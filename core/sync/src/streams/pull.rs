@@ -43,12 +43,8 @@ pub(super) struct Place {
 impl Place {
     /// S goes from this place (its rows went with the shred).
     pub(super) fn forget(&mut self, s: &SyncId) {
-        if self.at_stream.contains(s) {
-            self.at_stream.remove(s);
-        }
-        if self.joining.contains_key(s) {
-            self.joining.remove(s);
-        }
+        self.at_stream.remove(s);
+        self.joining.remove(s);
         self.stopped.remove(s);
         self.closed.remove(s);
         self.stale.remove(s);
@@ -566,9 +562,7 @@ impl Streams {
         let was = place.effective(&s);
         let reopened = place.closed.remove(&s);
         place.stopped.remove(&s);
-        if place.at_stream.contains(&s) {
-            place.at_stream.remove(&s);
-        }
+        place.at_stream.remove(&s);
         if place.joining.get(&s) != Some(&c) {
             place.joining.insert(s, c.clone());
         }

@@ -1045,39 +1045,23 @@ impl Store {
         let mut g = self.lock();
         let now = g.now;
         if let Some(old) = g.mem.read(s, b).cloned() {
-            if old.own || old.charged.is_some() {
-                return Ok(true);
+            let next = g.read(|t, env| unvouched(t, env, s, b, &old))?;
+            match &next {
+                Some(Some(new)) => g.mem.change(s, b, new.clone()),
+                Some(None) => {}
+                None => drop(g.mem.remove(s, b, now, false, false)),
             }
-            let Some(stamp) = old.stamp else { return Ok(true) };
-            if g.read(|t, _| head_vouch(t, s, b, &old.wrap, &stamp, old.vouch))?.is_some() {
-                return Ok(true);
-            }
-            if let Some(src) = old.brought
-                && !g.read(|t, env| over_peer_budget(t, env, src, old.size))?
-            {
-                g.mem.change(s, b, EntryRow { charged: Some(src), brought: None, ..old });
-                return Ok(true);
-            }
-            g.mem.remove(s, b, now, false, false);
-            return Ok(false);
+            return Ok(next.is_some());
         }
         g.write(|t, env| {
             let Some(old) = entries::get(t, s, b)? else { return Ok(false) };
-            if old.own || old.charged.is_some() {
-                return Ok(true);
+            let next = unvouched(t, env, s, b, &old)?;
+            match &next {
+                Some(Some(new)) => entries::change(t, env, s, b, &old, new.clone())?,
+                Some(None) => {}
+                None => drop(entries::remove(t, env, s, b, Removal::Untombed)?),
             }
-            let Some(stamp) = old.stamp else { return Ok(true) };
-            if head_vouch(t, s, b, &old.wrap, &stamp, old.vouch)?.is_some() {
-                return Ok(true);
-            }
-            if let Some(src) = old.brought
-                && !over_peer_budget(t, env, src, old.size)?
-            {
-                entries::change(t, env, s, b, &old.clone(), EntryRow { charged: Some(src), brought: None, ..old })?;
-                return Ok(true);
-            }
-            entries::remove(t, env, s, b, Removal::Untombed)?;
-            Ok(false)
+            Ok(next.is_some())
         })
     }
 
@@ -1991,6 +1975,20 @@ fn heir(t: &mut Transaction<'_>, env: &Env<'_>, src: Source, s: &SyncId, b: &Blo
 
 /// Whether `size` more bytes charged to `src` pass its peer budget (spec/sync-ids.md §5 Peer
 /// budget): what its durable and ephemeral entries giving nothing held are charged so far.
+/// What `Store::charge_unvouched` makes of entry row `old`: kept as it is (`Some(None)`: its own,
+/// charged, unstamped or still vouching), kept charged to the peer that brought it
+/// (`Some(Some(row))`), or not kept (`None`).
+fn unvouched(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId, b: &BlobId, old: &EntryRow) -> Result<Option<Option<EntryRow>>> {
+    let Some(stamp) = old.stamp.filter(|_| !old.own && old.charged.is_none()) else { return Ok(Some(None)) };
+    if head_vouch(t, s, b, &old.wrap, &stamp, old.vouch)?.is_some() {
+        return Ok(Some(None));
+    }
+    Ok(match old.brought {
+        Some(src) if !over_peer_budget(t, env, src, old.size)? => Some(Some(EntryRow { charged: Some(src), brought: None, ..old.clone() })),
+        _ => None,
+    })
+}
+
 fn over_peer_budget(t: &mut Transaction<'_>, env: &Env<'_>, src: Source, size: u64) -> Result<bool> {
     let mem = env.mem.charges.get(&src).copied().unwrap_or(0);
     Ok(source_charge(t, src)?.saturating_add(mem).saturating_add(size) > env.policy.peer_bytes)

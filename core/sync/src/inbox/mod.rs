@@ -310,14 +310,7 @@ impl Inbox {
     pub fn redeem(&mut self, cx: &mut Cx, link: &ShareLink) -> Waiting {
         let Cx { engine, store, now, mono, policy, .. } = cx;
         let mut here = Here { engine, status: None, store, now: *now, mono: *mono, policy };
-        self.redeem_on(&mut here, link)
-    }
-
-    fn redeem_on(&mut self, h: &mut Here<'_>, link: &ShareLink) -> Waiting {
-        match self.links.redeem(h, link) {
-            Ok(w) => w,
-            Err(_) => Waiting::Never("the link could not be kept"),
-        }
+        self.links.redeem(&mut here, link).unwrap_or(Waiting::Never("the link could not be kept"))
     }
 
     /// Whether link K is being redeemed here: a redeem not joined and not ended, nor given up

@@ -86,9 +86,7 @@ impl Register {
         let k = (src, *s);
         self.plans.unwant(&k);
         self.followed.remove(&k);
-        if self.progress.contains_key(&k) {
-            self.progress.remove(&k);
-        }
+        self.progress.remove(&k);
         self.wakes.retain(|(_, x)| *x != k);
     }
 

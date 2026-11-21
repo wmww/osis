@@ -348,10 +348,7 @@ impl Known {
             }
             Ok(rows)
         });
-        out.extend(recs.map_err(|e| match e {
-            crate::types::Error::Store(e) => e,
-            _ => osis_store::Error::Corrupt("streams: known"),
-        })?);
+        out.extend(recs.map_err(|e| e.into_store("streams: known"))?);
         Ok(out)
     }
 
@@ -367,10 +364,7 @@ impl Known {
     /// presence reads it, and a list read as empty would keep presence the listing proved gone.
     pub fn list(&self, src: Source, s: &SyncId) -> Result<Vec<BlobId>, osis_store::Error> {
         match src {
-            Source::Record(rec) => self.store.with_read(|t| t.record_rows(&rec, PRESENT, s, b"", usize::MAX).map(|rows| rows.into_iter().filter_map(|(k, _)| Some(BlobId(k.try_into().ok()?))).collect())).map_err(|e| match e {
-                crate::types::Error::Store(e) => e,
-                _ => osis_store::Error::Corrupt("streams: known"),
-            }),
+            Source::Record(rec) => self.store.with_read(|t| t.record_rows(&rec, PRESENT, s, b"", usize::MAX).map(|rows| rows.into_iter().filter_map(|(k, _)| Some(BlobId(k.try_into().ok()?))).collect())).map_err(|e| e.into_store("streams: known")),
             Source::Conn(_) => {
                 self.stamps.read(&("l", src, s));
                 Ok(self.by_src.get(&(src, *s)).map(|x| x.iter().copied().collect()).unwrap_or_default())

@@ -249,52 +249,6 @@ mod tests {
         assert!(told(&r) && r.unsaved.contains(&s), "Ok: told, written at the next settle");
     }
 
-    /// A `Net` with no connection.
-    struct Alone;
-
-    impl Net for Alone {
-        fn named(&self, _: ConnId) -> osis_store::Named {
-            osis_store::Named::default()
-        }
-        fn member(&self, _: ConnId, _: &SyncId) -> Option<crate::opens::Member> {
-            None
-        }
-        fn member_at(&self, _: crate::store::Source, _: &SyncId) -> Option<crate::opens::Member> {
-            None
-        }
-        fn conn_of(&self, _: crate::store::Source) -> Option<ConnId> {
-            None
-        }
-        fn agreed_on(&self, _: crate::store::Source) -> Option<ConnId> {
-            None
-        }
-        fn members(&self, _: ConnId) -> Vec<(SyncId, crate::types::SourceClass)> {
-            Vec::new()
-        }
-        fn head(&self, _: crate::store::Source, _: &SyncId) -> Option<osis_blob::StepId> {
-            None
-        }
-        fn present(&self, _: crate::store::Source, _: &SyncId, _: &osis_base::BlobId) -> bool {
-            false
-        }
-        fn shown(&self, _: &SyncId, _: &osis_base::BlobId) -> bool {
-            false
-        }
-        fn filter_generation(&self, _: ConnId) -> u64 {
-            0
-        }
-        fn shows_deposit_key(&self, _: ConnId, _: &SyncId, _: &[u8; 32]) -> bool {
-            false
-        }
-        fn source(&self, conn: ConnId) -> crate::store::Source {
-            crate::store::Source::Conn(conn)
-        }
-        fn request(&mut self, _: ConnId, _: Msg) -> Option<RequestId> {
-            None
-        }
-        fn answer(&mut self, _: ConnId, _: RequestId, _: Msg) {}
-    }
-
     // spec/sync-inbox.md §5 (Stranded notice: fired by a stranded node with no writer of it
     // connected), spec/permissions.md §4 (Stranded: once per sync key of the newest step): peer 0
     // rotates g's read leaving out reader m (peer 1), who takes it and is stranded. With nobody
@@ -328,7 +282,7 @@ mod tests {
             let mut h = Here { engine: e, status: None, store, now: WallMs(1_000_000), mono: osis_base::Mono(0), policy: &policy };
             r.now = Arc::new(BTreeMap::from([(s, st.clone())]));
             r.dirty = true;
-            r.settle(&mut h, &mut Alone).unwrap();
+            r.settle(&mut h, &mut super::super::suspect::tests::Records::default()).unwrap();
             h.engine.fires_owed().len() - before
         };
         let mut r = Reports::default();

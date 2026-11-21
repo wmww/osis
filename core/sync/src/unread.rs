@@ -149,10 +149,7 @@ impl Unread {
                     }
                     if self.followed.remove(&s) {
                         self.judged.unwant(&s);
-                        if self.kept.contains_key(&s) {
-                            self.kept.remove(&s);
-                            acted = true;
-                        }
+                        acted |= self.kept.remove(&s).is_some();
                     }
                 }
             }

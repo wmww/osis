@@ -752,10 +752,7 @@ impl Opens {
     /// Notes a store failure: the step fails at its end.
     fn failed(&mut self, r: Result<()>) {
         if let Err(e) = r {
-            self.fault.get_or_insert(match e {
-                crate::types::Error::Store(e) => e,
-                _ => osis_store::Error::Corrupt("opens: store"),
-            });
+            self.fault.get_or_insert(e.into_store("opens: store"));
         }
     }
 
@@ -1110,6 +1107,31 @@ impl Opens {
         }
     }
 
+    /// At the first settle: the store's `changed_at` end and the kept records' `acked_pos`.
+    fn load_first(&mut self, store: &Store) -> Result<()> {
+        if !self.changed.loaded {
+            self.changed.end = store.with_read(|t| t.changed_end())?;
+            self.changed.loaded = true;
+        }
+        if self.acks.is_none() {
+            let mut acks = store.with_read(|t| {
+                let mut acks = Acks::default();
+                for rec in t.records_all()? {
+                    let pos = records::acked_pos(t, &rec.id)?;
+                    acks.set(rec.id, Some((pos, &rec.named)));
+                }
+                Ok(acks)
+            })?;
+            // records in memory are newer than their rows
+            for (id, r) in self.records.iter().filter(|(_, r)| r.kept) {
+                acks.set(*id, Some((r.acked_pos, &r.named)));
+            }
+            self.acks = Some(acks);
+            self.peers.wrote_all();
+        }
+        Ok(())
+    }
+
     /// `conn` lets its record go: a kept one keeps its members where they stand (`Released`);
     /// one kept nowhere goes, each member closing with it.
     fn release(&mut self, conn: ConnId, moved: &mut Vec<Moved>) {
@@ -1227,42 +1249,9 @@ impl Opens {
                 r.basis.remove(&s);
             }
         }
-        if !self.changed.loaded {
-            let r = ctx.store.with_read(|t| t.changed_end());
-            match r {
-                Ok(end) => {
-                    self.changed.end = end;
-                    self.changed.loaded = true;
-                }
-                Err(e) => {
-                    self.failed(Err(e));
-                    return false;
-                }
-            }
-        }
-        if self.acks.is_none() {
-            let r = ctx.store.with_read(|t| {
-                let mut acks = Acks::default();
-                for rec in t.records_all()? {
-                    let pos = records::acked_pos(t, &rec.id)?;
-                    acks.set(rec.id, Some((pos, &rec.named)));
-                }
-                Ok(acks)
-            });
-            match r {
-                Ok(mut acks) => {
-                    // records in memory are newer than their rows
-                    for (id, r) in self.records.iter().filter(|(_, r)| r.kept) {
-                        acks.set(*id, Some((r.acked_pos, &r.named)));
-                    }
-                    self.acks = Some(acks);
-                    self.peers.wrote_all();
-                }
-                Err(e) => {
-                    self.failed(Err(e));
-                    return false;
-                }
-            }
+        if let Err(e) = self.load_first(ctx.store) {
+            self.failed(Err(e));
+            return false;
         }
         for s in ctx.holds.due() {
             self.work.creds += 1;
@@ -1360,9 +1349,7 @@ impl Opens {
                     k.walks.remove(&s);
                     k.retries.retain(|(_, x)| *x != s);
                 }
-                if self.stops.contains_key(&s) {
-                    self.stops.remove(&s);
-                }
+                self.stops.remove(&s);
                 // the record rows of S go with S in the store
                 for c in self.conns.keys() {
                     self.member_stamps.wrote(&(*c, s), false);

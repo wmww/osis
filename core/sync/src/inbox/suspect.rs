@@ -469,7 +469,7 @@ fn row_after(wrote: Option<[u8; 16]>, theirs: &[u8; 16], done: &Repaired) -> Row
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn entry(i: u8, ak: &str) -> SuspectEntry {
@@ -509,10 +509,10 @@ mod tests {
 
     use crate::session::RequestId;
 
-    /// A `Net` of records: the connection holding each, whether its digests agreed there, and
-    /// the messages sent.
+    /// A `Net` of records (none by default): the connection holding each, whether its digests
+    /// agreed there, and the messages sent.
     #[derive(Default)]
-    struct Records {
+    pub(in crate::inbox) struct Records {
         on: osis_base::memo::Stamped<Source, ConnId>,
         agreed: osis_base::memo::Stamped<Source, ConnId>,
         next: RequestId,
@@ -525,7 +525,7 @@ mod tests {
             self.on.insert(src, conn);
             if agreed {
                 self.agreed.insert(src, conn);
-            } else if self.agreed.contains_key(&src) {
+            } else {
                 self.agreed.remove(&src);
             }
         }
@@ -538,9 +538,7 @@ mod tests {
 
         fn release(&mut self, src: Source) {
             self.on.remove(&src);
-            if self.agreed.contains_key(&src) {
-                self.agreed.remove(&src);
-            }
+            self.agreed.remove(&src);
         }
     }
 

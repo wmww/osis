@@ -230,9 +230,7 @@ impl Redemptions {
             let engine = &mut *h.engine;
             let Some((_, false)) = self.kept.settle(&k, || engine.joined_link(&k)) else { continue };
             self.kept.unwant(&k);
-            if self.hints.contains_key(&k) {
-                self.hints.remove(&k);
-            }
+            self.hints.remove(&k);
             h.store.with_tx(|t| t.remove_local(&peers_key(&k), Shred::No))?;
             acted = true;
         }
@@ -252,7 +250,7 @@ impl Redemptions {
         })?;
         if keep {
             self.kept.want(*k);
-        } else if self.hints.contains_key(k) {
+        } else {
             self.hints.remove(k);
         }
         Ok(())

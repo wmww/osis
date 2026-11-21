@@ -11,13 +11,6 @@ use std::sync::Arc;
 
 type Res<T> = std::result::Result<T, Error>;
 
-fn store_err(e: crate::types::Error) -> Error {
-    match e {
-        crate::types::Error::Store(e) => e,
-        _ => Error::Corrupt("sync store"),
-    }
-}
-
 impl Inner {
     /// Runs `f` in the engine's open transaction (begun at its first use).
     fn engine_tx<R>(&mut self, f: impl FnOnce(&mut Transaction<'_>, &mut super::Env<'_>) -> crate::types::Result<R>) -> Res<R> {
@@ -31,7 +24,7 @@ impl Inner {
         *open = Some(t.suspend()?);
         // an abort of the engine's transaction counts the total again (`abort`)
         *total = env.total;
-        r.map_err(store_err)
+        r.map_err(|e| e.into_store("sync store"))
     }
 }
 

@@ -47,7 +47,7 @@ pub use known::{Known, Row as KnownRow};
 use crate::opens::{Member, Moved, Opens, Reported};
 use crate::session::{Incoming, Sessions, To};
 use crate::store::{Source, Store};
-use crate::types::{ConnId, Cx, Entry, Error, Position, RecordId, Result};
+use crate::types::{ConnId, Cx, Entry, Position, RecordId, Result};
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, Mono, SyncId, WallMs};
 use osis_engine::Engine;
@@ -537,11 +537,7 @@ impl Streams {
     /// the next settle.
     fn failed(&mut self, r: Result<()>) {
         if let Err(e) = r {
-            self.fault.get_or_insert(match e {
-                Error::Store(e) | Error::Engine(osis_engine::Error::Store(e)) => e,
-                Error::Engine(osis_engine::Error::Corrupt(m)) => osis_store::Error::Corrupt(m),
-                _ => osis_store::Error::Corrupt("streams: store"),
-            });
+            self.fault.get_or_insert(e.into_store("streams: store"));
         }
     }
 }

@@ -441,9 +441,7 @@ impl Status {
     /// where its peer stood is kept: a report racing the drop is made again by the next
     /// connection's Pull.
     pub fn released(&mut self, src: Source) {
-        if self.up.contains_key(&src) {
-            self.up.remove(&src);
-        }
+        self.up.remove(&src);
     }
 
     /// Member S of the record at `src` is a member no more: its lacking count goes.
@@ -473,9 +471,7 @@ impl Status {
 
     fn unwant_lacking(&mut self, src: Source, s: SyncId) {
         self.lacking_fx.unwant(&(s, src));
-        if self.lacking.contains_key(&(s, src)) {
-            self.lacking.remove(&(s, src));
-        }
+        self.lacking.remove(&(s, src));
     }
 
     /// Member S of record `id`, which no connection holds, closed (`Moved::Gone`).
@@ -557,9 +553,7 @@ impl Status {
 
     fn unstrand(&mut self, s: &SyncId) {
         self.stranding_fx.unwant(s);
-        if self.strandings.contains_key(s) {
-            self.strandings.remove(s);
-        }
+        self.strandings.remove(s);
     }
 
     /// Per read S, whether this node is stranded there (spec/permissions.md §4): heard out (the
@@ -591,7 +585,7 @@ impl Status {
                 Some((_, Some(x))) => {
                     self.strandings.insert(s, x);
                 }
-                Some((_, None)) if self.strandings.contains_key(&s) => {
+                Some((_, None)) => {
                     self.strandings.remove(&s);
                 }
                 _ => {}
@@ -642,8 +636,7 @@ impl Status {
                 self.release_fx.unwant(&c);
             }
             for c in now.iter() {
-                if !self.removals.contains(c) {
-                    self.removals.insert(*c);
+                if self.removals.insert(*c) {
                     self.release_fx.want(*c);
                 }
             }
@@ -693,9 +686,9 @@ impl Status {
         for c in moved {
             let ids = self.by_commit.get(&c);
             let held = ids.is_some_and(|ids| !ids.is_empty() && ids.iter().all(|s| self.unheld.get(s).is_some_and(|u| !u.contains(&c))));
-            if held && !self.held.contains(&c) {
+            if held {
                 self.held.insert(c);
-            } else if !held && self.held.contains(&c) {
+            } else {
                 self.held.remove(&c);
             }
         }
@@ -718,9 +711,7 @@ impl Status {
             ids.remove(s);
             if ids.is_empty() {
                 self.by_commit.remove(c);
-                if self.held.contains(c) {
-                    self.held.remove(c);
-                }
+                self.held.remove(c);
             }
         }
     }

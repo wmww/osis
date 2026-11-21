@@ -189,6 +189,18 @@ osis_base::impl_error!(Error {
     Proto(e) => ("protocol: {e}"),
 });
 
+impl Error {
+    /// As a store failure: a store's own (or the engine's), an engine's broken invariant with its
+    /// text, else `Corrupt(what)`.
+    pub fn into_store(self, what: &'static str) -> osis_store::Error {
+        match self {
+            Error::Store(e) | Error::Engine(osis_engine::Error::Store(e)) => e,
+            Error::Engine(osis_engine::Error::Corrupt(m)) => osis_store::Error::Corrupt(m),
+            _ => osis_store::Error::Corrupt(what),
+        }
+    }
+}
+
 impl From<osis_engine::Error> for Error {
     fn from(e: osis_engine::Error) -> Error {
         Error::Engine(e)
