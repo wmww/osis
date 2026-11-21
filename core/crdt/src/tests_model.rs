@@ -19,12 +19,12 @@ use crdt_model::state::Frag as MFrag;
 use crdt_model::wire::Ctx;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// How much the differential runs (notes/testing.md, Sizes): `Quick` in the default tests,
+/// How much the differential runs (notes/testing.md, Sizes): `Plain` the quick check,
 /// `Small` at the gate, `Large` in release checks. Only the seed count differs, so any seed replays alone at
 /// any size.
 #[derive(Clone, Copy, Debug)]
 enum Size {
-    Quick,
+    Plain,
     Small,
     Large,
 }
@@ -36,7 +36,7 @@ impl Size {
     }
     fn seeds(self) -> std::ops::Range<u64> {
         match self {
-            Size::Quick => 0..100,
+            Size::Plain => 0..100,
             Size::Small => 0..1000,
             Size::Large => 0..10_000,
         }
@@ -518,7 +518,7 @@ fn differential(size: Size) {
     let name = format!("crdt_equals_model ({size:?})");
     // only the property sizes read a range from the environment
     let (range, out) = match size {
-        Size::Quick => {
+        Size::Plain => {
             let seeds: Vec<u64> = size.seeds().collect();
             (size.seeds(), osis_base::testenv::run_seeds(&name, &seeds, false, replay, check))
         }
@@ -538,10 +538,11 @@ fn differential(size: Size) {
     }
 }
 
-/// G3: the crdt equals the model, `Quick`.
+/// G3: the crdt equals the model, `Plain`.
 #[test]
-fn crdt_equals_model() {
-    differential(Size::Quick);
+#[ignore = "property"]
+fn crdt_equals_model_plain() {
+    differential(Size::Plain);
 }
 
 /// `Small`, or `Large` with `OSIS_FULL=1`; `OSIS_CRDT_START`/`OSIS_CRDT_SEEDS` pick the

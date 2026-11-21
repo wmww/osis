@@ -145,7 +145,8 @@ pub fn run(start: u64, n: u64, disputes: bool) -> Vec<String> {
 // spec/permissions.md §5.2: the walk reads small worlds of content, addenda, covers, purges and
 // vouches as the model does, disputes included in a share.
 #[test]
-fn content_worlds_agree() {
+#[ignore = "property"]
+fn paths_content_agree_plain() {
     let f = run(0, 60, true);
     assert!(f.is_empty(), "{}", f.join("\n"));
     let f = run(60, 600, false);

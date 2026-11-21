@@ -175,7 +175,8 @@ fn chained_run(samples: u64, seed: u64) {
 }
 
 #[test]
-fn chained_writes_hold_the_applied_and_grow_spec_permissions_4() {
+#[ignore = "property"]
+fn chained_writes_hold_the_applied_and_grow_plain_spec_permissions_4() {
     chained_run(120, 0);
 }
 
@@ -415,7 +416,8 @@ fn certificates_carry_demotion_of_left_edge_spec_permissions_4() {
 }
 
 #[test]
-fn certificates_project_joint() {
+#[ignore = "property"]
+fn certificates_project_joint_plain() {
     cert_run_joint(80, 0);
 }
 
@@ -469,7 +471,8 @@ fn cert_run_edges(samples: u64, seed: u64) {
 }
 
 #[test]
-fn certificates_project_edges() {
+#[ignore = "property"]
+fn certificates_project_edges_plain() {
     cert_run_edges(80, 0);
 }
 
@@ -764,7 +767,8 @@ fn scope_run(samples: u64, seed: u64) {
 }
 
 #[test]
-fn demotion_scope_covers_audits_spec_permissions_5_1() {
+#[ignore = "property"]
+fn demotion_scope_covers_audits_plain_spec_permissions_5_1() {
     scope_run(4000, 0);
 }
 

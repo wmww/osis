@@ -345,7 +345,8 @@ fn story_run(start: u64, n: u64, disputes: bool) -> Vec<String> {
 // spec/permissions.md §5.1: the walk reads small worlds of admins, of invites and of a detached
 // thing written by marked direct hops as the model does, at every honesty, disputes included.
 #[test]
-fn tiny_worlds_agree() {
+#[ignore = "property"]
+fn paths_tiny_agree_plain() {
     let f = tiny_run(0, 150, true);
     assert!(f.is_empty(), "{}", f.join("\n"));
 }
@@ -353,7 +354,8 @@ fn tiny_worlds_agree() {
 // spec/permissions.md §5.1: the walk reads the stolen-node story's worlds at every node as the
 // model does (disputes in a few).
 #[test]
-fn story_worlds_agree() {
+#[ignore = "property"]
+fn paths_story_agree_plain() {
     let f = story_run(0, 6, true);
     assert!(f.is_empty(), "{}", f.join("\n"));
     let f = story_run(6, 30, false);

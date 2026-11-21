@@ -392,7 +392,8 @@ fn differential(seed: u64, steps: u64, stored_each: bool) -> BTreeMap<&'static s
 }
 
 #[test]
-fn paged_apply_matches_whole_spec_crdt_8() {
+#[ignore = "property"]
+fn paged_apply_matches_whole_plain_spec_crdt_8() {
     let c = differential(0, 14, false);
     // the history reached what it is for: paged deltas streamed, a reset joined by pages, a
     // commit waiting for its pages

@@ -445,7 +445,8 @@ fn epochs_run(samples: u64, seed: u64) {
 /// spec/permissions.md §5.4-§5.5: the chain and the epoch rule agree with core/test/roles-model
 /// `epochs` at every observer and receipt prefix of every world.
 #[test]
-fn epochs_model_agrees() {
+#[ignore = "property"]
+fn epochs_model_agrees_plain() {
     epochs_run(20, 0);
 }
 

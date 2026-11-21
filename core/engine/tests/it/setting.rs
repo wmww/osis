@@ -793,9 +793,10 @@ fn covered_drops_history(seed: u64) -> usize {
 // keep bound dropped in random order; no drop moves the listing, in-history status, keep bounds
 // or replaced-at of a held body in history.
 #[test]
-fn covered_drops_move_nothing_spec_commits_5() {
+#[ignore = "property"]
+fn covered_drops_move_nothing_plain_spec_commits_5() {
     let seeds: Vec<u64> = (0..10).collect();
-    let dropped = osis_base::testenv::run_seeds("setting::covered_drops_move_nothing_spec_commits_5", &seeds, false, covered_drops_replay, covered_drops_history);
+    let dropped = osis_base::testenv::run_seeds("setting::covered_drops_move_nothing_plain_spec_commits_5", &seeds, false, covered_drops_replay, covered_drops_history);
     assert!(dropped.iter().filter(|n| **n > 0).count() * 2 >= seeds.len(), "half the seeds drop a covered body: {dropped:?}");
 }
 

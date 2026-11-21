@@ -367,11 +367,12 @@ fn try_hostile(lp: &mut LocalPeer, i: usize, g: Tid, lists: &BTreeSet<Epoch>, fl
 // (its cut's causal past, and more: every epoch then known). Fails with the carry rule or the
 // boxing rule off.
 #[test]
-fn nothing_before_a_cut_reaches_its_holder_spec_crypto_4() {
-    osis_base::testenv::run_seeds("rotation::tests_cut::nothing_before_a_cut_reaches_its_holder_spec_crypto_4", &NOTHING_BEFORE_SEEDS, false, cut_replay("nothing_before_a_cut_reaches_its_holder_large_spec_crypto_4"), nothing_before_a_cut);
+#[ignore = "property"]
+fn nothing_before_a_cut_reaches_its_holder_plain_spec_crypto_4() {
+    osis_base::testenv::run_seeds("rotation::tests_cut::nothing_before_a_cut_reaches_its_holder_plain_spec_crypto_4", &NOTHING_BEFORE_SEEDS, false, cut_replay("nothing_before_a_cut_reaches_its_holder_large_spec_crypto_4"), nothing_before_a_cut);
 }
 
-/// The default test's seeds, a covering set: with the boxing or the carry rule off, every one of
+/// The `_plain` property's seeds, a covering set: with the boxing or the carry rule off, every one of
 /// seeds 1-40 fails; with the carry rule's maker clause off 5 (2 among them), with a box allowed
 /// one floor low 23 (2).
 const NOTHING_BEFORE_SEEDS: [u64; 3] = [1, 2, 3];
@@ -390,7 +391,7 @@ fn cut_replay(test: &'static str) -> impl Fn(u64) -> String + Sync {
     move |s| format!("OSIS_CUT_START={s} OSIS_CUT_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_cut::{test}")
 }
 
-/// One seed of `nothing_before_a_cut_reaches_its_holder_spec_crypto_4`.
+/// One seed of `nothing_before_a_cut_reaches_its_holder_plain_spec_crypto_4`.
 fn nothing_before_a_cut(seed: u64) {
     let read = BTreeSet::from(READ);
     let mut rng = super::tests::Rng(seed.wrapping_mul(0x9e37_79b9).wrapping_add(7));

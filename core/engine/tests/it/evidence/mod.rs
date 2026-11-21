@@ -349,31 +349,26 @@ fn assert_agrees_run(name: &str, w: &World) -> Run {
 
 // ---- the family, story and random worlds ----
 
-/// Every 291st family world (the model's default slice: 106 worlds over the three `Shape::mint` values).
+/// The quick check (a property): every 291st family world (the model's default slice: 106 worlds
+/// over the three `Shape::mint` values), then roles-model's story world of seed 0 under each of the
+/// six unit crossings, vouches counting on every other one.
 #[test]
-fn the_derivation_agrees_with_the_model_on_a_family_slice_spec_permissions_4() {
+#[ignore = "property"]
+fn the_derivation_agrees_with_the_model_plain_spec_permissions_4() {
     let mut r = Run::default();
     for i in (0..hm::FAMILY).step_by(97 * 3) {
         r.add(assert_agrees_run(&format!("{:?}", Shape::nth(i)), &hm::family(Shape::nth(i))));
     }
     eprintln!("copies {}, leaves {}, waits {}", r.copies, r.leaves, r.waits);
     assert!(r.copies > 1000 && r.leaves > 0 && r.waits > 0, "copies {}, leaves {}, waits {}", r.copies, r.leaves, r.waits);
-}
-
-/// roles-model's story world of seed 0 under each of the six unit crossings, vouches counting on
-/// every other one.
-#[test]
-fn the_derivation_agrees_with_the_model_on_story_worlds_spec_permissions_4() {
     for u in 0..hm::STORY_UNITS {
         let vouches = u % 2 == 0;
         let sim = paths::random_world(0, &rules(vouches));
-        {
-            let mut w = hm::story_world(&sim, u);
-            let rule = delivery(&mut w, vouches);
-            let r = differ(&w, &rule, vouches);
-            assert!(r.differ.is_empty(), "story units {u} vouches {vouches}: {} disagreements, first: {}", r.differ.len(), r.differ[0]);
-            eprintln!("story units {u} vouches {vouches}: {} comparisons with copies", r.copies);
-        }
+        let mut w = hm::story_world(&sim, u);
+        let rule = delivery(&mut w, vouches);
+        let r = differ(&w, &rule, vouches);
+        assert!(r.differ.is_empty(), "story units {u} vouches {vouches}: {} disagreements, first: {}", r.differ.len(), r.differ[0]);
+        eprintln!("story units {u} vouches {vouches}: {} comparisons with copies", r.copies);
     }
 }
 
@@ -429,8 +424,7 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
 }
 
 /// Full size (`OSIS_FULL=1`): every 17th family world, 1500 random and 60 story seeds; the
-/// gate's a tenth of the seeds and every 97th family world. No `_plain` twin: at the gate's one
-/// offset it would run a subset of these worlds again.
+/// gate's a tenth of the seeds and every 97th family world.
 #[test]
 #[ignore = "property"]
 fn the_derivation_agrees_with_the_model_large_spec_permissions_4() {

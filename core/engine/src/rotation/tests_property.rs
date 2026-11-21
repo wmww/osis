@@ -1005,11 +1005,12 @@ fn replay(s: u64) -> String {
 }
 
 // spec/crypto.md §4, spec/permissions.md §2-§3: no departed holder reads later content, every
-// holder ends reading everything (module doc). Quick size: seeds 0..8 (every emphasis twice), no
+// holder ends reading everything (module doc). The quick size (a property): seeds 0..8 (every emphasis twice), no
 // environment.
 #[test]
-fn rotation_holds_spec_crypto_4() {
-    tally(&osis_base::testenv::run_seeds("rotation::tests_property::rotation_holds_spec_crypto_4", &(0..8).collect::<Vec<u64>>(), false, replay, rotation_history));
+#[ignore = "property"]
+fn rotation_holds_plain_spec_crypto_4() {
+    tally(&osis_base::testenv::run_seeds("rotation::tests_property::rotation_holds_plain_spec_crypto_4", &(0..8).collect::<Vec<u64>>(), false, replay, rotation_history));
 }
 
 /// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_ROTATION_START,

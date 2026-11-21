@@ -228,14 +228,15 @@ fn replay(k: u64) -> String {
     format!("OSIS_FORGED_START={k} OSIS_FORGED_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact retention::tests_forged::forged_copies_fail_no_node_large")
 }
 
-/// Hostile input never produces a local error, the default sample: one seed of each kind.
+/// Hostile input never produces a local error, the quick sample (a property): one seed of each kind.
 #[test]
-fn forged_copies_fail_no_node() {
-    let made = osis_base::testenv::run_seeds("retention::tests_forged::forged_copies_fail_no_node", &[0, 1, 2], false, replay, forged_copies_case);
+#[ignore = "property"]
+fn forged_copies_fail_no_node_plain() {
+    let made = osis_base::testenv::run_seeds("retention::tests_forged::forged_copies_fail_no_node_plain", &[0, 1, 2], false, replay, forged_copies_case);
     assert!(made.iter().all(|n| *n > 0), "every kind forges: {made:?}");
 }
 
-/// `forged_copies_fail_no_node` at size: 300 seeds (`OSIS_FULL=1`), a tenth by default;
+/// `forged_copies_fail_no_node_plain` at size: 300 seeds (`OSIS_FULL=1`), a tenth by default;
 /// `OSIS_FORGED_START`/`OSIS_FORGED_SEEDS` pick them.
 #[test]
 #[ignore]

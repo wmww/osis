@@ -131,7 +131,8 @@ pub(super) fn run(start: u64, n: u64, alike: Alike) -> Vec<String> {
 // notes/perm-paths.md, Components: a part's verdict reads only its component, so the walk by
 // components reads every world as the single walk does, from scratch, on arrival and on forgetting.
 #[test]
-fn components_read_as_one_walk() {
+#[ignore = "property"]
+fn paths_components_agree_plain() {
     let f = run(0, 60, alike);
     assert!(f.is_empty(), "{}", f.join("\n"));
 }

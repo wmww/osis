@@ -74,7 +74,8 @@ pub(super) fn alike(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, com
 // and its own verdict and drop, so walking again only the parts whose reads changed reads every
 // world as the whole walk does, update by update.
 #[test]
-fn reach_reads_as_the_whole_walk() {
+#[ignore = "property"]
+fn paths_reach_agree_plain() {
     let f = run(0, 60, alike);
     assert!(f.is_empty(), "{}", f.join("\n"));
 }

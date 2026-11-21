@@ -3455,22 +3455,6 @@ struct Size {
     len: usize,
     cfg: Cfg,
     exhaustive: Option<usize>,
-    /// Read from the environment: a seed replays alone by `OSIS_ORDER_SEED`.
-    env: bool,
-}
-
-/// Default tests, a covering set, each emphasis once: half of them (seeds 0..4, 16 steps: its
-/// start sets most of a history) given one order of each kind and three partial held sets (the
-/// first sync part way, a node that never heard from a writer); the other half (seeds 100..104)
-/// capped to 3 commits after the setup (the smallest cap with orders past as made and reversed),
-/// checked in every order of every held set, each with late parts (its seeds are fixed, so a
-/// drawn share would leave the same orders untried for good); no environment read. `plain` and
-/// `exhaustive` run every emphasis both ways at full width.
-fn quick() -> Vec<Size> {
-    vec![
-        Size { name: "quick", seeds: (0..4).collect(), len: 16, cfg: Cfg { random: 1, partial: 3, split: Twins::First(1), clock: 1, reopens: 1, ..ORDERS }, exhaustive: None, env: false },
-        Size { name: "quick, exhaustive", seeds: (100..104).collect(), len: 30, cfg: Cfg { all_up_to: 3, every_held: true, random: 0, partial: 1, split: Twins::First(usize::MAX), clock: 1, ..ORDERS }, exhaustive: Some(3), env: false },
-    ]
 }
 
 /// The environment's range (`OSIS_ORDER_START`, `OSIS_ORDER_SEEDS`, or `OSIS_ORDER_SEED` alone),
@@ -3483,7 +3467,7 @@ fn from_env(name: &'static str, full: std::ops::Range<u64>, len: usize, cfg: Cfg
     let seeds = u64_var("OSIS_ORDER_SEED").map_or_else(|| range.range.collect(), |s| vec![s]);
     let len = u64_var("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
     let clock = u64_var("OSIS_ORDER_CLOCK").map_or(cfg.clock, |n| n as usize);
-    Size { name, seeds, len, cfg: Cfg { clock, ..cfg }, exhaustive, env: true }
+    Size { name, seeds, len, cfg: Cfg { clock, ..cfg }, exhaustive }
 }
 
 /// `plain`: 80 seeds of 60 steps at large size (`OSIS_FULL=1`), a tenth at small size.
@@ -3501,72 +3485,63 @@ fn exhaustive() -> Size {
 impl Size {
     /// The command that replays `seed`.
     fn replay(&self, seed: u64) -> String {
-        match (self.env, self.exhaustive) {
-            (false, _) => "cargo test -p osis-engine --test it -- --exact order::held_set_decides".to_string(),
-            (true, None) => format!("OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={} cargo test -p osis-engine --test it -- --ignored --exact order::held_set_decides_plain", self.len),
-            (true, Some(_)) => format!("OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={} cargo test -p osis-engine --test it -- --ignored --exact order::held_set_decides_exhaustive", self.len),
-        }
+        let test = if self.exhaustive.is_some() { "held_set_decides_exhaustive" } else { "held_set_decides_plain" };
+        format!("OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={} cargo test -p osis-engine --test it -- --ignored --exact order::{test}", self.len)
     }
 }
 
-/// Checks the histories of `sizes`' seeds (one seed per task, a thread per core) and reports every
+/// Checks the histories of `size`'s seeds (one seed per task, a thread per core) and reports every
 /// failing one, each with the command that replays it; then the coverage tally (`Seen::floors`)
 /// over all of them. `OSIS_ORDER_SHRINK=1` shrinks each failure first (slow: a shrink reruns the
 /// check per dropped step).
-fn held_set_decides_at(sizes: Vec<Size>) {
+fn held_set_decides_at(size: Size) {
     use osis_base::testenv::u64_var;
-    let mut seen = Seen::default();
     let mut by: BTreeMap<String, Seen> = BTreeMap::new();
     let mut open = Seen::default();
-    let mut fails = Vec::new();
     let threads = threads("OSIS_SEED_THREADS");
-    for size in &sizes {
-        let (t0, cpu) = (std::time::Instant::now(), osis_base::testenv::Cpu::now());
-        // up to a seed per thread in flight, each seed's deliveries on every thread, all of it
-        // holding the process's permits (`check_on`)
-        let results = par_map(&size.seeds, threads, |seed| {
-            let (e, steps) = generate(seed, size.len);
-            let cfg = cfg_of(e, size.cfg);
-            let steps = match size.exhaustive {
-                Some(max) => {
-                    let _p = Permit::take();
-                    cap(seed, &steps, cfg.addenda, max)
-                }
-                None => steps,
-            };
-            if std::env::var("OSIS_ORDER_STATS").is_ok() {
-                eprintln!("seed {seed} ({e:?}): {}", rust_of(&steps));
+    let (t0, cpu) = (std::time::Instant::now(), osis_base::testenv::Cpu::now());
+    // up to a seed per thread in flight, each seed's deliveries on every thread, all of it
+    // holding the process's permits (`check_on`)
+    let results = par_map(&size.seeds, threads, |seed| {
+        let (e, steps) = generate(seed, size.len);
+        let cfg = cfg_of(e, size.cfg);
+        let steps = match size.exhaustive {
+            Some(max) => {
+                let _p = Permit::take();
+                cap(seed, &steps, cfg.addenda, max)
             }
-            let r = check_on(threads, seed, &steps, cfg).map(|s| Seen { emphases: BTreeMap::from([(format!("{e:?}"), 1)]), ..s });
-            let fail = r.as_ref().is_err().then(|| {
-                let shrunk = u64_var("OSIS_ORDER_SHRINK").is_some_and(|n| n != 0);
-                let (steps, err) = if shrunk { shrink(threads, seed, steps, cfg) } else { (steps, r.clone().unwrap_err()) };
-                let what = if shrunk { "shrunk" } else { "as made; OSIS_ORDER_SHRINK=1 shrinks it" };
-                // the failure's first line on the seed line: what tools/known_failures.txt patterns match
-                let (head, rest) = err.split_once('\n').unwrap_or((&err, ""));
-                let msg = format!("seed {seed}, {e:?} (replay: {}; {what}, for check({seed}, &h, {})): {head}\nlet h = {};\n{rest}", size.replay(seed), rust_of(&cfg), rust_of(&steps));
-                eprintln!("{msg}\n");
-                msg
-            });
-            (r.unwrap_or_default(), fail)
+            None => steps,
+        };
+        if std::env::var("OSIS_ORDER_STATS").is_ok() {
+            eprintln!("seed {seed} ({e:?}): {}", rust_of(&steps));
+        }
+        let r = check_on(threads, seed, &steps, cfg).map(|s| Seen { emphases: BTreeMap::from([(format!("{e:?}"), 1)]), ..s });
+        let fail = r.as_ref().is_err().then(|| {
+            let shrunk = u64_var("OSIS_ORDER_SHRINK").is_some_and(|n| n != 0);
+            let (steps, err) = if shrunk { shrink(threads, seed, steps, cfg) } else { (steps, r.clone().unwrap_err()) };
+            let what = if shrunk { "shrunk" } else { "as made; OSIS_ORDER_SHRINK=1 shrinks it" };
+            // the failure's first line on the seed line: what tools/known_failures.txt patterns match
+            let (head, rest) = err.split_once('\n').unwrap_or((&err, ""));
+            let msg = format!("seed {seed}, {e:?} (replay: {}; {what}, for check({seed}, &h, {})): {head}\nlet h = {};\n{rest}", size.replay(seed), rust_of(&cfg), rust_of(&steps));
+            eprintln!("{msg}\n");
+            msg
         });
-        let mut here = Seen::default();
-        for r in &results {
-            here.add(&r.0);
-            // an emphasis's outcome needs its whole start: none is judged under the exhaustive cap
-            if size.exhaustive.is_none() {
-                open.add(&r.0);
-                for e in r.0.emphases.keys() {
-                    by.entry(e.clone()).or_default().add(&r.0);
-                }
+        (r.unwrap_or_default(), fail)
+    });
+    let mut seen = Seen::default();
+    for r in &results {
+        seen.add(&r.0);
+        // an emphasis's outcome needs its whole start: none is judged under the exhaustive cap
+        if size.exhaustive.is_none() {
+            open.add(&r.0);
+            for e in r.0.emphases.keys() {
+                by.entry(e.clone()).or_default().add(&r.0);
             }
         }
-        let failed: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
-        // always shown: the counts are what a passing run is read for
-        osis_base::testenv::visible(true, &format!("order::held_set_decides ({}): {} seeds from {}, {} steps, {} orders in the passing ones ({} with late parts; {} ingests, {} nodes copied, {} ends judged as an alike one), {} failing, {:.1} s, {:.1} CPU-s; held-model compared {} aspects over {} nodes", size.name, size.seeds.len(), size.seeds.first().copied().unwrap_or(0), size.len, here.orders, here.twins.2, here.ingests, here.copies, here.alike, failed.len(), t0.elapsed().as_secs_f64(), cpu.secs_since(), here.model.compared, here.model.nodes));
-        seen.add(&here);
-        fails.extend(failed);
     }
+    let fails: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
+    // always shown: the counts are what a passing run is read for
+    osis_base::testenv::visible(true, &format!("order::held_set_decides ({}): {} seeds from {}, {} steps, {} orders in the passing ones ({} with late parts; {} ingests, {} nodes copied, {} ends judged as an alike one), {} failing, {:.1} s, {:.1} CPU-s; held-model compared {} aspects over {} nodes", size.name, size.seeds.len(), size.seeds.first().copied().unwrap_or(0), size.len, seen.orders, seen.twins.2, seen.ingests, seen.copies, seen.alike, fails.len(), t0.elapsed().as_secs_f64(), cpu.secs_since(), seen.model.compared, seen.model.nodes));
     if std::env::var("OSIS_ORDER_STATS").is_ok() {
         let late: BTreeMap<&String, (u64, u64)> = by.iter().map(|(e, s)| (e, (s.twins.0, s.twins.2))).collect();
         eprintln!("held sets with a multi-part commit and orders with late parts, by emphasis: {late:?}");
@@ -3574,16 +3549,6 @@ fn held_set_decides_at(sizes: Vec<Size>) {
     }
     assert!(fails.is_empty(), "{} histories judged differently by what was held:\n{}", fails.len(), fails.join("\n\n"));
     seen.floors(&open, &by);
-}
-
-// spec/requirements.md Decentralization (Deterministic: a node's state and its judgment of every
-// write are functions of the data it holds, never of arrival order); spec/commits.md §4, §5 (purge; keep at least; the setting; for a duration D after replaced), §6; spec/crdt.md §4.6, §4.7, §4.8,
-// §5.7; spec/permissions.md §1, §2, §3, §4, §5, §5.1, §5.2 (addenda), §6: one generator
-// (`generate`), every node in every order judged by `node_checks` against the node keeping
-// every body and against held-model.
-#[test]
-fn held_set_decides() {
-    held_set_decides_at(quick());
 }
 
 // The shrink's harness pieces: a failure's kind ignores which order and held set found it and
@@ -3707,18 +3672,23 @@ fn tree_ends_are_fresh_deliveries() {
     assert!(copies > 0 && late > 0 && waiting > 0 && thrown > 0, "{copies} nodes copied, {late} deliveries with late parts, {waiting} ends with a pending commit, {thrown} with a thrown-out one");
 }
 
-// The same at small size (a tenth of large; `OSIS_FULL=1` large).
+// spec/requirements.md Decentralization (Deterministic: a node's state and its judgment of every
+// write are functions of the data it holds, never of arrival order); spec/commits.md §4, §5 (purge; keep at least; the setting; for a duration D after replaced), §6; spec/crdt.md §4.6, §4.7, §4.8,
+// §5.7; spec/permissions.md §1, §2, §3, §4, §5, §5.1, §5.2 (addenda), §6: one generator
+// (`generate`), every node in every order judged by `node_checks` against the node keeping
+// every body and against held-model.
+// At small size (a tenth of large; `OSIS_FULL=1` large).
 #[test]
 #[ignore = "property"]
 fn held_set_decides_plain() {
-    held_set_decides_at(vec![plain()]);
+    held_set_decides_at(plain());
 }
 
 // The same over short histories, in every order of every held set.
 #[test]
 #[ignore = "property"]
 fn held_set_decides_exhaustive() {
-    held_set_decides_at(vec![exhaustive()]);
+    held_set_decides_at(exhaustive());
 }
 
 // spec/permissions.md §5.2, spec/crdt.md §4.6: 2's snapshot, invalid once 0 lowers 2 to read,

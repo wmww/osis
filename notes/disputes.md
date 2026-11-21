@@ -81,7 +81,7 @@ Oracles are the design's statement of itself; change them once in the harness, n
 - **Switching**: for a node that dropped nothing, T then T' then T reads as a fresh node with those inputs; with drops, a subset.
 - **Other things**: things outside the disputed thing's reach read the same on both sides and still sync (Tess's requirement).
 - **Erase and return**: after a turned-around removal a node reads alike once a holder exists.
-- Built: osis-perm `differential::trust_model_agrees` (default and `_large`), `scenarios::*_spec_permissions_5_1`; osis-engine `disputes::*` (both orders, each party with itself, a planted waiting removal, switching, the store across a restart, other things untouched); osis `sharing::disputes_listed_told_and_chosen_*`.
+- Built: osis-perm `differential::trust_model_agrees` (`_plain` and `_large`), `scenarios::*_spec_permissions_5_1`; osis-engine `disputes::*` (both orders, each party with itself, a planted waiting removal, switching, the store across a restart, other things untouched); osis `sharing::disputes_listed_told_and_chosen_*`.
 
 ## Why no top authority
 The rejected design gave each thing an irremovable top authority fixed by its record. Its jobs and what covers each: fixing the tid (needs only a genesis: the creation record); inheritance (a role on a thing reaches the things minted with it as admin); dependent things deriving secrets (from the mint admin); settling a backdating fight between admins (the one job only an irremovable authority does, and the one per-node sides take). Every record names a mint admin, an ordinary removable admin whose edge is implicit; key actors have none (a node is its key). Details: notes/mint-admins.md.

@@ -536,7 +536,7 @@ fn a_regrant_after_everyone_judged_them_invalid_brings_them_back_spec_perm_6() {
 }
 
 /// One of the removed writer's writes in
-/// `a_removed_writers_writes_read_alike_in_any_arrival_order_and_tie_spec_perm_5_2`: its `ts`,
+/// `a_removed_writers_writes_read_alike_plain_spec_perm_5_2`: its `ts`,
 /// whether the remover and the witness had it before the removal.
 struct BobWrite {
     ts: osis_base::Ts,
@@ -552,13 +552,14 @@ struct BobWrite {
 // history gives: Bob's write counts iff re-granted, or stamped no later than the removal and
 // received before it by Alice (her frontier) or Carol (her addendum), whatever the tids.
 #[test]
-fn a_removed_writers_writes_read_alike_in_any_arrival_order_and_tie_spec_perm_5_2() {
-    let cases = osis_base::testenv::run_seeds("apply::tests_addenda::a_removed_writers_writes_read_alike_in_any_arrival_order_and_tie_spec_perm_5_2", &REMOVED_WRITER_SEEDS, false, removed_writer_replay, removed_writers_writes);
+#[ignore = "property"]
+fn a_removed_writers_writes_read_alike_plain_spec_perm_5_2() {
+    let cases = osis_base::testenv::run_seeds("apply::tests_addenda::a_removed_writers_writes_read_alike_plain_spec_perm_5_2", &REMOVED_WRITER_SEEDS, false, removed_writer_replay, removed_writers_writes);
     assert!((0..3).all(|t| cases.iter().any(|c| c.0 == t)), "every tie case ran: {cases:?}");
     assert!([false, true].iter().all(|r| cases.iter().any(|c| c.1 == *r)), "with and without a re-grant: {cases:?}");
 }
 
-/// The default test's seeds, a covering set: every tie case, with and without a re-grant; with a
+/// The `_plain` property's seeds, a covering set: every tie case, with and without a re-grant; with a
 /// witness's addendum leaving out a write at the removal's `ts`, 11 of seeds 0-47 fail (9, 13, 16
 /// and 21 among them), with addenda ignored 18, with frontiers ignored 7 (0), with re-grants
 /// ignored 8 (4).
@@ -577,7 +578,7 @@ fn removed_writer_replay(s: u64) -> String {
     format!("OSIS_ADDENDA_START={s} OSIS_ADDENDA_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact apply::tests_addenda::a_removed_writers_writes_read_alike_large_spec_perm_5_2")
 }
 
-/// One seed of `a_removed_writers_writes_read_alike_in_any_arrival_order_and_tie_spec_perm_5_2`:
+/// One seed of `a_removed_writers_writes_read_alike_plain_spec_perm_5_2`:
 /// its tie case, and whether Bob was granted again.
 fn removed_writers_writes(seed: u64) -> (usize, bool) {
     let mut rng = (seed + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;

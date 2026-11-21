@@ -112,7 +112,8 @@ fn joint_run(samples: u64, seed: u64) {
 
 /// spec/permissions.md §5.1: the joint walk agrees with core/test/roles-model `joint`.
 #[test]
-fn joint_model_agrees() {
+#[ignore = "property"]
+fn joint_model_agrees_plain() {
     joint_run(300, 0);
 }
 
@@ -281,7 +282,8 @@ fn edges_run(samples: u64, seed: u64) {
 /// spec/permissions.md §2, §5.1, §7: `until`, invite power, self-removal and links agree with
 /// core/test/roles-model `edges`, projections included.
 #[test]
-fn edges_model_agrees() {
+#[ignore = "property"]
+fn edges_model_agrees_plain() {
     edges_run(300, 0);
 }
 
@@ -478,7 +480,8 @@ fn trust_run(samples: u64, seed: u64) {
 /// histories, under no trust, each dispute's R alone and a node's random picks; switching
 /// trust sets through `Timelines` reads as a fresh evaluation.
 #[test]
-fn trust_model_agrees() {
+#[ignore = "property"]
+fn trust_model_agrees_plain() {
     trust_run(300, 0);
 }
 
@@ -583,7 +586,8 @@ fn addenda_run(samples: u64, seed: u64) {
 /// `addenda` under `GAPS` (the least fixpoint, rules 1-5, re-removals, forged addenda, admin-only
 /// content vouched for by a witness holding admin).
 #[test]
-fn addenda_model_agrees() {
+#[ignore = "property"]
+fn addenda_model_agrees_plain() {
     addenda_run(400, 0);
 }
 

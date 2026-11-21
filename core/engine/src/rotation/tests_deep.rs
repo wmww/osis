@@ -160,10 +160,12 @@ fn replay(s: u64) -> String {
     format!("OSIS_DEEP_START={s} OSIS_DEEP_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_deep::deep_departure_holds_large_spec_crypto_4")
 }
 
-// spec/crypto.md §4 (encrypting under; holder actors: stale): module doc. Quick size: seeds 0..4.
+// spec/crypto.md §4 (encrypting under; holder actors: stale): module doc. The quick size (a property): seeds
+// 0..4.
 #[test]
-fn deep_departure_holds_spec_crypto_4() {
-    osis_base::testenv::run_seeds("rotation::tests_deep::deep_departure_holds_spec_crypto_4", &(0..4).collect::<Vec<u64>>(), false, replay, deep_history);
+#[ignore = "property"]
+fn deep_departure_holds_plain_spec_crypto_4() {
+    osis_base::testenv::run_seeds("rotation::tests_deep::deep_departure_holds_plain_spec_crypto_4", &(0..4).collect::<Vec<u64>>(), false, replay, deep_history);
 }
 
 /// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_DEEP_START,

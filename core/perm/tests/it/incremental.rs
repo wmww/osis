@@ -2225,7 +2225,8 @@ fn invite_turns(rng: &mut Rng, at: &str, _: &mut Seen) {
 // from saved walks, equal one evaluation of the whole held set after every arrival, and roles
 // move only as `Changed` reports.
 #[test]
-fn incremental_equals_from_scratch() {
+#[ignore = "property"]
+fn incremental_equals_from_scratch_plain() {
     reached(&incremental(2 * SHAPES.len() as u64, 0));
 }
 
