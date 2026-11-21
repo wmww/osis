@@ -25,7 +25,7 @@ Goes with the leaf form outside the drafts: the engine's leaves derivation (note
 
 ## Far delivery
 A removal reaches a thing other than its own as today (decided, Tess: no eager delivery): with that thing's next key rotation by a writer holding it (its keyset carries the demotion: spec/crypto.md §4 Carried demotions), and wherever a node holds both the removal and a write it judges (the removal is on the write's path, so in the evidence of the write's sync IDs). Nothing logs a removal anywhere for its own sake. Where neither happens (a thing no remaining member writes, its readers served only by stores), its readers show the removed key's later writes there: an open bug in an issue, not something to build around.
-- **The reader's deposit on sight** (wanted if simple and good; nothing built): notes/write-path-design.md §2, D4, with what would make it trouble. Model it first in held-model.
+- **The reader's deposit on sight** (wanted if simple and good; nothing built): notes/write-path-design.md §2, D4; modelled (notes/evidence-model-findings.md 41): its promoted form needs no mechanism of its own; judging by unpromoted deposits is write-path Open 3.
 - **The model**: held-model `evidence` models lazy delivery (`Stage::A2`, the engine differential's oracle too) and lists whole in every copy; each reader is judged against a reference holding every removal some honest node syncing its sync ID holds, and the gap is counted (notes/evidence-model-findings.md 38; issues/removed-key-writes-show-far.md).
 
 ## What users observe

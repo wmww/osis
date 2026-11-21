@@ -40,7 +40,7 @@ pub fn stage_gaps_with(w: &World, stage: Stage, f: impl Fn(Rule) -> Rule) -> Vec
     w.rules = crate::spec_story::rules();
     let rule = f(stage.set(&mut w, Rule::fixed()));
     let mut out = vec![];
-    w.run(&rule, |st| out.extend(w.gap(st)));
+    w.run(&rule, |st| out.extend(w.gap(&rule, st)));
     out
 }
 

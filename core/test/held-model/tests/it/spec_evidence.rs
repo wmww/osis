@@ -133,7 +133,7 @@ fn org_apart() -> World {
 /// everything, at every step.
 fn gaps(w: &World, rule: &Rule) -> Vec<Fail> {
     let mut out = vec![];
-    w.run(rule, |st| out.extend(w.gap(st)));
+    w.run(rule, |st| out.extend(w.gap(rule, st)));
     out
 }
 
@@ -143,7 +143,8 @@ fn gaps(w: &World, rule: &Rule) -> Vec<Fail> {
 /// drops; each holds every property against its reference and is counted as the gap. Finding 1's
 /// and 17's (K writes D through [A, O], nobody honest syncs O with D or A), finding 3's (A raised
 /// on D after the removal, the stolen K writing D), risk 3's (K writes E, a dependent of R, through
-/// [A, R], X syncing A alone, Y R alone). A node holding the removal that syncs D (Q) closes it.
+/// [A, R], X syncing A alone, Y R alone). A node holding the removal that stamps D (Y syncing A)
+/// closes it.
 #[test]
 fn gap_a_removal_no_node_holding_it_brings_leaves_the_write_showing() {
     let mut raised = Shape::nth(0);
@@ -162,7 +163,7 @@ fn gap_a_removal_no_node_holding_it_brings_leaves_the_write_showing() {
         assert!(g.iter().any(|f| f.sid == s && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{name}: {g:?}");
     }
     let mut closed = raised;
-    closed.q_d = true;
+    closed.y_a = true;
     assert_eq!((fails(&family(closed), &Rule::fixed()), gaps(&family(closed), &Rule::fixed())), (vec![], vec![]));
 }
 
@@ -406,7 +407,7 @@ fn tally(w: &World, rule: &Rule, out: &mut BTreeMap<&'static str, usize>, first:
         first.entry(f.prop).or_insert_with(|| format!("{f:?}"));
     };
     let st = w.run(rule, |st| {
-        for f in w.p1(rule, st).iter().chain(&w.gap(st)) {
+        for f in w.p1(rule, st).iter().chain(&w.gap(rule, st)) {
             note(f, out);
         }
     });
@@ -542,7 +543,7 @@ pub fn show(w: &World, rule: &Rule) {
     });
     eprintln!("entries {:?}", st.entries);
     eprintln!("final units {:?}", st.units);
-    for f in w.p4(rule, &st, true).iter().chain(&w.gap(&st)) {
+    for f in w.p4(rule, &st, true).iter().chain(&w.gap(rule, &st)) {
         eprintln!("{f:?}");
     }
     let fv = w.verdicts(&w.full(&st, &Default::default()), &st.written);
@@ -557,3 +558,93 @@ pub fn show(w: &World, rule: &Rule) {
     }
 }
 
+
+/// D4's deposits no stamping source of their sync ID logs as well: (step, sync ID, removal) where
+/// only nodes that cannot stamp S keep the copy there, so it is never promoted and would expire
+/// while the body it judges stays (notes/write-path-design.md §2, D4: a standing duty by another
+/// name).
+fn unpromoted(w: &World, rule: &Rule, st: &State) -> Vec<(usize, Sid, Id)> {
+    let mut out = vec![];
+    for &s in &w.sids {
+        let stampers: Vec<usize> = (0..w.nodes.len()).filter(|&n| w.nodes[n].honest && w.stamps(n, s) && w.syncs(n, &st.units).contains(&s)).collect();
+        for &r in st.entries[&s].iter().filter(|&&r| w.takes_away(r) && !st.units[&s].contains(&w.on(r))) {
+            if !stampers.iter().any(|&n| w.req(rule, s, &st.units, &st.held[n]).contains(&r)) && w.nodes[w.by[r]].honest {
+                out.push((st.step, s, r));
+            }
+        }
+    }
+    out
+}
+
+/// D4, the reader's deposit on sight (notes/write-path-design.md §2): D in R's unit; X removes K
+/// from A; Y raises A to write on D; the stolen K writes D. Q (a member of A, syncing A and R, so
+/// D) holds the removal but stamps neither R nor D (A only read D when Q joined); Y stamps D and R
+/// but does not hold it. Without D4 D's and R's readers show K's write: the gap. With D4 Q
+/// deposits the removal's copy under both; Y, syncing them, then holds it and logs it (the
+/// deposits promoted), closing both.
+#[test]
+fn d4_a_reader_holding_the_removal_deposits_it_and_a_writer_promotes_it() {
+    let mut sh = Shape::nth(0);
+    (sh.units, sh.thief, sh.q_r, sh.raised) = (1, true, true, true);
+    let w = family(sh);
+    let d1 = Rule::fixed();
+    let d4 = Rule { deposit: true, ..d1 };
+    assert_eq!(fails(&w, &d1), vec![]);
+    let g = gaps(&w, &d1);
+    assert!([D, R].iter().all(|&s| g.iter().any(|f| f.sid == s && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid))), "{g:?}");
+    assert_eq!((fails(&w, &d4), gaps(&w, &d4)), (vec![], vec![]));
+    let mut left = vec![];
+    w.run(&d4, |st| left.extend(unpromoted(&w, &d4, st)));
+    assert_eq!(left, vec![]);
+}
+
+/// D4 over every `OSIS_D4_STEP`th family world (1: all) and `OSIS_D4_RANDOM` random worlds (by
+/// hand): worlds with the gap under D1 to D3 and with D4, worlds failing under D4, worlds where a
+/// deposit is never promoted (only nodes that cannot stamp keep it), and of the worlds D4 takes out
+/// of the gap those where every deposit is promoted.
+#[test]
+#[ignore = "by hand"]
+fn d4_explore() {
+    let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let (step, n) = (env("OSIS_D4_STEP", 1), env("OSIS_D4_RANDOM", 0));
+    let mut worlds: Vec<(String, Box<dyn Fn() -> World + Sync>)> = vec![];
+    for i in (0..FAMILY).step_by(step) {
+        worlds.push((format!("{:?}", Shape::nth(i)), Box::new(move || family(Shape::nth(i)))));
+    }
+    for seed in 0..n as u64 {
+        worlds.push((format!("random {seed}"), Box::new(move || random(seed, 14))));
+    }
+    let d1 = Rule::fixed();
+    let d4 = Rule { deposit: true, ..d1 };
+    let tally = std::sync::Mutex::new((0usize, 0usize, 0usize, 0usize, Vec::<String>::new(), 0usize, 0usize));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    std::thread::scope(|sc| {
+        for _ in 0..threads {
+            sc.spawn(|| loop {
+                let Some((name, f)) = worlds.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
+                let w = f();
+                let g1 = !gaps(&w, &d1).is_empty();
+                let g4 = !gaps(&w, &d4).is_empty();
+                let bad = fails(&w, &d4);
+                let mut left = vec![];
+                w.run(&d4, |st| left.extend(unpromoted(&w, &d4, st)));
+                let mut t = tally.lock().unwrap();
+                t.0 += usize::from(g1);
+                t.1 += usize::from(g4);
+                t.2 += usize::from(!bad.is_empty());
+                t.3 += usize::from(!left.is_empty());
+                t.5 += usize::from(g1 && !g4 && left.is_empty());
+                t.6 += usize::from(g1 && !g4 && !left.is_empty());
+                if !bad.is_empty() || (!left.is_empty() && t.4.len() < 5) {
+                    t.4.push(format!("{name}: {:?} unpromoted {left:?}", bad.first()));
+                }
+            });
+        }
+    });
+    let t = tally.into_inner().unwrap();
+    eprintln!("{} worlds: the gap under D1 to D3 {}, with D4 {}; failing with D4 {}; a deposit never promoted {}; out of the gap by D4 with every deposit promoted {}, with one never promoted {}", worlds.len(), t.0, t.1, t.2, t.3, t.5, t.6);
+    for l in t.4 {
+        eprintln!("  {l}");
+    }
+}

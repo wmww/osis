@@ -37,6 +37,11 @@
 //!   a rotation's keyset is a body on its thing carrying the demotions its writer holds, each whole;
 //!   with `Rule::keysets` they are in the required set of every sync ID holding the keyset, and a
 //!   keyset pends at a node lacking one of them (spec/crypto.md §4, Held keyset).
+//! - **Stamping and D4** (`Node::stamps`, `Rule::deposit`): a node logs under a sync ID only where
+//!   it can stamp it (a writer; by default every sync ID it syncs). With `Rule::deposit` (D4, off by
+//!   default) a node syncing S that cannot stamp it deposits there the copies of the removals S's
+//!   required set takes over its holdings (a deposit is an entry readers judge by; it is
+//!   recomputed each round, so it leaves with the bodies it judges).
 //! - **Readers.** A reader holding one sync ID holds its entries and trusts what the world trusts
 //!   that it holds. A lowering's list is in the lowering (notes/write-path-design.md §2, E4): every
 //!   copy carries it whole, so whoever holds a lowering reads its whole list (`Lists::Whole`; the
@@ -45,9 +50,11 @@
 //!   complete pass of its sync ID or (the control) on any partial arrival. A body judged invalid
 //!   is dropped at once (spec/commits.md §5 Invalid): no act waits for it.
 //!
-//! Left out: records (static, `paths::World::records`), keys and sealing, rotations, `@` signals,
-//! covers, the deposit path, invites as a reach (a removal's reach is write), taken-ness of a grant,
-//! multi-thing role commits, how units are computed (an input: `closure` checks the walk).
+//! Left out: records (static, `paths::World::records`), keys and sealing (a keyset is a body that
+//! carries demotions, no more), `@` signals, covers, deposits other than D4's and their promotion
+//! as a step of its own, taken-ness of a grant, multi-thing role commits, how units are computed
+//! (an input: `closure` checks the walk), owner-key list writes (waiting for roles-model's owner
+//! keys).
 
 use roles_model::paths::{self, Edge, Id, Kind, Rules, Set, Thing, Things, View};
 use roles_model::Role;
@@ -305,13 +312,16 @@ pub struct Rule {
     /// The carried-demotion seed (notes/a3-spec/README.md Open 8): a held keyset's carried
     /// demotions are in the required set of each sync ID holding it. False: the control.
     pub keysets: bool,
+    /// D4, the reader's deposit on sight (notes/write-path-design.md §2): a node syncing S that
+    /// cannot stamp it deposits the removal copies S's required set takes over its holdings.
+    pub deposit: bool,
 }
 
 impl Rule {
     /// The drafted closure (notes/a2-spec/permissions.md §4) with lazy delivery and lists whole;
     /// `Stage::A2` puts OPEN 10's (iv) and keys-open travel on it.
     pub fn fixed() -> Rule {
-        Rule { placement: Placement::Function, keys_open: false, author_reach: false, records: true, lists: Lists::Whole, closure: Closure::drafted(), keysets: true }
+        Rule { placement: Placement::Function, keys_open: false, author_reach: false, records: true, lists: Lists::Whole, closure: Closure::drafted(), keysets: true, deposit: false }
     }
 }
 
@@ -334,6 +344,9 @@ pub enum PromoteWhen {
 pub struct Node {
     pub honest: bool,
     pub syncs: Things,
+    /// The sync IDs it can stamp (a writer of their thing; and every thing it writes); None: every
+    /// sync ID it syncs.
+    pub stamps: Option<Things>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -408,8 +421,16 @@ impl World {
         World { w, rules: Rules::fixed(), sids, units, events: vec![], nodes: vec![], by: vec![], trust: Set::new(), pend: Pend::Any, join: join_default(), creations: false, creation_memo: Default::default(), opens: BTreeMap::new(), keysets: BTreeMap::new() }
     }
     pub fn node(&mut self, honest: bool, syncs: &[Thing]) -> usize {
-        self.nodes.push(Node { honest, syncs: syncs.iter().copied().collect() });
+        self.nodes.push(Node { honest, syncs: syncs.iter().copied().collect(), stamps: None });
         self.nodes.len() - 1
+    }
+    /// Node `n` stamps only `sids` (and what it writes from here on).
+    pub fn stamps_only(&mut self, n: usize, sids: &[Thing]) {
+        self.nodes[n].stamps = Some(sids.iter().copied().collect());
+    }
+    /// Node `n` can stamp sync ID `s` (log under it).
+    pub fn stamps(&self, n: usize, s: Sid) -> bool {
+        self.nodes[n].stamps.as_ref().is_none_or(|t| t.contains(&s))
     }
     /// A commit written now by node `n` (`f` pushes it to the paths world).
     pub fn write(&mut self, n: usize, f: impl FnOnce(&mut paths::World) -> Id) -> Id {
@@ -425,6 +446,10 @@ impl World {
             let c = &self.w.commits[i];
             let mine: Vec<Thing> = c.path.iter().copied().chain([c.on]).filter(|x| self.sids.contains(x)).collect();
             self.nodes[n].syncs.extend(mine);
+            let on = c.on;
+            if let Some(t) = self.nodes[n].stamps.as_mut() {
+                t.insert(on);
+            }
             self.by.push(n);
             self.events.push(Ev::Write(i));
         }
@@ -950,7 +975,16 @@ impl World {
                 held = keep;
             }
             for &s in &sy {
-                let logs = if self.nodes[n].honest { self.req(rule, s, &st.units, &held) } else { self.thief_logs(rule, s, &st.units, &held, &own) };
+                let logs = if !self.nodes[n].honest {
+                    self.thief_logs(rule, s, &st.units, &held, &own)
+                } else if self.stamps(n, s) {
+                    self.req(rule, s, &st.units, &held)
+                } else if rule.deposit {
+                    // D4: the removal copies its view requires there, deposited
+                    self.req(rule, s, &st.units, &held).into_iter().filter(|&i| self.takes_away(i) && !st.units[&s].contains(&self.on(i))).collect()
+                } else {
+                    Set::new()
+                };
                 new.get_mut(&s).unwrap().extend(logs);
             }
             for (s, items) in self.deliveries(rule, st, n, &held) {
@@ -1057,26 +1091,27 @@ impl World {
         Seen { v: View { held, leaves: None, trust } }
     }
     /// The lowerings taking something away (`takes_away`), written and not forgotten, that S's
-    /// entries lack and no honest node syncing S holds: what lazy delivery has not brought S
-    /// (notes/write-path-design.md §2, D1 to D3: a removal reaches S where a node holding it
-    /// holds S).
-    pub fn undelivered(&self, st: &State, s: Sid) -> Set {
-        let sources: Vec<usize> = (0..self.nodes.len()).filter(|&n| self.nodes[n].honest && self.syncs(n, &st.units).contains(&s)).collect();
+    /// entries lack and no source of S holds: what lazy delivery has not brought S
+    /// (notes/write-path-design.md §2, D1 to D3: a removal reaches S where a node holding it can
+    /// log under S). A source is an honest node syncing S that can stamp it, or with
+    /// `Rule::deposit` (D4) any honest node syncing it.
+    pub fn undelivered(&self, rule: &Rule, st: &State, s: Sid) -> Set {
+        let sources: Vec<usize> = (0..self.nodes.len()).filter(|&n| self.nodes[n].honest && self.syncs(n, &st.units).contains(&s) && (rule.deposit || self.stamps(n, s))).collect();
         st.written.iter().copied().filter(|&i| !st.forgotten.contains(&i) && self.takes_away(i) && !st.entries[&s].contains(&i) && !sources.iter().any(|&n| st.held[n].contains(&i))).collect()
     }
     /// What a reader of S is judged against (without `without`): the node holding everything
     /// written but what lazy delivery has not brought S (`undelivered`).
-    pub fn reference(&self, st: &State, s: Sid, without: &Set) -> Seen {
-        self.full(st, &without.union(&self.undelivered(st, s)).copied().collect())
+    pub fn reference(&self, rule: &Rule, st: &State, s: Sid, without: &Set) -> Seen {
+        self.full(st, &without.union(&self.undelivered(rule, st, s)).copied().collect())
     }
     /// The gap (notes/write-path-design.md §2, The gap; issues/removed-key-writes-show-far.md):
     /// each body S should carry, honestly written or held, that S's reference judges otherwise
     /// than the node holding everything. Counted, not a failure: a removal no node holding S holds.
-    pub fn gap(&self, st: &State) -> Vec<Fail> {
+    pub fn gap(&self, rule: &Rule, st: &State) -> Vec<Fail> {
         let fv = self.verdicts(&self.full(st, &Set::new()), &st.written);
         let mut out = vec![];
         for &s in &self.sids {
-            let un = self.undelivered(st, s);
+            let un = self.undelivered(rule, st, s);
             if un.is_empty() {
                 continue;
             }
@@ -1117,9 +1152,10 @@ pub struct Fail {
 }
 
 impl World {
-    /// P1 (and P2 for commits under several sync IDs): the reader of each sync ID judges every
-    /// body it should carry as its reference does (`reference`: the node holding everything but
-    /// what lazy delivery has not brought; a body it lacks is judged absent: `None`).
+    /// P1 (and P2 for commits under several sync IDs, judged alike under each whose references
+    /// agree): the reader of each sync ID judges every body it should carry as its reference does
+    /// (`reference`: the node holding everything but what lazy delivery has not brought; a body it
+    /// lacks is judged absent: `None`).
     pub fn p1(&self, rule: &Rule, st: &State) -> Vec<Fail> {
         self.p1_trusting(rule, st, &self.trust, "P1")
     }
@@ -1132,15 +1168,15 @@ impl World {
             s
         };
         let mut out = vec![];
-        let mut seen: BTreeMap<Id, Vec<(Sid, Option<Verdict>)>> = BTreeMap::new();
+        let mut seen: BTreeMap<Id, Vec<(Sid, Option<Verdict>, Verdict)>> = BTreeMap::new();
         for &s in &self.sids {
             let owed = self.owed_bodies(st, s);
-            let fv = self.verdicts(&trusting(self.reference(st, s, &Set::new())), &owed);
+            let fv = self.verdicts(&trusting(self.reference(rule, st, s, &Set::new())), &owed);
             let v = trusting(self.reader(rule, st, s, &Set::new()));
             let rv = self.verdicts(&v, &owed.intersection(&v.v.held).copied().collect());
             for &i in &owed {
                 let r = rv.get(&i).copied();
-                seen.entry(i).or_default().push((s, r));
+                seen.entry(i).or_default().push((s, r, fv[&i]));
                 if r.is_none() && !self.nodes[self.by[i]].honest {
                     // the thief logs its own writes where it likes
                     continue;
@@ -1150,10 +1186,12 @@ impl World {
                 }
             }
         }
+        // P2 where the references agree: sync IDs whose sources hold different removals may
+        // judge a body apart (the gap at one of them)
         for (i, per) in seen {
             let per: Vec<_> = per.into_iter().filter(|x| x.1.is_some()).collect();
-            if per.len() > 1 && per.iter().any(|x| x.1 != per[0].1) {
-                out.push(Fail { prop: "P2", step: st.step, sid: per[0].0, id: i, reader: per[0].1, full: per.iter().find(|x| x.1 != per[0].1).unwrap().1 });
+            if let Some((a, b)) = per.iter().flat_map(|a| per.iter().map(move |b| (a, b))).find(|(a, b)| a.2 == b.2 && a.1 != b.1) {
+                out.push(Fail { prop: "P2", step: st.step, sid: a.0, id: i, reader: a.1, full: b.1 });
             }
         }
         out
@@ -1318,7 +1356,7 @@ impl World {
                 for mask in 1..(1u32 << ev.len()) {
                     let y: Set = ev.iter().enumerate().filter(|(b, _)| mask >> b & 1 == 1).map(|(_, &j)| j).collect();
                     let r = self.verdicts(&self.reader(rule, st, s, &y), &Set::from([i]))[&i];
-                    let f = self.verdicts(&self.reference(st, s, &y), &Set::from([i]))[&i];
+                    let f = self.verdicts(&self.reference(rule, st, s, &y), &Set::from([i]))[&i];
                     if r != f {
                         out.push(Fail { prop: "P5-order", step: st.step, sid: s, id: i, reader: Some(r), full: Some(f) });
                     }
@@ -1341,7 +1379,7 @@ impl World {
     /// whole entries; `WhenNothingPends` (the control) also on every arrival order of each body's
     /// evidence (P5's subsets, `cap` parts) where the body does not pend.
     pub fn p8_promotions(&self, rule: &Rule, st: &State, when: PromoteWhen, cap: usize) -> Vec<Fail> {
-        let refs: BTreeMap<Sid, BTreeMap<Id, Verdict>> = self.sids.iter().map(|&s| (s, self.verdicts(&self.reference(st, s, &Set::new()), &st.written))).collect();
+        let refs: BTreeMap<Sid, BTreeMap<Id, Verdict>> = self.sids.iter().map(|&s| (s, self.verdicts(&self.reference(rule, st, s, &Set::new()), &st.written))).collect();
         let mut out = vec![];
         let mut check = |s: Sid, promoted: Vec<Id>| {
             for i in promoted {
@@ -1485,6 +1523,17 @@ pub fn family(sh: Shape) -> World {
     }
     let q = w.node(true, &q_syncs);
     let k = w.node(false, &[A, O, D, R]);
+    // who can stamp what (a writer of the thing; and whatever it writes): each mint admin its
+    // things (X D's and O's where they are minted down A's chain), Q, a member of A, A and D where
+    // A writes D (not where A only reads it: `raised`); Y syncing A and Q syncing R only read there
+    let mine = |m: Thing| [(D, d_mint), (O, o_mint)].into_iter().filter(move |&(_, by)| by == m).map(|(t, _)| t);
+    let xs: Vec<Thing> = [A].into_iter().chain(if d_mint != Y { vec![D] } else { vec![] }).chain(mine(A)).collect();
+    w.stamps_only(x, &xs);
+    w.stamps_only(y, &[R].into_iter().chain(mine(Y)).collect::<Vec<_>>());
+    if sh.org_apart {
+        w.stamps_only(o, &mine(W).collect::<Vec<_>>());
+    }
+    w.stamps_only(q, if sh.raised { &[A] } else { &[A, D] });
     let path: Vec<Thing> = if sh.via_org { vec![A, O] } else { vec![A] };
     match sh.units {
         1 | 3 => w.member(D, R),
@@ -1519,6 +1568,7 @@ pub fn family(sh: Shape) -> World {
         _ => {}
     }
     let zn = w.node(true, &[]);
+    w.stamps_only(zn, &[]);
     let gz = if sh.grant { Some(w.write(k, |p| p.edge(K, 4, &[], A, Z, Role::Write, &[]))) } else { None };
     if gz.is_some() {
         w.write(zn, |p| p.content(Z, 5, &path, D));
@@ -2061,7 +2111,7 @@ pub fn story_world(sim: &paths::Sim, units: usize) -> World {
         let c = &sim.w.commits[i];
         let signer = if sim.thief.contains_key(&i) { X } else { c.signer };
         let n = *node.entry(signer).or_insert_with(|| {
-            w.nodes.push(Node { honest: signer != X, syncs: Things::new() });
+            w.nodes.push(Node { honest: signer != X, syncs: Things::new(), stamps: None });
             w.nodes.len() - 1
         });
         let mine: Vec<Thing> = c.path.iter().copied().chain([c.on]).filter(|x| w.sids.contains(x)).collect();
