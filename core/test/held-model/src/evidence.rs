@@ -33,6 +33,10 @@
 //!   Where that node's verdict differs from the node holding everything is **the gap**
 //!   (`World::gap`, notes/write-path-design.md §2 The gap; issues/removed-key-writes-show-far.md),
 //!   counted, never excluded silently.
+//! - **Keysets** (`World::rotate`, notes/write-path-design.md §2 D2; notes/a3-spec/README.md Open 8):
+//!   a rotation's keyset is a body on its thing carrying the demotions its writer holds, each whole;
+//!   with `Rule::keysets` they are in the required set of every sync ID holding the keyset, and a
+//!   keyset pends at a node lacking one of them (spec/crypto.md §4, Held keyset).
 //! - **Readers.** A reader holding one sync ID holds its entries and trusts what the world trusts
 //!   that it holds. A lowering's list is in the lowering (notes/write-path-design.md §2, E4): every
 //!   copy carries it whole, so whoever holds a lowering reads its whole list (`Lists::Whole`; the
@@ -298,13 +302,16 @@ pub struct Rule {
     pub records: bool,
     pub lists: Lists,
     pub closure: Closure,
+    /// The carried-demotion seed (notes/a3-spec/README.md Open 8): a held keyset's carried
+    /// demotions are in the required set of each sync ID holding it. False: the control.
+    pub keysets: bool,
 }
 
 impl Rule {
     /// The drafted closure (notes/a2-spec/permissions.md §4) with lazy delivery and lists whole;
     /// `Stage::A2` puts OPEN 10's (iv) and keys-open travel on it.
     pub fn fixed() -> Rule {
-        Rule { placement: Placement::Function, keys_open: false, author_reach: false, records: true, lists: Lists::Whole, closure: Closure::drafted() }
+        Rule { placement: Placement::Function, keys_open: false, author_reach: false, records: true, lists: Lists::Whole, closure: Closure::drafted(), keysets: true }
     }
 }
 
@@ -367,6 +374,8 @@ pub struct World {
     /// its mint admin): a node holding the part without it knows no path for it, so the part
     /// brings nothing and pends (`World::hidden`). `usize::MAX`: not opened (yet).
     pub opens: BTreeMap<Id, Id>,
+    /// Each rotation's keyset (a body on its thing, `World::rotate`) and the demotions it carries.
+    pub keysets: BTreeMap<Id, Set>,
 }
 
 /// Where the model stands after some events.
@@ -396,7 +405,7 @@ impl World {
     pub fn new(w: paths::World, sids: &[Thing]) -> World {
         let sids: Things = sids.iter().copied().collect();
         let units = sids.iter().map(|&s| (s, Things::from([s]))).collect();
-        World { w, rules: Rules::fixed(), sids, units, events: vec![], nodes: vec![], by: vec![], trust: Set::new(), pend: Pend::Any, join: join_default(), creations: false, creation_memo: Default::default(), opens: BTreeMap::new() }
+        World { w, rules: Rules::fixed(), sids, units, events: vec![], nodes: vec![], by: vec![], trust: Set::new(), pend: Pend::Any, join: join_default(), creations: false, creation_memo: Default::default(), opens: BTreeMap::new(), keysets: BTreeMap::new() }
     }
     pub fn node(&mut self, honest: bool, syncs: &[Thing]) -> usize {
         self.nodes.push(Node { honest, syncs: syncs.iter().copied().collect() });
@@ -420,6 +429,14 @@ impl World {
             self.events.push(Ev::Write(i));
         }
         ids
+    }
+    /// A rotation by node `n` (notes/write-path-design.md §2, D2): `f` writes its keyset, a body on
+    /// the rotated thing (a content commit standing for the `keys.0` delta), carrying the demotions
+    /// `carried` its writer holds (spec/crypto.md §4 Carried demotions), each whole (E4).
+    pub fn rotate(&mut self, n: usize, carried: &[Id], f: impl FnOnce(&mut paths::World) -> Id) -> Id {
+        let k = self.write(n, f);
+        self.keysets.insert(k, carried.iter().copied().collect());
+        k
     }
     pub fn join(&mut self, x: Thing, s: Sid) {
         self.events.push(Ev::Join(x, s));
@@ -482,6 +499,12 @@ impl World {
         // those S's thing holds read or above on, through taken grants at any time
         let open = self.opened(rule, s, &hr);
         let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || (self.holder(i).is_some_and(|hd| open.contains(&hd)) && ok(&i))).collect();
+        if rule.keysets {
+            // a held keyset's carried demotions are evidence of it, each whole (those the closure
+            // takes: a keyset carries applied demotions, and a write no walk applies is nobody's)
+            let carried: Vec<Id> = seed.iter().filter_map(|k| self.keysets.get(k)).flatten().copied().filter(|c| h.contains(c) && ok(c)).collect();
+            seed.extend(carried);
+        }
         let mut edges = BTreeSet::new();
         if rule.closure.any_path || rule.author_reach {
             let ch = self.chained(h);
@@ -982,7 +1005,8 @@ impl World {
     }
     /// `pend` with `h`'s chained writes given under `Pend::Granted`.
     fn pend_with(&self, h: &Set, ch: Option<&Set>, i: Id) -> bool {
-        if self.hidden(h, i) {
+        // a keyset is held only with every demotion it carries (spec/crypto.md §4, Held keyset)
+        if self.hidden(h, i) || self.keysets.get(&i).is_some_and(|c| !c.is_subset(h)) {
             return true;
         }
         if self.creations && self.w.edge_class(i) && self.w.part_ids(self.w.cid(i)).any(|p| self.on(p) == self.on(i) && self.ends_grant(p) && self.creation(p).is_some_and(|c| !h.contains(&c))) {
@@ -1203,6 +1227,35 @@ impl World {
         let full = self.full(st, &Set::new());
         let ch = self.chained(&full.v.held);
         paths::judge(&self.w, &self.rules, &full.v).applied.difference(&ch).map(|&i| Fail { prop: "P0-unchained-applies", step: st.step, sid: 0, id: i, reader: None, full: None }).collect()
+    }
+    /// P11, carried demotions (notes/a3-spec/README.md Open 8): every demotion a keyset S holds
+    /// carries that the closure takes over everything written is in S's entries and in its
+    /// reader's required set (`P11`); a rotator holds what its
+    /// keyset carries when it writes it (`P11-held`: the generators' own check).
+    pub fn p11_keysets(&self, rule: &Rule, st: &State) -> Vec<Fail> {
+        let mut out = vec![];
+        if let Some(Ev::Write(k)) = st.step.checked_sub(1).map(|e| self.events[e]) {
+            for &c in self.keysets.get(&k).into_iter().flatten() {
+                let n = self.by[k];
+                if !st.held[n].contains(&c) && self.by[c] != n {
+                    out.push(Fail { prop: "P11-held", step: st.step, sid: self.on(k), id: c, reader: None, full: None });
+                }
+            }
+        }
+        if !self.keysets.keys().any(|k| st.written.contains(k)) {
+            return out;
+        }
+        let takes = self.takes(rule, &self.full(st, &Set::new()).v.held);
+        for &s in &self.sids {
+            let held = &st.entries[&s];
+            let req = self.req(rule, s, &st.units, held);
+            for c in held.iter().filter_map(|k| self.keysets.get(k)).flatten().filter(|c| takes.as_ref().is_none_or(|t| t.contains(c))) {
+                if !st.forgotten.contains(c) && !(held.contains(c) && req.contains(c)) {
+                    out.push(Fail { prop: "P11", step: st.step, sid: s, id: *c, reader: None, full: None });
+                }
+            }
+        }
+        out
     }
     /// P4: what a sync ID holds is what its reader requires (copies held are a function of the
     /// commits held: nothing outlives the commits it was needed for); and forgetting each content
@@ -1583,6 +1636,13 @@ pub fn random(seed: u64, len: usize) -> World {
                 let (on, hd) = [(D, A), (D, O), (O, A)][rng.below(3)];
                 let (a, n) = admin(on);
                 w.write(n, |p| p.edge(a, bts, &[], on, hd, role, &[]));
+            }
+            8 => {
+                // D's admin rotates D (D2): its keyset carries X's removals on A (A reaches D: the
+                // demotions it holds applied), which its node holds where it syncs A
+                let (a, n) = admin(D);
+                let carried: Vec<Id> = if w.nodes[n].syncs.contains(&A) { (0..w.by.len()).filter(|&j| w.by[j] == x && w.removes(j).is_some_and(|e| e.1 == A) && w.takes_away(j)).collect() } else { vec![] };
+                w.rotate(n, &carried, |p| p.content(a, bts, &[], D));
             }
             10 => {
                 // a member's edge write on A or O, any holder and role: junk where it holds no

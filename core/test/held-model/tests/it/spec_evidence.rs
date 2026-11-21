@@ -10,7 +10,10 @@ use std::collections::BTreeMap;
 /// Every check at every step, and the arrival-order check at the end: the failures.
 fn fails(w: &World, rule: &Rule) -> Vec<Fail> {
     let mut out = vec![];
-    let st = w.run(rule, |st| out.extend(w.p1(rule, st)));
+    let st = w.run(rule, |st| {
+        out.extend(w.p1(rule, st));
+        out.extend(w.p11_keysets(rule, st));
+    });
     assert!(!st.unsettled, "logging settles");
     out.extend(w.p4(rule, &st, true));
     out.extend(w.p5_order(rule, &st, 5).0);
@@ -189,6 +192,36 @@ fn f2_copies_placed_at_logging_leave_a_sync_id_short_when_a_unit_changes() {
     assert_eq!(fails(&w, &Rule::fixed()), vec![]);
 }
 
+/// Keysets carry whole demotions (notes/write-path-design.md §2, D2; notes/a3-spec/README.md Open
+/// 8): X removes K from A; Y, D's admin, syncing A and D, rotates D, its keyset carrying the
+/// removal (A writes D); the stolen K then writes D through [A]. From the rotation on, D holds the
+/// removal as evidence of the keyset, before any body needs it, and D's reader judges the keyset
+/// held and K's write invalid. The control (`Rule::keysets` off) fails P11 and P1 at the rotation:
+/// D's reader holds a keyset without the demotion it carries, pending where the node holding it
+/// all judges it valid.
+#[test]
+fn keysets_a_rotation_carries_the_demotions_its_writer_holds() {
+    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let (x, y, k) = (w.node(true, &[A]), w.node(true, &[A, D]), w.node(false, &[]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
+    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    let ks = w.rotate(y, &[r], |p| p.content(Y, 7, &[], D));
+    let late = w.write(k, |p| p.content(K, 8, &[A], D));
+    let rule = Rule::fixed();
+    assert_eq!(fails(&w, &rule), vec![]);
+    let mut at = vec![];
+    w.run(&rule, |st| at.push(st.entries[&D].contains(&r)));
+    assert_eq!(at, [false, false, false, true, true]);
+    let st = w.run(&rule, |_| {});
+    let v = w.verdicts(&w.reader(&rule, &st, D, &Set::new()), &Set::from([ks, late]));
+    assert_eq!((v[&ks], v[&late]), (Verdict::Valid, Verdict::Invalid));
+    let f = fails(&w, &Rule { keysets: false, ..rule });
+    assert!(f.iter().any(|f| f.prop == "P11" && f.sid == D && f.id == r), "{f:?}");
+    assert!(f.iter().any(|f| f.prop == "P1" && f.sid == D && f.id == ks && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Valid)), "{f:?}");
+}
+
 /// Finding 4, the list whole (notes/write-path-design.md §2, E4): K (admin of A) grants Z on A; Z
 /// writes D; X removes K, its list naming the grant. A copy of the removal under D carries its
 /// whole list, so D's reader reads the grant listed; reading only its unit's entries (the control
@@ -307,31 +340,34 @@ fn seeds(n: u64) -> std::ops::Range<u64> {
 /// P1 to P8 under the fixed rule over every `family_step`th family world and `random` random
 /// worlds of 14 moves, a thread per core.
 fn search(family_step: usize, random_worlds: u64) {
-    let mut jobs: Vec<Box<dyn Fn() -> (String, Vec<Fail>, usize) + Sync>> = vec![];
+    let mut jobs: Vec<Box<dyn Fn() -> (String, Vec<Fail>, usize, usize) + Sync>> = vec![];
     let rule = Rule::fixed();
-    let run = move |w: World| (fails(&w, &rule), usize::from(!gaps(&w, &rule).is_empty()));
+    // the failures, whether the world has the gap, its keysets carrying a demotion
+    let run = move |w: World| (fails(&w, &rule), usize::from(!gaps(&w, &rule).is_empty()), w.keysets.values().filter(|c| !c.is_empty()).count());
     for i in (0..FAMILY).step_by(family_step) {
         jobs.push(Box::new(move || {
-            let (f, g) = run(family(Shape::nth(i)));
-            (format!("{:?}", Shape::nth(i)), f, g)
+            let (f, g, k) = run(family(Shape::nth(i)));
+            (format!("{:?}", Shape::nth(i)), f, g, k)
         }));
     }
     for seed in seeds(random_worlds) {
         jobs.push(Box::new(move || {
-            let (f, g) = run(random(seed, 14));
-            (format!("random seed {seed}"), f, g)
+            let (f, g, k) = run(random(seed, 14));
+            (format!("random seed {seed}"), f, g, k)
         }));
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let bad = std::sync::Mutex::new(vec![]);
     let gap = std::sync::atomic::AtomicUsize::new(0);
+    let carrying = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     std::thread::scope(|sc| {
         for _ in 0..threads {
             sc.spawn(|| loop {
                 let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let (name, f, g) = j();
+                let (name, f, g, k) = j();
                 gap.fetch_add(g, std::sync::atomic::Ordering::Relaxed);
+                carrying.fetch_add(k, std::sync::atomic::Ordering::Relaxed);
                 if !f.is_empty() {
                     bad.lock().unwrap().push(format!("{name}: {:?} {:?}", props(&f), f[0]));
                 }
@@ -340,8 +376,10 @@ fn search(family_step: usize, random_worlds: u64) {
     });
     let bad = bad.into_inner().unwrap();
     // the gap, counted (issues/removed-key-writes-show-far.md)
-    eprintln!("{} worlds; {} with the gap", jobs.len(), gap.into_inner());
+    let carrying = carrying.into_inner();
+    eprintln!("{} worlds; {} with the gap; {carrying} keysets carrying a demotion", jobs.len(), gap.into_inner());
     assert!(bad.is_empty(), "{} worlds fail, first: {}", bad.len(), bad[0]);
+    assert!(carrying > 0, "no keyset carries a demotion: raise the rotation rate in `random`");
 }
 
 #[test]

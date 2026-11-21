@@ -21,6 +21,7 @@ pub fn fails_at(w: &World, rule: &Rule, at: &std::collections::BTreeSet<usize>) 
             out.extend(w.p1(rule, st));
             out.extend(w.p9_leak(rule, st));
             out.extend(w.p10_junk(rule, st));
+            out.extend(w.p11_keysets(rule, st));
         }
     });
     assert!(!st.unsettled, "logging settles");

@@ -25,16 +25,22 @@ type Copies = BTreeSet<CopyId<Id, Thing>>;
 /// Held copies with their parts as the derivation takes them.
 type HeldCopies = BTreeMap<CopyId<Id, Thing>, Vec<Part<Id, Thing, Key>>>;
 
+/// The model's rule as the derivation is built: no carried-demotion seed (Interim: A3 brief 3
+/// builds it, notes/a3-spec/README.md Open 8).
+fn derived() -> Rule {
+    Rule { keysets: false, ..Rule::fixed() }
+}
+
 /// `w` set to (iv) with entry creations.
 fn granted(w: &mut World) -> Rule {
     w.rules = Rules::fixed();
-    Open10::Granted.set(w, Rule::fixed())
+    Open10::Granted.set(w, derived())
 }
 
-/// `w` set to A2's rule (`Stage::A2` over `Rule::fixed`: (iv), keys-open travel, no leaves).
+/// `w` set to A2's rule (`Stage::A2`: (iv), keys-open travel, no leaves).
 fn a2(w: &mut World) -> Rule {
     w.rules = Rules::fixed();
-    Stage::A2.set(w, Rule::fixed())
+    Stage::A2.set(w, derived())
 }
 
 /// Part `i` of the model's world as the derivation's input, over held set `h` whose chained
