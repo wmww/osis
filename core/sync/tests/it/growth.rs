@@ -4,7 +4,7 @@
 
 use crate::harness::Step::*;
 use crate::harness::history::{self, Gives, value_ak, world};
-use crate::harness::{World, edge, play};
+use crate::harness::{World, edge, fixture_with, play};
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_engine::Mutation;
@@ -157,29 +157,39 @@ fn each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1() {
 
 /// Node 0 makes thing 0 and grants node 1's account write and node 2's read (no node keeps it
 /// unread: a store keeps what it holds of an invalid body until its expiry,
-/// issues/invalid-junk-kept.md). Cut off from node 0, node 1 is lowered to read there and writes
-/// `n` values it still believes valid, the first purging its own earlier write (`writer`
-/// purge-by, so it may as a writer); node 2, cut off from node 0 too, takes them; then nodes 0
-/// and 2 meet, then all: every node judges them invalid. Then a restart of every node and the
-/// tombstone lifetime: the world, the thing, the invalid commits and what each node holds
-/// (`Held`).
+/// issues/invalid-junk-kept.md); node 1 writes `u:n.0`, purgeable by its writer. Cut off from
+/// node 0, node 1 is lowered to read there. Built once per process (`fixture_with`): the world,
+/// the thing and node 1's write.
+fn lowered() -> (World, (Tid, CommitId)) {
+    fixture_with("growth lowered", || {
+        let mut w = world(0, 3);
+        w.cap = 200_000;
+        let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+        let t = w.history.things[0].0;
+        let note = Ak::new("u:n.0").unwrap();
+        let mine = w.write(1, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &note, &Value::Str("mine".into())).unwrap().purge_by(t, &note, osis_schema::PurgeBy::Writer).unwrap();
+            e.commit(m).unwrap().unwrap()
+        });
+        w.run();
+        w.partition(0, 1);
+        w.partition(0, 2);
+        let a1 = w.node(1).account.unwrap();
+        w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: Some(edge(Role::Read)), retain: None })).unwrap();
+        w.run();
+        (w, (t, mine))
+    })
+}
+
+/// On `lowered`, node 1 writes `n` values it still believes valid, the first purging its own
+/// earlier write (`writer` purge-by, so it may as a writer); node 2, cut off from node 0 too,
+/// takes them; then nodes 0 and 2 meet, then all: every node judges them invalid. Then a restart
+/// of every node and the tombstone lifetime: the world, the thing, the invalid commits and what
+/// each node holds (`Held`).
 fn lowered_writes(n: usize) -> (World, Tid, Vec<CommitId>, Vec<Held>) {
-    let mut w = world(0, 3);
-    w.cap = 200_000;
-    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Reads), Run], String::new());
-    let t = w.history.things[0].0;
+    let (mut w, (t, mine)) = lowered();
     let note = Ak::new("u:n.0").unwrap();
-    let mine = w.write(1, |e| {
-        let mut m = Mutation::new();
-        m.set(t, &note, &Value::Str("mine".into())).unwrap().purge_by(t, &note, osis_schema::PurgeBy::Writer).unwrap();
-        e.commit(m).unwrap().unwrap()
-    });
-    w.run();
-    w.partition(0, 1);
-    w.partition(0, 2);
-    let a1 = w.node(1).account.unwrap();
-    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: Some(edge(Role::Read)), retain: None })).unwrap();
-    w.run();
     let mut bad = Vec::new();
     for i in 0..n {
         w.advance(1_000);
@@ -260,9 +270,7 @@ fn a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_com
 // forgets the write while node 3 shows it and nothing brings it back.
 #[test]
 fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissions_6() {
-    eprintln!("start {:?}", std::time::Instant::now());
     let mut w = world(0, 4);
-    eprintln!("world {:?}", std::time::Instant::now());
     w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Reads), Grant(0, 0, 3, Gives::Syncs), Run], String::new());
     let t = w.history.things[0].0;
@@ -353,9 +361,7 @@ fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
 // and node 2 (a reader, no writer), each way, after n entries and again after 10n.
 #[test]
 fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
-    eprintln!("start {:?}", std::time::Instant::now());
     let mut w = world(0, 4);
-    eprintln!("world {:?}", std::time::Instant::now());
     w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
@@ -549,6 +555,16 @@ fn leaked(_: &mut World, _: usize, _: &mut World, _: usize, _: &[String]) -> Str
     String::new()
 }
 
+/// A fresh node of one account with its roots snapshotted, as `own_rounds` (and `expiry_rounds`,
+/// `history_rounds`) end at 0 rounds: the world and what it holds. Built once per process.
+fn fresh_node() -> (World, Held) {
+    fixture_with("growth fresh node", || {
+        let mut w = world(0, 1);
+        let h = own_rounds(&mut w, 0);
+        (w, h)
+    })
+}
+
 // Releasing everything, its own-things arm (issues/storage-owners.md), spec/sync-set.md §3 (Nothing of R stays): what a node mints with its account root as admin, its account
 // and its node root, written and then released, leaves its rows and blobs as a fresh node's of the
 // same account once tombstones have aged out, at 1 and 10 rounds: but the roots' set tombstones,
@@ -557,8 +573,7 @@ fn leaked(_: &mut World, _: usize, _: &mut World, _: usize, _: &[String]) -> Str
 // notes/test-harnesses.md, Why kept and row dumps).
 #[test]
 fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
-    let (mut wf, mut wa, mut wb) = (world(0, 1), world(0, 1), world(0, 1));
-    let fresh = own_rounds(&mut wf, 0);
+    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world(0, 1), world(0, 1));
     let (a, b) = (own_rounds(&mut wa, 1), own_rounds(&mut wb, 10));
     as_fresh(&a, &fresh, 4, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
     as_fresh(&b, &fresh, 10 * 4, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
@@ -606,8 +621,7 @@ fn expiry_rounds(w: &mut World, rounds: usize) -> Held {
 // snapshot, a few bytes each.
 #[test]
 fn expired_things_return_storage_to_a_fresh_nodes_spec_commits_5() {
-    let (mut wf, mut wa, mut wb) = (world(0, 1), world(0, 1), world(0, 1));
-    let fresh = expiry_rounds(&mut wf, 0);
+    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world(0, 1), world(0, 1));
     let (a, b) = (expiry_rounds(&mut wa, 1), expiry_rounds(&mut wb, 10));
     // each expired strong stays in D's holds.0 snapshot as its value-less record (notes/crdt.md,
     // An expired set element keeps its record), about two removals' tombstones of bytes
@@ -681,8 +695,7 @@ fn history_rounds(w: &mut World, rounds: usize) -> Held {
 // tombstones (one removal a round).
 #[test]
 fn releasing_held_history_returns_storage_to_a_fresh_nodes_spec_data_model_8() {
-    let (mut wf, mut wa, mut wb) = (world(0, 1), world(0, 1), world(0, 1));
-    let fresh = own_rounds(&mut wf, 0);
+    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world(0, 1), world(0, 1));
     let (a, b) = (history_rounds(&mut wa, 1), history_rounds(&mut wb, 10));
     as_fresh(&a, &fresh, 1, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
     as_fresh(&b, &fresh, 10, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
@@ -782,10 +795,11 @@ fn redeem_round(w: &mut World) {
     w.advance(1_000);
 }
 
-/// `grant_rounds` at 1 and 10 rounds: each node as a fresh world's (`as_fresh`), each round's
-/// set removals at most `removals` a node.
+/// `grant_rounds` at 1 and 10 rounds: each node as a fresh world's (`as_fresh`: `grant_rounds`
+/// at 0 rounds, the same for every arm, built once per process), each round's set removals at
+/// most `removals` a node.
 fn grants_as_fresh(accept: bool, redeem: bool, removals: usize) {
-    let (mut wf, fresh) = grant_rounds(0, accept, false);
+    let (mut wf, fresh) = fixture_with("growth grants fresh", || grant_rounds(0, true, false));
     let ((mut wa, a), (mut wb, b)) = (grant_rounds(1, accept, redeem), grant_rounds(10, accept, redeem));
     // the redeem round's set removals: the link's seed thing's and K's strongs and tickets beside the thing's
     let extra = if redeem { 4 } else { 0 };

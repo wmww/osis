@@ -505,20 +505,19 @@ fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_
 // T0 naming him is held, so he keeps T1 unread.
 #[test]
 fn a_removal_notice_taken_before_its_roster_acts_once_the_roster_comes_spec_sync_inbox_5() {
-    let mut w = contacts();
-    w.pair(0);
-    w.run();
-    let t0 = make(&mut w, 0, None, "v1");
-    let t1 = make(&mut w, 0, Some(t0), "v2");
-    let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t0, &bob, &edge(Role::Read))).unwrap();
+    // Alice: nodes 1 and 2; Bob: node 0, then node 3
+    let mut w = siblings();
+    let t0 = make(&mut w, 1, None, "v1");
+    let t1 = make(&mut w, 1, Some(t0), "v2");
+    let bob = w.node(0).account.unwrap();
+    w.write(1, |e| e.grant(&t0, &bob, &edge(Role::Read))).unwrap();
     w.run();
     w.write(2, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None })).unwrap();
-    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Sync))).unwrap();
-    strong(&mut w, 1, None, t1, true);
-    w.pair(1);
+    w.write(1, |e| e.grant(&t1, &bob, &edge(Role::Sync))).unwrap();
+    strong(&mut w, 0, None, t1, true);
+    w.pair(0);
     w.run();
-    for i in [1, 3] {
+    for i in [0, 3] {
         assert_eq!(holding(&mut w, i, &t1), Some(Holding::Unread), "node {i} keeps T1 unread");
     }
 }
@@ -1185,8 +1184,14 @@ fn a_mint_admins_readers_read_a_thing_again_once_granted_again_spec_permissions_
 
 /// Bob's node 1 makes T0 and grants Alice read on it; Alice holds T0. Node 1 makes T1 under T0
 /// (keyed by a grant of Bob's admin when `key1`), then T2 under T1, keyed so. Each record edge
-/// stands: (world, T0, T1, T2).
+/// stands: (world, T0, T1, T2). Built once per process per `key1` (`fixture_with`).
 fn record_chain_of_three(key1: bool) -> (World, Tid, Tid, Tid) {
+    let (w, (t0, t1, t2)) = fixture_with(&format!("holding record chain {key1}"), || record_chain_built(key1));
+    (w, t0, t1, t2)
+}
+
+/// `record_chain_of_three`, built.
+fn record_chain_built(key1: bool) -> (World, (Tid, Tid, Tid)) {
     let mut w = siblings();
     let alice = w.node(0).account.unwrap();
     let bob = w.node(1).account.unwrap();
@@ -1203,7 +1208,7 @@ fn record_chain_of_three(key1: bool) -> (World, Tid, Tid, Tid) {
     w.run();
     w.advance(osis_proto::limits::PASS_WAIT_MS);
     w.run();
-    (w, t0, t1, t2)
+    (w, (t0, t1, t2))
 }
 
 // spec/sync-set.md §2 (T's keys open: read counts through chains of role grants, the lowest role

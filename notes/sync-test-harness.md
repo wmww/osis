@@ -65,7 +65,7 @@ Filter them with `<only>` tokens (`verdict`, `lost access`, `rolled back`, `-> M
 | **Debug checks stay on** (`check_rebuilt` per transaction, `check_index` at each engine's end) | none | cost | they are the incremental-against-from-scratch oracle in every test, at every size (notes/test-harnesses.md, Debug checks) |
 
 ## Layers and budget
-The sync crate's one `tests/it` binary: its default tests (spec rules, scale, driver) budgeted at about 450 G instructions, the differential and the simulations (seed runners: `_plain` properties the gate selects for osis-sync and the crates below it, notes/testing.md, When tests run) at 750 G. The default tests run at about 860 G (Measured layers); `growth::` and `holding::` dominate.
+The sync crate's one `tests/it` binary: its default tests (spec rules, scale, driver) budgeted at about 450 G instructions, the differential and the simulations (seed runners: `_plain` properties the gate selects for osis-sync and the crates below it, notes/testing.md, When tests run) at 750 G. The default tests run at about 860 G (Measured layers); `holding::`, `growth::` and `deletes::` cost most. About 60% of every module is the product's settle after each delivery, a third read's judgements re-run under unchanged answers (issues/read-rejudges-per-delivery.md): the lever left is there, not in the tests.
 
 | layer | what | budget |
 |---|---|---|
