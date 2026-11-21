@@ -366,6 +366,7 @@ struct Way {
 fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>> {
     let ts = now_ts(core);
     let live = Way { retain: true, end: None };
+    let keyless = crate::rotation::members::key_access(core);
     let mut out: BTreeMap<Tid, BTreeMap<Tid, Way>> = BTreeMap::new();
     for a in actors {
         let w = out.entry(*a).or_default();
@@ -374,8 +375,9 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
             w.extend(tl.ended(a, ts).into_iter().filter(|(_, (_, _, r))| *r >= Role::Read).map(|(h, (retain, end, _))| (h, Way { retain, end })));
         }
         // the roster now at read or above (a grant of sync reads nothing to keep), its record
-        // edge included while it stands
-        w.extend(core.current_holders(a).into_iter().filter(|(_, r, _)| *r >= Role::Read).map(|(h, _, _)| (h, live)));
+        // edge included while it stands, by grants with key access: a keyless one reads nothing
+        // of `a` through it (spec/crypto.md §4 Key access), so it keeps the node nothing
+        w.extend(core.current_holders(a).into_iter().filter(|(h, r, _)| *r >= Role::Read && !keyless.contains(&(*a, *h))).map(|(h, _, _)| (h, live)));
     }
     out
 }

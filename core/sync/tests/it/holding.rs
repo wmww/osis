@@ -1423,6 +1423,31 @@ fn a_grant_no_longer_taken_up_reads_nothing_below_it_spec_permissions_3() {
     assert!(w.engine(0).read_secrets(&t1).is_empty(), "Alice holds T1's secrets: {}", w.why_role(0, &t1));
 }
 
+// spec/permissions.md §3 (Retain: a way alive is a grant with key access), spec/crypto.md §4 Key
+// access: Bob grants Alice read on T0, mints T1 under it, grants T1 read on T0 (keyless: T1's key
+// derives from T0's) and Alice read on T1; she holds both. Bob removes her from T0: T1's keyless
+// grant reads nothing of T0, so it keeps her no copy, and she reads T0 no more.
+#[test]
+fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
+    let mut w = contacts();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    let t1 = make_in(&mut w, 1, t0, "t1");
+    w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+    for t in [t0, t1] {
+        strong(&mut w, 0, None, t, true);
+    }
+    w.run();
+    assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0");
+    w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
+    assert_eq!(value(&mut w, 0, &t0), None, "Alice reads T0 no more: {}", w.why_role(0, &t0));
+    assert!(w.engine(0).read_secrets(&t0).is_empty(), "T0's secrets go");
+}
+
 // spec/permissions.md §3 (Lost access: what it can no longer read by another path), spec/sync-set.md
 // §2 Taken up: Bob grants Alice read on T1 and T3 and grants each of them read on T2; Alice holds all
 // three. She drops her strong to T1: T1 goes, T2 stays read through T3, whose grant she still takes up.
