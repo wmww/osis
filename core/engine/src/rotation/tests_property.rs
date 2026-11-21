@@ -595,7 +595,13 @@ fn rotation_history_as(seed: u64, interim: bool) -> (Reached, Verdicts) {
     for p in (0..N).filter(|p| *p != x) {
         all.extend(run.lp.packages_for(p, x).unwrap());
     }
-    let mut withheld: BTreeSet<CommitId> = departing.iter().copied().filter(|_| run.rng.next(2) == 0).collect();
+    // drawn in history order (ts, signer), not by commit ID: an ID hashes the path a role commit
+    // states, so the role-paths property's two runs of a seed withhold the same writes
+    let order = |c: &CommitId| (0..N).find_map(|p| run.lp.peers[p].engine.core.ix.commits.get(c).map(|m| (m.header.ts, m.header.signer)));
+    let mut lowering: Vec<CommitId> = departing.iter().copied().collect();
+    lowering.sort_by_key(&order);
+    all.sort_by_key(|p| order(&p.id));
+    let mut withheld: BTreeSet<CommitId> = lowering.into_iter().filter(|_| run.rng.next(2) == 0).collect();
     withheld.extend(all.iter().map(|p| p.id).filter(|_| run.rng.next(8) == 0));
     for pk in all.iter().filter(|p| !withheld.contains(&p.id)) {
         let _ = run.lp.peers[x].receive(&pk.bytes, pk.blobs.clone());
@@ -655,6 +661,12 @@ fn rotation_history_as(seed: u64, interim: bool) -> (Reached, Verdicts) {
     reached.forked = run.made.keys().any(|(t, r, e)| run.made.keys().any(|(t2, r2, e2)| t == t2 && r == r2 && e != e2 && e.n() == e2.n()));
     reached.invalid = invalid_rotations(&run);
     check(&mut run, seed, true);
+    // `OSIS_ROTATION_DUMP`: each run's steps, prefixed by its paths, for diffing the role-paths
+    // property's two runs of a seed
+    if osis_base::testenv::u64_var("OSIS_ROTATION_DUMP").is_some() {
+        let paths = if interim { "interim" } else { "real" };
+        run.log.iter().for_each(|l| eprintln!("{paths}: {l}"));
+    }
     let v = verdicts(&run);
     (reached, v)
 }
