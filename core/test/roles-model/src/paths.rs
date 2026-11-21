@@ -574,7 +574,10 @@ impl Rules {
 /// keys): a key is a value, never a thing; it holds no role and nothing is written on it.
 pub const KEYS: Thing = 0x80;
 
-/// The key thing `t`'s record holds where it names no mint admin (O1).
+/// The key thing `t`'s record holds where it names no mint admin (O1). Such a thing takes edge
+/// and list writes as any thing (O4, O5; the hand flows on T): the design past A4. Interim
+/// (issues/perm-walk-trails-model.md): spec/permissions.md §1 and the walk refuse them until A4,
+/// so no generator writes one.
 pub const fn own_key(t: Thing) -> Thing {
     KEYS | t
 }
