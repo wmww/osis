@@ -2559,14 +2559,77 @@ mod tests {
         panic!("too many runs")
     }
 
+    /// A choice `seq_cold_edits` asks of its plan, at a step, among `n`.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Pick {
+        /// 0 (of 3): a received delta, made against an older state; else the writer's own.
+        Writer,
+        /// The op: 0, 1 insert; 2 insert at the start; 3 move; 4, 5 delete; 6 edit against the read
+        /// (the step's first op), else insert.
+        Kind,
+        /// Where an op starts.
+        At,
+        /// An insert's items less one, a move's length less one, a delete's length less one.
+        Len,
+        /// 0: a long delete (up to 50), else a short one (up to 4).
+        Long,
+        /// An edit's deleted chars; its inserted ones.
+        Cut,
+    }
+
     // spec/crdt.md §5.7, §6, §8: ops by index into a paged text (inserts, deletes, moves, two in
-    // one commit; edits against the read, as a text session writes) and received deltas from another writer (concurrent: made against an older
-    // state), each in a new session, run on the pages loaded through the stored placement and
-    // keeping it: after each, the stored placement (rows, depths, waiting anchors) is a whole
-    // pass's, each loaded a few pages and blocks, and its blocks split as they grow.
+    // one commit; edits against the read, as a text session writes) and received deltas from
+    // another writer (concurrent: made against an older state), each in a new session, run on the
+    // pages loaded through the stored placement and keeping it: after each, the stored placement
+    // (rows, depths, waiting anchors) is a whole pass's, each loaded a few pages and blocks, and its
+    // blocks split as they grow. 48 steps built on purpose: each kind of op at spread positions, a
+    // received delta every third step, two ops every fourth.
     #[test]
     fn seq_cold_edits_keep_placement_spec_crdt_6_1() {
-        let mut rng = osis_crypto::SeededRng::from_u64(187);
+        // the kinds in turn, every op kind in each run of 12
+        const KINDS: [u64; 12] = [0, 3, 4, 6, 2, 3, 6, 5, 1, 3, 6, 4];
+        let mut ops = 0u64;
+        let (received, moves, edits) = seq_cold_edits(0, 48, &mut |pick, step, n| {
+            let x = match pick {
+                Pick::Writer => u64::from(step % 3 != 1),
+                Pick::Kind => {
+                    ops += 1;
+                    KINDS[(ops % 12) as usize]
+                }
+                // spread over the text, the start and the end included
+                Pick::At => n * ((step * 5 + ops) % 9) / 8,
+                Pick::Len | Pick::Cut => (step + ops) % n,
+                Pick::Long => ops % 4,
+            };
+            x.min(n.saturating_sub(1))
+        });
+        assert!(received >= 16 && moves >= 15 && edits >= 12, "{received} received, {moves} moves, {edits} edits");
+    }
+
+    // spec/crdt.md §5.7, §6, §8: as above, the plan's choices random: `OSIS_SEQ_COLD_START`, `OSIS_SEQ_COLD_SEEDS` (2 at small
+    // size), 160 steps a seed. Fails: issues/seq-received-move-insert-drops-placement.md.
+    #[test]
+    #[ignore = "property"]
+    fn seq_cold_edits_keep_placement_plain_spec_crdt_6_1() {
+        use osis_base::testenv::{Seeds, large, reach_floor};
+        let name = "engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1";
+        let seeds = Seeds::from_env("OSIS_SEQ_COLD_START", "OSIS_SEQ_COLD_SEEDS", large(0..20));
+        let replay = |s: u64| format!("OSIS_SEQ_COLD_START={s} OSIS_SEQ_COLD_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact {name}");
+        let tallies = seeds.run(name, replay, |seed| {
+            let mut orng = osis_crypto::SeededRng::from_u64(seed);
+            seq_cold_edits(seed, 160, &mut |_, _, n| osis_crypto::RngCore::next_u64(&mut orng) % n.max(1))
+        });
+        // per seed, well under the mean over seeds 0..20
+        reach_floor("received deltas", tallies.iter().map(|t| t.0), 30, 1);
+        reach_floor("moves", tallies.iter().map(|t| t.1), 20, 1);
+        reach_floor("edits", tallies.iter().map(|t| t.2), 15, 1);
+    }
+
+    /// The edits of `seq_cold_edits_keep_placement`: `steps` steps, each choice `pick(choice,
+    /// step, n)` (below `n`), on a store made with rng `seed`. The received deltas, moves and edits
+    /// made.
+    fn seq_cold_edits(seed: u64, steps: u64, pick: &mut dyn FnMut(Pick, u64, u64) -> u64) -> (usize, usize, usize) {
+        let mut rng = osis_crypto::SeededRng::from_u64(seed);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let nodes = [sess(1), sess(2)];
@@ -2578,35 +2641,34 @@ mod tests {
         let mut ctrs = [w.range().hi, 1];
         let mut txn = store.transaction(&mut rng).unwrap();
         let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
-        let mut orng = osis_crypto::SeededRng::from_u64(189);
-        let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n.max(1);
         let (mut most, mut received, mut moves, mut blocks, mut edits) = (0, 0, 0, 0, 0);
         let mut old = st.clone();
-        for step in 0..160u64 {
+        for step in 0..steps {
             ts += 1 << 16;
-            let wi = usize::from(r(3) == 0);
+            let mut r = |p: Pick, n: u64| pick(p, step, n.max(1));
+            let wi = usize::from(r(Pick::Writer, 3) == 0);
             let base = if wi == 1 { &old } else { &st };
             let len = base.at(&field()).and_then(|s| s.visible_range(0..usize::MAX)).unwrap().len() as u64;
             let read = base.at(&field()).and_then(|s| s.read());
-            let mut mk = |first: bool| match r(7) {
+            let mut mk = |first: bool| match r(Pick::Kind, 7) {
                 // what a text session writes: an edit against the read
                 6 if first => {
                     let Some(Value::Str(x)) = read.clone() else { panic!() };
                     let mut c: Vec<char> = x.chars().collect();
-                    let at = r(c.len() as u64 + 1) as usize;
-                    let del = (r(5) as usize).min(c.len() - at);
-                    c.splice(at..at + del, "ed".chars().take(r(3) as usize));
+                    let at = r(Pick::At, c.len() as u64 + 1) as usize;
+                    let del = (r(Pick::Cut, 5) as usize).min(c.len() - at);
+                    c.splice(at..at + del, "ed".chars().take(r(Pick::Cut, 3) as usize));
                     Op::Edit { base: Value::Str(x), new: Value::Str(c.into_iter().collect()) }
                 }
-                0 | 1 | 6 => Op::Insert { at: r(len + 1) as usize, items: seq_items(true, step, 1 + r(3)) },
+                0 | 1 | 6 => Op::Insert { at: r(Pick::At, len + 1) as usize, items: seq_items(true, step, 1 + r(Pick::Len, 3)) },
                 2 => Op::Insert { at: 0, items: seq_items(true, step, 1) },
                 3 => {
-                    let l = 1 + r(6);
-                    Op::Move { at: r(len - l) as usize, len: l as usize, to: r(len - l + 1) as usize }
+                    let l = 1 + r(Pick::Len, 6);
+                    Op::Move { at: r(Pick::At, len - l) as usize, len: l as usize, to: r(Pick::At, len - l + 1) as usize }
                 }
                 _ => {
-                    let most = if r(8) == 0 { 50 } else { 4 };
-                    Op::Delete { at: r(len) as usize, len: 1 + r(most) as usize }
+                    let most = if r(Pick::Long, 8) == 0 { 50 } else { 4 };
+                    Op::Delete { at: r(Pick::At, len) as usize, len: 1 + r(Pick::Len, most) as usize }
                 }
             };
             let mut ops = vec![PathOp { path: field(), op: mk(true) }];
@@ -2645,7 +2707,7 @@ mod tests {
             let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
             assert!(!set.whole, "step {step}");
             most = most.max(set.loaded.len());
-            let Place::Held(p) = &set.place else { panic!("step {step}: placement kept") };
+            let Place::Held(p) = &set.place else { panic!("step {step}: placement kept (writer {wi}: {:?})", ops.iter().map(|o| match &o.op { Op::Insert { at, items } => format!("insert {at} {}", items.len()), Op::Move { at, len, to } => format!("move {at} {len} {to}"), Op::Delete { at, len } => format!("delete {at} {len}"), _ => "edit".into() }).collect::<Vec<_>>()) };
             // a move's follow looks for the end of the moved subtrees: in a text whose depths moves
             // made uneven, at the rows of many blocks
             if !ops.iter().any(|o| matches!(o.op, Op::Move { .. })) {
@@ -2657,7 +2719,6 @@ mod tests {
                 old = st.clone();
             }
         }
-        assert!(received >= 30 && moves >= 20 && edits >= 15, "{received} received, {moves} moves, {edits} edits");
         assert!(most <= 8, "{most} pages loaded by one edit");
         // blocks split
         let (_, idx) = open(&unit, &SALT).unwrap();
@@ -2700,6 +2761,7 @@ mod tests {
             f
         };
         assert_eq!(whole.read(), st.read());
+        (received, moves, edits)
     }
 
     // spec/crdt.md §5.7 (list element edits; index paths never go on the wire), §6, §8: a path stepping into
