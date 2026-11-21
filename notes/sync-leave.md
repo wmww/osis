@@ -3,29 +3,37 @@
 
 Spec: spec/sync-set.md §3. Overview: notes/sync.md. What leaves is the node closure's (notes/node-closure.md).
 
+**Principle:** a thing goes when its last reference goes, after the pass in flight with the connected sources; nothing waits for an absent peer, the node's own writes not held elsewhere included.
+
 ## What this node syncs
-One value: the sync set, and each sync ID that left it while it waits to stop. `leave` alone follows the engine's sync set (per sync ID: `Engine::sync_held_added`, then `sync_held` per key) and writes the value into the store (`Store::set_holdings`, stamped per S, fed by `Store::syncs_feed`). Every other module follows the store's value, never the engine's sync set: store, opens and dials by their own `set::SyncsFollow`, unread by its own, status by `Store::syncs` whole, read, streams and inbox by `Store::synced`/`holding`. So a waiting S stays open, served, logged into and judged exactly as before, with no per-module case. `leave` settles first in each round, so no module ever sees S drop and come back.
+One value: the sync set, and each sync ID that left it while it waits to stop. `leave` alone follows the engine's sync set (`Engine::sync_held_added`, then `sync_held` per key) and writes the value into the store (`Store::set_holdings`, stamped per S, fed by `Store::syncs_feed`). Every other module follows the store's value, never the engine's sync set: store, opens and dials by their own `set::SyncsFollow`, unread by its own, status by `Store::syncs` whole, read, streams and inbox by `Store::synced`/`holding`. So a waiting S stays open, served, logged into and judged as before, with no per-module case. `leave` settles first in each round, so no module sees S drop and come back.
 
-The engine side answers for a leaving S by its things' held read secrets, not the sync set (`Engine::opening_things`): `read_credentials`, `claim_key`, `open_entry` and `dial_peers` go by it, `sync_bodies` by `thing_sync`.
+The engine answers for a leaving S by its things' held read secrets, not the sync set (`Engine::opening_things`): `read_credentials`, `claim_key`, `open_entry` and `dial_peers` go by it, `sync_bodies` by `thing_sync`.
 
-## The rule
-- One wait, for a sync ID leaving the sync set and for a thing leaving the node closure alike: the pass in flight with the connected sources (spec/sync-set.md §3). A complete pass begun after it left (status runs one, `Leave::passes_wanted`, by pass place; leave reads `Status::passed_since`), or none at all while S has no source (`Status::sourced`). No absent peer is waited for, and the node's own writes not held elsewhere go with what is released.
-- A sync ID: the sync IDs out of the sync set that this node syncs or holds rows of, each an `Effects` key judged (`leave::judge`). The first settle wants every stored one (a start, or a restart of the modules), later ones each S the sync set loses. S has left when it has an entry (as synced, else as this node's keys hold it, `Engine::sync_holder`) and this node has joined an account (`Engine::sync_rooted`). Its entry and the pass place it left at are noted (`leaving`), and it stays synced while it waits.
-  - After the pass, this node's keys must still hold S as when it left (`sync_holder` equal); else it stops (secrets lost, a removal: shredded, nothing released).
-  - A role commit on S's thing uncounted for want of its lists (a revocation taken before them) is no reason to wait longer: S stops after the pass in flight like any loss. A wait for a source to bring the lists would stall on an absent peer for good (notes/principles.md); nothing is kept because a loss may be undone, and S given back later is fetched again.
-  - Then it stops: a read S's thing is released (`Engine::released`, which keeps what is still in the node closure), then each S `Store::shred`, then not synced. Before each shred the engine drops what only S's entries own of the blobs no other sync ID's entry or tombstone names (`Store::alone_under`, `Engine::shredding`): its notes (`bp/`) of S's per-sync-ID copies, sealed for S's thing alone, whether the commit stays held or not (a certificate copy of the account's chain under a released thing's sync ID), with the held commit's openings under things whose record is gone (`ou/`); and of blobs of commits not held (forgotten with lost access, entries parked). A shared blob of a held commit stays the commit's: a peer still listing it under another sync ID is how a commit dropped as invalid is found again. Engine first, so a crash between does both again.
-- A thing: `Engine::left_closure` (each thing that left with the sync units that held it then). Leave notes the pass place and those units' sync IDs (`releasing`, stamped: status runs their passes), and releases it once each has passed or has no source; one that left the local part (no sync unit) at once. A thing back in the node closure before then leaves `left_closure` and is kept as it was.
-- Release is one `Ground::release` per settle for everything that goes: `Engine::released`. This node's own entries of every commit forgotten then or after (`retention::needed` forgets the role-class rest once nothing held needs it) go with it under every sync ID, by the engine's ciphertext door (notes/sync-store.md, Own entries), so no judgement reaches a commit no longer held.
-- State: per sync ID out of the sync set with rows or an entry, one key; per leaving S its entry and place; per thing released its place and sync IDs. Nothing durable: a restart begins each wait afresh.
+## The wait
+One wait, for a sync ID leaving the sync set and a thing leaving the node closure alike (spec/sync-set.md §3): a complete pass begun after it left (status runs one, `Leave::passes_wanted`, by pass place; leave reads `Status::passed_since`), or none while S has no source (`Status::sourced`).
+- A role commit uncounted for want of its lists (a revocation taken before them) is no reason to wait longer: waiting for a source to bring the lists would stall on an absent peer for good. S given back later is fetched again.
+
+## A sync ID
+- Each sync ID out of the sync set that this node syncs or holds rows of is one `Effects` key (`leave::judge`). The first settle wants every stored one (a start, or a restart of the modules), later ones each S the sync set loses.
+- S has left when it has an entry (as synced, else as this node's keys hold it, `Engine::sync_holder`) and this node has joined an account (`Engine::sync_rooted`). Its entry and pass place are noted (`leaving`); it stays synced while it waits.
+- After the pass, this node's keys must still hold S as when it left (`sync_holder` equal); else it stops at once (secrets lost, a removal: shredded, nothing released).
+- Then it stops: a read S's thing is released (below), then `Store::shred`, then not synced. Before each shred the engine drops what only S's entries own of the blobs no other sync ID's entry or tombstone names (`Store::alone_under`, `Engine::shredding`): its notes (`bp/`) of S's per-sync-ID copies sealed for S's thing alone, whether the commit stays held or not (a certificate copy of the account's chain under a released thing's sync ID), the held commit's openings under things whose record is gone (`ou/`), and blobs of commits not held. A shared blob of a held commit stays: a peer still listing it under another sync ID is how a commit dropped as invalid is found again. Engine first, so a crash between does both again.
+
+## A thing
+`Engine::left_closure` lists each thing that left with the sync units that held it then. Leave notes the pass place and those units' sync IDs (`releasing`, stamped: status runs their passes), and releases it once each has passed or has no source; one that left the local part (no sync unit) at once. A thing back in the node closure before then leaves `left_closure` and is kept as it was.
+
+## Release (engine: core/engine/src/retention/release.rs, retention/forget.rs `Scope::Local`)
+- One `Ground::release` per settle for everything that goes: `Engine::released`. It forgets the things given that the node closure does not hold, and each thing whose independent is one of them, by the lost-access machinery (`retention::forget::forget`), fate `Local`: commits left with no part are deleted and fetched again, others keep their other parts. Event cause `Released`. Each released thing leaves `left_closure` in the same transaction.
+- This node's own entries of every commit forgotten then or after (`retention::needed` forgets the role-class rest once nothing held needs it) go under every sync ID by the engine's ciphertext door (notes/sync-store.md, Own entries), so no judgement reaches a commit no longer held.
+- Cost: incremental, as for lost access (notes/engine-lost-access.md, Forgetting): the commits on what left, no reload.
+
+## State
+Per sync ID out of the sync set with rows or an entry, one key; per leaving S its entry and place; per thing released its place and sync IDs. Nothing durable: a restart begins each wait afresh.
 - A restart of the modules must not see things leave that did not: the engine keeps its followed links across a reload (`load_fresh`), else the sync IDs of links being redeemed would leave and wait a pass at every reload. A start follows the sync set whole before anything is judged left (`Inbox::start`, then `Engine::forget_unread`, then leave).
-
-## released (engine, core/engine/src/retention/release.rs, retention/forget.rs `Scope::Local`)
-- Forgets the things given that the node closure does not hold, and each thing whose independent is one of them, but those the node closure holds; same machinery as lost access (`retention::forget::forget`), fate `Local`: commits left with no part are deleted and fetched again, others keep their other parts. Event cause `Released`. Each released thing leaves `left_closure` in the same transaction.
-- Cost: incremental, as for lost access (notes/engine-lost-access.md, Forgetting): the commits on what left, no reload; once per settle.
 
 ## Reasons
 - One value every module follows, written by the module that owns leaving: a per-module "also synced while waiting" would be a carve-out in each.
-- A thing goes when its last reference goes (spec/sync-set.md §3): nothing waits for an absent peer, own unsynced writes included. Waiting for a peer to take them kept rows for a peer that may never return.
+- No wait for a peer to take own unsynced writes: it kept rows for a peer that may never return.
 
-## Tests
-Rules on a fake ground: core/sync/tests/it/leave.rs.
+Tests: rules on a fake ground, core/sync/tests/it/leave.rs.
