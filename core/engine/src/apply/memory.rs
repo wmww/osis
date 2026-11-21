@@ -100,17 +100,8 @@ pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId,
     if !blob.header.is_resolved() {
         // no dedup secret: examine finds it unjudgeable before it decodes anything
         let Some(dedup) = tx.core.dedup(&blob.header.signer) else { return Ok(None) };
-        // their walk lacks a blob: they cannot resolve yet
-        if tx.core.walks.waits(id, super::reach::Slot::Header) {
+        if !super::resolve_lists(tx, blob, id, &dedup)? {
             return wait(tx, blob, id, *signed).map(Some);
-        }
-        match blob.header.resolve(&mut crate::engine::blobs::TxBlobs::new(&mut tx.blobs, true), &dedup) {
-            Ok(()) => {}
-            Err(e) if super::is_missing_page(&e) => {
-                super::reach::wait_header(tx, id, blob)?;
-                return wait(tx, blob, id, *signed).map(Some);
-            }
-            Err(e) => return Err(e.into()),
         }
     }
     // a held commit's late parts wait alone for their pages (`examine`), decoded no further

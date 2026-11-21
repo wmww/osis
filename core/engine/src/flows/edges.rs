@@ -305,8 +305,9 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         m.frontier(f);
     }
     // an explicit demotion carries the target's rotation of the roles the holders left
-    let mut rot = None;
-    let mut unreached = Vec::new();
+    let mut roles = BTreeSet::new();
+    let mut departs = rotation::Departs::No;
+    let mut skip = Vec::new();
     // departures for keys: roles with `until` disregarded (spec/crypto.md §4), so a removal of an
     // edge past its `until` is the departure and rotates
     let new_role = rotation::key_role(new_p.as_ref());
@@ -331,37 +332,18 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         // holders leave, which would box them at it: this commit rotates it)
         rotation::ensure_rotated_but(tx, who, target, &removing, &left, &mut done)?;
         let may = rotation::may_rotate(tx.core, &who, &target);
-        let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
-        if !roles.is_empty() {
-            let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
-            let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
-            let holders = rotation::recipients(tx, &who, &target, &skip)?;
-            let departs = match (pending.is_empty(), demotes) {
-                (true, _) => rotation::Departs::No,
-                (false, false) => rotation::Departs::Holder,
-                (false, true) => rotation::Departs::Demoting,
-            };
-            let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, departs)?;
-            if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
-                rotation::fresh_deposit_seed(tx, &mut m, target)?;
-            }
-            unreached = rotation::unreached(tx, &target, &r)?;
-            rot = Some(r);
-        }
+        roles = left.into_iter().filter(|r| may.contains(r)).collect();
+        skip = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
+        departs = match (pending.is_empty(), demotes) {
+            (true, _) => rotation::Departs::No,
+            (false, false) => rotation::Departs::Holder,
+            (false, true) => rotation::Departs::Demoting,
+        };
     }
     if selfr {
         m.unchecked();
     }
-    let c = Engine::commit_tx(tx, m)?;
-    if let Some(r) = &rot {
-        rotation::record(tx, target, r)?;
-    }
-    done.add(c);
-    // its removal notices are owed as it applies (`inbox::owe_removal_notices`), as at every node
-    // applying it
-    if let Some(c) = c {
-        rotation::deliver_rotation(tx, target, Some(c), &unreached)?;
-    }
+    let c = rotation::commit_rotating(tx, m, who, target, &roles, &skip, departs, &mut done)?;
     // a node's removal from its account root: the account's epoch rotates next, in
     // this transaction (spec/permissions.md §3)
     if c.is_some()
@@ -418,34 +400,17 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
             pending.push(dep);
         }
     }
-    let mut rot = None;
-    let mut unreached = Vec::new();
     let may = rotation::may_rotate(tx.core, &who, &target);
-    let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r) && !kept.contains(r)).collect();
-    if !roles.is_empty() && tx.core.is_independent(&target) {
-        let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
-        let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
-        let holders = rotation::recipients(tx, &who, &target, &skip)?;
-        // a finalize demotes nobody (spec/permissions.md §5.1: it audits nothing)
-        let departs = if pending.is_empty() { rotation::Departs::No } else { rotation::Departs::Holder };
-        let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, departs)?;
-        if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
-            rotation::fresh_deposit_seed(tx, &mut m, target)?;
-        }
-        unreached = rotation::unreached(tx, &target, &r)?;
-        rot = Some(r);
+    let mut roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r) && !kept.contains(r)).collect();
+    if !tx.core.is_independent(&target) {
+        roles.clear();
     }
+    let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
+    // a finalize demotes nobody (spec/permissions.md §5.1: it audits nothing)
+    let departs = if pending.is_empty() { rotation::Departs::No } else { rotation::Departs::Holder };
     // a writer's write on `roles.0`: judged by the finalize authority, not an admin's
     m.unchecked();
-    let c = Engine::commit_tx(tx, m)?;
-    if let Some(r) = &rot {
-        rotation::record(tx, target, r)?;
-    }
-    done.add(c);
-    if let Some(c) = c {
-        rotation::deliver_rotation(tx, target, Some(c), &unreached)?;
-    }
-    Ok(())
+    rotation::commit_rotating(tx, m, who, target, &roles, &skip, departs, done).map(|_| ())
 }
 
 impl Engine {

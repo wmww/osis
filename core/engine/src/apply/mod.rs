@@ -19,7 +19,6 @@ mod tests_validity;
 #[cfg(test)]
 mod tests_addenda;
 #[cfg(test)]
-#[cfg(test)]
 mod oracle;
 #[cfg(test)]
 mod tests_paged;
@@ -546,6 +545,23 @@ fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> bool {
     matches!(author_key(tx.core, &b.header, &b.sigs, author), Ok(None))
 }
 
+/// Resolves the header lists of `blob` from held blobs: `false` when they wait for a blob, their
+/// walk lacking one (notes/sync-facade.md, Blob waits), or a page found missing (noted,
+/// `reach::wait_header`).
+pub(crate) fn resolve_lists(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, dedup: &osis_crypto::Secret32) -> Result<bool> {
+    if tx.core.walks.waits(id, reach::Slot::Header) {
+        return Ok(false);
+    }
+    match blob.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), dedup) {
+        Ok(()) => Ok(true),
+        Err(e) if is_missing_page(&e) => {
+            reach::wait_header(tx, id, blob)?;
+            Ok(false)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Checks a commit and decodes its parts, or says why it waits. `known`: its signature's
 /// verdict, as reached before (`signature`) and after, so a commit left pending keeps it.
 ///
@@ -580,17 +596,8 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             *known = Some(check_signature(tx, blob, id, &vk, *known)?);
         }
         let Some(dedup) = tx.core.dedup(&blob.header.signer) else { return Ok(Exam::Awaits(Reason::UnknownCreated(blob.header.signer))) };
-        // their walk lacks a blob: they cannot resolve yet (notes/sync-facade.md, Blob waits)
-        if tx.core.walks.waits(id, reach::Slot::Header) {
+        if !resolve_lists(tx, blob, id, &dedup)? {
             return Ok(Exam::Pending(Reason::WaitBlobs));
-        }
-        match blob.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup) {
-            Ok(()) => {}
-            Err(e) if is_missing_page(&e) => {
-                reach::wait_header(tx, id, blob)?;
-                return Ok(Exam::Pending(Reason::WaitBlobs));
-            }
-            Err(e) => return Err(e.into()),
         }
     }
     // a split commit's parts whose thing's path key no opened encryption carried, or whose entry

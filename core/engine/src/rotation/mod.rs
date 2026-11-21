@@ -525,27 +525,39 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
 #[cfg(test)]
 pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
     let mut done = Done::default();
-    let holders = recipients(tx, &who, &a, &[])?;
-    done.extend(rotate_boxing(tx, who, a, roles, &holders)?);
+    rotate_alone(tx, who, a, roles, &mut done)?;
     Ok(done)
 }
 
-/// `rotate_now` boxing `holders` (`recipients`).
-fn rotate_boxing(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, holders: &Boxing) -> Result<Done> {
-    let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
+/// Rotates `roles` of `a` in a commit of its own, signed by `who`, boxing every holder.
+fn rotate_alone(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
     let mut m = Mutation::new();
     if who != tx.core.writer()? {
         m.sign_as(who);
     }
-    let rot = rotation_into(tx, &mut m, a, roles, &held, holders, Departs::No)?;
+    commit_rotating(tx, m, who, a, roles, &[], Departs::No, done).map(|_| ())
+}
+
+/// Commits `m`, a role commit by `who` on `a`, with the rotation of `roles` (none: no rotation)
+/// boxed to the holders but `skip` (`departs`) and a fresh deposit seed where it refreshes one;
+/// the rotation recorded and delivered (`recorded`). The commit made, if any.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_rotating(tx: &mut Tx<'_>, mut m: Mutation, who: Tid, a: Tid, roles: &BTreeSet<Role>, skip: &[(Tid, Option<Role>)], departs: Departs, done: &mut Done) -> Result<Option<osis_base::CommitId>> {
+    if roles.is_empty() {
+        let c = Engine::commit_tx(tx, m)?;
+        done.add(c);
+        return Ok(c);
+    }
+    let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
+    let holders = recipients(tx, &who, &a, skip)?;
+    let rot = rotation_into(tx, &mut m, a, roles, &held, &holders, departs)?;
     if refreshes_deposit(tx.core, &who, &a, roles) {
         fresh_deposit_seed(tx, &mut m, a)?;
     }
-    let unreached = unreached(tx, &a, &rot)?;
+    let to = unreached(tx, &a, &rot)?;
     let c = Engine::commit_tx(tx, m)?;
-    let mut done = Done::default();
-    recorded(tx, a, c, &rot, &unreached, &mut done)?;
-    Ok(done)
+    recorded(tx, a, c, &rot, &to, done)?;
+    Ok(c)
 }
 
 /// Records rotation `rot` of `a`, committed as `c`, into `done` with its inbox deliveries to
@@ -668,8 +680,7 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, mode:
         if mine.is_empty() {
             continue;
         }
-        let holders = recipients(tx, &who, &x, &[])?;
-        done.extend(rotate_boxing(tx, who, x, &mine, &holders)?);
+        rotate_alone(tx, who, x, &mine, done)?;
         rotated.push(x);
     }
     Ok(rotated)
