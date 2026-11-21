@@ -452,10 +452,7 @@ impl Transaction<'_> {
         let Some(m) = self.log_meta()? else {
             return Ok(LogRead { whole: true, ..LogRead::default() });
         };
-        let after = match cursor {
-            Some(c) => self.log_position(c)?,
-            None => None,
-        };
+        let after = cursor.map(|c| self.log_position(c)).transpose()?.flatten();
         let prefix = [BY_SYNC, &l.0].concat();
         let rows = self.cat_scan(&prefix, &after.unwrap_or(0).saturating_add(1).to_be_bytes(), limit.saturating_add(1))?;
         let more = rows.len() > limit;
@@ -476,10 +473,7 @@ impl Transaction<'_> {
         let Some(m) = self.log_meta()? else {
             return Ok(LogRead { whole: true, ..LogRead::default() });
         };
-        let after = match cursor {
-            Some(c) => self.log_position(c)?,
-            None => None,
-        };
+        let after = cursor.map(|c| self.log_position(c)).transpose()?.flatten();
         let (events, at, more) = self.log_after(after.unwrap_or(0), limit)?;
         let cursor = Some(self.seal_cursor(&m, at)?);
         Ok(LogRead { events, cursor, whole: after.is_none(), more })

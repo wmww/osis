@@ -267,16 +267,34 @@ impl Transaction<'_> {
     /// bytes, gone with the record or with `l`. A record that is gone takes nothing: what it
     /// would say of the peer went with it.
     pub fn record_put_row(&mut self, id: &RecordId, tag: u8, l: &SyncId, key: &[u8], val: Vec<u8>) -> Result<(), Error> {
-        let Some(mut rec) = self.record(id)? else { return Ok(()) };
-        let before = rec.cost();
-        let k = row_key(id, tag, l, key);
-        if let Some(old) = self.cat_get(&k)? {
-            rec.row_bytes = rec.row_bytes.saturating_sub(row_bytes(&k, &old));
+        if self.record_put(id, row_key(id, tag, l, key), val, row_bytes)? {
+            self.cat_put_to(&row_index_key(l, tag, key, id), Vec::new(), Shred::No, false)?;
         }
-        rec.row_bytes += row_bytes(&k, &val);
+        Ok(())
+    }
+
+    /// Puts row `k` of record `id`, its share of the budget by `bytes`; false, writing nothing,
+    /// when the record is gone.
+    fn record_put(&mut self, id: &RecordId, k: Vec<u8>, val: Vec<u8>, bytes: fn(&[u8], &[u8]) -> u64) -> Result<bool, Error> {
+        let Some(mut rec) = self.record(id)? else { return Ok(false) };
+        let before = rec.cost();
+        let old = self.cat_get(&k)?.map_or(0, |old| bytes(&k, &old));
+        rec.row_bytes = rec.row_bytes.saturating_sub(old) + bytes(&k, &val);
         self.cat_put_to(&k, val, Shred::Yes, false)?;
-        self.cat_put_to(&row_index_key(l, tag, key, id), Vec::new(), Shred::No, false)?;
-        self.record_store(&rec, before)
+        self.record_store(&rec, before)?;
+        Ok(true)
+    }
+
+    /// Removes row `k` of record `id`, its share of the budget by `bytes`; whether it was there.
+    fn record_drop(&mut self, id: &RecordId, k: &[u8], bytes: fn(&[u8], &[u8]) -> u64) -> Result<bool, Error> {
+        let Some(old) = self.cat_get(k)? else { return Ok(false) };
+        self.cat_remove(k, Shred::Yes)?;
+        if let Some(mut rec) = self.record(id)? {
+            let before = rec.cost();
+            rec.row_bytes = rec.row_bytes.saturating_sub(bytes(k, &old));
+            self.record_store(&rec, before)?;
+        }
+        Ok(true)
     }
 
     pub fn record_get_row(&mut self, id: &RecordId, tag: u8, l: &SyncId, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
@@ -285,16 +303,11 @@ impl Transaction<'_> {
 
     /// Removes module `tag`'s row `key` about `l` in record `id`; whether it was there.
     pub fn record_remove_row(&mut self, id: &RecordId, tag: u8, l: &SyncId, key: &[u8]) -> Result<bool, Error> {
-        let k = row_key(id, tag, l, key);
-        let Some(old) = self.cat_get(&k)? else { return Ok(false) };
-        self.cat_remove(&k, Shred::Yes)?;
-        self.cat_remove(&row_index_key(l, tag, key, id), Shred::No)?;
-        if let Some(mut rec) = self.record(id)? {
-            let before = rec.cost();
-            rec.row_bytes = rec.row_bytes.saturating_sub(row_bytes(&k, &old));
-            self.record_store(&rec, before)?;
+        let gone = self.record_drop(id, &row_key(id, tag, l, key), row_bytes)?;
+        if gone {
+            self.cat_remove(&row_index_key(l, tag, key, id), Shred::No)?;
         }
-        Ok(true)
+        Ok(gone)
     }
 
     /// Module `tag`'s rows about `l` in record `id`, by key, from `from` on, at most `limit`.
@@ -353,15 +366,7 @@ impl Transaction<'_> {
     /// Module `tag`'s row `key` about record `id` as a whole (no sync ID), in this transaction;
     /// counted in the record's bytes, gone with the record. A record that is gone takes nothing.
     pub fn record_put_wide_row(&mut self, id: &RecordId, tag: u8, key: &[u8], val: Vec<u8>) -> Result<(), Error> {
-        let Some(mut rec) = self.record(id)? else { return Ok(()) };
-        let before = rec.cost();
-        let k = wide_key(id, tag, key);
-        if let Some(old) = self.cat_get(&k)? {
-            rec.row_bytes = rec.row_bytes.saturating_sub(wide_bytes(&k, &old));
-        }
-        rec.row_bytes += wide_bytes(&k, &val);
-        self.cat_put_to(&k, val, Shred::Yes, false)?;
-        self.record_store(&rec, before)
+        self.record_put(id, wide_key(id, tag, key), val, wide_bytes).map(drop)
     }
 
     pub fn record_get_wide_row(&mut self, id: &RecordId, tag: u8, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
@@ -370,15 +375,7 @@ impl Transaction<'_> {
 
     /// Removes module `tag`'s record-wide row `key` in record `id`; whether it was there.
     pub fn record_remove_wide_row(&mut self, id: &RecordId, tag: u8, key: &[u8]) -> Result<bool, Error> {
-        let k = wide_key(id, tag, key);
-        let Some(old) = self.cat_get(&k)? else { return Ok(false) };
-        self.cat_remove(&k, Shred::Yes)?;
-        if let Some(mut rec) = self.record(id)? {
-            let before = rec.cost();
-            rec.row_bytes = rec.row_bytes.saturating_sub(wide_bytes(&k, &old));
-            self.record_store(&rec, before)?;
-        }
-        Ok(true)
+        self.record_drop(id, &wide_key(id, tag, key), wide_bytes)
     }
 
     /// Module `tag`'s record-wide rows in record `id`, by key. Costs what it returns.

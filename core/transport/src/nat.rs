@@ -294,9 +294,7 @@ impl MemUdp {
         st.udp.lan_socks.insert(addr, LanEntry { id, heard: VecDeque::new(), waker: None });
         Ok(MemLan { net: self.net.clone(), addr, id })
     }
-}
 
-impl MemUdp {
     /// `bind`, or with `lan` `bind_lan`.
     fn bind_as(&self, at: SocketAddr, secret: Option<&StaticSecret>, lan: bool) -> Result<MemSock, Error> {
         if !at.ip().is_unspecified() && at.ip() != self.ip {
