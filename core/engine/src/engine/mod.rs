@@ -3220,28 +3220,23 @@ impl Tx<'_> {
     }
 
     /// `run` on the state of `(tid, ak)` as loaded; if the ops `attached` (`load_for_ops`), run
-    /// again while it missed rows, chunks or pages (what it missed loaded, `pages::absorb`), at
-    /// most `OP_RUNS` times, then on the whole state.
+    /// again while it missed rows, chunks or pages (what it missed loaded, `pages::absorb`) until
+    /// the runs' work passes about one whole pass, then on the whole state.
     pub(crate) fn run_attached<R>(&mut self, tid: &Tid, ak: &Ak, attached: bool, run: impl Fn(&Tx<'_>) -> R) -> Result<R> {
         let mut out = run(self);
         if !attached {
             return Ok(out);
         }
-        for runs in 1.. {
-            let more = self.with_pages(tid, ak, |txn, idx, f| pages::absorb(txn, tid, ak, idx, f))?.flatten();
-            if more == Some(false) {
-                break;
-            }
-            let whole = more.is_none() || runs >= pages::OP_RUNS;
-            if whole {
-                if more.is_some() {
-                    let _s = osis_base::costs::span("paged op whole: runs");
+        let mut work = 0;
+        loop {
+            match self.with_pages(tid, ak, |txn, idx, f| pages::absorb(txn, tid, ak, idx, f, &mut work))?.flatten() {
+                Some(false) => break,
+                Some(true) => out = run(self),
+                None => {
+                    self.load(tid, ak)?;
+                    out = run(self);
+                    break;
                 }
-                self.load(tid, ak)?;
-            }
-            out = run(self);
-            if whole {
-                break;
             }
         }
         Ok(out)

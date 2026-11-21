@@ -406,11 +406,18 @@ impl Placement {
         (b, 0)
     }
 
-    /// The nodes from position `i` on.
-    pub(crate) fn iter_from(&self, i: usize) -> impl Iterator<Item = &Row> + '_ {
-        let (k, o) = self.locate(i).unwrap_or((self.order.len(), 0));
-        let first = self.order.get(k).map_or(&[][..], |b| self.block(*b).get(o..).unwrap_or_default());
-        first.iter().chain(self.order.get(k + 1..).unwrap_or_default().iter().flat_map(|b| self.block(*b)))
+    /// The nodes at positions `r`, looking at the blocks holding them only (by their counts: a
+    /// stub among them gives no rows and notes a miss).
+    pub(crate) fn rows(&self, r: Range<usize>) -> impl Iterator<Item = &Row> + '_ {
+        let (k, o) = self.locate(r.start).unwrap_or((self.order.len(), 0));
+        // rows from block `k`'s first to `r`'s end
+        let mut need = o + r.len();
+        let blocks = self.order.get(k..).unwrap_or_default().iter().take_while(move |b| {
+            let go = need > 0;
+            need = need.saturating_sub(self.n_of(**b));
+            go
+        });
+        blocks.enumerate().flat_map(move |(j, b)| self.block(*b).get(if j == 0 { o } else { 0 }..).unwrap_or_default()).take(r.len())
     }
 
     /// Visible node `k` in order.
@@ -1403,7 +1410,6 @@ impl Lin {
         let fresh = edges().max().filter(|f| before.as_ref().is_some_and(|b| *f > b) && edges().filter(|e| e == f).count() == 1).cloned();
         let each = self.p.order.len() + self.p.cap;
         for x in cuts {
-            *work += each;
             if !self.cut_row(&x, work) || *work > self.p.len.max(1024) {
                 return false;
             }
@@ -1530,7 +1536,12 @@ impl Lin {
     /// subtree; the pieces of a range without creation sit on `END` side by side. `false`:
     /// rebuild (the row is on a broken cycle).
     fn cut_row(&mut self, x: &Dot, work: &mut usize) -> bool {
-        let Some((b, o)) = self.holder(x) else { return true };
+        let Some((b, o)) = self.holder(x) else {
+            *work += 1;
+            return true;
+        };
+        // the rows looked at for it in its block
+        *work += o + 1;
         let Some(row) = self.p.block(b).get(o).cloned() else { return false };
         if row.dot == *x {
             return true;
@@ -1538,6 +1549,8 @@ impl Lin {
         if self.cyc.contains(&row.dot) {
             return false;
         }
+        // its position, by the counts of the blocks before it
+        *work += self.p.order.len();
         let off = x.ctr - row.dot.ctr;
         let d = row.depth + self.p.shift_of(b);
         let i = self.p.base(b) + o;

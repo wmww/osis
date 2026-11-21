@@ -75,7 +75,7 @@ fn anchor_outside(vis: &Vis, r: Range<usize>, at: usize) -> Result<Anchor, Error
     let Some(i) = at.checked_sub(1) else { return Ok(Anchor::Head) };
     let p = &vis.0.p;
     let first = p.rank(r.start);
-    let inside = p.iter_from(r.start).take(r.len()).filter(|x| x.shown).count();
+    let inside = p.rows(r.clone()).filter(|x| x.shown).count();
     let i = if i >= first { i + inside } else { i };
     vis.get(i).cloned().map(Anchor::Dot).ok_or(Error::Mismatch("index out of range"))
 }
@@ -85,14 +85,14 @@ fn anchor_outside(vis: &Vis, r: Range<usize>, at: usize) -> Result<Anchor, Error
 fn range_of(l: &Lin, vis: &Vis, at: usize, len: usize) -> Result<Range<usize>, Error> {
     let end = at.checked_add(len).filter(|e| *e <= vis.len()).ok_or(Error::Mismatch("range out of range"))?;
     let (Some(first), Some(last)) = (vis.get(at), end.checked_sub(1).and_then(|e| vis.get(e))) else { return Ok(0..0) };
-    let i0 = l.index(first).unwrap_or(0);
-    let i1 = l.index(last).unwrap_or(i0);
+    // (held in part: a node's row or chunk not loaded is a miss noted, the op void)
+    let (Some(i0), Some(i1)) = (l.index(first), l.index(last)) else { return Ok(0..0) };
     Ok(i0..i1 + 1)
 }
 
 /// First dots of the nodes in `r`.
 fn dots_of(p: &Placement, r: Range<usize>) -> Vec<Dot> {
-    p.iter_from(r.start).take(r.len()).map(|r| r.dot.clone()).collect()
+    p.rows(r.clone()).map(|r| r.dot.clone()).collect()
 }
 
 /// §3.3 rule 7: at most `MAX_DELTA_BARE` content-less elements per delta (the caller splits).
@@ -116,7 +116,7 @@ fn position(w: &mut Writer, a: Anchor) -> SeqElem {
 /// on END by its dot as a virtual anchor does (§6.1) and stays there: it is no part of the
 /// range, and what hangs below it inside the range moves as roots.
 fn move_writes(w: &mut Writer, p: &Placement, range: Range<usize>, pred: Anchor, dest: Anchor, placed: &dyn Fn(&Dot) -> bool) -> BTreeMap<Dot, SeqElem> {
-    let rows: Vec<&Row> = p.iter_from(range.start).take(range.len()).filter(|r| placed(&r.dot)).collect();
+    let rows: Vec<&Row> = p.rows(range.clone()).filter(|r| placed(&r.dot)).collect();
     // a row's children name its last element
     let ends: Vec<Dot> = rows.iter().map(|r| nth(&r.dot, r.span - 1)).collect();
     let inr: HashSet<&Dot> = ends.iter().collect();
@@ -225,7 +225,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             let l = &vis.0;
             let d = w.delta_stamp();
             let r = range_of(l, &vis, *at, *len)?;
-            let rows: Vec<&crate::seq_lin::Row> = l.p.iter_from(r.start).take(r.len()).collect();
+            let rows: Vec<&crate::seq_lin::Row> = l.p.rows(r.clone()).collect();
             let n = rows.iter().fold(0u64, |a, r| a.saturating_add(r.span));
             if n > osis_base::format::MAX_DELTA_BARE {
                 // §3.3 rule 7: the caller splits a delete this long across commits

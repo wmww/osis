@@ -715,8 +715,6 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut State
 
 /// Blocks per group row of the block list.
 const GROUP: usize = 32;
-/// Runs of an op on a state held in part before loading it whole.
-pub const OP_RUNS: usize = 8;
 
 /// The page target of `set`'s pages.
 fn is_seq(set: &PageSet) -> bool {
@@ -1229,19 +1227,31 @@ pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
     Ok(true)
 }
 
-/// Loads what the placements attached to the paged sequences missed since the last call.
-/// `Some(true)`: something was (run again), `Some(false)`: nothing, `None`: give up (load whole).
-pub fn absorb(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment) -> Result<Option<bool>> {
+/// Loads what the placements attached to the paged sequences missed since the last call, adding
+/// the run's work to `work` (its follows' and plans', at least one per sequence that missed).
+/// `Some(true)`: something was (run again), `Some(false)`: nothing, `None`: give up (load whole):
+/// the runs so far looked at every record, or their work passed about one whole pass of the
+/// paged sequences (a run stops at its first miss, so ops touching many places take as many
+/// runs; a count of runs is no bound).
+pub fn absorb(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, work: &mut usize) -> Result<Option<bool>> {
     let t = table(txn, tid, ak)?;
     let mut any = false;
+    let mut budget = 0;
     for set in idx.sets.values_mut().filter(|s| is_seq(s) && !s.whole) {
         let Place::Held(p) = &set.place else { continue };
         let mut p = p.clone();
+        budget += p.len().max(1024);
         let m = p.misses();
         if !m.any() {
             continue;
         }
         any = true;
+        *work += m.work.max(1);
+
+        if *work > budget {
+            let _s = osis_base::costs::span("paged op whole: runs");
+            return Ok(None);
+        }
         if m.all {
             // counted: how often an op on the pages loaded gives up and loads whole
             let _s = osis_base::costs::span(if m.whole { "paged op whole: whole pass" } else { "paged op whole: every record" });
@@ -2524,6 +2534,16 @@ mod tests {
         assert!(!reset || long_strips >= 1, "no long received insert stripped");
     }
 
+    /// Whether the records of `d`'s sequence (field 1) fall on a node of a broken cycle (§6.2) in
+    /// a whole pass of `st`'s.
+    fn on_cycle(st: &Fragment, d: &Fragment) -> bool {
+        let p = place_whole_pass(st);
+        let top = p.top();
+        let recs = d.at_steps(&[Step::Field(1)]).map(Fragment::elem_spans).unwrap_or_default();
+        let overlaps = |r: &osis_crdt::PlaceRow| recs.iter().any(|(x, n)| x.src == r.dot.src && x.ctr < r.dot.ctr + r.span && r.dot.ctr < x.ctr + n);
+        top.blocks.iter().flat_map(|b| p.rows(b.id).unwrap_or_default()).any(|r| top.cyc.contains(&r.dot) && overlaps(&r))
+    }
+
     /// The placement of the sequence (field 1) of `f` by a whole pass of a fresh copy.
     fn place_whole_pass(f: &Fragment) -> SeqPlace {
         let fresh = decode(&encode(&f.at(&[PathSeg::Field(1)]).unwrap()).unwrap()).unwrap();
@@ -2543,20 +2563,30 @@ mod tests {
         Some(p)
     }
 
+    /// `run` on the pages loaded of a state prepared by `attach_ops`, loading what it misses and
+    /// running again until it misses nothing (as `run_attached` does); `None` if the runs gave up
+    /// (the engine then loads whole).
+    fn run_ops<T>(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, run: impl Fn(&Fragment) -> T) -> Option<T> {
+        let mut work = 0;
+        loop {
+            let got = run(f);
+            match absorb(txn, tid, ak, idx, f, &mut work).unwrap() {
+                Some(false) => return Some(got),
+                Some(true) => {}
+                None => return None,
+            }
+        }
+    }
+
     /// Runs `op` on the pages loaded of a state prepared by `attach_ops`, loading what it misses
     /// until nothing is (as `commit_in` does).
     #[allow(clippy::too_many_arguments)]
     fn run_cold(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, op: &PathOp, view: &SeqView, w: impl Fn() -> Writer) -> Option<(Fragment, osis_crdt::CounterRange)> {
-        for _ in 0..OP_RUNS {
+        let run = |f: &Fragment| {
             let mut b = DeltaBuilder::new(f, w());
-            let got = b.apply(op, view).ok().and_then(|_| b.finish());
-            match absorb(txn, tid, ak, idx, f).unwrap() {
-                Some(false) => return got,
-                Some(true) => {}
-                None => panic!("gave up on the pages loaded"),
-            }
-        }
-        panic!("too many runs")
+            b.apply(op, view).ok().and_then(|_| b.finish())
+        };
+        run_ops(txn, tid, ak, idx, f, run).expect("gave up on the pages loaded")
     }
 
     /// A choice `seq_cold_edits` asks of its plan, at a step, among `n`.
@@ -2589,7 +2619,7 @@ mod tests {
         // the kinds in turn, every op kind in each run of 12
         const KINDS: [u64; 12] = [0, 3, 4, 6, 2, 3, 6, 5, 1, 3, 6, 4];
         let mut ops = 0u64;
-        let (received, moves, edits) = seq_cold_edits(0, 48, &mut |pick, step, n| {
+        let (received, moves, edits, relaid) = seq_cold_edits(0, 48, &mut |pick, step, n| {
             let x = match pick {
                 Pick::Writer => u64::from(step % 3 != 1),
                 Pick::Kind => {
@@ -2604,6 +2634,7 @@ mod tests {
             x.min(n.saturating_sub(1))
         });
         assert!(received >= 16 && moves >= 15 && edits >= 12, "{received} received, {moves} moves, {edits} edits");
+        assert_eq!(relaid, 0, "placements laid out anew");
     }
 
     // spec/crdt.md §5.7, §6, §8: a received delta moving a range and inserting far from both
@@ -2639,6 +2670,49 @@ mod tests {
         assert!(stored.order() == place_whole_pass(&st).order());
     }
 
+    // spec/crdt.md §5.7, §6, §8: an own commit of an insert and a move far apart, in a new session:
+    // each run stops at its first miss, so it takes many runs of little work each (more than a
+    // fixed count would allow); they go on until one misses nothing, and the commit writes what
+    // it writes on the whole state, through the stored placement, which the join keeps.
+    #[test]
+    fn seq_ops_far_apart_run_until_done_spec_crdt_6_1() {
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
+        let view = SeqView::Root(true);
+        let field = || vec![PathSeg::Field(1)];
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
+        let mut st = create(&mut w, &view, &seq_value(true, 4_000)).unwrap();
+        let ctr = w.range().hi;
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
+        let ops: Vec<PathOp> = [Op::Insert { at: 3_114, items: seq_items(true, 0, 3) }, Op::Move { at: 1_167, len: 4, to: 3_603 }]
+            .into_iter()
+            .map(|op| PathOp { path: field(), op })
+            .collect();
+        let wr = || Writer::new(Ts::from_u64(2 << 16).unwrap(), sess(1), ctr);
+        let runs = std::cell::Cell::new(0);
+        let run = |f: &Fragment| {
+            runs.set(runs.get() + 1);
+            let mut b = DeltaBuilder::new(f, wr());
+            ops.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
+        };
+        let want = run(&st).unwrap();
+        runs.set(0);
+        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+        assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[]).unwrap());
+        assert!(run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).flatten().as_ref() == Some(&want), "same delta as on the whole state");
+        assert!(runs.get() > 8, "{} runs", runs.get());
+        let t = touch_of(&want.0, Some(&idx)).unwrap();
+        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
+        f.join(want.0.clone());
+        st.join(want.0);
+        assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)));
+        let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
+        assert!(!set.whole && matches!(set.place, Place::Held(_)), "placement kept");
+        assert!(stored_place(&mut txn, &tid, &ak, set).unwrap().order() == place_whole_pass(&st).order());
+    }
+
     // spec/crdt.md §5.7, §6, §8: as above, the plan's choices random: `OSIS_SEQ_COLD_START`, `OSIS_SEQ_COLD_SEEDS` (2 at small
     // size), 160 steps a seed. Fails on some seeds: issues/seq-cold-edits-follow-gaps.md.
     #[test]
@@ -2660,8 +2734,8 @@ mod tests {
 
     /// The edits of `seq_cold_edits_keep_placement`: `steps` steps, each choice `pick(choice,
     /// step, n)` (below `n`), on a store made with rng `seed`. The received deltas, moves and edits
-    /// made.
-    fn seq_cold_edits(seed: u64, steps: u64, pick: &mut dyn FnMut(Pick, u64, u64) -> u64) -> (usize, usize, usize) {
+    /// made, and the placements laid out anew (deltas writing on a broken cycle).
+    fn seq_cold_edits(seed: u64, steps: u64, pick: &mut dyn FnMut(Pick, u64, u64) -> u64) -> (usize, usize, usize, usize) {
         let mut rng = osis_crypto::SeededRng::from_u64(seed);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
@@ -2674,7 +2748,7 @@ mod tests {
         let mut ctrs = [w.range().hi, 1];
         let mut txn = store.transaction(&mut rng).unwrap();
         let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
-        let (mut most, mut received, mut moves, mut blocks, mut edits) = (0, 0, 0, 0, 0);
+        let (mut most, mut received, mut moves, mut blocks, mut edits, mut relaid) = (0, 0, 0, 0, 0, 0);
         let mut old = st.clone();
         for step in 0..steps {
             ts += 1 << 16;
@@ -2721,13 +2795,7 @@ mod tests {
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
             if wi == 0 {
                 assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[]).unwrap(), "step {step}: through the placement");
-                let mut got = None;
-                for _ in 0..OP_RUNS {
-                    got = run(&f);
-                    if absorb(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap() != Some(true) {
-                        break;
-                    }
-                }
+                let got = run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).flatten();
                 assert!(got == Some((delta.clone(), range)), "step {step}: same delta as on the whole state");
             } else {
                 received += 1;
@@ -2735,17 +2803,31 @@ mod tests {
             let t = touch_of(&delta, Some(&idx)).unwrap();
             assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
             f.join(delta.clone());
-            st.join(delta);
+            // a delta writing on a node of a broken cycle, before or after it joins, may change
+            // which edges are demoted (§6.2): its follow gives up and the placement is laid out anew
+            let cyc = on_cycle(&st, &delta);
+            st.join(delta.clone());
+            let cyc = cyc || on_cycle(&st, &delta);
             assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)), "step {step}: written in place");
             let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
             assert!(!set.whole, "step {step}");
-            most = most.max(set.loaded.len());
-            let Place::Held(p) = &set.place else { panic!("step {step}: placement kept (writer {wi}: {:?})", ops.iter().map(|o| match &o.op { Op::Insert { at, items } => format!("insert {at} {}", items.len()), Op::Move { at, len, to } => format!("move {at} {len} {to}"), Op::Delete { at, len } => format!("delete {at} {len}"), _ => "edit".into() }).collect::<Vec<_>>()) };
-            // a move's follow looks for the end of the moved subtrees: in a text whose depths moves
-            // made uneven, at the rows of many blocks
-            if !ops.iter().any(|o| matches!(o.op, Op::Move { .. })) {
-                blocks = blocks.max(p.top().blocks.len() - p.stubs().0.len());
+            match &set.place {
+                Place::Held(p) => {
+                    most = most.max(set.loaded.len());
+                    // a move's follow looks for the end of the moved subtrees: in a text whose
+                    // depths moves made uneven, at the rows of many blocks
+                    if !ops.iter().any(|o| matches!(o.op, Op::Move { .. })) {
+                        blocks = blocks.max(p.top().blocks.len() - p.stubs().0.len());
+                    }
+                }
+                // laid out anew, as the transaction's end does
+                _ => {
+                    assert!(cyc, "step {step}: placement kept (writer {wi}: {:?})", ops.iter().map(|o| match &o.op { Op::Insert { at, items } => format!("insert {at} {}", items.len()), Op::Move { at, len, to } => format!("move {at} {len} {to}"), Op::Delete { at, len } => format!("delete {at} {len}"), _ => "edit".into() }).collect::<Vec<_>>());
+                    relaid += 1;
+                    rebuild_placement(&mut txn, &tid, &ak, &mut idx, &mut f, &[Step::Field(1)]).unwrap();
+                }
             }
+            let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
             let stored = stored_place(&mut txn, &tid, &ak, set).unwrap_or_else(|| panic!("step {step}: placement kept"));
             assert!(stored.order() == place_whole_pass(&st).order(), "step {step}: stored placement differs from a whole pass");
             if wi == 0 && step % 3 == 0 {
@@ -2758,8 +2840,8 @@ mod tests {
         let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
         let all = stored_place(&mut txn, &tid, &ak, set).unwrap().top().blocks.len();
         assert!(all > 8 && blocks * 4 <= all, "{blocks} of {all} blocks loaded by one edit (no move)");
-        // an edit against a stale read (the text changed since) loads whole, then writes what it
-        // writes on the whole state
+        // an edit against a stale read (the text changed since) writes what it writes on the whole
+        // state: on the pages where the read matches base near the change, else loaded whole
         let Some(Value::Str(x)) = old.at(&field()).and_then(|s| s.read()) else { panic!() };
         let stale = vec![PathOp { path: field(), op: Op::Edit { base: Value::Str(x.clone()), new: Value::Str(format!("{x}!")) } }];
         ts += 1 << 16;
@@ -2771,21 +2853,11 @@ mod tests {
         if Some(Value::Str(x.clone())) != st.at(&field()).and_then(|s| s.read()) {
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
             assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &stale, &[]).unwrap());
-            let mut gave_up = false;
-            for _ in 0..OP_RUNS {
-                run(&f);
-                match absorb(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap() {
-                    Some(true) => {}
-                    Some(false) => break,
-                    None => {
-                        gave_up = true;
-                        break;
-                    }
-                }
-            }
-            assert!(gave_up, "a stale edit is a look at every record");
-            load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-            assert!(run(&f) == run(&st), "stale edit on the whole state");
+            let got = run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).unwrap_or_else(|| {
+                load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+                run(&f)
+            });
+            assert!(got == run(&st), "stale edit on the whole state");
         }
         // and the whole read is the state's
         let whole = {
@@ -2794,7 +2866,7 @@ mod tests {
             f
         };
         assert_eq!(whole.read(), st.read());
-        (received, moves, edits)
+        (received, moves, edits, relaid)
     }
 
     // spec/crdt.md §5.7 (list element edits; index paths never go on the wire), §6, §8: a path stepping into
@@ -2849,13 +2921,7 @@ mod tests {
             ctr = range.hi;
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
             assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[]).unwrap(), "step {step}: through the placement");
-            let mut got = None;
-            for _ in 0..OP_RUNS {
-                got = run(&f);
-                if absorb(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap() != Some(true) {
-                    break;
-                }
-            }
+            let got = run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).flatten();
             assert!(got == Some((delta.clone(), range)), "step {step}: same delta as on the whole state");
             let t = touch_of(&delta, Some(&idx)).unwrap();
             assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
@@ -3088,18 +3154,10 @@ mod tests {
             ctr = want.1.hi;
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
             assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[]).unwrap());
-            let mut got = run(&f);
-            for _ in 0..OP_RUNS {
-                match absorb(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap() {
-                    Some(false) => break,
-                    Some(true) => got = run(&f),
-                    None => {
-                        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-                        got = run(&f);
-                        break;
-                    }
-                }
-            }
+            let got = run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).unwrap_or_else(|| {
+                load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+                run(&f)
+            });
             assert!(got.as_ref() == Some(&want), "damage {damage}: same delta as on the whole state");
             let mut deltas = vec![want.0];
             let mut b = DeltaBuilder::new(&st, Writer::new(Ts::from_u64((2 + damage) << 16).unwrap(), sess(2), 1 + 10 * damage));

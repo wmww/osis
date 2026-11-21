@@ -799,10 +799,15 @@ impl<'s> Layered<'s> {
         l.join(d).then_some(l)
     }
 
-    /// Joins `d` (more of the delta's writes); `false`: the layer is unusable, drop it.
+    /// Joins `d` (more of the delta's writes); `false`: the layer is unusable, drop it. A
+    /// placement held in part notes its misses and its work, the plan of each of `d`'s records
+    /// included (as `dry_follow`).
     pub(crate) fn join(&mut self, d: Seq) -> bool {
         if d.text != self.base.text || d.meta.reset.is_some() {
             return false;
+        }
+        if let Some(p) = self.lin.partial() {
+            p.with(|m| m.work += d.elems.len().max(1));
         }
         self.w = max_opt(self.w.take(), d.meta.w);
         let mut plans = Vec::with_capacity(d.elems.len());

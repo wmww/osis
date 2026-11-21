@@ -1307,7 +1307,7 @@ fn placement_read_by_index_spec_6() {
 fn full_order(f: &Fragment) -> Vec<(crate::Dot, bool)> {
     let Fragment::Seq(sq) = f else { return Vec::new() };
     let l = sq.lin();
-    l.p.iter_from(0).flat_map(|r| (0..r.span).map(move |i| (crate::seq_span::nth(&r.dot, i), r.shown))).collect()
+    l.p.iter().flat_map(|r| (0..r.span).map(move |i| (crate::seq_span::nth(&r.dot, i), r.shown))).collect()
 }
 
 /// The visible length of sequence `f`.
@@ -1516,6 +1516,51 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
     // ops whose layered follow or placement fails other than by a miss: rare
     assert!(wholes * 40 <= runs, "{wholes} of {runs} runs by a whole pass");
     assert!(loaded * 4 < total * 3, "{loaded} of {total} blocks loaded");
+}
+
+/// §5.7, §8: an op held in part reads the rows of its range only, so a delete whose range spans
+/// blocks of hidden rows (skipped by their visible counts when its indices are found) loads the
+/// blocks its range covers, never the blocks after it.
+#[test]
+fn delete_across_hidden_blocks_loads_its_range_spec_5_7() {
+    let view = text_view();
+    let mut st = Fragment::default();
+    let text: String = (0..4_000).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+    st.join(create(&mut Writer::new(ts(1 << 16), node(1), 1), &view, &s(&text)).unwrap());
+    // single deletes, so the hidden rows stay a row each and fill whole blocks
+    for k in 0..400 {
+        let (d, _) = build(&st, Writer::new(ts((2 + k) << 16), node(3), 1 + k), &[op(Op::Delete { at: 1_000, len: 1 })], &view).unwrap();
+        st.join(d);
+    }
+    let (_, pg) = paged(&st, 64, || Writer::new(ts(1 << 30), node(2), 1), &[op(Op::Delete { at: 999, len: 2 })], &view);
+    let (all, hidden) = (pg.whole.top().blocks.len(), pg.whole.top().blocks.iter().filter(|b| b.shown == 0).count());
+    let loaded = all - pg.p.stubs().0.len();
+    assert!(hidden >= 2 && loaded <= hidden + 4, "{loaded} of {all} blocks loaded, {hidden} hidden");
+}
+
+/// §5.7, §8: an op held in part whose range's first node is in a dot-map chunk not loaded (its
+/// last node's loaded by an earlier op) misses that chunk, not the rows from the start to its last
+/// node: it loads a few blocks, and writes what it writes on the whole state.
+#[test]
+fn delete_from_unloaded_chunk_loads_its_range_spec_5_7() {
+    let view = text_view();
+    let mut st = Fragment::default();
+    let text: String = (0..4_000).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+    st.join(create(&mut Writer::new(ts(1 << 16), node(1), 1), &view, &s(&text)).unwrap());
+    // a node of another writer near the end, its dot in the dot map's last chunk
+    let (d, _) = build(&st, Writer::new(ts(2 << 16), node(2), 1), &[op(Op::Insert { at: 3_500, items: vec![s("x")] })], &view).unwrap();
+    st.join(d);
+    let Fragment::Seq(sq) = &st else { panic!() };
+    let mut pg = Pager::new(sq, 64);
+    let w = || Writer::new(ts(3 << 16), node(3), 1);
+    let first = [op(Op::Delete { at: 3_500, len: 1 })];
+    pg.run(|f| build(f, w(), &first, &view));
+    let before = pg.whole.top().blocks.len() - pg.p.stubs().0.len();
+    let ops = [op(Op::Delete { at: 3_499, len: 2 })];
+    let got = pg.run(|f| build(f, w(), &ops, &view));
+    assert!(got == build(&st, w(), &ops, &view), "same delta as on the whole state");
+    let (all, loaded) = (pg.whole.top().blocks.len(), pg.whole.top().blocks.len() - pg.p.stubs().0.len());
+    assert!(loaded <= before + 2, "{loaded} of {all} blocks loaded ({before} before)");
 }
 
 /// §5.7 Read, §9: a text whose placement is held in part reads a char from its record when the
