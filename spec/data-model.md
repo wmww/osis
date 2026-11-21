@@ -152,7 +152,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - **`clients^.0`**: clients acting as a thing of their own, by client actor (spec/sync-transport.md §6).
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
   - The client actor is an independent thing whose mint admin is the node's account, and what the client may do is its roles.
-- **Role-class aspects**: `roles.0`, `owners.0`, `secrets.0`, `keys.0`, `sync.0`, `account.0`, `listing.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `retention^.0` and `purge.0` have the fixed retention of spec/commits.md §5.
+- **Role-class aspects**: `roles.0`, `owners.0`, `secrets.0`, `keys.0`, `sync.0`, `account.0`, `listing.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0` and `purge.0` have the fixed retention of spec/commits.md §5.
 - `creation` holds exactly one of fields 0 and 1 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
 
 ## 10. Schemas
