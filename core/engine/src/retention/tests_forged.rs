@@ -184,6 +184,33 @@ fn a_forged_delete_copy_of_an_undelete_fails_no_node_spec_crdt_4_8() {
     assert_eq!(forged_pair(&text(undeleted), &text(deleted)), Some(Value::Str(String::new())));
 }
 
+// spec/crdt.md §4.8 Which write, §7: a register write "ab" (t5) and a position write and a delete
+// forged at its own stamp on its second embedded char, each a snapshot of writer 1: the char's
+// creation `(t5, Derived, 2)` beats each, though no body holds the char (the register's is a plain
+// register), so each forged body is replaced at t5, at every peer in either arrival order, and
+// no tick fails. Fails with a register write's embedding read only from bodies holding a text slot.
+#[test]
+fn a_write_forged_on_an_embedded_char_dies_by_the_register_write_spec_crdt_7() {
+    use crdt_model::state::{Anchor as MAnchor, Composite, Content, SeqElem as MSeqElem};
+    let s = mstamp(5, 3);
+    let reg = MFrag::Register { reset: None, write: Some((s.clone(), Some(crdt_model::value::Value::Str("ab".into())))) };
+    let second = crdt_model::stamp::Dot { source: MSource::Derived(Box::new(mdot(3))), ctr: 2 };
+    let text = |e: MSeqElem| MFrag::Seq { text: true, c: Composite::default(), elems: [(second.clone(), e)].into_iter().collect() };
+    for forged in [text(MSeqElem::write(Content::None, vec![(s.clone(), MAnchor::Head, None)], None)), text(MSeqElem::flag(s.clone(), true, None))] {
+        let (mut lp, t) = world();
+        let cf = forge(&mut lp, t, carried(&forged).expect("a wire form")).expect("the forger makes it");
+        lp.advance(10);
+        let cr = forge(&mut lp, t, carried(&reg).expect("a wire form")).expect("the forger makes it");
+        for (p, order) in [(0, [&cf, &cr]), (2, [&cr, &cf])] {
+            order.into_iter().for_each(|c| deliver(&mut lp, p, c));
+        }
+        for p in 0..3 {
+            assert_eq!(lp.peers[p].engine.replaced_at(&cf, &t, &ak()).unwrap(), Some(Ts::from_u64(s.ts).unwrap()), "peer {p}: {forged:?}");
+        }
+        settle_alike(&mut lp, t);
+    }
+}
+
 /// Seed `k`'s forged history (crdt-model's generators, notes/crdt.md Tests): writers 0 and 1
 /// sharing a source and clock (copies of one write differing in payload, one dot under two
 /// stamps) on a random type, or hostile single-record text and list writes.
@@ -286,7 +313,7 @@ fn a_removal_dates_a_write_a_later_reset_prunes_spec_crdt_4_8() {
 // spec/commits.md §5, spec/crdt.md §4.8 When: a node holding a set element's write (W) gets one
 // body holding a value removal hiding it (an hour after W) and a reset of the element (three
 // hours after W) that prunes it in the join: the kill's row (when leaving is told) is due a day
-// (the kept period) after the removal, never after the reset. Fails with the hiders of the
+// (the kept period) after the removal, never after the reset. Fails with the payloads of the
 // apply not noted from the state before the join (the pruned write's value not read).
 #[test]
 fn a_kill_by_a_removal_and_a_reset_in_one_body_is_told_at_the_removal_spec_commits_5() {

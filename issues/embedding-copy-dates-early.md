@@ -1,0 +1,8 @@
+# A losing copy's longer string dates a write on its extra chars early
+> Summary: `osis_crdt::Payloads` counts the chars a register write embeds into text as the most any held copy holds, not the winning copy's (spec/crdt.md §4.1: a text slot's embedded records follow the register's winning copy, §7), and `Fragment::held_writes` notes a held `Slots` body's text slot per body; so a write forged at a register write's stamp on a char only a losing copy embeds dates at that register write's `ts`, earlier than spec/crdt.md §4.8 When (its true superseder is later).
+> Priority: low
+> Tags: security, crdt, retention
+
+**Reach**: needs two copies of one register write `s` (one forged, spec/permissions.md §5.2 Copies) holding strings where the losing one is longer, plus a position or flag write forged at exactly `s` on a char `(Derived(s.dot), i)` past the winning copy's length, dead by a later write. The forged body is then replaced (and dropped after its history period) early. Every node holding the same bodies dates alike, and holding more dates no later, so nothing diverges; only the kept history of forged writes is cut short.
+
+**Exact fix**: judge the embedding by the winning copy (copy order, §4.1), as `Payloads` judges removal hiding: needs each string register write's winning value (copy order compares whole values), not only its char count: O(held string bytes) per aspect in `HeldWrites`, against an integer per write today. Ignore the per-body text-slot notes of embedded creations at the same time (`held_writes` would keep only creations that are no copy of a held register write's embedding).

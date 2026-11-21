@@ -7,7 +7,7 @@ use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::Header;
-use osis_crdt::{ByWrite, Fragment, Hiders, Winners, Won};
+use osis_crdt::{ByWrite, Fragment, Payloads, Winners, Won};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -176,7 +176,8 @@ fn part_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Res
 /// asks, `replace::under_purge`). A write of the held valid part is dead when it wins in the part
 /// and not once the part joins the state (spec/crdt.md §4.8, `Fragment::winners`); it died at the
 /// earliest `ts` among the held valid writes superseding it alone, a value removal hiding it
-/// judged in the held copies as joined (`HeldWrites::hiders`), read from any held body holding one
+/// judged in the held copies as joined and a register write by its embedding's chars
+/// (`HeldWrites::payloads`), read from any held body holding one
 /// (`HeldWrites::holds`: its own commit, or a snapshot carrying it), by the write's own `ts`
 /// wherever it is read (a valid snapshot's copy of a write whose own delta is
 /// held invalid counts as the write itself, spec/crdt.md §4.8 When). The part is replaced at the
@@ -212,12 +213,14 @@ fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Re
         return Ok(None);
     }
     let held = held_writes(tx, &tid, &ak)?;
-    // the state is the join of the held bodies (un-merged, spec/crdt.md §4.6), so a held body
-    // holds each superseder, dated by its own stamp whichever body holds it. The part's own body
-    // may hold it: a removal that hides the joined copy of a write, not the part's (§4.1 copies)
+    // Invariant: the state is the join of the held bodies (un-merged, spec/crdt.md §4.6), so a
+    // held body holds each superseder, or the register write whose embedding it is (§7: a char's
+    // creation no body need hold), dated by its own stamp whichever body holds it
+    // (`ByWrite::first_superseding`); so no writer's bytes reach the `Corrupt`. The part's own
+    // body may hold it: a removal that hides the joined copy of a write, not the part's (§4.1)
     let mut out: Option<Ts> = None;
     for w in &dead {
-        let d = held.holds.first_superseding(w, &held.hiders, |s, _| Some(s.ts)).ok_or(Error::Corrupt("a dead write no held body supersedes"))?;
+        let d = held.holds.first_superseding(w, &held.payloads, |s, _| Some(s.ts)).ok_or(Error::Corrupt("a dead write no held body supersedes"))?;
         out = out.max(Some(d));
     }
     Ok(out)
@@ -247,9 +250,10 @@ pub(crate) struct HeldWrites {
     /// state joins it (an invalid delta's writes left out, a valid snapshot's body whole, an
     /// invalid snapshot's giving nothing).
     holds: ByWrite<()>,
-    /// What decides which value removals hide which set element writes, of the copies the held
-    /// bodies hold, joined as the state joins them (`osis_crdt::Hiders`).
-    hiders: Hiders,
+    /// What the held bodies' copies decide of supersession: which value removals hide which set
+    /// element writes, joined as the state joins them, and which chars each register write
+    /// embeds (`osis_crdt::Payloads`).
+    payloads: Payloads,
     /// The writes each held valid snapshot with values holds as winners: its `ts` and ID, in
     /// that order.
     carried: ByWrite<Vec<(Ts, CommitId)>>,
@@ -347,7 +351,7 @@ fn note_body(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ts: Ts, x: CommitId, out: &mut
         });
     }
     out.holds.note(&f.held_writes(), |_, _| ());
-    out.hiders.note(&f);
+    out.payloads.note(&f);
     Ok(())
 }
 
@@ -398,9 +402,10 @@ impl Killed {
     /// the join took out of `d`'s reach is no death). Each dies at the earliest write held at the
     /// join's reach, before or after it, or in `d`, that supersedes it, winning or not
     /// (spec/crdt.md §4.8 When: a creation beating a move stamped below it supersedes it though a
-    /// delete beat the creation), or at the earliest value removal among those hiding it
-    /// (`osis_crdt::Hiders`: read in the copies of the same three as joined, §4.1 copies, so a
-    /// reset pruning the write in the join hides nothing of the removal).
+    /// delete beat the creation), at the earliest value removal among those hiding it
+    /// (`osis_crdt::Payloads`: read in the copies of the same three as joined, §4.1 copies, so a
+    /// reset pruning the write in the join hides nothing of the removal), or at a register write
+    /// whose embedding beats it (§7).
     ///
     /// Invariant: hostile input never produces a local error. Any writer can send any bytes the
     /// decoders accept, forged copies of others' writes included, so for every such input one of
@@ -413,13 +418,13 @@ impl Killed {
             return Ok(());
         }
         let mut by = osis_crdt::ByWrite::<()>::default();
-        let mut hiders = Hiders::default();
+        let mut payloads = Payloads::default();
         for f in [&before.reach, d, &reach] {
             by.note(&f.held_writes(), |_, _| ());
-            hiders.note(f);
+            payloads.note(f);
         }
         for w in dead {
-            let first = by.first_superseding(&w, &hiders, |s, _| Some(s.ts)).ok_or(Error::Corrupt("a dead write nothing in its join supersedes"))?;
+            let first = by.first_superseding(&w, &payloads, |s, _| Some(s.ts)).ok_or(Error::Corrupt("a dead write nothing in its join supersedes"))?;
             self.at = self.at.max(Some(first));
             self.dots.insert(w.stamp.dot);
         }

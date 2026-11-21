@@ -10,7 +10,6 @@
 ## First: main's failing properties
 A property failing on main is the next task (notes/coordination.md, Known failures). Found by the gate's random seeds and failing on main, each with its replay line and a line in tools/known_failures.txt:
 - issues/differential-small-size-failures.md (the sync differential at the gate's size on fresh seeds: four panics on main, one shrunk to a script failing every world).
-- issues/forged-text-dead-write-no-superseder.md (security: a forged text or list history fails a peer's tick with a local error; hostile input must never do that). First.
 - issues/perm-components-unapplied-vs-dropped.md and issues/perm-paths-incremental-differs.md (the unwired permission walk: by component, incremental and after a forget it disagrees with the single walk in one invite world; taken with stage D's call on the walk, before any A1 switch).
 - the app test of issues/app-tile-unreadable-emails-test.md.
 - The two story properties' `counts:` baselines (roles-model `paths`, liveness): issues/removed-key-backdated-drop.md.

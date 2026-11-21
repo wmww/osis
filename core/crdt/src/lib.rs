@@ -72,7 +72,7 @@ mod tests_stream;
 mod tests_winners;
 
 pub use changes::Changes;
-pub use winners::{ByWrite, Hiders, Kind, Place, Winners, Won};
+pub use winners::{ByWrite, Payloads, Kind, Place, Winners, Won};
 pub use copies::CopyIndex;
 pub use codec::{LinkTree, PageAt, TreePlace, decoded_bound, decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array, page_items, sources_of};
 pub use error::Error;

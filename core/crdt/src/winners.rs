@@ -27,7 +27,7 @@ pub enum Place {
     /// A set's value removal, beside its elements, by its record's dot (§5.5). Its reference and
     /// parts are payload, decided by copy order like a value (§4.1), never which write it is: so
     /// are a set element's value, so its register sits at `In` whatever it holds. Which elements
-    /// a removal hides is read in the copies held as they join (`Hiders`).
+    /// a removal hides is read in the copies held as they join (`Payloads`).
     Gone(Dot),
 }
 
@@ -71,19 +71,26 @@ pub struct Won {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Winners(BTreeMap<Vec<Place>, BTreeSet<(Kind, Stamp)>>);
 
-/// What decides which value removals hide which set element writes (§5.5), of every copy noted
-/// (`note`, any fragments: the bodies or states a join reads): each element register write's
-/// value and each removal's reference and parts, by write (set path, dot, stamp), the copies of
-/// one write joined by copy order (§4.1) as the state joins them. So hiding is judged write
-/// against write in the copies as joined, whether or not a reset prunes either from a state
-/// (§4.8 When: each superseder judged against the write alone): a death by hiding is dated by
-/// these (`first_superseding`).
+/// What a write's payload decides of what it supersedes (never which write it is, §4.8), of
+/// every copy noted (`note`, any fragments: the bodies or states a join reads), by write:
+/// - which value removals hide which set element writes (§5.5): each element register write's
+///   value and each removal's reference and parts, by write (set path, dot, stamp), the copies of
+///   one write joined by copy order (§4.1) as the state joins them. So hiding is judged write
+///   against write in the copies as joined, whether or not a reset prunes either from a state
+///   (§4.8 When: each superseder judged against the write alone);
+/// - which chars a register write embeds into a text slot at its position (§7): the most any
+///   noted copy holds. The embedding is the write's own (§4.8 Which write), held wherever the
+///   write is, whether or not a body holds the text slot or a reset prunes the chars from a state.
+///
+/// A death by either is dated by these (`first_superseding`).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Hiders {
+pub struct Payloads {
     values: BySetWrite<Option<Value>>,
     removals: BySetWrite<Removal>,
     /// Each set's removals by the reference their joined copy names, as `removals` holds them.
     named: BySet<BTreeMap<Value, BTreeSet<(Dot, Stamp)>>>,
+    /// Each register write with a string value, by position and stamp: the chars it embeds.
+    chars: BTreeMap<Vec<Place>, BTreeMap<Stamp, u64>>,
 }
 
 /// By a set's path.
@@ -92,10 +99,23 @@ type BySet<T> = BTreeMap<Vec<Place>, T>;
 /// By a set's path, then by a write's record dot and stamp.
 type BySetWrite<T> = BySet<BTreeMap<(Dot, Stamp), T>>;
 
-impl Hiders {
-    /// Notes every element write and value removal `f` holds, winning or not.
+impl Payloads {
+    /// Notes every element write, value removal and register write `f` holds, winning or not.
     pub fn note(&mut self, f: &Fragment) {
         collect(f, &mut Vec::new(), self);
+    }
+    /// The register writes noted whose embedding beats `w`, a position or flag write on a text
+    /// element of a `Derived` dot `(Derived(d), i)` (§7): the writes of `d` at `w`'s position
+    /// embedding `i` chars or more, their `i`-th char's creation `(ts, Derived(d), i)` stamped
+    /// above `w` (`supersedes`). Each as the register write it is (`Kind::Value`).
+    fn embedding<'a>(&'a self, w: &'a Won) -> impl Iterator<Item = Won> + 'a {
+        let at = match (w.kind, w.path.split_last()) {
+            (Kind::Pos | Kind::Delete | Kind::Undelete, Some((Place::Item(e), at))) if e.src.is_derived() => self.chars.get(at).map(|m| (at, e, m)),
+            _ => None,
+        };
+        at.into_iter().flat_map(move |(at, e, m)| {
+            m.iter().filter(move |(s, n)| s.dot == *e.origin() && **n >= e.ctr && supersedes(w.path.len(), Kind::Created, &Stamp { ts: s.ts, dot: e.clone() }, w)).map(move |(s, _)| Won { path: at.to_vec(), kind: Kind::Value, stamp: s.clone() })
+        })
     }
     /// The value removals noted that hide `w`, a set element's register write, as `Won`s.
     fn hiding<'a>(&'a self, w: &'a Won) -> impl Iterator<Item = Won> + 'a {
@@ -174,13 +194,20 @@ impl<T> ByWrite<T> {
     /// stamp's `ts`: per kind at each position on `w`'s path, the writes are read in stamp order
     /// from `w`'s until one stamped at or after the least date found, so about as many as
     /// supersede `w` earliest; and of a set element's register write, the value removals
-    /// `hiders` (noted from the same copies as these) say hide it, as noted here. A text element's creation
-    /// dies only by a delete beating the latest undelete of the element noted here: stamped after
-    /// it, or a copy of its stamp, a delete winning the tie (spec/crdt.md §4.1, §4.8 When).
-    pub fn first_superseding(&self, w: &Won, hiders: &Hiders, date: impl Fn(&Stamp, &T) -> Option<Ts>) -> Option<Ts> {
+    /// `payloads` (noted from the same copies as these) say hide it, and of a write on an embedded
+    /// char, the register writes whose embedding beats it (§7), as noted here. A text element's
+    /// creation dies only by a delete beating the latest undelete of the element noted here:
+    /// stamped after it, or a copy of its stamp, a delete winning the tie (spec/crdt.md §4.1,
+    /// §4.8 When).
+    ///
+    /// Invariant (with `Fragment::held_writes`): every write the join of the noted fragments
+    /// holds is one noted here or the embedding of one (§7), so each write the join supersedes
+    /// has a superseder here: a write forged at a register write's own stamp on one of its
+    /// embedded chars is beaten by the char's creation, which no fragment need hold.
+    pub fn first_superseding(&self, w: &Won, payloads: &Payloads, date: impl Fn(&Stamp, &T) -> Option<Ts>) -> Option<Ts> {
         let undeleted = if w.kind == Kind::Created { self.0.get(&w.path).and_then(|s| s.keys().filter(|x| x.0 == Kind::Undelete).map(|x| &x.1).max()) } else { None };
         let mut best: Option<Ts> = None;
-        for h in hiders.hiding(w) {
+        for h in payloads.hiding(w).chain(payloads.embedding(w)) {
             if let Some(d) = self.get(&h).and_then(|t| date(&h.stamp, t)) {
                 best = Some(best.map_or(d, |b| b.min(d)));
             }
@@ -239,6 +266,8 @@ trait Sink {
     fn put(&mut self, path: &[Place], kind: Kind, s: &Stamp);
     /// A set or bag element record at dot `d` of the set at `path`.
     fn elem(&mut self, _path: &[Place], _d: &Dot, _e: &Elem) {}
+    /// A register at `path`.
+    fn register(&mut self, _path: &[Place], _r: &Register) {}
 }
 
 impl Sink for Winners {
@@ -261,9 +290,18 @@ impl Sink for Held {
     }
 }
 
-impl Sink for Hiders {
+impl Sink for Payloads {
     const ALL: bool = true;
     fn put(&mut self, _: &[Place], _: Kind, _: &Stamp) {}
+    fn register(&mut self, path: &[Place], r: &Register) {
+        if let Some(w) = &r.write
+            && let Some(Value::Str(text)) = &w.value
+        {
+            let n = text.chars().count() as u64;
+            let at = self.chars.entry(path.to_vec()).or_default().entry(w.stamp.clone()).or_default();
+            *at = (*at).max(n);
+        }
+    }
     fn elem(&mut self, path: &[Place], d: &Dot, e: &Elem) {
         if let Some((v, s)) = e.written() {
             let at = self.values.entry(path.to_vec()).or_default().entry((d.clone(), s.clone())).or_insert(None);
@@ -348,6 +386,7 @@ fn meta<S: Sink>(out: &mut S, path: &[Place], m: &Meta) {
 }
 
 fn reg<S: Sink>(out: &mut S, path: &[Place], r: &Register) {
+    out.register(path, r);
     opt(out, path, Kind::Reset, &r.reset);
     if let Some(w) = &r.write {
         out.put(path, Kind::Value, &w.stamp);

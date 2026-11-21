@@ -341,7 +341,7 @@ Copies of one write (§4.1) are one write: what copy order decides (a key, a val
 A write of fragment `A` is dead in `A ⊔ B` iff it wins in `A` and not in `A ⊔ B`.
 
 **When.** It dies at the earliest `ts` among the valid writes the node holds that supersede it, or at T by expiry (which dates no body, spec/commits.md §5).
-- Each is judged against the write alone, so the order of arrival does not matter; a write is held while any held body holds it (its own commit, or a snapshot carrying it).
+- Each is judged against the write alone, so the order of arrival does not matter; a write is held while any held body holds it (its own commit, or a snapshot carrying it), and a register write's embedding (§7) wherever the write is.
 - A write's `ts` is its own commit's, also when a snapshot carries it: a valid snapshot's copy of a write whose own delta is held invalid counts as the write itself.
 - A text element's creation dies only by a delete beating the latest undelete of the element the node holds: stamped after it, or a copy of its stamp (a delete wins the tie, §4.1).
 

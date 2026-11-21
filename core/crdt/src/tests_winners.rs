@@ -3,12 +3,12 @@
 //! stamping many writes of which only some die.
 
 use crate::delta::DeltaBuilder;
-use crate::fragment::{Elem, Fragment, Meta};
+use crate::fragment::{Elem, Fragment, Meta, RegWrite};
 use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, Stamp};
 use crate::testutil::{TyView, frag, history, history_honest, sess, sink_no_seq, ts};
-use crate::winners::{ByWrite, Hiders, Kind, Place, Won};
+use crate::winners::{ByWrite, Payloads, Kind, Place, Won};
 use crdt_model::ops::Ty;
 use osis_base::{Tid, Ts, Value};
 use proptest::prelude::*;
@@ -20,8 +20,8 @@ struct Raw {
     w: Won,
     /// A text element's creation, not an embedded char's (§7).
     text_creation: bool,
-    /// A creation's own position write: it beats position writes below it, but is the
-    /// creation, not a write of its own.
+    /// A creation's own position write, or a register write's embedded char's creation (§7): it
+    /// supersedes, but is the creation's or the register write's, not a write of its own.
     shadow: bool,
     /// A set element's register write: the value its copy holds.
     value: Option<Value>,
@@ -65,6 +65,16 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
         Fragment::Register(r) => {
             r.reset.iter().for_each(|s| put(out, path, Kind::Reset, s));
             r.write.iter().for_each(|w| put(out, path, Kind::Value, &w.stamp));
+            // its embedding into text is its writes (§7): the chars' creations, the write's own
+            if let Some(RegWrite { stamp, value: Some(Value::Str(text)) }) = &r.write
+                && let Some(src) = Source::derived(stamp.dot.clone())
+            {
+                for i in 1..=text.chars().count() as u64 {
+                    let d = Dot::new(src.clone(), i);
+                    let w = Won { path: [path.as_slice(), &[Place::Item(d.clone())]].concat(), kind: Kind::Created, stamp: Stamp { ts: stamp.ts, dot: d } };
+                    out.push(Raw { w, text_creation: false, shadow: true, value: None, removal: None });
+                }
+            }
         }
         Fragment::Slots(s) => {
             if let Some(r) = &s.reg {
@@ -250,13 +260,13 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
         for x in [&a, &b, &ab] {
             held.note(&x.held_writes(), |_, _| ());
         }
-        let mut hiders = Hiders::default();
-        hiders.note(&a);
-        hiders.note(&b);
+        let mut payloads = Payloads::default();
+        payloads.note(&a);
+        payloads.note(&b);
         for w in &dead {
-            assert!(held.first_superseding(w, &hiders, |s, _| Some(s.ts)).is_some(), "a dead write dies by a write held before or after the join: {w:?} in {ab:?}");
+            assert!(held.first_superseding(w, &payloads, |s, _| Some(s.ts)).is_some(), "a dead write dies by a write held before or after the join: {w:?} in {ab:?}");
             assert!(a.holds_stamp(&w.stamp), "a dead write is the side's by exact stamp: {w:?}");
-            assert!(other.first_superseding(w, &hiders, |_, _| Some(w.stamp.ts)).is_some(), "a dead write dies by a write the other side holds: {w:?} in {ab:?}");
+            assert!(other.first_superseding(w, &payloads, |_, _| Some(w.stamp.ts)).is_some(), "a dead write dies by a write the other side holds: {w:?} in {ab:?}");
         }
     }
 }
@@ -301,15 +311,15 @@ fn first_superseding_check(bodies: &[Fragment]) {
     let mut all: Vec<Raw> = bodies.iter().flat_map(raw).collect();
     let dates: Vec<Ts> = bodies.iter().flat_map(|b| std::iter::repeat_n(date(b), raw(b).len())).collect();
     as_joined(&mut all);
-    let mut hiders = Hiders::default();
-    bodies.iter().for_each(|b| hiders.note(b));
+    let mut payloads = Payloads::default();
+    bodies.iter().for_each(|b| payloads.note(b));
     for w in all.iter().filter(|w| !w.shadow) {
         let undeleted = all.iter().filter(|s| s.w.kind == Kind::Undelete && s.w.path == w.w.path).map(|s| &s.w.stamp).max();
         let counts = |s: &Raw| kills(s, w) && !(w.text_creation && s.w.kind == Kind::Delete && undeleted.is_some_and(|u| s.w.stamp < *u));
         let want = all.iter().zip(&dates).filter(|(s, _)| counts(s)).map(|(_, d)| *d).min();
-        assert_eq!(ix.first_superseding(&w.w, &hiders, |_, x| *x), want, "the earliest body superseding {w:?}");
+        assert_eq!(ix.first_superseding(&w.w, &payloads, |_, x| *x), want, "the earliest body superseding {w:?}");
         let by_stamp = all.iter().filter(|s| counts(s)).map(|s| s.w.stamp.ts).min();
-        assert_eq!(ix.first_superseding(&w.w, &hiders, |s, _| Some(s.ts)), by_stamp, "the earliest write superseding {w:?}");
+        assert_eq!(ix.first_superseding(&w.w, &payloads, |s, _| Some(s.ts)), by_stamp, "the earliest write superseding {w:?}");
     }
 }
 
@@ -488,12 +498,12 @@ fn killed(st: &Fragment, y: &Fragment) -> Vec<(Won, Option<Ts>)> {
     let mut before = at.winners();
     before.extend(y.winners());
     let mut by: ByWrite<()> = ByWrite::default();
-    let mut hiders = Hiders::default();
+    let mut payloads = Payloads::default();
     for f in [&at, y, &at_after] {
         by.note(&f.held_writes(), |_, _| ());
-        hiders.note(f);
+        payloads.note(f);
     }
-    before.minus(&at_after.winners()).into_iter().map(|w| { let t = by.first_superseding(&w, &hiders, |s, _| Some(s.ts)); (w, t) }).collect()
+    before.minus(&at_after.winners()).into_iter().map(|w| { let t = by.first_superseding(&w, &payloads, |s, _| Some(s.ts)); (w, t) }).collect()
 }
 
 /// §4.1 Copy order, §4.8 Which write: copies of a set element's write (one stamp) holding a
@@ -561,19 +571,19 @@ fn a_removal_hides_a_write_a_later_reset_prunes_spec_4_8() {
 }
 
 /// What a node holding `held` dates `w` (a write of `held[0]`) at: `None` while the join of
-/// `held` keeps it winning, else the earliest superseder by the held writes and the hiders noted
+/// `held` keeps it winning, else the earliest superseder by the held writes and the payloads noted
 /// from `held` in that order (as `dated_replaced_at` reads the held bodies).
 fn held_date(held: &[&Fragment], w: &Won) -> Option<Option<Ts>> {
     let joined = held.iter().fold(Fragment::default(), |f, b| join(&f, b));
     if joined.winners().iter().any(|x| x == *w) {
         return None;
     }
-    let (mut by, mut hiders) = (ByWrite::<()>::default(), Hiders::default());
+    let (mut by, mut payloads) = (ByWrite::<()>::default(), Payloads::default());
     for b in held {
         by.note(&b.held_writes(), |_, _| ());
-        hiders.note(b);
+        payloads.note(b);
     }
-    Some(by.first_superseding(w, &hiders, |s, _| Some(s.ts)))
+    Some(by.first_superseding(w, &payloads, |s, _| Some(s.ts)))
 }
 
 fn perms(v: &[usize]) -> Vec<Vec<usize>> {
@@ -755,4 +765,30 @@ fn a_delete_copy_of_an_undelete_kills_the_creation_at_its_stamp_spec_4_8() {
     let deleted = one(SeqElem { deleted: Some((f.clone(), true)), ..SeqElem::bare() });
     let k: Vec<(Kind, Stamp, Option<Ts>)> = killed(&undeleted, &deleted).into_iter().map(|(w, t)| (w.kind, w.stamp, t)).collect();
     assert_eq!(k, vec![(Kind::Created, c, Some(ts(25))), (Kind::Undelete, f, Some(ts(25)))]);
+}
+
+/// §4.8 Which write, §7: a register write's embedding into text is its writes, held wherever the
+/// write is. A position write and a delete forged at the register write's own stamp `s` on its
+/// second embedded char: the char's creation `(s.ts, Derived(s.dot), 2)` beats both, so each dies
+/// at `s` once the register write is held (as a plain register: no body holds the char), or at a
+/// later text reset (t29) alone; on a third char the two-char string does not embed, nothing
+/// beats it but the reset. Every held set dates alike in any order, holding more no later. Fails
+/// with a register write's embedding read only from bodies holding a text slot.
+#[test]
+fn a_register_write_supersedes_by_its_embedding_spec_7() {
+    use crate::fragment::Register;
+    let s = Stamp::new(ts(5), x(), 3);
+    let reg = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: Some(Value::Str("ab".into())) }) });
+    let reset = Fragment::Seq(Seq::new(true, Meta { reset: Some(Stamp::new(ts(29), x(), 9)), ..Meta::default() }, BTreeMap::new()));
+    let at = |t| Some(Some(ts(t)));
+    for (i, el) in [(2, SeqElem { pos: vec![(s.clone(), crate::seq::Anchor::Head, None)], ..SeqElem::bare() }), (2, SeqElem { deleted: Some((s.clone(), true)), ..SeqElem::bare() }), (3, SeqElem { pos: vec![(s.clone(), crate::seq::Anchor::Head, None)], ..SeqElem::bare() })] {
+        let d = Dot::new(Source::derived(s.dot.clone()).unwrap(), i);
+        let kind = if el.pos.is_empty() { Kind::Delete } else { Kind::Pos };
+        let forged = Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), el)])));
+        let won = Won { path: vec![Place::Item(d)], kind, stamp: s.clone() };
+        // masks over [the register write, the reset]
+        let want = if i == 2 { [None, at(5), at(29), at(5)] } else { [None, None, at(29), at(29)] };
+        held_set_dates(&[forged.clone(), reg.clone(), reset.clone()], &won, &want, true);
+        first_superseding_check(&[forged, reg.clone(), reset.clone()]);
+    }
 }
