@@ -48,13 +48,12 @@ notes/priorities.md, First: issues/app-tile-unreadable-emails-test.md [checked: 
 ### P. Prune
 Net lines go down (notes/principles.md, Writing code is the cheapest part of having code). Out of spec, code, models and tests:
 - role-write vouches: `vouches.0`, the second walk, counting, the unasked writing, travel with the removal (issues/role-vouch-contested.md); roles-model `Rules::remake` and notes/role-remake-model.md;
-- eager delivery: the errand, the standing duty, reach, the record per (removal, target), holding a unit for it (engine `evidence` duty and reach, held-model's A3 stage and its known failure);
 - the drafts' and held-model's wait for a complete pass before a body judged invalid is dropped (drops are at once, as built);
 - the last-admin rule every node judges (a lowering naming its remaining admin, that edge as evidence);
 - whatever else these orphan. The gate is measured again afterwards (issues/test-time.md).
 
 ### D. The design restated
-On paper and in the models, no engine work: notes/account-membership-design.md, notes/write-path-design.md, notes/terms.md and the a1 to a3 drafts rewritten for owner keys (a path starts at the thing a key signs as; the list aspect; minting with an owner key; the override over admins and the flow of issues/recovery-redesign.md, modelled), may-grant as a flag, no role-write vouches, lazy delivery (with a reader's deposit on sight of a write the removal cuts, if the model shows it simple and good), invalid bodies dropped at once as built, the last admin as a writer's check. roles-model `paths` and held-model cut to it. Ends with the call on osis-perm `paths`: trimmed, or rebuilt from the simpler rule.
+On paper and in the models, no engine work: notes/account-membership-design.md, notes/write-path-design.md, notes/terms.md and the a1 to a3 drafts rewritten for owner keys (a path starts at the thing a key signs as; the list aspect; minting with an owner key; the override over admins and the flow of issues/recovery-redesign.md, modelled), may-grant as a flag, no role-write vouches, lazy delivery (with a reader's deposit on sight of a write the removal cuts, if the model shows it simple and good), invalid bodies dropped at once as built, the last admin as a writer's check. roles-model `paths` and held-model cut to it (held-model's errand and reach, `Rule::fixed` and `Stage::A3`, go once its holds-everything properties are restated: notes/a3-spec/README.md, Far delivery). Ends with the call on osis-perm `paths`: trimmed, or rebuilt from the simpler rule.
 
 ### S1. Cost defects of many sync IDs
 Any time.
@@ -147,7 +146,8 @@ The renames left (below); notes/terms.md, Built and being moved to, reduced to w
 | what | stage | must exist first |
 |---|---|---|
 | Chain certificates over any path, "closed under authors" | A2 | stated paths (A1), M2 |
-| Role-write vouches; eager delivery (the errand, the duty, reach); the wait before a drop; the last-admin rule every node judges | P | |
+| Role-write vouches; the wait before a drop; the last-admin rule every node judges | P | |
+| held-model's errand and reach (`Rule::fixed`, `Stage::A3`) | D | its holds-everything properties restated for lazy delivery |
 | The header's `actor`, the Acting check, the audit's reachability search | A1 | M1 briefs 2 and 3 |
 | The one frontier over every thing | A3 | evidence per sync unit (A2) |
 | Signing chain, epochs, custody, merges, account sides, thing lists and listings; `flows/account.rs`, `custody.rs`, `lists.rs`, `signing.rs`, `sides.rs`; perm `epochs.rs`, `chain.rs`; the header's `epoch`, `rotation`, `reseal`, inner signature | A4 | the ordinary removal complete (S3, A3) |

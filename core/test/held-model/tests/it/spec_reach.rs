@@ -1,9 +1,10 @@
-//! OPEN 14 (notes/a2-spec/README.md): how removals reach a sync ID between A2 and A3. Each
-//! delivery rule (`Stage`) over OPEN 10's (iv) closure and judge: A3's (reach and the errand), reach
-//! with no errand, brief 3's (no reach, Role changes travel), the derivation's actor seed alone,
-//! main's today (chain certificates on any path), and brief 3 keeping today's any-path chains for
-//! removals alone. Hand worlds per finding; `reach_explore` (by hand) tallies every stage over the
-//! family, random and story worlds and lists worlds where a stage fails and today holds.
+//! OPEN 14 (notes/a2-spec/README.md): how removals reach a sync ID between A2 and A3. Each delivery
+//! rule (`Stage`) over OPEN 10's (iv) closure and judge: the drafted A3's (reach and the errand,
+//! parked until stage D), brief 3's (no reach, Role changes travel), the derivation's actor seed
+//! alone, main's today (chain certificates on any path), and brief 3 keeping today's any-path
+//! chains for removals alone. Hand worlds per finding; `reach_explore` (by hand) tallies every
+//! stage over the family, random and story worlds and lists worlds where a stage fails and today
+//! holds.
 use crate::spec_open10::fails_at;
 use held_model::evidence::names::*;
 use held_model::evidence::*;

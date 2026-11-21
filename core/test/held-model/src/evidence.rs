@@ -21,17 +21,18 @@
 //!   grants travel under its sync ID: taken-ness is not modelled, every grant counts); and every
 //!   held removal of an edge (h, t) taking write away (`Rule::removals`), with its witness, whose
 //!   **reach** (held edge writes giving write or above and record edges, at any time, joining t to
-//!   a thing of the unit) is held, with that reach (a removal is logged for good where its holder
-//!   could write: notes/write-path-design.md §2, A3). What of it lies on things outside the unit is
-//!   a copy, the rest bodies.
+//!   a thing of the unit) is held, with that reach (`Rule::reach`: the drafted A3 delivery, parked
+//!   until held-model is restated at stage D: notes/a3-spec/README.md, Far delivery). What of it
+//!   lies on things outside the unit is a copy, the rest bodies.
 //! - **Delivery** (`Placement`): nodes sync sync IDs (`Node::syncs`, closed under the standing duty:
 //!   a node syncing S syncs every sync ID of a thing in S's unit) and hold what those carry and what
 //!   they wrote. An honest node logs under each sync ID it syncs what its own view requires there;
 //!   an entry no syncing node requires is deleted (a delete-key holder deletes, a holder whose view
 //!   requires it logs again: the union). The thief logs its own bodies and the grants they rest on,
-//!   never a lowering. The remover's errand (`Errand`): it logs its lowering under the own sync ID
-//!   of the lowered edge's target and of the things that target holds grants on (`Direct`, read
-//!   from the target's taken grants), or of everything reached by taken grants (`Transitive`).
+//!   never a lowering. The remover's errand (`Errand`, parked with reach): it logs its lowering under
+//!   the own sync ID of the lowered edge's target and of the things that target holds grants on
+//!   (`Direct`, read from the target's taken grants), or of everything reached by taken grants
+//!   (`Transitive`).
 //! - **Readers.** A reader holding one sync ID holds its entries, sees frontier leaves for its
 //!   unit's things and (`Leaves::Evidence`) for every thing a held edge write is on, and trusts
 //!   what the world trusts that it holds. The node holding everything sees every leaf.
@@ -74,7 +75,8 @@ pub enum Placement {
     AtLog,
 }
 
-/// Where the remover logs its lowering besides the sync IDs it syncs.
+/// Where the remover logs its lowering besides the sync IDs it syncs (the drafted A3 delivery,
+/// parked with `Rule::reach` until stage D).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Errand {
     Off,
@@ -375,10 +377,10 @@ pub enum Removals {
 pub struct Rule {
     pub placement: Placement,
     pub errand: Errand,
-    /// (A3) Each held removal of (h, t) whose reach under S is held (taken write grants joining
-    /// t to a thing of the unit) is a seed, with that reach (draft §4 Evidence of a sync ID). Off:
-    /// until A3, "a removal goes under S as Role changes travel says" (notes/a2-spec/README.md
-    /// OPEN 14).
+    /// (The drafted A3 delivery, parked until stage D: notes/a3-spec/README.md, Far delivery.)
+    /// Each held removal of (h, t) whose reach under S is held (taken write grants joining t to a
+    /// thing of the unit) is a seed, with that reach. Off: a removal goes under S as Role changes
+    /// travel says.
     pub reach: bool,
     /// Role changes travel's keys-open half: an edge write naming holder h is a seed also of the
     /// sync ID of each thing whose keys open h (holding read or above on h through taken grants,

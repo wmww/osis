@@ -81,8 +81,8 @@ fn first_read(w: &mut World) -> (u64, u64) {
 // reaches (spec/crypto.md §4, Carried demotions: the walk records it on everything the lowered
 // edge's target reaches), and a held keyset needs the edge writes of what it carries: a first
 // reader of D holds every removal on O, beside D's own rotation for each (the removed member
-// could read D through O). With reach (A2 brief 3, `Config::reach`) D requires each removal and
-// the grant its reset names as copies, each a role commit's header and its `roles.0` delta on O
+// could read D through O). Where D requires a removal (A2 brief 3: evidence of a write it judges)
+// it requires it and the grant its reset names as copies, each a role commit's header and its `roles.0` delta on O
 // sealed as a copy, measured here. Printed: the first read's bytes at two sizes, each copy's size.
 #[test]
 #[ignore = "by hand: prints counts (about a minute: six nodes)"]
