@@ -137,7 +137,6 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 
 - `roles.0` reads as the role timeline's roster (spec/permissions.md §5). `floor`: spec/permissions.md §2. `until` 0: a removal saying retain; `retain`: what a timed grant's `until` passing says (spec/permissions.md §2).
 - `addenda.0` is read per delta, never as state.
-- **`vouches.0`**: `map<blob, frontier>`, a removal's 32-byte commit ID to the 32-byte commit IDs its writer vouches for (spec/permissions.md §5.1 Vouches); each entry only put (`put_new`): a delta writing it otherwise is bad input (spec/commits.md §4); read per delta, never as state; a role part (spec/crypto.md §4 Roles secrets), never compaction-snapshotted (spec/commits.md §2).
 - `keys.0`: spec/crypto.md §3, spec/sync-ids.md §2; `signing` is set only on an account's (the current epoch's signing key; `key` beside it is that epoch's KEM key). `secrets.0`: spec/crypto.md §4. `sync.0`: spec/sync-ids.md §4. `reach.0`: spec/sync-transport.md §3 (a node's dialable key, its global addresses and relays). Box payloads, history box layout and AD tuples: spec/wire.md §7.
 - **References in core aspects**: every thing a core aspect's value names (schema/core.osis) is named by a weak: a creation record's `admin` and `link`, `roles.0`'s holders, box keys' holders, `left_out`'s holders, `reach.0`'s account, `keys.0`'s inbox, `caps^.0`'s things, `clients^.0`'s client actors; but `holds.0` holds refs and `tickets.0` tickets.
 - `node.0`, `reach.0` are written on node things; `caps^.0`, `clients^.0` on the node root (spec/sync-set.md §1); `dial^.0` on an account's profile; `ticket@~0`, `removal@~0`, `stranded@~0` on an inbox and on each thing with a sync ID that is not an account (spec/sync-inbox.md §1). `node.0` and `reach.0` go under the account root D's sync ID only (spec/permissions.md §4). A node's last sync is its own record; stranded reports go over connections and as `stranded@~0` fires, suspect lists over connections only (spec/permissions.md §4).
@@ -152,7 +151,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - **`clients^.0`**: clients acting as a thing of their own, by client actor (spec/sync-transport.md §6).
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
   - The client actor is an independent thing whose mint admin is the node's account, and what the client may do is its roles.
-- **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `sync.0`, `account.0`, `listing.0`, `vouches.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `retention^.0` and `purge.0` have the fixed retention of spec/commits.md §5.
+- **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `sync.0`, `account.0`, `listing.0`. Their rules: spec/commits.md §2, spec/permissions.md. `addenda.0` is content with the retention of a role-class aspect (spec/commits.md §5), never compacted. Role-class aspects, `addenda.0`, `retention^.0` and `purge.0` have the fixed retention of spec/commits.md §5.
 - `creation` holds exactly one of fields 0 and 1 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
 
 ## 10. Schemas

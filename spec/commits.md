@@ -41,7 +41,7 @@ Encoding: spec/wire.md §4. Fields:
   - A durable commit's `created.0` part MUST be exactly one minting of the record: the delta of one write setting the thing's record (typed by the `creation` struct, spec/data-model.md §9), nothing else; otherwise that delta is bad input (§4).
 - **Compaction snapshot**: content or role kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync-compaction.md §1).
   - Written by a node that may write the aspect (admin for `keys.0` and `secrets.0`, spec/permissions.md §5.2). A receiver judges this as for any delta of its signer, and a snapshot failing it gives nothing (spec/permissions.md §5.2).
-  - `roles.0` and `vouches.0` are never compaction-snapshotted: the role timeline walks every edge write and reads every vouch (spec/permissions.md §5.1).
+  - `roles.0` is never compaction-snapshotted: the role timeline walks every edge write (spec/permissions.md §5.1).
 - **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`+`) aspects (spec/data-model.md §2), one of:
   - a content commit (its signer's own writes, in its form, §3);
   - a content compaction snapshot of one `+` aspect (an ephemeral snapshot, below).
@@ -270,7 +270,7 @@ Every delta carries **retention** on the wire: who may purge it (its purgeable-b
 
 ### Fixed retention
 - **Fixed retention**:
-  - role-class deltas and `addenda.0`: `admin`, no history promised; each node keeps a replaced one `ROLE_KEEP` after replaced (a keep at least, §5 Keep bounds: compaction snapshots or later writes replace them; `roles.0` and `vouches.0` are never compaction-snapshotted, §2, and a `vouches.0` delta replaces nothing, so their deltas stay);
+  - role-class deltas and `addenda.0`: `admin`, no history promised; each node keeps a replaced one `ROLE_KEEP` after replaced (a keep at least, §5 Keep bounds: compaction snapshots or later writes replace them; `roles.0` is never compaction-snapshotted, §2, so its deltas stay);
   - `purge.0`: `author_or_admin`, no history promised, its snapshots too;
   - a certificate copy carries its commit's;
   - snapshots of role-class aspects keep it.
