@@ -55,16 +55,16 @@ fn chained_parts_agree() {
     assert!(f.is_empty(), "{}", f.join("\n"));
 }
 
-/// A held set of every kind of chained part, by H (A's mint admin): X admin; N5 write inviting
-/// write; N5's invite grant of Z (read, by its path's invite); Z's grant of Y (read: Z holds no
-/// invite, so unchained); X's removal of Z; Q timed write, finalized by N5 (by write); X's leave
+/// A held set of every kind of chained part, by H (A's mint admin): X admin; N5 write with the
+/// may-grant flag; N5's grant of Z (read, by the flag); Z's grant of Y (read: Z holds no flag, so
+/// unchained); X's removal of Z; Q timed write, finalized by N5 (by write); X's leave
 /// of A (a self-removal by its empty path).
 fn kinds() -> (World, [Id; 7]) {
     use m::{account, A, B, H, N5, X, Z};
     let (q, y) = (m::K, m::M);
     let mut w = account();
     let gx = w.edge(H, 1, &[], A, X, Admin, &[]);
-    let gn = w.push(H, 1, &[], A, Kind::set(N5, Write).inviting(Write));
+    let gn = w.push(H, 1, &[], A, Kind::set(N5, Write).may_grant());
     let gq = w.edge(H, 1, &[], A, q, Write, &[]);
     w.set_until(gq, 3);
     let inv = w.push(N5, 2, &[], A, Kind::set(Z, Read));

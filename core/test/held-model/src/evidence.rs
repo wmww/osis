@@ -773,8 +773,8 @@ impl World {
     /// The chained edge-class commits of `h` (spec/permissions.md §4 Chained writes, read with
     /// `paths::first_chained`'s authority): in key order, each whose author has, over record
     /// edges and the edges earlier chained writes set (applied or not, at the highest role and
-    /// invite each set, `until` disregarded), admin on its target; an invite on its target for an
-    /// invite grant (`paths` `invite_grant`); admin on its holder for a self-removal; write on its
+    /// may-grant role each let its holder grant, `until` disregarded), admin on its target;
+    /// may-grant on its target for a may-grant grant (`paths::flag_grant`); admin on its holder for a self-removal; write on its
     /// target for a finalize. Only the first two set an edge.
     /// Grows with `h`; every write any walk over `h` applies is in it.
     pub fn chained(&self, h: &Set) -> Set {
@@ -798,8 +798,8 @@ impl World {
                 Kind::Edge { .. } if self.w.leave(i) && least == Role::Admin => {
                     out.insert(i);
                 }
-                Kind::Edge { holder, role, until, invite, finalize: false, .. } if !self.w.leave(i) => {
-                    let lvl = (*invite <= *role && paths::alive((*role, *until), c.ts) > Role::None && *role < Role::Admin).then_some(*role);
+                Kind::Edge { holder, role, until, may_grant, finalize: false, .. } if !self.w.leave(i) => {
+                    let lvl = (paths::alive((*role, *until), c.ts) > Role::None && *role < Role::Admin).then_some(*role);
                     let invited = lvl.is_some_and(|lvl| hops.split_last().is_some_and(|(l, b)| get(&inv, l) >= lvl && b.iter().all(|e| get(&max, e) >= lvl)));
                     if least == Role::Admin || invited {
                         out.insert(i);
@@ -807,7 +807,7 @@ impl World {
                         let m = max.entry(e).or_insert(Role::None);
                         *m = (*m).max(*role);
                         let m = inv.entry(e).or_insert(Role::None);
-                        *m = (*m).max(give_invite(*role, *invite));
+                        *m = (*m).max(paths::grantable(*role, *may_grant));
                     }
                 }
                 _ => {}
@@ -868,22 +868,22 @@ impl World {
         if !needed || self.pend != Pend::Granted {
             return true;
         }
-        let Kind::Edge { role, invite, .. } = &self.w.commits[j].kind else { return false };
+        let Kind::Edge { role, may_grant, .. } = &self.w.commits[j].kind else { return false };
         match self.need(m, e) {
-            (r, true) => give_invite(*role, *invite) >= r,
+            (r, true) => paths::grantable(*role, *may_grant) >= r,
             (r, false) => *role >= r,
         }
     }
     /// The least part `m` needs of edge `e` its verdict reads (roles-model `paths` `need`, for a
-    /// write no pass applied): a role, or (true) an invite. Content-class parts write; an edge
-    /// write admin, a finalize write, an invite grant its level (on its path's last edge as an
-    /// invite, under `invite_check`).
+    /// write no pass applied): a role, or (true) that role with the may-grant flag. Content-class
+    /// parts write; an edge write admin, a finalize write, a may-grant grant its role (on its
+    /// path's last edge with the flag, under `flag_check`).
     pub fn need(&self, m: Id, e: Edge) -> (Role, bool) {
         let c = &self.w.commits[m];
         match &c.kind {
             Kind::Edge { .. } if !self.w.hops(m).contains(&e) => (Role::Admin, false),
             Kind::Edge { finalize: true, .. } => (Role::Write, false),
-            Kind::Edge { role, until, invite, .. } if !self.w.leave(m) && *invite <= *role && paths::alive((*role, *until), c.ts) > Role::None && *role < Role::Admin => (*role, self.rules.invite_check && self.w.hops(m).last() == Some(&e)),
+            Kind::Edge { role, until, .. } if !self.w.leave(m) && paths::alive((*role, *until), c.ts) > Role::None && *role < Role::Admin => (*role, self.rules.flag_check && self.w.hops(m).last() == Some(&e)),
             Kind::Edge { .. } => (Role::Admin, false),
             _ => (Role::Write, false),
         }
@@ -1033,13 +1033,13 @@ impl World {
         for r in 0..w.commits.len() {
             let ec: Set = (0..w.commits.len()).filter(|&c| self.w.edge_class(c)).collect();
             w.edit(r, |k| match k {
-                Kind::Edge { holder, role, until, mut frontier, invite, finalize } => {
+                Kind::Edge { holder, role, until, mut frontier, may_grant, finalize } => {
                     for (t, list) in frontier.iter_mut() {
                         if !l.contains(&(r, *t)) {
                             list.retain(|c| ec.contains(c));
                         }
                     }
-                    Kind::Edge { holder, role, until, frontier, invite, finalize }
+                    Kind::Edge { holder, role, until, frontier, may_grant, finalize }
                 }
                 k => k,
             });
@@ -1475,15 +1475,6 @@ fn join_default() -> Join {
     match std::env::var("OSIS_EV_JOIN") {
         Ok(n) if !n.is_empty() => Join::ALL.into_iter().find(|j| j.name() == n).unwrap_or_else(|| panic!("OSIS_EV_JOIN {n}: one of j1-any, j2-needed, j3-refused, j4-pend-needed")),
         _ => Join::Needed,
-    }
-}
-
-/// The invite a value gives: every invite at admin, else its field at most its role (`paths`).
-fn give_invite(role: Role, field: Role) -> Role {
-    if role == Role::Admin {
-        Role::Admin
-    } else {
-        field.min(role)
     }
 }
 

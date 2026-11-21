@@ -83,7 +83,7 @@ fn a_marked_final_hop_is_the_last_edge() {
     w.push_marked(H, 3, &[], T1, Kind::set(B, Gone), &[0]);
     agree_all(&w, &[]);
     let mut w = account();
-    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Write).inviting(Read));
+    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Read).may_grant());
     let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
     w.push(B, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
     w.push_marked(H, 3, &[], T1, Kind::set(Z, Read), &[0]);
@@ -655,47 +655,60 @@ fn an_honest_holder_leave_is_no_dispute() {
     agree_all(&w, &[]);
 }
 
-// spec/permissions.md §5.1 Seeds: a trusted demotion to write keeps the invites under it
+// spec/permissions.md §5.1 Seeds: a trusted demotion to write keeps the grants made by flag
 // (control `-seeds-all`).
 #[test]
-fn a_trusted_demotion_to_write_keeps_the_invites_under_it() {
+fn a_trusted_demotion_to_write_keeps_the_grants_made_by_flag() {
     let mut w = account();
     w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.push(H, 1, &[A], T1, Kind::set(A2, Admin).inviting(Read));
+    w.push(H, 1, &[A], T1, Kind::set(A2, Admin));
     w.edge(K, 1, &[], A2, X, Write, &[]);
     w.push(X, 4, &[A2], T1, Kind::set(G, Read));
-    let kiosk = w.push(B, 6, &[A], T1, Kind::set(A2, Write).inviting(Read));
+    let kiosk = w.push(B, 6, &[A], T1, Kind::set(A2, Write).may_grant());
     agree_all(&w, &[]);
     agree_all(&w, &[kiosk]);
 }
 
-// ---- Invites and finalizes ----
+// ---- May-grant and finalizes ----
 
+/// The model's: A2 shares T1 at write, GU (A2's guests) holds read with the flag on T1.
 fn invited() -> World {
     let mut w = account();
-    w.push(H, 1, &[A], T1, Kind::set(A2, Write).inviting(Read));
+    w.push(H, 1, &[A], T1, Kind::set(A2, Write));
+    w.push(H, 1, &[A], T1, Kind::set(GU, Read).may_grant());
     w.edge(K, 1, &[], A2, X, Write, &[]);
     w
 }
 
-// spec/permissions.md §2 (Invite grant): an invite grant applies by its path's invite (control
-// `-invite-role`).
+// notes/write-path-design.md §1 G1, G2: a may-grant grant applies by its path's flag (controls
+// `-no-flag`, `-last-hop`).
 #[test]
-fn an_invite_grant_applies_by_its_paths_invite() {
+fn a_may_grant_grant_applies_by_its_paths_flag() {
     let mut w = invited();
-    w.push(X, 2, &[A2], T1, Kind::set(Z, Read));
-    w.push(X, 2, &[A2], T1, Kind::set(N6, Write));
-    w.push(X, 3, &[A2], T1, Kind::set(Z, Read).until(9));
-    w.push(X, 4, &[A2], T1, Kind::set(Z, Gone));
+    w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read));
+    w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Write));
+    w.push(X, 2, &[A2], T1, Kind::set(N5, Read));
+    w.push(X, 3, &[A2, GU], T1, Kind::set(Z, Read).until(9));
+    w.push(X, 4, &[A2, GU], T1, Kind::set(Z, Gone));
     agree_all(&w, &[]);
 }
 
-// spec/permissions.md §5.1 step 3: a lowering falls in role or invite (control `-admin-falls`).
 #[test]
-fn an_invite_by_a_removed_writer_falls_unless_listed() {
+fn a_may_grant_grant_needs_its_role_on_every_hop() {
+    let mut w = account();
+    w.push(H, 1, &[A], T1, Kind::set(GU, Write).may_grant());
+    w.edge(K, 1, &[], A2, X, Read, &[]);
+    w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read));
+    w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Write));
+    agree_all(&w, &[]);
+}
+
+// spec/permissions.md §5.1 step 3: a lowering falls in role or flag (control `-admin-falls`).
+#[test]
+fn a_may_grant_grant_by_a_removed_writer_falls_unless_listed() {
     let mut w = invited();
-    let z = w.push(X, 3, &[A2], T1, Kind::set(Z, Read));
-    w.push(X, 4, &[A2], T1, Kind::set(N6, Read));
+    let z = w.push(X, 3, &[A2, GU], T1, Kind::set(Z, Read));
+    w.push(X, 4, &[A2, GU], T1, Kind::set(N6, Read));
     let r = w.edge(K, 6, &[], A2, X, Gone, &[z]);
     agree_all(&w, &[]);
     agree_all(&w, &[r]);
@@ -703,14 +716,14 @@ fn an_invite_by_a_removed_writer_falls_unless_listed() {
 
 // spec/permissions.md §2 (Finalize).
 #[test]
-fn a_finalize_ends_an_ended_grant_and_an_invite_follows_it() {
+fn a_finalize_ends_an_ended_grant_and_a_may_grant_grant_follows_it() {
     let mut w = invited();
-    w.push(X, 2, &[A2], T1, Kind::set(Z, Read).until(4));
+    w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read).until(4));
     w.push(K, 3, &[A2], T1, Kind::finalize(Z));
-    w.push(X, 2, &[A2], T1, Kind::set(N6, Read));
+    w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Read));
     w.push(N6, 3, &[], T1, Kind::finalize(Z));
     let fin = w.push(K, 4, &[A2], T1, Kind::finalize(Z));
-    w.push(X, 5, &[A2], T1, Kind::set(Z, Read));
+    w.push(X, 5, &[A2, GU], T1, Kind::set(Z, Read));
     agree_all(&w, &[]);
     agree(&w, &View::all(&w).without(&[fin]));
     let mut w = invited();
@@ -726,7 +739,7 @@ fn a_finalize_ends_an_ended_grant_and_an_invite_follows_it() {
 #[test]
 fn a_frontier_less_removal_of_ones_own_grant_is_no_finalize() {
     let mut w = invited();
-    w.push(X, 2, &[A2], T1, Kind::set(Z, Read).until(4));
+    w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read).until(4));
     w.push(Z, 3, &[], T1, Kind::finalize(Z));
     w.push(K, 4, &[A2], T1, Kind::finalize(Z));
     agree_all(&w, &[]);
@@ -741,37 +754,37 @@ fn a_frontier_less_removal_of_ones_own_grant_is_no_finalize() {
 // spec/permissions.md §2 (Self-removal): it lowers in every component; a removal always lowers.
 #[test]
 fn a_self_removal_lowers_in_every_component() {
-    for k in [Kind::set(Z, Gone), Kind::set(Z, Read).until(5), Kind::set(Z, Read).until(9).inviting(Read), Kind::set(Z, Read)] {
+    for k in [Kind::set(Z, Gone), Kind::set(Z, Read).until(5), Kind::set(Z, Read).until(9).may_grant(), Kind::set(Z, Read)] {
         let mut w = invited();
-        w.push(X, 2, &[A2], T1, Kind::set(Z, Read).until(9));
+        w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read).until(9));
         w.push(Z, 3, &[], T1, k);
         agree_all(&w, &[]);
     }
 }
 
-// spec/permissions.md §5.1 step 2: a lowering applied by its verdict that would raise its edge's
-// invite (its role not above the edge as restored) applies only by admin along its path. N6,
-// admin by H's grant, gives Z write and then read inviting read (a fall, judged and applied); B
+// spec/permissions.md §5.1 step 2: a lowering applied by its verdict that would set its edge's
+// flag (its role not above the edge as restored) applies only by admin along its path. N6,
+// admin by H's grant, gives Z write and then read with the flag (a fall, judged and applied); B
 // gave Z read at 2; B removes H not listing H's grant of N6, and the restart finds N6 with no
-// authority: Z stays at B's read, inviting nothing. (No model hand test: the walk's own.)
+// authority: Z stays at B's read, with no flag. (No model hand test: the walk's own.)
 #[test]
-fn a_lowering_applied_by_its_verdict_raises_no_invite() {
+fn a_lowering_applied_by_its_verdict_sets_no_flag() {
     let mut w = account();
     let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
     w.edge(H, 1, &[], A, N6, Admin, &[]);
     w.edge(B, 2, &[], A, Z, Read, &[]);
     w.edge(N6, 3, &[], A, Z, Write, &[]);
-    w.push(N6, 3, &[], A, Kind::set(Z, Read).inviting(Read));
+    w.push(N6, 3, &[], A, Kind::set(Z, Read).may_grant());
     let r = w.edge(B, 7, &[], A, H, Gone, &[gb]);
     agree_all(&w, &[]);
     agree_all(&w, &[r]);
 }
 
 #[test]
-fn the_explicit_removal_after_a_finalize_audits_the_invites() {
+fn the_explicit_removal_after_a_finalize_audits_the_grants_made_by_flag() {
     let mut w = account();
     let l = N6;
-    w.push(H, 1, &[A], T1, Kind::set(l, Write).inviting(Write).until(5));
+    w.push(H, 1, &[A], T1, Kind::set(l, Write).may_grant().until(5));
     let z = w.push(l, 2, &[], T1, Kind::set(Z, Write));
     w.push(l, 3, &[], T1, Kind::set(N5, Write));
     w.push(B, 6, &[A], T1, Kind::finalize(l));
@@ -783,10 +796,10 @@ fn the_explicit_removal_after_a_finalize_audits_the_invites() {
 }
 
 #[test]
-fn a_write_dropping_an_invite_audits_the_invites_under_it() {
+fn a_write_clearing_the_flag_audits_the_grants_made_by_it() {
     let mut w = invited();
-    let z = w.push(X, 2, &[A2], T1, Kind::set(Z, Read));
-    let plain = w.push(B, 5, &[A], T1, Kind::set(A2, Write));
+    let z = w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read));
+    let plain = w.push(B, 5, &[A], T1, Kind::set(GU, Read));
     w.edge(H, 1, &[], A, B, Admin, &[]);
     agree_all(&w, &[]);
     agree_all(&w, &[plain]);
@@ -863,7 +876,7 @@ const R2: Thing = 33;
 
 fn link() -> World {
     let mut w = World::new(&[(H, A), (A, LK)]);
-    w.push(H, 1, &[A], LK, Kind::set(L, Read).inviting(Read));
+    w.push(H, 1, &[A], LK, Kind::set(L, Read).may_grant());
     w
 }
 
@@ -931,9 +944,9 @@ fn an_unapplied_grant_changes_nothing_observed() {
     let mut w = account();
     let again = w.edge(H, 11, &[], A, N5, Admin, &[]);
     w.edge(N5, 11, &[], A, H, Write, &[again]);
-    w.edit(1, |k| k.inviting(Write));
+    w.edit(1, |k| k.may_grant());
     w.edge(N5, 9, &[], A, N6, Gone, &[]);
-    let g6 = w.push(N5, 8, &[], A, Kind::set(N6, Write).inviting(Write).until(10));
+    let g6 = w.push(N5, 8, &[], A, Kind::set(N6, Write).may_grant().until(10));
     w.edge(H, 3, &[], A, N5, Admin, &[]);
     agree_all(&w, &[]);
     agree(&w, &View::all(&w).without(&[g6]));
@@ -941,8 +954,8 @@ fn an_unapplied_grant_changes_nothing_observed() {
 
 fn h_demotes_n5(listing: &[Id]) -> World {
     let mut w = account();
-    let h = w.push(H, 7, &[], A, Kind::set(N5, Write).inviting(Write));
-    w.push(N5, 4, &[], A, Kind::set(Z, Write).inviting(Write).listing(w.cut(&[h])));
+    let h = w.push(H, 7, &[], A, Kind::set(N5, Write).may_grant());
+    w.push(N5, 4, &[], A, Kind::set(Z, Write).may_grant().listing(w.cut(&[h])));
     w.push(H, 4, &[], A, Kind::set(N5, Admin));
     w.push(H, 4, &[], A, Kind::set(Z, Admin));
     w.push(Z, 5, &[], A, Kind::set(H, Read).listing(w.cut(&[0, 1, 2, 3])));

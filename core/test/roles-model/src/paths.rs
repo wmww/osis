@@ -58,14 +58,17 @@
 //!   settled walk does not apply is void and loses its seeds, all void ones at once, and the
 //!   walk is redone.
 //! - **Disputes** (`disputes`): a held explicit lowering of another holder's edge (no
-//!   self-removal or invite grant: `Candidates`), not trusted, whose trust changes the reading.
+//!   self-removal or may-grant grant: `Candidates`), not trusted, whose trust changes the reading.
 //! - **Leaves.** A node sees a frontier's leaf for a thing only where its view says so
 //!   (`View::leaves`); an entry in a leaf it does not see is not listed for it.
-//! - **Invites and finalizes.** An edge write without admin on its path applies as an invite
-//!   grant where it adds a grant below admin to a holder with none current, within the path's
-//!   invite; a finalize ends a grant past its `until`. Neither is explicit: neither audits. A
-//!   lowering is judged where it takes its edge down in role or invite (`Rules::any_fall`), and
-//!   drops the writes whose need there the edge no longer meets (`need`).
+//! - **May-grant and finalizes** (notes/write-path-design.md §1 G1 to G5). A grant carries a
+//!   may-grant flag. An edge write without admin on its path applies as a may-grant grant where it
+//!   adds a grant below admin to a holder with none current, every hop of its path giving at least
+//!   its role and the last giving admin or carrying the flag; a finalize ends a grant past its
+//!   `until`. Neither is explicit: neither audits. A lowering is judged where it takes its edge
+//!   down in role or in the flag (`Rules::any_fall`, `Rules::flag_falls`), and drops the writes
+//!   whose need there the edge no longer meets (`need`). A lower level is an arrangement: a thing
+//!   holding the lower role with the flag, written by the person.
 //! - **Purge authors.** A commit states its purge author (an index into [signer, path..]); a
 //!   purge request by author P, valid as content along its path, holds the right over the earlier
 //!   deltas on its thing naming exactly P where P is on its chain (`purges`).
@@ -100,9 +103,9 @@ pub enum Kind {
         role: Role,
         until: Option<u32>,
         frontier: BTreeMap<Thing, Set>,
-        /// The invite it carries (spec/permissions.md §2), at most its role; an admin edge gives
-        /// every invite whatever this says.
-        invite: Role,
+        /// The may-grant flag (notes/write-path-design.md §1 G1): its holder may add holders up to
+        /// its role. An admin edge lets its holder grant every role below admin whatever this says.
+        may_grant: bool,
         /// A finalize: a removal carrying no frontier, ending a grant past its `until`
         /// (spec/permissions.md §2).
         finalize: bool,
@@ -147,7 +150,7 @@ impl Kind {
     }
     /// An edge write setting `holder`'s edge to `role`, standing, listing nothing.
     pub fn set(holder: Thing, role: Role) -> Kind {
-        Kind::Edge { holder, role, until: None, frontier: BTreeMap::new(), invite: Role::None, finalize: false }
+        Kind::Edge { holder, role, until: None, frontier: BTreeMap::new(), may_grant: false, finalize: false }
     }
     /// A finalize of `holder`'s ended grant.
     pub fn finalize(holder: Thing) -> Kind {
@@ -157,9 +160,10 @@ impl Kind {
         }
         k
     }
-    pub fn inviting(mut self, r: Role) -> Kind {
-        if let Kind::Edge { invite, .. } = &mut self {
-            *invite = r;
+    /// With the may-grant flag.
+    pub fn may_grant(mut self) -> Kind {
+        if let Kind::Edge { may_grant, .. } = &mut self {
+            *may_grant = true;
         }
         self
     }
@@ -294,13 +298,21 @@ pub struct Rules {
     /// How a story node records its sides (`Sim::sides`; notes/write-path-design.md §1, First
     /// received).
     pub sides: Sides,
-    /// An invite grant needs its level as an invite on its path's last edge (spec/permissions.md
-    /// §2, along one path: notes/write-path-design.md §1, Edge writes). False (control
-    /// `-invite-role`): a role there suffices, so any writer grants.
-    pub invite_check: bool,
+    /// A may-grant grant needs its path's last hop to give admin or carry the flag
+    /// (notes/write-path-design.md §1 G1). False (control `-no-flag`): its role there suffices, so
+    /// any writer grants.
+    pub flag_check: bool,
+    /// A may-grant grant needs its role on every hop of its path before the last (G1). False
+    /// (control `-last-hop`): the last hop alone is read, so a role above the path's minimum
+    /// applies.
+    pub min_check: bool,
+    /// A lowering clearing the flag of its edge (at the same role) takes it down (G5): it is
+    /// judged and puts the may-grant grants made by it in question. False (control `-role-falls`):
+    /// only a fall in role does.
+    pub flag_falls: bool,
     /// A lowering is judged, and audits, when it takes its edge as restored down in role or in
-    /// invite, dropping the writes whose need the edge no longer meets (an invite grant falls with
-    /// a writer's edge). False (control `-admin-falls`): only a fall from admin is judged.
+    /// the flag, dropping the writes whose need the edge no longer meets (a may-grant grant falls
+    /// with a writer's edge). False (control `-admin-falls`): only a fall from admin is judged.
     pub any_fall: bool,
     /// A purge request holds the author right over a delta only where its own chain ([signer,
     /// path..]) holds the delta's purge author (notes/write-path-design.md §1, What a purger must
@@ -327,12 +339,12 @@ pub struct Rules {
     /// Which held writes are dispute candidates.
     pub candidates: Candidates,
     /// A trusted write's seeds are the writes resting on its edge whose need there its own value
-    /// does not meet, as its audit reads them (a demotion to write keeps the invites under it).
+    /// does not meet, as its audit reads them (a demotion to write keeps the may-grant grants under it).
     /// False (control `-seeds-all`): every unlisted write resting on its edge.
     pub seeds_by_need: bool,
     /// Control (`-refuse-shapes`): a commit of several edge writes carrying a self-removal or a
     /// part on an edge of its own stated path applies nowhere. False (the rule): it is judged part
-    /// by part like any (`World::commit`), so a single-use link redemption (an invite grant and its
+    /// by part like any (`World::commit`), so a single-use link redemption (a may-grant grant and its
     /// signer's own leave) applies.
     pub refuse_shapes: bool,
     /// How a write putting an end on a standing admin edge (or shortening its end) is judged.
@@ -432,10 +444,10 @@ pub enum Until {
 /// admin at their `ts`, but finalizes, and of those:
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Candidates {
-    /// Every one: self-removals (a holder thing's leave by its member) and invite grants included.
+    /// Every one: self-removals (a holder thing's leave by its member) and may-grant grants included.
     All,
-    /// Explicit writes only: no self-removal, and none the walk trusting it applies as an invite
-    /// grant (neither carries a frontier, so neither is ever trusted).
+    /// Explicit writes only: no self-removal, and none the walk trusting it applies as a
+    /// may-grant grant (neither carries a frontier, so neither is ever trusted).
     Explicit,
 }
 
@@ -455,7 +467,9 @@ impl Rules {
             key_order: false,
             own_end: false,
             sides: Sides::Received,
-            invite_check: true,
+            flag_check: true,
+            min_check: true,
+            flag_falls: true,
             any_fall: true,
             purge_chain: true,
             purge_exact: true,
@@ -491,7 +505,9 @@ impl Rules {
             key_order: false,
             own_end: true,
             sides: Sides::Received,
-            invite_check: true,
+            flag_check: true,
+            min_check: true,
+            flag_falls: true,
             any_fall: true,
             purge_chain: true,
             purge_exact: true,
@@ -845,17 +861,18 @@ pub struct Reading {
     pub applied: Set,
     /// Applied edge writes that lowered their edge.
     pub lowered: Set,
-    /// Edge writes the settled walk applies as invite grants.
-    pub invited: Set,
+    /// Edge writes the settled walk applies as may-grant grants (G2).
+    pub by_flag: Set,
     /// Valid content-class commits.
     pub valid: Set,
     /// Held content a valid purge request holding the right over it names.
     pub purged: Set,
     /// Writes shown only by a valid cover's copy (none under `Rules::cover_facts`).
     pub copied: Set,
-    /// Final roles, every `until` counted removed, and the invite each edge gives in the end.
+    /// Final roles, every `until` counted removed, and the highest role each edge lets its
+    /// holder grant by may-grant in the end (`grantable`).
     pub roles: BTreeMap<Edge, Role>,
-    pub invites: BTreeMap<Edge, Role>,
+    pub grantable: BTreeMap<Edge, Role>,
     /// The settled walk's edge writes per edge (key, value), and its cuts: the applied explicit
     /// lowerings taking an edge from write or above to below (edge, key), which content judges by.
     pub hist: BTreeMap<Edge, Vec<(Key, Val)>>,
@@ -897,7 +914,7 @@ impl Reading {
         self.valid.contains(&i) || self.applied.contains(&i) || self.copied.contains(&i)
     }
     /// What users observe of the reading: what each holder can do (its role and
-    /// invite in the end, and the role each edge gives at the start of each `ts`, which content
+    /// what it may grant in the end, and the role each edge gives at the start of each `ts`, which content
     /// written there rests on, with the cuts) and which content counts (valid, copied, purged).
     /// Which edge-class commits apply is not in it: an applied write changing none of this is
     /// seen by nobody (notes/path-model-findings.md 33).
@@ -910,7 +927,7 @@ impl Reading {
         };
         let timeline = edges.into_iter().map(|e| (e, (0..=last).map(|t| at(e, t)).collect::<Vec<Role>>())).filter(|(_, r)| r.iter().any(|&r| r > Role::None)).collect();
         let some = |m: &BTreeMap<Edge, Role>| m.iter().filter(|(_, r)| **r > Role::None).map(|(&e, &r)| (e, r)).collect();
-        Observed { roles: some(&self.roles), invites: some(&self.invites), timeline, cuts: self.cuts.clone(), valid: self.valid.clone(), copied: self.copied.clone(), purged: self.purged.clone() }
+        Observed { roles: some(&self.roles), grantable: some(&self.grantable), timeline, cuts: self.cuts.clone(), valid: self.valid.clone(), copied: self.copied.clone(), purged: self.purged.clone() }
     }
 }
 
@@ -918,7 +935,7 @@ impl Reading {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Observed {
     pub roles: BTreeMap<Edge, Role>,
-    pub invites: BTreeMap<Edge, Role>,
+    pub grantable: BTreeMap<Edge, Role>,
     pub timeline: BTreeMap<Edge, Vec<Role>>,
     pub cuts: BTreeSet<(Edge, Key)>,
     pub valid: Set,
@@ -942,14 +959,15 @@ struct Pass {
     /// The edge as restored: the highest role each edge held since the last explicit write on it
     /// (values an `until` or a self-removal took included).
     restored: BTreeMap<Edge, Role>,
-    /// Each edge's invite field, and its invite as restored (as `restored`, of `invite_at`).
-    inv: BTreeMap<Edge, Role>,
-    rinv: BTreeMap<Edge, Role>,
+    /// Each edge's flag, and what it lets its holder grant as restored (as `restored`, of
+    /// `grantable_at`).
+    flag: BTreeMap<Edge, bool>,
+    rgrant: BTreeMap<Edge, Role>,
     hist: BTreeMap<Edge, Vec<(Key, Val)>>,
     applied: Vec<Id>,
-    /// The applied invite grants (attributed to invite, not to admin: spec/permissions.md §5.1
-    /// step 3, admin before invite).
-    invited: Set,
+    /// The applied may-grant grants (attributed to the flag, not to admin: spec/permissions.md
+    /// §5.1 step 3, admin first).
+    by_flag: Set,
     lows: Vec<Low>,
 }
 
@@ -957,67 +975,71 @@ impl Pass {
     fn at(&self, e: Edge, ts: u32) -> Role {
         self.state.get(&e).map_or(Role::None, |&v| alive(v, ts))
     }
-    /// The invite edge `e` gives at `ts`: every invite where it gives admin, else its invite
-    /// field, at most its role.
-    fn invite_at(&self, e: Edge, ts: u32) -> Role {
-        give_invite(self.at(e, ts), self.inv.get(&e).copied().unwrap_or(Role::None))
+    /// What edge `e` lets its holder grant at `ts` (`grantable`).
+    fn grantable_at(&self, e: Edge, ts: u32) -> Role {
+        grantable(self.at(e, ts), self.flag.get(&e).copied().unwrap_or(false))
     }
 }
 
-/// The invite a value gives: every invite at admin, else its field at most its role.
-fn give_invite(role: Role, field: Role) -> Role {
-    if role == Role::Admin {
-        Role::Admin
+/// The highest role a value lets its holder grant by may-grant, as the last hop of a path (G1):
+/// every role at admin, its role where it carries the flag, else none.
+pub fn grantable(role: Role, flag: bool) -> Role {
+    if role == Role::Admin || flag {
+        role
     } else {
-        field.min(role)
+        Role::None
     }
 }
 
-/// What a write needs of one edge of its path: a role there, or (the last edge of an invite
-/// grant's path) an invite there.
+/// What a write needs of one edge of its path: a role there, or (the last edge of a may-grant
+/// grant's path) that role with the flag there (G1).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Need {
     Role(Role),
-    Invite(Role),
-    /// More than this role or this invite (a leave's need at the edge it lowers, `Drops::LeaveLowers`).
+    Flag(Role),
+    /// More than this role, or this role and the flag where it had none (a leave's need at the
+    /// edge it lowers, `Drops::LeaveLowers`), read as what each lets its holder grant.
     Above(Role, Role),
 }
 
 impl Need {
-    fn met(self, role: Role, invite: Role) -> bool {
+    /// Met by an edge giving `role` and letting its holder grant `grants` (`grantable`).
+    fn met(self, role: Role, grants: Role) -> bool {
         match self {
             Need::Role(r) => role >= r,
-            Need::Invite(r) => invite >= r,
-            Need::Above(r, i) => role > r || invite > i,
+            Need::Flag(r) => grants >= r,
+            Need::Above(r, g) => role > r || grants > g,
         }
     }
 }
 
 /// An edge write adding a grant below admin (no self-removal, no finalize): one that may apply
-/// as an invite grant. Its level is its role (its invite is at most its role).
-fn invite_grant(w: &World, i: Id) -> Option<Role> {
+/// as a may-grant grant (G2), with its role.
+pub fn flag_grant(w: &World, i: Id) -> Option<Role> {
     let c = &w.commits[i];
     match &c.kind {
-        Kind::Edge { role, until, invite, finalize: false, .. } if !c.leave && *invite <= *role && alive((*role, *until), c.ts) > Role::None && *role < Role::Admin => Some(*role),
+        Kind::Edge { role, until, finalize: false, .. } if !c.leave && alive((*role, *until), c.ts) > Role::None && *role < Role::Admin => Some(*role),
         _ => None,
     }
 }
 
 /// What write `i` needs of edge `e` (where its path holds `e`; a self-removal of `e` needs admin
-/// there): admin, unless it is an invite grant (`as_invite`: applied as one, or, for a held write
-/// this pass did not apply, one that may), which needs its level as a role on its path's edges
-/// before the last and as an invite on the last (`Rules::invite_check`; else as a role there too).
-fn need(w: &World, rules: &Rules, i: Id, e: Edge, as_invite: bool) -> Need {
+/// there): admin, unless it is a may-grant grant (`by_flag`: applied as one, or, for a held write
+/// this pass did not apply, one that may), which needs its role on its path's hops before the
+/// last (`Rules::min_check`) and its role with the flag on the last (`Rules::flag_check`; else
+/// its role there too).
+fn need(w: &World, rules: &Rules, i: Id, e: Edge, by_flag: bool) -> Need {
     let hops = w.hops(i);
     // a leave applies at the edge it lowers by that edge giving more than it sets
     if rules.drops == Drops::LeaveLowers && w.leave(i) && w.sets(i) == Some(e) {
-        if let Kind::Edge { role, until, invite, .. } = &w.commits[i].kind {
+        if let Kind::Edge { role, until, may_grant, .. } = &w.commits[i].kind {
             let a = alive((*role, *until), w.commits[i].ts);
-            return Need::Above(a, give_invite(a, *invite));
+            return Need::Above(a, grantable(a, *may_grant));
         }
     }
-    match (as_invite, invite_grant(w, i)) {
-        (true, Some(r)) if rules.invite_check && hops.last() == Some(&e) => Need::Invite(r),
+    match (by_flag, flag_grant(w, i)) {
+        (true, Some(r)) if rules.flag_check && hops.last() == Some(&e) => Need::Flag(r),
+        (true, Some(_)) if !rules.min_check && hops.last() != Some(&e) => Need::Role(Role::None),
         (true, Some(r)) => Need::Role(r),
         _ if matches!(w.commits[i].kind, Kind::Edge { finalize: true, .. }) => Need::Role(Role::Write),
         _ => Need::Role(Role::Admin),
@@ -1177,7 +1199,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
         for &e in &w.records {
             p.state.insert(e, (Role::Admin, None));
             p.restored.insert(e, Role::Admin);
-            p.rinv.insert(e, Role::Admin);
+            p.rgrant.insert(e, Role::Admin);
         }
         let mut restart = None;
         // the commit taking effect: its ID, the drops its parts made in this pass and its parts
@@ -1222,20 +1244,20 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
             let c = &w.commits[i];
             let lowering = rules.lowering(w, i).is_some() && !w.leave(i);
             let judged = if lowering { verdict.get(&i).copied() } else { None };
-            // how it applies: by admin along its path (or its verdict), as an invite grant, or as
-            // a finalize (spec/permissions.md §2, along its stated path)
-            let mut as_invite = false;
+            // how it applies: by admin along its path (or its verdict), as a may-grant grant, or
+            // as a finalize (spec/permissions.md §2, along its stated path)
+            let mut by_flag = false;
             let mut as_finalize = false;
             match judged {
                 // applied for good where it lowers; where its edge as restored in this pass is below
-                // its value, in role or invite, it would raise the edge: it applies there only as
+                // its value, in role or flag, it would raise the edge: it applies there only as
                 // any write does, by admin along its path (finding 27)
                 Some(Verdict::Applied) => {
-                    if let Kind::Edge { holder, role, until, invite, .. } = &c.kind {
+                    if let Kind::Edge { holder, role, until, may_grant, .. } = &c.kind {
                         let e = (*holder, c.on);
                         let after = alive((*role, *until), c.ts);
                         let raises = after > p.restored.get(&e).copied().unwrap_or(Role::None).max(p.at(e, c.ts))
-                            || give_invite(after, *invite) > p.rinv.get(&e).copied().unwrap_or(Role::None).max(p.invite_at(e, c.ts));
+                            || grantable(after, *may_grant) > p.rgrant.get(&e).copied().unwrap_or(Role::None).max(p.grantable_at(e, c.ts));
                         if raises && !w.hops(i).iter().all(|&h| p.at(h, c.ts) == Role::Admin) {
                             continue;
                         }
@@ -1261,21 +1283,22 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
                         }
                         _ if path_role == Role::Admin => {}
                         Kind::Edge { holder, .. } => {
-                            // an invite grant: a holder with no current grant, its level within
-                            // the path's invite (roles before the last edge, the last's invite)
-                            let Some(lvl) = invite_grant(w, i) else { continue };
+                            // a may-grant grant (G2): a holder with no current grant, its role
+                            // below admin, given by every hop, the last giving admin or the flag
+                            let Some(r) = flag_grant(w, i) else { continue };
                             let (last, before) = hops.split_last().expect("a grant states a hop");
-                            let gives = if rules.invite_check { p.invite_at(*last, c.ts) } else { p.at(*last, c.ts) };
-                            if p.at((*holder, c.on), c.ts) > Role::None || !before.iter().all(|&e| p.at(e, c.ts) >= lvl) || gives < lvl {
+                            let gives = if rules.flag_check { p.grantable_at(*last, c.ts) } else { p.at(*last, c.ts) };
+                            let min = !rules.min_check || before.iter().all(|&e| p.at(e, c.ts) >= r);
+                            if p.at((*holder, c.on), c.ts) > Role::None || !min || gives < r {
                                 continue;
                             }
-                            as_invite = true;
+                            by_flag = true;
                         }
                         _ => continue,
                     }
                 }
             }
-            let Kind::Edge { holder, role, until, invite, .. } = &c.kind else {
+            let Kind::Edge { holder, role, until, may_grant, .. } = &c.kind else {
                 p.applied.push(i);
                 continue;
             };
@@ -1283,29 +1306,30 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
             let new = (*role, *until);
             let leave = w.leave(i);
             // an explicit write: attributed to admin (spec/permissions.md §5.1 step 2); a
-            // self-removal, an invite grant and a finalize are not, and audit nothing
-            let explicit = !leave && !as_invite && !as_finalize;
+            // self-removal, a may-grant grant and a finalize are not, and audit nothing
+            let explicit = !leave && !by_flag && !as_finalize;
             let old = p.state.get(&e).copied().unwrap_or((Role::None, None));
-            // a self-removal only lowers: it removes the grant, or sets no component (role, invite,
+            // a self-removal only lowers: it removes the grant, or sets no component (role, flag,
             // `until`) above the grant's
-            let old_inv = p.inv.get(&e).copied().unwrap_or(Role::None);
-            if leave && new.0 > Role::None && (new.0 > old.0 || *invite > old_inv || old.1.is_some_and(|u| new.1.is_none_or(|n| n > u))) {
+            let old_flag = p.flag.get(&e).copied().unwrap_or(false);
+            if leave && new.0 > Role::None && (new.0 > old.0 || (*may_grant && !old_flag) || old.1.is_some_and(|u| new.1.is_none_or(|n| n > u))) {
                 continue;
             }
             let restored = p.restored.get(&e).copied().unwrap_or(Role::None).max(p.at(e, c.ts));
-            let rinv = p.rinv.get(&e).copied().unwrap_or(Role::None).max(p.invite_at(e, c.ts));
+            let rgrant = p.rgrant.get(&e).copied().unwrap_or(Role::None).max(p.grantable_at(e, c.ts));
             let (before, after) = (if explicit { restored } else { p.at(e, c.ts) }, alive(new, c.ts));
-            let after_inv = give_invite(after, *invite);
+            let after_grant = grantable(after, *may_grant);
             // an explicit write audits against the edge as restored, once, when judged: where it
-            // takes the edge down (`any_fall`: in role or invite; else from admin)
-            let falls = if rules.any_fall { restored > after || rinv > after_inv } else { restored == Role::Admin && after < Role::Admin };
+            // takes the edge down (`any_fall`: in role or, `flag_falls`, in the flag; else from
+            // admin)
+            let falls = if rules.any_fall { restored > after || (rules.flag_falls && rgrant > after_grant) } else { restored == Role::Admin && after < Role::Admin };
             // or it puts an end on admin (`Until`): the edge gives admin at its `ts`, standing or
             // ending after the end it sets
             let falls = falls || (rules.until != Until::Plain && explicit && w.ends(i).is_some() && alive(old, c.ts) == Role::Admin && old.1.is_none_or(|o| new.1.is_some_and(|u| u < o)));
             // the value it sets as the write at `t` needs it (`Until::Plain`: as at its own `ts`)
             let at = |t: u32| {
                 let a = if rules.until == Until::Plain { after } else { alive(new, t) };
-                (a, give_invite(a, *invite))
+                (a, grantable(a, *may_grant))
             };
             let mut q = vec![];
             if judged.is_none() && explicit && falls {
@@ -1313,9 +1337,9 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
                 // in question: a write resting on the edge whose need there the edge as restored
                 // met and its new value does not, of another commit (no list can name its own)
                 let alone = |j: Id| {
-                    let n = need(w, rules, j, e, p.invited.contains(&j) || !p.applied.contains(&j));
-                    let (a, ai) = at(w.commits[j].ts);
-                    w.cid(j) != c.cid && rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, i, j) && n.met(restored, rinv) && !n.met(a, ai)
+                    let n = need(w, rules, j, e, p.by_flag.contains(&j) || !p.applied.contains(&j));
+                    let (a, ag) = at(w.commits[j].ts);
+                    w.cid(j) != c.cid && rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, i, j) && n.met(restored, rgrant) && !n.met(a, ag)
                 };
                 // `Drops::Commit`: with another part of its commit on its thing, not dropped or void
                 let gone = |j: Id| {
@@ -1328,8 +1352,8 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
                 // value met at its own `ts` and does not at theirs (stamped at or past its end)
                 let past = |j: Id| {
                     let n = need(w, rules, j, e, true);
-                    let (a, ai) = at(w.commits[j].ts);
-                    past_end(w, rules, i, j) && w.cid(j) != c.cid && rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, i, j) && n.met(after, after_inv) && !n.met(a, ai)
+                    let (a, ag) = at(w.commits[j].ts);
+                    past_end(w, rules, i, j) && w.cid(j) != c.cid && rests_on(w, rules, j, e) && !exempt.contains(&j) && !listed(w, v, i, j) && n.met(after, after_grant) && !n.met(a, ag)
                 };
                 // in question: the applied writes before it (`audit_held`: the held ones not yet
                 // dropped or void) resting on its edge
@@ -1361,16 +1385,16 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
                 judged_here.push(i);
             }
             p.state.insert(e, new);
-            p.inv.insert(e, *invite);
+            p.flag.insert(e, *may_grant);
             if explicit {
                 p.restored.insert(e, new.0);
-                p.rinv.insert(e, after_inv);
-            } else if as_invite {
+                p.rgrant.insert(e, after_grant);
+            } else if by_flag {
                 let r = p.restored.entry(e).or_insert(Role::None);
                 *r = (*r).max(new.0);
-                let r = p.rinv.entry(e).or_insert(Role::None);
-                *r = (*r).max(after_inv);
-                p.invited.insert(i);
+                let r = p.rgrant.entry(e).or_insert(Role::None);
+                *r = (*r).max(after_grant);
+                p.by_flag.insert(i);
             }
             p.hist.entry(e).or_default().push((w.key(i), new));
             p.applied.push(i);
@@ -1403,17 +1427,17 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
 fn seeds(w: &World, rules: &Rules, v: &View, active: &Set) -> BTreeMap<Id, Id> {
     let mut d = BTreeMap::new();
     for &r in active {
-        let (Some(h), Kind::Edge { role, until, invite, .. }) = (w.sets(r), &w.commits[r].kind) else { continue };
+        let (Some(h), Kind::Edge { role, until, may_grant, .. }) = (w.sets(r), &w.commits[r].kind) else { continue };
         let after = alive((*role, *until), w.commits[r].ts);
-        let after_inv = give_invite(after, *invite);
+        let after_grant = grantable(after, *may_grant);
         let exempt = if rules.exempt_chain { chain(w, &v.held, r) } else { Set::new() };
         for &j in &v.held {
             // its value as `j` needs it (`Until::Plain`: as at its own `ts`)
             let a = if rules.until == Until::Plain { after } else { alive((*role, *until), w.commits[j].ts) };
             let n = || need(w, rules, j, h, true);
-            let unmet = || !rules.seeds_by_need || !n().met(a, give_invite(a, *invite));
+            let unmet = || !rules.seeds_by_need || !n().met(a, grantable(a, *may_grant));
             // before it, or (`Until::PastEnd`) after it and past its end
-            let when = if w.key(j) < w.key(r) { unmet() } else { past_end(w, rules, r, j) && n().met(after, after_inv) && !n().met(a, give_invite(a, *invite)) };
+            let when = if w.key(j) < w.key(r) { unmet() } else { past_end(w, rules, r, j) && n().met(after, after_grant) && !n().met(a, grantable(a, *may_grant)) };
             if w.edge_class(j) && w.cid(j) != w.cid(r) && rests_on(w, rules, j, h) && !exempt.contains(&j) && !listed(w, v, r, j) && when {
                 d.entry(j).or_insert(r);
             }
@@ -1481,20 +1505,20 @@ fn first_applied(w: &World, p: &Pass, edges: &[Edge]) -> Option<Key> {
 /// §4 Chained writes, along the write's stated path, `until` disregarded).
 fn first_chained(w: &World, held: &Set, at: Role) -> BTreeMap<Edge, Key> {
     let mut max: BTreeMap<Edge, Role> = w.records.iter().map(|&e| (e, Role::Admin)).collect();
-    let mut inv: BTreeMap<Edge, Role> = w.records.iter().map(|&e| (e, Role::Admin)).collect();
+    let mut grants: BTreeMap<Edge, Role> = w.records.iter().map(|&e| (e, Role::Admin)).collect();
     let mut first: BTreeMap<Edge, Key> = w.records.iter().map(|&e| (e, (0, 0, 0))).collect();
     let get = |m: &BTreeMap<Edge, Role>, e: &Edge| m.get(e).copied().unwrap_or(Role::None);
     for i in order(w, held) {
         let hops = w.hops(i);
-        let (Some(e), Kind::Edge { role, invite, finalize, .. }) = (w.sets(i), &w.commits[i].kind) else { continue };
+        let (Some(e), Kind::Edge { role, may_grant, finalize, .. }) = (w.sets(i), &w.commits[i].kind) else { continue };
         // a self-removal and a finalize set no edge here (spec/permissions.md §4 Chained writes)
         if !w.well(i) || w.leave(i) || *finalize {
             continue;
         }
-        // by admin on its target, or by an invite there for an invite grant
+        // by admin on its target, or by may-grant there for a may-grant grant
         let admin = hops.iter().all(|h| get(&max, h) == Role::Admin);
-        let invited = invite_grant(w, i).is_some_and(|lvl| hops.split_last().is_some_and(|(l, b)| get(&inv, l) >= lvl && b.iter().all(|h| get(&max, h) >= lvl)));
-        if !admin && !invited {
+        let flagged = flag_grant(w, i).is_some_and(|r| hops.split_last().is_some_and(|(l, b)| get(&grants, l) >= r && b.iter().all(|h| get(&max, h) >= r)));
+        if !admin && !flagged {
             continue;
         }
         if *role >= at {
@@ -1502,8 +1526,8 @@ fn first_chained(w: &World, held: &Set, at: Role) -> BTreeMap<Edge, Key> {
         }
         let m = max.entry(e).or_insert(Role::None);
         *m = (*m).max(*role);
-        let m = inv.entry(e).or_insert(Role::None);
-        *m = (*m).max(give_invite(*role, *invite));
+        let m = grants.entry(e).or_insert(Role::None);
+        *m = (*m).max(grantable(*role, *may_grant));
     }
     first
 }
@@ -1548,7 +1572,7 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
             // an own cover stands while an explicit lowering by its writer naming it applies,
             // whatever it takes from its edge where this node holds it, its path having given the
             // role just before it (§5.2 Own cover)
-            let lowering = |l: Id| w.lowers(l).is_some() && !w.leave(l) && !p.invited.contains(&l);
+            let lowering = |l: Id| w.lowers(l).is_some() && !w.leave(l) && !p.by_flag.contains(&l);
             if rules.own_cover
                 && w.commits[i].own
                 && hops.iter().all(|&e| role_at(w, p, e, pos) >= Role::Write)
@@ -1724,11 +1748,11 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
         let fin = finals(&wk.pass);
         let mut rd = Reading {
             lowered: wk.pass.lows.iter().map(|l| l.id).collect(),
-            invited: wk.pass.invited.clone(),
+            by_flag: wk.pass.by_flag.clone(),
             valid,
             purged,
             copied,
-            invites: fin.iter().map(|(&e, &r)| (e, give_invite(r, wk.pass.inv.get(&e).copied().unwrap_or(Role::None)))).collect(),
+            grantable: fin.iter().map(|(&e, &r)| (e, grantable(r, wk.pass.flag.get(&e).copied().unwrap_or(false)))).collect(),
             roles: fin,
             hist: wk.pass.hist.clone(),
             cuts: wk.pass.lows.iter().filter(|l| l.explicit && l.before >= Role::Write && l.after < Role::Write).map(|l| (l.edge, w.key(l.id))).collect(),
@@ -1769,7 +1793,7 @@ fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
 
 /// Disputes: the candidates (`Candidates`: held edge writes of another holder's edge giving it
 /// below admin at their `ts`, but finalizes; under `Candidates::Explicit` no self-removal and none
-/// applied as an invite grant where trusted), not trusted and not dropped by a trusted write's
+/// applied as a may-grant grant where trusted), not trusted and not dropped by a trusted write's
 /// seeds, whose trust changes the reading (what applies, what is valid, the roles).
 /// spec/permissions.md §5.1 asks instead that the walk not apply it, that it apply once trusted and
 /// lower its edge (finding 21); a removal that applies but whose reach-back the walk cannot undo
@@ -1796,7 +1820,7 @@ pub fn disputes_by(w: &World, rules: &Rules, v: &View, differs: impl Fn(&Reading
             continue;
         }
         let t = judge(w, rules, &v.clone().trusting_also(r));
-        if explicit && t.invited.contains(&r) {
+        if explicit && t.by_flag.contains(&r) {
             continue;
         }
         if differs(&t, &rd) {

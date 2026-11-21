@@ -208,7 +208,7 @@ fn f15_a_writers_finalizes_and_an_inviters_grants_are_chained_and_copied() {
     // an inviter's invite grants onto a holder with a current grant apply nowhere and are chained
     let invites = |n: u32| {
         let (mut w, [x, _, k, q]) = base();
-        w.write(x, |p| p.push(X, 1, &[], A, paths::Kind::set(K, Role::Write).inviting(Role::Write)));
+        w.write(x, |p| p.push(X, 1, &[], A, paths::Kind::set(K, Role::Write).may_grant()));
         w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
         for i in 0..n {
             w.write(k, |p| p.push(K, 2 + i, &[], A, paths::Kind::set(Q, Role::Read)));

@@ -12,7 +12,7 @@ pub const Z: Thing = 6;
 pub const N6: Thing = 7;
 /// The mint admin of A in `Setup::mint` worlds, who leaves A.
 pub const M: Thing = 8;
-/// A guest X invites to read T1 through A2 (`Setup::x_a2` 1, 2, 5): an invite grant.
+/// A guest X invites to read T1 through A2 (`Setup::x_a2` 1, 2, 5): a may-grant grant.
 pub const G: Thing = 9;
 pub const A: Thing = 10;
 pub const A2: Thing = 11;
@@ -21,10 +21,14 @@ pub const T1: Thing = 13;
 pub const T2: Thing = 14;
 /// A dependent of T1 (minted with it, in T1's unit): written by descent.
 pub const D1: Thing = 15;
-/// A holder of admin on D1 (H's grant), writing T2 through D1, which holds write on T2 inviting
-/// read (J invites RD2): a reader of T2 holds D1's edges on J's path as evidence and not A's
-/// direct grant on D1.
+/// A holder of admin on D1 (H's grant), writing T2 through D1, which holds write on T2 with the
+/// may-grant flag (J invites RD2): a reader of T2 holds D1's edges on J's path as evidence and not
+/// A's direct grant on D1.
 pub const J: Thing = 16;
+/// A2's guests (minted with A2), holding read with the may-grant flag on T1 where X writes A2
+/// (`Setup::x_a2` 1, 2): the arrangement letting a writer of A2 add readers of T1 and no more
+/// (notes/write-path-design.md §1 G3), reached from A2 by descent.
+pub const GU: Thing = 17;
 /// Readers outside A (nodes, not signers): holding only T1 and D1, only T2 (part of the evidence).
 pub const RD: Thing = 20;
 pub const RD2: Thing = 21;
@@ -50,7 +54,7 @@ pub fn account() -> World {
 
 /// As `account`, A minted by `mint`.
 pub fn minted_by(mint: Thing) -> World {
-    World::new(&[(mint, A), (K, A2), (A, ORG), (ORG, T2), (A, T1), (T1, D1)])
+    World::new(&[(mint, A), (K, A2), (A, ORG), (ORG, T2), (A, T1), (T1, D1), (A2, GU)])
 }
 
 /// One world of the family (`Sim::build`).
@@ -78,8 +82,10 @@ pub struct Setup {
     /// 0: X holds nothing on A2; 1: write on A2; 2: write, and K removes it as H does; 3: admin
     /// on A2, and A2 admin on T1 (X administers T1 through A2 for good); 4: as 3, and B removes A2
     /// from T1 at the removal's tick, stating [A] (a removal of more than one hop); 5: as 1 but A2
-    /// admin on T1, X's invite of G at 4, and B demoting A2 on T1 to write inviting read at the
-    /// removal's tick, stating [A] (a kiosk: a holder kept at write, its invites kept).
+    /// admin on T1, X's invite of G through [A2] at 4, and B demoting A2 on T1 to write with the
+    /// flag at the removal's tick, stating [A] (a kiosk: a holder kept at write, the grants made
+    /// by it kept). In 1 and 2, A2's share carries no flag and GU's does: X invites through
+    /// [A2, GU].
     pub x_a2: u8,
     /// B sides with X's removal of H until its user switches at `AFTER`.
     pub b_side_x: bool,
@@ -107,9 +113,10 @@ pub struct Move {
 /// key of N5, removed by X before the theft (`Setup::n5` 3); 31 is X's twin of that removal; 32 is
 /// X removing A from T1 by [A2] (where it administers T1 through A2); 33 and 34 are X's own edge
 /// set timed by itself (admin until the tick after its `ts`; write until after the story); 35 to 37
-/// are invite grants through A2 (where X writes A2, its share on T1 inviting read): Z invited at
-/// write (beyond the invite), at read, and at read until the next tick, finalized by X then and
-/// invited again; 38 to 40 are purge requests by author: by A on T1 along [A], by A2 on T1 along
+/// are may-grant grants through A2's arrangement (where X writes A2: [A2, GU], GU holding read with
+/// the flag; [A2] in the kiosk's world): Z invited beyond it (at write through [A2, GU], and at
+/// read through [A2] whose share carries no flag), at read, and at read until the next tick,
+/// finalized by X then and invited again; 38 to 40 are purge requests by author: by A on T1 along [A], by A2 on T1 along
 /// [A2] (X's right where it keeps writing A2), by A on T1 along [A2] (an author not on its chain: no
 /// right); 41 withholds the removal from K until the settle and writes T1 after it, which K
 /// receives at once and compacts T1 carrying (an honest writer compacting before it holds the
@@ -158,11 +165,13 @@ pub struct Sim {
     pub r2: Option<Id>,
     /// B's removal of A2 from T1 by [A] (`Setup::x_a2` 4).
     pub r3: Option<Id>,
-    /// B's demotion of A2 on T1 to write inviting read by [A] (`Setup::x_a2` 5).
+    /// B's demotion of A2 on T1 to write with the flag by [A] (`Setup::x_a2` 5).
     pub kiosk: Option<Id>,
     pub rx: Option<Id>,
     pub xfirst: Option<Id>,
     pub gs: Id,
+    /// GU's share of T1 (`Setup::x_a2` 1, 2).
+    pub gg: Option<Id>,
     pub g5: Option<Id>,
     pub xrole: Option<Id>,
     /// X's removal of N5 before the theft (`Setup::n5` 3), N5's grant of write on T1 to B before
@@ -171,7 +180,7 @@ pub struct Sim {
     pub gb5: Option<Id>,
     pub gh: Option<Id>,
     pub gx: Id,
-    /// X's invite of G to read T1 through A2 (`Setup::x_a2` 1, 2, 5).
+    /// X's invite of G to read T1 through A2's arrangement (`Setup::x_a2` 1, 2, 5).
     pub gi: Option<Id>,
     /// Move 46: K compacts T1 at this tick, not yet holding the removal.
     cover_by_k: Option<(u32, Id)>,
@@ -199,6 +208,16 @@ fn role_path(n: Thing, on: Thing) -> Option<Vec<Thing>> {
         (H | B | X | N5 | Z | M, T1 | ORG) => Some(vec![A]),
         (H | B | X | N5 | Z, T2) => Some(vec![A, ORG]),
         _ => None,
+    }
+}
+
+/// The path X's may-grant grants on T1 state where it writes A2 (`Setup::x_a2` 1, 2, 5): through
+/// GU, the arrangement holding read with the flag; in the kiosk's world through A2 itself.
+pub fn x_route(s: &Setup) -> &'static [Thing] {
+    if s.x_a2 == 5 {
+        &[A2]
+    } else {
+        &[A2, GU]
     }
 }
 
@@ -304,7 +323,7 @@ impl Sim {
         sync.insert(RD3, Things::from([T1, D1]));
         sync.insert(J, Things::from([D1, T2]));
         let w = if s.mint > 0 { minted_by(M) } else { account() };
-        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, kiosk: None, rx: None, xfirst: None, gs: 0, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, gi: None, cover_by_k: None, unaware: Set::new(), smuggled: Set::new(), thief: BTreeMap::new(), logged: BTreeMap::new(), sided: Default::default() };
+        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, kiosk: None, rx: None, xfirst: None, gs: 0, gg: None, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, gi: None, cover_by_k: None, unaware: Set::new(), smuggled: Set::new(), thief: BTreeMap::new(), logged: BTreeMap::new(), sided: Default::default() };
         let grant = Kind::set;
         if s.mint > 0 {
             m.gh = Some(m.put((M, 0, &[], A, grant(H, Role::Admin)), 0, rng, false));
@@ -323,13 +342,13 @@ impl Sim {
             m.put((M, 3, &[A], T1, Kind::Content), 3, rng, false);
         }
         // A, two steps up D1's mint chain, holds a direct grant on D1 too; J holds admin on D1 and
-        // writes T2 through D1, which holds write there
+        // writes T2 through D1, which holds write there with the flag
         // (by [A, T1]: a path ending at A, the holder, is a self-removal's)
         m.put((H, 1, &[A, T1], D1, grant(A, Role::Admin)), 1, rng, false);
         m.put((H, 1, &[A], D1, grant(J, Role::Admin)), 1, rng, false);
-        m.put((H, 1, &[A, ORG], T2, grant(D1, Role::Write).inviting(Role::Read)), 1, rng, false);
+        m.put((H, 1, &[A, ORG], T2, grant(D1, Role::Write).may_grant()), 1, rng, false);
         m.put((J, 3, &[D1], T2, Kind::Content), 3, rng, false);
-        // J invites RD2 to read T2 by D1's invite: an edge-class write resting on (D1, T2)
+        // J invites RD2 to read T2 by D1's flag: an edge-class write resting on (D1, T2)
         m.put((J, 3, &[D1], T2, grant(RD2, Role::Read)), 3, rng, false);
         // B removes J from D1 by [A] at 4 (a descent of two steps); J writes T2 after it, and at 10
         // makes D1 leave T2 (an honest holder thing's leave)
@@ -338,12 +357,15 @@ impl Sim {
         m.put((J, 5, &[D1], T2, Kind::Content), 5, rng, false);
         m.put((J, 10, &[D1], T2, grant(D1, Role::None)), 10, rng, false);
         let sharer = if s.sharer_x { X } else { B };
-        m.gs = m.put((sharer, 2, &[A], T1, grant(A2, a2).inviting(Role::Read)), 2, rng, false);
+        m.gs = m.put((sharer, 2, &[A], T1, grant(A2, a2)), 2, rng, false);
+        if matches!(s.x_a2, 1 | 2) {
+            m.gg = Some(m.put((sharer, 2, &[A], T1, grant(GU, Role::Read).may_grant()), 2, rng, false));
+        }
         if matches!(s.x_a2, 1 | 2 | 5) {
-            // an invite grant: X's path [A2] gives write on A2 and A2's invite on T1 (at 4 for the
-            // kiosk, which an offline B receives only at the settle)
+            // a may-grant grant: X's path gives write on A2, and GU's read with the flag on T1
+            // (A2's admin at 4 for the kiosk, which an offline B receives only at the settle)
             let t = if s.x_a2 == 5 { 4 } else { 2 };
-            m.gi = Some(m.put((X, t, &[A2], T1, grant(G, Role::Read)), t, rng, false));
+            m.gi = Some(m.put((X, t, x_route(&s), T1, grant(G, Role::Read)), t, rng, false));
         }
         if s.n5 >= 3 {
             let g = m.put((H, 1, &[], A, grant(N5, Role::Admin)), 1, rng, false);
@@ -509,7 +531,7 @@ impl Sim {
         let at = |e: Edge| b.state.get(&e).is_some_and(|&v| alive(v, REMOVAL) == Role::Admin);
         if self.setup.x_a2 == 5 && at((B, A)) && at((A2, T1)) {
             let all = self.w.through((A2, T1), |i| self.got(i, B, REMOVAL - 1));
-            let k = self.put((B, REMOVAL, &[A], T1, Kind::set(A2, Role::Write).inviting(Role::Read).listing(self.w.cut(&all))), REMOVAL, rng, false);
+            let k = self.put((B, REMOVAL, &[A], T1, Kind::set(A2, Role::Write).may_grant().listing(self.w.cut(&all))), REMOVAL, rng, false);
             self.kiosk = Some(k);
             self.stand(B, k, &all, rules);
         }
@@ -626,7 +648,7 @@ impl Sim {
     }
     /// At `AFTER` (`Setup::regrant`) H grants N5 again and B grants A2 write on T1 again, after
     /// the answers written before: an honest explicit write carries its author's frontier
-    /// (spec/permissions.md §5.1 step 4), a re-grant included, and keeps the invite the share had.
+    /// (spec/permissions.md §5.1 step 4), a re-grant included, and keeps the flag the share had.
     fn regrants(&mut self, rng: &mut Rng) {
         let s = self.setup;
         if !s.regrant {
@@ -638,7 +660,8 @@ impl Sim {
             self.put((H, AFTER, &[], A, grant(N5, Role::Admin).listing(f)), AFTER, rng, false);
         }
         let f = self.w.cut(&self.w.through((A2, T1), |i| self.got(i, B, AFTER)));
-        self.put((B, AFTER, &[A], T1, grant(A2, Role::Write).inviting(Role::Read).listing(f)), AFTER, rng, false);
+        let g = if s.x_a2 == 5 { grant(A2, Role::Write).may_grant() } else { grant(A2, Role::Write) };
+        self.put((B, AFTER, &[A], T1, g.listing(f)), AFTER, rng, false);
     }
     /// One move of the thief: any `ts`, any path, as X, as the made-up key Z or as N5 (removed
     /// earlier). A move made at tick 5 (`early`) reaches H and B by then.
@@ -735,22 +758,27 @@ impl Sim {
             return;
         }
         if (35..38).contains(&mv.kind) {
-            // where X writes A2 (and K may remove it): invites of Z through A2
+            // where X writes A2 (and K may remove it): may-grant grants of Z through A2's
+            // arrangement
             if !matches!(self.setup.x_a2, 1 | 2 | 5) {
                 return;
             }
-            let ts = mv.ts;
+            let (ts, route) = (mv.ts, x_route(&self.setup));
             match mv.kind {
                 35 => {
-                    self.put((X, ts, &[A2], T1, grant(Z, Role::Write)), mv.made, rng, true);
+                    self.put((X, ts, route, T1, grant(Z, Role::Write)), mv.made, rng, true);
+                    if route != [A2] {
+                        // beyond it the other way: A2's own share carries no flag
+                        self.put((X, ts, &[A2], T1, grant(Z, Role::Read)), mv.made, rng, true);
+                    }
                 }
                 36 => {
-                    self.put((X, ts, &[A2], T1, grant(Z, Role::Read)), mv.made, rng, true);
+                    self.put((X, ts, route, T1, grant(Z, Role::Read)), mv.made, rng, true);
                 }
                 _ => {
-                    self.put((X, ts, &[A2], T1, grant(Z, Role::Read).until(ts + 1)), mv.made, rng, true);
-                    self.put((X, ts + 1, &[A2], T1, Kind::finalize(Z)), mv.made, rng, true);
-                    self.put((X, ts + 2, &[A2], T1, grant(Z, Role::Read)), mv.made, rng, true);
+                    self.put((X, ts, route, T1, grant(Z, Role::Read).until(ts + 1)), mv.made, rng, true);
+                    self.put((X, ts + 1, route, T1, Kind::finalize(Z)), mv.made, rng, true);
+                    self.put((X, ts + 2, route, T1, grant(Z, Role::Read)), mv.made, rng, true);
                 }
             }
             return;
@@ -930,7 +958,7 @@ impl Sim {
                     let rd = (!tie).then(|| judge(w, rules, &View { held: before.clone(), leaves: Some(self.leaves(n, &before, rules)), trust: trust.clone() }));
                     for (r, late) in cands {
                         // its reading applied it (variant `Lowered`: and it took its hop down there)
-                        let took = |rd: &Reading| !rd.invited.contains(&r) && if rules.sides == Sides::Lowered { rd.lowered.contains(&r) } else { rd.applied.contains(&r) };
+                        let took = |rd: &Reading| !rd.by_flag.contains(&r) && if rules.sides == Sides::Lowered { rd.lowered.contains(&r) } else { rd.applied.contains(&r) };
                         let stood = match &rd {
                             _ if rules.sides == Sides::Unapplied => true,
                             Some(rd) => took(rd),
@@ -946,9 +974,9 @@ impl Sim {
             // F1: its own, a choice (F4)
             if rules.sides != Sides::NoOwn {
                 let mut own: Vec<Id> = new.iter().copied().filter(|&r| self.own(n, r, rules) && explicit(r)).collect();
-                if own.iter().any(|&r| invite_grant(w, r).is_some()) {
+                if own.iter().any(|&r| flag_grant(w, r).is_some()) {
                     let rd = judge(w, rules, &View { trust: trust.clone(), ..v_now.clone() });
-                    own.retain(|r| !rd.invited.contains(r));
+                    own.retain(|r| !rd.by_flag.contains(r));
                 }
                 for r in own {
                     trust = choose(w, rules, &View { trust, ..v_now.clone() }, r).trust;
@@ -1193,16 +1221,16 @@ pub fn shrink(spec: &Spec, rules: &Rules, prop: &str) -> Spec {
 }
 
 pub fn trace(m: &Sim) -> String {
-    let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6", "M", "G", "A", "A2", "ORG", "T1", "T2", "D1", "J"].get(*t as usize).copied().unwrap_or("?");
+    let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6", "M", "G", "A", "A2", "ORG", "T1", "T2", "D1", "J", "GU"].get(*t as usize).copied().unwrap_or("?");
     let mut s = String::new();
     for (i, c) in m.w.commits.iter().enumerate() {
         let path: Vec<&str> = c.path.iter().map(name).collect();
         let kind = match &c.kind {
             Kind::Content => "content".to_string(),
-            Kind::Edge { holder, role, until, frontier, invite, finalize } => {
+            Kind::Edge { holder, role, until, frontier, may_grant, finalize } => {
                 let mut k = format!("{} := {role:?}", name(holder));
-                if *invite > Role::None {
-                    k += &format!(" invite {invite:?}");
+                if *may_grant {
+                    k += " may grant";
                 }
                 if *finalize {
                     k += " finalize";
@@ -1234,9 +1262,9 @@ pub fn rebuild(w: &World, keep: &[Id]) -> (World, BTreeMap<Id, Id>) {
     for &i in keep {
         let c = &w.commits[i];
         let kind = match &c.kind {
-            Kind::Edge { holder, role, until, frontier, invite, finalize } => {
+            Kind::Edge { holder, role, until, frontier, may_grant, finalize } => {
                 let f = frontier.iter().map(|(t, l)| (*t, ids(l))).collect();
-                Kind::Edge { holder: *holder, role: *role, until: *until, frontier: f, invite: *invite, finalize: *finalize }
+                Kind::Edge { holder: *holder, role: *role, until: *until, frontier: f, may_grant: *may_grant, finalize: *finalize }
             }
             Kind::Addendum { removal, list } => Kind::Addendum { removal: map[removal], list: ids(list) },
             Kind::Content => Kind::Content,
@@ -1289,7 +1317,7 @@ pub fn one_reading_relabelled(w: &World, rules: &Rules, v: &View, rd: &Reading) 
 }
 
 /// Whether the reading without `x` held observes what `rd` does, `x` aside (`Reading::observed`:
-/// roles over time, invites, valid and purged content), and whether it applies the same
+/// roles over time, what each may grant, valid and purged content), and whether it applies the same
 /// edge-class commits (counted, not a property: finding 33).
 pub fn no_effect(w: &World, rules: &Rules, v: &View, rd: &Reading, x: Id) -> (bool, bool) {
     let (seen, same, _) = no_effect_of(w, rules, v, rd, &[x]);
@@ -1297,7 +1325,7 @@ pub fn no_effect(w: &World, rules: &Rules, v: &View, rd: &Reading, x: Id) -> (bo
 }
 
 /// As `no_effect`, the writes `xs` (one commit's parts) taken out together, and whether what each
-/// holder can do (roles over time, invites, cuts) is the same, content aside.
+/// holder can do (roles over time, what it may grant, cuts) is the same, content aside.
 pub fn no_effect_of(w: &World, rules: &Rules, v: &View, rd: &Reading, xs: &[Id]) -> (bool, bool, bool) {
     let o = judge(w, rules, &v.clone().without(xs));
     let less = |s: &Set| s.iter().copied().filter(|i| !xs.contains(i)).collect::<Set>();
@@ -1305,7 +1333,7 @@ pub fn no_effect_of(w: &World, rules: &Rules, v: &View, rd: &Reading, xs: &[Id])
     for s in [&mut a.valid, &mut a.copied, &mut a.purged] {
         *s = less(s);
     }
-    let roles = a.roles == b.roles && a.invites == b.invites && a.timeline == b.timeline && a.cuts == b.cuts;
+    let roles = a.roles == b.roles && a.grantable == b.grantable && a.timeline == b.timeline && a.cuts == b.cuts;
     (a == b, o.applied == less(&rd.applied), roles)
 }
 
@@ -1327,7 +1355,7 @@ pub fn idle(w: &World, v: &View, rd: &Reading) -> Vec<Vec<Id>> {
 /// changes what users observe, whether the reading then shows a dispute (`disputes`, computed once
 /// and only where some commit has an effect), and whether it changes which writes apply (nobody
 /// sees that: finding 33). `kind`: `void` (a void lowering among its parts), `unapplied` (a lowering
-/// among them), else `idle` (grants, invite grants, finalizes, self-removals).
+/// among them), else `idle` (grants, may-grant grants, finalizes, self-removals).
 pub struct Effect {
     pub id: Id,
     pub parts: Vec<Id>,
@@ -1411,7 +1439,7 @@ pub fn fight_among(w: &World, rules: &Rules, v: &View, rd: &Reading, parts: &[Id
 /// writes apply differs). Failing, `idle gains`: an unshown effect making a commit of the thief's
 /// show that is signed by a key that never legitimately held the right (Z, N5's after its removal)
 /// and that holds no right by a path X keeps (`by_right`, safety's own reading: Z invited by X
-/// through A2 writes by that invite), at any node, or, at a node trusting the removal, made by X
+/// through A2 writes by that grant), at any node, or, at a node trusting the removal, made by X
 /// after it through A.
 #[allow(clippy::too_many_arguments)]
 fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bool, quiet: bool, relabel: bool, by_right: &dyn Fn(Id) -> bool, m: &Sim, st: &mut Stats) {
@@ -1460,7 +1488,7 @@ fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bo
                 let c = &w.commits[i];
                 let late = m.made[i] >= w.commits[m.r].ts;
                 let (bad, key) = match (c.signer, c.path.first() == Some(&A2)) {
-                    // a key holding its write by a path X keeps (an invite through A2) gains
+                    // a key holding its write by a path X keeps (a may-grant grant through A2) gains
                     // nothing it did not hold: the effect only moves which content counts
                     (Z | N5, _) if by_right(i) => (false, if t { "thief gains T by right" } else { "thief gains N by right" }),
                     (Z | N5, _) => (true, ""),
@@ -1591,14 +1619,15 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         _ => false,
     };
     let x_keeps_a2 = matches!(s.x_a2, 1 | 3 | 4 | 5);
-    // what X, writing A2 for good, invites on T1 through A2 by right: read where A2's share
-    // invites read (the kiosk's from its demotion on), write where the kiosk's share stays admin
-    let x_invites = match s.x_a2 {
+    // what X, writing A2 for good, may grant on T1 through A2's arrangement by right: read
+    // through GU; write in the kiosk's world (A2 admin there, then write with the flag)
+    let x_grants = match s.x_a2 {
         1 => Role::Read,
-        5 if m.kiosk.is_some() => Role::Read,
         5 => Role::Write,
         _ => Role::None,
     };
+    // the share X's may-grant grants rest on
+    let x_share = if s.x_a2 == 5 { Some(m.gs) } else { m.gg };
     // through A2 on T1 where B removed A2 from T1: what B's removal lists, or a writer of T1
     // received by then, or the path re-granted
     let in_r3 = |i: Id| m.r3.is_some_and(|r3| w.in_frontier(r3, i));
@@ -1623,10 +1652,11 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         (c.signer == X && x_keeps_a2 && c.path == [A2] && !matches!(c.kind, Kind::Edge { .. }) && !(m.r3.is_some() && !(s.regrant && b_admin) && [T1, D1].contains(&c.on)))
             // X leaving A by itself: a self-removal is always open to the holder, and takes nothing X still holds
             || (w.leave(i) && w.sets(i) == Some((X, A)))
-            // X inviting (or finalizing) at read through A2, which it keeps writing, by A2's invite
-            || (c.signer == X && x_invites > Role::None && c.path == [A2] && matches!(c.kind, Kind::Edge { role, .. } if role <= x_invites))
-            // Z writing T1 by X's invite at write, where that is X's right
-            || (c.signer == Z && x_invites >= Role::Write && c.on == T1 && c.path.is_empty() && matches!(c.kind, Kind::Content))
+            // X granting (or finalizing) through A2's arrangement, which it keeps writing, up to
+            // what the arrangement gives
+            || (c.signer == X && x_grants > Role::None && c.path == x_route(&s) && matches!(c.kind, Kind::Edge { role, .. } if role <= x_grants))
+            // Z writing T1 by X's grant of write, where that is X's right
+            || (c.signer == Z && x_grants >= Role::Write && c.on == T1 && c.path.is_empty() && matches!(c.kind, Kind::Content))
     };
     let safety = |n: Thing, v: &View, rd: &Reading, prop: &'static str, late: bool, st: &mut Stats| {
         // what it holds, and what the covers it holds carry
@@ -1647,8 +1677,8 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             let x_holds = e.0 == X && (e.1 == A || (e.1 == A2 && !x_keeps_a2));
             // N5, removed before the theft, stays removed
             let n5_holds = n5_out && *e == (N5, A);
-            // Z invited to read T1 through A2 by X, which keeps writing A2: X's right
-            let z_by_right = *e == (Z, T1) && *r <= x_invites;
+            // Z granted on T1 through A2's arrangement by X, which keeps writing A2: X's right
+            let z_by_right = *e == (Z, T1) && *r <= x_grants;
             if *r > Role::None && ((e.0 == Z && !z_by_right) || x_holds || n5_holds) {
                 st.fail(prop, m, format!("node {n}: {e:?} ends {r:?}"));
             }
@@ -1727,14 +1757,14 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 // X's invite of G through A2 stands where the share it rests on does, and where
                 // K removed X from A2, by K's list or H's
                 Kind::Edge { .. } if Some(i) == m.gi => {
-                    (!s.sharer_x || in_r(m.gs)) && (x_invites > Role::None || m.r2.is_some_and(|r2| w.in_frontier(r2, i)) || in_r(i))
+                    (!s.sharer_x || x_share.is_some_and(in_r)) && (x_grants > Role::None || m.r2.is_some_and(|r2| w.in_frontier(r2, i)) || in_r(i))
                         // the kiosk's invite at 4 follows X's removal of A2 from T1 at 3
                         && !(s.x_a2 == 5 && x_removed_a2 && m.xrole.is_some_and(in_r))
                 }
                 // N5's grant to B, listed by X's removal of N5, stays: X's twin, heard before the
                 // removal, is kept and drops it
                 Kind::Edge { .. } if Some(i) == m.gb5 => !m.thief.iter().any(|(&t, &k)| k == 31 && m.made[t] < REMOVAL),
-                Kind::Edge { .. } if honest_now => c.signer == H || c.signer == K || i == m.gs || (m.made[i] == AFTER && b_admin),
+                Kind::Edge { .. } if honest_now => c.signer == H || c.signer == K || i == m.gs || Some(i) == m.gg || (m.made[i] == AFTER && b_admin),
                 // (a write X made before the removal stamped after it never applies)
                 Kind::Edge { .. } => in_r(i) && c.ts < REMOVAL && !m.lowers_remover(i) && !m.aims(i),
                 _ => false,
@@ -1998,8 +2028,9 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// walk gave it), `-once` (a node answers a removal only the first time its walk applies it),
 /// `-leave` (a self-removal is never put in question), `-key-order` (the remover keeps
 /// the role writes in key order), `-audit-applied` (the audit puts in question the applied
-/// writes before it, not the held ones), `-invite-role` (an invite grant needs only a role on its
-/// path's last edge), `-admin-falls` (only a fall from admin is judged and audits), `-purge-any-path`
+/// writes before it, not the held ones), `-no-flag` (a may-grant grant needs only a role on its
+/// path's last hop), `-last-hop` (only on its last hop), `-role-falls` (clearing the flag puts
+/// nothing in question), `-admin-falls` (only a fall from admin is judged and audits), `-purge-any-path`
 /// (a purge request holds the author right wherever its path gives write), `-purge-contains` (a
 /// request by author matches every delta whose chain holds that author); the variants `-facts`
 /// (a carried write judged by its own facts, not shown by a cover's copy: not the design),
@@ -2014,7 +2045,7 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
     let rest = mode.strip_prefix("paths").unwrap_or(mode);
-    let rest = rest.strip_prefix("-exh").or_else(|| rest.strip_prefix("-tiny-invites")).or_else(|| rest.strip_prefix("-tiny-detached")).or_else(|| rest.strip_prefix("-tiny")).unwrap_or(rest);
+    let rest = rest.strip_prefix("-exh").or_else(|| rest.strip_prefix("-tiny-flags")).or_else(|| rest.strip_prefix("-tiny-detached")).or_else(|| rest.strip_prefix("-tiny")).unwrap_or(rest);
     let rest = rest.strip_prefix("-honest-writers").or_else(|| rest.strip_prefix("-honest")).unwrap_or(rest);
     Some(match rest {
         "" => f,
@@ -2039,7 +2070,9 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-leave" => Rules { leave_in_question: false, ..f },
         "-audit-applied" => Rules { audit_held: false, ..f },
         "-key-order" => Rules { key_order: true, ..f },
-        "-invite-role" => Rules { invite_check: false, ..f },
+        "-no-flag" => Rules { flag_check: false, ..f },
+        "-last-hop" => Rules { min_check: false, ..f },
+        "-role-falls" => Rules { flag_falls: false, ..f },
         "-admin-falls" => Rules { any_fall: false, ..f },
         "-purge-any-path" => Rules { purge_chain: false, ..f },
         "-purge-contains" => Rules { purge_exact: false, ..f },
@@ -2110,20 +2143,22 @@ fn tiny_commit(w: &mut World, rng: &mut Rng, n: usize, part: impl Fn(Thing, &mut
     }
 }
 
-/// A small world of invites on A (H its mint): as `tiny`, each write setting admin, none, write
-/// inviting write (standing or until two ticks on), or read, or finalizing its holder's grant. A
-/// writer holding an invite grants as an invite grant; a lowering from write or of the invite is
-/// judged (notes/path-model-findings.md 23).
-pub fn tiny_invites(i: u64, n: usize) -> World {
+/// A small world of may-grant on A (H its mint): as `tiny`, each write setting admin, none, write
+/// or read with the may-grant flag or without (write with it also until two ticks on), or
+/// finalizing its holder's grant. A writer holding the flag grants as a may-grant grant; a
+/// lowering in role or of the flag is judged (notes/write-path-design.md §1 G1 to G5).
+pub fn tiny_flags(i: u64, n: usize) -> World {
     let mut rng = Rng::thread(0x1271, i as usize);
     let mut w = account();
     for _ in 0..n {
-        tiny_commit(&mut w, &mut rng, n, |h, rng, ts| match rng.below(6) {
+        tiny_commit(&mut w, &mut rng, n, |h, rng, ts| match rng.below(8) {
             0 => Kind::set(h, Role::Admin),
             1 => Kind::set(h, Role::None),
-            2 => Kind::set(h, Role::Write).inviting(Role::Write),
+            2 => Kind::set(h, Role::Write).may_grant(),
             3 => Kind::set(h, Role::Read),
-            4 => Kind::set(h, Role::Write).inviting(Role::Write).until(ts + 2),
+            4 => Kind::set(h, Role::Write).may_grant().until(ts + 2),
+            5 => Kind::set(h, Role::Write),
+            6 => Kind::set(h, Role::Read).may_grant(),
             _ => Kind::finalize(h),
         });
     }
@@ -2196,24 +2231,24 @@ pub struct Tiny {
     pub recv: Vec<Vec<Id>>,
 }
 
-/// Which small worlds: `tiny`, `tiny_invites` or `tiny_detached`, and how honest their writers
+/// Which small worlds: `tiny`, `tiny_flags` or `tiny_detached`, and how honest their writers
 /// are.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TinyMode {
-    pub invites: bool,
+    pub flags: bool,
     pub detached: bool,
     pub honest: Honesty,
 }
 
 impl TinyMode {
-    /// The mode a `paths-tiny[-invites|-detached][-honest[-writers]]` name gives.
+    /// The mode a `paths-tiny[-flags|-detached][-honest[-writers]]` name gives.
     pub fn named(mode: &str) -> TinyMode {
-        let invites = mode.starts_with("paths-tiny-invites");
+        let flags = mode.starts_with("paths-tiny-flags");
         let detached = mode.starts_with("paths-tiny-detached");
         let rest = mode.strip_prefix("paths-tiny").unwrap_or("");
-        let rest = rest.strip_prefix(if invites { "-invites" } else if detached { "-detached" } else { "" }).unwrap_or(rest);
+        let rest = rest.strip_prefix(if flags { "-flags" } else if detached { "-detached" } else { "" }).unwrap_or(rest);
         let honest = if rest.starts_with("-honest-writers") { Honesty::Writers } else if rest.starts_with("-honest") { Honesty::Lists } else { Honesty::None };
-        TinyMode { invites, detached, honest }
+        TinyMode { flags, detached, honest }
     }
 }
 
@@ -2232,11 +2267,11 @@ pub enum Honesty {
     Writers,
 }
 
-/// Tiny world `i` (`n` from 3 to 12 writes; `tiny_invites` or `tiny`) and its view: every commit
+/// Tiny world `i` (`n` from 3 to 12 writes; `tiny_flags`, `tiny_detached` or `tiny`) and its view: every commit
 /// held; trusting nothing, or (every third world) one held lowering.
 pub fn tiny_world(i: u64, mode: TinyMode, rules: &Rules) -> Tiny {
     let n = 3 + (i % 10) as usize;
-    let mut w = if mode.invites { tiny_invites(i, n) } else if mode.detached { tiny_detached(i, n) } else { tiny(i, n) };
+    let mut w = if mode.flags { tiny_flags(i, n) } else if mode.detached { tiny_detached(i, n) } else { tiny(i, n) };
     let mut recv: Vec<Vec<Id>> = (0..w.commits.len()).map(|k| (0..w.cid(k)).collect()).collect();
     if mode.honest != Honesty::None {
         let mut rng = Rng::thread(0x4e57, i as usize);
@@ -2468,7 +2503,7 @@ pub fn shrink_world(t: &Tiny, fails: &dyn Fn(&Tiny) -> bool) -> Tiny {
     }
 }
 
-/// `-- N paths-tiny[-invites|-detached][-honest[-writers]][-variant]`: N small worlds.
+/// `-- N paths-tiny[-flags|-detached][-honest[-writers]][-variant]`: N small worlds.
 pub fn tiny_run(n: u64, rules: &Rules, mode: TinyMode) -> TinyStats {
     tiny_run_from(0, n, rules, mode)
 }
@@ -2506,8 +2541,8 @@ pub fn tiny_trace(w: &World) -> String {
     let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6"].get(*t as usize).copied().unwrap_or("?");
     let mut s = String::new();
     for (i, c) in w.commits.iter().enumerate() {
-        if let Kind::Edge { holder, role, frontier, until, invite, finalize } = &c.kind {
-            let what = if *finalize { "finalize".to_string() } else { format!("{role:?}{}{}", if *invite > Role::None { format!(" invite {invite:?}") } else { String::new() }, until.map_or(String::new(), |u| format!(" until {u}"))) };
+        if let Kind::Edge { holder, role, frontier, until, may_grant, finalize } = &c.kind {
+            let what = if *finalize { "finalize".to_string() } else { format!("{role:?}{}{}", if *may_grant { " may grant" } else { "" }, until.map_or(String::new(), |u| format!(" until {u}"))) };
             let part = if w.parts(c.cid) > 1 { format!(" (commit {})", c.cid) } else { String::new() };
             s += &format!("  {i}: {} ts {}{part}: {} := {what} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
         }
@@ -2516,7 +2551,7 @@ pub fn tiny_trace(w: &World) -> String {
 }
 
 /// `-- N paths[-control]` (random worlds), `-- 0 paths-exh[-control]` (the small family),
-/// `-- N paths-tiny[-invites|-detached][-honest[-writers]][-control]` (small worlds); random and small worlds from
+/// `-- N paths-tiny[-flags|-detached][-honest[-writers]][-control]` (small worlds); random and small worlds from
 /// index `from` on (`-- N paths --from K`). Returns the failing checks.
 pub fn run(samples: u64, from: u64, mode: &str) -> u64 {
     // `-- N paths-purge[-variant]`: purge worlds (`purge_rules`; `paths-purge-any-path` and

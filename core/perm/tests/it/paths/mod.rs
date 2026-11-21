@@ -120,8 +120,9 @@ pub fn input(w: &World, v: &View) -> Input {
             let k = &w.commits[i];
             let seen = |t: &Thing| v.leaves.as_ref().is_none_or(|l| l.contains(t));
             let kind = match &k.kind {
-                Kind::Edge { holder, role: r, until, frontier, invite, finalize } => {
-                    let value = role(*r).map(|r| Edge { role: r, until: until.map(|u| WallMs(u as u64)), invite: role(*invite), retain: false, floor: None });
+                Kind::Edge { holder, role: r, until, frontier, may_grant, finalize } => {
+                    // the walk's invite level: the role itself where the model's grant carries the flag
+                    let value = role(*r).map(|v| Edge { role: v, until: until.map(|u| WallMs(u as u64)), invite: may_grant.then_some(v), retain: false, floor: None });
                     let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(t, l)| l.iter().map(|&j| (tid(*t), cid(w.cid(j)))));
                     let frontier = (!finalize).then(|| Arc::new(List::new(listed)));
                     // Interim (issues/last-admin-rule-in-perm-engine.md): the model has no
@@ -142,7 +143,7 @@ pub fn input(w: &World, v: &View) -> Input {
 
 fn model_status(rd: &Reading, i: Id) -> Status {
     if rd.applied.contains(&i) {
-        if rd.invited.contains(&i) { Status::Invited } else { Status::Applied }
+        if rd.by_flag.contains(&i) { Status::Invited } else { Status::Applied }
     } else if rd.dropped.contains(&i) {
         Status::Dropped
     } else if rd.voided.contains(&i) {
@@ -229,7 +230,7 @@ fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &mu
     if mine != model {
         return Some(format!("histories: model {model:?}, walk {mine:?}"));
     }
-    let finals: BTreeMap<(Tid, Tid), (Option<Role>, Option<Role>)> = rd.roles.iter().map(|(&(a, b), &r)| ((tid(a), tid(b)), (role(r), role(rd.invites[&(a, b)])))).collect();
+    let finals: BTreeMap<(Tid, Tid), (Option<Role>, Option<Role>)> = rd.roles.iter().map(|(&(a, b), &r)| ((tid(a), tid(b)), (role(r), role(rd.grantable[&(a, b)])))).collect();
     if finals != p.finals() {
         return Some(format!("finals: model {finals:?}, walk {:?}", p.finals()));
     }
@@ -288,15 +289,15 @@ pub fn agree_all(w: &World, trust: &[Id]) {
 }
 
 const MODES: [TinyMode; 9] = [
-    TinyMode { invites: false, detached: false, honest: Honesty::None },
-    TinyMode { invites: true, detached: false, honest: Honesty::None },
-    TinyMode { invites: false, detached: true, honest: Honesty::None },
-    TinyMode { invites: false, detached: false, honest: Honesty::Lists },
-    TinyMode { invites: true, detached: false, honest: Honesty::Lists },
-    TinyMode { invites: false, detached: true, honest: Honesty::Lists },
-    TinyMode { invites: false, detached: false, honest: Honesty::Writers },
-    TinyMode { invites: true, detached: false, honest: Honesty::Writers },
-    TinyMode { invites: false, detached: true, honest: Honesty::Writers },
+    TinyMode { flags: false, detached: false, honest: Honesty::None },
+    TinyMode { flags: true, detached: false, honest: Honesty::None },
+    TinyMode { flags: false, detached: true, honest: Honesty::None },
+    TinyMode { flags: false, detached: false, honest: Honesty::Lists },
+    TinyMode { flags: true, detached: false, honest: Honesty::Lists },
+    TinyMode { flags: false, detached: true, honest: Honesty::Lists },
+    TinyMode { flags: false, detached: false, honest: Honesty::Writers },
+    TinyMode { flags: true, detached: false, honest: Honesty::Writers },
+    TinyMode { flags: false, detached: true, honest: Honesty::Writers },
 ];
 
 /// Tiny worlds `start..start + n` of every kind; the failures, at most three.

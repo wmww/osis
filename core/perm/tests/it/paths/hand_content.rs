@@ -24,11 +24,12 @@ fn paired() -> (World, Id, Id) {
     (w, gx, gb)
 }
 
-/// The invite world of the model's tests: A2 (K's) shares T1 at write inviting read, by H
-/// through A; K gives X write on A2.
+/// The may-grant world of the model's tests: A2 (K's) shares T1 at write and GU holds read with
+/// the flag, by H through A; K gives X write on A2.
 fn invited() -> World {
     let mut w = account();
-    w.push(H, 1, &[A], T1, Kind::set(A2, Write).inviting(roles_model::Role::Read));
+    w.push(H, 1, &[A], T1, Kind::set(A2, Write));
+    w.push(H, 1, &[A], T1, Kind::set(GU, roles_model::Role::Read).may_grant());
     w.edge(K, 1, &[], A2, X, Write, &[]);
     w
 }

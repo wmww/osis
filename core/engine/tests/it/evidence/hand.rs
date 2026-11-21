@@ -127,7 +127,7 @@ fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
     assert_eq!(finalizes(30) - finalizes(3), 27);
     let invites = |n: u32| {
         let (mut w, [x, _, k, q]) = base();
-        w.write(x, |p| p.push(X, 1, &[], A, PKind::set(K, Role::Write).inviting(Role::Write)));
+        w.write(x, |p| p.push(X, 1, &[], A, PKind::set(K, Role::Write).may_grant()));
         w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
         for i in 0..n {
             w.write(k, |p| p.push(K, 2 + i, &[], A, PKind::set(Q, Role::Read)));

@@ -853,6 +853,8 @@ fn each_fix_is_needed_plain() {
     for (name, rules) in cases {
         assert!(random(100, &rules).failures() > 0, "{name}");
     }
+    // the variant recording a lowering only where it took its hop down fails rarely (finding 52)
+    assert!(random(1000, &Rules { sides: Sides::Lowered, ..f }).failures() > 0, "lowered");
 }
 
 fn var(k: &str) -> Option<u64> {
@@ -888,8 +890,8 @@ fn small_family_holds_large() {
 
 /// What the story's `idle gains` gate must not count as a gain (`void_checks`, `by_right`): A2
 /// administers T1 and X writes A2, a path H's removal of X from A does not touch. After the
-/// removal X invites Z at write through [A2] at 7, by right, and Z writes T1 at 7, before its
-/// invite in key order. X's grant of write to Z through [A], stamped at the removal's `ts` and
+/// removal X grants Z write through [A2] at 7 by may-grant, by right, and Z writes T1 at 7, before its
+/// grant in key order. X's grant of write to Z through [A], stamped at the removal's `ts` and
 /// ordered after it, applies nowhere; held, it is the edge's first chained grant, so Z's write
 /// counts from 6 (finding 9: no new right, an earlier `ts`). Z holds write with or without the
 /// dead grant: its write showing is no gain by a key that never held the right.
@@ -906,9 +908,9 @@ fn a_dead_grant_moves_an_invited_keys_first_point_back() {
     let x = Rules::fixed();
     let v = View::all(&w).trusting(&[r]);
     let rd = judge(&w, &x, &v);
-    assert!(!rd.applied.contains(&dead) && rd.invited.contains(&inv) && rd.role(Z, T1) == Write && rd.valid.contains(&c), "{rd:?}");
+    assert!(!rd.applied.contains(&dead) && rd.by_flag.contains(&inv) && rd.role(Z, T1) == Write && rd.valid.contains(&c), "{rd:?}");
     let rd = judge(&w, &x, &v.without(&[dead]));
-    assert!(rd.invited.contains(&inv) && rd.role(Z, T1) == Write && !rd.valid.contains(&c), "{rd:?}");
+    assert!(rd.by_flag.contains(&inv) && rd.role(Z, T1) == Write && !rd.valid.contains(&c), "{rd:?}");
 }
 
 
@@ -1193,23 +1195,23 @@ fn a_thiefs_lowering_after_the_removal_holds_nothing() {
     assert!((rd.role(H, A), rd.role(X, A), rd.role(M, A)) == (Admin, Gone, Admin) && rd.void.is_empty());
 }
 
-/// Small worlds of admins granting and removing each other (`tiny`), of invites (`tiny_invites`;
+/// Small worlds of admins granting and removing each other (`tiny`), of may-grant (`tiny_flags`;
 /// README.md, Paths, for the search), and of a thing detached from its folder written by marked
 /// direct hops (`tiny_detached`): one reading under a relabelling. Control: a lowering whose drops take its author's
 /// standing applying, a commit of several parts loses its path's authority (`self-taken`).
 #[test]
 #[ignore = "property"]
 fn small_worlds_hold_plain() {
-    for (invites, detached) in [(false, false), (true, false), (false, true)] {
+    for (flags, detached) in [(false, false), (true, false), (false, true)] {
         for honest in [Honesty::None, Honesty::Lists, Honesty::Writers] {
-            let st = tiny_run(3000, &Rules::fixed(), TinyMode { invites, detached, honest });
+            let st = tiny_run(3000, &Rules::fixed(), TinyMode { flags, detached, honest });
             // honest writers make few writes that do not apply: their worlds check `honest` alone here
             let ran = |k: &str| st.checked.get(k).is_some_and(|n| *n > 0);
             let keys: &[&str] = if honest == Honesty::Writers { &["honest"] } else { &["void", "honest", "idle N", "unapplied N"] };
-            assert!(st.failures() == 0 && keys.iter().all(|k| ran(k)), "{invites} {detached} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
+            assert!(st.failures() == 0 && keys.iter().all(|k| ran(k)), "{flags} {detached} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
         }
     }
-    let no_void = tiny_run(1000, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { invites: false, detached: false, honest: Honesty::None });
+    let no_void = tiny_run(1000, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { flags: false, detached: false, honest: Honesty::None });
     assert!(no_void.fails.get("self-taken").is_some_and(|n| *n > 0), "{:?}", no_void.fails);
 }
 
@@ -1670,68 +1672,104 @@ fn a_commits_parts_on_two_things_are_judged_each_on_its_own() {
     }
 }
 
-// ---- Invites and finalizes (spec/permissions.md §2 along one path; notes/write-path-design.md §1, Edge writes) ----
+// ---- May-grant and finalizes (spec/permissions.md §2 along one path; notes/write-path-design.md §1 G1 to G5, Edge writes) ----
 
-/// A with H; A2 (K's) shares T1 at write inviting read (by H, through A); K gives X write on A2.
+/// A with H; A2 (K's) shares T1 at write, and GU (A2's guests, minted with A2) holds read with the
+/// may-grant flag on T1 (by H, through A): the arrangement letting a writer of A2 add readers of T1
+/// and no more (G3); K gives X write on A2, so X's path [A2, GU] gives may-grant at read.
 fn invited() -> World {
     let mut w = account();
-    w.push(H, 1, &[A], T1, Kind::set(A2, Write).inviting(Role::Read));
+    w.push(H, 1, &[A], T1, Kind::set(A2, Write));
+    w.push(H, 1, &[A], T1, Kind::set(GU, Role::Read).may_grant());
     w.edge(K, 1, &[], A2, X, Write, &[]);
     w
 }
 
-/// An invite grant applies by its path's invite (the roles before the last edge, the last edge's
-/// invite), to a holder with no current grant, and gives no right to change another edge.
+/// A may-grant grant applies where every hop of its path gives its role and the last carries the
+/// flag (G1, G2: X's [A2, GU]), to a holder with no current grant, and gives no right to change
+/// another edge. Beyond the arrangement: write through [A2, GU] (GU holds read), and read through
+/// [A2], whose share carries no flag. Controls: the flag not read (`-no-flag`) grants through
+/// [A2]; the last hop's role not read grants write through [A2, GU].
 #[test]
-fn an_invite_grant_applies_by_its_paths_invite() {
+fn a_may_grant_grant_applies_by_its_paths_flag() {
     let mut w = invited();
-    let z = w.push(X, 2, &[A2], T1, Kind::set(Z, Role::Read));
-    let beyond = w.push(X, 2, &[A2], T1, Kind::set(N6, Write));
-    let again = w.push(X, 3, &[A2], T1, Kind::set(Z, Role::Read).until(9));
-    let lower = w.push(X, 4, &[A2], T1, Kind::set(Z, Gone));
+    let z = w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read));
+    let beyond = w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Write));
+    let flagless = w.push(X, 2, &[A2], T1, Kind::set(N5, Role::Read));
+    let again = w.push(X, 3, &[A2, GU], T1, Kind::set(Z, Role::Read).until(9));
+    let lower = w.push(X, 4, &[A2, GU], T1, Kind::set(Z, Gone));
     let rd = fixed(&w, &[]);
-    assert!(rd.applied.contains(&z) && ![beyond, again, lower].iter().any(|i| rd.applied.contains(i)));
-    assert_eq!((rd.role(Z, T1), rd.role(N6, T1)), (Role::Read, Gone));
-    // control: a role on the last edge suffices, so a writer grants write
-    let rd = fixed_but(&w, &[], |r| r.invite_check = false);
+    assert!(rd.by_flag.contains(&z) && ![beyond, flagless, again, lower].iter().any(|i| rd.applied.contains(i)), "{rd:?}");
+    assert_eq!((rd.role(Z, T1), rd.role(N6, T1), rd.role(N5, T1)), (Role::Read, Gone, Gone));
+    // control: a role on the last hop suffices, so a writer of A2 grants through A2's share
+    let rd = fixed_but(&w, &[], |r| r.flag_check = false);
+    assert_eq!((rd.role(N5, T1), rd.role(N6, T1)), (Role::Read, Gone));
+}
+
+/// G1's minimum (control `-last-hop`): a reader of A2 reaches GU's flag but holds read on its
+/// first hop, so it grants readers and no writers, though GU's share would carry write.
+#[test]
+fn a_may_grant_grant_needs_its_role_on_every_hop() {
+    let mut w = account();
+    w.push(H, 1, &[A], T1, Kind::set(GU, Write).may_grant());
+    w.edge(K, 1, &[], A2, X, Role::Read, &[]);
+    let read = w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read));
+    let write = w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Write));
+    let rd = fixed(&w, &[]);
+    assert!(rd.by_flag.contains(&read) && !rd.applied.contains(&write), "{rd:?}");
+    let rd = fixed_but(&w, &[], |r| r.min_check = false);
     assert_eq!(rd.role(N6, T1), Write);
 }
 
-/// A writer removed from the holder it invited through: its invites rest on that edge, fall
-/// unless the removal lists them, whether the edge fell from admin or from write.
+/// A grant through a hop carrying no flag is not chained (spec/permissions.md §4 Chained writes,
+/// G1): X grants N5 write through [A2], whose share carries no flag, at 2; N5 writes T1 at 3; H
+/// grants N5 write at 5. N5's path is re-granted from H's grant, its first chained one, so the
+/// write at 3 stays invalid; were X's grant chained it would count from 2.
 #[test]
-fn an_invite_by_a_removed_writer_falls_unless_listed() {
+fn a_grant_by_a_flagless_hop_is_not_chained() {
     let mut w = invited();
-    let z = w.push(X, 3, &[A2], T1, Kind::set(Z, Role::Read));
-    let n6 = w.push(X, 4, &[A2], T1, Kind::set(N6, Role::Read));
+    let x = w.push(X, 2, &[A2], T1, Kind::set(N5, Write));
+    let c = w.content(N5, 3, &[], T1);
+    let h = w.push(H, 5, &[A], T1, Kind::set(N5, Write));
+    let rd = fixed(&w, &[]);
+    assert!(!rd.applied.contains(&x) && rd.applied.contains(&h) && !rd.valid.contains(&c), "{rd:?}");
+}
+
+/// A writer removed from the holder it granted through: its may-grant grants rest on that edge,
+/// fall unless the removal lists them, whether the edge fell from admin or from write.
+#[test]
+fn a_may_grant_grant_by_a_removed_writer_falls_unless_listed() {
+    let mut w = invited();
+    let z = w.push(X, 3, &[A2, GU], T1, Kind::set(Z, Role::Read));
+    let n6 = w.push(X, 4, &[A2, GU], T1, Kind::set(N6, Role::Read));
     let r = w.edge(K, 6, &[], A2, X, Gone, &[z]);
     for trust in [vec![], vec![r]] {
         let rd = fixed(&w, &trust);
         assert!(rd.applied.contains(&z) && !rd.shows(n6), "{trust:?}");
         assert_eq!((rd.role(Z, T1), rd.role(N6, T1)), (Role::Read, Gone));
     }
-    // control: only a fall from admin audits; trusting nothing the unlisted invite stands
+    // control: only a fall from admin audits; trusting nothing the unlisted grant stands
     let rd = fixed_but(&w, &[], |r| r.any_fall = false);
     assert_eq!(rd.role(N6, T1), Role::Read);
 }
 
-/// An expired grant counts as none: an invite over it applies, before or after a finalize; a
+/// An expired grant counts as none: a may-grant grant over it applies, before or after a finalize; a
 /// finalize applies only to an ended grant, by a writer holding at least its role (an admin for a
 /// timed admin grant), audits nothing and makes nothing standing.
 #[test]
-fn a_finalize_ends_an_ended_grant_and_an_invite_follows_it() {
+fn a_finalize_ends_an_ended_grant_and_a_may_grant_grant_follows_it() {
     let mut w = invited();
-    let timed = w.push(X, 2, &[A2], T1, Kind::set(Z, Role::Read).until(4));
+    let timed = w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read).until(4));
     let early = w.push(K, 3, &[A2], T1, Kind::finalize(Z));
-    w.push(X, 2, &[A2], T1, Kind::set(N6, Role::Read));
+    w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Role::Read));
     let by_reader = w.push(N6, 3, &[], T1, Kind::finalize(Z));
     let fin = w.push(K, 4, &[A2], T1, Kind::finalize(Z));
-    let again = w.push(X, 5, &[A2], T1, Kind::set(Z, Role::Read));
+    let again = w.push(X, 5, &[A2, GU], T1, Kind::set(Z, Role::Read));
     let rd = fixed(&w, &[]);
     assert!([timed, fin, again].iter().all(|i| rd.applied.contains(i)));
     assert!(![early, by_reader].iter().any(|i| rd.applied.contains(i)));
     assert_eq!(rd.role(Z, T1), Role::Read);
-    // without the finalize the invite over the ended grant applies all the same
+    // without the finalize the grant over the ended one applies all the same
     let rd = judge(&w, &Rules::fixed(), &View::all(&w).without(&[fin]));
     assert!(rd.applied.contains(&again) && rd.role(Z, T1) == Role::Read);
     // a timed admin grant is finalized by an admin only (its role at least the grant's), not by a
@@ -1753,7 +1791,7 @@ fn a_finalize_ends_an_ended_grant_and_an_invite_follows_it() {
 #[test]
 fn a_frontier_less_removal_of_ones_own_grant_is_no_finalize() {
     let mut w = invited();
-    w.push(X, 2, &[A2], T1, Kind::set(Z, Role::Read).until(4));
+    w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read).until(4));
     let leave = w.push(Z, 3, &[], T1, Kind::finalize(Z));
     let fin = w.push(K, 4, &[A2], T1, Kind::finalize(Z));
     let rd = fixed(&w, &[]);
@@ -1768,30 +1806,31 @@ fn a_frontier_less_removal_of_ones_own_grant_is_no_finalize() {
 }
 
 /// A self-removal lowers in every component (spec/permissions.md §2 Self-removal): a removal
-/// always lowers, a timed grant's included; a rewrite raising the invite applies nothing; one
+/// always lowers, a timed grant's included; a rewrite setting the flag applies nothing; one
 /// bringing the `until` earlier applies.
 #[test]
 fn a_self_removal_lowers_in_every_component() {
     let timed = |k: Kind| {
         let mut w = invited();
-        w.push(X, 2, &[A2], T1, Kind::set(Z, Role::Read).until(9));
+        w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read).until(9));
         let leave = w.push(Z, 3, &[], T1, k);
         fixed(&w, &[]).applied.contains(&leave)
     };
     assert!(timed(Kind::set(Z, Gone)));
     assert!(timed(Kind::set(Z, Role::Read).until(5)));
-    assert!(!timed(Kind::set(Z, Role::Read).until(9).inviting(Role::Read)));
+    assert!(!timed(Kind::set(Z, Role::Read).until(9).may_grant()));
     assert!(!timed(Kind::set(Z, Role::Read)));
 }
 
-/// spec/permissions.md §7, a link: L, timed with an invite, invites; its `until` passing and the
-/// finalize audit nothing (the invitee's writes stand by their own keys); the next explicit
-/// removal of L audits against the edge as restored and drops the invites it does not list.
+/// spec/permissions.md §7, a link: L, timed with the flag, grants; its `until` passing and the
+/// finalize audit nothing (the grantee's writes stand by their own keys); the next explicit
+/// removal of L audits against the edge as restored and drops the grants made by it it does not
+/// list.
 #[test]
-fn the_explicit_removal_after_a_finalize_audits_the_invites() {
+fn the_explicit_removal_after_a_finalize_audits_the_grants_made_by_flag() {
     let mut w = account();
     let l = N6;
-    w.push(H, 1, &[A], T1, Kind::set(l, Write).inviting(Write).until(5));
+    w.push(H, 1, &[A], T1, Kind::set(l, Write).may_grant().until(5));
     let z = w.push(l, 2, &[], T1, Kind::set(Z, Write));
     let n5 = w.push(l, 3, &[], T1, Kind::set(N5, Write));
     let wz = w.content(Z, 4, &[], T1);
@@ -1808,16 +1847,18 @@ fn the_explicit_removal_after_a_finalize_audits_the_invites() {
     }
 }
 
-/// A re-grant dropping the invite the share carried lowers it: it audits the invites made under
-/// it, and an honest one lists them (story: B's re-grant of A2 keeps the invite and lists).
+/// A re-grant clearing the flag the share carried lowers it (G5): it audits the may-grant grants
+/// made by it, and an honest one lists them (story: B's re-grant of A2 keeps the flag and lists).
+/// Control `-role-falls` (only a fall in role is judged): the unlisted grant stands.
 #[test]
-fn a_write_dropping_an_invite_audits_the_invites_under_it() {
+fn a_write_clearing_the_flag_audits_the_grants_made_by_it() {
     let mut w = invited();
-    let z = w.push(X, 2, &[A2], T1, Kind::set(Z, Role::Read));
-    let plain = w.push(B, 5, &[A], T1, Kind::set(A2, Write));
+    let z = w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read));
+    let plain = w.push(B, 5, &[A], T1, Kind::set(GU, Role::Read));
     w.edge(H, 1, &[], A, B, Admin, &[]);
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&plain) && rd.dropped.contains(&z));
+    assert_eq!(fixed_but(&w, &[], |r| r.flag_falls = false).role(Z, T1), Role::Read);
     w.edit(plain, |k| k.listing(BTreeMap::from([(T1, Set::from([z]))])));
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&z) && rd.role(Z, T1) == Role::Read);
@@ -2144,14 +2185,14 @@ const L: Thing = 31;
 const R1: Thing = 32;
 const R2: Thing = 33;
 
-/// A sharing LK by a link: H grants L read inviting read on LK by [A].
+/// A sharing LK by a link: H grants L read with the flag on LK by [A].
 fn link() -> World {
     let mut w = World::new(&[(H, A), (A, LK)]);
-    w.push(H, 1, &[A], LK, Kind::set(L, Role::Read).inviting(Role::Read));
+    w.push(H, 1, &[A], LK, Kind::set(L, Role::Read).may_grant());
     w
 }
 
-/// A redemption: signing as L, one commit invite-granting `r` read on LK and removing L's own grant.
+/// A redemption: signing as L, one commit granting `r` read on LK by may-grant and removing L's own grant.
 fn redeem(w: &mut World, ts: u32, r: Thing) -> Vec<Id> {
     w.commit(L, ts, &[], LK, vec![Kind::set(r, Role::Read), Kind::set(L, Gone)])
 }
@@ -2172,7 +2213,7 @@ fn tiny_gates(w: &World, trust: &[Id]) {
     assert!(st.failures() == 0, "{:?} {:?}", st.fails, st.first);
 }
 
-/// Redeemed once: the grant applies by L's invite as it stood, then L's leave, last: R1 reads LK
+/// Redeemed once: the grant applies by L's flag as it stood, then L's leave, last: R1 reads LK
 /// and L holds nothing. Control (`-refuse-shapes`): the redemption applies nowhere, L keeps its
 /// grant and R1 gets none.
 #[test]
@@ -2181,7 +2222,7 @@ fn a_link_redemption_grants_once_and_ends_the_link() {
     let red = redeem(&mut w, 3, R1);
     assert!(w.leave(red[1]) && w.sets(red[0]) == Some((R1, LK)));
     let rd = keyed(&w);
-    assert!(red.iter().all(|i| rd.applied.contains(i)) && rd.invited.contains(&red[0]), "{rd:?}");
+    assert!(red.iter().all(|i| rd.applied.contains(i)) && rd.by_flag.contains(&red[0]), "{rd:?}");
     assert_eq!((rd.role(R1, LK), rd.role(L, LK)), (Role::Read, Gone));
     assert!(disputes(&w, &Rules::fixed(), &View::all(&w)).is_empty());
     tiny_gates(&w, &[]);
@@ -2190,7 +2231,7 @@ fn a_link_redemption_grants_once_and_ends_the_link() {
 }
 
 /// Redeemed twice concurrently (two holders of the seed, both at 3, or at 3 and 4): the redemption
-/// first in key order grants and ends L's grant; the other's grant finds no invite on L's edge and
+/// first in key order grants and ends L's grant; the other's grant finds no flag on L's edge and
 /// applies nowhere, its leave a no-op. One redeemer holds LK at every node, whatever arrives first.
 #[test]
 fn a_link_redeemed_twice_concurrently_grants_once() {
@@ -2206,7 +2247,7 @@ fn a_link_redeemed_twice_concurrently_grants_once() {
 }
 
 /// A thief holding the link key after the redemption: its grant stamped after it finds L's edge
-/// gone and applies nowhere; one backdated before it applies by L's invite then, until the
+/// gone and applies nowhere; one backdated before it applies by L's flag then, until the
 /// sharer's explicit removal of L, listing the redemption it received, drops it (spec/permissions.md
 /// §7, Finalized). Trusted or not, R1 keeps LK and the thief's keys hold nothing.
 #[test]
@@ -2308,30 +2349,30 @@ fn a_single_use_link_redeemed_twice_stays_with_the_redemption_the_sharer_listed(
 }
 
 /// What `Drops::Commit` changes outside links: parts of one commit on a thing differ in need only
-/// where its path gives less than admin (invite grants, a finalize, a leave). B holds write
-/// inviting write on A and, in one commit, invites Z as reader and N5 as writer; H, not having
-/// received it, then lowers B's invite to read. N5's grant needs invite write and falls; Z's needs
-/// invite read, which B keeps: by its own need it stands (control `-part-drops`), under the rule
-/// it falls with N5's (the commit's `roles.0` delta on A is one part), as today's walk has it
-/// (engine `role_paths` class world "a writer's two invites in one commit"). No generator makes
-/// parts of one commit whose needs differ (`tiny_invites` never lowers an invite alone, `tiny`
-/// commits no leave beside another part), so `-part-drops` reads every generated world alike.
-/// And B hands A over to N5
-/// (invite and leave in one commit), unseen by H, who then removes B or lowers it to read: N5
+/// where its path gives less than admin (may-grant grants, a finalize, a leave). B holds write
+/// with the flag on A and, in one commit, grants Z read and N5 write by it; H, not having
+/// received it, then demotes B to read with the flag. N5's grant needs write with the flag and
+/// falls; Z's needs read with it, which B keeps: by its own need it stands (control
+/// `-part-drops`), under the rule it falls with N5's (the commit's `roles.0` delta on A is one
+/// part), as today's walk has it (engine `role_paths` class world "a writer's two invites in one
+/// commit"). No generator makes parts of one commit whose needs differ (`tiny_flags` writes no
+/// such commit, `tiny` commits no leave beside another part), so `-part-drops` reads every
+/// generated world alike. And B hands A over to N5
+/// (a may-grant grant and a leave in one commit), unseen by H, who then removes B or lowers it to read: N5
 /// falls and B ends as H set it under either reading.
 #[test]
 fn a_writers_commit_on_a_thing_falls_together_where_its_parts_need_differ() {
     for part in [false, true] {
         let rules = Rules { drops: if part { Drops::Part } else { Drops::Commit }, ..Rules::fixed() };
         let mut w = account();
-        w.push(H, 1, &[], A, Kind::set(B, Write).inviting(Write));
+        w.push(H, 1, &[], A, Kind::set(B, Write).may_grant());
         w.commit(B, 2, &[], A, vec![Kind::set(Z, Role::Read), Kind::set(N5, Write)]);
-        w.push(H, 3, &[], A, Kind::set(B, Write).inviting(Role::Read));
+        w.push(H, 3, &[], A, Kind::set(B, Role::Read).may_grant());
         let rd = judge(&w, &rules, &View::all(&w));
-        assert_eq!((rd.role(Z, A), rd.role(N5, A), rd.role(B, A)), (if part { Role::Read } else { Gone }, Gone, Write), "part {part}: {rd:?}");
+        assert_eq!((rd.role(Z, A), rd.role(N5, A), rd.role(B, A)), (if part { Role::Read } else { Gone }, Gone, Role::Read), "part {part}: {rd:?}");
         for to in [Gone, Role::Read] {
             let mut w = account();
-            w.push(H, 1, &[], A, Kind::set(B, Write).inviting(Write));
+            w.push(H, 1, &[], A, Kind::set(B, Write).may_grant());
             w.commit(B, 2, &[], A, vec![Kind::set(N5, Write), Kind::set(B, Gone)]);
             w.push(H, 3, &[], A, Kind::set(B, to));
             let rd = judge(&w, &rules, &View::all(&w));
@@ -2395,29 +2436,28 @@ fn two_admins_leaving_at_once_leave_the_thing_adminless() {
     tiny_gates(&w, &[]);
 }
 
-/// An admin edge gives every invite (notes/a1-spec/permissions.md §2 Path's invite): team M holds
-/// admin on T, B holds write on M. B's grants on T through [M] apply as invite grants up to B's
-/// role on M (the path's invite: the least of its edges' roles but the last, and the last's
-/// invite, every invite at admin): read and write apply, admin does not (it needs admin along the
-/// path). X, a reader of M, so invites readers and not writers. Today a grant names its invite
-/// and M's names none, so none of B's or X's applies.
+/// A path's last hop giving admin gives may-grant (G1, G4): team M holds admin on T, B holds
+/// write on M. B's grants on T through [M] apply as may-grant grants up to B's role on M (every hop
+/// giving it, the last admin): read and write apply, the write carrying the flag (G2: the new
+/// grant may), admin does not (it needs admin along the path). X, a reader of M, so grants
+/// readers and not writers (control `-last-hop`).
 #[test]
-fn a_writer_of_an_admin_team_invites_up_to_its_own_role() {
+fn a_writer_of_an_admin_team_grants_up_to_its_own_role() {
     const M: Thing = 41;
     const T: Thing = 42;
     let mut w = World::new(&[(H, M), (H, T)]);
     w.edge(H, 1, &[], T, M, Admin, &[]);
     w.edge(H, 1, &[], M, B, Write, &[]);
     let read = w.push(B, 2, &[M], T, Kind::set(Z, Role::Read));
-    let write = w.push(B, 2, &[M], T, Kind::set(N5, Write).inviting(Role::Read));
+    let write = w.push(B, 2, &[M], T, Kind::set(N5, Write).may_grant());
     let admin = w.push(B, 2, &[M], T, Kind::set(N6, Admin));
-    // a reader of M invites readers to T
+    // a reader of M grants readers on T
     w.edge(H, 1, &[], M, X, Role::Read, &[]);
     let x_read = w.push(X, 3, &[M], T, Kind::set(K, Role::Read));
     let x_write = w.push(X, 3, &[M], T, Kind::set(A2, Write));
     let rd = keyed(&w);
-    assert!(rd.invited.contains(&read) && rd.invited.contains(&write) && !rd.applied.contains(&admin), "{rd:?}");
-    assert!(rd.invited.contains(&x_read) && !rd.applied.contains(&x_write), "{rd:?}");
+    assert!(rd.by_flag.contains(&read) && rd.by_flag.contains(&write) && !rd.applied.contains(&admin), "{rd:?}");
+    assert!(rd.by_flag.contains(&x_read) && !rd.applied.contains(&x_write), "{rd:?}");
     assert_eq!((rd.role(Z, T), rd.role(N5, T), rd.role(N6, T), rd.role(K, T), rd.role(A2, T)), (Role::Read, Write, Gone, Role::Read, Gone));
     tiny_gates(&w, &[]);
 }
@@ -2526,8 +2566,8 @@ fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
 /// A final hop marked direct is the path's last edge (notes/a1-spec/permissions.md §1 Path's last
 /// edge): T1 detached, H holds admin on it by its direct grant, B by its own. H removes B along
 /// the marked hop: its last edge (H's grant) gives admin, so it applies (the descent would give
-/// nothing). H, given write inviting read on T1 in place of admin, invites Z to read along the
-/// marked hop: the last edge's invite.
+/// nothing). H, given read with the flag on T1 in place of admin, grants Z read along the marked
+/// hop and not N5 write: the last edge's flag at its role.
 #[test]
 fn a_marked_final_hop_is_the_last_edge() {
     let mut w = account();
@@ -2538,13 +2578,13 @@ fn a_marked_final_hop_is_the_last_edge() {
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&r) && rd.role(B, T1) == Gone, "{rd:?}");
     let mut w = account();
-    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Write).inviting(Role::Read));
+    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Role::Read).may_grant());
     let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
     w.push(B, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
     let inv = w.push_marked(H, 3, &[], T1, Kind::set(Z, Role::Read), &[0]);
     let too_much = w.push_marked(H, 3, &[], T1, Kind::set(N5, Write), &[0]);
     let rd = fixed(&w, &[]);
-    assert!(rd.invited.contains(&inv) && !rd.applied.contains(&too_much) && rd.role(Z, T1) == Role::Read, "{rd:?}");
+    assert!(rd.by_flag.contains(&inv) && !rd.applied.contains(&too_much) && rd.role(Z, T1) == Role::Read, "{rd:?}");
 }
 
 /// Two routes, two claims (notes/a1-spec/permissions.md §1 Path, Direct mark): H holds T1 by the
@@ -2635,7 +2675,7 @@ fn a_marked_hop_under_a_removal_with_a_list() {
 fn tiny_detached_worlds_reach_the_marked_cases() {
     let mut n = BTreeMap::<&str, u64>::new();
     for i in 0..300 {
-        let t = tiny_world(i, TinyMode { invites: false, detached: true, honest: Honesty::None }, &Rules::fixed());
+        let t = tiny_world(i, TinyMode { flags: false, detached: true, honest: Honesty::None }, &Rules::fixed());
         let rd = judge(&t.w, &Rules::fixed(), &t.v);
         for (k, c) in t.w.commits.iter().enumerate() {
             let does = rd.applied.contains(&k) || rd.valid.contains(&k);
@@ -2681,21 +2721,20 @@ fn an_honest_holder_leave_is_no_dispute() {
 
 // ---- Seeds by need: a demotion to write (a kiosk) ----
 
-/// A2 holds admin on T1 inviting read; X, a writer of A2, invites G to read T1 through A2; B, not
-/// having received the invite, demotes A2 on T1 to write inviting read (a kiosk: a holder kept at
-/// write). The invite's need on (A2, T1) is read as an invite, which the demotion still gives:
-/// its audit keeps it at a node trusting nothing, and a trusted demotion's seeds (its value's
-/// unmet needs) keep it too, so both read alike and nothing is shown. Control (seeds every
-/// unlisted write resting on the edge): the trusting node drops the invite and the demotion is
-/// shown as a dispute.
+/// A2 holds admin on T1; X, a writer of A2, grants G read on T1 through A2 by may-grant; B, not
+/// having received it, demotes A2 on T1 to write with the flag (a kiosk: a holder kept at write).
+/// The grant's need on (A2, T1) is read with the flag, which the demotion still gives: its audit
+/// keeps it at a node trusting nothing, and a trusted demotion's seeds (its value's unmet needs)
+/// keep it too, so both read alike and nothing is shown. Control (seeds every unlisted write
+/// resting on the edge): the trusting node drops the grant and the demotion is shown as a dispute.
 #[test]
-fn a_trusted_demotion_to_write_keeps_the_invites_under_it() {
+fn a_trusted_demotion_to_write_keeps_the_grants_made_by_flag() {
     let mut w = account();
     w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.push(H, 1, &[A], T1, Kind::set(A2, Admin).inviting(Role::Read));
+    w.push(H, 1, &[A], T1, Kind::set(A2, Admin));
     w.edge(K, 1, &[], A2, X, Write, &[]);
     let gi = w.push(X, 4, &[A2], T1, Kind::set(G, Role::Read));
-    let kiosk = w.push(B, 6, &[A], T1, Kind::set(A2, Write).inviting(Role::Read));
+    let kiosk = w.push(B, 6, &[A], T1, Kind::set(A2, Write).may_grant());
     for t in [&[][..], &[kiosk]] {
         let rd = fixed(&w, t);
         assert!(rd.applied.contains(&kiosk) && rd.applied.contains(&gi) && rd.role(G, T1) == Role::Read, "{t:?} {rd:?}");
@@ -2709,22 +2748,22 @@ fn a_trusted_demotion_to_write_keeps_the_invites_under_it() {
 
 // ---- What a write that does not apply may change (notes/path-model-findings.md 33) ----
 
-/// H grants N5 admin at 3 and again at 11; N5 gives N6 write inviting write until 10 at 8,
-/// removes N6 at 9, and demotes H to write inviting write at 11 listing only H's second grant.
+/// H grants N5 admin at 3 and again at 11; N5 gives N6 write with the flag until 10 at 8,
+/// removes N6 at 9, and demotes H to write with the flag at 11 listing only H's second grant.
 /// The removal of N6 falls from write, is judged and applied; the demotion of H drops H's first
 /// grant of N5, and the restart leaves N5 no right at 8 and 9: the grant of N6 does not apply,
 /// and the removal of N6 still applies by its verdict. Without the grant held the removal never
 /// falls and does not apply. What users observe is the same either way (N6 never holds a role,
-/// every role over time, invite and content alike): only whether the removal of N6 shows as
+/// every role over time, what each may grant and content alike): only whether the removal of N6 shows as
 /// applied differs, which nobody sees.
 #[test]
 fn an_unapplied_grant_changes_nothing_observed() {
     let mut w = account();
     let again = w.edge(H, 11, &[], A, N5, Admin, &[]);
     w.edge(N5, 11, &[], A, H, Write, &[again]);
-    w.edit(1, |k| k.inviting(Write));
+    w.edit(1, |k| k.may_grant());
     let r6 = w.edge(N5, 9, &[], A, N6, Gone, &[]);
-    let g6 = w.push(N5, 8, &[], A, Kind::set(N6, Write).inviting(Write).until(10));
+    let g6 = w.push(N5, 8, &[], A, Kind::set(N6, Write).may_grant().until(10));
     w.edge(H, 3, &[], A, N5, Admin, &[]);
     let (n6, h) = (w.content(N6, 9, &[], A), w.content(H, 12, &[], A));
     let rd = fixed(&w, &[]);
@@ -2739,8 +2778,8 @@ fn an_unapplied_grant_changes_nothing_observed() {
 /// in key order); Z demotes H and N5 to read at 5; H demotes N5 to write at 7, listing nothing.
 fn h_demotes_n5(listing: &[Id]) -> (World, Id) {
     let mut w = account();
-    let h = w.push(H, 7, &[], A, Kind::set(N5, Write).inviting(Write));
-    w.push(N5, 4, &[], A, Kind::set(Z, Write).inviting(Write).listing(w.cut(&[h])));
+    let h = w.push(H, 7, &[], A, Kind::set(N5, Write).may_grant());
+    w.push(N5, 4, &[], A, Kind::set(Z, Write).may_grant().listing(w.cut(&[h])));
     w.push(H, 4, &[], A, Kind::set(N5, Admin));
     w.push(H, 4, &[], A, Kind::set(Z, Admin));
     w.push(Z, 5, &[], A, Kind::set(H, Role::Read).listing(w.cut(&[0, 1, 2, 3])));
@@ -3096,7 +3135,7 @@ fn a_recorded_side_keeps_the_other_side_of_its_fight_unrecorded() {
 /// lowering recorded only where it took its hop down): B records H's removal here, but the
 /// variant fails the story: a reader holding H's removal before any write of X's (X's grant
 /// arrives as evidence with X's backdated removal of H) applied it taking nothing, records
-/// nothing, and the backdated removal acts.
+/// nothing, and the backdated removal acts (`each_fix_is_needed_plain`).
 #[test]
 fn a_lowering_that_applied_taking_nothing_is_a_side() {
     let s = Setup { x_first: true, ..Setup::default() };
@@ -3111,7 +3150,6 @@ fn a_lowering_that_applied_taking_nothing_is_a_side() {
         assert_eq!(rd.applied.contains(&m.r) && rd.role(H, A) == Admin, lowered, "{sides:?}: {rd:?}");
         assert_eq!(countered(&m.w, &rules, &v).contains(&m.r), !lowered, "{sides:?}");
     }
-    assert!(random(300, &Rules { sides: Sides::Lowered, ..Rules::fixed() }).failures() > 0);
 }
 
 /// F4, a choice drops an earlier lowering of its own path. M minted A and paired H; H paired X
