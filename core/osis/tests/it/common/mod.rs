@@ -33,6 +33,35 @@ pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
 }
 
+/// The untyped key of aspect `k`.
+pub fn untyped(k: &str) -> osis::DynamicAspectKey {
+    osis::DynamicAspectKey::untyped(ak(k))
+}
+
+pub fn s(x: &str) -> osis::Value {
+    osis::Value::Str(x.into())
+}
+
+/// A directory of this test's own under the system's temp directory, removed when dropped.
+pub struct Dir(pub std::path::PathBuf);
+
+impl Dir {
+    pub fn new(name: &str) -> Dir {
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u8(0);
+        let d = std::env::temp_dir().join(format!("osis-{name}-{}-{:x}", std::process::id(), h.finish()));
+        std::fs::create_dir_all(&d).unwrap();
+        Dir(d)
+    }
+}
+
+impl Drop for Dir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Registers on `db` a schema typing each of `aks` `any` (`kept` then names their keys).
 pub fn typed_any(db: &Osis, aks: &[&str]) {
     let src: String = aks.iter().map(|a| format!("aspect {a}: any;\n")).collect();
@@ -53,6 +82,17 @@ pub fn setting(entries: &[(&str, osis::History)]) -> osis::core::RetentionSettin
 pub fn keep_day(db: &Osis, t: Tid, aks: &[&str]) {
     let x = setting(&aks.iter().map(|a| (*a, DAY)).collect::<Vec<_>>());
     db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&x)).unwrap();
+}
+
+/// A thing made held (`create_held`) with a setting keeping each of `entries`' history.
+pub fn thing_keeping(db: &Osis, entries: &[(&str, osis::History)]) -> Tid {
+    let x = setting(entries);
+    db.commit_with(|w| {
+        let t = w.create_held()?;
+        w.at(t, osis::core::RETENTION).set(&x)?;
+        Ok(t)
+    })
+    .unwrap()
 }
 
 /// A setting keeping every aspect a day after replaced (its `default`).

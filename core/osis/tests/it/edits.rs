@@ -3,7 +3,6 @@
 //! its newest text, `versions` lists its history, `Purge::Commit` deletes every version, and the
 //! writer refuses a replacement nobody would honor.
 
-use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::internals::costs;
 use osis::{Body, CommitEvent, CommitFrom, CommitId, Osis, Tid, Value};
@@ -17,19 +16,9 @@ fn key() -> osis::DynamicAspectKey {
     osis::DynamicAspectKey::untyped(log())
 }
 
-fn s(x: &str) -> Value {
-    Value::Str(x.into())
-}
-
 /// A thing keeping its signal's fires for good.
 fn thing(db: &Osis) -> Tid {
-    let x = crate::common::setting(&[(log().as_str(), osis::History::FOREVER)]);
-    db.commit_with(|w| {
-        let t = w.create_held()?;
-        w.at(t, osis::core::RETENTION).set(&x)?;
-        Ok(t)
-    })
-    .unwrap()
+    thing_keeping(db, &[(log().as_str(), osis::History::FOREVER)])
 }
 
 fn fire(db: &Osis, t: Tid, x: &str) -> CommitId {

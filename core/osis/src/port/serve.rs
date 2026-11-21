@@ -259,17 +259,13 @@ fn clients(db: &ReadOnly) -> BTreeMap<Tid, [u8; 32]> {
 
 /// The client actor of `current` whose secret hash is `hash` (compared in constant time).
 fn holder(current: &BTreeMap<Tid, [u8; 32]>, hash: &[u8; 32]) -> Option<Tid> {
-    current.iter().find(|(_, h)| same(h, hash)).map(|(a, _)| *a)
+    current.iter().find(|(_, h)| crate::account::same(&h[..], hash)).map(|(a, _)| *a)
 }
 
 /// The client actor of the `clients^.0` entry whose secret hash is `hash`, its `until` not
 /// passed.
 fn client_of(db: &ReadOnly, hash: &[u8; 32]) -> Option<Tid> {
     holder(&clients(db), hash)
-}
-
-fn same(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// The session on `conn`, checked now: a client-actor session ends when its entry goes, its
@@ -603,6 +599,19 @@ fn read_as<R>(db: &ReadOnly, actor: Option<Tid>, f: impl FnOnce(&mut Reader<'_>)
     db.locked(|l| f(&mut Reader { e: l.engine(), limit, actor }))
 }
 
+/// A Tell that, on each delivery `when` takes, reads `now` and tells it when it differs from what it
+/// last told (`first` at the start).
+fn told_on_change(first: &Value, source: Value, when: fn(&Delivery) -> bool, mut now: impl FnMut(&crate::Osis) -> Option<Value> + Send + 'static) -> Tell {
+    let mut last = first.clone();
+    Box::new(move |db, d| match when(&d).then(|| now(db)).flatten().filter(|v| *v != last) {
+        Some(v) => {
+            last = v.clone();
+            vec![(v, source.clone())]
+        }
+        None => Vec::new(),
+    })
+}
+
 /// `t`'s `ak` read as `actor`, as a Notify of a thing filter when it reads otherwise than `last`
 /// (absent when never told: a thing the actor may not read tells nothing).
 fn aspect_told(db: &ReadOnly, actor: Option<Tid>, last: &mut BTreeMap<Ak, Option<Digest>>, t: Tid, ak: Ak, origin: &crate::Origin, limit: Value) -> Option<(Value, Value)> {
@@ -665,35 +674,12 @@ fn watch(l: &mut Locked, read_limit: usize, actor: Option<Tid>, w: Watched, limi
         }
         Watched::Grants(t) => {
             let first = r.grants(t).to_wire();
-            let mut last = first.clone();
-            let tell: Tell = Box::new(move |db, d| {
-                if !matches!(d, Delivery::Grants | Delivery::Due) {
-                    return Vec::new();
-                }
-                let now = read_as(db, actor, |r| r.grants(t)).to_wire();
-                if now == last {
-                    return Vec::new();
-                }
-                last = now.clone();
-                vec![(now, source.clone())]
-            });
+            let tell = told_on_change(&first, source, |d| matches!(d, Delivery::Grants | Delivery::Due), move |db| Some(read_as(db, actor, |r| r.grants(t)).to_wire()));
             (first, Filter::Grants(t), tell)
         }
         Watched::Status => {
             let first = crate::syncing::status_in(l, actor)?.to_wire();
-            let mut last = first.clone();
-            let tell: Tell = Box::new(move |db, d| {
-                if !matches!(d, Delivery::Due) {
-                    return Vec::new();
-                }
-                let Ok(now) = db.locked(|l| crate::syncing::status_in(l, actor)) else { return Vec::new() };
-                let now = now.to_wire();
-                if now == last {
-                    return Vec::new();
-                }
-                last = now.clone();
-                vec![(now, source.clone())]
-            });
+            let tell = told_on_change(&first, source, |d| matches!(d, Delivery::Due), move |db| db.locked(|l| crate::syncing::status_in(l, actor)).ok().map(|s| s.to_wire()));
             (first, Filter::Status, tell)
         }
         Watched::Diagnostics => {
@@ -741,13 +727,13 @@ fn run_write(h: &crate::Osis, method: u64, args: Vec<Value>) -> Result<Value> {
     match method {
         method::WRITE => {
             let w = crate::write::Write::from_wire(h, args)?;
-            w.things().into_iter().try_for_each(|t| here(h, t).map(drop))?;
+            here_all(h, &w.things())?;
             Ok(made(w.commit()?))
         }
         method::UNDO | method::REDO => {
             let [s] = <[Value; 1]>::try_from(args).map_err(|_| bad("arguments"))?;
             let scope = codec::scope_from(s)?;
-            crate::commits::Address::Writes(scope.clone()).things().into_iter().try_for_each(|t| here(h, t).map(drop))?;
+            here_all(h, &Address::Writes(scope.clone()).things())?;
             Ok(made(if method == method::UNDO { h.undo(&scope)? } else { h.redo(&scope)? }))
         }
         _ => {

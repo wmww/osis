@@ -3,7 +3,6 @@
 //! never timed, on a `Dispatcher::Pump` node so what a commit dispatches runs on this thread.
 //! spec: none (API surface, notes/api.md).
 
-use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::internals::Internals as _;
 use osis::internals::costs;
@@ -11,10 +10,6 @@ use osis::{CommitFrom, Dispatcher, MemStore, Osis, ReadSet, Scope, Tid, Value, p
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-
-fn untyped(k: &str) -> osis::DynamicAspectKey {
-    osis::DynamicAspectKey::untyped(ak(k))
-}
 
 fn pumped_at(seed: u64, clock: &Arc<osis::internals::ManualClock>) -> Osis {
     let mut c = cfg(seed, MemStore::new(), clock);

@@ -3,8 +3,6 @@
 
 use osis::internals::Exact as _;
 use osis::internals::CommitRaw as _;
-use crate::common::watched;
-use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
 use osis::{Error, MemStore, Osis, Role, Origin, Store, Value};
@@ -34,10 +32,6 @@ fn durable_marks(db: &Osis) -> usize {
 
 fn field(id: u64) -> osis::Path {
     osis::Path(vec![osis::Step::Field(id)])
-}
-
-fn s(x: &str) -> Value {
-    Value::Str(x.into())
 }
 
 // notes/ephemeral.md Model, Local engine: ephemeral aspects (typed, with path ops) are written,
@@ -105,7 +99,7 @@ fn restart_forgets_ephemeral_spec_requirements_ephemeral() {
     let (d, e) = db
         .commit_with(|w| {
             let d = w.create_held()?;
-            w.at(d, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
+            w.at(d, untyped("app:kept.0")).set(&Value::Int(1))?;
             let e = w.create_held()?;
             Ok((d, e))
         })
@@ -120,7 +114,7 @@ fn restart_forgets_ephemeral_spec_requirements_ephemeral() {
     let db = osis::internals::open(at(2)).unwrap();
     assert!(!db.has_content(e).unwrap());
     assert_eq!(db.at(e, osis::DynamicAspectKey::untyped(draft.clone())).get().unwrap(), None);
-    assert_eq!(db.at(d, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).get().unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.at(d, untyped("app:kept.0")).get().unwrap(), Some(Value::Int(1)));
     assert_eq!(db.at(d, osis::DynamicAspectKey::untyped(draft)).get().unwrap(), None);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let _ = std::fs::remove_dir_all(&dir);
@@ -134,7 +128,7 @@ fn rights_through_mint_admin_spec_permissions_1() {
     let (b, _c2) = setup(4);
     let mut w = a.write();
     let t = w.create_held().unwrap();
-    w.at(t, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1)).unwrap();
+    w.at(t, untyped("app:kept.0")).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     deliver(&a, &b);
     assert_eq!(b.role_on(t).unwrap(), None);
@@ -145,9 +139,9 @@ fn rights_through_mint_admin_spec_permissions_1() {
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     // ephemeral data on another actor's durable thing
     let mut w = b.write();
-    w.at(t, osis::DynamicAspectKey::untyped(ak("app:cursor+.0"))).set(&Value::Int(1)).unwrap();
+    w.at(t, untyped("app:cursor+.0")).set(&Value::Int(1)).unwrap();
     assert_eq!(w.commit(), Err(Error::Permission { tid: t, needs: Role::Write }));
-    assert_eq!(b.at(t, osis::DynamicAspectKey::untyped(ak("app:cursor+.0"))).get().unwrap(), None);
+    assert_eq!(b.at(t, untyped("app:cursor+.0")).get().unwrap(), None);
     assert_eq!(durable_marks(&b), before);
     // a's own chain under t: admin through t
     let (x, y) = a
@@ -202,7 +196,7 @@ fn ephemeral_expiry_spec_crdt_4_7() {
     assert_eq!(durable_marks(&db), before);
     let mut w = db.write();
     w.expires(osis::Expiry::In(Duration::ZERO));
-    w.at(t, osis::DynamicAspectKey::untyped(ak("app:x+.0"))).set(&Value::Int(1)).unwrap();
+    w.at(t, untyped("app:x+.0")).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
@@ -257,7 +251,7 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
     w.at(t, ring.clone()).remove().unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
     let mut w = db.write();
-    w.at(t, osis::DynamicAspectKey::untyped(ak("app:sig+~0"))).path(osis::p!["k"]).set(&Value::Int(1)).unwrap();
+    w.at(t, untyped("app:sig+~0")).path(osis::p!["k"]).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
@@ -317,8 +311,8 @@ fn dynamic_key_crossing_kinds_spec_data_model_2() {
     refused(&|w| w.at(t, log.clone()).remove(), "fire");
     refused(&|w| w.at(t, n.clone()).fire(&s("x")), "set");
     refused(&|w| { w.at(t, log.clone()).fire(&s("x"))?; w.at(t, log.clone()).fire(&s("y")) }, "once");
-    refused(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("app:raw+~0"))).set(&s("x")), "fire");
-    refused(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("app:raw+.0"))).fire(&s("x")), "set");
+    refused(&|w| w.at(t, untyped("app:raw+~0")).set(&s("x")), "fire");
+    refused(&|w| w.at(t, untyped("app:raw+.0")).fire(&s("x")), "set");
     assert_eq!(db.at(t, n.clone()).get().unwrap(), None, "nothing written");
     assert!(db.at(t, log.clone()).fired(&osis::CommitQuery::default()).unwrap().commits.is_empty(), "nothing fired");
     db.commit_set(t, n.clone(), &s("v")).unwrap();

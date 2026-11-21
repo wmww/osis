@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! The `Write` recorder: generic helpers over value keys, ranges, clashes.
 
-use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::{Osis, Tid, Value, p};
 
@@ -50,7 +49,7 @@ fn a_clash_is_judged_on_what_is_asked() {
     db.register_schema("rv.osis", "revision 1;\nexpires(30d) aspect app:d.0: int;\naspect app:p.0: int;").unwrap();
     let t = db.commit_with(|w| {
         let t = w.create_held()?;
-        w.at(t, osis::DynamicAspectKey::untyped(ak("app:a.0"))).set(&Value::Int(0))?;
+        w.at(t, untyped("app:a.0")).set(&Value::Int(0))?;
         Ok(t)
     })
     .unwrap();

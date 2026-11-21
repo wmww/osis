@@ -2,10 +2,9 @@
 //! notes/api.md Text editing sessions), and a keystroke never waits for a save.
 //! spec: none (API surface, notes/api.md)
 
-use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::{DynamicAspectKey, MemStore, Osis, Scope, TextSession, Tid, Value};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 const SCHEMA: &str = "revision 1;\naspect n:body.0: text;\naspect n:title.0: string;\n";
@@ -27,6 +26,23 @@ fn setup(db: Osis) -> (Osis, Tid, DynamicAspectKey) {
 /// compaction snapshot stands for them, spec/sync-compaction.md §1 trigger), and undo has what it needs.
 fn keep_body(db: &Osis, t: Tid) {
     db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&crate::common::setting(&[("n:body.0", crate::common::DAY)]))).unwrap();
+}
+
+/// A node (`setup`) whose first text save stops between its snapshot and its commit: `saving`
+/// hears when it stopped, a send on `go` lets it go on.
+fn stopped_save() -> (Osis, Tid, DynamicAspectKey, Receiver<()>, Sender<()>) {
+    let (saving_tx, saving) = channel();
+    let (go, go_rx) = channel::<()>();
+    let first = Mutex::new(Some((saving_tx, go_rx)));
+    let mut c = cfg(0, MemStore::new(), &clock());
+    c.app.internals.text_save = Some(Arc::new(move || {
+        if let Some((tx, rx)) = first.lock().unwrap().take() {
+            tx.send(()).unwrap();
+            rx.recv().unwrap();
+        }
+    }));
+    let (db, t, k) = setup(osis::internals::create(c).unwrap());
+    (db, t, k, saving, go)
 }
 
 fn open(db: &Osis, t: Tid, k: &DynamicAspectKey) -> TextSession {
@@ -137,17 +153,7 @@ fn text_undo_shows_in_open_session() {
 // writes its snapshot, the keystroke stays pending, and nothing is committed twice.
 #[test]
 fn text_keystroke_does_not_wait_for_a_save() {
-    let (saving_tx, saving) = channel();
-    let (go, go_rx) = channel::<()>();
-    let first = Mutex::new(Some((saving_tx, go_rx)));
-    let mut c = cfg(0, MemStore::new(), &clock());
-    c.app.internals.text_save = Some(Arc::new(move || {
-        if let Some((tx, rx)) = first.lock().unwrap().take() {
-            tx.send(()).unwrap();
-            rx.recv().unwrap();
-        }
-    }));
-    let (db, t, k) = setup(osis::internals::create(c).unwrap());
+    let (db, t, k, saving, go) = stopped_save();
     let (_c, listed) = commits(&db, t, &k);
     let s = Arc::new(open(&db, t, &k));
     s.edit("", "a").unwrap();
@@ -177,17 +183,7 @@ fn text_keystroke_does_not_wait_for_a_save() {
 // commits the typing by another round, and every edit is applied once.
 #[test]
 fn text_typing_during_a_merge_goes_round_again() {
-    let (saving_tx, saving) = channel();
-    let (go, go_rx) = channel::<()>();
-    let first = Mutex::new(Some((saving_tx, go_rx)));
-    let mut c = cfg(0, MemStore::new(), &clock());
-    c.app.internals.text_save = Some(Arc::new(move || {
-        if let Some((tx, rx)) = first.lock().unwrap().take() {
-            tx.send(()).unwrap();
-            rx.recv().unwrap();
-        }
-    }));
-    let (db, t, k) = setup(osis::internals::create(c).unwrap());
+    let (db, t, k, saving, go) = stopped_save();
     keep_body(&db, t);
     let s = open(&db, t, &k);
     let (_m, merged) = merges(&s);

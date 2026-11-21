@@ -602,10 +602,7 @@ impl Osis {
                 _ => {}
             })
         });
-        match failed {
-            Some(e) => Err(e),
-            None => Ok(sub),
-        }
+        failed.map_or(Ok(sub), Err)
     }
 
     /// Calls `f` with `grants(thing)` now (through the dispatcher) and on every change. Fails

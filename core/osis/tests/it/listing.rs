@@ -3,7 +3,6 @@
 //! aspect, a thing and the things it holds, typed and untyped; pages, `complete`, memory commits; delete for
 //! everyone and purge by author.
 
-use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
 use osis::{Body, CommitEvent, CommitFrom, CommitId, CommitKind, CommitQuery, Error, Osis, Scope, Tid, Value};
@@ -14,12 +13,8 @@ fn msg() -> osis::Ak {
     ak("t:msg.0")
 }
 
-fn untyped(k: osis::Ak) -> osis::DynamicAspectKey {
+fn key(k: osis::Ak) -> osis::DynamicAspectKey {
     osis::DynamicAspectKey::untyped(k)
-}
-
-fn s(x: &str) -> Value {
-    Value::Str(x.into())
 }
 
 fn db_at(n: u64) -> Osis {
@@ -28,19 +23,13 @@ fn db_at(n: u64) -> Osis {
 
 /// A thing keeping `msg` and the signal `t:log~0` for good, `t:kept.0` and `t:big.0` a day.
 fn thing(db: &Osis) -> Tid {
-    let x = crate::common::setting(&[("t:msg.0", osis::History::FOREVER), ("t:log~0", osis::History::FOREVER), ("t:kept.0", crate::common::DAY), ("t:big.0", crate::common::DAY)]);
-    db.commit_with(|w| {
-        let t = w.create_held()?;
-        w.at(t, osis::core::RETENTION).set(&x)?;
-        Ok(t)
-    })
-    .unwrap()
+    thing_keeping(db, &[("t:msg.0", osis::History::FOREVER), ("t:log~0", osis::History::FOREVER), ("t:kept.0", DAY), ("t:big.0", DAY)])
 }
 
 /// A write of `x` on `t`'s `msg`, its history kept for good: every one stays listed.
 fn say(db: &Osis, t: Tid, x: &str) -> CommitId {
     let mut w = db.write();
-    w.at(t, untyped(msg())).set(&s(x)).unwrap();
+    w.at(t, untyped("t:msg.0")).set(&s(x)).unwrap();
     w.commit().unwrap().unwrap().stamp.id
 }
 
@@ -48,12 +37,12 @@ fn say(db: &Osis, t: Tid, x: &str) -> CommitId {
 /// snapshots any writer may add (notes/api.md Delete for everyone).
 fn bodies(db: &Osis, t: Tid, k: &osis::Ak) -> Vec<Body<Value>> {
     let q = CommitQuery { kinds: vec![CommitKind::Content, CommitKind::Revert], ..page(CommitFrom::Oldest, 100) };
-    db.at(t, untyped(k.clone())).writes(&q).unwrap().commits.iter().map(|c| part(c, t, k).body).collect()
+    db.at(t, key(k.clone())).writes(&q).unwrap().commits.iter().map(|c| part(c, t, k).body).collect()
 }
 
 fn watch(db: &Osis, t: Tid, k: osis::Ak) -> (osis::Subscription, Receiver<CommitEvent>) {
     let (tx, rx) = channel();
-    let sub = db.at(t, untyped(k)).on_write(move |_, e| tx.send(e).unwrap()).unwrap();
+    let sub = db.at(t, key(k)).on_write(move |_, e| tx.send(e).unwrap()).unwrap();
     (sub, rx)
 }
 
@@ -83,20 +72,20 @@ fn page_and_listener() {
     let p = part(c, t, &msg());
     assert_eq!((p.body, p.valid, c.stamp.author, c.kind), (Body::Held(Some(s("one"))), true, db.me(), CommitKind::Content));
     say(&db, t, "two");
-    let got = db.at(t, untyped(msg())).writes(&page(CommitFrom::Newest, 10)).unwrap();
+    let got = db.at(t, untyped("t:msg.0")).writes(&page(CommitFrom::Newest, 10)).unwrap();
     assert_eq!(got.commits.iter().map(|c| part(c, t, &msg()).body).collect::<Vec<_>>(), vec![Body::Held(Some(s("two"))), Body::Held(Some(s("one")))]);
     assert!(!got.more);
     assert!(got.commits[0].stamp.received.0 > 0);
     for i in 0..osis::internals::COMMIT_PAGE {
         say(&db, t, &format!("m{i}"));
     }
-    let got = db.at(t, untyped(msg())).writes(&page(CommitFrom::Newest, usize::MAX)).unwrap();
+    let got = db.at(t, untyped("t:msg.0")).writes(&page(CommitFrom::Newest, usize::MAX)).unwrap();
     assert_eq!(got.commits.len(), osis::internals::COMMIT_PAGE);
     assert!(got.more);
-    let next = db.at(t, untyped(msg())).writes(&page(CommitFrom::Before(got.commits.last().unwrap().pos()), 1)).unwrap();
+    let next = db.at(t, untyped("t:msg.0")).writes(&page(CommitFrom::Before(got.commits.last().unwrap().pos()), 1)).unwrap();
     assert_eq!(next.commits.len(), 1);
     // an unknown thing: empty, not an error
-    let none = db.at(Tid::from_bytes([7; 15]), untyped(msg())).writes(&page(CommitFrom::Newest, 5)).unwrap();
+    let none = db.at(Tid::from_bytes([7; 15]), untyped("t:msg.0")).writes(&page(CommitFrom::Newest, 5)).unwrap();
     assert!(none.commits.is_empty() && !none.more);
 }
 
@@ -114,7 +103,7 @@ fn listed_while_in_read_or_kept_api_commits() {
     let (plain, decl) = (ak("t:plain.0"), ak("t:kept.0"));
     let held = |v: &str| Body::Held(Some(s(v)));
     for v in ["a", "b", "c"] {
-        db.commit_set(t, untyped(plain.clone()), &s(v)).unwrap();
+        db.commit_set(t, key(plain.clone()), &s(v)).unwrap();
         if v == "a" {
             assert_eq!(bodies(&db, t, &plain), vec![held("a")], "no history: the live write alone");
         }
@@ -125,7 +114,7 @@ fn listed_while_in_read_or_kept_api_commits() {
     // they by the snapshot): its live value is listed as the snapshot's
     assert_eq!(bodies(&db, t, &plain), vec![], "no history: the live write compacted away");
     let all = CommitQuery { kinds: vec![CommitKind::Content, CommitKind::Revert, CommitKind::Snapshot], ..page(CommitFrom::Oldest, 100) };
-    let listed: Vec<(CommitKind, Body<Value>)> = db.at(t, untyped(plain.clone())).writes(&all).unwrap().commits.iter().map(|x| (x.kind, part(x, t, &plain).body)).collect();
+    let listed: Vec<(CommitKind, Body<Value>)> = db.at(t, key(plain.clone())).writes(&all).unwrap().commits.iter().map(|x| (x.kind, part(x, t, &plain).body)).collect();
     assert_eq!(listed, vec![(CommitKind::Snapshot, held("c"))], "the snapshot carrying the live write");
     assert_eq!(bodies(&db, t, &decl), vec![held("a"), held("b"), held("c")], "kept a day");
     assert_eq!(bodies(&db, t, &msg()), vec![held("a"), held("b"), held("c")], "kept for good");
@@ -133,8 +122,8 @@ fn listed_while_in_read_or_kept_api_commits() {
     assert_eq!(bodies(&db, t, &decl), vec![held("c")], "past the bound: the live write alone");
     assert_eq!(bodies(&db, t, &msg()).len(), 3, "forever");
     // listing an aspect whose writes keep no history is no error; nor a crossing of kinds
-    assert!(db.at(t, untyped(ak("t:log~0"))).writes(&CommitQuery::default()).unwrap().commits.is_empty());
-    assert!(db.at(t, untyped(plain.clone())).fired(&CommitQuery::default()).unwrap().commits.is_empty());
+    assert!(db.at(t, key(ak("t:log~0"))).writes(&CommitQuery::default()).unwrap().commits.is_empty());
+    assert!(db.at(t, key(plain.clone())).fired(&CommitQuery::default()).unwrap().commits.is_empty());
 }
 
 // spec/commits.md §7 (Listed parts), notes/api.md Commits (listeners): a replaced part leaving
@@ -156,7 +145,7 @@ fn kept_part_is_told_leaving_at_its_bound_api_commits() {
     let p = thing(&db);
     let (_p, prx) = watch(&db, p, plain.clone());
     for v in ["x", "y"] {
-        db.commit_set(p, untyped(plain.clone()), &s(v)).unwrap();
+        db.commit_set(p, key(plain.clone()), &s(v)).unwrap();
     }
     assert_eq!(timer(), first, "no history kept: no timer of its own");
     let u = thing(&db);
@@ -195,10 +184,10 @@ fn a_purge_lists_no_part_that_had_left_the_listing_spec_commits_7() {
     c.advance(2 * 86_400_000);
     db.engine(|e| e.tick().unwrap());
     assert_eq!(bodies(&db, t, &k), vec![Body::Held(Some(s("b")))], "a left the listing");
-    commit_with(&db, |w| w.at(t, untyped(k.clone())).purge(osis::Purge::Commit(a)));
+    commit_with(&db, |w| w.at(t, key(k.clone())).purge(osis::Purge::Commit(a)));
     assert_eq!(bodies(&db, t, &k), vec![Body::Held(Some(s("b")))], "purged by commit: a stays unlisted");
     let me = db.me();
-    commit_with(&db, |w| w.at(t, untyped(k.clone())).purge(osis::Purge::Author(me)));
+    commit_with(&db, |w| w.at(t, key(k.clone())).purge(osis::Purge::Author(me)));
     let got = bodies(&db, t, &k);
     assert!(got.len() == 1 && matches!(got[0], Body::Purged { .. }), "purged by author: b alone listed, as purged: {got:?}");
 }
@@ -213,10 +202,10 @@ fn a_commit_shows_every_part_api_commits() {
     let n = db.aspect_key("t:n.0").unwrap();
     let (a, b) = (thing(&db), thing(&db));
     let mut w = db.write();
-    w.at(a, untyped(msg())).set(&s("on a")).unwrap();
+    w.at(a, untyped("t:msg.0")).set(&s("on a")).unwrap();
     w.at(b, n.clone()).set(&Value::Int(5)).unwrap();
     let made = w.commit().unwrap().unwrap();
-    let got = db.at(a, untyped(msg())).writes(&CommitQuery::default()).unwrap().commits;
+    let got = db.at(a, untyped("t:msg.0")).writes(&CommitQuery::default()).unwrap().commits;
     assert_eq!(got, vec![made.clone()], "what the write returned");
     let c = &got[0];
     let mut parts: Vec<_> = c.parts().map(|(t, k, p)| (t, k.as_str().to_string(), p.body.clone())).collect();
@@ -228,7 +217,7 @@ fn a_commit_shows_every_part_api_commits() {
     // a mismatching body
     let (tx, rx) = channel();
     let _d = db.on_diagnostic(move |_, d| tx.send(d).unwrap()).unwrap();
-    let odd = commit_with(&db, |w| w.at(b, untyped(ak("t:n.0"))).set(&s("not an int")));
+    let odd = commit_with(&db, |w| w.at(b, key(ak("t:n.0"))).set(&s("not an int")));
     let got = db.at(b, n.clone()).writes(&page(CommitFrom::Newest, 1)).unwrap().commits;
     assert_eq!(got[0].stamp.id, odd.stamp.id);
     assert_eq!(got[0].at(b, n.clone()).unwrap().body, Body::Held(None));
@@ -249,38 +238,38 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     let b = say(&db, t, "next");
     let (_sub, rx) = watch(&db, t, msg());
     let mut w = db.write();
-    w.at(t, untyped(msg())).purge(osis::Purge::Commit(a)).unwrap();
+    w.at(t, untyped("t:msg.0")).purge(osis::Purge::Commit(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().stamp.id;
-    let got = db.at(t, untyped(msg())).writes(&page(CommitFrom::Oldest, 10)).unwrap();
+    let got = db.at(t, untyped("t:msg.0")).writes(&page(CommitFrom::Oldest, 10)).unwrap();
     assert!(!got.commits.iter().any(|c| c.stamp.id == rq), "the request is not listed");
     let written: Vec<_> = got.commits.iter().filter(|c| c.kind == CommitKind::Content).collect();
     assert_eq!(written.iter().map(|c| c.stamp.id).collect::<Vec<_>>(), vec![a, b]);
     assert_eq!(part(written[0], t, &msg()).body, Body::Purged { by: rq, author: Some(db.me()) });
     assert_eq!(part(written[1], t, &msg()).body, Body::Held(Some(s("next"))));
-    assert_eq!(db.at(t, untyped(msg())).get().unwrap(), Some(s("next")));
+    assert_eq!(db.at(t, untyped("t:msg.0")).get().unwrap(), Some(s("next")));
     let evs = heard(&db, &rx);
     assert!(evs.iter().any(|e| matches!(e, CommitEvent::Commit { id, commit: Some(c) } if *id == a && matches!(part(c, t, &msg()).body, Body::Purged { .. }))), "{evs:?}");
     // a register's live write purged, no history kept: still listed, as purged
-    let x = commit_with(&db, |w| w.at(t, untyped(ak("t:reg.0"))).set(&s("x")));
-    commit_with(&db, |w| w.at(t, untyped(ak("t:reg.0"))).purge(osis::Purge::Commit(x.stamp.id)));
+    let x = commit_with(&db, |w| w.at(t, key(ak("t:reg.0"))).set(&s("x")));
+    commit_with(&db, |w| w.at(t, key(ak("t:reg.0"))).purge(osis::Purge::Commit(x.stamp.id)));
     assert!(matches!(bodies(&db, t, &ak("t:reg.0"))[..], [Body::Purged { .. }]));
     // an ephemeral write is purged as a durable one, by a durable request of its own
     // (notes/ephemeral.md Principle): beside an ephemeral write it is refused
-    let e = commit_with(&db, |w| w.at(t, untyped(ak("t:x+.0"))).set(&s("eph")));
-    assert_eq!(db.at(t, untyped(ak("t:x+.0"))).get().unwrap(), Some(s("eph")));
-    commit_with(&db, |w| w.at(t, untyped(ak("t:x+.0"))).purge(osis::Purge::Commit(e.stamp.id)));
-    assert_eq!(db.at(t, untyped(ak("t:x+.0"))).get().unwrap(), None);
+    let e = commit_with(&db, |w| w.at(t, key(ak("t:x+.0"))).set(&s("eph")));
+    assert_eq!(db.at(t, key(ak("t:x+.0"))).get().unwrap(), Some(s("eph")));
+    commit_with(&db, |w| w.at(t, key(ak("t:x+.0"))).purge(osis::Purge::Commit(e.stamp.id)));
+    assert_eq!(db.at(t, key(ak("t:x+.0"))).get().unwrap(), None);
     let mut w = db.write();
-    w.at(t, untyped(ak("t:x+.0"))).set(&s("again")).unwrap();
-    w.at(t, untyped(ak("t:x+.0"))).purge(osis::Purge::All).unwrap();
+    w.at(t, key(ak("t:x+.0"))).set(&s("again")).unwrap();
+    w.at(t, key(ak("t:x+.0"))).purge(osis::Purge::All).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("a purge is not")), "a write is one commit");
     // `Purge::All` of an ephemeral aspect: it reads as absent, as a durable one removed
-    commit_with(&db, |w| w.at(t, untyped(ak("t:x+.0"))).set(&s("again")));
-    commit_with(&db, |w| w.at(t, untyped(ak("t:x+.0"))).purge(osis::Purge::All));
-    assert_eq!(db.at(t, untyped(ak("t:x+.0"))).get().unwrap(), None);
-    commit_with(&db, |w| w.at(t, untyped(ak("t:m+.0"))).set(&osis::Value::Map(osis_base::ValueMap::from([(s("k"), s("v"))]))));
-    commit_with(&db, |w| w.at(t, untyped(ak("t:m+.0"))).purge(osis::Purge::All));
-    assert_eq!(db.at(t, untyped(ak("t:m+.0"))).get().unwrap(), None);
+    commit_with(&db, |w| w.at(t, key(ak("t:x+.0"))).set(&s("again")));
+    commit_with(&db, |w| w.at(t, key(ak("t:x+.0"))).purge(osis::Purge::All));
+    assert_eq!(db.at(t, key(ak("t:x+.0"))).get().unwrap(), None);
+    commit_with(&db, |w| w.at(t, key(ak("t:m+.0"))).set(&osis::Value::Map(osis_base::ValueMap::from([(s("k"), s("v"))]))));
+    commit_with(&db, |w| w.at(t, key(ak("t:m+.0"))).purge(osis::Purge::All));
+    assert_eq!(db.at(t, key(ak("t:m+.0"))).get().unwrap(), None);
 }
 
 // spec/commits.md §5 Forgetting (a forgotten commit's name), Purge: a write with no history kept,
@@ -291,7 +280,7 @@ fn purge_commit_reaches_a_forgotten_write_spec_commits_5() {
     let db = db_at(0);
     let t = thing(&db);
     let k = ak("t:reg.0");
-    let x = commit_with(&db, |w| w.at(t, untyped(k.clone())).set(&s("secret"))).stamp.id;
+    let x = commit_with(&db, |w| w.at(t, key(k.clone())).set(&s("secret"))).stamp.id;
     db.engine(|e| {
         let s = e.snapshot(&t, &k).unwrap().unwrap();
         let on: Vec<_> = e.commit_ids().into_iter().filter(|c| *c != s && e.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == k))).collect();
@@ -302,9 +291,9 @@ fn purge_commit_reaches_a_forgotten_write_spec_commits_5() {
         assert!(!due.is_empty());
         e.forget_commits(&due).unwrap();
     });
-    assert_eq!(db.at(t, untyped(k.clone())).get().unwrap(), Some(s("secret")));
-    commit_with(&db, |w| w.at(t, untyped(k.clone())).purge(osis::Purge::Commit(x)));
-    assert_eq!(db.at(t, untyped(k.clone())).get().unwrap(), None);
+    assert_eq!(db.at(t, key(k.clone())).get().unwrap(), Some(s("secret")));
+    commit_with(&db, |w| w.at(t, key(k.clone())).purge(osis::Purge::Commit(x)));
+    assert_eq!(db.at(t, key(k.clone())).get().unwrap(), None);
 }
 
 // spec/data-model.md §6 (holds the root link), notes/api.md Commits: a page is bounded in the bytes of its values, a link's once materialized, so
@@ -318,12 +307,12 @@ fn page_bound_counts_large_values() {
     let t = thing(&db);
     let k = ak("t:big.0");
     let put = |n: usize, b: u8| {
-        commit_with(&db, |w| w.at(t, untyped(k.clone())).set(&Value::Bytes(vec![b; n])));
+        commit_with(&db, |w| w.at(t, key(k.clone())).set(&Value::Bytes(vec![b; n])));
     };
     put(2 << 20, 1);
     put(2 << 20, 2);
     put(2 << 20, 3);
-    let list = |from| db.at(t, untyped(k.clone())).writes(&page(from, 10)).unwrap();
+    let list = |from| db.at(t, key(k.clone())).writes(&page(from, 10)).unwrap();
     let got = list(CommitFrom::Oldest);
     assert_eq!(got.commits.len(), 2, "stops past the bound");
     assert!(got.more);
@@ -350,20 +339,20 @@ fn purge_takes_no_setting_expiry_spec_commits_5() {
     let rules = ct::RetentionSetting { default: Some(ct::RetentionEntry { expires: Some(60_000), ..Default::default() }), ..Default::default() };
     db.commit_set(t, ct::RETENTION, &rules).unwrap();
     let mut w = db.write();
-    w.at(t, osis::DynamicAspectKey::untyped(msg())).purge(osis::Purge::Commit(a)).unwrap();
+    w.at(t, untyped("t:msg.0")).purge(osis::Purge::Commit(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().stamp.id;
-    let got = db.at(t, untyped(msg())).writes(&page(CommitFrom::Oldest, 1)).unwrap();
+    let got = db.at(t, untyped("t:msg.0")).writes(&page(CommitFrom::Oldest, 1)).unwrap();
     assert_eq!(part(&got.commits[0], t, &msg()).body, Body::Purged { by: rq, author: Some(db.me()) });
     // beside a write of the thing, a request goes under it and takes its expiry: one commit
     let mut w = db.write();
-    w.at(t, osis::DynamicAspectKey::untyped(msg())).set(&s("y")).unwrap();
+    w.at(t, untyped("t:msg.0")).set(&s("y")).unwrap();
     let b = w.commit().unwrap().unwrap().stamp.id;
     let mut w = db.write();
-    w.at(t, osis::DynamicAspectKey::untyped(ak("t:other.0"))).set(&s("z")).unwrap();
-    w.at(t, osis::DynamicAspectKey::untyped(msg())).purge(osis::Purge::Commit(b)).unwrap();
+    w.at(t, untyped("t:other.0")).set(&s("z")).unwrap();
+    w.at(t, untyped("t:msg.0")).purge(osis::Purge::Commit(b)).unwrap();
     let done = w.commit().unwrap().unwrap();
     assert!(done.parts().all(|(_, ak, _)| ak.as_str() != "purge.0"), "no purge.0 write: {done:?}");
-    let got = db.at(t, untyped(msg())).writes(&page(CommitFrom::Oldest, 8)).unwrap();
+    let got = db.at(t, untyped("t:msg.0")).writes(&page(CommitFrom::Oldest, 8)).unwrap();
     assert!(got.commits.iter().any(|k| k.stamp.id == b && part(k, t, &msg()).body == Body::Purged { by: done.stamp.id, author: Some(db.me()) }), "{got:?}");
 }
 
@@ -418,18 +407,18 @@ fn purge_goes_under_its_thing_and_reaches_what_it_names_spec_commits_5() {
     let a = say(&db, t, "secret");
     for what in [osis::Purge::Commit(a), osis::Purge::Author(db.me())] {
         let mut w = db.write();
-        w.at(t, untyped(ak("t:other.0"))).set(&s("z")).unwrap();
-        w.at(t, untyped(msg())).purge(what).unwrap();
+        w.at(t, key(ak("t:other.0"))).set(&s("z")).unwrap();
+        w.at(t, untyped("t:msg.0")).purge(what).unwrap();
         w.expires(osis::Expiry::In(std::time::Duration::from_secs(600)));
         assert!(matches!(w.commit(), Err(Error::Invalid(_))), "an expiring commit cannot reach a permanent delta");
     }
     assert_eq!(bodies(&db, t, &msg()), vec![Body::Held(Some(s("secret")))]);
-    commit_with(&db, |w| w.at(t, untyped(ak("t:other.0"))).set(&s("z")));
+    commit_with(&db, |w| w.at(t, key(ak("t:other.0"))).set(&s("z")));
     let u = thing(&db);
     let mut w = db.write();
-    w.at(t, untyped(ak("t:other.0"))).set(&s("z")).unwrap();
-    w.at(u, untyped(ak("t:other.0"))).set(&s("q")).unwrap();
-    w.at(t, untyped(msg())).purge(osis::Purge::Commit(a)).unwrap();
+    w.at(t, key(ak("t:other.0"))).set(&s("z")).unwrap();
+    w.at(u, key(ak("t:other.0"))).set(&s("q")).unwrap();
+    w.at(t, untyped("t:msg.0")).purge(osis::Purge::Commit(a)).unwrap();
     let done = w.commit().unwrap().unwrap();
     assert!(done.parts().any(|(x, _, _)| x == t), "a delta on the purged thing: {done:?}");
     assert!(matches!(bodies(&db, t, &msg())[..], [Body::Purged { .. }]));

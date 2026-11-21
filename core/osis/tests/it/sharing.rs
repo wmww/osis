@@ -1,15 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Sharing across nodes in process, commits carried by hand (notes/api.md Sharing and roles).
 
-use crate::common::Held as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
-use osis::{SetRoleOpts, Error, Role, Value};
-
-fn s(x: &str) -> Value {
-    Value::Str(x.into())
-}
+use osis::{SetRoleOpts, Error, Role};
 
 // spec/crypto.md §7 (Header list): a writer lists the thing's delete keys, notes/api.md Rights: a role whose
 // delete keys are not here yet (no inbox hint, the thing's `keys.0` in a later batch: another node
@@ -25,7 +20,7 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
         deliver(&dave, &bob);
         let mut w = alice.write();
         let t = w.create_held().unwrap();
-        w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("one")).unwrap();
+        w.at(t, untyped("t:x.0")).set(&s("one")).unwrap();
         w.commit().unwrap();
         // minted with the account as admin, `t` is independent from its creation: its keysets go in
         // that commit
@@ -53,7 +48,7 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
         bob.hold(t).unwrap();
         let write = |v: &str| {
             let mut w = bob.write();
-            w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v))?;
+            w.at(t, untyped("t:x.0")).set(&s(v))?;
             w.commit().map(drop)
         };
         assert_eq!(bob.engine(|e| e.role_on(&t)), Some(role), "the grant is here");
@@ -221,7 +216,7 @@ fn purge_without_the_right_is_refused_spec_permissions_6() {
     let g = alice.commit_with(|w| w.create_held()).unwrap();
     alice.grant(g, bob.me(), Role::Write, Default::default()).unwrap();
     bob.hold(g).unwrap();
-    let k = || osis::DynamicAspectKey::untyped(ak("t:m.0"));
+    let k = || untyped("t:m.0");
     let hers = commit_with(&alice, |w| w.at(g, k()).set(&s("hers"))).stamp.id;
     deliver(&alice, &bob);
     let refused = |what: osis::Purge| {
@@ -317,7 +312,7 @@ fn the_owners_rule_one_write_through_different_actors_is_one_commit_spec_wire_4(
     carol.hold(g).unwrap();
     carol.hold(o).unwrap();
     mesh(&all);
-    let k = || osis::DynamicAspectKey::untyped(ak("t:x.0"));
+    let k = || untyped("t:x.0");
     let before: std::collections::BTreeSet<_> = bob.engine(|e| e.commit_ids()).into_iter().collect();
     let mut w = bob.write();
     w.at(g, k()).set(&s("on g")).unwrap();

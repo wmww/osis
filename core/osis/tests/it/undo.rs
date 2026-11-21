@@ -4,7 +4,6 @@
 //! happens to hold.
 
 use osis::internals::CommitRaw as _;
-use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
 use osis::{CommitKind, CommitQuery, DynamicAspectKey, NotUndoableReason, Error, MemStore, Osis, Scope, Value};
@@ -25,20 +24,9 @@ const DAY: u64 = 86_400_000;
 /// The aspects a `kept_thing`'s setting keeps a day.
 const KEPT: [&str; 3] = ["app:k.0", "app:km.0", "app:ke+.0"];
 
-/// In `w`, `t`'s setting keeping `KEPT` a day.
-fn keeps(w: &mut osis::Write<'_>, t: osis::Tid) {
-    let x = setting(&KEPT.map(|a| (a, crate::common::DAY)));
-    w.at(t, osis::core::RETENTION).set(&x).unwrap();
-}
-
 /// A thing whose setting keeps `KEPT` a day.
 fn kept_thing(db: &Osis) -> osis::Tid {
-    db.commit_with(|w| {
-        let t = w.create_held()?;
-        keeps(w, t);
-        Ok(t)
-    })
-    .unwrap()
+    thing_keeping(db, &KEPT.map(|a| (a, crate::common::DAY)))
 }
 
 fn setup(seed: u64) -> Osis {
@@ -206,13 +194,7 @@ fn takings_undo_while_kept_spec_commits_7() {
     let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     db.register_schema("undo.osis", SCHEMA).unwrap();
     let until = osis::History::Keep { until: osis::Time(T0 + 60_000), after_replaced: std::time::Duration::ZERO };
-    let x = setting(&[("app:l.0", until), ("app:k.0", crate::common::DAY)]);
-    let t = db.commit_with(|w| {
-        let t = w.create_held()?;
-        w.at(t, osis::core::RETENTION).set(&x)?;
-        Ok(t)
-    })
-    .unwrap();
+    let t = thing_keeping(&db, &[("app:l.0", until), ("app:k.0", crate::common::DAY)]);
     let l = key(&db, "app:l.0");
     let la = ak("app:l.0");
     let list = Scope::Aspects(vec![(t, la.clone())]);

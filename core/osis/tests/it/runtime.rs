@@ -5,28 +5,7 @@
 
 use crate::common::*;
 use osis::{Error, Osis, Runtime, Store, Value};
-use std::path::PathBuf;
 use std::time::Duration;
-
-/// A directory of this test's own under the system's temp directory, removed when dropped.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new(name: &str) -> Dir {
-        use std::hash::{BuildHasher, Hasher};
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u8(0);
-        let d = std::env::temp_dir().join(format!("osis-{name}-{}-{:x}", std::process::id(), h.finish()));
-        std::fs::create_dir_all(&d).unwrap();
-        Dir(d)
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 fn at(dir: &std::path::Path, rt: Runtime) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Dir(dir.to_path_buf()));

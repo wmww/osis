@@ -2,9 +2,7 @@
 //! Commit listings' relations and filters, undo, redo, revert (notes/api.md Commits; spec/commits.md
 //! §7, spec/crdt.md §4.6).
 
-use crate::common::Held as _;
 use osis::internals::CommitRaw as _;
-use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
@@ -108,16 +106,6 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
     assert!(db.revert(osis::CommitId::from(newest)).is_err());
 }
 
-/// Two nodes of one account, paired locally; commits travel by `deliver`.
-fn two_nodes() -> (Osis, Osis) {
-    let c = clock();
-    let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
-    let j = osis::internals::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
-    let (_, reply) = a.pair_accept(j.request()).unwrap();
-    let b = j.finish(&reply).unwrap();
-    (a, b)
-}
-
 fn sync2(a: &Osis, b: &Osis) {
     deliver(a, b);
     deliver(b, a);
@@ -128,7 +116,7 @@ fn sync2(a: &Osis, b: &Osis) {
 // is found by the other with the same query; a new change on one node clears redo on both.
 #[test]
 fn undo_redo_across_nodes_spec_commits_7() {
-    let (da, db) = two_nodes();
+    let (da, db, _) = paired();
     typed_any(&da, &["t:x.0", "t:y.0"]);
     typed_any(&db, &["t:x.0", "t:y.0"]);
     let k = ak("t:x.0");
@@ -172,7 +160,7 @@ fn field(id: u64) -> osis::Step {
 // read equals the read before; another's write into it already held when undoing stays.
 #[test]
 fn exact_undo_spec_crdt_4_6() {
-    let (a, b) = two_nodes();
+    let (a, b, _) = paired();
     for d in [&a, &b] {
         d.register_schema("doc.osis", DOC_SCHEMA).unwrap();
     }
@@ -318,7 +306,7 @@ fn changes_on_as_many_things_spec_requirements_decentralization() {
         w.commit().unwrap();
     }
     deliver(&a, &b);
-    let key = osis::DynamicAspectKey::untyped(ak("t:x.0"));
+    let key = untyped("t:x.0");
     let big: Vec<u8> = (0..osis_base::format::MAX_BLOB + 1).map(|i| (i % 251) as u8).collect();
     let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
     let mut w = a.write();
@@ -384,7 +372,7 @@ fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
     w.commit().unwrap();
     deliver(&a, &b);
     add("create", costs::take(), osis_perm::roles_reached() - r0);
-    let key = osis::DynamicAspectKey::untyped(ak("t:x.0"));
+    let key = untyped("t:x.0");
     let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
     costs::take();
     let r0 = osis_perm::roles_reached();

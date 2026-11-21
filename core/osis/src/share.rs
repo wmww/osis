@@ -685,17 +685,7 @@ impl Osis {
             if db.engine(|e| e.role_on(&target).is_some()) {
                 return Some(Ok(target));
             }
-            if !started {
-                started = true;
-                if let osis_sync::types::Waiting::Never(why) = db.locked(|l| {
-                    let w = l.node.redeem(&link);
-                    l.handle(osis_sync::Input::Wrote);
-                    w
-                }) {
-                    return Some(Err(Error::Invalid(format!("link: {why}"))));
-                }
-            }
-            redeem_over(db, &link, "link")
+            redeem_started(db, &link, &mut started, "link").or_else(|| redeem_over(db, &link, "link"))
         }))
     }
 
@@ -798,15 +788,8 @@ impl Osis {
             if let Some(a) = found {
                 return Some(db.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{a}"), p.to_string().as_bytes())).map(|()| a).map_err(Into::into));
             }
-            if !started {
-                started = true;
-                if let osis_sync::types::Waiting::Never(why) = db.locked(|l| {
-                    let w = l.node.redeem(&link);
-                    l.handle(osis_sync::Input::Wrote);
-                    w
-                }) {
-                    return Some(Err(Error::Invalid(format!("contact card: {why}"))));
-                }
+            if let Some(e) = redeem_started(db, &link, &mut started, "contact card") {
+                return Some(e);
             }
             // joined: the account's keys come with the profile's sync
             if db.engine(|e| e.role_on(&p).is_some()) {
@@ -867,6 +850,23 @@ const PROFILE_OF: &str = "profile/";
 
 /// App record: this node's contact card text.
 const CONTACT: &str = "contact";
+
+/// Starts redeeming `link` on a redeem's first check (`redeem`, `import_contact`): an error when
+/// the node can never redeem it.
+fn redeem_started<R>(db: &Osis, link: &osis_blob::ShareLink, started: &mut bool, what: &str) -> Option<Result<R>> {
+    if std::mem::replace(started, true) {
+        return None;
+    }
+    let w = db.locked(|l| {
+        let w = l.node.redeem(link);
+        l.handle(osis_sync::Input::Wrote);
+        w
+    });
+    match w {
+        osis_sync::types::Waiting::Never(why) => Some(Err(Error::Invalid(format!("{what}: {why}")))),
+        _ => None,
+    }
+}
 
 /// A redeem with no role on its target yet (`redeem`, `import_contact`) whose node stopped
 /// redeeming the link: it ended (`Invalid`), or the sharer never answered within the node's

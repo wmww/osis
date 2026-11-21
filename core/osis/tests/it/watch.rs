@@ -3,9 +3,6 @@
 //! Diagnostics, Footguns closed).
 //! spec: none (API surface, notes/api.md).
 
-use crate::common::Held as _;
-use crate::common::watched;
-use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
@@ -152,10 +149,10 @@ fn api_usable_from_callback() {
 fn watch_thing_all_aspects() {
     let db = db(0);
     let t = thing(&db);
-    db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:a.0")), &Value::Int(1)).unwrap();
+    db.commit_set(t, untyped("t:a.0"), &Value::Int(1)).unwrap();
     let (tx, rx) = channel();
     let _s = db.on_thing_change(t, move |_, c| tx.send((c.ak.as_str().to_string(), c.origin == Origin::Initial, c.value)).unwrap()).unwrap();
-    db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:b.0")), &Value::Int(2)).unwrap();
+    db.commit_set(t, untyped("t:b.0"), &Value::Int(2)).unwrap();
     db.settle();
     let all: Vec<_> = rx.try_iter().collect();
     let initial: std::collections::BTreeSet<&str> = all.iter().filter(|r| r.1).map(|r| r.0.as_str()).collect();
@@ -173,7 +170,7 @@ fn derived_change_on_expiry() {
     let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let k = ak("t:x.0");
     let t = thing(&db);
-    db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:kept.0")), &Value::Int(0)).unwrap();
+    db.commit_set(t, untyped("t:kept.0"), &Value::Int(0)).unwrap();
     let mut w = db.write();
     w.expires(osis::Expiry::In(Duration::from_secs(5)));
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
@@ -409,7 +406,7 @@ fn mistyped_value_watches_absent() {
     let (tx, rx) = channel();
     let _s = db.at(t, example::TITLE).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
     assert_eq!(recv(&rx), Ok(Some("a".to_string())));
-    db.commit_set(t, osis::DynamicAspectKey::untyped(ak("note:title.0")), &Value::Int(3)).unwrap();
+    db.commit_set(t, untyped("note:title.0"), &Value::Int(3)).unwrap();
     assert_eq!(recv(&rx), Ok(None));
     db.settle();
     assert!(w.try_changed());
@@ -502,7 +499,7 @@ fn a_parked_commit_is_told_once_spec_versioning_2() {
     let (a, b) = (db(1), db(2));
     let t = thing(&a);
     deliver(&a, &b);
-    a.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &Value::Int(1)).unwrap();
+    a.commit_set(t, untyped("t:x.0"), &Value::Int(1)).unwrap();
     let known = b.engine(|e| e.commit_ids());
     let pk = a.engine(|e| e.commit_ids().into_iter().filter(|id| !known.contains(id)).find_map(|id| e.package(&id).unwrap())).unwrap();
     // the same commit as a newer format version would write it
@@ -530,10 +527,6 @@ fn a_parked_commit_is_told_once_spec_versioning_2() {
 
 // Path listeners (notes/listener-design.md, step 5): a path listener is called exactly when the
 // value at its path differs after a transaction, from any cause.
-
-fn untyped(k: &str) -> osis::DynamicAspectKey {
-    osis::DynamicAspectKey::untyped(ak(k))
-}
 
 fn map(kv: &[(&str, i64)]) -> Value {
     Value::Map(kv.iter().map(|(k, v)| (Value::Str((*k).into()), Value::Int(*v))).collect())

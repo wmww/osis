@@ -161,9 +161,6 @@ impl Osis {
                 _ => {}
             })
         });
-        match failed {
-            Some(e) => Err(e),
-            None => Ok(sub),
-        }
+        failed.map_or(Ok(sub), Err)
     }
 }

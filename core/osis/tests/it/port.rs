@@ -5,7 +5,7 @@
 
 use crate::common::Held as _;
 use crate::common::TestWrites as _;
-use crate::common::{ak, cfg, clock};
+use crate::common::{Dir, ak, cfg, clock, untyped};
 use osis::internals::{ManualClock, ManualNet};
 use osis::{AppConfig, ClientSecret, DynamicAspectKey, Error, UnitSource, MemStore, NodeLogin, Origin, Osis, Role, Tid, Value};
 use std::sync::mpsc::{Receiver, channel};
@@ -42,7 +42,7 @@ fn connect(net: &ManualNet, c: &Arc<ManualClock>, addr: &osis::Address, secret: 
 }
 
 fn v() -> DynamicAspectKey {
-    DynamicAspectKey::untyped(ak("x:v.0"))
+    untyped("x:v.0")
 }
 
 /// A node holding thing `t` (`x:v.0` = 5), a client registered, granted `role` on `t`, and the
@@ -297,39 +297,6 @@ fn made_id(m: &Msg) -> [u8; 32] {
     }
 }
 
-// spec/wire.md §11.2 (A client actor's rights): a watch on a thing the actor may not read hears
-// what a watch on a never-known thing hears, nothing when the thing changes; one on a thing it
-// reads hears the change.
-#[test]
-fn a_hidden_thing_notifies_nothing_spec_wire_11() {
-    let w = world(None);
-    let mut x = w.a.write();
-    let seen = x.create_held().unwrap();
-    x.at(seen, v()).set(&Value::Int(1)).unwrap();
-    x.commit().unwrap();
-    w.a.grant(seen, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
-    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
-    let never = Tid::from_bytes([9; 15]);
-    let (_a, hidden) = changes(&cl, w.t);
-    let (_b, unknown) = changes(&cl, never);
-    let (_c, read) = changes(&cl, seen);
-    cl.settle();
-    for rx in [&hidden, &unknown] {
-        let first = rx.try_recv().unwrap();
-        assert_eq!((first.value, first.origin), (Ok(None), Origin::Initial));
-    }
-    read.try_recv().unwrap();
-    for n in 6..9 {
-        crate::common::commit_with(&w.a, |x| {
-            x.at(w.t, v()).set(&Value::Int(n))?;
-            x.at(seen, v()).set(&Value::Int(n))
-        });
-        cl.settle();
-        assert_eq!(read.try_recv().unwrap().value, Ok(Some(Value::Int(n))));
-    }
-    assert!(hidden.try_recv().is_err() && unknown.try_recv().is_err());
-}
-
 // spec/wire.md §11.2 (an ended session (below) counts toward neither): an ended session is no
 // authenticated one, so it holds no place under `max_clients`; a client that can no longer
 // authenticate (removed, or past its `until`) keeps no write outcomes at the node.
@@ -395,26 +362,6 @@ fn subscriptions_per_connection_are_bounded_spec_wire_11() {
     assert!(r[1..=4096].iter().all(|m| matches!(outcome(m), Outcome::Ok { .. })));
     assert_eq!(error_code(&r[4097]), Some(2), "a live id reused");
     assert_eq!(error_code(&r[4098]), Some(4), "past the cap");
-}
-
-/// A directory of its own, removed at the end.
-struct Dir(std::path::PathBuf);
-
-impl Dir {
-    fn new(name: &str) -> Dir {
-        use std::hash::{BuildHasher, Hasher};
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u8(0);
-        let d = std::env::temp_dir().join(format!("osis-{name}-{}-{:x}", std::process::id(), h.finish()));
-        std::fs::create_dir_all(&d).unwrap();
-        Dir(d)
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 // spec/sync-transport.md §6 (Client-actor session): a client's secret goes over a keyed
@@ -693,11 +640,12 @@ fn thing_changes(db: &Osis, t: Tid) -> (osis::Subscription, Receiver<osis::Chang
     (s, rx)
 }
 
-// notes/client-port.md §1 (Watches), spec/wire.md §11.2 (A client actor's rights):
-// `on_thing_change` through a thin client hears each aspect, then each change; one on a thing
-// the actor may not read hears what one on a never-known thing hears: nothing.
+// notes/client-port.md §1 (Watches), spec/wire.md §11.2 (A client actor's rights): a watch
+// through a thin client, of a value (`on_change`) or of a thing (`on_thing_change`), hears the
+// first value, then each change; one on a thing the actor may not read hears what one on a
+// never-known thing hears: nothing when the thing changes.
 #[test]
-fn a_thing_watch_through_a_thin_client_spec_wire_11() {
+fn a_hidden_thing_notifies_nothing_spec_wire_11() {
     let w = world(None);
     let mut x = w.a.write();
     let seen = x.create_held().unwrap();
@@ -705,11 +653,20 @@ fn a_thing_watch_through_a_thin_client_spec_wire_11() {
     x.commit().unwrap();
     w.a.grant(seen, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
-    let (_a, hidden) = thing_changes(&cl, w.t);
-    let (_b, unknown) = thing_changes(&cl, Tid::from_bytes([9; 15]));
-    let (_c, read) = thing_changes(&cl, seen);
+    let never = Tid::from_bytes([9; 15]);
+    let (_a, hidden) = changes(&cl, w.t);
+    let (_b, unknown) = changes(&cl, never);
+    let (_c, read) = changes(&cl, seen);
+    let (_d, thing_hidden) = thing_changes(&cl, w.t);
+    let (_e, thing_unknown) = thing_changes(&cl, never);
+    let (_f, thing_read) = thing_changes(&cl, seen);
     cl.settle();
-    let first: Vec<_> = read.try_iter().collect();
+    for rx in [&hidden, &unknown] {
+        let first = rx.try_recv().unwrap();
+        assert_eq!((first.value, first.origin), (Ok(None), Origin::Initial));
+    }
+    read.try_recv().unwrap();
+    let first: Vec<_> = thing_read.try_iter().collect();
     assert!(first.iter().any(|c| c.ak == ak("x:v.0") && c.value == Ok(Some(Value::Int(1))) && c.origin == Origin::Initial), "{first:?}");
     osis::internals::costs::take();
     for n in 6..9 {
@@ -718,17 +675,19 @@ fn a_thing_watch_through_a_thin_client_spec_wire_11() {
             x.at(seen, v()).set(&Value::Int(n))
         });
         cl.settle();
-        let c = read.try_recv().unwrap();
+        assert_eq!(read.try_recv().unwrap().value, Ok(Some(Value::Int(n))));
+        let c = thing_read.try_recv().unwrap();
         assert_eq!((c.ak, c.value), (ak("x:v.0"), Ok(Some(Value::Int(n)))));
         assert!(matches!(c.origin, Origin::Local(s) if s.author == w.a.me()), "{:?}", c.origin);
     }
     assert!(hidden.try_recv().is_err() && unknown.try_recv().is_err());
-    assert_eq!(notifies(), 3, "one per change of the thing it reads, none of the hidden one");
+    assert!(thing_hidden.try_recv().is_err() && thing_unknown.try_recv().is_err());
+    assert_eq!(notifies(), 6, "one per change of the thing it reads and watch, none of the hidden one");
     w.net.set_online(0, false);
     w.net.run();
     cl.settle();
-    assert!(read.try_iter().all(|c| matches!(c.value, Err(Error::Network(_)))));
-    assert!(hidden.try_recv().is_err() && unknown.try_recv().is_err(), "nothing told, nothing lost");
+    assert!(thing_read.try_iter().all(|c| matches!(c.value, Err(Error::Network(_)))));
+    assert!(thing_hidden.try_recv().is_err() && thing_unknown.try_recv().is_err(), "nothing told, nothing lost");
 }
 
 // notes/client-port.md §1 (Watches), spec/wire.md §11.2 (A client actor's rights):
@@ -786,7 +745,7 @@ fn daemon(net: &ManualNet, c: &Arc<ManualClock>, seed: u64, name: &str) -> (Dir,
 }
 
 fn signal() -> DynamicAspectKey {
-    DynamicAspectKey::untyped(ak("x:log~0"))
+    untyped("x:log~0")
 }
 
 fn text(x: &str) -> Value {

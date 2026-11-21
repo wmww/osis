@@ -64,7 +64,8 @@ fn tag_ok(secret: &[u8; 32], purpose: &str, items: &[Value]) -> bool {
     same(&mac(secret, purpose, &Value::List(body.to_vec())), tag)
 }
 
-fn same(a: &[u8], b: &[u8]) -> bool {
+/// Whether `a` equals `b`, compared in constant time.
+pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
