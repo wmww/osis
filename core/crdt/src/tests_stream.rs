@@ -332,15 +332,18 @@ proptest! {
     }
 }
 
-/// The differential pages often and rejects and accepts mutants both (else it tests nothing).
+/// `stream_check_matches_whole_spec_8` on the default seeds, which page often and reject and
+/// accept mutants both (else it tests nothing); another range (a replay, the gate's offset)
+/// checks the decisions alone.
 #[test]
-fn stream_differential_covers_paging_spec_8() {
-    let mut n = (0, 0, 0, 0);
-    for seed in 0..18u64 {
-        let m = case(seed).unwrap();
-        n = (n.0 + m.0, n.1 + m.1, n.2 + m.2, n.3 + m.3);
-    }
-    assert!(n.0 > 30 && n.1 > 100 && n.2 > 8 && n.3 > 8, "accepted, rejected, paged inputs, streamed in pieces {n:?}");
+#[ignore = "property"]
+fn stream_differential_covers_paging_plain_spec_8() {
+    let name = "tests_stream::stream_differential_covers_paging_plain_spec_8";
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_CRDT_START", "OSIS_CRDT_SEEDS", 0..18);
+    let replay = |s: u64| format!("OSIS_CRDT_START={s} OSIS_CRDT_SEEDS=1 cargo test -p osis-crdt --lib -- --ignored --exact {name}");
+    let ms = seeds.run(name, replay, |seed| case(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
+    let n = ms.iter().fold((0, 0, 0, 0), |n, m| (n.0 + m.0, n.1 + m.1, n.2 + m.2, n.3 + m.3));
+    assert!(seeds.overridden || (n.0 > 30 && n.1 > 100 && n.2 > 8 && n.3 > 8), "accepted, rejected, paged inputs, streamed in pieces {n:?}");
 }
 
 /// `stream_check_matches_whole_spec_8` at size (a property).
@@ -430,10 +433,14 @@ fn page_bytes(map: bool, items: Vec<osis_base::Value>) -> Vec<u8> {
 /// it, a page emptied, two pages' contents swapped, a leaf turned into a link page): both
 /// decoders decide alike.
 #[test]
-fn stream_recut_pages_spec_8() {
+#[ignore = "property"]
+fn stream_recut_pages_plain_spec_8() {
     use osis_base::Value as V;
-    let mut n = (0, 0);
-    for seed in 0..24u64 {
+    let name = "tests_stream::stream_recut_pages_plain_spec_8";
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_RECUT_START", "OSIS_RECUT_SEEDS", 0..24);
+    let replay = |s: u64| format!("OSIS_RECUT_START={s} OSIS_RECUT_SEEDS=1 cargo test -p osis-crdt --lib -- --ignored --exact {name}");
+    let ns = seeds.run(name, replay, |seed| {
+        let mut n = (0, 0);
         let mut r = crate::testutil::rng(seed ^ 0x5ea3);
         let params = if seed % 2 == 0 { TINY } else { SMALL };
         for i in inputs(seed, &types(seed), Some(params)).0 {
@@ -472,8 +479,11 @@ fn stream_recut_pages_spec_8() {
                 if m.agree().unwrap() { n.0 += 1 } else { n.1 += 1 }
             }
         }
-    }
-    assert!(n.1 > 100, "accepted, rejected {n:?}");
+        n
+    });
+    // the default seeds reject often; another range checks the decisions alone
+    let n = ns.iter().fold((0, 0), |n, m| (n.0 + m.0, n.1 + m.1));
+    assert!(seeds.overridden || n.1 > 100, "accepted, rejected {n:?}");
 }
 
 /// §3.3 rule 1: a `Commits` entry no stamp uses is refused, whatever its `base` (the check's

@@ -169,9 +169,13 @@ fn r2_world() -> (LocalPeer, Vec<Tid>) {
 // removed and granted again; every commit reaches each other node in a random order, so writes
 // arrive before or after the grants and removals judging them (valid, then invalid, or back).
 #[test]
-fn known_references_are_a_scan_of_held_values_spec_data_model_8() {
+#[ignore = "property"]
+fn known_references_are_a_scan_of_held_values_plain_spec_data_model_8() {
     use osis_base::Role;
-    for seed in 1..=2u64 {
+    osis_base::testenv::Seeds::from_env("OSIS_KNOWN_REFS_START", "OSIS_KNOWN_REFS_SEEDS", 1..3).run(
+        "refs::known_references_are_a_scan_of_held_values_plain_spec_data_model_8",
+        |s| format!("OSIS_KNOWN_REFS_START={s} OSIS_KNOWN_REFS_SEEDS=1 cargo test -p osis-engine --test it -- --ignored --exact refs::known_references_are_a_scan_of_held_values_plain_spec_data_model_8"),
+        |seed| {
         let mut rng = crate::order::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let (mut lp, things) = r2_world();
         let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
@@ -352,7 +356,8 @@ fn known_references_are_a_scan_of_held_values_spec_data_model_8() {
                 .unwrap();
             }
         }
-    }
+    },
+    );
 }
 
 // spec/data-model.md §8 What counts: core aspects name things by weaks, so none of

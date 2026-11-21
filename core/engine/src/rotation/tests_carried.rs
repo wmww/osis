@@ -629,8 +629,12 @@ fn rotation_judged_alike_by_a_node_joining_after_compaction_plain_spec_crypto_4(
 // keysets are current, so a node granted X1 afterwards, fed what B holds in any order, holds them
 // as B does.
 #[test]
-fn own_demotion_keyset_held_by_a_node_joining_after_compaction_spec_crypto_4() {
-    for seed in 0..4u64 {
+#[ignore = "property"]
+fn own_demotion_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto_4() {
+    osis_base::testenv::Seeds::from_env("OSIS_OWN_DEMOTION_START", "OSIS_OWN_DEMOTION_SEEDS", 0..4).run(
+        "rotation::tests_carried::own_demotion_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto_4",
+        |s| format!("OSIS_OWN_DEMOTION_START={s} OSIS_OWN_DEMOTION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_carried::own_demotion_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto_4"),
+        |seed| {
         let mut rng = super::tests::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let mut s = shape(1);
         let (x1, w) = (s.x1(), s.me(W));
@@ -676,5 +680,6 @@ fn own_demotion_keyset_held_by_a_node_joining_after_compaction_spec_crypto_4() {
         for (r, e) in &demotes {
             assert!(s.lp.peers[x].engine.core.keyset(&x1, *r, e).is_some(), "seed {seed}: the newcomer lacks X1's keyset {r:?} B holds");
         }
-    }
+    },
+    );
 }

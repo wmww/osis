@@ -290,10 +290,14 @@ fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
 // sync unit and the NotCarried list equal held-model `closure`'s on the world rebuilt from the
 // edits.
 #[test]
-fn sync_units_are_the_models_spec_sync_set_2() {
+#[ignore = "property"]
+fn sync_units_are_the_models_plain_spec_sync_set_2() {
     use held_model::closure as hc;
     use osis_base::Role;
-    for seed in 1..=3u64 {
+    osis_base::testenv::Seeds::from_env("OSIS_UNITS_START", "OSIS_UNITS_SEEDS", 1..4).run(
+        "closure::sync_units_are_the_models_plain_spec_sync_set_2",
+        |s| format!("OSIS_UNITS_START={s} OSIS_UNITS_SEEDS=1 cargo test -p osis-engine --test it -- --ignored --exact closure::sync_units_are_the_models_plain_spec_sync_set_2"),
+        |seed| {
         let mut rng = crate::order::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let (mut lp, _) = people(1);
         let e = &mut lp.peers[0].engine;
@@ -367,7 +371,8 @@ fn sync_units_are_the_models_spec_sync_set_2() {
             let got: BTreeSet<(usize, usize)> = e.not_carried().unwrap().iter().filter_map(|(x, y)| Some((ix(x)?, ix(y)?))).collect();
             assert_eq!(got, want, "seed {seed} step {step}: not carried");
         }
-    }
+    },
+    );
 }
 
 /// `make` refused or not: a thing minted with admin `admin`, strongly referenced from `from` (none: from

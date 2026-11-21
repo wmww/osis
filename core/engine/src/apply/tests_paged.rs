@@ -1840,18 +1840,23 @@ fn walk_fill(w: &mut World, pk: &Package, one: bool) -> (usize, bool) {
 /// standing alone, in a list of links in a register, and as one-link lists in the entries of a
 /// paged map (the walk takes a list of links for a position's tree; their blobs are tree roots).
 #[test]
-fn honest_values_sync_through_the_fetch_walk_spec_wire_6() {
+#[ignore = "property"]
+fn honest_values_sync_through_the_fetch_walk_plain_spec_wire_6() {
     use crdt_model::r#gen::{Rng as MRng, bulk_value, kitchen_sink};
     let params = small_pages();
-    let _pages = osis_crdt::PageParams::set_test(Some(params));
     let a = aks()[1].clone();
     let big = |i: u64| Value::Str(format!("{:x}", i % 16).repeat(osis_base::format::CHUNK_THRESHOLD + 1 + i as usize));
-    let mut paged = 0;
-    for seed in 0..8u64 {
+    let name = "apply::tests_paged::honest_values_sync_through_the_fetch_walk_plain_spec_wire_6";
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_HONEST_PAGES_START", "OSIS_HONEST_PAGES_SEEDS", 0..8);
+    let replay = |s: u64| format!("OSIS_HONEST_PAGES_START={s} OSIS_HONEST_PAGES_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact {name}");
+    let paged = seeds.run(name, replay, |seed| {
+        // per seed thread: the page parameters are the thread's
+        let _pages = osis_crdt::PageParams::set_test(Some(params));
         let mut r = MRng(seed + 1);
         let generated = osis_base::decode(&bulk_value(&mut r, &kitchen_sink(), 0).canonical(), &osis_base::Limits::DEFAULT).unwrap();
         let mut v = vec![(Value::Str("gen".into()), generated)];
-        if seed < 2 {
+        // large values in two of any eight consecutive seeds
+        if seed % 8 < 2 {
             v.push((Value::Str("lone".into()), big(seed * 100)));
             v.push((Value::Str("list".into()), Value::List(vec![big(seed * 100 + 1), big(seed * 100 + 2)])));
             v.push((Value::Str("map".into()), Value::Map((0..12).map(|i| (Value::Int(i), Value::List(vec![big(seed * 100 + 10 + i as u64)]))).collect())));
@@ -1865,11 +1870,13 @@ fn honest_values_sync_through_the_fetch_walk_spec_wire_6() {
         let pk = w.lp.peers[0].engine.package(&c).unwrap().unwrap();
         let (rounds, waits) = walk_fill(&mut w, &pk, false);
         assert!(!waits, "seed {seed}: left waiting after {rounds} rounds");
-        paged += usize::from(rounds > 1);
         let want = w.lp.peers[0].engine.get(&t, &a).unwrap();
         assert!(want.is_some() && w.lp.peers[3].engine.get(&t, &a).unwrap() == want, "seed {seed}: node 3 reads what node 0 does");
-    }
-    assert!(paged >= 4, "paged values reached: {paged}");
+        usize::from(rounds > 1)
+    });
+    // the default seeds reach paging; another range (a replay, the gate's offset) checks the reads alone
+    let paged: usize = paged.into_iter().sum();
+    assert!(seeds.overridden || paged >= 4, "paged values reached: {paged}");
 }
 
 /// spec/sync-streams.md (page discovery), spec/crdt.md §3.3 rule 7: the walk follows paged

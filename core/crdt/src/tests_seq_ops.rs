@@ -1006,9 +1006,13 @@ fn move_undo_chain_spec_4_6() {
 /// cached placement follows the moves that close no cycle and equals a whole pass after every
 /// join; all converge.
 #[test]
-fn cached_placement_follows_moves_spec_6_2() {
-    let (mut kept, mut moves) = (0, 0);
-    for seed in 0..12u64 {
+#[ignore = "property"]
+fn cached_placement_follows_moves_plain_spec_6_2() {
+    let name = "tests_seq_ops::cached_placement_follows_moves_plain_spec_6_2";
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_CACHED_MOVES_START", "OSIS_CACHED_MOVES_SEEDS", 0..12);
+    let replay = |s: u64| format!("OSIS_CACHED_MOVES_START={s} OSIS_CACHED_MOVES_SEEDS=1 cargo test -p osis-crdt --lib -- --ignored --exact {name}");
+    let counts = seeds.run(name, replay, |seed| {
+        let (mut kept, mut moves) = (0, 0);
         let mut r = crate::testutil::rng(2 * seed + 1);
         let mut base = Replica::new(1);
         base.commit(1, &[op(Op::Set(s(&"abcdefghij".repeat(8))))], &text_view());
@@ -1070,9 +1074,12 @@ fn cached_placement_follows_moves_spec_6_2() {
             }
             assert_eq!(read_str(&w.state), read_str(&d.state), "seed {seed}");
         }
-    }
+        (kept, moves)
+    });
+    let (kept, moves) = counts.iter().fold((0, 0), |a, c| (a.0 + c.0, a.1 + c.1));
     eprintln!("moves followed: {kept} of {moves}");
-    assert!(kept * 4 >= moves * 3, "followed {kept} of {moves}");
+    // the default seeds' cache follows most moves; another range checks the placements alone
+    assert!(seeds.overridden || kept * 4 >= moves * 3, "followed {kept} of {moves}");
 }
 
 /// §6 (a deterministic function of state), `seq_lin`: hostile deltas of moves to HEAD below 250 newer HEAD siblings cost about a
