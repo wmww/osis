@@ -47,7 +47,6 @@ notes/priorities.md, First: issues/app-tile-unreadable-emails-test.md [checked: 
 
 ### P. Prune
 Net lines go down (notes/principles.md, Writing code is the cheapest part of having code). Out of spec, code, models and tests:
-- the drafts' and held-model's wait for a complete pass before a body judged invalid is dropped (drops are at once, as built);
 - the last-admin rule every node judges (a lowering naming its remaining admin, that edge as evidence);
 - whatever else these orphan. The gate is measured again afterwards (issues/test-time.md).
 
@@ -144,7 +143,7 @@ The renames left (below); notes/terms.md, Built and being moved to, reduced to w
 | what | stage | must exist first |
 |---|---|---|
 | Chain certificates over any path, "closed under authors" | A2 | stated paths (A1), M2 |
-| The wait before a drop; the last-admin rule every node judges | P | |
+| The last-admin rule every node judges | P | |
 | held-model's errand and reach (`Rule::fixed`, `Stage::A3`) | D | its holds-everything properties restated for lazy delivery |
 | The header's `actor`, the Acting check, the audit's reachability search | A1 | M1 briefs 2 and 3 |
 | The one frontier over every thing | A3 | evidence per sync unit (A2) |

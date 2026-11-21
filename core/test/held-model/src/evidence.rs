@@ -40,8 +40,9 @@
 //!   evidence of the bodies on that thing whose verdict reads it (`LeafKeep`), held and logged
 //!   as any evidence; a body lacking a leaf a held root shows pends (`pend_leaf`). Addenda leave
 //!   with the last held commit they can keep (`addendum_live`).
-//! - **Acting** (`acts`, `p8_acts`): what a reader does on a verdict, after a complete pass of
-//!   its sync ID or (the control) on any partial arrival.
+//! - **Promoting** (`promotions`, `p8_promotions`): a reader promotes a body it judges valid after a
+//!   complete pass of its sync ID or (the control) on any partial arrival. A body judged invalid
+//!   is dropped at once (spec/commits.md §5 Invalid): no act waits for it.
 //!
 //! Left out: records (static, `paths::World::records`), keys and sealing, rotations, `@` signals,
 //! covers, the deposit path, invites as a reach (a removal's reach is write), taken-ness of a grant,
@@ -441,19 +442,9 @@ pub struct Seen {
     pub keep: LeafKeep,
 }
 
-/// An action taken on a verdict (spec/sync-judgement.md §2, spec/sync-inbox.md §4): what a node does once it judges a body.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Act {
-    /// A valid body: a deposit of it promoted, a cover of it (a valid snapshot) dropping what it
-    /// covers, shown as settled.
-    Promote(Id),
-    /// An invalid body: dropped as invalid, not logged.
-    Drop(Id),
-}
-
-/// When a reader acts on its verdicts.
+/// When a reader promotes (spec/sync-inbox.md §4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActWhen {
+pub enum PromoteWhen {
     /// Only on the sync ID's whole entries: after a complete pass.
     AfterPass,
     /// Control: on any partial arrival where the verdict does not pend.
@@ -1761,53 +1752,37 @@ impl World {
         }
         out
     }
-    /// What a reader acts on from `seen`: a promotion (or a cover dropping what it covers) on a
-    /// valid body, a drop on an invalid one.
-    pub fn acts(&self, seen: &Seen, bodies: &Set) -> Vec<Act> {
-        let mut out = vec![];
-        for (i, v) in self.verdicts(seen, bodies) {
-            match v {
-                Verdict::Valid => out.push(Act::Promote(i)),
-                Verdict::Invalid => out.push(Act::Drop(i)),
-                Verdict::Pending => {}
-            }
-        }
-        out
+    /// What a reader promotes from `seen`: each body it judges valid (a deposit of it promoted, a
+    /// cover of it dropping what it covers, shown as settled).
+    pub fn promotions(&self, seen: &Seen, bodies: &Set) -> Vec<Id> {
+        self.verdicts(seen, bodies).into_iter().filter(|&(_, v)| v == Verdict::Valid).map(|(i, _)| i).collect()
     }
-    /// The verdict an act was taken on.
-    fn act_on(a: Act) -> (Id, Verdict) {
-        match a {
-            Act::Promote(i) => (i, Verdict::Valid),
-            Act::Drop(i) => (i, Verdict::Invalid),
-        }
-    }
-    /// P8, acting on verdicts: every act a reader of each sync ID takes (`when`) agrees with the
+    /// P8, promoting: every promotion a reader of each sync ID takes (`when`) agrees with the
     /// verdict of the node holding everything at that step. `AfterPass` acts on the sync ID's
     /// whole entries; `WhenNothingPends` (the control) also on every arrival order of each body's
     /// evidence (P5's subsets, `cap` parts) where the body does not pend.
-    pub fn p8_acts(&self, rule: &Rule, st: &State, when: ActWhen, cap: usize) -> Vec<Fail> {
+    pub fn p8_promotions(&self, rule: &Rule, st: &State, when: PromoteWhen, cap: usize) -> Vec<Fail> {
         let full = self.verdicts(&self.full(st, &Set::new()), &st.written);
         let mut out = vec![];
-        let mut check = |s: Sid, acts: Vec<Act>| {
-            for a in acts {
-                let (i, v) = World::act_on(a);
-                if full[&i] != v {
-                    out.push(Fail { prop: "P8-act", step: st.step, sid: s, id: i, reader: Some(v), full: Some(full[&i]) });
+        let mut check = |s: Sid, promoted: Vec<Id>| {
+            for i in promoted {
+                if full[&i] != Verdict::Valid {
+                    out.push(Fail { prop: "P8-promote", step: st.step, sid: s, id: i, reader: Some(Verdict::Valid), full: Some(full[&i]) });
                 }
             }
         };
         for &s in &self.sids {
             let seen = self.reader(rule, st, s, &Set::new());
             let bodies = self.bodies(s, &st.units, &seen.v.held);
-            check(s, self.acts(&seen, &bodies));
-            if when == ActWhen::AfterPass {
+            check(s, self.promotions(&seen, &bodies));
+            if when == PromoteWhen::AfterPass {
                 continue;
             }
             for &i in &bodies {
                 let ev: Vec<Id> = self.closure(rule, &Set::from([i]), &seen.v.held).into_iter().filter(|&j| j != i).take(cap).collect();
                 for mask in 1..(1u32 << ev.len()) {
                     let y: Set = ev.iter().enumerate().filter(|(b, _)| mask >> b & 1 == 1).map(|(_, &j)| j).collect();
-                    check(s, self.acts(&self.reader(rule, st, s, &y), &Set::from([i])));
+                    check(s, self.promotions(&self.reader(rule, st, s, &y), &Set::from([i])));
                 }
             }
         }

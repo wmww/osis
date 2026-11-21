@@ -16,7 +16,7 @@ fn fails(w: &World, rule: &Rule) -> Vec<Fail> {
     out.extend(w.p4(rule, &st, true));
     out.extend(w.p5_order(rule, &st, 5).0);
     out.extend(w.p7_leaf_waits(rule, &st));
-    out.extend(w.p8_acts(rule, &st, ActWhen::AfterPass, 0));
+    out.extend(w.p8_promotions(rule, &st, PromoteWhen::AfterPass, 0));
     out
 }
 
@@ -101,41 +101,38 @@ fn f27_a_leaf_of_a_lowering_that_cuts_nothing_is_waited_on_by_nobody() {
 }
 
 /// P8 and finding 5: D's reader holding the thief's write and K's grant but not X's earlier
-/// removal finds nothing pending; acting then (a promotion of a deposit, a cover dropping what it
-/// covers) contradicts the verdict of the node holding everything. Acting only on D's whole
-/// entries (after a complete pass) never does.
+/// removal finds nothing pending; promoting then (a deposit, a cover dropping what it covers)
+/// contradicts the verdict of the node holding everything. Promoting only on D's whole entries
+/// (after a complete pass) never does.
 #[test]
-fn p8_acting_before_a_complete_pass_is_reversed_by_what_it_lacked() {
+fn p8_promoting_before_a_complete_pass_is_reversed_by_what_it_lacked() {
     let mut sh = Shape::nth(0);
     sh.thief = true;
     let w = family(sh);
     let st = w.run(&Rule::fixed(), |_| {});
-    assert_eq!(w.p8_acts(&Rule::fixed(), &st, ActWhen::AfterPass, 5), vec![]);
-    let f = w.p8_acts(&Rule::fixed(), &st, ActWhen::WhenNothingPends, 5);
+    assert_eq!(w.p8_promotions(&Rule::fixed(), &st, PromoteWhen::AfterPass, 5), vec![]);
+    let f = w.p8_promotions(&Rule::fixed(), &st, PromoteWhen::WhenNothingPends, 5);
     assert!(f.iter().any(|f| f.sid == D && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
 }
 
-/// P8: an act taken after a complete pass is reversed by a write made later (the node holding
-/// everything reverses with it; one made earlier and delivered late does too, finding 33): X
-/// re-grants K after removing it, so D's reader drops K's first write as invalid, then judges it
-/// valid again; the drop must be undoable (the body fetched again, spec/sync-judgement.md §3
-/// Dropped bodies), never final.
+/// P8: a promotion taken after a complete pass is reversed by a write made later (the node
+/// holding everything reverses with it; one made earlier and delivered late does too, finding
+/// 33): D's reader promotes K's first write, which X's removal, written after, cuts; the
+/// promotion is undone by the rules (the body leaves the store), never final.
 #[test]
-fn p8_an_act_after_a_complete_pass_is_reversed_by_a_later_write() {
-    let mut sh = Shape::nth(0);
-    sh.regrant = true;
-    let w = family(sh);
+fn p8_a_promotion_after_a_complete_pass_is_reversed_by_a_later_write() {
+    let w = family(Shape::nth(0));
     let rule = Rule::fixed();
-    let mut taken: Vec<(usize, Act)> = vec![];
+    let mut taken: Vec<(usize, Id)> = vec![];
     let st = w.run(&rule, |st| {
         let seen = w.reader(&rule, st, D, &Set::new());
-        for a in w.acts(&seen, &w.bodies(D, &st.units, &seen.v.held)) {
-            taken.push((st.step, a));
+        for i in w.promotions(&seen, &w.bodies(D, &st.units, &seen.v.held)) {
+            taken.push((st.step, i));
         }
-        assert_eq!(w.p8_acts(&rule, st, ActWhen::AfterPass, 0), vec![]);
+        assert_eq!(w.p8_promotions(&rule, st, PromoteWhen::AfterPass, 0), vec![]);
     });
     let fin = w.verdicts(&w.full(&st, &Set::new()), &st.written);
-    let reversed: Vec<(usize, Act)> = taken.iter().copied().filter(|&(_, a)| matches!(a, Act::Drop(i) if fin[&i] == Verdict::Valid)).collect();
+    let reversed: Vec<(usize, Id)> = taken.iter().copied().filter(|&(_, i)| fin[&i] == Verdict::Invalid).collect();
     assert!(!reversed.is_empty(), "{taken:?}");
     for (step, _) in reversed {
         // every later step that reversed it is a write
@@ -241,27 +238,6 @@ fn f11_a_non_admin_of_a_path_thing_grows_the_evidence_with_writes_that_never_app
         w.copies(&st, D).len()
     };
     assert_eq!(copies(30) - copies(3), 27);
-}
-
-/// Finding 12: X removes K (5) and grants it again (6); K writes c on D at 7. D's reader holding
-/// the removal but not yet the re-grant judges c invalid, the node holding everything valid: a
-/// drop then (the control, acting on any arrival) discards a body the node holding everything
-/// shows; acting after a complete pass never does.
-#[test]
-fn f12_a_drop_on_partial_evidence_discards_a_valid_body() {
-    let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
-    let mut w = World::new(pw, &[A, D]);
-    let (x, y, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    w.write(x, |p| p.edge(X, 5, &[], A, K, Role::None, &[]));
-    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::Write, &[]));
-    let c = w.write(k, |p| p.content(K, 7, &[A], D));
-    let rule = Rule::fixed();
-    let st = w.run(&rule, |_| {});
-    assert_eq!(w.p8_acts(&rule, &st, ActWhen::AfterPass, 5), vec![]);
-    let f = w.p8_acts(&rule, &st, ActWhen::WhenNothingPends, 5);
-    assert!(f.iter().any(|f| f.id == c && f.reader == Some(Verdict::Invalid) && f.full == Some(Verdict::Valid)), "{f:?}");
 }
 
 fn props(f: &[Fail]) -> Vec<&'static str> {

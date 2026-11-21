@@ -98,7 +98,7 @@ fn gaps_a_list_entry_names_its_part_on_its_leafs_thing_alone() {
     w.write(x, |p| p.edge(X, 3, &[], A, Z, Role::None, &[ids[0]]));
     for s in Stage::ALL {
         let f = gap_fails(&w, s, &[]);
-        assert!(f.iter().all(|f| f.prop.starts_with("P1") || f.prop == "P8-act") && !f.iter().any(|f| f.prop == "P1" && f.id == ids[1]), "{}: {f:?}", s.name());
+        assert!(f.iter().all(|f| f.prop.starts_with("P1") || f.prop == "P8-promote") && !f.iter().any(|f| f.prop == "P1" && f.id == ids[1]), "{}: {f:?}", s.name());
     }
     let mut wl = w.clone();
     let rule = Stage::A3.set(&mut wl, Rule::fixed());
