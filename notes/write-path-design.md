@@ -3,10 +3,10 @@
 
 **Principle: a write states how it has its right, and is judged by that statement alone; what a reader needs to check the statement is in the unit it reads, as a function of the writes that unit holds.** Core knows owner keys, things, roles, a write's stated path and named purge author, and each session's configured defaults for those; it has no concept of an account, a profile or a home (Tess). Each section states the one rule it follows from that; a rule that does not follow is marked **Smell**.
 
-Marks: *decided* (Tess: notes/handoff.md, issues/actors-one-mechanism.md Answers), *modelled* (held by roles-model `paths` or held-model as they stand), *probed* (held by a throwaway run for this note, which the models are then cut to: §6), *argued* (a claim for the models, §6), *checked* (against the cited spec or code). Terms: notes/terms.md. Membership as a use of these rules: notes/account-membership-design.md.
+Marks: *decided* (Tess: Decided below, issues/actors-one-mechanism.md Answers), *modelled* (held by roles-model `paths` or held-model as they stand), *probed* (held by a throwaway run for this note, which the models are then cut to: §6), *argued* (a claim for the models, §6), *checked* (against the cited spec or code). Terms: notes/terms.md. Membership as a use of these rules: notes/account-membership-design.md.
 
 ## Decided (Tess)
-As recorded in notes/handoff.md, verbatim; every rule below keeps them.
+Tess's words, verbatim; every rule below keeps them.
 - "**Owner keys replace key actors.** An **owner key** is a key a thing lists as allowed to sign as it: a concept of its own, a value with no tid, aspects or roles."
 - "It speaks for the one thing that lists it: it is no actor and holds no role. A commit it signs is that thing acting, and the actor chain is all things, from the thing the key signs as to the target. Only things hold roles."
 - "A thing is minted with a mint admin or an owner key (a thing with no mint admin is where a chain starts). Owner keys are added and removed afterwards; the list is written only as the thing itself, by an owner key, and admins read it. A thing with none takes its first from an admin."
@@ -70,7 +70,7 @@ The sync unit is the built one: a thing's readable closure, so a thing may be ca
 - Typical paths: a node writing its own root []; writing what its account administers [A]; a member of an organization writing its things [A, Org]; a holder of a grant on a shared document D [A, D]; a link's grant [], signed as the link's thing; a recovery key acting on its account [], signed as the account.
 
 ### May-grant
-A grant's value is a role, an `until` and a **may-grant flag** (decided: a flag, not a level).
+A grant's value is a role, an `until` and a **may-grant flag** (decided: a flag, not a level). May-grant itself stays (decided): dropping it was weighed and rejected; it is no root cause of open bugs, and without it link joiners are either unnamed or able to evict each other.
 - **G1. The path's may-grant.** A path gives may-grant on T at role r iff every hop gives at least r and its last hop either gives admin (a record edge and a descent among them) or is a direct edge carrying the flag.
 - **G2. A may-grant grant.** An edge write whose path does not give admin on T applies as a may-grant grant iff it adds a grant for a thing with no current grant on T (an expired grant counts as none) and its path gives may-grant at its role r (G1). (So r is below admin: a path giving may-grant at admin gives admin.) The new grant may carry the flag ("up to its own role": the holder's own grant carries it). It carries no list, audits nothing, gets no verdict and is never trusted.
 - **G3. A lower level is an arrangement** (decided): to let a person add readers and no more, a thing holds read with the flag and the person writes that thing; the person's path through it gives may-grant at read (G1).
