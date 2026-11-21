@@ -5,7 +5,7 @@
 //! a fresh engine and compares; `judgment_vectors_can_fail` (ignored) checks a changed verdict
 //! fails each case, and a shorter order some case of each file.
 
-use crate::order::{Played, Probes, Step, play, play_in};
+use crate::order::{Played, Step, play};
 use osis_base::{CommitId, Role, WallMs};
 use osis_crypto::{Secret32, SeededRng};
 use osis_engine::local_peer::{LocalPeer, Package};
@@ -318,13 +318,13 @@ fn read_secrets(second: bool) -> Vec<Secret32> {
 }
 
 /// `second`: every thing but G under a second sync ID (`lay`).
-fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool, probes: &mut Probes) -> VecFile {
+fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
     let mut setup: Option<Vec<u8>> = None;
     let mut cases = Vec::new();
     let reads = read_secrets(second);
     let reads_hex = reads.iter().map(|x| osis_base::hex::encode(x.expose())).collect::<Vec<_>>().join(",");
     for sc in scenarios {
-        let played = play_in(0, &sc.steps, false, Some(probes));
+        let played = play(0, &sc.steps);
         let laid = lay(&played, second);
         let n = laid.setup;
         assert_eq!(setup.get_or_insert_with(|| laid.bytes[..n].to_vec())[..], laid.bytes[..n], "{}: one setup per file", sc.name);
@@ -354,13 +354,11 @@ fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool, probes: &mut Pro
 
 /// The judgment files (`judgment/<name>.vec`, never written out), generated in memory.
 fn files() -> Vec<(&'static str, String)> {
-    // the histories share their setup: its sync-set probe built once per clock (`Probes`)
-    let probes = &mut Probes::default();
     vec![
-        ("judgment/models.vec", generate("spec/permissions.md §5", models(), false, probes).render()),
-        ("judgment/rules.vec", generate("spec/permissions.md §2, §5, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(edges()).chain(invites()).chain(remerges()).chain(bounds()).collect(), false, probes).render()),
-        ("judgment/sync IDs.vec", generate("spec/commits.md §4, spec/sync-judgement.md §1", sync_ids(), true, probes).render()),
-        ("judgment/blobs.vec", generate("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1", blobs(), false, probes).render()),
+        ("judgment/models.vec", generate("spec/permissions.md §5", models(), false).render()),
+        ("judgment/rules.vec", generate("spec/permissions.md §2, §5, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(edges()).chain(invites()).chain(remerges()).chain(bounds()).collect(), false).render()),
+        ("judgment/sync IDs.vec", generate("spec/commits.md §4, spec/sync-judgement.md §1", sync_ids(), true).render()),
+        ("judgment/blobs.vec", generate("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1", blobs(), false).render()),
     ]
 }
 

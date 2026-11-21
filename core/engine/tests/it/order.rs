@@ -601,6 +601,10 @@ pub(crate) struct Played {
     pub(crate) access: Vec<(Tid, Package)>,
     /// What enters the node closure of a node under test, from the history (`held::Walk`).
     pub(crate) walk: std::sync::Arc<crate::held::Walk>,
+    /// A written history (`play_in`): what `reader` and the setup's commits are a function of
+    /// (seed, addenda, `now`, the access and the setup's commits), naming the nodes kept as they
+    /// took the setup (`after_setup`).
+    setup: Option<String>,
 }
 
 /// Per step kind: how many ran and how many made a commit, and why the others made none.
@@ -823,26 +827,22 @@ fn give_chain(lp: &mut LocalPeer, from: usize, to: usize, t: Tid) {
     lp.peers[to].engine.learn_records(recs).unwrap();
 }
 
+/// A history written in a test (`play_in`, `written`).
 pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
-    play_with(seed, steps, false)
+    play_in(seed, steps, false, true)
 }
 
-/// `play`, the three peers answering removals with addenda when `addenda` (spec/permissions.md
-/// §5.2): the fresh nodes judging them still write none.
+/// A drawn history: `play`, the three peers answering removals with addenda when `addenda`
+/// (spec/permissions.md §5.2): the fresh nodes judging them still write none.
 pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
-    play_in(seed, steps, addenda, None)
+    play_in(seed, steps, addenda, false)
 }
 
-/// The sync-set probes (`play_in`) that received a setup's commits, by everything that came
-/// before: kept by a caller playing many histories, so each such probe is built once and copied
-/// (notes/test-harnesses.md, Copied worlds). Scoped to its holder, unlike `LocalPeer::cached`: one
-/// per `now`, which a random history draws anew.
-#[derive(Default)]
-pub(crate) struct Probes(BTreeMap<String, Peer>);
-
-/// `play_with`, its sync-set probe after the setup's commits a copy of one in `probes`, built
-/// there when missing.
-pub(crate) fn play_in(seed: u64, steps: &[Step], addenda: bool, probes: Option<&mut Probes>) -> Played {
+/// `play_with`. A `written` history (one a test spells out: a fixed set per process) keeps the
+/// nodes it starts from right after they took the setup's commits (`Played::setup`), each built
+/// once per process and copied (`after_setup`); a drawn one keeps none, as each draws its clock
+/// anew.
+fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
     let (mut lp, (ids, g)) = LocalPeer::cached(&format!("order::play/{seed}/{addenda}"), || setup(seed, addenda));
     let mut reader = lp.peers.pop().unwrap();
     let reader_id = reader.engine.me();
@@ -1544,7 +1544,8 @@ pub(crate) fn play_in(seed: u64, steps: &[Step], addenda: bool, probes: Option<&
     // sees it (`LocalPeer::trimmed`), never another thing's content, which would wait there
     // (spec/commits.md §4 Outside the node closure): what they sync once given everything
     // (twice over: a pack taken before what it waits on comes again); the probe as it took the
-    // setup's packs the first time, from `probes`
+    // setup's packs the first time kept for a written history
+    let setup = written.then(|| format!("{seed}/{addenda}/{}/{tops:?}/{:?}/{:?}", now.0, access.iter().map(|(t, pk)| (*t, pk.id)).collect::<Vec<_>>(), packs[..base].iter().map(|pk| pk.id).collect::<Vec<_>>()));
     let synced: BTreeSet<osis_base::SyncId> = {
         let mut build = || {
             let mut probe = under_test(reader.copy().unwrap(), now);
@@ -1553,12 +1554,9 @@ pub(crate) fn play_in(seed: u64, steps: &[Step], addenda: bool, probes: Option<&
             }
             probe
         };
-        let mut probe = match probes {
+        let mut probe = match &setup {
             None => build(),
-            Some(probes) => {
-                let key = format!("{seed}/{addenda}/{}/{tops:?}/{:?}/{:?}", now.0, access.iter().map(|(t, pk)| (*t, pk.id)).collect::<Vec<_>>(), packs[..base].iter().map(|pk| pk.id).collect::<Vec<_>>());
-                probes.0.entry(key).or_insert_with(build).copy().unwrap()
-            }
+            Some(key) => kept(&format!("order::probe/{key}"), build),
         };
         for pk in packs[base..].iter().chain(&packs) {
             let _ = probe.receive(&pk.bytes, pk.blobs.clone());
@@ -1577,7 +1575,13 @@ pub(crate) fn play_in(seed: u64, steps: &[Step], addenda: bool, probes: Option<&
     let roots: BTreeSet<Tid> = [g].into_iter().chain(tops.iter().copied()).collect();
     let minted = parent.iter().filter_map(|(t, p)| made_by.get(t).map(|(_, id)| (*t, *p, *id))).chain(strong_in).collect();
     let walk = std::sync::Arc::new(crate::held::Walk { roots, minted });
-    Played { walk, access, packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)) }
+    Played { walk, access, packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default(), reader: std::sync::Arc::new(std::sync::Mutex::new(reader)), setup }
+}
+
+/// The node `build` makes, built once per process under `key` (`osis_base::copying::cached`):
+/// a copy of it, going on as it would (notes/test-harnesses.md, Copied worlds).
+fn kept(key: &str, build: impl FnOnce() -> Peer) -> Peer {
+    osis_base::copying::cached(key, build, |p: &mut Peer| p.copy().unwrap())
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
@@ -2026,6 +2030,29 @@ fn judged_node(played: &Played) -> Peer {
     p
 }
 
+/// For a written history (`Played::setup`) whose delivery `moves` takes the setup's commits
+/// first, as made: a copy of the judged node that took them (`kept`, by the setup and those
+/// commits as given), for the moves after them.
+fn after_setup(played: &Played, moves: &[Move]) -> Option<Peer> {
+    let b = played.base;
+    let setup = played.setup.as_ref().filter(|_| b > 0 && moves.len() >= b && moves[..b].iter().enumerate().all(|(i, m)| *m == Move::Ingest(i, None)))?;
+    let mut h = osis_base::hash::Hasher::new();
+    for pk in &played.packs[..b] {
+        h.update(&(pk.bytes.len() as u64).to_le_bytes()).update(&pk.bytes);
+        for (id, blob) in &pk.blobs {
+            h.update(&id.0).update(&(blob.len() as u64).to_le_bytes()).update(blob);
+        }
+    }
+    let given = osis_base::hex::encode(&h.finalize());
+    Some(kept(&format!("order::judged/{setup}/{given}"), || {
+        let mut p = judged_node(played);
+        for i in 0..b {
+            take_move(played, &mut p, Move::Ingest(i, None));
+        }
+        p
+    }))
+}
+
 /// Node `p` takes ingest `m` (`Move::Ingest`).
 fn ingest(played: &Played, p: &mut Peer, m: Move) {
     let Move::Ingest(i, ai) = m else { unreachable!("{m:?} is no ingest") };
@@ -2075,9 +2102,13 @@ fn finish(p: &mut Peer, late: bool, each: &mut dyn FnMut(&mut Peer)) {
     assert!(lost.is_empty(), "applied by a full scan, missed by the wakes: {lost:?}");
 }
 
-/// A fresh node given `packs` in `order`.
+/// A fresh node given `packs` in `order` (from the setup taken, `after_setup`).
 fn deliver(played: &Played, order: &[usize]) -> Peer {
-    deliver_with(played, order, None, None, None, &mut |_| {})
+    let path = ingests(played, order, None);
+    match after_setup(played, &path) {
+        Some(p) => deliver_on(played, p, &path[played.base..], false, None, None, &mut |_| {}),
+        None => deliver_on(played, judged_node(played), &path, false, None, None, &mut |_| {}),
+    }
 }
 
 /// A delivery's clock (`deliver_with`): the first `at` ingests at wall time `early`, then the
@@ -2133,7 +2164,11 @@ fn move_clock(played: &Played, p: &mut Peer) {
 /// its own things are the same as every fresh node's.
 fn deliver_with(played: &Played, order: &[usize], split: Option<u64>, clock: Option<Clock>, drops: Option<&std::cell::RefCell<crate::held::Drops>>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
     let path = ingests(played, order, split);
-    let mut p = judged_node(played);
+    deliver_on(played, judged_node(played), &path, split.is_some(), clock, drops, each)
+}
+
+/// `deliver_with` from node `p`, its moves `path` (late parts among them when `late`).
+fn deliver_on(played: &Played, mut p: Peer, path: &[Move], late: bool, clock: Option<Clock>, drops: Option<&std::cell::RefCell<crate::held::Drops>>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
     let mut each = |p: &mut Peer| {
         settle(played, p, drops);
         each(p)
@@ -2152,7 +2187,7 @@ fn deliver_with(played: &Played, order: &[usize], split: Option<u64>, clock: Opt
         move_clock(played, &mut p);
         each(&mut p);
     }
-    finish(&mut p, split.is_some(), &mut each);
+    finish(&mut p, late, &mut each);
     p
 }
 
@@ -2298,8 +2333,32 @@ fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], alike: bool,
             false => Ok(Seen { alike: 1, ..Seen::default() }),
         }
     };
-    let root = std::sync::Arc::new(std::sync::Mutex::new(judged_node(played)));
-    let tasks: Vec<Task> = (0..jobs.len()).map(Task::Job).chain([Task::Down(tree, None, root)]).collect();
+    let mut tasks: Vec<Task> = (0..jobs.len()).map(Task::Job).collect();
+    // the way down taking the setup first, as made, with no branch or end before it is through,
+    // from the node that took it (`after_setup`); the root, a branch then, to the other ways
+    let mut setup = (tree, Vec::new());
+    while setup.1.len() < played.base && (setup.1.is_empty() || setup.0.ends.is_empty() && setup.0.kids.len() == 1) {
+        let m = Move::Ingest(setup.1.len(), None);
+        let Some(kid) = setup.0.kids.get(&m) else { break };
+        setup = (kid, [setup.1, vec![m]].concat());
+    }
+    match after_setup(played, &setup.1) {
+        None => tasks.push(Task::Down(tree, None, std::sync::Arc::new(std::sync::Mutex::new(judged_node(played))))),
+        Some(p) => {
+            let after = Task::Down(setup.0, None, std::sync::Arc::new(std::sync::Mutex::new(p)));
+            if tree.kids.len() == 1 && tree.ends.is_empty() {
+                tasks.push(after);
+            } else {
+                // as a `Task::Down` at the root: the first node met, its ends, then its ways on
+                let mut root = judged_node(played);
+                assert!(first((6, tree.shape()), &mut root));
+                let root = std::sync::Arc::new(std::sync::Mutex::new(root));
+                tasks.extend(tree.ends.iter().map(|&e| Task::End(e, root.clone())));
+                tasks.push(after);
+                tasks.extend(tree.kids.iter().filter(|(m, _)| **m != setup.1[0]).map(|(&m, kid)| Task::Down(kid, Some(m), root.clone())));
+            }
+        }
+    }
     pool(tasks, threads, |task, add| {
         if stopped.load(std::sync::atomic::Ordering::Relaxed) {
             return;
@@ -2874,16 +2933,16 @@ impl Seen {
     }
 }
 
-/// Checks one history: what it reached, or the first mismatch found, described (a panic counts,
-/// so it shrinks).
+/// Checks one written history (`play`): what it reached, or the first mismatch found, described
+/// (a panic counts).
 fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
-    check_on(1, seed, steps, cfg)
+    caught(|| check_orders(1, seed, steps, cfg, true))
 }
 
-/// `check` with its orders on up to `threads` threads, each part holding a permit
-/// (`testenv::Permit`).
+/// `check` of a drawn history (`play_with`), so it shrinks, with its orders on up to `threads`
+/// threads, each part holding a permit (`testenv::Permit`).
 fn check_on(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
-    caught(|| check_orders(threads, seed, steps, cfg))
+    caught(|| check_orders(threads, seed, steps, cfg, false))
 }
 
 /// One held set's deliveries (`check_orders`).
@@ -2902,18 +2961,19 @@ struct HeldSet {
     reopens: usize,
 }
 
-/// The history `check_orders` delivers: `steps` played, settled and held away as `cfg` says.
-fn played_of(seed: u64, steps: &[Step], cfg: Cfg) -> Played {
+/// The history `check_orders` delivers: `steps` played (`written`, `play_in`), settled and held
+/// away as `cfg` says.
+fn played_of(seed: u64, steps: &[Step], cfg: Cfg, written: bool) -> Played {
     let _p = Permit::take();
-    let played = play_with(seed, steps, cfg.addenda);
+    let played = play_in(seed, steps, cfg.addenda, written);
     let played = if cfg.settled { settling(played, steps) } else { played };
     let played = if cfg.withhold { withhold(played, seed, cfg) } else { played };
     let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(crate::held::Coverage::default()))));
     Played { model, ..played }
 }
 
-fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
-    let played = &played_of(seed, steps, cfg);
+fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg, written: bool) -> Result<Seen, String> {
+    let played = &played_of(seed, steps, cfg, written);
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
     let n = played.packs.len();
@@ -3590,7 +3650,7 @@ fn shrink_keeps_the_failures_kind_and_prints_rust() {
 #[test]
 fn tree_failure_on_the_way_is_its_first_ends() {
     let (e, steps) = generate(0, 1);
-    let played = &played_of(0, &steps, cfg_of(e, NAMED));
+    let played = &played_of(0, &steps, cfg_of(e, NAMED), false);
     let mut tree = Tree::default();
     let order: Vec<usize> = (0..played.packs.len()).collect();
     tree.add(played, &order, None, End::Order(0, 0));
@@ -3656,7 +3716,7 @@ fn tree_ends_are_fresh_deliveries_plain() {
         let (late, waiting, thrown) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
         let (e, steps) = generate(seed, 10);
         let cfg = cfg_of(e, Cfg { all_up_to: 0, random: 0, ..ORDERS });
-        let played = &played_of(seed, &steps, cfg);
+        let played = &played_of(seed, &steps, cfg, false);
         let mut rng = Rng(seed | 1);
         let mut deliveries = Vec::new();
         for held in held_sets(played, 3, &mut rng) {

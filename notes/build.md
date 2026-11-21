@@ -48,7 +48,7 @@ One dev profile for all branch work (notes/build-internals.md, Profile). Every n
 - **Proptest**: `.cargo/config.toml`'s `PROPTEST_CASES=32` overrides a test's own `cases:` (deep runs pass `PROPTEST_CASES=N`). A test binary run outside cargo has neither that nor `PROPTEST_DISABLE_FAILURE_PERSISTENCE`: it runs 256 cases unless you set both (`tools/mutate.py` and `tools/heavy cargo test` run copies with cargo's env).
 
 **Probe variables**
-- A throwaway probe variable is named `OSIS_PROBE_*` and switched off by unsetting it (`env -u`): `X= cmd` still sets it (`var_os` is `Some`), so a `for v in 1 ""` toggle runs the probe both times. testenv refuses any other `OSIS_*` name missing from core/base/testenv-known.txt, and tools/policy.py fails while a probe is left in the sources.
+- A throwaway probe variable is named `OSIS_PROBE_*` and switched off by unsetting it (`env -u`): `X= cmd` still sets it (`var_os` is `Some`), so a `for v in 1 ""` toggle runs the probe both times. Read it with `std::env::var_os`: testenv's readers (`testenv::str_var` and the rest) panic on any `OSIS_*` name missing from core/base/testenv-known.txt, probes included. tools/policy.py fails while a probe is left in the sources.
 - testenv-known.txt is in append order: add a name at the end (a sort rewrites most lines, and its union merge beside another branch's addition then doubles them). A test binary reads it from its worktree at run time, so a `tools/bin-at` binary from before a variable's rename refuses its old name: append the old name for the replay, then remove it.
 
 **Editing and building**
