@@ -2,7 +2,8 @@
 //! ciphertext store (`osis_store::Transaction::put_local`), keyed by a two-byte tag so each kind is
 //! its own stamp family; a memo reading one row moves only when that row (or a scan's prefix)
 //! is written. The memory part (`Inner::ram`) keeps the entry rows (`E X G W B T t Y x U u S`)
-//! of ephemeral entries alike; the rest are the durable store's alone.
+//! of ephemeral entries alike, and a connection's source rows (`C w`); the rest are the durable
+//! store's alone.
 //!
 //! - `E/ s b` an entry (`EntryRow`).
 //! - `X/ b s` the sync IDs whose entries name blob `b`: its bytes go once none does and the
@@ -19,7 +20,9 @@
 //!   `q/ at s i` claim sets by when they may go.
 //! - `H/ s` the length of S's path.
 //! - `U/ s` S's usage (`Usage`); `u/ !bytes s` sync IDs by bytes used, most first, for "the one using most".
-//! - `w/ at s tag key rec` rows a source's record holds of S that age out (stands, deletes seen).
+//! - `w/ at s tag key src` rows a source holds of S that age out (stands, deletes seen): a
+//!   record's in the record, a connection's `C/ conn s tag key` in the memory part (gone with
+//!   the connection; a record's go with the record).
 //! - `S/ s b` a source showed holding entry `b` of S (spec/sync-status.md §2 Held elsewhere),
 //!   kept while the entry is; a row of its own so recording it moves no reader of the entry.
 //! - `N/ s` S is owed a pull from the start, gone once streams set the sources' places of S
@@ -62,6 +65,7 @@ pub(crate) const CLAIMS_DUE: &[u8] = b"q/";
 pub(crate) const USAGE: &[u8] = b"U/";
 pub(crate) const BY_USE: &[u8] = b"u/";
 pub(crate) const AGING: &[u8] = b"w/";
+pub(crate) const CONN_ROW: &[u8] = b"C/";
 pub(crate) const HEAD: &[u8] = b"H/";
 /// Deposited (unstamped) entries per sync ID: what promotion, clearing and offering read.
 pub(crate) const DEPOSITED: &[u8] = b"D/";
@@ -133,13 +137,15 @@ pub(crate) fn by_blob_key(b: &BlobId, s: &SyncId) -> Vec<u8> {
 pub(crate) fn engine_key(b: &BlobId) -> Vec<u8> {
     [ENGINE, &b.0].concat()
 }
-/// A source as a key part: 0 and a connection, or 1 and a record.
+/// A source as a key or row part (`R::source` reads it): 1 and a record, or `CONN` and a
+/// connection.
 pub(crate) fn source_bytes(src: Source) -> Vec<u8> {
     match src {
-        Source::Conn(c) => [&[0u8][..], &c.0.to_be_bytes()].concat(),
         Source::Record(r) => [&[1u8][..], &r].concat(),
+        Source::Conn(c) => [&[CONN][..], &c.0.to_be_bytes()].concat(),
     }
 }
+pub(crate) const CONN: u8 = 2;
 pub(crate) fn charged_key(src: Source, s: &SyncId, b: &BlobId) -> Vec<u8> {
     [CHARGED, &source_bytes(src), &s.0, &b.0].concat()
 }
@@ -173,8 +179,11 @@ pub(crate) fn usage_key(s: &SyncId) -> Vec<u8> {
 pub(crate) fn by_use_key(bytes: u64, s: &SyncId) -> Vec<u8> {
     [BY_USE, &(u64::MAX - bytes).to_be_bytes(), &s.0].concat()
 }
-pub(crate) fn aging_key(at: WallMs, s: &SyncId, tag: u8, key: &[u8], rec: &RecordId) -> Vec<u8> {
-    [AGING, &at.0.to_be_bytes(), &s.0, &[tag], &(key.len() as u32).to_be_bytes(), key, rec].concat()
+pub(crate) fn aging_key(at: WallMs, s: &SyncId, tag: u8, key: &[u8], src: Source) -> Vec<u8> {
+    [AGING, &at.0.to_be_bytes(), &s.0, &[tag], &(key.len() as u32).to_be_bytes(), key, &source_bytes(src)].concat()
+}
+pub(crate) fn conn_row_key(c: crate::types::ConnId, s: &SyncId, tag: u8, key: &[u8]) -> Vec<u8> {
+    [CONN_ROW, &c.0.to_be_bytes(), &s.0, &[tag], key].concat()
 }
 
 /// A plain byte writer.
@@ -234,6 +243,15 @@ impl<'a> R<'a> {
     pub(crate) fn bytes(&mut self) -> Result<&'a [u8]> {
         let n = self.u32()? as usize;
         self.take(n)
+    }
+    /// A source (`source_bytes`), or none (0).
+    pub(crate) fn source(&mut self) -> Result<Option<Source>> {
+        Ok(match self.u8()? {
+            0 => None,
+            1 => Some(Source::Record(self.array()?)),
+            CONN => Some(Source::Conn(crate::types::ConnId(self.u64()?))),
+            _ => return Err(corrupt()),
+        })
     }
     pub(crate) fn rest(&mut self) -> &'a [u8] {
         std::mem::take(&mut self.0)
@@ -338,8 +356,7 @@ impl EntryRow {
         w = w.u8(self.class as u8).u64(self.expires.map_or(0, |t| t.0)).u64(self.size);
         let src = |w: W, x: Option<Source>| match x {
             None => w.u8(0),
-            Some(Source::Record(r)) => w.u8(1).raw(&r),
-            Some(Source::Conn(c)) => w.u8(2).u64(c.0),
+            Some(x) => w.raw(&source_bytes(x)),
         };
         let w = src(src(w, self.charged), self.brought);
         match &self.vouch {
@@ -361,15 +378,7 @@ impl EntryRow {
         };
         let t = r.u64()?;
         let size = r.u64()?;
-        let mut src = || -> Result<Option<Source>> {
-            Ok(match r.u8()? {
-                0 => None,
-                1 => Some(Source::Record(r.array()?)),
-                2 => Some(Source::Conn(crate::types::ConnId(r.u64()?))),
-                _ => return Err(corrupt()),
-            })
-        };
-        let (charged, brought) = (src()?, src()?);
+        let (charged, brought) = (r.source()?, r.source()?);
         let vouch = match r.u8()? {
             0 => None,
             1 => Some(Vouch(r.array()?)),

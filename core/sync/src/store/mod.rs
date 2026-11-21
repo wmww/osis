@@ -491,7 +491,7 @@ impl Store {
             // numbers start again, so none may name the next one given it)
             let mut conns = BTreeSet::new();
             for prefix in [rows::CHARGED, rows::BROUGHT] {
-                for (k, _) in t.scan_local(&[prefix, &[0]].concat(), b"", usize::MAX)? {
+                for (k, _) in t.scan_local(&[prefix, &[rows::CONN]].concat(), b"", usize::MAX)? {
                     let id = k.get(prefix.len() + 1..prefix.len() + 9).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("charged row")))?;
                     conns.insert(crate::types::ConnId(u64::from_be_bytes(id)));
                 }
@@ -1417,7 +1417,16 @@ impl Store {
             let u = entries::usage(t, s)?;
             entries::put_usage(t, env, s, u, Usage::default())
         };
-        g.write_in(true, empty)?;
+        g.write_in(true, |t, env| {
+            empty(t, env)?;
+            // every connection's source rows of S (`C/ conn s ..`)
+            for (k, _) in t.scan_local(rows::CONN_ROW, b"", usize::MAX)? {
+                if k.get(rows::CONN_ROW.len() + 8..rows::CONN_ROW.len() + 24) == Some(&s.0[..]) {
+                    t.remove_local(&k, Shred::No)?;
+                }
+            }
+            Ok(())
+        })?;
         g.write(|t, env| {
             path::erase(t, env, s)?;
             empty(t, env)?;
@@ -1651,13 +1660,17 @@ impl Store {
         Ok(evicted)
     }
 
-    /// `gone_from` in the memory part, and what a connection kept in memory goes.
+    /// `gone_from` in the memory part, and a connection's source rows go.
     fn gone_memory(g: &mut Inner, src: Source) -> Result<()> {
-        g.write_in(true, |t, env| Self::gone_from(t, env, src))?;
-        if let Source::Conn(conn) = src {
-            g.mem.conn_forget(|(c, ..)| *c != conn);
-        }
-        Ok(())
+        g.write_in(true, |t, env| {
+            Self::gone_from(t, env, src)?;
+            if let Source::Conn(c) = src {
+                for (k, _) in t.scan_local(&[rows::CONN_ROW, &c.0.to_be_bytes()].concat(), b"", usize::MAX)? {
+                    t.remove_local(&k, Shred::No)?;
+                }
+            }
+            Ok(())
+        })
     }
 
     /// `src` went, in `t`'s part: each entry charged to it passes to its `heir`, else goes; each
@@ -1687,32 +1700,21 @@ impl Store {
 
     // What a source's record keeps for `read` (spec/sync-judgement.md §4)
 
+    /// Writes (or with `None` removes) the row `src` keeps of S, written at `at`: it ages out after
+    /// `TOMBSTONE_LIFETIME` (`settle_at`).
     fn source_put(&mut self, src: Source, s: &SyncId, tag: u8, key: &[u8], val: Option<(WallMs, Vec<u8>)>) -> Result<()> {
-        let mut g = self.lock();
-        match src {
-            Source::Conn(c) => {
-                g.mem.conn_put((c, *s, tag, key.to_vec()), val);
-                Ok(())
+        self.lock().write_in(matches!(src, Source::Conn(_)), |t, _| {
+            let Some((at, v)) = val else { return drop_source_row(t, src, s, tag, key) };
+            match src {
+                Source::Record(rec) => t.record_put_row(&rec, tag, s, key, v)?,
+                Source::Conn(c) => t.put_local(&rows::conn_row_key(c, s, tag, key), &v, Shred::No)?,
             }
-            Source::Record(rec) => g.write(|t, _| {
-                match val {
-                    Some((at, v)) => {
-                        t.record_put_row(&rec, tag, s, key, v)?;
-                        t.put_local(&rows::aging_key(at, s, tag, key, &rec), &[], Shred::No)?;
-                    }
-                    None => drop(t.record_remove_row(&rec, tag, s, key)?),
-                }
-                Ok(())
-            }),
-        }
+            Ok(t.put_local(&rows::aging_key(at, s, tag, key, src), &[], Shred::No)?)
+        })
     }
 
     fn source_get(&self, src: Source, s: &SyncId, tag: u8, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let mut g = self.lock();
-        match src {
-            Source::Conn(c) => Ok(g.mem.conn_get(&(c, *s, tag, key.to_vec()))),
-            Source::Record(rec) => g.read(|t, _| Ok(t.record_get_row(&rec, tag, s, key)?)),
-        }
+        self.lock().read_in(matches!(src, Source::Conn(_)), |t, _| source_row(t, src, s, tag, key))
     }
 
     /// The stand of "logged again once" for `body` at `src` (spec/sync-judgement.md §4).
@@ -1736,7 +1738,17 @@ impl Store {
     pub fn deletes_seen_all(&self) -> Result<Vec<(Source, SyncId, BlobId)>> {
         let mut g = self.lock();
         let blob = |k: &[u8]| <[u8; 32]>::try_from(k).ok().map(BlobId);
-        let mut out: Vec<_> = g.mem.conn_rows.keys().filter(|(_, _, tag, _)| *tag == SEEN).filter_map(|(c, s, _, k)| Some((Source::Conn(*c), *s, blob(k)?))).collect();
+        let mut out = g.read_in(true, |t, _| {
+            let mut rows = Vec::new();
+            for (k, _) in t.scan_local(rows::CONN_ROW, b"", usize::MAX)? {
+                let mut r = R::new(k.get(rows::CONN_ROW.len()..).unwrap_or_default());
+                let (c, s, tag) = (crate::types::ConnId(r.u64()?), SyncId(r.array()?), r.u8()?);
+                if tag == SEEN {
+                    rows.extend(blob(r.rest()).map(|b| (Source::Conn(c), s, b)));
+                }
+            }
+            Ok(rows)
+        })?;
         let recs = g.read(|t, _| {
             let mut rows = Vec::new();
             for r in t.records_all()? {
@@ -1768,7 +1780,7 @@ impl Store {
         g.clock.set(at);
         let now = g.now;
         let mut acted = g.mem.sweep(now);
-        // in either part: expiries, tombstone ends
+        // in either part: expiries, tombstone ends, a source's aged rows
         let entry_sweep = |t: &mut Transaction<'_>, env: &mut Env<'_>| -> Result<bool> {
             let mut acted = false;
             for (k, _) in due(t, rows::EXPIRY, Some(now.0))? {
@@ -1783,6 +1795,18 @@ impl Store {
                 entries::lift(t, env, &s, &b)?;
                 acted = true;
             }
+            for (k, _) in due(t, rows::AGING, now.0.checked_sub(TOMBSTONE_LIFETIME_MS))? {
+                let at = time_of(&k)?;
+                let mut r = R::new(k.get(rows::AGING.len() + 8..).unwrap_or_default());
+                let (s, tag, key) = (SyncId(r.array()?), r.u8()?, r.bytes()?.to_vec());
+                let src = r.source()?.ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("sync store aging row")))?;
+                t.remove_local(&k, Shred::No)?;
+                // a row written again since ages from its new time
+                if source_row(t, src, &s, tag, &key)?.is_some_and(|v| v.get(..8) == Some(&at.to_be_bytes()[..])) {
+                    drop_source_row(t, src, &s, tag, &key)?;
+                }
+                acted = true;
+            }
             Ok(acted)
         };
         acted |= g.write_in(true, entry_sweep)?;
@@ -1793,19 +1817,6 @@ impl Store {
                 let (s, i) = (SyncId(r.array()?), r.u32()?);
                 t.remove_local(&k, Shred::No)?;
                 path::drop_claims(t, env, &s, i)?;
-                acted = true;
-            }
-            for (k, _) in due(t, rows::AGING, now.0.checked_sub(TOMBSTONE_LIFETIME_MS))? {
-                let at = time_of(&k)?;
-                let mut r = R::new(k.get(rows::AGING.len() + 8..).unwrap_or_default());
-                let (s, tag) = (SyncId(r.array()?), r.u8()?);
-                let key = r.bytes()?.to_vec();
-                let rec: osis_store::RecordId = r.array()?;
-                t.remove_local(&k, Shred::No)?;
-                // a row written again since ages from its new time
-                if t.record_get_row(&rec, tag, &s, &key)?.is_some_and(|v| v.get(..8) == Some(&at.to_be_bytes()[..])) {
-                    t.record_remove_row(&rec, tag, &s, &key)?;
-                }
                 acted = true;
             }
             acted |= t.log_sweep(now.0)?;
@@ -1843,7 +1854,25 @@ impl Store {
     }
 }
 
-/// The time a time-keyed sweep row starts with.
+/// The row `src` keeps of S under `tag` and `key` (spec/sync-judgement.md §4): a record's in the
+/// record, durably (it goes with the record, and with S), a connection's in the memory part
+/// (`C/`: it goes with the connection, with S, and at a restart, when connection numbers start
+/// again).
+fn source_row(t: &mut Transaction<'_>, src: Source, s: &SyncId, tag: u8, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    Ok(match src {
+        Source::Record(rec) => t.record_get_row(&rec, tag, s, key)?,
+        Source::Conn(c) => t.get_local(&rows::conn_row_key(c, s, tag, key))?,
+    })
+}
+
+fn drop_source_row(t: &mut Transaction<'_>, src: Source, s: &SyncId, tag: u8, key: &[u8]) -> Result<()> {
+    match src {
+        Source::Record(rec) => drop(t.record_remove_row(&rec, tag, s, key)?),
+        Source::Conn(c) => drop(t.remove_local(&rows::conn_row_key(c, s, tag, key), Shred::No)?),
+    }
+    Ok(())
+}
+
 /// A page of the rows of time-ordered index `prefix` (keys `prefix || time || ...`) whose time
 /// is at most `through` (none: nothing is due): only those are read.
 fn due(t: &mut Transaction<'_>, prefix: &[u8], through: Option<u64>) -> Result<Vec<osis_store::KeyValue>> {
@@ -1851,6 +1880,7 @@ fn due(t: &mut Transaction<'_>, prefix: &[u8], through: Option<u64>) -> Result<V
     Ok(t.scan_local_before(prefix, &end.to_be_bytes(), PAGE)?)
 }
 
+/// The time a time-keyed sweep row starts with.
 fn time_of(k: &[u8]) -> Result<u64> {
     let mut r = R::new(k.get(2..).unwrap_or_default());
     r.u64()

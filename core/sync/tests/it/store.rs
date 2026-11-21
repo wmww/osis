@@ -1279,6 +1279,8 @@ fn shred_drops_everything_of_s_spec_sync_ids_5() {
     st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b2)], true).unwrap();
     let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
     st.saw_deleted(Source::Record(rec), &s.id, &b2).unwrap();
+    let conn = Source::Conn(ConnId(4));
+    st.saw_deleted(conn, &s.id, &b2).unwrap();
     // opens' rejoin rows in the record: S's go, another sync ID's stay
     let other = SyncId([7; 16]);
     st.with_tx(|t| {
@@ -1297,6 +1299,7 @@ fn shred_drops_everything_of_s_spec_sync_ids_5() {
     assert!(events_of(&st, &s.id).is_empty());
     assert_eq!(st.usage(&s.id).unwrap().0, osis_sync::store::Usage::default());
     assert!(!st.seen_deleted(Source::Record(rec), &s.id, &b2).unwrap());
+    assert!(!st.seen_deleted(conn, &s.id, &b2).unwrap(), "a connection's rows of S go too");
 }
 
 /// Every kind of durable store operation, each one transaction: what peers bring (a stamped entry,
