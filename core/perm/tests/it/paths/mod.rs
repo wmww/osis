@@ -124,9 +124,9 @@ pub fn input(w: &World, v: &View) -> Input {
                     let value = role(*r).map(|r| Edge { role: r, until: until.map(|u| WallMs(u as u64)), invite: role(*invite), retain: false, floor: None });
                     let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(t, l)| l.iter().map(|&j| (tid(*t), cid(w.cid(j)))));
                     let frontier = (!finalize).then(|| Arc::new(List::new(listed)));
-                    // the model has no last-admin rule (notes/write-path-design.md §5 A2): every
-                    // write carries the mark that turns the old walk's off (Interim: the walk is
-                    // rebuilt after stage D, notes/redesign-plan.md)
+                    // Interim (issues/last-admin-rule-in-perm-engine.md): the model has no
+                    // last-admin rule, so every write carries the mark turning the walk's off; the
+                    // rebuilt walk reads neither field
                     PartKind::Edge(EdgeWrite { holder: tid(*holder), value, frontier, remains: None, adminless: true })
                 }
                 _ => PartKind::Delta(delta(w, i)),
