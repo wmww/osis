@@ -109,9 +109,8 @@ const V: Thing = 7;
 /// read through it: K (of A) writes R through [A, O, D] (A writes O, O writes D, D writes R); Y
 /// removes O from D; the stolen K writes R again. Y syncs D and A, N syncs A and R; R's admin V
 /// syncs R alone. A reads through O, so the removal goes under A (Y logs it there), N takes it to
-/// R as evidence of K's write. Reach alone puts it under R only (D joins R), where nobody holding
-/// it syncs: with keys-open travel left out (the derivation alone, or reach in its place) R's
-/// reader shows K's late write.
+/// R as evidence of K's write. With keys-open travel left out (`a2-actor`) R's reader shows K's
+/// late write.
 #[test]
 fn open14_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() {
     let pw = paths::World::new(&[(X, A), (W, O), (Y, D), (V, R)]);
@@ -124,12 +123,7 @@ fn open14_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() 
     w.write(v, |p| p.edge(V, 1, &[], R, D, Role::Write, &[]));
     w.write(k, |p| p.content(K, 2, &[A, O, D], R));
     w.write(y, |p| p.edge(Y, 6, &[], D, O, Role::None, &[]));
-    let late = w.write(k, |p| p.content(K, 8, &[A, O, D], R));
-    let mut wr = w.clone();
-    let mut no_keys = Stage::ReachNoErrand.set(&mut wr, Rule::fixed());
-    no_keys.keys_open = false;
-    let f = crate::spec_open10::fails(&wr, &no_keys);
-    assert!(f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == late && f.reader == Some(Verdict::Valid)), "{f:?}");
+    w.write(k, |p| p.content(K, 8, &[A, O, D], R));
     for (name, p) in by_stage(&w) {
         assert_eq!(p.contains(&"P1"), name == "a2-actor", "{name}: {p:?}");
     }
@@ -172,8 +166,7 @@ fn open17_keys_open_through_a_mint_admins_record_edge() {
 /// granting A write on D. X grants K write on D (by descent through A) and Y grants A write on R;
 /// K writes D directly; X removes K from A; the stolen K writes R through [A]. X syncs A and D, Y
 /// syncs D and R. Today K's chain to D climbs A's record edge, so the removal goes under D; reach
-/// joins A to D by the record edge. With reach over grants only, brief 3 (`reach-no-errand`) is
-/// less safe than today here.
+/// joins A to D by the record edge.
 #[test]
 fn open17_a_removed_writers_other_route_through_a_record_edge() {
     let pw = paths::World::new(&[(X, A), (A, D), (Y, R)]);
@@ -184,14 +177,12 @@ fn open17_a_removed_writers_other_route_through_a_record_edge() {
     w.write(x, |p| p.edge(X, 1, &[], D, K, Role::Write, &[]));
     w.write(k, |p| p.content(K, 2, &[], D));
     w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
-    let late = w.write(k, |p| p.content(K, 8, &[A], R));
+    w.write(k, |p| p.content(K, 8, &[A], R));
     for (name, p) in by_stage(&w) {
         assert_eq!(p.contains(&"P1"), matches!(name, "a2" | "a2-actor"), "{name}: {p:?}");
     }
     let today = stage_fails(&w, Stage::Today, true);
     assert!(!today.iter().any(|f| f.prop == "P1"), "{today:?}");
-    let f = stage_fails_with(&w, Stage::ReachNoErrand, true, grants_only);
-    assert!(f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == late && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
 }
 
 /// The stage failures of every world in a job list, a thread per core: per (stage, vouches) the
@@ -320,7 +311,7 @@ fn open16_a_plain_readers_grant_and_removal_on_a_hub_stay_off_its_documents() {
     for (stage, p) in same_under_both(&w) {
         assert!(p.is_empty() || stage == "a2-actor" && p.iter().all(|p| *p != "P1"), "{stage}: {p:?}");
     }
-    for stage in [Stage::A3, Stage::ReachNoErrand] {
+    for stage in [Stage::A3] {
         let any = entries_with(&w, stage, D, any_removal);
         assert!(any.last().unwrap().is_superset(&paths::Set::from([g, r])), "{any:?}");
         let tw = entries_with(&w, stage, D, takes_write);
@@ -347,16 +338,14 @@ fn open16_a_backdated_write_grant_arriving_late_makes_the_removal_reach_then() {
     w.write(k, |p| p.content(K, 3, &[], D));
     let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
     let g = w.write(q, |p| p.edge(Q, 2, &[], A, K, Role::Write, &[]));
-    let late = w.write(k, |p| p.content(K, 8, &[A], R));
+    w.write(k, |p| p.content(K, 8, &[A], R));
     for (stage, p) in same_under_both(&w) {
         assert_eq!(p.contains(&"P1"), matches!(stage, "a2" | "a2-actor"), "{stage}: {p:?}");
     }
-    let tw = entries_with(&w, Stage::ReachNoErrand, D, takes_write);
+    let tw = entries_with(&w, Stage::A3, D, takes_write);
     // after the removal, before the grant: not under D; after the grant: both
     assert!(!tw[g - 1].contains(&r), "{tw:?}");
     assert!(tw[g].is_superset(&paths::Set::from([r, g])), "{tw:?}");
-    let f = stage_fails_with(&w, Stage::ReachNoErrand, true, |r| Rule { reach: false, ..r });
-    assert!(f.iter().any(|f| f.prop == "P1" && f.id == late), "the world needs reach: {f:?}");
 }
 
 /// A writer removed (5: a reach seed), granted read again (7: after a write grant on the edge, so a
@@ -379,9 +368,9 @@ fn open16_a_write_backdated_between_a_removal_and_a_read_regrant() {
     for (stage, p) in same_under_both(&w) {
         assert_eq!(p.contains(&"P1"), matches!(stage, "a2" | "a2-actor"), "{stage}: {p:?}");
     }
-    let tw = entries_with(&w, Stage::ReachNoErrand, R, takes_write);
+    let tw = entries_with(&w, Stage::A3, R, takes_write);
     assert!(tw.last().unwrap().contains(&r), "{tw:?}");
-    let td = entries_with(&w, Stage::ReachNoErrand, D, takes_write);
+    let td = entries_with(&w, Stage::A3, D, takes_write);
     assert!(td.last().unwrap().contains(&rr), "{td:?}");
 }
 
@@ -407,7 +396,7 @@ fn open16_a_readers_removal_on_one_edge_and_a_writers_on_another() {
     for (stage, p) in same_under_both(&w) {
         assert_eq!(p.contains(&"P1"), matches!(stage, "a2" | "a2-actor"), "{stage}: {p:?}");
     }
-    let td = entries_with(&w, Stage::ReachNoErrand, D, takes_write);
+    let td = entries_with(&w, Stage::A3, D, takes_write);
     assert!(td.last().unwrap().contains(&ra) && !td.last().unwrap().contains(&ro), "{td:?}");
 }
 
@@ -428,7 +417,7 @@ fn open16_a_demotion_to_read_reaches_and_one_to_write_does_not() {
     for (stage, p) in same_under_both(&w) {
         assert!(!p.contains(&"P1"), "{stage}: {p:?}");
     }
-    let td = entries_with(&w, Stage::ReachNoErrand, D, takes_write);
+    let td = entries_with(&w, Stage::A3, D, takes_write);
     let end = td.last().unwrap();
     assert!(end.contains(&to_read) && end.contains(&g) && !end.contains(&to_write), "{td:?}");
 }
@@ -450,7 +439,7 @@ fn org_copies(wr: usize, rd: usize, f: impl Fn(Rule) -> Rule) -> usize {
         w.write(y, |p| p.edge(Y, 4, &[], O, h, Role::None, &[]));
     }
     let mut w2 = w.clone();
-    let rule = f(Stage::ReachNoErrand.set(&mut w2, Rule::fixed()));
+    let rule = f(Stage::A3.set(&mut w2, Rule::fixed()));
     let st = w2.run(&rule, |_| {});
     w2.copies(&st, D).len()
 }

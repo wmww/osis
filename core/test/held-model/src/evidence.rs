@@ -92,25 +92,14 @@ pub enum Errand {
 pub enum Home {
     /// None: a leaf only where a body it reads is (the control of finding 30).
     None,
-    /// Its leaves for other things than its own: every holder of a removal holds what any runner
-    /// of its duty carries (finding 30). Its own thing's leaf is read only by bodies on that
+    /// Its leaves for other things than its own: a node holding the removal holds the leaf a write
+    /// it judges elsewhere needs (finding 30). Its own thing's leaf is read only by bodies on that
     /// thing, which are in every unit the lowering is a body of, so it leaves with the last of
     /// them (finding 34).
     Far,
     /// Every leaf, its own thing's too: kept for good where the lowering is a body (the control
     /// of finding 34).
     All,
-}
-
-/// Who runs the errand (A3's delivery duty).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Runners {
-    /// The remover's node alone.
-    Remover,
-    /// Every honest node holding the removal (no designated device): each runs the duty for every
-    /// removal it holds, as the remover does for its own; copies are identified by (commit,
-    /// thing), so several runners log one entry.
-    AnyHolder,
 }
 
 /// What travels by errand.
@@ -325,15 +314,13 @@ impl Open10 {
 /// closure and judge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
-    /// A3: removals with their reach, the remover's errand followed to the end (`Rule::fixed`),
-    /// and Role changes travel whole (its keys-open half carries what the errand cannot once the
-    /// remover's node is lost before its first pass, finding 31, and grants and readers' removals,
-    /// which read access through a holder thing reads).
+    /// The drafted A3 delivery: removals with their reach, the remover's errand followed to the
+    /// end (`Rule::fixed`), and Role changes travel whole. Not the decided design (no eager
+    /// delivery: notes/handoff.md): kept while the properties below rest on it (notes/a3-spec
+    /// README.md, The model).
     A3,
-    /// Brief 3 with reach on (`Config::reach`, unindexed) and Role changes travel, no errand
-    /// (the errand is A3's).
-    ReachNoErrand,
-    /// Brief 3 as drafted: no reach, no errand, Role changes travel.
+    /// The derivation as built (`osis_engine::evidence`): no reach, no errand, Role changes travel;
+    /// with `Rule::listed` A3's leaves.
     A2,
     /// Brief 3 as the built derivation computes it alone: no reach, no errand, the actor seed
     /// (Role changes travel's keys-open half left out).
@@ -347,11 +334,10 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub const ALL: [Stage; 6] = [Stage::A3, Stage::ReachNoErrand, Stage::A2, Stage::A2Actor, Stage::Today, Stage::A2AuthorReach];
+    pub const ALL: [Stage; 5] = [Stage::A3, Stage::A2, Stage::A2Actor, Stage::Today, Stage::A2AuthorReach];
     pub fn name(self) -> &'static str {
         match self {
             Stage::A3 => "a3",
-            Stage::ReachNoErrand => "reach-no-errand",
             Stage::A2 => "a2",
             Stage::A2Actor => "a2-actor",
             Stage::Today => "today",
@@ -363,7 +349,6 @@ impl Stage {
         let r = Rule { errand: Errand::Off, reach: false, keys_open: true, ..Open10::Granted.set(w, rule) };
         match self {
             Stage::A3 => Rule { errand: Errand::Transitive, reach: true, ..r },
-            Stage::ReachNoErrand => Rule { reach: true, ..r },
             Stage::A2 => r,
             Stage::A2Actor => Rule { keys_open: false, ..r },
             Stage::Today => Rule { closure: Closure { any_path: true, joined: false, ..r.closure }, ..r },
@@ -418,19 +403,14 @@ pub struct Rule {
     pub standing: bool,
     pub lists: Lists,
     pub closure: Closure,
-    /// Who runs the errand.
-    pub runners: Runners,
     /// Which of a lowering's leaves are required with it wherever it is a body (findings 30, 34).
     pub leaves_home: Home,
-    /// The errand runs only in a pass of its runner (`Ev::Pass`), not as the removal is written:
-    /// between, a removal is delivered by ordinary logging alone (the race with a thief).
-    pub lag: bool,
 }
 
 impl Rule {
     /// The plan's reading (notes/redesign-plan.md A2, A3).
     pub fn design() -> Rule {
-        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, records: true, removals: Removals::TakesWrite, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted(), runners: Runners::Remover, leaves_home: Home::None, lag: false }
+        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, records: true, removals: Removals::TakesWrite, scope: Scope::Lowerings, leaves: Leaves::Evidence, standing: true, lists: Lists::Whole, closure: Closure::drafted(), leaves_home: Home::None }
     }
     /// The design with the findings' fixes (notes/evidence-model-findings.md): the errand follows
     /// taken grants to the end.
@@ -498,11 +478,6 @@ pub enum Ev {
     /// The thing joins the sync ID's unit (a strong added), or leaves it.
     Join(Thing, Sid),
     Leave(Thing, Sid),
-    /// The node is destroyed: it holds, syncs and logs nothing from now; what it logged stays at
-    /// the stores of the sync IDs it synced (`State::stored`).
-    Gone(usize),
-    /// A pass of the node: under `Rule::lag` its errands run now.
-    Pass(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -554,13 +529,6 @@ pub struct State {
     /// `Lists::Travels`: the leaves logged under each sync ID, and per node the leaves it holds.
     pub leaves: BTreeMap<Sid, Leafs>,
     pub held_leaves: Vec<Leafs>,
-    /// Destroyed nodes (`Ev::Gone`).
-    pub gone: BTreeSet<usize>,
-    /// Per sync ID, the entries a destroyed node left at its stores (kept: nothing deletes them).
-    pub stored: BTreeMap<Sid, Set>,
-    /// The node whose pass this settle is (`Ev::Pass`), or every live node (`pass_all`).
-    pub passing: Option<usize>,
-    pub pass_all: bool,
     /// A settle that did not reach a fixpoint.
     pub unsettled: bool,
     /// Logging rounds over all settles (cost).
@@ -603,14 +571,6 @@ impl World {
     }
     pub fn leave(&mut self, x: Thing, s: Sid) {
         self.events.push(Ev::Leave(x, s));
-    }
-    /// Node `n` is destroyed now.
-    pub fn gone(&mut self, n: usize) {
-        self.events.push(Ev::Gone(n));
-    }
-    /// A pass of node `n` now (its errands, under `Rule::lag`).
-    pub fn pass(&mut self, n: usize) {
-        self.events.push(Ev::Pass(n));
     }
     /// In the unit from the start.
     pub fn member(&mut self, x: Thing, s: Sid) {
@@ -1137,17 +1097,6 @@ impl World {
     /// the target whose sync IDs it goes to.
     fn errand_items(&self, rule: &Rule, own: &Set, held: &Set, fresh: &Set) -> Vec<(Id, Thing)> {
         let mut out = vec![];
-        if rule.runners == Runners::AnyHolder {
-            // every held removal, the node's own or another's
-            for &i in held.difference(own) {
-                if !rule.standing && !fresh.contains(&i) {
-                    continue;
-                }
-                if let Some((_, t)) = self.removes(i) {
-                    out.push((i, t));
-                }
-            }
-        }
         for &i in own {
             if !rule.standing && !fresh.contains(&i) {
                 continue;
@@ -1206,7 +1155,7 @@ impl World {
     fn errands(&self, rule: &Rule, st: &State, n: usize, held: &Set, fresh: &Set) -> (BTreeMap<Sid, Set>, BTreeMap<Sid, Leafs>) {
         let mut out: BTreeMap<Sid, Set> = BTreeMap::new();
         let mut lv: BTreeMap<Sid, Leafs> = BTreeMap::new();
-        if !self.nodes[n].honest || st.gone.contains(&n) {
+        if !self.nodes[n].honest {
             return (out, lv);
         }
         let own = self.own(st, n);
@@ -1220,7 +1169,7 @@ impl World {
                 out.entry(hd).or_default().extend(self.closure(rule, &Set::from([i]), held));
             }
         }
-        if rule.errand == Errand::Off || (rule.lag && !st.pass_all && st.passing != Some(n)) {
+        if rule.errand == Errand::Off {
             return (out, lv);
         }
         for (i, t, targets, h, hr) in self.errand_plan(rule, st, n, held, fresh) {
@@ -1240,7 +1189,7 @@ impl World {
         (out, lv)
     }
     /// What node `n`'s errand runs for over `held`: each item (`errand_items`, taken) with the
-    /// thing its targets start from, its target sync IDs, what the runner held once it read them
+    /// thing its targets start from, its target sync IDs, what the remover held once it read them
     /// (`errand_targets`) and the taken writes among that; a removal taking no write away is left
     /// out (it travels as any edge write, Role changes travel).
     #[allow(clippy::type_complexity)]
@@ -1260,17 +1209,6 @@ impl World {
             out.push((i, t, targets, h, hr));
         }
         out
-    }
-    /// The duty node `n` runs over what it holds, as `Runners::AnyHolder` runs it whatever
-    /// `Rule::runners`, `Rule::lag` and the pass (A3's duty targets; the runner's right is not
-    /// modelled): per removal part it runs for, the sync IDs it logs it under. Nothing at a
-    /// dishonest or destroyed node.
-    pub fn errand_runs(&self, rule: &Rule, st: &State, n: usize) -> BTreeMap<Id, Things> {
-        if !self.nodes[n].honest || st.gone.contains(&n) {
-            return BTreeMap::new();
-        }
-        let rule = Rule { runners: Runners::AnyHolder, standing: true, ..*rule };
-        self.errand_plan(&rule, st, n, &st.held[n], &Set::new()).into_iter().filter(|(i, ..)| self.removes(*i).is_some()).map(|(i, _, targets, ..)| (i, targets)).collect()
     }
 
     /// The state before any event.
@@ -1296,29 +1234,9 @@ impl World {
                     self.unplace(st, s, |i| self.on(i) == x);
                 }
             }
-            Ev::Gone(n) => {
-                for s in self.syncs(n, &st.units) {
-                    let left: Set = st.entries[&s].intersection(&st.held[n]).copied().collect();
-                    st.stored.entry(s).or_default().extend(left);
-                }
-                st.gone.insert(n);
-                st.held[n].clear();
-                st.held_leaves[n].clear();
-            }
-            Ev::Pass(n) => st.passing = Some(n),
         }
         st.step = k + 1;
         self.settle(rule, st, &fresh);
-        st.passing = None;
-    }
-    /// `st` after a pass of every live node (their errands run): what the duty gives once each
-    /// live holder has passed (P1-window).
-    pub fn pass_all(&self, rule: &Rule, st: &State) -> State {
-        let mut s2 = st.clone();
-        s2.pass_all = true;
-        self.settle(rule, &mut s2, &Set::new());
-        s2.pass_all = false;
-        s2
     }
     /// `AtLog`: removes S's bodies matching `gone` and every copy left placed for nothing.
     fn unplace(&self, st: &mut State, s: Sid, gone: impl Fn(Id) -> bool) {
@@ -1400,15 +1318,9 @@ impl World {
     }
     fn round_function(&self, rule: &Rule, st: &mut State, fresh: &Set) {
         // nothing is kept for its past: an errand's entry stays while a holder's view requires it
-        // a destroyed node's entries stay at a store until a live honest syncer's view decides them
-        let live: Things = (0..self.nodes.len()).filter(|n| self.nodes[*n].honest && !st.gone.contains(n)).flat_map(|n| self.syncs(n, &st.units)).collect();
-        st.stored.retain(|s, _| !live.contains(s));
-        let mut new: BTreeMap<Sid, Set> = self.sids.iter().map(|&s| (s, st.stored.get(&s).map(|e| e.difference(&st.forgotten).copied().collect()).unwrap_or_default())).collect();
+        let mut new: BTreeMap<Sid, Set> = self.sids.iter().map(|&s| (s, Set::new())).collect();
         let mut new_leaves: BTreeMap<Sid, Leafs> = self.sids.iter().map(|&s| (s, Leafs::new())).collect();
         for n in 0..self.nodes.len() {
-            if st.gone.contains(&n) {
-                continue;
-            }
             let sy = self.syncs(n, &st.units);
             let own = self.own(st, n);
             let mut held: Set = st.held[n].iter().chain(&own).copied().chain(sy.iter().flat_map(|s| st.entries[s].iter().copied())).filter(|i| !st.forgotten.contains(i)).collect();
@@ -1441,7 +1353,7 @@ impl World {
             for (s, items) in items {
                 new.get_mut(&s).unwrap().extend(items);
             }
-            // an errand carries the leaves its runner holds
+            // an errand carries the leaves its remover holds
             for (s, l) in lv {
                 new_leaves.get_mut(&s).unwrap().extend(l.intersection(&avail));
             }
@@ -1664,7 +1576,7 @@ impl World {
     /// What each honest node logs under each sync ID it syncs at `st`: (node, sync ID, logs).
     fn honest_logs(&self, rule: &Rule, st: &State) -> Vec<(usize, Sid, Set)> {
         let mut out = vec![];
-        for n in (0..self.nodes.len()).filter(|&n| self.nodes[n].honest && !st.gone.contains(&n)) {
+        for n in (0..self.nodes.len()).filter(|&n| self.nodes[n].honest) {
             for s in self.syncs(n, &st.units) {
                 out.push((n, s, self.req(rule, s, &st.units, &st.held[n])));
             }

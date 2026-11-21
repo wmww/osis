@@ -48,7 +48,7 @@ notes/priorities.md, First: issues/app-tile-unreadable-emails-test.md [checked: 
 ### P. Prune
 Net lines go down (notes/principles.md, Writing code is the cheapest part of having code). Out of spec, code, models and tests:
 - role-write vouches: `vouches.0`, the second walk, counting, the unasked writing, travel with the removal (issues/role-vouch-contested.md); roles-model `Rules::remake` and notes/role-remake-model.md;
-- eager delivery: the errand, the standing duty, reach, the record per (removal, target), holding a unit for it (engine `evidence` duty and reach, held-model's A3 stage, issues/held-model-brief3-read-hop-delivery.md);
+- eager delivery: the errand, the standing duty, reach, the record per (removal, target), holding a unit for it (engine `evidence` duty and reach, held-model's A3 stage and its known failure);
 - the drafts' and held-model's wait for a complete pass before a body judged invalid is dropped (drops are at once, as built);
 - the last-admin rule every node judges (a lowering naming its remaining admin, that edge as evidence);
 - whatever else these orphan. The gate is measured again afterwards (issues/test-time.md).
@@ -115,7 +115,7 @@ Accounts unchanged: today's account key is the signer.
 - **Changes**: spec/permissions.md §5.1 Frontier: a leaf per thing and an entry per role commit in the list tree (the built tree of §5.5 moves to the ordinary removal [checked: core/commit/src/lists.rs, core/engine/src/flows/lists.rs exist]); a removal's copy under a sync ID with the leaves for that unit's things, in the unit's required set while it holds a write the removal judges, leaving with the last of them (A2's rule; no copy placed where nothing is judged). It arrives as today: with the thing's next key rotation by a writer holding it (the keyset's carried demotions), by any node holding both it and a write it judges there, and, if D's model shows it simple and good, by a node that only reads the thing depositing it on sight of such a write. No errand, no standing duty (Tess); where that leaves a removed key's write showing (readers served only by stores, in a thing no remaining member writes) is an issue, not something to build around.
 - **Removes**: the one frontier over every thing and its bound on a removal's size.
 - **Briefs**: (1) spec; (2) the list tree in the ordinary removal, perm and engine; (3) the copy per sync ID and its required-set rule; (4) counting: a removal over n and 10n things (entries, stamps, store rows), and that copies leave.
-- **State**: notes/a3-spec is drafted around the duty and is rewritten at D; the engine's leaves derivation (`evidence`) is built unused.
+- **State**: notes/a3-spec states lazy delivery (Far delivery, with its open modelling question); its For Tess and Open sections are rewritten at D; the engine's leaves derivation (`evidence`) is built unused.
 - **Depends on**: D. Briefs inherit from issues/zero-growth.md: content and purge-request entries are evidence of the commit they name and leave with it. **Unblocks**: A4.
 
 ### A4. Accounts as ordinary things

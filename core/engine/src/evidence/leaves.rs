@@ -5,10 +5,10 @@
 //!
 //! A lowering L in S's set (a member, or a body) requires its leaf for thing t where
 //! - **reads**: L **cuts** (a removal-shaped write taking write away on its edge: a record edge, or
-//!   a held chained write giving write or above ordered before it, as reach reads it) and a body of
+//!   a held chained write giving write or above ordered before it) and a body of
 //!   S on t has a content-class part resting on L's edge (`Sid::rest`, counted per (edge, thing));
 //! - **home**: t is not L's own thing and L is a body of S (a far leaf stays with its lowering
-//!   wherever it is a body, so every holder of it holds what any runner of its duty carries).
+//!   wherever it is a body, so a node holding L holds the leaf a write L judges elsewhere needs).
 
 use super::*;
 
@@ -157,7 +157,7 @@ where
 
     /// Part `i` of held copy `c` cuts content resting on its edge: a removal-shaped write taking
     /// write away there (a record edge, or a held chained write giving write or above ordered
-    /// before it: reach's witness test, so a leaf waited on is one the duty carries).
+    /// before it).
     fn cuts(&self, c: &CopyId<C, T>, i: usize) -> bool {
         match self.ix.copies.get(c).and_then(|h| h.parts.get(i)) {
             Some(Part { kind: Kind::Write(w), pos, .. }) => w.removal && self.takes_write(&(w.holder, c.1), *pos),

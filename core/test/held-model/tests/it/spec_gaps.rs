@@ -210,36 +210,15 @@ fn gaps_explore() {
     }
 }
 
-/// The sampled property: A3's rule (`Stage::A3`) holds P0 to P10 and P1 for two random trust sets
-/// over `wide` worlds under every option set (`per` seeds each from `OSIS_HELD_START`), and brief 3
-/// with reach (`Stage::ReachNoErrand`, OPEN 14's proposal) fails P1 or P3 in no world where
-/// today's rule holds both, over those and `random` random worlds, every `family_step`th family
-/// world and `story` story seeds under every unit crossing; vouches counting and not.
-fn search(per: u64, family_step: usize, random_worlds: u64, story: u64) {
+/// The sampled property: the drafted A3 delivery (`Stage::A3`) holds P0 to P10 and P1 for two
+/// random trust sets over `wide` worlds under every option set (`per` seeds each from
+/// `OSIS_HELD_START`), vouches counting and not.
+fn search(per: u64) {
     let start = std::env::var("OSIS_HELD_START").ok().filter(|v| !v.is_empty()).map_or(0, |v| v.parse::<u64>().expect("OSIS_HELD_START is a decimal u64"));
-    eprintln!("reach and gaps: wide and random seeds from {start}");
-    let mut jobs: Vec<(bool, Job)> = vec![];
+    eprintln!("gaps: wide seeds from {start}");
+    let mut jobs: Vec<Job> = vec![];
     for opt in WIDE_OPTS {
-        jobs.extend(wide_jobs(start, per, opt).into_iter().map(|j| (true, j)));
-    }
-    for i in (0..FAMILY).step_by(family_step) {
-        jobs.push((false, Box::new(move || (format!("{:?}", Shape::nth(i)), family(Shape::nth(i)), None))));
-    }
-    for seed in start..start + random_worlds {
-        jobs.push((false, Box::new(move || (format!("random {seed}"), random(seed, 14), None))));
-    }
-    for seed in start..start + story {
-        for u in 0..STORY_UNITS {
-            jobs.push((
-                false,
-                Box::new(move || {
-                    let sim = paths::random_world(seed, &crate::spec_story::rules(true));
-                    let w = story_world(&sim, u);
-                    let at = crate::spec_story::story_steps(&w, &sim);
-                    (format!("story {seed} units {u}"), w, Some(at))
-                }),
-            ));
-        }
+        jobs.extend(wide_jobs(start, per, opt));
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let bad = std::sync::Mutex::new(vec![]);
@@ -247,19 +226,12 @@ fn search(per: u64, family_step: usize, random_worlds: u64, story: u64) {
     std::thread::scope(|sc| {
         for _ in 0..threads {
             sc.spawn(|| loop {
-                let Some((a3, j)) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let (name, w, at) = j();
+                let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
+                let (name, w, _) = j();
                 for vouches in [true, false] {
-                    if *a3 {
-                        let trusts = trust_sets(&w, name.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64)));
-                        if let Some(f) = gap_fails(&w, Stage::A3, vouches, &trusts).first() {
-                            bad.lock().unwrap().push(format!("a3 vouches {vouches} {name}: {f:?}"));
-                        }
-                    }
-                    let p13 = |s: Stage| -> BTreeSet<&'static str> { crate::spec_reach::stage_fails_at(&w, s, vouches, at.as_ref()).into_iter().map(|f| f.prop).filter(|p| matches!(*p, "P1" | "P3")).collect() };
-                    let reach = p13(Stage::ReachNoErrand);
-                    if !reach.is_empty() && !reach.is_subset(&p13(Stage::Today)) {
-                        bad.lock().unwrap().push(format!("reach-no-errand worse than today, vouches {vouches} {name}: {reach:?}"));
+                    let trusts = trust_sets(&w, name.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64)));
+                    if let Some(f) = gap_fails(&w, Stage::A3, vouches, &trusts).first() {
+                        bad.lock().unwrap().push(format!("a3 vouches {vouches} {name}: {f:?}"));
                     }
                 }
             });
@@ -272,13 +244,13 @@ fn search(per: u64, family_step: usize, random_worlds: u64, story: u64) {
 #[test]
 #[ignore = "property"]
 fn evidence_reach_and_generator_gaps_plain() {
-    search(2, 97 * 4, 8, 1);
+    search(2);
 }
 
 #[test]
 #[ignore = "property"]
 fn evidence_reach_and_generator_gaps_large() {
-    search(40, 17, 150, 10);
+    search(40);
 }
 
 /// One `wide` world by hand: `OSIS_GAPS_SEED`, `OSIS_GAPS_OPT` (letters s, l, m: split, late,
@@ -414,8 +386,8 @@ fn gaps_wide_worlds_reach_the_read_hop() {
 /// errand the removal reaches R only by riding Q's write: where a read hop joins a path (J1, J4's
 /// closure, today's any-path chains), D's evidence takes the removal's copy (Q's removal is in it),
 /// Y holds it and R's reader requires it; under J2 Q's write through the read hop brings nothing
-/// and R's reader shows K's write valid (brief 3's rule less safe than today there). A3's errand
-/// carries it under every rule.
+/// and R's reader shows K's write valid (A2's rule less safe than today there). The drafted A3
+/// errand carries it under every rule.
 #[test]
 fn gaps_a_removal_rides_a_write_through_a_read_hop_only_where_read_joins() {
     let pw = paths::World::new(&[(X, A), (Y, D), (Y, R)]);
@@ -433,7 +405,7 @@ fn gaps_a_removal_rides_a_write_through_a_read_hop_only_where_read_joins() {
         for s in Stage::ALL {
             let f = gap_fails(&w, s, true, &[]);
             let shows = f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == c && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid));
-            assert_eq!(shows, join == Join::Needed && matches!(s, Stage::ReachNoErrand | Stage::A2 | Stage::A2Actor), "{} {}: {f:?}", join.name(), s.name());
+            assert_eq!(shows, join == Join::Needed && matches!(s, Stage::A2 | Stage::A2Actor), "{} {}: {f:?}", join.name(), s.name());
             if matches!(s, Stage::A3 | Stage::Today) {
                 assert_eq!(f, vec![], "{} {}", join.name(), s.name());
             }

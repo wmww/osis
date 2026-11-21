@@ -3,7 +3,7 @@
 //! searches (`_plain`, `_large`). `explore` prints every rule variant's failures (by hand).
 use held_model::evidence::names::*;
 use held_model::evidence::*;
-use roles_model::paths::{Id, Set};
+use roles_model::paths::{self, Id, Set};
 use roles_model::Role;
 use std::collections::BTreeMap;
 
@@ -699,5 +699,27 @@ pub fn show(w: &World, rule: &Rule) {
     }
     for &s in &w.sids {
         eprintln!("reader {s} req {:?}", w.req(rule, s, &st.units, &st.entries[&s]));
+    }
+}
+
+/// Finding 34: a removal's leaf for its own thing is read only by bodies on that thing, which sit
+/// with the removal in every unit it is a body of, so it leaves with the last of them; kept with
+/// the removal for good (`Home::All`), a thing's own removals keep every list they made.
+#[test]
+fn f34_a_removals_leaf_for_its_own_thing_leaves_with_what_it_reads() {
+    let pw = paths::World::new(&[(X, A)]);
+    let mut w = World::new(pw, &[A]);
+    let (x, k) = (w.node(true, &[A]), w.node(true, &[A]));
+    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    let c = w.write(k, |p| p.content(K, 2, &[], A));
+    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
+    for (home, left) in [(Home::Far, 0), (Home::All, 1)] {
+        let rule = Rule { leaves_home: home, ..Rule::listed() };
+        let mut st = w.run(&rule, |_| {});
+        assert_eq!(st.leaves[&A].len(), 1);
+        assert_eq!(w.verdicts(&w.reader(&rule, &st, A, &Set::new()), &Set::from([c]))[&c], Verdict::Valid);
+        w.forget(&rule, &mut st, c);
+        assert_eq!(st.leaves[&A].len(), left, "{home:?}");
+        assert_eq!(w.p4(&rule, &st, false), vec![]);
     }
 }

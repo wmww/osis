@@ -33,7 +33,7 @@ struct World {
 impl World {
     /// The path of `k` holder things and `n` writes of K on `on` along it.
     fn new(k: usize, n: usize) -> World {
-        let mut ev = E::new(Config { vouches: true, reach: false, keys_open: false, leaves: false, duty: false });
+        let mut ev = E::new(Config { vouches: true, keys_open: false, leaves: false });
         for s in [D, D2] {
             ev.add_sid(s, s);
             ev.join(&s, s);
@@ -207,7 +207,7 @@ fn a_write_naming_the_actor_reads_none_of_its_earlier_ones() {
 fn a_forgotten_body_closes_again_only_when_it_was_the_last_on_an_edge() {
     const A: u16 = 50;
     let at = |m: u16| {
-        let mut ev = E::new(Config { vouches: true, reach: false, keys_open: false, leaves: false, duty: false });
+        let mut ev = E::new(Config { vouches: true, keys_open: false, leaves: false });
         ev.add_sid(D, D);
         ev.join(&D, D);
         let mut next = 1u32;
@@ -250,7 +250,7 @@ fn a_forgotten_body_closes_again_only_when_it_was_the_last_on_an_edge() {
 #[test]
 fn a_compaction_forgetting_many_bodies_closes_once() {
     const A: u16 = 50;
-    let mut ev = E::new(Config { vouches: true, reach: false, keys_open: false, leaves: false, duty: false });
+    let mut ev = E::new(Config { vouches: true, keys_open: false, leaves: false });
     ev.add_sid(D, D);
     ev.join(&D, D);
     ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(X, D)]), pos: 1, chained: true }]);
@@ -269,38 +269,30 @@ fn a_compaction_forgetting_many_bodies_closes_once() {
     assert_eq!((c.closes, c.bodies), (1, 10), "{c:?}");
 }
 
-// ---- reach and keys-open travel (notes/evidence-derivation.md, Reach and keys-open travel) ----
+// ---- keys-open travel (notes/evidence-derivation.md, Keys-open travel) ----
 
-/// A world for reach counts: things minted by X, every write chained, reach and keys-open travel on.
-struct Reach {
+/// A world for keys-open counts: things minted by X, every write chained, keys-open travel on.
+struct Travel {
     ev: E,
     next: u32,
 }
 
-impl Reach {
-    fn new() -> Reach {
-        Reach { ev: E::new(Config { vouches: true, reach: true, keys_open: true, leaves: false, duty: false }), next: 1 }
+impl Travel {
+    fn new() -> Travel {
+        Travel { ev: E::new(Config { vouches: true, keys_open: true, leaves: false }), next: 1 }
     }
     fn sid(&mut self, s: u16) {
         self.ev.add_sid(s, s);
         self.ev.join(&s, s);
     }
-    fn edge(&mut self, holder: u16, on: u16, grant: bool, chained: bool) -> (u32, u16) {
-        let c = (self.next, on);
-        self.next += 1;
-        let kind = Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, relies: None, creation: None, leaves: vec![] });
-        self.ev.add(c, vec![Part { kind, hops: Some(vec![rec(X, on)]), pos: c.0, chained }]);
-        c
-    }
     /// A chained write grant of `holder` on `on`.
     fn grant(&mut self, holder: u16, on: u16) -> (u32, u16) {
-        self.edge(holder, on, true, true)
+        let c = (self.next, on);
+        self.next += 1;
+        self.ev.add(c, vec![Part { kind: write(holder), hops: Some(vec![rec(X, on)]), pos: c.0, chained: true }]);
+        c
     }
-    /// A chained removal of `holder` from `on`.
-    fn remove(&mut self, holder: u16, on: u16) -> (u32, u16) {
-        self.edge(holder, on, false, true)
-    }
-    fn work(&mut self, f: impl FnOnce(&mut Reach)) -> Counts {
+    fn work(&mut self, f: impl FnOnce(&mut Travel)) -> Counts {
         let before = self.ev.counts();
         f(self);
         let c = minus(self.ev.counts(), before);
@@ -314,158 +306,13 @@ const H: u16 = 51;
 const H2: u16 = 52;
 const Q: u16 = 4;
 
-/// A removal arriving: of s sync IDs, r lie below its target (A writes H, H writes D1..Dr; another
-/// hub writes the other s - r). It walks what A leads to once and, per sync ID reached, the way
-/// into it: work 7r + 3, the same at s = 10, 100 and 1,000; each reached sync ID takes the removal,
-/// its witness (K's grant on A) and A's grant on H.
-#[test]
-fn a_removal_arriving_reaches_only_the_sync_ids_below_it() {
-    let at = |s: u16, r: u16| {
-        let mut w = Reach::new();
-        w.grant(K, A);
-        w.grant(A, H);
-        for i in 0..s {
-            let d = 1000 + i;
-            w.sid(d);
-            w.grant(if i < r { H } else { H2 }, d);
-        }
-        let mut rm = (0, 0);
-        let c = w.work(|w| rm = w.remove(K, A));
-        for i in 0..s {
-            assert_eq!(w.ev.required(&(1000 + i)).unwrap().contains_key(&rm), i < r);
-        }
-        c
-    };
-    let (a, b, c) = (at(10, 5), at(100, 5), at(1000, 5));
-    assert_eq!((a, a), (b, c));
-    assert_eq!((a.reach, a.reach_seeds, a.closes), (7 * 5 + 3, 5 * 5, 0), "{a:?}");
-    assert_eq!(at(100, 50).reach, 7 * 50 + 3);
-}
-
-/// What does no reach work: a content body, junk (an unchained removal or write grant), a finalize,
-/// a vouch: no walk, no seed, however many removals and sync IDs there are.
-#[test]
-fn content_junk_and_other_role_changes_do_no_reach_work() {
-    let mut w = Reach::new();
-    w.grant(K, A);
-    w.grant(A, H);
-    for i in 0..10 {
-        w.sid(1000 + i);
-        w.grant(H, 1000 + i);
-    }
-    let rm = w.remove(K, A);
-    let d = 1000;
-    let content = w.work(|w| {
-        let c = (w.next, d);
-        w.next += 1;
-        w.ev.add(c, vec![Part { kind: Kind::Content, hops: Some(vec![hop(K, A), hop(A, H), hop(H, d)]), pos: c.0, chained: false }]);
-    });
-    let junk = w.work(|w| {
-        w.edge(Z, H, true, false);
-        w.edge(Z, H, false, false);
-    });
-    let finalize = w.work(|w| {
-        let c = (w.next, A);
-        w.next += 1;
-        let kind = Kind::Write(Write { holder: Q, grant: None, removal: false, gives_write: false, gives_read: false, relies: None, creation: None, leaves: vec![] });
-        w.ev.add(c, vec![Part { kind, hops: Some(vec![rec(X, A)]), pos: c.0, chained: true }]);
-    });
-    let vouch = w.work(|w| {
-        let c = (w.next, A);
-        w.next += 1;
-        w.ev.add(c, vec![Part { kind: Kind::Vouch { keyed: rm }, hops: Some(vec![rec(X, A)]), pos: c.0, chained: true }]);
-    });
-    for c in [content, junk, finalize, vouch] {
-        assert_eq!((c.reach, c.reach_seeds), (0, 0), "{c:?}");
-    }
-}
-
-/// A write grant joining two parts of the grant graph (H writes H2) with a removals above (each
-/// Aj writes H, K removed from each) and b sync IDs below (H2 writes D1..Db): each sync ID below
-/// takes each removal above with its witness (K's grant on Aj), with the ways: b (3a + 1) seeds,
-/// once. The same grant again goes
-/// where the edge does (b seeds, no walk); a write grant elsewhere with no removal above walks only
-/// what leads to it.
-#[test]
-fn a_write_grant_joining_removals_above_to_sync_ids_below_costs_their_product_once() {
-    let at = |a: u16, b: u16| {
-        let mut w = Reach::new();
-        for j in 0..a {
-            let aj = 200 + j;
-            w.grant(K, aj);
-            w.grant(aj, H);
-            w.remove(K, aj);
-        }
-        for i in 0..b {
-            w.sid(1000 + i);
-            w.grant(H2, 1000 + i);
-        }
-        let join = w.work(|w| {
-            w.grant(H, H2);
-        });
-        for i in 0..b {
-            let (seeds, _) = w.ev.reach_size(&(1000 + i)).unwrap();
-            assert_eq!(seeds, 3 * a as usize + 1);
-        }
-        let again = w.work(|w| {
-            w.grant(H, H2);
-        });
-        let elsewhere = w.work(|w| {
-            w.grant(Z, 999);
-        });
-        (join, again, elsewhere)
-    };
-    let ((j1, g1, e1), (j2, g2, e2)) = (at(2, 3), at(4, 6));
-    // seeds given: per sync ID below, the a removals and their a witnesses, the a + 2 ways ((Aj,
-    // H), (H, H2), (H2, Di)) and the a + 1 grants on them off the unit: b (4a + 3), a product
-    assert_eq!((j1.reach_seeds, j2.reach_seeds), (3 * (4 * 2 + 3), 6 * (4 * 4 + 3)), "{j1:?} {j2:?}");
-    // the walks, linear: above (H, Aj, K and their edges, 3a + 2) and below (H2, Di and their
-    // edges, 2b + 1) once, each sync ID's way in (3b), the ways from the targets once (2a + 1)
-    assert_eq!((j1.reach, j2.reach), (5 * 2 + 5 * 3 + 4, 5 * 4 + 5 * 6 + 4), "{j1:?} {j2:?}");
-    assert_eq!((g1.reach, g1.reach_seeds, g2.reach, g2.reach_seeds), (0, 3, 0, 6));
-    assert_eq!((e1.reach, e2.reach), (1, 1));
-}
-
-/// A forget of a grant reach used (A1's grant on H): each sync ID whose reach held it computes its
-/// reach again from nothing (the things leading into its unit), and closes again: b closes, each
-/// walk O(a); a sync ID it never reached does nothing.
-#[test]
-fn a_forgotten_reach_grant_recomputes_the_sync_ids_that_used_it() {
-    let at = |a: u16, b: u16| {
-        let mut w = Reach::new();
-        let mut first = None;
-        for j in 0..a {
-            let aj = 200 + j;
-            w.grant(K, aj);
-            let g = w.grant(aj, H);
-            first.get_or_insert(g);
-            w.remove(K, aj);
-        }
-        w.grant(H, H2);
-        for i in 0..b {
-            w.sid(1000 + i);
-            w.grant(H2, 1000 + i);
-        }
-        // a sync ID the grant never reached
-        w.sid(999);
-        w.grant(Q, 999);
-        let g = first.unwrap();
-        w.work(|w| w.ev.forget(&g))
-    };
-    let (c1, c2) = (at(2, 3), at(4, 6));
-    assert_eq!((c1.closes, c2.closes), (3, 6));
-    // per sync ID: the things leading into its unit and their edges, then the ways from the
-    // remaining targets: 5a + 6
-    assert_eq!((c1.reach, c2.reach), (3 * (5 * 2 + 6), 6 * (5 * 4 + 6)), "{c1:?} {c2:?}");
-}
-
 /// Keys-open travel: a grant giving read joins the things a sync ID's actor opens; it takes the
 /// writes naming each newly opened holder, found by the holder index: the walk is what the new edge
 /// opens, the same however many other sync IDs and writes there are.
 #[test]
 fn a_read_grant_opens_only_what_it_leads_to() {
     let at = |n: u16| {
-        let mut w = Reach::new();
+        let mut w = Travel::new();
         w.sid(A);
         for i in 0..n {
             w.sid(2000 + i);
@@ -483,67 +330,7 @@ fn a_read_grant_opens_only_what_it_leads_to() {
     assert_eq!(a.opened, 3);
 }
 
-/// Memory and copies in an organisation: O has m members (write grants by X) and n documents
-/// (each its own sync ID, O writes it); M1 writes each document through [O]; X removes r members,
-/// and grants x readers read on O and removes them. With reach each document requires the r
-/// removals and the r grants their resets name (each removal's witness too), besides M1's grant:
-/// 2r + 1 copies, flat in n and in x (a reader's grant or removal takes no write away: OPEN 16);
-/// without reach, M1's grant alone. The reach index holds 2r seeds (removals and witnesses) and
-/// one way per document.
-#[test]
-fn an_organisations_documents_each_carry_every_removal_above_them() {
-    const O: u16 = 60;
-    let at = |n: u16, r: u16, x: u16, reach: bool| {
-        let mut ev = E::new(Config { vouches: true, reach, keys_open: true, leaves: false, duty: false });
-        let mut next = 1u32;
-        let mut add = |ev: &mut E, on: u16, kind: Kind<u32, u16>, hops: Vec<Hop<u16>>| {
-            let c = (next, on);
-            let chained = !matches!(kind, Kind::Content);
-            ev.add(c, vec![Part { kind, hops: Some(hops), pos: next, chained }]);
-            next += 1;
-            c
-        };
-        let mut grants = vec![];
-        for j in 0..=r {
-            grants.push(add(&mut ev, O, write(2000 + j), vec![rec(X, O)]));
-        }
-        for i in 0..n {
-            let d = 1000 + i;
-            ev.add_sid(d, d);
-            ev.join(&d, d);
-            add(&mut ev, d, write(O), vec![rec(X, d)]);
-            add(&mut ev, d, Kind::Content, vec![hop(2000, O), hop(O, d)]);
-        }
-        for j in 1..=r {
-            let creation = Some(grants[j as usize]);
-            let kind = Kind::Write(Write { holder: 2000 + j, grant: None, removal: true, gives_write: false, gives_read: false, relies: None, creation, leaves: vec![] });
-            add(&mut ev, O, kind, vec![rec(X, O)]);
-        }
-        for j in 0..x {
-            let h = 3000 + j;
-            let read = Kind::Write(Write { holder: h, grant: Some(Gives::role(osis_base::Role::Read)), removal: true, gives_write: false, gives_read: true, relies: None, creation: None, leaves: vec![] });
-            let g = add(&mut ev, O, read, vec![rec(X, O)]);
-            let kind = Kind::Write(Write { holder: h, grant: None, removal: true, gives_write: false, gives_read: false, relies: None, creation: Some(g), leaves: vec![] });
-            add(&mut ev, O, kind, vec![rec(X, O)]);
-        }
-        ev.check().unwrap();
-        let per: Vec<(usize, usize, usize)> = (0..n).map(|i| {
-            let d = 1000 + i;
-            let (seeds, ways) = ev.reach_size(&d).unwrap();
-            (ev.required(&d).unwrap().len(), seeds, ways)
-        }).collect();
-        assert!(per.iter().all(|p| *p == per[0]), "{per:?}");
-        per[0]
-    };
-    assert_eq!(at(10, 10, 0, true), (21, 20, 1));
-    assert_eq!(at(100, 10, 0, true), (21, 20, 1));
-    assert_eq!(at(10, 10, 100, true), (21, 20, 1));
-    assert_eq!(at(10, 10, 1000, true), (21, 20, 1));
-    assert_eq!(at(10, 10, 100, false), (1, 0, 0));
-    assert_eq!(at(10, 100, 0, true), (201, 200, 1));
-}
-
-// ---- A3: leaves and the duty (notes/evidence-derivation.md, Leaves; The duty's targets) ----
+// ---- A3: leaves (notes/evidence-derivation.md, Leaves) ----
 
 /// A3's derivation alone: K's write grant on A (X's, by A's record) is every removal's witness; X
 /// removes K from A any number of times, each listing what it names in its leaves.
@@ -552,15 +339,12 @@ struct Lists {
     next: u32,
 }
 
-const A3: Config = Config { vouches: true, reach: true, keys_open: true, leaves: true, duty: true };
+const A3: Config = Config { vouches: true, keys_open: true, leaves: true };
 
 impl Lists {
     fn new() -> Lists {
         let mut ev = E::new(A3);
         ev.add_record((X, A));
-        for t in 0..4000 {
-            ev.set_role(t, Some(osis_base::Role::Write));
-        }
         let mut l = Lists { ev, next: 1 };
         l.add(A, write(K), vec![rec(X, A)]);
         l
@@ -594,52 +378,11 @@ impl Lists {
     }
 }
 
-/// A removal arriving: its duty walks the things it reaches from its target (A writing r things),
-/// O(those), nothing of the s things A does not reach (each writing the next) nor of the s other
-/// removals (Z's from each of s things), the same at s = 10, 100, 1,000.
-#[test]
-fn a_removal_arriving_walks_only_what_its_target_reaches() {
-    let at = |s: u16| {
-        let mut l = Lists::new();
-        for j in 0..3 {
-            l.add(1000 + j, write(A), vec![rec(X, 1000 + j)]);
-        }
-        for j in 0..s {
-            l.add(2001 + j, write(2000 + j), vec![rec(X, 2001 + j)]);
-            l.ev.add_record((X, 3000 + j));
-            l.add(3000 + j, write(Z), vec![rec(X, 3000 + j)]);
-            l.removal(Z, 3000 + j, vec![]);
-        }
-        let (c, r) = l.work(|l| l.removal(K, A, vec![]));
-        l.ev.check().unwrap();
-        assert_eq!(l.ev.reached(&r).unwrap().len(), 4);
-        c.duty
-    };
-    let (a, b, c) = (at(10), at(100), at(1000));
-    assert_eq!((a, b, c), (7, 7, 7));
-}
-
-/// A hub A writing d documents: a removal on A reaches each, O(d) per removal at this node; the
-/// node runs one (removal, document) per document it reads (N devices × D documents across an
-/// organisation: notes/a3-spec/README.md For Tess 3).
-#[test]
-fn a_hubs_removal_reaches_its_documents_once_each() {
-    let at = |d: u16| {
-        let mut l = Lists::new();
-        for j in 0..d {
-            l.doc(1000 + j);
-        }
-        let (c, r) = l.work(|l| l.removal(K, A, vec![]));
-        assert_eq!(l.ev.duty().iter().filter(|x| x.removal == r).count(), usize::from(d) + 1);
-        c.duty
-    };
-    assert_eq!((at(10), at(100)), (2 * 10 + 1, 2 * 100 + 1));
-}
-
 /// A body arriving on D where r removals of K from A have a leaf for D: the first such body sends
 /// each of them to decide its leaf again (2 checks each: found, decided), a later one none; which
-/// leaves judge a body looks up those r alone. Neither reads the u removals with a leaf for another
-/// thing or on another edge: the same at u = 10, 100, 1,000.
+/// leaves judge a body looks up those r alone. The u removals of K with a leaf for another thing
+/// enter D's set with the first body (evidence of it, on its edge): one check each for its one
+/// leaf, none for a later body. The u removals on another edge cost nothing: at u = 10, 100, 1,000.
 #[test]
 fn a_body_arriving_looks_up_only_the_leaves_of_its_edges() {
     let at = |u: u16| {
@@ -661,9 +404,9 @@ fn a_body_arriving_looks_up_only_the_leaves_of_its_edges() {
         assert_eq!(l.ev.leaves(&D).unwrap().len(), 3);
         (first.leaf_checks, later.leaf_checks, look.leaf_checks)
     };
-    assert_eq!(at(10), (6, 0, 3));
-    assert_eq!(at(100), (6, 0, 3));
-    assert_eq!(at(1000), (6, 0, 3));
+    for u in [10, 100, 1000] {
+        assert_eq!(at(u), (6 + usize::from(u), 0, 3), "u {u}");
+    }
 }
 
 /// A leaf arriving judges the held parts it reads: n bodies on D resting on (K, A), none of the m
@@ -711,42 +454,6 @@ fn a_document_keeps_its_own_leaf_and_the_removals_home_every_far_leaf() {
         l.ev.leaves(&A).unwrap().len()
     };
     assert_eq!((at(10), at(100)), (10, 100));
-}
-
-/// A hub A writing d documents and r removals of K from A. Forgetting one of A's grants (the rare
-/// path: a purge of role commits) walks every removal reaching both its ends again from nothing:
-/// r (2d - 1), for r targets gone. A hold's end (A's grants on the d documents read for the duty
-/// only, released at once by `duty_forget_all`) walks each removal again once over what is left (A
-/// alone): r at d = 10, 100, where a release per copy walked about r d².
-#[test]
-fn a_cut_walks_each_removal_reaching_it_again_once() {
-    let at = |d: u16, r: u16| {
-        let mut l = Lists::new();
-        let grants: Vec<(u32, u16)> = (0..d).map(|j| l.add(1000 + j, write(A), vec![rec(X, 1000 + j)])).collect();
-        for _ in 0..r {
-            l.removal(K, A, vec![]);
-        }
-        let (forget, _) = l.work(|l| l.ev.forget(&grants[0]));
-        l.ev.check().unwrap();
-        let mut l = Lists::new();
-        let reads: Vec<(u32, u16)> = (0..d)
-            .map(|j| {
-                let c = (l.next, 1000 + j);
-                l.next += 1;
-                l.ev.duty_add(c, vec![Part { kind: write(A), hops: Some(vec![rec(X, 1000 + j)]), pos: c.0, chained: true }]);
-                c
-            })
-            .collect();
-        let rs: Vec<(u32, u16)> = (0..r).map(|_| l.removal(K, A, vec![])).collect();
-        assert!(rs.iter().all(|x| l.ev.reached(x).unwrap().len() == usize::from(d) + 1));
-        let (release, _) = l.work(|l| l.ev.duty_forget_all(reads.iter().copied()));
-        l.ev.check().unwrap();
-        assert!(rs.iter().all(|x| l.ev.reached(x).unwrap().len() == 1));
-        (forget.duty, release.duty)
-    };
-    assert_eq!(at(10, 10), (10 * 19, 10));
-    assert_eq!(at(100, 10), (10 * 199, 10));
-    assert_eq!(at(10, 100), (100 * 19, 100));
 }
 
 /// A closure rebuilt (the last body on an edge of A forgotten) decides its members' leaves again,
