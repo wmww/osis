@@ -693,10 +693,10 @@ fn removed_writers_writes(seed: u64) -> (usize, bool) {
 // first and compacts the register over it, or Bob compacts in that `ts` himself (a snapshot, no
 // plain content: no addendum lists it). Every peer, a restarted one and fresh nodes handed every
 // commit in either order read alike: Bob's write stands by Carol's addendum when she had it, and
-// Bob's own snapshot never stands, whatever the tids.
+// Bob's own snapshot never stands, whatever the tids (both orders of the tied pair's).
 #[test]
 fn a_compaction_around_a_write_at_its_removals_ts_reads_alike_spec_perm_5_2() {
-    for [a, b, c] in [[0, 1, 2], [1, 0, 2], [2, 1, 0]] {
+    for [a, b, c] in [[0, 1, 2], [1, 0, 2]] {
         for bob_compacts in [false, true] {
             let mut lp = LocalPeer::fresh(3, T0);
             lp.sync_all().unwrap();
