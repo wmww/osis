@@ -20,6 +20,6 @@
 A scenario is a function of two seeds: a calm setup of the setup seed, then a run of the run seed. The setup seed is `sim-sweep --setup` (`OSIS_SIM_SETUP` in a test sweep), by default `--from`: one setup per scenario per sweep, a fresh one per gate and release check. Phase A scenarios build their few-commit setups per seed.
 
 ## Sim tests
-The networked scenarios are osis-sync's `sims::` (five default tests on the reference-graph differential's oracle, notes/test-properties.md), not `sim-sweep` scenarios: the gate runs them with the default tests.
+The networked scenarios are osis-sync's `sims::` (five `_plain` properties on the reference-graph differential's oracle, notes/test-properties.md), not `sim-sweep` scenarios: the gate runs them with the properties it selects for osis-sync.
 
 `core/test/sim/tests/it` holds only what the sweeps do not: a scenario's faults happening (`two_nodes_converge`, `three_nodes_random_delivery`, `drift_parks_until_clock_catches_up`; by hand `crash_and_restart`) and hand-written examples (`partial_relay_gets_its_rest_spec_commits_4`). No test replays a scenario at a seed for its own sake.

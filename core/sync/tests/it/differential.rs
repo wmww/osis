@@ -56,9 +56,10 @@ const TWICE_EVERY: u64 = 4;
 // the reference; its sync set and store hold what the model holds; no needed body is deleted
 // everywhere.
 #[test]
-fn histories_hold_their_closure() {
+#[ignore = "property"]
+fn histories_hold_their_closure_plain() {
     let (n, accounts, len, _) = size();
-    worlds("histories_hold_their_closure", |seed| history(seed, n, accounts, len, seed % 2 == 1));
+    worlds("histories_hold_their_closure_plain", |seed| history(seed, n, accounts, len, seed % 2 == 1));
 }
 
 /// `holds` for each seed of `OSIS_SYNC_SEED`/`OSIS_SYNC_SEEDS` (default: the size's range) on

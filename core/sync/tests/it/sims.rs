@@ -52,12 +52,13 @@ fn sim(name: &str, variants: u64, body: impl Fn(u64) -> Vec<Step> + Sync, outcom
 // away while the writer writes, back when the writer is gone, reads every write through the node
 // keeping the thing unread by its sync-only ticket alone.
 #[test]
-fn a_reader_through_a_node_keeping_it_unread() {
-    seeds(2).run("a_reader_through_a_node_keeping_it_unread", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
+#[ignore = "property"]
+fn a_reader_through_a_node_keeping_it_unread_plain() {
+    seeds(2).run("a_reader_through_a_node_keeping_it_unread_plain", |s| format!("OSIS_SYNC_SEED={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let steps: Vec<Step> = [start(), vec![PowerOff(1)], writes(2), vec![PowerOff(0), PowerOn(1), Run]].concat();
         let mut w = world(seed, 3);
         w.cap = crate::harness::STORM_CAP;
-        let _script = play(&mut w, &steps, format!("sims::a_reader_through_a_node_keeping_it_unread (seed {seed})"));
+        let _script = play(&mut w, &steps, format!("sims::a_reader_through_a_node_keeping_it_unread_plain (seed {seed})"));
         let mut r = reference(&mut w, &Default::default());
         reads_as(&mut w, &mut r, 0, 1);
     });
@@ -68,9 +69,10 @@ fn a_reader_through_a_node_keeping_it_unread() {
 // (drawn per seed) restart in place and every node holds its closure; a grant made across the
 // crashes reaches its grantee.
 #[test]
-fn crashes_and_restarts_in_place() {
+#[ignore = "property"]
+fn crashes_and_restarts_in_place_plain() {
     sim(
-        "crashes_and_restarts_in_place",
+        "crashes_and_restarts_in_place_plain",
         2,
         |seed| [vec![Disk(1, seed % 7, DiskFault::Crash), Disk(2, seed % 5, DiskFault::Crash)], writes(2), vec![New(0), Disk(0, seed % 3, DiskFault::Crash), Give(0, 1, crate::harness::history::Holder::Node(1), Gives::Reads), PowerOff(1), Run, PowerOn(1), Strong(1, None, 1)], writes(2)].concat(),
         |w| assert!(w.crashes > 0),
@@ -82,9 +84,10 @@ fn crashes_and_restarts_in_place() {
 // messages, and on odd seeds a peer holding every request open, hold their closure once it is
 // clean.
 #[test]
-fn lost_and_repeated_messages() {
+#[ignore = "property"]
+fn lost_and_repeated_messages_plain() {
     sim(
-        "lost_and_repeated_messages",
+        "lost_and_repeated_messages_plain",
         2,
         |seed| {
             let hold: Vec<Step> = if seed % 2 == 1 { vec![Lies(2, Lie::Hold)] } else { Vec::new() };
@@ -100,9 +103,10 @@ fn lost_and_repeated_messages() {
 // what it adds as deleted, or hides it); through a removal, a rotation and a grant again, node 1
 // still reads every write and holds its closure.
 #[test]
-fn a_peer_refusing_role_entries() {
+#[ignore = "property"]
+fn a_peer_refusing_role_entries_plain() {
     sim(
-        "a_peer_refusing_role_entries",
+        "a_peer_refusing_role_entries_plain",
         4,
         |seed| {
             let lie = [Lie::RefuseRoles, Lie::Full, Lie::Forget, Lie::Withhold][(seed % 4) as usize];
@@ -115,9 +119,10 @@ fn a_peer_refusing_role_entries() {
 // spec/sync-ids.md §5: a failed durable write, and one whose sync failed followed by a power
 // loss, leave every node holding its closure; clocks skewed by seed.
 #[test]
-fn store_failures() {
+#[ignore = "property"]
+fn store_failures_plain() {
     sim(
-        "store_failures",
+        "store_failures_plain",
         3,
         |seed| {
             let skew = [0i64, 600_000, -600_000][(seed % 3) as usize];
