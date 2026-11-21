@@ -593,8 +593,8 @@ impl Engine {
     }
 
     /// The demotions the keysets of `t` that commit `c` introduces carry (spec/crypto.md §4,
-    /// Carried demotions): each listed commit's `roles.0` parts with its author's chains, and
-    /// `c`'s own `roles.0` parts where a keyset says `c` demotes, added to `out`: a receiver holds
+    /// Carried demotions): each carried commit's `roles.0` parts (`c`'s own among them where a
+    /// keyset says `c` demotes) with its author's chains, added to `out`: a receiver holds
     /// those keysets only with them. Each demotion's chain once per `out` (a chain may name a
     /// keyset carrying it back: holder actors may form a cycle).
     fn carried_demotions(&mut self, t: &Tid, c: &CommitId, out: &mut Certs) {
@@ -602,9 +602,6 @@ impl Engine {
         for (r, e, x) in self.core.keysets_noted(t) {
             if self.core.ix.epoch_intro.get(&(*t, r, e)).is_some_and(|i| i.1 == *c) {
                 carried.extend(x.demotions.iter().copied());
-                if x.demotes {
-                    carried.insert(*c);
-                }
             }
         }
         for d in carried {

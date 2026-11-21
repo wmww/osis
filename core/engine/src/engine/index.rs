@@ -145,13 +145,13 @@ impl Rec for Arc<crate::flows::account::JudgedEpochs> {
 }
 impl Rec for super::HeldKeyset {
     fn to(&self) -> Value {
-        Value::List(vec![self.lists.to(), self.kem_in.to(), self.since.to(), self.names.to(), by_holder_to(&self.left_out), self.demotions.to(), Value::Bool(self.demotes)])
+        Value::List(vec![self.lists.to(), self.kem_in.to(), self.since.to(), self.names.to(), by_holder_to(&self.left_out), self.demotions.to()])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(f) = v else { return None };
-        let [lists, kem_in, since, names, left_out, demotions, Value::Bool(demotes)] = f.as_slice() else { return None };
+        let [lists, kem_in, since, names, left_out, demotions] = f.as_slice() else { return None };
         let (lists, kem_in, since, names, demotions) = (Rec::from(lists)?, Rec::from(kem_in)?, Rec::from(since)?, Rec::from(names)?, Rec::from(demotions)?);
-        Some(super::HeldKeyset { lists, kem_in, since, names, left_out: by_holder_from(left_out)?, demotions, demotes: *demotes })
+        Some(super::HeldKeyset { lists, kem_in, since, names, left_out: by_holder_from(left_out)?, demotions })
     }
 }
 /// `[holder, epoch]` pairs of a by-holder set map.
@@ -685,7 +685,6 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
             for c in &k.demotions {
                 w = w.raw(&c.0);
             }
-            w = w.u8(u8::from(k.demotes));
         }
         w = w.u8(u8::from(d.stands_in)).u64(d.hosts_from);
     }
@@ -850,8 +849,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             for _ in 0..r.u32()? {
                 demotions.push(CommitId(r.arr()?));
             }
-            let demotes = r.u8()? != 0;
-            keysets.push(super::KeysetRec { role, epoch: e, lists, kem, names, left_out, demotions, demotes });
+            keysets.push(super::KeysetRec { role, epoch: e, lists, kem, names, left_out, demotions });
         }
         let stands_in = r.u8()? != 0;
         let hosts_from = r.u64()?;

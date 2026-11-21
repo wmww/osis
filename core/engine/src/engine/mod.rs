@@ -201,9 +201,9 @@ pub struct KeysetRec {
     /// The keysets of holder actors it records its rotation left them out at (spec/crypto.md §4,
     /// Left out).
     pub left_out: Vec<(Tid, osis_crypto::Epoch)>,
-    /// The other commits' demotions it carries, and whether its own commit is one.
+    /// The commits whose demotions it carries: those it lists, and its rotation commit where it
+    /// `demotes` (the commit its write names, `KeysBody::of`).
     pub demotions: Vec<CommitId>,
-    pub demotes: bool,
 }
 
 /// A valid keyset body noted (`Indexes::keysets`): the epochs the supersedes lists of the bodies
@@ -215,7 +215,7 @@ pub struct KeysetRec {
 /// publish, each with its body's author (what binds a history entry to a rotator,
 /// spec/crypto.md §4: a forger's body binds entries to the forger), the left-out keysets they
 /// record, joined (Seal reads them at the actor's current epochs), and the demotions they carry,
-/// joined (spec/crypto.md §4, Carried demotions: `demotes`, its rotation commit is one). Held
+/// joined (spec/crypto.md §4, Carried demotions: its rotation commit among them where it demotes). Held
 /// only once those are (`Core::keyset`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeldKeyset {
@@ -226,7 +226,6 @@ pub struct HeldKeyset {
     pub names: BTreeSet<(osis_keys::NamesDigest, Tid)>,
     pub left_out: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
     pub demotions: BTreeSet<CommitId>,
-    pub demotes: bool,
 }
 
 /// A box record a `keys.0` body writes (spec/crypto.md §4, Stale): the actor's box of `role` at
@@ -1833,7 +1832,7 @@ impl Core {
 
     /// The held valid keysets of actor `m`: (role, epoch, what is held of it) (`keyset`).
     pub(crate) fn keysets_of(&self, m: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &HeldKeyset)> {
-        self.keysets_noted(m).filter(|(r, e, v)| self.carried_held(&(*m, *r, *e), v))
+        self.keysets_noted(m).filter(|(_, _, v)| self.carried_held(v))
     }
 
     /// Every keyset of actor `m` a valid body of which is noted (`Indexes::keysets`), held or not.
@@ -1852,14 +1851,13 @@ impl Core {
     /// stale by it, or descends through it.
     pub(crate) fn keyset(&self, m: &Tid, r: osis_base::Role, e: &osis_crypto::Epoch) -> Option<&HeldKeyset> {
         let k = (*m, r, *e);
-        self.ix.keysets.get(&k).filter(|v| self.carried_held(&k, v))
+        self.ix.keysets.get(&k).filter(|v| self.carried_held(v))
     }
 
-    /// Whether this node holds the demotions keyset `k` (actor, role, epoch) carries: the edge
-    /// writes of each commit it lists, and of its rotation commit when that demotes too.
-    fn carried_held(&self, k: &(Tid, osis_base::Role, osis_crypto::Epoch), v: &HeldKeyset) -> bool {
-        let held = |c: &CommitId| self.ix.held.edge_commit(c).is_some();
-        v.demotions.iter().all(held) && (!v.demotes || self.ix.epoch_intro.get(k).is_some_and(|x| held(&x.1)))
+    /// Whether this node holds the demotions keyset `v` carries: the edge writes of each commit
+    /// it carries (`HeldKeyset::demotions`).
+    fn carried_held(&self, v: &HeldKeyset) -> bool {
+        v.demotions.iter().all(|c| self.ix.held.edge_commit(c).is_some())
     }
 
     /// Bounds the clock (`Clock::bound`) at the first time after now that a grant's `until` or a

@@ -75,7 +75,19 @@ impl KeysBody {
                 let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;
                 let kem = (ks.suite == osis_keys::SUITE).then(|| osis_crypto::KemPublicKey::from_slice(b).ok()).flatten();
                 let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((m.0, osis_keys::aspects::from_schema(x).ok()?)))).collect();
-                Some(KeysetRec { role: *role, epoch, lists, kem, names: ks.names, left_out, demotions: ks.demotions.iter().copied().collect(), demotes: ks.demotes })
+                let mut demotions: Vec<CommitId> = ks.demotions.iter().copied().collect();
+                if ks.demotes {
+                    // its rotation commit: the commit its write names (a role commit is commit
+                    // form, spec/crdt.md §2.1), a snapshot's copy by its stamps
+                    let f = field(body, osis_keys::aspects::keyset_field(*role));
+                    demotions.extend(f.into_iter().flat_map(Fragment::live_writes).filter_map(|(d, _)| match d.src.kind() {
+                        osis_crdt::SourceKind::Commit(c) => Some(*c),
+                        _ => None,
+                    }));
+                    demotions.sort();
+                    demotions.dedup();
+                }
+                Some(KeysetRec { role: *role, epoch, lists, kem, names: ks.names, left_out, demotions })
             })
             .collect();
         KeysBody { write, recs, sealed: sealed_recs(body) }
@@ -168,7 +180,6 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &T
             held.left_out.entry(*m).or_default().insert(*x);
         }
         held.demotions.extend(k.demotions.iter().copied());
-        held.demotes |= k.demotes;
         if held != before || !core.ix.keysets.contains_key(&key) {
             core.ix.keysets.insert(key, held);
             core.touch();

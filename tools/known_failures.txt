@@ -14,5 +14,4 @@ osis-perm/paths::incremental::paths_forget_agrees_large rate:OSIS_PERM_SEED=3287
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=959507911307 issues/differential-small-size-failures.md node \d+ keeps \d+ store entries under thing \d+'s sync ID, which it does not hold
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=959507911307 issues/differential-small-size-failures.md node \d+ reads thing \d+: Some\(Str\("v\d+"\)\), the model does not
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=318840271993 issues/differential-small-size-failures.md must-hold bodies a caught-up reader lacks at quiet
-osis-engine/rotation::tests_carried::own_demotion_keyset_held_by_a_node_joining_after_compaction_plain_spec_crypto_4 rate:OSIS_OWN_DEMOTION_START=7 issues/own-demotion-read-rotated-again.md seed \d+: B dropped the removal's .keys\.0. part, its keysets current
 roles-model/paths::tests::random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/masked-backdated-lowerings.md counts:dispute=12 OSIS_ROLES_START=\d+: \{
