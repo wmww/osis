@@ -1,5 +1,5 @@
 # A removed key's backdated lowering drops honest writes for good
-> Summary: In roles-model `paths` a key removed before the theft can backdate a lowering ordered before its own removal: it applies at its key, drops the honest writes resting on the lowered edge, its own removal then drops it, and drops stand. Designed: a node that held the removal before the backdated write trusts the removal, whose seeds take the write before it acts (notes/write-path-design.md §1, First received). Owed: the model cut to it, the masking case.
+> Summary: In roles-model `paths` a key removed before the theft can backdate a lowering ordered before its own removal: it applies at its key, drops the honest writes resting on the lowered edge, its own removal then drops it, and drops stand. Designed: a node that held the removal before the backdated write trusts the removal, whose seeds take the write before it acts (notes/write-path-design.md §1, First received). Owed: F1's text (it fails as written: notes/path-model-findings.md 48), then the model cut to it; the masking case.
 > Priority: normal
 > Tags: perm, security
 
@@ -8,6 +8,6 @@
 **The rule** (notes/write-path-design.md §1, First received, F1): a node that receives an edge-class write ordered before a held, applying removal whose list leaves it out records that removal as trusted: it held the removal first. Trusted, the removal's seeds take the backdated write before the walk, so it never acts. The story gives its trusting nodes H's removal of X alone; with X's removal of N5 trusted where it was held first, liveness fails nowhere (a throwaway run: 3,000 random worlds, 190 failing checks to 0, nothing else failing).
 
 **Owed**
-- roles-model `paths`: trust sets from receipt order (notes/write-path-design.md §6, roles-model 3); then the two story properties' baselines leave tools/known_failures.txt.
+- F1 as written (notes/path-model-findings.md 48; notes/write-path-design.md Open 9): it gives a remover no side for its own removal, and the story's trusting nodes are H's side by choice where first received gives the thief's. Built as the variant `-first-received` (`Rules::received_trust`; `first_received_trusts_a_removal_held_before_a_backdated_write` holds this issue's world). Once the rule and the story's honest-side checks are restated, roles-model's trust sets come from receipt order and the two story properties' baselines leave tools/known_failures.txt.
 - The engine's default side recorded on such an arrival (engine `sides.rs`), with A1's walk.
 - A node with no order (a new node, a first sync) reads by the walk and is shown the removal as a dispute, except where two removed keys' backdated lowerings of one admin mask each other (notes/write-path-design.md Open 2).

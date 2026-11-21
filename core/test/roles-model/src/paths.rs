@@ -11,15 +11,13 @@
 //! - **Commits.** One signer, a `ts`, the thing written (`on`) and a stated path [A1..Ak]: the
 //!   commit uses the edges joining [signer, A1, .., Ak, on] and no other. Kinds: content, an
 //!   edge write (setting a holder's edge on `on`; a lowering carries a frontier, a leaf of commit
-//!   IDs per thing; it may name the remaining admin it relies on, or carry the mark that lets
-//!   its thing go adminless), an addendum (plain content naming a removal and commits it
-//!   vouches for). A commit of several edge writes
+//!   IDs per thing), an addendum (plain content naming a removal and commits it vouches for). A commit of several edge writes
 //!   on one target (`World::commit`) is one part per write, consecutive in key order, the part on
 //!   an edge of its own stated path last.
 //! - **Edges in time.** An edge gives its role at `ts` while its `until` is later; a write
 //!   giving no role at its own `ts` (none, or an `until` passed) is a removal. A write giving admin
-//!   with a later `until` on a standing admin edge (an **end**) is a grant: the last-admin rule
-//!   alone reads it (`Rules::until`; as a lowering it fails a required gate either way).
+//!   with a later `until` on a standing admin edge (an **end**) is a grant (`Rules::until`; as a
+//!   lowering it fails a required gate either way).
 //! - **Hops.** Consecutive members of [signer, A1..Ak, end] are joined by descent (the record
 //!   edges down the mint chain) where the first is a mint ancestor of the second and the path does
 //!   not mark the pair direct (`World::push_marked`), else by their direct edge. The end is the thing written, except for an edge write whose path ends at the
@@ -37,7 +35,7 @@
 //! - **Each lowering judged once, at its key** (`Rules::self_void`; finding 16): nothing is
 //!   exempt from a lowering's drops and no entry of its list is read as absent. A lowering (an
 //!   explicit edge write giving below admin at its `ts`) is judged the first time a pass reaches
-//!   it holding its right (its path giving admin, the last-admin rule passed) and taking its edge
+//!   it holding its right (its path giving admin) and taking its edge
 //!   from admin: where its own drops would take its authority (`keeps`: its path's edges read back
 //!   along the writes that set them, passing over its own drops) it is **void**; else it applies.
 //!   A commit of several edge writes takes effect part by part, each judged with the earlier
@@ -48,12 +46,6 @@
 //!   and an applied lowering applies in every later pass unless a later lowering drops it. One
 //!   without its right, or taking nothing, has no verdict and is judged by a later pass. D only
 //!   grows: nothing is undropped.
-//! - **Last admin** (`Rules::last_admin`): an unmarked write taking a **standing** admin edge
-//!   (admin, no `until`) of T to anything else applies only where the remaining admin it relies
-//!   on is, as the pass stands at it (its commit's earlier parts in effect), a standing admin edge of T other than the one
-//!   it lowers: the last edge of its own path where that is one (`Rules::last_hop`: its final hop
-//!   joining its last member to T in one edge), else the edge of the holder it names. A judged
-//!   lowering is void where that edge stands no more past its drops (`Rules::remains_kept`).
 //! - **Content.** A commit on T with path P is valid iff every edge of P gave write just before
 //!   its position (the start of its `ts`) and no applied lowering of an edge of P below write is
 //!   ordered after it; else iff such a lowering's list names it, a valid addendum by a writer
@@ -81,9 +73,8 @@
 //!   valid cover's copy of a write shows it whatever the write's own validity (spec/permissions.md
 //!   §5.2 Copies, §5.3), so a cover made by a writer not yet holding a removal carries the removed
 //!   party's late write for good: the accepted window. `Rules::cover_facts` is the alternative.
-//! - **Evidence** (`evidence`): the least set holding a unit's commits, every edge write on an
-//!   edge of a held commit's path or on the edge a held lowering names as the admin it relies
-//!   on.
+//! - **Evidence** (`evidence`): the least set holding a unit's commits and every edge write on
+//!   an edge of a held commit's path.
 //!
 //! `Sim` plays the stolen-node story over that rule (parties, ticks, honest writing and the
 //! properties: `Sim::build`, `check`); `rotations` is a small keys layer for A's epochs under a
@@ -109,11 +100,6 @@ pub enum Kind {
         role: Role,
         until: Option<u32>,
         frontier: BTreeMap<Thing, Set>,
-        /// The holder of the remaining admin edge this write relies on (notes/write-path-design.md
-        /// §5, The last admin); read only where its own path's last edge is not one.
-        relies: Option<Thing>,
-        /// The mark that lets the thing go adminless.
-        adminless: bool,
         /// The invite it carries (spec/permissions.md §2), at most its role; an admin edge gives
         /// every invite whatever this says.
         invite: Role,
@@ -161,7 +147,7 @@ impl Kind {
     }
     /// An edge write setting `holder`'s edge to `role`, standing, listing nothing.
     pub fn set(holder: Thing, role: Role) -> Kind {
-        Kind::Edge { holder, role, until: None, frontier: BTreeMap::new(), relies: None, adminless: false, invite: Role::None, finalize: false }
+        Kind::Edge { holder, role, until: None, frontier: BTreeMap::new(), invite: Role::None, finalize: false }
     }
     /// A finalize of `holder`'s ended grant.
     pub fn finalize(holder: Thing) -> Kind {
@@ -177,20 +163,17 @@ impl Kind {
         }
         self
     }
-    fn with(mut self, f: impl FnOnce(&mut Option<u32>, &mut BTreeMap<Thing, Set>, &mut Option<Thing>, &mut bool)) -> Kind {
-        if let Kind::Edge { until, frontier, relies, adminless, .. } = &mut self {
-            f(until, frontier, relies, adminless);
+    fn with(mut self, f: impl FnOnce(&mut Option<u32>, &mut BTreeMap<Thing, Set>)) -> Kind {
+        if let Kind::Edge { until, frontier, .. } = &mut self {
+            f(until, frontier);
         }
         self
     }
     pub fn until(self, t: u32) -> Kind {
-        self.with(|u, _, _, _| *u = Some(t))
+        self.with(|u, _| *u = Some(t))
     }
     pub fn listing(self, f: BTreeMap<Thing, Set>) -> Kind {
-        self.with(|_, l, _, _| *l = f)
-    }
-    pub fn relying(self, n: Thing) -> Kind {
-        self.with(|_, _, r, _| *r = Some(n))
+        self.with(|_, l| *l = f)
     }
 }
 
@@ -233,27 +216,12 @@ pub enum Regrant {
     FirstChained,
 }
 
-/// What a lowering of an admin edge must leave (notes/write-path-design.md §5, The last admin).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LastAdmin {
-    Off,
-    /// Control (the first round's reading): a lowering from admin that would leave its target no
-    /// admin edge alive, of all the walk holds, does not apply unless marked.
-    AnyEdge,
-    /// The rule: the remaining admin it relies on (its path's last edge, else the one it names)
-    /// is a standing admin edge (admin, no `until`) other than the lowered one.
-    Named,
-    /// Control: as `Named`, a timed admin edge alive at the write counting as standing.
-    NamedTimed,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rules {
     pub regrant: Regrant,
     /// Control (notes/write-path-design.md §1, Rejected): a lowering never puts in question the
     /// grants its own path rests on, read from the held writes, closed (`chain`).
     pub exempt_chain: bool,
-    pub last_admin: LastAdmin,
     /// An addendum vouches for no commit of its own signer (spec/permissions.md §5.2 Addenda
     /// asks only that its writer holds write on the thing, by any path).
     pub no_own_addendum: bool,
@@ -282,6 +250,15 @@ pub struct Rules {
     /// Control of `stands`: the writer keeps the role writes in key order, not in the order it
     /// received them.
     pub key_order: bool,
+    /// Writing policy, L3's end clause (notes/write-path-design.md §1): a remover keeps a received
+    /// role write only where its own path ends no sooner with it (`writers_keep`). False (control
+    /// `-no-end`): only where the removal still applies with it.
+    pub own_end: bool,
+    /// The story's trust sets (`Sim::view_at`). False (the story's oracle): each trusting node
+    /// trusts every honest removal, given. True (variant `-first-received`): the sides it recorded
+    /// by first received (notes/write-path-design.md §1 F1), which fail the story's honest-side
+    /// properties as F1 is written (notes/path-model-findings.md 48).
+    pub received_trust: bool,
     /// An invite grant needs its level as an invite on its path's last edge (spec/permissions.md
     /// §2, along one path: notes/write-path-design.md §1, Edge writes). False (control
     /// `-invite-role`): a role there suffices, so any writer grants.
@@ -312,14 +289,6 @@ pub struct Rules {
     /// commit's lowerings applied before it too (spec/commits.md §2). False (control
     /// `-own-drops`): over its own drops alone.
     pub commit_drops: bool,
-    /// `keeps(L)` also needs the remaining admin edge L relies on (its last edge, else the named
-    /// holder's) to stay a standing admin past L's drops; else L is void. False (control
-    /// `-remains-unkept`): the last-admin rule reads the pass before L's drops alone.
-    pub remains_kept: bool,
-    /// A path's last edge (the default remaining admin) is its final hop where that joins its
-    /// last member to the thing written in one edge; a descent of two steps or more has none.
-    /// False (control `-last-any`): the edge (Ak, T), read whether or not it is a hop.
-    pub last_hop: bool,
     /// Which held writes are dispute candidates.
     pub candidates: Candidates,
     /// A trusted write's seeds are the writes resting on its edge whose need there its own value
@@ -409,8 +378,7 @@ pub enum Drops {
 /// (notes/path-model-findings.md 38).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Until {
-    /// The rule: a grant, no lowering; the last-admin rule alone reads it (taking a standing admin's
-    /// standing). It applies in a pass only where its path gives admin there.
+    /// The rule: a grant, no lowering. It applies in a pass only where its path gives admin there.
     Plain,
     /// Variant (`-until-at-key`): a lowering judged at its key (verdict, audit, frontier, dispute
     /// candidate), whose drops are the writes resting on its edge whose need there its value does
@@ -442,7 +410,6 @@ impl Rules {
         Rules {
             regrant: Regrant::FirstApplied,
             exempt_chain: false,
-            last_admin: LastAdmin::AnyEdge,
             no_own_addendum: false,
             evidence_leaves: false,
             rewrite: false,
@@ -451,6 +418,8 @@ impl Rules {
             audit_held: false,
             stands: false,
             key_order: false,
+            own_end: false,
+            received_trust: false,
             invite_check: true,
             any_fall: true,
             purge_chain: true,
@@ -458,8 +427,6 @@ impl Rules {
             author_thing: false,
             cover_facts: false,
             commit_drops: true,
-            remains_kept: false,
-            last_hop: false,
             candidates: Candidates::All,
             seeds_by_need: false,
             refuse_shapes: false,
@@ -479,7 +446,6 @@ impl Rules {
         Rules {
             regrant: Regrant::FirstChained,
             exempt_chain: false,
-            last_admin: LastAdmin::Named,
             no_own_addendum: true,
             evidence_leaves: true,
             rewrite: true,
@@ -488,6 +454,8 @@ impl Rules {
             audit_held: true,
             stands: true,
             key_order: false,
+            own_end: true,
+            received_trust: false,
             invite_check: true,
             any_fall: true,
             purge_chain: true,
@@ -495,8 +463,6 @@ impl Rules {
             author_thing: false,
             cover_facts: false,
             commit_drops: true,
-            remains_kept: true,
-            last_hop: true,
             candidates: Candidates::Explicit,
             seeds_by_need: true,
             refuse_shapes: false,
@@ -531,11 +497,6 @@ pub fn alive(v: Val, ts: u32) -> Role {
     } else {
         v.0
     }
-}
-
-/// A standing admin edge's value: admin, no `until` (`timed`: or an `until` later than `ts`).
-fn standing(v: Option<Val>, ts: u32, timed: bool) -> bool {
-    v.is_some_and(|v| v.0 == Role::Admin && if timed { alive(v, ts) == Role::Admin } else { v.1.is_none() })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -741,15 +702,8 @@ impl World {
         let k = std::mem::replace(&mut self.commits[i].kind, Kind::Content);
         self.commits[i].kind = f(k);
     }
-    pub fn mark_adminless(&mut self, i: Id) {
-        self.edit(i, |k| k.with(|_, _, _, a| *a = true));
-    }
     pub fn set_until(&mut self, i: Id, t: u32) {
         self.edit(i, |k| k.until(t));
-    }
-    /// Names `holder` as the remaining admin edge write `i` relies on.
-    pub fn rely(&mut self, i: Id, holder: Thing) {
-        self.edit(i, |k| k.relying(holder));
     }
     pub fn key(&self, i: Id) -> Key {
         (self.commits[i].ts, self.commits[i].signer, i)
@@ -1050,7 +1004,7 @@ struct Walk {
 }
 
 /// R's list names `j`: its frontier, in a leaf the node sees.
-fn listed(w: &World, v: &View, r: Id, j: Id) -> bool {
+pub(crate) fn listed(w: &World, v: &View, r: Id, j: Id) -> bool {
     w.in_leaves(r, j, v.leaves.as_ref())
 }
 
@@ -1074,7 +1028,7 @@ fn chain(w: &World, held: &Set, r: Id) -> Set {
 
 /// Whether a lowering of edge `e` puts commit `j` in question: its path holds `e`, or (with
 /// `leave_in_question`) it is a self-removal of `e`.
-fn rests_on(w: &World, rules: &Rules, j: Id, e: Edge) -> bool {
+pub(crate) fn rests_on(w: &World, rules: &Rules, j: Id, e: Edge) -> bool {
     w.hops(j).contains(&e) || (rules.leave_in_question && w.leave(j) && w.sets(j) == Some(e))
 }
 
@@ -1114,41 +1068,8 @@ fn order(w: &World, held: &Set) -> Vec<Id> {
     o
 }
 
-/// The last-admin rule for edge write `i` setting `e` to `new` against `p`: None where it refuses
-/// the write; else the remaining admin edge it relies on, where it relies on one.
-fn remains(w: &World, rules: &Rules, p: &Pass, i: Id, e: Edge, new: Val) -> Option<Option<Edge>> {
-    let c = &w.commits[i];
-    let Kind::Edge { relies, adminless, .. } = &c.kind else { return Some(None) };
-    if *adminless {
-        return Some(None);
-    }
-    let old = p.state.get(&e).copied();
-    match rules.last_admin {
-        LastAdmin::Off => Some(None),
-        LastAdmin::AnyEdge => {
-            let refuses = p.at(e, c.ts) == Role::Admin && alive(new, c.ts) < Role::Admin && !p.state.keys().any(|&k| k.1 == c.on && k != e && p.at(k, c.ts) == Role::Admin);
-            (!refuses).then_some(None)
-        }
-        LastAdmin::Named | LastAdmin::NamedTimed => {
-            let timed = rules.last_admin == LastAdmin::NamedTimed;
-            if !standing(old, c.ts, timed) || standing(Some(new), c.ts, timed) {
-                return Some(None);
-            }
-            let ok = |x: Edge| x != e && standing(p.state.get(&x).copied(), c.ts, timed);
-            // the last edge: the final hop where it joins Ak (the signer for an empty path) to the
-            // thing in one edge (`last_hop`; else (Ak, T) wherever it is)
-            let ak = *c.path.last().unwrap_or(&c.signer);
-            let last = if rules.last_hop { w.hops(i).last().copied().filter(|&h| h == (ak, c.on)) } else { Some((ak, c.on)) };
-            if let Some(l) = last.filter(|&l| ok(l)) {
-                return Some(Some(l));
-            }
-            relies.map(|n| (n, c.on)).filter(|&x| ok(x)).map(Some)
-        }
-    }
-}
-
 /// A lowering's verdict, given the first time a pass reaches it holding the right (its path
-/// giving admin, the last-admin rule passed) and taking its edge from admin, as restored, to
+/// giving admin) and taking its edge from admin, as restored, to
 /// below; kept for the rest of the walk. One that does not hold the right, or takes nothing (its
 /// edge below admin already), has no verdict and is walked like any write: a restart reaching it
 /// judges it again.
@@ -1167,25 +1088,27 @@ fn keeps(w: &World, p: &Pass, gone: &dyn Fn(Id) -> bool, i: Id, memo: &mut BTree
         return k;
     }
     let (key, ts) = (w.key(i), w.commits[i].ts);
-    let ok = w.hops(i).iter().all(|&e| setter_keeps(w, p, gone, e, key, &|v| alive(v, ts) == Role::Admin, memo, checked));
+    let ok = w.hops(i).iter().all(|&e| setter_keeps(w, p, gone, e, key, ts, memo, checked));
     memo.insert(i, ok);
     ok
 }
 
 /// Edge `e` read back along the applied writes setting it before `key`, latest first, skipping
-/// those gone, grants that do not keep in turn, and self-removals `accept` passes (a self-removal
-/// lowers, so it passes only where the edge before it did): the first left decides by `accept`
-/// (a lowering as it stands; a self-removal it refuses), a record edge at the bottom.
+/// those gone, grants that do not keep in turn, and self-removals giving admin at `ts` (a
+/// self-removal lowers, so it gives admin only where the edge before it did): the first left
+/// decides by giving admin at `ts` (a lowering as it stands; a self-removal not giving it
+/// refuses), a record edge at the bottom.
 #[allow(clippy::too_many_arguments)]
-fn setter_keeps(w: &World, p: &Pass, gone: &dyn Fn(Id) -> bool, e: Edge, key: Key, accept: &dyn Fn(Val) -> bool, memo: &mut BTreeMap<Id, bool>, checked: &mut u64) -> bool {
+fn setter_keeps(w: &World, p: &Pass, gone: &dyn Fn(Id) -> bool, e: Edge, key: Key, ts: u32, memo: &mut BTreeMap<Id, bool>, checked: &mut u64) -> bool {
+    let accept = |v: Val| alive(v, ts) == Role::Admin;
     for &(k, v) in p.hist.get(&e).into_iter().flatten().rev().filter(|x| x.0 < key) {
         *checked += 1;
         let j = k.2;
         if gone(j) {
             continue;
         }
-        // a self-removal lowers: the edge after it gives what `accept` asks only where the edge
-        // before it did, so one that would pass is read through (notes/path-model-findings.md 43)
+        // a self-removal lowers: the edge after it gives admin only where the edge before it did,
+        // so one giving it is read through (notes/path-model-findings.md 43)
         if w.leave(j) {
             if accept(v) {
                 continue;
@@ -1327,15 +1250,6 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
             // an explicit write: attributed to admin (spec/permissions.md §5.1 step 2); a
             // self-removal, an invite grant and a finalize are not, and audit nothing
             let explicit = !leave && !as_invite && !as_finalize;
-            // the last-admin rule, with the commit's earlier parts in effect
-            let relied = if judged.is_none() && !as_invite && !as_finalize {
-                match remains(w, rules, &p, i, e, new) {
-                    None => continue,
-                    Some(r) => r,
-                }
-            } else {
-                None
-            };
             let old = p.state.get(&e).copied().unwrap_or((Role::None, None));
             // a self-removal only lowers: it removes the grant, or sets no component (role, invite,
             // `until`) above the grant's
@@ -1393,13 +1307,11 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
                 };
                 // void: its drops, with those of its commit's lowerings applied before it
                 // (`commit_drops`), would take its authority (read back from the state, before any
-                // drop is listed), or the remaining admin it relies on (`remains_kept`)
+                // drop is listed)
                 let all_gone = |j: Id| gone(j) || (rules.commit_drops && cdrops.contains(&j));
                 if rules.self_void {
                     let mut memo = BTreeMap::new();
-                    let timed = rules.last_admin == LastAdmin::NamedTimed;
-                    let kept = keeps(w, &p, &all_gone, i, &mut memo, &mut checked)
-                        && relied.is_none_or(|r| !rules.remains_kept || setter_keeps(w, &p, &all_gone, r, w.key(i), &|v| standing(Some(v), c.ts, timed), &mut memo, &mut checked));
+                    let kept = keeps(w, &p, &all_gone, i, &mut memo, &mut checked);
                     if !kept {
                         verdict.insert(i, Verdict::Void);
                         continue;
@@ -1855,24 +1767,73 @@ pub fn disputes_by(w: &World, rules: &Rules, v: &View, differs: impl Fn(&Reading
     out
 }
 
-/// The edges whose edge writes are evidence of commit `i`: its path's, and the remaining admin
-/// edge it names.
-fn evidence_edges(w: &World, i: Id) -> Vec<Edge> {
-    let mut e = w.hops(i).to_vec();
-    if let Kind::Edge { relies: Some(n), .. } = &w.commits[i].kind {
-        e.push((*n, w.commits[i].on));
+
+/// When a lowering's own path ends in a reading (notes/write-path-design.md §1, L3), ordered:
+/// `Nothing` (it does not apply, or is void), then any `ts`, then `Never`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum End {
+    Nothing,
+    At(u32),
+    Never,
+}
+
+/// `end(r)` in reading `rd`, `r` trusted: `Nothing` where `r` does not apply (void included: a
+/// trusted write the settled walk does not apply); else the earliest `ts`, at or after `r`'s, at
+/// which a hop of `r`'s own stated path stops giving admin (an `until` passing, or a later write
+/// setting it below), or `Never` where none does.
+pub fn end_of(w: &World, rd: &Reading, r: Id) -> End {
+    if !rd.applied.contains(&r) {
+        return End::Nothing;
     }
-    e
+    let ts = w.commits[r].ts;
+    let mut first: Option<u32> = None;
+    for &e in w.hops(r) {
+        let rec = if w.records.contains(&e) { (Role::Admin, None) } else { (Role::None, None) };
+        let h: &[(Key, Val)] = rd.hist.get(&e).map_or(&[], Vec::as_slice);
+        let at = |t: u32| alive(h.iter().rev().find(|(k, _)| k.0 <= t).map_or(rec, |x| x.1), t);
+        let mut points: Vec<u32> = std::iter::once(ts).chain(h.iter().flat_map(|(k, v)| [Some(k.0), v.1]).flatten()).filter(|&t| t >= ts).collect();
+        points.sort_unstable();
+        if let Some(t) = points.into_iter().find(|&t| at(t) < Role::Admin) {
+            first = Some(first.map_or(t, |f| f.min(t)));
+        }
+    }
+    first.map_or(End::Never, End::At)
+}
+
+/// The writers' rule (notes/write-path-design.md §1, L3) over `base` (what the list names of
+/// everything but the edge-class commits resting on the lowered edge) and `classed` (those, in the
+/// order received): `end(list)` is the writer's own walk's `end_of` with the lowering listing it.
+/// Where the lowering applies with everything named and its path has no end, everything is named;
+/// else each edge-class commit is kept iff the lowering applies with it and its end with it is no
+/// earlier than without (`own_end`; false, the control `-no-end`: kept iff it applies).
+pub fn writers_keep(base: Vec<Id>, classed: &[Id], own_end: bool, mut end: impl FnMut(&[Id]) -> End) -> Vec<Id> {
+    let all: Vec<Id> = base.iter().chain(classed).copied().collect();
+    let whole = end(&all);
+    if whole == End::Never || (!own_end && whole != End::Nothing) {
+        return all;
+    }
+    let mut kept = base;
+    let mut now = end(&kept);
+    for &c in classed {
+        kept.push(c);
+        let with = end(&kept);
+        if with != End::Nothing && (!own_end || with >= now) {
+            now = with;
+        } else {
+            kept.pop();
+        }
+    }
+    kept
 }
 
 /// The evidence closure of `unit` over `avail` (notes/write-path-design.md §2): the commits in
 /// `unit`, the other parts of a held commit on the same thing (a part on another thing is that
 /// thing's unit's, with its own path: notes/path-form.md), every available edge write on an edge
-/// of a held part's path or on the remaining admin edge a held lowering names.
+/// of a held part's path.
 pub fn evidence(w: &World, unit: &Set, avail: &Set) -> Set {
     let mut s = unit.clone();
     loop {
-        let edges: BTreeSet<Edge> = s.iter().flat_map(|&i| evidence_edges(w, i)).collect();
+        let edges: BTreeSet<Edge> = s.iter().flat_map(|&i| w.hops(i).iter().copied()).collect();
         let cids: BTreeSet<(Id, Thing)> = s.iter().map(|&i| (w.cid(i), w.commits[i].on)).collect();
         let more: Vec<Id> = avail
             .iter()

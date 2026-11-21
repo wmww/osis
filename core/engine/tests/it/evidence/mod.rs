@@ -63,13 +63,14 @@ fn part(w: &World, ch: &Set, i: Id) -> Part<Id, Thing, Key> {
     let pw = &w.w;
     let c = &pw.commits[i];
     let kind = match &c.kind {
-        paths::Kind::Edge { holder, role, relies, invite, .. } => Kind::Write(Write {
+        paths::Kind::Edge { holder, role, invite, .. } => Kind::Write(Write {
             holder: *holder,
             grant: w.grant(i).then(|| Gives { role: level(*role), invite: (*role == Role::Admin || *invite > Role::None).then(|| level(if *role == Role::Admin { Role::Admin } else { (*invite).min(*role) })) }),
             removal: w.removes(i).is_some(),
             gives_write: *role >= Role::Write,
             gives_read: *role >= Role::Read && !pw.leave(i),
-            relies: *relies,
+            // the model names no remaining admin (notes/write-path-design.md §5 A2)
+            relies: None,
             creation: w.creation(i).map(|j| (pw.cid(j), pw.commits[j].on)),
             leaves: w.leaves_of(i).into_iter().map(|(_, t)| t).collect(),
         }),

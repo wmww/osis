@@ -47,7 +47,7 @@ notes/priorities.md, First: issues/app-tile-unreadable-emails-test.md [checked: 
 
 ### P. Prune
 Net lines go down (notes/principles.md, Writing code is the cheapest part of having code). Out of spec, code, models and tests:
-- the last-admin rule every node judges (a lowering naming its remaining admin, that edge as evidence), with whatever it orphans: with D2's cut of the models: what it did for a remover's own path is the writers' leaving out's (notes/write-path-design.md §1, L3; notes/path-model-findings.md 45, 46). The last-admin rule goes from roles-model `paths` (`LastAdmin`, `Rules::remains_kept`, `last_hop`, `relies`, the adminless mark, their hand tests and controls, the story's and `tiny`'s `admin` checks), osis-perm `paths` (`remains`, `Accept::Standing`), held-model (`relies` as evidence), engine `evidence` (`relies`) and `write::remains_of`, the header's `remains` (spec/wire.md §4 field 17, `flags` to 17), and the drafts (A1 brief 6, Open 26; notes/write-path-design.md §5, The last admin). A start, not green: branch `mizzen-prune-rest-last-admin` (header, perm walk, roles-model and held-model sources; perm, engine and the notes not done).
+- the last-admin rule every node judges (a lowering naming its remaining admin, that edge as evidence), with whatever it orphans: with D2's cut of the models: what it did for a remover's own path is the writers' leaving out's (notes/write-path-design.md §1, L3; notes/path-model-findings.md 45, 46). Gone from the models (roles-model `paths`, held-model's evidence: notes/path-model-findings.md 46); still to go: osis-perm `paths` (`remains`, `Accept::Standing`; its tests feed it every model write marked adminless meanwhile), engine `evidence` (`relies`: its model differential passes none) and `write::remains_of`, the header's `remains` (spec/wire.md §4 field 17, `flags` to 17), and the drafts (A1 brief 6, Open 26; notes/a1-spec/README.md items 2, 3, 5, 9, which cite findings that went with the rule).
 - The gate is measured again afterwards (issues/test-time.md).
 
 ### D. The design restated
@@ -68,6 +68,8 @@ Not settled:
 - issues/owner-key-first-attach.md (for Tess): the flow that must hold fails where the first key was attached by an admin whom a later admin removes without listing the attach.
 - Two backdated lowerings masking each other from the dispute test at a node with no order (write-path Open 2; finding 47).
 - D4 (model first).
+
+**D2 so far** (roles-model): no last-admin rule and L3 modelled (notes/path-model-findings.md 45, 46); F1 stopped at its clause (finding 48, write-path Open 9: the writer's own side, and what the story's honest-side checks promise under first received), so the story's liveness baselines stay in tools/known_failures.txt; may-grant as a flag and owner keys not started.
 
 **D2 must model** (write-path §6, the full list): roles-model `paths`: no last-admin rule; L3 by its `end`; trust sets from receipt order (F1), then the story's liveness baselines leave tools/known_failures.txt; the flag in place of levels; the key hop and list writes with the must-hold flow's hand worlds. held-model: a lowering's copy whole (leaves, their homes and the wait on a leaf go); errand and reach go and the holds-everything properties are restated against a node holding the same removals, the gap counted; keysets carrying whole demotions; D4 as a variant; owner-key list writes as evidence.
 

@@ -1,7 +1,7 @@
 //! Evidence over roles-model's stolen-node story (`evidence::story_world`): the story's role
 //! history (invites, finalizes, `until`, covers, purges, trust, addenda written by the state-based
-//! rule, commits of several edge writes and of several things, self-removals with a
-//! named remaining admin, paths of two hops, a dependent by descent) under held-model's units and
+//! rule, commits of several edge writes and of several things, self-removals, paths of
+//! two hops, a dependent by descent) under held-model's units and
 //! delivery, each world under every unit crossing (`STORY_UNITS`). Checked at the end of each tick
 //! of the story, and the order checks at the end.
 use crate::spec_open10::fails_at;

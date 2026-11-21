@@ -178,7 +178,7 @@ pub struct Closure {
     pub any_path: bool,
     /// A member brings the writes on its stated path's edges only where the path is **joined**:
     /// each edge of it that is no record edge holds a held chained grant (`World::grants`) ordered
-    /// before the member. Its named remaining admin edge it brings whatever.
+    /// before the member.
     pub joined: bool,
     /// What an edge write in the set brings of the other edges its commit writes on its thing
     /// (finding 9: a commit's edge writes apply together, and a part resetting an entry waits for
@@ -877,7 +877,7 @@ impl World {
     /// The least part `m` needs of edge `e` its verdict reads (roles-model `paths` `need`, for a
     /// write no pass applied): a role, or (true) an invite. Content-class parts write; an edge
     /// write admin, a finalize write, an invite grant its level (on its path's last edge as an
-    /// invite, under `invite_check`); a named remaining admin edge admin.
+    /// invite, under `invite_check`).
     pub fn need(&self, m: Id, e: Edge) -> (Role, bool) {
         let c = &self.w.commits[m];
         match &c.kind {
@@ -890,7 +890,7 @@ impl World {
     }
     /// The evidence closure of `seeds` over `avail` under `rule.closure`: the seeds, the other
     /// parts of a member's commit on its thing, the taken edge writes on an edge of a member's
-    /// stated path (where joined, under `joined`) or on the remaining admin edge it names.
+    /// stated path (where joined, under `joined`).
     /// The draft is `paths::evidence`.
     pub fn closure(&self, rule: &Rule, seeds: &Set, avail: &Set) -> Set {
         self.closure_with(rule, seeds, BTreeSet::new(), avail)
@@ -920,9 +920,6 @@ impl World {
                     }
                 } else if !c.joined || self.joined(avail, &ch, m) {
                     edges.extend(self.w.hops(m).iter().copied());
-                }
-                if let Kind::Edge { relies: Some(n), .. } = &self.w.commits[m].kind {
-                    edges.insert((*n, self.on(m)));
                 }
                 if self.w.edge_class(m) {
                     let parts: Vec<Id> = self.w.part_ids(self.w.cid(m)).filter(|&p| self.on(p) == self.on(m)).collect();
@@ -1036,13 +1033,13 @@ impl World {
         for r in 0..w.commits.len() {
             let ec: Set = (0..w.commits.len()).filter(|&c| self.w.edge_class(c)).collect();
             w.edit(r, |k| match k {
-                Kind::Edge { holder, role, until, mut frontier, relies, adminless, invite, finalize } => {
+                Kind::Edge { holder, role, until, mut frontier, invite, finalize } => {
                     for (t, list) in frontier.iter_mut() {
                         if !l.contains(&(r, *t)) {
                             list.retain(|c| ec.contains(c));
                         }
                     }
-                    Kind::Edge { holder, role, until, frontier, relies, adminless, invite, finalize }
+                    Kind::Edge { holder, role, until, frontier, invite, finalize }
                 }
                 k => k,
             });
@@ -1372,14 +1369,9 @@ impl World {
 
     // ---- Judging ----
 
-    /// The edges a commit's verdict reads edge writes of: its path's and the remaining admin edge
-    /// it names.
+    /// The edges a commit's verdict reads edge writes of: its path's.
     pub fn edges_of(&self, i: Id) -> Vec<Edge> {
-        let mut e = self.w.hops(i).to_vec();
-        if let Kind::Edge { relies: Some(n), .. } = &self.w.commits[i].kind {
-            e.push((*n, self.on(i)));
-        }
-        e
+        self.w.hops(i).to_vec()
     }
     /// `i` pends over `h`: an edge it reads, no record edge, has no held edge write ordered before
     /// it, or the latest such write pends.
@@ -2422,7 +2414,7 @@ pub const STORY_UNITS: usize = 6;
 
 /// roles-model's stolen-node story (`paths::Sim`: invites, finalizes, `until`, covers, purges,
 /// addenda by the state-based rule, commits of several edge writes and of several
-/// things, self-removals and remaining admins, paths of two hops, a dependent written by descent)
+/// things, self-removals, paths of two hops, a dependent written by descent)
 /// as an evidence world: its commits written in the order made, by the node of their signer (the
 /// thief's moves and every commit signed by X, whose device the thief holds, by one dishonest
 /// node), each node syncing what the story's does, readers trusting the honest removals. Sync IDs

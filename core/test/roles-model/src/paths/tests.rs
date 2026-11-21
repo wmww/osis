@@ -335,7 +335,7 @@ fn nothing_raises_a_dispute_over_a_removal_that_voids_itself() {
     assert!(disputes(&w, &Rules::design(), &View::all(&w)).is_empty());
 }
 
-// ---- The last admin ----
+// ---- Mutual removal ----
 
 #[test]
 fn two_nodes_removing_each_other_never_leave_no_admin() {
@@ -358,54 +358,6 @@ fn two_nodes_removing_each_other_never_leave_no_admin() {
     assert_eq!(design(&w, &[rh]).role(H, A), Admin);
     assert_eq!(design(&w, &[rx]).role(X, A), Admin);
     assert_eq!(design(&w, &[]).role(H, A), Admin);
-}
-
-#[test]
-fn a_lowering_that_leaves_no_admin_applies_only_when_marked() {
-    let mut w = account();
-    let leave = w.edge(H, 3, &[], A, H, Gone, &[]);
-    let hc = w.content(H, 5, &[A], T1);
-    let rd = design(&w, &[]);
-    assert!(!rd.applied.contains(&leave) && rd.role(H, A) == Admin && rd.valid.contains(&hc));
-    w.mark_adminless(leave);
-    let rd = design(&w, &[]);
-    assert!(rd.applied.contains(&leave) && rd.role(H, A) == Gone && !rd.shows(hc));
-}
-
-/// H pairs B, then leaves A. Whether its leaving applies turns on B's grant being held.
-fn leaver() -> (World, Id, Id, Id) {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let leave = w.edge(H, 3, &[], A, H, Gone, &[gb]);
-    let hc = w.content(H, 5, &[A], T1);
-    (w, gb, leave, hc)
-}
-
-#[test]
-fn the_last_admin_rule_is_a_function_of_the_held_writes() {
-    let (w, gb, leave, hc) = leaver();
-    let rd = design(&w, &[]);
-    assert!(rd.applied.contains(&leave) && !rd.shows(hc));
-    let rd = judge(&w, &Rules::design(), &View::all(&w).without(&[gb]));
-    assert!(!rd.applied.contains(&leave) && rd.valid.contains(&hc));
-}
-
-#[test]
-#[ignore = "notes/path-model-findings.md: the last-admin rule reads the thing's every admin edge, which a reader's evidence does not hold"]
-fn repro_a_reader_judges_the_last_admin_rule_as_a_member() {
-    let (w, _, leave, hc) = leaver();
-    // T1's unit: H's write and the evidence of its path (B never wrote T1)
-    let v = View { held: evidence(&w, &Set::from([hc]), &View::all(&w).held), leaves: None, trust: Set::new() };
-    assert!(v.held.contains(&leave));
-    assert_eq!(judge(&w, &Rules::design(), &v).shows(hc), design(&w, &[]).shows(hc));
-}
-
-#[test]
-fn a_reader_holding_the_remaining_admins_grant_judges_the_last_admin_rule_as_a_member() {
-    let (w, gb, _, hc) = leaver();
-    let mut v = View { held: evidence(&w, &Set::from([hc]), &View::all(&w).held), leaves: None, trust: Set::new() };
-    v.held.insert(gb);
-    assert_eq!(judge(&w, &Rules::design(), &v).shows(hc), design(&w, &[]).shows(hc));
 }
 
 // ---- Another path's addendum ----
@@ -546,110 +498,6 @@ fn a_lowering_the_removed_node_made_before_stays_made_only_where_listed() {
     assert!(rd.applied.contains(&out) && !rd.applied.contains(&down) && rd.role(N5, A) == Gone && rd.role(B, A) == Admin);
 }
 
-// ---- The last admin relying on a named admin (notes/write-path-design.md §5) ----
-
-/// H pairs B, then leaves A naming B as the admin that remains; H writes T1 after. A reader of
-/// T1 holds H's write, its path's evidence and, as the leave's evidence, B's grant: it judges the
-/// leave as A's members do (finding 8). Control: the rule reading every admin edge of A, the
-/// reader (lacking B's grant) refuses the leave and shows H's later write.
-#[test]
-fn a_reader_judges_the_named_last_admin_rule_as_a_member() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let leave = w.edge(H, 3, &[], A, H, Gone, &[gb]);
-    w.rely(leave, B);
-    let hc = w.content(H, 5, &[A], T1);
-    let all = View::all(&w).held;
-    let unit = Set::from([hc]);
-    let reader = |rules: Rules| {
-        let v = View { held: evidence(&w, &unit, &all), leaves: None, trust: Set::new() };
-        (judge(&w, &rules, &v).shows(hc), judge(&w, &rules, &View::all(&w)).shows(hc))
-    };
-    assert!(evidence(&w, &unit, &all).contains(&gb));
-    assert_eq!(reader(Rules::fixed()), (false, false));
-    // without the named edge's writes as evidence, the any-edge rule splits reader and member
-    let v = View { held: Set::from([hc, leave]), leaves: None, trust: Set::new() };
-    let any = Rules { last_admin: LastAdmin::AnyEdge, ..Rules::fixed() };
-    assert!(judge(&w, &any, &v).shows(hc) && !judge(&w, &any, &View::all(&w)).shows(hc));
-    // the named rule reads the same two edges at both
-    assert!(!judge(&w, &Rules::fixed(), &View { held: Set::from([hc, leave, gb]), ..v }).shows(hc));
-}
-
-/// The named admin was removed by an earlier-stamped write of a third (C = N5): the leave is
-/// not applied though C stands (the cost the note states); a reader holding the leave's evidence
-/// (B's grant and its removal) judges it so too.
-#[test]
-fn a_leave_relying_on_an_admin_removed_earlier_is_not_applied() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[], A, N5, Admin, &[]);
-    w.edge(N5, 3, &[], A, B, Gone, &[gb]);
-    let leave = w.edge(H, 4, &[], A, H, Gone, &[gb]);
-    w.rely(leave, B);
-    let hc = w.content(H, 5, &[A], T1);
-    let rd = fixed(&w, &[]);
-    assert!(!rd.applied.contains(&leave) && rd.valid.contains(&hc));
-    let all = View::all(&w).held;
-    let v = View { held: evidence(&w, &Set::from([hc]), &all), leaves: None, trust: Set::new() };
-    assert_eq!(judge(&w, &Rules::fixed(), &v).shows(hc), rd.shows(hc));
-}
-
-/// A timed admin is no remaining admin (Tess): H grants B admin until 8 and leaves naming B; the
-/// leave is not applied. Control: a timed edge counting as standing, the leave applies and A has
-/// no admin from 8 on, though no write was marked.
-#[test]
-fn a_timed_admin_is_no_remaining_admin() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.set_until(gb, 8);
-    let leave = w.edge(H, 3, &[], A, H, Gone, &[gb]);
-    w.rely(leave, B);
-    let rd = fixed(&w, &[]);
-    assert!(!rd.applied.contains(&leave) && rd.role(H, A) == Admin);
-    let rd = fixed_but(&w, &[], |x| x.last_admin = LastAdmin::NamedTimed);
-    assert!(rd.applied.contains(&leave) && !rd.roles.iter().any(|(e, r)| e.1 == A && *r == Admin));
-    // marked, it applies under the rule
-    w.mark_adminless(leave);
-    assert!(fixed(&w, &[]).applied.contains(&leave));
-}
-
-/// Giving the last standing admin an `until` is a lowering of it: H grants B admin, gives B an
-/// `until` (relying on itself), then leaves naming B: not applied. Two admins leaving each
-/// other: the earlier-stamped applies, the later is not.
-#[test]
-fn no_unmarked_schedule_leaves_a_thing_without_a_standing_admin() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let timed = w.edge(H, 2, &[], A, B, Admin, &[gb]);
-    w.set_until(timed, 20);
-    let leave = w.edge(H, 3, &[], A, H, Gone, &[]);
-    w.rely(leave, B);
-    let rd = fixed(&w, &[]);
-    assert!(rd.applied.contains(&timed) && !rd.applied.contains(&leave) && rd.role(H, A) == Admin);
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let lb = w.edge(B, 3, &[], A, B, Gone, &[]);
-    w.rely(lb, H);
-    let lh = w.edge(H, 4, &[], A, H, Gone, &[gb]);
-    w.rely(lh, B);
-    let rd = fixed(&w, &[]);
-    assert!(rd.applied.contains(&lb) && !rd.applied.contains(&lh) && rd.role(H, A) == Admin);
-}
-
-/// Giving the last standing admin an `until` is a lowering of it: H, A's only admin, gives itself
-/// an `until` naming no other admin: not applied. Control: a timed admin counting as standing.
-#[test]
-fn the_last_standing_admin_takes_an_until_only_when_marked() {
-    let mut w = account();
-    let timed = w.edge(H, 2, &[], A, H, Admin, &[]);
-    w.set_until(timed, 8);
-    let rd = fixed(&w, &[]);
-    assert!(!rd.applied.contains(&timed) && rd.role(H, A) == Admin);
-    assert!(fixed_but(&w, &[], |x| x.last_admin = LastAdmin::NamedTimed).applied.contains(&timed));
-    w.mark_adminless(timed);
-    assert!(fixed(&w, &[]).applied.contains(&timed));
-}
-
 // ---- A re-granted writer writes again ----
 
 /// X's write only N5 received: N5's addendum written as it applies the removal (N5 holding
@@ -724,10 +572,11 @@ fn nothing_through_the_removed_edge_is_exempt() {
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     let rd = fixed(&w, &[r]);
     assert!(rd.void.is_empty() && !rd.shows(tg) && rd.role(X, A) == Gone && rd.role(H, A) == Admin);
-    assert!(fixed_but(&w, &[r], |x| x.exempt_chain = true).void.contains(&r));
-    // untrusted, it is the ordinary dispute of a backdated write against the remover
-    assert!(!fixed(&w, &[]).applied.contains(&r));
-    assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r]);
+    // exempt, the timed grant stays and H's admin ends at 7
+    assert!(fixed_but(&w, &[r], |x| x.exempt_chain = true).role(H, A) == Gone);
+    // untrusted, the removal applies with H's record edge and drops the timed grant alike
+    assert_eq!(fixed(&w, &[]).roles, rd.roles);
+    assert!(disputes(&w, &Rules::fixed(), &View::all(&w)).is_empty());
 }
 
 /// Finding 4's world: X's removal of H lists nothing, its own grant included. Its drops would
@@ -843,7 +692,6 @@ fn the_other_findings_read_the_same_with_nothing_exempt() {
     let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[down]);
     let leave = w.edge(X, 2, &[], A, X, Gone, &[]);
-    w.rely(leave, H);
     let rd = fixed(&w, &[r]);
     assert!(!rd.applied.contains(&leave) && rd.applied.contains(&down) && rd.role(B, A) == Write);
 }
@@ -869,7 +717,6 @@ fn a_write_by_descent_is_judged_along_the_record_edges() {
     let g = w.edge(H, 3, &[A, T1], D1, A2, Write, &[]);
     let kc = w.content(K, 4, &[A2], D1);
     let low = w.edge(H, 5, &[A], D1, T1, Gone, &[]);
-    w.mark_adminless(low);
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&low) && !rd.valid.contains(&bc));
     // H's grant states [A, T1] and so rests on (T1, D1) too: it falls with it, and K's write
@@ -884,7 +731,6 @@ fn a_self_removal_by_path_end_audits_nothing() {
     let (mut w, ..) = paired();
     let g5 = w.edge(B, 2, &[], A, N5, Admin, &[]);
     let leave = w.edge(B, 3, &[], A, B, Gone, &[]);
-    w.rely(leave, H);
     assert!(w.leave(leave) && w.hops(leave).is_empty());
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&leave) && rd.applied.contains(&g5) && rd.role(B, A) == Gone);
@@ -922,7 +768,6 @@ fn a_backdated_leave_shields_nothing_from_the_removal() {
     let gz = w.edge(X, 4, &[], A, Z, Admin, &[]);
     let back = w.content(X, 4, &[A], T1);
     let leave = w.edge(X, 5, &[], A, X, Gone, &[]);
-    w.rely(leave, H);
     let r = w.edge(H, 6, &[], A, X, Gone, &[listed]);
     // with the leave put in question (finding 14) it is dropped; without, it stands and R still
     // audits against the edge as restored
@@ -961,7 +806,6 @@ fn a_backdated_leave_undoes_nothing_the_removed_node_made() {
     let g5 = w.edge(X, 3, &[], A, N5, Admin, &[]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[down, g5]);
     let leave = w.edge(X, 2, &[], A, X, Gone, &[]);
-    w.rely(leave, H);
     let rd = fixed(&w, &[r]);
     assert!(!rd.applied.contains(&leave) && rd.applied.is_superset(&Set::from([down, g5])));
     assert_eq!((rd.role(B, A), rd.role(N5, A)), (Write, Admin));
@@ -972,7 +816,7 @@ fn a_backdated_leave_undoes_nothing_the_removed_node_made() {
 // ---- The searches (properties: every roles-model gate selects them, and nothing else can move them) ----
 
 fn assert_holds(st: &Stats, what: &str) {
-    for k in ["safety", "liveness", "alike", "removal kept", "removal", "own path", "admin", "untrusted", "dispute", "safety N", "admin N", "own path N"] {
+    for k in ["safety", "liveness", "alike", "removal kept", "removal", "own path", "untrusted", "dispute", "safety N", "own path N"] {
         assert!(st.checked.get(k).is_some_and(|n| *n > 0), "{what}: no {k} check ran");
     }
     for k in ["void", "idle", "one reading"] {
@@ -1001,7 +845,6 @@ fn each_fix_is_needed_plain() {
         ("no-void", Rules { self_void: false, ..f }),
         ("listed", Rules { stands: false, ..f }),
         ("exempt", Rules { exempt_chain: true, ..f }),
-        ("timed", Rules { last_admin: LastAdmin::NamedTimed, ..f }),
         ("once", Rules { rewrite: false, ..f }),
         ("leave", Rules { leave_in_question: false, ..f }),
     ];
@@ -1351,7 +1194,7 @@ fn a_thiefs_lowering_after_the_removal_holds_nothing() {
 /// Small worlds of admins granting and removing each other (`tiny`), of invites (`tiny_invites`;
 /// README.md, Paths, for the search), and of a thing detached from its folder written by marked
 /// direct hops (`tiny_detached`): one reading under a relabelling. Control: a lowering whose drops take its author's
-/// standing applying, A is left with no admin (counted).
+/// standing applying, a commit of several parts loses its path's authority (`self-taken`).
 #[test]
 #[ignore = "property"]
 fn small_worlds_hold_plain() {
@@ -1360,12 +1203,12 @@ fn small_worlds_hold_plain() {
             let st = tiny_run(3000, &Rules::fixed(), TinyMode { invites, detached, honest });
             // honest writers make few writes that do not apply: their worlds check `honest` alone here
             let ran = |k: &str| st.checked.get(k).is_some_and(|n| *n > 0);
-            let keys: &[&str] = if honest == Honesty::Writers { &["honest", "admin T"] } else { &["void", "admin T", "honest", "idle N", "unapplied N"] };
+            let keys: &[&str] = if honest == Honesty::Writers { &["honest"] } else { &["void", "honest", "idle N", "unapplied N"] };
             assert!(st.failures() == 0 && keys.iter().all(|k| ran(k)), "{invites} {detached} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
         }
     }
-    let no_void = tiny_run(300, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { invites: false, detached: false, honest: Honesty::None });
-    assert!(no_void.noted.contains_key("admin N"));
+    let no_void = tiny_run(1000, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { invites: false, detached: false, honest: Honesty::None });
+    assert!(no_void.fails.get("self-taken").is_some_and(|n| *n > 0), "{:?}", no_void.fails);
 }
 
 /// What a party with admin can make a reader walk (finding 17): X grants k keys of its own admin
@@ -1424,23 +1267,20 @@ fn a_void_check_reads_its_own_grant_chain() {
     assert!(large >= 50 * small, "{small} {large}");
 }
 
-/// A node trusting nothing: X backdates a grant
-/// of admin until 7 to H, then removes H at 7, listing its own and B's grants. In the plain walk H's edge is timed at its removal
-/// of X, so the removal (naming no standing admin) is refused, and X's removal of H applies: the
-/// node is shown H's removal as a dispute, never a silent loss, and trusting it gives the
+/// A node trusting nothing: X backdates a removal of H to 5, listing its own and B's grants; H
+/// removes X at 6. In the plain walk X's removal applies at its key and H's then holds no right:
+/// the node is shown H's removal as a dispute, never a silent loss, and trusting it gives the
 /// members' reading.
 #[test]
 fn a_node_trusting_nothing_is_shown_the_removal_as_a_dispute() {
     let (mut w, gx, gb) = paired();
-    let tg = w.edge(X, 4, &[], A, H, Admin, &[]);
-    w.set_until(tg, 7);
+    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    let rx = w.edge(X, 7, &[], A, H, Gone, &[gx, gb]);
     let plain = fixed(&w, &[]);
     assert!(!plain.applied.contains(&r) && plain.applied.contains(&rx) && plain.stray.is_empty());
     assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w)), vec![r]);
     let rd = fixed(&w, &[r]);
-    assert!(rd.void.is_empty() && !rd.shows(tg) && !rd.shows(rx) && rd.role(H, A) == Admin && rd.role(X, A) == Gone);
+    assert!(rd.void.is_empty() && !rd.shows(rx) && rd.role(H, A) == Admin && rd.role(X, A) == Gone);
 }
 
 /// Two readings of a lowering's drops (notes/path-model-findings.md 18): the audit puts in
@@ -1456,7 +1296,6 @@ fn the_audit_puts_the_held_writes_in_question() {
     let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     let leave = w.edge(X, 1, &[], A, X, Gone, &[]);
-    w.rely(leave, H);
     let held = fixed(&w, &[]);
     assert!(held.applied.contains(&r) && held.dropped == Set::from([leave, rx]) && (held.role(H, A), held.role(X, A)) == (Admin, Gone));
     let applied = fixed_but(&w, &[], |x| x.audit_held = false);
@@ -1515,15 +1354,13 @@ fn the_remover_keeps_what_it_received_first_in_the_story() {
     assert!(role == Admin && fails > 0);
 }
 
-/// Finding 45: the last-admin rule keeps the remover's own path against an end the thief put on
-/// it. The thief, heard before the removal, grants H admin until 7 (move 21, stamped 3, made 5);
-/// H removes X at 6. Under the rule H's own edge is timed at the removal, so the removal relies on
-/// no standing admin and does not apply with that grant held: H's list leaves it out, the removal
-/// drops it, and H stays a standing admin. Without the rule (`LastAdmin::Off`, the decided design:
-/// notes/handoff.md, The last admin is a writer's check only) the removal applies with it, H's
-/// list keeps it, and H's admin ends at 7 (`own path` fails).
+/// Findings 45, 46 (L3): the thief, heard before the removal, grants H admin until 7 (move 21,
+/// stamped 3, made 5); H removes X at 6. The removal applies with that grant held, but H's own
+/// path then ends at 7 where without it H stands: H's list leaves it out, the removal drops it, and
+/// H stays a standing admin. Control (`-no-end`: kept wherever the removal applies) H's list keeps
+/// it and H's admin ends at 7 (`own path` fails).
 #[test]
-fn the_last_admin_rule_keeps_the_removers_own_path_against_a_heard_end() {
+fn the_removers_list_leaves_out_an_end_on_its_own_path() {
     let s = Setup { b_side_x: true, ..Setup::default() };
     let moves = [Move { kind: 21, ts: 3, made: 5 }];
     let own_path = |rules: Rules| {
@@ -1533,8 +1370,111 @@ fn the_last_admin_rule_keeps_the_removers_own_path_against_a_heard_end() {
         (judge(&m.w, &rules, &m.view(H, &rules)).role(H, A), st.fails.get("own path").copied().unwrap_or(0))
     };
     assert_eq!(own_path(Rules::fixed()), (Admin, 0));
-    let (role, fails) = own_path(Rules { last_admin: LastAdmin::Off, ..Rules::fixed() });
+    let (role, fails) = own_path(Rules { own_end: false, ..Rules::fixed() });
     assert!(role == Gone && fails > 0, "{role:?} {fails}");
+}
+
+/// L3's hand worlds (notes/write-path-design.md §6, 2): M mints A, grants H admin until 20 (H's
+/// only grant) and X admin; H removes X at 6, listing by the writers' rule what it received, in that
+/// order. X's grant of B is kept (the removal applies with it, H's path ends at 20 either way); X
+/// shortening H's grant to 7 is left out (with it H's path ends at 7); X's end on B's admin is kept
+/// (on no hop of H's path); X's grant of a made-up key Z, which sets H's admin to end at 7, is left
+/// out (with it Z's end applies). Trusted, H stays admin until 20. Control `-no-end`: every one is
+/// kept (the removal applies with each) and H's admin ends at 7.
+#[test]
+fn the_writers_rule_leaves_out_what_ends_the_removers_path_sooner() {
+    let mut w = minted_by(M);
+    let gh = w.push(M, 1, &[], A, Kind::set(H, Admin).until(20));
+    let gx = w.push(M, 1, &[], A, Kind::set(X, Admin));
+    let gb = w.push(X, 2, &[], A, Kind::set(B, Admin));
+    let gz = w.push(X, 2, &[], A, Kind::set(Z, Admin));
+    let zs = w.push(Z, 3, &[], A, Kind::set(H, Admin).until(7));
+    let eb = w.push(X, 4, &[], A, Kind::set(B, Admin).until(8));
+    let short = w.push(X, 4, &[], A, Kind::set(H, Admin).until(7));
+    let r = w.push(H, 6, &[], A, Kind::set(X, Gone));
+    let recv = [gh, gx, gb, gz, zs, eb, short];
+    let h_at = |rules: &Rules| {
+        let mut w = w.clone();
+        let l = writers_list(&w, rules, r, &recv);
+        let f = w.cut(&l);
+        w.edit(r, |k| k.listing(f));
+        let rd = judge(&w, rules, &View::all(&w).trusting(&[r]));
+        assert!(rd.applied.contains(&r) && rd.void.is_empty(), "{rd:?}");
+        (l, rd.state.get(&(H, A)).copied())
+    };
+    assert_eq!(h_at(&Rules::fixed()), (vec![gb, eb], Some((Admin, Some(20)))));
+    assert_eq!(h_at(&Rules { own_end: false, ..Rules::fixed() }), (vec![gb, gz, eb, short], Some((Admin, Some(7)))));
+}
+
+/// L3 clause by clause, where H's only admin is X's grant (M mints A and grants X admin; H
+/// removes X at 6, listing by the writers' rule what it received, in that order). A write with
+/// which the removal still does not apply is left out (X's grant of B, received before X's timed
+/// grant of H); where the removal applies with everything named and its path has no end (X's grant
+/// of H standing), everything is named, X's grant of B with it; each write is compared with the
+/// end the list kept so far gives (X shortening its timed grant of H to 7 is left out against the
+/// end 20 that grant gave, though the removal with no list at all would not apply).
+#[test]
+fn the_writers_rule_reads_each_clause() {
+    let list = |until: Option<u32>, short: bool| {
+        let mut w = minted_by(M);
+        let gx = w.push(M, 1, &[], A, Kind::set(X, Admin));
+        let k = Kind::set(H, Admin);
+        let gh = w.push(X, 2, &[], A, match until { Some(u) => k.until(u), None => k });
+        let gb = w.push(X, 3, &[], A, Kind::set(B, Admin));
+        let mut recv = vec![gx, gb, gh];
+        if short {
+            recv = vec![gx, gh, w.push(X, 4, &[], A, Kind::set(H, Admin).until(7))];
+        }
+        let r = w.push(H, 6, &[], A, Kind::set(X, Gone));
+        (writers_list(&w, &Rules::fixed(), r, &recv), gh, gb)
+    };
+    let (l, gh, _) = list(Some(20), false);
+    assert_eq!(l, vec![gh]);
+    let (l, gh, gb) = list(None, false);
+    assert_eq!(l, vec![gb, gh]);
+    let (l, gh, _) = list(Some(20), true);
+    assert_eq!(l, vec![gh]);
+}
+
+/// Finding 49 (`tiny` with honest lists, world 387049 shrunk; every write held, nothing trusted):
+/// H grants Z admin and N6 admin until 4 at 2; Z grants N6 admin at 5; N6 sets H's admin to end at
+/// 9 at 7 and makes it standing again at 8; H removes Z at 10, listing nothing; Z removes N6 at 12.
+/// Held, N6's second write gives H admin at 10 in the first pass: H's removal is judged there and
+/// drops Z's grant of N6, so neither of N6's writes applies in the end (N6 never held its right),
+/// and Z's removal of N6, reached with no right, never applies. Without it, the first pass reaches
+/// Z's removal of N6 with Z still admin (H's admin ended at 9) and judges it applied, a verdict it
+/// keeps once H's removal applies in a later pass: N6's edge is cut at 12. An idle write of a party
+/// that held its right in no reading decides whether a removal applies, unshown (the class of 35,
+/// gated as `illegit gains`).
+#[test]
+#[ignore = "notes/path-model-findings.md 49: an idle write of a party with no right decides a removal"]
+fn repro_an_idle_write_with_no_right_decides_nothing() {
+    let mut w = account();
+    w.push(Z, 12, &[], A, Kind::set(N6, Gone));
+    let again = w.push(N6, 8, &[], A, Kind::set(H, Admin).listing(w.cut(&[0])));
+    w.push(N6, 7, &[], A, Kind::set(H, Admin).until(9).listing(w.cut(&[0, 1])));
+    w.push(Z, 5, &[], A, Kind::set(N6, Admin).listing(w.cut(&[1, 2])));
+    let r = w.push(H, 10, &[], A, Kind::set(Z, Gone));
+    w.commit(H, 2, &[], A, vec![Kind::set(Z, Admin).listing(w.cut(&[0, 2])), Kind::set(N6, Admin).until(4).listing(w.cut(&[1, 3, 4]))]);
+    let all = fixed(&w, &[]);
+    let less = judge(&w, &Rules::fixed(), &View::all(&w).without(&[again]));
+    assert!(!all.applied.contains(&again) && all.applied.contains(&r), "{all:?}");
+    assert_eq!(less.observed(&w), all.observed(&w));
+}
+
+/// Finding 48: F1 as written leaves the remover on the thief's side. X, stolen, removes H at 5,
+/// honestly stamped and received by every node at once (`Setup::x_first`); H removes X at 6, its
+/// list leaving X's removal out (L3: with it the removal would not apply). H held X's removal
+/// before writing its own, so no write its list leaves out arrives after it: F1 records no side,
+/// H's walk applies X's removal at its key and H's own removal holds no right at H.
+#[test]
+#[ignore = "notes/path-model-findings.md 48: F1 gives a remover no side for its own removal"]
+fn repro_first_received_sides_the_remover_with_its_own_removal() {
+    let s = Setup { x_first: true, ..Setup::default() };
+    let rules = Rules { received_trust: true, ..Rules::fixed() };
+    let m = Sim::build(&s, &rules, &[], &mut Rng(0));
+    let rd = judge(&m.w, &rules, &m.view(H, &rules));
+    assert!(rd.applied.contains(&m.r) && rd.role(H, A) == Admin, "{rd:?}");
 }
 
 /// Equivocation: X signs a twin of its removal of N5 at its `ts`, ordered first, listing H's
@@ -1589,7 +1529,6 @@ fn a_removal_of_two_hops_holds_against_a_lowering_above_its_signer() {
     assert_eq!((rd.role(A, T1), rd.role(A2, T1)), (Admin, Gone));
     let mut w2 = w.clone();
     let leave = w2.edge(X, 5, &[A], T1, A, Gone, &[]);
-    w2.mark_adminless(leave);
     let rd = fixed(&w2, &[r, r3]);
     assert!(rd.void.is_empty() && !rd.shows(leave) && rd.applied.contains(&r3) && rd.role(A, T1) == Admin);
 }
@@ -1632,7 +1571,6 @@ fn a_timed_self_removal_is_put_in_question_like_a_leave() {
         let r = w.edge(H, 6, &[], A, X, Gone, &[down, g5]);
         let timed = w.edge(X, 1, &[], A, X, role, &[]);
         w.set_until(timed, until);
-        w.rely(timed, H);
         assert!(w.leave(timed));
         let rd = fixed(&w, &[r]);
         assert!(!rd.applied.contains(&timed) && rd.applied.is_superset(&Set::from([down, g5])), "{role:?}");
@@ -1641,7 +1579,7 @@ fn a_timed_self_removal_is_put_in_question_like_a_leave() {
     }
 }
 
-/// A leave of a holder thing: X makes A leave T1 (marked adminless), stamped before a grant B made
+/// A leave of a holder thing: X makes A leave T1, stamped before a grant B made
 /// on T1 through (A, T1); K, a co-admin of T1 through A2, then removes A from T1 listing B's
 /// grant. The leave is put in question like a write through (A, T1): unlisted, it is dropped, and
 /// B's grant stands. Control: never put in question, the leave takes B's authority and its grant.
@@ -1652,7 +1590,6 @@ fn a_holder_things_leave_is_put_in_question_by_a_removal_of_its_edge() {
     w.edge(H, 1, &[], A, B, Admin, &[]);
     let g2 = w.edge(H, 1, &[A], T1, A2, Admin, &[]);
     let leave = w.edge(X, 2, &[A], T1, A, Gone, &[]);
-    w.mark_adminless(leave);
     let gn = w.edge(B, 3, &[A], T1, N6, Write, &[]);
     // K lists its own holder's grant too (else it drops its own authority and is void)
     let rk = w.edge(K, 6, &[A2], T1, A, Gone, &[g2, gn]);
@@ -2125,8 +2062,7 @@ fn a_commit_whose_drops_together_take_its_path_applies_only_what_keeps_it() {
 
 /// A commit of several edge writes is judged part by part like any, the part on an edge of its
 /// own stated path last (spec/commits.md §2; notes/a1-spec/README.md, OPEN 14). X removes B and
-/// leaves A in one commit, its leave relying on H: both apply. Relying on B instead, the leave is
-/// judged with B's removal in effect: B is no remaining admin, so it is refused. H, along [A],
+/// leaves A in one commit: both apply. H, along [A],
 /// takes T1's record edge off D1 (the edge its descent ends with) and grants N5 admin on D1: the
 /// grant applies by the path as it stood, then the removal, judged as any lowering, applies and
 /// drops nothing of its own commit (no list can name it). Naming one holder twice is bad input.
@@ -2134,15 +2070,15 @@ fn a_commit_whose_drops_together_take_its_path_applies_only_what_keeps_it() {
 /// commit): none of these apply.
 #[test]
 fn a_commit_of_several_writes_is_judged_part_by_part_its_own_path_last() {
-    let build = |relies: Thing| {
+    let build = || {
         let (mut w, ..) = paired();
         let ga = w.edge(H, 1, &[A, T1], D1, A, Admin, &[]);
-        let own = w.commit(X, 5, &[], A, vec![Kind::set(X, Gone).relying(relies), Kind::set(B, Gone)]);
+        let own = w.commit(X, 5, &[], A, vec![Kind::set(X, Gone), Kind::set(B, Gone)]);
         let twice = w.commit(X, 5, &[], A, vec![Kind::set(N5, Admin), Kind::set(N5, Write)]);
-        let rec = w.commit(H, 5, &[A], D1, vec![Kind::set(T1, Gone).relying(A).listing(w.cut(&[ga])), Kind::set(N5, Admin)]);
+        let rec = w.commit(H, 5, &[A], D1, vec![Kind::set(T1, Gone).listing(w.cut(&[ga])), Kind::set(N5, Admin)]);
         (w, own, twice, rec)
     };
-    let (w, own, twice, rec) = build(H);
+    let (w, own, twice, rec) = build();
     assert!(w.leave(own[1]) && w.sets(own[0]) == Some((B, A)) && w.sets(rec[1]) == Some((T1, D1)));
     let rd = keyed(&w);
     assert!(own.iter().chain(&rec).all(|i| rd.applied.contains(i)) && twice.iter().all(|i| !w.well(*i) && !rd.applied.contains(i)), "{rd:?}");
@@ -2152,9 +2088,6 @@ fn a_commit_of_several_writes_is_judged_part_by_part_its_own_path_last() {
     // trusted, the removal's seeds reach no part of its own commit either
     let rd = fixed(&w, &[rec[1]]);
     assert!(rd.dropped.is_empty() && rd.void.is_empty() && rd.role(N5, D1) == Admin, "{rd:?}");
-    let (w2, own2, ..) = build(B);
-    let rd = fixed(&w2, &[]);
-    assert!(rd.applied.contains(&own2[0]) && !rd.applied.contains(&own2[1]) && (rd.role(X, A), rd.role(B, A)) == (Admin, Gone), "{rd:?}");
     let rd = fixed_but(&w, &[], |r| r.refuse_shapes = true);
     assert!(own.iter().chain(&rec).all(|i| !rd.applied.contains(i)) && (rd.role(X, A), rd.role(B, A), rd.role(T1, D1)) == (Admin, Admin, Admin));
 }
@@ -2403,22 +2336,19 @@ fn leave_readings_change_no_story_reading() {
     assert!(out.iter().filter(|x| x.0 != Drops::LeaveLowers).all(|x| x.1 == 0 && x.2 == 0), "{out:?}");
 }
 
-/// Two admins leaving at once (notes/a1-spec/README.md step 3, For Tess before the switch): H (A's
-/// mint admin) and B (granted admin) each leave A at 3, each naming the other as the admin that
-/// remains, as each saw it standing. The leave first in key order applies; the later one's named
-/// remaining admin has left in the pass, so it applies nothing and its signer stays A's admin:
-/// A keeps one admin, the one whose leave came later. Today's walk applies both (the last-admin
-/// rule is the writer's check there) and A has none.
+/// Two admins leaving at once (notes/permissions.md, The last admin: a writer's check only): H
+/// (A's mint admin) and B (granted admin) each leave A at 3, as each saw the other standing. Both
+/// apply and A has no admin, as a deliberate leave would leave it.
 #[test]
-fn two_admins_leaving_at_once_keep_the_later_one() {
+fn two_admins_leaving_at_once_leave_the_thing_adminless() {
     let mut w = account();
     w.edge(H, 1, &[], A, B, Admin, &[]);
-    let lh = w.push(H, 3, &[], A, Kind::set(H, Gone).relying(B));
-    let lb = w.push(B, 3, &[], A, Kind::set(B, Gone).relying(H));
+    let lh = w.push(H, 3, &[], A, Kind::set(H, Gone));
+    let lb = w.push(B, 3, &[], A, Kind::set(B, Gone));
     assert!(w.leave(lh) && w.leave(lb) && w.key(lh) < w.key(lb));
     let rd = keyed(&w);
-    assert!(rd.applied.contains(&lh) && !rd.applied.contains(&lb), "{rd:?}");
-    assert_eq!((rd.role(H, A), rd.role(B, A)), (Gone, Admin));
+    assert!(rd.applied.contains(&lh) && rd.applied.contains(&lb), "{rd:?}");
+    assert_eq!((rd.role(H, A), rd.role(B, A)), (Gone, Gone));
     tiny_gates(&w, &[]);
 }
 
@@ -2451,7 +2381,7 @@ fn a_writer_of_an_admin_team_invites_up_to_its_own_role() {
 
 /// A thing detached from its folder (notes/a1-spec/README.md Open 21): H mints A (the folder),
 /// A mints T. H grants itself admin on T by [A] (its direct edge (H, T)), then removes A's record
-/// edge on T by its descent [], naming itself as the admin that remains: both apply. A record edge
+/// edge on T by its descent []: both apply. A record edge
 /// is an edge like any (the walk starts it at admin and edge writes move it), and a descent rests
 /// on each of its record edges as they stand at the part's key: so H's later content and grant on
 /// T, stated along the descent [] or through [A], apply nowhere, though H holds admin on T by its
@@ -2462,7 +2392,7 @@ fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
     const T: Thing = 40;
     let mut w = World::new(&[(H, A), (A, T)]);
     let g = w.push(H, 1, &[A], T, Kind::set(H, Admin));
-    let cut = w.push(H, 2, &[], T, Kind::set(A, Gone).listing(w.cut(&[g])).relying(H));
+    let cut = w.push(H, 2, &[], T, Kind::set(A, Gone).listing(w.cut(&[g])));
     assert_eq!(w.hops(cut), [(H, A), (A, T)], "the removal of A's record edge rests on its descent");
     let by_descent = w.content(H, 3, &[], T);
     let through_a = w.content(H, 3, &[A], T);
@@ -2551,16 +2481,16 @@ fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
 }
 
 /// A final hop marked direct is the path's last edge (notes/a1-spec/permissions.md §1 Path's last
-/// edge): T1 detached, H holds admin on it by its direct grant, B by its own. H removes B naming no
-/// remaining admin: along the marked hop its last edge (H's grant) stands, so it applies; read as
-/// the descent it would have none (and its path would give nothing). H, given write inviting read
-/// on T1 in place of admin, invites Z to read along the marked hop: the last edge's invite.
+/// edge): T1 detached, H holds admin on it by its direct grant, B by its own. H removes B along
+/// the marked hop: its last edge (H's grant) gives admin, so it applies (the descent would give
+/// nothing). H, given write inviting read on T1 in place of admin, invites Z to read along the
+/// marked hop: the last edge's invite.
 #[test]
 fn a_marked_final_hop_is_the_last_edge() {
     let mut w = account();
     let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
     let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
-    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])).relying(H));
+    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
     let r = w.push_marked(H, 3, &[], T1, Kind::set(B, Gone), &[0]);
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&r) && rd.role(B, T1) == Gone, "{rd:?}");
@@ -2610,7 +2540,7 @@ fn a_removed_far_ancestors_backdated_marked_writes_fall() {
     let mut w = account();
     let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
     let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
-    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])).relying(H));
+    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
     let r = w.push(B, 5, &[], T1, Kind::set(H, Gone));
     let back = w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
     let grant = w.push_marked(H, 4, &[], T1, Kind::set(Z, Admin), &[0]);
@@ -2635,7 +2565,7 @@ fn a_marked_hop_under_a_removal_with_a_list() {
     for (marked, listed) in [(true, true), (true, false), (false, true)] {
         let mut w = account();
         let gs: Vec<Id> = [H, B, N5].iter().map(|&h| w.push(H, 1, &[A], T1, Kind::set(h, Admin))).collect();
-        let detach = w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&gs)).relying(H));
+        let detach = w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&gs)));
         let mark: &[usize] = if marked { &[0] } else { &[] };
         let gx = w.push_marked(H, 3, &[], T1, Kind::set(X, Write), mark);
         let hc = w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
@@ -2684,62 +2614,6 @@ fn tiny_detached_worlds_reach_the_marked_cases() {
     }
 }
 
-// ---- The remaining admin past the lowering's drops (notes/a1-spec/README.md, OPEN 5) ----
-
-/// M mints A, grants H admin until 20 and X admin, and leaves naming X; X grants B admin. H
-/// removes X naming B, listing nothing: H's own edge is timed, so B's is the remaining admin it
-/// relies on, and its drops take X's grant of B: void, X stays an admin and A keeps a standing
-/// one, trusted or not. Control (the rule read before the drops alone): the removal applies and A
-/// is left with no standing admin, though no write was marked. Listing X's grant of B, it applies.
-#[test]
-fn a_lowering_whose_drops_take_its_remaining_admin_is_void() {
-    let mut w = minted_by(M);
-    w.push(M, 1, &[], A, Kind::set(H, Admin).until(20));
-    let gx = w.edge(M, 1, &[], A, X, Admin, &[]);
-    let leave = w.edge(M, 2, &[], A, M, Gone, &[]);
-    w.rely(leave, X);
-    let xb = w.edge(X, 3, &[], A, B, Admin, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.rely(r, B);
-    let standing = |rd: &Reading| rd.roles.iter().any(|(e, x)| e.1 == A && *x == Admin);
-    for t in [&[][..], &[r]] {
-        let rd = fixed(&w, t);
-        assert!(rd.applied.contains(&leave) && !rd.applied.contains(&r) && rd.role(X, A) == Admin && standing(&rd), "{t:?} {rd:?}");
-    }
-    let rd = fixed_but(&w, &[], |x| x.remains_kept = false);
-    assert!(rd.applied.contains(&r) && rd.dropped.contains(&xb) && !standing(&rd), "{rd:?}");
-    w.edit(r, |k| k.listing(BTreeMap::from([(A, Set::from([xb, gx]))])));
-    let rd = fixed(&w, &[r]);
-    assert!(rd.applied.contains(&r) && rd.role(B, A) == Admin && rd.role(X, A) == Gone);
-}
-
-// ---- The last edge is a hop of the stated path (notes/a1-spec/README.md, OPEN 9) ----
-
-/// A reaches D1 by descent (A, T1, D1: two steps) and also holds a direct grant on D1. J, admin on
-/// D1, writes T2 through D1 (which holds write there) after H removes J from D1 by [A], naming no
-/// remaining admin. The path's last hop is T1's record edge, not one edge from A: it has no last
-/// edge, so the removal applies nowhere, at a member and at a reader of T2 holding J's write and
-/// its evidence alike (A's direct grant on D1 is on no path it holds). Control (A's direct grant
-/// read as the last edge though no hop): a member applies the removal and J's write falls, the
-/// reader refuses it and shows the write. Naming T1 (its record edge) it applies at both.
-#[test]
-fn a_remaining_admin_by_a_descent_of_two_steps_is_named() {
-    let mut w = account();
-    let ga = w.edge(H, 1, &[A, T1], D1, A, Admin, &[]);
-    w.edge(H, 1, &[A], D1, J, Admin, &[]);
-    w.push(H, 1, &[A, ORG], T2, Kind::set(D1, Write));
-    let r = w.edge(H, 4, &[A], D1, J, Gone, &[]);
-    let late = w.content(J, 5, &[D1], T2);
-    let all = View::all(&w).held;
-    let reader = View { held: evidence(&w, &Set::from([late]), &all), leaves: None, trust: Set::new() };
-    assert!(reader.held.contains(&r) && !reader.held.contains(&ga));
-    let shows = |w: &World, rules: &Rules| (judge(w, rules, &View::all(w)).shows(late), judge(w, rules, &reader).shows(late));
-    assert_eq!(shows(&w, &Rules::fixed()), (true, true));
-    assert_eq!(shows(&w, &Rules { last_hop: false, ..Rules::fixed() }), (false, true));
-    w.rely(r, T1);
-    assert_eq!(shows(&w, &Rules::fixed()), (false, false));
-}
-
 // ---- Dispute candidates (notes/a1-spec/README.md, OPEN 12) ----
 
 /// An honest holder thing's leave: H grants A2 admin on T1 by [A], K grants Z write by [A2], and K
@@ -2753,7 +2627,6 @@ fn an_honest_holder_leave_is_no_dispute() {
     w.edge(H, 1, &[A], T1, A2, Admin, &[]);
     let gz = w.edge(K, 2, &[A2], T1, Z, Write, &[]);
     let leave = w.edge(K, 3, &[A2], T1, A2, Gone, &[]);
-    w.rely(leave, A);
     assert!(w.leave(leave));
     let rd = fixed(&w, &[]);
     assert!(rd.applied.contains(&leave) && rd.role(Z, T1) == Write && rd.role(A2, T1) == Gone);
@@ -2880,7 +2753,7 @@ fn idle_gate(w: &World, trust: &[Id]) -> Vec<Id> {
 fn a_grant_applying_nowhere_gives_a_lowering_its_verdict() {
     let mut w = account();
     let r = w.push(H, 6, &[], A, Kind::set(N5, Gone));
-    w.commit(N5, 2, &[], A, vec![Kind::set(H, Admin).until(4), Kind::set(B, Admin).relying(Z)]);
+    w.commit(N5, 2, &[], A, vec![Kind::set(H, Admin).until(4), Kind::set(B, Admin)]);
     let b = w.push(B, 4, &[], A, Kind::set(H, Admin).listing(w.cut(&[1, 2])));
     w.push(H, 2, &[], A, Kind::set(N5, Admin).listing(w.cut(&[b])));
     for rules in [Rules::fixed(), Rules { until: Until::AtKey, ..Rules::fixed() }] {
@@ -2988,8 +2861,8 @@ fn an_end_dropping_writes_past_it_keeps_its_drops_after_it_falls() {
 /// Why `Until::AtKey` is not the rule (`tiny`: A left with no standing admin at nodes trusting
 /// nothing in 13 of 1,000,000 worlds against 3, with no dispute shown more): H grants B and N6
 /// admin at 2; N6 removes H at 3 listing H's grant of N6; B, in one commit at 3 (before N6's in key
-/// order), sets H's and N6's admin to end at 5. Judged at its key B's commit applies (both ends
-/// pass the last-admin rule on B's standing edge); N6's removal, H's edge timed, applies and drops
+/// order), sets H's and N6's admin to end at 5. Judged at its key B's commit applies; N6's removal,
+/// H's edge timed, applies and drops
 /// H's grant of B. Restarted, B holds nothing, yet its ends keep their verdict and apply: H and B
 /// none, N6 timed, A with no standing admin. As grants (the rule) B's ends apply nowhere once B
 /// holds nothing: N6 stays a standing admin. The idle-write counts it lowers (47 to 35) are such
@@ -3024,10 +2897,10 @@ fn an_end_judged_at_its_key_applies_for_good_and_can_strand_the_thing() {
 fn an_end_judged_at_its_key_lets_an_idle_write_lengthen_a_grant() {
     let mut w = account();
     w.push(N5, 5, &[], A, Kind::set(Z, Admin));
-    let g = w.push(Z, 5, &[], A, Kind::set(B, Admin).relying(H).listing(w.cut(&[0])));
-    w.push(H, 2, &[], A, Kind::set(N6, Admin).relying(N6).listing(w.cut(&[0, 1])));
+    let g = w.push(Z, 5, &[], A, Kind::set(B, Admin).listing(w.cut(&[0])));
+    w.push(H, 2, &[], A, Kind::set(N6, Admin).listing(w.cut(&[0, 1])));
     let end = w.push(Z, 5, &[], A, Kind::set(B, Admin).until(7));
-    w.push(N6, 5, &[], A, Kind::set(N5, Gone).relying(Z));
+    w.push(N6, 5, &[], A, Kind::set(N5, Gone));
     let r = w.push(N5, 7, &[], A, Kind::set(N6, Gone));
     w.commit(N6, 3, &[], A, vec![Kind::set(B, Admin).until(5), Kind::set(N5, Admin).listing(w.cut(&[0, 1, 2, 3, 5]))]);
     let v = View::all(&w).trusting(&[r]);
@@ -3047,7 +2920,7 @@ fn an_end_judged_at_its_key_lets_an_idle_write_lengthen_a_grant() {
 
 /// Why `Until::AtKey` is not the rule: the story's `own path N` fails (62 of 200,000 worlds, thief
 /// move 23, shrunk): X, stolen, backdates a grant of admin to a made-up key Z at 1, and Z sets H's
-/// admin to end at 7 at 2; H removes X at 6 listing nothing, relying on B. At a node trusting
+/// admin to end at 7 at 2; H removes X at 6 listing nothing. At a node trusting
 /// nothing, judged at its key Z's end applies (Z admin by X's grant then); H's removal applies and
 /// drops X's grant of Z; restarted, Z holds nothing, yet its end keeps its verdict: H's admin ends
 /// at 7, a made-up key's write taking the remover's standing for good. Under the rule Z's end
@@ -3058,7 +2931,7 @@ fn an_end_judged_at_its_key_lets_a_made_up_key_end_the_removers_admin() {
     let (mut w, gx, _) = paired();
     let gz = w.push(X, 1, &[], A, Kind::set(Z, Admin));
     let end = w.push(Z, 2, &[], A, Kind::set(H, Admin).until(7));
-    let r = w.push(H, 6, &[], A, Kind::set(X, Gone).relying(B).listing(w.cut(&[gx])));
+    let r = w.push(H, 6, &[], A, Kind::set(X, Gone).listing(w.cut(&[gx])));
     let at_key = Rules { until: Until::AtKey, ..Rules::fixed() };
     let rd = judge(&w, &at_key, &View::all(&w));
     assert!(rd.applied.is_superset(&Set::from([r, end])) && rd.dropped.contains(&gz) && rd.role(H, A) == Gone, "{rd:?}");
@@ -3076,7 +2949,10 @@ fn an_end_judged_at_its_key_lets_a_made_up_key_end_the_removers_admin() {
 /// With N5's key the thief backdates a removal of B to 2, ordered after B's share. It applies at
 /// its key (N5 an admin then) and drops B's share (unlisted, resting on B's edge); X's removal of
 /// N5 then drops the thief's write, but a drop stands for good (finding 16): the share stays
-/// dropped, trusted or not: B is an admin throughout and its share is lost.
+/// dropped where X's removal of N5 is not trusted: B is an admin throughout and its share is lost,
+/// and X's removal of N5 is shown as a dispute. A node that held X's removal of N5 before the
+/// backdated write arrived trusts it (F1): its seeds take the write before it acts and the share
+/// stands (`first_received_trusts_a_removal_held_before_a_backdated_write`).
 #[test]
 fn a_removed_keys_backdated_lowering_drops_a_witness_write_for_good() {
     let (mut w, ..) = paired();
@@ -3092,6 +2968,30 @@ fn a_removed_keys_backdated_lowering_drops_a_witness_write_for_good() {
         let rd = fixed(&w, t);
         assert!(rd.role(B, A) == Admin && !rd.applied.contains(&down) && !rd.applied.contains(&gs) && rd.role(A2, T1) == Gone && rd.stray.contains(&gs), "{rd:?}");
     }
+    assert_eq!(disputes(&w, &Rules::fixed(), &View::all(&w).trusting(&[r])), vec![out5]);
+    let rd = fixed(&w, &[r, out5]);
+    assert!(rd.applied.contains(&gs) && rd.dropped.contains(&down) && rd.role(A2, T1) == Write && rd.void.is_empty(), "{rd:?}");
+}
+
+/// F1 in the story (`Rules::received_trust`): H paired N5 and X removed it at 3 (`Setup::n5` 3),
+/// every node receiving it then; the thief, after the removal, backdates N5's removal of B to 2
+/// (move 47, made 9). Each node holding X's removal of N5 when the backdated write arrives records
+/// it trusted, so B's writes stand there; a node receiving both at once (F2) records nothing.
+#[test]
+fn first_received_trusts_a_removal_held_before_a_backdated_write() {
+    let s = Setup { n5: 3, ..Setup::default() };
+    let rules = Rules { received_trust: true, ..Rules::fixed() };
+    let m = Sim::build(&s, &rules, &[Move { kind: 47, ts: 2, made: 9 }], &mut Rng(0));
+    let out5 = m.out5.unwrap();
+    for n in [H, B] {
+        let v = m.view(n, &rules);
+        assert!(v.trust.contains(&out5), "node {n}: {:?}", v.trust);
+        let rd = judge(&m.w, &rules, &v);
+        assert!(rd.role(B, A) == Admin && (n == H || rd.applied.contains(&m.gs)), "node {n}: {rd:?}");
+    }
+    let mut st = Stats::default();
+    check(&m, &rules, &mut st);
+    assert_eq!(st.failures(), 0, "{:?}", st.fails);
 }
 
 // ---- A cut's list answers that cut alone (notes/evidence-model-findings.md 26) ----

@@ -120,11 +120,14 @@ pub fn input(w: &World, v: &View) -> Input {
             let k = &w.commits[i];
             let seen = |t: &Thing| v.leaves.as_ref().is_none_or(|l| l.contains(t));
             let kind = match &k.kind {
-                Kind::Edge { holder, role: r, until, frontier, relies, adminless, invite, finalize } => {
+                Kind::Edge { holder, role: r, until, frontier, invite, finalize } => {
                     let value = role(*r).map(|r| Edge { role: r, until: until.map(|u| WallMs(u as u64)), invite: role(*invite), retain: false, floor: None });
                     let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(t, l)| l.iter().map(|&j| (tid(*t), cid(w.cid(j)))));
                     let frontier = (!finalize).then(|| Arc::new(List::new(listed)));
-                    PartKind::Edge(EdgeWrite { holder: tid(*holder), value, frontier, remains: relies.map(tid), adminless: *adminless })
+                    // the model has no last-admin rule (notes/write-path-design.md §5 A2): every
+                    // write carries the mark that turns the old walk's off (Interim: the walk is
+                    // rebuilt after stage D, notes/redesign-plan.md)
+                    PartKind::Edge(EdgeWrite { holder: tid(*holder), value, frontier, remains: None, adminless: true })
                 }
                 _ => PartKind::Delta(delta(w, i)),
             };

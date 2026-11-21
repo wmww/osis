@@ -85,9 +85,8 @@ pub struct Setup {
     pub b_side_x: bool,
     /// At `AFTER` H grants N5 again and B grants A2 write on T1 again.
     pub regrant: bool,
-    /// 0: H mints A. 1: M mints A, pairs H at 0, writes T1 at 1, leaves A at 2 naming B (paired
-    /// by H at 1) as the remaining admin, writes T1 again at 3: a reader of T1 holds B's grant
-    /// only as the leave's evidence where B wrote nothing there. 2: as 1, B's admin grant timed.
+    /// 0: H mints A. 1: M mints A, pairs H at 0, writes T1 at 1, leaves A at 2, writes T1 again
+    /// at 3. 2: as 1, B's admin grant (by H at 1) timed.
     pub mint: u8,
     /// The thief removes H at the theft, honestly stamped, and every node receives it at once:
     /// H's removal of X lists it.
@@ -309,7 +308,7 @@ impl Sim {
         if s.mint > 0 {
             m.put((M, 1, &[A], T1, Kind::Content), 1, rng, false);
             let f = m.w.cut(&m.w.through((M, A), |_| true));
-            m.put((M, 2, &[], A, grant(M, Role::None).listing(f).relying(B)), 2, rng, false);
+            m.put((M, 2, &[], A, grant(M, Role::None).listing(f)), 2, rng, false);
             m.put((M, 3, &[A], T1, Kind::Content), 3, rng, false);
         }
         // A, two steps up D1's mint chain, holds a direct grant on D1 too; J holds admin on D1 and
@@ -321,9 +320,8 @@ impl Sim {
         m.put((J, 3, &[D1], T2, Kind::Content), 3, rng, false);
         // J invites RD2 to read T2 by D1's invite: an edge-class write resting on (D1, T2)
         m.put((J, 3, &[D1], T2, grant(RD2, Role::Read)), 3, rng, false);
-        // B removes J from D1 by [A] at 4 (a descent of two steps: no last edge) naming no remaining
-        // admin, so it applies nowhere; J writes T2 after it, and at 10 makes D1 leave T2 (an
-        // honest holder thing's leave)
+        // B removes J from D1 by [A] at 4 (a descent of two steps); J writes T2 after it, and at 10
+        // makes D1 leave T2 (an honest holder thing's leave)
         let f = m.w.cut(&m.w.through((J, D1), |i| m.got(i, B, 4)));
         m.put((B, 4, &[A], D1, grant(J, Role::None).listing(f)), 4, rng, false);
         m.put((J, 5, &[D1], T2, Kind::Content), 5, rng, false);
@@ -507,11 +505,11 @@ impl Sim {
     pub fn removals(&self) -> Vec<Id> {
         [Some(self.r), self.r2, self.r3, self.kiosk].into_iter().flatten().collect()
     }
-    /// Whether `n`'s walk at `t`, trusting `r` beside its own trust set, applies removal `r` with
-    /// its seeds (it is not void): where the removal's list counts, whichever side `n` is on.
-    fn applies(&self, n: Thing, t: u32, r: Id, rules: &Rules) -> bool {
+    /// `end(r)` in `n`'s walk at `t`, trusting `r` beside its own trust set (`end_of`): `Nothing`
+    /// where it does not apply `r` with its seeds, whichever side `n` is on.
+    fn end_at(&self, n: Thing, t: u32, r: Id, rules: &Rules) -> End {
         let rd = judge(&self.w, rules, &self.view_at(n, Some(t), rules).trusting_also(r));
-        rd.applied.contains(&r) && !rd.void.contains(&r)
+        end_of(&self.w, &rd, r)
     }
     /// `ids` in the order `n` received them (control `Rules::key_order`: in key order).
     fn received(&self, n: Thing, ids: impl IntoIterator<Item = Id>, rules: &Rules) -> Vec<Id> {
@@ -523,22 +521,19 @@ impl Sim {
         }
         v
     }
-    /// The remover's list (`Rules::stands`): everything received where its own walk then applies
-    /// the removal; else the role writes one by one in the order received, each kept only where
-    /// the removal still applies with it.
+    /// The remover's list (`Rules::stands`): the writers' rule (`writers_keep`) over what it
+    /// received, in the order received, read in its own walk at the removal.
     fn stand(&mut self, n: Thing, r: Id, all: &[Id], rules: &Rules) {
-        if !rules.stands || self.applies(n, REMOVAL, r, rules) {
+        if !rules.stands {
             return;
         }
-        let mut kept: Vec<Id> = all.iter().copied().filter(|&i| !self.w.edge_class(i)).collect();
-        for c in self.received(n, all.iter().copied().filter(|&i| self.w.edge_class(i)), rules) {
-            kept.push(c);
-            let f = self.w.cut(&kept);
+        let base: Vec<Id> = all.iter().copied().filter(|&i| !self.w.edge_class(i)).collect();
+        let classed = self.received(n, all.iter().copied().filter(|&i| self.w.edge_class(i)), rules);
+        let kept = writers_keep(base, &classed, rules.own_end, |l| {
+            let f = self.w.cut(l);
             self.w.edit(r, |k| k.listing(f));
-            if !self.applies(n, REMOVAL, r, rules) {
-                kept.pop();
-            }
-        }
+            self.end_at(n, REMOVAL, r, rules)
+        });
         let f = self.w.cut(&kept);
         self.w.edit(r, |k| k.listing(f));
     }
@@ -801,19 +796,13 @@ impl Sim {
             // by descent through the cut path
             17 => (X, &[A], D1, Kind::Content),
             // X leaves A by itself (a self-removal, its path ending at itself)
-            18 => (X, &[], A, grant(X, Role::None).relying(H)),
+            18 => (X, &[], A, grant(X, Role::None)),
             // the same carrying an `until` in place of none: admin until just after, write until
             // after the story
-            33 => (X, &[], A, grant(X, Role::Admin).until(mv.ts + 1).relying(H)),
-            34 => (X, &[], A, grant(X, Role::Write).until(B_UNTIL).relying(H)),
-            // X makes A leave T1, its path ending at A, marked adminless
-            19 => {
-                let mut k = grant(A, Role::None);
-                if let Kind::Edge { adminless, .. } = &mut k {
-                    *adminless = true;
-                }
-                (X, &[A], T1, k)
-            }
+            33 => (X, &[], A, grant(X, Role::Admin).until(mv.ts + 1)),
+            34 => (X, &[], A, grant(X, Role::Write).until(B_UNTIL)),
+            // X makes A leave T1, its path ending at A
+            19 => (X, &[A], T1, grant(A, Role::None)),
             _ => unreachable!("move {}", mv.kind),
         };
         let ts = if mv.kind == 16 { 20 } else { mv.ts };
@@ -830,18 +819,63 @@ impl Sim {
         self.held_at(n, None)
     }
     /// The node's view by `t`: leaves for the things it syncs, and with `Rules::evidence_leaves`
-    /// for every thing a held edge write is on; it trusts the removals of X, B rather X's
-    /// removal of H until its switch.
+    /// for every thing a held edge write is on. Its trust set: the honest removals (under
+    /// `Rules::received_trust`, the sides it recorded by first received: `first_received`); B's
+    /// user (`Setup::b_side_x`) sides with X's removal of H against H's removal of X until it
+    /// switches at `AFTER`. The nodes that trust nothing record nothing.
     pub fn view_at(&self, n: Thing, t: Option<u32>, rules: &Rules) -> View {
         let held = self.held_at(n, t);
+        let leaves = self.leaves(n, &held, rules);
+        let mut trust = if self.untrusting().contains(&n) {
+            Set::new()
+        } else if rules.received_trust {
+            self.first_received(n, t, rules)
+        } else {
+            self.removals().into_iter().collect()
+        };
+        if self.setup.b_side_x && n == B {
+            let (on, off) = if t.is_some_and(|t| t < AFTER) { (self.rx, Some(self.r)) } else { (Some(self.r), self.rx) };
+            trust.extend(on);
+            trust.retain(|i| Some(*i) != off);
+        }
+        View { held, leaves: Some(leaves), trust }
+    }
+    fn leaves(&self, n: Thing, held: &Set, rules: &Rules) -> Things {
         let mut leaves = self.sync[&n].clone();
         if rules.evidence_leaves {
             leaves.extend(held.iter().filter(|&&i| self.w.edge_class(i)).map(|&i| self.w.commits[i].on));
         }
-        let trust = if self.untrusting().contains(&n) {
-            Set::new()
-        } else if self.setup.b_side_x && n == B && t.is_some_and(|t| t < AFTER) { self.rx.into_iter().collect() } else { self.removals().into_iter().collect() };
-        View { held, leaves: Some(leaves), trust }
+        leaves
+    }
+    /// The sides `n` recorded by `t` (notes/write-path-design.md §1 F1): at each tick, for each
+    /// edge-class commit W arriving then, each explicit lowering R the node held and its walk
+    /// applied just before (trusting what it recorded so far), W ordered before R, resting on R's
+    /// edge (or a self-removal of it), R's list not naming W, and no side recorded for R: R is
+    /// trusted. A W arriving with R in one update records nothing (F2); a side stays (F3).
+    fn first_received(&self, n: Thing, t: Option<u32>, rules: &Rules) -> Set {
+        let last = self.recv.iter().filter_map(|r| r.get(&n).copied()).max().unwrap_or(0).max(self.made.iter().copied().max().unwrap_or(0));
+        let end = t.unwrap_or(last).min(last);
+        let mut trust = Set::new();
+        let mut before = self.held_at(n, Some(0));
+        for u in 1..=end + 1 {
+            let now = if u > end { self.held_at(n, t) } else { self.held_at(n, Some(u)) };
+            let arrived: Vec<Id> = now.difference(&before).copied().filter(|&i| self.w.edge_class(i)).collect();
+            if !arrived.is_empty() {
+                let v = View { held: before.clone(), leaves: Some(self.leaves(n, &before, rules)), trust: trust.clone() };
+                let rd = judge(&self.w, rules, &v);
+                for &r in &rd.applied {
+                    let Some(h) = self.w.sets(r) else { continue };
+                    if trust.contains(&r) || rules.lowering(&self.w, r).is_none() || self.w.leave(r) || rd.invited.contains(&r) {
+                        continue;
+                    }
+                    if arrived.iter().any(|&j| self.w.cid(j) != self.w.cid(r) && self.w.key(j) < self.w.key(r) && rests_on(&self.w, rules, j, h) && !listed(&self.w, &v, r, j)) {
+                        trust.insert(r);
+                    }
+                }
+            }
+            before = now;
+        }
+        trust
     }
     pub fn view(&self, n: Thing, rules: &Rules) -> View {
         self.view_at(n, None, rules)
@@ -1020,7 +1054,7 @@ pub fn trace(m: &Sim) -> String {
         let path: Vec<&str> = c.path.iter().map(name).collect();
         let kind = match &c.kind {
             Kind::Content => "content".to_string(),
-            Kind::Edge { holder, role, until, frontier, relies, adminless, invite, finalize } => {
+            Kind::Edge { holder, role, until, frontier, invite, finalize } => {
                 let mut k = format!("{} := {role:?}", name(holder));
                 if *invite > Role::None {
                     k += &format!(" invite {invite:?}");
@@ -1030,12 +1064,6 @@ pub fn trace(m: &Sim) -> String {
                 }
                 if let Some(u) = until {
                     k += &format!(" until {u}");
-                }
-                if let Some(n) = relies {
-                    k += &format!(" relying on {}", name(n));
-                }
-                if *adminless {
-                    k += " adminless";
                 }
                 k + &format!(" frontier {:?}", frontier.values().flatten().collect::<Vec<_>>())
             }
@@ -1061,9 +1089,9 @@ pub fn rebuild(w: &World, keep: &[Id]) -> (World, BTreeMap<Id, Id>) {
     for &i in keep {
         let c = &w.commits[i];
         let kind = match &c.kind {
-            Kind::Edge { holder, role, until, frontier, relies, adminless, invite, finalize } => {
+            Kind::Edge { holder, role, until, frontier, invite, finalize } => {
                 let f = frontier.iter().map(|(t, l)| (*t, ids(l))).collect();
-                Kind::Edge { holder: *holder, role: *role, until: *until, frontier: f, relies: *relies, adminless: *adminless, invite: *invite, finalize: *finalize }
+                Kind::Edge { holder: *holder, role: *role, until: *until, frontier: f, invite: *invite, finalize: *finalize }
             }
             Kind::Addendum { removal, list } => Kind::Addendum { removal: map[removal], list: ids(list) },
             Kind::Content => Kind::Content,
@@ -1427,15 +1455,6 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             }
         }
     };
-    // the last admin: every thing keeps a standing admin edge (no write in the story is marked)
-    let admin = |n: Thing, rd: &Reading, prop: &'static str, st: &mut Stats| {
-        for t in [A, A2, ORG, T1, D1, T2] {
-            st.count(prop);
-            if !rd.roles.iter().any(|(e, r)| e.1 == t && *r == Role::Admin) {
-                st.fail(prop, m, format!("node {n}: {t} has no standing admin"));
-            }
-        }
-    };
     // the remover keeps its own path: H ends a standing admin of A (X's lowering of it shows only
     // where a write of X kept with it gives it back)
     let own_path = |n: Thing, v: &View, rd: &Reading, prop: &'static str, st: &mut Stats| {
@@ -1472,18 +1491,16 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 st.fail("removal kept", m, format!("node {n}: A2 holds on T1 again"));
             }
         }
-        admin(n, rd, "admin", st);
         // liveness
         for &i in v.held.iter().filter(|&&i| !m.hostile(i)) {
             let c = &w.commits[i];
             let honest_now = c.signer != X;
             let want = match &c.kind {
-                // M's leave applies iff the admin it names is standing: its write after shows
-                // iff the leave is refused
-                // (X's removal of M heard before the removal and kept cuts the leave, which it does
-                // not list, and M's writes after it)
-                Kind::Content if c.signer == M => !m_cut() && (c.ts == 1 || s.mint == 2),
-                Kind::Edge { holder, .. } if c.signer == M => *holder != M || (s.mint == 1 && !m_cut()),
+                // M's leave applies, so its write after does not show (X's removal of M heard
+                // before the removal and kept cuts the leave, which it does not list, and M's
+                // writes after it)
+                Kind::Content if c.signer == M => !m_cut() && c.ts == 1,
+                Kind::Edge { holder, .. } if c.signer == M => *holder != M || !m_cut(),
                 // through A2 on T1 where B removed A2 from T1 (K's, or X's as a member of A2)
                 Kind::Content | Kind::Purge { .. } | Kind::Cover { .. } if m.r3.is_some() && w.hops(i).contains(&(A2, T1)) => {
                     let r3 = m.r3.unwrap();
@@ -1567,7 +1584,7 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         }
     }
     // nodes trusting nothing: the walk settles; where the honest removals apply there, the thief
-    // gains nothing past its standing and H keeps its own (a thing left adminless counted); a
+    // gains nothing past its standing and H keeps its own; a
     // removal not applied is a dispute shown there; a reading unlike the trusted side's comes with
     // a dispute, and trusting the honest ones shown reads as the trusting side
     let plain: BTreeMap<Thing, (View, Reading)> = m
@@ -1585,10 +1602,6 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         void_checks(w, rules, v, rd, n, false, quiet, n == pick, &by_right, m, st);
         // where every honest removal it holds applies (else X keeps its standing there: a dispute)
         if m.removals().iter().all(|r| !v.held.contains(r) || rd.applied.contains(r)) {
-            st.count("admin N");
-            if !rd.roles.iter().any(|(e, r)| e.1 == T1 && *r == Role::Admin) || ![A, A2, ORG, D1, T2].iter().all(|&t| rd.roles.iter().any(|(e, r)| e.1 == t && *r == Role::Admin)) {
-                st.note("admin N", m, format!("node {n}: a thing has no standing admin"));
-            }
             safety(n, v, rd, "safety N", true, st);
             own_path(n, v, rd, "own path N", st);
         }
@@ -1773,8 +1786,7 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// The rules a mode runs: `paths` the design's (`Rules::fixed`); `paths-design` the first round's
 /// reading; controls, each the design with one rule undone: `-no-void` (a lowering whose own
 /// drops take its authority applies), `-listed` (the remover names all it received), `-exempt` (the held chain
-/// exempt from a lowering's drops), `-any-edge` (the last-admin rule reads every admin edge),
-/// `-timed` (a timed admin edge counts as standing), `-first-applied` (a re-granted path counts from the first point the settled
+/// exempt from a lowering's drops), `-first-applied` (a re-granted path counts from the first point the settled
 /// walk gave it), `-once` (a node answers a removal only the first time its walk applies it),
 /// `-leave` (a self-removal is never put in question), `-key-order` (the remover keeps
 /// the role writes in key order), `-audit-applied` (the audit puts in question the applied
@@ -1786,7 +1798,9 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// `-until-at-key` and `-until-past-end` (an end date on admin as a lowering: `Until`, both failing
 /// a required gate); what a drop takes of a commit (`Drops`): the control `-part-drops` (each
 /// part by its own need) and the variants `-leave-lowers`, `-leave-on-grant`, `-redemption-whole`;
-/// `-list-any-cut` (one answering cut of a delta's path makes it valid: `Answers`).
+/// `-list-any-cut` (one answering cut of a delta's path makes it valid: `Answers`); `-no-end` (the
+/// remover keeps a role write wherever its removal applies with it, L3's end clause off); the
+/// variant `-first-received` (trust sets by first received, F1: `Rules::received_trust`).
 /// `-exh` runs the small family in place of random worlds.
 pub fn mode_rules(mode: &str) -> Option<Rules> {
     let f = Rules::fixed();
@@ -1798,9 +1812,9 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-design" => Rules::design(),
         "-no-void" => Rules { self_void: false, ..f },
         "-listed" => Rules { stands: false, ..f },
+        "-no-end" => Rules { own_end: false, ..f },
+        "-first-received" => Rules { received_trust: true, ..f },
         "-exempt" => Rules { exempt_chain: true, ..f },
-        "-any-edge" => Rules { last_admin: LastAdmin::AnyEdge, ..f },
-        "-timed" => Rules { last_admin: LastAdmin::NamedTimed, ..f },
         "-first-applied" => Rules { regrant: Regrant::FirstApplied, ..f },
         "-once" => Rules { rewrite: false, ..f },
         "-leave" => Rules { leave_in_question: false, ..f },
@@ -1812,8 +1826,6 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-purge-contains" => Rules { purge_exact: false, ..f },
         "-facts" => Rules { cover_facts: true, ..f },
         "-own-drops" => Rules { commit_drops: false, ..f },
-        "-remains-unkept" => Rules { remains_kept: false, ..f },
-        "-last-any" => Rules { last_hop: false, ..f },
         "-all-candidates" => Rules { candidates: Candidates::All, ..f },
         "-seeds-all" => Rules { seeds_by_need: false, ..f },
         "-refuse-shapes" => Rules { refuse_shapes: true, ..f },
@@ -1833,20 +1845,17 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
 /// A small world of admins removing and granting each other on A (H its mint): `n` commits, each
 /// by a random party at a random `ts`, one in four carrying two or three edge writes on distinct
 /// holders (`tiny_commit`), each setting a random party's edge to admin (standing, or one in three
-/// until two ticks on) or none, naming a random remaining admin half the time, listing each earlier
-/// write with probability one half.
+/// until two ticks on) or none, listing each earlier write with probability one half.
 pub fn tiny(i: u64, n: usize) -> World {
     let mut rng = Rng::thread(0x701d, i as usize);
     let mut w = account();
     for _ in 0..n {
         tiny_commit(&mut w, &mut rng, n, |h, rng, ts| {
-            let k = match rng.below(5) {
+            match rng.below(5) {
                 0 | 1 => Kind::set(h, Role::Admin),
                 2 => Kind::set(h, Role::Admin).until(ts + 2),
                 _ => Kind::set(h, Role::None),
-            };
-            // naming a remaining admin, half the time
-            if rng.below(2) == 0 { k.relying([H, B, N5, Z, N6][rng.below(5)]) } else { k }
+            }
         });
     }
     w
@@ -1908,8 +1917,7 @@ pub fn tiny_invites(i: u64, n: usize) -> World {
 /// so it reaches T1 through [A]), else on T1: content, or setting a random holder's edge (A's is
 /// T1's record edge, a third of the time: removing it detaches T1) to admin (standing or until two
 /// ticks on) or none (half the time),
-/// naming a random remaining admin half the time, listing each earlier write with probability one
-/// half. Each commit on T1 states, for H: the descent [], the descent through [A], or [] with its
+/// listing each earlier write with probability one half. Each commit on T1 states, for H: the descent [], the descent through [A], or [] with its
 /// hop marked direct (H's direct grant); for another party: [] (its direct edge), [A], or one in
 /// six [] marked (a mark on no descent: the part applies nowhere). Half the worlds open with H
 /// granting itself admin on T1 by [A] (its direct edge) at 1. A stolen key of the far
@@ -1927,11 +1935,10 @@ pub fn tiny_detached(i: u64, n: usize) -> World {
         let s = parties[rng.below(5)];
         let ts = 1 + rng.below(n) as u32;
         let list: Vec<Id> = (0..w.commits.len()).filter(|_| rng.below(2) == 0).collect();
-        let relying = |k: Kind, rng: &mut Rng| if rng.below(2) == 0 { k.relying([H, B, N5, Z, N6][rng.below(5)]) } else { k };
         if rng.below(5) == 0 {
             let h = parties[rng.below(5)];
             let k = if rng.below(2) == 0 { Kind::set(h, Role::Admin) } else { Kind::set(h, Role::None) };
-            let k = relying(k, &mut rng).listing(w.cut(&list));
+            let k = k.listing(w.cut(&list));
             w.push(s, ts, &[], A, k);
             continue;
         }
@@ -1953,7 +1960,7 @@ pub fn tiny_detached(i: u64, n: usize) -> World {
                     2 => Kind::set(h, Role::Admin).until(ts + 2),
                     _ => Kind::set(h, Role::None),
                 };
-                relying(k, &mut rng).listing(w.cut(&list))
+                k.listing(w.cut(&list))
             }
         };
         w.push_marked(s, ts, path, T1, kind, direct);
@@ -2071,33 +2078,21 @@ fn resting(w: &World, r: Id, among: impl IntoIterator<Item = Id>) -> Vec<Id> {
 }
 
 /// The list the writers' rule gives lowering `r`, its writer having received `recv` (in that order)
-/// when writing it (notes/write-path-design.md §1, The list is its writer's; `Sim::stand`): the
-/// received commits resting on its edge, where the writer's walk (holding `recv` and `r`, trusting
-/// `r`) applies `r` with all of them named; else the content among them, then its role writes one
-/// at a time, each kept only where `r` still applies with it.
+/// when writing it (notes/write-path-design.md §1, L3; `Sim::stand`): `writers_keep` over the
+/// received commits resting on its edge, read in the writer's walk holding `recv` and `r`, trusting
+/// `r`.
 pub fn writers_list(w: &World, rules: &Rules, r: Id, recv: &[Id]) -> Vec<Id> {
     let all = resting(w, r, recv.iter().copied());
     let mut v = View { held: recv.iter().copied().collect(), leaves: None, trust: Set::from([r]) };
     v.held.insert(r);
-    let classed: Vec<bool> = all.iter().map(|&j| w.edge_class(j)).collect();
+    let base: Vec<Id> = all.iter().copied().filter(|&j| !w.edge_class(j)).collect();
+    let classed: Vec<Id> = all.iter().copied().filter(|&j| w.edge_class(j)).collect();
     let mut w = w.clone();
-    let mut applies = |l: &[Id]| {
+    writers_keep(base, &classed, rules.own_end, |l| {
         let f = w.cut(l);
         w.edit(r, |k| k.listing(f));
-        let rd = judge(&w, rules, &v);
-        rd.applied.contains(&r) && !rd.void.contains(&r)
-    };
-    if applies(&all) {
-        return all;
-    }
-    let mut kept: Vec<Id> = all.iter().zip(&classed).filter(|x| !*x.1).map(|x| *x.0).collect();
-    for c in all.iter().zip(&classed).filter(|x| *x.1).map(|x| *x.0) {
-        kept.push(c);
-        if !applies(&kept) {
-            kept.pop();
-        }
-    }
-    kept
+        end_of(&w, &judge(&w, rules, &v), r)
+    })
 }
 
 /// Whether every lowering's list (on the commits resting on its edge) is the writers' rule's
@@ -2181,7 +2176,7 @@ impl TinyStats {
 /// (`fight illegit`); any effect in a world whose lists all follow the writers' rule (`honest`,
 /// `lists_honest`); `fight` (an effect, a dispute shown), `void shown`, `unapplied shown`, `idle
 /// shown` (only which edge writes apply changes: nobody sees it, finding 33), `stray` (a drop
-/// whose dropper does not apply at the end), `admin N`/`V`, and the worlds whose lists are honest
+/// whose dropper does not apply at the end), and the worlds whose lists are honest
 /// (`honest worlds`).
 pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
     let (w, v) = (&t.w, &t.v);
@@ -2201,10 +2196,7 @@ pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
             ("idle", _) => "idle V",
             ("gains", "N") => "illegit gains N",
             ("gains", "T") => "illegit gains T",
-            ("gains", _) => "illegit gains V",
-            ("admin", "N") => "admin N",
-            ("admin", "T") => "admin T",
-            _ => "admin V",
+            _ => "illegit gains V",
         }
     };
     st.most_rounds = st.most_rounds.max(rd.rounds);
@@ -2235,7 +2227,6 @@ pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
     }
     st.hit("one reading", true, !one_reading_relabelled(w, rules, v, &rd), i, w, || "a relabelling reads otherwise".to_string());
     st.hit("self-taken", true, !rd.self_taken.is_empty(), i, w, || format!("commits {:?} lose their path's authority to their own drops", rd.self_taken));
-    st.hit(k("admin"), tr == "T", !rd.roles.iter().any(|(e, r)| e.1 == A && *r == Role::Admin), i, w, || format!("A has no admin: applied {:?}", rd.applied));
 }
 
 /// `t` less one commit at a time while `fails` holds of it (receipts follow the relabelling).
@@ -2296,9 +2287,8 @@ pub fn tiny_trace(w: &World) -> String {
     let name = |t: &Thing| ["?", "H", "B", "X", "N5", "K", "Z", "N6"].get(*t as usize).copied().unwrap_or("?");
     let mut s = String::new();
     for (i, c) in w.commits.iter().enumerate() {
-        if let Kind::Edge { holder, role, frontier, until, invite, finalize, relies, .. } = &c.kind {
+        if let Kind::Edge { holder, role, frontier, until, invite, finalize } = &c.kind {
             let what = if *finalize { "finalize".to_string() } else { format!("{role:?}{}{}", if *invite > Role::None { format!(" invite {invite:?}") } else { String::new() }, until.map_or(String::new(), |u| format!(" until {u}"))) };
-            let what = relies.map_or(what.clone(), |n| format!("{what} relying on {}", name(&n)));
             let part = if w.parts(c.cid) > 1 { format!(" (commit {})", c.cid) } else { String::new() };
             s += &format!("  {i}: {} ts {}{part}: {} := {what} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
         }

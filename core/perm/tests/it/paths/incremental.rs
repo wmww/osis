@@ -547,27 +547,3 @@ fn two_lowerings_on_one_thing_fall_together_in_every_order_and_forget() {
     }
 }
 
-// notes/perm-paths.md, Reach: a part reads its named remaining admin's edge, so a write on that
-// edge arriving before it walks it again. H leaves A relying on B (a self-removal: no path, its
-// own edge not B's), and a timed admin S's removal of X relying on B; B's grant, before them,
-// arriving last makes each apply (the last-admin rule).
-#[test]
-fn the_named_remaining_admin_arriving_late_walks_its_reader_again() {
-    use m::{account, A, B, H, N5, X};
-    use roles_model::Role::{Admin, None as Gone};
-    let mut w = account();
-    w.edge(H, 1, &[], A, B, Admin, &[]);
-    let leave = w.edge(H, 3, &[], A, H, Gone, &[]);
-    w.rely(leave, B);
-    every_order(&w);
-    let mut w = account();
-    w.edge(H, 1, &[], A, X, Admin, &[]);
-    let s = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    w.set_until(s, 50);
-    w.edge(H, 2, &[], A, B, Admin, &[]);
-    let r = w.edge(N5, 4, &[], A, X, Gone, &[]);
-    w.rely(r, B);
-    let leave = w.edge(H, 5, &[], A, H, Gone, &[]);
-    w.rely(leave, B);
-    every_order(&w);
-}

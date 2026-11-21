@@ -19,10 +19,6 @@ fn paired() -> (World, Id, Id) {
     (w, gx, gb)
 }
 
-fn held(ids: &[Id]) -> View {
-    View { held: ids.iter().copied().collect(), leaves: None, trust: Set::new() }
-}
-
 // ---- Descent, self-removal by path end, `until` ----
 
 // spec/permissions.md §1: a write by descent rests on the record edges; a lowering of a record
@@ -32,7 +28,6 @@ fn a_write_by_descent_is_judged_along_the_record_edges() {
     let (mut w, ..) = paired();
     w.edge(H, 3, &[A, T1], D1, A2, Write, &[]);
     let low = w.edge(H, 5, &[A], D1, T1, Gone, &[]);
-    w.mark_adminless(low);
     agree_all(&w, &[]);
     agree_all(&w, &[low]);
 }
@@ -46,7 +41,6 @@ fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
     let mut w = account();
     let g = w.edge(H, 1, &[A], T1, H, Admin, &[]);
     let cut = w.edge(H, 2, &[], T1, A, Gone, &[g]);
-    w.rely(cut, H);
     w.edge(H, 4, &[], T1, B, Write, &[]);
     w.edge(H, 4, &[A], T1, N5, Write, &[]);
     w.content(H, 3, &[], T1);
@@ -78,14 +72,14 @@ fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
     agree_all(&w, &[]);
 }
 
-// A final hop marked direct is the path's last edge (draft §1 Path's last edge): the last-admin
-// rule and the path's invite read the direct edge, as the model.
+// A final hop marked direct is the path's last edge (draft §1 Path's last edge): the path's
+// invite reads the direct edge, as the model.
 #[test]
 fn a_marked_final_hop_is_the_last_edge() {
     let mut w = account();
     let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
     let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
-    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])).relying(H));
+    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
     w.push_marked(H, 3, &[], T1, Kind::set(B, Gone), &[0]);
     agree_all(&w, &[]);
     let mut w = account();
@@ -123,7 +117,7 @@ fn a_removed_far_ancestors_backdated_marked_writes_fall() {
     let mut w = account();
     let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
     let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
-    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])).relying(H));
+    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
     let r = w.push(B, 5, &[], T1, Kind::set(H, Gone));
     w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
     w.push_marked(H, 4, &[], T1, Kind::set(Z, Admin), &[0]);
@@ -157,7 +151,7 @@ fn a_marked_hop_under_a_removal_with_a_list() {
     for (marked, listed) in [(true, true), (true, false), (false, true)] {
         let mut w = account();
         let gs: Vec<Id> = [H, B, N5].iter().map(|&h| w.push(H, 1, &[A], T1, Kind::set(h, Admin))).collect();
-        w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&gs)).relying(H));
+        w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&gs)));
         let gx = w.push_marked(H, 3, &[], T1, Kind::set(X, Write), if marked { &[0] } else { &[] });
         let hc = w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
         w.content(X, 5, &[], T1);
@@ -174,8 +168,7 @@ fn a_marked_hop_under_a_removal_with_a_list() {
 fn a_self_removal_by_path_end_audits_nothing() {
     let (mut w, ..) = paired();
     w.edge(B, 2, &[], A, N5, Admin, &[]);
-    let leave = w.edge(B, 3, &[], A, B, Gone, &[]);
-    w.rely(leave, H);
+    w.edge(B, 3, &[], A, B, Gone, &[]);
     agree_all(&w, &[]);
     let (mut w, ..) = paired();
     w.edge(B, 2, &[], A, N5, Admin, &[]);
@@ -200,8 +193,7 @@ fn a_backdated_leave_undoes_nothing_the_removed_node_made() {
     let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
     let g5 = w.edge(X, 3, &[], A, N5, Admin, &[]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[down, g5]);
-    let leave = w.edge(X, 2, &[], A, X, Gone, &[]);
-    w.rely(leave, H);
+    w.edge(X, 2, &[], A, X, Gone, &[]);
     agree_all(&w, &[r]);
     agree_all(&w, &[]);
 }
@@ -210,8 +202,7 @@ fn a_backdated_leave_undoes_nothing_the_removed_node_made() {
 fn a_backdated_leave_shields_nothing_from_the_removal() {
     let (mut w, ..) = paired();
     w.edge(X, 4, &[], A, Z, Admin, &[]);
-    let leave = w.edge(X, 5, &[], A, X, Gone, &[]);
-    w.rely(leave, H);
+    w.edge(X, 5, &[], A, X, Gone, &[]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     agree_all(&w, &[r]);
     agree_all(&w, &[]);
@@ -226,7 +217,6 @@ fn a_timed_self_removal_is_put_in_question_like_a_leave() {
         let r = w.edge(H, 6, &[], A, X, Gone, &[down, g5]);
         let timed = w.edge(X, 1, &[], A, X, role, &[]);
         w.set_until(timed, until);
-        w.rely(timed, H);
         agree_all(&w, &[r]);
         agree_all(&w, &[]);
     }
@@ -238,8 +228,7 @@ fn a_holder_things_leave_is_put_in_question_by_a_removal_of_its_edge() {
     w.edge(H, 1, &[], A, X, Admin, &[]);
     w.edge(H, 1, &[], A, B, Admin, &[]);
     let g2 = w.edge(H, 1, &[A], T1, A2, Admin, &[]);
-    let leave = w.edge(X, 2, &[A], T1, A, Gone, &[]);
-    w.mark_adminless(leave);
+    w.edge(X, 2, &[A], T1, A, Gone, &[]);
     let gn = w.edge(B, 3, &[A], T1, N6, Write, &[]);
     let rk = w.edge(K, 6, &[A2], T1, A, Gone, &[g2, gn]);
     agree_all(&w, &[]);
@@ -299,102 +288,9 @@ fn keeps_passes_over_a_fallen_finalize() {
     assert!(rd.applied.contains(&l), "{rd:?}");
 }
 
-// ---- The last admin ----
+// ---- Mutual removal ----
 
-// spec/permissions.md §1 (The last admin): an unmarked write taking the last standing admin
-// applies nowhere; marked, it applies.
-#[test]
-fn a_lowering_that_leaves_no_admin_applies_only_when_marked() {
-    let mut w = account();
-    let leave = w.edge(H, 3, &[], A, H, Gone, &[]);
-    agree_all(&w, &[]);
-    w.mark_adminless(leave);
-    agree_all(&w, &[]);
-}
-
-/// H pairs B, then leaves A (naming no remaining admin unless `rely`).
-fn leaver(rely: bool) -> (World, Id, Id) {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let leave = w.edge(H, 3, &[], A, H, Gone, &[gb]);
-    if rely {
-        w.rely(leave, B);
-    }
-    (w, gb, leave)
-}
-
-// spec/permissions.md §1 (The last admin): the rule reads the named holder's edge, so it is a
-// function of the held writes on it (controls `-any-edge`, `-timed`).
-#[test]
-fn the_last_admin_rule_is_a_function_of_the_held_writes() {
-    for rely in [false, true] {
-        let (w, gb, leave) = leaver(rely);
-        agree_all(&w, &[]);
-        agree(&w, &held(&[leave]));
-        agree(&w, &held(&[leave, gb]));
-    }
-}
-
-#[test]
-fn a_reader_judges_the_named_last_admin_rule_as_a_member() {
-    let (w, gb, leave) = leaver(true);
-    agree(&w, &held(&[leave]));
-    agree(&w, &held(&[gb, leave]));
-}
-
-#[test]
-fn a_leave_relying_on_an_admin_removed_earlier_is_not_applied() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[], A, N5, Admin, &[]);
-    w.edge(N5, 3, &[], A, B, Gone, &[gb]);
-    let leave = w.edge(H, 4, &[], A, H, Gone, &[gb]);
-    w.rely(leave, B);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn a_timed_admin_is_no_remaining_admin() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.set_until(gb, 8);
-    let leave = w.edge(H, 3, &[], A, H, Gone, &[gb]);
-    w.rely(leave, B);
-    agree_all(&w, &[]);
-    w.mark_adminless(leave);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn no_unmarked_schedule_leaves_a_thing_without_a_standing_admin() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let timed = w.edge(H, 2, &[], A, B, Admin, &[gb]);
-    w.set_until(timed, 20);
-    let leave = w.edge(H, 3, &[], A, H, Gone, &[]);
-    w.rely(leave, B);
-    agree_all(&w, &[]);
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let lb = w.edge(B, 3, &[], A, B, Gone, &[]);
-    w.rely(lb, H);
-    let lh = w.edge(H, 4, &[], A, H, Gone, &[gb]);
-    w.rely(lh, B);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn the_last_standing_admin_takes_an_until_only_when_marked() {
-    let mut w = account();
-    let timed = w.edge(H, 2, &[], A, H, Admin, &[]);
-    w.set_until(timed, 8);
-    agree_all(&w, &[]);
-    w.mark_adminless(timed);
-    agree_all(&w, &[]);
-}
-
-// spec/permissions.md §1 (The last admin): two admins removing each other, at every held
-// subset and trust.
+// Two admins removing each other, at every held subset and trust.
 #[test]
 fn two_nodes_removing_each_other_never_leave_no_admin() {
     let mut w = account();
@@ -407,42 +303,6 @@ fn two_nodes_removing_each_other_never_leave_no_admin() {
             agree(&w, &View { held: pick(h, &[gx, rh, rx]), leaves: None, trust: pick(t, &[rh, rx]) });
         }
     }
-}
-
-// spec/permissions.md §1: the path's last edge is a hop of the stated path; a descent of two steps
-// names its remaining admin (control `-last-any`).
-#[test]
-fn a_remaining_admin_by_a_descent_of_two_steps_is_named() {
-    let mut w = account();
-    let ga = w.edge(H, 1, &[A, T1], D1, A, Admin, &[]);
-    let gj = w.edge(H, 1, &[A], D1, J, Admin, &[]);
-    let gd = w.push(H, 1, &[A, ORG], T2, Kind::set(D1, Write));
-    let r = w.edge(H, 4, &[A], D1, J, Gone, &[]);
-    agree_all(&w, &[]);
-    agree(&w, &held(&[gj, gd, r]));
-    agree(&w, &held(&[ga, gj, gd, r]));
-    w.rely(r, T1);
-    agree_all(&w, &[]);
-    agree(&w, &held(&[gj, gd, r]));
-}
-
-// spec/permissions.md §5.1 step 4: a lowering whose drops take the remaining admin it relies on
-// is void (control `-remains-unkept`).
-#[test]
-fn a_lowering_whose_drops_take_its_remaining_admin_is_void() {
-    let mut w = minted_by(M);
-    w.push(M, 1, &[], A, Kind::set(H, Admin).until(20));
-    let gx = w.edge(M, 1, &[], A, X, Admin, &[]);
-    let leave = w.edge(M, 2, &[], A, M, Gone, &[]);
-    w.rely(leave, X);
-    let xb = w.edge(X, 3, &[], A, B, Admin, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.rely(r, B);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r]);
-    w.edit(r, |k| k.listing(BTreeMap::from([(A, Set::from([xb, gx]))])));
-    agree_all(&w, &[r]);
-    agree_all(&w, &[]);
 }
 
 // ---- Each lowering judged once: void, applied, drops that only grow ----
@@ -663,8 +523,7 @@ fn the_audit_puts_the_held_writes_in_question() {
     let (mut w, gx, gb) = paired();
     w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    let leave = w.edge(X, 1, &[], A, X, Gone, &[]);
-    w.rely(leave, H);
+    w.edge(X, 1, &[], A, X, Gone, &[]);
     agree_all(&w, &[]);
     agree_all(&w, &[r]);
 }
@@ -767,8 +626,7 @@ fn a_removal_of_two_hops_holds_against_a_lowering_above_its_signer() {
     let r3 = w.edge(B, 6, &[A], T1, A2, Gone, &[]);
     agree_all(&w, &[]);
     agree_all(&w, &[r, r3]);
-    let leave = w.edge(X, 5, &[A], T1, A, Gone, &[]);
-    w.mark_adminless(leave);
+    w.edge(X, 5, &[A], T1, A, Gone, &[]);
     agree_all(&w, &[r, r3]);
 }
 
@@ -793,8 +651,7 @@ fn an_honest_holder_leave_is_no_dispute() {
     let mut w = account();
     w.edge(H, 1, &[A], T1, A2, Admin, &[]);
     w.edge(K, 2, &[A2], T1, Z, Write, &[]);
-    let leave = w.edge(K, 3, &[A2], T1, A2, Gone, &[]);
-    w.rely(leave, A);
+    w.edge(K, 3, &[A2], T1, A2, Gone, &[]);
     agree_all(&w, &[]);
 }
 
@@ -990,15 +847,13 @@ fn a_commits_later_part_is_taken_before_the_restart_its_earlier_drops_start() {
 // are bad input (control `-refuse-shapes`).
 #[test]
 fn a_commit_of_several_writes_is_judged_part_by_part_its_own_path_last() {
-    for relies in [H, B] {
-        let (mut w, ..) = paired();
-        let ga = w.edge(H, 1, &[A, T1], D1, A, Admin, &[]);
-        w.commit(X, 5, &[], A, vec![Kind::set(X, Gone).relying(relies), Kind::set(B, Gone)]);
-        w.commit(X, 5, &[], A, vec![Kind::set(N5, Admin), Kind::set(N5, Write)]);
-        let rec = w.commit(H, 5, &[A], D1, vec![Kind::set(T1, Gone).relying(A).listing(w.cut(&[ga])), Kind::set(N5, Admin)]);
-        agree_all(&w, &[]);
-        agree_all(&w, &[rec[1]]);
-    }
+    let (mut w, ..) = paired();
+    let ga = w.edge(H, 1, &[A, T1], D1, A, Admin, &[]);
+    w.commit(X, 5, &[], A, vec![Kind::set(X, Gone), Kind::set(B, Gone)]);
+    w.commit(X, 5, &[], A, vec![Kind::set(N5, Admin), Kind::set(N5, Write)]);
+    let rec = w.commit(H, 5, &[A], D1, vec![Kind::set(T1, Gone).listing(w.cut(&[ga])), Kind::set(N5, Admin)]);
+    agree_all(&w, &[]);
+    agree_all(&w, &[rec[1]]);
 }
 
 const LK: Thing = 30;
@@ -1110,7 +965,7 @@ fn a_lowering_whose_drops_let_an_earlier_write_take_its_authority_changes_roles_
 fn a_grant_applying_nowhere_gives_a_lowering_its_verdict() {
     let mut w = account();
     w.push(H, 6, &[], A, Kind::set(N5, Gone));
-    w.commit(N5, 2, &[], A, vec![Kind::set(H, Admin).until(4), Kind::set(B, Admin).relying(Z)]);
+    w.commit(N5, 2, &[], A, vec![Kind::set(H, Admin).until(4), Kind::set(B, Admin)]);
     let b = w.push(B, 4, &[], A, Kind::set(H, Admin).listing(w.cut(&[1, 2])));
     w.push(H, 2, &[], A, Kind::set(N5, Admin).listing(w.cut(&[b])));
     agree_all(&w, &[]);
