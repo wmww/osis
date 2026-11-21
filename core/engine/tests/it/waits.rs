@@ -1022,11 +1022,12 @@ fn a_record_examines_only_what_awaits_it_spec_commits_4() {
 
 /// Peer 0 writes one commit on its `x` and on peer 1's `y` (0 a writer there by a grant); peer 2
 /// (a reader of `y`) holds all but `x`'s creation, the grant and the commit, then the commit: what it pends for
-/// there, then whether 2 reads 0's write on `y` once the grant came.
-fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
+/// there, then whether 2 reads 0's write on `y` once the grant came. `x`'s tid drawn below `y`'s
+/// or above it, so either part may be examined first.
+fn record_and_reach(x_below: bool) -> (Reason, Tid, Option<Value>) {
     use osis_base::Role;
     use osis_schema::core_types::Edge;
-    let mut lp = net(3, seed);
+    let mut lp = net(3, 0);
     let a = lp.peers[0].engine.me();
     sync(&mut lp, 0, 1);
     let y = new_thing(&mut lp, 1);
@@ -1038,7 +1039,18 @@ fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
     let grant = package_for(&mut lp, 1, 2, grant);
     sync(&mut lp, 1, 0);
     // 2 reads x too: else no sync ID it syncs carries the commit's part on x
-    let x = new_thing(&mut lp, 0);
+    let x = loop {
+        let admin = lp.peers[0].engine.dependents_admin();
+        let mut m = Mutation::new();
+        let x = lp.peers[0].engine.new_thing(&mut m, admin);
+        if (x < y) == x_below {
+            m.set(x, &REG, &s("new")).unwrap();
+            m.set(x, &osis_schema::core_types::RETENTION, &test_setting()).unwrap();
+            lp.peers[0].commit(m).unwrap();
+            lp.hold(x);
+            break x;
+        }
+    };
     let xc = creation_of(&mut lp, 0, 2, x);
     lp.peers[0].engine.grant(&x, &r, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
     let mut m = Mutation::new();
@@ -1074,10 +1086,10 @@ fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
 #[test]
 fn a_reach_wakes_a_commit_awaiting_a_record_too_spec_commits_4() {
     let mut firsts = std::collections::BTreeSet::new();
-    for seed in 0..16 {
-        let (r, x, got) = record_and_reach(seed);
+    for x_below in [false, true] {
+        let (r, x, got) = record_and_reach(x_below);
         firsts.insert(matches!(r, Reason::UnknownCreated(t) if t == x));
-        assert_eq!(got, Some(s("y")), "seed {seed}, first {r:?}: the grant lets y's part apply");
+        assert_eq!(got, Some(s("y")), "x below y {x_below}, first {r:?}: the grant lets y's part apply");
     }
     assert!(firsts.contains(&true), "a first reason naming x's record was reached: {firsts:?}");
 }
@@ -1298,14 +1310,17 @@ fn an_applied_commits_waiting_part_goes_with_its_carrier_spec_commits_4() {
 // spec/commits.md §4 (Unjudgeable; Order independence), spec/requirements.md Deterministic: every
 // commit given once, in any order, with a restart anywhere: a waiting part is examined when what
 // it awaits arrives (`lost_wakes`), and once all are held nothing pends and the node reads what
-// the writer reads (record chains away included).
+// the writer reads (record chains away included). The quick size (a property): seeds 0..24.
 #[test]
-fn every_part_given_once_joins_in_any_order_spec_commits_4() {
-    for seed in 0..24 {
+#[ignore = "property"]
+fn every_part_given_once_joins_in_any_order_plain_spec_commits_4() {
+    let name = "waits::every_part_given_once_joins_in_any_order_plain_spec_commits_4";
+    let replay = |_: u64| format!("cargo test -p osis-engine --test it -- --ignored --exact {name}");
+    osis_base::testenv::run_seeds(name, &(0..24).collect::<Vec<u64>>(), false, replay, |seed| {
         let (want, got, left) = once_each(seed, 4, 3);
         assert_eq!(got, want, "seed {seed}");
         assert_eq!(left, 0, "seed {seed}: nothing pends");
-    }
+    });
 }
 
 // spec/commits.md §4 (Unjudgeable: every arrival that applies examines again what waits for
