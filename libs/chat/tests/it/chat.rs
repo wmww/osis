@@ -44,7 +44,7 @@ fn create_is_one_whole_commit_spec_commits_2() {
     let db = node(1, &clock());
     let day = std::time::Duration::from_secs(86_400);
     let n = commits(&db);
-    let c = create(&db, &Options { name: "room".into(), purge: PurgeBy::Admin, edit: None, disappear: Some(day), retain_copies: false }, db.account_root()).unwrap();
+    let c = create(&db, &Options { name: "room".into(), purge_by: PurgeBy::Admin, edit: None, disappear: Some(day), retain_copies: false }, db.account_root()).unwrap();
     assert_eq!(commits(&db), n + 1, "one commit");
     let keys = |db: &Osis, c: Tid| db.engine(|e| e.get_typed(&c, &osis::internals::core_types::KEYS).unwrap().is_some());
     assert!(!keys(&db, c), "dependent until shared");
@@ -95,7 +95,7 @@ fn edit_modes_spec_permissions_5_2() {
     }
 }
 
-// notes/chat.md Edit, spec/permissions.md §6 (the right; a delta's retention names who may purge it): an edit is of one's own message only
+// notes/chat.md Edit, spec/permissions.md §6 (the right; a delta's purge-by names who may purge it): an edit is of one's own message only
 // (another's is `Invalid`); a writer the purge set does not let purge (`Admin`) edits all the same
 // and the old text stays; where it does (author or admin), the old text goes. Bob's node is
 // Alice's chat's writer, commits carried by hand.
@@ -104,8 +104,8 @@ fn edit_is_own_and_purges_as_the_set_lets_spec_permissions_6() {
     let c0 = clock();
     let (alice, bob) = (node(1, &c0), node(2, &c0));
     deliver(&bob, &alice);
-    for (purge, gone) in [(PurgeBy::Admin, false), (PurgeBy::AuthorOrAdmin, true)] {
-        let c = create(&alice, &Options { purge, ..Options::default() }, alice.account_root()).unwrap();
+    for (purge_by, gone) in [(PurgeBy::Admin, false), (PurgeBy::AuthorOrAdmin, true)] {
+        let c = create(&alice, &Options { purge_by, ..Options::default() }, alice.account_root()).unwrap();
         alice.grant(c, bob.me(), Role::Write, Default::default()).unwrap();
         bob.hold(c).unwrap();
         let hers = post(&alice, c, "hers");
@@ -115,7 +115,7 @@ fn edit_is_own_and_purges_as_the_set_lets_spec_permissions_6() {
         edit(&bob, c, his, "second").unwrap();
         assert_eq!(shown(&bob, c, his), ("second".into(), true));
         let v = versions(&bob, c, his);
-        assert_eq!(v[0].starts_with("Purged"), gone, "{purge:?}: {v:?}");
+        assert_eq!(v[0].starts_with("Purged"), gone, "{purge_by:?}: {v:?}");
     }
 }
 

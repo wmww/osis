@@ -69,7 +69,7 @@ db.at(c, schema::MSG).on_fire(move |db, ev| match ev { CommitEvent::Commit { com
 Codegen emits `Aspect<T>` for a value aspect and `Signal<T>` for a `~` declaration. History is not in the key: whether a write is kept is a run-time fact (the thing's history setting). Methods are bounded by traits on the key:
 - Value key (`Aspect`, `DynamicAspectKey`): `get`, `path`, `on_change`, `writes`, `on_write`, `edit_text`, `keep_alive`, and on `w.at(t, k)` the value writes (`set`, `remove`, `edit`, `overwrite`, path ops).
 - Signal key (`Signal`, `DynamicAspectKey`): `fired`, `on_fire`, and on `w.at(t, s)` only `fire(v)` (one whole value) and `purge`.
-- Both: `purge`, `retention` (who may purge the part), `commit.at`. A compile-fail doc test per crossing (`get`, `on_write`, `set` on a `Signal`; `fire`, `on_fire` on an `Aspect`).
+- Both: `purge`, `purge_by` (who may purge the part), `commit.at`. A compile-fail doc test per crossing (`get`, `on_write`, `set` on a `Signal`; `fire`, `on_fire` on an `Aspect`).
 
 Not at compile time:
 - `DynamicAspectKey` (generic tools, schema known at run time): reads answer by the rules, no error: a signal's `get` reads absent and its `writes` list nothing; a value aspect's `fired` lists nothing. A value write on a signal or `fire` on a value aspect is `Invalid` at `commit()`: a write never silently does nothing.

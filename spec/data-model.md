@@ -26,7 +26,7 @@
   - Core aspects are durable. None is a signal but an inbox's two (§9).
 - AKs of one name segment and no tid belong to the core schema (§9); no other schema declares one. Every other AK has two or more name segments or a tid segment: first-party AKs live in the osis repository (`contact:names.0`); an app's start with a tid its maker administers, by convention (nothing checks it).
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
-- A schema declares per AK: the type, the default purgeable-by (`admin`, `author_or_admin` or `writer`, spec/commits.md §5; `admin` unless declared), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `synthetic`, `guaranteed`, which are local: nothing on the wire enforces them. What history keeps is no schema's: it is each thing's setting (`retention^.0`). An ephemeral AK declares no purgeable-by, an ephemeral signal neither that nor expiry.
+- A schema declares per AK: the type, the default purge-by (`admin`, `author_or_admin` or `writer`, spec/commits.md §5; `admin` unless declared), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `synthetic`, `guaranteed`, which are local: nothing on the wire enforces them. What history keeps is no schema's: it is each thing's setting (`retention^.0`). An ephemeral AK declares no purge-by, an ephemeral signal neither that nor expiry.
 - A schema declares at most one AK per tid segment, name segments and version: keys differing only in markers are not both declared. Changing an aspect's markers takes a new version.
 
 ## 3. Types
@@ -133,7 +133,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - A **tag** is a thing with `holds.0` and `tag.0`: what it tags is what its `holds.0` references. `tag.0` marks it as one users see.
 
 ## 9. Core schema
-The core aspects form the core schema, evolving under spec/versioning.md. `schema/core.osis` (normative, in the DSL of notes/data-model.md) gives their exact types, flags and default retentions; `creation`, `signing_key`, `signature`, `kem_key`, `sealed` are spec/wire.md §3. Rules beyond the types:
+The core aspects form the core schema, evolving under spec/versioning.md. `schema/core.osis` (normative, in the DSL of notes/data-model.md) gives their exact types, flags and default purge-by; `creation`, `signing_key`, `signature`, `kem_key`, `sealed` are spec/wire.md §3. Rules beyond the types:
 
 - `roles.0` reads as the role timeline's roster (spec/permissions.md §5). `floor`: spec/permissions.md §2. `until` 0: a removal saying retain; `retain`: what a timed grant's `until` passing says (spec/permissions.md §2).
 - `addenda.0` is read per delta, never as state.

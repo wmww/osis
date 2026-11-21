@@ -938,7 +938,7 @@ fn make_beside(w: &mut World, admin: Tid, v: &str, x: Tid, by: osis_base::PurgeB
         let d = e.account_root().unwrap();
         let mut m = Mutation::new();
         let y = m.create(e.thing_record(admin, None));
-        m.set(y, &ak(), &Value::Str(v)).unwrap().retention(y, &ak(), by).unwrap();
+        m.set(y, &ak(), &Value::Str(v)).unwrap().purge_by(y, &ak(), by).unwrap();
         m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(y)) }).unwrap();
         m.set(x, &ak(), &Value::Str("x2".into())).unwrap();
         (y, e.commit(m).unwrap().unwrap())

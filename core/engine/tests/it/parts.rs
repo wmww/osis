@@ -267,7 +267,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let mut cb = CommitBuilder::new(Kind::Role, ts, author, osis_commit::Path::default(), Form::Commit);
     for t in [g, h] {
         let mut aw = AspectWrite::new(t, secrets.clone(), r.lo, r.hi, bytes.clone());
-        aw.retention = osis_commit::retention::write_retention(secrets.as_str(), None, None).unwrap();
+        aw.purge_by = osis_commit::retention::write_purge_by(secrets.as_str(), None, None).unwrap();
         cb.aspects.push(aw);
     }
     let forge_key = e.sign_forged(&mut cb);
@@ -289,7 +289,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
         let empty = encode_delta(&Delta { nonce: [8; 16], fragment: f }, &writer_ctx(Form::Commit, Kind::Role, ts, author, lr.lo, lr.hi), None).unwrap();
         for (t, a, lo, hi, d) in [(g, &lab, lr.lo, lr.hi, &empty), (h, &secrets, r.lo, r.hi, &bytes)] {
             let mut aw = AspectWrite::new(t, a.clone(), lo, hi, d.clone());
-            aw.retention = osis_commit::retention::write_retention(a.as_str(), None, None).unwrap();
+            aw.purge_by = osis_commit::retention::write_purge_by(a.as_str(), None, None).unwrap();
             cb.aspects.push(aw);
         }
         let forge_key = lp.peers[0].engine.sign_forged(&mut cb);

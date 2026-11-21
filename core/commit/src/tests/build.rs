@@ -34,7 +34,7 @@ fn role() -> CommitBuilder {
     let at = ts(1_000_000);
     let mut b = CommitBuilder::new(Kind::Role, at, t(1), crate::Path::default(), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
-    a.retention = retention::ROLE_RETENTION;
+    a.purge_by = retention::ROLE_PURGE_BY;
     b.aspects.push(a);
     b
 }
@@ -54,7 +54,7 @@ fn build(b: CommitBuilder, sink: &mut MemoryBlobs) -> Result<Built, Error> {
 }
 
 // spec/commits.md §1, §5, spec/wire.md §4: a built content commit verifies; its delete keys follow the
-// untyped `admin` retention (level 1, one per thing).
+// untyped `admin` purge-by (level 1, one per thing).
 #[test]
 fn build_content() {
     let mut sink = MemoryBlobs::default();
@@ -82,7 +82,7 @@ fn build_role_commit_and_refusals() {
         encode_delta(&Delta { nonce: [nonce; 16], fragment }, &writer_ctx(Form::Commit, Kind::Role, at, t(1), 1, 2), None).unwrap()
     };
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, roles(1));
-    a.retention = retention::ROLE_RETENTION;
+    a.purge_by = retention::ROLE_PURGE_BY;
     b.aspects.push(a);
     let mut sink = MemoryBlobs::default();
     let built = build(b.clone(), &mut sink).unwrap();
@@ -108,7 +108,7 @@ fn list_overflow_links() {
     let mut b = content(2000);
     // a level-2 key listed, to which the list blobs do not commit
     for a in &mut b.aspects {
-        a.retention = PurgeBy::AuthorOrAdmin;
+        a.purge_by = PurgeBy::AuthorOrAdmin;
     }
     let built = build(b, &mut sink).unwrap();
     let h = &built.commit.header;
@@ -219,11 +219,11 @@ fn small_linked_list_rejected() {
 fn mixed() -> CommitBlob {
     let mut b = content(6);
     for (i, a) in b.aspects.iter_mut().enumerate() {
-        // one thing, so the key sets differ only by retention
+        // one thing, so the key sets differ only by purge-by
         a.tid = t(3);
         a.ak = Ak::new(format!("app:f{i}.0")).unwrap();
         if i % 2 == 1 {
-            a.retention = PurgeBy::Writer;
+            a.purge_by = PurgeBy::Writer;
         }
     }
     b.expires = Some(9_000_000_000);
@@ -278,7 +278,7 @@ fn sections_per_reader() {
     let mut lied = env.clone();
     lied.sections[0].ais = vec![0];
     assert!(lied.open(|_| vec![secret(&1)]).is_err());
-    // the prefix groups: the two key sets of `mixed` (alternating retention), by first aspect
+    // the prefix groups: the two key sets of `mixed` (alternating purge-by), by first aspect
     let groups = prefix_groups(&c.header, env.ais()).unwrap();
     assert_eq!(groups.len(), 2);
     assert_eq!(groups, prefix_groups(&c.header, [0, 1]).unwrap());
@@ -423,7 +423,7 @@ fn relay_only_delta_never_pages_spec_commits_2() {
         let delta = osis_crdt::encode_snapshot(&s, &cx, Some(pages)).unwrap();
         let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, t(1), crate::Path::through(t(2)), Form::Commit);
         let mut a = AspectWrite::new(t(3), Ak::new("app:w.0").unwrap(), 0, 0, delta);
-        a.retention = crate::retention::EPHEMERAL_RETENTION;
+        a.purge_by = crate::retention::EPHEMERAL_PURGE_BY;
         b.aspects.push(a);
         b.ephemeral = Some(if relay { EphClass::Relay } else { EphClass::Plain });
         build(b, &mut MemoryBlobs::default()).unwrap().commit

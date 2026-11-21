@@ -111,14 +111,14 @@ pub const CREATIONS: [(ThingId, RecordLink, NodeId); 6] = [
 pub const CREATION_ID: CommitId = 2_000_000;
 
 /// Thing `t`'s creation commit (one `created.0` part), by `author` at `ts`.
-pub fn creation(t: ThingId, link: RecordLink, author: NodeId, ts: u64, retention: Retention, expires: Option<u64>) -> Commit {
-    let part = Part { thing: t, aspect: Aspect::CREATED, retention, body: Body::Held(Delta::Created(link)), stripped: Default::default(), replaces: None };
+pub fn creation(t: ThingId, link: RecordLink, author: NodeId, ts: u64, purge_by: PurgeBy, expires: Option<u64>) -> Commit {
+    let part = Part { thing: t, aspect: Aspect::CREATED, purge_by, body: Body::Held(Delta::Created(link)), stripped: Default::default(), replaces: None };
     Commit { id: CREATION_ID + t, signer: author, acting: author, ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
 /// Every `CREATIONS` thing's creation, an hour before `START`, durable and purgeable by admins.
 pub fn creations() -> Vec<Commit> {
-    CREATIONS.iter().enumerate().map(|(k, &(t, link, author))| creation(t, link, author, (START - HOUR) * MS + k as u64, Retention::ROLE, None)).collect()
+    CREATIONS.iter().enumerate().map(|(k, &(t, link, author))| creation(t, link, author, (START - HOUR) * MS + k as u64, PurgeBy::Admin, None)).collect()
 }
 
 /// Whether `c` creates a thing.
@@ -131,9 +131,6 @@ pub const CONTENT: [(ThingId, NodeId); 4] = [(10, 0), (11, 1), (12, 2), (13, 3)]
 pub const TARGETS: [(ThingId, NodeId); 6] = [(10, 0), (11, 1), (12, 2), (13, 3), (ACCOUNT, 2), (LINK_K, 0)];
 pub const HOLDERS: [NodeId; 7] = [0, 1, 2, 3, ACCOUNT, LINK_K, LINK_L];
 pub const START: u64 = 1_000_000_000;
-
-/// Who may purge a content write: the three options content has (Tess's decision 2, notes/engine-retention-history.md).
-pub const RETENTIONS: [Retention; 3] = [Retention::PLAIN, Retention::WRITER, Retention::ADMIN];
 
 /// The history options a setting's entry draws from, at wall `now`: none, kept an hour or six
 /// after replaced, until an hour from now, for good (twice as often), both bounds, purge on
@@ -204,11 +201,11 @@ fn newest_entry(commits: &[Commit], thing: ThingId, aspect: Aspect, ts: u64) -> 
 }
 
 fn role_part(thing: ThingId, e: EdgeWrite) -> Part {
-    Part { thing, aspect: Aspect::ROLES, retention: Retention::ROLE, body: Body::Held(Delta::Edge(e)), stripped: Default::default(), replaces: None }
+    Part { thing, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body: Body::Held(Delta::Edge(e)), stripped: Default::default(), replaces: None }
 }
 
-fn plain_part(thing: ThingId, aspect: Aspect, retention: Retention, d: Delta) -> Part {
-    Part { thing, aspect, retention, body: Body::Held(d), stripped: Default::default(), replaces: None }
+fn plain_part(thing: ThingId, aspect: Aspect, purge_by: PurgeBy, d: Delta) -> Part {
+    Part { thing, aspect, purge_by, body: Body::Held(d), stripped: Default::default(), replaces: None }
 }
 
 /// A random history of `n` commits on the `CREATIONS` things, after their creations (plus the
@@ -229,9 +226,9 @@ pub fn history(seed: u64, n: usize) -> Held {
     // the things' creations: a destruction (expiry, purge) needs a purgeable one
     for (k, &(t, link, author)) in CREATIONS.iter().enumerate() {
         let ts = (START - HOUR) * MS + k as u64;
-        let retention = if r.chance(50) { Retention::PLAIN } else { Retention::ROLE };
+        let purge_by = if r.chance(50) { PurgeBy::AuthorOrAdmin } else { PurgeBy::Admin };
         let expires = r.chance(4).then(|| START + (2 + r.below(9)) * HOUR);
-        commits.push(creation(t, link, author, ts, retention, expires));
+        commits.push(creation(t, link, author, ts, purge_by, expires));
     }
     let mut new_id = |r: &mut Rng| loop {
         let id = r.below(1_000_000) as CommitId + 1;
@@ -243,7 +240,7 @@ pub fn history(seed: u64, n: usize) -> Held {
     for (k, &(t, chief)) in CONTENT.iter().enumerate() {
         if r.chance(40) {
             let d = Delta::Retention(setting(&mut r, START));
-            let part = plain_part(t, Aspect::RETENTION, Retention::ADMIN, d);
+            let part = plain_part(t, Aspect::RETENTION, PurgeBy::Admin, d);
             let id = new_id(&mut r);
             commits.push(Commit { id, signer: chief, acting: chief, ts: (START - HOUR / 2) * MS + k as u64, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] });
         }
@@ -352,7 +349,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let o = evaluate(&h);
             // a snapshot carries writes of expiring deltas value-less (spec/crdt.md §8)
             let f = snapshot_state(&h, &o, thing, aspect);
-            Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, Retention::WRITER, Delta::Writes(f))], ..base(id, author, ts) }
+            Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, PurgeBy::Writer, Delta::Writes(f))], ..base(id, author, ts) }
         } else if roll < 31 && !commits.is_empty() {
             // a creation's purge destroys the thing: drawn less often
             let mut target = commits[r.below(commits.len() as u64) as usize].clone();
@@ -384,7 +381,7 @@ pub fn history(seed: u64, n: usize) -> Held {
                 _ if !granted.is_empty() && r.chance(60) => r.pick(&granted),
                 _ => author,
             };
-            Commit { purge: vec![item], parts: vec![plain_part(tp.thing, PURGE, Retention::PLAIN, Delta::Writes(ws))], ..base(id, author, ts) }
+            Commit { purge: vec![item], parts: vec![plain_part(tp.thing, PURGE, PurgeBy::AuthorOrAdmin, Delta::Writes(ws))], ..base(id, author, ts) }
         } else if roll < 39 {
             // a `retention^.0` setting: the chief's mostly (others' are invalid unless granted
             // admin), stamped now or up to an hour back (late: before commits already written)
@@ -394,7 +391,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let held = held_settings(&mut r, &commits, thing, ts);
             let held: Vec<(u64, &Setting)> = held.iter().map(|(w, x)| (*w, x)).collect();
             let d = Delta::Retention(setting(&mut r, w).written_after(&held, ts));
-            Commit { parts: vec![plain_part(thing, Aspect::RETENTION, Retention::ADMIN, d)], ..base(id, author, ts) }
+            Commit { parts: vec![plain_part(thing, Aspect::RETENTION, PurgeBy::Admin, d)], ..base(id, author, ts) }
         } else {
             let undone = (roll < 48)
                 .then(|| {
@@ -419,14 +416,14 @@ pub fn history(seed: u64, n: usize) -> Held {
                         _ => None,
                     }));
                     let ws = if aspect.signal { set(ts, id, r.below(5) as i64) } else { content(&mut r, aspect, ts, id, &prior) };
-                    let retention = r.pick(&RETENTIONS);
+                    let purge_by = r.pick(&PurgeBy::ALL);
                     let mut expires = r.chance(15).then(|| w + (1 + r.below(4)) * HOUR);
                     if follows {
                         expires = newest_entry(&commits, thing, aspect, ts).and_then(|e| e.expires).map(|d| w + d).or(expires);
                     }
                     // node 2 acts for its account on the account's thing half the time
                     let acting = if thing == 12 && author == 2 && r.chance(50) { ACCOUNT } else { author };
-                    Commit { expires, acting, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(ws))], ..base(id, author, ts) }
+                    Commit { expires, acting, parts: vec![plain_part(thing, aspect, purge_by, Delta::Writes(ws))], ..base(id, author, ts) }
                 }
             }
         };

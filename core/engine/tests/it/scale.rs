@@ -860,7 +860,7 @@ fn judging_every_body_reads_each_once_spec_commits_5() {
 /// rise)) at the mint admin.
 fn purge_rejudge(n: usize) -> [Work; 3] {
     use osis_schema::{Aspect, StaticSchema};
-    static S: StaticSchema = StaticSchema::new("purgecost.osis", "revision 1; purgeable_by(author, admin) aspect l:msg.0: string;\n");
+    static S: StaticSchema = StaticSchema::new("purgecost.osis", "revision 1; purge_by(author, admin) aspect l:msg.0: string;\n");
     const MSG: Aspect<Value> = Aspect::new("l:msg.0", &S);
     let r = n / 10;
     let mut lp = net(4, 0);
@@ -974,7 +974,7 @@ fn grant_is_flat_in_content_commits() {
     assert_eq!(b[1].n("rebuild"), 0, "open rebuilds nothing");
 }
 
-static LONG: osis_schema::StaticSchema = osis_schema::StaticSchema::new("long.osis", "revision 1; purgeable_by(author, admin) aspect l:msg.0: string;\n");
+static LONG: osis_schema::StaticSchema = osis_schema::StaticSchema::new("long.osis", "revision 1; purge_by(author, admin) aspect l:msg.0: string;\n");
 const MSGS: osis_schema::Aspect<Value> = osis_schema::Aspect::new("l:msg.0", &LONG);
 
 /// One aspect kept forever, n 200-byte writes by 4 writers (the mint admin and 3 granted write),

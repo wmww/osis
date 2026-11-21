@@ -1,4 +1,4 @@
-//! A parsed schema (spec/data-model.md §2, §10): types, aspects with retention, expiry and flags;
+//! A parsed schema (spec/data-model.md §2, §10): types, aspects with purge-by, expiry and flags;
 //! expansion of named types; validation.
 
 use crate::types::{EnumType, Field, StructType, Type, is_reserved_name};
@@ -32,7 +32,7 @@ pub struct TypeDef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AspectDef {
     pub ty: Type,
-    pub retention: PurgeBy,
+    pub purge_by: PurgeBy,
     /// Default expiry, ms after the write (spec/commits.md §6).
     pub expires: Option<u64>,
     pub flags: BTreeSet<Flag>,
@@ -76,7 +76,7 @@ impl History {
 /// Per-AK write defaults.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct AspectDefaults {
-    pub retention: PurgeBy,
+    pub purge_by: PurgeBy,
     pub expires: Option<u64>,
 }
 
@@ -100,7 +100,7 @@ impl Schema {
 
     /// Write defaults for an AK this schema declares.
     pub fn defaults(&self, ak: &str) -> Option<AspectDefaults> {
-        self.aspects.get(ak).map(|a| AspectDefaults { retention: a.retention, expires: a.expires })
+        self.aspects.get(ak).map(|a| AspectDefaults { purge_by: a.purge_by, expires: a.expires })
     }
 
     /// One expansion step of a named type (standard or declared): a declared one without
@@ -234,8 +234,8 @@ impl Schema {
                 bad(&item, "core aspects are durable and hold a value".into());
             }
             // an ephemeral write is purgeable by its writer (spec/commits.md §2)
-            if markers.ephemeral && def.retention != PurgeBy::default() {
-                bad(&item, "an ephemeral aspect takes no purgeable_by".into());
+            if markers.ephemeral && def.purge_by != PurgeBy::default() {
+                bad(&item, "an ephemeral aspect takes no purge_by".into());
             }
             // an ephemeral signal is held by nobody
             if markers.signal && markers.ephemeral && def.expires.is_some() {

@@ -39,7 +39,7 @@ pub(crate) fn four() -> (World, Tid, SyncId) {
 fn write(w: &mut World, i: usize, t: Tid, ak: &Ak, by: PurgeBy) -> CommitId {
     w.write(i, |e| {
         let mut m = Mutation::new();
-        m.set(t, ak, &Value::Str(format!("by {i}"))).unwrap().retention(t, ak, by).unwrap();
+        m.set(t, ak, &Value::Str(format!("by {i}"))).unwrap().purge_by(t, ak, by).unwrap();
         e.commit(m).unwrap().unwrap()
     })
 }
@@ -73,7 +73,7 @@ fn gone_at_unread(w: &mut World, s: &SyncId, held: &[BlobId]) -> bool {
 
 // spec/sync-ids.md §6 (Delete), spec/crypto.md §7: a writer's purge of its own write reaches a
 // node keeping S unread with no admin connected: the entry is deleted there by the writer's level
-// keys, and stays deleted across restarts. The commit's two deltas under different retention
+// keys, and stays deleted across restarts. The commit's two deltas under different purge-by
 // frame two commitment groups (levels 1, 2 and levels 1, 2, 3); the groups the writer signs for
 // are those the blob's prefix bears, and its level-2 key alone covers both. (Level 3 by a writer
 // that is not the author: `a_writer_deletes_only_what_it_may_purge_spec_sync_judgement_3`.)
@@ -83,8 +83,8 @@ fn a_writers_purge_of_its_own_write_deletes_it_at_a_node_keeping_s_unread_spec_s
     let other = Ak::new("u:n.0").unwrap();
     let c = w.write(2, |e| {
         let mut m = Mutation::new();
-        m.set(t, &value_ak(), &Value::Str("a".into())).unwrap().retention(t, &value_ak(), PurgeBy::AuthorOrAdmin).unwrap();
-        m.set(t, &other, &Value::Str("b".into())).unwrap().retention(t, &other, PurgeBy::Writer).unwrap();
+        m.set(t, &value_ak(), &Value::Str("a".into())).unwrap().purge_by(t, &value_ak(), PurgeBy::AuthorOrAdmin).unwrap();
+        m.set(t, &other, &Value::Str("b".into())).unwrap().purge_by(t, &other, PurgeBy::Writer).unwrap();
         e.commit(m).unwrap().unwrap()
     });
     w.run();
@@ -282,8 +282,8 @@ fn two_parts(w: &mut World, t: Tid, marker: &str) -> CommitId {
     let other = Ak::new("u:n.0").unwrap();
     w.write(2, |e| {
         let mut m = Mutation::new();
-        m.set(t, &value_ak(), &Value::Str(marker.into())).unwrap().retention(t, &value_ak(), PurgeBy::Writer).unwrap();
-        m.set(t, &other, &Value::Str("kept".into())).unwrap().retention(t, &other, PurgeBy::Writer).unwrap();
+        m.set(t, &value_ak(), &Value::Str(marker.into())).unwrap().purge_by(t, &value_ak(), PurgeBy::Writer).unwrap();
+        m.set(t, &other, &Value::Str("kept".into())).unwrap().purge_by(t, &other, PurgeBy::Writer).unwrap();
         e.commit(m).unwrap().unwrap()
     })
 }
@@ -346,7 +346,7 @@ fn build_replaced() -> (World, (Tid, CommitId, String)) {
     let by = PurgeBy::Writer;
     let c = w.write(0, |e| {
         let mut m = Mutation::new();
-        m.set(t, &value_ak(), &Value::Str(marker.clone())).unwrap().retention(t, &value_ak(), by).unwrap();
+        m.set(t, &value_ak(), &Value::Str(marker.clone())).unwrap().purge_by(t, &value_ak(), by).unwrap();
         m.set(t, &Ak::new("u:n.0").unwrap(), &Value::Str("kept".into())).unwrap();
         e.commit(m).unwrap().unwrap()
     });
@@ -354,7 +354,7 @@ fn build_replaced() -> (World, (Tid, CommitId, String)) {
     w.advance(10);
     w.write(0, |e| {
         let mut m = Mutation::new();
-        m.set(t, &value_ak(), &Value::Str("final".into())).unwrap().retention(t, &value_ak(), by).unwrap();
+        m.set(t, &value_ak(), &Value::Str("final".into())).unwrap().purge_by(t, &value_ak(), by).unwrap();
         e.commit(m).unwrap().unwrap()
     });
     w.run();
@@ -526,7 +526,7 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
     let x = w.write(0, |e| {
         let mut m = Mutation::new();
         for t in [a, b, c] {
-            m.set(t, &value_ak(), &Value::Str("v".into())).unwrap().retention(t, &value_ak(), by).unwrap();
+            m.set(t, &value_ak(), &Value::Str("v".into())).unwrap().purge_by(t, &value_ak(), by).unwrap();
         }
         e.commit(m).unwrap().unwrap()
     });

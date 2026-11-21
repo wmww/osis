@@ -1337,7 +1337,7 @@ pub fn rebuild(w: &World, keep: &[Id]) -> (World, BTreeMap<Id, Id>) {
         };
         let j = out.put(c.key, c.signer, c.ts, &c.path, c.on, kind, &c.direct);
         out.authored(j, c.pa);
-        out.commits[j].ret = c.ret;
+        out.commits[j].purge_by = c.purge_by;
         out.commits[j].own = c.own;
     }
     // a commit's parts kept stay one commit

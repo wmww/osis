@@ -359,13 +359,13 @@ pub(crate) fn walk_source<'r>(valid_on: &dyn Fn(&CommitId) -> bool, resets: &dyn
 }
 
 /// What delta `a` of a commit with view `v` is judged by in a purge (spec/crdt.md §8 `Facts`):
-/// its purgeable-by, and its purge author where that is not its signer.
+/// its purge-by, and its purge author where that is not its signer.
 pub(crate) fn header_fact(v: &crate::engine::View, a: &osis_commit::AspectEntry) -> osis_crdt::Fact {
-    osis_crdt::Fact { by: a.retention, purge_author: v.other_purge_author() }
+    osis_crdt::Fact { by: a.purge_by, purge_author: v.other_purge_author() }
 }
 
 /// What a snapshot's `Facts` (with its `Absorbed` signers, `absorbed`) state of carried commit
-/// `k` (spec/crdt.md §8): its purgeable-by and its purge author, the signer where the fact names
+/// `k` (spec/crdt.md §8): its purge-by and its purge author, the signer where the fact names
 /// none (a session's tid; a commit-form commit's `Absorbed` signer). `None` where the snapshot
 /// names no signer (a commit-form commit it does not list as absorbed): it states nothing of it.
 pub(crate) fn stated(facts: &osis_crdt::Facts, absorbed: &dyn Fn(&CommitId) -> Option<Tid>, k: &(Ts, osis_crdt::Source)) -> Option<(osis_base::PurgeBy, Tid)> {
@@ -647,7 +647,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
             Some((bf, babs)) => both.iter().all(|k| stated(bf, &|x| babs.get(x).copied(), k) == cover(k)),
             None => {
                 let k = (h.ts, h.form.own_source(h.signer, *c));
-                !both.contains(&k) || h.aspects.get(cai).is_none_or(|a| cover(&k) == Some((a.retention, m.view.purge_author)))
+                !both.contains(&k) || h.aspects.get(cai).is_none_or(|a| cover(&k) == Some((a.purge_by, m.view.purge_author)))
             }
         };
         if held && !same {
@@ -989,9 +989,9 @@ pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts
     frontiers.retain(&listed);
     absorbed.retain(|c, _| listed.contains(&osis_crdt::Source::commit(*c)));
     let facts = facts_of(tx, &tid, &ak, &st)?;
-    let retention = osis_commit::retention::snapshot_retention(ak.as_str());
+    let purge_by = osis_commit::retention::snapshot_purge_by(ak.as_str());
     let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, rotation: None, reseal: None, own_cover, adminless: false };
-    let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires, replaces: None, original_floor: 0, frontiers: Some((frontiers, absorbed, facts)), chunks: Vec::new() };
+    let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, purge_by: Some(purge_by), expires, replaces: None, original_floor: 0, frontiers: Some((frontiers, absorbed, facts)), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d])
 }
 

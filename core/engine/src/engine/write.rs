@@ -1,6 +1,6 @@
 //! Writing (spec/crdt.md §2.3, §4.5, §9; spec/commits.md §1–§3, §5, §6): a `Mutation` collects
 //! ops across things; `Engine::commit` resolves them against local state (one delta per
-//! aspect, the net effect), takes counters, fills retention and expiry from the schema, pages
+//! aspect, the net effect), takes counters, fills purge-by and expiry from the schema, pages
 //! large deltas, checks this node's role on every touched thing, signs, and applies the commit
 //! locally in the same store transaction that reserves its counters, so nothing signed leaves
 //! the node before its counters are durable.
@@ -25,7 +25,7 @@ use std::sync::Arc;
 pub(crate) struct AspectMut {
     pub ops: Vec<PathOp>,
     pub schema: Option<Arc<Schema>>,
-    pub retention: Option<PurgeBy>,
+    pub purge_by: Option<PurgeBy>,
     pub expires: Option<u64>,
     /// The key's default expiry (ms after the write): ephemeral writes fill it themselves.
     pub default_expiry: Option<u64>,
@@ -167,15 +167,15 @@ impl Mutation {
         self.op(tid, key, PathOp { path: Vec::new(), op: Op::RemoveAspect })
     }
 
-    /// Resets the hidden records of `(tid, ak)` (`Fragment::sweep`); the schema gives its retention.
+    /// Resets the hidden records of `(tid, ak)` (`Fragment::sweep`); the schema gives its purge-by.
     pub(crate) fn sweep(&mut self, tid: Tid, ak: Ak, schema: Option<Arc<Schema>>) {
         self.aspects.entry((tid, ak.clone())).or_default().schema = schema;
         self.sweeps.insert((tid, ak));
     }
 
-    /// Retention for this aspect's delta, instead of the schema default (spec/commits.md §5).
-    pub fn retention<K: RawKey>(&mut self, tid: Tid, key: &K, r: PurgeBy) -> Result<&mut Self> {
-        self.entry(tid, key)?.retention = Some(r);
+    /// Purge-by for this aspect's delta, instead of the schema default (spec/commits.md §5).
+    pub fn purge_by<K: RawKey>(&mut self, tid: Tid, key: &K, r: PurgeBy) -> Result<&mut Self> {
+        self.entry(tid, key)?.purge_by = Some(r);
         Ok(self)
     }
 
@@ -758,7 +758,7 @@ pub(crate) struct Resolved {
     pub lo: u64,
     pub hi: u64,
     pub schema: Option<Arc<Schema>>,
-    pub retention: Option<PurgeBy>,
+    pub purge_by: Option<PurgeBy>,
     pub expires: Option<u64>,
     /// The fire this delta replaces (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
@@ -807,7 +807,7 @@ pub(crate) fn draw_blind(rng: &mut dyn osis_crypto::CryptoRngCore) -> [u8; 16] {
     b
 }
 
-/// Retention and expiry of one aspect's delta in a commit of `kind` at `ts` (spec/commits.md §5,
+/// Purge-by and expiry of one aspect's delta in a commit of `kind` at `ts` (spec/commits.md §5,
 /// §6): the given ones, else the expiry the thing's newest valid setting held gives the AK, the
 /// schema's defaults, the untyped default. A replace of a fire the setting makes `final` is
 /// refused.
@@ -815,7 +815,7 @@ pub(crate) fn draw_blind(rng: &mut dyn osis_crypto::CryptoRngCore) -> [u8; 16] {
 pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, ak: &Ak, schema: Option<&Schema>, replaces: bool, r: Option<PurgeBy>, mut e: Option<u64>) -> Result<(PurgeBy, Option<u64>)> {
     let defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     // a hostile test writer writes what it is told
-    if kind == Kind::Content && !core.skip_writer_rules && !ak.ephemeral() && osis_commit::retention::fixed_retention(ak.as_str()).is_none()
+    if kind == Kind::Content && !core.skip_writer_rules && !ak.ephemeral() && osis_commit::retention::fixed_purge_by(ak.as_str()).is_none()
         && let Some(s) = crate::apply::validity::setting_now(core, tid)
         && let Some(q) = s.entry(ak)
     {
@@ -826,17 +826,17 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, a
             e = q.expires_at(ts.wall_ms().0).ok_or(Error::Misuse("expiry out of range"))?;
         }
     }
-    let retention = if memory || ak.ephemeral() {
+    let purge_by = if memory || ak.ephemeral() {
         // `writer` (spec/commits.md §2)
-        osis_commit::retention::EPHEMERAL_RETENTION
+        osis_commit::retention::EPHEMERAL_PURGE_BY
     } else {
         match kind {
             // a compaction snapshot's own (`Engine::snapshot`), never from schema defaults
-            Kind::ContentSnapshot | Kind::RoleSnapshot => r.unwrap_or_else(|| osis_commit::retention::snapshot_retention(ak.as_str())),
-            // a hostile test writer writes the retention it is told
+            Kind::ContentSnapshot | Kind::RoleSnapshot => r.unwrap_or_else(|| osis_commit::retention::snapshot_purge_by(ak.as_str())),
+            // a hostile test writer writes the purge-by it is told
             _ => match r.filter(|_| core.skip_writer_rules) {
                 Some(r) => r,
-                None => osis_commit::retention::write_retention(ak.as_str(), defaults.as_ref(), r)?,
+                None => osis_commit::retention::write_purge_by(ak.as_str(), defaults.as_ref(), r)?,
             },
         }
     };
@@ -846,22 +846,22 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, a
         Kind::ContentSnapshot => e,
         _ => None,
     };
-    Ok((retention, expires))
+    Ok((purge_by, expires))
 }
 
-/// Blob framing of one aspect's delta in a commit of `plan` with retention `retention`
+/// Blob framing of one aspect's delta in a commit of `plan` with purge-by `purge_by`
 /// (spec/crypto.md §7): its thing's dedup secret, the commit's expiry, the delete keys the
-/// retention calls for, of the class of `memory` (a memory commit's blobs are held in memory,
+/// purge-by calls for, of the class of `memory` (a memory commit's blobs are held in memory,
 /// spec/wire.md §5). `published`: [`super::secrets::published_keys`] of the commit's things;
 /// `keys`: the commit's [`super::secrets::KeyCache`].
-pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, keys: &super::secrets::KeyCache, tid: &Tid, retention: &PurgeBy) -> Result<Framing> {
+pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, keys: &super::secrets::KeyCache, tid: &Tid, purge_by: &PurgeBy) -> Result<Framing> {
     // a role is of use once its delete keys are here (spec/crypto.md §7): until then this node
-    // writes nothing on the thing, whatever the delta's retention (`secrets::usable_role`)
+    // writes nothing on the thing, whatever the delta's purge-by (`secrets::usable_role`)
     if !super::secrets::holds_listed_keys(core, &plan.creates, published, keys, tid) {
         return Err(Error::Permission { tid: *tid, needs: Role::Write });
     }
     let secrets = CommitSecrets { core, purge_author: plan.actor, created: &plan.creates, published, keys };
-    let keys = osis_commit::delete_keys(&secrets, tid, retention)?;
+    let keys = osis_commit::delete_keys(&secrets, tid, purge_by)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
     let class = if memory { osis_blob::Class::Ephemeral } else { osis_blob::Class::Durable };
     Ok(Framing { thing: *tid, dedup, expiry: plan.expires.map(WallMs), class, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
@@ -876,7 +876,7 @@ fn place_requests(aspects: &mut Vec<((Tid, Ak), AspectMut)>, expires: Option<u64
     }
 }
 
-/// The one expiry of a commit of these deltas (`entries`: thing, AK, retention, expiry; spec/commits.md
+/// The one expiry of a commit of these deltas (`entries`: thing, AK, purge-by, expiry; spec/commits.md
 /// §6), or `Clash` naming what cannot share a commit: different expiries.
 /// `purge.0` takes no part in the expiry: in a commit that expires it is left out (`place_requests`).
 /// `way`: what the caller can do about it.
@@ -903,7 +903,7 @@ fn one_commit(entries: &[(Tid, &Ak, &PurgeBy, Option<u64>)], way: &str) -> Resul
 pub(crate) fn build_one(tx: &mut Tx<'_>, mut plan: CommitPlan, mut deltas: Vec<Resolved>) -> Result<CommitId> {
     let mut settled = Vec::with_capacity(deltas.len());
     for d in &deltas {
-        let (r, _) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.retention, d.expires)?;
+        let (r, _) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.purge_by, d.expires)?;
         let (_, e) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, None, d.replaces.is_some(), Some(r), d.expires)?;
         settled.push((r, e));
     }
@@ -911,7 +911,7 @@ pub(crate) fn build_one(tx: &mut Tx<'_>, mut plan: CommitPlan, mut deltas: Vec<R
     plan.expires = one_commit(&entries, "An undo is one commit, so this cannot be undone while both stand")?;
     plan.restores = true;
     for (d, (r, e)) in deltas.iter_mut().zip(settled) {
-        (d.retention, d.expires) = (Some(r), e);
+        (d.purge_by, d.expires) = (Some(r), e);
     }
     build_and_apply(tx, plan, deltas)
 }
@@ -979,12 +979,12 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     }
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
-        let (retention, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.retention, d.expires)?;
+        let (purge_by, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, d.schema.as_deref(), d.replaces.is_some(), d.purge_by, d.expires)?;
         // one expiry per commit (spec/commits.md §6): `one_commit` saw to it
         if expires != plan.expires && !plan.restores {
             return Err(Error::Misuse("a commit's deltas share one expiry"));
         }
-        let framing = framing_for(tx.core, tx.txn.is_memory(), &plan, &published, &keys, &d.tid, &retention)?;
+        let framing = framing_for(tx.core, tx.txn.is_memory(), &plan, &published, &keys, &d.tid, &purge_by)?;
         let cx = writer_ctx(plan.form, plan.kind, plan.ts, node, d.lo, d.hi);
         let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
@@ -1013,7 +1013,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         }
         // hostile test authors only (`Engine::commit_forged`): the header hashes what is sent
         let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
-        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, replaces: d.replaces, original_floor: d.original_floor });
+        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, purge_by, replaces: d.replaces, original_floor: d.original_floor });
     }
     let stated = stated_paths(tx.core, &plan, &writes, &edges)?;
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, osis_commit::Path::default(), plan.form);
@@ -1322,7 +1322,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
                     am.original_floor = f;
                 }
             }
-            settle(tx.core, memory, kind, ts, &tid, &ak, am.schema.as_deref(), am.replaces.is_some(), am.retention, am.expires)?
+            settle(tx.core, memory, kind, ts, &tid, &ak, am.schema.as_deref(), am.replaces.is_some(), am.purge_by, am.expires)?
         };
         // a signal write is a whole value, history from the start (spec/commits.md §5 Signals)
         if ak.signal() && !tx.core.skip_writer_rules {
@@ -1342,10 +1342,10 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         {
             return Err(Error::Clash(format!("{tid} expires, and a commit of roles does not: create it in a write of its own")));
         }
-        (am.retention, am.expires) = (Some(r), e);
+        (am.purge_by, am.expires) = (Some(r), e);
         aspects.push(((tid, ak), am));
     }
-    let entries: Vec<(Tid, &Ak, &PurgeBy, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.retention.as_ref()?, am.expires))).collect();
+    let entries: Vec<(Tid, &Ak, &PurgeBy, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.purge_by.as_ref()?, am.expires))).collect();
     let expires = one_commit(&entries, "Write them as separate commits")?;
     place_requests(&mut aspects, expires);
     // role commits use commit form: a later commit by the same node can never void them by
@@ -1395,9 +1395,9 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
                 }
             }
         }
-        let retention = am.retention.unwrap_or_default();
+        let purge_by = am.purge_by.unwrap_or_default();
         let framing = match kind {
-            Kind::Content => Some(framing_for(tx.core, memory, &plan, &published, &keys, &tid, &retention)?),
+            Kind::Content => Some(framing_for(tx.core, memory, &plan, &published, &keys, &tid, &purge_by)?),
             _ => None,
         };
         // what the ops address (map keys, fields, set values: a large one by its link, as the
@@ -1480,7 +1480,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         if let Some(s) = &am.schema {
             keep_schema(tx, s, false)?;
         }
-        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, replaces: am.replaces, original_floor: am.original_floor, frontiers: None, chunks };
+        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, purge_by: am.purge_by, expires: am.expires, replaces: am.replaces, original_floor: am.original_floor, frontiers: None, chunks };
         deltas.push(r);
     }
     if deltas.is_empty() && plan.purge.is_empty() {

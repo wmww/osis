@@ -23,9 +23,9 @@ pub struct AspectWrite {
     pub hi: u64,
     /// Canonical delta (or snapshot) bytes, encoded against [`crate::writer_ctx`].
     pub delta: Vec<u8>,
-    /// Resolved retention ([`crate::retention`] helpers: fixed, override, schema default,
+    /// Resolved purge-by ([`crate::retention`] helpers: fixed, override, schema default,
     /// untyped default; snapshot).
-    pub retention: PurgeBy,
+    pub purge_by: PurgeBy,
     /// The fire this delta claims to replace (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
     /// That fire's floor as the writer read it (`AspectEntry::original_floor`).
@@ -35,7 +35,7 @@ pub struct AspectWrite {
 impl AspectWrite {
     /// One delta with untyped defaults; set the other fields as needed.
     pub fn new(tid: Tid, ak: Ak, lo: u64, hi: u64, delta: Vec<u8>) -> AspectWrite {
-        AspectWrite { tid, ak, lo, hi, delta, retention: PurgeBy::default(), replaces: None, original_floor: 0 }
+        AspectWrite { tid, ak, lo, hi, delta, purge_by: PurgeBy::default(), replaces: None, original_floor: 0 }
     }
 }
 
@@ -147,13 +147,13 @@ impl CommitBuilder {
             let dedup = secrets.dedup(&a.tid).ok_or(Error::Build("dedup secret not supplied"))?;
             let hash = delta_hash(&dedup, &a.delta);
             let (lo, hi) = if kind.has_own_writes() { (a.lo, a.hi) } else { (0, 0) };
-            aspect_keys.push(delete_keys(secrets, &a.tid, &a.retention)?);
+            aspect_keys.push(delete_keys(secrets, &a.tid, &a.purge_by)?);
             entries.push(AspectEntry {
                 tid: a.tid,
                 ak: a.ak,
                 lo,
                 hi,
-                retention: a.retention,
+                purge_by: a.purge_by,
                 keys: Vec::new(),
                 hash,
                 replaces: a.replaces,

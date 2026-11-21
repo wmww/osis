@@ -455,7 +455,7 @@ fn settings_of(a: Aspect, tl: &[(u64, Opt)]) -> Vec<Commit> {
 }
 /// Body `id` at hour `h`: a register write on `REG`, or a fire on `SIG`.
 fn body(id: CommitId, h: u64, fire: bool) -> Commit {
-    reg(id, MINT_ADMIN, h, if fire { SIG } else { REG }, Retention::PLAIN, id as i64)
+    reg(id, MINT_ADMIN, h, if fire { SIG } else { REG }, PurgeBy::AuthorOrAdmin, id as i64)
 }
 /// Bodies 10, 11, 12 at hours 1, 3, 5 (values: 10 replaced at 3, 11 at 5).
 fn bodies3(fire: bool) -> Vec<Commit> {
@@ -496,7 +496,7 @@ fn ev_leaves_in_replaced_order() {
 #[test]
 fn ev_in_force_from_its_own_commit() {
     let mut both = setting(20, 3, REG, Opt::Purge);
-    both.parts.push(part(REG, Retention::PLAIN, vec![set(3, 20, 7)]));
+    both.parts.push(part(REG, PurgeBy::AuthorOrAdmin, vec![set(3, 20, 7)]));
     let h = held(4, vec![setting(19, 0, REG, KEPT), body(10, 1, false), both]);
     let o = evaluate(&h);
     assert!(o.under_purge.contains(&(10, 0)));
@@ -605,7 +605,7 @@ fn ev_who_may_purge_changes_no_history() {
     for tl in ev_timelines(1, &[0, 2, 4, 6], &all_opts()) {
         for now in 5..10 {
             let with = |by: PurgeBy| {
-                let bs: Vec<Commit> = bodies3(false).into_iter().map(|mut c| { c.parts[0].retention = Retention { by }; c }).collect();
+                let bs: Vec<Commit> = bodies3(false).into_iter().map(|mut c| { c.parts[0].purge_by = by; c }).collect();
                 listed(&world(now, &tl, false, bs), REG)
             };
             let a = with(PurgeBy::AuthorOrAdmin);
@@ -635,7 +635,7 @@ fn ev_only_valid_settings_are_in_force_and_none_judges_validity() {
     assert!(listed(&held(9, [vec![exp], bodies()].concat()), REG).is_empty(), "until it expires");
     // writes breaking every default a setting gives (expiry, purge option) are valid
     let mut b = body(12, 2, false);
-    b.parts[0].retention = Retention::WRITER;
+    b.parts[0].purge_by = PurgeBy::Writer;
     b.expires = Some(at(9));
     let o = evaluate(&held(4, vec![setting(19, 0, REG, Opt::Purge), b]));
     assert_eq!(o.valid[&(12, 0)], true);
@@ -666,7 +666,7 @@ fn covered3(fire: bool) -> Vec<Commit> {
     let mut v = bodies3(fire);
     if !fire {
         for (id, h) in [(10, 1), (11, 3), (12, 5)] {
-            v.push(snap(id + 20, MINT_ADMIN, h, REG, Retention::WRITER, vec![set(h, id, id as i64)]));
+            v.push(snap(id + 20, MINT_ADMIN, h, REG, PurgeBy::Writer, vec![set(h, id, id as i64)]));
         }
     }
     v

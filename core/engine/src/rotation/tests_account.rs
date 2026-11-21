@@ -82,7 +82,7 @@ pub(super) fn rotation_at(rec: CreationRecord, at: (CommitId, &AccountEpochKeys)
     let r = w.range();
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Form::Commit, Kind::Role, ts, p, r.lo, r.hi), None).unwrap();
     let mut aw = AspectWrite::new(p, ak.clone(), r.lo, r.hi, bytes);
-    aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
+    aw.purge_by = osis_commit::retention::write_purge_by(ak.as_str(), None, None).unwrap();
     cb.aspects.push(aw);
     let node = osis_crypto::KeyActorKeys::from_seed(&Secret32::from_bytes([9; 32]));
     let more = forks.iter().map(|k| k.inner.clone()).chain([next.inner.clone()]).collect();

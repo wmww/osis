@@ -48,7 +48,7 @@ impl Framing {
     /// its salt and the thing blind of the link's link blind (the link alone decides). A
     /// purge author's (level-2) commitment need not match while this delta lists another level-2 key beside
     /// an admin or writer one; else (no level-2 key, or author-only) only its own key's stays:
-    /// that author could delete a blob this delta's retention gives it no right over. The link
+    /// that author could delete a blob this delta's purge-by gives it no right over. The link
     /// carries over verbatim, so its salt and Del must be what the prefix bears.
     pub fn keeps(&self, prefix: &Prefix, link: &Link) -> bool {
         let blind = &self.blind(&link_blind(&link.key));

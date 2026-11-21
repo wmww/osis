@@ -8,7 +8,7 @@ pub enum Error {
     Cbor(DecodeError),
     /// Violates a layout of spec/wire.md. BadInput.
     Malformed(&'static str),
-    /// Violates a rule of spec/commits.md (kinds, retention, expiry, purge). BadInput.
+    /// Violates a rule of spec/commits.md (kinds, purge-by, expiry, purge). BadInput.
     Invalid(&'static str),
     /// A format version above ours (a commit, link; spec/versioning.md §2). Parked.
     UnknownVersion(u64),

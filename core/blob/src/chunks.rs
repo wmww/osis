@@ -301,7 +301,7 @@ mod tests {
     // expiry is earlier than the new delta's or its commitments to the thing's delete keys are
     // not exactly the new delta's; purge author's (level-2) commitments need not match beside an admin or
     // writer key, but need the new delta's own key where it lists no level 2 or only level 2: else
-    // that author could delete a blob the delta's retention gives it no right over.
+    // that author could delete a blob the delta's purge-by gives it no right over.
     #[test]
     fn reencryption_rule() {
         let fr = |expiry: Option<u64>, keys: Vec<(u8, u8)>| Framing { thing: osis_base::Tid::from_bytes([5; 15]), dedup: Secret32::from_bytes([7; 32]), expiry: expiry.map(WallMs), keys: keys.into_iter().map(|(l, b)| (l, dk(b))).collect(), class: crate::blob::Class::Durable };

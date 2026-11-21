@@ -101,7 +101,7 @@ type flag = enum {
 type aspect_def = struct {
     type 0: type_expr,
     /// Who may purge its writes by default.
-    retention 1: purge_by,
+    purge_by 1: purge_by,
     /// Default expiry, after the write.
     expires 2: option<duration>,
     flags 3: set<flag>,

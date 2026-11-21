@@ -34,7 +34,7 @@ pub enum Expiry {
 }
 
 /// What `AspectWrite::purge` drops, for everyone. Each write goes only where the writer may purge
-/// it (its purgeable-by; admins always may).
+/// it (its purge-by; admins always may).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Purge {
     /// The aspect's whole history, and the aspect with it: it reads as absent.
@@ -104,7 +104,7 @@ pub struct Write<'d> {
     /// A thing that must still be known (`Osis::knows`) when the write commits, checked under
     /// the commit's lock: a text session never recreates a thing deleted since it knew it.
     pub(crate) alive: Option<Tid>,
-    /// Why a chained modifier (`retention`) could not be recorded: `commit` fails
+    /// Why a chained modifier (`purge_by`) could not be recorded: `commit` fails
     /// with it.
     refused: Option<Error>,
 }
@@ -494,7 +494,7 @@ impl<'d> Write<'d> {
                     }
                 }
                 WriteOp::PurgeBy { tid, key: k, by } => {
-                    m.retention(tid, key(k)?, by)?;
+                    m.purge_by(tid, key(k)?, by)?;
                 }
                 // each request carries a delta on its thing: a value aspect's removal, else
                 // `purge.0` (the engine leaves it out of a commit that expires)

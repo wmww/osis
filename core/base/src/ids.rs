@@ -538,7 +538,7 @@ pub enum PurgeBy {
 }
 
 impl PurgeBy {
-    #[doc(hidden)]
+    /// Every set, smallest first.
     pub const ALL: [PurgeBy; 3] = [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer];
     /// Its name in a schema: `admin`, `author_or_admin`, `writer`.
     pub fn name(self) -> &'static str {

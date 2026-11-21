@@ -9,7 +9,7 @@ use osis_schema::{PurgeBy};
 use osis_crypto::Secret32;
 use proptest::prelude::*;
 
-fn retention() -> impl Strategy<Value = PurgeBy> {
+fn purge_by() -> impl Strategy<Value = PurgeBy> {
     (1u64..4).prop_map(|b| PurgeBy::from_id(b).unwrap())
 }
 
@@ -18,8 +18,8 @@ fn tid() -> impl Strategy<Value = Tid> {
 }
 
 fn aspect() -> impl Strategy<Value = AspectEntry> {
-    (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, retention(), proptest::collection::vec(0usize..8, 0..3), any::<[u8; 32]>(), proptest::option::of((any::<[u8; 32]>(), 0u64..3)))
-        .prop_map(|(tid, ak, lo, hi, retention, keys, hash, replaces)| AspectEntry { tid, ak: Ak::new(format!("{ak}.0")).unwrap(), lo, hi, retention, keys, hash, replaces: replaces.map(|r| CommitId(r.0)), original_floor: replaces.map_or(0, |r| r.1) })
+    (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, purge_by(), proptest::collection::vec(0usize..8, 0..3), any::<[u8; 32]>(), proptest::option::of((any::<[u8; 32]>(), 0u64..3)))
+        .prop_map(|(tid, ak, lo, hi, purge_by, keys, hash, replaces)| AspectEntry { tid, ak: Ak::new(format!("{ak}.0")).unwrap(), lo, hi, purge_by, keys, hash, replaces: replaces.map(|r| CommitId(r.0)), original_floor: replaces.map_or(0, |r| r.1) })
 }
 
 fn link() -> impl Strategy<Value = Link> {
@@ -95,7 +95,7 @@ prop_compose! {
     }
 }
 
-/// A content commit over `n` aspects of three things with mixed retention, expiring or not.
+/// A content commit over `n` aspects of three things with mixed purge-by, expiring or not.
 fn commit(classes: &[(u8, u8)], exp: bool) -> CommitBlob {
     let at = ts(1_000_000);
     let mut b = CommitBuilder::new(Kind::Content, at, t(1), crate::Path::through(t(2)), SESSION);
@@ -103,7 +103,7 @@ fn commit(classes: &[(u8, u8)], exp: bool) -> CommitBlob {
     for (i, (thing, by)) in classes.iter().enumerate() {
         let by = (*by).clamp(1, 3);
         let mut a = AspectWrite::new(t(10 + thing), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, register_delta(t(1), at, 1, &format!("{i}")));
-        a.retention = PurgeBy::from_id(u64::from(by)).unwrap();
+        a.purge_by = PurgeBy::from_id(u64::from(by)).unwrap();
         b.aspects.push(a);
     }
     b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit

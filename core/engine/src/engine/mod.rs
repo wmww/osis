@@ -585,7 +585,7 @@ fn fallback_header(v: &View) -> Header {
         ts: v.ts,
         form: v.form,
         expires: None,
-        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), keys: Vec::new(), hash: [0; 32], replaces: a.replaces, original_floor: a.original_floor }).collect(),
+        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, purge_by: Default::default(), keys: Vec::new(), hash: [0; 32], replaces: a.replaces, original_floor: a.original_floor }).collect(),
         purge: Vec::new(),
         undoes: None,
         blind: [0; 16],
@@ -4883,7 +4883,7 @@ mod tests {
         let two = failing(&mut lp.peers[0], &mut failed, |e| {
             // two aspects: received a part at a time below; both expire (one expiry per commit)
             let mut m = Mutation::new();
-            m.retention(g, &kept, keep0).unwrap();
+            m.purge_by(g, &kept, keep0).unwrap();
             m.set(g, &kept, &Value::Str("w".into())).unwrap();
             write(&mut m, g, "w");
             m.expires(g, &reg, WallMs(now.0 + 60_000)).unwrap();

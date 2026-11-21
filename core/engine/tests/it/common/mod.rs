@@ -28,13 +28,13 @@ aspect t:tags.0: set<string>;
 aspect t:refs.0: set<ref>;
 aspect t:map.0: map<string, item>;
 aspect t:big.0: map<string, string>;
-purgeable_by(writer) aspect t:gone.0: string;
-purgeable_by(writer) aspect t:gone2.0: string;
-purgeable_by(writer) aspect t:gonemap.0: map<string, string>;
+purge_by(writer) aspect t:gone.0: string;
+purge_by(writer) aspect t:gone2.0: string;
+purge_by(writer) aspect t:gonemap.0: map<string, string>;
 expires(1h) aspect t:brief.0: string;
-purgeable_by(writer) aspect t:kept.0: string;
-purgeable_by(writer) aspect t:keptset.0: set<string>;
-purgeable_by(writer) aspect t:keptmap.0: map<string, string>;
+purge_by(writer) aspect t:kept.0: string;
+purge_by(writer) aspect t:keptset.0: set<string>;
+purge_by(writer) aspect t:keptmap.0: map<string, string>;
 aspect t:list.0: list<string>;
 ephemeral aspect t:log+.0: list<string>;
 aspect t:listtext.0: list<text>;
@@ -70,11 +70,6 @@ pub const BOOK: Aspect<Value> = Aspect::new("t:book.0", &TEST);
 pub const DOCS: Aspect<Value> = Aspect::new("t:docs.0", &TEST);
 pub const BIGMAP: Aspect<Value> = Aspect::new("t:big.0", &TEST);
 pub const LISTTEXT: Aspect<Value> = Aspect::new("t:listtext.0", &TEST);
-
-/// Purgeable by `by`.
-pub fn purgeable_by(by: osis_base::PurgeBy) -> osis_schema::PurgeBy {
-    by
-}
 
 /// Kept a day after replaced: what an undo writing back replaced content needs (spec/crdt.md §4.6).
 pub const DAY: osis_schema::History = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
@@ -461,7 +456,7 @@ pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs};
     let author = lp.peers[by].engine.me();
     let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
-    aw.retention = osis_commit::retention::snapshot_retention(a.as_str());
+    aw.purge_by = osis_commit::retention::snapshot_purge_by(a.as_str());
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
@@ -469,7 +464,7 @@ pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base
     cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
-/// Secrets for hand-built commits with `writer` retention: dedup, and made-up delete keys
+/// Secrets for hand-built commits with `writer` purge-by: dedup, and made-up delete keys
 /// (peers' business).
 pub struct Keys(pub osis_base::CreationRecord);
 impl osis_commit::Secrets for Keys {

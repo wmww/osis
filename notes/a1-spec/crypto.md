@@ -9,9 +9,9 @@ Replaces, in spec/crypto.md §7: the Levels table, the Header list bullet, the `
 The Path entry bullet is built: spec/crypto.md §5.
 
 ## 7. Delete keys
-- **Levels** of a delta, by its retention (spec/commits.md §5), one per member of its set:
+- **Levels** of a delta, by its purge-by (spec/commits.md §5), one per member of its set:
 
-  | level | retention set members | secret |
+  | level | purge-by set members | secret |
   |---|---|---|
   | 1, admin | `admin`, `author_or_admin`, `writer` | the admin secret of its thing |
   | 2, author | `author_or_admin`, `writer` | the write secret of the commit's one purge author (spec/permissions.md §6), at the purge author's delete base (below; a key actor's: its signing key) |

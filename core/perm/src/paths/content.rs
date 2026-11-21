@@ -35,7 +35,7 @@ pub struct Fact {
     /// Its members name no thing twice and its purge author index is within its path.
     pub well: bool,
     pub purge_author: Option<Tid>,
-    pub retention: PurgeBy,
+    pub purge_by: PurgeBy,
     /// [signer, A1..Ak].
     pub chain: Vec<Tid>,
 }
@@ -76,7 +76,7 @@ fn name_key(f: &Fact) -> Option<NameKey> {
 }
 
 /// What a delta's purge asks of the requests naming it (draft §6 The right): one holding admin
-/// (any retention); one holding write (`writer`); one holding write whose chain holds this purge
+/// (any purge-by); one holding write (`writer`); one holding write whose chain holds this purge
 /// author (`author_or_admin`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Holding {
@@ -385,7 +385,7 @@ impl<S: Store> Facts<S> {
                             hops: sh.hops,
                             well: sh.well && purge_author.is_some(),
                             purge_author,
-                            retention: d.retention,
+                            purge_by: d.purge_by,
                             chain,
                         });
                         out.deltas.push(id);
@@ -750,21 +750,21 @@ impl<S: Store> Facts<S> {
     }
 
     /// Whether a request holding a right names the delta (or copy) of `commit` on `on`'s `aspect`
-    /// stamped `ts`, of purge author `author` and `retention`, and holds a right over it: `admin`
+    /// stamped `ts`, of purge author `author` and `purge_by`, and holds a right over it: `admin`
     /// over any; `writer` (write) over a `writer` delta; `author` (write, its path holding the
     /// delta's purge author) over an `author_or_admin` one (draft §6). Per selector naming it (by
     /// that author, by the aspect, by that commit, a destruction of the thing) a point lookup of
-    /// the latest request holding what its retention asks: one stamped after it names it (a
+    /// the latest request holding what its purge-by asks: one stamped after it names it (a
     /// destruction: whatever its stamp).
     #[allow(clippy::too_many_arguments)]
-    fn purged_by(&self, on: Tid, aspect: &Ak, commit: CommitId, ts: Ts, author: Option<Tid>, retention: PurgeBy, counts: &mut Counts) -> bool {
+    fn purged_by(&self, on: Tid, aspect: &Ak, commit: CommitId, ts: Ts, author: Option<Tid>, purge_by: PurgeBy, counts: &mut Counts) -> bool {
         let mut keys: Vec<(NameKey, Option<Ts>)> = vec![((on, None, Names::Destroy), None)];
         for names in [Names::Aspect, Names::Commit(commit)].into_iter().chain(author.map(Names::Author)) {
             keys.push(((on, Some(aspect.clone()), names), Some(ts)));
         }
         let asks: Vec<Holding> = [Some(Holding::Admin)]
             .into_iter()
-            .chain([match retention {
+            .chain([match purge_by {
                 PurgeBy::Admin => None,
                 PurgeBy::Writer => Some(Holding::Write),
                 PurgeBy::AuthorOrAdmin => author.map(Holding::WriteFor),
@@ -782,7 +782,7 @@ impl<S: Store> Facts<S> {
     /// Whether a request holds a right over held plain delta `id`, by its own facts.
     pub(super) fn purged(&self, id: &WriteId, counts: &mut Counts) -> bool {
         let Some(d) = self.store.get(id) else { return false };
-        matches!(d.class, FactClass::Plain) && self.purged_by(d.on, &d.aspect, d.commit(), d.ts, d.purge_author, d.retention, counts)
+        matches!(d.class, FactClass::Plain) && self.purged_by(d.on, &d.aspect, d.commit(), d.ts, d.purge_author, d.purge_by, counts)
     }
 
     /// Whether a request holds a right over the copy of commit `c` on `on`'s `aspect`, `c` held
@@ -813,7 +813,7 @@ impl<S: Store> Facts<S> {
         if stated.is_empty() {
             return self.store.latest(&(*on, None, Names::Destroy), Holding::Admin).is_some();
         }
-        stated.iter().all(|f| self.purged_by(*on, aspect, *c, f.ts, Some(f.purge_author), f.retention, counts))
+        stated.iter().all(|f| self.purged_by(*on, aspect, *c, f.ts, Some(f.purge_author), f.purge_by, counts))
     }
 
     /// Every copy of a commit held by no delta on its snapshot's thing and aspect that a request
@@ -889,12 +889,12 @@ impl<S: Store> Facts<S> {
         Some(q.well && q.hops.iter().all(|e| self.record(*e) || self.ever.get(e).is_some_and(|n| n.iter().skip(from).any(|x| *x > 0))))
     }
 
-    /// Whether held request `id` could hold the right over a delta of `retention` and purge
+    /// Whether held request `id` could hold the right over a delta of `purge_by` and purge
     /// author `author`: admin, or write where the class allows a writer (a destruction: admin).
-    pub(super) fn could_hold(&self, id: &WriteId, retention: PurgeBy, author: Option<&Tid>) -> Option<bool> {
+    pub(super) fn could_hold(&self, id: &WriteId, purge_by: PurgeBy, author: Option<&Tid>) -> Option<bool> {
         let q = self.store.get(id).filter(|q| matches!(q.class, FactClass::Purge(_)))?;
         let writer = !matches!(q.class, FactClass::Purge(Names::Destroy))
-            && match retention {
+            && match purge_by {
                 PurgeBy::Admin => false,
                 PurgeBy::Writer => true,
                 PurgeBy::AuthorOrAdmin => author.is_some_and(|a| q.chain.contains(a)),

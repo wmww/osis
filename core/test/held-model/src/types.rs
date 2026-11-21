@@ -228,8 +228,8 @@ pub enum Body {
     Parked,
 }
 
-/// Who may purge a write (spec/commits.md §5): admins always may (Tess's decision 2,
-/// notes/engine-retention-history.md).
+/// Who may purge a write, its purge-by (spec/commits.md §5): admins always may. What replaced
+/// content is kept is the thing's setting (`Delta::Retention`), never the write's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PurgeBy {
     Admin,
@@ -237,30 +237,16 @@ pub enum PurgeBy {
     Writer,
 }
 
-/// A write's retention on the wire: who may purge it. What replaced content is kept is the
-/// thing's setting (`Delta::Retention`), never the write's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Retention {
-    pub by: PurgeBy,
-}
-
-impl Retention {
-    /// The untyped default: `author_or_admin`.
-    pub const PLAIN: Retention = Retention { by: PurgeBy::AuthorOrAdmin };
-    pub const WRITER: Retention = Retention { by: PurgeBy::Writer };
-    pub const ADMIN: Retention = Retention { by: PurgeBy::Admin };
-    /// Role-class: `admin`; the model drops no role body (ROLE_KEEP is compactor policy).
-    pub const ROLE: Retention = Retention::ADMIN;
-    pub fn with_by(self, by: PurgeBy) -> Retention {
-        Retention { by }
-    }
+impl PurgeBy {
+    /// The three sets a content write may name (Tess's decision 2, notes/engine-retention-history.md).
+    pub const ALL: [PurgeBy; 3] = [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer];
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Part {
     pub thing: ThingId,
     pub aspect: Aspect,
-    pub retention: Retention,
+    pub purge_by: PurgeBy,
     pub body: Body,
     /// The commits whose values this node stripped from the held body (it holds its leftover); one
     /// no longer held value-less makes the body count as never received (spec/permissions.md §6).

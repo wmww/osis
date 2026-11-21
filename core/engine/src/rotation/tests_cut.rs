@@ -896,7 +896,7 @@ fn cut_snapshot_of_a_large_value_reuses_its_chunks_spec_crypto_4() {
     assert_eq!(lp.peers[0].engine.live_trees(&g).unwrap().blobs.into_iter().collect::<BTreeSet<_>>(), tree, "the value's tree changed");
 }
 
-static BIG: osis_schema::StaticSchema = osis_schema::StaticSchema::new("cutbig.osis", "revision 1; purgeable_by(author, admin) aspect k:b.0: blob;\n");
+static BIG: osis_schema::StaticSchema = osis_schema::StaticSchema::new("cutbig.osis", "revision 1; purge_by(author, admin) aspect k:b.0: blob;\n");
 
 // spec/sync-ids.md §1 (Repair carries current state), spec/crypto.md §5 (Passing on: floors):
 // after a cut, a repair is written as state is: it rewrites the aspect's live value where that

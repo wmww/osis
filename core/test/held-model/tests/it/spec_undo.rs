@@ -14,7 +14,7 @@ fn undo_at(hd: &Held, target: CommitId, id: CommitId, h: u64) -> Option<Commit> 
 // spec/crdt.md §4.6 (read as it did just before that commit): the undo writes the previous value back; redo restores
 #[test]
 fn undo_writes_previous_register_value_and_redo_restores_spec_crdt_4_6() {
-    let mut hd = held(5, vec![reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1), reg(11, MINT_ADMIN, 2, REG, Retention::PLAIN, 2)]);
+    let mut hd = held(5, vec![reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 1), reg(11, MINT_ADMIN, 2, REG, PurgeBy::AuthorOrAdmin, 2)]);
     let u = undo_at(&hd, 11, 20, 3).unwrap();
     assert_eq!(u.undoes, Some(11));
     hd.commits.push(u);
@@ -27,14 +27,14 @@ fn undo_writes_previous_register_value_and_redo_restores_spec_crdt_4_6() {
 // spec/crdt.md §4.6 (read as it did just before that commit): no write once the register no longer reads the undone write
 #[test]
 fn undo_of_a_beaten_write_writes_nothing_spec_crdt_4_6() {
-    let hd = held(5, vec![reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1), reg(11, MINT_ADMIN, 2, REG, Retention::PLAIN, 2), reg(12, MINT_ADMIN, 3, REG, Retention::PLAIN, 3)]);
+    let hd = held(5, vec![reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 1), reg(11, MINT_ADMIN, 2, REG, PurgeBy::AuthorOrAdmin, 2), reg(12, MINT_ADMIN, 3, REG, PurgeBy::AuthorOrAdmin, 3)]);
     assert_eq!(undo_at(&hd, 11, 20, 4), None);
 }
 
 // spec/crdt.md §4.6 (read as it did just before that commit): undoing the write that made the aspect present resets it
 #[test]
 fn undo_of_first_write_resets_the_aspect_spec_crdt_4_6() {
-    let mut hd = held(5, vec![reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1)]);
+    let mut hd = held(5, vec![reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 1)]);
     let u = undo_at(&hd, 10, 20, 2).unwrap();
     assert_eq!(u.parts[0].body, Body::Held(Delta::Writes(reset(2, 20))));
     hd.commits.push(u);
@@ -44,10 +44,10 @@ fn undo_of_first_write_resets_the_aspect_spec_crdt_4_6() {
 // spec/crdt.md §4.6 (read as it did just before that commit): undoing a remove_aspect re-inserts the value with fresh dots
 #[test]
 fn undo_of_a_map_reset_reinserts_the_value_spec_crdt_4_6() {
-    let put = content(10, MINT_ADMIN, 1, vec![part(MAP, Retention::PLAIN, vec![
+    let put = content(10, MINT_ADMIN, 1, vec![part(MAP, PurgeBy::AuthorOrAdmin, vec![
         created(1, 10, 3), put(1, 10, 10, 3, 4)
     ])]);
-    let rm = content(11, MINT_ADMIN, 2, vec![part(MAP, Retention::PLAIN, vec![map_reset(2, 11)])]);
+    let rm = content(11, MINT_ADMIN, 2, vec![part(MAP, PurgeBy::AuthorOrAdmin, vec![map_reset(2, 11)])]);
     let mut hd = held(5, vec![put, rm]);
     assert_eq!(read(&hd, MAP), None);
     hd.commits.push(undo_at(&hd, 11, 20, 3).unwrap());
@@ -57,8 +57,8 @@ fn undo_of_a_map_reset_reinserts_the_value_spec_crdt_4_6() {
 // spec/crdt.md §4.6 (read as it did just before that commit): undoing a text delete shows the char again
 #[test]
 fn undo_of_a_text_delete_shows_the_char_again_spec_crdt_4_6() {
-    let ins = content(10, MINT_ADMIN, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, Some(7))])]);
-    let del = content(11, MINT_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![del(2, 11, 10)])]);
+    let ins = content(10, MINT_ADMIN, 1, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![ins(1, 10, 1, None, Some(7))])]);
+    let del = content(11, MINT_ADMIN, 2, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![del(2, 11, 10)])]);
     let mut hd = held(5, vec![ins, del]);
     let u = undo_at(&hd, 11, 20, 3).unwrap();
     hd.commits.push(u);
@@ -69,9 +69,9 @@ fn undo_of_a_text_delete_shows_the_char_again_spec_crdt_4_6() {
 // value-less by its time is not written back (here the text was then absent before: a reset)
 #[test]
 fn undo_takes_the_expiry_of_what_it_copies_spec_crdt_4_6() {
-    let mut i = content(10, MINT_ADMIN, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, Some(7))])]);
+    let mut i = content(10, MINT_ADMIN, 1, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![ins(1, 10, 1, None, Some(7))])]);
     i.expires = Some(at(5));
-    let del = content(11, MINT_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![del(2, 11, 10)])]);
+    let del = content(11, MINT_ADMIN, 2, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![del(2, 11, 10)])]);
     let hd = held(3, vec![i, del]);
     assert_eq!(undo_at(&hd, 11, 20, 3).unwrap().expires, Some(at(5)));
     let late = undo_at(&hd, 11, 20, 6).unwrap();
@@ -83,7 +83,7 @@ fn undo_takes_the_expiry_of_what_it_copies_spec_crdt_4_6() {
 fn invalid_writes_are_not_undone_spec_crdt_4_6() {
     let hd = held(5, vec![
         edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
-        reg(10, 1, 1, REG, Retention::PLAIN, 1),
+        reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1),
         edge(6, MINT_ADMIN, 2, 1, None, Some(vec![])),
     ]);
     assert_eq!(undo_at(&hd, 10, 20, 3), None);
@@ -94,13 +94,13 @@ fn invalid_writes_are_not_undone_spec_crdt_4_6() {
 #[test]
 fn undelete_char_is_its_own_value_spec_crdt_4_7() {
     let undel = || {
-        Commit { undoes: Some(11), ..content(20, MINT_ADMIN, 3, vec![part(TEXT, Retention::PLAIN, vec![undel(3, 20, 10, 7)])]) }
+        Commit { undoes: Some(11), ..content(20, MINT_ADMIN, 3, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![undel(3, 20, 10, 7)])]) }
     };
     let base = |demote: bool| {
         let mut cs = vec![
             edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None),
-            content(10, 1, 1, vec![part(TEXT, Retention::PLAIN, vec![ins(1, 10, 1, None, Some(7))])]),
-            content(11, MINT_ADMIN, 2, vec![part(TEXT, Retention::PLAIN, vec![del(2, 11, 10)])]),
+            content(10, 1, 1, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![ins(1, 10, 1, None, Some(7))])]),
+            content(11, MINT_ADMIN, 2, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![del(2, 11, 10)])]),
             undel(),
         ];
         if demote {
@@ -119,8 +119,8 @@ fn undelete_char_is_its_own_value_spec_crdt_4_7() {
 // spec/commits.md §7: a commit whose body was dropped cannot be undone
 #[test]
 fn dropped_body_cannot_be_undone_spec_commits_7() {
-    let mut c = reg(11, MINT_ADMIN, 2, REG, Retention::PLAIN, 2);
+    let mut c = reg(11, MINT_ADMIN, 2, REG, PurgeBy::AuthorOrAdmin, 2);
     c.parts[0].body = Body::Dropped(12);
-    let hd = held(5, vec![reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1), c, snap(12, MINT_ADMIN, 3, REG, Retention::WRITER, vec![set(2, 11, 2)])]);
+    let hd = held(5, vec![reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 1), c, snap(12, MINT_ADMIN, 3, REG, PurgeBy::Writer, vec![set(2, 11, 2)])]);
     assert_eq!(undo_at(&hd, 11, 20, 3), None);
 }

@@ -395,10 +395,10 @@ fn expired_unseen_before_tick_spec_crdt_4_7() {
     assert_eq!((db.at(t, osis::DynamicAspectKey::untyped(k)).get().unwrap(), db.at(t, osis::DynamicAspectKey::untyped(e)).get().unwrap()), (None, None));
 }
 
-// spec/commits.md §6, §5: per-write expiry kills the value at T; retention per write; purge
+// spec/commits.md §6, §5: per-write expiry kills the value at T; purge-by per write; purge
 // drops the history and removes the aspect.
 #[test]
-fn expiry_retention_purge_spec_commits_5_6() {
+fn expiry_purge_by_and_purge_spec_commits_5_6() {
     let c = clock();
     let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let (k, r) = (ak("t:msg.0"), ak("t:keep.0"));

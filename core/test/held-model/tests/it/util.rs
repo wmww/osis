@@ -94,14 +94,14 @@ pub fn undel(h: u64, c: CommitId, e: CommitId, v: u8) -> Frag {
     seq(dot(e, 1), SeqElem::flag(st(h, c, 1), false, Some(ch(v))))
 }
 
-pub fn part(aspect: Aspect, retention: Retention, ws: Vec<Frag>) -> Part {
-    Part { thing: T, aspect, retention, body: Body::Held(Delta::Writes(join(ws))), stripped: Default::default(), replaces: None }
+pub fn part(aspect: Aspect, purge_by: PurgeBy, ws: Vec<Frag>) -> Part {
+    Part { thing: T, aspect, purge_by, body: Body::Held(Delta::Writes(join(ws))), stripped: Default::default(), replaces: None }
 }
 pub fn content(id: CommitId, author: NodeId, h: u64, parts: Vec<Part>) -> Commit {
     Commit { id, signer: author, acting: author, ts: ts(h), expires: None, kind: CommitKind::Content, parts, purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 /// A one-part register write of `v` by `author` at hour `h`.
-pub fn reg(id: CommitId, author: NodeId, h: u64, a: Aspect, r: Retention, v: i64) -> Commit {
+pub fn reg(id: CommitId, author: NodeId, h: u64, a: Aspect, r: PurgeBy, v: i64) -> Commit {
     content(id, author, h, vec![part(a, r, vec![set(h, id, v)])])
 }
 pub fn edge(id: CommitId, author: NodeId, h: u64, holder: NodeId, role: Option<Role>, frontier: Option<Vec<CommitId>>) -> Commit {
@@ -110,14 +110,14 @@ pub fn edge(id: CommitId, author: NodeId, h: u64, holder: NodeId, role: Option<R
 /// A role commit writing one edge on `thing`.
 pub fn edge_on(id: CommitId, author: NodeId, h: u64, thing: ThingId, e: EdgeWrite, frontier: Option<Vec<CommitId>>) -> Commit {
     let body = Body::Held(Delta::Edge(e));
-    let part = Part { thing, aspect: Aspect::ROLES, retention: Retention::ROLE, body, stripped: Default::default(), replaces: None };
+    let part = Part { thing, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body, stripped: Default::default(), replaces: None };
     Commit { kind: CommitKind::Role, frontier, ..content(id, author, h, vec![part]) }
 }
-pub fn snap(id: CommitId, author: NodeId, h: u64, a: Aspect, r: Retention, ws: Vec<Frag>) -> Commit {
+pub fn snap(id: CommitId, author: NodeId, h: u64, a: Aspect, r: PurgeBy, ws: Vec<Frag>) -> Commit {
     Commit { kind: CommitKind::Snapshot, ..content(id, author, h, vec![part(a, r, ws)]) }
 }
 pub fn purge(id: CommitId, author: NodeId, h: u64, item: PurgeItem) -> Commit {
-    Commit { purge: vec![item], ..reg(id, author, h, held_model::gen::PURGE, Retention::PLAIN, 0) }
+    Commit { purge: vec![item], ..reg(id, author, h, held_model::gen::PURGE, PurgeBy::AuthorOrAdmin, 0) }
 }
 /// What node 0 holds at hour `now_h`: `commits` and the things' creations (`gen::creations`)
 /// `commits` does not give.
@@ -148,7 +148,7 @@ pub fn fate(h: &Held, c: CommitId) -> Fate {
 }
 /// A `retention^.0` setting `x` on `T` by `author` at hour `h`.
 pub fn setting_by(id: CommitId, author: NodeId, h: u64, x: Setting) -> Commit {
-    let p = Part { thing: T, aspect: Aspect::RETENTION, retention: Retention::ADMIN, body: Body::Held(Delta::Retention(x)), stripped: Default::default(), replaces: None };
+    let p = Part { thing: T, aspect: Aspect::RETENTION, purge_by: PurgeBy::Admin, body: Body::Held(Delta::Retention(x)), stripped: Default::default(), replaces: None };
     content(id, author, h, vec![p])
 }
 /// The mint admin's setting at hour `h` giving aspect `a` the entry `opt`.

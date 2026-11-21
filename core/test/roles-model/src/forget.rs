@@ -12,7 +12,7 @@
 //! Kept history (`Script::kept`) is never dropped as covered (spec/commits.md §5 Keep bounds).
 //! Layer 2 is `addenda::Ctx`, judged per node over what the node really holds. Per-node
 //! simulation (`Run`): arrivals in time order; a body dropped when a valid held snapshot
-//! carries it (anyone's: the worst retention), an invalid body at once; a valid body missing
+//! carries it (anyone's: the worst purge-by), an invalid body at once; a valid body missing
 //! fetched from any node still holding it; forgetting removes the header too, so the node
 //! reads as if it never received it and can list only what it still holds. Lists are written
 //! from the node's view when it writes: its frontier by what it received before its `ts`,

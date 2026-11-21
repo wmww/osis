@@ -21,7 +21,7 @@ fn grant(key: SyncId) -> Commit {
 }
 
 fn made() -> Commit {
-    creation(T, RecordLink::Admin(MINT_ADMIN), MINT_ADMIN, ts(0), Retention::ROLE, None)
+    creation(T, RecordLink::Admin(MINT_ADMIN), MINT_ADMIN, ts(0), PurgeBy::Admin, None)
 }
 
 /// T lives under `L`, which only the grant's key opens; `ME` holds `MINE` only; the grant is copied
@@ -32,7 +32,7 @@ fn invited(key: SyncId) -> Library {
     sync_ids.insert(T, BTreeSet::from([L]));
     let mut copies = BTreeMap::new();
     copies.insert(30, BTreeSet::from([MINE]));
-    let w = reg(40, MINT_ADMIN, 2, REG, Retention::PLAIN, 5);
+    let w = reg(40, MINT_ADMIN, 2, REG, PurgeBy::AuthorOrAdmin, 5);
     Library { now: at(5), me: ME, records, sync_ids, copies, commits: vec![grant(key), made(), w], keys: BTreeSet::from([MINE]) }
 }
 
@@ -107,7 +107,7 @@ fn world(seed: u64) -> Library {
         // up the chain may be behind another sync ID
         let (admin, link) = if r.chance(50) {
             let account = 40 + t;
-            let c = creation(account, RecordLink::Admin(key), key, ts(0), Retention::ROLE, None);
+            let c = creation(account, RecordLink::Admin(key), key, ts(0), PurgeBy::Admin, None);
             lib.sync_ids.insert(account, BTreeSet::from([10 + r.below(3) as SyncId]));
             lib.commits.push(c);
             (key, RecordLink::Admin(account))
@@ -116,7 +116,7 @@ fn world(seed: u64) -> Library {
         };
         let ls: BTreeSet<SyncId> = (0..1 + r.below(2)).map(|_| 10 + r.below(3) as SyncId).collect();
         lib.sync_ids.insert(thing, ls.clone());
-        let c = creation(thing, link, admin, ts(0), Retention::ROLE, None);
+        let c = creation(thing, link, admin, ts(0), PurgeBy::Admin, None);
         if r.chance(25) {
             lib.copies.insert(c.id, BTreeSet::from([MINE]));
         }
@@ -135,7 +135,7 @@ fn world(seed: u64) -> Library {
         // writes
         for h in 0..r.below(3) {
             id += 1;
-            let w = Commit { parts: vec![Part { thing, ..part(REG, Retention::PLAIN, vec![set(2 + h, id, id as i64)]) }], ..reg(id, admin, 2 + h, REG, Retention::PLAIN, id as i64) };
+            let w = Commit { parts: vec![Part { thing, ..part(REG, PurgeBy::AuthorOrAdmin, vec![set(2 + h, id, id as i64)]) }], ..reg(id, admin, 2 + h, REG, PurgeBy::AuthorOrAdmin, id as i64) };
             if r.chance(30) {
                 lib.copies.insert(id, BTreeSet::from([MINE]));
             }
@@ -185,13 +185,13 @@ fn forged_boxes_change_no_read_at_any_size_spec_crypto() {
 // keeps no bytes
 #[test]
 fn woken_part_joins_spec_commits_4() {
-    let w = reg(10, MINT_ADMIN, 1, REG, Retention::PLAIN, 1);
+    let w = reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 1);
     let mut lib = Library { now: at(5), me: ME, keys: BTreeSet::from([L]), records: vec![Record { id: MINT_ADMIN, link: RecordLink::Key }], ..Default::default() };
     lib.sync_ids.insert(T, BTreeSet::from([L]));
     lib.commits.push(w);
     let early = settle(&lib, &mut |_| {}, true);
     assert_eq!(early.held.commits.iter().filter(|c| c.id == 10).count(), 0);
-    lib.commits.push(creation(T, RecordLink::Admin(MINT_ADMIN), MINT_ADMIN, ts(0), Retention::ROLE, None));
+    lib.commits.push(creation(T, RecordLink::Admin(MINT_ADMIN), MINT_ADMIN, ts(0), PurgeBy::Admin, None));
     let done = settle(&lib, &mut |_| {}, true);
     assert!(evaluate(&done.held).applied.contains(&(CREATION_ID + T)));
     assert_eq!(evaluate(&done.held).reads.get(&(T, REG)).cloned().flatten(), int(1));
@@ -200,9 +200,9 @@ fn woken_part_joins_spec_commits_4() {
 /// Writer 1's body 10, replaced by the mint admin's 15 and covered by 1's snapshot 20 (a cover
 /// drops only a body nothing reads on its own: a replaced one), and `c`.
 fn covered(c: Commit) -> (Held, Commit) {
-    let b = Commit { parts: vec![Part { ..part(REG, Retention::WRITER, vec![set(1, 10, 1)]) }], ..reg(10, 1, 1, REG, Retention::WRITER, 1) };
-    let x = reg(15, MINT_ADMIN, 2, REG, Retention::WRITER, 2);
-    let s = snap(20, 1, 3, REG, Retention::WRITER, vec![set(2, 15, 2)]);
+    let b = Commit { parts: vec![Part { ..part(REG, PurgeBy::Writer, vec![set(1, 10, 1)]) }], ..reg(10, 1, 1, REG, PurgeBy::Writer, 1) };
+    let x = reg(15, MINT_ADMIN, 2, REG, PurgeBy::Writer, 2);
+    let s = snap(20, 1, 3, REG, PurgeBy::Writer, vec![set(2, 15, 2)]);
     let g = edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
     (held(5, vec![g, b, x, s]), c)
 }
@@ -211,7 +211,7 @@ fn covered(c: Commit) -> (Held, Commit) {
 // reads as if the commit had come first
 #[test]
 fn delete_during_a_content_wait_reads_alike_spec_sync_6() {
-    let c = reg(30, MINT_ADMIN, 2, Aspect::plain(5), Retention::PLAIN, 9);
+    let c = reg(30, MINT_ADMIN, 2, Aspect::plain(5), PurgeBy::AuthorOrAdmin, 9);
     let (h, c) = covered(c);
     let o = evaluate(&h);
     assert!(matches!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::Covered { by: 20 })));

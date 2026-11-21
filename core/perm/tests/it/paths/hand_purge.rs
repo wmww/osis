@@ -10,7 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::{agree, as_known, cid, tid, walk};
-use osis_base::{Ak, PurgeBy, Role as R};
+use osis_base::{Ak, Role as R};
 use osis_perm::paths::{Content, DeltaClass, PartKind, Paths, Stated};
 use osis_perm::WriteId;
 use roles_model::paths::*;
@@ -26,9 +26,9 @@ fn base() -> World {
     w
 }
 
-fn content(w: &mut World, n: Thing, t: u32, path: &[Thing], ret: Retention) -> Id {
+fn content(w: &mut World, n: Thing, t: u32, path: &[Thing], by: PurgeBy) -> Id {
     let i = w.content(n, t, path, T1);
-    w.retain(i, ret);
+    w.set_purge_by(i, by);
     i
 }
 
@@ -62,16 +62,16 @@ fn shows(w: &World, v: &View, i: Id) -> bool {
 // ---- the model's hand worlds ----
 
 // spec/permissions.md §6: draft The right: each named delta is judged alone by the members of its
-// retention set the request holds: a writer's request by whole aspect takes the `writer` deltas and
+// purge-by set the request holds: a writer's request by whole aspect takes the `writer` deltas and
 // its own `author_or_admin` one, never an `admin` delta or another author's; an admin's takes them
 // all.
 #[test]
 fn a_request_holds_each_class_of_its_named_deltas_alone() {
     let mut w = base();
-    let adm = content(&mut w, B, 2, &[A], Retention::Admin);
-    let other = content(&mut w, B, 2, &[A], Retention::AuthorOrAdmin);
-    let own = content(&mut w, W, 2, &[], Retention::AuthorOrAdmin);
-    let any = content(&mut w, B, 2, &[A], Retention::Writer);
+    let adm = content(&mut w, B, 2, &[A], PurgeBy::Admin);
+    let other = content(&mut w, B, 2, &[A], PurgeBy::AuthorOrAdmin);
+    let own = content(&mut w, W, 2, &[], PurgeBy::AuthorOrAdmin);
+    let any = content(&mut w, B, 2, &[A], PurgeBy::Writer);
     w.request(W, 3, &[], T1, Names::Aspect);
     assert_eq!(purged(&w, &all(&w, &[])), Set::from([own, any]));
     w.request(B, 4, &[A], T1, Names::Aspect);
@@ -85,7 +85,7 @@ fn a_request_holds_each_class_of_its_named_deltas_alone() {
 fn a_removed_signers_backdated_request_or_destruction_takes_nothing() {
     for names in [Names::Aspect, Names::Destroy] {
         let mut w = base();
-        let h = content(&mut w, H, 2, &[A], Retention::Admin);
+        let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
         let q = w.request(X, 5, &[A], T1, names);
         let r = w.edge(H, 6, &[], A, X, Gone, &[]);
         for trust in [vec![], vec![r]] {
@@ -104,7 +104,7 @@ fn a_removed_signers_backdated_request_or_destruction_takes_nothing() {
 fn a_destruction_stands_against_a_later_cut_on_its_own_thing_alone() {
     for on_thing in [true, false] {
         let mut w = base();
-        let h = content(&mut w, H, 2, &[A], Retention::Admin);
+        let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
         let (path, edge): (&[Thing], Thing) = if on_thing { (&[], T1) } else { (&[A], A) };
         let at: &[Thing] = if on_thing { &[A] } else { &[] };
         w.edge(H, 1, at, edge, Z, Admin, &[]);
@@ -185,7 +185,7 @@ fn an_own_cover_whose_path_gave_no_role_stands_by_nothing() {
 #[test]
 fn a_request_made_after_the_removal_is_kept_by_no_witness() {
     let mut w = base();
-    let h = content(&mut w, H, 2, &[A], Retention::Admin);
+    let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
     w.request(X, 4, &[A], T1, Names::Aspect);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     w.addendum(B, 7, &[A], T1, r, &[]);
@@ -199,9 +199,9 @@ fn a_request_made_after_the_removal_is_kept_by_no_witness() {
 #[test]
 fn a_request_names_only_deltas_stamped_before_it() {
     let mut w = base();
-    let early = content(&mut w, B, 2, &[A], Retention::AuthorOrAdmin);
-    let by_h = content(&mut w, H, 2, &[A], Retention::AuthorOrAdmin);
-    let late = content(&mut w, B, 5, &[A], Retention::AuthorOrAdmin);
+    let early = content(&mut w, B, 2, &[A], PurgeBy::AuthorOrAdmin);
+    let by_h = content(&mut w, H, 2, &[A], PurgeBy::AuthorOrAdmin);
+    let late = content(&mut w, B, 5, &[A], PurgeBy::AuthorOrAdmin);
     for (names, want) in [(Names::Aspect, vec![early, by_h]), (Names::Author(B), vec![early]), (Names::Commit(early), vec![early]), (Names::Commit(late), vec![])] {
         let mut v = w.clone();
         v.request(B, 3, &[A], T1, names);
@@ -215,8 +215,8 @@ fn a_request_names_only_deltas_stamped_before_it() {
 #[test]
 fn a_destruction_by_a_writer_takes_nothing() {
     let mut w = base();
-    let any = content(&mut w, W, 2, &[], Retention::Writer);
-    let later = content(&mut w, B, 5, &[A], Retention::Admin);
+    let any = content(&mut w, W, 2, &[], PurgeBy::Writer);
+    let later = content(&mut w, B, 5, &[A], PurgeBy::Admin);
     let mut by_w = w.clone();
     by_w.request(W, 3, &[], T1, Names::Destroy);
     assert!(purged(&by_w, &all(&by_w, &[])).is_empty());
@@ -232,8 +232,8 @@ fn a_writers_request_takes_the_author_deltas_its_path_holds() {
     let mut w = base();
     w.edge(B, 1, &[A], T1, A2, Write, &[]);
     let as_a2 = w.content_as(K, 2, &[A2], T1, 1);
-    w.retain(as_a2, Retention::AuthorOrAdmin);
-    content(&mut w, H, 2, &[A], Retention::AuthorOrAdmin);
+    w.set_purge_by(as_a2, PurgeBy::AuthorOrAdmin);
+    content(&mut w, H, 2, &[A], PurgeBy::AuthorOrAdmin);
     w.request(K, 3, &[A2], T1, Names::Aspect);
     assert_eq!(purged(&w, &all(&w, &[])), Set::from([as_a2]));
 }
@@ -245,7 +245,7 @@ fn a_writers_request_takes_the_author_deltas_its_path_holds() {
 fn a_copy_is_purged_only_by_what_every_snapshot_states() {
     let mut w = base();
     w.edge(B, 1, &[A], T1, A2, Write, &[]);
-    let d = content(&mut w, B, 2, &[A], Retention::Writer);
+    let d = content(&mut w, B, 2, &[A], PurgeBy::Writer);
     let c1 = w.push(K, 3, &[A2], T1, Kind::Cover { carries: Set::from([d]) });
     w.push(K, 4, &[A2], T1, Kind::Cover { carries: Set::from([d]) });
     w.request(W, 5, &[], T1, Names::Aspect);
@@ -256,7 +256,7 @@ fn a_copy_is_purged_only_by_what_every_snapshot_states() {
     let snap = inp.commits.iter_mut().find(|x| x.id == c).unwrap();
     let PartKind::Delta(delta) = &mut snap.parts[0].kind else { panic!() };
     let DeltaClass::Snapshot { stated, .. } = &mut delta.class else { panic!() };
-    stated.insert(cid(w.cid(d)), Stated { ts: osis_base::Ts::make(osis_base::WallMs(2), 0).unwrap(), purge_author: tid(B), retention: PurgeBy::Admin });
+    stated.insert(cid(w.cid(d)), Stated { ts: osis_base::Ts::make(osis_base::WallMs(2), 0).unwrap(), purge_author: tid(B), purge_by: osis_base::PurgeBy::Admin });
     let p = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
     assert!(p.copies().contains(&cid(w.cid(d))) && p.purged_copies().is_empty());
 }
@@ -266,8 +266,8 @@ fn a_copy_is_purged_only_by_what_every_snapshot_states() {
 #[test]
 fn a_destruction_names_every_aspect() {
     let mut w = base();
-    let doc = content(&mut w, H, 2, &[A], Retention::Admin);
-    let note = content(&mut w, H, 2, &[A], Retention::Admin);
+    let doc = content(&mut w, H, 2, &[A], PurgeBy::Admin);
+    let note = content(&mut w, H, 2, &[A], PurgeBy::Admin);
     let by_aspect = w.request(B, 3, &[A], T1, Names::Aspect);
     let mut inp = super::input(&w, &all(&w, &[]));
     let note_id = inp.ids[&note];
@@ -323,7 +323,7 @@ fn a_removed_partys_request_could_still_hold_a_strangers_could_not() {
     assert_eq!((p.could_give(&qx, R::Admin), p.could_give(&qz, R::Write), p.could_give(&qw, R::Admin), p.could_give(&qw, R::Write)), (Some(true), Some(false), Some(false), Some(true)));
     let (wt, ht) = (tid(W), tid(H));
     assert_eq!(
-        [p.could_hold(&qw, PurgeBy::Admin, Some(&wt)), p.could_hold(&qw, PurgeBy::Writer, Some(&ht)), p.could_hold(&qw, PurgeBy::AuthorOrAdmin, Some(&wt)), p.could_hold(&qw, PurgeBy::AuthorOrAdmin, Some(&ht))],
+        [p.could_hold(&qw, osis_base::PurgeBy::Admin, Some(&wt)), p.could_hold(&qw, osis_base::PurgeBy::Writer, Some(&ht)), p.could_hold(&qw, osis_base::PurgeBy::AuthorOrAdmin, Some(&wt)), p.could_hold(&qw, osis_base::PurgeBy::AuthorOrAdmin, Some(&ht))],
         [Some(false), Some(true), Some(true), Some(false)]
     );
 }
@@ -337,7 +337,7 @@ fn a_removed_partys_request_could_still_hold_a_strangers_could_not() {
 fn a_backdated_cut_listing_a_request_gives_its_right_back() {
     let mut w = World::new(&[(H, A), (A, T1)]);
     w.edge(H, 1, &[], A, X, Admin, &[]);
-    let h = content(&mut w, H, 2, &[A], Retention::Admin);
+    let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
     let q = w.request(X, 3, &[A], T1, Names::Aspect);
     w.edge(H, 9, &[], A, X, Gone, &[]);
     assert!(purged(&w, &all(&w, &[])).is_empty());
@@ -354,7 +354,7 @@ fn a_backdated_cut_listing_a_request_gives_its_right_back() {
 #[test]
 fn a_misstated_fact_steers_a_purge_only_where_the_original_is_not_held() {
     let mut w = base();
-    let h = content(&mut w, H, 2, &[A], Retention::Admin);
+    let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
     let s = w.push(W, 3, &[], T1, Kind::Cover { carries: Set::from([h]) });
     w.purge(W, 4, &[], T1, W);
     let forge = |v: &View| {
@@ -363,7 +363,7 @@ fn a_misstated_fact_steers_a_purge_only_where_the_original_is_not_held() {
         let snap = inp.commits.iter_mut().find(|x| x.id == c).unwrap();
         let PartKind::Delta(delta) = &mut snap.parts[0].kind else { panic!() };
         let DeltaClass::Snapshot { stated, .. } = &mut delta.class else { panic!() };
-        stated.insert(cid(w.cid(h)), Stated { ts: osis_base::Ts::make(osis_base::WallMs(2), 0).unwrap(), purge_author: tid(W), retention: PurgeBy::Writer });
+        stated.insert(cid(w.cid(h)), Stated { ts: osis_base::Ts::make(osis_base::WallMs(2), 0).unwrap(), purge_author: tid(W), purge_by: osis_base::PurgeBy::Writer });
         let p = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
         (inp, p)
     };

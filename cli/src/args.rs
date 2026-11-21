@@ -80,7 +80,7 @@ pub struct ExpiryFlags {
 pub struct WriteFlags {
     #[command(flatten)]
     pub e: ExpiryFlags,
-    /// Who may purge it besides admins: admin|author_or_admin|writer, over the key's default (what history keeps is the thing's retention^.0)
+    /// Who may purge it besides admins: admin|author_or_admin|writer, over the key's default (what history keeps is the thing's retention^.0 setting)
     #[arg(long, value_name = "BY")]
     pub purge_by: Option<String>,
 }
@@ -544,9 +544,9 @@ pub enum ChatCmd {
     Create {
         #[arg(long, default_value = "")]
         name: String,
-        /// Who deletes besides admins: author-or-admin, admin (admins only), writer (anyone in it)
-        #[arg(long, default_value = "author-or-admin")]
-        purge: String,
+        /// Who deletes besides admins: author_or_admin, admin (admins only), writer (anyone in it)
+        #[arg(long, value_name = "BY", default_value = "author_or_admin")]
+        purge_by: String,
         /// What an edit does to the old text: purge, keep, off
         #[arg(long, default_value = "purge")]
         edit: String,

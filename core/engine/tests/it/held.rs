@@ -339,15 +339,14 @@ impl Conv<'_> {
     }
 }
 
-/// The model's retention of a wire retention: who may purge it.
-fn retention(r: &osis_schema::PurgeBy) -> hm::Retention {
+/// The model's purge-by of a wire purge-by.
+fn purge_by(r: &osis_schema::PurgeBy) -> hm::PurgeBy {
     use osis_base::PurgeBy as P;
-    let by = match r {
+    match r {
         P::Admin => hm::PurgeBy::Admin,
         P::AuthorOrAdmin => hm::PurgeBy::AuthorOrAdmin,
         P::Writer => hm::PurgeBy::Writer,
-    };
-    hm::Retention { by }
+    }
 }
 
 /// A `retention^.0` body as the model's setting: per AK (by its model name) its history and floor,
@@ -486,9 +485,9 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             if ok && ct::is_content(a.ak.as_str()) {
                 inside.insert((a.tid, a.ak.clone()), (thing, aspect));
             }
-            let retention = retention(&a.retention);
+            let purge_by = purge_by(&a.purge_by);
             let replaces = a.replaces.map(|o| cv.commit(&o));
-            let part = |body| hm::Part { thing, aspect, retention, body, stripped: BTreeSet::new(), replaces };
+            let part = |body| hm::Part { thing, aspect, purge_by, body, stripped: BTreeSet::new(), replaces };
             let state = match &meta {
                 Some(m) if m.missing(ai) => Some(hm::Body::Missing),
                 Some(m) if m.is_dropped(ai) => {

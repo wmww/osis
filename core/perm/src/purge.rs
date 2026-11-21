@@ -6,7 +6,7 @@ use crate::types::Point;
 use osis_base::{PurgeBy, Role, Tid};
 
 impl Timeline {
-    /// §6: may `requester` purge a delta of `thing` with retention `by` at `at`? `author` is the
+    /// §6: may `requester` purge a delta of `thing` with purge-by `by` at `at`? `author` is the
     /// delta's purge author (its commit's path names it, checked by validity). Each member of the
     /// set `by` names gives the right alone: the thing's current admins; any node with write on
     /// `author` while `author` holds write on the thing; any current writer.

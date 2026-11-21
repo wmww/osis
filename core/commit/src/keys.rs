@@ -21,7 +21,7 @@ pub trait Secrets {
     fn write_key(&self, tid: &Tid) -> Option<VerifyingKey>;
 }
 
-/// Delete keys of a delta on `tid` with retention `r`: one per level its retention calls for; a
+/// Delete keys of a delta on `tid` with purge-by `r`: one per level its purge-by calls for; a
 /// missing one is an error.
 pub fn delete_keys(s: &dyn Secrets, tid: &Tid, r: &PurgeBy) -> Result<Vec<DeleteKey>, Error> {
     delete_levels(r)

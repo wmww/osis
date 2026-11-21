@@ -44,7 +44,7 @@ impl DynamicAspectKey {
     /// Who besides admins may purge a write through this key, unless the write says otherwise
     /// (`AspectWrite::purge_by`): as its schema declares, else only admins.
     pub fn default_purge_by(&self) -> crate::PurgeBy {
-        self.defaults().retention
+        self.defaults().purge_by
     }
 }
 

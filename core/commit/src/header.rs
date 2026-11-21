@@ -123,7 +123,7 @@ pub struct AspectEntry {
     /// Counter range `[lo, hi)`; `0, 0` for kinds without own writes.
     pub lo: u64,
     pub hi: u64,
-    pub retention: PurgeBy,
+    pub purge_by: PurgeBy,
     /// Ascending indices into the header's delete keys.
     pub keys: Vec<usize>,
     /// The delta hash of the aspect's one delta.
@@ -503,7 +503,7 @@ fn put_aspect(out: &mut Vec<u8>, a: &AspectEntry) {
     put_text(out, a.ak.as_str());
     put_uint(out, a.lo);
     put_uint(out, a.hi);
-    put_uint(out, a.retention as u64);
+    put_uint(out, a.purge_by as u64);
     put_idxs(out, &a.keys);
     put_bytes(out, &a.hash);
     // `[]`, `[id]`, or `[id, floor]` with the floor above 0 (spec/wire.md §4)
@@ -802,8 +802,8 @@ fn read_idxs(r: &mut Reader<'_>) -> Result<Vec<usize>, Error> {
     read_items(r, 1, |r| usize::try_from(r.uint()?).map_err(|_| Error::Malformed("index too large")))
 }
 
-fn read_retention(r: &mut Reader<'_>) -> Result<PurgeBy, Error> {
-    let by = PurgeBy::from_id(r.uint()?).ok_or(Error::Malformed("purgeable-by class"))?;
+fn read_purge_by(r: &mut Reader<'_>) -> Result<PurgeBy, Error> {
+    let by = PurgeBy::from_id(r.uint()?).ok_or(Error::Malformed("purge-by class"))?;
     Ok(by)
 }
 
@@ -812,7 +812,7 @@ fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {
         return Err(Error::Malformed("aspect arity"));
     }
     let (tid, ak, lo, hi) = (read_tid(r)?, read_ak(r)?, r.uint()?, r.uint()?);
-    let (retention, keys) = (read_retention(r)?, read_idxs(r)?);
+    let (purge_by, keys) = (read_purge_by(r)?, read_idxs(r)?);
     let hash = r.fixed::<32>()?;
     let (replaces, original_floor) = match r.array()? {
         0 => (None, 0),
@@ -826,7 +826,7 @@ fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {
         }
         _ => return Err(Error::Malformed("aspect replaces arity")),
     };
-    Ok(AspectEntry { tid, ak, lo, hi, retention, keys, hash, replaces, original_floor })
+    Ok(AspectEntry { tid, ak, lo, hi, purge_by, keys, hash, replaces, original_floor })
 }
 
 fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {

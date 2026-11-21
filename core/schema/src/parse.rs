@@ -7,7 +7,7 @@
 //! item    := doc* ( "type" IDENT ("<" IDENT,+ ">")? "=" type ";"
 //!                 | mod* "ephemeral"? "admin"? ("aspect" | "signal") AK ":" type succeeds? ";" )
 //! mod     := "synthetic" | "guaranteed"
-//!          | "purgeable_by" "(" IDENT ("," IDENT)? ")" | "expires" "(" DUR ")"
+//!          | "purge_by" "(" IDENT ("," IDENT)? ")" | "expires" "(" DUR ")"
 //! type    := IDENT ("<" type,+ ">")? | "struct" "{" field,* "}" | "enum" "{" case,* "}"
 //! field   := doc* (IDENT INT ":" type ("=" lit)? succeeds? | "reserved" ids)
 //! case    := doc* (IDENT INT ("(" type ")")? succeeds? | "reserved" ids)
@@ -186,7 +186,7 @@ impl<'a> Parser<'a> {
                 }
                 Tok::Ident(k) if k == "revision" => return self.err_at(at, "duplicate revision"),
                 Tok::Ident(_) => {
-                    let mut def = AspectDef { ty: Type::Any, retention: PurgeBy::default(), expires: None, flags: BTreeSet::new(), succeeds: BTreeSet::new(), doc: item_doc };
+                    let mut def = AspectDef { ty: Type::Any, purge_by: PurgeBy::default(), expires: None, flags: BTreeSet::new(), succeeds: BTreeSet::new(), doc: item_doc };
                     self.modifiers(&mut def)?;
                     let (ephemeral, admin) = (self.eat_kw("ephemeral"), self.eat_kw("admin"));
                     let kat = self.here();
@@ -246,7 +246,7 @@ impl<'a> Parser<'a> {
         loop {
             let at = self.here();
             let Tok::Ident(name) = self.tok().clone() else { return Ok(()) };
-            if !matches!(name.as_str(), "synthetic" | "guaranteed" | "purgeable_by" | "expires") {
+            if !matches!(name.as_str(), "synthetic" | "guaranteed" | "purge_by" | "expires") {
                 return Ok(());
             }
             self.pos += 1;
@@ -260,7 +260,7 @@ impl<'a> Parser<'a> {
                 "guaranteed" => {
                     def.flags.insert(Flag::Guaranteed);
                 }
-                "purgeable_by" => {
+                "purge_by" => {
                     self.expect('(')?;
                     let mut who = vec![self.ident("writer, or author, admin")?];
                     if self.eat(',') && !self.is(')') {
@@ -269,12 +269,12 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(')')?;
                     let who: Vec<&str> = who.iter().map(String::as_str).collect();
-                    def.retention = match who.as_slice() {
+                    def.purge_by = match who.as_slice() {
                         // the default is unnamed: admins alone
-                        ["admin"] => return self.err_at(at, "admins alone may purge by default: leave purgeable_by out"),
+                        ["admin"] => return self.err_at(at, "admins alone may purge by default: leave purge_by out"),
                         ["writer"] => PurgeBy::Writer,
                         ["author", "admin"] | ["admin", "author"] => PurgeBy::AuthorOrAdmin,
-                        _ => return self.err_at(at, "purgeable_by takes writer, or author, admin"),
+                        _ => return self.err_at(at, "purge_by takes writer, or author, admin"),
                     };
                 }
                 _ => {

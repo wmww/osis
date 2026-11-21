@@ -427,7 +427,7 @@ fn content(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, against: Option
         None => DeltaClass::Plain,
     };
     let aspect = Ak::new(if against.is_some() { "addenda.0" } else { "doc.0" }).unwrap();
-    let d = Delta { aspect, needs: Role::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class };
+    let d = Delta { aspect, needs: Role::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class };
     Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }] }
 }
 

@@ -35,11 +35,11 @@ fn carrierless(writes: Vec<Mutate>) -> (LocalPeer, Tid, Vec<osis_engine::local_p
 
 type Mutate = Box<dyn Fn(&mut Mutation, Tid)>;
 
-/// A commit writing `GONE` (under retention `r`, when given) and, when `reg`, `REG`.
+/// A commit writing `GONE` (under purge-by `r`, when given) and, when `reg`, `REG`.
 fn mixed(gone: &'static str, reg: Option<&'static str>, r: Option<PurgeBy>) -> Mutate {
     Box::new(move |m, t| {
         if let Some(r) = r {
-            m.retention(t, &GONE, r).unwrap();
+            m.purge_by(t, &GONE, r).unwrap();
         }
         m.set(t, &GONE, &s(gone)).unwrap();
         if let Some(v) = reg {
@@ -93,7 +93,7 @@ fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "the part stays invalid");
     assert_eq!(e.get(&t, &ak("t:gone.0")).unwrap(), None, "so does the later write");
-    assert!(osis_commit::retention::fixed_retention("roles.0").is_some());
+    assert!(osis_commit::retention::fixed_purge_by("roles.0").is_some());
 }
 
 /// As node-sync's `drop_covered` for a right holder past keep at least (the bodies here are
@@ -139,7 +139,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
     let put = move |k: &'static str, reg: bool, exp: bool| -> Mutate {
         Box::new(move |m, t| {
             let map = ak("t:gonemap.0");
-            m.retention(t, &map, by_writer().unwrap()).unwrap();
+            m.purge_by(t, &map, by_writer().unwrap()).unwrap();
             if exp {
                 m.expires(t, &map, WallMs(far)).unwrap();
             }
@@ -202,14 +202,14 @@ fn expired_entry_keeps_nested_write_alike_spec_crdt_4_7() {
     }
     let put = |v: &str| osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k"))], op: osis_crdt::Op::Set(s(v)) };
     let mut m = Mutation::new();
-    m.retention(t, &map, r).unwrap();
+    m.purge_by(t, &map, r).unwrap();
     m.expires(t, &map, WallMs(T0.0 + 3_600_000)).unwrap();
     m.op(t, &map, put("a")).unwrap();
     let c1 = lp.peers[0].commit(m).unwrap().unwrap();
     let p1 = package_for(&mut lp, 0, 1, c1);
     lp.deliver(1, &p1).unwrap();
     let mut m = Mutation::new();
-    m.retention(t, &map, r).unwrap();
+    m.purge_by(t, &map, r).unwrap();
     m.op(t, &map, put("b")).unwrap();
     let c2 = lp.peers[1].commit(m).unwrap().unwrap();
     assert_eq!(lp.peers[1].engine.header(&c2).unwrap().expires, None, "the put's own expiry");

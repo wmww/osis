@@ -208,7 +208,7 @@ impl World {
                 }
                 // purgeable by every writer, or the untyped default
                 if r.below(3) < 2 {
-                    m.retention(t, &aks[asp], PurgeBy::Writer).unwrap();
+                    m.purge_by(t, &aks[asp], PurgeBy::Writer).unwrap();
                 }
             }
             3 | 4 => {
@@ -981,8 +981,8 @@ fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: os
     let rec = w.lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
     let sec = Forged(rec);
     let author = w.lp.peers[by].engine.me();
-    let retention = osis_commit::retention::snapshot_retention(ak.as_str());
-    let keys = osis_commit::delete_keys(&sec, &t, &retention).unwrap();
+    let purge_by = osis_commit::retention::snapshot_purge_by(ak.as_str());
+    let keys = osis_commit::delete_keys(&sec, &t, &purge_by).unwrap();
     let blind = [9u8; 16];
     let framing = osis_blob::Framing { thing: t, dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), class: if memory { osis_blob::Class::Ephemeral } else { osis_blob::Class::Durable } };
     let mut blobs = osis_blob::MemoryBlobs::default();
@@ -1009,7 +1009,7 @@ fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: os
         bytes
     };
     let mut aw = AspectWrite::new(t, ak.clone(), 0, 0, bytes);
-    aw.retention = retention;
+    aw.purge_by = purge_by;
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
     cb.blind = Some(blind);

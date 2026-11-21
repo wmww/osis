@@ -4,7 +4,7 @@ use crate::cbor::strictly_ascending;
 use crate::header::{EphClass, FOREVER, Form, Header, Kind, Links, ListField, PurgeItem, aspect_order, purge_bytes};
 use crate::path::{Path, Paths};
 use osis_base::format::DELETE_AUTHOR;
-use crate::retention::{CREATED, EPHEMERAL_RETENTION, delete_levels, fixed_retention};
+use crate::retention::{CREATED, EPHEMERAL_PURGE_BY, delete_levels, fixed_purge_by};
 use crate::Error;
 use osis_schema::PurgeBy;
 use osis_schema::core_types::is_role_class;
@@ -88,18 +88,18 @@ impl Header {
             if kind == Kind::RoleSnapshot && osis_schema::core_types::never_compacted(ak) {
                 return Err(Error::Invalid("compaction snapshot of roles.0"));
             }
-            if let Some(f) = fixed_retention(ak) {
-                ord(a.retention == f, "retention of a fixed-retention aspect")?;
-            } else if kind == Kind::ContentSnapshot && a.retention != PurgeBy::Writer {
+            if let Some(f) = fixed_purge_by(ak) {
+                ord(a.purge_by == f, "purge-by of a fixed-retention aspect")?;
+            } else if kind == Kind::ContentSnapshot && a.purge_by != PurgeBy::Writer {
                 return Err(Error::Invalid("compaction-snapshot delta not purgeable by writer"));
-            } else if ak == CREATED && a.retention != PurgeBy::Admin {
+            } else if ak == CREATED && a.purge_by != PurgeBy::Admin {
                 // only an admin destroys a thing (spec/commits.md §5 Destruction)
                 return Err(Error::Invalid("created.0 not purgeable by admin"));
             }
             // levels as listed (ascending, since keys sort by level first): exactly those the
-            // retention calls for
-            if levels != delete_levels(&a.retention) {
-                return Err(Error::Invalid("delete levels do not match the retention"));
+            // purge-by calls for
+            if levels != delete_levels(&a.purge_by) {
+                return Err(Error::Invalid("delete levels do not match the purge-by"));
             }
         }
         // expiry: one per commit, on deltas that may expire (spec/commits.md §6)
@@ -108,7 +108,7 @@ impl Header {
             if kind.is_role() {
                 return Err(Error::Invalid("expires on a role commit"));
             }
-            if self.aspects.iter().any(|a| fixed_retention(a.ak.as_str()).is_some()) {
+            if self.aspects.iter().any(|a| fixed_purge_by(a.ak.as_str()).is_some()) {
                 return Err(Error::Invalid("expires on a commit with a fixed-retention aspect"));
             }
             if t <= wall {
@@ -183,8 +183,8 @@ impl Header {
             if !self.purge.is_empty() || self.links != Links::default() {
                 return Err(Error::Invalid("ephemeral commit with a purge or linked lists"));
             }
-            if self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION) {
-                return Err(Error::Invalid("ephemeral commit with a retention other than writer"));
+            if self.aspects.iter().any(|a| a.purge_by != EPHEMERAL_PURGE_BY) {
+                return Err(Error::Invalid("ephemeral commit with a purge-by other than writer"));
             }
             // relay-only: snapshot deltas of signals, never stored, so nothing to expire or undo
             if c == EphClass::Relay && (kind != Kind::ContentSnapshot || self.expires.is_some() || self.undoes.is_some()) {

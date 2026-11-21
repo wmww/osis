@@ -265,9 +265,9 @@ A **holder actor** of A is a holder for keys of A (its mint admin included while
 - **Link**: (link content hash 32, blob ID 32, suite byte || blob key 33, prefix salt 16, delete keys): the delete keys are those of the blob's one commitment group (§7), by level ascending, as its writer claims them: a holder of the blob checks them against its prefix before using them (spec/sync-ids.md §1).
 
 ## 7. Delete keys
-- **Levels** of a delta, by its retention (spec/commits.md §5), one per member of its set:
+- **Levels** of a delta, by its purge-by (spec/commits.md §5), one per member of its set:
 
-  | level | retention set members | secret |
+  | level | purge-by set members | secret |
   |---|---|---|
   | 1, admin | `admin`, `author_or_admin`, `writer` | the admin secret of its thing |
   | 2, author | `author_or_admin`, `writer` | the write secret of the commit's one purge author (spec/permissions.md §6), at the purge author's delete base (a key actor's: its signing key) |
@@ -281,7 +281,7 @@ A **holder actor** of A is a holder for keys of A (its mint admin included while
   - the base's delete key of the newest current epoch of that level's secret the writer holds;
   - the `delete_key` of the base's `keys.0` keyset of that role it holds;
   - A linked header list's chunks carry one empty group (spec/wire.md §4, §5): no delete key covers them; they go by the delete key or at their expiry (spec/sync-ids.md §6 Delete).
-- Every delta lists exactly the levels its retention calls for (spec/wire.md §4).
+- Every delta lists exactly the levels its purge-by calls for (spec/wire.md §4).
 - **Commitment** in a blob prefix = level byte || A' = h·A, h = `kdf("delete blind", A, prefix salt || blind)` read as 64 XOF bytes, little-endian, mod ℓ (the order of B).
   - A is taken as its 32-byte encoding.
   - `blind` of a commit blob is the 16 random bytes of its header. A blob reached by a link (a chunk, tree node, page or link page, of a value or of a header list) has its own **link blind**, the first 16 bytes of `kdf("link blind", blob key)`, and its `blind` is its **thing blind**, the first 16 bytes of `kdf("thing blind", link blind, tid)`, tid that of the thing whose dedup secret keys its link (a header list's: the header's `signer`): whoever holds a link to the blob and knows its thing can compute its commitments, nobody else, and commitments computed for another thing are not the blob's.

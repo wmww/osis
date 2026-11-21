@@ -604,7 +604,7 @@ fn chat_commands_plan_cli() {
     assert!(s.ok(&["--json", "chat", "read", &c]).out.contains(&format!("\"deleted_by\":\"{me}\"")));
     assert_ne!(s.code(&["chat", "resend", &c, &two]), 0, "delivered: nothing to send again");
     assert!(s.ok(&["chat", "participants", &c]).out.contains("Admin"));
-    assert_ne!(s.code(&["chat", "create", "--purge", "x"]), 0);
+    assert_ne!(s.code(&["chat", "create", "--purge-by", "x"]), 0);
     assert_eq!(s.code(&["chat", "edit", &c, "not/an/id", "x"]), 2, "an unparsable id is a usage error");
     // keep: earlier versions in `earlier`, newest first; off: refused
     let k = s.ok(&["chat", "create", "--edit", "keep"]).line().to_string();

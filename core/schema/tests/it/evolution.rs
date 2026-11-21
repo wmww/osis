@@ -78,7 +78,7 @@ fn additive_changes_pass_spec_versioning_4() {
         ("aspect n:s.0: string;", "aspect n:s.0: text;"),
         ("aspect n:s.0: string;", "aspect n:s.0: markdown;"),
         ("c 2: option<int>, reserved 5", "reserved (2, 5)"),
-        ("aspect n:n.0: int;", "/// Docs change freely.\npurgeable_by(writer) expires(1d) aspect n:n.0: int;"),
+        ("aspect n:n.0: int;", "/// Docs change freely.\npurge_by(writer) expires(1d) aspect n:n.0: int;"),
         ("ephemeral signal n:sig+~0: int;", "ephemeral signal n:sig+~0: int;\naspect n:more.0: set<weak>;"),
         ("type t = struct", "type t2 = struct { q 0: int };\ntype t = struct"),
     ] {
@@ -162,5 +162,5 @@ fn value_form_and_codegen_bytes_pinned_spec_data_model_10() {
     let src = include_str!("../example.osis");
     let s = parse("example.osis", src).unwrap();
     let code = generate(&s, "example.osis", src).unwrap().code;
-    assert_eq!((hex(&s.canonical_bytes()).as_str(), hex(code.as_bytes()).as_str()), ("47bec1460a779e0e", "c82e39e8cfdc2ee8"));
+    assert_eq!((hex(&s.canonical_bytes()).as_str(), hex(code.as_bytes()).as_str()), ("47bec1460a779e0e", "46136966f123aad8"));
 }

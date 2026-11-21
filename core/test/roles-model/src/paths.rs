@@ -139,7 +139,7 @@ pub enum Names {
 
 /// Who may purge a delta (spec/commits.md §5 Who and how long), fixed when it is written.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Retention {
+pub enum PurgeBy {
     Admin,
     AuthorOrAdmin,
     Writer,
@@ -202,7 +202,7 @@ pub struct Commit {
     /// The purge author: an index into [signer, path..] (notes/write-path-design.md §1).
     pa: usize,
     /// Who may purge its delta (content only; `Rules::purge_classes` reads it).
-    pub ret: Retention,
+    pub purge_by: PurgeBy,
     /// A compaction snapshot marked as its writer's own cover (`Rules::own_cover` reads it).
     pub own: bool,
     /// The commit this part belongs to: the ID of its first part (its own for a commit of one
@@ -373,10 +373,10 @@ pub struct Rules {
     /// How a write putting an end on a standing admin edge (or shortening its end) is judged.
     pub until: Until,
     /// Purge rights by class (notes/a1-spec/permissions.md §6, *taken*): a request holds, over each
-    /// delta it names, each member of the delta's retention set it holds: `admin` where it is valid
+    /// delta it names, each member of the delta's purge-by set it holds: `admin` where it is valid
     /// as a delta needing admin along its path, `writer` as one needing write, `author` as one
     /// needing write whose chain holds the delta's purge author; every selector (`Names`) read.
-    /// False (`fixed`): the `author` class alone, by author alone, retention unread.
+    /// False (`fixed`): the `author` class alone, by author alone, purge-by unread.
     pub purge_classes: bool,
     /// A request reaches the writes a valid cover shows of a commit the node does not hold (spec/
     /// commits.md §5 Purge, Without the header: judged by the facts the cover states, here the
@@ -645,7 +645,7 @@ impl World {
         let well = all.iter().collect::<BTreeSet<_>>().len() == all.len() && marks_ok;
         let rest = if well { std::iter::once((key, signer)).chain(all.windows(2).enumerate().flat_map(|(k, p)| if direct.contains(&k) { vec![(p[0], p[1])] } else { self.joins(p[0], p[1]) })).collect() } else { vec![] };
         let i = self.commits.len();
-        self.commits.push(Commit { signer, key, ts, path: path.to_vec(), on, kind, rest, well, leave, pa: 0, ret: Retention::AuthorOrAdmin, own: false, cid: i, own_path: false, direct: direct.to_vec() });
+        self.commits.push(Commit { signer, key, ts, path: path.to_vec(), on, kind, rest, well, leave, pa: 0, purge_by: PurgeBy::AuthorOrAdmin, own: false, cid: i, own_path: false, direct: direct.to_vec() });
         i
     }
     /// One commit of several edge writes on `on` along one path (spec/commits.md §2). Its parts
@@ -788,8 +788,8 @@ impl World {
         self.push(signer, ts, path, on, Kind::Purge { names })
     }
     /// Sets who may purge content `i`.
-    pub fn retain(&mut self, i: Id, r: Retention) {
-        self.commits[i].ret = r;
+    pub fn set_purge_by(&mut self, i: Id, r: PurgeBy) {
+        self.commits[i].purge_by = r;
     }
     /// Marks cover `i` as its writer's own cover.
     pub fn own_cover(&mut self, i: Id) {
@@ -1799,7 +1799,7 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
 }
 
 /// The content a valid purge request holds a right over (notes/a1-spec/permissions.md §6). Under
-/// `purge_classes` each named delta is judged alone, by the members of its retention set the request
+/// `purge_classes` each named delta is judged alone, by the members of its purge-by set the request
 /// holds (`holds`); else by the `author` class alone (a request by author P, valid, holds the right
 /// over the earlier deltas on its thing whose purge author is exactly P, P on its chain). Under
 /// `purge_copies` the writes a valid cover shows of a commit not held (`copied`) are named too.
@@ -1840,10 +1840,10 @@ fn purges(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, copied: &Se
             named(d)
                 && (admin
                     || (write
-                        && match w.commits[d].ret {
-                            Retention::Admin => false,
-                            Retention::AuthorOrAdmin => on_chain(d),
-                            Retention::Writer => true,
+                        && match w.commits[d].purge_by {
+                            PurgeBy::Admin => false,
+                            PurgeBy::AuthorOrAdmin => on_chain(d),
+                            PurgeBy::Writer => true,
                         }))
         }));
     }

@@ -70,7 +70,7 @@ fn edge_part(path: &[u8], on: u8, holder: u8, value: Option<Edge>, frontier: Opt
     PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: tid(holder), value, frontier, remains: None, adminless: false }) }
 }
 fn content_part(path: &[u8], on: u8) -> PPart {
-    let delta = Delta { aspect: Ak::new("doc.0").unwrap(), needs: Role::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain };
+    let delta = Delta { aspect: Ak::new("doc.0").unwrap(), needs: Role::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain };
     PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Delta(delta) }
 }
 

@@ -510,7 +510,7 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
     while let Some(t) = tx.core.settings_due.pop_first() {
         let aspects: Vec<Ak> = tx.core.ix.by_aspect.range((t, Ak::MIN)..).take_while(|((x, _), _)| *x == t).map(|((_, a), _)| a.clone()).collect();
         for ak in aspects {
-            if osis_commit::retention::fixed_retention(ak.as_str()).is_some() {
+            if osis_commit::retention::fixed_purge_by(ak.as_str()).is_some() {
                 continue;
             }
             let kept = history::of(tx.core, &t, &ak);
@@ -1851,7 +1851,7 @@ mod tests {
             for v in [1, 2] {
                 lp.advance(1000);
                 let mut m = Mutation::new();
-                m.set(t, &x, &Value::Int(v)).unwrap().retention(t, &x, none).unwrap();
+                m.set(t, &x, &Value::Int(v)).unwrap().purge_by(t, &x, none).unwrap();
                 puts.push(lp.peers[0].commit(m).unwrap().unwrap());
             }
             // a first holder by the flow gives `t` secrets of its own, its `keys.0` in that
@@ -2471,7 +2471,7 @@ mod tests {
         // its write as it holds write on `t` and admin on `u`, stamped after the demotion: its
         // part on `t` invalid at peer 0
         let mut m = Mutation::new();
-        m.set(t, &y, &Value::Int(1)).unwrap().retention(t, &y, osis_schema::PurgeBy::Writer).unwrap();
+        m.set(t, &y, &Value::Int(1)).unwrap().purge_by(t, &y, osis_schema::PurgeBy::Writer).unwrap();
         m.set(u, &y, &Value::Int(1)).unwrap();
         lp.advance(10);
         let own = lp.peers[1].commit(m).unwrap().unwrap();
@@ -2523,7 +2523,7 @@ mod tests {
         lp.advance(10);
         let (x, z) = (Ak::new("x:m.0").unwrap(), Ak::new("x:z.0").unwrap());
         let mut m = Mutation::new();
-        m.set(t, &x, &Value::Int(1)).unwrap().retention(t, &x, osis_schema::PurgeBy::Writer).unwrap();
+        m.set(t, &x, &Value::Int(1)).unwrap().purge_by(t, &x, osis_schema::PurgeBy::Writer).unwrap();
         let c1 = lp.peers[1].commit(m).unwrap().unwrap();
         lp.advance(10);
         let mut m = Mutation::new();

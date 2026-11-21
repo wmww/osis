@@ -252,7 +252,7 @@ fn ew(on: u32, path: &[u32], holder: u32, role: Option<Role>, list: &[u64]) -> P
 }
 
 fn role_delta(on: u32, path: &[u32]) -> Part {
-    let d = Delta { aspect: Ak::new("keys.0").unwrap(), needs: Role::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::RoleClass };
+    let d = Delta { aspect: Ak::new("keys.0").unwrap(), needs: Role::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::RoleClass };
     Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
@@ -339,16 +339,16 @@ fn every_forget_of_a_world_of_every_case_reads_as_from_scratch() {
     }
 }
 
-/// A `doc.0` delta on `on` along `path` of `retention`, its signer its purge author.
-fn doc(on: u32, path: &[u32], retention: PurgeBy) -> Part {
-    let d = Delta { aspect: Ak::new("doc.0").unwrap(), needs: Role::Write, purge_author: 0, retention, class: DeltaClass::Plain };
+/// A `doc.0` delta on `on` along `path` of `purge_by`, its signer its purge author.
+fn doc(on: u32, path: &[u32], purge_by: PurgeBy) -> Part {
+    let d = Delta { aspect: Ak::new("doc.0").unwrap(), needs: Role::Write, purge_author: 0, purge_by, class: DeltaClass::Plain };
     Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
 /// A purge request on `on` along `path` naming `names` on `doc.0` (a destruction: on `created.0`).
 fn req(on: u32, path: &[u32], names: Names) -> Part {
     let aspect = Ak::new(if names == Names::Destroy { "created.0" } else { "doc.0" }).unwrap();
-    let d = Delta { aspect, needs: Role::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names } };
+    let d = Delta { aspect, needs: Role::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names } };
     Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 

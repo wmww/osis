@@ -481,13 +481,13 @@ fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], ts: Ts, nonce: [u8; osis_crdt::SE
         };
         if let Some((f, r, e)) = out {
             copies.extend(e);
-            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, replaces: None, original_floor: 0, frontiers: None, chunks: Vec::new() });
+            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, purge_by: None, expires: None, replaces: None, original_floor: 0, frontiers: None, chunks: Vec::new() });
         }
     }
     Ok((deltas, copies))
 }
 
-/// The schema an undo writes `ak` under, so its writes take the aspect's retention and expiry
+/// The schema an undo writes `ak` under, so its writes take the aspect's purge-by and expiry
 /// defaults as any write of it does: the registered one, else the core schema for a core key.
 fn schema_of(core: &Core, ak: &Ak) -> Option<std::sync::Arc<osis_schema::Schema>> {
     core.schemas.get(ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())))
@@ -611,7 +611,7 @@ mod tests {
         let x = Ak::new("x:r.0").unwrap();
         let set = |lp: &mut LocalPeer, i: usize, v: i64| {
             let mut m = Mutation::new();
-            m.set(t, &x, &Value::Int(v)).unwrap().retention(t, &x, keep).unwrap();
+            m.set(t, &x, &Value::Int(v)).unwrap().purge_by(t, &x, keep).unwrap();
             lp.advance(10);
             lp.peers[i].commit(m).unwrap().unwrap()
         };
@@ -652,7 +652,7 @@ mod tests {
     /// as an Undo button asks on each redraw: `(bodies read, whole states copied)`. The check
     /// agrees with the revert.
     fn check_cost(shape: &str, n: usize) -> (u64, u64) {
-        static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; purgeable_by(author, admin) aspect k:t.0: text;\n");
+        static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; purge_by(author, admin) aspect k:t.0: text;\n");
         let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:t.0", &TS);
         let x = Ak::new(if shape == "map" { "x:m.0" } else { "k:t.0" }).unwrap();
         let history = if shape == "whole" { osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None } } else { osis_schema::History::Keep { until: None, after: Some(86_400_000) } };
@@ -686,9 +686,9 @@ mod tests {
             let mut m = Mutation::new();
             if shape == "map" {
                 let path = if i + 1 >= n { vec![] } else { vec![osis_crdt::PathSeg::Key(Value::Str(i.to_string()))] };
-                m.op(t, &x, PathOp { path, op }).unwrap().retention(t, &x, keep).unwrap();
+                m.op(t, &x, PathOp { path, op }).unwrap().purge_by(t, &x, keep).unwrap();
             } else {
-                m.op(t, &key, PathOp { path: vec![], op }).unwrap().retention(t, &x, keep).unwrap();
+                m.op(t, &key, PathOp { path: vec![], op }).unwrap().purge_by(t, &x, keep).unwrap();
             }
             lp.peers[0].commit(m).unwrap().unwrap()
         };
@@ -729,14 +729,14 @@ mod tests {
     fn put(lp: &mut LocalPeer, who: usize, t: osis_base::Tid, x: &Ak, k: &str, v: i64, keep: osis_schema::PurgeBy) -> osis_base::CommitId {
         lp.advance(10);
         let mut m = Mutation::new();
-        m.op(t, x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str(k.into()))], op: Op::Put(Value::Int(v)) }).unwrap().retention(t, x, keep).unwrap();
+        m.op(t, x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str(k.into()))], op: Op::Put(Value::Int(v)) }).unwrap().purge_by(t, x, keep).unwrap();
         lp.peers[who].commit(m).unwrap().unwrap()
     }
 
     fn replace(lp: &mut LocalPeer, who: usize, t: osis_base::Tid, x: &Ak, v: Value, keep: osis_schema::PurgeBy, expires: Option<WallMs>) -> osis_base::CommitId {
         lp.advance(10);
         let mut m = Mutation::new();
-        m.op(t, x, PathOp { path: vec![], op: Op::Replace(v) }).unwrap().retention(t, x, keep).unwrap();
+        m.op(t, x, PathOp { path: vec![], op: Op::Replace(v) }).unwrap().purge_by(t, x, keep).unwrap();
         if let Some(e) = expires {
             m.expires(t, x, e).unwrap();
         }
@@ -749,7 +749,7 @@ mod tests {
     // `l` the join leaves out cannot make it absent. Each revert is checked against the whole join.
     #[test]
     fn pre_state_presence_from_other_positions() {
-        static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; purgeable_by(author, admin) aspect k:s.0: struct { m 0: map<string, int>, l 1: list<int> };\n");
+        static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; purge_by(author, admin) aspect k:s.0: struct { m 0: map<string, int>, l 1: list<int> };\n");
         let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:s.0", &TS);
         let x = Ak::new("k:s.0").unwrap();
         let keep = osis_schema::PurgeBy::Writer;
@@ -769,7 +769,7 @@ mod tests {
                 for op in ops {
                     m.op(t, &key, op).unwrap();
                 }
-                m.retention(t, &x, keep).unwrap();
+                m.purge_by(t, &x, keep).unwrap();
                 lp.peers[0].commit(m).unwrap().unwrap()
             };
             let mut first = vec![PathOp { path: l(), op: Op::Insert { at: 0, items: vec![Value::Int(5)] } }];
@@ -837,7 +837,7 @@ mod tests {
                 "purged" => {
                     lp.advance(10);
                     let mut m = Mutation::new();
-                    m.purge_commit(r, t, x.clone()).op(t, &x, PathOp { path: vec![], op: Op::Replace(map_of(&[("p", 1)])) }).unwrap().retention(t, &x, keep).unwrap();
+                    m.purge_commit(r, t, x.clone()).op(t, &x, PathOp { path: vec![], op: Op::Replace(map_of(&[("p", 1)])) }).unwrap().purge_by(t, &x, keep).unwrap();
                     lp.peers[0].commit(m).unwrap();
                 }
                 _ => {
@@ -893,7 +893,7 @@ mod tests {
     fn remove_k(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, keep: osis_schema::PurgeBy) -> crate::error::Result<Option<osis_base::CommitId>> {
         lp.advance(10);
         let mut m = Mutation::new();
-        m.op(t, x, PathOp { path: Vec::new(), op: Op::Remove(Value::Str("k".into())) }).unwrap().retention(t, x, keep).unwrap();
+        m.op(t, x, PathOp { path: Vec::new(), op: Op::Remove(Value::Str("k".into())) }).unwrap().purge_by(t, x, keep).unwrap();
         let rm = lp.peers[0].commit(m).unwrap().unwrap();
         lp.peers[0].engine.revert(&rm)
     }
@@ -905,7 +905,7 @@ mod tests {
     fn remove_k_then_keep(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, keep: osis_schema::PurgeBy) -> crate::error::Result<Option<osis_base::CommitId>> {
         lp.advance(10);
         let mut m = Mutation::new();
-        m.op(t, x, PathOp { path: Vec::new(), op: Op::Remove(Value::Str("k".into())) }).unwrap().retention(t, x, keep).unwrap();
+        m.op(t, x, PathOp { path: Vec::new(), op: Op::Remove(Value::Str("k".into())) }).unwrap().purge_by(t, x, keep).unwrap();
         let rm = lp.peers[0].commit(m).unwrap().unwrap();
         lp.advance(10);
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
@@ -978,7 +978,7 @@ mod tests {
         m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), day)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let mut m = Mutation::new();
-        m.set(t, &x, &Value::Map([(Value::Str("k".into()), Value::Int(1))].into_iter().collect())).unwrap().retention(t, &x, keep).unwrap();
+        m.set(t, &x, &Value::Map([(Value::Str("k".into()), Value::Int(1))].into_iter().collect())).unwrap().purge_by(t, &x, keep).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.sync_all().unwrap();
         lp.advance(10);
@@ -1072,7 +1072,7 @@ mod tests {
             let (mut lp, t, _, keep) = two();
             let x = Ak::new("x:n.0").unwrap();
             let mut m = Mutation::new();
-            m.set(t, &x, &map_of(&[("j", 1)])).unwrap().retention(t, &x, keep).unwrap();
+            m.set(t, &x, &map_of(&[("j", 1)])).unwrap().purge_by(t, &x, keep).unwrap();
             lp.peers[0].commit(m).unwrap().unwrap();
             lp.sync(0, 1).unwrap();
             lp.advance(10);

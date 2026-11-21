@@ -38,7 +38,7 @@ pub enum Error {
     /// the call's `leave_adminless` option says it is meant.
     LeavesNoAdmin { tid: Tid },
     /// What was asked cannot be done as asked: a malformed argument (value, link, card, path, op,
-    /// retention), or writes that cannot share a commit. The text says which.
+    /// purge-by), or writes that cannot share a commit. The text says which.
     Invalid(String),
     /// Local storage failed (or a local record is corrupt).
     Storage(String),

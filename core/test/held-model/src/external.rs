@@ -37,12 +37,12 @@ fn hour(h: u64) -> u64 {
 }
 
 fn content(id: CommitId, author: NodeId, ts: u64, aspect: Aspect, body: Delta) -> Commit {
-    let part = Part { thing: THING, aspect, retention: Retention::ADMIN, body: Body::Held(body), stripped: Default::default(), replaces: None };
+    let part = Part { thing: THING, aspect, purge_by: PurgeBy::Admin, body: Body::Held(body), stripped: Default::default(), replaces: None };
     Commit { id, signer: author, acting: author, ts, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
 fn edge(id: CommitId, author: NodeId, ts: u64, holder: NodeId, role: Option<Role>, frontier: Option<Vec<CommitId>>) -> Commit {
-    let part = Part { thing: THING, aspect: Aspect::ROLES, retention: Retention::ROLE, body: Body::Held(Delta::Edge(EdgeWrite::role(holder, role))), stripped: Default::default(), replaces: None };
+    let part = Part { thing: THING, aspect: Aspect::ROLES, purge_by: PurgeBy::Admin, body: Body::Held(Delta::Edge(EdgeWrite::role(holder, role))), stripped: Default::default(), replaces: None };
     Commit { id, signer: author, acting: author, ts, expires: None, kind: CommitKind::Role, parts: vec![part], purge: vec![], frontier, undoes: None, own_cover: false, boxes: vec![] }
 }
 

@@ -637,7 +637,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
 }
 
 /// Whether a content write on `tid` can list its admin and write delete keys (`CommitSecrets`,
-/// `published` from `published_keys`): what every write on it needs, whatever its retention, so a
+/// `published` from `published_keys`): what every write on it needs, whatever its purge-by, so a
 /// write and [`usable_role`] agree.
 pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Creates, published: &BTreeMap<(Tid, Role), VerifyingKey>, keys: &KeyCache, tid: &Tid) -> bool {
     // a node that joined no account writes only its own card, as itself

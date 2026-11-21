@@ -487,7 +487,7 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
 }
 
 // spec/commits.md §5, spec/requirements.md (Deterministic): commit `c` writes `t` (reg, list) and `t2`;
-// node 1 gets `c` as two copies (one without the list part, one of it alone, as blobs of two retention
+// node 1 gets `c` as two copies (one without the list part, one of it alone, as blobs of two purge-by
 // classes would bring it), each applying at once. A purge request naming the reg part, in every
 // order: the node holds `t` as its author does and flags nothing. (A part waiting aside when its purge
 // comes: outside::a_part_waiting_aside_is_purged_where_it_waits.)
@@ -806,7 +806,7 @@ fn tombstone_alike(stride: u64) {
     assert_eq!(rec.len(), 1);
     lp.advance(5);
     let mut m = Mutation::new();
-    m.retention(t, &REG, forever).unwrap();
+    m.purge_by(t, &REG, forever).unwrap();
     m.set(t, &REG, &s(&big(marker))).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
@@ -1265,7 +1265,7 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("e"))], op: Op::Set(item("E-MARK", 1)) }).unwrap();
     // its author purges it below
-    m.retention(t, &MAP, crate::common::purgeable_by(osis_base::PurgeBy::AuthorOrAdmin)).unwrap();
+    m.purge_by(t, &MAP, osis_base::PurgeBy::AuthorOrAdmin).unwrap();
     let e = lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync(1, 0).unwrap();
     lp.advance(5);

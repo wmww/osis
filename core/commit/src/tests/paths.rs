@@ -408,14 +408,14 @@ fn seal_commit_unchecked(c: &CommitBlob, secret: &dyn Fn(&Tid) -> Secret32) -> E
 }
 
 // spec/wire.md §4 field 11 (at level 2 at most one, the commit's purge author's), spec/crypto.md §7
-// (Levels): a split commit writing three things, each along its own path, under retentions
+// (Levels): a split commit writing three things, each along its own path, of a purge-by
 // calling for level 2 lists one level-2 key, which every such aspect names; its other levels are
 // per thing.
 #[test]
 fn a_split_commit_lists_one_level_2_key() {
     for by in [osis_schema::PurgeBy::AuthorOrAdmin, osis_schema::PurgeBy::Writer] {
         let mut b = split(3);
-        b.aspects.iter_mut().for_each(|a| a.retention = by);
+        b.aspects.iter_mut().for_each(|a| a.purge_by = by);
         let h = built(b).header;
         assert!(h.is_split());
         let level_2: Vec<usize> = (0..h.keys.len()).filter(|i| h.keys[*i].level == 2).collect();

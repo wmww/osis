@@ -84,10 +84,14 @@ fn commit_expiry(ctx: &Ctx<'_>, w: &mut osis::Write<'_>, did: &mut Did, e: Optio
 
 fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, DynamicAspectKey>, f: &WriteFlags) -> anyhow::Result<AspectWrite<'w, 'd, DynamicAspectKey>> {
     if let Some(v) = &f.purge_by {
-        let by = [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer].into_iter().find(|p| p.name() == v).ok_or_else(|| usage(format!("--purge-by: one of admin, author_or_admin, writer (got {v:?})")))?;
-        a = a.purge_by(by);
+        a = a.purge_by(purge_by(v)?);
     }
     Ok(a)
+}
+
+/// A purge-by named as `PurgeBy::name` gives it.
+pub(crate) fn purge_by(v: &str) -> anyhow::Result<PurgeBy> {
+    PurgeBy::ALL.into_iter().find(|p| p.name() == v).ok_or_else(|| usage(format!("--purge-by: one of {} (got {v:?})", PurgeBy::ALL.map(PurgeBy::name).join(", "))))
 }
 
 fn range(s: &str) -> anyhow::Result<Range<usize>> {

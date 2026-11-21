@@ -39,7 +39,7 @@ TLC findings S1-S18 are core/test/tla/sync/AMBIGUITIES.md's (written against the
 - **No timed deletes**: purge on replace is deleted in the replacing writer's own judgement, under its cover; expiry is the only timer a node keeping S unread runs on its own, and nothing on the wire asks a node to delete later.
 
 ## Why no recycle bin
-A bin at nodes keeping S unread (writers retire entries with a soft key, restore within a grace period) is no permission boundary: a writer can already destroy everywhere by compacting with an empty snapshot. Nothing lists or restores from it, so it is a delayed delete, and a retire carries no reason, so "log again what still changes state" undoes moderation retires. Retention per delta gives the roles their deletion powers, "covered means redundant" the recovery a bin was for. Moderation is not deletion: a chat admin removes the participant, or the app hides the message with a marker (notes/chat.md).
+A bin at nodes keeping S unread (writers retire entries with a soft key, restore within a grace period) is no permission boundary: a writer can already destroy everywhere by compacting with an empty snapshot. Nothing lists or restores from it, so it is a delayed delete, and a retire carries no reason, so "log again what still changes state" undoes moderation retires. Purge-by per delta gives the roles their deletion powers, "covered means redundant" the recovery a bin was for. Moderation is not deletion: a chat admin removes the participant, or the app hides the message with a marker (notes/chat.md).
 
 ## Rejected
 - Soft retire, a recycle bin, restore, and a generation counter forcing concurrent loggers to re-tag (above).

@@ -173,7 +173,7 @@ fn overlapping_counters_spec_commits_4() {
     let f = create(&mut w, &AnyView, &s("second")).unwrap();
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(h.form, Kind::Content, ts, b, lo, hi), None).unwrap();
     let mut aw = AspectWrite::new(d, other.clone(), lo, hi, bytes);
-    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Writer);
+    aw.purge_by = osis_base::PurgeBy::Writer;
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, osis_commit::Path::default(), h.form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
@@ -197,7 +197,7 @@ fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_b
     let hi = lo + 1;
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, b, lo, hi), None).unwrap();
     let mut aw = AspectWrite::new(d, ak.clone(), lo, hi, bytes);
-    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Writer);
+    aw.purge_by = osis_base::PurgeBy::Writer;
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, osis_commit::Path::default(), form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
@@ -372,7 +372,7 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Role, ts, a, range.lo, range.hi), None).unwrap();
     let mut cb = CommitBuilder::new(Kind::Role, ts, a, osis_commit::Path::default(), form);
     let mut aw = AspectWrite::new(d, holders.ak.clone(), range.lo, range.hi, bytes);
-    aw.retention = osis_commit::retention::ROLE_RETENTION;
+    aw.purge_by = osis_commit::retention::ROLE_PURGE_BY;
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     // a session-form role commit is refused when built and when received (spec/commits.md §4)
@@ -463,7 +463,7 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     let cx = writer_ctx(Form::Commit, Kind::Content, ts, b, r.lo, r.hi);
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(d, ak("t:reg.0"), r.lo, r.hi, bytes);
-    aw.retention = crate::common::purgeable_by(osis_base::PurgeBy::Writer);
+    aw.purge_by = osis_base::PurgeBy::Writer;
     let path = if actor == b { osis_commit::Path::default() } else { osis_commit::Path::through(actor) };
     let mut cb = CommitBuilder::new(Kind::Content, ts, b, path, Form::Commit);
     cb.aspects.push(aw);
@@ -509,7 +509,7 @@ fn acting_valid_once_grant_arrives_spec_perm_5_2() {
     let mut m = Mutation::new();
     m.set(d, &REG, &s("for dave")).unwrap();
     // X's holders' write secrets are not Bob's to derive an author-class delete key from
-    m.retention(d, &REG, crate::common::purgeable_by(osis_base::PurgeBy::Admin)).unwrap();
+    m.purge_by(d, &REG, osis_base::PurgeBy::Admin).unwrap();
     m.act_as(x);
     let id = lp.peers[1].commit(m).unwrap().unwrap();
     let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
@@ -590,7 +590,7 @@ pub(crate) fn forge_by(by: &osis_engine::Engine, rec: osis_base::CreationRecord,
     let cx = writer_ctx(Form::Commit, kind, ts, author, r.lo, r.hi);
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
-    aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
+    aw.purge_by = osis_commit::retention::write_purge_by(ak.as_str(), None, None).unwrap();
     let mut cb = CommitBuilder::new(kind, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
     let forge_key = by.sign_forged(&mut cb);
@@ -1737,7 +1737,7 @@ fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
 }
 
 // spec/permissions.md §5.2, spec/commits.md §5 (compaction): Alice's commit C writes `x:m.0` and
-// `t:reg.0` (another retention class, another blob). A node that gets Alice's snapshot of `x:m.0`
+// `t:reg.0` (another purge-by class, another blob). A node that gets Alice's snapshot of `x:m.0`
 // and the blob of C without its `x:m.0` delta (dropped at the peer after compaction) holds C
 // without that delta and takes C's write from the snapshot, in either order; the delta coming
 // late changes nothing. A reader's snapshot copying C's `x:m.0` write with another value counts
@@ -3090,9 +3090,9 @@ fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
     forge_minting(lp, by, rec, ts, lo, ops, typed, osis_schema::PurgeBy::default(), rec.expires())
 }
 
-/// `forge_created` with retention `retention`, in a commit expiring at `expires`.
+/// `forge_created` with purge-by `purge_by`, in a commit expiring at `expires`.
 #[allow(clippy::too_many_arguments)]
-fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool, retention: osis_schema::PurgeBy, expires: Option<u64>) -> Result<Vec<u8>, String> {
+fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool, purge_by: osis_schema::PurgeBy, expires: Option<u64>) -> Result<Vec<u8>, String> {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{DeltaBuilder, Delta, Writer, encode_delta};
     let view = osis_schema::core_schema().view("created.0").unwrap();
@@ -3106,7 +3106,7 @@ fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
     let (f, r) = b.finish().ok_or("empty")?;
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi), None).map_err(|e| format!("{e:?}"))?;
     let mut aw = AspectWrite::new(rec.tid(), ak("created.0"), r.lo, r.hi, bytes);
-    aw.retention = retention;
+    aw.purge_by = purge_by;
     let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), form);
     cb.aspects.push(aw);
     cb.expires = expires;
@@ -3434,8 +3434,8 @@ fn forge_on(lp: &mut LocalPeer, k: Tid, a: &str) -> osis_commit::CommitBlob {
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, kind, ts, b, 1, 2), None).unwrap();
     let mut cb = CommitBuilder::new(kind, ts, b, osis_commit::Path::default(), form);
     let mut w = AspectWrite::new(k, ak(a), 1, 2, bytes);
-    if let Some(r) = osis_commit::retention::fixed_retention(a) {
-        w.retention = r;
+    if let Some(r) = osis_commit::retention::fixed_purge_by(a) {
+        w.purge_by = r;
     }
     cb.aspects.push(w);
     let rec = lp.peers[0].engine.get_typed(&k, &osis_schema::core_types::CREATED).unwrap().unwrap();
@@ -3549,7 +3549,7 @@ fn forge_parts(lp: &mut LocalPeer, by: usize, holder: usize, parts: &[ForgedPart
         let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, b, 1, 2), None).unwrap();
         let mut w = AspectWrite::new(*t, ak(a), 1, 2, bytes);
         if memory {
-            w.retention = osis_commit::retention::EPHEMERAL_RETENTION;
+            w.purge_by = osis_commit::retention::EPHEMERAL_PURGE_BY;
         }
         cb.aspects.push(w);
         if let Some(r) = lp.peers[holder].engine.core.created(t) {
@@ -3639,7 +3639,7 @@ fn undo_needs_write_spec_crdt_4_6() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("prior")));
 }
 
-// spec/sync-ids.md §1 (repair): a reused chunk a peer deleted is written again with the reusing delta's retention and expiry: an invalid commit linking the value (a reader's, expiring soon) lends
+// spec/sync-ids.md §1 (repair): a reused chunk a peer deleted is written again with the reusing delta's purge-by and expiry: an invalid commit linking the value (a reader's, expiring soon) lends
 // the rewrite nothing.
 #[test]
 fn invalid_reuse_lends_relink_no_expiry_spec_sync_1() {
@@ -3729,10 +3729,10 @@ fn frontier_iff_the_write_audits_spec_wire_4() {
 static KICK: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "kick.osis",
     "revision 1;\n\
-     purgeable_by(author, admin) aspect k:s.0: string;\n\
-     purgeable_by(author, admin) aspect k:m.0: struct { text 0: string, name 1: option<string>, tags 2: set<int> };\n",
+     purge_by(author, admin) aspect k:s.0: string;\n\
+     purge_by(author, admin) aspect k:m.0: struct { text 0: string, name 1: option<string>, tags 2: set<int> };\n",
 );
-static KICK_SEQ: osis_schema::StaticSchema = osis_schema::StaticSchema::new("kick-seq.osis", "revision 1; purgeable_by(author, admin) aspect k:m.0: struct { text 0: string, marks 3: list<int> };\n");
+static KICK_SEQ: osis_schema::StaticSchema = osis_schema::StaticSchema::new("kick-seq.osis", "revision 1; purge_by(author, admin) aspect k:m.0: struct { text 0: string, marks 3: list<int> };\n");
 
 // spec: none (costs, spec/requirements.md Scale; notes/chat.md): a kick that drops a kept aspect's
 // newest writes reads its bodies only down to the newest valid one, a whole value of any
@@ -3855,8 +3855,8 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
     }
 }
 
-static ANCHOR_TEXT: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-text.osis", "revision 1; purgeable_by(author, admin) aspect k:t.0: text;\n");
-static ANCHOR_STR: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-str.osis", "revision 1; purgeable_by(author, admin) aspect k:t.0: string;\n");
+static ANCHOR_TEXT: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-text.osis", "revision 1; purge_by(author, admin) aspect k:t.0: text;\n");
+static ANCHOR_STR: osis_schema::StaticSchema = osis_schema::StaticSchema::new("anchor-str.osis", "revision 1; purge_by(author, admin) aspect k:t.0: string;\n");
 
 // spec/crdt.md §4.2, §4.6, §6.1, §7: a rebuild is the join of every held body. A register write
 // resets older text, whose records go; a later insert anchored at an old char sits at its virtual
@@ -4868,7 +4868,7 @@ fn a_purge_request_is_judged_alike_in_both_path_forms_spec_permissions_6() {
         let by = osis_base::PurgeBy::AuthorOrAdmin;
         let mut m = Mutation::new();
         m.set(d, &REG, &s("his")).unwrap();
-        m.retention(d, &REG, by).unwrap();
+        m.purge_by(d, &REG, by).unwrap();
         let his = lp.peers[1].commit(m).unwrap().unwrap();
         let mut m = Mutation::new();
         m.set(p, &REG, &s("hers")).unwrap();

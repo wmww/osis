@@ -16,10 +16,10 @@ aspect s:count.0: counter<int>;
 aspect s:hi.0: max<int>;
 aspect s:tags.0: set<string>;
 aspect s:map.0: map<string, int>;
-purgeable_by(writer) aspect s:gone.0: string;
+purge_by(writer) aspect s:gone.0: string;
 aspect s:note.0: string;
 aspect s:story.0: set<string>;
-purgeable_by(writer) aspect s:latest.0: string;
+purge_by(writer) aspect s:latest.0: string;
 "#,
 );
 

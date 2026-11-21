@@ -482,7 +482,7 @@ fn certificates_project_edges_large() {
     sharded(20_000, 0x5eed_0204, cert_run_edges);
 }
 
-/// §6: purge rights by retention, judged at the request's time.
+/// §6: purge rights by purge-by, judged at the request's time.
 #[test]
 fn purge_rights() {
     let mut w = World::new();

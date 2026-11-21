@@ -34,7 +34,7 @@ Each entry: the spec text, the problem, the model's choice (and where in the cod
 15. **Expiry as a death date.** spec/commits.md §5: "an expiry dates none" vs spec/crdt.md §4.8: "It dies at the earliest `ts` ... or at T". Choice: T counts once passed; no effect, since the body is then a leftover.
    **Resolved** (a) The engine never dates T (`hold_valueless` makes a leftover with no deaths). spec/crdt.md §4.8: T by expiry dates no body. Model: no death at T.
 
-18. **Purging a snapshot by aspect history.** spec/commits.md §5: a request names deltas "by commit, by a whole aspect history, or by author on an aspect"; "A snapshot a request names itself ... its body is dropped". Whether "a whole aspect history" includes snapshot deltas is not said. Choice: yes, judged by the snapshot's retention (`writer`) and its author.
+18. **Purging a snapshot by aspect history.** spec/commits.md §5: a request names deltas "by commit, by a whole aspect history, or by author on an aspect"; "A snapshot a request names itself ... its body is dropped". Whether "a whole aspect history" includes snapshot deltas is not said. Choice: yes, judged by the snapshot's purge-by (`writer`) and its author.
    **Resolved** No request names a snapshot (`purge::names`; spec/commits.md §5 says so): it has no values of its own, so it is never purged nor read as purged, whether held whole, as its leftover or dropped as covered (shred.rs `purge_strips_carrying_snapshots_alike_in_every_order_spec_commits_5`).
 
 21. **Map presence after an entry expires.** spec/crdt.md §4.3 counts "its children's writes", so another delta's write inside an entry whose creation expired keeps the map present.

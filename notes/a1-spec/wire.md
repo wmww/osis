@@ -19,8 +19,7 @@ Path      := [index, tid*, marks?]         ; the purge-author index, the listed 
 Paths     := Path | Split                  ; one Path for every thing written, or the split form
 Split     := [Opt(tid), [bytes+]]          ; the purge author (absent: the signer), one sealed path per thing written
 PathKey   := [index, bytes]                ; a thing's index among the things written, its path key
-Aspect    := [tid, ak, lo, hi, Retention, keys, hash, replaces]   ; replaces := [] | [commit_id] | [commit_id, floor]
-Retention := by
+Aspect    := [tid, ak, lo, hi, by, keys, hash, replaces]   ; replaces := [] | [commit_id] | [commit_id, floor]
 DeleteKey := [level, pk]
 PurgeItem := [tid, ak] | [tid, ak, author] | [tid, ak, ts, source]
 Rotation  := [signing_key, kem_key, [epoch_id+], [commit_id*], [commit_id*], bool, bytes, list_root, [SeedBox*]]   ; supersedes, names, takes, revokes, devices
@@ -38,7 +37,7 @@ Header fields by position:
 3. to 7.: stand.
 8. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`; `[tid, ak, author]` those of them whose purge author is `author` (spec/permissions.md §6); `[tid, ak, ts, source]` the delta on that aspect of the commit stamped `ts` whose own writes are `source`'s (spec/crdt.md §2.1: 31 bytes, a session; 32, a commit-form commit's ID; else bad input), one commit per stamp and source on an aspect (spec/commits.md §5 Purge); on `created.0` only `[tid, created.0]` (it names every minting, spec/commits.md §5 Destruction).
 9., 10.: stand.
-11. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at level 2 at most one, the commit's purge author's (field 2; DRAFT, notes/path-form.md), present iff a delta's retention calls for level 2; a key no aspect lists is bad input.
+11. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at level 2 at most one, the commit's purge author's (field 2; DRAFT, notes/path-form.md), present iff a delta's purge-by calls for level 2; a key no aspect lists is bad input.
 12. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9), exactly `{0: set<32-byte commit ID>}`, inline or linked; present iff the commit is a role commit carrying an explicit removal or a lowering (spec/permissions.md §5.1 Frontier; a writer rule: a receiver checks only that it sits on a role commit). Any other value there is bad input.
 13. `ephemeral`: stands.
 14. `epoch`: `Opt(epoch_id)`, the epoch an account signer signs at (spec/crypto.md §9; 32 bytes: the minting plain rotation's commit ID, a merge's ID, 32 zero bytes for the first epoch); present iff the signer's creation record marks an account, else bad input.

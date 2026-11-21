@@ -53,7 +53,7 @@ fn setup_built() -> (LocalPeer, Tid, [Tid; 4]) {
 
 fn write(lp: &mut LocalPeer, i: usize, d: Tid, r: PurgeBy, v: &str) -> CommitId {
     let mut m = Mutation::new();
-    m.retention(d, &reg(), r).unwrap();
+    m.purge_by(d, &reg(), r).unwrap();
     m.set(d, &reg(), &s(v)).unwrap();
     let c = lp.peers[i].commit(m).unwrap().unwrap();
     lp.advance(1_000);
@@ -380,7 +380,7 @@ fn events_per_commit_exact() {
     assert_eq!(got, want, "Bob's, the purged one's too: it turned invalid; not Dan's");
 }
 
-// spec/commits.md §5 (fixed retention): `purge.0` keeps its retention through a compaction; the
+// spec/commits.md §5 (fixed retention): `purge.0` keeps its purge-by through a compaction; the
 // requests stand, and a receiver takes the snapshot.
 #[test]
 fn purge_aspect_compacts_spec_commits_5() {
@@ -393,7 +393,7 @@ fn purge_aspect_compacts_spec_commits_5() {
     purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), author: ids[3] });
     let snap = lp.peers[0].engine.snapshot(&d, &k).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&snap).unwrap();
-    assert_eq!(Some(h.aspects[0].retention), osis_commit::retention::fixed_retention("purge.0"));
+    assert_eq!(Some(h.aspects[0].purge_by), osis_commit::retention::fixed_purge_by("purge.0"));
     assert_eq!(lp.peers[0].engine.held_parts(&d, &reg(), CommitFrom::Oldest, 5, MAX).unwrap().0[0].body, PartBody::Purged(rq));
     lp.sync_all().unwrap();
     let got = lp.peers[3].engine.get(&d, &k).unwrap();
@@ -455,7 +455,7 @@ fn purge_by_author_any_order_spec_perm_6() {
                 _ => by.writer(),
             };
             let (mut lp, d, ids) = setup();
-            let r = crate::common::purgeable_by(by);
+            let r = by;
             let base = all(&mut lp, 0);
             let mut m = Mutation::new();
             m.set(d, &ct::RETENTION, &ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() }), ..Default::default() }).unwrap();
@@ -557,7 +557,7 @@ fn purge_request_floor_holds_purge_on_replace_spec_commits_5() {
     let w = write(&mut lp, 0, d, PurgeBy::Writer, "v");
     let mut m = Mutation::new();
     keep_in(&mut m, d, &setting(&[("t:reg.0", osis_schema::History::PurgeOnReplace)]));
-    m.retention(d, &reg(), PurgeBy::Writer).unwrap();
+    m.purge_by(d, &reg(), PurgeBy::Writer).unwrap();
     m.purge_commit(w, d, reg());
     m.set(d, &reg(), &s("p")).unwrap();
     let p = lp.peers[0].commit(m).unwrap().unwrap();
@@ -640,7 +640,7 @@ fn first_set_undo_with_concurrent_set_spec_commits_7() {
 #[test]
 fn purge_floor_part_told_at_its_floor_spec_commits_5() {
     let (mut lp, d, _) = setup();
-    let other = write(&mut lp, 0, d, crate::common::purgeable_by(PurgeBy::AuthorOrAdmin), "other");
+    let other = write(&mut lp, 0, d, PurgeBy::AuthorOrAdmin, "other");
     let mut m = Mutation::new();
     m.set(d, &reg(), &s("x")).unwrap();
     let now = lp.peers[0].engine.now();
@@ -648,7 +648,7 @@ fn purge_floor_part_told_at_its_floor_spec_commits_5() {
     m.purge_commit(other, d, reg());
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(1_000);
-    write(&mut lp, 0, d, crate::common::purgeable_by(PurgeBy::AuthorOrAdmin), "y");
+    write(&mut lp, 0, d, PurgeBy::AuthorOrAdmin, "y");
     assert!(held(&mut lp.peers[0], d, &c).body != PartBody::Dropped, "kept to its floor");
     // a listener added after the replacement
     lp.peers[0].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));

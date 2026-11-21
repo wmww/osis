@@ -26,7 +26,7 @@ fn stamped_before(at: Ts, ak: &Ak, ts: Ts) -> bool {
 }
 
 /// What a request judges a delta by (spec/commits.md §5 Purge): its thing and aspect, its stamp
-/// (`ts` and own source), its purge author and purgeable-by, its expiry, and whether it has writes of
+/// (`ts` and own source), its purge author and purge-by, its expiry, and whether it has writes of
 /// its own. From the header where held (`of`), else for the copies a held snapshot carries of a
 /// commit this node does not hold, from that snapshot's `Facts` (`carried`).
 #[derive(Clone, Debug)]
@@ -44,7 +44,7 @@ pub(crate) struct Target {
 impl Target {
     /// Delta `a` of commit `c` (header `h`).
     pub(crate) fn of(h: &Header, a: &AspectEntry, c: &CommitId) -> Target {
-        Target { tid: a.tid, ak: a.ak.clone(), ts: h.ts, src: h.form.own_source(h.signer, *c), purge_author: h.purge_author(), by: a.retention, expires: h.expires, own_writes: h.kind.has_own_writes() }
+        Target { tid: a.tid, ak: a.ak.clone(), ts: h.ts, src: h.form.own_source(h.signer, *c), purge_author: h.purge_author(), by: a.purge_by, expires: h.expires, own_writes: h.kind.has_own_writes() }
     }
 
     /// The commit stamped `ts` of `src` on `(tid, ak)` as a snapshot states it (`snapshot::stated`:
@@ -90,7 +90,7 @@ pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid
     let Some(a) = m.aspect(tid, ak).and_then(|ai| m.header.aspects.get(ai)) else { return false };
     let author = m.view.purge_author;
     let point = Point { ts, node: *who, commit: CommitId([0xff; 32]) };
-    core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(who, &a.tid, a.retention, &author, point))
+    core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(who, &a.tid, a.purge_by, &author, point))
 }
 
 /// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
@@ -103,7 +103,7 @@ pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid
 /// `rejudge_purges` follows it when those change.
 pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header) -> bool {
     let purge_author = ch.purge_author();
-    right_holds(core, p, pc, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention, purge_author })
+    right_holds(core, p, pc, &Right { tid: a.tid, ak: a.ak.clone(), by: a.purge_by, purge_author })
 }
 
 /// `holds_right` over delta `t`.
@@ -111,7 +111,7 @@ fn holds_right_t(core: &Core, p: &Header, pc: &CommitId, t: &Target) -> bool {
     right_holds(core, p, pc, &Right { tid: t.tid, ak: t.ak.clone(), by: t.by, purge_author: t.purge_author })
 }
 
-/// What the right over a delta depends on: its thing and aspect, purgeable-by and purge author.
+/// What the right over a delta depends on: its thing and aspect, purge-by and purge author.
 struct Right {
     tid: Tid,
     ak: Ak,
@@ -205,7 +205,7 @@ pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()
             let Some((m, ai)) = core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(item.tid(), item.ak())?))) else { continue };
             let Some(a) = m.header.aspects.get(ai).filter(|a| names(p, a, &m.header, &c)) else { continue };
             let author = m.view.purge_author;
-            if *rights.entry((a.retention as u64, author)).or_insert_with(|| holds_right(core, p, pc, a, &m.header)) {
+            if *rights.entry((a.purge_by as u64, author)).or_insert_with(|| holds_right(core, p, pc, a, &m.header)) {
                 break;
             }
         }
@@ -244,13 +244,13 @@ fn signers_could(core: &Core, p: &Header, a: &Right) -> bool {
 /// that could ever hold the right.
 fn could_stand(core: &Core, p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
     let purge_author = ch.purge_author();
-    names(p, a, ch, c) && signers_could(core, p, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention, purge_author })
+    names(p, a, ch, c) && signers_could(core, p, &Right { tid: a.tid, ak: a.ak.clone(), by: a.purge_by, purge_author })
 }
 
 /// Whether snapshot `s` may stand for body `(tid, ak)` of `c`: its purge author holds the right over it
 /// (`holds_right`; spec/commits.md §5). Without it the snapshot still carries the body's live
 /// writes and leaves it may-hold, but no node drops it for this snapshot. Either class (a memory
-/// delta's retention is `writer`).
+/// delta's purge-by is `writer`).
 pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     let (Some(sm), Some(m)) = (core.ix.commits.get(s), core.ix.commits.get(c)) else { return false };
     let Some(a) = m.aspect(tid, ak).and_then(|ai| m.header.aspects.get(ai)) else { return false };
@@ -281,7 +281,7 @@ pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -
 
 /// Whether request `pc` (header `p`) holds the right over no delta it could name, by the role
 /// timeline now (spec/permissions.md §6: an invalid request purges nothing): for each item, no
-/// purgeable-by class and no delta purge author gives it, the widest class (`writer`, every member) over
+/// purge-by class and no delta purge author gives it, the widest class (`writer`, every member) over
 /// each purge author the signer could write (`Held::reach`) that could write the item's thing
 /// (`Held::upstream`). Forgetting such a request changes no read (`Engine::forgettable`); a
 /// re-grant giving it the right back brings it again as any forgotten commit.
@@ -704,7 +704,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
             let Some(a) = m.header.aspects.get(ai) else { continue };
             // applied here: held, or dropped as covered (its writes in the state through its cover)
             let applied = m.view.kind.has_own_writes() && (!m.body_gone(ai) || m.dropped(ai).is_some_and(|d| d.as_cover()));
-            if (matches!(item, PurgeItem::Commit { .. }) || *rights.entry((a.retention as u64, m.view.purge_author)).or_insert_with(|| holds_right(core, h, id, a, &m.header)))
+            if (matches!(item, PurgeItem::Commit { .. }) || *rights.entry((a.purge_by as u64, m.view.purge_author)).or_insert_with(|| holds_right(core, h, id, a, &m.header)))
                 && purge_one(tx, id, &c, ai, purged)?
             {
                 stood = true;

@@ -232,7 +232,7 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
                     _ => DeltaClass::Purge { names: Names::Author(t(thing(&mut r))) },
                 };
                 let needs = [Role::Write, Role::Admin][r.below(2)];
-                PartKind::Delta(Delta { aspect: Ak::new(["doc.0", "addenda.0"][r.below(2)]).unwrap(), needs, purge_author: r.below(3) as u32, retention: PurgeBy::AuthorOrAdmin, class })
+                PartKind::Delta(Delta { aspect: Ak::new(["doc.0", "addenda.0"][r.below(2)]).unwrap(), needs, purge_author: r.below(3) as u32, purge_by: PurgeBy::AuthorOrAdmin, class })
             } else {
                 let value = (r.below(4) > 0).then(|| Edge {
                     role: role(&mut r),
@@ -264,7 +264,7 @@ fn random_part_soups_judge_alike_however_they_arrive() {
 
 fn delta(on: u32, path: &[u32], needs: Role, class: DeltaClass) -> Part {
     let aspect = Ak::new(if matches!(class, DeltaClass::Addendum { .. }) { "addenda.0" } else { "doc.0" }).unwrap();
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(Delta { aspect, needs, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(Delta { aspect, needs, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class }) }
 }
 
 fn ids(l: &[u64]) -> Frontier {
@@ -341,12 +341,12 @@ fn thousands_of_addenda_naming_one_commit_cost_one_read_each() {
     assert!(per[1] <= 11 * per[0] && per[1] >= 9 * per[0], "{per:?}");
 }
 
-fn request(on: u32, path: &[u32], names: Names, retention: PurgeBy) -> Part {
+fn request(on: u32, path: &[u32], names: Names, purge_by: PurgeBy) -> Part {
     let aspect = Ak::new(if names == Names::Destroy { "created.0" } else { "doc.0" }).unwrap();
     let mut p = delta(on, path, Role::Write, DeltaClass::Purge { names });
     if let PartKind::Delta(d) = &mut p.kind {
         d.aspect = aspect;
-        d.retention = retention;
+        d.purge_by = purge_by;
     }
     p
 }
@@ -388,7 +388,7 @@ fn hostile_requests_judge_alike_without_panicking() {
     let p = robust(&records(), &with(vec![by_y]), &mut rng);
     assert_eq!(p.purged(), BTreeSet::from([WriteId(cid(3), 0)]));
     // a snapshot not held: what it carries is no copy here, so nothing names it as one
-    let stated = BTreeMap::from([(cid(3), osis_perm::paths::Stated { ts: ms(3), purge_author: t(Z), retention: PurgeBy::AuthorOrAdmin })]);
+    let stated = BTreeMap::from([(cid(3), osis_perm::paths::Stated { ts: ms(3), purge_author: t(Z), purge_by: PurgeBy::AuthorOrAdmin })]);
     let snap = commit(16, ms(5), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::Snapshot { carries: ids(&[3]), stated, own: false })]);
     let by_y = commit(15, ms(6), Y, vec![request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin)]);
     let mut cs = with(vec![by_y, snap]);
@@ -401,9 +401,9 @@ fn hostile_requests_judge_alike_without_panicking() {
 }
 
 // spec/permissions.md §6: k requests holding a right name one delta: judging it is a point
-// lookup per selector naming it and per holding its retention asks (the latest stamp of the
+// lookup per selector naming it and per holding its purge-by asks (the latest stamp of the
 // requests holding it), whatever k: k writers' requests by aspect, none holding the right over
-// its `admin` retention, cost the same at k = 200 and 2000 as at none, and k requests holding no
+// its `admin` purge-by, cost the same at k = 200 and 2000 as at none, and k requests holding no
 // right (by the removed Z) are no index entry. Who can force k: any holder of a class's role,
 // writing requests of its own.
 #[test]
@@ -418,7 +418,7 @@ fn thousands_of_requests_naming_one_delta_cost_what_none_do() {
             commit(3, ms(3), H, vec![{
                 let mut d = delta(T1, &[A], Role::Write, DeltaClass::Plain);
                 if let PartKind::Delta(x) = &mut d.kind {
-                    x.retention = PurgeBy::Admin;
+                    x.purge_by = PurgeBy::Admin;
                 }
                 d
             }]),

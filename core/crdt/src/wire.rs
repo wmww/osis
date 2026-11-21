@@ -105,7 +105,7 @@ pub struct Snapshot {
 }
 
 /// A carried commit's facts a purge judges it by where its header is not held (§8 `Facts`,
-/// spec/commits.md §5 Purge): its purgeable-by class on the aspect, and its purge author where
+/// spec/commits.md §5 Purge): its purge-by class on the aspect, and its purge author where
 /// that is not its signer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Fact {
@@ -916,7 +916,7 @@ impl<'a> Dec<'a> {
         Ok(())
     }
 
-    /// Reads `Facts` (§8): one per `Commits` entry, a purgeable-by class (0 to 3), a purge author
+    /// Reads `Facts` (§8): one per `Commits` entry, a purge-by class (0 to 3), a purge author
     /// only where it is not the commit's signer (its session's tid; a commit-form one's `Absorbed`
     /// signer where listed). The narrowest are left out of the map.
     pub(crate) fn load_facts(&self, v: Item, absorbed: &BTreeMap<CommitId, Tid>) -> Result<Facts, Error> {

@@ -17,23 +17,23 @@ fn read(w: &World, rules: &Rules, trust: &[Id]) -> Reading {
     judge(w, rules, &View::all(w).trusting(trust))
 }
 
-fn content(w: &mut World, n: Thing, t: u32, path: &[Thing], ret: Retention) -> Id {
+fn content(w: &mut World, n: Thing, t: u32, path: &[Thing], by: PurgeBy) -> Id {
     let i = w.content(n, t, path, T1);
-    w.retain(i, ret);
+    w.set_purge_by(i, by);
     i
 }
 
-/// Each named delta is judged alone by the members of its retention set the request holds
+/// Each named delta is judged alone by the members of its purge-by set the request holds
 /// (draft §6): a writer's request by whole aspect takes the `writer` deltas and its own
 /// `author_or_admin` one, never an `admin` delta or another author's; an admin's takes them all.
 /// `fixed` reads requests by author alone.
 #[test]
 fn a_request_holds_each_class_of_its_named_deltas_alone() {
     let mut w = base();
-    let adm = content(&mut w, B, 2, &[A], Retention::Admin);
-    let other = content(&mut w, B, 2, &[A], Retention::AuthorOrAdmin);
-    let own = content(&mut w, W, 2, &[], Retention::AuthorOrAdmin);
-    let any = content(&mut w, B, 2, &[A], Retention::Writer);
+    let adm = content(&mut w, B, 2, &[A], PurgeBy::Admin);
+    let other = content(&mut w, B, 2, &[A], PurgeBy::AuthorOrAdmin);
+    let own = content(&mut w, W, 2, &[], PurgeBy::AuthorOrAdmin);
+    let any = content(&mut w, B, 2, &[A], PurgeBy::Writer);
     let by_w = w.request(W, 3, &[], T1, Names::Aspect);
     assert_eq!(read(&w, &Rules::purging(), &[]).purged, Set::from([own, any]));
     w.request(B, 4, &[A], T1, Names::Aspect);
@@ -48,7 +48,7 @@ fn a_request_holds_each_class_of_its_named_deltas_alone() {
 fn a_removed_signers_backdated_request_or_destruction_takes_nothing() {
     for names in [Names::Aspect, Names::Destroy] {
         let mut w = base();
-        let h = content(&mut w, H, 2, &[A], Retention::Admin);
+        let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
         let q = w.request(X, 5, &[A], T1, names);
         let r = w.edge(H, 6, &[], A, X, Gone, &[]);
         for trust in [vec![], vec![r]] {
@@ -67,7 +67,7 @@ fn a_removed_signers_backdated_request_or_destruction_takes_nothing() {
 fn a_destruction_stands_against_a_later_cut_on_its_own_thing_alone() {
     for on_thing in [true, false] {
         let mut w = base();
-        let h = content(&mut w, H, 2, &[A], Retention::Admin);
+        let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
         let (path, edge): (&[Thing], Thing) = if on_thing { (&[], T1) } else { (&[A], A) };
         let at: &[Thing] = if on_thing { &[A] } else { &[] };
         w.edge(H, 1, at, edge, Z, Admin, &[]);
@@ -90,7 +90,7 @@ fn repro_a_request_only_a_witness_received_stands() {
 
 fn witnessed() -> (World, Id) {
     let mut w = base();
-    let h = content(&mut w, H, 2, &[A], Retention::Admin);
+    let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
     let q = w.request(X, 4, &[A], T1, Names::Aspect);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     w.addendum(B, 7, &[A], T1, r, &[q]);
@@ -108,8 +108,8 @@ fn an_addendum_by_a_holder_of_the_class_keeps_a_request() {
         assert!(read(&w, &rules, &trust).purged.contains(&h), "{trust:?}");
     }
     let mut w = base();
-    let h = content(&mut w, H, 2, &[A], Retention::Admin);
-    let any = content(&mut w, H, 2, &[A], Retention::Writer);
+    let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
+    let any = content(&mut w, H, 2, &[A], PurgeBy::Writer);
     let q = w.request(X, 4, &[A], T1, Names::Aspect);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     w.addendum(W, 7, &[], T1, r, &[q]);
@@ -204,7 +204,7 @@ fn an_own_cover_whose_path_gave_no_role_stands_by_nothing() {
 fn a_request_made_after_the_removal_is_kept_by_no_witness() {
     let rules = Rules { purge_addenda: true, ..Rules::purging() };
     let mut w = base();
-    let h = content(&mut w, H, 2, &[A], Retention::Admin);
+    let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
     let q = w.request(X, 4, &[A], T1, Names::Aspect);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     // an honest addendum lists what its writer received by the removal's `ts`: the thief's request

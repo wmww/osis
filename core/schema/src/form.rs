@@ -70,7 +70,7 @@ impl Schema {
         let types = self.types.iter().map(|(n, d)| (n.to_value(), st(vec![d.params.to_value(), type_value(&d.body), d.doc.to_value()])));
         let aspects = self.aspects.iter().map(|(ak, a)| {
             let flags = Value::Set(a.flags.iter().map(|f| Value::Enum(*f as u64, None)).collect());
-            (ak.to_value(), st(vec![type_value(&a.ty), a.retention.to_value(), a.expires.to_value(), flags, a.succeeds.to_value(), a.doc.to_value()]))
+            (ak.to_value(), st(vec![type_value(&a.ty), a.purge_by.to_value(), a.expires.to_value(), flags, a.succeeds.to_value(), a.doc.to_value()]))
         });
         st(vec![self.revision.to_value(), Value::Map(types.collect()), Value::Map(aspects.collect()), self.doc.to_value()])
     }
@@ -99,7 +99,7 @@ impl Schema {
                     _ => Err(Error::Form("flag".into())),
                 })
                 .collect::<Result<_, _>>()?;
-            let def = AspectDef { ty: read_type(a.val(0)?)?, retention: a.get(1)?, expires: a.get(2)?, flags, succeeds: a.get(4)?, doc: a.get(5)? };
+            let def = AspectDef { ty: read_type(a.val(0)?)?, purge_by: a.get(1)?, expires: a.get(2)?, flags, succeeds: a.get(4)?, doc: a.get(5)? };
             s.aspects.insert(ak, def);
         }
         s.doc = f.get(3)?;

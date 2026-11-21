@@ -14,7 +14,7 @@ fn shown(h: &Held) -> Vec<CommitId> {
 // is history from its own `ts`
 #[test]
 fn signal_writes_never_join_and_are_history_at_once_spec_commits_5() {
-    let r = Retention::PLAIN;
+    let r = PurgeBy::AuthorOrAdmin;
     let h = held(3, vec![setting(5, 0, SIG, KEPT), reg(10, MINT_ADMIN, 1, SIG, r, 7), reg(11, MINT_ADMIN, 1, SIG, r, 8)]);
     let o = evaluate(&h);
     assert_eq!(read(&h, SIG), None);
@@ -29,7 +29,7 @@ fn signal_writes_never_join_and_are_history_at_once_spec_commits_5() {
 #[test]
 fn signal_kept_while_in_history_spec_commits_5() {
     for (opt, last) in [(keep_after(2), 2), (keep_until(4), 3)] {
-        let h = |now| held(now, vec![setting(5, 0, SIG, opt), reg(10, MINT_ADMIN, 1, SIG, Retention::PLAIN, 7)]);
+        let h = |now| held(now, vec![setting(5, 0, SIG, opt), reg(10, MINT_ADMIN, 1, SIG, PurgeBy::AuthorOrAdmin, 7)]);
         assert_eq!(shown(&h(last)), vec![10]);
         assert_eq!(fate(&h(last), 10), Fate::Keep(KeepWhy::Until));
         assert!(shown(&h(last + 1)).is_empty());
@@ -38,21 +38,21 @@ fn signal_kept_while_in_history_spec_commits_5() {
         assert!(shown(&dropped).is_empty(), "dropped or not, it is not listed");
         assert!(evaluate(&h(last)).deadlines.contains(&at(last + 1)));
     }
-    let h = held(10_000, vec![setting(5, 0, SIG, KEPT), reg(10, MINT_ADMIN, 1, SIG, Retention::PLAIN, 7)]);
+    let h = held(10_000, vec![setting(5, 0, SIG, KEPT), reg(10, MINT_ADMIN, 1, SIG, PurgeBy::AuthorOrAdmin, 7)]);
     assert_eq!(fate(&h, 10), Fate::Keep(KeepWhy::Until));
     for opt in [Opt::None, Opt::Purge] {
-        let h = held(1, vec![setting(5, 0, SIG, opt), reg(10, MINT_ADMIN, 1, SIG, Retention::PLAIN, 7)]);
+        let h = held(1, vec![setting(5, 0, SIG, opt), reg(10, MINT_ADMIN, 1, SIG, PurgeBy::AuthorOrAdmin, 7)]);
         assert!(shown(&h).is_empty(), "{opt:?}: no history, no listing");
         assert_eq!(fate(&h, 10), Fate::MayDrop(DropWhy::PastBound));
     }
-    assert_eq!(fate(&held(1, vec![reg(10, MINT_ADMIN, 1, SIG, Retention::PLAIN, 7)]), 10), Fate::MayDrop(DropWhy::PastBound), "no setting");
+    assert_eq!(fate(&held(1, vec![reg(10, MINT_ADMIN, 1, SIG, PurgeBy::AuthorOrAdmin, 7)]), 10), Fate::MayDrop(DropWhy::PastBound), "no setting");
 }
 
 // spec/commits.md §5 (signals; purge), §6: purge and expiry act per write; the leftover may go
 // once out of history
 #[test]
 fn signal_purge_and_expiry_per_write_spec_commits_5() {
-    let r = Retention::PLAIN;
+    let r = PurgeBy::AuthorOrAdmin;
     let mut exp = reg(11, MINT_ADMIN, 1, SIG, r, 8);
     exp.expires = Some(at(2));
     let item = PurgeItem::Commit { commit: 10, thing: T, aspect: SIG };
@@ -69,7 +69,7 @@ fn signal_purge_and_expiry_per_write_spec_commits_5() {
 // writes from then on and a re-grant shows them again, the reads unchanged
 #[test]
 fn signal_kick_rejudges_history_spec_perm_5_2() {
-    let r = Retention::PLAIN;
+    let r = PurgeBy::AuthorOrAdmin;
     let grant = edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
     let msg = reg(10, 1, 1, SIG, r, 7);
     let kick = edge(20, MINT_ADMIN, 2, 1, None, Some(vec![]));

@@ -33,7 +33,7 @@ impl osis_commit::Secrets for Secrets {
 }
 
 // spec/commits.md §1: a minimal content commit (header plus one register delta, untyped `author`
-// retention) is about 300 bytes before encryption (notes/crdt.md, Commit floor).
+// purge-by) is about 300 bytes before encryption (notes/crdt.md, Commit floor).
 #[test]
 #[ignore]
 fn budget_minimal_commit() {

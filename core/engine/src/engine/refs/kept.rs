@@ -29,7 +29,7 @@ const TID: usize = osis_base::format::TID_LEN;
 /// governs (no fixed retention), not a signal (a held fire's references are the reference
 /// index's, `refs::note`).
 pub(crate) fn counted(ak: &Ak) -> bool {
-    !ak.ephemeral() && !ak.signal() && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && !osis_commit::retention::role_kept(ak.as_str())
+    !ak.ephemeral() && !ak.signal() && osis_commit::retention::fixed_purge_by(ak.as_str()).is_none() && !osis_commit::retention::role_kept(ak.as_str())
 }
 
 /// Whether `tid`'s newest held valid setting says its history holds its strongs' targets.

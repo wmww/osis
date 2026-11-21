@@ -65,7 +65,7 @@ fn purged(lp: &mut LocalPeer, t: Tid, secret: Secret) {
     let mut early = None;
     for v in ["old", "SECRET"] {
         let mut m = Mutation::new();
-        m.retention(t, &reg(), PurgeBy::Writer).unwrap();
+        m.purge_by(t, &reg(), PurgeBy::Writer).unwrap();
         m.set(t, &reg(), &Value::Str(v.into())).unwrap();
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         if v == "old" || matches!(secret, Secret::First) {

@@ -54,7 +54,7 @@ impl Rng {
 pub(crate) enum Step {
     /// A content write (`op` picks the aspect and shape) by `by` on thing `t`.
     Write { by: usize, t: usize, op: u8, k: u8, v: u8 },
-    /// `Write` plus a write of `t:rec.0` under default retention in the same commit: two bodies
+    /// `Write` plus a write of `t:rec.0` under default purge-by in the same commit: two bodies
     /// when `op` has a keep bound (`generate`'s parts group draws it under purge on replace).
     Mixed { by: usize, t: usize, op: u8, k: u8, v: u8 },
     /// `holder`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
@@ -514,11 +514,11 @@ fn op_on(m: &mut Mutation, e: &mut osis_engine::Engine, t: Tid, op: u8, po: Path
     }
 }
 
-/// `op`'s write on `t` (`Write`), with its retention, expiry and second aspect.
+/// `op`'s write on `t` (`Write`), with its purge-by, expiry and second aspect.
 fn write_op(m: &mut Mutation, e: &mut osis_engine::Engine, t: Tid, op: u8, k: u8, v: u8, typed: bool) {
     let a = aspect_of(op);
     if let Some(r) = by_of(op) {
-        m.retention(t, &a, r).unwrap();
+        m.purge_by(t, &a, r).unwrap();
     }
     if let Some(ms) = expiry_of(op, v) {
         let at = WallMs(e.now().0 + ms);
@@ -925,7 +925,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let (a2, po2) = content_op(15, k, v);
                 let mut m = Mutation::new();
                 if let Some(r) = by_of(op) {
-                    let _ = m.retention(th(t), &a, r);
+                    let _ = m.purge_by(th(t), &a, r);
                 }
                 let _ = m.op(th(t), &a2, po2);
                 if m.op(th(t), &a, po).is_ok() && lp.peers[by].commit(m).is_ok_and(|x| x.is_some()) {
@@ -1309,7 +1309,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let m = {
                     let mut m = Mutation::new();
                     m.set(th(t), &osis_schema::core_types::RETENTION, &rules).unwrap();
-                    // a second part beside the setting (another aspect and retention), so the setting may arrive late
+                    // a second part beside the setting (another aspect and purge-by), so the setting may arrive late
                     if rule % 2 == 1 {
                         m.set(th(t), &REG, &s("beside")).unwrap();
                     }
@@ -1323,13 +1323,13 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let mut m = Mutation::new();
                 write_op(&mut m, &mut lp.peers[by].engine, th(t), op, 0, v, true);
                 let writer = PurgeBy::Writer;
-                m.retention(th(t), &a, if fits { PurgeBy::default() } else { writer }).unwrap();
-                // a commit with a second part, its retention its own, in the same class when `v` says;
+                m.purge_by(th(t), &a, if fits { PurgeBy::default() } else { writer }).unwrap();
+                // a commit with a second part, its purge-by its own, in the same class when `v` says;
                 // one expiry (spec/commits.md §6)
                 if v % 2 == 1 && a != aspect_of(0) {
                     let o = aspect_of(0);
                     write_op(&mut m, &mut lp.peers[by].engine, th(t), 0, 1, v, true);
-                    m.retention(th(t), &o, if v % 4 == 1 { if fits { PurgeBy::default() } else { writer } } else { PurgeBy::Admin }).unwrap();
+                    m.purge_by(th(t), &o, if v % 4 == 1 { if fits { PurgeBy::default() } else { writer } } else { PurgeBy::Admin }).unwrap();
                     if let Some(ms) = expiry_of(op, v) {
                         m.expires(th(t), &o, WallMs(lp.peers[by].engine.now().0 + ms)).unwrap();
                     }

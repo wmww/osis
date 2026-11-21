@@ -1722,7 +1722,7 @@ fn stranger_secrets(lp: &mut LocalPeer, t: Tid, secrets: &ct::Secrets) -> Vec<u8
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, Some(&mut pages)).unwrap();
     assert!(pages.is_empty());
     let mut aw = AspectWrite::new(t, a.clone(), r.lo, r.hi, bytes);
-    aw.retention = osis_commit::retention::write_retention(a.as_str(), None, None).unwrap();
+    aw.purge_by = osis_commit::retention::write_purge_by(a.as_str(), None, None).unwrap();
     let mut cb = CommitBuilder::new(Kind::Role, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
@@ -2301,9 +2301,9 @@ fn rekey_reaches_thing_below_spec_perm_3() {
 }
 
 // spec/permissions.md §5.1, §6: an admin demoter lists every received commit of the demoted
-// writer, whatever its retention and whoever's snapshot covers it; each stays valid.
+// writer, whatever its purge-by and whoever's snapshot covers it; each stays valid.
 #[test]
-fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
+fn frontier_lists_covered_deltas_of_every_purge_by_spec_perm_5_1() {
     use osis_schema::PurgeBy;
     let reg = ak("t:reg.0");
     for (by, snapper, listed) in [(PurgeBy::Admin, 0, true), (PurgeBy::Writer, 0, true), (PurgeBy::AuthorOrAdmin, 0, true), (PurgeBy::AuthorOrAdmin, 2, true)] {
@@ -2315,7 +2315,7 @@ fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
         spread(&mut lp);
         lp.advance(1_000);
         let mut m = Mutation::new();
-        m.retention(t, &REG, crate::common::purgeable_by(by)).unwrap();
+        m.purge_by(t, &REG, by).unwrap();
         m.set(t, &REG, &s("x's")).unwrap();
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         spread(&mut lp);

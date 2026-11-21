@@ -46,7 +46,7 @@ pub const QUIET_MS: u64 = osis_base::format::MAX_DRIFT_MS;
 /// state).
 pub(crate) fn compactable(ak: &Ak) -> bool {
     let a = ak.as_str();
-    (osis_schema::core_types::is_content(a) || a == osis_commit::retention::RETENTION) && osis_commit::retention::fixed_retention(a).is_none() && !ak.signal()
+    (osis_schema::core_types::is_content(a) || a == osis_commit::retention::RETENTION) && osis_commit::retention::fixed_purge_by(a).is_none() && !ak.signal()
 }
 
 /// The trigger's state per aspect, in memory. An aspect is weighed (its bodies read) only once

@@ -50,8 +50,8 @@ fn history_into(h: History) -> Option<osis_schema::History> {
     }
 }
 
-/// What a write says of its retention, checked at compile time: who may purge it, nothing more
-/// (its thing's setting says what history keeps).
+/// A write says only who may purge it (its purge-by), checked at compile time: its thing's setting
+/// says what history keeps.
 /// ```
 /// let _ = osis::PurgeBy::Writer;
 /// let _ = osis::core::RETENTION;

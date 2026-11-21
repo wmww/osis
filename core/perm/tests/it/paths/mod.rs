@@ -56,11 +56,11 @@ fn role(r: roles_model::Role) -> Option<Role> {
     }
 }
 
-pub fn retention(r: m::Retention) -> PurgeBy {
+pub fn purge_by(r: m::PurgeBy) -> PurgeBy {
     match r {
-        m::Retention::Admin => PurgeBy::Admin,
-        m::Retention::AuthorOrAdmin => PurgeBy::AuthorOrAdmin,
-        m::Retention::Writer => PurgeBy::Writer,
+        m::PurgeBy::Admin => PurgeBy::Admin,
+        m::PurgeBy::AuthorOrAdmin => PurgeBy::AuthorOrAdmin,
+        m::PurgeBy::Writer => PurgeBy::Writer,
     }
 }
 
@@ -70,7 +70,7 @@ fn ts(t: u32) -> Ts {
 
 /// A delta of the model's content-class kinds: content and purge requests on `doc.0` (a
 /// destruction on `created.0`), covers its snapshots (stating each carried commit's own stamp,
-/// purge author and retention, as an honest snapshot does), addenda on `addenda.0`.
+/// purge author and purge-by, as an honest snapshot does), addenda on `addenda.0`.
 fn delta(w: &World, i: Id) -> Delta {
     let k = &w.commits[i];
     let ids = |s: &m::Set| Frontier::new(s.iter().map(|&j| cid(w.cid(j))));
@@ -86,13 +86,13 @@ fn delta(w: &World, i: Id) -> Delta {
             (if names == Names::Destroy { "created.0" } else { "doc.0" }, DeltaClass::Purge { names })
         }
         Kind::Cover { carries } => {
-            let stated = carries.iter().map(|&j| (cid(w.cid(j)), Stated { ts: ts(w.commits[j].ts), purge_author: tid(w.purge_author(j)), retention: retention(w.commits[j].ret) })).collect();
+            let stated = carries.iter().map(|&j| (cid(w.cid(j)), Stated { ts: ts(w.commits[j].ts), purge_author: tid(w.purge_author(j)), purge_by: purge_by(w.commits[j].purge_by) })).collect();
             ("doc.0", DeltaClass::Snapshot { carries: ids(carries), stated, own: k.own })
         }
         Kind::Addendum { removal, list } => ("addenda.0", DeltaClass::Addendum { removal: cid(w.cid(*removal)), list: ids(list) }),
         _ => unreachable!("content-class kinds only"),
     };
-    Delta { aspect: Ak::new(aspect).unwrap(), needs: Role::Write, purge_author: w.chain(i).iter().position(|&t| t == w.purge_author(i)).unwrap() as u32, retention: retention(k.ret), class }
+    Delta { aspect: Ak::new(aspect).unwrap(), needs: Role::Write, purge_author: w.chain(i).iter().position(|&t| t == w.purge_author(i)).unwrap() as u32, purge_by: purge_by(k.purge_by), class }
 }
 
 /// A world as one node's input: its held parts, commits grouped by the model's commit ID, each

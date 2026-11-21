@@ -543,7 +543,7 @@ impl Engine {
     /// held one). For each aspect whose newest own commit linking one is held: every large position
     /// of the current value whose tree holds one is written again (`Op::Put` at that position:
     /// no reset, so every other write stays), with the lost blobs re-encrypted and the own
-    /// commit's retention and expiry. `allow` gates each aspect (the caller's back-off). Needs
+    /// commit's purge-by and expiry. `allow` gates each aspect (the caller's back-off). Needs
     /// write on the thing and the aspect's schema registered here. One commit, if any.
     pub fn relink(&mut self, lost: &BTreeSet<BlobId>, things: &BTreeSet<Tid>, allow: &mut dyn FnMut(&Tid, &Ak) -> bool) -> Result<Option<CommitId>> {
         let held: BTreeSet<BlobId> = self.read(|tx| {
@@ -622,9 +622,9 @@ impl Engine {
         Ok(Some(id))
     }
 
-    /// `relink` of one field: its ops, with the retention, expiry and schema of the newest held
+    /// `relink` of one field: its ops, with the purge-by, expiry and schema of the newest held
     /// commit or snapshot whose valid delta links a `held` blob (the value rewritten; a snapshot
-    /// gives the field's default retention, and no expiry: it carries no expiring value), if one of
+    /// gives the field's default purge-by, and no expiry: it carries no expiring value), if one of
     /// `me` links one too; `None` when there is nothing to do here.
     fn relink_field(&mut self, tid: &Tid, ak: &Ak, held: &BTreeSet<BlobId>, me: Tid, now: u64) -> Result<Option<super::write::AspectMut>> {
         // a compaction snapshot links too: the reusing commit may have dropped under it and been
@@ -636,7 +636,7 @@ impl Engine {
             let Some(dedup) = tx.core.dedup(&k.0) else { return Ok((None, false)) };
             let mut newest = None;
             for c in commits {
-                // a commit counts through its part valid here: an invalid one's retention and
+                // a commit counts through its part valid here: an invalid one's purge-by and
                 // expiry are no one's to copy
                 let Some((ai, mine)) = tx.core.ix.commits.get(&c).and_then(|m| Some((m.aspect(&k.0, &k.1).filter(|ai| m.valid_at(*ai))?, m.header.signer == me))) else { continue };
                 if newest.is_some() && !mine {
@@ -691,9 +691,9 @@ impl Engine {
         if ops.is_empty() {
             return Ok(None);
         }
-        // a snapshot's retention is its own (`snapshot_retention`): the field's default then
-        let retention = (!snapshot).then_some(a.retention);
-        Ok(Some(super::write::AspectMut { ops, schema, retention, expires, ..Default::default() }))
+        // a snapshot's purge-by is its own (`snapshot_purge_by`): the field's default then
+        let purge_by = (!snapshot).then_some(a.purge_by);
+        Ok(Some(super::write::AspectMut { ops, schema, purge_by, expires, ..Default::default() }))
     }
 
     /// The blobs the deltas of a body (`plaintext`: its commit blob plaintext) link, through

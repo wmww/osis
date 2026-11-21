@@ -64,7 +64,7 @@ A shared tag is already an actor (notes/tags.md, Sharing a tag) and may also car
 - **Chat core asks become realm asks**: pure readers placing nothing under big sync IDs matters more, since realms gather any number of things.
 
 ## Core changes
-- `realm.0: struct { color 0: option<string> }` in spec/data-model.md §9, default retention (`admin`), typed key `osis::core::REALM`.
+- `realm.0: struct { color 0: option<string> }` in spec/data-model.md §9, default purge-by (`admin`), typed key `osis::core::REALM`.
 - `osis` query: grants held by an actor. Possibly a `create_realm` helper (an independent thing, held by ticket); otherwise apps compose it.
 - For big realms: pure readers (notes/chat-cases.md core r).
 

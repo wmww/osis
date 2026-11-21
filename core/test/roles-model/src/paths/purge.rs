@@ -6,7 +6,7 @@
 //! Account A (mint H) administers T1 (record edge); X and B are admins of A (H's grants), W a
 //! writer of T1 by its own grant, A2 (K's) holds write or admin on T1 (B's share) and X write or
 //! admin on A2 or nothing (K's grant): [A2] is a path X keeps. Content on T1 at 2 to 4 by H, B, W,
-//! K and X, each delta's retention and purge author drawn. X may purge at 4 (H and the witnesses
+//! K and X, each delta's purge-by and purge author drawn. X may purge at 4 (H and the witnesses
 //! B, W receiving it in time or not). X is stolen at 5; H removes X at 6 listing what it received
 //! through (X, A) by 5. Witnesses write addenda at 7 (purge requests listed only under
 //! `Rules::purge_addenda`, the writing rule following the reading). K may compact T1 at 8. Honest
@@ -168,10 +168,10 @@ impl PWorld {
     }
 }
 
-/// A content write on T1 by `n` at `t`, its retention and purge author drawn.
+/// A content write on T1 by `n` at `t`, its purge-by and purge author drawn.
 fn write(m: &mut PWorld, n: Thing, t: u32, path: &[Thing], rng: &mut Rng) -> Id {
     let i = m.put(n, t, path, T1, Kind::Content, t, rng, false);
-    m.w.retain(i, [Retention::Admin, Retention::AuthorOrAdmin, Retention::Writer][rng.below(3)]);
+    m.w.set_purge_by(i, [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer][rng.below(3)]);
     if !path.is_empty() && rng.below(2) == 0 {
         m.w.authored(i, 1);
     }
@@ -422,17 +422,17 @@ fn named(w: &World, q: Id, d: Id) -> bool {
         }
 }
 
-/// Whether `q`'s right (admin, write) reaches `d`: the members of `d`'s retention set it holds.
+/// Whether `q`'s right (admin, write) reaches `d`: the members of `d`'s purge-by set it holds.
 fn reaches(w: &World, q: Id, d: Id, admin: bool, write: bool) -> bool {
     if matches!(w.commits[q].kind, Kind::Purge { names: Names::Destroy }) {
         return admin;
     }
     admin
         || (write
-            && match w.commits[d].ret {
-                Retention::Admin => false,
-                Retention::AuthorOrAdmin => w.chain(q).contains(&w.purge_author(d)),
-                Retention::Writer => true,
+            && match w.commits[d].purge_by {
+                PurgeBy::Admin => false,
+                PurgeBy::AuthorOrAdmin => w.chain(q).contains(&w.purge_author(d)),
+                PurgeBy::Writer => true,
             })
 }
 
@@ -538,7 +538,7 @@ pub fn purge_check(m: &PWorld, rules: &Rules, st: &mut PStats) {
         // a store that cannot judge would have acted on every request that holds the right
         for &d in &rd.purged {
             st.count("could hold");
-            let need = |q: Id| if w.commits[d].ret == Retention::Admin || matches!(w.commits[q].kind, Kind::Purge { names: Names::Destroy }) { Role::Admin } else { Role::Write };
+            let need = |q: Id| if w.commits[d].purge_by == PurgeBy::Admin || matches!(w.commits[q].kind, Kind::Purge { names: Names::Destroy }) { Role::Admin } else { Role::Write };
             if !v.held.iter().any(|&q| named(w, q, d) && could_hold(w, &v.held, q, need(q))) {
                 st.fail("could hold", i, format!("node {n}: {d} purged by no request a store could act on"));
             }
@@ -635,7 +635,7 @@ pub fn purge_trace(m: &PWorld) -> String {
     let mut s = format!("{:?} moves {:?}\n", m.setup, m.moves);
     for (i, c) in m.w.commits.iter().enumerate() {
         let tag = if m.thief.contains(&i) { " (thief)" } else { "" };
-        s += &format!("  {i}: {} ts {} made {} {:?} on {}: {:?} ret {:?} author {}{tag}; recv {:?}\n", c.signer, c.ts, m.made[i], c.path, c.on, c.kind, c.ret, m.w.purge_author(i), m.recv[i]);
+        s += &format!("  {i}: {} ts {} made {} {:?} on {}: {:?} purge_by {:?} author {}{tag}; recv {:?}\n", c.signer, c.ts, m.made[i], c.path, c.on, c.kind, c.purge_by, m.w.purge_author(i), m.recv[i]);
     }
     s
 }

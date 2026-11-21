@@ -1011,7 +1011,7 @@ mod tests {
         let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
         let mut cb = CommitBuilder::new(Kind::Role, ts, author, osis_commit::Path::default(), Form::Commit);
         let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes.clone());
-        aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
+        aw.purge_by = osis_commit::retention::write_purge_by(ak.as_str(), None, None).unwrap();
         cb.aspects.push(aw);
         let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
         cb.build(&forge_key, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()

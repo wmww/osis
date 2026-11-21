@@ -48,7 +48,7 @@ fn validate_kinds() {
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
     assert!(invalid(&x).to_string().contains("writer"));
-    x.aspects[0].retention = PurgeBy::Writer;
+    x.aspects[0].purge_by = PurgeBy::Writer;
     x.keys.push(dkey(3, 3));
     x.aspects[0].keys = vec![0, 1, 2];
     x.validate().unwrap();
@@ -66,7 +66,7 @@ fn own_cover_flag_spec_wire_4() {
     x.form = Form::Commit;
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
-    x.aspects[0].retention = PurgeBy::Writer;
+    x.aspects[0].purge_by = PurgeBy::Writer;
     x.keys.push(dkey(3, 3));
     x.aspects[0].keys = vec![0, 1, 2];
     x.validate().unwrap();
@@ -110,7 +110,7 @@ pub(crate) fn role_header(ak: &str) -> Header {
     h.path = Paths::default();
     let a = &mut h.aspects[0];
     a.ak = Ak::new(ak).unwrap();
-    a.retention = retention::ROLE_RETENTION;
+    a.purge_by = retention::ROLE_PURGE_BY;
     a.keys = vec![0];
     a.hash = [1; 32];
     h.expires = None;
@@ -138,7 +138,7 @@ fn validate_role_commit() {
     x.expires = Some(9_999_999_999);
     assert!(invalid(&x).to_string().contains("expires"));
     let mut x = h.clone();
-    x.aspects[0].retention = PurgeBy::Writer;
+    x.aspects[0].purge_by = PurgeBy::Writer;
     assert!(matches!(invalid(&x), Error::Malformed(_) | Error::Invalid(_)));
     let mut x = h.clone();
     x.frontier = Some(std::sync::Arc::from([]));
@@ -191,7 +191,7 @@ fn validate_commit_expiry() {
     for by in [PurgeBy::AuthorOrAdmin, PurgeBy::Writer] {
         let mut y = h.clone();
         y.aspects[0].ak = Ak::new("created.0").unwrap();
-        y.aspects[0].retention = by;
+        y.aspects[0].purge_by = by;
         assert!(invalid(&y).to_string().contains("created.0 not purgeable by admin"), "{by:?}: {}", invalid(&y));
     }
 }
@@ -236,14 +236,14 @@ fn validate_purge_created_whole_only_spec_wire_4() {
     with(PurgeItem::Author { tid: t(3), ak: Ak::new("app:title.0").unwrap(), author: t(4) }).validate().unwrap();
 }
 
-// spec/wire.md §4: a part's retention is `by` alone: every class round-trips; an unknown class, or
+// spec/wire.md §4: a part's purge-by is its class alone: every class round-trips; an unknown class, or
 // one as a list, is malformed.
 #[test]
-fn retention_encoding_spec_wire_4() {
+fn purge_by_encoding_spec_wire_4() {
     let h = sample_header();
     for by in PurgeBy::ALL {
         let mut x = h.clone();
-        x.aspects[0].retention = by;
+        x.aspects[0].purge_by = by;
         assert_eq!(Header::decode(&x.encode()).unwrap(), x);
     }
     for bad in [Value::Int(0), Value::Int(4), Value::List(vec![Value::Int(2), Value::Int(0)])] {
@@ -259,41 +259,41 @@ fn retention_encoding_spec_wire_4() {
 }
 
 // spec/commits.md §5: fixed tables, write defaults (untyped: admin, no expiry), `nobody`
-// refused, snapshot retention.
+// refused, snapshot purge-by.
 #[test]
-fn retention_rules() {
+fn purge_by_rules() {
     use osis_schema::AspectDefaults;
     use retention::*;
-    assert_eq!(fixed_retention("secrets.0"), Some(ROLE_RETENTION));
-    assert_eq!(fixed_retention("created.0"), None);
-    assert_eq!(fixed_retention("retention^.0"), None);
-    assert_eq!(fixed_retention("app:x.0"), None);
-    assert_eq!(write_retention("app:x.0", None, None).unwrap(), PurgeBy::default());
+    assert_eq!(fixed_purge_by("secrets.0"), Some(ROLE_PURGE_BY));
+    assert_eq!(fixed_purge_by("created.0"), None);
+    assert_eq!(fixed_purge_by("retention^.0"), None);
+    assert_eq!(fixed_purge_by("app:x.0"), None);
+    assert_eq!(write_purge_by("app:x.0", None, None).unwrap(), PurgeBy::default());
     assert_eq!(PurgeBy::default(), PurgeBy::Admin);
     assert_eq!(write_expires("app:x.0", ts(10), None, None).unwrap(), None);
-    let d = AspectDefaults { retention: PurgeBy::Writer, expires: Some(100) };
-    assert_eq!(write_retention("app:x.0", Some(&d), None).unwrap(), d.retention);
+    let d = AspectDefaults { purge_by: PurgeBy::Writer, expires: Some(100) };
+    assert_eq!(write_purge_by("app:x.0", Some(&d), None).unwrap(), d.purge_by);
     assert_eq!(write_expires("app:x.0", ts(10), Some(&d), None).unwrap(), Some(110));
     assert_eq!(write_expires("app:x.0", ts(10), Some(&d), Some(50)).unwrap(), Some(50));
     assert_eq!(write_expires("roles.0", ts(10), Some(&d), Some(50)).unwrap(), None);
-    assert!(write_retention("roles.0", None, Some(PurgeBy::Writer)).is_err());
-    assert_eq!(write_retention("retention^.0", None, None).unwrap(), PurgeBy::default());
+    assert!(write_purge_by("roles.0", None, Some(PurgeBy::Writer)).is_err());
+    assert_eq!(write_purge_by("retention^.0", None, None).unwrap(), PurgeBy::default());
     // a snapshot is `writer`, its history the thing's setting; fixed retention keeps its own
-    assert_eq!(snapshot_retention("app:x.0"), PurgeBy::Writer);
-    assert_eq!(snapshot_retention("keys.0"), ROLE_RETENTION);
+    assert_eq!(snapshot_purge_by("app:x.0"), PurgeBy::Writer);
+    assert_eq!(snapshot_purge_by("keys.0"), ROLE_PURGE_BY);
 }
 
-// spec/commits.md §2, spec/wire.md §4: an ephemeral commit's retention is `writer`, in session
+// spec/commits.md §2, spec/wire.md §4: an ephemeral commit's purge-by is `writer`, in session
 // form and as a commit-form snapshot alike; it may undo a commit. A relay-only commit is a content
 // snapshot and undoes nothing.
 #[test]
-fn ephemeral_retention_writer_spec_commits_2() {
+fn ephemeral_purge_by_writer_spec_commits_2() {
     let mut session = sample_header();
     session.undoes = None;
     session.ephemeral = Some(EphClass::Plain);
     session.keys.push(dkey(3, 3));
     session.aspects[0].keys = vec![0, 1, 2];
-    session.aspects[0].retention = crate::retention::EPHEMERAL_RETENTION;
+    session.aspects[0].purge_by = crate::retention::EPHEMERAL_PURGE_BY;
     let mut snapshot = session.clone();
     snapshot.form = Form::Commit;
     snapshot.kind = Kind::ContentSnapshot;
@@ -306,7 +306,7 @@ fn ephemeral_retention_writer_spec_commits_2() {
     for h in [session, snapshot, undo] {
         h.validate().unwrap();
         let mut x = h.clone();
-        x.aspects[0].retention = PurgeBy::AuthorOrAdmin;
+        x.aspects[0].purge_by = PurgeBy::AuthorOrAdmin;
         x.aspects[0].keys = vec![0, 1];
         x.keys.truncate(2);
         assert!(invalid(&x).to_string().contains("writer"), "{}", invalid(&x));
@@ -334,8 +334,8 @@ fn session_form_spec_commits_3() {
     // a durable content commit in session form, and an ephemeral one
     h.validate().unwrap();
     h.ephemeral = Some(EphClass::Plain);
-    assert!(invalid(&h).to_string().contains("retention"), "the durable commit's retention");
-    h.aspects[0].retention = crate::retention::EPHEMERAL_RETENTION;
+    assert!(invalid(&h).to_string().contains("purge-by"), "the durable commit's purge-by");
+    h.aspects[0].purge_by = crate::retention::EPHEMERAL_PURGE_BY;
     h.keys.push(dkey(3, 3));
     h.aspects[0].keys = vec![0, 1, 2];
     h.validate().unwrap();

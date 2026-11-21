@@ -374,7 +374,7 @@ fn ms(n: u64) -> Ts {
 }
 
 fn role_class(on: u32, path: &[u32]) -> Part {
-    let d = Delta { aspect: Ak::new("keys.0").unwrap(), needs: R::Admin, purge_author: 0, retention: PurgeBy::Admin, class: DeltaClass::RoleClass };
+    let d = Delta { aspect: Ak::new("keys.0").unwrap(), needs: R::Admin, purge_author: 0, purge_by: PurgeBy::Admin, class: DeltaClass::RoleClass };
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
@@ -447,7 +447,7 @@ fn a_retain_removal_restores_read_as_the_draft_reads_it() {
 
 fn admin_only(on: u32, path: &[u32], class: DeltaClass) -> Part {
     let aspect = Ak::new(if matches!(class, DeltaClass::Addendum { .. }) { "addenda.0" } else { "doc^.0" }).unwrap();
-    let d = Delta { aspect, needs: R::Admin, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class };
+    let d = Delta { aspect, needs: R::Admin, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class };
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
@@ -464,7 +464,7 @@ fn an_addendum_vouches_for_admin_only_content_only_by_admin() {
         commit(3, 1, KH, vec![edge(KA, &[], KN, Some(Edge::new(R::Write)), Some(&[]))]),
         commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
         commit(5, 2, KX, vec![role_class(KT, &[KA])]),
-        commit(6, 2, KX, vec![Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc.0").unwrap(), needs: R::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain }), ..role_class(KT, &[KA]) }]),
+        commit(6, 2, KX, vec![Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc.0").unwrap(), needs: R::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain }), ..role_class(KT, &[KA]) }]),
         commit(7, 5, KH, vec![edge(KA, &[], KX, Some(Edge::new(R::Write)), Some(&[]))]),
     ];
     let by = |signer, id| commit(id, 6, signer, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: c(7), list: Frontier::new([c(4), c(5)]) })]);
@@ -484,7 +484,7 @@ fn an_addendum_vouches_for_no_commit_carrying_a_purge_request() {
     let base = vec![
         commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
         commit(2, 1, KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
-        commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain), Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc^.0").unwrap(), needs: R::Write, purge_author: 1, retention: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names: osis_perm::paths::Names::Author(t(KA)) } }), ..role_class(KT, &[KA]) }]),
+        commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain), Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc^.0").unwrap(), needs: R::Write, purge_author: 1, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names: osis_perm::paths::Names::Author(t(KA)) } }), ..role_class(KT, &[KA]) }]),
         commit(5, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
         commit(7, 5, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
         commit(8, 6, KB, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: c(7), list: Frontier::new([c(4), c(5)]) })]),
@@ -501,7 +501,7 @@ const KY: u32 = 6;
 const KG: u32 = 5;
 
 fn doc(on: u32, path: &[u32], aspect: &str, class: DeltaClass) -> Part {
-    let d = Delta { aspect: Ak::new(aspect).unwrap(), needs: R::Write, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class };
+    let d = Delta { aspect: Ak::new(aspect).unwrap(), needs: R::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class };
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 

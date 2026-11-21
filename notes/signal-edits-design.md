@@ -18,7 +18,7 @@
   - O invalid: not honored, so a valid edit is a fire of its own at its own place, and an edit invalid with it is unlisted;
   - O re-validated: its versions fold under it again.
 - **Expiry:** a writer gives an edit O's `expires`; no rule checks it. O and its edits end together. An over-long edit stands alone once O goes, which is no more than a new message could do.
-- **Retention:** each version carries its own purgeable-by; what history keeps is the thing's setting for the AK, one window for every version, each from its own `ts`.
+- **Purge-by:** each version carries its own purge-by; what history keeps is the thing's setting for the AK, one window for every version, each from its own `ts`.
 - **Old text gone:** the edit commit carries an ordinary purge request naming the earlier versions, and stays honored. A request reaches only deltas expiring no later than its commit, and the purge floor ends at that expiry. A request goes under `purge.0`, which carries no expiry; in a commit that expires the engine leaves `purge.0` out and the request rides the commit's own deltas on the thing, refused (`Invalid`) when it names anything but commits expiring no later or the commit writes nothing there. A disappearing message's edit purging its old text is so one commit.
 - **Edits off:** `final` on the AK's entry of the thing's `retention^.0` setting: a writer refuses `replace` there (`Invalid`). No validity rule: an edit written anyway is honored (Tess, notes/engine-retention-history.md Tess's decisions, 5).
 - **What stays visible:**
@@ -32,7 +32,7 @@
 - register order (newest wins);
 - purge requests and tombstones;
 - validity (`actor`, key order), so removal needs no new work: an edit after a kick is invalid and not honored;
-- purgeable-by and expiry per delta;
+- purge-by and expiry per delta;
 - the listing rule and `on_fire`.
 
 **New:** the header field, two index sets, the fold in listings, `replace`, `commit`, `versions`, and `final`.

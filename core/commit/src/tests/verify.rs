@@ -40,10 +40,10 @@ pub(crate) fn register_delta(signer: Tid, at: Ts, lo: u64, v: &str) -> Vec<u8> {
     encode_delta(&d, &writer_ctx(SESSION, Kind::Content, at, signer, lo, lo + 1), None).unwrap()
 }
 
-// spec/crypto.md §7: delete keys by retention level; a missing
+// spec/crypto.md §7: delete keys by purge-by level; a missing
 // key is an error, level 1 included.
 #[test]
-fn delete_levels_by_retention() {
+fn delete_levels_by_purge_by() {
     let s = TestSecrets { admin: true };
     let lv = |by| delete_keys(&s, &t(3), &by).unwrap().iter().map(|x| x.level).collect::<Vec<_>>();
     assert_eq!(lv(PurgeBy::Admin), vec![1]);

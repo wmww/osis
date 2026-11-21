@@ -1,7 +1,7 @@
 //! Chat's shared rules (notes/chat.md): a chat is one actor C, participants hold write on it, a
 //! message is one fire of C's `chat:msg~0`, its sender the commit's verified author, an edit its
 //! sender's `replace` of it. Reading and writing are plain `osis` calls on the keys in `schema`;
-//! this crate holds what every chat writer must do alike: create a chat under its retention rules,
+//! this crate holds what every chat writer must do alike: create a chat under its retention setting,
 //! edit as the chat's settings say, and read by arrival (no osis listing orders by it).
 
 #![forbid(unsafe_code)]
@@ -35,7 +35,7 @@ pub struct Options {
     pub name: String,
     /// Who may delete a message besides admins: `AuthorOrAdmin`, `Admin` or `Writer` (admins
     /// may always purge; `create` refuses another).
-    pub purge: PurgeBy,
+    pub purge_by: PurgeBy,
     /// What an edit does to the old text; `None`: messages cannot be edited (the message rule
     /// refuses replacements).
     pub edit: Option<EditMode>,
@@ -47,7 +47,7 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { name: String::new(), purge: PurgeBy::AuthorOrAdmin, edit: Some(EditMode::Purge), disappear: None, retain_copies: true }
+        Options { name: String::new(), purge_by: PurgeBy::AuthorOrAdmin, edit: Some(EditMode::Purge), disappear: None, retain_copies: true }
     }
 }
 
@@ -60,7 +60,7 @@ impl Default for Options {
 /// makes it independent. Changing a setting later writes `retention^.0` whole; a participant
 /// who has not seen it writes as before (its messages keep the expiry they were written with).
 pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
-    let purge = match o.purge {
+    let purge = match o.purge_by {
         PurgeBy::AuthorOrAdmin => None,
         PurgeBy::Admin => Some(schema::Deletes::Admins),
         PurgeBy::Writer => Some(schema::Deletes::Anyone),
@@ -94,7 +94,7 @@ pub fn relay(db: &Osis, c: Tid, account: Tid) -> Result<Vec<Tid>> {
     Ok(granted)
 }
 
-/// The retention a message on chat `c` carries: who may delete it, as the chat's settings say.
+/// The purge-by a message on chat `c` carries: who may delete it, as the chat's settings say.
 pub fn message_purge_by(db: &Osis, c: Tid) -> Result<PurgeBy> {
     Ok(purge_by_of(db.at(c, SETTINGS).get()?.as_ref()))
 }

@@ -159,7 +159,7 @@ fn each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1() {
 /// unread: a store keeps what it holds of an invalid body until its expiry,
 /// issues/invalid-junk-kept.md). Cut off from node 0, node 1 is lowered to read there and writes
 /// `n` values it still believes valid, the first purging its own earlier write (`writer`
-/// retention, so it may as a writer); node 2, cut off from node 0 too, takes them; then nodes 0
+/// purge-by, so it may as a writer); node 2, cut off from node 0 too, takes them; then nodes 0
 /// and 2 meet, then all: every node judges them invalid. Then a restart of every node and the
 /// tombstone lifetime: the world, the thing, the invalid commits and what each node holds
 /// (`Held`).
@@ -171,7 +171,7 @@ fn lowered_writes(n: usize) -> (World, Tid, Vec<CommitId>, Vec<Held>) {
     let note = Ak::new("u:n.0").unwrap();
     let mine = w.write(1, |e| {
         let mut m = Mutation::new();
-        m.set(t, &note, &Value::Str("mine".into())).unwrap().retention(t, &note, osis_schema::PurgeBy::Writer).unwrap();
+        m.set(t, &note, &Value::Str("mine".into())).unwrap().purge_by(t, &note, osis_schema::PurgeBy::Writer).unwrap();
         e.commit(m).unwrap().unwrap()
     });
     w.run();
@@ -312,7 +312,7 @@ fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
     let mine = Some(Value::Str("mine".into()));
     let own = w.write(1, |e| {
         let mut m = Mutation::new();
-        m.set(u, &y, &Value::Str("mine".into())).unwrap().retention(u, &y, osis_schema::PurgeBy::Writer).unwrap();
+        m.set(u, &y, &Value::Str("mine".into())).unwrap().purge_by(u, &y, osis_schema::PurgeBy::Writer).unwrap();
         e.commit(m).unwrap().unwrap()
     });
     w.run();

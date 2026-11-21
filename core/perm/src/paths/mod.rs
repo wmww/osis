@@ -103,7 +103,7 @@ pub struct Delta {
     pub needs: Role,
     /// Its purge author: an index into [signer, A1..Ak] (draft §6); past the path, bad input.
     pub purge_author: u32,
-    pub retention: PurgeBy,
+    pub purge_by: PurgeBy,
     pub class: DeltaClass,
 }
 
@@ -140,12 +140,12 @@ pub enum Names {
 }
 
 /// What a snapshot states of a commit it carries (spec/crdt.md §8 `Facts`): its stamp, purge
-/// author and retention.
+/// author and purge-by.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stated {
     pub ts: Ts,
     pub purge_author: Tid,
-    pub retention: PurgeBy,
+    pub purge_by: PurgeBy,
 }
 
 /// A purge request's description of what it names (its thing, aspect, selector and stamp): the
@@ -542,12 +542,12 @@ impl<S: Store> Paths<S> {
         self.facts.could_give(id, r)
     }
 
-    /// Whether held request `id` could hold the right over a delta of `retention` whose purge
+    /// Whether held request `id` could hold the right over a delta of `purge_by` whose purge
     /// author is `author` (draft spec/commits.md §4 Could hold the right): admin on every edge,
     /// or write where the class allows a writer (`writer`; `author_or_admin` where its path holds
     /// the author). A destruction: admin.
-    pub fn could_hold(&self, id: &WriteId, retention: PurgeBy, author: Option<&Tid>) -> Option<bool> {
-        self.facts.could_hold(id, retention, author)
+    pub fn could_hold(&self, id: &WriteId, purge_by: PurgeBy, author: Option<&Tid>) -> Option<bool> {
+        self.facts.could_hold(id, purge_by, author)
     }
 
     /// Whether held edge-class part `id` is chained (draft §4 Chained writes; a self-removal by

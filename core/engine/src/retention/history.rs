@@ -48,7 +48,7 @@ pub(crate) fn of(core: &Core, tid: &Tid, ak: &Ak) -> Kept {
     if osis_commit::retention::role_kept(a) {
         return Kept { role: true, ..Kept::default() };
     }
-    if osis_commit::retention::fixed_retention(a).is_some() {
+    if osis_commit::retention::fixed_purge_by(a).is_some() {
         return Kept::default();
     }
     let all = crate::apply::validity::settings(core, tid);
@@ -67,7 +67,7 @@ pub(crate) fn of(core: &Core, tid: &Tid, ak: &Ak) -> Kept {
 /// no fixed retention, and a body of it replaced now would never leave history. It leaves by
 /// purge request, and leaves its header behind for good.
 pub(crate) fn permanent(core: &Core, h: &osis_commit::Header, a: &osis_commit::AspectEntry) -> bool {
-    h.ephemeral.is_none() && h.expires.is_none() && osis_commit::retention::fixed_retention(a.ak.as_str()).is_none() && of(core, &a.tid, &a.ak).forever(h.ts)
+    h.ephemeral.is_none() && h.expires.is_none() && osis_commit::retention::fixed_purge_by(a.ak.as_str()).is_none() && of(core, &a.tid, &a.ak).forever(h.ts)
 }
 
 impl Kept {

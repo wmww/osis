@@ -8,12 +8,12 @@ use osis_base::Ak;
 use osis_schema::core_types::{is_addenda, is_role_class, RetentionEntry, RetentionSetting};
 use osis_schema::{AspectDefaults, History, PurgeBy};
 
-/// The fixed retention of role-class deltas: `admin` (each node keeps a replaced one
+/// The fixed purge-by of role-class deltas: `admin` (each node keeps a replaced one
 /// `ROLE_KEEP`, `role_kept`).
-pub const ROLE_RETENTION: PurgeBy = PurgeBy::Admin;
+pub const ROLE_PURGE_BY: PurgeBy = PurgeBy::Admin;
 
-/// The retention of every delta of an ephemeral commit: `writer` (spec/commits.md §2).
-pub const EPHEMERAL_RETENTION: PurgeBy = PurgeBy::Writer;
+/// The purge-by of every delta of an ephemeral commit: `writer` (spec/commits.md §2).
+pub const EPHEMERAL_PURGE_BY: PurgeBy = PurgeBy::Writer;
 
 /// The AK of the creation record.
 pub const CREATED: &str = "created.0";
@@ -30,35 +30,35 @@ pub fn destroying_request(ak: &str) -> bool {
     ak == PURGE
 }
 
-/// Role-class aspects and `addenda.0`: fixed `ROLE_RETENTION`, each replaced delta kept
+/// Role-class aspects and `addenda.0`: fixed `ROLE_PURGE_BY`, each replaced delta kept
 /// `ROLE_KEEP` after replaced.
 pub fn role_kept(ak: &str) -> bool {
     is_role_class(ak) || is_addenda(ak)
 }
 
-/// Fixed retention of an AK, if it has one (role-class aspects, `addenda.0`, `purge.0`): no
+/// Fixed purge-by of an AK, if it has one (role-class aspects, `addenda.0`, `purge.0`): no
 /// setting governs it.
-pub fn fixed_retention(ak: &str) -> Option<PurgeBy> {
+pub fn fixed_purge_by(ak: &str) -> Option<PurgeBy> {
     if destroying_request(ak) {
         // a commit carrying a request carries no `expires` from a setting
         Some(PurgeBy::AuthorOrAdmin)
     } else if role_kept(ak) {
         // an addendum is kept like a role commit: the judgment reads its delta, never a snapshot
-        Some(ROLE_RETENTION)
+        Some(ROLE_PURGE_BY)
     } else {
         None
     }
 }
 
-/// Retention of a write: the fixed one, else the commit's override, else the schema's default
+/// Purge-by of a write: the fixed one, else the commit's override, else the schema's default
 /// for the AK, else the untyped default (`admin`). An override that disagrees with a
-/// fixed retention is refused.
-pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<PurgeBy>) -> Result<PurgeBy, Error> {
-    match (fixed_retention(ak), set) {
-        (Some(f), Some(s)) if f != s => Err(Error::Build("retention of this aspect is fixed")),
+/// fixed purge-by is refused.
+pub fn write_purge_by(ak: &str, defaults: Option<&AspectDefaults>, set: Option<PurgeBy>) -> Result<PurgeBy, Error> {
+    match (fixed_purge_by(ak), set) {
+        (Some(f), Some(s)) if f != s => Err(Error::Build("purge-by of this aspect is fixed")),
         (Some(f), _) => Ok(f),
         (None, Some(s)) => Ok(s),
-        (None, None) => Ok(defaults.map(|d| d.retention).unwrap_or_default()),
+        (None, None) => Ok(defaults.map(|d| d.purge_by).unwrap_or_default()),
     }
 }
 
@@ -73,16 +73,16 @@ pub fn entry_fits(e: &RetentionEntry) -> bool {
     history && e.expires.is_none_or(|d| d > 0 && d < FOREVER)
 }
 
-/// Retention of a compaction-snapshot delta (spec/commits.md §5): an aspect with fixed retention
-/// keeps it; any other is `writer` (its history is the thing's setting).
-pub fn snapshot_retention(ak: &str) -> PurgeBy {
-    fixed_retention(ak).unwrap_or(PurgeBy::Writer)
+/// Purge-by of a compaction-snapshot delta (spec/commits.md §5): an aspect of fixed retention
+/// keeps its fixed one; any other is `writer` (its history is the thing's setting).
+pub fn snapshot_purge_by(ak: &str) -> PurgeBy {
+    fixed_purge_by(ak).unwrap_or(PurgeBy::Writer)
 }
 
 /// Expiry of a write: an explicit T, else the schema's default duration from the write's `ts`.
 /// Aspects with fixed retention never expire. A T above 2^63 - 1 is refused.
 pub fn write_expires(ak: &str, ts: Ts, defaults: Option<&AspectDefaults>, set: Option<u64>) -> Result<Option<u64>, Error> {
-    if fixed_retention(ak).is_some() {
+    if fixed_purge_by(ak).is_some() {
         return Ok(None);
     }
     let t = match set {
@@ -102,7 +102,7 @@ pub fn purge_keep_until(h: &Header) -> Option<u64> {
     (!h.purge.is_empty()).then(|| h.ts.wall_ms().0.saturating_add(ROLE_KEEP_MS).min(h.expires.unwrap_or(u64::MAX)))
 }
 
-/// Delete levels a delta of retention `r` calls for (spec/crypto.md §7).
+/// Delete levels a delta of purge-by `r` calls for (spec/crypto.md §7).
 pub(crate) fn delete_levels(r: &PurgeBy) -> &'static [u8] {
     match r {
         PurgeBy::Admin => &[DELETE_ADMIN],

@@ -45,7 +45,7 @@ fn list_reader_bounds() {
 fn created_may_expire_spec_commits_6() {
     let mut h = sample_header();
     h.aspects[0].ak = Ak::new("created.0").unwrap();
-    h.aspects[0].retention = PurgeBy::Admin;
+    h.aspects[0].purge_by = PurgeBy::Admin;
     h.aspects[0].keys = vec![0];
     h.keys.truncate(1);
     h.expires = Some(h.ts.wall_ms().0 + 1);
@@ -76,7 +76,7 @@ fn prefix_groups_by_key_set() {
     b.aspects[0].tid = t(3);
     b.aspects[1].tid = t(3);
     b.aspects[1].ak = Ak::new("app:body.0").unwrap();
-    b.aspects[0].retention = PurgeBy::Writer;
+    b.aspects[0].purge_by = PurgeBy::Writer;
     let c = b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit;
     let g = prefix_groups(&c.header, [0, 1]).unwrap();
     assert_eq!(g.len(), 2);
@@ -85,7 +85,7 @@ fn prefix_groups_by_key_set() {
     assert_eq!(prefix_groups(&c.header, [2]).unwrap_err().class(), ErrorClass::BadInput);
 }
 
-// spec/crypto.md §7: delete levels are exactly those the retention calls for, level 1
+// spec/crypto.md §7: delete levels are exactly those the purge-by calls for, level 1
 // included, on content and role commits alike.
 #[test]
 fn delete_levels_strict() {
@@ -103,7 +103,7 @@ fn delete_levels_strict() {
     assert!(m.validate().unwrap_err().to_string().contains("delete levels"), "role commit: level 1");
     let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), crate::Path::default(), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), ts(1_000_000), 1, "a"));
-    a.retention = retention::ROLE_RETENTION;
+    a.purge_by = retention::ROLE_PURGE_BY;
     b.aspects.push(a);
     let c = b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap();
     assert_eq!(c.commit.header.keys.iter().map(|k| k.level).collect::<Vec<_>>(), vec![1]);
@@ -113,7 +113,7 @@ fn delete_levels_strict() {
 // is refused rather than clamped.
 #[test]
 fn expiry_range() {
-    let d = AspectDefaults { retention: PurgeBy::default(), expires: Some(u64::MAX - 5) };
+    let d = AspectDefaults { purge_by: PurgeBy::default(), expires: Some(u64::MAX - 5) };
     assert!(retention::write_expires("app:x.0", ts(10), Some(&d), None).is_err());
     assert!(retention::write_expires("app:x.0", ts(10), None, Some(FOREVER + 1)).is_err());
     let mut h = sample_header();

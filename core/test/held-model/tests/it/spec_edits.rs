@@ -11,7 +11,7 @@ const B: NodeId = 2;
 const X: NodeId = 3;
 
 fn fire(id: CommitId, author: NodeId, h: u64) -> Commit {
-    reg(id, author, h, SIG, Retention::PLAIN, id as i64)
+    reg(id, author, h, SIG, PurgeBy::AuthorOrAdmin, id as i64)
 }
 fn edit(id: CommitId, author: NodeId, h: u64, of: CommitId) -> Commit {
     let mut c = fire(id, author, h);
@@ -97,7 +97,7 @@ fn u_forged() -> Vec<Commit> {
     u.push(edit(32, A, 4, 11)); // names a version (chain)
     u.push(Commit { ts: ts(0) + 1, ..edit(33, A, 0, 10) }); // sorts before it (just after the grants: a write at their `ts` is concurrent with them)
     let mut other = edit(34, A, 4, 10); // on another aspect
-    other.parts[0] = part(SIG2, Retention::PLAIN, vec![set(4, 34, 34)]);
+    other.parts[0] = part(SIG2, PurgeBy::AuthorOrAdmin, vec![set(4, 34, 34)]);
     other.parts[0].replaces = Some(10);
     u.push(other);
     u.push(edit(35, A, 4, 999)); // names nothing

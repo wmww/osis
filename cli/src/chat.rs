@@ -7,7 +7,7 @@ use crate::cmd::{parse_id, parse_role};
 use crate::json::J;
 use crate::{exit, parse_dur, usage};
 use osis::core::RETENTION;
-use osis::{Body, Commit, CommitEvent, CommitFrom, CommitKind, CommitQuery, GrantOpts, HolderKind, LinkOpts, PurgeBy, ReadOnly, Role, SetRoleOpts, Tid};
+use osis::{Body, Commit, CommitEvent, CommitFrom, CommitKind, CommitQuery, GrantOpts, HolderKind, LinkOpts, ReadOnly, Role, SetRoleOpts, Tid};
 use osis_chat::schema::{self, EditMode, MSG, SETTINGS};
 use osis_chat::{Cursor, Options};
 use std::collections::BTreeMap;
@@ -133,20 +133,15 @@ fn print_since(ctx: &mut Ctx<'_>, t: Tid, s: &osis_chat::Since, from: Option<&Cu
 pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match c {
-        ChatCmd::Create { name, purge, edit, disappear, no_retain_copy } => {
-            let purge = match purge.as_str() {
-                "author-or-admin" => PurgeBy::AuthorOrAdmin,
-                "admin" => PurgeBy::Admin,
-                "writer" => PurgeBy::Writer,
-                x => return Err(usage(format!("--purge: author-or-admin, admin or writer, not {x:?}"))),
-            };
+        ChatCmd::Create { name, purge_by, edit, disappear, no_retain_copy } => {
+            let purge_by = crate::write::purge_by(&purge_by)?;
             let edit = match edit.as_str() {
                 "purge" => Some(EditMode::Purge),
                 "keep" => Some(EditMode::Keep),
                 "off" => None,
                 x => return Err(usage(format!("--edit: purge, keep or off, not {x:?}"))),
             };
-            let o = Options { name, purge, edit, disappear: disappear.as_deref().map(parse_dur).transpose()?, retain_copies: !no_retain_copy };
+            let o = Options { name, purge_by, edit, disappear: disappear.as_deref().map(parse_dur).transpose()?, retain_copies: !no_retain_copy };
             let t = osis_chat::create(&db, &o, db.account_root())?;
             ctx.one("tid", t.to_uri())
         }

@@ -55,14 +55,14 @@ fn setup() -> (LocalPeer, Tid, Vec<Tid>) {
 
 fn fire(lp: &mut LocalPeer, i: usize, d: Tid, r: PurgeBy, v: &str) -> CommitId {
     let mut m = Mutation::new();
-    m.retention(d, &log(), r).unwrap();
+    m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s(v)).unwrap();
     lp.peers[i].commit(m).unwrap().unwrap()
 }
 
 fn edit(lp: &mut LocalPeer, i: usize, d: Tid, r: PurgeBy, v: &str, of: CommitId) -> CommitId {
     let mut m = Mutation::new();
-    m.retention(d, &log(), r).unwrap();
+    m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s(v)).unwrap();
     m.replaces(d, &log(), of).unwrap();
     lp.peers[i].commit(m).unwrap().unwrap()
@@ -190,7 +190,7 @@ fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
     let r = purgeable();
     // bob, a reader, writes before he may, then is granted and edits it
     let mut m = Mutation::new();
-    m.retention(d, &log(), r).unwrap();
+    m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s("one")).unwrap();
     let o = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     lp.sync_all().unwrap();
@@ -278,7 +278,7 @@ fn a_purge_takes_only_what_it_names_spec_commits_5() {
     let (mut lp, d, _) = setup();
     let o = fire(&mut lp, 0, d, r, "one");
     let mut m = Mutation::new();
-    m.retention(d, &log(), r).unwrap();
+    m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s("two")).unwrap();
     m.replaces(d, &log(), o).unwrap();
     m.purge(named(&lp, d, o));
@@ -307,7 +307,7 @@ fn expiry_shows_the_previous_or_stands_alone_spec_commits_5() {
     let t = lp.peers[0].engine.now().0;
     let timed = |lp: &mut LocalPeer, v: &str, at: u64, of: Option<CommitId>| {
         let mut m = Mutation::new();
-        m.retention(d, &log(), r).unwrap();
+        m.purge_by(d, &log(), r).unwrap();
         m.set(d, &log(), &s(v)).unwrap();
         if let Some(o) = of {
             m.replaces(d, &log(), o).unwrap();
@@ -333,7 +333,7 @@ fn an_edit_takes_its_originals_expiry_spec_commits_5() {
     let r = purgeable();
     let t = lp.peers[0].engine.now().0;
     let mut m = Mutation::new();
-    m.retention(d, &log(), r).unwrap();
+    m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s("one")).unwrap();
     m.expires_all(WallMs(t + HOUR));
     let o = lp.peers[0].commit(m).unwrap().unwrap();
@@ -374,12 +374,12 @@ fn final_is_a_writer_default_spec_commits_5() {
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     let mut m = Mutation::new();
-    m.retention(d, &log(), r).unwrap();
+    m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s("two")).unwrap();
     m.replaces(d, &log(), o).unwrap();
     assert!(lp.peers[0].commit(m).is_err(), "the writer refuses");
     let mut m = Mutation::new();
-    m.retention(d, &log(), r).unwrap();
+    m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s("two")).unwrap();
     m.replaces(d, &log(), o).unwrap();
     let v = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
@@ -395,7 +395,7 @@ fn an_expiring_request_reaches_only_earlier_expiries_spec_commits_5() {
     let t = lp.peers[0].engine.now().0;
     let write = |lp: &mut LocalPeer, v: &str, at: Option<u64>| {
         let mut m = Mutation::new();
-        m.retention(d, &log(), r).unwrap();
+        m.purge_by(d, &log(), r).unwrap();
         m.set(d, &log(), &s(v)).unwrap();
         if let Some(x) = at {
             m.expires_all(WallMs(x));
@@ -409,7 +409,7 @@ fn an_expiring_request_reaches_only_earlier_expiries_spec_commits_5() {
     // call (spec/sync-judgement.md §1)
     lp.sync_all().unwrap();
     let mut m = Mutation::new();
-    m.retention(d, &log(), r).unwrap();
+    m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s("edit")).unwrap();
     for c in [permanent, brief, later] {
         m.purge(named(&lp, d, c));
@@ -466,7 +466,7 @@ fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
     let (mut lp, d, _) = setup();
     let t = lp.peers[0].engine.now().0;
     let mut m = Mutation::new();
-    m.retention(d, &log(), r).unwrap();
+    m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s("one")).unwrap();
     m.expires_all(WallMs(t + HOUR));
     let o = lp.peers[0].commit(m).unwrap().unwrap();
@@ -482,7 +482,7 @@ fn a_folded_version_ending_with_its_fire_is_not_told_spec_commits_5() {
     let o = fire(&mut lp, 0, d, r, "one");
     let t = lp.peers[0].engine.now().0;
     let mut m = Mutation::new();
-    m.retention(d, &log(), r).unwrap();
+    m.purge_by(d, &log(), r).unwrap();
     m.set(d, &log(), &s("two")).unwrap();
     m.replaces(d, &log(), o).unwrap();
     m.expires_all(WallMs(t + HOUR));
@@ -599,7 +599,7 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_plain_spec_commits_5()
                 set_setting(&mut lp, alice, d, &setting(&[(log().as_str(), h)]));
             }
             let mut m = Mutation::new();
-            m.retention(d, &log(), r).unwrap();
+            m.purge_by(d, &log(), r).unwrap();
             match g.below(6) {
                 0 | 1 => {
                     m.set(d, &log(), &s(&format!("f{step}"))).unwrap();

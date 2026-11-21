@@ -603,7 +603,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
         for c in live.iter().filter(|c| c.kind != CommitKind::Snapshot) {
             for (i, p) in c.parts.iter().enumerate() {
                 // a part the node does not hold is judged once fetched again
-                let right = tl.right(q.signer, q.acting, q.key(), q.id, p.retention.by, c.acting, p.thing);
+                let right = tl.right(q.signer, q.acting, q.key(), q.id, p.purge_by, c.acting, p.thing);
                 if thrown.contains(&(c.id, i)) || !names(q, c, p) || !right {
                     continue;
                 }
@@ -1012,11 +1012,11 @@ fn fate(
                 q.thing == t && q.aspect == a && o.valid.get(&(s.id, j)) == Some(&true) && !never_received(s, q) && body(q).is_some_and(|sw| covers(sw, &ws))
             })
         })
-        .map(|s| (s.id, tl.right(s.signer, s.acting, s.key(), s.id, p.retention.by, c.acting, t)))
+        .map(|s| (s.id, tl.right(s.signer, s.acting, s.key(), s.id, p.purge_by, c.acting, t)))
         .collect();
     let by_right = covering.iter().find(|x| x.1).map(|x| x.0);
     let by_any = by_right.or(covering.first().map(|x| x.0));
-    let right = tl.right(me, me, (u64::MAX, me, u32::MAX), u32::MAX, p.retention.by, c.acting, t);
+    let right = tl.right(me, me, (u64::MAX, me, u32::MAX), u32::MAX, p.purge_by, c.acting, t);
     // spec/commits.md §5 The setting: in history, kept (compaction may not drop it); under purge on
     // replace, gone at every node once a right holder covers it and the clock reaches its
     // replacement, owed by a right holder until then; out of history, any valid writer's cover
@@ -1043,11 +1043,11 @@ fn fate(
 }
 
 /// The covering snapshot `me` writes for an aspect from its whole state (spec/commits.md §2), its
-/// retention `writer`: what a writer owes for an `owed` body (`Outcome::owed`), or writes to
+/// purge-by `writer`: what a writer owes for an `owed` body (`Outcome::owed`), or writes to
 /// compact. A snapshot carries writes of expiring deltas value-less (spec/crdt.md §8).
 pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId, ts: u64) -> Commit {
     let f = snapshot_state(h, o, thing, aspect);
-    let part = Part { thing, aspect, retention: Retention::WRITER, body: Body::Held(Delta::Writes(f)), stripped: Default::default(), replaces: None };
+    let part = Part { thing, aspect, purge_by: PurgeBy::Writer, body: Body::Held(Delta::Writes(f)), stripped: Default::default(), replaces: None };
     Commit { id, signer: h.me, acting: h.me, ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
