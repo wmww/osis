@@ -1,0 +1,6 @@
+# held-model's story worlds fail P5-order: a reader judges valid what the full node judges invalid
+> Summary: held-model `spec_story::evidence_along_joined_chained_paths_large` fails at some offsets (OSIS_HELD_START=733100655480: 6 worlds, first story seed 733100655490 units 0/1, `P5-order` at step 64, sync ID 13, write 59: reader `Valid`, full `Invalid`). Fails alike on main's binary (ad5a12267). The story worlds come from roles-model `paths::random_world`, which changed today (owner keys' moves 54-55, the user's choice at AFTER, first-received sides), so this may be a story world the evidence model's P5 order check meets for the first time, or a real evidence gap under lazy delivery.
+> Priority: normal
+> Tags: tests, held-model
+
+Replay: `OSIS_HELD_START=733100655480 cargo test -p held-model --test it -- --ignored --exact spec_story::evidence_along_joined_chained_paths_large` (about 30 s wall, under `tools/heavy`). First: is the reader's Valid a write the reader lacks a removal for that the full node holds (the lazy-delivery gap, issues/removed-key-writes-show-far.md, which P5-order should then excuse the same way P1 does), or an ordering difference the design must not allow? Decide by notes/write-path-design.md §2 and notes/evidence-model-findings.md.

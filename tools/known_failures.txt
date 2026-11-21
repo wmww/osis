@@ -15,4 +15,5 @@ osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=959507911307 issues/differential-small-size-failures.md node \d+ reads thing \d+: Some\(Str\("v\d+"\)\), the model does not
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=318840271993 issues/differential-small-size-failures.md must-hold bodies a caught-up reader lacks at quiet
 roles-model/paths::tests::random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/masked-backdated-lowerings.md counts:dispute=4 OSIS_ROLES_START=\d+: \{
-osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 - issues/seq-received-move-insert-drops-placement.md placement kept \(writer 1: \["move
+osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 - issues/seq-received-move-insert-drops-placement.md placement kept \(writer 1:
+held-model/spec_story::evidence_along_joined_chained_paths_large rate:OSIS_HELD_START=733100655480 issues/held-story-p5-order.md worlds fail, first: .*P5-order
