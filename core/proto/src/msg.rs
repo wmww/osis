@@ -459,8 +459,7 @@ impl Msg {
                 vec![k, id, s(sync_id), Value::bytes(holder.as_bytes()), commits, records]
             }
             M::Suspect { sync_id, entries, .. } => vec![k, id, s(sync_id), Value::List(entries.iter().map(|e| Value::List(vec![Value::bytes(e.thing.as_bytes()), Value::Str(e.ak.as_str().to_string()), Value::bytes(&e.digest)])).collect())],
-            M::Prove { proofs, rotations, .. } => vec![k, id, proofs_value(proofs), Value::opt(rotations.as_ref().map(|r| Value::List(r.clone())))],
-            M::Proved { proofs, rotations, .. } => vec![k, id, proofs_value(proofs), Value::opt(rotations.as_ref().map(|r| Value::List(r.clone())))],
+            M::Prove { proofs, rotations, .. } | M::Proved { proofs, rotations, .. } => vec![k, id, proofs_value(proofs), Value::opt(rotations.as_ref().map(|r| Value::List(r.clone())))],
             M::Resume { nonce, tags, .. } => vec![k, id, Value::bytes(nonce), Value::List(tags.iter().map(|t| Value::bytes(t)).collect())],
             M::Resumed { nonce, tag, .. } => vec![k, id, Value::bytes(nonce), Value::opt(tag.as_ref().map(|t| Value::bytes(t)))],
             M::Beacons { generation, base, f, lo, hi, gcs, more, .. } => vec![k, id, Value::uint(*generation), Value::opt(base.map(Value::uint)), Value::uint(u64::from(*f)), Value::uint(*lo), Value::uint(*hi), Value::bytes(gcs), Value::Bool(*more)],

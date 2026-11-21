@@ -109,14 +109,8 @@ fn rotation_header_spec_wire_4() {
         r.rotation = Some(bad);
         assert!(r.validate().is_err(), "a merge carrying {why}");
     }
-    // `path` the one-for-all `[0]`: never split, whatever else it writes
     r.rotation = Some(rot);
-    let mut other = r.aspects[0].clone();
-    other.tid = Tid::from_bytes([0xee; 15]);
-    r.aspects.push(other);
-    r.validate().unwrap();
-    r.path = Paths::Split(crate::Split { author: None, entries: vec![vec![0; crate::entry_len(0).unwrap()]; 2] });
-    assert!(matches!(r.validate(), Err(Error::Invalid(m)) if m.contains("split")), "a rotation stating the split form");
+    never_split(r, "a rotation");
 }
 
 // spec/wire.md §4 field 16: a seed re-seal round-trips; it sits only on an account's role
@@ -146,13 +140,17 @@ fn reseal_header_spec_wire_4() {
     assert!(Header::decode(&x.encode()).is_err(), "boxes not ascending");
     x.reseal = Some(SeedReseal { seeds: vec![], ..rs });
     assert!(Header::decode(&x.encode()).is_err(), "no box");
-    // `path` the one-for-all `[0]`: never split
+    never_split(r, "a seed re-seal");
+}
+
+/// `r`'s `path`, the one-for-all `[0]`, is never split, whatever else it writes.
+fn never_split(mut r: Header, what: &str) {
     let mut other = r.aspects[0].clone();
     other.tid = Tid::from_bytes([0xee; 15]);
     r.aspects.push(other);
     r.validate().unwrap();
     r.path = Paths::Split(crate::Split { author: None, entries: vec![vec![0; crate::entry_len(0).unwrap()]; 2] });
-    assert!(matches!(r.validate(), Err(Error::Invalid(m)) if m.contains("split")), "a seed re-seal stating the split form");
+    assert!(matches!(r.validate(), Err(Error::Invalid(m)) if m.contains("split")), "{what} stating the split form");
 }
 
 // spec/wire.md §4: a stored header (verified on arrival) reads back as `decode` reads it,

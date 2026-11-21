@@ -61,10 +61,7 @@ pub fn print(v: &Value, ty: Ty<'_>) -> String {
 
 fn pv(o: &mut String, v: &Value, ty: Ty<'_>) {
     match (kind_of(ty), v) {
-        (Kind::Timestamp, Value::Int(i)) => match rfc3339(*i) {
-            Some(t) => o.push_str(&t),
-            None => o.push_str(&i.to_string()),
-        },
+        (Kind::Timestamp, Value::Int(i)) => o.push_str(&rfc3339(*i).unwrap_or_else(|| i.to_string())),
         (Kind::Duration, Value::Int(i)) => o.push_str(&duration_text(*i)),
         (Kind::Struct(st), Value::Map(m)) if m.keys().all(|k| matches!(k, Value::Int(i) if *i >= 0)) => {
             seq(o, "{", "}", m.iter(), |o, (k, v)| {
@@ -134,21 +131,9 @@ fn plain(o: &mut String, v: &Value) {
         Value::Float(f) => o.push_str(&float_text(f.get())),
         Value::Bool(b) => o.push_str(if *b { "true" } else { "false" }),
         Value::Str(s) => quote(o, s),
-        Value::Bytes(b) => {
-            o.push_str("h'");
-            o.push_str(&hex::encode(b));
-            o.push('\'');
-        }
-        Value::Strong(t) => {
-            o.push_str("strong(");
-            o.push_str(&t.to_uri());
-            o.push(')');
-        }
-        Value::Weak(t) => {
-            o.push_str("weak(");
-            o.push_str(&t.to_uri());
-            o.push(')');
-        }
+        Value::Bytes(b) => o.push_str(&format!("h'{}'", hex::encode(b))),
+        Value::Strong(t) => o.push_str(&format!("strong({})", t.to_uri())),
+        Value::Weak(t) => o.push_str(&format!("weak({})", t.to_uri())),
         Value::Ticket(t) => {
             o.push_str("ticket(");
             plain(o, &t.to_value());
@@ -177,11 +162,7 @@ fn plain(o: &mut String, v: &Value) {
             match u.content().to_value() {
                 Ok(c) => plain(o, &c),
                 // Not expected (the content was parsed canonical); raw bytes keep it readable.
-                Err(_) => {
-                    o.push_str("h'");
-                    o.push_str(&hex::encode(u.content().as_bytes()));
-                    o.push('\'');
-                }
+                Err(_) => o.push_str(&format!("h'{}'", hex::encode(u.content().as_bytes()))),
             }
             o.push(')');
         }

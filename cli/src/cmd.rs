@@ -171,7 +171,6 @@ fn truncate(s: String, width: usize) -> String {
     if width == 0 || s.chars().count() <= width { s } else { s.chars().take(width.saturating_sub(1)).collect::<String>() + "…" }
 }
 
-/// A command over an API piece that does not exist yet.
 fn backlink_lines(b: &[osis::Backlink]) -> Vec<String> {
     b.iter().map(|b| format!("{} {}", b.tid.to_uri(), b.ak.as_str())).collect()
 }
@@ -180,6 +179,7 @@ fn backlinks_json(b: &[osis::Backlink]) -> J {
     J::Arr(b.iter().map(|b| J::obj([("tid", J::tid(b.tid)), ("ak", J::str(b.ak.as_str()))])).collect())
 }
 
+/// A command over an API piece that does not exist yet.
 pub(crate) fn not_built(what: &'static str) -> anyhow::Error {
     exit(1, format!("not built yet: {what}"))
 }
@@ -333,8 +333,7 @@ fn enabled(ctx: &mut Ctx<'_>, t: &str, ak: &str, entry: Option<osis::core::Reten
 fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match cmd {
-        Cmd::Init | Cmd::Pair(PairCmd::Join { .. }) => whoami(ctx),
-        Cmd::Whoami => whoami(ctx),
+        Cmd::Init | Cmd::Pair(PairCmd::Join { .. }) | Cmd::Whoami => whoami(ctx),
         Cmd::Hold { t } => t.iter().try_for_each(|x| Ok(db.hold(ctx.tid(x)?)?)),
         Cmd::Unhold { t } => t.iter().try_for_each(|x| Ok(db.unhold(ctx.tid(x)?)?)),
         Cmd::Pair(PairCmd::Offer) => {
@@ -442,20 +441,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let commit = commit.as_deref().map(parse_id).transpose()?;
             let author = author.as_deref().map(|a| ctx.tid(a)).transpose()?;
             let mut w = db.write();
-            let Some(ak) = ak else {
-                if commit.is_some() || author.is_some() {
-                    return Err(usage("--commit and --author purge an aspect's writes: name the AK"));
-                }
-                w.purge(tid)?;
-                let done = w.commit()?;
-                return emit_commit(ctx, done.map(|d| d.stamp.id));
-            };
-            let key = ctx.aspect_key(&ak)?;
-            let mut at = w.at(tid, key);
-            match (commit, author) {
-                (Some(c), _) => at.purge(osis::Purge::Commit(c))?,
-                (_, Some(a)) => at.purge(osis::Purge::Author(a))?,
-                _ => at.purge(osis::Purge::All)?,
+            match (ak, commit, author) {
+                (None, None, None) => w.purge(tid)?,
+                (None, ..) => return Err(usage("--commit and --author purge an aspect's writes: name the AK")),
+                (Some(ak), c, a) => w.at(tid, ctx.aspect_key(&ak)?).purge(match (c, a) {
+                    (Some(c), _) => osis::Purge::Commit(c),
+                    (_, Some(a)) => osis::Purge::Author(a),
+                    _ => osis::Purge::All,
+                })?,
             }
             let done = w.commit()?;
             emit_commit(ctx, done.map(|d| d.stamp.id))
@@ -639,16 +632,8 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         Store::Memory(_) => "(memory)".into(),
     };
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
-    let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri())];
-    lines.push(format!("store\t{store}"));
-    lines.push(format!("software\t{sw}"));
-    let j = J::obj([
-        ("me", J::tid(db.me())),
-        ("node", J::tid(db.node())),
-        ("store", J::str(store)),
-        ("software", J::str(sw)),
-    ]);
-    ctx.emit(&lines, j)
+    let lines = [format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri()), format!("store\t{store}"), format!("software\t{sw}")];
+    ctx.emit(&lines, J::obj([("me", J::tid(db.me())), ("node", J::tid(db.node())), ("store", J::str(store)), ("software", J::str(sw))]))
 }
 
 fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, len: bool) -> anyhow::Result<()> {

@@ -29,6 +29,22 @@ pub(crate) fn content(n: usize) -> CommitBuilder {
     b
 }
 
+/// A role commit writing one `roles.0` delta.
+fn role() -> CommitBuilder {
+    let at = ts(1_000_000);
+    let mut b = CommitBuilder::new(Kind::Role, at, t(1), crate::Path::default(), Form::Commit);
+    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
+    a.retention = retention::ROLE_RETENTION;
+    b.aspects.push(a);
+    b
+}
+
+/// A frontier whose list goes by link in several chunks.
+fn big_frontier() -> std::sync::Arc<[CommitId]> {
+    let ids: std::collections::BTreeSet<CommitId> = (0..20_000u32).map(|i| CommitId(osis_base::hash::hash(&i.to_le_bytes()))).collect();
+    ids.into_iter().collect()
+}
+
 fn dedup(t: &Tid) -> Option<Secret32> {
     TestSecrets { admin: true }.dedup(t)
 }
@@ -124,11 +140,7 @@ fn list_overflow_links() {
 // too large stamps nothing only the signer could apply.
 #[test]
 fn list_over_the_bound_refused_at_the_signer() {
-    let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Role, at, t(1), crate::Path::default(), Form::Commit);
-    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
-    a.retention = retention::ROLE_RETENTION;
-    b.aspects.push(a);
+    let b = role();
     let mut sink = MemoryBlobs::default();
     // the most IDs that fit the bound, and one more
     let of = |n: usize| -> std::sync::Arc<[CommitId]> { (0..n as u32).map(|i| { let mut b = [0u8; 32]; b[..4].copy_from_slice(&i.to_be_bytes()); CommitId(b) }).collect() };
@@ -162,13 +174,8 @@ fn list_over_the_bound_refused_at_the_signer() {
 // delivered them, never one shared list per small commit (each would hold it whole again)
 #[test]
 fn a_linked_list_serves_its_own_commit_only_spec_wire_4() {
-    let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Role, at, t(1), crate::Path::default(), Form::Commit);
-    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
-    a.retention = retention::ROLE_RETENTION;
-    b.aspects.push(a);
-    let ids: std::collections::BTreeSet<CommitId> = (0..20_000u32).map(|i| CommitId(osis_base::hash::hash(&i.to_le_bytes()))).collect();
-    b.frontier = Some(ids.into_iter().collect());
+    let mut b = role();
+    b.frontier = Some(big_frontier());
     let mut sink = MemoryBlobs::default();
     let built = build(b, &mut sink).unwrap();
     let d = sec(0xd0, &t(1));
@@ -492,14 +499,8 @@ fn section_key_filter_keeps_the_key() {
 // inside the list's tree naming other keys than its root, is bad input.
 #[test]
 fn header_list_link_del_is_empty() {
-    let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Role, at, t(1), crate::Path::default(), Form::Commit);
-    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
-    a.retention = retention::ROLE_RETENTION;
-    b.aspects.push(a);
-    // several chunks under one node
-    let ids: std::collections::BTreeSet<CommitId> = (0..20_000u32).map(|i| CommitId(osis_base::hash::hash(&i.to_le_bytes()))).collect();
-    b.frontier = Some(ids.into_iter().collect());
+    let mut b = role();
+    b.frontier = Some(big_frontier());
     let mut sink = MemoryBlobs::default();
     let built = build(b, &mut sink).unwrap();
     let d = sec(0xd0, &t(1));

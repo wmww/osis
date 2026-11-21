@@ -175,7 +175,7 @@ fn fire(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &FireArgs) -> anyhow::Res
     let v = ctx.value(&a.value, key.value_type().map(|t| t.get()).as_ref())?;
     let mut at = with_flags(w.at(t, key.clone()), &a.w, &key)?;
     match &a.replaces {
-        Some(c) => at.replace(c.parse().map_err(|_| crate::usage(format!("not a commit id: {c}")))?, &v)?,
+        Some(c) => at.replace(crate::cmd::parse_id(c)?, &v)?,
         None => at.fire(&v)?,
     }
     Ok(())

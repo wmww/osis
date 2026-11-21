@@ -274,8 +274,6 @@ impl ClaimSet {
     }
 }
 
-/// A `box` value in the sealed form carrying no names (spec/wire.md §7), strictly: it must
-/// re-encode to itself.
 /// An entry box (spec/wire.md §7): a canonical `box` value in the sealed form (an unknown case
 /// parks).
 pub fn entry_box_from_value(v: &Value) -> Result<SecretBox, Error> {

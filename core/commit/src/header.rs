@@ -3,7 +3,7 @@
 
 use crate::Error;
 use crate::cbor::item;
-use crate::path::{Path, Paths, Split, ThingPath};
+use crate::path::{Paths, Split, ThingPath};
 use osis_base::cbor::{Item, MAJOR_TAG, encode_into, head, put_array, put_bytes, put_link, put_map, put_text, put_uint};
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
 use osis_base::{Ak, CommitId, Limits, Link, Reader, Tid, Ts, Value};
@@ -195,25 +195,12 @@ impl Header {
         aspect_position(&self.aspects, tid, ak, |a| (&a.tid, a.ak.as_str()))
     }
 
-    /// The indexes of its aspects on `tid` (`aspects_on`).
-    pub fn aspects_on(&self, tid: &Tid) -> std::ops::Range<usize> {
-        aspects_on(&self.aspects, tid, |a| &a.tid)
-    }
-
     /// The things it writes, distinct, in the order of its aspects (that of a split path's
     /// entries).
     pub fn things(&self) -> Vec<Tid> {
         let mut out: Vec<Tid> = self.aspects.iter().map(|a| a.tid).collect();
         out.dedup();
         out
-    }
-
-    /// The path it states in the clear, for every thing it writes.
-    pub fn path_in_clear(&self) -> Option<&Path> {
-        match &self.path {
-            Paths::One(p) => Some(p),
-            Paths::Split(_) => None,
-        }
     }
 
     /// Its one purge author (spec/permissions.md §6), in the clear in either form. Interim
