@@ -3,4 +3,6 @@
 > Priority: low
 > Tags: perm, api
 
+Stage A1 (notes/redesign-plan.md): the walk's rebuild changes how disputes are detected (notes/write-path-design.md §1 W10); check this against it before a fix.
+
 Detection is bounded by itself (each contestable write examined once, `DETECT_MAX` per update; past it a write that stopped applying keeps its side unexamined, a newly held one gets the walk's), and every recorded side is listed whatever the cap. The listing's order (point order, the earliest first) lets a hostile author sign enough early-stamped unapplied removals to keep a later open dispute with no recorded side (one that arrived unapplied, past detection's bound or before the grant its author's authority rests on) among the unexamined. Open: an API and CLI parameter for the bound (`disputes(max)`), or a listing that examines the recently flipped candidates first as detection does; nothing hides silently either way (the count is reported).

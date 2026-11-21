@@ -1,5 +1,5 @@
 # Admin fights are not always shown as disputes
-> Summary: When admins of one thing lower each other at the same time, every node reaches the same result and a node trusting one side reads safely, but which admin wins can turn on a third party's write that ends up doing nothing, and a node trusting none of them is not always told a fight happened; spec/requirements.md says a dispute is reported: must that hold for every fight?
+> Summary: When admins of one thing lower each other at the same time, every node reaches the same result and a node trusting one side reads safely, but which admin wins can turn on a third party's write that ends up doing nothing, and a node trusting none of them is not always told a fight happened. Decided (Tess): a dispute is reported only where a node's trust decides the reading; open only for a clean way to show the rest. Belongs to the walk's rebuild (stage A1).
 > Priority: low
 > Tags: perm
 
@@ -19,6 +19,4 @@
 4. H, having seen only Z's grant, removes B.
 5. With Z's grant held, H's removal works: B and Z lose admin and H stays; without it, H's admin had ended, so B and Z stay admins and H has none, and in neither case is a dispute shown.
 
-**The question.** spec/requirements.md (Permissions) says a node reports a dispute. Must that hold for every fight among admins, or only where a node's trust decides the reading (where it now holds)?
-
-**What the plan does meanwhile.** It proceeds as modelled: the walk judges each lowering once and keeps that verdict, and these cases are counted, not gated. Treating an end date on an admin as a removal does not help: the case above happens with a plain removal too, and both ways of fitting it into the walk break a required property (finding 38: a stolen key's made-up admin could end the remover's admin for good, or an honest admin's later grant is lost). The other way to close it, re-walking until nothing changes so a verdict can be taken back, was modelled and breaks safety (finding 16). Showing it would need a way to side with B that undoes H's later removal, which holds its right through Z's grant.
+**What the walk does.** As modelled: the walk judges each lowering once and keeps that verdict, and these cases are counted, not gated. Treating an end date on an admin as a removal does not help: the case above happens with a plain removal too, and both ways of fitting it into the walk break a required property (finding 38: a stolen key's made-up admin could end the remover's admin for good, or an honest admin's later grant is lost). The other way to close it, re-walking until nothing changes so a verdict can be taken back, was modelled and breaks safety (finding 16). Showing it would need a way to side with B that undoes H's later removal, which holds its right through Z's grant.

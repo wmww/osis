@@ -3,6 +3,8 @@
 > Priority: normal
 > Tags: perm, crypto, sync, spec
 
+Stage A4 (notes/redesign-plan.md) deletes the signing chain and epochs; this closes there. Take it up before only if the model sends the redesign back.
+
 Model: roles-model `custody` and `epochs` (README there). Decided design and rejected alternatives: spec/permissions.md §5.4-§5.5, notes/engine-validity-epochs.md.
 
 ## Left

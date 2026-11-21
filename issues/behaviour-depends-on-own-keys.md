@@ -1,5 +1,5 @@
 # Behaviour depends on whether a thing has own keys
-> Summary: Tess: whether a thing derives its keys from its mint admin (dependent) or has its own (independent) may change cost, never behaviour; promotion is implicit, and once independent the mint admin is an admin like any other. Three behaviours differ today, and the mint admin stays special in two ways.
+> Summary: Tess: whether a thing derives its keys from its mint admin (dependent) or has its own (independent) may change cost, never behaviour; promotion is implicit, and once independent the mint admin is an admin like any other. Two behaviours differ today, and the mint admin stays special in two ways.
 > Priority: normal
 > Tags: api, cli, perm, engine
 
@@ -8,8 +8,7 @@ The rule (Tess): no API behaviour depends on it. Docs may state the cost differe
 notes/api.md and notes/chat.md quote byte figures for app-facing choices.
 
 Behaviour that differs:
-- **Removing the last admin**: refused at the writer for every thing, dependent or independent, unless the write carries the adminless mark (spec/permissions.md §1; notes/permissions.md, The last admin). The rule every node judges alike waits for A1/A2 (notes/write-path-design.md §5, The last admin).
-- **A thing made under an account** is independent at birth (spec/permissions.md §3, spec/sync-set.md §2), because an account is in no sync unit. It becomes an ordinary dependent once the account is an ordinary independent thing (notes/write-path-design.md §5); until then `osis create --admin me` reaches it.
+- **A thing made under an account** is independent at birth (spec/permissions.md §3, spec/sync-set.md §2), because an account is in no sync unit. It becomes an ordinary dependent once the account is an ordinary independent thing (stage A4; notes/write-path-design.md §5); until then `osis create --admin me` reaches it.
 - **Sharing what a tag holds**: a strong grants nothing, so an app sharing a tag of n things makes n grants itself (issues/many-sync-ids-cost.md). To check whether that counts.
 
 The mint admin staying special after it is removed (to study):
@@ -22,7 +21,7 @@ The mint admin staying special after it is removed (to study):
 - No "made under X" or "under X": the positional picture is not kept to elsewhere (what holds a thing is another matter). Say "minted with admin X", "one of X's dependents".
 - **base actor** (spec/crypto.md §3) is one link up, so it is a dependent thing's mint admin: the word goes.
 - **its independent** for reader actor (spec/sync-judgement.md §1): the nearest independent thing up a dependent thing's chain, itself for an independent one.
-- **actor** (Tess): a part played in a commit, not a kind of thing: a thing on a commit's path from its signer to what it writes (issues/actors-one-mechanism.md, Signers, actors, profiles and accounts). Today's four uses (anything a role can be on, a holder, an independent thing as in `Engine::mint_actor`, a key actor) become thing, holder, independent thing and signer, each use read. **profile**: the public face of a thing. **account**: the arrangement with an inside view.
+- **actor** (Tess): a part played in a commit, not a kind of thing: a thing on a commit's path from the thing it is signed as to what it writes (issues/actors-one-mechanism.md, Owner keys, actors, profiles and accounts). Today's four uses (anything a role can be on, a holder, an independent thing as in `Engine::mint_actor`, a key actor) become thing, holder, independent thing and owner key (notes/terms.md), each use read. **profile**: the public face of a thing. **account**: the arrangement with an inside view.
 - **team** is no term and gets none (Tess). If a word is ever needed for an actor not tied to one account, a realm may be it (issues/realms-design.md).
 - None of these words reach the API or its docs.
 

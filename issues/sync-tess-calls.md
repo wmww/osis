@@ -10,8 +10,7 @@ Each is built or specified the reversible way; one decision each.
 - **A node keeping S unread shows its filter to every connection** (spec/sync-opens.md §5 Filter; stated limit spec/sync-hostile.md §2): anyone holding S's public values learns it keeps S. A policy limiting whom it syncs with (spec/sync-opens.md §1 Policy) hides it from the rest.
 
 ## Requirements
-What a sync holder learns is approved and written (spec/requirements.md, Data a node cannot read). The re-upload wording goes with issues/demoted-writer-deletes-at-stores.md.
+The re-upload wording below goes with issues/demoted-writer-deletes-at-stores.md.
 
-## As they were proposed
-- **What a sync holder learns** (Data a node cannot read; spec/sync-ids.md §2): a node granted sync learns the thing's identifier (its opaque tid: never its creation record or the tids of what it references) and the granting account, nothing more. Why the tid: the grant reaches it as the granter's signed role commit and a ticket, both naming the thing, and its account references the thing by tid so its nodes know what to keep. (Which accounts' nodes open S with it is theirs to show: spec/requirements.md, Offline and network.) Proposed wording: "It must not learn identifiers, keys, values, authors, role grants, node identities, or structure beyond that, except that a node granted sync on a thing learns the thing's identifier and the account that granted it."
+## Proposed, not applied
 - **Re-upload wording** (Data a node cannot read, Deletion): proposed "Reading never allows deleting data or forcing a writer to log it again." and Deletion's limit "a demoted holder can still delete what its old role allowed, until a writer holding the data logs it again."

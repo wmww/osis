@@ -1,5 +1,5 @@
 # A thing's readers can always see its other readers
-> Summary: Every holder of a thing opens all its role data, the roster included (spec/crypto.md §4 Roles secrets), so nothing can be shared with a chosen set without each learning who the others are. Tess: this should be possible to do well, as an option a thing's admins choose, not the default. To design.
+> Summary: Every holder of a thing opens all its role data, the roster included (spec/crypto.md §4 Roles secrets), so nothing can be shared with a chosen set without each learning who the others are. Tess: this should be possible to do well, as an option a thing's admins choose, not the default. To design after stage A2 (evidence per sync unit, notes/redesign-plan.md).
 > Priority: normal
 > Tags: perm, crypto, sync, spec
 
@@ -14,6 +14,6 @@ Costs and points to design:
 - The count of readers shows unless padded (claim sets at nodes keeping the thing unread are padded already).
 - With intermediary things as the only tool today (a thing per recipient holding the role), each recipient costs an independent thing: not the answer.
 
-Checked against the path and membership designs (notes/write-path-design.md §2, Readers hidden from each other): no conflict with validity, evidence, vouching, the last-admin rule or the public actor, since every edge a content path names is a writer-level grant, which readers still open. Sealing by the value an edge write sets (at or below read, and ending an entry at or below read: for writers only) keeps every write a reader's walk needs open. Two points for this design:
+Checked against the path and membership designs (notes/write-path-design.md §2, Readers hidden from each other): no conflict with validity, evidence or the public thing, since every edge a content path names is a writer-level grant, which readers still open. Sealing by the value an edge write sets (at or below read, and ending an entry at or below read: for writers only) keeps every write a reader's walk needs open. Two points for this design:
 - An act made at read through a holder shows that reader-level edge to the target's readers as evidence: leave such acts to writers, or accept that their maker shows.
-- A removal of a signer is logged only where the signer could write, invite or make an enabled reader-level act (issues/actors-one-mechanism.md, Answers), so it names its account to no reader of a unit the account only reads; where a reader-level act brings a copy, seal it for writers.
+- A removal's copy is in a unit only where it is evidence of a write held there (notes/write-path-design.md §2, D1 to D4), so it names the removed party to no reader of a unit it only reads; where a reader-level act brings a copy, seal it for writers.

@@ -3,6 +3,8 @@
 > Priority: normal
 > Tags: tess-call, perm, keys
 
+Built with owner keys at stage A4 (notes/redesign-plan.md, A4 brief 2); answer wanted before then.
+
 Owner keys: notes/write-path-design.md, Owner keys (O4, O7, The flow that must hold); issues/recovery-redesign.md.
 
 ## The question

@@ -3,6 +3,8 @@
 > Priority: low
 > Tags: permissions, performance
 
+Stage A1 (notes/redesign-plan.md): the walk's rebuild counts work per update at n and 10n edge writes with replay from a checkpoint (osis-perm `paths`: rebuild the walk; A1 brief 6); items 1 to 3 are of today's walk and are read again against the rebuild.
+
 Repro: osis-perm `scale::repro_late_write_rejudges_flat`, `scale::repro_evaluate_with_drops_linear` (`osis_perm::commits_walked` at 10^2 and 10^3 edge writes; notes/test-scale.md Scale checks).
 
 Done: notes/perm-impl.md (`Timelines::append`, the found-order rule for D, placed late writes and joining nodes, shared kept states) and "Walk cost" (numbers).

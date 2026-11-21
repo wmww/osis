@@ -3,6 +3,8 @@
 > Priority: low
 > Tags: sync, transport, security
 
+Stages A5 and A6 (notes/redesign-plan.md): the dial aspect moves off the account profile (notes/write-path-design.md §3, Contact-only information); take it after.
+
 ## A `peer://` URL with no items is dialed though nothing can reach it
 A node with LAN off dials a key known only by an empty `peer://` URL (a link sharer's or a grantor's hint from a node with no global listener, a node's own `reach.0` on loopback) every `REDIAL_MS`, failing at once (`unreachable: peer://`); and a dial of a peer known at both tries the empty one first. Noise in `diag`, one wasted dial per redial.
 

@@ -3,6 +3,8 @@
 > Priority: normal
 > Tags: perm, api, settings
 
+Stage A4 (notes/redesign-plan.md) deletes account sides: an account fork becomes an admin dispute whose side a node takes by first received (notes/write-path-design.md §1 F1 to F5). Read again there; nothing to build before.
+
 ## Now
 - Default: each node of the reader's account follows the version it held first, so two of the user's nodes may follow different versions (each warned, each choosing separately).
 - Choice: `Osis::choose_side` → `Engine::choose_line`, kept in `sides::Sides::accounts` (`records::SIDES`), this node only; recomputed default after a restart from the receipt order.

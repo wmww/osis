@@ -3,5 +3,7 @@
 > Priority: low
 > Tags: sync
 
+Stage A2 (notes/redesign-plan.md): evidence re-derived from holdings at every change replaces certificate copies and closes this; take it there, not before.
+
 - spec/sync-judgement.md §2 counts a copy outside the required set only when it holds none of the named deltas; a copy holding extra ones is never rewritten.
 - Likely reachable by any piece whose part set shrinks (a read thing's `Piece::Holder` or `Piece::Chain` as a chain loses an edge write). Wanted: a constructed case, then either rewrite such a copy as a strip is rewritten or say why the residue is bounded.

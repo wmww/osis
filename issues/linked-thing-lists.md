@@ -3,6 +3,8 @@
 > Priority: low
 > Tags: perm, engine, spec
 
+Stage A4 (notes/redesign-plan.md) deletes the account's thing lists and listings, `ThingList` with them; nothing to choose before unless A4 moves.
+
 ## Today
 - Writer (`flows::signing`, `rotate_in`): `fit_list` runs with `CHUNK_THRESHOLD` (128 KiB, about 3,900 IDs), not spec/permissions.md §5.5's `MAX_LIST_BYTES`; a rotation whose role and purge commits alone pass it on one thing is refused (`Misuse`). Plain content past it goes to later listings as the spec says.
 - Reader (`flows::lists::keep_certs`): a linked cert is verified and kept, but its names are not recorded, so the commits it names read as unlisted. Only a list's own rotator can write one, so a peer can hide only its own account's commits, which it could do by omitting them; no peer makes another account's commits read wrong. Between nodes of this build it never happens.

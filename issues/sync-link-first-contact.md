@@ -3,5 +3,7 @@
 > Priority: normal
 > Tags: sync, tests
 
+Stages A5 and A6 (notes/redesign-plan.md): links and cards change there; take it after.
+
 - Only the role-history end is built (`Engine::link_ended`), and only before the join: a joined link revoked before any source took its join (finalized, or its single use taken by another redeemer) whose sources all refuse L, so the revocation never arrives, is followed until this end exists (its row, L and the sharer dialed at the redial pace).
 - A link lists the sharer's relays, not its socket addresses, plus its configured addresses (spec/wire.md §10), so a sharer with no relay and no configured node is reached by a link only over a LAN.

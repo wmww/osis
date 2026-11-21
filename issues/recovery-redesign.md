@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: perm, keys, spec, api
 
-Owner keys: notes/handoff.md, Decided by Tess. None by default: a thing with no owner key is a fully valid way to use osis, and a thief with an unlocked node taking control is accepted.
+Owner keys: notes/write-path-design.md, Decided (Tess) and Owner keys. None by default: a thing with no owner key is a fully valid way to use osis, and a thief with an unlocked node taking control is accepted.
 
 ## The rule
 - An owner key acts as the thing itself, and no grant gives or takes a thing's authority over itself, so no admin's write lowers it: its removal of an admin is an ordinary removal nothing contests, and it settles a fight among admins. The owner-key list is written only as the thing itself (by an owner key); admins read it. A thing with none takes its first from an admin, as an ordinary admin write.
@@ -18,5 +18,6 @@ Attach an owner key, share adminship, the new admin turns hostile and backdates:
 The rules, clause by clause: notes/write-path-design.md, Owner keys (the list, the key hop, who writes the list, a thing acting as itself, removing a key). The flow above holds for a key from the thing's record or added by an owner key, and against a backdated add; it does not hold where the first key was attached by an admin that a later admin removes without listing the attach: issues/owner-key-first-attach.md (for Tess).
 
 ## To do
-- Model the rules and the flow before building (notes/write-path-design.md §6, roles-model 5). A thing given a role on itself changes nothing: acting as itself it is already its own admin (the unclassed difference of `windlass-wiring-1`: notes/priorities.md, Unlanded branches).
+- Model the rules and the flow before building (notes/write-path-design.md §6: roles-model `paths`' owner keys, stage D2).
+- Build with owner keys at stage A4 (notes/redesign-plan.md, A4 brief 2). A thing given a role on itself changes nothing: acting as itself it is already its own admin (the unclassed difference of `windlass-wiring-1`: notes/priorities.md, Unlanded branches).
 - API: making an owner key, showing it once, acting with one on a fresh node.

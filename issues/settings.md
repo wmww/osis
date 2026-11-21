@@ -3,6 +3,8 @@
 > Priority: normal
 > Tags: api, app, kit, spec
 
+The structure below hangs off the account root D, which stage A4 removes (the account becomes an ordinary thing A, home is A, its private things A's dependents: notes/write-path-design.md §5): restate it on A before building, after A4 or with it.
+
 ## Direction (Tess)
 Per-node settings (`caps^.0`, `clients^.0` included) sync by default: the node data thing is referenced both from the account's shared data (D) and from the local node root, so a node finds its own settings locally and its siblings find them through D. Today `caps^.0`/`clients^.0` sit on the local node root (spec/sync-set.md §1: simpler, and reversible); building settings moves them.
 

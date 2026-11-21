@@ -19,4 +19,4 @@ Replay: `run(514673641167, 1, alike)` in core/perm/tests/it/paths/single.rs (a t
 arrival [0, 3, 5, 4, 7, 1, 8, 2, 6]: statuses [(WriteId(commit 3, 0), Unapplied, Some(Dropped))]
 ```
 
-From scratch both walks agree; only that arrival order differs. A split commit (3) of two edge parts on one thing, one with an `until` already past at a later grant's `ts`, finalizes in another commit (5). Not yet narrowed to which of the components' restarts misses the drop.
+From scratch both walks agree; only that arrival order differs. A split commit (3) of two edge parts on one thing, one with an `until` already past at a later grant's `ts`, finalizes in another commit (5). Not yet narrowed to which of the components' restarts misses the drop. Likely one cause with issues/perm-paths-incremental-differs.md; like it, left to the walk's rebuild (stage A1), whose tests must hold this world.

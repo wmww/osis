@@ -1,18 +1,14 @@
 # Invalid bodies at stores are never deleted
-> Summary: No node deletes a body it judges invalid at a store (spec/sync-judgement.md §3 Deletes, §2 Judged invalid: the store copy is the refetch source when the body turns valid again), so an ex-writer's writes logged before its demotion reached it, and a hostile writer's junk, stay at stores keeping S unread until expiry, purge or S leaving, within S's caps. Stated for hostile writers (spec/sync-hostile.md), not as an honest-use limit. Needs Tess: keep re-grants restoring from stores, or delete.
+> Summary: No node deletes a body it judges invalid at a store (spec/sync-judgement.md §3 Deletes, §2 Judged invalid: the store copy is the refetch source when the body turns valid again), so an ex-writer's writes logged before its demotion reached it, and a hostile writer's junk, stay at stores keeping S unread until expiry, purge or S leaving, within S's caps. Decided (Tess): accepted as built, nothing to build; kept as the record of why, which code cites.
 > Priority: low
 > Tags: sync, security, retention
 
-**Decided (Tess):** accepted as built: no node deletes an invalid body at a store, readers drop theirs at once, and the store's copy, bounded as below, is the refetch source. Nothing to build.
+**Decided (Tess):** accepted as built: no node deletes an invalid body at a store, readers drop theirs at once (notes/write-path-design.md §2, What follows: invalid bodies are dropped at once), and the store's copy, bounded as below, is the refetch source. Nothing to build. Rejected: a right holder deleting a body it judges invalid at stores once the demotion is shown there (a re-grant would then restore only what an author still holds).
 
 ## What happens
 - A writer demoted with a frontier that does not list a write it logged keeps writing until it hears of the demotion; those writes are logged at stores while valid at the author, then judged invalid everywhere. Readers drop their entries (spec/sync-judgement.md §2 Judged invalid), the author keeps its own commit locally and does not log it. The store copies stay: nothing deletes an invalid body at a peer, and a snapshot never covers a part judged invalid (a cover drop of a part judged invalid is an invalid drop).
 - Each such store entry also keeps the commit's header (about 690 B) known at every reader with that store as a source (spec/commits.md §5 Forgetting: forgotten once no source shows an entry). That header is what refetches the body if it turns valid where its author never judged it invalid (`growth::a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissions_6`).
 - Bound: S's caps at each store, the commit's expiry, a purge, or its thing leaving S's sync unit. Honest-use volume is the writes made between a demotion and its author hearing of it; hostile volume is anything a writer can log (spec/sync-hostile.md: "a writer's invalid entry can take a full store's room there until it expires or the caps give way").
 
-## Why it is not just fixed
+## Why
 The store copy is the only refetch source once its author is gone: a re-grant whose frontier lists the write (or a demotion turning invalid) makes it valid again, and Tess's rule (issues/drop-rejoin-robust.md) has the body rejoin from any copy. An addendum written late (a witness first holding the right after the removal) turns a write valid after every node may have dropped its body, so the later the addendum the longer the store copy is its only source (core/test/roles-model/README.md, Addenda gaps). Deleting invalid bodies at stores keeps that rule ("none left means gone alike") but makes a re-grant restore only what an author still holds.
-
-## Options (Tess)
-1. Accept, stated: add the honest-use case to spec/sync-hostile.md's neighbour list of limits (or requirements wording "a demoted writer's last writes may take store room until they expire").
-2. A right holder deletes a body it judges invalid at stores, once the demotion is shown there (Role entries first already orders that). The author keeps its own invalid bodies and never logs them while invalid, so no delete/log-again loop; a node lacking the demotion that logs it again is bounded by the demotion travelling first. Pairs with Tess's floated rule that edits dated before a re-grant stay invalid, which removes refetch on re-grant altogether.
