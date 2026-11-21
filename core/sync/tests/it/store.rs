@@ -1062,20 +1062,57 @@ fn ephemeral_entries_live_in_memory_spec_sync_ids_5() {
     let dev = Dev::new();
     let s = Sid::new(10);
     let mut st = unread(&dev, &s);
+    let (d, dx) = blob(90, Class::Durable, None, &[]);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, d, false), dx.clone(), &[]).unwrap(), Code::OK);
     let (b, x) = blob(100, Class::Ephemeral, Some(10 * MAX_DRIFT_MS), &[]);
+    let (b2, x2) = blob(110, Class::Ephemeral, Some(10 * MAX_DRIFT_MS), &[]);
+    // every ephemeral operation below writes nothing durable: taking, the engine holding and
+    // releasing, a charge, a verified Delete, the node's own drop, the sweep
     dev.faults.forbid_writes(true);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone(), &[]).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b2, false), x2.clone(), &[]).unwrap(), Code::OK);
+    let door = st.cipher();
+    {
+        let mut tx = door.begin();
+        tx.hold(&b, x.clone(), true).unwrap();
+        tx.commit().unwrap();
+    }
+    st.set_memory_charge(&b, 5_000).unwrap();
+    assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b2)], true).unwrap(), vec![Code::OK]);
+    let before = st.usage(&s.id).unwrap().1.bytes;
+    st.drop_entry(&s.id, &b, Vec::new()).unwrap();
+    assert!(st.bytes(&b).unwrap().is_some(), "the engine still holds it in memory");
+    {
+        // released by a transaction working on durable data: it goes from memory all the same
+        let mut tx = door.begin();
+        tx.release(&b, false).unwrap();
+        tx.commit().unwrap();
+    }
+    assert!(st.bytes(&b).unwrap().is_none(), "released from memory");
+    // spec/sync-ids.md §6: a tombstone's overhead counts toward the memory cap
+    assert_eq!(st.usage(&s.id).unwrap().1.bytes, before - (5_000 + 256) + 128, "the entry left, its tombstone counts");
+    {
+        // spec/sync-judgement.md §3 Dropped bodies: never received again ends the node's own
+        // tombstones only; a verified Delete's stays
+        let mut tx = door.begin();
+        tx.unreceived(&b).unwrap();
+        tx.unreceived(&b2).unwrap();
+        tx.commit().unwrap();
+    }
+    assert!(st.tombstone(&s.id, &b).unwrap().is_none(), "the own drop's tombstone ended");
+    assert!(st.tombstone(&s.id, &b2).unwrap().is_some_and(|t| t.deleted), "the Delete's stays");
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b2, false), x2.clone(), &[]).unwrap(), Code::TOMBSTONED);
+    st.settle_at(WallMs(MAX_DRIFT_MS)).unwrap();
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b2, false), x2, &[]).unwrap(), Code::OK, "its tombstone lasted MAX_DRIFT");
     assert_eq!(dev.faults.forbidden(), 0, "no durable write");
     dev.faults.forbid_writes(false);
-    assert_eq!(st.read_memory(&s.id, 0, 10).0.len(), 1);
-    assert!(st.read_sync(&s.id, None, None, 10).unwrap().events.iter().all(|e| !matches!(e.event, NodeEvent::Added(..))), "no position names it");
-    st.drop_entry(&s.id, &b, Vec::new()).unwrap();
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone(), &[]).unwrap(), Code::TOMBSTONED);
-    st.settle_at(WallMs(MAX_DRIFT_MS)).unwrap();
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK, "its tombstone lasted MAX_DRIFT");
+    assert_eq!(st.read_memory(&s.id, 0, 10).0.iter().filter(|e| e.2).count(), 1);
+    assert!(st.read_sync(&s.id, None, None, 10).unwrap().events.iter().all(|e| !matches!(e.event, NodeEvent::Added(_, x) if x != d)), "no position names an ephemeral entry");
+    drop(door);
     drop(st);
     let st = dev.open();
-    assert!(st.entry(&s.id, &b).unwrap().is_none() && st.bytes(&b).unwrap().is_none(), "lost at a restart");
+    assert!(st.entry(&s.id, &b2).unwrap().is_none() && st.bytes(&b2).unwrap().is_none(), "lost at a restart");
+    assert!(st.entry(&s.id, &d).unwrap().is_some() && st.bytes(&d).unwrap() == Some(dx), "the durable entry stays");
     let (r, rx) = blob(60, Class::Relay, Some(10), &[]);
     let mut st = unread(&Dev::new(), &s);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, r, false), rx, &[]).unwrap(), Code::DECLINED, "relay-only is never held");

@@ -78,15 +78,21 @@ impl osis_store::CipherHost for Inner {
         Ok(true)
     }
 
+    /// A blob held in memory goes from the memory part whatever `memory` says (a durable-mode
+    /// transaction may release an ephemeral blob); `memory` keeps a durable hold.
     fn release(&mut self, id: &BlobId, memory: bool) -> Res<()> {
+        let key = rows::engine_key(id);
         let release = |t: &mut Transaction<'_>, env: &mut super::Env<'_>| {
-            t.remove_local(&rows::engine_key(id), Shred::No)?;
+            t.remove_local(&key, Shred::No)?;
             unref(t, env, id)
         };
-        match memory {
-            true => self.write_in(true, release).map_err(to_store),
-            false => self.engine_tx(release),
+        if self.read_in(true, |t, _| Ok(t.get_local(&key)?.is_some())).map_err(to_store)? {
+            return self.write_in(true, release).map_err(to_store);
         }
+        if memory {
+            return Ok(());
+        }
+        self.engine_tx(release)
     }
 
     /// The engine forgot blob `id` with its commit: its own entries go under every sync ID, with
