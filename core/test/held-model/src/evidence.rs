@@ -15,8 +15,9 @@
 //! - **Bodies.** A commit's body is under every sync ID whose unit holds the thing it writes
 //!   (roles-model commits write one thing: a copy per (commit, thing) is per commit here).
 //! - **The required set** of sync ID S over a held set H (`World::req`): the evidence closure
-//!   (`paths::evidence`: every held edge write on an edge of a seed's path or on the remaining
-//!   admin edge a lowering names, closed under the same for what it adds) of the seeds: the bodies; the grants naming S's thing as holder (a holder's
+//!   (`paths::evidence`: every held list write on a seed's key hop and edge write on an edge of
+//!   its path or on the remaining admin edge a lowering names, closed under the same for what it
+//!   adds: notes/write-path-design.md §2 E1) of the seeds: the bodies; the grants naming S's thing as holder (a holder's
 //!   grants travel under its sync ID: taken-ness is not modelled, every grant counts). What of it
 //!   lies on things outside the unit is a copy, the rest bodies. A removal is in it only as
 //!   evidence of a body (notes/write-path-design.md §2, D1) or as Role changes travel puts it
@@ -53,8 +54,7 @@
 //! Left out: records (static, `paths::World::records`), keys and sealing (a keyset is a body that
 //! carries demotions, no more), `@` signals, covers, deposits other than D4's and their promotion
 //! as a step of its own, taken-ness of a grant, multi-thing role commits, how units are computed
-//! (an input: `closure` checks the walk), owner-key list writes (waiting for roles-model's owner
-//! keys).
+//! (an input: `closure` checks the walk).
 
 use roles_model::paths::{self, Edge, Id, Kind, Rules, Set, Thing, Things, View};
 use roles_model::Role;
@@ -748,8 +748,8 @@ impl World {
         }
     }
     /// The evidence closure of `seeds` over `avail` under `rule.closure`: the seeds, the other
-    /// parts of a member's commit on its thing, the taken edge writes on an edge of a member's
-    /// stated path (where joined, under `joined`).
+    /// parts of a member's commit on its thing, the taken list writes on a member's key hop and
+    /// edge writes on an edge of its stated path (where joined, under `joined`).
     /// The draft is `paths::evidence`.
     pub fn closure(&self, rule: &Rule, seeds: &Set, avail: &Set) -> Set {
         self.closure_with(rule, seeds, BTreeSet::new(), avail)
@@ -778,7 +778,8 @@ impl World {
                         edges.extend(self.edges_among(avail, &self.chain_things(avail, &ch, a, hd)));
                     }
                 } else if !c.joined || self.joined(avail, &ch, m) {
-                    edges.extend(self.w.hops(m).iter().copied());
+                    // its key hop's list writes and its path's edge writes (E1)
+                    edges.extend(self.w.rests(m).iter().copied());
                 }
                 if self.w.edge_class(m) {
                     let parts: Vec<Id> = self.w.part_ids(self.w.cid(m)).filter(|&p| self.on(p) == self.on(m)).collect();

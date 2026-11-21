@@ -343,3 +343,25 @@ fn open10_show_random() {
         eprintln!("{f:?}");
     }
 }
+
+/// E1's key hop (notes/write-path-design.md §2 E1, Owner keys O3): X, A's admin, adds an owner
+/// key to A's list; the key, signing as A, grants Q write on A; Q writes D through [A]. The grant
+/// rests on its key hop, so D's reader must hold the list write as a copy beside the grant: a
+/// closure bringing only the grant's path edges leaves the key unlisted at D's reader, which
+/// refuses the grant and Q's write where the node holding everything shows it (P1).
+#[test]
+fn e1_a_writes_key_hop_list_writes_are_evidence_in_every_variant() {
+    const KEY: Thing = paths::KEYS | 0x40;
+    let (mut w, [x, _, _, q]) = base();
+    let list = w.write(x, |p| p.edge(X, 2, &[], A, KEY, Role::Admin, &[]));
+    w.write(x, |p| p.push_signed(KEY, A, 3, &[], A, paths::Kind::set(Q, Role::Write)));
+    let c = w.write(q, |p| p.content(Q, 4, &[A], D));
+    for (name, p) in by_variant(&w, &Open10::ALL) {
+        assert_eq!(p, Vec::<&str>::new(), "{name}");
+    }
+    let mut w = w;
+    let rule = Open10::Granted.set(&mut w, Rule::fixed());
+    let st = w.run(&rule, |_| {});
+    assert!(st.entries[&D].contains(&list));
+    assert_eq!(w.verdicts(&w.reader(&rule, &st, D, &Set::new()), &Set::from([c]))[&c], Verdict::Valid);
+}
