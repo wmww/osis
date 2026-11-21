@@ -108,7 +108,7 @@ fn setting_itself_ordinary_spec_commits_5() {
     let (mut lp, d) = setup();
     let c = set(&mut lp, 0, d, &setting(&[(A, History::FOREVER)]));
     let h = lp.peers[0].engine.header(&c).unwrap();
-    assert_eq!(h.aspects.iter().find(|a| a.ak.as_str() == "retention^.0").unwrap().retention.by, PurgeBy::Admin);
+    assert_eq!(h.aspects.iter().find(|a| a.ak.as_str() == "retention^.0").unwrap().retention, PurgeBy::Admin);
     assert!(lp.peers[0].engine.snapshot(&d, &ak("retention^.0")).unwrap().is_some(), "compacted as any aspect");
     // a partial write would say something else alone
     let mut m = Mutation::new();

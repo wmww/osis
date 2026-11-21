@@ -39,7 +39,7 @@ pub(crate) fn four() -> (World, Tid, SyncId) {
 fn write(w: &mut World, i: usize, t: Tid, ak: &Ak, by: PurgeBy) -> CommitId {
     w.write(i, |e| {
         let mut m = Mutation::new();
-        m.set(t, ak, &Value::Str(format!("by {i}"))).unwrap().retention(t, ak, osis_schema::Retention { by }).unwrap();
+        m.set(t, ak, &Value::Str(format!("by {i}"))).unwrap().retention(t, ak, by).unwrap();
         e.commit(m).unwrap().unwrap()
     })
 }
@@ -83,8 +83,8 @@ fn a_writers_purge_of_its_own_write_deletes_it_at_a_node_keeping_s_unread_spec_s
     let other = Ak::new("u:n.0").unwrap();
     let c = w.write(2, |e| {
         let mut m = Mutation::new();
-        m.set(t, &value_ak(), &Value::Str("a".into())).unwrap().retention(t, &value_ak(), osis_schema::Retention { by: PurgeBy::AuthorOrAdmin }).unwrap();
-        m.set(t, &other, &Value::Str("b".into())).unwrap().retention(t, &other, osis_schema::Retention { by: PurgeBy::Writer }).unwrap();
+        m.set(t, &value_ak(), &Value::Str("a".into())).unwrap().retention(t, &value_ak(), PurgeBy::AuthorOrAdmin).unwrap();
+        m.set(t, &other, &Value::Str("b".into())).unwrap().retention(t, &other, PurgeBy::Writer).unwrap();
         e.commit(m).unwrap().unwrap()
     });
     w.run();
@@ -282,8 +282,8 @@ fn two_parts(w: &mut World, t: Tid, marker: &str) -> CommitId {
     let other = Ak::new("u:n.0").unwrap();
     w.write(2, |e| {
         let mut m = Mutation::new();
-        m.set(t, &value_ak(), &Value::Str(marker.into())).unwrap().retention(t, &value_ak(), osis_schema::Retention { by: PurgeBy::Writer }).unwrap();
-        m.set(t, &other, &Value::Str("kept".into())).unwrap().retention(t, &other, osis_schema::Retention { by: PurgeBy::Writer }).unwrap();
+        m.set(t, &value_ak(), &Value::Str(marker.into())).unwrap().retention(t, &value_ak(), PurgeBy::Writer).unwrap();
+        m.set(t, &other, &Value::Str("kept".into())).unwrap().retention(t, &other, PurgeBy::Writer).unwrap();
         e.commit(m).unwrap().unwrap()
     })
 }
@@ -343,7 +343,7 @@ fn build_replaced() -> (World, (Tid, CommitId, String)) {
     });
     w.run();
     let marker = format!("PORMARK-77e3a1b2{}", "x".repeat(300));
-    let by = osis_schema::Retention { by: PurgeBy::Writer };
+    let by = PurgeBy::Writer;
     let c = w.write(0, |e| {
         let mut m = Mutation::new();
         m.set(t, &value_ak(), &Value::Str(marker.clone())).unwrap().retention(t, &value_ak(), by).unwrap();
@@ -522,7 +522,7 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
         }
     }
     w.run();
-    let by = osis_schema::Retention { by: PurgeBy::Writer };
+    let by = PurgeBy::Writer;
     let x = w.write(0, |e| {
         let mut m = Mutation::new();
         for t in [a, b, c] {

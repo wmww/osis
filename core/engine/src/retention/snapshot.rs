@@ -361,7 +361,7 @@ pub(crate) fn walk_source<'r>(valid_on: &dyn Fn(&CommitId) -> bool, resets: &dyn
 /// What delta `a` of a commit with view `v` is judged by in a purge (spec/crdt.md §8 `Facts`):
 /// its purgeable-by, and its purge author where that is not its signer.
 pub(crate) fn header_fact(v: &crate::engine::View, a: &osis_commit::AspectEntry) -> osis_crdt::Fact {
-    osis_crdt::Fact { by: a.retention.by, purge_author: v.other_purge_author() }
+    osis_crdt::Fact { by: a.retention, purge_author: v.other_purge_author() }
 }
 
 /// What a snapshot's `Facts` (with its `Absorbed` signers, `absorbed`) state of carried commit
@@ -647,7 +647,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
             Some((bf, babs)) => both.iter().all(|k| stated(bf, &|x| babs.get(x).copied(), k) == cover(k)),
             None => {
                 let k = (h.ts, h.form.own_source(h.signer, *c));
-                !both.contains(&k) || h.aspects.get(cai).is_none_or(|a| cover(&k) == Some((a.retention.by, m.view.purge_author)))
+                !both.contains(&k) || h.aspects.get(cai).is_none_or(|a| cover(&k) == Some((a.retention, m.view.purge_author)))
             }
         };
         if held && !same {

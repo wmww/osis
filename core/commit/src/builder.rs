@@ -9,7 +9,7 @@ use crate::Error;
 use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB, MAX_LIST_BYTES};
 use osis_base::{Ak, BlobId, CommitId, Tid, Ts};
 use osis_crypto::{CryptoRngCore, Domain, Secret32, SigningSecret, delta_hash, seal_inner};
-use osis_schema::Retention;
+use osis_schema::PurgeBy;
 use crate::path::{Path, Paths, Split};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,7 +25,7 @@ pub struct AspectWrite {
     pub delta: Vec<u8>,
     /// Resolved retention ([`crate::retention`] helpers: fixed, override, schema default,
     /// untyped default; snapshot).
-    pub retention: Retention,
+    pub retention: PurgeBy,
     /// The fire this delta claims to replace (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
     /// That fire's floor as the writer read it (`AspectEntry::original_floor`).
@@ -35,7 +35,7 @@ pub struct AspectWrite {
 impl AspectWrite {
     /// One delta with untyped defaults; set the other fields as needed.
     pub fn new(tid: Tid, ak: Ak, lo: u64, hi: u64, delta: Vec<u8>) -> AspectWrite {
-        AspectWrite { tid, ak, lo, hi, delta, retention: Retention::default(), replaces: None, original_floor: 0 }
+        AspectWrite { tid, ak, lo, hi, delta, retention: PurgeBy::default(), replaces: None, original_floor: 0 }
     }
 }
 

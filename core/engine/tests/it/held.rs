@@ -340,9 +340,9 @@ impl Conv<'_> {
 }
 
 /// The model's retention of a wire retention: who may purge it.
-fn retention(r: &osis_schema::Retention) -> hm::Retention {
+fn retention(r: &osis_schema::PurgeBy) -> hm::Retention {
     use osis_base::PurgeBy as P;
-    let by = match r.by {
+    let by = match r {
         P::Admin => hm::PurgeBy::Admin,
         P::AuthorOrAdmin => hm::PurgeBy::AuthorOrAdmin,
         P::Writer => hm::PurgeBy::Writer,

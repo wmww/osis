@@ -72,8 +72,8 @@ pub const BIGMAP: Aspect<Value> = Aspect::new("t:big.0", &TEST);
 pub const LISTTEXT: Aspect<Value> = Aspect::new("t:listtext.0", &TEST);
 
 /// Purgeable by `by`.
-pub fn purgeable_by(by: osis_base::PurgeBy) -> osis_schema::Retention {
-    osis_schema::Retention { by }
+pub fn purgeable_by(by: osis_base::PurgeBy) -> osis_schema::PurgeBy {
+    by
 }
 
 /// Kept a day after replaced: what an undo writing back replaced content needs (spec/crdt.md §4.6).

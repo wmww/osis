@@ -15,7 +15,7 @@ use osis_base::{Ak, CommitId as RawCommitId, CreationRecord, Role, Tid, Time, Ts
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::DiagnosticKind;
 use osis_proto::api::{ApiCode, Outcome};
-use osis_schema::{Path, Retention, Step};
+use osis_schema::{Path, PurgeBy, Step};
 
 /// What a malformed argument is.
 pub(crate) fn bad(what: &str) -> Error {
@@ -193,14 +193,12 @@ pub(crate) fn path_op_from(v: Value) -> Result<PathOp> {
     Ok(PathOp { path, op })
 }
 
-fn retention_to(r: &Retention) -> Value {
-    Value::uint(r.by as u64)
+fn retention_to(r: &PurgeBy) -> Value {
+    Value::uint(*r as u64)
 }
 
-fn retention_from(v: &Value) -> Result<Retention> {
-    let n = uint(v, "retention")?;
-    let by = osis_schema::PurgeBy::from_id(n).ok_or_else(|| bad("retention"))?;
-    Ok(Retention { by })
+fn retention_from(v: &Value) -> Result<PurgeBy> {
+    PurgeBy::from_id(uint(v, "retention")?).ok_or_else(|| bad("retention"))
 }
 
 /// A write op `[case, arg*]`; aspects by index into the write's AK list.

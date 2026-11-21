@@ -415,7 +415,7 @@ fn seal_commit_unchecked(c: &CommitBlob, secret: &dyn Fn(&Tid) -> Secret32) -> E
 fn a_split_commit_lists_one_level_2_key() {
     for by in [osis_schema::PurgeBy::AuthorOrAdmin, osis_schema::PurgeBy::Writer] {
         let mut b = split(3);
-        b.aspects.iter_mut().for_each(|a| a.retention = osis_schema::Retention { by });
+        b.aspects.iter_mut().for_each(|a| a.retention = by);
         let h = built(b).header;
         assert!(h.is_split());
         let level_2: Vec<usize> = (0..h.keys.len()).filter(|i| h.keys[*i].level == 2).collect();

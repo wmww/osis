@@ -1829,7 +1829,7 @@ mod tests {
             lp.sync_all().unwrap();
             let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
             let x = Ak::new("x:v.0").unwrap();
-            let none = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
+            let none = osis_schema::PurgeBy::Writer;
             let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
             // bob writes `t` by his write on its mint admin `g`, which holds it: `t` keeps g's
             // secrets
@@ -2471,7 +2471,7 @@ mod tests {
         // its write as it holds write on `t` and admin on `u`, stamped after the demotion: its
         // part on `t` invalid at peer 0
         let mut m = Mutation::new();
-        m.set(t, &y, &Value::Int(1)).unwrap().retention(t, &y, osis_schema::Retention { by: osis_schema::PurgeBy::Writer }).unwrap();
+        m.set(t, &y, &Value::Int(1)).unwrap().retention(t, &y, osis_schema::PurgeBy::Writer).unwrap();
         m.set(u, &y, &Value::Int(1)).unwrap();
         lp.advance(10);
         let own = lp.peers[1].commit(m).unwrap().unwrap();
@@ -2523,7 +2523,7 @@ mod tests {
         lp.advance(10);
         let (x, z) = (Ak::new("x:m.0").unwrap(), Ak::new("x:z.0").unwrap());
         let mut m = Mutation::new();
-        m.set(t, &x, &Value::Int(1)).unwrap().retention(t, &x, osis_schema::Retention { by: osis_schema::PurgeBy::Writer }).unwrap();
+        m.set(t, &x, &Value::Int(1)).unwrap().retention(t, &x, osis_schema::PurgeBy::Writer).unwrap();
         let c1 = lp.peers[1].commit(m).unwrap().unwrap();
         lp.advance(10);
         let mut m = Mutation::new();

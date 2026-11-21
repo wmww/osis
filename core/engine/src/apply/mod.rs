@@ -2682,7 +2682,7 @@ mod tests {
         let e = p0.engine.new_thing(&mut m, d);
         let f = p0.engine.new_thing(&mut m, e);
         m.set(f, &reg, &Value::Int(4)).unwrap();
-        m.retention(f, &reg, osis_schema::Retention { by: osis_schema::PurgeBy::Writer }).unwrap();
+        m.retention(f, &reg, osis_schema::PurgeBy::Writer).unwrap();
         let id = p0.commit(m).unwrap().unwrap();
         let h = p0.engine.header(&id).unwrap();
         let wf = h.aspects.iter().find(|w| w.tid == f && w.ak == reg).unwrap();

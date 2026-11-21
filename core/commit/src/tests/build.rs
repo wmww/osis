@@ -8,7 +8,7 @@ use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB};
 use osis_base::{Ak, CommitId, Tid, Ts, Value};
 use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
 use osis_crypto::{SeededRng, Secret32, SigningSecret};
-use osis_schema::{PurgeBy, Retention};
+use osis_schema::{PurgeBy};
 
 pub(crate) fn key() -> SigningSecret {
     SigningSecret::from_seed(&Secret32::from_bytes([0x41; 32]))
@@ -108,7 +108,7 @@ fn list_overflow_links() {
     let mut b = content(2000);
     // a level-2 key listed, to which the list blobs do not commit
     for a in &mut b.aspects {
-        a.retention = Retention { by: PurgeBy::AuthorOrAdmin };
+        a.retention = PurgeBy::AuthorOrAdmin;
     }
     let built = build(b, &mut sink).unwrap();
     let h = &built.commit.header;
@@ -223,7 +223,7 @@ fn mixed() -> CommitBlob {
         a.tid = t(3);
         a.ak = Ak::new(format!("app:f{i}.0")).unwrap();
         if i % 2 == 1 {
-            a.retention = Retention { by: PurgeBy::Writer };
+            a.retention = PurgeBy::Writer;
         }
     }
     b.expires = Some(9_000_000_000);

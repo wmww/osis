@@ -8,7 +8,6 @@ use crate::Mutation;
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Value};
 use osis_commit::PurgeItem;
 use osis_schema::core_types as ct;
-use osis_schema::Retention;
 
 const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
 
@@ -41,7 +40,7 @@ fn written(lp: &mut LocalPeer, t: Tid, by: PurgeBy) -> (CommitId, CommitId) {
     let mut c = None;
     for v in ["v1", "SECRET"] {
         let mut m = Mutation::new();
-        m.retention(t, &reg(), Retention { by }).unwrap();
+        m.retention(t, &reg(), by).unwrap();
         m.set(t, &reg(), &Value::Str(v.into())).unwrap();
         c = lp.peers[1].commit(m).unwrap();
         lp.advance(1_000);
@@ -419,7 +418,7 @@ fn written_as_x(lp: &mut LocalPeer, t: Tid) -> (Tid, CommitId, CommitId) {
     lp.sync_all().unwrap();
     lp.advance(1_000);
     let mut m = Mutation::new();
-    m.retention(t, &reg(), Retention { by: PurgeBy::AuthorOrAdmin }).unwrap();
+    m.retention(t, &reg(), PurgeBy::AuthorOrAdmin).unwrap();
     m.set(t, &reg(), &Value::Str("SECRET".into())).unwrap();
     m.act_as(x);
     let c = lp.peers[1].commit(m).unwrap().unwrap();
@@ -502,7 +501,7 @@ fn a_misnamed_purge_author_misleads_only_a_node_holding_no_honest_snapshot_spec_
 fn a_writers_misnamed_fact_lets_it_erase_an_admins_write_at_a_snapshot_only_node_spec_commits_5() {
     let (mut lp, t) = world();
     let mut m = Mutation::new();
-    m.retention(t, &reg(), Retention { by: PurgeBy::AuthorOrAdmin }).unwrap();
+    m.retention(t, &reg(), PurgeBy::AuthorOrAdmin).unwrap();
     m.set(t, &reg(), &Value::Str("SECRET".into())).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(1_000);

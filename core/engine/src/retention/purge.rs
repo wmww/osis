@@ -44,7 +44,7 @@ pub(crate) struct Target {
 impl Target {
     /// Delta `a` of commit `c` (header `h`).
     pub(crate) fn of(h: &Header, a: &AspectEntry, c: &CommitId) -> Target {
-        Target { tid: a.tid, ak: a.ak.clone(), ts: h.ts, src: h.form.own_source(h.signer, *c), purge_author: h.purge_author(), by: a.retention.by, expires: h.expires, own_writes: h.kind.has_own_writes() }
+        Target { tid: a.tid, ak: a.ak.clone(), ts: h.ts, src: h.form.own_source(h.signer, *c), purge_author: h.purge_author(), by: a.retention, expires: h.expires, own_writes: h.kind.has_own_writes() }
     }
 
     /// The commit stamped `ts` of `src` on `(tid, ak)` as a snapshot states it (`snapshot::stated`:
@@ -90,7 +90,7 @@ pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid
     let Some(a) = m.aspect(tid, ak).and_then(|ai| m.header.aspects.get(ai)) else { return false };
     let author = m.view.purge_author;
     let point = Point { ts, node: *who, commit: CommitId([0xff; 32]) };
-    core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(who, &a.tid, a.retention.by, &author, point))
+    core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(who, &a.tid, a.retention, &author, point))
 }
 
 /// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
@@ -103,7 +103,7 @@ pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid
 /// `rejudge_purges` follows it when those change.
 pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header) -> bool {
     let purge_author = ch.purge_author();
-    right_holds(core, p, pc, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention.by, purge_author })
+    right_holds(core, p, pc, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention, purge_author })
 }
 
 /// `holds_right` over delta `t`.
@@ -205,7 +205,7 @@ pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()
             let Some((m, ai)) = core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(item.tid(), item.ak())?))) else { continue };
             let Some(a) = m.header.aspects.get(ai).filter(|a| names(p, a, &m.header, &c)) else { continue };
             let author = m.view.purge_author;
-            if *rights.entry((a.retention.by as u64, author)).or_insert_with(|| holds_right(core, p, pc, a, &m.header)) {
+            if *rights.entry((a.retention as u64, author)).or_insert_with(|| holds_right(core, p, pc, a, &m.header)) {
                 break;
             }
         }
@@ -244,7 +244,7 @@ fn signers_could(core: &Core, p: &Header, a: &Right) -> bool {
 /// that could ever hold the right.
 fn could_stand(core: &Core, p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
     let purge_author = ch.purge_author();
-    names(p, a, ch, c) && signers_could(core, p, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention.by, purge_author })
+    names(p, a, ch, c) && signers_could(core, p, &Right { tid: a.tid, ak: a.ak.clone(), by: a.retention, purge_author })
 }
 
 /// Whether snapshot `s` may stand for body `(tid, ak)` of `c`: its purge author holds the right over it
@@ -704,7 +704,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
             let Some(a) = m.header.aspects.get(ai) else { continue };
             // applied here: held, or dropped as covered (its writes in the state through its cover)
             let applied = m.view.kind.has_own_writes() && (!m.body_gone(ai) || m.dropped(ai).is_some_and(|d| d.as_cover()));
-            if (matches!(item, PurgeItem::Commit { .. }) || *rights.entry((a.retention.by as u64, m.view.purge_author)).or_insert_with(|| holds_right(core, h, id, a, &m.header)))
+            if (matches!(item, PurgeItem::Commit { .. }) || *rights.entry((a.retention as u64, m.view.purge_author)).or_insert_with(|| holds_right(core, h, id, a, &m.header)))
                 && purge_one(tx, id, &c, ai, purged)?
             {
                 stood = true;

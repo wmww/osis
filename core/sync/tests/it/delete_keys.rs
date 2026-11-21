@@ -80,7 +80,7 @@ fn write(w: &mut World, i: usize, t: Tid, parts: &[(&str, PurgeBy)]) -> CommitId
         let mut m = Mutation::new();
         for (ak, by) in parts {
             let ak = Ak::new(*ak).unwrap();
-            m.set(t, &ak, &Value::Str(format!("by {i}"))).unwrap().retention(t, &ak, osis_schema::Retention { by: *by }).unwrap();
+            m.set(t, &ak, &Value::Str(format!("by {i}"))).unwrap().retention(t, &ak, *by).unwrap();
         }
         e.commit(m).unwrap().unwrap()
     })
@@ -319,7 +319,7 @@ fn nothing_deletes_a_header_lists_chunks_by_level_2_spec_crypto_7() {
     let c = w.write(2, |e| {
         let mut m = Mutation::new();
         for i in 0..n {
-            m.set(t, &name(i), &Value::Str("v".into())).unwrap().retention(t, &name(i), osis_schema::Retention { by: PurgeBy::AuthorOrAdmin }).unwrap();
+            m.set(t, &name(i), &Value::Str("v".into())).unwrap().retention(t, &name(i), PurgeBy::AuthorOrAdmin).unwrap();
         }
         e.commit(m).unwrap().unwrap()
     });
@@ -367,7 +367,7 @@ fn a_purge_author_other_than_the_signer_keys_level_2_spec_crypto_7() {
     let (mut w, t, s) = world_of_three();
     let _ = play(&mut w, &[New(0), Grant(0, 1, 2, Gives::Writes), Give(0, 0, Holder::Thing(1), Gives::Writes), Run], String::new());
     let x = w.history.things[1].0;
-    let by = osis_schema::Retention { by: PurgeBy::AuthorOrAdmin };
+    let by = PurgeBy::AuthorOrAdmin;
     let c = w.write(2, |e| {
         let mut m = Mutation::new();
         m.set(t, &Ak::new("u:a.0").unwrap(), &Value::Str("as X".into())).unwrap().retention(t, &Ak::new("u:a.0").unwrap(), by).unwrap();

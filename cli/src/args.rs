@@ -80,8 +80,8 @@ pub struct ExpiryFlags {
 pub struct WriteFlags {
     #[command(flatten)]
     pub e: ExpiryFlags,
-    /// Who may purge it besides admins: by=admin|author_or_admin|writer (what history keeps is the thing's retention^.0)
-    #[arg(long, value_name = "SPEC")]
+    /// Who may purge it besides admins: admin|author_or_admin|writer, over the key's default (what history keeps is the thing's retention^.0)
+    #[arg(long, value_name = "BY")]
     pub retention: Option<String>,
 }
 

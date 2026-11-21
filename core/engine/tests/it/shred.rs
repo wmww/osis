@@ -795,7 +795,7 @@ fn tombstone_alike_in_every_order_exhaustive_spec_commits_5() {
 /// Every `stride`th case (3 is coprime with the 4 and 5 restart points of an order).
 fn tombstone_alike(stride: u64) {
     use osis_commit::CommitBlob;
-    let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin };
+    let forever = osis_schema::PurgeBy::AuthorOrAdmin;
     let marker = "TOMBSTONE-SECRET-8e1a";
     let mut lp = net2();
     // the nodes judged: nodes of 0's account

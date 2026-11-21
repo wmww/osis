@@ -8,7 +8,7 @@ use osis_commit::CommitBlob;
 use osis_base::{Tid, Value, WallMs};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::{Ingested, Mutation, Reason};
-use osis_schema::{PurgeBy, Retention};
+use osis_schema::{PurgeBy};
 
 fn only(bytes: &[u8], h: &osis_commit::Header, keep: impl Fn(Tid, &str) -> bool) -> Vec<u8> {
     let mut b = CommitBlob::decode(bytes).unwrap();
@@ -36,7 +36,7 @@ fn carrierless(writes: Vec<Mutate>) -> (LocalPeer, Tid, Vec<osis_engine::local_p
 type Mutate = Box<dyn Fn(&mut Mutation, Tid)>;
 
 /// A commit writing `GONE` (under retention `r`, when given) and, when `reg`, `REG`.
-fn mixed(gone: &'static str, reg: Option<&'static str>, r: Option<Retention>) -> Mutate {
+fn mixed(gone: &'static str, reg: Option<&'static str>, r: Option<PurgeBy>) -> Mutate {
     Box::new(move |m, t| {
         if let Some(r) = r {
             m.retention(t, &GONE, r).unwrap();
@@ -49,8 +49,8 @@ fn mixed(gone: &'static str, reg: Option<&'static str>, r: Option<Retention>) ->
 }
 
 /// Purgeable by any writer (`GONE` is purged on replace by `test_setting`).
-fn by_writer() -> Option<Retention> {
-    Some(Retention { by: PurgeBy::Writer })
+fn by_writer() -> Option<PurgeBy> {
+    Some(PurgeBy::Writer)
 }
 
 fn reg_only(p: &osis_engine::local_peer::Package) -> Vec<u8> {

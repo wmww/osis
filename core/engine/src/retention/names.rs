@@ -95,7 +95,7 @@ pub(crate) fn note(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         if tx.core.ix.snapshots.get(&k).is_none_or(|v| v.is_empty()) {
             continue;
         }
-        let n = Name { ts: h.ts, src: src.clone(), purge_author, by: a.retention.by, expires: h.expires };
+        let n = Name { ts: h.ts, src: src.clone(), purge_author, by: a.retention, expires: h.expires };
         let row = n.encode();
         tx.in_class(a.ak.ephemeral(), |tx| Ok(tx.txn.put_local(&key(&a.tid, &a.ak, id), &row, Shred::No)?))?;
         tx.core.ix.forgotten_names.insert(k.clone(), *id, n);

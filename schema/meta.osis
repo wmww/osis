@@ -85,12 +85,10 @@ type case_def = struct {
 // ---- Aspects ----
 
 /// Who may purge the aspect's values (what history keeps is the thing's setting, `retention^.0`).
-type retention = struct {
-    by 0: enum {
-        admin 1,
-        author_or_admin 2,
-        writer 3,
-    },
+type purge_by = enum {
+    admin 1,
+    author_or_admin 2,
+    writer 3,
 };
 
 type flag = enum {
@@ -102,8 +100,8 @@ type flag = enum {
 
 type aspect_def = struct {
     type 0: type_expr,
-    /// The default retention of writes.
-    retention 1: retention,
+    /// Who may purge its writes by default.
+    retention 1: purge_by,
     /// Default expiry, after the write.
     expires 2: option<duration>,
     flags 3: set<flag>,

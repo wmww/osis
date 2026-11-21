@@ -90,9 +90,9 @@ impl Header {
             }
             if let Some(f) = fixed_retention(ak) {
                 ord(a.retention == f, "retention of a fixed-retention aspect")?;
-            } else if kind == Kind::ContentSnapshot && a.retention.by != PurgeBy::Writer {
+            } else if kind == Kind::ContentSnapshot && a.retention != PurgeBy::Writer {
                 return Err(Error::Invalid("compaction-snapshot delta not purgeable by writer"));
-            } else if ak == CREATED && a.retention.by != PurgeBy::Admin {
+            } else if ak == CREATED && a.retention != PurgeBy::Admin {
                 // only an admin destroys a thing (spec/commits.md §5 Destruction)
                 return Err(Error::Invalid("created.0 not purgeable by admin"));
             }

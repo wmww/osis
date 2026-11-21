@@ -16,7 +16,7 @@ use osis_blob::{BlobWriter, Framing};
 use osis_perm::At;
 use osis_perm::graph::Need;
 use osis_schema::core_types::{self as ct, CREATED, is_role_class};
-use osis_schema::{RawKey, Retention, Schema};
+use osis_schema::{RawKey, PurgeBy, Schema};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ use std::sync::Arc;
 pub(crate) struct AspectMut {
     pub ops: Vec<PathOp>,
     pub schema: Option<Arc<Schema>>,
-    pub retention: Option<Retention>,
+    pub retention: Option<PurgeBy>,
     pub expires: Option<u64>,
     /// The key's default expiry (ms after the write): ephemeral writes fill it themselves.
     pub default_expiry: Option<u64>,
@@ -174,7 +174,7 @@ impl Mutation {
     }
 
     /// Retention for this aspect's delta, instead of the schema default (spec/commits.md §5).
-    pub fn retention<K: RawKey>(&mut self, tid: Tid, key: &K, r: Retention) -> Result<&mut Self> {
+    pub fn retention<K: RawKey>(&mut self, tid: Tid, key: &K, r: PurgeBy) -> Result<&mut Self> {
         self.entry(tid, key)?.retention = Some(r);
         Ok(self)
     }
@@ -758,7 +758,7 @@ pub(crate) struct Resolved {
     pub lo: u64,
     pub hi: u64,
     pub schema: Option<Arc<Schema>>,
-    pub retention: Option<Retention>,
+    pub retention: Option<PurgeBy>,
     pub expires: Option<u64>,
     /// The fire this delta replaces (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
@@ -812,7 +812,7 @@ pub(crate) fn draw_blind(rng: &mut dyn osis_crypto::CryptoRngCore) -> [u8; 16] {
 /// schema's defaults, the untyped default. A replace of a fire the setting makes `final` is
 /// refused.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, ak: &Ak, schema: Option<&Schema>, replaces: bool, r: Option<Retention>, mut e: Option<u64>) -> Result<(Retention, Option<u64>)> {
+pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, ak: &Ak, schema: Option<&Schema>, replaces: bool, r: Option<PurgeBy>, mut e: Option<u64>) -> Result<(PurgeBy, Option<u64>)> {
     let defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     // a hostile test writer writes what it is told
     if kind == Kind::Content && !core.skip_writer_rules && !ak.ephemeral() && osis_commit::retention::fixed_retention(ak.as_str()).is_none()
@@ -854,7 +854,7 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, tid: &Tid, a
 /// retention calls for, of the class of `memory` (a memory commit's blobs are held in memory,
 /// spec/wire.md §5). `published`: [`super::secrets::published_keys`] of the commit's things;
 /// `keys`: the commit's [`super::secrets::KeyCache`].
-pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, keys: &super::secrets::KeyCache, tid: &Tid, retention: &Retention) -> Result<Framing> {
+pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, keys: &super::secrets::KeyCache, tid: &Tid, retention: &PurgeBy) -> Result<Framing> {
     // a role is of use once its delete keys are here (spec/crypto.md §7): until then this node
     // writes nothing on the thing, whatever the delta's retention (`secrets::usable_role`)
     if !super::secrets::holds_listed_keys(core, &plan.creates, published, keys, tid) {
@@ -880,7 +880,7 @@ fn place_requests(aspects: &mut Vec<((Tid, Ak), AspectMut)>, expires: Option<u64
 /// §6), or `Clash` naming what cannot share a commit: different expiries.
 /// `purge.0` takes no part in the expiry: in a commit that expires it is left out (`place_requests`).
 /// `way`: what the caller can do about it.
-fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], way: &str) -> Result<Option<u64>> {
+fn one_commit(entries: &[(Tid, &Ak, &PurgeBy, Option<u64>)], way: &str) -> Result<Option<u64>> {
     let placing = |ak: &Ak| ak.as_str() == osis_commit::retention::PURGE;
     let name = |t: &Tid, ak: &Ak, e: Option<u64>| match e {
         Some(e) => format!("{t} {ak} (expires at {e})"),
@@ -907,7 +907,7 @@ pub(crate) fn build_one(tx: &mut Tx<'_>, mut plan: CommitPlan, mut deltas: Vec<R
         let (_, e) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, &d.tid, &d.ak, None, d.replaces.is_some(), Some(r), d.expires)?;
         settled.push((r, e));
     }
-    let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = deltas.iter().zip(&settled).map(|(d, (r, e))| (d.tid, &d.ak, r, *e)).collect();
+    let entries: Vec<(Tid, &Ak, &PurgeBy, Option<u64>)> = deltas.iter().zip(&settled).map(|(d, (r, e))| (d.tid, &d.ak, r, *e)).collect();
     plan.expires = one_commit(&entries, "An undo is one commit, so this cannot be undone while both stand")?;
     plan.restores = true;
     for (d, (r, e)) in deltas.iter_mut().zip(settled) {
@@ -1345,7 +1345,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         (am.retention, am.expires) = (Some(r), e);
         aspects.push(((tid, ak), am));
     }
-    let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.retention.as_ref()?, am.expires))).collect();
+    let entries: Vec<(Tid, &Ak, &PurgeBy, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.retention.as_ref()?, am.expires))).collect();
     let expires = one_commit(&entries, "Write them as separate commits")?;
     place_requests(&mut aspects, expires);
     // role commits use commit form: a later commit by the same node can never void them by

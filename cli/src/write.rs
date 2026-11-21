@@ -82,23 +82,12 @@ fn commit_expiry(ctx: &Ctx<'_>, w: &mut osis::Write<'_>, did: &mut Did, e: Optio
     Ok(Some(at))
 }
 
-fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, DynamicAspectKey>, f: &WriteFlags, key: &DynamicAspectKey) -> anyhow::Result<AspectWrite<'w, 'd, DynamicAspectKey>> {
-    if let Some(r) = &f.retention {
-        a = a.retention(retention(r, key.default_retention())?);
+fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, DynamicAspectKey>, f: &WriteFlags) -> anyhow::Result<AspectWrite<'w, 'd, DynamicAspectKey>> {
+    if let Some(v) = &f.retention {
+        let by = [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer].into_iter().find(|p| p.name() == v).ok_or_else(|| usage(format!("--retention: one of admin, author_or_admin, writer (got {v:?})")))?;
+        a = a.retention(Retention { by });
     }
     Ok(a)
-}
-
-/// `by=NAME` over the key's default (what history keeps is the thing's setting, `retention^.0`).
-pub fn retention(s: &str, mut r: Retention) -> anyhow::Result<Retention> {
-    for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-        let (k, v) = part.split_once('=').ok_or_else(|| usage(format!("bad retention item {part:?}")))?;
-        match k {
-            "by" => r.by = [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer].into_iter().find(|p| p.name() == v).ok_or_else(|| usage(format!("by: one of admin, author_or_admin, writer (got {v:?})")))?,
-            _ => return Err(usage(format!("unknown retention item {k:?}"))),
-        }
-    }
-    Ok(r)
 }
 
 fn range(s: &str) -> anyhow::Result<Range<usize>> {
@@ -153,7 +142,7 @@ fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, overwrite: bool)
             [p] => path(ctx, t, &key, p, true)?,
             _ => return Err(usage("--stream takes [PATH] and the value on stdin")),
         };
-        with_flags(w.at(t, key.clone()), &a.w, &key)?.path(p).set_stream(&mut *ctx.stdin)?;
+        with_flags(w.at(t, key.clone()), &a.w)?.path(p).set_stream(&mut *ctx.stdin)?;
         return Ok(());
     }
     let (p, val) = match a.rest.as_slice() {
@@ -163,7 +152,7 @@ fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, overwrite: bool)
     };
     let pt = type_at(&key, &p);
     let v = ctx.value(val, pt.as_ref())?;
-    let mut aw = with_flags(w.at(t, key.clone()), &a.w, &key)?;
+    let mut aw = with_flags(w.at(t, key.clone()), &a.w)?;
     let mut pw = aw.path(p);
     if overwrite { pw.overwrite(&v)? } else { pw.set(&v)? }
     Ok(())
@@ -173,7 +162,7 @@ fn fire(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &FireArgs) -> anyhow::Res
     let t = ctx.tid(&a.t)?;
     let key = ctx.aspect_key(&a.ak)?;
     let v = ctx.value(&a.value, key.value_type().map(|t| t.get()).as_ref())?;
-    let mut at = with_flags(w.at(t, key.clone()), &a.w, &key)?;
+    let mut at = with_flags(w.at(t, key.clone()), &a.w)?;
     match &a.replaces {
         Some(c) => at.replace(crate::cmd::parse_id(c)?, &v)?,
         None => at.fire(&v)?,
@@ -200,7 +189,7 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
     let n = |k: usize| -> anyhow::Result<()> {
         if args.len() == k { Ok(()) } else { Err(usage(format!("{} takes {k} argument(s)", a.op))) }
     };
-    let mut aw = with_flags(w.at(t, key.clone()), &a.w, &key)?;
+    let mut aw = with_flags(w.at(t, key.clone()), &a.w)?;
     let mut pw = aw.path(p);
     match a.op.as_str() {
         "move" => {

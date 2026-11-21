@@ -18,7 +18,7 @@ use crate::commit_id::CommitId;
 use osis_engine::Mutation;
 use osis_schema::{AspectKey, SignalKey, ValueKey};
 use osis_schema::core_types::is_role_class;
-use osis_schema::{RawKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
+use osis_schema::{RawKey, Codec, Path, PathError, PurgeBy, Schema, Step, type_at, validate_write};
 use crate::commits::Commit;
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -61,7 +61,7 @@ pub(crate) enum WriteOp {
     /// A fire of a signal with `v`, replacing fire `replaces`.
     Fire { tid: Tid, key: u32, v: Value, replaces: Option<osis_base::CommitId> },
     /// The aspect's delta in this write has retention `r`.
-    Retention { tid: Tid, key: u32, r: Retention },
+    Retention { tid: Tid, key: u32, r: PurgeBy },
     /// Purges the aspect's history, removing a value aspect.
     Purge { tid: Tid, key: u32 },
     /// Purges one commit's deltas on the aspect.
@@ -585,7 +585,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     /// How this write's history is held, instead of as the key says; checked at commit (`Invalid`).
     pub fn retention(mut self, r: crate::Retention) -> Self {
         match self.ix.clone() {
-            Ok(key) => self.push(WriteOp::Retention { tid: self.tid, key, r: r.into() }),
+            Ok(key) => self.push(WriteOp::Retention { tid: self.tid, key, r: r.by }),
             Err(e) => self.refuse(e),
         }
         self

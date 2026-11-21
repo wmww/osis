@@ -8,7 +8,7 @@ use osis_engine::engine::listing::{CommitFrom, PartBody};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::{Event, Mutation};
 use osis_schema::core_types::{self as ct};
-use osis_schema::{History, Retention};
+use osis_schema::History;
 use std::collections::{BTreeMap, BTreeSet};
 
 const HOUR: u64 = 3_600_000;
@@ -18,8 +18,8 @@ fn log() -> Ak {
 }
 
 /// Purgeable by its author or admins (what history keeps is the thing's setting).
-fn purgeable() -> Retention {
-    Retention { by: PurgeBy::AuthorOrAdmin }
+fn purgeable() -> PurgeBy {
+    PurgeBy::AuthorOrAdmin
 }
 
 /// `n` peers, a thing `d` of peer 0's every other peer writes: built once per `n`
@@ -53,14 +53,14 @@ fn setup() -> (LocalPeer, Tid, Vec<Tid>) {
     net_with(2)
 }
 
-fn fire(lp: &mut LocalPeer, i: usize, d: Tid, r: Retention, v: &str) -> CommitId {
+fn fire(lp: &mut LocalPeer, i: usize, d: Tid, r: PurgeBy, v: &str) -> CommitId {
     let mut m = Mutation::new();
     m.retention(d, &log(), r).unwrap();
     m.set(d, &log(), &s(v)).unwrap();
     lp.peers[i].commit(m).unwrap().unwrap()
 }
 
-fn edit(lp: &mut LocalPeer, i: usize, d: Tid, r: Retention, v: &str, of: CommitId) -> CommitId {
+fn edit(lp: &mut LocalPeer, i: usize, d: Tid, r: PurgeBy, v: &str, of: CommitId) -> CommitId {
     let mut m = Mutation::new();
     m.retention(d, &log(), r).unwrap();
     m.set(d, &log(), &s(v)).unwrap();

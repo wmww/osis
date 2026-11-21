@@ -2226,7 +2226,7 @@ fn a_sources_class_follows_what_the_peer_holds_spec_sync_opens_4() {
     // node 2's purge of its own write deletes it at node 1, node 0 away
     let c = w.write(2, |e| {
         let mut m = Mutation::new();
-        m.set(t, &value_ak(), &osis_base::Value::Str("by 2".into())).unwrap().retention(t, &value_ak(), osis_schema::Retention { by: osis_base::PurgeBy::AuthorOrAdmin }).unwrap();
+        m.set(t, &value_ak(), &osis_base::Value::Str("by 2".into())).unwrap().retention(t, &value_ak(), osis_base::PurgeBy::AuthorOrAdmin).unwrap();
         e.commit(m).unwrap().unwrap()
     });
     w.run();

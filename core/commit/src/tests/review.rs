@@ -8,7 +8,7 @@ use crate::*;
 use osis_base::{Ak, CommitId, Link};
 use std::mem::size_of;
 use osis_crypto::{link_hash, link_tree_hash};
-use osis_schema::{AspectDefaults, PurgeBy, Retention};
+use osis_schema::{AspectDefaults, PurgeBy};
 
 // spec/wire.md §6, through `read_list` (tree.rs `reader_bounds_spec_wire_6` has the reader's
 // own bounds): a short chunk repeated (so not final) is bad input, one of CHUNK_MIN is not;
@@ -45,7 +45,7 @@ fn list_reader_bounds() {
 fn created_may_expire_spec_commits_6() {
     let mut h = sample_header();
     h.aspects[0].ak = Ak::new("created.0").unwrap();
-    h.aspects[0].retention = Retention { by: PurgeBy::Admin };
+    h.aspects[0].retention = PurgeBy::Admin;
     h.aspects[0].keys = vec![0];
     h.keys.truncate(1);
     h.expires = Some(h.ts.wall_ms().0 + 1);
@@ -76,7 +76,7 @@ fn prefix_groups_by_key_set() {
     b.aspects[0].tid = t(3);
     b.aspects[1].tid = t(3);
     b.aspects[1].ak = Ak::new("app:body.0").unwrap();
-    b.aspects[0].retention = Retention { by: PurgeBy::Writer };
+    b.aspects[0].retention = PurgeBy::Writer;
     let c = b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit;
     let g = prefix_groups(&c.header, [0, 1]).unwrap();
     assert_eq!(g.len(), 2);
@@ -113,7 +113,7 @@ fn delete_levels_strict() {
 // is refused rather than clamped.
 #[test]
 fn expiry_range() {
-    let d = AspectDefaults { retention: Retention::default(), expires: Some(u64::MAX - 5) };
+    let d = AspectDefaults { retention: PurgeBy::default(), expires: Some(u64::MAX - 5) };
     assert!(retention::write_expires("app:x.0", ts(10), Some(&d), None).is_err());
     assert!(retention::write_expires("app:x.0", ts(10), None, Some(FOREVER + 1)).is_err());
     let mut h = sample_header();

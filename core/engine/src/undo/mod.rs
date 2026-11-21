@@ -656,7 +656,7 @@ mod tests {
         let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:t.0", &TS);
         let x = Ak::new(if shape == "map" { "x:m.0" } else { "k:t.0" }).unwrap();
         let history = if shape == "whole" { osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None } } else { osis_schema::History::Keep { until: None, after: Some(86_400_000) } };
-        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
+        let keep = osis_schema::PurgeBy::Writer;
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let a = lp.peers[0].engine.me();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
@@ -726,14 +726,14 @@ mod tests {
         Value::Map(p.iter().map(|(k, v)| (Value::Str((*k).into()), Value::Int(*v))).collect())
     }
 
-    fn put(lp: &mut LocalPeer, who: usize, t: osis_base::Tid, x: &Ak, k: &str, v: i64, keep: osis_schema::Retention) -> osis_base::CommitId {
+    fn put(lp: &mut LocalPeer, who: usize, t: osis_base::Tid, x: &Ak, k: &str, v: i64, keep: osis_schema::PurgeBy) -> osis_base::CommitId {
         lp.advance(10);
         let mut m = Mutation::new();
         m.op(t, x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str(k.into()))], op: Op::Put(Value::Int(v)) }).unwrap().retention(t, x, keep).unwrap();
         lp.peers[who].commit(m).unwrap().unwrap()
     }
 
-    fn replace(lp: &mut LocalPeer, who: usize, t: osis_base::Tid, x: &Ak, v: Value, keep: osis_schema::Retention, expires: Option<WallMs>) -> osis_base::CommitId {
+    fn replace(lp: &mut LocalPeer, who: usize, t: osis_base::Tid, x: &Ak, v: Value, keep: osis_schema::PurgeBy, expires: Option<WallMs>) -> osis_base::CommitId {
         lp.advance(10);
         let mut m = Mutation::new();
         m.op(t, x, PathOp { path: vec![], op: Op::Replace(v) }).unwrap().retention(t, x, keep).unwrap();
@@ -752,7 +752,7 @@ mod tests {
         static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; purgeable_by(author, admin) aspect k:s.0: struct { m 0: map<string, int>, l 1: list<int> };\n");
         let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:s.0", &TS);
         let x = Ak::new("k:s.0").unwrap();
-        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
+        let keep = osis_schema::PurgeBy::Writer;
         let (m_k, l) = (|| vec![osis_crdt::PathSeg::Field(0), osis_crdt::PathSeg::Key(Value::Str("k".into()))], || vec![osis_crdt::PathSeg::Field(1)]);
         let k = || Value::Str("k".into());
         for removed_k in [false, true] {
@@ -861,7 +861,7 @@ mod tests {
     }
 
     // A and C, a thing of A's that C may write, map aspect `x`, and a keep-history retention.
-    fn two() -> (LocalPeer, osis_base::Tid, Ak, osis_schema::Retention) {
+    fn two() -> (LocalPeer, osis_base::Tid, Ak, osis_schema::PurgeBy) {
         let (lp, (t, x, keep)) = LocalPeer::cached("undo::tests::two", || {
             let (lp, t, x, keep) = two_build();
             (lp, (t, x, keep))
@@ -869,11 +869,11 @@ mod tests {
         (lp, t, x, keep)
     }
 
-    fn two_build() -> (LocalPeer, osis_base::Tid, Ak, osis_schema::Retention) {
+    fn two_build() -> (LocalPeer, osis_base::Tid, Ak, osis_schema::PurgeBy) {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
-        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
+        let keep = osis_schema::PurgeBy::Writer;
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
         lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None }).unwrap();
@@ -890,7 +890,7 @@ mod tests {
     }
 
     // A removes entry `k` keeping history and undoes the removal.
-    fn remove_k(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, keep: osis_schema::Retention) -> crate::error::Result<Option<osis_base::CommitId>> {
+    fn remove_k(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, keep: osis_schema::PurgeBy) -> crate::error::Result<Option<osis_base::CommitId>> {
         lp.advance(10);
         let mut m = Mutation::new();
         m.op(t, x, PathOp { path: Vec::new(), op: Op::Remove(Value::Str("k".into())) }).unwrap().retention(t, x, keep).unwrap();
@@ -902,7 +902,7 @@ mod tests {
     // millisecond (`two`'s rules plus `x:n.0`), and that passes: the parts the removal replaced
     // are out of history, the removal live and kept, so only a kept part superseding them lets
     // its undo restore (spec/commits.md §7). The undo.
-    fn remove_k_then_keep(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, keep: osis_schema::Retention) -> crate::error::Result<Option<osis_base::CommitId>> {
+    fn remove_k_then_keep(lp: &mut LocalPeer, t: osis_base::Tid, x: &Ak, keep: osis_schema::PurgeBy) -> crate::error::Result<Option<osis_base::CommitId>> {
         lp.advance(10);
         let mut m = Mutation::new();
         m.op(t, x, PathOp { path: Vec::new(), op: Op::Remove(Value::Str("k".into())) }).unwrap().retention(t, x, keep).unwrap();
@@ -967,7 +967,7 @@ mod tests {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let a = lp.peers[0].engine.me();
-        let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
+        let keep = osis_schema::PurgeBy::Writer;
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
         let r = lp.peers[1].engine.me();

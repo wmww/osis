@@ -5,12 +5,12 @@ use crate::tests::build::{key, rng};
 use crate::tests::verify::{TestSecrets, register_delta};
 use crate::*;
 use osis_base::{Ak, BlobId, CommitId, Link, Tid};
-use osis_schema::{PurgeBy, Retention};
+use osis_schema::{PurgeBy};
 use osis_crypto::Secret32;
 use proptest::prelude::*;
 
-fn retention() -> impl Strategy<Value = Retention> {
-    (1u64..4).prop_map(|b| Retention { by: PurgeBy::from_id(b).unwrap() })
+fn retention() -> impl Strategy<Value = PurgeBy> {
+    (1u64..4).prop_map(|b| PurgeBy::from_id(b).unwrap())
 }
 
 fn tid() -> impl Strategy<Value = Tid> {
@@ -103,7 +103,7 @@ fn commit(classes: &[(u8, u8)], exp: bool) -> CommitBlob {
     for (i, (thing, by)) in classes.iter().enumerate() {
         let by = (*by).clamp(1, 3);
         let mut a = AspectWrite::new(t(10 + thing), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, register_delta(t(1), at, 1, &format!("{i}")));
-        a.retention = Retention { by: PurgeBy::from_id(u64::from(by)).unwrap() };
+        a.retention = PurgeBy::from_id(u64::from(by)).unwrap();
         b.aspects.push(a);
     }
     b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit

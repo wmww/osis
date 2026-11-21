@@ -11,7 +11,7 @@ use std::sync::Arc;
 use osis_crdt::DeltaKind;
 use osis_base::SIGNING_KEY_ED25519;
 use osis_crypto::{Domain, KemPublicKey, Secret32, Signature, VerifyingKey};
-use osis_schema::{PurgeBy, Retention};
+use osis_schema::{PurgeBy};
 
 /// Decoder limits of commit structures (spec/wire.md §12).
 pub(crate) const LIMITS: Limits = Limits::new(MAX_OBJECT_DEPTH, MAX_BLOB);
@@ -123,7 +123,7 @@ pub struct AspectEntry {
     /// Counter range `[lo, hi)`; `0, 0` for kinds without own writes.
     pub lo: u64,
     pub hi: u64,
-    pub retention: Retention,
+    pub retention: PurgeBy,
     /// Ascending indices into the header's delete keys.
     pub keys: Vec<usize>,
     /// The delta hash of the aspect's one delta.
@@ -503,7 +503,7 @@ fn put_aspect(out: &mut Vec<u8>, a: &AspectEntry) {
     put_text(out, a.ak.as_str());
     put_uint(out, a.lo);
     put_uint(out, a.hi);
-    put_uint(out, a.retention.by as u64);
+    put_uint(out, a.retention as u64);
     put_idxs(out, &a.keys);
     put_bytes(out, &a.hash);
     // `[]`, `[id]`, or `[id, floor]` with the floor above 0 (spec/wire.md §4)
@@ -802,9 +802,9 @@ fn read_idxs(r: &mut Reader<'_>) -> Result<Vec<usize>, Error> {
     read_items(r, 1, |r| usize::try_from(r.uint()?).map_err(|_| Error::Malformed("index too large")))
 }
 
-fn read_retention(r: &mut Reader<'_>) -> Result<Retention, Error> {
+fn read_retention(r: &mut Reader<'_>) -> Result<PurgeBy, Error> {
     let by = PurgeBy::from_id(r.uint()?).ok_or(Error::Malformed("purgeable-by class"))?;
-    Ok(Retention { by })
+    Ok(by)
 }
 
 fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {

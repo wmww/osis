@@ -6,14 +6,14 @@ use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER, ROLE_KEEP_MS
 use osis_base::Ts;
 use osis_base::Ak;
 use osis_schema::core_types::{is_addenda, is_role_class, RetentionEntry, RetentionSetting};
-use osis_schema::{AspectDefaults, History, PurgeBy, Retention};
+use osis_schema::{AspectDefaults, History, PurgeBy};
 
 /// The fixed retention of role-class deltas: `admin` (each node keeps a replaced one
 /// `ROLE_KEEP`, `role_kept`).
-pub const ROLE_RETENTION: Retention = Retention { by: PurgeBy::Admin };
+pub const ROLE_RETENTION: PurgeBy = PurgeBy::Admin;
 
 /// The retention of every delta of an ephemeral commit: `writer` (spec/commits.md §2).
-pub const EPHEMERAL_RETENTION: Retention = Retention { by: PurgeBy::Writer };
+pub const EPHEMERAL_RETENTION: PurgeBy = PurgeBy::Writer;
 
 /// The AK of the creation record.
 pub const CREATED: &str = "created.0";
@@ -38,10 +38,10 @@ pub fn role_kept(ak: &str) -> bool {
 
 /// Fixed retention of an AK, if it has one (role-class aspects, `addenda.0`, `purge.0`): no
 /// setting governs it.
-pub fn fixed_retention(ak: &str) -> Option<Retention> {
+pub fn fixed_retention(ak: &str) -> Option<PurgeBy> {
     if destroying_request(ak) {
         // a commit carrying a request carries no `expires` from a setting
-        Some(Retention { by: PurgeBy::AuthorOrAdmin })
+        Some(PurgeBy::AuthorOrAdmin)
     } else if role_kept(ak) {
         // an addendum is kept like a role commit: the judgment reads its delta, never a snapshot
         Some(ROLE_RETENTION)
@@ -53,7 +53,7 @@ pub fn fixed_retention(ak: &str) -> Option<Retention> {
 /// Retention of a write: the fixed one, else the commit's override, else the schema's default
 /// for the AK, else the untyped default (`admin`). An override that disagrees with a
 /// fixed retention is refused.
-pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<Retention>) -> Result<Retention, Error> {
+pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<PurgeBy>) -> Result<PurgeBy, Error> {
     match (fixed_retention(ak), set) {
         (Some(f), Some(s)) if f != s => Err(Error::Build("retention of this aspect is fixed")),
         (Some(f), _) => Ok(f),
@@ -75,8 +75,8 @@ pub fn entry_fits(e: &RetentionEntry) -> bool {
 
 /// Retention of a compaction-snapshot delta (spec/commits.md §5): an aspect with fixed retention
 /// keeps it; any other is `writer` (its history is the thing's setting).
-pub fn snapshot_retention(ak: &str) -> Retention {
-    fixed_retention(ak).unwrap_or(Retention { by: PurgeBy::Writer })
+pub fn snapshot_retention(ak: &str) -> PurgeBy {
+    fixed_retention(ak).unwrap_or(PurgeBy::Writer)
 }
 
 /// Expiry of a write: an explicit T, else the schema's default duration from the write's `ts`.
@@ -103,8 +103,8 @@ pub fn purge_keep_until(h: &Header) -> Option<u64> {
 }
 
 /// Delete levels a delta of retention `r` calls for (spec/crypto.md §7).
-pub(crate) fn delete_levels(r: &Retention) -> &'static [u8] {
-    match r.by {
+pub(crate) fn delete_levels(r: &PurgeBy) -> &'static [u8] {
+    match r {
         PurgeBy::Admin => &[DELETE_ADMIN],
         PurgeBy::AuthorOrAdmin => &[DELETE_ADMIN, DELETE_AUTHOR],
         PurgeBy::Writer => &[DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER],

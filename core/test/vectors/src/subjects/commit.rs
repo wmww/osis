@@ -8,7 +8,7 @@ use osis_commit::*;
 use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Delta, Frontiers, Snapshot, Source, Writer, create, encode_delta, encode_snapshot};
 use osis_crypto::{Secret32, SigningSecret};
-use osis_schema::{PurgeBy, Retention};
+use osis_schema::{PurgeBy};
 
 const SPEC: &str = "spec/wire.md §4";
 
@@ -96,7 +96,7 @@ fn content() -> CommitBlob {
     let mut b = CommitBuilder::new(Kind::Content, at, SIGNER, osis_commit::Path::through(LISTED), SESSION);
     let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("hello".into()), 1));
     // two delete keys (admin, author), so their order is a case
-    a.retention = Retention { by: PurgeBy::AuthorOrAdmin };
+    a.retention = PurgeBy::AuthorOrAdmin;
     b.aspects.push(a);
     built(b)
 }
@@ -149,7 +149,7 @@ fn ephemeral(class: osis_commit::EphClass) -> CommitBlob {
     let bytes = encode_snapshot(&s, &writer_ctx(Form::Commit, Kind::ContentSnapshot, at, SIGNER, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, SIGNER, osis_commit::Path::through(LISTED), Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:state.0").unwrap(), 0, 0, bytes);
-    a.retention = Retention { by: PurgeBy::Writer };
+    a.retention = PurgeBy::Writer;
     b.aspects.push(a);
     b.ephemeral = Some(class);
     built(b)
@@ -162,7 +162,7 @@ fn session_commit() -> CommitBlob {
     let bytes = delta(SESSION, Kind::Content, at, 1, Value::Str("typing".into()), 11);
     let mut b = CommitBuilder::new(Kind::Content, at, SIGNER, osis_commit::Path::through(LISTED), SESSION);
     let mut a = AspectWrite::new(THING, Ak::new("app:state.0").unwrap(), 1, 2, bytes);
-    a.retention = Retention { by: PurgeBy::Writer };
+    a.retention = PurgeBy::Writer;
     b.aspects.push(a);
     b.ephemeral = Some(osis_commit::EphClass::Plain);
     built(b)
@@ -258,7 +258,7 @@ fn more_accepted() -> Vec<Record> {
     let mut b = CommitBuilder::new(Kind::Content, at, SIGNER, osis_commit::Path::through(LISTED), Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(Form::Commit, Kind::Content, at, 1, Value::Str("typed".into()), 6));
     b.expires = Some(at.wall_ms().0 + 86_400_000);
-    a.retention = Retention { by: PurgeBy::Writer };
+    a.retention = PurgeBy::Writer;
     b.aspects.push(a);
     b.undoes = Some(CommitId([0x2c; 32]));
     let c = built(b);
@@ -278,7 +278,7 @@ fn more_accepted() -> Vec<Record> {
     let at = ts(1_700_000_005_500);
     let mut b = CommitBuilder::new(Kind::Content, at, SIGNER, osis_commit::Path::through(LISTED), SESSION);
     let mut a = AspectWrite::new(THING, Ak::new("app:msg~0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("edited".into()), 9));
-    a.retention = Retention { by: PurgeBy::AuthorOrAdmin };
+    a.retention = PurgeBy::AuthorOrAdmin;
     a.replaces = Some(CommitId([0x2f; 32]));
     b.aspects.push(a);
     b.expires = Some(at.wall_ms().0 + 86_400_000);
@@ -299,7 +299,7 @@ fn more_accepted() -> Vec<Record> {
     for i in 0..140u32 {
         let mut a = AspectWrite::new(THING, Ak::new(format!("app:{long}{i:03}.0")).unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Int(i64::from(i)), 10));
         // the commit lists a level-2 key, which its list blobs commit to alone
-        a.retention = Retention { by: PurgeBy::AuthorOrAdmin };
+        a.retention = PurgeBy::AuthorOrAdmin;
         b.aspects.push(a);
     }
     let key = SigningSecret::from_seed(&s32(0x35));
@@ -476,7 +476,7 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     out.push(reject("ephemeral commit with a purge request", "spec/commits.md §2", &x, "ephemeral"));
     let s = session_commit().header;
     let mut x = s.clone();
-    x.aspects[0].retention.by = PurgeBy::Admin;
+    x.aspects[0].retention = PurgeBy::Admin;
     x.aspects[0].keys.truncate(1);
     x.keys.truncate(1);
     out.push(reject("session-form ephemeral commit not purgeable by writer", "spec/commits.md §2", &x, "ephemeral"));

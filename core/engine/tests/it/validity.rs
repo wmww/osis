@@ -3087,12 +3087,12 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
 /// A content commit signed by peer `by`'s key carrying only `created.0` of `rec`'s thing at `ts`,
 /// its delta `ops` run from counter `lo` (the record's view, else untyped), purgeable by `admin`.
 fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool) -> Result<Vec<u8>, String> {
-    forge_minting(lp, by, rec, ts, lo, ops, typed, osis_schema::Retention::default(), rec.expires())
+    forge_minting(lp, by, rec, ts, lo, ops, typed, osis_schema::PurgeBy::default(), rec.expires())
 }
 
 /// `forge_created` with retention `retention`, in a commit expiring at `expires`.
 #[allow(clippy::too_many_arguments)]
-fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool, retention: osis_schema::Retention, expires: Option<u64>) -> Result<Vec<u8>, String> {
+fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool, retention: osis_schema::PurgeBy, expires: Option<u64>) -> Result<Vec<u8>, String> {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{DeltaBuilder, Delta, Writer, encode_delta};
     let view = osis_schema::core_schema().view("created.0").unwrap();
@@ -3119,7 +3119,7 @@ fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
 fn reminting(lp: &mut LocalPeer, rec: &osis_base::CreationRecord, k: u64, lo: u64, by: osis_base::PurgeBy, expires: Option<u64>) -> Vec<u8> {
     use osis_crdt::{Op, PathOp};
     let ts = osis_base::Ts::make(WallMs(lp.peers[1].engine.now().0 + k), 0).unwrap();
-    forge_minting(lp, 1, rec, ts, lo, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], true, osis_schema::Retention { by }, expires).unwrap()
+    forge_minting(lp, 1, rec, ts, lo, &[PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) }], true, by, expires).unwrap()
 }
 
 /// Peer 0's purge of `x`'s creation.
@@ -4865,7 +4865,7 @@ fn a_purge_request_is_judged_alike_in_both_path_forms_spec_permissions_6() {
     let mut outcomes = Vec::new();
     for beside in [false, true] {
         let (mut lp, _, d, p) = two_paths_world();
-        let by = osis_schema::Retention { by: osis_base::PurgeBy::AuthorOrAdmin };
+        let by = osis_base::PurgeBy::AuthorOrAdmin;
         let mut m = Mutation::new();
         m.set(d, &REG, &s("his")).unwrap();
         m.retention(d, &REG, by).unwrap();

@@ -31,9 +31,9 @@ fn core_schema_parses_spec_data_model_9() {
     }
     assert_eq!(aks.len(), 21);
     let holders = &s.aspects["roles.0"];
-    assert_eq!(holders.retention.by, PurgeBy::Admin);
-    assert_eq!(s.aspects["created.0"].retention.by, PurgeBy::Admin);
-    assert_eq!(s.aspects["node.0"].retention, Retention::default());
+    assert_eq!(holders.retention, PurgeBy::Admin);
+    assert_eq!(s.aspects["created.0"].retention, PurgeBy::Admin);
+    assert_eq!(s.aspects["node.0"].retention, PurgeBy::default());
     assert!(s.aspects["aspects.0"].flags.contains(&Flag::Synthetic));
 }
 
@@ -50,11 +50,11 @@ fn example_schema_parses_items_spec_data_model_2() {
     assert_eq!(s.default_of(&task.fields[&4]), Some(Value::Enum(0, None)), "option defaults to none");
     assert_eq!(s.default_of(&task.fields[&1]), None);
     assert_eq!(s.aspects["note:last_opened.0"].expires, Some(30 * 86_400_000));
-    assert_eq!(s.aspects["note:pinned.0"].retention.by, PurgeBy::Writer);
+    assert_eq!(s.aspects["note:pinned.0"].retention, PurgeBy::Writer);
     assert!(s.aspects["note:body.0"].flags.is_empty());
     assert_eq!(s.aspects["note:body.0"].doc.as_deref(), Some("Markdown; not guaranteed valid."));
     assert!(s.aspects["note:typing+~0"].flags.is_empty());
-    assert_eq!(s.aspects["note:aliases.0"].retention, Retention { by: PurgeBy::AuthorOrAdmin });
+    assert_eq!(s.aspects["note:aliases.0"].retention, PurgeBy::AuthorOrAdmin);
     assert_eq!(s.aspects["note:cursor+^.0"].expires, Some(30_000));
     assert!(s.aspects["note:title.1"].succeeds.is_empty(), "a higher version succeeds the lower implicitly");
     assert_eq!(s.types["tagged"].params, vec!["T".to_string()]);
@@ -258,9 +258,9 @@ fn prefix_modifiers() {
     };
     assert_eq!(a("synthetic aspect x:a.0: int;").flags, [Flag::Synthetic].into());
     assert_eq!(a("guaranteed synthetic aspect x:a.0: int;").flags, [Flag::Synthetic, Flag::Guaranteed].into());
-    assert_eq!(a("aspect x:a.0: int;").retention.by, PurgeBy::Admin, "the default");
+    assert_eq!(a("aspect x:a.0: int;").retention, PurgeBy::Admin, "the default");
     for (by, want) in [("writer", PurgeBy::Writer), ("author, admin", PurgeBy::AuthorOrAdmin), ("admin, author", PurgeBy::AuthorOrAdmin)] {
-        assert_eq!(a(&format!("purgeable_by({by}) aspect x:a.0: int;")).retention.by, want, "{by}");
+        assert_eq!(a(&format!("purgeable_by({by}) aspect x:a.0: int;")).retention, want, "{by}");
     }
     assert_eq!(a("expires(250ms) aspect x:a.0: int;").expires, Some(250));
     // whitespace-insensitive: a long list on its own line
@@ -370,7 +370,7 @@ fn purge_classes_spec_commits_5() {
             _ => format!("revision 1; purgeable_by({}) aspect x:a.0: int;", by.name()),
         };
         let s = parse("t.osis", &src).unwrap();
-        assert_eq!(s.aspects["x:a.0"].retention.by, by);
+        assert_eq!(s.aspects["x:a.0"].retention, by);
         assert_eq!(PurgeBy::from_id(by as u64), Some(by));
         assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
     }

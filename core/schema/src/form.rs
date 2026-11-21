@@ -4,7 +4,7 @@
 
 use crate::codec::Codec;
 use crate::error::Error;
-use crate::schema::{AspectDef, Flag, Retention, Schema, TypeDef};
+use crate::schema::{AspectDef, Flag, Schema, TypeDef};
 use crate::statics::StaticSchema;
 use crate::typed::typed_read;
 use crate::types::{Case, EnumType, Field, StructType, Type};
@@ -70,8 +70,7 @@ impl Schema {
         let types = self.types.iter().map(|(n, d)| (n.to_value(), st(vec![d.params.to_value(), type_value(&d.body), d.doc.to_value()])));
         let aspects = self.aspects.iter().map(|(ak, a)| {
             let flags = Value::Set(a.flags.iter().map(|f| Value::Enum(*f as u64, None)).collect());
-            let retention = st(vec![a.retention.by.to_value()]);
-            (ak.to_value(), st(vec![type_value(&a.ty), retention, a.expires.to_value(), flags, a.succeeds.to_value(), a.doc.to_value()]))
+            (ak.to_value(), st(vec![type_value(&a.ty), a.retention.to_value(), a.expires.to_value(), flags, a.succeeds.to_value(), a.doc.to_value()]))
         });
         st(vec![self.revision.to_value(), Value::Map(types.collect()), Value::Map(aspects.collect()), self.doc.to_value()])
     }
@@ -100,8 +99,7 @@ impl Schema {
                     _ => Err(Error::Form("flag".into())),
                 })
                 .collect::<Result<_, _>>()?;
-            let retention = Retention { by: Fields::of(a.val(1)?)?.get(0)? };
-            let def = AspectDef { ty: read_type(a.val(0)?)?, retention, expires: a.get(2)?, flags, succeeds: a.get(4)?, doc: a.get(5)? };
+            let def = AspectDef { ty: read_type(a.val(0)?)?, retention: a.get(1)?, expires: a.get(2)?, flags, succeeds: a.get(4)?, doc: a.get(5)? };
             s.aspects.insert(ak, def);
         }
         s.doc = f.get(3)?;

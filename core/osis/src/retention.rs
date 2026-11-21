@@ -78,18 +78,6 @@ pub struct Retention {
 #[cfg(doctest)]
 pub struct RemovedChecks;
 
-impl From<osis_schema::Retention> for Retention {
-    fn from(r: osis_schema::Retention) -> Retention {
-        Retention { by: r.by }
-    }
-}
-
-impl From<Retention> for osis_schema::Retention {
-    fn from(r: Retention) -> osis_schema::Retention {
-        osis_schema::Retention { by: r.by }
-    }
-}
-
 /// What a thing keeps of one aspect's replaced content, and the expiry its writes get
 /// (`RetentionSetting`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -10,7 +10,7 @@ mod verify;
 use crate::*;
 use osis_base::{Ak, CommitId, Tid, Ts, Value, WallMs};
 use osis_crypto::{Secret32, Signature, SigningSecret};
-use osis_schema::{PurgeBy, Retention};
+use osis_schema::{PurgeBy};
 
 pub(crate) fn t(n: u8) -> Tid {
     Tid::from_bytes([n; 15])
@@ -42,7 +42,7 @@ pub(crate) fn sample_header() -> Header {
             ak: Ak::new("app:title.0").unwrap(),
             lo: 1,
             hi: 2,
-            retention: Retention { by: PurgeBy::AuthorOrAdmin },
+            retention: PurgeBy::AuthorOrAdmin,
             keys: vec![0, 1],
             hash: [9; 32],
             replaces: Some(CommitId([8; 32])),

@@ -6,7 +6,7 @@ use crate::Error;
 use osis_base::{Del, Tid};
 use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR};
 use osis_crypto::{Secret32, VerifyingKey};
-use osis_schema::Retention;
+use osis_schema::PurgeBy;
 
 /// What a writer supplies (osis-keys and the node implement it).
 pub trait Secrets {
@@ -23,7 +23,7 @@ pub trait Secrets {
 
 /// Delete keys of a delta on `tid` with retention `r`: one per level its retention calls for; a
 /// missing one is an error.
-pub fn delete_keys(s: &dyn Secrets, tid: &Tid, r: &Retention) -> Result<Vec<DeleteKey>, Error> {
+pub fn delete_keys(s: &dyn Secrets, tid: &Tid, r: &PurgeBy) -> Result<Vec<DeleteKey>, Error> {
     delete_levels(r)
         .iter()
         .map(|level| {

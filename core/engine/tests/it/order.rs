@@ -28,7 +28,7 @@ use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::Mutation;
 use osis_engine::local_peer::{LocalPeer, Package, Peer};
 use osis_perm::DemotionScope;
-use osis_schema::{History, Codec, PurgeBy, Retention};
+use osis_schema::{History, Codec, PurgeBy};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
@@ -244,8 +244,8 @@ fn keep_of(op: u8) -> Option<History> {
 }
 
 /// Who may purge `op`'s writes when not the default: any writer on the purge-on-replace aspects.
-fn by_of(op: u8) -> Option<Retention> {
-    matches!(op % OPS, 17..=20 | 31).then_some(Retention { by: PurgeBy::Writer })
+fn by_of(op: u8) -> Option<PurgeBy> {
+    matches!(op % OPS, 17..=20 | 31).then_some(PurgeBy::Writer)
 }
 
 /// The setting a thing the harness makes as its admin starts with (spec/commits.md §5 The
@@ -1322,14 +1322,14 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let a = aspect_of(op);
                 let mut m = Mutation::new();
                 write_op(&mut m, &mut lp.peers[by].engine, th(t), op, 0, v, true);
-                let writer = Retention { by: PurgeBy::Writer };
-                m.retention(th(t), &a, if fits { Retention::default() } else { writer }).unwrap();
+                let writer = PurgeBy::Writer;
+                m.retention(th(t), &a, if fits { PurgeBy::default() } else { writer }).unwrap();
                 // a commit with a second part, its retention its own, in the same class when `v` says;
                 // one expiry (spec/commits.md §6)
                 if v % 2 == 1 && a != aspect_of(0) {
                     let o = aspect_of(0);
                     write_op(&mut m, &mut lp.peers[by].engine, th(t), 0, 1, v, true);
-                    m.retention(th(t), &o, if v % 4 == 1 { if fits { Retention::default() } else { writer } } else { Retention { by: PurgeBy::Admin } }).unwrap();
+                    m.retention(th(t), &o, if v % 4 == 1 { if fits { PurgeBy::default() } else { writer } } else { PurgeBy::Admin }).unwrap();
                     if let Some(ms) = expiry_of(op, v) {
                         m.expires(th(t), &o, WallMs(lp.peers[by].engine.now().0 + ms)).unwrap();
                     }

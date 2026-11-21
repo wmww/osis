@@ -43,7 +43,7 @@ impl DynamicAspectKey {
 
     /// Who may purge a write through this key and how long it is held, unless it says otherwise (`AspectWrite::retention`).
     pub fn default_retention(&self) -> crate::Retention {
-        self.defaults().retention.into()
+        crate::Retention { by: self.defaults().retention }
     }
 }
 

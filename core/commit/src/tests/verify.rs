@@ -5,7 +5,7 @@ use crate::*;
 use osis_base::{Classified, CommitId, ErrorClass, Tid, Ts, Value};
 use osis_crdt::{AnyView, Delta, Interner, Writer, create, encode_delta};
 use osis_crypto::{DeleteSecret, Secret32, SigningSecret, VerifyingKey, delta_hash};
-use osis_schema::{PurgeBy, Retention};
+use osis_schema::{PurgeBy};
 
 pub(crate) struct TestSecrets {
     pub admin: bool,
@@ -45,11 +45,11 @@ pub(crate) fn register_delta(signer: Tid, at: Ts, lo: u64, v: &str) -> Vec<u8> {
 #[test]
 fn delete_levels_by_retention() {
     let s = TestSecrets { admin: true };
-    let lv = |by| delete_keys(&s, &t(3), &Retention { by }).unwrap().iter().map(|x| x.level).collect::<Vec<_>>();
+    let lv = |by| delete_keys(&s, &t(3), &by).unwrap().iter().map(|x| x.level).collect::<Vec<_>>();
     assert_eq!(lv(PurgeBy::Admin), vec![1]);
     assert_eq!(lv(PurgeBy::AuthorOrAdmin), vec![1, 2]);
     assert_eq!(lv(PurgeBy::Writer), vec![1, 2, 3]);
-    assert!(delete_keys(&TestSecrets { admin: false }, &t(3), &Retention::default()).is_err());
+    assert!(delete_keys(&TestSecrets { admin: false }, &t(3), &PurgeBy::default()).is_err());
 }
 
 /// A valid one-aspect content commit over a register delta, its blob and signer key.

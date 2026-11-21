@@ -261,7 +261,7 @@ fn write_as(lp: &mut LocalPeer, by: usize, actor: Tid, t: Tid, a: &str, v: i64) 
     let mut m = Mutation::new();
     m.set(t, &ak(a), &Value::Int(v)).unwrap();
     // the purge author's level-2 key is not this node's: purgeable by admins
-    m.retention(t, &ak(a), osis_schema::Retention { by: osis_schema::PurgeBy::Admin }).unwrap();
+    m.retention(t, &ak(a), osis_schema::PurgeBy::Admin).unwrap();
     m.act_as(actor);
     let id = lp.peers[by].commit(m).unwrap().unwrap();
     lp.advance(1000);

@@ -20,7 +20,7 @@
 
 use crate::error::ParseError;
 use crate::lex::{Tok, Token, lex};
-use crate::schema::{AspectDef, Flag, PurgeBy, Retention, Schema, TypeDef};
+use crate::schema::{AspectDef, Flag, PurgeBy, Schema, TypeDef};
 use crate::types::{Case, EnumType, Field, StructType, Type};
 use osis_base::{Ak, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -186,7 +186,7 @@ impl<'a> Parser<'a> {
                 }
                 Tok::Ident(k) if k == "revision" => return self.err_at(at, "duplicate revision"),
                 Tok::Ident(_) => {
-                    let mut def = AspectDef { ty: Type::Any, retention: Retention::default(), expires: None, flags: BTreeSet::new(), succeeds: BTreeSet::new(), doc: item_doc };
+                    let mut def = AspectDef { ty: Type::Any, retention: PurgeBy::default(), expires: None, flags: BTreeSet::new(), succeeds: BTreeSet::new(), doc: item_doc };
                     self.modifiers(&mut def)?;
                     let (ephemeral, admin) = (self.eat_kw("ephemeral"), self.eat_kw("admin"));
                     let kat = self.here();
@@ -269,7 +269,7 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(')')?;
                     let who: Vec<&str> = who.iter().map(String::as_str).collect();
-                    def.retention.by = match who.as_slice() {
+                    def.retention = match who.as_slice() {
                         // the default is unnamed: admins alone
                         ["admin"] => return self.err_at(at, "admins alone may purge by default: leave purgeable_by out"),
                         ["writer"] => PurgeBy::Writer,

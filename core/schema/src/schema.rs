@@ -32,7 +32,7 @@ pub struct TypeDef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AspectDef {
     pub ty: Type,
-    pub retention: Retention,
+    pub retention: PurgeBy,
     /// Default expiry, ms after the write (spec/commits.md §6).
     pub expires: Option<u64>,
     pub flags: BTreeSet<Flag>,
@@ -73,16 +73,10 @@ impl History {
     pub const FOREVER: History = History::Keep { until: Some(FOREVER), after: None };
 }
 
-/// Who may purge a write (spec/commits.md §5). `Default` is the untyped default: `admin`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
-pub struct Retention {
-    pub by: PurgeBy,
-}
-
 /// Per-AK write defaults.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct AspectDefaults {
-    pub retention: Retention,
+    pub retention: PurgeBy,
     pub expires: Option<u64>,
 }
 
@@ -240,7 +234,7 @@ impl Schema {
                 bad(&item, "core aspects are durable and hold a value".into());
             }
             // an ephemeral write is purgeable by its writer (spec/commits.md §2)
-            if markers.ephemeral && def.retention != Retention::default() {
+            if markers.ephemeral && def.retention != PurgeBy::default() {
                 bad(&item, "an ephemeral aspect takes no purgeable_by".into());
             }
             // an ephemeral signal is held by nobody

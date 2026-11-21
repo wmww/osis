@@ -4,7 +4,6 @@
 use osis_engine::Mutation;
 use osis_engine::local_peer::LocalPeer;
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Value};
-use osis_schema::Retention;
 use osis_schema::core_types as ct;
 use crate::common::{T0, edge};
 
@@ -66,7 +65,7 @@ fn purged(lp: &mut LocalPeer, t: Tid, secret: Secret) {
     let mut early = None;
     for v in ["old", "SECRET"] {
         let mut m = Mutation::new();
-        m.retention(t, &reg(), Retention { by: PurgeBy::Writer }).unwrap();
+        m.retention(t, &reg(), PurgeBy::Writer).unwrap();
         m.set(t, &reg(), &Value::Str(v.into())).unwrap();
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         if v == "old" || matches!(secret, Secret::First) {

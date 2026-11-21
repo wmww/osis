@@ -4852,7 +4852,7 @@ mod tests {
     // failed promotion keeps its candidate).
     #[test]
     fn failed_transaction_restores_indexes_retention_spec_commits_4() {
-        use osis_schema::{PurgeBy, Retention};
+        use osis_schema::{PurgeBy};
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
@@ -4878,7 +4878,7 @@ mod tests {
         m.set(g, &kept, &Value::Str("v".into())).unwrap();
         let v = lp.peers[1].commit(m).unwrap().unwrap();
         lp.advance(10);
-        let keep0 = Retention { by: PurgeBy::Writer };
+        let keep0 = PurgeBy::Writer;
         let now = lp.peers[0].engine.now();
         let two = failing(&mut lp.peers[0], &mut failed, |e| {
             // two aspects: received a part at a time below; both expire (one expiry per commit)

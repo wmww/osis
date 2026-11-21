@@ -5,7 +5,7 @@ use crate::retention::purge_keep_until;
 use crate::*;
 use crate::header::aspect_order;
 use osis_base::{Ak, CommitId, Tid, Value};
-use osis_schema::{PurgeBy, Retention};
+use osis_schema::{PurgeBy};
 
 fn invalid(h: &Header) -> Error {
     h.validate().unwrap_err()
@@ -48,7 +48,7 @@ fn validate_kinds() {
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
     assert!(invalid(&x).to_string().contains("writer"));
-    x.aspects[0].retention.by = PurgeBy::Writer;
+    x.aspects[0].retention = PurgeBy::Writer;
     x.keys.push(dkey(3, 3));
     x.aspects[0].keys = vec![0, 1, 2];
     x.validate().unwrap();
@@ -66,7 +66,7 @@ fn own_cover_flag_spec_wire_4() {
     x.form = Form::Commit;
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
-    x.aspects[0].retention.by = PurgeBy::Writer;
+    x.aspects[0].retention = PurgeBy::Writer;
     x.keys.push(dkey(3, 3));
     x.aspects[0].keys = vec![0, 1, 2];
     x.validate().unwrap();
@@ -138,7 +138,7 @@ fn validate_role_commit() {
     x.expires = Some(9_999_999_999);
     assert!(invalid(&x).to_string().contains("expires"));
     let mut x = h.clone();
-    x.aspects[0].retention.by = PurgeBy::Writer;
+    x.aspects[0].retention = PurgeBy::Writer;
     assert!(matches!(invalid(&x), Error::Malformed(_) | Error::Invalid(_)));
     let mut x = h.clone();
     x.frontier = Some(std::sync::Arc::from([]));
@@ -191,7 +191,7 @@ fn validate_commit_expiry() {
     for by in [PurgeBy::AuthorOrAdmin, PurgeBy::Writer] {
         let mut y = h.clone();
         y.aspects[0].ak = Ak::new("created.0").unwrap();
-        y.aspects[0].retention = Retention { by };
+        y.aspects[0].retention = by;
         assert!(invalid(&y).to_string().contains("created.0 not purgeable by admin"), "{by:?}: {}", invalid(&y));
     }
 }
@@ -243,7 +243,7 @@ fn retention_encoding_spec_wire_4() {
     let h = sample_header();
     for by in PurgeBy::ALL {
         let mut x = h.clone();
-        x.aspects[0].retention = Retention { by };
+        x.aspects[0].retention = by;
         assert_eq!(Header::decode(&x.encode()).unwrap(), x);
     }
     for bad in [Value::Int(0), Value::Int(4), Value::List(vec![Value::Int(2), Value::Int(0)])] {
@@ -268,18 +268,18 @@ fn retention_rules() {
     assert_eq!(fixed_retention("created.0"), None);
     assert_eq!(fixed_retention("retention^.0"), None);
     assert_eq!(fixed_retention("app:x.0"), None);
-    assert_eq!(write_retention("app:x.0", None, None).unwrap(), Retention::default());
-    assert_eq!(Retention::default().by, PurgeBy::Admin);
+    assert_eq!(write_retention("app:x.0", None, None).unwrap(), PurgeBy::default());
+    assert_eq!(PurgeBy::default(), PurgeBy::Admin);
     assert_eq!(write_expires("app:x.0", ts(10), None, None).unwrap(), None);
-    let d = AspectDefaults { retention: Retention { by: PurgeBy::Writer }, expires: Some(100) };
+    let d = AspectDefaults { retention: PurgeBy::Writer, expires: Some(100) };
     assert_eq!(write_retention("app:x.0", Some(&d), None).unwrap(), d.retention);
     assert_eq!(write_expires("app:x.0", ts(10), Some(&d), None).unwrap(), Some(110));
     assert_eq!(write_expires("app:x.0", ts(10), Some(&d), Some(50)).unwrap(), Some(50));
     assert_eq!(write_expires("roles.0", ts(10), Some(&d), Some(50)).unwrap(), None);
-    assert!(write_retention("roles.0", None, Some(Retention { by: PurgeBy::Writer })).is_err());
-    assert_eq!(write_retention("retention^.0", None, None).unwrap(), Retention::default());
+    assert!(write_retention("roles.0", None, Some(PurgeBy::Writer)).is_err());
+    assert_eq!(write_retention("retention^.0", None, None).unwrap(), PurgeBy::default());
     // a snapshot is `writer`, its history the thing's setting; fixed retention keeps its own
-    assert_eq!(snapshot_retention("app:x.0"), Retention { by: PurgeBy::Writer });
+    assert_eq!(snapshot_retention("app:x.0"), PurgeBy::Writer);
     assert_eq!(snapshot_retention("keys.0"), ROLE_RETENTION);
 }
 
@@ -306,7 +306,7 @@ fn ephemeral_retention_writer_spec_commits_2() {
     for h in [session, snapshot, undo] {
         h.validate().unwrap();
         let mut x = h.clone();
-        x.aspects[0].retention.by = PurgeBy::AuthorOrAdmin;
+        x.aspects[0].retention = PurgeBy::AuthorOrAdmin;
         x.aspects[0].keys = vec![0, 1];
         x.keys.truncate(2);
         assert!(invalid(&x).to_string().contains("writer"), "{}", invalid(&x));

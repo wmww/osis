@@ -14,7 +14,7 @@ use crate::Mutation;
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
-use osis_schema::{PurgeBy, Retention};
+use osis_schema::{PurgeBy};
 use std::collections::BTreeMap;
 
 const T0: WallMs = WallMs(1_700_000_000_000);
@@ -208,7 +208,7 @@ impl World {
                 }
                 // purgeable by every writer, or the untyped default
                 if r.below(3) < 2 {
-                    m.retention(t, &aks[asp], Retention { by: PurgeBy::Writer }).unwrap();
+                    m.retention(t, &aks[asp], PurgeBy::Writer).unwrap();
                 }
             }
             3 | 4 => {
