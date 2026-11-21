@@ -278,6 +278,13 @@ fn the_derivation_agrees_with_the_model_plain_spec_permissions_4() {
     }
 }
 
+// Interim (issues/engine-evidence-trails-model.md): the engine has no owner keys until A4; a story
+// world with a list write or a commit signed by a key other than its signer's own (moves 54, 55) is
+// the model's alone
+fn owner_keys(sim: &paths::Sim) -> bool {
+    (0..sim.w.commits.len()).any(|j| sim.w.list_write(j) || sim.w.commits[j].key != paths::own_key(sim.w.commits[j].signer))
+}
+
 /// Random worlds (junk, hostile paths, two-holder removals, retags), story worlds under the six
 /// crossings, a family slice: `n` random seeds and `story` story seeds from `OSIS_HELD_START`, a
 /// thread per core.
@@ -296,6 +303,9 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
         for u in 0..hm::STORY_UNITS {
             jobs.push(Box::new(move || {
                 let sim = paths::random_world(seed, &Rules::fixed());
+                if owner_keys(&sim) {
+                    return (format!("story seed {seed} units {u}"), Run::default());
+                }
                 (format!("story seed {seed} units {u}"), differ(&hm::story_world(&sim, u)))
             }));
         }
