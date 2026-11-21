@@ -13,25 +13,22 @@ const SPEC: &str = "spec/wire.md §3";
 pub fn thing() -> VecFile {
     let admin = Tid::from_bytes([1; 15]);
     let nonce = [2u8; 32];
-    let rec = CreationRecord::Thing { admin, nonce, link: None, expires: None };
-    let bytes = encode(&rec.to_value());
-    let tid = rec.tid();
-    assert_eq!(osis_base::hash::hash(&bytes)[..15], tid.as_bytes()[..], "tid is BLAKE3 of the record");
-    let mut cases = vec![
-        Record::new()
-            .with("case", "thing")
-            .with("spec", SPEC)
-            .with("admin", hex(admin.as_bytes()))
-            .with("nonce", hex(&nonce))
-            .with("record", hex(&bytes))
-            .with("tid", hex(tid.as_bytes()))
-            .with("text", tid.to_string())
-            .with("uri", tid.to_uri()),
-    ];
     // a thing that expires: field 5, in the tid
-    let brief = CreationRecord::Thing { admin, nonce, link: None, expires: Some(1_700_000_000_000) };
-    let (bb, bt) = (encode(&brief.to_value()), brief.tid());
-    cases.push(Record::new().with("case", "thing that expires").with("spec", SPEC).with("admin", hex(admin.as_bytes())).with("nonce", hex(&nonce)).with("expires", "1700000000000").with("record", hex(&bb)).with("tid", hex(bt.as_bytes())).with("text", bt.to_string()).with("uri", bt.to_uri()));
+    let mut cases: Vec<Record> = [("thing", None), ("thing that expires", Some(1_700_000_000_000u64))]
+        .into_iter()
+        .map(|(name, expires)| {
+            let rec = CreationRecord::Thing { admin, nonce, link: None, expires };
+            let bytes = encode(&rec.to_value());
+            let tid = rec.tid();
+            assert_eq!(osis_base::hash::hash(&bytes)[..15], tid.as_bytes()[..], "tid is BLAKE3 of the record");
+            let r = Record::new().with("case", name).with("spec", SPEC).with("admin", hex(admin.as_bytes())).with("nonce", hex(&nonce));
+            let r = match expires {
+                Some(t) => r.with("expires", t.to_string()),
+                None => r,
+            };
+            r.with("record", hex(&bytes)).with("tid", hex(tid.as_bytes())).with("text", tid.to_string()).with("uri", tid.to_uri())
+        })
+        .collect();
     // Field numbers of spec/wire.md §3: 0 admin, 1 key, 2 nonce, 5 expires.
     let key = Value::Enum(1, Some(Box::new(Value::Bytes(vec![3; 32]))));
     let keyed_expiry = BTreeMap::from([(Value::Int(1), key.clone()), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(5), Value::Int(1))]);

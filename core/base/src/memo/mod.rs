@@ -331,19 +331,14 @@ impl Stamps {
         lock(&self.0).stamp(Some(hash(k)))
     }
 
-
     /// Key `k` is read: the memo computing, if any, depends on it.
     pub fn read<Q: Hash + ?Sized>(&self, k: &Q) {
-        if RECORDING.load(Ordering::Relaxed) != 0 {
-            self.record(Some(hash(k)));
-        }
+        record(&self.0, || Some(hash(k)));
     }
 
     /// `read` of a key named by its stamp key.
     pub fn read_key(&self, k: StampKey) {
-        if RECORDING.load(Ordering::Relaxed) != 0 {
-            self.record(Some(k.0));
-        }
+        record(&self.0, || Some(k.0));
     }
 
     /// Every byte key starting with `p` is read (a scan): moved by a write of any such key
@@ -352,32 +347,52 @@ impl Stamps {
         if RECORDING.load(Ordering::Relaxed) != 0 {
             let h = prefix_hash(p);
             lock(&self.0).prefixes.entry(p.len()).or_default().insert(h);
-            self.record(Some(h));
+            record(&self.0, || Some(h));
         }
     }
 
     /// The whole container is read.
     pub fn read_all(&self) {
-        if RECORDING.load(Ordering::Relaxed) != 0 {
-            self.record(None);
-        }
+        record(&self.0, || None);
     }
 
-    fn record(&self, key: Option<u64>) {
-        Stamps::record_on(&self.0, key);
+    /// The container's change count, readable where the container is not.
+    pub fn counter(&self) -> Changes {
+        Changes(self.0.clone())
     }
 
-    fn record_on(t: &Arc<Mutex<Table>>, key: Option<u64>) {
-        FRAMES.with(|f| {
-            let mut f = f.borrow_mut();
-            let accounted = accounting(&f);
-            let Some(top) = f.last_mut() else { return };
-            top.note((Arc::as_ptr(t) as usize, key), accounted, || Dep { table: t.clone(), key, seen: lock(t).stamp(key), accounted });
-        });
+    /// A handle reading this container's keys (`Reader`).
+    pub fn reader(&self) -> Reader {
+        Reader(self.0.clone())
     }
 }
 
-/// A container's change count (`Stamps::changes`) read away from the container (`Stamps::counter`).
+/// The memo computing, if any, depends on `key()` of table `t` (`None`: the whole container).
+fn record(t: &Arc<Mutex<Table>>, key: impl FnOnce() -> Option<u64>) {
+    if RECORDING.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+    let key = key();
+    FRAMES.with(|f| {
+        let mut f = f.borrow_mut();
+        let accounted = accounting(&f);
+        let Some(top) = f.last_mut() else { return };
+        top.note((Arc::as_ptr(t) as usize, key), accounted, || Dep { table: t.clone(), key, seen: lock(t).stamp(key), accounted });
+    });
+}
+
+/// A container's key reads (`Stamps::read`), made away from the container (`Stamps::reader`): for
+/// a view of it handed out, read key by key as it is used.
+#[derive(Debug)]
+pub struct Reader(Arc<Mutex<Table>>);
+
+impl Reader {
+    pub fn read<Q: Hash + ?Sized>(&self, k: &Q) {
+        record(&self.0, || Some(hash(k)));
+    }
+}
+
+/// A container's change count read away from the container (`Stamps::counter`).
 #[derive(Debug)]
 pub struct Changes(Arc<Mutex<Table>>);
 
@@ -397,31 +412,6 @@ impl Default for Changes {
 impl Clone for Changes {
     fn clone(&self) -> Changes {
         Changes(copied(&self.0))
-    }
-}
-
-/// A container's key reads (`Stamps::read`), made away from the container (`Stamps::reader`): for
-/// a view of it handed out, read key by key as it is used.
-#[derive(Debug)]
-pub struct Reader(Arc<Mutex<Table>>);
-
-impl Reader {
-    pub fn read<Q: Hash + ?Sized>(&self, k: &Q) {
-        if RECORDING.load(Ordering::Relaxed) != 0 {
-            Stamps::record_on(&self.0, Some(hash(k)));
-        }
-    }
-}
-
-impl Stamps {
-    /// A handle reading this container's keys (`Reader`).
-    pub fn reader(&self) -> Reader {
-        Reader(self.0.clone())
-    }
-
-    /// The container's change count, readable where the container is not.
-    pub fn counter(&self) -> Changes {
-        Changes(self.0.clone())
     }
 }
 
@@ -823,15 +813,21 @@ impl Checks {
             return false;
         }
         self.hits += 1;
-        let often = self.hits > 1 && self.hits.is_power_of_two() && self.hits.trailing_zeros().is_multiple_of(4);
+        let often = self.hits > 1 && at_power(self.hits, 4);
         let at = moves(deps, groups);
         if !amended && at == self.at {
             return often;
         }
         self.at = at;
         self.moved += 1;
-        often || (self.moved.is_power_of_two() && self.moved.trailing_zeros().is_multiple_of(2))
+        often || at_power(self.moved, 2)
     }
+}
+
+/// Whether the `n`th event of a schedule by powers of `2^step` is one to compare at.
+#[cfg(debug_assertions)]
+fn at_power(n: u64, step: u32) -> bool {
+    n.is_power_of_two() && n.trailing_zeros().is_multiple_of(step)
 }
 
 /// The changes so far of the containers an entry read (`deps` in its `groups`), summed: it moves
@@ -876,15 +872,8 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq + std::fmt::Debug> Memo<K, V> {
     /// `get` for a function that needs all of `ctx` and may fail (one running a transaction of
     /// the engine holding this memo, which `memo` finds in `ctx`). A failure is not kept.
     pub fn get_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>) -> Result<V, E> {
-        Self::get_checked_in(ctx, memo, k, &f, &f)
-    }
-
-    /// `get_in` whose debug comparison runs `fresh`, which gives what `f` gives and changes
-    /// nothing: for an `f` with effects where its answer is not kept (one that writes when
-    /// something is due and fails so).
-    pub fn get_checked_in<C, E>(ctx: &mut C, memo: impl Fn(&C) -> &Self, k: &K, f: impl Fn(&mut C) -> Result<V, E>, fresh: impl Fn(&mut C) -> Result<V, E>) -> Result<V, E> {
         if let Some((value, deps, check)) = memo(ctx).kept(k) {
-            Self::compare(ctx, &memo, check, &value, &fresh, "a read no stamp covers");
+            Self::compare(ctx, &memo, check, &value, &f, "a read no stamp covers");
             depend(&deps);
             return Ok(value);
         }
@@ -1148,10 +1137,6 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
             None => {}
         }
     }
-    /// A handle reading this map's keys (`Reader`, as `get` reads them).
-    pub fn reader(&self) -> Reader {
-        self.stamps.reader()
-    }
 }
 
 impl<K: Ord + Hash + Clone + Send + Sync + 'static, V> Stamped<K, V> {
@@ -1357,6 +1342,10 @@ impl<T: Ord + Hash + Clone + Send + Sync + 'static> StampedSet<T> {
     pub fn feed(&self) -> Feed<T> {
         self.stamps.feed()
     }
+    /// A handle reading this set's items (`Reader`, as `contains` reads them).
+    pub fn reader(&self) -> Reader {
+        self.stamps.reader()
+    }
     /// Removes `t`; one not there changes nothing, so it moves nothing.
     pub fn remove(&mut self, t: &T) -> bool {
         let removed = self.set.remove(t);
@@ -1364,10 +1353,6 @@ impl<T: Ord + Hash + Clone + Send + Sync + 'static> StampedSet<T> {
             self.stamps.wrote(t, false);
         }
         removed
-    }
-    /// A handle reading this set's items (`Reader`, as `contains` reads them).
-    pub fn reader(&self) -> Reader {
-        self.stamps.reader()
     }
 }
 

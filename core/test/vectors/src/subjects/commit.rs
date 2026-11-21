@@ -102,21 +102,21 @@ fn content() -> CommitBlob {
 }
 
 fn role_commit() -> CommitBlob {
+    built(role_builder())
+}
+
+fn role_builder() -> CommitBuilder {
     let at = ts(1_700_000_001_000);
     let mut b = CommitBuilder::new(Kind::Role, at, SIGNER, osis_commit::Path::default(), Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, core_delta("roles.0", Form::Commit, Kind::Role, at, 1, grant(0x41, 1), 2));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
-    built(b)
+    b
 }
 
 /// `role_commit` with header flags bit 1 set (spec/wire.md §4 field 18).
 fn adminless_role_commit() -> CommitBlob {
-    let at = ts(1_700_000_001_000);
-    let mut b = CommitBuilder::new(Kind::Role, at, SIGNER, osis_commit::Path::default(), Form::Commit);
-    let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, core_delta("roles.0", Form::Commit, Kind::Role, at, 1, grant(0x41, 1), 2));
-    a.retention = retention::ROLE_RETENTION;
-    b.aspects.push(a);
+    let mut b = role_builder();
     b.adminless = true;
     built(b)
 }
@@ -219,7 +219,17 @@ pub fn headers() -> VecFile {
     VecFile { header: generated_header("commit", SPEC), cases }
 }
 
-/// Records every byte drawn from a seeded rng, so the vector can list them.
+/// `b` built under the rng seeded `seed`, with every byte it drew, so the vector can list them:
+/// built again from just those bytes, it is the same commit.
+fn build_recorded(b: CommitBuilder, key: &SigningSecret, seed: u8, sink: &mut MemoryBlobs) -> (Built, Vec<u8>) {
+    let mut rec = Recording(osis_crypto::SeededRng::from_seed([seed; 32]), Vec::new());
+    let first = b.clone().build(key, &VSecrets, &mut MemoryBlobs::default(), &mut rec).unwrap();
+    let again = b.build(key, &VSecrets, sink, &mut FixedRng::new(&[&rec.1])).unwrap();
+    assert_eq!(first.commit, again.commit);
+    (again, rec.1)
+}
+
+/// Records every byte drawn from a seeded rng.
 struct Recording(osis_crypto::SeededRng, Vec<u8>);
 
 impl osis_crypto::RngCore for Recording {
@@ -293,11 +303,8 @@ fn more_accepted() -> Vec<Record> {
         b.aspects.push(a);
     }
     let key = SigningSecret::from_seed(&s32(0x35));
-    let mut rec = Recording(osis_crypto::SeededRng::from_seed([0x36; 32]), Vec::new());
-    let first = b.clone().build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut rec).unwrap();
     let mut sink = MemoryBlobs::default();
-    let bl = b.build(&key, &VSecrets, &mut sink, &mut FixedRng::new(&[&rec.1])).unwrap();
-    assert_eq!(first.commit, bl.commit);
+    let (bl, randomness) = build_recorded(b, &key, 0x36, &mut sink);
     let c = bl.commit;
     assert!(c.header.links.aspects.is_some());
     let mut back = CommitBlob::decode(&c.encode()).unwrap();
@@ -307,7 +314,7 @@ fn more_accepted() -> Vec<Record> {
         .with("signing-seed", hex(s32(0x35).expose()))
         .with("dedup", hex(s32(0x30).expose()))
         .with("delete-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())))
-        .with("randomness", hex(&rec.1))
+        .with("randomness", hex(&randomness))
         .with("aspect-list-blake3", hex(&osis_base::hash::hash(&c.header.list_bytes(ListField::Aspects).unwrap())));
     for (i, id) in bl.list_blobs.iter().enumerate() {
         let (p, plain) = &sink.blobs[id];
@@ -344,18 +351,16 @@ fn several_things() -> Vec<Record> {
         if split {
             b.split = Some(osis_commit::SplitWrite { author: Some(LISTED), things: roles.iter().map(|(t, s, p, m)| (*t, ((p.clone(), *m), s.clone()))).collect() });
         }
-        let mut rec = Recording(osis_crypto::SeededRng::from_seed([0x38; 32]), Vec::new());
-        let first = b.clone().build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut rec).unwrap().commit;
-        let c = b.build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut FixedRng::new(&[&rec.1])).unwrap().commit;
-        assert_eq!(first, c);
+        let (bl, randomness) = build_recorded(b, &key, 0x38, &mut MemoryBlobs::default());
+        let c = bl.commit;
         verify_blob(&c, &key.verifying_key(), &dedup, None).unwrap();
         if !split {
             assert_eq!(c.header.path, osis_commit::Paths::One(osis_commit::Path::through(LISTED)));
-            out.push(record("several things: one path", "spec/wire.md §4 field 2", &c).with("randomness", hex(&rec.1)));
+            out.push(record("several things: one path", "spec/wire.md §4 field 2", &c).with("randomness", hex(&randomness)));
             continue;
         }
         assert!(c.header.is_split());
-        let mut r = record("several things: split paths", "spec/wire.md §4 field 2, spec/crypto.md §5 Path entry", &c).with("randomness", hex(&rec.1));
+        let mut r = record("several things: split paths", "spec/wire.md §4 field 2, spec/crypto.md §5 Path entry", &c).with("randomness", hex(&randomness));
         for (i, (t, s, ..)) in roles.iter().enumerate() {
             assert_eq!(c.keys.get(&i), Some(&osis_commit::path_key(s, &c.header.blind, t)));
             r = r.with(&format!("roles-{i}"), hex(s.expose())).with(&format!("path-key-{i}"), hex(&c.keys[&i]));
@@ -369,12 +374,9 @@ fn several_things() -> Vec<Record> {
     }
     let mut b = b;
     b.path = osis_commit::Path { purge: 1, things: vec![LISTED], direct: 0b10 };
-    let mut rec = Recording(osis_crypto::SeededRng::from_seed([0x39; 32]), Vec::new());
-    let first = b.clone().build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut rec).unwrap().commit;
-    let c = b.build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut FixedRng::new(&[&rec.1])).unwrap().commit;
-    assert_eq!(first, c);
-    verify_blob(&c, &key.verifying_key(), &dedup, None).unwrap();
-    out.push(record("several things: one path marking a hop direct", "spec/wire.md §4 field 2, marks", &c).with("randomness", hex(&rec.1)));
+    let (bl, randomness) = build_recorded(b, &key, 0x39, &mut MemoryBlobs::default());
+    verify_blob(&bl.commit, &key.verifying_key(), &dedup, None).unwrap();
+    out.push(record("several things: one path marking a hop direct", "spec/wire.md §4 field 2, marks", &bl.commit).with("randomness", hex(&randomness)));
     out
 }
 

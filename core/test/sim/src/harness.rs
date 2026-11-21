@@ -95,13 +95,11 @@ pub struct Config {
     pub weights: Weights,
     /// A tick advances virtual time by 1..=this.
     pub max_tick_ms: u64,
-    /// Check convergence after every step (else at quiescence only).
-    pub check_every_step: bool,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config { nodes: 2, clocks: Vec::new(), net: NetFaults::default(), weights: Weights::default(), max_tick_ms: 5_000, check_every_step: true }
+        Config { nodes: 2, clocks: Vec::new(), net: NetFaults::default(), weights: Weights::default(), max_tick_ms: 5_000 }
     }
 }
 
@@ -125,10 +123,6 @@ pub struct Report {
     pub steps: u64,
     pub writes: u64,
     pub sent: u64,
-    /// In compared runs (`net::with_arrivals`): messages sent, a stream push counted by the
-    /// events it carries (how arrivals group into pushes is the network's timing, what is
-    /// pushed is not).
-    pub sent_events: u64,
     pub dropped: u64,
     pub delivered: u64,
     pub parked: u64,
@@ -136,29 +130,11 @@ pub struct Report {
     pub restarts: u64,
     /// Planned one-off failed writes that happened (`Fault::Fail`: the device stays up).
     pub failed_writes: u64,
-    /// Phase B: messages duplicated, node crashes, partitions, engine and hub diagnostics.
-    pub duplicated: u64,
-    pub host_crashes: u64,
-    pub partitions: u64,
-    pub diagnostics: u64,
-    /// Must-hold bodies found at peers by the quiescent sync ID check.
-    pub held_checked: u64,
-    /// Holders the liveness check left out at the end: the model keeps them cut off.
-    pub unjudged: u64,
     /// (node, write, thing) triples the history check found held at quiet (`Sim::check_history`).
     pub history_checked: u64,
-    /// Phase C: messages an evil peer dropped, held back or replayed; requests an adversary's
-    /// hand-driven session sent and those the peer refused.
-    pub evil: u64,
-    pub rogue_sent: u64,
-    pub rogue_refused: u64,
     pub commits: usize,
-    /// BLAKE3 of every node's final held commits and reads and, on a net sim, the peers' logs
-    /// and `parts`: replays alike to the bit.
+    /// BLAKE3 of every node's final held commits and reads: replays alike to the bit.
     pub digest: [u8; 32],
-    /// What ended where, each named and free of blob IDs : what two runs must
-    /// share even if a node's random stream served its seals in another order.
-    pub parts: std::collections::BTreeMap<String, [u8; 32]>,
 }
 
 pub struct Sim {
@@ -575,10 +551,7 @@ impl Sim {
                 self.advance(dt)?;
             }
         }
-        if self.cfg.check_every_step {
-            self.check_convergence()?;
-        }
-        Ok(())
+        self.check_convergence()
     }
 
     /// `n` scheduler events.

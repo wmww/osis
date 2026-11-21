@@ -3,6 +3,8 @@
 //! writes (`Table::log`), never by asking every key; `Feed` is one reader's cursor over the keys
 //! a container added.
 
+#[cfg(debug_assertions)]
+use super::at_power;
 use super::{Dep, Ids, Logged, Table, bucket, copied, lock, recorded_frame};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -73,12 +75,6 @@ impl<V> Followed<V> {
             moved: 0,
         }
     }
-}
-
-/// Whether the `n`th event of a schedule by powers of `2^step` is one to compare at.
-#[cfg(debug_assertions)]
-fn at_power(n: u64, step: u32) -> bool {
-    n.is_power_of_two() && n.trailing_zeros().is_multiple_of(step)
 }
 
 /// The followed keys that read one container, and this reader's mark in its log.
@@ -496,11 +492,16 @@ impl<K: Clone + 'static> Feed<K> {
     /// The keys added since the last call (or the feed's start), in the order added: a key
     /// removed and added again comes again.
     pub fn added(&mut self) -> Vec<K> {
+        self.logged(true)
+    }
+
+    /// The keys logged with themselves since the last call, written (`present`) or removed.
+    fn logged(&mut self, present: bool) -> Vec<K> {
         let changes = lock(&self.table).read_log(&mut self.at);
         changes
             .into_iter()
             .filter_map(|c| match c {
-                Logged::Key { present: true, added: Some(k), .. } => k.downcast_ref::<K>().cloned(),
+                Logged::Key { present: p, added: Some(k), .. } if p == present => k.downcast_ref::<K>().cloned(),
                 _ => None,
             })
             .collect()
@@ -516,14 +517,7 @@ pub struct Removals<K>(pub(super) Feed<K>);
 impl<K: Clone + 'static> Removals<K> {
     /// The keys removed since the last call (or the cursor's start), in the order removed.
     pub fn removed(&mut self) -> Vec<K> {
-        let changes = lock(&self.0.table).read_log(&mut self.0.at);
-        changes
-            .into_iter()
-            .filter_map(|c| match c {
-                Logged::Key { present: false, added: Some(k), .. } => k.downcast_ref::<K>().cloned(),
-                _ => None,
-            })
-            .collect()
+        self.0.logged(false)
     }
 }
 
@@ -544,6 +538,12 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::super::{Clock, Memo, Stamped, StampedSet, Stamps};
     use super::*;
+
+    /// A key other than 100 whose stamp shares 100's bucket.
+    fn bucket_mate() -> u8 {
+        let b = bucket(super::super::hash(&100u8));
+        (0..=255u8).find(|x| bucket(super::super::hash(x)) == b && *x != 100).unwrap()
+    }
 
     /// `e` following key 1, settled once by `read`.
     fn settle_once<K: From<u8> + Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::Debug>(e: &mut Effects<K, V>, read: impl FnOnce() -> V) {
@@ -595,8 +595,7 @@ mod tests {
         // a read of an absent key moves with its own removal alone, not another's of its bucket
         e.want(100);
         e.settle(&100, || read(&m, &s, 100));
-        let same = |x: &u8| super::super::bucket(super::super::hash(x)) == super::super::bucket(super::super::hash(&100u8));
-        let removed = (0..=255u8).find(|x| same(x) && *x != 100).unwrap();
+        let removed = bucket_mate();
         m.insert(removed, 1);
         let _ = e.due();
         m.remove(&removed);
@@ -661,7 +660,7 @@ mod tests {
         m.remove(&100);
         assert_eq!(e.due(), [1]);
         e.settle(&1, || read(&m));
-        let other = (0..=255u8).find(|x| super::super::bucket(super::super::hash(x)) == super::super::bucket(super::super::hash(&100u8)) && *x != 100).unwrap();
+        let other = bucket_mate();
         m.insert(other, 1);
         m.remove(&other);
         assert_eq!(e.due(), Vec::<u8>::new(), "another key of its bucket came and went");
@@ -700,7 +699,7 @@ mod tests {
         let mut e: Effects<u8, u8> = Effects::new("test absent");
         let read = |m: &Stamped<u8, u8>| m.get(&100).copied().unwrap_or(0);
         settle_once(&mut e, || read(&m));
-        let other = (0..=255u8).find(|x| super::super::bucket(super::super::hash(x)) == super::super::bucket(super::super::hash(&100u8)) && *x != 100).unwrap();
+        let other = bucket_mate();
         assert_eq!(m.remove(&other), None);
         m.update(other, |v| Some(v.unwrap_or(0) + 1));
         m.update(other, |v| Some(v.unwrap_or(0) + 1));
