@@ -707,7 +707,7 @@ impl Engine {
     fn seal_certificate(&mut self, t: &Tid, c: &CommitId, meta: &BodyMeta, rng: &mut dyn NodeRng) -> Result<Option<(crate::sync_ids::Sealed, Wrap)>> {
         let Some(m) = self.core.ix.commits.get(c).cloned() else { return Ok(None) };
         let parts: Vec<usize> = meta.parts.iter().copied().collect();
-        let b = crate::sync_ids::Body { commit: *c, parts: parts.clone(), expires: meta.expires.map(|e| e.0), blind: m.header.blind, plaintext: Vec::new(), role_commit: m.header.kind.is_role(), order: meta.order, to_sync_id: true };
+        let b = crate::sync_ids::Body { commit: *c, parts: parts.clone(), expires: meta.expires.map(|e| e.0), blind: m.header.blind, plaintext: Vec::new(), order: meta.order, to_sync_id: true };
         let class = if m.view.memory { osis_blob::Class::Ephemeral } else { osis_blob::Class::Durable };
         let Some(sealed) = self.seal_to(&b, class, rng)? else { return Ok(None) };
         if parts.iter().any(|p| !sealed.parts.contains(p)) {

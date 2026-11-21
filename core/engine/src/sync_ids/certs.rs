@@ -648,7 +648,6 @@ impl Engine {
             expires: osis_commit::blob_expiry(&resolved),
             blind: cut.header.blind,
             plaintext: cut.encode(),
-            role_commit: cut.header.kind.is_role(),
             order: super::fetch_order(&resolved),
             to_sync_id: false,
         }))

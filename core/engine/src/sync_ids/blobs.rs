@@ -26,7 +26,6 @@ pub struct Body {
     /// The opened form `[Header, signature, [Part*]]` of what the blob carries (every held part
     /// of the commit, or a copy's parts); empty from `commit_bodies_under` (`body_plaintext`).
     pub plaintext: Vec<u8>,
-    pub role_commit: bool,
     /// Its wrap's fetch order (`fetch_order`).
     pub order: u64,
     /// A per-sync-ID copy: `parts` in one section under the blob key (`Engine::seal_to`), never
@@ -199,7 +198,6 @@ impl Engine {
             expires: osis_commit::blob_expiry(&resolved),
             blind: blob.header.blind,
             plaintext: if plaintext { blob.encode() } else { Vec::new() },
-            role_commit: blob.header.kind.is_role(),
             order: fetch_order(&resolved),
             to_sync_id: false,
         }))
@@ -615,7 +613,7 @@ impl Engine {
                     b.parts.dedup();
                     Some(b)
                 }
-                None => self.header(&id).map(|full| Body { commit: id, parts: gone, expires: osis_commit::blob_expiry(&full), blind: full.blind, plaintext: Vec::new(), role_commit: full.kind.is_role(), order: fetch_order(&full), to_sync_id: false }),
+                None => self.header(&id).map(|full| Body { commit: id, parts: gone, expires: osis_commit::blob_expiry(&full), blind: full.blind, plaintext: Vec::new(), order: fetch_order(&full), to_sync_id: false }),
             };
         }
         let mut out = Vec::new();
@@ -649,7 +647,7 @@ impl Engine {
             if self.run(|tx| crate::retention::lasting(tx, &id, &on))?
                 && let Some(blind) = self.core.ix.commits.get(&id).map(|m| m.header.blind)
             {
-                out.push(Body { commit: id, parts: Vec::new(), expires: None, blind, plaintext: Vec::new(), role_commit: false, order: h.ts.to_u64().max(1), to_sync_id: false });
+                out.push(Body { commit: id, parts: Vec::new(), expires: None, blind, plaintext: Vec::new(), order: h.ts.to_u64().max(1), to_sync_id: false });
             }
         }
         Ok(out)

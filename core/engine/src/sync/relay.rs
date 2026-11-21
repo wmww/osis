@@ -54,7 +54,7 @@ impl Engine {
                 if parts.is_empty() {
                     continue;
                 }
-                let b = Body { commit: c.id, parts: parts.clone(), expires: osis_commit::blob_expiry(h), blind: h.blind, plaintext: c.blob.encode(), role_commit: false, order: 0, to_sync_id: false };
+                let b = Body { commit: c.id, parts: parts.clone(), expires: osis_commit::blob_expiry(h), blind: h.blind, plaintext: c.blob.encode(), order: 0, to_sync_id: false };
                 let Some(sealed) = self.seal(&b, osis_blob::Class::Relay, &[], rng)? else { continue };
                 let Some(w) = self.wrap_secret(&g, Some((&c.id, &parts)))? else { continue };
                 let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, 0)?;
