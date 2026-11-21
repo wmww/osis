@@ -516,8 +516,8 @@ fn tally(f: &Fragment, seen: &mut BTreeSet<&'static str>) {
     }
 }
 
-/// One seed: its mode and the encodings its final state held.
-fn check(k: u64) -> (Mode, BTreeSet<&'static str>) {
+/// One seed: the encodings its final state held.
+fn check(k: u64) -> BTreeSet<&'static str> {
     let (mut r, c) = case(k);
     let reference = joins(&mut r, &c);
     let bodies: Vec<Fragment> = c.deltas.iter().map(|(d, _)| frag(d)).collect();
@@ -531,7 +531,7 @@ fn check(k: u64) -> (Mode, BTreeSet<&'static str>) {
         unmerge_and_strip(&c, st);
         tally(&frag(st), &mut seen);
     }
-    (c.mode, seen)
+    seen
 }
 
 fn differential(size: Size) {
@@ -541,24 +541,19 @@ fn differential(size: Size) {
     };
     let name = format!("crdt_equals_model ({size:?})");
     // only the property sizes read a range from the environment
-    let (range, out) = match size {
+    let out = match size {
         Size::Plain => {
             let seeds: Vec<u64> = size.seeds().collect();
-            (size.seeds(), osis_base::testenv::run_seeds(&name, &seeds, false, replay, check))
+            osis_base::testenv::run_seeds(&name, &seeds, false, replay, check)
         }
         Size::Small | Size::Large => {
             let seeds = osis_base::testenv::Seeds::from_env("OSIS_CRDT_START", "OSIS_CRDT_SEEDS", size.seeds());
-            (seeds.range.clone(), seeds.run(&name, replay, check))
+            seeds.run(&name, replay, check)
         }
     };
-    // every mode and every encoding reached, at every size (a run of fewer seeds than modes
-    // replays one)
-    if range.end - range.start >= 2 * MODES.len() as u64 {
-        let modes: BTreeSet<Mode> = out.iter().map(|x| x.0).collect();
-        assert_eq!(modes.len(), MODES.len(), "modes reached: {modes:?}");
-        let seen: BTreeSet<&str> = out.into_iter().flat_map(|x| x.1).collect();
-        let want = ["register", "counter", "max", "min", "set", "struct", "enum", "map", "text", "list", "slots"];
-        assert!(want.iter().all(|w| seen.contains(w)), "encodings reached: {seen:?}");
+    // every encoding reached (the mode is the seed's place mod 5, by construction)
+    for w in ["register", "counter", "max", "min", "set", "struct", "enum", "map", "text", "list", "slots"] {
+        osis_base::testenv::reach_floor(&format!("{w} encodings"), out.iter().map(|x| usize::from(x.contains(w))), 1, 20);
     }
 }
 

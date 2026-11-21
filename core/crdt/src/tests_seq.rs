@@ -369,8 +369,8 @@ fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
 
 /// §7 (embedding), `seq_lin`: joins at a `Slots` position that leave its register and effective
 /// reset as they are (text edits of a text upgraded from a string) follow the text slot's cached
-/// placement and read like the model (the join itself is checked against a whole pass); a run of
-/// 6 seeds or more follows nearly all.
+/// placement and read like the model (the join itself is checked against a whole pass); nearly all
+/// follow.
 #[test]
 #[ignore = "property"]
 fn slots_join_follows_cache_plain_spec_7() {
@@ -410,7 +410,9 @@ fn slots_join_follows_cache_plain_spec_7() {
         (joins, kept)
     });
     let (joins, kept) = out.iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-    assert!(out.len() < 6 || (joins * 6 >= 15 * out.len() && kept * 10 >= joins * 9), "{kept} of {joins} followed");
+    // a seed may join none on slots (its text never became one)
+    osis_base::testenv::reach_floor("joins on slots", out.iter().map(|x| x.0), 1, 2);
+    assert!(kept * 10 >= joins * 9, "{kept} of {joins} followed");
 }
 
 // ---- §3.3 rule 7 for runs (writer of node 1, range [3, 6), ts 5·2^16)

@@ -991,24 +991,25 @@ fn departure_point(run: &Run, o: usize, t: Tid, d: usize, r: Role) -> Option<osi
     applied.chain(dropped).max()
 }
 
-/// The runs' coverage: with at least eight seeds (every emphasis twice), each shape is reached.
+/// The shapes a run may reach, each with the rate the seeds reach it at (`reach_floor`: per, over
+/// seeds) set well under what offset ranges show: a cycle in every emphasis-3 seed and some others,
+/// an invalid rotation (a race, drawn by no emphasis) in about 1 run in 10.
+/// A shape: its name, whether a run reached it, its rate (per, over seeds).
+type Shape = (&'static str, fn(&Reached) -> bool, usize, usize);
+
+const SHAPES: [Shape; 6] = [
+    ("forked", |r| r.forked, 1, 8),
+    ("departed", |r| r.departed, 1, 4),
+    ("forged", |r| r.forged, 1, 8),
+    ("cycle", |r| r.cycle, 1, 8),
+    ("withheld", |r| r.withheld, 1, 2),
+    ("invalid rotation", |r| r.invalid, 1, 40),
+];
+
+/// The runs' coverage over any range: each shape at its rate.
 fn tally(runs: &[Reached]) {
-    let count = |f: fn(&Reached) -> bool| runs.iter().filter(|r| f(r)).count();
-    let line = format!(
-        "rotation: {} runs; forked {}, departed {}, forged {}, cycle {}, withheld {}, invalid rotation {}",
-        runs.len(),
-        count(|r| r.forked),
-        count(|r| r.departed),
-        count(|r| r.forged),
-        count(|r| r.cycle),
-        count(|r| r.withheld),
-        count(|r| r.invalid)
-    );
-    eprintln!("{line}");
-    if runs.len() >= 8 {
-        for (name, f) in [("forked", (|r: &Reached| r.forked) as fn(&Reached) -> bool), ("departed", |r| r.departed), ("forged", |r| r.forged), ("cycle", |r| r.cycle), ("withheld", |r| r.withheld), ("invalid", |r| r.invalid)] {
-            assert!(count(f) > 0, "no run reached {name}: {line}");
-        }
+    for (name, f, per, over) in SHAPES {
+        osis_base::testenv::reach_floor(&format!("rotation runs {name}"), runs.iter().map(|r| usize::from(f(r))), per, over);
     }
 }
 
@@ -1018,11 +1019,15 @@ fn replay(s: u64) -> String {
 
 // spec/crypto.md §4, spec/permissions.md §2-§3: no departed holder reads later content, every
 // holder ends reading everything (module doc). The quick size (a property): seeds 0..8 (every emphasis twice), no
-// environment.
+// environment, a covering set (every shape).
 #[test]
 #[ignore = "property"]
 fn rotation_holds_plain_spec_crypto_4() {
-    tally(&osis_base::testenv::run_seeds("rotation::tests_property::rotation_holds_plain_spec_crypto_4", &(0..8).collect::<Vec<u64>>(), false, replay, rotation_history));
+    let runs = osis_base::testenv::run_seeds("rotation::tests_property::rotation_holds_plain_spec_crypto_4", &(0..8).collect::<Vec<u64>>(), false, replay, rotation_history);
+    // a covering set: its fixed seeds reach every shape
+    for (name, f, ..) in SHAPES {
+        assert!(runs.iter().any(f), "no run of the covering seeds reached {name}");
+    }
 }
 
 /// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_ROTATION_START,

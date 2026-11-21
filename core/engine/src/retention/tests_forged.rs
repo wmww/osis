@@ -307,8 +307,8 @@ fn forged_copies_fail_no_node_plain() {
 #[ignore]
 fn forged_copies_fail_no_node_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_FORGED_START", "OSIS_FORGED_SEEDS", osis_base::testenv::large(0..300));
-    let made: usize = s.run("retention::tests_forged::forged_copies_fail_no_node_large", replay, forged_copies_case).into_iter().sum();
-    assert!(made > 0, "forged nothing");
+    let made = s.run("retention::tests_forged::forged_copies_fail_no_node_large", replay, forged_copies_case);
+    osis_base::testenv::reach_floor("seeds forging", made.into_iter().map(|n| usize::from(n > 0)), 1, 2);
 }
 
 // spec/crdt.md §4.8 When, §5.5, spec/commits.md §5 (nodes holding the same bodies judge alike;

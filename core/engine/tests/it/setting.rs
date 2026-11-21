@@ -797,7 +797,7 @@ fn covered_drops_history(seed: u64) -> usize {
 fn covered_drops_move_nothing_plain_spec_commits_5() {
     let seeds: Vec<u64> = (0..10).collect();
     let dropped = osis_base::testenv::run_seeds("setting::covered_drops_move_nothing_plain_spec_commits_5", &seeds, false, covered_drops_replay, covered_drops_history);
-    assert!(dropped.iter().filter(|n| **n > 0).count() * 2 >= seeds.len(), "half the seeds drop a covered body: {dropped:?}");
+    osis_base::testenv::reach_floor("seeds dropping a covered body", dropped.into_iter().map(|n| usize::from(n > 0)), 1, 2);
 }
 
 /// Seeds: OSIS_COVERED_START, OSIS_COVERED_SEEDS (default 0..1000, a tenth at small size).
@@ -806,7 +806,7 @@ fn covered_drops_move_nothing_plain_spec_commits_5() {
 fn covered_drops_move_nothing_large_spec_commits_5() {
     let range = osis_base::testenv::Seeds::from_env("OSIS_COVERED_START", "OSIS_COVERED_SEEDS", osis_base::testenv::large(0..1000));
     let dropped = range.run("setting::covered_drops_move_nothing_large_spec_commits_5", covered_drops_replay, covered_drops_history);
-    assert!(dropped.iter().filter(|n| **n > 0).count() * 2 >= dropped.len(), "half the seeds drop a covered body: {dropped:?}");
+    osis_base::testenv::reach_floor("seeds dropping a covered body", dropped.into_iter().map(|n| usize::from(n > 0)), 1, 2);
 }
 
 fn covered_drops_replay(s: u64) -> String {

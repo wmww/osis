@@ -130,6 +130,21 @@ impl std::fmt::Display for Seeds {
     }
 }
 
+/// A coverage floor over a seed range (notes/test-harnesses.md, Coverage floors): the seeds'
+/// tallies (one per seed) sum to at least `per` per `over` seeds, rounded down. A rate checked at
+/// every size: set at most what any one seed reaches (under 1 where a seed may reach none) and well
+/// under the mean, a replay of one seed asks what that seed gives and a larger range
+/// proportionally more. Prints the tally (and the least a seed gave) either way.
+pub fn reach_floor(what: &str, per_seed: impl IntoIterator<Item = usize>, per: usize, over: usize) {
+    let (mut n, mut k, mut least) = (0, 0, usize::MAX);
+    for x in per_seed {
+        (n, k, least) = (n + x, k + 1, least.min(x));
+    }
+    let floor = k * per / over;
+    eprintln!("{what}: {n} over {k} seeds (least {least} in a seed; floor {floor}, {per} per {over} seeds)");
+    assert!(n >= floor, "{what}: {n} over {k} seeds, under the floor {floor} ({per} per {over} seeds)");
+}
+
 /// `line` on stderr: written straight to the stream when `uncaptured` (libtest captures only
 /// `eprintln!`), else through `eprintln!`.
 pub fn visible(uncaptured: bool, line: &str) {

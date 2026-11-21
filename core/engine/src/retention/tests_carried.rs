@@ -298,7 +298,7 @@ fn a_dead_write_keeps_no_name_spec_commits_5() {
 fn purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5() {
     let aks: Vec<Ak> = ["x:a.0", "x:b.0", "x:c.0"].into_iter().map(|a| Ak::new(a).unwrap()).collect();
     let name = "retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5";
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_PURGE_BY_ID_START", "OSIS_PURGE_BY_ID_SEEDS", 0..2);
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_PURGE_BY_ID_START", "OSIS_PURGE_BY_ID_SEEDS", 0..8);
     let replay = |s: u64| format!("OSIS_PURGE_BY_ID_START={s} OSIS_PURGE_BY_ID_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact {name}");
     // per seed: its purges by ID of a commit the purger forgot
     let by_name = seeds.run(name, replay, |seed| {
@@ -376,9 +376,8 @@ fn purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5() {
         }
         by_name
     });
-    // the default seeds reach a purge by name; another range (a replay, the gate's offset)
-    // checks the reads alone
-    assert!(seeds.overridden || by_name.iter().sum::<usize>() > 0, "no purge went through a name");
+    // a seed may purge nothing through a name (about 1 per seed on average)
+    osis_base::testenv::reach_floor("purges through a name", by_name, 1, 4);
 }
 
 // spec/commits.md §5 Purge: a purge that expires reaches only deltas expiring no later, so one

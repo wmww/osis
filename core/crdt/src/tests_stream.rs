@@ -372,17 +372,19 @@ fn case(seed: u64) -> Result<Tally, String> {
 /// §3.3, §8: text, list and kitchen-sink deltas and snapshots, unpaged and paged, mutated in the
 /// root or a page or re-cut at a leaf seam: the streaming check decides as the whole re-encode;
 /// where they accept, joining the pieces equals joining the whole, into every kind of prior
-/// state. A run of 18 seeds or more pages often and both rejects and accepts mutants, re-cuts
-/// among them (else it tests nothing).
+/// state. The seeds page and both reject and accept mutants, re-cuts among them (else it tests
+/// nothing: `reach_floor`).
 #[test]
 #[ignore = "property"]
 fn stream_check_matches_whole_large_spec_8() {
     let out = crate::testutil::crdt_seeds("tests_stream::stream_check_matches_whole_large_spec_8", 0..600, |seed| case(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
-    let k = out.len();
-    if k >= 18 {
-        let n = out.iter().fold(Tally::default(), |a, b| Tally { accepted: a.accepted + b.accepted, rejected: a.rejected + b.rejected, paged: a.paged + b.paged, pieces: a.pieces + b.pieces, recut_rejected: a.recut_rejected + b.recut_rejected });
-        assert!(n.accepted * 18 > 30 * k && n.rejected * 18 > 100 * k && n.paged * 18 > 8 * k && n.pieces * 18 > 8 * k && n.recut_rejected * 18 > 15 * k, "{n:?} over {k} seeds");
-    }
+    use osis_base::testenv::reach_floor as f;
+    // a seed may reach none of any: an unpaged one (seed / 3 % 3 == 0) pages nothing
+    f("accepted", out.iter().map(|x| x.accepted), 1, 2);
+    f("rejected", out.iter().map(|x| x.rejected), 1, 2);
+    f("paged", out.iter().map(|x| x.paged), 1, 4);
+    f("pieces", out.iter().map(|x| x.pieces), 1, 4);
+    f("re-cuts rejected", out.iter().map(|x| x.recut_rejected), 1, 2);
 }
 
 /// §8: leaf links swapped, a leaf dropped or repeated, a page's run split at a seam: rejected

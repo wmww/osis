@@ -737,28 +737,23 @@ mod tests {
     }
 
     /// §4.5, §4.6, §5.7, §6, §8: random scripts of local ops, model commits, undos, joins in
-    /// any order and snapshot bootstraps on three replicas pass every check of `replay`; a run
-    /// of 32 seeds or more reaches each kind of step.
+    /// any order and snapshot bootstraps on three replicas pass every check of `replay`; the
+    /// seeds reach each kind of step (`reach_floor`).
     #[test]
     #[ignore = "property"]
     fn random_scripts_replay_plain_spec_5_7() {
         let out = crate::testutil::crdt_seeds("fuzz_seq::tests::random_scripts_replay_plain_spec_5_7", 0..32, |seed| replay(&script(seed)));
-        let k = out.len();
-        let mut all = Stats::default();
-        for x in out {
-            all.commits += x.commits;
-            all.partial += x.partial;
-            all.one_by_one += x.one_by_one;
-            all.model_ops += x.model_ops;
-            all.model_commits += x.model_commits;
-            all.undos += x.undos;
-            all.restores += x.restores;
-            all.joins += x.joins;
-            all.model_joins += x.model_joins;
-            all.merged += x.merged;
-        }
-        let floor = |n: usize, per32: usize| k < 32 || n * 32 > per32 * k;
-        assert!(floor(all.commits, 150) && floor(all.partial, 40) && floor(all.one_by_one, 40) && floor(all.model_ops, 40) && floor(all.model_joins, 8) && floor(all.undos, 10) && floor(all.restores, 2) && floor(all.joins, 300) && floor(all.merged, 20), "{all:?} over {k} seeds");
+        use osis_base::testenv::reach_floor as f;
+        // every seed commits and joins; the rest one per two seeds (a seed may take none)
+        f("commits", out.iter().map(|x| x.commits), 1, 1);
+        f("joins", out.iter().map(|x| x.joins), 9, 1);
+        f("partial", out.iter().map(|x| x.partial), 1, 2);
+        f("one by one", out.iter().map(|x| x.one_by_one), 1, 2);
+        f("model ops", out.iter().map(|x| x.model_ops), 1, 2);
+        f("model joins", out.iter().map(|x| x.model_joins), 1, 2);
+        f("undos", out.iter().map(|x| x.undos), 1, 2);
+        f("restores", out.iter().map(|x| x.restores), 1, 2);
+        f("merged", out.iter().map(|x| x.merged), 1, 2);
     }
 
     /// Shrinks the failing script of `OSIS_SHRINK=<seed>` (as `random_scripts_replay_plain_spec_5_7`

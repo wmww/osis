@@ -828,8 +828,8 @@ fn bound_value(r: &mut Rng, depth: u32) -> Value {
 }
 
 /// `decoded_bound` holds for random values held whole (set elements, map keys) and as fragments
-/// (map values, list elements); a run of 50 seeds or more leaves over half unpaged (paged ones
-/// are not checked; about 3 in 4 are unpaged). spec: none (resource bound)
+/// (map values, list elements); paged ones are not checked (about 1 in 5), so the seeds leave a
+/// shape unpaged at least every other seed (one seed may page all four). spec: none (resource bound)
 #[test]
 #[ignore = "property"]
 fn decoded_bound_holds_random_values_plain() {
@@ -845,8 +845,7 @@ fn decoded_bound_holds_random_values_plain() {
         ];
         shapes.iter().filter(|v| check_snapshot_bound(created(v))).count()
     });
-    let (checked, k) = (out.iter().sum::<usize>(), out.len());
-    assert!(k < 50 || checked > 2 * k, "{checked} of {} unpaged", 4 * k);
+    osis_base::testenv::reach_floor("unpaged shapes checked", out, 1, 2);
 }
 
 proptest! {

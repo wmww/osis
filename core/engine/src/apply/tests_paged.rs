@@ -1849,7 +1849,7 @@ fn honest_values_sync_through_the_fetch_walk_plain_spec_wire_6() {
     let name = "apply::tests_paged::honest_values_sync_through_the_fetch_walk_plain_spec_wire_6";
     let seeds = osis_base::testenv::Seeds::from_env("OSIS_HONEST_PAGES_START", "OSIS_HONEST_PAGES_SEEDS", 0..8);
     let replay = |s: u64| format!("OSIS_HONEST_PAGES_START={s} OSIS_HONEST_PAGES_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact {name}");
-    let paged = seeds.run(name, replay, |seed| {
+    seeds.run(name, replay, |seed| {
         // per seed thread: the page parameters are the thread's
         let _pages = osis_crdt::PageParams::set_test(Some(params));
         let mut r = MRng(seed + 1);
@@ -1874,11 +1874,10 @@ fn honest_values_sync_through_the_fetch_walk_plain_spec_wire_6() {
         assert!(!waits, "seed {seed}: left waiting after {rounds} rounds");
         let want = w.lp.peers[0].engine.get(&t, &a).unwrap();
         assert!(want.is_some() && w.lp.peers[3].engine.get(&t, &a).unwrap() == want, "seed {seed}: node 3 reads what node 0 does");
-        usize::from(rounds > 1)
+        // every value pages under the small pages (the generated one alone too): the walk takes
+        // more than one round
+        assert!(rounds > 1, "seed {seed}: fetched in one round, nothing paged");
     });
-    // the default seeds reach paging; another range (a replay, the gate's offset) checks the reads alone
-    let paged: usize = paged.into_iter().sum();
-    assert!(seeds.overridden || paged >= 4, "paged values reached: {paged}");
 }
 
 /// spec/sync-streams.md (page discovery), spec/crdt.md §3.3 rule 7: the walk follows paged
