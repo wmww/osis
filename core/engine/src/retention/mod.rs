@@ -1771,6 +1771,37 @@ mod tests {
         check(&mut lp, "a join beside an invalid part");
     }
 
+    // spec: none (internal: notes/engine.md, Derived values: a reader depends on the rows as
+    // last refreshed). A follower of an aspect's held writes row is due after `Engine::follow`
+    // alone once a body joins the aspect: under no history setting nothing in the join dates a
+    // part, so no date's refresh moves the row first.
+    #[test]
+    fn a_held_writes_reader_is_due_after_follow_alone() {
+        use osis_base::memo::Effects;
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let x = Ak::new("x:m.0").unwrap();
+        let set = |m: &mut Mutation, t, k: &str| {
+            m.op(t, &x, PathOp { path: vec![PathSeg::Key(Value::Str(k.into()))], op: Op::Set(Value::Int(1)) }).unwrap();
+        };
+        let e = &mut lp.peers[0].engine;
+        let me = e.me();
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, me);
+        set(&mut m, t, "k0");
+        e.commit(m).unwrap().unwrap();
+        let mut fx: Effects<(), std::sync::Arc<super::bounds::HeldWrites>> = Effects::new("held writes reader");
+        fx.want(());
+        let first = fx.settle(&(), || e.run(|tx| super::bounds::held_writes(tx, &t, &x)).unwrap()).unwrap().1;
+        assert!(fx.due().is_empty());
+        let mut m = Mutation::new();
+        set(&mut m, t, "k1");
+        e.commit(m).unwrap().unwrap();
+        e.follow().unwrap();
+        assert_eq!(fx.due(), vec![()], "due after follow alone");
+        let (old, now) = fx.settle(&(), || e.run(|tx| super::bounds::held_writes(tx, &t, &x)).unwrap()).unwrap();
+        assert!(old == Some(first) && now != *old.as_ref().unwrap(), "the row moved with the join");
+    }
+
     // spec: none (internal: notes/engine.md, Derived values). A memo reading a commit's leftover
     // runs again when the record is written, and again when a failed transaction undoes that
     // write.

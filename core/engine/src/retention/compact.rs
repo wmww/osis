@@ -1346,6 +1346,95 @@ mod tests {
         }
     }
 
+    /// Sets key `k` of thing `t`'s aspect `x` to `v` at `e`, expiring at `exp` when given: in
+    /// memory where `x` is ephemeral.
+    fn set_until(e: &mut Engine, t: Tid, x: &Ak, k: &str, v: &str, exp: Option<u64>) {
+        let mut m = Mutation::new();
+        m.op(t, x, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str(k.into()))], op: osis_crdt::Op::Set(Value::Str(v.into())) }).unwrap();
+        if let Some(at) = exp {
+            m.expires(t, x, osis_base::WallMs(at)).unwrap();
+        }
+        let c = if x.ephemeral() { e.commit_in_memory(m) } else { e.commit(m) };
+        c.unwrap().unwrap();
+    }
+
+    /// A writer of aspect `x` holding a large live key `a` and, per entry of `exps`, a key `e<i>`
+    /// written to expire that many ms past the start. Returns the peer and the thing.
+    fn expiring(x: &Ak, exps: &[u64]) -> (LocalPeer, Tid) {
+        let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
+        let p = &mut lp.peers[0];
+        let me = p.engine.me();
+        let mut m = Mutation::new();
+        let t = p.engine.new_thing(&mut m, me);
+        p.commit(m).unwrap();
+        // a state large beside a body: a few more bodies stay below the trigger
+        set_until(&mut p.engine, t, x, "a", &"v".repeat(20_000), None);
+        let start = p.engine.now().0;
+        for (i, at) in exps.iter().enumerate() {
+            set_until(&mut p.engine, t, x, &format!("e{i}"), "v", Some(start + at));
+        }
+        assert!(p.engine.compactions().unwrap().is_empty(), "below the trigger");
+        (lp, t)
+    }
+
+    /// `lp`'s clock advanced `ms`, then its tick and the trigger's step: the snapshots the quiet
+    /// rule wrote.
+    fn quiet_after(lp: &mut LocalPeer, ms: u64) -> u64 {
+        lp.advance(ms);
+        lp.peers[0].tick().unwrap();
+        osis_base::costs::take();
+        lp.peers[0].engine.compactions().unwrap();
+        osis_base::costs::take().iter().find(|x| x.0 == "compact: quiet snapshots").map_or(0, |x| x.2)
+    }
+
+    fn leftovers(lp: &mut LocalPeer, x: &Ak) -> usize {
+        lp.peers[0].engine.compaction_load().unwrap().into_iter().find(|l| l.ak == *x).map_or(0, |l| l.leftovers)
+    }
+
+    // spec/sync-compaction.md §1 (Cover once quiet): a writer holding an expired write's leftover,
+    // too small for the trigger, writes a snapshot dropping it once the aspect has been quiet at
+    // it for `MAX_DRIFT`, not before, and one per quiet time: later quiet times write none.
+    // Durable and ephemeral alike.
+    #[test]
+    fn leftover_covered_once_quiet_spec_sync_compaction_1() {
+        for x in ["x:m+.0", "x:m.0"].map(|x| Ak::new(x).unwrap()) {
+            let (mut lp, _) = expiring(&x, &[60_000]);
+            assert_eq!(quiet_after(&mut lp, 61_000), 0, "{x}: expired: quiet from here");
+            assert_eq!(leftovers(&mut lp, &x), 1, "{x}: the expired write is held as its leftover, below the trigger");
+            assert_eq!(quiet_after(&mut lp, QUIET_MS - 1), 0, "{x}: not yet quiet for MAX_DRIFT");
+            assert_eq!(leftovers(&mut lp, &x), 1, "{x}");
+            assert_eq!(quiet_after(&mut lp, 1), 1, "{x}: quiet for MAX_DRIFT: covered");
+            assert_eq!(leftovers(&mut lp, &x), 0, "{x}: the snapshot dropped the leftover");
+            assert_eq!(quiet_after(&mut lp, QUIET_MS), 0, "{x}: one per quiet time");
+            assert_eq!(quiet_after(&mut lp, 10 * QUIET_MS), 0, "{x}");
+        }
+    }
+
+    // spec/sync-compaction.md §1 (Cover once quiet): the quiet time starts again at a write of
+    // the aspect held, at another of its writes expiring, and at an open (the node ran
+    // throughout; a durable aspect, whose leftover outlives the restart): the cover comes
+    // `MAX_DRIFT` after the last of these, not after the expiry.
+    #[test]
+    fn quiet_cover_waits_out_churn_and_restarts_spec_sync_compaction_1() {
+        let half = QUIET_MS / 2;
+        for stir in ["write", "expiry", "restart"] {
+            let x = Ak::new(if stir == "restart" { "x:m.0" } else { "x:m+.0" }).unwrap();
+            let exps = if stir == "expiry" { vec![60_000, 61_000 + half] } else { vec![60_000] };
+            let (mut lp, t) = expiring(&x, &exps);
+            assert_eq!(quiet_after(&mut lp, 61_000), 0);
+            assert_eq!(quiet_after(&mut lp, half), 0, "{stir}");
+            match stir {
+                "write" => set_until(&mut lp.peers[0].engine, t, &x, "b", "v", None),
+                "restart" => lp.peers[0].restart(3).unwrap(),
+                _ => {} // the second write expired at that tick
+            }
+            assert_eq!(quiet_after(&mut lp, half + 1), 0, "{stir}: past the first quiet time, stirred since");
+            assert!(leftovers(&mut lp, &x) >= 1, "{stir}");
+            assert_eq!(quiet_after(&mut lp, half), 1, "{stir}: quiet for MAX_DRIFT since");
+            assert_eq!(leftovers(&mut lp, &x), 0, "{stir}");
+        }
+    }
+
     // spec/sync-compaction.md §1 (trigger): a writer whose held bodies passed the trigger while the thing's
     // delete keys were not here (`MayWrite::Later`: a first holder's grant gave the thing secrets
     // of its own, its `keys.0` not yet received) compacts them once the keys arrive, with no write

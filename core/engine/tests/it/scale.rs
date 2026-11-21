@@ -709,6 +709,42 @@ fn commits_after_their_snapshot_are_linear_spec_permissions_5_2() {
     all_linear("commits after their snapshot", &snapshot_first(12), &snapshot_first(120));
 }
 
+/// A fresh reader's first sync of a thing holding n one-element commits (200-byte elements), each content commit
+/// arriving before every commit it waits on (the thing's record, the reader's grant: all pend),
+/// then those: (its work, pending commits examined again).
+fn first_sync(n: usize) -> (Work, u64) {
+    use crate::common::TAGS;
+    let mut lp = net(2, 0);
+    let t = crate::common::new_shared(&mut lp, 0);
+    let base: BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
+    // 200-byte elements: the state is paged at either size
+    for i in 0..n {
+        add(&mut lp, 0, t, &TAGS, format!("{i:08}{}", "e".repeat(192)));
+    }
+    let pks = crate::common::packages_to(&mut lp, 0, 1);
+    let (_, w) = measured_at(&mut lp, 1, |lp| {
+        for p in pks.iter().filter(|p| !base.contains(&p.id)).chain(pks.iter().filter(|p| base.contains(&p.id))) {
+            lp.deliver(1, p).unwrap();
+        }
+    });
+    let k = ak("t:tags.0");
+    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), lp.peers[0].engine.get(&t, &k).unwrap());
+    let examined = w.n("examined");
+    (w, examined)
+}
+
+// spec/commits.md §4 (Pending storage); spec/requirements.md, Scale (no operation O(history)): a
+// first sync of n and 10n commits, each arriving before what it waits on, does linear work: each
+// pending commit is examined again a fixed number of times, as what it waits on arrives, not after every
+// commit applied.
+#[test]
+fn a_first_sync_is_linear_spec_commits_4() {
+    let ((a, ea), (b, eb)) = (first_sync(40), first_sync(400));
+    assert!(ea >= 40 && eb >= 400, "the content commits pended: {ea}, {eb} examined again");
+    assert!(eb <= 2 * 400 + 40, "each pending commit examined again a few times: {eb} for 400");
+    all_linear("a first sync", &a, &b);
+}
+
 /// n one-element commits on t by its mint admin (0); B (1) writes one, received by C (2)
 /// alone; 0 removes B and C's addendum keeps B's add (held at 0 if `with`). Team T (a thing 0
 /// makes, 3 its admin) holds write on t and gains a member E (4) by 3: the work of that grant
