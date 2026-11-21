@@ -2611,13 +2611,16 @@ fn a_move_of_its_bodies_inputs_restarts_the_wait_spec_sync_judgement_2() {
 /// The durable commits (engine store, sync store) of one node's start, run to quiet.
 type Commits = (u64, u64);
 
+/// Per node of `starts`: its first start's commits, the bodies it logged there that the session
+/// did not, its quiet start's commits.
+type Start = (Commits, BTreeSet<(SyncId, BlobId)>, Commits);
+
 /// Node 0 makes `n` things, each kept unread by node 1 and read by node 2, run to quiet; then
 /// every node restarts cut off from the others (its first start after the session), run to
 /// quiet; then healed and run, each node restarts again cut off (a quiet start), run to quiet.
-/// Per node: the commits of its first start, the bodies it logged there that the session did
-/// not (the entries naming a commit and the own entries, certificate blobs too, per sync ID
-/// read), and the commits of its quiet start.
-fn starts(n: usize) -> Vec<(Commits, BTreeSet<(SyncId, BlobId)>, Commits)> {
+/// Per node a `Start` (bodies: the entries naming a commit and the own entries, certificate
+/// blobs too, per sync ID read).
+fn starts(n: usize) -> Vec<Start> {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, world};
     let mut w = world(0, 3);
@@ -2683,7 +2686,7 @@ fn a_start_after_a_session_finds_nothing_owed_at_n_and_10n_spec_sync_judgement_3
     for (i, (_, new, _)) in a.iter().chain(&b).enumerate() {
         assert!(new.is_empty(), "node {}: bodies a start logged that the session did not: {new:?}", i % 3);
     }
-    let first = |x: &[(Commits, BTreeSet<(SyncId, BlobId)>, Commits)]| x.iter().map(|y| y.0).collect::<Vec<_>>();
+    let first = |x: &[Start]| x.iter().map(|y| y.0).collect::<Vec<_>>();
     assert_eq!(first(&a), first(&b), "(engine, store) commits per node's first start at n and 10n");
     let quiet: Vec<Commits> = a.iter().chain(&b).map(|y| y.2).collect();
     assert!(quiet.iter().all(|x| *x == (0, 0)), "(engine, store) commits per node's quiet start: {quiet:?}");
