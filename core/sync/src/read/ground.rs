@@ -31,10 +31,6 @@ pub struct Facts {
     pub repair_fresh: Arc<BTreeSet<BlobId>>,
     /// A role commit or request (spec/sync-judgement.md §3 Role entries first).
     pub role: bool,
-    /// Per delta needing a carrier (holding a live write, kept, or dropped as covered and not
-    /// purged), the commits whose entries under S would carry it (spec/sync-compaction.md §1
-    /// Carriers): one of each set must be held where the body leaves. Empty: none needed.
-    pub carriers: Vec<BTreeSet<CommitId>>,
     /// Snapshots of the body's aspects stamped later than it that this node does not hold
     /// (forgotten, dropped), each with whether this node judged it invalid (spec/sync-judgement.md
     /// §2 established uncovered).
@@ -102,6 +98,12 @@ pub trait Ground {
     /// Per sync ID of the sync set, `c`'s body there (`Engine::sync_bodies`).
     fn bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>>;
     fn facts(&mut self, s: &SyncId, c: &CommitId) -> Result<Facts>;
+    /// `c`'s body under S taken as covered: per delta needing a carrier (holding a live write,
+    /// kept, or dropped as covered and not purged), the commits whose entries under S would
+    /// carry it (spec/sync-compaction.md §1 Carriers, `Engine::carriers`): one of each set must
+    /// be held where the body leaves. Empty: none needed. Asked only where an entry of the body
+    /// would leave: it moves with every snapshot extending the body's chain of covers.
+    fn carriers(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BTreeSet<CommitId>>>;
     /// `c`'s judgement under S went idle: what `facts` keeps of it may go (`Engine::unfollow_facts`).
     fn unfollow_facts(&mut self, s: &SyncId, c: &CommitId) {
         let _ = (s, c);

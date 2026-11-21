@@ -40,23 +40,23 @@ impl Engine {
     }
 
     /// spec/sync-judgement.md §2 must-not-hold (the clauses only the engine judges), §3 Role
-    /// entries first, Dropped bodies, Neither; spec/sync-compaction.md §1 Carriers.
+    /// entries first, Dropped bodies.
     /// - `must_not`: purged (a held request purges a part of the body, `purged_by`); another
     ///   node's card commit superseded (`card_superseded`) or ended (`card_ended`). A blob losing
     ///   to another is per blob (`blob_loses`).
     /// - `own`: written here. `role`: a role commit or a purge request.
-    /// - `carriers`: for a covered body, per part a held valid snapshot under S covers, the
-    ///   snapshots covering it (one of each must be held where the body leaves); a part dropped
-    ///   as covered, the held valid snapshots of its chain of covers (spec/permissions.md §5.2).
     /// - `later_unheld`: snapshots stamped later than it whose part is dropped here, each with
     ///   whether it was dropped as invalid, on the aspects of its parts established uncovered.
     /// - `missing`: a part of the body counts as never received (dropped as covered, its cover
     ///   gone, or found valid again), other than one sealed below this node's floor
     ///   (`rotation::floors::sealed_below_floor`): it never opens here, so it is fetched for
     ///   nothing, and the body is judged with it as every reader judges it.
+    ///
+    /// Its carriers are a call of their own (`carriers`): they move with every snapshot
+    /// extending a chain of covers, which no other fact of a covered body does.
     pub(crate) fn read_facts_now(&mut self, s: &SyncId, c: &CommitId) -> Result<ReadFacts> {
         let body: BodyFacts = self.body_facts(s, c)?;
-        let mut f = ReadFacts { body, must_not: None, own: false, repair_fresh: Arc::default(), role: false, carriers: Vec::new(), later_unheld: Vec::new(), missing: false };
+        let mut f = ReadFacts { body, must_not: None, own: false, repair_fresh: Arc::default(), role: false, later_unheld: Vec::new(), missing: false };
         // a card is judged by its header alone: it is no closure body of S (spec/permissions.md §4)
         if let Some(h) = self.header(c)
             && let Some(node) = self.card_node(s, &h)?
@@ -80,49 +80,57 @@ impl Engine {
         if purged {
             f.must_not = Some(MustNot::Purged);
         }
-        // carriers matter only for a covered body (spec/sync-compaction.md §1), a later snapshot
-        // not held only for a delta otherwise established uncovered (spec/sync-judgement.md §2):
-        // so a snapshot of an aspect moves no fact of a body it cannot drop
-        let covered = f.body.covered == Some(true);
+        // a later snapshot not held matters only for a delta otherwise established uncovered
+        // (spec/sync-judgement.md §2): so a snapshot of an aspect moves no fact of a covered body
+        if f.body.covered == Some(true) {
+            return Ok(f);
+        }
         for ai in &b.parts {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let dropped = m.dropped(*ai).is_some_and(|d| d.as_cover());
-            if covered && dropped {
-                // the chain of covers it dropped under (spec/permissions.md §5.2): its held valid
-                // snapshots carry it
-                let carries = |x: &CommitId| self.core.ix.commits.get(x).is_some_and(|sm| sm.view.kind.is_compaction() && sm.aspect(&a.tid, &a.ak).is_some_and(|sai| sm.valid_at(sai) && !sm.is_dropped(sai) && !sm.missing(sai)));
-                let covering: BTreeSet<CommitId> = crate::retention::coverers(&self.core, c, *ai).into_iter().filter(|x| carries(x)).collect();
-                if !covering.is_empty() {
-                    f.carriers.push(covering);
-                }
+            if self.part_covered(c, &h, *ai)? != Some(false) {
                 continue;
             }
-            let uncovered = !covered && self.part_covered(c, &h, *ai)? == Some(false);
-            if !covered && !uncovered {
-                continue;
-            }
-            let snaps: Vec<CommitId> = self.core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).filter(|x| x != c).collect();
-            let mut covering = BTreeSet::new();
-            for x in snaps {
-                if covered && self.covered(&x, c, &a.tid, &a.ak)? == Some(true) {
-                    covering.insert(x);
-                }
-                if !uncovered {
-                    continue;
-                }
+            for x in self.core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).filter(|x| x != c) {
                 let Some(sm) = self.core.ix.commits.get(&x) else { continue };
                 let later = self.header(&x).is_some_and(|sh| sh.ts > h.ts);
                 if later && let Some(sai) = self.header(&x).and_then(|sh| sh.aspect_index(&a.tid, a.ak.as_str())) && let Some(d) = sm.dropped(sai) {
                     f.later_unheld.push((x, d.why == DropFor::Invalid));
                 }
             }
-            if !covering.is_empty() {
-                f.carriers.push(covering);
-            }
         }
         f.later_unheld.sort();
         f.later_unheld.dedup();
         Ok(f)
+    }
+
+    /// spec/sync-compaction.md §1 Carriers, for `c`'s body under `s` taken as covered
+    /// (`BodyFacts::covered`): per part a held valid snapshot under S covers, the snapshots
+    /// covering it; per part dropped as covered, the held valid snapshots of its chain of covers
+    /// (spec/permissions.md §5.2). One of each must be held where the body leaves.
+    pub(crate) fn carriers_now(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BTreeSet<CommitId>>> {
+        let (Some(b), Some(m), Some(h)) = (self.sync_body_now(s, c)?, self.core.ix.commits.get(c).cloned(), self.header(c)) else { return Ok(Vec::new()) };
+        let mut out = Vec::new();
+        for ai in &b.parts {
+            let Some(a) = h.aspects.get(*ai) else { continue };
+            let covering: BTreeSet<CommitId> = if m.dropped(*ai).is_some_and(|d| d.as_cover()) {
+                // the chain of covers it dropped under (spec/permissions.md §5.2): its held valid
+                // snapshots carry it
+                let carries = |x: &CommitId| self.core.ix.commits.get(x).is_some_and(|sm| sm.view.kind.is_compaction() && sm.aspect(&a.tid, &a.ak).is_some_and(|sai| sm.valid_at(sai) && !sm.is_dropped(sai) && !sm.missing(sai)));
+                crate::retention::coverers(&self.core, c, *ai).into_iter().filter(|x| carries(x)).collect()
+            } else {
+                let mut covering = BTreeSet::new();
+                for x in self.core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).filter(|x| x != c).collect::<Vec<_>>() {
+                    if self.covered(&x, c, &a.tid, &a.ak)? == Some(true) {
+                        covering.insert(x);
+                    }
+                }
+                covering
+            };
+            if !covering.is_empty() {
+                out.push(covering);
+            }
+        }
+        Ok(out)
     }
 
     /// The node whose card `h` is, when it is another node's card commit under this node's

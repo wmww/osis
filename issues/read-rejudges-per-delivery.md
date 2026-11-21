@@ -1,21 +1,13 @@
 # read judges a body again after each delivery
-> Summary: Node::handle settles every module after each input, and read's `judged` re-runs a body's judgement each time one of its reads moved: 7-21 judgements per (node, S, commit) in a run to quiet, two thirds to three quarters of them giving the answer already held, and the re-runs per round grow with the rounds already played though deliveries and moved answers stay flat. Read's settle is about a third of osis-sync's default-test instructions (Node::settle about 60%).
+> Summary: Node::handle settles every module after each input, and read's `judged` re-runs a body's judgement each time one of its reads moved: several judgements per (node, S, commit) in a run to quiet, about two in five giving the answer already held. Work per round no longer grows with the rounds played (`growth::flat_work`); what is left is the re-runs inside a round, and a prune's stamp checks over every absent-row reader of its table.
 > Priority: normal
 > Tags: sync, performance, tests
 
 ## Measured
-Counts from a scratch probe (osis-sync `read::Read::settle_on`, the `judged` loop): judgements (`read: judged`), answers that moved (`try_settle` returning `Some`), distinct (node, S, commit) keys judged, per phase of three default tests. Deliveries are `World::deliveries` in the phase.
+Counts from a scratch probe over the `growth` grant arm (`grant_rounds`: the same steps each round, 53 deliveries, about 47 fresh (S, commit) keys): per round about 240 judgements of keys first judged that round (140 answers moved) and 40-60 of keys of earlier rounds (20-30 moved), flat from round 2 to round 11. cpuprof before the history fix (instruction-sampled, one thread): `Node::settle` 57% of `growth::`, 61% of `holding::`, 70% of the duties test; `Read::settle` 32-37% of each; `Node::dispatch` 12-18%.
 
-| phase | deliveries | judgements | moved | keys |
-|---|---|---|---|---|
-| `duties::sibling_removals_apart_both_hold_through_sync_spec_permissions_3`, the heal run | 172 | 5,272 | 1,343 | 249 |
-| `growth` grant arm, round 1 | 53 | 470 | 158 | 66 |
-| `growth` grant arm, round 10 | 53 | 692-802 | 153-163 | 144-203 |
-| `growth` lowered writes, restart and tombstone lifetime | 160 | 1,908 | 550 | 498 |
-
-- Per key, a run to quiet judges a body 7 (grant round) to 21 (heal) times; its answer moves 2-5 times (each delivery bringing a part of the picture), and 66-75% of the runs return the answer already held.
-- The grant arm plays the same round each time (53 deliveries, about 47 fresh keys, about 160 moved answers per round), yet its judgements per round rise from 470 to about 700-800 by the tenth: bodies of earlier rounds are judged again by each later round, while answering as before. Work per change grows with history (spec/requirements.md Scale), which `growth::` does not check: it counts storage, not work.
-- cpuprof (instruction-sampled, one thread): `Node::settle` 57% of `growth::`, 61% of `holding::`, 70% of the duties test; `Read::settle` 32-37% of each; `Node::dispatch` (taking the messages themselves) 12-18%.
+- Per key, a run to quiet judges a body several times; its answer moves 2-5 times (each delivery bringing a part of the picture). The steady causes of an unchanged re-run of an earlier round's body, per round: `index: commits` (about 21) and `store: local rows 0x63` (about 12), each the same every round.
+- A prune of a store table's removal stamps (`memo::Table::prune`) moves no `Effects` reader of another absent row, but `Effects::due` still checks each such reader's stamps once per prune (no judgement): O(absent-row readers of the table) per prune, a prune per about as many removals as the table has stamped rows. Bounding removal stamps by the readers too (a prune per as many removals as there are readers at bucket stamps) would make it O(1) per removal.
 
 ## Direction
-Find what moves under an unchanged answer: which reads of `judge::body` move per delivery (issues/test-time.md, Levers 2 names the suspects: blobs at S, presence at a source, own entries, `may_log`'s role reads through `role_now`), and why bodies of earlier rounds are re-judged in later ones. Narrow those reads to what the answer depends on (fast by construction), rather than settling less often: a node settles after every input by design (sans-IO step), and batching inputs would hide the cost from tests without removing it from nodes. Then a scale test counting judgements per round at n and 10n rounds (the grant arm's shape) guards it.
+Find what moves under an unchanged answer within a round: which reads of `judge::body` move per delivery (issues/test-time.md, Levers 2 names the suspects: blobs at S, presence at a source, own entries, `may_log`'s role reads through `role_now`). Narrow those reads to what the answer depends on (fast by construction), rather than settling less often: a node settles after every input by design (sans-IO step), and batching inputs would hide the cost from tests without removing it from nodes. `growth::flat_work` guards the history half; a count of re-runs per key at quiet would guard this one.

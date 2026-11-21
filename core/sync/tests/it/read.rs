@@ -71,22 +71,42 @@ fn meta() -> BodyMeta {
     BodyMeta { parts: [0].into(), expires: None, order: 1, copy: false, certificate: false, header_only: false, mints: BTreeSet::new() }
 }
 
+/// A body's facts and its carriers (`Ground::facts`, `Ground::carriers`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Fx {
+    facts: Facts,
+    carriers: Vec<BTreeSet<CommitId>>,
+}
+
+impl std::ops::Deref for Fx {
+    type Target = Facts;
+    fn deref(&self) -> &Facts {
+        &self.facts
+    }
+}
+
+impl std::ops::DerefMut for Fx {
+    fn deref_mut(&mut self) -> &mut Facts {
+        &mut self.facts
+    }
+}
+
 /// A body of this node's own, established uncovered: must-hold.
-fn uncovered() -> Facts {
-    Facts {
+fn uncovered() -> Fx {
+    let facts = Facts {
         body: BodyFacts { required: true, closure: true, dropped: None, invalid: false, kept: false, hosts_from: 0, covered: Some(false), sole_certificate: false, lasting_header: false },
         must_not: None,
         own: true,
         repair_fresh: Arc::default(),
         role: false,
-        carriers: Vec::new(),
         later_unheld: Vec::new(),
         missing: false,
-    }
+    };
+    Fx { facts, carriers: Vec::new() }
 }
 
 /// Covered by snapshot `by`, past its keep bound: its live write needs `by` as carrier.
-fn covered(by: CommitId) -> Facts {
+fn covered(by: CommitId) -> Fx {
     let mut f = uncovered();
     f.body.covered = Some(true);
     f.carriers = vec![[by].into()];
@@ -133,7 +153,7 @@ struct Fake {
     bodies: Stamped<CommitId, Arc<BTreeMap<SyncId, BodyMeta>>>,
     /// Something else `Ground::bodies` reads, written without changing what it gives.
     bodies_read: Stamped<CommitId, u64>,
-    facts: Stamped<(SyncId, CommitId), Facts>,
+    facts: Stamped<(SyncId, CommitId), Fx>,
     marks: Stamped<(SyncId, CommitId), u64>,
     creds: Stamped<SyncId, Arc<ReadCredentials>>,
     own: Stamped<(SyncId, CommitId), Vec<Entry>>,
@@ -341,7 +361,10 @@ impl Ground for Fake {
         Ok(self.bodies.get(c).cloned().unwrap_or_default())
     }
     fn facts(&mut self, s: &SyncId, c: &CommitId) -> Result<Facts> {
-        Ok(self.facts.get(&(*s, *c)).cloned().unwrap_or_else(uncovered))
+        Ok(self.facts.get(&(*s, *c)).cloned().unwrap_or_else(uncovered).facts)
+    }
+    fn carriers(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BTreeSet<CommitId>>> {
+        Ok(self.facts.get(&(*s, *c)).map(|f| f.carriers.clone()).unwrap_or_default())
     }
     fn fall_mark(&mut self, s: &SyncId, c: &CommitId) -> u64 {
         self.marks.get(&(*s, *c)).copied().unwrap_or(0)
@@ -611,7 +634,7 @@ impl W {
     }
 
     /// The engine holds `c` with a body under each of `ids`, judged `f`.
-    fn hold(&mut self, c: CommitId, ids: &[SyncId], f: Facts) {
+    fn hold(&mut self, c: CommitId, ids: &[SyncId], f: Fx) {
         for s in ids {
             self.g.facts.insert((*s, c), f.clone());
         }
@@ -620,7 +643,7 @@ impl W {
         self.settle();
     }
 
-    fn judge(&mut self, s: SyncId, c: CommitId, f: Facts) {
+    fn judge(&mut self, s: SyncId, c: CommitId, f: Fx) {
         self.g.facts.insert((s, c), f);
         self.settle();
     }

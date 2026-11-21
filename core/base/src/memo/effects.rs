@@ -166,39 +166,65 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     /// in want order. A key stays due until it is settled. Debug builds add, after them, keys
     /// whose settle compares with the value kept (`Checks`).
     pub fn due(&mut self) -> Vec<K> {
-        let mut maybe: HashSet<K> = std::mem::take(&mut self.pending);
-        for ix in self.tables.values_mut() {
+        let given = std::mem::take(&mut self.pending);
+        let mut maybe: HashSet<K> = given.clone();
+        // per container written since the marks, the keys written or removed (by hash) and
+        // whether it changed whole
+        let mut wrote: HashMap<usize, (HashSet<u64, Ids>, bool), Ids> = HashMap::default();
+        for (p, ix) in self.tables.iter_mut() {
             let changes = lock(&ix.table).read_log(&mut ix.at);
             if changes.is_empty() {
                 continue;
             }
             // any change moves what read it whole
             maybe.extend(ix.whole.iter().cloned());
+            let (keys, all) = wrote.entry(*p).or_default();
+            let mut buckets = HashSet::new();
             for c in changes {
                 match c {
-                    Logged::Key { h, .. } => maybe.extend(ix.keys.get(&h).into_iter().flatten().cloned()),
-                    Logged::Bucket(h) => {
+                    Logged::Key { h, .. } => {
+                        keys.insert(h);
                         maybe.extend(ix.keys.get(&h).into_iter().flatten().cloned());
-                        for x in ix.buckets.get(&bucket(h)).into_iter().flatten() {
-                            maybe.extend(ix.keys.get(x).into_iter().flatten().cloned());
-                        }
+                    }
+                    Logged::Bucket(h) => {
+                        keys.insert(h);
+                        maybe.extend(ix.keys.get(&h).into_iter().flatten().cloned());
+                        buckets.insert(bucket(h));
                     }
                     Logged::Whole => {}
-                    Logged::All => maybe.extend(ix.keys.values().flatten().cloned()),
+                    Logged::All => {
+                        *all = true;
+                        maybe.extend(ix.keys.values().flatten().cloned());
+                    }
                 }
+            }
+            for x in buckets.iter().filter_map(|b| ix.buckets.get(b)).flatten() {
+                maybe.extend(ix.keys.get(x).into_iter().flatten().cloned());
             }
         }
         crate::costs::count("effects: candidates", maybe.len() as u64);
         // a logged write of a key read, before the read or by a key sharing its hash, moved
-        // nothing: the stamps say which did
+        // nothing: the stamps say which did. A key read at its bucket's absent stamp and written
+        // by nothing since moved only with another key's pruned removal (`Table::prune`): its
+        // value stands, read again at the bucket's stamp now. Not for a key given before: the
+        // write that moved it may be in an earlier `due`'s log
+        let bucket_only = |d: &Dep| -> bool {
+            let Some(h) = d.key else { return false };
+            let Some((keys, all)) = wrote.get(&(Arc::as_ptr(&d.table) as usize)) else { return false };
+            !*all && !keys.contains(&h) && !lock(&d.table).keys.contains_key(&h)
+        };
         let mut due: Vec<(u64, K)> = Vec::new();
         #[cfg(debug_assertions)]
         let mut check: Vec<(u64, K)> = Vec::new();
         for k in maybe {
             let Some(f) = self.followed.get_mut(&k) else { continue };
-            if f.value.is_none() || !f.deps.iter().all(Dep::holds) {
+            let moved = f.value.is_none() || f.deps.iter().any(|d| !d.holds() && (given.contains(&k) || !bucket_only(d)));
+            if moved {
                 due.push((f.seq, k));
             } else {
+                for d in f.deps.iter_mut() {
+                    d.seen = lock(&d.table).stamp(d.key);
+                }
                 #[cfg(debug_assertions)]
                 if super::effect_checks() {
                     f.moved += 1;
@@ -673,21 +699,46 @@ mod tests {
     }
 
     // spec: none (internal). Removal stamps stay as many as the keys stamped otherwise (at least
-    // the buckets): past that they are pruned, which moves each pruned key's bucket, so a reader
-    // of an absent key there moves then and a reader of a key read since its removal does too.
+    // the buckets): past that they are pruned, which moves each pruned key's bucket. A reader of
+    // an absent key nothing wrote moves not (its value stands); one of a key present with no
+    // stamp of its own (since `wrote_all`) that was written, removed and pruned moves, at the
+    // `due` after and at each later one until settled, whatever prunes came between.
     #[test]
-    fn pruned_removals_move_their_buckets() {
+    fn a_prune_moves_the_readers_of_what_it_pruned_alone() {
+        let ab = super::super::ABSENT_BUCKETS as u16;
+        // removes keys `from..` until a prune, stamps bounded throughout
+        let churn = |m: &mut Stamped<u16, u8>, from: u16| {
+            let was = lock(&m.stamps.0).absent;
+            for k in from..from + 4 * ab {
+                m.insert(k, 1);
+                m.remove(&k);
+                assert!(lock(&m.stamps.0).removed.len() <= ab as usize, "removal stamps bounded");
+            }
+            assert_ne!(lock(&m.stamps.0).absent, was, "a prune moved buckets");
+        };
         let mut m: Stamped<u16, u8> = Stamped::default();
         let mut e: Effects<u16, u8> = Effects::new("test pruned");
         settle_once(&mut e, || m.get(&5000).copied().unwrap_or(0));
-        let mut moved = false;
-        for k in 0..4 * super::super::ABSENT_BUCKETS as u16 {
-            m.insert(k, 1);
-            m.remove(&k);
-            moved |= e.due() == [1];
-            assert!(lock(&m.stamps.0).removed.len() <= super::super::ABSENT_BUCKETS, "removal stamps bounded");
+        let was = m.stamps.stamp(&5000u16);
+        for i in 0..4 {
+            churn(&mut m, 1000 * i);
+            assert_eq!(e.due(), Vec::<u16>::new(), "nothing wrote the absent key read");
         }
-        assert!(moved, "a prune moved the bucket of the absent key read");
+        assert_ne!(m.stamps.stamp(&5000u16), was, "its bucket moved");
+        m.insert(5000, 1);
+        assert_eq!(e.due(), [1], "read again at its bucket's stamp: its own write moves it");
+        let mut m: Stamped<u16, u8> = Stamped::default();
+        let mut e: Effects<u16, u8> = Effects::new("test pruned present");
+        m.insert(7, 1);
+        m.stamps.wrote_all();
+        settle_once(&mut e, || m.get(&7).copied().unwrap_or(0));
+        m.insert(7, 2);
+        m.remove(&7);
+        churn(&mut m, 1000);
+        assert!(!lock(&m.stamps.0).keys.contains_key(&super::super::hash(&7u16)), "its removal pruned");
+        assert_eq!(e.due(), [1], "written, removed and pruned");
+        churn(&mut m, 2000);
+        assert_eq!(e.due(), [1], "given before, not settled since");
     }
 
     // spec: none (internal). Nothing reacts to what did not change: a reader of an absent key is

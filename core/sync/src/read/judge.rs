@@ -307,14 +307,14 @@ pub(crate) fn last_why() -> &'static str {
 /// keep-at-least bound, each delta needing a carrier having one held there. A certificate but a
 /// sole one (a lasting header has no delta to cover) is required whatever snapshot covers it:
 /// never dropped as covered, may-hold only while this node may not log it (§2 Loggable: kept).
-fn covered_dropped(v: &Verdict, f: &Facts, mut held: impl FnMut(&CommitId) -> Result<bool>) -> Result<bool> {
+fn covered_dropped<G: Ground>(g: &mut G, s: &SyncId, c: &CommitId, v: &Verdict, f: &Facts, mut held: impl FnMut(&mut G, &CommitId) -> Result<bool>) -> Result<bool> {
     if *v != Verdict::May || f.body.covered != Some(true) || f.body.kept || (!f.body.closure && !f.body.sole_certificate) {
         return Ok(false);
     }
-    for alternatives in &f.carriers {
+    for alternatives in g.carriers(s, c)? {
         let mut any = false;
-        for c in alternatives {
-            if held(c)? {
+        for c in &alternatives {
+            if held(g, c)? {
                 any = true;
                 break;
             }
@@ -448,10 +448,11 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     if verdict == Verdict::Unjudged {
         return Ok(j);
     }
-    // own store (§3 Own store): it follows this node's judgement alone, no delete key needed
+    // own store (§3 Own store): it follows this node's judgement alone, no delete key needed;
+    // carriers are read only where an entry would leave
     let dropped_here = match &f {
-        Some(f) => covered_dropped(&verdict, f, |x| Ok(!g.own(s, x)?.is_empty()))?,
-        None => false,
+        Some(f) if !live.is_empty() => covered_dropped(g, s, c, &verdict, f, |g, x| Ok(!g.own(s, x)?.is_empty()))?,
+        _ => false,
     };
     // judged invalid here, the body leaves the own store with no tombstone, so the node is no
     // refetch source of it and its commit becomes forgettable (spec/commits.md §5 Forgetting);
@@ -727,7 +728,7 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full
         // and it waits `MAX_DRIFT` past its keep-at-least bound (spec/commits.md §5 Keep at
         // least: every node's clock agrees it left history)
         _ => match f {
-            Some(f) => covered_dropped(verdict, f, |x| Ok(full || !g.seen(&src.at, s, x)?.present.is_empty()))? && mine.reached(f.body.hosts_from),
+            Some(f) => covered_dropped(g, s, c, verdict, f, |g, x| Ok(full || !g.seen(&src.at, s, x)?.present.is_empty()))? && mine.reached(f.body.hosts_from),
             None => false,
         },
     };

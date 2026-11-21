@@ -721,18 +721,25 @@ fn settled(w: &mut World) -> Vec<Held> {
     (0..w.len()).map(|i| held(w, i)).collect()
 }
 
+/// What read does in a round, both nodes together: judgements of a body (`read: judged`) and
+/// store rows it reads (`store rows read <- read`).
+type Work = [u64; 2];
+
 /// Node 0 mints a thing with its account root as admin, writes it, and gives node 1's account read on
 /// it: node 1 accepts (`accept`, a strong from its account root) or declines (no accept, the
 /// fire left in its inbox); node 0 writes again, removes node 1's account, and both let the thing
 /// go (node 0 its strong, node 1 its accept). `rounds` times, the first by `redeem_round` with
-/// `redeem`; then `settled`.
-fn grant_rounds(rounds: usize, accept: bool, redeem: bool) -> (World, Vec<Held>) {
+/// `redeem`; then `settled`. With read's work per round.
+fn grant_rounds(rounds: usize, accept: bool, redeem: bool) -> (World, Vec<Held>, Vec<Work>) {
     use crate::harness::history::Holder;
     let mut w = world(0, 2);
     w.cap = 2_000_000;
+    let mut work = Vec::new();
     for k in 0..rounds {
+        osis_base::costs::take();
         if redeem && k == 0 {
             redeem_round(&mut w);
+            work.push(round_work());
             continue;
         }
         let give = if accept { Grant(0, k, 1, Gives::Reads) } else { Give(0, k, Holder::Node(1), Gives::Reads) };
@@ -743,9 +750,35 @@ fn grant_rounds(rounds: usize, accept: bool, redeem: bool) -> (World, Vec<Held>)
         steps.extend([Unstrong(0, None, k), Run]);
         let _ = play(&mut w, &steps, String::new());
         w.advance(1_000);
+        work.push(round_work());
     }
     let held = settled(&mut w);
-    (w, held)
+    (w, held, work)
+}
+
+/// Read's work since the last `costs::take` (`Work`).
+fn round_work() -> Work {
+    let taken = osis_base::costs::take();
+    let n = |name: &str| taken.iter().filter(|(k, ..)| *k == name).map(|(.., n)| n).sum::<u64>();
+    [n("read: judged"), n("store rows read <- read")]
+}
+
+/// spec/requirements.md Scale (each operation costs in proportion to what it changes, never to
+/// history): every round plays the same steps, so read's work over three rounds of the tenth's
+/// history is no more than over three of the first's. A body of an earlier round is judged again
+/// only where something deciding it moved: a snapshot extending its chain of covers moves its
+/// carriers, read only where an entry of it would leave (`Ground::carriers`); a removal stamp
+/// pruned in a store table moves no reader of another absent row (`memo::Effects::due`). One
+/// round's count varies by about a tenth either way, so windows of three are compared.
+fn flat_work(work: &[Work], who: &str) {
+    let window = |r: std::ops::Range<usize>| -> Work {
+        let w = &work[r];
+        [w.iter().map(|x| x[0]).sum(), w.iter().map(|x| x[1]).sum()]
+    };
+    let (early, late) = (window(1..4), window(work.len() - 3..work.len()));
+    for (i, what) in ["judgements", "store rows read"].iter().enumerate() {
+        assert!(late[i] <= early[i], "{who}: read's {what} per round grow with the rounds played: rounds 2-4 {}, the last three {} ({work:?})", early[i], late[i]);
+    }
 }
 
 /// `grant_rounds`' first accepting round, by a link: node 0 makes thing 0, writes it and makes a
@@ -799,8 +832,12 @@ fn redeem_round(w: &mut World) {
 /// at 0 rounds, the same for every arm, built once per process), each round's set removals at
 /// most `removals` a node.
 fn grants_as_fresh(accept: bool, redeem: bool, removals: usize) {
-    let (mut wf, fresh) = fixture_with("growth grants fresh", || grant_rounds(0, true, false));
-    let ((mut wa, a), (mut wb, b)) = (grant_rounds(1, accept, redeem), grant_rounds(10, accept, redeem));
+    let (mut wf, fresh) = fixture_with("growth grants fresh", || {
+        let (w, held, _) = grant_rounds(0, true, false);
+        (w, held)
+    });
+    let ((mut wa, a, _), (mut wb, b, work)) = (grant_rounds(1, accept, redeem), grant_rounds(10, accept, redeem));
+    flat_work(&work, if accept { "accepted" } else { "declined" });
     // the redeem round's set removals: the link's seed thing's and K's strongs and tickets beside the thing's
     let extra = if redeem { 4 } else { 0 };
     for (i, who) in ["the maker", "the grantee"].iter().enumerate() {

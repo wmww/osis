@@ -276,7 +276,10 @@ impl Ground for Live<'_, '_> {
             MustNot::CardSuperseded => Why::CardSuperseded,
             MustNot::CardEnded => Why::CardEnded,
         });
-        Ok(Facts { body: f.body, must_not, own: f.own, repair_fresh: f.repair_fresh, role: f.role, carriers: f.carriers, later_unheld: f.later_unheld, missing: f.missing })
+        Ok(Facts { body: f.body, must_not, own: f.own, repair_fresh: f.repair_fresh, role: f.role, later_unheld: f.later_unheld, missing: f.missing })
+    }
+    fn carriers(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BTreeSet<CommitId>>> {
+        Ok(self.cx.engine.carriers(s, c)?)
     }
     fn unfollow_facts(&mut self, s: &SyncId, c: &CommitId) {
         self.cx.engine.unfollow_facts(s, c);

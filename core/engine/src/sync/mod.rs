@@ -238,9 +238,6 @@ pub struct ReadFacts {
     pub repair_fresh: Arc<BTreeSet<BlobId>>,
     /// A role commit or a purge request (spec/sync-judgement.md §3 Role entries first).
     pub role: bool,
-    /// Per delta needing a carrier, the commits one of which must be held where the body leaves
-    /// (spec/sync-compaction.md §1 Carriers).
-    pub carriers: Vec<BTreeSet<CommitId>>,
     /// Snapshots of its aspects stamped later than it that this node does not hold, each with
     /// whether it was judged invalid (spec/sync-judgement.md §2 established uncovered).
     pub later_unheld: Vec<(CommitId, bool)>,
@@ -487,6 +484,14 @@ impl Engine {
     /// `follow`): a reader moves only when the facts do; `unfollow_facts` lets a key go.
     pub fn read_facts(&mut self, s: &SyncId, c: &CommitId) -> Result<ReadFacts> {
         osis_base::memo::Cutoff::get_in(self, |e| &e.core.read_facts, &(*s, *c), |e, (s, c)| e.read_facts_now(s, c))
+    }
+
+    /// `c`'s carriers under `s`, its body taken as covered (spec/sync-compaction.md §1 Carriers):
+    /// per delta needing one, the commits one of which must be held where the body leaves. Not
+    /// kept: a judgement asks only where it would let an entry of the body go, so a body whose
+    /// entries went reads nothing of the snapshots extending its chain of covers.
+    pub fn carriers(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BTreeSet<CommitId>>> {
+        self.carriers_now(s, c)
     }
 
     /// Stops keeping `c`'s facts under `s` (`read_facts`): its judgement went idle.
