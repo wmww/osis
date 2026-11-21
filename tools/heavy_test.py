@@ -145,14 +145,14 @@ expect("short logged", [o.get("lane") for o in log if o["ev"] == "acq"][-1], "sh
 expect("short refuses --limit", heavy("--short", "--limit", "gate", "true")[0], 1)
 fcntl.flock(lock, fcntl.LOCK_UN)
 
-# past a cap the lane kills the run's whole tree (exit 137); caps given directly, as limit
-# heavy.short's are too large to wait for in a test
+# past a cap the lane kills the run's whole tree (exit 137); caps and polling given directly, as
+# limit heavy.short's are too large to wait for in a test
 LANE = r"""
 import importlib.machinery, importlib.util, json, sys
 l = importlib.machinery.SourceFileLoader("heavy", sys.argv[1])
 h = importlib.util.module_from_spec(importlib.util.spec_from_loader("heavy", l)); l.exec_module(h)
 cpu, wall, rss, cmd = float(sys.argv[2]), float(sys.argv[3]), int(sys.argv[4]), sys.argv[5:]
-h.SHORT_RSS = rss
+h.SHORT_RSS, h.SHORT_POLL_S = rss, 0.1
 who = dict(who="t", branch="t", sess="", via="", cmd="t")
 rc = h.hold(cmd, "heavy", None, who, [dict(argv=cmd, cwd=None, env=None)], None, (cpu, wall))
 print(rc)
@@ -177,7 +177,7 @@ def alive(pid):
 
 
 big = str(1 << 40)
-got, err = lane(1, 60, big, "sh", "-c", rf'sh -c "echo \$\$ >> {pidf}; {spin}" & sh -c "echo \$\$ >> {pidf}; {spin}"; wait')
+got, err = lane(0.5, 60, big, "sh", "-c", rf'sh -c "echo \$\$ >> {pidf}; {spin}" & sh -c "echo \$\$ >> {pidf}; {spin}"; wait')
 expect("CPU cap over a tree", (got, "CPU-s" in err), (["137"], True))
 left = [int(p) for p in open(pidf).read().split() if alive(p)]
 expect("the whole tree killed", left, [])
@@ -209,7 +209,7 @@ HOLD = r"""
 import importlib.machinery, importlib.util, sys
 l = importlib.machinery.SourceFileLoader("heavy", sys.argv[1])
 h = importlib.util.module_from_spec(importlib.util.spec_from_loader("heavy", l)); l.exec_module(h)
-h.YIELD_CORES, h.YIELD_WINDOW_S, h.SAMPLE_S = float(sys.argv[2]), 1, 0.2
+h.YIELD_CORES, h.YIELD_WINDOW_S, h.SAMPLE_S = float(sys.argv[2]), 0.5, 0.1
 cmd = sys.argv[3:]
 who = dict(who="t", branch="t", sess="", via="", cmd="t")
 print(h.hold(cmd, "heavy", None, who, [dict(argv=cmd, cwd=None, env=None)], None))
@@ -249,18 +249,19 @@ def yielding(cores, job, hold_s=0.0, waiter=True):
 
 
 # one spinning process: under 1.5 cores, so the waiter gets the lock while it still runs
-rc, ev, (wacq, _), end = yielding(1.5, spinners(1, 4))
-expect("spinner yields", (rc, [o["ev"] for o in ev if o["ev"] in ("yld", "back")], wacq < end - 1), (["0"], ["yld"], True))
+rc, ev, (wacq, _), end = yielding(1.5, spinners(1, 2))
+expect("spinner yields", (rc, [o["ev"] for o in ev if o["ev"] in ("yld", "back")], wacq < end - 0.5), (["0"], ["yld"], True))
 # idle, then over its share beside the waiter's hold: stopped until it holds the lock again, then done
-rc, ev, (_, wrel), _ = yielding(0.5, f"sleep 2; {spinners(4, 1)}", hold_s=3)
+rc, ev, (_, wrel), _ = yielding(0.5, f"sleep 1; {spinners(4, 0.5)}", hold_s=1.5)
 backs = [o for o in ev if o["ev"] == "back"]
 expect("idle then busy: yields, stops, resumes", (rc, [o["ev"] for o in ev if o["ev"] in ("yld", "back")], [o["paused"] for o in backs]),
        (["0"], ["yld", "back"], [True]))
 expect("resumed only after the waiter's hold", backs and backs[0]["t"] >= wrel - 0.05, True)
-# a busy run keeps the lock with a waiter; a quiet one keeps it with none
-rc, ev, (wacq, _), end = yielding(0.5, spinners(4, 3))
+# a busy run keeps the lock with a waiter (two spinners: over 0.5 cores at any load); a quiet one
+# keeps it with none
+rc, ev, (wacq, _), end = yielding(0.5, spinners(2, 1.5))
 expect("busy keeps the lock", (rc, [o["ev"] for o in ev if o["ev"] == "yld"], wacq >= end - 0.5), (["0"], [], True))
-rc, ev, _, _ = yielding(1.5, "sleep 2", waiter=False)
+rc, ev, _, _ = yielding(1.5, "sleep 1", waiter=False)
 expect("no waiter: no yield", (rc, [o["ev"] for o in ev if o["ev"] == "yld"]), (["0"], []))
 
 subprocess.run(["rm", "-rf", d])

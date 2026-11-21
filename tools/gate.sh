@@ -175,12 +175,24 @@ step locks
 step python3 tools/policy.py
 if [ -z "$core" ]; then gui_only "GUI-only change"; fi
 # instant checks first (policy.py above holds the spec map's): the tools' own tests (every
-# tools/*_test.*) only when what they read changed (tooling)
+# tools/*_test.*) only when what they read changed (tooling), all at once (each works in its own
+# scratch dirs; one at a time, the stage's wall is their sum), then each one's output in order
 instant() {
+  local t pids rc failed
+  pids=
   for t in tools/*_test.*; do
-    case $t in *.sh) step sh "$t" ;; *) step python3 "$t" ;; esac
+    case $t in *.sh) sh "$t" ;; *) python3 "$t" ;; esac > "$tmp/${t#tools/}.out" 2>&1 < /dev/null &
+    pids="$pids $!"
+  done
+  failed=
+  set -- $pids
+  for t in tools/*_test.*; do
+    rc=0; wait "$1" || rc=$?; shift
+    printf '== %s: exit %s\n' "$t" "$rc"; cat "$tmp/${t#tools/}.out"
+    [ "$rc" = 0 ] || failed="$failed $t"
   done
   step python3 tools/limits.py split
+  [ -z "$failed" ] || { echo "gate: the tools' own tests failed:$failed" >&2; return 1; }
 }
 if [ -n "$tooling" ]; then limited gate.checks instant; fi
 if [ "$core" = docs ]; then

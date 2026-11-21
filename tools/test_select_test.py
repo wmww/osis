@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests tools/test_select.py on a fabricated workspace in a throwaway repo. Exit 1 on a mismatch."""
-import os, shutil, subprocess, sys, tempfile
+import contextlib, functools, io, os, shutil, subprocess, sys, tempfile
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -35,9 +35,22 @@ def git(*a):
 
 
 def out(*a):
-    r = subprocess.run([sys.executable, TOOL, *a, "--offset", "7"] if "--paths" not in a else [sys.executable, TOOL, "--offset", "7", *a], capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    return r.stdout
+    """test_select's report for args `a` at offset 7: run in process (the workspace's `cargo metadata`
+    read once, as its manifests never change here), the first call as a command."""
+    args = [*a, "--offset", "7"] if "--paths" not in a else ["--offset", "7", *a]
+    if not calls:
+        calls.append(1)
+        r = subprocess.run([sys.executable, TOOL, *args], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+    sys.argv = [TOOL, *args]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert not test_select.main()
+    return buf.getvalue()
+
+
+calls = []
 
 
 fails = 0
@@ -103,6 +116,7 @@ for f in ("notes/a.md", "tools/x.sh", "schema/core.osis", "schema/README.md", "s
 write("core/mid/build.rs", '// reads "../../schema/core.osis"\n')
 write("core/base/testenv-known.txt", "OSIS_ORDER_START\nOSIS_ORDER_SEEDS\nOSIS_ORDER_SEED\nOSIS_CRDT_SEED\n")
 subprocess.run(["cargo", "metadata", "--format-version", "1"], check=True, capture_output=True)
+test_select.metadata = functools.cache(test_select.metadata)
 git("init", "-q", "-b", "main")
 git("config", "user.email", "t@t")
 git("config", "user.name", "t")
