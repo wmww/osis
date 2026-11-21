@@ -11,7 +11,14 @@ Draft files: notes/a3-spec/permissions.md (§2 one bullet; §4 the removal and l
 - brief 6 (acting after a pass) waits on OPEN 12 (drops after a complete pass, finding 33).
 - brief 7 (the keyset seed) waits on OPEN 8.
 
-## For Tess
+## For Tess (all answered)
+None of these is open. The draft below is rewritten at stage D of notes/redesign-plan.md; until then the items stand as they were asked, with their answers:
+- 1, 5: within spec/requirements.md as written (a node missing data reads as if it never had it; a removal binds the nodes that receive it). No question.
+- 2, 3, 4, 7: gone with the delivery duty, which is not built: a removal reaches a far thing with that thing's next key rotation and where a node holds both it and a write it judges. The list's form is the coordinator's.
+- 8: a bug: a demotion arriving with a key rotation brings its list. No demotion travels eagerly.
+- 9: a write judged invalid is set aside, never dropped for the verdict, so it is there when the cancelling removal arrives.
+- 6, 10: restated without the duty: a list part sits where writes it judges are held and leaves with them. spec/requirements.md Scale reads "on it, or on what its writers act through".
+- 11: as today.
 Each a question about the model, with what a user would observe.
 1. **How long a far document shows a removed person's new writes.** A removal reaches a document the removed person could write through the removed membership (however many grants down) when some device holding the removal and able to read that document next syncs and reaches its servers. Until then its readers show the removed (or stolen) device's new writes there as valid, and a complete sync of the document does not end that (finding 29). Where no such device exists or comes online, the writes stay shown. Today a far document learns of the removal when a writer of each thing in between next writes (each rotates its keys, carrying the removal), or when a device syncing both carries it; with no such writer or device, never. A3 is as fast or faster than today in every world built (The delivery duty, When a far reader learns). Is "until a device holding the removal and reading the document next reaches it" within "only propagation waits"?
 2. **A remover's device lost right after removing.** If the removal reached any server that another live device holding read on the organisation syncs, that device delivers it (no designated device), with the list of what the removed person wrote, kept with the removal under the organisation's own sync ID for good. If it reached no such server, it is lost like any unsynced change. Acceptable?

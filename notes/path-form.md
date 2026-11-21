@@ -85,7 +85,11 @@ Every error stating paths can raise, against what main accepts in one commit:
 - **One search for a path serving every thing**: rests a part on a longer route than its own.
 - **A purge author per thing**: a level-2 key per author names a holder on another thing's chain.
 
-## For Tess
+## For Tess (all answered)
+None of these is open:
+- 1: no new sentence; spec/requirements.md already says a write is one commit or refused, never split.
+- 2: refused. A write acts only as things on its chain.
+- 3, 4, 5: the coordinator's, as built (padding, the bound of 64, the sealed form counted against the size limit): none is visible to users.
 1. Proposed property (spec/requirements.md): "A write may span things reached through different actors; it is one commit."
 2. Open 16, `act_as(X)` where X is not on every thing's path (X holds no role on a thing written, or the write is of X itself), at `engine::write::stated_paths` (the Interim fallback):
    | | main | built | proposed |
