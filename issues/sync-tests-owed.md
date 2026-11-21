@@ -7,7 +7,7 @@ Test conventions: notes/sync-test-harness.md (one harness, one fast test per spe
 
 ## Reference graph properties with no sync world test
 Each needs a sync world (three nodes, contacts or siblings, inbox delivery) unless it says otherwise.
-- Security on a recording world (`w.record`; the old metadata and shred modules are in git at e499872aa^ core/sync/tests/it): a node keeping S unread holds in clear, live or overwritten, no value, map key, content or core AK, role secret, or writer's node tid or signing key, and every blob it keeps has a Padmé length; a purge reaching a reader while away, and a dropped blob's wraps and key row (one sync ID or several), leave nothing the forensic attack recovers; a crash at every write of sync's forget (notes/test-security.md).
+- Security on a recording world (`w.record`; the old metadata and shred modules are in git at e499872aa^ core/sync/tests/it): a node keeping S unread holds in clear, live or overwritten, no value, map key, content or core AK, role secret, or writer's node tid or signing key, and every blob it keeps has a Padmé length (by hand: what an attack on its whole device decrypts holds none of them but the core AKs its own things carry); a purge reaching a reader while away, and a dropped blob's wraps and key row (one sync ID or several), leave nothing the forensic attack recovers; a crash at every write of sync's forget (notes/test-security.md).
 - D's deposit seed is fresh after a node removal: the removed node's deposit to the inbox is refused (an account removal from a thing: engine `flows::removal_refreshes_deposit_seed_*`).
 
 ## Scenarios from the old sync's issues
