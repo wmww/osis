@@ -208,7 +208,8 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
      - a `Slots` whose encoding pruning (§4.2, §7) would change (content rule 5 leaves out, such as a deleted embedded character, does not count).
    - **`Derived` sources**
      - a creation run of a `Derived` source in a writer's delta (only snapshots carry embedded characters, §7);
-     - a write stamped with a `Derived` source other than a text element's creation and that creation as a position write (§7).
+     - a write stamped with a `Derived` source other than a text element's creation and that creation as a position write (§7);
+     - a position or flag write on an element of a `Derived(d)` source stamped with dot `d` (a dot is one write, §2.1: `d` is the register write's whose embedding creates the element, §7).
    - **Writer's deltas**
      - in a writer's delta, runs with empty `Content` of more than `MAX_DELTA_BARE` elements in all, pages included.
        - A delete or move of more elements is split across commits; `replace` and `remove_aspect` clear any length with one reset.
@@ -333,7 +334,7 @@ A write is **dead** at a node once the join has superseded it:
 **Which write.** A write is its position, kind and stamp, never its stamp alone (one op stamps many writes: every value of a map set). Positions: a struct field, an enum payload, a set or bag element, a set's value removal by its dot (§5.5), a map entry by its dot (the dot's records are one entry, §5.6), a sequence element per element (a range record is one per element), and the content of an entry or element, below that one's own writes; a `Slots` position's slots are one position, a slot's embedding of the register the register's writes (§7). A fragment's **winning writes** are the writes it holds but:
 - of a sequence element's position writes only `cur`, when it is not the creation's own (`prev` is beaten);
 - of a text element's flag write only a winning one (§5.7; one below the creation is beaten);
-- not a text element's creation while its winning flag is a delete, but for an embedded char (§7), which dies with its register's write;
+- not a text element's creation while its winning flag is a delete; an embedded char's creation (§7), with its position write, is the register write it is a copy of, whichever records or slots hold copies of it, so it dies only with that write;
 - of a map dot's records, the writes of their join (a write beaten at its position by one in another record of the dot is beaten).
 
 Copies of one write (§4.1) are one write: what copy order decides (a key, a value, a reference, a removal's reference and parts, an anchor, a char) never makes a copy another write, so a copy losing by copy order is no death. Which elements a value removal hides is read in the copies held as they join (§4.1), whether or not a reset prunes the element's write or the removal from the state. A register write is also the reset its stamp implies (§5.1), so a reset of that stamp at its position (another encoding's) is no death while the write wins.
@@ -341,7 +342,7 @@ Copies of one write (§4.1) are one write: what copy order decides (a key, a val
 A write of fragment `A` is dead in `A ⊔ B` iff it wins in `A` and not in `A ⊔ B`.
 
 **When.** It dies at the earliest `ts` among the valid writes the node holds that supersede it, or at T by expiry (which dates no body, spec/commits.md §5).
-- Each is judged against the write alone, so the order of arrival does not matter; a write is held while any held body holds it (its own commit, or a snapshot carrying it), and a register write's embedding (§7) wherever the write is.
+- Each is judged against the write alone, so the order of arrival does not matter; a write is held while any held body holds a copy of it (its own commit, or a snapshot carrying it; a register write also by a copy of its embedding, §7, which supersedes as the register write does).
 - A write's `ts` is its own commit's, also when a snapshot carries it: a valid snapshot's copy of a write whose own delta is held invalid counts as the write itself.
 - A text element's creation dies only by a delete beating the latest undelete of the element the node holds: stamped after it, or a copy of its stamp (a delete wins the tie, §4.1).
 

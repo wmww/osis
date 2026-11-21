@@ -336,7 +336,9 @@ pub fn bulk_value(r: &mut Rng, ty: &Ty, depth: u32) -> Value {
 /// position write with other anchors or keys, moves with random anchors and sibling keys (cycles
 /// through chains and range records), deletes, undeletes, resets; with `slots` (text), register
 /// writes of strings at the position (§7: embedded chars, `Derived` dots moved, deleted and
-/// anchored at, held or not). Joined into deltas of 1..4 writes each.
+/// anchored at, held or not), forged copies of a register write (other strings) and of its
+/// embedding (other chars, fewer or more, as a snapshot carries them). Joined into deltas of
+/// 1..4 writes each.
 pub fn hostile(r: &mut Rng, list: bool, slots: bool) -> Vec<Frag> {
     let mut deltas = Vec::new();
     let mut single = hostile_writes(r, list, slots, 48).into_iter().peekable();
@@ -364,8 +366,10 @@ fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
     use crate::stamp::Stamp as MStamp;
     use crate::state::{Anchor as MAnchor, Composite, SeqElem as MElem};
     let srcs = [Source::session(1, 0), Source::session(2, 0), Source::session(3, 0)];
-    // the dots of the register writes so far (their embedded chars: `Derived(d)`, 1..)
+    // the dots of the register writes so far (their embedded chars: `Derived(d)`, 1..), and
+    // their stamps (forged copies of a write and of its embedding)
     let mut regs: Vec<Dot> = Vec::new();
+    let mut reg_stamps: Vec<MStamp> = Vec::new();
     fn dot(r: &mut Rng, srcs: &[Source; 3], regs: &[Dot]) -> Dot {
         if !regs.is_empty() && r.chance(1, 4) {
             return Dot { source: Source::Derived(Box::new(regs[r.below(regs.len())].clone())), ctr: 1 + r.below(4) as u64 };
@@ -387,7 +391,20 @@ fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
         let t = (1 + r.below(30) as u64) << 16;
         let k = r.below(20);
         let mut elems = BTreeMap::new();
-        if k < 8 {
+        if k < 8 && !reg_stamps.is_empty() && r.chance(1, 3) {
+            // a forged copy of a register write's embedding (§7): its chars' creations, some or
+            // more than it embeds, other chars, mostly at its stamps, sometimes another `ts`
+            let rs = reg_stamps[r.below(reg_stamps.len())].clone();
+            let src = Source::Derived(Box::new(rs.dot.clone()));
+            let ct = if r.chance(1, 4) { t } else { rs.ts };
+            let (first, len) = (1 + r.below(3) as u64, 1 + r.below(4) as u64);
+            let mut a = if first == 1 { MAnchor::Head } else { MAnchor::Dot(Dot { source: src.clone(), ctr: first - 1 }) };
+            for i in first..first + len {
+                let e = Dot { source: src.clone(), ctr: i };
+                elems.insert(e.clone(), MElem::new(MStamp { ts: ct, dot: e.clone() }, a.clone(), Content::Char(any_char(r))));
+                a = MAnchor::Dot(e);
+            }
+        } else if k < 8 {
             // a creation chain of 1..4 elements (never of a `Derived` source: a writer's delta
             // rejects them)
             let d = Dot { source: srcs[r.below(3)].clone(), ctr: 1 + r.below(12) as u64 };
@@ -429,12 +446,21 @@ fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
                 elems.insert(e, MElem::flag(s.clone(), !undel, c));
             }
         } else if slots && r.chance(1, 2) {
+            if !reg_stamps.is_empty() && r.chance(1, 3) {
+                // a forged copy of a register write: its stamp, another string (§4.1 copy order)
+                let rs = reg_stamps[r.below(reg_stamps.len())].clone();
+                let v: String = (0..r.below(4)).map(|_| if r.chance(1, 4) { 'é' } else { any_char(r) }).collect();
+                out.push(Frag::Register { reset: None, write: Some((rs, Some(Value::Str(v)))) });
+                continue;
+            }
             // an old app's save: a register write of a string (a reset of everything older)
             pos_ctr += 1;
             let d = Dot { source: srcs[r.below(3)].clone(), ctr: pos_ctr };
             let v: String = (0..r.below(4)).map(|i| char::from(b'a' + ((d.ctr + i as u64 + 1) % 4) as u8)).collect();
-            out.push(Frag::Register { reset: None, write: Some((MStamp { ts: t, dot: d.clone() }, Some(Value::Str(v)))) });
+            let s = MStamp { ts: t, dot: d.clone() };
+            out.push(Frag::Register { reset: None, write: Some((s.clone(), Some(Value::Str(v)))) });
             regs.push(d);
+            reg_stamps.push(s);
             continue;
         } else {
             pos_ctr += 1;

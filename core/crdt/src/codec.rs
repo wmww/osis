@@ -1053,7 +1053,9 @@ pub(crate) fn decode_fragment(cx: &mut Dec, v: Item, may_reset: bool) -> Result<
 }
 
 /// §3.3 rule 7: only a text element's creation (and that creation as a position write) carries
-/// a `Derived` stamp; checks the writes of `f`'s own level (nested fragments check their own).
+/// a `Derived` stamp, and no position or flag write on an element of `Derived(d)` is stamped
+/// with dot `d` (a dot is one write, §2.1: the register write's, whose embedding creates the
+/// element, §7); checks the writes of `f`'s own level (nested fragments check their own).
 pub(crate) fn derived_ok(f: &Fragment) -> bool {
     let ok = |s: Option<&Stamp>| !s.is_some_and(|s| s.dot.src.is_derived());
     let meta = |m: &Meta| ok(m.reset.as_ref()) && ok(m.w.as_ref());
@@ -1066,9 +1068,10 @@ pub(crate) fn derived_ok(f: &Fragment) -> bool {
         Fragment::Map(x) => meta(&x.meta) && x.entries.values().all(|e| ok(e.reset.as_ref()) && ok(e.created.as_ref())),
         Fragment::Seq(x) => {
             meta(&x.meta)
-                && x.elems().values().all(|e| {
+                && x.elems().iter().all(|(d, e)| {
                     let created = e.created.as_ref().map(|c| &c.0);
-                    ok(e.deleted.as_ref().map(|d| &d.0)) && (x.text || ok(created)) && e.pos.iter().all(|(p, _, _)| ok(Some(p)) || Some(p) == created)
+                    let theirs = |s: &Stamp| d.src.is_derived() && s.dot == *d.origin();
+                    ok(e.deleted.as_ref().map(|d| &d.0)) && !e.deleted.as_ref().is_some_and(|f| theirs(&f.0)) && (x.text || ok(created)) && e.pos.iter().all(|(p, _, _)| (ok(Some(p)) || Some(p) == created) && !theirs(p))
                 })
         }
         Fragment::Slots(_) => true,

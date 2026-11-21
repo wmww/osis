@@ -232,6 +232,8 @@ impl Fragment {
                 (w, v)
             }
             Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => (w, elems.keys().cloned().collect()),
+            // the whole text where a copy of a register write's embedding is (`Seq::embeds`)
+            Fragment::Seq(s) if s.embeds() => return None,
             Fragment::Seq(s) => (w, s.elems().iter().flat_map(|(d, e)| [d.clone(), crate::seq_span::nth(d, e.span - 1)]).collect()),
             _ => return None,
         })

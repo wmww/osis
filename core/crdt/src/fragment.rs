@@ -554,7 +554,7 @@ impl Fragment {
             }
             (Fragment::Set(s), Fragment::Set(d)) => Fragment::Set(s.at(d, None, refs)),
             (Fragment::Bag(s), Fragment::Bag(d)) if s.kind == d.kind => Fragment::Bag(Bag { kind: s.kind, meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() }),
-            (Fragment::Seq(s), Fragment::Seq(d)) if s.encoding() == d.encoding() => Fragment::Seq(s.footprint(d)),
+            (Fragment::Seq(s), Fragment::Seq(d)) if s.encoding() == d.encoding() && !d.embeds() => Fragment::Seq(s.footprint(d)),
             _ => self.clone(),
         }
     }
@@ -628,7 +628,7 @@ impl Fragment {
             )),
             // a range record the join split (a write into one of its elements) is reached still
             // at every element: the records holding a dot of `before`'s
-            (Fragment::Seq(s), Fragment::Seq(d)) if s.encoding() == d.encoding() => match before {
+            (Fragment::Seq(s), Fragment::Seq(d)) if s.encoding() == d.encoding() && !d.embeds() => match before {
                 Some(Fragment::Seq(b)) => Fragment::Seq(s.footprint_of(&[d, b])),
                 _ => self.part_at(x),
             },

@@ -184,31 +184,69 @@ fn a_forged_delete_copy_of_an_undelete_fails_no_node_spec_crdt_4_8() {
     assert_eq!(forged_pair(&text(undeleted), &text(deleted)), Some(Value::Str(String::new())));
 }
 
-// spec/crdt.md §4.8 Which write, §7: a register write "ab" (t5) and a position write and a delete
-// forged at its own stamp on its second embedded char, each a snapshot of writer 1: the char's
-// creation `(t5, Derived, 2)` beats each, though no body holds the char (the register's is a plain
-// register), so each forged body is replaced at t5, at every peer in either arrival order, and
-// no tick fails. Fails with a register write's embedding read only from bodies holding a text slot.
+// spec/crdt.md §3.3 rule 7, §2.1, §7: a position write and a delete forged on a register write's
+// second embedded char stamped with the register write's own dot (at its stamp, the one stamp the
+// char's creation beats there that the register write's reset does not prune) have no wire form:
+// no node receives either. Fails with the decoders letting them in.
 #[test]
-fn a_write_forged_on_an_embedded_char_dies_by_the_register_write_spec_crdt_7() {
+fn a_write_forged_on_an_embedded_char_at_its_register_dot_has_no_wire_form_spec_crdt_3_3() {
     use crdt_model::state::{Anchor as MAnchor, Composite, Content, SeqElem as MSeqElem};
     let s = mstamp(5, 3);
-    let reg = MFrag::Register { reset: None, write: Some((s.clone(), Some(crdt_model::value::Value::Str("ab".into())))) };
     let second = crdt_model::stamp::Dot { source: MSource::Derived(Box::new(mdot(3))), ctr: 2 };
     let text = |e: MSeqElem| MFrag::Seq { text: true, c: Composite::default(), elems: [(second.clone(), e)].into_iter().collect() };
     for forged in [text(MSeqElem::write(Content::None, vec![(s.clone(), MAnchor::Head, None)], None)), text(MSeqElem::flag(s.clone(), true, None))] {
-        let (mut lp, t) = world();
-        let cf = forge(&mut lp, t, carried(&forged).expect("a wire form")).expect("the forger makes it");
-        lp.advance(10);
-        let cr = forge(&mut lp, t, carried(&reg).expect("a wire form")).expect("the forger makes it");
-        for (p, order) in [(0, [&cf, &cr]), (2, [&cr, &cf])] {
-            order.into_iter().for_each(|c| deliver(&mut lp, p, c));
-        }
-        for p in 0..3 {
-            assert_eq!(lp.peers[p].engine.replaced_at(&cf, &t, &ak()).unwrap(), Some(Ts::from_u64(s.ts).unwrap()), "peer {p}: {forged:?}");
-        }
-        settle_alike(&mut lp, t);
+        assert!(carried(&forged).is_none(), "{forged:?}");
     }
+}
+
+/// Register write `s` = `v` as a model fragment.
+fn mstring(s: &crdt_model::stamp::Stamp, v: &str) -> MFrag {
+    MFrag::Register { reset: None, write: Some((s.clone(), Some(crdt_model::value::Value::Str(v.into())))) }
+}
+
+/// Text elements: register write `s`'s embedded chars `(Derived(s.dot), i)` with chars `cs` from
+/// the first, created at `s`'s embedding stamps, chained from HEAD (a copy of the embedding).
+fn membedded(s: &crdt_model::stamp::Stamp, cs: &str) -> std::collections::BTreeMap<crdt_model::stamp::Dot, crdt_model::state::SeqElem> {
+    use crdt_model::state::{Anchor as MAnchor, Content, SeqElem as MSeqElem};
+    let src = MSource::Derived(Box::new(s.dot.clone()));
+    let mut prev = MAnchor::Head;
+    let mut out = std::collections::BTreeMap::new();
+    for (i, c) in cs.chars().enumerate() {
+        let d = crdt_model::stamp::Dot { source: src.clone(), ctr: i as u64 + 1 };
+        out.insert(d.clone(), MSeqElem::new(crdt_model::stamp::Stamp { ts: s.ts, dot: d.clone() }, prev, Content::Char(c)));
+        prev = MAnchor::Dot(d);
+    }
+    out
+}
+
+// spec/crdt.md §7 The embedding is the register's, §4.8 Which write: register write "a" (t5) and
+// a forged snapshot of the text carrying three chars' creations at its embedding's stamps: the
+// join cuts them to the winning copy's one char, and the copies are one write, the register
+// write, which wins: no node fails receiving either first, a tick or a restart, and all read
+// "a". Fails with an embedded char's creation counted as a write of its own (a dead write with
+// no superseder: Corrupt on receive).
+#[test]
+fn a_forged_copy_of_an_embedding_fails_no_node_spec_crdt_7() {
+    use crdt_model::state::Composite;
+    let s = mstamp(5, 3);
+    let text = MFrag::Seq { text: true, c: Composite::default(), elems: membedded(&s, "abc") };
+    assert_eq!(forged_pair(&mstring(&s, "a"), &text), Some(Value::Str("a".into())));
+}
+
+// spec/crdt.md §4.1 Copy order, §7: a `Slots` snapshot holding register copy "ab" of `s` (t5)
+// with its embedding and an insert after it, and a snapshot of register copy "é" of `s`, which
+// wins by copy order: the text slot's embedded records follow it, the second char's creation cut,
+// one write, no death: no node fails, all read alike. Fails with an embedded char's creation
+// counted as a write of its own.
+#[test]
+fn an_embedding_losing_by_copy_order_fails_no_node_spec_crdt_4_1() {
+    use crdt_model::state::{Anchor as MAnchor, Composite, Content, SeqElem as MSeqElem};
+    let s = mstamp(5, 3);
+    let mut elems = membedded(&s, "ab");
+    let second = crdt_model::stamp::Dot { source: MSource::Derived(Box::new(s.dot.clone())), ctr: 2 };
+    elems.insert(mdot(10), MSeqElem::new(mstamp(6, 10), MAnchor::Dot(second), Content::Char('z')));
+    let slots = MFrag::Slots { reg: Some(Box::new(mstring(&s, "ab"))), slots: [(9, MFrag::Seq { text: true, c: Composite { reset: Some(s.clone()), w: None, w_valueless: false }, elems })].into_iter().collect() };
+    assert!(forged_pair(&slots, &mstring(&s, "é")).is_some());
 }
 
 /// Seed `k`'s forged history (crdt-model's generators, notes/crdt.md Tests): writers 0 and 1

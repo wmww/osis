@@ -220,16 +220,35 @@ pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fr
     assert_eq!(killed, dead(before, after), "a join supersedes at its reach what it supersedes in the whole state");
     // what the engine dates a death by (`Killed::note`): each write dead at the reach dies by a
     // write held there before or after the join or in the delta, winning or not, or by a value
-    // removal hiding it in the copies as joined (`payloads`): every input, forged copies included,
+    // removal hiding it in the copies as joined (`hiders`): every input, forged copies included,
     // since a node that found none would fail the join with a local error
     let mut by: crate::ByWrite<()> = crate::ByWrite::default();
-    let mut payloads = crate::Payloads::default();
+    let mut hiders = crate::Hiders::default();
     for f in [&at, y, &at_after] {
         by.note(&f.held_writes(), |_, _| ());
-        payloads.note(f);
+        hiders.note(f);
     }
     for w in killed {
-        assert!(by.first_superseding(&w, &payloads, |s, _| Some(s.ts)).is_some(), "a write dead at the reach dies by a write held there: {w:?}");
+        assert!(by.first_superseding(&w, &hiders, |s, _| Some(s.ts)).is_some(), "a write dead at the reach dies by a write held there: {w:?}");
+    }
+}
+
+/// What a node dates a held body by (spec/commits.md §5, `retention::bounds::judge_replaced_at`):
+/// each write of a body that the join of `bodies` supersedes dies by a write one of them holds,
+/// winning or not, or by a removal hiding it as their copies join (`Hiders`): every input,
+/// forged copies included, since a node that found none would fail its tick with a local error.
+fn held_set_supersedes(bodies: &[Fragment]) {
+    let all = bodies.iter().fold(Fragment::default(), |f, b| joined(&f, b));
+    let (mut by, mut hiders) = (crate::ByWrite::<()>::default(), crate::Hiders::default());
+    for b in bodies {
+        by.note(&b.held_writes(), |_, _| ());
+        hiders.note(b);
+    }
+    let won = all.winners();
+    for b in bodies {
+        for w in b.winners().minus(&won) {
+            assert!(by.first_superseding(&w, &hiders, |s, _| Some(s.ts)).is_some(), "a held body's write the held set supersedes dies by a held write: {w:?}");
+        }
     }
 }
 
@@ -501,6 +520,11 @@ fn tally(f: &Fragment, seen: &mut BTreeSet<&'static str>) {
 fn check(k: u64) -> (Mode, BTreeSet<&'static str>) {
     let (mut r, c) = case(k);
     let reference = joins(&mut r, &c);
+    let bodies: Vec<Fragment> = c.deltas.iter().map(|(d, _)| frag(d)).collect();
+    held_set_supersedes(&bodies);
+    for _ in 0..2 {
+        held_set_supersedes(&bodies.iter().filter(|_| r.chance(1, 2)).cloned().collect::<Vec<_>>());
+    }
     wire(&c);
     let mut seen = BTreeSet::new();
     if let Some(st) = &reference {
@@ -589,4 +613,34 @@ fn implied_creation_pos_decodes_back_spec_3_3() {
     assert_eq!(back.fragment, f, "a canonical state's snapshot decodes back to it");
     let model = crdt_model::wire::decode_snapshot(&bytes, &mut snap_mcx()).unwrap();
     assert_eq!(frag(&model.0), f, "the model's decoder too");
+}
+
+/// §3.3 rule 7, §2.1, §7: a position write or a flag write on a register
+/// write `s`'s embedded char stamped with `s`'s dot (at `s` itself: the one stamp at or above the
+/// register write's reset and below the char's creation, so beaten by it there and lost from the
+/// element's top-2 when the join cuts the creation as a losing copy's, an order-dependent join)
+/// is bad input to both decoders; stamped otherwise it decodes.
+#[test]
+fn a_write_stamped_with_its_embedded_chars_register_dot_is_bad_input_spec_3_3() {
+    use crdt_model::state::{Anchor as MAnchor, Composite, Content, SeqElem as MSeqElem};
+    use crdt_model::stamp::Stamp as MStamp;
+    let d = MDot { source: MSource::session(1, 0), ctr: 3 };
+    let s = MStamp { ts: 5 << 16, dot: d.clone() };
+    let other = MStamp { ts: 6 << 16, dot: MDot { source: MSource::session(1, 0), ctr: 4 } };
+    let second = MDot { source: MSource::Derived(Box::new(d)), ctr: 2 };
+    let text = |e: MSeqElem| MFrag::Seq { text: true, c: Composite::default(), elems: [(second.clone(), e)].into_iter().collect() };
+    let mv = |st: &MStamp| text(MSeqElem::write(Content::None, vec![(st.clone(), MAnchor::Head, None)], None));
+    let del = |st: &MStamp| text(MSeqElem::flag(st.clone(), true, None));
+    let decodes = |f: &MFrag| {
+        let bytes = crdt_model::wire::encode_snapshot(f, &[], [3; 16], &mut snap_mcx());
+        let ours = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).is_ok();
+        assert_eq!(ours, crdt_model::wire::decode_snapshot(&bytes, &mut snap_mcx()).is_ok(), "both decoders alike: {f:?}");
+        ours
+    };
+    for f in [mv(&s), del(&s), mv(&MStamp { ts: 7 << 16, dot: s.dot.clone() })] {
+        assert!(!decodes(&f), "{f:?}");
+    }
+    for f in [mv(&other), del(&other)] {
+        assert!(decodes(&f), "{f:?}");
+    }
 }

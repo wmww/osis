@@ -1015,8 +1015,9 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
     Ok(f)
 }
 
-/// §3.3 rule 7: only a text element's creation (and that creation as a position write) carries a `Derived` stamp.
-/// Checks `f`'s own level; nested fragments were checked when decoded.
+/// §3.3 rule 7: only a text element's creation (and that creation as a position write) carries a `Derived` stamp,
+/// and no position or flag write on an element of `Derived(d)` is stamped with dot `d` (§2.1, §7). Checks `f`'s own
+/// level; nested fragments were checked when decoded.
 fn derived_ok(f: &Frag) -> bool {
     let ok = |s: Option<&Stamp>| !s.map_or(false, |s| matches!(s.dot.source, Source::Derived(_)));
     let comp = |c: &Composite| ok(c.reset.as_ref()) && ok(c.w.as_ref());
@@ -1028,9 +1029,10 @@ fn derived_ok(f: &Frag) -> bool {
         Frag::Map { c, entries } => comp(c) && entries.values().all(|e| ok(e.reset.as_ref()) && ok(e.created.as_ref())),
         Frag::Seq { text, c, elems } => {
             comp(c)
-                && elems.values().all(|e| {
+                && elems.iter().all(|(d, e)| {
                     let created = e.created.as_ref().map(|x| &x.0);
-                    ok(e.deleted.as_ref().map(|d| &d.0)) && (*text || ok(created)) && e.pos.iter().all(|(p, _, _)| ok(Some(p)) || Some(p) == created)
+                    let theirs = |s: &Stamp| matches!(&d.source, Source::Derived(o) if s.dot == **o);
+                    ok(e.deleted.as_ref().map(|d| &d.0)) && !e.deleted.as_ref().is_some_and(|f| theirs(&f.0)) && (*text || ok(created)) && e.pos.iter().all(|(p, _, _)| (ok(Some(p)) || Some(p) == created) && !theirs(p))
                 })
         }
         Frag::Slots { .. } => true,

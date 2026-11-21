@@ -132,6 +132,13 @@ impl Seq {
     pub(crate) fn into_elems(self) -> Elems {
         self.elems
     }
+    /// Whether a record here holds an embedded char's creation (§7; of a delta, only a snapshot
+    /// carries one): a copy of a register write, whose copies span every record of its
+    /// embedding, so what joining it supersedes is read in the whole sequence (`part_at`,
+    /// `reach`, `touched_elems`: a write dies only once no record holds a copy).
+    pub(crate) fn embeds(&self) -> bool {
+        self.elems.iter().any(|(d, e)| d.src.is_derived() && e.created.is_some())
+    }
     /// The records undoing `delta` reads (`seq_ops::undo` looks the pre-commit state up by the
     /// delta's dots): every record holding a dot of a delta record. O(delta), not O(sequence).
     pub(crate) fn footprint(&self, delta: &Seq) -> Seq {
