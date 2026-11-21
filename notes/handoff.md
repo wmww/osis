@@ -1,7 +1,8 @@
 # Handoff
 > Summary: For the next coordinator: what Tess decided in the review session after Windlass's run, what that run left on main and on branches. Delete once its items are taken.
 
-## Decided by Tess, in the plan and not yet in the design notes or spec
+## Decided by Tess, in the plan and the design notes, not yet in the models or spec
+Written into notes/write-path-design.md, notes/account-membership-design.md and notes/terms.md as lettered rules (notes/redesign-plan.md, D1 result); the drafts carry To recut sections. One question came back: issues/owner-key-first-attach.md.
 - **Owner keys replace key actors.** An **owner key** is a key a thing lists as allowed to sign as it: a concept of its own, a value with no tid, aspects or roles. Always "owner key", never "owner" alone (that reads as a role, and long ago was one: set at creation and immutable, which an owner key is not).
   - It speaks for the one thing that lists it: it is no actor and holds no role. A commit it signs is that thing acting, and the actor chain is all things, from the thing the key signs as to the target. Only things hold roles. A limited key is a thing with an owner key, granted what it should have: a node root is an ordinary thing with its node's owner key, holding a role on its account (README.md); a node wanting two accounts unlinked uses a thing and owner key for each.
   - A thing is minted with a mint admin or an owner key (a thing with no mint admin is where a chain starts). Owner keys are added and removed afterwards; the list is written only as the thing itself, by an owner key, and admins read it. A thing with none takes its first from an admin.

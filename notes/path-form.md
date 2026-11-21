@@ -3,6 +3,11 @@
 
 **Principle: a thing's path is header data, readable exactly by the nodes that judge that thing's parts.** A write is never refused or split for its paths (the owner's rule): one commit may write things its signer reaches through different holders.
 
+## To recut
+Built and unchanged by the design restated (notes/write-path-design.md) but for:
+- `remains` (the header's remaining admin, 1 B on every commit) goes with the last-admin rule every node judges (notes/write-path-design.md §5, The last admin); the byte counts below include it until it does.
+- At A4 the header's `signer` names the thing signed as and the commit names the owner key that signed (notes/write-path-design.md, Owner keys, O2); until then a key actor reads as a thing whose record holds its one key. The purge-author index 0 is the thing signed as.
+
 ## Who reads a path
 A thing T's path is read by every node that judges T's parts: T's holders, who hold the read roles secrets of T's independent (spec/crypto.md §3, §4: derived, boxed, or below a floor from history entries). A node holding the header but no secret of T's independent at the entry's epoch and no encryption of T's parts never needs T's path: T's content applies nothing there (spec/commits.md §4 Outside the node closure).
 

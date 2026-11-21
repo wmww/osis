@@ -11,6 +11,18 @@ Draft files: notes/a2-spec/permissions.md (§4 whole, §2 one bullet, A3's leaf 
 - brief 3 waits on OPEN 13 (creations for every edge write's reset, or removals' only), and the walk's per-write chained-ness (osis-perm `paths` reports first chained keys per edge only: an invite grant's chained-ness needs the per-write report; being built on windlass-walk-purge). Settled: OPEN 14 (no reach, Role changes travel kept whole), OPEN 15 (for good), OPEN 17 (record edges are edges of keys-open travel; finding 21), in the model and the derivation, the differential 0 disagreements. Finding 23 (a write through a read hop pends at a reader lacking the read grant) is modelled as three rules, of which J2 (a hop joins a part, and a part pends, only by a chained grant giving what the part needs there) holds everything and is *proposed*, in the model (`Join::Needed`) and the derivation (joins indexed per need); it waits on the decision and on the walk following it (osis-perm `paths` leaves a part inert while a hop has no walked grant of any role: per need instead). A list entry names its commit's parts on its leaf's thing alone (finding 24: roles-model `paths`, held-model through it, and the walk's `List`; A1's single list is the leaf of every thing). Finding 26 is settled in A1 (a cut's list answers that cut alone: notes/path-model-findings.md 44).
 Every other row of the map is settled.
 
+## To recut
+The design was restated after these drafts were written (notes/write-path-design.md §2; notes/redesign-plan.md, D1 result). What it changes here, by draft section; the spec text is rewritten from this once held-model is cut to the design. Everything not listed stands.
+| draft section | under the design |
+|---|---|
+| permissions §4, commits §4: the edge writes on a named remaining admin's edge as evidence (spec/wire.md §4 `remains`) | go: nothing names a remaining admin |
+| every **(A3)** sentence: the leaf frontier in permissions, wire's leaf and leaf blob, commits' wait on a leaf, sync-judgement's leaf blobs | go: a lowering's copy is whole, its list inside it (notes/write-path-design.md §2, E4); no part waits on a leaf |
+| permissions §4: the records of signers as evidence | stand until A4; then the held list writes on a commit's key hop are its evidence (E1) |
+| Open 4, 5, 12 (role entries, leaf bytes, a leaf's lifetime) | moot with the leaf form |
+| Open 14, 16 (how removals reach a sync ID; which removals reach carries) | settled: no reach, no errand; a removal is in a unit's required set while the unit holds a write it judges (D1 to D3), and the reader's deposit is to be modelled (D4) |
+| The model questions (b) (a sync ID whose only writers are hostile) | as stated there; it is the gap of notes/write-path-design.md §2 |
+| held-model oracle names (`Rule::fixed`, `Stage::A3`, `Rule::listed`, `Errand`) | recut: notes/write-path-design.md §6, held-model 1 to 4 |
+
 ## For Tess (all answered)
 None of these is open. The draft below is rewritten at stage D of notes/redesign-plan.md; until then the items stand as they were asked, with their answers:
 - 1, 4: within spec/requirements.md as written. Of 1's waits, a drop of a body judged invalid does not wait (at once, as built: Open 11 (b)); whether a deposit's promotion and a store delete resting on a verdict wait is the coordinator's.
