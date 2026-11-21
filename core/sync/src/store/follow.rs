@@ -180,10 +180,7 @@ fn apply_waiting(engine: &mut Engine, store: &Store, c: &CommitId) -> Result<boo
             if store.holding(&s) != Some(Holding::Read) {
                 continue;
             }
-            let own = match store.entry(&s, b)? {
-                Some(e) if !e.role => store.blob_len(b)?.unwrap_or(0).saturating_add(super::ENTRY_OVERHEAD),
-                _ => 0,
-            };
+            let own = store.counted(&s, b)?;
             let applied = engine.apply_waiting_memory(c, store.memory_room(&s)?.saturating_add(own))?;
             return Ok(matches!(applied, Some(osis_engine::Ingested::Applied(_))));
         }

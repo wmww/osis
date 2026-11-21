@@ -11,6 +11,17 @@ use osis_base::memo::Stamps;
 use osis_base::{BlobId, SyncId, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// What a `BTreeMap<K, V>` element holds: twice its key and value (B-tree nodes at worst half
+/// full).
+const fn slot<K, V>() -> u64 {
+    2 * (size_of::<K>() + size_of::<V>()) as u64
+}
+
+/// What a memory log event holds (`Memory::held`): its log, slot and counter elements, and once
+/// it is a removal its aging element.
+pub(crate) const EVENT: u64 = slot::<(SyncId, u64), (BlobId, Option<WallMs>)>() + slot::<(SyncId, BlobId), u64>() + slot::<u64, SyncId>();
+pub(crate) const REMOVAL: u64 = EVENT + slot::<(WallMs, SyncId, BlobId), ()>();
+
 /// The stamp key of S's memory log.
 #[derive(Hash)]
 struct Listing<'a>(&'a SyncId);
@@ -63,6 +74,16 @@ impl Memory {
         if let Some(at) = gone {
             self.aging.insert((at, *s, *b));
         }
+    }
+
+    /// Bytes these maps hold (`slot` each element): with the memory store's
+    /// (`osis_store::Store::memory_held`), what the memory part holds. O(1).
+    pub(crate) fn held(&self) -> u64 {
+        fn of<K, V>(m: &BTreeMap<K, V>) -> u64 {
+            m.len() as u64 * slot::<K, V>()
+        }
+        let aging = self.aging.len() as u64 * slot::<(WallMs, SyncId, BlobId), ()>();
+        of(&self.log) + of(&self.slot) + of(&self.by_n) + aging + of(&self.estimate) + of(&self.charges)
     }
 
     /// Drops entry `b` of S's event (an expiry serves none).

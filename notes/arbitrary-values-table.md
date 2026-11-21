@@ -138,7 +138,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | `Policy::peer_bytes` 64 MiB | R (5: an unstamped entry giving nothing held is not kept) | none kept / one peer fills the store |
 | `Policy::deposit_entries`, `deposit_bytes` 0 (raised to `osis_proto::limits::deposit_budget`) | R (5) | the spec's minimum / disk |
 | `Policy::register_every_ms` 1 h | R (a child step past the caps without its set, once per interval, else 12) | every one taken / one ever |
-| `ENTRY_OVERHEAD` 256 B, `TOMB_OVERHEAD` 128 B | M (caps approximate by this per row) | rows count nothing / nothing fits |
+| `ENTRY_OVERHEAD` 256 B, `TOMB_OVERHEAD` 128 B (durable part; the memory part counts what it holds, `entries::overhead` at `MEM_ROW_COST`) | M (the durable caps approximate by this per row) | rows count nothing / nothing fits |
 | store `PAGE` 256 (rows a sweep or give-way pass handles per settle round) | P | no progress / one transaction holds the sweep |
 
 ### Streams (`sync/src/streams/`)
@@ -177,6 +177,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | crdt `BLOCK` 256, `STEP` 8, `SIBS` 256, `isqrt().clamp(4, BLOCK)`, work `max(1024)` (`seq_lin.rs`), `LIN_MIN` 64, `MAX_D` 512, `CTX` 32 (`seq_diff.rs`) | P | |
 | store `arity` 256, `depth` 5 | R: 2^40 unit slots, never reused; exhaustion refuses writes for good, after about 35 years at 1000 unit writes/s | |
 | store `page_max` 8 KiB, `spill_bytes` 16 MiB, `node_cache` 4096, `unit_cache_bytes` 16 MiB | P | |
+| store `MEM_ROW_COST` 160 B (a memory-overlay row or blob held, beside its bytes: B-tree slot, allocation headers, key stamp; `Store::memory_held`, osis-sync's memory caps charge it) | M (an estimate of the representation: memory caps off by a few dozen bytes a row) | only the bytes count / nothing fits |
 | store `RETRY_FIRST` 1 s doubling to `RETRY_MAX` 60 s (`pager.rs`: waits between a lost store's attempts to recover in place after its first, at the next call) | M (each attempt reopens the backend, which may scan the file; recovery up to a minute late once the device works) | a failing device costs a reopen per call / the store never recovers until opened again |
 | store row padding `UNIT_MIN` 512 B (`pager.rs`; above it Padmé, spec/wire.md §5) | M (length leak of small units; notes/local-store.md, Row padding; Padmé's class width at 512 is 32 B; cost on engine tests' unit rows 3.7%, Padmé alone 2.3%, 1024: 6.5%) | units below a few hundred bytes show their length to within 1-16 bytes, so a small page's drop shows / every unit that big |
 | schema `MAX_EXPAND` 64, `MAX_TYPE_DEPTH` 256, `MAX_INSTANCES` 10 000, `MAX_CHECK_WORK` 100 000, `MAX_NEST` 64, `MAX_CHECK_DEPTH` 2 × `MAX_TYPE_DEPTH` | R (refuse; sign-off: not specced) | |

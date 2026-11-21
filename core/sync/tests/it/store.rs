@@ -503,7 +503,8 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
     let (b, x) = blob(300, Class::Durable, None, &[]);
     let used = st.usage(&s.id).unwrap().0.bytes + st.usage(&o.id).unwrap().0.bytes;
     let caps = |total: u64, memory: u64| Caps { policy: BTreeMap::from([("total_bytes".to_string(), total), ("memory_total".to_string(), memory)]), ..Caps::default() };
-    st.set_caps(&caps(used + x.len() as u64, 1000));
+    // an entry in memory counts what it holds there, about 1.5 KB beside its blob
+    st.set_caps(&caps(used + x.len() as u64, 2300));
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone(), &[]).unwrap(), Code::STORAGE_CAP);
     st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
     let (ob, ox) = blob(150, Class::Durable, None, &[]);
@@ -521,7 +522,7 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
     assert_eq!(st.take_stamped(&s.id, &big, bx.clone(), &[]).unwrap(), Code::STORAGE_CAP, "larger than the memory total");
     let (_, small, sx) = eph(&o, 400);
     assert_eq!(st.take_stamped(&o.id, &small, sx, &[]).unwrap(), Code::OK);
-    st.set_caps(&caps(u64::MAX, bx.len() as u64 + 400));
+    st.set_caps(&caps(u64::MAX, bx.len() as u64 + 2000));
     assert_eq!(st.room_grew().unwrap(), vec![s.id], "o's memory gives way: room for S's");
     assert_eq!(st.take_stamped(&s.id, &big, bx, &[]).unwrap(), Code::OK);
 
@@ -1090,7 +1091,8 @@ fn ephemeral_entries_live_in_memory_spec_sync_ids_5() {
     }
     assert!(st.bytes(&b).unwrap().is_none(), "released from memory");
     // spec/sync-ids.md §6: a tombstone's overhead counts toward the memory cap
-    assert_eq!(st.usage(&s.id).unwrap().1.bytes, before - (5_000 + 256) + 128, "the entry left, its tombstone counts");
+    let after = st.usage(&s.id).unwrap().1.bytes;
+    assert!(after > 0 && after < before - 5_000, "the entry left at its charge; what counts now is the two tombstones");
     {
         // spec/sync-judgement.md §3 Dropped bodies: never received again ends the node's own
         // tombstones only; a verified Delete's stays
@@ -1117,6 +1119,42 @@ fn ephemeral_entries_live_in_memory_spec_sync_ids_5() {
     let mut st = unread(&Dev::new(), &s);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, r, false), rx, &[]).unwrap(), Code::DECLINED, "relay-only is never held");
 }
+
+// spec/sync-ids.md §6 (Caps at a node keeping S unread: S's memory cap and the memory total
+// bound what memory holds): what S's ephemeral entries, and then their tombstones, count toward
+// the memory caps is at least what the memory part holds for them (`Store::memory_held`) and not
+// a quarter more: each one, from n to 10n, and all of them at n and at 10n but for S's usage
+// rows, which S keeps whatever it holds.
+#[test]
+fn memory_caps_count_what_memory_holds_spec_sync_ids_6() {
+    let s = Sid::new(10);
+    let at = |n: usize| {
+        let mut st = unread(&Dev::new(), &s);
+        let (held, used) = (st.memory_held(), st.usage(&s.id).unwrap().1.bytes);
+        let blobs: Vec<_> = (0..n).map(|i| blob(64, Class::Ephemeral, Some(10 * MAX_DRIFT_MS + i as u64), &[])).collect();
+        for (b, x) in &blobs {
+            let e = Entry { class: Class::Ephemeral, expires: Some(WallMs(10 * MAX_DRIFT_MS)), ..stamped(&s, *b, false) };
+            assert_eq!(st.take_stamped(&s.id, &e, x.clone(), &[]).unwrap(), Code::OK);
+        }
+        let entries = (st.memory_held() - held, st.usage(&s.id).unwrap().1.bytes - used);
+        let items: Vec<_> = blobs.iter().map(|(b, _)| DeleteItem::sign(&s.delete(), &s.id, *b)).collect();
+        assert!(st.take_delete(&s.id, &items, true).unwrap().iter().all(|c| *c == Code::OK));
+        [entries, (st.memory_held() - held, st.usage(&s.id).unwrap().1.bytes - used)]
+    };
+    let usage_rows = 2 * (osis_store::MEM_ROW_COST + 64);
+    let (small, large) = (at(N_ENTRIES), at(10 * N_ENTRIES));
+    for (i, what) in ["entries", "tombstones"].iter().enumerate() {
+        let ((h1, c1), (h10, c10)) = (small[i], large[i]);
+        let (h, c) = (h10 - h1, c10 - c1);
+        assert!(h <= c && c <= h + h / 4, "{what} from n to 10n: memory holds {h} more, the caps count {c} more");
+        for (held, charged) in [(h1, c1), (h10, c10)] {
+            assert!(held <= charged + usage_rows && charged <= held + held / 4, "{what}: memory holds {held}, the caps count {charged}");
+        }
+    }
+}
+
+/// Entries a memory count test takes at n.
+const N_ENTRIES: usize = 20;
 
 // spec/sync-ids.md §5 (Caps), §6 (Caps at a node keeping S unread): caps count only the sync IDs
 // kept unread; an ephemeral entry past S's memory cap is refused (12); at the total cap the sync

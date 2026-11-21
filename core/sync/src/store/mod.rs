@@ -60,11 +60,12 @@ use rows::{EntryRow, R, Vouch, W};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-/// Bytes an entry counts toward the caps beside its blob: its row, index rows and log record.
-/// Minor consequence: the caps are approximate by this much per entry (0: rows count nothing;
+/// Bytes a durable entry counts toward the caps beside its blob: its row, index rows and log
+/// record on disk (an entry in memory counts what it holds there: `entries::overhead`). Minor
+/// consequence: the durable caps are approximate by this much per entry (0: rows count nothing;
 /// infinity: no entry fits).
 pub(crate) const ENTRY_OVERHEAD: u64 = 256;
-/// Bytes a tombstone counts toward the caps (minor consequence, as `ENTRY_OVERHEAD`).
+/// Bytes a durable tombstone counts toward the caps (minor consequence, as `ENTRY_OVERHEAD`).
 pub(crate) const TOMB_OVERHEAD: u64 = 128;
 /// Rows a sweep or a give-way pass reads at a time (performance switch: each settle round does
 /// at most this much per kind and says it acted while more is due).
@@ -819,6 +820,26 @@ impl Store {
         Ok((d, m))
     }
 
+    /// Bytes the memory part holds: its store's rows and blobs and the memory log, at an estimate
+    /// of their cost held (`osis_store::Store::memory_held`, `Memory::held`). O(rows); tests
+    /// check the caps' charges against it.
+    #[doc(hidden)]
+    pub fn memory_held(&self) -> u64 {
+        let g = self.lock();
+        g.ram.memory_held() + g.mem.held()
+    }
+
+    /// What entry `b` of S counts toward its part's caps (`entries::count`): none for a role
+    /// entry or none held.
+    pub(crate) fn counted(&self, s: &SyncId, b: &BlobId) -> Result<u64> {
+        let mut g = self.lock();
+        let Some((memory, r)) = g.find(s, b)? else { return Ok(0) };
+        let add = g.read_in(memory, |_, env| Ok(entries::count(memory, env, b, &r, true)))?;
+        let mut u = Usage::default();
+        add(&mut u);
+        Ok(u.bytes)
+    }
+
     /// What holding one more ephemeral commit under read S may cost now (spec/sync-compaction.md
     /// §2 Caps, at a node for what it reads): S's memory cap less what S's ephemeral entries
     /// count, each at least its bytes and an entry of a commit from another node at what it
@@ -1109,16 +1130,17 @@ impl Store {
                 }
                 return Ok(Ok(Code::OK));
             }
-            if !role && let Some(cap) = make_room(t, env, s, size + ENTRY_OVERHEAD)? {
-                return Ok(Err(cap));
+            let need = size + entries::overhead(t.is_memory(), &row);
+            if !role && let Some(cap) = make_room(t, env, s, need)? {
+                return Ok(Err((cap, need)));
             }
             entries::insert(t, env, s, &b, row, Some(bytes))?;
             Ok(Ok(Code::OK))
         })?;
         match short {
             Ok(code) => Ok(code),
-            Err(cap) => {
-                g.wait_room(s, cap, size + ENTRY_OVERHEAD, expires, from)?;
+            Err((cap, need)) => {
+                g.wait_room(s, cap, need, expires, from)?;
                 Ok(Code::STORAGE_CAP)
             }
         }
@@ -1173,7 +1195,7 @@ impl Store {
         let row = EntryRow { wrap: d.wrap, stamp: None, deposited: true, own: false, role, class, expires, size: 0, charged: from, brought: None, vouch: None };
         let caps = holding == Holding::Unread && !role;
         g.write_in(memory, |t, env| {
-            if caps && make_room(t, env, &s, size + ENTRY_OVERHEAD)?.is_some() {
+            if caps && make_room(t, env, &s, size + entries::overhead(t.is_memory(), &row))?.is_some() {
                 return Ok(Code::STORAGE_CAP);
             }
             entries::insert(t, env, &s, &b, row, Some(d.blob.clone()))?;

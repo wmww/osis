@@ -26,6 +26,7 @@ pub use error::Error;
 pub use nodelog::{CURSOR_LEN, INCARNATIONS_KEPT, LogRead, LoggedEvent, NodeEvent};
 pub use memory::{Fault, Faults, Io, MemoryBackend, Synced};
 pub use forensic::{Ciphers, Evidence, Recovered, Section, Source, attack};
+pub use overlay::ROW_COST as MEM_ROW_COST;
 pub use pager::StoreConfig;
 pub use record::{Named, RECORD_BUDGET, Record, RecordId, RecordRow};
 pub use root::{FileRoot, MemoryRoot, RootRecord, RootStorage};

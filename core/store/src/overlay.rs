@@ -10,6 +10,12 @@ use std::collections::{BTreeMap, HashMap};
 /// Table IDs of tables created in memory (never a durable root slot).
 pub(crate) const MEM_TABLE: u64 = 1 << 63;
 
+/// What a row or blob held here costs beside its key and value bytes (`Store::memory_held`): a
+/// B-tree slot of two `Vec` headers in nodes at worst half full (96), two allocations' headers
+/// (32), the stamp of its key (32). Minor consequence: an estimate of this representation, off by
+/// a few dozen bytes a row (0: only the bytes count; infinity: nothing seems to fit).
+pub const ROW_COST: u64 = 160;
+
 type Rows = BTreeMap<Vec<u8>, Vec<u8>>;
 
 #[derive(Clone, Default)]
@@ -21,6 +27,14 @@ pub(crate) struct Overlay {
     pub tables: BTreeMap<u64, Rows>,
     pub blobs: HashMap<BlobId, Vec<u8>>,
     pub next_table: u64,
+}
+
+impl Overlay {
+    /// Bytes held: each row's and blob's, and `ROW_COST` each. O(rows).
+    pub fn held(&self) -> u64 {
+        let rows = self.cat.iter().chain(self.tables.values().flatten()).map(|(k, v)| k.len() + v.len());
+        rows.chain(self.blobs.values().map(Vec::len)).map(|n| n as u64 + ROW_COST).sum()
+    }
 }
 
 pub(crate) enum Undo {

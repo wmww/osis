@@ -357,6 +357,12 @@ impl Store {
         self.pager.changes()
     }
 
+    /// Bytes the memory overlay holds (its rows and blobs, at an estimate of their cost held:
+    /// `MEM_ROW_COST`): O(rows).
+    pub fn memory_held(&self) -> u64 {
+        self.mem.held()
+    }
+
     /// Counts the changes of the store's rows, each write and each undo (`Stamping`): equal at
     /// two times, no row changed between.
     pub fn row_changes(&self) -> osis_base::memo::Changes {

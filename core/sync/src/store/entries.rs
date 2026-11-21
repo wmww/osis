@@ -86,18 +86,48 @@ pub(crate) fn add_usage(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, 
     put_usage(t, env, s, old, new)
 }
 
-/// What entry row `r` of blob `b` adds to its sync ID's usage: role entries count toward no cap;
-/// a deposit waiting for a stamp counts toward the deposit budget too. Its blob counts at what it
-/// costs held where that is more than its bytes (`Memory::estimate`, an ephemeral commit's).
-fn count(env: &Env<'_>, b: &BlobId, r: &EntryRow, sign: bool) -> impl Fn(&mut Usage) + use<> {
-    let held = env.mem.estimate.get(b).copied().unwrap_or(0).max(r.size);
+/// What a row of `key` and `value` bytes holds in the memory part: its bytes, the store's kind
+/// byte and `MEM_ROW_COST`.
+fn mem_row(key: usize, value: usize) -> u64 {
+    (1 + key + value) as u64 + osis_store::MEM_ROW_COST
+}
+
+/// What entry row `r` holds beside its blob's bytes, in the memory part (`memory`) or durably:
+/// in memory exactly what it holds there (`Store::memory_held`): its rows (`insert`'s, and a
+/// held-elsewhere row whether or not it is written), its blob's place, its memory log event;
+/// durably `ENTRY_OVERHEAD`.
+pub(crate) fn overhead(memory: bool, r: &EntryRow) -> u64 {
+    if !memory {
+        return ENTRY_OVERHEAD;
+    }
+    let id = |key: usize| mem_row(key, 0);
+    let source = |x: Option<Source>| x.map_or(0, |x| mem_row(2 + rows::source_bytes(x).len() + 48, 8));
+    let optional = r.expires.map_or(0, |_| id(58)) + if r.deposited { id(50) } else { 0 } + source(r.charged) + source(r.brought);
+    mem_row(50, r.encode().len()) + 2 * id(50) + osis_store::MEM_ROW_COST + optional + super::memory::EVENT
+}
+
+/// What tombstone `tomb` holds, in the memory part (`memory`, as `overhead`: its rows and its
+/// removal event) or durably (`TOMB_OVERHEAD`).
+fn tomb_overhead(memory: bool, tomb: &Tombstone) -> u64 {
+    if !memory {
+        return TOMB_OVERHEAD;
+    }
+    mem_row(50, tomb.encode().len()) + mem_row(58, 0) + mem_row(50, 0) + super::memory::REMOVAL
+}
+
+/// What entry row `r` of blob `b` adds to its sync ID's usage in the memory part (`memory`) or
+/// durably: role entries count toward no cap; a deposit waiting for a stamp counts toward the
+/// deposit budget too. Its blob counts at what it costs held where that is more than its bytes
+/// (`Memory::estimate`, an ephemeral commit's), beside its `overhead`.
+pub(crate) fn count(memory: bool, env: &Env<'_>, b: &BlobId, r: &EntryRow, sign: bool) -> impl Fn(&mut Usage) + use<> {
+    let held = env.mem.estimate.get(b).copied().unwrap_or(0).max(r.size) + overhead(memory, r);
     let (role, deposited, size) = (r.role, r.deposited, r.size);
     move |u: &mut Usage| {
         let op = |x: &mut u64, n: u64| *x = if sign { x.saturating_add(n) } else { x.saturating_sub(n) };
         if !role {
             op(&mut u.entries, 1);
-            op(&mut u.bytes, held + ENTRY_OVERHEAD);
-            op(&mut u.entry_bytes, held + ENTRY_OVERHEAD);
+            op(&mut u.bytes, held);
+            op(&mut u.entry_bytes, held);
         }
         if deposited {
             op(&mut u.deposits, 1);
@@ -110,7 +140,7 @@ fn count(env: &Env<'_>, b: &BlobId, r: &EntryRow, sign: bool) -> impl Fn(&mut Us
 fn recount(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &BlobId, old: &EntryRow, new: &EntryRow) -> Result<()> {
     charge(t, env, old, s, b, false)?;
     charge(t, env, new, s, b, true)?;
-    let (out, into) = (count(env, b, old, false), count(env, b, new, true));
+    let (out, into) = (count(t.is_memory(), env, b, old, false), count(t.is_memory(), env, b, new, true));
     add_usage(t, env, s, |u| {
         out(u);
         into(u);
@@ -160,11 +190,11 @@ pub(crate) fn set_estimate(t: &mut Transaction<'_>, env: &mut Env<'_>, b: &BlobI
         return Ok(());
     }
     for (s, r) in &held {
-        add_usage(t, env, s, count(env, b, r, false))?;
+        add_usage(t, env, s, count(t.is_memory(), env, b, r, false))?;
     }
     env.mem.estimate.insert(*b, n);
     for (s, r) in &held {
-        add_usage(t, env, s, count(env, b, r, true))?;
+        add_usage(t, env, s, count(t.is_memory(), env, b, r, true))?;
     }
     Ok(())
 }
@@ -245,7 +275,7 @@ pub(crate) fn insert(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
     }
     env.mem.fed.wrote_added(&(*s, *b), true, true);
     charge(t, env, &row, s, b, true)?;
-    add_usage(t, env, s, count(env, b, &row, true))?;
+    add_usage(t, env, s, count(t.is_memory(), env, b, &row, true))?;
     if row.size > 0 {
         log(t, env, s, b, Ev::Added)?;
     }
@@ -299,7 +329,7 @@ pub(crate) fn remove(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
         }
         env.mem.fed.wrote_added(&(*s, *b), true, true);
         charge(t, env, row, s, b, false)?;
-        add_usage(t, env, s, count(env, b, row, false))?;
+        add_usage(t, env, s, count(t.is_memory(), env, b, row, false))?;
         let ev = match how {
             Removal::Tomb(_) | Removal::Untombed if row.size > 0 => Ev::Deleted,
             _ => Ev::Gone,
@@ -318,7 +348,8 @@ pub(crate) fn put_tomb(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b
     t.put_local(&rows::tomb_at_key(tomb_ends(t, tomb.at), s, b), &[], Shred::No)?;
     t.put_local(&rows::tomb_key(s, b), &tomb.encode(), Shred::No)?;
     t.put_local(&[rows::TOMB_BY_BLOB, &b.0, &s.0].concat(), &[], Shred::No)?;
-    add_usage(t, env, s, |u| u.bytes = u.bytes.saturating_add(TOMB_OVERHEAD))
+    let n = tomb_overhead(t.is_memory(), &tomb);
+    add_usage(t, env, s, |u| u.bytes = u.bytes.saturating_add(n))
 }
 
 /// Removes S's tombstone of `b`, if any; whether there was one.
@@ -327,7 +358,8 @@ pub(crate) fn lift(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: &B
     t.remove_local(&rows::tomb_key(s, b), Shred::No)?;
     t.remove_local(&rows::tomb_at_key(tomb_ends(t, old.at), s, b), Shred::No)?;
     t.remove_local(&[rows::TOMB_BY_BLOB, &b.0, &s.0].concat(), Shred::No)?;
-    add_usage(t, env, s, |u| u.bytes = u.bytes.saturating_sub(TOMB_OVERHEAD))?;
+    let n = tomb_overhead(t.is_memory(), &old);
+    add_usage(t, env, s, |u| u.bytes = u.bytes.saturating_sub(n))?;
     Ok(true)
 }
 
