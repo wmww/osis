@@ -11,6 +11,7 @@ roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=56766
 osis-perm/paths::single::paths_components_agree_large rate:OSIS_PERM_SEED=513418300552 issues/perm-paths-incremental-differs.md Unapplied, Some\(Dropped\)
 osis-perm/paths::incremental::paths_incremental_agrees_large rate:OSIS_PERM_SEED=328756246695 issues/perm-paths-incremental-differs.md incremental and from scratch differ
 osis-perm/paths::incremental::paths_forget_agrees_large rate:OSIS_PERM_SEED=328756246695 issues/perm-paths-incremental-differs.md updated and from scratch differ
+osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=991936048185 issues/differential-small-size-failures.md node \d+ keeps \d+ store entries under thing \d+'s sync ID, which it does not hold
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=318840271993 issues/differential-small-size-failures.md must-hold bodies a caught-up reader lacks at quiet
 roles-model/paths::tests::random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/masked-backdated-lowerings.md counts:dispute=4 OSIS_ROLES_START=\d+: \{
 osis-perm/paths::paths_story_agree_large rate:OSIS_PERM_SEED=3994064557 issues/perm-walk-trails-model.md model valid false, walk Some\(Valid\(Regranted\)\)
