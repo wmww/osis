@@ -267,7 +267,7 @@ fn gaps_show() {
         eprintln!("node {n}: honest {} syncs {:?}", nd.honest, nd.syncs);
     }
     for (i, c) in w.w.commits.iter().enumerate() {
-        eprintln!("{i}: by {} cid {} {} ts {} path {:?} on {} {:?} hops {:?}", w.by[i], w.w.cid(i), c.signer, c.ts, c.path, c.on, c.kind, w.w.hops(i));
+        eprintln!("{i}: by {} cid {} {} ts {} path {:?} on {} {:?} rests {:?}", w.by[i], w.w.cid(i), c.signer, c.ts, c.path, c.on, c.kind, w.w.rests(i));
     }
     eprintln!("events {:?}", w.events);
     for s in Stage::ALL {

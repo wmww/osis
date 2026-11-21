@@ -5,8 +5,8 @@
 //!
 //! Judging is roles-model `paths` (`Rules::fixed`, the rule A1 builds): a commit states a path,
 //! judged along it; a lowering lists a frontier; addenda, re-grants as there. On top:
-//! - **Pending** (`pend`): a commit pends at a node while an edge of its path (or the remaining
-//!   admin edge it names) that is no record edge has no held edge write ordered before it, or the
+//! - **Pending** (`pend`): a commit pends at a node while a hop it rests on (`paths::World::rests`:
+//!   its key hop, then its path's edges) that is no record hop has no held edge write ordered before it, or the
 //!   latest such write pends (notes/write-path-design.md §2 What follows, its smallest reading).
 //! - **Sync IDs and units.** Signers have no sync ID; every other thing in `sids` has its own, and
 //!   a unit per sync ID: the thing and the members `Ev::Join`/`Ev::Leave` give it. Which things a
@@ -492,7 +492,7 @@ impl World {
         }
     }
     /// A lowering that takes something away: an edge write below admin at its own `ts`
-    /// (`paths::World::lowers`: no finalize), on a record edge or ordered (by key) after a write on
+    /// (`paths::World::lowers`: no finalize), on a record hop or ordered (by key) after a write on
     /// its edge giving more at its own `ts`. What lazy delivery may leave behind (`undelivered`).
     pub fn takes_away(&self, i: Id) -> bool {
         let Some(e) = self.w.lowers(i) else { return false };
@@ -500,7 +500,7 @@ impl World {
             Kind::Edge { role, until, .. } => paths::alive((*role, *until), self.w.commits[j].ts),
             _ => Role::None,
         };
-        self.w.records.contains(&e) || (0..self.w.commits.len()).any(|j| self.w.sets(j) == Some(e) && self.w.key(j) < self.w.key(i) && at(j) > at(i))
+        self.w.is_record(e) || (0..self.w.commits.len()).any(|j| self.w.sets(j) == Some(e) && self.w.key(j) < self.w.key(i) && at(j) > at(i))
     }
     /// A held edge write giving write or above (any `until`).
     pub fn gives_write(&self, i: Id) -> Option<Edge> {
@@ -629,50 +629,9 @@ impl World {
             }
         }
     }
-    /// The chained edge-class commits of `h` (spec/permissions.md §4 Chained writes, read with
-    /// `paths::first_chained_ever`'s authority): in key order, each whose author has, over record
-    /// edges and the edges earlier chained writes set (applied or not, at the highest role and
-    /// may-grant role each let its holder grant, `until` disregarded), admin on its target;
-    /// may-grant on its target for a may-grant grant (`paths::flag_grant`); admin on its holder for a self-removal; write on its
-    /// target for a finalize. Only the first two set an edge.
-    /// Grows with `h`; every write any walk over `h` applies is in it.
+    /// The chained edge-class commits of `h`: roles-model's (`paths::chained`).
     pub fn chained(&self, h: &Set) -> Set {
-        let mut max: BTreeMap<Edge, Role> = self.w.records.iter().map(|&e| (e, Role::Admin)).collect();
-        let mut inv = max.clone();
-        let get = |m: &BTreeMap<Edge, Role>, e: &Edge| m.get(e).copied().unwrap_or(Role::None);
-        let mut order: Vec<Id> = h.iter().copied().filter(|&i| self.w.edge_class(i)).collect();
-        order.sort_by_key(|&i| self.w.key(i));
-        let mut out = Set::new();
-        for i in order {
-            let c = &self.w.commits[i];
-            if !self.w.well(i) {
-                continue;
-            }
-            let hops = self.w.hops(i);
-            let least = hops.iter().map(|e| get(&max, e)).min().unwrap_or(Role::Admin);
-            match &c.kind {
-                Kind::Edge { finalize: true, .. } if least >= Role::Write => {
-                    out.insert(i);
-                }
-                Kind::Edge { .. } if self.w.leave(i) && least == Role::Admin => {
-                    out.insert(i);
-                }
-                Kind::Edge { holder, role, until, may_grant, finalize: false, .. } if !self.w.leave(i) => {
-                    let lvl = (paths::alive((*role, *until), c.ts) > Role::None && *role < Role::Admin).then_some(*role);
-                    let invited = lvl.is_some_and(|lvl| hops.split_last().is_some_and(|(l, b)| get(&inv, l) >= lvl && b.iter().all(|e| get(&max, e) >= lvl)));
-                    if least == Role::Admin || invited {
-                        out.insert(i);
-                        let e = (*holder, c.on);
-                        let m = max.entry(e).or_insert(Role::None);
-                        *m = (*m).max(*role);
-                        let m = inv.entry(e).or_insert(Role::None);
-                        *m = (*m).max(paths::grantable(*role, *may_grant));
-                    }
-                }
-                _ => {}
-            }
-        }
-        out
+        paths::chained(&self.w, h)
     }
     /// A grant: an edge write setting its edge (no self-removal, no finalize) to a role, `until`
     /// disregarded.
@@ -710,11 +669,11 @@ impl World {
             self.w.commits[j].ts < self.w.commits[i].ts
         }
     }
-    /// `m`'s stated path is joined over `h`: each edge of it that is no record edge holds a
-    /// chained grant of `ch` ordered before `m` (under `Join::Needed`, one giving what `m` needs
-    /// there).
+    /// `m`'s stated path is joined over `h`: each hop it rests on (`paths::World::rests`, its key
+    /// hop first) that is no record hop holds a chained grant of `ch` ordered before `m` (under
+    /// `Join::Needed`, one giving what `m` needs there).
     pub fn joined(&self, h: &Set, ch: &Set, m: Id) -> bool {
-        self.w.hops(m).iter().filter(|e| !self.w.records.contains(e)).all(|&e| h.iter().any(|&j| self.w.sets(j) == Some(e) && ch.contains(&j) && self.joins(j, m, e, false) && self.before(j, m)))
+        self.w.rests(m).iter().filter(|&&e| !self.w.is_record(e)).all(|&e| h.iter().any(|&j| self.w.sets(j) == Some(e) && ch.contains(&j) && self.joins(j, m, e, false) && self.before(j, m)))
     }
     /// Edge write `j` on edge `e` can join `e` for part `m` (`World::join`): a grant, and under
     /// `Join::Needed` with `Pend::Granted` one giving at least what `m` needs of `e`, `until`
@@ -736,7 +695,8 @@ impl World {
     /// The least part `m` needs of edge `e` its verdict reads (roles-model `paths` `need`, for a
     /// write no pass applied): a role, or (true) that role with the may-grant flag. Content-class
     /// parts write; an edge write admin, a finalize write, a may-grant grant its role (on its
-    /// path's last edge with the flag, under `flag_check`).
+    /// path's last edge with the flag, under `flag_check`). Its key hop is met by any chained
+    /// list write putting it: one adding the key, admin (Owner keys O3, O4).
     pub fn need(&self, m: Id, e: Edge) -> (Role, bool) {
         let c = &self.w.commits[m];
         match &c.kind {
@@ -1028,12 +988,8 @@ impl World {
 
     // ---- Judging ----
 
-    /// The edges a commit's verdict reads edge writes of: its path's.
-    pub fn edges_of(&self, i: Id) -> Vec<Edge> {
-        self.w.hops(i).to_vec()
-    }
-    /// `i` pends over `h`: an edge it reads, no record edge, has no held edge write ordered before
-    /// it, or the latest such write pends.
+    /// `i` pends over `h`: a hop it rests on (`paths::World::rests`, its key hop first), no record
+    /// hop, has no held edge write ordered before it, or the latest such write pends.
     pub fn pend(&self, h: &Set, i: Id) -> bool {
         let ch = (self.pend == Pend::Granted).then(|| self.chained(h));
         self.pend_with(h, ch.as_ref(), i)
@@ -1049,7 +1005,7 @@ impl World {
         }
         // under J3 a hop no chained grant joins is judged, not waited on
         let refused = ch.is_some() && self.join == Join::Refused;
-        self.edges_of(i).into_iter().filter(|e| !self.w.records.contains(e)).any(|e| {
+        self.w.rests(i).iter().copied().filter(|&e| !self.w.is_record(e)).any(|e| {
             let on_e = || h.iter().copied().filter(|&j| self.w.sets(j) == Some(e) && self.before(j, i) && ch.is_none_or(|c| c.contains(&j)));
             if ch.is_some() && !refused && !on_e().any(|j| self.joins(j, i, e, true)) {
                 return true;
@@ -1661,7 +1617,7 @@ pub fn random(seed: u64, len: usize) -> World {
             3 | 4 => {
                 let m = [K, Q, Z][rng.below(3)];
                 let role = if rng.below(2) == 0 { Role::None } else { up(&mut rng) };
-                let front: Vec<Id> = (0..w.by.len()).filter(|&j| w.w.hops(j).contains(&(m, A)) && rng.below(2) == 0).collect();
+                let front: Vec<Id> = (0..w.by.len()).filter(|&j| w.w.rests(j).contains(&(m, A)) && rng.below(2) == 0).collect();
                 w.write(x, |p| p.edge(X, bts, &[], A, m, role, if role == Role::None { &front } else { &[] }));
             }
             5 => {
@@ -1817,14 +1773,14 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
                 // K removed or re-granted on A or on a thing it holds a direct route on
                 let on = [A, A, O, H, D, R][rng.below(6)];
                 let role = if rng.below(3) == 0 { up(&mut rng) } else { Role::None };
-                let front: Vec<Id> = (0..w.by.len()).filter(|&j| w.w.hops(j).contains(&(K, on)) && rng.below(2) == 0).collect();
+                let front: Vec<Id> = (0..w.by.len()).filter(|&j| w.w.rests(j).contains(&(K, on)) && rng.below(2) == 0).collect();
                 let (a, n) = admin(on);
                 w.write(n, |p| p.edge(a, bts, &[], on, K, role, if role == Role::None { &front } else { &[] }));
             }
             4 => {
                 let m = [K, Q, Z][rng.below(3)];
                 let role = if rng.below(2) == 0 { Role::None } else { up(&mut rng) };
-                let front: Vec<Id> = (0..w.by.len()).filter(|&j| w.w.hops(j).contains(&(m, A)) && rng.below(2) == 0).collect();
+                let front: Vec<Id> = (0..w.by.len()).filter(|&j| w.w.rests(j).contains(&(m, A)) && rng.below(2) == 0).collect();
                 w.write(x, |p| p.edge(X, bts, &[], A, m, role, if role == Role::None { &front } else { &[] }));
             }
             5 => {
@@ -1837,7 +1793,7 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
                 let j = 1 + rng.below(things.len() - 1);
                 let (hd, on) = (things[rng.below(j)], things[j]);
                 let role = [Role::None, Role::Read, Role::Write, Role::Admin][rng.below(4)];
-                let front: Vec<Id> = (0..w.by.len()).filter(|&c| w.w.hops(c).contains(&(hd, on)) && rng.below(2) == 0).collect();
+                let front: Vec<Id> = (0..w.by.len()).filter(|&c| w.w.rests(c).contains(&(hd, on)) && rng.below(2) == 0).collect();
                 let (a, n) = admin(on);
                 w.write(n, |p| p.edge(a, bts, &[], on, hd, role, if role == Role::None { &front } else { &[] }));
             }
@@ -1893,7 +1849,7 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
                 let m = [K, Q, Z][rng.below(3)];
                 let on = things[1 + rng.below(4)];
                 let role = if rng.below(3) == 0 { Role::None } else { up(&mut rng) };
-                let front: Vec<Id> = (0..w.by.len()).filter(|&c| w.w.hops(c).contains(&(m, on)) && rng.below(2) == 0).collect();
+                let front: Vec<Id> = (0..w.by.len()).filter(|&c| w.w.rests(c).contains(&(m, on)) && rng.below(2) == 0).collect();
                 let (a, n) = admin(on);
                 w.write(n, |p| p.edge(a, bts, &[], on, m, role, if role == Role::None { &front } else { &[] }));
             }

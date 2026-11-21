@@ -1688,38 +1688,59 @@ fn grantable_at(w: &World, p: &Pass, e: Edge, pos: Key) -> Role {
     })
 }
 
-/// Control `-chain-ever`: per edge, the key of the first chained write giving it `at` or above
-/// (spec/permissions.md §4 Chained writes, along the write's stated path, `until` disregarded).
-fn first_chained_ever(w: &World, held: &Set, at: Role) -> BTreeMap<Edge, Key> {
-    let records = w.record_hops();
-    let mut max: BTreeMap<Edge, Role> = records.iter().map(|&e| (e, Role::Admin)).collect();
-    let mut grants: BTreeMap<Edge, Role> = records.iter().map(|&e| (e, Role::Admin)).collect();
-    let mut first: BTreeMap<Edge, Key> = records.iter().map(|&e| (e, (0, 0, 0))).collect();
+/// The chained writes of `held` (spec/permissions.md §4 Chained writes): in key order, each whose
+/// author has, along every hop it rests on (`World::rests`, its key hop first), over record edges
+/// and record key hops and the edges chained writes earlier set (applied or not, each at the
+/// highest role and may-grant role it let its holder grant, `until` disregarded): admin on its
+/// target (a list write also by O4, read against every key ever listed); may-grant on its target
+/// for a may-grant grant (`flag_grant`; its key hop then reads as a hop before the last, listed);
+/// admin on its holder for a self-removal; write on its target for a finalize. Only the first two
+/// set an edge. Grows with `held`; every write any walk over `held` applies is in it.
+pub fn chained(w: &World, held: &Set) -> Set {
+    let mut max: BTreeMap<Edge, Role> = w.record_hops().into_iter().map(|e| (e, Role::Admin)).collect();
+    let mut grants = max.clone();
     let get = |m: &BTreeMap<Edge, Role>, e: &Edge| m.get(e).copied().unwrap_or(Role::None);
+    let mut out = Set::new();
     for i in order(w, held) {
-        let hops = w.hops(i);
         let rests = w.rests(i);
         let (Some(e), Kind::Edge { role, may_grant, finalize, .. }) = (w.sets(i), &w.commits[i].kind) else { continue };
-        // a self-removal and a finalize set no edge here (spec/permissions.md §4 Chained writes)
-        if !w.well(i) || w.leave(i) || *finalize {
+        if !w.well(i) {
             continue;
         }
-        // by admin on its target, or by may-grant there for a may-grant grant
-        let admin = rests.iter().all(|h| get(&max, h) == Role::Admin);
-        // a list write by O4, read against every key ever listed
+        let least = rests.iter().map(|h| get(&max, h)).min().unwrap_or(Role::Admin);
+        if *finalize || w.leave(i) {
+            // sets no edge here
+            if least >= if *finalize { Role::Write } else { Role::Admin } {
+                out.insert(i);
+            }
+            continue;
+        }
         let ever = max.iter().any(|(&(k, t), &r)| t == e.1 && is_key(k) && r == Role::Admin);
-        let admin = admin && (!w.list_write(i) || list_writes(w, i, ever));
-        let flagged = flag_grant(w, i).is_some_and(|r| hops.split_last().is_some_and(|(l, b)| get(&grants, l) >= r && b.iter().all(|h| get(&max, h) >= r)));
+        let admin = least == Role::Admin && (!w.list_write(i) || list_writes(w, i, ever));
+        let flagged = flag_grant(w, i).is_some_and(|r| rests.split_last().is_some_and(|(l, b)| get(&grants, l) >= r && b.iter().all(|h| get(&max, h) >= r)));
         if !admin && !flagged {
             continue;
         }
-        if *role >= at {
-            first.entry(e).or_insert(w.key(i));
-        }
+        out.insert(i);
         let m = max.entry(e).or_insert(Role::None);
         *m = (*m).max(*role);
         let m = grants.entry(e).or_insert(Role::None);
         *m = (*m).max(grantable(*role, *may_grant));
+    }
+    out
+}
+
+/// Control `-chain-ever`: per edge, the key of the first chained write (`chained`) setting it to
+/// `at` or above, `until` disregarded.
+fn first_chained_ever(w: &World, held: &Set, at: Role) -> BTreeMap<Edge, Key> {
+    let ch = chained(w, held);
+    let mut first: BTreeMap<Edge, Key> = w.record_hops().into_iter().map(|e| (e, (0, 0, 0))).collect();
+    for i in order(w, held).into_iter().filter(|i| ch.contains(i) && !w.leave(*i)) {
+        if let (Some(e), Kind::Edge { role, finalize: false, .. }) = (w.sets(i), &w.commits[i].kind) {
+            if *role >= at {
+                first.entry(e).or_insert(w.key(i));
+            }
+        }
     }
     first
 }

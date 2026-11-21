@@ -365,3 +365,35 @@ fn e1_a_writes_key_hop_list_writes_are_evidence_in_every_variant() {
     assert!(st.entries[&D].contains(&list));
     assert_eq!(w.verdicts(&w.reader(&rule, &st, D, &Set::new()), &Set::from([c]))[&c], Verdict::Valid);
 }
+
+/// Pending (notes/write-path-design.md §2 Pending and Hops; spec/commits.md §4 Unjudgeable): the
+/// key hop is a hop. KEY, signing as A (minted by X, so A's record holds no key), grants Q write
+/// on A, and Q writes D through [A]. A node holding everything but X's list write adding KEY finds
+/// no write putting the key hop: the grant, and Q's write resting on it, pend (judged on missing
+/// evidence, never invalid for it), and the grant is neither chained nor joined; with the list
+/// write both are valid and the grant chained and joined. In every variant.
+#[test]
+fn an_unlisted_key_hop_pends_until_a_list_write_puts_it() {
+    use held_model::evidence::Verdict::{Pending, Valid};
+    const KEY: Thing = paths::KEYS | 0x40;
+    for v in Open10::ALL {
+        let (mut w, [x, _, _, q]) = base();
+        let list = w.write(x, |p| p.edge(X, 2, &[], A, KEY, Role::Admin, &[]));
+        let g = w.write(x, |p| p.push_signed(KEY, A, 3, &[], A, paths::Kind::set(Q, Role::Write)));
+        let c = w.write(q, |p| p.content(Q, 4, &[A], D));
+        let rule = v.set(&mut w, Rule::fixed());
+        let st = w.run(&rule, |_| {});
+        let ids = Set::from([g, c]);
+        let lacking: Vec<Verdict> = w.verdicts(&w.full(&st, &Set::from([list])), &ids).into_values().collect();
+        assert_eq!(lacking, [Pending, Pending], "{}", v.name());
+        let all: Vec<Verdict> = w.verdicts(&w.full(&st, &Set::new()), &ids).into_values().collect();
+        assert_eq!(all, [Valid, Valid], "{}", v.name());
+        // the grant chains (spec/permissions.md §4 Chained writes), and its stated path is
+        // joined (OPEN 10 (b)), only with its key hop listed
+        for (without, yes) in [(Set::from([list]), false), (Set::new(), true)] {
+            let h = w.full(&st, &without).v.held;
+            let ch = w.chained(&h);
+            assert_eq!((ch.contains(&g), w.joined(&h, &ch, g)), (yes, yes), "{}", v.name());
+        }
+    }
+}
