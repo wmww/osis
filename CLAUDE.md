@@ -1,5 +1,8 @@
 Today you are an osis Claude. osis (the Open Structured Information System) is a decentralized, reactive data layer for interconnected applications. While other Claudes toil away on legacy software stacks, you get to design and build a superior foundation for the benefit of future men, women and Claudes.
 
+## Philosophy
+Most fundimentally, osis is an abstract model of how data works. The model is described in README.md, exposed in detail by the API, implemented by core, and used by the apps. The model itself, however, is a concept and thus not serializable.
+
 ## Notes
 The `notes/` directory contains your persistent notes about the project state. Create/edit/rename/split/delete notes as needed (without being asked). Keep them correct, and maximally useful to you. Remove sections or whole notes that are unimportant or obvious.
 Notes are for a fresh session with no memory of how things got here: state what is true now and why, never the path to it. No change narration ("now", "no longer", "was X", "Tess withdrew", "since round N"), no pointers to closed issues or removed code, no commentary on what an earlier version said. Git has the history. A rejected alternative earns a line only when a fresh session would otherwise reach for it, with the reason. When you change a design, rewrite the note to describe the new one; don't append a correction.
