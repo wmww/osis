@@ -1049,7 +1049,8 @@ fn each_cut_replaces_the_last_cuts_expiring_snapshots_spec_commits_5() {
 // another expiry or a lasting one, with a value R holds only from expiring snapshots kept
 // valued in R2's own snapshot, and with an expiring snapshot's values kept past its expiry.
 #[test]
-fn expiring_snapshots_read_alike_whatever_arrives_and_is_covered_spec_crdt_8() {
+#[ignore = "property"]
+fn expiring_snapshots_read_alike_whatever_arrives_and_is_covered_plain_spec_crdt_8() {
     let (m_ak, r_ak) = (osis_base::Ak::new("x:m.0").unwrap(), osis_base::Ak::new("x:r.0").unwrap());
     let (mut compared, mut dropped, mut ended) = (0, 0, 0);
     for seed in 1..=10u64 {

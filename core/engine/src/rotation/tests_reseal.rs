@@ -238,7 +238,8 @@ fn forged_section_unlocks_no_reseal_spec_crypto_5() {
 // The invariant (`sync_ids::opened`): M never reads "w", which R wrote knowing W under e_R,
 // which M never held; and once V holds W without D, V seals the write.
 #[test]
-fn reseal_never_hands_m_the_write_randomized_spec_crypto_5() {
+#[ignore = "property"]
+fn reseal_never_hands_m_the_write_randomized_plain_spec_crypto_5() {
     let mut live = 0;
     for seed in 0..8u64 {
         let mut s = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;

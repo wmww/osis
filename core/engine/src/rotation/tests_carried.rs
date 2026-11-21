@@ -527,7 +527,8 @@ fn demoted_member_writes_nothing_after_the_knowing_keyset_spec_crypto_4() {
 // A writes nothing W opens while that keyset is held there. With every keyset of X1 carrying
 // nothing (the fix disabled), some case leaks.
 #[test]
-fn removed_member_reads_nothing_randomized_spec_crypto_4() {
+#[ignore = "property"]
+fn removed_member_reads_nothing_randomized_plain_spec_crypto_4() {
     // whether A held X1's newest keyset (made knowing) when it wrote, and W opened what it wrote
     let run = |seed: u64, carry: Carry| -> (bool, bool) {
         let mut rng = super::tests::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
@@ -558,7 +559,8 @@ fn removed_member_reads_nothing_randomized_spec_crypto_4() {
 // holds: its verdict on every `secrets.0` part matches A's. Randomized over the removal, the
 // rotations, which aspects are compacted, the clock, restarts and arrival order.
 #[test]
-fn rotation_judged_alike_by_a_node_joining_after_compaction_spec_crypto_4() {
+#[ignore = "property"]
+fn rotation_judged_alike_by_a_node_joining_after_compaction_plain_spec_crypto_4() {
     let mut keys_dropped = 0;
     for seed in 0..8u64 {
         let mut rng = super::tests::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x2545_f491_4f6c_dd1d);

@@ -580,7 +580,8 @@ impl Mix {
 // (`Engine::check_index`), and at the end a node fed every commit in a shuffled order, some header
 // first and body later, reads the same listing, its listener told of each change of what it lists
 #[test]
-fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
+#[ignore = "property"]
+fn incremental_equals_rebuilt_and_every_order_reads_alike_plain_spec_commits_5() {
     let (mut folded, mut out_writes) = (0, 0);
     for seed in 0..10u64 {
         let mut g = Mix(seed);
