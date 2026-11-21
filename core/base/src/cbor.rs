@@ -383,7 +383,7 @@ pub fn decode(input: &[u8], limits: &Limits) -> Result<Value, DecodeError> {
 /// holds on the heap): what a reader holding several values counts against one budget.
 pub fn decode_charged(input: &[u8], limits: &Limits) -> Result<(Value, usize), DecodeError> {
     let mut d = Decoder::new(input, limits);
-    let v = d.item(0)?;
+    let v = d.item::<Value>(0)?;
     if d.pos != input.len() {
         return Err(DecodeError::Trailing);
     }
@@ -587,7 +587,7 @@ fn checked_len(b: &[u8]) -> Option<usize> {
 /// Decodes one value from the start of `input`; returns it with the bytes it spans.
 pub fn decode_prefix<'a>(input: &'a [u8], limits: &Limits) -> Result<(Value, &'a [u8]), DecodeError> {
     let mut d = Decoder::new(input, limits);
-    let v = d.item(0)?;
+    let v = d.item::<Value>(0)?;
     Ok((v, input.get(..d.pos).unwrap_or(input)))
 }
 
@@ -761,7 +761,9 @@ struct Decoder<'a> {
     /// Bytes `item` has allocated (or will, for what it was promised), and the most it may.
     spent: usize,
     max_alloc: usize,
-    /// `check` met a map or set of more than one key or element holding a link.
+    /// Links read so far.
+    links_read: usize,
+    /// A map or set of more than one key or element holding a link was read.
     link_keys: bool,
 }
 
@@ -769,13 +771,15 @@ impl<'a> Decoder<'a> {
     fn new(input: &'a [u8], limits: &Limits) -> Decoder<'a> {
         let cut = input.len() > limits.max_bytes;
         let buf = input.get(..limits.max_bytes).unwrap_or(input);
-        Decoder { buf, cut, pos: 0, max_depth: limits.max_depth, deepest: 0, promised: 0, spent: 0, max_alloc: limits.max_alloc, link_keys: false }
+        Decoder { buf, cut, pos: 0, max_depth: limits.max_depth, deepest: 0, promised: 0, spent: 0, max_alloc: limits.max_alloc, links_read: 0, link_keys: false }
     }
 
+    #[inline]
     fn remaining(&self) -> usize {
         self.buf.len() - self.pos
     }
 
+    #[inline]
     fn short(&self) -> DecodeError {
         if self.cut { DecodeError::TooLarge } else { DecodeError::Truncated }
     }
@@ -787,6 +791,7 @@ impl<'a> Decoder<'a> {
         Ok(s)
     }
 
+    #[inline]
     fn byte(&mut self) -> Result<u8, DecodeError> {
         let b = *self.buf.get(self.pos).ok_or_else(|| self.short())?;
         self.pos += 1;
@@ -812,6 +817,7 @@ impl<'a> Decoder<'a> {
     }
 
     /// A length that must fit in the remaining input at `per` bytes per unit at least.
+    #[inline]
     fn len(&mut self, ib: u8, per: usize) -> Result<usize, DecodeError> {
         let n = self.arg(ib)?;
         match usize::try_from(n).ok().and_then(|n| n.checked_mul(per)) {
@@ -830,6 +836,7 @@ impl<'a> Decoder<'a> {
     /// Charges `n` bytes `item` is about to allocate: past `max_alloc` the value is too large.
     /// Charges are never returned (a dropped unknown tag's content stays charged), so what was
     /// charged bounds the peak.
+    #[inline]
     fn spend(&mut self, n: usize) -> Result<(), DecodeError> {
         self.spent = self.spent.saturating_add(n);
         if self.spent > self.max_alloc { Err(DecodeError::TooLarge) } else { Ok(()) }
@@ -854,6 +861,7 @@ impl<'a> Decoder<'a> {
     }
 
     /// Opens an array, map or tag at nesting `level`.
+    #[inline]
     fn enter(&mut self, level: usize) -> Result<(), DecodeError> {
         if level > self.max_depth {
             return Err(DecodeError::TooDeep);
@@ -902,6 +910,7 @@ impl<'a> Decoder<'a> {
 
     /// `err` unless the item read since `start` sorts strictly after `prev` by canonical bytes
     /// (`prev` empty before the first: every item is at least one byte); it becomes `prev`.
+    #[inline]
     fn in_order(&self, start: usize, prev: &mut &'a [u8], err: DecodeError) -> Result<(), DecodeError> {
         let raw = self.buf.get(start..self.pos).unwrap_or(&[]);
         if !prev.is_empty() && raw <= *prev {
@@ -1017,172 +1026,79 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    /// `decode`'s verdict and error on all of `input`, and its deepest nesting: `check`, then,
-    /// only when it met a map or set whose keys or elements hold links, `decode` itself for
-    /// `EqualLinks` (which needs the values, and whose error comes first where it applies). Once
-    /// for the whole input: once per such collection would decode nested ones once per level.
+    /// `decode`'s verdict and error on all of `input`, and its deepest nesting: `item` building
+    /// nothing, then, only when it met a map or set whose keys or elements hold links, building
+    /// the value for `EqualLinks` (which needs the values, and whose error comes first where it
+    /// applies). Once for the whole input: once per such collection would decode nested ones once
+    /// per level.
     fn check_whole(input: &[u8], limits: &Limits) -> Result<usize, DecodeError> {
         let mut d = Decoder::new(input, limits);
-        let checked = d.check(0);
+        let checked = d.item::<()>(0);
         if d.link_keys {
             d = Decoder::new(input, limits);
-            d.item(0)?;
+            d.item::<Value>(0)?;
         } else {
             checked?;
         }
         if d.pos == input.len() { Ok(d.deepest) } else { Err(DecodeError::Trailing) }
     }
 
-    /// `item` without building the value: the same checks in the same order, so the same result
-    /// but `EqualLinks` (`check_whole`). Returns whether a link occurs inside.
-    fn check(&mut self, depth: usize) -> Result<bool, DecodeError> {
-        let ib = self.byte()?;
-        match ib >> 5 {
-            MAJOR_UINT | MAJOR_NINT => {
-                let n = self.arg(ib)?;
-                if i64::try_from(n).is_err() {
-                    return Err(DecodeError::IntOutOfRange);
-                }
-            }
-            MAJOR_BYTES => {
-                let n = self.len(ib, 1)?;
-                self.spend(n)?;
-                self.take(n)?;
-            }
-            MAJOR_TEXT => {
-                let n = self.len(ib, 1)?;
-                self.spend(n)?;
-                std::str::from_utf8(self.take(n)?).map_err(|_| DecodeError::InvalidUtf8)?;
-            }
-            MAJOR_ARRAY => {
-                let n = self.open(ib, depth + 1, 1)?;
-                let mut link = false;
-                for _ in 0..n {
-                    link |= self.check(depth + 1)?;
-                }
-                return Ok(link);
-            }
-            MAJOR_MAP => {
-                let n = self.open(ib, depth + 1, 2)?;
-                let (mut keys, mut values) = (false, false);
-                let mut prev: &[u8] = &[];
-                for _ in 0..n {
-                    let start = self.pos;
-                    keys |= self.check(depth + 1)?;
-                    self.in_order(start, &mut prev, DecodeError::MapKeyOrder)?;
-                    values |= self.check(depth + 1)?;
-                }
-                self.link_keys |= keys && n > 1;
-                return Ok(keys || values);
-            }
-            MAJOR_TAG => {
-                let tag = self.arg(ib)?;
-                return self.check_tagged(tag, depth);
-            }
-            _ => match ib {
-                FALSE | TRUE => {}
-                FLOAT64 => {
-                    let bits = self.be(8)?;
-                    Float::from_bits(bits).ok_or(DecodeError::NonCanonicalNan)?;
-                }
-                _ => return Err(DecodeError::BadSimple),
-            },
-        }
-        Ok(false)
-    }
-
-    /// `tagged` without building the value (`check`).
-    fn check_tagged(&mut self, tag: u64, depth: usize) -> Result<bool, DecodeError> {
-        let inner = depth + 1;
-        self.enter(inner)?;
-        match tag {
-            TAG_SET => {
-                let n = self.set_head(inner)?;
-                let mut prev: &[u8] = &[];
-                let mut link = false;
-                for _ in 0..n {
-                    let start = self.pos;
-                    link |= self.check(inner + 1)?;
-                    self.in_order(start, &mut prev, DecodeError::SetOrder)?;
-                }
-                self.link_keys |= link && n > 1;
-                Ok(link)
-            }
-            TAG_STRONG | TAG_WEAK => self.fixed_bytes::<TID_LEN>(tag).map(|_| false),
-            TAG_TICKET => {
-                self.spend(size_of::<crate::refs::Ticket>())?;
-                self.ticket(inner).map(|_| false)
-            }
-            TAG_RETIRED => Err(DecodeError::TagContent(tag)),
-            TAG_ENUM => {
-                let (_, payload) = self.enum_head(inner)?;
-                if !payload {
-                    return Ok(false);
-                }
-                self.spend(size_of::<Value>())?;
-                self.check(inner + 1)
-            }
-            TAG_LINK => {
-                self.enter(inner + 1)?;
-                self.spend(size_of::<Link>())?;
-                self.link_content(inner + 1).map(|_| true)
-            }
-            _ => {
-                self.spend(size_of::<Unknown>())?;
-                let start = self.pos;
-                let saved = std::mem::take(&mut self.deepest);
-                let link = self.check(inner)?;
-                self.deepest = self.deepest.max(saved);
-                self.spend(self.pos - start)?;
-                Ok(link)
-            }
-        }
-    }
-
-    /// One item inside `depth` arrays, maps and tags.
-    fn item(&mut self, depth: usize) -> Result<Value, DecodeError> {
+    /// One item inside `depth` arrays, maps and tags, built as `M`: the value (`decode`) or
+    /// nothing (`check`), under the same rules in the same order either way, so the same result
+    /// but `EqualLinks` (`check_whole`).
+    fn item<M: Made>(&mut self, depth: usize) -> Result<M, DecodeError> {
         let ib = self.byte()?;
         match ib >> 5 {
             MAJOR_UINT => {
                 let n = self.arg(ib)?;
-                i64::try_from(n).map(Value::Int).map_err(|_| DecodeError::IntOutOfRange)
+                let n = i64::try_from(n).map_err(|_| DecodeError::IntOutOfRange)?;
+                M::make(|| Ok(Value::Int(n)))
             }
             MAJOR_NINT => {
                 let n = self.arg(ib)?;
                 // -1 - n == !n, in range iff n <= i64::MAX.
-                i64::try_from(n).map(|n| Value::Int(!n)).map_err(|_| DecodeError::IntOutOfRange)
+                let n = i64::try_from(n).map_err(|_| DecodeError::IntOutOfRange)?;
+                M::make(|| Ok(Value::Int(!n)))
             }
             MAJOR_BYTES => {
                 let n = self.len(ib, 1)?;
                 self.spend(n)?;
-                Ok(Value::Bytes(self.take(n)?.to_vec()))
+                let b = self.take(n)?;
+                M::make(|| Ok(Value::Bytes(b.to_vec())))
             }
             MAJOR_TEXT => {
                 let n = self.len(ib, 1)?;
                 self.spend(n)?;
                 let s = std::str::from_utf8(self.take(n)?).map_err(|_| DecodeError::InvalidUtf8)?;
-                Ok(Value::Str(s.to_owned()))
+                M::make(|| Ok(Value::Str(s.to_owned())))
             }
             MAJOR_ARRAY => {
                 let n = self.open(ib, depth + 1, 1)?;
-                let mut l = Vec::with_capacity(n);
+                let mut l = Vec::with_capacity(if M::BUILD { n } else { 0 });
                 for _ in 0..n {
-                    l.push(self.item(depth + 1)?);
+                    if let Some(v) = self.item::<M>(depth + 1)?.value() {
+                        l.push(v);
+                    }
                 }
-                Ok(Value::List(l))
+                M::make(|| Ok(Value::List(l)))
             }
             MAJOR_MAP => {
                 let n = self.open(ib, depth + 1, 2)?;
-                let mut m = Vec::with_capacity(n);
+                let mut m = Vec::with_capacity(if M::BUILD { n } else { 0 });
                 let mut prev: &[u8] = &[];
+                let mut keys = false;
                 for _ in 0..n {
-                    let start = self.pos;
-                    let k = self.item(depth + 1)?;
+                    let (start, links) = (self.pos, self.links_read);
+                    let k = self.item::<M>(depth + 1)?;
                     self.in_order(start, &mut prev, DecodeError::MapKeyOrder)?;
-                    m.push((k, self.item(depth + 1)?));
+                    // only `check` asks (`check_whole`)
+                    keys |= !M::BUILD && self.links_read != links;
+                    let v = self.item::<M>(depth + 1)?;
+                    M::pair(&mut m, k, v);
                 }
+                self.link_keys |= keys && n > 1;
                 // Distinct bytes, one value: links with one content hash.
-                ValueMap::from_decoded(m).map(Value::Map).ok_or(DecodeError::EqualLinks)
+                M::make(|| ValueMap::from_decoded(m).map(Value::Map).ok_or(DecodeError::EqualLinks))
             }
             MAJOR_TAG => {
                 let tag = self.arg(ib)?;
@@ -1190,11 +1106,12 @@ impl<'a> Decoder<'a> {
             }
             _ => match ib {
                 // Major 7.
-                FALSE => Ok(Value::Bool(false)),
-                TRUE => Ok(Value::Bool(true)),
+                FALSE => M::make(|| Ok(Value::Bool(false))),
+                TRUE => M::make(|| Ok(Value::Bool(true))),
                 FLOAT64 => {
                     let bits = self.be(8)?;
-                    Float::from_bits(bits).map(Value::Float).ok_or(DecodeError::NonCanonicalNan)
+                    let f = Float::from_bits(bits).ok_or(DecodeError::NonCanonicalNan)?;
+                    M::make(|| Ok(Value::Float(f)))
                 }
                 _ => Err(DecodeError::BadSimple),
             },
@@ -1236,57 +1153,116 @@ impl<'a> Decoder<'a> {
 
     /// A ticket's content (spec/data-model.md §8 Tickets).
     fn ticket(&mut self, inner: usize) -> Result<crate::refs::Ticket, DecodeError> {
-        let v = self.item(inner)?;
+        let v = self.item::<Value>(inner)?;
         crate::refs::Ticket::from_value(&v).ok_or(DecodeError::TagContent(TAG_TICKET))
     }
 
-    fn tagged(&mut self, tag: u64, depth: usize) -> Result<Value, DecodeError> {
+    fn tagged<M: Made>(&mut self, tag: u64, depth: usize) -> Result<M, DecodeError> {
         let inner = depth + 1;
         self.enter(inner)?;
         match tag {
             TAG_SET => {
                 let n = self.set_head(inner)?;
-                let mut s = Vec::with_capacity(n);
+                let mut s = Vec::with_capacity(if M::BUILD { n } else { 0 });
                 let mut prev: &[u8] = &[];
+                let links = self.links_read;
                 for _ in 0..n {
                     let start = self.pos;
-                    s.push(self.item(inner + 1)?);
+                    if let Some(v) = self.item::<M>(inner + 1)?.value() {
+                        s.push(v);
+                    }
                     self.in_order(start, &mut prev, DecodeError::SetOrder)?;
                 }
-                ValueSet::from_decoded(s).map(Value::Set).ok_or(DecodeError::EqualLinks)
+                self.link_keys |= !M::BUILD && self.links_read != links && n > 1;
+                M::make(|| ValueSet::from_decoded(s).map(Value::Set).ok_or(DecodeError::EqualLinks))
             }
-            TAG_STRONG => Ok(Value::Strong(Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?))),
-            TAG_WEAK => Ok(Value::Weak(Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?))),
+            TAG_STRONG => {
+                let t = Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?);
+                M::make(|| Ok(Value::Strong(t)))
+            }
+            TAG_WEAK => {
+                let t = Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?);
+                M::make(|| Ok(Value::Weak(t)))
+            }
             TAG_TICKET => {
                 self.spend(size_of::<crate::refs::Ticket>())?;
-                self.ticket(inner).map(|t| Value::Ticket(Box::new(t)))
+                let t = self.ticket(inner)?;
+                M::make(|| Ok(Value::Ticket(Box::new(t))))
             }
             TAG_RETIRED => Err(DecodeError::TagContent(tag)),
             TAG_ENUM => {
                 let (case, payload) = self.enum_head(inner)?;
-                if payload {
+                let payload = if payload {
                     self.spend(size_of::<Value>())?;
-                }
-                let payload = if payload { Some(Box::new(self.item(inner + 1)?)) } else { None };
-                Ok(Value::Enum(case, payload))
+                    self.item::<M>(inner + 1)?.value().map(Box::new)
+                } else {
+                    None
+                };
+                M::make(|| Ok(Value::Enum(case, payload)))
             }
             TAG_LINK => {
                 self.enter(inner + 1)?;
                 self.spend(size_of::<Link>())?;
-                self.link_content(inner + 1).map(Value::link)
+                let l = self.link_content(inner + 1)?;
+                self.links_read += 1;
+                M::make(|| Ok(Value::link(l)))
             }
             _ => {
                 self.spend(size_of::<Unknown>())?;
                 let start = self.pos;
                 let saved = std::mem::take(&mut self.deepest);
-                self.item(inner)?;
+                self.item::<M>(inner)?;
                 let content_depth = self.deepest.saturating_sub(inner);
                 self.deepest = self.deepest.max(saved);
                 self.spend(self.pos - start)?;
-                let bytes = self.buf.get(start..self.pos).unwrap_or(&[]).to_vec();
-                let content = CanonicalBytes { bytes, depth: content_depth };
-                Unknown::new(tag, content).map(Value::unknown).ok_or(DecodeError::TagContent(tag))
+                let bytes = self.buf.get(start..self.pos).unwrap_or(&[]);
+                M::make(|| {
+                    let content = CanonicalBytes { bytes: bytes.to_vec(), depth: content_depth };
+                    Unknown::new(tag, content).map(Value::unknown).ok_or(DecodeError::TagContent(tag))
+                })
             }
         }
     }
+}
+
+/// What `Decoder::item` makes of an item: its `Value` (`decode`), or nothing (`()`: `check`,
+/// which allocates only for a link's delete keys and a ticket, read whole to check them).
+trait Made: Sized {
+    /// Whether anything is built.
+    const BUILD: bool;
+    /// Builds the item from what was read and checked; `()` never calls `f`.
+    fn make(f: impl FnOnce() -> Result<Value, DecodeError>) -> Result<Self, DecodeError>;
+    fn value(self) -> Option<Value>;
+    /// Adds a map entry.
+    fn pair(m: &mut Vec<(Value, Value)>, k: Self, v: Self);
+}
+
+impl Made for Value {
+    const BUILD: bool = true;
+    #[inline]
+    fn make(f: impl FnOnce() -> Result<Value, DecodeError>) -> Result<Value, DecodeError> {
+        f()
+    }
+    #[inline]
+    fn value(self) -> Option<Value> {
+        Some(self)
+    }
+    #[inline]
+    fn pair(m: &mut Vec<(Value, Value)>, k: Value, v: Value) {
+        m.push((k, v));
+    }
+}
+
+impl Made for () {
+    const BUILD: bool = false;
+    #[inline]
+    fn make(_: impl FnOnce() -> Result<Value, DecodeError>) -> Result<(), DecodeError> {
+        Ok(())
+    }
+    #[inline]
+    fn value(self) -> Option<Value> {
+        None
+    }
+    #[inline]
+    fn pair(_: &mut Vec<(Value, Value)>, _: (), _: ()) {}
 }
