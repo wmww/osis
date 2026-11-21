@@ -13,7 +13,7 @@ use crate::core::HOLDS;
 
 /// Backlinks a page holds when the query names no limit, and at most. Resource bound: 0 returns
 /// nothing, infinity reads every backlink of a thing in one call under the node lock.
-pub const BACKLINK_PAGE: usize = 256;
+const BACKLINK_PAGE: usize = 256;
 
 /// A thing whose current value on an aspect references another thing.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

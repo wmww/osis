@@ -12,7 +12,7 @@ use osis_base::{BlobId, CommitId as RawCommitId, Tid, Value, base64url};
 use osis_engine::local_peer::Package;
 
 /// How long a pairing offer can be accepted.
-pub const OFFER_LIFETIME_MS: u64 = 10 * 60_000;
+const OFFER_LIFETIME_MS: u64 = 10 * 60_000;
 
 const OFFER: &str = "osis://pair/";
 const REQUEST: &str = "osis://pair-request/";

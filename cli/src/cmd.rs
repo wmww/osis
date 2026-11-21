@@ -797,7 +797,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     lines.push(format!("state\t{}", if known { "present" } else { "empty" }));
     lines.push(format!("role\t{}", role.map_or("none", role_text)));
     let changed = db.changed(t)?;
-    let stamp = |c: Option<osis::ThingStamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, c.written.0), c.author.to_uri()));
+    let stamp = |c: Option<osis::Stamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, c.written.0), c.author.to_uri()));
     lines.push(format!("created\t{}", stamp(created)));
     lines.push(format!("changed\t{}", stamp(changed)));
     let j = J::obj([
@@ -811,7 +811,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     ctx.emit(&lines, j)
 }
 
-fn stamp_json(c: osis::ThingStamp) -> J {
+fn stamp_json(c: osis::Stamp) -> J {
     J::obj([("commit", J::str(c.id.to_string())), ("author", J::tid(c.author)), ("ts", J::int(c.written.0))])
 }
 

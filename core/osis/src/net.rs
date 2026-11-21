@@ -444,11 +444,11 @@ struct Fabric {
 
 /// Deliveries one `run` may make before it panics as a storm. At 0 nothing runs; at infinity a
 /// storm hangs the test instead of failing it.
-pub const MANUAL_CAP: u64 = 20_000;
+const MANUAL_CAP: u64 = 20_000;
 
 /// How far ahead `run` looks for a wake before it calls the network quiet: an hour of simulated
 /// time. At 0 timers never run; at infinity a node with a periodic timer never lets `run` end.
-pub const MANUAL_HORIZON_MS: u64 = 3_600_000;
+const MANUAL_HORIZON_MS: u64 = 3_600_000;
 
 impl ManualNet {
     /// A network whose nodes run on `clock` (give each node the same clock, `Knobs::clock`).

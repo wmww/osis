@@ -31,7 +31,8 @@ pub struct Grant {
 }
 
 /// A commit's author and time, as the commit itself signs them (a `CommitKind::Snapshot` is reported
-/// as itself, never as the writes it stands in for): why a watch fired, a commit's.
+/// as itself, never as the writes it stands in for): why a watch fired, a commit's, a thing's
+/// creation or last change (`Osis::created`, `Osis::changed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {
     /// The commit.
@@ -65,30 +66,8 @@ impl Stamp {
     }
 }
 
-/// When a thing was made or last changed (`Osis::created`, `Osis::changed`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ThingStamp {
-    /// The commit.
-    pub id: CommitId,
-    /// Whom it is by, as `Stamp::author`.
-    pub author: Tid,
-    /// When it was written, by the author's clock: the same on every node.
-    pub written: Time,
-    /// When this node received it (per node).
-    pub received: Time,
-    /// `written` with what orders commits of one moment.
-    pub(crate) ts: Ts,
-}
-
-impl ThingStamp {
-    /// The time to show and sort by, as `Stamp::shown`.
-    pub fn shown(&self) -> Time {
-        self.written.min(self.received)
-    }
-}
-
-fn stamp(c: osis_engine::Creation) -> ThingStamp {
-    ThingStamp { id: CommitId(c.commit), written: c.ts.wall_ms(), ts: c.ts, author: c.purge_author, received: c.received }
+fn stamp(c: osis_engine::Creation) -> Stamp {
+    Stamp::new(CommitId(c.commit), c.purge_author, c.ts, c.received)
 }
 
 /// The grants on a thing, by holder.
@@ -403,7 +382,7 @@ impl Reader<'_> {
 
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
     /// snapshot; `None` while it is unknown or destroyed, or only a snapshot carrying its `created.0` is here.
-    pub fn created(&self, tid: Tid) -> Option<ThingStamp> {
+    pub fn created(&self, tid: Tid) -> Option<Stamp> {
         if self.hidden(tid) || self.e.destroyed(&tid) {
             return None;
         }
@@ -413,7 +392,7 @@ impl Reader<'_> {
     /// When the thing's content last changed: of the held commits and reverts writing its aspects (not `created.0` or role-class ones: sharing is no
     /// content write; not ephemeral writes), the one with the latest `shown()`, else its creation. A commit known here only from a
     /// snapshot is not seen.
-    pub fn changed(&self, tid: Tid) -> Option<ThingStamp> {
+    pub fn changed(&self, tid: Tid) -> Option<Stamp> {
         if self.hidden(tid) || self.e.destroyed(&tid) {
             return None;
         }
@@ -500,7 +479,7 @@ impl ReadOnly {
 
     /// When the thing was created: the oldest valid commit carrying its creation; `None` while it
     /// is unknown here, or once it was destroyed (`Write::purge`, an expiry).
-    pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
+    pub fn created(&self, tid: Tid) -> Result<Option<Stamp>> {
         if let Some(at) = self.remote(tid, "created")? {
             return self.forward(&at, crate::port::method::CREATED, (tid,));
         }
@@ -510,7 +489,7 @@ impl ReadOnly {
     /// When the thing's content last changed (membership and sharing are no content write, a delete
     /// is); its creation if never since. A commit known here only from a `CommitKind::Snapshot` is
     /// not seen.
-    pub fn changed(&self, tid: Tid) -> Result<Option<ThingStamp>> {
+    pub fn changed(&self, tid: Tid) -> Result<Option<Stamp>> {
         if let Some(at) = self.remote(tid, "changed")? {
             return self.forward(&at, crate::port::method::CHANGED, (tid,));
         }

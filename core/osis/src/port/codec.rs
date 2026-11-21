@@ -6,7 +6,7 @@
 use crate::commit_id::{CommitFrom, CommitId, CommitPos};
 use crate::commits::{Address, Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
-use crate::read::{Grant, Grants, Stamp, ThingStamp};
+use crate::read::{Grant, Grants, Stamp};
 use crate::share::{ContactCard, Holder, HolderKind, ShareLink};
 use crate::syncing::{Status, SyncScope, SyncState, UnitSync};
 use crate::watch::{DerivedFrom, Origin};
@@ -280,16 +280,6 @@ pub(crate) fn read_from(v: Value) -> Result<Result<Option<Value>>> {
     }
 }
 
-fn stamp_to(s: &Stamp) -> Value {
-    Value::List(vec![commit_id_to(&s.id.0), tid_to(&s.author), Value::uint(s.ts.to_u64()), Value::uint(s.received.0)])
-}
-
-fn stamp_from(v: Value) -> Result<Stamp> {
-    let [id, author, ts, received] = <[Value; 4]>::try_from(list(v, "stamp")?).map_err(|_| bad("stamp"))?;
-    let ts = Ts::from_u64(uint(&ts, "stamp")?).ok_or_else(|| bad("stamp"))?;
-    Ok(Stamp::new(CommitId(commit_id_from(&id)?), tid(&author)?, ts, Time(uint(&received, "stamp")?)))
-}
-
 const DERIVED: [DerivedFrom; 7] = [DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Recovered, DerivedFrom::Released];
 
 /// An origin: `[0] | [1, stamp] | [2, stamp] | [3, derived]`.
@@ -297,8 +287,8 @@ pub(crate) fn origin_to(o: &Origin) -> Value {
     let u = Value::uint;
     Value::List(match o {
         Origin::Initial => vec![u(0)],
-        Origin::Local(s) => vec![u(1), stamp_to(s)],
-        Origin::Remote(s) => vec![u(2), stamp_to(s)],
+        Origin::Local(s) => vec![u(1), s.to_wire()],
+        Origin::Remote(s) => vec![u(2), s.to_wire()],
         Origin::Derived(d) => vec![u(3), u(DERIVED.iter().position(|x| x == d).unwrap_or(0) as u64)],
     })
 }
@@ -308,8 +298,8 @@ pub(crate) fn origin_from(v: Value) -> Result<Origin> {
     let case = uint(&a.next().ok_or_else(|| bad("origin"))?, "origin")?;
     let o = match (case, a.next()) {
         (0, None) => Origin::Initial,
-        (1, Some(s)) => Origin::Local(stamp_from(s)?),
-        (2, Some(s)) => Origin::Remote(stamp_from(s)?),
+        (1, Some(s)) => Origin::Local(Stamp::from_wire(s)?),
+        (2, Some(s)) => Origin::Remote(Stamp::from_wire(s)?),
         (3, Some(d)) => Origin::Derived(*DERIVED.get(usize_from(&d)?).ok_or_else(|| bad("origin"))?),
         _ => return Err(bad("origin")),
     };
@@ -360,7 +350,7 @@ pub(crate) fn commit_to(c: &Commit) -> Value {
         .map(|(t, ak, p)| Value::List(vec![tid_to(&t), ak_to(ak), Value::Bool(p.valid), body_to(&p.body), opt(p.edited.as_ref().map(pos_to))]))
         .collect();
     Value::List(vec![
-        stamp_to(&c.stamp),
+        c.stamp.to_wire(),
         Value::uint(KINDS.iter().position(|k| *k == c.kind).unwrap_or(0) as u64),
         opt(c.reverts.map(|r| commit_id_to(&r.0))),
         Value::List(c.reverted_by.iter().map(|r| commit_id_to(&r.0)).collect()),
@@ -379,7 +369,7 @@ pub(crate) fn commit_from(v: Value) -> Result<Commit> {
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(Commit::of(
-        stamp_from(stamp)?,
+        Stamp::from_wire(stamp)?,
         *KINDS.get(usize_from(&kind)?).ok_or_else(|| bad("commit kind"))?,
         opt_from(reverts, "commit")?.map(|r| commit_id_from(&r).map(CommitId)).transpose()?,
         list(reverted_by, "commit")?.iter().map(|r| commit_id_from(r).map(CommitId)).collect::<Result<Vec<_>>>()?,
@@ -444,13 +434,15 @@ impl Form for Holder {
     }
 }
 
-/// `created`, `changed` (in an `Opt`): `[commit id, actor, ts, received]`.
-impl Form for ThingStamp {
+/// An origin's, a commit's, and `created`, `changed` (in an `Opt`): `[commit id, author, ts, received]`.
+impl Form for Stamp {
     fn to_wire(&self) -> Value {
         Value::List(vec![commit_id_to(&self.id.0), tid_to(&self.author), Value::uint(self.ts.to_u64()), Value::uint(self.received.0)])
     }
-    fn from_wire(v: Value) -> Result<ThingStamp> {
-        stamp_from(v).map(|s| ThingStamp { id: s.id, author: s.author, written: s.written, received: s.received, ts: s.ts })
+    fn from_wire(v: Value) -> Result<Stamp> {
+        let [id, author, ts, received] = <[Value; 4]>::try_from(list(v, "stamp")?).map_err(|_| bad("stamp"))?;
+        let ts = Ts::from_u64(uint(&ts, "stamp")?).ok_or_else(|| bad("stamp"))?;
+        Ok(Stamp::new(CommitId(commit_id_from(&id)?), tid(&author)?, ts, Time(uint(&received, "stamp")?)))
     }
 }
 

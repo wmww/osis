@@ -4,9 +4,7 @@
 use crate::Osis;
 use osis_engine::Engine;
 
-pub use crate::backlinks::BACKLINK_PAGE;
 pub use crate::commits::COMMIT_PAGE;
-pub use crate::account::OFFER_LIFETIME_MS;
 pub use osis_sync::types::FOLLOW_LINK_MS;
 pub use crate::value_type::of_schema;
 pub use osis_base::{Clock, CommitId as RawCommitId, CreationRecord, ManualClock, Ts};
@@ -15,7 +13,7 @@ pub use osis_engine as engine;
 pub use osis_schema as schema;
 pub use osis_schema::core_types;
 pub use osis_store::{Fault, Faults};
-pub use crate::net::{MANUAL_CAP, MANUAL_HORIZON_MS, ManualNet};
+pub use crate::net::ManualNet;
 
 /// What a `ReadSet` listens to (its addresses, e.g. `value {tid} {ak} Path([])`, `aspects {tid}`)
 /// and how often the last pass read each: a harness finds a read made twice by one node.
@@ -52,12 +50,6 @@ pub trait Exact {
 }
 
 impl Exact for crate::Stamp {
-    fn ts(&self) -> Ts {
-        self.ts
-    }
-}
-
-impl Exact for crate::ThingStamp {
     fn ts(&self) -> Ts {
         self.ts
     }
