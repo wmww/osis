@@ -1,5 +1,5 @@
 # Making role writes again (`Rules::remake`)
-> Summary: The proposal for role writes a removed party made that its remover never received: no vouch; a witness that holds the right makes the write again as its own. Modelled in roles-model `paths` beside today's rule (`Rules::fixed`, vouches); its rule set, the generator's witness-lowering moves, each gate's result under both, what users lose, and the questions for Tess. A proposal: nothing here is in spec or the drafts.
+> Summary: Rejected (Tess; the decided rule is issues/role-vouch-contested.md), kept until the model is rebuilt: the proposal for role writes a removed party made that its remover never received: no vouch; a witness that holds the right makes the write again as its own. Modelled in roles-model `paths` beside today's rule (`Rules::fixed`, vouches); its rule set, the generator's witness-lowering moves, each gate's result under both, what users lose, and the questions for Tess. A proposal: nothing here is in spec or the drafts.
 
 ## Principle
 A role write is judged only by its own signer's path at its own key. Nothing speaks for another's role write: a witness that wants X's write to stand writes it again, signed by itself, judged like any write of its own. A contested witness is then an ordinary admin fight, shown as a dispute and decided by trust.
@@ -64,9 +64,5 @@ An addendum vouches for content by its writer's standing at its position, and a 
 - A key removed before the theft, its removal held by everyone, backdates a lowering ordered before its own removal: it applies at its key, drops the honest writes on the lowered edge, and those drops stand after its removal drops it (issues/removed-key-backdated-drop.md, `a_removed_keys_backdated_lowering_drops_a_witness_write_for_good`).
 - The story's honest re-grants were written before the answers of earlier ticks existed, so their frontiers missed them; they are now written in tick order.
 
-## For Tess
-1. X removed someone, only another device saw it, then X is removed. Is it acceptable that the removal is not kept automatically: that device's owner, if an admin, removes the party again (its device does it unasked), and if the lowered party's key fights back the user sides on a shown dispute? If no admin saw it, nobody can: the party is back until someone notices.
-2. X shared something or paired a device, and the remover had not received it. Is it acceptable that it exists again only from when another admin's device makes it again, content written under it counting again but invites and role changes made under it in between lost?
-3. A device writing role changes in its user's name without being asked ("B granted Q", "B removed N5"): acceptable, or must the user confirm each? Today devices already write vouches unasked, but those show as X's writes.
-4. A removal only its victim's device saw (or where another witness's write made again took the right first) is lost under `remake` and kept today. Accept, or is there a requirement here that the model cannot meet either way?
-5. If any answer is no: which of the pair's two worlds should the model get wrong, and for whom?
+## Decided (Tess)
+Neither rule set: nothing vouches for a role write and no node makes one again unasked (issues/role-vouch-contested.md). This note and `Rules::remake` go once roles-model holds the decided rule; the results above are what it is compared against.

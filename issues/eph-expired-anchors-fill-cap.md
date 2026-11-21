@@ -1,7 +1,9 @@
 # Expired ephemeral writes leave anchors that fill a holder's cap
 > Summary: An expired ephemeral list element or fresh map entry stays in the aspect's state as a value-less record (about 575 B decoded, charged about 1.15 KB at holders), never collected, so an ephemeral event list or per-message map hits the 16 MiB node cap after about 14,000 expired elements over its lifetime; the lattice needs the records, so an O(live) fix changes a convergence limit (Tess) and a smaller form keeps the growth.
 > Priority: normal
-> Tags: ephemeral, crdt, engine, tess-call
+> Tags: ephemeral, crdt, engine
+
+**Decided (Tess):** compact records (exact convergence kept); the coordinator's to build.
 
 **Question for Tess:** expired ephemeral list elements and map entries keep a value-less record each, so a per-message ephemeral list fills its 16 MiB cap after about 14,000 lifetime messages. Fix B frees them but lets a late reaction to an expired message read differently on some nodes until a writer's snapshot repairs it; fix A keeps exact convergence and shrinks each record to a few bytes (about a million lifetime messages). B or A?
 

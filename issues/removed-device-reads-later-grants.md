@@ -1,7 +1,9 @@
 # A removed party reads the role parts of grants and re-seals made after its removal
 > Summary: A commit giving read epochs (rotation, grant, re-seal) wraps under an epoch they supersede, so a party removed at epoch e, still holding the superseded epoch's roles secret, opens the role parts (who was granted, keysets, the deposit seed; boxes stay sealed) of the rotation, grants and re-seals giving e while it still opens S: until S's step for e reaches the peers it uses. Study (notes/keys-establishment.md, The superseded-epoch wrap): no structural close at a sane cost; proposed to Tess as a stated limit.
 > Priority: normal
-> Tags: security, crypto, engine, tess-call
+> Tags: security, crypto, engine
+
+**Decided (Tess):** within the requirements' key-step rule (a removed holder stops reading new content once the keys have changed and a writer has written since), role parts included; no fix sought before A5.
 
 ## The gap
 - spec/crypto.md §5 (Who wraps under what, the exception): a commit giving read epochs of a thing is wrapped under the epoch they supersede with the greatest n whose roles secret the node holds.

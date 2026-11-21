@@ -57,7 +57,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 
 ## Data a node cannot read
 - Holding and serving data it cannot read is a first-class feature of every node; one node may read some things and not others. One protocol for all nodes: peers differ only in which keys they hold.
-- For such data a node learns only what storing and selective sync need: volume, which opaque sync units each item is in and how they overlap, padded sizes, timing, addresses, and what it must act on (an item's expiry, whether it is durable, which kinds of right may delete it, whether someone without write left it). It may learn that units it keeps share a writer, and may know the account it keeps data for. Never keys, values, what a thing is, or its role grants.
+- For such data a node learns only what storing and selective sync need: volume, which opaque sync units each item is in and how they overlap, padded sizes, timing, addresses, and what it must act on (an item's expiry, whether it is durable, which kinds of right may delete it, whether someone without write left it). It may learn that units it keeps share a writer, and may know the account it keeps data for. A node granted sync on a thing learns that thing's identifier and who granted it. Never keys, values, what a thing is, or its role grants.
 - What a connection reveals (its address, the sync units it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - A node that cannot read data may hold its only copy, knows none of its role holders and never waits on their liveness.
 - Reading never allows deleting data, forcing it to be sent again, or storing arbitrary content at a node that cannot read it. Such a node stores content only with a writer's signature, beyond a small bounded budget per thing for parties that must reach the thing's readers without write (an invitation, a reader leaving). The budget is best effort: it can be used up, and what needs it then waits.
@@ -97,7 +97,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 
 ## Scale
 - Many GB per node, multi-GB single values, maps with millions of keys, millions of things referenced from one thing, millions of things that were never shared directly. A change inside a huge value costs in proportion to the change. Large values stream; no whole value is ever needed in memory.
-- Storage follows live data and the history a setting keeps, never the number of writes ever made: writing a value again and again where its history is not kept, or making and releasing things again and again, does not grow a node's storage without bound. A long-lived thing may grow modestly with the number of role changes made on it.
+- Storage follows live data and the history a setting keeps, never the number of writes ever made: writing a value again and again where its history is not kept, or making and releasing things again and again, does not grow a node's storage without bound. A long-lived thing may grow modestly with the number of role changes made on it, or on what its writers act through.
 - Every wire object has a fixed maximum size. Peer input never causes a panic or unbounded allocation, work, storage or diagnostics.
 
 ## Generality (goal)
@@ -131,7 +131,7 @@ Binds released formats only; until a stable release formats change in place.
 - Readers only read. A thing's writers may grant roles to it. From anyone else it takes messages, or grants of roles to it, only where its admins allow.
 - Every write states its actors, from the key that signs it to a holder of the role it uses on what it writes, and is judged along them alone. Anyone who may read the write can verify each step.
 - Rights held by different parties never combine into a right neither has alone.
-- When a writer is removed, those of its edits the remover or another remaining writer vouches for having received by then are kept; the rest are discarded, since nothing shows they were made before the removal. Removing a node from an account works the same way.
+- When a writer is removed, those of its edits the remover or another remaining writer vouches for having received by then are kept; the rest are discarded, since nothing shows they were made before the removal. Its changes to roles are kept only where the remover's own removal names them. Removing a node from an account works the same way.
 - Admins are equals, and a fight between them has no right answer inside osis: both sides go on working, each node sides by a trust set that is an input to its judgment, reports the dispute, and lets its user switch. Sides are never merged and no winner is picked for everyone; a side changes nothing outside what the disputed thing reaches. The same holds between the nodes of an account.
 - A removal nobody states (a timed grant ending, a self-removal, a link expiring) cuts off by the removed party's own timestamps until another holder states it.
 - A share link is a bearer secret. One joiner is revoked only together with the link.

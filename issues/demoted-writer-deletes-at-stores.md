@@ -1,7 +1,9 @@
 # A writer lowered to read can keep its old writes out of stores that cannot read
 > Summary: lowering a writer to read rotates write but not sync, and a level-2 Delete goes with the head's sync key, so with its own (never revoked) level-2 key the former writer deletes its earlier writes at any node keeping the sync ID unread, with no purge request and no author's right left; holders log each back once and its second delete stands until the sync key moves. Nothing is erased while a reader holds the body, but a reader syncing only through such a store lacks those writes. May a writer demoted to reader still erase its own earlier writes from stores?
 > Priority: normal
-> Tags: security, sync, tess-call
+> Tags: security, sync
+
+**Decided (Tess):** option 1 if it is easy, with spec/requirements.md Deletion's "anyone who ever held the right" becoming "anyone holding write now" (approved); left as it is if it turns out a mess.
 
 **The question (Tess)**: may a writer demoted to reader still erase its own earlier writes from stores?
 

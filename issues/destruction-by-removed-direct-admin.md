@@ -1,7 +1,9 @@
 # A removed admin's backdated destruction of a thing it held directly stands
 > Summary: a destruction's right reads no cut on an edge into the destroyed thing ordered after it (spec/commits.md §5 Destruction; draft notes/a1-spec/permissions.md §6 Destruction; roles-model `holds`; osis-perm `paths`), so a key holding admin on T by a direct edge, stolen and removed, destroys T for good by a request backdated before its removal, unlisted. Every other purge request falls with such a cut. Against spec/requirements.md Deletion ("A purge counts only if its author had the right to make it, judged as an edit's validity is").
 > Priority: normal
-> Tags: security, perm, tess-call
+> Tags: security, perm
+
+**Decided (Tess):** a destruction is judged as any purge request (spec/requirements.md Deletion: a destroyed thing comes back if the purge turns out invalid), so a removed key destroys nothing: the rule below is a bug to fix.
 
 World (roles-model `paths::purge::tests::a_destruction_stands_against_a_later_cut_on_its_own_thing_alone`, `on_thing`): H grants Z admin on T1 directly; H removes Z from T1 at 6 listing nothing; Z's destruction of T1 stamped 4. The held set is the same whether honest Z destroyed at 4 before H (not yet holding it) removed it, or a thief with Z's key made it after the removal and backdated it. The rule keeps it in both: the thing is gone at every node that holds the request, for good, and nodes that erased it fetch nothing back.
 

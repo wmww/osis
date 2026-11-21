@@ -1,7 +1,9 @@
 # Opening a sync ID: by role and by secret both carry weight today
 > Summary: Checked against spec and code. An old secret alone opens nothing: a reader that is behind gets back in only by a peer opening on its role (J, ByRole), and a holder that only stores gets every new sync secret from a fresh ticket fired on its inbox. So by-role cannot simply go. The simplification on offer: every key change leaves a sealed copy of the new secrets for each holder in the sync ID's own steps, as link keys get today; then an old secret catches up, tickets never go stale, and by-role opening and fresh tickets on key changes can go.
 > Priority: low
-> Tags: sync, tess-call
+> Tags: sync
+
+**Decided (Tess):** no: a node keeping the data unread would learn how many holders a thing has (spec/requirements.md, Data a node cannot read).
 
 What holds today:
 - **A holder that only stores** follows no step by itself: entry boxes go to link keys only ("Other readers get none", spec/sync-ids.md §3). When its head moves past its keys it stops, and only a box of the new sync secret restarts it (spec/sync-judgement.md §6 Stops), delivered as a fresh ticket on its inbox (spec/sync-inbox.md §5 Key changes). It can be behind by zero changes of the sync key.

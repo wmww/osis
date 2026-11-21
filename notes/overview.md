@@ -30,7 +30,7 @@ Open work: issues/, by their Priority lines.
 - Workflow: Tess and agent iterate by discussion. Notes mark what was Tess's decision, the agent's call or a proposal. Decisions waiting on Tess are issues tagged `tess-call`.
 
 ## Notes
-Each note's first line is its summary: `grep '^> Summary' notes/*.md`. Sections that group several: notes/sync.md (sync), notes/engine.md (engine-*). Questions for Tess are issues tagged `tess-call`, all indexed in notes/decisions-for-tess.md; notes/testing-map.md is the generated spec-to-test map.
+Each note's first line is its summary: `grep '^> Summary' notes/*.md`. Sections that group several: notes/sync.md (sync), notes/engine.md (engine-*). Questions for Tess are issues tagged `tess-call`; notes/testing-map.md is the generated spec-to-test map.
 
 ## Long-term direction (Tess)
 Dogfood osis for the project's own coordination: Claudes working on osis coordinate over it (a realm), notes become osis documents, agents message each other and post to channels, and Tess sees and joins it in the app. Near term the core comes first; apps, UX and other use cases follow once it is solid.

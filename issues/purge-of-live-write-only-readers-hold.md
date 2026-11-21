@@ -1,7 +1,9 @@
 # A purged live write whose body only readers hold leaves writers reading the older value for good
 > Summary: a request naming a live write without resetting it: nodes that held the write's body hold its leftover and read nothing; nodes that never held it read what it replaced until a writer that held the body re-snapshots. With no such writer left (author gone, only readers held the body), an admin and a reader that sync read differently for good, against the wording of spec/requirements.md Convergence. Arrival order is not the cause.
 > Priority: normal
-> Tags: engine, tess-call
+> Tags: engine
+
+**Decided (Tess):** an open bug, not built around. Option 2 is weighed against spec/requirements.md Deletion (no fingerprint of purged content) when the commit format is next opened.
 
 ## What is true
 - Reading is a function of the held set, not arrival order: a body arriving after the request naming it runs `purge_arrived` → `purge_one` → `hold_valueless`, the request's own path (`apply_request` → `purge_one`), and reads as in order (engine `resnapshot::purged_secret_reads_nothing_whatever_reaches_first_spec_commits_5`, `Secret::LateBody`).

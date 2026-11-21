@@ -1,5 +1,5 @@
 # Test and gate time
-> Summary: Targets (Tess): default tests 4x faster without losing coverage that matters (a test should cost milliseconds), and the whole gate in 5 minutes on ostrich, reached by fixing perf, not shrinking sizes. Both are about 2-3x over. Most of the cost is the engine's per-change work under every test and osis-sync's per-delivery settles; this lists where it goes, the levers left and the patterns behind them.
+> Summary: Targets (Tess): default tests 4x faster without losing coverage that matters (a test should cost milliseconds), and the whole gate in 10 minutes on ostrich, reached by fixing perf, not shrinking sizes. Both are about 2-3x over. Most of the cost is the engine's per-change work under every test and osis-sync's per-delivery settles; this lists where it goes, the levers left and the patterns behind them.
 > Priority: normal
 > Tags: tests, performance, sync, engine
 
@@ -52,7 +52,7 @@ Per stage CPU-s / wall s (notes/time-limits.md, Limits: `gate` 4,094 CPU-s / 299
 - The engine drop's index check (`Engine::check_index`, issues/index-check-rebuild-cost.md): about 23% of engine `it` (about half its load from the store, a third `checked_states`), 3-7% of a sync test.
 
 ## Budget
-- Gate: 5 minutes wall but its lock wait (notes/time-limits.md, Limits, `gate`), about 4000 CPU-s on ostrich at its usual 85%; each stage's limit is its share (the hold 105 u: 241 s, 3795 CPU-s). Measured: the whole gate about 15 min (8000 CPU-s), the hold 11 min, every stage about 2x its share, builds after a rebase 7x. Other agents' unlocked builds take 25-35% of the box during the hold and count against its wall.
+- Gate: 10 minutes wall but its lock wait (notes/time-limits.md, Limits, `gate`), about 8000 CPU-s on ostrich at its usual 85%; each stage's limit is its share (the hold 210 u: 483 s, 7590 CPU-s). Measured: the whole gate about 15 min (8000 CPU-s), the hold 11 min, every stage about 2x its share, builds after a rebase 7x. Other agents' unlocked builds take 25-35% of the box during the hold and count against its wall.
 - Ostrich spends about 1.6x the CPU-s per u that fastbox-0 does (notes/time-limits.md, Investigations), so its u limits are tight by that factor until u is timed on real work.
 - Default tests alone exceed the hold's budget even with properties and sim at zero.
 - Shares moved to the work (Windlass, the coordinator's call; `gate.hold` and `gate` unchanged): `gate.sim` 410 u to 105 u (943 to 242 CPU-s on ostrich; it takes 135-150), `gate.properties` 530 u to 835 u (1,219 to 1,920; an engine change's take 1,880-2,050). Tess may undo it: it makes `gate.properties` hits rarer without making the properties cheaper.

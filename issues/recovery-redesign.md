@@ -1,22 +1,19 @@
-# Recovery, from scratch
-> Summary: No recovery exists: an account is reached again only through one of its other nodes. Tess wants it designed from scratch (optional, none by default); open questions and her idea of an optional key below. Not urgent.
-> Priority: low
-> Tags: api, permissions, tess-call
+# Recovery by an owner key
+> Summary: Decided (Tess): recovery is no mechanism of its own. An owner key (a key a thing lists as allowed to sign as it) outranks the thing's admins: they see it and cannot remove it, and its role writes on the thing always apply. So anyone may attach an owner key to a thing, write it down, share adminship and take it back. It recovers authority, not data. Designed and modelled with the owner-key work.
+> Priority: normal
+> Tags: perm, keys, spec, api
 
-**Tess question:** when should recovery be designed, and is the optional recovery key below the direction?
+Owner keys: notes/handoff.md, Decided by Tess. None by default: a thing with no owner key is a fully valid way to use osis, and a thief with an unlocked node taking control is accepted.
 
-notes/disputes.md records her direction: no recovery key by default, and a stolen unlocked device accepted.
+## The rule
+- An owner key acts as the thing itself, and no grant gives or takes a thing's authority over itself, so no admin's write lowers it: its removal of an admin is an ordinary removal nothing contests, and it settles a fight among admins. The owner-key list is written only as the thing itself (by an owner key); admins read it. A thing with none takes its first from an admin, as an ordinary admin write.
+- **Authority, not data** (Tess): nothing is sealed to an owner key. A node that lost every other way in regains control of the thing, and reads again what another reader shares with it.
+- **A stolen owner key has no remedy** (Tess): two parties holding one key cannot be told apart.
+- An adminless thing with an owner key (a node root) is unaffected.
 
-Nothing of recovery is in the engine or spec. Accounts (spec/permissions.md §1) have no owner key apart from their epoch seeds on D, so an account with no node left is not recoverable; a design starts from the epoch seeds. One that claims a sync ID by a static entry must handle a head moving while the fresh node reads.
+## Must hold (Tess)
+Attach an owner key, share adminship, the new admin turns hostile and backdates: no takeover and no dispute. It follows from a grant counting only from its own start: the admin's write adding an owner key is dated either before its grant (no right) or after the owner key exists (only an owner key writes the list). Not protected, by design: a party made admin of a thing that then attaches an owner key, against an admin who held the thing earlier and backdates one ahead of it.
 
-## Questions for the design
-- Is recovery an explicit act after `create`, any time, with or without peers?
-- Where the data comes from on restore: any node of the account or an address typed in.
-- How a lost or stolen card is revoked.
-- Interaction with disputes (notes/disputes.md, The walk).
-
-## Tess's idea: an optional key
-Having none must be a fully valid way to use osis, and a thief with an unlocked device taking control is accepted (the alternatives are no irrevocable actions for legit users, or a recovery system, which stays optional). So nobody gets one by default and it is not in the first build. Losing all nodes needs no new role: a recovery card can be a key actor holding a plain admin edge, listed by static entry as link keys are (spec/permissions.md §7); a thief can remove it. If built, it is a section nothing else reads; every rule and test works with none.
-- At most one key actor per thing, none by default. It holds boxes like an admin (it must see the log to write frontiers, seal to new admins and register steps), so "only changes grants" is a client rule. No admin can remove it; its role writes always apply and settle disputes, so a split tid converges again. It acts on the named thing only, not on things below by path.
-- **Hand-off**: names a successor, then burns. **Burn**: a signed list of its writes that count; any other write of it is void; several burns intersect, so a thief with the key can only cancel recovery. **Threshold**: split the seed outside the protocol.
-- **Must be addable later** (Tess: nothing users may want to change is baked into a thing). An ex-admin could claim to have added one, stamped in the past, or void the honest grant by removing its granter earlier, so an added key is only as strong as a normal admin write. Accepted if built. Adds back one small rule; not modelled.
+## To do
+- Model the override and the flow above before building: the self edge is a soft spot (a thing given a role on itself is one of the unclassed differences of `windlass-wiring-1`: notes/priorities.md, Unlanded branches).
+- API: making an owner key, showing it once, acting with one on a fresh node.

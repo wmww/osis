@@ -1,7 +1,9 @@
 # Invalid bodies at stores are never deleted
 > Summary: No node deletes a body it judges invalid at a store (spec/sync-judgement.md §3 Deletes, §2 Judged invalid: the store copy is the refetch source when the body turns valid again), so an ex-writer's writes logged before its demotion reached it, and a hostile writer's junk, stay at stores keeping S unread until expiry, purge or S leaving, within S's caps. Stated for hostile writers (spec/sync-hostile.md), not as an honest-use limit. Needs Tess: keep re-grants restoring from stores, or delete.
 > Priority: low
-> Tags: sync, security, retention, tess-call
+> Tags: sync, security, retention
+
+**Decided (Tess):** invalid data is set aside, never deleted for being invalid (notes/handoff.md): no node deletes at a store because of a verdict; what is set aside goes by the pending budget, expiry, purge or release, and those must be real.
 
 ## What happens
 - A writer demoted with a frontier that does not list a write it logged keeps writing until it hears of the demotion; those writes are logged at stores while valid at the author, then judged invalid everywhere. Readers drop their entries (spec/sync-judgement.md §2 Judged invalid), the author keeps its own commit locally and does not log it. The store copies stay: nothing deletes an invalid body at a peer, and a snapshot never covers a part judged invalid (a cover drop of a part judged invalid is an invalid drop).

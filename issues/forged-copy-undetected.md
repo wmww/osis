@@ -1,7 +1,9 @@
 # A writer's forged copy of another's write changes what it reads, unattributed and undetected
 > Summary: a valid snapshot may carry another author's write under its stamp with another payload; copy order (spec/crdt.md §4.1) can pick the forged payload, so every reader shows the forger's value in place of the author's, with `changed` still naming the author's commit and no history entry for the change. A node holding both copies has proof (the author's signed delta, the forger's signed snapshot) but by spec never compares them. Should it?
 > Priority: low
-> Tags: security, crdt, tess-call
+> Tags: security, crdt
+
+**Decided (Tess):** an open issue, not built around. What a snapshot carries is its writer's word; to do: the API attributes a value to an author only where the author's own commit is held, else to nobody.
 
 What a forger (any writer of the thing) can do, by spec (spec/permissions.md §5.2 Copies):
 - Copy order decides each part by bytes (the greater value, a valued copy over a value-less one), so the forger picks a payload that wins: every node holding both copies reads it (osis-engine `retention::tests_forged`: all nodes alike, the forger's reference in place of admin 0's int).

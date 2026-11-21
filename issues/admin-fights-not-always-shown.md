@@ -1,7 +1,9 @@
 # Admin fights are not always shown as disputes
 > Summary: When admins of one thing lower each other at the same time, every node reaches the same result and a node trusting one side reads safely, but which admin wins can turn on a third party's write that ends up doing nothing, and a node trusting none of them is not always told a fight happened; spec/requirements.md says a dispute is reported: must that hold for every fight?
 > Priority: low
-> Tags: tess-call, perm
+> Tags: perm
+
+**Decided (Tess):** a dispute is reported where a node's trust decides the reading; where it does not there are no sides to choose, and nothing is built to show such a fight. Open only for a clean way to show them, should one turn up.
 
 **What happens.** When two or more admins of a thing remove, demote, or put an end date on each other at about the same time:
 - every node holding the same writes and trusting the same side reaches the same result;
