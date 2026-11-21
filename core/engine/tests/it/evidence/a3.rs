@@ -1,5 +1,5 @@
-//! The derivation's leaves (`Config::leaves`; notes/a3-spec/permissions.md drafts them: the leaf
-//! bullet, §5.1 Reading a list), built unused and going at A3: the leaf form is not the design
+//! The derivation's leaves (`Config::leaves`; spec/permissions.md §4 as notes/a3-spec/permissions.md
+//! drafts it: the leaf bullet, §5.1 Reading a list), built unused and going at A3: the leaf form is not the design
 //! (notes/write-path-design.md §2, E4), so held-model has no oracle for them. Worlds for findings 27
 //! and 34, each a differential of the copies at every step (`assert_agrees`) plus the leaf the
 //! draft's words decide; the derivation's own (an addendum leaving, a late witness, a lowering

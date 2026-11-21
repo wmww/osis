@@ -17,21 +17,22 @@
 //! - **The required set** of sync ID S over a held set H (`World::req`): the evidence closure
 //!   (`paths::evidence`: every held edge write on an edge of a seed's path or on the remaining
 //!   admin edge a lowering names, closed under the same for what it adds) of the seeds: the bodies; the grants naming S's thing as holder (a holder's
-//!   grants travel under its sync ID: taken-ness is not modelled, every grant counts); and every
-//!   held removal of an edge (h, t) taking write away (`Rule::removals`), with its witness, whose
-//!   **reach** (held edge writes giving write or above and record edges, at any time, joining t to
-//!   a thing of the unit) is held, with that reach (`Rule::reach`: the drafted A3 delivery, parked
-//!   until held-model is restated at stage D: notes/a3-spec/README.md, Far delivery). What of it
-//!   lies on things outside the unit is a copy, the rest bodies.
+//!   grants travel under its sync ID: taken-ness is not modelled, every grant counts). What of it
+//!   lies on things outside the unit is a copy, the rest bodies. A removal is in it only as
+//!   evidence of a body (notes/write-path-design.md §2, D1) or as Role changes travel puts it
+//!   (D3); nothing logs a removal anywhere for its own sake (lazy delivery: no errand, no reach).
 //! - **Delivery** (`Placement`): nodes sync sync IDs (`Node::syncs`, closed under the standing duty:
 //!   a node syncing S syncs every sync ID of a thing in S's unit) and hold what those carry and what
 //!   they wrote. An honest node logs under each sync ID it syncs what its own view requires there;
 //!   an entry no syncing node requires is deleted (a delete-key holder deletes, a holder whose view
 //!   requires it logs again: the union). The thief logs its own bodies and the grants they rest on,
-//!   never a lowering. The remover's errand (`Errand`, parked with reach): it logs its lowering under
-//!   the own sync ID of the lowered edge's target and of the things that target holds grants on
-//!   (`Direct`, read from the target's taken grants), or of everything reached by taken grants
-//!   (`Transitive`).
+//!   never a lowering. A granter logs its grant under the holder's sync ID.
+//! - **The reference** (`World::reference`): a reader of S is judged against a node holding
+//!   everything written but the lowerings S lacks that no honest node syncing S holds
+//!   (`World::undelivered`): lazy delivery brings a removal only where a node holding it holds S.
+//!   Where that node's verdict differs from the node holding everything is **the gap**
+//!   (`World::gap`, notes/write-path-design.md §2 The gap; issues/removed-key-writes-show-far.md),
+//!   counted, never excluded silently.
 //! - **Readers.** A reader holding one sync ID holds its entries and trusts what the world trusts
 //!   that it holds. A lowering's list is in the lowering (notes/write-path-design.md §2, E4): every
 //!   copy carries it whole, so whoever holds a lowering reads its whole list (`Lists::Whole`; the
@@ -69,29 +70,6 @@ pub enum Placement {
     /// then; a body where the thing is in the unit then, else a copy) and leave once every commit
     /// they were placed for left; nothing is placed again when a unit changes.
     AtLog,
-}
-
-/// Where the remover logs its lowering besides the sync IDs it syncs (the drafted A3 delivery,
-/// parked with `Rule::reach` until stage D).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Errand {
-    Off,
-    /// The target's own sync ID and those of the things it holds grants on (its taken grants,
-    /// under its own sync ID).
-    Direct,
-    /// Every thing reached from the target by taken grants, each read under the reached thing's
-    /// own sync ID, held for the errand.
-    Transitive,
-}
-
-/// What travels by errand.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scope {
-    /// Lowerings only ("only removals travel at once").
-    Lowerings,
-    /// A lowering, and every later edge write on its edge (a re-grant), written by any honest
-    /// node holding the lowering, to the same sync IDs.
-    Edge,
 }
 
 /// What of a held lowering's list a reader reads (notes/write-path-design.md §2, E4).
@@ -267,29 +245,23 @@ impl Open10 {
 /// closure and judge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
-    /// The drafted A3 delivery: removals with their reach, the remover's errand followed to the
-    /// end (`Rule::fixed`), and Role changes travel whole. Not the decided design (no eager
-    /// delivery: notes/handoff.md): kept while the properties below rest on it (notes/a3-spec
-    /// README.md, The model).
-    A3,
-    /// The derivation as built (`osis_engine::evidence`): no reach, no errand, Role changes travel.
+    /// The design (lazy delivery, notes/write-path-design.md §2 D1 to D3) and the derivation as
+    /// built (`osis_engine::evidence`): Role changes travel whole.
     A2,
-    /// Brief 3 as the built derivation computes it alone: no reach, no errand, the actor seed
-    /// (Role changes travel's keys-open half left out).
+    /// The actor seed alone (Role changes travel's keys-open half left out).
     A2Actor,
     /// Main today: chain certificates on any path, closed under authors, the account's chain
     /// under each sync ID it logs to (spec/permissions.md §4 Logging certificates: read as the
-    /// chain of each signer of a body there), Role changes travel; no errand.
+    /// chain of each signer of a body there), Role changes travel.
     Today,
     /// Brief 3 with today's any-path chains kept for removals alone (`Rule::author_reach`).
     A2AuthorReach,
 }
 
 impl Stage {
-    pub const ALL: [Stage; 5] = [Stage::A3, Stage::A2, Stage::A2Actor, Stage::Today, Stage::A2AuthorReach];
+    pub const ALL: [Stage; 4] = [Stage::A2, Stage::A2Actor, Stage::Today, Stage::A2AuthorReach];
     pub fn name(self) -> &'static str {
         match self {
-            Stage::A3 => "a3",
             Stage::A2 => "a2",
             Stage::A2Actor => "a2-actor",
             Stage::Today => "today",
@@ -298,9 +270,8 @@ impl Stage {
     }
     /// `rule` under (iv) with this stage's delivery; `w` judging as (iv).
     pub fn set(self, w: &mut World, rule: Rule) -> Rule {
-        let r = Rule { errand: Errand::Off, reach: false, keys_open: true, ..Open10::Granted.set(w, rule) };
+        let r = Rule { keys_open: true, ..Open10::Granted.set(w, rule) };
         match self {
-            Stage::A3 => Rule { errand: Errand::Transitive, reach: true, ..r },
             Stage::A2 => r,
             Stage::A2Actor => Rule { keys_open: false, ..r },
             Stage::Today => Rule { closure: Closure { any_path: true, joined: false, ..r.closure }, ..r },
@@ -309,29 +280,9 @@ impl Stage {
     }
 }
 
-/// Which removals are reach seeds (notes/a2-spec/README.md OPEN 16).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Removals {
-    /// Every held removal (`World::removes`: an edge write giving below write at its `ts`, a fresh
-    /// grant of read and a reader's removal included).
-    Any,
-    /// A removal that takes write away: one ordered (by key) after a held taken edge write on its
-    /// own edge giving write or above, or on a record edge (standing admin from the thing's
-    /// creation). With it, its **witness** (the first such write by key, none for a record edge)
-    /// is a seed too, so a reader holding the removal requires it as the node does. Monotone in the
-    /// held set: a write grant arriving later with an earlier key makes a held removal one.
-    TakesWrite,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rule {
     pub placement: Placement,
-    pub errand: Errand,
-    /// (The drafted A3 delivery, parked until stage D: notes/a3-spec/README.md, Far delivery.)
-    /// Each held removal of (h, t) whose reach under S is held (taken write grants joining t to a
-    /// thing of the unit) is a seed, with that reach. Off: a removal goes under S as Role changes
-    /// travel says.
-    pub reach: bool,
     /// Role changes travel's keys-open half: an edge write naming holder h is a seed also of the
     /// sync ID of each thing whose keys open h (holding read or above on h through taken grants,
     /// at any time: `ROLE_KEEP` read as for good). The half naming S's own thing is always on.
@@ -341,30 +292,19 @@ pub struct Rule {
     /// from h to it over record edges and chained grants, any time), with the writes of that
     /// chain's edges.
     pub author_reach: bool,
-    /// Record edges are edges of the reach graph and of the read graph and steps of the errand
-    /// (each a mint admin's admin edge on the thing it minted, at any time: `World::reach`,
-    /// `World::opened`): today's keys open through them (spec/sync-set.md §2) and its chains
-    /// climb them. False: the control (grants only), which under-reads today (README OPEN 17).
+    /// Record edges are edges of the read graph (each a mint admin's admin edge on the thing it
+    /// minted, at any time: `World::opened`): today's keys open through them (spec/sync-set.md
+    /// §2). False: the control (grants only), which under-reads today (README OPEN 17).
     pub records: bool,
-    /// Which held removals reach (`World::reach_removal`; README OPEN 16).
-    pub removals: Removals,
-    pub scope: Scope,
-    /// The errand is a standing duty: the remover logs again whenever its view shows a new
-    /// target (a holder raised later); false, once, as the lowering is written.
-    pub standing: bool,
     pub lists: Lists,
     pub closure: Closure,
 }
 
 impl Rule {
-    /// The plan's reading (notes/redesign-plan.md A2, A3).
-    pub fn design() -> Rule {
-        Rule { placement: Placement::Function, errand: Errand::Direct, reach: true, keys_open: false, author_reach: false, records: true, removals: Removals::TakesWrite, scope: Scope::Lowerings, standing: true, lists: Lists::Whole, closure: Closure::drafted() }
-    }
-    /// The design with the findings' fixes (notes/evidence-model-findings.md): the errand follows
-    /// taken grants to the end.
+    /// The drafted closure (notes/a2-spec/permissions.md §4) with lazy delivery and lists whole;
+    /// `Stage::A2` puts OPEN 10's (iv) and keys-open travel on it.
     pub fn fixed() -> Rule {
-        Rule { errand: Errand::Transitive, ..Rule::design() }
+        Rule { placement: Placement::Function, keys_open: false, author_reach: false, records: true, lists: Lists::Whole, closure: Closure::drafted() }
     }
 }
 
@@ -440,8 +380,8 @@ pub struct State {
     pub entries: BTreeMap<Sid, Set>,
     /// Per node what it holds (`Placement::Function`: kept while a sync ID it syncs requires it).
     pub held: Vec<Set>,
-    /// `Placement::AtLog`: what errands logged, never unplaced.
-    pub errands: BTreeMap<Sid, Set>,
+    /// `Placement::AtLog`: what granters delivered under holders' sync IDs, never unplaced.
+    pub delivered: BTreeMap<Sid, Set>,
     /// `Placement::AtLog`: per (sync ID, copy), the commits it was placed for.
     pub placed: BTreeMap<(Sid, Id), Set>,
     /// A settle that did not reach a fixpoint.
@@ -509,7 +449,18 @@ impl World {
             _ => None,
         }
     }
-    /// A held edge write giving write or above (any `until`): a reach.
+    /// A lowering that takes something away: an edge write below admin at its own `ts`
+    /// (`paths::World::lowers`: no finalize), on a record edge or ordered (by key) after a write on
+    /// its edge giving more at its own `ts`. What lazy delivery may leave behind (`undelivered`).
+    pub fn takes_away(&self, i: Id) -> bool {
+        let Some(e) = self.w.lowers(i) else { return false };
+        let at = |j: Id| match &self.w.commits[j].kind {
+            Kind::Edge { role, until, .. } => paths::alive((*role, *until), self.w.commits[j].ts),
+            _ => Role::None,
+        };
+        self.w.records.contains(&e) || (0..self.w.commits.len()).any(|j| self.w.sets(j) == Some(e) && self.w.key(j) < self.w.key(i) && at(j) > at(i))
+    }
+    /// A held edge write giving write or above (any `until`).
     pub fn gives_write(&self, i: Id) -> Option<Edge> {
         match &self.w.commits[i].kind {
             Kind::Edge { holder, role, .. } if *role >= Role::Write => Some((*holder, self.on(i))),
@@ -519,39 +470,9 @@ impl World {
 
     // ---- What a sync ID requires ----
 
-    /// The held grants (write or above, any time) joining `t` to a thing of `unit`, record edges
-    /// counting as such grants (a mint admin's admin edge, standing since the thing's creation:
-    /// read at any time as grants are); None when none joins it. Empty when `t` is in the unit.
-    /// Returns the grants on the ways (record edges are no copies).
-    pub fn reach(&self, rule: &Rule, t: Thing, unit: &Things, h: &Set) -> Option<Set> {
-        if unit.contains(&t) {
-            return Some(Set::new());
-        }
-        let grants: Vec<(Option<Id>, Edge)> = self.records(rule).map(|e| (None, e)).chain(h.iter().filter_map(|&i| self.gives_write(i).map(|e| (Some(i), e)))).collect();
-        let mut fwd = Things::from([t]);
-        loop {
-            let n = fwd.len();
-            fwd.extend(grants.iter().filter(|(_, e)| fwd.contains(&e.0)).map(|(_, e)| e.1).collect::<Vec<_>>());
-            if fwd.len() == n {
-                break;
-            }
-        }
-        let mut back: Things = unit.clone();
-        loop {
-            let n = back.len();
-            back.extend(grants.iter().filter(|(_, e)| back.contains(&e.1)).map(|(_, e)| e.0).collect::<Vec<_>>());
-            if back.len() == n {
-                break;
-            }
-        }
-        if !fwd.iter().any(|x| unit.contains(x)) {
-            return None;
-        }
-        Some(grants.iter().filter(|(_, e)| fwd.contains(&e.0) && back.contains(&e.1)).filter_map(|(i, _)| *i).collect())
-    }
     /// The seeds of S's required set over `h`, its unit `unit`: the bodies, and of the edge-class
-    /// commits the closure takes (`takes`), the grants naming S's thing and the removals with
-    /// their reach.
+    /// commits the closure takes (`takes`), the grants naming S's thing (and under `keys_open` a
+    /// thing S's keys open).
     /// And the edges whose taken writes are seeds too (`Stage::Today`'s account chains).
     fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set) -> (Set, BTreeSet<Edge>) {
         let takes = self.takes(rule, h);
@@ -561,23 +482,6 @@ impl World {
         // those S's thing holds read or above on, through taken grants at any time
         let open = self.opened(rule, s, &hr);
         let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || (self.holder(i).is_some_and(|hd| open.contains(&hd)) && ok(&i))).collect();
-        if rule.reach {
-            for &l in &hr {
-                if let Some((hd, t)) = self.removes(l) {
-                    if !self.reach_removal(rule, l, &hr) {
-                        continue;
-                    }
-                    if let Some(r) = self.reach(rule, t, unit, &hr) {
-                        seed.insert(l);
-                        seed.extend(r);
-                        seed.extend(self.witness(rule, l, &hr));
-                        if rule.scope == Scope::Edge {
-                            seed.extend(hr.iter().copied().filter(|&j| self.w.sets(j) == Some((hd, t)) && self.w.key(l) < self.w.key(j)));
-                        }
-                    }
-                }
-            }
-        }
         let mut edges = BTreeSet::new();
         if rule.closure.any_path || rule.author_reach {
             let ch = self.chained(h);
@@ -625,28 +529,10 @@ impl World {
         }
         open
     }
-    /// The record edges reach, keys-open travel and the errand step along (`Rule::records`).
+    /// The record edges keys-open travel steps along (`Rule::records`).
     fn records<'a>(&'a self, rule: &Rule) -> impl Iterator<Item = Edge> + 'a {
         let on = rule.records;
         self.w.records.iter().copied().filter(move |_| on)
-    }
-    /// Removal `l` (`removes`) is a reach seed over taken writes `hr` (`Rule::removals`).
-    pub fn reach_removal(&self, rule: &Rule, l: Id, hr: &Set) -> bool {
-        let Some(e) = self.removes(l) else { return false };
-        match rule.removals {
-            Removals::Any => true,
-            Removals::TakesWrite => self.w.records.contains(&e) || self.witness(rule, l, hr).is_some(),
-        }
-    }
-    /// Under `Removals::TakesWrite`, removal `l`'s witness over taken writes `hr`: the first (by
-    /// key) write on its own edge giving write or above ordered before it; none on a record edge
-    /// (the record, which every reader holds, is its witness).
-    pub fn witness(&self, rule: &Rule, l: Id, hr: &Set) -> Option<Id> {
-        let e = self.removes(l)?;
-        if rule.removals == Removals::Any || self.w.records.contains(&e) {
-            return None;
-        }
-        hr.iter().copied().filter(|&j| self.gives_write(j) == Some(e) && self.w.key(j) < self.w.key(l)).min_by_key(|&j| self.w.key(j))
     }
     /// A held edge write giving read or above (any `until`): a link by which keys open.
     fn gives_read(&self, i: Id) -> Option<Edge> {
@@ -901,115 +787,30 @@ impl World {
     fn own(&self, st: &State, n: usize) -> Set {
         st.written.iter().copied().filter(|&i| self.by[i] == n && !st.forgotten.contains(&i)).collect()
     }
-    /// What the thief logs under S: its own bodies there and the grants (no lowering) they rest on.
+    /// What the thief logs under S: its own bodies there and the grants (no edge write giving
+    /// below write but its own) they rest on, read as if the lowerings it withholds (`takes_away`)
+    /// were never written: nothing only a withheld lowering brings, such as the creation of an
+    /// entry it resets.
     fn thief_logs(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, held: &Set, own: &Set) -> Set {
         let mine: Set = own.iter().copied().filter(|&i| units[&s].contains(&self.on(i))).collect();
         // it knows its own paths, opened or not
-        let known: Set = held.iter().chain(own.iter().filter_map(|i| self.opens.get(i)).filter(|&&o| o < self.by.len())).copied().collect();
+        let known: Set = held.iter().chain(own.iter().filter_map(|i| self.opens.get(i)).filter(|&&o| o < self.by.len())).copied().filter(|&i| own.contains(&i) || !self.takes_away(i)).collect();
         self.closure(rule, &mine, &known).into_iter().filter(|&i| held.contains(&i) && (own.contains(&i) || self.removes(i).is_none())).collect()
     }
-    /// The commits node `n`'s errand carries: its own lowerings, and under `Scope::Edge` its own
-    /// later edge writes on a held lowering's edge; each with the target whose sync IDs it goes
-    /// to.
-    fn errand_items(&self, rule: &Rule, own: &Set, held: &Set, fresh: &Set) -> Vec<(Id, Thing)> {
-        let mut out = vec![];
-        for &i in own {
-            if !rule.standing && !fresh.contains(&i) {
-                continue;
-            }
-            if let Some((_, t)) = self.removes(i) {
-                out.push((i, t));
-                continue;
-            }
-            if rule.scope != Scope::Edge {
-                continue;
-            }
-            let lowered = |e: Edge, after: Option<Id>| held.iter().any(|&l| self.removes(l) == Some(e) && after.is_none_or(|a| self.w.key(l) < self.w.key(a)));
-            match &self.w.commits[i].kind {
-                Kind::Edge { .. } if lowered(self.w.sets(i).unwrap(), Some(i)) => out.push((i, self.on(i))),
-                _ => {}
-            }
-        }
-        out
-    }
-    /// Where an errand for target `t` logs, and what node `n` holds once it held each of those
-    /// for the errand: the target's own sync ID and those its taken grants (grants naming it,
-    /// under its own sync ID) reach, one level (`Direct`) or all (`Transitive`).
-    fn errand_targets(&self, rule: &Rule, st: &State, t: Thing, held: &Set) -> (Things, Set) {
-        let mut seen = Things::new();
-        let mut todo = vec![(t, 0)];
-        let mut h = held.clone();
-        while let Some((x, depth)) = todo.pop() {
-            if !seen.insert(x) {
-                continue;
-            }
-            if let Some(e) = st.entries.get(&x) {
-                h.extend(e.iter().copied());
-            }
-            if rule.errand == Errand::Direct && depth >= 1 {
-                continue;
-            }
-            // the grants the closure takes (a write no walk applies leads nowhere)
-            let takes = self.takes(rule, &h);
-            let steps: Vec<Edge> = self.records(rule).chain(h.iter().filter(|j| takes.as_ref().is_none_or(|t| t.contains(j))).filter_map(|&j| self.gives_write(j))).collect();
-            for (hd, y) in steps {
-                if hd == x {
-                    todo.push((y, depth + 1));
-                }
-            }
-        }
-        (seen.into_iter().filter(|x| self.sids.contains(x)).collect(), h)
-    }
-    /// Runs node `n`'s errands over `held`: what each sync ID gains.
-    fn errands(&self, rule: &Rule, st: &State, n: usize, held: &Set, fresh: &Set) -> BTreeMap<Sid, Set> {
+    /// What node `n` delivers over `held` besides what it logs by its view: a grant naming a
+    /// holder goes under the holder's sync ID by its granter (spec/sync-inbox.md §5 Delivery of a
+    /// grant), with its closure.
+    fn deliveries(&self, rule: &Rule, st: &State, n: usize, held: &Set) -> BTreeMap<Sid, Set> {
         let mut out: BTreeMap<Sid, Set> = BTreeMap::new();
         if !self.nodes[n].honest {
             return out;
         }
-        let own = self.own(st, n);
         // what the closure takes (a write no walk applies is nobody's evidence)
         let takes = self.takes(rule, held);
-        let taken = |i: &Id| takes.as_ref().is_none_or(|t| t.contains(i));
-        // a grant naming a holder goes under the holder's sync ID by its granter (spec/sync-inbox.md
-        // §5 Delivery of a grant)
-        for &i in own.iter().filter(|i| taken(i)) {
+        for &i in self.own(st, n).iter().filter(|i| takes.as_ref().is_none_or(|t| t.contains(i))) {
             if let Some(hd) = self.holder(i).filter(|hd| self.sids.contains(hd)) {
                 out.entry(hd).or_default().extend(self.closure(rule, &Set::from([i]), held));
             }
-        }
-        if rule.errand == Errand::Off {
-            return out;
-        }
-        for (i, t, targets, h, hr) in self.errand_plan(rule, st, n, held, fresh) {
-            for x in targets {
-                let reach = self.reach(rule, t, &st.units[&x], &hr).unwrap_or_default();
-                let mut seed = reach;
-                seed.insert(i);
-                seed.extend(self.witness(rule, i, &hr));
-                out.entry(x).or_default().extend(self.closure(rule, &seed, &h));
-            }
-        }
-        out
-    }
-    /// What node `n`'s errand runs for over `held`: each item (`errand_items`, taken) with the
-    /// thing its targets start from, its target sync IDs, what the remover held once it read them
-    /// (`errand_targets`) and the taken writes among that; a removal taking no write away is left
-    /// out (it travels as any edge write, Role changes travel).
-    #[allow(clippy::type_complexity)]
-    fn errand_plan(&self, rule: &Rule, st: &State, n: usize, held: &Set, fresh: &Set) -> Vec<(Id, Thing, Things, Set, Set)> {
-        let takes = self.takes(rule, held);
-        let taken = |i: &Id| takes.as_ref().is_none_or(|t| t.contains(i));
-        let mut out = vec![];
-        for (i, t) in self.errand_items(rule, &self.own(st, n), held, fresh).into_iter().filter(|(i, _)| taken(i)) {
-            let (targets, h) = self.errand_targets(rule, st, t, held);
-            let hr: Set = match self.takes(rule, &h) {
-                Some(t) => h.iter().copied().filter(|i| t.contains(i) || !self.w.edge_class(*i)).collect(),
-                None => h.clone(),
-            };
-            if self.removes(i).is_some() && !self.reach_removal(rule, i, &hr) {
-                continue;
-            }
-            out.push((i, t, targets, h, hr));
         }
         out
     }
@@ -1021,11 +822,9 @@ impl World {
     }
     /// Applies event `k`, then lets the nodes log until nothing moves.
     pub fn apply(&self, rule: &Rule, st: &mut State, k: usize) {
-        let mut fresh = Set::new();
         match self.events[k] {
             Ev::Write(i) => {
                 st.written.insert(i);
-                fresh.insert(i);
             }
             Ev::Join(x, s) => {
                 st.units.get_mut(&s).unwrap().insert(x);
@@ -1038,7 +837,7 @@ impl World {
             }
         }
         st.step = k + 1;
-        self.settle(rule, st, &fresh);
+        self.settle(rule, st);
     }
     /// `AtLog`: removes S's bodies matching `gone` and every copy left placed for nothing.
     fn unplace(&self, st: &mut State, s: Sid, gone: impl Fn(Id) -> bool) {
@@ -1064,7 +863,7 @@ impl World {
         }
         for c in drop {
             st.placed.remove(&(s, c));
-            if !st.errands.get(&s).is_some_and(|e| e.contains(&c)) {
+            if !st.delivered.get(&s).is_some_and(|e| e.contains(&c)) {
                 st.entries.get_mut(&s).unwrap().remove(&c);
             }
         }
@@ -1084,7 +883,7 @@ impl World {
         for h in st.held.iter_mut() {
             h.remove(&i);
         }
-        for e in st.errands.values_mut() {
+        for e in st.delivered.values_mut() {
             e.remove(&i);
         }
         if rule.placement == Placement::AtLog {
@@ -1096,27 +895,24 @@ impl World {
                 e.remove(&i);
             }
         }
-        self.settle(rule, st, &Set::new());
+        self.settle(rule, st);
     }
-    fn settle(&self, rule: &Rule, st: &mut State, fresh: &Set) {
-        let mut fresh = fresh.clone();
+    fn settle(&self, rule: &Rule, st: &mut State) {
         for _ in 0..ROUNDS {
             st.rounds += 1;
             let before = (st.entries.clone(), st.held.clone());
             match rule.placement {
-                Placement::Function => self.round_function(rule, st, &fresh),
-                Placement::AtLog => self.round_atlog(rule, st, &fresh),
+                Placement::Function => self.round_function(rule, st),
+                Placement::AtLog => self.round_atlog(rule, st),
             }
-            // an errand at writing runs in the first round only
-            fresh.clear();
             if (st.entries.clone(), st.held.clone()) == before {
                 return;
             }
         }
         st.unsettled = true;
     }
-    fn round_function(&self, rule: &Rule, st: &mut State, fresh: &Set) {
-        // nothing is kept for its past: an errand's entry stays while a holder's view requires it
+    fn round_function(&self, rule: &Rule, st: &mut State) {
+        // nothing is kept for its past: a delivered entry stays while a holder's view requires it
         let mut new: BTreeMap<Sid, Set> = self.sids.iter().map(|&s| (s, Set::new())).collect();
         for n in 0..self.nodes.len() {
             let sy = self.syncs(n, &st.units);
@@ -1134,14 +930,14 @@ impl World {
                 let logs = if self.nodes[n].honest { self.req(rule, s, &st.units, &held) } else { self.thief_logs(rule, s, &st.units, &held, &own) };
                 new.get_mut(&s).unwrap().extend(logs);
             }
-            for (s, items) in self.errands(rule, st, n, &held, fresh) {
+            for (s, items) in self.deliveries(rule, st, n, &held) {
                 new.get_mut(&s).unwrap().extend(items);
             }
             st.held[n] = held;
         }
         st.entries = new;
     }
-    fn round_atlog(&self, rule: &Rule, st: &mut State, fresh: &Set) {
+    fn round_atlog(&self, rule: &Rule, st: &mut State) {
         for n in 0..self.nodes.len() {
             let sy = self.syncs(n, &st.units);
             let own = self.own(st, n);
@@ -1165,8 +961,8 @@ impl World {
                 }
             }
             st.held[n] = held.clone();
-            for (s, items) in self.errands(rule, st, n, &held, fresh) {
-                st.errands.entry(s).or_default().extend(items.iter().copied());
+            for (s, items) in self.deliveries(rule, st, n, &held) {
+                st.delivered.entry(s).or_default().extend(items.iter().copied());
                 st.entries.get_mut(&s).unwrap().extend(items);
             }
         }
@@ -1236,6 +1032,39 @@ impl World {
         let trust = self.trust.intersection(&held).copied().collect();
         Seen { v: View { held, leaves: None, trust } }
     }
+    /// The lowerings taking something away (`takes_away`), written and not forgotten, that S's
+    /// entries lack and no honest node syncing S holds: what lazy delivery has not brought S
+    /// (notes/write-path-design.md §2, D1 to D3: a removal reaches S where a node holding it
+    /// holds S).
+    pub fn undelivered(&self, st: &State, s: Sid) -> Set {
+        let sources: Vec<usize> = (0..self.nodes.len()).filter(|&n| self.nodes[n].honest && self.syncs(n, &st.units).contains(&s)).collect();
+        st.written.iter().copied().filter(|&i| !st.forgotten.contains(&i) && self.takes_away(i) && !st.entries[&s].contains(&i) && !sources.iter().any(|&n| st.held[n].contains(&i))).collect()
+    }
+    /// What a reader of S is judged against (without `without`): the node holding everything
+    /// written but what lazy delivery has not brought S (`undelivered`).
+    pub fn reference(&self, st: &State, s: Sid, without: &Set) -> Seen {
+        self.full(st, &without.union(&self.undelivered(st, s)).copied().collect())
+    }
+    /// The gap (notes/write-path-design.md §2, The gap; issues/removed-key-writes-show-far.md):
+    /// each body S should carry, honestly written or held, that S's reference judges otherwise
+    /// than the node holding everything. Counted, not a failure: a removal no node holding S holds.
+    pub fn gap(&self, st: &State) -> Vec<Fail> {
+        let fv = self.verdicts(&self.full(st, &Set::new()), &st.written);
+        let mut out = vec![];
+        for &s in &self.sids {
+            let un = self.undelivered(st, s);
+            if un.is_empty() {
+                continue;
+            }
+            let owed: Set = self.owed_bodies(st, s).into_iter().filter(|&i| self.nodes[self.by[i]].honest || st.entries[&s].contains(&i)).collect();
+            for (i, v) in self.verdicts(&self.full(st, &un), &owed) {
+                if v != fv[&i] {
+                    out.push(Fail { prop: "gap", step: st.step, sid: s, id: i, reader: Some(v), full: Some(fv[&i]) });
+                }
+            }
+        }
+        out
+    }
     /// What S should carry as bodies: every written commit on its unit's things.
     pub fn owed_bodies(&self, st: &State, s: Sid) -> Set {
         self.bodies(s, &st.units, &self.full(st, &Set::new()).v.held)
@@ -1265,24 +1094,24 @@ pub struct Fail {
 
 impl World {
     /// P1 (and P2 for commits under several sync IDs): the reader of each sync ID judges every
-    /// body it should carry as the node holding everything does (a body it lacks is judged
-    /// absent: `None`).
+    /// body it should carry as its reference does (`reference`: the node holding everything but
+    /// what lazy delivery has not brought; a body it lacks is judged absent: `None`).
     pub fn p1(&self, rule: &Rule, st: &State) -> Vec<Fail> {
         self.p1_trusting(rule, st, &self.trust, "P1")
     }
-    /// `p1` (`prop` naming its failures) for readers and a node holding everything that trust
-    /// `trust` (each what of it it holds) in place of the world's: evidence carries no trust, so a
-    /// reader trusting otherwise must still hold everything its own walk reads.
+    /// `p1` (`prop` naming its failures) for readers and references that trust `trust` (each what
+    /// of it it holds) in place of the world's: evidence carries no trust, so a reader trusting
+    /// otherwise must still hold everything its own walk reads.
     pub fn p1_trusting(&self, rule: &Rule, st: &State, trust: &Set, prop: &'static str) -> Vec<Fail> {
         let trusting = |mut s: Seen| {
             s.v.trust = trust.intersection(&s.v.held).copied().collect();
             s
         };
-        let fv = self.verdicts(&trusting(self.full(st, &Set::new())), &st.written);
         let mut out = vec![];
         let mut seen: BTreeMap<Id, Vec<(Sid, Option<Verdict>)>> = BTreeMap::new();
         for &s in &self.sids {
             let owed = self.owed_bodies(st, s);
+            let fv = self.verdicts(&trusting(self.reference(st, s, &Set::new())), &owed);
             let v = trusting(self.reader(rule, st, s, &Set::new()));
             let rv = self.verdicts(&v, &owed.intersection(&v.v.held).copied().collect());
             for &i in &owed {
@@ -1375,30 +1204,6 @@ impl World {
         let ch = self.chained(&full.v.held);
         paths::judge(&self.w, &self.rules, &full.v).applied.difference(&ch).map(|&i| Fail { prop: "P0-unchained-applies", step: st.step, sid: 0, id: i, reader: None, full: None }).collect()
     }
-    /// P3: every removal by an honest node that the full closure of a sync ID's bodies holds and
-    /// that can move a verdict there (it takes write away and its reach under S is held over
-    /// everything written, at any time: notes/evidence-model-findings.md 20) is carried there and
-    /// judged required by its reader from its own holdings.
-    pub fn p3(&self, rule: &Rule, st: &State) -> Vec<Fail> {
-        let all = self.full(st, &Set::new()).v.held;
-        let taken: Set = match self.takes(rule, &all) {
-            Some(t) => all.iter().copied().filter(|i| t.contains(i)).collect(),
-            None => all.clone(),
-        };
-        let mut out = vec![];
-        for &s in &self.sids {
-            let closure = self.closure(rule, &self.owed_bodies(st, s), &all);
-            let held = &st.entries[&s];
-            let req = self.req(rule, s, &st.units, held);
-            for &l in &closure {
-                let owed = self.removes(l).is_some_and(|(_, t)| self.reach_removal(rule, l, &taken) && self.reach(rule, t, &st.units[&s], &taken).is_some());
-                if owed && self.nodes[self.by[l]].honest && !req.contains(&l) {
-                    out.push(Fail { prop: "P3", step: st.step, sid: s, id: l, reader: None, full: None });
-                }
-            }
-        }
-        out
-    }
     /// P4: what a sync ID holds is what its reader requires (copies held are a function of the
     /// commits held: nothing outlives the commits it was needed for); and forgetting each content
     /// body changes no other verdict at the reader and leaves nothing only it needed.
@@ -1445,8 +1250,8 @@ impl World {
         out
     }
     /// P5, arrival order: for each body and each strict part of its evidence the reader holds,
-    /// the reader missing that part judges the body as the node holding everything but that part
-    /// does (`local`, a failure), and counts where it judges (not pending) otherwise than once
+    /// the reader missing that part judges the body as its reference without that part does
+    /// (`local`, a failure), and counts where it judges (not pending) otherwise than once
     /// everything arrived while some missing part is ordered before the body (`provisional`).
     pub fn p5_order(&self, rule: &Rule, st: &State, cap: usize) -> (Vec<Fail>, usize) {
         let mut out = vec![];
@@ -1460,7 +1265,7 @@ impl World {
                 for mask in 1..(1u32 << ev.len()) {
                     let y: Set = ev.iter().enumerate().filter(|(b, _)| mask >> b & 1 == 1).map(|(_, &j)| j).collect();
                     let r = self.verdicts(&self.reader(rule, st, s, &y), &Set::from([i]))[&i];
-                    let f = self.verdicts(&self.full(st, &y), &Set::from([i]))[&i];
+                    let f = self.verdicts(&self.reference(st, s, &y), &Set::from([i]))[&i];
                     if r != f {
                         out.push(Fail { prop: "P5-order", step: st.step, sid: s, id: i, reader: Some(r), full: Some(f) });
                     }
@@ -1479,16 +1284,16 @@ impl World {
         self.verdicts(seen, bodies).into_iter().filter(|&(_, v)| v == Verdict::Valid).map(|(i, _)| i).collect()
     }
     /// P8, promoting: every promotion a reader of each sync ID takes (`when`) agrees with the
-    /// verdict of the node holding everything at that step. `AfterPass` acts on the sync ID's
+    /// verdict of its reference at that step. `AfterPass` acts on the sync ID's
     /// whole entries; `WhenNothingPends` (the control) also on every arrival order of each body's
     /// evidence (P5's subsets, `cap` parts) where the body does not pend.
     pub fn p8_promotions(&self, rule: &Rule, st: &State, when: PromoteWhen, cap: usize) -> Vec<Fail> {
-        let full = self.verdicts(&self.full(st, &Set::new()), &st.written);
+        let refs: BTreeMap<Sid, BTreeMap<Id, Verdict>> = self.sids.iter().map(|&s| (s, self.verdicts(&self.reference(st, s, &Set::new()), &st.written))).collect();
         let mut out = vec![];
         let mut check = |s: Sid, promoted: Vec<Id>| {
             for i in promoted {
-                if full[&i] != Verdict::Valid {
-                    out.push(Fail { prop: "P8-promote", step: st.step, sid: s, id: i, reader: Some(Verdict::Valid), full: Some(full[&i]) });
+                if refs[&s][&i] != Verdict::Valid {
+                    out.push(Fail { prop: "P8-promote", step: st.step, sid: s, id: i, reader: Some(Verdict::Valid), full: Some(refs[&s][&i]) });
                 }
             }
         };
@@ -2076,7 +1881,7 @@ fn wide_route(w: &World, rng: &mut roles_model::Rng, signer: Thing) -> (Vec<Thin
 
 /// Copies and bodies under D's sync ID after `n` writes by K on D along a path of `k` holder
 /// things, `outside` of which lie outside D's unit (the rest in it): each holder thing H_j granted
-/// write on the next by X, the last on D. Under the draft (`Rule::design`).
+/// write on the next by X, the last on D. Under the draft (`Rule::fixed`).
 pub fn cost(n: usize, k: usize, outside: usize) -> (usize, usize) {
     let c = cost_with(n, k, outside, 0, 1, Open10::Drafted);
     (c.copies, c.bodies)
@@ -2128,7 +1933,7 @@ pub fn cost_with(n: usize, k: usize, outside: usize, churn: usize, carried: usiz
     for c in 0..n {
         w.write(x, |p| p.content(if k == 0 { X } else { K }, t0 + c as u32, &hs, D));
     }
-    let rule = v.set(&mut w, Rule::design());
+    let rule = v.set(&mut w, Rule::fixed());
     let st = w.run(&rule, |_| {});
     let copies = w.copies(&st, D).len();
     let everywhere = std::iter::once(D).chain(rs.iter().copied()).map(|s| w.copies(&st, s).len()).sum();

@@ -1,7 +1,7 @@
 # A3 spec draft: the map
 > Summary: Stage A3 (notes/redesign-plan.md, A3: a removal as evidence) after the design was restated: a removal's list stays inside the removal, as built, so the per-thing leaf form these drafts specify is not the design; which draft sections stand and which go, far delivery as decided (lazy, with the reader's deposit to be modelled), the open points left, the two parked leaks, the code briefs.
 
-Design: notes/write-path-design.md §2 (E4: the list in the removal; How a removal reaches a far thing). Draft files: notes/a3-spec/permissions.md, wire.md, sync-judgement.md, crypto.md, commits.md, written over A2's draft (notes/a2-spec/) for a list split into a root and per-thing leaves. Model: held-model `evidence` (`Stage::A2` with `Rule::listed`), findings notes/evidence-model-findings.md.
+Design: notes/write-path-design.md §2 (E4: the list in the removal; How a removal reaches a far thing). Draft files: notes/a3-spec/permissions.md, wire.md, sync-judgement.md, crypto.md, commits.md, written over A2's draft (notes/a2-spec/) for a list split into a root and per-thing leaves. Model: held-model `evidence` (`Stage::A2`, lists whole), findings notes/evidence-model-findings.md.
 
 ## Verdict
 **To recut.** The leaf form is not built on: a removal carried down by key rotations two grants below arrives without the leaf for the thing it lands on (finding 35), and every rule tried for where leaves live either placed them once or kept every leaf with its removal for good (findings 30, 34). With the list in the removal whoever holds a removal holds what it keeps, and no reader waits on a part of a list. Cost and what a reader learns: notes/write-path-design.md §2, E4.
@@ -21,12 +21,12 @@ By draft section, what the design changes. Spec text is rewritten from this afte
 | commits §4 Provisional, last sentence | stands |
 | wire §4 field 12 as a list root, the leaf, the leaf blob | go: field 12 stands as built |
 
-Goes with the leaf form outside the drafts: the engine's leaves derivation (notes/evidence-derivation.md, Leaves; built unused), held-model `LeafKeep`, `Home`, `pend_leaf` and `Rule::listed`, osis-commit's unused leaf encoding if any landed.
+Goes with the leaf form outside the drafts: the engine's leaves derivation (notes/evidence-derivation.md, Leaves; built unused, its tests ignored), osis-commit's unused leaf encoding if any landed.
 
 ## Far delivery
 A removal reaches a thing other than its own as today (decided, Tess: no eager delivery): with that thing's next key rotation by a writer holding it (its keyset carries the demotion: spec/crypto.md §4 Carried demotions), and wherever a node holds both the removal and a write it judges (the removal is on the write's path, so in the evidence of the write's sync IDs). Nothing logs a removal anywhere for its own sake. Where neither happens (a thing no remaining member writes, its readers served only by stores), its readers show the removed key's later writes there: an open bug in an issue, not something to build around.
 - **The reader's deposit on sight** (wanted if simple and good; nothing built): notes/write-path-design.md §2, D4, with what would make it trouble. Model it first in held-model.
-- **The model**: held-model has no keysets, so it cannot check far delivery by rotation. Its properties that hold everything (the family slice, `one_sync_id_reader_judges_as_everything_*`, `evidence_along_joined_chained_paths_*`, `evidence_reach_and_generator_gaps_*`) run over `Rule::fixed` and `Stage::A3`, which carry an errand (`Errand`) and reach (`Rule::reach`) that are not the design; restated for lazy delivery in notes/write-path-design.md §6 (held-model 2). The engine derivation and its differential use `Stage::A2`, which has neither.
+- **The model**: held-model `evidence` models lazy delivery (`Stage::A2`, the engine differential's oracle too) and lists whole in every copy; each reader is judged against a reference holding every removal some honest node syncing its sync ID holds, and the gap is counted (notes/evidence-model-findings.md 38; issues/removed-key-writes-show-far.md).
 
 ## What users observe
 Within spec/requirements.md as written (Tess): how long a far thing shows a removed key's writes (a node missing data reads as if it never had it); a write shown valid then invalid; hostile writers keeping a removal away (a removal binds the nodes that receive it); invitations by a removed member showing until the removal arrives. spec/requirements.md Scale reads "on it, or on what its writers act through", which a removal carried as evidence falls under.

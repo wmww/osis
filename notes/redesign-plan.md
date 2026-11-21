@@ -69,7 +69,7 @@ Not settled:
 - Two backdated lowerings masking each other from the dispute test at a node with no order (write-path Open 2; finding 47).
 - D4 (model first).
 
-**D2 so far** (roles-model): no last-admin rule and L3 modelled (notes/path-model-findings.md 45, 46); first received modelled (write-path §1 F1 to F5; findings 47, 48, 50 to 53: a node's sides from what it made and the order it received, the story's honest-side checks per node), the story's one baseline in tools/known_failures.txt the masking case (issues/masked-backdated-lowerings.md); may-grant as a flag modelled (finding 54: the story's guest share as G3's arrangement); owner keys not started.
+**D2 so far** (roles-model): no last-admin rule and L3 modelled (notes/path-model-findings.md 45, 46); first received modelled (write-path §1 F1 to F5; findings 47, 48, 50 to 53: a node's sides from what it made and the order it received, the story's honest-side checks per node), the story's one baseline in tools/known_failures.txt the masking case (issues/masked-backdated-lowerings.md); may-grant as a flag modelled (finding 54: the story's guest share as G3's arrangement); owner keys not started. held-model: a lowering's copy whole and lazy delivery modelled (no errand, no reach; readers judged against a reference holding the removals their sources hold, the gap counted: notes/evidence-model-findings.md 38, issues/removed-key-writes-show-far.md).
 
 **D2 must model** (write-path §6, the full list): roles-model `paths`: no last-admin rule; L3 by its `end`; sides from what a node made and the order it received (F1 to F5); the flag in place of levels; the key hop and list writes with the must-hold flow's hand worlds. held-model: a lowering's copy whole (leaves, their homes and the wait on a leaf go); errand and reach go and the holds-everything properties are restated against a node holding the same removals, the gap counted; keysets carrying whole demotions; D4 as a variant; owner-key list writes as evidence.
 
@@ -169,7 +169,6 @@ The renames left (below); notes/terms.md, Built and being moved to, reduced to w
 |---|---|---|
 | Chain certificates over any path, "closed under authors" | A2 | stated paths (A1), M2 |
 | The last-admin rule every node judges | P | |
-| held-model's errand and reach (`Rule::fixed`, `Stage::A3`) | D | its holds-everything properties restated for lazy delivery |
 | The header's `actor`, the Acting check, the audit's reachability search | A1 | M1 briefs 2 and 3 |
 | Signing chain, epochs, custody, merges, account sides, thing lists and listings; `flows/account.rs`, `custody.rs`, `lists.rs`, `signing.rs`, `sides.rs`; perm `epochs.rs`, `chain.rs`; the header's `epoch`, `rotation`, `reseal`, inner signature | A4 | the ordinary removal complete (S3, A3) |
 | roles-model `custody` and `epochs`, the custody differential, TLA Account | A4 | `paths` holding the membership instances (M1) |

@@ -1,10 +1,10 @@
 //! The evidence generators' gaps (notes/evidence-model-findings.md, Generators): per-node trust
 //! sets (P1 for readers trusting otherwise than the world), paths of up to four holder things with
 //! churn and junk on every edge and second routes (`wide`), content in the split form across units
-//! (`Wide::split`), path entries opening late (`Wide::late`, `World::opens`). Each under A3's rule
-//! and brief 3's (`Stage::A2`). `gaps_explore` (by hand) tallies them;
-//! the sampled searches run A3's and the recommended A2 rule.
-use crate::spec_reach::{stage_fails, Job};
+//! (`Wide::split`), path entries opening late (`Wide::late`, `World::opens`). Each under every
+//! stage, the design's (`Stage::A2`) first, judged against its reference with the gap counted.
+//! `gaps_explore` (by hand) tallies them; the sampled searches run the design.
+use crate::spec_reach::{stage_fails, stage_gaps, Job};
 use held_model::evidence::names::*;
 use held_model::evidence::*;
 use roles_model::paths::{self, Set};
@@ -150,9 +150,9 @@ fn wide_jobs(start: u64, n: u64, opt: Wide) -> Vec<Job> {
     (start..start + n).map(|seed| Box::new(move || (format!("wide {opt:?} {seed}"), wide(seed, 16, opt), None)) as Job).collect()
 }
 
-/// Per stage, the worlds failing each property (P1-trust: two random
-/// trust sets) over `OSIS_GAPS_N` (60) wide worlds per option set and the family slice, and the
-/// worlds a stage fails (P1 or P3) where today holds, by hand. `OSIS_EV_RULE` names one stage.
+/// Per stage, the worlds failing each property (P1-trust: two random trust sets) or with the gap
+/// over `OSIS_GAPS_N` (60) wide worlds per option set and the family slice, and the worlds with
+/// the gap where today has none, by hand. `OSIS_EV_RULE` names one stage.
 #[test]
 #[ignore = "by hand"]
 fn gaps_explore() {
@@ -180,9 +180,12 @@ fn gaps_explore() {
                 let Some((g, j)) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
                 let (name, w, _) = j();
                 let trusts = trust_sets(&w, name.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64)));
-                let today: BTreeSet<&str> = if stages.contains(&Stage::Today) { gap_fails(&w, Stage::Today, &[]).iter().map(|f| f.prop).collect() } else { BTreeSet::new() };
+                let today = stages.contains(&Stage::Today) && stage_gaps(&w, Stage::Today).is_empty();
                 for &s in &stages {
-                    let f = gap_fails(&w, s, &trusts);
+                    let mut f = gap_fails(&w, s, &trusts);
+                    let gp = stage_gaps(&w, s);
+                    let worse = today && !gp.is_empty();
+                    f.extend(gp);
                     let mut o = out.lock().unwrap();
                     let e = o.entry((g.clone(), s.name())).or_default();
                     let mut seen = BTreeSet::new();
@@ -191,8 +194,8 @@ fn gaps_explore() {
                             e.entry(x.prop).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
                         }
                     }
-                    if stages.contains(&Stage::Today) && f.iter().any(|x| matches!(x.prop, "P1" | "P3") && !today.contains(x.prop)) {
-                        e.entry("WORSE-THAN-TODAY").or_insert((0, format!("{name}"))).0 += 1;
+                    if worse {
+                        e.entry("GAP-WHERE-TODAY-HAS-NONE").or_insert((0, name.to_string())).0 += 1;
                     }
                 }
             });
@@ -206,9 +209,9 @@ fn gaps_explore() {
     }
 }
 
-/// The sampled property: the drafted A3 delivery (`Stage::A3`) holds P0 to P10 and P1 for two
-/// random trust sets over `wide` worlds under every option set (`per` seeds each from
-/// `OSIS_HELD_START`).
+/// The sampled property: the design (`Stage::A2`) holds P0 to P10 and P1 for two random trust
+/// sets against its reference over `wide` worlds under every option set (`per` seeds each from
+/// `OSIS_HELD_START`), the worlds with the gap counted.
 fn search(per: u64) {
     let start = std::env::var("OSIS_HELD_START").ok().filter(|v| !v.is_empty()).map_or(0, |v| v.parse::<u64>().expect("OSIS_HELD_START is a decimal u64"));
     eprintln!("gaps: wide seeds from {start}");
@@ -218,6 +221,7 @@ fn search(per: u64) {
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let bad = std::sync::Mutex::new(vec![]);
+    let gap = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     std::thread::scope(|sc| {
         for _ in 0..threads {
@@ -225,12 +229,15 @@ fn search(per: u64) {
                 let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
                 let (name, w, _) = j();
                 let trusts = trust_sets(&w, name.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64)));
-                if let Some(f) = gap_fails(&w, Stage::A3, &trusts).first() {
-                    bad.lock().unwrap().push(format!("a3 {name}: {f:?}"));
+                if let Some(f) = gap_fails(&w, Stage::A2, &trusts).first() {
+                    bad.lock().unwrap().push(format!("a2 {name}: {f:?}"));
                 }
+                gap.fetch_add(usize::from(!stage_gaps(&w, Stage::A2).is_empty()), std::sync::atomic::Ordering::Relaxed);
             });
         }
     });
+    // the gap, counted (issues/removed-key-writes-show-far.md)
+    eprintln!("{} worlds; {} with the gap", jobs.len(), gap.into_inner());
     let bad = bad.into_inner().unwrap();
     assert!(bad.is_empty(), "{} fail, first: {}", bad.len(), bad[0]);
 }
@@ -273,15 +280,13 @@ fn gaps_show() {
 /// Finding 20 (`wide` seed 14204407699, split and late, shrunk): K writes O through [A], where A holds
 /// only read on O, after X removed K from A; nobody honest syncs A and O. The write is invalid
 /// everywhere (no write reaches O through A), with or without the removal. Where any grant joins a
-/// hop (J1) the path is joined, so O's evidence closure over everything holds the removal, which no
-/// rule delivers to O (no write path leads from A into O, so neither reach nor the errand goes
-/// there); P3 owes it where it can move a verdict: where its reach is held. Where only a grant
-/// giving what the write needs joins (J2, finding 23) the closure stops at the read hop and the
-/// write waits everywhere. Once
-/// W raises A to write on O (backdated, after the removal), reach holds and A3's standing errand
-/// carries it, while every stage without the errand misses it (finding 17's class, today too).
+/// hop (J1) the path is joined, so O's evidence closure over everything holds the removal, which
+/// nothing delivers to O and which moves no verdict there. Where only a grant giving what the write
+/// needs joins (J2, finding 23) the closure stops at the read hop and the write waits everywhere.
+/// Once W raises A to write on O (backdated, after the removal), the removal decides K's write and
+/// no node holding it holds O: the gap at every stage (finding 17's class, today too).
 #[test]
-fn gaps_a_removal_on_a_path_through_a_read_hop_is_owed_once_it_has_reach() {
+fn gaps_a_removal_on_a_path_through_a_read_hop_is_the_gap_once_it_decides() {
     let base = |raise: bool| {
         let pw = paths::World::new(&[(X, A), (W, O)]);
         let mut w = World::new(pw, &[A, O]);
@@ -299,7 +304,7 @@ fn gaps_a_removal_on_a_path_through_a_read_hop_is_owed_once_it_has_reach() {
     for join in [Join::Any, Join::Needed] {
         w.join = join;
         let mut wr = w.clone();
-        let rule = Stage::A3.set(&mut wr, Rule::fixed());
+        let rule = Stage::A2.set(&mut wr, Rule::fixed());
         let st = wr.run(&rule, |_| {});
         let all = wr.full(&st, &Set::new()).v.held;
         // J1: the full closure of O's bodies holds the removal (a read grant joins (A, O)), O's
@@ -313,10 +318,10 @@ fn gaps_a_removal_on_a_path_through_a_read_hop_is_owed_once_it_has_reach() {
             assert_eq!(gap_fails(&w, s, &[]), vec![], "{} {}", join.name(), s.name());
         }
     }
-    let (w, r, _) = base(true);
+    let (w, _, c) = base(true);
     for s in Stage::ALL {
-        let f = gap_fails(&w, s, &[]);
-        assert_eq!(f.iter().any(|f| f.prop == "P3" && f.id == r), s != Stage::A3, "{}: {f:?}", s.name());
+        assert_eq!(gap_fails(&w, s, &[]), vec![], "{}", s.name());
+        assert!(stage_gaps(&w, s).iter().any(|f| f.sid == O && f.id == c && f.reader == Some(Verdict::Valid)), "{}", s.name());
     }
 }
 
@@ -356,19 +361,19 @@ fn gaps_a_write_through_a_read_hop_pends_at_a_reader_lacking_the_read_grant() {
 
 /// The generator reaches finding 23's shape at default size (`wide`'s read-hop move): among the
 /// first `wide` worlds (no options) some hold the thief's write through a read hop that a reader
-/// without the read grant pends on while the node holding everything judges it invalid, under A3
-/// with J1 (a hop joined by any grant); with J2 A3 holds each of them. (The sampled searches run
-/// every world under J2.)
+/// without the read grant pends on while the node holding everything judges it invalid, under the
+/// design with J1 (a hop joined by any grant); with J2 it holds each of them. (The sampled searches
+/// run every world under J2.)
 #[test]
 fn gaps_wide_worlds_reach_the_read_hop() {
     let mut hit = vec![];
     for seed in 0..16 {
         let mut w = wide(seed, 16, Wide::default());
         w.join = Join::Any;
-        if crate::spec_reach::stage_fails(&w, Stage::A3).iter().any(|f| f.prop == "P1" && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid)) {
+        if crate::spec_reach::stage_fails(&w, Stage::A2).iter().any(|f| f.prop == "P1" && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid)) {
             hit.push(seed);
             w.join = Join::Needed;
-            assert_eq!(crate::spec_reach::stage_fails(&w, Stage::A3), vec![], "seed {seed}");
+            assert_eq!(crate::spec_reach::stage_fails(&w, Stage::A2), vec![], "seed {seed}");
         }
     }
     assert!(!hit.is_empty(), "the generator no longer reaches finding 23's read hop in 16 worlds: raise its rate");
@@ -376,12 +381,11 @@ fn gaps_wide_worlds_reach_the_read_hop() {
 
 /// Finding 28 (`wide` seed 14204407714, split, shrunk): X removes K and Q from A in one commit; Q
 /// (its node honest, syncing A and D) then writes D through [A], A holding only read on D; the
-/// stolen K writes R through [A]. Y syncs D and R; nobody honest syncs A and R. Without the
-/// errand the removal reaches R only by riding Q's write: where a read hop joins a path (J1, J4's
-/// closure, today's any-path chains), D's evidence takes the removal's copy (Q's removal is in it),
-/// Y holds it and R's reader requires it; under J2 Q's write through the read hop brings nothing
-/// and R's reader shows K's write valid (A2's rule less safe than today there). The drafted A3
-/// errand carries it under every rule.
+/// stolen K writes R through [A]. Y syncs D and R; nobody honest syncs A and R. The removal reaches
+/// R only by riding Q's write: where a read hop joins a path (J1, J4's closure, today's any-path
+/// chains), D's evidence takes the removal's copy (Q's removal is in it), Y holds it and R's reader
+/// requires it; under J2 Q's write through the read hop brings nothing, no node holding the removal
+/// holds R, and R's reader shows K's write valid: the gap (the design's, where today has none).
 #[test]
 fn gaps_a_removal_rides_a_write_through_a_read_hop_only_where_read_joins() {
     let pw = paths::World::new(&[(X, A), (Y, D), (Y, R)]);
@@ -397,12 +401,10 @@ fn gaps_a_removal_rides_a_write_through_a_read_hop_only_where_read_joins() {
     for join in Join::ALL {
         w.join = join;
         for s in Stage::ALL {
-            let f = gap_fails(&w, s, &[]);
-            let shows = f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == c && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid));
-            assert_eq!(shows, join == Join::Needed && matches!(s, Stage::A2 | Stage::A2Actor), "{} {}: {f:?}", join.name(), s.name());
-            if matches!(s, Stage::A3 | Stage::Today) {
-                assert_eq!(f, vec![], "{} {}", join.name(), s.name());
-            }
+            assert_eq!(gap_fails(&w, s, &[]), vec![], "{} {}", join.name(), s.name());
+            let g = stage_gaps(&w, s);
+            let shows = g.iter().any(|f| f.sid == R && f.id == c && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid));
+            assert_eq!(shows, join == Join::Needed && matches!(s, Stage::A2 | Stage::A2Actor), "{} {}: {g:?}", join.name(), s.name());
         }
     }
 }

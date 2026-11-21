@@ -12,7 +12,6 @@ fn fails(w: &World, rule: &Rule) -> Vec<Fail> {
     let mut out = vec![];
     let st = w.run(rule, |st| out.extend(w.p1(rule, st)));
     assert!(!st.unsettled, "logging settles");
-    out.extend(w.p3(rule, &st));
     out.extend(w.p4(rule, &st, true));
     out.extend(w.p5_order(rule, &st, 5).0);
     out.extend(w.p8_promotions(rule, &st, PromoteWhen::AfterPass, 0));
@@ -26,7 +25,7 @@ fn fails(w: &World, rule: &Rule) -> Vec<Fail> {
 #[test]
 fn p8_promoting_before_a_complete_pass_is_reversed_by_what_it_lacked() {
     let mut sh = Shape::nth(0);
-    sh.thief = true;
+    (sh.thief, sh.q_d) = (true, true);
     let w = family(sh);
     let st = w.run(&Rule::fixed(), |_| {});
     assert_eq!(w.p8_promotions(&Rule::fixed(), &st, PromoteWhen::AfterPass, 5), vec![]);
@@ -40,7 +39,9 @@ fn p8_promoting_before_a_complete_pass_is_reversed_by_what_it_lacked() {
 /// promotion is undone by the rules (the body leaves the store), never final.
 #[test]
 fn p8_a_promotion_after_a_complete_pass_is_reversed_by_a_later_write() {
-    let w = family(Shape::nth(0));
+    let mut sh = Shape::nth(0);
+    sh.q_d = true;
+    let w = family(sh);
     let rule = Rule::fixed();
     let mut taken: Vec<(usize, Id)> = vec![];
     let st = w.run(&rule, |st| {
@@ -125,16 +126,53 @@ fn org_apart() -> World {
     family(Shape { via_org: true, units: 0, listed: false, thief: false, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, grant: false, mint: 0 })
 }
 
-/// Finding 1: the remover's errand by direct taken grants (A's grant on O) never reaches D, two
-/// grants below the removed edge: D's reader judges K's write valid, the node holding everything
-/// invalid. Followed to the end of the taken grants (O's grant on D, under O's sync ID) it does.
+/// The gap of `w` under `rule`: every body a reference judges otherwise than the node holding
+/// everything, at every step.
+fn gaps(w: &World, rule: &Rule) -> Vec<Fail> {
+    let mut out = vec![];
+    w.run(rule, |st| out.extend(w.gap(st)));
+    out
+}
+
+/// The gap (notes/write-path-design.md §2, The gap; issues/removed-key-writes-show-far.md):
+/// worlds where no node holding X's removal of K syncs the sync ID K's write is under, so lazy
+/// delivery never brings it there and its reader shows the write the node holding everything
+/// drops; each holds every property against its reference and is counted as the gap. Finding 1's
+/// and 17's (K writes D through [A, O], nobody honest syncs O with D or A), finding 3's (A raised
+/// on D after the removal, the stolen K writing D), risk 3's (K writes E, a dependent of R, through
+/// [A, R], X syncing A alone, Y R alone). A node holding the removal that syncs D (Q) closes it.
 #[test]
-fn f1_a_direct_errand_misses_a_unit_two_grants_below_the_removed_edge() {
+fn gap_a_removal_no_node_holding_it_brings_leaves_the_write_showing() {
+    let mut raised = Shape::nth(0);
+    (raised.raised, raised.thief) = (true, true);
+    let pw = roles_model::paths::World::new(&[(X, A), (Y, R), (R, E)]);
+    let mut risk3 = World::new(pw, &[A, R]);
+    risk3.member(E, R);
+    let (x, y, k) = (risk3.node(true, &[A]), risk3.node(true, &[R]), risk3.node(false, &[]));
+    risk3.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    risk3.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
+    risk3.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
+    risk3.write(k, |p| p.content(K, 8, &[A, R], E));
+    for (name, w, s) in [("f1", org_apart(), D), ("f3", family(raised), D), ("risk3", risk3, R)] {
+        assert_eq!(fails(&w, &Rule::fixed()), vec![], "{name}");
+        let g = gaps(&w, &Rule::fixed());
+        assert!(g.iter().any(|f| f.sid == s && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{name}: {g:?}");
+    }
+    let mut closed = raised;
+    closed.q_d = true;
+    assert_eq!((fails(&family(closed), &Rule::fixed()), gaps(&family(closed), &Rule::fixed())), (vec![], vec![]));
+}
+
+/// The control of the reference: judged against the node holding everything (no removal
+/// excused), D's reader in finding 1's world fails P1; against its reference it holds.
+#[test]
+fn gap_judged_against_everything_the_reader_fails() {
     let w = org_apart();
-    let f = fails(&w, &Rule::design());
-    assert!(f.iter().any(|f| f.prop == "P1" && f.sid == D && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
-    assert!(f.iter().any(|f| f.prop == "P3" && f.sid == D));
-    assert_eq!(fails(&w, &Rule::fixed()), vec![]);
+    let st = w.run(&Rule::fixed(), |_| {});
+    let full = w.verdicts(&w.full(&st, &Set::new()), &st.written);
+    let rd = w.verdicts(&w.reader(&Rule::fixed(), &st, D, &Set::new()), &w.owed_bodies(&st, D));
+    assert!(rd.iter().any(|(i, v)| *v != full[i]), "{rd:?} {full:?}");
+    assert_eq!(w.p1(&Rule::fixed(), &st), vec![]);
 }
 
 /// Finding 2, Risk 2: copies placed when their commit is logged and never placed again. O (on
@@ -145,30 +183,10 @@ fn f2_copies_placed_at_logging_leave_a_sync_id_short_when_a_unit_changes() {
     let mut sh = Shape::nth(0);
     (sh.via_org, sh.units, sh.listed) = (true, 4, true);
     let w = family(sh);
-    let atlog = Rule { placement: Placement::AtLog, ..Rule::design() };
+    let atlog = Rule { placement: Placement::AtLog, ..Rule::fixed() };
     let f = fails(&w, &atlog);
     assert!(f.iter().any(|f| f.prop == "P1" && f.sid == R && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Valid)), "{f:?}");
-    assert_eq!(fails(&w, &Rule::design()), vec![]);
-    // D in R's unit from the start: a removal is no body of either, so placed with nothing it
-    // reaches R only by the errand, which goes to D's own sync ID
-    let mut sh = Shape::nth(0);
-    sh.units = 1;
-    let f = fails(&family(sh), &atlog);
-    assert!(f.iter().any(|f| f.prop == "P1" && f.sid == R && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
-    assert_eq!(fails(&family(sh), &Rule::design()), vec![]);
-}
-
-/// Finding 3, Risk 4: A only reads D when K is removed, so the errand finds no unit where K could
-/// write; Y raises A to write later and the stolen K writes D. An errand run once, at the
-/// removal, never logs it under D; the standing duty logs it once the raise shows D.
-#[test]
-fn f3_an_errand_run_once_misses_a_holder_raised_after_the_removal() {
-    let mut sh = Shape::nth(0);
-    (sh.raised, sh.thief) = (true, true);
-    let w = family(sh);
-    let f = fails(&w, &Rule { standing: false, ..Rule::design() });
-    assert!(f.iter().any(|f| f.prop == "P1" && f.sid == D && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
-    assert_eq!(fails(&w, &Rule::design()), vec![]);
+    assert_eq!(fails(&w, &Rule::fixed()), vec![]);
 }
 
 /// Finding 4, the list whole (notes/write-path-design.md §2, E4): K (admin of A) grants Z on A; Z
@@ -179,7 +197,7 @@ fn f3_an_errand_run_once_misses_a_holder_raised_after_the_removal() {
 fn f4_a_reader_needs_the_leaf_of_each_evidence_copy() {
     let pw = roles_model::paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
-    let (x, y, k, z) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]), w.node(true, &[]));
+    let (x, y, k, z) = (w.node(true, &[A, D]), w.node(true, &[D]), w.node(true, &[A]), w.node(true, &[]));
     w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Admin, &[]));
     w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
     let gz = w.write(k, |p| p.edge(K, 2, &[], A, Z, Role::Write, &[]));
@@ -197,7 +215,7 @@ fn f4_a_reader_needs_the_leaf_of_each_evidence_copy() {
 #[test]
 fn f5_partial_evidence_judges_before_a_complete_pass() {
     let mut sh = Shape::nth(0);
-    sh.thief = true;
+    (sh.thief, sh.q_d) = (true, true);
     let w = family(sh);
     let st = w.run(&Rule::fixed(), |_| {});
     // the thief's write (stamped after the removal) without the removal
@@ -214,28 +232,9 @@ fn f5_partial_evidence_judges_before_a_complete_pass() {
     assert_eq!(w.p5_order(&Rule::fixed(), &st, 5).0, vec![]);
 }
 
-/// Risk 3: a stolen node's first write on E, a dependent of R reached only through R (A holds
-/// write on R; K writes E along [A, R], its last hop R's record edge). X syncs A alone, Y syncs R
-/// alone. The errand logs X's removal under R (A's taken grant); without it R's reader judges the
-/// write valid.
-#[test]
-fn risk3_a_first_write_through_an_enclosing_root() {
-    let pw = roles_model::paths::World::new(&[(X, A), (Y, R), (R, E)]);
-    let mut w = World::new(pw, &[A, R]);
-    w.member(E, R);
-    let (x, y, k) = (w.node(true, &[A]), w.node(true, &[R]), w.node(false, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], R, A, Role::Write, &[]));
-    w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
-    let late = w.write(k, |p| p.content(K, 8, &[A, R], E));
-    assert_eq!(fails(&w, &Rule::design()), vec![]);
-    let f = fails(&w, &Rule { errand: Errand::Off, ..Rule::design() });
-    assert!(f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == late && f.reader == Some(Verdict::Valid)), "{f:?}");
-}
-
 /// P2: D under its own sync ID and R's, joining R between K's write and the removal: both
-/// readers judge every write alike, by their own evidence (the removal reaches R through Y, who
-/// syncs D and R).
+/// readers judge every write alike, by their own evidence (the removal reaches neither: the gap,
+/// alike under both).
 #[test]
 fn p2_a_write_under_two_sync_ids_is_judged_alike_by_each() {
     for units in [1, 2, 3] {
@@ -251,27 +250,25 @@ fn p2_a_write_under_two_sync_ids_is_judged_alike_by_each() {
     }
 }
 
-/// P4: forgetting K's writes takes out of D's sync ID everything only they needed: what stays is
-/// X's removal of K, whose reach (A writes D) keeps it for good, and under `Removals::TakesWrite`
-/// its witness, K's grant (with every removal: `Removals::Any`, the grant leaves).
+/// P4: forgetting K's writes takes out of D's sync ID everything only they needed, X's removal
+/// of K and K's grant included: a removal's copy leaves with the last body it judges
+/// (notes/write-path-design.md §2, D1). Q, syncing A and D, logged the removal there.
 #[test]
 fn p4_evidence_leaves_with_the_last_commit_that_needed_it() {
     let mut sh = Shape::nth(0);
-    sh.listed = true;
+    (sh.listed, sh.q_d) = (true, true);
     let w = family(sh);
     let (gk, r) = (0, 4);
     assert_eq!(w.removes(r), Some((K, A)));
-    for (removals, left) in [(Removals::TakesWrite, Set::from([gk, r])), (Removals::Any, Set::from([r]))] {
-        let rule = Rule { removals, ..Rule::fixed() };
-        let mut st = w.run(&rule, |_| {});
-        assert!(w.copies(&st, D).contains(&gk));
-        let kw: Vec<Id> = st.entries[&D].iter().copied().filter(|&i| w.w.commits[i].signer == K).collect();
-        for i in kw {
-            w.forget(&rule, &mut st, i);
-        }
-        assert_eq!(w.copies(&st, D), left, "{removals:?}");
-        assert_eq!(w.p4(&rule, &st, true), vec![]);
+    let rule = Rule::fixed();
+    let mut st = w.run(&rule, |_| {});
+    assert!(w.copies(&st, D).is_superset(&Set::from([gk, r])));
+    let kw: Vec<Id> = st.entries[&D].iter().copied().filter(|&i| w.w.commits[i].signer == K).collect();
+    for i in kw {
+        w.forget(&rule, &mut st, i);
     }
+    assert_eq!(w.copies(&st, D), Set::new());
+    assert_eq!(w.p4(&rule, &st, true), vec![]);
 }
 
 /// P6: copies under D after n writes along a path of k holder things, m of them outside D's
@@ -286,18 +283,18 @@ fn p6_copies_are_shared_by_the_writes_along_a_path() {
     }
 }
 
-/// P1 to P5 over a slice of the family under the fixed rule; the design fails only where
-/// finding 1 says: D two errand steps from A (through O, granted or minted, or down a mint chain
-/// two deep) with no honest node syncing O (W apart, or O minted by A: nobody writes O).
+/// P1 to P8 over a slice of the family under the fixed rule, the gap counted: it is never
+/// empty there (the family's removal reaches D only where Q or Y holds A and D).
 #[test]
-fn p1_to_p5_hold_on_a_slice_of_the_family() {
+fn p1_to_p8_hold_on_a_slice_of_the_family() {
+    let mut gap = 0;
     for i in (0..FAMILY).step_by(97 * 3) {
         let sh = Shape::nth(i);
         let w = family(sh);
         assert_eq!(fails(&w, &Rule::fixed()), vec![], "{sh:?}");
-        let d = fails(&w, &Rule::design());
-        assert!(d.is_empty() || ((sh.via_org || sh.mint == 2) && (sh.org_apart || sh.mint > 0)), "{sh:?} {d:?}");
+        gap += usize::from(!gaps(&w, &Rule::fixed()).is_empty());
     }
+    assert!(gap > 0);
 }
 
 /// The random worlds' seeds: `n` from `OSIS_HELD_START` (default 0).
@@ -310,22 +307,31 @@ fn seeds(n: u64) -> std::ops::Range<u64> {
 /// P1 to P8 under the fixed rule over every `family_step`th family world and `random` random
 /// worlds of 14 moves, a thread per core.
 fn search(family_step: usize, random_worlds: u64) {
-    let mut jobs: Vec<Box<dyn Fn() -> (String, Vec<Fail>) + Sync>> = vec![];
+    let mut jobs: Vec<Box<dyn Fn() -> (String, Vec<Fail>, usize) + Sync>> = vec![];
     let rule = Rule::fixed();
+    let run = move |w: World| (fails(&w, &rule), usize::from(!gaps(&w, &rule).is_empty()));
     for i in (0..FAMILY).step_by(family_step) {
-        jobs.push(Box::new(move || (format!("{:?}", Shape::nth(i)), fails(&family(Shape::nth(i)), &rule))));
+        jobs.push(Box::new(move || {
+            let (f, g) = run(family(Shape::nth(i)));
+            (format!("{:?}", Shape::nth(i)), f, g)
+        }));
     }
     for seed in seeds(random_worlds) {
-        jobs.push(Box::new(move || (format!("random seed {seed}"), fails(&random(seed, 14), &rule))));
+        jobs.push(Box::new(move || {
+            let (f, g) = run(random(seed, 14));
+            (format!("random seed {seed}"), f, g)
+        }));
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
     let bad = std::sync::Mutex::new(vec![]);
+    let gap = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     std::thread::scope(|sc| {
         for _ in 0..threads {
             sc.spawn(|| loop {
                 let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let (name, f) = j();
+                let (name, f, g) = j();
+                gap.fetch_add(g, std::sync::atomic::Ordering::Relaxed);
                 if !f.is_empty() {
                     bad.lock().unwrap().push(format!("{name}: {:?} {:?}", props(&f), f[0]));
                 }
@@ -333,6 +339,8 @@ fn search(family_step: usize, random_worlds: u64) {
         }
     });
     let bad = bad.into_inner().unwrap();
+    // the gap, counted (issues/removed-key-writes-show-far.md)
+    eprintln!("{} worlds; {} with the gap", jobs.len(), gap.into_inner());
     assert!(bad.is_empty(), "{} worlds fail, first: {}", bad.len(), bad[0]);
 }
 
@@ -349,17 +357,8 @@ fn one_sync_id_reader_judges_as_everything_large() {
 }
 
 fn variants() -> Vec<(&'static str, Rule)> {
-    let d = Rule::design();
-    vec![
-        ("design", d),
-        ("atlog", Rule { placement: Placement::AtLog, ..d }),
-        ("no-errand", Rule { errand: Errand::Off, ..d }),
-        ("transitive", Rule { errand: Errand::Transitive, ..d }),
-        ("edge", Rule { scope: Scope::Edge, ..d }),
-        ("transitive+edge", Rule { errand: Errand::Transitive, scope: Scope::Edge, ..d }),
-        ("unit-lists", Rule { lists: Lists::Unit, ..d }),
-        ("once", Rule { standing: false, ..d }),
-    ]
+    let d = Rule::fixed();
+    vec![("fixed", d), ("atlog", Rule { placement: Placement::AtLog, ..d }), ("unit-lists", Rule { lists: Lists::Unit, ..d })]
 }
 
 /// Every check at every step of `w` under `rule`: failures by property.
@@ -369,15 +368,15 @@ fn tally(w: &World, rule: &Rule, out: &mut BTreeMap<&'static str, usize>, first:
         first.entry(f.prop).or_insert_with(|| format!("{f:?}"));
     };
     let st = w.run(rule, |st| {
-        for f in w.p1(rule, st) {
-            note(&f, out);
+        for f in w.p1(rule, st).iter().chain(&w.gap(st)) {
+            note(f, out);
         }
     });
     if st.unsettled {
         *out.entry("unsettled").or_default() += 1;
     }
-    for f in w.p3(rule, &st).iter().chain(&w.p4(rule, &st, true)) {
-        note(f, out);
+    for f in w.p4(rule, &st, true) {
+        note(&f, out);
     }
 }
 
@@ -467,7 +466,7 @@ fn random_shape() {
     let (mut v, mut n) = (BTreeMap::<Verdict, usize>::new(), 0);
     for seed in 0..100 {
         let w = random(seed, 14);
-        let st = w.run(&Rule::design(), |_| {});
+        let st = w.run(&Rule::fixed(), |_| {});
         for (_, x) in w.verdicts(&w.full(&st, &Default::default()), &st.written) {
             *v.entry(x).or_default() += 1;
         }
@@ -482,7 +481,7 @@ fn random_shape() {
 fn show_random() {
     let seed: u64 = std::env::var("OSIS_HELD_START").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let w = random(seed, 12);
-    let name = std::env::var("OSIS_EV_RULE").unwrap_or_else(|_| "design".into());
+    let name = std::env::var("OSIS_EV_RULE").unwrap_or_else(|_| "fixed".into());
     let rule = variants().into_iter().find(|v| v.0 == name).expect("OSIS_EV_RULE names a variant").1;
     show(&w, &rule);
 }
@@ -505,7 +504,7 @@ pub fn show(w: &World, rule: &Rule) {
     });
     eprintln!("entries {:?}", st.entries);
     eprintln!("final units {:?}", st.units);
-    for f in w.p3(rule, &st).iter().chain(&w.p4(rule, &st, true)) {
+    for f in w.p4(rule, &st, true).iter().chain(&w.gap(&st)) {
         eprintln!("{f:?}");
     }
     let fv = w.verdicts(&w.full(&st, &Default::default()), &st.written);
