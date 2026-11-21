@@ -907,3 +907,39 @@ fn a_memo_over_the_store_moves_with_the_rows_it_read() {
     assert_eq!(ask(&mut t, 0), Vec::new(), "a failed commit");
     assert_eq!(runs(), 4);
 }
+
+// spec: none (notes/local-store.md, Stamps): a memo reading whether a blob is held (its length,
+// its bytes) moves when it is put, deleted, or the delete is undone; another blob moves nothing.
+// A blob's presence read unstamped kept a sync judgement over a dropped copy (sync differential
+// seed 959507911307).
+#[test]
+fn a_memo_over_a_blob_moves_as_it_comes_and_goes() {
+    use osis_base::memo::Memo;
+    use osis_store::Transaction;
+    let (_dev, mut rng, mut s) = fresh(cfg());
+    let (b, other) = (BlobId([7; 32]), BlobId([8; 32]));
+    let memo: Memo<u8, Option<u64>> = Memo::new("test blob read");
+    // 0: the length, 1: the bytes' length
+    let ask = |t: &mut Transaction<'_>, k: u8| -> Option<u64> {
+        Memo::get_in(&mut (&memo, t), |c| c.0, &k, |(_, t)| match k {
+            0 => t.blob_len(&b),
+            _ => t.get_blob(&b).map(|v| v.map(|v| v.len() as u64)),
+        })
+        .unwrap()
+    };
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!((ask(&mut t, 0), ask(&mut t, 1)), (None, None));
+    t.put_blob(&b, b"blob".to_vec()).unwrap();
+    assert_eq!((ask(&mut t, 0), ask(&mut t, 1)), (Some(4), Some(4)), "put");
+    t.put_blob(&other, b"x".to_vec()).unwrap();
+    osis_base::costs::take();
+    assert_eq!(ask(&mut t, 0), Some(4));
+    assert!(!osis_base::costs::take().iter().any(|x| x.0 == "test blob read"), "another blob moves nothing");
+    t.commit().unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.delete_blob(&b);
+    assert_eq!((ask(&mut t, 0), ask(&mut t, 1)), (None, None), "deleted");
+    drop(t);
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(ask(&mut t, 0), Some(4), "the delete undone");
+}

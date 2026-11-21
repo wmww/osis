@@ -91,6 +91,16 @@ pub(crate) mod kind {
     pub const INDEX: u8 = 11;
     pub const LOCAL: u8 = 12;
     pub const CHANGED: u8 = 13;
+    /// No catalog row: the stamps of blob ciphertexts' presence (`blob_key`).
+    pub const BLOB: u8 = 14;
+}
+
+/// The stamp key of blob `id`'s presence: a blob held or not moves what read it (its length,
+/// its bytes) as a row does.
+fn blob_key(id: &BlobId) -> [u8; 33] {
+    let mut k = [kind::BLOB; 33];
+    k[1..].copy_from_slice(&id.0);
+    k
 }
 
 fn aspect_key(k: u8, tid: &Tid, ak: &Ak) -> Vec<u8> {
@@ -170,6 +180,7 @@ impl Default for Stamping {
         static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
         let names = NAMES.get_or_init(|| {
             let name = |i: usize| match i {
+                i if i == usize::from(kind::BLOB) => "store: blobs".to_string(),
                 i if i < KINDS => format!("store: catalog kind {i}"),
                 i if i < KINDS + 256 => format!("store: local rows {:#04x}", i - KINDS),
                 i => format!("store: record rows {:#04x}", i - KINDS - 256),
@@ -1077,6 +1088,7 @@ impl Transaction<'_> {
 
     /// Stores a blob: in memory in memory mode.
     pub fn put_blob(&mut self, id: &BlobId, ciphertext: Vec<u8>) -> Result<(), Error> {
+        self.st.s.row(&blob_key(id), true);
         if self.memory {
             self.mem.blob_put(*id, ciphertext);
             return Ok(());
@@ -1087,6 +1099,7 @@ impl Transaction<'_> {
     /// Deletes a blob. A memory blob never had a durable copy, and memory-mode work touches no
     /// durable blob: neither writes anything durable.
     pub fn delete_blob(&mut self, id: &BlobId) {
+        self.st.s.row(&blob_key(id), false);
         if self.mem.blob_remove(id) {
             return;
         }
@@ -1101,6 +1114,7 @@ impl Transaction<'_> {
     }
     /// Bytes `offset..offset+len` of a blob (streaming reads of large blobs).
     pub fn read_blob(&mut self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error> {
+        self.st.s.read(&blob_key(id));
         let v = match self.mem.o.blobs.get(id) {
             Some(b) => Some(crate::backend::blob_slice(b, offset, len)),
             None => self.pager.txn_get_blob(&self.d, id, offset, len)?,
@@ -1110,6 +1124,7 @@ impl Transaction<'_> {
     }
     /// A blob's byte length, without reading it.
     pub fn blob_len(&mut self, id: &BlobId) -> Result<Option<u64>, Error> {
+        self.st.s.read(&blob_key(id));
         if let Some(b) = self.mem.o.blobs.get(id) {
             return Ok(Some(b.len() as u64));
         }
