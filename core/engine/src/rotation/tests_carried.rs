@@ -664,6 +664,40 @@ fn own_demotion_keyset_held_from_a_snapshot_after_read_rotated_spec_crypto_4() {
     }
 }
 
+// spec/crypto.md §4 (Held keyset; Carried demotions): B removes W from X1, its rotation's keysets
+// carrying the removal by `demotes`. A node holding that commit's `keys.0` part without its
+// `roles.0` part (a node may hold a commit's parts at different times) does not hold the
+// keysets (W's removal unknown there), and does once the rest arrives.
+#[test]
+fn own_demotion_keyset_held_only_with_its_own_edge_writes_spec_crypto_4() {
+    let mut s = shape(1);
+    let (x1, w) = (s.x1(), s.me(W));
+    s.lp.advance(1000);
+    let before = commit_ids(&mut s.lp, B);
+    s.lp.peers[B].engine.demote(&x1, &Demotion { holder: w, new: None, retain: None }).unwrap();
+    let rm = *commit_ids(&mut s.lp, B).difference(&before).next().unwrap();
+    let (r, e, _) = s.lp.peers[B].engine.core.keysets_of(&x1).find(|x| x.0 == Role::Write && x.2.since.is_some_and(|p| p.commit == rm)).unwrap();
+    let c = s.lp.peers.len();
+    let now = s.lp.peers[B].engine.now();
+    s.lp.peers.push(crate::local_peer::Peer::new(92, now).unwrap());
+    let parts = keys_part(&s.lp, B, &rm, x1);
+    for pk in s.lp.packages_for(B, c).unwrap() {
+        if pk.id == rm {
+            let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+            let _ = s.lp.peers[c].receive(&osis_commit::rewrite(&b, |ai| !parts.contains(&ai)).encode(), pk.blobs);
+        } else {
+            let _ = s.lp.peers[c].receive(&pk.bytes, pk.blobs);
+        }
+    }
+    assert!(s.lp.peers[c].engine.core.ix.keysets.contains_key(&(x1, r, e)), "its body noted");
+    assert!(s.lp.peers[c].engine.core.ix.held.edge_commit(&rm).is_none(), "the removal's edge writes held");
+    assert!(s.lp.peers[c].engine.core.keyset(&x1, r, &e).is_none(), "held without the removal");
+    for pk in s.lp.packages_for(B, c).unwrap().into_iter().filter(|p| p.id == rm) {
+        s.lp.peers[c].receive(&pk.bytes, pk.blobs).unwrap();
+    }
+    assert!(s.lp.peers[c].engine.core.keyset(&x1, r, &e).is_some(), "held once the removal arrives");
+}
+
 // spec/crypto.md §4 (Held keyset; Carried demotions), spec/commits.md §5 Keep bounds: B's removal
 // of W from X1 rotates X1 in its own commit, so X1's keysets carry it by `demotes`, held only with
 // that commit's edge writes. B may rotate read again, compacts X1's `keys.0` (and perhaps
