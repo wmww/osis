@@ -13,7 +13,7 @@ or added, is a whole-line `//` comment (below); else 1. Under docs or comments, 
 reads or includes a file under spec/, notes/ or issues/ (a one-line call `git grep` finds) makes
 core 1 and is named on stderr.
 doc: on the comments path, the crates (space-separated) whose changed comments include a doc
-comment: their doctests run.
+comment and whose library has doctests (not `doctest = false`): their doctests run.
 
 A whole-line comment is a `//` comment that starts its line after blanks only: the line then starts
 and ends outside any other comment or literal, so the changed lines remove or add only comments and
@@ -24,11 +24,11 @@ compiler or macro. A doc comment (`///` not `////`, `//!`) is a `#[doc]` attribu
 macro call's or macro_rules' brackets falls through (the macro may read it), as does one in a crate
 that is not a workspace member or that reaches a proc macro outside DOCS_BLIND (a direct
 dependency's, or one a direct dependency depends on: clap's derive turns doc comments into help
-text); else its crate's doctests run, when it has a library. An added, deleted or untracked .rs
-file falls through, as does one that is a symlink at either end (its blob is its target) and one
-whose name a one-line call reading a .rs file as text names (`include_str!("../msg.rs")`: a test
-parsing a source sees its comments). The diff is read with --text: a NUL byte makes git call a
-file binary and show no lines.
+text); else its crate's doctests run, unless its library has none (`doctest = false`). An
+added, deleted or untracked .rs file falls through, as does one that is a symlink at either end
+(its blob is its target) and one whose name a one-line call reading a .rs file as text names
+(`include_str!("../msg.rs")`: a test parsing a source sees its comments). The diff is read with
+--text: a NUL byte makes git call a file binary and show no lines.
 """
 import bisect, json, os, re, shlex, subprocess, sys
 
@@ -227,7 +227,7 @@ def doc_crates(files):
         other = sorted(pkgs[x]["name"] for x in reach & procs if pkgs[x]["name"] not in DOCS_BLIND)
         if other:
             why.append(f"{f}: a doc comment in {pkgs[i]['name']}, which reaches {', '.join(other)} (may read doc comments)")
-        elif any(k in ("lib", "rlib", "proc-macro") for t in pkgs[i]["targets"] for k in t["kind"]):
+        elif any(t["doctest"] and {"lib", "rlib", "proc-macro"} & set(t["kind"]) for t in pkgs[i]["targets"]):
             crates.add(pkgs[i]["name"])
     return sorted(crates), why
 
