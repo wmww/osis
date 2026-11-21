@@ -1197,8 +1197,10 @@ fn a_thiefs_lowering_after_the_removal_holds_nothing() {
 
 /// Small worlds of admins granting and removing each other (`tiny`), of may-grant (`tiny_flags`;
 /// README.md, Paths, for the search), and of a thing detached from its folder written by marked
-/// direct hops (`tiny_detached`): one reading under a relabelling. Control: a lowering whose drops take its author's
-/// standing applying, a commit of several parts loses its path's authority (`self-taken`).
+/// direct hops (`tiny_detached`): one reading under a relabelling. Controls: a lowering whose drops take its author's
+/// standing applying, a commit of several parts loses its path's authority (`self-taken`); in
+/// `tiny_flags`, `-no-flag` grants with no right (`may-grant right`) and `-role-falls` leaves a
+/// grant standing past the flag's clearing (`may-grant audited`).
 #[test]
 #[ignore = "property"]
 fn small_worlds_hold_plain() {
@@ -1213,6 +1215,11 @@ fn small_worlds_hold_plain() {
     }
     let no_void = tiny_run(1000, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { flags: false, detached: false, honest: Honesty::None });
     assert!(no_void.fails.get("self-taken").is_some_and(|n| *n > 0), "{:?}", no_void.fails);
+    let flags = TinyMode { flags: true, detached: false, honest: Honesty::None };
+    for (rules, k) in [(Rules { flag_check: false, ..Rules::fixed() }, "may-grant right"), (Rules { flag_falls: false, ..Rules::fixed() }, "may-grant audited")] {
+        let st = tiny_run(3000, &rules, flags);
+        assert!(st.fails.get(k).is_some_and(|n| *n > 0), "{k} {:?}", st.fails);
+    }
 }
 
 /// What a party with admin can make a reader walk (finding 17): X grants k keys of its own admin

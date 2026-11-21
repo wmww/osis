@@ -2417,12 +2417,66 @@ impl TinyStats {
     }
 }
 
+/// The may-grant grants of `rd` its signer held no right to make (notes/write-path-design.md §1
+/// G1, G2), read from the reading's own history (`Reading::hist`), not from the walk's rule: each
+/// sets an edge with no current grant, its role below admin, every hop before its last giving
+/// that role and the last giving admin or that role with the flag, at its `ts`.
+pub fn unright_flag_grants(w: &World, rd: &Reading) -> Vec<Id> {
+    // edge `e`'s value and flag just before `i` in key order (a record edge starts at admin)
+    let before = |e: Edge, i: Id| -> (Role, bool) {
+        let start = if w.records.contains(&e) { (Role::Admin, false) } else { (Role::None, false) };
+        let k = w.key(i);
+        rd.hist.get(&e).and_then(|h| h.iter().rev().find(|(kj, _)| *kj < k)).map_or(start, |&(kj, v)| {
+            let flag = matches!(w.commits[kj.2].kind, Kind::Edge { may_grant: true, .. });
+            (alive(v, w.commits[i].ts), flag)
+        })
+    };
+    rd.by_flag
+        .iter()
+        .copied()
+        .filter(|&i| {
+            let Kind::Edge { role: r, .. } = w.commits[i].kind else { return true };
+            let Some((&last, hops)) = w.hops(i).split_last() else { return true };
+            let (lr, lf) = before(last, i);
+            let held = before(w.sets(i).expect("an edge write"), i).0 > Role::None;
+            held || r >= Role::Admin || hops.iter().any(|&e| before(e, i).0 < r) || !(lr == Role::Admin || (lf && lr >= r))
+        })
+        .collect()
+}
+
+/// The may-grant grants of `rd` standing past an applied explicit lowering of their path's last
+/// hop that does not list them and takes from the hop what they need there, its role with the
+/// flag (G5), read from the reading's own history (`Reading::hist`). The hop's value before the
+/// lowering is read as written (its `until` and any self-removal after it aside), never above the
+/// value the walk audits against, so a grant this names was in question there.
+pub fn unaudited_flag_grants(w: &World, v: &View, rd: &Reading) -> Vec<Id> {
+    let gives = |i: Id, role: Role| match w.commits[i].kind {
+        Kind::Edge { may_grant, .. } if role == Role::Admin || may_grant => role,
+        _ => Role::None,
+    };
+    rd.by_flag
+        .iter()
+        .copied()
+        .filter(|&j| {
+            let (Kind::Edge { role: r, .. }, Some(&last)) = (&w.commits[j].kind, w.hops(j).last()) else { return false };
+            let h = rd.hist.get(&last).map_or(&[][..], |h| &h[..]);
+            h.iter().enumerate().any(|(n, &(kl, val))| {
+                let l = kl.2;
+                let explicit = !w.leave(l) && !rd.by_flag.contains(&l) && !matches!(w.commits[l].kind, Kind::Edge { finalize: true, .. });
+                let prev = if n == 0 { if w.records.contains(&last) { Role::Admin } else { Role::None } } else { gives(h[n - 1].0 .2, h[n - 1].1 .0) };
+                kl > w.key(j) && explicit && w.cid(l) != w.cid(j) && !listed(w, v, l, j) && prev >= *r && gives(l, alive(val, w.commits[l].ts)) < *r
+            })
+        })
+        .collect()
+}
+
 /// The checks on one small world, by its trust: `N` trusting nothing, `T` trusting a lowering
 /// the settled walk applies, `V` trusting one it does not (void, its seeds lost: the walk is
 /// redone, notes/write-path-design.md §1). Failing: `one reading` (a relabelling keeping the
 /// order reads the same), `self-taken` (no applied commit's path loses its authority to the
-/// commit's own drops), `admin T` (A keeps a standing admin), `illegit gains N`/`T`/`V` (an idle
-/// write's unshown effect never makes apply, nor is, a write whose signer held its right in no
+/// commit's own drops), `may-grant right` (every may-grant grant applied by a right its history shows: `unright_flag_grants`), `may-grant audited` (none stands past a lowering taking what it
+/// needs that does not list it: `unaudited_flag_grants`),
+/// `illegit gains N`/`T`/`V` (an idle write's unshown effect never makes apply, nor is, a write whose signer held its right in no
 /// reading: `fight_among`). Counted: of each idle write (a void lowering, any other lowering, any
 /// other edge write, held and doing nothing), an effect users observe (`Reading::observed`)
 /// with no dispute shown (`void`, `unapplied N`/`T`/`V`, `idle N`/`T`/`V`; findings 34 to 36), each
@@ -2481,6 +2535,10 @@ pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
     }
     st.hit("one reading", true, !one_reading_relabelled(w, rules, v, &rd), i, w, || "a relabelling reads otherwise".to_string());
     st.hit("self-taken", true, !rd.self_taken.is_empty(), i, w, || format!("commits {:?} lose their path's authority to their own drops", rd.self_taken));
+    let unright = unright_flag_grants(w, &rd);
+    st.hit("may-grant right", true, !unright.is_empty(), i, w, || format!("may-grant grants {unright:?} made with no right"));
+    let unaudited = unaudited_flag_grants(w, v, &rd);
+    st.hit("may-grant audited", true, !unaudited.is_empty(), i, w, || format!("may-grant grants {unaudited:?} stand past a lowering taking their need"));
 }
 
 /// `t` less one commit at a time while `fails` holds of it (receipts follow the relabelling).

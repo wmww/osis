@@ -807,6 +807,34 @@ fn a_write_clearing_the_flag_audits_the_grants_made_by_it() {
     agree_all(&w, &[]);
 }
 
+// G5 with the flag below the role it was granted at (the walk's invite level, the role, falls with
+// it): N5 holds write with the flag on A and grants Z read and N6 write by it; H demotes N5 to
+// read with the flag (N6's grant falls, Z's stands), then sets it to write without the flag (Z's
+// falls, or stands where listed).
+#[test]
+fn a_flag_kept_below_the_granted_role_keeps_the_grants_it_still_covers() {
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(N5, Write).may_grant());
+    let z = w.push(N5, 2, &[], A, Kind::set(Z, Read));
+    w.push(N5, 2, &[], A, Kind::set(N6, Write).may_grant());
+    let down = w.push(H, 3, &[], A, Kind::set(N5, Read).may_grant());
+    let plain = w.push(H, 4, &[], A, Kind::set(N5, Write));
+    let roles = |w: &World| {
+        let rd = judge(w, &Rules::fixed(), &View::all(w));
+        (rd.role(Z, A), rd.role(N6, A))
+    };
+    assert_eq!(roles(&w), (Gone, Gone));
+    agree_all(&w, &[]);
+    agree_all(&w, &[down, plain]);
+    let v = View::all(&w).without(&[plain]);
+    let rd = judge(&w, &Rules::fixed(), &v);
+    assert_eq!((rd.role(Z, A), rd.role(N6, A)), (Read, Gone));
+    agree(&w, &v);
+    w.edit(plain, |k| k.listing(BTreeMap::from([(A, Set::from([z]))])));
+    assert_eq!(roles(&w), (Read, Gone));
+    agree_all(&w, &[]);
+}
+
 // spec/permissions.md §5.1 step 2: a lowering applied by its verdict only lowers (finding 27).
 #[test]
 fn a_lowering_applied_by_its_verdict_raises_nothing() {
