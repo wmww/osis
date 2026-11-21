@@ -324,9 +324,9 @@ fn story_run(start: u64, n: u64, disputes: bool) -> Vec<String> {
     let mut fails = vec![];
     for i in start..start + n {
         let s = m::random_world(i, &Rules::fixed());
-        // D2: the walk has no owner keys until it is rebuilt after D (notes/redesign-plan.md): a
-        // world with a list write or a commit signed by a key other than its signer's own (moves
-        // 54, 55) is the model's alone
+        // Interim (issues/perm-walk-trails-model.md): the walk's rebuild brings owner keys; until
+        // then a world with a list write or a commit signed by a key other than its signer's own
+        // (moves 54, 55) is the model's alone
         if (0..s.w.commits.len()).any(|j| s.w.list_write(j) || s.w.commits[j].key != m::own_key(s.w.commits[j].signer)) {
             continue;
         }
