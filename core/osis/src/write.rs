@@ -60,8 +60,8 @@ pub(crate) enum WriteOp {
     Path { tid: Tid, key: u32, op: PathOp },
     /// A fire of a signal with `v`, replacing fire `replaces`.
     Fire { tid: Tid, key: u32, v: Value, replaces: Option<osis_base::CommitId> },
-    /// The aspect's delta in this write has retention `r`.
-    Retention { tid: Tid, key: u32, r: PurgeBy },
+    /// The aspect's delta in this write is purgeable by `by`.
+    PurgeBy { tid: Tid, key: u32, by: PurgeBy },
     /// Purges the aspect's history, removing a value aspect.
     Purge { tid: Tid, key: u32 },
     /// Purges one commit's deltas on the aspect.
@@ -190,7 +190,7 @@ impl<'d> Write<'d> {
                     CreationRecord::Thing { admin, .. } => vec![r.tid(), *admin],
                     CreationRecord::KeyActor { .. } => vec![r.tid()],
                 },
-                WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
+                WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::PurgeBy { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
                 WriteOp::PurgeThing(t) => vec![*t],
             })
             .filter(|t| !self.created.contains(t))
@@ -493,8 +493,8 @@ impl<'d> Write<'d> {
                         m.replaces(tid, k, o)?;
                     }
                 }
-                WriteOp::Retention { tid, key: k, r } => {
-                    m.retention(tid, key(k)?, r)?;
+                WriteOp::PurgeBy { tid, key: k, by } => {
+                    m.retention(tid, key(k)?, by)?;
                 }
                 // each request carries a delta on its thing: a value aspect's removal, else
                 // `purge.0` (the engine leaves it out of a commit that expires)
@@ -582,10 +582,11 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         Ok(())
     }
 
-    /// How this write's history is held, instead of as the key says; checked at commit (`Invalid`).
-    pub fn retention(mut self, r: crate::Retention) -> Self {
+    /// Who besides admins may purge this write, instead of as the key says
+    /// (`DynamicAspectKey::default_purge_by`); checked at commit (`Invalid`).
+    pub fn purge_by(mut self, by: PurgeBy) -> Self {
         match self.ix.clone() {
-            Ok(key) => self.push(WriteOp::Retention { tid: self.tid, key, r: r.by }),
+            Ok(key) => self.push(WriteOp::PurgeBy { tid: self.tid, key, by }),
             Err(e) => self.refuse(e),
         }
         self

@@ -95,9 +95,9 @@ fn things_and_aspects_plan_cli_4() {
     assert_eq!(s.code(&["get", &t, "note:m.0", "[\"b\"]"]), 3);
     s.ok(&["overwrite", &t, "note:n.0", "4"]);
     assert_eq!(s.ok(&["get", &t, "note:n.0"]).line(), "4");
-    // --retention names who may purge the write besides admins
-    s.ok(&["set", "--retention", "writer", &t, "note:n.0", "5"]);
-    assert_eq!(s.code(&["set", "--retention", "nobody", &t, "note:n.0", "6"]), 2);
+    // --purge-by names who may purge the write besides admins
+    s.ok(&["set", "--purge-by", "writer", &t, "note:n.0", "5"]);
+    assert_eq!(s.code(&["set", "--purge-by", "nobody", &t, "note:n.0", "6"]), 2);
     assert_eq!(s.ok(&["get", &t, "note:n.0"]).line(), "5");
     let aks = s.ok(&["aspects", &t]).out;
     assert!(aks.contains("note:title.0") && aks.contains("created.0"), "{aks}");

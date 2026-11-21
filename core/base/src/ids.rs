@@ -525,18 +525,22 @@ impl fmt::Debug for Del {
     }
 }
 
-/// Who may purge a write: admins always may (spec/commits.md §5); by default only they may.
+/// Who may purge a write: admins always may; by default only they may.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum PurgeBy {
+    /// Its thing's admins.
     #[default]
     Admin = 1,
+    /// Whom it is by, or an admin.
     AuthorOrAdmin = 2,
+    /// Anyone who may write its thing.
     Writer = 3,
 }
 
 impl PurgeBy {
     #[doc(hidden)]
     pub const ALL: [PurgeBy; 3] = [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer];
+    /// Its name in a schema: `admin`, `author_or_admin`, `writer`.
     pub fn name(self) -> &'static str {
         match self {
             PurgeBy::Admin => "admin",

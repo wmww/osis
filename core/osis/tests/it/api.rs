@@ -404,8 +404,7 @@ fn expiry_retention_purge_spec_commits_5_6() {
     let (k, r) = (ak("t:msg.0"), ak("t:keep.0"));
     let mut w = db.write();
     let t = w.create_held().unwrap();
-    let ret = osis::Retention { by: osis::internals::schema::PurgeBy::Writer };
-    w.at(t, osis::DynamicAspectKey::untyped(r.clone())).retention(ret).set(&s("kept")).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(r.clone())).purge_by(osis::PurgeBy::Writer).set(&s("kept")).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
     w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
@@ -807,7 +806,7 @@ aspect t:rec.0: rec;
     // no schema: nothing to say
     assert_eq!(db.aspect_key("t:other.0").unwrap().value_type(), None);
     assert_eq!(untyped("t:rec.0").value_type(), None);
-    assert_eq!(key.default_retention(), osis::Retention::default());
+    assert_eq!(key.default_purge_by(), osis::PurgeBy::Admin);
 }
 
 // spec: none (API surface); notes/api.md Commits: a commit's and a place's text form names what it was made from, an entry's or a commit's, and anything else is `Invalid`

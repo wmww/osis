@@ -7,7 +7,7 @@
 #![forbid(unsafe_code)]
 
 use osis::core::{RETENTION, RetentionEntry, RetentionSetting};
-use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, GrantOpts, History, Osis, Purge, PurgeBy, ReadOnly, Result, Retention, Role, Tid, Time};
+use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, GrantOpts, History, Osis, Purge, PurgeBy, ReadOnly, Result, Role, Tid, Time};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -95,24 +95,23 @@ pub fn relay(db: &Osis, c: Tid, account: Tid) -> Result<Vec<Tid>> {
 }
 
 /// The retention a message on chat `c` carries: who may delete it, as the chat's settings say.
-pub fn message_retention(db: &Osis, c: Tid) -> Result<Retention> {
-    Ok(retention_of(db.at(c, SETTINGS).get()?.as_ref()))
+pub fn message_purge_by(db: &Osis, c: Tid) -> Result<PurgeBy> {
+    Ok(purge_by_of(db.at(c, SETTINGS).get()?.as_ref()))
 }
 
-fn retention_of(settings: Option<&schema::Settings>) -> Retention {
-    let by = match settings.and_then(|s| s.purge.as_ref()) {
+fn purge_by_of(settings: Option<&schema::Settings>) -> PurgeBy {
+    match settings.and_then(|s| s.purge.as_ref()) {
         None | Some(schema::Deletes::SenderOrAdmins) => PurgeBy::AuthorOrAdmin,
         Some(schema::Deletes::Admins) => PurgeBy::Admin,
         Some(schema::Deletes::Anyone) => PurgeBy::Writer,
-    };
-    Retention { by }
+    }
 }
 
 /// Sends `m` on chat `c`, purgeable as the chat's settings say: its id.
 pub fn send(db: &Osis, c: Tid, m: &schema::Message) -> Result<CommitId> {
-    let r = message_retention(db, c)?;
+    let by = message_purge_by(db, c)?;
     let mut w = db.write();
-    w.at(c, MSG).retention(r).fire(m)?;
+    w.at(c, MSG).purge_by(by).fire(m)?;
     Ok(w.commit()?.ok_or_else(|| Error::Invalid("nothing written".into()))?.stamp.id)
 }
 
@@ -129,10 +128,10 @@ pub fn edit(db: &Osis, c: Tid, id: CommitId, text: &str) -> Result<()> {
     let new = schema::Message { text: text.into(), name, reply_to };
     let settings = db.at(c, SETTINGS).get()?;
     let purge = settings.as_ref().is_none_or(|s| s.edit == EditMode::Purge);
-    let r = retention_of(settings.as_ref());
+    let by = purge_by_of(settings.as_ref());
     let write = |purge: bool| -> Result<()> {
         let mut w = db.write();
-        w.at(c, MSG).retention(r).replace(id, &new)?;
+        w.at(c, MSG).purge_by(by).replace(id, &new)?;
         if purge {
             w.at(c, MSG).purge(Purge::Commit(id))?;
         }

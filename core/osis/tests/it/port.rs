@@ -525,7 +525,7 @@ fn every_op(db: &Osis, t: Tid) -> Tid {
     x.at(t, k("x:l.0")).path(osis::p![]).move_range(0..1, 3).unwrap();
     x.at(t, k("x:m.0")).edit(&Value::Map(Default::default()), &Value::Map([(Value::Str("c".into()), Value::Bool(true))].into_iter().collect())).unwrap();
     x.at(t, k("x:gone.0")).remove().unwrap();
-    x.at(t, k("x:o.0")).retention(osis::Retention::default()).set(&Value::Str("p".into())).unwrap();
+    x.at(t, k("x:o.0")).purge_by(osis::PurgeBy::Admin).set(&Value::Str("p".into())).unwrap();
     x.commit().unwrap();
     n
 }

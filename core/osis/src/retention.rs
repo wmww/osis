@@ -1,8 +1,8 @@
-//! Who may purge a write, and what a thing keeps of replaced content (its setting), in the API's
-//! time types; the engine's counts in plain milliseconds.
+//! What a thing keeps of replaced content (its setting), in the API's time types; the engine's
+//! counts in plain milliseconds.
 
 use osis_base::{Ak, Time, Value};
-use osis_schema::{Codec, PathError, PurgeBy};
+use osis_schema::{Codec, PathError};
 use std::time::Duration;
 
 fn ms(d: Duration) -> u64 {
@@ -50,22 +50,11 @@ fn history_into(h: History) -> Option<osis_schema::History> {
     }
 }
 
-/// Who may purge a write; admins always may (what history keeps of it is its thing's setting,
-/// `RetentionSetting`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Retention {
-    /// Who may purge it besides admins.
-    pub by: PurgeBy,
-}
-
-/// What a write says of its retention, checked at compile time: who may purge it, nothing more.
+/// What a write says of its retention, checked at compile time: who may purge it, nothing more
+/// (its thing's setting says what history keeps).
 /// ```
-/// let _ = osis::Retention { by: osis::PurgeBy::Writer };
+/// let _ = osis::PurgeBy::Writer;
 /// let _ = osis::core::RETENTION;
-/// ```
-/// A write carries no history: its thing's setting says what is kept.
-/// ```compile_fail,E0560
-/// let _ = osis::Retention { by: osis::PurgeBy::Writer, history: Some(osis::History::FOREVER) };
 /// ```
 /// Nothing beside the setting rules a thing's writes.
 /// ```compile_fail,E0425

@@ -82,7 +82,7 @@ pub struct WriteFlags {
     pub e: ExpiryFlags,
     /// Who may purge it besides admins: admin|author_or_admin|writer, over the key's default (what history keeps is the thing's retention^.0)
     #[arg(long, value_name = "BY")]
-    pub retention: Option<String>,
+    pub purge_by: Option<String>,
 }
 
 /// Where commits are listed, and undo's scope.

@@ -511,7 +511,7 @@ pub use keep::KeepAlive;
 pub use keys::{DynamicAspectKey, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Grant, Grants, PathRef, Stamp};
-pub use retention::{History, Retention};
+pub use retention::History;
 pub use share::{AccountNode, Address, ContactCard, GrantOpts, Holder, HolderKind, LinkId, LinkInfo, LinkOpts, Reads, SetRoleOpts, ShareLink, Url};
 pub use syncing::{Status, SyncScope, SyncState, UnitSync};
 pub use sources::{UnitSource, NodeLogin};

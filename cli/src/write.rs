@@ -5,7 +5,7 @@ use crate::args::{CreateArgs, ExpiryFlags, FireArgs, OpArgs, RmArgs, ScriptCmd, 
 use crate::text::{self, PStep};
 use crate::{Ctx, parse_dur, parse_ts, usage};
 use clap::Parser;
-use osis::{AspectWrite, DynamicAspectKey, Expiry, Path, PurgeBy, Retention, Step, Tid, Time, Value, ValueType};
+use osis::{AspectWrite, DynamicAspectKey, Expiry, Path, PurgeBy, Step, Tid, Time, Value, ValueType};
 use std::ops::Range;
 
 /// What a write command produced.
@@ -83,9 +83,9 @@ fn commit_expiry(ctx: &Ctx<'_>, w: &mut osis::Write<'_>, did: &mut Did, e: Optio
 }
 
 fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, DynamicAspectKey>, f: &WriteFlags) -> anyhow::Result<AspectWrite<'w, 'd, DynamicAspectKey>> {
-    if let Some(v) = &f.retention {
-        let by = [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer].into_iter().find(|p| p.name() == v).ok_or_else(|| usage(format!("--retention: one of admin, author_or_admin, writer (got {v:?})")))?;
-        a = a.retention(Retention { by });
+    if let Some(v) = &f.purge_by {
+        let by = [PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer].into_iter().find(|p| p.name() == v).ok_or_else(|| usage(format!("--purge-by: one of admin, author_or_admin, writer (got {v:?})")))?;
+        a = a.purge_by(by);
     }
     Ok(a)
 }

@@ -229,7 +229,7 @@ fn purge_without_the_right_is_refused_spec_permissions_6() {
     assert!(refused(osis::Purge::Author(alice.me())), "another's writes by author");
     let his = commit_with(&bob, |w| w.at(g, k()).set(&s("his, by default"))).stamp.id;
     assert!(refused(osis::Purge::Commit(his)), "his own, under the default");
-    let mine = commit_with(&bob, |w| w.at(g, k()).retention(osis::Retention { by: osis::PurgeBy::AuthorOrAdmin }).set(&s("his"))).stamp.id;
+    let mine = commit_with(&bob, |w| w.at(g, k()).purge_by(osis::PurgeBy::AuthorOrAdmin).set(&s("his"))).stamp.id;
     commit_with(&bob, |w| w.at(g, k()).purge(osis::Purge::Commit(mine)));
     // an admin purges another's write still held
     let again = commit_with(&bob, |w| w.at(g, k()).set(&s("again"))).stamp.id;

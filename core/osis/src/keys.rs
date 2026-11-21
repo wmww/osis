@@ -41,9 +41,10 @@ impl DynamicAspectKey {
         Some(crate::value_type::nested(s, ty))
     }
 
-    /// Who may purge a write through this key and how long it is held, unless it says otherwise (`AspectWrite::retention`).
-    pub fn default_retention(&self) -> crate::Retention {
-        crate::Retention { by: self.defaults().retention }
+    /// Who besides admins may purge a write through this key, unless the write says otherwise
+    /// (`AspectWrite::purge_by`): as its schema declares, else only admins.
+    pub fn default_purge_by(&self) -> crate::PurgeBy {
+        self.defaults().retention
     }
 }
 

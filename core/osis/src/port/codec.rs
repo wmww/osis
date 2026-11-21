@@ -193,12 +193,12 @@ pub(crate) fn path_op_from(v: Value) -> Result<PathOp> {
     Ok(PathOp { path, op })
 }
 
-fn retention_to(r: &PurgeBy) -> Value {
-    Value::uint(*r as u64)
+fn purge_by_to(by: &PurgeBy) -> Value {
+    Value::uint(*by as u64)
 }
 
-fn retention_from(v: &Value) -> Result<PurgeBy> {
-    PurgeBy::from_id(uint(v, "retention")?).ok_or_else(|| bad("retention"))
+fn purge_by_from(v: &Value) -> Result<PurgeBy> {
+    PurgeBy::from_id(uint(v, "purge by")?).ok_or_else(|| bad("purge by"))
 }
 
 /// A write op `[case, arg*]`; aspects by index into the write's AK list.
@@ -209,7 +209,7 @@ pub(crate) fn write_op_to(o: &WriteOp) -> Result<Value> {
         WriteOp::Create(rec) => vec![u(0), rec.to_value()],
         WriteOp::Path { tid, key, op } => vec![u(2), tid_to(tid), k(key), path_op_to(op)?],
         WriteOp::Fire { tid, key, v, replaces } => vec![u(3), tid_to(tid), k(key), v.clone(), opt(replaces.as_ref().map(commit_id_to))],
-        WriteOp::Retention { tid, key, r } => vec![u(4), tid_to(tid), k(key), retention_to(r)],
+        WriteOp::PurgeBy { tid, key, by } => vec![u(4), tid_to(tid), k(key), purge_by_to(by)],
         WriteOp::Purge { tid, key } => vec![u(5), tid_to(tid), k(key)],
         WriteOp::PurgeCommit { tid, key, commit } => vec![u(6), tid_to(tid), k(key), commit_id_to(commit)],
         WriteOp::PurgeAuthor { tid, key, author } => vec![u(7), tid_to(tid), k(key), tid_to(author)],
@@ -240,7 +240,7 @@ pub(crate) fn write_op_from(v: Value) -> Result<WriteOp> {
         }
         4 => {
             want(4)?;
-            WriteOp::Retention { tid: t(1)?, key: k(2)?, r: retention_from(arg(3)?)? }
+            WriteOp::PurgeBy { tid: t(1)?, key: k(2)?, by: purge_by_from(arg(3)?)? }
         }
         5 => {
             want(3)?;
