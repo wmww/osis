@@ -13,7 +13,7 @@ Every other row of the map is settled.
 
 ## For Tess (all answered)
 None of these is open. The draft below is rewritten at stage D of notes/redesign-plan.md; until then the items stand as they were asked, with their answers:
-- 1, 4: within spec/requirements.md as written. Of 1's four waits, dropping a body and deleting at a store on a verdict go (invalid data is set aside, never deleted for being invalid) and so does the vouch for role writes; a deposit's promotion still waits.
+- 1, 4: within spec/requirements.md as written. Of 1's four waits, a drop of a body judged invalid does not wait (at once, as built: Open 11 (b)) and the vouch for role writes is gone; whether a deposit's promotion and a store delete resting on a verdict wait is the coordinator's.
 - 2, 6: spec/requirements.md Scale reads "on it, or on what its writers act through". No copy is delivered where nothing is judged.
 - 3: a design task, the coordinator's: an evidence copy shows only the role change it is evidence of. Back to Tess only if that is not simple.
 - 5: such a write waits, as built; the residue is accepted.

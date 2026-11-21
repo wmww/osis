@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: sync, security, retention
 
-**Decided (Tess):** invalid data is set aside, never deleted for being invalid (notes/handoff.md): no node deletes at a store because of a verdict; what is set aside goes by the pending budget, expiry, purge or release, and those must be real.
+**Decided (Tess):** accepted as built: no node deletes an invalid body at a store, readers drop theirs at once, and the store's copy, bounded as below, is the refetch source. Nothing to build.
 
 ## What happens
 - A writer demoted with a frontier that does not list a write it logged keeps writing until it hears of the demotion; those writes are logged at stores while valid at the author, then judged invalid everywhere. Readers drop their entries (spec/sync-judgement.md §2 Judged invalid), the author keeps its own commit locally and does not log it. The store copies stay: nothing deletes an invalid body at a peer, and a snapshot never covers a part judged invalid (a cover drop of a part judged invalid is an invalid drop).

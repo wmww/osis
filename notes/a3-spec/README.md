@@ -16,7 +16,7 @@ None of these is open but 8. The draft below is rewritten at stage D of notes/re
 - 1, 5: within spec/requirements.md as written (a node missing data reads as if it never had it; a removal binds the nodes that receive it). No question.
 - 2, 3, 4, 7: gone with the delivery duty, which is not built: a removal reaches a far thing with that thing's next key rotation and where a node holds both it and a write it judges. The list's form is the coordinator's.
 - 8: open, the coordinator's to bring to Tess at stage D as a modelled proposal, and wider than the item says. Today a removal's list is inside the removal, so it arrives with it; this draft moves the list into per-thing leaves kept under the removed-from thing's sync ID, and without the duty a removal carried down by key rotations two or more grants below arrives with no leaf (the rotating writer syncs the holder above it, not the thing the removal was made on), so the removed party's earlier writes there wait until a node holding the leaf reads that thing. They are set aside, not lost. First candidate, since it deletes work: keep the list in the removal as today (what then is left of this stage?); else the leaf carried with the demotion, or deposited on sight with the removal.
-- 9: a write judged invalid is set aside, never dropped for the verdict, so it is there when the cancelling removal arrives.
+- 9: accepted and stated (Open 12 (a)): nothing is kept aside for it. A write turning valid comes back from whoever still holds it.
 - 6, 10: restated without the duty: a list part sits where writes it judges are held and leaves with them. spec/requirements.md Scale reads "on it, or on what its writers act through".
 - 11: as today.
 Each a question about the model, with what a user would observe.
