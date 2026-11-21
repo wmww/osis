@@ -157,10 +157,9 @@ impl<'a> Parser<'a> {
         let mut s = Schema::new(0);
         let mut locs = Locs::new();
         let at = self.here();
-        if !self.is_kw("revision") {
+        if !self.eat_kw("revision") {
             return self.err("expected `revision <n>;` first");
         }
-        self.pos += 1;
         s.revision = self.int("a revision number")?;
         self.expect(';')?;
         locs.insert("schema".into(), at);

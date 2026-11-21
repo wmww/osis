@@ -54,29 +54,23 @@ scalar!(bool, Bool, "bool");
 scalar!(i64, Int, "int");
 scalar!(Float, Float, "float");
 
-impl Codec for Strong {
-    fn to_value(&self) -> Value {
-        (*self).into()
-    }
-    fn from_value(v: &Value) -> Result<Strong, PathError> {
-        match v {
-            Value::Strong(t) => Ok(Strong(*t)),
-            _ => Err(mismatch("strong")),
+macro_rules! reference {
+    ($t:ident, $name:literal) => {
+        impl Codec for $t {
+            fn to_value(&self) -> Value {
+                (*self).into()
+            }
+            fn from_value(v: &Value) -> Result<$t, PathError> {
+                match v {
+                    Value::$t(t) => Ok($t(*t)),
+                    _ => Err(mismatch($name)),
+                }
+            }
         }
-    }
+    };
 }
-
-impl Codec for Weak {
-    fn to_value(&self) -> Value {
-        (*self).into()
-    }
-    fn from_value(v: &Value) -> Result<Weak, PathError> {
-        match v {
-            Value::Weak(t) => Ok(Weak(*t)),
-            _ => Err(mismatch("weak")),
-        }
-    }
-}
+reference!(Strong, "strong");
+reference!(Weak, "weak");
 
 impl Codec for Ref {
     fn to_value(&self) -> Value {

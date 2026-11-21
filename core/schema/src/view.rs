@@ -121,6 +121,11 @@ fn large(schema: &Schema, v: &Value, ty: Option<&Type>, path: &mut Vec<Step>, ou
         large(schema, x, ty, path, out, links);
         path.pop();
     };
+    let mark = |s: Step, map_key: bool, path: &mut Vec<Step>, out: &mut Vec<Large>| {
+        path.push(s);
+        out.push(Large { path: Path(path.clone()), map_key });
+        path.pop();
+    };
     let field_ty = |id: i64| match t {
         Some(Type::Struct(st)) => u64::try_from(id).ok().and_then(|id| st.fields.get(&id)).map(|f| &f.ty),
         _ => None,
@@ -144,9 +149,7 @@ fn large(schema: &Schema, v: &Value, ty: Option<&Type>, path: &mut Vec<Step>, ou
         Value::Set(items) => {
             for x in items {
                 if too_big(x) {
-                    path.push(Step::Elem(x.clone()));
-                    out.push(Large { path: Path(path.clone()), map_key: false });
-                    path.pop();
+                    mark(Step::Elem(x.clone()), false, path, out);
                 }
             }
         }
@@ -161,9 +164,7 @@ fn large(schema: &Schema, v: &Value, ty: Option<&Type>, path: &mut Vec<Step>, ou
                     (true, Value::Int(id)) if *id >= 0 => at(Step::Field(id.unsigned_abs()), x, field_ty(*id), path, out),
                     _ => {
                         if too_big(k) {
-                            path.push(Step::Key(k.clone()));
-                            out.push(Large { path: Path(path.clone()), map_key: true });
-                            path.pop();
+                            mark(Step::Key(k.clone()), true, path, out);
                         }
                         at(Step::Key(k.clone()), x, vt, path, out);
                     }
