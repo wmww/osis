@@ -1496,7 +1496,7 @@ fn a_remover_sides_with_its_own_removal() {
     let vh = m.view(H, &rules);
     let rd = judge(&m.w, &rules, &vh);
     assert!(vh.trust.contains(&m.r) && rd.applied.contains(&m.r) && rd.role(H, A) == Admin && rd.role(X, A) == Gone, "{rd:?}");
-    let vb = m.view(B, &rules);
+    let vb = m.view_unchosen(B, &rules);
     let rd = judge(&m.w, &rules, &vb);
     assert!(!vb.trust.contains(&m.r) && !rd.applied.contains(&m.r) && rd.role(H, A) == Gone && rd.role(X, A) == Admin, "{:?} {rd:?}", vb.trust);
     assert!(disputes(&m.w, &rules, &vb).contains(&m.r));
@@ -1525,13 +1525,16 @@ fn a_thief_heard_first_keeps_a_node_until_its_user_chooses() {
     let vh = m.view(H, &rules);
     let rd = judge(&m.w, &rules, &vh);
     assert!(vh.trust.contains(&m.r) && !vh.trust.contains(&down) && rd.applied.contains(&m.r) && rd.role(H, A) == Admin, "{:?} {rd:?}", vh.trust);
-    let vb = m.view(B, &rules);
+    let vb = m.view_unchosen(B, &rules);
     let rd = judge(&m.w, &rules, &vb);
     assert!(vb.trust.contains(&down) && !rd.applied.contains(&m.r) && rd.role(H, A) == Write && rd.role(X, A) == Admin, "{:?} {rd:?}", vb.trust);
     assert_eq!(countered(&m.w, &rules, &vb), vec![m.r]);
     let chosen = choose(&m.w, &rules, &vb, m.r);
     let rd = judge(&m.w, &rules, &chosen);
     assert!(!chosen.trust.contains(&down) && rd.applied.contains(&m.r) && rd.void.is_empty() && rd.role(H, A) == Admin && rd.role(X, A) == Gone, "{rd:?}");
+    // its user chooses at `AFTER` in the story (`Sim::chose`): B's final view is that choice
+    assert_eq!(m.chose.get(&B), Some(&vec![m.r]));
+    assert_eq!(m.view(B, &rules).trust, chosen.trust);
     let off = Rules { sides: Sides::ChoiceAdds, ..rules };
     let rd = judge(&m.w, &off, &choose(&m.w, &off, &vb, m.r));
     assert!(rd.void.contains(&m.r) && rd.role(H, A) == Write, "{rd:?}");
@@ -3151,7 +3154,7 @@ fn a_recorded_side_keeps_the_other_side_of_its_fight_unrecorded() {
         let rules = Rules { sides, ..Rules::fixed() };
         let m = Sim::build(&Setup::default(), &rules, &mv, &mut Rng(0));
         let down = *m.thief.iter().find(|(_, k)| **k == 25).unwrap().0;
-        let v = m.view(B, &rules);
+        let v = m.view_unchosen(B, &rules);
         let rd = judge(&m.w, &rules, &v);
         assert!(v.trust.contains(&down) && !rd.applied.contains(&m.r), "{sides:?}: {:?} {rd:?}", v.trust);
         assert_eq!(v.trust.contains(&m.r), both, "{sides:?}");
@@ -3180,7 +3183,7 @@ fn a_lowering_that_applied_taking_nothing_is_a_side() {
         let rules = Rules { sides, ..Rules::fixed() };
         let m = Sim::build(&s, &rules, &mv, &mut Rng(0));
         let again = *m.thief.iter().find(|(_, k)| **k == 11).unwrap().0;
-        let v = m.view(B, &rules);
+        let v = m.view_unchosen(B, &rules);
         let rd = judge(&m.w, &rules, &v);
         assert_eq!((v.trust.contains(&again), v.trust.contains(&m.r)), (!lowered, lowered), "{sides:?}: {:?}", v.trust);
         assert_eq!(rd.applied.contains(&m.r) && rd.role(H, A) == Admin, lowered, "{sides:?}: {rd:?}");

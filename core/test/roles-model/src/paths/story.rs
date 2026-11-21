@@ -200,6 +200,9 @@ pub struct Sim {
     pub thief: BTreeMap<Id, usize>,
     /// Removals and the further units they are logged under.
     pub logged: BTreeMap<Id, Things>,
+    /// The honest lowerings each node's user chose at `AFTER` (`choices`): every one it held, where
+    /// it had no order.
+    pub chose: BTreeMap<Thing, Vec<Id>>,
     /// `sides`' work so far, per node: after each tick, what it held and had recorded. A function
     /// of the commits made by that tick; `touch` forgets it from a tick on.
     sided: std::cell::RefCell<BTreeMap<Thing, Vec<(Set, Set)>>>,
@@ -335,7 +338,7 @@ impl Sim {
         sync.insert(RD3, Things::from([T1, D1]));
         sync.insert(J, Things::from([D1, T2]));
         let w = if s.mint > 0 { minted_by(M) } else { account() };
-        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, kiosk: None, rx: None, xfirst: None, gs: 0, gg: None, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, gi: None, cover_by_k: None, unaware: Set::new(), smuggled: Set::new(), thief: BTreeMap::new(), logged: BTreeMap::new(), sided: Default::default() };
+        let mut m = Sim { w, spec, setup: s, made: vec![], recv: vec![], sync, r: 0, r2: None, r3: None, kiosk: None, rx: None, xfirst: None, gs: 0, gg: None, g5: None, xrole: None, out5: None, gb5: None, gh: None, gx: 0, gi: None, cover_by_k: None, unaware: Set::new(), smuggled: Set::new(), thief: BTreeMap::new(), logged: BTreeMap::new(), chose: BTreeMap::new(), sided: Default::default() };
         let grant = Kind::set;
         if s.mint > 0 {
             m.gh = Some(m.put((M, 0, &[], A, grant(H, Role::Admin)), 0, rng, false));
@@ -617,6 +620,7 @@ impl Sim {
         let mut done: BTreeSet<(Thing, Id, Thing)> = BTreeSet::new();
         for t in REMOVAL + 1..=END {
             if t == AFTER {
+                self.choices(rules);
                 self.regrants(rng);
             }
             for n in [H, B, N5, K] {
@@ -655,6 +659,20 @@ impl Sim {
                     }
                     self.put((n, t, &path, on, Kind::Addendum { removal: r, list }), t, rng, false);
                 }
+            }
+        }
+    }
+    /// At `AFTER` the user of every honest node with no order (`held_first`, from the receipts)
+    /// chooses the honest lowerings it holds (notes/write-path-design.md §1 F4): a step of the
+    /// history, with its consequences (a witness answering once its walk applies the removal).
+    fn choices(&mut self, rules: &Rules) {
+        let hon = self.honest_lowerings();
+        for n in self.honest() {
+            let v = self.view_at(n, Some(AFTER), rules);
+            let held: Vec<Id> = hon.iter().copied().filter(|r| v.held.contains(r)).collect();
+            let arrivals = self.arrivals(n, rules);
+            if !held.iter().all(|&r| self.held_first(n, r, &v, &arrivals, false, rules)) {
+                self.chose.insert(n, held);
             }
         }
     }
@@ -894,9 +912,18 @@ impl Sim {
     /// The node's view by `t`: leaves for the things it syncs, and with `Rules::evidence_leaves`
     /// for every thing a held edge write is on. Its trust set: the sides it recorded (`sides`:
     /// its own lowerings and those it held first); B's user (`Setup::b_side_x`) chooses X's
-    /// removal of H until it chooses H's removal of X at `AFTER` (`choose`). The nodes that trust
-    /// nothing record nothing: a node with no order, by fiat.
+    /// removal of H until it chooses H's removal of X at `AFTER` (`choose`); from `AFTER` on, what
+    /// its user chose then (`chose`). The nodes that trust nothing record nothing: a node with no
+    /// order, by fiat.
     pub fn view_at(&self, n: Thing, t: Option<u32>, rules: &Rules) -> View {
+        self.view_choosing(n, t, rules, true)
+    }
+    /// The node's final view as it stands without its user's choice at `AFTER` (`chose`): what it
+    /// is shown before choosing.
+    pub fn view_unchosen(&self, n: Thing, rules: &Rules) -> View {
+        self.view_choosing(n, None, rules, false)
+    }
+    fn view_choosing(&self, n: Thing, t: Option<u32>, rules: &Rules, chosen: bool) -> View {
         let held = self.held_at(n, t);
         let leaves = self.leaves(n, &held, rules);
         let trust = if self.untrusting().contains(&n) {
@@ -904,17 +931,21 @@ impl Sim {
         } else {
             self.sides(n, t, rules)
         };
-        let v = View { held, leaves: Some(leaves), trust };
+        let mut v = View { held, leaves: Some(leaves), trust };
+        let before = t.is_some_and(|t| t < AFTER);
         if self.setup.b_side_x && n == B {
             // its user's choices (F4): X's removal of H once held, then H's removal of X
-            let before = t.is_some_and(|t| t < AFTER);
-            let mut v = View { trust: v.trust.iter().copied().filter(|&i| i != self.r || !before).collect(), ..v };
+            v = View { trust: v.trust.iter().copied().filter(|&i| i != self.r || !before).collect(), ..v };
             for on in if before { vec![self.rx] } else { vec![self.rx, Some(self.r)] }.into_iter().flatten() {
                 if v.held.contains(&on) {
                     v = choose(&self.w, rules, &v, on);
                 }
             }
-            return v;
+        }
+        for &r in self.chose.get(&n).into_iter().flatten().filter(|_| chosen && !before) {
+            if v.held.contains(&r) {
+                v = choose(&self.w, rules, &v, r);
+            }
         }
         v
     }
@@ -1053,7 +1084,7 @@ impl Sim {
         out
     }
     /// The oracle's side of first received, from the story alone and never from a reading: `n`
-    /// held lowering `r` first where it wrote it, its user chose it (B's switch), or every write
+    /// held lowering `r` first where it wrote it, its user chose it (B's switch, `chose`), or every write
     /// of its held set `r` leaves out (`seeds`: a function of the held set and the lists) arrived
     /// there after `r` did, as did every lowering that cannot stand beside it (`against`). A node
     /// trusting nothing has no order. `thiefs`: counting only what the thief made (a write X
@@ -1063,7 +1094,7 @@ impl Sim {
         if self.untrusting().contains(&n) {
             return false;
         }
-        if self.wrote(n, r) || (self.setup.b_side_x && n == B && r == self.r) {
+        if self.wrote(n, r) || (self.setup.b_side_x && n == B && r == self.r) || self.chose.get(&n).is_some_and(|c| c.contains(&r)) {
             return true;
         }
         // what contests `r` there: the writes it leaves out, and the lowerings leaving it out
@@ -1553,13 +1584,13 @@ fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bo
 /// The honest side is per node (notes/write-path-design.md §1, First received). A node that held
 /// every honest lowering it holds first (`Sim::held_first`, from the receipts: `held first`) is
 /// checked on its own reading: safety, liveness, own path, removal, purge, alike. Any other
-/// (`no order`: the thief's write came first or with the removal) is checked on the reading its
-/// user gets by choosing the honest lowerings it holds (`choose`), and, like the nodes trusting
-/// nothing, on what it is shown: each honest lowering it does not apply is an open dispute or a
+/// (`no order`: the thief's write came first or with the removal) has its user choose the honest
+/// lowerings it holds at `AFTER` (`Sim::chose`), a step of the history whose consequences follow
+/// (its answers once its walk applies the removal), and is checked on its own reading as the
+/// first kind is, and, like the nodes trusting nothing, on what it was shown before choosing
+/// (`Sim::view_unchosen`): each honest lowering it does not apply is an open dispute or a
 /// counter-removal told (`disputes`, `countered`), and choosing those shown reads as choosing
-/// them all. Content only a witness keeps is wanted where a witness received it that nothing
-/// the thief made reached before or with an honest lowering it contests; where the thief
-/// reached every witness first it may show or not (`liveness, the witness with no order`).
+/// them all. Content only a witness keeps is wanted wherever a witness received it.
 pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     st.worlds += 1;
     let (w, s) = (&m.w, &m.setup);
@@ -1568,7 +1599,6 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     // from the story's receipts alone) whether it held every honest lowering it holds first
     let hon = m.honest_lowerings();
     let hon_held = |v: &View| -> Vec<Id> { hon.iter().copied().filter(|r| v.held.contains(r)).collect() };
-    let mut sure = Things::new();
     let own: BTreeMap<Thing, (View, Reading, bool)> = nodes
         .iter()
         .copied()
@@ -1579,40 +1609,27 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
             let held = hon_held(&v);
             let first = !m.untrusting().contains(&n) && {
                 let arrivals = m.arrivals(n, rules);
-                if held.iter().all(|&r| m.held_first(n, r, &v, &arrivals, true, rules)) {
-                    sure.insert(n);
-                }
                 held.iter().all(|&r| m.held_first(n, r, &v, &arrivals, false, rules))
             };
             (n, (v, rd, first))
         })
         .collect();
-    // a witness of removal `r` answers it for certain where nothing the thief made reached it
-    // before or with an honest lowering it contests (`sure`: its walk applies `r`, and nothing
-    // the thief wrote takes its own path); any other answers only where its own walk leaves it
-    // both: `unsure`
+    // a witness of removal `r` (it received `i` by the removal and holds `r`) answers it once its
+    // walk applies `r`: held first, or once its user chose at `AFTER`
     let witness = |a: Thing, r: Id, i: Id| m.sync.get(&a).is_some_and(|u| u.contains(&w.commits[i].on)) && m.got(i, a, REMOVAL) && m.recv[r].contains_key(&a);
-    let unsure = std::cell::Cell::new(false);
-    let vouched = |among: &[Thing], r: Id, i: Id, wrote: &dyn Fn(Thing) -> bool| {
-        let answered = among.iter().any(|&a| wrote(a) && witness(a, r, i) && sure.contains(&a));
-        if !answered && among.iter().any(|&a| wrote(a) && witness(a, r, i)) {
-            unsure.set(true);
-        }
-        answered
-    };
-    // the honest side at each honest node: its own reading where it held the honest lowerings
-    // first, else its reading once its user chooses them
+    let vouched = |among: &[Thing], r: Id, i: Id, wrote: &dyn Fn(Thing) -> bool| among.iter().any(|&a| wrote(a) && witness(a, r, i));
+    // the honest side at each honest node: its own reading, which holds every honest lowering
+    // first or by its user's choice at `AFTER`
     let rds: BTreeMap<Thing, (View, Reading)> = nodes
         .iter()
         .map(|&n| {
             let (v, rd, first) = &own[&n];
-            st.count(if *first { "held first" } else { "no order" });
-            if *first {
-                return (n, (v.clone(), rd.clone()));
+            st.count(if m.chose.contains_key(&n) { "no order" } else { "held first" });
+            st.count("honest side");
+            if !*first {
+                st.fail("honest side", m, format!("node {n}: holds an honest lowering neither first nor by its user's choice"));
             }
-            let v = hon_held(v).into_iter().fold(v.clone(), |v, r| choose(w, rules, &v, r));
-            let rd = judge(w, rules, &v);
-            (n, (v, rd))
+            (n, (v.clone(), rd.clone()))
         })
         .collect();
     // the remover's list names it: where a role write of X stands
@@ -1755,7 +1772,6 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
         for &i in v.held.iter().filter(|&&i| !m.hostile(i)) {
             let c = &w.commits[i];
             let honest_now = c.signer != X;
-            unsure.set(false);
             let want = match &c.kind {
                 // M's leave applies, so its write after does not show (X's removal of M heard
                 // before the removal and kept cuts the leave, which it does not list, and M's
@@ -1794,9 +1810,6 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
                 Kind::Edge { .. } => in_r(i) && c.ts < REMOVAL && !m.lowers_remover(i) && !m.aims(i),
                 _ => false,
             };
-            if !want && unsure.get() {
-                st.count("liveness, the witness with no order");
-            }
             if want && !under_h(i) {
                 st.count("liveness");
                 if !rd.shows(i) {
@@ -1849,10 +1862,18 @@ pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
     // removal not applied is a dispute shown there; a reading unlike the trusted side's comes with
     // a dispute, and trusting the honest ones shown reads as the trusting side
     let plain: BTreeMap<Thing, (View, Reading)> = m.untrusting().into_iter().map(|n| (n, (own[&n].0.clone(), own[&n].1.clone()))).collect();
-    for (&n, (v, rd, first)) in &own {
-        if *first {
-            continue;
-        }
+    // the nodes trusting nothing as they stand, and the nodes whose user chose at `AFTER` as they
+    // stood without the choice (what they were shown)
+    let unchosen: BTreeMap<Thing, (View, Reading)> = m
+        .chose
+        .keys()
+        .map(|&n| {
+            let v = m.view_unchosen(n, rules);
+            let rd = judge(w, rules, &v);
+            (n, (v, rd))
+        })
+        .collect();
+    for (&n, (v, rd)) in plain.iter().chain(&unchosen) {
         let no_sides = m.untrusting().contains(&n);
         st.count("untrusted");
         st.most("rounds", rd.rounds as u64);
