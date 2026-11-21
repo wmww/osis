@@ -686,6 +686,12 @@ pub(crate) fn account_ticket_due(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<Role
 /// `account_ticket_due`, with the sync IDs lacking D's ticket.
 fn owed_account_tickets(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<(Role, Vec<osis_base::SyncId>)>> {
     let (Some((p, d)), Some(r)) = (tx.core.account_and_root(), tx.core.ix.closure.entered_outside(t)) else { return Ok(None) };
+    // kept unread, D's ticket records a counting ticket word, never a role the role commits
+    // alone give (notes/node-closure.md Roles taken up, 8): its sync word always counts, so one
+    // written for a chain's role would keep that role once the chain is no longer taken up
+    if r == Role::Sync && !crate::sync::tickets::words_on(tx.core, t).iter().any(|(_, counts)| *counts) {
+        return Ok(None);
+    }
     let Some(epochs) = tx.core.epochs(t) else { return Ok(None) };
     let held = account_tickets(tx, &d, t)?;
     let mut lacking = Vec::new();

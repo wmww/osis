@@ -119,8 +119,9 @@ pub struct Closure {
     inn: JSetMap<Vx, Vx>,
     /// Out-list edges added or removed since the sync set's tree followed them.
     moved: JSet<(Vx, Vx)>,
-    /// Strongs that appeared or went since the last settle, (source, target) (`note_row`).
-    rows: JSet<(Tid, Tid)>,
+    /// Strongs that appeared or went since the last settle, per target its sources (`note_row`):
+    /// by target, as `targeted` reads one target's.
+    rows: JSetMap<Tid, Tid>,
     /// Things whose edges into them are judged again at the next settle (`rejudge`).
     rejudge: JSet<Tid>,
     /// Per thing a held strong reaches whose read secret is not established here, the sync IDs
@@ -142,6 +143,13 @@ pub struct Closure {
     /// commits that judge those tickets stay while any does (`retention::needed`), whether or not
     /// they enter it.
     accepted: JSetMap<Tid, Vx>,
+    /// Per thing, the held vertices of a context that reads strongs (the local part, a read sync
+    /// unit) whose strong reaches it, as last judged: the things the account's own edges count
+    /// on (`rotation::role_here`, notes/node-closure.md Roles taken up).
+    targeted: JSetMap<Tid, Vx>,
+    /// A thing became targeted or stopped being since the settle last looked (`settle_with`):
+    /// outside the journal, as a spurious mark costs one `flows::retake`.
+    reached_moved: bool,
     /// Per thing whose record the node does not hold, the held vertices whose strong reaches it,
     /// as last judged: each awaits the record (spec/commits.md §4 Records), which decides whether
     /// the strong brings the thing in, so a record blob's record of it is learned
@@ -168,7 +176,7 @@ impl Default for Closure {
             out: JSetMap::default(),
             inn: JSetMap::default(),
             moved: JSet::default(),
-            rows: JSet::default(),
+            rows: JSetMap::default(),
             rejudge: JSet::default(),
             ticket_ids: JMap::default(),
             ticket_words: JMap::default(),
@@ -176,6 +184,8 @@ impl Default for Closure {
             openers: JSetMap::default(),
             by_opener: JSetMap::default(),
             accepted: JSetMap::default(),
+            targeted: JSetMap::default(),
+            reached_moved: false,
             unknown: JSetMap::default(),
             fires_due: JSet::default(),
             members: JSetMap::by_element(),
@@ -228,7 +238,7 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = ([usize; 4], [usize; 4], [usize; 16]);
+    type Mark = ([usize; 4], [usize; 4], [usize; 17]);
     fn commit(&mut self) {
         self.ticket_ids.commit();
         self.ticket_words.commit();
@@ -236,6 +246,7 @@ impl Journaled for Closure {
         self.openers.commit();
         self.by_opener.commit();
         self.accepted.commit();
+        self.targeted.commit();
         self.unknown.commit();
         self.fires_due.commit();
         self.tree.commit();
@@ -250,7 +261,7 @@ impl Journaled for Closure {
         self.cut.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.rejudge.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.ticket_ids.mark(), self.by_ticket_id.mark(), self.fires_due.mark(), self.openers.mark(), self.by_opener.mark(), self.accepted.mark(), self.ticket_words.mark(), self.unknown.mark()])
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.rejudge.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.ticket_ids.mark(), self.by_ticket_id.mark(), self.fires_due.mark(), self.openers.mark(), self.by_opener.mark(), self.accepted.mark(), self.ticket_words.mark(), self.unknown.mark(), self.targeted.mark()])
     }
     fn rollback_to(&mut self, (t, s, m): Self::Mark) {
         self.tree.rollback_to(t);
@@ -271,6 +282,7 @@ impl Journaled for Closure {
         self.accepted.rollback_to(m[13]);
         self.ticket_words.rollback_to(m[14]);
         self.unknown.rollback_to(m[15]);
+        self.targeted.rollback_to(m[16]);
     }
     fn name(&mut self, _name: &'static str) {
         self.tree.name("index: closure held");
@@ -284,6 +296,7 @@ impl Journaled for Closure {
         self.openers.name("index: closure ticket openers");
         self.by_opener.name("index: closure by ticket opener");
         self.accepted.name("index: closure accepted");
+        self.targeted.name("index: closure targeted");
         self.unknown.name("index: closure unknown");
     }
     #[cfg(test)]
@@ -518,6 +531,27 @@ impl Closure {
         self.accepted.get(t).is_some_and(|v| !v.is_empty())
     }
 
+    /// Whether a held vertex of a context that reads strongs has a strong to `t` (`targeted`):
+    /// the account's own edges on `t` count (notes/node-closure.md Roles taken up).
+    /// A strong noted since the last settle (`rows`) counts from a held reading source until
+    /// the settle judges it: a transaction asks roles before its settle (a thing it makes, held
+    /// by a strong it writes, is made independent by its maker's record edge).
+    pub(crate) fn targeted(&self, t: &Tid) -> bool {
+        let reading = |x: &Tid| self.tree.held.get(x).is_some_and(|cs| cs.iter().any(|c| matches!(c, Ctx::Local | Ctx::Read(_))));
+        self.targeted.get(t).is_some_and(|v| !v.is_empty()) || self.rows.get(t).is_some_and(|xs| xs.iter().any(reading))
+    }
+
+    /// Notes whether `v`'s strong to `t` counts for `targeted`.
+    fn set_targeted(&mut self, t: Tid, v: Vx, on: bool) {
+        let set = |c: &Closure| c.targeted.get(&t).is_some_and(|v| !v.is_empty());
+        let was = set(self);
+        match on {
+            true => drop(self.targeted.insert(t, v)),
+            false => drop(self.targeted.remove(&t, &v)),
+        }
+        self.reached_moved |= was != set(self);
+    }
+
     /// Whether a held vertex's strong reaches `t`, whose record was not held when it was judged
     /// (`unknown`).
     pub(crate) fn awaits_record(&self, t: &Tid) -> bool {
@@ -666,7 +700,7 @@ impl Closure {
     /// (`refs::note`).
     pub(crate) fn note_row(&mut self, source: Tid, target: Tid) {
         if self.tree.held.contains_key(&source) {
-            self.rows.insert((source, target));
+            self.rows.insert(target, source);
         }
     }
 
@@ -959,9 +993,9 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
     }
     loop {
         // the strongs that appeared, followed from each vertex of their source
-        let rows: Vec<(Tid, Tid)> = tx.core.ix.closure.rows.iter().copied().collect();
+        let rows: Vec<(Tid, Tid)> = tx.core.ix.closure.rows.iter().flat_map(|(y, xs)| xs.iter().map(|x| (*x, *y))).collect();
         for (x, y) in &rows {
-            tx.core.ix.closure.rows.remove(&(*x, *y));
+            tx.core.ix.closure.rows.remove(y, x);
             for c in tx.core.ix.closure.contexts(x) {
                 let v = (c, *x);
                 if tx.core.ix.closure.is_held(&v) {
@@ -993,8 +1027,13 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
                 }
             }
         }
+        // what is reached moved, so the node's roles may have grown (notes/node-closure.md Roles
+        // taken up): boxes kept out for want of them open now, moving what the walk enters
+        if std::mem::take(&mut tx.core.ix.closure.reached_moved) {
+            crate::flows::retake(tx)?;
+        }
         let due = f.fx.due();
-        if due.is_empty() && tx.core.ix.closure.rows.is_empty() && tx.core.ix.closure.rejudge.is_empty() {
+        if due.is_empty() && tx.core.ix.closure.rows.is_empty() && tx.core.ix.closure.rejudge.is_empty() && !tx.core.ix.closure.reached_moved {
             // each thing out of the node closure now, noted with every context it was dropped
             // from in this transaction: the sync units that carried it when it left
             let cl = &mut tx.core.ix.closure;
@@ -1044,9 +1083,11 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     if matches!(v.0, Ctx::Unread(_) | Ctx::Ticket(_)) || !strong_to(tx, &v.1, &y)? {
         f.fx.unwant(&(v, y));
         set_accepted(tx, y, v, false);
+        tx.core.ix.closure.set_targeted(y, v, false);
         tx.core.ix.closure.set_unknown(y, v, false);
         return Ok(BTreeSet::new());
     }
+    tx.core.ix.closure.set_targeted(y, v, true);
     // a strong to a thing whose record is not held awaits it: a record blob's copy of it, kept
     // loose, is learned (spec/commits.md §4 Records)
     let unknown = !tx.core.exists(&y) && !tx.core.is_key_actor(&y);
@@ -1139,6 +1180,7 @@ fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<V
                     for y in strongs_from(tx, &x.1)? {
                         f.fx.unwant(&(x, y));
                         set_accepted(tx, y, x, false);
+                        tx.core.ix.closure.set_targeted(y, x, false);
                     }
                 }
             }

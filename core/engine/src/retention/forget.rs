@@ -68,9 +68,14 @@ enum Fate {
     Whole,
 }
 
-/// Whether a held path reads `t` (the node's or a held key actor's effective role on it).
+/// Whether a held path reads `t`: its secrets derive from an own actor's (the node's account,
+/// itself, a held key actor), or the node reads the actor they derive from by the role it takes
+/// up there (`rotation::role_here`, notes/node-closure.md Roles taken up): the one role the
+/// lost-access drop judges by, so what it keeps is what that role reads.
 pub(crate) fn read_path(core: &Core, t: &Tid) -> bool {
-    core.member().into_iter().chain([core.id.tid()]).any(|m| core.may_read(&m, t)) || core.key_actors.keys().any(|k| core.may_read(k, t))
+    let Some(a) = core.secret_actor(t) else { return false };
+    let own = core.member() == Some(a) || a == core.id.tid() || core.key_actors.contains_key(&a);
+    own || crate::rotation::role_here(core, &a) >= Some(osis_base::Role::Read)
 }
 
 /// `t` when the secrets of `lost` are dropped: forgotten when its secrets derive from a lost

@@ -799,6 +799,19 @@ impl Timelines {
         (roles, until)
     }
 
+    /// `roles_now` over the edges not in `skip`, each named (target, holder): walked afresh.
+    pub fn roles_now_without(&self, thing: &Tid, ts: osis_base::Ts, skip: &BTreeSet<(Tid, Tid)>) -> (Arc<BTreeMap<Tid, Role>>, Option<osis_base::WallMs>) {
+        let Some(tl) = self.of.get(thing) else {
+            self.stamps.read(&Read::Things);
+            return (Arc::default(), None);
+        };
+        let (roles, until) = tl.roles_on_now_without(thing, ts, skip);
+        for t in roles.keys().chain([thing]) {
+            self.stamps.read(&Read::Into(*t));
+        }
+        (Arc::new(roles), until)
+    }
+
     /// `node`'s effective role on `thing` at `at` (`roles_on`).
     pub fn role(&self, node: &Tid, thing: &Tid, at: osis_perm::At) -> Option<Role> {
         self.roles_on(thing, at, &BTreeSet::new()).get(node).copied()

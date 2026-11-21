@@ -1328,3 +1328,72 @@ fn a_grantee_reads_a_value_minted_under_its_mint_admin_spec_sync_judgement_1() {
     w.run();
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2's minting value");
 }
+
+// spec/sync-set.md §2 (Taken up), spec/sync-inbox.md §5 (Nothing before the strong): Alice
+// grants Bob read on T1; Bob accepts, then drops his strong to T1 while Alice grants T1 sync on
+// T2 and he writes a strong to T2: his grant on T1 is no longer taken up, so the chain through it
+// gives him nothing on T2, which he does not hold.
+#[test]
+fn a_chain_through_a_grant_accepted_then_dropped_gives_nothing_spec_sync_set_2() {
+    let mut w = contacts();
+    let bob = w.node(1).account.unwrap();
+    let t1 = make(&mut w, 0, None, "t1");
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, None, t1, true);
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Read));
+    strong(&mut w, 1, None, t1, false);
+    let t2 = make(&mut w, 0, None, "t2");
+    w.write(0, |e| e.grant(&t2, &t1, &edge(Role::Sync))).unwrap();
+    strong(&mut w, 1, None, t2, true);
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t1), None, "T1 dropped");
+    assert_eq!(holding(&mut w, 1, &t2), None, "no role on T2 through T1, no longer accepted");
+}
+
+// spec/sync-set.md §1 (The account's tickets), §2 (Taken up): Bob holds T2 kept unread by a chain
+// through T1, which he reads (T1 holds sync on T2), so D's ticket for T2 records no ticket's word
+// and none is written; Bob drops his strong to T1, and with it every role on T2: T2 goes, and
+// no ticket of D's own keeps it.
+#[test]
+fn a_thing_kept_unread_by_a_chain_goes_once_the_chain_is_dropped_spec_sync_set_1() {
+    let mut w = contacts();
+    let bob = w.node(1).account.unwrap();
+    let t1 = make(&mut w, 0, None, "t1");
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, None, t1, true);
+    let t2 = make(&mut w, 0, None, "t2");
+    w.write(0, |e| e.grant(&t2, &t1, &edge(Role::Sync))).unwrap();
+    w.run();
+    strong(&mut w, 1, None, t2, true);
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t2), Some(Holding::Unread), "T2 kept unread through T1");
+    assert_eq!(d_tickets(&mut w, 1, &t2), 0, "a role by role commits alone: no D ticket");
+    strong(&mut w, 1, None, t1, false);
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t2), None, "the chain dropped, T2 goes");
+}
+
+// spec/sync-set.md §2 (Taken up): Alice grants Bob read on T0 and T1, mints T2 with admin T1 and
+// grants T0 read on T2. Bob accepts T0 alone and holds T2 from his root, reading it through T0
+// (T2's certificates bring T1's roster, his grant on T1 among it). Alice lowers Bob to sync on
+// T0: his grant on T1, never accepted, gives no read of T2.
+#[test]
+fn a_grant_never_accepted_reads_nothing_through_certificates_spec_sync_set_2() {
+    let mut w = contacts();
+    let bob = w.node(1).account.unwrap();
+    let t0 = make(&mut w, 0, None, "t0");
+    let t1 = make(&mut w, 0, None, "t1");
+    w.write(0, |e| e.grant(&t0, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    let t2 = make_in(&mut w, 0, t1, "t2");
+    w.write(0, |e| e.grant(&t2, &t0, &edge(Role::Read))).unwrap();
+    w.run();
+    strong(&mut w, 1, None, t0, true);
+    strong(&mut w, 1, None, t2, true);
+    w.run();
+    assert_eq!(value(&mut w, 1, &t2), Some(Value::Str("t2".into())), "Bob reads T2 through T0");
+    w.write(0, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: bob, new: Some(edge(Role::Sync)), retain: None })).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 1, &t2), None, "T1 never accepted: no read of T2 through it");
+}

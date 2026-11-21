@@ -85,11 +85,32 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
     crate::sync::tickets::role_on(core, a) >= Some(min)
 }
 
-/// The best role the node or a held key actor holds on `a` now
-/// (any path with key access, `until` honoured: `Core::keyed_role_now`).
+/// The best role the node's own actors (its account, itself, a held key actor) hold on `a` now
+/// by its role commits (notes/node-closure.md Roles taken up): any path with key access, `until`
+/// honoured (`Core::keyed_role_now`), whose first edge, where it is the account's, is on a thing
+/// reached (`reached`): a grant naming the account gives a role only accepting takes up (a key
+/// actor is taken up by holding it). An edge into a thing that reaches no holder of `a` is no
+/// path's, so only the account's edges on things `roles_now` names are skipped: none in the
+/// usual case, where this is `keyed_role_now`.
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
-    let at = |m: &Tid| core.keyed_role_now(m, a);
-    core.member().into_iter().chain([core.id.tid()]).map(|m| at(&m)).chain(core.key_actors.keys().map(at)).max().flatten()
+    let own: Vec<Tid> = core.member().into_iter().chain([core.id.tid()]).chain(core.key_actors.keys().copied()).collect();
+    let skip: BTreeSet<(Tid, Tid)> = match core.member() {
+        Some(p) if core.root_holders(a).is_none() => core.roles_now(a).keys().chain([a]).filter(|t| core.ix.held.is_named(&p, t) && !reached(core, t)).map(|t| (*t, p)).collect(),
+        _ => BTreeSet::new(),
+    };
+    if skip.is_empty() {
+        return own.iter().map(|m| core.keyed_role_now(m, a)).max().flatten();
+    }
+    let roles = core.roles_now_without(a, &skip);
+    let keyless = crate::rotation::members::key_access(core);
+    let keyed = (!keyless.is_empty()).then(|| core.timelines.roles_on(a, osis_perm::At::KEYS, &keyless.union(&skip).copied().collect()));
+    own.iter().map(|m| roles.get(m).copied().min(keyed.as_ref().map_or(Some(Role::Admin), |k| k.get(m).copied()))).max().flatten()
+}
+
+/// Whether the account's edge on `t` counts (notes/node-closure.md Roles taken up): `t` is the
+/// node root, or a strong of a thing the node closure reads targets it (`Closure::targeted`).
+fn reached(core: &Core, t: &Tid) -> bool {
+    core.node_root == Some(*t) || core.ix.closure.targeted(t)
 }
 
 /// Whether the node (`holds_at`) reads `a` now: read or above.

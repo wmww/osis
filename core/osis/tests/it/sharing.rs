@@ -31,6 +31,8 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
             e.commit_ids().into_iter().map(|id| (e.writes_keyset(&t, &id), e.package(&id).unwrap().unwrap())).partition(|(k, _)| *k)
         });
         assert_eq!(later.len(), 1, "one commit carries t's keysets");
+        // bob accepts t first: a grant gives his account a role only at a strong to its thing
+        bob.hold(t).unwrap();
         for (_, pk) in &now {
             bob.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
         }
@@ -44,8 +46,6 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
             header.parts.clear();
             bob.engine(|e| e.ingest(&header.encode(), Vec::new()).unwrap());
         }
-        // bob holds what he writes
-        bob.hold(t).unwrap();
         let write = |v: &str| {
             let mut w = bob.write();
             w.at(t, untyped("t:x.0")).set(&s(v))?;
@@ -308,6 +308,8 @@ fn the_owners_rule_one_write_through_different_actors_is_one_commit_spec_wire_4(
     let o = bob.commit_with(|w| w.create_held()).unwrap();
     bob.grant(o, carol.me(), Role::Read, Default::default()).unwrap();
     mesh(&all);
+    // Bob acts through H once he accepts it: a grant gives a role only at a strong to its thing
+    bob.hold(h).unwrap();
     bob.hold(g).unwrap();
     carol.hold(g).unwrap();
     carol.hold(o).unwrap();

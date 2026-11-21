@@ -192,6 +192,17 @@ impl Core {
         })
     }
 
+    /// `roles_now` over the edges not in `skip`, each named (target, holder).
+    pub(crate) fn roles_now_without(&self, tid: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> Arc<BTreeMap<Tid, Role>> {
+        if let Some(h) = self.root_holders(tid) {
+            return Arc::new(h);
+        }
+        self.time.at(|now| {
+            let (roles, until) = self.timelines.roles_now_without(tid, ts_at(now), skip);
+            (roles, until.map(|u| u.0))
+        })
+    }
+
     /// The mint admin of `tid` (spec/permissions.md §1): the next actor up its record chain,
     /// whose secrets a dependent `tid` derives from (spec/crypto.md §3). None for a key actor or an
     /// unknown thing.

@@ -1073,6 +1073,12 @@ impl Timeline {
         ways.path(self.records(), node)
     }
 
+    /// `roles_on_now` over the edges not in `skip`, each named (target, holder), walked afresh.
+    pub fn roles_on_now_without(&self, thing: &Tid, ts: Ts, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
+        let edges = self.edges_at(None);
+        View::at(&edges, Some(ts)).roles_to_expiring(thing, skip)
+    }
+
     /// `roles_on` over the edges not in `skip`, each named (target, holder).
     pub fn roles_on_without(&self, thing: &Tid, at: At, skip: &BTreeSet<(Tid, Tid)>) -> BTreeMap<Tid, Role> {
         let edges = self.edges_at(at.point);

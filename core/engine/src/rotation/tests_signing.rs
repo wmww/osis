@@ -1994,8 +1994,9 @@ fn a_reader_paired_into_the_account_judges_its_chain_as_a_node_spec_permissions_
 }
 
 // spec/permissions.md §1 (a node pairs another into P), spec/crypto.md §9 (Custody): a node paired
-// into an account opens what is boxed to the account (its inbox's own secrets) as it becomes a
-// node of it, so its secrets are what a rebuild from its commit records opens
+// into an account opens what is boxed to the account (its inbox's own secrets) once it is a node
+// of it and reads D's strong to the inbox, so its secrets are what a rebuild from its commit
+// records opens
 #[test]
 fn a_paired_node_opens_what_is_boxed_to_its_account_spec_permissions_1() {
     let mut lp = LocalPeer::new_bare(2, 0, WallMs(1_700_000_000_000)).unwrap();
@@ -2003,6 +2004,11 @@ fn a_paired_node_opens_what_is_boxed_to_its_account_spec_permissions_1() {
     pair(&mut lp, &a, 1);
     let e = &mut lp.peers[1].engine;
     let inbox = e.inbox_thing(&a.account).expect("the account's inbox");
+    // D's commits came before the node could open them: as D's sync ID would, they come again,
+    // and the strong in D's `holds.0` reaching the inbox takes up the account's role there
+    let ids = lp.peers[0].engine.commit_ids();
+    send(&mut lp, 0, 1, &ids);
+    let e = &mut lp.peers[1].engine;
     assert!(e.core.ix.secrets.get(&inbox).is_some_and(|s| s.read.held().next().is_some()), "the paired node holds the inbox's read secrets");
     let d = e.index_digest();
     e.rebuild_index().unwrap();
