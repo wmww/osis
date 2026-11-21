@@ -135,14 +135,15 @@ fn hash_hex(b: &[u8]) -> String {
 
 /// `replay`, once per input in this process: generating a file judges each case, and replaying it
 /// from its text then finds the same inputs (the text carries all of them exactly) or judges anew.
-fn judged(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
+/// `setup`: the length of the file's setup, the first entries of `bytes`.
+fn judged(bytes: &[u8], setup: usize, reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
     type Key = (String, Vec<String>, u64, String);
     static SEEN: std::sync::Mutex<BTreeMap<Key, Vec<(String, String)>>> = std::sync::Mutex::new(BTreeMap::new());
     let key = (hash_hex(bytes), reads.iter().map(|r| osis_base::hex::encode(r.expose())).collect(), now.0, render_order(order));
     if let Some(v) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return v.clone();
     }
-    let v = replay(bytes, reads, now, order);
+    let v = replay(bytes, setup, reads, now, order);
     SEEN.lock().unwrap_or_else(|e| e.into_inner()).insert(key, v.clone());
     v
 }
@@ -152,11 +153,12 @@ fn judged(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
 /// granted read in the setup and in its first entries), holding every thing an entry writes on,
 /// so what it judges is a function of the entries alone (spec/commits.md §4 Outside the node
 /// closure, §5 What a held thing needs); what it judges, as the expected fields of a case
-/// (README.md, `judgment/`).
-fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
+/// (README.md, `judgment/`). An order starting with the setup's entries (`setup`: their length in
+/// `bytes`) as laid starts from a copy of the node that received them so, made once per
+/// (`now`, setup, read secrets, held things) in this process (notes/test-harnesses.md, Copied
+/// worlds).
+fn replay(bytes: &[u8], setup: usize, reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
     let ents = entries(bytes);
-    // a fresh node at `now`: built once per `now` (`LocalPeer::cached`)
-    let mut p = LocalPeer::cached(&format!("judgment::fresh/{}", now.0), || (LocalPeer::apart(vec![crate::order::judge_at(now)], 0), ())).0.peers.remove(0);
     let mut ids = BTreeSet::new();
     // a filler wrap opens under no read secret (spec/crypto.md §5)
     // an entry delivers its sync ID's section: the one sealed under the read secret its wrap
@@ -178,21 +180,43 @@ fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
             held.extend(cb.header.aspects.iter().map(|a| a.tid));
         }
     }
-    for t in held {
-        p.engine.hold(osis_base::Strong(t)).unwrap();
-    }
-    for t in order {
+    let ingest = |p: &mut osis_engine::local_peer::Peer, i: usize| match open(i) {
+        Some((pt, _)) => {
+            let _ = p.engine.ingest(&pt, Vec::new());
+        }
+        None => {
+            p.engine.put_blobs(vec![(ents[i].0, ents[i].2.clone())]).unwrap();
+            p.reexamine().unwrap();
+        }
+    };
+    let n = entries(&bytes[..setup]).len();
+    let lead = if order.len() >= n && order.iter().zip(0..n).all(|(t, i)| matches!(t, Tok::In(j) if *j == i)) { n } else { 0 };
+    let key = format!("judgment::received/{}/{}/{:?}/{held:?}/{lead}", now.0, hash_hex(&bytes[..setup]), reads.iter().map(|r| hash_hex(r.expose())).collect::<Vec<_>>());
+    let mut p = LocalPeer::cached(&key, || {
+        // a fresh node at `now`: built once per `now`
+        let mut p = LocalPeer::cached(&format!("judgment::fresh/{}", now.0), || (LocalPeer::apart(vec![crate::order::judge_at(now)], 0), ())).0;
+        for t in &held {
+            p.peers[0].engine.hold(osis_base::Strong(*t)).unwrap();
+        }
+        for i in 0..lead {
+            ingest(&mut p.peers[0], i);
+        }
+        (p, ())
+    })
+    .0
+    .peers
+    .remove(0);
+    for (at, t) in order.iter().enumerate() {
         match *t {
-            Tok::In(i) => match open(i) {
-                Some((pt, cb)) => {
+            Tok::In(i) => {
+                if let Some((_, cb)) = open(i) {
                     ids.insert(cb.id());
-                    let _ = p.engine.ingest(&pt, Vec::new());
                 }
-                None => {
-                    p.engine.put_blobs(vec![(ents[i].0, ents[i].2.clone())]).unwrap();
-                    p.reexamine().unwrap();
+                // the first `lead` the copied node received
+                if at >= lead {
+                    ingest(&mut p, i);
                 }
-            },
+            }
             Tok::Wait(ms) => {
                 p.clock.advance(ms);
                 p.tick().unwrap();
@@ -310,7 +334,7 @@ fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
             let mut r = Rec::new().with("case", &name).with("spec", sc.spec).with("source", sc.source).with("read-secret", &reads_hex).with("now", played.now.0.to_string());
             r = if i == 0 { r.with("entries", osis_base::hex::encode(&laid.bytes[n..])) } else { r.with("entries", format!("as in {first}")) };
             r = r.with("order", render_order(&order));
-            for (k, v) in judged(&laid.bytes, &reads, played.now, &order) {
+            for (k, v) in judged(&laid.bytes, laid.setup, &reads, played.now, &order) {
                 r = r.with(&k, v);
             }
             cases.push(r);
@@ -817,7 +841,7 @@ fn replay_cases(path: &str, text: &str, only: Option<&str>) -> Result<usize, Str
             reads.push(Secret32::from_bytes(b.try_into().map_err(|_| "read-secret length")?));
         }
         let now = WallMs(c.req("now")?.parse().map_err(|_| "bad now")?);
-        let mut got = judged(&bytes, &reads, now, &parse_order(c.req("order")?));
+        let mut got = judged(&bytes, setup.len(), &reads, now, &parse_order(c.req("order")?));
         if let Some(f) = shared.iter().find(|f| !got.contains(f)) {
             return Err(format!("{path}, case `{name}`: judged no `{}: {}` (a header line)", f.0, f.1));
         }
@@ -854,7 +878,7 @@ fn chainless_part_order_spec_commits_4() {
     let (edge, last) = (played.base + 1, played.packs.len() - 1);
     let rest: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] != edge && laid.of[*e] != last).collect();
     let two: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] == last).collect();
-    let judge = |parts: &[usize]| replay(&laid.bytes, &read_secrets(true), played.now, &rest.iter().chain(parts).map(|e| Tok::In(*e)).collect::<Vec<_>>());
+    let judge = |parts: &[usize]| replay(&laid.bytes, laid.setup, &read_secrets(true), played.now, &rest.iter().chain(parts).map(|e| Tok::In(*e)).collect::<Vec<_>>());
     assert_eq!(judge(&two), judge(&[two[1], two[0]]));
 }
 
@@ -871,7 +895,7 @@ fn chainless_role_part_order_spec_commits_4() {
     let two: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] == last).collect();
     let roster = |parts: &[usize]| {
         let order: Vec<Tok> = rest.iter().chain(parts).map(|e| Tok::In(*e)).collect();
-        replay(&laid.bytes, &read_secrets(true), played.now, &order).into_iter().find(|(k, _)| *k == format!("thing {}", played.things[0])).unwrap().1
+        replay(&laid.bytes, laid.setup, &read_secrets(true), played.now, &order).into_iter().find(|(k, _)| *k == format!("thing {}", played.things[0])).unwrap().1
     };
     assert_eq!(roster(&two), roster(&[two[1], two[0]]));
 }
