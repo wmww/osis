@@ -487,12 +487,12 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
 }
 
 // spec/commits.md §5, spec/requirements.md (Deterministic): commit `c` writes `t` (reg, list) and `t2`;
-// node 1 syncs `t2`, not `t`, and gets `c` as two copies (one without the list part, one of it alone, as
-// blobs of two retention classes would bring it): with the first alone `c` applies its `t2` part and the
-// reg part waits alone for its unit. A purge request naming the reg part, in every order: the node holds
-// `t` as its author does and flags nothing.
+// node 1 gets `c` as two copies (one without the list part, one of it alone, as blobs of two retention
+// classes would bring it), each applying at once. A purge request naming the reg part, in every
+// order: the node holds `t` as its author does and flags nothing. (A part waiting aside when its purge
+// comes: outside::a_part_waiting_aside_is_purged_where_it_waits.)
 #[test]
-fn purge_of_a_part_waiting_aside_reads_alike_spec_commits_5() {
+fn purge_of_a_commit_in_two_copies_reads_alike_spec_commits_5() {
     for order in [[0usize, 1, 2], [1, 0, 2], [0, 2, 1], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
         let mut lp = net2();
         let t = new_shared(&mut lp, 0);
@@ -1512,6 +1512,43 @@ fn copy_of_a_purged_part_beside_an_unjudgeable_one_is_spent_spec_commits_5() {
     let copy = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     assert!(e.spent_copy(&c, &copy).unwrap(), "nothing of it needed");
     assert!(!recoverable(&mut lp.peers[1], b"SECRET-C7d2"));
+}
+
+// spec/commits.md §5 (A waiting part past its expiry: goes at T, counts as never received), §4 (Examined
+// again: the clock reaching its expiry): commit `c` overwrites `t`'s register, pending for its `ts`, its
+// expiry T past that `ts`. Past T, ticked at T or not, the node examines it again: the part went at
+// T, so the register reads its older value, nothing waits and the node reads alike either way.
+#[test]
+fn part_pending_for_its_ts_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
+    let mut lp = net2_one(); // 1 a node of 0's account
+    let t = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("old")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    let ahead = 3 * osis_base::format::MAX_DRIFT_MS;
+    lp.peers[0].clock.advance(ahead);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("SECRET-D4c7")).unwrap();
+    m.expires(t, &REG, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pc = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    assert!(matches!(lp.deliver(1, &pc).unwrap(), osis_engine::Ingested::Pending(_, osis_engine::Reason::Drift)));
+    let mut seen = Vec::new();
+    for tick in [true, false] {
+        let mut p = lp.peers[1].copy().unwrap();
+        p.clock.advance(ahead + 120_000);
+        if tick {
+            p.tick().unwrap();
+        }
+        p.reexamine().unwrap();
+        let e = &mut p.engine;
+        assert!(e.commit_ids().contains(&c) && e.pending().is_empty(), "tick {tick}: {:?}", e.pending());
+        assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("old")), "tick {tick}: never received");
+        seen.push(format!("applied {} pending {:?} flags {:?} reg {:?} digest {:?}", e.commit_ids().contains(&c), e.pending(), e.suspects(), e.get(&t, &ak("t:reg.0")).unwrap(), e.state_digest(&t, &ak("t:reg.0")).unwrap()));
+        assert!(!recoverable(&mut p, b"SECRET-D4c7"), "tick {tick}");
+    }
+    assert_eq!(seen[0], seen[1], "ticked at T or not");
 }
 
 // spec/commits.md §5 (Purge), spec/crdt.md §4.7 (Copies): a compaction snapshot carrying a write's

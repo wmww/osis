@@ -265,3 +265,113 @@ fn writes_outside_the_node_closure_store_nothing_once_not_carried_spec_commits_4
     assert_eq!(s, l, "the same rows at n and 10n");
     assert!(s.1.is_empty(), "nothing left once their carriers go: {:?}", s.1);
 }
+
+/// `base` with W: peer 0's thing (the test retention setting), peer 1 granted read on it but not
+/// holding it, so W stays outside peer 1's node closure; in the same sync pass (its record
+/// judged at the pass end) peer 1 holds W's record and secrets. Then commit `c` by peer 0 writes
+/// W (`t:reg.0` the secret, `t:list.0`) and, if `aside`, X (`t:tags.0`), every part expiring an
+/// hour on if `expiring` (at the time returned): at peer 1 W's parts wait, aside under `c`
+/// applied for its X part, else with `c` pending whole.
+fn waiting_on_w(expiring: bool, aside: bool) -> (LocalPeer, Tid, Tid, CommitId, u64) {
+    let ((mut lp, x), ps) = base_n(2);
+    let e0 = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let w = e0.new_thing(&mut m, ps[0]);
+    m.set(w, &ct::RETENTION, &crate::common::test_setting()).unwrap();
+    e0.commit(m).unwrap();
+    e0.grant(&w, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    for c in lp.peers[0].engine.commit_ids() {
+        give(&mut lp, &c);
+    }
+    lp.peers[0].clock.advance(5);
+    let (tags, reg, list) = (crate::common::ak("t:tags.0"), crate::common::ak("t:reg.0"), crate::common::ak("t:list.0"));
+    let mut m = Mutation::new();
+    m.set(w, &reg, &Value::Str("SECRET-W8a3".into())).unwrap();
+    m.set(w, &list, &Value::List(vec![Value::Str("a".into())])).unwrap();
+    let mut parts = vec![(w, &reg), (w, &list)];
+    if aside {
+        m.set(x, &tags, &Value::Set([Value::Str("x".into())].into_iter().collect())).unwrap();
+        parts.push((x, &tags));
+    }
+    let exp = lp.peers[0].engine.now().0 + 3_600_000;
+    if expiring {
+        // one expiry per commit (spec/commits.md §6)
+        for (t, k) in parts {
+            m.expires(t, k, osis_base::WallMs(exp)).unwrap();
+        }
+    }
+    let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    give(&mut lp, &c);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.closure_holds(&w), "W outside");
+    assert!(e1.core.created(&w).is_some(), "W's record held");
+    assert_eq!(e1.commit_ids().contains(&c), aside, "applied for its X part");
+    assert!(e1.pending().iter().any(|(p, r)| *p == c && *r == osis_engine::Reason::Outside(w)), "W's parts wait: {:?}", e1.pending());
+    (lp, x, w, c, exp)
+}
+
+/// Peer 1 holds W from its account root: W enters its node closure, what it pulls anew given.
+fn enter(lp: &mut LocalPeer, w: Tid) {
+    let d1 = lp.peers[1].engine.account_root().unwrap();
+    let mut m = Mutation::new();
+    strong_m(&mut m, d1, w);
+    lp.peers[1].engine.commit(m).unwrap();
+    assert!(lp.peers[1].engine.closure_holds(&w));
+    pull(lp);
+    pass_end(&mut lp.peers[1].engine);
+}
+
+// spec/commits.md §5 A waiting part under a purge (held value-less from then on, no other local copy
+// of it), §4 Outside the node closure: commit `c`'s parts on W wait aside (`waiting_on_w`) when
+// peer 0's request purging its `t:reg.0` part comes: once W enters the part joins value-less, as its
+// author holds it, nothing waiting or flagged, the value nowhere.
+#[test]
+fn a_part_waiting_aside_is_purged_where_it_waits_spec_commits_5() {
+    let reg = crate::common::ak("t:reg.0");
+    let (mut lp, x, w, c, _) = waiting_on_w(false, true);
+    let mut m = Mutation::new();
+    m.set(x, &reg, &Value::Str("x".into())).unwrap();
+    m.purge_commit(c, w, reg.clone());
+    let p = lp.peers[0].engine.commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&p).unwrap().unwrap();
+    assert_eq!(lp.deliver(1, &pk).unwrap(), osis_engine::Ingested::Applied(p));
+    enter(&mut lp, w);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.pending().is_empty() && e1.suspects().is_empty(), "{:?} {:?}", e1.pending(), e1.suspects());
+    assert_eq!(e1.get(&w, &reg).unwrap(), None, "value-less");
+    assert_eq!(e1.get(&w, &crate::common::ak("t:list.0")).unwrap(), Some(Value::List(vec![Value::Str("a".into())])));
+    let author = lp.peers[0].engine.state_digest(&w, &reg).unwrap();
+    assert_eq!(lp.peers[1].engine.state_digest(&w, &reg).unwrap(), author, "as its author holds it");
+    assert!(!crate::common::recoverable(&mut lp.peers[1], b"SECRET-W8a3"));
+}
+
+// spec/commits.md §5 (A waiting part past its expiry: goes at T, counts as never received, the
+// aspect a part waiting aside went from reported suspect), §4 (Examined again: the thing a part
+// waits on entering the node closure): commit `c`'s parts on W wait (`waiting_on_w`), aside or with
+// `c` pending whole, every part expiring at T. Ticked past T or not, W then enters: the value is
+// nowhere and the node reads alike either way.
+#[test]
+fn a_waiting_part_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
+    let (reg, list) = (crate::common::ak("t:reg.0"), crate::common::ak("t:list.0"));
+    for aside in [true, false] {
+        let (mut base, _, w, c, exp) = waiting_on_w(true, aside);
+        let mut seen = Vec::new();
+        for tick in [true, false] {
+            let mut lp = base.copy().unwrap();
+            let now = lp.peers[1].engine.now().0;
+            lp.peers[1].clock.advance(exp + 5_000 - now);
+            if tick {
+                lp.peers[1].tick().unwrap();
+                let e1 = &lp.peers[1].engine;
+                assert!(!aside || e1.suspects().iter().any(|f| f.0 == w && f.1 == reg), "the part that went flags its aspect: {:?}", e1.suspects());
+            }
+            enter(&mut lp, w);
+            let e1 = &mut lp.peers[1].engine;
+            assert!(e1.commit_ids().contains(&c) && e1.pending().is_empty(), "aside {aside} tick {tick}: {:?}", e1.pending());
+            assert_eq!(e1.get(&w, &reg).unwrap(), None, "aside {aside} tick {tick}");
+            seen.push(format!("flags {:?} reads {:?} digests {:?} {:?}", e1.suspects(), e1.get(&w, &list).unwrap(), e1.state_digest(&w, &reg).unwrap(), e1.state_digest(&w, &list).unwrap()));
+            assert!(!crate::common::recoverable(&mut lp.peers[1], b"SECRET-W8a3"), "aside {aside} tick {tick}");
+        }
+        assert_eq!(seen[0], seen[1], "aside {aside}: ticked at T or not");
+    }
+}
