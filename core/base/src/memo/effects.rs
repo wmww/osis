@@ -167,10 +167,10 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     /// whose settle compares with the value kept (`Checks`).
     pub fn due(&mut self) -> Vec<K> {
         let given = std::mem::take(&mut self.pending);
-        let mut maybe: HashSet<K> = given.clone();
-        // per container written since the marks, the keys written or removed (by hash) and
-        // whether it changed whole
-        let mut wrote: HashMap<usize, (HashSet<u64, Ids>, bool), Ids> = HashMap::default();
+        let mut maybe: HashSet<K> = HashSet::new();
+        // per container a prune moved buckets of since the marks (and nothing moved whole), the
+        // keys written, removed or pruned (by hash)
+        let mut pruned: HashMap<usize, HashSet<u64, Ids>, Ids> = HashMap::default();
         for (p, ix) in self.tables.iter_mut() {
             let changes = lock(&ix.table).read_log(&mut ix.at);
             if changes.is_empty() {
@@ -178,52 +178,66 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
             }
             // any change moves what read it whole
             maybe.extend(ix.whole.iter().cloned());
-            let (keys, all) = wrote.entry(*p).or_default();
             let mut buckets = HashSet::new();
-            for c in changes {
+            for c in &changes {
                 match c {
-                    Logged::Key { h, .. } => {
-                        keys.insert(h);
-                        maybe.extend(ix.keys.get(&h).into_iter().flatten().cloned());
-                    }
+                    Logged::Key { h, .. } => maybe.extend(ix.keys.get(h).into_iter().flatten().cloned()),
                     Logged::Bucket(h) => {
-                        keys.insert(h);
-                        maybe.extend(ix.keys.get(&h).into_iter().flatten().cloned());
-                        buckets.insert(bucket(h));
+                        maybe.extend(ix.keys.get(h).into_iter().flatten().cloned());
+                        buckets.insert(bucket(*h));
                     }
                     Logged::Whole => {}
-                    Logged::All => {
-                        *all = true;
-                        maybe.extend(ix.keys.values().flatten().cloned());
-                    }
+                    Logged::All => maybe.extend(ix.keys.values().flatten().cloned()),
                 }
+            }
+            if buckets.is_empty() {
+                continue;
             }
             for x in buckets.iter().filter_map(|b| ix.buckets.get(b)).flatten() {
                 maybe.extend(ix.keys.get(x).into_iter().flatten().cloned());
             }
+            if !changes.iter().any(|c| matches!(c, Logged::All)) {
+                let named = changes.iter().filter_map(|c| match c {
+                    Logged::Key { h, .. } | Logged::Bucket(h) => Some(*h),
+                    _ => None,
+                });
+                pruned.insert(*p, named.collect());
+            }
         }
-        crate::costs::count("effects: candidates", maybe.len() as u64);
+        maybe.retain(|k| !given.contains(k));
+        crate::costs::count("effects: candidates", (given.len() + maybe.len()) as u64);
         // a logged write of a key read, before the read or by a key sharing its hash, moved
-        // nothing: the stamps say which did. A key read at its bucket's absent stamp and written
+        // nothing: the stamps say which did. A key read at its bucket's absent stamp and named
         // by nothing since moved only with another key's pruned removal (`Table::prune`): its
         // value stands, read again at the bucket's stamp now. Not for a key given before: the
         // write that moved it may be in an earlier `due`'s log
         let bucket_only = |d: &Dep| -> bool {
             let Some(h) = d.key else { return false };
-            let Some((keys, all)) = wrote.get(&(Arc::as_ptr(&d.table) as usize)) else { return false };
-            !*all && !keys.contains(&h) && !lock(&d.table).keys.contains_key(&h)
+            let Some(named) = pruned.get(&(Arc::as_ptr(&d.table) as usize)) else { return false };
+            !named.contains(&h) && !lock(&d.table).keys.contains_key(&h)
         };
         let mut due: Vec<(u64, K)> = Vec::new();
         #[cfg(debug_assertions)]
         let mut check: Vec<(u64, K)> = Vec::new();
-        for k in maybe {
+        for (k, was_given) in given.iter().map(|k| (k.clone(), true)).chain(maybe.into_iter().map(|k| (k, false))) {
             let Some(f) = self.followed.get_mut(&k) else { continue };
-            let moved = f.value.is_none() || f.deps.iter().any(|d| !d.holds() && (given.contains(&k) || !bucket_only(d)));
+            let (mut moved, mut stale) = (f.value.is_none(), false);
+            for d in f.deps.iter() {
+                if moved {
+                    break;
+                }
+                if !d.holds() {
+                    stale = true;
+                    moved = was_given || !bucket_only(d);
+                }
+            }
             if moved {
                 due.push((f.seq, k));
             } else {
-                for d in f.deps.iter_mut() {
-                    d.seen = lock(&d.table).stamp(d.key);
+                if stale {
+                    for d in f.deps.iter_mut() {
+                        d.seen = lock(&d.table).stamp(d.key);
+                    }
                 }
                 #[cfg(debug_assertions)]
                 if super::effect_checks() {
