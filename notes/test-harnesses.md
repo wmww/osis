@@ -169,6 +169,9 @@ Measure by instruction counts (Measuring); totals from `tools/pertest.py top`. T
 - An oracle choosing its subjects by an internal flag (`HeldKeyset::demotes`) breaks across a refactor of that index and cannot run on the code before a fix: choose by a stable fact (which commit wrote the keyset).
 - A differential's exclusion (a predicate excusing a disagreement) is counted over every world it covers, printed beside the failures: applied to failing worlds only, one excused 38% of the paths content worlds unseen.
 - A differential mapping model flags to wire shapes (`finalize` to a missing frontier) never emits a shape its mapping lacks, so a mutant of that shape's rule survives every agreement test: a shape rule needs a test that builds the wire input directly (roles-model `paths/shapes.rs`, osis-perm's).
+- A test whose comment claims a state (a part waits aside, a strip hits a long insert) asserts or tallies it: unasserted, a setup change silently makes it test something else (`pending()` names a wait). The forensic `recoverable` sees nothing of a pending copy outside the node closure: assert the value recoverable before the step that should remove it, or "no copy left" passes vacuously.
+- A count read from a process-wide counter (`memo::writes`) moves with other tests' threads: count per thread; a filter excusing the noise in one test is a carve-out, look for the same excuse elsewhere.
+- Each failure kind of a property panics with its own text: two kinds sharing one ("placement kept") make a known_failures pattern for one hide the other.
 - A `rejects` case asserting only the error class passes on any earlier rejection (a crdt overlap case was refused for its arity before any run decoded): print the error once (`--nocapture`) when writing one.
 
 **Other**

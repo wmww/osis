@@ -15,9 +15,10 @@ plain edit. Several are built once: each OLD, an expression, becomes
 `(if <OSIS_MUTANT is i> { NEW } else { OLD })`, and the built binaries run once per mutation
 with OSIS_MUTANT=i (a build per mutation of a crate low in the tree costs minutes). An OLD or NEW
 that starts with `.` (a method-call suffix) or ends with `;` (a statement) is refused before
-building: include the receiver, drop the `;`, or give it alone. Any other text that is not an
-expression (a pattern) fails to build: its compiler errors are printed, its row says
-"does not build", and the others are built again without it. Files are put back from
+building: include the receiver, drop the `;`, or give it alone. A mutation whose build fails in a
+batch (a pattern, or a value the `if` cannot hold both ways: a closure is its own type, a `const`
+takes no `if`) is built alone after the others are built again without it; one that fails alone
+prints its compiler errors and its row says "does not build". Files are put back from
 their text as read before the edit (never from git, so uncommitted work survives) as soon as the
 build ends, before any test runs; a file changed during the build (someone else edited it) is left
 alone and the path of the original's copy, kept beside it, is printed. The build is a `cargo test`
@@ -201,17 +202,23 @@ def built(muts, group, rest, cargo_args, test_args, texts, mutated, saved, sites
         # the mutations whose substituted lines an error points into
         bad = {group[i] for e in errors for sp in e.get("spans", []) for i, (path, lo, hi) in enumerate(sites)
                if os.path.abspath(sp["file_name"]) == os.path.abspath(path) and sp["line_start"] <= hi and sp["line_end"] >= lo}
-        for i in sorted(bad) or range(len(rows)):
-            print(f"{rows[i]} does not build |")
-        kept = [j for j in range(n) if j not in bad]
-        if bad and kept:
-            # the others built again without the broken ones (one more build, not a lost batch)
-            print(f"mutate: {len(bad)} mutation(s) do not build; building the other {len(kept)} again", file=sys.stderr)
-            args = []
-            for j in kept:
+        if n == 1 or not bad:
+            for row in rows:
+                print(f"{row} does not build |")
+            return 0
+
+        def args(js):
+            a = []
+            for j in js:
                 for k, m in enumerate(m for m, g in zip(muts, group) if g == j):
-                    args += (["+"] if k else []) + list(m)
-            return main(args + ["--", *rest])
+                    a += (["+"] if k else []) + list(m)
+            return a
+        # the others built again without the broken ones (one more build, not a lost batch), then
+        # each broken one alone: a plain edit, which builds where the batch's `if` could not
+        kept = [j for j in range(n) if j not in bad]
+        print(f"mutate: {len(bad)} mutation(s) do not build in the batch; building the other {len(kept)} again, then each alone", file=sys.stderr)
+        for js in ([kept] if kept else []) + [[j] for j in sorted(bad)]:
+            main(args(js) + ["--", *rest])
         return 0
     out_dir = os.environ.get("MUTATE_OUT") or tempfile.mkdtemp(prefix="mutate-")
     os.makedirs(out_dir, exist_ok=True)
