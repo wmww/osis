@@ -77,7 +77,6 @@ pub enum Credential {
     Claim,
     /// A static entry of S's roster.
     Static([u8; 32]),
-    Deposit,
     /// J, judged by roles.
     J,
 }

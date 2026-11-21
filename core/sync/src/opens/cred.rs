@@ -99,6 +99,8 @@ pub enum Shown {
     SyncKey([u8; 32]),
     Claim([u8; 32]),
     Static([u8; 32]),
+    /// Shown so a sealed fire's sender finds a peer that may hold S (spec/sync-inbox.md §3); its
+    /// Hit opens nothing (spec/sync-opens.md §5 Proof).
     Deposit([u8; 32]),
 }
 
@@ -110,15 +112,16 @@ impl Shown {
         }
     }
 
-    pub fn credential(&self) -> Credential {
-        match self {
+    /// What S opens by on a Hit on it; none for a deposit key.
+    pub fn credential(&self) -> Option<Credential> {
+        Some(match self {
             Shown::Read(e, _) => Credential::ReadSecret(*e),
             Shown::Proof(_) => Credential::SyncProof,
             Shown::SyncKey(_) => Credential::SyncKey,
             Shown::Claim(_) => Credential::Claim,
             Shown::Static(e) => Credential::Static(*e),
-            Shown::Deposit(_) => Credential::Deposit,
-        }
+            Shown::Deposit(_) => return None,
+        })
     }
 }
 
@@ -164,11 +167,5 @@ impl Tested {
             Tested::SyncKey { step, .. } | Tested::Static { step, .. } => *step,
             _ => None,
         }
-    }
-
-    /// The answer must carry a tag keyed by a secret (read secret, sync proof); otherwise an open
-    /// signature by the replier's step's sync key.
-    pub fn secret(&self) -> bool {
-        matches!(self, Tested::Read(..) | Tested::Proof(_))
     }
 }

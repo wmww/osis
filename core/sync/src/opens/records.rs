@@ -134,8 +134,7 @@ fn encode_member(m: &Member, basis: Option<&[u8; 32]>) -> Vec<u8> {
             w.push(4);
             w.extend_from_slice(&k);
         }
-        Credential::Deposit => w.push(5),
-        Credential::J => w.push(6),
+        Credential::J => w.push(5),
     }
     match m.until {
         Some(p) => {
@@ -161,8 +160,7 @@ fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
         2 => Credential::SyncProof,
         3 => Credential::Claim,
         4 => Credential::Static(r.a32()?),
-        5 => Credential::Deposit,
-        6 => Credential::J,
+        5 => Credential::J,
         _ => return Err(corrupt()),
     };
     let (until, departed) = match r.u8()? {

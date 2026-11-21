@@ -2293,23 +2293,22 @@ impl Opens {
     /// open signature by the sync key of the step hit; for a static entry, the grant's head sync
     /// key, the grant taken once it verifies.
     fn replier_proved(&mut self, ctx: &mut Ctx, bind: &Bind, s: &SyncId, cred: &Tested, a: &SharedItem, j: J) -> bool {
-        if matches!(j, J::Reader | J::SyncHolder) || cred.secret() {
+        if matches!(j, J::Reader | J::SyncHolder) {
             return true;
         }
-        let Some(sig) = &a.sig else { return false };
         let key = match cred {
+            Tested::Read(..) | Tested::Proof(_) => return true,
             // The replier's step is the step hit: a step older than the one hit proves nothing.
             Tested::SyncKey { key, .. } => key.verifying_key().to_bytes(),
             Tested::Claim { sync, .. } => *sync,
             // the grant's secrets are taken only once `sig` verifies under its head's sync key
             Tested::Static { key, .. } => {
                 let entry = osis_crypto::static_entry(s, &key.verifying_key());
-                let Some(g) = a.grant.as_ref() else { return false };
+                let (Some(sig), Some(g)) = (&a.sig, a.grant.as_ref()) else { return false };
                 return ctx.holds.take_grant(s, &entry, g, &|k| bind.peer_signed(k, s, sig));
             }
-            Tested::Read(..) | Tested::Proof(_) => return true,
         };
-        bind.peer_signed(&key, s, sig)
+        a.sig.as_ref().is_some_and(|sig| bind.peer_signed(&key, s, sig))
     }
 
     /// The peer's Offer (spec/sync-opens.md §5 Opening): this side opens S on a Hit that is one
@@ -2355,13 +2354,15 @@ impl Opens {
         if !adm.shows.contains(&shown) && !walk {
             return refuse;
         }
+        // A deposit key's Hit carries no proof and opens nothing.
+        let Some(by) = shown.credential() else { return refuse };
         let proved = match (&shown, signing) {
             (Shown::Read(..) | Shown::Proof(_), None) => true,
             (Shown::SyncKey(k) | Shown::Claim(k), None) => sig.is_some_and(|g| bind.peer_signed(k, &s, g)),
             (Shown::Static(e), None) => proven_statics(&s, &proven).contains(e),
             (Shown::Static(e), Some(pk)) => osis_crypto::VerifyingKey::from_bytes(&pk).is_ok_and(|k| osis_crypto::static_entry(&s, &k) == *e) && sig.is_some_and(|g| bind.peer_signed(&pk, &s, g)),
-            // A deposit key's Hit carries none and opens nothing.
-            _ => false,
+            // a Static item names a static entry
+            (_, Some(_)) | (Shown::Deposit(_), None) => false,
         };
         if !proved {
             return refuse;
@@ -2387,7 +2388,7 @@ impl Opens {
             Shown::Static(e) => ctx.holds.grant(&s, e),
             _ => None,
         };
-        let m = Member { class, own: adm.own, by: shown.credential(), until: None, departed: false };
+        let m = Member { class, own: adm.own, by, until: None, departed: false };
         if self.open(ctx, conn, s, m, Some(beacon), moved) && walk {
             self.rejudge(ctx, conn, s, moved);
         }
@@ -2406,18 +2407,19 @@ impl Opens {
         let Some(c) = self.conns.get(&conn) else { return SharedItem::code(Code::DECLINED) };
         let proven = c.proven.clone();
         let statics = proven_statics(&s, &proven);
-        let found = hits.iter().filter_map(|h| c.shown.get(h).cloned()).find(|(hs, sh, _)| {
-            *hs == s
-                && adm.shows.contains(sh)
-                && match sh {
+        let found = hits.iter().filter_map(|h| c.shown.get(h).cloned()).find_map(|(hs, sh, b)| {
+            let own = hs == s
+                && adm.shows.contains(&sh)
+                && match &sh {
                     Shown::Read(..) => true,
                     Shown::Static(e) => statics.contains(e),
                     _ => false,
-                }
+                };
+            sh.credential().filter(|_| own).map(|by| (by, b))
         });
         match found {
-            Some((_, sh, b)) => {
-                self.open(ctx, conn, s, Member { class, own: adm.own, by: sh.credential(), until: None, departed: false }, Some(b), moved);
+            Some((by, b)) => {
+                self.open(ctx, conn, s, Member { class, own: adm.own, by, until: None, departed: false }, Some(b), moved);
                 ok
             }
             None => SharedItem::code(Code::DECLINED),
