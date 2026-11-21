@@ -11,11 +11,11 @@ Draft files: notes/a3-spec/permissions.md (§2 one bullet; §4 the removal and l
 - brief 6 (acting after a pass) waits on OPEN 12 (drops after a complete pass, finding 33).
 - brief 7 (the keyset seed) waits on OPEN 8.
 
-## For Tess (all answered)
-None of these is open. The draft below is rewritten at stage D of notes/redesign-plan.md; until then the items stand as they were asked, with their answers:
+## For Tess (answered but 8)
+None of these is open but 8. The draft below is rewritten at stage D of notes/redesign-plan.md; until then the items stand as they were asked, with their answers:
 - 1, 5: within spec/requirements.md as written (a node missing data reads as if it never had it; a removal binds the nodes that receive it). No question.
 - 2, 3, 4, 7: gone with the delivery duty, which is not built: a removal reaches a far thing with that thing's next key rotation and where a node holds both it and a write it judges. The list's form is the coordinator's.
-- 8: a bug: a demotion arriving with a key rotation brings its list. No demotion travels eagerly.
+- 8: open, the coordinator's to bring to Tess at stage D as a modelled proposal, and wider than the item says. Today a removal's list is inside the removal, so it arrives with it; this draft moves the list into per-thing leaves kept under the removed-from thing's sync ID, and without the duty a removal carried down by key rotations two or more grants below arrives with no leaf (the rotating writer syncs the holder above it, not the thing the removal was made on), so the removed party's earlier writes there wait until a node holding the leaf reads that thing. They are set aside, not lost. First candidate, since it deletes work: keep the list in the removal as today (what then is left of this stage?); else the leaf carried with the demotion, or deposited on sight with the removal.
 - 9: a write judged invalid is set aside, never dropped for the verdict, so it is there when the cancelling removal arrives.
 - 6, 10: restated without the duty: a list part sits where writes it judges are held and leaves with them. spec/requirements.md Scale reads "on it, or on what its writers act through".
 - 11: as today.
