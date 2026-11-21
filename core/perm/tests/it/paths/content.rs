@@ -7,7 +7,7 @@
 //! none), content on T1 along [A] or [A2] (a purge author of the signer or the listed thing),
 //! one commit writing an edge on A and A2's on T1 (write, admin or none), addenda against an
 //! earlier lowering, covers carrying earlier content and purges by author.
-//! spec/permissions.md §5.1, §5.2, §6 (the draft replaces them: spec/permissions.md).
+//! spec/permissions.md §5.1, §5.2, §6.
 
 use super::diff;
 use crate::common::{seeded, sharded};

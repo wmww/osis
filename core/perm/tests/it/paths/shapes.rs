@@ -3,7 +3,7 @@
 //! snapshots naming what they should not), and random soups of parts and
 //! deltas. Each must judge without panicking and read the same however its commits
 //! arrive, each update's `Changed` exact.
-//! spec/permissions.md §5.1 (draft: spec/permissions.md §1 Path, §5.1 step 1); the
+//! spec/permissions.md §1 Path, §5.1 step 1; the
 //! update path: notes/perm-paths.md, One definition.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -148,7 +148,7 @@ fn a_frontier_less_removal_of_the_signers_own_grant_is_explicit() {
     assert_eq!(p.status(&WriteId(cid(3), 0)), Some(Status::Dropped));
 }
 
-// spec/permissions.md §5.1 (draft: spec/permissions.md §1 Path, §2): hostile shapes judge without panicking, read alike
+// spec/permissions.md §1 Path, §2: hostile shapes judge without panicking, read alike
 // however they arrive, and reach no role they should not.
 #[test]
 fn hostile_shapes_judge_alike_without_panicking() {
@@ -271,7 +271,7 @@ fn ids(l: &[u64]) -> Frontier {
     Frontier::new(l.iter().map(|&c| cid(c)))
 }
 
-// spec/permissions.md §5.1, §5.2 (draft: spec/permissions.md §5.1, §5.2): hostile
+// spec/permissions.md §5.1, §5.2: hostile
 // addenda and snapshots judge without panicking, read alike however they arrive, and keep
 // nothing they should not.
 #[test]

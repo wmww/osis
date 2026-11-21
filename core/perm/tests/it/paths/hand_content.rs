@@ -3,7 +3,7 @@
 //! and the model at the views the model's test reads (`agree`: statuses, histories, roles, void
 //! trusted writes, every delta's validity, copies, purges, disputes), with the walk's own reason
 //! where the rule is named; then the walk's own worlds for draft sentences no model test reaches.
-//! spec/permissions.md §5.1, §5.2 (draft: spec/permissions.md §5.1, §5.2, §6).
+//! spec/permissions.md §5.1, §5.2, §6.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::{agree, agree_all, cid, verdict, walk};

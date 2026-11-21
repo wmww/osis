@@ -436,7 +436,7 @@ fn reaches(w: &World, q: Id, d: Id, admin: bool, write: bool) -> bool {
             })
 }
 
-/// A store that cannot judge acts on a request that could hold the right (draft spec/commits.md §4
+/// A store that cannot judge acts on a request that could hold the right (spec/commits.md §4
 /// Could hold the right): each edge of its path a record edge or set at `r` or above by some held
 /// edge write, whatever its validity.
 pub fn could_hold(w: &World, held: &Set, q: Id, r: Role) -> bool {

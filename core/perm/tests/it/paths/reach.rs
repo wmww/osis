@@ -4,7 +4,7 @@
 //! the work, never more than the whole walk's) on every differential world kind and on part
 //! soups, from scratch, on arrival in a shuffled order, on forgetting half one commit at a time and
 //! on trust switched on and off, with the dispute set at the end.
-//! spec/permissions.md §5.1, §5.2 (draft: spec/permissions.md §5.1, §5.2).
+//! spec/permissions.md §5.1, §5.2.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::single::{differs, run};

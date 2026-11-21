@@ -298,7 +298,7 @@ pub(super) struct CommitFacts {
     signer: Tid,
     /// Its edge writes' frontiers.
     lists: Vec<(WriteId, Arc<List>)>,
-    /// The edges its edge writes set, each with the role it sets (draft spec/commits.md §4
+    /// The edges its edge writes set, each with the role it sets (spec/commits.md §4
     /// Could hold the right).
     sets: Vec<(Pair, Role)>,
 }
@@ -882,7 +882,7 @@ impl<S: Store> Facts<S> {
     }
 
     /// Whether held request `id` could hold role `r`: each edge of its path a record edge or
-    /// set at `r` or above by some held edge write (draft spec/commits.md §4 Could hold the right).
+    /// set at `r` or above by some held edge write (spec/commits.md §4 Could hold the right).
     pub(super) fn could_give(&self, id: &WriteId, r: Role) -> Option<bool> {
         let q = self.store.get(id).filter(|q| matches!(q.class, FactClass::Purge(_)))?;
         let from = level(r);

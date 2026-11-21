@@ -535,7 +535,7 @@ impl<S: Store> Paths<S> {
         self.facts.right_of(&self.timeline, id, &mut Counts::default())
     }
 
-    /// Whether held request `id` could hold role `r` (draft spec/commits.md §4 Could hold the
+    /// Whether held request `id` could hold role `r` (spec/commits.md §4 Could hold the
     /// right): every edge of its path a record edge or set at `r` or above by some held edge
     /// write, whatever that write's validity. What a node that cannot judge acts on.
     pub fn could_give(&self, id: &WriteId, r: Role) -> Option<bool> {
@@ -543,14 +543,14 @@ impl<S: Store> Paths<S> {
     }
 
     /// Whether held request `id` could hold the right over a delta of `purge_by` whose purge
-    /// author is `author` (draft spec/commits.md §4 Could hold the right): admin on every edge,
+    /// author is `author` (spec/commits.md §4 Could hold the right): admin on every edge,
     /// or write where the class allows a writer (`writer`; `author_or_admin` where its path holds
     /// the author). A destruction: admin.
     pub fn could_hold(&self, id: &WriteId, purge_by: PurgeBy, author: Option<&Tid>) -> Option<bool> {
         self.facts.could_hold(id, purge_by, author)
     }
 
-    /// Whether held edge-class part `id` is chained (draft §4 Chained writes; a self-removal by
+    /// Whether held edge-class part `id` is chained (spec/permissions.md §4 Chained writes; a self-removal by
     /// admin on its path, a finalize by write).
     pub fn is_chained(&self, id: &WriteId) -> Option<bool> {
         self.timeline.is_chained(id)

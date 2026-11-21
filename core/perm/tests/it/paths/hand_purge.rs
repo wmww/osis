@@ -5,8 +5,8 @@
 //! walk's own worlds for draft sentences no model world reaches (selectors and stamps, a
 //! destruction by a writer and of every aspect, the author class through a listed thing, a copy
 //! judged by every snapshot's statement, an own cover by another signer's lowering, could hold).
-//! spec/permissions.md §6, §5.2 (draft: spec/permissions.md §6, §5.2 Own cover);
-//! spec/commits.md §4, §5 (draft: spec/commits.md §4 Could hold the right, §5 Purge).
+//! spec/permissions.md §6, §5.2 Own cover;
+//! spec/commits.md §4 Could hold the right, §5 Purge.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::{agree, as_known, cid, tid, walk};
