@@ -426,11 +426,30 @@ fn a_sync_holder_takes_the_sync_secret_in_any_order_spec_permissions_3() {
 // it holds receiving them in order: every current read epoch as a reader, nothing once removed;
 // O holds none. Packages travel unsealed here, so what a node can read is what it holds
 // secrets for. Fails when a pending read hides a kept-out box from `flows::retake`, without
-// `retake`, or with boxes taken past `may_take`.
+// `retake`, or with boxes taken past `may_take`. The quick size (a property): seeds 0..5.
 #[test]
-fn arrival_order_holds_alike_spec_permissions_3() {
+#[ignore = "property"]
+fn arrival_order_holds_alike_plain_spec_permissions_3() {
+    osis_base::testenv::run_seeds("rotation::tests::arrival_order_holds_alike_plain_spec_permissions_3", &(0..5).collect::<Vec<u64>>(), false, arrival_replay, arrival_order);
+}
+
+/// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_ARRIVAL_START,
+/// OSIS_ARRIVAL_SEEDS.
+#[test]
+#[ignore = "property"]
+fn arrival_order_holds_alike_large_spec_permissions_3() {
+    let s = osis_base::testenv::Seeds::from_env("OSIS_ARRIVAL_START", "OSIS_ARRIVAL_SEEDS", osis_base::testenv::large(0..50));
+    s.run("rotation::tests::arrival_order_holds_alike_large_spec_permissions_3", arrival_replay, arrival_order);
+}
+
+fn arrival_replay(s: u64) -> String {
+    format!("OSIS_ARRIVAL_START={s} OSIS_ARRIVAL_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests::arrival_order_holds_alike_large_spec_permissions_3")
+}
+
+/// One seed of `arrival_order_holds_alike_plain_spec_permissions_3`.
+fn arrival_order(seed: u64) {
     const ORDERS: usize = 4;
-    for seed in 0..5u64 {
+    {
         let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ (seed + 1).wrapping_mul(0x2545_f491_4f6c_dd1d));
         let mut lp = synced(5);
         let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
@@ -1446,17 +1465,23 @@ fn audit_dropped_grant_named_spec_crypto_4() {
 // from G (rotation e1 names that removal); W, an admin of G's mint admin O, grants D read on G
 // again, boxing it at e1; A demotes W on O without that grant, so the audit drops it. The drop
 // is a tail write giving D read that e1 does not name void: A must rotate before encrypting
-// under e1, which D holds.
+// under e1, which D holds. G's tid drawn below O's and above it: the drop is named on O, the
+// removal on G, so either sorts first by thing.
 #[test]
 fn newest_event_names_departure_spec_crypto_4() {
-    for seed in 0..4 {
-        let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
+    for g_below in [false, true] {
+        let mut lp = LocalPeer::new(3, 0, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
         let o = independent_thing(&mut lp, 0);
         lp.peers[0].engine.grant(&o, &tids[1], &edge(Role::Admin)).unwrap();
-        let mut m = Mutation::new();
-        let g = lp.peers[0].engine.new_thing(&mut m, o);
+        let (g, m) = loop {
+            let mut m = Mutation::new();
+            let g = lp.peers[0].engine.new_thing(&mut m, o);
+            if (g < o) == g_below {
+                break (g, m);
+            }
+        };
         lp.peers[0].commit(m).unwrap();
         lp.hold(g);
         lp.peers[0].engine.make_independent(&g).unwrap();
@@ -1467,15 +1492,15 @@ fn newest_event_names_departure_spec_crypto_4() {
         let e1 = newest_read(&lp, 0, g).unwrap();
         lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
         lp.sync(1, 2).unwrap();
-        assert!(lp.peers[2].engine.epochs(&g).is_some_and(|x| x.read.secret(&e1).is_some()), "seed {seed}: D holds e1");
+        assert!(lp.peers[2].engine.epochs(&g).is_some_and(|x| x.read.secret(&e1).is_some()), "G below O {g_below}: D holds e1");
         // ordered after the re-grant, whose author it has not seen: audited, not plain invalid
         lp.peers[0].clock.advance(5_000);
         lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
         lp.sync(1, 0).unwrap();
-        assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "seed {seed}: the re-grant audited away at A");
-        assert_eq!(newest_read(&lp, 0, g), Some(e1), "seed {seed}");
+        assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "G below O {g_below}: the re-grant audited away at A");
+        assert_eq!(newest_read(&lp, 0, g), Some(e1), "G below O {g_below}");
         let _ = lp.peers[0].engine.ensure_rotated(&g).unwrap();
-        assert_ne!(newest_read(&lp, 0, g), Some(e1), "seed {seed}: e1 names only the earlier removal");
+        assert_ne!(newest_read(&lp, 0, g), Some(e1), "G below O {g_below}: e1 names only the earlier removal");
     }
 }
 
@@ -2097,39 +2122,39 @@ fn withdrawn_epoch_content_reaches_its_box_holders_only_spec_crypto_4() {
 // its secret) keeps its boxes in `secrets.0` for good, and they are carried (names aside), so its
 // holders cover and drop them. Invariant: a holder compacts, drops the covered bodies and still reads what
 // was written under e_R; a node granted after and fed by it judges every `secrets.0` part and the
-// current epochs as the compactor does. Randomized over the compactor, which aspects it compacts,
-// the clock, restarts and arrival order.
+// current epochs as the compactor does. Two cases set every choice both ways: the compactor (A or
+// another admin), its `keys.0` compacted too or not, restarts around the drop or none, N fed in
+// order or reversed.
 #[test]
 fn withdrawn_epoch_compacts_judged_alike_spec_crypto_4() {
     let mut dropped = 0;
-    for seed in 0..6u64 {
-        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x2545_f491_4f6c_dd1d);
+    for (case, (c, compact_keys, restarts, reversed)) in [(0, true, false, false), (3, false, true, true)].into_iter().enumerate() {
+        let case = case as u64;
         let (mut lp, g, tids, e_r, entry) = withdrawn_shape();
-        let c = [0, 3][rng.next(2) as usize];
         let (keys, secrets) = (osis_base::Ak::new("keys.0").unwrap(), osis_base::Ak::new("secrets.0").unwrap());
-        lp.advance(1 + rng.next(1000));
-        if rng.next(2) == 0 {
+        lp.advance(1 + 500 * case);
+        if compact_keys {
             lp.peers[c].engine.snapshot(&g, &keys).unwrap().unwrap();
         }
         lp.peers[c].engine.snapshot(&g, &secrets).expect("a withdrawn epoch blocks compaction").unwrap();
-        lp.advance(osis_base::format::ROLE_KEEP_MS + 1 + rng.next(3) * 86_400_000);
-        if rng.next(2) == 0 {
-            lp.peers[c].restart(seed).unwrap();
+        lp.advance(osis_base::format::ROLE_KEEP_MS + 1 + case * 2 * 86_400_000);
+        if restarts {
+            lp.peers[c].restart(case).unwrap();
         }
         dropped += drop_covered(&mut lp, c, g);
-        if rng.next(2) == 0 {
-            lp.peers[c].restart(seed + 100).unwrap();
+        if restarts {
+            lp.peers[c].restart(case + 100).unwrap();
         }
-        assert!(lp.peers[c].engine.epochs(&g).unwrap().read.reading_secret(&e_r).is_some(), "seed {seed}: compactor {c} lost e_R's secret");
+        assert!(lp.peers[c].engine.epochs(&g).unwrap().read.reading_secret(&e_r).is_some(), "case {case}: compactor {c} lost e_R's secret");
         // R's entry under e_R, arriving now, still opens there
         lp.deliver_sealed(c, &entry).unwrap();
-        assert!(reads_key(&mut lp, c, g, "w"), "seed {seed}: compactor {c} reads nothing R wrote under e_R");
+        assert!(reads_key(&mut lp, c, g, "w"), "case {case}: compactor {c} reads nothing R wrote under e_R");
         // N, granted now, gets what c holds, in some order
         lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Read)).unwrap();
         lp.sync(0, c).unwrap();
         let mut pks = lp.packages_to(c, 4).unwrap();
-        for k in (1..pks.len()).rev() {
-            pks.swap(k, rng.next(k as u64 + 1) as usize);
+        if reversed {
+            pks.reverse();
         }
         for _ in 0..2 {
             for pk in &pks {
@@ -2137,13 +2162,13 @@ fn withdrawn_epoch_compacts_judged_alike_spec_crypto_4() {
             }
         }
         let read = |lp: &LocalPeer, p: usize| lp.peers[p].engine.epochs(&g).unwrap().read.clone();
-        assert_eq!(read(&lp, 4).current(), read(&lp, c).current(), "seed {seed}: N and compactor {c} count different current read epochs");
-        assert!(reads_key(&mut lp, 4, g, "after"), "seed {seed}: N reads nothing of what came after");
+        assert_eq!(read(&lp, 4).current(), read(&lp, c).current(), "case {case}: N and compactor {c} count different current read epochs");
+        assert!(reads_key(&mut lp, 4, g, "after"), "case {case}: N reads nothing of what came after");
         // the snapshot vouches for no names: N, granted after, still never gets e_R (R9); what it
         // reads of "w" proves nothing here, as packages carry c's opened commits in the clear
-        assert!(read(&lp, 4).reading_secret(&e_r).is_none(), "seed {seed}: N, granted after, holds e_R's secret");
+        assert!(read(&lp, 4).reading_secret(&e_r).is_none(), "case {case}: N, granted after, holds e_R's secret");
         let differ: Vec<_> = secrets_verdicts(&lp, c, 4, g).into_iter().filter(|(_, a, b)| a != b).collect();
-        assert!(differ.is_empty(), "seed {seed}: compactor {c} and N judge `secrets.0` parts differently: {differ:?}");
+        assert!(differ.is_empty(), "case {case}: compactor {c} and N judge `secrets.0` parts differently: {differ:?}");
     }
     assert!(dropped > 0, "no compactor dropped a covered body");
 }
