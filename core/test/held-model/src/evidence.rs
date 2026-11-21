@@ -630,7 +630,7 @@ impl World {
         }
     }
     /// The chained edge-class commits of `h` (spec/permissions.md §4 Chained writes, read with
-    /// `paths::first_chained`'s authority): in key order, each whose author has, over record
+    /// `paths::first_chained_ever`'s authority): in key order, each whose author has, over record
     /// edges and the edges earlier chained writes set (applied or not, at the highest role and
     /// may-grant role each let its holder grant, `until` disregarded), admin on its target;
     /// may-grant on its target for a may-grant grant (`paths::flag_grant`); admin on its holder for a self-removal; write on its

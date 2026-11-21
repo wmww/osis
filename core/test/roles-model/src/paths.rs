@@ -51,7 +51,9 @@
 //!   ordered after it; else iff such a lowering's list names it, a valid addendum by a writer
 //!   of T against such a lowering ordered between them lists it (least fixpoint), or P is
 //!   re-granted (every edge gives write in the final state, every `until` counted removed) and
-//!   the commit is ordered after the first point P gave write (`Regrant`).
+//!   the commit is ordered after P's first point: per edge, the first held write giving it write
+//!   whose grantor held the right at its key in this reading, applied or dropped (`Regrant`,
+//!   `first_by_right`).
 //! - **Trust sets.** A trusted lowering R of edge h seeds D with the held edge-class commits
 //!   ordered before R whose path holds h, R's list does not name and whose need at h R's value
 //!   does not meet (`Rules::seeds_by_need`); a trusted write the
@@ -219,8 +221,13 @@ pub enum Regrant {
     /// spec/permissions.md §5.2: the first point the settled walk gave the role.
     FirstApplied,
     /// notes/account-membership-design.md §1 (the collateral grantee): the first chained grant
-    /// of each edge (spec/permissions.md §4 Chained writes), dropped or not.
+    /// of each edge giving the role whose grantor held the right at its key in the reading,
+    /// dropped or not (notes/write-path-design.md §1, Judging content, C2: `first_by_right`).
     FirstChained,
+    /// Control `-chain-ever`: from each edge's first chained write (spec/permissions.md §4 Chained
+    /// writes: by every value an earlier chained write set, never removed, `until` disregarded),
+    /// so an idle grant by a party with no right moves a first point back (notes/path-model-findings.md 56).
+    ChainedEver,
 }
 
 /// How a node records its sides (notes/write-path-design.md §1, First received).
@@ -1625,9 +1632,50 @@ fn first_applied(w: &World, p: &Pass, edges: &[Edge]) -> Option<Key> {
     keys.into_iter().find(|k| edges.iter().all(|&e| role_at(w, p, e, (k.0, k.1, k.2 + 1)) >= Role::Write))
 }
 
-/// Per edge, the key of the first chained write giving it `at` or above (spec/permissions.md
-/// §4 Chained writes, along the write's stated path, `until` disregarded).
-fn first_chained(w: &World, held: &Set, at: Role) -> BTreeMap<Edge, Key> {
+/// Per edge, the key of the first held write giving it `at` or above that its grantor made by
+/// right (notes/write-path-design.md §1, Judging content, C2): no self-removal or finalize, every
+/// hop it rests on giving what it needs just before its key in this reading (`p`, each `until`
+/// read at its `ts`): admin (a list write also by O4), or for a write that may apply as a
+/// may-grant grant, may-grant at its role by its path (G1). Applied or dropped alike. Control
+/// `Regrant::ChainedEver`: the first chained write (`first_chained_ever`).
+fn first_by_right(w: &World, rules: &Rules, p: &Pass, held: &Set, at: Role) -> BTreeMap<Edge, Key> {
+    if rules.regrant == Regrant::ChainedEver {
+        return first_chained_ever(w, held, at);
+    }
+    let records = w.record_hops();
+    let mut first: BTreeMap<Edge, Key> = records.iter().map(|&e| (e, (0, 0, 0))).collect();
+    for i in order(w, held) {
+        let (Some(e), Kind::Edge { role, finalize, .. }) = (w.sets(i), &w.commits[i].kind) else { continue };
+        if !w.well(i) || w.leave(i) || *finalize || *role < at || first.contains_key(&e) {
+            continue;
+        }
+        let key = w.key(i);
+        let admin = w.rests(i).iter().all(|&h| role_at(w, p, h, key) == Role::Admin);
+        // a list write by O4, against the keys listed at its key
+        let listing = p.hist.keys().chain(&records).any(|&(k, t)| t == e.1 && is_key(k) && role_at(w, p, (k, t), key) == Role::Admin);
+        let admin = admin && (!w.list_write(i) || list_writes(w, i, listing));
+        let hops = w.hops(i);
+        let flagged = flag_grant(w, i).is_some_and(|r| hops.split_last().is_some_and(|(l, b)| grantable_at(w, p, *l, key) >= r && b.iter().all(|&h| role_at(w, p, h, key) >= r)));
+        if admin || flagged {
+            first.insert(e, key);
+        }
+    }
+    first
+}
+
+/// What edge `e` lets its holder grant just before `pos` in pass `p`, its `until` read at `pos`'s
+/// `ts` (`grantable`).
+fn grantable_at(w: &World, p: &Pass, e: Edge, pos: Key) -> Role {
+    let rec = if w.is_record(e) { Role::Admin } else { Role::None };
+    p.hist.get(&e).and_then(|h| h.iter().rev().find(|(k, _)| *k < pos)).map_or(rec, |&(k, v)| {
+        let flag = matches!(w.commits[k.2].kind, Kind::Edge { may_grant: true, .. });
+        grantable(alive(v, pos.0), flag)
+    })
+}
+
+/// Control `-chain-ever`: per edge, the key of the first chained write giving it `at` or above
+/// (spec/permissions.md §4 Chained writes, along the write's stated path, `until` disregarded).
+fn first_chained_ever(w: &World, held: &Set, at: Role) -> BTreeMap<Edge, Key> {
     let records = w.record_hops();
     let mut max: BTreeMap<Edge, Role> = records.iter().map(|&e| (e, Role::Admin)).collect();
     let mut grants: BTreeMap<Edge, Role> = records.iter().map(|&e| (e, Role::Admin)).collect();
@@ -1682,7 +1730,7 @@ fn known(w: &World, rules: &Rules, v: &View) -> Set {
 
 /// Valid content-class commits, and the addenda among them that vouch.
 fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
-    let chained = first_chained(w, &v.held, Role::Write);
+    let chained = first_by_right(w, rules, p, &v.held, Role::Write);
     let fin = finals(p);
     let vouches = |a: Id| rest_of(w, rules, a).iter().all(|&e| role_at(w, p, e, w.pos(a)) >= Role::Write);
     let mut valid = Set::new();
@@ -1732,7 +1780,7 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
                 || (hops.iter().all(|e| fin.get(e).is_some_and(|r| *r >= Role::Write)) && {
                     let from = match rules.regrant {
                         Regrant::FirstApplied => first_applied(w, p, &hops),
-                        Regrant::FirstChained => hops.iter().map(|e| chained.get(e).copied()).collect::<Option<Vec<Key>>>().and_then(|k| k.into_iter().max()),
+                        Regrant::FirstChained | Regrant::ChainedEver => hops.iter().map(|e| chained.get(e).copied()).collect::<Option<Vec<Key>>>().and_then(|k| k.into_iter().max()),
                     };
                     from.is_some_and(|k| k == (0, 0, 0) || pos > k)
                 });
@@ -1837,7 +1885,7 @@ fn holds(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, q: Id, r: Ro
     stands(w, rules, p, &hops, pos, w.commits[q].ts, r, &cuts, &answers)
         || {
             let fin = finals(p);
-            let chained = first_chained(w, &v.held, r);
+            let chained = first_by_right(w, rules, p, &v.held, r);
             hops.iter().all(|e| fin.get(e).is_some_and(|x| *x >= r))
                 && hops.iter().map(|e| chained.get(e).copied()).collect::<Option<Vec<Key>>>().and_then(|k| k.into_iter().max()).is_some_and(|k| k == (0, 0, 0) || pos > k)
         }

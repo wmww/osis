@@ -175,13 +175,13 @@ fn repro_a_collateral_grantees_writes_count_after_its_re_grant() {
 }
 
 #[test]
-fn a_collateral_grantees_writes_count_from_its_first_chained_grant() {
+fn a_collateral_grantees_writes_count_from_its_first_grant_by_right() {
     let (w, week, r, after) = collateral();
     let rd = with(&w, &[r], |x| x.regrant = Regrant::FirstChained);
     assert!(rd.valid.contains(&week) && rd.valid.contains(&after));
 }
 
-/// The fix's cost: a grant the thief backdates is chained, so a holder granted later may
+/// The fix's cost: a grant the thief backdates is made by right (C2), so a holder granted later may
 /// stamp content back to it.
 #[test]
 fn a_backdated_grant_moves_a_current_holders_first_point_back() {
@@ -889,15 +889,16 @@ fn small_family_holds_large() {
     assert_holds(&st, "family");
 }
 
-/// What the story's `idle gains` gate must not count as a gain (`void_checks`, `by_right`): A2
+/// A dead grant moves no first point back (notes/write-path-design.md §1, Judging content, C2): A2
 /// administers T1 and X writes A2, a path H's removal of X from A does not touch. After the
 /// removal X grants Z write through [A2] at 7 by may-grant, by right, and Z writes T1 at 7, before its
 /// grant in key order. X's grant of write to Z through [A], stamped at the removal's `ts` and
-/// ordered after it, applies nowhere; held, it is the edge's first chained grant, so Z's write
-/// counts from 6 (finding 9: no new right, an earlier `ts`). Z holds write with or without the
-/// dead grant: its write showing is no gain by a key that never held the right.
+/// ordered after it, applies nowhere and is made with no right in this reading, so Z's write
+/// counts from its grant through [A2] with or without the dead grant: it shows in neither. Read
+/// by chained writes (control `-chain-ever`), the dead grant is the edge's first, and Z's write
+/// shows by it alone.
 #[test]
-fn a_dead_grant_moves_an_invited_keys_first_point_back() {
+fn a_dead_grant_moves_no_invited_keys_first_point_back() {
     let (mut w, ..) = paired();
     w.edge(K, 1, &[], A2, X, Write, &[]);
     w.edge(H, 1, &[A], T1, A2, Admin, &[]);
@@ -909,11 +910,12 @@ fn a_dead_grant_moves_an_invited_keys_first_point_back() {
     let x = Rules::fixed();
     let v = View::all(&w).trusting(&[r]);
     let rd = judge(&w, &x, &v);
-    assert!(!rd.applied.contains(&dead) && rd.by_flag.contains(&inv) && rd.role(Z, T1) == Write && rd.valid.contains(&c), "{rd:?}");
-    let rd = judge(&w, &x, &v.without(&[dead]));
+    assert!(!rd.applied.contains(&dead) && rd.by_flag.contains(&inv) && rd.role(Z, T1) == Write && !rd.valid.contains(&c), "{rd:?}");
+    let rd = judge(&w, &x, &v.clone().without(&[dead]));
     assert!(rd.by_flag.contains(&inv) && rd.role(Z, T1) == Write && !rd.valid.contains(&c), "{rd:?}");
+    let ever = Rules { regrant: Regrant::ChainedEver, ..Rules::fixed() };
+    assert!(judge(&w, &ever, &v).valid.contains(&c));
 }
-
 
 // ---- Each lowering judged once (notes/write-path-design.md §1; findings 16, 17) ----
 
@@ -3713,24 +3715,75 @@ fn a_key_removal_dropping_its_own_keys_add_is_void() {
     assert!(rd.applied.contains(&r) && !rd.listed(RK, A) && rd.listed(TK, A), "{rd:?}");
 }
 
-/// Finding 56: re-grant counts a path from each edge's first chained grant, `until` disregarded,
-/// so a grant by a party whose own grant had ended (no right at its key, applying nowhere) moves a
-/// re-granted holder's first point back: H gives B admin until 3; B gives N6 admin until 8 at 6;
-/// H gives B admin at 7; B gives N6 admin at 10; N6 writes at 9. With B's idle grant held N6's
-/// content shows by re-grant; without it, not: an idle write of a party that held its right in no
-/// reading changes what users see, unshown (`tiny_keys` worlds, gate `illegit gains N`; the
-/// story's `by_right` sets the same class aside, finding 9).
+/// Finding 56: a write counts toward a first point only where its grantor held the right at its key
+/// in the reading (notes/write-path-design.md §1, Judging content, C2), so a grant by a party whose own grant had ended moves no re-granted
+/// holder's first point back: H gives B admin until 3; B gives N6 admin until 8 at 6 (no right,
+/// applying nowhere); H gives B admin at 7; B gives N6 admin at 10; N6 writes at 9 (also with B's
+/// grant ending at 6, the idle grant's own `ts`). N6's content
+/// shows neither with B's idle grant held nor without it. Chaining by every value, `until`
+/// disregarded (control `-chain-ever`), the idle grant is chained and N6's write shows by re-grant:
+/// an idle write of a party that held its right in no reading changes what users see, unshown.
 #[test]
-#[ignore = "notes/path-model-findings.md 56: an idle grant with no right moves a re-granted holder's first point back"]
-fn repro_an_idle_grant_with_no_right_moves_no_first_point_back() {
-    let mut w = account();
-    w.push(H, 1, &[], A, Kind::set(B, Admin).until(3));
-    let idle = w.push(B, 6, &[], A, Kind::set(N6, Admin).until(8));
-    w.push(H, 7, &[], A, Kind::set(B, Admin));
-    w.push(B, 10, &[], A, Kind::set(N6, Admin));
-    let c = w.content(N6, 9, &[], A);
-    let rd = fixed(&w, &[]);
-    assert!(!rd.applied.contains(&idle));
-    let without = judge(&w, &Rules::fixed(), &View::all(&w).without(&[idle]));
-    assert_eq!(rd.valid.contains(&c), without.valid.contains(&c), "{rd:?}");
+fn an_idle_grant_with_no_right_moves_no_first_point_back() {
+    // B's grant ending at 3, and ending at 6, the idle grant's own `ts` (ended there, as in the walk)
+    for end in [3, 6] {
+        let mut w = account();
+        w.push(H, 1, &[], A, Kind::set(B, Admin).until(end));
+        let idle = w.push(B, 6, &[], A, Kind::set(N6, Admin).until(8));
+        w.push(H, 7, &[], A, Kind::set(B, Admin));
+        w.push(B, 10, &[], A, Kind::set(N6, Admin));
+        let c = w.content(N6, 9, &[], A);
+        let rd = fixed(&w, &[]);
+        assert!(!rd.applied.contains(&idle), "{end}");
+        let without = judge(&w, &Rules::fixed(), &View::all(&w).without(&[idle]));
+        assert!(!rd.valid.contains(&c) && !without.valid.contains(&c), "{end}: {rd:?}");
+        assert!(fixed_but(&w, &[], |r| r.regrant = Regrant::ChainedEver).valid.contains(&c), "{end}");
+    }
 }
+
+/// As above where the grantor's right was taken by a lowering applying in the reading (C2 reads the
+/// walk, not the chained writes, which nothing removes): H gives B admin at 1 and removes it at 2;
+/// B gives N6 admin at 3; H gives N6 admin at 6; N6 writes at 4. And a key that removed itself:
+/// H adds RK to A at 1, RK (as A) removes itself at 1; RK, as A, gives N5 admin at 2; H gives N5
+/// admin at 5; N5 writes at 3. Neither content shows; chaining by every value (`-chain-ever`), both do.
+#[test]
+fn an_idle_grant_after_its_grantors_removal_moves_no_first_point_back() {
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(B, Admin));
+    w.push(H, 2, &[], A, Kind::set(B, Gone));
+    w.push(B, 3, &[], A, Kind::set(N6, Admin));
+    w.push(H, 6, &[], A, Kind::set(N6, Admin));
+    let c = w.content(N6, 4, &[], A);
+    let mut k = account();
+    k.push(H, 1, &[], A, Kind::set(RK, Admin));
+    k.push_signed(RK, A, 1, &[], A, Kind::set(RK, Gone));
+    k.push_signed(RK, A, 2, &[], A, Kind::set(N5, Admin));
+    k.push(H, 5, &[], A, Kind::set(N5, Admin));
+    let ck = k.content(N5, 3, &[], A);
+    for (w, c) in [(&w, c), (&k, ck)] {
+        assert!(!fixed(w, &[]).valid.contains(&c), "{:?}", fixed(w, &[]));
+        assert!(fixed_but(w, &[], |r| r.regrant = Regrant::ChainedEver).valid.contains(&c));
+    }
+}
+
+/// As above for a may-grant grant (C2 by G1): a grant whose path gave may-grant only by a value
+/// ended at its key counts for nothing, the flag on its last hop (B holding write with the flag on A
+/// until 3, granting on A) or the role on a hop before it (B holding write on A until 3, granting
+/// on T1 through [A], whose record edge gives admin).
+#[test]
+fn an_idle_may_grant_grant_with_no_right_moves_no_first_point_back() {
+    for two in [false, true] {
+        let mut w = account();
+        let (path, on): (&[Thing], Thing) = if two { (&[A], T1) } else { (&[], A) };
+        let g = if two { Kind::set(B, Write) } else { Kind::set(B, Write).may_grant() };
+        w.push(H, 1, &[], A, g.clone().until(3));
+        let idle = w.push(B, 6, path, on, Kind::set(N6, Write).until(8));
+        w.push(H, 7, &[], A, g);
+        let grant = w.push(B, 10, path, on, Kind::set(N6, Write));
+        let c = w.content(N6, 9, &[], on);
+        let rd = fixed(&w, &[]);
+        assert!(!rd.applied.contains(&idle) && rd.by_flag.contains(&grant) && !rd.valid.contains(&c), "{two}: {rd:?}");
+        assert!(fixed_but(&w, &[], |r| r.regrant = Regrant::ChainedEver).valid.contains(&c), "{two}");
+    }
+}
+
