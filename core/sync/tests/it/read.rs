@@ -131,6 +131,8 @@ struct Fake {
     /// Entries dropped with no tombstone (`Ground::unlog`).
     unlogged: Vec<(SyncId, BlobId)>,
     bodies: Stamped<CommitId, Arc<BTreeMap<SyncId, BodyMeta>>>,
+    /// Something else `Ground::bodies` reads, written without changing what it gives.
+    bodies_read: Stamped<CommitId, u64>,
     facts: Stamped<(SyncId, CommitId), Facts>,
     marks: Stamped<(SyncId, CommitId), u64>,
     creds: Stamped<SyncId, Arc<ReadCredentials>>,
@@ -335,6 +337,7 @@ impl Ground for Fake {
         Ok(std::mem::take(&mut self.entries_feed))
     }
     fn bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
+        let _ = self.bodies_read.get(c);
         Ok(self.bodies.get(c).cloned().unwrap_or_default())
     }
     fn facts(&mut self, s: &SyncId, c: &CommitId) -> Result<Facts> {
@@ -2540,6 +2543,32 @@ fn an_unjudgeable_entry_is_kept_then_judged_spec_sync_judgement_1() {
     assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Must));
     assert!(w.g.unlogged.is_empty(), "never dropped");
     assert_eq!(w.g.own(&S, &c).unwrap().len(), 1);
+}
+
+// spec/sync-judgement.md §3 (Own store: another's body is logged once a complete pass of S begun
+// after what decides it last moved did): before S's first sync here ends, a peer's must-hold body
+// waits for a pass begun after its bodies last moved; its bodies read again unchanged move
+// nothing, so a pass begun before that read still ends the wait. Fails with every read of the
+// bodies counted as a move: a node cut off from S's other holders, whose wait ends only at
+// `PASS_WAIT_MS`, then waits a pass more each time its bodies are read again.
+#[test]
+fn a_body_read_again_unchanged_holds_back_no_log_spec_sync_judgement_3() {
+    let mut w = W::new();
+    w.g.first_syncing.insert(S, ());
+    w.g.done.insert(S, 0);
+    let c = cid(43);
+    let mut f = uncovered();
+    f.own = false;
+    w.g.place = 5;
+    w.hold(c, &[S], f);
+    assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Must));
+    assert_eq!(w.logs(S, c), 0, "held back until a pass begun after place 5");
+    // the bodies read again, the same: something they read was written
+    w.g.place = 7;
+    w.g.bodies_read.insert(c, 1);
+    w.settle();
+    w.pass(6);
+    assert_eq!(w.logs(S, c), 1, "a pass begun after the bodies last moved ends the wait");
 }
 
 // spec/sync-judgement.md §2, §3 (Own store): judged outside S wrongly (its bodies' inputs had

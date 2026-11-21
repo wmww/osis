@@ -230,9 +230,10 @@ impl Read {
             }
         }
         for c in self.bodies.due() {
-            // what it read moved: a judgement outside S waits a pass begun after now
-            self.moved.insert(c, place);
             let Some((_, now)) = self.bodies.try_settle(&c, || g.bodies(&c))? else { continue };
+            // what it read moved: a judgement outside S waits a pass begun after now (a body read
+            // again unchanged moves nothing)
+            self.moved.insert(c, place);
             let was = self.settled.insert(c, now.clone()).unwrap_or_default();
             for s in was.keys().filter(|s| !now.contains_key(*s)) {
                 self.metas.remove(&(*s, c));

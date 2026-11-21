@@ -1,5 +1,5 @@
 # Sync differential fails at the gate's size on some seeds
-> Summary: `differential::histories_hold_their_closure_plain` at small size fails 3 of 60 seeds on main (c8822df81), with four panics: a node keeps store entries under a sync ID it does not hold (shrunk script, 50 of 50 worlds), a node reads a thing the model holds unread (the seed whose shrink reached the first), a caught-up reader lacks a must-hold body at quiet under duplicated messages (shrunk script, 0 of 50 other worlds), and a node lacks store entries for must-hold bodies at quiet (unshrunk). None is one of issues/differential-full-size-classes.md's classes as written.
+> Summary: `differential::histories_hold_their_closure_plain` at small size fails 3 of 60 seeds on main (c8822df81), with three panics: a node keeps store entries under a sync ID it does not hold (shrunk script, 50 of 50 worlds), a node reads a thing the model holds unread (the seed whose shrink reached the first), a caught-up reader lacks a must-hold body at quiet under duplicated messages (shrunk script, 0 of 50 other worlds). None is one of issues/differential-full-size-classes.md's classes as written.
 > Priority: normal
 > Tags: sync, engine, tests
 
@@ -15,5 +15,3 @@
 ## A must-hold body missing under duplicates
 - Shrunk script (6 steps; shrink budget spent): `New(1), Give(1, 0, Holder::Node(0), Reads), Run, Strong(0, None, 0), Lossy(Loss { drop: 0, dup: 25, delay: 0, delay_ms: 312 }), Run`. Panic: `must-hold bodies a caught-up reader lacks at quiet (holder, reader, S, commit)`. Fails on seed 318840271993's world only: 0 of 50 other worlds, so the duplicate timing matters; widen the replay or shrink with a larger budget before reading it.
 
-## Must-hold bodies with no entry
-- Seed 914688535823 (15 steps, not shrunk): `New(0), Run, Give(2, 0, Holder::Node(1), Reads), Strong(1, None, 0), Write(0, 0), Strong(1, None, 0), Partition(1, 2), Give(2, 0, Holder::Node(1), Reads), Skew(1, -90000), Lower(0, 0, Holder::Node(1), Syncs), Give(2, 0, Holder::Node(1), Reads), Partition(2, 0), Give(0, 0, Holder::Node(1), Writes), New(1), Run`. Panic: `must-hold bodies with no entry at quiet (node, S, commit)`: node 2 lacks six entries under one sync ID.

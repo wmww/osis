@@ -964,7 +964,9 @@ fn closure_clauses(w: &mut World, r: &mut Peer, m: &Model) {
                     && want.is_none()
                 {
                     let n = w.store(i).entries(s).expect("entries").len();
-                    assert_eq!(n, 0, "node {i} keeps {n} store entries under thing {k}'s sync ID, which it does not hold");
+                    if n != 0 {
+                        panic!("node {i} keeps {n} store entries under thing {k}'s sync ID, which it does not hold\n{}", why_role(w, i, t));
+                    }
                 }
             }
         }
