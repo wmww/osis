@@ -294,6 +294,8 @@ impl Engine {
                     }
                     let due = crate::rotation::explain_due(tx, &a)?;
                     let _ = write!(out, "\n  lost access ({}): {due}", label(tx.core, &a));
+                    let cl = &tx.core.ix.closure;
+                    let _ = write!(out, "\n  node closure: contexts {:?}, left {:?}, reads {}, content held {}", cl.contexts(&t), cl.left().get(&t), cl.reads(&t), crate::retention::needed::holds_content(tx.core, &t));
                     Ok(out)
                 })
             })

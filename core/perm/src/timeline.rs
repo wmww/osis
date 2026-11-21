@@ -858,10 +858,11 @@ impl Timeline {
         e
     }
 
-    /// `node`'s effective role on `thing` at `ts` over `edges_unfinalized`.
-    pub fn role_unfinalized(&self, node: &Tid, thing: &Tid, ts: Ts) -> Option<Role> {
+    /// `node`'s effective role on `thing` at `ts` over `edges_unfinalized`, the edges in `skip`
+    /// (each named (target, holder)) left out.
+    pub fn role_unfinalized(&self, node: &Tid, thing: &Tid, ts: Ts, skip: &BTreeSet<(Tid, Tid)>) -> Option<Role> {
         let edges = self.edges_unfinalized();
-        View::at(&edges, Some(ts)).roles_from(node).get(thing).copied()
+        View::at(&edges, Some(ts)).roles_to_expiring(thing, skip).0.get(node).copied()
     }
 
     /// Whether edge (`holder`, `target`) was lowered by a write that audits nothing (a

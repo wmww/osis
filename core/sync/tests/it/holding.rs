@@ -1397,3 +1397,28 @@ fn a_grant_never_accepted_reads_nothing_through_certificates_spec_sync_set_2() {
     w.run();
     assert_eq!(value(&mut w, 1, &t2), None, "T1 never accepted: no read of T2 through it");
 }
+
+// spec/permissions.md §3 (Lost access; Retain), notes/node-closure.md Roles taken up: Bob grants
+// Alice read on T1, which she holds, then drops; his sibling mints T2 under its T0 and he grants
+// T1 read on T2, which Alice holds from her root. A grant no longer taken up is a lost one: Alice
+// drops T1's secrets, keeps no copy by her own grant on it, and reads T2 neither through T1 nor
+// at all.
+#[test]
+fn a_grant_no_longer_taken_up_reads_nothing_below_it_spec_permissions_3() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 2, None, "t0");
+    let t1 = make(&mut w, 1, None, "t1");
+    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t1, true);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
+    let t2 = make_in(&mut w, 1, t0, "t2");
+    strong(&mut w, 0, None, t1, false);
+    w.write(1, |e| e.grant(&t2, &t1, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t2, true);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), None, "Alice reads T1 no more");
+    assert_eq!(value(&mut w, 0, &t2), None, "Alice reads T2: {}", w.why_role(0, &t2));
+    assert!(w.engine(0).read_secrets(&t1).is_empty(), "Alice holds T1's secrets: {}", w.why_role(0, &t1));
+}
