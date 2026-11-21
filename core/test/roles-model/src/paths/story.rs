@@ -924,13 +924,8 @@ impl Sim {
         self.view_choosing(n, None, rules, false)
     }
     fn view_choosing(&self, n: Thing, t: Option<u32>, rules: &Rules, chosen: bool) -> View {
-        let held = self.held_at(n, t);
+        let (held, trust) = if self.untrusting().contains(&n) { (self.held_at(n, t), Set::new()) } else { self.stood(n, t, rules) };
         let leaves = self.leaves(n, &held, rules);
-        let trust = if self.untrusting().contains(&n) {
-            Set::new()
-        } else {
-            self.sides(n, t, rules)
-        };
         let mut v = View { held, leaves: Some(leaves), trust };
         let before = t.is_some_and(|t| t < AFTER);
         if self.setup.b_side_x && n == B {
@@ -963,6 +958,10 @@ impl Sim {
     /// first held in one update, or the write first, record nothing. A side stays (F4). Controls:
     /// `Sides`.
     pub fn sides(&self, n: Thing, t: Option<u32>, rules: &Rules) -> Set {
+        self.stood(n, t, rules).1
+    }
+    /// What `n` holds by `t` (`held_at`, worked out tick by tick on the way) and its `sides`.
+    fn stood(&self, n: Thing, t: Option<u32>, rules: &Rules) -> (Set, Set) {
         let last = self.recv.iter().filter_map(|r| r.get(&n).copied()).max().unwrap_or(0).max(self.made.iter().copied().max().unwrap_or(0));
         let end = t.unwrap_or(last).min(last);
         let w = &self.w;
@@ -993,15 +992,7 @@ impl Sim {
                 let tie = rules.sides == Sides::Tie;
                 let pool = if tie { &now } else { &before };
                 // each lowering's seeds over this update's held set, computed once
-                let memo: std::cell::RefCell<BTreeMap<Id, Set>> = Default::default();
-                let seeds_of = |x: Id| -> Set {
-                    if let Some(s) = memo.borrow().get(&x) {
-                        return s.clone();
-                    }
-                    let s: Set = seeds(w, rules, &v_now, &Set::from([x])).into_keys().collect();
-                    memo.borrow_mut().insert(x, s.clone());
-                    s
-                };
+                let seeds_of = seeds_once(w, rules, &v_now);
                 let cands: Vec<(Id, Vec<Id>)> = pool
                     .iter()
                     .copied()
@@ -1048,7 +1039,7 @@ impl Sim {
             }
             before = now;
         }
-        trust
+        (before, trust)
     }
     pub fn view(&self, n: Thing, rules: &Rules) -> View {
         self.view_at(n, None, rules)
@@ -1084,13 +1075,13 @@ impl Sim {
         let last = self.recv.iter().filter_map(|r| r.get(&n).copied()).max().unwrap_or(0).max(self.made.iter().copied().max().unwrap_or(0));
         let mut out = BTreeMap::new();
         // (`sides` keeps what the node held after each tick)
-        self.sides(n, None, rules);
+        let (all, _) = self.stood(n, None, rules);
         for (u, (held, _)) in self.sided.borrow()[&n].iter().enumerate() {
             for &i in held {
                 out.entry(i).or_insert(u as u32);
             }
         }
-        for i in self.held_at(n, None) {
+        for i in all {
             out.entry(i).or_insert(last + 1);
         }
         out
@@ -1111,8 +1102,9 @@ impl Sim {
         }
         // what contests `r` there: the writes it leaves out, and the lowerings leaving it out
         let w = &self.w;
-        let mut contest: Set = seeds(w, rules, v, &Set::from([r])).into_keys().collect();
-        contest.extend(v.held.iter().copied().filter(|&l| candidate(w, rules, l) && !self.wrote(n, l) && against(w, rules, v, r, l)));
+        let seeds_of = seeds_once(w, rules, v);
+        let mut contest: Set = seeds_of(r);
+        contest.extend(v.held.iter().copied().filter(|&l| candidate(w, rules, l) && !self.wrote(n, l) && against_by(w, rules, r, l, &seeds_of)));
         let counts = |j: Id| !thiefs || self.thief.contains_key(&j) || self.hostile(j) || Some(j) == self.xfirst || Some(j) == self.rx;
         contest.iter().all(|&j| arrivals[&j] > arrivals[&r] || !counts(j))
     }
@@ -1383,16 +1375,17 @@ pub fn one_reading_relabelled(w: &World, rules: &Rules, v: &View, rd: &Reading) 
 /// roles over time, what each may grant, valid and purged content), and whether it applies the same
 /// edge-class commits (counted, not a property: finding 33).
 pub fn no_effect(w: &World, rules: &Rules, v: &View, rd: &Reading, x: Id) -> (bool, bool) {
-    let (seen, same, _) = no_effect_of(w, rules, v, rd, &[x]);
+    let (seen, same, _) = no_effect_of(w, rules, v, rd, &rd.observed(w), &[x]);
     (seen, same)
 }
 
 /// As `no_effect`, the writes `xs` (one commit's parts) taken out together, and whether what each
-/// holder can do (roles over time, what it may grant, cuts) is the same, content aside.
-pub fn no_effect_of(w: &World, rules: &Rules, v: &View, rd: &Reading, xs: &[Id]) -> (bool, bool, bool) {
+/// holder can do (roles over time, what it may grant, cuts) is the same, content aside. `seen`
+/// is `rd.observed(w)`.
+pub fn no_effect_of(w: &World, rules: &Rules, v: &View, rd: &Reading, seen: &Observed, xs: &[Id]) -> (bool, bool, bool) {
     let o = judge(w, rules, &v.clone().without(xs));
     let less = |s: &Set| s.iter().copied().filter(|i| !xs.contains(i)).collect::<Set>();
-    let (mut a, b) = (rd.observed(w), o.observed(w));
+    let (mut a, b) = (seen.clone(), o.observed(w));
     for s in [&mut a.valid, &mut a.copied, &mut a.purged] {
         *s = less(s);
     }
@@ -1432,10 +1425,11 @@ pub struct Effect {
 
 pub fn effects(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Vec<Effect> {
     let mut shown: Option<bool> = None;
+    let observed = rd.observed(w);
     idle(w, v, rd)
         .into_iter()
         .map(|parts| {
-            let (seen, same, roles_same) = no_effect_of(w, rules, v, rd, &parts);
+            let (seen, same, roles_same) = no_effect_of(w, rules, v, rd, &observed, &parts);
             let shown = !seen && *shown.get_or_insert_with(|| !disputes(w, rules, v).is_empty());
             let kind = if parts.iter().any(|i| rd.voided.contains(i)) {
                 "void"
@@ -1604,6 +1598,10 @@ fn void_checks(w: &World, rules: &Rules, v: &View, rd: &Reading, n: Thing, t: bo
 /// counter-removal told (`disputes`, `countered`), and choosing those shown reads as choosing
 /// them all. Content only a witness keeps is wanted wherever a witness received it.
 pub fn check(m: &Sim, rules: &Rules, st: &mut Stats) {
+    judging_once(&m.w, || check_world(m, rules, st))
+}
+
+fn check_world(m: &Sim, rules: &Rules, st: &mut Stats) {
     st.worlds += 1;
     let (w, s) = (&m.w, &m.setup);
     let nodes = m.honest();

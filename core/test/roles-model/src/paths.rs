@@ -86,7 +86,8 @@
 //! standing dispute.
 
 use crate::{Rng, Role};
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub type Thing = u8;
 pub type Id = usize;
@@ -216,7 +217,7 @@ pub struct Commit {
 }
 
 /// Where a re-granted path's writes count from.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Regrant {
     /// spec/permissions.md §5.2: the first point the settled walk gave the role.
     FirstApplied,
@@ -231,7 +232,7 @@ pub enum Regrant {
 }
 
 /// How a node records its sides (notes/write-path-design.md §1, First received).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Sides {
     /// The rule: its own lowerings, each a choice (F1, F4); a lowering its walk applied before a
     /// write that lowering leaves out arrived, where it has no side in that fight yet (F2);
@@ -267,7 +268,7 @@ pub enum Sides {
     ToldAll,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Rules {
     pub regrant: Regrant,
     /// Control (notes/write-path-design.md §1, Rejected): a lowering never puts in question the
@@ -405,7 +406,7 @@ pub struct Rules {
 
 /// What a cut's list, or a valid addendum against the cut, keeps of a delta it names
 /// (spec/permissions.md §5.2 Content).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Answers {
     /// The rule (`fixed`): it answers that cut alone, as a lowering's list exempts from its own
     /// drops alone (§5.1): the delta is valid as if the cuts answering it had not cut it. Per edge
@@ -420,7 +421,7 @@ pub enum Answers {
 }
 
 /// What a drop (a lowering's audit, a trusted write's seeds) takes of a commit (Open 23).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Drops {
     /// The rule (`fixed`): a commit's edge-class parts on one thing fall together. A part another
     /// part of its commit on the same thing would be dropped beside (put in question and not
@@ -446,7 +447,7 @@ pub enum Drops {
 /// An **end**: a write giving an edge that gives admin at its `ts` a value giving admin until an
 /// earlier end (an `until` after its `ts`; the edge standing, or ending later). How it is judged
 /// (notes/path-model-findings.md 38).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Until {
     /// The rule: a grant, no lowering. It applies in a pass only where its path gives admin there.
     Plain,
@@ -465,7 +466,7 @@ pub enum Until {
 
 /// The dispute candidates (`disputes`): held edge writes of another holder's edge giving it below
 /// admin at their `ts`, but finalizes, and of those:
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Candidates {
     /// Every one: self-removals (a holder thing's leave by its member) and may-grant grants included.
     All,
@@ -929,7 +930,7 @@ impl World {
 
 /// What a node judges from: the commits it holds, the frontier leaves it sees (None: every
 /// leaf), its trust set.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct View {
     pub held: Set,
     pub leaves: Option<Things>,
@@ -1078,6 +1079,9 @@ struct Pass {
     /// §5.1 step 3, admin first).
     by_flag: Set,
     lows: Vec<Low>,
+    /// The record edges and record key hops the world uses (`World::record_hops`), each admin
+    /// from the start.
+    records: BTreeSet<Edge>,
 }
 
 impl Pass {
@@ -1330,7 +1334,7 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
     let (mut rounds, mut passes, mut walked, mut checked, mut from) = (0, 0, 0, 0, 0);
     loop {
         passes += 1;
-        let mut p = Pass::default();
+        let mut p = Pass { records: records.clone(), ..Pass::default() };
         for &e in &records {
             p.state.insert(e, (Role::Admin, None));
             p.restored.insert(e, Role::Admin);
@@ -1660,7 +1664,7 @@ fn first_by_right(w: &World, rules: &Rules, p: &Pass, held: &Set, at: Role) -> B
     if rules.regrant == Regrant::ChainedEver {
         return first_chained_ever(w, held, at);
     }
-    let records = w.record_hops();
+    let records = &p.records;
     let mut first: BTreeMap<Edge, Key> = records.iter().map(|&e| (e, (0, 0, 0))).collect();
     for i in order(w, held) {
         let (Some(e), Kind::Edge { role, finalize, .. }) = (w.sets(i), &w.commits[i].kind) else { continue };
@@ -1670,7 +1674,7 @@ fn first_by_right(w: &World, rules: &Rules, p: &Pass, held: &Set, at: Role) -> B
         let key = w.key(i);
         let admin = w.rests(i).iter().all(|&h| role_at(w, p, h, key) == Role::Admin);
         // a list write by O4, against the keys listed at its key
-        let listing = p.hist.keys().chain(&records).any(|&(k, t)| t == e.1 && is_key(k) && role_at(w, p, (k, t), key) == Role::Admin);
+        let listing = p.hist.keys().chain(records).any(|&(k, t)| t == e.1 && is_key(k) && role_at(w, p, (k, t), key) == Role::Admin);
         let admin = admin && (!w.list_write(i) || list_writes(w, i, listing));
         let hops = w.hops(i);
         let flagged = role_at(w, p, w.key_hop(i), key) == Role::Admin && flag_grant(w, i).is_some_and(|r| hops.split_last().is_some_and(|(l, b)| grantable_at(w, p, *l, key) >= r && b.iter().all(|&h| role_at(w, p, h, key) >= r)));
@@ -1930,9 +1934,45 @@ fn holds(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, q: Id, r: Ro
         }
 }
 
+/// Readings kept by `judging_once`: the world it fixes, and per rule set each view's reading.
+type Kept = (*const World, HashMap<Rules, HashMap<View, Reading>>);
+
+thread_local! {
+    static KEPT: RefCell<Option<Kept>> = const { RefCell::new(None) };
+}
+
+/// Runs `f` with each reading of `w` judged once: within it, `judge` of `w` keeps every reading
+/// it makes and answers the same rules and view again from it (`w` is borrowed for the whole
+/// call, so it cannot change). A search asks many questions of one fixed world, many alike.
+/// Readings of any other world are judged as always; the readings kept before are back after.
+pub fn judging_once<T>(w: &World, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Kept>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            KEPT.with(|k| *k.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(KEPT.with(|k| k.borrow_mut().replace((w as *const World, HashMap::new()))));
+    f()
+}
+
 /// A node's reading: a function of the world's rules, what it holds, the leaves it sees and
 /// its trust set.
 pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
+    let ours = |k: &Kept| std::ptr::eq(k.0, w);
+    if let Some(rd) = KEPT.with(|k| k.borrow().as_ref().filter(|k| ours(k)).and_then(|k| k.1.get(rules)?.get(v).cloned())) {
+        return rd;
+    }
+    let rd = judge_afresh(w, rules, v);
+    KEPT.with(|k| {
+        if let Some(k) = k.borrow_mut().as_mut().filter(|k| ours(k)) {
+            k.1.entry(*rules).or_default().insert(v.clone(), rd.clone());
+        }
+    });
+    rd
+}
+
+fn judge_afresh(w: &World, rules: &Rules, v: &View) -> Reading {
     let mut active: Set = v.trust.iter().copied().filter(|i| v.held.contains(i) && w.sets(*i).is_some()).collect();
     let mut void = Set::new();
     let (mut rounds, mut passes, mut walked, mut checked) = (0, 0, 0, 0);
@@ -2057,7 +2097,14 @@ fn candidate(w: &World, rules: &Rules, r: Id) -> bool {
 /// seeds take it, its seeds take `r`, or it is ordered before `r` and lowers a hop of `r`'s own
 /// path (where it applies `r` has no right).
 pub fn against(w: &World, rules: &Rules, v: &View, r: Id, l: Id) -> bool {
-    against_by(w, rules, r, l, &|x| seeds(w, rules, v, &Set::from([x])).into_keys().collect())
+    against_by(w, rules, r, l, &seeds_once(w, rules, v))
+}
+
+/// Each lowering's own seeds over `v` (the writes `seeds` gives it trusted alone), each worked
+/// out once however often it is asked (`against_by` over many pairs).
+pub fn seeds_once<'a>(w: &'a World, rules: &'a Rules, v: &'a View) -> impl Fn(Id) -> Set + 'a {
+    let memo: RefCell<BTreeMap<Id, Set>> = RefCell::default();
+    move |x| memo.borrow_mut().entry(x).or_insert_with(|| seeds(w, rules, v, &Set::from([x])).into_keys().collect()).clone()
 }
 
 /// `against`, each lowering's seeds read from `seeds_of` (a caller judging many pairs over one
@@ -2072,7 +2119,8 @@ pub fn against_by(w: &World, rules: &Rules, r: Id, l: Id, seeds_of: &dyn Fn(Id) 
 pub fn choose(w: &World, rules: &Rules, v: &View, r: Id) -> View {
     let mut out = v.clone();
     if rules.sides != Sides::ChoiceAdds {
-        out.trust.retain(|&l| !against(w, rules, v, r, l));
+        let seeds_of = seeds_once(w, rules, v);
+        out.trust.retain(|&l| !against_by(w, rules, r, l, &seeds_of));
     }
     out.trust.insert(r);
     out
@@ -2164,20 +2212,23 @@ pub fn writers_keep(base: Vec<Id>, classed: &[Id], own_end: bool, mut end: impl 
 /// of a held part's path.
 pub fn evidence(w: &World, unit: &Set, avail: &Set) -> Set {
     let mut s = unit.clone();
-    loop {
-        let edges: BTreeSet<Edge> = s.iter().flat_map(|&i| w.rests(i).iter().copied()).collect();
-        let cids: BTreeSet<(Id, Thing)> = s.iter().map(|&i| (w.cid(i), w.commits[i].on)).collect();
-        let more: Vec<Id> = avail
+    // the edges and (commit, thing) units of what is in so far, grown by what each round adds
+    let (mut edges, mut cids): (BTreeSet<Edge>, BTreeSet<(Id, Thing)>) = Default::default();
+    let mut more: Vec<Id> = s.iter().copied().collect();
+    while !more.is_empty() {
+        for &i in &more {
+            edges.extend(w.rests(i));
+            cids.insert((w.cid(i), w.commits[i].on));
+        }
+        more = avail
             .iter()
             .copied()
             .filter(|i| !s.contains(i))
             .filter(|&i| cids.contains(&(w.cid(i), w.commits[i].on)) || w.sets(i).is_some_and(|e| edges.contains(&e)))
             .collect();
-        if more.is_empty() {
-            return s;
-        }
-        s.extend(more);
+        s.extend(&more);
     }
+    s
 }
 
 // ---- The keys layer: A's epochs under a standing dispute (spec/crypto.md §4) ----
