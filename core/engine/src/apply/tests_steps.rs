@@ -185,17 +185,17 @@ fn addenda_by(lp: &LocalPeer, peer: usize, t: Tid) -> usize {
 }
 
 // spec/permissions.md §5.2 (Addenda): an answer to a removal that fails
-// (`flows::vouches::write_owed`) keeps nothing of its
+// (`flows::addenda::write_owed`) keeps nothing of its
 // attempt, and the removal stays due.
 #[test]
 fn answer_failing_keeps_nothing() {
     let (lp, t, r) = removal_answered(None);
     assert_eq!(addenda_by(&lp, 2, t), 1, "without a fault it answers");
-    assert!(!lp.peers[2].engine.core.ix.vouches_due.contains(&r));
-    ran_equals_never_ran(Step::Vouch, 0, |f| {
+    assert!(!lp.peers[2].engine.core.ix.addenda_due.contains(&r));
+    ran_equals_never_ran(Step::Addenda, 0, |f| {
         let (lp, t, r) = removal_answered(f);
         assert_eq!(addenda_by(&lp, 2, t), 0);
-        assert!(lp.peers[2].engine.core.ix.vouches_due.contains(&r), "still due");
+        assert!(lp.peers[2].engine.core.ix.addenda_due.contains(&r), "still due");
         (lp, 2)
     });
 }
@@ -206,7 +206,7 @@ fn answer_failing_keeps_nothing() {
 fn failing_answer_never_blocks_ingest() {
     let (mut lp, t, r) = removal_to_answer();
     let rx = lp.peers[2].engine.subscribe();
-    lp.peers[2].engine.core.step_fault = fault(Step::Vouch, true, 0);
+    lp.peers[2].engine.core.step_fault = fault(Step::Addenda, true, 0);
     lp.sync(0, 2).unwrap();
     assert!(lp.peers[2].engine.core.ix.commits.contains_key(&r), "the removal applies");
     // more from the remover: applied though the answer keeps failing
@@ -217,13 +217,13 @@ fn failing_answer_never_blocks_ingest() {
     let e = &mut lp.peers[2].engine;
     assert!(e.core.ix.commits.contains_key(&c), "ingest goes on");
     assert_eq!(e.get(&t, &ak("x:a.0")).unwrap(), Some(Value::Int(9)));
-    assert!(e.core.ix.vouches_due.contains(&r), "still due");
+    assert!(e.core.ix.addenda_due.contains(&r), "still due");
     let reported: Vec<_> = rx.try_iter().filter_map(|e| if let Event::Diagnostic(d) = e { Some(d) } else { None }).filter(|d| d.kind == DiagnosticKind::OwnWriteFailed).collect();
     assert_eq!(reported.len(), 1, "reported once: {reported:?}");
     assert_eq!(reported[0].commit, Some(r));
     e.core.step_fault = None;
     e.run(|_| Ok(())).unwrap();
-    assert!(!lp.peers[2].engine.core.ix.vouches_due.contains(&r), "answered");
+    assert!(!lp.peers[2].engine.core.ix.addenda_due.contains(&r), "answered");
     assert_eq!(addenda_by(&lp, 2, t), 1);
 }
 

@@ -152,7 +152,7 @@ impl Input {
         let mut out = BTreeMap::new();
         for x in self.victims(ix, op.holder, r.signer) {
             for c in ix.by_author.get(&x).into_iter().flatten() {
-                if c.id == r.id || c.point() >= point || self.frontier(r).is_some_and(|f| f.covers(&c.id)) {
+                if c.id == r.id || c.point() >= point || r.frontier.as_ref().is_some_and(|f| f.covers(&c.id)) {
                     continue;
                 }
                 for (k, o) in c.ops.iter().enumerate() {

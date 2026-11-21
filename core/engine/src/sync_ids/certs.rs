@@ -549,32 +549,7 @@ impl Engine {
     /// each thing and the current `keys.0` of each actor, with the demotions its keysets carry,
     /// and each account's on the chain or at the root of a record chain on it (`account_chain`;
     /// named in `out.accounts` instead where `out` defers them).
-    ///
-    /// With each role commit named, the held vouches keyed by it, projected to their `vouches.0`
-    /// deltas, with their authors' chains to the things they are on, and so on for the commits
-    /// those chains name (spec/permissions.md §4 Vouches travel with their removal), whether
-    /// or not their entries count: each removal's vouches once.
     pub(super) fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut Certs) {
-        self.chain_parts(certs, out);
-        let mut todo: Vec<CommitId> = certs.commits.iter().copied().collect();
-        let mut seen: BTreeSet<CommitId> = BTreeSet::new();
-        while let Some(r) = todo.pop() {
-            if !seen.insert(r) {
-                continue;
-            }
-            let keyed: Vec<(CommitId, Tid)> = self.core.ix.held.keyed_by(&r).copied().collect();
-            for (v, t) in keyed {
-                let Some(author) = self.header(&v).map(|h| h.signer) else { continue };
-                out.add(v, self.parts_of(&v, &BTreeSet::from([t]), &[osis_schema::core_types::VOUCHES_AK]));
-                let chain = self.chain_to(&author, &t);
-                todo.extend(chain.commits.iter().copied());
-                self.chain_parts(&chain, out);
-            }
-        }
-    }
-
-    /// `cert_parts` but for the vouches.
-    fn chain_parts(&mut self, certs: &osis_perm::Certificates, out: &mut Certs) {
         let all: BTreeSet<Tid> = certs.created.iter().copied().collect();
         for c in &certs.commits {
             out.add(*c, self.parts_of(c, &all, &["roles.0"]));

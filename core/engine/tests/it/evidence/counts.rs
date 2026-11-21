@@ -33,7 +33,7 @@ struct World {
 impl World {
     /// The path of `k` holder things and `n` writes of K on `on` along it.
     fn new(k: usize, n: usize) -> World {
-        let mut ev = E::new(Config { vouches: true, keys_open: false, leaves: false });
+        let mut ev = E::new(Config { keys_open: false, leaves: false });
         for s in [D, D2] {
             ev.add_sid(s, s);
             ev.join(&s, s);
@@ -207,7 +207,7 @@ fn a_write_naming_the_actor_reads_none_of_its_earlier_ones() {
 fn a_forgotten_body_closes_again_only_when_it_was_the_last_on_an_edge() {
     const A: u16 = 50;
     let at = |m: u16| {
-        let mut ev = E::new(Config { vouches: true, keys_open: false, leaves: false });
+        let mut ev = E::new(Config { keys_open: false, leaves: false });
         ev.add_sid(D, D);
         ev.join(&D, D);
         let mut next = 1u32;
@@ -250,7 +250,7 @@ fn a_forgotten_body_closes_again_only_when_it_was_the_last_on_an_edge() {
 #[test]
 fn a_compaction_forgetting_many_bodies_closes_once() {
     const A: u16 = 50;
-    let mut ev = E::new(Config { vouches: true, keys_open: false, leaves: false });
+    let mut ev = E::new(Config { keys_open: false, leaves: false });
     ev.add_sid(D, D);
     ev.join(&D, D);
     ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(X, D)]), pos: 1, chained: true }]);
@@ -279,7 +279,7 @@ struct Travel {
 
 impl Travel {
     fn new() -> Travel {
-        Travel { ev: E::new(Config { vouches: true, keys_open: true, leaves: false }), next: 1 }
+        Travel { ev: E::new(Config { keys_open: true, leaves: false }), next: 1 }
     }
     fn sid(&mut self, s: u16) {
         self.ev.add_sid(s, s);
@@ -339,7 +339,7 @@ struct Lists {
     next: u32,
 }
 
-const A3: Config = Config { vouches: true, keys_open: true, leaves: true };
+const A3: Config = Config { keys_open: true, leaves: true };
 
 impl Lists {
     fn new() -> Lists {

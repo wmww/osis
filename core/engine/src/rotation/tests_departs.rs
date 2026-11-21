@@ -256,8 +256,7 @@ fn dropped_lowering_takes_nothing_spec_crypto_4() {
     let p1_held = leave(&mut lp, p1, g, Forge::None).unwrap();
     lp.peers[o].clock.advance(1_000);
     lp.peers[o].engine.demote(&g, &Demotion { holder: tids[p4], new: Some(edge(Role::Read)), retain: None }).unwrap();
-    // Q gets K after D's `ts` (received by it, Q's vouch would keep K, spec/permissions.md §5.1
-    // Vouches)
+    // Q gets K after D's `ts`
     lp.peers[q].clock.advance(2_000);
     send_skipping(&mut lp, p4, q, &none);
     send_skipping(&mut lp, o, q, &none);

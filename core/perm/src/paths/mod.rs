@@ -1,8 +1,8 @@
 //! The permission walk along stated paths (notes/perm-paths.md; draft spec
-//! notes/a1-spec/permissions.md §1, §2, §5.1, §5.2, §6): every edge-class part (edge writes,
-//! vouches) is judged along the one path its commit states for its thing, in key order, each
-//! lowering judged once, in two walks (vouch entries unread, then read); every delta is judged
-//! along its path by point queries on the second walk, and a purge request's right as a delta of
+//! notes/a1-spec/permissions.md §1, §2, §5.1, §5.2, §6): every edge-class part (an edge write)
+//! is judged along the one path its commit states for its thing, in key order, each lowering
+//! judged once; every delta is judged along its path by point queries on the walk, and a purge
+//! request's right as a delta of
 //! it needing each role its class needs, so whether a delta is purged is a reading too (§6). Not
 //! yet called by the engine (A1 steps 2 and 3 wire it in).
 //!
@@ -48,9 +48,6 @@ pub struct Part {
 #[derive(Clone, Debug)]
 pub enum PartKind {
     Edge(EdgeWrite),
-    /// A `vouches.0` entry (draft §5.1 Vouches): an edge-class part, its entries counting by the
-    /// first walk.
-    Vouch { removal: CommitId, list: Frontier },
     /// Any other delta, judged as content (draft §5.2).
     Delta(Delta),
 }
@@ -250,8 +247,8 @@ pub struct Changed {
     pub cuts: BTreeMap<(Tid, Tid), Key>,
     /// Edges whose final role or first chained point changed.
     pub regrant: BTreeSet<(Tid, Tid)>,
-    /// Commits whose namers changed: carried by a new snapshot, or a counting entry's; an own
-    /// cover a lowering of its signer lists whose status changed.
+    /// Commits whose namers changed: carried by a new snapshot; an own cover a lowering of its
+    /// signer lists whose status changed.
     pub named: BTreeSet<CommitId>,
     /// What the requests whose right changed, arrived holding one or went name (draft §6): a
     /// description, never a list of deltas.
@@ -261,24 +258,15 @@ pub struct Changed {
     pub chained: BTreeSet<WriteId>,
 }
 
-/// A counting entry: (removal, commit, the vouch's thing).
-type Entry = (CommitId, CommitId, Tid);
-
 /// The walk over a held set of commits, under a trust set, reading delta facts through `S`.
 #[derive(Clone)]
 pub struct Paths<S: Store = MemStore> {
-    /// The first walk: vouch entries unread.
-    first: walk::Walk,
-    /// The second walk, the timeline: counting entries read as named by their removals' lists.
+    /// The walk, the timeline.
     timeline: walk::Walk,
     trust: BTreeSet<WriteId>,
     /// The held trusted edge writes walked as trusted, and those void (draft §5.1 Trust set).
     active: BTreeSet<WriteId>,
     void: BTreeSet<WriteId>,
-    /// The counting entries, each with the vouches keeping it.
-    counting: BTreeSet<Entry>,
-    keeping: BTreeMap<Entry, u32>,
-    by_vouch: BTreeMap<WriteId, BTreeSet<Entry>>,
     facts: content::Facts<S>,
 }
 
@@ -292,8 +280,7 @@ impl Paths<MemStore> {
     /// mode: the walk by components must read exactly as this (notes/perm-paths.md, Components).
     pub fn single(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>) -> Paths {
         let mut p = Paths::new(records, trust);
-        p.first = walk::Walk::new(records, false, true, true);
-        p.timeline = walk::Walk::new(records, true, true, true);
+        p.timeline = walk::Walk::new(records, true, true);
         p
     }
 
@@ -302,12 +289,11 @@ impl Paths<MemStore> {
     /// (notes/perm-paths.md, Reach).
     pub fn whole(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>) -> Paths {
         let mut p = Paths::new(records, trust);
-        p.first = walk::Walk::new(records, false, false, true);
-        p.timeline = walk::Walk::new(records, true, false, true);
+        p.timeline = walk::Walk::new(records, false, true);
         p
     }
 
-    /// The settled walks of `commits` from scratch.
+    /// The settled walk of `commits` from scratch.
     pub fn evaluate(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>, commits: &[Commit]) -> Paths {
         let mut p = Paths::new(records, trust);
         p.add(commits);
@@ -319,14 +305,10 @@ impl<S: Store> Paths<S> {
     /// An empty held set over `records` and `trust`, delta facts kept in `store`.
     pub fn with_store(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>, store: S) -> Paths<S> {
         Paths {
-            first: walk::Walk::new(records, false, false, false),
-            timeline: walk::Walk::new(records, true, false, false),
+            timeline: walk::Walk::new(records, false, false),
             trust,
             active: BTreeSet::new(),
             void: BTreeSet::new(),
-            counting: BTreeSet::new(),
-            keeping: BTreeMap::new(),
-            by_vouch: BTreeMap::new(),
             facts: content::Facts::new(records, store),
         }
     }
@@ -344,8 +326,8 @@ impl<S: Store> Paths<S> {
         }
         self.begin();
         let taken = self.take(&fresh);
-        let named = self.settle(&taken.roles, &BTreeSet::new());
-        self.finish(taken, named)
+        self.settle(&BTreeSet::new());
+        self.finish(taken)
     }
 
     /// Forgets held commits (a commit not held is ignored): the reading is the walk without them
@@ -357,9 +339,8 @@ impl<S: Store> Paths<S> {
         }
         self.begin();
         let gone = self.let_go(&held);
-        let mut named = self.drop_entries(&held);
-        named.extend(self.settle(&gone.roles, &BTreeSet::new()));
-        self.finish(gone, named)
+        self.settle(&BTreeSet::new());
+        self.finish(gone)
     }
 
     /// Replaces held commits by the versions given (a chunked frontier's leaf arriving: the same
@@ -374,7 +355,6 @@ impl<S: Store> Paths<S> {
         self.begin();
         let held: Vec<CommitId> = given.iter().map(|c| c.id).filter(|c| self.holds(c)).collect();
         let mut taken = self.let_go(&held);
-        let mut named = self.drop_entries(&held);
         let t = self.take(&given);
         // a list read further names more with the walk unchanged: what it names is reported
         for c in &given {
@@ -384,12 +364,11 @@ impl<S: Store> Paths<S> {
                 }
             }
         }
-        taken.roles.extend(t.roles);
         taken.carried.extend(t.carried);
         taken.deltas.extend(t.deltas);
         taken.addenda.extend(t.addenda);
-        named.extend(self.settle(&taken.roles, &BTreeSet::new()));
-        self.finish(taken, named)
+        self.settle(&BTreeSet::new());
+        self.finish(taken)
     }
 
     /// Replaces the trust set and settles the components whose trusted writes changed.
@@ -397,8 +376,8 @@ impl<S: Store> Paths<S> {
         let changed: BTreeSet<WriteId> = self.trust.symmetric_difference(&trust).copied().collect();
         self.trust = trust;
         self.begin();
-        let named = self.settle(&BTreeSet::new(), &changed);
-        self.finish(content::Taken::default(), named)
+        self.settle(&changed);
+        self.finish(content::Taken::default())
     }
 
     fn fresh<'a>(&self, commits: &'a [Commit]) -> Vec<&'a Commit> {
@@ -412,49 +391,30 @@ impl<S: Store> Paths<S> {
     }
 
     fn begin(&mut self) {
-        self.first.begin();
         self.timeline.begin();
     }
 
     fn take(&mut self, fresh: &[&Commit]) -> content::Taken {
         let owned: Vec<Commit> = fresh.iter().map(|c| (*c).clone()).collect();
-        self.first.take(&owned);
         self.timeline.take(&owned);
         self.facts.take(fresh)
     }
 
     /// Forgets `held` from the walks and the facts.
     fn let_go(&mut self, held: &[CommitId]) -> content::Taken {
-        self.first.forget(held);
         self.timeline.forget(held);
         self.active.retain(|id| !held.contains(&id.0));
         self.void.retain(|id| !held.contains(&id.0));
         self.facts.forget(held)
     }
 
-    /// The counting entries kept by the vouches of `held` go; the commits whose entries changed.
-    fn drop_entries(&mut self, held: &[CommitId]) -> BTreeSet<CommitId> {
-        let ids: Vec<WriteId> = self.by_vouch.keys().filter(|id| held.contains(&id.0)).copied().collect();
-        let mut named = BTreeSet::new();
-        for id in ids {
-            self.set_entries(id, BTreeSet::new(), &mut named);
-        }
-        if !named.is_empty() {
-            self.facts.set_counted(&self.counting);
-            self.timeline.set_vouched(self.counting.clone());
-        }
-        named
-    }
-
     /// `Changed` from the timeline's journal, the addenda and what arrived or went.
-    fn finish(&mut self, taken: content::Taken, named: BTreeSet<CommitId>) -> Changed {
-        let _ = self.first.changed();
+    fn finish(&mut self, taken: content::Taken) -> Changed {
         let mut ch = self.timeline.changed();
         // a list naming a snapshot names what it carries
         let through = self.facts.carried_by(&taken.carried);
         ch.named.extend(taken.carried);
         ch.named.extend(through);
-        ch.named.extend(named);
         let own = self.facts.own_listed(&ch.parts);
         ch.named.extend(own);
         let addenda = self.facts.addenda_update(&self.timeline, &ch, &taken.addenda);
@@ -467,13 +427,11 @@ impl<S: Store> Paths<S> {
     }
 
     /// Settles every component an input change reached, each as from scratch under the trust set
-    /// (draft §5.1 Trust set): its void trusted writes walked as trusted again, then both walks,
-    /// the counting entries, and the trusted writes the timeline does not apply void, all at
-    /// once, both walks again, until none is (notes/perm-paths.md, Trust per component).
-    /// `roles`: role commits arrived or forgotten (the vouches listing them count again);
-    /// `changed`: trusted writes added to or taken from the trust set. The commits whose counting
-    /// entries changed.
-    fn settle(&mut self, roles: &BTreeSet<CommitId>, changed: &BTreeSet<WriteId>) -> BTreeSet<CommitId> {
+    /// (draft §5.1 Trust set): its void trusted writes walked as trusted again, then the walk,
+    /// and the trusted writes it does not apply void, all at once, the walk again, until none is
+    /// (notes/perm-paths.md, Trust per component). `changed`: trusted writes added to or taken
+    /// from the trust set.
+    fn settle(&mut self, changed: &BTreeSet<WriteId>) {
         let held: BTreeSet<WriteId> = self.trust.iter().filter(|id| self.timeline.is_edge_write(id)).copied().collect();
         self.active.retain(|id| held.contains(id));
         self.void.retain(|id| held.contains(id));
@@ -484,97 +442,29 @@ impl<S: Store> Paths<S> {
         }
         let extra: BTreeSet<_> = changed.iter().filter_map(|id| self.timeline.comp_of(id)).collect();
         let mut seen = BTreeSet::new();
-        let mut named = BTreeSet::new();
-        let mut listing = roles.clone();
         loop {
             // a component walked again reads as from scratch: its void trusted writes count again
-            let touched: BTreeSet<_> = self.first.touched().into_iter().chain(self.timeline.touched()).chain(extra.iter().copied()).filter(|c| !seen.contains(c)).collect();
+            let touched: BTreeSet<_> = self.timeline.touched().into_iter().chain(extra.iter().copied()).filter(|c| !seen.contains(c)).collect();
             let again: Vec<WriteId> = self.void.iter().filter(|id| self.timeline.comp_of(id).is_some_and(|c| touched.contains(&c))).copied().collect();
             for id in again {
                 self.void.remove(&id);
                 self.active.insert(id);
             }
             seen.extend(touched);
-            self.first.set_active(&self.active);
             self.timeline.set_active(&self.active);
-            self.first.run_dirty();
-            named.extend(self.recount(&self.first.touched(), &std::mem::take(&mut listing)));
-            self.timeline.set_vouched(self.counting.clone());
-            if self.first.touched().into_iter().chain(self.timeline.touched()).any(|c| !seen.contains(&c)) {
+            if self.timeline.touched().into_iter().any(|c| !seen.contains(&c)) {
                 continue;
             }
             self.timeline.run_dirty();
             let gone = self.timeline.unapplied_trusted();
-            if gone.is_empty() && !self.first.is_dirty() && !self.timeline.is_dirty() {
-                return named;
+            if gone.is_empty() && !self.timeline.is_dirty() {
+                return;
             }
             self.timeline.counts.scratch += 1;
             for r in gone {
                 self.active.remove(&r);
                 self.void.insert(r);
             }
-        }
-    }
-
-    /// Counts again the entries of the vouches of components `comps` and of those listing a
-    /// commit of `listing` (draft §5.1 Vouches): an entry of an applied vouch V on N keyed by R
-    /// and listing c counts where an edge write of R on h applies as a lowering, V is ordered
-    /// after it, and c, held, has a role-class part on N, is ordered before R, rests on h by a
-    /// part on N and is not signed by V's signer. It keeps c's parts on N alone: V applies by its
-    /// voucher's admin on N, which says nothing of another thing c writes. The commits whose
-    /// entries changed.
-    fn recount(&mut self, comps: &BTreeSet<u32>, listing: &BTreeSet<CommitId>) -> BTreeSet<CommitId> {
-        let mut all = vec![];
-        for v in self.first.vouches(comps, listing) {
-            let mut pairs = BTreeSet::new();
-            if v.applied {
-                for (h, rkey) in self.first.lowers(&v.removal) {
-                    if v.key <= rkey {
-                        continue;
-                    }
-                    for c in v.list.commits() {
-                        let Some(cf) = self.facts.commits.get(c) else { continue };
-                        if cf.key < rkey.commit_start() && cf.role_on.contains(&v.on) && cf.rests.contains(&(v.on, h)) && cf.signer != v.signer {
-                            pairs.insert((v.removal, *c, v.on));
-                        }
-                    }
-                }
-            }
-            all.push((v.id, pairs));
-        }
-        let mut named = BTreeSet::new();
-        for (id, pairs) in all {
-            self.set_entries(id, pairs, &mut named);
-        }
-        if !named.is_empty() {
-            self.facts.set_counted(&self.counting);
-        }
-        named
-    }
-
-    /// Sets the entries vouch `id` keeps; the commits whose entries changed join `named`.
-    fn set_entries(&mut self, id: WriteId, pairs: BTreeSet<Entry>, named: &mut BTreeSet<CommitId>) {
-        let was = self.by_vouch.remove(&id).unwrap_or_default();
-        for t in was.difference(&pairs) {
-            let n = self.keeping.get(t).copied().unwrap_or(0).saturating_sub(1);
-            if n == 0 {
-                self.keeping.remove(t);
-                self.counting.remove(t);
-                named.insert(t.1);
-            } else {
-                self.keeping.insert(*t, n);
-            }
-        }
-        for t in pairs.difference(&was) {
-            let n = self.keeping.get(t).copied().unwrap_or(0) + 1;
-            self.keeping.insert(*t, n);
-            if n == 1 {
-                self.counting.insert(*t);
-                named.insert(t.1);
-            }
-        }
-        if !pairs.is_empty() {
-            self.by_vouch.insert(id, pairs);
         }
     }
 
@@ -660,8 +550,8 @@ impl<S: Store> Paths<S> {
         self.facts.could_hold(id, retention, author)
     }
 
-    /// Whether held edge-class part `id` is chained (draft §4 Chained writes; a vouch, a
-    /// self-removal by admin on its path, a finalize by write).
+    /// Whether held edge-class part `id` is chained (draft §4 Chained writes; a self-removal by
+    /// admin on its path, a finalize by write).
     pub fn is_chained(&self, id: &WriteId) -> Option<bool> {
         self.timeline.is_chained(id)
     }
@@ -681,11 +571,6 @@ impl<S: Store> Paths<S> {
     /// follows theirs (`Changed`); its purge follows `Changed::purges`.
     pub fn naming(&self, id: &WriteId) -> Vec<WriteId> {
         self.facts.naming(id)
-    }
-
-    /// The counting entries: (removal, commit, the vouch's thing).
-    pub fn counting(&self) -> &BTreeSet<(CommitId, CommitId, Tid)> {
-        &self.counting
     }
 
     /// The part's key (draft §5.1 step 1).
@@ -773,24 +658,15 @@ impl<S: Store> Paths<S> {
         (applied, finals, valid)
     }
 
-    /// Where no counting entry's removal is, the first walk reads as the timeline
-    /// (notes/perm-paths.md, Two walks): the first part of a component holding a vouch whose
-    /// statuses differ there, if any.
-    pub fn first_walk_differs(&self) -> Option<WriteId> {
-        let counted: BTreeSet<u32> = self.counting.iter().flat_map(|e| self.timeline.parts_of(&e.0)).filter_map(|id| self.timeline.comp_of(&id)).collect();
-        self.first.vouch_comps().into_iter().filter(|(c, _)| !counted.contains(c)).flat_map(|(_, ids)| ids).find(|id| self.first.status(id) != self.timeline.status(id))
-    }
-
-    /// Entries the walks keep in memory (parts, edges, events, chain entries, histories,
+    /// Entries the walk keeps in memory (parts, edges, events, chain entries, histories,
     /// readers): edge-class state alone (notes/perm-paths.md, The delta-facts seam).
     pub fn footprint(&self) -> u64 {
-        self.first.footprint() + self.timeline.footprint() + self.facts.footprint()
+        self.timeline.footprint() + self.facts.footprint()
     }
 
-    /// Work done since construction: both walks, the chained pass and the addenda.
+    /// Work done since construction: the walk, the chained pass and the addenda.
     pub fn counts(&self) -> Counts {
-        let mut c = self.first.counts;
-        c.add(&self.timeline.counts);
+        let mut c = self.timeline.counts;
         c.add(&self.facts.counts);
         c
     }

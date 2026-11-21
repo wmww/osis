@@ -619,9 +619,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     if h.rotation.is_some() {
         crate::flows::signing::note_rotation_due(tx, &id)?;
     }
-    // an explicit demotion: this node judges what vouches and addenda it owes (`flows::vouches`)
+    // an explicit demotion: this node judges what vouches and addenda it owes (`flows::addenda`)
     if h.kind.is_role() && view.frontier.is_some() {
-        crate::flows::vouches::note_due(tx.core, &id);
+        crate::flows::addenda::note_due(tx.core, &id);
     }
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &view, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
@@ -630,7 +630,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
     // a commit applying late (its receipt known) may be a removal's candidate, or bring one into question
-    crate::flows::vouches::note_applied(tx.core, &id, &h);
+    crate::flows::addenda::note_applied(tx.core, &id, &h);
     // held now: what it names is judged (`lists::put_names`)
     crate::flows::lists::note_listing(tx, &h, &id, &parts.whole)?;
     crate::retention::note_requests(tx, &id, &h)?;
@@ -786,16 +786,16 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let late = parts.ais();
     let mut held_changed = note_created(tx, &h, &parts.whole)?;
     let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
-    // a late role-class part may change what perm reads of the commit: its edge writes, vouches
-    // or the role another part needs (`validity::add_role_commit`)
+    // a late role-class part may change what perm reads of the commit: its edge writes or the
+    // role another part needs (`validity::add_role_commit`)
     let perm = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| osis_schema::core_types::is_role_class(a.ak.as_str())));
     validity::note_addenda(tx.core, &h, id, &parts.whole);
     crate::flows::lists::note_listing(tx, &h, id, &parts.whole)?;
     if edges && meta.view.frontier.is_some() {
-        crate::flows::vouches::note_due(tx.core, id);
+        crate::flows::addenda::note_due(tx.core, id);
     }
-    // a late part may make the commit a removal's candidate (`flows::vouches::wake`)
-    crate::flows::vouches::note_applied(tx.core, id, &h);
+    // a late part may make the commit a removal's candidate (`flows::addenda::wake`)
+    crate::flows::addenda::note_applied(tx.core, id, &h);
     let (held, n) = with_held(tx, &h, id, &parts)?;
     let read = super::PartsRead::of(&h, &held);
     if h.kind.is_role() {

@@ -4,7 +4,7 @@
 //! Properties in tests/it/spec_evidence.rs, findings in notes/evidence-model-findings.md.
 //!
 //! Judging is roles-model `paths` (`Rules::fixed`, the rule A1 builds): a commit states a path,
-//! judged along it; a lowering lists a frontier; vouches, addenda, re-grants as there. On top:
+//! judged along it; a lowering lists a frontier; addenda, re-grants as there. On top:
 //! - **Pending** (`pend`): a commit pends at a node while an edge of its path (or the remaining
 //!   admin edge it names) that is no record edge has no held edge write ordered before it, or the
 //!   latest such write pends (notes/write-path-design.md §2 What follows, its smallest reading).
@@ -16,8 +16,7 @@
 //!   (roles-model commits write one thing: a copy per (commit, thing) is per commit here).
 //! - **The required set** of sync ID S over a held set H (`World::req`): the evidence closure
 //!   (`paths::evidence`: every held edge write on an edge of a seed's path or on the remaining
-//!   admin edge a lowering names, every held vouch against a held removal, closed under the same
-//!   for what it adds) of the seeds: the bodies; the grants naming S's thing as holder (a holder's
+//!   admin edge a lowering names, closed under the same for what it adds) of the seeds: the bodies; the grants naming S's thing as holder (a holder's
 //!   grants travel under its sync ID: taken-ness is not modelled, every grant counts); and every
 //!   held removal of an edge (h, t) taking write away (`Rule::removals`), with its witness, whose
 //!   **reach** (held edge writes giving write or above and record edges, at any time, joining t to
@@ -109,8 +108,8 @@ pub enum Home {
 pub enum Scope {
     /// Lowerings only ("only removals travel at once").
     Lowerings,
-    /// A lowering, and every later edge write on its edge (a re-grant) and vouch against it,
-    /// written by any honest node holding the lowering, to the same sync IDs.
+    /// A lowering, and every later edge write on its edge (a re-grant), written by any honest
+    /// node holding the lowering, to the same sync IDs.
     Edge,
 }
 
@@ -180,9 +179,6 @@ pub struct Closure {
     /// each edge of it that is no record edge holds a held chained grant (`World::grants`) ordered
     /// before the member. Its named remaining admin edge it brings whatever.
     pub joined: bool,
-    /// Vouches against lowerings in the set are evidence (`Rules::vouch` counting them); false
-    /// where role writes are kept by witnesses re-making them (no vouch evidence).
-    pub vouches: bool,
     /// What an edge write in the set brings of the other edges its commit writes on its thing
     /// (finding 9: a commit's edge writes apply together, and a part resetting an entry waits for
     /// that entry's creation, `World::creations`).
@@ -205,11 +201,11 @@ impl Closure {
     /// The draft (notes/a2-spec/permissions.md §4 Evidence of a commit): `paths::evidence` with
     /// finding 9's clause in the draft's words.
     pub fn drafted() -> Closure {
-        Closure { takes: Takes::All, any_path: false, joined: false, vouches: true, commit_edges: CommitEdges::AllWrites }
+        Closure { takes: Takes::All, any_path: false, joined: false, commit_edges: CommitEdges::AllWrites }
     }
     /// OPEN 10 (b): chained writes, along joined paths.
     pub fn joined() -> Closure {
-        Closure { takes: Takes::Chained, any_path: false, joined: true, vouches: true, commit_edges: CommitEdges::Creations }
+        Closure { takes: Takes::Chained, any_path: false, joined: true, commit_edges: CommitEdges::Creations }
     }
 }
 
@@ -295,7 +291,7 @@ impl Open10 {
             Open10::Joined | Open10::Granted => (Takes::Chained, true),
             Open10::Applied => (Takes::Applied, true),
         };
-        Closure { takes, any_path: false, joined, vouches: true, commit_edges: CommitEdges::Creations }
+        Closure { takes, any_path: false, joined, commit_edges: CommitEdges::Creations }
     }
     pub fn pend(self) -> Pend {
         match self {
@@ -303,12 +299,12 @@ impl Open10 {
             _ => Pend::Granted,
         }
     }
-    /// `rule` with this closure (keeping its `vouches`), and `w` judging with its pending rule
+    /// `rule` with this closure, and `w` judging with its pending rule
     /// and with entry creations (`World::creations`).
     pub fn set(self, w: &mut World, rule: Rule) -> Rule {
         w.pend = self.pend();
         w.creations = true;
-        Rule { closure: Closure { vouches: rule.closure.vouches, ..self.closure() }, ..rule }
+        Rule { closure: self.closure(), ..rule }
     }
 }
 
@@ -346,7 +342,7 @@ impl Stage {
             Stage::A2AuthorReach => "a2-author-reach",
         }
     }
-    /// `rule` (keeping its `vouches`) under (iv) with this stage's delivery; `w` judging as (iv).
+    /// `rule` under (iv) with this stage's delivery; `w` judging as (iv).
     pub fn set(self, w: &mut World, rule: Rule) -> Rule {
         let r = Rule { errand: Errand::Off, reach: false, keys_open: true, ..Open10::Granted.set(w, rule) };
         match self {
@@ -445,8 +441,7 @@ pub struct Seen {
     pub keep: LeafKeep,
 }
 
-/// An action taken on a verdict (spec/sync-judgement.md §2, spec/sync-inbox.md §4,
-/// spec/permissions.md §5.1 Vouches): what a node does once it judges a body.
+/// An action taken on a verdict (spec/sync-judgement.md §2, spec/sync-inbox.md §4): what a node does once it judges a body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Act {
     /// A valid body: a deposit of it promoted, a cover of it (a valid snapshot) dropping what it
@@ -454,8 +449,6 @@ pub enum Act {
     Promote(Id),
     /// An invalid body: dropped as invalid, not logged.
     Drop(Id),
-    /// An applied lowering: a witness writing a vouch against it.
-    Vouch(Id),
 }
 
 /// When a reader acts on its verdicts.
@@ -791,7 +784,7 @@ impl World {
     /// edges and the edges earlier chained writes set (applied or not, at the highest role and
     /// invite each set, `until` disregarded), admin on its target; an invite on its target for an
     /// invite grant (`paths` `invite_grant`); admin on its holder for a self-removal; write on its
-    /// target for a finalize; admin on its thing for a vouch. Only the first two set an edge.
+    /// target for a finalize. Only the first two set an edge.
     /// Grows with `h`; every write any walk over `h` applies is in it.
     pub fn chained(&self, h: &Set) -> Set {
         let mut max: BTreeMap<Edge, Role> = self.w.records.iter().map(|&e| (e, Role::Admin)).collect();
@@ -808,9 +801,6 @@ impl World {
             let hops = self.w.hops(i);
             let least = hops.iter().map(|e| get(&max, e)).min().unwrap_or(Role::Admin);
             match &c.kind {
-                Kind::Vouch { .. } if least == Role::Admin => {
-                    out.insert(i);
-                }
                 Kind::Edge { finalize: true, .. } if least >= Role::Write => {
                     out.insert(i);
                 }
@@ -896,21 +886,20 @@ impl World {
     /// The least part `m` needs of edge `e` its verdict reads (roles-model `paths` `need`, for a
     /// write no pass applied): a role, or (true) an invite. Content-class parts write; an edge
     /// write admin, a finalize write, an invite grant its level (on its path's last edge as an
-    /// invite, under `invite_check`); a vouch admin; a named remaining admin edge admin.
+    /// invite, under `invite_check`); a named remaining admin edge admin.
     pub fn need(&self, m: Id, e: Edge) -> (Role, bool) {
         let c = &self.w.commits[m];
         match &c.kind {
             Kind::Edge { .. } if !self.w.hops(m).contains(&e) => (Role::Admin, false),
             Kind::Edge { finalize: true, .. } => (Role::Write, false),
             Kind::Edge { role, until, invite, .. } if !self.w.leave(m) && *invite <= *role && paths::alive((*role, *until), c.ts) > Role::None && *role < Role::Admin => (*role, self.rules.invite_check && self.w.hops(m).last() == Some(&e)),
-            Kind::Edge { .. } | Kind::Vouch { .. } => (Role::Admin, false),
+            Kind::Edge { .. } => (Role::Admin, false),
             _ => (Role::Write, false),
         }
     }
     /// The evidence closure of `seeds` over `avail` under `rule.closure`: the seeds, the other
     /// parts of a member's commit on its thing, the taken edge writes on an edge of a member's
-    /// stated path (where joined, under `joined`) or on the remaining admin edge it names, and
-    /// (`vouches`) the taken vouches against a member lowering on a thing a member is on.
+    /// stated path (where joined, under `joined`) or on the remaining admin edge it names.
     /// The draft is `paths::evidence`.
     pub fn closure(&self, rule: &Rule, seeds: &Set, avail: &Set) -> Set {
         self.closure_with(rule, seeds, BTreeSet::new(), avail)
@@ -964,7 +953,6 @@ impl World {
                         || ok(i)
                             && match &self.w.commits[i].kind {
                                 Kind::Edge { .. } => self.w.sets(i).is_some_and(|e| edges.contains(&e)),
-                                Kind::Vouch { removal, .. } => c.vouches && s.contains(removal) && s.iter().any(|&j| self.on(j) == self.on(i)),
                                 _ => false,
                             }
                 })
@@ -1046,7 +1034,7 @@ impl World {
     /// the last. (An addendum listing an addendum would keep its writer's own unlogged one alive.)
     pub fn addendum_live(&self, i: Id, h: &Set) -> bool {
         match &self.w.commits[i].kind {
-            Kind::Addendum { list, removal } => list.iter().any(|&j| h.contains(&j) && !matches!(self.w.commits[j].kind, Kind::Edge { .. } | Kind::Vouch { .. } | Kind::Addendum { .. }) && self.w.sets(*removal).is_some_and(|e| self.w.hops(j).contains(&e))),
+            Kind::Addendum { list, removal } => list.iter().any(|&j| h.contains(&j) && !matches!(self.w.commits[j].kind, Kind::Edge { .. } | Kind::Addendum { .. }) && self.w.sets(*removal).is_some_and(|e| self.w.hops(j).contains(&e))),
             _ => true,
         }
     }
@@ -1095,8 +1083,8 @@ impl World {
         self.closure(rule, &mine, &known).into_iter().filter(|&i| held.contains(&i) && (own.contains(&i) || self.removes(i).is_none())).collect()
     }
     /// The commits node `n`'s errand carries: its own lowerings, and under `Scope::Edge` its own
-    /// later edge writes on a held lowering's edge and vouches against a held lowering; each with
-    /// the target whose sync IDs it goes to.
+    /// later edge writes on a held lowering's edge; each with the target whose sync IDs it goes
+    /// to.
     fn errand_items(&self, rule: &Rule, own: &Set, held: &Set, fresh: &Set) -> Vec<(Id, Thing)> {
         let mut out = vec![];
         for &i in own {
@@ -1113,11 +1101,6 @@ impl World {
             let lowered = |e: Edge, after: Option<Id>| held.iter().any(|&l| self.removes(l) == Some(e) && after.is_none_or(|a| self.w.key(l) < self.w.key(a)));
             match &self.w.commits[i].kind {
                 Kind::Edge { .. } if lowered(self.w.sets(i).unwrap(), Some(i)) => out.push((i, self.on(i))),
-                Kind::Vouch { removal, .. } if held.contains(removal) => {
-                    if let Some((_, t)) = self.removes(*removal) {
-                        out.push((i, t));
-                    }
-                }
                 _ => {}
             }
         }
@@ -1779,12 +1762,11 @@ impl World {
         out
     }
     /// What a reader acts on from `seen`: a promotion (or a cover dropping what it covers) on a
-    /// valid body, a drop on an invalid one, a vouch against an applied lowering.
+    /// valid body, a drop on an invalid one.
     pub fn acts(&self, seen: &Seen, bodies: &Set) -> Vec<Act> {
         let mut out = vec![];
         for (i, v) in self.verdicts(seen, bodies) {
             match v {
-                Verdict::Valid if self.w.lowers(i).is_some() => out.extend([Act::Promote(i), Act::Vouch(i)]),
                 Verdict::Valid => out.push(Act::Promote(i)),
                 Verdict::Invalid => out.push(Act::Drop(i)),
                 Verdict::Pending => {}
@@ -1795,7 +1777,7 @@ impl World {
     /// The verdict an act was taken on.
     fn act_on(a: Act) -> (Id, Verdict) {
         match a {
-            Act::Promote(i) | Act::Vouch(i) => (i, Verdict::Valid),
+            Act::Promote(i) => (i, Verdict::Valid),
             Act::Drop(i) => (i, Verdict::Invalid),
         }
     }
@@ -1843,7 +1825,7 @@ pub mod names {
     pub const K: Thing = 2;
     /// Another member signer of A.
     pub const Q: Thing = 3;
-    /// A holder K grants on A (vouch worlds).
+    /// A holder K grants on A (`Shape::grant`).
     pub const Z: Thing = 4;
     /// The mint admin of O, D and R (the organization's side; Risk 4: the raiser).
     pub const Y: Thing = 5;
@@ -1886,8 +1868,8 @@ pub struct Shape {
     /// O is minted by W, a node syncing O alone, rather than by Y.
     pub org_apart: bool,
     /// K holds admin on A and grants Z write on A after its first write; Z writes D; the removal
-    /// does not list the grant and Q (admin) vouches for it.
-    pub vouch: bool,
+    /// does not list the grant, so it falls with Z's write.
+    pub grant: bool,
     /// Record edges on K's path (README OPEN 17): 0 grants only; 1 the hop after A a record edge
     /// (A mints O, or, with K writing through [A], A mints D); 2 a mint chain two deep (A mints O,
     /// O mints D: K's path [A, O] or [A] (by descent) climbs records past A). Where the last hop
@@ -1917,7 +1899,7 @@ impl Shape {
             q_r: take(2) == 1,
             y_a: take(2) == 1,
             org_apart: take(2) == 1,
-            vouch: take(2) == 1,
+            grant: take(2) == 1,
             mint: take(3) as u8,
         }
     }
@@ -1960,7 +1942,7 @@ pub fn family(sh: Shape) -> World {
         }
         _ => {}
     }
-    let member = if sh.vouch { Role::Admin } else { Role::Write };
+    let member = if sh.grant { Role::Admin } else { Role::Write };
     w.write(x, |p| p.edge(X, 1, &[], A, K, member, &[]));
     w.write(x, |p| p.edge(X, 1, &[], A, Q, member, &[]));
     let on_d = if sh.raised { Role::Read } else { Role::Write };
@@ -1983,15 +1965,12 @@ pub fn family(sh: Shape) -> World {
         _ => {}
     }
     let zn = w.node(true, &[]);
-    let gz = if sh.vouch { Some(w.write(k, |p| p.edge(K, 4, &[], A, Z, Role::Write, &[]))) } else { None };
+    let gz = if sh.grant { Some(w.write(k, |p| p.edge(K, 4, &[], A, Z, Role::Write, &[]))) } else { None };
     if gz.is_some() {
         w.write(zn, |p| p.content(Z, 5, &path, D));
     }
     let listed: Vec<Id> = if sh.listed { first.into_iter().collect() } else { vec![] };
     let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &listed));
-    if let Some(gz) = gz {
-        w.write(q, |p| p.vouch(Q, 7, &[], A, r, &[gz]));
-    }
     if sh.raised {
         w.write(dn, |p| p.edge(ds, 7, &[], last, holder, Role::Write, &[]));
     }
@@ -2014,7 +1993,7 @@ pub fn family(sh: Shape) -> World {
 /// moves drawn from: a member's content on D or O along [A] or [A, O] (sometimes backdated), X
 /// removing or re-granting a member (a random frontier of what it could have received) or two in
 /// one commit, K
-/// granting Z, Q vouching or writing an addendum against a held removal, Y or W raising or
+/// granting Z, Q writing an addendum against a held removal, Y or W raising or
 /// lowering A's or O's edge, retags among the four things, a member's edge write on A or O to any
 /// holder (junk where it holds no admin), content along [A, R] (A writing R half the time, R
 /// holding nothing on D) or [O, A]; random node sync sets beside each mint admin syncing its
@@ -2095,13 +2074,8 @@ pub fn random(seed: u64, len: usize) -> World {
             6 if !removals.is_empty() => {
                 let r = removals[rng.below(removals.len())];
                 let list: Vec<Id> = (0..w.by.len()).filter(|&j| j != r && rng.below(2) == 0).collect();
-                let vouches: Vec<Id> = list.iter().copied().filter(|&j| w.w.edge_class(j) && w.on(j) == A).collect();
                 let adds: Vec<Id> = list.iter().copied().filter(|&j| !w.w.edge_class(j) && w.on(j) == D).collect();
-                if rng.below(2) == 0 {
-                    w.write(q, |p| p.vouch(Q, bts, &[], A, r, &vouches));
-                } else {
-                    w.write(q, |p| p.addendum(Q, bts, &[A], D, r, &adds));
-                }
+                w.write(q, |p| p.addendum(Q, bts, &[A], D, r, &adds));
             }
             7 => {
                 let role = [Role::None, Role::Read, Role::Write][rng.below(3)];
@@ -2163,7 +2137,7 @@ pub struct Wide {
 /// backdated), K removed or re-granted on any thing it has a route on, X removing
 /// or re-granting a member (a random frontier) or two in one commit, an admin's churn on any edge
 /// between the things (a removal with a random frontier), junk edge writes by members on any thing
-/// to any holder, K granting Z, Q's vouches and addenda, direct routes granted and removed, retags
+/// to any holder, K granting Z, Q's addenda, direct routes granted and removed, retags
 /// among the five, A granted read alone on a thing with the thief writing through that hop
 /// (finding 23's read hop); with `opt` split commits and late path entries. Random node sync sets beside
 /// each mint admin syncing its things (each other thing one chance in five: honest bridges
@@ -2276,16 +2250,10 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
             }
             8 if !removals.is_empty() => {
                 let r = removals[rng.below(removals.len())];
-                let on = w.on(r);
                 let list: Vec<Id> = (0..w.by.len()).filter(|&j| j != r && rng.below(2) == 0).collect();
-                if rng.below(2) == 0 {
-                    let vs: Vec<Id> = list.iter().copied().filter(|&j| w.w.edge_class(j) && w.on(j) == on).collect();
-                    w.write(q, |p| p.vouch(Q, bts, &[A], on, r, &vs));
-                } else {
-                    let t = things[3 + rng.below(2)];
-                    let adds: Vec<Id> = list.iter().copied().filter(|&j| !w.w.edge_class(j) && w.on(j) == t).collect();
-                    w.write(q, |p| p.addendum(Q, bts, &[A], t, r, &adds));
-                }
+                let t = things[3 + rng.below(2)];
+                let adds: Vec<Id> = list.iter().copied().filter(|&j| !w.w.edge_class(j) && w.on(j) == t).collect();
+                w.write(q, |p| p.addendum(Q, bts, &[A], t, r, &adds));
             }
             9 => {
                 let (sg, n) = members[rng.below(3)];
@@ -2478,7 +2446,7 @@ pub fn cost_with(n: usize, k: usize, outside: usize, churn: usize, carried: usiz
 pub const STORY_UNITS: usize = 6;
 
 /// roles-model's stolen-node story (`paths::Sim`: invites, finalizes, `until`, covers, purges,
-/// vouches and addenda by the state-based rule, commits of several edge writes and of several
+/// addenda by the state-based rule, commits of several edge writes and of several
 /// things, self-removals and remaining admins, paths of two hops, a dependent written by descent)
 /// as an evidence world: its commits written in the order made, by the node of their signer (the
 /// thief's moves and every commit signed by X, whose device the thief holds, by one dishonest

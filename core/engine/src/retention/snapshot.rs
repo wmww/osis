@@ -1108,9 +1108,9 @@ impl Engine {
     /// has none).
     pub fn snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
         let (tid, ak) = (*tid, ak.clone());
-        // the role timeline walks every edge write and reads every vouch (spec/commits.md §2)
+        // the role timeline walks every edge write (spec/commits.md §2)
         if osis_schema::core_types::never_compacted(ak.as_str()) {
-            return Err(Error::Misuse("roles.0 and vouches.0 are never compacted"));
+            return Err(Error::Misuse("roles.0 is never compacted"));
         }
         if ak.as_str() == "created.0" {
             return Err(Error::Misuse("created.0 is never compacted"));

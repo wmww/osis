@@ -8,8 +8,7 @@ use held_model::evidence::names::*;
 use held_model::evidence::State;
 use osis_engine::evidence::Reason;
 
-/// The derivation under `cfg` over a held set of `w`'s end state under A2's delivery (vouches
-/// counting).
+/// The derivation under `cfg` over a held set of `w`'s end state under A2's delivery.
 fn at_end(w: &World, cfg: Config, held: impl Fn(&State) -> Set) -> (Ev, Set) {
     at_end_records(w, cfg, true, held)
 }
@@ -17,7 +16,7 @@ fn at_end(w: &World, cfg: Config, held: impl Fn(&State) -> Set) -> (Ev, Set) {
 /// `at_end`, with the world's record edges given to the derivation or not (the control).
 fn at_end_records(w: &World, cfg: Config, records: bool, held: impl Fn(&State) -> Set) -> (Ev, Set) {
     let mut w = w.clone();
-    let rule = a2(&mut w, true);
+    let rule = a2(&mut w);
     let st = w.run(&rule, |_| {});
     let h = held(&st);
     let mut d = Driver::with(&w, cfg);
@@ -36,8 +35,8 @@ fn everything(st: &State) -> Set {
     st.written.clone()
 }
 
-const KEYS: Config = Config { vouches: true, keys_open: true, leaves: false };
-const NO_KEYS: Config = Config { vouches: true, keys_open: false, leaves: false };
+const KEYS: Config = Config { keys_open: true, leaves: false };
+const NO_KEYS: Config = Config { keys_open: false, leaves: false };
 
 /// R's mint admin (finding 19's worlds).
 const V: Thing = 7;

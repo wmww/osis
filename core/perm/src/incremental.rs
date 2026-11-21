@@ -1,8 +1,6 @@
 //! Incremental evaluation (notes/perm-impl.md): the timeline split into connected components of
-//! things (edges join holder, target and author; a record joins a thing and its mint admin; a
-//! vouch joins nothing: one counts only on a thing where its voucher holds a role, so already
-//! in its component), each cached by its exact
-//! inputs. A held-set change touches only the components whose inputs changed: continued in
+//! things (edges join holder, target and author; a record joins a thing and its mint admin),
+//! each cached by its exact inputs. A held-set change touches only the components whose inputs changed: continued in
 //! place (`Timeline::append`, `add_leaves`), from the old walk (`Timeline::extend`), from a
 //! saved walk, or evaluated. Components are independent: no write in one can change authority
 //! in another, so the result equals one evaluation of the whole held set.
@@ -211,9 +209,7 @@ pub struct SaveDone {
 
 /// The unions of the partition that thing `t`'s held inputs make (`created` its record,
 /// `commits` those held on it): with its mint admin; each edge write's author and holder with
-/// its target. A vouch joins nothing: it counts only on a thing where its listed commit has a
-/// role-class part and its voucher could write that commit, so where the voucher, the commit's
-/// things and its removal are joined already (spec/permissions.md §5.1 Vouches).
+/// its target.
 fn joins(t: Tid, created: Option<&CreationRecord>, commits: &[Arc<RoleCommit>], mut join: impl FnMut(Tid, Tid)) {
     if let Some(CreationRecord::Thing { admin, .. }) = created {
         join(t, *admin);
@@ -425,7 +421,6 @@ impl Timelines {
         // with that record already).
         let unseen = |x: &Tid, known: bool| {
             held.edge_commits(x).is_empty()
-                && held.vouches(x).is_empty()
                 && self.of.get(x).is_none_or(|j| self.comps.get(j).is_some_and(|c| c.inputs.0.len() == 1 && c.inputs.1.is_empty() && c.inputs.2.len() == usize::from(known)))
         };
         // A node new to every walk (nothing held of its own but its key actor's `created.0`)
@@ -454,9 +449,7 @@ impl Timelines {
             };
             let c = self.comps.get(&i)?;
             let old = c.per.get(t);
-            // a vouch come or gone, or the role parts of a commit one lists: the general path
-            // (re-partition, `Timeline::extend`)
-            if c.inputs.2.contains(t) != held.created(t).is_some() || self.trusts(&c.inputs.1) || !c.tl.input.vouches.same_on(t, &held.vouches(t)) || !c.tl.input.vouches.same_parts(held) {
+            if c.inputs.2.contains(t) != held.created(t).is_some() || self.trusts(&c.inputs.1) {
                 return None;
             }
             let (mut kept, mut ids) = (0, BTreeSet::new());
@@ -534,14 +527,8 @@ impl Timelines {
             #[cfg(debug_assertions)]
             let was = (!new.is_empty() && c.tl.input.commits.len() <= 400).then(|| WalkWas::of(&c.tl));
             if !leaves.is_empty() {
-                let second = c.tl.second();
                 match c.tl.add_leaves(&leaves) {
-                    Ok(tl) => {
-                        c.tl = tl;
-                        if second {
-                            changed.evaluated.extend(c.inputs.0.iter().copied());
-                        }
-                    }
+                    Ok(tl) => c.tl = tl,
                     Err(tl) => {
                         c.tl = *tl;
                         self.comps.insert(i, c);
@@ -561,15 +548,8 @@ impl Timelines {
             if !new.is_empty() {
                 let list: Vec<Arc<RoleCommit>> = new.values().cloned().collect();
                 let keys: Vec<(Tid, CreationRecord)> = join.iter().filter_map(|(x, r)| r.clone().map(|r| (*x, r))).collect();
-                let second = c.tl.second();
                 match c.tl.append(&list, &keys) {
-                    Ok(tl) => {
-                        c.tl = tl;
-                        // a second walk is walked from scratch (`Timeline::vouched`)
-                        if second || c.tl.second() {
-                            changed.evaluated.extend(c.inputs.0.iter().copied());
-                        }
-                    }
+                    Ok(tl) => c.tl = tl,
                     Err(tl) => {
                         c.tl = *tl;
                         self.comps.insert(i, c);
@@ -658,22 +638,18 @@ impl Timelines {
         let old_ids: BTreeSet<CommitId> = if self.detect { cache.keys().flat_map(|k| k.1.iter().copied()).collect() } else { BTreeSet::new() };
         let mut fresh_comps: Vec<(u64, Inputs)> = Vec::new();
         let mut dsu = Dsu::default();
-        // edge commits per thing (`Comp::per`), and with the vouches (`Inputs`)
+        // edge commits per thing (`Comp::per`, `Inputs`)
         let mut ids: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
-        let mut vouch_ids: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
         let mut created: BTreeSet<Tid> = BTreeSet::new();
         for t in &region {
             dsu.find(*t);
-            let (rec, commits, vouches) = (held.created(t), held.edge_commits(t), held.vouches(t));
+            let (rec, commits) = (held.created(t), held.edge_commits(t));
             joins(*t, rec.as_ref(), &commits, |a, b| dsu.union(a, b));
             if rec.is_some() {
                 created.insert(*t);
             }
             if !commits.is_empty() {
                 ids.entry(*t).or_default().extend(commits.iter().map(|c| c.id));
-            }
-            if !vouches.is_empty() {
-                vouch_ids.entry(*t).or_default().extend(vouches.iter().map(|v| v.id));
             }
         }
         let mut groups: BTreeMap<Tid, Inputs> = BTreeMap::new();
@@ -683,7 +659,6 @@ impl Timelines {
             let g = groups.entry(root).or_default();
             g.0.insert(t);
             g.1.extend(ids.get(&t).into_iter().flatten().copied());
-            g.1.extend(vouch_ids.get(&t).into_iter().flatten().copied());
             if created.contains(&t) {
                 g.2.insert(t);
             }
@@ -743,12 +718,7 @@ impl Timelines {
                     };
                     let extended = match from {
                         Some((tl, basis)) => {
-                            let second = tl.second();
                             let tl = tl.extend(&part);
-                            // a second walk is walked from scratch (`Timeline::vouched`)
-                            if second || tl.as_ref().is_some_and(Timeline::second) {
-                                changed.evaluated.extend(inputs.0.iter().copied());
-                            }
                             if tl.is_none() && basis > 0 {
                                 // the walk saved under the root is no basis for an evaluation
                                 self.retired.insert(root);

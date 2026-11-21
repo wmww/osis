@@ -219,30 +219,6 @@ fn an_addendum_leaves_with_the_last_commit_it_lists() {
     assert_eq!(fails(&w, &rule), vec![]);
 }
 
-/// Finding 10: a vouch on N keyed by R counts parts on N alone, so D's evidence holds a vouch
-/// against a removal it holds only where it holds something on N. Y's vouch on F keyed by X's
-/// removal of K from A is in F's sync ID, not D's, though Y syncs both and D's evidence holds the
-/// removal; D's reader judges as the node holding everything.
-#[test]
-fn f10_a_vouch_on_a_thing_the_evidence_holds_nothing_on_stays_out() {
-    const F: roles_model::paths::Thing = 15;
-    let pw = roles_model::paths::World::new(&[(X, A), (Y, D), (Y, F)]);
-    let mut w = World::new(pw, &[A, D, F]);
-    let (x, y, k, z) = (w.node(true, &[A]), w.node(true, &[D, F]), w.node(true, &[A]), w.node(true, &[]));
-    w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Admin, &[]));
-    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
-    w.write(k, |p| p.edge(K, 2, &[], A, Z, Role::Write, &[]));
-    w.write(z, |p| p.content(Z, 3, &[A], D));
-    let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
-    let vf = w.write(y, |p| p.vouch(Y, 7, &[], F, r, &[]));
-    let rule = Rule::fixed();
-    let st = w.run(&rule, |_| {});
-    assert!(st.entries[&D].contains(&r));
-    assert!(st.entries[&F].contains(&vf));
-    assert!(!st.entries[&D].contains(&vf), "{:?}", st.entries[&D]);
-    assert_eq!(fails(&w, &rule), vec![]);
-}
-
 /// Finding 11, pinned as the draft has it: a writer of A without admin writes `n` grants of
 /// admin on Q's edge, none of which applies; Q writes D through [A], so every one is in D's
 /// evidence (an edge write on an edge of the stated path, whatever its validity) and Q's node
@@ -298,7 +274,7 @@ fn props(f: &[Fail]) -> Vec<&'static str> {
 /// K writes D through [A, O]; O is W's, and W syncs O alone; X (syncing A) removes K, listing
 /// nothing. No honest node syncs both O and D.
 fn org_apart() -> World {
-    family(Shape { via_org: true, units: 0, listed: false, thief: false, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, vouch: false, mint: 0 })
+    family(Shape { via_org: true, units: 0, listed: false, thief: false, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, grant: false, mint: 0 })
 }
 
 /// Finding 1: the remover's errand by direct taken grants (A's grant on O) never reaches D, two

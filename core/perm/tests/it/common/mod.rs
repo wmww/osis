@@ -61,25 +61,11 @@ pub struct CSpec {
     pub fin: bool,
 }
 
-/// A vouch commit (spec/permissions.md §5.1 Vouches): its entries on `thing`, by removal.
-#[derive(Clone, Debug)]
-pub struct VSpec {
-    pub id: CommitId,
-    pub author: Tid,
-    pub t: u64,
-    pub thing: Tid,
-    pub entries: Vec<(CommitId, Vec<CommitId>)>,
-    pub recv: BTreeMap<Tid, u64>,
-}
-
 /// A history under construction.
 #[derive(Clone, Debug, Default)]
 pub struct World {
     pub created: BTreeMap<Tid, CreationRecord>,
     pub commits: Vec<CSpec>,
-    pub vouches: Vec<VSpec>,
-    /// Role-class parts other than edge writes, by commit (`osis_perm::RoleParts`).
-    pub parts: Vec<osis_perm::RoleParts>,
     next: u32,
 }
 
@@ -108,8 +94,6 @@ impl World {
     pub fn merge(&mut self, o: World) {
         self.created.extend(o.created);
         self.commits.extend(o.commits);
-        self.vouches.extend(o.vouches);
-        self.parts.extend(o.parts);
     }
     pub fn fresh_id(&mut self) -> CommitId {
         self.next += 1;
@@ -143,30 +127,10 @@ impl World {
     pub fn set(&mut self, author: Tid, target: Tid, holder: Tid, e: Option<Edge>, t: u64, recv: &[(Tid, u64)]) -> CommitId {
         self.commit(author, t, &[(target, holder, e)], recv)
     }
-    /// A vouch by `author` at `t` on `thing`, entries (removal, commits listed); `recv` as
-    /// `commit`. Returns its commit ID.
-    pub fn vouch(&mut self, author: Tid, t: u64, thing: Tid, entries: &[(CommitId, &[CommitId])], recv: &[(Tid, u64)]) -> CommitId {
-        let id = self.fresh_id();
-        self.vouch_id(id, author, t, thing, entries, recv);
-        id
-    }
-    /// A vouch with a chosen ID.
-    pub fn vouch_id(&mut self, id: CommitId, author: Tid, t: u64, thing: Tid, entries: &[(CommitId, &[CommitId])], recv: &[(Tid, u64)]) {
-        let mut r: BTreeMap<Tid, u64> = recv.iter().copied().collect();
-        r.insert(author, t);
-        self.vouches.push(VSpec { id, author, t, thing, entries: entries.iter().map(|(k, l)| (*k, l.to_vec())).collect(), recv: r });
-    }
-    /// A role commit with no edge write whose role-class parts need `parts` (thing, role): a
-    /// rotation. Returns its commit ID.
-    pub fn role_parts(&mut self, author: Tid, t: u64, parts: &[(Tid, Role)], recv: &[(Tid, u64)]) -> CommitId {
-        let id = self.commit(author, t, &[], recv);
-        self.parts.push(osis_perm::RoleParts { id, ts: ts(t), author, parts: parts.to_vec() });
-        id
-    }
     /// Frontier of a demoter `node` at `t`: every commit it received before `t`.
     pub fn frontier(&self, node: Tid, t: u64) -> Frontier {
         let got = |r: &BTreeMap<Tid, u64>| r.get(&node).copied().unwrap_or(LATE) < t;
-        Frontier::new(self.commits.iter().filter(|c| got(&c.recv)).map(|c| c.id).chain(self.vouches.iter().filter(|v| got(&v.recv)).map(|v| v.id)))
+        Frontier::new(self.commits.iter().filter(|c| got(&c.recv)).map(|c| c.id))
     }
 
     /// The held set, every commit carrying the frontier its receipts imply.
@@ -187,13 +151,6 @@ impl World {
                 frontier: (!c.fin).then(|| Arc::new(self.frontier(c.author, c.t))),
                 ops: c.ops.iter().map(|&(target, holder, edge)| EdgeOp { target, holder, edge }).collect(),
             });
-        }
-        for v in self.vouches.iter().filter(|v| !skip.contains(&v.id)) {
-            let entries = v.entries.iter().map(|(r, l)| (*r, Arc::new(Frontier::new(l.iter().copied())))).collect();
-            h.add_vouch(osis_perm::Vouch { id: v.id, ts: ts(v.t), author: v.author, thing: v.thing, entries });
-        }
-        for p in self.parts.iter().filter(|p| !skip.contains(&p.id)) {
-            h.add_parts(p.clone());
         }
         h
     }

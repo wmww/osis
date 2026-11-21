@@ -127,7 +127,6 @@ pub fn input(w: &World, v: &View) -> Input {
                     let frontier = (!finalize).then(|| Arc::new(List::new(listed)));
                     PartKind::Edge(EdgeWrite { holder: tid(*holder), value, frontier, remains: relies.map(tid), adminless: *adminless })
                 }
-                Kind::Vouch { removal, list } => PartKind::Vouch { removal: cid(w.cid(*removal)), list: Frontier::new(list.iter().map(|&j| cid(w.cid(j)))) },
                 _ => PartKind::Delta(delta(w, i)),
             };
             let direct = k.direct.iter().fold(0, |m, &j| m | 1 << j);
@@ -159,10 +158,6 @@ pub fn diff(w: &World, v: &View, disputes: bool) -> Option<String> {
     let rd = m::judge(w, &rules, v);
     let inp = input(w, v);
     let mut p = Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits);
-    // where no entry counts, the first walk reads as the timeline (notes/perm-paths.md, Two walks)
-    if let Some(id) = p.first_walk_differs() {
-        return Some(format!("the first walk differs from the timeline at {id:?}, no entry counting there"));
-    }
     compare(w, v, &rules, &rd, &inp, &mut p, disputes)
 }
 

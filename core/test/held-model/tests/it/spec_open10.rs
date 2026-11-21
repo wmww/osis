@@ -286,39 +286,33 @@ fn open10_variants_agree_where_every_write_is_chained() {
 }
 
 /// Per variant, the worlds failing each property over every `step`th family world and `n` random
-/// worlds of 14 moves (by hand: `OSIS_OPEN10_STEP`, `OSIS_OPEN10_RANDOM`; vouches on, then off).
+/// worlds of 14 moves (by hand: `OSIS_OPEN10_STEP`, `OSIS_OPEN10_RANDOM`).
 #[test]
 #[ignore = "by hand"]
 fn open10_explore() {
     let env = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (step, n) = (env("OSIS_OPEN10_STEP", 97), env("OSIS_OPEN10_RANDOM", 100));
-    let mut jobs: Vec<(Open10, bool, String, World)> = vec![];
+    let mut jobs: Vec<(Open10, String, World)> = vec![];
     for v in Open10::ALL {
-        for vouches in [true, false] {
-            for i in (0..FAMILY).step_by(step) {
-                jobs.push((v, vouches, format!("{:?}", Shape::nth(i)), family(Shape::nth(i))));
-            }
-            for seed in 0..n as u64 {
-                jobs.push((v, vouches, format!("random {seed}"), random(seed, 14)));
-            }
+        for i in (0..FAMILY).step_by(step) {
+            jobs.push((v, format!("{:?}", Shape::nth(i)), family(Shape::nth(i))));
+        }
+        for seed in 0..n as u64 {
+            jobs.push((v, format!("random {seed}"), random(seed, 14)));
         }
     }
-    let out = std::sync::Mutex::new(std::collections::BTreeMap::<(&str, bool), (usize, std::collections::BTreeMap<&str, (usize, String)>)>::new());
+    let out = std::sync::Mutex::new(std::collections::BTreeMap::<&str, (usize, std::collections::BTreeMap<&str, (usize, String)>)>::new());
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     std::thread::scope(|sc| {
         for _ in 0..threads {
             sc.spawn(|| loop {
-                let Some((v, vouches, name, w)) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
+                let Some((v, name, w)) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
                 let mut w = w.clone();
-                let mut rule = v.set(&mut w, Rule::fixed());
-                if !vouches {
-                    rule.closure.vouches = false;
-                    w.rules.vouch = roles_model::paths::Vouch::Off;
-                }
+                let rule = v.set(&mut w, Rule::fixed());
                 let f = fails(&w, &rule);
                 let mut o = out.lock().unwrap();
-                let e = o.entry((v.name(), *vouches)).or_default();
+                let e = o.entry(v.name()).or_default();
                 e.0 += 1;
                 let mut seen = std::collections::BTreeSet::new();
                 for x in f {
@@ -330,8 +324,8 @@ fn open10_explore() {
             });
         }
     });
-    for ((v, vouches), (worlds, props)) in out.into_inner().unwrap() {
-        eprintln!("{v} vouches {vouches}: {worlds} worlds");
+    for (v, (worlds, props)) in out.into_inner().unwrap() {
+        eprintln!("{v}: {worlds} worlds");
         for (p, (k, first)) in props {
             eprintln!("  {p}: {k} worlds, first {first}");
         }

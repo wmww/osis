@@ -10,9 +10,9 @@ use super::{input, rules, MODES};
 use crate::common::{seeded, sharded};
 use osis_base::Tid;
 use osis_base::{Ak, CommitId, PurgeBy, Role, Ts, WallMs};
-use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, EdgeWrite, Fact, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
+use osis_perm::paths::{Commit, Delta, DeltaClass, EdgeWrite, Fact, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::ops::Bound;
-use osis_perm::{Edge, Frontier, WriteId};
+use osis_perm::{Edge, WriteId};
 use std::sync::Arc;
 use roles_model::paths as m;
 use roles_model::Rng;
@@ -33,9 +33,6 @@ pub(super) fn differs(a: &mut Paths, b: &mut Paths, disputes: bool) -> Option<St
             "histories, finals, copies, purges or chained points".into()
         };
         return Some(what);
-    }
-    if a.counting() != b.counting() {
-        return Some(format!("counting {:?} / {:?}", a.counting(), b.counting()));
     }
     if a.void_trusted() != b.void_trusted() {
         return Some(format!("void trusted {:?} / {:?}", a.void_trusted(), b.void_trusted()));
@@ -259,10 +256,6 @@ fn role_delta(on: u32, path: &[u32]) -> Part {
     Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
-fn vouch(on: u32, removal: u64, list: &[u64]) -> Part {
-    Part { on: th(on), path: vec![], direct: 0, kind: PartKind::Vouch { removal: cm(removal), list: Frontier::new(list.iter().map(|&c| cm(c))) } }
-}
-
 const H: u32 = 1;
 const M: u32 = 2;
 const X: u32 = 3;
@@ -279,39 +272,6 @@ fn recs() -> BTreeMap<Tid, Tid> {
     BTreeMap::from([(th(A), th(H)), (th(B), th(H)), (th(C), th(H)), (th(N), th(M))])
 }
 
-/// X's role-class delta on N along [A] (A granted admin on N by M) rests on X's edge on A, which
-/// H's removal cuts; M's vouch on N keeps it. Nothing but the vouch joins A's edges and N's: the
-/// vouch's join is what makes the first walk run where the removal is.
-fn vouch_world() -> Vec<Commit> {
-    vec![
-        mk(1, 1, H, vec![ew(A, &[], X, Some(Role::Admin), &[])]),
-        mk(2, 1, M, vec![ew(N, &[], A, Some(Role::Admin), &[])]),
-        mk(3, 3, X, vec![role_delta(N, &[A])]),
-        mk(4, 5, H, vec![ew(A, &[], X, None, &[])]),
-        mk(5, 6, M, vec![vouch(N, 4, &[3])]),
-    ]
-}
-
-// spec/permissions.md §5.1 Vouches (draft): a vouch on N for a removal on another thing counts,
-// whatever joins their edges otherwise: its removal applies as a lowering in the first walk, which
-// runs where a vouch is (notes/perm-paths.md, Components: a vouch touches its removal's edges).
-// Every arrival order; the single walk alike.
-#[test]
-fn a_vouch_joins_its_removals_component() {
-    let c = vouch_world();
-    let id = WriteId(cm(3), 0);
-    for order in perms(c.len()) {
-        let mut p = Paths::new(&recs(), BTreeSet::new());
-        for &k in &order {
-            p.add(std::slice::from_ref(&c[k]));
-        }
-        assert_eq!(p.content(&id), Some(Content::Valid(By::Listed)), "order {order:?}");
-    }
-    assert_eq!(alike(&recs(), &BTreeSet::new(), &c, 1, true), None);
-    let without: Vec<Commit> = c[..4].to_vec();
-    assert_eq!(Paths::evaluate(&recs(), BTreeSet::new(), &without).content(&id), Some(Content::Invalid));
-}
-
 fn perms(n: usize) -> Vec<Vec<usize>> {
     let mut out = vec![vec![]];
     for k in 0..n {
@@ -322,7 +282,7 @@ fn perms(n: usize) -> Vec<Vec<usize>> {
 
 /// A world of every forget case: a lowering with drops (5, dropping X's grant of Y), a lowering
 /// judged void against the grant it rests on (6), a part joining two components (4: H on B along
-/// [A]), a commit writing two components (7), a vouch with a counting entry (10 for 9 against 5).
+/// [A]), a commit writing two components (7), a role-class delta on a component of its own (9).
 fn forget_world() -> Vec<Commit> {
     let admin = Some(Role::Admin);
     vec![
@@ -335,12 +295,11 @@ fn forget_world() -> Vec<Commit> {
         mk(7, 6, H, vec![ew(A, &[], Z, admin, &[]), ew(C, &[], Z, admin, &[])]),
         mk(8, 1, M, vec![ew(N, &[], A, admin, &[])]),
         mk(9, 3, X, vec![role_delta(N, &[A])]),
-        mk(10, 7, M, vec![vouch(N, 5, &[9])]),
     ]
 }
 
 /// Over every subset of `commits` forgotten at once from all held, under `trust`: `Changed` exact,
-/// the reading (counting entries and void trusted writes too) as from scratch over the rest and
+/// the reading (void trusted writes too) as from scratch over the rest and
 /// as the single walk; then added again in reverse order, each `Changed` exact, as all held.
 fn every_forget(trust: &BTreeSet<WriteId>, commits: &[Commit]) {
     let n = commits.len();
@@ -361,21 +320,20 @@ fn every_forget(trust: &BTreeSet<WriteId>, commits: &[Commit]) {
             let ch = p.add(std::slice::from_ref(&commits[k]));
             assert_eq!(check(&before, &p, &ch), None, "adding {k} again after {gone:?} under {trust:?}");
         }
-        assert!(reading(&p) == reading(&full) && p.counting() == full.counting() && p.void_trusted() == full.void_trusted(), "re-added {gone:?} under {trust:?}");
+        assert!(reading(&p) == reading(&full) && p.void_trusted() == full.void_trusted(), "re-added {gone:?} under {trust:?}");
     }
 }
 
 // notes/perm-paths.md, Forget and update: every subset of a world of every forget case forgotten
 // (a lowering's drops coming back, a void lowering's grant gone, the joining part of a merged
-// component, a vouch with its counting entry, a commit writing two components, a trusted write)
+// component, a commit writing two components, a trusted write)
 // reads as from scratch over the rest and as the single walk, and added again as never forgotten.
 #[test]
 fn every_forget_of_a_world_of_every_case_reads_as_from_scratch() {
     let c = forget_world();
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &c);
-    // the cases are there: 5 drops 2, 6 void, 4 applied joining A and B, the entry counting
+    // the cases are there: 5 drops 2, 6 void, 4 applied joining A and B
     assert_eq!((p.status(&WriteId(cm(2), 0)), p.status(&WriteId(cm(6), 0)), p.status(&WriteId(cm(4), 0))), (Some(Status::Dropped), Some(Status::Void), Some(Status::Applied)));
-    assert_eq!(p.counting().len(), 1);
     for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cm(5), 0)]), BTreeSet::from([WriteId(cm(6), 0)])] {
         every_forget(&trust, &c);
     }

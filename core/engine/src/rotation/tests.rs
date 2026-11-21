@@ -1432,8 +1432,7 @@ fn audit_dropped_grant_named_spec_crypto_4() {
     let e = newest_read(&lp, 0, g).unwrap();
     let mut all = lp.packages_for(0, 3).unwrap();
     all.extend(lp.packages_for(1, 3).unwrap());
-    // X gets C after the demotion's `ts` (received by it, X's vouch would keep C,
-    // spec/permissions.md §5.1 Vouches)
+    // X gets C after the demotion's `ts`
     lp.peers[3].clock.advance(1_000);
     for pk in all.iter().filter(|p| !dem.contains(&p.id)) {
         let _ = lp.peers[3].receive(&pk.bytes, pk.blobs.clone());
@@ -2439,8 +2438,7 @@ fn drop_over_older_raise_resealed_spec_crypto_4() {
     lp.peers[0].clock.advance(10_000);
     assert!(!lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "A rotates for the drop");
     assert!(!removed_reader_reads(&mut lp, g, &tids, 0), "A's own rotation boxes M");
-    // every other node gets C past X's `ts` by its own clock (A's runs ahead; one receiving C by
-    // X's `ts` would keep it with a vouch, spec/permissions.md §5.1 Vouches)
+    // every other node gets C past X's `ts` by its own clock (A's runs ahead)
     for p in 1..6 {
         lp.peers[p].clock.advance(20_000);
     }

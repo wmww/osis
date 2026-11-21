@@ -135,7 +135,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     let void = core.ix.void.remove(id);
     super::set_pending(core, id, None);
     core.ix.unresolved.remove(id);
-    // perm reads nothing of a commit not held: edge writes, vouches, other role-class parts
+    // perm reads nothing of a commit not held: its edge writes
     core.ix.held.remove(id);
     core.stale_commits.remove(id);
     if void {
@@ -182,7 +182,6 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
 pub(crate) fn unjudge_part(core: &mut crate::engine::Core, c: &CommitId, ai: usize) {
     core.ix.rotation_role.remove(&(*c, ai));
     core.ix.grant_overreach.remove(&(*c, ai));
-    super::validity::parts_moved(core, c);
 }
 
 #[cfg(test)]

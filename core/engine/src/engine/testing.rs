@@ -335,12 +335,6 @@ impl Engine {
         self.core.interim_role_paths = on;
     }
 
-    /// Whether this node writes vouches unasked (tests: a world with hand-written vouches).
-    #[doc(hidden)]
-    pub fn write_vouches(&mut self, on: bool) {
-        self.core.vouches_on = on;
-    }
-
     /// The list bound in place of `MAX_LIST_BYTES` (tests: frontiers, thing lists and listings
     /// fit end to end).
     #[doc(hidden)]
@@ -866,19 +860,17 @@ impl super::Core {
         }
         let mut tables: BTreeMap<&'static str, String> = tables(ix).into_iter().map(|(n, t)| (n, format!("{t:?}"))).collect();
         tables.insert("derived_written", format!("{:?}", derived_written(ix)));
-        tables.insert("held vouching", format!("{:?}", ix.held.vouching()));
         IndexDigest { commits, held: self.held_digest(), snapshots, dropped_snapshots, tables }
     }
 
     /// `IndexDigest::held`.
-    fn held_digest(&self) -> BTreeMap<Tid, (Vec<CommitId>, bool, Vec<CommitId>)> {
+    fn held_digest(&self) -> BTreeMap<Tid, (Vec<CommitId>, bool)> {
         let ix = &self.ix;
         osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
             // sorted: the held set keeps arrival order, which nothing it answers depends on
             let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&ix.held, &t).iter().map(|x| x.id).collect();
             cs.sort();
-            let vs: Vec<CommitId> = ix.held.vouches_on(&t).map(|v| v.id).collect();
-            (t, (cs, ix.held.created(&t).is_some(), vs))
+            (t, (cs, ix.held.created(&t).is_some()))
         }).collect()
     }
 
@@ -894,7 +886,6 @@ impl super::Core {
             && *a.dropped_snapshots == *b.dropped_snapshots
             && tables(a).iter().zip(tables(b).iter()).all(|((_, x), (_, y))| x.same(*y))
             && derived_written(a) == derived_written(b)
-            && a.held.vouching() == b.held.vouching()
             && self.perm_parts(false) == o.perm_parts(false)
     }
 
@@ -942,9 +933,9 @@ impl super::Core {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndexDigest {
     pub commits: BTreeMap<CommitId, CommitDigest>,
-    /// Per thing perm's held set reads: its edge commits, sorted, whether its creation record is
-    /// held, and the commits of the vouches on it, sorted.
-    pub held: BTreeMap<Tid, (Vec<CommitId>, bool, Vec<CommitId>)>,
+    /// Per thing perm's held set reads: its edge commits, sorted, and whether its creation record
+    /// is held.
+    pub held: BTreeMap<Tid, (Vec<CommitId>, bool)>,
     /// Per compaction snapshot: its `snapshots` entries, with their aspect.
     pub snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>>,
     /// Per snapshot: the aspects listing it in `dropped_snapshots`.
@@ -1110,9 +1101,9 @@ mod tests {
         // `pend_keys`, `pend_by`, `pend_needs`: each examined again); rows not persisted for ephemeral aspects
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
         // `cause_at`, `reseal_asks`, `carriers`, `carrying`); the node closure, built again after an open (`closure`);
-        // the removals to judge for vouches, all of them again at an open (`vouches_due`,
-        // `vouch_watch`, `vouch_filed`, `vouch_gathered`, `vouch_left`, `vouch_wake`, `vouch_wake_ts`).
-        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "vouches_due", "vouch_watch", "vouch_filed", "vouch_gathered", "vouch_left", "vouch_wake", "vouch_wake_ts"];
+        // the removals to judge for addenda, all of them again at an open (`addenda_due`,
+        // `addenda_watch`, `addenda_filed`, `addenda_gathered`, `addenda_wake`, `addenda_wake_ts`).
+        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "addenda_due", "addenda_watch", "addenda_filed", "addenda_gathered", "addenda_wake", "addenda_wake_ts"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {

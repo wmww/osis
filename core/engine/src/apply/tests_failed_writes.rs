@@ -5,11 +5,52 @@
 //! applies examines again what waits for it).
 #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
-use super::tests_vouches::{grant, remove, role, vouches, world};
 use crate::Mutation;
+use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
-use osis_base::{Ak, Role, Tid, Value};
+use crate::rotation::tests::edge;
+use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_store::Fault;
+
+const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
+
+/// Peer 0 (H) makes thing `t` and grants peers 1 (X) and 2 (W) admin; peers 3.. hold nothing
+/// on it. Everyone synced.
+fn world(n: usize) -> (LocalPeer, Tid) {
+    LocalPeer::cached(&format!("apply::tests_failed_writes::world/{n}"), || {
+        let mut lp = LocalPeer::fresh(n, T0);
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.me();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
+        for i in [1, 2] {
+            let who = lp.peers[i].engine.me();
+            lp.peers[0].engine.grant(&t, &who, &edge(Role::Admin)).unwrap();
+        }
+        lp.sync_all().unwrap();
+        lp.advance(1000);
+        (lp, t)
+    })
+}
+
+/// Peer `by` grants peer `to` `role` on `t`: the grant's commit.
+fn grant(lp: &mut LocalPeer, by: usize, t: Tid, to: usize, role: Role) -> CommitId {
+    let who = lp.peers[to].engine.me();
+    let id = *lp.peers[by].engine.grant(&t, &who, &edge(role)).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    id
+}
+
+/// Peer `by` removes peer `holder` from `t`, a second after everything so far.
+fn remove(lp: &mut LocalPeer, by: usize, t: Tid, holder: usize) -> CommitId {
+    lp.advance(1000);
+    let h = lp.peers[holder].engine.me();
+    let id = *lp.peers[by].engine.demote(&t, &Demotion { holder: h, new: None, retain: None }).unwrap().commits.last().unwrap();
+    lp.advance(1000);
+    id
+}
 
 /// `op` on the world `make` builds, peer `at`'s store failing at its n-th write, for every n `op`
 /// writes; after a failure, `op` again and a tick: `seen` of the world then equals a run where
@@ -73,13 +114,14 @@ fn an_arrival_waking_a_wait() {
     );
 }
 
-// A removal arriving at a witness that owes a vouch: X grants K write, W (peer 2) received it,
-// H removes X. W vouches for the grant once, and K keeps its role.
+// A removal arriving at a witness that owes an addendum: X writes, W (peer 2) received it, H
+// removes X. W writes one addendum for the write, and it stays valid.
 #[test]
-fn a_removal_owing_a_vouch() {
+fn a_removal_owing_an_addendum() {
     let make = || {
         let (mut lp, t) = world(4);
-        grant(&mut lp, 1, t, 3, Role::Write);
+        set(&mut lp, 1, t, "by X");
+        lp.advance(1000);
         lp.sync(1, 2).unwrap();
         remove(&mut lp, 0, t, 1);
         (lp, t)
@@ -90,8 +132,8 @@ fn a_removal_owing_a_vouch() {
         |lp, _| lp.sync(0, 2),
         |lp, t| {
             let w = lp.peers[2].engine.me();
-            let mine = vouches(lp, 2, *t).iter().filter(|v| v.0 == w).count();
-            format!("{:?} vouches {mine} role {:?}", pending(lp, 2), role(lp, 2, 3, *t))
+            let mine = lp.peers[2].engine.core.ix.addenda.iter().filter(|((on, _), a)| on == t && a.point.node == w).count();
+            format!("{:?} addenda {mine} {:?}", pending(lp, 2), lp.peers[2].engine.get(t, &Ak::new(X).unwrap()).unwrap())
         },
     );
 }

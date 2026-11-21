@@ -1,4 +1,4 @@
-//! Small worlds of content, vouches, addenda, covers and purges (A1 step 3b): the model's `tiny`
+//! Small worlds of content, addenda, covers and purges (A1 step 3b): the model's `tiny`
 //! worlds hold edge writes alone, so these are drawn here over the model's `World` and judged by
 //! the model as the oracle. Account A (H's) mints T1, A2 is K's; at 1 H pairs B, X and N5, shares
 //! T1 with A2 at write, and K gives Z write on A2; halfway H removes X. Parties (X one in three)
@@ -6,8 +6,7 @@
 //! each listing earlier commits at random), T1's edges along [A] (A2's grant: write or
 //! none), content on T1 along [A] or [A2] (a purge author of the signer or the listed thing),
 //! one commit writing an edge on A and A2's on T1 (write, admin or none), addenda against an
-//! earlier lowering, covers carrying earlier content, purges by author, and vouches on A or on T1
-//! (along [A] or [A2]) against an earlier lowering.
+//! earlier lowering, covers carrying earlier content and purges by author.
 //! spec/permissions.md §5.1, §5.2, §6 (the draft replaces them: notes/a1-spec/permissions.md).
 
 use super::diff;
@@ -53,7 +52,6 @@ pub fn world(i: u64) -> (World, View) {
             _ => earlier.iter().copied().filter(|&j| w.lowers(j).is_some()).collect(),
         };
         let contents: Vec<Id> = earlier.iter().copied().filter(|&j| matches!(w.commits[j].kind, Kind::Content)).collect();
-        let edges: Vec<Id> = earlier.iter().copied().filter(|&j| w.edge_class(j)).collect();
         match rng.below(12) {
             0 | 1 => {
                 let h = PARTIES[rng.below(PARTIES.len())];
@@ -82,15 +80,6 @@ pub fn world(i: u64) -> (World, View) {
                 let (path, ix) = if rng.below(3) == 0 { (vec![m::A2], rng.below(2)) } else { (vec![m::A], rng.below(2)) };
                 w.content_as(s, ts, &path, m::T1, ix);
             }
-            5 | 10 => {
-                // stamped after its removal, listing content before it
-                if let Some(r) = pick(&mut rng, &lowerings) {
-                    let rts = w.commits[r].ts;
-                    let x = w.sets(r).map(|e| e.0);
-                    let l = list(&mut rng, &|j| contents.contains(&j) && w.commits[j].ts <= rts && (Some(w.commits[j].signer) == x || rng_free(j)));
-                    w.addendum(s, ts.max(rts + 1), &[m::A], m::T1, r, &l);
-                }
-            }
             6 => {
                 let carries: Set = list(&mut rng, &|j| contents.contains(&j)).into_iter().collect();
                 w.push(s, ts, &[m::A], m::T1, Kind::Cover { carries });
@@ -100,17 +89,12 @@ pub fn world(i: u64) -> (World, View) {
                 w.purge(s, ts, &[m::A], m::T1, author);
             }
             _ => {
-                // stamped after its removal, listing role writes on its thing before it
+                // stamped after its removal, listing content before it
                 if let Some(r) = pick(&mut rng, &lowerings) {
-                    let (path, on) = match rng.below(4) {
-                        0 | 1 => (vec![], m::A),
-                        2 => (vec![m::A], m::T1),
-                        _ => (vec![m::A2], m::T1),
-                    };
                     let rts = w.commits[r].ts;
                     let x = w.sets(r).map(|e| e.0);
-                    let l = list(&mut rng, &|j| edges.contains(&j) && w.commits[j].on == on && w.commits[j].ts <= rts && (Some(w.commits[j].signer) == x || rng_free(j)));
-                    w.vouch(s, ts.max(rts + 1), &path, on, r, &l);
+                    let l = list(&mut rng, &|j| contents.contains(&j) && w.commits[j].ts <= rts && (Some(w.commits[j].signer) == x || rng_free(j)));
+                    w.addendum(s, ts.max(rts + 1), &[m::A], m::T1, r, &l);
                 }
             }
         }

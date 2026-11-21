@@ -947,30 +947,26 @@ indexes! {
     /// rotation joining or leaving an epoch's closers moves only the commits these list
     /// (`refresh_epochs`).
     pub addenda_keyed: JSetMap<CommitId, (Tid, CommitId)>,
-    /// Removals whose vouches and addenda this node may owe, to judge at the end of the
-    /// transaction (`flows::vouches`): every held one at an open, then those whose component
+    /// Removals whose addenda this node may owe, to judge at the end of the
+    /// transaction (`flows::addenda`): every held one at an open, then those whose component
     /// changed.
-    pub vouches_due: JSet<CommitId>,
-    /// The removals judged by `flows::vouches`, by each thing whose roles for this node their
-    /// judgement reads (`flows::vouches::Gathered::watched`): this node's roles moving there, or
+    pub addenda_due: JSet<CommitId>,
+    /// The removals judged by `flows::addenda`, by each thing whose roles for this node their
+    /// judgement reads (`flows::addenda::Gathered::watched`): this node's roles moving there, or
     /// the thing's component walked anew, makes them due again.
-    pub vouch_watch: JSetMap<Tid, CommitId>,
-    /// The things each removal is filed under in `vouch_watch`.
-    pub vouch_filed: JMap<CommitId, Arc<BTreeSet<Tid>>>,
-    /// What each removal's judgement gathered (`flows::vouches::Gathered`), kept while it is
+    pub addenda_watch: JSetMap<Tid, CommitId>,
+    /// The things each removal is filed under in `addenda_watch`.
+    pub addenda_filed: JMap<CommitId, Arc<BTreeSet<Tid>>>,
+    /// What each removal's judgement gathered (`flows::addenda::Gathered`), kept while it is
     /// filed or due: gathered anew only when what it reads may have changed. Memory only.
-    pub vouch_gathered: JMap<CommitId, Arc<crate::flows::vouches::Gathered>>,
-    /// The removals judged by `flows::vouches`, by the holders their edge writes name and their
+    pub addenda_gathered: JMap<CommitId, Arc<crate::flows::addenda::Gathered>>,
+    /// The removals judged by `flows::addenda`, by the holders their edge writes name and their
     /// author: (party, the removal's `ts`, removal). A commit ordered no later than the removal,
     /// applying and reaching one (`Held::reach` from its author, its edge targets and everything
-    /// upstream of its edge holders), makes it due again (`flows::vouches::wake`).
-    pub vouch_wake: JSet<(Tid, osis_base::Ts, CommitId)>,
-    /// `vouch_wake`'s removals by `ts`: a commit stamped after the newest wakes none.
-    pub vouch_wake_ts: JSet<(osis_base::Ts, CommitId)>,
-    /// The writers' leaving out taken per (removal, thing) (`flows::vouches::leaving_out`): kept
-    /// while it still holds for the same candidates and trust set, so a fight costs a step two
-    /// walks, not one per candidate. Memory only: an open takes it anew.
-    pub vouch_left: JMap<(CommitId, Tid), Arc<crate::flows::vouches::LeftOut>>,
+    /// upstream of its edge holders), makes it due again (`flows::addenda::wake`).
+    pub addenda_wake: JSet<(Tid, osis_base::Ts, CommitId)>,
+    /// `addenda_wake`'s removals by `ts`: a commit stamped after the newest wakes none.
+    pub addenda_wake_ts: JSet<(osis_base::Ts, CommitId)>,
     /// Accounts' rotations applied and not yet answered with this node's listing or addenda
     /// (`flows::signing::answer_rotations`; `records::ROTATIONS_DUE`).
     pub rotations_due: JSet<CommitId>,
@@ -1018,8 +1014,8 @@ pub(crate) enum Step {
     Commit,
     /// One part judged alone (`apply::examine`).
     Part,
-    /// The vouches and addenda one removal owes written (`flows::vouches::write_owed`).
-    Vouch,
+    /// The addenda one removal owes written (`flows::addenda::write_owed`).
+    Addenda,
     /// One purge-on-replace cover written (`retention::settle_none`).
     Cover,
     /// One re-snapshot owed after a purge written (`Engine::purge_resnapshots`).
@@ -1212,9 +1208,6 @@ pub struct Core {
     /// Whether this node answers removals with addenda (tests: an oracle checking that reads
     /// are a function of the received commits turns it off, `Engine::write_addenda`).
     pub addenda_on: bool,
-    /// Whether this node writes vouches (tests: a world with hand-written vouches turns it off,
-    /// `Engine::write_vouches`).
-    pub vouches_on: bool,
     pub stale_under: BTreeSet<Tid>,
     pub stale_commits: BTreeSet<CommitId>,
     pub stale_all: bool,
@@ -1604,7 +1597,6 @@ impl Core {
             stale_things: self.stale_things.clone(),
             stale_authors: self.stale_authors.clone(),
             addenda_on: self.addenda_on.clone(),
-            vouches_on: self.vouches_on.clone(),
             stale_under: self.stale_under.clone(),
             stale_commits: self.stale_commits.clone(),
             stale_all: self.stale_all.clone(),
@@ -1780,9 +1772,9 @@ impl Core {
     pub(crate) fn timelines_changed(&mut self, c: osis_perm::Changed) {
         // a removal whose own change in the walk differs (it started or stopped applying, or
         // lowers or audits otherwise: perm names every such commit, `Changed::commits`) is
-        // judged again for vouches: the one input a removal not applying reads
-        crate::flows::vouches::note_changed(self, &c.commits);
-        crate::flows::vouches::note_evaluated(self, &c.evaluated);
+        // judged again for addenda: the one input a removal not applying reads
+        crate::flows::addenda::note_changed(self, &c.commits);
+        crate::flows::addenda::note_evaluated(self, &c.evaluated);
         self.stale_things.extend(c.evaluated);
         self.stale_things.extend(self.ix.held.below(&c.created));
         // a write may have stopped or started applying with no role of its author moving, and an
@@ -1792,7 +1784,7 @@ impl Core {
         let targets: BTreeSet<Tid> = c.edges.iter().map(|p| p.1).chain(c.created.iter().copied()).collect();
         let moved = self.ix.held.upstream(&holders);
         let under = self.ix.held.reach(&targets);
-        crate::flows::vouches::note_roles_moved(self, &moved, &under);
+        crate::flows::addenda::note_roles_moved(self, &moved, &under);
         self.stale_authors.extend(moved);
         // a role moved there, this node's maybe: a held purge-on-replace body may now be owed a
         // cover (`retention::settle_none`), an aspect weighed while this node could not write it
@@ -2270,7 +2262,6 @@ impl Core {
             walk_cache_min: _,
             key_salt: _,
             addenda_on: _,
-            vouches_on: _,
             skip_writer_rules: _,
             interim_role_paths: _,
             leave_adminless: _,
@@ -2464,7 +2455,6 @@ impl Core {
             stale_things: BTreeSet::new(),
             stale_authors: BTreeSet::new(),
             addenda_on: true,
-            vouches_on: true,
             stale_under: BTreeSet::new(),
             stale_commits: BTreeSet::new(),
             stale_all: true,
@@ -4168,7 +4158,7 @@ impl Engine {
         // debug builds: whether the transaction changed a state or a part
         #[cfg(debug_assertions)]
         let mut changed = false;
-        // debug builds: whether the transaction was durable (`flows::vouches::missed` after it)
+        // debug builds: whether the transaction was durable (`flows::addenda::missed` after it)
         #[cfg(debug_assertions)]
         let mut durable = false;
         // the blobs it held, once committed
@@ -4212,7 +4202,7 @@ impl Engine {
                 }
                 if r.is_ok()
                     && !tx.txn.is_memory()
-                    && let Err(e) = crate::flows::inbox::owe_removal_notices(&mut tx).and_then(|()| crate::flows::vouches::write_owed(&mut tx)).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
+                    && let Err(e) = crate::flows::inbox::owe_removal_notices(&mut tx).and_then(|()| crate::flows::addenda::write_owed(&mut tx)).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
                         .and_then(|()| crate::sync::dial::drop_departed(&mut tx))
                 {
                     r = Err(e);
@@ -4415,7 +4405,7 @@ impl Engine {
                 // answer owed only mid-history escapes a check at the drop alone)
                 #[cfg(debug_assertions)]
                 if durable && !self.loading {
-                    self.check_vouches_missed("after a transaction");
+                    self.check_missed_wakes("after a transaction");
                     // no blob wait wants a blob held here unnoted (a lost wake)
                     if self.core.walks.any() {
                         let r = self.check_walks(false);
@@ -4697,7 +4687,7 @@ impl Drop for Engine {
         // a store that fails (a crash test's) has nothing to check
         assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "end of history: {:?}", r.err());
         if r.is_ok() {
-            self.check_vouches_missed("end of history");
+            self.check_missed_wakes("end of history");
             let r = self.check_walks(true);
             assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "blob waits at the end of history: {:?}", r.err());
         }
@@ -4706,11 +4696,11 @@ impl Drop for Engine {
 
 #[cfg(debug_assertions)]
 impl Engine {
-    /// Debug builds: no vouch or addendum trigger missed (`flows::vouches::missed`), and no
+    /// Debug builds: no addendum trigger missed (`flows::addenda::missed`), and no
     /// waiting split path a fresh attempt opens (`apply::paths::missed`), counting nothing.
-    fn check_vouches_missed(&mut self, when: &str) {
-        let m = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(crate::flows::vouches::missed))));
-        assert!(matches!(m, Ok(None) | Err(Error::Store(_))), "{when}: a vouch trigger missed: {m:?}");
+    fn check_missed_wakes(&mut self, when: &str) {
+        let m = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(crate::flows::addenda::missed))));
+        assert!(matches!(m, Ok(None) | Err(Error::Store(_))), "{when}: an addenda trigger missed: {m:?}");
         let p = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(crate::apply::paths::missed))));
         assert!(matches!(p, Ok(None) | Err(Error::Store(_))), "{when}: a split path's wake missed: {p:?}");
     }

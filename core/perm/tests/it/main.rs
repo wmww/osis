@@ -12,4 +12,3 @@ mod paths;
 mod queries;
 mod robust;
 mod scenarios;
-mod vouches;

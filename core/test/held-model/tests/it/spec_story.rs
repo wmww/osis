@@ -1,24 +1,23 @@
 //! Evidence over roles-model's stolen-node story (`evidence::story_world`): the story's role
-//! history (invites, finalizes, `until`, covers, purges, trust, vouches and addenda written by the
-//! state-based rule, commits of several edge writes and of several things, self-removals with a
+//! history (invites, finalizes, `until`, covers, purges, trust, addenda written by the state-based
+//! rule, commits of several edge writes and of several things, self-removals with a
 //! named remaining admin, paths of two hops, a dependent by descent) under held-model's units and
 //! delivery, each world under every unit crossing (`STORY_UNITS`). Checked at the end of each tick
 //! of the story, and the order checks at the end.
 use crate::spec_open10::fails_at;
 use held_model::evidence::*;
-use roles_model::paths::{self, Rules, Vouch};
+use roles_model::paths::{self, Rules};
 
-/// The rules a story is built and judged by: `Rules::fixed`, vouches counting or not.
-pub fn rules(vouches: bool) -> Rules {
-    Rules { vouch: if vouches { Vouch::BaseWalk } else { Vouch::Off }, ..Rules::fixed() }
+/// The rules a story is built and judged by.
+pub fn rules() -> Rules {
+    Rules::fixed()
 }
 
 /// Story world `sim` under unit crossing `units` and variant `v`: the failures.
-pub fn story_fails(sim: &paths::Sim, units: usize, v: Open10, vouches: bool) -> Vec<Fail> {
+pub fn story_fails(sim: &paths::Sim, units: usize, v: Open10) -> Vec<Fail> {
     let mut w = story_world(sim, units);
-    w.rules = rules(vouches);
-    let mut rule = v.set(&mut w, Rule::fixed());
-    rule.closure.vouches = vouches;
+    w.rules = rules();
+    let rule = v.set(&mut w, Rule::fixed());
     fails_at(&w, &rule, &story_steps(&w, sim))
 }
 
@@ -37,12 +36,12 @@ pub fn story_steps(w: &World, sim: &paths::Sim) -> std::collections::BTreeSet<us
 #[test]
 fn a_story_world_under_a_retag_holds_under_iv() {
     let setup = paths::Setup { x_role: 5, x_a2: 5, h_t1: true, h_t2: true, regrant: true, ..Default::default() };
-    let sim = paths::Sim::build(&setup, &rules(true), &[paths::Move { kind: 48, ts: 8, made: 7 }], &mut roles_model::Rng(0));
+    let sim = paths::Sim::build(&setup, &rules(), &[paths::Move { kind: 43, ts: 8, made: 7 }], &mut roles_model::Rng(0));
     assert!((0..sim.w.commits.len()).any(|i| sim.w.parts(sim.w.cid(i)) > 1));
-    assert_eq!(story_fails(&sim, 3, Open10::Granted, true), vec![]);
+    assert_eq!(story_fails(&sim, 3, Open10::Granted), vec![]);
 }
 
-/// Per variant and vouch setting, failing worlds per property over story random worlds
+/// Per variant, failing worlds per property over story random worlds
 /// `OSIS_HELD_START..+OSIS_STORY_N` (default 0..12), each under every unit crossing (by hand).
 #[test]
 #[ignore = "by hand"]
@@ -55,26 +54,24 @@ fn story_explore() {
     };
     let mut jobs = vec![];
     for &v in &vs {
-        for vouches in [true, false] {
-            for seed in start..start + n {
-                for u in 0..STORY_UNITS {
-                    jobs.push((v, vouches, seed, u));
-                }
+        for seed in start..start + n {
+            for u in 0..STORY_UNITS {
+                jobs.push((v, seed, u));
             }
         }
     }
-    let out = std::sync::Mutex::new(std::collections::BTreeMap::<(&str, bool), std::collections::BTreeMap<&str, (usize, String)>>::new());
+    let out = std::sync::Mutex::new(std::collections::BTreeMap::<&str, std::collections::BTreeMap<&str, (usize, String)>>::new());
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     let t0 = std::time::Instant::now();
     std::thread::scope(|sc| {
         for _ in 0..threads {
             sc.spawn(|| loop {
-                let Some(&(v, vouches, seed, u)) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
-                let sim = paths::random_world(seed, &rules(vouches));
-                let f = story_fails(&sim, u, v, vouches);
+                let Some(&(v, seed, u)) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
+                let sim = paths::random_world(seed, &rules());
+                let f = story_fails(&sim, u, v);
                 let mut o = out.lock().unwrap();
-                let e = o.entry((v.name(), vouches)).or_default();
+                let e = o.entry(v.name()).or_default();
                 let mut seen = std::collections::BTreeSet::new();
                 for x in f {
                     if seen.insert(x.prop) {
@@ -85,8 +82,8 @@ fn story_explore() {
         }
     });
     eprintln!("{} jobs in {:?}", jobs.len(), t0.elapsed());
-    for ((v, vouches), props) in out.into_inner().unwrap() {
-        eprintln!("{v} vouches {vouches}");
+    for (v, props) in out.into_inner().unwrap() {
+        eprintln!("{v}");
         for (p, (k, first)) in props {
             eprintln!("  {p}: {k} worlds, first {first}");
         }
@@ -94,7 +91,7 @@ fn story_explore() {
 }
 
 /// P0 to P10 under OPEN 10's (iv) (chained writes along joined paths, pending on chained grants,
-/// entry creations), vouches counting and not: every `family_step`th family world, `random`
+/// entry creations): every `family_step`th family world, `random`
 /// random worlds of 14 moves and `story` story random worlds under every unit crossing, from
 /// `OSIS_HELD_START`, a thread per core.
 fn search(family_step: usize, random_worlds: u64, story: u64) {
@@ -102,26 +99,23 @@ fn search(family_step: usize, random_worlds: u64, story: u64) {
     eprintln!("open10 (iv): random seeds {start}..{}, story seeds {start}..{}", start + random_worlds, start + story);
     type Job = Box<dyn Fn() -> (String, Vec<Fail>) + Sync>;
     let mut jobs: Vec<Job> = vec![];
-    for vouches in [true, false] {
-        let set = move |mut w: World| {
-            let mut rule = Open10::Granted.set(&mut w, Rule::fixed());
-            rule.closure.vouches = vouches;
-            w.rules = rules(vouches);
-            crate::spec_open10::fails(&w, &rule)
-        };
-        for i in (0..FAMILY).step_by(family_step) {
-            jobs.push(Box::new(move || (format!("vouches {vouches} {:?}", Shape::nth(i)), set(family(Shape::nth(i))))));
-        }
-        for seed in start..start + random_worlds {
-            jobs.push(Box::new(move || (format!("vouches {vouches} random seed {seed}"), set(random(seed, 14)))));
-        }
-        for seed in start..start + story {
-            for u in 0..STORY_UNITS {
-                jobs.push(Box::new(move || {
-                    let sim = paths::random_world(seed, &rules(vouches));
-                    (format!("vouches {vouches} story seed {seed} units {u}"), story_fails(&sim, u, Open10::Granted, vouches))
-                }));
-            }
+    let set = move |mut w: World| {
+        let rule = Open10::Granted.set(&mut w, Rule::fixed());
+        w.rules = rules();
+        crate::spec_open10::fails(&w, &rule)
+    };
+    for i in (0..FAMILY).step_by(family_step) {
+        jobs.push(Box::new(move || (format!("{:?}", Shape::nth(i)), set(family(Shape::nth(i))))));
+    }
+    for seed in start..start + random_worlds {
+        jobs.push(Box::new(move || (format!("random seed {seed}"), set(random(seed, 14)))));
+    }
+    for seed in start..start + story {
+        for u in 0..STORY_UNITS {
+            jobs.push(Box::new(move || {
+                let sim = paths::random_world(seed, &rules());
+                (format!("story seed {seed} units {u}"), story_fails(&sim, u, Open10::Granted))
+            }));
         }
     }
     let next = std::sync::atomic::AtomicUsize::new(0);

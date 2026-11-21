@@ -35,9 +35,6 @@ pub type CopyId<C, T> = (C, T);
 /// A sync ID's evidence: each copy with the reason it is in it.
 pub type Required<C, T> = BTreeMap<CopyId<C, T>, Reason<C, T>>;
 
-/// Vouches waiting for a member on their thing, each with the lowering it is keyed by.
-type Pending<C, T> = BTreeMap<T, BTreeMap<CopyId<C, T>, CopyId<C, T>>>;
-
 /// A part of a held copy: (copy, part index).
 type PartId<C, T> = (CopyId<C, T>, usize);
 
@@ -118,8 +115,6 @@ pub enum Kind<C, T> {
     /// A part with no edge-class part: content, a purge request, a compaction snapshot.
     Content,
     Write(Write<C, T>),
-    /// A vouch keyed by the lowering on that copy.
-    Vouch { keyed: CopyId<C, T> },
     /// (leaves) An addendum against a lowering of `edge` listing `lists`: with `Config::leaves` a
     /// body only while it lists a held copy with a content part resting on `edge` (draft §4: an
     /// addendum is evidence of those, and leaves with the last). Otherwise as content.
@@ -154,8 +149,6 @@ pub enum Reason<C, T> {
     Edge(Edge<T>),
     /// The creation of an entry this member's reset names.
     Creation(CopyId<C, T>),
-    /// A vouch keyed by this member lowering.
-    Vouch(CopyId<C, T>),
     /// A chained write naming this holder, whose role changes travel under the sync ID: its
     /// actor, or (`keys_open`) a thing the actor's keys open (Role changes travel).
     Travels(T),
@@ -163,8 +156,6 @@ pub enum Reason<C, T> {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Config {
-    /// Vouches against a member lowering are evidence.
-    pub vouches: bool,
     /// Role changes travel's keys-open half: a chained write naming a holder the actor holds read
     /// or above on, through chained grants at any time, is a seed (held-model `Rule::keys_open`).
     /// Off: only writes naming the actor.
@@ -306,8 +297,6 @@ struct Ix<C, T, K> {
     resting: BTreeMap<(Edge<T>, Need), ByKey<C, T, K>>,
     /// Copies with a chained write naming the holder.
     by_holder: BTreeMap<T, BTreeSet<CopyId<C, T>>>,
-    /// Copies with a chained vouch keyed by the copy.
-    vouches_by: BTreeMap<CopyId<C, T>, BTreeSet<CopyId<C, T>>>,
     /// Copies with a write whose reset names the copy as its entry's creation.
     resetters: BTreeMap<CopyId<C, T>, BTreeSet<CopyId<C, T>>>,
     /// Record edges (each a mint admin's edge on the thing it minted).
@@ -325,15 +314,12 @@ struct Ix<C, T, K> {
 #[derive(Clone, Debug)]
 struct Closure<C, T> {
     members: Required<C, T>,
-    /// Members per thing (a vouch needs a member on its thing).
-    on: BTreeMap<T, usize>,
     edges: BTreeSet<Edge<T>>,
-    pending: Pending<C, T>,
 }
 
 impl<C, T> Default for Closure<C, T> {
     fn default() -> Self {
-        Closure { members: BTreeMap::new(), on: BTreeMap::new(), edges: BTreeSet::new(), pending: BTreeMap::new() }
+        Closure { members: BTreeMap::new(), edges: BTreeSet::new() }
     }
 }
 
@@ -365,8 +351,6 @@ struct Sid<C, T> {
 enum Item<C, T> {
     Edge(Edge<T>),
     Copy(CopyId<C, T>, Reason<C, T>),
-    /// A chained vouch, keyed by a lowering in the set.
-    Vouch(CopyId<C, T>, CopyId<C, T>),
 }
 
 /// What an update leaves to do: closures to extend, sync IDs to close again, travel seeds to
@@ -446,7 +430,6 @@ where
             grants: BTreeMap::new(),
             resting: BTreeMap::new(),
             by_holder: BTreeMap::new(),
-            vouches_by: BTreeMap::new(),
             resetters: BTreeMap::new(),
             records: BTreeSet::new(),
             write_keys: BTreeMap::new(),
@@ -505,9 +488,8 @@ where
         work.extend(atoms.keys().map(|e| Item::Edge(*e)));
         let travel = self.travel_of(s.actor, &mut counts);
         work.extend(travel.seeds.iter().map(|(c, r)| Item::Copy(*c, *r)));
-        work.extend(self.body_vouches(&s.unit));
         let mut cl = Closure::default();
-        close(&self.ix, self.cfg, &s.unit, &mut cl, work, &mut counts);
+        close(&self.ix, &s.unit, &mut cl, work, &mut counts);
         Some((cl.members, counts))
     }
 
@@ -634,7 +616,7 @@ where
         if !moved {
             return;
         }
-        let had = s.closure.on.get(&t).is_some_and(|n| *n > 0);
+        let had = s.closure.members.keys().any(|c| c.1 == t);
         if joins {
             self.thing_sids.entry(t).or_default().insert(*sid);
         } else if let Some(x) = self.thing_sids.get_mut(&t) {
@@ -843,18 +825,6 @@ where
         let Some(p) = self.part(c, i) else { return };
         match &p.kind {
             Kind::Content | Kind::Addendum { .. } => {}
-            Kind::Vouch { keyed } => {
-                self.ix.vouches_by.entry(*keyed).or_default().insert(*c);
-                if self.cfg.vouches {
-                    let mut sids = self.member_sids.get(keyed).cloned().unwrap_or_default();
-                    if self.ix.copies.contains_key(keyed) {
-                        sids.extend(self.thing_sids.get(&keyed.1).into_iter().flatten().copied());
-                    }
-                    for sid in sids {
-                        todo.push(&sid, Item::Vouch(*c, *keyed));
-                    }
-                }
-            }
             Kind::Write(w) => {
                 let e = (w.holder, c.1);
                 self.ix.taken_on.entry(e).or_default().insert(*c);
@@ -900,14 +870,6 @@ where
         let Some(p) = self.part(c, i) else { return };
         match &p.kind {
             Kind::Content | Kind::Addendum { .. } => {}
-            Kind::Vouch { keyed } => {
-                if let Some(s) = self.ix.vouches_by.get_mut(keyed) {
-                    s.remove(c);
-                    if s.is_empty() {
-                        self.ix.vouches_by.remove(keyed);
-                    }
-                }
-            }
             Kind::Write(w) => {
                 let e = (w.holder, c.1);
                 // another chained part of the copy may set the same edge
@@ -1097,14 +1059,6 @@ where
         out
     }
 
-    /// The chained vouches keyed by a body of a unit (`unit`'s held copies).
-    fn body_vouches(&self, unit: &BTreeSet<T>) -> Vec<Item<C, T>> {
-        if !self.cfg.vouches {
-            return vec![];
-        }
-        self.ix.vouches_by.iter().filter(|(r, _)| unit.contains(&r.1) && self.ix.copies.contains_key(r)).flat_map(|(r, vs)| vs.iter().map(|v| Item::Vouch(*v, *r))).collect()
-    }
-
     fn atoms_in(&mut self, sid: &T, edges: impl Iterator<Item = Edge<T>>, todo: &mut Todo<C, T>) {
         let Some(s) = self.sids.get_mut(sid) else { return };
         for e in edges {
@@ -1144,11 +1098,6 @@ where
         }
         let edges = self.body_edges(c);
         self.atoms_in(sid, edges.into_iter(), todo);
-        if self.cfg.vouches {
-            for v in self.ix.vouches_by.get(c).into_iter().flatten() {
-                todo.push(sid, Item::Vouch(*v, *c));
-            }
-        }
         self.rest_move(sid, c, true, todo);
     }
 
@@ -1159,9 +1108,6 @@ where
         }
         let edges = self.body_edges(c);
         self.atoms_out(sid, edges.into_iter(), todo);
-        if self.ix.vouches_by.contains_key(c) {
-            todo.dirty.insert(*sid);
-        }
         self.rest_move(sid, c, false, todo);
     }
 
@@ -1216,7 +1162,7 @@ where
     /// Extends S's closure by `work` and indexes what it added; the members it added.
     fn extend(&mut self, sid: &T, work: Vec<Item<C, T>>) -> Vec<CopyId<C, T>> {
         let Some(s) = self.sids.get_mut(sid) else { return vec![] };
-        let (edges, members) = close(&self.ix, self.cfg, &s.unit, &mut s.closure, work, &mut self.counts);
+        let (edges, members) = close(&self.ix, &s.unit, &mut s.closure, work, &mut self.counts);
         for e in edges {
             self.edge_sids.entry(e).or_default().insert(*sid);
         }
@@ -1240,7 +1186,6 @@ where
         let Some(s) = self.sids.get(sid) else { return };
         let mut work: Vec<Item<C, T>> = s.atoms.keys().map(|e| Item::Edge(*e)).collect();
         work.extend(s.travel.seeds.iter().map(|(c, r)| Item::Copy(*c, *r)));
-        work.extend(self.body_vouches(&s.unit));
         self.extend(sid, work);
     }
 }
@@ -1266,10 +1211,9 @@ fn remove_by_key<E: Ord, K: Ord, V: Ord>(m: &mut BTreeMap<E, BTreeMap<K, BTreeSe
 
 /// The closure step (draft §4 Evidence of a commit), from `work` over the held copies: an edge
 /// brings every held copy with a chained write on it; a copy (outside the unit) brings its joined
-/// parts' path edges, its writes' remaining admin edges and the creations their resets name, and
-/// (`vouches`) the chained vouches keyed by it on a thing some member is on. Returns the edges
-/// and members it added.
-fn close<C, T, K>(ix: &Ix<C, T, K>, cfg: Config, unit: &BTreeSet<T>, cl: &mut Closure<C, T>, mut work: Vec<Item<C, T>>, counts: &mut Counts) -> (Vec<Edge<T>>, Vec<CopyId<C, T>>)
+/// parts' path edges, its writes' remaining admin edges and the creations their resets name.
+/// Returns the edges and members it added.
+fn close<C, T, K>(ix: &Ix<C, T, K>, unit: &BTreeSet<T>, cl: &mut Closure<C, T>, mut work: Vec<Item<C, T>>, counts: &mut Counts) -> (Vec<Edge<T>>, Vec<CopyId<C, T>>)
 where
     C: Ord + std::marker::Copy,
     T: Ord + std::marker::Copy,
@@ -1295,13 +1239,6 @@ where
                 let Some(h) = ix.copies.get(&c) else { continue };
                 cl.members.insert(c, why);
                 members.push(c);
-                let n = cl.on.entry(c.1).or_insert(0);
-                *n += 1;
-                if *n == 1
-                    && let Some(p) = cl.pending.remove(&c.1)
-                {
-                    work.extend(p.into_iter().map(|(v, r)| Item::Copy(v, Reason::Vouch(r))));
-                }
                 for (p, j) in h.parts.iter().zip(&h.joined) {
                     if *j {
                         work.extend(p.hops.iter().flatten().map(|h| Item::Edge(h.edge)));
@@ -1314,19 +1251,6 @@ where
                             work.push(Item::Copy(cr, Reason::Creation(c)));
                         }
                     }
-                }
-                if cfg.vouches {
-                    work.extend(ix.vouches_by.get(&c).into_iter().flatten().map(|v| Item::Vouch(*v, c)));
-                }
-            }
-            Item::Vouch(v, r) => {
-                if unit.contains(&v.1) || cl.members.contains_key(&v) {
-                    continue;
-                }
-                if cl.on.get(&v.1).is_some_and(|n| *n > 0) {
-                    work.push(Item::Copy(v, Reason::Vouch(r)));
-                } else {
-                    cl.pending.entry(v.1).or_default().insert(v, r);
                 }
             }
         }

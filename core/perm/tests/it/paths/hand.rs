@@ -150,21 +150,19 @@ fn a_self_rewrite_keeps_no_admin_its_grant_lost() {
     }
 }
 
-// roles-model `a_marked_hop_under_a_removal_with_a_list_and_a_vouch`: a grant along a marked
-// direct hop of a detached thing, under a removal listing other writes and a co-admin's vouch.
+// roles-model `a_marked_hop_under_a_removal_with_a_list`: a grant along a marked direct hop of a
+// detached thing, under a removal listing other writes, and the grant or not.
 #[test]
-fn a_marked_hop_under_a_removal_with_a_list_and_a_vouch() {
-    for (marked, vouched) in [(true, true), (true, false), (false, true)] {
+fn a_marked_hop_under_a_removal_with_a_list() {
+    for (marked, listed) in [(true, true), (true, false), (false, true)] {
         let mut w = account();
         let gs: Vec<Id> = [H, B, N5].iter().map(|&h| w.push(H, 1, &[A], T1, Kind::set(h, Admin))).collect();
         w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&gs)).relying(H));
         let gx = w.push_marked(H, 3, &[], T1, Kind::set(X, Write), if marked { &[0] } else { &[] });
         let hc = w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
         w.content(X, 5, &[], T1);
-        let r = w.push(B, 6, &[], T1, Kind::set(H, Gone).listing(w.cut(&[hc])));
-        if vouched {
-            w.vouch(N5, 7, &[], T1, r, &[gx]);
-        }
+        let list = if listed { vec![hc, gx] } else { vec![hc] };
+        let r = w.push(B, 6, &[], T1, Kind::set(H, Gone).listing(w.cut(&list)));
         agree_all(&w, &[]);
         agree_all(&w, &[r]);
     }
@@ -779,13 +777,13 @@ fn a_dispute_whose_write_is_a_no_op_where_trusted_is_shown() {
     let (mut w, ..) = paired();
     w.edge(K, 1, &[], A2, X, Admin, &[]);
     let gs = w.edge(B, 2, &[A], T1, A2, Admin, &[]);
-    let xr = w.edge(X, 3, &[A], T1, A2, Gone, &[]);
+    w.edge(X, 3, &[A], T1, A2, Gone, &[]);
     w.edge(X, 3, &[A2], T1, A, Gone, &[gs]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     let r3 = w.edge(B, 6, &[A], T1, A2, Gone, &[]);
-    w.vouch(B, 7, &[A], T1, r, &[xr]);
     agree_all(&w, &[]);
     agree_all(&w, &[r3]);
+    agree_all(&w, &[r]);
 }
 
 // spec/permissions.md §5.1 Trust set: dispute candidates are explicit lowerings (control

@@ -12,26 +12,25 @@ use roles_model::paths::{self, Thing};
 use roles_model::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// `w` under `stage`, vouches counting or not: the failures (P0 to P10), the per-step checks at
+/// `w` under `stage`: the failures (P0 to P10), the per-step checks at
 /// steps `at` (every step: None).
-pub fn stage_fails_at(w: &World, stage: Stage, vouches: bool, at: Option<&Steps>) -> Vec<Fail> {
-    stage_fails_at_with(w, stage, vouches, at, |r| r)
+pub fn stage_fails_at(w: &World, stage: Stage, at: Option<&Steps>) -> Vec<Fail> {
+    stage_fails_at_with(w, stage, at, |r| r)
 }
 
 /// `stage_fails_at` with `f` applied to the stage's rule.
-pub fn stage_fails_at_with(w: &World, stage: Stage, vouches: bool, at: Option<&Steps>, f: impl Fn(Rule) -> Rule) -> Vec<Fail> {
+pub fn stage_fails_at_with(w: &World, stage: Stage, at: Option<&Steps>, f: impl Fn(Rule) -> Rule) -> Vec<Fail> {
     let mut w = w.clone();
-    w.rules = crate::spec_story::rules(vouches);
-    let mut rule = f(stage.set(&mut w, Rule::fixed()));
-    rule.closure.vouches = vouches;
+    w.rules = crate::spec_story::rules();
+    let rule = f(stage.set(&mut w, Rule::fixed()));
     let all: Steps = (1..=w.events.len()).collect();
     fails_at(&w, &rule, at.unwrap_or(&all))
 }
 
 pub type Steps = BTreeSet<usize>;
 
-pub fn stage_fails(w: &World, stage: Stage, vouches: bool) -> Vec<Fail> {
-    stage_fails_at(w, stage, vouches, None)
+pub fn stage_fails(w: &World, stage: Stage) -> Vec<Fail> {
+    stage_fails_at(w, stage, None)
 }
 
 /// The properties `w` fails under each stage.
@@ -40,11 +39,10 @@ fn by_stage(w: &World) -> BTreeMap<&'static str, Vec<&'static str>> {
 }
 
 /// `stage_fails` with `f` applied to the stage's rule.
-pub fn stage_fails_with(w: &World, stage: Stage, vouches: bool, f: impl Fn(Rule) -> Rule) -> Vec<Fail> {
+pub fn stage_fails_with(w: &World, stage: Stage, f: impl Fn(Rule) -> Rule) -> Vec<Fail> {
     let mut w = w.clone();
-    w.rules = crate::spec_story::rules(vouches);
-    let mut rule = f(stage.set(&mut w, Rule::fixed()));
-    rule.closure.vouches = vouches;
+    w.rules = crate::spec_story::rules();
+    let rule = f(stage.set(&mut w, Rule::fixed()));
     crate::spec_open10::fails(&w, &rule)
 }
 
@@ -53,7 +51,7 @@ fn by_stage_with(w: &World, f: impl Fn(Rule) -> Rule) -> BTreeMap<&'static str, 
     Stage::ALL
         .iter()
         .map(|&s| {
-            let mut p: Vec<&str> = stage_fails_with(w, s, true, &f).iter().map(|f| f.prop).collect();
+            let mut p: Vec<&str> = stage_fails_with(w, s, &f).iter().map(|f| f.prop).collect();
             p.sort();
             p.dedup();
             (s.name(), p)
@@ -67,11 +65,11 @@ fn by_stage_with(w: &World, f: impl Fn(Rule) -> Rule) -> BTreeMap<&'static str, 
 /// K's write valid, the node holding everything invalid) and P3, today's included.
 #[test]
 fn open14_with_no_honest_node_between_only_the_errand_reaches_d() {
-    let w = family(Shape { via_org: true, units: 0, listed: false, thief: true, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, vouch: false, mint: 0 });
+    let w = family(Shape { via_org: true, units: 0, listed: false, thief: true, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, grant: false, mint: 0 });
     for (name, p) in by_stage(&w) {
         assert_eq!(p.contains(&"P1") && p.contains(&"P3"), name != "a3", "{name}: {p:?}");
     }
-    let f = stage_fails(&w, Stage::A2, true);
+    let f = stage_fails(&w, Stage::A2);
     assert!(f.iter().any(|f| f.prop == "P1" && f.sid == D && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
 }
 
@@ -99,7 +97,7 @@ fn open14_a_removed_writers_other_route_carried_the_removal_today() {
         let fails = matches!(*name, "a2" | "a2-actor");
         assert_eq!(p.contains(&"P1"), fails, "{name}: {p:?}");
     }
-    let f = stage_fails(&w, Stage::A2, true);
+    let f = stage_fails(&w, Stage::A2);
     assert!(f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == late && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
 }
 
@@ -159,7 +157,7 @@ fn open17_keys_open_through_a_mint_admins_record_edge() {
     for (name, p) in by_stage_with(&w, grants_only) {
         assert_eq!(p.contains(&"P1"), name != "a3", "control {name}: {p:?}");
     }
-    let f = stage_fails_with(&w, Stage::Today, true, grants_only);
+    let f = stage_fails_with(&w, Stage::Today, grants_only);
     assert!(f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == late && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{f:?}");
 }
 
@@ -182,17 +180,17 @@ fn open17_a_removed_writers_other_route_through_a_record_edge() {
     for (name, p) in by_stage(&w) {
         assert_eq!(p.contains(&"P1"), matches!(name, "a2" | "a2-actor"), "{name}: {p:?}");
     }
-    let today = stage_fails(&w, Stage::Today, true);
+    let today = stage_fails(&w, Stage::Today);
     assert!(!today.iter().any(|f| f.prop == "P1"), "{today:?}");
 }
 
-/// The stage failures of every world in a job list, a thread per core: per (stage, vouches) the
+/// The stage failures of every world in a job list, a thread per core: per stage the
 /// failing worlds per property, and per stage the worlds it fails (P1 or P3) where today holds.
 pub type Job = Box<dyn Fn() -> (String, World, Option<Steps>) + Sync>;
 
 /// `f` is applied to every stage's rule but today's (a control against today as built).
 pub fn tally(jobs: &[Job], stages: &[Stage], f: impl Fn(Rule) -> Rule + Sync) -> String {
-    let out = std::sync::Mutex::new(BTreeMap::<(&str, bool), BTreeMap<&str, (usize, String)>>::new());
+    let out = std::sync::Mutex::new(BTreeMap::<&str, BTreeMap<&str, (usize, String)>>::new());
     let worse = std::sync::Mutex::new(BTreeMap::<&str, (usize, String)>::new());
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
@@ -201,29 +199,27 @@ pub fn tally(jobs: &[Job], stages: &[Stage], f: impl Fn(Rule) -> Rule + Sync) ->
             sc.spawn(|| loop {
                 let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
                 let (name, w, at) = j();
-                for vouches in [true, false] {
-                    let today: BTreeSet<&str> = stage_fails_at(&w, Stage::Today, vouches, at.as_ref()).iter().map(|f| f.prop).filter(|p| matches!(*p, "P1" | "P3")).collect();
-                    for &s in stages {
-                        let f = if s == Stage::Today { stage_fails_at(&w, s, vouches, at.as_ref()) } else { stage_fails_at_with(&w, s, vouches, at.as_ref(), &f) };
-                        let mut o = out.lock().unwrap();
-                        let e = o.entry((s.name(), vouches)).or_default();
-                        let mut seen = BTreeSet::new();
-                        for x in &f {
-                            if seen.insert(x.prop) {
-                                e.entry(x.prop).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
-                            }
+                let today: BTreeSet<&str> = stage_fails_at(&w, Stage::Today, at.as_ref()).iter().map(|f| f.prop).filter(|p| matches!(*p, "P1" | "P3")).collect();
+                for &s in stages {
+                    let f = if s == Stage::Today { stage_fails_at(&w, s, at.as_ref()) } else { stage_fails_at_with(&w, s, at.as_ref(), &f) };
+                    let mut o = out.lock().unwrap();
+                    let e = o.entry(s.name()).or_default();
+                    let mut seen = BTreeSet::new();
+                    for x in &f {
+                        if seen.insert(x.prop) {
+                            e.entry(x.prop).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
                         }
-                        if let Some(x) = f.iter().find(|x| matches!(x.prop, "P1" | "P3") && !today.contains(x.prop)) {
-                            worse.lock().unwrap().entry(s.name()).or_insert((0, format!("vouches {vouches} {name}: {x:?}"))).0 += 1;
-                        }
+                    }
+                    if let Some(x) = f.iter().find(|x| matches!(x.prop, "P1" | "P3") && !today.contains(x.prop)) {
+                        worse.lock().unwrap().entry(s.name()).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
                     }
                 }
             });
         }
     });
     let mut s = String::new();
-    for ((st, v), props) in out.into_inner().unwrap() {
-        s += &format!("{st} vouches {v}\n");
+    for (st, props) in out.into_inner().unwrap() {
+        s += &format!("{st}\n");
         for (p, (k, first)) in props {
             s += &format!("  {p}: {k} worlds, first {first}\n");
         }
@@ -253,7 +249,7 @@ fn reach_explore() {
     for seed in 0..story as u64 {
         for u in 0..STORY_UNITS {
             jobs.push(Box::new(move || {
-                let sim = paths::random_world(seed, &crate::spec_story::rules(true));
+                let sim = paths::random_world(seed, &crate::spec_story::rules());
                 let w = story_world(&sim, u);
                 let at = crate::spec_story::story_steps(&w, &sim);
                 (format!("story {seed} units {u}"), w, Some(at))

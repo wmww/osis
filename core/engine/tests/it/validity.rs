@@ -4057,7 +4057,7 @@ fn a_removed_writers_write_at_the_removals_ts_reads_alike_whatever_the_tids_spec
             assert!(rm.iter().all(|r| ts(&lp, a, r) == ts(&lp, b, &v5)), "v5 and the removal share a ts");
             if carol_first {
                 sync(&mut lp, b, c);
-                // before the removal reaches her (spec/permissions.md §5.1 Vouches, Writing: R's
+                // before the removal reaches her (spec/permissions.md §5.2 Addenda, Writing: R's
                 // window ends at R's arrival, at an earlier millisecond)
                 lp.advance(1);
             }

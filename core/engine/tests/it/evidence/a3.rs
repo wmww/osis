@@ -10,7 +10,7 @@ use osis_engine::evidence::LeafWhy;
 fn at_end(w: &World, rule: &Rule, held: impl Fn(&State) -> Set) -> Driver {
     let st = w.run(rule, |_| {});
     let h = held(&st);
-    let mut d = Driver::a3(w, true);
+    let mut d = Driver::a3(w);
     d.step(w, &h, &st.units);
     d.ev.check().unwrap();
     d
@@ -37,7 +37,7 @@ fn f27_a_leaf_of_a_lowering_that_cuts_nothing_is_waited_on_by_nobody() {
         w.write(x, |p| p.edge(X, 4, &[], A, Z, Role::Write, &[]));
         let c1 = w.write(z, |p| p.content(Z, 5, &[A], D));
         assert_agrees("f27", &w);
-        let rule = a3(&mut w, true);
+        let rule = a3(&mut w);
         let mut d = at_end(&w, &rule, |st| st.written.clone());
         let want = granted.then_some(LeafWhy::Reads);
         assert_eq!(d.ev.leaves(&D).unwrap().get(&(r, D)).copied(), want, "granted {granted}");
@@ -59,9 +59,9 @@ fn f34_a_removals_leaf_for_its_own_thing_leaves_with_what_it_reads() {
     let c = w.write(k, |p| p.content(K, 2, &[], A));
     let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
     assert_agrees("f34", &w);
-    let rule = a3(&mut w, true);
+    let rule = a3(&mut w);
     let mut st = w.run(&rule, |_| {});
-    let mut d = Driver::a3(&w, true);
+    let mut d = Driver::a3(&w);
     d.step(&w, &st.held[x], &st.units);
     assert_eq!(d.ev.leaves(&A).unwrap(), BTreeMap::from([((r, A), LeafWhy::Reads)]));
     w.forget(&rule, &mut st, c);
@@ -88,10 +88,10 @@ fn an_addendum_leaves_with_the_last_commit_it_lists() {
     let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
     let ad = w.write(q, |p| p.addendum(Q, 7, &[A], D, r, &[c1]));
     assert_agrees("addendum", &w);
-    let rule = a3(&mut w, true);
+    let rule = a3(&mut w);
     let mut st = w.run(&rule, |_| {});
     let everything = |st: &State| st.written.difference(&st.forgotten).copied().collect::<Set>();
-    let mut d = Driver::a3(&w, true);
+    let mut d = Driver::a3(&w);
     d.step(&w, &everything(&st), &st.units);
     assert!(d.required(D).contains(&(gq, A)));
     w.forget(&rule, &mut st, c1);
@@ -121,8 +121,8 @@ fn a_late_witness_makes_a_held_removals_leaf_read() {
     let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
     let g = w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
     assert_agrees("late witness", &w);
-    let rule = a3(&mut w, true);
-    let mut d = Driver::a3(&w, true);
+    let rule = a3(&mut w);
+    let mut d = Driver::a3(&w);
     let mut seen = vec![];
     w.run(&rule, |st| {
         d.step(&w, &st.held[x], &st.units);
@@ -148,10 +148,10 @@ fn a_lowering_leaving_a_set_takes_its_leaves() {
     let c = w.write(k, |p| p.content(K, 2, &[A], D));
     let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[c]));
     assert_agrees("path member", &w);
-    let rule = a3(&mut w, true);
+    let rule = a3(&mut w);
     let mut st = w.run(&rule, |_| {});
     let everything = |st: &State| st.written.difference(&st.forgotten).copied().collect::<Set>();
-    let mut d = Driver::a3(&w, true);
+    let mut d = Driver::a3(&w);
     d.step(&w, &everything(&st), &st.units);
     d.ev.check().unwrap();
     assert_eq!(d.ev.leaves(&D).unwrap().get(&(r, D)), Some(&LeafWhy::Reads));

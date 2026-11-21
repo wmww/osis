@@ -11,19 +11,16 @@ use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, SyncId, Ticket, Ts, Val
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
-pub const ROLE_CLASS: [&str; 7] = ["roles.0", "secrets.0", "keys.0", "sync.0", "account.0", "listing.0", VOUCHES_AK];
+pub const ROLE_CLASS: [&str; 6] = ["roles.0", "secrets.0", "keys.0", "sync.0", "account.0", "listing.0"];
 
 pub fn is_role_class(ak: &str) -> bool {
     ROLE_CLASS.contains(&ak)
 }
 
-/// The vouches aspect (spec/permissions.md §5.1 Vouches): role-class, entries only put.
-pub const VOUCHES_AK: &str = "vouches.0";
-
 /// Whether `ak` is never compaction-snapshotted (spec/commits.md §2): the role timeline walks
-/// every edge write and reads every vouch.
+/// every edge write.
 pub fn never_compacted(ak: &str) -> bool {
-    ak == "roles.0" || ak == VOUCHES_AK
+    ak == "roles.0"
 }
 
 /// The addenda aspect (spec/permissions.md §5.2, Addenda).
@@ -380,10 +377,6 @@ pub const ROLES: Aspect<Holders> = Aspect::new("roles.0", &CORE);
 /// Removal commit ID -> what the author vouches for (spec/permissions.md §5.2, Addenda).
 pub type Addenda = BTreeMap<Vec<u8>, Frontier>;
 pub const ADDENDA: Aspect<Addenda> = Aspect::new(ADDENDA_AK, &CORE);
-/// Removal commit ID -> the removed holder's commits the writer vouches for (spec/permissions.md
-/// §5.1 Vouches).
-pub type Vouches = BTreeMap<CommitId, Frontier>;
-pub const VOUCHES: Aspect<Vouches> = Aspect::new(VOUCHES_AK, &CORE);
 pub const KEYS: Aspect<Keys> = Aspect::new("keys.0", &CORE);
 pub const SECRETS: Aspect<Secrets> = Aspect::new("secrets.0", &CORE);
 pub const SYNC: Aspect<SyncIds> = Aspect::new("sync.0", &CORE);

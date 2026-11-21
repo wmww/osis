@@ -345,7 +345,7 @@ fn a_trust_switch_equals_evaluating_under_it() {
                 let ch = p.set_trust(trust.clone());
                 assert_eq!(check(&before, &p, &ch), None, "content world {i} trust {trust:?}");
                 let scratch = Paths::evaluate(&inp.records, trust.clone(), &inp.commits);
-                assert!(reading(&p) == reading(&scratch) && p.counting() == scratch.counting(), "content world {i} trust {trust:?}");
+                assert!(reading(&p) == reading(&scratch), "content world {i} trust {trust:?}");
             }
         }
     }
@@ -378,7 +378,7 @@ fn forgetting(w: &m::World, v: &m::View, seed: u64) -> Option<String> {
     }
     let rest: Vec<Commit> = (0..n).filter(|&i| held[i]).map(|i| inp.commits[i].clone()).collect();
     let mut scratch = Paths::evaluate(&inp.records, inp.trust.clone(), &rest);
-    if reading(&p) != reading(&scratch) || p.counting() != scratch.counting() || p.void_trusted() != scratch.void_trusted() {
+    if reading(&p) != reading(&scratch) || p.void_trusted() != scratch.void_trusted() {
         return Some(format!("forgetting and from scratch differ, held {held:?}\n{}", m::tiny_trace(w)));
     }
     if seed.is_multiple_of(8) && p.disputes() != scratch.disputes() {
@@ -415,7 +415,7 @@ fn leaves_arriving(w: &m::World, v: &m::View, seed: u64) -> Option<String> {
         rest = more;
     }
     let scratch = Paths::evaluate(&b.records, b.trust.clone(), &b.commits);
-    (reading(&p) != reading(&scratch) || p.counting() != scratch.counting()).then(|| format!("updated and from scratch differ\n{}", m::tiny_trace(w)))
+    (reading(&p) != reading(&scratch)).then(|| format!("updated and from scratch differ\n{}", m::tiny_trace(w)))
 }
 
 /// Tiny worlds of every kind and content worlds `start..start + n`, forgetting and leaves
@@ -500,34 +500,6 @@ fn a_verdict_kept_past_a_later_restart_would_misjudge() {
             assert_eq!(check(&full, &p, &ch), None, "variant {variant} forgetting {gone:?}");
             let rest: Vec<Commit> = (0..n).filter(|k| kept.contains(k)).map(|k| inp.commits[k].clone()).collect();
             assert!(reading(&p) == reading(&Paths::evaluate(&inp.records, BTreeSet::new(), &rest)), "variant {variant} forgetting {gone:?}");
-        }
-    }
-}
-
-// The vouch counting world of `hand_content` (a removal of two edge writes on two things, one
-// void in the first walk, a vouch for a commit resting on the void one's edge alone): in one
-// commit and in two, trusting nothing or either removal, every arrival order reads as from
-// scratch, and every subset of commits forgotten as from scratch and as the model there.
-#[test]
-fn a_vouch_against_a_removal_of_two_things_reads_alike_in_every_order_and_forget() {
-    for one in [true, false] {
-        let (w, on_a, on_t) = super::hand_content::removals_on_two_things(one);
-        every_order(&w);
-        for trust in [vec![], vec![on_a], vec![on_t]] {
-            let all = m::View::all(&w).trusting(&trust);
-            let inp = input(&w, &all);
-            let n = inp.commits.len();
-            let full = Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits);
-            for mask in 0u32..1 << n {
-                let gone: Vec<CommitId> = (0..n).filter(|k| mask >> k & 1 == 1).map(|k| inp.commits[k].id).collect();
-                let held: m::Set = all.held.iter().copied().filter(|&i| !gone.contains(&inp.ids[&i].0)).collect();
-                super::agree(&w, &m::View { held, leaves: None, trust: all.trust.clone() });
-                let mut p = full.clone();
-                let ch = p.forget(&gone);
-                assert_eq!(check(&full, &p, &ch), None, "{one} {trust:?} forgetting {gone:?}");
-                let rest: Vec<Commit> = inp.commits.iter().filter(|c| !gone.contains(&c.id)).cloned().collect();
-                assert!(reading(&p) == reading(&Paths::evaluate(&inp.records, inp.trust.clone(), &rest)), "{one} {trust:?} forgetting {gone:?}");
-            }
         }
     }
 }

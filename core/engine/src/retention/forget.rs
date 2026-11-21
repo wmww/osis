@@ -34,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Aspects of a forgotten thing that stay: what perm judges others' writes by, no content and
 /// no secret.
-const KEPT: [&str; 6] = ["created.0", "retention^.0", "roles.0", "keys.0", "sync.0", "vouches.0"];
+const KEPT: [&str; 5] = ["created.0", "retention^.0", "roles.0", "keys.0", "sync.0"];
 
 /// Whether a part on `ak` is a certificate (spec/commits.md §5 What a held thing needs): the
 /// record or a role-class part, `secrets.0` included.

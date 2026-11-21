@@ -1,12 +1,12 @@
 //! Hand worlds of step 3b: one counterpart per rule-naming hand test of roles-model `paths` on
-//! content, vouches, addenda, covers and purges (src/paths/tests.rs, same names), read by the walk
+//! content, addenda, covers and purges (src/paths/tests.rs, same names), read by the walk
 //! and the model at the views the model's test reads (`agree`: statuses, histories, roles, void
 //! trusted writes, every delta's validity, copies, purges, disputes), with the walk's own reason
 //! where the rule is named; then the walk's own worlds for draft sentences no model test reaches.
-//! spec/permissions.md §5.1, §5.2 (draft: notes/a1-spec/permissions.md §5.1 Vouches, §5.2, §6).
+//! spec/permissions.md §5.1, §5.2 (draft: notes/a1-spec/permissions.md §5.1, §5.2, §6).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::{agree, agree_all, cid, tid, verdict, walk};
+use super::{agree, agree_all, cid, verdict, walk};
 use osis_base::{Ak, CommitId, PurgeBy, Role as R, Tid, Ts, WallMs};
 use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
@@ -102,149 +102,52 @@ fn a_removal_logged_only_where_the_node_wrote_leaves_a_window() {
     agree(&w, &View { held: evidence(&w, &Set::from([first, r]), &source), ..v });
 }
 
-// ---- The role-write gap: vouches ----
+// ---- Role writes a removal does not list (issues/role-vouch-contested.md) ----
 
-fn shared_by_x() -> (World, Id, Id) {
+/// X shares T1 with A2; K writes; H, who does not sync T1, removes X.
+fn shared_by_x() -> (World, Id, Id, Id, Id) {
     let (mut w, ..) = paired();
     let gs = w.edge(X, 2, &[A], T1, A2, Write, &[]);
-    w.content(K, 3, &[A2], T1);
+    let kc = w.content(K, 3, &[A2], T1);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.content(K, 8, &[A2], T1);
-    (w, gs, r)
+    let later = w.content(K, 8, &[A2], T1);
+    (w, gs, kc, r, later)
 }
 
-// spec/permissions.md §5.1: a co-admin's vouch keeps a grant the remover did not hold, and the
-// writes made under it.
+// spec/permissions.md §5.1 (Frontier: nothing but the frontier decides what X's writes before T
+// survive): X's grant H's removal does not list falls, with K's writes resting on it, whoever else
+// received it; listed, it stands.
 #[test]
-fn a_grant_the_remover_did_not_hold_stands_by_a_co_admins_vouch() {
-    let (mut w, gs, r) = shared_by_x();
-    w.vouch(B, 7, &[A], T1, r, &[gs]);
+fn a_grant_the_removal_does_not_list_falls_and_a_listed_one_stands() {
+    let (mut w, gs, kc, r, later) = shared_by_x();
+    agree_all(&w, &[r]);
+    let (inp, p) = walk(&w, &all(&w, &[r]));
+    assert_eq!(p.status(&inp.ids[&gs]), Some(Status::Dropped));
+    assert_eq!((verdict(&w, &all(&w, &[r]), kc), verdict(&w, &all(&w, &[r]), later)), (Some(Content::Invalid), Some(Content::Invalid)));
+    let f = w.cut(&[gs]);
+    w.edit(r, |k| k.listing(f));
     agree_all(&w, &[r]);
     let (inp, p) = walk(&w, &all(&w, &[r]));
     assert_eq!(p.status(&inp.ids[&gs]), Some(Status::Applied));
-    assert!(p.counting().contains(&(cid(w.cid(r)), cid(w.cid(gs)), tid(T1))));
 }
 
-// spec/permissions.md §5.1: a vouch counts only ordered after its removal and for a commit on its
-// own thing.
+// spec/permissions.md §5.1: the same for a removal X made: unlisted, it is undone and A2 holds T1
+// again; listed, it stands.
 #[test]
-fn a_vouch_counts_only_after_its_removal_and_on_its_own_thing() {
-    let (mut w, gs, r) = shared_by_x();
-    w.vouch(B, 5, &[A], T1, r, &[gs]);
-    w.vouch(B, 7, &[], A, r, &[gs]);
-    agree_all(&w, &[r]);
-    assert!(walk(&w, &all(&w, &[r])).1.counting().is_empty());
-}
-
-// spec/permissions.md §5.1 Vouches (draft: an entry counts only against an edge write applying
-// as a lowering, an explicit write; Trust set, Seeds: a part that never applied is seeded and
-// dropped all the same): X grants Z write on A and leaves A; N5 vouches against the leave,
-// naming the grant. The leave trusted (no draft trust set holds a self-removal; the generators
-// trust one), it seeds the grant and the vouch keeps nothing. X's vouch on A after H's removal of
-// X applies nowhere; the trusted leave seeds it (Dropped, not Unapplied), N5's vouch naming it.
-#[test]
-fn a_vouch_against_a_self_removal_never_counts() {
-    let mut w = account();
-    w.edge(H, 1, &[], A, X, Admin, &[]);
-    w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let g = w.edge(X, 2, &[], A, Z, Write, &[]);
-    let leave = w.push(X, 3, &[], A, Kind::set(X, Gone).relying(H));
-    w.vouch(N5, 4, &[], A, leave, &[g]);
-    agree_all(&w, &[leave]);
-    let (inp, p) = walk(&w, &all(&w, &[leave]));
-    assert!(p.counting().is_empty());
-    assert_eq!((p.status(&inp.ids[&leave]), p.status(&inp.ids[&g])), (Some(Status::Applied), Some(Status::Dropped)));
-
-    // the content world's shape: X's vouch stamped with H's removal of X, ordered after it
-    let mut w = account();
-    w.edge(H, 1, &[], A, X, Admin, &[]);
-    w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let r = w.edge(H, 3, &[], A, X, Gone, &[]);
-    let xv = w.vouch(X, 3, &[], A, r, &[]);
-    let leave = w.edge(X, 4, &[], A, X, Gone, &[]);
-    w.vouch(N5, 5, &[], A, leave, &[xv]);
-    agree_all(&w, &[leave]);
-    let (inp, p) = walk(&w, &all(&w, &[leave]));
-    assert!(p.counting().is_empty());
-    assert_eq!((p.status(&inp.ids[&leave]), p.status(&inp.ids[&xv])), (Some(Status::Applied), Some(Status::Dropped)));
-    let (inp, p) = walk(&w, &all(&w, &[]));
-    assert_eq!(p.status(&inp.ids[&xv]), Some(Status::Unapplied));
-}
-
-/// X's one commit grants G write on T1 and on T2, both through A; H removes X listing nothing; B,
-/// admin on T1 alone (H's grant through A), vouches on T1 for it.
-fn two_things() -> (World, Id, Id, Id) {
-    let mut w = account();
-    w.edge(H, 1, &[], A, X, Admin, &[]);
-    w.edge(H, 1, &[A], T1, B, Admin, &[]);
-    let on1 = w.push(X, 2, &[A], T1, Kind::set(G, Write));
-    let on2 = w.push(X, 2, &[A, ORG], T2, Kind::set(G, Write));
-    w.group(&[on1, on2]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.vouch(B, 7, &[], T1, r, &[on1]);
-    (w, on1, on2, r)
-}
-
-// notes/a1-spec/permissions.md §5.1 Vouches: a counting entry keeps its commit's parts on the
-// vouch's own thing alone: B's vouch keeps X's grant on T1 and not the one on T2.
-#[test]
-fn a_vouch_keeps_a_commits_parts_on_its_own_thing_alone() {
-    let (w, on1, on2, r) = two_things();
-    agree_all(&w, &[r]);
-    let (inp, p) = walk(&w, &all(&w, &[r]));
-    assert_eq!((p.status(&inp.ids[&on1]), p.status(&inp.ids[&on2])), (Some(Status::Applied), Some(Status::Dropped)));
-    assert_eq!(p.counting(), &BTreeSet::from([(cid(w.cid(r)), cid(w.cid(on1)), tid(T1))]));
-}
-
-// notes/a1-spec/permissions.md §5.1 Vouches (Writing: a vouch per thing): with N5, an admin of A,
-// vouching on T2 too, both parts stay; without it the part on T2 falls.
-#[test]
-fn a_commit_writing_two_things_stays_by_a_vouch_on_each() {
-    let (mut w, on1, on2, r) = two_things();
-    w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let v5 = w.vouch(N5, 7, &[A, ORG], T2, r, &[on2]);
-    agree_all(&w, &[r]);
-    let (inp, p) = walk(&w, &all(&w, &[r]));
-    assert_eq!((p.status(&inp.ids[&on1]), p.status(&inp.ids[&on2])), (Some(Status::Applied), Some(Status::Applied)));
-    agree(&w, &all(&w, &[r]).without(&[v5]));
-}
-
-// spec/permissions.md §5.1: a co-admin's vouch keeps a removal the removed node made.
-#[test]
-fn a_removal_the_removed_node_made_stays_by_a_co_admins_vouch() {
+fn a_removal_the_removed_party_made_stands_only_where_listed() {
     let (mut w, ..) = paired();
     w.edge(B, 2, &[A], T1, A2, Write, &[]);
     let out = w.edge(X, 3, &[A], T1, A2, Gone, &[]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     w.content(K, 8, &[A2], T1);
-    w.vouch(B, 7, &[A], T1, r, &[out]);
     agree_all(&w, &[r]);
-}
-
-// spec/permissions.md §5.1: the vouch is read from the walk without vouches, so it settles.
-#[test]
-fn a_vouch_judged_in_the_walk_without_vouches_settles() {
-    let (mut w, ..) = paired();
-    let down = w.edge(X, 3, &[], A, B, Write, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.vouch(B, 7, &[], A, r, &[down]);
+    let (inp, p) = walk(&w, &all(&w, &[r]));
+    assert_eq!(p.status(&inp.ids[&out]), Some(Status::Dropped));
+    let f = w.cut(&[out]);
+    w.edit(r, |k| k.listing(f));
     agree_all(&w, &[r]);
-}
-
-// spec/permissions.md §5.1: a key X made up, or X by another path, vouches for nothing.
-#[test]
-fn a_vouch_gives_nothing_to_whoever_could_not_have_made_the_write() {
-    let (mut w, ..) = paired();
-    w.edge(K, 1, &[], A2, X, Write, &[]);
-    w.edge(B, 2, &[A], T1, A2, Admin, &[]);
-    let gz = w.edge(X, 2, &[], A, Z, Admin, &[]);
-    let gt = w.edge(X, 2, &[A], T1, Z, Admin, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.vouch(Z, 7, &[], A, r, &[gz]);
-    w.vouch(X, 7, &[], A, r, &[gz]);
-    w.vouch(X, 7, &[A2], T1, r, &[gt]);
-    w.vouch(Z, 7, &[], T1, r, &[gt]);
-    agree_all(&w, &[r]);
+    let (inp, p) = walk(&w, &all(&w, &[r]));
+    assert_eq!(p.status(&inp.ids[&out]), Some(Status::Applied));
 }
 
 // ---- The collateral grantee: re-grant from the first chained write ----
@@ -332,20 +235,6 @@ fn an_addendum_vouches_for_no_commit_of_its_own_signer() {
     assert_eq!(verdict(&w, &all(&w, &[r]), back), Some(Content::Invalid));
 }
 
-// spec/permissions.md §5.1: a removed signer vouches for nothing of its own.
-#[test]
-fn a_removed_signer_vouches_for_nothing_of_its_own() {
-    let (mut w, ..) = paired();
-    w.edge(K, 1, &[], A2, X, Admin, &[]);
-    w.edge(H, 1, &[A], T1, A2, Admin, &[]);
-    let gz = w.edge(X, 2, &[A], T1, Z, Admin, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.vouch(X, 7, &[A2], T1, r, &[gz]);
-    agree_all(&w, &[r]);
-    let (inp, p) = walk(&w, &all(&w, &[r]));
-    assert!(p.counting().is_empty() && p.status(&inp.ids[&gz]) == Some(Status::Dropped));
-}
-
 // spec/permissions.md §5.2: a re-granted writer's addendum written after its new grant vouches.
 #[test]
 fn a_re_granted_writers_later_addendum_vouches() {
@@ -360,88 +249,6 @@ fn a_re_granted_writers_later_addendum_vouches() {
     w.addendum(N5, 9, &[A], T1, r, &[xc]);
     agree_all(&w, &[r]);
     assert_eq!(verdict(&w, &all(&w, &[r]), xc), Some(Content::Valid(By::Vouched)));
-}
-
-// spec/permissions.md §5.1: the collateral grantee granted again vouches for its own fallen grant.
-#[test]
-fn a_re_granted_grantee_vouches_for_its_own_fallen_grant() {
-    let (mut w, ..) = paired();
-    let g5 = w.edge(X, 2, &[], A, N5, Admin, &[]);
-    w.content(N5, 3, &[A], T1);
-    w.edge(N5, 4, &[A], T1, A2, Write, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.edge(H, 8, &[], A, N5, Admin, &[]);
-    agree_all(&w, &[r]);
-    w.vouch(N5, 9, &[], A, r, &[g5]);
-    agree_all(&w, &[r]);
-}
-
-// spec/permissions.md §5.1: an accomplice's vouch voids the trusted removal and leaves no trace.
-#[test]
-fn a_current_admins_vouch_voids_the_removal_and_leaves_no_trace() {
-    let (mut w, gx, gb) = paired();
-    let g5 = w.edge(X, 2, &[], A, N5, Admin, &[]);
-    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[g5]);
-    agree_all(&w, &[r]);
-    for by in [Z, X] {
-        let mut w = w.clone();
-        w.vouch(by, 7, &[], A, r, &[rx]);
-        agree_all(&w, &[r]);
-    }
-    let v5 = w.vouch(N5, 7, &[], A, r, &[rx]);
-    agree_all(&w, &[r]);
-    agree(&w, &all(&w, &[r]).without(&[v5]));
-    let (inp, p) = walk(&w, &all(&w, &[r]));
-    assert!(p.void_trusted().contains(&inp.ids[&r]) && p.counting().is_empty());
-}
-
-// spec/permissions.md §5.1: a vouch counts only where its removal applies in the first walk.
-#[test]
-fn a_vouch_counts_only_where_its_removal_applies_in_the_first_walk() {
-    let (mut w, gx, gb) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let out = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
-    let rx = w.edge(X, 5, &[], A, H, Gone, &[gx, gb, g5]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
-    let timed = w.edge(X, 2, &[], A, X, Write, &[]);
-    w.set_until(timed, 20);
-    w.rely(timed, H);
-    w.vouch(N5, 7, &[], A, r, &[out, rx, timed]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r]);
-}
-
-/// N5's removal of H from A (listing B's grant and H's share of T1, not N5's own grant) and of
-/// A2's share of T1 (through A), in one commit or (`one` false) two; B vouches on A against the
-/// removal on A for N5's grant. The world and the two removals.
-pub(super) fn removals_on_two_things(one: bool) -> (World, Id, Id) {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let share = w.edge(H, 1, &[A], T1, A2, Write, &[]);
-    let on_a = w.edge(N5, 5, &[], A, H, Gone, &[gb, share]);
-    let on_t = w.edge(N5, 5, &[A], T1, A2, Gone, &[]);
-    if one {
-        w.group(&[on_a, on_t]);
-    }
-    w.vouch(B, 6, &[], A, on_a, &[g5]);
-    (w, on_a, on_t)
-}
-
-// notes/a1-spec/permissions.md §5.1 Vouches, the third counting condition: the removal on T1
-// applies in the first walk and the one on A is void there; B's entry names a commit resting on
-// (H, A), not on (A2, T1), so it keeps nothing and the removal on A stays void, as where the two
-// are separate commits (a commit's parts on different things judged each on its own).
-#[test]
-fn a_vouch_counts_only_for_a_commit_resting_on_an_edge_its_removal_lowers_in_the_first_walk() {
-    for one in [true, false] {
-        let (w, on_a, on_t) = removals_on_two_things(one);
-        agree_all(&w, &[]);
-        let (inp, p) = walk(&w, &all(&w, &[]));
-        assert_eq!((p.status(&inp.ids[&on_a]), p.status(&inp.ids[&on_t])), (Some(Status::Void), Some(Status::Applied)), "{one}");
-        assert!(p.counting().is_empty(), "{one}");
-    }
 }
 
 // ---- Purge authors ----
@@ -496,7 +303,7 @@ fn a_removed_signers_backdated_purge_takes_nothing() {
 #[test]
 fn a_cover_by_a_writer_not_yet_holding_the_removal_carries_the_late_write() {
     let s = Setup { x_a2: 0, ..Setup::default() };
-    let m = Sim::build(&s, &Rules::fixed(), &[Move { kind: 46, ts: 7, made: 7 }], &mut Rng(1));
+    let m = Sim::build(&s, &Rules::fixed(), &[Move { kind: 41, ts: 7, made: 7 }], &mut Rng(1));
     let late = *m.thief.keys().next().unwrap();
     for n in [B, K, RD, RD3] {
         let v = m.view(n, &Rules::fixed());
@@ -637,54 +444,6 @@ fn a_retain_removal_restores_read_as_the_draft_reads_it() {
     assert!(!w[2].cuts(R::Write) && w[1].cuts(R::Write));
 }
 
-// spec/permissions.md §5.1: the first counting condition: an edge write of the removal applies as
-// a lowering in the first walk, whether or not it takes anything from the edge's value (a vouch is
-// part of its removal's list, read wherever the removal drops). X left A by itself before H's
-// removal, which lists the leave, so the removal takes nothing from X's value yet falls from X's
-// edge as restored and drops X's unlisted grant: B's vouch for that grant keeps it, as roles-model
-// `counting` reads it (notes/path-model-findings.md 22: R applies in the first walk).
-#[test]
-fn a_vouch_counts_against_a_removal_of_a_holder_already_gone() {
-    let commits = vec![
-        commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, 1, KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
-        commit(3, 2, KX, vec![edge(KT, &[KA], 7, Some(Edge::new(R::Write)), Some(&[]))]),
-        commit(4, 3, KX, vec![Part { on: t(KA), path: vec![], direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(KX), value: None, frontier: None, remains: Some(t(KH)), adminless: false }) }]),
-        commit(5, 6, KH, vec![edge(KA, &[], KX, None, Some(&[4]))]),
-    ];
-    let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
-    assert_eq!((p.status(&WriteId(c(4), 0)), p.status(&WriteId(c(5), 0))), (Some(Status::Applied), Some(Status::Applied)));
-    assert_eq!(p.status(&WriteId(c(3), 0)), Some(Status::Dropped));
-    let vouch = commit(6, 7, KB, vec![Part { on: t(KT), path: vec![t(KA)], direct: 0, kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]);
-    let p = Paths::evaluate(&recs(), BTreeSet::new(), &[commits, vec![vouch]].concat());
-    assert_eq!(p.counting(), &BTreeSet::from([(c(5), c(3), t(KT))]));
-    assert_eq!(p.status(&WriteId(c(3), 0)), Some(Status::Applied));
-}
-
-// notes/a1-spec/permissions.md §5.1 Vouches: a counting entry keeps its commit's parts on its
-// vouch's thing alone. X's commit c grants holder 7 write on T and on S, both along [A]; H removes
-// X listing nothing; B, admin on T alone, vouches on T. The entry keeps c's part on T and not the
-// one on S, where B holds nothing: else, X having backdated c and B its accomplice, authority on T
-// would keep a write on S no holder of S vouched for. With S's admin H vouching on S too, both stay.
-#[test]
-fn a_counting_entry_keeps_its_commits_parts_on_its_vouchs_thing_alone() {
-    // B holds admin on T only (H's grant through A), not on S
-    let commits = vec![
-        commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, 1, KH, vec![edge(KT, &[KA], KB, admin(), Some(&[]))]),
-        commit(3, 2, KX, vec![edge(KT, &[KA], 7, Some(Edge::new(R::Write)), Some(&[])), edge(KS, &[KA], 7, Some(Edge::new(R::Write)), Some(&[]))]),
-        commit(5, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
-        commit(6, 7, KB, vec![Part { on: t(KT), path: vec![], direct: 0, kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]),
-    ];
-    let p = Paths::evaluate(&recs(), BTreeSet::from([WriteId(c(5), 0)]), &commits);
-    assert_eq!(p.counting(), &BTreeSet::from([(c(5), c(3), t(KT))]));
-    assert_eq!((p.status(&WriteId(c(3), 0)), p.status(&WriteId(c(3), 1))), (Some(Status::Applied), Some(Status::Dropped)));
-    let on_s = commit(7, 7, KH, vec![Part { on: t(KS), path: vec![t(KA)], direct: 0, kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]);
-    let p = Paths::evaluate(&recs(), BTreeSet::from([WriteId(c(5), 0)]), &[commits, vec![on_s]].concat());
-    assert_eq!(p.counting(), &BTreeSet::from([(c(5), c(3), t(KT)), (c(5), c(3), t(KS))]));
-    assert_eq!((p.status(&WriteId(c(3), 0)), p.status(&WriteId(c(3), 1))), (Some(Status::Applied), Some(Status::Applied)));
-}
-
 fn admin_only(on: u32, path: &[u32], class: DeltaClass) -> Part {
     let aspect = Ak::new(if matches!(class, DeltaClass::Addendum { .. }) { "addenda.0" } else { "doc^.0" }).unwrap();
     let d = Delta { aspect, needs: R::Admin, purge_author: 0, retention: PurgeBy::AuthorOrAdmin, class };
@@ -734,23 +493,6 @@ fn an_addendum_vouches_for_no_commit_carrying_a_purge_request() {
     assert_eq!(p.content(&WriteId(c(5), 0)), Some(Content::Valid(By::Vouched)));
 }
 
-// spec/permissions.md §5.1: an entry counts only for a commit ordered before its removal: B's vouch
-// naming X's key rotation made after H's removal keeps nothing of it (as a cut's list it would keep
-// it whatever the order, §5.2).
-#[test]
-fn a_vouch_names_no_commit_ordered_after_its_removal() {
-    let commits = [
-        commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, 1, KH, vec![edge(KT, &[KA], KB, admin(), Some(&[]))]),
-        commit(5, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
-        commit(3, 7, KX, vec![role_class(KT, &[KA])]),
-        commit(6, 8, KB, vec![Part { on: t(KT), path: vec![], direct: 0, kind: PartKind::Vouch { removal: c(5), list: Frontier::new([c(3)]) } }]),
-    ];
-    let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
-    assert!(p.counting().is_empty());
-    assert_eq!(p.content(&WriteId(c(3), 0)), Some(Content::Invalid));
-}
-
 // ---- Rules no model control names: one world each, failing where the rule is dropped ----
 
 const KZ: u32 = 4;
@@ -772,10 +514,6 @@ fn addendum(on: u32, removal: u64, list: &[u64]) -> Part {
 
 fn snapshot(on: u32, aspect: &str, carries: &[u64]) -> Part {
     doc(on, &[KA], aspect, DeltaClass::Snapshot { carries: Frontier::new(carries.iter().map(|&i| c(i))), stated: BTreeMap::new(), own: false })
-}
-
-fn vouch(on: u32, path: &[u32], removal: u64, list: &[u64]) -> Part {
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Vouch { removal: c(removal), list: Frontier::new(list.iter().map(|&i| c(i))) } }
 }
 
 /// H grants each of `who` admin on A at 1 (commit IDs 100 on).
@@ -832,34 +570,6 @@ fn an_addendum_vouches_for_no_snapshot() {
     assert_eq!(verdicts(&w).content(&WriteId(c(4), 0)), Some(Content::Invalid));
 }
 
-// spec/permissions.md §5.1 Second walk, §5.2: §5.2 reads a removal's list with its counting
-// entries: X's key rotation on T, cut by H's removal, is valid as listed by B's vouch on T.
-#[test]
-fn a_counting_entry_lists_a_role_class_delta_for_content() {
-    let w = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![role_class(KT, &[KA])]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))])]].concat();
-    assert_eq!(verdicts(&w).content(&WriteId(c(4), 0)), Some(Content::Invalid));
-    let w = [w, vec![commit(9, 7, KB, vec![vouch(KT, &[KA], 7, &[4])])]].concat();
-    let p = verdicts(&w);
-    assert_eq!(p.counting(), &BTreeSet::from([(c(7), c(4), t(KT))]));
-    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Valid(By::Listed)));
-}
-
-// spec/permissions.md §5.1 step 3, Vouches: no list names its own commit: H's commit removing G
-// from A also rotates T's keys along [G, A]; B's vouch naming that commit keeps nothing of it.
-#[test]
-fn a_vouch_names_nothing_of_its_removals_own_commit() {
-    let recs = BTreeMap::from([(t(KA), t(KH)), (t(KT), t(KA)), (t(KG), t(KH))]);
-    let w = [
-        admins(&[KB, KG]),
-        vec![commit(7, 6, KH, vec![edge(KA, &[], KG, None, Some(&[])), role_class(KT, &[KG, KA])]), commit(9, 7, KB, vec![vouch(KT, &[KA], 7, &[7])])],
-    ]
-    .concat();
-    let p = Paths::evaluate(&recs, BTreeSet::new(), &w);
-    assert_eq!(p.status(&WriteId(c(7), 0)), Some(Status::Applied));
-    assert!(p.counting().is_empty());
-    assert_eq!(p.content(&WriteId(c(7), 1)), Some(Content::Invalid));
-}
-
 // spec/permissions.md §5.2 Addenda (A is valid: the least fixpoint): validity passes along a chain
 // of addenda. X's write is cut by H's removal at 5; Y's addendum at 6 vouches for it, Y is removed
 // at 7; Z's addendum at 8 vouches for Y's, Z is removed at 9; B's at 10 vouches for Z's. Each
@@ -905,25 +615,6 @@ fn addenda_naming_each_other_support_nothing() {
     assert_eq!((p.content(&WriteId(c(12), 0)), p.content(&WriteId(c(14), 0))), (Some(Content::Invalid), Some(Content::Invalid)));
 }
 
-// `Changed` names the commits whose counting entries changed: B's vouch arriving changes no edge's
-// history, yet lists X's key rotation; every arrival order reports it.
-#[test]
-fn a_counting_change_is_named() {
-    let w = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![role_class(KT, &[KA])]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]), commit(9, 7, KB, vec![vouch(KT, &[KA], 7, &[4])])]].concat();
-    let mut orders: Vec<Vec<usize>> = vec![vec![]];
-    for k in 0..w.len() {
-        orders = orders.into_iter().flat_map(|o| (0..=o.len()).map(move |at| [&o[..at], &[k], &o[at..]].concat())).collect();
-    }
-    for order in orders {
-        let mut p = Paths::new(&recs(), BTreeSet::new());
-        for &k in &order {
-            let before = p.clone();
-            let ch = p.add(std::slice::from_ref(&w[k]));
-            assert_eq!(super::incremental::check(&before, &p, &ch), None, "order {order:?}, adding {k}");
-        }
-    }
-}
-
 // spec/permissions.md §5.2 Copies: no snapshot carries a role commit, so no list names one through
 // a snapshot and no snapshot shows one as a copy: H's removal names B's `keys.0` snapshot claiming
 // X's key rotation, which stays cut.
@@ -938,52 +629,15 @@ fn no_snapshot_carries_a_role_commit() {
     assert!(p.copies().is_empty());
 }
 
-// notes/a1-spec/permissions.md §5.1 Vouches, §5.2: a counting entry lists c's role-class parts
-// on its vouch's thing alone for content too: X's key rotations on T and on S in one commit, both
-// along [A], cut by H's removal; B, admin on T alone, vouches on T: the part on T is listed, the
-// one on S stays invalid.
-#[test]
-fn a_counting_entry_lists_a_role_class_delta_on_its_vouchs_thing_alone() {
-    let w = vec![
-        commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, 1, KH, vec![edge(KT, &[KA], KB, admin(), Some(&[]))]),
-        commit(4, 2, KX, vec![role_class(KT, &[KA]), role_class(KS, &[KA])]),
-        commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
-        commit(9, 7, KB, vec![vouch(KT, &[], 7, &[4])]),
-    ];
-    let p = verdicts(&w);
-    assert_eq!(p.counting(), &BTreeSet::from([(c(7), c(4), t(KT))]));
-    assert_eq!((p.content(&WriteId(c(4), 0)), p.content(&WriteId(c(4), 1))), (Some(Content::Valid(By::Listed)), Some(Content::Invalid)));
-}
-
-// notes/a1-spec/permissions.md §5.1 Vouches (c rests on R's edge by a part on N): X's commit
-// grants on T along X's own grant there and on S along [A]; H removes X from A; B's vouch on T
-// counts for nothing (c's part on T does not rest on X's edge on A), and c's part on S falls.
-#[test]
-fn an_entry_counts_only_where_cs_part_on_its_thing_rests_on_rs_edge() {
-    let w = vec![
-        commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, 1, KH, vec![edge(KT, &[KA], KB, admin(), Some(&[]))]),
-        commit(3, 1, KH, vec![edge(KT, &[KA], KX, admin(), Some(&[]))]),
-        commit(4, 2, KX, vec![edge(KT, &[], 7, Some(Edge::new(R::Write)), Some(&[])), edge(KS, &[KA], 7, Some(Edge::new(R::Write)), Some(&[]))]),
-        commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
-        commit(9, 7, KB, vec![vouch(KT, &[], 7, &[4])]),
-    ];
-    let p = verdicts(&w);
-    assert!(p.counting().is_empty(), "{:?}", p.counting());
-    assert_eq!((p.status(&WriteId(c(4), 0)), p.status(&WriteId(c(4), 1))), (Some(Status::Applied), Some(Status::Dropped)));
-}
-
-// spec/permissions.md §5.1 Vouches, §5.2 Position: a commit with no edge-class part is ordered at
-// the start of its `ts`, so X's key rotation stamped in the millisecond of H's removal is ordered
-// before it (cut by it) and B's vouch keeps it, whatever the signers' tids.
+// spec/permissions.md §5.2 Position: a commit with no edge-class part is ordered at the start of
+// its `ts`, so X's key rotation stamped in the millisecond of H's removal is ordered before it and
+// cut by it, whatever the signers' tids; listed, it stands.
 #[test]
 fn a_role_class_delta_in_its_removals_millisecond_is_ordered_before_it() {
     let w = [admins(&[KX, KB]), vec![commit(4, 6, KX, vec![role_class(KT, &[KA])]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))])]].concat();
     assert_eq!(verdicts(&w).content(&WriteId(c(4), 0)), Some(Content::Invalid));
-    let p = verdicts(&[w, vec![commit(9, 7, KB, vec![vouch(KT, &[KA], 7, &[4])])]].concat());
-    assert_eq!(p.counting(), &BTreeSet::from([(c(7), c(4), t(KT))]));
-    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Valid(By::Listed)));
+    let w = [admins(&[KX, KB]), vec![commit(4, 6, KX, vec![role_class(KT, &[KA])]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[4]))])]].concat();
+    assert_eq!(verdicts(&w).content(&WriteId(c(4), 0)), Some(Content::Valid(By::Listed)));
 }
 
 // ---- A cut's list answers that cut alone (notes/evidence-model-findings.md 26) ----

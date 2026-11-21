@@ -216,11 +216,6 @@ fn tag(salt: &[u8], records: &Records, commits: &BTreeMap<CommitId, Arc<RoleComm
 /// Encodes `tl`, walked over `inputs`; `None` if a frontier it holds is not in its input
 /// (never, by construction).
 pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8>> {
-    // a walk over held vouches is not saved: the tag covers edge writes and records only, and a
-    // restored walk is the first walk, its vouches judged again only by `Timeline::extend`
-    if !tl.input.vouches.is_empty() {
-        return None;
-    }
     // A frontier the walk holds is the frontier of the commit at its point: referenced by that
     // commit's ID.
     let fref = |w: &mut W, _: &Arc<Frontier>, at: &Point| -> Option<()> {
@@ -570,19 +565,6 @@ impl HeldSet for Only<'_> {
     }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
         if self.created.unwrap_or(self.things).contains(thing) { self.held.created(thing) } else { None }
-    }
-    fn vouches(&self, thing: &Tid) -> Vec<Arc<crate::vouch::Vouch>> {
-        if !self.things.contains(thing) {
-            return Vec::new();
-        }
-        let mut v = self.held.vouches(thing);
-        if let Some(ids) = self.ids {
-            v.retain(|c| ids.contains(&c.id));
-        }
-        v
-    }
-    fn role_parts(&self, id: &CommitId) -> Option<Arc<crate::vouch::RoleParts>> {
-        self.held.role_parts(id)
     }
 }
 

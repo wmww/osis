@@ -1,7 +1,7 @@
 //! Chained-ness per edge-class part (draft §4 Chained writes; what A2's evidence derivation reads,
 //! notes/evidence-derivation.md): `Paths::is_chained` against held-model's `evidence::World::chained`
 //! over the differential worlds at every view, and hand worlds of each kind of part (an invite
-//! grant by its path's invite, a removal, a finalize by write, a self-removal, a vouch), with
+//! grant by its path's invite, a removal, a finalize by write, a self-removal), with
 //! `Changed::chained` reporting each flip, on arrival and on forget.
 //! spec/permissions.md §4 (the draft replaces it: notes/a1-spec/permissions.md §4 Chained writes).
 
@@ -57,9 +57,9 @@ fn chained_parts_agree() {
 
 /// A held set of every kind of chained part, by H (A's mint admin): X admin; N5 write inviting
 /// write; N5's invite grant of Z (read, by its path's invite); Z's grant of Y (read: Z holds no
-/// invite, so unchained); X's removal of Z; Q timed write, finalized by N5 (by write); X's vouch on
-/// A; X's leave of A (a self-removal by its empty path).
-fn kinds() -> (World, [Id; 8]) {
+/// invite, so unchained); X's removal of Z; Q timed write, finalized by N5 (by write); X's leave
+/// of A (a self-removal by its empty path).
+fn kinds() -> (World, [Id; 7]) {
     use m::{account, A, B, H, N5, X, Z};
     let (q, y) = (m::K, m::M);
     let mut w = account();
@@ -71,24 +71,23 @@ fn kinds() -> (World, [Id; 8]) {
     let junk = w.push(Z, 3, &[], A, Kind::set(y, Read));
     let rz = w.edge(X, 4, &[], A, Z, Gone, &[]);
     let fin = w.push(N5, 5, &[], A, Kind::finalize(q));
-    let vouch = w.vouch(X, 6, &[], A, rz, &[]);
     let leave = w.edge(X, 7, &[], A, X, Gone, &[]);
     let _ = (gx, B);
-    (w, [gn, inv, junk, rz, fin, vouch, leave, gx])
+    (w, [gn, inv, junk, rz, fin, leave, gx])
 }
 
 // spec/permissions.md §4: draft Chained writes: an invite grant is chained by its path's invite
 // (N5 holds write and invite write on A), a grant by a holder with no invite is not; a removal by
-// admin, a finalize by write, a vouch by admin and a self-removal along its empty path are chained.
+// admin, a finalize by write and a self-removal along its empty path are chained.
 #[test]
 fn each_kind_of_part_is_chained_by_what_it_needs() {
-    let (w, [gn, inv, junk, rz, fin, vouch, leave, gx]) = kinds();
+    let (w, [gn, inv, junk, rz, fin, leave, gx]) = kinds();
     let v = View::all(&w);
     assert_eq!(diff(&w, &v), None);
     let inp = input(&w, &v);
     let p = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
     let chained = |i: Id| p.is_chained(&inp.ids[&i]);
-    for i in [gn, inv, rz, fin, vouch, leave, gx] {
+    for i in [gn, inv, rz, fin, leave, gx] {
         assert_eq!(chained(i), Some(true), "part {i}");
     }
     assert_eq!(chained(junk), Some(false));

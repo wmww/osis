@@ -1226,37 +1226,6 @@ fn a_witness_granted_write_after_the_removal_writes_its_addendum_then_spec_perm_
     }
 }
 
-// spec/permissions.md §5.2 (addenda; writing; when it first holds the role after), §5.1 Vouches: Dave
-// holds write on t by Bob's grant alone. Alice removes Bob, having received neither that grant
-// nor Bob's edit, both of which Dave received: Dave's grant falls at Dave, so he writes no
-// addendum as he applies the removal. Carol (an admin who received the grant) vouches for it,
-// Dave's write comes back, and Dave then writes the addendum keeping Bob's edit at every node.
-#[test]
-fn a_writer_kept_by_a_vouch_writes_its_addendum_then_spec_perm_5_2() {
-    let (mut lp, t) = world(4, &[Role::Admin, Role::Admin]);
-    let dave = lp.peers[3].engine.me();
-    lp.peers[1].engine.grant(&t, &dave, &edge(Role::Write)).unwrap();
-    lp.advance(1000);
-    let e = write(&mut lp, 1, t, "x:e.0", 7);
-    for p in [2, 3] {
-        lp.sync(1, p).unwrap();
-    }
-    lp.advance(1);
-    remove(&mut lp, 0, t, 1);
-    lp.sync(0, 3).unwrap();
-    let role = |lp: &LocalPeer, at: usize| lp.peers[at].engine.core.timelines.role(&dave, &t, osis_perm::At::END);
-    assert_eq!(role(&lp, 3), None, "Dave's grant falls at Dave");
-    assert!(addenda(&lp, 3, t).is_empty(), "no addendum without write");
-    lp.sync(0, 2).unwrap();
-    lp.sync(2, 3).unwrap();
-    assert_eq!(role(&lp, 3), Some(Role::Write), "Carol's vouch keeps Dave's grant");
-    assert_eq!(addenda(&lp, 3, t).iter().filter(|(a, _)| *a == dave).count(), 1, "Dave writes once he holds write again");
-    lp.sync_all().unwrap();
-    for p in 0..4 {
-        assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: the edit stands");
-    }
-}
-
 /// Peer 0 (Alice) demotes Bob (peer 1, an admin) on `t` to `to` (`None`: removes him), a second
 /// after everything so far.
 fn demote_to(lp: &mut LocalPeer, t: Tid, to: Option<Role>) -> CommitId {
@@ -1399,8 +1368,8 @@ fn elsewhere_cost(n: usize) -> (u64, u64) {
     let c = osis_base::costs::take();
     let get = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
     assert_eq!(lp.peers[2].engine.core.timelines.role(&dave, &t, osis_perm::At::END), Some(Role::Write));
-    assert_eq!(get("vouches: wake climbs"), 0, "live traffic climbs to no filed party");
-    (get("vouches: removals judged"), get("vouches: commits scanned"))
+    assert_eq!(get("addenda: wake climbs"), 0, "live traffic climbs to no filed party");
+    (get("addenda: removals judged"), get("addenda: commits scanned"))
 }
 
 // spec/permissions.md §5.2 (Addenda; Writing), notes/principles.md (Fast by construction): a

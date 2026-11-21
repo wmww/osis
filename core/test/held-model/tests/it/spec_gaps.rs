@@ -2,7 +2,7 @@
 //! sets (P1 for readers trusting otherwise than the world), paths of up to four holder things with
 //! churn and junk on every edge and second routes (`wide`), content in the split form across units
 //! (`Wide::split`), path entries opening late (`Wide::late`, `World::opens`). Each under A3's rule
-//! and brief 3's (`Stage::A2`), vouches counting and not. `gaps_explore` (by hand) tallies them;
+//! and brief 3's (`Stage::A2`). `gaps_explore` (by hand) tallies them;
 //! the sampled searches run A3's and the recommended A2 rule.
 use crate::spec_reach::{stage_fails, Job};
 use held_model::evidence::names::*;
@@ -21,15 +21,14 @@ pub fn trust_sets(w: &World, seed: u64) -> Vec<Set> {
 
 /// `w` under `stage` (P0 to P10 as `stage_fails`) and P1 for readers trusting each of `trusts`
 /// at every step.
-pub fn gap_fails(w: &World, stage: Stage, vouches: bool, trusts: &[Set]) -> Vec<Fail> {
-    let mut out = stage_fails(w, stage, vouches);
+pub fn gap_fails(w: &World, stage: Stage, trusts: &[Set]) -> Vec<Fail> {
+    let mut out = stage_fails(w, stage);
     if trusts.is_empty() {
         return out;
     }
     let mut w = w.clone();
-    w.rules = crate::spec_story::rules(vouches);
-    let mut rule = stage.set(&mut w, Rule::fixed());
-    rule.closure.vouches = vouches;
+    w.rules = crate::spec_story::rules();
+    let rule = stage.set(&mut w, Rule::fixed());
     w.run(&rule, |st| {
         for t in trusts {
             out.extend(w.p1_trusting(&rule, st, t, "P1-trust"));
@@ -51,7 +50,7 @@ fn gaps_a_reader_trusting_otherwise_holds_what_its_walk_reads() {
     w.write(k, |p| p.content(K, 2, &[A], D));
     let r = w.write(x, |p| p.edge(X, 6, &[], A, K, Role::None, &[]));
     for s in Stage::ALL {
-        assert_eq!(gap_fails(&w, s, true, &[Set::new(), Set::from([r])]), vec![], "{}", s.name());
+        assert_eq!(gap_fails(&w, s, &[Set::new(), Set::from([r])]), vec![], "{}", s.name());
     }
 }
 
@@ -70,7 +69,7 @@ fn gaps_a_split_commit_is_judged_per_part_by_each_unit() {
     w.write(x, |p| p.edge(X, 2, &[], A, K, Role::None, &[]));
     let ids = w.write_parts(k, |p| p.split(K, 3, K, &[(&[A], D), (&[O], R)]));
     for s in Stage::ALL {
-        assert_eq!(gap_fails(&w, s, true, &[]), vec![], "{}", s.name());
+        assert_eq!(gap_fails(&w, s, &[]), vec![], "{}", s.name());
     }
     let mut wg = w.clone();
     let rule = Stage::A2.set(&mut wg, Rule::fixed());
@@ -98,7 +97,7 @@ fn gaps_a_list_entry_names_its_part_on_its_leafs_thing_alone() {
     let ids = w.write_parts(z, |p| p.split(Z, 2, Z, &[(&[A, O], D), (&[], A)]));
     w.write(x, |p| p.edge(X, 3, &[], A, Z, Role::None, &[ids[0]]));
     for s in Stage::ALL {
-        let f = gap_fails(&w, s, true, &[]);
+        let f = gap_fails(&w, s, &[]);
         assert!(f.iter().all(|f| f.prop.starts_with("P1") || f.prop == "P8-act") && !f.iter().any(|f| f.prop == "P1" && f.id == ids[1]), "{}: {f:?}", s.name());
     }
     let mut wl = w.clone();
@@ -123,7 +122,7 @@ fn gaps_a_path_entry_opening_late_brings_its_evidence_then() {
     let o = w.write(y, |p| p.content(Y, 3, &[], D));
     w.opens.insert(c, o);
     for s in Stage::ALL {
-        assert_eq!(gap_fails(&w, s, true, &[]), vec![], "{}", s.name());
+        assert_eq!(gap_fails(&w, s, &[]), vec![], "{}", s.name());
     }
     let mut wg = w.clone();
     let rule = Stage::A2.set(&mut wg, Rule::fixed());
@@ -152,7 +151,7 @@ fn wide_jobs(start: u64, n: u64, opt: Wide) -> Vec<Job> {
     (start..start + n).map(|seed| Box::new(move || (format!("wide {opt:?} {seed}"), wide(seed, 16, opt), None)) as Job).collect()
 }
 
-/// Per stage, vouches counting and not, the worlds failing each property (P1-trust: two random
+/// Per stage, the worlds failing each property (P1-trust: two random
 /// trust sets) over `OSIS_GAPS_N` (60) wide worlds per option set and the family slice, and the
 /// worlds a stage fails (P1 or P3) where today holds, by hand. `OSIS_EV_RULE` names one stage.
 #[test]
@@ -164,7 +163,7 @@ fn gaps_explore() {
         Err(_) => Stage::ALL.to_vec(),
     };
     let opts = WIDE_OPTS;
-    let out = std::sync::Mutex::new(BTreeMap::<(String, &str, bool), BTreeMap<&str, (usize, String)>>::new());
+    let out = std::sync::Mutex::new(BTreeMap::<(String, &str), BTreeMap<&str, (usize, String)>>::new());
     let mut jobs: Vec<(String, Job)> = vec![];
     for opt in opts {
         for j in wide_jobs(0, n, opt) {
@@ -182,28 +181,26 @@ fn gaps_explore() {
                 let Some((g, j)) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
                 let (name, w, _) = j();
                 let trusts = trust_sets(&w, name.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64)));
-                for vouches in [true, false] {
-                    let today: BTreeSet<&str> = if stages.contains(&Stage::Today) { gap_fails(&w, Stage::Today, vouches, &[]).iter().map(|f| f.prop).collect() } else { BTreeSet::new() };
-                    for &s in &stages {
-                        let f = gap_fails(&w, s, vouches, &trusts);
-                        let mut o = out.lock().unwrap();
-                        let e = o.entry((g.clone(), s.name(), vouches)).or_default();
-                        let mut seen = BTreeSet::new();
-                        for x in &f {
-                            if seen.insert(x.prop) {
-                                e.entry(x.prop).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
-                            }
+                let today: BTreeSet<&str> = if stages.contains(&Stage::Today) { gap_fails(&w, Stage::Today, &[]).iter().map(|f| f.prop).collect() } else { BTreeSet::new() };
+                for &s in &stages {
+                    let f = gap_fails(&w, s, &trusts);
+                    let mut o = out.lock().unwrap();
+                    let e = o.entry((g.clone(), s.name())).or_default();
+                    let mut seen = BTreeSet::new();
+                    for x in &f {
+                        if seen.insert(x.prop) {
+                            e.entry(x.prop).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
                         }
-                        if stages.contains(&Stage::Today) && f.iter().any(|x| matches!(x.prop, "P1" | "P3") && !today.contains(x.prop)) {
-                            e.entry("WORSE-THAN-TODAY").or_insert((0, format!("{name}"))).0 += 1;
-                        }
+                    }
+                    if stages.contains(&Stage::Today) && f.iter().any(|x| matches!(x.prop, "P1" | "P3") && !today.contains(x.prop)) {
+                        e.entry("WORSE-THAN-TODAY").or_insert((0, format!("{name}"))).0 += 1;
                     }
                 }
             });
         }
     });
-    for ((g, s, v), props) in out.into_inner().unwrap() {
-        eprintln!("{g} {s} vouches {v}");
+    for ((g, s), props) in out.into_inner().unwrap() {
+        eprintln!("{g} {s}");
         for (p, (k, first)) in props {
             eprintln!("  {p}: {k} worlds, first {first}");
         }
@@ -212,7 +209,7 @@ fn gaps_explore() {
 
 /// The sampled property: the drafted A3 delivery (`Stage::A3`) holds P0 to P10 and P1 for two
 /// random trust sets over `wide` worlds under every option set (`per` seeds each from
-/// `OSIS_HELD_START`), vouches counting and not.
+/// `OSIS_HELD_START`).
 fn search(per: u64) {
     let start = std::env::var("OSIS_HELD_START").ok().filter(|v| !v.is_empty()).map_or(0, |v| v.parse::<u64>().expect("OSIS_HELD_START is a decimal u64"));
     eprintln!("gaps: wide seeds from {start}");
@@ -228,11 +225,9 @@ fn search(per: u64) {
             sc.spawn(|| loop {
                 let Some(j) = jobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else { return };
                 let (name, w, _) = j();
-                for vouches in [true, false] {
-                    let trusts = trust_sets(&w, name.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64)));
-                    if let Some(f) = gap_fails(&w, Stage::A3, vouches, &trusts).first() {
-                        bad.lock().unwrap().push(format!("a3 vouches {vouches} {name}: {f:?}"));
-                    }
+                let trusts = trust_sets(&w, name.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64)));
+                if let Some(f) = gap_fails(&w, Stage::A3, &trusts).first() {
+                    bad.lock().unwrap().push(format!("a3 {name}: {f:?}"));
                 }
             });
         }
@@ -254,7 +249,7 @@ fn evidence_reach_and_generator_gaps_large() {
 }
 
 /// One `wide` world by hand: `OSIS_GAPS_SEED`, `OSIS_GAPS_OPT` (letters s, l, m: split, late,
-/// mint), its commits, events and every stage's failures (vouches counting).
+/// mint), its commits, events and every stage's failures.
 #[test]
 #[ignore = "by hand"]
 fn gaps_show() {
@@ -270,7 +265,7 @@ fn gaps_show() {
     }
     eprintln!("events {:?}", w.events);
     for s in Stage::ALL {
-        for f in stage_fails(&w, s, true) {
+        for f in stage_fails(&w, s) {
             eprintln!("{}: {f:?}", s.name());
         }
     }
@@ -316,12 +311,12 @@ fn gaps_a_removal_on_a_path_through_a_read_hop_is_owed_once_it_has_reach() {
         assert!(!wr.req(&rule, O, &st.units, &st.entries[&O]).contains(&r));
         assert_eq!(wr.verdicts(&wr.full(&st, &Set::new()), &Set::from([c]))[&c], if any { Verdict::Invalid } else { Verdict::Pending });
         for s in Stage::ALL {
-            assert_eq!(gap_fails(&w, s, true, &[]), vec![], "{} {}", join.name(), s.name());
+            assert_eq!(gap_fails(&w, s, &[]), vec![], "{} {}", join.name(), s.name());
         }
     }
     let (w, r, _) = base(true);
     for s in Stage::ALL {
-        let f = gap_fails(&w, s, true, &[]);
+        let f = gap_fails(&w, s, &[]);
         assert_eq!(f.iter().any(|f| f.prop == "P3" && f.id == r), s != Stage::A3, "{}: {f:?}", s.name());
     }
 }
@@ -347,7 +342,7 @@ fn gaps_a_write_through_a_read_hop_pends_at_a_reader_lacking_the_read_grant() {
     for join in Join::ALL {
         w.join = join;
         for s in Stage::ALL {
-            let f = crate::spec_reach::stage_fails(&w, s, true);
+            let f = crate::spec_reach::stage_fails(&w, s);
             let pends = f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == c && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid));
             assert_eq!(pends, join == Join::Any, "{} {}: {f:?}", join.name(), s.name());
             assert!(f.iter().all(|f| matches!(f.prop, "P1" | "P4-held")), "{} {}: {f:?}", join.name(), s.name());
@@ -371,10 +366,10 @@ fn gaps_wide_worlds_reach_the_read_hop() {
     for seed in 0..16 {
         let mut w = wide(seed, 16, Wide::default());
         w.join = Join::Any;
-        if crate::spec_reach::stage_fails(&w, Stage::A3, true).iter().any(|f| f.prop == "P1" && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid)) {
+        if crate::spec_reach::stage_fails(&w, Stage::A3).iter().any(|f| f.prop == "P1" && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid)) {
             hit.push(seed);
             w.join = Join::Needed;
-            assert_eq!(crate::spec_reach::stage_fails(&w, Stage::A3, true), vec![], "seed {seed}");
+            assert_eq!(crate::spec_reach::stage_fails(&w, Stage::A3), vec![], "seed {seed}");
         }
     }
     assert!(!hit.is_empty(), "the generator no longer reaches finding 23's read hop in 16 worlds: raise its rate");
@@ -403,7 +398,7 @@ fn gaps_a_removal_rides_a_write_through_a_read_hop_only_where_read_joins() {
     for join in Join::ALL {
         w.join = join;
         for s in Stage::ALL {
-            let f = gap_fails(&w, s, true, &[]);
+            let f = gap_fails(&w, s, &[]);
             let shows = f.iter().any(|f| f.prop == "P1" && f.sid == R && f.id == c && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid));
             assert_eq!(shows, join == Join::Needed && matches!(s, Stage::A2 | Stage::A2Actor), "{} {}: {f:?}", join.name(), s.name());
             if matches!(s, Stage::A3 | Stage::Today) {

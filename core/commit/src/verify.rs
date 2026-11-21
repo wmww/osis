@@ -80,7 +80,7 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         DeltaKind::Snapshot => Decoded::Snapshot(decode_snapshot(&part.delta, &cx, &mut *interner, pages)?),
         DeltaKind::Writer => Decoded::Delta(decode_delta(&part.delta, &cx, &mut *interner, pages)?),
     };
-    check_fragment(ak, &cx, d.fragment())?;
+    check_fragment(ak, d.fragment())?;
     Ok(d)
 }
 
@@ -99,7 +99,7 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
             Piece::Skeleton(f) | Piece::Page { fragment: f, .. } => f,
         };
         if keyed.is_ok() {
-            keyed = check_fragment(ak, &cx, &f);
+            keyed = check_fragment(ak, &f);
         }
         if keyed.is_ok() { each(f) } else { Ok(()) }
     };
@@ -135,9 +135,8 @@ pub fn read_part_whole<'a>(h: &Header, id: &CommitId, ai: usize, delta: Checked<
 }
 
 /// The rules a delta's fragment answers to by itself (spec/commits.md §4), per record and position.
-fn check_fragment(ak: &str, cx: &DeltaCtx, f: &osis_crdt::Fragment) -> Result<(), Error> {
+fn check_fragment(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
     check_entry_keys(ak, f)?;
-    check_put_only(ak, cx, f)?;
     check_types(ak, f)?;
     // a role-class value stays inline (spec/data-model.md §6). Role kinds write only role-class
     // aspects and `created.0`, a record far below the threshold; content kinds write no
@@ -148,15 +147,6 @@ fn check_fragment(ak: &str, cx: &DeltaCtx, f: &osis_crdt::Fragment) -> Result<()
     Ok(())
 }
 
-/// A `vouches.0` delta writes new entries only (`put_new`, spec/data-model.md §9): a reset of the
-/// map or of an entry, or a write into an entry it did not create, is bad input.
-fn check_put_only(ak: &str, cx: &DeltaCtx, f: &osis_crdt::Fragment) -> Result<(), Error> {
-    let own = |d: &osis_crdt::Dot| d.src == cx.own && cx.range.lo <= d.ctr && d.ctr < cx.range.hi;
-    if ak == osis_schema::core_types::VOUCHES_AK && cx.kind == DeltaKind::Writer && !f.is_put_only_map(&own) {
-        return Err(Error::Malformed("a vouches.0 delta writing other than new entries"));
-    }
-    Ok(())
-}
 
 /// A keyed map removal or tombstone (a keyed entry record with a reset) outside the
 /// role-class aspects is malformed: an app map's key must not outlive its entry

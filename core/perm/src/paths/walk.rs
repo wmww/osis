@@ -6,7 +6,7 @@
 
 use super::path::shape;
 use super::{Changed, Commit, List, PartKind, Status};
-use crate::types::{lowers, Edge, Frontier, WriteId};
+use crate::types::{lowers, Edge, WriteId};
 use osis_base::{CommitId, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound::{self, Excluded, Included, Unbounded};
@@ -22,7 +22,7 @@ type Slot = u32;
 pub type History = Vec<(Key, Option<Edge>)>;
 
 /// One applied write on an edge in the settled walk, with what it found there (draft §5.1:
-/// content and the second walk read the value and the edge as restored before it).
+/// content reads the value and the edge as restored before it).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Applied {
     pub key: Key,
@@ -60,10 +60,10 @@ type State = (Option<Option<Edge>>, Lvl, Lvl);
 
 /// The two levels a cut is counted at (draft §5.2: write, admin).
 const LEVELS: [Role; 2] = [Role::Write, Role::Admin];
-/// A part's place within its commit: (thing written, on the commit's own path, a vouch, holder):
-/// the part setting an edge of the commit's own path after every other part on its thing, vouches
-/// included, so no part's path is changed by an earlier part of its commit (draft §5.1 step 1).
-type PartOrder = (Tid, bool, u8, Tid);
+/// A part's place within its commit: (thing written, on the commit's own path, holder): the part
+/// setting an edge of the commit's own path after every other part on its thing, so no part's
+/// path is changed by an earlier part of its commit (draft §5.1 step 1).
+type PartOrder = (Tid, bool, Tid);
 /// A role; `None` is no role.
 type Lvl = Option<Role>;
 
@@ -109,7 +109,7 @@ pub struct Counts {
     pub content: u64,
     /// Addenda judged and entries read by the addenda fixpoint.
     pub addenda: u64,
-    /// Entries (parts, events, edge-class parts in the chained pass, vouches) moved by component merges.
+    /// Entries (parts, events, edge-class parts in the chained pass) moved by component merges.
     pub merged: u64,
     /// Chained writes replayed by the chained pass.
     pub chained: u64,
@@ -185,10 +185,8 @@ struct Item {
     well: bool,
     /// A self-removal: its path ends at the holder of the edge it sets.
     leave: bool,
-    /// `None`: a vouch.
+    /// `None` in the nil item alone (a slot not in use).
     edge: Option<EdgeItem>,
-    /// A vouch's removal and list.
-    vouch: Option<(CommitId, Frontier)>,
 }
 
 fn alive(v: Option<&Edge>, ts: Ts) -> Lvl {
@@ -208,7 +206,7 @@ fn standing(v: Option<&Edge>) -> bool {
 impl Item {
     fn nil() -> Item {
         let key = Key { ts: Ts::ZERO, signer: Tid::from_bytes([0; 15]), commit: CommitId([0; 32]), part: 0 };
-        Item { key, id: WriteId(CommitId([0; 32]), 0), ts: Ts::ZERO, signer: T::MAX, on: T::MAX, hops: vec![], path: vec![], shape_well: false, well: false, leave: false, edge: None, vouch: None }
+        Item { key, id: WriteId(CommitId([0; 32]), 0), ts: Ts::ZERO, signer: T::MAX, on: T::MAX, hops: vec![], path: vec![], shape_well: false, well: false, leave: false, edge: None }
     }
     fn after(&self) -> Lvl {
         self.edge.as_ref().and_then(|ei| alive(ei.value.as_ref(), self.ts))
@@ -285,18 +283,6 @@ fn ri(r: Role) -> usize {
     Role::ALL.iter().position(|&x| x == r).unwrap_or(0)
 }
 
-/// What a vouch is, for the counting rule (draft §5.1 Vouches): its key, thing, signer, removal
-/// and list.
-pub(super) struct VouchItem<'a> {
-    pub id: WriteId,
-    pub applied: bool,
-    pub key: Key,
-    pub on: Tid,
-    pub signer: Tid,
-    pub removal: CommitId,
-    pub list: &'a Frontier,
-}
-
 /// A verdict given: the lowering's key and slot, its drops, and the inert parts its audit would
 /// drop (counted, never walked).
 #[derive(Clone)]
@@ -338,15 +324,11 @@ struct Comp {
     /// The greatest key the walk had reached when giving its last kept event.
     reach: Option<Key>,
     chain: BTreeMap<Key, Slot>,
-    vouches: BTreeSet<Slot>,
-    /// The first walk: its state is not this component's walk (it held no vouch when its input
-    /// changed), so it is walked from its start once it holds one.
-    stale: bool,
 }
 
 impl Comp {
     fn one() -> Comp {
-        Comp { edges: 1, order: BTreeMap::new(), log: BTreeMap::new(), reach: None, chain: BTreeMap::new(), vouches: BTreeSet::new(), stale: false }
+        Comp { edges: 1, order: BTreeMap::new(), log: BTreeMap::new(), reach: None, chain: BTreeMap::new() }
     }
 }
 
@@ -380,9 +362,6 @@ pub(super) struct Walk {
     /// Per edge, the inert parts resting on it.
     inert_rest: Tab<BTreeSet<Slot>>,
     held: BTreeSet<CommitId>,
-    /// The timeline: it walks every component and keeps the chained pass (content reads it). The
-    /// first walk walks only the components holding a vouch (notes/perm-paths.md, Two walks).
-    timeline: bool,
     /// Partitioning off (`Paths::single`, a test mode): every part walked, in one component,
     /// and walked again whole.
     single: bool,
@@ -404,9 +383,6 @@ pub(super) struct Walk {
     inert: Tab<bool>,
     /// Inert parts by an edge of their path not live.
     waiting: BTreeMap<E, Vec<Slot>>,
-    /// Vouches by the removal they name, and by each commit they list.
-    by_removal: BTreeMap<CommitId, BTreeSet<Slot>>,
-    listing: BTreeMap<CommitId, BTreeSet<Slot>>,
     /// Per component, the earliest key an input changed at and the parts whose input changed
     /// (the walk); the earliest key for the chained pass.
     dirty: BTreeMap<E, (Key, BTreeSet<Slot>)>,
@@ -420,10 +396,6 @@ pub(super) struct Walk {
     seeds: BTreeMap<Slot, BTreeSet<Slot>>,
     /// Per part, the active trusted writes seeding it.
     seeded: Tab<u32>,
-    /// (removal, commit, thing) triples the counting vouch entries add to removals' lists, each
-    /// naming the commit's parts on that thing alone: empty in the first walk, the counting entries
-    /// in the second (draft §5.1 Vouches).
-    vouched: BTreeSet<(CommitId, CommitId, Tid)>,
     // ---- carried from pass to pass ----
     verdict: Tab<Option<Verdict>>,
     /// The lowering whose audit dropped a walked part.
@@ -471,7 +443,7 @@ struct Journal {
 }
 
 impl Walk {
-    pub(super) fn new(records: &BTreeMap<Tid, Tid>, timeline: bool, single: bool, whole: bool) -> Walk {
+    pub(super) fn new(records: &BTreeMap<Tid, Tid>, single: bool, whole: bool) -> Walk {
         let mut w = Walk {
             things: BTreeMap::new(),
             names: Tab::new(Tid::from_bytes([0; 15])),
@@ -487,7 +459,6 @@ impl Walk {
             resting: Tab::new(BTreeSet::new()),
             inert_rest: Tab::new(BTreeSet::new()),
             held: BTreeSet::new(),
-            timeline,
             single,
             whole: whole || single,
             readers: Tab::new(BTreeSet::new()),
@@ -497,8 +468,6 @@ impl Walk {
             live: Tab::new(false),
             inert: Tab::new(true),
             waiting: BTreeMap::new(),
-            by_removal: BTreeMap::new(),
-            listing: BTreeMap::new(),
             dirty: BTreeMap::new(),
             chain_dirty: BTreeMap::new(),
             ran: BTreeSet::new(),
@@ -506,7 +475,6 @@ impl Walk {
             trusted_on: BTreeMap::new(),
             seeds: BTreeMap::new(),
             seeded: Tab::new(0),
-            vouched: BTreeSet::new(),
             verdict: Tab::new(None),
             dropped: Tab::new(None),
             inert_by: BTreeMap::new(),
@@ -605,14 +573,7 @@ impl Walk {
         let mut n = absorb(&mut big.order, small.order);
         n += absorb(&mut big.log, small.log);
         n += absorb(&mut big.chain, small.chain);
-        let mut vs = small.vouches;
-        if big.vouches.len() < vs.len() {
-            std::mem::swap(&mut big.vouches, &mut vs);
-        }
-        n += vs.len() as u64;
-        big.vouches.extend(vs);
         big.reach = big.reach.max(small.reach);
-        big.stale |= small.stale;
         self.counts.merged += n;
         self.comps.insert(root, big);
         if let Some((k, mut slots)) = self.dirty.remove(&other) {
@@ -655,33 +616,23 @@ impl Walk {
         // (sort key, input index, item)
         let mut made: Vec<(PartOrder, u32, Item)> = vec![];
         for (ix, p) in (0u32..).zip(c.parts.iter()) {
-            let holder = match &p.kind {
-                PartKind::Edge(ew) => Some(ew.holder),
-                PartKind::Vouch { .. } => None,
-                PartKind::Delta(_) => continue,
-            };
+            let PartKind::Edge(ew) = &p.kind else { continue };
+            let holder = Some(ew.holder);
             let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, holder, true);
             let on = self.thing(&p.on);
             let hops: Vec<E> = sh.hops.iter().map(|&e| self.intern(e)).collect();
             // the part on an edge of the commit's own path comes last on its thing: a self-removal
             // of the path's last thing, or the final edge joining Ak to the thing
             let own = holder.is_some_and(|h| sh.leave || sh.final_hop == Some((h, p.on)));
-            let (edge, vouch) = match &p.kind {
-                PartKind::Edge(ew) => {
-                    let h = self.thing(&ew.holder);
-                    let e = self.edge(h, on);
-                    let remains = ew.remains.map(|n| self.intern((n, p.on)));
-                    let last = sh.last.map(|l| self.intern(l));
-                    let finalize = ew.value.is_none() && ew.frontier.is_none() && !sh.leave && h != signer;
-                    let ei = EdgeItem { e, holder: h, value: ew.value, frontier: ew.frontier.clone(), remains, adminless: ew.adminless, finalize, last, sets: ew.value.filter(|_| sh.well && !sh.leave && !finalize) };
-                    (Some(ei), None)
-                }
-                PartKind::Vouch { removal, list } => (None, Some((*removal, list.clone()))),
-                PartKind::Delta(_) => continue,
-            };
-            let sort = (p.on, own, u8::from(edge.is_none()), holder.unwrap_or(Tid::from_bytes([0; 15])));
+            let h = self.thing(&ew.holder);
+            let e = self.edge(h, on);
+            let remains = ew.remains.map(|n| self.intern((n, p.on)));
+            let last = sh.last.map(|l| self.intern(l));
+            let finalize = ew.value.is_none() && ew.frontier.is_none() && !sh.leave && h != signer;
+            let edge = Some(EdgeItem { e, holder: h, value: ew.value, frontier: ew.frontier.clone(), remains, adminless: ew.adminless, finalize, last, sets: ew.value.filter(|_| sh.well && !sh.leave && !finalize) });
+            let sort = (p.on, own, ew.holder);
             let key = Key { ts: c.ts, signer: c.signer, commit: c.id, part: 0 };
-            let item = Item { key, id: WriteId(c.id, ix), ts: c.ts, signer, on, path: hops.clone(), hops, shape_well: sh.well, well: sh.well, leave: sh.leave, edge, vouch };
+            let item = Item { key, id: WriteId(c.id, ix), ts: c.ts, signer, on, path: hops.clone(), hops, shape_well: sh.well, well: sh.well, leave: sh.leave, edge };
             made.push((sort, ix, item));
         }
         made.sort_by_key(|m| (m.0, m.1));
@@ -698,12 +649,6 @@ impl Walk {
             let s = self.items.len();
             self.ids.insert(it.id, s);
             self.by_commit.entry(c.id).or_default().push(s);
-            if let Some((removal, list)) = &it.vouch {
-                self.by_removal.entry(*removal).or_default().insert(s);
-                for x in list.commits() {
-                    self.listing.entry(*x).or_default().insert(s);
-                }
-            }
             self.items.push(it);
             self.dead.push(false);
             self.inert.push(true);
@@ -778,9 +723,8 @@ impl Walk {
         })
     }
 
-    /// Walks part `s` from now on: it joins its touched edges' components (and, a vouch, its
-    /// removal's; an edge write, the vouches naming its commit), and its own edge turns live,
-    /// waking the inert parts that waited on it, in turn.
+    /// Walks part `s` from now on: it joins its touched edges' components, and its own edge turns
+    /// live, waking the inert parts that waited on it, in turn.
     fn activate(&mut self, s: Slot) {
         let mut todo = vec![s];
         while let Some(s) = todo.pop() {
@@ -798,18 +742,6 @@ impl Walk {
                     None => self.anchor = Some(root),
                 }
             }
-            // a counting entry makes a removal's list read the vouch's verdict
-            let partners: Vec<Slot> = match &it.vouch {
-                Some((removal, _)) => self.by_commit.get(removal).into_iter().flatten().copied().collect(),
-                None => self.by_removal.get(&it.key.commit).into_iter().flatten().copied().collect(),
-            };
-            for p in partners {
-                if !self.inert[p]
-                    && let Some(&b) = self.items[p].touches().first()
-                {
-                    root = self.union(root, b);
-                }
-            }
             for e in it.rests() {
                 self.inert_rest[e].remove(&s);
                 self.resting[e].insert(s);
@@ -819,16 +751,11 @@ impl Walk {
             }
             let comp = self.comp_mut(root);
             comp.order.insert(it.key, s);
-            if it.vouch.is_some() {
-                comp.vouches.insert(s);
-            }
             // every edge-class part is judged chained or not; those setting an edge set it
-            if self.timeline {
-                self.comp_mut(root).chain.insert(it.key, s);
-                self.chain_dirty.entry(root).or_default().insert((it.key, s));
-                for &h in it.path.iter().collect::<BTreeSet<_>>() {
-                    self.chain_readers[h].insert((it.key, s));
-                }
+            comp.chain.insert(it.key, s);
+            self.chain_dirty.entry(root).or_default().insert((it.key, s));
+            for &h in it.path.iter().collect::<BTreeSet<_>>() {
+                self.chain_readers[h].insert((it.key, s));
             }
             self.mark(s);
             // its own edge turns live: wake what waited on it
@@ -869,7 +796,6 @@ impl Walk {
                     if let Some(root) = self.home(s) {
                         let comp = self.comp_mut(root);
                         comp.order.remove(&it.key);
-                        comp.vouches.remove(&s);
                         if comp.chain.remove(&it.key).is_some() {
                             self.chain_dirty.entry(root).or_default().insert((it.key, s));
                             for &h in &it.path {
@@ -892,16 +818,6 @@ impl Walk {
                 for e in &it.path {
                     if let Some(w) = self.waiting.get_mut(e) {
                         w.retain(|&j| j != s);
-                    }
-                }
-                if let Some((removal, list)) = &it.vouch {
-                    if let Some(v) = self.by_removal.get_mut(removal) {
-                        v.remove(&s);
-                    }
-                    for x in list.commits() {
-                        if let Some(v) = self.listing.get_mut(x) {
-                            v.remove(&s);
-                        }
                     }
                 }
                 self.ids.remove(&it.id);
@@ -928,26 +844,9 @@ impl Walk {
     /// Runs every component an input change reached from its earliest key (the walk and the
     /// chained pass); the components run join `ran`.
     pub(super) fn run_dirty(&mut self) {
-        for (c, (mut p, slots)) in std::mem::take(&mut self.dirty) {
+        for (c, (p, slots)) in std::mem::take(&mut self.dirty) {
             let mut todo: BTreeSet<(Key, Slot)> = slots.iter().map(|&s| (self.items[s].key, s)).collect();
-            let mut whole = self.whole;
-            if !self.timeline {
-                let comp = self.comp_mut(c);
-                if comp.vouches.is_empty() {
-                    comp.stale = true;
-                    // walked from its start once it holds a vouch: a forgotten part's entry goes now
-                    for (k, s) in todo {
-                        if self.dead[s] {
-                            self.put_entry(s, k, None, &mut BTreeSet::new());
-                        }
-                    }
-                    continue;
-                }
-                if std::mem::take(&mut comp.stale) {
-                    p = Key::start(Ts::ZERO);
-                    whole = true;
-                }
-            }
+            let whole = self.whole;
             let x = self.cut(c, p, &mut todo).commit_start();
             if whole {
                 let all = self.comps.get(&c).map(|comp| comp.order.range(x..).map(|(k, s)| (*k, *s)).collect::<Vec<_>>()).unwrap_or_default();
@@ -1018,21 +917,6 @@ impl Walk {
     pub(super) fn begin(&mut self) {
         self.journal = Some(Journal::default());
         self.ran.clear();
-    }
-
-    /// Sets the counting entries' pairs (the second walk): each held removal whose list they
-    /// change is walked again from its key, and its seeds are read again where it is trusted.
-    pub(super) fn set_vouched(&mut self, vouched: BTreeSet<(CommitId, CommitId, Tid)>) {
-        let changed: BTreeSet<CommitId> = self.vouched.symmetric_difference(&vouched).map(|p| p.0).collect();
-        self.vouched = vouched;
-        for r in changed {
-            for s in self.by_commit.get(&r).cloned().unwrap_or_default() {
-                self.mark(s);
-                if self.trust.contains(&s) {
-                    self.reseed(s);
-                }
-            }
-        }
     }
 
     // ---- trust (draft §5.1 Trust set) ----
@@ -1321,11 +1205,10 @@ impl Walk {
         give_invite(v.and_then(|v| alive(v.as_ref(), ts)), v.flatten().and_then(|v| v.invite))
     }
 
-    /// `r`'s list names `j` (draft §5.1): its frontier, or (the second walk) a counting entry on
-    /// `j`'s thing.
+    /// `r`'s list names `j` (draft §5.1): its frontier's leaf for `j`'s thing.
     fn listed(&self, r: Slot, j: Slot) -> bool {
         let c = self.items[j].key.commit;
-        self.items[r].edge.as_ref().and_then(|ei| ei.frontier.as_ref()).is_some_and(|f| f.names(&c, &self.names[self.items[j].on])) || self.vouched.contains(&(self.items[r].key.commit, c, self.names[self.items[j].on]))
+        self.items[r].edge.as_ref().and_then(|ei| ei.frontier.as_ref()).is_some_and(|f| f.names(&c, &self.names[self.items[j].on]))
     }
 
     /// What part `j` needs of edge `e` it rests on (draft §5.1 step 3): an invite grant (applied
@@ -1400,7 +1283,7 @@ impl Walk {
     }
 
     /// Takes part `s` in the pass (draft §5.1 steps 2 and 3), reading the state before its key:
-    /// its entry where it applies as an edge write (a vouch that applies is marked applied).
+    /// its entry where it applies.
     fn step(&mut self, s: Slot, cdrops: &mut Vec<Slot>) -> Option<Entry> {
         let it = &self.items[s];
         let (key, ts) = (it.key, it.ts);
@@ -1451,10 +1334,7 @@ impl Walk {
                 }
             }
         }
-        let Some(ei) = it.edge.clone() else {
-            self.applied[s] = true;
-            return None;
-        };
+        let ei = it.edge.clone()?;
         let leave = it.leave;
         let explicit = !leave && !as_invite && !as_finalize;
         let relied = if judged.is_none() && !as_invite && !as_finalize { self.remains(s)? } else { None };
@@ -1530,8 +1410,8 @@ impl Walk {
     /// Judges again component `c`'s edge-class parts in `todo`, in key order (whole: every
     /// one from the earliest): a write is chained where every edge of its path is a record edge
     /// or set at admin by a chained write of an earlier commit (an invite grant: its role on each
-    /// edge but the last, an invite of it on the last; a finalize: at write; a vouch or a
-    /// self-removal: at admin); a chained write that sets an edge sets it at the role and invite
+    /// edge but the last, an invite of it on the last; a finalize: at write; a self-removal: at
+    /// admin); a chained write that sets an edge sets it at the role and invite
     /// it sets, `until` disregarded. A write reads, per edge of its path and threshold,
     /// only whether the earliest chained key meeting it is before its commit: where that earliest
     /// key moves, the writes whose commit it crosses are judged again (notes/perm-paths.md, Reach).
@@ -1551,8 +1431,8 @@ impl Walk {
             let now = !self.dead[s]
                 && it.shape_well
                 && match &it.edge {
-                    // a vouch, by admin on its thing; a self-removal, by admin up to its holder
-                    None => all(ROLE + 3),
+                    None => false,
+                    // a self-removal, by admin up to its holder
                     Some(_) if it.leave => all(ROLE + 3),
                     // a finalize, by write on its target
                     Some(ei) if ei.finalize => all(ROLE + ri(Role::Write)),
@@ -1570,8 +1450,8 @@ impl Walk {
             if let Some(j) = &mut self.journal {
                 j.chained.entry(s).or_insert((id, !now));
             }
-            // a chained write that sets no edge (a removal, a self-removal, a finalize, a vouch)
-            // moves no threshold
+            // a chained write that sets no edge (a removal, a self-removal, a finalize) moves no
+            // threshold
             let Some((e, v)) = sets else { continue };
             self.chain_note(e);
             let was: [Option<Key>; 8] = std::array::from_fn(|n| self.chain_min(e, n));
@@ -1831,38 +1711,6 @@ impl Walk {
         self.by_commit.get(commit).into_iter().flatten().map(|&s| self.items[s].id).collect()
     }
 
-    /// The held vouches of components `comps`, and those listing a commit of `listing`, applied
-    /// or not.
-    pub(super) fn vouches(&self, comps: &BTreeSet<E>, listing: &BTreeSet<CommitId>) -> Vec<VouchItem<'_>> {
-        let mut slots: BTreeSet<Slot> = comps.iter().filter_map(|c| self.comps.get(&self.find(*c))).flat_map(|c| c.vouches.iter().copied()).collect();
-        slots.extend(listing.iter().filter_map(|c| self.listing.get(c)).flatten());
-        let mut out = vec![];
-        for s in slots {
-            let it = &self.items[s];
-            if let (false, Some((removal, list))) = (self.dead[s], &it.vouch) {
-                out.push(VouchItem { id: it.id, applied: self.applied[s], key: it.key, on: self.names[it.on], signer: self.names[it.signer], removal: *removal, list });
-            }
-        }
-        out
-    }
-
-    /// The edge writes of `commit` the walk applies as lowerings (explicit writes giving their
-    /// edge below admin at their `ts`: draft §5.1 Vouches, the first counting condition): each
-    /// one's edge and key.
-    pub(super) fn lowers(&self, commit: &CommitId) -> Vec<((Tid, Tid), Key)> {
-        let mut out = vec![];
-        for &s in self.by_commit.get(commit).into_iter().flatten() {
-            let it = &self.items[s];
-            if !it.lowering() {
-                continue;
-            }
-            if let Some((e, a)) = self.applied_write(&it.id).filter(|(_, a)| a.explicit) {
-                out.push((e, a.key));
-            }
-        }
-        out
-    }
-
     pub(super) fn finals(&self) -> BTreeMap<(Tid, Tid), (Lvl, Lvl)> {
         let mut out = BTreeMap::new();
         for e in 0..self.ends.len() {
@@ -1913,11 +1761,6 @@ impl Walk {
             out.push(it.id);
         }
         out
-    }
-
-    /// The components walked in the first walk (holding a vouch, not stale), each with its parts.
-    pub(super) fn vouch_comps(&self) -> Vec<(E, Vec<WriteId>)> {
-        self.comps.iter().filter(|(_, c)| !c.vouches.is_empty() && !c.stale).map(|(&r, c)| (r, c.order.values().map(|&s| self.items[s].id).collect())).collect()
     }
 
     /// Entries the walk keeps in memory: parts, edges, events, chain entries, histories and

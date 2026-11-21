@@ -9,7 +9,7 @@
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
 use osis_engine::evidence::{Config, CopyId, Evidence, Gives, Hop, Kind, Need, Part, Write};
 use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Key, List, Part as PPart, PartKind, Paths};
-use osis_perm::{Edge, Frontier, WriteId};
+use osis_perm::{Edge, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -64,9 +64,6 @@ impl World {
     fn content(&mut self, t: u64, signer: u8, path: &[u8], on: u8) -> CommitId {
         self.push(t, signer, vec![content_part(path, on)])
     }
-    fn vouch(&mut self, t: u64, signer: u8, on: u8, removal: CommitId, list: &[CommitId]) -> CommitId {
-        self.push(t, signer, vec![PPart { on: tid(on), path: vec![], direct: 0, kind: PartKind::Vouch { removal, list: Frontier::new(list.iter().copied()) } }])
-    }
 }
 
 fn edge_part(path: &[u8], on: u8, holder: u8, value: Option<Edge>, frontier: Option<Arc<List>>) -> PPart {
@@ -118,7 +115,7 @@ impl Node {
     fn new(w: &World, held: &[Commit], trust: BTreeSet<WriteId>, creations: &BTreeMap<WriteId, (CommitId, Tid)>, unit: &[u8]) -> Node {
         let paths = Paths::evaluate(&w.records, trust, held);
         let first = paths.chained();
-        let mut ev = Evidence::new(Config { vouches: true, keys_open: false, leaves: false });
+        let mut ev = Evidence::new(Config { keys_open: false, leaves: false });
         ev.add_sid(tid(D), tid(D));
         for &t in unit {
             ev.join(&tid(D), tid(t));
@@ -148,10 +145,6 @@ impl Node {
                             leaves: vec![],
                         };
                         (Kind::Write(wr), if finalize { has(0) } else { has(1) })
-                    }
-                    PartKind::Vouch { removal, .. } => {
-                        // keyed by the removal's copy on the vouch's thing (one-thing removals here)
-                        (Kind::Vouch { keyed: (*removal, p.on) }, has(1))
                     }
                     PartKind::Delta(_) => (Kind::Content, false),
                 };
@@ -279,8 +272,8 @@ fn valid() -> String {
     format!("{:?}", Some(Content::Valid(osis_perm::paths::By::Held)))
 }
 
-/// Z writes D through A on K's grant; X removes K keeping K's own write, dropping K's grant to Z;
-/// Q vouches for that grant; X re-grants K, who writes again; Z's junk grant on A. D's reader
+/// Z writes D through A on K's grant; X removes K keeping K's own write and K's grant to Z; X
+/// re-grants K, who writes again; Z's junk grant on A. D's reader
 /// holding D's bodies and the required copies judges every body of D as the writer; less any one
 /// of the copies a verdict reads, it does not.
 #[test]
@@ -288,26 +281,25 @@ fn a_reader_holding_the_bodies_and_the_required_copies_judges_as_the_writer_spec
     let mut w = World::new(&[(X, A), (Y, D)]);
     w.set(1, Y, D, A, Some(Role::Write), &[]);
     let gk = w.set(1, X, A, K, Some(Role::Admin), &[]);
-    let gq = w.set(1, X, A, Q, Some(Role::Admin), &[]);
+    w.set(1, X, A, Q, Some(Role::Admin), &[]);
     let gz = w.set(2, K, A, Z, Some(Role::Write), &[]);
     let cz = w.content(3, Z, &[A], D);
     let ck = w.content(3, K, &[A], D);
     let junk = w.set(4, Z, A, Q, Some(Role::Admin), &[]);
-    let rm = w.set(5, X, A, K, None, &[ck]);
-    let v = w.vouch(6, Q, A, rm, &[gz]);
+    let rm = w.set(5, X, A, K, None, &[ck, gz]);
     let rg = w.set(7, X, A, K, Some(Role::Write), &[]);
     let ck2 = w.content(8, K, &[A], D);
     let (req, wv) = reader_agrees(&w, &[D], &[]);
     let a = tid(A);
-    let want: BTreeSet<_> = [gk, gq, gz, rm, v, rg].into_iter().map(|c| (c, a)).collect();
+    let want: BTreeSet<_> = [gk, gz, rm, rg].into_iter().map(|c| (c, a)).collect();
     assert_eq!(req, want);
     assert!(!req.contains(&(junk, a)));
-    // Z's write valid by the vouch, K's first by the removal's list, its second by the re-grant
+    // Z's write and K's first valid by the removal's list, K's second by the re-grant
     for c in [cz, ck, ck2] {
         assert!(wv[&WriteId(c, 0)].contains("Valid"), "{c:?}: {wv:?}");
     }
     // each copy the verdicts read: a reader without it judges some body of D otherwise
-    for c in [gk, gq, gz, rm, v, rg] {
+    for c in [gk, gz, rm, rg] {
         let less: BTreeSet<_> = req.iter().copied().filter(|x| x.0 != c).collect();
         assert_ne!(reader_verdicts(&w, &[D], &less), wv, "without {c:?}");
     }

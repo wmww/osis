@@ -240,12 +240,10 @@ impl Mutation {
 
 /// The role a write of `ak` needs (spec/permissions.md §1, §3, §5.2): admin for edges,
 /// `sync.0`, an account's seeds (`account.0`) and admin-only (`^`) aspects; write for rotations
-/// (`secrets.0`, `keys.0`) and other content; a vouch needs no role beyond a path to its thing
-/// (§5.1 Vouches: each entry counts or not by the first walk).
+/// (`secrets.0`, `keys.0`) and other content.
 pub(crate) fn required_role(ak: &str) -> Role {
     match ak {
         "roles.0" | "sync.0" | "account.0" => Role::Admin,
-        osis_schema::core_types::VOUCHES_AK => Role::Sync,
         _ if Ak::markers_of(ak).admin_only => Role::Admin,
         _ => Role::Write,
     }

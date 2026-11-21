@@ -51,11 +51,6 @@ fn cid(id: u64) -> CommitId {
     CommitId(b)
 }
 
-/// The walks doing each walk's work: the timeline alone, since the first walk runs only in a
-/// component holding a vouch (notes/perm-paths.md, Two walks) and no world here holds one but
-/// `the_first_walk_runs_only_where_a_vouch_is`'s.
-const W: u64 = 1;
-
 fn delta(a: Counts, b: Counts) -> Counts {
     Counts {
         steps: b.steps - a.steps,
@@ -91,14 +86,14 @@ fn an_appended_part_costs_its_own_step() {
     for n in [100, 1000] {
         let end = 10 + n as u64 + 5;
         let (d, p) = cost_of(&history(n), write(1, H, end, &[], A, X, Some(Role::Admin)));
-        assert_eq!((d.steps, d.passes, d.restarts, d.audited), (W, W, 0, 0), "grant at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes, d.restarts, d.audited), (1, 1, 0, 0), "grant at n {n}: {d:?}");
         assert_eq!(p.status(&WriteId(cid(1), 0)), Some(Status::Applied));
         // holder 0, admin on A, grants X on C (minted with A) through [A]: two hops
         let (d, p) = cost_of(&history(n), write(2, holder(0), end, &[A], C, X, Some(Role::Read)));
-        assert_eq!((d.steps, d.passes), (W, W), "path at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes), (1, 1), "path at n {n}: {d:?}");
         assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Applied));
         let (d, p) = cost_of(&history(n), write(3, H, end, &[], A, holder(1), None));
-        assert_eq!((d.steps, d.passes, d.restarts, d.audited), (W, W, 0, 0), "removal at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes, d.restarts, d.audited), (1, 1, 0, 0), "removal at n {n}: {d:?}");
         assert_eq!(p.status(&WriteId(cid(3), 0)), Some(Status::Applied));
     }
 }
@@ -121,10 +116,10 @@ fn a_backdated_part_walks_again_what_reads_its_change() {
         let (d, p) = cost_of(&base(n), write(2, H, 5, &[], A, X, None));
         // a removal sets no chained point (draft §4: chained writes are never removed): the
         // chained pass judges it alone (it is chained or not)
-        assert_eq!((d.steps, d.passes, d.chained), (W * (1 + m as u64), W, 1), "on A at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes, d.chained), ((1 + m as u64), 1, 1), "on A at n {n}: {d:?}");
         assert_eq!(p.status(&WriteId(cid(50), 0)), Some(Status::Unapplied));
         let (d, _) = cost_of(&base(n), write(3, H, 5, &[], B, X, Some(Role::Admin)));
-        assert_eq!((d.steps, d.passes, d.chained), (W, W, 1), "on B at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes, d.chained), (1, 1, 1), "on B at n {n}: {d:?}");
     }
     let mut p = Paths::whole(&records(), BTreeSet::new());
     p.add(&base(100));
@@ -188,11 +183,11 @@ fn a_part_among_c_components_walks_its_own() {
         let before = p.counts();
         p.add(&[write(1, H, 5000, &[], 100, X, Some(Role::Admin))]);
         let d = delta(before, p.counts());
-        assert_eq!((d.steps, d.passes), (W, W), "appended at c {c}: {d:?}");
+        assert_eq!((d.steps, d.passes), (1, 1), "appended at c {c}: {d:?}");
         let before = p.counts();
         p.add(&[write(2, H, 1, &[], 100, Y, Some(Role::Admin))]);
         let d = delta(before, p.counts());
-        assert_eq!((d.steps, d.passes), (W * 2, W), "backdated at c {c}: {d:?}");
+        assert_eq!((d.steps, d.passes), (2, 1), "backdated at c {c}: {d:?}");
     }
     let c = 10;
     let mut p = Paths::single(&many(c), BTreeSet::new());
@@ -219,7 +214,7 @@ fn a_merge_moves_the_smaller_components_entries() {
         base.extend((0..n).map(|i| write(1000 + i as u64, H, 10 + i as u64, &[], B, Y, Some(Role::Admin))));
         let (d, p) = cost_of(&base, write(3, X, 5000, &[A], B, holder(99), Some(Role::Write)));
         assert_eq!(p.status(&WriteId(cid(3), 0)), Some(Status::Applied));
-        assert_eq!((d.steps, d.passes), (W, W), "{d:?}");
+        assert_eq!((d.steps, d.passes), (1, 1), "{d:?}");
         per.push(d.merged);
     }
     assert!(per[0] == per[1] && per[0] < 200, "{per:?}");
@@ -248,7 +243,7 @@ fn a_path_joins_components_only_through_held_edges() {
         p.add(&[write(3, X, 5000, &things, 100 + k - 1, holder(1), Some(Role::Admin))]);
         let d = delta(before, p.counts());
         assert_eq!(p.status(&WriteId(cid(3), 0)), Some(Status::Applied));
-        assert_eq!(d.steps, W, "X's at k {k}: {d:?}");
+        assert_eq!(d.steps, 1, "X's at k {k}: {d:?}");
         per.push(d.merged);
     }
     assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0], "{per:?}");
@@ -273,7 +268,7 @@ fn a_trusted_component_takes_an_appended_part_in_its_own_step() {
         let before = p.counts();
         p.add(&[write(3, H, end + 1, &[], A, holder(7777), Some(Role::Admin))]);
         let d = delta(before, p.counts());
-        assert_eq!((d.steps, d.passes, d.scratch), (W, W, 0), "at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes, d.scratch), (1, 1, 0), "at n {n}: {d:?}");
     }
 }
 
@@ -294,7 +289,7 @@ fn a_forget_walks_what_read_the_part() {
         let before = p.counts();
         p.forget(&[cid(1)]);
         let d = delta(before, p.counts());
-        assert_eq!((d.steps, d.passes), (W, W), "an edge part at n {n}: {d:?}");
+        assert_eq!((d.steps, d.passes), (1, 1), "an edge part at n {n}: {d:?}");
         let mut p = Paths::whole(&records(), BTreeSet::new());
         p.add(&base);
         let before = p.counts();
@@ -317,10 +312,10 @@ fn a_lowering_with_drops_restarts_once_from_its_earliest_drop() {
         base.extend(history(n));
         let end = 10 + n as u64 + 5;
         let (d, p) = cost_of(&base, write(2, H, end, &[], A, X, None));
-        assert_eq!(d.restarts, W, "{d:?}");
-        assert_eq!(d.audited, W * k as u64, "{d:?}");
+        assert_eq!(d.restarts, 1, "{d:?}");
+        assert_eq!(d.audited, k as u64, "{d:?}");
         // the removal, then its drops
-        assert_eq!(d.steps, W * (1 + k as u64), "{d:?}");
+        assert_eq!(d.steps, (1 + k as u64), "{d:?}");
         assert!((0..k).all(|i| p.status(&WriteId(cid(10 + i as u64), 0)) == Some(Status::Dropped)));
         let mut p = Paths::whole(&records(), BTreeSet::new());
         p.add(&base);
@@ -348,7 +343,7 @@ fn k_lowerings_with_drops_restart_k_times() {
         base.extend((0..k).map(|i| write(60 + i as u64, H, end + i as u64, &[], A, y(i), None)));
         let p = Paths::evaluate(&records(), BTreeSet::new(), &base);
         let c = p.counts();
-        assert_eq!((c.restarts, c.steps), (W * k as u64, n as u64 + 4 * k as u64), "{c:?}");
+        assert_eq!((c.restarts, c.steps), (k as u64, n as u64 + 4 * k as u64), "{c:?}");
         assert!((0..k).all(|i| p.status(&WriteId(cid(40 + i as u64), 0)) == Some(Status::Dropped)));
         let mut w = Paths::whole(&records(), BTreeSet::new());
         w.add(&base);
@@ -382,7 +377,7 @@ fn a_void_check_reads_its_own_grant_chain() {
         let base = chain(k, 0);
         let (d, p) = cost_of(&base, chain(k, 1).pop().unwrap());
         assert_eq!(p.status(&WriteId(cid(100_000), 0)), Some(Status::Void));
-        assert_eq!((d.steps, d.restarts), (W, 0), "{d:?}");
+        assert_eq!((d.steps, d.restarts), (1, 0), "{d:?}");
         per.push(d.setters);
         let all = Paths::evaluate(&records(), BTreeSet::new(), &chain(k, k));
         assert_eq!(all.counts().restarts, 0);
@@ -421,7 +416,7 @@ fn a_void_check_reads_each_setter_once() {
 fn from_scratch_is_linear_in_the_parts() {
     let small = Paths::evaluate(&records(), BTreeSet::new(), &history(100)).counts();
     let large = Paths::evaluate(&records(), BTreeSet::new(), &history(1000)).counts();
-    assert_eq!((small.steps, small.passes, large.steps, large.passes), (W * 100, W, W * 1000, W));
+    assert_eq!((small.steps, small.passes, large.steps, large.passes), (100, 1, 1000, 1));
 }
 
 /// A content commit of one plain delta by `signer` on `on` along `path` (an addendum: `against`
@@ -478,7 +473,7 @@ fn a_removal_cutting_n_deltas_costs_nothing_per_delta() {
         }
         let ch = p.add(&[r]);
         let d = delta(before, p.counts());
-        assert_eq!((d.steps, d.content), (W, 0), "{d:?}");
+        assert_eq!((d.steps, d.content), (1, 0), "{d:?}");
         assert_eq!(ch.cuts.keys().copied().collect::<Vec<_>>(), vec![(t(X), t(A))]);
         assert!(ch.parts.len() == 1 && ch.named.is_empty(), "{ch:?}");
         let mut q = Counts::default();
@@ -602,8 +597,8 @@ fn a_delta_every_cut_answers_reads_each_cut_once() {
     assert!(step > 0 && per[2] - per[1] == 8 * step, "{per:?}");
 }
 
-// An update judges again only the addenda it reaches (notes/perm-paths.md, Counting entries and
-// addenda, by reach): Y's k addenda along [A] against H's removal of X; a stranger's write that
+// An update judges again only the addenda it reaches (notes/perm-paths.md, Addenda, by
+// reach): Y's k addenda along [A] against H's removal of X; a stranger's write that
 // applies nowhere, a grant on B and a grant on A after them judge none, at k = 100 and 1000; a
 // grant of Y backdated before them reaches every one (its edge changes before their positions):
 // tenfold. Mutation: every addendum judged again on each update: k for the others too.
@@ -624,23 +619,6 @@ fn an_update_judges_again_only_the_addenda_it_reaches() {
         per.push(d.addenda);
     }
     assert!(per[1] >= 9 * per[0] && per[1] <= 11 * per[0] && per[2] >= 9 * per[1] && per[2] <= 11 * per[1], "{per:?}");
-}
-
-// The first walk (vouch entries unread) runs only in a component holding a vouch
-// (notes/perm-paths.md, Two walks): a part appended on A, which holds n grants, costs the
-// timeline's step alone; once a vouch is held on A, both walks' (the first walking A from its
-// start once). Mutation: the first walk in every component: two steps without the vouch.
-#[test]
-fn the_first_walk_runs_only_where_a_vouch_is() {
-    for n in [100u32, 1000] {
-        let end = 10 + n as u64 + 5;
-        let (d, _) = cost_of(&history(n), write(1, H, end, &[], A, X, Some(Role::Admin)));
-        assert_eq!((d.steps, d.passes), (1, 1), "no vouch at n {n}: {d:?}");
-        let mut base = history(n);
-        base.push(Commit { id: cid(2), ts: Ts::make(WallMs(5), 0).unwrap(), signer: t(H), parts: vec![Part { on: t(A), path: vec![], direct: 0, kind: PartKind::Vouch { removal: cid(3), list: Frontier::new([]) } }] });
-        let (d, _) = cost_of(&base, write(1, H, end, &[], A, X, Some(Role::Admin)));
-        assert_eq!((d.steps, d.passes), (2, 2), "a vouch at n {n}: {d:?}");
-    }
 }
 
 /// A `MemStore` counting its lookups (the engine's store index in the wiring).
@@ -909,7 +887,7 @@ fn teams_once_joined_cost_as_if_never_joined() {
         q.forget(&hub.iter().map(|c| c.id).collect::<Vec<_>>());
         let before = q.counts();
         q.add(&[write(2, H, 5, &[], team(0), X, Some(Role::Write))]);
-        assert_eq!(delta(before, q.counts()).steps, W, "at k {k}");
+        assert_eq!(delta(before, q.counts()).steps, 1, "at k {k}");
     }
 }
 

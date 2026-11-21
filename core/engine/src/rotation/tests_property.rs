@@ -115,7 +115,7 @@ impl Drop for Run {
             eprintln!("the failing history: {:#?}", self.log);
             return;
         }
-        // the engines' drop checks (the index, a missed vouch trigger) run after `Run` is gone:
+        // the engines' drop checks (the index, a missed addenda trigger) run after `Run` is gone:
         // run them here, so their failure prints the history too
         let peers = std::mem::take(&mut self.lp.peers);
         if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(peers))) {

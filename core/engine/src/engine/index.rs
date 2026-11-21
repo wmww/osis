@@ -47,7 +47,7 @@ const EPOCHS: &[u8] = b"node/epochs";
 const NAMED: &[u8] = b"node/named";
 /// What each addendum commit says (`validity::AddendaParts`), by commit ID.
 pub(super) const ADDENDA: &[u8] = b"node/addenda";
-/// Per role commit, what perm's adaptation reads of its held `roles.0` and `vouches.0` parts (`validity::PermParts`): written with the commit record (`Tx::put_commit`), so an open
+/// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::PermParts`): written with the commit record (`Tx::put_commit`), so an open
 /// adapts these rows instead of decoding the bodies.
 pub(super) const PERM_PARTS: &[u8] = b"node/perm";
 /// Saved role walks (osis-perm `Timelines::to_save`), by component root: a cache unit
@@ -484,19 +484,10 @@ impl Rec for crate::apply::validity::PermParts {
                 Value::List(vec![Value::uint(*ai as u64), Value::List(es)])
             })
             .collect();
-        let vouches = self
-            .vouches
-            .iter()
-            .map(|(ai, es)| {
-                let es = es.iter().map(|(d, r, l)| Value::List(vec![records::dot_value(d), r.to(), Value::List(l.commits().iter().map(Rec::to).collect())])).collect();
-                Value::List(vec![Value::uint(*ai as u64), Value::List(es)])
-            })
-            .collect();
-        Value::List(vec![Value::List(edges), Value::List(vouches)])
+        Value::List(edges)
     }
     fn from(v: &Value) -> Option<Self> {
-        let Value::List(x) = v else { return None };
-        let [Value::List(edges), Value::List(vouches)] = x.as_slice() else { return None };
+        let Value::List(edges) = v else { return None };
         let mut out = crate::apply::validity::PermParts::default();
         for p in edges {
             let Value::List(p) = p else { return None };
@@ -514,20 +505,6 @@ impl Rec for crate::apply::validity::PermParts {
                 })
                 .collect::<Option<Vec<_>>>()?;
             out.edges.push((<usize as Rec>::from(ai)?, es));
-        }
-        for p in vouches {
-            let Value::List(p) = p else { return None };
-            let [ai, Value::List(items)] = p.as_slice() else { return None };
-            let es = items
-                .iter()
-                .map(|e| {
-                    let Value::List(e) = e else { return None };
-                    let [d, r, Value::List(l)] = e.as_slice() else { return None };
-                    let l = l.iter().map(Rec::from).collect::<Option<Vec<CommitId>>>()?;
-                    Some((records::dot_of(d).ok()?, Rec::from(r)?, std::sync::Arc::new(osis_perm::Frontier::new(l))))
-                })
-                .collect::<Option<Vec<_>>>()?;
-            out.vouches.push((<usize as Rec>::from(ai)?, es));
         }
         Some(out)
     }

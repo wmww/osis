@@ -117,17 +117,16 @@ fn records() -> BTreeMap<Tid, Tid> {
 }
 
 // spec/permissions.md §5.1 step 1 (draft): the part setting an edge of the commit's own path
-// comes after every other part on its thing, a vouch included, so no part's path is changed by an
-// earlier part of its commit: Y, admin on LK, leaves LK and vouches on LK in one commit along the
-// empty path; the vouch is taken first and applies.
+// comes after every other part on its thing, so no part's path is changed by an earlier part of
+// its commit: Y, admin on LK, leaves LK and grants Z admin on LK in one commit along the empty
+// path; the grant is taken first and applies.
 #[test]
-fn a_vouch_is_taken_before_its_commits_own_path_part() {
+fn a_part_is_taken_before_its_commits_own_path_part() {
     let grant = commit(1, ms(1), H, vec![edge(LK, &[A], Y, Some(Edge::new(Role::Admin)), Some(&[]), None)]);
-    let vouch = Part { on: t(LK), path: vec![], direct: 0, kind: PartKind::Vouch { removal: cid(9), list: Frontier::new([]) } };
-    let both = commit(2, ms(3), Y, vec![edge(LK, &[], Y, None, None, Some(A)), vouch]);
+    let both = commit(2, ms(3), Y, vec![edge(LK, &[], Y, None, None, Some(A)), edge(LK, &[], Z, Some(Edge::new(Role::Admin)), Some(&[]), None)]);
     let p = Paths::evaluate(&records(), BTreeSet::new(), &[grant, both]);
     assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Applied), "the self-removal");
-    assert_eq!(p.status(&WriteId(cid(2), 1)), Some(Status::Applied), "the vouch");
+    assert_eq!(p.status(&WriteId(cid(2), 1)), Some(Status::Applied), "the grant");
 }
 
 // spec/permissions.md §2 Finalize: a finalize is a frontier-less removal of ANOTHER holder's grant.
@@ -223,9 +222,7 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
             let on = t(thing(&mut r));
             let path = (0..r.below(4)).map(|_| t(thing(&mut r))).collect();
             let pick = r.below(8);
-            let kind = if pick == 0 {
-                PartKind::Vouch { removal: cid(r.below(40) as u64), list: Frontier::new((0..r.below(3)).map(|_| cid(r.below(40) as u64))) }
-            } else if pick <= 2 {
+            let kind = if pick <= 2 {
                 let ids = |r: &mut Rng| Frontier::new((0..r.below(4)).map(|_| cid(r.below(40) as u64)));
                 let class = match r.below(5) {
                     0 => DeltaClass::Plain,
@@ -274,11 +271,11 @@ fn ids(l: &[u64]) -> Frontier {
     Frontier::new(l.iter().map(|&c| cid(c)))
 }
 
-// spec/permissions.md §5.1, §5.2 (draft: notes/a1-spec/permissions.md §5.1 Vouches, §5.2): hostile
-// vouches, addenda and snapshots judge without panicking, read alike however they arrive, and keep
+// spec/permissions.md §5.1, §5.2 (draft: notes/a1-spec/permissions.md §5.1, §5.2): hostile
+// addenda and snapshots judge without panicking, read alike however they arrive, and keep
 // nothing they should not.
 #[test]
-fn hostile_vouches_addenda_and_snapshots_judge_alike_without_panicking() {
+fn hostile_addenda_and_snapshots_judge_alike_without_panicking() {
     let mut rng = Rng(11);
     let admin = Some(Edge::new(Role::Admin));
     let gy = commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]), None)]);
@@ -287,13 +284,6 @@ fn hostile_vouches_addenda_and_snapshots_judge_alike_without_panicking() {
     let rz = commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]), None)]);
     let base = [gy, gz, zc, rz];
     let with = |more: Vec<Commit>| base.iter().cloned().chain(more).collect::<Vec<_>>();
-    let vouch = |id, removal, list: &[u64], signer| commit(id, ms(5), signer, vec![Part { on: t(A), path: vec![], direct: 0, kind: PartKind::Vouch { removal: cid(removal), list: ids(list) } }]);
-    // a vouch keyed by itself, listing itself, its signer's commit, and its own removal
-    for v in [vouch(9, 9, &[9], Y), vouch(9, 4, &[9, 1], Y), vouch(9, 4, &[4], Y)] {
-        let p = robust(&records(), &with(vec![v]), &mut rng);
-        assert!(p.counting().is_empty(), "{:?}", p.counting());
-        assert_eq!(p.content(&WriteId(cid(3), 0)), Some(Content::Invalid));
-    }
     // an addendum keyed by a grant and by itself, naming role commits and itself
     for (removal, list) in [(1, vec![2, 1]), (9, vec![9, 3]), (2, vec![3])] {
         let ad = commit(9, ms(6), Y, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { removal: cid(removal), list: ids(&list) })]);

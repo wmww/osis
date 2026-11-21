@@ -21,7 +21,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 /// purged deltas; the purge readings (purged copies, requests' rights, parts' chained-ness).
 fn full(p: &mut Paths, disputes: bool) -> [String; 3] {
     let (st, h, f, c, cp, pu, ch, more) = reading(p);
-    let mut s = format!("{st:?}|{h:?}|{f:?}|{c:?}|{cp:?}|{ch:?}|{:?}|{:?}", p.counting(), p.void_trusted());
+    let mut s = format!("{st:?}|{h:?}|{f:?}|{c:?}|{cp:?}|{ch:?}|{:?}", p.void_trusted());
     if disputes {
         let _ = write!(s, "|{:?}", p.disputes());
     }

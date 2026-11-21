@@ -41,16 +41,9 @@ pub(crate) fn edge_ak(ak: &str) -> bool {
     ak == "roles.0"
 }
 
-/// Whether a role commit's part on `ak` is read into perm's held set (`PermParts`): edge writes
-/// and vouches.
-pub(crate) fn perm_part(ak: &str) -> bool {
-    edge_ak(ak) || ak == ct::VOUCHES_AK
-}
-
-/// Whether `ak`'s writes reach perm instead of a state: edge writes, vouches (read per delta,
-/// never as state, spec/data-model.md §9) and creation records.
+/// Whether `ak`'s writes reach perm instead of a state: edge writes and creation records.
 pub(crate) fn perm_ak(ak: &str) -> bool {
-    perm_part(ak) || ak == "created.0"
+    edge_ak(ak) || ak == "created.0"
 }
 
 /// Whether a part of commit `h` on aspect `a` is plain content, what an addendum against a
@@ -194,40 +187,19 @@ fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
 /// fragment reading no edge is bad input, `check_holders_parts`).
 pub(crate) type Entry = (Dot, Option<Tid>, Option<Edge>);
 
-/// What perm's adaptation reads of a role commit's held `roles.0` and `vouches.0` parts, by
-/// aspect index: a function of the commit record, persisted per commit in the index
-/// (`engine::index`, `PERM_PARTS`) so an open decodes no role body.
+/// What perm's adaptation reads of a role commit's held `roles.0` parts, by aspect index: a
+/// function of the commit record, persisted per commit in the index (`engine::index`,
+/// `PERM_PARTS`) so an open decodes no role body.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub(crate) struct PermParts {
     pub edges: Vec<(usize, Vec<Entry>)>,
-    /// Each `vouches.0` part's entries (`VouchEntry`); which the delta creates is judged with the
-    /// commit's ID (`vouches_of`).
-    pub vouches: Vec<(usize, Vec<VouchEntry>)>,
 }
-
-/// A `vouches.0` entry as perm's adaptation reads it: dot, the removal its key names and the
-/// commits its frontier lists. An entry keyed by no commit ID or holding no frontier says
-/// nothing and is not kept.
-pub(crate) type VouchEntry = (Dot, CommitId, Arc<Frontier>);
 
 impl PermParts {
     pub(crate) fn of(h: &Header, parts: &[(usize, Decoded)]) -> PermParts {
         let mut out = PermParts::default();
         for (ai, d) in parts {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            if ct::VOUCHES_AK == a.ak.as_str() {
-                let es = entries(d.fragment())
-                    .into_iter()
-                    .filter_map(|(dot, k, f)| {
-                        let Some(Value::Bytes(r)) = k else { return None };
-                        let r = <[u8; 32]>::try_from(r.as_slice()).ok()?;
-                        let list = f.and_then(|f| f.read()).and_then(|v| typed(&v, "frontier")).and_then(|v| ct::Frontier::from_value(&v).ok())?;
-                        Some((dot, CommitId(r), Arc::new(Frontier::new(list.commits))))
-                    })
-                    .collect();
-                out.vouches.push((*ai, es));
-                continue;
-            }
             if !edge_ak(a.ak.as_str()) {
                 continue;
             }
@@ -251,14 +223,12 @@ impl PermParts {
         }
         // by aspect, as the record holds them, whatever order the parts came in
         out.edges.sort_by_key(|x| x.0);
-        out.vouches.sort_by_key(|x| x.0);
         out
     }
 
     /// Keeps only the parts of the aspects `keep` says are held.
     pub(crate) fn retain(&mut self, keep: impl Fn(usize) -> bool) {
         self.edges.retain(|(ai, _)| keep(*ai));
-        self.vouches.retain(|(ai, _)| keep(*ai));
     }
 }
 
@@ -355,8 +325,7 @@ pub(crate) fn check_holders_parts(h: &Header, id: &CommitId, parts: &[(usize, De
     Ok(())
 }
 
-/// Sets what perm's held set reads of a held role commit (its edge writes, vouches, other
-/// role-class parts, standing) from `parts`, its held role-class parts, replacing whatever it
+/// Sets what perm's held set reads of a held role commit (its edge writes, standing) from `parts`, its held role-class parts, replacing whatever it
 /// read of the commit before: a late part, a drop or a forget calls it again with what stays
 /// held, so it is a function of the parts held. A commit's edge writes apply together or
 /// not at all (spec/permissions.md §2): one whose removal resets an entry of unknown creation
@@ -374,8 +343,6 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
             note_keys(core, &a.tid, es, Owned::of_view(h, id, *ai).as_ref());
         }
     }
-    let (vouches, role_parts) = vouching_parts(core, h, id, parts);
-    core.ix.held.set_vouching(*id, vouches, role_parts);
     let mut ops = Vec::new();
     let mut known = true;
     for (ai, es) in &parts.edges {
@@ -383,7 +350,7 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
         // nothing written on a thing too deep applies (spec/permissions.md §1); its record chain is
         // held whole at apply (`apply::thing_wait`) and a record goes only with every part on its
         // thing, once nothing held needs it, a thing it minted included (`retention::needed`), so
-        // this never changes while the part is held (vouches alike, `vouching_parts`)
+        // this never changes while the part is held
         if too_deep(core, &a.tid) {
             continue;
         }
@@ -403,59 +370,10 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
         _ => {}
     }
     if ops.is_empty() {
-        core.ix.held.remove_edges(id);
+        core.ix.held.remove(id);
     } else {
         core.ix.held.add_commit(RoleCommit { id: *id, ts: h.ts, signer: h.signer, frontier: h.frontier.clone(), ops });
     }
-}
-
-/// What perm reads of role commit `id` beside its edge writes (spec/permissions.md §5.1
-/// Vouches): the vouches its `vouches.0` deltas create, per thing (an entry it did not create
-/// says nothing, `put_new`), and its role-class parts other than edge writes with the role
-/// each needs (what "W could write c" asks of them; a vouch and a listing need none), none for a
-/// compaction snapshot: a function of the commit alone, the depth rule applied where perm reads
-/// them (`Held::parts_read`). No vouch on a thing too deep (`too_deep`: fixed while the part is
-/// held, `add_role_commit`).
-fn vouching_parts(core: &Core, h: &View, id: &CommitId, parts: &PermParts) -> (Vec<osis_perm::Vouch>, Option<osis_perm::RoleParts>) {
-    let mut vouches = Vec::new();
-    for (ai, es) in &parts.vouches {
-        let Some(a) = h.aspects.get(*ai).filter(|a| !too_deep(core, &a.tid)) else { continue };
-        let own = Owned::of_view(h, id, *ai);
-        let entries: Vec<(CommitId, Arc<Frontier>)> = es.iter().filter(|(d, _, _)| own.as_ref().is_some_and(|o| o.owns(d.origin()))).map(|(_, r, l)| (*r, l.clone())).collect();
-        if !entries.is_empty() {
-            vouches.push(osis_perm::Vouch { id: *id, ts: h.ts, author: h.signer, thing: a.tid, entries });
-        }
-    }
-    (vouches, role_parts(core, h, id))
-}
-
-/// The other role-class parts of role commit `id` (`vouching_parts`), each with the role its
-/// aspect requires (`rotation_role`, from its body, else by its aspect key).
-fn role_parts(core: &Core, h: &View, id: &CommitId) -> Option<osis_perm::RoleParts> {
-    // a compaction snapshot is its author's edit: no vouch lists one (as no addendum does)
-    let others: Vec<(Tid, Role)> = h
-        .aspects
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| !h.kind.is_compaction() && ct::is_role_class(a.ak.as_str()) && !edge_ak(a.ak.as_str()))
-        .map(|(ai, a)| {
-            let role = match a.ak.as_str() {
-                ct::VOUCHES_AK | "listing.0" => Role::Sync,
-                ak => core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak)),
-            };
-            (a.tid, role)
-        })
-        .collect();
-    (!others.is_empty()).then_some(osis_perm::RoleParts { id: *id, ts: h.ts, author: h.signer, parts: others })
-}
-
-/// `rotation_role` of commit `id` moved (a body judged, or gone): what perm reads of its other
-/// role-class parts follows, where it reads any (`Held::set_parts`).
-pub(crate) fn parts_moved(core: &mut Core, id: &CommitId) {
-    let Some(v) = core.ix.commits.get(id).map(|m| m.view.clone()).filter(|v| v.kind.is_role()) else { return };
-    osis_base::costs::count("role parts read", 1);
-    let parts = role_parts(core, &v, id);
-    core.ix.held.set_parts(*id, parts);
 }
 
 /// Notes the edges role commit `id` writes as held (`Core::notices_due`): a commit applied or
@@ -572,7 +490,6 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
             core.ix.rotation_role.upsert((*id, *ai), || r, |e| *e = (*e).max(r));
         }
     }
-    parts_moved(core, id);
     if h.kind != Kind::Role {
         return;
     }
@@ -798,7 +715,7 @@ pub(crate) struct Judge<'a> {
 pub(crate) type Settings = Vec<(Point, Arc<ct::RetentionSetting>)>;
 
 /// The addenda on `t` that count (`Judge::vouching`): what a writer reads to know whether its own
-/// vouch for a commit (`flows::vouches`).
+/// vouch for a commit (`flows::addenda`).
 pub(crate) fn vouching_on(core: &Core, t: &Tid) -> Option<Arc<Vouching>> {
     Judge::new(core).vouching(t)
 }
@@ -944,9 +861,8 @@ impl<'a> Judge<'a> {
         if deep {
             return false;
         }
-        // an edge write is judged by the timeline; a vouch's delta needs no role on its thing,
-        // each entry counting or not in the first walk (spec/permissions.md §5.1 Vouches)
-        if perm_part(ak) {
+        // an edge write is judged by the timeline
+        if edge_ak(ak) {
             return true;
         }
         // a listing needs no role on its thing: it names its author's own commits

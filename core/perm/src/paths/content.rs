@@ -1,10 +1,10 @@
-//! Content (draft §5.2): a delta's validity derived at read from the second walk's per-edge
-//! state, its chained points and what names the delta (notes/perm-paths.md, Step 3b design).
+//! Content (draft §5.2): a delta's validity derived at read from the walk's per-edge state,
+//! its chained points and what names the delta (notes/perm-paths.md, Step 3b design).
 //! Delta facts are read through the `Store` seam the engine backs with its store index
 //! (notes/perm-paths.md, The delta-facts seam); in memory stay only role commits' facts and the
 //! frontiers naming commits. Addenda validity (a least fixpoint) and purge requests' rights are
-//! the stored verdicts, judged again for those an update reached (notes/perm-paths.md, Counting
-//! entries and addenda, by reach; Purges).
+//! the stored verdicts, judged again for those an update reached (notes/perm-paths.md, Addenda,
+//! by reach; Purges).
 
 use super::path::shape;
 use super::walk::{Counts, Key, Walk};
@@ -291,18 +291,11 @@ impl Store for MemStore {
     }
 }
 
-/// What a held role commit is, for the counting rule and the addenda rule (content commits are
-/// the store's alone).
+/// What a held role commit is, for the addenda rule, own covers and could hold (content commits
+/// are the store's alone).
 #[derive(Clone)]
 pub(super) struct CommitFacts {
-    /// Its commit-level key (part 0) where it has an edge-class part, else the start of its `ts`.
-    pub key: Key,
-    pub signer: Tid,
-    /// The things it has a role-class part on (edge-class parts and role-class deltas).
-    pub role_on: BTreeSet<Tid>,
-    /// The edges its parts rest on (their paths', and the edges its self-removals lower), each
-    /// with the thing of the part resting on it.
-    pub rests: BTreeSet<(Tid, Pair)>,
+    signer: Tid,
     /// Its edge writes' frontiers.
     lists: Vec<(WriteId, Arc<List>)>,
     /// The edges its edge writes set, each with the role it sets (draft spec/commits.md §4
@@ -314,12 +307,9 @@ pub(super) struct CommitFacts {
 pub(super) struct Facts<S> {
     mint: BTreeMap<Tid, Tid>,
     /// The held role commits (a commit with a role-class part).
-    pub commits: BTreeMap<CommitId, CommitFacts>,
+    commits: BTreeMap<CommitId, CommitFacts>,
     /// Per (commit, thing), the frontiers (edge writes) whose leaf of the thing lists it.
     named: BTreeMap<(CommitId, Tid), BTreeSet<WriteId>>,
-    /// Removals by (commit, thing): the counting entries, each keeping the commit's parts on its
-    /// vouch's thing (draft §5.1 Vouches).
-    counted: BTreeMap<(CommitId, Tid), Vec<CommitId>>,
     /// Per edge, how many held edge writes set it at each role (`Role::ALL`'s order), whatever
     /// their validity: what a node that cannot judge reads (Could hold the right).
     ever: BTreeMap<Pair, [u32; 4]>,
@@ -329,7 +319,7 @@ pub(super) struct Facts<S> {
 
 impl<S: Store> Facts<S> {
     pub(super) fn new(records: &BTreeMap<Tid, Tid>, store: S) -> Facts<S> {
-        Facts { mint: records.clone(), commits: BTreeMap::new(), named: BTreeMap::new(), counted: BTreeMap::new(), ever: BTreeMap::new(), store, counts: Counts::default() }
+        Facts { mint: records.clone(), commits: BTreeMap::new(), named: BTreeMap::new(), ever: BTreeMap::new(), store, counts: Counts::default() }
     }
 
     fn record(&self, e: Pair) -> bool {
@@ -343,7 +333,7 @@ impl<S: Store> Facts<S> {
 
     /// Entries kept in memory: role commits, the frontiers' names, the edges role writes set.
     pub(super) fn footprint(&self) -> u64 {
-        (self.commits.len() + self.named.values().map(BTreeSet::len).sum::<usize>() + self.counted.len() + self.ever.len()) as u64
+        (self.commits.len() + self.named.values().map(BTreeSet::len).sum::<usize>() + self.ever.len()) as u64
     }
 
     /// Takes in new commits (the walks took their edge-class parts). Returns the new deltas, the
@@ -351,21 +341,14 @@ impl<S: Store> Facts<S> {
     pub(super) fn take(&mut self, commits: &[&Commit]) -> Taken {
         let mut out = Taken::default();
         for c in commits {
-            let start = Key { ts: c.ts, signer: c.signer, commit: c.id, part: 0 };
-            let mut cf = CommitFacts { key: start, signer: c.signer, role_on: BTreeSet::new(), rests: BTreeSet::new(), lists: vec![], sets: vec![] };
+            let mut cf = CommitFacts { signer: c.signer, lists: vec![], sets: vec![] };
             let mut role = false;
             let mut facts = vec![];
             for (ix, p) in (0u32..).zip(c.parts.iter()) {
                 let id = WriteId(c.id, ix);
                 match &p.kind {
                     PartKind::Edge(ew) => {
-                        let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, Some(ew.holder), true);
-                        cf.role_on.insert(p.on);
                         role = true;
-                        cf.rests.extend(sh.hops.iter().map(|&e| (p.on, e)));
-                        if sh.leave {
-                            cf.rests.insert((p.on, (ew.holder, p.on)));
-                        }
                         if let Some(f) = &ew.frontier {
                             cf.lists.push((id, f.clone()));
                         }
@@ -373,21 +356,13 @@ impl<S: Store> Facts<S> {
                             cf.sets.push(((ew.holder, p.on), v.role));
                         }
                     }
-                    PartKind::Vouch { .. } => {
-                        let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, None, true);
-                        cf.role_on.insert(p.on);
-                        role = true;
-                        cf.rests.extend(sh.hops.iter().map(|&e| (p.on, e)));
-                    }
                     PartKind::Delta(d) => {
                         let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, None, false);
-                        cf.rests.extend(sh.hops.iter().map(|&e| (p.on, e)));
                         let chain: Vec<Tid> = std::iter::once(c.signer).chain(p.path.iter().copied()).collect();
                         let purge_author = usize::try_from(d.purge_author).ok().and_then(|i| chain.get(i).copied());
                         let class = match &d.class {
                             DeltaClass::Plain => FactClass::Plain,
                             DeltaClass::RoleClass => {
-                                cf.role_on.insert(p.on);
                                 role = true;
                                 FactClass::Role
                             }
@@ -425,11 +400,6 @@ impl<S: Store> Facts<S> {
                 self.store.put(f);
             }
             if role {
-                // ordered for the counting rule as its parts are: by its edge-class parts' key,
-                // else at the start of its `ts` (§5.2 Position)
-                if !c.parts.iter().any(|p| matches!(p.kind, PartKind::Edge(_) | PartKind::Vouch { .. })) {
-                    cf.key = Key::start(c.ts);
-                }
                 for (id, f) in &cf.lists {
                     for x in f.entries() {
                         self.named.entry((x.1, x.0)).or_default().insert(*id);
@@ -440,7 +410,6 @@ impl<S: Store> Facts<S> {
                         *n += 1;
                     }
                 }
-                out.roles.insert(c.id);
                 self.commits.insert(c.id, cf);
             }
         }
@@ -454,7 +423,6 @@ impl<S: Store> Facts<S> {
         let mut out = Taken::default();
         for c in commits {
             if let Some(cf) = self.commits.remove(c) {
-                out.roles.insert(*c);
                 for (e, r) in &cf.sets {
                     if let Some(n) = self.ever.get_mut(e) {
                         if let Some(x) = n.get_mut(level(*r)) {
@@ -503,15 +471,6 @@ impl<S: Store> Facts<S> {
             }
         }
         out
-    }
-
-    // ---- counting entries as lists ----
-
-    pub(super) fn set_counted(&mut self, entries: &BTreeSet<(CommitId, CommitId, Tid)>) {
-        self.counted.clear();
-        for (r, c, on) in entries {
-            self.counted.entry((*c, *on)).or_default().push(*r);
-        }
     }
 
     // ---- judging a delta ----
@@ -564,8 +523,8 @@ impl<S: Store> Facts<S> {
         })
     }
 
-    /// The edge writes answering `d` (draft §5.2 Content): those whose list names its commit
-    /// (a frontier, or a counting entry against them), and with `addenda` the removal parts a
+    /// The edge writes answering `d` (draft §5.2 Content): those whose frontier names its commit,
+    /// and with `addenda` the removal parts a
     /// valid addendum naming it vouches against. Each answers its own cut alone (`stands`).
     fn answered(&self, tl: &Walk, d: &Fact, addenda: bool, counts: &mut Counts) -> BTreeSet<WriteId> {
         let mut out = BTreeSet::new();
@@ -581,10 +540,6 @@ impl<S: Store> Facts<S> {
                 }
                 Namer::Addendum(_) => {}
             }
-        }
-        for c in self.counted.get(&(d.commit(), d.on)).into_iter().flatten() {
-            counts.content += 1;
-            out.extend(tl.parts_of(c));
         }
         out
     }
@@ -605,8 +560,8 @@ impl<S: Store> Facts<S> {
         })
     }
 
-    /// (b): it stands against every cut of its path below `r`, each answered by its own list
-    /// (a frontier, or a counting entry).
+    /// (b): it stands against every cut of its path below `r`, each answered by its own
+    /// frontier.
     fn listed(&self, tl: &Walk, d: &Fact, r: Role, spare: Option<Tid>, counts: &mut Counts) -> bool {
         let answered = self.answered(tl, d, false, counts);
         !answered.is_empty() && Self::stands(tl, d, r, spare, &answered, counts)
@@ -950,8 +905,8 @@ impl<S: Store> Facts<S> {
 
     // ---- addenda: the least fixpoint, by reach ----
 
-    /// Judges again the addenda an update reached (notes/perm-paths.md, Counting entries and
-    /// addenda, by reach): those `ch` reaches as it reaches any delta (an edge of its path in
+    /// Judges again the addenda an update reached (notes/perm-paths.md, Addenda, by
+    /// reach): those `ch` reaches as it reaches any delta (an edge of its path in
     /// `edges` before its position, in `cuts` at or after it, in `regrant`; its commit in
     /// `named`), those `fresh`, and every addendum their lists name, in turn (F). F leaves the
     /// valid set; its members valid by (a), (b), (d) or by a valid namer outside F join it again
@@ -1092,8 +1047,6 @@ pub(super) struct Taken {
     /// Commits whose namers changed: carried by a snapshot taken or forgotten, listed by an
     /// addendum or a frontier forgotten.
     pub carried: BTreeSet<CommitId>,
-    /// The role commits taken or forgotten.
-    pub roles: BTreeSet<CommitId>,
     /// The new addenda.
     pub addenda: Vec<WriteId>,
     /// The scopes of the requests forgotten holding a right.

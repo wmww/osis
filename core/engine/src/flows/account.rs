@@ -1066,7 +1066,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             }
             if m.view.kind.is_role() {
                 let counts = m.view.epoch.is_some_and(|e| judged.standing(&c, &e, tx.core.ix.named.contains(&p, &c)) == EpochStanding::Counts);
-                moved_roles |= tx.core.ix.held.reads(&c);
+                moved_roles |= tx.core.ix.held.edge_commit(&c).is_some();
                 tx.core.ix.held.set_counted(c, counts);
             }
             // a snapshot waiting for what it would carry to last (`signing::lasts`) is weighed again

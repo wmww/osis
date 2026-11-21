@@ -19,7 +19,6 @@ mod tests_validity;
 #[cfg(test)]
 mod tests_addenda;
 #[cfg(test)]
-mod tests_vouches;
 #[cfg(test)]
 mod oracle;
 #[cfg(test)]
@@ -147,7 +146,7 @@ pub(crate) struct Streamed {
 }
 
 /// A commit's decoded parts, with what is read of them, each read once on first ask: each
-/// `keys.0` part's keysets (`keys::KeysBody`) and perm's reading of its `roles.0` and `vouches.0` parts
+/// `keys.0` part's keysets (`keys::KeysBody`) and perm's reading of its `roles.0` parts
 /// (`validity::PermParts`, also its record's `node/perm` row). A part may come as several
 /// deltas (pages of one rotation): each entry is read alone.
 pub(crate) struct PartsRead<'a> {
@@ -181,7 +180,7 @@ impl<'a> PartsRead<'a> {
         Some(self.keys.get(i)?.get_or_init(|| keys::KeysBody::of(d.fragment())))
     }
 
-    /// What perm's adaptation reads of the `roles.0` and `vouches.0` parts.
+    /// What perm's adaptation reads of the `roles.0` parts.
     pub(crate) fn perm(&self) -> &validity::PermParts {
         self.perm.get_or_init(|| validity::PermParts::of(self.h, self.parts))
     }
@@ -404,7 +403,7 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
 /// (`Reason::Outside`, spec/commits.md §4 Outside the node closure): each such commit is
 /// examined again in this transaction, at its end (`Engine::run`), an ephemeral one woken for
 /// node-sync's room (`apply_waiting_memory`), and the removals owing a vouch or addendum there
-/// are judged again (`vouches::note_entered`). How many were examined. The first call reads every
+/// are judged again (`addenda::note_entered`). How many were examined. The first call reads every
 /// thing awaited so (an open judges every removal anyway). O(what entered and the commits and
 /// removals waiting for it).
 pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
@@ -416,7 +415,7 @@ pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
         }
     };
     // a vouch or addendum owed on a thing outside the node closure waits for it to enter
-    crate::flows::vouches::note_entered(tx.core, &came);
+    crate::flows::addenda::note_entered(tx.core, &came);
     let mut ids: BTreeSet<CommitId> = BTreeSet::new();
     for t in came.iter().filter(|t| crate::retention::needed::whole(tx.core, t)) {
         ids.extend(tx.core.ix.pend_on.get(&Wake::Enters(*t)).into_iter().flatten().copied());
@@ -2352,8 +2351,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     }
     // the split commits' paths the loaded secrets open (`paths::refresh`)
     paths::refresh(tx);
-    // what vouches are owed is re-derived, never kept (`flows::vouches`)
-    crate::flows::vouches::all_due(tx.core);
+    // what vouches are owed is re-derived, never kept (`flows::addenda`)
+    crate::flows::addenda::all_due(tx.core);
     if fast {
         return Ok(None);
     }
@@ -2408,7 +2407,7 @@ fn examine_stored<'p>(tx: &mut Tx<'_>, h: &Header, parts: impl IntoIterator<Item
     Ok(out)
 }
 
-/// What perm's adaptation reads of a held role commit: its held `roles.0` and `vouches.0` parts.
+/// What perm's adaptation reads of a held role commit: its held `roles.0` parts.
 pub(crate) fn perm_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::PermParts> {
     // the header decoded only for a held record
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(validity::PermParts::default()) };
@@ -2418,7 +2417,7 @@ pub(crate) fn perm_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::Per
 
 /// `perm_parts` of a commit record's blob (`h`: its resolved header).
 pub(crate) fn perm_parts_of(tx: &mut Tx<'_>, id: &CommitId, h: &Header, blob: &CommitBlob) -> Result<validity::PermParts> {
-    let perm = blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| validity::perm_part(a.ak.as_str())));
+    let perm = blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
     Ok(validity::PermParts::of(h, &examine_stored(tx, h, perm, id)?))
 }
 

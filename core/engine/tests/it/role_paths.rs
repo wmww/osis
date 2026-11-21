@@ -42,8 +42,8 @@ fn invite(role: Role, invite: Role) -> ct::Edge {
 /// H5, takes H5 off T5 (a self-removal through a holder: B's only role there is through H5); C
 /// leaves T1 itself; B invites D to T4 by H4's invite and C invites B by its own; a timed grant
 /// on T1 ends and B finalizes it; C redeems a single-use link to T7; on T6, B grants D write and
-/// writes content only C receives, A removes B, and C vouches for the grant and writes an addendum
-/// for the content, then leaves T6 itself (an admin's leave, naming a remaining admin); A removes
+/// writes content only C receives, A removes B (the grant falls), and C writes an addendum for the
+/// content, then leaves T6 itself (an admin's leave, naming a remaining admin); A removes
 /// C from T8, which A reaches by a descent of two steps (naming a remaining admin). With
 /// `interim`, every node's role commits state the Interim empty path.
 pub(crate) fn world(interim: bool) -> World {
@@ -92,7 +92,7 @@ pub(crate) fn world(interim: bool) -> World {
     lp.peers[2].engine.redeem(&link, &pc, true).unwrap();
     lp.advance(1000);
     spread(&mut lp);
-    // a vouch and an addendum for what A's removal of B left out, then C's own leave
+    // an addendum for what A's removal of B left out, then C's own leave
     grant(&mut lp, 0, t6, pb, edge_of(Role::Admin));
     grant(&mut lp, 0, t6, pc, edge_of(Role::Admin));
     lp.peers[1].engine.grant(&t6, &pd, &edge_of(Role::Write)).unwrap();
@@ -168,7 +168,7 @@ fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> O
 // states one path, purge index 0, whose hops from its signer to each thing it writes (to the
 // holder, for a self-removal) are held edges or descents just before its key, giving what the
 // commit needs there: the signer's role on the thing (admin for an admin's edge write, its role
-// for a rotation or a vouch), admin up to the holder for a self-removal, the granted role as an
+// for a rotation), admin up to the holder for a self-removal, the granted role as an
 // invite on the last edge for an invite grant. Every kind the table names is met.
 #[test]
 fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
@@ -218,9 +218,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
                 *seen.entry("invite").or_default() += 1;
             } else {
                 assert!(Some(role) >= effective, "{id:?}: the path gives {role:?}, the signer's role there is {effective:?}");
-                let kind = if has("vouches.0") {
-                    "vouch"
-                } else if has("roles.0") && h.frontier.is_none() && ops.iter().all(|(_, v)| v.is_none()) {
+                let kind = if has("roles.0") && h.frontier.is_none() && ops.iter().all(|(_, v)| v.is_none()) {
                     "finalize"
                 } else if has("roles.0") {
                     "admin edge write"
@@ -236,7 +234,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
             }
         }
     }
-    for k in ["leave", "leave through a holder", "redemption", "invite", "vouch", "finalize", "admin edge write", "rotation", "remains"] {
+    for k in ["leave", "leave through a holder", "redemption", "invite", "finalize", "admin edge write", "rotation", "remains"] {
         assert!(seen.contains_key(k), "no {k}: {seen:?}");
     }
     assert!(lens.contains_key(&1) && lens.contains_key(&3), "paths through one and three holders: {lens:?}");
@@ -248,8 +246,8 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
 
 /// The new walk (`osis_perm::paths`, notes/perm-paths.md) over the role commits engine `e` holds
 /// as it holds them: each edge write a part along the path its commit states for its target (the
-/// old walk's own reading of its value and frontier, the header's `remains` and adminless mark),
-/// each vouch entry a part; `e`'s trust set; records for every thing named. With each edge part's
+/// old walk's own reading of its value and frontier, the header's `remains` and adminless mark);
+/// `e`'s trust set; records for every thing named. With each edge part's
 /// old-walk ID and target.
 pub(crate) fn new_walk(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTreeMap<osis_perm::WriteId, (osis_perm::WriteId, Tid)>) {
     use osis_perm::paths::{Commit, EdgeWrite, Part, PartKind};
@@ -286,11 +284,6 @@ pub(crate) fn new_walk(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTr
                         std::sync::Arc::new(osis_perm::paths::List::new(f.commits().iter().flat_map(|x| things(x).into_iter().map(move |t| (t, *x))).collect::<Vec<_>>()))
                     });
                     parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier, remains: h.remains, adminless: h.adminless }) });
-                }
-            }
-            for v in e.core.ix.held.vouches_on(&t).filter(|v| v.id == id) {
-                for (r, list) in &v.entries {
-                    parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Vouch { removal: *r, list: (**list).clone() } });
                 }
             }
         }
@@ -342,28 +335,13 @@ pub(crate) fn walks_differ(e: &osis_engine::Engine) -> Vec<String> {
 }
 
 // notes/a1-spec/README.md step 3 (For the wiring): the new walk judging the paths role commits
-// state gives every edge write the old walk's verdict and every edge the old walk's final role,
-// at every node of the representative world, but where the two rules differ by design. One such
-// difference is in it: C's vouch keeps B's grant of D on T6 past A's removal of B, and C then
-// leaves T6 itself. The old walk counts an entry only while its voucher could write the commit
-// at each later lowering of the voucher (spec/permissions.md §5.1 Vouches), so C's leave ends it
-// and the grant falls; in the new walk the vouch is a part resting on C's path, which a
-// self-removal puts in nothing's question (it audits nothing, notes/a1-spec/permissions.md §2
-// Self-removal), so the grant stays.
+// state gives every edge write the old walk's verdict (spec/permissions.md §5.1) and every edge
+// the old walk's final role, at every node of the representative world.
 #[test]
 fn the_new_walk_judges_the_stated_role_paths_as_the_old_walk_does() {
     let w = world(false);
-    let (t6, d) = (w.things[10], w.lp.peers[3].engine.me());
     for i in 0..4 {
-        let e = &w.lp.peers[i].engine;
-        let differ = walks_differ(e);
-        let tl = e.core.timelines.get(&t6).unwrap();
-        let grant = tl.held_on(&t6).find(|(_, _, op)| op.holder == d).map(|(w, _, _)| w).unwrap();
-        let expected = vec![
-            format!("edge write {:?} by {:?} on ({d:?}, {t6:?}): old false, new Some(Applied)", grant.0, tl.edge_op(&grant).unwrap().0),
-            format!("roles on {t6:?}: old {:?}, new {:?}", BTreeMap::from([(w.lp.peers[0].engine.me(), Role::Admin)]), BTreeMap::from([(w.lp.peers[0].engine.me(), Role::Admin), (d, Role::Write)])),
-        ];
-        assert_eq!(differ, expected, "peer {i}");
+        assert_eq!(walks_differ(&w.lp.peers[i].engine), Vec::<String>::new(), "peer {i}");
     }
 }
 
@@ -446,7 +424,7 @@ type ClassWorld = (&'static str, Option<&'static str>, LocalPeer);
 
 /// The classes' worlds this binary builds (notes/a1-spec/README.md step 3, For the wiring).
 fn class_worlds() -> Vec<ClassWorld> {
-    let mut out: Vec<ClassWorld> = vec![("representative", Some("a vouch outlives its voucher's own leave"), world(false).lp)];
+    let mut out: Vec<ClassWorld> = vec![("representative", None, world(false).lp)];
     // the last-admin rule as a validity rule: A, T's mint admin, and B, granted admin, leave at once
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
@@ -544,7 +522,6 @@ fn new_walk_differs_only_by_design() {
             }
             let fits = match class {
                 None => d.is_empty(),
-                Some(c) if c.starts_with("a vouch") => d.len() == 2,
                 Some(c) if c.starts_with("a leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
                 Some(c) if c.starts_with("a no-op leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Dropped)")),
                 Some(c) => panic!("no rule for class {c}"),
