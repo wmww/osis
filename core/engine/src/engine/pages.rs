@@ -1236,11 +1236,10 @@ pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
 pub fn absorb(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, work: &mut usize) -> Result<Option<bool>> {
     let t = table(txn, tid, ak)?;
     let mut any = false;
-    let mut budget = 0;
+    let budget: usize = idx.sets.values().filter(|s| is_seq(s) && !s.whole).filter_map(|s| if let Place::Held(p) = &s.place { Some(p.len().max(1024)) } else { None }).sum();
     for set in idx.sets.values_mut().filter(|s| is_seq(s) && !s.whole) {
         let Place::Held(p) = &set.place else { continue };
         let mut p = p.clone();
-        budget += p.len().max(1024);
         let m = p.misses();
         if !m.any() {
             continue;
@@ -2707,6 +2706,49 @@ mod tests {
         assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
         f.join(want.0.clone());
         st.join(want.0);
+        assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)));
+        let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
+        assert!(!set.whole && matches!(set.place, Place::Held(_)), "placement kept");
+        assert!(stored_place(&mut txn, &tid, &ak, set).unwrap().order() == place_whole_pass(&st).order());
+    }
+
+    // spec/crdt.md §5.7, §6, §8: a stretch of a text split into rows of two chars (a char inserted
+    // before every other one), then deleted in one commit, is one range record on the pages (the
+    // chars dropped) over those rows; a received delta deleting every other pair cuts that record
+    // only where a row already starts, many times: each cut costs the rows it looks at, not a
+    // walk of the blocks, so the join follows the stored placement and keeps it.
+    #[test]
+    fn seq_cuts_where_rows_start_keep_placement_spec_crdt_6_1() {
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
+        let view = SeqView::Root(true);
+        let field = || vec![PathSeg::Field(1)];
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
+        let mut st = create(&mut w, &view, &seq_value(true, 4_000)).unwrap();
+        let commit = |st: &Fragment, ts: u64, node: u8, lo: u64, ops: Vec<Op>| {
+            let mut b = DeltaBuilder::new(st, Writer::new(Ts::from_u64(ts << 16).unwrap(), sess(node), lo));
+            for op in ops {
+                b.apply(&PathOp { path: field(), op }, &view).unwrap();
+            }
+            b.finish().unwrap()
+        };
+        let base = st.clone();
+        // a char before each even position 1000..1114 of the text as created
+        let (ins, r) = commit(&st, 2, 1, w.range().hi, (0..58).map(|k| Op::Insert { at: 1_000 + 3 * k, items: seq_items(true, k as u64, 1) }).collect());
+        st.join(ins);
+        // the stretch and those chars deleted at once
+        let (del, _) = commit(&st, 3, 1, r.hi, vec![Op::Delete { at: 1_000, len: 174 }]);
+        st.join(del);
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
+        // concurrently, every other pair of the stretch: each record cuts at two row starts
+        let (delta, _) = commit(&base, 4, 2, 1, (0..19).map(|j| Op::Delete { at: 1_000 + 2 * j, len: 2 }).collect());
+        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+        let t = touch_of(&delta, Some(&idx)).unwrap();
+        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
+        f.join(delta.clone());
+        st.join(delta);
         assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)));
         let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
         assert!(!set.whole && matches!(set.place, Place::Held(_)), "placement kept");
