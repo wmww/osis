@@ -135,7 +135,7 @@ impl Engine {
         if self.rows_quiet() {
             return Ok(());
         }
-        osis_base::costs::count("sync set: follows", 1);
+        osis_base::costs::count("sync set: follows", u64::from(!self.rows_settled(Quiet::holds_here)));
         let _u = Unrecorded::start();
         let from = Quiet::begin();
         let mut r = std::mem::take(&mut self.core.sync_rows);
@@ -147,8 +147,13 @@ impl Engine {
 
     /// Whether `follow_rows` is at its fixed point (`Quiet`): a follow would do nothing.
     pub(crate) fn rows_quiet(&self) -> bool {
+        self.rows_settled(Quiet::holds)
+    }
+
+    /// `rows_quiet` by `at` (`Quiet::holds`, or `holds_here` to count a follow).
+    pub(crate) fn rows_settled(&self, at: fn(&Quiet, bool) -> bool) -> bool {
         let r = &self.core.sync_rows;
-        r.quiet.holds(r.thing.idle())
+        at(&r.quiet, r.thing.idle())
     }
 
     fn follow_rows_in(&mut self, r: &mut SyncRows) -> Result<()> {

@@ -539,7 +539,7 @@ impl Engine {
         if self.certificates_quiet() {
             return Ok(false);
         }
-        osis_base::costs::count("certified: follows", 1);
+        osis_base::costs::count("certified: follows", u64::from(!self.certificates_settled(Quiet::holds_here)));
         let _u = Unrecorded::start();
         let from = Quiet::begin();
         let mut f = std::mem::take(&mut self.core.certified.followers);
@@ -552,8 +552,13 @@ impl Engine {
     /// Whether `follow_certificates` is at its fixed point (`Quiet`), the rows it follows inside
     /// included: a follow would do nothing.
     pub(crate) fn certificates_quiet(&self) -> bool {
+        self.certificates_settled(Quiet::holds)
+    }
+
+    /// `certificates_quiet` by `at` (`Quiet::holds`, or `holds_here` to count a follow).
+    fn certificates_settled(&self, at: fn(&Quiet, bool) -> bool) -> bool {
         let f = &self.core.certified.followers;
-        f.quiet.holds(f.read.idle() && f.authored.idle() && f.held_on.idle() && f.opens.idle() && f.pieces.idle()) && self.rows_quiet()
+        at(&f.quiet, f.read.idle() && f.authored.idle() && f.held_on.idle() && f.opens.idle() && f.pieces.idle()) && self.rows_settled(at)
     }
 
     fn follow_with(&mut self, f: &mut Followers) -> Result<bool> {

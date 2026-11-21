@@ -139,6 +139,7 @@ impl Table {
     /// Logs change `e` at `ver`, while some reader holds a mark; counts it in `writes`.
     fn log(&mut self, e: Logged) {
         WRITES.fetch_add(1, Ordering::Relaxed);
+        WRITES_HERE.set(WRITES_HERE.get() + 1);
         if !self.marks.is_empty() {
             self.log.push_back((self.ver, e));
         }
@@ -548,6 +549,11 @@ fn accounting(frames: &[Frame]) -> bool {
 /// Every change of any container's stamps in the process (`writes`).
 static WRITES: AtomicU64 = AtomicU64::new(0);
 
+thread_local! {
+    /// The changes of `WRITES` made on this thread.
+    static WRITES_HERE: Cell<u64> = const { Cell::new(0) };
+}
+
 /// Counts the changes of every container's stamps in the process (a write, a move, a drop a
 /// reader holds): equal at two times, no stamped container changed between, so a follower at its
 /// fixed point at the first has nothing to do at the second (`Quiet`). Writes on other threads
@@ -559,24 +565,44 @@ pub fn writes() -> u64 {
 /// A follower's fixed point (`Engine::follow`'s parts, `Cutoff`): `writes` when one of its
 /// follows ended having written nothing. While that stands and the follower has nothing pending
 /// (`Effects::idle`), a follow would find nothing due and write nothing: it may return at once.
+/// Another thread's writes (another engine's) break it, so whether a follow runs depends on the
+/// process; whether this thread's own writes owed it (`holds_here`) is a function of the
+/// follower's history, as a count of follows must be.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Quiet(Option<u64>);
+pub struct Quiet {
+    all: Option<u64>,
+    here: Option<u64>,
+}
+
+/// Where a follow began (`Quiet::begin`): `writes`, and this thread's share of them.
+#[derive(Clone, Copy, Debug)]
+pub struct Begun {
+    all: u64,
+    here: u64,
+}
 
 impl Quiet {
     /// Whether a follow of an `idle` follower has nothing to do.
     pub fn holds(&self, idle: bool) -> bool {
-        idle && self.0 == Some(writes())
+        idle && self.all == Some(writes())
+    }
+
+    /// `holds` counting this thread's writes alone: what decides whether a follow is counted. A
+    /// follow it skips is one only another thread's writes ran (it finds nothing due).
+    pub fn holds_here(&self, idle: bool) -> bool {
+        idle && self.here == Some(WRITES_HERE.get())
     }
 
     /// A follow begins: the mark `ended` compares with.
-    pub fn begin() -> u64 {
-        writes()
+    pub fn begin() -> Begun {
+        Begun { all: writes(), here: WRITES_HERE.get() }
     }
 
     /// The follow begun at `from` ended, `ok` if it succeeded: a fixed point when nothing was
     /// written since `from`.
-    pub fn ended(&mut self, from: u64, ok: bool) {
-        self.0 = (ok && writes() == from).then_some(from);
+    pub fn ended(&mut self, from: Begun, ok: bool) {
+        self.all = (ok && writes() == from.all).then_some(from.all);
+        self.here = (ok && WRITES_HERE.get() == from.here).then_some(from.here);
     }
 }
 
@@ -1520,6 +1546,28 @@ mod tests {
         push(&mut list, 1);
         assert_eq!(ask(&list, &other, false), (4, 40));
         assert_eq!(ran(), [0, 1]);
+    }
+
+    // spec: none (internal: a count of follows is a function of the follower's history). A
+    // fixed point (`Quiet`) breaks at any thread's write, so the follow runs; only this
+    // thread's writes owe it (`holds_here`), so another thread's leave the count as it was.
+    #[test]
+    fn another_threads_write_runs_a_follow_but_owes_none() {
+        let (mut quiet, mine) = (Quiet::default(), Stamps::default());
+        let from = Quiet::begin();
+        quiet.ended(from, true);
+        // `holds` too, but for other tests' threads writing beside this one
+        assert!(quiet.holds_here(true));
+        std::thread::spawn(|| Stamps::default().wrote(&1u8, true)).join().unwrap();
+        assert!(!quiet.holds(true), "any thread's write breaks the fixed point");
+        assert!(quiet.holds_here(true), "another thread's write owes no follow");
+        mine.wrote(&1u8, true);
+        assert!(!quiet.holds_here(true), "this thread's write owes one");
+        let from = Quiet::begin();
+        mine.wrote(&2u8, true);
+        quiet.ended(from, true);
+        assert!(!quiet.holds_here(true) && !quiet.holds(true), "a follow that wrote ends at no fixed point");
+        assert!(!Quiet::default().holds_here(true) && !quiet.holds_here(false));
     }
 
     // spec: none (internal). A key present with no stamp of its own (there before the stamps

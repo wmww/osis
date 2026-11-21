@@ -80,10 +80,8 @@ fn observe(lp: &mut LocalPeer, t: Tid) -> Vec<String> {
 }
 
 /// Each memo's and phase's runs (not their time): a copy's memos hit and miss as the original's.
-/// But the follows a fixed point skips (`memo::Quiet`): writes on other threads cost one
-/// (`memo::writes`), so their count is no function of this world.
 fn runs() -> Vec<(&'static str, u64)> {
-    osis_base::costs::take().into_iter().filter(|(k, _, _)| !k.ends_with(": follows")).map(|(k, _, n)| (k, n)).collect()
+    osis_base::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect()
 }
 
 // spec: none (internal: notes/test-harnesses.md, Copied worlds). A copied world goes on exactly as the
