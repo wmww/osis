@@ -636,8 +636,9 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
 // a relay's empty slots (the bytes of a stripped one, no record behind them or one), in any order, T
 // passing and a restart anywhere among them: each true copy delivered again at the end, the node reads
 // alike, its commit applied, no flag left, nothing of either value recoverable.
-// The default test runs the 7 rotations of the items' order in every shape: each item first and
-// last, each pair both ways round.
+// The default test runs the 7 rotations of the items' order (each item first and last, each pair
+// both ways round) at each place of T among them, ticked or not; a restart in half of those cases,
+// so each rotation and each place of T meets both (every pair of the three choices once).
 #[test]
 fn past_expiry_and_purge_alike_spec_commits_5() {
     past_expiry_and_purge_alike(false);
@@ -699,7 +700,12 @@ fn past_expiry_and_purge_alike(every: bool) {
     }
     // (whether it restarts before the fourth item, deliveries before T, whether a tick follows T)
     let shapes: Vec<(bool, usize, bool)> = [false, true].into_iter().flat_map(|restart| [(0, false), (2, false), (2, true), (4, false), (4, true)].map(|(k, tick)| (restart, k, tick))).collect();
-    let cases: Vec<(usize, usize)> = shapes.iter().enumerate().flat_map(|(n, _)| (0..orders.len()).map(move |o| (n, o))).collect();
+    // by hand every order in every shape; else each order and place of T once, restarting at
+    // alternate ones
+    let cases: Vec<(usize, usize)> = match every {
+        true => (0..shapes.len()).flat_map(|n| (0..orders.len()).map(move |o| (n, o))).collect(),
+        false => (0..5).flat_map(|t| (0..orders.len()).map(move |o| (t + 5 * ((t + o) % 2), o))).collect(),
+    };
     let outcomes = std::sync::Mutex::new(std::collections::BTreeMap::<String, String>::new());
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());

@@ -1967,12 +1967,9 @@ fn unrecorded(lp: &mut LocalPeer, boxer: usize, other: usize, a: Tid) -> Vec<(Ti
     out
 }
 
-/// One seed of `every_box_is_recorded_beside_it_spec_crypto_4`: G {a1, W, A}, A {a1, holder
-/// actors granted at random}, teams T0, T1 {t1, P, Q}. a1 grants teams and accounts on A, removes
-/// them, rotates and re-seals A; t1 removes and re-grants members (each removal rotates its
-/// team). After each step every box of A's current epochs to a holder actor (a team, an account)
-/// is recorded at W, G's admin.
-fn every_box_recorded(seed: u64) -> Vec<String> {
+/// The world of the box-record tests: G {a1, W, A}, A {a1}, teams T0, T1 {t1, P, Q}; peers a1,
+/// t1, P, Q, W. Returns it with P, Q, the teams and A.
+fn boxes_world() -> (LocalPeer, [Tid; 2], [Tid; 2], Tid) {
     let mut lp = synced(5);
     let [_, _, p, q, w] = std::array::from_fn(|i| lp.peers[i].engine.me());
     let teams: Vec<Tid> = (0..2).map(|_| independent_thing(&mut lp, 1)).collect();
@@ -1987,51 +1984,82 @@ fn every_box_recorded(seed: u64) -> Vec<String> {
     lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
-    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let mut bad = Vec::new();
-    for step in 0..12 {
-        let pick = rng.next(6);
-        let holder = match rng.next(4) {
-            0 => p,
-            1 => q,
-            n => teams[n as usize - 2],
-        };
-        let on_a = lp.peers[0].engine.roster(&a).contains_key(&holder);
-        let did = match pick {
-            0 | 1 if !on_a => format!("grant {holder:?}: {:?}", lp.peers[0].engine.grant(&a, &holder, &edge(Role::Read)).map(|d| d.commits.len())),
-            0 | 1 => format!("remove {holder:?}: {:?}", lp.peers[0].engine.demote(&a, &Demotion { holder, new: None, retain: None }).map(|d| d.commits.len())),
-            2 => {
-                let t = teams[rng.next(2) as usize];
-                let m = if rng.next(2) == 0 { p } else { q };
-                if lp.peers[1].engine.roster(&t).contains_key(&m) {
-                    format!("t1 removes {m:?} from {t:?}: {:?}", lp.peers[1].engine.demote(&t, &Demotion { holder: m, new: None, retain: None }).map(|d| d.commits.len()))
-                } else {
-                    format!("t1 grants {m:?} on {t:?}: {:?}", lp.peers[1].engine.grant(&t, &m, &edge(Role::Read)).map(|d| d.commits.len()))
-                }
-            }
-            3 => format!("a1 rotates: {:?}", lp.peers[0].engine.ensure_rotated(&a).map(|d| d.0.commits.len())),
-            4 => format!("t1 rotates: {:?}", teams.iter().map(|t| lp.peers[1].engine.ensure_rotated(t).map(|d| d.0.commits.len()).ok()).collect::<Vec<_>>()),
-            _ => format!("a1 re-seals: {:?}", lp.peers[0].engine.reseal_after_pass(&a).map(|d| d.commits.len())),
-        };
-        lp.sync_all().unwrap();
-        let missing = unrecorded(&mut lp, 0, 4, a);
-        if !missing.is_empty() {
-            bad.push(format!("seed {seed} step {step} ({did}): unrecorded at W {missing:?}"));
-        }
-    }
-    bad
+    (lp, [p, q], [teams[0], teams[1]], a)
 }
 
-// spec/crypto.md §4 (Stale: every box to a holder actor is recorded beside it, whoever writes it).
-// Randomized: grants, removals, rotations and re-seals of A's holder actors (teams and accounts),
-// and removals inside the teams; after each step W, G's admin, holds a record of every box at A's
-// current epochs naming the keysets the box names. Fails where a grant or re-seal records
-// nothing. (Which sync IDs carry the records is the osis `sharing` tests': LocalPeer delivers every
+/// A step of the box-record tests on A.
+#[derive(Clone, Copy, Debug)]
+enum BoxStep {
+    /// a1 grants `holder` read on A, or removes it when on A.
+    Flip(Tid),
+    /// t1 grants member `m` on team `t`, or removes it (rotating the team) when on it.
+    Member(Tid, Tid),
+    /// a1 rotates A.
+    Rotate,
+    /// t1 rotates both teams.
+    RotateTeams,
+    /// a1 re-seals A.
+    Reseal,
+}
+
+/// Runs `step` and syncs every peer; `Err` naming what it did and every box of A's current epochs
+/// to a holder actor left unrecorded at W, G's admin, if any.
+fn box_step(lp: &mut LocalPeer, teams: [Tid; 2], a: Tid, step: BoxStep) -> Result<(), String> {
+    let did = match step {
+        BoxStep::Flip(holder) if !lp.peers[0].engine.roster(&a).contains_key(&holder) => format!("grant {holder:?}: {:?}", lp.peers[0].engine.grant(&a, &holder, &edge(Role::Read)).map(|d| d.commits.len())),
+        BoxStep::Flip(holder) => format!("remove {holder:?}: {:?}", lp.peers[0].engine.demote(&a, &Demotion { holder, new: None, retain: None }).map(|d| d.commits.len())),
+        BoxStep::Member(t, m) if lp.peers[1].engine.roster(&t).contains_key(&m) => format!("t1 removes {m:?} from {t:?}: {:?}", lp.peers[1].engine.demote(&t, &Demotion { holder: m, new: None, retain: None }).map(|d| d.commits.len())),
+        BoxStep::Member(t, m) => format!("t1 grants {m:?} on {t:?}: {:?}", lp.peers[1].engine.grant(&t, &m, &edge(Role::Read)).map(|d| d.commits.len())),
+        BoxStep::Rotate => format!("a1 rotates: {:?}", lp.peers[0].engine.ensure_rotated(&a).map(|d| d.0.commits.len())),
+        BoxStep::RotateTeams => format!("t1 rotates: {:?}", teams.iter().map(|t| lp.peers[1].engine.ensure_rotated(t).map(|d| d.0.commits.len()).ok()).collect::<Vec<_>>()),
+        BoxStep::Reseal => format!("a1 re-seals: {:?}", lp.peers[0].engine.reseal_after_pass(&a).map(|d| d.commits.len())),
+    };
+    lp.sync_all().unwrap();
+    let missing = unrecorded(lp, 0, 4, a);
+    if missing.is_empty() { Ok(()) } else { Err(format!("{did}: unrecorded at W {missing:?}")) }
+}
+
+// spec/crypto.md §4 (Stale: every box to a holder actor is recorded beside it, whoever writes it):
+// after each of a1's grants on A (a team, an account), a team's member removed (the team rotates)
+// and granted again, a1's re-seal and rotation of A, t1's rotation of the teams and a1's removals,
+// W, G's admin, holds a record of every box at A's current epochs naming the keysets the box
+// names. (Which sync IDs carry the records is the osis `sharing` tests': LocalPeer delivers every
 // commit.)
 #[test]
 fn every_box_is_recorded_beside_it_spec_crypto_4() {
-    let bad: Vec<String> = (0..6).flat_map(every_box_recorded).collect();
-    assert!(bad.is_empty(), "{bad:#?}");
+    use BoxStep::*;
+    let (mut lp, [p, q], teams, a) = boxes_world();
+    let steps = [Flip(teams[0]), Flip(p), Member(teams[0], q), Reseal, Member(teams[0], q), Flip(teams[1]), Rotate, Member(teams[1], p), RotateTeams, Reseal, Flip(p), Flip(teams[0])];
+    for (i, step) in steps.into_iter().enumerate() {
+        box_step(&mut lp, teams, a, step).unwrap_or_else(|e| panic!("step {i}, {e}"));
+    }
+}
+
+// As above, over random steps: grants, removals, rotations and re-seals of A's holder actors
+// (teams and accounts), and removals inside the teams; 12 steps a seed. Small size (a tenth of
+// large) or large under `OSIS_FULL=1`; seeds: OSIS_ROTATION_START, OSIS_ROTATION_SEEDS.
+#[test]
+#[ignore = "property"]
+fn every_box_is_recorded_beside_it_randomized_plain_spec_crypto_4() {
+    let name = "rotation::tests_members::every_box_is_recorded_beside_it_randomized_plain_spec_crypto_4";
+    let s = osis_base::testenv::Seeds::from_env("OSIS_ROTATION_START", "OSIS_ROTATION_SEEDS", osis_base::testenv::large(0..60));
+    let replay = |s: u64| format!("OSIS_ROTATION_START={s} OSIS_ROTATION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact {name}");
+    s.run(name, replay, |seed| {
+        let (mut lp, [p, q], teams, a) = boxes_world();
+        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        for i in 0..12 {
+            let pick = rng.next(6);
+            let holder = [p, q, teams[0], teams[1]][rng.next(4) as usize];
+            let step = match pick {
+                0 | 1 => BoxStep::Flip(holder),
+                2 => BoxStep::Member(teams[rng.next(2) as usize], if rng.next(2) == 0 { p } else { q }),
+                3 => BoxStep::Rotate,
+                4 => BoxStep::RotateTeams,
+                _ => BoxStep::Reseal,
+            };
+            box_step(&mut lp, teams, a, step).unwrap_or_else(|e| panic!("seed {seed} step {i}, {e}"));
+        }
+    });
 }
 
 // spec/crypto.md §4 (Box records: whatever later bodies write at its key): a writer of A

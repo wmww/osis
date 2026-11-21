@@ -3611,16 +3611,23 @@ fn node_key(played: &Played, p: &mut Peer) -> u64 {
     h.finish()
 }
 
-// The delivery tree (`walk`) is exact: each delivery's end, reached from nodes copied where
-// deliveries part (`Peer::copy`) on several threads, is the node a fresh replay of that delivery
-// alone makes, byte for byte. A seed of the parts-away emphasis, whose ends hold pending and
-// thrown-out commits and parts away, held sets whole and partial, each order as it is and with
-// late parts.
+// spec: none (the order harness: notes/test-harnesses.md, Copied worlds). The delivery tree
+// (`walk`) is exact: each delivery's end, reached from nodes copied where deliveries part
+// (`Peer::copy`) on several threads, is the node a fresh replay of that delivery alone makes, byte
+// for byte. Histories of the parts-away emphasis (seed `8i + 5` for each `i` of `OSIS_ORDER_START`
+// and `OSIS_ORDER_SEEDS`: 10 at large size), whose ends hold pending and thrown-out commits and
+// parts away; 3 held sets each, whole and partial, each order as it is and with late parts.
 #[test]
-fn tree_ends_are_fresh_deliveries() {
-    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-    let [copies, late, waiting, thrown] = [(); 4].map(|_| AtomicU64::new(0));
-    par_map(&[5], 1, |seed| {
+#[ignore = "property"]
+fn tree_ends_are_fresh_deliveries_plain() {
+    use osis_base::testenv::{Seeds, large, reach_floor};
+    let range = Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", large(0..10));
+    range.announce("order::tree_ends_are_fresh_deliveries");
+    let seeds: Vec<u64> = range.range.map(|i| i * EMPHASES.len() as u64 + 5).collect();
+    assert!(seeds.iter().all(|s| matches!(emphasis(*s), Emphasis::PartsAway)));
+    let tallies = par_map(&seeds, 2, |seed| {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        let (late, waiting, thrown) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicUsize::new(0));
         let (e, steps) = generate(seed, 10);
         let cfg = cfg_of(e, Cfg { all_up_to: 0, random: 0, ..ORDERS });
         let played = &played_of(seed, &steps, cfg);
@@ -3635,14 +3642,14 @@ fn tree_ends_are_fresh_deliveries() {
         let mut tree = Tree::default();
         for (d, (order, split)) in deliveries.iter().enumerate() {
             tree.add(played, order, *split, End::Order(0, d));
-            late.fetch_add(u64::from(ingests(played, order, *split).iter().any(|m| matches!(m, Move::Ingest(_, Some(_))))), Relaxed);
+            late.fetch_add(usize::from(ingests(played, order, *split).iter().any(|m| matches!(m, Move::Ingest(_, Some(_))))), Relaxed);
         }
         let end = |e: End, mut p: Peer| -> Result<Seen, String> {
             let End::Order(_, d) = e else { unreachable!() };
             let (order, split) = &deliveries[d];
             let mut fresh = deliver_with(played, order, *split, None, None, &mut |_| {});
-            waiting.fetch_add(u64::from(!fresh.engine.pending().is_empty()), Relaxed);
-            thrown.fetch_add(u64::from(!fresh.discarded.is_empty()), Relaxed);
+            waiting.fetch_add(usize::from(!fresh.engine.pending().is_empty()), Relaxed);
+            thrown.fetch_add(usize::from(!fresh.discarded.is_empty()), Relaxed);
             let (got, want) = (node_state(played, &mut p), node_state(played, &mut fresh));
             match got.iter().zip(&want).find(|(g, w)| g != w) {
                 // from the first difference: a store's bytes print long
@@ -3657,10 +3664,12 @@ fn tree_ends_are_fresh_deliveries() {
         for (_, r) in walk(played, &tree, 4, &[], false, &end) {
             r.unwrap();
         }
-        copies.fetch_add(played.copies.load(Relaxed), Relaxed);
+        [played.copies.load(Relaxed) as usize, late.into_inner(), waiting.into_inner(), thrown.into_inner()]
     });
-    let [copies, late, waiting, thrown] = [copies, late, waiting, thrown].map(AtomicU64::into_inner);
-    assert!(copies > 0 && late > 0 && waiting > 0 && thrown > 0, "{copies} nodes copied, {late} deliveries with late parts, {waiting} ends with a pending commit, {thrown} with a thrown-out one");
+    // per seed, about a quarter of the mean over seeds 0..21 (least: 24, 12, 6, 6)
+    for (k, (what, per)) in [("nodes copied", 6), ("deliveries with late parts", 3), ("ends with a pending commit", 2), ("ends with a thrown-out commit", 2)].into_iter().enumerate() {
+        reach_floor(&format!("order::tree_ends_are_fresh_deliveries: {what}"), tallies.iter().map(|t| t[k]), per, 1);
+    }
 }
 
 // spec/requirements.md Decentralization (Deterministic: a node's state and its judgment of every
