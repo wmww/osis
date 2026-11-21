@@ -1063,14 +1063,16 @@ impl Sim {
         if rules.sides == Sides::KeyOwn { self.w.commits[i].signer == n } else { self.wrote(n, i) }
     }
     /// Node `n` joins at tick `at`: it holds nothing before, and everything made by then reaches
-    /// it in one update (a new node's first sync).
-    pub fn joins(&mut self, n: Thing, at: u32) {
+    /// it in one update (a new node's first sync); the users' choices at `AFTER` follow it.
+    pub fn joins(&mut self, n: Thing, at: u32, rules: &Rules) {
         for r in &mut self.recv {
             if let Some(t) = r.get_mut(&n) {
                 *t = (*t).max(at);
             }
         }
         self.touch(0);
+        self.chose.clear();
+        self.choices(rules);
     }
     /// The honest lowerings a node may side with: the honest removals, and X's removal of N5
     /// before the theft.

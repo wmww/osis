@@ -3120,8 +3120,9 @@ fn first_received_trusts_a_removal_held_before_a_backdated_write() {
     check(&m, &rules, &mut st);
     assert_eq!(st.failures(), 0, "{:?}", st.fails);
     let mut late = m.clone();
-    late.joins(RD, 10);
-    let v = late.view(RD, &rules);
+    late.joins(RD, 10, &rules);
+    assert!(late.chose.get(&RD).is_some_and(|c| c.contains(&out5)));
+    let v = late.view_unchosen(RD, &rules);
     let rd = judge(&late.w, &rules, &v);
     assert!(!v.trust.contains(&out5) && !rd.applied.contains(&m.gs) && rd.role(A2, T1) == Gone, "{:?} {rd:?}", v.trust);
     assert_eq!(disputes(&late.w, &rules, &v), vec![out5]);
@@ -3131,7 +3132,7 @@ fn first_received_trusts_a_removal_held_before_a_backdated_write() {
         let off = Rules { sides, ..rules };
         let mut m = Sim::build(&s, &off, &mv, &mut Rng(0));
         if let Some(at) = at {
-            m.joins(RD, at);
+            m.joins(RD, at, &off);
         }
         let v = m.view(RD, &off);
         assert_eq!(v.trust.contains(&out5), trusts, "{sides:?}");
