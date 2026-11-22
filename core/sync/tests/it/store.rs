@@ -98,12 +98,20 @@ fn holding(sids: &[(&Sid, Holding)]) -> SyncSet {
     SyncSet { ids: sids.iter().map(|(s, h)| (s.id, ([THING].into(), *h))).collect(), ..SyncSet::default() }
 }
 
-/// A store holding `s` kept unread, its genesis registered.
 /// A peer record in `st`, as a source.
 fn record(st: &mut Store, b: u8) -> Source {
     Source::Record(st.with_tx(|t| t.record_create([b; 32], &osis_store::Named::default())).unwrap())
 }
 
+/// A fresh device keeping `Sid::new(10)` unread (`unread`).
+fn one_unread() -> (Dev, Sid, Store) {
+    let dev = Dev::new();
+    let s = Sid::new(10);
+    let st = unread(&dev, &s);
+    (dev, s, st)
+}
+
+/// A store holding `s` kept unread, its genesis registered.
 fn unread(dev: &Dev, s: &Sid) -> Store {
     let mut st = dev.open();
     st.set_sync_set(&holding(&[(s, Holding::Unread)])).unwrap();
@@ -187,9 +195,7 @@ fn register_takes_genesis_then_children_of_the_head_spec_sync_ids_6() {
 // skipped; the head again is 0.
 #[test]
 fn register_takes_a_deeper_branch_alone_spec_sync_ids_6() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     let (g, gc) = s.steps[0].clone();
     // two admins step at once: A at the store, B then C recorded
     let mut a = s.clone();
@@ -352,9 +358,7 @@ fn an_endorsement_counts_only_by_the_heads_key_over_the_last_step_spec_sync_ids_
 // step's; one that does not is refused with the step.
 #[test]
 fn register_refuses_a_claim_set_of_another_hash_spec_sync_ids_6() {
-    let dev = Dev::new();
-    let mut s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, mut s, mut st) = one_unread();
     let (c1, _) = s.rotate(60);
     let (_, wrong) = s.rotate(70);
     assert_eq!(st.take_register(&s.id, &[(&c1, Some(&wrong))], None, osis_base::Mono(0)).unwrap(), Code::MALFORMED);
@@ -455,9 +459,7 @@ fn a_behind_refused_is_13_only_where_s_is_not_kept_spec_sync_ids_6() {
 // genesis.
 #[test]
 fn behind_by_a_static_entry_grants_the_path_spec_sync_ids_6() {
-    let dev = Dev::new();
-    let mut s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, mut s, mut st) = one_unread();
     let link = SigningSecret::from_seed(&Secret32::from_bytes([77; 32]));
     let kem = KemSecret::derive(&Secret32::from_bytes([78; 32]));
     let (c1, cs1) = s.issue(&[Reader::Static { signing: link.verifying_key(), kem: kem.public() }]);
@@ -478,9 +480,7 @@ fn behind_by_a_static_entry_grants_the_path_spec_sync_ids_6() {
 // blob, and takes a good one with wrap and stamp.
 #[test]
 fn stamped_entries_refused_and_taken_spec_sync_ids_6() {
-    let dev = Dev::new();
-    let mut s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, mut s, mut st) = one_unread();
     let (b, bytes) = blob(100, Class::Durable, None, &[]);
     let old = stamped(&s, b, false);
     let (c1, cs1) = s.rotate(60);
@@ -512,9 +512,7 @@ fn stamped_entries_refused_and_taken_spec_sync_ids_6() {
 // its keys keeps and takes (the unheld mark is what stops it).
 #[test]
 fn a_head_past_its_keys_drops_the_copy_and_takes_nothing_spec_sync_judgement_6() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     let (b, bytes) = blob(100, Class::Durable, None, &[]);
     let (e, ebytes) = blob(101, Class::Ephemeral, Some(10_000), &[]);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes.clone(), &[]).unwrap(), Code::OK);
@@ -539,9 +537,7 @@ fn a_head_past_its_keys_drops_the_copy_and_takes_nothing_spec_sync_judgement_6()
 // still takes nothing, and leaving the mark tells streams to fetch S anew (`anew_feed`).
 #[test]
 fn a_dropped_copy_is_fetched_anew_after_a_restart_spec_sync_judgement_6() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (dev, s, mut st) = one_unread();
     st.set_unheld(&s.id, true).unwrap();
     drop(st);
     let mut st = dev.open();
@@ -577,9 +573,7 @@ fn a_raise_to_read_fetches_s_anew_spec_sync_judgement_6() {
 // after: taking it again changes nothing and logs no event.
 #[test]
 fn a_stamp_replaces_a_deposit_once_spec_sync_ids_6() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     let (b, bytes) = blob(100, Class::Durable, None, &[]);
     assert_eq!(st.take_deposit(&deposit(&s, &bytes, false), None).unwrap(), Code::OK);
     assert!(st.entry(&s.id, &b).unwrap().unwrap().deposited);
@@ -603,9 +597,7 @@ fn a_stamp_replaces_a_deposit_once_spec_sync_ids_6() {
 // refused for room (12).
 #[test]
 fn role_entries_pass_the_caps_spec_sync_ids_6() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     st.set_caps(&Caps { policy: BTreeMap::from([("entries".to_string(), 1)]), ..Caps::default() });
     let (b1, x1) = blob(100, Class::Durable, None, &[]);
     let (b2, x2) = blob(101, Class::Durable, None, &[]);
@@ -625,9 +617,7 @@ fn role_entries_pass_the_caps_spec_sync_ids_6() {
 // lifetime make it, with no cap moving. Room judged by what moved, not per call.
 #[test]
 fn a_total_refusal_ends_as_room_for_it_frees_spec_sync_streams_4() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     for n in 0..3 {
         let (b, x) = blob(200 + n, Class::Durable, None, &[]);
         assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK);
@@ -720,9 +710,7 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
 #[test]
 fn full_ends_once_what_it_refused_expired_spec_sync_streams_4() {
     for (restart, forever) in [(false, false), (true, false), (false, true)] {
-        let dev = Dev::new();
-        let s = Sid::new(10);
-        let mut st = unread(&dev, &s);
+        let (dev, s, mut st) = one_unread();
         let from = [record(&mut st, 1)];
         let used = st.usage(&s.id).unwrap().0.bytes;
         let caps = Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() };
@@ -755,9 +743,7 @@ fn full_ends_once_what_it_refused_expired_spec_sync_streams_4() {
 #[test]
 fn full_is_marked_per_source_spec_sync_streams_4() {
     for restart in [false, true] {
-        let dev = Dev::new();
-        let s = Sid::new(10);
-        let mut st = unread(&dev, &s);
+        let (dev, s, mut st) = one_unread();
         let (r1, r2, r3, c) = (record(&mut st, 1), record(&mut st, 2), record(&mut st, 3), Source::Conn(ConnId(5)));
         let used = st.usage(&s.id).unwrap().0.bytes;
         let caps = Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() };
@@ -804,9 +790,7 @@ fn full_is_marked_per_source_spec_sync_streams_4() {
 // longer after a restart (its connections ended with it).
 #[test]
 fn full_by_connections_alone_ends_at_a_restart_spec_sync_streams_4() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (dev, s, mut st) = one_unread();
     let used = st.usage(&s.id).unwrap().0.bytes;
     st.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() });
     let (b, x) = blob(300, Class::Durable, None, &[]);
@@ -852,9 +836,7 @@ fn deposit_answers_spec_sync_inbox_3() {
 // leaves the budget when stamped or deleted.
 #[test]
 fn deposit_budget_spec_sync_inbox_3() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     // the genesis claim set holds one key: 68 entries
     let mut taken = Vec::new();
     for i in 0..68 {
@@ -875,9 +857,7 @@ fn deposit_budget_spec_sync_inbox_3() {
 // connection without one, or none.
 #[test]
 fn deposits_from_anyone_spec_sync_inbox_3() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     for (i, from) in [None, Some(Source::Conn(ConnId(3))), Some(Source::Record([4; 16]))].into_iter().enumerate() {
         let (b, x) = blob(100 + i, Class::Durable, None, &[]);
         assert_eq!(st.take_deposit(&deposit(&s, &x, false), from).unwrap(), Code::OK);
@@ -890,9 +870,7 @@ fn deposits_from_anyone_spec_sync_inbox_3() {
 // to it in the same transaction: a failed eviction leaves both, a landed one neither.
 #[test]
 fn an_evicted_record_takes_its_charges_at_once_spec_sync_opens_3() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (dev, s, mut st) = one_unread();
     let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
     let (b, x) = blob(1003, Class::Durable, None, &[]);
     assert_eq!(st.take_deposit(&deposit(&s, &x, false), Some(Source::Record(rec))).unwrap(), Code::OK);
@@ -915,9 +893,7 @@ fn an_evicted_record_takes_its_charges_at_once_spec_sync_opens_3() {
 fn a_gone_sources_charges_pass_to_a_record_that_showed_them_spec_sync_ids_5() {
     // the record row of what a source's stream showed present (osis-sync's `rows::tag::PRESENT`)
     const PRESENT: u8 = b'k';
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 600)]), ..Caps::default() });
     let rec = |st: &mut Store, k: u8| st.with_tx(|t| t.record_create([k; 32], &osis_store::Named::default())).unwrap();
     let (loser, survivor, silent) = (rec(&mut st, 1), rec(&mut st, 2), rec(&mut st, 3));
@@ -962,9 +938,7 @@ fn a_gone_sources_charges_pass_to_a_record_that_showed_them_spec_sync_ids_5() {
 // charged per connection, and what it brought goes when the connection closes.
 #[test]
 fn peer_budget_spec_sync_ids_5() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 1500)]), ..Caps::default() });
     let c = Source::Conn(ConnId(1));
     let (b1, x1) = blob(1000, Class::Durable, None, &[]);
@@ -1005,9 +979,7 @@ fn peer_budget_spec_sync_ids_5() {
 // connection where S is open by a store credential, else refused whole (8).
 #[test]
 fn delete_needs_a_store_credential_spec_sync_ids_6() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     let (b, x) = blob(100, Class::Durable, None, &[]);
     st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     let del = DeleteItem::sign(&s.delete(), &s.id, b);
@@ -1024,9 +996,7 @@ fn delete_needs_a_store_credential_spec_sync_ids_6() {
 // adds no row for a blob this node does not hold.
 #[test]
 fn delete_of_an_entry_not_held_changes_nothing_spec_wire_11_2() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     let (b, x) = blob(100, Class::Durable, None, &[]);
     let (never, _) = blob(101, Class::Durable, None, &[]);
     st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
@@ -1046,9 +1016,7 @@ fn delete_of_an_entry_not_held_changes_nothing_spec_wire_11_2() {
 #[test]
 fn delete_reads_only_the_prefix_spec_sync_ids_6() {
     let read = |n: usize| {
-        let dev = Dev::new();
-        let s = Sid::new(10);
-        let mut st = unread(&dev, &s);
+        let (_dev, s, mut st) = one_unread();
         let (b, x) = blob(n, Class::Durable, None, &[]);
         st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
         osis_base::costs::take();
@@ -1065,9 +1033,7 @@ fn delete_reads_only_the_prefix_spec_sync_ids_6() {
 // write key when any level is 3, else its sync key; anything else is refused.
 #[test]
 fn delete_by_levels_spec_sync_ids_6() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     let d2 = DeleteSecret::derive(&Secret32::from_bytes([21; 32]));
     let d3 = DeleteSecret::derive(&Secret32::from_bytes([22; 32]));
     let p = Prefix::for_keys([5; 16], &[1; 16], None, &[(2, d2.verifying_key())]).unwrap();
@@ -1092,9 +1058,7 @@ fn delete_by_levels_spec_sync_ids_6() {
 // rotates too) X's own level-2 key deletes nothing under its old sync key.
 #[test]
 fn deletes_by_levels_reach_only_the_signers_right_spec_sync_ids_6() {
-    let dev = Dev::new();
-    let mut s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, mut s, mut st) = one_unread();
     let dk = |b: u8| DeleteSecret::derive(&Secret32::from_bytes([b; 32]));
     let (admin, x, y, w3) = (dk(31), dk(32), dk(33), dk(34));
     let mut rng = SeededRng::from_u64(3);
@@ -1138,9 +1102,7 @@ fn deletes_by_levels_reach_only_the_signers_right_spec_sync_ids_6() {
 // tombstone, and no event in the log (spec/wire.md §11.2: expiry produces no event).
 #[test]
 fn expiry_leaves_no_tombstone_spec_sync_ids_6() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     let (b, x) = blob(100, Class::Durable, Some(1000), &[]);
     st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     assert_eq!(st.next_wake(), Some(WallMs(1000)));
@@ -1157,9 +1119,7 @@ fn expiry_leaves_no_tombstone_spec_sync_ids_6() {
 #[test]
 fn settling_the_time_reads_only_what_is_due_spec_sync_ids_6() {
     let rows = |n: usize| {
-        let dev = Dev::new();
-        let s = Sid::new(10);
-        let mut st = unread(&dev, &s);
+        let (_dev, s, mut st) = one_unread();
         for i in 0..n {
             let (b, x) = blob(100 + i, Class::Durable, Some(10_000 + i as u64), &[]);
             st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
@@ -1179,9 +1139,7 @@ fn settling_the_time_reads_only_what_is_due_spec_sync_ids_6() {
 // come back.
 #[test]
 fn tombstones_end_after_their_lifetime_spec_sync_ids_5() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     let (b, x) = blob(100, Class::Durable, None, &[]);
     let e = stamped(&s, b, false);
     st.take_stamped(&s.id, &e, x.clone(), &[]).unwrap();
@@ -1231,9 +1189,7 @@ fn bytes_once_per_node_spec_sync_ids_5() {
 // `MAX_DRIFT`.
 #[test]
 fn ephemeral_entries_live_in_memory_spec_sync_ids_5() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (dev, s, mut st) = one_unread();
     let (d, dx) = blob(90, Class::Durable, None, &[]);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, d, false), dx.clone(), &[]).unwrap(), Code::OK);
     let (b, x) = blob(100, Class::Ephemeral, Some(10 * MAX_DRIFT_MS), &[]);
@@ -1432,9 +1388,7 @@ fn log_reads_by_member_and_until_spec_sync_streams_3() {
 // `ROLE_KEEP`; the step stays.
 #[test]
 fn claim_sets_go_after_role_keep_spec_sync_ids_5() {
-    let dev = Dev::new();
-    let mut s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, mut s, mut st) = one_unread();
     st.settle_at(WallMs(100)).unwrap();
     let (c1, cs1) = s.rotate(60);
     st.take_register(&s.id, &[(&c1, Some(&cs1))], None, osis_base::Mono(0)).unwrap();
@@ -1450,9 +1404,7 @@ fn claim_sets_go_after_role_keep_spec_sync_ids_5() {
 // the connection.
 #[test]
 fn stands_live_in_the_record_spec_sync_judgement_4() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (dev, s, mut st) = one_unread();
     let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
     let stand = Stand { at: WallMs(5), logged: BlobId([2; 32]), head: s.head().id(), fall: 3 };
     let (src, conn) = (Source::Record(rec), Source::Conn(ConnId(9)));
@@ -1483,9 +1435,7 @@ fn stands_live_in_the_record_spec_sync_judgement_4() {
 // sync ID names.
 #[test]
 fn shred_drops_everything_of_s_spec_sync_ids_5() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, s, mut st) = one_unread();
     let (b, x) = blob(100, Class::Durable, None, &[]);
     st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     let (b2, x2) = blob(101, Class::Durable, None, &[]);
@@ -1710,9 +1660,7 @@ fn removal_and_expiry_cost_alike_at_any_size_spec_sync_ids_5() {
 #[test]
 fn store_values_are_due_when_their_rows_move() {
     use osis_base::memo::Effects;
-    let dev = Dev::new();
-    let mut s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (_dev, mut s, mut st) = one_unread();
     let mut heads: Effects<SyncId, Option<Step>> = Effects::new("test heads");
     let mut lists: Effects<SyncId, Vec<Entry>> = Effects::new("test entries");
     heads.want(s.id);
@@ -1775,9 +1723,7 @@ fn deposited_index_and_entry_feed_follow_entries() {
 // keeps it; it goes with the entry.
 #[test]
 fn held_elsewhere_kept_while_the_entry_is() {
-    let dev = Dev::new();
-    let s = Sid::new(10);
-    let mut st = unread(&dev, &s);
+    let (dev, s, mut st) = one_unread();
     let (b, bytes) = blob(40, Class::Durable, None, &[]);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes.clone(), &[]).unwrap(), Code::OK);
     assert!(!st.elsewhere(&s.id, &b).unwrap());

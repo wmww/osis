@@ -14,19 +14,24 @@ use osis_sync::types::{Credential, SourceClass};
 
 const S: SyncId = SyncId([5; 16]);
 
-/// Two readers of S holding one read secret.
+/// Two readers of S holding one read secret, met (`reader_pair`).
 fn readers() -> Pair {
-    let st = StepKeys::new(1, 0);
-    let rs = read_secret(1, 0);
+    let mut p = reader_pair(account(1), account(2));
+    p.run();
+    p
+}
+
+/// Two readers of S holding one read secret, settled, `a` dialing `b` proving `pa` and `pb`;
+/// nothing routed yet.
+fn reader_pair(pa: Proven, pb: Proven) -> Pair {
+    let (st, rs) = (StepKeys::new(1, 0), read_secret(1, 0));
     let mut a = Side::new(1);
     let mut b = Side::new(2);
     a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
     b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
     a.settle();
     b.settle();
-    let mut p = Pair::new(a, b, account(1), account(2));
-    p.run();
-    p
+    Pair::new(a, b, pa, pb)
 }
 
 /// S's read secret at `side` moves to epoch `n`, covering every departure: J is read when S's
@@ -1309,13 +1314,7 @@ fn a_lost_for_no_member_open_here_remarks_nothing_spec_sync_opens_5() {
 // Error 1, the dialer sends NoRecord, and the shared set runs keeping no record at either side.
 #[test]
 fn a_resume_from_a_dialer_proving_nothing_runs_unkept_spec_sync_opens_3() {
-    let st = StepKeys::new(1, 0);
-    let rs = read_secret(1, 0);
-    let mut a = Side::new(1);
-    let mut b = Side::new(2);
-    a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
-    b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
-    let mut p = Pair::new(a, b, Proven::default(), account(2));
+    let mut p = reader_pair(Proven::default(), account(2));
     p.run();
     let from_b: Vec<&Msg> = p.log.iter().filter(|(a, _)| !a).map(|(_, m)| m).collect();
     assert!(from_b.iter().any(|m| matches!(m, Msg::Error { code: Code::REFUSED, .. })), "Error 1");
@@ -1464,25 +1463,34 @@ fn a_redial_replaces_the_connection_its_dialer_gave_up_spec_sync_opens_1() {
 // dials): one closes, the same one at both ends, and the shared set runs on the other.
 #[test]
 fn crossed_first_dials_between_own_nodes_keep_one_spec_sync_opens_1() {
-    use osis_sync::types::ConnId;
     let node = |n: u8, node: u8| Proven { node: Some(tid(node)), ..account(n) };
-    let st = StepKeys::new(1, 0);
-    let rs = read_secret(1, 0);
-    let mut a = Side::new(1);
-    let mut b = Side::new(2);
-    a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
-    b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
-    a.settle();
-    b.settle();
-    // a dials b (connection 1) and b dials a (connection 2) before either answers
-    let mut p = Pair::new(a, b, node(1, 11), node(2, 12));
+    let (mut p, (ca2, cb2)) = crossed(node(1, 11), node(2, 12));
+    route_all(&mut p);
+    one_closed(&p, ca2, cb2);
+}
+
+/// Readers of S proving `pa` and `pb` that dial each other at once: a dials b (connection 1),
+/// b dials a (connection 2), both proved, nothing routed yet. a's and b's ends of connection 2.
+fn crossed(pa: Proven, pb: Proven) -> (Pair, (osis_sync::types::ConnId, osis_sync::types::ConnId)) {
+    use osis_sync::types::ConnId;
+    let mut p = reader_pair(pa.clone(), pb.clone());
     let (cb2, ca2) = (ConnId(2), ConnId(ConnId::ACCEPTED | 2));
     let (bb, ba) = binds([0x5c; 32], [0x6d; 32], [0x4a; 32]);
-    p.b.pipe.binds.insert(cb2, (bb, node(1, 11)));
-    p.a.pipe.binds.insert(ca2, (ba, node(2, 12)));
+    p.b.pipe.binds.insert(cb2, (bb, pa));
+    p.a.pipe.binds.insert(ca2, (ba, pb));
     p.a.take(ca2, osis_sync::session::Incoming::Proved);
     p.b.take(cb2, osis_sync::session::Incoming::Proved);
-    route_all(&mut p);
+    (p, (ca2, cb2))
+}
+
+/// `crossed` of accounts 1 and 2.
+fn crossed_accounts() -> (Pair, (osis_sync::types::ConnId, osis_sync::types::ConnId)) {
+    crossed(account(1), account(2))
+}
+
+/// Of the two connections (`crossed`, routed), one closed, the same one at both ends, and S is
+/// open on the other at both ends: the other's (a, b) ends.
+fn one_closed(p: &Pair, ca2: osis_sync::types::ConnId, cb2: osis_sync::types::ConnId) -> (osis_sync::types::ConnId, osis_sync::types::ConnId) {
     let a_lost: Vec<_> = p.a.pipe.closed.iter().map(|(c, _)| *c).collect();
     let b_lost: Vec<_> = p.b.pipe.closed.iter().map(|(c, _)| *c).collect();
     let pairs = [(p.ca, p.cb), (ca2, cb2)];
@@ -1490,28 +1498,7 @@ fn crossed_first_dials_between_own_nodes_keep_one_spec_sync_opens_1() {
     let (lost, kept) = if a_lost[0] == pairs[0].0 { (pairs[0], pairs[1]) } else { (pairs[1], pairs[0]) };
     assert_eq!(b_lost, [lost.1], "the same connection at both ends");
     assert!(p.a.open(kept.0, &S) && p.b.open(kept.1, &S));
-}
-
-/// Readers of S under accounts 1 and 2 that dial each other at once: a dials b (connection 1),
-/// b dials a (connection 2), both proved, nothing routed yet. b's and a's ends of connection 2.
-fn crossed_accounts() -> (Pair, (osis_sync::types::ConnId, osis_sync::types::ConnId)) {
-    use osis_sync::types::ConnId;
-    let st = StepKeys::new(1, 0);
-    let rs = read_secret(1, 0);
-    let mut a = Side::new(1);
-    let mut b = Side::new(2);
-    a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
-    b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
-    a.settle();
-    b.settle();
-    let mut p = Pair::new(a, b, account(1), account(2));
-    let (cb2, ca2) = (ConnId(2), ConnId(ConnId::ACCEPTED | 2));
-    let (bb, ba) = binds([0x5c; 32], [0x6d; 32], [0x4a; 32]);
-    p.b.pipe.binds.insert(cb2, (bb, account(1)));
-    p.a.pipe.binds.insert(ca2, (ba, account(2)));
-    p.a.take(ca2, osis_sync::session::Incoming::Proved);
-    p.b.take(cb2, osis_sync::session::Incoming::Proved);
-    (p, (ca2, cb2))
+    kept
 }
 
 // spec/sync-opens.md §1 (Twin): nodes of two accounts that dial each other at once make a record
@@ -1522,13 +1509,7 @@ fn crossed_accounts() -> (Pair, (osis_sync::types::ConnId, osis_sync::types::Con
 fn crossed_first_dials_between_accounts_twin_spec_sync_opens_1() {
     let (mut p, (ca2, cb2)) = crossed_accounts();
     route_all(&mut p);
-    let a_lost: Vec<_> = p.a.pipe.closed.iter().map(|(c, _)| *c).collect();
-    let b_lost: Vec<_> = p.b.pipe.closed.iter().map(|(c, _)| *c).collect();
-    let pairs = [(p.ca, p.cb), (ca2, cb2)];
-    assert_eq!(a_lost.len(), 1, "one closed: {a_lost:?}");
-    let (lost, kept) = if a_lost[0] == pairs[0].0 { (pairs[0], pairs[1]) } else { (pairs[1], pairs[0]) };
-    assert_eq!(b_lost, [lost.1], "the same connection at both ends");
-    assert!(p.a.open(kept.0, &S) && p.b.open(kept.1, &S));
+    let kept = one_closed(&p, ca2, cb2);
     for (x, conn) in [(&p.a, kept.0), (&p.b, kept.1)] {
         let kept_rec = x.opens.record(conn);
         let all: Vec<_> = x.store.with_read(|t| t.records_all()).unwrap().into_iter().map(|r| r.id).collect();
@@ -1717,15 +1698,8 @@ fn eviction_spares_a_record_a_resume_lists_spec_sync_opens_3() {
 /// stops reading S once the two share it (a Lost naming where S stopped), `a` crashing at that
 /// Lost instead. Both connect again twice, `b` reading S again. Whether `a` crashed.
 fn crash_before_flush(k: usize, leave: bool) -> bool {
-    let st = StepKeys::new(1, 0);
-    let rs = read_secret(1, 0);
-    let mut a = Side::new(1);
-    let mut b = Side::new(2);
-    a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
-    b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
-    a.settle();
-    b.settle();
-    let mut p = Pair::new(a, b, account(1), account(2));
+    let (st, rs) = (StepKeys::new(1, 0), read_secret(1, 0));
+    let mut p = reader_pair(account(1), account(2));
     let mut n = 0;
     let mut crashed = false;
     let mut left = false;

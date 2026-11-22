@@ -896,15 +896,7 @@ fn delete_waits_for_carrier_in_known() {
 // past its keep-at-least bound, on this node's clock; the own log drops it at once.
 #[test]
 fn covered_delete_waits_max_drift_spec_commits_5() {
-    let mut w = W::new();
-    w.pulls = false;
-    w.hold(cid(1), &[S], uncovered());
-    let b = w.own_blobs(S, cid(1))[0];
-    w.g.k.held.insert((S, b), cid(1));
-    w.hold(cid(2), &[S], uncovered());
-    let b2 = w.own_blobs(S, cid(2))[0];
-    w.g.k.held.insert((S, b2), cid(2));
-    w.stream();
+    let (mut w, _) = two_shown();
     let mut f = covered(cid(2));
     f.body.hosts_from = 5_000;
     w.judge(S, cid(1), f);
@@ -941,14 +933,7 @@ fn full_source_counts_a_carrier_it_lacks() {
 // connection (each reconnect resends what was answered) or with nothing carried to the next one.
 #[test]
 fn an_act_owed_goes_on_each_connection_until_answered_spec_sync_judgement_3() {
-    let mut w = W::new();
-    w.pulls = false;
-    w.hold(cid(1), &[S], uncovered());
-    w.hold(cid(2), &[S], uncovered());
-    let (b1, b2) = (w.own_blobs(S, cid(1))[0], w.own_blobs(S, cid(2))[0]);
-    w.g.k.held.insert((S, b1), cid(1));
-    w.g.k.held.insert((S, b2), cid(2));
-    w.stream();
+    let (mut w, b1) = two_shown();
     w.g.conns.remove(&K);
     w.judge(S, cid(1), covered(cid(2)));
     assert_eq!(w.deletes(), 0, "sent while K is away");
