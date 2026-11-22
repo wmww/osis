@@ -1,5 +1,5 @@
 # Sync differential fails at the gate's size on some seeds
-> Summary: `differential::histories_hold_their_closure_plain` at small size fails on fresh offsets: a caught-up reader lacks part of a must-hold minting body after a connection reset (one world in 50, studied, parked), and a node lacks a read the model has (seed 3994064562, not shrunk).
+> Summary: `differential::histories_hold_their_closure_plain` at small size fails on fresh offsets: a caught-up reader lacks part of a must-hold minting body after a connection reset (one world in 50, studied, parked), and a node lacks a read the model has (seed 3994064562, not shrunk). Also: must-hold bodies with no entry at quiet (seed 61254442551, not shrunk).
 > Priority: normal
 > Tags: sync, engine, tests
 
@@ -15,3 +15,6 @@
 
 ## A storm past the delivery cap
 - Seed 594660024526 (fails on main 038a90b45 as on a cleanup branch): `storm: past the cap of 30000 deliveries`, with no partition and nothing still flowing. Not shrunk: shrink first, then find which messages keep answering each other (the settle round counters: notes/test-harnesses.md, Measuring).
+
+## Must-hold bodies with no entry at quiet (seed 61254442551)
+- `must-hold bodies with no entry at quiet (node, S, commit)`: node 0 holds two commits must-hold under one S with no entry of them in its store at quiet. Fails on main c67cbeeb8; not shrunk. First shrink it with `OSIS_SHRINK_MATCH` set to this message (unset, shrinking drifts to another class).
