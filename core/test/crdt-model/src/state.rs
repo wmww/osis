@@ -562,7 +562,15 @@ impl Frag {
                 f
             };
             let reg = reg.map(fix);
-            let slots = slots.into_iter().map(|(k, f)| (k, fix(f))).collect();
+            let mut slots: BTreeMap<u8, Frag> = slots.into_iter().map(|(k, f)| (k, fix(f))).collect();
+            // one presence write per position (§7): a slot's `W` below another slot's goes
+            let w = slots.values().filter_map(|f| f.composite()?.w.clone()).max();
+            for c in slots.values_mut().filter_map(Frag::composite_mut) {
+                if c.w.is_some() && c.w < w {
+                    c.w = None;
+                    c.w_valueless = false;
+                }
+            }
             *self = assemble(reg, slots);
             return;
         }

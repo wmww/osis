@@ -906,6 +906,40 @@ fn an_embedding_copy_carries_its_register_writes_reset_spec_7() {
     first_superseding_check(&[older, under]);
 }
 
+/// §7 One presence write per position, §4.8: a position's slots are one position, so an empty
+/// map written (`W` at t3) and an empty list written later (`W` at t5) without a reset, unseen
+/// by each other, meet as slots where the list's `W` beats the map's: the map's dies in the
+/// join, as the held writes say (dated t5), and the joined position is the list alone. A
+/// snapshot holding both as slots is refused by both decoders (prune would change it). Fails
+/// with each slot keeping its own `W` (the join keeps the map's, the held writes date it).
+#[test]
+fn a_slots_presence_write_beats_a_lower_one_in_another_slot_spec_7() {
+    use crate::codec::{decode_snapshot, encode_snapshot};
+    use crate::fragment::{Map, Slots};
+    use crate::wire::Snapshot;
+    let w = |t: u64| Meta { w: Some(Stamp::new(ts(t), x(), 1)), ..Meta::default() };
+    let map = Fragment::Map(Map { meta: w(3), entries: BTreeMap::new(), keys: BTreeMap::new() });
+    let list = Fragment::Seq(Seq::new(false, w(5), BTreeMap::new()));
+    for (a, b) in [(&map, &list), (&list, &map)] {
+        assert_eq!(join(a, b), list, "the list alone");
+    }
+    assert_eq!(dead(&map, &list), vec![(Kind::W, Stamp::new(ts(3), x(), 1))], "the map's W dies");
+    let mut ix: ByWrite<()> = ByWrite::default();
+    for b in [&map, &list] {
+        ix.note(&b.held_writes(), |_, _| ());
+    }
+    for w in map.winners().iter() {
+        assert_eq!(ix.first_superseding(&w, &Hiders::default(), |s, _| Some(s.ts)), Some(ts(5)), "{w:?}");
+    }
+    first_superseding_check(&[map.clone(), list.clone()]);
+    let both = Fragment::Slots(Slots { reg: None, slots: [(map.encoding(), map.clone()), (list.encoding(), list.clone())].into_iter().collect() });
+    let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: both, frontiers: Default::default() };
+    let b = encode_snapshot(&snap, &crate::testutil::snap_cx(), None).unwrap();
+    assert!(decode_snapshot(&b, &crate::testutil::snap_cx(), &mut crate::stamp::Interner::new(), None).is_err(), "both slots' W refused");
+    let mcx = &mut crdt_model::wire::Ctx::new(1 << 40, crdt_model::stamp::Source::session(250, 0), 1);
+    assert!(crdt_model::wire::decode_snapshot(&b, mcx).is_err(), "the model refuses both slots' W");
+}
+
 fn string_reg(s: &Stamp, v: &str) -> Fragment {
     Fragment::Register(crate::fragment::Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: Some(Value::Str(v.into())) }) })
 }

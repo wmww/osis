@@ -1097,14 +1097,16 @@ fn uncached(f: &Fragment) -> Fragment {
 }
 
 /// The effective reset `E` of `Slots` state `sa` when joining `b` leaves its register and `E` as
-/// they are; `None` when the position must be re-embedded and pruned whole.
+/// they are and `b` writes no slot's `W`; `None` when the position must be re-embedded and pruned
+/// whole.
 fn kept_reset(sa: &Slots, b: &Fragment, e_parent: Option<&Stamp>) -> Option<Option<Stamp>> {
     let e = slots_reset(sa.reg.as_ref(), &sa.slots, e_parent);
     let raises = |x: Option<Stamp>| x.is_some_and(|x| e.as_ref().is_none_or(|e| x > *e));
+    let moves = |f: &Fragment| raises(f.reset()) || f.meta().is_some_and(|m| m.w.is_some());
     let keeps = match b {
         Fragment::Register(rb) => sa.reg.as_ref().is_some_and(|ra| reg_absorbs(ra, rb)),
-        Fragment::Slots(sb) => sb.reg.as_ref().is_none_or(|rb| sa.reg.as_ref().is_some_and(|ra| reg_absorbs(ra, rb))) && !sb.slots.values().any(|f| raises(f.reset())),
-        f => !raises(f.reset()),
+        Fragment::Slots(sb) => sb.reg.as_ref().is_none_or(|rb| sa.reg.as_ref().is_some_and(|ra| reg_absorbs(ra, rb))) && !sb.slots.values().any(moves),
+        f => !moves(f),
     };
     keeps.then_some(e)
 }
@@ -1190,7 +1192,8 @@ fn fit_embedding(f: &mut Fragment, r: &Register) {
 }
 
 /// Prunes a position's slots under its one effective reset (an own reset below it goes,
-/// §4.2, §7) and assembles the canonical form.
+/// §4.2, §7) and its one presence write (a slot's `W` below another's goes), and assembles the
+/// canonical form.
 pub(crate) fn prune_slots(reg: Option<Register>, slots: BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
     // every slot holds the register's embedding, whatever path the slots came by (a
     // received snapshot's `Slots` included)
@@ -1212,7 +1215,12 @@ pub(crate) fn prune_slots(reg: Option<Register>, slots: BTreeMap<Encoding, Fragm
         Fragment::Register(r) => Some(r),
         _ => None,
     });
-    let slots = slots.into_iter().map(|(k, f)| (k, fix(f, ch))).collect();
+    let mut slots: BTreeMap<Encoding, Fragment> = slots.into_iter().map(|(k, f)| (k, fix(f, ch))).collect();
+    // one presence write per position (§7): a slot's `W` below another slot's goes
+    let w = slots.values().filter_map(|f| f.meta()?.w.clone()).max();
+    for m in slots.values_mut().filter_map(Fragment::meta_mut) {
+        prune_w(m, w.as_ref(), ch);
+    }
     assemble(reg, slots)
 }
 

@@ -252,7 +252,7 @@ Every fragment has an **effective reset** `E = max(E_parent, own R)`, with `E_ro
   - **A record with no surviving write goes**, in every collection: a set, bag or map element record whose content is entirely pruned and whose own `R` is dropped, and a sequence element record left with no creation, position, flag or content write. What anchors at a sequence record gone is placed at its virtual anchor (§6.1), as at a node that never held it.
   - One whose content is pruned but whose `R` survives is a **tombstone** (dot plus reset stamp, nothing else).
 - **Emptiness.** A fragment is empty iff it holds no surviving write at any depth.
-- `Slots` positions (§7) have one effective reset `E = max(E_parent, greatest slot reset)`; every slot is pruned under it, so a slot's own reset below it goes.
+- `Slots` positions (§7) have one effective reset `E = max(E_parent, greatest slot reset)`; every slot is pruned under it, so a slot's own reset below it goes; a slot's `W` below another slot's goes (one presence write per position).
 - A delta, after pruning against the state it joins, may contribute nothing.
 
 ### 4.3 Presence
@@ -511,6 +511,8 @@ Wherever a fragment holds a copy of an embedded char of `s`, the reset `s` impli
 **The embedding is the register's.** What `embed` puts into a slot is the register slot's writes (its write and reset), not the slot's: a write in a slot at the position and stamp of one of the embedding's is a copy of that register write. So wherever a position's writes are told apart (the records of a map dot, §5.6; un-merge and expiry by dot, §4.6, §4.7, where the embedding carries the register write's dot), the embedding goes with the register write it comes from, and a record holds it only with that write.
 
 **One reset per position.** The effective reset of a `Slots` position is the greatest reset among its slots (and the parent's); prune uses it for every slot (§4.2). So a `replace` or `remove_aspect` in any encoding removes everything older at the position, whatever encoding wrote it, and a register write (an old app's save) is a reset of everything older in every slot plus its content where an edge exists.
+
+**One presence write per position.** A slot's explicit presence write `W` (§4.3) below another slot's is beaten (§4.8) and goes in prune, as two `W`s of one encoding join to the greater.
 
 **Read.** A `Slots` position reads as its **chosen** slot: the one with the greatest stamp anywhere inside it (resets included), ties by greater encoding id; the position is present iff that slot is. Ops (§4.5, §9) see the position's read and write into the slot of their schema's encoding; a slot not held is the register slot's embedding (Canonical form), or empty without a register slot, and the write creates it.
 
