@@ -139,16 +139,25 @@ fn a_writer_deletes_only_what_it_may_purge_spec_sync_judgement_3() {
     assert!(held(&mut w, &authors), "the writer deleted a write only its author or an admin may purge");
 }
 
-/// Node 2 writes thing `t`'s value (purgeable by its author or an admin); node 1 goes away and
-/// `purger` (0 the admin, or 2 the author) purges it with the other one away, so the purger's
-/// Delete is the only one; `restart` restarts the purger while node 1 is still away. Node 1 comes
-/// back: whether every entry of the commit left it.
+/// `three` where node 2 has written thing `t`'s value, purgeable by its author or an admin, run:
+/// the commit and node 1's entries of it; built once per process (`fixture_with`).
+fn written() -> (World, Tid, SyncId, CommitId, Vec<BlobId>) {
+    let (w, (t, s, c, held)) = fixture_with("deletes written", || {
+        let (mut w, t, s) = three();
+        let c = write(&mut w, 2, t, &value_ak(), PurgeBy::AuthorOrAdmin);
+        w.run();
+        let held = at_unread(&mut w, 2, &s, &c);
+        assert!(!held.is_empty(), "node 1 holds the write");
+        (w, (t, s, c, held))
+    });
+    (w, t, s, c, held)
+}
+
+/// After `written`, node 1 goes away and `purger` (0 the admin, or 2 the author) purges the write
+/// with the other one away, so the purger's Delete is the only one; `restart` restarts the purger
+/// while node 1 is still away. Node 1 comes back: whether every entry of the commit left it.
 fn purged_while_away(purger: usize, restart: bool) -> bool {
-    let (mut w, t, s) = three();
-    let c = write(&mut w, 2, t, &value_ak(), PurgeBy::AuthorOrAdmin);
-    w.run();
-    let held = at_unread(&mut w, 2, &s, &c);
-    assert!(!held.is_empty(), "{purger}: node 1 holds the write");
+    let (mut w, t, s, c, held) = written();
     w.power_off(1);
     w.power_off(2 - purger);
     purge(&mut w, purger, t, c);
@@ -180,11 +189,7 @@ fn a_purge_made_while_the_unread_store_is_away_deletes_there_on_return_spec_sync
 // record's connection at its take (`Ground::connected` as `conn_of`).
 #[test]
 fn an_owed_delete_waits_for_the_digests_to_agree_spec_sync_opens_3() {
-    let (mut w, t, s) = three();
-    let c = write(&mut w, 2, t, &value_ak(), PurgeBy::AuthorOrAdmin);
-    w.run();
-    let held = at_unread(&mut w, 2, &s, &c);
-    assert!(!held.is_empty(), "node 1 holds the write");
+    let (mut w, t, s, c, held) = written();
     w.power_off(1);
     w.run();
     w.power_on(1);

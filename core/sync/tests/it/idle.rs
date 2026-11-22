@@ -3,28 +3,10 @@
 //! and one small commit cost, counted at n and 10n things, never timed.
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, world_of};
-use crate::harness::{World, fixture, play};
+use crate::harness::history::shared;
+use crate::harness::{World, play};
 
 const N: usize = 1;
-
-/// Node 0 has made `n` things, each kept unread by node 1 and read by node 2, quiet, each pair
-/// reconnected once since (built on the world of `N` things). The first reconnect after first
-/// contact proves other actors than the record names (the cards' key actors), so it tests every
-/// credential again (spec/sync-opens.md §3): not an idle one.
-fn things(n: usize) -> World {
-    fixture(&format!("idle things {n}"), || {
-        let mut w = if n == N { world_of(0, 3, 3) } else { things(N) };
-        w.cap = 2_000_000;
-        let mut steps = Vec::new();
-        for k in w.history.things.len()..n {
-            steps.extend([New(0), Grant(0, k, 1, Gives::Syncs), Grant(0, k, 2, Gives::Reads)]);
-        }
-        steps.extend([Run, Cut(0, 1), Run, Cut(0, 2), Run]);
-        let _ = play(&mut w, &steps, String::new());
-        w
-    })
-}
 
 /// Counts exact from here: no memo debug comparison (the history world turns them on) runs
 /// in place of a settle.
@@ -82,7 +64,7 @@ fn an_idle_reconnect_sends_reads_and_judges_the_same_at_10n_spec_sync_streams_4(
     const STORE: &[&str] = &["opens: members judged", "status: stranded", "opens standing", "perm: roles walked", "read: certificate blobs", "inbox: register judged", "status: lacking", "status: members moved", "inbox: members moved", "inbox: offer judged", "inbox: suspect sent"];
     const MEMBERS: u64 = (10 * N - N) as u64;
     let at = |n| {
-        let mut w = things(n);
+        let mut w = shared(n);
         [reconnect(&mut w, 0, 2), reconnect(&mut w, 0, 1)]
     };
     let (small, large) = (at(N), at(10 * N));
@@ -123,7 +105,7 @@ fn commit(w: &mut World, named: &[&str]) -> u64 {
 #[test]
 fn a_commit_judges_one_stranding_and_time_passing_no_duty_per_thing_spec_sync_status_1() {
     let at = |n| {
-        let mut w = things(n);
+        let mut w = shared(n);
         let stranded = commit(&mut w, &["status: stranded"]);
         w.jump(3_600_000);
         (stranded, commit(&mut w, &["life: role duty owed", "life: lost access"]))
@@ -140,7 +122,7 @@ fn a_commit_judges_one_stranding_and_time_passing_no_duty_per_thing_spec_sync_st
 #[ignore = "by hand: prints counts"]
 fn probe_counts() {
     for n in [N, 10 * N] {
-        let mut w = things(n);
+        let mut w = shared(n);
         for (tag, b) in [("R", 2), ("S", 1)] {
             let (bytes, costs) = reconnect(&mut w, 0, b);
             println!("{tag}{n} bytes {bytes}");

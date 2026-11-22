@@ -513,6 +513,25 @@ pub fn three(gives: Gives, runs: usize) -> (World, Tid, osis_base::SyncId) {
     (w, t, s)
 }
 
+/// `three(Gives::Reads, 1)` with `n` things, each kept unread by node 1 and read by node 2, quiet,
+/// each pair reconnected once since (those past the first made on the world of one, after its
+/// reconnects); built once per process per `n` (`fixture`). The first reconnect after first contact
+/// proves other actors than the record names (the cards' key actors), so it tests every credential
+/// again (spec/sync-opens.md §3): an idle reconnect comes after it.
+pub fn shared(n: usize) -> World {
+    super::fixture(&format!("shared {n}"), || {
+        let mut w = if n == 1 { three(Gives::Reads, 1).0 } else { shared(1) };
+        w.cap = 2_000_000;
+        let mut steps: Vec<Step> = (w.history.things.len()..n).flat_map(|k| [Step::New(0), Step::Grant(0, k, 1, Gives::Syncs), Step::Grant(0, k, 2, Gives::Reads)]).collect();
+        if n > 1 {
+            steps.push(Step::Run);
+        }
+        steps.extend([Step::Cut(0, 1), Step::Run, Step::Cut(0, 2), Step::Run]);
+        let _ = super::play(&mut w, &steps, String::new());
+        w
+    })
+}
+
 /// A world of `accounts` accounts over `nodes` nodes: one node each, each account every other's
 /// contact (`introduce`), then a node paired to each account in turn (`World::pair`), quiet,
 /// handing its commits to the reference from now on. Nodes find each other only as the product

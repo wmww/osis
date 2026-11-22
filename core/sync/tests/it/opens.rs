@@ -2374,21 +2374,30 @@ fn away_and_back(one: crate::harness::history::Gives) -> (crate::harness::World,
 /// (the rotation it brings), which judges every record holding S in its step; the per-member
 /// standing path is isolated by the `Pair` tests above and `a_self_removal_alone_ends_what_is_served_*` below.
 fn served_after_a_change_while_away(one: crate::harness::history::Gives, change: impl FnOnce(&mut crate::harness::World, osis_base::Tid)) -> bool {
-    served_after_a_change_while_away_from(one, |_| (), |w, t, _| change(w, t))
+    let (w, (t, s)) = away_and_back(one);
+    served_after_a_change(w, t, s, change)
 }
 
-/// `served_after_a_change_while_away`, `setup` run once node 2 reads t, before it goes away
-/// (its value is `change`'s).
-fn served_after_a_change_while_away_from<X>(one: crate::harness::history::Gives, setup: impl FnOnce(&mut crate::harness::World) -> X, change: impl FnOnce(&mut crate::harness::World, osis_base::Tid, X)) -> bool {
-    let (mut w, (t, s)) = away_and_back(one);
-    let x = setup(&mut w);
+/// `served_after_a_change_while_away` on world `w` where node 2 reads t (its sync ID `s`).
+fn served_after_a_change(mut w: crate::harness::World, t: osis_base::Tid, s: SyncId, change: impl FnOnce(&mut crate::harness::World, osis_base::Tid)) -> bool {
     w.partition(0, 2);
     w.partition(1, 2);
-    change(&mut w, t, x);
+    change(&mut w, t);
     let after = write_value(&mut w, t, &s, 2);
     w.run();
     assert!(!after.is_empty() && after.is_subset(&held_of(&w, 1, &s)), "node 1 took the write");
     served_at_reconnect(&mut w, &s, &after)
+}
+
+/// `away_and_back(Gives::Reads)` with node 2's account paired to a new node `n`, quiet. Built once
+/// per process (`fixture_with`): the world, t, S and `n`.
+fn paired_away_and_back() -> (crate::harness::World, (osis_base::Tid, SyncId, usize)) {
+    crate::harness::fixture_with("opens away and back paired", || {
+        let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
+        let n = w.pair(2);
+        w.run();
+        (w, (t, s, n))
+    })
 }
 
 // spec/sync-opens.md §6 (whether or not a connection holds its record): a member is re-judged at
@@ -2446,17 +2455,13 @@ fn an_until_passing_while_away_serves_nothing_after_it_spec_sync_opens_6() {
 // (§3), whatever the record held.
 #[test]
 fn a_device_revoked_while_away_is_served_nothing_after_it_spec_sync_opens_6() {
-    let paired = |w: &mut crate::harness::World| {
-        let n = w.pair(2);
-        w.run();
-        n
-    };
-    let revoked = |w: &mut crate::harness::World, _: osis_base::Tid, n: usize| {
+    let (w, (t, s, n)) = paired_away_and_back();
+    let revoked = |w: &mut crate::harness::World, _: osis_base::Tid| {
         let n2 = w.engine(2).tid();
         w.write(n, |e| e.remove_device(&n2)).unwrap();
         w.run();
     };
-    assert!(!served_after_a_change_while_away_from(crate::harness::history::Gives::Reads, paired, revoked));
+    assert!(!served_after_a_change(w, t, s, revoked));
 }
 
 // spec/sync-opens.md §4 Departed, §6 (at each change of J of its peer): node 2's account
@@ -2469,9 +2474,7 @@ fn a_device_revoked_while_away_is_served_nothing_after_it_spec_sync_opens_6() {
 // names its account's new key and the reconnect's take re-judges nothing.
 #[test]
 fn a_self_removal_alone_ends_what_is_served_spec_sync_opens_6() {
-    let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
-    let n = w.pair(2);
-    w.run();
+    let (mut w, (t, s, n)) = paired_away_and_back();
     w.partition(0, 2);
     w.partition(1, 2);
     w.advance(1000);

@@ -2600,22 +2600,13 @@ type Commits = (u64, u64);
 /// did not, its quiet start's commits.
 type Start = (Commits, BTreeSet<(SyncId, BlobId)>, Commits);
 
-/// Node 0 makes `n` things, each kept unread by node 1 and read by node 2, run to quiet; then
-/// every node restarts cut off from the others (its first start after the session), run to
-/// quiet; then healed and run, each node restarts again cut off (a quiet start), run to quiet.
-/// Per node a `Start` (bodies: the entries naming a commit and the own entries, certificate
-/// blobs too, per sync ID read).
+/// `history::shared(n)`, then every node restarts cut off from the others (its first start after
+/// the session), run to quiet; then healed and run, every node restarts cut off again (a quiet
+/// start), run to quiet. Per node a `Start` (bodies: the entries naming a commit and the own
+/// entries, certificate blobs too, per sync ID read).
 fn starts(n: usize) -> Vec<Start> {
-    use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world_of};
-    let mut w = world_of(0, 3, 3);
+    let mut w = crate::harness::history::shared(n);
     w.cap = 2_000_000;
-    let mut steps = Vec::new();
-    for k in 0..n {
-        steps.extend([New(0), Grant(0, k, 1, Gives::Syncs), Grant(0, k, 2, Gives::Reads)]);
-    }
-    steps.push(Run);
-    let _ = crate::harness::play(&mut w, &steps, String::new());
     let bodies = |w: &mut crate::harness::World, i: usize| -> BTreeSet<(SyncId, BlobId)> {
         let mut out = BTreeSet::new();
         for (s, _) in w.store(i).syncs().into_iter().filter(|(_, (_, h))| *h == osis_engine::sync::Holding::Read) {
@@ -2628,33 +2619,27 @@ fn starts(n: usize) -> Vec<Start> {
         out
     };
     let commits = |w: &mut crate::harness::World, i: usize| (w.engine(i).store_writes().committed, w.store(i).committed());
-    let before: Vec<_> = (0..3).map(|i| bodies(&mut w, i)).collect();
-    for i in 0..3 {
-        w.power_off(i);
-    }
-    for (i, j) in [(0, 1), (0, 2), (1, 2)] {
-        w.partition(i, j);
-    }
-    for i in 0..3 {
-        w.power_on(i);
-    }
-    w.run();
-    let first: Vec<_> = (0..3).map(|i| (commits(&mut w, i), bodies(&mut w, i).difference(&before[i]).copied().collect())).collect();
-    w.heal();
-    w.run();
-    let mut out = Vec::new();
-    for (i, (c, new)) in first.into_iter().enumerate() {
-        w.power_off(i);
-        for j in (0..3).filter(|j| *j != i) {
+    // every node restarts cut off from the others, run to quiet: each node's commits
+    let restart = |w: &mut crate::harness::World| {
+        for i in 0..3 {
+            w.power_off(i);
+        }
+        for (i, j) in [(0, 1), (0, 2), (1, 2)] {
             w.partition(i, j);
         }
-        w.power_on(i);
+        for i in 0..3 {
+            w.power_on(i);
+        }
         w.run();
-        out.push((c, new, commits(&mut w, i)));
-        w.heal();
-        w.run();
-    }
-    out
+        (0..3).map(|i| commits(w, i)).collect::<Vec<_>>()
+    };
+    let before: Vec<_> = (0..3).map(|i| bodies(&mut w, i)).collect();
+    let first = restart(&mut w);
+    let new: Vec<BTreeSet<_>> = (0..3).map(|i| bodies(&mut w, i).difference(&before[i]).copied().collect()).collect();
+    w.heal();
+    w.run();
+    let quiet = restart(&mut w);
+    first.into_iter().zip(new).zip(quiet).map(|((c, new), q)| (c, new, q)).collect()
 }
 
 // spec/sync-judgement.md §3 (own store: must-hold bodies are logged), spec/permissions.md §4

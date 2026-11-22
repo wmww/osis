@@ -744,21 +744,25 @@ fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
 /// `removed`, node 0 removes node 1 from the thing, and node 2 hears of it. Then node 2 (a writer
 /// left out of S's next rotation, standing at its head) writes with node 0 off: its entry is
 /// deposited, owed to the sources keeping S unread. The Deposit items node 2 sends as node 1 is
-/// back (node 2 withholds its entries from every stream, so nothing promotes the deposit).
+/// back (node 2 withholds its entries from every stream, so nothing promotes the deposit). The
+/// setup up to node 1 away again is built once per process (`fixture_with`).
 fn deposit_items_to_a_peer_back(removed: bool) -> u64 {
     use crate::harness::history::{Gives, three, value_ak};
     use osis_base::{Role, Value};
     use osis_engine::Mutation;
-    let (mut w, t, s) = three(Gives::Writes, 1);
-    w.cap = 2_000_000;
-    w.partition(0, 1);
-    w.partition(1, 2);
-    w.advance(1000);
-    w.rejoin(0, 1);
-    w.rejoin(1, 2);
-    w.advance(30_000);
-    w.partition(0, 1);
-    w.partition(1, 2);
+    let (mut w, (t, s)) = crate::harness::fixture_with("inbox away and back", || {
+        let (mut w, t, s) = three(Gives::Writes, 1);
+        w.cap = 2_000_000;
+        w.partition(0, 1);
+        w.partition(1, 2);
+        w.advance(1000);
+        w.rejoin(0, 1);
+        w.rejoin(1, 2);
+        w.advance(30_000);
+        w.partition(0, 1);
+        w.partition(1, 2);
+        (w, (t, s))
+    });
     if removed {
         let _ = crate::harness::play(&mut w, &[crate::harness::Step::Remove(0, 0, 1)], String::new());
         w.run();
@@ -923,23 +927,26 @@ fn a_store_on_a_losing_sibling_under_a_new_admin_secret_is_moved_on_spec_sync_id
     losing_sibling(true);
 }
 
-/// The losing-sibling world, node 0's rotation of the admin secret too when `admin`.
+/// The losing-sibling world, node 0's rotation of the admin secret too when `admin`; its setup up
+/// to nodes 0 and 1 apart from node 2 built once per process (`fixture_with`).
 fn losing_sibling(admin: bool) {
     use crate::harness::history::{Holder, world_of};
     use crate::harness::script::{Give, New, Run, Strong, Syncs, Write};
     use osis_engine::flows::edges::Demotion;
-    let mut w = world_of(0, 2, 3);
-    w.cap = 20_000;
-    let _ = crate::harness::play(&mut w, &[New(2), Run, Strong(1, None, 0), Write(2, 0), Give(0, 0, Holder::Node(1), Syncs), Run], String::new());
-    let t = w.history.things[0].0;
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
-    let bob = w.node(1).account.unwrap();
-    assert_eq!(w.engine(1).sync_holder(&s).unwrap().map(|x| x.1), Some(Holding::Unread), "node 1 keeps S unread");
-    assert!(!w.store(1).entries(&s).unwrap().is_empty(), "and holds its entries");
-    let removal = Demotion { holder: bob, new: None, retain: None };
-    w.partition(0, 2);
-    w.partition(1, 2);
-    w.flush();
+    let (mut w, (t, s)) = crate::harness::fixture_with("inbox losing sibling", || {
+        let mut w = world_of(0, 2, 3);
+        w.cap = 20_000;
+        let _ = crate::harness::play(&mut w, &[New(2), Run, Strong(1, None, 0), Write(2, 0), Give(0, 0, Holder::Node(1), Syncs), Run], String::new());
+        let t = w.history.things[0].0;
+        let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+        assert_eq!(w.engine(1).sync_holder(&s).unwrap().map(|x| x.1), Some(Holding::Unread), "node 1 keeps S unread");
+        assert!(!w.store(1).entries(&s).unwrap().is_empty(), "and holds its entries");
+        w.partition(0, 2);
+        w.partition(1, 2);
+        w.flush();
+        (w, (t, s))
+    });
+    let removal = Demotion { holder: w.node(1).account.unwrap(), new: None, retain: None };
     // node 0 removes node 1 (a rotation of sync), steps (A) and registers A at node 1
     let rotation = w.write(0, |e| {
         let before: BTreeSet<_> = e.commit_ids().into_iter().collect();

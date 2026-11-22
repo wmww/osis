@@ -5,7 +5,7 @@
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, Holder, world_of};
-use crate::harness::{World, fixture, play};
+use crate::harness::{World, fixture, fixture_with, play};
 use osis_base::BlobId;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -179,6 +179,24 @@ fn a_node_holding_an_entry_of_s_has_its_head_logged_spec_sync_streams_4() {
     }
 }
 
+/// `world_of(0, 2, 3)` where node 2 has made thing t, then node 0 is cut off from both peers;
+/// built once per process (`fixture_with`).
+fn cut_off() -> (World, osis_base::Tid) {
+    fixture_with("first cut off", || {
+        let mut w = world_of(0, 2, 3);
+        let _ = play(&mut w, &[New(2), Run, Partition(0, 1), Partition(0, 2)], String::new());
+        let t = w.history.things[0].0;
+        (w, t)
+    })
+}
+
+/// Node 2's bodies are must-hold under S at node 0, and node 0 logs each.
+fn must_hold_logged(w: &mut World, s: &osis_base::SyncId) {
+    let must: Vec<_> = w.engine(0).commit_ids().into_iter().filter(|c| w.node(0).node.verdict(s, c) == Some(osis_sync::read::Verdict::Must)).collect();
+    assert!(!must.is_empty(), "node 2's bodies must-hold under S");
+    assert!(must.iter().all(|c| w.engine(0).commit_blobs(c).unwrap().iter().any(|b| w.store(0).entry(s, b).unwrap().is_some())), "logged");
+}
+
 // spec/sync-judgement.md §3 (Own store: another's body logged only once S's first sync here ended
 // or a complete pass of S did), spec/sync-status.md §1 (PASS_WAIT_MS: a complete pass with no
 // source waits for a peer to be waited for): node 0, cut off from both peers, gives node 1's
@@ -188,16 +206,12 @@ fn a_node_holding_an_entry_of_s_has_its_head_logged_spec_sync_streams_4() {
 // every must-hold body is logged (`World::run`'s quiet check).
 #[test]
 fn a_log_waits_out_its_pass_spec_sync_judgement_3() {
-    let mut w = world_of(0, 2, 3);
-    let _ = play(&mut w, &[New(2), Run, Partition(0, 1), Partition(0, 2)], String::new());
-    let t = w.history.things[0].0;
+    let (mut w, t) = cut_off();
     w.horizon_ms = osis_proto::limits::PASS_WAIT_MS / 2;
     let _ = play(&mut w, &[Give(0, 0, Holder::Node(1), Gives::Syncs), Run], String::new());
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     assert!(w.node(0).node.status_of(&s).is_some_and(|x| x.pass_waits.is_none()), "the pass ended");
-    let must: Vec<_> = w.engine(0).commit_ids().into_iter().filter(|c| w.node(0).node.verdict(&s, c) == Some(osis_sync::read::Verdict::Must)).collect();
-    assert!(!must.is_empty(), "node 2's bodies must-hold under S");
-    assert!(must.iter().all(|c| w.engine(0).commit_blobs(c).unwrap().iter().any(|b| w.store(0).entry(&s, b).unwrap().is_some())), "logged");
+    must_hold_logged(&mut w, &s);
 }
 
 // spec/sync-status.md §1 (PASS_WAIT_MS: a pass's start is dated durably), spec/sync-streams.md §1
@@ -208,9 +222,7 @@ fn a_log_waits_out_its_pass_spec_sync_judgement_3() {
 #[test]
 fn restarts_hold_no_pass_past_its_wait_spec_sync_status_1() {
     use osis_proto::limits::PASS_WAIT_MS;
-    let mut w = world_of(0, 2, 3);
-    let _ = play(&mut w, &[New(2), Run, Partition(0, 1), Partition(0, 2)], String::new());
-    let t = w.history.things[0].0;
+    let (mut w, t) = cut_off();
     let _ = play(&mut w, &[Give(0, 0, Holder::Node(1), Gives::Syncs)], String::new());
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     for _ in 0..3 {
@@ -221,9 +233,7 @@ fn restarts_hold_no_pass_past_its_wait_spec_sync_status_1() {
     }
     w.advance(PASS_WAIT_MS / 4 + 60_000);
     assert!(w.node(0).node.status_of(&s).is_some_and(|x| x.pass_waits.is_none()), "the pass ended");
-    let must: Vec<_> = w.engine(0).commit_ids().into_iter().filter(|c| w.node(0).node.verdict(&s, c) == Some(osis_sync::read::Verdict::Must)).collect();
-    assert!(!must.is_empty(), "node 2's bodies must-hold under S");
-    assert!(must.iter().all(|c| w.engine(0).commit_blobs(c).unwrap().iter().any(|b| w.store(0).entry(&s, b).unwrap().is_some())), "logged");
+    must_hold_logged(&mut w, &s);
 }
 
 /// By hand: every counter and the frame census of the first sync at n and 10n members
