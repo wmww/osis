@@ -554,7 +554,7 @@ impl Osis {
 
     /// Calls `f` with every change of any aspect of `tid`, first
     /// once per present aspect (`Origin::Initial`, through the dispatcher). Like every
-    /// callback, `f` gets the node handle, so it need not capture one (a captured clone in
+    /// callback, `f` gets a handle reading as this one, so it need not capture one (a captured clone in
     /// a detached callback keeps the node open; capture `Osis::downgrade()` instead).
     /// Fails `Network` when `tid` is at a node that cannot be reached now. A live watch hears a
     /// lost connection as an `Err` value, and the aspects again once it is back.
@@ -703,7 +703,7 @@ impl<'d, K: ValueKey, H: Borrow<ReadOnly>> AspectRef<'d, K, H> {
 impl<K: ValueKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls `f` once with the value at registration (`Origin::Initial`, through the
     /// dispatcher like every later call), then each time the value differs after a change,
-    /// whatever caused it; `f` gets the node handle. Calls coalesce: one call may show several
+    /// whatever caused it; `f` gets a handle reading as this one. Calls coalesce: one call may show several
     /// commits' effect and carries the newest one's origin; an unchanged value is not repeated,
     /// an error always is. `path(p).on_change` hears one position inside the value.
     ///
@@ -839,7 +839,7 @@ impl crate::handle::ReadOnly {
             Filter::Due(Watch::CommitsOf(_)) => l.engine().watch_commits(),
             _ => {}
         }
-        let sub = d.register(l.seq + 1, filter, cb);
+        let sub = d.register(l.seq + 1, filter, self.acting, cb);
         if initial && let Some(id) = sub.id() {
             l.seq += 1;
             d.send(l.seq, Msg::Initial(id));
@@ -848,10 +848,10 @@ impl crate::handle::ReadOnly {
     }
 }
 
-/// `on_thing_change`'s `f` hears `c` when it differs from the last value it heard there (an error
-/// always).
+/// `on_thing_change`'s `f` hears `c` when it differs from the last value it heard there, absent
+/// where it heard none (an error always).
 pub(crate) fn tell_changed(last: &mut BTreeMap<Ak, Option<crate::watch::Digest>>, db: &Osis, c: Change<Value>, f: &mut impl FnMut(&Osis, Change<Value>)) {
-    if c.value.is_err() || last.get(&c.ak) != Some(&digest(&c.value)) {
+    if c.value.is_err() || last.get(&c.ak).copied().unwrap_or(digest(&Ok(None))) != digest(&c.value) {
         last.insert(c.ak.clone(), digest(&c.value));
         f(db, c);
     }

@@ -193,7 +193,7 @@ impl Commit {
             Body::Held(v) => Body::Held(v.as_ref().and_then(|v| {
                 lenient(t, &ak, k.decode(v), |d| {
                     if let Some(i) = self.report.0.as_ref().and_then(Weak::upgrade) {
-                        Osis::internal(i).engine(|e| e.report(d));
+                        Osis::internal(i, None).engine(|e| e.report(d));
                     }
                 })
             })),
@@ -427,11 +427,9 @@ impl Osis {
         if let Some(at) = self.remote_of(&a.things(), "commit listener")? {
             return self.remote_commits_watch(&at, &a, f);
         }
-        // the dispatcher's handle acts for no one: read as this one does
-        let acting = self.acting;
         Ok(self.subscribe(Filter::Commits(a.clone()), false, move |_| {
             Box::new(move |db, d| {
-                if let Some(e) = commit_event(db, acting, &a, d) {
+                if let Some(e) = commit_event(db, &a, d) {
                     f(db, e)
                 }
             })
@@ -439,19 +437,15 @@ impl Osis {
     }
 }
 
-/// What a commit listener at `a` reading as `acting` hears of delivery `d` (`on_write`,
-/// `on_fire`, and their subscriptions through the port).
-pub(crate) fn commit_event(db: &Osis, acting: Option<Tid>, a: &Address, d: Delivery) -> Option<CommitEvent> {
+/// What a commit listener at `a` hears of delivery `d`, read as `db` (its subscriber) reads
+/// (`on_write`, `on_fire`, and their subscriptions through the port).
+pub(crate) fn commit_event(db: &Osis, a: &Address, d: Delivery) -> Option<CommitEvent> {
     match d {
         // what it may not read is not told: an event would tell the commit is there
         Delivery::Commit { tids, .. }
-            if acting.is_some_and(|x| db.engine(|e| !tids.iter().any(|t| e.readable_by(&x, t)))) => None,
+            if db.acting.is_some_and(|x| db.engine(|e| !tids.iter().any(|t| e.readable_by(&x, t)))) => None,
         Delivery::Commit { id, fired, .. } => {
-            let told = match acting {
-                Some(x) => db.act_as(x).commit_told_here(a, id, fired),
-                None => db.commit_told_here(a, id, fired),
-            };
-            Some(match told {
+            Some(match db.commit_told_here(a, id, fired) {
                 Ok(commit) => CommitEvent::Commit { id, commit },
                 Err(e) => CommitEvent::Ended(e),
             })

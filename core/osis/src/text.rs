@@ -293,7 +293,7 @@ fn merge(db: &Osis, s: &Session) {
         return;
     }
     for id in subs {
-        db.inner.dispatch.call_now(db, id, Delivery::Text { text: merged.clone(), edits: edits.clone() });
+        db.inner.dispatch.call_now(&db.inner, id, Delivery::Text { text: merged.clone(), edits: edits.clone() });
     }
 }
 
@@ -353,7 +353,7 @@ impl TextSession {
                 f(db, &text, &edits);
             }
         });
-        let sub = self.db.locked(|l| self.db.inner.dispatch.register(l.seq + 1, Filter::Text, cb));
+        let sub = self.db.locked(|l| self.db.inner.dispatch.register(l.seq + 1, Filter::Text, self.db.acting, cb));
         lock(&self.s.st).on_merge.extend(sub.id());
         Ok(sub)
     }

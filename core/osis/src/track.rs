@@ -9,7 +9,7 @@ use crate::commits::Address;
 use crate::CommitId;
 use crate::error::Result;
 use crate::handle::{Locked, Osis, ReadOnly};
-use crate::read::{ReadAs, Reader};
+use crate::read::Reader;
 use crate::watch::{Callback, Delivery, DerivedFrom, Digest, Filter, Origin, ReadAt, Subscription, Watch, digest, lock};
 use osis_base::{Ak, Tid, Value};
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 /// What a tracking handle has read (`Osis::tracking`): one listener per address read since the
 /// last `sweep`, each calling `on_change` when its address reads otherwise than it did when read.
-/// `on_change` runs on the dispatcher, with the node handle, like every callback.
+/// `on_change` runs on the dispatcher, with a handle reading as the tracking one, like every callback.
 pub struct ReadSet(pub(crate) Arc<SetInner>);
 
 pub(crate) struct SetInner {
@@ -162,7 +162,7 @@ impl ReadOnly {
             let follows = at.follows();
             let again = read.clone();
             let id = self.track_in(l, &set, key(), last, move |gate| {
-                (at, answer_callback(gate, w, move |r| answer_digest(&again(r)), ra))
+                (at, answer_callback(gate, w, move |r| answer_digest(&again(r))))
             });
             if let Some(id) = id.filter(|_| follows) {
                 self.inner.dispatch.follow(id, Box::new(move |e| answer_digest(&read(&mut ra.on(e)))));
@@ -212,10 +212,10 @@ fn value_callback(gate: Arc<Gate>, set: Weak<SetInner>) -> Callback {
 
 /// A listener on any other read: an event there reads it again, and it is told when the answer
 /// differs from the last read.
-fn answer_callback(gate: Arc<Gate>, set: Weak<SetInner>, read: impl Fn(&mut Reader<'_>) -> Digest + Send + Sync + 'static, ra: ReadAs) -> Callback {
+fn answer_callback(gate: Arc<Gate>, set: Weak<SetInner>, read: impl Fn(&mut Reader<'_>) -> Digest + Send + Sync + 'static) -> Callback {
     Box::new(move |db, d| match d {
         Delivery::Due | Delivery::Grants => {
-            let now = ra.read(db, |r| read(r));
+            let now = db.read_as().read(db, |r| read(r));
             if *lock(&gate.last) != Some(now) {
                 gate.fire(&set, db);
             }

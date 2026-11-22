@@ -170,7 +170,7 @@ pub(crate) fn serve(inner: &std::sync::Arc<crate::handle::Inner>, events: Vec<Po
     if events.is_empty() {
         return;
     }
-    let db = crate::Osis::internal(inner.clone());
+    let db = crate::Osis::internal(inner.clone(), None);
     for ev in events {
         match ev {
             PortEvent::Closed(conn) => {
@@ -256,9 +256,10 @@ fn auth(db: &ReadOnly, conn: ConnId, secret: Option<[u8; 32]>, id: [u8; 16]) -> 
 }
 
 /// The `clients^.0` entries that authenticate now (`until` not passed): actor to secret hash.
+/// The node's own read, whatever `db` acts as (a session's callback checks it).
 fn clients(db: &ReadOnly) -> BTreeMap<Tid, [u8; 32]> {
     let now = db.inner.clock.now_wall_ms();
-    let entries = db.read_local(|r| r.get(db.inner.node_root, &osis_schema::core_types::CLIENTS)).ok().flatten().unwrap_or_default();
+    let entries = ReadAs { limit: db.inner.limit, actor: None }.read(db, |r| r.get(db.inner.node_root, &osis_schema::core_types::CLIENTS)).ok().flatten().unwrap_or_default();
     entries.into_iter().filter(|(_, c)| c.until.is_none_or(|u| u.0 > now.0)).map(|(a, c)| (a.0, c.secret_hash)).collect()
 }
 
@@ -290,8 +291,8 @@ fn session(db: &ReadOnly, conn: ConnId) -> Option<(Who, [u8; 16])> {
 /// The handle a session's rows run on.
 fn handle(db: &ReadOnly, who: Who) -> crate::Osis {
     match who {
-        Who::Main => crate::Osis::internal(db.inner.clone()),
-        Who::Client { actor, .. } => crate::Osis::internal(db.inner.clone()).act_as(actor),
+        Who::Main => crate::Osis::internal(db.inner.clone(), None),
+        Who::Client { actor, .. } => crate::Osis::internal(db.inner.clone(), Some(actor)),
     }
 }
 
@@ -588,10 +589,10 @@ fn told_on_change(first: &Value, source: Value, when: fn(&Delivery) -> bool, mut
     })
 }
 
-/// `t`'s `ak` read as `ra`, as a Notify of a thing filter when it reads otherwise than `last`
-/// (absent when never told: a thing the actor may not read tells nothing).
-fn aspect_told(db: &ReadOnly, ra: ReadAs, last: &mut BTreeMap<Ak, Option<Digest>>, t: Tid, ak: Ak, origin: &crate::Origin, limit: Value) -> Option<(Value, Value)> {
-    let value = ra.read(db, |r| r.value(t, &ak));
+/// `t`'s `ak` read as `db` reads, as a Notify of a thing filter when it reads otherwise than
+/// `last` (absent when never told: a thing the actor may not read tells nothing).
+fn aspect_told(db: &ReadOnly, last: &mut BTreeMap<Ak, Option<Digest>>, t: Tid, ak: Ak, origin: &crate::Origin, limit: Value) -> Option<(Value, Value)> {
+    let value = db.read_as().read(db, |r| r.value(t, &ak));
     let now = digest(&value);
     if value.is_ok() && last.get(&ak).copied().unwrap_or(digest(&Ok(None))) == now {
         return None;
@@ -600,20 +601,16 @@ fn aspect_told(db: &ReadOnly, ra: ReadAs, last: &mut BTreeMap<Ak, Option<Digest>
     Some(((ak.clone(), value, *origin).to_wire(), Value::List(vec![codec::ak_to(&ak), limit])))
 }
 
-/// The value a Sub's Reply carries and how it goes on: each kind read as `actor`, so a thing it
-/// may not read answers and tells exactly what a never known one does.
+/// The value a Sub's Reply carries and how it goes on: each kind read as `ra`, the session's
+/// handle, which its Tell's deliveries read as too (a callback reads as its subscriber), so a
+/// thing it may not read answers and tells exactly what a never known one does.
 fn watch(l: &mut Locked, ra: ReadAs, w: Watched, limit: usize) -> Result<(Value, Filter, Tell)> {
-    let (mut r, actor) = (ra.on(l.engine()), ra.actor);
+    let mut r = ra.on(l.engine());
     let source = Value::uint(limit as u64);
     Ok(match w {
         Watched::Value(t, k, p) => {
             let ak = k.ak.clone();
-            let read = ReadAt::new(move |r| {
-                let a = std::mem::replace(&mut r.actor, actor);
-                let v = r.get_path(t, &k, &p);
-                r.actor = a;
-                v
-            });
+            let read = ReadAt::new(move |r| r.get_path(t, &k, &p));
             let first = read.0(&mut r);
             let mut last = digest(&first);
             let tell: Tell = Box::new(move |_, d| {
@@ -636,13 +633,13 @@ fn watch(l: &mut Locked, ra: ReadAs, w: Watched, limit: usize) -> Result<(Value,
                 first.push((ak.clone(), v).to_wire());
             }
             let tell: Tell = Box::new(move |db, d| match d {
-                Delivery::Aspect { ak, origin, .. } => aspect_told(db, ra, &mut last, t, ak, &origin, source.clone()).into_iter().collect(),
+                Delivery::Aspect { ak, origin, .. } => aspect_told(db, &mut last, t, ak, &origin, source.clone()).into_iter().collect(),
                 // every aspect it told or holds now, read again
                 Delivery::Reread => {
                     let mut aks: std::collections::BTreeSet<Ak> = last.keys().cloned().collect();
-                    aks.extend(ra.read(db, |r| r.aspects(t)).unwrap_or_default());
+                    aks.extend(db.read_as().read(db, |r| r.aspects(t)).unwrap_or_default());
                     let origin = crate::Origin::Derived(crate::DerivedFrom::Recovered);
-                    aks.into_iter().filter_map(|ak| aspect_told(db, ra, &mut last, t, ak, &origin, source.clone())).collect()
+                    aks.into_iter().filter_map(|ak| aspect_told(db, &mut last, t, ak, &origin, source.clone())).collect()
                 }
                 _ => Vec::new(),
             });
@@ -650,12 +647,12 @@ fn watch(l: &mut Locked, ra: ReadAs, w: Watched, limit: usize) -> Result<(Value,
         }
         Watched::Grants(t) => {
             let first = r.grants(t).to_wire();
-            let tell = told_on_change(&first, source, |d| matches!(d, Delivery::Grants | Delivery::Due), move |db| Some(ra.read(db, |r| r.grants(t)).to_wire()));
+            let tell = told_on_change(&first, source, |d| matches!(d, Delivery::Grants | Delivery::Due), move |db| Some(db.read_as().read(db, |r| r.grants(t)).to_wire()));
             (first, Filter::Grants(t), tell)
         }
         Watched::Status => {
-            let first = crate::syncing::status_in(l, actor)?.to_wire();
-            let tell = told_on_change(&first, source, |d| matches!(d, Delivery::Due), move |db| db.locked(|l| crate::syncing::status_in(l, actor)).ok().map(|s| s.to_wire()));
+            let first = crate::syncing::status_in(l, ra.actor)?.to_wire();
+            let tell = told_on_change(&first, source, |d| matches!(d, Delivery::Due), move |db| db.locked(|l| crate::syncing::status_in(l, db.acting)).ok().map(|s| s.to_wire()));
             (first, Filter::Status, tell)
         }
         Watched::Diagnostics => {
@@ -667,7 +664,7 @@ fn watch(l: &mut Locked, ra: ReadAs, w: Watched, limit: usize) -> Result<(Value,
         }
         Watched::Commits(a) => {
             let at = a.clone();
-            let tell: Tell = Box::new(move |db, d| crate::commits::commit_event(db, actor, &at, d).map(|e| (e.to_wire(), Value::List(Vec::new()))).into_iter().collect());
+            let tell: Tell = Box::new(move |db, d| crate::commits::commit_event(db, &at, d).map(|e| (e.to_wire(), Value::List(Vec::new()))).into_iter().collect());
             (Value::List(Vec::new()), Filter::Commits(a), tell)
         }
         // started by `sub` itself: no dispatcher filter
@@ -763,7 +760,7 @@ fn sub(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, max_reply
                 }
             }
         });
-        let sub = db.subscribe_in(l, filter, false, cb);
+        let sub = h.subscribe_in(l, filter, false, cb);
         if let Some(s) = l.port.sessions.get_mut(&conn) {
             s.subs.insert(id, sub);
         }

@@ -281,6 +281,8 @@ pub(crate) struct Sub {
     /// The first sequence number it hears: a tracked read moves it past what it read.
     since: AtomicU64,
     filter: Filter,
+    /// The subscribing handle's acting actor: its callback gets a handle reading as it.
+    acting: Option<Tid>,
     removed: AtomicBool,
     cb: Mutex<Callback>,
 }
@@ -366,7 +368,7 @@ impl std::fmt::Debug for Dispatcher {
 /// What the watch layer follows as `Effects` values, so that a change no event tells (an `until`
 /// passing: a role or roster read follows the memo clock up to its next `until`,
 /// `Engine::clock_next`) is told (`Dispatch::moved`): each watched roster's grants
-/// (`Filter::Grants`, one key per thing watched) and each tracked read the role graph decides
+/// (`Filter::Grants`, one key per thing and reader watching it, as that reader reads them) and each tracked read the role graph decides
 /// (`Filter::follows`, one key per listener, its read in `answers`).
 struct Follows {
     fx: Effects<Followed, Digest>,
@@ -375,7 +377,8 @@ struct Follows {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Followed {
-    Grants(Tid),
+    /// A thing's grants, as its acting actor reads them (`None`: the node).
+    Grants(Tid, Option<Tid>),
     Answer(u64),
 }
 
@@ -485,15 +488,16 @@ impl Dispatch {
     }
 
     /// Registers a callback for messages from sequence `since` on.
-    pub fn register(&self, since: u64, filter: Filter, cb: Callback) -> Subscription {
+    /// `acting` is the subscribing handle's actor: the callback reads as it (`call`).
+    pub fn register(&self, since: u64, filter: Filter, acting: Option<Tid>, cb: Callback) -> Subscription {
         let mut follows = lock(&self.shared.follows);
         let mut r = lock(&self.shared.registry);
         r.next += 1;
         let id = r.next;
         if let Filter::Grants(t) = filter {
-            follows.fx.want(Followed::Grants(t));
+            follows.fx.want(Followed::Grants(t, acting));
         }
-        r.insert(Arc::new(Sub { id, since: AtomicU64::new(since), filter, removed: AtomicBool::new(false), cb: Mutex::new(cb) }));
+        r.insert(Arc::new(Sub { id, since: AtomicU64::new(since), filter, acting, removed: AtomicBool::new(false), cb: Mutex::new(cb) }));
         Subscription { shared: Arc::downgrade(&self.shared), id: Some(id) }
     }
 
@@ -515,7 +519,7 @@ impl Dispatch {
         let (mut things, mut ids) = (Vec::new(), Vec::new());
         for k in f.fx.due() {
             let moved = match &k {
-                Followed::Grants(t) => f.fx.settle(&k, || crate::track::answer_digest(&crate::read::ReadAs::NODE.on(e).grants(*t))),
+                Followed::Grants(t, actor) => f.fx.settle(&k, || crate::track::answer_digest(&crate::read::ReadAs { limit: 0, actor: *actor }.on(e).grants(*t))),
                 Followed::Answer(id) => match f.answers.get(id) {
                     Some(read) => f.fx.settle(&k, || read(&mut *e)),
                     None => None,
@@ -523,7 +527,7 @@ impl Dispatch {
             };
             if let Some((Some(_), _)) = moved {
                 match k {
-                    Followed::Grants(t) => things.push(t),
+                    Followed::Grants(t, _) => things.push(t),
                     Followed::Answer(id) => ids.push(id),
                 }
             }
@@ -549,10 +553,10 @@ impl Dispatch {
     }
 
     /// Calls subscription `id` on this thread, which must be running callbacks.
-    pub fn call_now(&self, db: &Osis, id: u64, d: Delivery) {
+    pub fn call_now(&self, inner: &Arc<Inner>, id: u64, d: Delivery) {
         let s = lock(&self.shared.registry).subs.get(&id).cloned();
         if let Some(s) = s {
-            call(db, &s, d);
+            call(&Osis::internal(inner.clone(), s.acting), &s, d);
         }
     }
 
@@ -632,7 +636,7 @@ enum Pre {
 
 /// Which subscriptions a message reaches: the slots it names looked up in the registry, in
 /// subscription order, O(log S + matched).
-fn targets(sh: &Shared, _db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
+fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     if let Msg::Initial(id) = m {
         return lock(&sh.registry).subs.get(id).map(|s| (s.clone(), Pre::Ready(Delivery::Initial))).into_iter().collect();
     }
@@ -795,9 +799,10 @@ impl Pump {
             return true;
         }
         let Some(inner) = db.upgrade() else { return true };
-        let db = Osis::internal(inner);
         self.covered.retain(|_, c| *c >= seq);
-        for (s, pre) in targets(sh, &db, seq, &m) {
+        for (s, pre) in targets(sh, seq, &m) {
+            // a callback reads as its subscriber, its value read included
+            let db = Osis::internal(inner.clone(), s.acting);
             let d = match pre {
                 Pre::Ready(d) => d,
                 Pre::Aspect { tid, ak, mut origin } => {
@@ -890,9 +895,9 @@ impl Drop for Subscription {
         let mut r = lock(&sh.registry);
         let Some(s) = r.remove(id) else { return };
         if let Filter::Grants(t) = s.filter
-            && !r.index.contains_key(&Slot::Grants(t))
+            && !r.index.get(&Slot::Grants(t)).is_some_and(|ids| ids.iter().any(|i| r.subs.get(i).is_some_and(|o| o.acting == s.acting)))
         {
-            follows.fx.unwant(&Followed::Grants(t));
+            follows.fx.unwant(&Followed::Grants(t, s.acting));
         }
         if follows.answers.remove(&id).is_some() {
             follows.fx.unwant(&Followed::Answer(id));

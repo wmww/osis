@@ -631,6 +631,7 @@ impl crate::Osis {
         let sub = self.inner.dispatch.register(
             0,
             Filter::Remote,
+            self.acting,
             Box::new(move |db: &crate::Osis, d: Delivery| {
                 if let Delivery::Remote { from, got } = d {
                     f(db, &from, got)

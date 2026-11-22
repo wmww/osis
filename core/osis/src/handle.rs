@@ -416,7 +416,7 @@ impl WeakOsis {
     /// For osis's own short-lived use (an engine call, a timer): not counted as a user handle,
     /// so `close` waits for it to end.
     pub(crate) fn hold(&self) -> Option<Osis> {
-        self.0.upgrade().map(Osis::internal)
+        self.0.upgrade().map(|i| Osis::internal(i, None))
     }
 }
 
@@ -624,9 +624,10 @@ impl Osis {
         Osis(ReadOnly::user(inner))
     }
 
-    /// A handle for osis's own short-lived use (the dispatcher running callbacks), not counted.
-    pub(crate) fn internal(inner: Arc<Inner>) -> Osis {
-        Osis(ReadOnly { inner, user: false, acting: None, tracking: None })
+    /// A handle for osis's own short-lived use (the dispatcher running a callback, as its
+    /// subscriber's `acting`), not counted.
+    pub(crate) fn internal(inner: Arc<Inner>, acting: Option<Tid>) -> Osis {
+        Osis(ReadOnly { inner, user: false, acting, tracking: None })
     }
 
     /// A handle acting as `actor`, an actor this node administers (notes/client-port.md §3): `me()`
@@ -635,7 +636,7 @@ impl Osis {
     /// on the tid-addressed read and write paths only: the sharing, sync and process-wide calls do
     /// not honour it yet (issues/grant-rename-multi-actor.md), so it stays inside the crate.
     pub(crate) fn act_as(&self, actor: Tid) -> Osis {
-        Osis(ReadOnly { inner: self.inner.clone(), user: false, acting: Some(actor), tracking: None })
+        Osis::internal(self.inner.clone(), Some(actor))
     }
 
     /// A handle that does not keep the node open (for the rare callback that must capture

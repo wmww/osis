@@ -709,3 +709,92 @@ fn a_commit_found_landed_after_a_failed_sync_reaches_watches() {
     }
     assert!(landed > 0, "some write's failed sync leaves a landed commit answered Err");
 }
+
+// notes/api.md Watching (a callback reads as its subscriber), spec/wire.md §11.2 (A client
+// actor's rights): every local watch taken on a handle acting as an actor tells what that actor
+// reads and nothing else. Invariant: after the node writes a thing the actor may not read and
+// changes its roster, no watch on it tells anything past its first call (absent, no grants).
+// Differential: each watch's last word equals the acting handle's own read, which on the hidden
+// thing differs from the node's. Inputs: the node writes and grants; the actor's rights come
+// from the node's grants only.
+#[test]
+fn a_watch_reads_as_its_acting_subscriber() {
+    let db = db(0);
+    let k = untyped("t:x.0");
+    let (seen, hid) = (thing(&db), thing(&db));
+    let (actor, _) = db.add_client(None).unwrap();
+    let (other, _) = db.add_client(None).unwrap();
+    db.grant(seen, actor, Role::Read, osis::GrantOpts::default()).unwrap();
+    let a = db.acting_as(actor);
+    type Told = Arc<Mutex<Vec<String>>>;
+    let log = |t: &Told, s: String| t.lock().unwrap().push(s);
+    let mut subs = Vec::new();
+    let mut watches: Vec<(osis::Tid, &str, Told)> = Vec::new();
+    let set_fired = Arc::new(Mutex::new(0usize));
+    let f2 = set_fired.clone();
+    let set = osis::ReadSet::new(move |_| *f2.lock().unwrap() += 1);
+    for t in [seen, hid] {
+        let (v, p, th, g, c): (Told, Told, Told, Told, Told) = Default::default();
+        let x = v.clone();
+        subs.push(a.at(t, k.clone()).on_change(move |_, ch| log(&x, format!("{:?}", ch.value))).unwrap());
+        let x = p.clone();
+        subs.push(a.at(t, k.clone()).path(osis::Path::root()).on_change::<Value>(move |_, ch| log(&x, format!("{:?}", ch.value))).unwrap());
+        let x = th.clone();
+        subs.push(a.on_thing_change(t, move |_, ch| log(&x, format!("{} {:?}", ch.ak, ch.value))).unwrap());
+        let x = g.clone();
+        subs.push(a.on_grants_change(t, move |_, gs| log(&x, format!("{gs:?}"))).unwrap());
+        let x = c.clone();
+        subs.push(a.on_write(&osis::Scope::Thing(t), move |_, e| log(&x, format!("{e:?}"))).unwrap());
+        watches.extend([(t, "value", v), (t, "path", p), (t, "thing", th), (t, "grants", g), (t, "writes", c)]);
+        // tracked reads: a value and a roster
+        a.tracking(&set).at(t, k.clone()).get().unwrap();
+        a.tracking(&set).grants(t).unwrap();
+    }
+    db.settle();
+    *set_fired.lock().unwrap() = 0;
+    let before: Vec<usize> = watches.iter().map(|(_, _, t)| t.lock().unwrap().len()).collect();
+    for t in [seen, hid] {
+        db.commit_set(t, k.clone(), &Value::Int(7)).unwrap();
+        db.grant(t, other, Role::Read, osis::GrantOpts::default()).unwrap();
+    }
+    db.settle();
+    // the node reads the hidden thing otherwise than the actor: the case is reached
+    assert_ne!(db.at(hid, k.clone()).get().unwrap(), a.at(hid, k.clone()).get().unwrap());
+    assert_ne!(db.grants(hid).unwrap(), a.grants(hid).unwrap());
+    let mut bad = Vec::new();
+    for ((t, what, told), n) in watches.iter().zip(before) {
+        let told = told.lock().unwrap();
+        if *t == hid {
+            if told.len() != n {
+                bad.push(format!("{what} on a thing the actor may not read told {:?}", &told[n..]));
+            }
+            continue;
+        }
+        assert!(told.len() > n, "{what} on a thing it reads told nothing");
+        let name = format!("{} ", ak("t:x.0"));
+        let last = if *what == "thing" { told.iter().rev().find(|l| l.starts_with(&name)).unwrap() } else { told.last().unwrap() };
+        let direct = match *what {
+            "value" | "path" => format!("{:?}", Ok::<_, osis::Error>(a.at(*t, k.clone()).get().unwrap())),
+            "thing" => format!("{name}{:?}", Ok::<_, osis::Error>(a.at(*t, k.clone()).get().unwrap())),
+            "grants" => format!("{:?}", Ok::<_, osis::Error>(a.grants(*t).unwrap())),
+            _ => continue,
+        };
+        if *last != direct {
+            bad.push(format!("{what}: told {last}, the acting handle reads {direct}"));
+        }
+    }
+    // the readable thing moved the set; with only the hidden thing moving it stays still
+    assert!(*set_fired.lock().unwrap() > 0);
+    set.sweep();
+    a.tracking(&set).at(hid, k.clone()).get().unwrap();
+    a.tracking(&set).grants(hid).unwrap();
+    db.settle();
+    *set_fired.lock().unwrap() = 0;
+    db.commit_set(hid, k.clone(), &Value::Int(8)).unwrap();
+    db.grant(hid, other, Role::Write, osis::GrantOpts::default()).unwrap();
+    db.settle();
+    if *set_fired.lock().unwrap() != 0 {
+        bad.push("a tracked read of a hidden thing moved".into());
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
