@@ -267,7 +267,6 @@ pub struct Net {
     paused: BTreeMap<(usize, ConnId), Vec<Input>>,
 }
 
-/// splitmix64: one deterministic draw.
 /// Where a fabric connection from node `n` comes from: one source per node (spec/sync-transport.md
 /// §5 Served connections shares served slots by source).
 fn source_of(n: usize) -> [u8; 16] {
@@ -276,6 +275,7 @@ fn source_of(n: usize) -> [u8; 16] {
     s
 }
 
+/// splitmix64: one deterministic draw.
 fn mix(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);

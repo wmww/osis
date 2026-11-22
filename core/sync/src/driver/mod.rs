@@ -476,8 +476,9 @@ impl Node {
         match input {
             Input::Up { conn, peer, rank, dialed, listener, source } => {
                 // past the served slots a newcomer takes the slot of a source holding more, or is
-                // refused (spec/sync-transport.md §5 Served connections)
-                if !dialed {
+                // refused; a main session is outside them (spec/sync-transport.md §5 Served
+                // connections)
+                if let (false, Some(source)) = (dialed, source) {
                     match self.driver.sessions.serve(conn, source) {
                         Slot::Free => {}
                         Slot::Evict(v) => {

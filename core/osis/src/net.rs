@@ -641,7 +641,7 @@ impl Links for FabricLinks<'_> {
         f.queue.push_back((self.node, Input::Up { conn, peer: NodeKey(to.key), rank: 0, dialed: true, listener: NodeKey(to.key), source: None }));
         *f.ups.entry(self.node).or_default() += 1;
         *f.ups.entry(t).or_default() += 1;
-        f.queue.push_back((t, Input::Up { conn: acc, peer: NodeKey(eph), rank: 0, dialed: false, listener: NodeKey(to.key), source: Some(source_of(self.node)) }));
+        f.queue.push_back((t, Input::Up { conn: acc, peer: NodeKey(eph), rank: 0, dialed: false, listener: NodeKey(to.key), source: socket.is_none().then(|| source_of(self.node)) }));
     }
 
     fn send(&mut self, conn: ConnId, bytes: &[u8]) {

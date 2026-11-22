@@ -998,7 +998,7 @@ pub struct Sessions {
     /// A waiting request does not fit the bound's room: nothing else goes past it.
     room_blocked: bool,
     /// Served sessions up, each with its source (`MAX_SERVED`).
-    served: BTreeMap<ConnId, Option<osis_transport::Source>>,
+    served: BTreeMap<ConnId, osis_transport::Source>,
 }
 
 impl Sessions {
@@ -1077,14 +1077,21 @@ impl Sessions {
         out
     }
 
-    /// The connection holding the most received while every connection together holds more
-    /// than `IN_BOUND`: to close (spec/sync-transport.md §5 Served connections).
+    /// While every connection together holds more than `IN_BOUND` received, the one to close:
+    /// the connection holding the most of the source holding the most, a session outside the
+    /// slots its own source (spec/sync-transport.md §5 Served connections).
     pub fn over_in(&mut self) -> Option<ConnId> {
         self.recount();
         if self.in_total <= IN_BOUND {
             return None;
         }
-        self.conns.iter().max_by_key(|(c, s)| (s.in_held(), std::cmp::Reverse(**c))).map(|(c, _)| *c)
+        let source = |c: &ConnId| self.served.get(c).map_or(Err(*c), |s| Ok(*s));
+        let mut by: BTreeMap<Result<osis_transport::Source, ConnId>, u64> = BTreeMap::new();
+        for (c, s) in &self.conns {
+            *by.entry(source(c)).or_default() += s.in_held();
+        }
+        let (top, _) = by.iter().max_by_key(|(k, n)| (**n, std::cmp::Reverse(**k)))?;
+        self.conns.iter().filter(|(c, _)| source(c) == *top).max_by_key(|(c, s)| (s.in_held(), std::cmp::Reverse(**c))).map(|(c, _)| *c)
     }
 
     /// The connections to close for the first request waiting for the bound's room once it has
@@ -1132,11 +1139,11 @@ impl Sessions {
     /// shared fairly by source (`osis_transport::evict_for`): the oldest session of the source
     /// holding the most gives its slot up if that source holds two more than `source`, else the
     /// newcomer is refused. A slot taken is the newcomer's, kept until `remove`.
-    pub fn serve(&mut self, conn: ConnId, source: Option<osis_transport::Source>) -> Slot {
+    pub fn serve(&mut self, conn: ConnId, source: osis_transport::Source) -> Slot {
         let slot = if self.served.len() < MAX_SERVED {
             Slot::Free
         } else {
-            let mut held: BTreeMap<Option<osis_transport::Source>, usize> = BTreeMap::new();
+            let mut held: BTreeMap<osis_transport::Source, usize> = BTreeMap::new();
             for s in self.served.values() {
                 *held.entry(*s).or_default() += 1;
             }
