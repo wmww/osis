@@ -453,6 +453,39 @@ mod tests {
         due
     }
 
+    // spec/sync.md §2, notes/engine.md (Stamps): a part's record bytes are read at its hold; read
+    // mid-write, its hold saying held and its record not yet carrying it (or the reverse), the
+    // reader reads the record's row too, so the record's write (here its undo) moves it.
+    #[test]
+    fn a_part_read_while_its_record_disagrees_moves_with_the_record() {
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let a = lp.peers[0].engine.me();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        lp.peers[0].commit(m).unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let mut fx: Effects<u8, bool> = Effects::new("record test");
+        fx.want(0);
+        let e = &mut lp.peers[0].engine;
+        let failed = e.run(|tx| {
+            tx.txn.remove_local(&crate::engine::records::commit_key(&c), osis_store::Shred::No)?;
+            assert_eq!(fx.due(), vec![0]);
+            fx.settle(&0, || crate::apply::held_part(tx, &c, 0).ok().flatten().is_some());
+            Err::<(), _>(crate::Error::Misuse("undone"))
+        });
+        assert!(failed.is_err());
+        assert_eq!(fx.due(), vec![0], "the record back moves what read it gone");
+        let e = &mut lp.peers[0].engine;
+        e.run(|tx| {
+            fx.settle(&0, || crate::apply::held_part(tx, &c, 0).ok().flatten().is_some());
+            Ok(())
+        })
+        .unwrap();
+        assert!(fx.due().is_empty(), "agreeing, nothing moved");
+    }
+
     // spec/sync.md §2 (work in proportion to change), notes/engine.md (Stamps): a commit's meta is
     // read facet by facet, so a reader of one part's hold moves when that part's state does, not
     // with the commit's other parts; the fixed facts move only as the commit comes or goes; a

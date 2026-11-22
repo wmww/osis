@@ -3465,15 +3465,18 @@ impl Tx<'_> {
 
     /// `get_commit` for the bytes of the parts `keep` selects alone, read at those parts' holds
     /// in the index (`Meta::hold`) rather than at the record's row: a part's bytes are fixed by
-    /// the commit's ID, and every record write adding or stripping one changes that part's hold
-    /// in the same transaction, so a reader of some parts moves with those parts alone, not with
-    /// another part of the commit arriving or dropping.
+    /// the commit's ID, and the record carries exactly the parts held as their bodies, so a reader
+    /// of some parts moves with those parts alone, not with another part of the commit arriving or
+    /// dropping. Mid-write (a hold set before its record is written, or after) the two disagree:
+    /// the reader then reads the row too, so the write moves it whatever order it comes in.
     pub(crate) fn commit_for_parts(&mut self, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Option<Arc<CommitBlob>>> {
         let Some(m) = self.core.ix.commits.get(id) else { return self.get_commit(id) };
-        for ai in (0..m.parts()).filter(|ai| keep(*ai)) {
-            m.hold(ai);
+        let bodies: Vec<(usize, bool)> = (0..m.parts()).filter(|ai| keep(*ai)).map(|ai| (ai, matches!(m.hold(ai), Some(Hold::Body { .. })))).collect();
+        let blob = osis_base::memo::unrecorded(|| self.get_commit(id))?;
+        if bodies.iter().any(|(ai, body)| *body != blob.as_ref().is_some_and(|b| b.part(*ai).is_some())) {
+            self.txn.noted_local(&records::commit_key(id));
         }
-        osis_base::memo::unrecorded(|| self.get_commit(id))
+        Ok(blob)
     }
 
     /// The change stamp of commit `id`'s record (`Transaction::local_stamp`): what `Core::decoded`
