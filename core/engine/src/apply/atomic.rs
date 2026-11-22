@@ -509,11 +509,11 @@ pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment
 }
 
 /// Records the creation records durable commit `h` carries on `created.0` that are not held
-/// yet; whether any was new. `first`: the node receives `h` for the first time, so a strong
-/// newly reaching a thing whose record it brings pulls nothing anew (`learn_record`); a part
-/// of a commit already known (counted never received: a released thing's record, forgotten
-/// with its content) arrives again, and the content it lost is fetched again (spec/sync-
-/// judgement.md §3 Dropped bodies).
+/// yet; whether any was new. `first`: the node had received nothing of `h` before, so a strong
+/// newly reaching a thing whose record it brings pulls nothing anew (`learn_record`); a late
+/// part of a commit already held (a released thing's record among them, forgotten with its
+/// content) is no exemption, and what was forgotten is fetched again (spec/sync-judgement.md §3
+/// Dropped bodies).
 fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], first: bool) -> Result<bool> {
     let mut any = false;
     if h.ephemeral.is_some() {
@@ -552,7 +552,7 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     Ok(new)
 }
 
-/// `learn_record`, not counted learned: a record arriving again in a part counted never received.
+/// `learn_record`, not counted learned: a record in a late part of a commit already held.
 fn hold_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool> {
     let t = rec.tid();
     if tx.core.created(&t).is_some() {
