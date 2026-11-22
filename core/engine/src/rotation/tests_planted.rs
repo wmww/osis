@@ -158,6 +158,26 @@ fn planted_epoch_never_blocks_compaction_plain_spec_crypto_4() {
     assert!(dropped > 0, "no compactor dropped a covered body");
 }
 
+/// Peer 0 rotates read of `g` (new epoch e, rotation commit R), grants `n` `role` (boxing it at e)
+/// and writes `put` under e if given; admin C (peer 3) gets all of it but R, so e is not verified
+/// there. Returns e and the grant's commits.
+fn granted_before_rotation(lp: &mut LocalPeer, g: Tid, n: Tid, role: Role, put: Option<&str>) -> (Epoch, Vec<CommitId>) {
+    let before: BTreeSet<CommitId> = lp.commit_ids(0).into_iter().collect();
+    rotate_leaving_out(lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    let e = newest_read(lp, 0, g).unwrap();
+    let rot: BTreeSet<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c)).collect();
+    lp.peers[0].engine.grant(&g, &n, &edge(role)).unwrap();
+    let gr: Vec<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c) && !rot.contains(c)).collect();
+    if let Some(k) = put {
+        put_on(lp, 0, g, k, 1);
+    }
+    for pk in lp.packages_for(0, 3).unwrap().into_iter().filter(|p| !rot.contains(&p.id)) {
+        let _ = lp.peers[3].receive(&pk.bytes, pk.blobs.clone());
+    }
+    assert!(!based(lp, 3, g, &e), "e verified at C without its rotation commit");
+    (e, gr)
+}
+
 // spec/crypto.md §4, spec/commits.md §5: a grant boxing N at e reaching admin C before e's
 // rotation commit R. C compacts: e is not verified there, so the grant's entries stay beside the
 // snapshot, and nothing is lost at the nodes where e is current (N keeps its box and reads under
@@ -165,17 +185,7 @@ fn planted_epoch_never_blocks_compaction_plain_spec_crypto_4() {
 #[test]
 fn unverified_genuine_entry_kept_beside_spec_crypto_4() {
     let (mut lp, g, tids) = granted(5, &[(3, Role::Admin)]);
-    let before: BTreeSet<CommitId> = lp.commit_ids(0).into_iter().collect();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
-    let e = newest_read(&lp, 0, g).unwrap();
-    let rot: BTreeSet<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c)).collect();
-    lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Read)).unwrap();
-    let gr: Vec<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c) && !rot.contains(c)).collect();
-    put_on(&mut lp, 0, g, "w", 1);
-    for pk in lp.packages_for(0, 3).unwrap().into_iter().filter(|p| !rot.contains(&p.id)) {
-        let _ = lp.peers[3].receive(&pk.bytes, pk.blobs.clone());
-    }
-    assert!(!based(&lp, 3, g, &e), "e verified at C without its rotation commit");
+    let (e, gr) = granted_before_rotation(&mut lp, g, tids[4], Role::Read, Some("w"));
     lp.peers[3].engine.snapshot(&g, &secrets_ak()).unwrap().unwrap();
     lp.advance(osis_base::format::ROLE_KEEP_MS + 1);
     drop_covered(&mut lp, 3, g);
@@ -211,16 +221,7 @@ fn unverified_genuine_entry_kept_beside_spec_crypto_4() {
 #[test]
 fn mixed_commit_not_absorbed_spec_crdt_8() {
     let (mut lp, g, tids) = granted(6, &[(3, Role::Admin), (5, Role::Read)]);
-    let before: BTreeSet<CommitId> = lp.commit_ids(0).into_iter().collect();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
-    let e = newest_read(&lp, 0, g).unwrap();
-    let rot: BTreeSet<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c)).collect();
-    lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Write)).unwrap();
-    let gr: Vec<CommitId> = lp.commit_ids(0).into_iter().filter(|c| !before.contains(c) && !rot.contains(c)).collect();
-    for pk in lp.packages_for(0, 3).unwrap().into_iter().filter(|p| !rot.contains(&p.id)) {
-        let _ = lp.peers[3].receive(&pk.bytes, pk.blobs.clone());
-    }
-    assert!(!based(&lp, 3, g, &e), "e verified at C without its rotation commit");
+    let (_, gr) = granted_before_rotation(&mut lp, g, tids[4], Role::Write, None);
     let s = lp.peers[3].engine.snapshot(&g, &secrets_ak()).unwrap().unwrap();
     let boxes = |lp: &mut LocalPeer, p: usize| lp.peers[p].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap().boxes;
     assert!(boxes(&mut lp, 3).keys().any(|k| k.holder == osis_base::Weak(tids[4]) && k.role == Role::Write), "C lacks N's write box");

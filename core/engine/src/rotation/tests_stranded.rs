@@ -109,11 +109,7 @@ fn report_and_pass(lp: &mut LocalPeer, g: Tid, m: Tid) {
 // an ask of a holder whose grant ended goes with the finalize the pass end writes, unmet.
 #[test]
 fn an_ended_holders_ask_goes_with_its_finalize_spec_permissions_4() {
-    let (mut lp, tids) = synced_tids(2);
-    let g = independent_thing(&mut lp, 0);
-    let until = lp.peers[0].engine.now().0 + 1_000;
-    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(osis_base::WallMs(until)), ..edge(Role::Read) }).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, tids) = until_granted();
     lp.peers[0].clock.advance(2_000);
     report_and_pass(&mut lp, g, tids[1]);
     assert!(!lp.peers[0].engine.core.key_holders(&g).iter().any(|x| x.0 == tids[1]), "finalized");
@@ -133,10 +129,18 @@ fn a_met_ask_goes_with_its_holder_spec_permissions_4() {
     assert_eq!(asks(&mut lp, g), Vec::new(), "gone with the holder");
 }
 
-fn synced_tids(n: usize) -> (LocalPeer, Vec<Tid>) {
-    let lp = super::tests::synced(n);
-    let tids = (0..n).map(|i| lp.peers[i].engine.me()).collect();
-    (lp, tids)
+/// G, an independent thing of peer 0's, granting peer 1 read until a second on; synced.
+fn until_granted() -> (LocalPeer, Tid, Vec<Tid>) {
+    let (lp, (g, tids)) = LocalPeer::cached("rotation::tests_stranded::until_granted", || {
+        let mut lp = synced(2);
+        let tids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.me()).collect();
+        let g = independent_thing(&mut lp, 0);
+        let until = lp.peers[0].engine.now().0 + 1_000;
+        lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(osis_base::WallMs(until)), ..edge(Role::Read) }).unwrap();
+        lp.sync_all().unwrap();
+        (lp, (g, tids))
+    });
+    (lp, g, tids)
 }
 
 // spec/crypto.md §4 (Encrypting under: a grant past its `until` that this node may finalize is
@@ -145,11 +149,7 @@ fn synced_tids(n: usize) -> (LocalPeer, Vec<Tid>) {
 // nothing else moving, and judges it unwrappable until the finalize is written.
 #[test]
 fn whether_a_body_wraps_moves_at_a_grants_until_spec_crypto_4() {
-    let (mut lp, tids) = synced_tids(2);
-    let g = independent_thing(&mut lp, 0);
-    let until = lp.peers[0].engine.now().0 + 1_000;
-    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(osis_base::WallMs(until)), ..edge(Role::Read) }).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, _) = until_granted();
     let mut m = crate::Mutation::new();
     m.set(g, &osis_base::Ak::new("x:m.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
@@ -314,9 +314,6 @@ fn on_unknown(lp: &mut LocalPeer, v: &str) -> (Tid, CommitId, Vec<u8>) {
     (w, d, e1.package(&d).unwrap().unwrap().bytes)
 }
 
-fn awaited(lp: &LocalPeer, w: &Tid) -> bool {
-    lp.peers[0].engine.core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*w))
-}
 
 // spec/commits.md §4 Pending storage (a stranded report carries while it is the newest on its
 // sync ID and its holder is current), §5 What a held thing needs: D1, D2 and D3 pend at peer 0
@@ -337,7 +334,7 @@ fn a_report_letting_go_forgets_what_only_it_carries_spec_commits_4() {
         lp.peers[0].engine.ingest_valid(b, Some(k)).unwrap();
     }
     lp.peers[0].receive(&b2, Vec::new()).unwrap();
-    assert!([d1, d2].iter().all(|d| lp.peers[0].engine.pends(d)) && awaited(&lp, &w1));
+    assert!([d1, d2].iter().all(|d| lp.peers[0].engine.pends(d)) && awaited_at(&lp.peers[0].engine, &w1));
     let mut keys = osis_blob::HolderKeys::default();
     keys.commits.push(osis_base::decode(&b3, &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB)).unwrap());
     // the newer report: D3 rides it alone (off M's chain, so it is not taken from it)
@@ -345,15 +342,15 @@ fn a_report_letting_go_forgets_what_only_it_carries_spec_commits_4() {
     lp.peers[0].engine.ingest_valid(&b3, Some(k)).unwrap();
     lp.peers[0].engine.settle_needs().unwrap();
     let e0 = &mut lp.peers[0].engine;
-    assert!(!e0.pends(&d1) && !awaited(&lp, &w1), "D1 goes with the report replaced");
+    assert!(!e0.pends(&d1) && !awaited_at(&lp.peers[0].engine, &w1), "D1 goes with the report replaced");
     let e0 = &mut lp.peers[0].engine;
     assert_eq!(e0.pending_carriers(&d2), vec![Carrier::Entry], "D2 kept by its entry");
     assert_eq!(e0.pending_carriers(&d3), vec![k], "D3 carried by the newer report");
     e0.demote(&g, &crate::flows::Demotion { holder: m, new: None, retain: None }).unwrap();
     e0.reseal_run(&g).unwrap();
     e0.settle_needs().unwrap();
-    assert!(!lp.peers[0].engine.pends(&d3) && !awaited(&lp, &w3), "D3 goes with its holder");
-    assert!(lp.peers[0].engine.pends(&d2) && awaited(&lp, &w2));
+    assert!(!lp.peers[0].engine.pends(&d3) && !awaited_at(&lp.peers[0].engine, &w3), "D3 goes with its holder");
+    assert!(lp.peers[0].engine.pends(&d2) && awaited_at(&lp.peers[0].engine, &w2));
 }
 
 // spec/commits.md §4 Pending storage (a fire carries while its commit is held), spec/sync-inbox.md
@@ -366,24 +363,11 @@ fn a_report_letting_go_forgets_what_only_it_carries_spec_commits_4() {
 fn a_removal_notice_carries_what_it_brings_until_it_goes_spec_commits_4() {
     use crate::apply::carriers::Carrier;
     use crate::flows::inbox::{save, Fire, OwedFire, REMOVAL_FIRE};
-    const HOUR_MS: u64 = 3_600_000;
     let (mut lp, g, tids) = granted(3, &[(1, Role::Read), (2, Role::Read)]);
     let bob = tids[1];
     let removal = osis_base::Ak::new(REMOVAL_FIRE).unwrap();
-    // Bob keeps removal notices on his inbox an hour
-    let e1 = &mut lp.peers[1].engine;
-    let inbox = e1.inbox_thing(&bob).unwrap();
-    let mut s = e1.get_typed(&inbox, &osis_schema::core_types::RETENTION).unwrap().unwrap_or_default();
-    s.rules.insert(removal.clone(), osis_schema::core_types::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(HOUR_MS) }), ..Default::default() });
-    let mut m = crate::Mutation::new();
-    m.set(inbox, &osis_schema::core_types::RETENTION, &s).unwrap();
-    lp.peers[1].commit(m).unwrap().unwrap();
-    lp.sync_all().unwrap();
+    let (inbox, w) = keeps_removals_an_hour(&mut lp, &removal);
     let e2 = &mut lp.peers[2].engine;
-    let me2 = e2.me();
-    let mut m = crate::Mutation::new();
-    let w = e2.new_thing(&mut m, me2);
-    e2.commit(m).unwrap().unwrap();
     let before = e2.fires_owed();
     let c = e2
         .run(|tx| {
@@ -432,20 +416,12 @@ fn awaited_at(e: &crate::Engine, w: &Tid) -> bool {
     e.core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*w))
 }
 
-// spec/commits.md §4 Pending storage (a fire carries a chain commit it carries while its commit is
-// held), spec/sync-inbox.md §4 A sealed fire: peer 2 seals Bob (peer 1) a fire whose chain carries,
-// beside its own, a write on W, a thing it mints and never sends. Bob takes the fire whole: the
-// write pends for W's record, carried by the fire alone, rooting W; once the fire leaves Bob's
-// inbox history and is forgotten, nothing of the write or W is left.
-#[test]
-fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
-    use crate::apply::carriers::Carrier;
-    use crate::flows::inbox::REMOVAL_FIRE;
-    use osis_base::Value;
-    const HOUR_MS: u64 = 3_600_000;
-    let (mut lp, _, tids) = granted(3, &[]);
-    let bob = tids[1];
-    let removal = osis_base::Ak::new(REMOVAL_FIRE).unwrap();
+const HOUR_MS: u64 = 3_600_000;
+
+/// Bob (peer 1) keeps `removal` notices on his inbox an hour, synced; peer 2 then mints W, which
+/// it never sends. (Bob's inbox, W)
+fn keeps_removals_an_hour(lp: &mut LocalPeer, removal: &osis_base::Ak) -> (Tid, Tid) {
+    let bob = lp.peers[1].engine.me();
     let e1 = &mut lp.peers[1].engine;
     let inbox = e1.inbox_thing(&bob).unwrap();
     let mut s = e1.get_typed(&inbox, &osis_schema::core_types::RETENTION).unwrap().unwrap_or_default();
@@ -459,6 +435,23 @@ fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
     let mut m = crate::Mutation::new();
     let w = e2.new_thing(&mut m, me2);
     e2.commit(m).unwrap().unwrap();
+    (inbox, w)
+}
+
+// spec/commits.md §4 Pending storage (a fire carries a chain commit it carries while its commit is
+// held), spec/sync-inbox.md §4 A sealed fire: peer 2 seals Bob (peer 1) a fire whose chain carries,
+// beside its own, a write on W, a thing it mints and never sends. Bob takes the fire whole: the
+// write pends for W's record, carried by the fire alone, rooting W; once the fire leaves Bob's
+// inbox history and is forgotten, nothing of the write or W is left.
+#[test]
+fn a_sealed_fire_carries_its_chain_until_it_goes_spec_commits_4() {
+    use crate::apply::carriers::Carrier;
+    use crate::flows::inbox::REMOVAL_FIRE;
+    use osis_base::Value;
+    let (mut lp, _, _) = granted(3, &[]);
+    let removal = osis_base::Ak::new(REMOVAL_FIRE).unwrap();
+    let (inbox, w) = keeps_removals_an_hour(&mut lp, &removal);
+    let e2 = &mut lp.peers[2].engine;
     let mut m = crate::Mutation::new();
     m.set(w, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Str("d".into())).unwrap();
     let d = e2.commit(m).unwrap().unwrap();

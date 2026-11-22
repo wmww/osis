@@ -129,14 +129,9 @@ pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::
     })
 }
 
-/// W leaves as `how`; A and X get everything. Each must see its read role due for rotation, and
-/// after `ensure_rotated` encrypt under a read epoch W never held.
-fn leaver_uncovered(how: Forge) {
-    leaver_uncovered_as(Role::Write, how)
-}
-
-/// `leaver_uncovered` with the leaver holding `role`.
-fn leaver_uncovered_as(role: Role, how: Forge) {
+/// W, holding `role`, leaves as `how`; A and X get everything. Each must see its read role due
+/// for rotation, and after `ensure_rotated` encrypt under a read epoch W never held.
+fn leaver_uncovered(role: Role, how: Forge) {
     let (mut lp, g, tids) = shape(role);
     let w_held: BTreeSet<Epoch> = leave(&mut lp, W, g, how).unwrap().into_iter().filter(|(r, _)| *r == Role::Read).map(|(_, e)| e).collect();
     for i in [A, X] {
@@ -145,7 +140,7 @@ fn leaver_uncovered_as(role: Role, how: Forge) {
         }
     }
     for i in [A, X] {
-        assert!(lp.peers[i].engine.departures(&g).unwrap().iter().any(|d| d.holder == tids[W]), "peer {i} knows W left ({how:?})");
+        assert!(lp.peers[i].engine.departures(&g).unwrap().iter().any(|d| d.holder == tids[W]), "peer {i} knows W left ({role:?} {how:?})");
         if role == Role::Write {
             let e = lp.peers[i].engine.epochs(&g).unwrap();
             let opened = match how {
@@ -153,50 +148,36 @@ fn leaver_uncovered_as(role: Role, how: Forge) {
                 Forge::Listed | Forge::Backdated => e.read.epochs().any(|(_, x)| x.names.iter().any(|n| n.list.iter().any(|m| m.key.node == tids[W]))),
                 Forge::None | Forge::Rotating => true,
             };
-            assert!(opened, "peer {i} opened W's entry ({how:?})");
+            assert!(opened, "peer {i} opened W's entry ({role:?} {how:?})");
         }
-        assert!(super::tests::blocked_at(&mut lp, i, g).contains(&Role::Read), "peer {i}: W's departure covered ({how:?})");
+        assert!(super::tests::blocked_at(&mut lp, i, g).contains(&Role::Read), "peer {i}: W's departure covered ({role:?} {how:?})");
         lp.peers[i].engine.ensure_rotated(&g).unwrap();
         let now = newest_read(&lp, i, g).unwrap();
-        assert!(!w_held.contains(&now), "peer {i} encrypts under {now:?}, which W held ({how:?})");
+        assert!(!w_held.contains(&now), "peer {i} encrypts under {now:?}, which W held ({role:?} {how:?})");
     }
 }
 
-// spec/crypto.md §4 (covers): a plain self-removal stays uncovered (the baseline).
+// spec/crypto.md §4 (covers): a plain self-removal stays uncovered (the baseline). W's
+// self-removal by its own writes covers nothing:
+// - spec/crypto.md §4 (Covers; Met; Departs mark): it puts an entry at the current read epoch
+//   naming its own mark; the mark establishes, never covers.
+// - spec/crypto.md §4 (covers: an entry counts only as the rotation commit whose keyset publishes
+//   its digest): after it, W backdates a commit before it putting an entry at the current read
+//   epoch that lists the self-removal by its key. No keyset commits to the entry.
+// - spec/crypto.md §4 (covers: a rotation commit counts while its author holds the role),
+//   spec/permissions.md §3 (self-removal; carries no rotation): it rotates to fresh epochs boxed
+//   to the others. W made those secrets and holds nothing now.
+// - spec/crypto.md §4 (covers: a rotation commit counts while its author holds the role): after
+//   it W backdates a rotation commit (valid: a writer then) whose names list the self-removal.
+//   Its own commit, bound to its own entry; W holds nothing now.
+// - spec/permissions.md §3 (a `secrets.0` delta needs; at least write): a reader's backdated
+//   entry listing its self-removal writes nothing there.
 #[test]
 fn self_removal_uncovered_spec_crypto_4() {
-    leaver_uncovered(Forge::None);
-}
-
-// spec/crypto.md §4 (Covers; Met; Departs mark): W's self-removal puts an entry at the current
-// read epoch naming its own mark; the mark establishes, never covers.
-#[test]
-fn self_removal_own_mark_entry_spec_crypto_4() {
-    leaver_uncovered(Forge::Mark);
-}
-
-// spec/crypto.md §4 (covers: an entry counts only as the rotation commit whose keyset publishes
-// its digest): after its self-removal, W backdates a commit before it putting an entry at the
-// current read epoch that lists the self-removal by its key. No keyset commits to the entry.
-#[test]
-fn self_removal_listed_by_backdated_entry_spec_crypto_4() {
-    leaver_uncovered(Forge::Listed);
-}
-
-// spec/crypto.md §4 (covers: a rotation commit counts while its author holds the role),
-// spec/permissions.md §3 (self-removal; carries no rotation): W's self-removal rotates to fresh
-// epochs boxed to the others. W made those secrets and holds nothing now.
-#[test]
-fn self_removal_rotating_spec_crypto_4() {
-    leaver_uncovered(Forge::Rotating);
-}
-
-// spec/crypto.md §4 (covers: a rotation commit counts while its author holds the role): after
-// its self-removal W backdates a rotation commit (valid: a writer then) whose names list the
-// self-removal. Its own commit, bound to its own entry; W holds nothing now.
-#[test]
-fn self_removal_backdated_rotation_spec_crypto_4() {
-    leaver_uncovered(Forge::Backdated);
+    for how in [Forge::None, Forge::Mark, Forge::Listed, Forge::Rotating, Forge::Backdated] {
+        leaver_uncovered(Role::Write, how);
+    }
+    leaver_uncovered(Role::Read, Forge::Listed);
 }
 
 // spec/crypto.md §4 (Holds; Departure; maker; Covers): over grants with key access; the departs mark's author holds r, spec/requirements.md Permissions (a keyless grant gives no read through
@@ -228,13 +209,6 @@ fn leaver_through_keyless_grant_spec_crypto_4() {
         let now = newest_read(&lp, i, g).unwrap();
         assert!(!w_held.contains(&now), "peer {i} encrypts under {now:?}, which W held");
     }
-}
-
-// spec/permissions.md §3 (a `secrets.0` delta needs; at least write): a reader's backdated entry listing
-// its self-removal writes nothing there.
-#[test]
-fn reader_self_removal_listed_entry_spec_crypto_4() {
-    leaver_uncovered_as(Role::Read, Forge::Listed);
 }
 
 // spec/crypto.md §4 (Covers; tail): the tail write taking the holder below the role is one that applies; a dropped write lowering it applies nothing and pins nothing. Admin P4 demotes admin P1 to read (K); P1, not knowing,
@@ -325,38 +299,23 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
 
 // spec/permissions.md §2 (self-removal: authority through the holder does not count): holder M
 // holds admin on A; P1, M's mint admin, has admin on A only through M. Its removal of M (no frontier,
-// no rotation) is a self-removal at every node: it applies.
+// no rotation) is a self-removal at every node: it applies. Likewise node N of account U removing
+// U's admin grant on A (U's only path to A); N has admin on U and no other authority on A.
 #[test]
 fn own_group_removal_is_a_self_removal_spec_permissions_2() {
-    let mut lp = synced(2);
-    let a = independent_thing(&mut lp, 0);
-    let m = independent_thing(&mut lp, 1);
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
-    lp.peers[1].engine.demote(&a, &Demotion { holder: m, new: None, retain: None }).unwrap();
-    lp.sync_all().unwrap();
-    for i in 0..2 {
-        assert!(!lp.peers[i].engine.core.key_holders(&a).iter().any(|h| h.0 == m), "peer {i}: M removed");
-    }
-}
-
-// spec/permissions.md §2 (self-removal: authority through the holder does not count): node N of
-// account U removes U's admin grant on G (U's only path to G); N has admin on U and no
-// other authority on G. A self-removal at every node: it applies without a frontier.
-#[test]
-fn account_leaving_a_thing_it_administers_spec_permissions_2() {
-    let mut lp = synced(2);
-    let g = independent_thing(&mut lp, 0);
-    let u = lp.peers[1].engine.me();
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&g, &u, &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
-    assert_eq!(lp.peers[1].engine.core.role_now(&u, &g), Some(Role::Admin));
-    lp.peers[1].engine.demote(&g, &Demotion { holder: u, new: None, retain: None }).unwrap();
-    lp.sync_all().unwrap();
-    for i in 0..2 {
-        assert!(!lp.peers[i].engine.core.key_holders(&g).iter().any(|h| h.0 == u), "peer {i}: U removed");
+    for account in [false, true] {
+        let mut lp = synced(2);
+        let a = independent_thing(&mut lp, 0);
+        let m = if account { lp.peers[1].engine.me() } else { independent_thing(&mut lp, 1) };
+        lp.sync_all().unwrap();
+        lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[1].engine.core.role_now(&m, &a), Some(Role::Admin), "account {account}");
+        lp.peers[1].engine.demote(&a, &Demotion { holder: m, new: None, retain: None }).unwrap();
+        lp.sync_all().unwrap();
+        for i in 0..2 {
+            assert!(!lp.peers[i].engine.core.key_holders(&a).iter().any(|h| h.0 == m), "peer {i}: removed (account {account})");
+        }
     }
 }
 

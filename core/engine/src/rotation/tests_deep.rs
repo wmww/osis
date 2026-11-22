@@ -186,18 +186,21 @@ fn deep_departure_holds_large_spec_crypto_4() {
 #[test]
 fn churn_below_rotates_g_once_per_rotation_below_spec_crypto_4() {
     for lag in [0, 2] {
-        let mut lp = synced(6);
-        let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
-        let [g, a, m] = [0, 2, 3].map(|i| independent_thing(&mut lp, i));
-        lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
-        for t in &tids[4..6] {
-            lp.peers[3].engine.grant(&m, t, &edge(Role::Read)).unwrap();
-        }
-        lp.sync_all().unwrap();
-        lp.peers[2].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
-        lp.sync_all().unwrap();
-        lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
-        lp.sync_all().unwrap();
+        let (mut lp, (tids, [g, a, m])) = LocalPeer::cached("rotation::tests_deep::churn", || {
+            let mut lp = synced(6);
+            let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
+            let [g, a, m] = [0, 2, 3].map(|i| independent_thing(&mut lp, i));
+            lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
+            for t in &tids[4..6] {
+                lp.peers[3].engine.grant(&m, t, &edge(Role::Read)).unwrap();
+            }
+            lp.sync_all().unwrap();
+            lp.peers[2].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+            lp.sync_all().unwrap();
+            lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
+            lp.sync_all().unwrap();
+            (lp, (tids, [g, a, m]))
+        });
         let mut rng = Rng(0x5EED_u64.wrapping_add(lag as u64) | 1);
         let (mut writes, mut g_rot, mut a_rot, mut m_rot) = (0, 0, 0, 0);
         for change in 0..6usize {
