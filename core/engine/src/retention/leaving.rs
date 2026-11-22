@@ -65,12 +65,16 @@ fn put(tx: &mut Tx<'_>, ak: &Ak, key: &[u8], val: Option<&[u8]>) -> Result<()> {
 }
 
 fn put_row(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place) -> Result<()> {
+    #[cfg(debug_assertions)]
+    tx.core.unchecked_rows.insert((*tid, ak.clone()));
     tx.core.ix.leaving.insert((*tid, ak.clone()), p);
     tx.core.ix.dated.insert((p.1, *tid, ak.clone()), p.0);
     put(tx, ak, &row_key(tid, ak, &p), Some(&[]))
 }
 
 fn remove_row(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, p: Place) -> Result<()> {
+    #[cfg(debug_assertions)]
+    tx.core.unchecked_rows.insert((*tid, ak.clone()));
     tx.core.ix.leaving.remove(&(*tid, ak.clone()), &p);
     tx.core.ix.dated.remove(&(p.1, *tid, ak.clone()));
     put(tx, ak, &row_key(tid, ak, &p), None)
@@ -255,6 +259,8 @@ fn before(core: &Core, tid: &Tid, ak: &Ak, out: Option<Place>, p: Place) -> Opti
 /// turning dated has every held part dated (`date_due`, a rare path: O(the aspect's history));
 /// one turning undated loses its rows (those in history told, as they leave).
 pub(crate) fn settings_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    #[cfg(debug_assertions)]
+    tx.core.unchecked_rows.insert((*tid, ak.clone()));
     let k = history::of(tx.core, tid, ak);
     let now = tx.now().0;
     let key = (*tid, ak.clone());
@@ -404,6 +410,8 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
                 continue;
             }
             let k = (a.tid, a.ak.clone());
+            #[cfg(debug_assertions)]
+            tx.core.unchecked_rows.insert(k.clone());
             let was = match seen.get(&(*id, ai)) {
                 Some(n) => Some(*n),
                 None => old.map(|m| noted(m, ai)),
@@ -427,6 +435,8 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
     }
     tx.core.dated_as.extend(now_as);
     let keys: BTreeSet<(Tid, Ak)> = whole.keys().chain(changed.keys()).cloned().collect();
+    #[cfg(debug_assertions)]
+    let must = dated_whole_due(tx.core, &keys);
     let now = tx.now().0;
     for (tid, ak) in keys {
         let k = history::of(tx.core, &tid, &ak);
@@ -474,29 +484,57 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
         if fresh && !tx.core.ix.leave_from.contains_key(&key) {
             set_from(tx, &tid, &ak, Some((u64::MAX, None)))?;
         }
-        // dated whole, every part was just dated (checked against the state, `index_date`)
-        #[cfg(debug_assertions)]
-        if k.dated() && tell.is_none() {
-            super::bounds::unseen(tx, |tx| rows_exact(tx, &tid, &ak))?;
-        }
         rearm(tx, &tid, &ak, &k)?;
+    }
+    #[cfg(debug_assertions)]
+    super::bounds::unseen(tx, |tx| must.iter().try_for_each(|key| rows_exact_on(tx, key, "after a pass dating it whole")))?;
+    Ok(())
+}
+
+/// Debug builds: the aspects of `keys` a pass must date whole, by their own definition rather than
+/// `date_due`'s bookkeeping: dated with no rows kept so far (turned dated), or a body the held
+/// writes noted (held, valid) left them or changed since the transaction began. The pass pays
+/// O(the aspect) for those anyway, so checking each whole after it costs what the pass did.
+#[cfg(debug_assertions)]
+fn dated_whole_due(core: &Core, keys: &BTreeSet<(Tid, Ak)>) -> BTreeSet<(Tid, Ak)> {
+    let mut out: BTreeSet<(Tid, Ak)> = keys.iter().filter(|(t, a)| history::of(core, t, a).dated() && !core.ix.leave_from.contains_key(&(*t, a.clone()))).cloned().collect();
+    for (id, old) in core.ix.commits.before() {
+        let Some(old) = old else { continue };
+        let new = core.ix.commits.get(id);
+        for (ai, a) in old.view.aspects.iter().enumerate() {
+            let was = noted(old, ai);
+            if was.0 && was.1 && new.map(|m| noted(m, ai)) != Some(was) && keys.contains(&(a.tid, a.ak.clone())) {
+                out.insert((a.tid, a.ak.clone()));
+            }
+        }
+    }
+    out.retain(|(t, a)| history::of(core, t, a).dated());
+    out
+}
+
+/// Debug builds: every held part of `(tid, ak)` has its row at `row_at` (none where the aspect is
+/// not dated), and no other row is left.
+#[cfg(debug_assertions)]
+fn rows_exact_on(tx: &mut Tx<'_>, key: &(Tid, Ak), when: &str) -> Result<()> {
+    let (tid, ak) = (&key.0, &key.1);
+    let dated = history::of(tx.core, tid, ak).dated();
+    let mut on: BTreeSet<CommitId> = tx.core.ix.by_aspect.get(key).into_iter().flatten().map(|x| x.1).collect();
+    on.extend(tx.core.ix.leaving.get(key).into_iter().flatten().map(|p| p.1));
+    for c in on {
+        let want = if dated { row_at(tx, &c, tid, ak, super::bounds::held_date)? } else { None };
+        assert_eq!(tx.core.ix.dated.get(&(c, *tid, ak.clone())).copied(), want, "{when}: {c:?} on {tid:?} {ak:?}: its row vs its date from the held set");
     }
     Ok(())
 }
 
-/// Every held part of dated `(tid, ak)` has its row at `row_at`, and no other row is left: an
-/// incremental dating missed nothing. Each part's date is checked against the state where it
-/// is dated, not here.
+/// Debug builds, at the end of the engine's history (with the index check, `Engine::check_index`,
+/// never per transaction): every held part of each aspect of `keys` (`Core::unchecked_rows`:
+/// those whose rows a transaction wrote or should have written since the last check) has its row
+/// at `row_at`, and no other row is left, so no dating missed a part whose date moved. Each row
+/// written is checked against the state where it is dated (`index_date`), not here.
 #[cfg(debug_assertions)]
-fn rows_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    let key = (*tid, ak.clone());
-    let mut on: BTreeSet<CommitId> = tx.core.ix.by_aspect.get(&key).into_iter().flatten().map(|x| x.1).collect();
-    on.extend(tx.core.ix.leaving.get(&key).into_iter().flatten().map(|p| p.1));
-    for c in on {
-        let want = row_at(tx, &c, tid, ak, super::bounds::held_date)?;
-        assert_eq!(tx.core.ix.dated.get(&(c, *tid, ak.clone())).copied(), want, "{c:?} on {tid:?} {ak:?}: its row vs its date from the held set");
-    }
-    Ok(())
+pub(crate) fn rows_exact(tx: &mut Tx<'_>, keys: &BTreeSet<(Tid, Ak)>) -> Result<()> {
+    super::bounds::unseen(tx, |tx| keys.iter().filter(|k| !k.1.signal()).try_for_each(|key| rows_exact_on(tx, key, "end of history")))
 }
 
 /// Reads the rows and cursors at open (`apply::load`); a row of a commit no longer held there
@@ -548,6 +586,8 @@ pub(crate) fn forget_aspects(tx: &mut Tx<'_>, keys: impl IntoIterator<Item = (Ti
         if !tx.core.ix.leave_from.contains_key(&(tid, ak.clone())) {
             continue;
         }
+        #[cfg(debug_assertions)]
+        tx.core.unchecked_rows.insert((tid, ak.clone()));
         let rows: Vec<Place> = tx.core.ix.leaving.get(&(tid, ak.clone())).into_iter().flatten().copied().collect();
         for p in rows {
             remove_row(tx, &tid, &ak, p)?;

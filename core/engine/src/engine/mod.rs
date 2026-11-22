@@ -1162,6 +1162,11 @@ pub struct Core {
     /// (`Engine::checked_states`). A copy starts empty: its original checks their shared past.
     #[cfg(debug_assertions)]
     pub(crate) unchecked_states: BTreeSet<(Tid, Ak)>,
+    /// Debug builds: the aspects whose history rows a transaction wrote or should have written
+    /// since the row check last read them (`retention::leaving::rows_exact`), checked at the end
+    /// of the engine's history. A copy starts empty, as for `unchecked_states`.
+    #[cfg(debug_assertions)]
+    pub(crate) unchecked_rows: BTreeSet<(Tid, Ak)>,
     /// Debug builds: what a load from the commit records read of each role commit's edge writes
     /// (`apply::load`), for `Engine::check_index` to compare with the persisted rows.
     #[cfg(debug_assertions)]
@@ -1453,6 +1458,8 @@ impl Core {
         c.commit_listeners = None;
         #[cfg(debug_assertions)]
         c.unchecked_states.clear();
+        #[cfg(debug_assertions)]
+        c.unchecked_rows.clear();
         c.header_fault = osis_base::copying::remap(&self.header_fault, |f| std::sync::atomic::AtomicBool::new(f.load(std::sync::atomic::Ordering::Relaxed)));
         c
     }
@@ -2041,6 +2048,8 @@ impl Core {
             #[cfg(debug_assertions)]
             unchecked_states: _,
             #[cfg(debug_assertions)]
+            unchecked_rows: _,
+            #[cfg(debug_assertions)]
             rebuilt_perm: _,
             #[cfg(debug_assertions)]
             #[cfg(test)]
@@ -2252,6 +2261,8 @@ impl Core {
             unchecked_tx: false,
             #[cfg(debug_assertions)]
             unchecked_states: BTreeSet::new(),
+            #[cfg(debug_assertions)]
+            unchecked_rows: BTreeSet::new(),
             #[cfg(debug_assertions)]
             rebuilt_perm: BTreeMap::new(),
             forged: None,
@@ -3489,6 +3500,7 @@ impl Engine {
         #[cfg(debug_assertions)]
         {
             fresh.unchecked_states = std::mem::take(&mut self.core.unchecked_states);
+            fresh.unchecked_rows.extend(std::mem::take(&mut self.core.unchecked_rows));
         }
         // and so is what the sync set's walk takes no path through: the fresh closure is built cut
         fresh.ix.closure.set_cut(None, self.core.ix.closure.cut().iter().copied().collect())?;
@@ -3547,6 +3559,8 @@ impl Engine {
         {
             self.checked_verdicts();
             self.checked_states()?;
+            let rows = std::mem::take(&mut self.core.unchecked_rows);
+            osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(|tx| crate::retention::leaving::rows_exact(tx, &rows)))))?;
             self.index_unchecked = false;
         }
         // key actors are derived: held exactly while `hold_key_actor` or a followed link names them

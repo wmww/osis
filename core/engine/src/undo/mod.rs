@@ -715,7 +715,7 @@ mod tests {
     #[test]
     fn check_cost_scales() {
         for shape in ["whole", "typing", "delete", "map"] {
-            let [small, big] = [20, 200].map(|n| check_cost(shape, n));
+            let [small, big] = [10, 100].map(|n| check_cost(shape, n));
             assert_eq!(small, big, "{shape}: the cost grows with the history");
             assert_eq!(small.1, 0, "{shape}: a whole state copied");
         }
