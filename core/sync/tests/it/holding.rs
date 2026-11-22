@@ -1448,6 +1448,33 @@ fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
     assert!(w.engine(0).read_secrets(&t0).is_empty(), "T0's secrets go");
 }
 
+// spec/permissions.md §3 (Retain: a way alive with key access keeps): Bob grants T1 read on T0 (both
+// his own, the grant keyed) and Alice read on T1 only; she holds both. Bob removes her from T1
+// saying retain: she keeps a copy of T1, and of T0 by T1's live grant.
+#[test]
+fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
+    let mut w = contacts();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    let t1 = make(&mut w, 1, None, "t1");
+    w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+    for t in [t0, t1] {
+        strong(&mut w, 0, None, t, true);
+    }
+    w.run();
+    assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
+    w.write(1, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: alice, new: None, retain: Some(true) })).unwrap();
+    w.run();
+    let mut kept = w.engine(0).kept_copies();
+    kept.sort();
+    let mut want = vec![t0, t1];
+    want.sort();
+    assert_eq!(kept, want, "copies of T1 and T0 kept: {}", w.why_role(0, &t0));
+    assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "the copy of T0 reads");
+    assert!(w.engine(0).read_secrets(&t0).is_empty(), "T0's secrets go");
+}
+
 // spec/permissions.md §3 (Lost access: what it can no longer read by another path), spec/sync-set.md
 // §2 Taken up: Bob grants Alice read on T1 and T3 and grants each of them read on T2; Alice holds all
 // three. She drops her strong to T1: T1 goes, T2 stays read through T3, whose grant she still takes up.
