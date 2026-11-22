@@ -647,11 +647,7 @@ fn sync_ids() -> Vec<Scenario> {
     }
     /// The two parts in both orders, before or after the rest, and the withheld edge last.
     fn chainless(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
-        let (edge, last) = (played.base + 1, played.packs.len() - 1);
-        let rest: Vec<usize> = (0..of.len()).filter(|e| of[*e] != edge && of[*e] != last).collect();
-        let two: Vec<usize> = (0..of.len()).filter(|e| of[*e] == last).collect();
-        assert_eq!(two.len(), 2, "a part under each sync ID");
-        let edges: Vec<usize> = (0..of.len()).filter(|e| of[*e] == edge).collect();
+        let (rest, two, edges) = chainless_entries(played, of);
         let list = |post: &[usize]| rest.iter().chain(post).map(|e| Tok::In(*e)).collect::<Vec<Tok>>();
         let (gh, hg) = ([two[0], two[1]], [two[1], two[0]]);
         let early = |parts: &[usize]| parts.iter().chain(&rest).map(|e| Tok::In(*e)).collect::<Vec<Tok>>();
@@ -696,6 +692,17 @@ fn sync_ids() -> Vec<Scenario> {
             orders: Some(chainless),
         },
     ]
+}
+
+/// A history whose commit after the setup is the edge giving the last commit's author its path to
+/// H, and whose last commit has a part under each sync ID: (the entries of every other commit,
+/// the last commit's two, the edge's).
+fn chainless_entries(played: &Played, of: &[usize]) -> (Vec<usize>, [usize; 2], Vec<usize>) {
+    let (edge, last) = (played.base + 1, played.packs.len() - 1);
+    let rest = (0..of.len()).filter(|e| of[*e] != edge && of[*e] != last).collect();
+    let two: Vec<usize> = (0..of.len()).filter(|e| of[*e] == last).collect();
+    let edges = (0..of.len()).filter(|e| of[*e] == edge).collect();
+    (rest, two.try_into().expect("a part under each sync ID"), edges)
 }
 
 /// Referenced blobs: as made, and the setup first with the rest reversed (blobs after what names
@@ -869,36 +876,20 @@ fn judgment_vectors_spec_permissions_5_2() {
 }
 
 // spec/requirements.md Decentralization, spec/commits.md §4: one held set, its parts in two
-// orders: the H part, its chain away, waits alone either way and G's write stands.
+// orders, the edge giving the author its path to H withheld: 1 (write on G and H) writes both,
+// the H part waiting alone either way and G's write standing; 2 (admin on G, a write edge on H)
+// sets 1's edge on G and H, either order changing G's roster. The node shows the same in both.
 #[test]
 fn chainless_part_order_spec_commits_4() {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
-    let played = play(0, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, tick, Two { by: 1, a: 0, b: 1, v: 1 }]);
-    let laid = lay(&played, true);
-    let (edge, last) = (played.base + 1, played.packs.len() - 1);
-    let rest: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] != edge && laid.of[*e] != last).collect();
-    let two: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] == last).collect();
-    let judge = |parts: &[usize]| replay(&laid.bytes, laid.setup, &read_secrets(true), played.now, &rest.iter().chain(parts).map(|e| Tok::In(*e)).collect::<Vec<_>>());
-    assert_eq!(judge(&two), judge(&[two[1], two[0]]));
-}
-
-// spec/requirements.md Decentralization, spec/commits.md §4: the same with a role commit: 2 (admin
-// on G, a write edge on H not delivered) sets 1's edge on G and H; either order changes G's roster.
-#[test]
-fn chainless_role_part_order_spec_commits_4() {
-    use Step::*;
-    let tick = Advance { who: None, ms: 1000 };
-    let played = play(0, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Write) }, Sync { from: 0, to: 2 }, tick, TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);
-    let laid = lay(&played, true);
-    let (edge, last) = (played.base + 1, played.packs.len() - 1);
-    let rest: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] != edge && laid.of[*e] != last).collect();
-    let two: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] == last).collect();
-    let roster = |parts: &[usize]| {
-        let order: Vec<Tok> = rest.iter().chain(parts).map(|e| Tok::In(*e)).collect();
-        replay(&laid.bytes, laid.setup, &read_secrets(true), played.now, &order).into_iter().find(|(k, _)| *k == format!("thing {}", played.things[0])).unwrap().1
-    };
-    assert_eq!(roster(&two), roster(&[two[1], two[0]]));
+    for (by, last) in [(1, Two { by: 1, a: 0, b: 1, v: 1 }), (2, TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read })] {
+        let played = play(0, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: by, role: Some(Role::Write) }, Sync { from: 0, to: by }, tick.clone(), last.clone()]);
+        let laid = lay(&played, true);
+        let (rest, [g, h], _) = chainless_entries(&played, &laid.of);
+        let judge = |parts: [usize; 2]| replay(&laid.bytes, laid.setup, &read_secrets(true), played.now, &rest.iter().chain(&parts).map(|e| Tok::In(*e)).collect::<Vec<_>>());
+        assert_eq!(judge([g, h]), judge([h, g]), "{last:?}");
+    }
 }
 
 // spec: none (a check of the judgment vectors): in every case, flipping its first own verdict
