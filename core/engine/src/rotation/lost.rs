@@ -287,7 +287,7 @@ pub(crate) fn authentic(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_b
 /// Whether `author` may grant on `x` now: admin, or an invite (spec/permissions.md §2).
 fn may_grant(core: &Core, author: &Tid, x: &Tid) -> bool {
     let at = At::now(now_ts(core));
-    core.role_now(author, x) == Some(Role::Admin) || core.timelines.get(x).and_then(|t| t.invite(author, x, at)).is_some()
+    core.role_now(author, x) == Some(Role::Admin) || core.timelines.get(x).and_then(|t| t.may_grant(author, x, at)).is_some()
 }
 
 /// Of `cands`, the actors this node holds a secret of and lost read access to

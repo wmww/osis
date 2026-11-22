@@ -548,7 +548,7 @@ fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(T
                 }
                 (listed, marks)
             }),
-            Some(RoleWay::Invite(r)) => path_with(core, node, records, &t, Need::Invite(r), plan.ts).map(|(listed, marks, _)| (listed, marks)),
+            Some(RoleWay::Invite(r)) => path_with(core, node, records, &t, Need::MayGrant(r), plan.ts).map(|(listed, marks, _)| (listed, marks)),
             None => {
                 let need = if plan.kind.is_compaction() { writes.iter().filter(|w| w.tid == t).map(|w| snapshot_role(w.ak.as_str())).max() } else { role_with(core, node, records, &t, plan.ts) };
                 let found = need.and_then(|r| path_with(core, node, records, &t, Need::Role(r), plan.ts));

@@ -28,7 +28,7 @@ impl Core {
     /// (`Engine::clock_next`).
     pub(crate) fn roster_of(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
         if let Some(h) = self.root_holders(thing) {
-            return h.into_iter().map(|(m, role)| (m, Edge { role, until: None, invite: None, retain: false, floor: None })).collect();
+            return h.into_iter().map(|(m, role)| (m, Edge::new(role))).collect();
         }
         self.time.at(|now| {
             let r = self.timelines.on(thing).map(|on| on.roster(At::now(crate::flows::ts_at(now)))).unwrap_or_default();

@@ -2267,11 +2267,11 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         ids.sort();
         for (_, id) in ids {
             // the view, not the header
-            let Some(v) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
+            let Some((v, path)) = tx.core.ix.commits.get(&id).map(|m| (m.view.clone(), m.header.path.clone())) else { continue };
             // every row is what its record reads now (rewritten with it: late parts, drops;
             // `Engine::check_index` compares them)
             let parts = edges.remove(&id).ok_or(Error::Corrupt("edges row missing"))?;
-            validity::add_role_commit(tx.core, &v, &id, &parts);
+            validity::add_role_commit(tx.core, &v, &path, &id, &parts);
         }
         // what each addendum says, from its row
         for (id, parts) in crate::engine::index::load_addenda(tx)? {
@@ -2387,8 +2387,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                     keys::note_boxes_to(tx.core, &a.tid, &d.fragment);
                 }
             }
-            let v = tx.core.ix.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
-            validity::add_role_commit(tx.core, &v, &id, read.perm());
+            let (v, path) = tx.core.ix.commits.get(&id).map(|m| (m.view.clone(), m.header.path.clone())).ok_or(Error::Corrupt("commit meta"))?;
+            validity::add_role_commit(tx.core, &v, &path, &id, read.perm());
             #[cfg(debug_assertions)]
             tx.core.rebuilt_perm.insert(id, read.perm().clone());
         }
@@ -2400,7 +2400,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     validity::resolve_unresolved(tx)?;
     if fast {
         let _s = osis_base::costs::span("open: walks");
-        crate::engine::index::update_timelines_saved(tx)?;
+        crate::engine::index::update_timelines_loaded(tx)?;
     } else {
         tx.core.update_timelines();
     }

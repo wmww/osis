@@ -395,13 +395,13 @@ impl<T: Rec> Rec for Option<T> {
 }
 impl Rec for osis_perm::Edge {
     fn to(&self) -> Value {
-        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), Value::Bool(self.retain), self.floor.to()])
+        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), Value::Bool(self.may_grant), Value::Bool(self.retain), self.floor.to()])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let [role, until, invite, Value::Bool(retain), floor] = x.as_slice() else { return None };
+        let [role, until, Value::Bool(may_grant), Value::Bool(retain), floor] = x.as_slice() else { return None };
         let until = <Option<u64> as Rec>::from(until)?.map(WallMs);
-        Some(osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, retain: *retain, floor: Rec::from(floor)? })
+        Some(osis_perm::Edge { role: Rec::from(role)?, until, may_grant: *may_grant, retain: *retain, floor: Rec::from(floor)? })
     }
 }
 impl Rec for u64 {
@@ -928,22 +928,6 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, EPOCHS, &c.ix.epochs, all)?;
     put_setmap(txn, NAMED, &c.ix.named, all)?;
     write_secrets(tx, all)?;
-    // after the indexes and in their transaction: a saved walk never runs ahead of the
-    // commits it covers
-    let min = tx.core.walk_cache_min;
-    let mut saves = tx.core.timelines.to_save(VERSION.as_bytes(), min, all);
-    // `Timelines::saved` once the transaction is durable (`Engine::run`)
-    tx.core.walks_done = Some(std::mem::take(&mut saves.done));
-    if !saves.put.is_empty() || !saves.delete.is_empty() {
-        // shredded: a walk may name writes no longer held (rare, amortized: one root write)
-        let t = tx.txn.index(WALKS)?;
-        for r in saves.delete {
-            tx.txn.table_remove(t, r.as_bytes(), Shred::Yes)?;
-        }
-        for (r, bytes) in saves.put {
-            tx.txn.table_put(t, r.as_bytes(), bytes, Shred::Yes)?;
-        }
-    }
     Ok(())
 }
 
@@ -970,17 +954,14 @@ fn write_secrets(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     Ok(())
 }
 
-/// `Core::update_timelines` at open: components restored from their saved walks where those
-/// match (else evaluated); a unit that does not read is evaluated anew, never an error.
-pub(crate) fn update_timelines_saved(tx: &mut Tx<'_>) -> Result<()> {
-    let touched = tx.core.ix.held.take_touched();
-    let t = tx.txn.index(WALKS)?;
-    let txn = &mut tx.txn;
-    let core = &mut *tx.core;
-    let changed = core.timelines.update_touched_cached(&core.ix.held, &touched, &mut |r| txn.table_get(t, r.as_bytes()).ok().flatten(), VERSION.as_bytes());
-    let ever = core.ix.held.take_ever();
-    core.timelines.ever_moved(&ever);
-    core.timelines_changed(changed);
+/// `Core::update_timelines` at open: the walk over every held commit, read from the loaded
+/// index (the timeline is derived state, built again at each open).
+pub(crate) fn update_timelines_loaded(tx: &mut Tx<'_>) -> Result<()> {
+    let ids: Vec<CommitId> = tx.core.ix.commits.keys().copied().collect();
+    for id in ids {
+        tx.core.ix.held.touch_commit(id);
+    }
+    tx.core.update_timelines();
     Ok(())
 }
 

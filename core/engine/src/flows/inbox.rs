@@ -156,7 +156,7 @@ pub(crate) fn owe_removal_notices(tx: &mut Tx<'_>) -> Result<()> {
     for (x, t) in due {
         let Some(tl) = tx.core.timelines.get(&t) else { continue };
         for (w, c, op) in tl.held_on(&t) {
-            if op.holder != x || c.ts.wall_ms().0.saturating_add(osis_base::format::ROLE_KEEP_MS) < now || !tl.applied().get(&w).is_some_and(|a| matches!(a.attr, osis_perm::Attr::By(_))) {
+            if op.holder != x || c.ts.wall_ms().0.saturating_add(osis_base::format::ROLE_KEEP_MS) < now || !matches!(tl.way(&w), Some(osis_perm::paths::Way::Explicit | osis_perm::paths::Way::MayGrant)) {
                 continue;
             }
             let old = crate::rotation::key_role(tl.edges_at(Some(c.point())).get(&x, &t));

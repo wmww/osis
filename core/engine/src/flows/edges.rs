@@ -71,7 +71,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     // a non-writer of the target's sync ID deposits its invite grant (spec/sync-judgement.md §1)
     let ts = now_ts(tx.core);
     let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
-    let invite = tx.core.timelines.get(&target).and_then(|tl| tl.invite(&who, &target, At::now(ts)));
+    let invite = tx.core.timelines.get(&target).and_then(|tl| tl.may_grant(&who, &target, At::now(ts)));
     // below the holder's edge for keys (one past its `until` included, still in the state) a
     // grant would be the holder's departure, whose rotation it does not carry (spec/permissions.md
     // §3): a demotion makes it

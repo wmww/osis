@@ -837,7 +837,7 @@ indexes! {
     /// Every held `addenda.0` delta (spec/permissions.md §5.2, Addenda), by (thing, commit):
     /// its author's write whether its body is held or not, with the entries its body says while
     /// held (`validity::note_addenda`, `validity::forget_addendum_body`).
-    pub addenda: JMap<(Tid, CommitId), Arc<osis_perm::Addendum>>,
+    pub addenda: JMap<(Tid, CommitId), Arc<crate::apply::validity::Addendum>>,
     /// `addenda` by the rotation or removal an entry is keyed by: (thing, addendum commit). A
     /// rotation joining or leaving an epoch's closers moves only the commits these list
     /// (`refresh_epochs`).
@@ -1097,8 +1097,6 @@ pub struct Core {
     /// Components with fewer commits and snapshots are not saved (`index::WALK_CACHE_MIN`;
     /// tests lower it).
     pub walk_cache_min: usize,
-    /// Saved walks the running transaction writes, for `Timelines::saved` once it is durable.
-    pub walks_done: Option<osis_perm::SaveDone>,
     /// The running transaction called `touch` (`rollback` drops the caches).
     pub dirty: bool,
     /// The paged maps' key index hash key, derived from the node's seed.
@@ -1771,7 +1769,7 @@ impl Core {
     /// around what it restores, which would absorb an earlier change without marking what it
     /// moved.
     pub(crate) fn mark(&mut self) -> CoreMark {
-        debug_assert!(self.ix.held.touched().is_empty(), "a mark with held changes the timelines lack");
+        debug_assert!(self.ix.held.touched().is_empty(), "a mark with held record or edge changes the timelines lack");
         CoreMark {
             ix: self.ix.mark(),
             sides: self.sides.mark(),
@@ -1868,9 +1866,12 @@ impl Core {
         self.ix.rollback_to(m.ix);
         self.schemas.rollback_to(m.schemas);
         // the timelines follow the restored held set; validity flags are restored with `commits`
-        let touched = self.ix.held.take_touched();
-        if !touched.is_empty() {
-            self.timelines.update_touched(&self.ix.held, &touched);
+        if self.ix.held.is_touched() {
+            let touched = self.ix.held.take_touched();
+            let commits = self.ix.held.take_touched_commits();
+            let mut tl = std::mem::take(&mut self.timelines);
+            tl.update(&*self, &commits, &touched);
+            self.timelines = tl;
             let ever = self.ix.held.take_ever();
             self.timelines.ever_moved(&ever);
             crate::sides::discard(self);
@@ -2048,7 +2049,6 @@ impl Core {
             // set at each transaction's start, and what its end records (taken at the commit,
             // dropped at a rollback)
             time: _,
-            walks_done: _,
             // set outside transactions: identity, configuration, node-sync's settings; checked
             // unchanged by every transaction (the value below, `Engine::run`)
             id,
@@ -2254,7 +2254,6 @@ impl Core {
             sides: crate::sides::Sides::default(),
             detect: false,
             walk_cache_min: index::WALK_CACHE_MIN,
-            walks_done: None,
             stale_things: BTreeSet::new(),
             stale_authors: BTreeSet::new(),
             addenda_on: true,
@@ -3442,9 +3441,6 @@ impl Engine {
         match r {
             Ok(v) => {
                 undoable.end(false);
-                if let Some(d) = self.core.walks_done.take() {
-                    self.core.timelines.aside().saved(d);
-                }
                 self.core.commit_journal();
                 #[cfg(debug_assertions)]
                 assert_eq!(memo::unrecorded(|| Core::rollback_classes(&self.core)), outside, "a transaction changed what is set outside transactions (`Core::rollback_classes`)");
@@ -3485,7 +3481,6 @@ impl Engine {
                 Ok(v)
             }
             Err(e) => {
-                self.core.walks_done = None;
                 self.core.forget_reach_since(start.reached);
                 let walked = start.walked;
                 self.core.rollback_to(start);
@@ -3694,7 +3689,6 @@ impl Engine {
                 memo::unrecorded(|| {
                     let d = crate::apply::validity::misjudged(core);
                     assert!(d.is_none(), "end of history: {} changed outside the re-judged set", d.unwrap_or_default());
-                    core.timelines.check_first_held();
                 })
             })
         });

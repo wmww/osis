@@ -602,7 +602,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let read = super::PartsRead::of(&h, &parts.whole);
     if h.kind.is_role() {
         validity::note_required(tx.core, &h, &id, &read);
-        validity::add_role_commit(tx.core, &view, &id, read.perm());
+        validity::add_role_commit(tx.core, &view, &h.path, &id, read.perm());
         validity::note_notices(tx.core, &id);
         held_changed = true;
     }
@@ -841,7 +841,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     crate::retention::stripped_joined(tx, id, &parts.stripped_joined(), &mut j.changed)?;
     crate::retention::on_late(tx, id, Some(&late), &mut j.changed)?;
     if perm && let Some(all) = perm_parts {
-        validity::add_role_commit(tx.core, &meta.view, id, all);
+        validity::add_role_commit(tx.core, &meta.view, &meta.header.path, id, all);
         validity::note_notices(tx.core, id);
         held_changed = true;
     }
