@@ -889,7 +889,7 @@ fn head_step(lp: &mut LocalPeer, k: usize, a: &Tid, s: &SyncId) -> osis_blob::St
 }
 
 // spec/permissions.md §3, spec/crypto.md §4 (Holder actors; Stale): the cascade: node d1
-// removed from account P, P a writer of team T, T a writer of doc U. No departure is U's; before
+// removed from account P, P a writer of realm T, T a writer of doc U. No departure is U's; before
 // P's other node encrypts under U it rotates T (its box to P stale), then U (its box to T
 // stale); d1 holds neither new secret.
 #[test]
@@ -1327,7 +1327,7 @@ fn inside_member_departure_leaves_holder_out_spec_perm_3() {
 }
 
 // spec/permissions.md §3, spec/crypto.md §4 (orphaned): a doc whose mint admin is a dependent thing T
-// in team H gets secrets of its own on its first grant; T gets its own first, so the rotation
+// in realm H gets secrets of its own on its first grant; T gets its own first, so the rotation
 // boxes T and H's writer reads and writes the doc. Left out (T has no keyset), the doc's write
 // epoch was orphaned at that writer, whose rotation was orphaned at the admin: they rotated it
 // back and forth for good.
@@ -1468,10 +1468,10 @@ fn writer_leaves_spec_perm_3() {
     assert!(sealed_write(&mut lp, 0, d, "after").is_empty(), "the leaver's old secrets open nothing new");
 }
 
-// spec/permissions.md §2, §3: a node removing its account from a team (its only authority
-// there comes through the account) is a self-removal; the team's admin rotates later.
+// spec/permissions.md §2, §3: a node removing its account from a realm (its only authority
+// there comes through the account) is a self-removal; the realm's admin rotates later.
 #[test]
-fn node_removes_account_from_team_spec_perm_3() {
+fn node_removes_account_from_realm_spec_perm_3() {
     let (mut lp, p, pa, _) = nodes_and_alice();
     let t = thing_of(&mut lp, 2, pa);
     lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Write)).unwrap();
@@ -1563,8 +1563,8 @@ fn write_link_rotates_as_signer_spec_perm_3() {
 }
 
 // spec/crypto.md §4, spec/sync-ids.md §6: signing a step and sealing its entry boxes encrypt under
-// the team's epochs: after a node left the account that administers the team, no step is issued
-// until the team rotates (its roles blocked meanwhile); then its step is, at the new epochs.
+// the realm's epochs: after a node left the account that administers the realm, no step is issued
+// until the realm rotates (its roles blocked meanwhile); then its step is, at the new epochs.
 #[test]
 fn issue_step_after_inside_removal_spec_sync_5() {
     let (mut lp, p, pa, _) = nodes_and_alice();
@@ -1575,7 +1575,7 @@ fn issue_step_after_inside_removal_spec_sync_5() {
     let t0 = newest_read(&lp, 1, t).unwrap();
     let sync_id = lp.peers[1].engine.sync_id_of(&t).unwrap().unwrap();
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
-    assert!(lp.peers[1].engine.issue_step(&t, &sync_id, false).unwrap().is_none(), "the team has not rotated: nothing");
+    assert!(lp.peers[1].engine.issue_step(&t, &sync_id, false).unwrap().is_none(), "the realm has not rotated: nothing");
     lp.peers[1].engine.ensure_rotated(&t).unwrap();
     let (step, _) = lp.peers[1].engine.issue_step(&t, &sync_id, false).unwrap().unwrap();
     let t1 = newest_read(&lp, 1, t).unwrap();
@@ -1920,7 +1920,7 @@ fn writer_rotating_to_itself_recovered_spec_perm_3() {
 
 // The owner's rule (notes/path-form.md), spec/crypto.md §5 Path entry, §4 Low floor: a writer left
 // unboxed at a thing's current epoch writes on, its paths no reason to refuse: account 2 writes D
-// through team H and its own thing O in one commit while account 1 has rotated D boxing itself
+// through realm H and its own thing O in one commit while account 1 has rotated D boxing itself
 // alone. The commit states the split form, D's entry under the newest roles secret account 2 holds.
 #[test]
 fn a_writer_left_unboxed_writes_through_different_actors_in_one_commit_spec_crypto_5() {
@@ -2122,9 +2122,9 @@ fn vandal_with_second_path_recovered_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
 
-// spec/permissions.md §3, spec/crypto.md §4 (Holder actors; Seal): a team actor holding
+// spec/permissions.md §3, spec/crypto.md §4 (Holder actors; Seal): a realm actor holding
 // read on `d` is locked out with the rest; the re-key's rotation seals it again, so the
-// team's mint admin reads the new epoch through it.
+// realm's mint admin reads the new epoch through it.
 #[test]
 fn rekey_reseals_holder_actor_spec_perm_3() {
     let (mut lp, ps) = people(4);
@@ -2134,13 +2134,13 @@ fn rekey_reseals_holder_actor_spec_perm_3() {
     let (d, e0, _) = locked_out(&mut lp, &ps[..3], 0);
     lp.peers[0].engine.grant(&d, &t, &edge_of(Role::Read)).unwrap();
     spread(&mut lp);
-    assert_eq!(newest_read(&lp, 3, d), Some(e0), "the team's mint admin reads through it");
+    assert_eq!(newest_read(&lp, 3, d), Some(e0), "the realm's mint admin reads through it");
     lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
     spread_sealed(&mut lp);
-    assert_eq!(newest_read(&lp, 3, d), None, "the team is locked out too");
+    assert_eq!(newest_read(&lp, 3, d), None, "the realm is locked out too");
     let e1 = recovered(&mut lp, d, ps[1]);
     spread_sealed(&mut lp);
-    assert_eq!(newest_read(&lp, 3, d), Some(e1), "sealed to the team again");
+    assert_eq!(newest_read(&lp, 3, d), Some(e1), "sealed to the realm again");
     assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([2, 3]));
 }
 
@@ -2615,7 +2615,7 @@ fn mint_admin_record_edge_removed_by_its_node_spec_permissions_2() {
 }
 
 // spec/permissions.md §1 (mint admin removable), notes/moves.md: a move is a grant then a
-// removal. T made in a content commit under account A (its mint admin); A grants team B admin
+// removal. T made in a content commit under account A (its mint admin); A grants realm B admin
 // on T, then B's admin removes A's record edge: T keeps its tid and content, B's nodes read and
 // write it, A's node opens nothing written since (the removal rotated T) and cannot write it.
 #[test]

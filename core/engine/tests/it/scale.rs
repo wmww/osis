@@ -747,7 +747,7 @@ fn a_first_sync_is_linear_spec_commits_4() {
 }
 
 /// n one-element commits on t by its mint admin (0); B (1) writes one, received by C (2)
-/// alone; 0 removes B and C's addendum keeps B's add (held at 0 if `with`). Team T (a thing 0
+/// alone; 0 removes B and C's addendum keeps B's add (held at 0 if `with`). Realm T (a thing 0
 /// makes, 3 its admin) holds write on t and gains a member E (4) by 3: the work of that grant
 /// arriving at 0.
 fn addenda_rejudge(n: usize, with: bool) -> Work {
@@ -756,9 +756,9 @@ fn addenda_rejudge(n: usize, with: bool) -> Work {
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
     let t = shared_thing(&mut lp, &[Role::Write, Role::Write, Role::Write]);
-    let team = new_thing(&mut lp, 0);
-    set_edge(&mut lp.peers[0].engine, team, ids[3], Some(edge(Role::Admin)), None);
-    set_edge(&mut lp.peers[0].engine, t, team, Some(edge(Role::Write)), None);
+    let realm = new_thing(&mut lp, 0);
+    set_edge(&mut lp.peers[0].engine, realm, ids[3], Some(edge(Role::Admin)), None);
+    set_edge(&mut lp.peers[0].engine, t, realm, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     for i in 0..n {
         add(&mut lp, 0, t, &TAGS, format!("e{i}"));
@@ -780,7 +780,7 @@ fn addenda_rejudge(n: usize, with: bool) -> Work {
     }
     let Some(Value::Set(v)) = lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap() else { panic!() };
     assert_eq!(v.len(), n + usize::from(with), "C's addendum keeps B's add");
-    let g = set_edge(&mut lp.peers[3].engine, team, ids[4], Some(edge(Role::Write)), None);
+    let g = set_edge(&mut lp.peers[3].engine, realm, ids[4], Some(edge(Role::Write)), None);
     let pk = lp.packages_for(3, 0).unwrap().into_iter().find(|p| p.id == g).unwrap();
     measured_at(&mut lp, 0, |lp| lp.deliver(0, &pk).unwrap()).1
 }

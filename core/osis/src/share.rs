@@ -54,7 +54,7 @@ pub enum Reads {
 /// this node reads as `Actor`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HolderKind {
-    /// An account, team or other actor.
+    /// An account, realm or other actor.
     Actor,
     /// The actor of a share link: those who joined by the link hold through it.
     Link,
@@ -92,7 +92,7 @@ pub struct Holder {
     /// When this way ends: the earliest end along it. One that has ended is not listed.
     pub until: Option<Time>,
     /// The actors between the thing and this holder, nearest the thing first: empty for a grant
-    /// on the thing itself, the link's actor for someone who joined by a link, a team for its
+    /// on the thing itself, the link's actor for someone who joined by a link, a realm for its
     /// members.
     pub through: Vec<Tid>,
 }
@@ -365,7 +365,7 @@ pub(crate) fn holders_in(r: &crate::read::Reader<'_>, target: Tid) -> Vec<Holder
 
 impl ReadOnly {
     /// Everyone who holds a role on `target`, directly or through an actor that holds one (an account
-    /// through a team, a joiner through a link), nearest first. An actor with several ways in is
+    /// through a realm, a joiner through a link), nearest first. An actor with several ways in is
     /// listed once per way: the shortest to each grant it holds them by, and a longer one when it
     /// gives more, so its best role and latest end are among its entries. Who holds through an actor:
     /// `holders` of that actor, or those here with it in `through`. Grants one level down, with
@@ -432,7 +432,7 @@ impl Osis {
     /// Needs admin on the target (or a `may_grant` of at least `role`, for someone with no grant yet;
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,
     /// and the holder's keys here (a contact card, a shared thing, pairing), else `UnknownActor`.
-    /// Each grant costs about 2.6 KB of keys: to share with many, grant one team. `Unsupported` on
+    /// Each grant costs about 2.6 KB of keys: to share with many, grant one realm. `Unsupported` on
     /// a client with its own actor. An `until` on the last admin whose grant has none is
     /// `LeavesNoAdmin` unless `GrantOpts::leave_adminless` says it is meant (`set_role`).
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
@@ -483,7 +483,7 @@ impl Osis {
     /// it may have kept the link's text. The link then stops working for anyone who has not used
     /// it yet (make a new one), and its other joiners stay. A joiner's role cannot be changed, only
     /// removed (`Invalid`; `grant` gives it a role of its own). Nor can this call reach through
-    /// another actor (a team, a link of another account): `Invalid`, naming the actor to set
+    /// another actor (a realm, a link of another account): `Invalid`, naming the actor to set
     /// the role on.
     ///
     /// A writer that changed the keys so only it can read locks the others out; removing it (or
@@ -560,12 +560,12 @@ impl Osis {
     }
 
     /// Ends `holder`'s ways in that exist for `target`: its own grant on it, and its join of any link
-    /// to it. `holder` is `me()`, or a team or other actor this node is an admin of (as when a team's
+    /// to it. `holder` is `me()`, or a realm or other actor this node is an admin of (as when a realm's
     /// admin drops a thing that was shared with it). The keys change when the target's next writer or
     /// admin writes, or at once when this node is an admin of `target` by another way. No way in at all
     /// writes nothing.
     ///
-    /// A team or other actor the holder reaches `target` through stays: `Invalid` when that is all it
+    /// A realm or other actor the holder reaches `target` through stays: `Invalid` when that is all it
     /// has, naming the actor, as leaving it is what ends the role. `Invalid` for another
     /// actor when this node is an admin of `target`: taking that role away is `set_role`'s.
     /// `Permission` when this node is no admin of `holder`; on a client with its own

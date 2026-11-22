@@ -2469,13 +2469,13 @@ fn two_admins_leaving_at_once_leave_the_thing_adminless() {
     tiny_gates(&w, &[]);
 }
 
-/// A path's last hop giving admin gives may-grant (G1, G4): team M holds admin on T, B holds
+/// A path's last hop giving admin gives may-grant (G1, G4): realm M holds admin on T, B holds
 /// write on M. B's grants on T through [M] apply as may-grant grants up to B's role on M (every hop
 /// giving it, the last admin): read and write apply, the write carrying the flag (G2: the new
 /// grant may), admin does not (it needs admin along the path). X, a reader of M, so grants
 /// readers and not writers (control `-last-hop`).
 #[test]
-fn a_writer_of_an_admin_team_grants_up_to_its_own_role() {
+fn a_writer_of_an_admin_realm_grants_up_to_its_own_role() {
     const M: Thing = 41;
     const T: Thing = 42;
     let mut w = World::new(&[(H, M), (H, T)]);

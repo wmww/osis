@@ -571,7 +571,7 @@ fn reaches_via(lp: &mut LocalPeer, i: usize, actors: &[Tid], g: Tid, x: Tid) -> 
     own.into_iter().chain(opened).collect()
 }
 
-// spec/crypto.md §4 (Floors: a party's floor through holder actors): team T (admin X, member M)
+// spec/crypto.md §4 (Floors: a party's floor through holder actors): realm T (admin X, member M)
 // is granted read on `g` without history. M, reading `g` only through T, reaches nothing before
 // T's cut, by T's boxes or its own node, after co-holders' adds and re-seals. Granted read on
 // `g` directly with history too, M's floor is the least over its paths: its own nodes count every

@@ -521,7 +521,7 @@ fn acting_valid_once_grant_arrives_spec_perm_5_2() {
 
 // spec/permissions.md §1 Key actor ("No edge write targets a key actor: it has no roster"): the
 // engine refuses an edge write on a key actor, its own included; one a hostile writer makes
-// anyway (peer 2 giving B write on its own key actor, as a "team") applies nowhere at any node:
+// anyway (peer 2 giving B write on its own key actor, as a "realm") applies nowhere at any node:
 // no roster entry, no role, the edge write unapplied by the walk.
 #[test]
 fn an_edge_write_on_a_key_actor_is_refused_and_applies_nowhere_spec_permissions_1() {

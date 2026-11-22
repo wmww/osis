@@ -168,7 +168,7 @@ impl Engine {
 
     /// The holder of `a` this node reads it through, as it judges it (spec/permissions.md §4):
     /// its account when that holds `a`, else a holder of `a` that is no key actor and that its
-    /// account holds a role on (a team); its account when it judges none.
+    /// account holds a role on (a realm); its account when it judges none.
     fn own_holder(&self, a: &Tid) -> Tid {
         let me = self.core.account.get().unwrap_or_else(|| self.core.id.tid());
         let holders: Vec<Tid> = self.core.key_holders(a).into_iter().map(|x| x.0).collect();

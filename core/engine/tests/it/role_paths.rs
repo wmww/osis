@@ -361,14 +361,14 @@ fn one_path(h: &osis_commit::Header) -> Vec<Tid> {
     p.things.clone()
 }
 
-// spec/permissions.md §1 Path, §2 Self-removal, §1 The last admin: B, admin of team H,
+// spec/permissions.md §1 Path, §2 Self-removal, §1 The last admin: B, admin of realm H,
 // removes H from T, where B's only admin on T is through H: a self-removal (its path, [H], ends at
 // the holder), carrying no frontier and naming T's mint admin A as the admin that remains
 // (roles-model `an_honest_holder_leave_is_no_dispute`: K makes A2 leave T1 by [A2], naming A).
 // With a direct admin grant of its own on T, the same removal is explicit: the empty path, a
 // frontier, and B's own edge the last edge, nothing named.
 #[test]
-fn removing_the_team_one_acts_through_is_a_self_removal_spec_permissions_2() {
+fn removing_the_realm_one_acts_through_is_a_self_removal_spec_permissions_2() {
     for direct in [false, true] {
         let (mut lp, ps) = people(2);
         let (pa, pb) = (ps[0], ps[1]);
@@ -492,9 +492,9 @@ fn class_worlds() -> Vec<ClassWorld> {
     }
     // a key actor's edge write on itself, made anyway: both walks apply it nowhere
     let (mut lp, ps) = people(3);
-    let team = lp.peers[2].engine.me();
+    let realm = lp.peers[2].engine.me();
     let mut m = Mutation::new();
-    m.op(team, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Weak(ps[1]))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge_of(Role::Write))) }).unwrap();
+    m.op(realm, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Weak(ps[1]))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge_of(Role::Write))) }).unwrap();
     lp.peers[2].engine.core.skip_writer_rules = true;
     lp.peers[2].engine.commit(m).unwrap().unwrap();
     lp.peers[2].engine.core.skip_writer_rules = false;
