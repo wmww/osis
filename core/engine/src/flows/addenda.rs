@@ -374,31 +374,39 @@ fn gather(core: &Core, r: &CommitId, me: Tid, count: bool) -> Option<Gathered> {
     if !out.applies {
         return Some(out);
     }
-    for (x, n, below) in tl.demoted_by(r) {
-        let (x, n, below) = (*x, *n, *below);
-        if x == me {
+    // each cut R makes (spec/permissions.md §5.2 Writing): an applied write taking its hop
+    // below write, or below admin
+    let paths = core.timelines.paths();
+    for (k, op) in (0u32..).zip(&rc.ops) {
+        let Some(a) = tl.applied(&osis_perm::WriteId(*r, k)) else { continue };
+        let below = if a.cuts(Role::Write) {
+            Role::Write
+        } else if a.cuts(Role::Admin) {
+            Role::Admin
+        } else {
             continue;
-        }
-        let held = core.ix.by_thing.get(&(n, x)).into_iter().flatten().chain(core.ix.by_actor.get(&(n, x)).into_iter().flatten());
-        for c in held {
+        };
+        let hop = (op.holder, op.target);
+        // the content commits with a delta stated along a path with that hop
+        for c in paths.through(&hop.0, &hop.1) {
             if count {
                 osis_base::costs::count("addenda: commits scanned", 1);
             }
-            let Some(cm) = core.ix.commits.get(c) else { continue };
+            let Some(cm) = core.ix.commits.get(&c) else { continue };
             let v = &cm.view;
-            // ordered before R (at its `ts` or earlier, §5.2 Position); what the frontier lists
-            // needs no witness
-            if v.purges || v.kind != osis_commit::Kind::Content || frontier.covers(c) || v.ts > m.view.ts || !window(cm.received, m.view.ts, m.received) {
+            // not made by itself; ordered before R (at its `ts` or earlier, §5.2 Position); what
+            // the frontier lists needs no addendum
+            if v.signer == me || v.purges || v.kind != osis_commit::Kind::Content || frontier.covers(&c) || v.ts > m.view.ts || !window(cm.received, m.view.ts, m.received) {
                 continue;
             }
-            let listed = match below {
-                // a plain part on N, or the Acting check for N
-                Role::Write => v.aspects.iter().any(|a| plain_ak(&a.ak) && (a.tid == n || v.purge_author == n)),
-                Role::Admin => v.aspects.iter().any(|a| a.tid == n && admin_listable_ak(&a.ak)),
-                _ => false,
-            };
-            if listed {
-                out.addenda.entry(n).or_default().entry(*c).or_default().insert(below);
+            for (ai, x) in (0u32..).zip(&v.aspects) {
+                let listable = match below {
+                    Role::Write => plain_ak(&x.ak),
+                    _ => admin_listable_ak(&x.ak),
+                };
+                if listable && paths.rests(&osis_perm::WriteId(c, ai)).is_some_and(|(hops, _)| hops.contains(&hop)) {
+                    out.addenda.entry(x.tid).or_default().entry(c).or_default().insert(below);
+                }
             }
         }
     }
@@ -413,9 +421,8 @@ fn gather(core: &Core, r: &CommitId, me: Tid, count: bool) -> Option<Gathered> {
 /// held (the node closure is read where the addenda are written, `writable_split`).
 ///
 /// Who writes each input: R and the candidates are their signers' word, judged by the walk and
-/// layer 2; every addendum on N (any writer's, a removed party's forged ones included) goes
-/// through the least fixpoint (`validity::vouching_on`), so only this node's own counting ones
-/// stop it owing.
+/// layer 2; every addendum on N (any writer's, a removed party's forged ones included) is judged
+/// by the walk's least fixpoint, and only this node's own valid ones stop it owing.
 fn owed(core: &Core, r: &CommitId, g: &Gathered, me: Tid, now: Ts) -> BTreeMap<Tid, BTreeSet<CommitId>> {
     let mut out = BTreeMap::new();
     if !g.applies {
@@ -431,13 +438,14 @@ fn owed(core: &Core, r: &CommitId, g: &Gathered, me: Tid, now: Ts) -> BTreeMap<T
             continue;
         }
         let held: Vec<(&CommitId, &BTreeSet<Role>)> = cs.iter().filter(|(c, _)| core.ix.commits.contains_key(c)).collect();
-        let own = crate::apply::validity::vouching_on(core, n);
-        let vouched = |c: &CommitId, q: Role| {
-            let Some(cm) = core.ix.commits.get(c) else { return false };
-            let at = Point { ts: cm.view.ts, node: cm.view.signer, commit: *c };
-            own.as_ref().is_some_and(|v| v.witnesses(tn, at, q).any(|(w, _)| w == me))
+        // a valid addendum of this node's on N against R listing the commit
+        let vouched = |c: &CommitId| {
+            core.ix.addenda.range((*n, CommitId([0; 32]))..=(*n, CommitId([0xff; 32]))).any(|((_, ac), x)| {
+                x.entries.iter().any(|(removal, list)| removal == r && list.contains(c))
+                    && core.ix.commits.get(ac).is_some_and(|am| am.view.signer == me && am.view.aspect(n, ct::ADDENDA_AK).is_some_and(|ai| am.valid_at(ai)))
+            })
         };
-        if held.iter().any(|(c, qs)| qs.iter().any(|q| mine >= Some(*q) && !vouched(c, *q))) {
+        if held.iter().any(|(c, qs)| qs.iter().any(|q| mine >= Some(*q)) && !vouched(c)) {
             out.insert(*n, held.into_iter().map(|(c, _)| *c).collect());
         }
     }

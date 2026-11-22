@@ -333,6 +333,11 @@ impl<S: Store> Timeline<S> {
         self.on.get(t).into_iter().flatten().filter_map(|id| self.roles.get(id)).flat_map(move |(c, _)| (0u32..).zip(&c.ops).filter(move |(_, o)| o.target == *t).map(move |(k, o)| (WriteId(c.id, k), &**c, o)))
     }
 
+    /// `held_on` of `t` by value.
+    pub fn held_on_owned(&self, t: Tid) -> impl Iterator<Item = (WriteId, &RoleCommit, &EdgeOp)> + '_ {
+        self.on.get(&t).into_iter().flatten().filter_map(|id| self.roles.get(id)).flat_map(move |(c, _)| (0u32..).zip(&c.ops).filter(move |(_, o)| o.target == t).map(move |(k, o)| (WriteId(c.id, k), &**c, o)))
+    }
+
     /// The edge writes applied on `t`, each with its commit and op.
     pub fn applied_on<'t>(&'t self, t: &'t Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t EdgeOp)> + 't {
         self.held_on(t).filter(|(w, _, _)| self.is_applied(w)).map(|(_, c, o)| (c, o))
@@ -351,6 +356,13 @@ impl<S: Store> Timeline<S> {
     /// How the settled walk applies `w`.
     pub fn way(&self, w: &WriteId) -> Option<Way> {
         self.paths.way(&self.part_of(w)?)
+    }
+
+    /// Whether held edge write `w` would apply at its key were its holder's edge `old` there, the
+    /// rest as the walk has it: its verdict over another state of its own edge, such as a second
+    /// removal of a holder another write removed first (spec/crypto.md §4, Covers).
+    pub fn applies_over(&self, w: &WriteId, old: Option<Edge>) -> bool {
+        self.part_of(w).is_some_and(|p| self.paths.would_apply(&p, old))
     }
 
     /// Applied edge write `w`: what it found on its edge.

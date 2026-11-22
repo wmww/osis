@@ -1923,6 +1923,7 @@ impl Core {
             stale_things: _,
             stale_authors: _,
             stale_under: _,
+            purges_moved: _,
             stale_commits: _,
             stale_all: _,
             batched: _,

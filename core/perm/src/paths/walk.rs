@@ -1239,6 +1239,22 @@ impl Walk {
         self.edge(holder, target)?.hist.range(..*key).next_back().map(|(_, en)| (self.it(en.slot).id, en.a))
     }
 
+    /// Whether held part `id` would apply at its key were its edge's value `old` there, the rest
+    /// as the settled walk has it (§5.1 step 2; a lowering's judging is not run: a dropped or void
+    /// part applies nowhere).
+    pub(super) fn would_apply(&self, id: &WriteId, old: Option<Edge>) -> bool {
+        let Some(it) = self.ids.get(id).map(|&s| self.it(s)) else { return false };
+        if !it.live || !it.well || it.dropped.is_some() || it.seeded || it.verdict == Some(Verdict::Void) {
+            return false;
+        }
+        let by = if it.finalize {
+            old.filter(|g| g.until.is_some() && !g.alive_at(Some(it.ts))).is_some_and(|g| it.hops.iter().all(|&h| self.at(h, it.key, it.ts) >= Some(g.role.max(Role::Write))))
+        } else {
+            self.admin(it) || alive(old.as_ref(), it.ts).is_none() && self.may_grant(it)
+        };
+        by && !(it.leave && it.value.is_some_and(|n| !old.is_some_and(|o| leaves(&n, &o))))
+    }
+
     /// How the settled walk applies part `id` (`None`: held, not applied; not held).
     pub(super) fn way(&self, id: &WriteId) -> Option<Way> {
         let it = self.it(*self.ids.get(id)?);

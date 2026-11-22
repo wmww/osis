@@ -184,7 +184,7 @@ impl Engine {
         }
         r.floor.retain(|_, f| f.saturating_add(MAX_DRIFT_MS) >= now);
         let received = self.now();
-        let fired = fired(signals, id, h.signer, purge_author, h.ts, received);
+        let fired = fired(signals, id, h.signer, h.purge_author(), h.ts, received);
         self.core.commits_fired(fired);
         Ok(true)
     }

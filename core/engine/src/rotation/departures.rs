@@ -128,7 +128,20 @@ pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> os
 /// regained. A reader's removal records none: it stays hidden from what holds `a`.
 pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {
     let Some(tl) = core.timelines.get(a) else { return BTreeSet::new() };
-    tl.demotions_in_effect(a).map(|(_, d)| d.point.commit).collect()
+    // the cuts (spec/permissions.md §5.2) of the edges into `a` and into what reaches it, whose
+    // holder holds less on `a` at the end than the cut took
+    let now = tl.roles_on(a, At::END);
+    let mut out = BTreeSet::new();
+    for t in now.keys().chain([a]).collect::<BTreeSet<_>>() {
+        for (w, mc, op) in tl.held_on(t) {
+            let Some(x) = tl.applied(&w) else { continue };
+            let below = if x.cuts(Role::Write) { Role::Write } else if x.cuts(Role::Admin) { Role::Admin } else { continue };
+            if now.get(&op.holder).copied() < Some(below) {
+                out.insert(mc.id);
+            }
+        }
+    }
+    out
 }
 
 /// Departures from `a` itself (spec/crypto.md §4): each holder whose edge (`edge_logs`) gave it

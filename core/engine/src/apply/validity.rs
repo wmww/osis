@@ -719,7 +719,7 @@ fn stated(h: &Header, view: &View, t: &Tid) -> Option<(Vec<Tid>, osis_base::form
 /// part `ai` is aspect `ai`'s delta along the path the commit states for its thing, needing the
 /// role its aspect does, or nothing where the walk reads none of it (an edge write's aspect,
 /// `created.0`, a listing, a part whose path is not known, a void commit's, one that does not
-/// pass the epoch rule); then one part per purge item (`retention::purge::names`); its edge
+/// pass the epoch rule); then one part per purge item (`retention::purge::item_names`); its edge
 /// writes are its `RoleCommit`'s where it counts.
 pub(crate) fn reading(core: &Core, id: &CommitId) -> Option<osis_perm::Held> {
     let m = core.ix.commits.get(id)?;
@@ -756,7 +756,7 @@ pub(crate) fn reading(core: &Core, id: &CommitId) -> Option<osis_perm::Held> {
     }
     if !void {
         for item in &h.purge {
-            let (t, ak, names) = crate::retention::purge::names(item);
+            let (t, ak, names) = crate::retention::purge::item_names(item);
             let kind = match stated(h, &m.view, t) {
                 Some((_, _, purge_author)) => PartKind::Delta(Delta { aspect: ak.clone(), needs: Role::Write, purge_author, purge_by: osis_base::PurgeBy::Admin, class: DeltaClass::Purge { names } }),
                 None => PartKind::None,

@@ -685,9 +685,10 @@ impl<'a> On<'a> {
         self.tl
     }
     /// The edge writes held on it, applied or not (`Timeline::held_on`).
-    pub fn held(&'a self) -> impl Iterator<Item = (osis_perm::WriteId, &'a RoleCommit, &'a osis_perm::EdgeOp)> + 'a {
+    pub fn held(&self) -> impl Iterator<Item = (osis_perm::WriteId, &'a RoleCommit, &'a osis_perm::EdgeOp)> + 'a {
         self.stamps.read(&Read::Held(self.thing));
-        self.tl.held_on(&self.thing)
+        let (tl, thing) = (self.tl, self.thing);
+        tl.held_on_owned(thing)
     }
     /// Whether one of them applies (`Timeline::is_applied`).
     pub fn is_applied(&self, w: &osis_perm::WriteId) -> bool {
@@ -710,9 +711,10 @@ impl<'a> On<'a> {
         self.tl.in_force(holder, &self.thing)
     }
     /// The applied edge writes on it (`Timeline::applied_on`).
-    pub fn applied(&'a self) -> impl Iterator<Item = (&'a RoleCommit, &'a osis_perm::EdgeOp)> + 'a {
+    pub fn applied(&self) -> impl Iterator<Item = (&'a RoleCommit, &'a osis_perm::EdgeOp)> + 'a {
         self.stamps.read(&Read::Held(self.thing));
-        self.tl.applied_on(&self.thing)
+        let (tl, thing) = (self.tl, self.thing);
+        tl.held_on_owned(thing).filter(move |(w, _, _)| tl.is_applied(w)).map(|(_, c, o)| (c, o))
     }
     /// The holders whose edge on it ended by `ts` (`Timeline::ended`).
     pub fn holders_gone(&self, ts: osis_base::Ts) -> BTreeMap<Tid, (bool, Option<osis_perm::Point>, Role)> {

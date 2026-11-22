@@ -474,6 +474,12 @@ impl<S: Store> Paths<S> {
         self.timeline.last_before(holder, target, key)
     }
 
+    /// Whether held edge-class part `id` would apply at its key were its edge's value `old`
+    /// there, the rest as the settled walk has it.
+    pub fn would_apply(&self, id: &WriteId, old: Option<Edge>) -> bool {
+        self.timeline.would_apply(id, old)
+    }
+
     /// How the settled walk applies edge-class part `id` (`None`: not applied, not held).
     pub fn way(&self, id: &WriteId) -> Option<Way> {
         self.timeline.way(id)

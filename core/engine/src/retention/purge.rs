@@ -109,7 +109,7 @@ fn role_right(core: &Core, who: &Tid, tid: &Tid, by: osis_base::PurgeBy, author:
 /// request on `created.0` is a destruction (spec/commits.md §5). A by-commit item is read by the
 /// walk as naming nothing held (the engine names its targets itself, `names_t`; the walk gives
 /// the request's right).
-pub(crate) fn names(item: &PurgeItem) -> (&Tid, &Ak, osis_perm::paths::Names) {
+pub(crate) fn item_names(item: &PurgeItem) -> (&Tid, &Ak, osis_perm::paths::Names) {
     use osis_perm::paths::Names;
     let whole = |ak: &Ak| if ak.as_str() == osis_commit::retention::CREATED { Names::Destroy } else { Names::Aspect };
     match item {
@@ -155,7 +155,7 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
         return valid && role_right(core, &p.signer, &a.tid, a.by, &a.purge_author, Point { ts: p.ts, node: p.signer, commit: *pc });
     }
     // its items on one (thing, aspect) are one request there: one path, one right
-    let Some(j) = p.purge.iter().position(|it| names(it).0 == &a.tid && names(it).1 == &a.ak) else { return false };
+    let Some(j) = p.purge.iter().position(|it| item_names(it).0 == &a.tid && item_names(it).1 == &a.ak) else { return false };
     let Some(r) = core.timelines.paths().right(&crate::apply::validity::request_id(m, pc, j)) else { return false };
     let on_path = || crate::apply::validity::chain(&m.header, &m.view, &a.tid).is_some_and(|c| c.contains(&a.purge_author));
     r.admin || r.write && (a.by.writer() || a.by.author() && on_path())
