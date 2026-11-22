@@ -320,10 +320,10 @@ fn story_run(start: u64, n: u64, disputes: bool) -> Vec<String> {
     let mut fails = vec![];
     for i in start..start + n {
         let s = m::random_world(i, &Rules::fixed());
-        // Interim (issues/perm-walk-trails-model.md): the walk takes owner keys at A4; until then
-        // a world with a list write or a commit signed by a key other than its signer's own
+        // Interim (issues/perm-walk-trails-model.md): the walk reads the key hop at A4; until then
+        // a world with an edge write on a key hop or a commit signed by a key other than its signer's own
         // (moves 54, 55) is the model's alone
-        if (0..s.w.commits.len()).any(|j| s.w.list_write(j) || s.w.commits[j].key != m::own_key(s.w.commits[j].signer)) {
+        if (0..s.w.commits.len()).any(|j| s.w.key_write(j) || s.w.commits[j].key != m::own_key(s.w.commits[j].signer)) {
             continue;
         }
         for node in s.honest().into_iter().chain(s.untrusting()) {

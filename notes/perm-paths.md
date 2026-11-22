@@ -59,7 +59,7 @@ A pass that ends at a commit whose lowerings dropped does not start over: the pa
 
 Trust (§5.1 Trust set) is the same machinery: seeds are a function of the held parts and the active trusted writes, set per part; an update of a component with void trusted writes activates them again and walks it from scratch, then the loop (walk, void what the pass does not apply, seed anew, walk from scratch).
 
-**The key hop** is listed for every commit until accounts are ordinary things (notes/redesign-plan.md A4): it reads as admin everywhere, so the walk keeps no hop for it and takes no list writes; both come with A4 (the hop per (key, thing), list writes as parts on it).
+**The key hop** gives admin for every commit until accounts are ordinary things (notes/redesign-plan.md A4), so the walk keeps no edge for it and takes no write on one; both come with A4: an edge per (key, thing), first on every path, written and judged like any (notes/write-path-design.md, Keys), so the walk gains an edge whose holder is a key and no rule.
 
 **The may-grant flag** is read off `types::Edge::invite` (the level `roles.0` still carries): an invite at the grant's own role or above is the flag, a lower one none.
 ## Cost shapes

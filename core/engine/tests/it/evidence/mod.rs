@@ -282,7 +282,7 @@ fn the_derivation_agrees_with_the_model_plain_spec_permissions_4() {
 // world with an edge write on a key hop or a commit signed by a key other than its signer's own (moves 54, 55) is
 // the model's alone
 fn other_keys(sim: &paths::Sim) -> bool {
-    (0..sim.w.commits.len()).any(|j| sim.w.list_write(j) || sim.w.commits[j].key != paths::own_key(sim.w.commits[j].signer))
+    (0..sim.w.commits.len()).any(|j| sim.w.key_write(j) || sim.w.commits[j].key != paths::own_key(sim.w.commits[j].signer))
 }
 
 /// Random worlds (junk, hostile paths, two-holder removals, retags), story worlds under the six

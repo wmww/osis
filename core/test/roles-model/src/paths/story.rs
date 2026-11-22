@@ -2619,7 +2619,7 @@ pub fn unright_key_writes(w: &World, rd: &Reading) -> Vec<Id> {
     rd.applied
         .iter()
         .copied()
-        .filter(|&i| w.list_write(i) && !w.leave(i) && !rd.by_flag.contains(&i))
+        .filter(|&i| w.key_write(i) && !w.leave(i) && !rd.by_flag.contains(&i))
         .filter(|&i| {
             let c = &w.commits[i];
             let Kind::Edge { role, until, finalize: false, .. } = &c.kind else { return false };
@@ -2748,9 +2748,9 @@ pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
     // reach: a key's grant written by a key and by a member, by may-grant, a key acting below
     // admin, and drops made by a lowering of a key's grant
     let n = |f: &dyn Fn(Id) -> bool| rd.applied.iter().filter(|&&j| f(j)).count() as u64;
-    *st.checked.entry("reach: key grant by key").or_default() += n(&|j| w.list_write(j) && w.hops(j).is_empty());
-    *st.checked.entry("reach: key grant by member").or_default() += n(&|j| w.list_write(j) && !w.hops(j).is_empty());
-    *st.checked.entry("reach: key grant by flag").or_default() += n(&|j| w.list_write(j) && rd.by_flag.contains(&j));
+    *st.checked.entry("reach: key grant by key").or_default() += n(&|j| w.key_write(j) && w.hops(j).is_empty());
+    *st.checked.entry("reach: key grant by member").or_default() += n(&|j| w.key_write(j) && !w.hops(j).is_empty());
+    *st.checked.entry("reach: key grant by flag").or_default() += n(&|j| w.key_write(j) && rd.by_flag.contains(&j));
     *st.checked.entry("reach: key below admin writes").or_default() += rd.valid.iter().filter(|&&j| is_key(w.key_hop(j).0) && w.key_hop(j).0 != own_key(w.key_hop(j).1) && before_in(w, &rd, w.key_hop(j), j) == Role::Write).count() as u64;
     *st.checked.entry("reach: key drops").or_default() += rd.dropped.iter().filter(|j| rd.dropper.get(j).is_some_and(|&d| w.sets(d).is_some_and(|e| is_key(e.0)))).count() as u64;
     let keys = unright_key_writes(w, &rd);

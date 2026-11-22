@@ -1,5 +1,5 @@
-# osis-perm's walk trails roles-model `paths` on owner keys
-> Summary: osis-perm's `paths` walk reads every commit's key hop as listed and takes no list writes until accounts are ordinary things (A4), so its story differential skips the worlds with owner-key moves and no differential writes a roster on a key-record thing.
+# osis-perm's walk trails roles-model `paths` on the key hop
+> Summary: osis-perm's `paths` walk reads every commit's key hop as admin and takes no edge write on one until accounts are ordinary things (A4), so its story differential skips the worlds with key moves and no differential writes a roster on a key-record thing.
 > Priority: normal
 > Tags: perm, tests
 

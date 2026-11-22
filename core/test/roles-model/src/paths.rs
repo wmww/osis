@@ -857,7 +857,7 @@ impl World {
         (self.commits[i].key, self.commits[i].signer)
     }
     /// An edge write on a key hop (its holder a key; Keys K3).
-    pub fn list_write(&self, i: Id) -> bool {
+    pub fn key_write(&self, i: Id) -> bool {
         matches!(&self.commits[i].kind, Kind::Edge { holder, .. } if is_key(*holder))
     }
     /// A path naming no thing twice (else bad input: the commit applies nowhere).
