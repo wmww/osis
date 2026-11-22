@@ -2366,6 +2366,31 @@ fn served_at_reconnect(w: &mut crate::harness::World, s: &SyncId, blobs: &std::c
     served
 }
 
+/// Node 1 holds t (`one`: reads, or keeps it unread), node 2 reads it and node 0 has written it;
+/// node 2 has been away from both and back once. Built once per process per `one`
+/// (`fixture_with`): the world, t and its sync ID S.
+fn away_and_back(one: crate::harness::history::Gives) -> (crate::harness::World, (osis_base::Tid, SyncId)) {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, world_of};
+    crate::harness::fixture_with(&format!("opens away and back {one:?}"), || {
+        let mut w = world_of(0, 3, 3);
+        w.cap = 2_000_000;
+        let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, one), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+        let t = w.history.things[0].0;
+        let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+        let before = write_value(&mut w, t, &s, 1);
+        w.advance(1000);
+        assert!(!before.is_empty() && before.is_subset(&held_of(&w, 2, &s)), "node 2 reads t");
+        w.partition(0, 2);
+        w.partition(1, 2);
+        w.advance(1000);
+        w.rejoin(0, 2);
+        w.rejoin(1, 2);
+        w.advance(30_000);
+        (w, (t, s))
+    })
+}
+
 /// Node 1 holds t (`one`: reads, or keeps it unread), node 2 reads it; node 2 goes away from
 /// both, `change` ends its right at node 0, node 0 writes t and node 1 takes the write. Whether
 /// node 2 is served the write when it meets node 1 again. Node 2 is away and back once first:
@@ -2379,22 +2404,7 @@ fn served_after_a_change_while_away(one: crate::harness::history::Gives, change:
 /// `served_after_a_change_while_away`, `setup` run once node 2 reads t, before it goes away
 /// (its value is `change`'s).
 fn served_after_a_change_while_away_from<X>(one: crate::harness::history::Gives, setup: impl FnOnce(&mut crate::harness::World) -> X, change: impl FnOnce(&mut crate::harness::World, osis_base::Tid, X)) -> bool {
-    use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world_of};
-    let mut w = world_of(0, 3, 3);
-    w.cap = 2_000_000;
-    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, one), Grant(0, 0, 2, Gives::Reads), Run], String::new());
-    let t = w.history.things[0].0;
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
-    let before = write_value(&mut w, t, &s, 1);
-    w.advance(1000);
-    assert!(!before.is_empty() && before.is_subset(&held_of(&w, 2, &s)), "node 2 reads t");
-    w.partition(0, 2);
-    w.partition(1, 2);
-    w.advance(1000);
-    w.rejoin(0, 2);
-    w.rejoin(1, 2);
-    w.advance(30_000);
+    let (mut w, (t, s)) = away_and_back(one);
     let x = setup(&mut w);
     w.partition(0, 2);
     w.partition(1, 2);

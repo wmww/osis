@@ -33,7 +33,12 @@ fn snapshots(w: &mut World, t: Tid) -> usize {
 }
 
 /// The divergence: node 1 flags `(t, big)` and reads apart from node 0, nothing left to fetch.
+/// Built once per process (`fixture_with`).
 fn diverged() -> (World, Tid) {
+    crate::harness::fixture_with("suspect diverged", built_diverged)
+}
+
+fn built_diverged() -> (World, Tid) {
     let mut w = world_of(0, 2, 2);
     w.cap = 4 * crate::harness::RULE_CAP;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
