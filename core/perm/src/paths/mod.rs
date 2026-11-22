@@ -34,7 +34,7 @@ pub struct Commit {
 }
 
 /// One part: what it writes on `on`, along the path the commit states for `on`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Part {
     pub on: Tid,
     /// [A1..Ak]: the things between the signer and `on` (draft §1 Path).
@@ -45,7 +45,7 @@ pub struct Part {
     pub kind: PartKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PartKind {
     Edge(EdgeWrite),
     /// Any other delta, judged as content (draft §5.2).
@@ -94,7 +94,7 @@ impl List {
 }
 
 /// A `roles.0` write on `holder`'s grant.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EdgeWrite {
     pub holder: Tid,
     /// `None`: a removal.
@@ -104,7 +104,7 @@ pub struct EdgeWrite {
 }
 
 /// A delta judged as content (draft §5.2).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Delta {
     pub aspect: Ak,
     /// The role its aspect needs: write; admin for an admin-only aspect, `sync.0`, `keys.0`,
@@ -116,7 +116,7 @@ pub struct Delta {
     pub class: DeltaClass,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DeltaClass {
     /// A content commit's delta.
     Plain,
@@ -366,16 +366,21 @@ impl<S: Store> Paths<S> {
         self.finish(taken)
     }
 
-    /// One update of everything that moved: the records that came (thing, mint admin), the
+    /// One update of everything that moved: the records that came (thing, mint admin) and went
+    /// (a held part whose hops read one is the caller's to give again: `through`), the
     /// commits no longer held, and the commits held now, each added or, where held already,
     /// replaced by the version given (`update`).
-    pub fn sync(&mut self, records: &[(Tid, Tid)], gone: &[CommitId], commits: &[Commit]) -> Changed {
+    pub fn sync(&mut self, records: &[(Tid, Tid)], records_gone: &[Tid], gone: &[CommitId], commits: &[Commit]) -> Changed {
         let mut seen = BTreeSet::new();
         let given: Vec<&Commit> = commits.iter().filter(|c| seen.insert(c.id)).collect();
         self.begin();
         for (t, a) in records {
             self.timeline.add_record(*t, *a);
             self.facts.add_record(*t, *a);
+        }
+        for t in records_gone {
+            self.timeline.remove_record(t);
+            self.facts.remove_record(t);
         }
         let held: Vec<CommitId> = given.iter().map(|c| c.id).chain(gone.iter().copied()).filter(|c| self.holds(c)).collect::<BTreeSet<_>>().into_iter().collect();
         let mut taken = self.let_go(&held);
@@ -486,6 +491,13 @@ impl<S: Store> Paths<S> {
     /// names within the keys it names, and those it names.
     pub fn reached(&self, ch: &Changed) -> BTreeSet<WriteId> {
         self.facts.reached(ch)
+    }
+
+    /// The held commits with a part resting on or setting (holder, target), or a delta along it.
+    pub fn through(&self, holder: &Tid, target: &Tid) -> BTreeSet<CommitId> {
+        let mut out = self.timeline.through(holder, target);
+        out.extend(self.facts.store.through(&(*holder, *target), std::ops::Bound::Unbounded, std::ops::Bound::Unbounded).into_iter().map(|w| w.0));
+        out
     }
 
     /// The trust set.

@@ -401,6 +401,24 @@ impl Walk {
         }
     }
 
+    /// A record that went: its record edge with it, from the start.
+    pub(super) fn remove_record(&mut self, t: &Tid) {
+        let Some(admin) = self.mint.remove(t) else { return };
+        if let Some(e) = self.edge_ids.get(&(admin, *t)).copied().filter(|&e| self.ed(e).record) {
+            let fin = self.final_pair(e).0;
+            self.journal.finals.entry(e).or_insert(fin);
+            self.note_first(e);
+            self.edges[e].record = false;
+            self.touch(e, FIRST);
+        }
+    }
+
+    /// The held commits with an edge-class part setting or resting on (holder, target).
+    pub(super) fn through(&self, holder: &Tid, target: &Tid) -> BTreeSet<CommitId> {
+        let Some(ed) = self.edge(holder, target) else { return BTreeSet::new() };
+        ed.setters.iter().chain(&ed.resting).map(|&(_, s)| self.it(s).id.0).collect()
+    }
+
     fn edge(&self, holder: &Tid, target: &Tid) -> Option<&EdgeInfo> {
         self.edge_ids.get(&(*holder, *target)).map(|&e| self.ed(e))
     }

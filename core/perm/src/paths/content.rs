@@ -334,6 +334,11 @@ impl<S: Store> Facts<S> {
         self.mint.insert(t, admin);
     }
 
+    /// A record that went.
+    pub(super) fn remove_record(&mut self, t: &Tid) {
+        self.mint.remove(t);
+    }
+
     fn record(&self, e: Pair) -> bool {
         self.mint.get(&e.1) == Some(&e.0)
     }

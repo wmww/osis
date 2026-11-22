@@ -47,6 +47,17 @@ impl Records {
         }
         self.link.insert(t, link);
     }
+    /// Forgets `t`'s record.
+    pub fn remove(&mut self, t: &Tid) {
+        if let Some(RecordLink::Admin(a)) = self.link.remove(t)
+            && let Some(v) = self.mint_admin_of.get_mut(&a)
+        {
+            v.retain(|x| x != t);
+            if v.is_empty() {
+                self.mint_admin_of.remove(&a);
+            }
+        }
+    }
     /// Every record link, by thing.
     pub fn links(&self) -> impl Iterator<Item = (&Tid, &RecordLink)> {
         self.link.iter()

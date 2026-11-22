@@ -9,11 +9,26 @@
 
 use crate::graph::{Class, Edges, EdgesAt, Need, Records, Standing, View, RECORD_EDGE};
 use crate::paths::{self, Key, MemStore, Paths, Status, Store, Way};
-use crate::types::{Edge, Point, WriteId};
+use crate::types::{Edge, EdgeOp, Point, RoleCommit, WriteId};
 use osis_base::format::{PathMarks, MAX_CHAIN_DEPTH};
 use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+/// A held commit as the walk reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Held {
+    pub id: CommitId,
+    pub ts: Ts,
+    pub signer: Tid,
+    /// Its parts but its edge writes, in the node's numbering (`WriteId(id, index)`): a delta, or
+    /// `PartKind::None` where nothing is read.
+    pub parts: Vec<paths::Part>,
+    /// Its edge writes, where it has any that count: op k is `WriteId(id, k)` in this layer's
+    /// queries, along the path the commit states for its target, the frontier naming commits
+    /// whole.
+    pub role: Option<Arc<RoleCommit>>,
+}
 
 /// What the node holds that the walk reads. Applied, verified commits only (pending ones are
 /// not held, spec/commits.md §4).
@@ -22,7 +37,7 @@ pub trait HeldSet {
     fn created(&self, thing: &Tid) -> Option<CreationRecord>;
     /// Held commit `id` as the walk reads it; `None` where it is not held or nothing of it is
     /// read.
-    fn commit(&self, id: &CommitId) -> Option<paths::Commit>;
+    fn commit(&self, id: &CommitId) -> Option<Held>;
 }
 
 /// When a query is evaluated: the edge state just before `point` (`None`: after every held
@@ -68,6 +83,8 @@ pub struct Changed {
     pub created: BTreeSet<Tid>,
     /// The held deltas whose verdict may have moved (`Paths::reached`).
     pub reached: BTreeSet<WriteId>,
+    /// The edge writes (commit, op) that are new or whose status changed.
+    pub ops: BTreeSet<WriteId>,
 }
 
 impl Changed {
@@ -95,6 +112,11 @@ pub struct Timeline<S: Store = MemStore> {
     /// Per thing whose record is not held, the held commits with a path member whose record
     /// chain stops at it: given again when the record comes (their hops read the chain).
     waiting: BTreeMap<Tid, BTreeSet<CommitId>>,
+    /// The held commits with edge writes, as given: each with its other parts, which its ops
+    /// are numbered after in the walk.
+    roles: BTreeMap<CommitId, (Arc<RoleCommit>, Vec<paths::Part>)>,
+    /// Per target, the held commits with an edge write on it.
+    on: BTreeMap<Tid, BTreeSet<CommitId>>,
 }
 
 impl Default for Timeline<MemStore> {
@@ -112,7 +134,7 @@ impl Timeline<MemStore> {
 
 impl<S: Store> Timeline<S> {
     pub fn with_store(trust: BTreeSet<WriteId>, store: S) -> Timeline<S> {
-        Timeline { paths: Paths::with_store(&BTreeMap::new(), trust, store), records: Records::default(), now: Edges::default(), log: BTreeMap::new(), into: BTreeMap::new(), waiting: BTreeMap::new() }
+        Timeline { paths: Paths::with_store(&BTreeMap::new(), trust, store), records: Records::default(), now: Edges::default(), log: BTreeMap::new(), into: BTreeMap::new(), waiting: BTreeMap::new(), roles: BTreeMap::new(), on: BTreeMap::new() }
     }
 
     /// The walk.
@@ -126,68 +148,107 @@ impl<S: Store> Timeline<S> {
 
     /// Brings the timeline up to what `held` holds: `commits` names every commit whose reading
     /// (`HeldSet::commit`) may have changed since the last update, held or not, `things` every
-    /// thing whose record came. A record that went stays read until its thing's parts go.
+    /// thing whose record came or went. A commit with edge writes given as it was is not taken
+    /// again (its component would be walked again from its key).
     pub fn update(&mut self, held: &dyn HeldSet, commits: &BTreeSet<CommitId>, things: &BTreeSet<Tid>) -> Changed {
         let mut out = Changed::default();
-        let mut records = Vec::new();
+        let (mut came, mut went) = (Vec::new(), Vec::new());
         let mut again: BTreeSet<CommitId> = commits.clone();
         for t in things {
-            let Some(rec) = held.created(t).filter(|r| r.tid() == *t) else { continue };
-            if self.records.link(t).is_some() {
-                continue;
+            match (held.created(t).filter(|r| r.tid() == *t), self.records.link(t)) {
+                (Some(rec), None) => {
+                    self.records.insert(*t, &rec);
+                    out.created.insert(*t);
+                    if let RecordLink::Admin(a) = rec.record_link() {
+                        came.push((*t, a));
+                    }
+                    again.extend(self.waiting.remove(t).unwrap_or_default());
+                }
+                (None, Some(l)) => {
+                    // a part whose hops read the record edge loses it: given again
+                    if let RecordLink::Admin(a) = l {
+                        again.extend(self.paths.through(&a, t));
+                        went.push((*t, a));
+                    }
+                    self.records.remove(t);
+                    out.created.insert(*t);
+                }
+                _ => {}
             }
-            self.records.insert(*t, &rec);
-            out.created.insert(*t);
-            if let RecordLink::Admin(a) = rec.record_link() {
-                records.push((*t, a));
-            }
-            again.extend(self.waiting.remove(t).unwrap_or_default());
         }
         let mut gone = Vec::new();
         let mut given = Vec::new();
         for id in &again {
-            match held.commit(id) {
-                Some(c) => {
+            let now = held.commit(id);
+            let was = self.roles.get(id);
+            if let (Some(h), Some((role, parts))) = (&now, was)
+                && h.role.as_ref().is_some_and(|r| Arc::ptr_eq(r, role) || r == role)
+                && h.parts == *parts
+                && commits.contains(id)
+            {
+                continue;
+            }
+            if let Some((role, _)) = self.roles.remove(id) {
+                for o in &role.ops {
+                    if let Some(s) = self.on.get_mut(&o.target) {
+                        s.remove(id);
+                        if s.is_empty() {
+                            self.on.remove(&o.target);
+                        }
+                    }
+                }
+            }
+            match now {
+                Some(h) => {
+                    let c = commit_of(&h);
                     self.await_records(&c);
+                    if let Some(role) = h.role {
+                        for o in &role.ops {
+                            self.on.entry(o.target).or_default().insert(h.id);
+                            self.into.entry(o.target).or_default().insert(o.holder);
+                        }
+                        self.roles.insert(h.id, (role, h.parts));
+                    }
                     given.push(c);
                 }
                 None => gone.push(*id),
             }
         }
-        if records.is_empty() && gone.is_empty() && given.is_empty() {
+        if came.is_empty() && went.is_empty() && gone.is_empty() && given.is_empty() {
             return out;
         }
-        for c in &given {
-            for p in &c.parts {
-                if let paths::PartKind::Edge(w) = &p.kind {
-                    self.into.entry(p.on).or_default().insert(w.holder);
-                }
-            }
-        }
-        out.walk = self.paths.sync(&records, &gone, &given);
-        // a record edge that came is in force from the start
-        for (t, a) in &records {
-            self.now.set(&self.records, *a, *t, self.paths.last(a, t).map_or(Some(RECORD_EDGE), |(_, w)| w.value));
+        let went_things: Vec<Tid> = went.iter().map(|x| x.0).collect();
+        out.walk = self.paths.sync(&came, &went_things, &gone, &given);
+        // a record edge that came or went does so from the start
+        for (t, a) in came.iter().chain(&went) {
+            let last = self.paths.last(a, t).map(|(_, w)| w.value);
+            self.now.set(&self.records, *a, *t, last.unwrap_or(self.records.is_record_edge(a, t).then_some(RECORD_EDGE)));
         }
         self.follow(&mut out);
         out
     }
 
-    /// Replaces the trust set (spec/permissions.md §5.1 Trust set).
-    pub fn set_trust(&mut self, trust: BTreeSet<WriteId>) -> Changed {
+    /// Replaces the trust set (spec/permissions.md §5.1 Trust set): edge writes (commit, op).
+    pub fn set_trust(&mut self, trust: &BTreeSet<WriteId>) -> Changed {
+        let trust = trust.iter().filter_map(|w| self.part_of(w)).collect();
         let mut out = Changed { walk: self.paths.set_trust(trust), ..Changed::default() };
         self.follow(&mut out);
         out
     }
 
-    /// The trust set.
-    pub fn trust(&self) -> &BTreeSet<WriteId> {
-        self.paths.trust()
+    /// The held trusted edge writes.
+    pub fn trust(&self) -> BTreeSet<WriteId> {
+        self.paths.trust().iter().filter_map(|w| self.op_of(w)).collect()
     }
 
     /// The held lowerings whose trust would change the reading (`Paths::disputes`).
     pub fn disputes(&mut self) -> BTreeSet<WriteId> {
-        self.paths.disputes()
+        self.paths.disputes().iter().filter_map(|w| self.op_of(w)).collect()
+    }
+
+    /// The trusted edge writes the walk does not apply.
+    pub fn void_trusted(&self) -> BTreeSet<WriteId> {
+        self.paths.void_trusted().iter().filter_map(|w| self.op_of(w)).collect()
     }
 
     /// Notes under the first thing with no held record up each member's chain that `c` is to be
@@ -229,13 +290,48 @@ impl<S: Store> Timeline<S> {
             self.now.set(&self.records, *h, *t, value);
         }
         out.reached = self.paths.reached(&out.walk);
+        out.ops = out.walk.parts.iter().filter_map(|w| self.op_of(w)).collect();
     }
 
-    // ---- edge-class parts ----
+    /// The walk's ID of edge write `w` (commit, op).
+    fn part_of(&self, w: &WriteId) -> Option<WriteId> {
+        let (_, parts) = self.roles.get(&w.0)?;
+        Some(WriteId(w.0, u32::try_from(parts.len()).ok()?.checked_add(w.1)?))
+    }
 
-    /// What the settled walk did with held edge-class part `w`.
+    /// The edge write (commit, op) the walk's part `w` is, if one.
+    fn op_of(&self, w: &WriteId) -> Option<WriteId> {
+        let (_, parts) = self.roles.get(&w.0)?;
+        Some(WriteId(w.0, w.1.checked_sub(u32::try_from(parts.len()).ok()?)?))
+    }
+
+    // ---- edge writes, each (commit, op) ----
+
+    /// The held commit `id` with edge writes.
+    pub fn role_commit(&self, id: &CommitId) -> Option<&Arc<RoleCommit>> {
+        self.roles.get(id).map(|x| &x.0)
+    }
+
+    /// An edge write held here: its signer, holder and target.
+    pub fn edge_op(&self, w: &WriteId) -> Option<(Tid, Tid, Tid)> {
+        let c = self.role_commit(&w.0)?;
+        let op = c.ops.get(usize::try_from(w.1).ok()?)?;
+        Some((c.signer, op.holder, op.target))
+    }
+
+    /// The edge writes held on `t`, applied or not, each with its ID, commit and op.
+    pub fn held_on<'t>(&'t self, t: &'t Tid) -> impl Iterator<Item = (WriteId, &'t RoleCommit, &'t EdgeOp)> + 't {
+        self.on.get(t).into_iter().flatten().filter_map(|id| self.roles.get(id)).flat_map(move |(c, _)| (0u32..).zip(&c.ops).filter(move |(_, o)| o.target == *t).map(move |(k, o)| (WriteId(c.id, k), &**c, o)))
+    }
+
+    /// The edge writes applied on `t`, each with its commit and op.
+    pub fn applied_on<'t>(&'t self, t: &'t Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t EdgeOp)> + 't {
+        self.held_on(t).filter(|(w, _, _)| self.is_applied(w)).map(|(_, c, o)| (c, o))
+    }
+
+    /// What the settled walk did with held edge write `w`.
     pub fn status(&self, w: &WriteId) -> Option<Status> {
-        self.paths.status(w)
+        self.paths.status(&self.part_of(w)?)
     }
 
     /// Whether the settled walk applies `w`.
@@ -245,13 +341,39 @@ impl<S: Store> Timeline<S> {
 
     /// How the settled walk applies `w`.
     pub fn way(&self, w: &WriteId) -> Option<Way> {
-        self.paths.way(w)
+        self.paths.way(&self.part_of(w)?)
     }
 
-    /// The part in force on (`holder`, `target`): the last applied one, when it set a value
-    /// (spec/permissions.md §2: the next edge write resets the entry it created).
-    pub fn in_force(&self, holder: &Tid, target: &Tid) -> Option<WriteId> {
-        self.paths.last(holder, target).filter(|(_, a)| a.value.is_some()).map(|(w, _)| w)
+    /// Applied edge write `w`: what it found on its edge.
+    pub fn applied(&self, w: &WriteId) -> Option<paths::Applied> {
+        self.paths.applied(&self.part_of(w)?).map(|x| x.1)
+    }
+
+    /// Whether `w` is chained (spec/permissions.md §4 Chained writes).
+    pub fn is_chained(&self, w: &WriteId) -> bool {
+        self.part_of(w).and_then(|p| self.paths.is_chained(&p)) == Some(true)
+    }
+
+    /// The commit of the edge write in force on (`holder`, `target`): the last applied one, when
+    /// it set a value (spec/permissions.md §2: the next edge write resets the entry it created).
+    pub fn in_force(&self, holder: &Tid, target: &Tid) -> Option<CommitId> {
+        self.paths.last(holder, target).filter(|(_, a)| a.value.is_some()).map(|(w, _)| w.0)
+    }
+
+    /// A held delta's verdict (`Paths::content`), by (commit, part).
+    pub fn content(&self, id: &WriteId) -> Option<paths::Content> {
+        self.paths.content(id)
+    }
+
+    /// Whether a thing's record or an edge write on it is held.
+    pub fn knows(&self, t: &Tid) -> bool {
+        self.records.link(t).is_some() || self.on.contains_key(t)
+    }
+
+    /// Every thing with a held record or edge write on it.
+    pub fn things(&self) -> impl Iterator<Item = &Tid> {
+        let extra = self.on.keys().filter(|t| self.records.link(t).is_none());
+        self.records.links().map(|(t, _)| t).chain(extra)
     }
 
     /// Whether (`holder`, `target`) as restored (§5.1) gives or lets grant more than its value
@@ -344,7 +466,7 @@ impl<S: Store> Timeline<S> {
         }
         let end = before.map(key_of);
         for (k, (h, t)) in self.log.iter().take_while(|(k, _)| end.is_none_or(|e| **k < e)) {
-            let v = self.paths.applied(&self.id_at(k, h, t)).and_then(|(_, a)| a.value);
+            let v = self.paths.last_before(h, t, &Key { part: k.part.saturating_add(1), ..*k }).and_then(|(_, a)| a.value);
             let on = out.entry(*t).or_default();
             if v.is_some_and(|e| !e.says_retain()) {
                 on.entry(*h).or_insert(Some(point_of(*k)));
@@ -354,13 +476,6 @@ impl<S: Store> Timeline<S> {
         }
         out.retain(|_, hs| !hs.is_empty());
         out
-    }
-
-    /// The part applied at `k` on (`h`, `t`).
-    fn id_at(&self, k: &Key, h: &Tid, t: &Tid) -> WriteId {
-        // the write just after everything before `k` on its edge
-        let next = Key { part: k.part.saturating_add(1), ..*k };
-        self.paths.last_before(h, t, &next).map_or(WriteId(k.commit, u32::MAX), |(w, _)| w)
     }
 
     /// The holders whose edge on `thing`, alive at `ts`, gives a role below one an earlier write
@@ -490,4 +605,14 @@ impl<S: Store> Timeline<S> {
         let edges = self.edges_at(at.point);
         View::at(&edges, at.ts).roles_from_without(node, skip)
     }
+}
+
+/// The walk's input for `h`: its parts, then its edge writes.
+fn commit_of(h: &Held) -> paths::Commit {
+    let mut parts = h.parts.clone();
+    if let Some(r) = &h.role {
+        let list = r.frontier.as_ref().map(|f| Arc::new(paths::List::whole((**f).clone())));
+        parts.extend(r.ops.iter().map(|o| paths::Part { on: o.target, path: r.path_to(&o.target).to_vec(), direct: r.direct, kind: paths::PartKind::Edge(paths::EdgeWrite { holder: o.holder, value: o.edge, frontier: list.clone() }) }));
+    }
+    paths::Commit { id: h.id, ts: h.ts, signer: h.signer, parts }
 }

@@ -19,5 +19,5 @@ pub use count::{commits_walked, roles_reached, uncounted};
 pub use epochs::{AccountCommit, Epochs, ListPath, Listing, EpochStanding, ThingList};
 pub use graph::{Class, Edges, Need, Records, Standing};
 pub use osis_base::PurgeBy;
-pub use timeline::{At, Changed, HeldSet, Timeline};
+pub use timeline::{At, Changed, Held, HeldSet, Timeline};
 pub use types::{Edge, EdgeOp, Frontier, RoleCommit, Point, WriteId, ROLES};
