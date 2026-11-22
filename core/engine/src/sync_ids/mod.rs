@@ -5,6 +5,7 @@
 pub(crate) mod actors;
 mod blobs;
 mod certs;
+mod chain;
 pub(crate) use certs::judged_valid;
 mod judge;
 pub(crate) mod opened;

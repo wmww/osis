@@ -155,7 +155,7 @@ impl Engine {
         }
         // the account's signing chain, every line (spec/permissions.md §5.5, Chains travel)
         self.account_chain(&me, &mut out);
-        let certs = self.core.timelines.certificates(&me, g);
+        let certs = super::chain::certificates(&self.core, &me, g);
         self.cert_parts(&certs, &mut out);
         // and to each actor it has acted for (`validity::acts_for`): usually on the chain to
         // `g` already, the node reaching `g` through it
@@ -281,7 +281,7 @@ impl Engine {
         let under_d = self.core.account_of_root(g).is_some();
         let mut out = Certs::deferring();
         self.shared_certificates(g, &mut out);
-        let found = self.core.timelines.certificates_into(g);
+        let found = super::chain::certificates_into(&self.core, g);
         self.cert_parts(&found, &mut out);
         if under_d {
             // D's holders, and every node its account's chain names (a rotation's minter or
@@ -314,7 +314,7 @@ impl Engine {
     /// (`Timelines::certificates`).
     pub(crate) fn chain_piece(&mut self, a: &Tid, x: &Tid) -> Certs {
         let mut out = Certs::deferring();
-        let found = self.core.timelines.certificates(a, x);
+        let found = super::chain::certificates(&self.core, a, x);
         self.cert_parts(&found, &mut out);
         out
     }
@@ -436,12 +436,12 @@ impl Engine {
 
     /// What judges destroyed actor `t`'s permission history (spec/permissions.md §4): every held
     /// edge write on `t` with its write certificates (its author's chains, its holder's).
-    fn history_certificates(&self, t: &Tid) -> osis_perm::Certificates {
-        let mut out = osis_perm::Certificates::default();
+    fn history_certificates(&self, t: &Tid) -> super::chain::Certificates {
+        let mut out = super::chain::Certificates::default();
         let Some(tl) = self.core.timelines.get(t) else { return out };
         for cm in self.core.ix.held.commits_on(t) {
             for (i, _) in cm.ops.iter().enumerate().filter(|(_, o)| o.target == *t) {
-                let Some(cs) = u32::try_from(i).ok().and_then(|i| tl.write_certificates(&osis_perm::WriteId(cm.id, i))) else { continue };
+                let Some(cs) = u32::try_from(i).ok().and_then(|i| super::chain::write_certificates(&self.core, &osis_perm::WriteId(cm.id, i))) else { continue };
                 out.created.extend(cs.created);
                 out.commits.extend(cs.commits);
                 out.keys.extend(cs.keys);
@@ -483,8 +483,8 @@ impl Engine {
 
     /// `node`'s chain certificates for `t` with the record chains of both up to their key
     /// actors, timeline or not.
-    pub(super) fn chain_to(&self, node: &Tid, t: &Tid) -> osis_perm::Certificates {
-        let mut cs = self.core.timelines.certificates(node, t);
+    pub(super) fn chain_to(&self, node: &Tid, t: &Tid) -> super::chain::Certificates {
+        let mut cs = super::chain::certificates(&self.core, node, t);
         for x in [t, node] {
             for step in self.core.record_chain(x) {
                 match step {
@@ -516,7 +516,7 @@ impl Engine {
         if !things.is_empty() {
             things.insert(acting);
         }
-        let found: Vec<osis_perm::Certificates> = things.iter().chain([&h.signer]).map(|t| self.chain_to(&h.signer, t)).collect();
+        let found: Vec<super::chain::Certificates> = things.iter().chain([&h.signer]).map(|t| self.chain_to(&h.signer, t)).collect();
         let mut out = Certs::default();
         for cs in &found {
             self.cert_parts(cs, &mut out);
@@ -551,7 +551,7 @@ impl Engine {
     /// each thing and the current `keys.0` of each actor, with the demotions its keysets carry,
     /// and each account's on the chain or at the root of a record chain on it (`account_chain`;
     /// named in `out.accounts` instead where `out` defers them).
-    pub(super) fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut Certs) {
+    pub(super) fn cert_parts(&mut self, certs: &super::chain::Certificates, out: &mut Certs) {
         let all: BTreeSet<Tid> = certs.created.iter().copied().collect();
         for c in &certs.commits {
             out.add(*c, self.parts_of(c, &all, &["roles.0"]));
