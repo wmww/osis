@@ -39,6 +39,58 @@ fn granted() -> (World, (Tid, Tid)) {
     })
 }
 
+/// On `siblings`, Bob's node 1 makes T0 and grants Alice (node 0's account) read on it; Alice
+/// holds T0; run. Built once per process (`fixture_with`): the world, Alice, Bob and T0.
+fn alice_reads_t0() -> (World, (Tid, Tid, Tid)) {
+    fixture_with("holding alice reads t0", || {
+        let mut w = siblings();
+        let (alice, bob) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+        let t0 = make(&mut w, 1, None, "t0");
+        w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+        strong(&mut w, 0, None, t0, true);
+        w.run();
+        (w, (alice, bob, t0))
+    })
+}
+
+/// On `contacts`, Bob (node 1) grants Alice read on T0, mints T1 under it, grants T1 read on T0
+/// (keyless: T1's key derives from T0's) and Alice read on T1; she holds both. Built once per
+/// process (`fixture_with`): the world, Alice, T0 and T1.
+fn keyless_way() -> (World, (Tid, Tid, Tid)) {
+    fixture_with("holding keyless way", || {
+        let mut w = contacts();
+        let alice = w.node(0).account.unwrap();
+        let t0 = make(&mut w, 1, None, "t0");
+        w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+        let t1 = make_in(&mut w, 1, t0, "t1");
+        w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+        w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+        for t in [t0, t1] {
+            strong(&mut w, 0, None, t, true);
+        }
+        w.run();
+        (w, (alice, t0, t1))
+    })
+}
+
+/// On `contacts`, Bob (node 1) makes T0 and T1, grants T1 read on T0 (keyed) and Alice read on
+/// T1 only; she holds both. Built once per process (`fixture_with`): the world, Alice, T0 and T1.
+fn keyed_way() -> (World, (Tid, Tid, Tid)) {
+    fixture_with("holding keyed way", || {
+        let mut w = contacts();
+        let alice = w.node(0).account.unwrap();
+        let t0 = make(&mut w, 1, None, "t0");
+        let t1 = make(&mut w, 1, None, "t1");
+        w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+        w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+        for t in [t0, t1] {
+            strong(&mut w, 0, None, t, true);
+        }
+        w.run();
+        (w, (alice, t0, t1))
+    })
+}
+
 /// Node `i` adds (`on`) or removes a strong from `from` (its account root when `None`) to `t`;
 /// the write's NotCarried strongs.
 fn strong(w: &mut World, i: usize, from: Option<Tid>, t: Tid, on: bool) {
@@ -1121,12 +1173,7 @@ fn refile(w: &mut World, from: usize, to: usize, s: &osis_base::SyncId) {
 // again after the loss by a writer of T0 (who holds them all) gives none of T2's content back.
 #[test]
 fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_sync_set_2() {
-    let mut w = siblings();
-    let alice = w.node(0).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
-    strong(&mut w, 0, None, t0, true);
-    w.run();
+    let (mut w, (alice, _, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 2, t0, "t2");
     w.write(2, |e| e.grant(&t2, &alice, &edge(Role::Sync))).unwrap();
     w.write(2, |e| e.leaving_adminless(|e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None }))).unwrap();
@@ -1154,13 +1201,7 @@ fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_syn
 // T2 again: she reads T2 again, and only then.
 #[test]
 fn a_mint_admins_readers_read_a_thing_again_once_granted_again_spec_permissions_3() {
-    let mut w = siblings();
-    let alice = w.node(0).account.unwrap();
-    let bob = w.node(1).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
-    strong(&mut w, 0, None, t0, true);
-    w.run();
+    let (mut w, (_, bob, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 2, t0, "t2");
     w.write(2, |e| e.grant(&t2, &bob, &edge(Role::Admin))).unwrap();
     w.run();
@@ -1192,13 +1233,7 @@ fn record_chain_of_three(key1: bool) -> (World, Tid, Tid, Tid) {
 
 /// `record_chain_of_three`, built.
 fn record_chain_built(key1: bool) -> (World, (Tid, Tid, Tid)) {
-    let mut w = siblings();
-    let alice = w.node(0).account.unwrap();
-    let bob = w.node(1).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
-    strong(&mut w, 0, None, t0, true);
-    w.run();
+    let (mut w, (_, bob, t0)) = alice_reads_t0();
     let t1 = make_in(&mut w, 1, t0, "t1");
     if key1 {
         w.write(1, |e| e.grant(&t1, &bob, &edge(Role::Admin))).unwrap();
@@ -1284,13 +1319,7 @@ fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3
 // grant and holds none of its content.
 #[test]
 fn a_thing_read_through_one_unit_and_kept_unread_directly_spec_sync_set_2() {
-    let mut w = siblings();
-    let alice = w.node(0).account.unwrap();
-    let bob = w.node(1).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
-    strong(&mut w, 0, None, t0, true);
-    w.run();
+    let (mut w, (alice, bob, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 1, t0, "t2");
     w.write(1, |e| e.grant(&t2, &bob, &edge(Role::Admin))).unwrap();
     w.write(1, |e| e.grant(&t2, &alice, &edge(Role::Sync))).unwrap();
@@ -1316,12 +1345,7 @@ fn a_thing_read_through_one_unit_and_kept_unread_directly_spec_sync_set_2() {
 // she holds it: she reads T2's minting value, and holds every part her siblings judge must-hold.
 #[test]
 fn a_grantee_reads_a_value_minted_under_its_mint_admin_spec_sync_judgement_1() {
-    let mut w = siblings();
-    let alice = w.node(0).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
-    strong(&mut w, 0, None, t0, true);
-    w.run();
+    let (mut w, (alice, _, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 2, t0, "t2");
     w.write(2, |e| e.grant(&t2, &alice, &edge(Role::Admin))).unwrap();
     strong(&mut w, 0, None, t2, true);
@@ -1429,17 +1453,7 @@ fn a_grant_no_longer_taken_up_reads_nothing_below_it_spec_permissions_3() {
 // grant reads nothing of T0, so it keeps her no copy, and she reads T0 no more.
 #[test]
 fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
-    let mut w = contacts();
-    let alice = w.node(0).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
-    let t1 = make_in(&mut w, 1, t0, "t1");
-    w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
-    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
-    for t in [t0, t1] {
-        strong(&mut w, 0, None, t, true);
-    }
-    w.run();
+    let (mut w, (alice, t0, t1)) = keyless_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0");
     w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
     w.run();
@@ -1453,16 +1467,7 @@ fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
 // saying retain: she keeps a copy of T1, and of T0 by T1's live grant.
 #[test]
 fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
-    let mut w = contacts();
-    let alice = w.node(0).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    let t1 = make(&mut w, 1, None, "t1");
-    w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
-    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
-    for t in [t0, t1] {
-        strong(&mut w, 0, None, t, true);
-    }
-    w.run();
+    let (mut w, (alice, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
     w.write(1, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: alice, new: None, retain: Some(true) })).unwrap();
     w.run();
@@ -1558,16 +1563,7 @@ fn a_reader_follows_a_forked_sync_id_through_a_rotation_spec_sync_inbox_5() {
 // holds both. Bob removes T1's grant saying retain: she keeps a copy of T0 and still reads T1.
 #[test]
 fn an_ended_keyed_grant_keeps_a_copy_spec_permissions_3() {
-    let mut w = contacts();
-    let alice = w.node(0).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    let t1 = make(&mut w, 1, None, "t1");
-    w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
-    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
-    for t in [t0, t1] {
-        strong(&mut w, 0, None, t, true);
-    }
-    w.run();
+    let (mut w, (_, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
     w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: t1, new: None, retain: Some(true) })).unwrap();
     w.run();
@@ -1637,17 +1633,7 @@ fn an_own_write_before_a_dropped_strong_reaches_its_peer_spec_sync_set_3() {
 // then removes Alice from T0: the ended keyless grant read nothing of T0, so it keeps her no copy.
 #[test]
 fn an_ended_keyless_grant_keeps_no_copy_spec_permissions_3() {
-    let mut w = contacts();
-    let alice = w.node(0).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
-    let t1 = make_in(&mut w, 1, t0, "t1");
-    w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
-    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
-    for t in [t0, t1] {
-        strong(&mut w, 0, None, t, true);
-    }
-    w.run();
+    let (mut w, (alice, t0, t1)) = keyless_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0");
     w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: t1, new: None, retain: Some(true) })).unwrap();
     w.run();
