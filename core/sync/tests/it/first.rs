@@ -200,6 +200,32 @@ fn a_log_waits_out_its_pass_spec_sync_judgement_3() {
     assert!(must.iter().all(|c| w.engine(0).commit_blobs(c).unwrap().iter().any(|b| w.store(0).entry(&s, b).unwrap().is_some())), "logged");
 }
 
+// spec/sync-status.md §1 (PASS_WAIT_MS: a pass's start is dated durably), spec/sync-streams.md §1
+// (Waits: a pass's start outlives a restart): node 0, cut off from both peers, gives node 1's
+// account sync on node 2's thing (a new sync ID S, its log of node 2's bodies held back for the
+// pass) and restarts every quarter of `PASS_WAIT_MS`; the pass ends `PASS_WAIT_MS` after it first
+// began all the same, and the bodies are logged. Fails with a pass's wait counted from each start.
+#[test]
+fn restarts_hold_no_pass_past_its_wait_spec_sync_status_1() {
+    use osis_proto::limits::PASS_WAIT_MS;
+    let mut w = world_of(0, 2, 3);
+    let _ = play(&mut w, &[New(2), Run, Partition(0, 1), Partition(0, 2)], String::new());
+    let t = w.history.things[0].0;
+    let _ = play(&mut w, &[Give(0, 0, Holder::Node(1), Gives::Syncs)], String::new());
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    for _ in 0..3 {
+        w.advance(PASS_WAIT_MS / 4);
+        assert!(w.node(0).node.status_of(&s).is_some_and(|x| x.pass_waits.is_some()), "under way");
+        w.power_off(0);
+        w.power_on(0);
+    }
+    w.advance(PASS_WAIT_MS / 4 + 60_000);
+    assert!(w.node(0).node.status_of(&s).is_some_and(|x| x.pass_waits.is_none()), "the pass ended");
+    let must: Vec<_> = w.engine(0).commit_ids().into_iter().filter(|c| w.node(0).node.verdict(&s, c) == Some(osis_sync::read::Verdict::Must)).collect();
+    assert!(!must.is_empty(), "node 2's bodies must-hold under S");
+    assert!(must.iter().all(|c| w.engine(0).commit_blobs(c).unwrap().iter().any(|b| w.store(0).entry(&s, b).unwrap().is_some())), "logged");
+}
+
 /// By hand: every counter and the frame census of the first sync at n and 10n members
 /// (`--ignored --nocapture`). What issues/many-sync-ids-cost.md counts.
 #[test]

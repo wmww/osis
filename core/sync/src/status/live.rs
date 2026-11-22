@@ -7,7 +7,8 @@ use crate::store::Source;
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Position, RecordId, Result};
 use crate::unread::Unread;
-use osis_base::{BlobId, CommitId, SyncId};
+use osis_base::{BlobId, CommitId, SyncId, WallMs};
+use osis_store::Shred;
 use osis_engine::sync::SyncSet;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -36,6 +37,9 @@ impl Net for NetView<'_> {
         self.unread.stranded(s)
     }
 }
+
+/// The sync store's rows `Z/p/ s`: the wall time a pass of S under way began (8 bytes).
+const BEGUN: &[u8] = b"Z/p/";
 
 pub struct Live<'a, 'b> {
     pub cx: &'a mut Cx<'b>,
@@ -71,8 +75,26 @@ impl Net for Live<'_, '_> {
 }
 
 impl Ground for Live<'_, '_> {
-    fn mono(&self) -> osis_base::Mono {
-        self.cx.mono
+    fn now(&self) -> WallMs {
+        self.cx.now
+    }
+    fn passes_begun(&mut self) -> Result<BTreeMap<SyncId, WallMs>> {
+        let rows = self.cx.store.with_read(|t| t.scan_local(BEGUN, b"", usize::MAX))?;
+        let mut out = BTreeMap::new();
+        for (k, v) in rows {
+            let s = k.get(BEGUN.len()..).and_then(|x| x.try_into().ok()).map(SyncId);
+            let at = v.as_slice().try_into().ok().map(u64::from_be_bytes).map(WallMs);
+            let (Some(s), Some(at)) = (s, at) else { return Err(crate::types::Error::Store(osis_store::Error::Corrupt("status pass start row"))) };
+            out.insert(s, at);
+        }
+        Ok(out)
+    }
+    fn set_pass_begun(&mut self, s: &SyncId, at: Option<WallMs>) -> Result<()> {
+        let key = [BEGUN, &s.0].concat();
+        self.cx.store.with_tx(|t| match at {
+            Some(at) => t.put_local(&key, &at.0.to_be_bytes(), Shred::No),
+            None => t.remove_local(&key, Shred::No).map(drop),
+        })
     }
     fn syncs(&mut self) -> Arc<SyncSet> {
         Arc::new(SyncSet { ids: self.cx.store.syncs(), ..SyncSet::default() })

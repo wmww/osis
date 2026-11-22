@@ -76,6 +76,8 @@ struct Fake {
     /// The engine's wants, by pass place; the fake's places are its ms (`begin_pass`).
     wanted: Stamped<(), Arc<BTreeMap<SyncId, u64>>>,
     passes: Vec<(SyncId, u64)>,
+    /// The pass starts kept durably (`set_pass_begun`): what a restart keeps.
+    begun: BTreeMap<SyncId, WallMs>,
     /// Calls to `stamped` (lacking counts taken).
     stamped_reads: u64,
     /// The engine's `stranded` per read S.
@@ -105,8 +107,18 @@ impl Net for Fake {
 }
 
 impl Ground for Fake {
-    fn mono(&self) -> osis_base::Mono {
-        osis_base::Mono(self.now)
+    fn now(&self) -> WallMs {
+        WallMs(self.now)
+    }
+    fn passes_begun(&mut self) -> Result<BTreeMap<SyncId, WallMs>> {
+        Ok(self.begun.clone())
+    }
+    fn set_pass_begun(&mut self, s: &SyncId, at: Option<WallMs>) -> Result<()> {
+        match at {
+            Some(at) => self.begun.insert(*s, at),
+            None => self.begun.remove(s),
+        };
+        Ok(())
     }
     fn syncs(&mut self) -> Arc<SyncSet> {
         self.set.get(&()).cloned().unwrap_or_default()
@@ -606,11 +618,34 @@ fn complete_pass_gives_up_on_away_peer() {
     t.at(10);
     want(&mut t, S, 10);
     assert!(t.g.passes.is_empty());
-    assert_eq!(t.st.next_wake(), Some(osis_base::Mono(10 + PASS_WAIT_MS)));
+    assert_eq!(t.st.next_wake(), Some(WallMs(10 + PASS_WAIT_MS)));
     t.at(10 + PASS_WAIT_MS - 1);
     assert!(t.g.passes.is_empty());
     t.at(10 + PASS_WAIT_MS);
     assert_eq!(t.g.passes, vec![(S, 10)]);
+}
+
+// spec/sync-status.md §1 (PASS_WAIT_MS: a pass's start is dated durably, outliving a restart): a
+// node restarting more often than PASS_WAIT_MS with a recorded peer away begins the pass under way
+// at the stop again from when it began, so it ends PASS_WAIT_MS after that, and its row goes.
+// Fails with a pass's deadline counted from each start.
+#[test]
+fn a_pass_under_way_at_a_restart_ends_by_its_first_start_spec_sync_status_1() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.g.records.insert(S, [RB].into());
+    t.at(10);
+    want(&mut t, S, 10);
+    assert_eq!(t.g.begun, [(S, WallMs(10))].into(), "its start is kept");
+    for k in 1..4 {
+        t.st = Status::default();
+        t.at(10 + k * PASS_WAIT_MS / 4);
+        assert!(t.g.passes.is_empty(), "restart {k}: under way");
+        assert_eq!(t.st.of(&S, &t.g).unwrap().pass_waits, Some([RB].into()), "restart {k}: begun again");
+        assert_eq!(t.st.next_wake(), Some(WallMs(10 + PASS_WAIT_MS)), "restart {k}");
+    }
+    t.at(10 + PASS_WAIT_MS);
+    assert_eq!(t.g.passes.len(), 1, "ended at its first start's deadline");
+    assert!(t.g.begun.is_empty(), "its row goes with it");
 }
 
 // spec/sync-status.md §1 (complete pass, spec/permissions.md §3 Complete pass): a pass under way
