@@ -397,12 +397,10 @@ fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
 
 /// Node 0 mints a dependent thing with its account root D as admin held from D, an independent thing with
 /// its account as admin (held from D), and a dependent thing minted with its node root as admin held from it, writes each,
-/// removes every strong to them and runs (a pass releases them), `rounds` times; then snapshots
-/// the roots' `holds.0` and D's `tickets.0` (what the trigger leaves held moves in a cycle; a
-/// snapshot ends it at the same place) and lets the tombstone lifetime and two days pass. What
-/// it holds then.
+/// removes every strong to them and runs (a pass releases them), `rounds` times; then what it
+/// holds `aged`.
 fn own_rounds(w: &mut World, rounds: usize) -> Held {
-    use osis_schema::core_types::{HOLDS, TICKETS};
+    use osis_schema::core_types::HOLDS;
     let (root, d) = (w.engine(0).node_root().unwrap(), w.engine(0).account_root().unwrap());
     let p = w.engine(0).account().unwrap().unwrap().0;
     let strong = |m: &mut Mutation, from: Tid, to: Tid, on: bool| {
@@ -444,15 +442,29 @@ fn own_rounds(w: &mut World, rounds: usize) -> Held {
         }
         w.advance(1_000);
     }
-    w.write(0, |e| {
-        for (t, ak) in [(d, HOLDS.name()), (d, TICKETS.name()), (root, HOLDS.name())] {
-            e.snapshot(&t, &ak).unwrap();
-        }
-    });
+    aged(w)
+}
+
+/// Node 0 snapshots its roots' `holds.0` and D's `tickets.0` (what the trigger leaves held moves
+/// in a cycle; a snapshot ends it at the same place), then the tombstone lifetime and two days
+/// pass: what it holds then.
+fn aged(w: &mut World) -> Held {
+    snapshot_roots(w, 0);
     w.run();
     w.advance(TOMBSTONE_LIFETIME_MS + 2 * DAY_MS);
     w.run();
     held(w, 0)
+}
+
+/// Node `i` snapshots its node root's and account root's `holds.0` and D's `tickets.0`.
+fn snapshot_roots(w: &mut World, i: usize) {
+    use osis_schema::core_types::{HOLDS, TICKETS};
+    let (root, d) = (w.engine(i).node_root().unwrap(), w.engine(i).account_root().unwrap());
+    w.write(i, |e| {
+        for (t, ak) in [(d, HOLDS.name()), (d, TICKETS.name()), (root, HOLDS.name())] {
+            e.snapshot(&t, &ak).unwrap();
+        }
+    });
 }
 
 /// What a set removal's tombstone may add to the roots' snapshots, in their records (`c/`) and
@@ -584,8 +596,8 @@ fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
 /// written in the same commit (a disappearing message), and lets it expire, `rounds` times; then
 /// as `own_rounds` ends.
 fn expiry_rounds(w: &mut World, rounds: usize) -> Held {
-    use osis_schema::core_types::{HOLDS, TICKETS};
-    let (root, d) = (w.engine(0).node_root().unwrap(), w.engine(0).account_root().unwrap());
+    use osis_schema::core_types::HOLDS;
+    let d = w.engine(0).account_root().unwrap();
     for _ in 0..rounds {
         let t = w.write(0, |e| {
             let at = osis_base::WallMs(e.now().0 + 1_000);
@@ -602,15 +614,7 @@ fn expiry_rounds(w: &mut World, rounds: usize) -> Held {
         w.run();
         assert!(!w.engine(0).knows(&t), "expired");
     }
-    w.write(0, |e| {
-        for (t, ak) in [(d, HOLDS.name()), (d, TICKETS.name()), (root, HOLDS.name())] {
-            e.snapshot(&t, &ak).unwrap();
-        }
-    });
-    w.run();
-    w.advance(TOMBSTONE_LIFETIME_MS + 2 * DAY_MS);
-    w.run();
-    held(w, 0)
+    aged(w)
 }
 
 // S1, its expiry arm, spec/commits.md §5 (Destruction: a thing goes by ordinary expiry at its
@@ -633,8 +637,8 @@ fn expired_things_return_storage_to_a_fresh_nodes_spec_commits_5() {
 /// their targets (`history_holds_targets`), and B, held by A alone: A's strong to B is removed
 /// (B held by A's history), then the root's to A. `rounds` times; then as `own_rounds` ends.
 fn history_rounds(w: &mut World, rounds: usize) -> Held {
-    use osis_schema::core_types::{self as ct, HOLDS, TICKETS};
-    let (root, d) = (w.engine(0).node_root().unwrap(), w.engine(0).account_root().unwrap());
+    use osis_schema::core_types::{self as ct, HOLDS};
+    let d = w.engine(0).account_root().unwrap();
     let strong = |m: &mut Mutation, from: Tid, to: Tid, on: bool| {
         let v = Value::Strong(to);
         let op = if on { osis_crdt::Op::Add(v) } else { osis_crdt::Op::Remove(v) };
@@ -678,15 +682,7 @@ fn history_rounds(w: &mut World, rounds: usize) -> Held {
         }
         w.advance(1_000);
     }
-    w.write(0, |e| {
-        for (t, ak) in [(d, HOLDS.name()), (d, TICKETS.name()), (root, HOLDS.name())] {
-            e.snapshot(&t, &ak).unwrap();
-        }
-    });
-    w.run();
-    w.advance(TOMBSTONE_LIFETIME_MS + 2 * DAY_MS);
-    w.run();
-    held(w, 0)
+    aged(w)
 }
 
 // Releasing everything, its history arm, spec/data-model.md §8 What counts, spec/sync-set.md
@@ -706,14 +702,8 @@ fn releasing_held_history_returns_storage_to_a_fresh_nodes_spec_data_model_8() {
 /// tombstone lifetime and two days: what each node holds.
 fn settled(w: &mut World) -> Vec<Held> {
     use osis_base::format::{INBOX_LIFETIME_MS, ROLE_KEEP_MS};
-    use osis_schema::core_types::{HOLDS, TICKETS};
     for i in 0..w.len() {
-        let (root, d) = (w.engine(i).node_root().unwrap(), w.engine(i).account_root().unwrap());
-        w.write(i, |e| {
-            for (t, ak) in [(d, HOLDS.name()), (d, TICKETS.name()), (root, HOLDS.name())] {
-                e.snapshot(&t, &ak).unwrap();
-            }
-        });
+        snapshot_roots(w, i);
     }
     w.run();
     w.advance(INBOX_LIFETIME_MS.max(ROLE_KEEP_MS) + TOMBSTONE_LIFETIME_MS + 2 * DAY_MS);

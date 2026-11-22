@@ -134,27 +134,9 @@ fn a_delete_by_levels_needs_the_right_over_every_delta_of_the_blob_spec_sync_ids
 // Delete of it, and one by its own level-2 key (its own purge author's, which covers its own
 // write) or its write key alone is refused; writer 2's own Delete takes it. Fails with a store
 // taking a level-2 signature under any key.
-#[test]
-fn a_party_without_the_right_signs_no_delete_a_store_takes_spec_sync_ids_6() {
-    let (mut w, t, s) = crate::deletes::four();
-    let theirs = write(&mut w, 2, t, &[("u:a.0", PurgeBy::AuthorOrAdmin)]);
-    let own = write(&mut w, 3, t, &[("u:b.0", PurgeBy::AuthorOrAdmin)]);
-    w.run();
-    let (b, mine) = (entry(&mut w, 2, &s, &theirs), entry(&mut w, 3, &s, &own));
-    assert!(by_levels(&mut w, 3, t, &s, &b).is_none(), "writer 3 covers nothing of writer 2's");
-    let keys = head_keys(&mut w, 3, t, &s);
-    let its = secret(&mut w, 3, &mine, 2);
-    let item = forged(&mut w, 3, &mine, &keys, &[(2, &its)], &s, &b);
-    assert_eq!(take(&w, &s, item), Code::REFUSED, "another purge author's level-2 key");
-    let item = forged(&mut w, 3, &b, &keys, &[(2, &its)], &s, &b);
-    assert_eq!(take(&w, &s, item), Code::REFUSED, "under the blob's own salt and blind");
-    assert!(held(&w, &s, &b));
-    let by_author = by_levels(&mut w, 2, t, &s, &b).expect("its author covers it");
-    assert_eq!(take(&w, &s, by_author), Code::OK);
-    assert!(!held(&w, &s, &b));
-}
-
-// spec/sync-ids.md §6 (Delete), spec/wire.md §11.2 (Delete): the two refusals above as a peer
+//
+// spec/sync-ids.md §6 (Delete), spec/wire.md §11.2 (Delete): that refusal and the one above
+// (`a_delete_by_levels_needs_the_right_over_every_delta_of_the_blob_spec_sync_ids_6`) as a peer
 // sends them. Writer 2 sends node 1, in one Delete, its level-2 signature alone over a blob
 // holding an admin-only delta beside its own (one group of two covered), then writer 3 sends its
 // own level-2 key over writer 2's blob; each message also carries the sender's honest Delete of
@@ -162,14 +144,30 @@ fn a_party_without_the_right_signs_no_delete_a_store_takes_spec_sync_ids_6() {
 // connection, so the refusals are the levels'. Fails with the peer's path taking a Delete the
 // store's own check refuses.
 #[test]
-fn a_peers_delete_by_levels_is_judged_as_the_stores_spec_sync_ids_6() {
+fn a_party_without_the_right_signs_no_delete_a_store_or_its_peer_path_takes_spec_sync_ids_6() {
     let (mut w, t, s) = crate::deletes::four();
-    let mixed = write(&mut w, 2, t, &[("u:a.0", PurgeBy::Admin), ("u:b.0", PurgeBy::AuthorOrAdmin)]);
+    let theirs = write(&mut w, 2, t, &[("u:a.0", PurgeBy::AuthorOrAdmin)]);
+    let own = write(&mut w, 3, t, &[("u:b.0", PurgeBy::AuthorOrAdmin)]);
+    let mixed = write(&mut w, 2, t, &[("u:f.0", PurgeBy::Admin), ("u:g.0", PurgeBy::AuthorOrAdmin)]);
     let own2 = write(&mut w, 2, t, &[("u:c.0", PurgeBy::AuthorOrAdmin)]);
-    let theirs = write(&mut w, 2, t, &[("u:d.0", PurgeBy::AuthorOrAdmin)]);
+    let theirs2 = write(&mut w, 2, t, &[("u:d.0", PurgeBy::AuthorOrAdmin)]);
     let own3 = write(&mut w, 3, t, &[("u:e.0", PurgeBy::AuthorOrAdmin)]);
     w.run();
-    let [bm, b2, bt, b3] = [mixed, own2, theirs, own3].map(|c| entry(&mut w, if c == own3 { 3 } else { 2 }, &s, &c));
+    // at the store
+    let (b, mine) = (entry(&mut w, 2, &s, &theirs), entry(&mut w, 3, &s, &own));
+    assert!(by_levels(&mut w, 3, t, &s, &b).is_none(), "writer 3 covers nothing of writer 2's");
+    let keys3 = head_keys(&mut w, 3, t, &s);
+    let its = secret(&mut w, 3, &mine, 2);
+    let item = forged(&mut w, 3, &mine, &keys3, &[(2, &its)], &s, &b);
+    assert_eq!(take(&w, &s, item), Code::REFUSED, "another purge author's level-2 key");
+    let item = forged(&mut w, 3, &b, &keys3, &[(2, &its)], &s, &b);
+    assert_eq!(take(&w, &s, item), Code::REFUSED, "under the blob's own salt and blind");
+    assert!(held(&w, &s, &b));
+    let by_author = by_levels(&mut w, 2, t, &s, &b).expect("its author covers it");
+    assert_eq!(take(&w, &s, by_author), Code::OK);
+    assert!(!held(&w, &s, &b));
+    // as a peer sends them
+    let [bm, b2, bt, b3] = [mixed, own2, theirs2, own3].map(|c| entry(&mut w, if c == own3 { 3 } else { 2 }, &s, &c));
     let keys2 = head_keys(&mut w, 2, t, &s);
     let two = secret(&mut w, 2, &bm, 2);
     let alone = forged(&mut w, 2, &bm, &keys2, &[(2, &two)], &s, &bm);
