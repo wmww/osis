@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: sync, engine
 
-Stage A4 (notes/redesign-plan.md) deletes the account signing chain a Prove carries; read again there (a proof of an owner key, spec/sync-opens.md §2).
+Stage A4 (notes/redesign-plan.md) deletes the account signing chain a Prove carries; read again there (a proof of a key of a thing, spec/sync-opens.md §2).
 
 - The prover does not know what the verifier holds, so it sends the newest rotations of `AccountView::proving_chain` that fit. A verifier holding the chain up to them takes them all; one lacking older ones keeps nothing of them (they would pend; nothing carries them).
 - At infinity (a long-lived account, a fresh verifier) Prove proves nothing; sync still delivers the chain as certificates of any sync ID it shares with the account.

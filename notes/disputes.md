@@ -7,7 +7,7 @@ Principle: a side is an ordinary view. A node runs the ordinary rules over held 
 - No top authority above the admins, nothing hidden, nothing users may want to change baked into a thing. A tid and the mint admin it names stay; the mint admin is history, with no power once removed.
 - Admins fight: every node has a default side (first received), warns if it can, and can be overridden. Convergence is given up only there. Switching back and forth must work and may be slow.
 - Accepted: a thief with an unlocked device taking control; a wrong default sealing keys to the attacker; a current admin Q that Y left in place voiding Y's removal silently (Y should have removed Q too); a removed node erasing and re-syncing if that turns around, with data lost if no copy is left; role history growing; a kicked admin raising a warning; a new node taking the walk's side (Defaults below).
-- Recovery: undesigned (issues/recovery-redesign.md).
+- Recovery: undesigned (issues/recovery-design.md).
 - Default side: conflicts should be very rare, so whatever keeps the code simplest (first received alone).
 - "Contained" means code complexity, not blast radius: a fight may do wide damage, but its handling must not spread through the code. Fix the design rather than work around oddities.
 

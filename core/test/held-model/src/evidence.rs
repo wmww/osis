@@ -15,7 +15,7 @@
 //! - **Bodies.** A commit's body is under every sync ID whose unit holds the thing it writes
 //!   (roles-model commits write one thing: a copy per (commit, thing) is per commit here).
 //! - **The required set** of sync ID S over a held set H (`World::req`): the evidence closure
-//!   (`paths::evidence`: every held list write on a seed's key hop and edge write on an edge of
+//!   (`paths::evidence`: every held edge write on a seed's key hop and on an edge of
 //!   its path or on the remaining admin edge a lowering names, closed under the same for what it
 //!   adds: notes/write-path-design.md §2 E1) of the seeds: the bodies; the grants naming S's thing as holder (a holder's
 //!   grants travel under its sync ID: taken-ness is not modelled, every grant counts). What of it
@@ -731,21 +731,20 @@ impl World {
     /// The least part `m` needs of edge `e` its verdict reads (roles-model `paths` `need`, for a
     /// write no pass applied): a role, or (true) that role with the may-grant flag. Content-class
     /// parts write; an edge write admin, a finalize write, a may-grant grant its role (on its
-    /// path's last edge with the flag, under `flag_check`). Its key hop is met by any chained
-    /// list write putting it: one adding the key, admin (Owner keys O3, O4).
+    /// path's last edge with the flag, under `flag_check`), its key hop a hop like any.
     pub fn need(&self, m: Id, e: Edge) -> (Role, bool) {
         let c = &self.w.commits[m];
         match &c.kind {
-            Kind::Edge { .. } if !self.w.hops(m).contains(&e) => (Role::Admin, false),
+            Kind::Edge { .. } if !self.w.rests(m).contains(&e) => (Role::Admin, false),
             Kind::Edge { finalize: true, .. } => (Role::Write, false),
-            Kind::Edge { role, until, .. } if !self.w.leave(m) && paths::alive((*role, *until), c.ts) > Role::None && *role < Role::Admin => (*role, self.rules.flag_check && self.w.hops(m).last() == Some(&e)),
+            Kind::Edge { role, until, .. } if !self.w.leave(m) && paths::alive((*role, *until), c.ts) > Role::None && *role < Role::Admin => (*role, self.rules.flag_check && self.w.rests(m).last() == Some(&e)),
             Kind::Edge { .. } => (Role::Admin, false),
             _ => (Role::Write, false),
         }
     }
     /// The evidence closure of `seeds` over `avail` under `rule.closure`: the seeds, the other
-    /// parts of a member's commit on its thing, the taken list writes on a member's key hop and
-    /// edge writes on an edge of its stated path (where joined, under `joined`).
+    /// parts of a member's commit on its thing, the taken edge writes on a member's key hop and
+    /// on an edge of its stated path (where joined, under `joined`).
     /// The draft is `paths::evidence`.
     pub fn closure(&self, rule: &Rule, seeds: &Set, avail: &Set) -> Set {
         self.closure_with(rule, seeds, BTreeSet::new(), avail)
@@ -774,7 +773,7 @@ impl World {
                         edges.extend(self.edges_among(avail, &self.chain_things(avail, &ch, a, hd)));
                     }
                 } else if !c.joined || self.joined(avail, &ch, m) {
-                    // its key hop's list writes and its path's edge writes (E1)
+                    // the edge writes on its key hop and its path's edges (E1)
                     edges.extend(self.w.rests(m).iter().copied());
                 }
                 if self.w.edge_class(m) {

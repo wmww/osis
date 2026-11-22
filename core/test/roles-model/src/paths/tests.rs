@@ -1203,13 +1203,13 @@ fn a_thiefs_lowering_after_the_removal_holds_nothing() {
 #[test]
 #[ignore = "property"]
 fn small_worlds_hold_plain() {
-    for (flags, detached, owner) in [(false, false, false), (true, false, false), (false, true, false), (false, false, true)] {
+    for (flags, detached, keyed) in [(false, false, false), (true, false, false), (false, true, false), (false, false, true)] {
         for honest in [Honesty::None, Honesty::Lists, Honesty::Writers] {
-            let st = tiny_run(3000, &Rules::fixed(), TinyMode { flags, detached, keys: owner, honest });
+            let st = tiny_run(3000, &Rules::fixed(), TinyMode { flags, detached, keys: keyed, honest });
             // honest writers make few writes that do not apply: their worlds check `honest` alone here
             let ran = |k: &str| st.checked.get(k).is_some_and(|n| *n > 0);
             let keys: &[&str] = if honest == Honesty::Writers { &["honest"] } else { &["void", "honest", "idle N", "unapplied N"] };
-            assert!(st.failures() == 0 && keys.iter().all(|k| ran(k)), "{flags} {detached} {owner} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
+            assert!(st.failures() == 0 && keys.iter().all(|k| ran(k)), "{flags} {detached} {keyed} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
         }
     }
     let no_void = tiny_run(1000, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { flags: false, detached: false, keys: false, honest: Honesty::None });
@@ -1220,7 +1220,7 @@ fn small_worlds_hold_plain() {
         assert!(st.fails.get(k).is_some_and(|n| *n > 0), "{k} {:?}", st.fails);
     }
     let keys = TinyMode { flags: false, detached: false, keys: true, honest: Honesty::None };
-    for (rules, k) in [(Rules { key_hop: false, ..Rules::fixed() }, "key audited"), (Rules { list_writers: false, ..Rules::fixed() }, "list right")] {
+    for (rules, k) in [(Rules { key_hop: false, ..Rules::fixed() }, "key audited"), (Rules { key_hop: false, ..Rules::fixed() }, "key right")] {
         let st = tiny_run(3000, &rules, keys);
         assert!(st.fails.get(k).is_some_and(|n| *n > 0), "{k} {:?}", st.fails);
     }
@@ -2577,7 +2577,7 @@ fn a_self_rewrite_keeps_no_admin_its_grant_lost() {
 /// record edge, which is its direct edge: its write by [] marked applies nowhere, unmarked applies.
 /// A mark past the members (hop 1 of a path of one hop) applies nowhere. H's marked hop, where H
 /// holds a direct edge on T1, applies; where it holds none, nowhere (no edge, not the descent).
-/// (A, minted by H, signs by a key H adds as its first, O4 (b).)
+/// (A, minted by H, signs by a key H grants.)
 #[test]
 fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
     let mut w = account();
@@ -3465,19 +3465,19 @@ fn a_list_entry_keeps_an_edge_class_part_on_its_leafs_thing_alone() {
     }
 }
 
-// ---- Owner keys (notes/write-path-design.md, Owner keys O1 to O9, The flow that must hold) ----
+// ---- Keys (notes/write-path-design.md, Keys K1 to K6) ----
 
-/// A key the owner wrote down, and one the thief made up.
+/// A key its holder wrote down, and one the thief made up.
 const RK: Thing = KEYS | 0x40;
 const TK: Thing = KEYS | 0x41;
-/// A thing minted with an owner key (its own: no mint admin), and its dependent.
+/// A thing minted with a key (its own: no mint admin), and its dependent.
 const T: Thing = 40;
 const TD: Thing = 41;
 
-/// O1, O4 (b): a thing minted with an owner key signs as itself from the start; one minted with a
-/// mint admin lists no key and signs as nothing until an admin adds its first.
+/// K1: a thing minted with a key signs as itself from the start; one minted with a mint admin has
+/// no key and signs as nothing until an admin grants one.
 #[test]
-fn a_thing_signs_by_the_key_its_record_holds_or_the_first_an_admin_adds() {
+fn a_thing_signs_by_the_key_its_record_holds_or_one_an_admin_grants() {
     let mut w = account();
     let t_own = w.content(T, 1, &[], T);
     let a_none = w.content(A, 1, &[], A);
@@ -3491,129 +3491,107 @@ fn a_thing_signs_by_the_key_its_record_holds_or_the_first_an_admin_adds() {
     assert!(fixed_but(&w, &[], |r| r.key_hop = false).valid.contains(&a_own));
 }
 
-/// O4: where a key is listed no admin's write adds or removes one, and a key hop takes no
-/// `until`, flag or level; a listed key acting as itself writes any keys (control `-admin-lists`:
-/// the admin's writes apply).
+/// K3: a key's grant is an edge like any. A's admins write it at any role, beside other keys; a
+/// key acts as its thing by the role its grant gives (at write: content, no edge write); an admin
+/// removes a key by the ordinary removal, and what the key signed falls unless listed (K4).
 #[test]
-fn no_admin_writes_the_list_while_a_key_is_listed() {
+fn a_keys_grant_is_written_and_removed_like_any_grant() {
     let mut w = account();
-    w.push(H, 1, &[], A, Kind::set(RK, Admin));
-    let add = w.push(H, 2, &[], A, Kind::set(TK, Admin));
-    let rm = w.edge(H, 3, &[], A, RK, Gone, &[]);
-    let timed = w.push_signed(RK, A, 3, &[], A, Kind::set(TK, Admin).until(9));
-    let level = w.push_signed(RK, A, 3, &[], A, Kind::set(TK, Write));
-    let flag = w.push_signed(RK, A, 3, &[], A, Kind::set(TK, Admin).may_grant());
-    let as_tk = w.push_signed(TK, A, 4, &[], A, Kind::Content);
+    let rk = w.push(H, 1, &[], A, Kind::set(RK, Admin));
+    let tk = w.push(H, 2, &[], A, Kind::set(TK, Write));
+    let c = w.push_signed(TK, A, 3, &[], A, Kind::Content);
+    let g = w.push_signed(TK, A, 3, &[], A, Kind::set(Z, Admin));
+    let up = w.push_signed(RK, A, 4, &[], A, Kind::set(N6, Write));
     let rd = fixed(&w, &[]);
-    assert!([add, rm, timed, level, flag].iter().all(|i| !rd.applied.contains(i)) && !rd.valid.contains(&as_tk), "{rd:?}");
-    assert!(rd.listed(RK, A) && !rd.listed(TK, A));
-    let rd = fixed_but(&w, &[], |r| r.list_writers = false);
-    assert!(rd.applied.contains(&add) && rd.applied.contains(&rm) && rd.valid.contains(&as_tk), "{rd:?}");
-    // the listed key adds by acting as itself
-    let by_rk = w.push_signed(RK, A, 5, &[], A, Kind::set(TK, Admin));
-    let late = w.push_signed(TK, A, 6, &[], A, Kind::Content);
-    let rd = fixed(&w, &[]);
-    assert!(rd.applied.contains(&by_rk) && rd.valid.contains(&late), "{rd:?}");
-    // re-grant counts TK's content from the listed key's add, never from a list write that did not
-    // apply (the admin's, the timed one): earlier content stays out
-    assert!(!rd.valid.contains(&as_tk), "{rd:?}");
-}
-
-/// O5: a thing acting as itself is its own admin, by its key hop alone: it removes an admin and
-/// settles a fight among them whatever the trust set, and reaches its dependents by descent. A
-/// grant of the thing on itself changes nothing (no path names a thing twice).
-#[test]
-fn a_thing_acting_as_itself_is_its_own_admin_under_every_trust_set() {
-    let mut w = account();
-    w.records.push((T, TD));
-    w.push(T, 1, &[], T, Kind::set(H, Admin));
-    w.edge(H, 2, &[], T, M, Admin, &[]);
-    let mh = w.edge(M, 3, &[], T, H, Gone, &[]);
-    let out = w.edge(T, 4, &[], T, M, Gone, &[]);
-    let back = w.edge(T, 5, &[], T, H, Admin, &[]);
-    let down = w.content(T, 5, &[], TD);
-    for trust in [vec![], vec![mh], vec![out], vec![mh, out]] {
-        let rd = fixed(&w, &trust);
-        assert!(rd.applied.contains(&out) && rd.applied.contains(&back) && rd.valid.contains(&down), "{trust:?}: {rd:?}");
-        assert!(rd.role(H, T) == Admin && rd.role(M, T) == Gone, "{trust:?}: {rd:?}");
-    }
-    let mut w2 = w.clone();
-    let selfie = w2.push(H, 2, &[], T, Kind::set(T, Admin));
-    let (a, b) = (fixed(&w, &[]), fixed(&w2, &[]));
-    assert!(b.applied.contains(&selfie) && a.valid == b.valid && a.applied.iter().all(|i| b.applied.contains(i)));
-    assert_eq!(a.roles.iter().filter(|(e, _)| e.0 != T).collect::<Vec<_>>(), b.roles.iter().filter(|(e, _)| e.0 != T).collect::<Vec<_>>());
-}
-
-/// The flow that must hold (Tess), in a world `key` sets up: T lists an owner key (`k`, signing as
-/// T), T grants H admin, H shares adminship with M, M turns hostile and backdates (it adds its own
-/// key, removes H, writes), then T removes M by its key. No takeover and no dispute, at every
-/// trust set.
-fn the_flow(mut w: World, k: Thing, from: u32) {
-    let t = |w: &mut World, ts: u32, kind: Kind| w.push_signed(k, T, ts, &[], T, kind);
-    t(&mut w, from, Kind::set(H, Admin));
-    w.edge(H, from + 1, &[], T, M, Admin, &[]);
-    let tk = w.push(M, from + 2, &[], T, Kind::set(TK, Admin));
-    let mh = w.edge(M, from + 2, &[], T, H, Gone, &[]);
-    let by_tk = w.push_signed(TK, T, from + 3, &[], T, Kind::set(Z, Admin));
-    let mc = w.content(M, from + 3, &[], T);
-    let out = t(&mut w, from + 4, Kind::set(M, Gone));
-    let back = t(&mut w, from + 4, Kind::set(H, Admin));
-    for trust in [vec![], vec![mh], vec![out], vec![mh, out]] {
-        let v = View::all(&w).trusting(&trust);
-        let rd = judge(&w, &Rules::fixed(), &v);
-        assert!(rd.applied.contains(&out) && rd.applied.contains(&back) && !rd.applied.contains(&tk) && !rd.applied.contains(&by_tk), "{trust:?}: {rd:?}");
-        assert!(rd.role(M, T) == Gone && rd.role(Z, T) == Gone && !rd.listed(TK, T) && rd.role(H, T) == Admin && !rd.valid.contains(&mc), "{trust:?}: {rd:?}");
-        assert!(disputes(&w, &Rules::fixed(), &v).is_empty(), "{trust:?}");
-    }
-}
-
-/// The flow with T's key from its record (minted with it).
-#[test]
-fn the_flow_holds_with_the_key_from_the_record() {
-    the_flow(account(), own_key(T), 1);
-}
-
-/// The flow with the key added by T acting as itself (O4 (a)), the record's key then removed by
-/// itself (a self-removal of the key hop: it audits nothing).
-#[test]
-fn the_flow_holds_with_the_key_added_by_the_thing_itself() {
-    let mut w = account();
-    w.push(T, 1, &[], T, Kind::set(RK, Admin));
-    let gone = w.push(T, 2, &[], T, Kind::set(own_key(T), Gone));
-    assert!(w.leave(gone));
-    let late = w.content(T, 3, &[], T);
-    let rd = fixed(&w, &[]);
-    assert!(rd.applied.contains(&gone) && !rd.valid.contains(&late) && rd.listed(RK, T));
-    the_flow(w, RK, 3);
-}
-
-/// The flow on A, whose first key H added (O4 (b)): M's add of its own key, dated after H's
-/// grant of M (the key listed) or before it (no right), applies nowhere, and A's key removes M.
-#[test]
-fn a_backdated_add_against_a_key_an_admin_added_is_refused() {
-    let mut w = account();
-    w.push(H, 1, &[], A, Kind::set(RK, Admin));
-    w.edge(H, 3, &[], A, M, Admin, &[]);
-    let after = w.push(M, 4, &[], A, Kind::set(TK, Admin));
-    let before = w.push(M, 2, &[], A, Kind::set(TK, Admin));
-    let by_tk = w.push_signed(TK, A, 5, &[], A, Kind::set(Z, Admin));
-    let out = w.push_signed(RK, A, 6, &[], A, Kind::set(M, Gone));
+    assert!([rk, tk, up].iter().all(|i| rd.applied.contains(i)) && rd.valid.contains(&c) && !rd.applied.contains(&g), "{rd:?}");
+    assert!(rd.key_role(RK, A) == Admin && rd.key_role(TK, A) == Write && rd.role(Z, A) == Gone);
+    let out = w.edge(H, 5, &[], A, RK, Gone, &[]);
+    let late = w.push_signed(RK, A, 6, &[], A, Kind::set(H, Gone));
     for trust in [vec![], vec![out]] {
         let v = View::all(&w).trusting(&trust);
         let rd = judge(&w, &Rules::fixed(), &v);
-        assert!(!rd.applied.contains(&after) && !rd.applied.contains(&before) && !rd.applied.contains(&by_tk) && rd.applied.contains(&out), "{rd:?}");
-        assert!(rd.role(M, A) == Gone && !rd.listed(TK, A) && rd.role(Z, A) == Gone);
+        assert!(rd.applied.contains(&out) && rd.dropped.contains(&up) && !rd.applied.contains(&late), "{trust:?}: {rd:?}");
+        assert!(rd.key_role(RK, A) == Gone && rd.role(H, A) == Admin && rd.role(N6, A) == Gone && rd.valid.contains(&c), "{trust:?}: {rd:?}");
         assert!(disputes(&w, &Rules::fixed(), &v).is_empty(), "{trust:?}");
     }
 }
 
-/// The flow's failing variant (For Tess 1, issues/owner-key-first-attach.md; asserted as built,
-/// option 1): H attaches A's first key, makes M admin, and M removes H listing its own grant and
-/// leaving the attach out. The attach rests on H's admin path (O7), so it falls: A lists no key,
-/// M adds its own, and A's written-down key removes nobody. Under the issue's option 2 (variant
-/// `-attach-kept`: the attach rests on its key hop alone) the key stays and M is out.
+/// K3: a key's grant carries `until` and the may-grant flag as any grant. RK holds write with the
+/// flag on A until 5: it adds TK at write by may-grant (its key hop the path's last hop, G1), adds
+/// nobody at admin, writes until its grant ends; TK's grant outlives it.
 #[test]
-fn an_attach_falls_with_its_attacher_where_the_removal_leaves_it_out() {
+fn a_keys_grant_takes_until_and_the_flag() {
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(RK, Write).may_grant().until(5));
+    let by_flag = w.push_signed(RK, A, 2, &[], A, Kind::set(TK, Write));
+    let over = w.push_signed(RK, A, 2, &[], A, Kind::set(Z, Admin));
+    let c1 = w.push_signed(RK, A, 3, &[], A, Kind::Content);
+    let c2 = w.push_signed(RK, A, 6, &[], A, Kind::Content);
+    let t = w.push_signed(TK, A, 6, &[], A, Kind::Content);
+    let rd = fixed(&w, &[]);
+    assert!(rd.by_flag.contains(&by_flag) && !rd.applied.contains(&over) && rd.valid.contains(&c1) && !rd.valid.contains(&c2) && rd.valid.contains(&t), "{rd:?}");
+    assert!(rd.key_role(TK, A) == Write && rd.key_role(RK, A) == Gone && rd.role(Z, A) == Gone);
+    // without the flag the key adds nobody
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(RK, Write));
+    let g = w.push_signed(RK, A, 2, &[], A, Kind::set(TK, Write));
+    assert!(!fixed(&w, &[]).applied.contains(&g));
+}
+
+/// K5: a key outranks nothing. T, minted with its own key, makes H admin; H removes the key by
+/// an ordinary removal (listing what the key signed) and the key's later writes apply nowhere.
+/// Where the key and an admin remove each other it is an admin dispute like
+/// any: the walk takes the earlier in key order, a node trusting the other reads the other.
+#[test]
+fn a_key_outranks_no_admin() {
+    let mut w = account();
+    w.records.push((T, TD));
+    let gh = w.push(T, 1, &[], T, Kind::set(H, Admin));
+    let down = w.content(T, 2, &[], TD);
+    let out = w.edge(H, 3, &[], T, own_key(T), Gone, &[gh, down]);
+    let back = w.edge(T, 4, &[], T, H, Gone, &[]);
+    let late = w.content(T, 4, &[], TD);
+    for trust in [vec![], vec![out]] {
+        let v = View::all(&w).trusting(&trust);
+        let rd = judge(&w, &Rules::fixed(), &v);
+        assert!(rd.applied.contains(&out) && !rd.applied.contains(&back) && rd.valid.contains(&down) && !rd.valid.contains(&late), "{trust:?}: {rd:?}");
+        assert!(rd.role(H, T) == Admin && rd.key_role(own_key(T), T) == Gone, "{trust:?}: {rd:?}");
+        // the removed key's later removal of H is shown, as any removed admin's counter-removal is
+        assert_eq!(disputes(&w, &Rules::fixed(), &v), vec![back], "{trust:?}");
+    }
+    let mut w = account();
+    let gh = w.push(T, 1, &[], T, Kind::set(H, Admin));
+    let by_key = w.edge(T, 3, &[], T, H, Gone, &[]);
+    let by_h = w.edge(H, 4, &[], T, own_key(T), Gone, &[gh]);
+    let v = View::all(&w);
+    let rd = judge(&w, &Rules::fixed(), &v);
+    assert!(rd.applied.contains(&by_key) && !rd.applied.contains(&by_h) && rd.role(H, T) == Gone && rd.key_role(own_key(T), T) == Admin, "{rd:?}");
+    assert_eq!(disputes(&w, &Rules::fixed(), &v), vec![by_h]);
+    let rd = fixed(&w, &[by_h]);
+    assert!(rd.applied.contains(&by_h) && rd.role(H, T) == Admin && rd.key_role(own_key(T), T) == Gone, "{rd:?}");
+}
+
+/// K4: a key lowers or drops its own grant whatever its role (a self-removal: it audits nothing),
+/// and raises it by no write of its own.
+#[test]
+fn a_key_lowers_its_own_grant_whatever_its_role() {
+    let mut w = account();
+    w.push(H, 1, &[], A, Kind::set(RK, Write));
+    let c = w.push_signed(RK, A, 2, &[], A, Kind::Content);
+    let raise = w.push_signed(RK, A, 2, &[], A, Kind::set(RK, Admin));
+    let own = w.push_signed(RK, A, 3, &[], A, Kind::set(RK, Gone));
+    let after = w.push_signed(RK, A, 4, &[], A, Kind::Content);
+    assert!(w.leave(own) && w.leave(raise));
+    let rd = fixed(&w, &[]);
+    assert!(rd.applied.contains(&own) && !rd.applied.contains(&raise) && rd.valid.contains(&c) && !rd.valid.contains(&after) && rd.key_role(RK, A) == Gone, "{rd:?}");
+    assert!(disputes(&w, &Rules::fixed(), &View::all(&w)).is_empty());
+}
+
+/// K3: a key's grant rests on its writer's path like any grant (nothing vouches for a role
+/// write): H grants RK admin on A, makes M admin, and M removes H listing its own grant and
+/// leaving RK's out. RK's grant falls, M grants its own key, and RK removes nobody.
+#[test]
+fn a_keys_grant_falls_with_its_grantor_where_the_removal_leaves_it_out() {
     let mut w = account();
     let attach = w.push(H, 1, &[], A, Kind::set(RK, Admin));
     let gm = w.edge(H, 2, &[], A, M, Admin, &[]);
@@ -3623,20 +3601,17 @@ fn an_attach_falls_with_its_attacher_where_the_removal_leaves_it_out() {
     for trust in [vec![], vec![mh]] {
         let rd = fixed(&w, &trust);
         assert!(rd.dropped.contains(&attach) && rd.applied.contains(&tk) && !rd.applied.contains(&out), "{trust:?}: {rd:?}");
-        assert!(rd.role(M, A) == Admin && !rd.listed(RK, A) && rd.listed(TK, A) && rd.role(H, A) == Gone);
-        let kept = fixed_but(&w, &trust, |r| r.attach_on_path = false);
-        assert!(kept.applied.contains(&attach) && !kept.applied.contains(&tk) && kept.applied.contains(&out), "{trust:?}: {kept:?}");
-        assert!(kept.role(M, A) == Gone && kept.listed(RK, A));
+        assert!(rd.role(M, A) == Admin && rd.key_role(RK, A) == Gone && rd.key_role(TK, A) == Admin && rd.role(H, A) == Gone);
     }
 }
 
-/// A stolen admin node backdates an add of its own key, made up, to before its removal (A listing
-/// none), and acts as A by it to remove the remover (listing H's grant of X, which its key rests
+/// A stolen admin node backdates a grant to a key it made up, to before its removal, and acts as
+/// A by it to remove the remover (listing H's grant of X, which its key rests
 /// on). Where the removal is trusted its seeds take the
 /// add and nothing of the key acts; where nothing is trusted the walk applies the made-up key's
 /// removal of H and shows H's removal of X as a dispute, whose choice reads as the trusting node.
 #[test]
-fn a_stolen_nodes_backdated_attach_falls_where_its_removal_is_trusted() {
+fn a_stolen_nodes_backdated_key_grant_falls_where_its_removal_is_trusted() {
     let mut w = account();
     let gx = w.edge(H, 1, &[], A, X, Admin, &[]);
     let attach = w.push(X, 4, &[], A, Kind::set(TK, Admin));
@@ -3644,7 +3619,7 @@ fn a_stolen_nodes_backdated_attach_falls_where_its_removal_is_trusted() {
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     let t = fixed(&w, &[r]);
     assert!(t.dropped.contains(&attach) && !t.applied.contains(&th) && t.applied.contains(&r), "{t:?}");
-    assert!(t.role(X, A) == Gone && !t.listed(TK, A) && t.role(H, A) == Admin);
+    assert!(t.role(X, A) == Gone && t.key_role(TK, A) == Gone && t.role(H, A) == Admin);
     let v = View::all(&w);
     let plain = judge(&w, &Rules::fixed(), &v);
     assert!(plain.applied.contains(&th) && !plain.applied.contains(&r), "{plain:?}");
@@ -3653,9 +3628,8 @@ fn a_stolen_nodes_backdated_attach_falls_where_its_removal_is_trusted() {
     assert!(fixed_but(&w, &[r], |r| r.key_hop = false).applied.contains(&th));
 }
 
-/// O6: removing a key is the ordinary removal one hop earlier: what the key signed falls unless the
-/// removal lists it; a key removing itself audits nothing; two keys removing each other are an
-/// admin dispute at the key hop.
+/// K4: removing a key is the ordinary removal: what the key signed falls unless the removal lists
+/// it; a key removing itself audits nothing; two keys removing each other are an admin dispute.
 #[test]
 fn removing_a_key_drops_what_it_signed_unless_listed() {
     let base = || {
@@ -3674,7 +3648,7 @@ fn removing_a_key_drops_what_it_signed_unless_listed() {
     for trust in [vec![], vec![r]] {
         let rd = fixed(&w, &trust);
         assert!(rd.valid.contains(&c1) && rd.applied.contains(&g1) && !rd.valid.contains(&c2) && rd.dropped.contains(&g2), "{trust:?}: {rd:?}");
-        assert!(!rd.listed(TK, A) && rd.role(Z, A) == Write && rd.role(N6, A) == Gone);
+        assert!(rd.key_role(TK, A) == Gone && rd.role(Z, A) == Write && rd.role(N6, A) == Gone);
     }
     assert!(fixed_but(&w, &[], |r| r.key_hop = false).valid.contains(&c2));
     // a key removing itself audits nothing
@@ -3692,18 +3666,18 @@ fn removing_a_key_drops_what_it_signed_unless_listed() {
     let by_tk = w.push_signed(TK, A, 5, &[], A, Kind::set(RK, Gone).listing(w.cut(&[add])));
     let v = View::all(&w);
     let rd = judge(&w, &Rules::fixed(), &v);
-    assert!(rd.applied.contains(&by_rk) && !rd.applied.contains(&by_tk) && rd.listed(RK, A), "{rd:?}");
+    assert!(rd.applied.contains(&by_rk) && !rd.applied.contains(&by_tk) && rd.key_role(RK, A) == Admin, "{rd:?}");
     assert_eq!(disputes(&w, &Rules::fixed(), &v), vec![by_tk]);
     let rd = fixed(&w, &[by_tk]);
-    assert!(rd.applied.contains(&by_tk) && !rd.listed(RK, A) && rd.listed(TK, A), "{rd:?}");
+    assert!(rd.applied.contains(&by_tk) && rd.key_role(RK, A) == Gone && rd.key_role(TK, A) == Admin, "{rd:?}");
 }
 
-/// W7 with the key hop: an owner key replaces itself in one commit (acting as its thing, adding the
+/// W7 with the key hop: a key replaces itself in one commit (acting as its thing, adding the
 /// new key and removing itself), and the commit applies whichever key sorts first: its removal of
 /// its own key hop takes effect after the add. Control: the parts in holder order (the old rule),
 /// the replacement applies only where the new key sorts first.
 #[test]
-fn an_owner_key_replaces_itself_in_one_commit_in_either_key_order() {
+fn a_key_replaces_itself_in_one_commit_in_either_key_order() {
     let world = |old: Thing, new: Thing, w7: bool| {
         let mut w = account();
         w.push(H, 1, &[], A, Kind::set(old, Admin));
@@ -3723,7 +3697,7 @@ fn an_owner_key_replaces_itself_in_one_commit_in_either_key_order() {
         let by_new = w.push_signed(new, A, 3, &[], A, Kind::Content);
         let by_old = w.push_signed(old, A, 3, &[], A, Kind::Content);
         let rd = fixed(&w, &[]);
-        let ok = ids.iter().all(|i| rd.applied.contains(i)) && rd.listed(new, A) && !rd.listed(old, A) && rd.valid.contains(&by_new) && !rd.valid.contains(&by_old);
+        let ok = ids.iter().all(|i| rd.applied.contains(i)) && rd.key_role(new, A) == Admin && rd.key_role(old, A) == Gone && rd.valid.contains(&by_new) && !rd.valid.contains(&by_old);
         (ok, rd)
     };
     for (old, new) in [(RK, TK), (TK, RK)] {
@@ -3744,11 +3718,11 @@ fn a_key_removal_dropping_its_own_keys_add_is_void() {
     let add = w.push_signed(RK, A, 2, &[], A, Kind::set(TK, Admin));
     let r = w.push_signed(TK, A, 3, &[], A, Kind::set(RK, Gone));
     let rd = fixed(&w, &[]);
-    assert!(rd.voided.contains(&r) && rd.listed(RK, A) && rd.listed(TK, A), "{rd:?}");
+    assert!(rd.voided.contains(&r) && rd.key_role(RK, A) == Admin && rd.key_role(TK, A) == Admin, "{rd:?}");
     assert!(fixed_but(&w, &[], |r| r.key_hop = false).applied.contains(&r));
     w.edit(r, |k| k.listing(BTreeMap::from([(A, Set::from([add]))])));
     let rd = fixed(&w, &[]);
-    assert!(rd.applied.contains(&r) && !rd.listed(RK, A) && rd.listed(TK, A), "{rd:?}");
+    assert!(rd.applied.contains(&r) && rd.key_role(RK, A) == Gone && rd.key_role(TK, A) == Admin, "{rd:?}");
 }
 
 /// Finding 56: a write counts toward a first point only where its grantor held the right at its key
@@ -3824,12 +3798,12 @@ fn an_idle_may_grant_grant_with_no_right_moves_no_first_point_back() {
 }
 
 
-/// A key that removed itself makes no may-grant grant (Owner keys O3: a commit holds its right only
-/// where its key hop is listed; G2 adds the path's may-grant to that): B, holding write with the
+/// A key that removed itself makes no may-grant grant (G1: every hop gives the role, the key hop
+/// first): B, holding write with the
 /// flag on A, removes its own key, then grants N6 write on A by may-grant. It applies nowhere and,
 /// made with no right (C2), moves no first point back: N6's content before its later grant shows not.
 #[test]
-fn an_unlisted_key_makes_no_may_grant_grant() {
+fn a_removed_key_makes_no_may_grant_grant() {
     let mut w = account();
     w.push(H, 1, &[], A, Kind::set(B, Write).may_grant());
     w.push_signed(own_key(B), B, 2, &[], B, Kind::set(own_key(B), Gone));
@@ -3837,5 +3811,34 @@ fn an_unlisted_key_makes_no_may_grant_grant() {
     w.push(H, 6, &[], A, Kind::set(N6, Write));
     let c = w.content(N6, 4, &[], A);
     let rd = fixed(&w, &[]);
-    assert!(!rd.listed(own_key(B), B) && !rd.applied.contains(&g) && rd.role(N6, A) == Write && !rd.valid.contains(&c), "{rd:?}");
+    assert!(rd.key_role(own_key(B), B) == Gone && !rd.applied.contains(&g) && rd.role(N6, A) == Write && !rd.valid.contains(&c), "{rd:?}");
+}
+
+/// A lowered key's commit can stand at a node trusting nothing, which is then shown the lowering
+/// (each lowering judged once, as among members): RK grants TK admin; TK demotes RK to write;
+/// H, having received neither, removes both in one commit. RK's removal is judged with RK at
+/// write, so it puts RK's grant of TK (applied by admin) in no question; TK's removal then drops
+/// the demotion, and the grant stands in the next pass. Nothing of TK's shows either way (TK's
+/// own removal takes it), both removals are shown as disputes, and a node trusting them drops
+/// the grant. The same world with things for the keys reads alike.
+#[test]
+fn a_lowered_keys_grant_standing_where_nothing_is_trusted_is_shown() {
+    for keys in [true, false] {
+        let mut w = account();
+        let (x, z) = if keys { (RK, TK) } else { (X, Z) };
+        let by = |w: &mut World, k: Thing, ts: u32, kind: Kind| if keys { w.push_signed(k, A, ts, &[], A, kind) } else { w.push(k, ts, &[], A, kind) };
+        w.push(H, 1, &[], A, Kind::set(x, Admin));
+        let g = by(&mut w, x, 4, Kind::set(z, Admin));
+        let c = by(&mut w, z, 5, Kind::Content);
+        let cut = w.cut(&[g]);
+        by(&mut w, z, 5, Kind::set(x, Write).listing(cut));
+        let late = by(&mut w, z, 6, Kind::set(B, Admin));
+        let out = w.commit(H, 7, &[], A, vec![Kind::set(x, Gone), Kind::set(z, Gone)]);
+        let v = View::all(&w);
+        let rd = judge(&w, &Rules::fixed(), &v);
+        assert!(rd.applied.contains(&g) && !rd.valid.contains(&c) && !rd.applied.contains(&late) && rd.role(B, A) == Gone, "{keys}: {rd:?}");
+        assert_eq!(disputes(&w, &Rules::fixed(), &v), out, "{keys}");
+        let t = fixed(&w, &out);
+        assert!(t.dropped.contains(&g) && !t.valid.contains(&c) && t.role(B, A) == Gone, "{keys}: {t:?}");
+    }
 }

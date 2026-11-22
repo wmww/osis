@@ -191,7 +191,7 @@ pub struct Commit {
     pub path: Vec<Thing>,
     pub on: Thing,
     pub kind: Kind,
-    /// The owner key that signed it (notes/write-path-design.md, Owner keys O2).
+    /// The signing key that signed it (notes/write-path-design.md, Keys K2).
     pub key: Thing,
     /// What it rests on: its key hop (key, signer), then the edges its stated path uses
     /// (`World::rests`, `World::hops`); empty for bad input.
@@ -349,19 +349,10 @@ pub struct Rules {
     pub commit_drops: bool,
     /// Which held writes are dispute candidates.
     pub candidates: Candidates,
-    /// A thing's first owner key added by an admin (O4 (b)) rests on its writer's admin path like
-    /// any admin write (O7; issues/owner-key-first-attach.md, option 1). False (variant
-    /// `-attach-kept`, the issue's option 2): on its key hop alone, so no removal of its writer
-    /// puts it in question.
-    pub attach_on_path: bool,
-    /// A commit rests on its key hop (notes/write-path-design.md, Owner keys O3): a path's role
-    /// reads it, a removal of the key puts the commit in question. False (control `-no-key-hop`):
-    /// the key hop is never read, so a removed key keeps signing.
+    /// A commit rests on its key hop (notes/write-path-design.md, Keys K3): a path's role
+    /// reads it, a lowering of the key's grant puts the commit in question. False (control
+    /// `-no-key-hop`): the key hop is never read, so a removed key keeps signing.
     pub key_hop: bool,
-    /// A list write applies only by O4: (a) acting as itself, or (b) adding the first key by
-    /// admin. False (control `-admin-lists`): any write whose path gives admin on the thing writes
-    /// its list, as any edge write.
-    pub list_writers: bool,
     /// A trusted write's seeds are the writes resting on its edge whose need there its own value
     /// does not meet, as its audit reads them (a demotion to write keeps the may-grant grants under it).
     /// False (control `-seeds-all`): every unlisted write resting on its edge.
@@ -501,9 +492,7 @@ impl Rules {
             cover_facts: false,
             commit_drops: true,
             candidates: Candidates::All,
-            attach_on_path: true,
             key_hop: true,
-            list_writers: true,
             seeds_by_need: false,
             refuse_shapes: false,
             until: Until::Plain,
@@ -542,9 +531,7 @@ impl Rules {
             cover_facts: false,
             commit_drops: true,
             candidates: Candidates::Explicit,
-            attach_on_path: true,
             key_hop: true,
-            list_writers: true,
             seeds_by_need: true,
             refuse_shapes: false,
             until: Until::Plain,
@@ -571,14 +558,15 @@ impl Rules {
     }
 }
 
-/// Owner keys share `Thing`'s numbers in a range of their own (notes/write-path-design.md, Owner
-/// keys): a key is a value, never a thing; it holds no role and nothing is written on it.
+/// Signing keys share `Thing`'s numbers in a range of their own (notes/write-path-design.md,
+/// Keys): a key is a value, never a thing; it holds a grant on the thing it signs as (its key
+/// hop, an edge like any) and nothing is written on it.
 pub const KEYS: Thing = 0x80;
 
-/// The key thing `t`'s record holds where it names no mint admin (O1). Such a thing takes edge
-/// and list writes as any thing (O4, O5; the hand flows on T): the design past A4. Interim
-/// (issues/perm-walk-trails-model.md): spec/permissions.md §1 and the walk refuse them until A4,
-/// so no generator writes one.
+/// The key thing `t`'s record holds where it names no mint admin (K1): its key hop stands at
+/// admin from the start. Such a thing takes edge writes as any thing (the hand worlds on T): the
+/// design past A4. Interim (issues/perm-walk-trails-model.md): spec/permissions.md §1 and the
+/// walk refuse them until A4, so no generator writes one.
 pub const fn own_key(t: Thing) -> Thing {
     KEYS | t
 }
@@ -612,7 +600,7 @@ impl World {
     pub fn push(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, kind: Kind) -> Id {
         self.push_marked(signer, ts, path, on, kind, &[])
     }
-    /// A commit signed by owner key `key` as `signer` (notes/write-path-design.md, Owner keys O2).
+    /// A commit signed by key `key` as `signer` (notes/write-path-design.md, Keys K2).
     pub fn push_signed(&mut self, key: Thing, signer: Thing, ts: u32, path: &[Thing], on: Thing, kind: Kind) -> Id {
         self.put(key, signer, ts, path, on, kind, &[])
     }
@@ -631,12 +619,13 @@ impl World {
         let mut all = vec![signer];
         all.extend(path);
         // a thing acting as itself (signed as the thing written, nothing listed) states no edge:
-        // its key hop alone (O5)
+        // its key hop alone
         let itself = path.is_empty() && on == signer;
         // the path's end decides the class: an edge write whose path ends at the holder is a
-        // self-removal, as is a list write removing the key that signs it, acting as itself (O6);
-        // any other ends at the thing written
-        let leave = matches!(&kind, Kind::Edge { holder, .. } if all.last() == Some(holder) || (itself && *holder == key));
+        // self-removal, as is a write by a key on its own key hop, acting as its thing (K4); any
+        // other ends at the thing written
+        let own_hop = matches!(&kind, Kind::Edge { holder, .. } if itself && *holder == key);
+        let leave = own_hop || matches!(&kind, Kind::Edge { holder, .. } if all.last() == Some(holder));
         if !leave && !itself {
             all.push(on);
         }
@@ -647,7 +636,9 @@ impl World {
         }
         let marks_ok = direct.iter().all(|&k| k + 1 < all.len() && self.joins(all[k], all[k + 1]).len() >= 2);
         let well = all.iter().collect::<BTreeSet<_>>().len() == all.len() && marks_ok;
-        let rest = if well { self.path_hops(key, &all, direct) } else { vec![] };
+        // a key lowering its own grant is the holder itself: its path has no hop (it rests on
+        // the hop it gives up alone, as a self-removal does)
+        let rest = if well && !own_hop { self.path_hops(key, &all, direct) } else { vec![] };
         let i = self.commits.len();
         self.commits.push(Commit { signer, key, ts, path: path.to_vec(), on, kind, rest, well, leave, pa: 0, purge_by: PurgeBy::AuthorOrAdmin, own: false, cid: i, own_path: false, direct: direct.to_vec() });
         i
@@ -673,7 +664,7 @@ impl World {
     pub fn commit_marked(&mut self, signer: Thing, ts: u32, path: &[Thing], on: Thing, parts: Vec<Kind>, direct: &[usize]) -> Vec<Id> {
         self.commit_signed(own_key(signer), signer, ts, path, on, parts, direct)
     }
-    /// `commit_marked` signed by owner key `key`.
+    /// `commit_marked` signed by key `key`.
     #[allow(clippy::too_many_arguments)]
     pub fn commit_signed(&mut self, key: Thing, signer: Thing, ts: u32, path: &[Thing], on: Thing, mut parts: Vec<Kind>, direct: &[usize]) -> Vec<Id> {
         // the stated path's members, ending at the thing written (acting as itself, the signer)
@@ -725,7 +716,7 @@ impl World {
     }
     /// An edge or key hop standing at the start: a record edge (admin), or the key hop of the
     /// key a thing's record holds, which is the thing's own key where it names no mint admin
-    /// (notes/write-path-design.md, Owner keys O1; listed, read as admin).
+    /// (notes/write-path-design.md, Keys K1; admin).
     pub fn is_record(&self, e: Edge) -> bool {
         self.records.contains(&e) || (e.0 == own_key(e.1) && self.mint_of(e.1).is_none())
     }
@@ -857,15 +848,15 @@ impl World {
         self.commits[i].rest.get(1..).unwrap_or(&[])
     }
     /// What a commit rests on: its key hop (key, signer), then its path's edges (`hops`); none for
-    /// bad input. A path's role is the minimum over these (a listed key hop reads as admin).
+    /// bad input and for a key lowering its own grant. A path's role is the minimum over these.
     pub fn rests(&self, i: Id) -> &[Edge] {
         &self.commits[i].rest
     }
-    /// The key hop (key, signer) a commit is signed by (Owner keys O3).
+    /// The key hop (key, signer) a commit is signed by (Keys K3).
     pub fn key_hop(&self, i: Id) -> Edge {
         (self.commits[i].key, self.commits[i].signer)
     }
-    /// A list write: an edge write on a thing's owner-key list (its holder a key; Owner keys O4).
+    /// An edge write on a key hop (its holder a key; Keys K3).
     pub fn list_write(&self, i: Id) -> bool {
         matches!(&self.commits[i].kind, Kind::Edge { holder, .. } if is_key(*holder))
     }
@@ -975,9 +966,9 @@ pub struct Reading {
     /// holder grant by may-grant in the end (`grantable`).
     pub roles: BTreeMap<Edge, Role>,
     pub grantable: BTreeMap<Edge, Role>,
-    /// The key hops listed in the end (owner keys hold no role: notes/write-path-design.md, Owner
-    /// keys).
-    pub keys: BTreeSet<Edge>,
+    /// The key hops' final roles, every `until` counted removed (edges like any, kept apart from
+    /// `roles` so that map holds things alone).
+    pub keys: BTreeMap<Edge, Role>,
     /// The settled walk's edge writes per edge (key, value), and its cuts: the applied explicit
     /// lowerings taking an edge from write or above to below (edge, key), which content judges by.
     pub hist: BTreeMap<Edge, Vec<(Key, Val)>>,
@@ -1014,9 +1005,9 @@ impl Reading {
     pub fn role(&self, holder: Thing, target: Thing) -> Role {
         self.roles.get(&(holder, target)).copied().unwrap_or(Role::None)
     }
-    /// Key `k` is on `t`'s owner-key list in the end.
-    pub fn listed(&self, k: Thing, t: Thing) -> bool {
-        self.keys.contains(&(k, t))
+    /// The role key `k` holds on `t` in the end.
+    pub fn key_role(&self, k: Thing, t: Thing) -> Role {
+        self.keys.get(&(k, t)).copied().unwrap_or(Role::None)
     }
     /// A commit shows: valid content, or an applied edge-class commit.
     pub fn shows(&self, i: Id) -> bool {
@@ -1045,7 +1036,7 @@ impl Reading {
 pub struct Observed {
     pub roles: BTreeMap<Edge, Role>,
     pub grantable: BTreeMap<Edge, Role>,
-    pub keys: BTreeSet<Edge>,
+    pub keys: BTreeMap<Edge, Role>,
     pub timeline: BTreeMap<Edge, Vec<Role>>,
     pub cuts: BTreeSet<(Edge, Key)>,
     pub valid: Set,
@@ -1126,35 +1117,23 @@ impl Need {
     }
 }
 
-/// An edge write adding a grant (no self-removal, no finalize, no list write: a key is granted
-/// nothing): one that may apply as a may-grant grant (G2), with its role. One at admin never does: a path giving may-grant at admin gives
+/// An edge write adding a grant (no self-removal, no finalize): one that may apply as a may-grant grant (G2), with its role. One at admin never does: a path giving may-grant at admin gives
 /// admin (G1), so it applies as an explicit write.
 pub fn flag_grant(w: &World, i: Id) -> Option<Role> {
     let c = &w.commits[i];
     match &c.kind {
-        Kind::Edge { holder, role, until, finalize: false, .. } if !c.leave && !is_key(*holder) && alive((*role, *until), c.ts) > Role::None => Some(*role),
+        Kind::Edge { holder, role, until, finalize: false, .. } if !c.leave && alive((*role, *until), c.ts) > Role::None => Some(*role),
         _ => None,
     }
-}
-
-/// Whether list write `i` may write its thing's owner-key list, its path giving admin (notes/
-/// write-path-design.md, Owner keys O3, O4): a key hop's value is listed or not, with no `until`,
-/// flag or level; (a) a thing acting as itself (signed as the thing written, nothing listed) writes
-/// any keys; (b) where the thing lists no key (`listing` false) an admin adds one.
-fn list_writes(w: &World, i: Id, listing: bool) -> bool {
-    let c = &w.commits[i];
-    let Kind::Edge { role, until, may_grant, finalize, .. } = &c.kind else { return false };
-    let value = until.is_none() && !*may_grant && !*finalize && matches!(role, Role::Admin | Role::None);
-    value && ((w.hops(i).is_empty() && c.on == c.signer) || (*role == Role::Admin && !listing))
 }
 
 /// What write `i` needs of edge `e` (where its path holds `e`; a self-removal of `e` needs admin
 /// there): admin, unless it is a may-grant grant (`by_flag`: applied as one, or, for a held write
 /// this pass did not apply, one that may), which needs its role on its path's hops before the
 /// last (`Rules::min_check`) and its role with the flag on the last (`Rules::flag_check`; else
-/// its role there too).
+/// its role there too). The key hop is a hop like any: the last where the path has no edge.
 fn need(w: &World, rules: &Rules, i: Id, e: Edge, by_flag: bool) -> Need {
-    let hops = w.hops(i);
+    let hops = rest_of(w, rules, i);
     // a leave applies at the edge it lowers by that edge giving more than it sets
     if rules.drops == Drops::LeaveLowers && w.leave(i) && w.sets(i) == Some(e) {
         if let Kind::Edge { role, until, may_grant, .. } = &w.commits[i].kind {
@@ -1221,10 +1200,7 @@ fn rest_of<'a>(w: &'a World, rules: &Rules, i: Id) -> &'a [Edge] {
 /// Whether a lowering of edge `e` puts commit `j` in question: its path holds `e`, or (with
 /// `leave_in_question`) it is a self-removal of `e`.
 pub(crate) fn rests_on(w: &World, rules: &Rules, j: Id, e: Edge) -> bool {
-    // a list write not acting as itself (O4 (b), the first key by admin) rests on its writer's
-    // admin path (O7); variant `-attach-kept`: on its key hop alone
-    let rest = if !rules.attach_on_path && w.list_write(j) && !w.hops(j).is_empty() { &w.rests(j)[..1] } else { rest_of(w, rules, j) };
-    rest.contains(&e) || (rules.leave_in_question && w.leave(j) && w.sets(j) == Some(e))
+    rest_of(w, rules, j).contains(&e) || (rules.leave_in_question && w.leave(j) && w.sets(j) == Some(e))
 }
 
 /// The parts lowering `r` of edge `e` drops beside `q` (its drops, each unlisted) under
@@ -1407,18 +1383,9 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
                     if !w.well(i) || (rules.refuse_shapes && w.commits[i].own_path) {
                         continue;
                     }
-                    let hops = w.hops(i);
+                    let hops = rest_of(w, rules, i);
                     let path_role = rest_of(w, rules, i).iter().map(|&e| p.at(e, c.ts)).min().unwrap_or(Role::Admin);
                     match &c.kind {
-                        // a list write (O4): (a) acting as itself, its key hop listed, any keys; (b)
-                        // where the thing lists no key, adding one, by admin along its path. A key
-                        // hop has no `until`, flag or levels: any other value is bad input (O3)
-                        Kind::Edge { holder, .. } if is_key(*holder) && rules.list_writers => {
-                            let listing = p.state.iter().any(|(&(k, t), &v)| t == c.on && is_key(k) && alive(v, c.ts) == Role::Admin);
-                            if !(list_writes(w, i, listing) && path_role == Role::Admin) {
-                                continue;
-                            }
-                        }
                         Kind::Edge { holder, finalize: true, .. } => {
                             // it ends a grant past its `until`, by a writer holding a role at
                             // least the grant's; else it applies nothing
@@ -1433,14 +1400,12 @@ fn walk(w: &World, rules: &Rules, v: &View, d0: &Set) -> Walk {
                         Kind::Edge { holder, .. } => {
                             // a may-grant grant (G2): a holder with no current grant, its role
                             // below admin, given by every hop, the last giving admin or the flag
+                            // (the key hop a hop like any: the last where the path has no edge)
                             let Some(r) = flag_grant(w, i) else { continue };
-                            // (an edgeless path, a thing acting as itself, gives admin or nothing)
                             let Some((last, before)) = hops.split_last() else { continue };
                             let gives = if rules.flag_check { p.grantable_at(*last, c.ts) } else { p.at(*last, c.ts) };
                             let min = !rules.min_check || before.iter().all(|&e| p.at(e, c.ts) >= r);
-                            // its key hop listed (O3)
-                            let keyed = !rules.key_hop || p.at(w.key_hop(i), c.ts) == Role::Admin;
-                            if p.at((*holder, c.on), c.ts) > Role::None || !keyed || !min || gives < r {
+                            if p.at((*holder, c.on), c.ts) > Role::None || !min || gives < r {
                                 continue;
                             }
                             by_flag = true;
@@ -1657,8 +1622,8 @@ fn first_applied(w: &World, p: &Pass, edges: &[Edge]) -> Option<Key> {
 /// Per edge, the key of the first held write giving it `at` or above that its grantor made by
 /// right (notes/write-path-design.md §1, Judging content, C2): no self-removal or finalize, every
 /// hop it rests on giving what it needs just before its key in this reading (`p`, each `until`
-/// read at its `ts`): admin (a list write also by O4), or for a write that may apply as a
-/// may-grant grant, its key hop listed and may-grant at its role by its path (O3, G1). Applied or dropped alike. Control
+/// read at its `ts`): admin, or for a write that may apply as a may-grant grant, may-grant at its
+/// role by its path (G1). Applied or dropped alike. Control
 /// `Regrant::ChainedEver`: the first chained write (`first_chained_ever`).
 fn first_by_right(w: &World, rules: &Rules, p: &Pass, held: &Set, at: Role) -> BTreeMap<Edge, Key> {
     if rules.regrant == Regrant::ChainedEver {
@@ -1673,11 +1638,7 @@ fn first_by_right(w: &World, rules: &Rules, p: &Pass, held: &Set, at: Role) -> B
         }
         let key = w.key(i);
         let admin = w.rests(i).iter().all(|&h| role_at(w, p, h, key) == Role::Admin);
-        // a list write by O4, against the keys listed at its key
-        let listing = p.hist.keys().chain(records).any(|&(k, t)| t == e.1 && is_key(k) && role_at(w, p, (k, t), key) == Role::Admin);
-        let admin = admin && (!w.list_write(i) || list_writes(w, i, listing));
-        let hops = w.hops(i);
-        let flagged = role_at(w, p, w.key_hop(i), key) == Role::Admin && flag_grant(w, i).is_some_and(|r| hops.split_last().is_some_and(|(l, b)| grantable_at(w, p, *l, key) >= r && b.iter().all(|&h| role_at(w, p, h, key) >= r)));
+        let flagged = flag_grant(w, i).is_some_and(|r| w.rests(i).split_last().is_some_and(|(l, b)| grantable_at(w, p, *l, key) >= r && b.iter().all(|&h| role_at(w, p, h, key) >= r)));
         if admin || flagged {
             first.insert(e, key);
         }
@@ -1699,8 +1660,7 @@ fn grantable_at(w: &World, p: &Pass, e: Edge, pos: Key) -> Role {
 /// author has, along every hop it rests on (`World::rests`, its key hop first), over record edges
 /// and record key hops and the edges chained writes earlier set (applied or not, each at the
 /// highest role and may-grant role it let its holder grant, `until` disregarded): admin on its
-/// target (a list write also by O4, read against every key ever listed); may-grant on its target
-/// for a may-grant grant (`flag_grant`; its key hop then reads as a hop before the last, listed);
+/// target; may-grant on its target for a may-grant grant (`flag_grant`);
 /// admin on its holder for a self-removal; write on its target for a finalize. Only the first two
 /// set an edge. Grows with `held`; every write any walk over `held` applies is in it.
 pub fn chained(w: &World, held: &Set) -> Set {
@@ -1722,8 +1682,7 @@ pub fn chained(w: &World, held: &Set) -> Set {
             }
             continue;
         }
-        let ever = max.iter().any(|(&(k, t), &r)| t == e.1 && is_key(k) && r == Role::Admin);
-        let admin = least == Role::Admin && (!w.list_write(i) || list_writes(w, i, ever));
+        let admin = least == Role::Admin;
         let flagged = flag_grant(w, i).is_some_and(|r| rests.split_last().is_some_and(|(l, b)| get(&grants, l) >= r && b.iter().all(|h| get(&max, h) >= r)));
         if !admin && !flagged {
             continue;
@@ -2003,7 +1962,7 @@ fn judge_afresh(w: &World, rules: &Rules, v: &View) -> Reading {
         dropper.extend(d0);
         let (keys, fin): (BTreeMap<Edge, Role>, BTreeMap<Edge, Role>) = finals(&wk.pass).into_iter().partition(|(e, _)| is_key(e.0));
         let mut rd = Reading {
-            keys: keys.into_iter().filter(|(_, r)| *r == Role::Admin).map(|(e, _)| e).collect(),
+            keys: keys.into_iter().filter(|(_, r)| *r > Role::None).collect(),
             lowered: wk.pass.lows.iter().map(|l| l.id).collect(),
             by_flag: wk.pass.by_flag.clone(),
             valid,

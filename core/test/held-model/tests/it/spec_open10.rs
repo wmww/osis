@@ -348,13 +348,13 @@ fn open10_show_random() {
     }
 }
 
-/// E1's key hop (notes/write-path-design.md §2 E1, Owner keys O3): X, A's admin, adds an owner
-/// key to A's list; the key, signing as A, grants Q write on A; Q writes D through [A]. The grant
-/// rests on its key hop, so D's reader must hold the list write as a copy beside the grant: a
-/// closure bringing only the grant's path edges leaves the key unlisted at D's reader, which
+/// E1's key hop (notes/write-path-design.md §2 E1, Keys K3): X, A's admin, grants a key admin
+/// on A; the key, signing as A, grants Q write on A; Q writes D through [A]. The grant
+/// rests on its key hop, so D's reader must hold the key's grant as a copy beside it: a
+/// closure bringing only the grant's path edges leaves the key with no grant at D's reader, which
 /// refuses the grant and Q's write where the node holding everything shows it (P1).
 #[test]
-fn e1_a_writes_key_hop_list_writes_are_evidence_in_every_variant() {
+fn e1_the_edge_writes_on_a_writes_key_hop_are_evidence_in_every_variant() {
     const KEY: Thing = paths::KEYS | 0x40;
     let (mut w, [x, _, _, q]) = base();
     let list = w.write(x, |p| p.edge(X, 2, &[], A, KEY, Role::Admin, &[]));
@@ -372,12 +372,12 @@ fn e1_a_writes_key_hop_list_writes_are_evidence_in_every_variant() {
 
 /// Pending (notes/write-path-design.md §2 Pending and Hops; spec/commits.md §4 Unjudgeable): the
 /// key hop is a hop. KEY, signing as A (minted by X, so A's record holds no key), grants Q write
-/// on A, and Q writes D through [A]. A node holding everything but X's list write adding KEY finds
+/// on A, and Q writes D through [A]. A node holding everything but X's grant to KEY finds
 /// no write putting the key hop: the grant, and Q's write resting on it, pend (judged on missing
-/// evidence, never invalid for it), and the grant is neither chained nor joined; with the list
-/// write both are valid and the grant chained and joined. In every variant.
+/// evidence, never invalid for it), and the grant is neither chained nor joined; with X's
+/// grant both are valid and the grant chained and joined. In every variant.
 #[test]
-fn an_unlisted_key_hop_pends_until_a_list_write_puts_it() {
+fn a_key_hop_no_write_puts_pends_until_one_is_held() {
     use held_model::evidence::Verdict::{Pending, Valid};
     const KEY: Thing = paths::KEYS | 0x40;
     for v in Open10::ALL {

@@ -17,7 +17,7 @@ The design was restated after these drafts were written (notes/write-path-design
 |---|---|
 | permissions §4, commits §4: the edge writes on a named remaining admin's edge as evidence (spec/wire.md §4 `remains`) | go: nothing names a remaining admin |
 | every **(A3)** sentence: the leaf frontier in permissions, wire's leaf and leaf blob, commits' wait on a leaf, sync-judgement's leaf blobs | go: a lowering's copy is whole, its list inside it (notes/write-path-design.md §2, E4); no part waits on a leaf |
-| permissions §4: the records of signers as evidence | stand until A4; then the held list writes on a commit's key hop are its evidence (E1) |
+| permissions §4: the records of signers as evidence | stand until A4; then the held edge writes on a commit's key hop are its evidence (E1) |
 | Open 4, 5, 12 (role entries, leaf bytes, a leaf's lifetime) | moot with the leaf form |
 | Open 14, 16 (how removals reach a sync ID; which removals reach carries) | settled: no reach, no errand; a removal is in a unit's required set while the unit holds a write it judges (D1 to D3), and the reader's deposit is to be modelled (D4) |
 | The model questions (b) (a sync ID whose only writers are hostile) | as stated there; it is the gap of notes/write-path-design.md §2 |

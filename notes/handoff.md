@@ -5,7 +5,6 @@ The design is notes/write-path-design.md (Decided, the lettered rules); the plan
 
 ## Waiting on Tess
 - **Roles apart from syncing** (Tess decided: a role counts wherever its grants are held): not built, the role filter is not what blocks it; options in issues/roles-apart-from-syncing.md.
-- **The first owner key** (issues/owner-key-first-attach.md): built as option 1, one clause (`Rules::attach_on_path`), option 2 the variant `-attach-kept`.
 - Small: CLAUDE.md's GUI test command lacks `--no-fail-fast` (app's known failure stops kit's tests); a smaller fixed setting for the KNOWN story search is hers to allow; the gate.checks CPU share raise (notes/time-limits.md) is hers to review.
 
 ## Parked

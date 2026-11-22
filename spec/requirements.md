@@ -12,7 +12,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 - **Role**: sync, read, write or admin, held by one thing on another. A **holder** is a thing with a role on something. Sync stores and serves data without reading it.
 - **Node**: a running osis instance with its own key and store. It reads what it holds keys for and stores and serves the rest encrypted, in any mix; nothing else separates nodes. A node is **untrusted** for data it cannot read.
 - **Account**: the identity a person's (or anything else's) nodes act as, and where others reach it.
-- **Actor**: a thing a write is made through: the thing whose owner key signs it, then each thing whose role it uses, in order (a node, its account, a thing the account holds a role on). Being an actor is a part played in a write, not a kind of thing.
+- **Actor**: a thing a write is made through: the thing whose key signs it, then each thing whose role it uses, in order (a node, its account, a thing the account holds a role on). Being an actor is a part played in a write, not a kind of thing.
 - **Peer**: another node a node syncs with directly. **Relay**: forwards a connection's encrypted bytes and stores nothing; not a node. **Client**: anything using the osis client protocol to reach a node out of process, on the same machine or another. Which accounts a client may act as is the node's policy, not a property of where the client runs.
 
 ## Purpose
