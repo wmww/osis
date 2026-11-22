@@ -2395,8 +2395,10 @@ fn away_and_back(one: crate::harness::history::Gives) -> (crate::harness::World,
 /// both, `change` ends its right at node 0, node 0 writes t and node 1 takes the write. Whether
 /// node 2 is served the write when it meets node 1 again. Node 2 is away and back once first:
 /// the first reconnect after first contact names other actors than the record (issues/
-/// many-sync-ids-cost.md), and a take naming other actors judges every member, which would hide
-/// a change not judged in its step.
+/// many-sync-ids-cost.md), and a take naming other actors judges every member. These check the
+/// outcome, not which judgement gives it: each change here also moves what node 1 holds of S
+/// (the rotation it brings), which judges every record holding S in its step; the per-member
+/// standing path is isolated by the `Pair` tests above (issues/opens-standing-plant-survives.md).
 fn served_after_a_change_while_away(one: crate::harness::history::Gives, change: impl FnOnce(&mut crate::harness::World, osis_base::Tid)) -> bool {
     served_after_a_change_while_away_from(one, |_| (), |w, t, _| change(w, t))
 }
@@ -2448,9 +2450,9 @@ fn a_removal_after_a_restart_serves_nothing_after_it_spec_sync_opens_6() {
 }
 
 // Its grant's `until` passing (granted while it is away, so it still asks for S), the finalize's
-// rotation reaching node 1. With the until's time alone (node 1 cut off from node 0) the member
-// is judged at the until's wake, departed; a credential open toward it stays until that rotation
-// (§4 Departed), and what it is served is what it held the secret for.
+// rotation reaching node 1. The until's time alone judges it departed, but its read secret's
+// epoch still covers every departure node 1 knows of (§4 Departed): a credential open toward it
+// stays until the rotation, and what it is served is what it held the secret for.
 #[test]
 fn an_until_passing_while_away_serves_nothing_after_it_spec_sync_opens_6() {
     let expire = |w: &mut crate::harness::World, t: osis_base::Tid| {
