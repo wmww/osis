@@ -655,7 +655,8 @@ impl Ground for Live<'_, '_> {
         Ok(())
     }
     fn step_ready(&mut self, s: &SyncId) -> Result<StepReady> {
-        let Some(due) = self.cx.engine.due_step(s)? else { return Ok(StepReady::No) };
+        // an endorsement owed is written at once: it registers no epoch (`Engine::endorse_due`)
+        let Some(due) = self.cx.engine.due_step(s)? else { return Ok(if self.cx.engine.endorsement_due(s)? { StepReady::Now } else { StepReady::No }) };
         for c in due.needs.iter() {
             let mut logged = false;
             for b in self.cx.engine.commit_blobs(c)?.iter() {
@@ -668,7 +669,8 @@ impl Ground for Live<'_, '_> {
         Ok(if due.deposit_only { StepReady::AfterPass } else { StepReady::Now })
     }
     fn issue_step(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.cx.engine.issue_due_step(s)?.is_some())
+        let stepped = self.cx.engine.issue_due_step(s)?.is_some();
+        Ok(self.cx.engine.endorse_due(s)? || stepped)
     }
     fn log_cert_blob(&mut self, s: &SyncId, r: CertKind, tids: &BTreeSet<osis_base::Tid>) -> Result<()> {
         let sealed = match r {

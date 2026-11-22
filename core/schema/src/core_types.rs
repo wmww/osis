@@ -184,9 +184,10 @@ codec_struct! {
     pub struct Frontier { 0 commits: BTreeSet<CommitId> }
 }
 codec_struct! {
-    /// Step and claim-set bytes (spec/wire.md §8).
+    /// Step and claim-set bytes (spec/wire.md §8), and the step's endorsements by delete key
+    /// (spec/sync-ids.md §4).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct StepRecord { 0 step: Vec<u8>, 1 claims: Option<Vec<u8>> }
+    pub struct StepRecord { 0 step: Vec<u8>, 1 claims: Option<Vec<u8>>, 2 endorsements: BTreeMap<[u8; 32], [u8; 64]> }
 }
 codec_struct! {
     /// One sync ID of a thing (`sync.0`, spec/sync-ids.md §4); steps by step ID.

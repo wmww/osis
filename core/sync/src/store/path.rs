@@ -9,7 +9,7 @@ use super::Env;
 use crate::types::Result;
 use osis_base::format::ROLE_KEEP_MS;
 use osis_base::{SyncId, WallMs};
-use osis_crypto::VerifyingKey;
+use osis_crypto::{Signature, VerifyingKey};
 use osis_engine::sync::{Holding, Path};
 use osis_blob::{ClaimSet, Step, StepId};
 use osis_proto::{Code, Grant};
@@ -193,22 +193,31 @@ pub(crate) fn drop_claims(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId
 /// unread in the sync set; into an empty path a list from a genesis step that verifies (else 1; a
 /// list from a child step 13; a later step not verifying under the one before 9), within the caps
 /// (else 12); else a list ending at the head (0, nothing changes), or one leaving the path at a
-/// step whose delete key is the head's, each step verifying under the one before, its last deeper
-/// than the head (else 9), taken in place of the path after that step: within the caps, past them
-/// without its claim sets, and past them even so at most once per `register_every_ms`. A head
-/// moved over a refusal told to a record's source marks S anew (`rows::ANEW_SOME`) unless a mark
-/// stands: refusals told under the old head are shown again (spec/sync-streams.md §4 Refused; a
+/// step whose delete key is the head's or ending at a step `endorsement` endorses under the
+/// head's delete key, each step verifying under the one before, its last deeper than the head
+/// (else 9), taken in place of the path after that step: within the caps, past them without its
+/// claim sets, and past them even so at most once per `register_every_ms`. A head moved over a
+/// refusal told to a record's source marks S anew (`rows::ANEW_SOME`) unless a mark stands:
+/// refusals told under the old head are shown again (spec/sync-streams.md §4 Refused; a
 /// connection's are in memory, `Store::take_register`). Answers the code, whether past the caps,
 /// and whether the head moved.
 ///
-/// Invariant: a Register moves a store only deeper, and only off a step whose delete key is its
-/// head's. Every step it takes is signed by its parent's delete key, the first by the delete key
-/// of a step the store already holds, which the head bears: so whoever moves it holds the head's
-/// delete key (an admin of the head's epoch, as a child of the head needs) or relays steps such an
-/// admin signed. A relay (a removed node included) replays only real steps: an equal-depth
-/// sibling or a shallower path is refused, so it cannot flip a store between siblings or roll it
-/// back; a removed admin holding an older delete key than the head's cannot branch below the head.
-pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, steps: &[(&Step, Option<&ClaimSet>)], past_cap_due: bool) -> Result<(Code, bool, bool)> {
+/// Invariant: a Register moves a store only deeper, and only by the word of its head's delete
+/// key: the branch leaves the path at a step bearing that key (its first step signed by it), or
+/// its last step carries an endorsement by it (a signature under its own domain over that step's
+/// ID, so no step, Delete or other signature passes for one). Either way whoever moves it holds
+/// the head's delete key (an admin of the head's admin epoch, who could as well make a child of
+/// the head bearing any keys it likes) or relays what such a holder signed: an endorsement grants
+/// nothing a child of the head does not, and like a step it stands for good. It names its step,
+/// whose ID binds the sync ID and, through `prev`, every step above it, so it moves no store of
+/// another sync ID and endorses no other branch; it binds no head, since any store whose head
+/// bears its key is one its signer could move by a child. An admin removed at the head's step
+/// (a rotation of the admin secret) holds only older delete keys and so neither signs a child of
+/// the head nor endorses. A relay (a removed node included) replays only real steps and
+/// endorsements: an equal-depth sibling or a shallower path is refused, so it cannot flip a store
+/// between siblings or roll it back; a removed admin holding an older delete key than the head's
+/// cannot branch below the head.
+pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, steps: &[(&Step, Option<&ClaimSet>)], endorsement: Option<&Signature>, past_cap_due: bool) -> Result<(Code, bool, bool)> {
     let Some(((first, _), (last, _))) = steps.first().zip(steps.last()) else { return Ok((Code::MALFORMED, false, false)) };
     if steps.iter().any(|(st, c)| st.sync_id != *s || c.is_some_and(|c| c.hash() != st.claims_hash)) {
         return Ok((Code::MALFORMED, false, false));
@@ -254,7 +263,8 @@ pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, s
             let Some(fork) = at.checked_sub(1).and_then(|j| step(t, s, j as u32).transpose()).transpose()? else {
                 return Ok((Code::NOT_HEAD_KEY, false, false));
             };
-            if new.is_empty() || at + new.len() <= hi as usize + 1 || fork.keys.delete != h.keys.delete || !chained(&fork, new) {
+            let by_head = fork.keys.delete == h.keys.delete || endorsement.is_some_and(|e| last.endorsed_by(&h.keys.delete, e));
+            if new.is_empty() || at + new.len() <= hi as usize + 1 || !by_head || !chained(&fork, new) {
                 return Ok((Code::NOT_HEAD_KEY, false, false));
             }
             (at as u32, new)

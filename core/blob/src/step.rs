@@ -165,6 +165,17 @@ impl Step {
         parent.keys.delete.verify(Domain::SyncStep, &self.digest(), &self.sig).map_err(|_| Error::Verify("step signature"))
     }
 
+    /// An endorsement of this step by delete key `delete` (spec/sync-ids.md §6 Register, spec/wire.md
+    /// §8): a store whose head bears that key may take a branch ending at this step.
+    pub fn endorse(&self, delete: &SigningSecret) -> Signature {
+        delete.sign(Domain::SyncEndorse, &self.id().0)
+    }
+
+    /// Whether `sig` endorses this step under delete key `delete` (`endorse`).
+    pub fn endorsed_by(&self, delete: &VerifyingKey, sig: &Signature) -> bool {
+        delete.verify(Domain::SyncEndorse, &self.id().0, sig).is_ok()
+    }
+
     /// The claim key a reader derives from its X25519 private key (spec/sync-ids.md §3); try each
     /// keyset epoch held.
     pub fn claim_key(&self, own: &X25519Secret) -> Result<SigningSecret, Error> {

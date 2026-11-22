@@ -344,7 +344,7 @@ fn sync_id_claim_set_above_the_threshold_stays_inline_spec_dm_6() {
     let t = new_thing(&mut lp, 0);
     let claims = osis_blob::ClaimSet { claims: vec![[1; 32]; 4096], entries: Default::default() }.to_bytes();
     assert!(claims.len() > osis_base::format::CHUNK_THRESHOLD);
-    let l = ct::SyncEntry { steps: [([9; 32], ct::StepRecord { step: vec![1; 200], claims: Some(claims) })].into_iter().collect() };
+    let l = ct::SyncEntry { steps: [([9; 32], ct::StepRecord { step: vec![1; 200], claims: Some(claims), endorsements: Default::default() })].into_iter().collect() };
     let mut m = Mutation::new();
     m.op(t, &ct::SYNC, PathOp { path: vec![PathSeg::Key(Value::Bytes(vec![5; 16]))], op: Op::Set(osis_schema::Codec::to_value(&l)) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -362,7 +362,7 @@ fn a_paged_sync_state_records_its_sync_ids_whole_spec_dm_6() {
     let t = new_thing(&mut lp, 0);
     let a = ak("sync.0");
     for i in 1..=4u8 {
-        let l = ct::SyncEntry { steps: [([i; 32], ct::StepRecord { step: vec![i; 2000], claims: None })].into_iter().collect() };
+        let l = ct::SyncEntry { steps: [([i; 32], ct::StepRecord { step: vec![i; 2000], claims: None, endorsements: Default::default() })].into_iter().collect() };
         let mut m = Mutation::new();
         m.op(t, &ct::SYNC, PathOp { path: vec![PathSeg::Key(Value::Bytes(vec![i; 16]))], op: Op::Set(osis_schema::Codec::to_value(&l)) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();

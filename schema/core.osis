@@ -232,6 +232,9 @@ type step_record = struct {
     step 0: blob,
     /// The readers it lets in.
     claims 1: option<blob>,
+    /// Endorsements of this step by other steps' delete keys, by delete key: a node keeping the
+    /// sync ID unread on such a step may move here (spec/sync-ids.md §6 Register).
+    endorsements 2: map<blob, blob>,
 };
 
 type sync_entry = struct {

@@ -400,12 +400,12 @@ pub trait Ground {
     /// Whether this node's step of S is due and each role commit it registers is logged under S
     /// in the own store (spec/sync-ids.md §6 Steps: issued after logging the rotations it
     /// registers, so they are stamped under the head a store keeping S unread holds), and
-    /// whether it is deposit-only.
+    /// whether it is deposit-only; or an endorsement of its recorded head is owed (`Now`).
     fn step_ready(&mut self, s: &SyncId) -> Result<StepReady> {
         let _ = s;
         Ok(StepReady::No)
     }
-    /// Issues the step due of S (`step_ready`): whether one was issued.
+    /// Issues the step due of S and the endorsements owed (`step_ready`): whether any was written.
     fn issue_step(&mut self, s: &SyncId) -> Result<bool> {
         let _ = s;
         Ok(false)

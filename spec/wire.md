@@ -216,7 +216,8 @@ ClaimSet := [[claim+], {entry: box}]
 - `claims_hash` = BLAKE3(canonical bytes of the step's `ClaimSet`). `claim`: 32 bytes, a claim public key or static entry (spec/sync-ids.md §2), the count a power of two from 1 to `MAX_CLAIMS`, order as the registrar wrote it. The map holds an entry box (§7) per static entry listed, keyed by the 32-byte entry; every key appears in the claims.
 - **Claim key pair**: the Ed25519 key pair with seed `kdf("sync claim", DH(step private key, M's X25519 key), sync_id || step_key)`.
 - **Static entry**: `BLAKE3("osis v1 static claim" || sync_id || pk)` with `pk` the key actor's raw Ed25519 signing key.
-- `sync.0` stores a step as the canonical bytes of `Step` and its claim set as those of `ClaimSet` (`step_record`, spec/data-model.md §9).
+- **Endorsement** of a step by a delete key (spec/sync-ids.md §6 Register): raw Ed25519 signature by that key under `"osis v1 sync endorse"`, digest the step ID.
+- `sync.0` stores a step as the canonical bytes of `Step`, its claim set as those of `ClaimSet`, and its endorsements as a map from the endorsing raw `delete_pk` to the 64-byte signature (`step_record`, spec/data-model.md §9).
 
 ## 9. Sealed fires and holder keys
 - **Sealed fire** (spec/crypto.md §5, spec/sync-inbox.md §2): the prefix of its commit's encryption (§5: its `expires`, the commitments of the delete keys its header lists), then the raw bytes of a sealed box (§7, not a `sealed` value) to the fired thing's read keyset KEM key the sender chose.
@@ -247,7 +248,7 @@ peer := [dialable, [url*]]
 Error     [0, id, code]
 Ok        [1, id]
 Ping      [2, id, wall_ms]                     -> Pong [3, id, wall_ms]
-Register  [7, id, sync_id, [[step, Opt(claim_set)]+]] -> Ok | Error
+Register  [7, id, sync_id, [[step, Opt(claim_set)]+], Opt(endorsement)] -> Ok | Error
 Status    [11, id, [code+]]
 Delete    [14, id, sync_id, [ditem+]]          -> Status
 Fetch     [19, id, max_reply, [[sync_id, [blob_id+]]+]] -> FetchReply [20, id, [[blob_id, Opt([blob, wrap, Opt(stamp)])]*]]
@@ -302,11 +303,11 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Digest** (spec/sync-opens.md §3): `digest` 32 bytes. **Members**: at most 4096 sync IDs, `more` true on every page but the last; sent only after a Digest that differs. Neither is answered.
 - **Resume** (spec/sync-opens.md §3): dialer to listener, after the dialer's `Proved`, at most one per connection (a second, or one before a Prove, is answered Error 2; a listener the dialer proved no key actor to, keeping no record for this connection, answers Error 1, and the dialer sends NoRecord). `nonce` 32 random bytes; each `tag` 32 bytes, at most `MAX_RESUME_TAGS` of them, as many as fit one message. **Resumed**: the listener's own `nonce`, and `tag` when it holds a listed record.
 - **Twin** (spec/sync-opens.md §1 Twin): either side, on a connection holding a record, about another; `tag` 32 bytes. **Twinned**: `tag` when the receiver matched it. A Twin on a connection holding no record is answered Twinned with none.
-- **Register**: one or more steps in order, each a child of the one before, as many as fit `MAX_MESSAGE`. Replies Ok (also when the last step already is the head), or an Error without the head (spec/sync-ids.md §6):
+- **Register**: one or more steps in order, each a child of the one before, as many as fit `MAX_MESSAGE`, and optionally an endorsement of the last (§8, 64 bytes). Replies Ok (also when the last step already is the head), or an Error without the head (spec/sync-ids.md §6):
   - 2 when a step's sync ID is not the message's, or a claim set does not hash to its step's `claims_hash`;
   - 1 for a genesis step into an empty path that does not verify;
   - 13 for steps from a child step of an unknown sync ID;
-  - 9 for steps the node does not take (a step not verifying under the one before, a branch no deeper than the head or off a step bearing another delete key than the head's, a genesis step the node's path does not hold);
+  - 9 for steps the node does not take (a step not verifying under the one before, a branch no deeper than the head or both off a step bearing another delete key than the head's and without an endorsement of its last step by the head's delete key, a genesis step the node's path does not hold);
   - 12 when steps into an empty path do not fit a storage cap (a branch that does not fit: spec/sync-ids.md §6);
   - 4 when registrations are rate-limited;
   - 14 when the node reads the sync ID or does not sync it.

@@ -10,6 +10,9 @@ use std::fmt;
 pub enum Domain {
     Commit,
     SyncStep,
+    /// A delete key's endorsement of a step a store on another branch may move to
+    /// (spec/sync-ids.md §6 Register).
+    SyncEndorse,
     SyncOpen,
     Stamp,
     Deposit,
@@ -28,9 +31,10 @@ pub enum Domain {
 }
 
 impl Domain {
-    pub const ALL: [Domain; 11] = [
+    pub const ALL: [Domain; 12] = [
         Domain::Commit,
         Domain::SyncStep,
+        Domain::SyncEndorse,
         Domain::SyncOpen,
         Domain::Stamp,
         Domain::Deposit,
@@ -45,6 +49,7 @@ impl Domain {
         match self {
             Domain::Commit => "osis v1 commit",
             Domain::SyncStep => "osis v1 sync step",
+            Domain::SyncEndorse => "osis v1 sync endorse",
             Domain::SyncOpen => "osis v1 sync open",
             Domain::Stamp => "osis v1 stamp",
             Domain::Deposit => "osis v1 deposit",
@@ -61,6 +66,7 @@ impl Domain {
         match self {
             Domain::Commit => "verify: commit",
             Domain::SyncStep => "verify: sync step",
+            Domain::SyncEndorse => "verify: sync endorse",
             Domain::SyncOpen => "verify: sync open",
             Domain::Stamp => "verify: stamp",
             Domain::Deposit => "verify: deposit",

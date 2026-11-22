@@ -551,13 +551,19 @@ fn plan_at(st: &Steps, at: Option<StepId>, p: Progress, held: &[StepId]) -> Plan
 
 /// As `plan_at`, `sync.0` recording `tree`.
 fn plan_in(st: &Steps, tree: &BTreeMap<StepId, Step>, at: Option<StepId>, p: Progress, held: &[StepId]) -> Plan {
-    plan(at, &st.path(), tree, &p, &mut |x: &StepId| Ok(held.contains(x))).unwrap()
+    plan_endorsed(st, tree, &BTreeMap::new(), at, p, held)
+}
+
+/// As `plan_in`, `sync.0` recording endorsements `endorsed` too.
+fn plan_endorsed(st: &Steps, tree: &BTreeMap<StepId, Step>, endorsed: &BTreeMap<StepId, BTreeMap<[u8; 32], osis_crypto::Signature>>, at: Option<StepId>, p: Progress, held: &[StepId]) -> Plan {
+    let o = osis_engine::sync::OwnedSyncId { id: st.steps[0].0.sync_id, path: st.path(), tree: Arc::new(tree.clone()), endorsed: Arc::new(endorsed.clone()), hint: false };
+    plan(at, &o, &p, &mut |x: &StepId| Ok(held.contains(x))).unwrap()
 }
 
 /// The single step a plan sends.
 fn sends(p: &Plan) -> Option<StepId> {
     match p {
-        Plan::Send(s) if s.len() == 1 => s.first().map(|(st, _)| st.id()),
+        Plan::Send(s, _) if s.len() == 1 => s.first().map(|(st, _)| st.id()),
         _ => None,
     }
 }
@@ -565,7 +571,7 @@ fn sends(p: &Plan) -> Option<StepId> {
 /// The steps a plan sends.
 fn sends_all(p: &Plan) -> Vec<StepId> {
     match p {
-        Plan::Send(s) => s.iter().map(|(st, _)| st.id()).collect(),
+        Plan::Send(s, _) => s.iter().map(|(st, _)| st.id()).collect(),
         _ => vec![],
     }
 }
@@ -626,6 +632,32 @@ fn registers_a_branch_at_a_sibling_spec_sync_ids_6() {
     let rotated = st.sibling(0, Some(0xcd));
     assert_eq!(plan_in(&st, &st.tree(&[&rotated]), Some(rotated.id()), Progress::default(), &all), Plan::Nothing, "a sibling under another delete key");
     assert_eq!(plan_in(&st, &st.tree(&[]), Some(a.id()), Progress::default(), &all), Plan::Nothing, "a step sync.0 does not record");
+}
+
+// spec/sync-ids.md §6 (register: a branch by an endorsement): at a source on a sibling under
+// another delete key than the shared step's, one Register carries the recorded steps after the
+// shared step through the first deeper than the source's step that `sync.0` records endorsed by
+// the source's step's delete key, with that endorsement; an endorsement by another key, or of a
+// step no deeper than the source's, sends nothing.
+#[test]
+fn registers_an_endorsed_branch_at_a_rotated_sibling_spec_sync_ids_6() {
+    let st = Steps::new(4);
+    let all: Vec<StepId> = (0..4).map(|i| st.id(i)).collect();
+    let rotated = st.sibling(0, Some(0xcd));
+    let tree = st.tree(&[&rotated]);
+    let by = |k: u8, i: usize| {
+        let key = role_key(RoleKey::Delete, &Secret32::from_bytes([k; 32]));
+        BTreeMap::from([(st.id(i), BTreeMap::from([(key.verifying_key().to_bytes(), st.steps[i].0.endorse(&key))]))])
+    };
+    let e = by(0xcd, 2);
+    let plan = plan_endorsed(&st, &tree, &e, Some(rotated.id()), Progress::default(), &all);
+    assert_eq!(sends_all(&plan), vec![st.id(1), st.id(2)], "through the endorsed step");
+    let Plan::Send(_, Some(sig)) = &plan else { panic!("with its endorsement: {plan:?}") };
+    assert_eq!(Some(sig), e.get(&st.id(2)).and_then(|m| m.values().next()));
+    assert_eq!(sends_all(&plan_endorsed(&st, &tree, &by(0xcd, 3), Some(rotated.id()), Progress::default(), &all)), vec![st.id(1), st.id(2), st.id(3)], "a deeper endorsed step");
+    assert_eq!(plan_endorsed(&st, &tree, &by(0xce, 2), Some(rotated.id()), Progress::default(), &all), Plan::Nothing, "by another key");
+    assert_eq!(plan_endorsed(&st, &tree, &by(0xcd, 1), Some(rotated.id()), Progress::default(), &all), Plan::Nothing, "a step no deeper than the source's");
+    assert_eq!(plan_endorsed(&st, &tree, &e, Some(rotated.id()), Progress::default(), &all[..2]), Plan::Wait, "the role commits of the last are not there yet");
 }
 
 // spec/sync-ids.md §6 (register; refused for now): one Register out at a time; refused for now (4,
@@ -878,6 +910,21 @@ fn a_peer_never_answering_holds_nothing_across_reconnects_spec_sync_inbox_3() {
 // step, so the recorded path runs through its own.
 #[test]
 fn a_store_on_a_losing_sibling_step_is_moved_on_spec_sync_ids_6() {
+    losing_sibling(false);
+}
+
+// spec/sync-ids.md §6 (register: a branch by an endorsement; steps: endorsements owed): as
+// `a_store_on_a_losing_sibling_step_is_moved_on_spec_sync_ids_6`, node 0's rotation rotating the
+// admin secret too, so node 1's head bears a delete key the step the branch leaves from does not:
+// node 0, holding that key, endorses the recorded head, and a reader registers the branch with
+// the endorsement.
+#[test]
+fn a_store_on_a_losing_sibling_under_a_new_admin_secret_is_moved_on_spec_sync_ids_6() {
+    losing_sibling(true);
+}
+
+/// The losing-sibling world, node 0's rotation of the admin secret too when `admin`.
+fn losing_sibling(admin: bool) {
     use crate::harness::history::{Holder, world_of};
     use crate::harness::script::{Give, New, Run, Strong, Syncs, Write};
     use osis_engine::flows::edges::Demotion;
@@ -897,6 +944,9 @@ fn a_store_on_a_losing_sibling_step_is_moved_on_spec_sync_ids_6() {
     let rotation = w.write(0, |e| {
         let before: BTreeSet<_> = e.commit_ids().into_iter().collect();
         e.demote(&t, &removal).unwrap();
+        if admin {
+            e.rotate_leaving_out(&t, &[osis_base::Role::Admin], &[]).unwrap().expect("an admin rotation");
+        }
         let new: Vec<_> = e.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
         new.iter().map(|c| e.package(c).unwrap().unwrap()).collect::<Vec<_>>()
     });
@@ -913,6 +963,9 @@ fn a_store_on_a_losing_sibling_step_is_moved_on_spec_sync_ids_6() {
     w.run();
     let b = w.store(2).head(&s).unwrap().map(|h| h.id());
     assert!(b.is_some() && b != a, "node 2 stepped a sibling");
+    let delete = |w: &mut crate::harness::World, i: usize| w.store(i).head(&s).unwrap().map(|h| h.keys.delete);
+    let fork = w.store(1).path(&s).unwrap().and_then(|p| p.steps.iter().rev().nth(1).map(|(st, _)| st.keys.delete));
+    assert_eq!(fork != delete(&mut w, 1), admin, "node 1's head bears a new delete key alone by an admin rotation");
     // node 2 grants node 1 sync again (at A's epoch too) and removes it (C, a child of B)
     let _ = crate::harness::play(&mut w, &[Give(2, 0, Holder::Node(1), Syncs)], String::new());
     w.write(2, |e| e.demote(&t, &removal).unwrap());

@@ -59,6 +59,52 @@ pub(crate) fn head_of(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Opt
     steps.keys().filter(|k| !parents.contains(k)).filter_map(|k| Some((osis_blob::path_to(&plain, k).ok()?.len(), *k))).min_by_key(|(n, k)| (std::cmp::Reverse(*n), *k)).map(|(_, k)| k)
 }
 
+/// The delete keys owing an endorsement of S's recorded head (spec/sync-ids.md §6 Steps): each
+/// key some step off the recorded path bears, that step shallower than the head and its fork (its
+/// deepest ancestor on the recorded path) bearing another key, while no recorded-path step deeper
+/// than every such step of that key carries an endorsement by it. A store on such a step takes no
+/// branch of the recorded path but by one (§6 Register).
+pub(crate) fn endorsements_owed(o: &OwnedSyncId) -> BTreeSet<[u8; 32]> {
+    let at: BTreeMap<StepId, usize> = o.path.steps.iter().enumerate().map(|(i, (st, _))| (st.id(), i)).collect();
+    // per off-path step: its fork's index and its depth, filled down each branch once
+    let mut placed: BTreeMap<StepId, (usize, usize)> = BTreeMap::new();
+    let mut deepest: BTreeMap<[u8; 32], usize> = BTreeMap::new();
+    for (id, x) in o.tree.iter() {
+        if at.contains_key(id) {
+            continue;
+        }
+        let mut chain = vec![(*id, x)];
+        let base = loop {
+            let Some((_, cur)) = chain.last() else { break None };
+            let Some(prev) = cur.prev.filter(|_| chain.len() <= o.tree.len()) else { break None };
+            if let Some(j) = at.get(&prev) {
+                break Some((*j, j + 1));
+            }
+            if let Some(p) = placed.get(&prev) {
+                break Some(*p);
+            }
+            let Some(next) = o.tree.get(&prev) else { break None };
+            chain.push((prev, next));
+        };
+        let Some((fork, mut depth)) = base else { continue };
+        for (cid, _) in chain.iter().rev() {
+            depth += 1;
+            placed.insert(*cid, (fork, depth));
+        }
+        let Some(&(fork, depth)) = placed.get(id) else { continue };
+        let Some((f, _)) = o.path.steps.get(fork) else { continue };
+        if depth < o.path.steps.len() && f.keys.delete != x.keys.delete {
+            let d = deepest.entry(x.keys.delete.to_bytes()).or_default();
+            *d = (*d).max(depth);
+        }
+    }
+    deepest
+        .into_iter()
+        .filter(|(d, depth)| !o.path.steps.iter().skip(*depth).any(|(st, _)| o.endorsed.get(&st.id()).is_some_and(|e| e.contains_key(d))))
+        .map(|(d, _)| d)
+        .collect()
+}
+
 /// The sync IDs decoded `sync.0` `m` of `g` records that `g` owns here (`Core::owns_sync_id`),
 /// each with its recorded path; records that do not parse are skipped.
 pub(crate) fn owned_in(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId> {
@@ -70,7 +116,8 @@ pub(crate) fn owned_in(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId
                 return None;
             }
             let tree = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-            Some(OwnedSyncId { id: *id, path: Arc::new(recorded_path(&steps)?), tree: Arc::new(tree), hint })
+            let endorsed = Arc::new(osis_blob::sync_endorsements(l, &steps));
+            Some(OwnedSyncId { id: *id, path: Arc::new(recorded_path(&steps)?), tree: Arc::new(tree), endorsed, hint })
         })
         .collect()
 }
@@ -298,7 +345,7 @@ fn followed(core: &Core, k: &Tid) -> Option<OwnedSyncId> {
     let ix = &core.ix;
     let elsewhere = ix.sync_recorders.get(&s).is_some_and(|x| !x.is_empty())
         || core.followed_links.naming(&s).iter().any(|t| t != k);
-    (followable(core, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), hint: true })
+    (followable(core, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), endorsed: Arc::default(), hint: true })
 }
 
 /// The sync IDs the held tickets for `g` name (spec/sync-inbox.md §5 Ticket sync IDs: its
@@ -311,7 +358,7 @@ fn ticket_hints(core: &Core, g: &Tid) -> Vec<OwnedSyncId> {
         ix.sync_recorders.get(s).is_some_and(|x| x.iter().any(|t| t != g)) || !core.followed_links.naming(s).is_empty()
     };
     let ids: BTreeSet<SyncId> = ix.closure.ticket_ids(g).into_iter().map(|(s, _)| s).filter(|s| !theirs(s)).collect();
-    ids.into_iter().map(|id| OwnedSyncId { id, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), hint: true }).collect()
+    ids.into_iter().map(|id| OwnedSyncId { id, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), endorsed: Arc::default(), hint: true }).collect()
 }
 
 /// Whether followed link `k` may be a link's K here: a thing this node holds only as a link's K

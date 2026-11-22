@@ -310,6 +310,9 @@ pub struct OwnedSyncId {
     /// Every step its `sync.0` records, every branch, by ID (a source's step off `path` is found
     /// here: spec/sync-ids.md §6 Register).
     pub tree: Arc<BTreeMap<StepId, Step>>,
+    /// The endorsements its `sync.0` records that verify, by endorsed step: the endorsing delete
+    /// keys and signatures (spec/sync-ids.md §6 Register).
+    pub endorsed: Arc<BTreeMap<StepId, BTreeMap<[u8; 32], osis_crypto::Signature>>>,
     /// A hint: held while the node holds no sync secret of the thing's own (spec/sync-ids.md §4).
     pub hint: bool,
 }

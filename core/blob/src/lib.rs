@@ -24,7 +24,7 @@ pub use auth::{DeleteItem, cover_levels, delete_digest, entry_digest, key_for_le
 pub use blob::{Class, Group, Level, Prefix, blob_id, check_size, frame, frame_under, open, clear_prefix, unwrap_any, wrap_order};
 pub use chunks::{LargeParams, chunk_value, read_value, string_head};
 pub use error::Error;
-pub use sync_ids::{StepRecord, SyncEntry, SyncIds, parse_record, step_record, sync_steps};
+pub use sync_ids::{StepRecord, SyncEntry, SyncIds, parse_record, step_record, sync_endorsements, sync_steps};
 pub use fire::{SealedFire, open_fire, seal_fire};
 pub use holder::HolderKeys;
 pub use link::{DialHint, ShareLink, link_peers};

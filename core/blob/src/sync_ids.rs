@@ -4,12 +4,13 @@
 
 use crate::step::{ClaimSet, Step, StepId};
 use crate::Error;
+use osis_crypto::{Signature, VerifyingKey};
 pub use osis_schema::core_types::{SYNC, StepRecord, SyncEntry, SyncIds};
 use std::collections::BTreeMap;
 
 /// A step record from a step and its claim set (when held).
 pub fn step_record(step: &Step, claims: Option<&ClaimSet>) -> StepRecord {
-    StepRecord { step: step.to_bytes(), claims: claims.map(ClaimSet::to_bytes) }
+    StepRecord { step: step.to_bytes(), claims: claims.map(ClaimSet::to_bytes), endorsements: BTreeMap::new() }
 }
 
 /// Parses a record: canonical step bytes, and a claim set that hashes to the step's (spec/sync.md
@@ -39,6 +40,25 @@ pub fn sync_steps(sync_id: &SyncEntry) -> Result<BTreeMap<StepId, (Step, Option<
         out.insert(StepId(*id), (s, c));
     }
     Ok(out)
+}
+
+/// The endorsements a sync ID's records carry that verify (spec/sync-ids.md §4, §6 Register): by
+/// endorsed step, the endorsing delete keys with their signatures. Others are ignored.
+pub fn sync_endorsements(sync_id: &SyncEntry, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> BTreeMap<StepId, BTreeMap<[u8; 32], Signature>> {
+    let mut out = BTreeMap::new();
+    for (id, r) in &sync_id.steps {
+        let Some((step, _)) = steps.get(&StepId(*id)) else { continue };
+        let ok: BTreeMap<[u8; 32], Signature> = r
+            .endorsements
+            .iter()
+            .filter(|(k, sig)| VerifyingKey::from_slice(*k).is_ok_and(|vk| step.endorsed_by(&vk, &Signature(**sig))))
+            .map(|(k, sig)| (*k, Signature(*sig)))
+            .collect();
+        if !ok.is_empty() {
+            out.insert(StepId(*id), ok);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

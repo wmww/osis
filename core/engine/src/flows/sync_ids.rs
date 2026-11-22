@@ -262,6 +262,30 @@ fn step_into(tx: &mut Tx<'_>, m: &mut Mutation, g: Tid, l: SyncId, fresh: bool) 
     Ok(Some((step, set)))
 }
 
+/// The endorsements this node owes S's recorded head, as signing keys (spec/sync-ids.md §6
+/// Steps): those of `endorsements_owed` whose admin secret it holds, while it is an admin of `g`.
+pub(crate) fn endorsers(tx: &mut Tx<'_>, g: &Tid, o: &crate::sync::OwnedSyncId) -> Result<Vec<osis_crypto::SigningSecret>> {
+    let owed = crate::sync_ids::actors::endorsements_owed(o);
+    if owed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Ok(me) = tx.core.writer() else { return Ok(Vec::new()) };
+    if tx.core.role_now(&me, g) != Some(Role::Admin) {
+        return Ok(Vec::new());
+    }
+    let Some(epochs) = tx.core.epochs(g) else { return Ok(Vec::new()) };
+    Ok(epochs.admin.held_newest_first().into_iter().map(|(_, s)| role_key(RoleKey::Delete, s)).filter(|k| owed.contains(&k.verifying_key().to_bytes())).collect())
+}
+
+/// `sync.0` write: endorsements of `g`'s sync ID `l`'s step `step` by `keys`.
+fn put_endorsements(m: &mut Mutation, g: Tid, l: SyncId, step: &Step, keys: &[osis_crypto::SigningSecret]) -> Result<()> {
+    for k in keys {
+        let path = vec![PathSeg::Key(l.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(step.id().0.to_vec())), PathSeg::Field(2), PathSeg::Key(Value::Bytes(k.verifying_key().to_bytes().to_vec()))];
+        m.op(g, &ct::SYNC, PathOp { path, op: Op::Set(Value::Bytes(step.endorse(k).0.to_vec())) })?;
+    }
+    Ok(())
+}
+
 impl Engine {
     /// Refreshes `actor`'s deposit seed (spec/crypto.md §3, a MAY: a departed holder can then no
     /// longer deposit under its sync IDs, nor can a holder that has not read the new `keys.0`).
@@ -295,6 +319,29 @@ impl Engine {
             Engine::commit_tx(tx, m)?;
             Ok(Some(out))
         })
+    }
+
+    /// Writes the endorsements this node owes `sync_id`'s recorded head (`endorsers`, spec/sync-ids.md
+    /// §6 Steps): whether it wrote any.
+    pub fn endorse_due(&mut self, sync_id: &SyncId) -> Result<bool> {
+        let Some((g, o)) = self.recorded_owner(sync_id)? else { return Ok(false) };
+        let Some((head, _)) = o.path.steps.last().cloned() else { return Ok(false) };
+        self.run(|tx| {
+            let keys = endorsers(tx, &g, &o)?;
+            if keys.is_empty() {
+                return Ok(false);
+            }
+            let mut m = Mutation::new();
+            put_endorsements(&mut m, g, o.id, &head, &keys)?;
+            Engine::commit_tx(tx, m)?;
+            Ok(true)
+        })
+    }
+
+    /// Whether this node owes `sync_id`'s recorded head an endorsement it can sign (`endorse_due`).
+    pub fn endorsement_due(&mut self, sync_id: &SyncId) -> Result<bool> {
+        let Some((g, o)) = self.recorded_owner(sync_id)? else { return Ok(false) };
+        self.read(|tx| Ok(!endorsers(tx, &g, &o)?.is_empty()))
     }
 
     /// The sync ID of `t`: the greatest it owns (`flows::sync_id_of`).
