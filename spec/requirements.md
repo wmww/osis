@@ -53,6 +53,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 - Nothing a node already holds is sent again. Data reachable from many places is stored and transferred once per node.
 - Every operation costs in proportion to what it changes, never to the size of what holds it, to total data, or to history.
 - Removing a holder costs in proportion to the rosters of what it could read and to those of its edits the other writers still hold.
+- A role change that arrives out of order (stamped before role changes a node already holds on that thing) may cost in proportion to the role history after it on that thing.
 - Connected nodes see each other's commits promptly, pushed, not polled.
 
 ## Data a node cannot read

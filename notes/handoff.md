@@ -1,10 +1,9 @@
 # Handoff
-> Summary: For the next coordinator (from Mizzen): the one decision A1 waits on (the walk rebuild's shape), the open Tess questions, the latent items worth knowing, osprey's base unit, and the drafts' answered questions. Delete once its items are taken.
+> Summary: For the next coordinator (from Mizzen): the open Tess questions, the latent items worth knowing, osprey's base unit, and the drafts' answered questions. Delete once its items are taken.
 
 The design is notes/write-path-design.md (Decided, the lettered rules); the plan notes/redesign-plan.md (stages P and D done; A1's spec written: spec/permissions.md §1-§2, §5.1-§5.2, §6); what runs beside it notes/priorities.md.
 
 ## Waiting on Tess
-- **The walk rebuild's shape (blocks A1)**: issues/perm-eval-cost.md (tess-call, critical). Checkpoint replay misses the requirement "every operation costs in proportion to what it changes" for backdated or late-arriving role writes (a count test on main: `core/perm/tests/it/paths/counts.rs`). Options: (A) re-step only what a change reaches, designed as verdicts that are functions of the hops they read with changes carried by the memo system (the coordinator's lean), or (B) checkpoint replay with a weaker cost requirement (a requirements change). Until answered, osis-perm's old walk trails the model and its differentials carry `rate:` known failures (issues/perm-walk-trails-model.md).
 - **Requirements wording**: spec/requirements.md line 15 says a write's actors start at "the key that signs it"; under owner keys the actors are all things (a key signs as a thing). Not contradicted by the spec, but stale: offered to Tess, not yet answered.
 - **Acting through a team requires accepting it** (907d6f4f7): follows spec/sync-inbox.md §5 (only accepting takes a grant up) and fixed the unaccepted-grant sync class, but removes something a user could do; asked, not yet answered. Narrow to reverse (`rotation::role_here`'s skip of the account's edges on unreached things).
 - **The first owner key** (issues/owner-key-first-attach.md): built as option 1, one clause (`Rules::attach_on_path`), option 2 the variant `-attach-kept`.
