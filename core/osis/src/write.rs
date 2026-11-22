@@ -230,32 +230,24 @@ impl<'d> Write<'d> {
     /// [ak*], [op*], Opt(expiry)]`, the nonce put before it as it is sent; an expiry `[0, at]`
     /// or `[1, ms from now]`.
     fn wire(self) -> Result<Vec<Value>> {
-        use crate::port::codec::{ak_to, opt, tid_to, write_op_to};
-        let expires = self.expires.map(|e| match e {
-            Expiry::At(t) => Value::List(vec![Value::uint(0), Value::uint(t.0)]),
-            Expiry::In(d) => Value::List(vec![Value::uint(1), Value::uint(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))]),
-        });
-        Ok(vec![
-            tid_to(&self.actor),
-            Value::List(self.keys.iter().map(|k| ak_to(&k.ak)).collect()),
-            Value::List(self.ops.iter().map(write_op_to).collect::<Result<Vec<_>>>()?),
-            opt(expires),
-        ])
+        use crate::port::codec::{Form, write_op_to};
+        let aks: Vec<Ak> = self.keys.iter().map(|k| k.ak.clone()).collect();
+        let ops = self.ops.iter().map(write_op_to).collect::<Result<Vec<_>>>()?;
+        Ok(vec![self.actor.to_wire(), aks.to_wire(), Value::List(ops), self.expires.to_wire()])
     }
 
     /// The write a client port's `WRITE` carries (`wire`), on `db`, its keys typed as `db` types
     /// them; refused past `MAX_WRITE_OPS` ops.
     pub(crate) fn from_wire(db: &'d Osis, args: Vec<Value>) -> Result<Write<'d>> {
-        use crate::port::codec::{ak, bad, list, opt_from, uint, write_op_from};
-        let [actor, aks, ops, expires] = <[Value; 4]>::try_from(args).map_err(|_| bad("write"))?;
-        let ops = list(ops, "write ops")?;
+        use crate::port::codec::{Form, write_op_from};
+        let (actor, aks, ops, expires): (Tid, Vec<Ak>, Vec<Value>, Option<Expiry>) = Form::from_wire(Value::List(args))?;
         if ops.len() > crate::port::MAX_WRITE_OPS {
             return Err(Error::Invalid(format!("a write through another node has at most {} ops", crate::port::MAX_WRITE_OPS)));
         }
         let mut w = db.write();
-        w.actor = crate::port::codec::tid(&actor)?;
-        for a in list(aks, "aspect keys")? {
-            let a = ak(&a)?;
+        w.actor = actor;
+        w.expires = expires;
+        for a in aks {
             let k = db.aspect_key(a.as_str())?;
             let i = u32::try_from(w.keys.len()).unwrap_or(u32::MAX);
             w.key_ix.insert((a, 0), i);
@@ -268,18 +260,6 @@ impl<'d> Write<'d> {
             }
             w.ops.push(o);
         }
-        w.expires = match opt_from(expires, "expiry")? {
-            None => None,
-            Some(e) => {
-                let [case, n] = <[Value; 2]>::try_from(list(e, "expiry")?).map_err(|_| bad("expiry"))?;
-                let n = uint(&n, "expiry")?;
-                Some(match uint(&case, "expiry")? {
-                    0 => Expiry::At(Time(n)),
-                    1 => Expiry::In(Duration::from_millis(n)),
-                    _ => return Err(bad("expiry")),
-                })
-            }
-        };
         Ok(w)
     }
 
