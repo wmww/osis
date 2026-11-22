@@ -1214,7 +1214,7 @@ fn run_timer(tx: &mut Tx<'_>, t: u64, c: &CommitId, ai: usize, kind: u8, changed
     // the bound may have ended the part's listing with nothing held changing (a purge
     // tombstone's): its fold under its original judged again, and told (an event repeating a
     // page is harmless)
-    if !crate::engine::listing::is_listed(tx, c, ai)?
+    if crate::engine::listing::listed(tx, c, ai)?.is_none()
         && let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai))
     {
         let (tid, ak) = (a.tid, a.ak.clone());

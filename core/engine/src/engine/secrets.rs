@@ -58,13 +58,7 @@ impl Core {
         // no mint admin's epochs held: the leftovers alone, still reading-only
         let mut d = d.unwrap_or_default();
         for r in ROLES {
-            for (ep, info) in x.role(r).epochs() {
-                if d.role(r).get(ep).is_none() {
-                    let i = d.role_mut(r).observe(*ep);
-                    *i = info.clone();
-                    i.established = None;
-                }
-            }
+            add_reading(&mut d, x, r);
         }
         Some(d)
     }
@@ -110,11 +104,7 @@ impl Core {
         let up = self.created(tid)?.mint_admin()?;
         let derived = ActorEpochs::derived(&self.chain_epochs(&up)?, tid);
         let mut out = ActorEpochs::default();
-        for (ep, info) in derived.role(Role::Read).epochs() {
-            let i = out.role_mut(Role::Read).observe(*ep);
-            *i = info.clone();
-            i.established = None;
-        }
+        add_reading(&mut out, &derived, Role::Read);
         Some(out)
     }
 
@@ -438,6 +428,17 @@ impl Core {
     }
 }
 
+/// Adds to `d` the epochs of role `r` of `from` it lacks, unestablished: for reading only.
+fn add_reading(d: &mut ActorEpochs, from: &ActorEpochs, r: Role) {
+    for (ep, info) in from.role(r).epochs() {
+        if d.role(r).get(ep).is_none() {
+            let i = d.role_mut(r).observe(*ep);
+            *i = info.clone();
+            i.established = None;
+        }
+    }
+}
+
 /// What a `secrets.0` read handed to `Core::ingest_secrets` stands for.
 #[derive(Clone, Copy)]
 pub(crate) enum SecretsRead<'a> {
@@ -640,8 +641,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
 /// `published` from `published_keys`): what every write on it needs, whatever its purge-by, so a
 /// write and [`usable_role`] agree.
 pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Creates, published: &BTreeMap<(Tid, Role), VerifyingKey>, keys: &KeyCache, tid: &Tid) -> bool {
-    // a node that joined no account writes only its own card, as itself
-    let s = CommitSecrets { core, purge_author: core.me().unwrap_or(core.id.tid()), created, published, keys };
+    let s = CommitSecrets::own(core, created, published, keys);
     osis_commit::Secrets::admin_key(&s, tid).is_some() && osis_commit::Secrets::write_key(&s, tid).is_some()
 }
 
@@ -651,8 +651,7 @@ pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Cre
 pub(crate) fn writer_delete_key_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<Option<VerifyingKey>> {
     let created = Default::default();
     let published = published_keys(tx, &created, [*t])?;
-    let s = CommitSecrets { core: tx.core, purge_author: tx.core.me().unwrap_or(tx.core.id.tid()), created: &created, published: &published, keys: &KeyCache::default() };
-    Ok(osis_commit::Secrets::write_key(&s, t))
+    Ok(osis_commit::Secrets::write_key(&CommitSecrets::own(tx.core, &created, &published, &KeyCache::default()), t))
 }
 
 /// Whether this node holds the delete keys every write on `t` lists (`framing_for`'s check), in
@@ -732,7 +731,13 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
     }
 }
 
-impl CommitSecrets<'_> {
+impl<'c> CommitSecrets<'c> {
+    /// A build as this node writes on its own account (a node that joined no account writes
+    /// only its own card, as itself).
+    fn own(core: &'c Core, created: &'c crate::engine::write::Creates, published: &'c BTreeMap<(Tid, Role), VerifyingKey>, keys: &'c KeyCache) -> Self {
+        CommitSecrets { core, purge_author: core.me().unwrap_or(core.id.tid()), created, published, keys }
+    }
+
     /// Whether this node holds the key actor at the end of the purge author's record chain.
     fn holds_purge_author_key(&self) -> bool {
         self.core.record_chain(&self.purge_author).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t) || self.core.accounts.contains_key(&t))
@@ -857,6 +862,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
     let bad = || Error::Corrupt("epochs");
     let lim = osis_base::Limits::new(16, b.len());
     let Value::List(roles) = osis_base::decode(b, &lim).map_err(|_| bad())? else { return Err(bad()) };
+    let commit = |c: &[u8]| c.try_into().map(CommitId).map_err(|_| bad());
     let mut a = ActorEpochs::default();
     for (r, items) in ROLES.iter().zip(roles) {
         let Value::List(items) = items else { return Err(bad()) };
@@ -868,13 +874,13 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
             for x in rotations {
                 let Value::List(x) = x else { return Err(bad()) };
                 let [Value::Bytes(c), Value::List(list)] = x.as_slice() else { return Err(bad()) };
-                let c = CommitId(c.as_slice().try_into().map_err(|_| bad())?);
+                let c = commit(c)?;
                 let list = list.iter().map(|s| Epoch::from_wire(s).map_err(|_| bad())).collect::<Result<_>>()?;
                 info.rotations.insert(c, list);
             }
             for c in snapshots {
                 let Value::Bytes(c) = c else { return Err(bad()) };
-                info.snapshots.insert(CommitId(c.as_slice().try_into().map_err(|_| bad())?));
+                info.snapshots.insert(commit(c)?);
             }
             for n in names {
                 info.names.insert(osis_keys::Names::from_value(n).ok_or_else(bad)?);
@@ -898,10 +904,9 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
             }
             let source = |c: &Value| -> Result<Unchecked> {
                 let Value::List(c) = c else { return Err(bad()) };
-                let [Value::Bytes(author), Value::Bytes(commit)] = c.as_slice() else { return Err(bad()) };
+                let [Value::Bytes(author), Value::Bytes(id)] = c.as_slice() else { return Err(bad()) };
                 let author = Tid::from_bytes(author.as_slice().try_into().map_err(|_| bad())?);
-                let commit = osis_base::CommitId(commit.as_slice().try_into().map_err(|_| bad())?);
-                Ok(Unchecked { author, commit })
+                Ok(Unchecked { author, commit: commit(id)? })
             };
             info.reading = reading.iter().map(source).collect::<Result<_>>()?;
             info.roles_reading = roles_reading.iter().map(source).collect::<Result<_>>()?;

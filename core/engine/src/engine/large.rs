@@ -24,7 +24,7 @@ pub const MAX_READ: usize = 1 << 30;
 
 /// Largest current value a write indexes for reuse (local policy: one link of memory per chunk);
 /// past it the rest of the new value is written afresh.
-pub const MAX_REUSE: u64 = 16 << 30;
+const MAX_REUSE: u64 = 16 << 30;
 
 fn at<'v>(v: &'v mut Value, steps: &[Step]) -> Option<&'v mut Value> {
     let Some((s, rest)) = steps.split_first() else { return Some(v) };
@@ -121,10 +121,13 @@ fn schema_path(p: &[PathSeg]) -> Path {
 
 /// The root links the state holds under `path`, by content hash.
 fn held_links(state: Option<&Fragment>, path: &[PathSeg]) -> HashMap<[u8; 32], Link> {
+    by_hash(state.and_then(|f| f.at(path)).filter(|f| f.present()).and_then(|f| f.read()).as_slice())
+}
+
+/// The links inside `vs`, by content hash.
+fn by_hash(vs: &[Value]) -> HashMap<[u8; 32], Link> {
     let mut out = Vec::new();
-    if let Some(v) = state.and_then(|f| f.at(path)).filter(|f| f.present()).and_then(|f| f.read()) {
-        links_in(&v, &mut out);
-    }
+    vs.iter().for_each(|v| links_in(v, &mut out));
     out.into_iter().map(|l| (l.hash, l)).collect()
 }
 
@@ -224,9 +227,7 @@ pub(crate) fn window_links(list: &Fragment, e: &ListEdit) -> Option<HashMap<[u8;
     if vals.len() != base.len() || vals.iter().zip(base).any(|(v, b)| hash_only(v) != hash_only(b)) {
         return None;
     }
-    let mut out = Vec::new();
-    vals.iter().for_each(|v| links_in(v, &mut out));
-    Some(out.into_iter().map(|l| (l.hash, l)).collect())
+    Some(by_hash(&vals))
 }
 
 /// Chunks the large positions of an op's value (untyped writes are classified as `any`);
@@ -478,7 +479,7 @@ pub(crate) fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out:
 }
 
 /// `tree_blobs`, calling `seen` once per blob added to `out` with the link it was reached by.
-pub(crate) fn walk_trees(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out: &mut Trees, seen: &mut dyn FnMut(&Link)) -> Result<()> {
+fn walk_trees(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out: &mut Trees, seen: &mut dyn FnMut(&Link)) -> Result<()> {
     // (link, whether it is known to be a chunk)
     let mut stack: Vec<(Link, bool)> = roots.iter().map(|l| (*l, false)).collect();
     let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
@@ -667,11 +668,7 @@ impl Engine {
         let schema: Option<Arc<Schema>> = self.core.schemas.get(ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(ak.as_str()).then(|| Arc::new(osis_schema::core_schema().clone())));
         let Some(state) = self.state(tid, ak)? else { return Ok(None) };
         let Some(v) = state.read() else { return Ok(None) };
-        let core = osis_schema::core_schema();
-        let (sc, ty): (&Schema, Type) = match schema.as_deref().and_then(|s| s.aspects.get(ak.as_str()).map(|d| (s, d.ty.clone()))) {
-            Some(x) => x,
-            None => (core, Type::Any),
-        };
+        let (sc, ty, _) = op_type(schema.as_deref(), ak.as_str(), &[]);
         let mut ops = Vec::new();
         for l in osis_schema::link_positions(sc, &v, &ty) {
             // set elements and map keys have no register position to write

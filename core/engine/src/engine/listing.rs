@@ -101,7 +101,7 @@ pub struct HeldPart {
 }
 
 /// What is here of part `ai` of commit `c`, its body unread (`Here::Holds`).
-pub(super) enum Here {
+pub(crate) enum Here {
     Holds,
     Purged(CommitId),
     Dropped,
@@ -176,7 +176,7 @@ fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize, itself: 
 /// by its value-less writes or kept by its keep rule counted from its own `ts` (its body is gone,
 /// so no death of its writes can be judged from it; its own `ts` is never later than its death, so
 /// a purge never lists a part retention no longer kept).
-pub(super) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here)>> {
+pub(crate) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here)>> {
     let me = tx.core.me();
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.view.aspects.get(ai) else { return Ok(None) };
@@ -220,11 +220,6 @@ fn own_floor(core: &crate::engine::Core, tid: &Tid) -> u64 {
 fn opened_at(tx: &mut Tx<'_>, o: &CommitId, tid: &Tid, ak: &osis_base::Ak, floor: u64) -> Result<bool> {
     let Some(oai) = tx.core.ix.commits.get(o).and_then(|m| m.aspect(tid, ak)) else { return Ok(false) };
     Ok(crate::sync_ids::opened::part_floor(tx, o, oai, tid)?.is_some_and(|f| f >= floor))
-}
-
-/// Whether part `ai` of `c` is listed (`listed`).
-pub(crate) fn is_listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
-    Ok(listed(tx, c, ai)?.is_some())
 }
 
 /// The keep bound of purged part `ai` of `c`: its keep rule counted from its own `ts`, never past

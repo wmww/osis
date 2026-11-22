@@ -23,7 +23,7 @@
 //! whole, state and bodies and timers: only `secrets.0` and the blob ciphertexts nothing still
 //! lists go.
 
-use crate::engine::records::{self, Rd};
+use crate::engine::records;
 use crate::engine::{Core, DropFor, Tx};
 use crate::error::Result;
 use crate::events::{Cause, Event};
@@ -238,10 +238,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         }
         reached.insert(t);
         let mut held: BTreeSet<Ak> = tx.core.aspects_of(&t).map(|((_, ak), _)| ak.clone()).collect();
-        tx.scan(&[records::ASPECTS, t.as_bytes()].concat(), |k, _| {
-            held.insert(Rd::new(k).ak()?);
-            Ok(())
-        })?;
+        held.extend(tx.state_aks(&t)?);
         if held.is_empty() {
             continue;
         }

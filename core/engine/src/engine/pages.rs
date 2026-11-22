@@ -81,6 +81,10 @@ impl PageSet {
     fn prefix(&self) -> Vec<u8> {
         self.id.to_be_bytes().to_vec()
     }
+    /// The end of the set's rows: the next set's prefix.
+    fn end(&self) -> [u8; 4] {
+        self.id.saturating_add(1).to_be_bytes()
+    }
     fn row_key(&self, first: Option<&Dot>) -> Vec<u8> {
         let mut k = self.prefix();
         if let Some(d) = first {
@@ -93,6 +97,23 @@ impl PageSet {
         let k = self.row_key(Some(d));
         let (pk, r) = self.loaded.range(..=k.clone()).next_back()?;
         r.1.as_ref().is_none_or(|hi| d < hi).then_some((pk, r))
+    }
+    /// A key just past `d`'s row key: the page holding `d` is the last row below it.
+    fn past(&self, d: &Dot) -> Vec<u8> {
+        [self.row_key(Some(d)), vec![0]].concat()
+    }
+    /// The stored placement as held, if read and present.
+    fn stored(&self) -> Option<&SeqPlace> {
+        match &self.place {
+            Place::Held(p) => Some(p),
+            _ => None,
+        }
+    }
+    /// Notes the stored placement missing or damaged: laid out anew by the next transaction
+    /// writing the state.
+    fn lose_place(&mut self) {
+        self.place = Place::Missing;
+        self.relay = true;
     }
 }
 
@@ -108,7 +129,7 @@ pub struct StatePages {
 impl StatePages {
     /// The paths below a paged collection's elements (what its pages reduce).
     fn nested(&self, p: &[Step]) -> Paths {
-        Paths { here: false, next: self.paths.below(p).map(|x| x.next.clone()).unwrap_or_default() }
+        below(&self.paths, p)
     }
     /// Notes no page loaded (the state reduced to its skeleton).
     fn unload(&mut self) {
@@ -126,6 +147,11 @@ impl StatePages {
     pub fn sets(&self) -> usize {
         self.sets.len()
     }
+}
+
+/// The paths of `paths` strictly below `p`, relative to it.
+fn below(paths: &Paths, p: &[Step]) -> Paths {
+    Paths { here: false, next: paths.below(p).map(|x| x.next.clone()).unwrap_or_default() }
 }
 
 /// What a bounded read may still hold of the states it loads, in bytes (`Tx::bound`); `None`:
@@ -249,6 +275,17 @@ fn page_row(r: &Range, p: &Fragment) -> Result<Vec<u8>> {
     Ok(osis_base::encode(&Value::List(vec![opt_dot_value(r.0.as_ref()), opt_dot_value(r.1.as_ref()), Value::Bytes(encode(p)?)])))
 }
 
+/// A page row decoded under `bound` (`charge`).
+fn charge_row(bound: &mut Bound, row: &[u8]) -> Result<(Range, Fragment)> {
+    let mut range = (None, None);
+    let p = charge(bound, row.len(), || {
+        let (r, p) = parse_page_row(row)?;
+        range = r;
+        Ok(p)
+    })?;
+    Ok((range, p))
+}
+
 fn parse_page_row(b: &[u8]) -> Result<(Range, Fragment)> {
     let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, b.len());
     let v = osis_base::decode(b, &lim).map_err(|_| Error::Corrupt("state page"))?;
@@ -320,12 +357,7 @@ fn join_row(f: &mut Fragment, set: &mut PageSet, bound: &mut Bound, key: Vec<u8>
     }
     // counted: scale tests read the number of pages loaded
     let _s = osis_base::costs::span("state page load");
-    let mut range = (None, None);
-    let p = charge(bound, row.len(), || {
-        let (r, p) = parse_page_row(row)?;
-        range = r;
-        Ok(p)
-    })?;
+    let (range, p) = charge_row(bound, row)?;
     if set.row_key(range.0.as_ref()) != key {
         return Err(Error::Corrupt("state page key"));
     }
@@ -391,19 +423,14 @@ pub fn each_piece(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &StatePage
         for key in set_rows(txn, t, set)? {
             let Some(row) = txn.table_get(t, &key)? else { continue };
             let mut bound = idx.bound;
-            let mut range = (None, None);
-            let pg = charge(&mut bound, row.len(), || {
-                let (r, p) = parse_page_row(&row)?;
-                range = r;
-                Ok(p)
-            })?;
+            let (range, pg) = charge_row(&mut bound, &row)?;
             let mut g = spine.clone();
             if keys && is_keyed(set) {
                 let inside = |d: &Dot| range.0.as_ref().is_none_or(|lo| d >= lo) && range.1.as_ref().is_none_or(|hi| d < hi);
                 let vs: BTreeSet<Value> = pg.elem_dots(None, None).iter().flat_map(|d| indexed(&pg, set.enc, d)).collect();
                 for v in &vs {
                     for d in key_dots(txn, tid, ak, set, v)?.into_iter().filter(|d| !inside(d)) {
-                        let (_, other) = row_below(txn, t, &[set.row_key(Some(&d)), vec![0]].concat())?;
+                        let (_, other) = row_below(txn, t, &set.past(&d))?;
                         let mut b = bound;
                         let o = charge(&mut b, other.len(), || Ok(parse_page_row(&other)?.1))?;
                         if let Some(r) = o.key_records(&d, v) {
@@ -429,7 +456,7 @@ fn ensure_dot(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, bound: &mu
     if set.whole || set.loaded_page(d).is_some() {
         return Ok(());
     }
-    let (k, v) = row_below(txn, t, &[set.row_key(Some(d)), vec![0]].concat())?;
+    let (k, v) = row_below(txn, t, &set.past(d))?;
     if !k.starts_with(&set.prefix()) {
         return Err(Error::Corrupt("state page missing"));
     }
@@ -448,8 +475,7 @@ fn ensure_span(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, bound: &m
     if set.whole || b <= a {
         return Ok(());
     }
-    let from = [set.row_key(Some(a)), vec![0]].concat();
-    let end = [set.row_key(Some(b)), vec![0]].concat();
+    let (from, end) = (set.past(a), set.past(b));
     scan_table(txn, t, &from, Some(&end), |k, v| join_row(f, set, bound, k, &v))
 }
 
@@ -469,7 +495,7 @@ fn ensure_set(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
     if set.whole {
         return Ok(());
     }
-    let (start, end) = (set.prefix(), set.id.saturating_add(1).to_be_bytes());
+    let (start, end) = (set.prefix(), set.end());
     scan_table(txn, t, &start, Some(&end), |k, v| join_row(f, set, bound, k, &v))?;
     if !set.loaded.contains_key(&start) {
         return Err(Error::Corrupt("first state page missing"));
@@ -1134,7 +1160,7 @@ fn invalidate_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut
 
 /// Drops every placement row of `set`.
 fn clear_placement(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, shred: Shred) -> Result<()> {
-    clear_table(txn, pt, &set.prefix(), &set.id.saturating_add(1).to_be_bytes(), shred)
+    clear_table(txn, pt, &set.prefix(), &set.end(), shred)
 }
 
 /// Once every page of the paged sequence `set` is loaded: its placement as stored, loaded whole
@@ -1157,8 +1183,7 @@ fn place_whole(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet,
     };
     if !ok || !p.complete() {
         attach(f, set, None);
-        set.place = Place::Missing;
-        set.relay = true;
+        set.lose_place();
         return Ok(());
     }
     if let Some(s) = f.at_steps(&at) {
@@ -1210,8 +1235,7 @@ pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
                 if pl.shown() != e.base_len() || load_range(txn, tid, ak, t, set, &mut idx.bound, f, pl, w.lo..w.hi)?.is_none() {
                     return Ok(false);
                 }
-                let Place::Held(pl) = &set.place else { return Ok(false) };
-                let pl = pl.clone();
+                let Some(pl) = set.stored().cloned() else { return Ok(false) };
                 attach(f, set, Some(pl.clone()));
                 let lends = f.at(&op.path).is_some_and(|l| super::large::window_links(&l, e).is_some());
                 if !lends || pl.misses().any() {
@@ -1236,10 +1260,9 @@ pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
 pub fn absorb(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, work: &mut usize) -> Result<Option<bool>> {
     let t = table(txn, tid, ak)?;
     let mut any = false;
-    let budget: usize = idx.sets.values().filter(|s| is_seq(s) && !s.whole).filter_map(|s| if let Place::Held(p) = &s.place { Some(p.len().max(1024)) } else { None }).sum();
+    let budget: usize = idx.sets.values().filter(|s| is_seq(s) && !s.whole).filter_map(|s| s.stored().map(|p| p.len().max(1024))).sum();
     for set in idx.sets.values_mut().filter(|s| is_seq(s) && !s.whole) {
-        let Place::Held(p) = &set.place else { continue };
-        let mut p = p.clone();
+        let Some(mut p) = set.stored().cloned() else { continue };
         let m = p.misses();
         if !m.any() {
             continue;
@@ -1311,8 +1334,7 @@ fn load_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
             break;
         }
         if !fill_place(txn, pt, set, &mut pl, &m.blocks, &m.chunks)? {
-            set.place = Place::Missing;
-            set.relay = true;
+            set.lose_place();
             return Ok(None);
         }
     }
@@ -1339,10 +1361,7 @@ fn step_index(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
     if f.at_steps(p).is_none() {
         ensure_first(txn, t, set, bound, f)?;
     }
-    let pl = match &set.place {
-        Place::Held(x) => x.clone(),
-        _ => return Ok(false),
-    };
+    let Some(pl) = set.stored().cloned() else { return Ok(false) };
     attach(f, set, Some(pl));
     Ok(true)
 }
@@ -1351,8 +1370,7 @@ fn step_index(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
 /// transaction writing the state.
 pub fn damaged(idx: &mut StatePages, p: &[Step]) {
     if let Some(set) = idx.sets.get_mut(p) {
-        set.place = Place::Missing;
-        set.relay = true;
+        set.lose_place();
     }
 }
 
@@ -1405,7 +1423,7 @@ fn paged_paths(f: &Fragment) -> Result<Vec<Vec<Step>>> {
         if !splits(c) {
             continue;
         }
-        let below = Paths { here: false, next: paged.below(&p).map(|x| x.next.clone()).unwrap_or_default() };
+        let below = below(&paged, &p);
         let own = if below.is_empty() { encode(c)?.len() } else { encode(&c.reduced(&below))?.len() };
         if own > PAGE_BYTES {
             paged.insert(&p);
@@ -1518,7 +1536,7 @@ fn relink_prev(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, key: &[u8
 #[allow(clippy::too_many_arguments)]
 fn rewrite_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet, c: &Fragment, nested: &Paths, dots: &[Dot], shred: Shred) -> Result<bool> {
     let mut dirty: BTreeMap<Vec<u8>, Range> = BTreeMap::new();
-    if matches!(set.enc, Encoding::List | Encoding::Text) {
+    if is_seq(set) {
         // (first, last) per delta record: a range record touches every page between (all
         // loaded, or those its records span, `ensure_span`)
         for pair in dots.chunks(2) {
@@ -1613,10 +1631,7 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut StatePages, tid: &Tid,
             // loaded whole): what changed is written; else (dropped, or not followed from the
             // stored one) a whole one is written whole, or the stored one invalidated
             let cur = c.seq_place_cached();
-            let old = match &set.place {
-                Place::Held(o) => Some(o.clone()),
-                _ => None,
-            };
+            let old = set.stored().cloned();
             let kept = match cur {
                 Some(cur) if old.is_some() || set.whole => write_place(txn, tid, ak, set, &cur, old.as_ref(), shred)?,
                 _ => false,
@@ -1674,7 +1689,7 @@ fn set_pages(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<F
 /// The row keys of a paged collection's pages, in order.
 fn set_rows(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Vec<u8>>> {
     let mut out = Vec::new();
-    scan_table(txn, t, &set.prefix(), Some(&set.id.saturating_add(1).to_be_bytes()), |k, _| {
+    scan_table(txn, t, &set.prefix(), Some(&set.end()), |k, _| {
         out.push(k);
         Ok(())
     })?;

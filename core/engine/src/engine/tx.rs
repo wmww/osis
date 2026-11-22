@@ -463,9 +463,7 @@ impl Tx<'_> {
     /// collection), dropped from the cache again (`evict_pages`), so reading a delta against
     /// the state a piece at a time holds about one page of it. `None`: the state is empty.
     pub fn state_at(&mut self, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<Option<Fragment>> {
-        self.load_lazy(tid, ak)?;
-        let touch = pages::touch_of(f, self.core.pages.get(&(*tid, ak.clone())));
-        self.ensure_touch(tid, ak, &touch)?;
+        self.load_touched(tid, ak, f)?;
         drop(osis_base::costs::span("state copied whole"));
         let out = self.cached(tid, ak).cloned();
         self.evict_pages(tid, ak);
@@ -476,12 +474,17 @@ impl Tx<'_> {
     /// the resets on its paths included), loading only the pages `f` touches: O(f), not a copy of
     /// the state.
     pub fn state_part_at(&mut self, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<Option<Fragment>> {
-        self.load_lazy(tid, ak)?;
-        let touch = pages::touch_of(f, self.core.pages.get(&(*tid, ak.clone())));
-        self.ensure_touch(tid, ak, &touch)?;
+        self.load_touched(tid, ak, f)?;
         let out = self.cached(tid, ak).map(|s| s.part_at(f));
         self.evict_pages(tid, ak);
         Ok(out)
+    }
+
+    /// Loads the state of `(tid, ak)` with the pages a join of `f` meets (`pages::touch_of`).
+    fn load_touched(&mut self, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        let touch = pages::touch_of(f, self.core.pages.get(&(*tid, ak.clone())));
+        self.ensure_touch(tid, ak, &touch)
     }
 
     /// The pieces of the state of `(tid, ak)` as a read sees each, within the running read's

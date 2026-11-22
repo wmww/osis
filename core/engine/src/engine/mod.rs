@@ -2799,6 +2799,169 @@ fn then<T, U>(r: Result<T>, f: impl FnOnce() -> Result<U>) -> Result<T> {
     r.and_then(|v| f().map(|_| v))
 }
 
+/// The transaction's end, steps 1 and 2 (notes/engine.md): own secrets due, then the flows while
+/// their writes bring things into the node closure.
+fn end_flows<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
+    // a thing minted with an account as admin is independent by its creating transaction's end
+    // (spec/permissions.md §3)
+    if !tx.core.own_secrets_due.is_empty() {
+        r = then(r, || crate::rotation::own_secrets_due(tx));
+    }
+    tx.core.own_secrets_due.clear();
+    // explicit demotions applied get this node's addenda (spec/permissions.md §5.2),
+    // on what the node closure holds as this transaction leaves it (a node writes only
+    // what it holds, spec/sync-set.md §2 Writing). The flows' own writes may bring
+    // things into the node closure (an addendum makes the content it vouches for
+    // valid, strongs included): what waits for them joins and the flows run again,
+    // until nothing enters.
+    let mut flows = osis_base::loop_guard::LoopGuard::new("Engine::run (the flows' writes bringing things into the node closure)");
+    while r.is_ok() && !tx.txn.is_memory() {
+        r = then(r, || crate::sync::units::settle(tx));
+        // what waits to see a thing enter the node closure joins as it enters
+        // (spec/commits.md §4 Outside the node closure), the closure settled again
+        let mut guard = osis_base::loop_guard::LoopGuard::new("Engine::run (what waits for things entering the node closure)");
+        while r.is_ok() {
+            match crate::apply::wake_entered(tx) {
+                Ok(0) => break,
+                Ok(n) => {
+                    // each round wakes what things newly entered hold back
+                    let pending = tx.core.ix.pending.len() as u64;
+                    guard.round(n, || (pending + 2, format!("{pending} pending")));
+                    r = then(r, || crate::sync::units::settle(tx));
+                }
+                Err(e) => r = Err(e),
+            }
+        }
+        // a commit pends only while carried (spec/commits.md §4 Pending storage)
+        r = then(r, || crate::apply::carriers::settle(tx));
+        r = then(r, || crate::flows::inbox::owe_removal_notices(tx));
+        r = then(r, || crate::flows::addenda::write_owed(tx));
+        r = then(r, || crate::flows::signing::leave_if_removed(tx));
+        r = then(r, || crate::flows::signing::answer_rotations(tx));
+        r = then(r, || crate::sync::dial::drop_departed(tx));
+        r = then(r, || crate::sync::units::settle(tx));
+        if r.is_err() || !crate::apply::entering(tx) {
+            break;
+        }
+        // each round brings a thing in
+        flows.round((), || {
+            let held = tx.core.ix.closure.things().count() as u64;
+            (held + 2, format!("{held} things in the node closure"))
+        });
+    }
+    r
+}
+
+/// The transaction's end, steps 3 and 4 (notes/engine.md): invalid bodies, settings, re-judging,
+/// setting waits and covers; then destructions and what nothing held needs any more.
+fn end_drops<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
+    tx.core.notices_due.clear();
+    tx.core.removals_due.clear();
+    if r.is_ok() && tx.core.header_fault.load(std::sync::atomic::Ordering::Relaxed) {
+        r = Err(Error::Corrupt("commit record header"));
+    }
+    // a body judged invalid goes at the end of the transaction that judged it
+    // (spec/permissions.md §6), after this node's addenda vouched for what they list;
+    // a memory transaction drops memory parts only (`drop_invalid`)
+    if !tx.core.drop_due.is_empty() {
+        r = then(r, || crate::retention::drop_invalid(tx));
+    }
+    tx.core.drop_due.clear();
+    if !tx.core.settings_due.is_empty() {
+        // the new timelines walk rows dated by this transaction's joins and validity
+        // changes (a superseder turning invalid moves its victims' rows later), so the
+        // walk tells no body early
+        r = then(r, || crate::retention::leaving::date_due(tx));
+        r = then(r, || crate::retention::settings_changed(tx));
+    }
+    tx.core.settings_due.clear();
+    // a setting that left here moves which external fires are valid
+    // (`validity::setting_moved`): judged, and what turned invalid goes, in this
+    // transaction; a removal notice turned valid is taken as one arriving
+    if tx.core.stale() {
+        r = then(r, || crate::apply::rejudged(tx, false).and_then(|_| crate::retention::drop_invalid(tx)));
+        if !tx.core.removals_due.is_empty() && !tx.txn.is_memory() {
+            r = then(r, || crate::flows::inbox::owe_removal_notices(tx));
+        }
+    }
+    tx.core.drop_due.clear();
+    tx.core.removals_due.clear();
+    if !tx.core.setting_waits_due.is_empty() {
+        r = then(r, || crate::sync::setting::judge_due(tx));
+    }
+    tx.core.setting_waits_due.clear();
+    if !tx.core.ix.cover_waits.is_empty() && !tx.txn.is_memory() {
+        r = then(r, || crate::retention::replace::wake_covers(tx));
+    }
+    if !tx.core.none_due.is_empty() {
+        r = then(r, || crate::retention::settle_none(tx));
+    }
+    tx.core.none_due.clear();
+    // destructions and what nothing held needs any more, each letting more go
+    // (`retention::needed`), judged on the node closure as it stands
+    while r.is_ok() && !tx.txn.is_memory() {
+        r = then(r, || crate::retention::destroy::apply_destructions(tx));
+        if r.is_err() || tx.core.needs_due.is_empty() {
+            break;
+        }
+        r = then(r, || crate::sync::units::settle(tx));
+        let mut went = false;
+        r = r.and_then(|v| crate::retention::needed::settle(tx).map(|w| {
+            went = w;
+            v
+        }));
+        if !went {
+            break;
+        }
+    }
+    tx.core.needs_due.clear();
+    r
+}
+
+/// The transaction's end, step 5 (notes/engine.md): what follows every change above, settled
+/// and stored.
+fn end_settle<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
+    r = then(r, || crate::retention::persist_valueless(tx));
+    tx.core.valueless_dirty.clear();
+    r = then(r, || edits::settle(tx));
+    tx.core.refold.clear();
+    // freed links judged once every rebuild ran: a judged one keeps no key here
+    if !tx.core.freed_due.is_empty() {
+        r = then(r, || crate::retention::freed::settle_due(tx));
+    }
+    tx.core.freed_due.clear();
+    if !tx.core.forgotten_names_due.is_empty() {
+        r = then(r, || crate::retention::names::settle_due(tx));
+    }
+    tx.core.forgotten_names_due.clear();
+    if !tx.core.handed_due.is_empty() {
+        r = then(r, || crate::retention::handed::settle_due(tx));
+    }
+    tx.core.handed_due.clear();
+    r = then(r, || listing::listing_moved(tx));
+    tx.core.listed_before.clear();
+    tx.core.killed.clear();
+    // the node closure follows every change above (spec/sync-set.md §2), and holds
+    // what this transaction made
+    r = then(r, || crate::sync::units::settle(tx).and_then(|()| crate::sync::units::check_written(tx)));
+    tx.core.wrote_on.clear();
+    // what stopped pending above loses its carriers
+    if !tx.txn.is_memory() {
+        r = then(r, || crate::apply::carriers::settle(tx));
+    }
+    tx.core.carriers_due.clear();
+    // the blob waits of what pends no more go (`apply::reach::settle`)
+    crate::apply::reach::settle(tx.core);
+    // the history rows follow every change of what is held above
+    r = then(r, || crate::retention::leaving::date_due(tx));
+    tx.core.to_date.clear();
+    tx.core.dated_as.clear();
+    // every state written above stored in its form (`Tx::settle_states`)
+    r = then(r, || tx.settle_placements().and_then(|()| tx.settle_states()));
+    r = then(r, || Core::commit_changes(tx));
+    r
+}
+
 impl Engine {
     /// How many times the engine read its indexes from the store again (an open, a reload after
     /// a write of unknown outcome): a follower of its memos (sync's modules)
@@ -3107,8 +3270,6 @@ impl Engine {
         // wakes, due lists) differs from what a restart derives. One
         // whose outcome was unknown (its sync failed) may have landed after all: read once the
         // store works again, under a fresh session (that commit's counters may be taken)
-        // a memo running `f` reads what `f` reads: the transaction's own work around it (settling,
-        // its end's follow-ups, persisting, checks) is no part of `f`'s answer
         if self.reload_owed() {
             let w = self.store.writes();
             let seen = std::mem::replace(&mut self.failed_seen, (w.failed, w.unknown));
@@ -3165,156 +3326,16 @@ impl Engine {
                 let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, bound: None };
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
+                // a memo running `f` reads what `f` reads: the transaction's own work around it
+                // (its end's follow-ups, persisting, checks) is no part of `f`'s answer
                 _after = memo::Unrecorded::start();
-                // a thing minted with an account as admin is independent by its creating transaction's end
-                // (spec/permissions.md §3)
-                if !tx.core.own_secrets_due.is_empty() {
-                    r = then(r, || crate::rotation::own_secrets_due(&mut tx));
-                }
-                tx.core.own_secrets_due.clear();
-                // explicit demotions applied get this node's addenda (spec/permissions.md §5.2),
-                // on what the node closure holds as this transaction leaves it (a node writes only
-                // what it holds, spec/sync-set.md §2 Writing). The flows' own writes may bring
-                // things into the node closure (an addendum makes the content it vouches for
-                // valid, strongs included): what waits for them joins and the flows run again,
-                // until nothing enters.
-                let mut flows = osis_base::loop_guard::LoopGuard::new("Engine::run (the flows' writes bringing things into the node closure)");
-                while r.is_ok() && !tx.txn.is_memory() {
-                    r = then(r, || crate::sync::units::settle(&mut tx));
-                    // what waits to see a thing enter the node closure joins as it enters
-                    // (spec/commits.md §4 Outside the node closure), the closure settled again
-                    let mut guard = osis_base::loop_guard::LoopGuard::new("Engine::run (what waits for things entering the node closure)");
-                    while r.is_ok() {
-                        match crate::apply::wake_entered(&mut tx) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                // each round wakes what things newly entered hold back
-                                let pending = tx.core.ix.pending.len() as u64;
-                                guard.round(n, || (pending + 2, format!("{pending} pending")));
-                                r = then(r, || crate::sync::units::settle(&mut tx));
-                            }
-                            Err(e) => r = Err(e),
-                        }
-                    }
-                    // a commit pends only while carried (spec/commits.md §4 Pending storage)
-                    r = then(r, || crate::apply::carriers::settle(&mut tx));
-                    r = then(r, || crate::flows::inbox::owe_removal_notices(&mut tx));
-                    r = then(r, || crate::flows::addenda::write_owed(&mut tx));
-                    r = then(r, || crate::flows::signing::leave_if_removed(&mut tx));
-                    r = then(r, || crate::flows::signing::answer_rotations(&mut tx));
-                    r = then(r, || crate::sync::dial::drop_departed(&mut tx));
-                    r = then(r, || crate::sync::units::settle(&mut tx));
-                    if r.is_err() || !crate::apply::entering(&tx) {
-                        break;
-                    }
-                    // each round brings a thing in
-                    flows.round((), || {
-                        let held = tx.core.ix.closure.things().count() as u64;
-                        (held + 2, format!("{held} things in the node closure"))
-                    });
-                }
+                r = end_flows(&mut tx, r);
                 #[cfg(debug_assertions)]
                 {
                     durable = !tx.txn.is_memory();
                 }
-                tx.core.notices_due.clear();
-                tx.core.removals_due.clear();
-                if r.is_ok() && tx.core.header_fault.load(std::sync::atomic::Ordering::Relaxed) {
-                    r = Err(Error::Corrupt("commit record header"));
-                }
-                // a body judged invalid goes at the end of the transaction that judged it
-                // (spec/permissions.md §6), after this node's addenda vouched for what they list;
-                // a memory transaction drops memory parts only (`drop_invalid`)
-                if !tx.core.drop_due.is_empty() {
-                    r = then(r, || crate::retention::drop_invalid(&mut tx));
-                }
-                tx.core.drop_due.clear();
-                if !tx.core.settings_due.is_empty() {
-                    // the new timelines walk rows dated by this transaction's joins and validity
-                    // changes (a superseder turning invalid moves its victims' rows later), so the
-                    // walk tells no body early
-                    r = then(r, || crate::retention::leaving::date_due(&mut tx));
-                    r = then(r, || crate::retention::settings_changed(&mut tx));
-                }
-                tx.core.settings_due.clear();
-                // a setting that left here moves which external fires are valid
-                // (`validity::setting_moved`): judged, and what turned invalid goes, in this
-                // transaction; a removal notice turned valid is taken as one arriving
-                if tx.core.stale() {
-                    r = then(r, || crate::apply::rejudged(&mut tx, false).and_then(|_| crate::retention::drop_invalid(&mut tx)));
-                    if !tx.core.removals_due.is_empty() && !tx.txn.is_memory() {
-                        r = then(r, || crate::flows::inbox::owe_removal_notices(&mut tx));
-                    }
-                }
-                tx.core.drop_due.clear();
-                tx.core.removals_due.clear();
-                if !tx.core.setting_waits_due.is_empty() {
-                    r = then(r, || crate::sync::setting::judge_due(&mut tx));
-                }
-                tx.core.setting_waits_due.clear();
-                if !tx.core.ix.cover_waits.is_empty() && !tx.txn.is_memory() {
-                    r = then(r, || crate::retention::replace::wake_covers(&mut tx));
-                }
-                if !tx.core.none_due.is_empty() {
-                    r = then(r, || crate::retention::settle_none(&mut tx));
-                }
-                tx.core.none_due.clear();
-                // destructions and what nothing held needs any more, each letting more go
-                // (`retention::needed`), judged on the node closure as it stands
-                while r.is_ok() && !tx.txn.is_memory() {
-                    r = then(r, || crate::retention::destroy::apply_destructions(&mut tx));
-                    if r.is_err() || tx.core.needs_due.is_empty() {
-                        break;
-                    }
-                    r = then(r, || crate::sync::units::settle(&mut tx));
-                    let mut went = false;
-                    r = r.and_then(|v| crate::retention::needed::settle(&mut tx).map(|w| {
-                        went = w;
-                        v
-                    }));
-                    if !went {
-                        break;
-                    }
-                }
-                tx.core.needs_due.clear();
-                r = then(r, || crate::retention::persist_valueless(&mut tx));
-                tx.core.valueless_dirty.clear();
-                r = then(r, || edits::settle(&mut tx));
-                tx.core.refold.clear();
-                // freed links judged once every rebuild ran: a judged one keeps no key here
-                if !tx.core.freed_due.is_empty() {
-                    r = then(r, || crate::retention::freed::settle_due(&mut tx));
-                }
-                tx.core.freed_due.clear();
-                if !tx.core.forgotten_names_due.is_empty() {
-                    r = then(r, || crate::retention::names::settle_due(&mut tx));
-                }
-                tx.core.forgotten_names_due.clear();
-                if !tx.core.handed_due.is_empty() {
-                    r = then(r, || crate::retention::handed::settle_due(&mut tx));
-                }
-                tx.core.handed_due.clear();
-                r = then(r, || listing::listing_moved(&mut tx));
-                tx.core.listed_before.clear();
-                tx.core.killed.clear();
-                // the node closure follows every change above (spec/sync-set.md §2), and holds
-                // what this transaction made
-                r = then(r, || crate::sync::units::settle(&mut tx).and_then(|()| crate::sync::units::check_written(&mut tx)));
-                tx.core.wrote_on.clear();
-                // what stopped pending above loses its carriers
-                if !tx.txn.is_memory() {
-                    r = then(r, || crate::apply::carriers::settle(&mut tx));
-                }
-                tx.core.carriers_due.clear();
-                // the blob waits of what pends no more go (`apply::reach::settle`)
-                crate::apply::reach::settle(tx.core);
-                // the history rows follow every change of what is held above
-                r = then(r, || crate::retention::leaving::date_due(&mut tx));
-                tx.core.to_date.clear();
-                tx.core.dated_as.clear();
-                // every state written above stored in its form (`Tx::settle_states`)
-                r = then(r, || tx.settle_placements().and_then(|()| tx.settle_states()));
-                r = then(r, || Core::commit_changes(&mut tx));
+                r = end_drops(&mut tx, r);
+                r = end_settle(&mut tx, r);
                 // every validity change was judged before the index is persisted
                 debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty() && tx.core.ix.epochs_due.is_empty()), "stale validity left unjudged: {:?} {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits, *tx.core.ix.epochs_due);
                 #[cfg(debug_assertions)]
