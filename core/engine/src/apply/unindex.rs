@@ -115,6 +115,10 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     }
     if let Some(x) = v.other_purge_author() {
         core.ix.by_actor.remove(&(x, v.signer), id);
+        // the last held commit acting as it was a need (`retention::needed::Need::Acting`)
+        if core.acting_for(&x).next().is_none() {
+            core.note_lost(x);
+        }
     }
     core.ix.paths_unknown.remove(id);
     if let Some(e) = v.epoch {

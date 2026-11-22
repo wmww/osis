@@ -778,6 +778,28 @@ fn a_part_missing_outside_the_node_closure_keeps_nothing_spec_commits_5() {
     assert!(r.engine.core.created(&t).is_none(), "{}", r.engine.why_kept(&t));
 }
 
+// spec/commits.md §5 What a held thing needs, §4 Unjudgeable: a held commit needs the things its
+// path lists, whose records judge it. Peer 0 writes X acting as T, a thing of its own outside
+// peer 1's node closure, holding no role on X: nothing else needs T at peer 1, and its record
+// stays past the pass's end with the commit.
+#[test]
+fn a_held_commit_needs_the_thing_it_acts_as_spec_commits_5() {
+    let mut lp = crate::common::net(2, 0);
+    let d = lp.peers[0].engine.account_root().unwrap();
+    let x = crate::common::new_shared(&mut lp, 0);
+    let e0 = &mut lp.peers[0].engine;
+    let t = make(e0, d, d);
+    let mut m = Mutation::new();
+    m.set(x, &crate::common::REG, &crate::common::s("as t")).unwrap();
+    m.act_as(t);
+    let c = e0.commit_hostile(m).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    e1.settle_needs().unwrap();
+    assert!(e1.commit_ids().contains(&c) && e1.commit_purge_author(&c) == Some(t), "the commit acting as T applies");
+    assert!(e1.core.created(&t).is_some(), "T's record stays with the commit acting as it: {}", e1.why_kept(&t));
+}
+
 // spec/sync-set.md §2 (Writing): a node writes only what it holds. Bob, granted write on Alice's
 // T and holding its commits, writes it unaccepted: refused, nothing applies. Accepting T and
 // writing it in one commit passes: what it writes is held at the transaction's end.
