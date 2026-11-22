@@ -58,7 +58,7 @@
 
 use roles_model::paths::{self, Edge, Id, Kind, Rules, Set, Thing, Things, View};
 use roles_model::Role;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub type Sid = Thing;
 
@@ -358,6 +358,16 @@ pub enum Ev {
     Leave(Thing, Sid),
 }
 
+/// A world's `chained` answers by held set: a pure function of the paths world and the set.
+#[derive(Debug, Default)]
+pub struct Memo(std::sync::Mutex<HashMap<Set, Set>>);
+
+impl Clone for Memo {
+    fn clone(&self) -> Memo {
+        Memo(std::sync::Mutex::new(self.0.lock().map(|m| m.clone()).unwrap_or_default()))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct World {
     pub w: paths::World,
@@ -382,6 +392,8 @@ pub struct World {
     pub creations: bool,
     /// `creation` of every commit, computed once the world is written (`creations_of`).
     pub creation_memo: std::sync::OnceLock<Vec<Option<Id>>>,
+    /// `chained` per held set, of the commits written so far (`write_parts` clears it).
+    pub chained_memo: Memo,
     /// Content parts whose path entry opens late (notes/path-form.md, the split form's waiting
     /// paths), each with the commit opening it (a key arriving: a content commit on its thing by
     /// its mint admin): a node holding the part without it knows no path for it, so the part
@@ -418,7 +430,7 @@ impl World {
     pub fn new(w: paths::World, sids: &[Thing]) -> World {
         let sids: Things = sids.iter().copied().collect();
         let units = sids.iter().map(|&s| (s, Things::from([s]))).collect();
-        World { w, rules: Rules::fixed(), sids, units, events: vec![], nodes: vec![], by: vec![], trust: Set::new(), pend: Pend::Any, join: join_default(), creations: false, creation_memo: Default::default(), opens: BTreeMap::new(), keysets: BTreeMap::new() }
+        World { w, rules: Rules::fixed(), sids, units, events: vec![], nodes: vec![], by: vec![], trust: Set::new(), pend: Pend::Any, join: join_default(), creations: false, creation_memo: Default::default(), chained_memo: Memo::default(), opens: BTreeMap::new(), keysets: BTreeMap::new() }
     }
     pub fn node(&mut self, honest: bool, syncs: &[Thing]) -> usize {
         self.nodes.push(Node { honest, syncs: syncs.iter().copied().collect(), stamps: None });
@@ -440,6 +452,7 @@ impl World {
     /// one event per part, consecutive.
     pub fn write_parts(&mut self, n: usize, f: impl FnOnce(&mut paths::World) -> Vec<Id>) -> Vec<Id> {
         let ids = f(&mut self.w);
+        self.chained_memo = Memo::default();
         for &i in &ids {
             assert_eq!(i, self.by.len(), "parts in order");
             // a node writes only what it holds: it syncs the thing written and its path's things
@@ -631,7 +644,13 @@ impl World {
     }
     /// The chained edge-class commits of `h`: roles-model's (`paths::chained`).
     pub fn chained(&self, h: &Set) -> Set {
-        paths::chained(&self.w, h)
+        let memo = |f: &mut dyn FnMut(&mut HashMap<Set, Set>) -> Option<Set>| self.chained_memo.0.lock().ok().and_then(|mut m| f(&mut m));
+        if let Some(ch) = memo(&mut |m| m.get(h).cloned()) {
+            return ch;
+        }
+        let ch = paths::chained(&self.w, h);
+        memo(&mut |m| m.insert(h.clone(), ch.clone()));
+        ch
     }
     /// A grant: an edge write setting its edge (no self-removal, no finalize) to a role, `until`
     /// disregarded.
