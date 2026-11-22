@@ -258,7 +258,7 @@ impl Stamps {
     }
 
     /// The stamps of a container every write of which inside an `Undoable` stretch is undone if
-    /// the stretch is (a journaled index, a store's rows): such a stretch undone leaves what read
+    /// the stretch is (a journaled index, the engine's store's rows): such a stretch undone leaves what read
     /// its keys before their first write in it holding (`Undoable::end`).
     pub fn undoable(self) -> Stamps {
         lock(&self.0).undoable = true;
