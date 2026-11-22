@@ -390,8 +390,9 @@ pub struct World {
     /// (`ends_grant`) resets an entry whose creation (`creation`) is not held. False: the walk
     /// alone (paths has no entries).
     pub creations: bool,
-    /// `creation` of every commit, computed once the world is written (`creations_of`).
-    pub creation_memo: std::sync::OnceLock<Vec<Option<Id>>>,
+    /// `creation` of every commit (`creations_of`), with the commit and event counts it was
+    /// computed at.
+    pub creation_memo: std::sync::OnceLock<(usize, usize, Vec<Option<Id>>)>,
     /// `chained` per held set, of the commits written so far (`write_parts` clears it).
     pub chained_memo: Memo,
     /// Content parts whose path entry opens late (notes/path-form.md, the split form's waiting
@@ -665,19 +666,35 @@ impl World {
         matches!(&self.w.commits[i].kind, Kind::Edge { role, until, .. } if *role == Role::None || *until == Some(0))
     }
     /// The creation of the entry edge write `i` resets: the first grant on its edge in key order
-    /// before it that is chained over everything written (an entry no walk creates is none); None
-    /// where `i` creates it.
+    /// before it that is chained over what was written before `i`'s commit (its writer names the
+    /// entry, and can know no later write; an entry no walk creates is none); None where `i`
+    /// creates it.
     pub fn creation(&self, i: Id) -> Option<Id> {
+        let at = (self.w.commits.len(), self.events.len());
+        let (n, k, memo) = self.creation_memo.get_or_init(|| (at.0, at.1, self.creations_of()));
+        if (*n, *k) == at { memo[i] } else { self.creations_of()[i] }
+    }
+    /// `creation` of every commit.
+    fn creations_of(&self) -> Vec<Option<Id>> {
         let n = self.w.commits.len();
-        let compute = || {
-            let ch = self.chained(&(0..n).collect());
-            (0..n).map(|i| {
+        let mut at = vec![usize::MAX; n];
+        for (k, e) in self.events.iter().enumerate() {
+            if let Ev::Write(j) = e {
+                at[*j] = k;
+            }
+        }
+        (0..n)
+            .map(|i| {
                 let e = self.w.sets(i)?;
-                (0..n).filter(|&j| self.w.sets(j) == Some(e) && self.grant(j) && ch.contains(&j) && self.w.key(j) < self.w.key(i)).min_by_key(|&j| self.w.key(j))
-            }).collect::<Vec<_>>()
-        };
-        let memo = self.creation_memo.get_or_init(compute);
-        if memo.len() == n { memo[i] } else { compute()[i] }
+                let before = |j: Id| at[j] < at[self.w.cid(i)];
+                let grants: Vec<Id> = (0..n).filter(|&j| before(j) && self.w.sets(j) == Some(e) && self.grant(j) && self.w.key(j) < self.w.key(i)).collect();
+                if grants.is_empty() {
+                    return None;
+                }
+                let ch = self.chained(&(0..n).filter(|&j| before(j)).collect());
+                grants.into_iter().filter(|j| ch.contains(j)).min_by_key(|&j| self.w.key(j))
+            })
+            .collect()
     }
     /// `j` is ordered before `i` as `i`'s verdict reads it: by key for an edge-class `i`, by `ts`
     /// (the start of its `ts`) for content.

@@ -250,6 +250,22 @@ fn f9_a_removal_of_two_holders_waits_for_each_creation() {
     }
 }
 
+/// An entry's creation is named by the write putting inside or resetting it, so it is chained
+/// over what was written before that write: K (a writer of A) grants D admin on A (junk), X grants
+/// D admin on A, then X grants K admin from before K's grant, chaining it. X's grant names no
+/// creation: no honest node logs K's grant under D while it is junk (P10).
+#[test]
+fn a_creation_is_judged_over_what_its_naming_write_follows() {
+    let (mut w, [x, _, k, _]) = base();
+    let junk = w.write(k, |p| p.edge(K, 3, &[], A, D, Role::Admin, &[]));
+    w.write(x, |p| p.edge(X, 4, &[], A, D, Role::Admin, &[]));
+    w.write(x, |p| p.edge(X, 2, &[], A, K, Role::Admin, &[]));
+    let rule = Open10::Granted.set(&mut w, Rule::fixed());
+    assert_eq!(fails(&w, &rule), vec![]);
+    let st = w.run(&rule, |_| {});
+    assert!(w.chained(&w.full(&st, &Set::new()).v.held).contains(&junk));
+}
+
 /// Cost under (iv), counted: copies under D are the chained writes on the outside edges its
 /// bodies' paths use, shared by every write (flat at 3 and 30 writes), one more per re-grant on a
 /// used edge (role churn), and repeated under every sync ID whose unit carries D (each counts the
