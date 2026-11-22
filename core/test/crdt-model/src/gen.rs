@@ -337,7 +337,8 @@ pub fn bulk_value(r: &mut Rng, ty: &Ty, depth: u32) -> Value {
 /// through chains and range records), deletes, undeletes, resets; with `slots` (text), register
 /// writes of strings at the position (§7: embedded chars, `Derived` dots moved, deleted and
 /// anchored at, held or not), forged copies of a register write (other strings) and of its
-/// embedding (other chars, fewer or more, as a snapshot carries them). Joined into deltas of
+/// embedding (other chars, fewer or more, as a snapshot carries them, with the reset the
+/// register write copied implies). Joined into deltas of
 /// 1..4 writes each.
 pub fn hostile(r: &mut Rng, list: bool, slots: bool) -> Vec<Frag> {
     let mut deltas = Vec::new();
@@ -409,6 +410,9 @@ fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
                 elems.insert(e.clone(), MElem::new(MStamp { ts: ct, dot: e.clone() }, a.clone(), Content::Char(any_char(r))));
                 a = MAnchor::Dot(e);
             }
+            // with the reset the register write it copies implies (§3.3 rule 7, §7)
+            out.push(seq(elems, Some(MStamp { ts: ct, dot: rs.dot.clone() })));
+            continue;
         } else if k < 8 {
             // a creation chain of 1..4 elements (never of a `Derived` source: a writer's delta
             // rejects them)

@@ -210,6 +210,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
      - a creation run of a `Derived` source in a writer's delta (only snapshots carry embedded characters, §7);
      - a write stamped with a `Derived` source other than a text element's creation and that creation as a position write (§7);
      - a position or flag write on an element of a `Derived(d)` source stamped with dot `d` (a dot is one write, §2.1: `d` is the register write's whose embedding creates the element, §7).
+     - a text element created at `(ts, Derived(d), i)` under an effective reset (§4.2; at a `Slots` position, its register write's stamp included) below `(ts, d)`: a copy of a register write's embedding carries the reset that write implies (§7), so it prunes what the register write supersedes.
    - **Writer's deltas**
      - in a writer's delta, runs with empty `Content` of more than `MAX_DELTA_BARE` elements in all, pages included.
        - A delete or move of more elements is split across commits; `replace` and `remove_aspect` clear any length with one reset.
@@ -505,7 +506,7 @@ A position may see fragments of different encodings: an aspect upgraded from `st
 | struct, enum, set, map, list | reset `max(r, s)` only |
 A register with no write embeds as reset `r` only. A contribution that is not an int or float reads as nothing (§5.2). The edges are total, so a value-less write (§4.7) embeds like its valued copy, except into text: it embeds no chars (an embedded char goes with its value, §4.7).
 
-A slot's copies of the register slot's write `s` are its writes at the stamps the embedding of `s` uses: a text slot's creations stamped `(s.ts, Derived(s.dot), i)` with their position writes and chars, a bag's contribution write stamped `s`. They are exactly the embedding of the register slot's winning copy of `s` (§4.1 copy order): a join replaces any others (other writes on those records stay; a record left with none goes). A write on such a record under another stamp is not a copy but a write of its own (§5.7 Join: one creation per dot, the greater stamp wins).
+Wherever a fragment holds a copy of an embedded char of `s`, the reset `s` implies is over it (§3.3 rule 7), as in `embed`. A slot's copies of the register slot's write `s` are its writes at the stamps the embedding of `s` uses: a text slot's creations stamped `(s.ts, Derived(s.dot), i)` with their position writes and chars, a bag's contribution write stamped `s`. They are exactly the embedding of the register slot's winning copy of `s` (§4.1 copy order): a join replaces any others (other writes on those records stay; a record left with none goes). A write on such a record under another stamp is not a copy but a write of its own (§5.7 Join: one creation per dot, the greater stamp wins).
 
 **The embedding is the register's.** What `embed` puts into a slot is the register slot's writes (its write and reset), not the slot's: a write in a slot at the position and stamp of one of the embedding's is a copy of that register write. So wherever a position's writes are told apart (the records of a map dot, §5.6; un-merge and expiry by dot, §4.6, §4.7, where the embedding carries the register write's dot), the embedding goes with the register write it comes from, and a record holds it only with that write.
 

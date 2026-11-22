@@ -220,7 +220,8 @@ fn membedded(s: &crdt_model::stamp::Stamp, cs: &str) -> std::collections::BTreeM
 }
 
 // spec/crdt.md §7 The embedding is the register's, §4.8 Which write: register write "a" (t5) and
-// a forged snapshot of the text carrying three chars' creations at its embedding's stamps: the
+// a forged snapshot of the text carrying three chars' creations at its embedding's stamps (and
+// the reset the register write implies, spec/crdt.md §3.3 rule 7): the
 // join cuts them to the winning copy's one char, and the copies are one write, the register
 // write, which wins: no node fails receiving either first, a tick or a restart, and all read
 // "a". Fails with an embedded char's creation counted as a write of its own (a dead write with
@@ -229,7 +230,7 @@ fn membedded(s: &crdt_model::stamp::Stamp, cs: &str) -> std::collections::BTreeM
 fn a_forged_copy_of_an_embedding_fails_no_node_spec_crdt_7() {
     use crdt_model::state::Composite;
     let s = mstamp(5, 3);
-    let text = MFrag::Seq { text: true, c: Composite::default(), elems: membedded(&s, "abc") };
+    let text = MFrag::Seq { text: true, c: Composite { reset: Some(s.clone()), w: None, w_valueless: false }, elems: membedded(&s, "abc") };
     assert_eq!(forged_pair(&mstring(&s, "a"), &text), Some(Value::Str("a".into())));
 }
 

@@ -9,7 +9,7 @@ use crate::fragment::{Bag, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment
 use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::paging::Step;
 use crate::seq::{self, Seq};
-use crate::stamp::{Dot, DotRange, Interner, Source, SourceKind, Stamp};
+use crate::stamp::{Dot, DotRange, Interner, Source, SourceKind, Stamp, max_opt};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint};
 use osis_base::cbor::{Item, List, encode_into, head_len, link_len, put_array, put_bool, put_bytes, put_link, put_map, put_tid, put_uint};
 use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
@@ -835,6 +835,9 @@ pub(crate) fn canonical(bytes: &[u8], again: Result<Vec<u8>, Error>) -> Result<(
 /// rules for it (a record carrying no write, `Slots` form). Returns the pruned form, which is what
 /// the delta holds (`stream::Whole::done`).
 pub(crate) fn prune_stable(f: &Fragment, e: Option<&Stamp>) -> Result<Fragment, Error> {
+    if !embedded_under_reset(f, e.cloned()) {
+        return Err(Error::Malformed("an embedded char without its register write's reset"));
+    }
     let mut p = f.clone();
     p.prune(e, &mut crate::Changes::new());
     if p.carried() == f.carried() { Ok(p) } else { Err(Error::Malformed("carries a write its own pruning drops")) }
@@ -1050,6 +1053,49 @@ pub(crate) fn decode_fragment(cx: &mut Dec, v: Item, may_reset: bool) -> Result<
         return Err(Error::Malformed("write with a Derived stamp"));
     }
     Ok(f)
+}
+
+/// §3.3 rule 7, §7: a text's embedded char created at `(ts, Derived(d), i)` is a copy of register
+/// write `(ts, d)`'s embedding, which carries the reset that write implies: the effective reset
+/// over it (`e` above `f`, the greatest reset on the way down, a `Slots` position's register
+/// write included) is at least `(ts, d)`. So a copy prunes what the register write does, in a
+/// join as in the held writes (§4.8 When).
+fn embedded_under_reset(f: &Fragment, e: Option<Stamp>) -> bool {
+    let under = |m: &Meta| max_opt(e.clone(), m.reset.clone());
+    match f {
+        Fragment::Register(_) | Fragment::Bag(_) | Fragment::Set(_) => true,
+        Fragment::Struct(x) => {
+            let e = under(&x.meta);
+            x.fields.values().all(|y| embedded_under_reset(y, e.clone()))
+        }
+        Fragment::Enum(x) => {
+            let e = under(&x.meta);
+            x.payloads.values().all(|y| embedded_under_reset(y, e.clone()))
+        }
+        Fragment::Map(x) => {
+            let e = under(&x.meta);
+            x.entries.values().all(|en| en.frag.as_deref().is_none_or(|y| embedded_under_reset(y, max_opt(e.clone(), en.reset.clone()))))
+        }
+        Fragment::Seq(x) => {
+            let e = under(&x.meta);
+            x.elems().iter().all(|(d, el)| {
+                let copy = el.created.as_ref().filter(|_| x.text && d.src.is_derived()).map(|(c, _)| Stamp { ts: c.ts, dot: d.origin().clone() });
+                let nested = match &el.content {
+                    crate::seq::SeqContent::Frag(y) => embedded_under_reset(y, max_opt(e.clone(), el.reset())),
+                    _ => true,
+                };
+                nested && copy.is_none_or(|s| e.as_ref().is_some_and(|e| *e >= s))
+            })
+        }
+        Fragment::Slots(x) => {
+            let reg = x.reg.as_ref();
+            let mut e = max_opt(e, reg.and_then(|r| max_opt(r.reset.clone(), r.write.as_ref().map(|w| w.stamp.clone()))));
+            for y in x.slots.values() {
+                e = max_opt(e, y.reset());
+            }
+            x.slots.values().all(|y| embedded_under_reset(y, e.clone()))
+        }
+    }
 }
 
 /// §3.3 rule 7: only a text element's creation (and that creation as a position write) carries

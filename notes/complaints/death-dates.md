@@ -6,3 +6,4 @@
 - `Commits::before` logs a commit once per mark, so "changes since position N of the log" is not a safe incremental cursor mid-transaction; a lagging-row check (`dating_due`) had to scan the log instead.
 - One `tools/heavy` hold running the four crates' suites plus five property runs passed the heavy caps (1.14x CPU, 1.06x wall, box load 17): split a suite run and the property runs into separate holds.
 - The order harness's trace interleaves several engines per thread (copies at tree branches): tracing one commit's history needed a hook in `Commits::insert` with a backtrace, not date_due prints.
+- A new reader rule first failed crdt's own `crdt_equals_model_plain` (its hostile generator forged embedded chars without the implied reset): run the crdt `_plain` properties before the engine ones whenever a decoder rule changes, since the generators make the shapes the rule is about.

@@ -852,6 +852,11 @@ fn a_delete_copy_of_an_undelete_kills_the_creation_at_its_stamp_spec_4_8() {
 /// (1-based, with their chars), created at `(ts, Derived(s.dot), i)`, chained from HEAD: a copy
 /// of `s`'s embedding (§7) when `ts` is `s.ts`, as a snapshot carries it.
 fn embedded_text(s: &Stamp, ts: Ts, chars: &[(u64, char)]) -> Fragment {
+    embedded_text_under(s, ts, chars, None)
+}
+
+/// `embedded_text` with reset `reset` (an embedding's own is its register write's stamp, §7).
+fn embedded_text_under(s: &Stamp, ts: Ts, chars: &[(u64, char)], reset: Option<Stamp>) -> Fragment {
     let src = Source::derived(s.dot.clone()).unwrap();
     let mut prev = crate::seq::Anchor::Head;
     let mut elems = BTreeMap::new();
@@ -861,7 +866,44 @@ fn embedded_text(s: &Stamp, ts: Ts, chars: &[(u64, char)]) -> Fragment {
         elems.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(*c), pos: vec![(st, prev, None)], ..SeqElem::bare() });
         prev = crate::seq::Anchor::Dot(d);
     }
-    Fragment::Seq(Seq::new(true, Meta::default(), elems))
+    Fragment::Seq(Seq::new(true, Meta { reset, ..Meta::default() }, elems))
+}
+
+/// §3.3 rule 7, §7, §4.8 When: a copy of register write `s`'s embedding carries the reset `s`
+/// implies, so in a join it prunes what it supersedes in the held writes. A snapshot of a text
+/// holding `s`'s embedded char without that reset is rejected by both decoders; with it, an
+/// older char held beside it is dead in the join and its earliest superseder is `s`, alike.
+/// Fails with the copy taken without its reset (the join keeps the older char, the held writes
+/// date it at `s`).
+#[test]
+fn an_embedding_copy_carries_its_register_writes_reset_spec_7() {
+    use crate::codec::{decode_snapshot, encode_snapshot};
+    use crate::wire::Snapshot;
+    let st = Stamp::new(ts(5), x(), 3);
+    let (bare, under) = (embedded_text(&st, ts(5), &[(1, 'a')]), embedded_text_under(&st, ts(5), &[(1, 'a')], Some(st.clone())));
+    for (f, ok) in [(&bare, false), (&under, true)] {
+        let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Default::default() };
+        let b = encode_snapshot(&snap, &crate::testutil::snap_cx(), None).unwrap();
+        assert_eq!(decode_snapshot(&b, &crate::testutil::snap_cx(), &mut crate::stamp::Interner::new(), None).is_ok(), ok, "{f:?}");
+        let mcx = &mut crdt_model::wire::Ctx::new(1 << 40, crdt_model::stamp::Source::session(250, 0), 1);
+        assert_eq!(crdt_model::wire::decode_snapshot(&b, mcx).is_ok(), ok, "the model: {f:?}");
+    }
+    let empty = Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::new()));
+    let older = edit(&empty, 3, 1, vec![Op::Insert { at: 0, items: vec![s("q")] }]);
+    let mut ix: ByWrite<()> = ByWrite::default();
+    let mut hiders = Hiders::default();
+    for b in [&older, &under] {
+        ix.note(&b.held_writes(), |_, _| ());
+        hiders.note(b);
+    }
+    let dead = dead(&older, &under);
+    assert!(!dead.is_empty(), "the older char dies in the join");
+    for w in older.winners().iter() {
+        let first = ix.first_superseding(&w, &hiders, |s, _| Some(s.ts));
+        assert_eq!(first.is_some(), dead.contains(&(w.kind, w.stamp.clone())), "{w:?}: superseded in the held writes iff dead in the join");
+        assert!(first.is_none_or(|t| t == ts(5)), "{w:?} dies at s: {first:?}");
+    }
+    first_superseding_check(&[older, under]);
 }
 
 fn string_reg(s: &Stamp, v: &str) -> Fragment {

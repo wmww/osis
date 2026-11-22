@@ -292,6 +292,9 @@ impl Ctx {
         if before.len() != after.len() {
             return Err(Error::Bad("carries a write its own pruning drops"));
         }
+        if !embedded_under_reset(&f, None) {
+            return Err(Error::Bad("an embedded char without its register write's reset"));
+        }
         Ok(pruned)
     }
 }
@@ -1013,6 +1016,49 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
         return Ok(pruned);
     }
     Ok(f)
+}
+
+/// §3.3 rule 7, §7: a text's embedded char created at `(ts, Derived(d), i)` is a copy of register write `(ts, d)`'s
+/// embedding, which carries the reset that write implies: the effective reset over it (`e` above `f`, a `Slots`
+/// position's register write included) is at least `(ts, d)`.
+fn embedded_under_reset(f: &Frag, e: Option<Stamp>) -> bool {
+    use crate::stamp::max_opt;
+    let under = |c: &Composite| max_opt(e.clone(), c.reset.clone());
+    match f {
+        Frag::Register { .. } | Frag::Bag { .. } | Frag::Set { .. } => true,
+        Frag::Struct { c, fields } | Frag::Enum { c, payloads: fields, .. } => {
+            let e = under(c);
+            fields.values().all(|y| embedded_under_reset(y, e.clone()))
+        }
+        Frag::Map { c, entries } => {
+            let e = under(c);
+            entries.values().all(|en| en.frag.as_deref().map_or(true, |y| embedded_under_reset(y, max_opt(e.clone(), en.reset.clone()))))
+        }
+        Frag::Seq { text, c, elems } => {
+            let e = under(c);
+            elems.iter().all(|(d, el)| {
+                let copy = match (&d.source, &el.created) {
+                    (Source::Derived(o), Some((c, _))) if *text => Some(Stamp { ts: c.ts, dot: (**o).clone() }),
+                    _ => None,
+                };
+                let nested = match &el.content {
+                    Content::Frag(y) => embedded_under_reset(y, max_opt(e.clone(), el.deleted.as_ref().map(|x| x.0.clone()))),
+                    _ => true,
+                };
+                nested && copy.map_or(true, |s| e.as_ref().map_or(false, |e| *e >= s))
+            })
+        }
+        Frag::Slots { reg, slots } => {
+            let mut e = e;
+            if let Some(Frag::Register { reset, write }) = reg.as_deref() {
+                e = max_opt(e, max_opt(reset.clone(), write.as_ref().map(|w| w.0.clone())));
+            }
+            for y in slots.values() {
+                e = max_opt(e, y.reset());
+            }
+            slots.values().all(|y| embedded_under_reset(y, e.clone()))
+        }
+    }
 }
 
 /// §3.3 rule 7: only a text element's creation (and that creation as a position write) carries a `Derived` stamp,
