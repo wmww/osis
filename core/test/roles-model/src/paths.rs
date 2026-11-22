@@ -635,7 +635,9 @@ impl World {
             *finalize = *finalize && !leave && *holder != signer;
         }
         let marks_ok = direct.iter().all(|&k| k + 1 < all.len() && self.joins(all[k], all[k + 1]).len() >= 2);
-        let well = all.iter().collect::<BTreeSet<_>>().len() == all.len() && marks_ok;
+        // an edge write whose holder is its target is not applied (spec/permissions.md §1)
+        let to_itself = matches!(&kind, Kind::Edge { holder, .. } if *holder == on);
+        let well = all.iter().collect::<BTreeSet<_>>().len() == all.len() && marks_ok && !to_itself;
         // a key lowering its own grant is the holder itself: its path has no hop (it rests on
         // the hop it gives up alone, as a self-removal does)
         let rest = if well && !own_hop { self.path_hops(key, &all, direct) } else { vec![] };

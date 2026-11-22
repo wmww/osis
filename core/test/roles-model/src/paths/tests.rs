@@ -1937,6 +1937,20 @@ fn a_purge_by_author_takes_exactly_that_authors_deltas() {
     assert!(fixed_but(&w, &[], |r| r.purge_exact = false).purged.contains(&b_as_b));
 }
 
+/// An edge write whose holder is its target is not applied (spec/permissions.md §1), whoever
+/// writes it: A's admin H granting A admin on A, and A acting as itself on its own edge, set
+/// nothing; H's grant to X beside them applies.
+#[test]
+fn an_edge_write_whose_holder_is_its_target_is_not_applied() {
+    let (mut w, gx, _) = paired();
+    let by_admin = w.edge(H, 2, &[], A, A, Admin, &[]);
+    let by_itself = w.edge(A, 3, &[], A, A, Gone, &[]);
+    assert!(!w.well(by_admin) && !w.well(by_itself));
+    let rd = design(&w, &[]);
+    assert!(rd.applied.contains(&gx) && !rd.applied.contains(&by_admin) && !rd.applied.contains(&by_itself));
+    assert_eq!((rd.role(A, A), rd.role(X, A)), (Gone, Admin));
+}
+
 /// One commit states one path (notes/path-form.md, One path): X, granted admin on A, writes A,
 /// T1 (minted by A) and D1 (minted by T1) stating [A]: A is the path's end, the others hang from
 /// it by record edges, and every part rests on (X, A) alone above the descent. H's removal of X
