@@ -450,7 +450,7 @@ impl Engine {
         let frontier = match audits {
             true => {
                 let ops: Vec<osis_perm::EdgeOp> = std::iter::once((holder, new)).chain(leave.then_some((who, None))).map(|(holder, edge)| osis_perm::EdgeOp { target, holder, edge }).collect();
-                self.demotion_frontier(who, target, ops)?
+                self.demotion_frontier(target, ops)?
             }
             false => (None, Vec::new()),
         };
@@ -489,51 +489,31 @@ impl Engine {
     /// every thing the demoted authority gave write or role authority on. What a caller syncs
     /// first when it wants the removal to keep more (spec/permissions.md §5.3).
     pub fn removal_scope(&self, target: &Tid, holder: &Tid, new: Option<&Edge>) -> BTreeSet<Tid> {
-        let Some(tl) = self.core.timelines.get(target) else { return BTreeSet::new() };
-        // as if every held write had been received
-        let ops = vec![osis_perm::EdgeOp { target: *target, holder: *holder, edge: new.map(perm_edge) }];
-        let Some(me) = self.core.me() else { return BTreeSet::new() };
-        let scope = tl.demotion_scope(self.demotion_probe(me, ops, tl.all_held()));
+        let _ = new;
+        let scope = crate::apply::receipt::scope_of(&self.core, &[(*holder, *target)]);
         scope.roles.values().chain(scope.content.values()).flatten().copied().collect()
     }
 
-    /// The frontier edge writes `ops` on `target` by `who`, stamped now, carry (spec/permissions.md
-    /// §5.1): what this node received on the aspects they put in question with that frontier
-    /// (`Timeline::demotion_scope`), from what they put in question with every held write
-    /// received, until the scope stops growing, plus this node's own chain certificates for the
-    /// target by commit ID (its own chain counts only as listed, §4), and its own cover of what it
-    /// no longer holds the ID of (`own_cover`; the scope settled first: content moves no edge
-    /// write). Returns the frontier and the own covers, which the caller's `Done` carries before
-    /// the demotion. `None`: an unknown target.
-    fn demotion_frontier(&mut self, who: Tid, target: Tid, ops: Vec<osis_perm::EdgeOp>) -> Result<(Option<osis_perm::Frontier>, Vec<CommitId>)> {
+    /// The frontier edge writes `ops` on `target`, stamped now, carry (spec/permissions.md §5.1
+    /// Frontier): what this node received of the commits resting on the edges they lower
+    /// (`receipt::scope_of`), and its own cover of what it no longer holds the ID of
+    /// (`own_cover`). Returns the frontier and the own covers, which the caller's `Done` carries
+    /// before the lowering. `None`: an unknown target.
+    fn demotion_frontier(&mut self, target: Tid, ops: Vec<osis_perm::EdgeOp>) -> Result<(Option<osis_perm::Frontier>, Vec<CommitId>)> {
         let as_of = self.now();
-        let Some(tl) = self.core.timelines.get(&target) else { return Ok((None, Vec::new())) };
-        let own = tl.certificates(&who, &target).commits;
-        let mut scope = tl.demotion_scope(self.demotion_probe(who, ops.clone(), tl.all_held()));
-        let mut keep: BTreeSet<CommitId> = own.iter().copied().collect();
-        let mut f = loop {
-            let f = self.frontier_fitted(&scope, as_of, &keep)?;
-            let probe = self.demotion_probe(who, ops.clone(), osis_perm::Frontier::new(f.commits.iter().copied()));
-            let s = self.core.timelines.get(&target).map(|tl| tl.demotion_scope(probe)).unwrap_or_default();
-            if scope.covers(&s) {
-                break f;
-            }
-            scope.join(s);
-        };
+        if self.core.timelines.get(&target).is_none() {
+            return Ok((None, Vec::new()));
+        }
+        let edges: Vec<(Tid, Tid)> = ops.iter().map(|o| (o.holder, o.target)).collect();
+        let scope = crate::apply::receipt::scope_of(&self.core, &edges);
+        let mut keep: BTreeSet<CommitId> = BTreeSet::new();
+        let mut f = self.frontier_fitted(&scope, as_of, &keep)?;
         let named = self.own_cover(&scope)?;
         if !named.is_empty() {
             keep.extend(named.iter().copied());
             f = self.frontier_fitted(&scope, as_of, &keep)?;
         }
         Ok((Some(osis_perm::Frontier::new(f.commits)), named.into_iter().collect()))
-    }
-
-    /// A demotion by `who` with edge writes `ops` and frontier `f`, as `Timeline::demotion_scope`
-    /// takes it: at the `ts` the next commit gets (after every held one); its ID is not known yet.
-    fn demotion_probe(&self, who: Tid, mut ops: Vec<osis_perm::EdgeOp>, f: osis_perm::Frontier) -> osis_perm::RoleCommit {
-        ops.sort_by_key(|o| (o.target, o.holder));
-        let id = CommitId([0xff; 32]);
-        osis_perm::RoleCommit { id, ts: self.core.hlc.peek(), signer: who, frontier: Some(std::sync::Arc::new(f)), ops }
     }
 
     /// Lowers or removes `d.holder`'s edge on `target` (spec/permissions.md §2, §3, §5): an
@@ -586,7 +566,7 @@ impl Engine {
         let audits = self.needs_frontier(&t, &d.holder, new.as_ref());
         let new = new.as_ref().map(perm_edge);
         let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
-        let (frontier, covers) = if audits { self.demotion_frontier(who, t, ops)? } else { (None, Vec::new()) };
+        let (frontier, covers) = if audits { self.demotion_frontier(t, ops)? } else { (None, Vec::new()) };
         let d = d.clone();
         let mut done = self.run(|tx| {
             let done = demote_in(tx, signer, t, &d, others, frontier)?;

@@ -3,11 +3,10 @@
 //! time. Pending and parked commits are not received; snapshot frontiers and `Absorbed` are no
 //! receipts (spec/crdt.md §8).
 
-use crate::engine::Engine;
+use crate::engine::{Core, Engine};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
 use osis_commit::Header;
-use osis_perm::DemotionScope;
 use osis_schema::core_types::{Frontier, is_role_class};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -124,21 +123,6 @@ impl Engine {
                     }
                 }
             }
-            // a fall below write on M puts in question every delta of the node's commits acting
-            // for M (`validity::acts_for`)
-            for (node, things) in &scope.content {
-                for t in things {
-                    for c in tx.core.ix.by_actor.get(&(*t, *node)).into_iter().flatten() {
-                        let Some(m) = tx.core.ix.commits.get(c) else { continue };
-                        if m.received.0 <= as_of.0 {
-                            f.commits.insert(*c);
-                            if m.view.kind != osis_commit::Kind::Role && !m.view.purges {
-                                content.push((std::cmp::Reverse(m.received.0), *c));
-                            }
-                        }
-                    }
-                }
-            }
             // a request's right ends with the role unless the frontier lists it (spec/permissions.md
             // §6): one this node received stays rightful, whatever became of its body and on
             // whatever aspect its own delta lies
@@ -208,4 +192,39 @@ mod tests {
         fit(&mut f, &requests, 100);
         assert_eq!(f.commits, (0..1000).map(id).collect::<BTreeSet<_>>(), "only requests go");
     }
+}
+
+/// What a lowering puts in question, per signer: the things its commits resting on the lowered
+/// edges write (`scope_of`).
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct DemotionScope {
+    /// Signer -> things whose role-class and admin-only aspects the frontier lists its commits on.
+    pub roles: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Signer -> things on whose every aspect the frontier lists its commits.
+    pub content: BTreeMap<Tid, BTreeSet<Tid>>,
+}
+
+impl DemotionScope {
+    pub fn is_empty(&self) -> bool {
+        self.roles.is_empty() && self.content.is_empty()
+    }
+}
+
+/// What lowering the edges `edges` (holder, target) puts in question (spec/permissions.md §5.1
+/// Frontier): every held commit with a part resting on one of them (an edge-class part by its
+/// path, a delta along it: `osis_perm::paths::Paths::through`), by signer and the things it
+/// writes. The frontier lists each signer's received commits on those things: every commit
+/// resting on the edges, and those of the same signers there along other paths, which a list
+/// names to no effect.
+pub(crate) fn scope_of(core: &Core, edges: &[(Tid, Tid)]) -> DemotionScope {
+    let mut scope = DemotionScope::default();
+    for (holder, target) in edges {
+        for c in core.timelines.paths().through(holder, target) {
+            let Some(m) = core.ix.commits.get(&c) else { continue };
+            let things: BTreeSet<Tid> = m.view.aspects.iter().map(|a| a.tid).collect();
+            scope.roles.entry(m.view.signer).or_default().extend(things.iter().copied());
+            scope.content.entry(m.view.signer).or_default().extend(things);
+        }
+    }
+    scope
 }
