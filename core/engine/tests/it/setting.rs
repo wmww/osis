@@ -956,10 +956,10 @@ fn a_snapshot_is_told_leaving_history_spec_commits_5() {
 }
 
 // spec/commits.md §5 The setting: a body leaves history when the current setting stops keeping
-// it, told late, never early. Alice keeps the register 10 min after replaced and writes it; Bob
-// replaces it; Carol replaces it again. A node whose clock is behind all of it gets Carol's write
-// before Bob's, so Alice's write is scheduled to leave from Carol's stamp (late: Bob's replaced it
-// first): listing judges it fresh, and the row tells it once the clock passes.
+// it, never before it was replaced. Alice keeps the register 10 min after replaced and writes it;
+// Bob replaces it; Carol replaces it again. A node whose clock is behind all of it gets Carol's
+// write before Bob's: Alice's write is dated at Bob's stamp whatever the order (its row is its
+// replaced-at), in history until the clock passes 10 min after it, and told once out.
 #[test]
 fn a_late_row_leaves_no_earlier_than_replaced_spec_commits_5() {
     let (mut lp, d) = setup();

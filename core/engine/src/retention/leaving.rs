@@ -294,10 +294,12 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()
     }
 }
 
+/// A part's date (`bounds::index_date`, or `held_date` unchecked).
+type DateOf = fn(&mut Tx<'_>, &osis_commit::Header, &CommitId, usize) -> Result<Option<Ts>>;
+
 /// The row of value part `(tid, ak)` of `c`: a held valid part with values at its replaced-at
-/// (`bounds::index_date`), a purged one at its own `ts`; `None`: no row (not held, invalid,
-/// live).
-fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
+/// (`date`), a purged one at its own `ts`; `None`: no row (not held, invalid, live).
+fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, date: DateOf) -> Result<Option<Ts>> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(ai) = m.aspect(tid, ak) else { return Ok(None) };
     if !m.valid_at(ai) {
@@ -305,7 +307,7 @@ fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts
     }
     let h = m.header.clone();
     if m.holds(ai) && !m.bare(ai) {
-        return super::bounds::index_date(tx, &h, c, ai);
+        return date(tx, &h, c, ai);
     }
     Ok(super::purged_by(tx, &h, c, ai)?.map(|_| h.ts))
 }
@@ -337,7 +339,7 @@ pub(crate) fn dating_due(core: &Core, tid: &Tid, ak: &Ak) -> bool {
 /// the clock; the cursor moves back past a row that lands in history before it; each aspect
 /// touched rearms. A transaction's end dates twice: a later pass compares each part with what an
 /// earlier one dated (`Core::dated_as`). Debug builds check every row of each aspect dated
-/// against `index_date`.
+/// incrementally (`rows_exact`).
 pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
     // per aspect: whole (telling rows landing in history), or the changed and joined commits
     let mut whole: BTreeMap<(Tid, Ak), bool> = BTreeMap::new();
@@ -401,7 +403,7 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
         };
         for c in on {
             let old = tx.core.ix.dated.get(&(c, tid, ak.clone())).copied();
-            let new = if k.dated() { row_at(tx, &c, &tid, &ak)? } else { None };
+            let new = if k.dated() { row_at(tx, &c, &tid, &ak, super::bounds::index_date)? } else { None };
             if old == new {
                 continue;
             }
@@ -426,8 +428,9 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
         if fresh && !tx.core.ix.leave_from.contains_key(&key) {
             set_from(tx, &tid, &ak, Some((u64::MAX, None)))?;
         }
+        // dated whole, every part was just dated (checked against the state, `index_date`)
         #[cfg(debug_assertions)]
-        if k.dated() {
+        if k.dated() && tell.is_none() {
             super::bounds::unseen(tx, |tx| rows_exact(tx, &tid, &ak))?;
         }
         rearm(tx, &tid, &ak, &k)?;
@@ -436,14 +439,15 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// Every held part of dated `(tid, ak)` has its row at `row_at`, and no other row is left: an
-/// incremental dating missed nothing.
+/// incremental dating missed nothing. Each part's date is checked against the state where it
+/// is dated, not here.
 #[cfg(debug_assertions)]
 fn rows_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let key = (*tid, ak.clone());
     let mut on: BTreeSet<CommitId> = tx.core.ix.by_aspect.get(&key).into_iter().flatten().map(|x| x.1).collect();
     on.extend(tx.core.ix.leaving.get(&key).into_iter().flatten().map(|p| p.1));
     for c in on {
-        let want = row_at(tx, &c, tid, ak)?;
+        let want = row_at(tx, &c, tid, ak, super::bounds::held_date)?;
         assert_eq!(tx.core.ix.dated.get(&(c, *tid, ak.clone())).copied(), want, "{c:?} on {tid:?} {ak:?}: its row vs its date from the held set");
     }
     Ok(())

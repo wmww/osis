@@ -220,6 +220,18 @@ fn judged(core: &Core, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> bool {
 /// O(the part) plus a path walk per winner; debug builds compare it with the state's deaths
 /// (`whole_date`).
 pub(super) fn index_date(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
+    let out = held_date(tx, h, c, ai)?;
+    // a test hook wrote states no body gives (`Core::unchecked_tx`): no check reads them
+    #[cfg(debug_assertions)]
+    if !tx.core.unchecked_tx && let Some(a) = h.aspects.get(ai) {
+        let whole = unseen(tx, |tx| whole_date(tx, h, c, ai))?;
+        assert_eq!(out, whole, "{c:?} on {:?} {:?}: dated from the held writes vs the state's deaths", a.tid, a.ak);
+    }
+    Ok(out)
+}
+
+/// `index_date` without its debug check.
+pub(super) fn held_date(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
     let Some(a) = h.aspects.get(ai) else { return Ok(None) };
     let (tid, ak) = (a.tid, a.ak.clone());
     if !judged(tx.core, c, ai, &tid, &ak) {
@@ -235,12 +247,6 @@ pub(super) fn index_date(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -
             continue;
         }
         out = out.max(held.holds.first_superseding(&w, &held.hiders, |s, _| Some(s.ts)));
-    }
-    // a test hook wrote states no body gives (`Core::unchecked_tx`): no check reads them
-    #[cfg(debug_assertions)]
-    if !tx.core.unchecked_tx {
-        let whole = unseen(tx, |tx| whole_date(tx, h, c, ai))?;
-        assert_eq!(out, whole, "{c:?} on {tid:?} {ak:?}: dated from the held writes vs the state's deaths");
     }
     Ok(out)
 }
