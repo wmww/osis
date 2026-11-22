@@ -31,6 +31,7 @@ Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry
 - Client port: tracking reads of `role_on`, `holders`, `backlinks`, `profile_of` and `stream` follow a thing at a connected node (tracked-read-port).
 
 ## Built, untested end to end
+- A record lacking its creation whose delta is not reflected stays unswept (notes/crdt.md, Hidden writes go by a sweep): no world where a record's creation is invalid at a sweep, then a re-grant makes it valid and the entry reads with the edits made into it (osis-crdt `sweep_takes_what_a_parent_reset_hid` and engine `partial_receipt_survives_compaction` cover the unit and the not-yet-received case).
 - HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does): the engine's `fall_mark`.
 - `Live::fresh` (held blobs handed to `Engine::seal_body`): no World test; a mutation passing none fails no osis-sync test (the engine's `rotation::tests_reseal::facade_*` cover the contract). Cheapest found: a purge of one thing's part of a commit spanning two things, the other thing's section then logged again verbatim.
 

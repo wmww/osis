@@ -204,7 +204,7 @@ One rule throughout: what the decoder accepts re-encodes and re-prunes to itself
 - **Enum case ids at most 2^63 - 1** (spec/data-model.md §5): every other integer is i64 and `Value::uint` saturates, so a larger case would be written as `i64::MAX`.
 
 ## Text size
-Benchmark `core/test/crdt-model/src/bin/text_bench.rs`: Kleppmann's automerge-paper trace (259,778 single-character edits, final text 104,852 bytes, 182k elements of which 77k deleted), one writer, net effect per commit, encoded as a foreign node's snapshot. Target 1.5-3x the plain text. The table does not apply the §4.5 rule "omit a created-and-removed element only once nothing anchors at it" (which `text_bench` follows); the trace is not in the repo. The synthetic typist of osis-bench gives 2.89x and 6.73x under the rule.
+Benchmark `core/test/crdt-model/src/bin/text_bench.rs`: Kleppmann's automerge-paper trace (259,778 single-character edits, final text 104,852 bytes, 182k elements of which 77k deleted), one writer, net effect per commit, encoded as a foreign node's snapshot. Target 1.5-3x the plain text. The table does not apply the §4.5 rule "omit a created-and-removed element only once nothing anchors at it" (which `text_bench` follows); the trace is not in the repo, so the table is re-checked only by hand (`budget_text_snapshot_ratio` with `OSIS_TEXT_TRACE`). The synthetic typist of osis-bench gives 2.89x and 6.73x under the rule.
 
 | edits per commit | commits | commit table | runs | flag writes | snapshot | ratio |
 |---|---|---|---|---|---|---|

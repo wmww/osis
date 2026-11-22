@@ -6,7 +6,7 @@
 ## By input
 | input | supplied by | decoded at | bound |
 |---|---|---|---|
-| a durable delta's root fragment and pages | writer | `codec::check_items`/`check_root`, `stream` | `MAX_PAGE_ITEMS` items per blob, counted from heads before the blob is checked; verified and joined a page at a time (notes/crdt.md, Page items and Wire; notes/engine-paged.md, Streamed apply) |
+| a durable delta's root fragment and pages | writer | `codec::check_items`/`check_root`, `stream` | `MAX_PAGE_ITEMS` items per blob, counted from heads before the blob is checked (its bytes: `MAX_BLOB`); verified and joined a page at a time (notes/crdt.md, Page items and Wire; notes/engine-paged.md, Streamed apply) |
 | a paged delta's link tree | writer | `codec::walk_tree` (both decoders), osis-engine `apply::reach` (sync's fetch) | one link list per level on the way down; each page fetched once (a blob linked twice is bad input); `LinkTree` refuses a page that cannot lie in the canonical tree as it comes, so depth (and fetch rounds) are at most about log2 of the pages delivered |
 | a value inside a blob or message | writer, peer | `osis_base::decode` and readers by shape | its bytes (`Limits::max_bytes`; at most about 56 B per byte; messages also 2^20 items) |
 | a large value read whole | writer | `osis_blob::read_value` (engine `read_large_max`, osis `read_link`) | the reader's bound: canonical bytes, and as much again decoded (`Limits::max_alloc`) |
@@ -38,7 +38,7 @@
 - **Filters.** A peer's filter is held as Golomb-Rice runs, as on the wire, with an index point every `STRIDE` (64) entries; a run at least as long as the one before merges into it (at most log2 n + 1 runs, each entry recoded at most log2 n times). An arriving generation builds its run page by page, and its row is the run's bytes. About 1.3 B an entry against 8; per connection at most `MAX_FILTER_ENTRIES` whole plus as many added. Test: `opens::a_peers_filter_is_held_as_sent_spec_wire_11_2` (osis-sync).
 
 ## Rejected
-- An item cap on large values read whole, like `MAX_PAGE_ITEMS` on delta pages: an item count is not memory (a link holds five times an int), and the reader's own bound already caps it.
+- An item cap on large values read whole: an item count is not memory (a link holds five times an int), and the reader's own byte bound already caps it. Delta pages keep theirs (`MAX_PAGE_ITEMS`, Tess's decision B in issues/durable-decode-bound.md): a page is the unit a streamed apply decodes and joins.
 - Holding linked lists as bytes: saves about 5x and leaves the count of commits sharing one list unbounded.
 
 ## Left
