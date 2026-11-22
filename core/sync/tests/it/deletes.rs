@@ -7,7 +7,7 @@
 //! end-to-end arms.
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, three as three_of, value_ak, world};
+use crate::harness::history::{Gives, three as three_of, value_ak, world_of};
 use crate::harness::{World, edge, fixture_with, play};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, BlobId, CommitId, PurgeBy, Role, SyncId, Tid, Value};
@@ -25,7 +25,7 @@ fn three() -> (World, Tid, SyncId) {
 /// `three` with node 3 a second writer, built once per process (`fixture_with`).
 pub(crate) fn four() -> (World, Tid, SyncId) {
     let (w, (t, s)) = fixture_with("deletes four", || {
-        let mut w = world(0, 4);
+        let mut w = world_of(0, 4, 4);
         w.cap = 20_000;
         let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Grant(0, 0, 3, Gives::Writes), Run], String::new());
         let t = w.history.things[0].0;
@@ -506,7 +506,7 @@ fn make_held(w: &mut World) -> Tid {
 // count (two strips of different parts never meet at a node opening neither).
 #[test]
 fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_judgement_1() {
-    let mut w = world(0, 4);
+    let mut w = world_of(0, 4, 4);
     w.cap = 20_000;
     let [a, b, c] = [0; 3].map(|_| make_held(&mut w));
     for (i, ts) in [(1, vec![a, c]), (2, vec![b, c]), (3, vec![c])] {

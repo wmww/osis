@@ -3,7 +3,7 @@
 //! deleted is repaired by the node whose own commit links it.
 
 use crate::harness::Step::*;
-use crate::harness::history::{self, Gives, world};
+use crate::harness::history::{self, Gives, world_of};
 use crate::harness::{World, play};
 use osis_base::{Ak, BlobId, CommitId, SyncId, Tid, Value};
 use osis_engine::Mutation;
@@ -213,7 +213,7 @@ fn a_write_is_one_blob_however_many_read_it_spec_sync_judgement_3() {
 // nothing of the commit, and keeps the framed blob as one of it).
 #[test]
 fn a_blob_framed_under_other_commitments_is_dropped_once_its_lists_resolve_spec_commits_4() {
-    let mut w = world(0, 2);
+    let mut w = world_of(0, 2, 2);
     w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;

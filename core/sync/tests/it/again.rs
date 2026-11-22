@@ -5,7 +5,7 @@
 //! write itself (its store deleting them, as a deleter holding a cover node 0 lacks would).
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, value_ak, world};
+use crate::harness::history::{Gives, value_ak, world_of};
 use crate::harness::lies::Lie;
 use crate::harness::{World, edge, fixture_with, play};
 use osis_base::{Ak, BlobId, CommitId, Role, SyncId, Tid, Value};
@@ -15,7 +15,7 @@ use osis_engine::flows::Demotion;
 /// Thing 0 kept unread at node 1, its value written by node 0 and held at node 1.
 fn setup() -> (World, Tid, SyncId, CommitId) {
     let (mut w, (t, s, c)) = fixture_with("again setup", || {
-        let mut w = world(0, 2);
+        let mut w = world_of(0, 2, 2);
         let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Run], String::new());
         let t = w.history.things[0].0;
         let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();

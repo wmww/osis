@@ -16,6 +16,8 @@ open(os.environ["FAKE_ARGS"], "w").write(json.dumps(sys.argv[1:]))
 # FAKE_SRC holding BADNEW inside a batch's wrapper (OnceLock) fails to build, as a closure's type does
 src = os.environ.get("FAKE_SRC")
 text = open(src).read() if src else ""
+if os.environ.get("FAKE_SEEN"):  # the tree as built
+    open(os.environ["FAKE_SEEN"], "w").write(text)
 if "OnceLock" in text and "BADNEW" in text:
     line = next(k + 1 for k, l in enumerate(text.splitlines()) if "BADNEW" in l)
     print(json.dumps({"reason": "compiler-message", "message": {"level": "error", "rendered": "error[E0308]: mismatched types",
@@ -101,11 +103,30 @@ with tempfile.TemporaryDirectory(prefix="mutate-test-") as d:
     with open(src, "w") as f:
         f.write("fn f() -> bool { a < b && c }\n")
 
-    # an OLD found in another's wrapper text is no overlap (`c` above); overlapping spans are refused
+    # an OLD found in another's wrapper text is no overlap (`c` above); crossing spans are refused,
+    # as are overlapping sites of one `+` mutation
     os.remove(env["FAKE_ARGS"])
     p = mutate(src, "a < b", "a <= b", src, "b && c", "b || c", "--", "--lib")
     _, err = p.communicate()
-    check("overlapping spans", (p.returncode, "overlap" in err, os.path.exists(env["FAKE_ARGS"])), (1, True, False))
+    check("crossing spans", (p.returncode, "overlap" in err, os.path.exists(env["FAKE_ARGS"])), (1, True, False))
+    p = mutate(src, "a < b && c", "x", "+", src, "c", "!c", "--", "--lib")
+    _, err = p.communicate()
+    check("one mutation's sites overlap", (p.returncode, "overlap" in err, os.path.exists(env["FAKE_ARGS"])), (1, True, False))
+
+    # a span inside another's: planted inside the outer's OLD branch, one build, a row each
+    seen = os.path.join(d, "seen.rs")
+    with open(exe, "w") as f:
+        f.write('#!/bin/sh\necho "running 1 test"\nif [ "$OSIS_MUTANT" = 1 ]; then echo "test t ... FAILED"; exit 101; fi\necho "test t ... ok"\n')
+    p = mutate(src, "a < b && c", "false", src, "c", "!c", "--", "-p", "x", FAKE_SRC=src, FAKE_SEEN=seen)
+    out, _ = p.communicate()
+    check("nested: rows", (p.returncode, [l for l in out.splitlines() if not l.startswith("   limit ")]),
+          (0, ["| `%s`: `a < b && c` -> `false` | none |" % src, "| `%s`: `c` -> `!c` | t |" % src]))
+    built = open(seen).read()
+    outer = built.index('== "0")) } { false } else { ')
+    check("nested: inner inside the outer's OLD branch", (built.count("OnceLock::new()") == 2, outer < built.index('== "1")) } { !c } else { c })')),
+          (True, True))
+    check("nested: file put back", open(src).read(), "fn f() -> bool { a < b && c }\n")
+    os.remove(env["FAKE_ARGS"])
 
     # a method-call suffix or a statement among several mutations: refused before any build
     for old in (".then_with(g)", "x;"):

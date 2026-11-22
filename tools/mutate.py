@@ -12,7 +12,9 @@ both planted together, one row).
 
 OLD must occur exactly once in FILE; NEW must be non-empty and differ from OLD. One mutation is a
 plain edit. Several are built once: each OLD, an expression, becomes
-`(if <OSIS_MUTANT is i> { NEW } else { OLD })`, and the built binaries run once per mutation
+`(if <OSIS_MUTANT is i> { NEW } else { OLD })` (an OLD inside another's is planted inside that
+one's OLD branch; two crossing without one inside the other are refused, as are two sites of one
+`+` mutation that overlap), and the built binaries run once per mutation
 with OSIS_MUTANT=i (a build per mutation of a crate low in the tree costs minutes). An OLD or NEW
 that starts with `.` (a method-call suffix) or ends with `;` (a statement) is refused before
 building: include the receiver, drop the `;`, or give it alone. A mutation whose build fails in a
@@ -124,32 +126,52 @@ def main(argv):
             if x.lstrip().startswith(".") or x.rstrip().endswith(";"):
                 sys.exit(f"mutate: {x!r} is not an expression ({'a method-call suffix' if x.lstrip().startswith('.') else 'a statement'}): "
                          "with several mutations each OLD and NEW is wrapped as one; include the receiver, drop the `;`, or give it alone")
-    # each OLD's span in its file as read; spans of one file must be disjoint
+    # each OLD's span in its file as read; one span inside another's (two mutations of one
+    # expression) is planted in the outer's OLD branch; spans crossing are refused
     spans = {}
     for i, (path, old, new) in enumerate(muts):
-        if n == 1:
-            sub = new
-        else:
-            # the variable read once per site: a read per call slows hot paths several-fold
-            on = f'{{ static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *ON.get_or_init(|| std::env::var_os("{VAR}").is_some_and(|v| v == "{group[i]}")) }}'
-            sub = f"(if {on} {{ {new} }} else {{ {old} }})"
         at = texts[path].index(old)
-        spans.setdefault(path, []).append((at, at + len(old), sub, i))
+        spans.setdefault(path, []).append((at, at + len(old), i))
     mutated, sites = dict(texts), [None] * len(muts)
-    for path, ss in spans.items():
-        ss.sort()
-        if any(x[1] > y[0] for x, y in zip(ss, ss[1:])):
-            sys.exit(f"mutate: two mutations of {path} overlap")
-        text, parts, prev = texts[path], [], 0
-        for lo, hi, sub, i in ss:
-            parts.append(text[prev:lo])
+
+    def wrap(i):
+        """The text before and after OLD planted in a batch: `(if <OSIS_MUTANT is i> { NEW } else { OLD })`."""
+        # the variable read once per site: a read per call slows hot paths several-fold
+        on = f'{{ static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new(); *ON.get_or_init(|| std::env::var_os("{VAR}").is_some_and(|v| v == "{group[i]}")) }}'
+        return f"(if {on} {{ {muts[i][2]} }} else {{ ", " })"
+
+    def emit(path, text, lo, hi, ss, out):
+        """text[lo:hi] with the spans ss (sorted, each inside it) planted, appended to out."""
+        prev, k = lo, 0
+        while k < len(ss):
+            a, k = ss[k], k + 1
+            inner = []
+            while k < len(ss) and ss[k][0] < a[1]:
+                if ss[k][1] > a[1]:
+                    sys.exit(f"mutate: two mutations of {path} overlap without one inside the other")
+                if group[ss[k][2]] == group[a[2]]:
+                    sys.exit(f"mutate: one mutation's sites in {path} overlap")
+                inner.append(ss[k])
+                k += 1
+            out.append(text[prev : a[0]])
             # its lines in the mutated file, to name the mutation a build error points into
-            first = "".join(parts).count("\n") + 1
-            sites[i] = (path, first, first + sub.count("\n"))
-            parts.append(sub)
-            prev = hi
-        parts.append(text[prev:])
-        mutated[path] = "".join(parts)
+            first = "".join(out).count("\n") + 1
+            if n == 1:  # a plain edit (a site inside it is its own group's: refused above)
+                out.append(muts[a[2]][2])
+            else:
+                pre, post = wrap(a[2])
+                out.append(pre)
+                emit(path, text, a[0], a[1], inner, out)
+                out.append(post)
+            sites[a[2]] = (path, first, "".join(out).count("\n") + 1)
+            prev = a[1]
+        out.append(text[prev:hi])
+
+    for path, ss in spans.items():
+        ss.sort(key=lambda x: (x[0], -x[1]))
+        out = []
+        emit(path, texts[path], 0, len(texts[path]), ss, out)
+        mutated[path] = "".join(out)
     rec = tempfile.mkdtemp(prefix="mutate-bins-")
     saved = {}
     for path in texts:

@@ -2380,8 +2380,8 @@ fn served_after_a_change_while_away(one: crate::harness::history::Gives, change:
 /// (its value is `change`'s).
 fn served_after_a_change_while_away_from<X>(one: crate::harness::history::Gives, setup: impl FnOnce(&mut crate::harness::World) -> X, change: impl FnOnce(&mut crate::harness::World, osis_base::Tid, X)) -> bool {
     use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world};
-    let mut w = world(0, 3);
+    use crate::harness::history::{Gives, world_of};
+    let mut w = world_of(0, 3, 3);
     w.cap = 2_000_000;
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, one), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
@@ -2480,8 +2480,8 @@ fn a_device_revoked_while_away_is_served_nothing_after_it_spec_sync_opens_6() {
 #[test]
 fn s_shredded_while_its_reader_is_away_spec_sync_opens_3() {
     use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world};
-    let mut w = world(0, 3);
+    use crate::harness::history::{Gives, world_of};
+    let mut w = world_of(0, 3, 3);
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();

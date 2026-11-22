@@ -4,7 +4,7 @@
 //! syncs it (kept unread), node 2's reads.
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, value_ak, world};
+use crate::harness::history::{Gives, value_ak, world_of};
 use crate::harness::{World, play};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{BlobId, CommitId, SyncId, Tid, Value};
@@ -16,7 +16,7 @@ const HOUR_MS: u64 = 3_600_000;
 /// Thing 0 with its value kept an hour after replaced, written ("one", returned), replaced and
 /// covered by node 0's snapshot, synced.
 fn covered_in_history() -> (World, Tid, SyncId, CommitId) {
-    let mut w = world(0, 3);
+    let mut w = world_of(0, 3, 3);
     w.cap = 20_000;
     // `run` looks a minute ahead, never to the keep bound: only `advance` passes it
     w.horizon_ms = 60_000;

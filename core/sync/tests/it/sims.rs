@@ -8,7 +8,7 @@
 //! both accept, so node 2 keeps the thing's sync ID unread; then it runs to quiet.
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, check, reads_as, reference, world};
+use crate::harness::history::{Gives, check, reads_as, reference, world_of};
 use crate::harness::lies::Lie;
 use crate::harness::{DiskFault, Loss, Step, World, play};
 use osis_base::testenv::Seeds;
@@ -39,7 +39,7 @@ fn end() -> Vec<Step> {
 fn sim(name: &str, variants: u64, body: impl Fn(u64) -> Vec<Step> + Sync, outcome: impl Fn(&mut World) + Sync) {
     seeds(variants).run(name, |s| format!("OSIS_SYNC_START={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let steps: Vec<Step> = start().into_iter().chain(body(seed)).chain(end()).collect();
-        let mut w = world(seed, 3);
+        let mut w = world_of(seed, 3, 3);
         w.cap = crate::harness::STORM_CAP;
         let _script = play(&mut w, &steps, format!("sims::{name} (seed {seed})"));
         check(&mut w);
@@ -56,7 +56,7 @@ fn sim(name: &str, variants: u64, body: impl Fn(u64) -> Vec<Step> + Sync, outcom
 fn a_reader_through_a_node_keeping_it_unread_plain() {
     seeds(2).run("a_reader_through_a_node_keeping_it_unread_plain", |s| format!("OSIS_SYNC_START={s} OSIS_SYNC_SEEDS=1"), |seed| {
         let steps: Vec<Step> = [start(), vec![PowerOff(1)], writes(2), vec![PowerOff(0), PowerOn(1), Run]].concat();
-        let mut w = world(seed, 3);
+        let mut w = world_of(seed, 3, 3);
         w.cap = crate::harness::STORM_CAP;
         let _script = play(&mut w, &steps, format!("sims::a_reader_through_a_node_keeping_it_unread_plain (seed {seed})"));
         let mut r = reference(&mut w, &Default::default());

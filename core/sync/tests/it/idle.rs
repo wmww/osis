@@ -3,7 +3,7 @@
 //! and one small commit cost, counted at n and 10n things, never timed.
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, world};
+use crate::harness::history::{Gives, world_of};
 use crate::harness::{World, fixture, play};
 
 const N: usize = 1;
@@ -14,7 +14,7 @@ const N: usize = 1;
 /// credential again (spec/sync-opens.md §3): not an idle one.
 fn things(n: usize) -> World {
     fixture(&format!("idle things {n}"), || {
-        let mut w = if n == N { world(0, 3) } else { things(N) };
+        let mut w = if n == N { world_of(0, 3, 3) } else { things(N) };
         w.cap = 2_000_000;
         let mut steps = Vec::new();
         for k in w.history.things.len()..n {

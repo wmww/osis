@@ -4,7 +4,7 @@
 > Tags: sync, engine, perf
 
 ## Measured
-Throwaway debug test on the sync harness (`history::world(0, 3)`, script steps, `osis_base::costs`, `net.between`, store `scan_local`), main at 6e38bcd03, not kept. World: one root with 4 or 40 members, each an independent thing promoted from a dependent, made by node 0, read by node 2, kept unread by node 1.
+Throwaway debug test on the sync harness (`history::world_of(0, 3, 3)`, script steps, `osis_base::costs`, `net.between`, store `scan_local`), main at 6e38bcd03, not kept. World: one root with 4 or 40 members, each an independent thing promoted from a dependent, made by node 0, read by node 2, kept unread by node 1.
 - **Detaching a member** (removing the root's strong to it): 7.0 KB, 47 deliveries, 17 entries leaving the maker's store; with 20 dependents under the member 13.9 KB, 70 deliveries, 80 entries.
 - **Attaching it again**: 82.8 KB, 63 deliveries, 42 signs at 4 members; **140.8 KB at 40 members**; with 20 dependents 145.8 KB, 85 deliveries, 92 signs, 371 transactions.
 - What was seen: the enclosing sync ID is pulled anew (spec/sync-judgement.md §3 Dropped bodies, the pull anew at a new strong; engine `units::refetch`), so the cost follows the size of what encloses. Not traced further.

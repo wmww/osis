@@ -4,7 +4,7 @@
 //! syncs the closure for the first time. Counted at n and 5n members, never timed.
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, Holder, world, world_of};
+use crate::harness::history::{Gives, Holder, world_of};
 use crate::harness::{World, fixture, play};
 use osis_base::BlobId;
 use std::collections::BTreeMap;
@@ -18,7 +18,7 @@ const LARGE: usize = 5 * N;
 /// the root unread, quiet (built on the world of `N` members).
 fn closure(n: usize) -> World {
     fixture(&format!("first closure {n}"), || {
-        let mut w = if n == N { world(0, 3) } else { closure(N) };
+        let mut w = if n == N { world_of(0, 3, 3) } else { closure(N) };
         w.cap = 2_000_000;
         let mut steps = Vec::new();
         if n == N {

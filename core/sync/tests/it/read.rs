@@ -1971,8 +1971,8 @@ fn a_delivery_judges_what_it_moved_at_n_and_10n_bodies() {
 /// each run to quiet: through the product's sync over the real engine.
 fn judged_per_event(n: usize) -> (u64, u64) {
     use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world};
-    let mut w = world(0, 2);
+    use crate::harness::history::{Gives, world_of};
+    let mut w = world_of(0, 2, 2);
     let mut steps = vec![New(0), Grant(0, 0, 1, Gives::Reads), New(0), New(0), New(0), Run];
     steps.extend((0..n).flat_map(|_| [Write(0, 1), Write(0, 2), Write(0, 3), Run]));
     for s in &steps {
@@ -2279,7 +2279,7 @@ fn a_freed_link_is_dropped_deleted_at_stores_then_done_spec_sync_compaction_1() 
 /// actor G of its account (a thing with a sync ID whose mint admin is G, in no other sync unit: its `sync.0` and
 /// `created.0` commits go under G's sync IDs as published), after `n` such things, run to quiet.
 fn judged_per_publish(n: usize) -> u64 {
-    let mut w = crate::harness::history::world(0, 1);
+    let mut w = crate::harness::history::world_of(0, 1, 1);
     let account = w.node(0).account.expect("an account");
     let g = w.write(0, |e| {
         let mut m = osis_engine::Mutation::new();
@@ -2674,8 +2674,8 @@ type Start = (Commits, BTreeSet<(SyncId, BlobId)>, Commits);
 /// blobs too, per sync ID read).
 fn starts(n: usize) -> Vec<Start> {
     use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world};
-    let mut w = world(0, 3);
+    use crate::harness::history::{Gives, world_of};
+    let mut w = world_of(0, 3, 3);
     w.cap = 2_000_000;
     let mut steps = Vec::new();
     for k in 0..n {
@@ -2830,9 +2830,9 @@ fn a_deposit_only_step_waits_a_complete_pass_spec_permissions_3() {
 /// ticket sync IDs), not what they are.
 fn judged_per_ticket(n: usize) -> u64 {
     use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world};
+    use crate::harness::history::{Gives, world_of};
     use osis_base::{Ak, Role, Value};
-    let mut w = world(0, 2);
+    let mut w = world_of(0, 2, 2);
     let mut steps = vec![New(0), Grant(0, 0, 1, Gives::Reads), Run];
     steps.extend((0..n).flat_map(|_| [NewIn(0, 0), Run]));
     for s in &steps {

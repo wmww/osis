@@ -5,7 +5,7 @@
 //! (notes/engine-suspects.md, What it backstops). Its list reaches node 0, which snapshots.
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, world};
+use crate::harness::history::{Gives, world_of};
 use crate::harness::lies::Lie;
 use crate::harness::{World, play};
 use osis_base::{Ak, CommitId, Tid, Value, ValueMap};
@@ -34,7 +34,7 @@ fn snapshots(w: &mut World, t: Tid) -> usize {
 
 /// The divergence: node 1 flags `(t, big)` and reads apart from node 0, nothing left to fetch.
 fn diverged() -> (World, Tid) {
-    let mut w = world(0, 2);
+    let mut w = world_of(0, 2, 2);
     w.cap = 4 * crate::harness::RULE_CAP;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
@@ -225,7 +225,7 @@ fn a_list_lost_by_its_receiver_restarting_goes_again_spec_permissions_4() {
 // would repair it for nothing).
 #[test]
 fn a_flag_naming_a_body_a_source_shows_waits_spec_permissions_4() {
-    let mut w = world(0, 2);
+    let mut w = world_of(0, 2, 2);
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
     let v = Ak::new("u:v.0").unwrap();
@@ -257,7 +257,7 @@ fn a_flag_naming_a_body_a_source_shows_waits_spec_permissions_4() {
 // no tid, AK or digest of S's closure.
 #[test]
 fn a_false_reader_declaration_gets_no_list_spec_permissions_4() {
-    let mut w = world(0, 3);
+    let mut w = world_of(0, 3, 3);
     w.lie(2, Some(Lie::Declare { unread: false }));
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Grant(0, 0, 2, Gives::Syncs), Run, Run], String::new());
     let t = w.history.things[0].0;

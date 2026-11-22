@@ -6,7 +6,7 @@
 Every independent thing has a sync ID of its own, and a node holds one per independent thing it reaches, so work per sync ID held at a reconnect or a commit grows with the wrong thing (notes/principles.md, Fast by construction; spec/requirements.md Cost). Kept counts at n and 10n shared sync IDs: core/sync/tests/it/idle.rs (bytes of an idle reconnect; strandings and register plans judged at one; strandings at a commit; duties as time passes); the ignored `idle::probe_counts` prints every counter. No kept test counts a first sync.
 
 ## Counted
-Method: `history::world(0, 3)`, script steps, `osis_base::costs`, `net.between`, `local_census`, store `scan_local`. idle.rs: node 0 makes 1 and 10 things (the `things` fixture), node 1 keeps each unread, node 2 reads each; per unit = difference / 9. The other rows are from throwaway tests at 6e38bcd03 on the sync harness (5 and 50 things, "flat"; one root with 4 and 40 members promoted from dependents, "closure"), whose row counts include the harness's own checks.
+Method: `history::world_of(0, 3, 3)`, script steps, `osis_base::costs`, `net.between`, `local_census`, store `scan_local`. idle.rs: node 0 makes 1 and 10 things (the `things` fixture), node 1 keeps each unread, node 2 reads each; per unit = difference / 9. The other rows are from throwaway tests at 6e38bcd03 on the sync harness (5 and 50 things, "flat"; one root with 4 and 40 members promoted from dependents, "closure"), whose row counts include the harness's own checks.
 
 | | at n | at 10n | per unit | |
 |---|---|---|---|---|

@@ -5,7 +5,7 @@
 //! is then granted read on D and syncs it for the first time. Counted at two sizes, never timed.
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, Holder, world};
+use crate::harness::history::{Gives, Holder, world_of};
 use crate::harness::{World, fixture, play};
 use osis_base::CommitId;
 use std::collections::BTreeSet;
@@ -16,7 +16,7 @@ fn org(r: usize) -> (World, Vec<CommitId>, Vec<CommitId>) {
     let mut grants = vec![];
     let mut removals = vec![];
     let w = fixture(&format!("reach cost org {r}"), || {
-        let mut w = world(0, 2 + r);
+        let mut w = world_of(0, 2 + r, 2 + r);
         w.cap = 4_000_000;
         let _ = play(&mut w, &[New(0), New(0), Give(0, 1, Holder::Thing(0), Gives::Writes), Write(0, 1), Write(0, 1), Run], String::new());
         w

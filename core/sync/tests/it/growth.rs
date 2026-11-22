@@ -3,7 +3,7 @@
 //! reads it (`writers`: writes it too).
 
 use crate::harness::Step::*;
-use crate::harness::history::{self, Gives, value_ak, world};
+use crate::harness::history::{self, Gives, value_ak, world_of};
 use crate::harness::{World, edge, fixture_with, play};
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{Ak, CommitId, Role, Tid, Value};
@@ -162,7 +162,7 @@ fn each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1() {
 /// the thing and node 1's write.
 fn lowered() -> (World, (Tid, CommitId)) {
     fixture_with("growth lowered", || {
-        let mut w = world(0, 3);
+        let mut w = world_of(0, 3, 3);
         w.cap = 200_000;
         let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Reads), Run], String::new());
         let t = w.history.things[0].0;
@@ -270,7 +270,7 @@ fn a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_com
 // forgets the write while node 3 shows it and nothing brings it back.
 #[test]
 fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissions_6() {
-    let mut w = world(0, 4);
+    let mut w = world_of(0, 4, 4);
     w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Reads), Grant(0, 0, 3, Gives::Syncs), Run], String::new());
     let t = w.history.things[0].0;
@@ -313,7 +313,7 @@ fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissio
 // commit's part on thing 0 stays invalid: every node reads the purge.
 #[test]
 fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
-    let mut w = world(0, 2);
+    let mut w = world_of(0, 2, 2);
     let _ = play(&mut w, &[New(0), New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 1, 1, Gives::Writes), Run], String::new());
     let (t, u) = (w.history.things[0].0, w.history.things[1].0);
     let y = Ak::new("u:y.0").unwrap();
@@ -361,7 +361,7 @@ fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
 // and node 2 (a reader, no writer), each way, after n entries and again after 10n.
 #[test]
 fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
-    let mut w = world(0, 4);
+    let mut w = world_of(0, 4, 4);
     w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
@@ -559,7 +559,7 @@ fn leaked(_: &mut World, _: usize, _: &mut World, _: usize, _: &[String]) -> Str
 /// `history_rounds`) end at 0 rounds: the world and what it holds. Built once per process.
 fn fresh_node() -> (World, Held) {
     fixture_with("growth fresh node", || {
-        let mut w = world(0, 1);
+        let mut w = world_of(0, 1, 1);
         let h = own_rounds(&mut w, 0);
         (w, h)
     })
@@ -573,7 +573,7 @@ fn fresh_node() -> (World, Held) {
 // notes/test-harnesses.md, Why kept and row dumps).
 #[test]
 fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
-    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world(0, 1), world(0, 1));
+    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world_of(0, 1, 1), world_of(0, 1, 1));
     let (a, b) = (own_rounds(&mut wa, 1), own_rounds(&mut wb, 10));
     as_fresh(&a, &fresh, 4, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
     as_fresh(&b, &fresh, 10 * 4, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
@@ -621,7 +621,7 @@ fn expiry_rounds(w: &mut World, rounds: usize) -> Held {
 // snapshot, a few bytes each.
 #[test]
 fn expired_things_return_storage_to_a_fresh_nodes_spec_commits_5() {
-    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world(0, 1), world(0, 1));
+    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world_of(0, 1, 1), world_of(0, 1, 1));
     let (a, b) = (expiry_rounds(&mut wa, 1), expiry_rounds(&mut wb, 10));
     // each expired strong stays in D's holds.0 snapshot as its value-less record (notes/crdt.md,
     // An expired set element keeps its record), about two removals' tombstones of bytes
@@ -695,7 +695,7 @@ fn history_rounds(w: &mut World, rounds: usize) -> Held {
 // tombstones (one removal a round).
 #[test]
 fn releasing_held_history_returns_storage_to_a_fresh_nodes_spec_data_model_8() {
-    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world(0, 1), world(0, 1));
+    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world_of(0, 1, 1), world_of(0, 1, 1));
     let (a, b) = (history_rounds(&mut wa, 1), history_rounds(&mut wb, 10));
     as_fresh(&a, &fresh, 1, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
     as_fresh(&b, &fresh, 10, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
@@ -732,7 +732,7 @@ type Work = [u64; 2];
 /// `redeem`; then `settled`. With read's work per round.
 fn grant_rounds(rounds: usize, accept: bool, redeem: bool) -> (World, Vec<Held>, Vec<Work>) {
     use crate::harness::history::Holder;
-    let mut w = world(0, 2);
+    let mut w = world_of(0, 2, 2);
     w.cap = 2_000_000;
     let mut work = Vec::new();
     for k in 0..rounds {
@@ -880,7 +880,7 @@ fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
 #[test]
 fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3() {
     use osis_schema::core_types::HOLDS;
-    let mut w = world(0, 1);
+    let mut w = world_of(0, 1, 1);
     let d = w.engine(0).account_root().unwrap();
     let p = w.engine(0).account().unwrap().unwrap().0;
     let t = w.write(0, |e| {

@@ -31,7 +31,7 @@ use reach::{Reach, Route, Uplink, Who};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 /// Deliveries one world may make before it panics as a storm, unless a test sets its own
 /// (`World::cap`). The rule-test layer's cap (notes/sync-test-harness.md, Enforcement).
@@ -57,20 +57,34 @@ pub const HORIZON_MS: u64 = 3_600_000;
 /// The world's start time (any fixed value).
 pub const START: WallMs = WallMs(1_700_000_000_000);
 
-/// A node's clock: the world's, moved by the node's skew (`World::skew`).
+/// A node's clock: the world's, its wall clock moved by the node's skew (`World::skew`), its
+/// monotonic clock started again from 0 at each power loss (`World::power_off`), as a process's
+/// is (`SystemClock`).
 #[derive(Debug)]
 pub struct NodeClock {
     world: Arc<ManualClock>,
     skew: AtomicI64,
+    /// The world's monotonic clock at the node's last power loss (0 before any).
+    boot: AtomicU64,
+}
+
+impl NodeClock {
+    fn new(world: Arc<ManualClock>) -> NodeClock {
+        NodeClock { world, skew: AtomicI64::new(0), boot: AtomicU64::new(0) }
+    }
+
+    fn boot(&self) -> u64 {
+        self.boot.load(Ordering::SeqCst)
+    }
 }
 
 impl Clock for NodeClock {
     fn now_wall_ms(&self) -> WallMs {
         WallMs(self.world.now_wall_ms().0.saturating_add_signed(self.skew.load(Ordering::SeqCst)))
     }
-    /// The world's: a skew moves the wall clock alone.
+    /// The world's since the last power loss: a skew moves the wall clock alone.
     fn mono(&self) -> osis_base::Mono {
-        self.world.mono()
+        osis_base::Mono(self.world.mono().0.saturating_sub(self.boot()))
     }
 }
 
@@ -210,7 +224,7 @@ pub struct Net {
     /// The world's time, as the network last saw it.
     now: WallMs,
     /// Each node's one wake (`Links::wake` replaces it), in world time: a node's waits run on its
-    /// monotonic clock, which no skew moves.
+    /// monotonic clock, which no skew moves (its boot offset added back: `NodeLinks::boot`).
     wakes: BTreeMap<usize, WallMs>,
     /// Node pairs a partition separates (lower index first).
     cut_off: BTreeSet<(usize, usize)>,
@@ -472,6 +486,8 @@ impl Net {
 struct NodeLinks<'a> {
     net: &'a mut Net,
     node: usize,
+    /// The node's `NodeClock::boot`: its monotonic clock plus this is the world's.
+    boot: u64,
 }
 
 impl Links for NodeLinks<'_> {
@@ -493,7 +509,7 @@ impl Links for NodeLinks<'_> {
 
     fn wake(&mut self, at: osis_base::Mono) {
         // the world's clock never goes back: its monotonic clock reads as its time
-        self.net.wakes.insert(self.node, WallMs(at.0));
+        self.net.wakes.insert(self.node, WallMs(at.0.saturating_add(self.boot)));
     }
 }
 
@@ -677,7 +693,7 @@ impl World {
                 b.record_history();
             }
         }
-        let clock = Arc::new(NodeClock { world: self.clock.clone(), skew: AtomicI64::new(0) });
+        let clock = Arc::new(NodeClock::new(self.clock.clone()));
         let store = Store::open(Box::new(disks.store.0.clone()), Box::new(disks.store.1.clone()), Box::new(SeededRng::from_u64(seed ^ 1))).expect("store");
         let c: Arc<dyn Clock> = clock.clone();
         let engine = Engine::create(Box::new(disks.engine.0.clone()), Box::new(disks.engine.1.clone()), store.cipher(), osis_engine::Config::default(), c, Box::new(SeededRng::from_u64(seed))).expect("engine");
@@ -834,14 +850,14 @@ impl World {
             std::panic::panic_any(Capped);
         }
         if self.deliveries > self.cap {
-            let flowing: Vec<Seen> = self.net.queue.iter().take(8).map(|(n, x)| Seen::of(*n, x, self.clock.mono())).collect();
+            let flowing: Vec<Seen> = self.net.queue.iter().take(8).map(|(n, x)| Seen::of(*n, x, self.node(*n).clock.mono())).collect();
             let off: Vec<usize> = (0..self.net.online.len()).filter(|n| !self.online(*n)).collect();
             panic!(
                 "storm: past the cap of {} deliveries over this world's whole run (not one `run`: a long test or the dial ticks toward a partitioned or powered-off peer add up; `World::cap` raises it, `flush()` delivers without firing wakes); partitioned {:?}, powered off {off:?}; still flowing (first 8 of {}): {flowing:?}; wakes {:?}",
                 self.cap, self.net.cut_off, self.net.queue.len(), self.net.wakes
             );
         }
-        let seen = Seen::of(i, &input, self.clock.mono());
+        let seen = Seen::of(i, &input, self.node(i).clock.mono());
         if self.trace {
             self.seen.push(seen.clone());
         }
@@ -890,7 +906,8 @@ impl World {
             let links = &self.net.links;
             t.sent(i, &out, |c| links.get(&(i, c)).map(|x| x.0));
         }
-        apply(out, &mut NodeLinks { net: &mut self.net, node: i });
+        let boot = self.node(i).clock.boot();
+        apply(out, &mut NodeLinks { net: &mut self.net, node: i, boot });
         self.crashed(i);
         if traced {
             self.traced(i);
@@ -1004,7 +1021,8 @@ impl World {
 
     /// Tests of the harness only: carries out `out` as node `i`'s outputs.
     pub fn apply_as(&mut self, i: usize, out: Vec<Out>) {
-        apply(out, &mut NodeLinks { net: &mut self.net, node: i });
+        let boot = self.node(i).clock.boot();
+        apply(out, &mut NodeLinks { net: &mut self.net, node: i, boot });
     }
 
     /// Delivers the next input in flight now; whether there was one.
@@ -1249,7 +1267,7 @@ impl World {
     }
 
     /// Node `i`'s wall clock runs `ms` ahead of the world's (behind when negative) from now on;
-    /// its monotonic clock stays the world's.
+    /// its monotonic clock does not move.
     pub fn skew(&mut self, i: usize, ms: i64) {
         self.node(i).clock.skew.store(ms, Ordering::SeqCst);
     }
@@ -1274,8 +1292,8 @@ impl World {
 
     /// Node `i` loses power: its connections are cut (peers told), its wake and inputs in flight
     /// to it are lost, and so is all it held in memory: it reopens over what reached its disks
-    /// (`MemoryBackend::power_cut`; a crashed device powers up again), and is stepped again at
-    /// `power_on`.
+    /// (`MemoryBackend::power_cut`; a crashed device powers up again) with its monotonic clock at
+    /// 0, and is stepped again at `power_on`.
     pub fn power_off(&mut self, i: usize) {
         if let Some(t) = self.tracer.as_mut().filter(|t| t.traces(i)) {
             t.restarted(i);
@@ -1296,6 +1314,7 @@ impl World {
         let n = self.nodes.get_mut(i).expect("no such node");
         n.disks.faults.revive();
         n.disks.power_cut();
+        n.clock.boot.store(self.clock.mono().0, Ordering::SeqCst);
         let clock: Arc<dyn Clock> = n.clock.clone();
         let d = &n.disks;
         let store = Store::open(Box::new(d.store.0.clone()), Box::new(d.store.1.clone()), Box::new(SeededRng::from_u64(seed ^ 1))).expect("store reopens");
@@ -1322,7 +1341,7 @@ impl World {
             self.nodes
                 .iter()
                 .map(|n| {
-                    let c = Arc::new(NodeClock { world: clock.clone(), skew: AtomicI64::new(n.clock.skew.load(Ordering::SeqCst)) });
+                    let c = Arc::new(NodeClock { world: clock.clone(), skew: AtomicI64::new(n.clock.skew.load(Ordering::SeqCst)), boot: AtomicU64::new(n.clock.boot()) });
                     let dc: Arc<dyn Clock> = c.clone();
                     let node = n.node.test_copy(dc.clone()).expect("node copy");
                     let store = n.store.test_copy(dc).expect("store copy");

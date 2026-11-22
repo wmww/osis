@@ -331,7 +331,7 @@ fn a_reader_lowered_to_sync_keeps_the_thing_unread_spec_sync_set_3() {
 // store reads.
 #[test]
 fn a_reader_lowered_to_sync_keeps_its_sync_epochs_as_a_load_reads_them_spec_permissions_3() {
-    let mut w = crate::harness::history::world(0, 3);
+    let mut w = crate::harness::history::world_of(0, 3, 3);
     let t = make(&mut w, 0, None, "hi");
     let (bob, carol) = (w.node(1).account.unwrap(), w.node(2).account.unwrap());
     w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();

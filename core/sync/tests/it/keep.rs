@@ -126,8 +126,8 @@ fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
 #[test]
 fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
     use crate::harness::Step::*;
-    use crate::harness::history::{Gives, Holder, world};
-    let mut w = world(0, 3);
+    use crate::harness::history::{Gives, Holder, world_of};
+    let mut w = world_of(0, 3, 3);
     w.cap = 20_000;
     w.partition(1, 2);
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
@@ -151,8 +151,8 @@ fn a_reader_moves_a_removed_store_it_never_showed_its_step_spec_sync_opens_6() {
 #[test]
 fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
     use crate::harness::Step::*;
-    use crate::harness::history::{Gives, Holder, world};
-    let mut w = world(0, 2);
+    use crate::harness::history::{Gives, Holder, world_of};
+    let mut w = world_of(0, 2, 2);
     w.cap = 20_000;
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Run], String::new());
     let t = w.history.things[0].0;
@@ -189,8 +189,8 @@ fn a_member_closed_on_a_report_is_no_source_spec_sync_status_1() {
 #[test]
 fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4() {
     use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world};
-    let mut w = world(0, 3);
+    use crate::harness::history::{Gives, world_of};
+    let mut w = world_of(0, 3, 3);
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();

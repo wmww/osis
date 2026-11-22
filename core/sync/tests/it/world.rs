@@ -49,6 +49,32 @@ fn every_output_reaches_the_network() {
     assert_eq!(w.seen, [Seen::Tick { node: 0, at }]);
 }
 
+// spec: none (test harness): a power loss starts the node's monotonic clock again from 0, as a
+// process's is, while its wall clock and the other nodes' clocks run on; a wake asked on the
+// restarted clock ticks the node at that time.
+#[test]
+fn power_loss_starts_the_monotonic_clock_again() {
+    let mut w = World::new(0);
+    w.add_bare_node();
+    w.add_bare_node();
+    w.run();
+    w.advance(10_000);
+    let (wall, other) = (w.node_now(0), w.engine(1).mono());
+    assert!(w.engine(0).mono().0 > 10_000);
+    w.power_off(0);
+    w.power_on(0);
+    w.run();
+    assert!(w.engine(0).mono().0 < 10_000, "started again: {:?}", w.engine(0).mono());
+    assert!(w.node_now(0) >= wall && w.engine(1).mono() >= other);
+    w.trace = true;
+    let at = osis_base::Mono(w.engine(0).mono().0 + 5_000);
+    let due = w.now().0 + 5_000;
+    w.apply_as(0, vec![Out::Wake(at)]);
+    w.run();
+    assert_eq!(w.seen, [Seen::Tick { node: 0, at }]);
+    assert_eq!(w.now().0, due, "at its time in the world");
+}
+
 #[derive(Default)]
 struct Record(Vec<String>);
 
