@@ -899,7 +899,32 @@ mod tests {
     fn grant(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RoleCommit {
         let mut c = [0; 32];
         c[..8].copy_from_slice(&id.to_be_bytes());
-        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), signer: by, frontier: None, ops: vec![EdgeOp { target: on, holder: to, edge: Some(Edge::new(role)) }] }
+        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), signer: by, listed: Vec::new(), direct: 0, frontier: None, ops: vec![EdgeOp { target: on, holder: to, edge: Some(Edge::new(role)) }] }
+    }
+
+    /// The held set alone as the walk reads it: each counting edge commit along the empty path.
+    struct Bare<'a>(&'a Held);
+    impl osis_perm::HeldSet for Bare<'_> {
+        fn created(&self, t: &Tid) -> Option<CreationRecord> {
+            self.0.created(t).cloned()
+        }
+        fn commit(&self, id: &CommitId) -> Option<osis_perm::Held> {
+            let c = self.0.counted(id)?;
+            Some(osis_perm::Held { id: *id, ts: c.ts, signer: c.signer, parts: Vec::new(), role: Some(c) })
+        }
+    }
+
+    /// Brings `tl` up to `h`.
+    fn sync(h: &mut Held, tl: &mut Timelines) {
+        let (touched, commits) = (h.take_touched(), h.take_touched_commits());
+        tl.update(&Bare(h), &commits, &touched);
+    }
+
+    /// The timeline of `h` from scratch.
+    fn scratch(h: &Held) -> osis_perm::Timeline {
+        let mut tl = osis_perm::Timeline::default();
+        tl.update(&Bare(h), &h.ids.keys().copied().collect(), &h.all_things().into_iter().collect());
+        tl
     }
 
     /// The definition (spec/commits.md §4) by brute force, to judge the worklist by.
@@ -936,7 +961,7 @@ mod tests {
             let tids = |ts: &mut dyn Iterator<Item = &Tid>| ts.map(|t| *t.as_bytes()).map(|b| { let mut x = [0; 32]; x[..15].copy_from_slice(&b); x }).collect::<Vec<_>>();
             match r {
                 0 => ids(h.commits_on(t)),
-                1 => ids(&HeldSet::edge_commits(h, t)),
+                1 => ids(&h.edge_commits(t)),
                 2 => tids(&mut h.holders_of(t)),
                 3 => tids(&mut h.named_on(t)),
                 4 => tids(&mut h.granted_on(t)),
@@ -1020,8 +1045,7 @@ mod tests {
         let things: Vec<Tid> = at.iter().copied().chain([&g1, &g2, &x, &y, &late].map(|r| r.tid())).collect();
         let (mut h, mut tl) = (Held::default(), Timelines::default());
         let update = |h: &mut Held, tl: &mut Timelines| {
-            let touched = h.take_touched();
-            tl.update_touched(h, &touched);
+            sync(h, tl);
         };
         let check = |tl: &Timelines| {
             for t in &things {
@@ -1105,7 +1129,7 @@ mod tests {
                 8 => format!("{:?}", tl.roles_on(t, At::KEYS, &tl.keyless())),
                 9 => format!("{:?}", tl.things().collect::<Vec<_>>()),
                 10 => format!("{:?}", tl.keyless()),
-                _ => format!("{:?}", tl.get(t).map(|x| (x.applied().clone(), x.dropped().clone()))),
+                _ => format!("{:?}", tl.get(t).map(|x| (x.applied_writes(), x.dropped_writes()))),
             }
         };
         let mut seed = 0x5eed_u64;
@@ -1163,15 +1187,14 @@ mod tests {
                         }
                     }
                 }
-                let touched = h.take_touched();
-                tl.update_touched(&h, &touched);
+                sync(&mut h, &mut tl);
                 for t in &all {
                     for r in 0..12 {
                         let k = (r, *t);
                         assert_eq!(memo.get(&k, || read(&tl, &k)), read(&tl, &k), "world {world} step {step}: read {r} of {t:?}");
                     }
                 }
-                let full = Timeline::evaluate(&h);
+                let full = scratch(&h);
                 let mut grants = Vec::new();
                 for (t, on) in full.standing_since_all(None) {
                     for (m, since) in on {
@@ -1182,7 +1205,7 @@ mod tests {
                 }
                 assert_eq!(*tl.keyless(), osis_keys::key_access(grants), "world {world} step {step}: keyless grants");
                 // perm's walks kept per thing too, the clock moving past an `until` among them
-                for (t, at) in all.iter().filter(|t| tl.of.get(t).is_some()).flat_map(|t| [At::KEYS, now, later].map(|at| (t, at))) {
+                for (t, at) in all.iter().filter(|t| tl.of.knows(t)).flat_map(|t| [At::KEYS, now, later].map(|at| (t, at))) {
                     assert_eq!(*tl.roles_on(t, at, &BTreeSet::new()), full.roles_on_without(t, at, &BTreeSet::new()), "world {world} step {step}: roles on {t:?} at {at:?}");
                 }
             }

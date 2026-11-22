@@ -1757,7 +1757,7 @@ mod tests {
         let inside = lp.peers[1].engine.package(&inside).unwrap().unwrap();
         let r = lp.peers[2].engine.me();
         use std::collections::{BTreeMap, BTreeSet};
-        let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(r, BTreeSet::from([t]))]), content: BTreeMap::from([(r, BTreeSet::from([t]))]) };
+        let scope = crate::apply::receipt::DemotionScope { roles: BTreeMap::from([(r, BTreeSet::from([t]))]), content: BTreeMap::from([(r, BTreeSet::from([t]))]) };
         let f = lp.peers[0].engine.frontier(&scope, WallMs(1_700_000_000_000)).unwrap();
         let mut m = Mutation::new();
         m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(r)) }).unwrap();

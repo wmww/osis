@@ -370,6 +370,23 @@ impl<S: Store> Timeline<S> {
         self.paths.applied(&self.part_of(w)?).map(|x| x.1)
     }
 
+    /// Every held edge write the settled walk applies, with its commit's point.
+    pub fn applied_writes(&self) -> BTreeMap<WriteId, Point> {
+        self.ops().filter(|(w, _)| self.is_applied(w)).collect()
+    }
+
+    /// Every held edge write in the drop set, with the point of the lowering whose drops hold it
+    /// (a trusted write's seed: its own point).
+    pub fn dropped_writes(&self) -> BTreeMap<WriteId, Point> {
+        let by = |w: &WriteId| self.part_of(w).and_then(|p| self.paths.dropped_by(&p)).and_then(|d| self.paths.key(&d)).map(point_of);
+        self.ops().filter(|(w, _)| self.status(w) == Some(Status::Dropped)).map(|(w, p)| (w, by(&w).unwrap_or(p))).collect()
+    }
+
+    /// Every held edge write with its commit's point.
+    fn ops(&self) -> impl Iterator<Item = (WriteId, Point)> + '_ {
+        self.roles.values().flat_map(|(c, _)| (0u32..).zip(&c.ops).map(move |(k, _)| (WriteId(c.id, k), c.point())))
+    }
+
     /// Whether `w` is chained (spec/permissions.md §4 Chained writes).
     pub fn is_chained(&self, w: &WriteId) -> bool {
         self.part_of(w).and_then(|p| self.paths.is_chained(&p)) == Some(true)

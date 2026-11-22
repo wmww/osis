@@ -177,7 +177,7 @@ fn edited(v: Option<Value>, r: &mut Rng, g: u64) -> Value {
 /// Node 0 removes writer `who` with a frontier before all its writes: the removal's commit.
 fn demote_peer(w: &mut World, who: usize) -> CommitId {
     let (t, x) = (w.t, w.lp.peers[who].engine.me());
-    let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]), content: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]) };
+    let scope = crate::apply::receipt::DemotionScope { roles: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]), content: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]) };
     let f = w.lp.peers[0].engine.frontier(&scope, T0).unwrap();
     let mut m = Mutation::new();
     m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(x)) }).unwrap();

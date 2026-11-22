@@ -25,6 +25,7 @@ pub mod undo;
 pub use apply::{Creation, Ingested, Reason};
 pub use apply::carriers::Carrier;
 pub use apply::reach::Wants;
+pub use apply::receipt::DemotionScope;
 pub use engine::{Config, Engine, Mutation};
 /// A demotion's frontier, as `Mutation::frontier` takes it.
 pub use osis_perm::Frontier;

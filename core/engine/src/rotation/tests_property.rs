@@ -914,7 +914,7 @@ fn held_while_current(run: &Run, o: usize, d: usize, t: Tid, r: Role, e: &Epoch)
     let ep = core.epochs(&t).unwrap_or_default();
     let end = ep.role(r).epochs().flat_map(|(_, info)| info.rotations.iter().filter(|(_, list)| list.contains(e)).filter_map(|(c, _)| point(c))).min();
     let before_end = |p: &osis_perm::Point| end.is_none_or(|x| *p < x);
-    let writes = run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| tl.applied().values().map(|a| a.point)).filter(|p| *p > start).collect::<BTreeSet<_>>();
+    let writes = run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| tl.applied_writes().into_values()).filter(|p| *p > start).collect::<BTreeSet<_>>();
     std::iter::once(start).chain(writes).map(just_after).filter(before_end).any(|p| access_at(run, o, d, t, r, Some(p)))
 }
 
@@ -1016,7 +1016,7 @@ fn path_loss(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<CommitId>
 /// `path_loss`, at its point in the key order.
 fn path_loss_point(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<osis_perm::Point> {
     let core = &run.lp.peers[o].engine.core;
-    let points: BTreeSet<osis_perm::Point> = run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| tl.applied().values().map(|a| a.point)).collect();
+    let points: BTreeSet<osis_perm::Point> = run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| tl.applied_writes().into_values()).collect();
     let last = points.last().map(|p| osis_perm::Point { commit: CommitId([0xff; 32]), ..*p });
     // whether `d` reads `t` just before each point, then just after the last
     let reads: Vec<bool> = points.iter().copied().chain(last).map(|p| access_at(run, o, d, t, r, Some(p))).collect();
@@ -1044,8 +1044,8 @@ fn departure_point(run: &Run, o: usize, t: Tid, d: usize, r: Role) -> Option<osi
     // the edge value write `w` sets on `d`'s edge into `t`, if it is one
     let on_edge = |w: &osis_perm::WriteId| tl.role_commit(&w.0).and_then(|mc| mc.ops.get(w.1 as usize)).filter(|op| op.target == t && op.holder == h).map(|op| op.edge.as_ref());
     let gives = |e: Option<&osis_perm::Edge>| super::key_role(e) >= Some(r);
-    let applied = tl.applied().iter().filter(|(w, a)| on_edge(w).is_some_and(|e| !gives(e)) && gives(tl.edges_at(Some(a.point)).get(&h, &t))).map(|(_, a)| a.point);
-    let dropped = tl.dropped().iter().filter(|(w, _)| on_edge(w).is_some_and(gives)).map(|(_, p)| *p);
+    let applied = tl.applied_writes().into_iter().filter(|(w, p)| on_edge(w).is_some_and(|e| !gives(e)) && gives(tl.edges_at(Some(*p)).get(&h, &t))).map(|(_, p)| p);
+    let dropped = tl.dropped_writes().into_iter().filter(|(w, _)| on_edge(w).is_some_and(gives)).map(|(_, p)| p);
     applied.chain(dropped).max()
 }
 

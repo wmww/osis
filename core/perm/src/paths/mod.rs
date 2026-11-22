@@ -480,6 +480,11 @@ impl<S: Store> Paths<S> {
         self.timeline.would_apply(id, old)
     }
 
+    /// The lowering whose drops hold edge-class part `id`.
+    pub fn dropped_by(&self, id: &WriteId) -> Option<WriteId> {
+        self.timeline.dropped_by(id)
+    }
+
     /// How the settled walk applies edge-class part `id` (`None`: not applied, not held).
     pub fn way(&self, id: &WriteId) -> Option<Way> {
         self.timeline.way(id)

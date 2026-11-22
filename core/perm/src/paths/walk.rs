@@ -1255,6 +1255,12 @@ impl Walk {
         by && !(it.leave && it.value.is_some_and(|n| !old.is_some_and(|o| leaves(&n, &o))))
     }
 
+    /// The lowering whose drops hold part `id` (`None`: not dropped, or a trusted write's seed).
+    pub(super) fn dropped_by(&self, id: &WriteId) -> Option<WriteId> {
+        let it = self.it(*self.ids.get(id)?);
+        it.dropped.filter(|_| it.live).map(|d| self.it(d).id)
+    }
+
     /// How the settled walk applies part `id` (`None`: held, not applied; not held).
     pub(super) fn way(&self, id: &WriteId) -> Option<Way> {
         let it = self.it(*self.ids.get(id)?);
