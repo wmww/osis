@@ -81,6 +81,7 @@ Profile at 0d2778997 less the custody differential's four seeds (73.3 G, 17.5 CP
 4. **`check_index` has no incremental form** (22% of osis-engine `it`, 10-14% of the engine properties, a quarter of `covered_drops_move_nothing_large`): cheaper loads are the lever, and they are the product's open (issues/long-aspect-cost.md). Its sampling is a Tess call; the narrowest form is the order harness's alike tree ends (a node whose rows, pending, clock and reads equal one already judged: about a fifth of `held_set_decides_exhaustive`), which still differ in the path that built their live indexes.
 5. `rotation_holds_large`, `deep_departure_holds_large`: ingest a third, the drop check 12-15%, fresh peers per seed (`LocalPeer::new`, key generation) 10%, the sender's packages rebuilt per moved sender and trimmed per receiver's sync IDs 14% (`sent_parts`, product memo reads after each change, 10%). 10 seeds at one thread: deep 55 G (51 before content waited outside the node closure), rotation 96 G (93). `incremental_equals_from_scratch_large` and perm `incremental::late_writes_across_kept_states`: oracles that replay from scratch per query.
 6. Allocation: `Value` trees for epochs and schema reads, fragment clones where a join could consume its side, `kdf_key` formatting its purpose per call.
+7. redb serializes its allocator state at every open and clean close: 43% of osis-cli's `cli::*`.
 
 Rejected: `opt-level` 2 for the workspace (3-10%); fake or memoized crypto in tests (debug and release differ, every forgery test must opt out).
 

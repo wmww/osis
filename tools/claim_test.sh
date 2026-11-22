@@ -1,7 +1,7 @@
 #!/bin/sh
 # Tests tools/claim against a temp repo with a bare origin and a fake `wt` (claim: a git worktree
 # of BRANCH, made from BASE when new; list: path and branch): a new branch starts at origin/main, a
-# stale local branch is reset to its pushed copy, an ancestor fast-forwards, a dirty worktree moves
+# stale local branch is reset to its pushed copy (naming the refs still holding what it dropped), an ancestor fast-forwards, a dirty worktree moves
 # nothing, and the known-failures merge driver is set. Exit 1 on a mismatch.
 set -eu
 claim=$(cd "$(dirname "$0")" && pwd)/claim
@@ -37,8 +37,10 @@ git checkout -q main && echo two >> f && git commit -qam two && git push -q orig
 git checkout -q task && git rebase -q main && git push -q -f origin task:coord-task
 git reset -q --hard HEAD~1 && echo old > g && git add g && git commit -qm "pre-rebase one"
 git checkout -q main
-w=$("$claim" task 2> /dev/null)
+git branch other task
+w=$("$claim" task 2> "$d/err")
 check "stale local reset to the pushed copy" "$(git -C "$w" rev-parse HEAD)" "$(git rev-parse origin/coord-task)"
+check "dropped commits named where kept" "$(grep -c 'each is still on other' "$d/err")" "1"
 check "merge driver set" "$(git config merge.known-failures.driver)" "python3 tools/known_failures_merge.py %O %A %B"
 # a new branch starts at origin/main as fetched
 w2=$("$claim" fresh 2> /dev/null)

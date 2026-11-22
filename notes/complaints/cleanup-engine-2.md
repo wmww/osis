@@ -1,2 +1,0 @@
-- A rejudge branch under review rewrites `Meta` and its field reads across `apply/`, `engine/` and `retention/`: avoiding its hunks fenced off most `Meta` code (accessors, `put_meta`), so cleanup there waits for it to land.
-- No write-only-field or unused-parameter finder: reading for them meant a script counting `.field` uses (a field used twice reads as fine, a clone list in `test_copy` counts as a use).

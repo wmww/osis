@@ -70,9 +70,11 @@ def main(argv):
                 print(f"claim: fast-forwarded {branch} to {ref}", file=sys.stderr)
             else:
                 lost = git("log", "--oneline", f"{to}..{head}", cwd=path)
+                # another ref holding the old head holds every dropped commit: nothing is lost
+                kept = [r for r in git("for-each-ref", "--format=%(refname:short)", "--contains", head, cwd=path).split() if r != branch]
+                where = f"each is still on {', '.join(kept)}" if kept else "they stay in `git reflog`"
                 git("reset", "-q", "--hard", ref, cwd=path)
-                print(f"claim: reset {branch} from {head[:9]} to {ref} ({to[:9]}); the local commits it dropped stay in "
-                      f"`git reflog`:\n{lost}", file=sys.stderr)
+                print(f"claim: reset {branch} from {head[:9]} to {ref} ({to[:9]}); of the local commits it dropped, {where}:\n{lost}", file=sys.stderr)
     elif run("git", "merge-base", "--is-ancestor", "origin/main", "HEAD", cwd=path, check=False).returncode:
         behind = git("rev-list", "--count", "HEAD..origin/main", cwd=path)
         print(f"claim: {branch} is an existing local branch {behind} commits behind origin/main and has no pushed copy: "

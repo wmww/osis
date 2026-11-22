@@ -141,7 +141,12 @@ passed() {
   if [ -e "$sel" ] || [ -e "$results" ]; then
     rc=0; python3 "$tools/gate_failures.py" "$sel" "$results" > "$tmp/summary" || rc=$?
     cat "$tmp/summary"
-    [ "$rc" = 0 ] || exit "$rc"
+    if [ "$rc" != 0 ]; then
+      # kept, so the summary can be read again once a known line is added
+      trap - EXIT
+      echo "== summary again (this gate's files kept in $tmp; rm -r it when done): python3 $tools/gate_failures.py $sel $results"
+      exit "$rc"
+    fi
     # a known line whose test passed: stale unless `rate:`, so the pass line (the one read) says it
     n=$(grep -c '^   KNOWN-BUT-PASSED:' "$tmp/summary" || true)
     [ "$n" = 0 ] || stale="; $n KNOWN-BUT-PASSED to remove (above)"

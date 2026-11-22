@@ -721,18 +721,24 @@ impl<A: std::fmt::Debug + Clone + 'static> Script<A> {
     }
 }
 
+/// The script as printed on a panic: each step as Rust with its note, and the replay call.
+impl<A: std::fmt::Debug + Clone + 'static> std::fmt::Display for Script<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "the run as a script ({}; {}=1 shrinks it):\nlet script = {{\n    use {}::*;\n    vec![", self.replay, self.shrink_var, self.kind)?;
+        for (a, note) in &self.steps {
+            writeln!(f, "        {a:?},{}", if note.is_empty() { String::new() } else { format!(" // {note}") })?;
+        }
+        write!(f, "    ]\n}};")
+    }
+}
+
 impl<A: std::fmt::Debug + Clone + 'static> Drop for Script<A> {
     fn drop(&mut self) {
         if !std::thread::panicking() {
             return;
         }
         if !QUIET.get() {
-            let mut out = format!("the run as a script ({}; {}=1 shrinks it):\nlet script = {{\n    use {}::*;\n    vec![\n", self.replay, self.shrink_var, self.kind);
-            for (a, note) in &self.steps {
-                out.push_str(&format!("        {a:?},{}\n", if note.is_empty() { String::new() } else { format!(" // {note}") }));
-            }
-            out.push_str("    ]\n};");
-            eprintln!("{out}");
+            eprintln!("{self}");
         }
         let steps: Vec<A> = self.steps.iter().map(|x| x.0.clone()).collect();
         FAILED.set(Some(Box::new(steps)));
