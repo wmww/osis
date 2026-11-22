@@ -1,6 +1,8 @@
 # Closure model
 > Summary: The held-model model of the reference graph, the readable closure (held_model::closure, `spec_closure`, the sync differential's oracle): what it checks, P1-P6 with each test, the P5 work counts, and the hole it found in the design: a revocation never reaches a node syncing only the grantee when the target is dependent or the grant is a chain, and with a delete key two honest nodes then undo each other for good; carrying role commits under the thing they name fixes it, and the spec states that rule (spec/permissions.md §4 Role changes travel, spec/sync-judgement.md §2).
 
+Holder access (roles over the world's grants, `Closure::for_keys`, key parts, the path search) is `held_model::closure::keys`: notes/holder-access-study.md, The model. `World::roles_from_reached` is the rule it replaces, kept as the sync differential's oracle until the build and as that model's control.
+
 ## The readable-closure model (held_model::closure, tests `spec_closure`)
 The model is an oracle written from the design's rules (spec/data-model.md §8, spec/sync-set.md), not from code: plain data, pure functions, 24 tests in about 0.8 s (debug, parallel). Its module doc lists what it leaves out (validity, disputes, key rotation, the wire, sealing, `@` signals, purge, storage rows).
 

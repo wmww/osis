@@ -16,6 +16,8 @@
 //! wants (`Net`), or, per sync ID, every commit the sender carries there (`Sync`).
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+pub mod keys;
+
 pub type T = usize;
 /// A commit's index in its world's list.
 pub type C = usize;
@@ -427,6 +429,9 @@ pub struct Closure {
     pub keys: Set,
     /// The independent things whose sync secret the node's keys give (they hold sync or above there).
     pub synced: Set,
+    /// Holders held for keys alone (`keys::oracle`: notes/holder-access-study.md): on a path of
+    /// grants from an own actor to a thing synced, and not held whole. Empty from `closure`.
+    pub for_keys: Set,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
