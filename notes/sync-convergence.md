@@ -50,7 +50,8 @@ A bin at nodes keeping S unread (writers retire entries with a soft key, restore
 
 ## Reasons behind spec rules
 - spec/sync-judgement.md §3 Neither: a deleted body is not logged again because a right holder's keep bounds, judged from the bodies it holds (spec/commits.md §5), had passed.
-- spec/sync-compaction.md §1: the `MAX_DRIFT` wait past the keep-at-least bound before deleting at peers means no node whose clock lags by up to `MAX_DRIFT` still judges a dropped body must-hold. Sweep: what a removal or expiry hid dies (spec/crdt.md §4.8), its bodies follow their keep bounds and no snapshot carries it.
+- spec/sync-compaction.md §1: the `MAX_DRIFT` wait past the keep-at-least bound before deleting at peers means no node whose clock lags by up to `MAX_DRIFT` still judges a dropped body must-hold. Sweep: what a removal or expiry hid dies (spec/crdt.md §4.8), its bodies follow their keep bounds and no snapshot carries it. Own bodies only under an own cover: another writer's snapshot may later count for nothing (a demotion not listing it), and the signer's copy must then bring the write back. A snapshot turning invalid re-asks peers' live ephemeral entries so the copies they still have reach the node again. Sweep leaves a record lacking its creation: the creation may arrive, or turn valid.
+- spec/sync-compaction.md §2: a superseded ephemeral part vanishes whole so a later removal or undo of the superseding write does not show it again; the rest of an applied ephemeral commit's trees are fetched at once because peers hold them in memory only.
 
 ## Accepted
 - An ex-writer or ex-admin keeps old-step delete keys and, as a reader, the sync key, so it can delete its own old `author` bodies or old `admin` bodies at nodes keeping S unread; healed by any holder's next pass (spec/sync-judgement.md §4). Level 3 needs the write key, so `writer` bodies are safe.
