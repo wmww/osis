@@ -24,3 +24,5 @@ osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=146887569055 issues/custody-differential-failures.md node \w+, account \w+: seeds held: engine
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=153359937795,OSIS_ORDER_LEN=60 issues/order-roster-admin-edge.md histories judged differently by what was held
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=594660024526 issues/differential-small-size-failures.md storm: past the cap of \d+ deliveries
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=2609037846 issues/order-role-commit-one-path.md a role commit's things are reached along one path
+osis-engine/order::held_set_decides_exhaustive rate:OSIS_ORDER_SEED=2609037846 issues/order-role-commit-one-path.md a role commit's things are reached along one path
