@@ -24,3 +24,4 @@ osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=2609037846 issues/order-role-commit-one-path.md a role commit's things are reached along one path
 osis-engine/order::held_set_decides_exhaustive rate:OSIS_ORDER_SEED=2609037846 issues/order-role-commit-one-path.md a role commit's things are reached along one path
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=915130969958,OSIS_ORDER_LEN=60 issues/order-roster-admin-edge.md shows other than the node keeping every body
+osis-engine/refs::known_references_are_a_scan_of_held_values_plain_spec_data_model_8 rate:OSIS_KNOWN_REFS_START=39221095449,OSIS_KNOWN_REFS_SEEDS=1 issues/refs-index-overcounts.md rows by source
