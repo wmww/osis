@@ -599,7 +599,7 @@ fn forks_proved(n: usize) -> (std::collections::BTreeMap<String, (usize, usize)>
     (e.local_census().unwrap(), v.rotation_ids().len(), kept)
 }
 
-// spec/sync-opens.md §2 (a verifier takes those rotations as received commits; nothing carries them),
+// spec/sync-opens.md §2 (a verifier takes those rotations as received commits),
 // spec/permissions.md §5.4 (Warning): a removed node holding an old epoch proves forks at every
 // reconnection; the verifier keeps of them only what the Warning's first rise needs (one line
 // whose tip rejects the followed rotation, with what it needs), never a plain fork beside the
