@@ -183,8 +183,8 @@ fn app_config(g: &Global) -> AppConfig {
     c
 }
 
-/// How long connecting to a node waits, by `--timeout`.
-fn connect_wait(g: &Global) -> anyhow::Result<Option<Duration>> {
+/// The `--timeout` bound of a call that waits on other nodes (default 30 s; `0`: none).
+fn wait_bound(g: &Global) -> anyhow::Result<Option<Duration>> {
     timeout_of(g, Some(DEFAULT_WAIT))
 }
 
@@ -203,6 +203,16 @@ fn read_secret(file: &Path) -> anyhow::Result<osis::ClientSecret> {
 
 const SCHEMAS_FILE: &str = "cli.toml";
 
+/// Exit 8 unless a store is at `d`.
+fn existing(d: &Path) -> anyhow::Result<()> {
+    if d.join("db.redb").exists() { Ok(()) } else { Err(exit(8, format!("no store at {} (run osis init)", d.display()))) }
+}
+
+/// The name a schema registers under: its file name.
+fn file_name(p: &Path) -> String {
+    p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 /// Opens an existing store (exit 8 when missing or locked). Locked by a daemon (`osis serve`)
 /// whose socket answers, the invocation is that daemon's client instead (`use_daemon`, unless the
 /// command must hold the store itself: `inspect`).
@@ -212,9 +222,7 @@ fn open(sel: &Store, g: &Global, net: Network, use_daemon: bool) -> anyhow::Resu
     }
     match sel {
         Store::Dir(d) => {
-            if !d.join("db.redb").exists() {
-                return Err(exit(8, format!("no store at {} (run osis init)", d.display())));
-            }
+            existing(d)?;
             let login = connect_flags(g)?;
             let db = match Osis::open(sel.clone(), config(g, net)?) {
                 Ok(db) => db,
@@ -222,7 +230,7 @@ fn open(sel: &Store, g: &Global, net: Network, use_daemon: bool) -> anyhow::Resu
                 Err(e) => return Err(e.into()),
             };
             if let Some(l) = login {
-                match crate::cmd::within(connect_wait(g)?, db.connect_node(&l)) {
+                match crate::cmd::within(wait_bound(g)?, db.connect_node(&l)) {
                     // a node down fails what goes there, as `Network`; the rest of the store works
                     Err(Error::Network(_)) | Ok(()) => {}
                     Err(e) => return Err(e.into()),
@@ -241,7 +249,7 @@ fn open(sel: &Store, g: &Global, net: Network, use_daemon: bool) -> anyhow::Resu
 /// (notes/client-port.md §5). Nothing answering on its socket is `InUse`, saying why (the store's
 /// holder may serve no socket: the app, or a command); any other failure is itself.
 fn daemon(d: &Path, g: &Global) -> anyhow::Result<Osis> {
-    let wait = connect_wait(g)?;
+    let wait = wait_bound(g)?;
     crate::cmd::within(wait, Osis::connect_socket(d, app_config(g))).map_err(|e| match e {
         Error::Network(_) => anyhow::Error::new(e).context(Error::InUse),
         e => anyhow::Error::new(e).context("store in use; reaching its daemon"),
@@ -254,7 +262,7 @@ fn client_of_node(g: &Global) -> anyhow::Result<Osis> {
     let (Some(addr), Some(file)) = (&g.node, &g.client_secret) else { return Err(usage("--node needs --client-secret")) };
     let secret = read_secret(file)?;
     let login = osis::NodeLogin { addr: addr.parse()?, secret };
-    Ok(crate::cmd::within(connect_wait(g)?, Osis::connect(&[login], app_config(g)))?)
+    Ok(crate::cmd::within(wait_bound(g)?, Osis::connect(&[login], app_config(g)))?)
 }
 
 /// Serves the client port while `serve` runs, on the store's socket, returning its path. A memory
@@ -339,8 +347,7 @@ impl Ctx<'_> {
         for p in paths {
             let fail = |e: &dyn std::fmt::Display| exit(7, format!("schema {}: {e}", p.display()));
             let src = std::fs::read_to_string(&p).map_err(|e| fail(&e))?;
-            let name = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-            db.register_schema(&name, &src).map_err(|e| fail(&e))?;
+            db.register_schema(&file_name(&p), &src).map_err(|e| fail(&e))?;
         }
         Ok(Ctx { g, db, out, stdin, tty, sel, vars: BTreeMap::new(), pending: Default::default() })
     }
@@ -373,9 +380,8 @@ impl Ctx<'_> {
         self.emit(lines, J::strs(lines))
     }
 
-    /// The `--timeout` bound (default 30 s; `0`: none).
     pub fn timeout(&self) -> anyhow::Result<Option<Duration>> {
-        timeout_of(&self.g, Some(DEFAULT_WAIT))
+        wait_bound(&self.g)
     }
 
     /// Resolves a tid argument: `osis://…`, bare, `me`, `node`, `$var`.

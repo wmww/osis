@@ -19,13 +19,24 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
 const ROLES: [(&str, Role); 4] = [("sync", Role::Sync), ("read", Role::Read), ("write", Role::Write), ("admin", Role::Admin)];
+const KINDS: [(&str, CommitKind); 4] = [("content", CommitKind::Content), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot)];
+
+/// The name of `v` in a table of words.
+fn name_in<T: PartialEq>(table: &[(&'static str, T)], v: T) -> &'static str {
+    table.iter().find(|x| x.1 == v).map_or("?", |x| x.0)
+}
+
+/// The value a table names `s`, else a usage error listing the names.
+fn parse_in<T: Copy>(table: &[(&str, T)], what: &str, s: &str) -> anyhow::Result<T> {
+    table.iter().find(|x| x.0 == s).map(|x| x.1).ok_or_else(|| usage(format!("{what}: one of {} (got {s:?})", table.iter().map(|x| x.0).collect::<Vec<_>>().join(", "))))
+}
 
 pub fn role_text(r: Role) -> &'static str {
-    ROLES.iter().find(|x| x.1 == r).map_or("?", |x| x.0)
+    name_in(&ROLES, r)
 }
 
 pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
-    ROLES.iter().find(|x| x.0 == s).map(|x| x.1).ok_or_else(|| usage(format!("role: sync, read, write or admin (got {s:?})")))
+    parse_in(&ROLES, "role", s)
 }
 
 fn parse_reads(s: Option<&str>) -> anyhow::Result<osis::Reads> {
@@ -102,11 +113,6 @@ pub(crate) fn within<T>(limit: Option<Duration>, f: impl Future<Output = osis::R
     race(limit, f).unwrap_or_else(|| Err(Error::Network("timed out".into())))
 }
 
-/// A call that waits, within `--timeout`.
-pub(crate) fn wait<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
-    Ok(within(ctx.timeout()?, f)?)
-}
-
 /// `wait` of a call judging a link or card: nothing says it never will, so past `--timeout` it says
 /// what is known, and that nothing was left half done.
 pub(crate) fn confirm<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
@@ -127,18 +133,14 @@ fn synced(ctx: &Ctx<'_>, scopes: &[SyncScope]) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-/// The end of a delivering command (notes/cli.md Delivering commands): what it gave another
-/// account a way to is synced within `--timeout`, else `Network`, exit 6, after its output.
-pub(crate) fn delivered(ctx: &Ctx<'_>, scopes: &[SyncScope]) -> anyhow::Result<()> {
-    match synced(ctx, scopes)? {
+/// The end of a delivering command (notes/cli.md Delivering commands): the things it gave another
+/// account a way to (a grant or link on each) are synced within `--timeout`, else `Network`, exit
+/// 6, after its output.
+pub(crate) fn delivered(ctx: &Ctx<'_>, things: &[Tid]) -> anyhow::Result<()> {
+    match synced(ctx, &things.iter().map(|t| SyncScope::Thing(*t)).collect::<Vec<_>>())? {
         true => Ok(()),
         false => Err(Error::Network("done here, not yet held or taken where it goes: it goes on as this node syncs".into()).into()),
     }
-}
-
-/// What a grant of `t` delivers: `t` synced, holding the grant.
-pub(crate) fn granted(t: Tid) -> [SyncScope; 1] {
-    [SyncScope::Thing(t)]
 }
 
 fn links_j(ls: &[osis::LinkInfo]) -> J {
@@ -241,8 +243,7 @@ pub fn dispatch(cli: Cli, store: Option<Store>, stdin: &mut dyn BufRead, out: &m
         Cmd::Schema(SchemaCmd::Add { file }) => return schema_reg(&sel, file, true),
         Cmd::Schema(SchemaCmd::Rm { file }) => return schema_reg(&sel, file, false),
         Cmd::Schema(SchemaCmd::Ls) => {
-            let Store::Dir(d) = &sel else { return Err(usage("schemas register with a store directory")) };
-            let list = crate::registered(d)?;
+            let list = crate::registered(schema_dir(&sel)?)?;
             let lines: Vec<String> = list.iter().map(|p| p.display().to_string()).collect();
             let text = if g.json { J::strs(&lines).text() + "\n" } else { lines.iter().map(|l| format!("{l}\n")).collect() };
             return Ok(out.write_all(text.as_bytes())?);
@@ -459,7 +460,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let c = db.revert(parse_id(&id)?)?;
             emit_commit(ctx, Some(c.stamp.id))
         }
-        Cmd::Grants { t, watch: false, .. } => grants(ctx, &t),
+        Cmd::Grants { t, watch: false, .. } => {
+            let r = db.grants(ctx.tid(&t)?)?;
+            ctx.emit(&grants_lines(&r, ctx.g.raw), grants_json(&r))
+        }
         Cmd::Grants { t, watch: true, count } => {
             let (t, raw) = (ctx.tid(&t)?, ctx.g.raw);
             let (mut f, rx) = page_sink(ctx.g.json, move |r: &osis::Grants| (grants_lines(r, raw).join(", "), grants_json(r)));
@@ -491,7 +495,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
             db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, retain_copy: None, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())?, leave_adminless })?;
-            delivered(ctx, &granted(t))
+            delivered(ctx, &[t])
         }
         Cmd::SetRole { t, holder, role, d, leave_adminless } => {
             let role = if role == "none" { None } else { Some(parse_role(&role)?) };
@@ -499,7 +503,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             db.set_role(t, m, role, o)?;
             // a role given is a grant; a removal gives nobody anything and waits for nothing
             match role {
-                Some(_) => delivered(ctx, &granted(t)),
+                Some(_) => delivered(ctx, &[t]),
                 None => Ok(()),
             }
         }
@@ -510,17 +514,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Retained { drop: Some(a) } => Ok(db.drop_retained_copy(ctx.tid(&a)?)?),
         Cmd::Retained { drop: None } => ctx.list(&db.retained_copies()?.iter().map(Tid::to_uri).collect::<Vec<_>>()),
         Cmd::Chat(c) => crate::chat::run(ctx, c),
-        Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
-            let t = ctx.tid(&t)?;
-            let l = db.make_link(t, parse_role(&role)?, LinkOpts { until: opt_ts(&until)?, single_use })?;
-            ctx.one("link", l)?;
-            delivered(ctx, &[SyncScope::Thing(t)])
-        }
-        Cmd::Link(LinkCmd::Redeem { link }) => {
-            let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
-            let t = confirm(ctx, db.redeem(&l))?;
-            ctx.one("tid", t.to_uri())
-        }
+        Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => make_link(ctx, &t, &role, LinkOpts { until: opt_ts(&until)?, single_use }),
+        Cmd::Link(LinkCmd::Redeem { link }) => redeem(ctx, &link),
         Cmd::Link(LinkCmd::Ls { t }) => {
             let mut ls = db.links()?;
             if let Some(t) = t {
@@ -538,7 +533,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             // a card is a read link to the profile
             let c = db.contact_card()?;
             ctx.one("card", c)?;
-            delivered(ctx, &[SyncScope::Thing(db.profile()?)])
+            delivered(ctx, &[db.profile()?])
         }
         Cmd::Card(CardCmd::Profile { account }) => {
             let p = match account {
@@ -591,7 +586,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             };
             Ok(db.choose_side(id.parse()?, side)?)
         }
-        Cmd::Status { watch: false } => status(ctx),
+        Cmd::Status { watch: false } => {
+            let s = db.status()?;
+            ctx.emit(&status_lines(&s), status_json(&s))
+        }
         Cmd::Status { watch: true } => {
             let (mut f, rx) = page_sink(ctx.g.json, move |s: &osis::Status| (status_lines(s).join(", "), status_json(s)));
             let _sub = db.on_status_change(move |_, r| f(Ok(r)))?;
@@ -618,11 +616,26 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 return ctx.one("source", db.unit_sources().get(&g).map_or("local".to_string(), |a| a.to_string()));
             };
             let to = if to == "local" { osis::UnitSource::Local } else { osis::UnitSource::Node(to.parse()?) };
-            wait(ctx, db.unit_source(g, to))
+            Ok(within(ctx.timeout()?, db.unit_source(g, to))?)
         }
         Cmd::Inspect(i) => inspect(ctx, i),
         Cmd::Diag { follow } => diag(ctx, follow, false),
     }
+}
+
+/// `link make` (and `chat link`): prints the link, then waits until it works.
+pub(crate) fn make_link(ctx: &mut Ctx<'_>, t: &str, role: &str, o: LinkOpts) -> anyhow::Result<()> {
+    let t = ctx.tid(t)?;
+    let l = ctx.db.make_link(t, parse_role(role)?, o)?;
+    ctx.one("link", l)?;
+    delivered(ctx, &[t])
+}
+
+/// `link redeem` (and `chat join`): prints the thing joined.
+pub(crate) fn redeem(ctx: &mut Ctx<'_>, link: &str) -> anyhow::Result<()> {
+    let l: osis::ShareLink = ctx.arg_text(link)?.parse()?;
+    let t = confirm(ctx, ctx.db.redeem(&l))?;
+    ctx.one("tid", t.to_uri())
 }
 
 fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
@@ -934,17 +947,6 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, path: Option<&str>, count
     stream(ctx, &rx, count, "change", false, |ctx, c| (change_line(ctx, &c, pty.as_ref()), !matches!(c.origin, Origin::Initial)))
 }
 
-const KINDS: [(&str, CommitKind); 4] =
-    [("content", CommitKind::Content), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot)];
-
-fn kind_of(s: &str) -> anyhow::Result<CommitKind> {
-    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: content, revert, role or snapshot")))
-}
-
-fn kind_text(k: CommitKind) -> &'static str {
-    KINDS.iter().find(|x| x.1 == k).map_or("?", |x| x.0)
-}
-
 /// A place printed by `writes` or `fired`.
 fn parse_pos(s: &str) -> anyhow::Result<osis::CommitPos> {
     s.parse().map_err(|_| usage(format!("not a place printed by writes or fired: {s:?}")))
@@ -987,7 +989,7 @@ fn listing(ctx: &mut Ctx<'_>, at: &Listed, l: &ListArgs) -> anyhow::Result<()> {
         from,
         limit: Some(l.max),
         authors: l.author.iter().map(|a| ctx.tid(a)).collect::<anyhow::Result<_>>()?,
-        kinds: l.kind.iter().map(|k| kind_of(k)).collect::<anyhow::Result<_>>()?,
+        kinds: l.kind.iter().map(|k| parse_in(&KINDS, "kind", k)).collect::<anyhow::Result<_>>()?,
         reverts: l.reverts.as_deref().map(parse_id).transpose()?,
         reverted_by: l.reverted_by.as_deref().map(parse_id).transpose()?,
         in_effect: l.in_effect,
@@ -1016,7 +1018,7 @@ fn body_text(b: &osis::Body<Value>) -> String {
 /// each part `T/AK valid|invalid body`.
 fn commit_line(ctx: &Ctx<'_>, c: &osis::Commit) -> String {
     let i = &c.stamp;
-    let mut l = format!("{} {} {} {} {}", c.pos(), ts_text(ctx.g.raw, i.written.0), i.author.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
+    let mut l = format!("{} {} {} {} {}", c.pos(), ts_text(ctx.g.raw, i.written.0), i.author.to_uri(), name_in(&KINDS, c.kind), if c.in_effect { "in-effect" } else { "reverted" });
     if let Some(r) = &c.reverts {
         l += &format!(" reverts={r}");
     }
@@ -1038,7 +1040,7 @@ fn commit_j(c: &osis::Commit) -> J {
         ("ts", J::int(i.written.0)),
         ("received", J::int(i.received.0)),
         ("author", J::tid(i.author)),
-        ("kind", J::str(kind_text(c.kind))),
+        ("kind", J::str(name_in(&KINDS, c.kind))),
         ("in_effect", J::Bool(c.in_effect)),
         ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(r.to_string())))),
         ("reverted_by", J::strs(&c.reverted_by)),
@@ -1070,18 +1072,6 @@ fn grants_json(r: &osis::Grants) -> J {
             .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::opt(e.may_grant.map(|r| J::str(role_text(r))))), ("from_now", J::Bool(e.from_now))]))
             .collect(),
     )
-}
-
-fn grants(ctx: &mut Ctx<'_>, t: &str) -> anyhow::Result<()> {
-    let r = ctx.db.grants(ctx.tid(t)?)?;
-    let lines = grants_lines(&r, ctx.g.raw);
-    ctx.emit(&lines, grants_json(&r))
-}
-
-fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
-    let s = ctx.db.status()?;
-    let lines = status_lines(&s);
-    ctx.emit(&lines, status_json(&s))
 }
 
 fn status_lines(s: &osis::Status) -> Vec<String> {
@@ -1303,16 +1293,14 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
     }
 }
 
-/// Reads and parses a schema file (exit 7 when it does not parse); returns its file name too.
-fn read_schema(file: &std::path::Path) -> anyhow::Result<(String, osis_schema::Schema)> {
+/// Reads and parses a schema file (exit 7 when it does not parse).
+fn read_schema(file: &std::path::Path) -> anyhow::Result<osis_schema::Schema> {
     let src = std::fs::read_to_string(file).map_err(|e| usage(format!("{}: {e}", file.display())))?;
-    let name = file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-    let s = osis_schema::parse(&name, &src).map_err(|e| exit(7, e.to_string()))?;
-    Ok((name, s))
+    osis_schema::parse(&crate::file_name(file), &src).map_err(|e| exit(7, e.to_string()))
 }
 
 fn schema_check(g: &crate::args::Global, file: &std::path::Path, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-    let (_, s) = read_schema(file)?;
+    let s = read_schema(file)?;
     if g.json {
         writeln!(out, "{}", J::obj([("revision", J::int(s.revision))]).text())?;
     } else {
@@ -1334,11 +1322,15 @@ fn schema_gen(file: &std::path::Path, dir: &std::path::Path, out: &mut dyn std::
     Ok(())
 }
 
-fn schema_reg(sel: &Store, file: &std::path::Path, add: bool) -> anyhow::Result<()> {
+/// The store directory schemas register in.
+fn schema_dir(sel: &Store) -> anyhow::Result<&std::path::Path> {
     let Store::Dir(d) = sel else { return Err(usage("schemas register with a store directory")) };
-    if !d.join("db.redb").exists() {
-        return Err(exit(8, format!("no store at {} (run osis init)", d.display())));
-    }
+    Ok(d)
+}
+
+fn schema_reg(sel: &Store, file: &std::path::Path, add: bool) -> anyhow::Result<()> {
+    let d = schema_dir(sel)?;
+    crate::existing(d)?;
     let abs = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let mut list = crate::registered(d)?;
     if add {

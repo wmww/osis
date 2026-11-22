@@ -104,10 +104,6 @@ fn range(s: &str) -> anyhow::Result<Range<usize>> {
     Ok(a..b)
 }
 
-fn index(s: &str) -> anyhow::Result<usize> {
-    s.parse().map_err(|_| usage(format!("bad index {s:?}")))
-}
-
 pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &mut Did) -> anyhow::Result<()> {
     let admin = match &a.admin {
         Some(o) => ctx.tid(o)?,
@@ -198,7 +194,7 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
     match a.op.as_str() {
         "move" => {
             n(2)?;
-            pw.move_range(range(&args[0])?, index(&args[1])?)?
+            pw.move_range(range(&args[0])?, args[1].parse().map_err(|_| usage(format!("bad index {:?}", args[1])))?)?
         }
         "splice" => {
             if args.is_empty() {
@@ -240,20 +236,6 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
 
 /// Applies one write command to the `Write`.
 pub fn apply(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
-    apply_one(ctx, w, c, did)?;
-    // Record what this script wrote (path resolution must not trust the saved state there).
-    let touched = match c {
-        ScriptCmd::Set(SetArgs { t, ak, .. }) | ScriptCmd::Overwrite(SetArgs { t, ak, .. }) | ScriptCmd::Rm(RmArgs { t, ak, .. }) | ScriptCmd::Op(OpArgs { t, ak, .. }) => {
-            Some((ctx.tid(t)?, ak.clone()))
-        }
-        ScriptCmd::Create(_) => did.created.last().map(|(_, t)| (*t, String::new())),
-        _ => None,
-    };
-    ctx.pending.extend(touched);
-    Ok(())
-}
-
-fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
     if let ScriptCmd::Set(SetArgs { w: f, .. }) | ScriptCmd::Overwrite(SetArgs { w: f, .. }) | ScriptCmd::Fire(FireArgs { w: f, .. }) | ScriptCmd::Op(OpArgs { w: f, .. }) = c {
         commit_expiry(ctx, w, did, expiry(&f.e)?)?;
     }
@@ -264,7 +246,17 @@ fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mu
         ScriptCmd::Fire(a) => fire(ctx, w, a),
         ScriptCmd::Rm(a) => rm(ctx, w, a),
         ScriptCmd::Op(a) => op(ctx, w, a),
-    }
+    }?;
+    // Record what this script wrote (path resolution must not trust the saved state there).
+    let touched = match c {
+        ScriptCmd::Set(SetArgs { t, ak, .. }) | ScriptCmd::Overwrite(SetArgs { t, ak, .. }) | ScriptCmd::Rm(RmArgs { t, ak, .. }) | ScriptCmd::Op(OpArgs { t, ak, .. }) => {
+            Some((ctx.tid(t)?, ak.clone()))
+        }
+        ScriptCmd::Create(_) => did.created.last().map(|(_, t)| (*t, String::new())),
+        _ => None,
+    };
+    ctx.pending.extend(touched);
+    Ok(())
 }
 
 /// Splits a script line into arguments: whitespace separates, except inside quotes and

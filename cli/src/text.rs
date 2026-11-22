@@ -239,12 +239,18 @@ pub fn rfc3339(ms: i64) -> Option<String> {
 
 /// Parses RFC 3339 (`2026-10-19T12:00:00.5+02:00`, or a bare date as UTC midnight) to ms.
 pub fn parse_rfc3339(s: &str) -> Option<i64> {
+    rfc3339_prefix(s).filter(|&(_, n)| n == s.len()).map(|(ms, _)| ms)
+}
+
+/// The RFC 3339 timestamp at the start of `s` and its length: a date, then a time with its zone
+/// if one follows (a value's text stops there, before a `:` separator after a bare date).
+fn rfc3339_prefix(s: &str) -> Option<(i64, usize)> {
     let b = s.as_bytes();
     let num = |r: std::ops::Range<usize>| -> Option<i64> {
         let t = s.get(r)?;
         if t.bytes().all(|c| c.is_ascii_digit()) { t.parse().ok() } else { None }
     };
-    if b.len() < 10 || b.get(4) != Some(&b'-') || b.get(7) != Some(&b'-') {
+    if b.get(4) != Some(&b'-') || b.get(7) != Some(&b'-') {
         return None;
     }
     let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
@@ -254,13 +260,8 @@ pub fn parse_rfc3339(s: &str) -> Option<i64> {
         return None;
     }
     let mut ms = days_from_civil(y, mo, d) * 86_400_000;
-    if b.len() == 10 {
-        return Some(ms);
-    }
-    if !matches!(b.get(10), Some(b'T' | b't' | b' ')) || b.get(13) != Some(&b':') || b.get(16) != Some(&b':') {
-        return None;
-    }
-    let (h, mi, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    let time = matches!(b.get(10), Some(b'T' | b't' | b' ')) && b.get(13) == Some(&b':') && b.get(16) == Some(&b':');
+    let Some((h, mi, sec)) = time.then(|| Some((num(11..13)?, num(14..16)?, num(17..19)?))).flatten() else { return Some((ms, 10)) };
     if h > 23 || mi > 59 || sec > 60 {
         return None;
     }
@@ -279,42 +280,13 @@ pub fn parse_rfc3339(s: &str) -> Option<i64> {
         let three: String = digits.chars().chain("00".chars()).take(3).collect();
         ms += three.parse::<i64>().ok()?;
     }
-    match s.get(i..)? {
-        "Z" | "z" => Some(ms),
-        off if off.len() == 6 && (off.starts_with('+') || off.starts_with('-')) && off.get(3..4) == Some(":") => {
-            let (oh, om) = (num(i + 1..i + 3)?, num(i + 4..i + 6)?);
-            let o = (oh * 60 + om) * 60_000;
-            Some(if off.starts_with('+') { ms - o } else { ms + o })
+    match b.get(i)? {
+        b'Z' | b'z' => Some((ms, i + 1)),
+        c @ (b'+' | b'-') if b.get(i + 3) == Some(&b':') => {
+            let o = (num(i + 1..i + 3)? * 60 + num(i + 4..i + 6)?) * 60_000;
+            Some((if *c == b'+' { ms - o } else { ms + o }, i + 6))
         }
         _ => None,
-    }
-}
-
-/// Length of the RFC 3339 timestamp at the start of `r` as the printer writes it (date, then
-/// optionally `T` time, fraction, `Z` or offset); stops before a following `:` separator.
-fn ts_len(r: &str) -> usize {
-    let b = r.as_bytes();
-    let at = |i: usize, f: fn(u8) -> bool| b.get(i).copied().is_some_and(f);
-    let dig = |i: usize, n: usize| (i..i + n).all(|j| at(j, |c| c.is_ascii_digit()));
-    if !(dig(0, 4) && at(4, |c| c == b'-') && dig(5, 2) && at(7, |c| c == b'-') && dig(8, 2)) {
-        return 0;
-    }
-    if !(at(10, |c| c == b'T' || c == b't') && dig(11, 2) && at(13, |c| c == b':') && dig(14, 2) && at(16, |c| c == b':') && dig(17, 2)) {
-        return 10;
-    }
-    let mut i = 19;
-    if at(i, |c| c == b'.') {
-        i += 1;
-        while at(i, |c| c.is_ascii_digit()) {
-            i += 1;
-        }
-    }
-    if at(i, |c| c == b'Z' || c == b'z') {
-        i + 1
-    } else if at(i, |c| c == b'+' || c == b'-') && dig(i + 1, 2) && at(i + 3, |c| c == b':') && dig(i + 4, 2) {
-        i + 6
-    } else {
-        i
     }
 }
 
@@ -562,14 +534,11 @@ impl<'a> Parser<'a> {
         let k = kind_of(ty);
         let r = self.rest();
         let Some(c) = self.peek() else { return Err(self.err("expected a value")) };
-        if matches!(k, Kind::Timestamp) && (c.is_ascii_digit() || c == '-') && !r.starts_with("-Infinity") {
-            let n = ts_len(r);
-            if n > 0 {
-                let w = r.get(..n).unwrap_or("");
-                let v = parse_rfc3339(w).map(Value::Int).ok_or_else(|| self.err("bad RFC 3339 timestamp"))?;
-                self.pos += n;
-                return Ok(v);
-            }
+        // a date's `-` at 4 makes it no number
+        if matches!(k, Kind::Timestamp) && r.get(4..5) == Some("-") {
+            let (ms, n) = rfc3339_prefix(r).ok_or_else(|| self.err("bad RFC 3339 timestamp"))?;
+            self.pos += n;
+            return Ok(Value::Int(ms));
         }
         if matches!(k, Kind::Duration) && (c.is_ascii_digit() || c == '-') {
             let start = self.pos;

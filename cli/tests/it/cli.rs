@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! The `osis` binary run in-process (notes/cli.md Tests, default tests; one test spawns `serve`): commands over memory and
 //! temp-dir stores, exit codes per error category, `--json`, `write` scripts, named
-//! keys with a schema, the command table's coverage of the API. No network, no sleeps.
+//! keys with a schema. No network, no sleeps.
 //! spec: none (client surface: notes/cli.md).
 
 use clap::CommandFactory;
@@ -35,6 +35,11 @@ impl S {
         s
     }
 
+    /// The store directory `d`, not created.
+    fn dir(d: &std::path::Path) -> S {
+        S { sel: Store::Dir(d.to_path_buf()), pre: Vec::new() }
+    }
+
     fn call(&self, args: &[&str], stdin: &str) -> Out {
         let (mut o, mut e) = (Vec::new(), Vec::new());
         let mut i = stdin.as_bytes();
@@ -50,6 +55,11 @@ impl S {
 
     fn code(&self, args: &[&str]) -> i32 {
         self.call(args, "").code
+    }
+
+    /// This store's account.
+    fn me(&self) -> String {
+        self.ok(&["whoami"]).out.lines().find_map(|l| l.strip_prefix("me\t")).unwrap().to_string()
     }
 
     fn thing(&self) -> String {
@@ -105,6 +115,22 @@ fn things_and_aspects_plan_cli_4() {
     assert!(show.contains("note:title.0\t\"hi\"") && show.contains("role\tadmin") && show.contains("created.0\t{admin: weak(osis://"), "{show}");
     s.ok(&["rm", &t, "note:title.0"]);
     assert_eq!(s.code(&["get", &t, "note:title.0"]), 3);
+    // notes/api.md Large values: a value written from stdin streams back raw; its length reads
+    // without materializing
+    let big = "x".repeat(300_000);
+    assert_eq!(s.call(&["set", &t, "a:doc.0", "--stream"], &big).code, 0);
+    assert_eq!(s.ok(&["get", &t, "a:doc.0", "--len"]).line(), "300000");
+    assert_eq!(s.ok(&["--json", "get", &t, "a:doc.0", "--len"]).line(), "{\"len\":300000}");
+    let o = s.ok(&["get", &t, "a:doc.0", "--stream"]);
+    assert!(o.out.as_bytes() == big.as_bytes(), "untyped: stored as a blob, streamed raw");
+    assert_eq!(s.code(&["get", &t, "a:none.0", "--len"]), 3);
+    // `backlinks T`: the things whose values reference T, one `tid aspect` line each
+    let a = s.thing();
+    let before = s.ok(&["backlinks", &t]).out;
+    s.ok(&["set", &a, "note:link.0", &format!("weak({t})")]);
+    let out = s.ok(&["backlinks", &t]).out;
+    assert!(out.lines().count() == before.lines().count() + 1 && out.contains(&format!("{a} note:link.0\n")), "{out}");
+    assert!(s.ok(&["--json", "backlinks", &t]).line().contains(&format!("{{\"tid\":\"{a}\",\"ak\":\"note:link.0\"}}")));
 }
 
 // notes/cli.md Exit codes: exit codes by error category.
@@ -131,21 +157,15 @@ fn exit_codes_plan_cli_6() {
     let o = s.call(&["link", "redeem", "@/nonexistent/link"], "");
     assert_eq!(o.code, 2, "{}", o.err);
     assert!(o.err.contains("/nonexistent/link"), "{}", o.err);
+    assert_eq!(s.code(&["link", "redeem", "x"]), 7, "malformed link");
 }
 
 // notes/cli.md Design: one process at a time; a second opener fails with exit 8.
 #[test]
 fn store_dir_init_lock_plan_cli_2() {
     let d = tmp("lock");
-    let ds = d.to_str().unwrap();
-    let call = |args: &[&str]| {
-        let (mut o, mut e) = (Vec::new(), Vec::new());
-        let code = osis_cli::main_with(["osis", "--no-lan", "-s", ds].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
-        (code, String::from_utf8(o).unwrap(), String::from_utf8(e).unwrap())
-    };
-    let (c, out, _) = call(&["init"]);
-    assert_eq!(c, 0);
-    assert!(out.starts_with("me\tosis://"));
+    let s = S::dir(&d);
+    assert!(s.ok(&["init"]).out.starts_with("me\tosis://"));
     // spec/requirements.md, Deletion (local keys): the store directory, its node and its
     // root key are the owner's only
     #[cfg(unix)]
@@ -153,16 +173,14 @@ fn store_dir_init_lock_plan_cli_2() {
         let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&p).unwrap().permissions());
         assert_eq!(mode & 0o777, m, "{}", p.display());
     }
-    assert_eq!(call(&["init"]).0, 8, "refuses a non-empty store");
-    let (c, t, _) = call(&["create", "a:b.0", "1"]);
-    assert_eq!(c, 0);
-    assert_eq!(call(&["get", t.trim(), "a:b.0"]).1, "1\n");
+    assert_eq!(s.code(&["init"]), 8, "refuses a non-empty store");
+    let t = s.thing();
+    assert_eq!(s.ok(&["get", &t, "t:made.0"]).out, "true\n");
     let held = osis::internals::open(osis::internals::Opening::dir(&d)).unwrap();
-    let (c, _, err) = call(&["whoami"]);
-    assert_eq!(c, 8, "{err}");
-    assert!(err.contains("store in use"), "{err}");
+    let o = s.call(&["whoami"], "");
+    assert!(o.code == 8 && o.err.contains("store in use"), "{}", o.err);
     drop(held);
-    assert_eq!(call(&["whoami"]).0, 0);
+    s.ok(&["whoami"]);
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -172,17 +190,8 @@ fn store_dir_init_lock_plan_cli_2() {
 #[test]
 fn commands_run_through_the_daemon_plan_cli() {
     let d = tmp("daemon");
-    let ds = d.to_str().unwrap();
-    let call = |args: &[&str]| {
-        let (mut o, mut e) = (Vec::new(), Vec::new());
-        let code = osis_cli::main_with(["osis", "--no-lan", "-s", ds].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
-        (code, String::from_utf8(o).unwrap(), String::from_utf8(e).unwrap())
-    };
-    let ok = |args: &[&str]| {
-        let (c, out, err) = call(args);
-        assert_eq!(c, 0, "{args:?}: {err}");
-        out
-    };
+    let s = S::dir(&d);
+    let ok = |args: &[&str]| s.ok(args).out;
     ok(&["init"]);
     let c = ok(&["chat", "create", "--name", "room"]).trim().to_string();
     let one = ok(&["chat", "post", &c, "one"]).trim().to_string();
@@ -237,8 +246,7 @@ fn write_script_atomic_plan_cli_4() {
     assert_eq!(commit.len(), 64);
     let n = lines.next().unwrap().strip_prefix("n\t").unwrap().to_string();
     assert_eq!(s.ok(&["get", &n, "note:title.0"]).line(), "\"a b\"");
-    let me = s.ok(&["--json", "whoami"]).out.split("\"me\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
-    assert_eq!(s.ok(&["get", &n, "note:m.0", "[\"k\"]"]).line(), format!("[weak({n}), weak({me})]"));
+    assert_eq!(s.ok(&["get", &n, "note:m.0", "[\"k\"]"]).line(), format!("[weak({n}), weak({})]", s.me()));
     // the third line fails: nothing of the script is committed
     let bad = format!("create --as x a:b.0 1\nset {n} a:c.0 2\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n");
     let o = s.call(&["write"], &bad);
@@ -274,6 +282,11 @@ fn untyped_index_paths_notes_cli() {
     let o = s.call(&["write"], "create --as a x:l.0 [1, 2]\nset $a x:l.0 [0] 5\n");
     assert_eq!(o.code, 2, "{}", o.err);
     assert_eq!(s.ok(&["writes", "--thing", &t]).out, before);
+    // notes/api.md Large values: `[0]` needs the value to tell list from map: past the limit it
+    // fails `TooLarge`, and never reads as absent
+    let t = s.ok(&["create", "t:l.0", "[\"a long enough string\"]"]).line().to_string();
+    assert_eq!(s.ok(&["get", &t, "t:l.0", "[0]"]).line(), "\"a long enough string\"");
+    assert_eq!(s.code(&["--limit", "4", "get", &t, "t:l.0", "[0]"]), 5);
 }
 
 // notes/cli.md Design `--timeout` parses (`0` is no timeout: `deadline_never_overflows_plan_cli_2`); a wait past it exits 6.
@@ -281,7 +294,6 @@ fn untyped_index_paths_notes_cli() {
 fn timeout_zero_plan_cli_2() {
     let s = S::mem();
     assert_eq!(s.code(&["--timeout", "5x", "wait"]), 2);
-    assert_eq!(s.code(&["diag", "--since", "0"]), 2, "--since is gone");
     // a wait past its `--timeout`: a thing never known here is never synced here
     let never = S::mem().thing();
     let o = s.call(&["--timeout", "1ms", "sync", "--thing", &never], "");
@@ -344,32 +356,6 @@ fn commits_undo_redo_plan_cli_4() {
     assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "2");
 }
 
-
-// CLI Things and aspects (`--stream`, `--len`), notes/api.md Large values: a value
-// written from stdin streams back raw; its length reads without materializing.
-#[test]
-fn stream_and_len_plan_cli_4() {
-    let s = S::mem();
-    let t = s.thing();
-    let big = "x".repeat(300_000);
-    assert_eq!(s.call(&["set", &t, "a:doc.0", "--stream"], &big).code, 0);
-    assert_eq!(s.ok(&["get", &t, "a:doc.0", "--len"]).line(), "300000");
-    assert_eq!(s.ok(&["--json", "get", &t, "a:doc.0", "--len"]).line(), "{\"len\":300000}");
-    let o = s.ok(&["get", &t, "a:doc.0", "--stream"]);
-    assert!(o.out.as_bytes() == big.as_bytes(), "untyped: stored as a blob, streamed raw");
-    assert_eq!(s.code(&["get", &t, "a:none.0", "--len"]), 3);
-}
-
-// notes/api.md Large values: `[0]` on an untyped aspect needs its value to tell list from map:
-// a value past the limit fails `TooLarge`, and never reads as absent.
-#[test]
-fn an_untyped_index_past_the_limit_says_so() {
-    let s = S::mem();
-    let t = s.ok(&["create", "t:l.0", "[\"a long enough string\"]"]).line().to_string();
-    assert_eq!(s.ok(&["get", &t, "t:l.0", "[0]"]).line(), "\"a long enough string\"");
-    assert_eq!(s.code(&["--limit", "4", "get", &t, "t:l.0", "[0]"]), 5);
-}
-
 // CLI Sharing and roles, Sync, Identity and nodes: the local half of the
 // sharing commands on one store (nobody to dial): links, cards, nodes, grants by error
 // category, status. The delivering ones (notes/cli.md) wait on nothing on a node alone.
@@ -384,9 +370,11 @@ fn sharing_commands_local_plan_cli_4() {
     assert!(s.ok(&["--json", "link", "ls", &g]).line().contains("\"single_use\":true"));
     assert!(s.ok(&["card", "show"]).line().starts_with("osis://link/"));
     assert_eq!(s.ok(&["node", "ls"]).out.lines().count(), 1);
-    let other = S::mem();
-    let stranger = other.ok(&["whoami"]).out.lines().next().unwrap().split('\t').nth(1).unwrap().to_string();
+    let stranger = S::mem().me();
     assert_eq!(s.code(&["grant", &g, &stranger, "read"]), 3, "keys unknown: import a card first");
+    // `chat relay` (notes/dogfood.md) grants as `grant` does
+    let c = s.ok(&["chat", "create"]).line().to_string();
+    assert_eq!(s.code(&["chat", "relay", &c, &stranger]), 3, "keys unknown: import a card first");
     assert_eq!(s.code(&["node", "rm", &stranger]), 0, "no node of this account: nothing to do");
     assert_eq!(s.code(&["grant", &g, "me", "superuser"]), 2);
     // `--reads` (`osis::Reads`): from-now or all; from-now on a holder reading what came before
@@ -410,40 +398,8 @@ fn sharing_commands_local_plan_cli_4() {
     assert_eq!(o.code, 0, "{}", o.err);
 }
 
-// CLI `chat relay` (issues of notes/dogfood.md: a relay of another account) grants as `grant`
-// does, so an account whose keys are not here is exit 3.
-#[test]
-fn relay_command() {
-    let s = S::mem();
-    let c = s.ok(&["chat", "create"]).line().to_string();
-    let other = S::mem();
-    let stranger = other.ok(&["whoami"]).out.lines().next().unwrap().split('\t').nth(1).unwrap().to_string();
-    assert_eq!(s.code(&["chat", "relay", &c, &stranger]), 3, "keys unknown: import a card first");
-}
-
-// CLI `backlinks T`: the things whose values reference T, one `tid aspect` line each.
-#[test]
-fn backlinks_lists_the_referrers() {
-    let s = S::mem();
-    let (a, t) = (s.thing(), s.thing());
-    let before = s.ok(&["backlinks", &t]).out;
-    s.ok(&["set", &a, "note:link.0", &format!("weak({t})")]);
-    let out = s.ok(&["backlinks", &t]).out;
-    assert!(out.lines().count() == before.lines().count() + 1 && out.contains(&format!("{a} note:link.0\n")), "{out}");
-    assert!(s.ok(&["--json", "backlinks", &t]).line().contains(&format!("{{\"tid\":\"{a}\",\"ak\":\"note:link.0\"}}")));
-}
-
-// CLI: commands over API pieces not built yet (queries) parse and report it; sharing commands
-// without a runtime or peers fail as the API does.
-#[test]
-fn unbuilt_commands_say_so_plan_cli_4() {
-    let s = S::mem();
-    assert_eq!(s.ok(&["node", "ls"]).out.lines().count(), 1, "this node");
-    assert_eq!(s.code(&["link", "redeem", "x"]), 7, "malformed link");
-}
-
 // CLI Watching: initial value first, printed but not counted by
-// --count (no other node writes here, so --count 1 meets the timeout); roster --watch alike.
+// --count (no other node writes here, so --count 1 meets the timeout); `grants --watch` alike.
 #[test]
 fn watch_initial_not_counted_plan_cli_4() {
     let s = S::mem();
@@ -481,12 +437,10 @@ fn named_keys_with_schema_plan_cli_1() {
     std::fs::create_dir_all(&d).unwrap();
     let f = d.join("todo.osis");
     std::fs::write(&f, SCHEMA).unwrap();
-    let store = d.join("store");
-    let st = store.to_str().unwrap();
+    let s = S::dir(&d.join("store"));
     let call = |args: &[&str], stdin: &str| {
-        let (mut o, mut e) = (Vec::new(), Vec::new());
-        let code = osis_cli::main_with(["osis", "--no-lan", "-s", st].iter().chain(args).copied(), &mut stdin.as_bytes(), &mut o, &mut e);
-        (code, String::from_utf8(o).unwrap(), String::from_utf8(e).unwrap())
+        let o = s.call(args, stdin);
+        (o.code, o.out, o.err)
     };
     assert_eq!(call(&["init"], "").0, 0);
     assert_eq!(call(&["schema", "add", f.to_str().unwrap()], "").0, 0);
@@ -573,6 +527,9 @@ fn inspect_and_diag_plan_cli_4() {
 fn chat_commands_plan_cli() {
     let s = S::mem();
     let c = s.ok(&["chat", "create", "--name", "room"]).line().to_string();
+    // spec/permissions.md §7, notes/cli.md Delivering commands: with no peer to dial a chat link
+    // is made, and its wait ends at once on a node alone
+    assert!(s.ok(&["chat", "link", &c]).line().starts_with("osis://link/"));
     // an empty chat's cursor is null; given back empty, everything is after it
     assert!(s.ok(&["--json", "chat", "read", &c]).out.contains("\"cursor\":null"));
     let one = s.ok(&["chat", "post", &c, "--from", "ann", "--subject", "head", "body"]).line().to_string();
@@ -598,8 +555,7 @@ fn chat_commands_plan_cli() {
     let again = s.ok(&["chat", "read", &c, "--after", &cursor2]).out;
     assert!(again.contains(&format!("{two} ")) && again.contains("two!!") && again.lines().count() == 2, "{again}");
     s.ok(&["chat", "delete", &c, &one]);
-    let who = s.ok(&["whoami"]).out;
-    let me = who.lines().find_map(|l| l.strip_prefix("me\t")).unwrap().to_string();
+    let me = s.me();
     assert!(s.ok(&["chat", "read", &c]).out.contains(&format!("<deleted by {me}>")));
     assert!(s.ok(&["--json", "chat", "read", &c]).out.contains(&format!("\"deleted_by\":\"{me}\"")));
     assert_ne!(s.code(&["chat", "resend", &c, &two]), 0, "delivered: nothing to send again");
@@ -649,7 +605,6 @@ fn clients_commands_plan_cli() {
     assert_eq!(s.code(&["--node", &addr, "--client-secret", "/nonexistent", "whoami"]), 8);
     assert_eq!(s.code(&["--node", &addr, "--client-secret", bad.to_str().unwrap(), "inspect", "actor", "me"]), 2);
 }
-
 
 // notes/cli.md Design (daemon), notes/client-port.md §5: a socket directory another user made first (here: one of the wrong mode) does not stop `serve`: it warns and serves without the client socket; with a good one, its first line is the socket's path (the one test here that runs the binary)
 #[test]
@@ -757,16 +712,6 @@ fn expiry_admin_and_splice_commands() {
     assert_ne!(s.code(&["create", "--admin", &g[..g.len() - 1], "t:x.0", "1"]), 0, "a malformed admin");
     let schema = s.ok(&["create", "t:made.0", "true"]).line().to_string();
     assert_eq!(s.code(&["op", &schema, "t:made.0", "", "splice"]), 2, "a range");
-}
-
-// spec/permissions.md §7, notes/cli.md Delivering commands: with no peer to dial the CLI still
-// makes a chat link (a link and a card: `sharing_commands_local_plan_cli_4`); its wait ends at
-// once on a node alone, so a store with no peers is not a dead end.
-#[test]
-fn a_chat_link_on_a_store_with_no_peer() {
-    let s = S::mem();
-    let c = s.ok(&["chat", "create", "--name", "room"]).line().to_string();
-    assert!(s.ok(&["chat", "link", &c]).line().starts_with("osis://link/"));
 }
 
 // spec/permissions.md §5.2 External fires, spec/commits.md §5 The setting: `enable` gives an

@@ -3,9 +3,9 @@
 > Priority: low
 > Tags: api
 
-Repro: osis-cli `unbuilt_commands_say_so_plan_cli_4` (the CLI reports queries not built); no failing test.
+No failing test: these are missing calls (the CLI's `op ... undelete` reports not built).
 
-- **Queries** (`query(in, with, order, page)`): need local rebuildable indexes per aspect (notes/local-store.md) and a live result over the dispatcher; a design pass first (notes/api.md, Open; backlinks set the paged-and-live shape). Apps read a container's references plus each target meanwhile (O(items) per change); `Osis::created(t)` gives a sort time. The CLI's `ls` reports not built.
+- **Queries** (`query(in, with, order, page)`): need local rebuildable indexes per aspect (notes/local-store.md) and a live result over the dispatcher; a design pass first (notes/api.md, Open; backlinks set the paged-and-live shape). Apps read a container's references plus each target meanwhile (O(items) per change); `Osis::created(t)` gives a sort time.
 - **`undelete` and text cut/paste**: a deleted text range is named by its elements' dots, which no visible range reaches, so an API needs an opaque clipboard handle remembered across edits (`cut(range) -> Clip`, `paste(clip, at)`: a move plus undelete when the clipboard still matches, notes/crdt.md; osis-crdt's `Op::Paste` exists). Workaround: undo.
 - **Bearer `open_link`**: read-only use of a link without an account (flows' `bear` exists).
 - **Streaming writes**: `set_stream` reads the value into memory before the commit; a chunk tree built while reading needs the commit's framing (delete keys, header blind, expiry) known up front.
