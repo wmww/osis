@@ -159,7 +159,7 @@ Synchronous unless noted; each is one role commit made locally (spec/permissions
 
 ## Diagnostics
 A place to dump problems such as a colliding record from a peer, rejected writes from a revoked writer, a strong whose target is not carried, a thing whose sync is stranded. Apps may log, surface or ignore it; correctness never depends on anyone seeing it.
-- `Diagnostic` (`core/osis/src/diagnostic.rs`, translated from the engine's kinds, which the port keeps carrying) has a variant per thing an app can act on, and `Handled` for the rest (bad, pending, colliding, repaired data: log material). `Parked` (a commit from a newer format: an update may read it) fires once per commit as it first waits for a newer format, alone or beside other reasons (`apply::tell_parked`).
+- `Diagnostic` (`core/osis/src/diagnostic.rs`, translated from the engine's kinds, which the port keeps carrying) has a variant per thing an app can act on, and `Handled` for the rest (bad, pending, colliding, repaired data: log material). `Parked` (a commit from a newer format: an update may read it) fires once per commit as it first waits for a newer format, alone or beside other reasons (`apply::tell_parked`). `Fault` (a received commit this node failed to apply for a bug or damage of its own, set aside until the next open; `commit` absent when no one commit is to blame, a Prove's trial) fires per fault (`apply::set_aside`).
 - Heard by `on_diagnostic`.
 - A peer must not be able to flood it: dedupe per (kind, tid), rate-limit per peer.
 - Must include: "this node was removed from account X by node N at time T" (a stolen node's removal otherwise looks like a silent lockout) and "stranded on thing T" (also in status).

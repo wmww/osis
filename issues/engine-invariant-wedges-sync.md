@@ -4,9 +4,10 @@
 > Tags: engine, sync, security
 
 What is left:
-- A re-examination round's transaction-end work (`Engine::run`: `end_drops`' re-judge, `judge_replaced_at`, `retention::needed::settle`) or shared part (`reach::round`, `read_pending`, `promote_loose`'s `learn_records_in`) faulting sets `taken_failed`: each tick reloads and fails again (`reload_owed` keeps `next_timer` at now). `Engine::fail_round` plants the shared-part case.
-- A tick's own work faulting (`judge_replaced_at` at a tick or a setting change) fails every tick.
-- An arrival whose transaction faults outside the commit (end work about other state) faults again in the set-aside transaction: the step fails, for good.
+- A re-examination round's transaction-end work (`Engine::run`: `end_drops`' re-judge, `judge_replaced_at`, `retention::needed::settle`) or shared part (`reach::round`, `read_pending`, `promote_loose`'s `learn_records_in`) faulting sets `taken_failed`: each tick reloads and fails again (`reload_owed` keeps `next_timer` at now). `Engine::fail_round` plants the shared-part case. Direction: on a fault, run the round's end work per commit (bisect to the commit whose end work faults, set it aside) and stop owing a reload for a fault (only a store failure owes one).
+- A tick's own work faulting (`judge_replaced_at` at a tick or a setting change) fails every tick. Direction: judge per body as a step; a body whose judging faults keeps its last verdict until the next open, reported.
+- An arrival whose transaction faults outside the commit (end work about other state) faults again in the set-aside transaction: the step fails, for good (two transactions per retry, no loop within one). Direction: find which state the end work faulted on and set that aside, as the round case; until then the node error is visible.
+- The set-aside transaction keeps the bytes alone: blobs and list blobs handed in with the commit (`ingest_with_lists`, an account restore's) roll back with the failed one, so after a fixed build's open the commit may wait for blobs nothing fetches. Sync's path brings none. Direction: store them in the set-aside transaction too.
 
 ## Peer-reachable local errors (audit of `Error::Corrupt` and local-class errors on apply, join, judge, purge, covers, ingest)
 | site | what reaches it | peer-caused? |

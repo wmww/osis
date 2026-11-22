@@ -48,10 +48,10 @@ pub enum Diagnostic {
     /// Background sync died: nothing syncs until the node is opened again, and waits fail
     /// `Network`.
     SyncStopped { detail: String },
-    /// This node failed to apply `commit` for a fault of its own (a bug in this build, or damaged
-    /// storage), not because of the commit: it waits here and is tried again when the node opens
-    /// (an update may apply it). Worth reporting as a bug.
-    Fault { things: Vec<Tid>, commit: CommitId, detail: String },
+    /// This node failed to apply data from another node for a fault of its own (a bug in this
+    /// build, or damaged storage), not because of the data. A `commit` named waits here and is
+    /// tried again when the node opens (an update may apply it). Worth reporting as a bug.
+    Fault { things: Vec<Tid>, commit: Option<CommitId>, detail: String },
     /// A commit from a newer format than this build reads: it waits here, and an update may read it.
     Parked { things: Vec<Tid>, commit: Option<CommitId>, peer: Option<Tid>, detail: String },
     /// Data from another node was refused, is waiting for what it depends on or was repaired, all
@@ -79,7 +79,7 @@ impl From<osis_engine::Diagnostic> for Diagnostic {
             (K::ClockSkew, ..) => Diagnostic::ClockSkew { detail },
             (K::InputCapped, ..) => Diagnostic::InputCapped { detail },
             (K::Connection, ..) => Diagnostic::Connection { detail },
-            (K::Fault, _, _, Some(c)) => Diagnostic::Fault { things: tids, commit: c.into(), detail },
+            (K::Fault, ..) => Diagnostic::Fault { things: tids, commit: commit.map(Into::into), detail },
             (K::Parked, ..) => Diagnostic::Parked { things: tids, commit: commit.map(Into::into), peer, detail },
             _ => Diagnostic::Handled { things: tids, commit: commit.map(Into::into), peer, detail: format!("{kind:?}: {detail}") },
         }

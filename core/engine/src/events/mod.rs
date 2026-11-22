@@ -165,8 +165,8 @@ pub enum DiagnosticKind {
     Connection,
     /// Applying a received commit failed for a fault of this node (a broken invariant of this
     /// build, or damaged storage read back as one), never a judgment of the commit: it is set aside,
-    /// pending, and tried again at the next open (spec/commits.md §4; `commit`: it, `tids`: its
-    /// things, `detail`: the error).
+    /// pending, and tried again at the next open (spec/commits.md §4; `commit`: it, none for a
+    /// trial of several, `tids`: its things, `detail`: the error).
     Fault,
 }
 
