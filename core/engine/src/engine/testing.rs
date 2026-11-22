@@ -816,6 +816,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("kept", &*ix.kept),
         ("timed_lost", &*ix.timed_lost),
         ("fires", &*ix.fires),
+        ("fires_on", &*ix.fires_on),
     ]
 }
 

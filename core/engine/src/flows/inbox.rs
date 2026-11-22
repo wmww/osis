@@ -365,14 +365,26 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     for o in rows {
+        tx.core.ix.fires_on.insert(o.thing, o.id());
         tx.core.ix.fires.insert(o.id(), Arc::new(o));
     }
     Ok(())
 }
 
 fn drop_fire(tx: &mut Tx<'_>, id: &FireId) -> Result<()> {
-    if tx.core.ix.fires.remove(id).is_some() {
+    if let Some(o) = tx.core.ix.fires.remove(id) {
+        tx.core.ix.fires_on.remove(&o.thing, id);
         tx.txn.remove_local(&[FIRES, id].concat(), Shred::No)?;
+    }
+    Ok(())
+}
+
+/// Thing `t` is forgotten whole here (spec/commits.md §5 What a held thing needs): the fires owed
+/// on it go, no keyset of it being left to seal them to (spec/sync-inbox.md §2).
+pub(crate) fn drop_fires_on(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    let ids: Vec<FireId> = tx.core.ix.fires_on.get(t).into_iter().flatten().copied().collect();
+    for id in ids {
+        drop_fire(tx, &id)?;
     }
     Ok(())
 }
@@ -380,6 +392,7 @@ fn drop_fire(tx: &mut Tx<'_>, id: &FireId) -> Result<()> {
 pub(crate) fn save(tx: &mut Tx<'_>, o: OwedFire) -> Result<()> {
     let id = o.id();
     tx.txn.put_local(&[FIRES, &id].concat(), &o.encode(), Shred::No)?;
+    tx.core.ix.fires_on.insert(o.thing, id);
     tx.core.ix.fires.insert(id, Arc::new(o));
     Ok(())
 }

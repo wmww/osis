@@ -896,6 +896,9 @@ indexes! {
     /// Sealed fires this node owes until a peer takes one (`flows::inbox`, spec/sync-inbox.md §2),
     /// by fire ID: durable (`flows::inbox::FIRES`).
     pub fires: JMap<crate::flows::inbox::FireId, Arc<crate::flows::inbox::OwedFire>>,
+    /// The fires of `fires` by the thing each fires on (its inbox): what goes as that thing is
+    /// forgotten whole (`flows::inbox::drop_fires_on`). Loaded with `fires`.
+    pub fires_on: JSetMap<Tid, crate::flows::inbox::FireId>,
 }
 
 /// The steps run inside a transaction, each applied fully or not at all (`Tx::step`).

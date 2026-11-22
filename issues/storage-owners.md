@@ -53,4 +53,4 @@ A lasting header is in the required set of each sync ID whose sync unit holds th
 
 ## Test
 One count test: a node holding several things (shared with a peer, a purge, an admin dispute, certificates from other accounts, a retained copy, an ended share, an imported contact) releases everything; its store rows and bytes by family must equal those of a fresh node of the same account that synced nothing, and the work counted must be flat between n and 10n of what stays. Re-syncing must read as a node that never left.
-Built arms: osis-sync `growth::` own things, expiry, held history, grant and decline; the redeem arm fails (issues/redeem-leaves-a-blob.md, `repro_a_redeemed_and_ended_link_*`).
+Built arms: osis-sync `growth::` own things, expiry, held history, grant and decline; the redeem arm fails by a certificate copy that never shrinks (issues/certificate-copy-never-shrinks.md, `repro_a_redeemed_and_ended_link_*`).

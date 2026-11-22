@@ -524,7 +524,7 @@ impl Osis {
                         _ => self.lower(target, holder, role, o)?,
                     }
                 }
-                [k] if self.held_links()?.iter().any(|h| h.k == *k && h.target == target) => {
+                [k] if self.own_link(*k, target) => {
                     if role.is_some() {
                         return Err(Error::Invalid(format!("{holder} joined {target} by a link: it can only be removed")));
                     }
@@ -712,9 +712,16 @@ impl Osis {
         self.engine(|e| account_links(e, me))
     }
 
-    /// Link actor `k`'s key L (`held_links`).
-    fn link_key(&self, k: Tid) -> Result<Tid> {
-        self.held_links()?.iter().find(|h| h.k == k).map(|h| h.l).ok_or(Error::Invalid(format!("no link {k} of this account")))
+    /// Link actor `k`'s key L while its link works (`held_links`: its seed goes with its end).
+    fn link_key(&self, k: Tid) -> Result<Option<Tid>> {
+        Ok(self.held_links()?.iter().find(|h| h.k == k).map(|h| h.l))
+    }
+
+    /// Whether `k` is a link actor of this account's to `target`, working or ended: its record names
+    /// the target, and the account is its mint admin.
+    fn own_link(&self, k: Tid, target: Tid) -> bool {
+        let me = self.me();
+        self.engine(|e| e.core.created(&k).and_then(|r| r.link_target()) == Some(target) && e.mint_admin(&k) == Some(me))
     }
 
     /// Ends a link: nobody can use it from now on. Those who joined by it keep their role; to remove
@@ -722,8 +729,15 @@ impl Osis {
     /// writer received stands, as `set_role` says). `Unsupported` on a client with its own actor.
     pub fn revoke_link(&self, id: LinkId) -> Result<()> {
         self.local("revoke_link")?;
-        let l = self.link_key(id.0)?;
-        self.lower(id.0, l, None, SetRoleOpts::default())
+        match self.link_key(id.0)? {
+            Some(l) => {
+                self.engine(|e| e.finalize_link(&id.0, &l))?;
+                Ok(())
+            }
+            // ended already: its seed went with its end
+            None if self.engine(|e| e.core.created(&id.0).and_then(|r| r.link_target())).is_some_and(|t| self.own_link(id.0, t)) => Ok(()),
+            None => Err(Error::Invalid(format!("no link {} of this account", id.0))),
+        }
     }
 
     /// Removes `joiner` from link actor `k` and ends the link in the same commit, under one rotation
@@ -731,7 +745,7 @@ impl Osis {
     /// need a new link to invite anyone.
     fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts) -> Result<()> {
         let l = self.link_key(k)?;
-        self.engine(|e| marked(e, o.leave_adminless, |e| e.revoke_joiner(&k, &l, &joiner, o.retain_copy)))?;
+        self.engine(|e| marked(e, o.leave_adminless, |e| e.revoke_joiner(&k, l.as_ref(), &joiner, o.retain_copy)))?;
         Ok(())
     }
 

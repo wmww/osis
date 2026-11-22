@@ -441,6 +441,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
         tx.core.ix.secrets.remove(t);
         crate::sync::stranded::drop_asks(tx, t, |_| false)?;
         crate::sync::held::forget_actor(tx, t)?;
+        crate::flows::inbox::drop_fires_on(tx, t)?;
         if tx.core.created(t).is_some() {
             tx.txn.remove_local(&[crate::engine::records::CREATED, t.as_bytes()].concat(), Shred::Yes)?;
             tx.core.ix.held.forget_record(t);

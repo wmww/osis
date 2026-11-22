@@ -565,6 +565,11 @@ impl Engine {
     /// `demote` that also removes `others` in the same commit under one rotation
     /// (spec/commits.md §2); `d.new` must then be `None`.
     pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid]) -> Result<Done> {
+        self.remove_signed_then(signer, target, d, others, |_| Ok(()))
+    }
+
+    /// `remove_signed`, then `then` in the same transaction.
+    pub(crate) fn remove_signed_then(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid], then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
         // a device leaves its account root only by a rotation removing it
         if self.core.account_of_root(target).is_some() {
             return match d.new {
@@ -583,7 +588,11 @@ impl Engine {
         let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
         let (frontier, covers) = if audits { self.demotion_frontier(who, t, ops)? } else { (None, Vec::new()) };
         let d = d.clone();
-        let mut done = self.run(|tx| demote_in(tx, signer, t, &d, others, frontier))?;
+        let mut done = self.run(|tx| {
+            let done = demote_in(tx, signer, t, &d, others, frontier)?;
+            then(tx)?;
+            Ok(done)
+        })?;
         done.commits.splice(0..0, covers);
         Ok(done)
     }

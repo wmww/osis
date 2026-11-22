@@ -1165,6 +1165,8 @@ fn until_link_backdated_grant_void_spec_perm_7() {
         assert_eq!(lp.peers[i].engine.next_link_expiry().unwrap(), Some(until.0), "peer {i}");
     }
     assert_eq!(lp.peers[2].engine.next_link_expiry().unwrap(), None);
+    // sealed: the seed thing is read by the sharer's nodes alone, the joiner not among them
+    assert_eq!(sealed_write(&mut lp, 0, keep, "before"), BTreeSet::from([1]));
     // the link expires everywhere but at the forger
     for i in [0, 1, 2, 4] {
         lp.peers[i].clock.advance(2 * 3_600_000);
@@ -1201,9 +1203,12 @@ fn until_link_backdated_grant_void_spec_perm_7() {
     for i in 0..5 {
         assert!(lp.peers[i].engine.links_due().unwrap().is_empty(), "peer {i}: nothing left after both removals");
     }
-    // sealed: the joiner reads the target, not the seed thing; the forger neither
+    // sealed: the joiner reads the target, the forger not; the seed thing went with the link's
+    // end (spec/permissions.md §7)
     assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([1, 2]));
-    assert_eq!(sealed_write(&mut lp, 0, keep, "after"), BTreeSet::from([1]));
+    for i in [0, 1] {
+        assert!(!lp.peers[i].engine.closure_holds(&keep), "peer {i}: the seed thing goes");
+    }
 }
 
 // spec/crypto.md §4, spec/permissions.md §2 (finalize): keys read no clock: an edge past its

@@ -282,6 +282,31 @@ fn a_redeem_whose_sharer_never_answers_fails_at_the_follow_time_spec_sync_inbox_
     assert!(!matches!(b.role_on(t), Ok(Some(_))), "joined nothing");
 }
 
+// spec/permissions.md §7 (Finalized; the seed thing goes): a revoked link is listed no more and
+// revoking it again changes nothing; its joiner keeps its role until set_role removes it,
+// through the link's actor.
+#[test]
+fn a_revoked_links_joiner_stays_until_removed_spec_permissions_7() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 46, &c);
+    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    let b = on(&net, 47, &c);
+    let mut w = a.write();
+    let t = w.create_held().unwrap();
+    w.commit().unwrap();
+    let link = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
+    assert_eq!(drive(&net, b.redeem(&link)).unwrap(), t);
+    let id = a.links().unwrap().into_iter().find(|l| l.target == t).unwrap().id;
+    a.revoke_link(id).unwrap();
+    assert!(a.links().unwrap().is_empty(), "ended");
+    a.revoke_link(id).unwrap();
+    let joined = |a: &Osis| a.holders(t).unwrap().into_iter().any(|h| h.actor == b.me());
+    assert!(joined(&a), "the joiner keeps its role");
+    a.set_role(t, b.me(), None, osis::SetRoleOpts::default()).unwrap();
+    assert!(!joined(&a), "removed");
+}
+
 // spec/sync-inbox.md §5 (contact card), spec/sync-set.md §4: importing a card gives the account,
 // whose keys are then here (a grant to it goes through).
 #[test]

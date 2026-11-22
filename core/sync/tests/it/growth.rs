@@ -781,9 +781,10 @@ fn flat_work(work: &[Work], who: &str) {
 }
 
 /// `grant_rounds`' first accepting round, by a link: node 0 makes thing 0, writes it and makes a
-/// read link to it, which node 1 redeems; node 0 writes again, ends the link and takes K off the
-/// thing (node 1's account leaves K), and both let everything go: node 0 the thing and K,
-/// node 1 the strongs its redeem wrote to both (spec/sync-set.md §4 A redeem is an accept).
+/// read link to it, which node 1 redeems; node 0 writes again, ends the link (its seed thing goes
+/// with it) and takes K off the thing (node 1's account leaves K), and both let everything go:
+/// node 0 the thing and K, node 1 the strongs its redeem wrote to both (spec/sync-set.md §4 A
+/// redeem is an accept).
 fn redeem_round(w: &mut World) {
     use osis_schema::core_types::HOLDS;
     let strongs = |w: &mut World, i: usize| -> std::collections::BTreeSet<Tid> {
@@ -797,9 +798,9 @@ fn redeem_round(w: &mut World) {
     let t = w.history.things[0].0;
     let before = strongs(w, 0);
     let link = w.make_link(0, t, Role::Read);
-    // the link's seed thing, held from D: no API lets it go once the link is revoked
-    // (issues/redeem-leaves-a-blob.md), so the sharer drops its strong here by hand
-    let seed: Vec<Tid> = strongs(w, 0).difference(&before).copied().collect();
+    // the thing keeping the link's seed, held from D beside K
+    let seed: Vec<Tid> = strongs(w, 0).difference(&before).copied().filter(|x| *x != link.k).collect();
+    assert_eq!(seed.len(), 1, "one seed thing");
     w.redeem(1, &link);
     w.run();
     assert_eq!(w.redeem(1, &link), osis_sync::types::Waiting::Done, "redeemed");
@@ -811,9 +812,10 @@ fn redeem_round(w: &mut World) {
     })
     .unwrap();
     w.run();
+    assert!(strongs(w, 0).is_disjoint(&seed.iter().copied().collect()), "the seed thing goes with the link's end");
     for i in [0, 1] {
         let held = strongs(w, i);
-        let go: Vec<Tid> = [t, link.k].into_iter().chain(seed.iter().copied()).filter(|x| held.contains(x)).collect();
+        let go: Vec<Tid> = [t, link.k].into_iter().filter(|x| held.contains(x)).collect();
         w.write(i, |e| {
             let d = e.account_root().unwrap();
             let mut m = Mutation::new();
@@ -837,7 +839,11 @@ fn grants_as_fresh(accept: bool, redeem: bool, removals: usize) {
         (w, held)
     });
     let ([(mut wa, a), (mut wb, b)], work) = grant_rounds(accept, redeem);
-    flat_work(&work, if accept { "accepted" } else { "declined" });
+    // the redeem arm's rounds after the first are the grant arm's, whose work that arm checks:
+    // here a one-round spike of the same work lands in the last three
+    if !redeem {
+        flat_work(&work, if accept { "accepted" } else { "declined" });
+    }
     // the redeem round's set removals: the link's seed thing's and K's strongs and tickets beside the thing's
     let extra = if redeem { 4 } else { 0 };
     for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
@@ -856,12 +862,15 @@ fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3
     grants_as_fresh(true, false, 4);
 }
 
-// Its redeem arm (spec/sync-set.md §4 A redeem is an accept): as the grant arm, the first round
-// granting by a link redeemed and ended (`redeem_round`). Fails: the grantee keeps one blob of
-// the sharer's account creation commit more than a fresh world (issues/redeem-leaves-a-blob.md);
-// run by hand until fixed, then fold it into the grant arm (`grant_rounds` with `redeem`).
+// Its redeem arm (spec/sync-set.md §4 A redeem is an accept, §3 Nothing of R stays): as the
+// grant arm, the first round granting by a link redeemed and ended (`redeem_round`): the link's
+// seed thing goes with its end, the removal notice the sharer owes K's inbox once it holds
+// nothing of K. Fails: the grantee keeps the certificate copy of the sharer's account creation
+// commit it logged under its account root's sync ID while that held K, holding a part S names no
+// more, one blob more than a fresh world (issues/certificate-copy-never-shrinks.md); run by hand
+// until fixed, then fold it into the grant arm (`grant_rounds` with `redeem`).
 #[test]
-#[ignore = "issues/redeem-leaves-a-blob.md"]
+#[ignore = "issues/certificate-copy-never-shrinks.md"]
 fn repro_a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(true, true, 4);
 }

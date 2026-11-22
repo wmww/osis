@@ -33,6 +33,8 @@ pub struct HeldLink {
     pub mint_admin: Tid,
     pub target: Tid,
     pub single_use: bool,
+    /// The thing keeping the seed (`LINK_SEED`), held from the account root while the link works.
+    pub keep: Tid,
     /// This node wrote the seed: it made the link, so its redeemer dials this node (the link's
     /// peers, spec/wire.md §10).
     pub here: bool,
@@ -183,9 +185,16 @@ impl Engine {
     /// Finalizes a link (spec/permissions.md §7): a sharer node's plain removal of L from K,
     /// an explicit demotion with the sharer's frontier, after `until` passed, after a single-use
     /// redemption (L's edge already gone: its entry is reset again, spec/permissions.md §2), or
-    /// to revoke the link. K rotates before its next encryption (L's departure).
+    /// to revoke the link. K rotates before its next encryption (L's departure). The link ends
+    /// with it, and so does its seed (`let_seeds_go`).
     pub fn finalize_link(&mut self, k: &Tid, l: &Tid) -> Result<Done> {
-        self.demote(k, &crate::flows::Demotion { holder: *l, new: None, retain: Some(false) })
+        let keeps = self.link_seeds(k, l)?;
+        self.remove_signed_then(None, k, &crate::flows::Demotion { holder: *l, new: None, retain: Some(false) }, &[], move |tx| let_seeds_go(tx, &keeps))
+    }
+
+    /// The things keeping the seed of link (K `k`, L `l`) held here (`HeldLink::keep`).
+    fn link_seeds(&mut self, k: &Tid, l: &Tid) -> Result<Vec<Tid>> {
+        Ok(self.held_links()?.iter().filter(|h| h.k == *k && h.l == *l).map(|h| h.keep).collect())
     }
 
     /// The links whose seed this node holds (a `link:seed.0` on a thing minted with the account root as admin, readable on
@@ -208,7 +217,7 @@ impl Engine {
             {
                 let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
                 let here = ids.iter().any(|c| self.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local && m.view.aspect(&t, LINK_SEED).is_some()));
-                out.push(HeldLink { k: *k, l: crate::identity::key_actor_tid(&Secret32::from_bytes(seed)), mint_admin, target: *target, single_use: *single_use, here });
+                out.push(HeldLink { k: *k, l: crate::identity::key_actor_tid(&Secret32::from_bytes(seed)), mint_admin, target: *target, single_use: *single_use, keep: t, here });
             }
         }
         out.sort();
@@ -267,10 +276,13 @@ impl Engine {
     /// joiner may still hold the seed) in one commit under one rotation of K (spec/commits.md
     /// §2); the remaining joiners need a new link. L already gone (a used single-use link):
     /// the joiner alone.
-    pub fn revoke_joiner(&mut self, k: &Tid, l: &Tid, joiner: &Tid, retain: Option<bool>) -> Result<Done> {
+    pub fn revoke_joiner(&mut self, k: &Tid, l: Option<&Tid>, joiner: &Tid, retain: Option<bool>) -> Result<Done> {
         let d = crate::flows::Demotion { holder: *joiner, new: None, retain };
-        let with_l = self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some());
-        self.remove_signed(None, k, &d, if with_l { std::slice::from_ref(l) } else { &[] })
+        let Some(l) = l.filter(|l| self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some())) else {
+            return self.remove_signed(None, k, &d, &[]);
+        };
+        let keeps = self.link_seeds(k, l)?;
+        self.remove_signed_then(None, k, &d, std::slice::from_ref(l), move |tx| let_seeds_go(tx, &keeps))
     }
 
     /// Bearer use (spec/permissions.md §7): act as L without writing anything; reads open
@@ -278,6 +290,23 @@ impl Engine {
     pub fn bear(&mut self, link: &ShareLink) -> Result<Tid> {
         self.hold_key_actor(link.seed.clone())
     }
+}
+
+/// A link ends with L's removal from K: the things keeping its seed, which serve only a working
+/// link, lose the account root's strong to them, so each goes as any thing whose last
+/// reference goes (spec/sync-set.md §3).
+fn let_seeds_go(tx: &mut Tx<'_>, keeps: &[Tid]) -> Result<()> {
+    let Some((_, d)) = tx.core.account_and_root() else { return Ok(()) };
+    let mut m = Mutation::new();
+    for t in keeps {
+        if crate::engine::refs::strong_from(tx, &d, t)? {
+            m.op(d, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Remove(Value::Strong(*t)) })?;
+        }
+    }
+    if !m.is_empty() {
+        Engine::commit_tx(tx, m)?;
+    }
+    Ok(())
 }
 
 /// A key actor's `keys.0`: its KEM key (spec/crypto.md §3).
