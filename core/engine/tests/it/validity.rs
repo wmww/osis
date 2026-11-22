@@ -612,7 +612,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
         d
     };
     let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let inv = osis_schema::core_types::Edge { invite: Some(Role::Read), ..edge(Role::Read) };
+    let inv = osis_schema::core_types::Edge { may_grant: true, ..edge(Role::Read) };
     lp.peers[0].engine.grant(&d, &b, &inv).unwrap();
     lp.peers[0].engine.grant(&d, &c, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();

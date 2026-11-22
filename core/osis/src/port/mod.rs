@@ -27,7 +27,7 @@ pub mod method {
     /// `[tid] -> bool`: the thing is known here, content or not (where a thin client of several
     /// nodes finds a thing).
     pub const HAS_RECORD: u64 = 4;
-    /// `[tid] -> [[holder, role, Opt(until), retain_copy, Opt(may_grant), from_now]*]`
+    /// `[tid] -> [[holder, role, Opt(until), retain_copy, may_grant, from_now]*]`
     pub const GRANTS: u64 = 6;
     /// `[tid] -> Opt(role)`
     pub const ROLE_ON: u64 = 7;

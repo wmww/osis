@@ -30,6 +30,9 @@ pub struct Edge {
     pub role: Role,
     /// The edge counts as removed from `wall_ms(t) >= until` (spec/permissions.md §2).
     pub until: Option<WallMs>,
+    /// The highest role the value lets its holder grant. Interim (notes/redesign-plan.md A1): the
+    /// walk this crate's `timeline` runs reads a level; a grant's value carries the may-grant flag
+    /// (spec/permissions.md §2), which reads here as its own role (`may_grant`).
     pub invite: Option<Role>,
     /// With `until`: its passing says retain (spec/permissions.md §3, Retain).
     pub retain: bool,
@@ -41,6 +44,10 @@ pub struct Edge {
 impl Edge {
     pub fn new(role: Role) -> Edge {
         Edge { role, until: None, invite: None, retain: false, floor: None }
+    }
+    /// Whether the value carries the may-grant flag (spec/permissions.md §2).
+    pub fn may_grant(&self) -> bool {
+        self.invite >= Some(self.role)
     }
     /// The value a removal saying retain writes (spec/permissions.md §3): `until` 0, gone at every
     /// clock.

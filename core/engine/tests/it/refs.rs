@@ -422,7 +422,7 @@ fn core_aspects_hold_nothing_spec_data_model_8() {
     let g = e.new_thing(&mut m, e.me());
     e.commit(m).unwrap();
     e.make_independent(&x).unwrap();
-    e.grant(&x, &g, &ct::Edge { role: osis_base::Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
+    e.grant(&x, &g, &ct::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     let mut m = Mutation::new();
     m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(Value::Strong(g)) }).unwrap();
     e.commit(m).unwrap();

@@ -274,8 +274,8 @@ pub(crate) fn observe(e: &mut osis_engine::Engine, ids: &BTreeSet<CommitId>) -> 
             if let Some(u) = ed.until {
                 s += &format!(":until={}", u.0);
             }
-            if let Some(i) = ed.invite {
-                s += &format!(":invite={}", role(i));
+            if ed.may_grant() {
+                s += ":may-grant";
             }
             s
         }).collect();
@@ -356,7 +356,7 @@ fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
 fn files() -> Vec<(&'static str, String)> {
     vec![
         ("judgment/models.vec", generate("spec/permissions.md §5", models(), false).render()),
-        ("judgment/rules.vec", generate("spec/permissions.md §2, §5, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(edges()).chain(invites()).chain(remerges()).chain(bounds()).collect(), false).render()),
+        ("judgment/rules.vec", generate("spec/permissions.md §2, §5, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(edges()).chain(may_grants()).chain(remerges()).chain(bounds()).collect(), false).render()),
         ("judgment/sync IDs.vec", generate("spec/commits.md §4, spec/sync-judgement.md §1", sync_ids(), true).render()),
         ("judgment/blobs.vec", generate("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1", blobs(), false).render()),
     ]
@@ -487,7 +487,7 @@ fn rules() -> Vec<Scenario> {
     ]
 }
 
-/// One hand-picked scenario per rule of `until` and invite edges (spec/permissions.md §2).
+/// One hand-picked scenario per rule of `until` and may-grant (spec/permissions.md §2).
 fn edges() -> Vec<Scenario> {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
@@ -497,103 +497,87 @@ fn edges() -> Vec<Scenario> {
             name: "until passes: the edge ends",
             spec: "spec/permissions.md §2, §5.2",
             source: "hand-picked: 0 sets 1's write edge to end 2.5 s on (1 not told), 1 writes 1 s and 3 s on (the first valid, the second invalid: the edge expired)",
-            steps: vec![Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: Some(2500), invite: None, flow: false }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, tick.clone(), tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }],
+            steps: vec![Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: Some(2500), may_grant: false, flow: false }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, tick.clone(), tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }],
             orders: None,
         },
-        // spec/permissions.md §2: an invite grant adds an edge up to the author's invite (beyond
-        // it: `invites()`)
+        // spec/permissions.md §2: a may-grant grant adds an edge up to its signer's role (beyond
+        // it: `may_grants()`)
         Scenario {
-            name: "invite grant",
+            name: "may-grant grant",
             spec: "spec/permissions.md §2, §5.1",
-            source: "hand-picked: 0 removes 2 and grants 1 write with invite write; 1 grants 2 write by invite (applies); 2 writes (valid)",
-            steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: None, invite: Some(Role::Write), flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Write, until: None, invite: None, flow: true }, Sync { from: 1, to: 2 }, tick.clone(), Write { by: 2, t: 0, op: 0, k: 0, v: 1 }],
+            source: "hand-picked: 0 removes 2 and grants 1 write with may-grant; 1 grants 2 write by may-grant (applies); 2 writes (valid)",
+            steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: None, may_grant: true, flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Write, until: None, may_grant: false, flow: true }, Sync { from: 1, to: 2 }, tick.clone(), Write { by: 2, t: 0, op: 0, k: 0, v: 1 }],
             orders: None,
         },
     ]
 }
 
-/// Invite grants the inviter's invite does not cover (spec/permissions.md §2, §5.1): bare edge
-/// writes, which the writer's checks refuse, except where the inviter did not know yet. In each,
-/// 0 removed 2 and gave 1 write with an invite first.
-fn invites() -> Vec<Scenario> {
+/// May-grant grants the granter's path does not cover (spec/permissions.md §2, §5.1): bare edge
+/// writes, which the writer's checks refuse, except where the granter did not know yet. In each,
+/// 0 removed 2 and gave 1 a grant with the may-grant flag first.
+fn may_grants() -> Vec<Scenario> {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
-    let start = |invite: Role| vec![Edge { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: None, invite: Some(invite), flow: false }, Sync { from: 0, to: 1 }, tick.clone()];
+    let start = |role: Role| vec![Edge { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role, until: None, may_grant: true, flow: false }, Sync { from: 0, to: 1 }, tick.clone()];
     let then = |base: Vec<Step>, more: Vec<Step>| base.into_iter().chain(more).collect::<Vec<_>>();
     let w2 = HostileWrite { by: 2, t: 0, v: 1 };
     vec![
         Scenario {
-            name: "invite grant with a role above the invite",
+            name: "may-grant grant with a role above the granter's",
             spec: "spec/permissions.md §2, §5.1",
-            source: "hand-built: 1 (invite read) grants 2 write: not applied, 2's write invalid",
-            steps: then(start(Role::Read), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }, Sync { from: 1, to: 2 }, tick.clone(), w2.clone()]),
-            orders: None,
-        },
-        // §2: an edge value with `invite` above its role is bad by itself, whoever writes it and
-        // however it is carried: the delta applies nothing, its resets included
-        Scenario {
-            name: "edge with an invite above its role, by an invite holder",
-            spec: "spec/permissions.md §2, spec/commits.md §4",
-            source: "hand-built: 1 (invite read) grants 2 read with invite write: the commit is bad input",
-            steps: then(start(Role::Read), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Read), invite: Some(Role::Write) }]),
+            source: "hand-built: 1 (read, may-grant) grants 2 write: not applied, 2's write invalid",
+            steps: then(start(Role::Read), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }, Sync { from: 1, to: 2 }, tick.clone(), w2.clone()]),
             orders: None,
         },
         Scenario {
-            name: "edge with an invite above its role, by an admin",
-            spec: "spec/permissions.md §2, spec/commits.md §4",
-            source: "hand-built: 0 rewrites 2's write edge to read with invite write: the commit is bad input, 2's edge stands and 2's later write is valid",
-            steps: vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) }, Sync { from: 0, to: 2 }, tick.clone(), Hostile { by: 0, t: 0, holder: 2, role: Some(Role::Read), invite: Some(Role::Write) }, tick.clone(), w2.clone()],
-            orders: None,
-        },
-        Scenario {
-            name: "invite grant within the invite, control",
+            name: "may-grant grant within the granter's role, control",
             spec: "spec/permissions.md §2, §5.1",
-            source: "hand-built: 1 (invite read) grants 2 read: applied, with no boxes (the edge is judged on its own); 2's write invalid (read)",
-            steps: then(start(Role::Read), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Read), invite: None }, Sync { from: 1, to: 2 }, tick.clone(), w2.clone()]),
+            source: "hand-built: 1 (read, may-grant) grants 2 read: applied, with no boxes (the edge is judged on its own); 2's write invalid (read)",
+            steps: then(start(Role::Read), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Read), may_grant: false }, Sync { from: 1, to: 2 }, tick.clone(), w2.clone()]),
             orders: None,
         },
         Scenario {
-            name: "invite grant over a current edge",
+            name: "may-grant grant over a current edge",
             spec: "spec/permissions.md §2, §5.1",
-            source: "hand-built: 2 holds read; 1 (invite write) writes 2's edge to write: an invite adds edges only, not applied",
-            steps: then(start(Role::Write), vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }]),
+            source: "hand-built: 2 holds read; 1 (write, may-grant) writes 2's edge to write: may-grant adds edges only, not applied",
+            steps: then(start(Role::Write), vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }]),
             orders: None,
         },
         Scenario {
-            name: "invite grant over an expired edge",
+            name: "may-grant grant over an expired edge",
             spec: "spec/permissions.md §2, §5.1",
-            source: "hand-built: 2's read edge ended by `until`; 1 (invite write) grants 2 write: an expired edge counts as none, applied",
-            steps: then(start(Role::Write), vec![Grant { by: 0, t: 0, holder: 2, role: Role::Read, until: Some(500), invite: None, flow: false }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }]),
+            source: "hand-built: 2's read edge ended by `until`; 1 (write, may-grant) grants 2 write: an expired edge counts as none, applied",
+            steps: then(start(Role::Write), vec![Grant { by: 0, t: 0, holder: 2, role: Role::Read, until: Some(500), may_grant: false, flow: false }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }]),
             orders: None,
         },
         Scenario {
-            name: "invite holder removes another edge",
+            name: "a holder by may-grant removes another edge",
             spec: "spec/permissions.md §2, §5.1",
-            source: "hand-built: 2 holds read; 1 (invite write) removes 2's edge: invite holders change no other edge, not applied",
-            steps: then(start(Role::Write), vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: None, invite: None }]),
+            source: "hand-built: 2 holds read; 1 (write, may-grant) removes 2's edge: holders by may-grant change no other edge, not applied",
+            steps: then(start(Role::Write), vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: None, may_grant: false }]),
             orders: None,
         },
-        // §5.1 step 4: an invite level is a class; losing it audits the grants made through it
+        // §5.1 step 3: a lowering clearing the flag puts the grants made by it in question
         Scenario {
-            name: "invite grant unseen by the invite's removal",
+            name: "may-grant grant unseen by the granter's removal",
             spec: "spec/permissions.md §5.1, §7",
-            source: "hand-picked: 1 (invite write) grants 2 write, unseen by 0; 0 removes 1 with its frontier: the grant goes to D",
-            steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
+            source: "hand-picked: 1 (write, may-grant) grants 2 write, unseen by 0; 0 removes 1 with its frontier: the grant goes to D",
+            steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
             orders: None,
         },
         Scenario {
-            name: "invite grant seen by the invite's removal",
+            name: "may-grant grant seen by the granter's removal",
             spec: "spec/permissions.md §5.1, §7",
-            source: "hand-picked: 1 (invite write) grants 2 write and 0 receives it; 0 removes 1 with its frontier: the grant stands",
-            steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }, Sync { from: 1, to: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
+            source: "hand-picked: 1 (write, may-grant) grants 2 write and 0 receives it; 0 removes 1 with its frontier: the grant stands",
+            steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), may_grant: false }, Sync { from: 1, to: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
             orders: None,
         },
-        // §2: an over-invite grant's `secrets.0` gets no exemption
+        // §2: a grant past its signer's may-grant gets no exemption for its `secrets.0`
         Scenario {
-            name: "invite grant through the flow after the invite went",
+            name: "may-grant grant through the flow after the flag went",
             spec: "spec/permissions.md §2, §5.1, §5.2",
-            source: "hand-picked: 1 holds read with invite read; 0 rewrites it to read without invite, unseen by 1, which grants 2 read through the flow: the edge is not applied and its `secrets.0` delta, no longer exempt, needs write: invalid",
-            steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, Edge { by: 0, t: 0, holder: 1, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, invite: Some(Role::Read), flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, invite: None, flow: false }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Read, until: None, invite: None, flow: true }],
+            source: "hand-picked: 1 holds read with may-grant; 0 rewrites it to read without, unseen by 1, which grants 2 read through the flow: the edge is not applied and its `secrets.0` delta, no longer exempt, needs write: invalid",
+            steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, Edge { by: 0, t: 0, holder: 1, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, may_grant: true, flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, may_grant: false, flow: false }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Read, until: None, may_grant: false, flow: true }],
             orders: None,
         },
     ]

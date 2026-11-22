@@ -25,7 +25,7 @@ fn world() -> (LocalPeer, Tid) {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
         lp.peers[0].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
@@ -114,7 +114,7 @@ fn a_wider_fact_never_covers_spec_commits_5() {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
         for (i, role) in [(1, Role::Write), (2, Role::Read), (3, Role::Write)] {
             let who = me(&lp, i);
             lp.peers[0].engine.grant(&t, &who, &edge(role)).unwrap();
@@ -411,7 +411,7 @@ fn written_as_x(lp: &mut LocalPeer, t: Tid) -> (Tid, CommitId, CommitId) {
     let x = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     lp.hold(x);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None };
+    let edge = ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
     let w = lp.peers[1].engine.me();
     lp.peers[0].engine.grant(&x, &w, &edge).unwrap();
     lp.peers[0].engine.grant(&t, &x, &edge).unwrap();

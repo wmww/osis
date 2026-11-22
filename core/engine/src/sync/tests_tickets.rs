@@ -76,7 +76,7 @@ fn ticket_after_strong(forge: bool) {
     e1.commit(m).unwrap();
     // Alice grants Bob read: her ticket reaches him as a sealed fire
     let e0 = &mut lp.peers[0].engine;
-    e0.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
+    e0.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     let honest = e0.epochs(&t).unwrap().read.newest_held().unwrap().0;
     let fires = e0.fires_owed();
     let out = e0.sealed_fire(&fires[0]).unwrap().unwrap();
@@ -141,7 +141,7 @@ fn a_part_taken_on_a_tickets_word_is_redelivered_once_held_whole_spec_commits_4(
     m.op(d1, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
     e1.commit(m).unwrap();
     let e0 = &mut lp.peers[0].engine;
-    e0.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
+    e0.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     let fire = e0.sealed_fire(&e0.fires_owed()[0]).unwrap().unwrap();
     let keysets: BTreeSet<_> = e0.core.ix.keyset_parts.get(&t).into_iter().flatten().copied().collect();
     let grant: Vec<_> = e0.commit_ids().into_iter().filter(|c| !before.contains(c) && !keysets.contains(c)).collect();
@@ -198,7 +198,7 @@ fn a_tickets_secret_on_a_dependent_thing_reads_nothing_and_goes_spec_permissions
     // Alice grants Bob read for an hour: her ticket reaches him as a sealed fire
     let e0 = &mut lp.peers[0].engine;
     let hour = 3_600_000;
-    e0.grant(&t, &bob, &ct::Edge { role: Role::Read, until: Some(WallMs(T0.0 + hour)), invite: None, retain: false, floor: None }).unwrap();
+    e0.grant(&t, &bob, &ct::Edge { role: Role::Read, until: Some(WallMs(T0.0 + hour)), may_grant: false, retain: false, floor: None }).unwrap();
     let fire = e0.sealed_fire(&e0.fires_owed()[0]).unwrap().unwrap();
     let keysets: BTreeSet<_> = e0.core.ix.keyset_parts.get(&t).into_iter().flatten().copied().collect();
     let grant: Vec<_> = e0.commit_ids().into_iter().filter(|c| !before.contains(c) && !keysets.contains(c)).collect();

@@ -170,10 +170,9 @@ fn alive(v: Option<&Edge>, ts: Ts) -> Lvl {
     v.filter(|v| v.alive_at(Some(ts))).map(|v| v.role)
 }
 
-/// A value's may-grant flag. Interim (notes/redesign-plan.md A1, the may-grant flag): `roles.0`
-/// still carries an invite level; the flag is an invite at the grant's own role or above.
+/// A value's may-grant flag.
 fn flag(v: Option<&Edge>) -> bool {
-    v.is_some_and(|v| v.invite >= Some(v.role))
+    v.is_some_and(Edge::may_grant)
 }
 
 /// What a value giving `role` lets its holder grant (§5.1): its role at admin or with the flag.

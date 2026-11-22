@@ -768,7 +768,7 @@ fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
             lp.peers[2].engine.grant(&m, &p0, &edge(Role::Read)).unwrap();
             let t = independent_thing(&mut lp, first);
             if first != g {
-                lp.peers[first].engine.grant(&t, &p0, &ct::Edge { invite: Some(Role::Write), ..edge(Role::Write) }).unwrap();
+                lp.peers[first].engine.grant(&t, &p0, &ct::Edge { may_grant: true, ..edge(Role::Write) }).unwrap();
             }
             lp.sync_all().unwrap();
             (lp, (m, t))

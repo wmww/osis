@@ -165,7 +165,7 @@ pub(super) fn independent_thing(lp: &mut LocalPeer, i: usize) -> Tid {
 }
 
 pub(crate) fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, retain: false, floor: None }
+    ct::Edge { role, until: None, may_grant: false, retain: false, floor: None }
 }
 
 pub(super) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
@@ -1569,7 +1569,7 @@ fn bad_rotation_parts_read_as_missing_spec_commits_4() {
 fn keyset_before_box_reads_only_spec_permissions_4() {
     let mut lp = synced(3);
     let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, retain: false, floor: None };
+    let admin = ct::Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None };
     let mut m = Mutation::new();
     let o = lp.peers[0].engine.new_thing(&mut m, a);
     lp.peers[0].commit(m).unwrap();

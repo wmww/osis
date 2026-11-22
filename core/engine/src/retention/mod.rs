@@ -1730,7 +1730,7 @@ mod tests {
         lp.sync_all().unwrap();
         for (w, role) in [(1, Role::Write), (2, Role::Write), (3, Role::Read)] {
             let w = lp.peers[w].engine.me();
-            lp.peers[0].engine.grant(&t, &w, &ct::Edge { role, until: None, invite: None, retain: false, floor: None }).unwrap();
+            lp.peers[0].engine.grant(&t, &w, &ct::Edge { role, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         }
         lp.sync_all().unwrap();
         let check = |lp: &mut LocalPeer, what: &str| {
@@ -1877,7 +1877,7 @@ mod tests {
             let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
             let x = Ak::new("x:v.0").unwrap();
             let none = osis_schema::PurgeBy::Writer;
-            let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
+            let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
             // bob writes `t` by his write on its mint admin `g`, which holds it: `t` keeps g's
             // secrets
             let mut m = Mutation::new();
@@ -1956,7 +1956,7 @@ mod tests {
         let readers = |e: &crate::Engine| [p, q, r, s].map(|t| e.core.reader_of(&t));
         assert_eq!(readers(&lp.peers[0].engine), [a; 4], "dependent: every independent is A");
         let e = &mut lp.peers[0].engine;
-        e.grant(&p, &b, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
+        e.grant(&p, &b, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         assert!(e.core.ix.independent.contains(&p), "the grant gave P secrets of its own");
         assert_eq!(readers(&lp.peers[0].engine), [p, p, p, a], "P's own, S still A's");
     }
@@ -1975,7 +1975,7 @@ mod tests {
         m.set(t, &ak, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None };
+        let write = ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
         let admin = ct::Edge { role: Role::Admin, ..write.clone() };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.peers[0].engine.grant(&t, &x, &admin).unwrap();
@@ -2014,7 +2014,7 @@ mod tests {
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
-        lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         use osis_crdt::{Op, PathOp, PathSeg};
         let mut m = Mutation::new();
         m.op(t, &key, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Value::Int(1)) }).unwrap();
@@ -2130,7 +2130,7 @@ mod tests {
         m.set(t, &other, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None };
+        let write = ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &x, &ct::Edge { role: Role::Admin, ..write.clone() }).unwrap();
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
@@ -2209,7 +2209,7 @@ mod tests {
         m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(reg.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
         lp.peers[0].engine.grant(&t, &r, &edge(Role::Read)).unwrap();
         let set = |lp: &mut LocalPeer, p: usize, v: i64| {
@@ -2256,7 +2256,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
         lp.peers[0].engine.grant(&t, &r, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
@@ -2473,7 +2473,7 @@ mod tests {
         lp.hold(t);
         let (u, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(u);
-        let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &r, &edge(Role::Write)).unwrap();
         lp.peers[0].engine.grant(&u, &r, &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
@@ -2519,7 +2519,7 @@ mod tests {
         assert!(e.kept_invalid(&c) && e.forgettable(&c).unwrap(), "arrived again: dropped again");
         e.forget_commits(&[c]).unwrap();
         lp.advance(10);
-        lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
         lp.deliver(0, &pk).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(!e.forgettable(&c).unwrap() && e.get(&t, &x).unwrap() == Some(Value::Int(1)), "re-granted: held and read");
@@ -2585,7 +2585,7 @@ mod tests {
         assert_eq!(e.get(&u, &y).unwrap(), None, "admin on u: its request drops the write there");
         assert!(!e.forgettable(&q_u).unwrap(), "a request dropping a write is kept");
         lp.advance(10);
-        lp.peers[0].engine.demote(&u, &Demotion { holder: r, new: Some(ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }), retain: None }).unwrap();
+        lp.peers[0].engine.demote(&u, &Demotion { holder: r, new: Some(ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }), retain: None }).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(!e.forgettable(&q_u).unwrap(), "a demotion whose frontier lists it leaves the purge standing: still kept");
         e.forget_commits(&[q_t]).unwrap();
@@ -2606,7 +2606,7 @@ mod tests {
         let r = lp.peers[1].engine.me();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         lp.hold(t);
-        let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &r, &edge(Role::Write)).unwrap();
         let r2 = lp.peers[2].engine.me();
         lp.peers[0].engine.grant(&t, &r2, &edge(Role::Read)).unwrap();

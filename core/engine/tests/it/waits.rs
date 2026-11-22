@@ -1029,9 +1029,9 @@ fn record_and_reach(x_below: bool) -> (Reason, Tid, Option<Value>) {
     let y = new_thing(&mut lp, 1);
     // 2 reads y
     let r = lp.peers[2].engine.me();
-    lp.peers[1].engine.grant(&y, &r, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
+    lp.peers[1].engine.grant(&y, &r, &Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     sync(&mut lp, 1, 0);
-    let grant = *lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None }).unwrap().commits.last().unwrap();
+    let grant = *lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap().commits.last().unwrap();
     let grant = package_for(&mut lp, 1, 2, grant);
     sync(&mut lp, 1, 0);
     // 2 reads x too: else no sync ID it syncs carries the commit's part on x
@@ -1048,7 +1048,7 @@ fn record_and_reach(x_below: bool) -> (Reason, Tid, Option<Value>) {
         }
     };
     let xc = creation_of(&mut lp, 0, 2, x);
-    lp.peers[0].engine.grant(&x, &r, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
+    lp.peers[0].engine.grant(&x, &r, &Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     let mut m = Mutation::new();
     m.set(y, &REG, &s("y")).unwrap();
     m.set(x, &REG, &s("x")).unwrap();

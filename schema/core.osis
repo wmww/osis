@@ -87,8 +87,8 @@ type edge = struct {
     role 0: role,
     /// When the grant ends; absent: never.
     until 1: option<timestamp>,
-    /// The highest role the holder may grant to others.
-    invite 2: option<role>,
+    /// The holder may add new holders, up to this grant's role (spec/permissions.md §2).
+    may_grant 2: bool,
     /// With `until`: when it passes, the holder's nodes keep a read-only copy (spec/permissions.md
     /// §3, Retain).
     retain 3: bool,

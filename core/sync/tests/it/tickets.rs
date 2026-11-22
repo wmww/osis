@@ -295,7 +295,7 @@ fn accepted(role: Role) -> (World, Tid) {
     let mut w = contacts();
     let t = make(&mut w, 0, "hi");
     let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role, until: None, invite: None, retain: false, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role, until: None, may_grant: false, retain: false, floor: None })).unwrap();
     w.run();
     accept(&mut w, t, &[]);
     (w, t)
@@ -425,7 +425,7 @@ fn a_lost_read_takes_ds_read_ticket_with_it_spec_sync_set_1() {
         let d = w.engine(i).account_root().unwrap();
         w.engine(i).get_typed(&d, &ct::TICKETS).unwrap().unwrap_or_default().iter().filter(|k| k.target == t).map(|k| k.role).collect()
     };
-    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None })).unwrap();
     w.run();
     assert!(d_roles(&mut w, 1).contains(&Role::Read), "Bob reads T: D holds his read ticket");
     w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new: None, retain: None })).unwrap();

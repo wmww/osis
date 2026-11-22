@@ -35,7 +35,7 @@ fn world() -> (LocalPeer, Tid) {
         m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(ak(), day)).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
+        let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
         lp.peers[0].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();

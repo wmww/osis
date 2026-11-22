@@ -652,7 +652,7 @@ impl LocalPeer {
         for j in (0..self.peers.len()).filter(|j| *j != admin) {
             let who = self.peers[j].engine.me();
             if self.peers[admin].engine.key_role(&t, &who).is_none() {
-                let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, retain: false, floor: None };
+                let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
                 self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
             }
         }
@@ -674,7 +674,7 @@ impl LocalPeer {
         }
         p.engine.hold(osis_base::Strong(t)).unwrap_or_else(|e| panic!("hold {t:?}: {e}"));
         let who = p.engine.me();
-        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, retain: false, floor: None };
+        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
         let done = self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
         for c in &done.commits {
             if let Some(pk) = self.peers[admin].engine.package(c).unwrap_or_else(|e| panic!("package: {e}")) {

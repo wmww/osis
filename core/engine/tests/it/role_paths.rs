@@ -33,8 +33,8 @@ fn remove(lp: &mut LocalPeer, by: usize, t: Tid, holder: Tid) {
     spread(lp);
 }
 
-fn invite(role: Role, invite: Role) -> ct::Edge {
-    ct::Edge { invite: Some(invite), ..edge_of(role) }
+fn may_grant(role: Role) -> ct::Edge {
+    ct::Edge { may_grant: true, ..edge_of(role) }
 }
 
 /// Four accounts A (0), B (1), C (2), D (3). B grants through one holder (H1 on T1) and through
@@ -73,12 +73,11 @@ pub(crate) fn world(interim: bool) -> World {
     grant(&mut lp, 0, h5, pb, edge_of(Role::Admin));
     remove(&mut lp, 1, t5, h5);
     remove(&mut lp, 2, t1, pc);
-    // invites: by a holder's invite and by one's own, each at its grant's own role (the may-grant flag,
-    // spec/permissions.md §2: the new walk reads a lower invite level as no flag)
-    grant(&mut lp, 0, t4, h4, invite(Role::Write, Role::Write));
+    // may-grant grants: by a holder's flag and by one's own
+    grant(&mut lp, 0, t4, h4, may_grant(Role::Write));
     grant(&mut lp, 0, h4, pb, edge_of(Role::Write));
     grant(&mut lp, 1, t4, pd, edge_of(Role::Read));
-    grant(&mut lp, 0, t4, pc, invite(Role::Write, Role::Write));
+    grant(&mut lp, 0, t4, pc, may_grant(Role::Write));
     grant(&mut lp, 2, t4, pb, edge_of(Role::Read));
     // a finalize of an ended grant
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 500);
@@ -420,11 +419,11 @@ fn a_hostile_role_commit_on_things_reached_apart_is_written_spec_commits_2() {
 }
 
 // spec/permissions.md §2 May-grant grant ("an edge write whose path gives admin on T is
-// explicit, whatever it sets"): B holds admin on T through H and a direct write grant inviting
-// read; its grant of read to C states the admin path [H], not its own invite (the empty path),
-// and applies as an explicit grant, not an invite grant.
+// explicit, whatever it sets"): B holds admin on T through H and a direct write grant with the
+// may-grant flag; its grant of read to C states the admin path [H], not its own flag's (the empty
+// path), and applies as an explicit grant, not a may-grant grant.
 #[test]
-fn an_admin_holding_an_invite_grants_by_its_admin_path_spec_permissions_2() {
+fn an_admin_holding_the_may_grant_flag_grants_by_its_admin_path_spec_permissions_2() {
     let (mut lp, ps) = people(3);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let t = thing_of(&mut lp, 0, pa);
@@ -432,7 +431,7 @@ fn an_admin_holding_an_invite_grants_by_its_admin_path_spec_permissions_2() {
     spread(&mut lp);
     grant(&mut lp, 0, t, h, edge_of(Role::Admin));
     grant(&mut lp, 0, h, pb, edge_of(Role::Admin));
-    grant(&mut lp, 0, t, pb, invite(Role::Write, Role::Read));
+    grant(&mut lp, 0, t, pb, may_grant(Role::Write));
     grant(&mut lp, 1, t, pc, edge_of(Role::Read));
     for i in 0..3 {
         let (hd, st) = newest_write(&lp, i, t, pc);
@@ -509,12 +508,12 @@ fn class_worlds() -> Vec<ClassWorld> {
     remove(&mut lp, 0, t, g);
     grant(&mut lp, 0, t, ps[1], edge_of(Role::Write));
     out.push(("a detached thing", None, lp));
-    // a writer's commit of two invites on T (read to C, write to D), unseen by A, who then lowers
-    // the writer's invite to read: both grants fall under both walks (C's by Open 23's rule)
+    // a writer's commit of two may-grant grants on T (read to C, write to D), unseen by A, who then
+    // lowers the writer to read, flag kept: both grants fall under both walks (C's by Open 23's rule)
     let (mut lp, ps) = people(4);
     let t = thing_of(&mut lp, 0, ps[0]);
     spread(&mut lp);
-    grant(&mut lp, 0, t, ps[1], invite(Role::Write, Role::Write));
+    grant(&mut lp, 0, t, ps[1], may_grant(Role::Write));
     let mut m = Mutation::new();
     for (to, r) in [(ps[2], Role::Read), (ps[3], Role::Write)] {
         m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Weak(to))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge_of(r))) }).unwrap();
@@ -522,19 +521,10 @@ fn class_worlds() -> Vec<ClassWorld> {
     // this engine's writer refuses it (a writer's raw role write needs admin): another one's
     lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     lp.advance(1000);
-    lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: Some(invite(Role::Write, Role::Read)), retain: None }).unwrap();
+    lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: Some(may_grant(Role::Read)), retain: None }).unwrap();
     lp.advance(1000);
     spread(&mut lp);
     out.push(("a writer's two invites in one commit", None, lp));
-    // an invite level below its grant's role: B holds write with invite read on T and grants C
-    // read by it; the new walk reads the level as no may-grant flag (spec/permissions.md §2), so
-    // the grant applies nowhere there
-    let (mut lp, ps) = people(3);
-    let t = thing_of(&mut lp, 0, ps[0]);
-    spread(&mut lp);
-    grant(&mut lp, 0, t, ps[1], invite(Role::Write, Role::Read));
-    grant(&mut lp, 1, t, ps[2], edge_of(Role::Read));
-    out.push(("an invite below its grant's role", Some("an invite level below the grant's role is no flag"), lp));
     out
 }
 
@@ -556,7 +546,6 @@ fn new_walk_differs_only_by_design() {
             }
             let fits = match class {
                 None => d.is_empty(),
-                Some(c) if c.starts_with("an invite level") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
                 Some(c) if c.starts_with("a no-op leave") =>!d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Dropped)")),
                 Some(c) => panic!("no rule for class {c}"),
             };
@@ -580,7 +569,7 @@ fn finding_an_invite_grants_path_does_not_grow_with_history_spec_wire_4() {
         let t = thing_of(&mut lp, 0, pa);
         let h = thing_of(&mut lp, 0, pa);
         spread(&mut lp);
-        grant(&mut lp, 0, t, h, invite(Role::Write, Role::Read));
+        grant(&mut lp, 0, t, h, may_grant(Role::Write));
         grant(&mut lp, 0, h, pb, edge_of(Role::Write));
         for _ in 0..n {
             let x = thing_of(&mut lp, 0, pa);

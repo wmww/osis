@@ -21,8 +21,8 @@ pub struct GrantOpts {
     /// (`core::RetentionSetting::retain_copies`); a later change of the default leaves the grant
     /// as written. `Invalid` without `until`.
     pub retain_copy: Option<bool>,
-    /// The highest role the holder may grant others, at most its own.
-    pub may_grant: Option<Role>,
+    /// The holder may add new holders, up to its own role.
+    pub may_grant: bool,
     /// What the holder reads of what was written before its first grant.
     pub reads: Reads,
     /// The grant may leave `target` with no admin: an `until` on its last admin whose grant has
@@ -311,7 +311,7 @@ fn edge(e: &osis_engine::Engine, t: &Tid, role: Role, o: GrantOpts) -> Result<ct
         return Err(Error::Invalid("retain_copy is for a grant with an until".into()));
     }
     let retain = o.until.is_some() && o.retain_copy.unwrap_or_else(|| e.retains_by_default(t));
-    Ok(ct::Edge { role, until: o.until, invite: o.may_grant, retain, floor: None })
+    Ok(ct::Edge { role, until: o.until, may_grant: o.may_grant, retain, floor: None })
 }
 
 /// Whether an admin's grant of `role` to `h` on `t` would lower `h`'s grant still in the state (a
@@ -417,7 +417,7 @@ impl Osis {
     /// `set_role` also adds and raises, and this overlap is on purpose: `grant` is the call that
     /// does not block and takes no role away, for sync code and for callers that mean only that, and
     /// the only one that sets `until` and `may_grant`. What it does take away, it takes as `set_role`
-    /// does: a `may_grant` below the present one undoes the grants the
+    /// does: taking `may_grant` away undoes the grants the
     /// holder made by it that this node had not received, and a role below one the holder had before
     /// (it left, or its grant ended and was removed) undoes what it wrote with that role that this
     /// node had not received.
@@ -429,7 +429,7 @@ impl Osis {
     /// not read the holder it goes as a ticket the holder takes only once its setting enables its
     /// inbox signals (`core::RetentionSetting::enable_inbox_signals`), waiting until then.
     ///
-    /// Needs admin on the target (or a `may_grant` of at least `role`, for someone with no grant yet;
+    /// Needs admin on the target (or `may_grant` with a role of at least `role`, for someone with no grant yet;
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,
     /// and the holder's keys here (a contact card, a shared thing, pairing), else `UnknownActor`.
     /// Each grant costs about 2.6 KB of keys: to share with many, grant one thing they all hold a role on. `Unsupported` on
@@ -462,7 +462,7 @@ impl Osis {
     /// Makes `holder`'s role on `target` this one: raises, lowers, or with `None` removes. The usual
     /// way to change a role (`grant` says why both exist). A role that does not change writes
     /// nothing. Someone with no role gets a `grant` with default options, or with `None` nothing is
-    /// written. `until` and `may_grant` stay as they are (`may_grant` capped at the new role): `grant`
+    /// written. `until` and `may_grant` stay as they are: `grant`
     /// sets those.
     ///
     /// Lowering or removing a role writes at once, keeping what this node has received of the
@@ -540,12 +540,12 @@ impl Osis {
     }
 
     /// The edge `m` holds on `t` after lowering it to `role` (`None`: removed): `until` and what
-    /// its passing says kept, `may_grant` capped.
+    /// its passing says kept, `may_grant` as it is.
     fn lowered_edge(&self, t: Tid, m: Tid, role: Option<Role>) -> Result<Option<ct::Edge>> {
         let Some(role) = role else { return Ok(None) };
         let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
         let held = self.engine(|e| e.roster(&t).get(&m).copied());
-        Ok(Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), retain: cur.until.is_some() && cur.retain_copy, floor: held.and_then(|x| x.floor) }))
+        Ok(Some(ct::Edge { role, until: cur.until, may_grant: cur.may_grant, retain: cur.until.is_some() && cur.retain_copy, floor: held.and_then(|x| x.floor) }))
     }
 
     /// Lowers or removes the grant of `m` on `t`: the demotion with this node's frontier and the

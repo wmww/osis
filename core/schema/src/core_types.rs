@@ -140,7 +140,7 @@ codec_struct! {
     /// Retain); `floor`: the read n its holder reads from, granted without history
     /// (spec/crypto.md §4, Floors).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 retain: bool, 4 floor: Option<u64> }
+    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 may_grant: bool, 3 retain: bool, 4 floor: Option<u64> }
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, the epochs its rotation

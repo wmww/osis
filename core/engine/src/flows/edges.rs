@@ -6,6 +6,7 @@
 use super::{Done, now_ts, put_edge, put_secrets};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
+use crate::apply::validity::perm_edge;
 use crate::rotation;
 use crate::Mutation;
 use osis_base::{CommitId, Role, Tid, WallMs};
@@ -35,11 +36,7 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
         };
     }
     let retain = old.is_some() && d.retain.unwrap_or_else(|| crate::apply::validity::retain_default(core, target));
-    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, retain: false, floor: None }))
-}
-
-fn perm_edge(e: &Edge) -> PermEdge {
-    PermEdge { role: e.role, until: e.until, invite: e.invite, retain: e.retain, floor: e.floor }
+    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), may_grant: false, retain: false, floor: None }))
 }
 
 /// A grant or a raise of `holder`'s edge on `target` by `who` (this node, or a held key actor
@@ -66,9 +63,6 @@ pub enum History {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_perm::Frontier>, history: History) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.writer()?);
-    if edge.invite.is_some_and(|i| i > edge.role) {
-        return Err(Error::Misuse("invite above the edge's role"));
-    }
     if edge.until == Some(osis_base::WallMs(0)) {
         return Err(Error::Misuse("`until` 0 is a removal's saying retain"));
     }
@@ -86,7 +80,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
         return Err(Error::Misuse("a grant below the holder's edge lowers it (use demote)"));
     }
     if !admin {
-        let ok = old.is_none() && invite.is_some_and(|i| edge.role <= i && edge.invite.is_none_or(|x| x <= i));
+        let ok = old.is_none() && invite.is_some_and(|i| edge.role <= i);
         if !ok || below || history == History::None {
             return Err(Error::Permission { tid: target, needs: Role::Admin });
         }
@@ -393,7 +387,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     for (x, e, keep) in ended {
         removal(tx, &mut m, target, *x)?;
         if *keep {
-            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, retain: false, floor: None })?;
+            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), may_grant: false, retain: false, floor: None })?;
         }
         if let Some(dep) = Departure::of_change(*x, Some(e.role), None) {
             left.extend(ROLES.into_iter().filter(|r| *r <= e.role));

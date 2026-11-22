@@ -60,11 +60,11 @@ pub(crate) enum Step {
     /// `holder`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
     Edge { by: usize, t: usize, holder: usize, role: Option<Role> },
     /// `by` grants `holder` `role` on `t` with an `until` (`ms` after the author's clock) and an
-    /// invite level: a bare edge write like `Edge`, or with `flow` through `Engine::grant` (its
+    /// the may-grant flag: a bare edge write like `Edge`, or with `flow` through `Engine::grant` (its
     /// authority checks, secrets, boxes, rotations). Scripted only (`random_step` never draws
-    /// it): a refusal panics. An invite grant needs the flow, which first gives G (derived
+    /// it): a refusal panics. A may-grant grant needs the flow, which first gives G (derived
     /// secrets in the setup) secrets of its own, about 12 KB.
-    Grant { by: usize, t: usize, holder: usize, role: Role, until: Option<u64>, invite: Option<Role>, flow: bool },
+    Grant { by: usize, t: usize, holder: usize, role: Role, until: Option<u64>, may_grant: bool, flow: bool },
     /// An explicit demotion (removal, or to read) with a frontier as of one of the holder's
     /// writes (`at`: 0 before all of them, backdated; the last: now).
     Demote { by: usize, t: usize, holder: usize, at: u8, to_read: bool },
@@ -141,8 +141,8 @@ pub(crate) enum Step {
     /// A new thing whose mint admin is peer `by` itself: no edge of G reaches it.
     NewTop { by: usize },
     /// A bare edge write past the writer's rules (`Engine::commit_hostile`):
-    /// `holder`'s edge on `t` set to `role` with `invite`, or removed.
-    Hostile { by: usize, t: usize, holder: usize, role: Option<Role>, invite: Option<Role> },
+    /// `holder`'s edge on `t` set to `role` with the may-grant flag or not, or removed.
+    Hostile { by: usize, t: usize, holder: usize, role: Option<Role>, may_grant: bool },
     /// A `keys.0` write of one field of `t`, unchecked: 1 (`write`) to none, 5 (`deposit_seed`).
     HostileKeys { by: usize, t: usize, field: u64 },
     /// A register write on `t`, unchecked.
@@ -951,8 +951,8 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 no = why(&lp.peers[by].commit(m));
                 Some(by)
             }
-            Step::Grant { by, t, holder, role, until, invite, flow } => {
-                let e = osis_schema::core_types::Edge { until: until.map(|ms| WallMs(lp.peers[by].engine.now().0 + ms)), invite, ..edge(role) };
+            Step::Grant { by, t, holder, role, until, may_grant, flow } => {
+                let e = osis_schema::core_types::Edge { until: until.map(|ms| WallMs(lp.peers[by].engine.now().0 + ms)), may_grant, ..edge(role) };
                 if flow {
                     lp.peers[by].engine.grant(&th(t), &ids[holder], &e).unwrap();
                 } else {
@@ -1166,7 +1166,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                         edge_on(&mut m, a, other, edge(Role::Write));
                         edge_on(&mut m, b, other, edge(Role::Write));
                     }
-                    _ => edge_on(&mut m, a, ids[by], osis_schema::core_types::Edge { invite: (v % 2 == 0).then_some(Role::Admin), ..edge(Role::Admin) }),
+                    _ => edge_on(&mut m, a, ids[by], osis_schema::core_types::Edge { may_grant: v % 2 == 0, ..edge(Role::Admin) }),
                 }
                 no = why(&noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked));
                 Some(by)
@@ -1292,8 +1292,8 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                 tops.push(t);
                 Some(by)
             }
-            Step::Hostile { by, t, holder, role, invite } => {
-                let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], role.map(|r| osis_schema::core_types::Edge { invite, ..edge(r) }));
+            Step::Hostile { by, t, holder, role, may_grant } => {
+                let m = edge_write(&lp.peers[by].engine, th(t), ids[holder], role.map(|r| osis_schema::core_types::Edge { may_grant, ..edge(r) }));
                 noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked).unwrap().expect("an edge write writes");
                 Some(by)
             }

@@ -21,14 +21,21 @@ fn typed(v: &Value, name: &str) -> Option<Value> {
     typed_read(osis_schema::core_schema(), v, &Type::Named(name.into(), Vec::new())).ok()
 }
 
-/// The edge a `roles.0` value reads as: `None` when it is not one, or its `invite` is above its
-/// `role` (spec/permissions.md §2), which makes the delta bad by itself (`check_holders_parts`).
+/// The edge a `roles.0` value reads as: `None` when it is not one, which makes the delta bad by
+/// itself (`check_holders_parts`).
 pub(crate) fn edge_of(v: &Value) -> Option<Edge> {
-    let e = ct::Edge::from_value(&typed(v, "edge")?).ok()?;
-    if e.invite.is_some_and(|i| i > e.role) {
-        return None;
-    }
-    Some(Edge { role: e.role, until: e.until, invite: e.invite, retain: e.retain, floor: e.floor })
+    Some(perm_edge(&ct::Edge::from_value(&typed(v, "edge")?).ok()?))
+}
+
+/// A grant's value as the walk reads it: the may-grant flag (spec/permissions.md §2) as what the
+/// grant lets its holder grant, its own role.
+pub(crate) fn perm_edge(e: &ct::Edge) -> Edge {
+    Edge { role: e.role, until: e.until, invite: e.may_grant.then_some(e.role), retain: e.retain, floor: e.floor }
+}
+
+/// The value a walk's edge reads back as (`perm_edge`).
+pub(crate) fn schema_edge(e: &Edge) -> ct::Edge {
+    ct::Edge { role: e.role, until: e.until, may_grant: e.may_grant(), retain: e.retain, floor: e.floor }
 }
 
 /// The header's frontier (inline, or resolved from its link), sharing its IDs.

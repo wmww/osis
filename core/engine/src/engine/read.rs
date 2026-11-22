@@ -19,7 +19,7 @@ fn synthetic_ak(ak: &str) -> bool {
 }
 
 fn edge_value(e: &Edge) -> Value {
-    ct::Edge { role: e.role, until: e.until, invite: e.invite, retain: e.retain, floor: e.floor }.to_value()
+    crate::apply::validity::schema_edge(e).to_value()
 }
 
 impl Core {

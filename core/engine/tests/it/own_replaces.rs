@@ -149,7 +149,7 @@ fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     lp.hold(t);
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, retain: false, floor: None };
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
     for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
         let who = lp.peers[p].engine.me();
         lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
@@ -197,7 +197,7 @@ fn one_own_replace_left_covers_nothing_spec_commits_5() {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     lp.hold(t);
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, retain: false, floor: None };
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
     for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
         let who = lp.peers[p].engine.me();
         lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();
@@ -263,7 +263,7 @@ fn any_two_held_own_replaces_keep_a_drop_spec_commits_5() {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     lp.hold(t);
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, retain: false, floor: None };
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, may_grant: false, retain: false, floor: None };
     for (p, r) in [(1, osis_base::Role::Write), (2, osis_base::Role::Read)] {
         let who = lp.peers[p].engine.me();
         lp.peers[0].engine.grant(&t, &who, &edge(r)).unwrap();

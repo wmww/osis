@@ -318,9 +318,9 @@ pub enum Cmd {
         role: Option<String>,
         #[arg(long, value_name = "TS")]
         until: Option<String>,
-        /// The highest role HOLDER may grant others
-        #[arg(long = "may-grant", value_name = "ROLE")]
-        may_grant: Option<String>,
+        /// HOLDER may add new holders, up to its own role
+        #[arg(long = "may-grant")]
+        may_grant: bool,
         /// What HOLDER reads of what was written before its first grant: from-now (the values as
         /// they stand then and what is written after, no earlier version or message), all, or as
         /// it reads now (unset; a new holder: all)

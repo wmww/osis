@@ -144,7 +144,7 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     lp.hold(u);
     lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: a, new: None, retain: None }).unwrap();
     // the grant that makes 0 able to sign, held back from 2 till the end
-    let grant = *lp.peers[1].engine.grant(&t, &a, &Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap().commits.last().unwrap();
+    let grant = *lp.peers[1].engine.grant(&t, &a, &Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap().commits.last().unwrap();
     let grant = package_for(&mut lp, 1, 2, grant);
     for p in packages_to(&mut lp, 1, 0) {
         lp.deliver(0, &p).unwrap();
@@ -152,7 +152,7 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     let mut m = Mutation::new();
     for x in [t, u] {
         m.op(x, &ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(a)) }).unwrap();
-        m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(a))], op: Op::Set(Edge { role: Role::Admin, until: None, invite: None, retain: false, floor: None }.to_value()) }).unwrap();
+        m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(a))], op: Op::Set(Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None }.to_value()) }).unwrap();
     }
     let forged = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     let forged = package_for(&mut lp, 0, 2, forged);

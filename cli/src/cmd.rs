@@ -479,7 +479,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 Some(r) => parse_role(&r)?,
                 None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
-            db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, retain_copy: None, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())?, leave_adminless })?;
+            db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, retain_copy: None, may_grant, reads: parse_reads(reads.as_deref())?, leave_adminless })?;
             delivered(ctx, &[t])
         }
         Cmd::SetRole { t, holder, role, d, leave_adminless } => {
@@ -1041,9 +1041,9 @@ fn undo(ctx: &mut Ctx<'_>, s: &Scope, redo: bool) -> anyhow::Result<()> {
 fn grants_out(r: &osis::Grants, raw: bool) -> (Vec<String>, J) {
     let lines = r.iter().map(|(m, e)| {
         let until = e.until.map_or("-".into(), |u| ts_text(raw, u.0));
-        format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.may_grant.map_or("-", role_text), if e.from_now { " from-now" } else { "" })
+        format!("{} {} {}{}{}", m.to_uri(), role_text(e.role), until, if e.may_grant { " may-grant" } else { "" }, if e.from_now { " from-now" } else { "" })
     });
-    let j = r.iter().map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::opt(e.may_grant.map(|r| J::str(role_text(r))))), ("from_now", J::Bool(e.from_now))]));
+    let j = r.iter().map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::Bool(e.may_grant)), ("from_now", J::Bool(e.from_now))]));
     (lines.collect(), J::Arr(j.collect()))
 }
 
