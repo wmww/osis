@@ -51,7 +51,7 @@ def main(argv):
         sys.exit(f"claim: no such ref {ref}")
     r = run(wt(), "claim", branch, "origin/main", check=False)
     if r.returncode:
-        hint = ("\nclaim: a `wt release` of that worktree is still pruning (notes/build.md, Footguns): "
+        hint = ("\nclaim: a `wt release` of that worktree is still pruning (notes/build.md, Worktrees): "
                 "retry once `wt list` shows it free") if "already used by worktree" in r.stderr else ""
         sys.exit(f"claim: wt claim failed: {r.stderr.strip()}{hint}")
     sys.stderr.write(r.stderr)

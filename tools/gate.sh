@@ -116,7 +116,7 @@ unification_check() {
   [ "$bad" -eq 0 ]
 }
 # system76-scheduler puts any cargo it sees (60 s refresh) and everything it spawns after in
-# SCHED_IDLE: builds then crawl 10-20x beside any test run (notes/build.md, Profile and command forms)
+# SCHED_IDLE: builds then crawl 10-20x beside any test run (notes/build-internals.md, Scheduler)
 if systemctl is-active --quiet com.system76.Scheduler.service 2>/dev/null; then
   echo "gate: WARNING: system76-scheduler is running; builds here run at idle priority and take many times their cost (notes/build.md)" >&2
 fi
