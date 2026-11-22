@@ -9,7 +9,7 @@ Three worker agents at once (reviewers count against them), in four kinds of job
 - **Workflow**: about half the time: test speed first (faster tests without real coverage loss build osis faster and better; the test-time limits are soft), then watchdog, tools that speed agents up, sorting piled-up branches, hunting slowdowns.
 - **Primary workstream** (the top item of notes/priorities.md, which says how to use and keep it) and **bug fixes** share the rest (about 1.5 agents): big pieces first, details after. Bug fixes are worth it when a bug threatens the design, slows or masks tests, or goes away with a complication a cleanup removes.
 - **Park on a direction snag (Tess).** When a job hits something that questions the direction of what is being built, park it (wip commit, an issue or note stating the question) and run other work, rather than charging forward. Signs of a build going off the rails: a second copy of an existing mechanism, tweaked; an alternative architecture nobody expected to need. The goal is a clean, simple implementation of the model.
-- Spawn opus; fable never unless Tess explicitly says so for that job (CLAUDE.md).
+- Fable for hard jobs, about 0.5 running on average (Tess's standing instruction to this coordinator; CLAUDE.md: fable only when explicitly instructed).
 
 How to run them (Tess):
 - Complexity-bound first, CPU second, not token-bound; heavy token use is a symptom of complexity. Less code that still moves toward a working osis is better.
