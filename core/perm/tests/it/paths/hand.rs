@@ -44,12 +44,17 @@ fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
 }
 
 // The one-encoding rule (draft §1 Path, Direct mark): a mark on a hop not otherwise read as a
-// descent of two steps or more applies nowhere (B's direct grant; A's record edge; a hop past the
-// members); H's marked hop applies where it holds a direct edge, nowhere before.
+// descent of two steps or more applies nowhere (B's direct grant; A's record edge, on H's path
+// through A; a hop past the members); H's marked hop applies where it holds a direct edge, nowhere
+// before. A's own writes stand nowhere: its record names a mint admin, so its key hop gives
+// nothing.
 #[test]
-#[ignore = "issues/perm-walk-mark-off-descent.md"]
 fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
     let mut w = account();
+    w.content(H, 2, &[A], T1);
+    w.push_marked(H, 2, &[A], T1, Kind::Content, &[0]);
+    w.push_marked(H, 2, &[A], T1, Kind::Content, &[1]);
+    w.push_marked(H, 2, &[A], T1, Kind::set(Z, Write), &[1]);
     w.push(H, 1, &[A], T1, Kind::set(B, Admin));
     w.content(B, 2, &[], T1);
     w.push_marked(B, 2, &[], T1, Kind::Content, &[0]);

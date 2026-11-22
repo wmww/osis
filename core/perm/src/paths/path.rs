@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 /// What a part's stated path gives it to rest on.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Shape {
-    /// Its members name no thing twice (and an edge-class part is not on its own signer).
+    /// Its members name no thing twice, its marks are valid, an edge-class part is not on its own
+    /// signer, and its signer's key hop stands (the signer's record names no mint admin).
     pub well: bool,
     /// An edge write whose path ends at the holder of the edge it sets: a self-removal.
     pub leave: bool,
@@ -42,10 +43,17 @@ pub(crate) fn joins(mint: &BTreeMap<Tid, Tid>, p: Tid, q: Tid) -> Vec<(Tid, Tid)
 /// (spec/permissions.md §1 Key actor). A hop marked direct is its pair's direct edge; a mark on a
 /// hop not otherwise read as a descent of two steps or more, or past the members, leaves the part
 /// not `well` (draft §1 Path, Direct mark).
+///
+/// Interim (issues/perm-walk-trails-model.md): the walk keeps no key grant until A4, so the key
+/// hop stands at admin where the signer's record holds its key (names no mint admin) and gives
+/// nothing elsewhere: a part signed as a thing with a mint admin is not `well`.
 pub(crate) fn shape(mint: &BTreeMap<Tid, Tid>, signer: Tid, path: &[Tid], direct: PathMarks, on: Tid, holder: Option<Tid>, edge_class: bool) -> Shape {
     let ak = *path.last().unwrap_or(&signer);
     let leave = holder.is_some_and(|h| h == ak);
     let marked = |j: usize| j < PathMarks::BITS as usize && direct >> j & 1 == 1;
+    if mint.contains_key(&signer) {
+        return Shape { well: false, leave, hops: vec![] };
+    }
     if !edge_class && on == signer && path.is_empty() && direct == 0 {
         return Shape { well: true, leave: false, hops: vec![] };
     }

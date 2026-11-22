@@ -2234,9 +2234,12 @@ pub fn tiny_flags(i: u64, n: usize) -> World {
 /// so it reaches T1 through [A]), else on T1: content, or setting a random holder's edge (A's is
 /// T1's record edge, a third of the time: removing it detaches T1) to admin (standing or until two
 /// ticks on) or none (half the time),
-/// listing each earlier write with probability one half. Each commit on T1 states, for H: the descent [], the descent through [A], or [] with its
-/// hop marked direct (H's direct grant); for another party: [] (its direct edge), [A], or one in
-/// six [] marked (a mark on no descent: the part applies nowhere). Half the worlds open with H
+/// listing each earlier write with probability one half. Each commit on T1 states, for H: the
+/// descent [], the descent through [A], [] with its hop marked direct (H's direct grant), or one in
+/// eight each [A] with a one-step hop marked or [] with a mark past its hops; for another party: []
+/// (its direct edge), [A], or one in eight each [] marked (a mark on no descent), [A] with its
+/// one-step hop A to T1 marked, [] with a mark past its hops (each mark off a descent of two steps
+/// or more: the part applies nowhere). Half the worlds open with H
 /// granting itself admin on T1 by [A] (its direct edge) at 1. A stolen key of the far
 /// ancestor, a removed far ancestor backdating by its direct edge, a mark where no direct edge
 /// stands, and a party holding both routes using the one a removal did not cut are each some
@@ -2259,12 +2262,16 @@ pub fn tiny_detached(i: u64, n: usize) -> World {
             w.push(s, ts, &[], A, k);
             continue;
         }
-        let (path, direct): (&[Thing], &[usize]) = match (s == H, rng.below(6)) {
+        let (path, direct): (&[Thing], &[usize]) = match (s == H, rng.below(8)) {
             (true, 0 | 1) => (&[], &[]),
             (true, 2 | 3) => (&[], &[0]),
-            (true, _) => (&[A], &[]),
+            (true, 4 | 5) => (&[A], &[]),
+            (true, 6) => (&[A], if rng.below(2) == 0 { &[0] } else { &[1] }),
+            (true, _) => (&[], &[1]),
             (false, 0) => (&[], &[0]),
             (false, 1 | 2) => (&[A], &[]),
+            (false, 3) => (&[A], &[1]),
+            (false, 4) => (&[], &[1]),
             (false, _) => (&[], &[]),
         };
         let kind = match rng.below(5) {

@@ -2704,8 +2704,9 @@ fn a_marked_hop_under_a_removal_with_a_list() {
 }
 
 /// `tiny_detached` reaches every case its doc names (counted over its first 300 worlds, every
-/// count above zero): a marked hop applying, one applying nowhere (no direct edge, or a mark off a
-/// descent), A's record edge removed (T1 detached), and an unmarked descent applying nowhere.
+/// count above zero): a marked hop applying, one applying nowhere (no direct edge), a mark off a
+/// descent of two steps or more (on no descent, on a one-step descent, past the hops), A's record
+/// edge removed (T1 detached), and an unmarked descent applying nowhere.
 #[test]
 fn tiny_detached_worlds_reach_the_marked_cases() {
     let mut n = BTreeMap::<&str, u64>::new();
@@ -2717,7 +2718,16 @@ fn tiny_detached_worlds_reach_the_marked_cases() {
             let key = match (c.direct.is_empty(), t.w.well(k), does) {
                 (false, true, true) => "marked applies",
                 (false, true, false) => "marked applies nowhere",
-                (false, false, _) => "mark off a descent",
+                (false, false, _) => {
+                    let all: Vec<Thing> = std::iter::once(c.signer).chain(c.path.iter().copied()).chain([T1]).collect();
+                    let off = |j: usize| match all.get(j + 1) {
+                        None => Some("mark past the hops"),
+                        Some(&q) if t.w.mint_of(q) == Some(all[j]) => Some("mark on a one-step descent"),
+                        Some(&q) if t.w.joins(all[j], q).len() < 2 => Some("mark on no descent"),
+                        Some(_) => None,
+                    };
+                    c.direct.iter().find_map(|&j| off(j)).unwrap_or("other")
+                }
                 (true, _, false) if c.on == T1 && c.signer == H && c.path.is_empty() => "descent applies nowhere",
                 _ => "other",
             };
@@ -2727,7 +2737,7 @@ fn tiny_detached_worlds_reach_the_marked_cases() {
             }
         }
     }
-    for k in ["marked applies", "marked applies nowhere", "mark off a descent", "descent applies nowhere", "detached"] {
+    for k in ["marked applies", "marked applies nowhere", "mark on no descent", "mark on a one-step descent", "mark past the hops", "descent applies nowhere", "detached"] {
         assert!(n.get(k).is_some_and(|c| *c > 0), "{k}: {n:?}");
     }
 }

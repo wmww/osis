@@ -5,9 +5,10 @@
 //! drops) are kept in the order given; an update replays its component from the earliest key it
 //! touches, keeping the events given before any pass reached that key (`Walk::run`).
 //!
-//! The key hop (spec/permissions.md §1) gives admin for every commit until accounts are ordinary
-//! things (notes/redesign-plan.md A4), so no edge is kept for it; it becomes an edge like any,
-//! with the edge writes on it, there.
+//! The key hop (spec/permissions.md §1) keeps no edge until accounts are ordinary things
+//! (notes/redesign-plan.md A4): it gives admin where the signer's record holds its key and
+//! nothing elsewhere (`path::shape`); it becomes an edge like any, with the edge writes on it,
+//! there.
 
 use super::path::shape;
 use super::{Changed, Commit, List, Part, PartKind, Status};
