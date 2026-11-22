@@ -32,11 +32,7 @@ fn histories() -> Vec<Played> {
 
 fn part(played: &Played, i: usize, t: Option<Tid>) -> Vec<u8> {
     let pk = &played.packs[i];
-    let Some(t) = t else { return pk.bytes.clone() };
-    let mut b = CommitBlob::decode(&pk.bytes).unwrap();
-    let h = b.header.clone();
-    b.parts.retain(|p| h.aspects[p.ai].tid == t);
-    b.encode()
+    t.map_or_else(|| pk.bytes.clone(), |t| on(pk, t))
 }
 
 /// A fresh node holding the history's things given `order`, one pass. It reads them all (G by
@@ -133,11 +129,14 @@ fn two_things(write: impl Fn(&mut Mutation, Tid, Tid)) -> (osis_engine::local_pe
     (lp, g, h, pk)
 }
 
+/// Package `pk`'s commit with its parts on `t` alone.
 fn on(pk: &osis_engine::local_peer::Package, t: Tid) -> Vec<u8> {
-    let mut b = CommitBlob::decode(&pk.bytes).unwrap();
-    let h = b.header.clone();
-    b.parts.retain(|p| h.aspects[p.ai].tid == t);
-    b.encode()
+    on_blob(&CommitBlob::decode(&pk.bytes).unwrap(), t)
+}
+
+/// Commit `b` with its parts on `t` alone.
+fn on_blob(b: &CommitBlob, t: Tid) -> Vec<u8> {
+    osis_commit::rewrite(b, |ai| b.header.aspects[ai].tid != t).encode()
 }
 
 // spec/commits.md §4, spec/crdt.md §8: a paged part whose pages are away waits alone, in either
@@ -199,12 +198,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     cb.aspects.push(AspectWrite::new(h, ak("t:future.0"), 100, 101, parked));
     let forge_key = e.sign_forged(&mut cb);
     let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
-    let part = |t: Tid| {
-        let mut b = blob.clone();
-        let hd = b.header.clone();
-        b.parts.retain(|p| hd.aspects[p.ai].tid == t);
-        b.encode()
-    };
+    let part = |t: Tid| on_blob(&blob, t);
     let id = blob.id();
     let e = &mut lp.peers[1].engine;
     let r = e.ingest(&part(h), Vec::new()).unwrap();
@@ -272,12 +266,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     }
     let forge_key = e.sign_forged(&mut cb);
     let blob = cb.build(&forge_key, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
-    let part = |t: Tid| {
-        let mut b = blob.clone();
-        let hd = b.header.clone();
-        b.parts.retain(|p| hd.aspects[p.ai].tid == t);
-        b.encode()
-    };
+    let part = |t: Tid| on_blob(&blob, t);
     let (one, two, whole) = (part(g), part(h), blob.encode());
     let plain = {
         // G's part is no `secrets.0` (an empty `sync.0`): only the waiting part's boxes can be read
@@ -381,13 +370,14 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
         b.encode()
     };
     let (p_one, p_two, p_bad) = (on("t:one.0"), on("t:two.0"), on("t:bad.0"));
-    let read = |deliveries: &[&[u8]]| {
-        let mut lp2 = net(2, 0);
-        // peer 1 holds g: content of a thing outside its node closure waits (spec/commits.md §4)
-        lp2.hold_at(1, g);
-        for pk in &setup {
-            lp2.deliver(1, pk).unwrap();
-        }
+    // peer 1 holds g: content of a thing outside its node closure waits (spec/commits.md §4)
+    let mut receiver = net(2, 0);
+    receiver.hold_at(1, g);
+    for pk in &setup {
+        receiver.deliver(1, pk).unwrap();
+    }
+    let mut read = |deliveries: &[&[u8]]| {
+        let mut lp2 = receiver.copy().unwrap();
         let e = &mut lp2.peers[1].engine;
         for b in deliveries {
             crate::common::unless_refused(e.ingest(b, Vec::new()));
@@ -395,44 +385,37 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
         e.reexamine().unwrap();
         (e.get(&g, &ak("t:one.0")).unwrap(), e.get(&g, &ak("t:two.0")).unwrap(), e.commit_ids().contains(&id), e.pending())
     };
-    {
-        let got = read(&[&blob.encode()]);
-        assert_eq!((&got.0, &got.1, got.2), (&Some(s("one")), &Some(s("two")), true));
-        assert!(got.3.is_empty());
-        let parts = [&p_one[..], &p_two[..], &p_bad[..]];
-        for order in permutations(3) {
-            let seq: Vec<&[u8]> = order.iter().map(|i| parts[*i]).collect();
-            assert_eq!(read(&seq), got, "order {order:?}");
-            // the first two alone: what is good of them shows
-            let held = read(&seq[..2]);
-            let has = |i: usize| order[..2].contains(&i);
-            assert_eq!((&held.0, &held.1, held.2), (&has(0).then(|| s("one")), &has(1).then(|| s("two")), true), "held {:?}", &order[..2]);
-            assert!(held.3.is_empty(), "held {:?}", &order[..2]);
-        }
-        // the bad part alone, and a junk copy of its slot: refused, nothing kept
-        let mut lp2 = net(2, 0);
-        // peer 1 holds g: content of a thing outside its node closure waits (spec/commits.md §4)
-        lp2.hold_at(1, g);
-        for pk in &setup {
-            lp2.deliver(1, pk).unwrap();
-        }
-        let e = &mut lp2.peers[1].engine;
-        assert!(e.ingest(&p_bad, Vec::new()).is_err());
-        let mut junk = CommitBlob::decode(&p_bad).unwrap();
-        junk.parts[0].delta = osis_base::encode(&Value::List(vec![Value::Int(2)]));
-        assert!(e.ingest(&junk.encode(), Vec::new()).is_err());
-        assert!(e.pending().is_empty() && !e.commit_ids().contains(&id));
-        assert!(e.take_redeliver().is_empty());
-        lp2.deliver(1, &beside).unwrap();
-        let e = &mut lp2.peers[1].engine;
-        assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("beside")));
-        e.ingest(&p_one, Vec::new()).unwrap();
-        assert_eq!(e.get(&g, &ak("t:one.0")).unwrap(), Some(s("one")));
-        e.ingest(&p_two, Vec::new()).unwrap();
-        assert_eq!(e.get(&g, &ak("t:one.0")).unwrap(), Some(s("one")));
-        assert_eq!(e.get(&g, &ak("t:bad.0")).unwrap(), None);
-        assert!(e.pending().is_empty(), "{:?}", e.pending());
+    let got = read(&[&blob.encode()]);
+    assert_eq!((&got.0, &got.1, got.2), (&Some(s("one")), &Some(s("two")), true));
+    assert!(got.3.is_empty());
+    let parts = [&p_one[..], &p_two[..], &p_bad[..]];
+    for order in permutations(3) {
+        let seq: Vec<&[u8]> = order.iter().map(|i| parts[*i]).collect();
+        assert_eq!(read(&seq), got, "order {order:?}");
+        // the first two alone: what is good of them shows
+        let held = read(&seq[..2]);
+        let has = |i: usize| order[..2].contains(&i);
+        assert_eq!((&held.0, &held.1, held.2), (&has(0).then(|| s("one")), &has(1).then(|| s("two")), true), "held {:?}", &order[..2]);
+        assert!(held.3.is_empty(), "held {:?}", &order[..2]);
     }
+    // the bad part alone, and a junk copy of its slot: refused, nothing kept
+    let mut lp2 = receiver.copy().unwrap();
+    let e = &mut lp2.peers[1].engine;
+    assert!(e.ingest(&p_bad, Vec::new()).is_err());
+    let mut junk = CommitBlob::decode(&p_bad).unwrap();
+    junk.parts[0].delta = osis_base::encode(&Value::List(vec![Value::Int(2)]));
+    assert!(e.ingest(&junk.encode(), Vec::new()).is_err());
+    assert!(e.pending().is_empty() && !e.commit_ids().contains(&id));
+    assert!(e.take_redeliver().is_empty());
+    lp2.deliver(1, &beside).unwrap();
+    let e = &mut lp2.peers[1].engine;
+    assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("beside")));
+    e.ingest(&p_one, Vec::new()).unwrap();
+    assert_eq!(e.get(&g, &ak("t:one.0")).unwrap(), Some(s("one")));
+    e.ingest(&p_two, Vec::new()).unwrap();
+    assert_eq!(e.get(&g, &ak("t:one.0")).unwrap(), Some(s("one")));
+    assert_eq!(e.get(&g, &ak("t:bad.0")).unwrap(), None);
+    assert!(e.pending().is_empty(), "{:?}", e.pending());
 }
 
 /// Pack `i` cut into parts by aspect.

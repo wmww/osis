@@ -1181,22 +1181,31 @@ fn creation_of(lp: &mut LocalPeer, i: usize, to: usize, t: Tid) -> osis_engine::
     packages_for(lp, i, to).into_iter().find(|p| osis_commit::CommitBlob::decode(&p.bytes).unwrap().header.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "created.0")).unwrap()
 }
 
+/// Peer 1, a node of peer 0's account, holds U; peer 0 makes X and commits C writing U and X:
+/// U, X, C, C's package and X's creation, none given to peer 1. Built once (`LocalPeer::cached`).
+fn record_away() -> (LocalPeer, (Tid, Tid, osis_base::CommitId, osis_engine::local_peer::Package, osis_engine::local_peer::Package)) {
+    LocalPeer::cached("waits::record_away", || {
+        let mut lp = net_one(2);
+        let u = new_shared(&mut lp, 0);
+        sync(&mut lp, 0, 1);
+        let x = new_shared(&mut lp, 0);
+        let xc = creation_of(&mut lp, 0, 1, x);
+        let mut m = Mutation::new();
+        m.set(u, &REG, &s("u")).unwrap();
+        m.set(x, &REG, &s("x")).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let cp = package_for(&mut lp, 0, 1, c);
+        (lp, (u, x, c, cp, xc))
+    })
+}
+
 // spec/commits.md §4 (Unjudgeable; Pending storage), spec/requirements.md Deterministic: a part
 // of an applied commit on a thing whose record is away waits in the commit's pending copy (its
 // carrier kept) and joins when the record comes, the commit not given again; the facade names it
 // then (`unpended_feed`), so sync takes its carriers off their peers' budgets.
 #[test]
 fn an_applied_commits_part_joins_when_its_record_comes_spec_commits_4() {
-    let mut lp = net_one(2); // 1 a node of 0's account
-    let u = new_shared(&mut lp, 0);
-    sync(&mut lp, 0, 1);
-    let x = new_shared(&mut lp, 0);
-    let xc = creation_of(&mut lp, 0, 1, x);
-    let mut m = Mutation::new();
-    m.set(u, &REG, &s("u")).unwrap();
-    m.set(x, &REG, &s("x")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let cp = package_for(&mut lp, 0, 1, c);
+    let (mut lp, (u, x, c, cp, xc)) = record_away();
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.ingest(&cp.bytes, Vec::new()).unwrap(), Ingested::Applied(c));
     assert_eq!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("u")), "the part held applies");
@@ -1287,16 +1296,7 @@ fn a_record_joins_its_part_beside_a_part_waiting_for_pages_spec_commits_4() {
 // its last carrier gone it counts as never received, and a copy brings it again.
 #[test]
 fn an_applied_commits_waiting_part_goes_with_its_carrier_spec_commits_4() {
-    let mut lp = net_one(2); // 1 a node of 0's account
-    let u = new_thing(&mut lp, 0);
-    sync(&mut lp, 0, 1);
-    let x = new_thing(&mut lp, 0);
-    let xc = creation_of(&mut lp, 0, 1, x);
-    let mut m = Mutation::new();
-    m.set(u, &REG, &s("u")).unwrap();
-    m.set(x, &REG, &s("x")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let cp = package_for(&mut lp, 0, 1, c);
+    let (mut lp, (_, x, c, cp, xc)) = record_away();
     let e = &mut lp.peers[1].engine;
     e.ingest(&cp.bytes, Vec::new()).unwrap();
     assert!(e.release_entry(&c).unwrap());

@@ -5,12 +5,13 @@ use crate::flows::people;
 use osis_base::{Tid, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use osis_crdt::{Op, PathOp};
+use osis_engine::local_peer::LocalPeer;
 use osis_engine::{Engine, Mutation};
 use osis_schema::core_types as ct;
 
 /// Writes (`on`) or removes a strong from `from`'s `holds.0` to `to`.
 /// One person's node (`people(1)`) and its account root D.
-fn alone() -> (osis_engine::local_peer::LocalPeer, Tid) {
+fn alone() -> (LocalPeer, Tid) {
     let (lp, _) = people(1);
     let d = lp.peers[0].engine.account_root().unwrap();
     (lp, d)
@@ -529,7 +530,7 @@ fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
     let d1 = e1.account_root().unwrap();
     strong(e1, d1, x, true);
     lp.sync_all().unwrap();
-    let read = |lp: &mut osis_engine::local_peer::LocalPeer| lp.peers[1].engine.get(&x, &crate::common::ak("t:reg.0")).unwrap();
+    let read = |lp: &mut LocalPeer| lp.peers[1].engine.get(&x, &crate::common::ak("t:reg.0")).unwrap();
     assert_eq!(read(&mut lp), Some(Value::Str("before".into())));
     let e = &mut lp.peers[0].engine;
     let lowering = e.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: Some(crate::flows::edge_of(osis_base::Role::Sync)), retain: None }).unwrap();
@@ -555,7 +556,7 @@ fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
 
 /// Whether peer `i` holds anything of account `a`'s chain: its record, its inbox's, or a
 /// commit it authored.
-fn knows(lp: &mut osis_engine::local_peer::LocalPeer, i: usize, a: Tid) -> bool {
+fn knows(lp: &mut LocalPeer, i: usize, a: Tid) -> bool {
     let e = &mut lp.peers[i].engine;
     let inbox = e.inbox_thing(&a);
     let commits = e.commit_ids();
@@ -572,7 +573,7 @@ fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_
     let mut lp = crate::common::net_bare(3, 0);
     let ps: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.create_account().unwrap().0.account).collect();
     // each peer's commits to the others, twice (chains first); of peer 1 only role commits
-    let pass = |lp: &mut osis_engine::local_peer::LocalPeer| {
+    let pass = |lp: &mut LocalPeer| {
         for _ in 0..2 {
             for from in 0..3 {
                 let ids: Vec<_> = lp.peers[from].engine.commit_ids().into_iter().filter(|c| from != 1 || crate::common::is_role(&lp.peers[from].engine, c)).collect();
@@ -659,7 +660,7 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
 // the same.
 #[test]
 fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
-    let mut lp = osis_engine::local_peer::LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
+    let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
     let (p0, q) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
     let mut end = |late: bool| {
         let mut lp = lp.copy().unwrap();
@@ -735,7 +736,7 @@ fn a_commit_waiting_for_a_part_keeps_what_it_is_on_spec_commits_5() {
 
 /// Peer 1 reads and holds X, made by peer 0 under its account root D (outside peer 1's node
 /// closure, needed as X's mint admin), once a pass brought what peer 0 holds: the world and D.
-fn held_under_d() -> (osis_engine::local_peer::LocalPeer, Tid) {
+fn held_under_d() -> (LocalPeer, Tid) {
     let mut lp = crate::common::net(2, 0);
     let d = lp.peers[0].engine.account_root().unwrap();
     let x = crate::common::new_shared(&mut lp, 0);
@@ -810,7 +811,7 @@ fn a_node_writes_only_what_it_holds_spec_sync_set_2() {
 // contact), the profile needs Q (its mint admin) and Q's chain stays.
 #[test]
 fn a_weak_to_an_account_keeps_nothing_a_strong_to_its_profile_keeps_its_chain_spec_commits_5() {
-    let mut lp = osis_engine::local_peer::LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
+    let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
     let q = lp.peers[1].engine.me();
     let profile = lp.peers[1].engine.profile_of(&q).unwrap();
     let mut kept = |v: Value| {
@@ -918,7 +919,7 @@ fn a_strong_in_held_history_holds_its_target_until_the_body_goes_spec_data_model
 // strong on its account root alone; the aspect removed, Q's chain goes at the pass's end.
 #[test]
 fn an_ephemeral_strong_going_lets_its_target_go_spec_commits_5() {
-    let mut lp = osis_engine::local_peer::LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
+    let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
     let q = lp.peers[1].engine.me();
     let theirs: Vec<_> = lp.peers[1].engine.commit_ids();
     crate::flows::send_carried(&mut lp, 1, 0, &theirs);
@@ -954,12 +955,12 @@ fn an_ephemeral_strong_holds_while_a_peer_holds_its_value_spec_data_model_8() {
     let eph = lp.peers[0].engine.write(m).unwrap().unwrap().id;
     strong(&mut lp.peers[0].engine, d, x, false);
     lp.sync_all().unwrap();
-    let give = |lp: &mut osis_engine::local_peer::LocalPeer, from: usize, to: usize| {
+    let give = |lp: &mut LocalPeer, from: usize, to: usize| {
         let b = lp.peers[from].engine.memory_blob(&eph).unwrap().expect("held in memory");
         lp.peers[to].engine.ingest_memory(&b.encode(), u64::MAX).unwrap();
     };
     give(&mut lp, 0, 1);
-    let held = |lp: &mut osis_engine::local_peer::LocalPeer, i: usize| {
+    let held = |lp: &mut LocalPeer, i: usize| {
         let e = &mut lp.peers[i].engine;
         e.settle_needs().unwrap();
         e.settle_needs().unwrap();
@@ -984,7 +985,7 @@ fn an_ephemeral_strong_holds_while_a_peer_holds_its_value_spec_data_model_8() {
 // adding body is held.
 #[test]
 fn a_strong_in_held_history_needs_its_target_spec_commits_5() {
-    let mut lp = osis_engine::local_peer::LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
+    let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
     let q = lp.peers[1].engine.me();
     let theirs: Vec<_> = lp.peers[1].engine.commit_ids();
     crate::flows::send_carried(&mut lp, 1, 0, &theirs);
@@ -1091,7 +1092,7 @@ fn a_release_keeps_an_own_leave_still_waiting_spec_commits_5() {
 // test's stand-in for sync), and peer 1 then removes peer 0, boxing the new seed to Z.
 #[test]
 fn a_device_named_after_its_card_went_is_fetched_again_spec_commits_5() {
-    let mut lp = osis_engine::local_peer::LocalPeer::new_bare(3, 0, crate::common::T0).unwrap();
+    let mut lp = LocalPeer::new_bare(3, 0, crate::common::T0).unwrap();
     lp.peers[0].engine.create_account().unwrap();
     let mut rest = lp.peers.split_off(1);
     crate::common::pair_into(&mut lp, 0, &mut rest[0]);
@@ -1122,8 +1123,8 @@ fn a_device_named_after_its_card_went_is_fetched_again_spec_commits_5() {
 
 /// Peer 0's thing X (minted by its account), read by peer 1's account, which holds it from its
 /// root and took what X's sync IDs carry: built once (`LocalPeer::cached`).
-fn x_read_at_1() -> (osis_engine::local_peer::LocalPeer, Tid) {
-    osis_engine::local_peer::LocalPeer::cached("closure::x_read_at_1", || {
+fn x_read_at_1() -> (LocalPeer, Tid) {
+    LocalPeer::cached("closure::x_read_at_1", || {
         let (mut lp, ps) = people(2);
         let e0 = &mut lp.peers[0].engine;
         let mut m = Mutation::new();
@@ -1152,7 +1153,7 @@ fn pass_end(e: &mut Engine) {
 
 /// Peer 0's commits, all sent to peer 1 again (a pull from the start), when peer 1 pulled a sync
 /// ID anew or a sync ID joined its sync set since `before`: what node-sync would fetch.
-fn pull_again(lp: &mut osis_engine::local_peer::LocalPeer, before: &BTreeSet<osis_base::SyncId>) -> bool {
+fn pull_again(lp: &mut LocalPeer, before: &BTreeSet<osis_base::SyncId>) -> bool {
     lp.peers[1].reexamine().unwrap();
     let now = synced(lp);
     let pulled = !std::mem::take(&mut lp.peers[1].pulled_anew).is_empty() || now.difference(before).next().is_some();
@@ -1163,7 +1164,7 @@ fn pull_again(lp: &mut osis_engine::local_peer::LocalPeer, before: &BTreeSet<osi
     pulled
 }
 
-fn synced(lp: &mut osis_engine::local_peer::LocalPeer) -> BTreeSet<osis_base::SyncId> {
+fn synced(lp: &mut LocalPeer) -> BTreeSet<osis_base::SyncId> {
     lp.peers[1].engine.sync_set().unwrap().ids.keys().copied().collect()
 }
 
@@ -1176,7 +1177,7 @@ fn parts_held(e: &Engine, ids: &BTreeSet<osis_base::CommitId>) -> BTreeMap<osis_
 /// both; every commit reaches peer 1 (`n` things of its own held first), which holds X by its
 /// account root's strong, and Y too when `y_too`; the pass ends. Y outside peer 1's node closure
 /// is needed as X's mint admin.
-fn under_y(n: usize, y_too: bool) -> (osis_engine::local_peer::LocalPeer, Tid, Tid) {
+fn under_y(n: usize, y_too: bool) -> (LocalPeer, Tid, Tid) {
     let (mut lp, ps) = people(2);
     let d1 = lp.peers[1].engine.account_root().unwrap();
     for _ in 0..n {
@@ -1326,17 +1327,17 @@ fn waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5()
         let (mut lp, _, y) = under_y(n, false);
         let d1 = lp.peers[1].engine.account_root().unwrap();
         // a source whose view puts Y in a sync unit peer 1 syncs sends its writes whole
-        let give = |lp: &mut osis_engine::local_peer::LocalPeer, c: &osis_base::CommitId| {
+        let give = |lp: &mut LocalPeer, c: &osis_base::CommitId| {
             let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
             lp.deliver(1, &pk).unwrap();
         };
-        let write = |lp: &mut osis_engine::local_peer::LocalPeer, v: &str| {
+        let write = |lp: &mut LocalPeer, v: &str| {
             let mut m = Mutation::new();
             m.set(y, &crate::common::REG, &Value::Str(v.into())).unwrap();
             lp.peers[0].engine.commit(m).unwrap().unwrap()
         };
         let c = write(&mut lp, "y2");
-        let counted = |lp: &mut osis_engine::local_peer::LocalPeer, f: &dyn Fn(&mut osis_engine::local_peer::LocalPeer)| {
+        let counted = |lp: &mut LocalPeer, f: &dyn Fn(&mut LocalPeer)| {
             osis_base::costs::take();
             f(lp);
             osis_base::costs::take().into_iter().map(|(k, _, c)| (k, c)).collect::<BTreeMap<_, _>>()
@@ -1383,43 +1384,42 @@ type End = (String, usize, Vec<(String, String)>, BTreeMap<osis_base::CommitId, 
 /// part on W, C's part on X, D, a restart, or a pass end), and once what it pulled anew is given
 /// again, what it holds and shows of C and D, with how many pulls each took.
 fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
-    let (mut lp, ps) = people(2);
-    let e0 = &mut lp.peers[0].engine;
-    let mut m = Mutation::new();
-    let x = e0.new_thing(&mut m, ps[0]);
-    m.set(x, &crate::common::REG, &Value::Str("x".into())).unwrap();
-    e0.commit(m).unwrap();
-    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-    let all = lp.peers[0].engine.commit_ids();
-    crate::flows::send_carried(&mut lp, 0, 1, &all);
-    let d1 = lp.peers[1].engine.account_root().unwrap();
-    strong(&mut lp.peers[1].engine, d1, x, true);
-    pass_end(&mut lp.peers[1].engine);
-    let e0 = &mut lp.peers[0].engine;
-    let rec = e0.thing_record(x, None);
-    let mut m = Mutation::new();
-    let w = m.create(rec);
-    m.set(w, &crate::common::REG, &Value::Str("w".into())).unwrap();
-    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
-    let c = e0.commit(m).unwrap().unwrap();
-    let mut m = Mutation::new();
-    m.set(w, &crate::common::LIST, &Value::List(vec![Value::Str("d".into())])).unwrap();
-    let d = e0.commit(m).unwrap().unwrap();
-    let pk = |lp: &mut osis_engine::local_peer::LocalPeer, id| lp.peers[0].engine.package(&id).unwrap().unwrap();
-    let (cp, dp) = (pk(&mut lp, c), pk(&mut lp, d));
-    let on = |t: Tid| {
-        let mut b = osis_commit::CommitBlob::decode(&cp.bytes).unwrap();
-        let h = b.header.clone();
-        b.parts.retain(|p| h.aspects[p.ai].tid == t);
-        b.encode()
-    };
-    let steps: BTreeMap<&str, Vec<u8>> = [("C", cp.bytes.clone()), ("C on W", on(w)), ("C on X", on(x)), ("D", dp.bytes.clone())].into();
-    let blobs: Vec<_> = cp.blobs.iter().chain(&dp.blobs).cloned().collect();
-    let ids: BTreeSet<osis_base::CommitId> = [c, d].into();
-    // W's record alone, as a record blob under X's sync ID (spec/wire.md §3)
-    let rec_w = lp.peers[0].engine.core.created(&w).cloned().unwrap();
-    let sx = lp.peers[0].engine.sync_id_of(&x).unwrap().unwrap();
-    let record = crate::facade::record_blob_by_hand(&mut lp, 0, &x, &[rec_w]);
+    let (mut lp, (w, d, steps, blobs, ids, sx, record)) = LocalPeer::cached("closure::record_with_strong", || {
+        let (mut lp, ps) = people(2);
+        let e0 = &mut lp.peers[0].engine;
+        let mut m = Mutation::new();
+        let x = e0.new_thing(&mut m, ps[0]);
+        m.set(x, &crate::common::REG, &Value::Str("x".into())).unwrap();
+        e0.commit(m).unwrap();
+        e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+        let all = lp.peers[0].engine.commit_ids();
+        crate::flows::send_carried(&mut lp, 0, 1, &all);
+        let d1 = lp.peers[1].engine.account_root().unwrap();
+        strong(&mut lp.peers[1].engine, d1, x, true);
+        pass_end(&mut lp.peers[1].engine);
+        let e0 = &mut lp.peers[0].engine;
+        let rec = e0.thing_record(x, None);
+        let mut m = Mutation::new();
+        let w = m.create(rec);
+        m.set(w, &crate::common::REG, &Value::Str("w".into())).unwrap();
+        m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(w)) }).unwrap();
+        let c = e0.commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        m.set(w, &crate::common::LIST, &Value::List(vec![Value::Str("d".into())])).unwrap();
+        let d = e0.commit(m).unwrap().unwrap();
+        let pk = |lp: &mut LocalPeer, id| lp.peers[0].engine.package(&id).unwrap().unwrap();
+        let (cp, dp) = (pk(&mut lp, c), pk(&mut lp, d));
+        let c_blob = osis_commit::CommitBlob::decode(&cp.bytes).unwrap();
+        let on = |t: Tid| osis_commit::rewrite(&c_blob, |ai| c_blob.header.aspects[ai].tid != t).encode();
+        let steps: BTreeMap<&str, Vec<u8>> = [("C", cp.bytes.clone()), ("C on W", on(w)), ("C on X", on(x)), ("D", dp.bytes.clone())].into();
+        let blobs: Vec<_> = cp.blobs.iter().chain(&dp.blobs).cloned().collect();
+        let ids: BTreeSet<osis_base::CommitId> = [c, d].into();
+        // W's record alone, as a record blob under X's sync ID (spec/wire.md §3)
+        let rec_w = lp.peers[0].engine.core.created(&w).cloned().unwrap();
+        let sx = lp.peers[0].engine.sync_id_of(&x).unwrap().unwrap();
+        let record = crate::facade::record_blob_by_hand(&mut lp, 0, &x, &[rec_w]);
+        (lp, (w, d, steps, blobs, ids, sx, record))
+    });
     let mut ends = Vec::new();
     for order in orders {
         let name = order.join(", ");

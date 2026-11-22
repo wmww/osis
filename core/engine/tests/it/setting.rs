@@ -194,27 +194,6 @@ fn setting_after_reopen_spec_commits_5() {
     assert!(listed(&mut lp.peers[2], &v1, d));
 }
 
-// spec/commits.md §5 The setting: what is listed follows the setting, whatever order the setting
-// and the bodies arrive in: kept an hour after replaced, then not
-#[test]
-fn history_follows_the_setting_in_any_order_spec_commits_5() {
-    let (mut lp, d) = setup();
-    let base = base(&mut lp);
-    let x = set(&mut lp, 0, d, &setting(&[(A, keep(HOUR))]));
-    let v1 = put(&mut lp, 1, d, "one");
-    let v2 = put(&mut lp, 1, d, "two");
-    let pks = [pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
-    let now = lp.peers[0].engine.now();
-    for order in [[0, 1, 2], [1, 0, 2], [1, 2, 0], [2, 1, 0], [0, 2, 1], [2, 0, 1]] {
-        let mut p = fresh(d, &base, &order.map(|i| &pks[i]), now);
-        assert!(listed(&mut p, &v1, d), "{order:?}: in history");
-        assert!(listed(&mut p, &v2, d), "{order:?}: live");
-        p.clock.advance(HOUR + 2_000);
-        p.tick().unwrap();
-        assert!(!listed(&mut p, &v1, d), "{order:?}: out an hour after replaced");
-    }
-}
-
 // spec/commits.md §5 The setting, Dropped stays dropped: a shortening hides what it ends at once,
 // and a later extension reaches what each node still holds, never what it dropped
 #[test]
@@ -865,11 +844,12 @@ fn told(p: &mut Peer, d: Tid) -> Vec<CommitId> {
     out
 }
 
-// notes/api.md Commits, spec/commits.md §5 The setting: a body leaving history as its window passes
-// is told to a commit listener, whatever order the setting and the bodies arrived in and across
-// a restart, and nothing that stays is told
+// spec/commits.md §5 The setting, notes/api.md Commits: what is listed follows the setting,
+// whatever order the setting and the bodies arrive in, and across a restart: kept an hour after
+// replaced, then not; the body leaving history as its window passes is told to a commit
+// listener, and nothing that stays is told
 #[test]
-fn leaving_history_is_told_in_any_order_spec_commits_5() {
+fn history_follows_the_setting_and_leaving_is_told_in_any_order_spec_commits_5() {
     let (mut lp, d) = setup();
     let base = base(&mut lp);
     let x = set(&mut lp, 0, d, &setting(&[(A, keep(HOUR))]));
@@ -877,19 +857,22 @@ fn leaving_history_is_told_in_any_order_spec_commits_5() {
     let v2 = put(&mut lp, 1, d, "two");
     let pks = [pack(&mut lp, 0, &x), pack(&mut lp, 1, &v1), pack(&mut lp, 1, &v2)];
     let now = lp.peers[0].engine.now();
-    for (n, order) in [[0, 1, 2], [1, 2, 0], [2, 1, 0]].into_iter().enumerate() {
+    let orders = [[0, 1, 2], [1, 0, 2], [1, 2, 0], [2, 1, 0], [0, 2, 1], [2, 0, 1]].map(|o| (o, false));
+    for (order, restart) in orders.into_iter().chain([([1, 2, 0], true)]) {
         let mut p = fresh(d, &base, &order.map(|i| &pks[i]), now);
-        if n == 1 {
+        if restart {
             p.restart(355).unwrap();
         }
+        assert!(listed(&mut p, &v1, d), "{order:?}: in history");
+        assert!(listed(&mut p, &v2, d), "{order:?}: live");
         watch(&mut p);
         p.clock.advance(HOUR - 5_000);
         p.tick().unwrap();
         assert!(told(&mut p, d).is_empty(), "{order:?}: nothing leaves before its window passes");
-        p.clock.advance(10_000);
+        p.clock.advance(7_000);
         p.tick().unwrap();
         assert_eq!(told(&mut p, d), vec![v1], "{order:?}: told as it leaves");
-        assert!(!listed(&mut p, &v1, d) && listed(&mut p, &v2, d), "{order:?}");
+        assert!(!listed(&mut p, &v1, d) && listed(&mut p, &v2, d), "{order:?}: out an hour after replaced");
         p.clock.advance(10 * HOUR);
         p.tick().unwrap();
         assert!(told(&mut p, d).is_empty(), "{order:?}: the live one stays");
