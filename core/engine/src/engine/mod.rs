@@ -926,9 +926,6 @@ pub(crate) struct StepFault {
     pub skip: u32,
 }
 
-/// A point `Core::rollback_to` undoes back to: the journals' points, the lengths of the lists
-/// that only grow within a transaction, and the work lists a step's start holds (a copy: they
-/// are empty or small there).
 /// Whether a commit listener is on a thing (`Engine::listen_commits`).
 pub type CommitListeners = Arc<dyn Fn(&Tid) -> bool + Send + Sync>;
 
@@ -955,6 +952,9 @@ pub struct RoleSigs {
     pub merge: Vec<osis_crypto::Signature>,
 }
 
+/// A point `Core::rollback_to` undoes back to: the journals' points, the lengths of the lists
+/// that only grow within a transaction, and the work lists a step's start holds (a copy: they
+/// are empty or small there).
 pub(crate) struct CoreMark {
     ix: IndexesMark,
     sides: (usize, usize),
@@ -987,8 +987,10 @@ pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitI
 pub(crate) type CommitRecord = (index::RecordHead, CommitBlob);
 
 /// In-memory state over the store: caches and indexes, rebuilt by `load`. The indexes are
-/// journaled (`journal`): a failed transaction undoes its own changes to them.
+/// journaled (`journal`): a failed transaction undoes its own changes to them. Cloned only by
+/// `test_copy`.
 #[doc(hidden)]
+#[derive(Clone)]
 pub struct Core {
     /// The journaled indexes: a failed transaction undoes its own changes to them.
     pub ix: Indexes,
@@ -1435,180 +1437,14 @@ impl Core {
     /// Tests only (`Engine::test_copy`): this state for a copy of the node on `clock`, inside a
     /// world copy (`osis_base::copying`). Commit listeners are not copied (their owner listens
     /// again); event subscribers neither (`Events`).
-    // every field `clone`d, whatever its type: none is left out by accident
-    #[allow(clippy::clone_on_copy)]
     pub(crate) fn test_copy(&self, clock: Arc<dyn Clock>) -> Core {
-        Core {
-            ix: self.ix.clone(),
-            id: self.id.clone(),
-            hlc: Hlc::new(clock, self.hlc.last()),
-            states: self.states.clone(),
-            secrets_read: self.secrets_read.clone(),
-            head_keys: self.head_keys.clone(),
-            read_credentials: self.read_credentials.clone(),
-            sync_things: self.sync_things.clone(),
-            thing_sync: self.thing_sync.clone(),
-            sync_set: self.sync_set.clone(),
-            dial_peers: self.dial_peers.clone(),
-            roster_holders: self.roster_holders.clone(),
-            dial_departed: self.dial_departed.clone(),
-            paths_wait: self.paths_wait.clone(),
-            holders_named: self.holders_named.clone(),
-            certified: self.certified.clone(),
-            listed: self.listed.clone(),
-            cert_records: self.cert_records.clone(),
-            departures: self.departures.clone(),
-            reseal_scans: self.reseal_scans.clone(),
-            store_rows: self.store_rows.clone(),
-            epochs_of: self.epochs_of.clone(),
-            rotation_seq: self.rotation_seq.clone(),
-            place: self.place,
-            account_views: self.account_views.clone(),
-            account_epochs_of: self.account_epochs_of.clone(),
-            epochs_judged_from: self.epochs_judged_from.clone(),
-            key_roles: self.key_roles.clone(),
-            acting_of: self.acting_of.clone(),
-            wrap_blocks: self.wrap_blocks.clone(),
-            read_facts: self.read_facts.clone(),
-            held_fates: self.held_fates.clone(),
-            pages: self.pages.clone(),
-            timelines: self.timelines.clone(),
-            sides: self.sides.clone(),
-            detect: self.detect.clone(),
-            walk_cache_min: self.walk_cache_min.clone(),
-            walks_done: self.walks_done.clone(),
-            dirty: self.dirty.clone(),
-            key_salt: self.key_salt.clone(),
-            waits: self.waits.clone(),
-            stale_things: self.stale_things.clone(),
-            stale_authors: self.stale_authors.clone(),
-            addenda_on: self.addenda_on.clone(),
-            stale_under: self.stale_under.clone(),
-            stale_commits: self.stale_commits.clone(),
-            stale_all: self.stale_all.clone(),
-            schemas: self.schemas.clone(),
-            events: self.events.clone(),
-            written: self.written.clone(),
-            skip_writer_rules: self.skip_writer_rules.clone(),
-            interim_role_paths: self.interim_role_paths,
-            leave_adminless: self.leave_adminless,
-            commits_watched: self.commits_watched.clone(),
-            refs_watched: self.refs_watched.clone(),
-            commits_named: self.commits_named.clone(),
-            commit_listeners: None,
-            listed_before: self.listed_before.clone(),
-            killed: self.killed.clone(),
-            to_date: self.to_date.clone(),
-            redeliver: self.redeliver.clone(),
-            forge_bad: self.forge_bad.clone(),
-            #[cfg(debug_assertions)]
-            unchecked_tx: self.unchecked_tx.clone(),
-            #[cfg(debug_assertions)]
-            unchecked_states: BTreeSet::new(),
-            #[cfg(debug_assertions)]
-            rebuilt_perm: self.rebuilt_perm.clone(),
-            forged: self.forged.clone(),
-            session: self.session.clone(),
-            expiring: self.expiring.clone(),
-            later_sessions: self.later_sessions.clone(),
-            compaction: self.compaction.clone(),
-            fallen: self.fallen.clone(),
-            header_fault: osis_base::copying::remap(&self.header_fault, |f| std::sync::atomic::AtomicBool::new(f.load(std::sync::atomic::Ordering::Relaxed))),
-            #[cfg(test)]
-            check_ingest: self.check_ingest.clone(),
-            #[cfg(test)]
-            whole_apply: self.whole_apply.clone(),
-            #[cfg(test)]
-            piece_fault: self.piece_fault.clone(),
-            #[cfg(test)]
-            step_fault: self.step_fault.clone(),
-            #[cfg(test)]
-            lie_facts: self.lie_facts.clone(),
-            #[cfg(test)]
-            snapshot_fault: self.snapshot_fault.clone(),
-            #[cfg(test)]
-            lie_floor: self.lie_floor,
-            #[cfg(test)]
-            faults: self.faults,
-            key_actors: self.key_actors.clone(),
-            held_keys: self.held_keys.clone(),
-            followed_links: self.followed_links.clone(),
-            account: self.account.clone(),
-            time: self.time.clone(),
-            accounts: self.accounts.clone(),
-            left: self.left.clone(),
-            signing_due: self.signing_due.clone(),
-            keep_bodies: self.keep_bodies.clone(),
-            list_bound: self.list_bound.clone(),
-            valueless_dirty: self.valueless_dirty.clone(),
-            needs_due: self.needs_due.clone(),
-            pass_due: self.pass_due.clone(),
-            lost_due: self.lost_due.clone(),
-            learned: self.learned.clone(),
-            entered: self.entered.clone(),
-            batched: self.batched.clone(),
-            touches: self.touches.clone(),
-            held_writes: self.held_writes.clone(),
-            held_writes_rows: self.held_writes_rows.clone(),
-            replaced_dates: self.replaced_dates.clone(),
-            waiting_carried: self.waiting_carried.clone(),
-            part_bounds: self.part_bounds.clone(),
-            tree_roots: self.tree_roots.clone(),
-            tree_reach: self.tree_reach.clone(),
-            reach_log: self.reach_log.clone(),
-            timer_floor: self.timer_floor.clone(),
-            none_due: self.none_due.clone(),
-            settings_due: self.settings_due.clone(),
-            setting_waits_due: self.setting_waits_due.clone(),
-            setting_waits_judging: self.setting_waits_judging,
-            drop_due: self.drop_due.clone(),
-            kept_due: self.kept_due.clone(),
-            kept_things_due: self.kept_things_due.clone(),
-            own_secrets_due: self.own_secrets_due.clone(),
-            notices_due: self.notices_due.clone(),
-            removals_due: self.removals_due.clone(),
-            freed_due: self.freed_due.clone(),
-            carriers_due: self.carriers_due.clone(),
-            forgotten_names_due: self.forgotten_names_due.clone(),
-            handed_due: self.handed_due.clone(),
-            freed_waits: self.freed_waits.clone(),
-            refold: self.refold.clone(),
-            wakes: self.wakes.clone(),
-            resnapshots_due: self.resnapshots_due.clone(),
-            openings: self.openings.clone(),
-            missed: self.missed.clone(),
-            live_bodies: self.live_bodies.clone(),
-            covers: self.covers.clone(),
-            sync_body: self.sync_body.clone(),
-            sync_bodies: self.sync_bodies.clone(),
-            state_digests: self.state_digests.clone(),
-            pieces_below: self.pieces_below.clone(),
-            replaced_reads: self.replaced_reads.clone(),
-            death_walks: self.death_walks.clone(),
-            rebuilds: self.rebuilds.clone(),
-            decoded: self.decoded.clone(),
-            generation: self.generation.clone(),
-            memory_generation: self.memory_generation.clone(),
-            memory_tx: self.memory_tx.clone(),
-            memory_room: self.memory_room,
-            memory_waits: self.memory_waits.clone(),
-            walks: self.walks.clone(),
-            sync_ids: self.sync_ids.clone(),
-            sync_rows: self.sync_rows.clone(),
-            pass_wanted: self.pass_wanted.clone(),
-            read_things: self.read_things.clone(),
-            step_write_keys: self.step_write_keys.clone(),
-            setting_wants: self.setting_wants.clone(),
-            published: self.published.clone(),
-            own_commits: self.own_commits.clone(),
-            links: self.links.clone(),
-            caught_up: self.caught_up.clone(),
-            closure_follow: self.closure_follow.clone(),
-            unit_of: self.unit_of.clone(),
-            node_root: self.node_root,
-            wrote_on: self.wrote_on.clone(),
-            sourced_elsewhere: self.sourced_elsewhere.clone(),
-        }
+        let mut c = self.clone();
+        c.hlc = Hlc::new(clock, self.hlc.last());
+        c.commit_listeners = None;
+        #[cfg(debug_assertions)]
+        c.unchecked_states.clear();
+        c.header_fault = osis_base::copying::remap(&self.header_fault, |f| std::sync::atomic::AtomicBool::new(f.load(std::sync::atomic::Ordering::Relaxed)));
+        c
     }
 }
 
@@ -1647,8 +1483,7 @@ impl Core {
 
     /// The held commits with a delta on `t`, by author.
     pub fn on_thing(&self, t: &Tid) -> impl Iterator<Item = CommitId> + '_ {
-        let t = *t;
-        self.ix.by_thing.run(actor_run(&t), (t, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == t).flat_map(|(_, s)| s.iter().copied())
+        run_of(&self.ix.by_thing, *t).flat_map(|(_, s)| s.iter().copied())
     }
 
     /// Notes what a timeline update changed (`osis_perm::Changed`): a role at any point moves
@@ -1689,10 +1524,7 @@ impl Core {
     /// The commits of `index` (by (thing, author)) on `under` by `authors`: O(the things and their
     /// authors), not their product.
     fn by_authors<'a>(index: &'a JSetMap<(Tid, Tid), CommitId>, under: &'a BTreeSet<Tid>, authors: &'a BTreeSet<Tid>) -> impl Iterator<Item = CommitId> + 'a {
-        under.iter().flat_map(move |t| {
-            let t = *t;
-            index.run(actor_run(&t), (t, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == t).filter(|((_, a), _)| authors.contains(a)).flat_map(|(_, s)| s.iter().copied())
-        })
+        under.iter().flat_map(move |t| run_of(index, *t).filter(|(a, _)| authors.contains(a)).flat_map(|(_, s)| s.iter().copied()))
     }
 
     /// The commits on `under` by `authors` (`rejudge_once`), and those acting for one of `under`.
@@ -1702,8 +1534,7 @@ impl Core {
 
     /// The held commits acting for `actor` by another author (a range of `by_actor`).
     pub fn acting_for(&self, actor: &Tid) -> impl Iterator<Item = CommitId> + '_ {
-        let a = *actor;
-        self.ix.by_actor.run(actor_run(&a), (a, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == a).flat_map(|(_, s)| s.iter().copied())
+        run_of(&self.ix.by_actor, *actor).flat_map(|(_, s)| s.iter().copied())
     }
 
     /// The actors this node has acted for in a held commit: its chain certificates for them go
@@ -2345,8 +2176,6 @@ impl Core {
                 sealed: JMap::by_run(|k| actor_run(&k.0)),
                 by_thing: JSetMap::by_run(|k| actor_run(&k.0)),
                 by_actor: JSetMap::by_run(|k| actor_run(&k.0)),
-                acting_on: JSetMap::by_run(|k| actor_run(&k.0)),
-                role_on: JSetMap::by_run(|k| actor_run(&k.0)),
                 ..Indexes::default()
             }
             .named(),
@@ -3575,6 +3404,12 @@ pub(crate) fn clear_table(txn: &mut Transaction<'_>, t: osis_store::Table, start
             txn.table_remove(t, &k, shred)?;
         }
     }
+}
+
+/// The entries of `index` (keyed by thing, then another) on `t`, each with that other: a read
+/// of `t`'s run alone (`actor_run`).
+fn run_of(index: &JSetMap<(Tid, Tid), CommitId>, t: Tid) -> impl Iterator<Item = (Tid, &BTreeSet<CommitId>)> {
+    index.run(actor_run(&t), (t, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == t).map(|((_, a), s)| (*a, s))
 }
 
 /// The run of a thing's entries in a map keyed by thing first (`JMap::by_run`).

@@ -5,6 +5,7 @@
 use osis_base::{Clock, Mono, Ts, WallMs};
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct Hlc {
     clock: Arc<dyn Clock>,
     last: Ts,

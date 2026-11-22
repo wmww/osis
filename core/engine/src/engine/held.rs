@@ -915,17 +915,6 @@ impl Timelines {
         out
     }
 
-    /// The components the last update evaluated, continued or took apart, by ID (never reused):
-    /// read where what changes is followed per component (`flows::addenda`), not by a memo.
-    pub fn changed_components(&self) -> &BTreeSet<u64> {
-        self.of.changed()
-    }
-
-    /// The ID of the component holding `thing` (`changed_components`).
-    pub fn component(&self, thing: &Tid) -> Option<u64> {
-        self.of.component(thing)
-    }
-
     /// The timelines' bookkeeping, which moves no timeline: dispute detection's switch and
     /// findings, what was saved, the tests' path switch.
     pub fn aside(&mut self) -> &mut osis_perm::Timelines {
