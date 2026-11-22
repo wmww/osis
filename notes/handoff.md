@@ -4,7 +4,7 @@
 The design is notes/write-path-design.md (Decided, the lettered rules); the plan notes/redesign-plan.md (stages P and D done; A1's spec written: spec/permissions.md §1-§2, §5.1-§5.2, §6); what runs beside it notes/priorities.md.
 
 ## Waiting on Tess
-- **Roles apart from syncing** (Tess decided: a role counts wherever its grants are held): not built, the role filter is not what blocks it; options in issues/roles-apart-from-syncing.md.
+- **Finding the paths for held-for-keys** (notes/holder-access-study.md, Open: finding the paths; modelled in held-model `closure::keys`): the coordinator's lean ((p3) then (p2)) misses honest paths; the two complete searches each cost something refused. Proposed to Tess, not yet answered: search down from the account's grants ((p1)), bounded by A5's rule that a thing takes grants to it only where its admins allow, built together with A5.
 - Small: CLAUDE.md's GUI test command lacks `--no-fail-fast` (app's known failure stops kit's tests); a smaller fixed setting for the KNOWN story search is hers to allow; the gate.checks CPU share raise (notes/time-limits.md) is hers to review.
 
 ## Parked
