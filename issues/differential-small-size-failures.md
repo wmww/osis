@@ -1,20 +1,15 @@
 # Sync differential fails at the gate's size on some seeds
-> Summary: `differential::histories_hold_their_closure_plain` at small size fails on fresh offsets: a caught-up reader lacks part of a must-hold minting body after a connection reset (one world in 50, studied, parked), and a node lacks a read the model has (seed 3994064562, not shrunk). Also: must-hold bodies with no entry at quiet (seed 61254442551, not shrunk).
+> Summary: `differential::histories_hold_their_closure_plain` at small size fails on fresh offsets: a re-granted writer lacks role commits' `secrets.0` parts (seed 6170, not shrunk), and a storm past the delivery cap (seed 594660024526, not shrunk); must-hold bodies with no entry at quiet (seed 61254442551, not shrunk).
 > Priority: normal
 > Tags: sync, engine, tests
 
-**Seen**: seed 318840271993 (a gate offset) fails on main; 6170 too (a must-hold body a caught-up reader lacks). Replay: `OSIS_SYNC_START=<seed> OSIS_SYNC_SEEDS=1 cargo test -p osis-sync --test it -- --ignored --exact differential::histories_hold_their_closure_plain`; scripts replay in a scratch test (notes/sync-test-harness.md, Replaying a script).
-
-## A must-hold body a caught-up reader lacks (one world in 50)
-- Shrunk script (6 steps): `New(1), Give(1, 0, Holder::Node(0), Reads), Run, Strong(0, None, 0), Lossy(Loss { drop: 0, dup: 25, delay: 0, delay_ms: 312 }), Run`; fails on seed 318840271993's world only (0 of 50 others). Panic: `must-hold bodies a caught-up reader lacks at quiet`: Bob mints T (dependent on his D), grants Alice read (T keyed, its own sync ID S); Alice's node accepts, her sibling node 2 lacks part of T's minting commit.
-- What the trace shows (node 2): at the grant Bob's node logs the minting's blob verbatim under S (the blob it holds under D's sync ID). Node 2's fetch of S's head entries from Bob's node is lost with a duplicate's connection reset; it fetches the minting blob from Alice's node 0 first and applies the commit, its u:v.0 part (written while T's secrets derived from D's) unopened. The role commits arrive on Bob's next connection, after which every verdict moves to Must, and node 2 holds the blob and opens its wrap, but the commit's u:v.0 part stays missing at quiet: nothing hands node 2 a section of it under an epoch of T. On the other worlds node 2 reads T's first value, so some other path covers the part there (not yet traced).
-- Open: whether a holder may pass the D-era minting blob on under S verbatim (spec/crypto.md §5 Passing on: the wrap gates the header and the floors clause binds parts "on a thing whose read secrets are those of the wrap's sync ID's thing") or must log a fresh encryption of S's body, and which path gives the part on the passing worlds. Trace a passing world of the script next (`OSIS_SYNC_TRACE=all:<commit>,<blob>`).
-
-## A node lacks a read the model has
-- Seed 3994064562 (gate offset 3994064557; fails on main's binary ec950c4ef): `node 1 reads thing 1: None, the model reads it`. The reverse of the earlier "reads what the model holds unread" facet; not shrunk.
+**Seen**: seeds 6170 (offset 6168) and 594660024526 fail on main. Replay: `OSIS_SYNC_START=<seed> OSIS_SYNC_SEEDS=1 cargo test -p osis-sync --test it -- --ignored --exact differential::histories_hold_their_closure_plain`; scripts replay in a scratch test (notes/sync-test-harness.md, Replaying a script).
 
 ## A storm past the delivery cap
 - Seed 594660024526 (fails on main 038a90b45 as on a cleanup branch): `storm: past the cap of 30000 deliveries`, with no partition and nothing still flowing. Not shrunk: shrink first, then find which messages keep answering each other (the settle round counters: notes/test-harnesses.md, Measuring).
+
+## A re-granted writer lacks role commits' `secrets.0` parts (seed 6170)
+- `must-hold bodies a caught-up reader lacks at quiet`: Bob (node 1) grants Alice write on T (his), lowers her to sync, revokes her and gives her write again; at quiet Alice's nodes 0 and 2 hold seven of T's role commits (keyset rotations: `keys.0`, `sync.0`, `secrets.0`) with the `secrets.0` part missing, verdict May at the reader, Must at Bob's node. Not the outside-the-closure case (role-class parts, no `Outside` wait). Not shrunk; the 30-step history passes through `Lower`, `Revoke` and `Give` again.
 
 ## Must-hold bodies with no entry at quiet (seed 61254442551)
 - `must-hold bodies with no entry at quiet (node, S, commit)`: node 0 holds two commits must-hold under one S with no entry of them in its store at quiet. Fails on main c67cbeeb8; not shrunk. First shrink it with `OSIS_SHRINK_MATCH` set to this message (unset, shrinking drifts to another class).

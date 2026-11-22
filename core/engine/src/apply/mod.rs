@@ -402,14 +402,20 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
 /// (`Reason::Outside`, spec/commits.md §4 Outside the node closure): each such commit is
 /// examined again in this transaction, at its end (`Engine::run`), an ephemeral one woken for
 /// node-sync's room (`apply_waiting_memory`), and the removals owing an addendum there
-/// are judged again (`addenda::note_entered`). How many were examined. The first call reads every
-/// thing awaited so (an open judges every removal anyway). O(what entered and the commits and
-/// removals waiting for it).
+/// are judged again (`addenda::note_entered`); each held commit on such a thing missing a part
+/// on it that a blob of it opened is named for redelivery (`Engine::take_redeliver`). How many
+/// were examined. The first call reads every thing awaited so and every held commit (an open
+/// judges every removal anyway). O(what entered and the commits on it and removals waiting for
+/// it).
 pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
+    let mut opened: Vec<CommitId> = Vec::new();
     let came: BTreeSet<Tid> = match tx.core.entered.as_mut() {
         Some(f) => f.added().into_iter().map(|(_, t)| t).collect(),
         None => {
             tx.core.entered = Some(tx.core.ix.closure.member_feed());
+            // what entered before a restart and was not opened again since
+            let core = &*tx.core;
+            opened.extend(core.ix.commits.keys().filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().any(|a| crate::retention::needed::whole(core, &a.tid) && missing_opened(core, c, &a.tid)))).copied());
             tx.core.ix.pend_on.keys().filter_map(|w| if let Wake::Enters(t) = w { Some(*t) } else { None }).collect()
         }
     };
@@ -418,7 +424,12 @@ pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
     let mut ids: BTreeSet<CommitId> = BTreeSet::new();
     for t in came.iter().filter(|t| crate::retention::needed::whole(tx.core, t)) {
         ids.extend(tx.core.ix.pend_on.get(&Wake::Enters(*t)).into_iter().flatten().copied());
+        // a held commit missing a part on `t` that a blob of it opened here (taken out as outside
+        // the node closure, its pass since ended: `unreceive_outside`): its entries open again
+        // (spec/sync-streams.md §4), as no pull brings a blob held
+        opened.extend(tx.core.on_thing(t).filter(|c| missing_opened(tx.core, c, t)));
     }
+    tx.core.redeliver.extend(opened);
     let mut n = 0;
     for id in ids {
         if !tx.core.ix.pending.contains_key(&id) {
@@ -437,6 +448,13 @@ pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
         tx.core.waits.memory_woken.wrote_added(&id, true, true);
     }
     Ok(n)
+}
+
+/// Whether held commit `c` counts missing a part on `t` that a blob of it opened here.
+fn missing_opened(core: &crate::engine::Core, c: &CommitId, t: &Tid) -> bool {
+    let Some(m) = core.ix.commits.get(c) else { return false };
+    let blobs: Vec<_> = core.ix.commit_blobs.get(c).into_iter().flatten().filter_map(|b| core.ix.blob_parts.get(b)).collect();
+    m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *t && m.missing(ai) && blobs.iter().any(|x| x.parts.contains(&ai)))
 }
 
 /// Whether a member entered the node closure since `wake_entered` last looked (its feed, read
@@ -1427,8 +1445,10 @@ impl Engine {
         Some(h)
     }
 
-    /// The commits with a part or signature of a pending copy proved junk since the last call, when a
-    /// true copy the first one kept out may be held by the sync layer (`with_pending`).
+    /// The commits whose held entries the sync layer opens again, named since the last call: a
+    /// part or signature of a pending copy proved junk, when a true copy the first one kept out
+    /// may be held (`with_pending`); a held commit missing a part a blob of it opened on a thing
+    /// come to be held whole (`wake_entered`).
     pub fn take_redeliver(&mut self) -> BTreeSet<CommitId> {
         std::mem::take(&mut self.core.redeliver)
     }

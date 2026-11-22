@@ -117,6 +117,61 @@ fn a_forged_ticket_keeps_no_dependent_thing_held_spec_sync_set_2() {
     assert!(!e1.closure_holds(&p) && !e1.sync_things().unwrap().contains(&p), "nothing of P left");
 }
 
+// spec/commits.md §4 (Outside the node closure: counted as never received once the pass that
+// brought it ends), spec/sync-streams.md §4 (Fill order: an entry opens again as its thing comes
+// to be held whole): Bob takes T's minting commit on his ticket's word alone, before any keyset of T, and
+// the pass ends: its value counts as never received, the commit held. Once T's keysets arrive
+// and he holds T whole, the engine names the commit for its entries to open again (no pull
+// brings a blob held), and opening that blob again gives the value.
+#[test]
+fn a_part_taken_on_a_tickets_word_is_redelivered_once_held_whole_spec_commits_4() {
+    let (mut lp, [_, bob]) = two();
+    let ak = osis_base::Ak::new("x:v.0").unwrap();
+    let e0 = &mut lp.peers[0].engine;
+    let d0 = e0.account_root().unwrap();
+    let mut m = Mutation::new();
+    let t = e0.new_thing(&mut m, d0);
+    m.set(t, &ak, &Value::Str("v".into())).unwrap();
+    m.op(d0, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+    let made = e0.commit(m).unwrap().unwrap();
+    let before: BTreeSet<_> = e0.commit_ids().into_iter().collect();
+    let e1 = &mut lp.peers[1].engine;
+    let d1 = e1.account_root().unwrap();
+    let mut m = Mutation::new();
+    m.op(d1, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+    e1.commit(m).unwrap();
+    let e0 = &mut lp.peers[0].engine;
+    e0.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None }).unwrap();
+    let fire = e0.sealed_fire(&e0.fires_owed()[0]).unwrap().unwrap();
+    let keysets: BTreeSet<_> = e0.core.ix.keyset_parts.get(&t).into_iter().flatten().copied().collect();
+    let grant: Vec<_> = e0.commit_ids().into_iter().filter(|c| !before.contains(c) && !keysets.contains(c)).collect();
+    // T's minting under T's sync ID, as its writer logs it there
+    let s = e0.sync_id_of(&t).unwrap().unwrap();
+    let (sealed, wrap) = e0.seal_body(&s, &made, &[], &mut lp.rng).unwrap().unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    e1.open_entry(&fire.sync_id, &osis_blob::blob_id(&fire.blob), &[0; 57], &fire.blob, u64::MAX).unwrap();
+    e1.open_entry(&s, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap();
+    for c in &grant {
+        let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+        lp.deliver(1, &pk).unwrap();
+    }
+    assert!(!lp.peers[1].engine.closure_holds(&t), "held on the ticket's word alone");
+    lp.settle_needs().unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.holds_commit(&made) && !e1.pends(&made), "T's minting is held, its value not received");
+    assert_eq!(e1.get(&t, &ak).unwrap(), None, "unread");
+    // the keysets taken as node-sync takes them, its store reading what the engine names after
+    for c in &keysets {
+        let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+        lp.peers[1].engine.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists).unwrap();
+    }
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.closure_holds(&t), "T held whole: {}", e1.why_role(&t));
+    assert!(e1.take_redeliver().contains(&made), "T's minting named for its entries to open again");
+    lp.peers[1].engine.open_entry(&s, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &ak).unwrap(), Some(Value::Str("v".into())), "Bob reads T");
+}
+
 // spec/permissions.md §3 Lost access (drop those role secrets and every local unit it can no
 // longer read), spec/sync-set.md §2 (a read secret a ticket gives establishes nothing; On a
 // ticket's word), spec/commits.md §4 (Outside the node closure): Bob holds T's read secret from

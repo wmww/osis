@@ -475,6 +475,12 @@ impl Engine {
         self.core.ix.closure.reaches(t) || self.core.is_key_actor(t)
     }
 
+    /// Whether this node holds thing `t` whole: its content applies here (spec/commits.md §4
+    /// Outside the node closure).
+    pub fn held_whole(&self, t: &Tid) -> bool {
+        crate::retention::needed::whole(&self.core, t)
+    }
+
     /// What a held blob's sealed section of thing `t` awaits to open again (store `Follow`):
     /// whether this node opens `t`'s sections whole (`section_opens`), and `t`'s read secrets
     /// while it opens them at all (whole, or for a record it lacks).

@@ -11,10 +11,9 @@ roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=56766
 osis-perm/paths::single::paths_components_agree_large rate:OSIS_PERM_SEED=513418300552 issues/perm-paths-incremental-differs.md Unapplied, Some\(Dropped\)
 osis-perm/paths::incremental::paths_incremental_agrees_large rate:OSIS_PERM_SEED=328756246695 issues/perm-paths-incremental-differs.md incremental and from scratch differ
 osis-perm/paths::incremental::paths_forget_agrees_large rate:OSIS_PERM_SEED=328756246695 issues/perm-paths-incremental-differs.md updated and from scratch differ
-osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=318840271993 issues/differential-small-size-failures.md must-hold bodies a caught-up reader lacks at quiet
+osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=6168 issues/differential-small-size-failures.md must-hold bodies a caught-up reader lacks at quiet
 roles-model/paths::tests::random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/masked-backdated-lowerings.md counts:dispute=4 OSIS_ROLES_START=\d+: \{
 osis-perm/paths::paths_story_agree_large rate:OSIS_PERM_SEED=3994064557 issues/perm-walk-trails-model.md model valid false, walk Some\(Valid\(Regranted\)\)
-osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=3994064562 issues/differential-small-size-failures.md node \d+ reads thing \d+: None, the model reads it
 osis-perm/paths::content::paths_content_agree_large rate:OSIS_PERM_SEED=265113995329 issues/perm-walk-trails-model.md model valid false, walk Some\(Valid\(Regranted\)\)
 osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=13 issues/seq-cold-edits-follow-gaps.md same delta as on the whole state
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=192781816512 issues/custody-differential-failures.md T paired by A: needs Write on

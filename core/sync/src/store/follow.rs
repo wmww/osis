@@ -66,7 +66,8 @@ impl Unheld {
 }
 
 /// What an awaited value opens with: its read secrets, and whether they open whole (a thing's
-/// sections open whole only while this node holds it, `Engine::section_keys`; S's always).
+/// sections open whole only while this node holds it, `Engine::section_keys`; S's entries
+/// while one of S's things is held whole, `Engine::held_whole`).
 type Keys = (bool, Vec<osis_crypto::Secret32>);
 
 /// A read secret an entry waits for: one of S's (`Engine::opening_secrets`: its wrap opened
@@ -396,9 +397,13 @@ impl Follow {
         }
         // a parked entry is opened as read secrets arrive (spec/sync-streams.md §4 Fill order;
         // S's first settle tries each once; a thing's, once it names a secret)
+        // an entry of S whose commit is neither held nor pending, thrown out while S's things
+        // were not held whole (spec/commits.md §4 Outside the node closure: on a ticket's word,
+        // before their keysets arrive), opens again as one comes to be: no pull brings a blob held
+        let read = &self.read;
         for a in self.creds.due() {
             let r = self.creds.try_settle(&a, || match a {
-                Awaits::Sync(s) => engine.opening_secrets(&s).map(|v| (true, v)),
+                Awaits::Sync(s) => engine.opening_secrets(&s).map(|v| (read.get(&s).is_some_and(|ts| ts.iter().any(|t| engine.held_whole(t))), v)),
                 Awaits::Thing(t) => Ok(engine.section_keys(&t)),
             })?;
             let Some((was, now)) = r else { continue };
