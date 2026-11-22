@@ -215,7 +215,7 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
                 let value = (r.below(4) > 0).then(|| Edge {
                     role: role(&mut r),
                     until: (r.below(3) == 0).then(|| WallMs(r.below(8) as u64)),
-                    invite: (r.below(2) == 0).then(|| role(&mut r)),
+                    may_grant: r.below(2) == 0,
                     retain: false,
                     floor: (r.below(6) == 0).then(|| r.below(3) as u64),
                 });

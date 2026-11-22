@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub use content::{Fact, FactClass, Holding, MemStore, NameKey, Pair, Store};
-pub use walk::{Applied, Counts, History, Key};
+pub use walk::{Applied, Counts, History, Key, Way};
 
 /// A held commit's parts.
 #[derive(Clone, Debug)]
@@ -50,6 +50,9 @@ pub enum PartKind {
     Edge(EdgeWrite),
     /// Any other delta, judged as content (draft §5.2).
     Delta(Delta),
+    /// A part nothing is read of, keeping its place among the commit's parts (the caller's
+    /// numbering): one judged elsewhere, or whose path is not known.
+    None,
 }
 
 /// A lowering's list (draft §5.1 The list) by leaf: per thing, the commits its leaf names. An
@@ -57,7 +60,11 @@ pub enum PartKind {
 /// reads it as a node holding every leaf (notes/evidence-model-findings.md 24). A single list
 /// naming commits whole (A1's header field) is the leaf of every thing those commits write.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct List(BTreeMap<Tid, Frontier>);
+pub struct List {
+    leaves: BTreeMap<Tid, Frontier>,
+    /// Commits named whole: every part of each, on whatever thing (a header's one frontier).
+    whole: Frontier,
+}
 
 impl List {
     /// The list of entries (thing, commit).
@@ -66,17 +73,23 @@ impl List {
         for (t, c) in entries {
             by.entry(t).or_default().insert(c);
         }
-        List(by.into_iter().map(|(t, cs)| (t, Frontier::new(cs))).collect())
+        List { leaves: by.into_iter().map(|(t, cs)| (t, Frontier::new(cs))).collect(), whole: Frontier::default() }
     }
 
-    /// Whether it names `commit`'s parts on `on`: its leaf of `on` lists the commit.
+    /// The list naming every part of each commit of `frontier`, on whatever thing.
+    pub fn whole(frontier: Frontier) -> List {
+        List { leaves: BTreeMap::new(), whole: frontier }
+    }
+
+    /// Whether it names `commit`'s parts on `on`: it names the commit whole, or its leaf of `on`
+    /// lists it.
     pub fn names(&self, commit: &CommitId, on: &Tid) -> bool {
-        self.0.get(on).is_some_and(|f| f.covers(commit))
+        self.whole.covers(commit) || self.leaves.get(on).is_some_and(|f| f.covers(commit))
     }
 
-    /// Its entries, (thing, commit).
-    pub fn entries(&self) -> impl Iterator<Item = (Tid, CommitId)> + '_ {
-        self.0.iter().flat_map(|(t, f)| f.commits().iter().map(|c| (*t, *c)))
+    /// Its entries: (thing, commit) per leaf entry, (none, commit) for a commit named whole.
+    pub fn keys(&self) -> impl Iterator<Item = (Option<Tid>, CommitId)> + '_ {
+        self.leaves.iter().flat_map(|(t, f)| f.commits().iter().map(|c| (Some(*t), *c))).chain(self.whole.commits().iter().map(|c| (None, *c)))
     }
 }
 
@@ -342,7 +355,35 @@ impl<S: Store> Paths<S> {
         for c in &given {
             for p in &c.parts {
                 if let PartKind::Edge(EdgeWrite { frontier: Some(f), .. }) = &p.kind {
-                    taken.carried.extend(f.entries().map(|(_, c)| c));
+                    taken.carried.extend(f.keys().map(|(_, c)| c));
+                }
+            }
+        }
+        taken.carried.extend(t.carried);
+        taken.deltas.extend(t.deltas);
+        taken.addenda.extend(t.addenda);
+        self.timeline.settle(&self.trust, &BTreeSet::new());
+        self.finish(taken)
+    }
+
+    /// One update of everything that moved: the records that came (thing, mint admin), the
+    /// commits no longer held, and the commits held now, each added or, where held already,
+    /// replaced by the version given (`update`).
+    pub fn sync(&mut self, records: &[(Tid, Tid)], gone: &[CommitId], commits: &[Commit]) -> Changed {
+        let mut seen = BTreeSet::new();
+        let given: Vec<&Commit> = commits.iter().filter(|c| seen.insert(c.id)).collect();
+        self.begin();
+        for (t, a) in records {
+            self.timeline.add_record(*t, *a);
+            self.facts.add_record(*t, *a);
+        }
+        let held: Vec<CommitId> = given.iter().map(|c| c.id).chain(gone.iter().copied()).filter(|c| self.holds(c)).collect::<BTreeSet<_>>().into_iter().collect();
+        let mut taken = self.let_go(&held);
+        let t = self.take(&given);
+        for c in &given {
+            for p in &c.parts {
+                if let PartKind::Edge(EdgeWrite { frontier: Some(f), .. }) = &p.kind {
+                    taken.carried.extend(f.keys().map(|(_, c)| c));
                 }
             }
         }
@@ -408,6 +449,48 @@ impl<S: Store> Paths<S> {
 
     pub fn status(&self, id: &WriteId) -> Option<Status> {
         self.timeline.status(id)
+    }
+
+    /// The held edge-class parts of `commit`.
+    pub fn parts_of(&self, commit: &CommitId) -> Vec<WriteId> {
+        self.timeline.parts_of(commit)
+    }
+
+    /// Applied part `id`: its edge and what it found there.
+    pub fn applied(&self, id: &WriteId) -> Option<((Tid, Tid), Applied)> {
+        self.timeline.applied_write(id)
+    }
+
+    /// The last applied write on (holder, target) before `key`.
+    pub fn last_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Option<(WriteId, Applied)> {
+        self.timeline.last_before(holder, target, key)
+    }
+
+    /// How the settled walk applies edge-class part `id` (`None`: not applied, not held).
+    pub fn way(&self, id: &WriteId) -> Option<Way> {
+        self.timeline.way(id)
+    }
+
+    /// (holder, target) as restored after every applied write (spec/permissions.md §5.1): what
+    /// it gives and what it lets grant.
+    pub fn restored(&self, holder: &Tid, target: &Tid) -> (Option<Role>, Option<Role>) {
+        self.timeline.restored(holder, target)
+    }
+
+    /// The last applied write on (holder, target).
+    pub fn last(&self, holder: &Tid, target: &Tid) -> Option<(WriteId, Applied)> {
+        self.timeline.last(holder, target)
+    }
+
+    /// The held deltas whose verdict `ch` may have moved (`Changed`): those through an edge it
+    /// names within the keys it names, and those it names.
+    pub fn reached(&self, ch: &Changed) -> BTreeSet<WriteId> {
+        self.facts.reached(ch)
+    }
+
+    /// The trust set.
+    pub fn trust(&self) -> &BTreeSet<WriteId> {
+        &self.trust
     }
 
     /// Every held edge-class part's status.

@@ -308,8 +308,9 @@ pub(super) struct Facts<S> {
     mint: BTreeMap<Tid, Tid>,
     /// The held role commits (a commit with a role-class part).
     commits: BTreeMap<CommitId, CommitFacts>,
-    /// Per (commit, thing), the frontiers (edge writes) whose leaf of the thing lists it.
-    named: BTreeMap<(CommitId, Tid), BTreeSet<WriteId>>,
+    /// Per (commit, thing), the frontiers (edge writes) whose leaf of the thing lists it; under
+    /// no thing, those naming the commit whole (`List::whole`).
+    named: BTreeMap<(CommitId, Option<Tid>), BTreeSet<WriteId>>,
     /// Per edge, how many held edge writes set it at each role (`Role::ALL`'s order), whatever
     /// their validity: what a node that cannot judge reads (Could hold the right).
     ever: BTreeMap<Pair, [u32; 4]>,
@@ -320,6 +321,17 @@ pub(super) struct Facts<S> {
 impl<S: Store> Facts<S> {
     pub(super) fn new(records: &BTreeMap<Tid, Tid>, store: S) -> Facts<S> {
         Facts { mint: records.clone(), commits: BTreeMap::new(), named: BTreeMap::new(), ever: BTreeMap::new(), store, counts: Counts::default() }
+    }
+
+    /// The edge writes whose list names commit `c`'s parts on `on`.
+    fn named_on(&self, c: &CommitId, on: &Tid) -> impl Iterator<Item = WriteId> + '_ {
+        let c = *c;
+        [Some(*on), None].into_iter().flat_map(move |t| self.named.get(&(c, t))).flatten().copied()
+    }
+
+    /// A record that came: `t`'s mint admin.
+    pub(super) fn add_record(&mut self, t: Tid, admin: Tid) {
+        self.mint.insert(t, admin);
     }
 
     fn record(&self, e: Pair) -> bool {
@@ -390,6 +402,7 @@ impl<S: Store> Facts<S> {
                         });
                         out.deltas.push(id);
                     }
+                    PartKind::None => {}
                 }
             }
             // an addendum written by a role commit is no addendum: it names nothing
@@ -401,8 +414,8 @@ impl<S: Store> Facts<S> {
             }
             if role {
                 for (id, f) in &cf.lists {
-                    for x in f.entries() {
-                        self.named.entry((x.1, x.0)).or_default().insert(*id);
+                    for (t, x) in f.keys() {
+                        self.named.entry((x, t)).or_default().insert(*id);
                     }
                 }
                 for (e, r) in &cf.sets {
@@ -434,7 +447,7 @@ impl<S: Store> Facts<S> {
                     }
                 }
                 for (id, f) in &cf.lists {
-                    for (t, x) in f.entries() {
+                    for (t, x) in f.keys() {
                         if let Some(set) = self.named.get_mut(&(x, t)) {
                             set.remove(id);
                             if set.is_empty() {
@@ -501,7 +514,7 @@ impl<S: Store> Facts<S> {
         }
         let mut out = vec![];
         for c in commits {
-            out.extend(self.named.get(&(c, d.on)).into_iter().flatten().map(|&w| Namer::Write(w)));
+            out.extend(self.named_on(&c, &d.on).map(Namer::Write));
             out.extend(self.addenda_listing(&c).into_iter().map(Namer::Addendum));
         }
         counts.content += out.len() as u64;
@@ -619,7 +632,8 @@ impl<S: Store> Facts<S> {
             counts.content += 1;
             tl.role_before(h, t, &d.pos) >= Some(d.needs)
         });
-        gave && self.named.get(&(d.commit(), d.on)).into_iter().flatten().any(|w| {
+        gave && self.named_on(&d.commit(), &d.on).any(|w| {
+            let w = &w;
             counts.content += 1;
             tl.applied_write(w).is_some_and(|(_, a)| a.explicit && a.key.signer == d.signer && a.key >= d.pos && a.value.filter(|v| v.alive_at(Some(a.key.ts))).map(|v| v.role) < Some(Role::Admin))
         })
@@ -873,7 +887,7 @@ impl<S: Store> Facts<S> {
             let Some(cf) = self.commits.get(&id.0).filter(|cf| cf.lists.iter().any(|(w, _)| w == id)) else { continue };
             for s in self.store.own_covers(&cf.signer) {
                 let on = self.store.get(&s).map(|f| f.on);
-                if on.is_some_and(|on| self.named.get(&(s.0, on)).is_some_and(|n| n.contains(id))) {
+                if on.is_some_and(|on| self.named_on(&s.0, &on).any(|n| n == *id)) {
                     out.insert(s.0);
                 }
             }

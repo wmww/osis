@@ -148,6 +148,19 @@ enum How {
     Finalize,
 }
 
+/// How the settled walk applies an edge write (§2, §5.1 step 2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Way {
+    /// By admin along its path: an explicit write.
+    Explicit,
+    /// A self-removal.
+    Leave,
+    /// As a may-grant grant.
+    MayGrant,
+    /// As a finalize.
+    Finalize,
+}
+
 /// What a part needs of one edge it rests on (§5.1 step 3): a role there, or that the edge lets
 /// its holder grant the role (the last edge of a may-grant grant's path).
 #[derive(Clone, Copy)]
@@ -172,7 +185,7 @@ fn alive(v: Option<&Edge>, ts: Ts) -> Lvl {
 
 /// A value's may-grant flag.
 fn flag(v: Option<&Edge>) -> bool {
-    v.is_some_and(Edge::may_grant)
+    v.is_some_and(|v| v.may_grant)
 }
 
 /// What a value giving `role` lets its holder grant (§5.1): its role at admin or with the flag.
@@ -369,6 +382,25 @@ impl Walk {
         e
     }
 
+    /// A record that came: `t`'s mint admin, its record edge in force from the start. A held part
+    /// whose shape read `t`'s record chain without it is the caller's to give again.
+    pub(super) fn add_record(&mut self, t: Tid, admin: Tid) {
+        self.mint.insert(t, admin);
+        match self.edge_ids.get(&(admin, t)).copied() {
+            Some(e) if !self.ed(e).record => {
+                let fin = self.final_pair(e).0;
+                self.journal.finals.entry(e).or_insert(fin);
+                self.note_first(e);
+                self.edges[e].record = true;
+                self.touch(e, FIRST);
+            }
+            Some(_) => {}
+            None => {
+                self.intern((admin, t));
+            }
+        }
+    }
+
     fn edge(&self, holder: &Tid, target: &Tid) -> Option<&EdgeInfo> {
         self.edge_ids.get(&(*holder, *target)).map(|&e| self.ed(e))
     }
@@ -423,7 +455,7 @@ impl Walk {
         let mut own: BTreeSet<(Tid, Tid)> = BTreeSet::new();
         let mut sets: BTreeSet<(Tid, Tid)> = BTreeSet::new();
         let mut twice = false;
-        for p in &c.parts {
+        for p in c.parts.iter().filter(|p| !matches!(p.kind, PartKind::None)) {
             own.extend(shape(&self.mint, c.signer, &p.path, p.direct, p.on, None, true).hops);
             if let PartKind::Edge(w) = &p.kind {
                 twice |= !sets.insert((w.holder, p.on));
@@ -876,6 +908,7 @@ impl Walk {
     /// Takes part `s` in the pass (§5.1 steps 2 and 3).
     fn step(&mut self, c: E, s: Slot, cdrops: &mut Vec<Slot>) {
         self.counts.steps += 1;
+        crate::count::walked(1);
         let it = self.it(s).clone();
         let by_right = it.well && !it.leave && !it.finalize && (self.admin(&it) || self.may_grant(&it));
         if by_right != it.by_right {
@@ -1183,6 +1216,32 @@ impl Walk {
     /// The last applied write on the edge before `key`.
     pub(super) fn last_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Option<(WriteId, Applied)> {
         self.edge(holder, target)?.hist.range(..*key).next_back().map(|(_, en)| (self.it(en.slot).id, en.a))
+    }
+
+    /// How the settled walk applies part `id` (`None`: held, not applied; not held).
+    pub(super) fn way(&self, id: &WriteId) -> Option<Way> {
+        let it = self.it(*self.ids.get(id)?);
+        Some(match it.how? {
+            How::Admin if it.leave => Way::Leave,
+            How::Admin => Way::Explicit,
+            How::Flag => Way::MayGrant,
+            How::Finalize => Way::Finalize,
+        })
+    }
+
+    /// The edge as restored after every applied write (§5.1): what it gives and lets grant.
+    pub(super) fn restored(&self, holder: &Tid, target: &Tid) -> (Lvl, Lvl) {
+        let Some(ed) = self.edge(holder, target) else { return (None, None) };
+        match ed.hist.values().next_back() {
+            Some(en) => (en.restored, en.rgrant),
+            None if ed.record => (ADMIN, ADMIN),
+            None => (None, None),
+        }
+    }
+
+    /// The last applied write on the edge.
+    pub(super) fn last(&self, holder: &Tid, target: &Tid) -> Option<(WriteId, Applied)> {
+        self.edge(holder, target)?.hist.values().next_back().map(|en| (self.it(en.slot).id, en.a))
     }
 
     /// Applied part `id`: its edge and what it found.

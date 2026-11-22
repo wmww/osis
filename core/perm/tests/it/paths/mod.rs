@@ -136,8 +136,7 @@ pub fn input(w: &World, v: &View) -> Input {
             let seen = |t: &Thing| v.leaves.as_ref().is_none_or(|l| l.contains(t));
             let kind = match &k.kind {
                 Kind::Edge { holder, role: r, until, frontier, may_grant, finalize } => {
-                    // the walk's invite level: the role itself where the model's grant carries the flag
-                    let value = role(*r).map(|v| Edge { role: v, until: until.map(|u| WallMs(u as u64)), invite: may_grant.then_some(v), retain: false, floor: None });
+                    let value = role(*r).map(|v| Edge { role: v, until: until.map(|u| WallMs(u as u64)), may_grant: *may_grant, retain: false, floor: None });
                     let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(t, l)| l.iter().map(|&j| (tid(*t), model_cid(w, j))));
                     let frontier = (!finalize).then(|| Arc::new(List::new(listed)));
                     PartKind::Edge(EdgeWrite { holder: tid(*holder), value, frontier })

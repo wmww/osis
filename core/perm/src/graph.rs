@@ -1,22 +1,23 @@
 //! Authority over one edge state (spec/permissions.md §1, §2, §5.1 step 3): effective role as
-//! the widest path over role edges, effective invite, authority class. Record edges
+//! the widest path over role edges, may-grant, the path search. Record edges
 //! (spec/permissions.md §1) are virtual: a mint admin's edge on its thing is read from the
 //! creation record (`Records`) unless an edge write set it (`Edges` holds the value written, or
 //! that it was removed), so dependent things cost the edge state nothing.
 
-use crate::held::HeldSet;
-use crate::types::{earliest, mark, put, Edge};
+use crate::types::{earliest, mark, Edge};
 use osis_base::format::{PathMarks, MAX_CHAIN_DEPTH};
 use osis_base::{CreationRecord, RecordLink, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Authority class of a node on a thing (spec/permissions.md §5.1 step 3), ordered: edge admin
-/// above every invite level.
+/// What a thing may write of another's grants (spec/permissions.md §2), ordered: admin above
+/// every may-grant role.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Class {
     None,
-    Invite(Role),
+    /// It may add holders up to this role (§2 Path's may-grant).
+    MayGrant(Role),
+    /// Admin: every edge write.
     Edge,
 }
 
@@ -27,8 +28,8 @@ pub struct Standing {
     pub role: Option<Role>,
 }
 
-/// The value of a record edge in force (spec/permissions.md §1): admin, no `until`, no invite.
-pub const RECORD_EDGE: Edge = Edge { role: Role::Admin, until: None, invite: None, retain: false, floor: None };
+/// The value of a record edge in force (spec/permissions.md §1): admin, no `until`.
+pub const RECORD_EDGE: Edge = Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None };
 
 /// Record links of every thing with a verified `created.0`: each thing's mint admin (or that
 /// it is a key actor), and the things each actor is mint admin of.
@@ -39,18 +40,6 @@ pub struct Records {
 }
 
 impl Records {
-    /// From the held `created.0` records; one that does not hash to its tid is ignored.
-    pub(crate) fn from_held(held: &dyn HeldSet, things: &BTreeSet<Tid>) -> Records {
-        let mut o = Records::default();
-        for t in things {
-            if let Some(rec) = held.created(t)
-                && rec.tid() == *t
-            {
-                o.insert(*t, &rec);
-            }
-        }
-        o
-    }
     pub fn insert(&mut self, t: Tid, rec: &CreationRecord) {
         let link = rec.record_link();
         if let RecordLink::Admin(a) = link {
@@ -99,9 +88,6 @@ pub struct Edges {
     /// Record edges (holder, target) a write removed, with no value written since.
     cut: BTreeSet<(Tid, Tid)>,
 }
-
-/// An empty edge state: the state before every write (every record edge in force).
-pub(crate) static INITIAL: Edges = Edges { by_target: BTreeMap::new(), by_holder: BTreeMap::new(), cut: BTreeSet::new() };
 
 impl Edges {
     /// The value an edge write set (holder, target) to, if one is in force (a record edge in
@@ -157,77 +143,6 @@ impl Edges {
             }
         }
     }
-    /// Sets `changes` in each of `states`, consecutive kept states in order: a map two
-    /// neighbours shared before stays shared (one copy per run of states sharing it).
-    pub(crate) fn set_all<'a>(records: &Records, states: impl Iterator<Item = &'a mut Arc<Edges>>, changes: &[(Tid, Tid, Option<Edge>)]) {
-        /// The target's and the holder's maps before and after a change, in the previous state.
-        type Was = ((Option<Arc<BTreeMap<Tid, Edge>>>, Option<Arc<BTreeMap<Tid, Edge>>>), (Option<Arc<BTreeSet<Tid>>>, Option<Arc<BTreeSet<Tid>>>));
-        fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
-            match (a, b) {
-                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
-        }
-        let mut last: Vec<Was> = Vec::new();
-        for s in states {
-            let s = Arc::make_mut(s);
-            for (j, (m, t, e)) in changes.iter().enumerate() {
-                let record = records.is_record_edge(m, t);
-                if record {
-                    mark(&mut s.cut, (*m, *t), e.is_none());
-                }
-                let e = &e.filter(|e| !(record && *e == RECORD_EDGE));
-                let old_t = s.by_target.get(t).cloned();
-                let old_m = s.by_holder.get(m).cloned();
-                let prev = last.get(j);
-                let new_t = match prev {
-                    Some((p, _)) if same(&p.0, &old_t) => p.1.clone(),
-                    _ => {
-                        let mut v = old_t.as_deref().cloned().unwrap_or_default();
-                        put(&mut v, *m, *e);
-                        (!v.is_empty()).then(|| Arc::new(v))
-                    }
-                };
-                let new_m = match prev {
-                    Some((_, p)) if same(&p.0, &old_m) => p.1.clone(),
-                    _ => {
-                        let mut v = old_m.as_deref().cloned().unwrap_or_default();
-                        mark(&mut v, *t, e.is_some());
-                        (!v.is_empty()).then(|| Arc::new(v))
-                    }
-                };
-                put(&mut s.by_target, *t, new_t.clone());
-                put(&mut s.by_holder, *m, new_m.clone());
-                let x = ((old_t, new_t), (old_m, new_m));
-                match last.get_mut(j) {
-                    Some(l) => *l = x,
-                    None => last.push(x),
-                }
-            }
-        }
-    }
-    /// Adds `from`'s per-target maps and cut record edges (another component's: their targets
-    /// are not here).
-    pub(crate) fn take_targets(&mut self, from: &Edges) {
-        self.by_target.extend(from.by_target.iter().map(|(t, m)| (*t, m.clone())));
-        self.cut.extend(from.cut.iter().copied());
-    }
-    /// The (holder, target) edges that differ from `old`. O(targets), plus the holders of the
-    /// targets whose maps differ: an unwritten map is shared with its clone.
-    pub(crate) fn diff(&self, old: &Edges, out: &mut BTreeSet<(Tid, Tid)>) {
-        out.extend(self.cut.symmetric_difference(&old.cut).copied());
-        let empty = Arc::new(BTreeMap::new());
-        let targets = self.by_target.keys().chain(old.by_target.keys().filter(|t| !self.by_target.contains_key(*t)));
-        for t in targets {
-            let (a, b) = (self.by_target.get(t).unwrap_or(&empty), old.by_target.get(t).unwrap_or(&empty));
-            if Arc::ptr_eq(a, b) {
-                continue;
-            }
-            out.extend(a.iter().filter(|(h, e)| b.get(*h) != Some(*e)).map(|(h, _)| (*h, *t)));
-            out.extend(b.keys().filter(|h| !a.contains_key(*h)).map(|h| (*h, *t)));
-        }
-    }
     /// Written edges on `target`, by holder.
     fn holders(&self, target: &Tid) -> impl Iterator<Item = (&Tid, &Edge)> {
         self.by_target.get(target).into_iter().flat_map(|m| m.iter())
@@ -240,22 +155,10 @@ impl Edges {
     pub fn iter(&self) -> impl Iterator<Item = (&Tid, &Tid, &Edge)> {
         self.by_target.iter().flat_map(|(t, m)| m.iter().map(move |(h, e)| (h, t, e)))
     }
-    /// The record edges a write removed.
-    pub(crate) fn cuts(&self) -> impl Iterator<Item = &(Tid, Tid)> {
-        self.cut.iter()
-    }
-    /// A state from its written edges and cut record edges (a saved walk's).
-    pub(crate) fn restore(written: impl IntoIterator<Item = (Tid, Tid, Edge)>, cut: BTreeSet<(Tid, Tid)>) -> Edges {
-        let mut e = Edges { cut, ..Edges::default() };
-        for (m, t, v) in written {
-            e.set_explicit(m, t, Some(v));
-        }
-        e
-    }
 }
 
-/// Edges set over a base edge state: an edge here replaces the base's (`None`: removed). A
-/// few (at most a checkpoint interval), sorted by (holder, target), with a 256-bit filter of
+/// Edges set over a base edge state: an edge here replaces the base's (`None`: removed).
+/// Sorted by (holder, target), with a 256-bit filter of
 /// the holders and targets present so most lookups skip them.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Overlay {
@@ -371,160 +274,6 @@ impl<'a> EdgesAt<'a> {
         });
         base.chain(set).chain(record)
     }
-}
-
-/// Roles by dense index, the indexes reached, and the earliest `until` followed
-/// (`Dense::roles`).
-pub(crate) type DenseRoles = (Vec<Option<Role>>, Vec<usize>, Option<WallMs>);
-
-/// An edge state by dense index, for searches without map lookups per edge (the same answers
-/// as `View`'s): a fixed set of entities and the edges out of and into each, record edges in
-/// force included, kept in step with `set`.
-pub(crate) struct Dense {
-    pub ids: BTreeMap<Tid, usize>,
-    pub tids: Vec<Tid>,
-    out: Vec<Vec<(usize, Edge)>>,
-    inc: Vec<Vec<usize>>,
-    /// Every edge set has both ends indexed (else callers search through `View`).
-    pub whole: bool,
-}
-
-impl Dense {
-    pub fn new(records: &Records, all: BTreeSet<Tid>, edges: &Edges) -> Dense {
-        let tids: Vec<Tid> = all.into_iter().collect();
-        let ids: BTreeMap<Tid, usize> = tids.iter().enumerate().map(|(i, t)| (*t, i)).collect();
-        let n = tids.len();
-        let mut g = Dense { out: vec![Vec::new(); n], inc: vec![Vec::new(); n], ids, tids, whole: true };
-        // each pair once (a record edge only where no write set the pair): pushed, then sorted
-        // once per holder (`set` keeps the order; a holder of a million things costs no scan)
-        let record = records.links().filter_map(|(t, o)| match o {
-            RecordLink::Admin(a) if edges.explicit(a, t).is_none() && !edges.is_cut(a, t) => Some((a, t, RECORD_EDGE)),
-            _ => None,
-        });
-        for (m, t, e) in record.chain(edges.iter().map(|(m, t, e)| (m, t, *e))) {
-            let (Some(&mi), Some(&ti)) = (g.ids.get(m), g.ids.get(t)) else { continue };
-            if let Some(out) = g.out.get_mut(mi) {
-                out.push((ti, e));
-            }
-            if let Some(inc) = g.inc.get_mut(ti) {
-                inc.push(mi);
-            }
-        }
-        for out in &mut g.out {
-            out.sort_unstable_by_key(|x| x.0);
-        }
-        g
-    }
-
-    pub fn set(&mut self, holder: &Tid, target: &Tid, edge: Option<Edge>) {
-        let (Some(&m), Some(&t)) = (self.ids.get(holder), self.ids.get(target)) else {
-            self.whole &= edge.is_none();
-            return;
-        };
-        let Some(out) = self.out.get_mut(m) else { return };
-        match (out.binary_search_by_key(&t, |x| x.0), edge) {
-            (Ok(i), Some(e)) => {
-                if let Some(x) = out.get_mut(i) {
-                    x.1 = e;
-                }
-            }
-            (Ok(i), None) => {
-                out.remove(i);
-                if let Some(inc) = self.inc.get_mut(t)
-                    && let Some(j) = inc.iter().position(|x| *x == m)
-                {
-                    inc.swap_remove(j);
-                }
-            }
-            (Err(i), Some(e)) => {
-                out.insert(i, (t, e));
-                if let Some(inc) = self.inc.get_mut(t) {
-                    inc.push(m);
-                }
-            }
-            (Err(_), None) => {}
-        }
-    }
-
-    /// `View::roles_expiring` of `x` at `ts`: the roles by index, the indexes reached, and
-    /// the earliest `until` followed. `None` when not `whole` or `x` has no index.
-    pub fn roles(&self, x: &Tid, ts: Ts) -> Option<DenseRoles> {
-        let &xi = self.ids.get(x).filter(|_| self.whole)?;
-        let mut best: Vec<Option<Role>> = vec![None; self.tids.len()];
-        *best.get_mut(xi)? = Some(Role::Admin);
-        let mut reached = vec![xi];
-        let mut expires: Option<WallMs> = None;
-        for level in Role::ALL.into_iter().rev() {
-            let mut stack: Vec<usize> = reached.iter().copied().filter(|i| best.get(*i).copied().flatten() == Some(level)).collect();
-            while let Some(e) = stack.pop() {
-                for (t, edge) in self.out.get(e).into_iter().flatten() {
-                    if edge.alive_at(Some(ts)) {
-                        expires = earliest(expires, edge.until);
-                        let (y, v) = (*t, level.min(edge.role));
-                        if let Some(b) = best.get_mut(y)
-                            && b.is_none_or(|b| v > b)
-                        {
-                            if b.is_none() {
-                                reached.push(y);
-                            }
-                            *b = Some(v);
-                            if v == level {
-                                stack.push(y);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Some((best, reached, expires))
-    }
-
-    /// `View::roles_raised_expiring` from `seed` over roles `best` by index, raised in place:
-    /// the indexes raised and the earliest `until` followed.
-    pub fn raise(&self, best: &mut [Option<Role>], seed: &Tid, ts: Ts) -> Option<(Vec<usize>, Option<WallMs>)> {
-        let &si = self.ids.get(seed).filter(|_| self.whole)?;
-        let mut expires: Option<WallMs> = None;
-        let mut raised = Vec::new();
-        let mut stack: Vec<usize> = best.get(si).copied().flatten().map(|_| si).into_iter().collect();
-        while let Some(e) = stack.pop() {
-            let Some(level) = best.get(e).copied().flatten() else { continue };
-            for (t, edge) in self.out.get(e).into_iter().flatten() {
-                if edge.alive_at(Some(ts)) {
-                    expires = earliest(expires, edge.until);
-                    let (y, v) = (*t, level.min(edge.role));
-                    if let Some(b) = best.get_mut(y)
-                        && b.is_none_or(|b| v > b)
-                    {
-                        *b = Some(v);
-                        raised.push(y);
-                        stack.push(y);
-                    }
-                }
-            }
-        }
-        Some((raised, expires))
-    }
-}
-
-/// What a standing on a thing reads besides the node's roles: its holders holding an invite
-/// (edges alive).
-pub(crate) struct Reads {
-    pub invites: Vec<(Tid, Edge)>,
-}
-
-impl Reads {
-    /// Standing of `x` on the thing `n` these are of, given `x`'s roles.
-    pub fn standing(&self, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
-        let role = best.get(n).copied();
-        let class = class_of(role, || self.invites.iter().filter_map(|(m, e)| Some(e.invite?.min(*best.get(m)?).min(e.role))).max());
-        Standing { class, role }
-    }
-}
-
-/// Authority class from its parts (§5.1 step 3): the role on the thing, the effective invite
-/// there.
-fn class_of(role: Option<Role>, invite: impl FnOnce() -> Option<Role>) -> Class {
-    if role == Some(Role::Admin) { Class::Edge } else { invite().map_or(Class::None, Class::Invite) }
 }
 
 /// One edge set to a value over an edge state: (holder, target, value).
@@ -668,7 +417,7 @@ impl<'a> View<'a> {
                 });
             }
         }
-        crate::walk::count_reached(best.len());
+        crate::count::reached(best.len());
         // counted: tests read how much a role walk reaches
         osis_base::costs::count("perm: roles walked", best.len() as u64);
         (best, expires)
@@ -746,8 +495,8 @@ impl<'a> View<'a> {
     }
 
     /// The ways into `y` giving at least `need` (`Ways`): breadth first, backward from `y`, over
-    /// edges alive at the view's `ts` each giving `need` or more (for `Need::Invite`, the edges
-    /// into `y` giving it as an invite: spec/permissions.md §2 Path's may-grant), holders
+    /// edges alive at the view's `ts` each giving `need` or more (for `Need::MayGrant`, the edges
+    /// into `y` giving admin or carrying the flag: spec/permissions.md §2 Path's may-grant), holders
     /// taken in the order the edge state lists them; with the earliest `until` it followed. A
     /// mint ancestor two or more record edges up reaches a thing by its direct edge only as a hop
     /// marked direct (spec/permissions.md §1 Path, Direct mark): ways are the fewest
@@ -772,9 +521,9 @@ impl<'a> View<'a> {
             let parent = self.records.mint_admin(&t);
             let up: BTreeSet<Tid> = std::iter::successors(parent.and_then(|p| self.records.mint_admin(&p)), |a| self.records.mint_admin(a)).take(osis_base::format::MAX_CHAIN_DEPTH).collect();
             let mut found: Vec<(Tid, bool)> = Vec::new();
-            let invite = matches!(need, Need::Invite(_)) && t == *y;
+            let last = matches!(need, Need::MayGrant(_)) && t == *y;
             self.each_holder(&t, |m, e| {
-                let gives = if invite { e.role == Role::Admin || e.invite.is_some_and(|i| i.min(e.role) >= role) } else { e.role >= role };
+                let gives = e.role >= role && (!last || e.role == Role::Admin || e.may_grant);
                 if e.alive_at(self.ts) && gives {
                     expires = earliest(expires, e.until);
                     found.push((*m, up.contains(m)));
@@ -791,37 +540,23 @@ impl<'a> View<'a> {
         (Ways { to: *y, next }, expires)
     }
 
-    /// Effective invite on `n` given `x`'s roles (spec/permissions.md §2).
-    pub fn invite(&self, best: &BTreeMap<Tid, Role>, n: &Tid) -> Option<Role> {
-        let mut inv = None;
+    /// The highest role at which a path from `x` into `n` gives may-grant, given `x`'s roles
+    /// (spec/permissions.md §2 Path's may-grant): over the edges into `n` giving admin or
+    /// carrying the flag, what `x` holds on the holder and the edge gives.
+    pub fn may_grant(&self, best: &BTreeMap<Tid, Role>, n: &Tid) -> Option<Role> {
+        let mut top = None;
         self.each_holder(n, |m, e| {
-            if let (Some(i), Some(&r), true) = (e.invite, best.get(m), e.alive_at(self.ts)) {
-                inv = inv.max(Some(i.min(r).min(e.role)));
+            if let (Some(&r), true) = (best.get(m), e.alive_at(self.ts) && (e.role == Role::Admin || e.may_grant)) {
+                top = top.max(Some(r.min(e.role)));
             }
         });
-        inv
+        top
     }
 
     /// Standing of `x` on `n` given `x`'s roles.
     pub fn standing(&self, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
-        self.reads(n).standing(best, n)
-    }
-
-    /// What a standing on `n` reads besides the node's roles.
-    pub(crate) fn reads(&self, n: &Tid) -> Reads {
-        let mut invites = Vec::new();
-        self.each_holder(n, |m, e| {
-            if e.invite.is_some() && e.alive_at(self.ts) {
-                invites.push((*m, *e));
-            }
-        });
-        Reads { invites }
-    }
-
-    /// Standing on `n` from its parts: the node's role on `n` and its roles on `n`'s holders
-    /// (for the invite).
-    pub(crate) fn standing_from(&self, role: Option<Role>, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
-        Standing { class: class_of(role, || self.invite(best, n)), role }
+        let role = best.get(n).copied();
+        Standing { class: if role == Some(Role::Admin) { Class::Edge } else { self.may_grant(best, n).map_or(Class::None, Class::MayGrant) }, role }
     }
 
     /// Things reachable from `start` (included) by edges of any role and `until`.
@@ -860,15 +595,15 @@ impl<'a> View<'a> {
 pub enum Need {
     /// At least this role on every edge.
     Role(Role),
-    /// This role on every edge but the last, and as an invite on the last (§2 Path's invite):
-    /// what an invite grant of the role needs.
-    Invite(Role),
+    /// May-grant at this role (§2 Path's may-grant): at least the role on every edge, the last
+    /// giving admin or carrying the flag: what a may-grant grant of the role needs.
+    MayGrant(Role),
 }
 
 impl Need {
     pub fn role(self) -> Role {
         match self {
-            Need::Role(r) | Need::Invite(r) => r,
+            Need::Role(r) | Need::MayGrant(r) => r,
         }
     }
 }

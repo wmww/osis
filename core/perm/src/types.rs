@@ -3,7 +3,7 @@
 //! bytes. Every record is untrusted: perm never panics on one.
 
 use osis_base::{CommitId, Role, Tid, Ts, WallMs};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// Position in the joint order (spec/permissions.md §5.1 step 1): (`ts`, author node, commit
@@ -30,10 +30,8 @@ pub struct Edge {
     pub role: Role,
     /// The edge counts as removed from `wall_ms(t) >= until` (spec/permissions.md §2).
     pub until: Option<WallMs>,
-    /// The highest role the value lets its holder grant. Interim (notes/redesign-plan.md A1): the
-    /// walk this crate's `timeline` runs reads a level; a grant's value carries the may-grant flag
-    /// (spec/permissions.md §2), which reads here as its own role (`may_grant`).
-    pub invite: Option<Role>,
+    /// The may-grant flag (spec/permissions.md §2): its holder may add new holders up to its role.
+    pub may_grant: bool,
     /// With `until`: its passing says retain (spec/permissions.md §3, Retain).
     pub retain: bool,
     /// Granted without history: the read n the holder reads from (spec/crypto.md §4, Floors);
@@ -43,11 +41,7 @@ pub struct Edge {
 
 impl Edge {
     pub fn new(role: Role) -> Edge {
-        Edge { role, until: None, invite: None, retain: false, floor: None }
-    }
-    /// Whether the value carries the may-grant flag (spec/permissions.md §2).
-    pub fn may_grant(&self) -> bool {
-        self.invite >= Some(self.role)
+        Edge { role, until: None, may_grant: false, retain: false, floor: None }
     }
     /// The value a removal saying retain writes (spec/permissions.md §3): `until` 0, gone at every
     /// clock.
@@ -73,7 +67,7 @@ impl Edge {
     }
 }
 
-/// `new` removes `old` or lowers it in every component (role, invite, `until`; a floor at least
+/// `new` removes `old` or lowers it in every component (role, may-grant flag, `until`; a floor at least
 /// the old one: a lower floor hands history): the shape of a self-removal (spec/permissions.md §2).
 pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
     match (new, old) {
@@ -85,7 +79,7 @@ pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
                 (None, Some(_)) => false,
                 (Some(a), Some(b)) => a <= b,
             };
-            n.role <= o.role && n.invite <= o.invite && until_le && n.floor.unwrap_or(0) >= o.floor.unwrap_or(0)
+            n.role <= o.role && n.may_grant <= o.may_grant && until_le && n.floor.unwrap_or(0) >= o.floor.unwrap_or(0)
         }
     }
 }
@@ -139,11 +133,14 @@ pub struct EdgeOp {
 pub struct RoleCommit {
     pub id: CommitId,
     pub ts: Ts,
-    // Interim (notes/a1-spec/README.md step 3): the walk reads the path a role commit states;
-    // until then it reads the signer alone, which every role commit names as purge author.
     /// Its signer (header field 1).
     pub signer: Tid,
-    /// The demoter's frontier (explicit demotions only), resolved from its link if large.
+    /// The things its one stated path lists and the hops it marks direct (spec/wire.md §4
+    /// `Path`).
+    pub listed: Vec<Tid>,
+    pub direct: osis_base::format::PathMarks,
+    /// Its frontier (an explicit lowering's list, spec/permissions.md §5.1), resolved from its
+    /// link if large.
     pub frontier: Option<Arc<Frontier>>,
     pub ops: Vec<EdgeOp>,
 }
@@ -153,24 +150,17 @@ impl RoleCommit {
         Point { ts: self.ts, node: self.signer, commit: self.id }
     }
 
-    /// Whether `o` is this record as an input to the walk: every field, frontiers by their
-    /// sizes (fixed by the commit ID, `HeldSet`), as the saved-walk tag covers it. A record can
-    /// grow under its ID (a part that arrives late).
-    pub(crate) fn same_input(&self, o: &RoleCommit) -> bool {
-        (self.id, self.ts, self.signer, &self.ops) == (o.id, o.ts, o.signer, &o.ops) && same_frontier(&self.frontier, &o.frontier)
+    /// The things between its signer and `t` along which it writes `t` (spec/permissions.md §1
+    /// Path): the listed things, less the last where that is `t`.
+    pub fn path_to(&self, t: &Tid) -> &[Tid] {
+        match self.listed.split_last() {
+            Some((last, rest)) if last == t => rest,
+            _ => &self.listed,
+        }
     }
 }
 
-/// Frontiers as the walk's input compares them: by their sizes (`RoleCommit::same_input`).
-fn same_frontier(a: &Option<Arc<Frontier>>, b: &Option<Arc<Frontier>>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a.commits().len() == b.commits().len(),
-        _ => false,
-    }
-}
-
-/// An edge write's identity: op `.1` of role commit `.0`.
+/// A part's identity: part `.1` of commit `.0`, in its holder's numbering (`paths::Commit`).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct WriteId(pub CommitId, pub u32);
 
@@ -182,24 +172,6 @@ impl WriteId {
 
 /// The `roles.0` AK.
 pub const ROLES: &str = "roles.0";
-
-/// Sets `k` to `v` in `m` (`None`: removes it); the value before.
-pub(crate) fn put<K: Ord, V>(m: &mut BTreeMap<K, V>, k: K, v: Option<V>) -> Option<V> {
-    match v {
-        Some(v) => m.insert(k, v),
-        None => m.remove(&k),
-    }
-}
-
-/// Pops the last element of `m[k]`, removing the entry once empty.
-pub(crate) fn pop<K: Ord, V>(m: &mut BTreeMap<K, Vec<V>>, k: &K) {
-    if let Some(v) = m.get_mut(k) {
-        v.pop();
-        if v.is_empty() {
-            m.remove(k);
-        }
-    }
-}
 
 /// The earlier of two optional expiries.
 pub(crate) fn earliest(a: Option<WallMs>, b: Option<WallMs>) -> Option<WallMs> {

@@ -1,19 +1,29 @@
-//! The role timeline (spec/permissions.md §5.1) and its queries: roster, effective role,
-//! effective invite and authority class at a point, the applied and dropped edge writes.
+//! The role timeline (spec/permissions.md §5.1): the settled walk along stated paths
+//! (`paths::Paths`) over what a node holds, read per holder. The walk answers per edge (its
+//! applied writes, its value before a key); this layer keeps the edge state those histories
+//! end in and answers what is asked across edges: effective roles (§1), rosters, standing,
+//! the default path, at the end or just before a key.
+//!
+//! The node gives it the held commits as the walk's input (`HeldSet`), naming what moved since
+//! the last update; any order of updates reads as the walk from scratch over what is held.
 
-use crate::cert::CertIndex;
-use crate::graph::{Class, Edges, EdgesAt, Records, Standing, View, INITIAL, RECORD_EDGE};
-use crate::held::HeldSet;
-use crate::trust::{self, Detected, Dispute, Trust, TrustIndex};
-use crate::types::{Edge, EdgeOp, RoleCommit, Point, WriteId};
-use crate::walk::{self, Applied, Demotion, Input};
-use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
+use crate::graph::{Class, Edges, EdgesAt, Need, Records, Standing, View, RECORD_EDGE};
+use crate::paths::{self, Key, MemStore, Paths, Status, Store, Way};
+use crate::types::{Edge, Point, WriteId};
+use osis_base::format::{PathMarks, MAX_CHAIN_DEPTH};
+use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-/// History changes between two kept edge states (`edges_at` replays at most this many as an
-/// overlay; a kept state shares its unchanged per-thing maps, `Edges`).
-const CHECKPOINT: usize = 32;
+/// What the node holds that the walk reads. Applied, verified commits only (pending ones are
+/// not held, spec/commits.md §4).
+pub trait HeldSet {
+    /// The `created.0` record of `thing`, if held.
+    fn created(&self, thing: &Tid) -> Option<CreationRecord>;
+    /// Held commit `id` as the walk reads it; `None` where it is not held or nothing of it is
+    /// read.
+    fn commit(&self, id: &CommitId) -> Option<paths::Commit>;
+}
 
 /// When a query is evaluated: the edge state just before `point` (`None`: after every held
 /// write) with edges alive at `ts` (`None`: the end of time, where every `until` has passed).
@@ -32,888 +42,274 @@ impl At {
     pub fn now(ts: Ts) -> At {
         At { point: None, ts: Some(ts) }
     }
-    /// The current state at the end of time: only edges without `until` count. Re-grant
-    /// (§5.2) is judged here.
+    /// The current state at the end of time: only edges without `until` count.
     pub const END: At = At { point: None, ts: None };
     /// The current state as keys see it (spec/crypto.md §4): every `until` disregarded, a
     /// removal's retain value (`until` 0, §2) counting as no edge.
     pub const KEYS: At = At { point: None, ts: Some(Ts::ZERO) };
 }
 
-/// Layer 1 evaluated over a held set.
+/// The key just before every part of the commit at `p`.
+pub fn key_of(p: Point) -> Key {
+    Key { ts: p.ts, signer: p.node, commit: p.commit, part: 0 }
+}
+
+/// The point of the commit holding the part at `k`.
+pub fn point_of(k: Key) -> Point {
+    Point { ts: k.ts, node: k.signer, commit: k.commit }
+}
+
+/// What an update changed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Changed {
+    /// What the walk reports (`paths::Changed`).
+    pub walk: paths::Changed,
+    /// Things whose record came or went: their record edge with it.
+    pub created: BTreeSet<Tid>,
+    /// The held deltas whose verdict may have moved (`Paths::reached`).
+    pub reached: BTreeSet<WriteId>,
+}
+
+impl Changed {
+    /// The edges (holder, target) whose value at some key changed, a record edge that came or
+    /// went aside (`created`).
+    pub fn edges(&self) -> impl Iterator<Item = &(Tid, Tid)> {
+        self.walk.edges.keys()
+    }
+    pub fn is_empty(&self) -> bool {
+        *self == Changed::default()
+    }
+}
+
+/// The timeline over a held set.
 #[derive(Clone)]
-pub struct Timeline {
-    /// The inputs walked (`append` adds to them).
-    pub(crate) input: Input,
-    /// The final walk's items over `input`.
-    pub(crate) items: walk::Items,
-    pub(crate) walked: walk::Walked,
-    dropped: BTreeMap<WriteId, Point>,
-    passes: usize,
-    /// The furthest point a walk other than the final one reached
-    /// (the latest point of a drop in D; kept for the walk cache).
-    pub(crate) reach: Option<Point>,
-    /// Kept edge states `(i, state before history change i)`, `i` increasing from 0, about
-    /// `CHECKPOINT` apart, for `edges_at` (shared with the timeline `extend` made this from).
-    checkpoints: Checkpoints,
-    /// Answers of layer-2 queries, valid as long as this timeline (the held set of its
-    /// component) is.
-    pub(crate) memo: Memo,
-    /// Commits the last `append` placed without walking again.
-    pub(crate) placed: usize,
-    /// What the last `append` changed in the history (`Changed::edges`; `Timelines` takes it).
-    pub(crate) appended: Appended,
-    /// The trust set this was evaluated under (`crate::trust`).
-    pub(crate) trust: Trust,
-    /// Its ops in force: trustable here and applied (the void ones shrunk out).
-    active: BTreeSet<WriteId>,
-    /// Their seeds: D before the walk, each with its op's point.
-    seeds: BTreeMap<WriteId, Point>,
+pub struct Timeline<S: Store = MemStore> {
+    paths: Paths<S>,
+    records: Records,
+    /// The edge state after every applied write.
+    now: Edges,
+    /// The applied writes in key order, each with its edge (holder, target).
+    log: BTreeMap<Key, (Tid, Tid)>,
+    /// Per target, the holders whose edge on it a held edge write sets, applied or not.
+    into: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Per thing whose record is not held, the held commits with a path member whose record
+    /// chain stops at it: given again when the record comes (their hops read the chain).
+    waiting: BTreeMap<Tid, BTreeSet<CommitId>>,
 }
 
-/// What `Timeline::append` changed in the history: the changes it placed without walking
-/// again, and, when the walk went on (`walk::Outcome::undone`), the first change it rolled
-/// back over and the changes from there before (placed ones among them).
-#[derive(Clone, Default)]
-pub(crate) struct Appended {
-    pub placed: Vec<walk::Change>,
-    pub undone: Option<(usize, Vec<walk::Change>)>,
-}
-
-/// `first_held` by (node, thing, role).
-type FirstHeld = BTreeMap<(Tid, Tid, Role), Option<Option<Point>>>;
-/// `delta_valid` by its arguments.
-type Valid = BTreeMap<(Point, Tid, Role), crate::content::Validity>;
-
-/// One `Memo::on_now` entry.
-type OnNow = (Arc<BTreeMap<Tid, Role>>, Ts, Option<WallMs>);
-type WaysNow = (Arc<crate::graph::Ways>, Ts, Option<WallMs>);
-
-/// An explicit demotion as `Timeline::demoted_by` gives it: (node, thing, the role it fell below).
-pub type Demoted = (Tid, Tid, Role);
-
-/// Memoized layer-2 answers.
-#[derive(Default)]
-pub(crate) struct Memo {
-    pub first_held: Mutex<FirstHeld>,
-    /// `first_held`'s replays by (node, role), to go on with.
-    pub replays: Mutex<BTreeMap<(Tid, Role), crate::content::Replay>>,
-    pub valid: Mutex<Valid>,
-    /// `roles_on` at `At::END`, per thing.
-    pub on_end: Mutex<BTreeMap<Tid, Arc<BTreeMap<Tid, Role>>>>,
-    /// `roles_on` on the current edges, per thing: (the answer, from what ts, the earliest
-    /// `until` it followed). A walk per thing while the edges stay and no followed edge ends.
-    pub on_now: Mutex<BTreeMap<Tid, OnNow>>,
-    /// `ways_to` on the current edges, per (thing, need): (the ways, from what ts, the earliest
-    /// `until` they followed). A walk per thing and need while the edges stay and no followed edge
-    /// ends.
-    pub ways: Mutex<BTreeMap<(Tid, crate::graph::Need), WaysNow>>,
-    /// Walks made for `on_now` (a measure).
-    pub on_walks: std::sync::atomic::AtomicU64,
-    /// What a node reaches over chained edges (`cert`), per node `closure` met: the asker (a
-    /// node asks for its own certificates at every pass) and the authors on its chains; and the
-    /// walks made for it (a measure).
-    pub forward: Mutex<BTreeMap<Tid, Arc<BTreeSet<Tid>>>>,
-    pub forward_walks: std::sync::atomic::AtomicU64,
-    /// `certificates` per (node, thing) asked.
-    pub certificates: Mutex<BTreeMap<(Tid, Tid), crate::cert::Certificates>>,
-    /// The chained edge writes and the edges they set, for certificates and trust seeds.
-    pub certs: std::sync::OnceLock<Arc<crate::cert::CertIndex>>,
-    /// The edge writes applied, by their target; and the indexes built (a measure).
-    pub on_target: std::sync::OnceLock<BTreeMap<Tid, Vec<WriteId>>>,
-    pub on_target_built: std::sync::atomic::AtomicU64,
-    /// The edge writes held, applied or not, by their target.
-    pub held_on_target: std::sync::OnceLock<BTreeMap<Tid, Vec<WriteId>>>,
-    /// `Timeline::disputes`.
-    pub disputes: std::sync::OnceLock<Vec<Dispute>>,
-    /// `Timeline::own_named`'s index: by (author, thing).
-    pub own_named: std::sync::OnceLock<BTreeMap<(Tid, Tid), Vec<Demotion>>>,
-    /// `Timeline::demoted_by`'s index: per explicit demotion's commit, (node, thing, below).
-    pub demoted_by: std::sync::OnceLock<BTreeMap<CommitId, Vec<Demoted>>>,
-}
-
-impl Memo {
-    /// The answers that stand once `links` (leaf, its mint admin) join as leaves `new`: a leaf
-    /// holds nothing and no write names it, so no path into another thing passes it, no write's
-    /// standing moves (the chained writes, the writes by target, the disputes stay) and every
-    /// answer on another thing stands; what reaches a leaf's mint admin reaches the leaf too,
-    /// with the same role from the same change on (`forward` and the replays gain it). The
-    /// rest goes.
-    fn add_leaves(&mut self, links: &[(Tid, Tid)], new: &BTreeSet<Tid>) {
-        fn m<T>(x: &mut Mutex<T>) -> &mut T {
-            x.get_mut().unwrap_or_else(|e| e.into_inner())
-        }
-        m(&mut self.first_held).retain(|(_, t, _), v| v.is_some() && !new.contains(t));
-        m(&mut self.replays).values_mut().for_each(|r| r.add_leaves(links));
-        m(&mut self.valid).retain(|(_, t, _), _| !new.contains(t));
-        m(&mut self.on_end).retain(|t, _| !new.contains(t));
-        m(&mut self.on_now).retain(|t, _| !new.contains(t));
-        m(&mut self.ways).retain(|(t, _), _| !new.contains(t));
-        m(&mut self.certificates).retain(|(_, t), _| !new.contains(t));
-        for reach in m(&mut self.forward).values_mut() {
-            // through mint admins that are new leaves too
-            while let Some(x) = links.iter().find(|(x, a)| reach.contains(a) && !reach.contains(x)).map(|l| l.0) {
-                Arc::make_mut(reach).insert(x);
-            }
-        }
-        self.own_named = std::sync::OnceLock::new();
-        // a leaf takes its mint admin's demotions (`alias_leaves`)
-        self.demoted_by = std::sync::OnceLock::new();
+impl Default for Timeline<MemStore> {
+    fn default() -> Self {
+        Timeline::new(BTreeSet::new())
     }
 }
 
-/// A copy holding the same answers and measures (world copies, notes/test-harnesses.md).
-impl Clone for Memo {
-    fn clone(&self) -> Memo {
-        fn get<T: Clone>(m: &Mutex<T>) -> Mutex<T> {
-            Mutex::new(m.lock().unwrap_or_else(|e| e.into_inner()).clone())
-        }
-        fn n(a: &std::sync::atomic::AtomicU64) -> std::sync::atomic::AtomicU64 {
-            std::sync::atomic::AtomicU64::new(a.load(std::sync::atomic::Ordering::Relaxed))
-        }
-        Memo {
-            first_held: get(&self.first_held),
-            replays: get(&self.replays),
-            valid: get(&self.valid),
-            on_end: get(&self.on_end),
-            on_now: get(&self.on_now),
-            ways: get(&self.ways),
-            on_walks: n(&self.on_walks),
-            forward: get(&self.forward),
-            forward_walks: n(&self.forward_walks),
-            certificates: get(&self.certificates),
-            certs: self.certs.clone(),
-            on_target: self.on_target.clone(),
-            on_target_built: n(&self.on_target_built),
-            held_on_target: self.held_on_target.clone(),
-            disputes: self.disputes.clone(),
-            own_named: self.own_named.clone(),
-            demoted_by: self.demoted_by.clone(),
-        }
+impl Timeline<MemStore> {
+    /// Nothing held, under `trust`.
+    pub fn new(trust: BTreeSet<WriteId>) -> Timeline {
+        Timeline::with_store(trust, MemStore::default())
     }
 }
 
-/// Kept edge states (`Timeline::checkpoints`).
-type Checkpoints = Vec<(usize, Arc<Edges>)>;
-
-/// The kept edge states of `w`'s history, going on from those in `out` (still valid for it).
-fn checkpoints(records: &Records, w: &walk::Walked, mut out: Checkpoints) -> Checkpoints {
-    let len = w.history.len();
-    out.retain(|c| c.0 < len);
-    let (start, mut e) = match out.last() {
-        Some((i, c)) => (*i, (**c).clone()),
-        None => (0, Edges::default()),
-    };
-    let mut next = if out.is_empty() { 0 } else { start + CHECKPOINT };
-    for (i, c) in w.history.iter().enumerate().skip(start) {
-        if i == next {
-            out.push((i, Arc::new(e.clone())));
-            next += CHECKPOINT;
-        }
-        e.set(records, c.holder, c.target, c.edge);
-    }
-    out
-}
-
-/// What a timeline hands the one `extend` or `append` makes from it: what stays true over
-/// the history both share (the same initial state and changes up to the first that differs,
-/// `Outcome::common`).
-pub(crate) struct Kept {
-    checkpoints: Checkpoints,
-    first_held: FirstHeld,
-}
-
-impl Kept {
-    fn of(tl: &mut Timeline) -> Kept {
-        let first_held = std::mem::take(tl.memo.first_held.get_mut().unwrap_or_else(|e| e.into_inner()));
-        Kept { checkpoints: std::mem::take(&mut tl.checkpoints), first_held }
+impl<S: Store> Timeline<S> {
+    pub fn with_store(trust: BTreeSet<WriteId>, store: S) -> Timeline<S> {
+        Timeline { paths: Paths::with_store(&BTreeMap::new(), trust, store), records: Records::default(), now: Edges::default(), log: BTreeMap::new(), into: BTreeMap::new(), waiting: BTreeMap::new() }
     }
 
-    /// The kept states and `first_held` answers still valid for `w`.
-    fn carry(self, records: &Records, w: &walk::Walked, common: Option<(usize, Option<Point>)>) -> (Checkpoints, FirstHeld) {
-        let mut cps = self.checkpoints;
-        let mut fh = self.first_held;
-        match common {
-            // an answer found at a change before the first that differs stands
-            Some((n, bound)) => {
-                cps.retain(|c| c.0 <= n);
-                fh.retain(|_, v| v.is_some_and(|p| p.is_none_or(|p| bound.is_none_or(|b| p < b))));
-            }
-            None => {
-                cps.clear();
-                fh.clear();
-            }
-        }
-        (checkpoints(records, w, cps), fh)
-    }
-}
-
-impl Timeline {
-    /// Evaluates from scratch (D rebuilt, §5.1 step 5) under an empty trust set.
-    pub fn evaluate(held: &dyn HeldSet) -> Timeline {
-        Timeline::evaluate_with(held, &Trust::default())
+    /// The walk.
+    pub fn paths(&self) -> &Paths<S> {
+        &self.paths
     }
 
-    /// Evaluates from scratch under `trust` (`crate::trust`): D starts at the seeds of the
-    /// trusted ops held here; a trusted op the settled walk leaves unapplied is void, every
-    /// void one loses its seeds at once and the walk is redone, until none is (at most one
-    /// round per trusted op). Equal to `evaluate` when no trusted op is held here.
-    pub fn evaluate_with(held: &dyn HeldSet, trust: &Trust) -> Timeline {
-        Timeline::from_input(Input::gather(held), trust)
-    }
-
-    /// The walk over `input` under `trust` (steps 1 to 5).
-    pub(crate) fn from_input(input: Input, trust: &Trust) -> Timeline {
-        let mut active: BTreeSet<WriteId> = trust.ops.iter().filter(|w| input.trustable(w).is_some()).copied().collect();
-        let ix = (!active.is_empty()).then(|| TrustIndex::new(&input, Arc::new(CertIndex::of(&input))));
-        let mut passes = 0;
-        loop {
-            let seeds = ix.as_ref().map(|ix| trust::seeds_of(&input, ix, &active)).unwrap_or_default();
-            let out = walk::run(&input, seeds.clone());
-            passes += out.passes;
-            let void: Vec<WriteId> = active.iter().filter(|r| !out.walked.applied.contains_key(r)).copied().collect();
-            if void.is_empty() {
-                let mut tl = Timeline::from_outcome(input, out);
-                if let Some(ix) = ix {
-                    let _ = tl.memo.certs.set(ix.chained);
-                }
-                tl.passes = passes;
-                tl.trust = trust.clone();
-                tl.active = active;
-                tl.seeds = seeds;
-                return tl;
-            }
-            for r in void {
-                active.remove(&r);
-            }
-        }
-    }
-
-    /// Whether a timeline under this trust set over `commits` may only be evaluated from
-    /// scratch: a trusted op is among them (`crate::trust`).
-    fn trusted(&self, commits: impl IntoIterator<Item = CommitId>) -> bool {
-        !self.trust.is_empty() && commits.into_iter().any(|id| self.trust.names(&id))
-    }
-
-    /// The trust set this timeline was walked under.
-    pub fn trust(&self) -> &BTreeSet<WriteId> {
-        &self.trust.ops
-    }
-
-    /// The trusted ops in force: held here, applied, their seeds in D.
-    pub fn trusted_active(&self) -> &BTreeSet<WriteId> {
-        &self.active
-    }
-
-    /// The open disputes (`crate::trust`): the trustable ops the settled walk did not apply
-    /// and no seed dropped, that apply as an explicit write lowering their holder's edge in
-    /// the walk with their seeds added to D. One extra walk per candidate with seeds: a
-    /// removed admin can sign any number (`disputes_up_to` bounds a scan).
-    pub fn disputes(&self) -> &[Dispute] {
-        self.memo.disputes.get_or_init(|| self.scan(&self.candidates(), usize::MAX, false).0.into_iter().map(|d| d.dispute).collect())
-    }
-
-    /// `disputes` walking at most `max` candidates (in point order): the disputes among them,
-    /// the walks made and how many candidates were left unexamined.
-    pub fn disputes_up_to(&self, max: usize) -> (Vec<Dispute>, usize, usize) {
-        let (d, walked, left) = self.scan(&self.candidates(), max, false);
-        (d.into_iter().map(|d| d.dispute).collect(), walked, left.len())
-    }
-
-    /// The op of `commit` on edge (`holder`, `target`), if held here.
-    pub(crate) fn op_of(&self, commit: &CommitId, holder: &Tid, target: &Tid) -> Option<WriteId> {
-        let c = self.input.commits.get(commit)?;
-        let k = c.ops.iter().position(|o| o.holder == *holder && o.target == *target)?;
-        Some(WriteId(*commit, u32::try_from(k).ok()?))
-    }
-
-    /// Every trustable op the settled walk did not apply and no seed dropped, in point order.
-    pub(crate) fn candidates(&self) -> Vec<WriteId> {
-        let mut out = Vec::new();
-        for c in self.input.commits.values().filter(|c| c.frontier.is_some()) {
-            for k in 0..c.ops.len() {
-                let Ok(k32) = u32::try_from(k) else { continue };
-                let id = WriteId(c.id, k32);
-                if self.input.trustable(&id).is_some() && !self.walked.applied.contains_key(&id) && !self.seeds.contains_key(&id) {
-                    out.push((c.point(), k32, id));
-                }
-            }
-        }
-        out.sort_unstable_by_key(|x| (x.0, x.1));
-        out.into_iter().map(|x| x.2).collect()
-    }
-
-    /// Candidates `cands` (ops of this timeline, in order; applied, seeded and untrustable ones
-    /// skipped) examined: each with seeds costs one walk, at most `max` of them; the rest are
-    /// counted, not examined. `stood`: they applied before the update that asks (`Detected`).
-    /// Returns the disputes found, the walks
-    /// made and the candidates left that needed one (each with the holder it lowers: maybe no
-    /// dispute).
-    pub(crate) fn scan(&self, cands: &[WriteId], max: usize, stood: bool) -> (Vec<Detected>, usize, Vec<Dispute>) {
-        // the index over every held commit only once a candidate needs seeds (honest arrivals
-        // apply, and detection asks at every update)
-        let mut ix: Option<TrustIndex> = None;
-        let mut out = Vec::new();
-        let (mut walked, mut left) = (0, Vec::new());
-        for id in cands {
-            let Some((c, op)) = self.input.trustable(id) else { continue };
-            if self.walked.applied.contains_key(id) || self.seeds.contains_key(id) {
-                continue;
-            }
-            let ix = ix.get_or_insert_with(|| TrustIndex::new(&self.input, self.cert_index().clone()));
-            let mut d = self.input.seeds(ix, id);
-            if d.is_empty() {
-                continue;
-            }
-            if walked >= max {
-                left.push(Dispute { op: *id, holder: op.holder });
-                continue;
-            }
-            for (w, p) in &self.seeds {
-                d.entry(*w).and_modify(|q| *q = (*q).min(*p)).or_insert(*p);
-            }
-            walked += 1;
-            let o = walk::run(&self.input, d);
-            let k = usize::try_from(id.1).unwrap_or(usize::MAX);
-            if !trust::demoting(&o.walked, &self.input.records, c, k) {
-                continue;
-            }
-            out.push(Detected { dispute: Dispute { op: *id, holder: op.holder }, author: c.signer, target: op.target, stood });
-        }
-        (out, walked, left)
-    }
-
-    /// This timeline's walk and inputs without its memos, to append to (`demotion_scope`).
-    pub(crate) fn copy(&self) -> Timeline {
-        let (input, items, walked) = (self.input.clone(), self.items.clone(), self.walked.clone());
-        let (dropped, checkpoints) = (self.dropped.clone(), self.checkpoints.clone());
-        let (trust, active, seeds) = (self.trust.clone(), self.active.clone(), self.seeds.clone());
-        let Timeline { passes, reach, .. } = *self;
-        Timeline { input, items, walked, dropped, passes, reach, checkpoints, memo: Memo::default(), placed: 0, appended: Appended::default(), trust, active, seeds }
-    }
-
-    pub(crate) fn from_outcome(input: Input, out: walk::Outcome) -> Timeline {
-        Timeline::from_kept(input, out, None)
-    }
-
-    fn from_kept(input: Input, out: walk::Outcome, kept: Option<Kept>) -> Timeline {
-        let (checkpoints, first_held) = match kept {
-            Some(k) => k.carry(&input.records, &out.walked, out.common),
-            None => (checkpoints(&input.records, &out.walked, Vec::new()), FirstHeld::new()),
-        };
-        let items = out.items.unwrap_or_else(|| walk::items(&input));
-        Timeline {
-            input,
-            items,
-            walked: out.walked,
-            dropped: out.dropped,
-            passes: out.passes,
-            reach: out.reach,
-            checkpoints,
-            memo: Memo { first_held: Mutex::new(first_held), ..Memo::default() },
-            placed: 0,
-            appended: Appended::default(),
-            trust: Trust::default(),
-            active: BTreeSet::new(),
-            seeds: BTreeMap::new(),
-        }
-    }
-
-    /// This timeline for `held`, which holds every role commit walked here, maybe more, and
-    /// maybe new things, `created.0` records and nodes (equal to `evaluate`). Before the first
-    /// point `p` where the walk meets anything new (a new commit, or an item naming a thing
-    /// whose record is new, one below it, or a new node), the walk is the same but for the
-    /// demotions on those things: their record edge is their only edge there, so a node's role
-    /// on one is its role on its mint admin (`Walked::alias_leaves`); a new node reaches
-    /// nothing walked there (it is mint admin only of such things). So the final walk takes
-    /// those, is rolled back to `p` (or to the first write a drop found after it dropped, D
-    /// keeping what was found before) and goes on from there instead of starting over. `None`
-    /// when that does not hold (a node gone that has no record now, a new node mint admin of a
-    /// thing walked before, a record changed under its ID) or a trusted op is held (seeds and
-    /// void ops are read from the whole held set, `crate::trust`): evaluate.
-    pub fn extend(mut self, held: &dyn HeldSet) -> Option<Timeline> {
-        let input = Input::gather(held);
-        if !self.input.commits.keys().all(|k| input.commits.contains_key(k)) || !self.input.kept_in(&input) || self.trusted(input.commits.keys().copied()) {
-            return None;
-        }
-        let added = input.commits.iter().filter(|(k, _)| !self.input.commits.contains_key(*k)).map(|(_, c)| c.point()).min();
-        let (below, from) = self.joined(&input, added)?;
-        let cut = match from {
-            Some(f) => self.walked.marks.get(self.items.list_before(f)).map_or(self.walked.log.len(), |m| m.0),
-            None => self.walked.log.len(),
-        };
-        let leaves: Vec<(Tid, Tid)> = below.iter().filter_map(|t| input.records.mint_admin(t).map(|o| (*t, o))).collect();
-        // the record edges of the records new here: in force from the start, which the walk's
-        // undo entries (logged with the record unknown) do not restore
-        let fresh: Vec<(Tid, Tid)> = leaves.iter().filter(|(t, _)| self.input.records.link(t).is_none()).map(|(t, a)| (*a, *t)).collect();
-        let joins = !below.is_empty() || input.nodes != self.input.nodes;
-        let mut kept = Kept::of(&mut self);
-        // a role through a new record edge may differ from where the walk meets it on, its
-        // history changed there or not; on one of them, from the start
-        if !below.is_empty() {
-            kept.first_held.retain(|(_, t, _), v| !below.contains(t) && v.is_some_and(|q| q.is_none_or(|q| from.is_none_or(|f| q < f))));
-        }
-        let Timeline { mut walked, dropped, passes, reach, .. } = self;
-        walked.alias_leaves(&leaves, &input.nodes, cut)?;
-        let Some(from) = from else {
-            let common = Some((walked.history.len(), None));
-            let out = walk::Outcome { walked, dropped, passes, reach, items: None, common, undone: None };
-            return Some(Timeline::from_kept(input, out, Some(kept)));
-        };
-        Some(Timeline::resumed(input, walk::Resume { walked, dropped, from, items: None, fresh }, kept, joins).0)
-    }
-
-    /// `walk::resume` of `r` over `input`, carrying `kept`; debug builds check the walk
-    /// against one from scratch when `check`.
-    #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-    fn resumed(input: Input, r: walk::Resume, kept: Kept, check: bool) -> (Timeline, Option<(usize, Vec<walk::Change>)>) {
-        let mut out = walk::resume(&input, r);
-        let undone = out.undone.take();
-        let tl = Timeline::from_kept(input, out, Some(kept));
-        #[cfg(debug_assertions)]
-        if check {
-            tl.walked.check_scratch(&tl.input, &tl.dropped);
-        }
-        (tl, undone)
-    }
-
-    /// What `input` (this timeline's, grown) adds that the walk may meet before its new commits
-    /// (from `added`): the things whose record is new and every thing below them, and the
-    /// first point where an item walked here names one of them or a new node (`None`: none
-    /// does, and no commit is new). `None` when a record is gone, a node is gone that has no
-    /// record now, or a new node is mint admin of a thing not among them.
-    fn joined(&self, input: &Input, added: Option<Point>) -> Option<(BTreeSet<Tid>, Option<Point>)> {
-        if !self.input.records.links().all(|(t, o)| input.records.link(t) == Some(*o)) {
-            return None;
-        }
-        let mut below: BTreeSet<Tid> = input.records.links().filter(|(t, _)| self.input.records.link(t).is_none()).map(|(t, _)| *t).collect();
-        let mut stack: Vec<Tid> = below.iter().copied().collect();
-        while let Some(t) = stack.pop() {
-            for y in input.records.mint_admin_of(&t) {
-                if below.insert(*y) {
-                    stack.push(*y);
-                }
-            }
-        }
-        if self.input.nodes.difference(&input.nodes).any(|n| !below.contains(n)) {
-            return None;
-        }
-        let came: Vec<Tid> = input.nodes.difference(&self.input.nodes).filter(|n| !below.contains(n)).copied().collect();
-        if came.iter().any(|n| input.records.mint_admin_of(n).iter().any(|y| !below.contains(y))) {
-            return None;
-        }
-        let mut named = below.clone();
-        named.extend(came);
-        if named.is_empty() {
-            return Some((below, added));
-        }
-        let first = self.items.first_naming(&named, added);
-        Some((below, match (first, added) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }))
-    }
-
-    /// This timeline with role commits `new` added (not held here, on things of this
-    /// timeline, by and for its nodes or nodes that reach nothing here) and the `created.0` of
-    /// key actors `keys` new here (nodes `new` names, nothing else held of them): `extend`
-    /// without gathering the held set again. Each commit, in timeline order, is placed in the walk
-    /// without walking again where that is exact (`Walked::insert`: it applies nothing, or no
-    /// later item reads what it changes); from the first that is not, the walk goes on from
-    /// it. `Err(self)`, unchanged, when `extend` would not hold or the inputs would change
-    /// otherwise (`Input::can_append`).
-    pub fn append(mut self, new: &[Arc<RoleCommit>], keys: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
-        self.appended = Appended::default();
-        if new.is_empty() {
-            return Ok(self);
-        }
-        if !self.input.can_append(new) || keys.iter().any(|(t, r)| self.input.records.link(t).is_some() || r.tid() != *t || !matches!(r, CreationRecord::KeyActor { .. })) || self.trusted(new.iter().chain(self.input.commits.values()).map(|c| c.id)) {
-            return Err(Box::new(self));
-        }
-        for (t, r) in keys {
-            self.input.records.insert(*t, r);
-        }
-        let mut new = new.to_vec();
-        new.sort_by_key(|c| c.point());
-        // chain certificates list held writes; what is ever reached and what lies below moves
-        self.memo.certs = std::sync::OnceLock::new();
-        self.memo.on_target = std::sync::OnceLock::new();
-        self.memo.held_on_target = std::sync::OnceLock::new();
-        *self.memo.forward.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
-        *self.memo.certificates.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
-        self.placed = 0;
-        for (j, c) in new.iter().enumerate() {
-            let p = c.point();
-            let first: BTreeMap<Tid, Option<Point>> = walk::written_on(c).map(|t| (t, self.input.first_write.get(&(c.signer, t)).copied())).collect();
-            let fresh = self.input.append(std::slice::from_ref(c));
-            let n0 = self.walked.history.len();
-            let h = self.walked.marks.get(self.items.place(c)).map_or(n0, |m| m.1);
-            let before = self.edges_before(h);
-            let cx = walk::Place { input: &self.input, items: &self.items, dropped: &self.dropped, c };
-            let pl = self.walked.insert(&cx, before, &first, &fresh);
-            match pl {
-                walk::Placement::Idle => {
-                    self.items.add(std::slice::from_ref(c));
-                    self.placed += 1;
-                }
-                walk::Placement::Inserted(h) => {
-                    self.items.add(std::slice::from_ref(c));
-                    self.inserted(h, self.walked.history.len() - n0, p);
-                    self.placed += 1;
-                }
-                walk::Placement::Declined | walk::Placement::From(..) => {
-                    // placed up to a later item: the walk goes on from there (or from a later
-                    // commit of this batch before it)
-                    let (rest, joined, from) = match pl {
-                        walk::Placement::From(h, q) => {
-                            self.items.add(std::slice::from_ref(c));
-                            self.inserted(h, self.walked.history.len() - n0, p);
-                            let rest = new.get(j + 1..).unwrap_or_default();
-                            (rest, rest, rest.first().map_or(q, |r| r.point().min(q)))
-                        }
-                        _ => {
-                            let rest = new.get(j..).unwrap_or_default();
-                            (rest, rest.get(1..).unwrap_or_default(), p)
-                        }
-                    };
-                    self.input.append(joined);
-                    self.items.add(rest);
-                    let kept = Kept::of(&mut self);
-                    let Timeline { input, items, walked, dropped, placed, appended, .. } = self;
-                    let r = walk::Resume { walked, dropped, from, items: Some(items), fresh: Vec::new() };
-                    let (tl, undone) = Timeline::resumed(input, r, kept, matches!(pl, walk::Placement::From(..)));
-                    let appended = Appended { placed: appended.placed, undone };
-                    return Ok(Timeline { placed, appended, ..tl });
-                }
-            }
-        }
-        Ok(self)
-    }
-
-    /// This timeline with things `leaves` new here that only their `created.0` names (no item
-    /// names them, they are mint admin of nothing held): `extend` without gathering the held
-    /// set again. The walk is the same but for their demotions, which are their mint admins'
-    /// (`Walked::alias_leaves`). `Err(self)`, unchanged, when one is known here, a key actor,
-    /// or the records cycle.
-    pub fn add_leaves(mut self, leaves: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
-        let records = &self.input.records;
-        let links: Option<Vec<(Tid, Tid)>> = leaves
-            .iter()
-            .map(|(t, r)| match r {
-                CreationRecord::Thing { admin, .. } if records.link(t).is_none() && records.mint_admin_of(t).is_empty() && !self.input.nodes.contains(t) => Some((*t, *admin)),
-                _ => None,
-            })
-            .collect();
-        let Some(links) = links else { return Err(Box::new(self)) };
-        if self.trusted(self.input.commits.keys().copied()) {
-            return Err(Box::new(self));
-        }
-        let new: BTreeSet<Tid> = links.iter().map(|l| l.0).collect();
-        debug_assert!(self.items.first_naming(&new, None).is_none(), "a leaf an item names");
-        let cut = self.walked.log.len();
-        if self.walked.alias_leaves(&links, &self.input.nodes, cut).is_none() {
-            return Err(Box::new(self));
-        }
-        for (t, r) in leaves {
-            self.input.records.insert(*t, r);
-        }
-        // a mint admin whose record is not held is a node, as `Input::gather` has it
-        let mut nodes = false;
-        for (_, a) in &links {
-            if self.input.records.link(a).is_none() {
-                nodes |= self.input.nodes.insert(*a);
-            }
-        }
-        if nodes {
-            self.reset_memo(|(_, t, _), v| v.is_some() && !new.contains(t));
-        } else {
-            self.memo.add_leaves(&links, &new);
-        }
-        self.placed = 0;
-        Ok(self)
-    }
-
-    /// Whether the commits `held` holds on `things` are the ones walked here, with the same
-    /// content (a record can grow under its ID: a part that arrives late).
-    pub(crate) fn holds_same(&self, held: &dyn HeldSet, things: &BTreeSet<Tid>) -> bool {
-        things.iter().all(|t| held.edge_commits(t).iter().all(|c| self.input.holds_commit(c)))
-    }
-
-    /// The edge state before history change `h`, from the newest kept state at or before it.
-    fn edges_before(&self, h: usize) -> Edges {
-        let k = self.checkpoints.partition_point(|c| c.0 <= h);
-        let (mut e, pos) = match k.checked_sub(1).and_then(|k| self.checkpoints.get(k)) {
-            Some((i, e)) => ((**e).clone(), *i),
-            None => (Edges::default(), 0),
-        };
-        for x in self.walked.history.iter().take(h).skip(pos) {
-            e.set(&self.input.records, x.holder, x.target, x.edge);
-        }
-        e
-    }
-
-    /// `n` changes were inserted into the history at change `h` (point `p`) by
-    /// `Walked::insert`, which no later change touches the edges of: each later kept state
-    /// moves by `n` and takes them; answers past `p` go.
-    fn inserted(&mut self, h: usize, n: usize, p: Point) {
-        let changes: Vec<(Tid, Tid, Option<Edge>)> = self.walked.history.iter().skip(h).take(n).map(|c| (c.holder, c.target, c.edge)).collect();
-        self.appended.placed.extend(self.walked.history.iter().skip(h).take(n).cloned());
-        // a history that was empty kept no state: the initial one, so later gaps get split
-        if self.checkpoints.is_empty() {
-            self.checkpoints.push((0, Arc::new(Edges::default())));
-        }
-        let k = self.checkpoints.partition_point(|c| c.0 <= h);
-        let later = self.checkpoints.get_mut(k..).unwrap_or_default();
-        for c in later.iter_mut() {
-            c.0 += n;
-        }
-        Edges::set_all(&self.input.records, later.iter_mut().map(|c| &mut c.1), &changes);
-        // keep the gap the insert widened within twice the interval
-        let end = self.checkpoints.get(k).map_or(self.walked.history.len(), |c| c.0);
-        if let Some((i, base)) = k.checked_sub(1).and_then(|k| self.checkpoints.get(k)).cloned()
-            && end - i > 2 * CHECKPOINT
-        {
-            let mut e = (*base).clone();
-            for c in self.walked.history.iter().skip(i).take(CHECKPOINT) {
-                e.set(&self.input.records, c.holder, c.target, c.edge);
-            }
-            self.checkpoints.insert(k, (i + CHECKPOINT, Arc::new(e)));
-        }
-        #[cfg(debug_assertions)]
-        {
-            let mut e = Edges::default();
-            let mut cps = self.checkpoints.iter().peekable();
-            for (i, c) in self.walked.history.iter().enumerate() {
-                while let Some((j, s)) = cps.next_if(|x| x.0 == i) {
-                    debug_assert!(**s == e, "kept state {j} after an insert at {h}");
-                }
-                e.set(&self.input.records, c.holder, c.target, c.edge);
-            }
-            debug_assert!(cps.next().is_none(), "kept states past the history");
-        }
-        self.reset_memo(|_, v| v.is_some_and(|q| q.is_none_or(|q| q < p)));
-    }
-
-    /// Drops the memoized answers but the `first_held` ones `keep` keeps.
-    fn reset_memo(&mut self, keep: impl FnMut(&(Tid, Tid, Role), &mut Option<Option<Point>>) -> bool) {
-        let mut fh = std::mem::take(self.memo.first_held.get_mut().unwrap_or_else(|e| e.into_inner()));
-        fh.retain(keep);
-        self.memo = Memo { first_held: Mutex::new(fh), ..Memo::default() };
-    }
-
-    /// Walks the last evaluation or `extend` made (1 when nothing was dropped).
-    pub fn passes(&self) -> usize {
-        self.passes
-    }
     pub fn records(&self) -> &Records {
-        &self.input.records
-    }
-    /// The drop set D, each with the point of the demotion whose audit dropped it.
-    pub fn dropped(&self) -> &BTreeMap<WriteId, Point> {
-        &self.dropped
-    }
-    /// Edge writes applied by the timeline, with their attribution.
-    pub fn applied(&self) -> &BTreeMap<WriteId, Applied> {
-        &self.walked.applied
-    }
-    /// An edge write held here: its author, holder and target.
-    pub fn edge_op(&self, w: &WriteId) -> Option<(Tid, Tid, Tid)> {
-        let (c, op) = self.edge_write(w)?;
-        Some((c.signer, op.holder, op.target))
+        &self.records
     }
 
-    /// The commit and op of an edge write.
-    fn edge_write(&self, w: &WriteId) -> Option<(&RoleCommit, &EdgeOp)> {
-        let mc = self.input.commits.get(&w.0)?;
-        Some((&**mc, mc.ops.get(w.1 as usize)?))
-    }
-    /// The edge writes applied on `t`, each with its commit and op, in `applied` order: not a walk
-    /// of every write of the component per thing (a chat's members share one).
-    pub fn applied_on<'t>(&'t self, t: &Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t EdgeOp)> + 't {
-        let index = self.memo.on_target.get_or_init(|| {
-            self.memo.on_target_built.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let mut by: BTreeMap<Tid, Vec<WriteId>> = BTreeMap::new();
-            for w in self.walked.applied.keys() {
-                if let Some((_, o)) = self.edge_write(w) {
-                    by.entry(o.target).or_default().push(*w);
+    /// Brings the timeline up to what `held` holds: `commits` names every commit whose reading
+    /// (`HeldSet::commit`) may have changed since the last update, held or not, `things` every
+    /// thing whose record came. A record that went stays read until its thing's parts go.
+    pub fn update(&mut self, held: &dyn HeldSet, commits: &BTreeSet<CommitId>, things: &BTreeSet<Tid>) -> Changed {
+        let mut out = Changed::default();
+        let mut records = Vec::new();
+        let mut again: BTreeSet<CommitId> = commits.clone();
+        for t in things {
+            let Some(rec) = held.created(t).filter(|r| r.tid() == *t) else { continue };
+            if self.records.link(t).is_some() {
+                continue;
+            }
+            self.records.insert(*t, &rec);
+            out.created.insert(*t);
+            if let RecordLink::Admin(a) = rec.record_link() {
+                records.push((*t, a));
+            }
+            again.extend(self.waiting.remove(t).unwrap_or_default());
+        }
+        let mut gone = Vec::new();
+        let mut given = Vec::new();
+        for id in &again {
+            match held.commit(id) {
+                Some(c) => {
+                    self.await_records(&c);
+                    given.push(c);
+                }
+                None => gone.push(*id),
+            }
+        }
+        if records.is_empty() && gone.is_empty() && given.is_empty() {
+            return out;
+        }
+        for c in &given {
+            for p in &c.parts {
+                if let paths::PartKind::Edge(w) = &p.kind {
+                    self.into.entry(p.on).or_default().insert(w.holder);
                 }
             }
-            by
-        });
-        let on = index.get(t).map_or(&[][..], Vec::as_slice);
-        #[cfg(debug_assertions)]
-        assert!(on.iter().eq(self.walked.applied.keys().filter(|w| self.edge_write(w).is_some_and(|(_, o)| o.target == *t))), "on_target of {t:?} went stale");
-        on.iter().filter_map(|w| self.edge_write(w))
+        }
+        out.walk = self.paths.sync(&records, &gone, &given);
+        // a record edge that came is in force from the start
+        for (t, a) in &records {
+            self.now.set(&self.records, *a, *t, self.paths.last(a, t).map_or(Some(RECORD_EDGE), |(_, w)| w.value));
+        }
+        self.follow(&mut out);
+        out
     }
-    /// The edge writes held on `t`, applied or not (a write that applies to nothing, such as a
-    /// removal of an edge another write removed first, included), each with its ID, commit and op.
-    pub fn held_on<'t>(&'t self, t: &Tid) -> impl Iterator<Item = (WriteId, &'t RoleCommit, &'t EdgeOp)> + 't {
-        let index = self.memo.held_on_target.get_or_init(|| {
-            let mut by: BTreeMap<Tid, Vec<WriteId>> = BTreeMap::new();
-            for c in self.input.commits.values() {
-                for (i, o) in c.ops.iter().enumerate() {
-                    by.entry(o.target).or_default().push(WriteId(c.id, i as u32));
+
+    /// Replaces the trust set (spec/permissions.md §5.1 Trust set).
+    pub fn set_trust(&mut self, trust: BTreeSet<WriteId>) -> Changed {
+        let mut out = Changed { walk: self.paths.set_trust(trust), ..Changed::default() };
+        self.follow(&mut out);
+        out
+    }
+
+    /// The trust set.
+    pub fn trust(&self) -> &BTreeSet<WriteId> {
+        self.paths.trust()
+    }
+
+    /// The held lowerings whose trust would change the reading (`Paths::disputes`).
+    pub fn disputes(&mut self) -> BTreeSet<WriteId> {
+        self.paths.disputes()
+    }
+
+    /// Notes under the first thing with no held record up each member's chain that `c` is to be
+    /// given again when it comes.
+    fn await_records(&mut self, c: &paths::Commit) {
+        for p in &c.parts {
+            if matches!(p.kind, paths::PartKind::None) {
+                continue;
+            }
+            for m in p.path.iter().chain([&p.on]) {
+                let mut t = *m;
+                for _ in 0..=MAX_CHAIN_DEPTH {
+                    match self.records.link(&t) {
+                        Some(RecordLink::Admin(a)) => t = a,
+                        Some(RecordLink::Key) => break,
+                        None => {
+                            self.waiting.entry(t).or_default().insert(c.id);
+                            break;
+                        }
+                    }
                 }
             }
-            by
-        });
-        index.get(t).map_or(&[][..], Vec::as_slice).iter().filter_map(|w| self.edge_write(w).map(|(c, o)| (*w, c, o)))
+        }
     }
-    /// The commit of the edge write in force on (`holder`, `target`): the last applied one, when
-    /// it set a value (spec/permissions.md §2: the next edge write resets the entry it created).
-    /// O(the writes applied on `target`).
-    pub fn in_force(&self, holder: &Tid, target: &Tid) -> Option<CommitId> {
-        let (c, o) = self.applied_on(target).filter(|(_, o)| o.holder == *holder).max_by_key(|(c, _)| c.point())?;
-        o.edge.is_some().then_some(c.id)
+
+    /// Brings the edge state and the log to the walk after an update reporting `out.walk`, and
+    /// fills what it reaches.
+    fn follow(&mut self, out: &mut Changed) {
+        for ((h, t), k) in &out.walk.edges {
+            let stale: Vec<Key> = self.log.range(*k..).filter(|(_, e)| **e == (*h, *t)).map(|(k, _)| *k).collect();
+            for k in stale {
+                self.log.remove(&k);
+            }
+            for (key, _) in self.paths.history(h, t).into_iter().filter(|(key, _)| key >= k) {
+                self.log.insert(key, (*h, *t));
+            }
+            let last = self.paths.last(h, t).map(|(_, w)| w.value);
+            let value = last.unwrap_or(self.records.is_record_edge(h, t).then_some(RECORD_EDGE));
+            self.now.set(&self.records, *h, *t, value);
+        }
+        out.reached = self.paths.reached(&out.walk);
     }
-    /// Indexes `applied_on` built (a measure).
-    pub fn applied_on_built(&self) -> u64 {
-        self.memo.on_target_built.load(std::sync::atomic::Ordering::Relaxed)
+
+    // ---- edge-class parts ----
+
+    /// What the settled walk did with held edge-class part `w`.
+    pub fn status(&self, w: &WriteId) -> Option<Status> {
+        self.paths.status(w)
     }
+
+    /// Whether the settled walk applies `w`.
     pub fn is_applied(&self, w: &WriteId) -> bool {
-        self.walked.applied.contains_key(w)
-    }
-    /// Whether held edge write `w` would apply at its point were its holder's edge `old` there
-    /// (the rest as the walk had it): its verdict over another state of its own edge, such as a
-    /// second removal of a holder another write removed first (spec/crypto.md §4, Covers). A
-    /// dropped write applies nowhere its audit is held.
-    pub fn applies_over(&self, w: &WriteId, old: Option<Edge>) -> bool {
-        let Some((c, op)) = self.edge_write(w).filter(|_| !self.dropped.contains_key(w)) else { return false };
-        let edges = self.edges_at(Some(c.point()));
-        let view = View::at(&edges, Some(c.ts)).patched(op.holder, op.target, old);
-        let best = view.roles_from(&c.signer);
-        walk::judge(&view, old.as_ref(), c, w.1 as usize, &best).is_some()
-    }
-    /// The explicit demotions on `thing` that `author` wrote, each once (whoever it demotes), in
-    /// timeline order: what saves the author's own commits its frontier names (§5.1, Own cover).
-    pub fn own_named(&self, author: &Tid, thing: &Tid) -> &[Demotion] {
-        let index = self.memo.own_named.get_or_init(|| {
-            let mut m: BTreeMap<(Tid, Tid), Vec<Demotion>> = BTreeMap::new();
-            for ((_, t), ds) in &self.walked.demotions {
-                for d in ds.iter().filter(|d| d.frontier.is_some()) {
-                    let v = m.entry((d.point.node, *t)).or_default();
-                    if !v.iter().any(|x| x.point == d.point) {
-                        v.push(d.clone());
-                    }
-                }
-            }
-            for v in m.values_mut() {
-                v.sort_by_key(|d| d.point);
-            }
-            m
-        });
-        index.get(&(*author, *thing)).map_or(&[], |v| v.as_slice())
-    }
-    /// Explicit demotions of `node` on `thing` in timeline order (§5.2 input).
-    pub fn demotions(&self, node: &Tid, thing: &Tid) -> &[Demotion] {
-        self.walked.demotions.get(&(*node, *thing)).map_or(&[], |v| v.as_slice())
-    }
-    /// The explicit demotions on `thing` (§5.1 step 4) of a node that holds the demoted role
-    /// there no more at the end (a re-grant ends what a demotion keeps out, §5.2), each with its
-    /// node. O(every demotion recorded).
-    pub fn demotions_in_effect(&self, thing: &Tid) -> impl Iterator<Item = (&Tid, &Demotion)> {
-        self.walked.demotions.iter().filter(move |(k, _)| k.1 == *thing).flat_map(move |((x, t), ds)| ds.iter().filter(move |d| self.role(x, t, At::END) < Some(d.below)).map(move |d| (x, d)))
-    }
-    /// The explicit demotions (§5.1 step 4) role commit `commit` makes: (node, thing, the role it
-    /// fell below), what writers answer with addenda (§5.2). One pass over every demotion per
-    /// timeline, memoized.
-    pub fn demoted_by(&self, commit: &CommitId) -> &[Demoted] {
-        self.memo
-            .demoted_by
-            .get_or_init(|| {
-                let mut out: BTreeMap<CommitId, Vec<Demoted>> = BTreeMap::new();
-                for ((x, t), ds) in &self.walked.demotions {
-                    for d in ds {
-                        out.entry(d.point.commit).or_default().push((*x, *t, d.below));
-                    }
-                }
-                out
-            })
-            .get(commit)
-            .map_or(&[], |v| v.as_slice())
-    }
-    /// Class falls of `node` on `thing` in the settled walk (§5.1 step 4), in timeline order,
-    /// where `node` has an earlier held write on `thing`.
-    pub fn falls(&self, node: &Tid, thing: &Tid) -> &[crate::walk::Fall] {
-        self.walked.falls.get(&(*node, *thing)).map_or(&[], |v| v.as_slice())
-    }
-    /// The edges at the end, each edge whose last write is a finalize (§2) as it stood just
-    /// before it: what an `until` passing alone ended (§3, Lost access). O(the walk's history):
-    /// only a node that lost access asks.
-    pub fn edges_unfinalized(&self) -> EdgesAt<'_> {
-        let mut last: BTreeMap<(Tid, Tid), Point> = BTreeMap::new();
-        for c in &self.walked.history {
-            last.insert((c.holder, c.target), c.point);
-        }
-        let mut e = self.edges_at(None);
-        for ((m, t), p) in last {
-            let finalize = self.input.commits.get(&p.commit).is_some_and(|c| {
-                c.ops.iter().enumerate().any(|(k, o)| o.holder == m && o.target == t && u32::try_from(k).is_ok_and(|k| self.walked.applied.get(&WriteId(c.id, k)).is_some_and(|a| a.attr == walk::Attr::Finalize)))
-            });
-            if finalize {
-                let before = self.edges_at(Some(p)).get(&m, &t).copied();
-                e.set(m, t, before);
-            }
-        }
-        e
+        matches!(self.status(w), Some(Status::Applied | Status::MayGrant))
     }
 
-    /// `node`'s effective role on `thing` at `ts` over `edges_unfinalized`, the edges in `skip`
-    /// (each named (target, holder)) left out.
-    pub fn role_unfinalized(&self, node: &Tid, thing: &Tid, ts: Ts, skip: &BTreeSet<(Tid, Tid)>) -> Option<Role> {
-        let edges = self.edges_unfinalized();
-        View::at(&edges, Some(ts)).roles_to_expiring(thing, skip).0.get(node).copied()
+    /// How the settled walk applies `w`.
+    pub fn way(&self, w: &WriteId) -> Option<Way> {
+        self.paths.way(w)
     }
 
-    /// Whether edge (`holder`, `target`) was lowered by a write that audits nothing (a
-    /// self-removal or finalize, §2) with no explicit write on it since (§5.1 step 4: the next
-    /// one restores it). An expiry by `until` is read from the edge itself.
+    /// The part in force on (`holder`, `target`): the last applied one, when it set a value
+    /// (spec/permissions.md §2: the next edge write resets the entry it created).
+    pub fn in_force(&self, holder: &Tid, target: &Tid) -> Option<WriteId> {
+        self.paths.last(holder, target).filter(|(_, a)| a.value.is_some()).map(|(w, _)| w)
+    }
+
+    /// Whether (`holder`, `target`) as restored (§5.1) gives or lets grant more than its value
+    /// now: a self-removal, a finalize or a may-grant grant lowered it with no explicit write
+    /// since. An expiry by `until` is read from the edge itself.
     pub fn lowered_unaudited(&self, holder: &Tid, target: &Tid) -> bool {
-        self.walked.prior.contains_key(&(*holder, *target))
+        let v = self.now.get(&self.records, holder, target);
+        let (role, grant) = (v.map(|v| v.role), v.filter(|v| v.role == Role::Admin || v.may_grant).map(|v| v.role));
+        let (r, g) = self.paths.restored(holder, target);
+        r > role || g > grant
     }
 
-    /// Whether an explicit write of `new` on edge (`holder`, `target`) at `ts`, after every held
-    /// write, audits (§5.1 step 4): the edge as restored exceeds it.
+    /// Whether an explicit write of `new` on (`holder`, `target`) at `ts`, after every held
+    /// write, takes the edge down (§5.1): the edge as restored gives or lets grant more.
     pub fn audits(&self, holder: &Tid, target: &Tid, new: Option<Edge>, ts: Ts) -> bool {
-        walk::exceeds(self.walked.restored(&self.input.records, (*holder, *target)), new, ts)
+        let role = new.filter(|v| v.alive_at(Some(ts))).map(|v| v.role);
+        let grant = role.filter(|r| *r == Role::Admin || new.is_some_and(|v| v.may_grant));
+        let (r, g) = self.paths.restored(holder, target);
+        role < r || grant < g
     }
 
-    pub fn role_commit(&self, id: &CommitId) -> Option<&Arc<RoleCommit>> {
-        self.input.commits.get(id)
-    }
+    // ---- the edge state ----
 
-    /// The walk's edge changes, in order.
-    pub(crate) fn history(&self) -> &[crate::walk::Change] {
-        &self.walked.history
-    }
-
-    /// The current edge state.
-    pub(crate) fn edges(&self) -> &crate::graph::Edges {
-        &self.walked.edges
-    }
-
-    /// The edge state just before `point` (`None`: the current state).
+    /// The edge state just before `point` (`None`: after every applied write).
     pub fn edges_at(&self, point: Option<Point>) -> EdgesAt<'_> {
-        let Some(p) = point else { return EdgesAt::new(&self.input.records, &self.walked.edges) };
-        let mut e = EdgesAt::new(&self.input.records, &INITIAL);
-        self.advance(&mut e, 0, self.walked.history.partition_point(|c| c.point < p));
+        let mut e = EdgesAt::new(&self.records, &self.now);
+        let Some(p) = point else { return e };
+        let k = key_of(p);
+        let mut seen = BTreeSet::new();
+        for (_, (h, t)) in self.log.range(k..) {
+            if seen.insert((*h, *t)) {
+                e.set(*h, *t, self.paths.value_before(h, t, &k));
+            }
+        }
         e
     }
 
-    /// Brings `e`, the state after the first `pos` history changes, to after the first `n`
-    /// (`n >= pos`): from the newest kept state when that is past `pos`, the changes since as
-    /// an overlay. O(CHECKPOINT), no copy.
-    pub(crate) fn advance<'a>(&'a self, e: &mut EdgesAt<'a>, mut pos: usize, n: usize) {
-        let k = self.checkpoints.partition_point(|c| c.0 <= n);
-        if let Some((i, base)) = k.checked_sub(1).and_then(|k| self.checkpoints.get(k))
-            && *i > pos
-        {
-            *e = EdgesAt::new(&self.input.records, base);
-            pos = *i;
+    /// The edges at the end, each edge whose last write is a finalize (§2) as it stood just
+    /// before it: what an `until` passing alone ended (§3, Lost access).
+    pub fn edges_unfinalized(&self) -> EdgesAt<'_> {
+        let mut e = self.edges_at(None);
+        for (t, hs) in &self.into {
+            for h in hs {
+                if let Some((w, a)) = self.paths.last(h, t)
+                    && self.paths.way(&w) == Some(Way::Finalize)
+                {
+                    e.set(*h, *t, a.before);
+                }
+            }
         }
-        for c in self.walked.history.iter().take(n).skip(pos) {
-            e.set(c.holder, c.target, c.edge);
-        }
+        e
+    }
+
+    /// The applied writes on the edges into `thing`, in key order: (key, holder, value).
+    fn writes_on(&self, thing: &Tid) -> Vec<(Key, Tid, Option<Edge>)> {
+        let mut out: Vec<(Key, Tid, Option<Edge>)> = self.into.get(thing).into_iter().flatten().flat_map(|h| self.paths.history(h, thing).into_iter().map(|(k, v)| (k, *h, v))).collect();
+        out.sort_by_key(|x| x.0);
+        out
     }
 
     /// The roster of `thing` (§5.1): its edges alive at `at`.
@@ -922,159 +318,124 @@ impl Timeline {
         edges.holders(thing).filter(|(_, e)| e.alive_at(at.ts)).map(|(m, e)| (*m, *e)).collect()
     }
 
-    /// `f` over the view at `at` and `node`'s roles there.
-    fn with_roles<R>(&self, node: &Tid, at: At, f: impl FnOnce(&View<'_>, &BTreeMap<Tid, Role>) -> R) -> R {
-        let edges = self.edges_at(at.point);
-        let view = View::at(&edges, at.ts);
-        f(&view, &view.roles_from(node))
-    }
-
-    /// Each holder of `thing` whose current edge does not say retain (spec/permissions.md §2), with
-    /// the point of the change since which it has held such an edge without a break (`None`:
-    /// since before every change: its record edge). O(the walk's history of `thing`).
+    /// Each holder of `thing` whose current edge does not say retain (§2), with the point of the
+    /// write since which it has held such an edge without a break (`None`: since before every
+    /// write: its record edge).
     pub fn standing_since(&self, thing: &Tid) -> BTreeMap<Tid, Option<Point>> {
-        let mut out: BTreeMap<Tid, Option<Point>> = self.input.records.mint_admin(thing).map(|a| (a, None)).into_iter().collect();
-        for c in self.walked.history.iter().filter(|c| c.target == *thing) {
-            if c.edge.is_some_and(|e| !e.says_retain()) {
-                out.entry(c.holder).or_insert(Some(c.point));
+        let mut out: BTreeMap<Tid, Option<Point>> = self.records.mint_admin(thing).map(|a| (a, None)).into_iter().collect();
+        for (k, h, v) in self.writes_on(thing) {
+            if v.is_some_and(|e| !e.says_retain()) {
+                out.entry(h).or_insert(Some(point_of(k)));
             } else {
-                out.remove(&c.holder);
+                out.remove(&h);
             }
         }
         out
     }
 
-    /// `standing_since` of every thing of the component with a holder, in one pass over the
-    /// walk's history: over its writes before `before` (`None`: all of them).
+    /// `standing_since` of every thing with a holder, over the writes before `before` (`None`:
+    /// all of them). O(the applied writes and the records).
     pub fn standing_since_all(&self, before: Option<Point>) -> BTreeMap<Tid, BTreeMap<Tid, Option<Point>>> {
         let mut out: BTreeMap<Tid, BTreeMap<Tid, Option<Point>>> = BTreeMap::new();
-        for (t, l) in self.input.records.links() {
-            if let osis_base::RecordLink::Admin(a) = l {
+        for (t, l) in self.records.links() {
+            if let RecordLink::Admin(a) = l {
                 out.entry(*t).or_default().insert(*a, None);
             }
         }
-        for c in self.walked.history.iter().filter(|c| before.is_none_or(|p| c.point < p)) {
-            let on = out.entry(c.target).or_default();
-            if c.edge.is_some_and(|e| !e.says_retain()) {
-                on.entry(c.holder).or_insert(Some(c.point));
+        let end = before.map(key_of);
+        for (k, (h, t)) in self.log.iter().take_while(|(k, _)| end.is_none_or(|e| **k < e)) {
+            let v = self.paths.applied(&self.id_at(k, h, t)).and_then(|(_, a)| a.value);
+            let on = out.entry(*t).or_default();
+            if v.is_some_and(|e| !e.says_retain()) {
+                on.entry(*h).or_insert(Some(point_of(*k)));
             } else {
-                on.remove(&c.holder);
+                on.remove(h);
             }
         }
         out.retain(|_, hs| !hs.is_empty());
         out
     }
 
+    /// The part applied at `k` on (`h`, `t`).
+    fn id_at(&self, k: &Key, h: &Tid, t: &Tid) -> WriteId {
+        // the write just after everything before `k` on its edge
+        let next = Key { part: k.part.saturating_add(1), ..*k };
+        self.paths.last_before(h, t, &next).map_or(WriteId(k.commit, u32::MAX), |(w, _)| w)
+    }
+
     /// The holders whose edge on `thing`, alive at `ts`, gives a role below one an earlier write
-    /// of it (or its record edge) gave: lowered, not ended (`ended`). O(the walk's history).
+    /// of it (or its record edge) gave: lowered, not ended (`ended`).
     pub fn lowered(&self, thing: &Tid, ts: Ts) -> BTreeSet<Tid> {
-        let mut top: BTreeMap<Tid, Role> = self.input.records.mint_admin(thing).map(|a| (a, RECORD_EDGE.role)).into_iter().collect();
-        for c in self.walked.history.iter().filter(|c| c.target == *thing) {
-            if let Some(e) = c.edge {
-                let r = top.entry(c.holder).or_insert(e.role);
+        let mut top: BTreeMap<Tid, Role> = self.records.mint_admin(thing).map(|a| (a, RECORD_EDGE.role)).into_iter().collect();
+        for (_, h, v) in self.writes_on(thing) {
+            if let Some(e) = v {
+                let r = top.entry(h).or_insert(e.role);
                 *r = (*r).max(e.role);
             }
         }
-        let edges = self.edges_at(None);
-        top.into_iter().filter(|(m, r)| edges.get(m, thing).is_some_and(|e| e.alive_at(Some(ts)) && e.role < *r)).map(|(m, _)| m).collect()
+        top.into_iter().filter(|(m, r)| self.now.get(&self.records, m, thing).is_some_and(|e| e.alive_at(Some(ts)) && e.role < *r)).map(|(m, _)| m).collect()
     }
 
     /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: whether each
     /// one's edge ended saying retain (`Edge::ends_retaining`), the point of its last write
-    /// (`None`: its record edge, never written) and the role the edge last gave (a removal's value
-    /// saying retain gives none: the role before it). O(the walk's history): only a node that lost
-    /// access asks (spec/permissions.md §3, Retain).
+    /// (`None`: its record edge, never written) and the role the edge last gave (a removal's
+    /// value saying retain gives none: the role before it).
     pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (bool, Option<Point>, Role)> {
-        let mut out: BTreeMap<Tid, (bool, Option<Point>, Role)> = self.input.records.mint_admin(thing).map(|a| (a, (RECORD_EDGE.ends_retaining(), None, RECORD_EDGE.role))).into_iter().collect();
-        for c in self.walked.history.iter().filter(|c| c.target == *thing) {
-            match (c.edge, out.get_mut(&c.holder)) {
+        let mut out: BTreeMap<Tid, (bool, Option<Point>, Role)> = self.records.mint_admin(thing).map(|a| (a, (RECORD_EDGE.ends_retaining(), None, RECORD_EDGE.role))).into_iter().collect();
+        for (k, h, v) in self.writes_on(thing) {
+            match (v, out.get_mut(&h)) {
                 (Some(e), x) => {
                     let role = x.filter(|_| e.says_retain()).map_or(e.role, |x| x.2);
-                    out.insert(c.holder, (e.ends_retaining(), Some(c.point), role));
+                    out.insert(h, (e.ends_retaining(), Some(point_of(k)), role));
                 }
-                (None, Some(x)) => (x.0, x.1) = (false, Some(c.point)),
+                (None, Some(x)) => (x.0, x.1) = (false, Some(point_of(k))),
                 (None, None) => {}
             }
         }
-        let edges = self.edges_at(None);
-        out.retain(|m, _| !edges.get(m, thing).is_some_and(|e| e.alive_at(Some(ts))));
+        out.retain(|m, _| !self.now.get(&self.records, m, thing).is_some_and(|e| e.alive_at(Some(ts))));
         out
     }
 
-    /// Standing (class and effective role) of `node` on `thing`.
+    // ---- roles ----
+
+    fn with_roles<R>(&self, node: &Tid, at: At, f: impl FnOnce(&View<'_>, &BTreeMap<Tid, Role>) -> R) -> R {
+        let edges = self.edges_at(at.point);
+        let view = View::at(&edges, at.ts);
+        f(&view, &view.roles_from(node))
+    }
+
+    /// Standing (what it may write of grants, and its effective role) of `node` on `thing`.
     pub fn standing(&self, node: &Tid, thing: &Tid, at: At) -> Standing {
         self.with_roles(node, at, |view, best| view.standing(best, thing))
     }
 
-    /// Effective role (§1): read backward from `thing` (`roles_on`), so it walks only what
-    /// reaches `thing`, never all that `node` reaches.
+    pub fn class(&self, node: &Tid, thing: &Tid, at: At) -> Class {
+        self.standing(node, thing, at).class
+    }
+
+    /// The highest role at which a path from `node` gives may-grant on `thing` (§2).
+    pub fn may_grant(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
+        self.with_roles(node, at, |view, best| view.may_grant(best, thing))
+    }
+
+    /// Effective role (§1), read backward from `thing`.
     pub fn role(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
         self.roles_on(thing, at).get(node).copied()
     }
 
-    /// Every node's effective role on `thing` at `at`: `roles_of` read backward, by the widest
-    /// paths into `thing` (`View::roles_to`), so it walks only what reaches `thing`. Walked once
-    /// per thing while the answer holds for the current edges (counted: `on_walks`), and at the end.
+    /// Every thing's effective role on `thing` at `at`, by the widest paths into it.
     pub fn roles_on(&self, thing: &Tid, at: At) -> Arc<BTreeMap<Tid, Role>> {
-        let none = BTreeSet::new();
-        if at.point.is_none()
-            && let Some(ts) = at.ts
-        {
-            return self.roles_on_now(thing, ts).0;
-        }
-        if at != At::END {
-            return Arc::new(self.roles_on_without(thing, at, &none));
-        }
-        if let Some(r) = self.memo.on_end.lock().ok().and_then(|m| m.get(thing).cloned()) {
-            return r;
-        }
-        let r = Arc::new(self.roles_on_without(thing, at, &none));
-        if let Ok(mut m) = self.memo.on_end.lock() {
-            m.insert(*thing, r.clone());
-        }
-        r
+        Arc::new(self.roles_on_without(thing, at, &BTreeSet::new()))
     }
 
     /// `roles_on` on the current edges at `ts`, and the earliest `until` the walk followed: the
-    /// answer holds at any later ts before it. Walked once per thing while it holds.
+    /// answer holds at any later ts before it.
     pub fn roles_on_now(&self, thing: &Tid, ts: Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<WallMs>) {
-        let held = |e: &OnNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
-        if let Some(r) = self.memo.on_now.lock().ok().and_then(|m| m.get(thing).filter(|e| held(e)).map(|e| (e.0.clone(), e.2))) {
-            return r;
-        }
-        self.memo.on_walks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let edges = self.edges_at(None);
-        let (r, expires) = View::at(&edges, Some(ts)).roles_to_expiring(thing, &BTreeSet::new());
-        let r = Arc::new(r);
-        if let Ok(mut m) = self.memo.on_now.lock() {
-            m.insert(*thing, (r.clone(), ts, expires));
-        }
-        (r, expires)
+        let (r, u) = self.roles_on_now_without(thing, ts, &BTreeSet::new());
+        (Arc::new(r), u)
     }
 
-    /// The path from `node` into `thing` giving `need` on the current edges at `ts`
-    /// (`graph::Ways::path`): the things listed, the hops marked direct and whether the last hop is
-    /// a record edge.
-    /// Walked once per thing and need while it holds (counted: "perm: ways walked").
-    pub fn path_now(&self, node: &Tid, thing: &Tid, need: crate::graph::Need, ts: Ts) -> Option<(Vec<Tid>, osis_base::format::PathMarks, bool)> {
-        let held = |e: &WaysNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
-        let cached = self.memo.ways.lock().ok().and_then(|m| m.get(&(*thing, need)).filter(|e| held(e)).map(|e| e.0.clone()));
-        let ways = match cached {
-            Some(w) => w,
-            None => {
-                let edges = self.edges_at(None);
-                let (w, expires) = View::at(&edges, Some(ts)).ways_to(thing, need);
-                let w = Arc::new(w);
-                if let Ok(mut m) = self.memo.ways.lock() {
-                    m.insert((*thing, need), (w.clone(), ts, expires));
-                }
-                w
-            }
-        };
-        ways.path(self.records(), node)
-    }
-
-    /// `roles_on_now` over the edges not in `skip`, each named (target, holder), walked afresh.
+    /// `roles_on_now` over the edges not in `skip`, each named (target, holder).
     pub fn roles_on_now_without(&self, thing: &Tid, ts: Ts, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
         let edges = self.edges_at(None);
         View::at(&edges, Some(ts)).roles_to_expiring(thing, skip)
@@ -1086,41 +447,36 @@ impl Timeline {
         View::at(&edges, at.ts).roles_to_expiring(thing, skip).0
     }
 
-    /// `node`'s roles over every grant this walk applied, the ended ones included: what it reached
-    /// by the paths the held writes show (spec/crypto.md §4 Holders for keys: removals, finalizes
-    /// and a retain value end a path; `until` is disregarded). A path may join edges that never
-    /// stood at once (over-counts into departed, never into holder). O(history): built once per use.
+    /// `node`'s effective role on `thing` at `ts` over `edges_unfinalized`, the edges in `skip`
+    /// (each named (target, holder)) left out.
+    pub fn role_unfinalized(&self, node: &Tid, thing: &Tid, ts: Ts, skip: &BTreeSet<(Tid, Tid)>) -> Option<Role> {
+        let edges = self.edges_unfinalized();
+        View::at(&edges, Some(ts)).roles_to_expiring(thing, skip).0.get(node).copied()
+    }
+
+    /// The path from `node` into `thing` giving `need` on the current edges at `ts`
+    /// (`graph::Ways::path`): the things listed, the hops marked direct and whether the last hop
+    /// is a record edge.
+    pub fn path_now(&self, node: &Tid, thing: &Tid, need: Need, ts: Ts) -> Option<(Vec<Tid>, PathMarks, bool)> {
+        let edges = self.edges_at(None);
+        View::at(&edges, Some(ts)).ways_to(thing, need).0.path(&self.records, node)
+    }
+
+    /// `node`'s roles over every grant the walk applied, the ended ones included: what it
+    /// reached by the paths the held writes show (spec/crypto.md §4 Holders for keys: removals,
+    /// finalizes and a retain value end a path; `until` is disregarded). A path may join edges
+    /// that never stood at once. O(the applied writes).
     pub fn roles_ever(&self, node: &Tid) -> BTreeMap<Tid, Role> {
-        let mut best: BTreeMap<(Tid, Tid), Edge> = BTreeMap::new();
-        for c in &self.walked.history {
-            if let Some(e) = c.edge.filter(|e| !e.says_retain())
-                && best.get(&(c.holder, c.target)).is_none_or(|b| e.role > b.role)
-            {
-                best.insert((c.holder, c.target), e);
+        let mut ever = Edges::default();
+        for (t, hs) in &self.into {
+            for h in hs {
+                let best = self.paths.history(h, t).into_iter().filter_map(|(_, v)| v.filter(|e| !e.says_retain())).max_by_key(|e| e.role);
+                if let Some(e) = best {
+                    ever.set(&self.records, *h, *t, Some(Edge { until: None, ..e }));
+                }
             }
         }
-        let ever = Edges::restore(best.into_iter().map(|((h, t), e)| (h, t, e)), BTreeSet::new());
-        View::new(&self.input.records, &ever, Some(Ts::ZERO)).roles_from(node)
-    }
-
-    /// Walks of `Memo::forward` so far (a measure).
-    pub fn forward_walks(&self) -> u64 {
-        self.memo.forward_walks.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Walks of `roles_on` on the current edges so far (a measure).
-    pub fn on_walks(&self) -> u64 {
-        self.memo.on_walks.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Authority class (§5.1 step 3).
-    pub fn class(&self, node: &Tid, thing: &Tid, at: At) -> Class {
-        self.standing(node, thing, at).class
-    }
-
-    /// Effective invite (§2).
-    pub fn invite(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
-        self.with_roles(node, at, |view, best| view.invite(best, thing))
+        View::new(&self.records, &ever, Some(Ts::ZERO)).roles_from(node)
     }
 
     /// Effective roles of `node` on every thing it reaches.
