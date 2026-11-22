@@ -1,0 +1,2 @@
+- Proving `then()` kept `Engine::run`'s short-circuiting meant checking each dropped guard's condition by hand (`stale()`, `is_empty`, `is_memory`): no test tells a step that ran on an `Err` from one that did not, since the rollback hides it.
+- The brief expected rebase conflicts with read-rejudge-2's `Meta` accessors; there were none (`view` and `header` stay fields, only hold and validity went behind accessors).
