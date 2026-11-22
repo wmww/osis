@@ -1121,6 +1121,27 @@ fn a_device_named_after_its_card_went_is_fetched_again_spec_commits_5() {
     }
 }
 
+/// Peer 0's thing X (minted by its account), read by peer 1's account, which holds it from its
+/// root and took what X's sync IDs carry: built once (`LocalPeer::cached`).
+fn x_read_at_1() -> (osis_engine::local_peer::LocalPeer, Tid) {
+    osis_engine::local_peer::LocalPeer::cached("closure::x_read_at_1", || {
+        let (mut lp, ps) = people(2);
+        let e0 = &mut lp.peers[0].engine;
+        let mut m = Mutation::new();
+        let x = e0.new_thing(&mut m, ps[0]);
+        e0.commit(m).unwrap();
+        e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+        let d1 = lp.peers[1].engine.account_root().unwrap();
+        strong(&mut lp.peers[1].engine, d1, x, true);
+        let all = lp.peers[0].engine.commit_ids();
+        crate::flows::send_carried(&mut lp, 0, 1, &all);
+        crate::flows::send_carried(&mut lp, 0, 1, &all);
+        pass_end(&mut lp.peers[1].engine);
+        assert!(lp.peers[1].engine.closure_holds(&x));
+        (lp, x)
+    })
+}
+
 /// A pass ends with no source in flight (spec/sync-set.md §3 Release: at once): what left the
 /// node closure is released, then what the pass brought is judged.
 fn pass_end(e: &mut Engine) {
@@ -1482,20 +1503,8 @@ fn a_commit_before_its_record_blob_and_its_strong_waits_for_them_spec_commits_4(
 #[test]
 fn a_commit_awaiting_its_record_is_kept_while_carried_and_no_longer_spec_commits_5() {
     let n = 20;
-    let (mut lp, ps) = people(2);
-    let e0 = &mut lp.peers[0].engine;
-    let mut m = Mutation::new();
-    let x = e0.new_thing(&mut m, ps[0]);
-    e0.commit(m).unwrap();
-    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
     // what X's sync IDs carry: nothing else waits there (spec/commits.md §4 Outside the node closure)
-    let d1 = lp.peers[1].engine.account_root().unwrap();
-    strong(&mut lp.peers[1].engine, d1, x, true);
-    let all = lp.peers[0].engine.commit_ids();
-    crate::flows::send_carried(&mut lp, 0, 1, &all);
-    crate::flows::send_carried(&mut lp, 0, 1, &all);
-    pass_end(&mut lp.peers[1].engine);
-    assert!(lp.peers[1].engine.closure_holds(&x));
+    let (mut lp, x) = x_read_at_1();
     let mut made = Vec::new();
     for _ in 0..n {
         let e0 = &mut lp.peers[0].engine;
@@ -1557,19 +1566,7 @@ fn a_needed_account_root_keeps_its_role_class_parts_alone_spec_commits_5() {
 // more.
 #[test]
 fn a_commit_minting_with_the_strong_applies_whole_in_its_transaction_spec_commits_4() {
-    let (mut lp, ps) = people(2);
-    let e0 = &mut lp.peers[0].engine;
-    let mut m = Mutation::new();
-    let x = e0.new_thing(&mut m, ps[0]);
-    e0.commit(m).unwrap();
-    e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-    let d1 = lp.peers[1].engine.account_root().unwrap();
-    strong(&mut lp.peers[1].engine, d1, x, true);
-    let all = lp.peers[0].engine.commit_ids();
-    crate::flows::send_carried(&mut lp, 0, 1, &all);
-    crate::flows::send_carried(&mut lp, 0, 1, &all);
-    pass_end(&mut lp.peers[1].engine);
-    assert!(lp.peers[1].engine.closure_holds(&x));
+    let (mut lp, x) = x_read_at_1();
     let e0 = &mut lp.peers[0].engine;
     let rec = e0.thing_record(x, None);
     let mut m = Mutation::new();

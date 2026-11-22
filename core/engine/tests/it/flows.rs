@@ -995,6 +995,21 @@ fn a_link_naming_another_target_grants_nothing_spec_permissions_7() {
     lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
 }
 
+
+/// People 0..3 (`people`); 0's thing D and its single-use read link, followed and spread: built
+/// once (`LocalPeer::cached`).
+fn read_link_followed() -> (LocalPeer, [Tid; 3], Tid, osis_blob::ShareLink) {
+    let (lp, (ps, d, link)) = LocalPeer::cached("flows::read_link_followed", || {
+        let (mut lp, ps) = people(3);
+        let d = thing_of(&mut lp, 0, ps[0]);
+        let (link, _, _) = lp.peers[0].engine.create_link(&ps[0], &link_spec(d, Role::Read, None)).unwrap();
+        follow(&mut lp, &link);
+        spread(&mut lp);
+        (lp, ([ps[0], ps[1], ps[2]], d, link))
+    });
+    (lp, ps, d, link)
+}
+
 // spec/permissions.md §7: a stranger redeems a read link: signing as L it invite-grants its
 // own actor to K (deposited: read), single use removes L's edge in the same commit, so a
 // second redeemer finds no link; the redeemer reads the target through K.
@@ -1036,12 +1051,7 @@ fn link_redeem_single_use_spec_perm_7() {
 // one the sharer saw, stands until the sharer finalizes; its frontier does not cover it.
 #[test]
 fn single_use_finalization_audits_spec_perm_7() {
-    let (mut lp, ps) = people(3);
-    let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
-    let d = thing_of(&mut lp, 0, pa);
-    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
-    follow(&mut lp, &link);
-    spread(&mut lp);
+    let (mut lp, [_, ps1, ps2], _, link) = read_link_followed();
     let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
     // the forger redeems first (earlier ts) but the sharer never hears of it before finalizing
     lp.peers[2].engine.redeem(&link, &ps2, true).unwrap();
@@ -1064,12 +1074,7 @@ fn single_use_finalization_audits_spec_perm_7() {
 // once the finalization arrives, drops them.
 #[test]
 fn single_use_loser_keeps_secrets_until_finalized_spec_perm_7() {
-    let (mut lp, ps) = people(3);
-    let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
-    let d = thing_of(&mut lp, 0, pa);
-    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
-    follow(&mut lp, &link);
-    spread(&mut lp);
+    let (mut lp, [_, ps1, ps2], d, link) = read_link_followed();
     let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
     let early = lp.peers[2].engine.redeem(&link, &ps2, true).unwrap().commits;
     lp.peers[1].clock.advance(1000);

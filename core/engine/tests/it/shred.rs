@@ -92,6 +92,19 @@ fn net2() -> LocalPeer {
     .0
 }
 
+/// `net2` with peer 1's thing T, peer 0 granted write on it, synced: built once
+/// (`LocalPeer::cached`).
+fn writable_by_0() -> (LocalPeer, Tid) {
+    LocalPeer::cached("shred::writable_by_0", || {
+        let mut lp = net2();
+        let a = lp.peers[0].engine.me();
+        let t = new_thing(&mut lp, 1);
+        lp.peers[1].engine.grant(&t, &a, &edge(osis_base::Role::Write)).unwrap();
+        lp.sync(1, 0).unwrap();
+        (lp, t)
+    })
+}
+
 fn big(marker: &str) -> String {
     format!("{marker}{}", "x".repeat(400))
 }
@@ -111,51 +124,37 @@ fn filler(lp: &mut LocalPeer, i: usize, n: usize) {
 }
 
 // spec/commits.md §5: a purge drops every local copy (the commit record, state, undo buffer)
-// so that later compromise recovers nothing
+// so that later compromise recovers nothing; spec/commits.md §6: at T the body is dropped, no
+// local copy surviving; spec/commits.md §5 (purge on replace): the replacing node drops the body
+// in the killing transaction, no local copy surviving
 #[test]
-fn purged_body_unrecoverable_spec_commits_5() {
-    let mut lp = net2();
-    let t = new_thing(&mut lp, 0);
-    let marker = "PURGED-MARK-41c9";
-    let secret = set(&mut lp, 0, t, &REG, &big(marker));
-    filler(&mut lp, 0, 6);
-    assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
-    lp.advance(5);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("public")).unwrap();
-    m.purge_commit(secret, t, ak("t:reg.0"));
-    lp.peers[0].commit(m).unwrap();
-    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
-    assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "purged content recovered");
-}
-
-// spec/commits.md §6: at T the body is dropped; spec/commits.md §5: no local copy survives
-#[test]
-fn expired_body_unrecoverable_spec_commits_6() {
-    let mut lp = net2();
-    let t = new_thing(&mut lp, 0);
-    let marker = "EXPIRED-MARK-77aa";
-    let c = set(&mut lp, 0, t, &BRIEF, &big(marker));
-    filler(&mut lp, 0, 6);
-    lp.advance(3_600_001);
-    lp.peers[0].tick().unwrap();
-    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:brief.0")));
-    assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "expired content recovered");
-}
-
-// spec/commits.md §5 (purge on replace): the replacing node drops the body in the killing
-// transaction; no local copy survives
-#[test]
-fn purged_on_replace_unrecoverable_spec_commits_5() {
-    let mut lp = net2();
-    let t = new_thing(&mut lp, 0);
-    let marker = "ATMOST-MARK-5b01";
-    let c = set(&mut lp, 0, t, &GONE, &big(marker));
-    filler(&mut lp, 0, 6);
-    lp.advance(5);
-    set(&mut lp, 0, t, &GONE, "final");
-    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:gone.0")));
-    assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "dropped content recovered");
+fn purged_expired_or_replaced_body_unrecoverable_spec_commits_5() {
+    for (case, k, marker) in [("purged", &REG, "PURGED-MARK-41c9"), ("expired", &BRIEF, "EXPIRED-MARK-77aa"), ("replaced", &GONE, "ATMOST-MARK-5b01")] {
+        let mut lp = net2();
+        let t = new_thing(&mut lp, 0);
+        let c = set(&mut lp, 0, t, k, &big(marker));
+        filler(&mut lp, 0, 6);
+        match case {
+            "purged" => {
+                assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
+                lp.advance(5);
+                let mut m = Mutation::new();
+                m.set(t, &REG, &s("public")).unwrap();
+                m.purge_commit(c, t, ak("t:reg.0"));
+                lp.peers[0].commit(m).unwrap();
+            }
+            "expired" => {
+                lp.advance(3_600_001);
+                lp.peers[0].tick().unwrap();
+            }
+            _ => {
+                lp.advance(5);
+                set(&mut lp, 0, t, &GONE, "final");
+            }
+        }
+        assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &k.name()), "{case}");
+        assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "{case} content recovered");
+    }
 }
 
 // spec/commits.md §5 (purge on replace), spec/requirements.md (Scale: O(change)): in a paged map
@@ -1523,13 +1522,7 @@ fn part_pending_for_its_ts_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
 #[test]
 fn waiting_snapshot_drops_a_purged_copy_spec_commits_5() {
     for purge_first in [false, true] {
-        let mut lp = net2();
-        lp.sync_all().unwrap();
-        let a = lp.peers[0].engine.me();
-        let t = new_thing(&mut lp, 1);
-        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, retain: false, floor: None };
-        lp.peers[1].engine.grant(&t, &a, &edge).unwrap();
-        lp.sync(1, 0).unwrap();
+        let (mut lp, t) = writable_by_0();
         lp.advance(5);
         let w = set(&mut lp, 0, t, &REG, "SECRET-W9b4");
         lp.sync(0, 1).unwrap();
@@ -1575,13 +1568,7 @@ fn decoded(f: impl FnOnce()) -> u64 {
 /// changed, by the next purge on that aspect (of a write none carries), by an expiring write
 /// there, and by its expiry.
 fn waiting_snapshots_decoded(n: usize) -> [u64; 4] {
-    let mut lp = net2();
-    lp.sync_all().unwrap();
-    let a = lp.peers[0].engine.me();
-    let t = new_thing(&mut lp, 1);
-    let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, retain: false, floor: None };
-    lp.peers[1].engine.grant(&t, &a, &edge).unwrap();
-    lp.sync(1, 0).unwrap();
+    let (mut lp, t) = writable_by_0();
     lp.advance(5);
     let purge = |lp: &mut LocalPeer, v: &str| {
         let w = set(lp, 1, t, &REG, v);
