@@ -973,6 +973,8 @@ pub(crate) struct CoreMark {
     wrote_on: usize,
     stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
     batched: Option<BTreeMap<(Tid, Ak), Batched>>,
+    /// `fallen`: a snapshot a rolled-back flip owed is owed no more.
+    fallen: BTreeSet<(Tid, Ak)>,
     memory_tx: bool,
     dirty: bool,
     /// `store_rows`: a row written alone (a commit record, a leftover) changes no index.
@@ -1737,6 +1739,7 @@ impl Core {
             wrote_on: self.wrote_on.len(),
             stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
             batched: self.batched.clone(),
+            fallen: self.fallen.clone(),
             memory_tx: self.memory_tx,
             dirty: self.dirty,
             records: self.store_rows.get(),
@@ -1823,6 +1826,7 @@ impl Core {
         self.dated_as.truncate(m.dated_as);
         self.wrote_on.truncate(m.wrote_on);
         self.batched = m.batched;
+        self.fallen = m.fallen;
         self.memory_tx = m.memory_tx;
     }
 
@@ -1852,11 +1856,9 @@ impl Core {
             stale_commits: _,
             stale_all: _,
             batched: _,
+            fallen: _,
             memory_tx: _,
             dirty: _,
-            // taken by node-sync, kept: a flip rolled back only reports once more (one more
-            // placement again, one more relist)
-            fallen: _,
             // a call's parameter (`memory_room`) and caches true of the store whatever a
             // rollback undoes (`memory_waits`: a pending row's class never changes); `walks`
             // drops what a failed step or transaction touched (`reach::rolled_back`)

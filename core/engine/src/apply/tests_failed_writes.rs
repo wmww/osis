@@ -184,11 +184,12 @@ fn an_arrival_waking_a_wait_whose_round_fails() {
 }
 
 // spec/commits.md §4 (Apply: a transaction that fails or is refused leaves the node as it was,
-// waits included): a transaction or step that fails leaves no blob wait due for a commit only it
-// brought, so the next timer stays as it was. A wait kept for commit C, unknown here, and its
-// trees asked, in a transaction that then fails (a sealed fire applied
-// with a part waiting for a page, refused: `Engine::ingest_sealed_fire`), and in a step that fails
-// inside one that commits: a round due for C finds nothing, yet put the next timer at now, and
+// waits included): a transaction or step that fails leaves nothing due that it brought, so the
+// next timer stays as it was. A wait kept for commit C, unknown here, its trees asked, and a
+// memory snapshot owed (`Core::fallen`), in a transaction that then fails (a sealed fire applied
+// with a part waiting for a page, or flipping a snapshot invalid, refused:
+// `Engine::ingest_sealed_fire`), and in a step that fails inside one that commits: a round due
+// for C finds nothing and the snapshot did not fall, yet either put the next timer at now, and
 // a driver ticking then tried the refused fire again, refused again: a loop.
 #[test]
 fn a_failed_transaction_leaves_no_wait_due_for_what_it_brought() {
@@ -199,6 +200,7 @@ fn a_failed_transaction_leaves_no_wait_due_for_what_it_brought() {
     let waits = |tx: &mut crate::engine::Tx<'_>| -> crate::Result<()> {
         crate::apply::reach::wait_part(tx, &c, 0, &[], false)?;
         tx.core.walks.trees_of(c);
+        tx.core.fallen.insert((Tid::from_bytes([7; osis_base::format::TID_LEN]), Ak::new(X).unwrap()));
         Err(crate::Error::Misuse("fails"))
     };
     assert!(e.run(waits).is_err());
