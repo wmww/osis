@@ -23,7 +23,7 @@ pub(crate) fn pending_expired(tx: &Tx<'_>, h: &Header, ai: usize) -> bool {
 /// here, where a node that applied them before T keeps them). The others get a timer doing the
 /// same at T (`hold_valueless`). One a held purge request names is held value-less instead
 /// (`strip_purged`), as an applied one is: the request is a held commit, so nodes holding the same
-/// commits read alike; one applied later wakes the commit (`on_apply`). A header whose aspects
+/// commits read alike; one applied later wakes the commit (`purge_one`). A header whose aspects
 /// are not resolved yet is judged once they are.
 pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header) -> Result<()> {
     let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();

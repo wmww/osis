@@ -137,7 +137,7 @@ impl Screen {
         }
     }
 
-    /// Answers the clipboard signals as every shell does (`Ui::copy`, `Ui::paste`); true if a
+    /// Answers the clipboard signals as every shell does (`Started::copy`, `Started::paste`); true if a
     /// paste was asked.
     fn clipboard_signals(&mut self) -> bool {
         let mut asked = false;

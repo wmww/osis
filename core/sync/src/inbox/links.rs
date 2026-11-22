@@ -41,7 +41,7 @@ use osis_store::Shred;
 use std::collections::BTreeMap;
 
 const ROWS: &[u8] = b"I/r/";
-/// A joined link's peers, kept once the link is forgotten (`KeptPeers`).
+/// A joined link's peers, kept once the link is forgotten.
 const PEERS: &[u8] = b"I/p/";
 
 #[derive(Clone, Debug)]

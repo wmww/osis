@@ -582,7 +582,7 @@ fn a_refused_hit_is_tried_again_only_when_remarked_spec_sync_opens_5() {
 
 // ---- NetOpen controls (core/test/tla/net/NetOpen.tla, ON_*): the hostile cases ----
 
-/// A store K at `head` that Adv dials keeping no record; Adv holds `adv_steps` seeds.
+/// A store K at `head` that Adv dials keeping no record, then Hits once (`hit_once`).
 fn store_dialed_by_adv(head: &StepKeys, ch_adv: [u8; 32]) -> (Side, Adv) {
     let mut k = Side::new(3);
     k.table.set(S, Some(store(head)));

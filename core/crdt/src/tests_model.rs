@@ -252,7 +252,7 @@ fn read_references_are_the_reads(st: &Fragment) {
     assert_eq!(by_values, by_read, "the references read values name are the read's");
 }
 
-/// What a node dates a held body by (spec/commits.md §5, `retention::bounds::judge_replaced_at`):
+/// What a node dates a held body by (spec/commits.md §5, `retention::bounds::dated_replaced_at`):
 /// each write of a body that the join of `bodies` supersedes dies by a write one of them holds,
 /// winning or not, or by a removal hiding it as their copies join (`Hiders`): every input,
 /// forged copies included, since a node that found none would fail its tick with a local error.

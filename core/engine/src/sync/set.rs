@@ -153,7 +153,7 @@ impl Engine {
 
     /// What a reader of `s` opens and acts with: per thing whose read secrets open `s`
     /// (`opening_things`, each one judged), its recorded path's head and the keys held per
-    /// recorded step, its current read secrets (`ActorEpochs::current`, the engine's Current with
+    /// recorded step, its current read secrets (the engine's Current with
     /// its history-less floors; with none current, the newest held, spec/sync-opens.md §4), and
     /// the static entries of its read roster. `None` when `s` is no sync ID this node reads.
     pub(crate) fn read_credentials_now(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {

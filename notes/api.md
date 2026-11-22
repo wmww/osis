@@ -118,7 +118,7 @@ The design and its properties: notes/listener-design.md.
 - A read that missed a blob notes the aspect, a commit's read the (aspect, commit) (`Engine::missed_blob`, `Core::missed`); the next blob stored re-delivers every noted aspect to its watches (`Cause::Fetched`) and every noted commit as `Event::Commits`, and a read still missing one notes it again.
 
 ## References
-- A value names a thing only by a reference, whose kind the writer always says (spec/data-model.md §3, §8): `Strong`, `Weak` (each a newtype over `Tid`, `.into()` both ways), `Ref` (a strong or a weak, for a `ref` position), `Ticket`. No `Codec` for `Tid`: a typed key's reference fields are `Strong`/`Weak`/`Ref`/`Ticket`, so the compiler makes the writer choose; untyped, `Value::Strong`/`Value::Weak`/`Value::Ticket`. `Value::target()` reads the tid of any of them. `osis::core::HOLDS` is `holds.0` (`set<ref>`). Path keys take `Strong`/`Weak` (`p![Weak(t)]`).
+- A value names a thing only by a reference, whose kind the writer always says (spec/data-model.md §3, §8): `Strong`, `Weak` (each a newtype over `Tid`, `.into()` both ways), `Ref` (a strong or a weak, for a `ref` position), `Ticket`. No `Codec` for `Tid`: a typed key's reference fields are `Strong`/`Weak`/`Ref`/`Ticket`, so the compiler makes the writer choose; untyped, `Value::Strong`/`Value::Weak`/`Value::Ticket`. `Value::as_ref_value()` reads a strong or a weak as a `Ref`. `osis::core::HOLDS` is `holds.0` (`set<ref>`). Path keys take `Strong`/`Weak` (`p![Weak(t)]`).
 - Rejected: `From<Tid> for Value` or a `Tid` codec (a default kind); one `Ref` enum with a ticket case (a ticket is no `ref`: a `ref` position takes a strong or a weak only).
 
 ## Backlinks

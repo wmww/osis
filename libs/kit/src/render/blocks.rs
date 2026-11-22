@@ -131,7 +131,7 @@ struct R<'a> {
     path: &'a str,
     /// The block being placed, while it can keep a list: where the list is recorded.
     listing: Option<usize>,
-    /// The slot being filled (`Acts::list_of`).
+    /// The slot being filled.
     list_slot: Option<String>,
 }
 

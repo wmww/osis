@@ -254,7 +254,7 @@ struct Pass {
     noted: u64,
     /// The recorded peers not read since it began.
     waits: BTreeSet<RecordId>,
-    /// The Pulls sent before it began (`Ground::pull_seq`): a source is fresh by a later one.
+    /// The Pulls sent before it began (`Net::pull_seq`): a source is fresh by a later one.
     pulled: u64,
 }
 
@@ -323,7 +323,7 @@ pub struct Status {
     /// Per read S: stranded there (heard out, and the engine's `stranded`).
     stranding_fx: Effects<SyncId, Option<Arc<Stranding>>>,
     strandings: Stamped<SyncId, Arc<Stranding>>,
-    /// Per S held, the place (`Pass::seq`) of its last complete pass here: what a leaving S
+    /// Per S held, the place (`Ground::pass_seq`) of its last complete pass here: what a leaving S
     /// waits on (crate::leave). Goes with S.
     done: Stamped<SyncId, u64>,
     /// The passes leave and read want (`Ground::module_passes`), whole.

@@ -1,5 +1,5 @@
-# Names notes/ and issues/ cite in backticks that are not in our code, kept on purpose (tools/code_refs.py).
-# `<name>  <reason>`. Kinds of reason: third-party (a library, OS, platform or tool name), placeholder
+# Names notes/, issues/ and Rust doc comments cite in backticks that are not in our code, kept on purpose (tools/code_refs.py).
+# `<name>  <reason>` (a name or `Type::item`). Kinds of reason: third-party (a library, OS, platform or tool name), placeholder
 # (an example or a math name), planned (a design or issue names it before it is built), rejected (a
 # design names what it chose not to build), removed (notes/arbitrary-values-table.md, Caps that must not come back).
 
@@ -72,3 +72,30 @@ CARGO_HOME  third-party: cargo environment variable
 Backdate  rejected: a removal mode notes/api.md turns down
 Executable  third-party: cargo test --no-run output
 Monitor  third-party: a Claude Code tool
+TextUtils  third-party: Android
+sun_path  third-party: the OS's sockaddr_un field
+SO_REUSEADDR  third-party: socket option
+IPV6_MULTICAST_ALL  third-party: Linux socket option
+Connection::set_receive_window  third-party: quinn
+Java_net_osis_app_OsisView_  third-party: the JNI export names jni's native_method! generates
+u_i  placeholder: math
+S1a2b3c  placeholder: a trace token
+NoteTyping  placeholder: an example generated type name
+BoxSealed  placeholder: an example generated type name
+x_v1  placeholder: an example aspect key
+HIGH  placeholder: an example generated case constant
+stream_read  planned: notes/client-port.md (streams over the port, not built)
+Osis::open_link  planned: issues/api-deferred.md (bearer read)
+Tx::header  planned: issues/long-aspect-cost.md
+Config::relays  planned: issues/p2p-own.md
+Pager::run_until_loaded  planned: issues/test-consolidation.md
+Engine::wants  planned: issues/sync-unbuilt.md
+Try  rejected: notes/api.md (a timeout in the API)
+Value::Large  rejected: notes/api.md
+Missing::Forgot  rejected: notes/engine-lost-access.md
+Rule::listed  removed: a held-model evidence option its findings name (notes/evidence-model-findings.md)
+Leaves::Evidence  removed: a held-model evidence option its findings name
+Leaves::Unit  removed: a held-model evidence option its findings name
+Removals::Any  removed: a held-model evidence option its findings name
+Scope::Edge  removed: a held-model evidence option its findings name
+Far  removed: a held-model evidence option its findings name (`Home::Far`)

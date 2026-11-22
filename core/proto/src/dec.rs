@@ -10,7 +10,7 @@ pub(crate) struct Fields {
 }
 
 impl Fields {
-    /// An array of exactly `n` items, or between `min` and `max` items with `fields_range`.
+    /// An array of exactly `n` items, or between `min` and `max` items with `Fields::range`.
     pub(crate) fn exact(v: Value, n: usize, what: &'static str) -> Result<Fields, Error> {
         Fields::range(v, n, n, what)
     }

@@ -128,7 +128,7 @@ pub struct Closure {
     /// Per thing a held strong reaches whose read secret is not established here, the sync IDs
     /// and roles of the held tickets for it the node can open, as last judged (`judge`).
     ticket_ids: JMap<Tid, BTreeSet<(osis_base::SyncId, Role)>>,
-    /// Per thing as `ticket_ids`, each such ticket's holder and word (`tickets::Taken::words`):
+    /// Per thing as `ticket_ids`, each such ticket's holder and word:
     /// what `tickets::role_on` reads.
     ticket_words: JMap<Tid, BTreeSet<(Tid, Role)>>,
     /// Per sync ID, the things whose `ticket_ids` name it.

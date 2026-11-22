@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
-"""Code names in notes (notes/gate.md, Policy checks): every code name a note or issue cites in
-backticks exists, so a rename or deletion fails the branch that made it, not a later reader.
-Checked, in each inline backtick span of notes/ and issues/ (fenced blocks are sketches, not citations):
+"""Code names in notes and doc comments (notes/gate.md, Policy checks): every code name a note, an
+issue or a Rust doc comment (`///`, `//!`, not in vendored crates) cites in backticks exists, so a
+rename or deletion fails the branch that made it, not a later reader.
+Checked, in each inline backtick span (fenced blocks are sketches, not citations):
   names: each segment of an `a::b` path, a name called (`foo(`), a name with `_` (`foo_bar`,
       `MAX_PROOFS`), a CamelCase name with an inner capital (`LocalPeer`) and a span that is one
-      capitalised word (`Payloads`): the word occurs in a
-      repo file outside docs/ (not Markdown, but spec/'s), is a repo file's name without its
-      extension (a TLA model's .cfg), or is a test's name less its `_spec_...` tail. A word match,
-      not a definition: a name only a comment keeps passes. Skipped: a name starting or ending in
-      `_`, shorter than 3, or beside `*`, `<`, `>`, `{`, `}`, `$`, `-`, `/` (a pattern, placeholder,
-      flag or alternative); `a_{b,c}` names `a_b` and `a_c`.
+      capitalised word (`Payloads`): the word occurs in code (Rust outside its comments, its
+      literals included; any other repo file outside docs/ that is not Markdown, and spec/), is a
+      repo file's name without its extension (a TLA model's .cfg), or is a test's name less its
+      `_spec_...` tail or its `_plain`/`_large`/`_exhaustive` size. A name only a comment keeps
+      fails. Skipped: a name starting or ending in `_`, shorter than 3, or beside `*`, `<`, `>`,
+      `{`, `}`, `$`, `-`, `/` (a pattern, placeholder, flag or alternative); `a_{b,c}` names `a_b`
+      and `a_c`.
+  members: `Type::item` (not `Enum::Variant::item`), where our Rust defines `Type`: `item` is one of
+      its variants, fields or associated items (of its impls, or its `Deref` target's), or the code
+      writes `Type::item` itself (a std, third-party or generated type of that name). Read by regex
+      from rustfmt'd source at the item's own brace depth; a type a macro fills in passes any item.
   families: a name ending in `_` followed by `*` (a test family, not after another pattern
       character): some code word starts with it, so a family whose tests all went fails.
   paths: a span that is a relative path of a source extension (`core/x/src/y.rs`, `apply/mod.rs`):
@@ -18,13 +24,14 @@ Checked, in each inline backtick span of notes/ and issues/ (fenced blocks are s
 A repo file is tracked, or untracked and not ignored (a new file counts before its `git add`).
 Not read: notes/complaints/ (consumed), the Investigations section of notes/time-limits.md (a record
 of what ran then), spec/ (its names are wire and grammar terms). Names not in our code on purpose
-(third-party, placeholder, planned, rejected, removed) are listed in tools/code_refs_allow.txt with a
-reason; a listed name that is in the code, or that no note or issue cites, fails.
+(third-party, placeholder, planned, rejected, removed; `Type::item` too) are listed in
+tools/code_refs_allow.txt with a reason; a listed name that is in the code, or that nothing cites,
+fails.
 Usage: python3 tools/code_refs.py   (exit 1 on any stale name; policy.py runs it)"""
-import bisect, os, re, subprocess, sys
+import bisect, itertools, os, re, subprocess, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from rustsrc import members
+from rustsrc import members as members_of
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ALLOW = "tools/code_refs_allow.txt"
@@ -43,6 +50,28 @@ GLOB = set("*<>{}$-/")
 BRACES = re.compile(r"(\w*)\{(\w+(?:,\w+)+)\}")
 # a test's name ends in the spec section it covers (tools/spec_map.py); a note may leave it out
 SPEC_TAIL = re.compile(r"_spec_\w*$")
+# a property runs as `_plain`, `_large` or `_exhaustive` tests (notes/testing.md); a note may name them at once
+SIZE_TAIL = re.compile(r"_(?:plain|large|exhaustive)$")
+OWNER = re.compile(r"\b([A-Z]\w*)::$")
+PAIR = re.compile(r"[A-Z]\w*::[A-Za-z_]\w*")
+# Rust: a comment or literal (its first character, then the rest: the charset lead keeps the scan fast;
+# block comments are taken as not nested), a doc comment line, an item that has members, and a line that
+# may declare one, indented (a variant, a line a macro fills in: a metavariable or a call, an associated fn, const
+# or type, a field); the last two read text that
+# starts with a newline, which also keeps their scan fast
+LIT = re.compile(r'''[/"'r](?:(?<=/)(?:/[^\n]*|\*.*?\*/)|(?<=")(?:[^"\\]|\\.)*"|(?<=')(?:\\(?:u\{\w+\}|x\w\w|.)|[^'\\\n])'|(?<=r)(#*)".*?"\1)''', re.S)
+DOC = re.compile(r"\n[ \t]*//(?:/(?!/)|!)(.*)")
+VIS = r"(?:pub(?:\([^)\n]*\))?[ \t]+)?"
+HEAD = re.compile(r"\n[ \t]*" + VIS + r"(?:(?:unsafe|default)[ \t]+)*(impl|struct|enum|trait|union)\b([^{;]*)([{;])")
+CAND = re.compile(r"\n[ \t]+(?:(?P<v>[A-Z]\w*)|(?P<x>\$|[a-z_]\w*![ \t]*[({\[])|" + VIS + r"(?:(?:(?:const|async|unsafe|default|extern[ \t]+\"[^\"\n]*\")[ \t]+)*"
+                  r"(?:fn|const|type)[ \t]+(?:r#)?(?P<m>\w+)|(?:r#)?(?P<f>[A-Za-z_]\w*)[ \t]*:(?!:)))")
+# in a type's member set: the type's members are partly a macro's (unknown), or also those of `Deref` target
+OPEN, DEREF = "$", "Deref="
+# a derived or std trait's method, every type's
+DERIVED = {"default", "clone", "eq", "cmp", "partial_cmp", "hash", "fmt", "from", "into", "try_from", "to_string", "drop", "deref"}
+TARGET = re.compile(r"\btype[ \t]+Target[ \t]*=[ \t&]*(?:dyn[ \t]+)?(?:\w+::)*(\w+)")
+# vendored crates: their names are code, their docs not ours to check
+VENDORED = "libs/kit/patches/"
 
 
 def cited(text):
@@ -65,6 +94,10 @@ def cited(text):
             if name.startswith("_") or name.endswith("_") or len(name) < 3 or GLOB & {before, after}:
                 continue
             pathy = span[max(0, a - 2):a] == "::" or span[b:b + 2] == "::"
+            # `Type::item`: the item is one of the type's own when the code defines the type
+            # not `Enum::Variant::item`, whose item is the variant's payload's
+            if (o := OWNER.search(span[:a])) and not re.search(r"\b[A-Z]\w*::$", span[:o.start()]):
+                yield line, o.group(1) + "::" + name, "member"
             if pathy or after == "(" or "_" in name or CAMEL.match(name) or CAPITAL.fullmatch(span):
                 yield line, name, "name"
 
@@ -93,15 +126,26 @@ def allow_list(root):
     return out, errs
 
 
-def stale(docs, words, ends, allow):
-    """Stale citations in `docs` ({path: text}) against the code's `words` and path tails `ends`,
-    and stale lines of `allow` ({name: (line, reason)})."""
-    used, by_order = set(), sorted(words)
+def stale(docs, words, ends, allow, members=None):
+    """Stale citations in `docs` ({path: text}) against the code's `words`, path tails `ends` and
+    `members` ({type: its variants, fields and associated items}), and stale lines of `allow`
+    ({name: (line, reason)})."""
+    used, by_order, members = set(), sorted(words), members or {}
+
+    def has_member(owner, item, seen):
+        # a type a macro fills in is open; a `Deref` target's members are the type's too
+        seen.add(owner)
+        got = members.get(owner, ())
+        return item in got or item in DERIVED or OPEN in got or any(has_member(t[len(DEREF):], item, seen) for t in got
+                                                 if t.startswith(DEREF) and t[len(DEREF):] not in seen)
 
     def found(name, kind):
         if kind == "prefix":
             i = bisect.bisect_left(by_order, name)
             return i < len(by_order) and by_order[i].startswith(name)
+        if kind == "member":
+            owner, item = name.split("::")
+            return name in words or owner not in members or has_member(owner, item, set())
         return name in words if kind == "name" else name in ends
     for rel, text in docs.items():
         seen = set()
@@ -110,7 +154,8 @@ def stale(docs, words, ends, allow):
                 used.add(name)
             elif not found(name, kind) and name not in seen:
                 seen.add(name)
-                yield f"{rel}:{line}: `{name}`: no such {kind} in the code ({ALLOW} for a third-party name or placeholder)"
+                what = f"no `{name.split('::')[1]}` in the code's `{name.split('::')[0]}`" if kind == "member" else f"no such {kind} in the code"
+                yield f"{rel}:{line}: `{name}`: {what} ({ALLOW} for a third-party name or placeholder)"
     for name, (n, why) in sorted(allow.items(), key=lambda x: x[1][0]):
         if not why:
             yield f"{ALLOW}:{n}: `{name}` has no reason"
@@ -120,16 +165,107 @@ def stale(docs, words, ends, allow):
             yield f"{ALLOW}:{n}: `{name}` is cited nowhere (drop the line)"
 
 
+def owner(kind, head):
+    """The type an item header names: `struct Name`, `impl<T> Trait for path::Name<T> where ...`."""
+    if kind != "impl":
+        m = re.match(r"\s*(?:r#)?(\w+)", head)
+        return m and m.group(1)
+    h = head.strip()
+    if h.startswith("<"):
+        d = 0
+        for i, c in enumerate(h):
+            d += (c == "<") - (c == ">")
+            if d == 0:
+                h = h[i + 1:]
+                break
+    h = re.split(r"\bfor\b", re.split(r"\bwhere\b", h)[0])[-1]
+    m = re.match(r"[\s&]*(?:dyn\s+|mut\s+)?(?:\w+::)*(\w+)", h)
+    return m and m.group(1)
+
+
+def rust(src, members):
+    """Rust source `src`: its code with comments left out (literals kept: an env var or a test is named
+    in a string), its doc comments ({line: text}), and each type's members (variants, fields and the
+    associated items of its impls, at the item's own brace depth) added to `members`."""
+    strings = []
+
+    def lit(m):
+        t = m.group()
+        if t[0] != "/":
+            strings.append(t)
+        return "\n" * t.count("\n")
+    bare = "\n" + LIT.sub(lit, src)
+    src = "\n" + src
+    docs, line, last = {}, 0, 0
+    for m in DOC.finditer(src):
+        line += src.count("\n", last, m.start() + 1)
+        last = m.start() + 1
+        docs[line] = m.group(1)
+    # line j of `lines` is the source's line j
+    lines = bare.split("\n")
+    starts = [0, *itertools.accumulate(len(l) + 1 for l in lines)]
+
+    def pick(kind, c):
+        return c.group("v") if kind == "enum" else c.group("f") if kind in ("struct", "union") else c.group("m")
+    heads = {}
+    for m in HEAD.finditer(bare):
+        if m.group(3) == "{" and (name := owner(m.group(1), m.group(2))):
+            p = m.end() - 1
+            n = bisect.bisect_right(starts, p) - 1
+            rest = bare[p + 1:starts[n + 1]]
+            if rest.count("{") >= rest.count("}"):
+                heads[n] = (m.group(1), name)
+                if m.group(1) == "impl" and re.search(r"\bDeref\b", m.group(2)) and (t := TARGET.search(bare, p)):
+                    members.setdefault(name, set()).add(DEREF + t.group(1))
+            else:
+                # on one line: `enum Kind { A, B }`
+                for part in rest[:rest.find("}")].split(","):
+                    if (c := CAND.match("\n " + part)) and (v := pick(m.group(1), c)):
+                        members.setdefault(name, set()).add(v)
+    if heads:
+        # each line's brace depth at its start
+        depth = [0, *itertools.accumulate(l.count("{") - l.count("}") for l in lines)]
+        order = sorted(heads)
+        # where each item's body ends: the first line after it starting shallower than its body
+        at = {}
+        for j, v in enumerate(depth):
+            at.setdefault(v, []).append(j)
+        end = {}
+        for n in order:
+            d = depth[n + 1]
+            end[n] = min((ls[i] for v, ls in at.items() if v < d and (i := bisect.bisect_right(ls, n)) < len(ls)), default=len(lines))
+        for c in CAND.finditer(bare):
+            j = bisect.bisect_right(starts, c.start() + 1) - 1
+            # a member is on a line straight inside its item's braces: the nearest item before it
+            # whose body it is in, one level deeper
+            for n in reversed(order[:bisect.bisect_left(order, j)]):
+                if j < end[n]:
+                    kind, name = heads[n]
+                    if depth[j] == depth[n + 1] and (v := OPEN if c.group("x") else pick(kind, c)):
+                        members.setdefault(name, set()).add(v)
+                    break
+    return bare + " ".join(strings), docs
+
+
 def code_names(root, files):
-    """The words of the code (and of spec/, which names wire fields and constants), and every tail
-    of each source path."""
-    words = set()
+    """The words of the code (and of spec/, which names wire fields and constants), every tail of
+    each source path, each Rust type's members, and the Rust doc comments ({path: text})."""
+    words, members, docs = set(), {}, {}
     for rel in files:
         # not the tools' own test fixtures, whose planted names are none
         if (rel.startswith("spec/") or not rel.endswith(NOT_SRC)) and rel not in LISTS and not rel.startswith("docs/") \
                 and not re.match(r"tools/\w+_test\.", rel) and os.path.isfile(os.path.join(root, rel)):
-            words.update(WORD.findall(open(os.path.join(root, rel), errors="replace").read()))
+            text = open(os.path.join(root, rel), errors="replace").read()
+            if rel.endswith(".rs"):
+                text, doc = rust(text, members)
+                # `Type::item` as the code writes it: a std, third-party or generated type's item
+                words.update(PAIR.findall(text))
+                if doc and not rel.startswith(VENDORED):
+                    n = max(doc)
+                    docs[rel] = "\n".join(doc.get(i, "") for i in range(1, n + 1))
+            words.update(WORD.findall(text))
     words |= {SPEC_TAIL.sub("", w) for w in words if "_spec_" in w}
+    words |= {SIZE_TAIL.sub("", w) for w in words if w.endswith(("_plain", "_large", "_exhaustive"))}
     # a file's name without its extension (a TLA model's .cfg, a script) is a name too
     words.update(os.path.splitext(os.path.basename(r))[0] for r in files)
     # a path cites a file by any tail of its path, also with the crate's src/ left out
@@ -140,10 +276,10 @@ def code_names(root, files):
             for g in {f, f.replace("/src/", "/")}:
                 parts = g.split("/")
                 ends.update("/".join(parts[i:]) for i in range(len(parts)))
-    for d, pkg in members().items():
+    for d, pkg in members_of().items():
         d = os.path.relpath(d, root) + "/"
         ends.update(pkg + "/" + f[len(d):] for f in files if f.startswith(d) and f.endswith(PATH_EXTS))
-    return words, ends
+    return words, ends, members, docs
 
 
 def check(root=ROOT):
@@ -154,7 +290,8 @@ def check(root=ROOT):
             and os.path.isfile(os.path.join(root, rel))}
     allow, errs = allow_list(root)
     yield from errs
-    yield from stale(docs, *code_names(root, files), allow)
+    words, ends, members, rdocs = code_names(root, files)
+    yield from stale({**docs, **rdocs}, words, ends, allow, members)
 
 
 if __name__ == "__main__":

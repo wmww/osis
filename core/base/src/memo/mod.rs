@@ -348,7 +348,7 @@ impl Stamps {
     }
 
     /// Key `k`'s stamp now, read by no memo: equal at two times, `k` was not written or removed
-    /// between (a copy of what `k` held that checks itself, as `Store::local_stamp`'s callers).
+    /// between (a copy of what `k` held that checks itself, as `Transaction::local_stamp`'s callers).
     pub fn stamp<Q: Hash + ?Sized>(&self, k: &Q) -> u64 {
         lock(&self.0).stamp(Some(hash(k)))
     }

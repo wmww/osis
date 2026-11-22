@@ -101,7 +101,7 @@ pub struct Write<'d> {
     created: Vec<Tid>,
     /// `Write::expires`.
     expires: Option<Expiry>,
-    /// A thing that must still be known (`Osis::knows`) when the write commits, checked under
+    /// A thing that must still be known (`Reader::knows`) when the write commits, checked under
     /// the commit's lock: a text session never recreates a thing deleted since it knew it.
     pub(crate) alive: Option<Tid>,
     /// Why a chained modifier (`purge_by`) could not be recorded: `commit` fails

@@ -105,7 +105,9 @@ PLANTS = [
     ("notes/build.md", None, "\nSee `Engine::planted_gone_fn` and `planted_listed_name`.\n"),
     ("tools/code_refs_allow.txt", None, "planted_listed_name  placeholder\nEngine  placeholder\nplanted_listed_name  placeholder\n"),
     # files made after the `git add`, untracked: cited, they count (a near miss)
-    ("core/base/src/planted_fresh.rs", None, "// fn planted_fresh_fn\n"),
+    ("core/base/src/planted_fresh.rs", None, "fn planted_fresh_fn() {}\n"),
+    # code_refs in doc comments: a name only a comment keeps, a type's member it lacks
+    ("core/base/src/planted_doc.rs", None, "/// `planted_doc_gone` and `PlantedDoc::gone`.\npub struct PlantedDoc {\n    pub here: u8, // planted_doc_gone\n}\n"),
     ("notes/planted-fresh.md", None, "# Fresh\n> Summary: planted.\n"),
     ("notes/build.md", None, "\nSee notes/planted-fresh.md, `core/base/src/planted_fresh.rs` and `planted_fresh_fn`.\n"),
     # spec_anchors: a test citing nothing, an anchor naming no rule
@@ -164,6 +166,8 @@ EXPECT = [  # regexes the output must hold
     r"notes/build\.md:\d+: notes/no-such-planted\.md does not exist",
     r"notes/build\.md:\d+: notes/gate\.md, \"planted nonexistent section\": no such section",
     r"notes/build\.md:\d+: `planted_gone_fn`: no such name",
+    r"core/base/src/planted_doc\.rs:1: `planted_doc_gone`: no such name",
+    r"core/base/src/planted_doc\.rs:1: `PlantedDoc::gone`: no `gone` in the code's `PlantedDoc`",
     r"tools/code_refs_allow\.txt:\d+: `Engine` is in the code",
     r"tools/code_refs_allow\.txt:\d+: `planted_listed_name` listed twice",
     r"tools/code_refs_allow\.txt:\d+: duplicate of line \d+",

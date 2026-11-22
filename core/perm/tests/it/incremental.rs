@@ -1884,8 +1884,8 @@ fn creation_histories(rng: &mut Rng, at: &str, seen: &mut Seen) {
 
 /// §5.1: a lone node's first commit joins it to a component without commits (a record chain):
 /// the general path continues the larger component and reports the node and the commit's
-/// target, as `append` does, not the target's mint admins (seed 7301 of
-/// `creation_fast_equals_general_large`: it continued the node's walk and reported them all).
+/// target, as `append` does, not the target's mint admins (a creation
+/// history, seed 7301: it continued the node's walk and reported them all).
 #[test]
 fn merge_continues_the_larger_component_spec_permissions_5_1() {
     use osis_base::Role::Write;
@@ -1916,7 +1916,7 @@ fn merge_continues_the_larger_component_spec_permissions_5_1() {
 /// a commit) joins that component by the fast path; the next growth of the component that
 /// the fast path declines continues the walk (a mint admin without a record is a node to
 /// `Timeline::add_leaves` as to `Input::gather`, so none "comes" at the extension), as the
-/// general path does (`creation_fast_equals_general_large` seed 0x5005eed0a02 sample 11: the
+/// general path does (a creation history, seed 0x5005eed0a02 sample 11: the
 /// fast path evaluated the component instead).
 #[test]
 fn leaf_under_a_late_node_continues_spec_permissions_5_1() {
@@ -1984,7 +1984,7 @@ fn saved_walk_keeps_keep_spec_permissions_3() {
 }
 
 thread_local! {
-    /// Whether `update_moved` checks what it reports (the `role_moves_*` tests turn it on).
+    /// Whether `update_moved` checks what it reports (`incremental` turns it on for a quarter of its samples).
     static MOVES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 

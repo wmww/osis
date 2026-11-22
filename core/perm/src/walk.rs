@@ -1187,8 +1187,8 @@ struct Pass<'a> {
     outer: Option<&'a Walked>,
 }
 
-/// A node's cached roles (`Pass::roles`): the answer, also by dense index (`Pass::ids`, for
-/// the check every change makes), the ts it was computed at and the earliest `until` it
+/// A node's cached roles (`Pass::roles`): the answer, also by dense index (for the
+/// check every change makes), the ts it was computed at and the earliest `until` it
 /// followed.
 #[derive(Clone)]
 struct Roles {

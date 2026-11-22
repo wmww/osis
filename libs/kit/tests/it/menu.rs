@@ -73,7 +73,7 @@ impl Screen {
         self.tap(ty, r.center());
     }
 
-    /// Answers the clipboard signals as every shell does (`Ui::copy`, `Ui::paste`).
+    /// Answers the clipboard signals as every shell does (`Started::copy`, `Started::paste`).
     fn answer(&mut self) {
         for s in self.signals.try_iter().collect::<Vec<_>>() {
             match s {

@@ -17,7 +17,7 @@
 
 ## Not memos, by audit
 - Clock-relative, per ask: `rotation::blocked_roles_of`, `Engine::pass_end` (an effect: split the value it derives from the effect run when it moves; its reads were 5-8% of multi-node workloads), `rotation_due`, `own_secrets_candidates`, `Core::may_read`, `finalizable`, `roster_of`, `links_due`.
-- Not clock-relative, per ask: `sync_ids::certs::{latest_by, destroyed_upstream, history_certificates}` (`destroyed_upstream` walks the destroyed things held, `Indexes::destroyed`), `giving_wrap_epoch`, `part_body`, `Engine::inbox` and `deposit_seed`, `keys_write_unapplied`, `Engine::epochs`' fallback. None above 3% in profiles.
+- Not clock-relative, per ask: `sync_ids::certs::{latest_by, destroyed_upstream, history_certificates}` (`destroyed_upstream` walks the destroyed things held, `Indexes::destroyed`), `giving_wrap_epoch`, `part_body`, `deposit_seed`, `keys_write_unapplied`, `Engine::epochs`' fallback. None above 3% in profiles.
 - Blocked by unstamped reads: `readable_by` (`sourced_elsewhere`), `next_timer`/`timers_due`, `freed_wants`.
 - Hand-kept state that stays, with its reason: `Core::states`/`pages` (the transaction's working copy), `undo::touch::Touches`, `tree_refs::Reach`, `epochs_judged_from` (an effect trigger), perm's `Timeline::memo` and walk cache, `Core::memory_waits`, `apply::reach::Walks`.
 

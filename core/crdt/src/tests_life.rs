@@ -495,7 +495,7 @@ fn pages_under(cas: &Cas, top: &[osis_base::Link]) -> usize {
 
 /// Links grouped level by level into link pages while the level's list is above the target,
 /// a group closing after a link where `close(level, links in the group so far, link)` says or
-/// at the level's end: the root list. `spec_rule` closes as spec/wire.md §6 does.
+/// at the level's end: the root list.
 fn grouped(cas: &mut Cas, mut links: Vec<osis_base::Link>, params: PageParams, close: &dyn Fn(usize, usize, &osis_base::Link) -> bool) -> Vec<osis_base::Link> {
     let len = |ls: &[osis_base::Link]| osis_base::encode(&Value::List(ls.iter().copied().map(Value::link).collect())).len();
     let mut level = 0;

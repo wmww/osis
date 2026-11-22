@@ -125,7 +125,7 @@ pub struct Made {
     /// account next took a strong away or lowered a role (a step that may release its thing):
     /// what a release after it could still lose (`lost_writes`).
     froze: BTreeMap<usize, BTreeSet<usize>>,
-    /// Hand commits to the reference (`World::differential`); off, a step only writes.
+    /// Hand commits to the reference; off, a step only writes.
     pub harvest: bool,
     /// Things held by no node at some quiet run (`ran`): gone for everyone, a strong to one
     /// holds nothing from then on (spec/sync-set.md §3 A thing goes when its last reference goes).

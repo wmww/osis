@@ -2194,7 +2194,7 @@ fn room_fits(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, cap: Cap, n
     Ok(entries >= 1 && bytes >= need)
 }
 
-/// The room `cap` has for S now, as the take judges it (`make_room`, `mem_room`): entries and
+/// The room `cap` has for S now, as the take judges it (`make_room`, `room_fits`): entries and
 /// bytes left under it (`u64::MAX` entries for a cap of bytes alone). A total's room counts what
 /// give-way frees: the durable total less the bytes no give-way frees (read by its stamp, the
 /// count kept, not read by key); the memory total whole (every byte in memory gives way).

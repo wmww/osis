@@ -112,8 +112,8 @@ Totals from `tools/pertest.py top`; the gate's figures: notes/time-limits.md; wh
 - `Engine::local_census` keys keep the family's trailing `/` (`"pc/"`): a lookup by the bare prefix reads no rows, and an "is zero" assert passes vacuously. Probe every row-count assert with its mechanism off.
 - `Engine::fires_owed` is in `FireId` order: `.last()` is the highest id, not the newest fire; diff the owed set before and after.
 - `Hlc::peek` jumps to every received `ts`: a wait "until R's `ts`" against it ends the moment R arrives. A rule "as of its wall clock" reads `Hlc::wall`, and a wait on wall time sets a wake.
-- `LocalPeer::receive` wakes and re-examines after every ingest, so a wake a shortcut skips is invisible there: probe an ingest path through `Engine::ingest`.
-- `LocalPeer::pulled_anew` fills only at `receive`/`reexamine`: a test clearing it after a copy sees the setup's pulls at the next receive (`reexamine` first). The order harness's `fetch_missing` never delivers what a node pulls anew: a node relying on one fails `held_set_decides` with no hint.
+- `local_peer::Peer::receive` wakes and re-examines after every ingest, so a wake a shortcut skips is invisible there: probe an ingest path through `Engine::ingest`.
+- `local_peer::Peer::pulled_anew` fills only at `receive`/`reexamine`: a test clearing it after a copy sees the setup's pulls at the next receive (`reexamine` first). The order harness's `fetch_missing` never delivers what a node pulls anew: a node relying on one fails `held_set_decides` with no hint.
 - `LocalPeer::sync` carries no ephemeral commit: hand one over with `memory_blob` and `ingest_memory`.
 - A role commit past `grant`'s refusal needs `m.unchecked` plus `skip_writer_rules`.
 - A mutation that changes nothing (a `set` of the current value, a set `Add` of a live value) writes no delta, and a commit with no delta is not made (`commit_tx` returns `None`).
@@ -164,7 +164,6 @@ Totals from `tools/pertest.py top`; the gate's figures: notes/time-limits.md; wh
 - roles-model: probe a failing world by printing it and its reference, never by shrinking it first (one shrink ran past 10 minutes on one core). Two readings of one world (a mutant against the rule) go in one process with a thread-local switch: an env var cannot switch per call across `on_every_core` threads.
 - roles-model `paths::World::lowers` counts every edge write below admin, a fresh grant of write included: it is not "a removal" (the evidence model defines its own `removes`).
 - held-model `gen::shuffle` does not reorder `Held::dots`, and `Dots::commit` takes the first range holding a dot: an order test over overlapping ranges shuffles `dots` itself (`props_overlap::reorder`).
-- held-model `unit`: `Net::deliver` decides by the truth which units a writer syncs, so a writer that cannot know a sync ID still gets commits under it; a gap there needs delivery by hand.
 - osis-perm tests: `World::nodes(n)` returns the same nodes on every call; fresh nodes per loop step come from one `nodes_salted` call, or the components silently merge.
 - A generator may build in-memory states no encoder writes (a crdt position write stamped with its element's dot): before fixing a rule for one, check it decodes from bytes; a decoder test of such bytes hand-patches an encoding (decode to `Value`, change it, re-encode). `DeltaBuilder` `Add v` of a value already live writes nothing: a forged copy adds a value the base lacks.
 - `Debug` of a crdt `Seq` expands range records per element, so a printed state never shows whether a join split a range: count `elems().len()` or spans. Text ranges exist only content-less.
@@ -173,7 +172,7 @@ Totals from `tools/pertest.py top`; the gate's figures: notes/time-limits.md; wh
 
 **Oracles and isolation**
 - A test meant to isolate one mechanism checks that it fails with that mechanism alone disabled: a test passing by either of two mechanisms isolates neither, and a plant a later backstop hides needs a check between the two.
-- An oracle choosing its subjects by an internal flag (`HeldKeyset::demotes`) breaks across a refactor of that index and cannot run on the code before a fix: choose by a stable fact.
+- An oracle choosing its subjects by an internal flag (`HeldKeyset::demotions`) breaks across a refactor of that index and cannot run on the code before a fix: choose by a stable fact.
 - A differential's exclusion (a predicate excusing a disagreement) is counted over every world it covers, printed beside the failures: applied to failing worlds only, one excused 38% of the paths content worlds unseen.
 - A differential mapping model flags to wire shapes never emits a shape its mapping lacks, so a mutant of that shape's rule survives every agreement test: a shape rule needs a test that builds the wire input directly (roles-model `paths/shapes.rs`, osis-perm's).
 - A test whose comment claims a state asserts or tallies it: unasserted, a setup change silently makes it test something else (`pending()` names a wait). The forensic `recoverable` sees nothing of a pending copy outside the node closure: assert the value recoverable before the step that should remove it.

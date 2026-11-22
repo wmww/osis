@@ -33,7 +33,7 @@ pub(super) struct Place {
     pub closed: BTreeSet<SyncId>,
     /// Members whose rows hold another form of the same position (`effective`): a member at the
     /// stream that left it, stopped at the stream's cursor, still stored as at it. Written with
-    /// the next cursor that moves (`Pulling::save`), before it could mean another position.
+    /// the next cursor that moves (`Streams::save`), before it could mean another position.
     stale: BTreeSet<SyncId>,
     /// The head of S this node last told this source a refusal of S under (no head: `None`),
     /// until S is pulled from the start there (spec/sync-streams.md §4 Refused). Row `TOLD`.

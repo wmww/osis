@@ -5,7 +5,7 @@
 //! writes it: a value other than the text it last committed or merged (another session, a
 //! `remove`, an undo, another node) has pending typing committed first, then the merged text
 //! replaces the buffer, reported through `on_merge` as `Splice`s; its own commit's echo changes
-//! nothing. A session commits on `commit`, after `Config::idle_commit` without edits (a timer on
+//! nothing. A session commits on `commit`, after `AppConfig::idle_commit` without edits (a timer on
 //! the node's runtime; without one, at the next edit), and on drop. At most one save of a
 //! session is in flight, and none holds the buffer's lock across a node call: a keystroke never
 //! waits for a save. A session whose thing was deleted since it was known keeps its pending

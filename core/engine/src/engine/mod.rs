@@ -286,7 +286,7 @@ pub struct View {
     /// A role commit's frontier (`validity::header_frontier`; perm's adaptation reads it
     /// for demotions); `None` on other kinds.
     pub frontier: Option<Arc<osis_perm::Frontier>>,
-    /// It carries a request, a purge or a release (`Header::requests`; `retention::lasting`).
+    /// It carries a request, a purge or a release (`Header::purge`; `retention::lasting`).
     pub purges: bool,
     /// The epoch an account's commit is signed at (spec/wire.md §4): what the epoch rule reads
     /// (`Core::standing`); `None` for any other author.
@@ -639,13 +639,13 @@ indexes! {
     /// (`Core::note_rotation`): what `Core::account_view` is cached by.
     pub rotations: JMap<Tid, u64>,
     /// Accounts whose rotations held changed since their epochs were last judged
-    /// (`Core::refresh_epochs`).
+    /// (`account::refresh_epochs`).
     pub epochs_due: JSet<Tid>,
     /// Per account with a rotation judged, what the epoch rule says of its commits
-    /// (`JudgedEpochs`; `Core::refresh_epochs` re-judges what moved). Persisted.
+    /// (`JudgedEpochs`; `account::refresh_epochs` re-judges what moved). Persisted.
     pub epochs: JMap<Tid, Arc<crate::flows::account::JudgedEpochs>>,
     /// Per account, its held commits at closed epochs that a counting thing list or listing
-    /// names (`Core::refresh_epochs`): a row each, as the history it grows with. Persisted.
+    /// names (`account::refresh_epochs`): a row each, as the history it grows with. Persisted.
     pub named: JSetMap<Tid, CommitId>,
     /// Per held role commit at an epoch, its inner and merge signatures (spec/wire.md §4), read
     /// when the chain is built (`Core::account_view`; `note_role_sigs`). Not persisted: an open
@@ -1248,7 +1248,7 @@ pub struct Core {
     pub account: memo::Tracked<Option<Tid>>,
     /// The wall clock as memos read it (`memo::Clock`, wall ms): set at each transaction and by
     /// node-sync before it asks its memos; a memo reads it whole (`get`) or up to the next time
-    /// that moves its answer (`until`, `Core::horizon`).
+    /// that moves its answer (`until`).
     pub time: memo::Clock,
     /// Accounts this node signs as, seeds from each one's account root (`Engine::hold_account`),
     /// retaken on every open.

@@ -36,7 +36,7 @@ Timers: expiry; one per (thing, AK) at the next body leaving history; `T_KEPT` (
 - Expiry is per commit; purge drops single deltas. A blob holding a part that strips (a purge's leftover, past its bounds, destroyed, or dropped as covered under purge on replace by a snapshot reaching it by its tables) is must-not-hold wherever it is logged and is rewritten without it (`Engine::blob_gone`, notes/whole-commits.md Strip).
 - "Held" is judged by the stored blob holding the part (`apply::stores_part`), not meta alone: during a join the commit is indexed before it is stored. A part still to arrive is not held (`retention::held_part`): not judged, not dropped.
 - `drop_part` keeps a dropped part's rotation role, overreach and keysets (`Dropped::role`, `overreach`, `keysets`), so re-judging and rebuilds need no body; `reopen` forgets them. A bare leftover is never dropped (it stays for un-merge); one holding values (`Hold::Leftover::valued`) drops as a whole body.
-- An index entry derived from a dropped body goes with it (`apply::forget_snapshot` for `Core::snapshots`), since a rebuild cannot read it (order seed 1291).
+- An index entry derived from a dropped body goes with it (`apply::forget_snapshot` for `Indexes::snapshots`), since a rebuild cannot read it (order seed 1291).
 
 ## Invalid bodies (`retention::drop_invalid`; spec/permissions.md §6)
 - `Core::drop_due` collects every commit with a part held or missing and invalid. At the end of `Engine::run`, after `addenda::write_owed` (this node's addenda vouch first) and before `settle_none`, each such part goes (`DropFor::Invalid`) with no rebuild (it gave nothing; one whose drop uncovers parts rebuilds). Memory parts go alike; their commit stays known (notes/ephemeral.md What follows from memory).

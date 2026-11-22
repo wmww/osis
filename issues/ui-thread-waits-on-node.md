@@ -3,5 +3,5 @@
 > Priority: normal
 > Tags: kit, app, osis
 
-- Where it waits: kit render reads (`Data` reads through `Osis`), `settle` running a session's merge (it commits pending typing and reads the merged text), `TextSession::splice` saving inline after a pause when no runtime arms the idle timer.
+- Where it waits: kit render reads (`Data` reads through `Osis`), `settle` running a session's merge (it commits pending typing and reads the merged text), `TextSession::edit` saving inline after a pause when no runtime arms the idle timer.
 - Not waiting: `splice`/`text` during a save in flight (test `text::text_keystroke_does_not_wait_for_a_save`).

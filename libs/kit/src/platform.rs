@@ -20,7 +20,7 @@ pub trait Platform {
     fn keyboard(&mut self, wanted: bool);
     /// Shows the platform's own selection menu, or changes the one shown to `menu`: true when it
     /// did, false when there is none (kit draws its own). The shell reports the item picked
-    /// (`Ui::menu_pick`) and a menu the platform closed by itself (`Ui::menu_gone`).
+    /// (`Started::menu_pick`) and a menu the platform closed by itself (`Started::menu_gone`).
     fn show_selection_menu(&mut self, menu: &SelectionMenu) -> bool;
     /// Hides the selection menu `show_selection_menu` showed.
     fn hide_selection_menu(&mut self);

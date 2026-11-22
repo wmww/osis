@@ -20,10 +20,10 @@
 //! removal's `ts` (a late copy of a snapshot is not named: Bob could have signed it after
 //! his removal). Everything anyone still holds is exchanged at the end.
 //!
-//! Attacker (`Script::forged`): the removed writer signs any commit at a closed standing,
+//! Attacker: the removed writer signs any commit at a closed standing,
 //! backdated, on a counter of a listed or covered commit, delivered before or after the
 //! removal reaches each node. A lying snapshot (`Script::claims`) covers a write it does not
-//! carry. `window_search` runs the small families; hand tests below state each result.
+//! carry. `search` runs the small families; hand tests below state each result.
 
 use crate::addenda::{Cover, Ctx, Eval, Gaps, Item, Kind, View, World, L1};
 use crate::joint::{JHist, JWrite};

@@ -173,7 +173,7 @@ struct Fake {
     anywhere: Stamped<(SyncId, CommitId), bool>,
     /// S not read here, its closure not settled, or no reader can pull it.
     unread: Stamped<SyncId, ()>,
-    /// Sync IDs whose holding moved (`unread` written through `W::set_reads`).
+    /// Sync IDs whose holding moved (`unread` written through `Fake::set_reads`).
     holdings_feed: Vec<SyncId>,
     unsettled: Stamped<SyncId, ()>,
     unpullable: Stamped<SyncId, ()>,

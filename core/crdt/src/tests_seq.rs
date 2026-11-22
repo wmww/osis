@@ -1069,7 +1069,7 @@ fn derived_record_inside_a_range_places_spec_7() {
 }
 
 /// A state's part at a delta's positions judges the delta as the whole state does (`covered`,
-/// `Parts::kills`, spec/commits.md §5), and the part of paged pieces is the part of their join: for
+/// spec/commits.md §5), and the part of paged pieces is the part of their join: for
 /// any shape of delta, forged ones included. A false "joins unchanged" would lose history.
 pub(crate) fn part_judges_as_whole(st: &Fragment, d: &Fragment, r: &mut crdt_model::r#gen::Rng) {
     let unchanged = |x: &Fragment| snapshot_bytes(&joined(x, d)) == snapshot_bytes(x);

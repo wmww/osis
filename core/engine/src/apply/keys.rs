@@ -156,7 +156,7 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
 /// record): each is a held valid keyset (`keysets`); a role
 /// commit's also record the commit as the epoch's introduction if earliest: a rotation writes
 /// the rotated roles' keysets, nothing else does, so the epoch's introducer
-/// (`Core::epoch_intro`) is its rotation commit, or unknown while that `keys.0` part is not held
+/// (`Indexes::epoch_intro`) is its rotation commit, or unknown while that `keys.0` part is not held
 /// (synced after a compaction, or missing again after `retention::uncover`).
 pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &Tid, keysets: &[KeysetRec]) {
     if keysets.is_empty() {

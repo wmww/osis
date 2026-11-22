@@ -401,7 +401,7 @@ impl Engine {
     /// every minting does: a minting again travels only while it is the witness, and only a right
     /// holder makes a request, so what a reader mints adds nothing. A minting's `expires` dates an
     /// expiry (a value-less part is never logged), a request's header names what it destroys
-    /// (`Header::requests`; `t`'s frozen history judges its right), and a header-only blob has no
+    /// (`Header::purge`; `t`'s frozen history judges its right), and a header-only blob has no
     /// prefix expiry, so a release's copy outlives the request's own blobs (spec/sync-ids.md §1).
     /// The witness and the requests each with its author's chains to `t` and to its actor. Once
     /// per `out`: `t` among its witness's things in `out.mintings`.

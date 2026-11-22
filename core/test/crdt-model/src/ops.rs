@@ -286,7 +286,7 @@ pub fn remove(w: &mut Writer, enc: u8) -> Frag {
     f
 }
 
-/// Reset then create (`set_aspect_replace`, enum case change, nested replace).
+/// Reset then create (an aspect's replace, an enum case change, a nested replace).
 pub fn replace(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
     let r = w.delta();
     let mut f = create(w, ty, v);
