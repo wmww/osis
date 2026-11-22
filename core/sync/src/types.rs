@@ -103,8 +103,9 @@ pub enum Input {
     /// A connection is up: one this node dialed (`dialed`, the conn of its `Dial`) or accepted.
     /// `rank`: the route rank (spec/sync-transport.md §1). `listener`: the listening side's static
     /// key (spec/wire.md §11.1): the key dialed, or the key of this node's listener that took it
-    /// (its dialable key, or a LAN transport key).
-    Up { conn: ConnId, peer: NodeKey, rank: u8, dialed: bool, listener: NodeKey },
+    /// (its dialable key, or a LAN transport key). `source`: where an accepted one comes from, as
+    /// far as the transport can tell (`osis_transport::Source`; none: unknown, one source).
+    Up { conn: ConnId, peer: NodeKey, rank: u8, dialed: bool, listener: NodeKey, source: Option<osis_transport::Source> },
     /// Bytes arrived on a connection.
     Bytes { conn: ConnId, bytes: Vec<u8> },
     /// The transport took `bytes` of what this node sent on `conn`, in all so far (written out,

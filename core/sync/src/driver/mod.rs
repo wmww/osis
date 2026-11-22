@@ -23,7 +23,7 @@ pub use dials::{DISCOVERED_KEEP, MAX_PEERS, REDIAL_MS};
 use crate::inbox::Inbox;
 use crate::opens::{Moved, Opens, Reported};
 use crate::read::Read;
-use crate::session::{Incoming, Session, Sessions, To};
+use crate::session::{Incoming, Session, Sessions, Slot, To};
 use crate::status::{NetView, Status, SyncStatus};
 use crate::store::Store;
 use crate::streams::Streams;
@@ -261,6 +261,8 @@ impl Node {
             out.push(Out::Close(c));
             self.closed(c, "closed here", &mut out);
         }
+        // messages in hand let go during the settle: no longer counted received
+        self.streams.take_kept(&mut self.driver.sessions);
         self.driver.sessions.take_sends(&mut out);
         // a failing stretch wakes no sooner than its retry (a wake due now would fail again)
         let floor = self.driver.failing.map(|f| f.retry_at);
@@ -472,7 +474,23 @@ impl Node {
 
     fn step(&mut self, input: Input, out: &mut Vec<Out>) -> Result<()> {
         match input {
-            Input::Up { conn, peer, rank, dialed, listener } => {
+            Input::Up { conn, peer, rank, dialed, listener, source } => {
+                // past the served slots a newcomer takes the slot of a source holding more, or is
+                // refused (spec/sync-transport.md §5 Served connections)
+                if !dialed {
+                    match self.driver.sessions.serve(conn, source) {
+                        Slot::Free => {}
+                        Slot::Evict(v) => {
+                            out.push(Out::Close(v));
+                            self.closed(v, "gave its slot to a source holding fewer", out);
+                        }
+                        Slot::Refused => {
+                            self.report_conn(conn, format!("{} refused: every served slot taken", conn_name(conn)));
+                            out.push(Out::Close(conn));
+                            return Ok(());
+                        }
+                    }
+                }
                 let how = match (dialed, self.driver.dials.dialed_to(conn)) {
                     (true, Some(to)) => format!("dialed {}", osis_blob::address_to_text(&to)),
                     (true, None) => "dialed".into(),
@@ -589,8 +607,9 @@ impl Node {
         let Some(s) = self.driver.sessions.get_mut(conn) else { return };
         let r = s.receive(bytes, &mut cx!(self, out));
         self.dispatch(conn, r, out);
-        // past the node-wide bound on bytes received, the connection holding the most closes
-        // (spec/sync-transport.md §5 Served connections)
+        self.streams.take_kept(&mut self.driver.sessions);
+        // past the node-wide bound on bytes received (what modules keep of the peers' counted),
+        // the connection holding the most closes (spec/sync-transport.md §5 Served connections)
         while let Some(c) = self.driver.sessions.over_in() {
             out.push(Out::Close(c));
             self.closed(c, "holds the most received past the node's bound", out);

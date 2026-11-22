@@ -2095,6 +2095,30 @@ fn another_sync_ids_traffic_leaves_s_caught_up_spec_sync_status_1() {
     assert!(p.b.streams.caught_up(C, &s), "s is caught up whatever t's traffic");
 }
 
+// spec/sync-transport.md §5 (Received): messages a requester holds while
+// their bodies arrive count as received, each about as coded, until they apply. Fails if they
+// are not counted (`PENDING_CAP` messages per connection, each up to `MAX_MESSAGE`, beside the
+// node's bound).
+#[test]
+fn messages_in_hand_count_as_received_spec_sync_transport_5() {
+    let mut p = Pair::new();
+    let t = sid(2);
+    p.shared_read(t);
+    p.run();
+    assert_eq!(p.b.streams.held_bytes(C), 0);
+    // large entries come by Fetch: b holds a's pushes in hand while the answers are held back
+    p.a.log(t, 20_000);
+    p.run_with(|ab, m| ab && m.kind() == 20);
+    let one = p.b.streams.held_bytes(C);
+    assert!(one > 32, "a push in hand counts: {one}");
+    p.a.log(t, 20_001);
+    p.run_with(|ab, m| ab && m.kind() == 20);
+    assert!(p.b.streams.held_bytes(C) > one, "two count more");
+    p.release();
+    p.run();
+    assert_eq!(p.b.streams.held_bytes(C), 0, "applied: no longer held");
+}
+
 /// The cursor of a's last message to b carrying one (a PullReply or a Stream).
 fn last_cursor_from_a(p: &Pair) -> Vec<u8> {
     p.seen.iter().rev().filter(|(ab, _)| *ab).find_map(|(_, m)| match m {

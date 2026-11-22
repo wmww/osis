@@ -591,6 +591,14 @@ impl ManualNet {
     }
 }
 
+/// Where a fabric connection from node `n` comes from: one source per node (spec/sync-transport.md
+/// §5 Served connections shares served slots by source).
+fn source_of(n: usize) -> [u8; 16] {
+    let mut s = [0u8; 16];
+    s[..8].copy_from_slice(&(n as u64).to_be_bytes());
+    s
+}
+
 impl Fabric {
     /// Ends the connection at (`a`, `c`): the other end hears `Closed`.
     fn cut(&mut self, a: usize, c: ConnId) {
@@ -630,10 +638,10 @@ impl Links for FabricLinks<'_> {
         let mut eph = [0u8; 32];
         eph[..8].copy_from_slice(&f.accepted.to_le_bytes());
         eph[31] = 0xee;
-        f.queue.push_back((self.node, Input::Up { conn, peer: NodeKey(to.key), rank: 0, dialed: true, listener: NodeKey(to.key) }));
+        f.queue.push_back((self.node, Input::Up { conn, peer: NodeKey(to.key), rank: 0, dialed: true, listener: NodeKey(to.key), source: None }));
         *f.ups.entry(self.node).or_default() += 1;
         *f.ups.entry(t).or_default() += 1;
-        f.queue.push_back((t, Input::Up { conn: acc, peer: NodeKey(eph), rank: 0, dialed: false, listener: NodeKey(to.key) }));
+        f.queue.push_back((t, Input::Up { conn: acc, peer: NodeKey(eph), rank: 0, dialed: false, listener: NodeKey(to.key), source: Some(source_of(self.node)) }));
     }
 
     fn send(&mut self, conn: ConnId, bytes: &[u8]) {

@@ -66,6 +66,24 @@ pub const OUT_BOUND: u64 = 256 << 20;
 /// `UNANSWERED` and one partial frame while it reads).
 pub const IN_BOUND: u64 = 256 << 20;
 
+/// Sessions a node serves at once (spec/sync-transport.md §5 Served connections): as many as
+/// the transport's receive buffers of served connections (`osis_transport::link::CONN_MEMORY`
+/// each, a session counted as a connection) fit in `IN_BOUND`. Resource bound: past it a
+/// newcomer takes a slot of the source holding the most, or is refused (`Sessions::serve`). At 0
+/// nothing is served; at infinity the transport's buffers grow with the connections.
+pub const MAX_SERVED: usize = (IN_BOUND / osis_transport::link::CONN_MEMORY as u64) as usize;
+
+/// What happens to a served session coming up (`Sessions::serve`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    /// A slot was free.
+    Free,
+    /// Every slot is taken: this session gives up its slot (closes) to the newcomer.
+    Evict(ConnId),
+    /// Every slot is taken and no source holds two more than the newcomer's: it closes.
+    Refused,
+}
+
 /// A peer's request waiting for room (`Session::fits`): reading stops behind it.
 #[derive(Clone, Debug)]
 struct Held {
@@ -280,6 +298,18 @@ pub struct Session {
     starved: bool,
     /// Its holdings as `Sessions` last counted them (out, in).
     counted: (u64, u64),
+    /// What modules keep of the peer's beyond its frames (`IN_BOUND`), by `Kept`.
+    kept: [u64; 2],
+}
+
+/// What a module keeps of a peer's for its connection, counted as received (`IN_BOUND`,
+/// spec/sync-transport.md §5 Served connections).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kept {
+    /// Opens: the peer's filter, the generation arriving and the record's held entries.
+    Filter = 0,
+    /// Streams: the peer's messages in hand while their bodies arrive.
+    InHand = 1,
 }
 
 impl Session {
@@ -340,6 +370,7 @@ impl Session {
             told_reading: true,
             starved: false,
             counted: (0, 0),
+            kept: [0; 2],
         };
         s.write(Hello::new(cx.now.0, challenge).encode());
         s
@@ -532,9 +563,17 @@ impl Session {
     }
 
     /// What it holds received for the connection (`IN_BOUND`): frame bytes not yet run, partial
-    /// ones included, and those of the requests it has not answered.
+    /// ones included, those of the requests it has not answered, and what modules keep of the
+    /// peer's (`keep`).
     pub fn in_held(&self) -> u64 {
-        self.frames.pending() as u64 + self.unanswered_len
+        self.frames.pending() as u64 + self.unanswered_len + self.kept.iter().sum::<u64>()
+    }
+
+    /// Module `who` keeps `bytes` of the peer's for this connection now (`Kept`).
+    pub fn keep(&mut self, who: Kept, bytes: u64) {
+        if let Some(k) = self.kept.get_mut(who as usize) {
+            *k = bytes;
+        }
     }
 
     /// Whether the transport should read the connection: no request waits for room.
@@ -958,6 +997,8 @@ pub struct Sessions {
     starved: BTreeSet<ConnId>,
     /// A waiting request does not fit the bound's room: nothing else goes past it.
     room_blocked: bool,
+    /// Served sessions up, each with its source (`MAX_SERVED`).
+    served: BTreeMap<ConnId, Option<osis_transport::Source>>,
 }
 
 impl Sessions {
@@ -1086,6 +1127,34 @@ impl Sessions {
         })
     }
 
+    /// The driver's: a session this node accepted from `source` comes up (spec/sync-transport.md
+    /// §5 Served connections). Within `MAX_SERVED` it takes a free slot; past it the slots are
+    /// shared fairly by source (`osis_transport::evict_for`): the oldest session of the source
+    /// holding the most gives its slot up if that source holds two more than `source`, else the
+    /// newcomer is refused. A slot taken is the newcomer's, kept until `remove`.
+    pub fn serve(&mut self, conn: ConnId, source: Option<osis_transport::Source>) -> Slot {
+        let slot = if self.served.len() < MAX_SERVED {
+            Slot::Free
+        } else {
+            let mut held: BTreeMap<Option<osis_transport::Source>, usize> = BTreeMap::new();
+            for s in self.served.values() {
+                *held.entry(*s).or_default() += 1;
+            }
+            match osis_transport::evict_for(&held, &source) {
+                // accepted connections are numbered in arrival order: the first is the oldest
+                Some(v) => self.served.iter().find(|(_, s)| **s == v).map_or(Slot::Refused, |(c, _)| Slot::Evict(*c)),
+                None => Slot::Refused,
+            }
+        };
+        if let Slot::Evict(c) = slot {
+            self.served.remove(&c);
+        }
+        if slot != Slot::Refused {
+            self.served.insert(conn, source);
+        }
+        slot
+    }
+
     pub fn conns(&self) -> impl Iterator<Item = ConnId> + '_ {
         self.conns.keys().copied()
     }
@@ -1122,6 +1191,7 @@ impl Sessions {
         self.touched.remove(&conn);
         self.waiting.retain(|w| *w != conn);
         self.starved.remove(&conn);
+        self.served.remove(&conn);
         let s = self.conns.remove(&conn)?;
         self.out_total -= s.counted.0;
         self.in_total -= s.counted.1;

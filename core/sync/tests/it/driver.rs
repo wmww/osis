@@ -906,7 +906,7 @@ fn a_connection_flood_leaves_a_dial_failure_reported() {
     let me = w.node(0).key;
     for n in 0..200u64 {
         let conn = ConnId(ConnId::ACCEPTED | (1_000 + n));
-        w.deliver(0, osis_sync::Input::Up { conn, peer: osis_sync::NodeKey([n as u8; 32]), rank: 0, dialed: false, listener: me });
+        w.deliver(0, osis_sync::Input::Up { conn, peer: osis_sync::NodeKey([n as u8; 32]), rank: 0, dialed: false, listener: me, source: None });
         w.deliver(0, osis_sync::Input::Closed { conn });
     }
     let mut w = configured(w);

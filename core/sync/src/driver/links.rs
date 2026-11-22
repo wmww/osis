@@ -46,6 +46,10 @@ struct Live {
     /// Whether its reader reads (`Links::read`): stopped, the transport's flow control holds the
     /// peer back.
     reading: tokio::sync::watch::Sender<bool>,
+    /// Told as the node takes each of its reads: its reader hands on one read at a time, so what
+    /// waits for the node is at most one `link::READ_CHUNK` per link (the rest stays under the
+    /// transport's flow control).
+    next_read: Arc<tokio::sync::Notify>,
     tasks: [JoinHandle<()>; 2],
 }
 
@@ -245,7 +249,11 @@ impl<T: Transport> TransportLinks<T> {
                 Some(self.up(conn, l, false, set, key))
             }
             Event::Cut(conn) => Some(Input::Closed { conn }),
-            Event::Bytes(conn, bytes) => self.live.contains_key(&conn).then_some(Input::Bytes { conn, bytes }),
+            Event::Bytes(conn, bytes) => {
+                let l = self.live.get(&conn)?;
+                l.next_read.notify_one();
+                Some(Input::Bytes { conn, bytes })
+            }
             Event::Taken(conn, bytes) => self.live.contains_key(&conn).then_some(Input::Taken { conn, bytes }),
             Event::Ended(conn) => self.live.remove(&conn).map(|_| Input::Closed { conn }),
             Event::Found(addr) => Some(Input::Discovered { addr }),
@@ -256,10 +264,12 @@ impl<T: Transport> TransportLinks<T> {
     /// the listener set that took it.
     fn up(&mut self, conn: ConnId, l: Link, dialed: bool, set: Option<Listening>, listener: [u8; 32]) -> Input {
         let took = set.map(|s| (s, listener));
-        let Link { peer_key, rank, tx, mut rx, peer, .. } = l;
+        let Link { peer_key, rank, tx, mut rx, peer, source, .. } = l;
         let unix = matches!(peer, osis_transport::Peer::Unix { .. });
         let ev = self.tx.clone();
         let (reading, mut gate) = tokio::sync::watch::channel(true);
+        let next_read = Arc::new(tokio::sync::Notify::new());
+        let next = next_read.clone();
         let reader = tokio::spawn(async move {
             loop {
                 // nothing is read while the node stops reading (a request of the peer's waits
@@ -271,6 +281,7 @@ impl<T: Transport> TransportLinks<T> {
                 if ev.send(Event::Bytes(conn, b)).is_err() {
                     return;
                 }
+                next.notified().await;
             }
             let _ = ev.send(Event::Ended(conn));
         });
@@ -284,8 +295,8 @@ impl<T: Transport> TransportLinks<T> {
                 }
             }
         });
-        self.live.insert(conn, Live { tx, unix, took, reading, tasks: [reader, taken] });
-        Input::Up { conn, peer: NodeKey(peer_key), rank, dialed, listener: NodeKey(listener) }
+        self.live.insert(conn, Live { tx, unix, took, reading, next_read, tasks: [reader, taken] });
+        Input::Up { conn, peer: NodeKey(peer_key), rank, dialed, listener: NodeKey(listener), source }
     }
 }
 

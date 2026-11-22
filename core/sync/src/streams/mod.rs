@@ -233,6 +233,8 @@ pub struct Streams {
     /// Sources whose connection ended keeping stops of members closed on it, which go at the
     /// next tick (spec/sync-opens.md §6 Where it stopped).
     unkept: Vec<(Source, Vec<SyncId>)>,
+    /// Connections whose messages in hand moved since `take_kept`.
+    kept_moved: BTreeSet<ConnId>,
 }
 
 impl Streams {
@@ -241,7 +243,7 @@ impl Streams {
     pub fn new(store: Store) -> Streams {
         let (anew, owed) = store.anew_feed();
         let unkept = pull::forget_unkept(store.clone());
-        let mut st = Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew, known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), caught: StampedSet::default(), busy: StampedSet::default(), busy_of: BTreeMap::new(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default(), unkept: Vec::new() };
+        let mut st = Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew, known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), caught: StampedSet::default(), busy: StampedSet::default(), busy_of: BTreeMap::new(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default(), unkept: Vec::new(), kept_moved: BTreeSet::new() };
         st.failed(owed);
         st.failed(unkept);
         st
@@ -264,6 +266,16 @@ impl Streams {
     /// Pull, PullReply, Stream, Applied, Fetch, FetchReply.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, m: Incoming, reported: &mut Vec<Reported>) {
         product(cx, sessions, opens, reported, |ctx| self.message(ctx, conn, m));
+    }
+
+    /// Tells each session whose messages in hand moved what they hold now (`Kept::InHand`).
+    pub fn take_kept(&mut self, sessions: &mut Sessions) {
+        for c in std::mem::take(&mut self.kept_moved) {
+            let held = self.pull.get(&c).map_or(0, |p| p.held_bytes);
+            if let Some(s) = sessions.get_mut(c) {
+                s.keep(crate::session::Kept::InHand, held);
+            }
+        }
     }
 
     /// Whether anything acted.
@@ -327,6 +339,13 @@ impl Streams {
     /// The Pulls sent so far: a Pull sent after this reads a greater place (`caught_since`).
     pub fn pull_seq(&self) -> u64 {
         self.pulls_sent
+    }
+
+    /// Tests only: the bytes of a connection's messages in hand, as counted received
+    /// (`take_kept`).
+    #[doc(hidden)]
+    pub fn held_bytes(&self, conn: ConnId) -> u64 {
+        self.pull.get(&conn).map_or(0, |p| p.held_bytes)
     }
 
     /// Tests only: what a connection's pulling holds for its peer (messages in hand, queued and
