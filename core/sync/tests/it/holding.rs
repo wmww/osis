@@ -1528,3 +1528,31 @@ fn an_own_write_before_a_dropped_strong_reaches_its_peer_spec_sync_set_3() {
     assert_eq!(value(&mut w, 0, &t), None, "Alice let T go");
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("alice".into())), "Bob holds Alice's write");
 }
+
+// spec/permissions.md §3 (Retain), spec/crypto.md §4 Key access: Bob grants Alice read on T0, mints
+// T1 under it, grants T1 read on T0 (keyless) and Alice read on T1; she holds both. Bob removes T1's
+// grant saying retain, then removes Alice from T0: the ended keyless grant read nothing of T0, so it
+// should keep her no copy; it keeps one.
+#[test]
+#[ignore = "issues/retain-ended-keyless-way.md"]
+fn repro_an_ended_keyless_grant_keeps_no_copy_spec_permissions_3() {
+    let mut w = contacts();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    let t1 = make_in(&mut w, 1, t0, "t1");
+    w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+    for t in [t0, t1] {
+        strong(&mut w, 0, None, t, true);
+    }
+    w.run();
+    assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0");
+    w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: t1, new: None, retain: Some(true) })).unwrap();
+    w.run();
+    w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: alice, new: None, retain: None })).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
+    assert!(w.engine(0).kept_copies().is_empty(), "no copy kept");
+    assert_eq!(value(&mut w, 0, &t0), None, "Alice reads T0 no more: {}", w.why_role(0, &t0));
+}
