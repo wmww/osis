@@ -19,3 +19,4 @@ held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_STA
 osis-engine/rotation::tests_property::rotation_holds_large_spec_crypto_4 rate:OSIS_ROTATION_START=147083058899 issues/rotation-holder-lacks-box.md with key access lacks a box
 osis-engine/rotation::tests_property::rotation_holds_large_spec_crypto_4 rate:OSIS_ROTATION_START=214919900839 issues/rotation-removed-peer-opens-epoch.md \(now None\) opens Tid\(\S+\) \w+ epoch .* encrypts under
 osis-engine/rotation::tests_property::rotation_holds_large_spec_crypto_4 rate:OSIS_ROTATION_START=611521595787 issues/rotation-removed-peer-opens-epoch.md opens
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=169360654999,OSIS_ORDER_LEN=60 issues/order-addenda-seed.md histories judged differently by what was held
