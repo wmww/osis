@@ -225,6 +225,7 @@ print(t, time.time())
 with open(os.path.join(d, "spin.py"), "w") as f:
     f.write("import sys, time\nt = time.time() + float(sys.argv[1])\nwhile time.time() < t:\n    pass\n")
 logf = os.path.join(d, ".cache/osis/heavy.log")
+waitf = os.path.join(d, "wait")
 
 
 def spinners(n, secs):
@@ -236,7 +237,7 @@ def yielding(cores, job, hold_s=0.0, waiter=True):
     Returns (the holder's printed exit code, its log events, (waiter's acquire, release) times, end)."""
     open(logf, "w").close()
     with open(os.path.join(d, "hold.err"), "w") as e:
-        hp = subprocess.Popen([sys.executable, "-c", HOLD, HEAVY, str(cores), "sh", "-c", job], env=ENV, cwd=d,
+        hp = subprocess.Popen([sys.executable, "-c", HOLD, HEAVY, str(cores), "sh", "-c", job], env=dict(ENV, HEAVY_WAIT_FILE=waitf), cwd=d,
                               stdout=subprocess.PIPE, stderr=e, text=True)
         while not os.path.getsize(logf):  # the hold is taken
             time.sleep(0.01)
@@ -257,6 +258,10 @@ backs = [o for o in ev if o["ev"] == "back"]
 expect("idle then busy: yields, stops, resumes", (rc, [o["ev"] for o in ev if o["ev"] in ("yld", "back")], [o["paused"] for o in backs]),
        (["0"], ["yld", "back"], [True]))
 expect("resumed only after the waiter's hold", backs and backs[0]["t"] >= wrel - 0.05, True)
+# the wait to take the lock back is a wait, not the hold's: written to the wait file, left out of held
+acq, rel = next(o for o in ev if o["ev"] == "acq"), next(o for o in ev if o["ev"] == "rel")
+expect("retake wait left out of held", bool(backs) and abs(rel["held"] + backs[0]["wait"] - (rel["t"] - acq["t"])) < 0.2, True)
+expect("retake wait in the wait file", bool(backs) and open(waitf).read().strip() == f"{acq['wait'] + backs[0]['wait']:.0f}", True)
 # a busy run keeps the lock with a waiter (two spinners: over 0.5 cores at any load); a quiet one
 # keeps it with none
 rc, ev, (wacq, _), end = yielding(0.5, spinners(2, 1.5))

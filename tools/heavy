@@ -30,7 +30,7 @@ CPU jiffies (`busy`, `all` from /proc/stat), so any two lines give the box's uti
 them. Events: `acq` (lock taken: who, cmd, wait, and the box at the request), `smp` (every
 SAMPLE_S while held: the run's CPU-s so far), `yld` (a quiet hold released the lock, run going on),
 `back` (a yielded run holds it again: wait, paused), `rel` (the command ended: held, its wall from
-the first acquisition, the command's CPU-s from its rusage, exit code).
+the first acquisition less the waits to take it back, the command's CPU-s from its rusage, exit code).
 tools/agent-times.py charges each acquisition to the agent whose command ran it.
 
 The short lane (--short): a run small enough to cost a hold beside it little needs no wait for one.
@@ -54,8 +54,9 @@ a holder pays at most YIELD_CORES / cores of its wall for it.
 
 Time limits (notes/build.md): the hold's CPU-s and wall are checked against NAME's limits
 (default `heavy`, a hold's own; the gate's is `gate.hold`) by tools/limits.py, which prints an
-over-limit line and logs the hit. The wait is not part of the hold: with HEAVY_WAIT_FILE set, its
-seconds are written there (the gate's own limit leaves them out).
+over-limit line and logs the hit. The waits are not part of the hold (the first acquisition's and a
+yielded run's to take the lock back): with HEAVY_WAIT_FILE set, their seconds are written there
+(the gate's own limit leaves them out).
 """
 import errno, fcntl, json, os, re, resource, shlex, shutil, signal, subprocess, sys, tempfile, time
 
@@ -365,12 +366,16 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
     log("acq", wait=round(t1 - t0, 1), busy0=b0, all0=a0, **(dict(lane="short") if lane else {}), **who)
     if t1 - t0 >= 1:
         note(out, f"heavy: waited {t1 - t0:.0f} s for the lock")
-    if os.environ.get("HEAVY_WAIT_FILE"):
-        try:
-            with open(os.environ["HEAVY_WAIT_FILE"], "w") as f:
-                f.write(f"{t1 - t0:.0f}\n")
-        except OSError as e:
-            print(f"heavy: {e}", file=sys.stderr)
+    waited = [t1 - t0, 0.0]  # the first acquisition's wait, a yielded run's waits to take it back
+
+    def wait_file():
+        if os.environ.get("HEAVY_WAIT_FILE"):
+            try:
+                with open(os.environ["HEAVY_WAIT_FILE"], "w") as f:
+                    f.write(f"{sum(waited):.0f}\n")
+            except OSError as e:
+                print(f"heavy: {e}", file=sys.stderr)
+    wait_file()
     ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
     cur = [None]
     # forward the usual stop signals; the child shares our process group, so a group kill reaches it anyway
@@ -393,6 +398,8 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
             say("the yielded run went over its share beside the hold: stopped until it holds the lock again")
         tw = time.time()
         fcntl.flock(fd, fcntl.LOCK_EX)
+        waited[1] += time.time() - tw
+        wait_file()
         log("back", wait=round(time.time() - tw, 1), paused=bool(pid))
         if pid:
             signal_tree(pid, signal.SIGCONT)
@@ -480,7 +487,7 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
         rc = 101 if failed else 0
     ru = resource.getrusage(resource.RUSAGE_CHILDREN)
     cpu = ru.ru_utime + ru.ru_stime - ru0.ru_utime - ru0.ru_stime
-    held = time.time() - t1
+    held = time.time() - t1 - waited[1]
     log("rel", held=round(held, 1), cpu=round(cpu, 1), rc=rc, **(dict(stop=stop) if stop else {}))
     if lane:
         return rc
