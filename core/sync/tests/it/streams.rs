@@ -2105,7 +2105,7 @@ fn messages_in_hand_count_as_received_spec_sync_transport_5() {
     let t = sid(2);
     p.shared_read(t);
     p.run();
-    let held = |p: &mut Pair| p.b.streams.take_kept().into_iter().filter(|(c, _)| *c == C).map(|(_, n)| n).last();
+    let held = |p: &mut Pair| p.b.streams.take_kept().into_iter().filter(|(c, _)| *c == C).map(|(_, n)| n).next_back();
     held(&mut p);
     // large entries come by Fetch: b holds a's pushes in hand while the answers are held back
     p.a.log(t, 20_000);
