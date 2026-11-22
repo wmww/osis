@@ -1,14 +1,12 @@
 # Sync differential fails at the gate's size on some seeds
-> Summary: `differential::histories_hold_their_closure_plain` at small size fails on fresh offsets: a revoked direct sync grantee keeps a thing unread by an earlier sync ticket's word (seed 991936048185), a caught-up reader lacks part of a must-hold minting body after a connection reset (one world in 50, studied, parked), and a node lacks a read the model has (seed 3994064562, not shrunk).
+> Summary: `differential::histories_hold_their_closure_plain` at small size fails on fresh offsets: a revoked sync grantee stuck on a losing sibling step keeps its store (seed 991936048185, issues/sibling-step-store-stuck.md), a caught-up reader lacks part of a must-hold minting body after a connection reset (one world in 50, studied, parked), and a node lacks a read the model has (seed 3994064562, not shrunk).
 > Priority: normal
 > Tags: sync, engine, tests
 
 **Seen**: seeds 318840271993, 991936048185 (gate offsets) fail on main; 6170 too (a must-hold body a caught-up reader lacks). Replay: `OSIS_SYNC_START=<seed> OSIS_SYNC_SEEDS=1 cargo test -p osis-sync --test it -- --ignored --exact differential::histories_hold_their_closure_plain`; scripts replay in a scratch test (notes/sync-test-harness.md, Replaying a script).
 
-## A sync ticket's word outlives the grantee's removal (seed 991936048185)
-- Fails on main and with the taken-up role alike: `node 1 keeps 3 store entries under thing 0's sync ID, which it does not hold`. Not shrunk; the history gives Bob (node 1) sync on T, then write, Bob accepts, and the write grant is revoked. `why_role`: role Sync by a sync word boxed to Bob's account (counts: a sync word), beside a read word that does not count (a held role commit reaches its holder). So a sync ticket from the earlier sync grant keeps T kept unread after the removal, which the role commits Bob holds show (spec/sync-set.md §2: a sync word always counts, since a node keeping T unread cannot read its own grant).
-- Design question: when may the role commits a node holds decide against a sync word? Not "whenever they reach the holder" (a direct sync grantee whose role commits show a path from the account through an unreached thing would lose its direct grant: notes/node-closure.md Roles taken up, Rejected). Perhaps: once they show the holder's own edge on T at or after the ticket's epoch.
-
+## A store on a losing sibling step (seed 991936048185)
+- Shrunk and traced: a revoked sync grantee stuck on the sibling step `head_of` did not pick, never registered past it; issues/sibling-step-store-stuck.md.
 
 ## A must-hold body a caught-up reader lacks (one world in 50)
 - Shrunk script (6 steps): `New(1), Give(1, 0, Holder::Node(0), Reads), Run, Strong(0, None, 0), Lossy(Loss { drop: 0, dup: 25, delay: 0, delay_ms: 312 }), Run`; fails on seed 318840271993's world only (0 of 50 others). Panic: `must-hold bodies a caught-up reader lacks at quiet`: Bob mints T (dependent on his D), grants Alice read (T keyed, its own sync ID S); Alice's node accepts, her sibling node 2 lacks part of T's minting commit.
