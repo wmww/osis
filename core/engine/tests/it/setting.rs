@@ -534,6 +534,28 @@ fn a_covered_drop_redates_nothing_spec_commits_5() {
     assert!(!listed(&mut lp.peers[0], &x1, d), "x1 is not listed again");
 }
 
+// spec/commits.md §5 (when a body was replaced): a date is a function of the held bodies, so a
+// body leaving before its bound (`Engine::drop_body` skips it) takes its superseding writes with
+// it: what it replaced dies at the next held superseder (`bounds::moved_by_changes` following a
+// leaving body; a row left at the dropped one is early).
+#[test]
+fn a_body_leaving_redates_what_it_replaced_spec_commits_5() {
+    let (mut lp, d) = setup();
+    set(&mut lp, 0, d, &setting(&[(A, keep(10 * 60_000))]));
+    let x1 = put(&mut lp, 0, d, "one");
+    lp.advance(1_000);
+    let x2 = put(&mut lp, 0, d, "two");
+    lp.advance(1_000);
+    let x3 = put(&mut lp, 0, d, "three");
+    lp.advance(1_000);
+    let e = &mut lp.peers[0].engine;
+    let s = e.snapshot(&d, &ak(A)).unwrap().unwrap();
+    assert_eq!(e.replaced_at(&x1, &d, &ak(A)).unwrap(), Some(e.header(&x2).unwrap().ts));
+    assert_eq!(e.covered(&s, &x2, &d, &ak(A)).unwrap(), Some(true));
+    e.drop_body(&x2, &d, &ak(A)).unwrap();
+    assert_eq!(e.replaced_at(&x1, &d, &ak(A)).unwrap(), Some(e.header(&x3).unwrap().ts), "x1 dies at x3 once x2 is gone");
+}
+
 /// Drops, in `order`, each held body of `(d, a)` that `s` covers once its keep-at-least bound
 /// allows (`Engine::drop_from` on the node's clock, as node-sync does), and checks after each
 /// drop that every commit in `watch` still held is listed and kept (in history: its keep bound
