@@ -118,7 +118,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
         let p = tx.txn.index(PARTS)?;
         if now {
             tx.txn.table_put(p, t.as_bytes(), Vec::new(), Shred::No)?;
-            let on: Vec<(Ak, CommitId)> = tx.core.ix.by_aspect.range((t, Ak::MIN)..).take_while(|((x, _), _)| *x == t).filter(|((_, a), _)| counted(a)).flat_map(|((_, a), s)| s.iter().map(move |x| (a.clone(), x.1))).collect();
+            let on: Vec<(Ak, CommitId)> = tx.core.aspects_of(&t).filter(|((_, a), _)| counted(a)).flat_map(|((_, a), s)| s.iter().map(move |x| (a.clone(), x.1))).collect();
             for (ak, c) in on {
                 if let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(&t, &ak)) {
                     tx.core.kept_due.insert((t, ak, c, ai));

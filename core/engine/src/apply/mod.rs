@@ -455,17 +455,10 @@ pub(crate) fn unreceive_outside(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let ids: Vec<CommitId> = tx.core.ix.pend_on.get(&Wake::Enters(*t)).into_iter().flatten().copied().collect();
     for id in ids {
         let Some(mut b) = read_pending(tx, &id)? else { continue };
-        let things: Vec<Tid> = match tx.core.ix.commits.get(&id) {
-            Some(m) => m.view.aspects.iter().map(|a| a.tid).collect(),
-            None => {
-                if !b.header.is_resolved() {
-                    let Some(dedup) = tx.core.dedup(&b.header.signer) else { continue };
-                    if b.header.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).is_err() {
-                        continue;
-                    }
-                }
-                b.header.aspects.iter().map(|a| a.tid).collect()
-            }
+        let things: Vec<Tid> = match tx.core.ix.commits.get(&id).map(|m| m.view.aspects.iter().map(|a| a.tid).collect()) {
+            Some(things) => things,
+            None if resolve_held(tx, &mut b.header) => b.header.aspects.iter().map(|a| a.tid).collect(),
+            None => continue,
         };
         let ais: BTreeSet<usize> = b.parts.iter().map(|p| p.ai).filter(|ai| things.get(*ai) == Some(t)).collect();
         let Some(rest) = crate::retention::take_parts(tx, &id, &ais)? else { continue };
@@ -508,14 +501,11 @@ fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<
             // a kept first copy proved junk (named in `examine`): a true copy may be held, so the
             // name and what was opened of the commit stay for its carriers to bring it again
             // (`Engine::redelivered` lets them go after)
-            match tx.core.redeliver.contains(&id) {
-                true => {
-                    crate::retention::forget_waiting_leftovers(tx, &id)?;
-                    unpend(tx, &id)?;
-                }
-                false => {
-                    drop_pending(tx, &id)?;
-                }
+            if tx.core.redeliver.contains(&id) {
+                crate::retention::forget_waiting_leftovers(tx, &id)?;
+                unpend(tx, &id)?;
+            } else {
+                drop_pending(tx, &id)?;
             }
             keys::forget_unchecked(tx, &id)?;
             // secrets read from its boxes go unless something else reads them
@@ -560,6 +550,20 @@ pub(crate) fn resolve_lists(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitI
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// Resolves the header lists of `h` from held blobs where its signer's record and every list are
+/// here, else leaves it as it was. Whether it is resolved.
+pub(crate) fn resolve_held(tx: &mut Tx<'_>, h: &mut Header) -> bool {
+    if !h.is_resolved()
+        && let Some(dedup) = tx.core.dedup(&h.signer)
+    {
+        let mut r = h.clone();
+        if r.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).is_ok() {
+            *h = r;
+        }
+    }
+    h.is_resolved()
 }
 
 /// Checks a commit and decodes its parts, or says why it waits. `known`: its signature's
@@ -649,22 +653,23 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // a part that does not hash to its header entry is no part of this commit, and one on an aspect
     // of the wrong storage class is never applied: dropped
     // alone, before anything reads what is held (spec/commits.md §4)
+    let fits = |a: &osis_commit::AspectEntry| fits_part(a, h.ephemeral.is_some(), h.kind.is_compaction());
     let junk: Vec<usize> = blob
         .parts
         .iter()
         .filter(|p| !kept(p))
         .filter(|p| {
             let Some(a) = h.aspects.get(p.ai) else { return true };
-            !fits_part(a, h.ephemeral.is_some(), h.kind.is_compaction()) || record(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != a.hash)
+            !fits(a) || record(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != a.hash)
         })
         .map(|p| p.ai)
         .collect();
     // a copy holding only what does not hash is no copy of it: refused, as if it never came
-    let only_junk = !blob.parts.is_empty() && junk.len() == blob.parts.len() && blob.parts.iter().any(|p| h.aspects.get(p.ai).is_none_or(|a| fits_part(a, h.ephemeral.is_some(), h.kind.is_compaction())));
+    let only_junk = !blob.parts.is_empty() && junk.len() == blob.parts.len() && blob.parts.iter().any(|p| h.aspects.get(p.ai).is_none_or(fits));
     if !junk.is_empty() {
         // a slot's stored first copy, kept while it could not be checked: a true copy may be held. Not a
         // copy just come (it kept nothing out), nor a part of the wrong class (it has no true copy)
-        let kept_out = |p: &osis_commit::Part| junk.contains(&p.ai) && h.aspects.get(p.ai).is_none_or(|a| fits_part(a, h.ephemeral.is_some(), h.kind.is_compaction()));
+        let kept_out = |p: &osis_commit::Part| junk.contains(&p.ai) && h.aspects.get(p.ai).is_none_or(fits);
         if tx.core.ix.pending.contains_key(id) && tx.txn.get_pending(id)?.and_then(|p| CommitBlob::decode_stored(&p.bytes).ok()).is_some_and(|b| b.parts.iter().any(kept_out)) {
             tx.core.redeliver.insert(*id);
         }
@@ -1163,14 +1168,7 @@ fn expire_stored(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         None => old.header.clone(),
     };
     // a header whose lists are away is judged once they come (`retention::pending_drops`)
-    if !h.is_resolved()
-        && let Some(dedup) = tx.core.dedup(&h.signer)
-    {
-        let mut r = h.clone();
-        if r.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).is_ok() {
-            h = r;
-        }
-    }
+    resolve_held(tx, &mut h);
     // a memory commit's copy is memory work, as its ingest is (`ingest_blob`)
     let memory = h.ephemeral.is_some();
     tx.in_class(memory, |tx| crate::retention::expire_waiting(tx, id, &old, &h))
@@ -1187,18 +1185,10 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         && let Ok(mut old) = CommitBlob::decode_stored(&stored.bytes)
     {
         let mut verdict = kept_verdict(&stored);
-        if !old.header.is_resolved()
-            && let Some(dedup) = tx.core.dedup(&old.header.signer)
-        {
-            let mut h = old.header.clone();
-            if h.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup).is_ok() {
-                old.header = h;
-            }
-        }
         // a slot the header does not list has no true copy: a sender could grow the blob by them
-        if old.header.is_resolved() {
-            let h = old.header.clone();
-            blob.parts.retain(|p| p.ai < h.aspects.len());
+        if resolve_held(tx, &mut old.header) {
+            let n = old.header.aspects.len();
+            blob.parts.retain(|p| p.ai < n);
         }
         let mut others: Vec<osis_commit::Part> = Vec::new();
         let mut rest = Vec::new();
@@ -1404,17 +1394,7 @@ impl Engine {
         let id = blob.id();
         let h = match self.core.ix.commits.get(&id) {
             Some(m) => m.header.decoded()?,
-            None => {
-                let mut h = blob.header.clone();
-                if !h.is_resolved() {
-                    self.run(|tx| {
-                        let Some(dedup) = tx.core.dedup(&h.signer) else { return Err(Error::Misuse("not resolved")) };
-                        Ok(h.resolve(&mut TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup)?)
-                    })
-                    .ok()?;
-                }
-                Arc::new(h)
-            }
+            None => Arc::new(self.held_resolved(blob.header.clone())?),
         };
         let pending: Vec<osis_commit::Part> = self.run(|tx| Ok(tx.txn.get_pending(&id)?.and_then(|p| CommitBlob::decode_stored(&p.bytes).ok()).map(|b| b.parts))).ok().flatten().unwrap_or_default();
         let mut all = blob.clone();
@@ -1436,6 +1416,15 @@ impl Engine {
             None => known = false,
         }
         known.then_some(true)
+    }
+
+    /// `h` with its lists resolved from held blobs (`resolve_held`, in a transaction kept only
+    /// when they resolve): `None` while one is away.
+    pub(crate) fn held_resolved(&mut self, mut h: Header) -> Option<Header> {
+        if !h.is_resolved() {
+            self.run(|tx| if resolve_held(tx, &mut h) { Ok(()) } else { Err(Error::Misuse("not resolved")) }).ok()?;
+        }
+        Some(h)
     }
 
     /// The commits with a part or signature of a pending copy proved junk since the last call, when a
@@ -1535,14 +1524,7 @@ impl Engine {
         let mut refused = false;
         let mut applied = false;
         let r = self.run(|tx| {
-            let mut n = 0;
-            for rec in records {
-                n += usize::from(atomic::learn_record(tx, rec)?);
-            }
-            if n > 0 {
-                tx.core.update_timelines();
-                atomic::rejudged(tx, true)?;
-            }
+            learn_records_in(tx, records)?;
             for b in blobs {
                 let (c, parts): (CommitId, Vec<usize>) = (b.id(), b.parts.iter().map(|p| p.ai).collect());
                 hold_rotation_lists(tx, &b, &[])?;
@@ -1603,9 +1585,10 @@ impl Engine {
         let r: Result<()> = self.run(|tx| {
             for b in blobs {
                 hold_rotation_lists(tx, b, &[])?;
-                match ingest_blob(tx, b.clone(), Origin::Remote) {
-                    Err(e) if e.class() == ErrorClass::Local => return Err(e),
-                    _ => {}
+                if let Err(e) = ingest_blob(tx, b.clone(), Origin::Remote)
+                    && e.class() == ErrorClass::Local
+                {
+                    return Err(e);
                 }
             }
             out = Some(keep(tx.core));
@@ -1664,7 +1647,7 @@ impl Engine {
     /// a record proves itself by its hash, so it needs no commit. Returns how many were new; what
     /// awaited them is judged again.
     pub fn learn_records(&mut self, records: Vec<CreationRecord>) -> Result<usize> {
-        let n = self.learn_records_now(records)?;
+        let n = self.run(|tx| learn_records_in(tx, records))?;
         if n > 0 {
             self.reexamine()?;
         }
@@ -1680,11 +1663,6 @@ impl Engine {
         self.core.waits.every_due = true;
         self.reexamine()?;
         Ok(before.into_iter().filter(|c| !self.core.ix.pending.contains_key(c) && self.core.ix.commits.contains_key(c)).collect())
-    }
-
-    /// `learn_records` without the `reexamine` after.
-    fn learn_records_now(&mut self, records: Vec<CreationRecord>) -> Result<usize> {
-        self.run(|tx| learn_records_in(tx, records))
     }
 
     /// Learns the loose records something here came to await, with the loose records on their
@@ -2005,7 +1983,7 @@ impl Engine {
     pub fn changed(&self, tid: &Tid) -> Option<Creation> {
         let shown = |c: &Creation| c.ts.wall_ms().min(c.received);
         let mut best = self.creation(tid);
-        let aspects = self.core.ix.by_aspect.range((*tid, osis_base::Ak::MIN)..).take_while(|((t, _), _)| t == tid);
+        let aspects = self.core.aspects_of(tid);
         for ((_, ak), ids) in aspects {
             let a = ak.as_str();
             if !osis_schema::core_types::is_content(a) {
@@ -2478,10 +2456,7 @@ pub(crate) fn each_held_page(tx: &mut Tx<'_>, id: &CommitId, ai: usize, want: Op
 /// by the first read of the part and kept per write of its record, `Core::decoded`), so a read
 /// costs the root and `at`'s pages, flat in the part's size.
 pub(crate) fn held_part_at(tx: &mut Tx<'_>, id: &CommitId, ai: usize, at: &osis_crdt::Fragment) -> Result<(osis_crdt::Fragment, Option<Option<crate::engine::Gives>>)> {
-    let stored = match tx.core.ix.commits.get(id).is_some_and(|m| m.stripped(ai)) {
-        true => None,
-        false => tx.get_commit(id)?.and_then(|b| b.part(ai).cloned()),
-    };
+    let stored = if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped(ai)) { None } else { tx.get_commit(id)?.and_then(|b| b.part(ai).cloned()) };
     let stamp = tx.commit_stamp(id);
     let kept = stored.as_ref().and_then(|p| tx.core.decoded.page_index(id, stamp, p));
     // a part with no pages is its skeleton: read decoded once per write of its record, not

@@ -508,7 +508,7 @@ pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
 /// setting arriving can make a writer owe a cover).
 pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
     while let Some(t) = tx.core.settings_due.pop_first() {
-        let aspects: Vec<Ak> = tx.core.ix.by_aspect.range((t, Ak::MIN)..).take_while(|((x, _), _)| *x == t).map(|((_, a), _)| a.clone()).collect();
+        let aspects: Vec<Ak> = tx.core.aspects_of(&t).map(|((_, a), _)| a.clone()).collect();
         for ak in aspects {
             if osis_commit::retention::fixed_purge_by(ak.as_str()).is_some() {
                 continue;
@@ -585,27 +585,23 @@ pub(super) fn reopen_in(tx: &mut Tx<'_>, c: &CommitId, m: &mut crate::engine::Me
 /// on arrival, and missing, its commit would wait for good for a body no honest node logs while
 /// invalid (spec/sync-judgement.md §2 Judged invalid). It is judged again with the rest: valid,
 /// `valid_again` reopens it.
-fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
+fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     if tx.core.ix.commits.get(c).is_some_and(|m| m.is_dropped(ai) && drops_invalid(tx.core, m, ai)) {
         return drop_as_invalid(tx, c, ai);
     }
-    let mut m = reopen(tx, c, ai)?;
-    if let Some(m) = m.as_mut().filter(|m| m.view.memory) {
+    if let Some(mut m) = reopen(tx, c, ai)?.filter(|m| m.view.memory) {
         m.set_hold(ai, Hold::Missing(Missing::ToFetch));
-        tx.core.put_meta(*c, m.clone());
+        tx.core.put_meta(*c, m);
     }
-    Ok(m)
+    Ok(())
 }
 
 /// Dropped part `ai` of `c` (as covered, purged, its thing destroyed) is dropped as invalid in
 /// place, keeping the judgments its body made (`Dropped::role`); judged again (`stale_commits`).
-fn drop_as_invalid(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
-    let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+fn drop_as_invalid(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let view = m.view.clone();
-    let Some(d) = m.dropped_mut(ai) else { return Ok(None) };
-    if d.why == DropFor::Invalid {
-        return Ok(Some(m));
-    }
+    let Some(d) = m.dropped_mut(ai).filter(|d| d.why != DropFor::Invalid) else { return Ok(()) };
     tx.core.touch();
     // an invalid snapshot settles nothing (`drop_part_for`)
     if d.stands_in
@@ -615,8 +611,7 @@ fn drop_as_invalid(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
     }
     *d = Dropped { why: DropFor::Invalid, role: d.role, overreach: d.overreach, keysets: std::mem::take(&mut d.keysets), ..Dropped::default() };
     tx.core.stale_commits.insert(*c);
-    tx.in_class(m.view.memory, |tx| tx.put_meta_record(c, m.clone()))?;
-    Ok(Some(m))
+    tx.in_class(view.memory, |tx| tx.put_meta_record(c, m))
 }
 
 /// Whether a late copy of part `ai` of `c`, dropped or stripped, joins (`reopen_late` makes
@@ -1055,14 +1050,9 @@ pub(crate) fn persist_valueless(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// After a commit applied: its expiry (now or by timer), its purge request against held
-/// deltas, and earlier purge requests against its deltas.
-pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
-    on_late(tx, id, None, changed)
-}
-
-/// After late parts `ais` of applied commit `id` joined: `on_apply` for them (`None`: the commit
-/// applied, every part and its request).
+/// After commit `id` applied (`ais` `None`) or its late parts `ais` joined: their expiry (now or
+/// by timer), held purge requests against them, and, the commit applied, its purge request
+/// against held deltas.
 pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: Option<&BTreeSet<usize>>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
     let mut purged = BTreeSet::new();
@@ -1093,9 +1083,7 @@ fn carried_valueless(core: &Core, tid: &Tid, ak: &Ak, src: &osis_crdt::Source) -
 /// (`rejudge_purges` takes the rest out; `drop_gone`).
 fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: BTreeSet<usize>, purged: &mut BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     for &ai in &ais {
-        if h.aspects.get(ai).is_none() {
-            continue;
-        }
+        let Some(a) = h.aspects.get(ai) else { continue };
         if let Some(t) = h.expires {
             if t <= tx.now().0 {
                 hold_valueless(tx, id, ai, false, purged)?;
@@ -1106,22 +1094,20 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: BTreeSet<usize>, pu
         purge::purge_arrived(tx, id, h, ai, purged)?;
         // a snapshot's copies of commits not held here, judged by its facts; a commit whose copies
         // were judged so: its header decides from now on (spec/commits.md §5 Without the header)
-        if let Some(a) = h.aspects.get(ai)
-            && (h.kind.is_compaction() || carried_valueless(tx.core, &a.tid, &a.ak, &h.form.own_source(h.signer, *id)))
-        {
+        if h.kind.is_compaction() || carried_valueless(tx.core, &a.tid, &a.ak, &h.form.own_source(h.signer, *id)) {
             purge::rejudge_carried(tx, &a.tid, &a.ak, purged)?;
         }
         drop_gone(tx, id, ai, purged)?;
         // a value part a purge request's header keeps listed to its floor, replaced or not by then,
         // whatever its aspect keeps: told when the floor passes (`listing::kept_passed`)
         if let Some(t) = osis_commit::retention::purge_keep_until(h).filter(|t| *t > tx.now().0 && *t < osis_commit::FOREVER)
-            && h.aspects.get(ai).is_some_and(|a| !a.ak.signal())
+            && !a.ak.signal()
         {
             tx.put_timer(t, id, ai, T_KEPT)?;
         }
         // a signal body goes at its keep bound, whole or as its leftover: by its aspect's walk
         // while its setting keeps it (`leaving`), then by its commit's purge floor if later
-        if let Some(a) = h.aspects.get(ai).filter(|a| a.ak.signal()) {
+        if a.ak.signal() {
             let now = tx.now().0;
             if history::of(tx.core, &a.tid, &a.ak).leaves_at(Some(h.ts.wall_ms().0), h.ts) > now {
                 leaving::fire_held(tx, &a.tid, &a.ak, (h.ts, *id))?;
@@ -1381,18 +1367,20 @@ impl Engine {
         // at a fresh node
         let unheld = |ai: usize| !m.holds(ai) && m.view.aspects.get(ai).is_some_and(|a| self.core.created(&a.tid).is_none());
         let gone = |ai: usize| covered(ai) || m.dropped_invalid(ai) || spent(ai) || unheld(ai);
-        if matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && (0..m.view.aspects.len()).all(gone) {
-            return Ok(true);
-        }
         let n = m.view.aspects.len();
-        if matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && m.view.purges && (0..n).any(|ai| m.dropped_invalid(ai)) && (0..n).all(gone) {
-            let c = *c;
-            return self.read(|tx| Ok(purge::drops_nothing(tx.core, &c, &m.header) && !lasting(tx, &c, &|_, _| true)?));
+        if matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && (0..n).all(gone) {
+            if !m.view.purges {
+                return Ok(true);
+            }
+            if (0..n).any(|ai| m.dropped_invalid(ai)) {
+                let c = *c;
+                return self.read(|tx| Ok(purge::drops_nothing(tx.core, &c, &m.header) && !lasting(tx, &c, &|_, _| true)?));
+            }
         }
         if !kept_purged(&self.core, c, &m) {
             return Ok(false);
         }
-        for ai in 0..m.view.aspects.len() {
+        for ai in 0..n {
             if !covered(ai) && self.part_covered(c, &m.header, ai)? != Some(true) {
                 return Ok(false);
             }

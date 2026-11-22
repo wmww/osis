@@ -383,16 +383,7 @@ impl Engine {
         let header: Option<std::sync::Arc<osis_commit::Header>> = match self.core.ix.commits.get(&id) {
             Some(m) if !env.header.is_resolved() => m.header.decoded(),
             _ if env.header.is_resolved() => Some(std::sync::Arc::new(env.header.clone())),
-            _ => {
-                let mut h = env.header.clone();
-                let ok = self
-                    .run(|tx| {
-                        let Some(dedup) = tx.core.dedup(&h.signer) else { return Err(Error::Misuse("not resolved")) };
-                        Ok(h.resolve(&mut crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), &dedup)?)
-                    })
-                    .is_ok();
-                ok.then(|| std::sync::Arc::new(h))
-            }
+            _ => self.held_resolved(env.header.clone()).map(std::sync::Arc::new),
         };
         let ais = env.ais();
         // its expiry is the commit's (spec/sync-ids.md §1), from the header's own fields, checked

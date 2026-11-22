@@ -154,12 +154,12 @@ pub struct Dropped {
     pub superseded_by: BTreeSet<CommitId>,
 }
 
-/// The coverers the dropped parts of `m` name (`Dropped::covered_by`).
 /// The aspects of `m`'s parts not held (`Indexes::missing`).
 fn missing_of(m: &Meta) -> BTreeSet<(Ak, Tid)> {
     m.view.aspects.iter().enumerate().filter(|(ai, _)| m.missing(*ai)).map(|(_, a)| (a.ak.clone(), a.tid)).collect()
 }
 
+/// The coverers the dropped parts of `m` name (`Dropped::covered_by`).
 fn covers_of(m: &Meta) -> BTreeSet<CommitId> {
     m.dropped_parts().flat_map(|(_, d)| d.covered_by.iter().copied()).collect()
 }
@@ -1676,7 +1676,7 @@ impl Core {
         // a weighing (`compact::Trigger::wake`)
         for t in &under {
             self.compaction.wake(t);
-            let on: Vec<(Tid, Ak)> = self.ix.by_aspect.range((*t, Ak::MIN)..).take_while(|((x, _), _)| x == t).map(|(k, _)| k.clone()).collect();
+            let on: Vec<(Tid, Ak)> = self.aspects_of(t).map(|(k, _)| k.clone()).collect();
             for (x, ak) in on {
                 if crate::retention::history::of(self, &x, &ak).purges() {
                     self.none_due.insert((x, ak));
@@ -1955,11 +1955,8 @@ impl Core {
             self.touches.clear();
             // what it followed may have gone back: built again from the restored index
             self.paths_wait = None;
-            if self.memory_tx {
-                self.memory_generation += 1;
-            } else {
-                self.generation += 1;
-            }
+            // every cache goes (`dirty` is restored below)
+            self.touch();
             for k in self.written.split_off(m.written) {
                 self.states.remove(&k);
                 self.pages.remove(&k);
@@ -3159,14 +3156,12 @@ impl Tx<'_> {
         if !self.held_in_part(tid, ak) {
             return Ok(());
         }
-        let ok = match touch {
-            Some(t) => self.with_pages(tid, ak, |txn, idx, f| pages::ensure_touch(txn, tid, ak, idx, f, t))? == Some(true),
-            None => false,
-        };
-        if !ok {
-            self.load(tid, ak)?;
+        if let Some(t) = touch
+            && self.with_pages(tid, ak, |txn, idx, f| pages::ensure_touch(txn, tid, ak, idx, f, t))? == Some(true)
+        {
+            return Ok(());
         }
-        Ok(())
+        self.load(tid, ak)
     }
 
     /// A joined state `st` of `(tid, ak)` as it is cached: `None` exactly when the whole state
@@ -3582,7 +3577,6 @@ pub(crate) fn clear_table(txn: &mut Transaction<'_>, t: osis_store::Table, start
     }
 }
 
-/// `(head, blob)`.
 /// The run of a thing's entries in a map keyed by thing first (`JMap::by_run`).
 fn actor_run(a: &Tid) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -3591,6 +3585,7 @@ fn actor_run(a: &Tid) -> u64 {
     h.finish()
 }
 
+/// A stored commit record's `(head, blob)`, its header's linked lists filled from the head.
 pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
     let (head, rest) = index::parse_head(v)?;
     let mut blob = CommitBlob::decode_stored(rest).map_err(|_| Error::Corrupt("commit blob"))?;
@@ -3686,8 +3681,12 @@ fn nonce_count(n: &Nonce) -> u64 {
     u64::from_be_bytes(b)
 }
 
+/// `r`, then `f` while `r` is `Ok` (`f`'s error in its place): a transaction's end work, a step at a time.
+fn then<T, U>(r: Result<T>, f: impl FnOnce() -> Result<U>) -> Result<T> {
+    r.and_then(|v| f().map(|_| v))
+}
+
 impl Engine {
-    /// `Store::writes` of the engine's store.
     /// How many times the engine read its indexes from the store again (an open, a reload after
     /// a write of unknown outcome): a follower of its memos (sync's modules)
     /// follows them afresh when it moves, as the old stamps and feeds see no further write.
@@ -3695,6 +3694,7 @@ impl Engine {
         self.loads
     }
 
+    /// `Store::writes` of the engine's store.
     pub fn store_writes(&self) -> osis_store::Writes {
         self.store.writes()
     }
@@ -3724,6 +3724,14 @@ impl Engine {
         (self.store.changes(), self.core.generation, self.core.memory_generation, self.core.now().0)
     }
 
+    /// The engine of node `id` over `store`, its indexes empty (`create` writes them, `open`
+    /// loads them).
+    fn over(store: Store, store_rng: SeededRng, blobs: Arc<dyn osis_store::Ciphertext>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn osis_crypto::NodeRng>, id: Identity) -> Engine {
+        let (session, expiring) = sessions(id.tid(), &mut *rng);
+        let rows = store.row_changes();
+        Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false }
+    }
+
     /// A new node over an empty backend: fresh identity, its node thing with `created.0`,
     /// `node.0` and `keys.0` (spec/permissions.md §4 node card).
     pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, blobs: Arc<dyn osis_store::Ciphertext>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Engine> {
@@ -3732,9 +3740,7 @@ impl Engine {
         rng.fill_bytes(&mut seed);
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
-        let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false };
+        let mut e = Engine::over(store, store_rng, blobs, cfg, clock, rng, id);
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -3762,9 +3768,7 @@ impl Engine {
             let mut txn = store.transaction(&mut store_rng)?;
             txn.get_local(records::NODE_ROOT)?.map(|b| <[u8; osis_base::format::TID_LEN]>::try_from(b.as_slice()).map(Tid::from_bytes).map_err(|_| Error::Corrupt("node root"))).transpose()?
         };
-        let (session, expiring) = sessions(id.tid(), &mut *rng);
-        let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false };
+        let mut e = Engine::over(store, store_rng, blobs, cfg, clock, rng, id);
         e.core.node_root = node_root;
         e.load()?;
         Ok(e)
@@ -4043,8 +4047,8 @@ impl Engine {
                 _after = memo::Unrecorded::start();
                 // a thing minted with an account as admin is independent by its creating transaction's end
                 // (spec/permissions.md §3)
-                if r.is_ok() && !tx.core.own_secrets_due.is_empty() {
-                    r = r.and_then(|v| crate::rotation::own_secrets_due(&mut tx).map(|_| v));
+                if !tx.core.own_secrets_due.is_empty() {
+                    r = then(r, || crate::rotation::own_secrets_due(&mut tx));
                 }
                 tx.core.own_secrets_due.clear();
                 // explicit demotions applied get this node's addenda (spec/permissions.md §5.2),
@@ -4055,7 +4059,7 @@ impl Engine {
                 // until nothing enters.
                 let mut flows = osis_base::loop_guard::LoopGuard::new("Engine::run (the flows' writes bringing things into the node closure)");
                 while r.is_ok() && !tx.txn.is_memory() {
-                    r = r.and_then(|v| crate::sync::units::settle(&mut tx).map(|_| v));
+                    r = then(r, || crate::sync::units::settle(&mut tx));
                     // what waits to see a thing enter the node closure joins as it enters
                     // (spec/commits.md §4 Outside the node closure), the closure settled again
                     let mut guard = osis_base::loop_guard::LoopGuard::new("Engine::run (what waits for things entering the node closure)");
@@ -4066,22 +4070,19 @@ impl Engine {
                                 // each round wakes what things newly entered hold back
                                 let pending = tx.core.ix.pending.len() as u64;
                                 guard.round(n, || (pending + 2, format!("{pending} pending")));
-                                r = r.and_then(|v| crate::sync::units::settle(&mut tx).map(|_| v));
+                                r = then(r, || crate::sync::units::settle(&mut tx));
                             }
                             Err(e) => r = Err(e),
                         }
                     }
                     // a commit pends only while carried (spec/commits.md §4 Pending storage)
-                    if r.is_ok() {
-                        r = r.and_then(|v| crate::apply::carriers::settle(&mut tx).map(|_| v));
-                    }
-                    if r.is_ok()
-                        && let Err(e) = crate::flows::inbox::owe_removal_notices(&mut tx).and_then(|()| crate::flows::addenda::write_owed(&mut tx)).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
-                            .and_then(|()| crate::sync::dial::drop_departed(&mut tx))
-                    {
-                        r = Err(e);
-                    }
-                    r = r.and_then(|v| crate::sync::units::settle(&mut tx).map(|_| v));
+                    r = then(r, || crate::apply::carriers::settle(&mut tx));
+                    r = then(r, || crate::flows::inbox::owe_removal_notices(&mut tx));
+                    r = then(r, || crate::flows::addenda::write_owed(&mut tx));
+                    r = then(r, || crate::flows::signing::leave_if_removed(&mut tx));
+                    r = then(r, || crate::flows::signing::answer_rotations(&mut tx));
+                    r = then(r, || crate::sync::dial::drop_departed(&mut tx));
+                    r = then(r, || crate::sync::units::settle(&mut tx));
                     if r.is_err() || !crate::apply::entering(&tx) {
                         break;
                     }
@@ -4103,48 +4104,48 @@ impl Engine {
                 // a body judged invalid goes at the end of the transaction that judged it
                 // (spec/permissions.md §6), after this node's addenda vouched for what they list;
                 // a memory transaction drops memory parts only (`drop_invalid`)
-                if r.is_ok() && !tx.core.drop_due.is_empty() {
-                    r = r.and_then(|v| crate::retention::drop_invalid(&mut tx).map(|_| v));
+                if !tx.core.drop_due.is_empty() {
+                    r = then(r, || crate::retention::drop_invalid(&mut tx));
                 }
                 tx.core.drop_due.clear();
-                if r.is_ok() && !tx.core.settings_due.is_empty() {
+                if !tx.core.settings_due.is_empty() {
                     // the new timelines walk rows dated by this transaction's kills and
                     // validity changes: a row is never early (a superseder turning invalid moves
                     // its victims' rows later), so the walk tells no body early
-                    r = r.and_then(|v| crate::retention::leaving::date_due(&mut tx).map(|_| v));
-                    r = r.and_then(|v| crate::retention::settings_changed(&mut tx).map(|_| v));
+                    r = then(r, || crate::retention::leaving::date_due(&mut tx));
+                    r = then(r, || crate::retention::settings_changed(&mut tx));
                 }
                 tx.core.settings_due.clear();
                 // a setting that left here moves which external fires are valid
                 // (`validity::setting_moved`): judged, and what turned invalid goes, in this
                 // transaction; a removal notice turned valid is taken as one arriving
-                if r.is_ok() && tx.core.stale() {
-                    r = r.and_then(|v| crate::apply::rejudged(&mut tx, false).and_then(|_| crate::retention::drop_invalid(&mut tx)).map(|_| v));
-                    if r.is_ok() && !tx.core.removals_due.is_empty() && !tx.txn.is_memory() {
-                        r = r.and_then(|v| crate::flows::inbox::owe_removal_notices(&mut tx).map(|_| v));
+                if tx.core.stale() {
+                    r = then(r, || crate::apply::rejudged(&mut tx, false).and_then(|_| crate::retention::drop_invalid(&mut tx)));
+                    if !tx.core.removals_due.is_empty() && !tx.txn.is_memory() {
+                        r = then(r, || crate::flows::inbox::owe_removal_notices(&mut tx));
                     }
                 }
                 tx.core.drop_due.clear();
                 tx.core.removals_due.clear();
-                if r.is_ok() && !tx.core.setting_waits_due.is_empty() {
-                    r = r.and_then(|v| crate::sync::setting::judge_due(&mut tx).map(|_| v));
+                if !tx.core.setting_waits_due.is_empty() {
+                    r = then(r, || crate::sync::setting::judge_due(&mut tx));
                 }
                 tx.core.setting_waits_due.clear();
-                if r.is_ok() && !tx.core.ix.cover_waits.is_empty() && !tx.txn.is_memory() {
-                    r = r.and_then(|v| crate::retention::replace::wake_covers(&mut tx).map(|_| v));
+                if !tx.core.ix.cover_waits.is_empty() && !tx.txn.is_memory() {
+                    r = then(r, || crate::retention::replace::wake_covers(&mut tx));
                 }
-                if r.is_ok() && !tx.core.none_due.is_empty() {
-                    r = r.and_then(|v| crate::retention::settle_none(&mut tx).map(|_| v));
+                if !tx.core.none_due.is_empty() {
+                    r = then(r, || crate::retention::settle_none(&mut tx));
                 }
                 tx.core.none_due.clear();
                 // destructions and what nothing held needs any more, each letting more go
                 // (`retention::needed`), judged on the node closure as it stands
                 while r.is_ok() && !tx.txn.is_memory() {
-                    r = r.and_then(|v| crate::retention::destroy::apply_destructions(&mut tx).map(|_| v));
+                    r = then(r, || crate::retention::destroy::apply_destructions(&mut tx));
                     if r.is_err() || tx.core.needs_due.is_empty() {
                         break;
                     }
-                    r = r.and_then(|v| crate::sync::units::settle(&mut tx).map(|_| v));
+                    r = then(r, || crate::sync::units::settle(&mut tx));
                     let mut went = false;
                     r = r.and_then(|v| crate::retention::needed::settle(&mut tx).map(|w| {
                         went = w;
@@ -4155,56 +4156,42 @@ impl Engine {
                     }
                 }
                 tx.core.needs_due.clear();
-                if r.is_ok() {
-                    r = r.and_then(|v| crate::retention::persist_valueless(&mut tx).map(|_| v));
-                }
+                r = then(r, || crate::retention::persist_valueless(&mut tx));
                 tx.core.valueless_dirty.clear();
-                if r.is_ok() {
-                    r = r.and_then(|v| edits::settle(&mut tx).map(|_| v));
-                }
+                r = then(r, || edits::settle(&mut tx));
                 tx.core.refold.clear();
                 // freed links judged once every rebuild ran: a judged one keeps no key here
-                if r.is_ok() && !tx.core.freed_due.is_empty() {
-                    r = r.and_then(|v| crate::retention::freed::settle_due(&mut tx).map(|_| v));
+                if !tx.core.freed_due.is_empty() {
+                    r = then(r, || crate::retention::freed::settle_due(&mut tx));
                 }
                 tx.core.freed_due.clear();
-                if r.is_ok() && !tx.core.forgotten_names_due.is_empty() {
-                    r = r.and_then(|v| crate::retention::names::settle_due(&mut tx).map(|_| v));
+                if !tx.core.forgotten_names_due.is_empty() {
+                    r = then(r, || crate::retention::names::settle_due(&mut tx));
                 }
                 tx.core.forgotten_names_due.clear();
-                if r.is_ok() && !tx.core.handed_due.is_empty() {
-                    r = r.and_then(|v| crate::retention::handed::settle_due(&mut tx).map(|_| v));
+                if !tx.core.handed_due.is_empty() {
+                    r = then(r, || crate::retention::handed::settle_due(&mut tx));
                 }
                 tx.core.handed_due.clear();
-                if r.is_ok() {
-                    r = r.and_then(|v| listing::listing_moved(&mut tx).map(|_| v));
-                }
+                r = then(r, || listing::listing_moved(&mut tx));
                 tx.core.listed_before.clear();
                 tx.core.killed.clear();
-                if r.is_ok() {
-                    r = r.and_then(|v| crate::retention::leaving::date_due(&mut tx).map(|_| v));
-                }
+                r = then(r, || crate::retention::leaving::date_due(&mut tx));
                 tx.core.to_date.clear();
                 // the node closure follows every change above (spec/sync-set.md §2), and holds
                 // what this transaction made
-                if r.is_ok() {
-                    r = r.and_then(|v| crate::sync::units::settle(&mut tx).and_then(|()| crate::sync::units::check_written(&mut tx)).map(|_| v));
-                }
+                r = then(r, || crate::sync::units::settle(&mut tx).and_then(|()| crate::sync::units::check_written(&mut tx)));
                 tx.core.wrote_on.clear();
                 // what stopped pending above loses its carriers
-                if r.is_ok() && !tx.txn.is_memory() {
-                    r = r.and_then(|v| crate::apply::carriers::settle(&mut tx).map(|_| v));
+                if !tx.txn.is_memory() {
+                    r = then(r, || crate::apply::carriers::settle(&mut tx));
                 }
                 tx.core.carriers_due.clear();
                 // the blob waits of what pends no more go (`apply::reach::settle`)
                 crate::apply::reach::settle(tx.core);
                 // every state written above stored in its form (`Tx::settle_states`)
-                if r.is_ok() {
-                    r = r.and_then(|v| tx.settle_placements().and_then(|()| tx.settle_states()).map(|_| v));
-                }
-                if r.is_ok() {
-                    r = r.and_then(|v| Core::commit_changes(&mut tx).map(|_| v));
-                }
+                r = then(r, || tx.settle_placements().and_then(|()| tx.settle_states()));
+                r = then(r, || Core::commit_changes(&mut tx));
                 // every validity change was judged before the index is persisted
                 debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty() && tx.core.ix.epochs_due.is_empty()), "stale validity left unjudged: {:?} {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits, *tx.core.ix.epochs_due);
                 #[cfg(debug_assertions)]
@@ -4216,7 +4203,7 @@ impl Engine {
                 }
                 let persisted = {
                     let _s = osis_base::costs::span("tx: persist index");
-                    r.and_then(|v| crate::sides::persist(&mut tx).map(|_| v)).and_then(|v| index::persist(&mut tx).map(|_| v))
+                    then(then(r, || crate::sides::persist(&mut tx)), || index::persist(&mut tx))
                 };
                 match persisted {
                     Ok(v) => {
@@ -4317,7 +4304,7 @@ impl Engine {
     /// it was rebuilt from the commit records.
     fn load_fresh(&mut self, rebuild: bool) -> Result<Option<Vec<(Tid, Ak)>>> {
         self.loads = self.loads.wrapping_add(1);
-        let mut fresh = self.blank_core();
+        let mut fresh = self.blank_core(self.clock.clone());
         fresh.events = std::mem::take(&mut self.core.events);
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.held_keys = std::mem::take(&mut self.core.held_keys);
@@ -4357,13 +4344,8 @@ impl Engine {
         r
     }
 
-    /// An empty `Core` with this one's identity, sessions, clock and settings.
-    fn blank_core(&self) -> Core {
-        self.blank_core_on(self.clock.clone())
-    }
-
-    /// `blank_core` on `clock`.
-    fn blank_core_on(&self, clock: Arc<dyn Clock>) -> Core {
+    /// An empty `Core` on `clock` with this one's identity, sessions and settings.
+    fn blank_core(&self, clock: Arc<dyn Clock>) -> Core {
         let mut fresh = Core::new(self.core.id.clone(), clock.clone(), self.core.session, self.core.expiring, self.store.row_changes());
         fresh.later_sessions = self.core.later_sessions;
         fresh.hlc = Hlc::new(clock, self.core.hlc.last());
@@ -4419,7 +4401,7 @@ impl Engine {
         #[cfg(not(debug_assertions))]
         let clock = self.clock.clone();
         for rebuild in [false, true] {
-            let mut fresh = self.blank_core_on(clock.clone());
+            let mut fresh = self.blank_core(clock.clone());
             // the store's records decoded as this node keeps them: a decode is a function of
             // the record's bytes, compared at each hit (`decoded`), so judging is all redone
             fresh.decoded = std::mem::take(&mut self.core.decoded);

@@ -226,7 +226,7 @@ fn end_wait(core: &mut Core, t: &Tid) {
 /// comes to be writable (`wake_covers`).
 pub(crate) fn standing_moved(core: &mut Core, t: &Tid) {
     core.compaction.wake(t);
-    let on: Vec<Ak> = core.ix.by_aspect.range((*t, Ak::MIN)..).take_while(|((x, _), _)| x == t).map(|((_, a), _)| a.clone()).collect();
+    let on: Vec<Ak> = core.aspects_of(t).map(|((_, a), _)| a.clone()).collect();
     for ak in on {
         if super::history::of(core, t, &ak).purges() {
             core.none_due.insert((*t, ak));
@@ -264,7 +264,7 @@ pub(crate) fn wake_covers(tx: &mut Tx<'_>) -> Result<()> {
             MayWrite::Later => await_cover(tx.core, &t),
             MayWrite::Yes => {
                 tx.core.compaction.wake(&t);
-                let on: Vec<Ak> = tx.core.ix.by_aspect.range((t, Ak::MIN)..).take_while(|((x, _), _)| *x == t).map(|((_, a), _)| a.clone()).collect();
+                let on: Vec<Ak> = tx.core.aspects_of(&t).map(|((_, a), _)| a.clone()).collect();
                 for ak in on {
                     if super::history::of(tx.core, &t, &ak).purges() {
                         tx.core.none_due.insert((t, ak));

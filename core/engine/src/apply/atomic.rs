@@ -647,7 +647,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     {
         let _s = osis_base::costs::span("apply: retention");
         crate::retention::stripped_joined(tx, &id, &parts.stripped_joined(), &mut j.changed)?;
-        crate::retention::on_apply(tx, &id, &mut j.changed)?;
+        crate::retention::on_late(tx, &id, None, &mut j.changed)?;
     }
     {
         let _s = osis_base::costs::span("apply: observe");

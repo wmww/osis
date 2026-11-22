@@ -614,7 +614,7 @@ pub(crate) fn setting_moved(core: &mut Core, t: &Tid, before: Option<BTreeSet<Ak
     core.settings_due.insert(*t);
     core.kept_things_due.insert(*t);
     let moved = |a: &Ak| a.external() && before.as_ref().is_none_or(|b| b.contains(a) != setting_now(core, t).is_some_and(|s| s.enables(a)));
-    let fires: Vec<CommitId> = core.ix.by_aspect.range((*t, Ak::MIN)..).take_while(|((x, _), _)| x == t).filter(|((_, a), _)| moved(a)).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
+    let fires: Vec<CommitId> = core.aspects_of(t).filter(|((_, a), _)| moved(a)).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
     core.stale_commits.extend(fires);
 }
 
