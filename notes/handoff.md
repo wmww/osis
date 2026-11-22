@@ -6,8 +6,12 @@ The design is notes/write-path-design.md (Decided, the lettered rules); the plan
 ## Waiting on Tess
 - **The walk rebuild's shape (blocks A1)**: issues/perm-eval-cost.md (tess-call, critical). Checkpoint replay misses the requirement "every operation costs in proportion to what it changes" for backdated or late-arriving role writes (a count test on main: `core/perm/tests/it/paths/counts.rs`). Options: (A) re-step only what a change reaches, designed as verdicts that are functions of the hops they read with changes carried by the memo system (the coordinator's lean), or (B) checkpoint replay with a weaker cost requirement (a requirements change). Until answered, osis-perm's old walk trails the model and its differentials carry `rate:` known failures (issues/perm-walk-trails-model.md).
 - **Requirements wording**: spec/requirements.md line 15 says a write's actors start at "the key that signs it"; under owner keys the actors are all things (a key signs as a thing). Not contradicted by the spec, but stale: offered to Tess, not yet answered.
+- **Acting through a team requires accepting it** (907d6f4f7): follows spec/sync-inbox.md §5 (only accepting takes a grant up) and fixed the unaccepted-grant sync class, but removes something a user could do; asked, not yet answered. Narrow to reverse (`rotation::role_here`'s skip of the account's edges on unreached things).
 - **The first owner key** (issues/owner-key-first-attach.md): built as option 1, one clause (`Rules::attach_on_path`), option 2 the variant `-attach-kept`.
 - Small: CLAUDE.md's GUI test command lacks `--no-fail-fast` (app's known failure stops kit's tests); a smaller fixed setting for the KNOWN story search is hers to allow; the gate.checks CPU share raise (notes/time-limits.md) is hers to review.
+
+## Parked
+- `mizzen-snapshot-stream`: a page-walking snapshot writer, byte-identical but unbounded memory on forged states (a dot may honestly name several keys: no decode rule closes it); resume only with a per-source cursor, if the issue's priority warrants (issues/durable-decode-bound.md, Parked).
 
 ## Left to take
 - **osprey**: the box has no base unit in notes/time-limits.md, so `tools/limits.py` checks nothing there: `tools/heavy tools/limits.py unit`, then add its row, before a gate runs on it.
