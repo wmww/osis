@@ -149,6 +149,15 @@ impl Kept {
     pub(crate) fn forever(&self, written: Ts) -> bool {
         matches!(self.opt, Opt::Keep { until, .. } if until >= FOREVER && !self.floored(written))
     }
+
+    /// `leaves_at` of a body written at `ts` `written` replaced at any time, where that is one
+    /// bound whenever it was replaced: kept for good (`forever`), not a role body.
+    pub(crate) fn forever_bound(&self, written: Ts) -> Option<u64> {
+        match self.opt {
+            Opt::Keep { until, .. } if !self.role && self.forever(written) => Some(until),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

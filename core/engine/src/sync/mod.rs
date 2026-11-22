@@ -177,7 +177,8 @@ pub struct BodyFacts {
     /// and dropped: `MAX_DRIFT` past the latest keep-at-least bound of its parts (0: at once;
     /// spec/commits.md §5 Keep at least, spec/sync-compaction.md §1).
     pub hosts_from: u64,
-    /// Covered by a held valid snapshot under S; `None` while that cannot be judged yet.
+    /// Covered by a held valid snapshot under S; `None` while that cannot be judged yet. Not
+    /// judged where `kept`, which decides first (`Some(false)`).
     pub covered: Option<bool>,
     /// A certificate blob whose author has no other blob under S.
     pub sole_certificate: bool,

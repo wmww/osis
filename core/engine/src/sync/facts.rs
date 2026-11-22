@@ -82,8 +82,9 @@ impl Engine {
             f.must_not = Some(MustNot::Purged);
         }
         // a later snapshot not held matters only for a delta otherwise established uncovered
-        // (spec/sync-judgement.md §2): so a snapshot of an aspect moves no fact of a covered body
-        if f.body.covered == Some(true) {
+        // and not kept (spec/sync-judgement.md §2): so a snapshot of an aspect moves no fact of a
+        // covered or kept body
+        if f.body.covered == Some(true) || f.body.kept {
             return Ok(f);
         }
         for ai in &b.parts {

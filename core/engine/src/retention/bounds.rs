@@ -105,8 +105,14 @@ pub(crate) fn setting_keeps(tx: &mut Tx<'_>, c: &CommitId, ai: usize, now: u64) 
 /// replaced is kept while live where its aspect's setting says so (`live_keep`).
 fn part_bounds(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<(u64, u64)> {
     let Some(a) = h.aspects.get(ai) else { return Ok((0, 0)) };
-    let r = part_replaced_at(tx, h, c, ai)?.map(|t| t.wall_ms().0);
     let w = written_of(tx, h, c, ai)?;
+    // kept for good, live or replaced: when it was replaced decides nothing, so it is not dated
+    // (a date reads the aspect's state and held writes, which every write to it moves)
+    let live = live_keep(tx.core, c, ai, a);
+    if super::history::of(tx.core, &a.tid, &a.ak).forever_bound(w) == Some(live) {
+        return Ok((kept_until(tx.core, h, a, None, w).max(live), 0));
+    }
+    let r = part_replaced_at(tx, h, c, ai)?.map(|t| t.wall_ms().0);
     let k = kept_until(tx.core, h, a, r, w);
     let k = if r.is_none() { k.max(live_keep(tx.core, c, ai, a)) } else { k };
     Ok((k, r.unwrap_or(0)))

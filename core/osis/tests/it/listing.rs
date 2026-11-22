@@ -423,3 +423,27 @@ fn purge_goes_under_its_thing_and_reaches_what_it_names_spec_commits_5() {
     assert!(done.parts().any(|(x, _, _)| x == t), "a delta on the purged thing: {done:?}");
     assert!(matches!(bodies(&db, t, &msg())[..], [Body::Purged { .. }]));
 }
+
+// spec/sync.md §2 (Work in proportion to change): one
+// more write to an aspect keeping its history for good re-derives the sync facts and fates of the
+// bodies it replaces, not of every body kept there: the same work after 8 and after 80 kept
+// writes.
+#[test]
+fn a_kept_write_rederives_only_what_it_replaces_spec_sync_2() {
+    let per_write = |n: usize| {
+        let db = db(0);
+        let t = thing(&db);
+        for i in 0..n {
+            say(&db, t, &format!("m{i}"));
+        }
+        db.settle();
+        osis::internals::costs::take();
+        say(&db, t, "last");
+        db.settle();
+        let c = osis::internals::costs::take();
+        let n_of = |name: &str| c.iter().filter(|x| x.0.starts_with(name)).map(|x| x.2).sum::<u64>();
+        [n_of("sync: read facts <- "), n_of("sync: held fate <- "), n_of("replaced at"), n_of("covered: join")]
+    };
+    let (small, big) = (per_write(8), per_write(80));
+    assert_eq!(small, big, "facts, fates refreshed, bodies dated and joins judged by one write after 8 kept writes, then after 80");
+}

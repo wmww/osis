@@ -356,8 +356,10 @@ impl Engine {
             Some(d) => d.hosts_from,
             None => keeps.get(*ai).filter(|k| **k > 0).map_or(0, |k| k.saturating_add(osis_base::format::MAX_DRIFT_MS)),
         }).max().unwrap_or(0);
-        let mut covered = Some(!b.parts.is_empty());
-        for ai in &b.parts {
+        // a kept body is must-hold whatever covers it (spec/sync-judgement.md §2): its coverage,
+        // which every later write of its aspects may move, is not judged
+        let mut covered = Some(!b.parts.is_empty() && !kept);
+        for ai in b.parts.iter().filter(|_| !kept) {
             // a signal's delta is never joined: never established uncovered
             if h.aspects.get(*ai).is_none_or(|a| a.ak.signal()) {
                 continue;
