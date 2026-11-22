@@ -74,6 +74,12 @@ pub(crate) fn keyed_before(tl: &osis_perm::Timeline, a: &Tid, h: &Tid, p: osis_p
     standing.get(a).is_some_and(|on| on.contains_key(h)) && !keyless_among(tl, standing).contains(&(*a, *h))
 }
 
+/// `keyless_in` over the writes before `p` alone: the keyless grants as they stood there.
+#[cfg(test)]
+pub(crate) fn keyless_before(tl: &osis_perm::Timeline, p: osis_perm::Point) -> BTreeSet<(Tid, Tid)> {
+    keyless_among(tl, tl.standing_since_all(Some(p)))
+}
+
 /// The keyless grants among the actor grants `standing` (per thing, each holder's standing since).
 fn keyless_among(tl: &osis_perm::Timeline, standing: BTreeMap<Tid, BTreeMap<Tid, Option<osis_perm::Point>>>) -> BTreeSet<(Tid, Tid)> {
     let mut grants = Vec::new();

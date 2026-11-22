@@ -761,8 +761,9 @@ fn access(run: &Run, at: usize, d: usize, t: Tid, r: Role) -> bool {
     access_at(run, at, d, t, r, None)
 }
 
-/// `access` as the rosters stood just before `point` (`None`: now), key access as `at` judges
-/// it now.
+/// `access` as the rosters stood just before `point` (`None`: now), key access judged over the
+/// actor grants standing there (a grant keyless then, its cycle's earlier grant standing, reads
+/// nothing then, whatever a later removal gave it).
 fn access_at(run: &Run, at: usize, d: usize, t: Tid, r: Role, point: Option<osis_perm::Point>) -> bool {
     let core = &run.lp.peers[at].engine.core;
     let holders_of = |a: &Tid| -> Vec<(Tid, Role)> {
@@ -771,7 +772,10 @@ fn access_at(run: &Run, at: usize, d: usize, t: Tid, r: Role, point: Option<osis
             _ => core.key_holders(a),
         }
     };
-    let keyless = super::members::key_access(core);
+    let keyless: BTreeSet<(Tid, Tid)> = match point {
+        Some(p) => run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| super::members::keyless_before(tl, p)).collect(),
+        None => (*super::members::key_access(core)).clone(),
+    };
     let mut reach: BTreeSet<Tid> = BTreeSet::new();
     loop {
         let n = reach.len();
@@ -836,10 +840,11 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
             // (but a secret a grant left it reading: `left_reading`);
             // nor does any epoch made by a rotator that saw the peer lose access (it held the
             // commit that cost the peer the thing, directly or below, and the peer reads it in
-            // none of the rotator's rosters, nor in the settled ones just after it), unless a grant (on the thing or on a holder actor
-            // of it) handed it on (its author's own departure, or the grant counting, then
-            // rotates the role, so the first holds), the history of a later epoch the peer held as a holder in its rotator's view
-            // carried it (access regained, here or through a holder actor, reads earlier
+            // none of the rotator's rosters, nor in the settled ones while it was current: `holder_at`),
+            // unless a grant (on the thing or on a holder actor of it) handed it on (its author's
+            // own departure, or the grant counting, then rotates the role, so the first holds), the
+            // history of a later epoch the peer held as a holder (in its rotator's view or the
+            // settled one) carried it (access regained, here or through a holder actor, reads earlier
             // content), or it opens only through boxes within the limits (`excused`)
             let gone: Vec<usize> = (0..N).filter(|d| !access(run, o, *d, t, r)).collect();
             for &d in &gone {
@@ -858,11 +863,16 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                 // the commits that cost it `r` of `t`: its departure from `r` on `t` itself, and
                 // the one that cut its last path to `t` (through holder actors too)
                 let lost: Vec<CommitId> = departure(run, o, t, d, r).into_iter().chain(path_loss(run, o, d, t, r)).collect();
-                // the epochs it held access to `r` of `t` at, just after their rotation commits, in
-                // the settled rosters: a holder then (a grant concurrent with the rotation, here or
-                // on a holder actor the epoch boxes, its maker unaware) is entitled to the epoch and
-                // its history (spec/crypto.md §4, the three promises: 2)
-                let holder_at: BTreeSet<Epoch> = run.made.keys().filter(|(t2, r2, e2)| *t2 == t && *r2 == r && run.lp.peers[o].engine.core.ix.epoch_intro.get(&(t, r, *e2)).and_then(|(_, c)| run.after(o, c)).is_some_and(|p| access_at(run, o, d, t, r, Some(p)))).map(|k| k.2).collect();
+                // the epochs it held access to `r` of `t` at while current in the settled order
+                // (`held_while_current`): a current holder is entitled to every current epoch and to
+                // the history its holders have (notes/keys.md, the three promises: 2; spec/crypto.md
+                // §4 Boxes: a re-seal boxes every current holder at every current epoch, a grant with
+                // history carries what lies below), and the requirement ends its reading only at a
+                // rotation knowing a removal after that (spec/requirements.md Permissions); a holder
+                // then by a grant concurrent with the rotation, here or on a holder actor the epoch
+                // boxes, its maker unaware, is one. Every grant drawn here goes with history: a
+                // cut's floor would bar the epoch (spec/crypto.md §4 Floors)
+                let holder_at: BTreeSet<Epoch> = run.made.keys().filter(|(t2, r2, e2)| *t2 == t && *r2 == r && held_while_current(run, o, d, t, r, e2)).map(|k| k.2).collect();
                 let regained = |e: &Epoch| run.made.iter().any(|((t2, r2, e2), m)| *t2 == t && *r2 == r && (!m.below.contains(&d) || holder_at.contains(e2)) && m.carried.contains(e) && run.ever[d].contains(&(t, r, *e2)));
                 // the boxes within the limit for `d` (`excused`), in any epoch of the history: a
                 // cascade seals a holder actor blind in an epoch of an actor `t`'s epoch boxes
@@ -890,6 +900,22 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
             }
         }
     }
+}
+
+/// Whether peer `d` held access to role `r` of `t` (`access_at`) at some point while epoch `e`
+/// was current in peer `o`'s settled order: just after `e`'s rotation commit, or just after an
+/// applied edge write ordered after it and before the first held rotation commit whose keyset
+/// lists `e` (spec/crypto.md §4 Supersedes).
+fn held_while_current(run: &Run, o: usize, d: usize, t: Tid, r: Role, e: &Epoch) -> bool {
+    let core = &run.lp.peers[o].engine.core;
+    let point = |c: &CommitId| core.ix.commits.get(c).map(|m| osis_perm::Point { ts: m.header.ts, node: m.header.signer, commit: *c });
+    let Some(start) = core.ix.epoch_intro.get(&(t, r, *e)).and_then(|(_, c)| point(c)) else { return false };
+    let just_after = |p: osis_perm::Point| osis_perm::Point { commit: CommitId([0xff; 32]), ..p };
+    let ep = core.epochs(&t).unwrap_or_default();
+    let end = ep.role(r).epochs().flat_map(|(_, info)| info.rotations.iter().filter(|(_, list)| list.contains(e)).filter_map(|(c, _)| point(c))).min();
+    let before_end = |p: &osis_perm::Point| end.is_none_or(|x| *p < x);
+    let writes = run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| tl.applied().values().map(|a| a.point)).filter(|p| *p > start).collect::<BTreeSet<_>>();
+    std::iter::once(start).chain(writes).map(just_after).filter(before_end).any(|p| access_at(run, o, d, t, r, Some(p)))
 }
 
 /// Whether peer `d` was first handed secret `k` by a grant that leaves it reading (spec/crypto.md
@@ -1247,6 +1273,60 @@ fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3()
     assert!(run.lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "it covers E's departure too");
     settle(&mut run, 1, true);
     check(&mut run, 1, true);
+}
+
+// A grant concurrent with a rotation entitles its grantee to the epoch (seed 611521595787): M
+// (peer 0's) a read holder of G (peer 0's), D (peer 2) a reader of G, W (peer 1) a writer of G
+// and a reader of M (so its box to M is no blind one within the limit). Peer 0 removes D from
+// G, then grants D read of M; W, holding the removal but not the grant, rotates G's read to e2,
+// boxing M, D below e2 in its view. In the settled rosters D holds G through M while e2 is
+// current, so it opens e2 through M rightly (`holder_at`), and keeps it once peer 0 removes it
+// from M; with `after`, the grant is ordered after e2's rotation commit.
+#[test]
+fn a_grant_concurrent_with_a_rotation_entitles_its_grantee_spec_crypto_4() {
+    for after in [false, true] {
+        let mut lp = synced(N);
+        let (w, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let g = independent_thing(&mut lp, 0);
+        let m = independent_thing(&mut lp, 0);
+        lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&g, &w, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&m, &w, &edge(Role::Read)).unwrap();
+        lp.peers[0].engine.grant(&g, &d, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        let mut run = Run::new(lp, vec![(g, 0), (m, 0)], Rng(1));
+        step(&mut run, 0, |run| {
+            run.lp.peers[0].clock.advance(1_000);
+            run.lp.peers[0].engine.demote(&g, &Demotion { holder: d, new: None, retain: None }).unwrap();
+        });
+        run.lp.sync(0, 1).unwrap();
+        run.note();
+        let made = |run: &Run| run.made.keys().filter(|k| k.0 == g && k.1 == Role::Read).map(|k| k.2).collect::<BTreeSet<Epoch>>();
+        let before = made(&run);
+        step(&mut run, 0, |run| {
+            run.lp.peers[0].clock.advance(2_000);
+            run.grant(0, 2, m, Role::Read);
+        });
+        step(&mut run, 1, |run| {
+            run.lp.peers[1].clock.advance(if after { 2_000 } else { 4_000 });
+            run.lp.peers[1].engine.rotate_leaving_out(&g, &[Role::Read], &[]).unwrap();
+        });
+        let e2: Vec<Epoch> = made(&run).difference(&before).copied().collect();
+        assert_eq!(e2.len(), 1, "after {after}: W's rotation alone");
+        let e2 = e2[0];
+        let made_e2 = &run.made[&(g, Role::Read, e2)];
+        assert!(made_e2.below.contains(&2) && made_e2.blind.is_empty(), "after {after}: D is below e2 in W's view, M boxed knowingly");
+        run.lp.sync_all().unwrap();
+        run.note();
+        assert!(run.ever[2].contains(&(g, Role::Read, e2)), "after {after}: D opens e2 through M");
+        step(&mut run, 0, |run| {
+            run.lp.peers[0].clock.advance(3_000);
+            run.lp.peers[0].engine.demote(&m, &Demotion { holder: d, new: None, retain: None }).unwrap();
+        });
+        settle(&mut run, 1, true);
+        assert!(!access(&run, 0, 2, g, Role::Read), "after {after}: D has left G");
+        check(&mut run, 1, true);
+    }
 }
 
 // A grant that leaves its grantee reading (spec/crypto.md §4, Boxes; seed 874943289279): M
