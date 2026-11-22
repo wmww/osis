@@ -16,3 +16,4 @@ osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=146887569055 issues/custody-differential-failures.md node \w+, account \w+: seeds held: engine
 osis-crdt/tests_seq::slots_join_follows_cache_plain_spec_7 rate:OSIS_CRDT_START=828121608434 issues/slots-join-floor-small-size.md joins on slots: \d+ over \d+ seeds, under the floor
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
+osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=285299238820 issues/differential-must-hold-reader.md must-hold bodies a caught-up reader lacks
