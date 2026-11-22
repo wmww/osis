@@ -215,6 +215,33 @@ pub fn new_thing_keeping(lp: &mut LocalPeer, i: usize, extra: &[(&str, osis_sche
     t
 }
 
+/// Peer `i` commits `v` to `k` on `t` alone.
+pub fn put<K: osis_schema::RawKey>(lp: &mut LocalPeer, i: usize, t: Tid, k: &K, v: &K::T) -> CommitId {
+    let mut m = Mutation::new();
+    m.set(t, k, v).unwrap();
+    lp.peers[i].commit(m).unwrap().unwrap()
+}
+
+/// Peer `i` commits `op` on `k` of `t` alone.
+pub fn put_op<K: osis_schema::RawKey>(lp: &mut LocalPeer, i: usize, t: Tid, k: &K, op: PathOp) -> CommitId {
+    let mut m = Mutation::new();
+    m.op(t, k, op).unwrap();
+    lp.peers[i].commit(m).unwrap().unwrap()
+}
+
+/// The tags `TAGS` holds on `t` at peer `i`.
+pub fn tags(lp: &mut LocalPeer, i: usize, t: Tid) -> std::collections::BTreeSet<String> {
+    match lp.peers[i].engine.get(&t, &ak("t:tags.0")).unwrap() {
+        Some(Value::Set(s)) => s.into_iter().map(|v| if let Value::Str(x) = v { x } else { String::new() }).collect(),
+        _ => std::collections::BTreeSet::new(),
+    }
+}
+
+/// Peer `i` adds `tag` to `TAGS` on `t`.
+pub fn add_tag(lp: &mut LocalPeer, i: usize, t: Tid, tag: &str) -> CommitId {
+    put_op(lp, i, t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s(tag)) })
+}
+
 /// `new_thing` shared with the net (`share`).
 pub fn new_shared(lp: &mut LocalPeer, i: usize) -> Tid {
     let t = new_thing(lp, i);

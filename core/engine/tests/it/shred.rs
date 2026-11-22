@@ -166,14 +166,10 @@ fn purged_on_replace_paged_unrecoverable_spec_commits_5() {
     let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let fill: osis_base::ValueMap = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
-    let mut m = Mutation::new();
-    m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put(&mut lp, 0, t, &GONEMAP, &Value::Map(fill));
     let marker = "PAGED-ATMOST-MARK-77e3";
     let edit = |lp: &mut LocalPeer, v: &str| {
-        let mut m = Mutation::new();
-        m.op(t, &GONEMAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k047"))], op: osis_crdt::Op::Set(s(v)) }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap()
+        put_op(lp, 0, t, &GONEMAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k047"))], op: osis_crdt::Op::Set(s(v)) })
     };
     lp.advance(5);
     let c = edit(&mut lp, &big(marker));
@@ -194,9 +190,7 @@ fn expired_entry_paged_unrecoverable_spec_commits_6() {
     let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let fill: osis_base::ValueMap = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
-    let mut m = Mutation::new();
-    m.set(t, &BIG, &Value::Map(fill)).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put(&mut lp, 0, t, &BIG, &Value::Map(fill));
     let marker = "PAGED-EXPIRY-MARK-31aa";
     lp.advance(5);
     let mut m = Mutation::new();
@@ -225,9 +219,7 @@ fn expired_element_paged_set_unrecoverable_spec_commits_6() {
     let mut lp = net2();
     let t = new_thing(&mut lp, 0);
     let a = ak("t:bigset.0");
-    let mut m = Mutation::new();
-    m.set(t, &a, &Value::Set((0..66).map(|i| s(&format!("e{i:03}{}", "f".repeat(1100)))).collect())).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put(&mut lp, 0, t, &a, &Value::Set((0..66).map(|i| s(&format!("e{i:03}{}", "f".repeat(1100)))).collect()));
     let marker = big("PAGED-SET-EXPIRY-MARK-5b1e");
     let add = |lp: &mut LocalPeer, v: &str, exp: Option<u64>| {
         let mut m = Mutation::new();
@@ -252,9 +244,7 @@ fn expired_element_paged_set_unrecoverable_spec_commits_6() {
     assert_eq!(read(&mut lp).len(), 66);
     assert!(add(&mut lp, &marker, None).is_some(), "the value is gone, so it is added again");
     let gone = format!("e007{}", "f".repeat(1100));
-    let mut m = Mutation::new();
-    m.op(t, &a, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s(&gone)) }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put_op(&mut lp, 0, t, &a, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s(&gone)) });
     let v = read(&mut lp);
     assert!(v.len() == 66 && v.contains(&s(&marker)) && !v.contains(&s(&gone)));
 }
@@ -271,9 +261,7 @@ fn purged_large_value_unrecoverable_spec_commits_5() {
     let mut r = SeededRng::from_u64(0);
     osis_crypto::RngCore::fill_bytes(&mut r, &mut v);
     v[150_000..150_000 + marker.len()].copy_from_slice(marker);
-    let mut m = Mutation::new();
-    m.set(t, &BLOB, &Value::Bytes(v)).unwrap();
-    let secret = lp.peers[0].commit(m).unwrap().unwrap();
+    let secret = put(&mut lp, 0, t, &BLOB, &Value::Bytes(v));
     let chunks: Vec<Vec<u8>> = lp.peers[0].engine.package(&secret).unwrap().unwrap().blobs.into_iter().map(|(_, b)| b).collect();
     assert!(!chunks.is_empty(), "the value is chunked");
     // the attack opens blobs (tree nodes, chunks) with the link keys it recovers
@@ -301,9 +289,7 @@ fn erasing_edit_drops_replaced_body_unrecoverable_spec_commits_5() {
         let marker = "LIVE-ATMOST-MARK-c90d";
         let mut fill: osis_base::ValueMap = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
         fill.insert(s("secret"), s(&big(marker)));
-        let mut m = Mutation::new();
-        m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
-        let c0 = lp.peers[0].commit(m).unwrap().unwrap();
+        let c0 = put(&mut lp, 0, t, &GONEMAP, &Value::Map(fill));
         let k = ak("t:gonemap.0");
         // compaction: a snapshot, then the covered body dropped
         let body = if compact {
@@ -315,9 +301,7 @@ fn erasing_edit_drops_replaced_body_unrecoverable_spec_commits_5() {
         };
         filler(&mut lp, 0, 6);
         lp.advance(5);
-        let mut m = Mutation::new();
-        m.op(t, &GONEMAP, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("secret")) }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap();
+        put_op(&mut lp, 0, t, &GONEMAP, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("secret")) });
         assert!(!lp.peers[0].engine.body_not_dropped(&body, &t, &k), "compact {compact}: dropped in the erasing transaction");
         assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "compact {compact}: erased content recovered");
         assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))));
@@ -334,16 +318,12 @@ fn removed_map_key_gone_after_purge_spec_crdt_5_6() {
     let marker = "KEY-MARK-5e17";
     let k = ak("t:big.0");
     let put = |lp: &mut LocalPeer, key: &str| {
-        let mut m = Mutation::new();
-        m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(s("v")) }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap()
+        put_op(lp, 0, t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(s("v")) })
     };
     let c = put(&mut lp, marker);
     lp.sync(0, 1).unwrap();
     lp.advance(5);
-    let mut m = Mutation::new();
-    m.op(t, &BIG, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s(marker)) }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put_op(&mut lp, 0, t, &BIG, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s(marker)) });
     lp.sync(0, 1).unwrap();
     filler(&mut lp, 0, 6);
     lp.advance(5);
@@ -598,9 +578,7 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
 fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     let mut lp = net2();
     let (t, y) = (new_shared(&mut lp, 0), new_shared(&mut lp, 0));
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("old")).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put(&mut lp, 0, t, &REG, &s("old"));
     lp.sync(0, 1).unwrap();
     lp.advance(5);
     let exp = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
@@ -881,16 +859,12 @@ fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::Commit
     // 1 reads t
     lp.sync(1, 0).unwrap();
     let t = new_shared(lp, 0);
-    let mut m = Mutation::new();
-    m.set(t, &BIG, &Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))]))).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put(lp, 0, t, &BIG, &Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))])));
     lp.sync(0, 1).unwrap();
     lp.advance(5);
     // the marker in every entry, so whichever page stays away the held ones carry it
     let fill: osis_base::ValueMap = (0..400).map(|i| (s(&format!("k{i:03}")), s(&format!("{marker}{}", "f".repeat(1100))))).collect();
-    let mut m = Mutation::new();
-    m.set(t, &BIG, &Value::Map(fill)).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let c = put(lp, 0, t, &BIG, &Value::Map(fill));
     let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
     assert!(whole.blobs.len() > 1, "paged: {} blobs, {} bytes", whole.blobs.len(), whole.bytes.len());
     let mut held = whole.blobs.clone();
@@ -962,9 +936,7 @@ fn snapshot_leftover_stripped_again_unrecoverable_spec_commits_5() {
     let k = ak("t:big.0");
     let (mx, my) = ("SNAPX-MARK-1a2b", "SNAPY-MARK-3c4d");
     let put = |lp: &mut LocalPeer, key: &str, val: &str| {
-        let mut m = Mutation::new();
-        m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(s(val)) }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap()
+        put_op(lp, 0, t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(s(val)) })
     };
     let cx = put(&mut lp, "kx", &big(mx));
     lp.advance(5);
@@ -1095,9 +1067,7 @@ fn put_entry(lp: &mut LocalPeer, t: Tid, key: &str, expires: Option<u64>) -> osi
 
 /// Writes `n` into entry `key` of `t`'s `t:map.0`: a body repeating the key.
 fn into_entry(lp: &mut LocalPeer, t: Tid, key: &str, n: i64) -> osis_base::CommitId {
-    let mut m = Mutation::new();
-    m.op(t, &MAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key)), osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Set(Value::Int(n)) }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap()
+    put_op(lp, 0, t, &MAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key)), osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Set(Value::Int(n)) })
 }
 
 // spec/crdt.md §4.7, §5.6, spec/commits.md §5: a purge of an entry's creation takes the creation's
@@ -1175,9 +1145,7 @@ fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
     let marker = "UNDELETE-MARK-6d2a";
     let k = ak("t:text.0");
     let text = |lp: &mut LocalPeer, v: &str| {
-        let mut m = Mutation::new();
-        m.set(t, &TEXT, &s(v)).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap()
+        put(lp, 0, t, &TEXT, &s(v))
     };
     let made = text(&mut lp, marker);
     lp.advance(5);
@@ -1225,9 +1193,7 @@ fn undo_revives_no_purged_value_spec_crdt_4_6() {
     lp.hold(t);
     let marker = "PURGED-UNDO-5c1e";
     let k = ak("t:reg.0");
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s(marker)).unwrap();
-    let made = lp.peers[0].commit(m).unwrap().unwrap();
+    let made = put(&mut lp, 0, t, &REG, &s(marker));
     lp.advance(5);
     let mut m = Mutation::new();
     m.remove_aspect(t, &REG).unwrap();
@@ -1274,9 +1240,7 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2"))], op: Op::Set(item("M2-MARK", 7)) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(5);
-    let mut m = Mutation::new();
-    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2")), PathSeg::Field(1)], op: Op::Set(Value::Int(9)) }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put_op(&mut lp, 0, t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2")), PathSeg::Field(1)], op: Op::Set(Value::Int(9)) });
     lp.sync(0, 1).unwrap();
     let m2 = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap();
     assert_eq!(m2(&mut lp, 1), Some(item("M2-MARK", 9)));
@@ -1523,9 +1487,7 @@ fn copy_of_a_purged_part_beside_an_unjudgeable_one_is_spent_spec_commits_5() {
 fn part_pending_for_its_ts_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
     let mut lp = net2_one(); // 1 a node of 0's account
     let t = new_thing(&mut lp, 0);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("old")).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put(&mut lp, 0, t, &REG, &s("old"));
     lp.sync(0, 1).unwrap();
     let ahead = 3 * osis_base::format::MAX_DRIFT_MS;
     lp.peers[0].clock.advance(ahead);
@@ -1778,9 +1740,7 @@ fn a_state_digest_is_computed_once_per_state_spec_perm_4() {
             }
         }
         assert_eq!(computed(), 3, "n {n}: each listed aspect digested once");
-        let mut m = Mutation::new();
-        m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("new")] } }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap();
+        put_op(&mut lp, 0, t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("new")] } });
         osis_base::costs::take();
         let after: Vec<_> = listed.iter().map(|a| lp.peers[0].engine.state_digest(&t, a).unwrap().unwrap()).collect();
         assert_eq!(computed(), 1, "n {n}: the written aspect alone digested anew");

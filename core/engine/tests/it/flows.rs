@@ -53,9 +53,7 @@ pub(crate) fn spread_sealed(lp: &mut LocalPeer) {
 pub(crate) fn sealed_write(lp: &mut LocalPeer, from: usize, t: Tid, v: &str) -> BTreeSet<usize> {
     // the writer's step runs its role duty before it writes (sync's `Life`), its rotations sent first
     let mut ids = lp.role_duties(from).unwrap();
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s(v)).unwrap();
-    let c = lp.peers[from].commit(m).unwrap().unwrap();
+    let c = put(lp, from, t, &REG, &s(v));
     ids.push(c);
     let pks = lp.sealed(from, &ids).unwrap();
     assert!(pks.last().is_some_and(|p| p.id == c && !p.entries.is_empty()), "the writer seals its write");
@@ -71,18 +69,7 @@ pub(crate) fn sealed_write(lp: &mut LocalPeer, from: usize, t: Tid, v: &str) -> 
     out
 }
 
-fn tags(lp: &mut LocalPeer, i: usize, t: Tid) -> BTreeSet<String> {
-    match lp.peers[i].engine.get(&t, &ak("t:tags.0")).unwrap() {
-        Some(Value::Set(s)) => s.into_iter().map(|v| if let Value::Str(x) = v { x } else { String::new() }).collect(),
-        _ => BTreeSet::new(),
-    }
-}
 
-fn add_tag(lp: &mut LocalPeer, i: usize, t: Tid, tag: &str) {
-    let mut m = Mutation::new();
-    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s(tag)) }).unwrap();
-    lp.peers[i].commit(m).unwrap().unwrap();
-}
 
 /// Every peer but the sharer (0) follows `link` (`Engine::follow_link`), as a redeemer does before
 /// it downloads K's sync ID: each keeps K and L's chain once received.
@@ -2028,9 +2015,7 @@ fn vandal_that_left_recovered_by_due_rotation_spec_crypto_4() {
     let e1 = newest_read(&lp, 0, d).unwrap();
     assert_eq!(e1.n(), ev.n() + 1, "above the vandal's epoch");
     assert_eq!(lp.peers[0].engine.epochs(&d).unwrap().read.current(), vec![e1]);
-    let mut m = Mutation::new();
-    m.set(d, &REG, &s("after")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let c = put(&mut lp, 0, d, &REG, &s("after"));
     assert!(!lp.sealed(0, &[c]).unwrap().is_empty(), "the write is sealed under d");
     spread_sealed(&mut lp);
     assert_eq!(newest_read(&lp, 2, d), Some(e1));
@@ -2055,9 +2040,7 @@ fn lockout_beside_kept_writer_superseded_history_added_spec_crypto_4() {
     }
     assert_eq!(newest_read(&lp, 0, d), None, "the admin is locked out");
     let eh = newest_read(&lp, 2, d).unwrap();
-    let mut m = Mutation::new();
-    m.set(d, &REG, &s("under eh")).unwrap();
-    let w = lp.peers[2].commit(m).unwrap().unwrap();
+    let w = put(&mut lp, 2, d, &REG, &s("under eh"));
     let cur = lp.peers[0].engine.epochs(&d).unwrap().read.current();
     assert!(cur.contains(&eh) && cur.len() == 2);
     let e1 = recovered(&mut lp, d, ps[1]);
@@ -2254,9 +2237,7 @@ fn rotation_missing_admin_recovered_spec_perm_3() {
     spread_sealed(&mut lp);
     let ev = newest_read(&lp, 2, d).unwrap();
     assert_eq!(newest_read(&lp, 0, d), None, "the admin was missed");
-    let mut m = Mutation::new();
-    m.set(d, &REG, &s("under ev")).unwrap();
-    let w = lp.peers[2].commit(m).unwrap().unwrap();
+    let w = put(&mut lp, 2, d, &REG, &s("under ev"));
     spread_sealed(&mut lp);
     recovered(&mut lp, d, ps[1]);
     lp.peers[0].engine.grant(&d, &ps[3], &edge_of(Role::Read)).unwrap();
@@ -2320,9 +2301,7 @@ fn frontier_lists_covered_deltas_of_every_purge_by_spec_perm_5_1() {
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         spread(&mut lp);
         lp.advance(1_000);
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s("new")).unwrap();
-        lp.peers[0].commit(m).unwrap();
+        put(&mut lp, 0, t, &REG, &s("new"));
         spread(&mut lp);
         let snap = lp.peers[snapper].engine.snapshot(&t, &reg).unwrap().unwrap();
         spread(&mut lp);
@@ -2451,9 +2430,7 @@ fn first_grant_on_dependent_thing_rotates_first_spec_perm_3() {
     let d = lp.peers[0].engine.dependents_admin();
     let (o, _) = lp.peers[0].engine.create_with_admin(&d).unwrap();
     lp.hold(o);
-    let mut m = Mutation::new();
-    m.set(o, &REG, &s("derived")).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put(&mut lp, 0, o, &REG, &s("derived"));
     let before = lp.peers[0].engine.commit_ids();
     let done = lp.peers[0].engine.grant(&o, &ps[1], &edge_of(Role::Admin)).unwrap();
     let aks = |c: &CommitId| lp.peers[0].engine.header(c).unwrap().aspects.iter().filter(|a| a.tid == o).map(|a| a.ak.as_str().to_string()).collect::<BTreeSet<String>>();
@@ -2573,9 +2550,7 @@ fn a_dependent_thing_marked_adminless_stays_dependent_spec_perm_1() {
     let n = lp.peers[0].engine.dependents_admin();
     let (o, _) = lp.peers[0].engine.create_with_admin(&n).unwrap();
     lp.hold(o);
-    let mut m = Mutation::new();
-    m.set(o, &REG, &s("v")).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put(&mut lp, 0, o, &REG, &s("v"));
     assert!(leaves_no_admin(lp.peers[0].engine.demote(&o, &remove(n)), o), "unmarked, refused");
     lp.peers[0].engine.leaving_adminless(|e| e.demote(&o, &remove(n))).unwrap();
     spread(&mut lp);
@@ -2711,9 +2686,7 @@ fn a_purge_stamped_before_the_named_commit_names_nothing_spec_commits_5() {
     spread(&mut lp);
     let k = osis_base::Ak::new("t:reg.0").unwrap();
     lp.peers[2].clock.advance(10_000);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("kept")).unwrap();
-    let c = lp.peers[2].commit(m).unwrap().unwrap();
+    let c = put(&mut lp, 2, t, &REG, &s("kept"));
     let mut m = Mutation::new();
     m.purge(lp.peers[2].engine.purge_item(&c, t, k.clone()).unwrap());
     m.set(t, &REG, &s("forged")).unwrap();
