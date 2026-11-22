@@ -7,7 +7,7 @@ use osis_engine::local_peer::{LocalPeer, Package, Peer};
 use osis_engine::Mutation;
 use osis_base::{Ak, Clock, CommitId, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
-use osis_perm::DemotionScope;
+use osis_engine::DemotionScope;
 use osis_schema::core_types as ct;
 use osis_schema::Codec;
 use std::collections::{BTreeMap, BTreeSet};

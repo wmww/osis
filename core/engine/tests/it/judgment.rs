@@ -274,7 +274,7 @@ pub(crate) fn observe(e: &mut osis_engine::Engine, ids: &BTreeSet<CommitId>) -> 
             if let Some(u) = ed.until {
                 s += &format!(":until={}", u.0);
             }
-            if ed.may_grant() {
+            if ed.may_grant {
                 s += ":may-grant";
             }
             s

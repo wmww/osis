@@ -160,7 +160,7 @@ fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> O
     let tl = e.core.timelines.get(&q)?;
     let edges = tl.edges_at(Some(point));
     let x = edges.get(&p, &q).filter(|x| x.alive_at(Some(point.ts)))?;
-    Some((x.role, if x.role == Role::Admin { Some(Role::Admin) } else { x.invite.map(|i| i.min(x.role)) }))
+    Some((x.role, if x.role == Role::Admin { Some(Role::Admin) } else { x.may_grant.then_some(x.role) }))
 }
 
 // spec/permissions.md §1 Path, §2 Self-removal and Invite grant, spec/wire.md §4 field 2:

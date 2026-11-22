@@ -130,7 +130,7 @@ impl Node {
                 let has = |slot: usize| hs.iter().all(|h| record(h) || first.get(h).and_then(|f| f[slot]).is_some_and(|k| k < start));
                 let (kind, chained) = match &p.kind {
                     PartKind::Edge(e) => {
-                        assert!(e.value.is_none_or(|v| v.invite.is_none()), "no invites: the walk does not report an invite grant's chained-ness");
+                        assert!(e.value.is_none_or(|v| !v.may_grant), "no invites: the walk does not report an invite grant's chained-ness");
                         let leave = e.holder == *p.path.last().unwrap_or(&c.signer);
                         let finalize = e.value.is_none() && e.frontier.is_none() && !leave;
                         let role = e.value.map(|v| v.role);
@@ -146,12 +146,14 @@ impl Node {
                         (Kind::Write(wr), if finalize { has(0) } else { has(1) })
                     }
                     PartKind::Delta(_) => (Kind::Content, false),
+                    PartKind::None => continue,
                 };
                 let pos = if matches!(p.kind, PartKind::Delta(_)) { Key::start(c.ts) } else { Key { part: i as u32, ..start } };
                 // what the part needs of each hop: write for content (admin for an admin-only
                 // aspect), write for a finalize, admin for any other edge-class part
                 let need = match &p.kind {
                     PartKind::Delta(d) => Need::Role(d.needs),
+                    PartKind::None => continue,
                     PartKind::Edge(e) if e.value.is_none() && e.frontier.is_none() && e.holder != *p.path.last().unwrap_or(&c.signer) => Need::Role(Role::Write),
                     _ => Need::Role(Role::Admin),
                 };

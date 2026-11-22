@@ -34,26 +34,23 @@ fn try_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Option<Role>) {
     let _ = e.commit(m);
 }
 
-/// Reopens and checks the timelines against what the node had and against one from-scratch
-/// evaluation; returns how many components the open restored from saved walks.
-fn reopen_same(e: &mut Engine, at: &str) -> usize {
+/// Reopens and checks the timeline against what the node had and against one from-scratch
+/// evaluation (the timeline is derived at each open).
+fn reopen_same(e: &mut Engine, at: &str) {
     let perm = e.perm_digest(false);
     e.reload().unwrap();
     assert_eq!(e.perm_digest(false), perm, "{at}: reopened");
     assert_eq!(e.perm_digest(true), perm, "{at}: from scratch");
-    e.walks_restored()
 }
 
 // spec: none (rebuildable caches): a truncated, garbled or missing `node/perm` row, an index
-// tagged with other rules (its states joined so) or a row that does not decode, and a saved walk
-// truncated, with a flipped bit or saved under other rules, each make the open evaluate anew from
-// the commit records: what the node had (an invalid part included, its state joined again), the
-// rows and walks saved again for the next open
+// tagged with other rules (its states joined so) or a row that does not decode, each make the
+// open evaluate anew from the commit records: what the node had (an invalid part included, its
+// state joined again), the rows saved again for the next open
 #[test]
 fn damaged_caches_are_rebuilt() {
     let (mut lp, ps) = people(3);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
-    lp.peers[0].engine.set_walk_cache_min(1);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&d, &pc, &edge_of(Role::Read)).unwrap();
@@ -75,8 +72,7 @@ fn damaged_caches_are_rebuilt() {
     assert_eq!(e.get(&d, &reg).unwrap(), Some(s("bob before")), "bob's late write invalid here");
     let before = (e.index_digest(), e.perm_digest(false), e.perm_rows().unwrap());
     assert!(before.0.commits.values().any(|c| c.valid.contains(&false)), "an invalid part is indexed");
-    reopen_same(e, "saved");
-    assert!(reopen_same(e, "restored") > 0);
+    reopen_same(e, "reopened");
     for how in 0..5u8 {
         match how {
             0..3 => assert_eq!(e.damage_perm_rows(how).unwrap(), before.2.len()),
@@ -92,11 +88,6 @@ fn damaged_caches_are_rebuilt() {
         assert_eq!((e.index_digest(), e.perm_digest(false), e.perm_rows().unwrap()), before, "index damage {how}");
         assert!(e.index_current().unwrap(), "index damage {how}: tagged again");
         assert_eq!(e.get(&d, &reg).unwrap(), Some(s("bob before")), "index damage {how}: joined again");
-    }
-    for how in 0..3u8 {
-        assert!(e.damage_walks(how).unwrap() > 0);
-        assert_eq!(reopen_same(e, &format!("walk damage {how}")), 0, "walk damage {how}: not used");
-        assert!(reopen_same(e, &format!("after walk damage {how}")) > 0, "walk damage {how}: saved again");
     }
 }
 
@@ -124,11 +115,11 @@ fn reload_never_takes_generation_back() {
     }
 }
 
-// spec/permissions.md §5.1 step 5; spec: none (rebuildable caches): new things in a saved
-// component between opens (leaves by their `created.0`, one of them with a smaller tid than the
-// saved root, then edges on them) still resume its walk
+// spec/permissions.md §5.1 step 5 (the walk is a function of the held commits): new things
+// between opens (leaves by their `created.0`, then edges on them) read alike reopened and from
+// scratch
 #[test]
-fn new_things_between_opens_still_restore() {
+fn new_things_between_opens_read_alike() {
     let mut lp = net(1, 0);
     let e = &mut lp.peers[0].engine;
     let me = e.me();
@@ -138,8 +129,7 @@ fn new_things_between_opens_still_restore() {
     for i in 0..80u8 {
         try_edge(e, t, Tid::from_bytes([60 + i % 5; 15]), Some(if i % 2 == 0 { Role::Read } else { Role::Write }));
     }
-    reopen_same(e, "saved");
-    assert_eq!(reopen_same(e, "restored"), 1);
+    reopen_same(e, "reopened");
     let mut smaller = false;
     for k in 0..12 {
         let mut m = Mutation::new();
@@ -149,14 +139,14 @@ fn new_things_between_opens_still_restore() {
         if k % 3 == 0 {
             try_edge(e, d, Tid::from_bytes([60; 15]), Some(Role::Read));
         }
-        assert_eq!(reopen_same(e, &format!("new thing {k}")), 1, "new thing {k}: evaluated from scratch");
+        reopen_same(e, &format!("new thing {k}"));
     }
     assert!(smaller, "no new thing below the saved root");
 }
 
 // spec/commits.md §4 (applies in one storage transaction): all or none; spec: none (rebuildable caches): a crash at any durable write
-// of a content commit and then of edge writes that save their component's walk, then open: the
-// open resumes the walk saved before, and computes what a rebuild of what landed computes
+// of a content commit and then of edge writes, then open: the open computes what a rebuild of
+// what landed computes
 #[test]
 fn crash_at_every_write_keeps_caches_exact() {
     let mut crashed_any = false;
@@ -171,7 +161,6 @@ fn crash_at_every_write_keeps_caches_exact() {
             } else {
                 Engine::open(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?
             };
-            e.set_walk_cache_min(1);
             Ok(e)
         };
         let mut e = open(true, 0).unwrap();
@@ -199,8 +188,6 @@ fn crash_at_every_write_keeps_caches_exact() {
         faults.revive();
         let mut e = open(false, 1).unwrap();
         assert_eq!(e.perm_digest(false), e.perm_digest(true), "crash at write {n}");
-        // the first grants saved the walk before the faults: every open resumes it
-        assert!(e.walks_restored() > 0, "crash at write {n}: the saved walk was not used");
         e.check_index();
         if !crashed {
             break;

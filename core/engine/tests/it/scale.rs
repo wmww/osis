@@ -515,7 +515,7 @@ fn purge_on_replace_pays_its_state() {
 /// pending commits read again, perm commits walked and entries moved) added as spans.
 fn measured_at<T>(lp: &mut LocalPeer, i: usize, f: impl FnOnce(&mut LocalPeer) -> T) -> (T, Work) {
     let b = lp.peers[i].backend.clone();
-    let c = |lp: &LocalPeer| [lp.peers[i].engine.death_walks(), lp.peers[i].engine.replaced_reads(), lp.peers[i].engine.examined(), osis_perm::commits_walked(), osis_perm::entries_moved(), lp.peers[i].engine.held_writes_copied()];
+    let c = |lp: &LocalPeer| [lp.peers[i].engine.death_walks(), lp.peers[i].engine.replaced_reads(), lp.peers[i].engine.examined(), osis_perm::commits_walked(), 0u64, lp.peers[i].engine.held_writes_copied()];
     let c0 = c(lp);
     let (r, mut w) = measured(&b, || f(&mut *lp));
     for (k, (x, y)) in ["death walks", "replaced reads", "examined", "perm commits walked", "perm entries moved", "held writes copied"].into_iter().zip(c0.into_iter().zip(c(lp))) {
@@ -654,7 +654,7 @@ fn validity_flip(n: usize) -> [Work; 2] {
     let bs = add(&mut lp, 1, t, &TAGS, "b".into());
     let pk = lp.packages_for(1, 0).unwrap().into_iter().find(|p| p.id == bs).unwrap();
     lp.deliver(0, &pk).unwrap();
-    let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([t]))]), content: BTreeMap::from([(b, BTreeSet::from([t]))]) };
+    let scope = osis_engine::DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([t]))]), content: BTreeMap::from([(b, BTreeSet::from([t]))]) };
     let now = lp.peers[2].engine.now();
     let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
     let mut m = Mutation::new();
@@ -1041,7 +1041,7 @@ fn dropped_frontier(k: usize) -> (usize, usize) {
         lp.peers[1].tick().unwrap();
     }
     let e = &mut lp.peers[1].engine;
-    let scope = osis_perm::DemotionScope { roles: BTreeMap::new(), content: BTreeMap::from([(me, BTreeSet::from([t]))]) };
+    let scope = osis_engine::DemotionScope { roles: BTreeMap::new(), content: BTreeMap::from([(me, BTreeSet::from([t]))]) };
     let now = e.now();
     let f = e.frontier(&scope, now).unwrap();
     (f.commits.len(), osis_base::encode(&f.to_value()).len())

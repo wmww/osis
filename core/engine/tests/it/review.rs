@@ -8,7 +8,7 @@ use osis_base::{Role, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::local_peer::Package;
 use osis_engine::{Ingested, Mutation};
-use osis_perm::DemotionScope;
+use osis_engine::DemotionScope;
 
 fn set(lp: &mut osis_engine::local_peer::LocalPeer, i: usize, t: osis_base::Tid, k: &osis_schema::Aspect<Value>, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();

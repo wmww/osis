@@ -89,7 +89,7 @@ fn pending_until_created_spec_commits_4() {
     let r = lp.deliver(1, pks.last().unwrap()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_))), "{r:?}");
     let me = lp.peers[0].engine.me();
-    let scope = osis_perm::DemotionScope { roles: Default::default(), content: [(me, [t].into())].into() };
+    let scope = osis_engine::DemotionScope { roles: Default::default(), content: [(me, [t].into())].into() };
     let now = lp.peers[1].engine.now();
     assert!(!lp.peers[1].engine.frontier(&scope, now).unwrap().commits.contains(&pks.last().unwrap().id), "not judged: not received");
     // the author's commits, then the thing's creation

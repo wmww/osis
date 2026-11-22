@@ -27,7 +27,7 @@ use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::Mutation;
 use osis_engine::local_peer::{LocalPeer, Package, Peer};
-use osis_perm::DemotionScope;
+use osis_engine::DemotionScope;
 use osis_schema::{History, Codec, PurgeBy};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -2026,7 +2026,6 @@ fn ingests(played: &Played, order: &[usize], split: Option<u64>) -> Vec<Move> {
 /// them.
 fn judged_node(played: &Played) -> Peer {
     let mut p = fresh(played);
-    p.engine.set_walk_cache_min(1);
     p
 }
 

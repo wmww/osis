@@ -321,7 +321,7 @@ impl Conv<'_> {
     }
     /// A role edge write (`floor` dropped: it gives keys, never a role).
     fn edge(&mut self, holder: &Tid, e: Option<&osis_perm::Edge>) -> hm::EdgeWrite {
-        hm::EdgeWrite { holder: self.id(holder), role: e.map(|e| role_of(e.role)), invite: e.and_then(|e| e.invite).map(role_of), until: e.and_then(|e| e.until).map(|u| u.0) }
+        hm::EdgeWrite { holder: self.id(holder), role: e.map(|e| role_of(e.role)), invite: e.and_then(|e| e.may_grant.then_some(e.role)).map(role_of), until: e.and_then(|e| e.until).map(|u| u.0) }
     }
     /// An `addenda.0` body as its entries: per removal (a 32-byte commit ID key), the commits its
     /// `frontier` lists.
@@ -862,7 +862,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
         for th in input.held.records.iter().map(|t| t.id).filter(|th| Some(input.ids[th]) != own_d) {
             let model: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = last.iter().filter(|((t, _), e)| *t == th && e.alive(input.held.now)).map(|((_, h), e)| (*h, (e.role, e.invite, e.until))).collect();
             let t = input.ids[&th];
-            let node: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = e.roster(&t).iter().map(|(h, x)| (input.ids.iter().find(|(_, v)| *v == h).map_or(NOBODY, |(k, _)| *k), (role_of(x.role), x.invite.map(role_of), x.until.map(|u| u.0)))).collect();
+            let node: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = e.roster(&t).iter().map(|(h, x)| (input.ids.iter().find(|(_, v)| *v == h).map_or(NOBODY, |(k, _)| *k), (role_of(x.role), x.may_grant.then_some(x.role).map(role_of), x.until.map(|u| u.0)))).collect();
             reach_n(cov, "rosters", 1);
             if node != model {
                 diffs.push(("roster differs".into(), differ(format!("{t:?} roster: model {model:?}, node {node:?}"), &[th])));

@@ -9,7 +9,7 @@ use osis_base::Classified;
 use osis_base::{Role, Tid, Value, WallMs};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::{Event, Ingested, Mutation};
-use osis_perm::DemotionScope;
+use osis_engine::DemotionScope;
 use osis_schema::Codec;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -4050,7 +4050,7 @@ fn a_sealed_split_commit_gives_each_reader_its_own_things_keys_spec_wire_4() {
         let things = c.header.things();
         let keys: Vec<Tid> = c.keys.keys().map(|i| things[*i]).collect();
         let paths = e.core.ix.commits.get(&id).unwrap().view.paths.clone().unwrap();
-        (keys, paths.get(&d).copied(), paths.get(&p).copied(), e.core.ix.paths_unknown.contains(&id))
+        (keys, paths.get(&d).map(Option::is_some), paths.get(&p).map(Option::is_some), e.core.ix.paths_unknown.contains(&id))
     };
     assert_eq!(stated(&mut lp, 2), (vec![p], None, Some(true), true), "Carol: P's key alone, D waits");
     assert_eq!(lp.peers[2].engine.get(&p, &ak("t:reg.0")).unwrap(), Some(s("on p")));
@@ -4394,7 +4394,7 @@ fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
     let state = |w: &mut LocalPeer| {
         let e = &mut w.peers[0].engine;
         let paths = e.core.ix.commits.get(&id).unwrap().view.paths.clone().unwrap();
-        (paths.get(&d).copied(), e.core.ix.paths_unknown.contains(&id), e.get(&d, &ak("t:reg.0")).unwrap())
+        (paths.get(&d).map(Option::is_some), e.core.ix.paths_unknown.contains(&id), e.get(&d, &ak("t:reg.0")).unwrap())
     };
     for (name, first) in [("P's section alone", opened_sections(&f, &c, &[ip], &keyed(mine))), ("D's section carrying the roles key", opened_sections(&f, &c, &[id_, ip], &keyed(roles)))] {
         let (mut w, _) = split_world();
@@ -4602,7 +4602,7 @@ fn a_split_commits_path_outlives_its_parts_spec_wire_4() {
         assert_eq!(e.get(&p, &ak("t:reg.0")).unwrap(), None, "purged ({reopened})");
         assert_eq!(e.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")), "D stands ({reopened})");
         let paths = e.core.ix.commits.get(&id).unwrap().view.paths.clone().unwrap();
-        assert_eq!((paths.get(&p), paths.get(&d)), (Some(&true), Some(&true)), "kept ({reopened})");
+        assert_eq!((paths.get(&p).map(Option::is_some), paths.get(&d).map(Option::is_some)), (Some(true), Some(true)), "kept ({reopened})");
         assert!(!e.core.ix.paths_unknown.contains(&id));
         e.check_index();
     }
@@ -4708,7 +4708,7 @@ fn a_path_waiting_opens_when_its_roles_secret_comes_spec_commits_4() {
         lp.peers[2].reexamine().unwrap();
         assert!(lp.peers[2].engine.epochs(&d).is_some_and(|e| !e.read.held_roles().is_empty()), "Carol holds D's roles secret");
         assert!(!lp.peers[2].engine.core.ix.paths_unknown.contains(&id), "D's path opened (rolled back: {rolled_back})");
-        assert_eq!(lp.peers[2].engine.core.ix.commits.get(&id).unwrap().view.paths.as_ref().unwrap().get(&d), Some(&true));
+        assert_eq!(lp.peers[2].engine.core.ix.commits.get(&id).unwrap().view.paths.as_ref().unwrap().get(&d).map(Option::is_some), Some(true));
         lp.peers[2].engine.check_index();
     }
 }

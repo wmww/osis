@@ -1762,7 +1762,7 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
     let e = new_ids(&lp, 2, &before);
     spread(&mut lp);
     let nc = lp.peers[2].engine.me();
-    let scope = osis_perm::DemotionScope { roles: [(nc, [t].into())].into(), content: [(nc, [t].into())].into() };
+    let scope = osis_engine::DemotionScope { roles: [(nc, [t].into())].into(), content: [(nc, [t].into())].into() };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     assert!(!e.is_empty() && e.iter().all(|c| f.commits.contains(c)), "by ID: {f:?}");
@@ -1795,7 +1795,7 @@ fn removed_node_frontier_lists_uncovered_acting_spec_perm_5_1() {
     let on_y = write(&mut lp, y, "as p");
     spread(&mut lp);
     let ds = BTreeSet::from([p, x]);
-    let scope = osis_perm::DemotionScope { roles: [(d, ds.clone())].into(), content: [(d, ds)].into() };
+    let scope = osis_engine::DemotionScope { roles: [(d, ds.clone())].into(), content: [(d, ds)].into() };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     assert!(f.commits.contains(&on_y), "an uncovered write as P on a thing outside the scope");
@@ -1842,7 +1842,7 @@ fn rotation_within_role_keep_listed_spec_perm_5_1() {
     lp.advance(1_000);
     let x = lp.peers[1].engine.me();
     let things = BTreeSet::from([t]);
-    let scope = osis_perm::DemotionScope { roles: [(x, things.clone())].into(), content: [(x, things)].into() };
+    let scope = osis_engine::DemotionScope { roles: [(x, things.clone())].into(), content: [(x, things)].into() };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     assert!(f.commits.contains(&rotations[0]), "a rotation replaced inside ROLE_KEEP is listed");
@@ -2293,7 +2293,7 @@ fn frontier_lists_covered_deltas_of_every_purge_by_spec_perm_5_1() {
         lp.advance(osis_base::format::MAX_DRIFT_MS + 1_000);
         let x = lp.peers[1].engine.me();
         let things = BTreeSet::from([t]);
-        let scope = osis_perm::DemotionScope { roles: [(x, things.clone())].into(), content: [(x, things)].into() };
+        let scope = osis_engine::DemotionScope { roles: [(x, things.clone())].into(), content: [(x, things)].into() };
         let now = lp.peers[0].engine.now();
         let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
         assert_eq!(f.commits.contains(&c), listed, "{by:?}");

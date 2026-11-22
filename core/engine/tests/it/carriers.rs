@@ -253,7 +253,7 @@ fn a_commit_that_waited_for_its_record_was_received_when_it_came_spec_commits_4(
     let author = lp.peers[0].engine.me();
     let e1 = &mut lp.peers[1].engine;
     assert!(!e1.pends(&d) && e1.header(&d).is_some(), "D applied");
-    let scope = osis_perm::DemotionScope { roles: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]), content: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]) };
+    let scope = osis_engine::DemotionScope { roles: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]), content: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]) };
     assert!(e1.frontier(&scope, between).unwrap().commits.contains(&d), "received when it came");
     assert!(!e1.frontier(&scope, before).unwrap().commits.contains(&d));
 }
@@ -361,7 +361,7 @@ fn a_pending_commit_handed_again_costs_a_lookup_unless_it_brings_something_spec_
     assert!(!e1.pends(&d) && e1.header(&d).is_some(), "D applied");
     assert_eq!(e1.get(&w, &ak("t:reg.0")).unwrap(), Some(Value::Str("d".into())), "the stored part, not the forged one");
     assert_eq!(e1.get(&w, &ak("t:gone.0")).unwrap(), Some(Value::Str("g".into())), "the part a later copy brought");
-    let scope = osis_perm::DemotionScope { roles: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]), content: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]) };
+    let scope = osis_engine::DemotionScope { roles: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]), content: std::collections::BTreeMap::from([(author, BTreeSet::from([w]))]) };
     assert!(e1.frontier(&scope, between).unwrap().commits.contains(&d), "received when it first came");
     assert!(!e1.frontier(&scope, before).unwrap().commits.contains(&d));
 }
