@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: sync, engine, tests
 
-**Seen**: seeds 318840271993, 991936048185 (gate offsets) fail on main. Replay: `OSIS_SYNC_START=<seed> OSIS_SYNC_SEEDS=1 cargo test -p osis-sync --test it -- --ignored --exact differential::histories_hold_their_closure_plain`; scripts replay in a scratch test (notes/sync-test-harness.md, Replaying a script).
+**Seen**: seeds 318840271993, 991936048185 (gate offsets) fail on main; 6170 too (a must-hold body a caught-up reader lacks). Replay: `OSIS_SYNC_START=<seed> OSIS_SYNC_SEEDS=1 cargo test -p osis-sync --test it -- --ignored --exact differential::histories_hold_their_closure_plain`; scripts replay in a scratch test (notes/sync-test-harness.md, Replaying a script).
 
 ## A sync ticket's word outlives the grantee's removal (seed 991936048185)
 - Fails on main and with the taken-up role alike: `node 1 keeps 3 store entries under thing 0's sync ID, which it does not hold`. Not shrunk; the history gives Bob (node 1) sync on T, then write, Bob accepts, and the write grant is revoked. `why_role`: role Sync by a sync word boxed to Bob's account (counts: a sync word), beside a read word that does not count (a held role commit reaches its holder). So a sync ticket from the earlier sync grant keeps T kept unread after the removal, which the role commits Bob holds show (spec/sync-set.md §2: a sync word always counts, since a node keeping T unread cannot read its own grant).

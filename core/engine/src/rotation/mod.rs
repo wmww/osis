@@ -480,8 +480,10 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
 
 /// Holders a rotation `rot` of `a` boxes that hold no box at a current read epoch before it: its
 /// commit is wrapped under that epoch, so they cannot open it from the sync ID (a grant this node
-/// learned of after an epoch that left it out, the single-use link race's winner). They get it
-/// by inbox (spec/permissions.md §3). Called before the rotation is committed.
+/// learned of after an epoch that left it out, the single-use link race's winner); while `a`
+/// owns several sync IDs here (a fork), every holder it boxes. They get it by inbox
+/// (spec/permissions.md §3, spec/sync-inbox.md §5 Key changes). Called before the rotation is
+/// committed.
 pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<Tid>> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
     let secrets = secrets_in(tx, a)?;
@@ -489,6 +491,14 @@ pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<
     let mut out: Vec<Tid> = rot.secrets.boxes.keys().map(|k| k.holder.0).filter(|m| *m != me).collect();
     out.sort();
     out.dedup();
+    // Invariant: a holder syncs the sync ID the commit is logged under (`a`'s, the greatest it
+    // owns) only once it holds the `sync.0` entry recording it or a ticket naming it. With two
+    // (admins making `a` independent at once), a holder granted on the other side holds neither:
+    // nothing is logged under its sync ID once every writer syncs the greater one, so only a
+    // ticket naming `a`'s sync ID reaches it, and this node cannot tell which side a holder is on
+    if flows::sync_ids::owned_in(tx, a)?.len() > 1 {
+        return Ok(out);
+    }
     // reached: boxed at the epoch the commit is wrapped under (a current one: held by box), or,
     // with none, at a current epoch. A holder a floor bars from that epoch (spec/crypto.md §4,
     // Floors: a fork beside its cut) is boxed at another and must take the commit by inbox

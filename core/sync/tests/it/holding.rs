@@ -1509,13 +1509,12 @@ fn an_ended_way_found_keyless_drops_its_copy_spec_permissions_3() {
     assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
 }
 
-// spec/permissions.md §5.1, spec/sync-set.md: Bob's offline sibling grants T0 read on T1; Bob then
-// grants T1 read on T0 (a cycle the sibling's grant, ordered first, closes) and Alice read on T1,
-// which she holds. Once the sibling is back, Bob holds its grant: Alice, reading T1, should hold it
-// too (T1's live roster); she never does. Without Bob's grant on T0 she does.
-#[test]
-#[ignore = "issues/earlier-ordered-role-commit-not-delivered.md"]
-fn repro_an_earlier_ordered_grant_reaches_a_later_reader_spec_permissions_5() {
+// spec/sync-ids.md §2 (two admins making a thing independent at once: the greatest sync ID),
+// spec/sync-inbox.md §5 Key changes: Bob's offline sibling grants T0 read on T1, making T1
+// independent with a sync ID of its own; Bob, apart, grants Alice read on T1 (another sync ID, the
+// one her ticket names), which she holds. Once the sibling is back, every writer syncs T1 by the
+// greater sync ID: Alice learns it by a ticket and holds the sibling's grant as Bob does.
+fn a_reader_follows_a_forked_sync_id(cycle: bool) {
     let mut w = siblings();
     let alice = w.node(0).account.unwrap();
     let t0 = make(&mut w, 1, None, "t0");
@@ -1525,7 +1524,9 @@ fn repro_an_earlier_ordered_grant_reaches_a_later_reader_spec_permissions_5() {
     w.partition(1, 2);
     w.write(2, |e| e.grant(&t1, &t0, &edge(Role::Read))).unwrap();
     w.advance(1000);
-    w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+    if cycle {
+        w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+    }
     w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
     strong(&mut w, 0, None, t1, true);
     w.run();
@@ -1533,7 +1534,20 @@ fn repro_an_earlier_ordered_grant_reaches_a_later_reader_spec_permissions_5() {
     w.run();
     assert!(w.engine(1).roster(&t1).contains_key(&t0), "Bob holds the sibling's grant");
     assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
-    assert!(w.engine(0).roster(&t1).contains_key(&t0), "Alice holds the sibling's grant: {}", w.why_role(0, &t1));
+    assert_eq!(w.engine(0).roster(&t1), w.engine(1).roster(&t1), "Alice's roster of T1 is Bob's: {}", w.why_role(0, &t1));
+}
+
+// The fork alone: a re-seal of the sibling's epoch boxes Alice.
+#[test]
+fn a_reader_follows_a_forked_sync_id_spec_sync_inbox_5() {
+    a_reader_follows_a_forked_sync_id(false);
+}
+
+// Bob's grant of T1 on T0 closes a cycle with the sibling's (ordered first, it makes Bob's keyless):
+// a rotation of T1, which boxes Alice at the epoch it is wrapped under, replaces the re-seal.
+#[test]
+fn a_reader_follows_a_forked_sync_id_through_a_rotation_spec_sync_inbox_5() {
+    a_reader_follows_a_forked_sync_id(true);
 }
 
 // spec/permissions.md §3 (Retain: an ended way by a grant with key access just before its removal
