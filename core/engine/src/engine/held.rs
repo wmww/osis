@@ -299,9 +299,11 @@ impl Held {
                 self.named.entry(t).or_default().insert(m);
             } else {
                 *n = n.saturating_sub(1);
+                // stamped at every naming taken, as at every one added: a rollback's undo
+                // stamps again each key the undone write stamped (`memo::undoing`)
+                self.pairs.wrote(&(m, t), *n > 0);
                 if *n == 0 {
                     e.remove(&t);
-                    self.pairs.wrote(&(m, t), false);
                     self.unnamed.insert(m);
                     if let Some(x) = self.named.get_mut(&t) {
                         x.remove(&m);
@@ -494,19 +496,21 @@ impl Journaled for Held {
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
-        while self.log.len() > m {
-            let Some(u) = self.log.pop() else { break };
-            match u {
-                Undo::Created(t, old) => {
-                    self.set_created(t, old);
+        osis_base::memo::undoing(|| {
+            while self.log.len() > m {
+                let Some(u) = self.log.pop() else { break };
+                match u {
+                    Undo::Created(t, old) => {
+                        self.set_created(t, old);
+                    }
+                    Undo::AddedCommit(c) => {
+                        self.take(&c.id);
+                    }
+                    Undo::Removed(c) => self.put_commit(c),
+                    Undo::Counted(id, counts) => self.mark_counted(id, counts),
                 }
-                Undo::AddedCommit(c) => {
-                    self.take(&c.id);
-                }
-                Undo::Removed(c) => self.put_commit(c),
-                Undo::Counted(id, counts) => self.mark_counted(id, counts),
             }
-        }
+        })
     }
 }
 

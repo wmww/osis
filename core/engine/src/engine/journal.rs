@@ -37,9 +37,11 @@ pub(crate) trait Journaled {
 pub struct JMap<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> {
     map: BTreeMap<K, V>,
     stamps: Stamps,
-    log: Vec<(K, Option<V>)>,
-    /// The keys `log` holds since the last mark.
-    seen: BTreeSet<K>,
+    /// Each key's value before its first change since a mark, and whether a change since came or
+    /// went (stamped the keys, `keys_held`: so does its undo).
+    log: Vec<(K, Option<V>, bool)>,
+    /// The keys `log` holds since the last mark, each with its entry's place.
+    seen: BTreeMap<K, usize>,
     /// Each key's run (`by_run`): a write stamps its run too, read by `run`.
     run: Option<fn(&K) -> u64>,
 }
@@ -54,7 +56,7 @@ struct Run(u64);
 
 impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> Default for JMap<K, V> {
     fn default() -> Self {
-        JMap { map: BTreeMap::new(), stamps: Stamps::of::<Self>().undoable(), log: Vec::new(), seen: BTreeSet::new(), run: None }
+        JMap { map: BTreeMap::new(), stamps: Stamps::of::<Self>().undoable(), log: Vec::new(), seen: BTreeMap::new(), run: None }
     }
 }
 
@@ -85,20 +87,23 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> JMap<K, V> {
         self.map.keys()
     }
     /// Stamps what a write of `k` moves beside `k`: its run, if the map has runs, and the keys
-    /// when `k` came or went (`came_or_went`).
-    fn wrote_also(&self, k: &K, came_or_went: bool) {
+    /// when `k` came or went (`came_or_went`), noted in `k`'s journal entry.
+    fn wrote_also(&mut self, k: &K, came_or_went: bool) {
         if let Some(f) = self.run {
             self.stamps.wrote(&Run(f(k)), true);
         }
         if came_or_went {
             self.stamps.wrote(&Keys, true);
+            if let Some(e) = self.seen.get(k).and_then(|i| self.log.get_mut(*i)) {
+                e.2 = true;
+            }
         }
     }
     /// Journals `k`'s value before this transaction's first change of it.
     fn note(&mut self, k: &K, old: impl FnOnce(&BTreeMap<K, V>) -> Option<V>) {
-        if !self.seen.contains(k) {
-            self.seen.insert(k.clone());
-            self.log.push((k.clone(), old(&self.map)));
+        if !self.seen.contains_key(k) {
+            self.seen.insert(k.clone(), self.log.len());
+            self.log.push((k.clone(), old(&self.map), false));
         }
     }
     pub fn get<Q: Ord + Hash + ?Sized>(&self, k: &Q) -> Option<&V>
@@ -147,7 +152,7 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> JMap<K, V> {
     /// What the running transaction changed, each key with its value before it.
     pub fn before(&self) -> BTreeMap<&K, Option<&V>> {
         let mut out = BTreeMap::new();
-        for (k, v) in &self.log {
+        for (k, v, _) in &self.log {
             out.entry(k).or_insert(v.as_ref());
         }
         out
@@ -176,9 +181,10 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> JMap<K, V> {
         let mut v = old.clone().unwrap_or_else(default);
         f(&mut v);
         if old.as_ref() != Some(&v) {
-            self.stamps.wrote_added(&k, true, old.is_none());
-            self.wrote_also(&k, old.is_none());
+            let added = old.is_none();
             self.note(&k, |_| old);
+            self.stamps.wrote_added(&k, true, added);
+            self.wrote_also(&k, added);
             self.map.insert(k, v);
         }
     }
@@ -210,7 +216,7 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> JMap<K, V> {
     }
     /// The keys the running transaction changed.
     pub fn logged(&self) -> Vec<K> {
-        let s: std::collections::BTreeSet<&K> = self.log.iter().map(|(k, _)| k).collect();
+        let s: std::collections::BTreeSet<&K> = self.log.iter().map(|(k, ..)| k).collect();
         s.into_iter().cloned().collect()
     }
 }
@@ -234,16 +240,18 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static + Debug, V: Clone + Debug> Jo
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
-        self.seen.clear();
-        while self.log.len() > m {
-            let Some((k, old)) = self.log.pop() else { break };
-            self.stamps.wrote_added(&k, old.is_some(), !self.map.contains_key(&k));
-            self.wrote_also(&k, old.is_some() != self.map.contains_key(&k));
-            match old {
-                Some(v) => self.map.insert(k, v),
-                None => self.map.remove(&k),
-            };
-        }
+        osis_base::memo::undoing(|| {
+            self.seen.clear();
+            while self.log.len() > m {
+                let Some((k, old, came_or_went)) = self.log.pop() else { break };
+                self.stamps.wrote_added(&k, old.is_some(), !self.map.contains_key(&k));
+                self.wrote_also(&k, came_or_went);
+                match old {
+                    Some(v) => self.map.insert(k, v),
+                    None => self.map.remove(&k),
+                };
+            }
+        })
     }
 }
 
@@ -326,15 +334,17 @@ impl<T: Ord + Clone + Hash + Debug + Send + Sync + 'static> Journaled for JSet<T
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
-        while self.log.len() > m {
-            let Some((t, was)) = self.log.pop() else { break };
-            self.stamps.wrote_added(&t, was, was);
-            if was {
-                self.set.insert(t);
-            } else {
-                self.set.remove(&t);
+        osis_base::memo::undoing(|| {
+            while self.log.len() > m {
+                let Some((t, was)) = self.log.pop() else { break };
+                self.stamps.wrote_added(&t, was, was);
+                if was {
+                    self.set.insert(t);
+                } else {
+                    self.set.remove(&t);
+                }
             }
-        }
+        })
     }
 }
 
@@ -506,16 +516,18 @@ impl<K: Ord + Clone + Hash + Debug + Send + Sync + 'static, T: Ord + Clone + Deb
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
-        while self.log.len() > m {
-            let Some((k, t, was)) = self.log.pop() else { break };
-            let added = !self.map.contains_key(&k);
-            if was {
-                Self::raw_insert(&mut self.map, k.clone(), t.clone());
-            } else {
-                Self::raw_remove(&mut self.map, &k, &t);
+        osis_base::memo::undoing(|| {
+            while self.log.len() > m {
+                let Some((k, t, was)) = self.log.pop() else { break };
+                let added = !self.map.contains_key(&k);
+                if was {
+                    Self::raw_insert(&mut self.map, k.clone(), t.clone());
+                } else {
+                    Self::raw_remove(&mut self.map, &k, &t);
+                }
+                self.stamp(&k, &t, added);
             }
-            self.stamp(&k, &t, added);
-        }
+        })
     }
 }
 
@@ -598,11 +610,13 @@ impl<K: Ord + Clone + Hash + Debug, K2: Ord + Clone + Debug, V: Clone + Debug> J
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
-        while self.log.len() > m {
-            let Some((k, k2, old)) = self.log.pop() else { break };
-            Self::put(&mut self.map, k.clone(), k2, old);
-            self.stamp(&k);
-        }
+        osis_base::memo::undoing(|| {
+            while self.log.len() > m {
+                let Some((k, k2, old)) = self.log.pop() else { break };
+                Self::put(&mut self.map, k.clone(), k2, old);
+                self.stamp(&k);
+            }
+        })
     }
 }
 

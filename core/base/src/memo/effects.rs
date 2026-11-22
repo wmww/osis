@@ -677,8 +677,11 @@ mod tests {
                 t.wrote(&1u8, true);
                 t.wrote(&2u8, true);
                 t.read(&2u8);
-                t.wrote(&1u8, false);
-                t.wrote(&2u8, false);
+                // the container's undo of its writes
+                super::super::undoing(|| {
+                    t.wrote(&1u8, false);
+                    t.wrote(&2u8, false);
+                });
                 s.end(undone);
                 0
             });
@@ -694,6 +697,39 @@ mod tests {
         assert_eq!(trial(&undoable, false, false).due(), [1], "kept");
         assert_eq!(trial(&undoable, true, true).due(), [1], "written between the read and the stretch");
         assert_eq!(trial(&Stamps::named("test plain"), true, false).due(), [1], "not undoable");
+    }
+
+    // spec: none (internal: `Undoable`). Debug builds: a stretch ended undone that left a write
+    // of a container marked undoable without its undo (`undoing`) writing that key again panics
+    // naming the container; one whose undo wrote it again, or ended kept, does not.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn an_undone_stretch_leaving_an_undoable_write_panics() {
+        use super::super::{undoing, Undoable};
+        let run = |undo: &[u8], undone: bool| {
+            let t = Stamps::named("test undoable").undoable();
+            let s = Undoable::start();
+            t.wrote(&1u8, true);
+            t.wrote(&2u8, true);
+            undoing(|| undo.iter().for_each(|k| t.wrote(k, false)));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.end(undone))).map_err(|e| e.downcast_ref::<String>().cloned().unwrap_or_default())
+        };
+        assert!(run(&[2, 1], true).is_ok(), "every write undone");
+        assert!(run(&[], false).is_ok(), "kept");
+        let e = run(&[2], true).expect_err("key 1 left as written");
+        assert!(e.contains("test undoable"), "{e}");
+        // a write after the undo is left too
+        let t = Stamps::named("test undoable").undoable();
+        let s = Undoable::start();
+        t.wrote(&1u8, true);
+        undoing(|| t.wrote(&1u8, false));
+        t.wrote(&1u8, true);
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.end(true))).is_err(), "written again after its undo");
+        // a container not marked undoable claims nothing
+        let plain = Stamps::named("test plain");
+        let s = Undoable::start();
+        plain.wrote(&1u8, true);
+        s.end(true);
     }
 
     // spec: none (internal). `current` is a followed key's value while nothing it read moved:

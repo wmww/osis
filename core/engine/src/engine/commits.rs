@@ -412,29 +412,31 @@ impl Journaled for Commits {
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
-        self.seen.clear();
-        while self.log.len() > m {
-            let Some((c, old, view)) = self.log.pop() else { break };
-            for a in &view.aspects {
-                let k = (a.tid, a.ak.clone());
-                if let Some(n) = self.on.get_mut(&k) {
-                    *n -= 1;
-                    if *n == 0 {
-                        self.on.remove(&k);
+        osis_base::memo::undoing(|| {
+            self.seen.clear();
+            while self.log.len() > m {
+                let Some((c, old, view)) = self.log.pop() else { break };
+                for a in &view.aspects {
+                    let k = (a.tid, a.ak.clone());
+                    if let Some(n) = self.on.get_mut(&k) {
+                        *n -= 1;
+                        if *n == 0 {
+                            self.on.remove(&k);
+                        }
+                    }
+                }
+                self.stamp(&c, self.map.get(&c), old.as_ref());
+                match old {
+                    Some(mut v) => {
+                        self.attach(&c, &mut v);
+                        self.map.insert(c, v);
+                    }
+                    None => {
+                        self.map.remove(&c);
                     }
                 }
             }
-            self.stamp(&c, self.map.get(&c), old.as_ref());
-            match old {
-                Some(mut v) => {
-                    self.attach(&c, &mut v);
-                    self.map.insert(c, v);
-                }
-                None => {
-                    self.map.remove(&c);
-                }
-            }
-        }
+        })
     }
 }
 

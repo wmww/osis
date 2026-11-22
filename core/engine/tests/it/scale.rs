@@ -146,6 +146,37 @@ fn map_edit_is_flat() {
     }
 }
 
+/// Debug builds' undo check (`memo::Undoable`) at n entries of a paged map (`big_map`): the
+/// writes it noted in an edit, and in a transaction writing 10 rows then rolled back.
+fn undo_check(n: usize) -> [u64; 2] {
+    let (mut lp, t) = big_map(n, false);
+    let noted = osis_base::memo::undoable_writes_noted;
+    let n0 = noted();
+    edit_entry(&mut lp, t, n / 2, false, "x");
+    let n1 = noted();
+    let r = lp.peers[0].engine.run(|tx| {
+        for i in 0..10u8 {
+            tx.txn.put_local(&[b'u', i], b"x", osis_store::Shred::No)?;
+        }
+        Err::<(), _>(osis_engine::Error::BadInput("rolled back"))
+    });
+    assert!(r.is_err());
+    [n1 - n0, noted() - n1]
+}
+
+// spec: none (internal: debug builds' check that an undone transaction left every container
+// marked undoable as it was, `memo::Undoable`). Its cost is per key a transaction wrote, not per
+// key the store or an index holds: an edit of a paged map of n and 10n entries, and a rolled-back
+// transaction writing 10 rows (each row noted, and its family's table whole).
+#[cfg(debug_assertions)]
+#[test]
+fn the_undo_check_costs_what_was_written() {
+    let (small, big) = (undo_check(500), undo_check(5000));
+    flat("edit: undoable writes noted", small[0], big[0]);
+    flat("rolled back: undoable writes noted", small[1], big[1]);
+    assert!((10..=30).contains(&small[1]), "10 rows written: {} noted", small[1]);
+}
+
 /// A covered drop at n entries of a paged map (`big_map`): two one-entry edits (one replacing the
 /// other's write, one live), a snapshot covering both, then each dropped as covered: (store
 /// bytes, pages written) per drop.

@@ -259,7 +259,8 @@ impl Stamps {
 
     /// The stamps of a container every write of which inside an `Undoable` stretch is undone if
     /// the stretch is (a journaled index, the engine's store's rows): such a stretch undone leaves what read
-    /// its keys before their first write in it holding (`Undoable::end`).
+    /// its keys before their first write in it holding (`Undoable::end`). The container's undo
+    /// stamps again, inside `undoing`, every key the undone writes stamped: debug builds check it.
     pub fn undoable(self) -> Stamps {
         lock(&self.0).undoable = true;
         self
@@ -404,12 +405,64 @@ fn record(t: &Arc<Mutex<Table>>, key: impl FnOnce() -> Option<u64>) {
 
 /// Per (undoable table, key or `None` for the whole), its stamp before an `Undoable` stretch first
 /// wrote it.
-type Written = HashMap<(usize, Option<u64>), u64, Ids>;
+type Written = HashMap<TableKey, u64, Ids>;
+
+/// A key of a table, as `Written` names it.
+type TableKey = (usize, Option<u64>);
+
+/// An `Undoable` stretch open.
+struct Stretch {
+    /// What it wrote, for one begun under a frame recording.
+    written: Option<Written>,
+    /// Debug builds: per (undoable table, key or `None` for the whole) it wrote, the table and
+    /// whether its last write was the container undoing its own (`undoing`). Ended undone, each
+    /// must be: else a container marked undoable kept a write the stretch's undo should have
+    /// undone (`Undoable::end`).
+    #[cfg(debug_assertions)]
+    undone: HashMap<TableKey, (Arc<Mutex<Table>>, bool), Ids>,
+}
 
 thread_local! {
-    /// The `Undoable` stretches open on this thread, innermost last: `Written` for one begun
-    /// under a frame recording.
-    static UNDOABLE: RefCell<Vec<Option<Written>>> = const { RefCell::new(Vec::new()) };
+    /// The `Undoable` stretches open on this thread, innermost last.
+    static UNDOABLE: RefCell<Vec<Stretch>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Containers undoing their own writes on this thread (`undoing`).
+    static UNDOING: Cell<usize> = const { Cell::new(0) };
+    /// The entries the undo check kept on this thread (`undoable_writes_noted`).
+    static NOTED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Debug builds: the keys of undoable containers written in each `Undoable` stretch ended on
+/// this thread so far, each counted once per stretch (the undo check's work; 0 in release builds).
+pub fn undoable_writes_noted() -> u64 {
+    #[cfg(debug_assertions)]
+    return NOTED.get();
+    #[cfg(not(debug_assertions))]
+    0
+}
+
+/// Runs `f`, a container undoing its own writes (a journal rolled back to a mark, a store
+/// transaction's rows undone): debug builds check that a stretch ended undone leaves no write of
+/// an undoable container (`Stamps::undoable`) but those such an undo wrote again after it
+/// (`Undoable::end`), so a container marked undoable that a rollback leaves as written is loud.
+pub fn undoing<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(debug_assertions)]
+    struct Undoing;
+    #[cfg(debug_assertions)]
+    impl Drop for Undoing {
+        fn drop(&mut self) {
+            UNDOING.set(UNDOING.get() - 1);
+        }
+    }
+    #[cfg(debug_assertions)]
+    let _u = {
+        UNDOING.set(UNDOING.get() + 1);
+        Undoing
+    };
+    f()
 }
 
 /// Table `t` (`table`, locked) of an undoable container is about to write `key` (and so move
@@ -419,11 +472,27 @@ fn undo_note(t: &Arc<Mutex<Table>>, table: &Table, key: Option<u64>) {
         return;
     }
     UNDOABLE.with(|u| {
-        if let Some(Some(top)) = u.borrow_mut().last_mut() {
-            let p = Arc::as_ptr(t) as usize;
-            top.entry((p, None)).or_insert(table.ver);
+        let mut u = u.borrow_mut();
+        let Some(top) = u.last_mut() else { return };
+        let p = Arc::as_ptr(t) as usize;
+        if let Some(w) = &mut top.written {
+            w.entry((p, None)).or_insert(table.ver);
             if let Some(h) = key {
-                top.entry((p, key)).or_insert_with(|| table.stamp(Some(h)));
+                w.entry((p, key)).or_insert_with(|| table.stamp(Some(h)));
+            }
+        }
+        #[cfg(debug_assertions)]
+        {
+            let undoing = UNDOING.get() > 0;
+            for k in std::iter::once(None).chain(key.map(Some)) {
+                match top.undone.entry((p, k)) {
+                    std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().1 = undoing,
+                    // an undo of a write from before the stretch is no part of it
+                    std::collections::hash_map::Entry::Vacant(e) if !undoing => {
+                        e.insert((t.clone(), false));
+                    }
+                    std::collections::hash_map::Entry::Vacant(_) => {}
+                }
             }
         }
     });
@@ -437,7 +506,8 @@ fn undo_note(t: &Arc<Mutex<Table>>, table: &Table, key: Option<u64>) {
 /// a computation that runs a transaction and rolls it back (a trial) depends on what it read,
 /// not on its own undone writes. A read made before the stretch at another stamp than the key's
 /// at the stretch's first write of it moves as usual, as does every other reader. A stretch
-/// begun with no frame recording keeps nothing.
+/// begun with no frame recording keeps nothing. Debug builds check the claim each undoable
+/// container makes: ended undone, its every write in the stretch was undone by it (`undoing`).
 pub struct Undoable {
     depth: usize,
     /// Each frame open at the start, the reads it had noted by then.
@@ -450,7 +520,11 @@ impl Undoable {
         let frames: Vec<usize> = if RECORDING.load(Ordering::Relaxed) != 0 { FRAMES.with(|fr| fr.borrow().iter().map(|f| f.deps.len()).collect()) } else { Vec::new() };
         let depth = UNDOABLE.with(|u| {
             let mut u = u.borrow_mut();
-            u.push((!frames.is_empty()).then(HashMap::default));
+            u.push(Stretch {
+                written: (!frames.is_empty()).then(HashMap::default),
+                #[cfg(debug_assertions)]
+                undone: HashMap::default(),
+            });
             u.len() - 1
         });
         Undoable { depth, frames, ended: false }
@@ -459,18 +533,40 @@ impl Undoable {
     /// The stretch ends, `undone` or kept: what it wrote counts toward the stretch around it.
     pub fn end(mut self, undone: bool) {
         self.ended = true;
-        let Some(Some(written)) = UNDOABLE.with(|u| {
+        let Some(stretch) = UNDOABLE.with(|u| {
             let mut u = u.borrow_mut();
-            let w = u.drain(self.depth..).next();
-            if let (Some(Some(w)), Some(Some(outer))) = (&w, u.last_mut()) {
-                for (k, b) in w {
-                    outer.entry(*k).or_insert(*b);
+            let s = u.drain(self.depth..).next();
+            if let (Some(s), Some(outer)) = (&s, u.last_mut()) {
+                if let (Some(w), Some(o)) = (&s.written, &mut outer.written) {
+                    for (k, b) in w {
+                        o.entry(*k).or_insert(*b);
+                    }
+                }
+                // undone, the stretch's writes are no longer the outer one's
+                #[cfg(debug_assertions)]
+                if !undone {
+                    for (k, (t, d)) in &s.undone {
+                        outer.undone.entry(*k).or_insert_with(|| (t.clone(), false)).1 = *d;
+                    }
                 }
             }
-            w
+            s
         }) else {
             return;
         };
+        #[cfg(debug_assertions)]
+        NOTED.set(NOTED.get() + stretch.undone.len() as u64);
+        #[cfg(debug_assertions)]
+        if undone {
+            let mut left: Vec<String> = stretch.undone.iter().filter(|(_, (_, d))| !d).map(|((_, k), (t, _))| {
+                let t = lock(t);
+                let name = t.name.map(str::to_string).unwrap_or_else(|| format!("{}:{}", t.born.file(), t.born.line()));
+                format!("{name} {}", k.map_or("whole".to_string(), |h| format!("{h:x}")))
+            }).collect();
+            left.sort();
+            assert!(left.is_empty(), "an undone `Undoable` stretch left writes of containers marked undoable (`Stamps::undoable`) that no undo of theirs (`memo::undoing`) wrote again: {left:?}");
+        }
+        let Some(written) = stretch.written else { return };
         if !undone || written.is_empty() {
             return;
         }

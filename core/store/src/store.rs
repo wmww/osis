@@ -295,16 +295,18 @@ impl Stamping {
     /// keeps no stamp of its own for it (a row there reads at its bucket's), so a row created and
     /// undone leaves no stamp behind.
     fn undo_to(&mut self, len: usize) {
-        let undone = self.log.split_off(len.min(self.log.len()));
-        for l in undone {
-            match l {
-                Logged::Row(k) => self.stamp_row(&k, false),
-                Logged::TableRow(o, k) => {
-                    self.stamp_table_row(o, &k, false);
-                    self.stamp_owner(o, false);
+        osis_base::memo::undoing(|| {
+            let undone = self.log.split_off(len.min(self.log.len()));
+            for l in undone {
+                match l {
+                    Logged::Row(k) => self.stamp_row(&k, false),
+                    Logged::TableRow(o, k) => {
+                        self.stamp_table_row(o, &k, false);
+                        self.stamp_owner(o, false);
+                    }
                 }
             }
-        }
+        })
     }
 }
 
