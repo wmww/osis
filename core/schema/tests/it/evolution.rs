@@ -4,6 +4,7 @@
 
 use osis_base::{Limits, Value};
 use osis_schema::*;
+use super::schema;
 
 const BASE: &str = "\
 type t = struct { a 0: int, b 1: string = \"x\", c 2: option<int>, reserved 5 };
@@ -17,9 +18,6 @@ aspect n:tree.0: tree;
 ephemeral signal n:sig+~0: int;
 ";
 
-fn schema(rev: u64, body: &str) -> Schema {
-    parse("t.osis", &format!("revision {rev};\n{body}")).unwrap()
-}
 
 /// Rules broken by version 2 of BASE with `from` replaced by `to`.
 fn rules(from: &str, to: &str) -> Vec<Rule> {

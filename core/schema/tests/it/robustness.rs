@@ -5,15 +5,9 @@
 use osis_base::Value;
 use osis_base::format::CHUNK_THRESHOLD;
 use osis_schema::*;
+use super::{app, err};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn src(body: &str) -> String {
-    format!("revision 1;\n{body}")
-}
-
-fn err(body: &str) -> ParseError {
-    parse("t.osis", &src(body)).expect_err("should fail")
-}
 
 // spec/data-model.md §3: wrappers take int or float; a self-referential wrapper with a default
 // is an error, not unbounded recursion while typing the default.
@@ -36,14 +30,14 @@ fn polymorphic_recursion_rejected() {
     let e = err("type a<T> = struct { x 0: option<b<T>> }; type b<U> = struct { y 0: option<a<set<U>>> };");
     assert!(e.msg.contains("recursive reference"), "{e}");
     // Regular recursion, also mutual, is fine.
-    parse("t.osis", &src("type a<T> = struct { x 0: option<b<T>>, v 1: T }; type b<U> = struct { y 0: list<a<U>> }; aspect x:y.0: a<int>;"))
+    app("type a<T> = struct { x 0: option<b<T>>, v 1: T }; type b<U> = struct { y 0: list<a<U>> }; aspect x:y.0: a<int>;")
         .unwrap();
 }
 
 // spec/versioning.md §4: the checker on schemas that bypass validation stops with a violation.
 #[test]
 fn checker_refuses_unvalidated_irregular_schemas() {
-    let good = parse("t.osis", &src("aspect x:y.0: int;")).unwrap();
+    let good = app("aspect x:y.0: int;").unwrap();
     let mut bad = good.clone();
     let body = Type::Struct(StructType {
         fields: BTreeMap::from([(
@@ -83,7 +77,7 @@ fn long_type_chains_error() {
         assert!(e.msg.contains("nests too deeply"), "{e}");
     }
     // Within the limit: parses and compares.
-    let s = parse("t.osis", &src(&chain(200))).unwrap();
+    let s = app(&chain(200)).unwrap();
     let mut s2 = s.clone();
     s2.revision = 2;
     assert_eq!(check(&s, &s2), vec![]);
@@ -113,7 +107,7 @@ fn exponential_instances_bounded() {
 // field step (field IDs are non-negative).
 #[test]
 fn negative_keys_are_not_fields() {
-    let s = parse("t.osis", &src("aspect x:y.0: struct { b 3: blob };")).unwrap();
+    let s = app("aspect x:y.0: struct { b 3: blob };").unwrap();
     let big = Value::Bytes(vec![1; CHUNK_THRESHOLD]);
     let v = Value::Map(osis_base::ValueMap::from([(Value::Int(-3), big.clone())]));
     let got = large_positions(&s, &v, &s.aspects["x:y.0"].ty);

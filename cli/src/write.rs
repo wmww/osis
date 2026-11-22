@@ -220,7 +220,7 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
                 pw.splice(r, &vs)?
             }
         }
-        "undelete" => return Err(crate::cmd::not_built("undelete")),
+        "undelete" => return Err(crate::exit(1, "not built yet: undelete")),
         "add" => {
             n(1)?;
             pw.add(&ctx.value(&args[0], ety)?)?

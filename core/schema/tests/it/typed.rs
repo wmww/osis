@@ -6,11 +6,9 @@ use osis_base::format::CHUNK_THRESHOLD;
 use osis_base::{Limits, Tid, Value};
 use osis_crdt::{Encoding, View};
 use osis_schema::*;
+use super::schema;
 use proptest::prelude::*;
 
-fn schema(rev: u64, body: &str) -> Schema {
-    parse("t.osis", &format!("revision {rev};\n{body}")).unwrap()
-}
 
 fn st(fields: &[(i64, Value)]) -> Value {
     Value::Map(fields.iter().cloned().map(|(k, v)| (Value::Int(k), v)).collect())

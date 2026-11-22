@@ -5,16 +5,10 @@
 use osis_base::Value;
 use osis_crdt::Encoding;
 use osis_schema::*;
+use super::{app, err};
 
 const EXAMPLE: &str = include_str!("../example.osis");
 
-fn app(body: &str) -> Result<Schema, ParseError> {
-    parse("t.osis", &format!("revision 1;\n{body}"))
-}
-
-fn err(body: &str) -> ParseError {
-    app(body).expect_err("should fail")
-}
 
 #[test]
 fn core_schema_parses_spec_data_model_9() {

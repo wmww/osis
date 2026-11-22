@@ -7,3 +7,19 @@ mod evolution;
 mod parse;
 mod robustness;
 mod typed;
+
+use osis_schema::{ParseError, Schema, parse};
+
+/// `body` as revision `rev` of a schema file.
+fn schema(rev: u64, body: &str) -> Schema {
+    parse("t.osis", &format!("revision {rev};\n{body}")).unwrap()
+}
+
+/// `body` as revision 1 of a schema file, parsed.
+fn app(body: &str) -> Result<Schema, ParseError> {
+    parse("t.osis", &format!("revision 1;\n{body}"))
+}
+
+fn err(body: &str) -> ParseError {
+    app(body).expect_err("should fail")
+}

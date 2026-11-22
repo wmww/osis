@@ -48,10 +48,6 @@ fn parse_reads(s: Option<&str>) -> anyhow::Result<osis::Reads> {
     }
 }
 
-/// A commit id, as `inspect` prints it.
-pub fn commit_text(c: &osis::internals::RawCommitId) -> String {
-    CommitId::from(*c).to_string()
-}
 
 /// Prints a commit id (nothing when nothing changed).
 fn emit_commit(ctx: &mut Ctx<'_>, c: Option<CommitId>) -> anyhow::Result<()> {
@@ -173,17 +169,8 @@ fn truncate(s: String, width: usize) -> String {
     if width == 0 || s.chars().count() <= width { s } else { s.chars().take(width.saturating_sub(1)).collect::<String>() + "…" }
 }
 
-fn backlink_lines(b: &[osis::Backlink]) -> Vec<String> {
-    b.iter().map(|b| format!("{} {}", b.tid.to_uri(), b.ak.as_str())).collect()
-}
-
-fn backlinks_json(b: &[osis::Backlink]) -> J {
-    J::Arr(b.iter().map(|b| J::obj([("tid", J::tid(b.tid)), ("ak", J::str(b.ak.as_str()))])).collect())
-}
-
-/// A command over an API piece that does not exist yet.
-pub(crate) fn not_built(what: &'static str) -> anyhow::Error {
-    exit(1, format!("not built yet: {what}"))
+fn backlinks_out(b: &[osis::Backlink]) -> (Vec<String>, J) {
+    (b.iter().map(|b| format!("{} {}", b.tid.to_uri(), b.ak.as_str())).collect(), J::Arr(b.iter().map(|b| J::obj([("tid", J::tid(b.tid)), ("ak", J::str(b.ak.as_str()))])).collect()))
 }
 
 /// Commands that wait for or talk to other nodes, the delivering ones (`delivered`) included: the
@@ -401,13 +388,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 }
                 q.after = all.last().cloned();
             }
-            ctx.emit(&backlink_lines(&all), backlinks_json(&all))
+            let (l, j) = backlinks_out(&all);
+            ctx.emit(&l, j)
         }
         Cmd::Backlinks { t, watch: true, count } => {
             let t = ctx.tid(&t)?;
-            let (mut f, rx) = page_sink(ctx.g.json, |p: &osis::BacklinkPage| (backlink_lines(&p.backlinks).join(", "), backlinks_json(&p.backlinks)));
-            let _sub = db.on_backlinks_change(t, &osis::BacklinkQuery::default(), move |_, r| f(r))?;
-            stream_pages(ctx, &rx, count)
+            watch_pages(ctx, count, |p: &osis::BacklinkPage| backlinks_out(&p.backlinks), |mut f| db.on_backlinks_change(t, &osis::BacklinkQuery::default(), move |_, r| f(r)))
         }
         Cmd::Watch { t, ak, path, count } => watch(ctx, &t, ak.as_deref(), path.as_deref(), count),
         Cmd::Writes { t, ak, scope: s, list, next } => {
@@ -462,13 +448,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Grants { t, watch: false, .. } => {
             let r = db.grants(ctx.tid(&t)?)?;
-            ctx.emit(&grants_lines(&r, ctx.g.raw), grants_json(&r))
+            let (l, j) = grants_out(&r, ctx.g.raw);
+            ctx.emit(&l, j)
         }
         Cmd::Grants { t, watch: true, count } => {
             let (t, raw) = (ctx.tid(&t)?, ctx.g.raw);
-            let (mut f, rx) = page_sink(ctx.g.json, move |r: &osis::Grants| (grants_lines(r, raw).join(", "), grants_json(r)));
-            let _sub = db.on_grants_change(t, move |_, r| f(r))?;
-            stream_pages(ctx, &rx, count)
+            watch_pages(ctx, count, move |r: &osis::Grants| grants_out(r, raw), |mut f| db.on_grants_change(t, move |_, r| f(r)))
         }
         Cmd::Holders { t } => {
             let hs = db.holders(ctx.tid(&t)?)?;
@@ -588,12 +573,11 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Status { watch: false } => {
             let s = db.status()?;
-            ctx.emit(&status_lines(&s), status_json(&s))
+            let (l, j) = status_out(&s);
+            ctx.emit(&l, j)
         }
         Cmd::Status { watch: true } => {
-            let (mut f, rx) = page_sink(ctx.g.json, move |s: &osis::Status| (status_lines(s).join(", "), status_json(s)));
-            let _sub = db.on_status_change(move |_, r| f(Ok(r)))?;
-            stream_pages(ctx, &rx, None)
+            watch_pages(ctx, None, status_out, |mut f| db.on_status_change(move |_, r| f(Ok(r))))
         }
         // `wait_synced` asks its peers to sync first: `sync` and `wait` are one call
         Cmd::Sync { thing } => {
@@ -866,24 +850,21 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>, ty: Ty<'_>) -> String {
     }
 }
 
-/// A page subscription's callback, each call a line of `rx` (text or JSON by `json`): the first,
-/// the page now, printed but not counted.
-fn page_sink<T>(json: bool, show: impl Fn(&T) -> (String, J) + Send + 'static) -> (impl FnMut(osis::Result<T>) + Send + 'static, mpsc::Receiver<(String, bool)>) {
+/// Prints a page subscription's pages, one line each (`show`'s lines joined, or its JSON), until
+/// `count` changes or `--timeout`: the first, the page now, printed but not counted.
+fn watch_pages<T>(
+    ctx: &mut Ctx<'_>,
+    count: Option<usize>,
+    show: impl Fn(&T) -> (Vec<String>, J) + Send + 'static,
+    subscribe: impl FnOnce(Box<dyn FnMut(osis::Result<T>) + Send>) -> osis::Result<osis::Subscription>,
+) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel();
-    let mut initial = true;
-    let f = move |r: osis::Result<T>| {
-        let l = match r {
-            Ok(p) => show(&p),
-            Err(e) => (format!("(error: {e})"), J::obj([("error", J::str(e.to_string()))])),
-        };
-        let _ = tx.send((if json { l.1.text() } else { l.0 }, !std::mem::take(&mut initial)));
-    };
-    (f, rx)
-}
-
-/// Prints `page_sink`'s lines until `count` changes or `--timeout`.
-fn stream_pages(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<(String, bool)>, count: Option<usize>) -> anyhow::Result<()> {
-    stream(ctx, rx, count, "change", false, |_, l| l)
+    let (json, mut initial) = (ctx.g.json, true);
+    let _sub = subscribe(Box::new(move |r: osis::Result<T>| {
+        let (l, j) = r.map_or_else(|e| (vec![format!("(error: {e})")], J::obj([("error", J::str(e.to_string()))])), |p| show(&p));
+        let _ = tx.send((if json { j.text() } else { l.join(", ") }, !std::mem::take(&mut initial)));
+    }))?;
+    stream(ctx, &rx, count, "change", false, |_, l| l)
 }
 
 /// Prints items from `rx` until `count` of them, `--timeout` (none by default), or the senders
@@ -1057,37 +1038,19 @@ fn undo(ctx: &mut Ctx<'_>, s: &Scope, redo: bool) -> anyhow::Result<()> {
     }
 }
 
-fn grants_lines(r: &osis::Grants, raw: bool) -> Vec<String> {
-    r.iter()
-        .map(|(m, e)| {
-            let until = e.until.map_or("-".into(), |u| ts_text(raw, u.0));
-            format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.may_grant.map_or("-", role_text), if e.from_now { " from-now" } else { "" })
-        })
-        .collect()
-}
-
-fn grants_json(r: &osis::Grants) -> J {
-    J::Arr(
-        r.iter()
-            .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::opt(e.may_grant.map(|r| J::str(role_text(r))))), ("from_now", J::Bool(e.from_now))]))
-            .collect(),
-    )
-}
-
-fn status_lines(s: &osis::Status) -> Vec<String> {
-    let units = s.units.iter().map(|(g, x)| {
-        let mut line = format!("{} {:?}", g.to_uri(), x.state);
-        if x.not_taking > 0 {
-            line.push_str(&format!(" not taking: {}", x.not_taking));
-        }
-        line
+fn grants_out(r: &osis::Grants, raw: bool) -> (Vec<String>, J) {
+    let lines = r.iter().map(|(m, e)| {
+        let until = e.until.map_or("-".into(), |u| ts_text(raw, u.0));
+        format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.may_grant.map_or("-", role_text), if e.from_now { " from-now" } else { "" })
     });
-    std::iter::once(format!("connected {}", s.connected)).chain(units).collect()
+    let j = r.iter().map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::opt(e.may_grant.map(|r| J::str(role_text(r))))), ("from_now", J::Bool(e.from_now))]));
+    (lines.collect(), J::Arr(j.collect()))
 }
 
-fn status_json(s: &osis::Status) -> J {
-    let units = s.units.iter().map(|(g, x)| J::obj([("thing", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("not_taking", J::int(x.not_taking as u64))]));
-    J::obj([("units", J::Arr(units.collect())), ("connected", J::int(s.connected as u64))])
+fn status_out(s: &osis::Status) -> (Vec<String>, J) {
+    let units = s.units.iter().map(|(g, x)| format!("{} {:?}{}", g.to_uri(), x.state, if x.not_taking > 0 { format!(" not taking: {}", x.not_taking) } else { String::new() }));
+    let j = s.units.iter().map(|(g, x)| J::obj([("thing", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("not_taking", J::int(x.not_taking as u64))]));
+    (std::iter::once(format!("connected {}", s.connected)).chain(units).collect(), J::obj([("units", J::Arr(j.collect())), ("connected", J::int(s.connected as u64))]))
 }
 
 /// One diagnostic as `diag` prints it (text or a JSON line): its kind, what it names, its detail.
@@ -1215,7 +1178,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
                 lines.push(format!("aspect {} commits={} stored_size={}", ak.as_str(), changes.len(), size.map_or("-".into(), |s| s.to_string())));
                 for c in changes {
                     let h = &c.header;
-                    lines.push(format!("  commit {} kind={:?} ts={} purge_author={} signer={}{}", commit_text(&c.id), h.kind, h.ts.wall_ms().0, c.purge_author.to_uri(), h.signer.to_uri(), h.undoes.map_or(String::new(), |u| format!(" undoes={}", commit_text(&u)))));
+                    lines.push(format!("  commit {} kind={:?} ts={} purge_author={} signer={}{}", CommitId::from(c.id), h.kind, h.ts.wall_ms().0, c.purge_author.to_uri(), h.signer.to_uri(), h.undoes.map_or(String::new(), |u| format!(" undoes={}", CommitId::from(u)))));
                 }
                 if let Some(f) = frag {
                     lines.push(format!("  state {f}"));
@@ -1407,8 +1370,9 @@ mod tests {
         let g = osis::Tid::from_bytes([7; 15]);
         let mut s = osis::Status::default();
         s.units.insert(g, osis::UnitSync { state: osis::SyncState::Syncing, not_taking: 2 });
-        assert_eq!(super::status_lines(&s)[1], format!("{} Syncing not taking: 2", g.to_uri()));
-        assert!(super::status_json(&s).text().contains("\"not_taking\":2"));
+        let (l, j) = super::status_out(&s);
+        assert_eq!(l[1], format!("{} Syncing not taking: 2", g.to_uri()));
+        assert!(j.text().contains("\"not_taking\":2"));
     }
 
     // notes/cli.md Design: `edit`'s temp file is new (`create_new`), randomly named, owner-only.
