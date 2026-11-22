@@ -1050,13 +1050,19 @@ impl World {
     }
 
     /// Runs to quiet: delivers everything in flight, then jumps the clock to the earliest wake or
-    /// held-back input within `horizon_ms`, until neither is left.
+    /// held-back input within `horizon_ms`, until neither is left. A complete pass still under way
+    /// there ends within `PASS_WAIT_MS` (spec/sync-status.md §1): quiet waits it out, once.
     pub fn run(&mut self) {
-        let horizon = WallMs(self.now().0.saturating_add(self.horizon_ms));
+        let mut horizon = WallMs(self.now().0.saturating_add(self.horizon_ms));
+        let mut waited = false;
         loop {
             self.flush();
             match self.net.next_due(horizon) {
                 Some(at) => self.fire(at),
+                None if !waited && self.passes_under_way() => {
+                    waited = true;
+                    horizon = WallMs(self.now().0.saturating_add(osis_proto::limits::PASS_WAIT_MS));
+                }
                 None => break,
             }
         }
@@ -1068,6 +1074,11 @@ impl World {
                 self.unlogged_must_holds();
             });
         }
+    }
+
+    /// Whether an online node has a complete pass under way.
+    fn passes_under_way(&self) -> bool {
+        (0..self.nodes.len()).filter(|i| self.online(*i)).any(|i| self.node(i).node.status().values().any(|x| x.pass_waits.is_some()))
     }
 
     /// At quiet, every source status counts of S at a node is a connection up on which S is a
@@ -1089,8 +1100,7 @@ impl World {
 
     /// At quiet, each node logs every body it judges must-hold under S, wherever a reader can
     /// pull S from it and the body counts as held (spec/sync-judgement.md §2: must-hold only what
-    /// it may log under S; §3 Own store), unless the complete pass of S its log waits for is
-    /// still under way there.
+    /// it may log under S; §3 Own store).
     fn unlogged_must_holds(&mut self) {
         let mut stuck = Vec::new();
         for i in 0..self.nodes.len() {
@@ -1101,15 +1111,7 @@ impl World {
                     if self.node(i).node.verdict(s, &c) != Some(osis_sync::read::Verdict::Must) {
                         continue;
                     }
-                    let status = self.node(i).node.status_of(s);
-                    if !reach && status.as_ref().is_none_or(|x| x.sources.is_empty()) {
-                        continue;
-                    }
-                    // another's body is logged once a complete pass of S ends (§3 Own store): one
-                    // still under way at quiet waits out `PASS_WAIT_MS` on a peer to be waited
-                    // for, begun within the run's horizon (say after a failed step restarted
-                    // the node), its wake set
-                    if status.is_some_and(|x| x.pass_waits.is_some()) && self.net.wakes.contains_key(&i) {
+                    if !reach && self.node(i).node.status_of(s).is_none_or(|x| x.sources.is_empty()) {
                         continue;
                     }
                     if self.engine(i).read_facts(s, &c).unwrap().missing {
