@@ -129,20 +129,6 @@ fn verdicts(w: &World, i: usize) -> Verdicts {
     (out, rosters)
 }
 
-// spec/permissions.md §5.2; notes/a1-spec/README.md step 3 (Role paths), notes/redesign-plan.md, Interim in code: stating real
-// paths on role commits changes no verdict of the old walk: every node's verdict on every edge
-// write, and every thing's roster, equal those of the same world with every role commit stating
-// the Interim empty path.
-#[test]
-fn role_paths_change_no_verdict_of_the_old_walk_spec_permissions_5_2() {
-    let (real, interim) = (world(false), world(true));
-    for i in 0..4 {
-        let (a, b) = (verdicts(&real, i), verdicts(&interim, i));
-        assert!(a.0.len() >= 20, "peer {i}: {} edge writes", a.0.len());
-        assert_eq!(a, b, "peer {i}");
-    }
-}
-
 /// Whether `p` is on `q`'s record chain (above `q`).
 fn above(e: &osis_engine::Engine, p: Tid, q: Tid) -> bool {
     std::iter::successors(e.core.created(&q).and_then(|r| r.mint_admin()), |y| e.core.created(y).and_then(|r| r.mint_admin())).take(70).any(|x| x == p)

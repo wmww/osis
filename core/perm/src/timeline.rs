@@ -636,8 +636,15 @@ impl<S: Store> Timeline<S> {
     /// (`graph::Ways::path`): the things listed, the hops marked direct and whether the last hop
     /// is a record edge.
     pub fn path_now(&self, node: &Tid, thing: &Tid, need: Need, ts: Ts) -> Option<(Vec<Tid>, PathMarks, bool)> {
+        self.ways_now(thing, need, ts).0.path(&self.records, node)
+    }
+
+    /// Every thing's way into `thing` giving `need` on the current edges at `ts`
+    /// (`graph::Ways`), and the earliest `until` the search followed: the answer holds at any
+    /// later ts before it, while no edge changes.
+    pub fn ways_now(&self, thing: &Tid, need: Need, ts: Ts) -> (crate::graph::Ways, Option<WallMs>) {
         let edges = self.edges_at(None);
-        View::at(&edges, Some(ts)).ways_to(thing, need).0.path(&self.records, node)
+        View::at(&edges, Some(ts)).ways_to(thing, need)
     }
 
     /// `node`'s roles over every grant the walk applied, the ended ones included: what it

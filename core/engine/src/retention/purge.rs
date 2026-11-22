@@ -156,10 +156,10 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
     // its items on one (thing, aspect) are one request there: one path, one right
     let Some(j) = p.purge.iter().position(|it| item_names(it).0 == &a.tid && item_names(it).1 == &a.ak) else { return false };
     // a point query over what is held, the request held yet or not (a writer checks its own
-    // before it applies); one not held states its path in the clear or is read as stating none
+    // before it applies, its split paths opened by the roles secrets it holds)
     let view = match core.ix.commits.get(pc) {
         Some(m) => m.view.clone(),
-        None => std::sync::Arc::new(crate::engine::View::of(p, None)),
+        None => std::sync::Arc::new(crate::engine::View::of(p, crate::apply::paths::decided(core, p, &BTreeMap::new()))),
     };
     let reading = crate::apply::validity::reading_of(core, pc, p, &view).deltas();
     let Some(r) = core.timelines.paths().judge_right(&reading, crate::apply::validity::request_part(p, j)) else { return false };

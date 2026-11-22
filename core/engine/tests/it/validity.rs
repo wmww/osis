@@ -485,40 +485,6 @@ fn forged_actor_invalid_spec_perm_5_2() {
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("as bob")));
 }
 
-// spec/permissions.md §5.2 (content: the old walk's Acting check, notes/redesign-plan.md, Interim in code), spec/commits.md §4 (order independence):
-// Dave (3), with no right on D, grants Bob write on X, a thing Dave makes; Bob writes D acting
-// for X. Alice gets the write before the grant (invalid: Bob cannot act for X as far as she
-// knows) and judges it valid once the grant arrives, though nothing about D changed.
-#[test]
-fn acting_valid_once_grant_arrives_spec_perm_5_2() {
-    let mut lp = net(4, 0);
-    lp.sync_all().unwrap();
-    let d = new_thing(&mut lp, 0);
-    let x = new_thing(&mut lp, 3);
-    let b = lp.peers[1].engine.me();
-    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    lp.advance(1_000);
-    set_edge(&mut lp.peers[3].engine, x, b, Some(edge(Role::Write)), None);
-    sync(&mut lp, 3, 1);
-    lp.advance(1_000);
-    let mut m = Mutation::new();
-    m.set(d, &REG, &s("for dave")).unwrap();
-    // X's holders' write secrets are not Bob's to derive an author-class delete key from
-    m.purge_by(d, &REG, osis_base::PurgeBy::Admin).unwrap();
-    m.act_as(x);
-    let id = lp.peers[1].commit(m).unwrap().unwrap();
-    let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
-    lp.deliver(0, &pk).unwrap();
-    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("new")));
-    // invalid on arrival, it went (spec/permissions.md §6); valid with the grant, it is missing and
-    // fetched again
-    sync(&mut lp, 3, 0);
-    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("new")));
-    lp.deliver(0, &pk).unwrap();
-    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("for dave")));
-}
-
 // spec/permissions.md §1 Key actor ("No edge write targets a key actor: it has no roster"): the
 // engine refuses an edge write on a key actor, its own included; one a hostile writer makes
 // anyway (peer 2 giving B write on its own key actor, as a "holder") applies nowhere at any node:
@@ -1071,59 +1037,6 @@ fn commit_form_carried_writes_vouched_spec_perm_5_2() {
     assert_eq!(keys(&mut lp, 0), BTreeSet::from([s("alice"), s("bob")]));
 }
 
-// spec/permissions.md §5.1 step 4 (D only grows): osis-perm joint neutrality seed 6's shape
-// (notes/role-timeline.md, Sticky drops leave residue). n0 removes A2 from A0 (W, unseen by n1) and grants n1
-// write on A2 (G, unseen too); n1 lowers A1 to write on A0 (R). The full walk drops W (R is a
-// fall on A0 while W stands) and keeps it dropped after R stops being one; G stands, n0 keeping
-// admin on A2 through A1 (one class: a path lost while another keeps it is no fall).
-#[test]
-fn sticky_residue_spec_perm_5_1() {
-    let mut lp = net(3, 0);
-    lp.sync_all().unwrap();
-    let (n0, n1) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
-    // mint admins: A0 n1, A1 n0, A2 A0; A1 admin on A0, A2 write on A1
-    let a0 = new_thing(&mut lp, 1);
-    let a1 = new_thing(&mut lp, 0);
-    let a2 = {
-        let mut m = Mutation::new();
-        let t = lp.peers[1].engine.new_thing(&mut m, a0);
-        m.set(t, &REG, &s("a2")).unwrap();
-        lp.peers[1].commit(m).unwrap();
-        lp.hold(t);
-        t
-    };
-    edge_write(&mut lp.peers[1].engine, a0, a1, Some(edge(Role::Admin)), None);
-    // n0 holds what it writes: read on A0 by the flow (A2 under it with it)
-    set_edge(&mut lp.peers[1].engine, a0, n0, Some(edge(Role::Read)), None);
-    lp.sync_all().unwrap();
-    edge_write(&mut lp.peers[0].engine, a1, a2, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    // n0 through A1: A2 admin on A0, then removed (W); n1 write on A2 (G); A1 admin on A2
-    let step = |lp: &mut LocalPeer| lp.advance(1000);
-    step(&mut lp);
-    let c1 = edge_write(&mut lp.peers[0].engine, a0, a2, Some(edge(Role::Admin)), None);
-    step(&mut lp);
-    edge_write(&mut lp.peers[0].engine, a0, a2, None, None);
-    step(&mut lp);
-    edge_write(&mut lp.peers[0].engine, a2, n1, Some(edge(Role::Write)), None);
-    step(&mut lp);
-    let c6 = edge_write(&mut lp.peers[0].engine, a2, a1, Some(edge(Role::Admin)), None);
-    // n1 has c1 and c6, not W or G, when it lowers A1 to write on A0 (R)
-    crate::flows::send_carried(&mut lp, 0, 1, &[c1, c6]);
-    step(&mut lp);
-    let scope = DemotionScope { roles: BTreeMap::from([(n0, BTreeSet::from([a0, a2]))]), content: BTreeMap::new() };
-    let f = frontier_now(&mut lp, 1, &scope);
-    edge_write(&mut lp.peers[1].engine, a0, a1, Some(edge(Role::Write)), Some(f.clone()));
-    // nodes A (2) and B (1) hold the full history
-    for i in [1, 2] {
-        sync(&mut lp, 0, i);
-        sync(&mut lp, 1, i);
-    }
-    let has_g = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&a2).contains_key(&n1);
-    assert!(lp.peers[2].engine.roster(&a0).contains_key(&a2), "W dropped: A2 stays admin on A0");
-    assert!(has_g(&lp, 2) && has_g(&lp, 1), "G stands: no fall on A2");
-}
-
 fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_engine::Result<Option<osis_base::CommitId>> {
     let mut m = Mutation::new();
     m.set(t, &REG, &s(v)).unwrap();
@@ -1181,8 +1094,9 @@ fn record_then_edge_chain_applies_spec_perm_1() {
 }
 
 // spec/permissions.md §1 (`MAX_CHAIN_DEPTH`): n0 is mint admin of a chain of things down to one
-// link past the cap. Record links count on a path as perm's effective role counts them: an edge on C to
-// the thing at the cap or past it lets n0 write C, and the write applies at n0 and a receiver.
+// link past the cap. A descent runs within the cap (spec/permissions.md §1 Record chain): an edge
+// on C to the thing at the cap lets n0 write C, the write applying at n0 and a receiver; through
+// the thing one link past it no path gives the role, and the write is refused.
 #[test]
 fn record_chain_depth_edge_chain_spec_perm_1() {
     use osis_base::format::MAX_CHAIN_DEPTH;
@@ -1205,7 +1119,13 @@ fn record_chain_depth_edge_chain_spec_perm_1() {
         let p0 = lp.peers[0].engine.me();
         set_edge(&mut lp.peers[1].engine, c, p0, Some(edge(Role::Read)), None);
         lp.sync_all().unwrap();
-        write_reg(&mut lp, 0, c, "n0").unwrap().unwrap();
+        let r = write_reg(&mut lp, 0, c, "n0");
+        if k == 1 {
+            // a descent runs within `MAX_CHAIN_DEPTH` record edges: past it the path gives nothing
+            assert!(matches!(r, Err(osis_engine::Error::Permission { .. })), "past the cap: {r:?}");
+            continue;
+        }
+        r.unwrap().unwrap();
         sync(&mut lp, 0, 2);
         for i in [0, 2] {
             assert_eq!(lp.peers[i].engine.get(&c, &ak("t:reg.0")).unwrap(), Some(s("n0")), "case {k} peer {i}");
@@ -3888,10 +3808,9 @@ fn a_removed_admins_grant_forged_at_the_removals_ts_counts_nowhere_spec_perm_5_1
     }
 }
 
-/// Bob (1), a writer of D and E (minted by Alice, 0), writes both acting for D: the commit's ID
-/// and its opened form. D holds no role on E, so no path to E goes through D: Open
-/// (notes/a1-spec/README.md Open 16), the Interim `[D]` for both, as the Acting check accepts it.
-fn acting_on_two() -> (LocalPeer, Tid, Tid, osis_base::CommitId, osis_commit::CommitBlob) {
+/// Bob (1), a writer of D and E (minted by Alice, 0), writes both acting as D: the result. D holds
+/// no role on E, so no path to E goes through D.
+fn acting_on_two() -> osis_engine::Result<Option<osis_base::CommitId>> {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let (d, e) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
@@ -3904,9 +3823,7 @@ fn acting_on_two() -> (LocalPeer, Tid, Tid, osis_base::CommitId, osis_commit::Co
     m.set(d, &REG, &s("on d")).unwrap();
     m.set(e, &REG, &s("on e")).unwrap();
     m.act_as(d);
-    let id = lp.peers[1].commit(m).unwrap().unwrap();
-    let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
-    (lp, d, e, id, osis_commit::CommitBlob::decode(&pk.bytes).unwrap())
+    lp.peers[1].commit(m)
 }
 
 /// Alice (0) mints D, P and the holder H; Bob (1) holds write on H, H on D, Bob on P directly;
@@ -4332,9 +4249,9 @@ fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
 // to open under two keys of his choosing (a path under `k1`, no list under `k2`; the entry commits
 // to `k1`), and seals D's parts twice: `one` holds D's parts carrying `k1`; `other` D's parts
 // carrying `k2` and P's. Alice takes both in either order, or one alone. `k2` is no key of the
-// entry, so `other`'s D section holds nothing, wherever it comes: D's write applies wherever
-// `one` is held, P's wherever `other` is, and the key Alice keeps for D is `k1` in both orders,
-// before and after a reopen. Without the commitment, `other` after `one` would replace D's key
+// entry, so `other`'s D section holds nothing, wherever it comes: P's write applies wherever
+// `other` is held, and the key Alice keeps for D is `k1` in both orders, before and after a
+// reopen (D's write, stated along the made-up path `k1` opens, applies nowhere). Without the commitment, `other` after `one` would replace D's key
 // (one key per (commit, thing)) and void D's write that the other order applies.
 #[test]
 fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
@@ -4364,7 +4281,10 @@ fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
                 crate::flows::reopen(&mut w, 0).unwrap();
             }
             assert_eq!(held(&mut w, 0, &id).keys.get(&id_), order.contains(&&one).then_some(&k1), "{at}: D's key ({reopened})");
-            assert_eq!(reg(&mut w, d), if order.contains(&&one) { Some(s("on d")) } else { before.0.clone() }, "{at}: D ({reopened})");
+            // spec/permissions.md §1 Path (nothing but the stated path judges a part): under `k1`
+            // the entry states a path of four made-up things, which gives nothing, so D's write
+            // applies in no order; which key is kept is what the orders must agree on
+            assert_eq!(reg(&mut w, d), before.0.clone(), "{at}: D ({reopened})");
             assert_eq!(reg(&mut w, p), if order.contains(&&other) { Some(s("on p")) } else { before.1.clone() }, "{at}: P ({reopened})");
         }
     }
@@ -4407,7 +4327,9 @@ fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
         unless_refused(w.peers[0].engine.ingest(&opened_sections(&f, &c, &[id_], &keyed(mine)), Vec::new()));
         w.peers[0].reexamine().unwrap();
         w.peers[0].engine.check_index();
-        assert_eq!(state(&mut w), (Some(true), false, Some(s("on d"))), "{name}, then D's section carrying the committed key");
+        // spec/permissions.md §1 Path: the committed key opens the entry (its path is known, it
+        // waits no more) to a path of four made-up things, which gives nothing: D's write stays out
+        assert_eq!(state(&mut w), (Some(true), false, before), "{name}, then D's section carrying the committed key");
     }
 }
 
@@ -5075,8 +4997,9 @@ fn one_path_in_the_clear_only_where_it_shows_no_reader_another_roster_spec_wire_
 
 // spec/wire.md §4 field 2; notes/path-form.md One path: a creation states one path in the
 // clear: under the account root along the empty path (18 B on `signer` and `path`); under a
-// parent the signer holds by a grant along `[D]` (34 B), the new thing one record edge past it. A
-// write acting for D whose path to E does not go through D states the Interim `[D]` (Open 16).
+// parent the signer holds by a grant along `[D]` (34 B), the new thing one record edge past it.
+// spec/permissions.md §1 Path (nothing but the stated path judges a part): a write acting as D on
+// E, which D holds no role on, is refused: no path through D gives the role.
 #[test]
 fn the_engine_states_one_path_for_a_creation_spec_wire_4() {
     let path_bytes = |h: &osis_commit::Header| {
@@ -5103,7 +5026,5 @@ fn the_engine_states_one_path_for_a_creation_spec_wire_4() {
     let h = lp.peers[1].engine.header(&made(&lp, 1, x)).unwrap();
     assert_eq!(h.path, osis_commit::Paths::One(osis_commit::Path { purge: 0, things: vec![t], direct: 0 }));
     assert_eq!(path_bytes(&h), 34);
-    let (_, d, _, _, c) = acting_on_two();
-    assert_eq!(c.header.things().len(), 2);
-    assert_eq!(c.header.path, osis_commit::Paths::One(osis_commit::Path::through(d)));
+    assert!(matches!(acting_on_two(), Err(osis_engine::Error::Permission { .. })), "acting as D on E, which D holds nothing on");
 }

@@ -581,6 +581,26 @@ pub struct Timelines {
     /// The keyless actor grants (target, holder) (`rotation::members::keyless_in`, spec/crypto.md
     /// §4 Key access).
     keyless: Arc<BTreeSet<(Tid, Tid)>>,
+    /// The ways into a thing (`osis_perm::Timeline::ways_now`) searched since the edges last
+    /// changed, each with the ts it was searched at and the `until` it holds before.
+    ways: Ways,
+}
+
+/// `Timelines::ways`: a cache of the current edges, empty in a copy.
+#[derive(Default)]
+struct Ways(std::sync::Mutex<BTreeMap<(Tid, osis_perm::Need), WaysAt>>);
+type WaysAt = (Arc<osis_perm::graph::Ways>, osis_base::Ts, Option<osis_base::WallMs>);
+
+impl Clone for Ways {
+    fn clone(&self) -> Ways {
+        Ways::default()
+    }
+}
+
+impl Ways {
+    fn clear(&mut self) {
+        *self = Ways::default();
+    }
 }
 
 /// `Timelines`' stamps, a table per kind of read (`Read`), each named for it (`Effects` causes).
@@ -656,7 +676,7 @@ enum Read {
 
 impl Default for Timelines {
     fn default() -> Self {
-        Timelines { of: osis_perm::Timeline::default(), stamps: TlStamps::default(), keyless: Arc::default() }
+        Timelines { of: osis_perm::Timeline::default(), stamps: TlStamps::default(), keyless: Arc::default(), ways: Ways::default() }
     }
 }
 
@@ -777,7 +797,20 @@ impl Timelines {
     pub fn path_now(&self, node: &Tid, thing: &Tid, need: osis_perm::Need, ts: osis_base::Ts) -> Option<(Vec<Tid>, osis_base::format::PathMarks, bool)> {
         // the search reads the edges into everything that reaches `thing`
         self.stamps.read(&Read::Whole);
-        self.of.path_now(node, thing, need, ts)
+        let held = |e: &WaysAt| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
+        let cached = self.ways.0.lock().ok().and_then(|m| m.get(&(*thing, need)).filter(|e| held(e)).map(|e| e.0.clone()));
+        let ways = match cached {
+            Some(w) => w,
+            None => {
+                let (w, expires) = self.of.ways_now(thing, need, ts);
+                let w = Arc::new(w);
+                if let Ok(mut m) = self.ways.0.lock() {
+                    m.insert((*thing, need), (w.clone(), ts, expires));
+                }
+                w
+            }
+        };
+        ways.path(self.of.records(), node)
     }
 
     /// Every actor's effective role on `thing` on the current edges at `ts`, and the earliest
@@ -816,6 +849,9 @@ impl Timelines {
     fn moved(&mut self, touched: &BTreeSet<Tid>, c: &osis_perm::Changed) {
         if !c.is_empty() {
             self.stamps.wrote(&Read::Whole, true);
+        }
+        if !c.created.is_empty() || c.edges().next().is_some() {
+            self.ways.clear();
         }
         for t in touched {
             self.stamps.wrote(&Read::Held(*t), true);
@@ -861,6 +897,7 @@ impl Timelines {
     /// every read moves and `keyless` is judged anew.
     pub fn change<T>(&mut self, f: impl FnOnce(&mut osis_perm::Timeline) -> T) -> T {
         self.stamps.wrote_all();
+        self.ways.clear();
         let out = f(&mut self.of);
         self.keyless = Arc::new(crate::rotation::members::keyless_in(&self.of));
         out

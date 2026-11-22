@@ -467,7 +467,14 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
                 (osis_commit::Path { purge, things: to.into_iter().chain([actor]).chain(from).collect(), direct }, rec)
             })
         };
-        let Some(path) = path.filter(|(p, _)| p.things.iter().collect::<BTreeSet<_>>().len() == p.things.len() && !p.things.contains(&node)) else { return Ok(fallback) };
+        let Some(path) = path.filter(|(p, _)| p.things.iter().collect::<BTreeSet<_>>().len() == p.things.len() && !p.things.contains(&node)) else {
+            // acting as a thing whose authority does not reach the write is refused: no path
+            // through it gives the role (spec/permissions.md §1 Path)
+            if actor != node {
+                return Err(Error::Permission { tid: t, needs: r });
+            }
+            return Ok(fallback);
+        };
         if path.0.things.len() > osis_base::format::MAX_PATH_THINGS {
             return Err(Error::Misuse("a path through more than MAX_PATH_THINGS (64) holders"));
         }
