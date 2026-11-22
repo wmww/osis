@@ -1,12 +1,9 @@
 # Sync differential fails at the gate's size on some seeds
-> Summary: `differential::histories_hold_their_closure_plain` at small size fails on fresh offsets: a revoked sync grantee stuck on a losing sibling step keeps its store (seed 991936048185, issues/sibling-step-store-stuck.md), a caught-up reader lacks part of a must-hold minting body after a connection reset (one world in 50, studied, parked), and a node lacks a read the model has (seed 3994064562, not shrunk).
+> Summary: `differential::histories_hold_their_closure_plain` at small size fails on fresh offsets: a caught-up reader lacks part of a must-hold minting body after a connection reset (one world in 50, studied, parked), and a node lacks a read the model has (seed 3994064562, not shrunk).
 > Priority: normal
 > Tags: sync, engine, tests
 
-**Seen**: seeds 318840271993, 991936048185 (gate offsets) fail on main; 6170 too (a must-hold body a caught-up reader lacks). Replay: `OSIS_SYNC_START=<seed> OSIS_SYNC_SEEDS=1 cargo test -p osis-sync --test it -- --ignored --exact differential::histories_hold_their_closure_plain`; scripts replay in a scratch test (notes/sync-test-harness.md, Replaying a script).
-
-## A store on a losing sibling step (seed 991936048185)
-- Shrunk and traced: a revoked sync grantee stuck on the sibling step `head_of` did not pick, never registered past it; issues/sibling-step-store-stuck.md.
+**Seen**: seed 318840271993 (a gate offset) fails on main; 6170 too (a must-hold body a caught-up reader lacks). Replay: `OSIS_SYNC_START=<seed> OSIS_SYNC_SEEDS=1 cargo test -p osis-sync --test it -- --ignored --exact differential::histories_hold_their_closure_plain`; scripts replay in a scratch test (notes/sync-test-harness.md, Replaying a script).
 
 ## A must-hold body a caught-up reader lacks (one world in 50)
 - Shrunk script (6 steps): `New(1), Give(1, 0, Holder::Node(0), Reads), Run, Strong(0, None, 0), Lossy(Loss { drop: 0, dup: 25, delay: 0, delay_ms: 312 }), Run`; fails on seed 318840271993's world only (0 of 50 others). Panic: `must-hold bodies a caught-up reader lacks at quiet`: Bob mints T (dependent on his D), grants Alice read (T keyed, its own sync ID S); Alice's node accepts, her sibling node 2 lacks part of T's minting commit.

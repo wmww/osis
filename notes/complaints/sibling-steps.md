@@ -1,0 +1,4 @@
+# sibling-steps
+- The approved rule (branch off any step on the store's path, deeper than the head) widened a removed admin's power from "until the removal's step lands" to "forever": it holds every delete key before its removal and could hang a branch of its own keys off any of them. The hostile-party pass caught it; the build adds a delete-key bound. A design brief for a store-acceptance rule should run that pass before approval.
+- A hand reproducer of a timing race (one admin's rotation reaching another before its step) needs a hand delivery of the rotation's packages inside the `w.write` closure, before `Input::Wrote` lets the node settle and step; `World::partition` alone cannot split a rotation from its step.
+- The reproducer world (`world_of(0, 2, 3)` with two partitioned runs) passes `RULE_CAP` on dial ticks alone; the storm panic reads like a loop until `w.cap` is raised.

@@ -10,8 +10,11 @@
 //! its head event, which comes with its first Pull reply. Ok moves on to the
 //! next; refused for now (4, 12) backs off (`offers::backoff_ms`) and registers again; any other
 //! refusal waits for the source's step to move (a refused Register changes no view; the next head
-//! event does). Nothing is registered at a source on a step `sync.0` does not record (a sibling,
-//! or a step past it).
+//! event does). At a source on a step `sync.0` records off the recorded path (a sibling branch),
+//! one Register carries the recorded steps after the deepest step the two paths share, through
+//! the first deeper than the source's step, when the shared step's delete key is the source's
+//! step's (a store takes nothing else: `store::path::register`); nothing at a source on a step
+//! `sync.0` does not record (past it), or on an equal-depth or deeper branch.
 //!
 //! Steps are issued by the engine with the rotations that make them (spec/sync-ids.md §6
 //! Steps); this module only registers recorded ones.
@@ -42,7 +45,8 @@ type Key = (Source, SyncId);
 pub enum Plan {
     Nothing,
     Wait,
-    Send(Box<Step>, Option<ClaimSet>),
+    /// The steps of one Register, in order, each with its claim set when it goes.
+    Send(Vec<(Step, Option<ClaimSet>)>),
 }
 
 /// This node's registering at one source of S.
@@ -63,7 +67,7 @@ pub(super) struct Register {
     /// The keys `plans` follows, by record: what a record going lets go.
     followed: BTreeSet<Key>,
     progress: Stamped<Key, Progress>,
-    /// Register requests out: their key, step and the source's step when sent.
+    /// Register requests out: their key, last step and the source's step when sent.
     out: BTreeMap<(ConnId, RequestId), (Key, StepId, Option<StepId>)>,
     wakes: BTreeSet<(Mono, Key)>,
 }
@@ -128,14 +132,15 @@ impl Register {
         for k in self.plans.due() {
             let (engine, progress) = (&mut *h.engine, &self.progress);
             let Some((_, plan)) = self.plans.try_settle(&k, || judge(engine, &*net, progress, &k))? else { continue };
-            let Plan::Send(step, claims) = plan else { continue };
+            let Plan::Send(steps) = plan else { continue };
+            let Some(last) = steps.last().map(|(st, _)| st.id()) else { continue };
             let (src, s) = k;
             // a Send judged reads the connection holding the record: one is up
             let Some(conn) = net.conn_of(src) else { continue };
             let source = net.head(src, &s);
-            let Some(id) = net.request(conn, Msg::Register { id: 0, sync_id: s, step: (*step).clone(), claim_set: claims }) else { continue };
+            let Some(id) = net.request(conn, Msg::Register { id: 0, sync_id: s, steps }) else { continue };
             osis_base::costs::count("inbox: registered", 1);
-            self.out.insert((conn, id), (k, step.id(), source));
+            self.out.insert((conn, id), (k, last, source));
             let mut p = self.progress.get(&k).copied().unwrap_or_default();
             p.out = true;
             self.progress.insert(k, p);
@@ -176,12 +181,12 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
     osis_base::costs::count("inbox: register judged", 1);
     let (src, s) = k;
     let Some(m) = net.member_at(*src, s).filter(|m| m.class == SourceClass::Store) else { return Ok(Plan::Nothing) };
-    // S's recorded path: a sync ID only tickets name records none
-    let mut path = None;
+    // S's recorded path and tree: a sync ID only tickets name records none
+    let mut owned = None;
     for t in engine.sync_owners(s)? {
-        path = path.or_else(|| engine.sync_ids(&t).ok()?.iter().find(|o| o.id == *s && !o.hint).map(|o| o.path.clone()));
+        owned = owned.or_else(|| engine.sync_ids(&t).ok()?.iter().find(|o| o.id == *s && !o.hint).map(|o| (o.path.clone(), o.tree.clone())));
     }
-    let Some(path) = path else { return Ok(Plan::Nothing) };
+    let Some((path, tree)) = owned else { return Ok(Plan::Nothing) };
     let p = progress.get(k).copied().unwrap_or_default();
     // a departed peer's store stops at the first step past its keys and drops everything: its
     // holding the step's role commits serves no one (spec/sync-opens.md §6)
@@ -196,7 +201,7 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
         }
         Ok(true)
     };
-    let plan = plan(net.head(*src, s), &path, &p, &mut needs_held)?;
+    let plan = plan(net.head(*src, s), &path, &tree, &p, &mut needs_held)?;
     // the connection is read only where a step is to go: up again, it goes
     Ok(match plan {
         Plan::Send(..) if net.conn_of(*src).is_none() => Plan::Wait,
@@ -205,21 +210,67 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
 }
 
 /// spec/sync-ids.md §6 Steps (Register), Walk (Moving it): at a source keeping S unread standing
-/// at step `source` (its head event's), given this node's recorded `path` and its progress
-/// there, the next recorded step to register, once `held` says the source holds the role
-/// commits it depends on; at a source whose step is not known, its genesis step, at once.
-pub fn plan(source: Option<StepId>, path: &Path, p: &Progress, held: &mut dyn FnMut(&StepId) -> Result<bool>) -> Result<Plan> {
+/// at step `source` (its head event's), given this node's recorded `path`, every step its
+/// `sync.0` records (`tree`) and its progress there, the next Register, once `held` says the
+/// source holds the role commits each of its steps depends on: on the recorded path, the next
+/// recorded step; on a branch off it, the recorded steps after the deepest step the two share
+/// through the first deeper than the source's step (when the shared step's delete key is the
+/// source's step's); at a source whose step is not known, its genesis step, at once. Claim sets
+/// go while the message fits `MAX_MESSAGE`, the earliest dropped first; nothing goes when the
+/// steps alone do not fit.
+pub fn plan(source: Option<StepId>, path: &Path, tree: &BTreeMap<StepId, Step>, p: &Progress, held: &mut dyn FnMut(&StepId) -> Result<bool>) -> Result<Plan> {
     if p.out || p.backoff.is_some() || p.stuck.is_some_and(|x| x == source) {
         return Ok(Plan::Wait);
     }
     let index = |id: &Option<StepId>| id.and_then(|id| path.steps.iter().position(|(st, _)| st.id() == id));
+    // the recorded steps `from..=to`, once the source holds what each depends on
+    let mut send = |from: usize, to: usize| -> Result<Plan> {
+        let Some(steps) = path.steps.get(from..=to) else { return Ok(Plan::Nothing) };
+        for (st, _) in steps {
+            if !held(&st.id())? {
+                return Ok(Plan::Wait);
+            }
+        }
+        Ok(fit(steps.to_vec()))
+    };
     // the source's step: its head event's, or a later one this node registered there
-    let Some(i) = index(&source).max(index(&p.at)) else {
+    if let Some(i) = index(&source).max(index(&p.at)) {
+        return send(i + 1, i + 1);
+    }
+    let Some(at) = source else {
         return Ok(match path.steps.first() {
-            Some((genesis, claims)) if source.is_none() && p.at.is_none() => Plan::Send(Box::new(genesis.clone()), claims.clone()),
+            Some((genesis, claims)) if p.at.is_none() => fit(vec![(genesis.clone(), claims.clone())]),
             _ => Plan::Nothing,
         });
     };
-    let Some((next, claims)) = path.steps.get(i + 1) else { return Ok(Plan::Nothing) };
-    if held(&next.id())? { Ok(Plan::Send(Box::new(next.clone()), claims.clone())) } else { Ok(Plan::Wait) }
+    // off the recorded path: up the source's path in the tree to its deepest recorded-path step
+    // `fork`, `up` steps above the source's
+    let Some(source_step) = tree.get(&at) else { return Ok(Plan::Nothing) };
+    let (mut cur, mut up) = (source_step, 1);
+    let fork = loop {
+        let Some(prev) = cur.prev else { return Ok(Plan::Nothing) };
+        if let Some(j) = index(&Some(prev)) {
+            break j;
+        }
+        let Some(next) = tree.get(&prev).filter(|_| up <= tree.len()) else { return Ok(Plan::Nothing) };
+        (cur, up) = (next, up + 1);
+    };
+    // a store moves off a step bearing its head's delete key alone
+    match path.steps.get(fork) {
+        Some((f, _)) if f.keys.delete == source_step.keys.delete => send(fork + 1, fork + up + 1),
+        _ => Ok(Plan::Nothing),
+    }
+}
+
+/// A Register's steps with their claim sets while its body fits `MAX_MESSAGE`, the earliest set
+/// dropped first; nothing when the steps alone do not fit.
+fn fit(mut steps: Vec<(Step, Option<ClaimSet>)>) -> Plan {
+    let size = |steps: &[(Step, Option<ClaimSet>)]| Msg::Register { id: u32::MAX, sync_id: SyncId([0; 16]), steps: steps.to_vec() }.encode().len();
+    let mut i = 0;
+    while size(&steps) > osis_base::format::MAX_MESSAGE {
+        let Some((_, c)) = steps.get_mut(i) else { return Plan::Nothing };
+        *c = None;
+        i += 1;
+    }
+    Plan::Send(steps)
 }

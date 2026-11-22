@@ -102,11 +102,12 @@ fn step_bytes(step: &Step, claims: Option<&ClaimSet>) -> u64 {
 }
 
 /// Appends `step` (the head's child, or the genesis step) with its claim set, the parent's set
-/// starting its `ROLE_KEEP`; logs the head event.
+/// starting its `ROLE_KEEP` at its first child; logs the head event.
 pub(crate) fn append(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, step: &Step, claims: Option<&ClaimSet>) -> Result<()> {
     let n = len(t, s)?;
     if let Some(p) = n.checked_sub(1)
         && let Some(mut row) = step_row(t, s, p)?
+        && row.superseded.is_none()
     {
         row.superseded = Some(env.now);
         t.put_local(&rows::step_key(s, p), &row.encode(), Shred::No)?;
@@ -127,9 +128,24 @@ pub(crate) fn append(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, ste
 
 /// Drops S's path rows (its usage with them).
 pub(crate) fn erase(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId) -> Result<()> {
+    truncate(t, env, s, 0)
+}
+
+/// Bytes the path rows from index `keep` on count toward the caps.
+fn bytes_from(t: &mut Transaction<'_>, s: &SyncId, keep: u32) -> Result<u64> {
+    let mut n = 0;
+    for i in keep..len(t, s)? {
+        n += step_row(t, s, i)?.map_or(0, |r| r.step.len() as u64);
+        n += t.get_local(&rows::claims_key(s, i))?.map_or(0, |c| c.len() as u64);
+    }
+    Ok(n)
+}
+
+/// Drops S's path rows from index `keep` on (its usage with them).
+fn truncate(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, keep: u32) -> Result<()> {
     let n = len(t, s)?;
     let mut freed = 0;
-    for i in 0..n {
+    for i in keep..n {
         if let Some(row) = step_row(t, s, i)? {
             freed += row.step.len() as u64;
             if let Some(at) = row.superseded {
@@ -142,7 +158,11 @@ pub(crate) fn erase(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId) -> R
         t.remove_local(&rows::step_key(s, i), Shred::No)?;
         t.remove_local(&rows::claims_key(s, i), Shred::No)?;
     }
-    t.remove_local(&rows::head_key(s), Shred::No)?;
+    if keep == 0 {
+        t.remove_local(&rows::head_key(s), Shred::No)?;
+    } else if keep < n {
+        t.put_local(&rows::head_key(s), &W::default().u32(keep).take(), Shred::No)?;
+    }
     add_usage(t, env, s, |u| u.bytes = u.bytes.saturating_sub(freed))
 }
 
@@ -168,49 +188,110 @@ pub(crate) fn drop_claims(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId
     Ok(())
 }
 
-/// Register (spec/sync-ids.md §6, spec/wire.md §11.2 Register): 2 a step of another sync ID or a
-/// claim set of another hash; 14 a sync ID not kept unread in the sync set; into an empty path a
-/// genesis step that verifies (else 1; a child step 13); else the head again (0, nothing changes)
-/// or a child of the head (else 9); within
-/// the caps, a child past them without its claim set, and past them even so at most once per
-/// `register_every_ms`. A head moved over a refusal told to a record's source marks S anew
-/// (`rows::ANEW_SOME`) unless a mark stands: refusals told under the old head are shown again
-/// (spec/sync-streams.md §4 Refused; a connection's are in memory, `Store::take_register`). Answers
-/// the code, whether past the caps, and whether the head moved.
-pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, step: &Step, claims: Option<&ClaimSet>, past_cap_due: bool) -> Result<(Code, bool, bool)> {
-    if step.sync_id != *s || claims.is_some_and(|c| c.hash() != step.claims_hash) {
+/// Register (spec/sync-ids.md §6, spec/wire.md §11.2 Register) of `steps`, each a child of the
+/// one before: 2 a step of another sync ID or a claim set of another hash; 14 a sync ID not kept
+/// unread in the sync set; into an empty path a list from a genesis step that verifies (else 1; a
+/// list from a child step 13; a later step not verifying under the one before 9), within the caps
+/// (else 12); else a list ending at the head (0, nothing changes), or one leaving the path at a
+/// step whose delete key is the head's, each step verifying under the one before, its last deeper
+/// than the head (else 9), taken in place of the path after that step: within the caps, past them
+/// without its claim sets, and past them even so at most once per `register_every_ms`. A head
+/// moved over a refusal told to a record's source marks S anew (`rows::ANEW_SOME`) unless a mark
+/// stands: refusals told under the old head are shown again (spec/sync-streams.md §4 Refused; a
+/// connection's are in memory, `Store::take_register`). Answers the code, whether past the caps,
+/// and whether the head moved.
+///
+/// Invariant: a Register moves a store only deeper, and only off a step whose delete key is its
+/// head's. Every step it takes is signed by its parent's delete key, the first by the delete key
+/// of a step the store already holds, which the head bears: so whoever moves it holds the head's
+/// delete key (an admin of the head's epoch, as a child of the head needs) or relays steps such an
+/// admin signed. A relay (a removed node included) replays only real steps: an equal-depth
+/// sibling or a shallower path is refused, so it cannot flip a store between siblings or roll it
+/// back; a removed admin holding an older delete key than the head's cannot branch below the head.
+pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, steps: &[(&Step, Option<&ClaimSet>)], past_cap_due: bool) -> Result<(Code, bool, bool)> {
+    let Some(((first, _), (last, _))) = steps.first().zip(steps.last()) else { return Ok((Code::MALFORMED, false, false)) };
+    if steps.iter().any(|(st, c)| st.sync_id != *s || c.is_some_and(|c| c.hash() != st.claims_hash)) {
         return Ok((Code::MALFORMED, false, false));
     }
     if env.holding(s) != Some(Holding::Unread) {
         return Ok((Code::DECLINED, false, false));
     }
-    let genesis = step.prev.is_none();
-    match head(t, s)? {
-        None if !genesis => return Ok((Code::UNKNOWN_SYNC_ID, false, false)),
-        None if step.verify_genesis().is_err() => return Ok((Code::REFUSED, false, false)),
-        None => {}
-        Some((_, h)) if h.id() == step.id() => return Ok((Code::OK, false, false)),
-        Some((_, h)) if step.verify_child(&h).is_err() => return Ok((Code::NOT_HEAD_KEY, false, false)),
-        Some(_) => {}
-    }
-    let fits = |t: &mut Transaction<'_>, env: &mut Env<'_>, add: u64| -> Result<bool> { env.room(t, s, 0, add) };
-    let (keep_claims, past) = if fits(t, env, step_bytes(step, claims))? {
-        (claims, false)
-    } else if genesis {
+    let chained = |from: &Step, rest: &[(&Step, Option<&ClaimSet>)]| {
+        let mut parent = from;
+        for (st, _) in rest {
+            if st.verify_child(parent).is_err() {
+                return false;
+            }
+            parent = st;
+        }
+        true
+    };
+    // the index the new steps start at, and those of the list the path does not hold
+    let (keep, new) = match head(t, s)? {
+        None if first.prev.is_some() => return Ok((Code::UNKNOWN_SYNC_ID, false, false)),
+        None if first.verify_genesis().is_err() => return Ok((Code::REFUSED, false, false)),
+        None if !chained(first, steps.get(1..).unwrap_or_default()) => return Ok((Code::NOT_HEAD_KEY, false, false)),
+        None => (0, steps),
+        Some((_, h)) if h.id() == last.id() => return Ok((Code::OK, false, false)),
+        Some((hi, h)) => {
+            let ids: Vec<StepId> = steps_ids(t, s)?;
+            // where the list's first step goes on the path, then past the steps the path holds
+            let Some(mut at) = (match first.prev {
+                None => Some(0),
+                Some(p) => ids.iter().position(|x| *x == p).map(|j| j + 1),
+            }) else {
+                return Ok((Code::NOT_HEAD_KEY, false, false));
+            };
+            let mut skip = 0;
+            while let Some((st, _)) = steps.get(skip)
+                && ids.get(at) == Some(&st.id())
+            {
+                skip += 1;
+                at += 1;
+            }
+            let new = steps.get(skip..).unwrap_or_default();
+            // `at` is at least 1 here: a genesis the path does not hold is no step after one of it
+            let Some(fork) = at.checked_sub(1).and_then(|j| step(t, s, j as u32).transpose()).transpose()? else {
+                return Ok((Code::NOT_HEAD_KEY, false, false));
+            };
+            if new.is_empty() || at + new.len() <= hi as usize + 1 || fork.keys.delete != h.keys.delete || !chained(&fork, new) {
+                return Ok((Code::NOT_HEAD_KEY, false, false));
+            }
+            (at as u32, new)
+        }
+    };
+    let freed = bytes_from(t, s, keep)?;
+    let add = |with: bool| new.iter().map(|(st, c)| step_bytes(st, if with { *c } else { None })).sum::<u64>().saturating_sub(freed);
+    let (with_claims, past) = if env.room(t, s, 0, add(true))? {
+        (true, false)
+    } else if keep == 0 && len(t, s)? == 0 {
         return Ok((Code::STORAGE_CAP, false, false));
-    } else if fits(t, env, step_bytes(step, None))? {
-        (None, false)
+    } else if env.room(t, s, 0, add(false))? {
+        (false, false)
     } else if past_cap_due {
-        (None, true)
+        (false, true)
     } else {
         return Ok((Code::STORAGE_CAP, false, false));
     };
-    append(t, env, s, step, keep_claims)?;
+    truncate(t, env, s, keep)?;
+    for (st, c) in new {
+        append(t, env, s, st, if with_claims { *c } else { None })?;
+    }
     let mark = [rows::ANEW, &s.0].concat();
     if t.get_local(&mark)?.is_none() && t.records_any_row(s, rows::tag::TOLD, b"")? {
         t.put_local(&mark, rows::ANEW_SOME, Shred::No)?;
     }
     Ok((Code::OK, past, true))
+}
+
+/// The step IDs of S's path, from genesis.
+fn steps_ids(t: &mut Transaction<'_>, s: &SyncId) -> Result<Vec<StepId>> {
+    let n = len(t, s)?;
+    let mut out = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        out.extend(step_row(t, s, i)?.map(|r| StepId(osis_base::hash::hash(&r.step))));
+    }
+    Ok(out)
 }
 
 /// The code a Behind of S that carries nothing is answered with, whatever it names or shows

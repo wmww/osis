@@ -302,11 +302,14 @@ pub enum Holding {
     Unread,
 }
 
-/// A sync ID a thing owns, with its recorded path.
+/// A sync ID a thing owns, with its recorded path and tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OwnedSyncId {
     pub id: SyncId,
     pub path: Arc<Path>,
+    /// Every step its `sync.0` records, every branch, by ID (a source's step off `path` is found
+    /// here: spec/sync-ids.md §6 Register).
+    pub tree: Arc<BTreeMap<StepId, Step>>,
     /// A hint: held while the node holds no sync secret of the thing's own (spec/sync-ids.md §4).
     pub hint: bool,
 }

@@ -218,13 +218,14 @@ pub struct SuspectEntry {
 /// `ditem` is osis-blob's `DeleteItem`; `actor_proof` is `ActorProof`.
 /// Every message after Hello (spec/wire.md §11.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)] // a Register's step carries parsed keys; one per message
 pub enum Msg {
     Error { id: Id, code: Code },
     Ok { id: Id },
     Ping { id: Id, wall_ms: u64 },
     Pong { id: Id, wall_ms: u64 },
-    Register { id: Id, sync_id: SyncId, step: Step, claim_set: Option<ClaimSet> },
+    /// Steps in order, each child of the one before, each with its claim set when carried
+    /// (spec/sync-ids.md §6 Register).
+    Register { id: Id, sync_id: SyncId, steps: Vec<(Step, Option<ClaimSet>)> },
     /// One code per item of a Delete, in order.
     Status { id: Id, codes: Vec<Code> },
     Delete { id: Id, sync_id: SyncId, items: Vec<DeleteItem> },
@@ -443,7 +444,7 @@ impl Msg {
             M::Error { code, .. } => vec![k, id, Value::uint(code.0)],
             M::Ok { .. } | M::NoRecord { .. } => vec![k, id],
             M::Ping { wall_ms, .. } | M::Pong { wall_ms, .. } => vec![k, id, Value::uint(*wall_ms)],
-            M::Register { sync_id, step, claim_set, .. } => vec![k, id, s(sync_id), step_value(step), Value::opt(claim_set.as_ref().map(|c| Value::Bytes(c.to_bytes())))],
+            M::Register { sync_id, steps, .. } => vec![k, id, s(sync_id), Value::List(steps.iter().map(|(st, c)| Value::List(vec![step_value(st), Value::opt(c.as_ref().map(|c| Value::Bytes(c.to_bytes())))])).collect())],
             M::Status { codes, .. } => vec![k, id, Value::List(codes.iter().map(|c| Value::uint(c.0)).collect())],
             M::Delete { sync_id, items, .. } => vec![k, id, s(sync_id), Value::List(items.iter().map(DeleteItem::to_value).collect())],
             M::Fetch { max_reply, ids, .. } => vec![k, id, Value::uint(*max_reply), Value::List(ids.iter().map(|(x, bs)| Value::List(vec![s(x), Value::List(bs.iter().map(|i| Value::bytes(&i.0)).collect())])).collect())],
@@ -548,7 +549,11 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
         1 => Msg::Ok { id },
         2 => Msg::Ping { id, wall_ms: f.uint()? },
         3 => Msg::Pong { id, wall_ms: f.uint()? },
-        7 => Msg::Register { id, sync_id: sync_id(&mut f)?, step: step(f.next()?, n)?, claim_set: f.opt()?.map(|v| claim_set(v, n)).transpose()? },
+        7 => {
+            let sync_id = sync_id(&mut f)?;
+            let steps = f.list(1, usize::MAX, "register steps")?.into_iter().map(|v| register_step(v, n)).collect::<Result<_, _>>()?;
+            Msg::Register { id, sync_id, steps }
+        }
         11 => Msg::Status { id, codes: f.list(1, MAX_DELETE_ITEMS, "status codes")?.into_iter().map(|v| dec::uint(v, "code").map(Code)).collect::<Result<_, _>>()? },
         14 => {
             let sync_id = sync_id(&mut f)?;
@@ -695,6 +700,12 @@ fn sync_id(f: &mut Fields) -> Result<SyncId, Error> {
 fn step(v: Value, n: &Items) -> Result<Step, Error> {
     let bytes = dec::bytes(v, MAX_STEP_BYTES, "step")?;
     Ok(Step::from_value(&n.decode(&bytes, MAX_OBJECT_DEPTH)?)?)
+}
+
+/// `[step, Opt(claim_set)]`, an item of a Register.
+fn register_step(v: Value, n: &Items) -> Result<(Step, Option<ClaimSet>), Error> {
+    let mut f = Fields::range(v, 2, 2, "register step")?;
+    Ok((step(f.next()?, n)?, f.opt()?.map(|v| claim_set(v, n)).transpose()?))
 }
 
 fn step_value(s: &Step) -> Value {

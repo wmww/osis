@@ -526,17 +526,47 @@ impl Steps {
     fn id(&self, i: usize) -> StepId {
         self.steps[i].0.id()
     }
+    /// A sibling of step `i + 1`: a child of step `i` with the same role keys (another admin
+    /// stepping for the same epochs), or under a new admin secret's delete key (`admin`).
+    fn sibling(&self, i: usize, admin: Option<u8>) -> Step {
+        let a = Secret32::from_bytes([0xab; 32]);
+        let id = osis_blob::genesis_sync_id(&a);
+        let (sync, write) = (Secret32::from_bytes([i as u8 + 1; 32]), Secret32::from_bytes([i as u8 + 0x41; 32]));
+        let keys = StepKeys::derive(&sync, &write, &admin.map_or(a.clone(), |b| Secret32::from_bytes([b; 32])), &deposit_seed(0), &id);
+        let read = Epoch::derive(&THING, osis_base::Role::Read, i as u64 + 1, &write).unwrap();
+        let se = Epoch::derive(&THING, osis_base::Role::Sync, i as u64 + 1, &sync).unwrap();
+        let mut rng = SeededRng::from_u64(0x5000 + i as u64);
+        osis_blob::register(Parent::Child { step: &self.steps[i].0, delete: &role_key(RoleKey::Delete, &a) }, keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap().0
+    }
+    /// Every recorded step: the path's and `more`.
+    fn tree(&self, more: &[&Step]) -> BTreeMap<StepId, Step> {
+        self.steps.iter().map(|(s, _)| s).chain(more.iter().copied()).map(|s| (s.id(), s.clone())).collect()
+    }
 }
 
-/// The plan at a source standing at step `at`, given what it holds.
+/// The plan at a source standing at step `at`, given what it holds, `sync.0` recording the path.
 fn plan_at(st: &Steps, at: Option<StepId>, p: Progress, held: &[StepId]) -> Plan {
-    plan(at, &st.path(), &p, &mut |x: &StepId| Ok(held.contains(x))).unwrap()
+    plan_in(st, &st.tree(&[]), at, p, held)
 }
 
+/// As `plan_at`, `sync.0` recording `tree`.
+fn plan_in(st: &Steps, tree: &BTreeMap<StepId, Step>, at: Option<StepId>, p: Progress, held: &[StepId]) -> Plan {
+    plan(at, &st.path(), tree, &p, &mut |x: &StepId| Ok(held.contains(x))).unwrap()
+}
+
+/// The single step a plan sends.
 fn sends(p: &Plan) -> Option<StepId> {
     match p {
-        Plan::Send(s, _) => Some(s.id()),
+        Plan::Send(s) if s.len() == 1 => s.first().map(|(st, _)| st.id()),
         _ => None,
+    }
+}
+
+/// The steps a plan sends.
+fn sends_all(p: &Plan) -> Vec<StepId> {
+    match p {
+        Plan::Send(s) => s.iter().map(|(st, _)| st.id()).collect(),
+        _ => vec![],
     }
 }
 
@@ -566,6 +596,36 @@ fn a_source_holding_no_step_gets_genesis_first_spec_sync_ids_6() {
     let all = [st.id(0), st.id(1), st.id(2)];
     let at = Progress { at: Some(st.id(0)), ..Progress::default() };
     assert_eq!(sends(&plan_at(&st, None, at, &all)), Some(st.id(1)), "then the next");
+}
+
+// spec/sync-ids.md §6 (register: a branch): at a source on a recorded sibling of the recorded
+// path, one Register carries the recorded steps after the step the two paths share, through the
+// first deeper than the source's step, each once the source holds what it depends on; nothing at
+// an equal-depth sibling (siblings stand), at a sibling under another delete key than the shared
+// step's (no store takes it), or at a step `sync.0` does not record.
+#[test]
+fn registers_a_branch_at_a_sibling_spec_sync_ids_6() {
+    let st = Steps::new(4);
+    let all: Vec<StepId> = (0..4).map(|i| st.id(i)).collect();
+    let a = st.sibling(0, None);
+    let tree = st.tree(&[&a]);
+    assert_eq!(sends_all(&plan_in(&st, &tree, Some(a.id()), Progress::default(), &all)), vec![st.id(1), st.id(2)], "past the sibling");
+    assert_eq!(plan_in(&st, &tree, Some(a.id()), Progress::default(), &all[..2]), Plan::Wait, "the role commits of the last are not there yet");
+    let done = Progress { at: Some(st.id(2)), ..Progress::default() };
+    assert_eq!(sends(&plan_in(&st, &tree, Some(a.id()), done, &all)), Some(st.id(3)), "registered there: the next alone");
+    let stuck = Progress { stuck: Some(Some(a.id())), ..Progress::default() };
+    assert_eq!(plan_in(&st, &tree, Some(a.id()), stuck, &all), Plan::Wait, "refused: waits for the source to move");
+    // a branch two deep off step 0: the recorded path through its depth plus one
+    let mut b = Steps { steps: st.steps[..1].to_vec() };
+    b.steps.push((a.clone(), st.steps[0].1.clone()));
+    let a2 = b.sibling(1, None);
+    let tree2 = st.tree(&[&a, &a2]);
+    assert_eq!(sends_all(&plan_in(&st, &tree2, Some(a2.id()), Progress::default(), &all)), vec![st.id(1), st.id(2), st.id(3)]);
+    let short = Steps { steps: st.steps[..3].to_vec() };
+    assert_eq!(plan_in(&short, &short.tree(&[&a, &a2]), Some(a2.id()), Progress::default(), &all), Plan::Nothing, "an equal-depth sibling stands");
+    let rotated = st.sibling(0, Some(0xcd));
+    assert_eq!(plan_in(&st, &st.tree(&[&rotated]), Some(rotated.id()), Progress::default(), &all), Plan::Nothing, "a sibling under another delete key");
+    assert_eq!(plan_in(&st, &st.tree(&[]), Some(a.id()), Progress::default(), &all), Plan::Nothing, "a step sync.0 does not record");
 }
 
 // spec/sync-ids.md §6 (register; refused for now): one Register out at a time; refused for now (4,
@@ -806,4 +866,63 @@ fn a_peer_never_answering_holds_nothing_across_reconnects_spec_sync_inbox_3() {
         }
         assert_eq!(t.deposits_sent().len(), 9, "one item out per connection");
     }
+}
+
+// spec/sync-ids.md §6 (register: a branch): two admin nodes of one account (0 and 2) step S for
+// one rotation, so the store of a sync grantee of another account (node 1, keeping S unread)
+// stands on a sibling the recorded path does not take; a later step lists past the other
+// sibling only. A reader registers the branch there, so the grantee follows its grant by the
+// steps registered with it: removed again, it holds nothing of S. Built by hand: node 0's
+// removal reaches node 2 before node 0's step does (a hand delivery while 0 and 2 are apart), so
+// node 2 steps for the same epochs; node 2 grants and removes again before it hears of node 0's
+// step, so the recorded path runs through its own.
+#[test]
+fn a_store_on_a_losing_sibling_step_is_moved_on_spec_sync_ids_6() {
+    use crate::harness::history::{Holder, world_of};
+    use crate::harness::script::{Give, New, Run, Strong, Syncs, Write};
+    use osis_engine::flows::edges::Demotion;
+    let mut w = world_of(0, 2, 3);
+    w.cap = 20_000;
+    let _ = crate::harness::play(&mut w, &[New(2), Run, Strong(1, None, 0), Write(2, 0), Give(0, 0, Holder::Node(1), Syncs), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let bob = w.node(1).account.unwrap();
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap().map(|x| x.1), Some(Holding::Unread), "node 1 keeps S unread");
+    assert!(!w.store(1).entries(&s).unwrap().is_empty(), "and holds its entries");
+    let removal = Demotion { holder: bob, new: None, retain: None };
+    w.partition(0, 2);
+    w.partition(1, 2);
+    w.flush();
+    // node 0 removes node 1 (a rotation of sync), steps (A) and registers A at node 1
+    let rotation = w.write(0, |e| {
+        let before: BTreeSet<_> = e.commit_ids().into_iter().collect();
+        e.demote(&t, &removal).unwrap();
+        let new: Vec<_> = e.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+        new.iter().map(|c| e.package(c).unwrap().unwrap()).collect::<Vec<_>>()
+    });
+    w.run();
+    let a = w.store(1).head(&s).unwrap().map(|h| h.id());
+    assert_eq!(a, w.store(0).head(&s).unwrap().map(|h| h.id()), "node 1 is registered node 0's step");
+    // node 2 holds the rotation without node 0's step: it steps for the same epochs (B)
+    w.write(2, |e| {
+        for pk in &rotation {
+            e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists).unwrap();
+        }
+        e.reexamine().unwrap();
+    });
+    w.run();
+    let b = w.store(2).head(&s).unwrap().map(|h| h.id());
+    assert!(b.is_some() && b != a, "node 2 stepped a sibling");
+    // node 2 grants node 1 sync again (at A's epoch too) and removes it (C, a child of B)
+    let _ = crate::harness::play(&mut w, &[Give(2, 0, Holder::Node(1), Syncs)], String::new());
+    w.write(2, |e| e.demote(&t, &removal).unwrap());
+    w.run();
+    w.heal();
+    w.run();
+    let head = w.store(0).head(&s).unwrap().map(|h| h.id());
+    assert_eq!(head, w.store(2).head(&s).unwrap().map(|h| h.id()), "the readers record one head");
+    assert_ne!(head, b, "past B");
+    let _ = crate::harness::play(&mut w, &[Write(2, 0), Run], String::new());
+    assert!(w.store(1).entries(&s).unwrap().is_empty(), "removed, node 1 holds nothing of S");
+    assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), head, "node 1 is moved to the recorded head");
 }

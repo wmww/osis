@@ -247,7 +247,7 @@ peer := [dialable, [url*]]
 Error     [0, id, code]
 Ok        [1, id]
 Ping      [2, id, wall_ms]                     -> Pong [3, id, wall_ms]
-Register  [7, id, sync_id, step, Opt(claim_set)]   -> Ok | Error
+Register  [7, id, sync_id, [[step, Opt(claim_set)]+]] -> Ok | Error
 Status    [11, id, [code+]]
 Delete    [14, id, sync_id, [ditem+]]          -> Status
 Fetch     [19, id, max_reply, [[sync_id, [blob_id+]]+]] -> FetchReply [20, id, [[blob_id, Opt([blob, wrap, Opt(stamp)])]*]]
@@ -302,12 +302,12 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Digest** (spec/sync-opens.md §3): `digest` 32 bytes. **Members**: at most 4096 sync IDs, `more` true on every page but the last; sent only after a Digest that differs. Neither is answered.
 - **Resume** (spec/sync-opens.md §3): dialer to listener, after the dialer's `Proved`, at most one per connection (a second, or one before a Prove, is answered Error 2; a listener the dialer proved no key actor to, keeping no record for this connection, answers Error 1, and the dialer sends NoRecord). `nonce` 32 random bytes; each `tag` 32 bytes, at most `MAX_RESUME_TAGS` of them, as many as fit one message. **Resumed**: the listener's own `nonce`, and `tag` when it holds a listed record.
 - **Twin** (spec/sync-opens.md §1 Twin): either side, on a connection holding a record, about another; `tag` 32 bytes. **Twinned**: `tag` when the receiver matched it. A Twin on a connection holding no record is answered Twinned with none.
-- **Register**: replies Ok (also when the step already is the head), or an Error without the head (spec/sync-ids.md §6):
-  - 2 when the step's sync ID is not the message's, or the claim set does not hash to `claims_hash`;
-  - 1 for a genesis step that does not verify;
-  - 13 for a child step of an unknown sync ID;
-  - 9 for a step that is not a valid child of the head, and a genesis step while the node holds a step of the sync ID;
-  - 12 when that genesis step does not fit a storage cap (a child step that does not fit: spec/sync-ids.md §6);
+- **Register**: one or more steps in order, each a child of the one before, as many as fit `MAX_MESSAGE`. Replies Ok (also when the last step already is the head), or an Error without the head (spec/sync-ids.md §6):
+  - 2 when a step's sync ID is not the message's, or a claim set does not hash to its step's `claims_hash`;
+  - 1 for a genesis step into an empty path that does not verify;
+  - 13 for steps from a child step of an unknown sync ID;
+  - 9 for steps the node does not take (a step not verifying under the one before, a branch no deeper than the head or off a step bearing another delete key than the head's, a genesis step the node's path does not hold);
+  - 12 when steps into an empty path do not fit a storage cap (a branch that does not fit: spec/sync-ids.md §6);
   - 4 when registrations are rate-limited;
   - 14 when the node reads the sync ID or does not sync it.
 - **Stamp**: `stamp` under `"osis v1 stamp"` (`"osis v1 role entry"` for a role entry, spec/sync-ids.md §6), digest BLAKE3(canonical `[sync_id, blob_id, wrap]`).

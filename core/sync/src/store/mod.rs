@@ -1283,18 +1283,19 @@ impl Store {
         Ok(out)
     }
 
-    /// A Register of `step` with its claim set (spec/sync-ids.md §6 Register, spec/wire.md §11.2).
-    /// 14: S not kept unread here (a reader's path comes from `sync.0` alone); 2: a step of
-    /// another sync ID or a claim set not hashing to the step's; into an empty path 1 for a
-    /// genesis that does not verify, 13 for a child; 0 for the head again; 9: not a child of the
-    /// head; 12: past the caps (a genesis; a child past them even without its set, more than once
-    /// per interval, on the monotonic clock: `mono` is its reading now).
-    pub fn take_register(&mut self, s: &SyncId, step: &Step, claims: Option<&ClaimSet>, mono: Mono) -> Result<Code> {
+    /// A Register of `steps`, each with its claim set when carried (spec/sync-ids.md §6 Register,
+    /// spec/wire.md §11.2; `path::register`). 14: S not kept unread here (a reader's path comes
+    /// from `sync.0` alone); 2: a step of another sync ID or a claim set not hashing to its
+    /// step's; into an empty path 1 for a genesis that does not verify, 13 for a list from a child;
+    /// 0 for a list ending at the head; 9: not a deeper branch off a step bearing the head's delete
+    /// key; 12: past the caps (into an empty path; else past them even without the claim sets,
+    /// more than once per interval, on the monotonic clock: `mono` is its reading now).
+    pub fn take_register(&mut self, s: &SyncId, steps: &[(&Step, Option<&ClaimSet>)], mono: Mono) -> Result<Code> {
         let mut g = self.lock();
         let last = g.past_cap.get(s).copied();
         let policy = g.policy.clone();
         let due = last.is_none_or(|at| mono >= at.after(policy.register_every_ms));
-        let (code, past, moved) = g.write(|t, env| path::register(t, env, s, step, claims, due))?;
+        let (code, past, moved) = g.write(|t, env| path::register(t, env, s, steps, due))?;
         // refusals told under the old head are shown again (`anew_feed`), a record's marked durably
         // (`path::register`)
         if moved {

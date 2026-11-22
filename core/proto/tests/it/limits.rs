@@ -75,7 +75,9 @@ fn embedded_items_count_toward_the_message_spec_wire_12() {
     let ms = osis_proto::examples::messages();
     let msg = |name: &str| ms.iter().find(|(m, _)| *m == name).map(|(_, m)| m.to_value()).unwrap();
     let Value::List(mut register) = msg("register") else { panic!() };
-    register[4] = Value::List(vec![ones(n, &[0xa0])]);
+    let Value::List(steps) = &mut register[3] else { panic!() };
+    let Value::List(first) = &mut steps[0] else { panic!() };
+    first[1] = Value::List(vec![ones(n, &[0xa0])]);
     let Value::List(mut shared) = msg("shared with an entry grant") else { panic!() };
     let Value::List(items) = &mut shared[2] else { panic!() };
     let Value::List(item) = &mut items[0] else { panic!() };

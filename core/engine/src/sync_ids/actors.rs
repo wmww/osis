@@ -69,7 +69,8 @@ pub(crate) fn owned_in(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId
             if !core.owns_sync_id(g, id, &steps) {
                 return None;
             }
-            Some(OwnedSyncId { id: *id, path: Arc::new(recorded_path(&steps)?), hint })
+            let tree = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
+            Some(OwnedSyncId { id: *id, path: Arc::new(recorded_path(&steps)?), tree: Arc::new(tree), hint })
         })
         .collect()
 }
@@ -297,7 +298,7 @@ fn followed(core: &Core, k: &Tid) -> Option<OwnedSyncId> {
     let ix = &core.ix;
     let elsewhere = ix.sync_recorders.get(&s).is_some_and(|x| !x.is_empty())
         || core.followed_links.naming(&s).iter().any(|t| t != k);
-    (followable(core, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true })
+    (followable(core, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), hint: true })
 }
 
 /// The sync IDs the held tickets for `g` name (spec/sync-inbox.md §5 Ticket sync IDs: its
@@ -310,7 +311,7 @@ fn ticket_hints(core: &Core, g: &Tid) -> Vec<OwnedSyncId> {
         ix.sync_recorders.get(s).is_some_and(|x| x.iter().any(|t| t != g)) || !core.followed_links.naming(s).is_empty()
     };
     let ids: BTreeSet<SyncId> = ix.closure.ticket_ids(g).into_iter().map(|(s, _)| s).filter(|s| !theirs(s)).collect();
-    ids.into_iter().map(|id| OwnedSyncId { id, path: Arc::new(crate::sync::Path::default()), hint: true }).collect()
+    ids.into_iter().map(|id| OwnedSyncId { id, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), hint: true }).collect()
 }
 
 /// Whether followed link `k` may be a link's K here: a thing this node holds only as a link's K

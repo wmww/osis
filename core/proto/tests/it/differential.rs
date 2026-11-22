@@ -301,7 +301,13 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
         0 => n(1).and_then(|_| u(&a[0])),
         1 | 40 => n(0),
         2 | 3 => n(1).and_then(|_| u(&a[0])),
-        7 => n(3).and_then(|_| b(&a[0], 16)).and_then(|_| step(&a[1])).and_then(|_| opt_of(&a[2], claim_set)),
+        7 => n(2).and_then(|_| b(&a[0], 16)).and_then(|_| {
+            // `[[step, Opt(claim_set)]+]`, as many as fit the message
+            list(&a[1], 1, usize::MAX, |x| {
+                let t = tuple(x, 2)?;
+                step(&t[0]).and_then(|_| opt_of(&t[1], claim_set))
+            })
+        }),
         11 => n(1).and_then(|_| list(&a[0], 1, 1024, u)),
         14 => n(2).and_then(|_| b(&a[0], 16)).and_then(|_| list(&a[1], 1, 1024, ditem)),
         19 => n(2).and_then(|_| max_reply(&a[0])).and_then(|_| {

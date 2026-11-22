@@ -8,9 +8,10 @@ use osis_proto::{Code, Msg};
 
 pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: RequestId, m: Msg) {
     let reply = match m {
-        Msg::Register { sync_id, step, claim_set, .. } => {
+        Msg::Register { sync_id, steps, .. } => {
             // a store failure answers refused: the node reopens from its store
-            let code = h.store.take_register(&sync_id, &step, claim_set.as_ref(), h.mono).unwrap_or(Code::REFUSED);
+            let steps: Vec<_> = steps.iter().map(|(st, c)| (st, c.as_ref())).collect();
+            let code = h.store.take_register(&sync_id, &steps, h.mono).unwrap_or(Code::REFUSED);
             if code == Code::OK { Msg::Ok { id } } else { Msg::Error { id, code } }
         }
         Msg::Delete { sync_id, items, .. } => {
