@@ -633,19 +633,25 @@ impl World {
 
     /// A new node paired as a second node of node `i`'s account, as the product's pairing does
     /// (`Engine::pair`, `Engine::paired`): its card handed to node `i` and what node `i` sends
-    /// handed back, outside sync; then placed, listening and published as `add_node`'s.
+    /// handed back, outside sync; then placed, listening and published as `add_node`'s. A store
+    /// failure at node `i` (a planned device fault; a crash restarts it in place, `write`) fails
+    /// its part, and the user pairs again: `Engine::pair` takes the same node twice.
     pub fn pair(&mut self, i: usize) -> usize {
         let (account, profile) = (self.node(i).account.expect("an account"), self.node(i).profile);
         let n = self.add_bare_node();
         let new = self.engine(n).tid();
         let card: Vec<osis_engine::local_peer::Package> = { let e = self.engine(n); e.commit_ids().iter().filter_map(|c| e.package(c).ok().flatten()).collect() };
-        let sent = self.write(i, |e| {
+        let exchange = |e: &mut Engine| -> osis_engine::Result<Vec<osis_engine::local_peer::Package>> {
             for pk in &card {
-                e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists).expect("the new node's card");
+                e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists)?;
             }
-            let (_, send) = e.pair(&new).expect("pair");
-            send.iter().filter_map(|c| e.package(c).ok().flatten()).collect::<Vec<_>>()
-        });
+            let (_, send) = e.pair(&new)?;
+            Ok(send.iter().filter_map(|c| e.package(c).ok().flatten()).collect())
+        };
+        let sent = match self.write(i, exchange) {
+            Err(osis_engine::Error::Store(_)) => self.write(i, exchange).expect("pairing again after a store failure"),
+            r => r.expect("pairing"),
+        };
         self.write(n, |e| {
             for pk in &sent {
                 e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists).expect("pairing's commits");

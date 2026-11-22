@@ -446,6 +446,9 @@ pub(crate) fn without_frozen(core: &Core, blob: osis_commit::CommitBlob) -> osis
 /// now. `rejudge`: a role commit may have changed what the held copies hang on.
 fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) -> Result<Vec<Tid>> {
     // an account this node was removed from: what it read as it goes too
+    for p in tx.core.left.clone() {
+        tx.core.account_changing(p);
+    }
     lost.extend(std::mem::take(&mut tx.core.left));
     let lost = with_unread_below(tx.core, lost);
     if lost.is_empty() && dropped.is_empty() && !(rejudge && !tx.core.ix.kept.is_empty()) {

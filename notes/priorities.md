@@ -9,7 +9,6 @@
 
 ## First: main's failing properties
 A property failing on main is the next task (notes/coordination.md, Known failures). Found by the gate's random seeds and failing on main, each with its replay line and a line in tools/known_failures.txt:
-- issues/differential-small-size-failures.md (the sync differential at the gate's size on fresh seeds: a new node's card failing on a crashed store, not shrunk).
 - the app test of issues/app-tile-unreadable-emails-test.md.
 - The story property's `counts:` baseline (roles-model `paths`, `dispute`: two backdated lowerings hiding each other from a node with no order): issues/masked-backdated-lowerings.md.
 - held-model's laws property on some seeds: issues/held-model-until-no-deadline.md.

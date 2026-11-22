@@ -84,6 +84,7 @@ pub(crate) fn keep(tx: &mut Tx<'_>, p: &Tid, s: &Secret32) -> Result<()> {
     if let Some(a) = tx.core.accounts.get(p).filter(|a| !a.keys.contains_key(&pk)) {
         let mut n = (**a).clone();
         n.keys.insert(pk, Arc::new(keys));
+        tx.core.account_changing(*p);
         tx.core.accounts.replace(*p, Arc::new(n));
         tx.core.ix.epochs_due.insert(*p);
         // a part on the account itself sealed under an epoch whose seed came only now opens now:

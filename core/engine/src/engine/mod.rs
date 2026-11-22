@@ -963,6 +963,8 @@ pub(crate) struct CoreMark {
     sides: (usize, usize),
     schemas: usize,
     written: usize,
+    /// `accounts_undo`'s length.
+    accounts: usize,
     events: usize,
     commits_named: usize,
     listed_before: usize,
@@ -1236,6 +1238,9 @@ pub struct Core {
     /// The account this node was removed from and has not dropped what it read as it yet
     /// (`flows::signing::leave_if_removed`; the lost-access drop takes it).
     pub left: BTreeSet<Tid>,
+    /// What the running transaction changed of `accounts` and `left` (`account_changing`),
+    /// oldest first: each account as it was, held (`None`: not) and in `left`.
+    accounts_undo: Vec<(Tid, Option<Arc<crate::flows::account::HeldAccount>>, bool)>,
     /// A commit of this node's account applied from elsewhere, or the engine opened (not
     /// durable): what it owes its signing chain is looked at at the end of the next complete
     /// pass of its account root's sync IDs (`Engine::pass_end`, `Engine::signing_due`).
@@ -1705,9 +1710,18 @@ impl Core {
         self.sides.commit();
         self.waits.retake_committed();
         self.written.clear();
+        self.accounts_undo.clear();
         self.reach_log.clear();
         self.walks.committed();
         self.dirty = false;
+    }
+
+    /// Account `p` is about to change in `accounts` or `left` inside a transaction: a rollback
+    /// puts it back (a seed a failed transaction kept is not held, a leave undone is not left).
+    pub(crate) fn account_changing(&mut self, p: Tid) {
+        let was = self.accounts.get(&p).cloned();
+        let left = self.left.contains(&p);
+        self.accounts_undo.push((p, was, left));
     }
 
     /// Drops the `tree_reach` of every thing a question took since `n` (`reach_log`): what it
@@ -1730,6 +1744,7 @@ impl Core {
             sides: self.sides.mark(),
             schemas: self.schemas.mark(),
             written: self.written.len(),
+            accounts: self.accounts_undo.len(),
             events: self.events.queued(),
             commits_named: self.commits_named.len(),
             listed_before: self.listed_before.len(),
@@ -1764,6 +1779,7 @@ impl Core {
             ("sides", self.sides.journaled() > m.sides.0 + m.sides.1),
             ("schemas", self.schemas.mark() != m.schemas),
             ("written", self.written.len() != m.written),
+            ("accounts", self.accounts_undo.len() != m.accounts),
             ("events", self.events.queued() != m.events),
             ("commits_named", self.commits_named.len() != m.commits_named),
             ("listed_before", self.listed_before.len() != m.listed_before),
@@ -1803,6 +1819,16 @@ impl Core {
             }
         }
         self.dirty = m.dirty;
+        for (p, was, left) in self.accounts_undo.split_off(m.accounts.min(self.accounts_undo.len())).into_iter().rev() {
+            match was {
+                Some(a) => drop(self.accounts.replace(p, a)),
+                None => drop(self.accounts.remove(&p)),
+            }
+            match left {
+                true => self.left.insert(p),
+                false => self.left.remove(&p),
+            };
+        }
         self.waits.retake_rolled_back();
         self.ix.rollback_to(m.ix);
         self.schemas.rollback_to(m.schemas);
@@ -1849,6 +1875,9 @@ impl Core {
             dated_as: _,
             wrote_on: _,
             written: _,
+            accounts: _,
+            left: _,
+            accounts_undo: _,
             compaction: _,
             stale_things: _,
             stale_authors: _,
@@ -1996,8 +2025,6 @@ impl Core {
             followed_links: _,
             account: _,
             time: _,
-            accounts: _,
-            left: _,
             signing_due: _,
             keep_bodies: _,
             list_bound: _,
@@ -2242,6 +2269,7 @@ impl Core {
             account: Default::default(),
             time: Default::default(),
             left: BTreeSet::new(),
+            accounts_undo: Vec::new(),
             // judged once after an open: a commit applied before a restart left it owed
             signing_due: true,
             accounts: Default::default(),

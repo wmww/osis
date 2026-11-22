@@ -661,6 +661,7 @@ pub(crate) fn kept(v: &super::account::AccountView, held: &super::account::HeldA
 
 /// `leave_if_removed` of account `p` with account root `d`.
 pub(crate) fn leave(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()> {
+    tx.core.account_changing(p);
     tx.core.accounts.remove(&p);
     super::custody::shred(tx, &p)?;
     tx.core.left.insert(p);

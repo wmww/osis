@@ -212,3 +212,43 @@ fn a_failed_transaction_leaves_no_wait_due_for_what_it_brought() {
     .unwrap();
     assert_eq!(e.next_timer().unwrap(), before, "a failed step");
 }
+
+// spec/commits.md §4 (Apply: a transaction that fails or is refused leaves the node as it was):
+// a pairing failing at any write of its rotation leaves the account's seeds as the store holds
+// them (the rotation's new seed not held unless the commit landed), as an open reads them;
+// pairing again then pairs.
+#[test]
+fn a_failed_pairing_keeps_no_seed_of_its_rotation() {
+    let make = || {
+        let mut lp = LocalPeer::new_bare(2, 0, T0).unwrap();
+        let (a, _) = lp.peers[0].engine.create_account().unwrap();
+        lp.advance(1);
+        for id in lp.peers[1].engine.commit_ids() {
+            let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
+            lp.deliver(0, &pk).unwrap();
+        }
+        let node = lp.peers[1].engine.tid();
+        (lp, a.account, node)
+    };
+    for n in 0.. {
+        let (mut lp, _, node) = make();
+        let f = lp.peers[0].backend.faults().clone();
+        f.at(n, Fault::Fail);
+        let r = lp.peers[0].engine.pair(&node);
+        if f.writes() <= n {
+            r.unwrap();
+            assert!(n > 0, "pairing writes");
+            return;
+        }
+        // a failed write may yet land the commit (`Ok`): either way memory is what the store holds
+        lp.peers[0].engine.check_index();
+        let (_, all) = match r {
+            Ok(x) => x,
+            Err(_) => lp.peers[0].engine.pair(&node).unwrap(),
+        };
+        for id in &all {
+            let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
+            lp.deliver(1, &pk).unwrap();
+        }
+    }
+}
