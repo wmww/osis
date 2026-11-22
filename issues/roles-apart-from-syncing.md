@@ -1,7 +1,7 @@
 # A role through holders works only where the node syncs the holders
-> Summary: Tess decided "a role counts wherever its grants are held; syncing is a separate choice" (account write on A, A admin of B, B admin of C, the account syncing only C writes on C). Not built: the role filter (notes/node-closure.md Roles taken up, clause 3) is not what blocks it. A node gets a thing's secrets only through a ticket or a holder's sync ID it syncs, and only the account's grants could point it at holders to fetch, which a stranger controls. Studied in notes/holder-access-study.md, which recommends holding each holder on the path for keys only (its role entries, by taken grants) and lists five questions for Tess; the options below are the earlier ones.
+> Summary: Tess decided "a role counts wherever its grants are held; syncing is a separate choice" (account write on A, A admin of B, B admin of C, the account syncing only C writes on C). Not built: a node gets a thing's secrets only through a ticket or a holder's sync ID it syncs. Direction decided (notes/holder-access-study.md): roles never feed what syncs, no taking of grants, and a node syncing C holds for keys every holder on every path giving its account a role on C (own boxes only); lands with A2, modelled first. spec/requirements.md stays as it is until the direction proves practical.
 > Priority: normal
-> Tags: sync, engine, spec, tess-call
+> Tags: sync, engine, spec
 
 ## Measured
 Alice's A, B, C, all independent; Bob write on A, A admin of B, B admin of C; Bob writes on C (a sync `holding` probe):
@@ -25,11 +25,5 @@ That was the rule before clause 3. What a node holds outside its closure is inci
 ## The obstacle
 For a node syncing only C, C's secrets come through A's and B's key material, under their sync IDs. Which holders' sync IDs to fetch can only be found from the account's grants (C is opaque without its secrets). A stranger granting the account a role on X would then make the node fetch X's sync ID and follow X's grants onward, so nodes would sync on a stranger's say. Taking grant fires as they arrive is also a rejected rule (a declined grant's records stay: sync `growth::a_declined_grant_returns_storage_to_a_fresh_worlds_*`).
 
-## Options
-1. The strong stays the choice, stated as syncing (no "accepting"): a role through holder H is usable where the node syncs H, since grants naming H and boxes to H travel under H's sync ID. Close gap 2: boxes to a holder travel down the keys-open chain as its role commits do, so syncing the first holder is enough (A -> B -> C works with strongs to A and C). Cheap for a realm that references its contents by weaks (notes/realms.md); a holder's sync ID then carries the boxes of everything below it by roles.
-2. A lighter choice than a strong: the account marks a holder to act through, and the node syncs that sync ID's role commits and boxes only, not its sync unit. A new holding mode and a sync filter by entry kind; still a choice per holder.
-3. Roles decide which key material is fetched (every holder on the account's paths). Nodes sync on a stranger's say.
-4. Clause 3 dropped alone: changes nothing in the measured world and brings back the class above.
-
-## Study
-notes/holder-access-study.md costs the baseline (a removal from a holder already rotates everything below it, and copies each of those rotations' boxes to every reader of the holder) and three candidates. Its recommendation is option 2 made automatic and driven by taken grants instead of a mark per holder: a node holds for keys every thing on a chain of taken grants from an own actor to a thing its strongs reach, an edge counts only while its holder is held, and nothing new is placed under any unit below. Waiting on Tess: the study's For Tess 1 to 5.
+## Direction
+notes/holder-access-study.md (The direction, Modelling plan). It answers the obstacle: what a node fetches comes from what it syncs and the real holder chains of those things, so a stranger's grant on a thing on no path changes nothing; how a node finds those paths without reading a stranger's lists is the study's Open, settled in the model. Planned in notes/redesign-plan.md A2.
