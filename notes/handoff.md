@@ -4,7 +4,6 @@
 The design is notes/write-path-design.md (Decided, the lettered rules); the plan notes/redesign-plan.md (stages P and D done; A1's spec written: spec/permissions.md §1-§2, §5.1-§5.2, §6); what runs beside it notes/priorities.md.
 
 ## Waiting on Tess
-- **Requirements wording**: spec/requirements.md line 15 says a write's actors start at "the key that signs it"; under owner keys the actors are all things (a key signs as a thing). Not contradicted by the spec, but stale: offered to Tess, not yet answered.
 - **Acting through a team requires accepting it** (907d6f4f7): follows spec/sync-inbox.md §5 (only accepting takes a grant up) and fixed the unaccepted-grant sync class, but removes something a user could do; asked, not yet answered. Narrow to reverse (`rotation::role_here`'s skip of the account's edges on unreached things).
 - **The first owner key** (issues/owner-key-first-attach.md): built as option 1, one clause (`Rules::attach_on_path`), option 2 the variant `-attach-kept`.
 - Small: CLAUDE.md's GUI test command lacks `--no-fail-fast` (app's known failure stops kit's tests); a smaller fixed setting for the KNOWN story search is hers to allow; the gate.checks CPU share raise (notes/time-limits.md) is hers to review.
