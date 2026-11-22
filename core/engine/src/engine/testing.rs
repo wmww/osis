@@ -617,47 +617,7 @@ impl Engine {
     /// Whether an edge write of commit `c` on `t` applies in the settled walk (tests).
     #[doc(hidden)]
     pub fn edge_write_applied(&self, t: &Tid, c: &CommitId) -> bool {
-        self.core.timelines.get(t).is_some_and(|tl| tl.applied().iter().any(|(w, a)| w.commit() == *c && a.target == *t))
-    }
-
-    /// Sets the least component saved (`WALK_CACHE_MIN`) for this session (tests).
-    #[doc(hidden)]
-    pub fn set_walk_cache_min(&mut self, n: usize) {
-        self.core.walk_cache_min = n;
-    }
-
-    /// Role components the last open restored from their saved walks (tests).
-    #[doc(hidden)]
-    pub fn walks_restored(&self) -> usize {
-        self.core.timelines.restored()
-    }
-
-    /// Damages every saved walk (tests): 0 truncates, 1 flips a bit, 2 saves it again under
-    /// other rules.
-    #[doc(hidden)]
-    pub fn damage_walks(&mut self, how: u8) -> Result<usize> {
-        self.run(|tx| {
-            let t = tx.txn.index(WALKS)?;
-            let rows = tx.txn.table_range(t, &[], None, 1 << 20)?;
-            let other = tx.core.timelines.to_save(b"another build", 1, true);
-            for (k, mut v) in rows.iter().cloned() {
-                match how {
-                    0 => v.truncate(v.len() / 2),
-                    1 => {
-                        let i = v.len() / 2;
-                        if let Some(b) = v.get_mut(i) {
-                            *b ^= 4;
-                        }
-                    }
-                    _ => match other.put.iter().find(|(r, _)| r.as_bytes()[..] == k[..]) {
-                        Some((_, b)) => v = b.clone(),
-                        None => continue,
-                    },
-                }
-                tx.txn.table_put(t, &k, v, Shred::Yes)?;
-            }
-            Ok(rows.len())
-        })
+        self.core.timelines.get(t).is_some_and(|tl| tl.held_on(t).any(|(w, mc, _)| mc.id == *c && tl.is_applied(&w)))
     }
 
     /// Damages the role commits' `PERM_PARTS` rows (tests): 0 truncates one, 1 garbles one,
@@ -834,8 +794,9 @@ fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::WallMs, &crate:
 }
 
 /// The role timelines' verdicts `Core::perm_digest` shows: per held thing its roster (`None`: no
-/// timeline), then every applied and dropped edge write, and the keyless actor grants.
-type PermParts = (Vec<(Tid, Option<BTreeMap<Tid, osis_perm::Edge>>)>, BTreeMap<osis_perm::WriteId, osis_perm::Applied>, BTreeMap<osis_perm::WriteId, osis_perm::Point>, BTreeSet<(Tid, Tid)>);
+/// timeline), then every applied edge write and every held one not applied, and the keyless actor
+/// grants.
+type PermParts = (Vec<(Tid, Option<BTreeMap<Tid, osis_perm::Edge>>)>, BTreeMap<osis_perm::WriteId, osis_perm::paths::Applied>, BTreeSet<osis_perm::WriteId>, BTreeSet<(Tid, Tid)>);
 
 impl super::Core {
     /// `Engine::index_digest`.
@@ -866,9 +827,9 @@ impl super::Core {
     /// `IndexDigest::held`.
     fn held_digest(&self) -> BTreeMap<Tid, (Vec<CommitId>, bool)> {
         let ix = &self.ix;
-        osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
+        ix.held.all_things().into_iter().map(|t| {
             // sorted: the held set keeps arrival order, which nothing it answers depends on
-            let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&ix.held, &t).iter().map(|x| x.id).collect();
+            let mut cs: Vec<CommitId> = ix.held.edge_commits(&t).iter().map(|x| x.id).collect();
             cs.sort();
             (t, (cs, ix.held.created(&t).is_some()))
         }).collect()
@@ -892,17 +853,29 @@ impl super::Core {
     /// `PermParts` of the components as held (`false`) or of one from-scratch evaluation.
     fn perm_parts(&self, from_scratch: bool) -> PermParts {
         let held = &self.ix.held;
-        let full = from_scratch.then(|| osis_perm::Timeline::evaluate(held));
+        // from scratch: one update over every held commit and record, under the same trust set
+        let full = from_scratch.then(|| {
+            let mut tl = osis_perm::Timeline::default();
+            let commits: BTreeSet<CommitId> = self.ix.commits.keys().copied().collect();
+            let things: BTreeSet<Tid> = held.all_things().into_iter().collect();
+            tl.update(self, &commits, &things);
+            tl.set_trust(&self.sides.trust());
+            tl
+        });
         let get = |t: &Tid| full.as_ref().or_else(|| self.timelines.get(t));
-        let (mut rosters, mut applied, mut dropped) = (Vec::new(), BTreeMap::new(), BTreeMap::new());
-        for t in osis_perm::HeldSet::things(held) {
+        let (mut rosters, mut applied, mut dropped) = (Vec::new(), BTreeMap::new(), BTreeSet::new());
+        for t in held.all_things() {
             let Some(tl) = get(&t) else {
                 rosters.push((t, None));
                 continue;
             };
             rosters.push((t, Some(tl.roster(&t, osis_perm::At::END))));
-            applied.extend(tl.applied().iter().map(|(k, v)| (*k, *v)));
-            dropped.extend(tl.dropped().iter().map(|(k, v)| (*k, *v)));
+            for (w, _, _) in tl.held_on(&t) {
+                match tl.applied(&w) {
+                    Some(a) => drop(applied.insert(w, a)),
+                    None => drop(dropped.insert(w)),
+                }
+            }
         }
         let keyless = match &full {
             Some(tl) => crate::rotation::members::keyless_in(tl),
@@ -922,7 +895,7 @@ impl super::Core {
                 None => writeln!(out, "{t:?} no timeline"),
             };
         }
-        let _ = writeln!(out, "applied {applied:?}\ndropped {dropped:?}\nkeyless {keyless:?}");
+        let _ = writeln!(out, "applied {applied:?}\nnot applied {dropped:?}\nkeyless {keyless:?}");
         out
     }
 }
