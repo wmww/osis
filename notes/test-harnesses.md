@@ -6,7 +6,7 @@
 - A set variable and an overridden range are echoed past libtest's capture, so they show on a passing run: check that line, not only `1 passed`. Per-seed output needs `-- --nocapture`.
 - Sizes (`OSIS_FULL=1`, the gate's a tenth): notes/testing.md, Sizes.
 - **Every property and its variable**: `python3 tools/test_select.py --all` lists every property test by crate and prints the command with every `OSIS_*` start variable the gate sets. Each harness prints its own replay line for a failing seed: use it as printed.
-- **`_plain` and `_large`**: a seed runner is a property, never a default test (notes/testing.md, When tests run). Its `_plain` runs a fixed sample (a covering set where one was chosen by planted faults) and reads no environment; its `_large` reads the range (`--ignored --exact <name>_large`). The replay line names the `_large` where it checks a seed as the `_plain` does, else the `_plain`. `held_set_decides_plain` reads the range itself, beside `held_set_decides_exhaustive`.
+- **`_plain` and `_large`**: a seed runner is a property, never a default test (notes/testing.md, When tests run). Its `_plain` runs the gate-sized sample: a fixed covering set chosen by planted faults (reading no environment), or a seed range the gate offsets (`OSIS_*_START`/`_SEEDS`: the sync differential, the order harness, crdt's model, the forged copies, the custody seeds); its `_large` reads the range at full size (`--ignored --exact <name>_large`). The replay line names the `_large` where it checks a seed as the `_plain` does, else the `_plain`.
 - Engine lib harnesses: `cargo test -p osis-engine --lib <path> -- --ignored --exact`; a copied binary from `tools/bin-at REV OUT --lib osis-engine`, run from `core/engine`.
 
 Crate-wide seeds:
@@ -127,6 +127,8 @@ Measure by instruction counts (Measuring); totals from `tools/pertest.py top`. T
 - A thing re-entering the node closure usually rejoins the sync set by its own sync ID, pulled from the start anyway, so a re-entry test passes with `refetch` broken: only a dependent thing in a unit whose sync ID never left exercises it.
 - A drop path that marks commits stale needs a test where the drop happens in the end-of-transaction tail: only the end-of-transaction debug assert ("stale validity left unjudged") catches a re-judge marker set after the transaction's last re-judge.
 - A late-order test says which copy it delivers: a node's copy of a commit it purged is header-only, so delivering it tests "never held the body", not "the body arrived late".
+- A test handing a grant's packages to a node before it holds the thing loses what lies outside its node closure (boxes of a thing outside it are not kept), and later reads mislead: accept first, then deliver.
+- A kept copy syncs nothing: a node holding only a kept copy never sees a later flip of the way; a test of a recorded holder leaving uses an ended way whose holder the node still syncs.
 - A hand-again-until-quiet loop must not count every non-`Duplicate` result as progress: a commit kept pending, handed again, comes back `Pending` every round (at a lookup's cost, `apply::rearrival`), so the loop runs its full bound (osis-sync `history::reference`: 319 rounds instead of 2, 5x the sims' and differential's cost). Stop once a round applies nothing and leaves `Engine::pending` as it was.
 - `order.rs`'s and `parts.rs`'s `FRESH` are one account (one seed), granted by the base; the judgment vectors' judge is that account too (`order::judge_at`).
 - A world built under `PageParams::set_test` (thread-local small pages) must not go into `LocalPeer::cached`: other tests would read its small-page states.
@@ -144,12 +146,17 @@ Measure by instruction counts (Measuring); totals from `tools/pertest.py top`. T
 
 **Counting**
 - `costs::take` counts per thread: in a `LocalPeer` test it mixes every peer's work; scope the window to one peer's applies.
+- `testenv::Cpu` counts only threads `testenv`'s `par_map`/`run_jobs` ran: work on other threads (osis-store forensic's own `par_map` under `World::forensic`, any `thread::scope`) is missing from it. Count such work with `tools/icount`.
+- `icount` of one `--exact` sync test reads its cached fixture too (most `world(0, 4)` tests 30-40 G each, in-binary 2-10 G): rank tests by module or whole-binary counts (Measuring).
+- A memo's `try_settle` returns `None` for an unchanged answer: count `Some` returns against total runs, not `was == Some(now)`.
 - A count taken inside a `measured` closure (`osis_base::costs::take`) zeroes what the closure is measured by: every n/10n check then passes at 0. Probe outside the measured region.
 - A new `osis_base::costs` count shows in every test comparing all spans (osis `making::`, engine `closure::` assert exact equality): a counter one scale test reads goes outside the shared table (as `osis_store::bytes_handed`).
 - `osis_perm::commits_walked` deltas around a step settle "who can force many walks" questions quickly (k against 10k).
 - A memo kept by a key's stamp, read before that key is inserted, computes again at the next look: a cost test looks once before counting.
 - An n/10n count through a real world needs an event that moves inputs alone: most events (a redeem, a register) also bring new keys.
 - A cost test varying only what the node closure holds cannot see a pass judging every held thing when the filter to things outside it is uncounted: count what is due before filtering.
+- `read: judged` counts twice per judgement (the `Effects` span of that name plus `judge::body`'s own): halve it against a per-call probe. An env-gated dump inside a `Cutoff` derivation also prints the debug comparison runs: read growth from `costs` counts, not dump lines.
+- A churn helper taking a start key: keep its range far from the keys the test reads, or the churn moves the read.
 - A count test with a tolerance (charged within 1.25x of held) passes with a whole term dropped: mutate each term before trusting a tolerance, and make the check exact where every term can be written down.
 
 **Models and generators**
@@ -172,8 +179,13 @@ Measure by instruction counts (Measuring); totals from `tools/pertest.py top`. T
 - A test whose comment claims a state (a part waits aside, a strip hits a long insert) asserts or tallies it: unasserted, a setup change silently makes it test something else (`pending()` names a wait). The forensic `recoverable` sees nothing of a pending copy outside the node closure: assert the value recoverable before the step that should remove it, or "no copy left" passes vacuously.
 - A count read from a process-wide counter (`memo::writes`) moves with other tests' threads: count per thread; a filter excusing the noise in one test is a carve-out, look for the same excuse elsewhere.
 - Each failure kind of a property panics with its own text: two kinds sharing one ("placement kept") make a known_failures pattern for one hide the other.
+- A shrunk script (`OSIS_SYNC_SHRINK=1`) of a debug-check failure may shrink to another panic (the model's): replay it and compare the panic before treating it as the reproducer.
+- `git checkout <base> -- core/` to try a script on main also reverts a scratch test under core/: keep scratch tests outside the swapped paths.
 - A `rejects` case asserting only the error class passes on any earlier rejection (a crdt overlap case was refused for its arity before any run decoded): print the error once (`--nocapture`) when writing one.
 
 **Other**
 - A redb store's clean close commits its allocator state, most of any `FileDevice` test that closes a written store; `std::mem::forget` of a store as a power cut fails the reopen (the file lock stays held).
 - A module name may exist in several crates' `it` (`destruction::`: osis-engine's and osis-sync's): a brief or command names the crate with it.
+- A probe printing from every engine of a world interleaves their lines: prefix each with the node's tid. A probe several test threads write to one file writes each line with one `write_all` (`writeln!` splits into several writes and interleaves).
+- osis-perm's `paths/hand*.rs` mirror roles-model's hand worlds by name: grep `core/` too before renaming or merging a model test. A test helper swapped for a "superset" one can pass the default tests and fail a `_plain` property: run the crate's `_plain` properties after a helper change.
+- Ephemeral bodies do not survive a restart: a restart case of an ephemeral rule needs a durable aspect. A scale test's small size must page as its large size does (sized so both page).

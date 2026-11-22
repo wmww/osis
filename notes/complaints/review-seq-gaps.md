@@ -1,3 +1,0 @@
-# review-seq-gaps
-- Building a cut where a row already starts took three probe builds: a delete record only plans a cut against a record coarser than the rows, which needs the pages' range record (a stretch deleted in one commit), not separate per-char records or a creation record (the state's records split where rows do). A one-line probe of the follow's `runs/moves/cuts` counts answered each try; the issue's guess ("short hand-built history did not produce it") gave no shape.
-- No default crdt or engine test reaches `cut_row`'s splitting branch on a paged state (planting `cyc.contains(&row.dot)` → `true` failed nothing under `seq_` and `pages::tests::`).

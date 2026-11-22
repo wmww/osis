@@ -4,8 +4,17 @@
 # lacks), `tools/policy.py --baseline` passes on that tree, and HEAD contains origin/main as just
 # fetched (refused, it lists the files both sides changed, whose crates' tests the rebase owes).
 # One command, so no `;` or `echo $?` between the check and the push drops the check's exit (that
-# pushed policy violations to main twice). Exit 1 refused, else git push's.
+# pushed policy violations to main twice). `--delete BRANCH` then deletes origin's BRANCH (the
+# landed branch's pushed copy), only after the push succeeded: a delete chained after a piped land
+# ran though land refused. Exit 1 refused, else git push's.
 set -eu
+del=
+if [ "${1:-}" = --delete ]; then
+    del=${2:?land: --delete needs a branch name}
+    [ "$del" != main ] || { echo "land: --delete main refused" >&2; exit 1; }
+    shift 2
+fi
+[ $# -eq 0 ] || { echo "usage: tools/land [--delete BRANCH]" >&2; exit 1; }
 cd "$(git rev-parse --show-toplevel)"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "land: uncommitted changes: commit them or drop them first; not pushed" >&2; exit 1; }
 git fetch -q origin main
@@ -18,3 +27,4 @@ echo "land: pushing $(git rev-list --count origin/main..HEAD) commits:" >&2
 git log --oneline origin/main..HEAD >&2
 git push -q origin HEAD:main
 echo "land: main is $(git rev-parse --short HEAD)" >&2
+[ -z "$del" ] || { git push -q origin --delete "$del" && echo "land: deleted origin/$del" >&2; }

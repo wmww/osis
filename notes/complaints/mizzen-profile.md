@@ -1,2 +1,0 @@
-- The reference profile (8,553 G) was never saved where a later job finds it, so today's per-test moves could not be listed (`tools/pertest.py compare` needs the old file); only totals compare. Profiles now go to /home/ai/osis-profiles (notes/test-harnesses.md, Default-test cost).
-- A shell loop over `tools/cpuprof --report FILE 1 FILTER` re-reads the samples per filter: 16 filters on three profiles took about 4 minutes.

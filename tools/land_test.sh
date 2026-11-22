@@ -1,7 +1,7 @@
 #!/bin/sh
 # Tests tools/land against a temp repo with a bare origin and a stub tools/policy.py (exits
 # $POLICY_RC): it pushes only from a clean tree containing origin/main whose policy passes; refused
-# behind origin/main, it names the files both sides changed.
+# behind origin/main, it names the files both sides changed; `--delete BRANCH` deletes only after a push.
 # Exit 1 on a mismatch.
 set -eu
 land=$(cd "$(dirname "$0")" && pwd)/land
@@ -33,7 +33,13 @@ moved=$(tip)
 POLICY_RC=0 "$land" 2> "$d/err" && rc=0 || rc=$?
 check "behind: refused" "$rc $(tip)" "1 $moved"
 check "behind: names the file both sides changed" "$(grep -c '(c )' "$d/err")" "1"
+git push -q origin HEAD:refs/heads/coord-x
+POLICY_RC=0 "$land" --delete coord-x 2> /dev/null && rc=0 || rc=$?
+check "behind, --delete: branch kept" "$rc $(git ls-remote "$d/origin.git" coord-x | wc -l)" "1 1"
 git rebase -q origin/main
-POLICY_RC=0 "$land" 2> /dev/null && rc=0 || rc=$?
+POLICY_RC=0 "$land" --delete coord-x 2> /dev/null && rc=0 || rc=$?
 check "clean, current, policy ok: pushed" "$rc $(tip)" "0 $(git rev-parse HEAD)"
+check "pushed, --delete: branch deleted" "$(git ls-remote "$d/origin.git" coord-x | wc -l)" "0"
+"$land" --delete main 2> /dev/null && rc=0 || rc=$?
+check "--delete main: refused" "$rc" "1"
 exit $fail

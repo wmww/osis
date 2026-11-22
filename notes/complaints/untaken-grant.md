@@ -1,4 +1,0 @@
-# untaken-grant
-- Hand deliveries outside the closure: osis `sharing::role_before_delete_keys_*` ingested a grant's packages before the grantee held the thing; the boxes of a thing outside the node closure are not kept, so after the strong nothing retook them and the test read "no secrets" as "delete keys held" (published-key fallback). Tests relying on the old counting showed as wrong asserts, not as "nothing delivered": accept first, then deliver.
-- An edit landed under a running two-command background chain (second cargo rebuilt with the edit): keep every edit until the whole chain ends, as notes/build.md says; easy to forget with a chain started "just to check".
-- Ran `cargo test -p osis-engine -p osis-sync` unlocked once in the dev loop; two big crates in one run belong under `tools/heavy`.
