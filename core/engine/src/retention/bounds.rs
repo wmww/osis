@@ -282,7 +282,8 @@ fn whole_date(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Op
 /// The held bodies of `(tid, ak)` whose `index_date` may have moved when bodies `joined` were
 /// noted in its held writes (`HeldWrites`, read after): each joined one, and for each write a
 /// joined body holds, the owner and the snapshots carrying each write it may date anew
-/// (`ByWrite::moved_by`). O(the joined bodies and the positions at or below their writes').
+/// (`ByWrite::moved_by`). O(the joined bodies and the positions at or below their writes'
+/// written since the reset before each).
 pub(crate) fn moved_by_joins(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, joined: &[CommitId]) -> Result<BTreeSet<CommitId>> {
     let mut out: BTreeSet<CommitId> = joined.iter().copied().collect();
     let held = held_writes(tx, tid, ak)?;

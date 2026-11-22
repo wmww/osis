@@ -1512,3 +1512,29 @@ fn a_dated_read_in_a_transaction_reads_no_change_log_spec_commits_5() {
     flat("change log entries read per date read", a.n("commits log entries read") / ra, b.n("commits log entries read") / rb);
     all_linear("a kept backlog woken", &a, &b);
 }
+
+/// A text kept a day after replaced, written whole n times, one commit each (each write a reset,
+/// spec/crdt.md §5.1): the work of one more whole write.
+fn whole_text_writes(n: usize) -> Work {
+    let mut lp = net(1, 0);
+    let t = crate::common::new_thing_keeping(&mut lp, 0, &[("t:text.0", crate::common::DAY)]);
+    let write = |lp: &mut LocalPeer, i: usize| {
+        lp.advance(1);
+        let mut m = Mutation::new();
+        m.op(t, &TEXT, PathOp { path: Vec::new(), op: Op::Replace(Value::Str(format!("text {i}"))) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+    };
+    for i in 0..n {
+        write(&mut lp, i);
+    }
+    measured_at(&mut lp, 0, |lp| write(lp, n)).1
+}
+
+// spec/commits.md §5 (when a body was replaced); spec/requirements.md, Scale: a text written
+// whole n and 10n times, a write dates again the bodies it newly replaces, not every earlier
+// one (each already replaced by the write before it).
+#[test]
+fn a_whole_write_redates_only_what_it_replaces_spec_commits_5() {
+    let (a, b) = (whole_text_writes(20), whole_text_writes(200));
+    flat("bodies dated (replaced at)", a.n("replaced at"), b.n("replaced at"));
+}
