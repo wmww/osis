@@ -318,12 +318,24 @@ fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, date: DateOf) -> Re
     Ok(super::purged_by(tx, &h, c, ai)?.map(|_| h.ts))
 }
 
-/// What of a part the aspect's held writes note (`bounds::HeldWrites`): held, valid, bare.
-pub(crate) type Noted = (bool, bool, bool);
+/// What of a part the aspect's held writes note (`bounds::HeldWrites`): held, valid, and its
+/// form (`bounds::Form`: as a leftover, bare).
+pub(crate) type Noted = (bool, bool, super::bounds::Form);
 
 /// `Noted` of part `ai` of `m`.
 fn noted(m: &crate::engine::Meta, ai: usize) -> Noted {
-    (m.holds(ai), m.valid_at(ai), m.bare(ai))
+    (m.holds(ai), m.valid_at(ai), (m.stripped(ai), m.bare(ai)))
+}
+
+/// What a transaction changed of a dated aspect's held bodies (`date_due`).
+#[derive(Default)]
+struct Changed {
+    /// Its commits whose part changed.
+    commits: BTreeSet<CommitId>,
+    /// Bodies the held writes note now that they did not, or not in this form.
+    joined: Vec<CommitId>,
+    /// Bodies they noted that they no longer do in the form they did then.
+    left: Vec<(CommitId, super::bounds::Form)>,
 }
 
 /// Whether a dated aspect's rows may lag its held set in the running transaction: a commit with
@@ -382,12 +394,13 @@ impl ToDate {
 /// At a transaction's end: each dated aspect's rows follow its held set, so a row is its part's
 /// replaced-at (`bounds::index_date`), exact. On an aspect the transaction only added noted
 /// bodies to (applied, a late part come, turned valid), the parts dated again are the changed
-/// ones and those whose writes the new bodies' writes may date anew (`bounds::moved_by_joins`):
-/// O(what they supersede), whatever the aspect's history. Where a noted body left or changed
-/// (dropped, stripped, turned invalid), the aspect was rebuilt (`Core::to_date`) or turned dated
-/// (`true`, also on a dated aspect with no cursor yet: a row landing in history is told), every
-/// part is dated again: O(the aspect's
-/// history), as the rebuild. A row that moves is marked for node-sync, and told where it crosses
+/// ones and those whose writes the new bodies' writes, or a leaving body's (dropped, stripped:
+/// its writes as the amend taking it away reported them), may date anew
+/// (`bounds::moved_by_changes`): O(what they supersede), whatever the aspect's history. Where
+/// the aspect was rebuilt (`Core::to_date`: a validity flip, an un-merge) or turned dated (`true`,
+/// also on a dated aspect with no cursor yet: a row landing in history is told), or a body left
+/// that no amend reported (the held writes read anew), every part is dated again: O(the
+/// aspect's history), as the rebuild. A row that moves is marked for node-sync, and told where it crosses
 /// the clock; the cursor moves back past a row that lands in history before it; each aspect
 /// touched rearms. A transaction's end dates twice: a later pass compares each part with what an
 /// earlier one dated (`Core::dated_as`). Debug builds check every row of each aspect dated
@@ -398,7 +411,7 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
     for (t, a, tell) in tx.core.to_date.take() {
         *whole.entry((t, a)).or_default() |= tell;
     }
-    let mut changed: BTreeMap<(Tid, Ak), (BTreeSet<CommitId>, Vec<CommitId>)> = BTreeMap::new();
+    let mut changed: BTreeMap<(Tid, Ak), Changed> = BTreeMap::new();
     // what an earlier pass of this transaction dated, else the meta before it
     let seen: BTreeMap<(CommitId, usize), Noted> = tx.core.dated_as.iter().map(|(c, ai, n)| ((*c, *ai), *n)).collect();
     let mut now_as = Vec::new();
@@ -424,12 +437,13 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
                 continue;
             }
             let e = changed.entry(k.clone()).or_default();
-            e.0.insert(*id);
-            // a noted body left or changed: writes may have left the held set
-            if was.is_some_and(|w| w.0 && w.1) {
-                whole.entry(k).or_default();
-            } else if is.is_some_and(|w| w.0 && w.1) {
-                e.1.push(*id);
+            e.commits.insert(*id);
+            // a noted body left or changed form: its writes as they were left the held set
+            if let Some(w) = was.filter(|w| w.0 && w.1) {
+                e.left.push((*id, w.2));
+            }
+            if is.is_some_and(|w| w.0 && w.1) {
+                e.joined.push(*id);
             }
         }
     }
@@ -452,10 +466,20 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
             on.extend(tx.core.ix.leaving.get(&key).into_iter().flatten().map(|p| p.1));
             on
         } else {
-            let (ch, joined) = changed.remove(&key).unwrap_or_default();
-            let mut on = super::bounds::moved_by_joins(tx, &tid, &ak, &joined)?;
-            on.extend(ch);
-            on
+            let ch = changed.remove(&key).unwrap_or_default();
+            match super::bounds::moved_by_changes(tx, &tid, &ak, &ch.joined, &ch.left)? {
+                Some(mut on) => {
+                    on.extend(ch.commits);
+                    on
+                }
+                // a body left whose writes no amend took away: every part
+                None => {
+                    let mut on: BTreeSet<CommitId> = tx.core.ix.by_aspect.get(&key).into_iter().flatten().map(|x| x.1).collect();
+                    on.extend(tx.core.ix.leaving.get(&key).into_iter().flatten().map(|p| p.1));
+                    on.extend(ch.commits);
+                    on
+                }
+            }
         };
         for c in on {
             let old = tx.core.ix.dated.get(&(c, tid, ak.clone())).copied();
@@ -493,8 +517,11 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
 
 /// Debug builds: the aspects of `keys` a pass must date whole, by their own definition rather than
 /// `date_due`'s bookkeeping: dated with no rows kept so far (turned dated), or a body the held
-/// writes noted (held, valid) left them or changed since the transaction began. The pass pays
-/// O(the aspect) for those anyway, so checking each whole after it costs what the pass did.
+/// writes noted (held, valid) turned invalid or was forgotten since the transaction began.
+/// The pass pays O(the aspect) for those anyway, so checking each whole after it costs what the
+/// pass did. A body leaving otherwise is followed (`bounds::moved_by_changes`) and checked as a
+/// join is: each row it writes against the state (`bounds::index_date`), every row at the end
+/// of history (`rows_exact`).
 #[cfg(debug_assertions)]
 fn dated_whole_due(core: &Core, keys: &BTreeSet<(Tid, Ak)>) -> BTreeSet<(Tid, Ak)> {
     let mut out: BTreeSet<(Tid, Ak)> = keys.iter().filter(|(t, a)| history::of(core, t, a).dated() && !core.ix.leave_from.contains_key(&(*t, a.clone()))).cloned().collect();
@@ -503,7 +530,7 @@ fn dated_whole_due(core: &Core, keys: &BTreeSet<(Tid, Ak)>) -> BTreeSet<(Tid, Ak
         let new = core.ix.commits.get(id);
         for (ai, a) in old.view.aspects.iter().enumerate() {
             let was = noted(old, ai);
-            if was.0 && was.1 && new.map(|m| noted(m, ai)) != Some(was) && keys.contains(&(a.tid, a.ak.clone())) {
+            if was.0 && was.1 && new.is_none_or(|m| !m.valid_at(ai)) && keys.contains(&(a.tid, a.ak.clone())) {
                 out.insert((a.tid, a.ak.clone()));
             }
         }

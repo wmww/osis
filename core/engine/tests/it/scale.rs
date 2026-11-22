@@ -515,10 +515,10 @@ fn purge_on_replace_pays_its_state() {
 /// pending commits read again, perm commits walked and entries moved) added as spans.
 fn measured_at<T>(lp: &mut LocalPeer, i: usize, f: impl FnOnce(&mut LocalPeer) -> T) -> (T, Work) {
     let b = lp.peers[i].backend.clone();
-    let c = |lp: &LocalPeer| [lp.peers[i].engine.death_walks(), lp.peers[i].engine.replaced_reads(), lp.peers[i].engine.examined(), osis_perm::commits_walked(), osis_perm::entries_moved()];
+    let c = |lp: &LocalPeer| [lp.peers[i].engine.death_walks(), lp.peers[i].engine.replaced_reads(), lp.peers[i].engine.examined(), osis_perm::commits_walked(), osis_perm::entries_moved(), lp.peers[i].engine.held_writes_copied()];
     let c0 = c(lp);
     let (r, mut w) = measured(&b, || f(&mut *lp));
-    for (k, (x, y)) in ["death walks", "replaced reads", "examined", "perm commits walked", "perm entries moved"].into_iter().zip(c0.into_iter().zip(c(lp))) {
+    for (k, (x, y)) in ["death walks", "replaced reads", "examined", "perm commits walked", "perm entries moved", "held writes copied"].into_iter().zip(c0.into_iter().zip(c(lp))) {
         // a restart counts from 0 again
         w.spans.insert(k, if y >= x { y - x } else { y });
     }
@@ -915,6 +915,32 @@ fn kept_snapshots_stay_within_their_window_spec_commits_5() {
     all_linear("judging the held snapshots", &w1, &w2);
     for k in ["death walks", "replaced reads"] {
         flat(&format!("judging the held snapshots: {k}"), w1.n(k), w2.n(k));
+    }
+}
+
+/// A kept set (`kept_set`) of n elements, compacted: the work of one more element added, then of
+/// a body the snapshot covers dropped (`Engine::drop_body`), each with its transaction's dating.
+fn kept_set_changes(n: usize) -> [Work; 2] {
+    let (mut lp, t, ids) = kept_set(n);
+    let k = ak("t:keptset.0");
+    lp.advance(1);
+    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    let (_, edit) = measured_at(&mut lp, 0, |lp| kept_op(lp, t, Op::Add(Value::Str("more".into()))));
+    let (_, drop) = measured_at(&mut lp, 0, |lp| lp.peers[0].engine.drop_body(&ids[0], &t, &k).unwrap());
+    [edit, drop]
+}
+
+// spec/commits.md §5 (when a body was replaced); spec/requirements.md, Scale (no operation
+// O(history)): on a dated aspect of n and 10n bodies, a body joining and a covered body leaving
+// each note or forget that body's writes alone in the aspect's held writes (no copy of them, no
+// body read anew) and date again only what its writes may move.
+#[test]
+fn a_body_joining_or_leaving_dates_only_what_it_moves_spec_commits_5() {
+    let (a, b) = (kept_set_changes(20), kept_set_changes(200));
+    for (what, a, b) in [("an element added", &a[0], &b[0]), ("a covered body dropped", &a[1], &b[1])] {
+        for k in ["deaths: a body", "held writes", "held writes copied", "replaced at"] {
+            flat(&format!("{what}: {k}"), a.n(k), b.n(k));
+        }
     }
 }
 

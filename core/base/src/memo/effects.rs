@@ -157,6 +157,29 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
         f.value.clone()
     }
 
+    /// The name it counts and fails under.
+    pub(super) fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// `k`'s settled value, taken out (`Cutoff::refresh_amended_in`): put back (`put_value`) or
+    /// settled again.
+    pub(super) fn take_value(&mut self, k: &K) -> Option<V> {
+        self.followed.get_mut(k)?.value.take()
+    }
+
+    /// Puts back `k`'s value taken out (`take_value`), unchanged.
+    pub(super) fn put_value(&mut self, k: &K, v: V) {
+        if let Some(f) = self.followed.get_mut(k) {
+            f.value = Some(v);
+        }
+    }
+
+    /// What `k`'s last value read.
+    pub(super) fn deps(&self, k: &K) -> Vec<Dep> {
+        self.followed.get(k).map(|f| f.deps.clone()).unwrap_or_default()
+    }
+
     /// Whether `k` is followed with a value settled (none since a failed settle).
     pub(super) fn settled_value(&self, k: &K) -> bool {
         self.followed.get(k).is_some_and(|f| f.value.is_some())

@@ -972,6 +972,7 @@ pub(crate) struct CoreMark {
     killed: usize,
     to_date: usize,
     dated_as: usize,
+    left_bodies: usize,
     /// `wrote_on`'s length: a write undone owes no holding.
     wrote_on: usize,
     stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
@@ -1146,6 +1147,10 @@ pub struct Core {
     /// `leaving::Noted`), newest last: a later pass compares with it, not with the meta before
     /// the transaction.
     pub(crate) dated_as: Vec<(CommitId, usize, crate::retention::leaving::Noted)>,
+    /// The bodies the running transaction's amends of held writes took away (aspect, commit,
+    /// what it added there, in the form it was held: `retention::bounds::held_writes`), for
+    /// `date_due` to date what they dated (the body may be gone from the store).
+    pub(crate) left_bodies: Vec<((Tid, Ak), CommitId, Arc<crate::retention::bounds::BodyWrites>)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look. A name goes with its commit (forgotten, or dropped from pending while not
     /// applied), so it holds at most one per commit held. Sync reads none of it.
@@ -1288,11 +1293,9 @@ pub struct Core {
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     /// Per aspect undo has checked, which held parts write each position (`undo::touch`).
     pub(crate) touches: crate::undo::touch::Touches,
-    /// What judging when bodies were replaced reads of an aspect's held bodies, per aspect
-    /// (`retention::bounds::held_writes`, `memo`).
-    pub(crate) held_writes: memo::Memo<(Tid, Ak), Arc<crate::retention::bounds::HeldWrites>>,
-    /// `held_writes` per aspect as a row (`memo::Cutoff`): a part's date reads the row, not the
-    /// aspect's every body, so it copies one read where the memo would copy one per body.
+    /// What judging when bodies were replaced reads of an aspect's held bodies, per aspect, as a
+    /// row (`retention::bounds::held_writes`, a `memo::Cutoff` amended in place): a part's date
+    /// reads the row, not the aspect's every body.
     pub(crate) held_writes_rows: memo::Cutoff<(Tid, Ak), Arc<crate::retention::bounds::HeldWrites>>,
     /// What a waiting snapshot part carries, per (commit, aspect index), as a held snapshot's
     /// bound (`retention::snapshot::Carried`; `None`: no snapshot it can join): decoded once while
@@ -1397,6 +1400,9 @@ pub struct Core {
     /// Held parts walked for their winners judging deaths (`retention::bounds::winners_of`), for
     /// cost tests: a few per part judged, never per death.
     pub death_walks: u64,
+    /// Bodies of held writes copied by an amend that found the row's value shared
+    /// (`retention::bounds::held_writes`), for cost tests: none outside a copied world.
+    pub held_writes_copied: u64,
     /// Aspect rebuilds run (`apply::rebuild`). Tests: what a validity change costs.
     pub rebuilds: u64,
     /// Stored commit records and their parts, decoded once per write of the record
@@ -1762,6 +1768,7 @@ impl Core {
             killed: self.killed.len(),
             to_date: self.to_date.len(),
             dated_as: self.dated_as.len(),
+            left_bodies: self.left_bodies.len(),
             wrote_on: self.wrote_on.len(),
             stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
             batched: self.batched.clone(),
@@ -1861,6 +1868,7 @@ impl Core {
         self.killed.truncate(m.killed);
         self.to_date.truncate(m.to_date);
         self.dated_as.truncate(m.dated_as);
+        self.left_bodies.truncate(m.left_bodies);
         self.wrote_on.truncate(m.wrote_on);
         self.batched = m.batched;
         self.fallen = m.fallen;
@@ -1887,6 +1895,7 @@ impl Core {
             killed: _,
             to_date: _,
             dated_as: _,
+            left_bodies: _,
             wrote_on: _,
             written: _,
             accounts: _,
@@ -1958,7 +1967,6 @@ impl Core {
             unit_of: _,
             closure_follow: _,
             node_root: _,
-            held_writes: _,
             waiting_carried: _,
             part_bounds: _,
             tree_roots: _,
@@ -2018,6 +2026,7 @@ impl Core {
             later_sessions: _,
             replaced_reads: _,
             death_walks: _,
+            held_writes_copied: _,
             rebuilds: _,
             // set at each transaction's start, and what its end records (taken at the commit,
             // dropped at a rollback)
@@ -2260,6 +2269,7 @@ impl Core {
             killed: Vec::new(),
             to_date: Default::default(),
             dated_as: Vec::new(),
+            left_bodies: Vec::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
@@ -2317,7 +2327,6 @@ impl Core {
             entered: None,
             batched: None,
             touches: Default::default(),
-            held_writes: memo::Memo::new("held writes"),
             held_writes_rows: memo::Cutoff::new("held writes: rows"),
             waiting_carried: memo::Memo::new("waiting snapshot: bound"),
             part_bounds: memo::Memo::new("part bounds"),
@@ -2353,6 +2362,7 @@ impl Core {
             pieces_below: memo::Memo::new("pieces: below"),
             replaced_reads: 0,
             death_walks: 0,
+            held_writes_copied: 0,
             rebuilds: 0,
             decoded: Default::default(),
             generation: 0,
@@ -2968,6 +2978,7 @@ fn end_settle<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
     r = then(r, || crate::retention::leaving::date_due(tx));
     tx.core.to_date.clear();
     tx.core.dated_as.clear();
+    tx.core.left_bodies.clear();
     // every state written above stored in its form (`Tx::settle_states`)
     r = then(r, || tx.settle_placements().and_then(|()| tx.settle_states()));
     r = then(r, || Core::commit_changes(tx));

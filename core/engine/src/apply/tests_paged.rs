@@ -2026,7 +2026,7 @@ fn a_trickled_fill_reads_each_page_a_bounded_number_of_times_spec_commits_4() {
     eprintln!("(delivery, entries, blobs given, pages read, walk opens, examines, signature checks): {out:#?}");
     // per page: one walk step (and the compaction trigger's weighing after), three reads (the
     // checked decode once it lacks nothing, the streamed apply, and the body's writes noted for
-    // dating: `mix` keeps history, `retention::bounds::moved_by_joins`); per commit one
+    // dating: `mix` keeps history, `retention::bounds::held_writes`); per commit one
     // examination
     for (how, n, given, read, opened, examines, sigs) in &out {
         let (given, commits) = (*given as u64, if *how == Deliver::Interleaved { 2 } else { 1 });

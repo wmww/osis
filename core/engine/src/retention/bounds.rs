@@ -8,7 +8,8 @@ use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::Header;
 use osis_crdt::{ByWrite, Fragment, Hiders, Winners, Won};
-use std::collections::BTreeSet;
+use osis_base::memo::Amended;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// `Engine::delta_live` in `tx` (`Core::live_bodies`).
@@ -280,24 +281,35 @@ fn whole_date(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Op
 }
 
 /// The held bodies of `(tid, ak)` whose `index_date` may have moved when bodies `joined` were
-/// noted in its held writes (`HeldWrites`, read after): each joined one, and for each write a
-/// joined body holds, the owner and the snapshots carrying each write it may date anew
-/// (`ByWrite::moved_by`). O(the joined bodies and the positions at or below their writes'
-/// written since the reset before each).
-pub(crate) fn moved_by_joins(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, joined: &[CommitId]) -> Result<BTreeSet<CommitId>> {
-    let mut out: BTreeSet<CommitId> = joined.iter().copied().collect();
+/// noted in its held writes (`HeldWrites`, read after) and bodies `left` (each with the form it
+/// was noted in) taken away: each joined one, and for each write a joined or leaving body holds
+/// (as the held writes note it, so no body is read again),
+/// the owner and the snapshots carrying each write it may date anew (`ByWrite::moved_by`, on the
+/// held writes after: `osis_crdt` `changes_check`). A leaving body's writes are those the amend
+/// that took it away reported (`Core::left_bodies`); `None` when one has none (read anew: the
+/// caller dates every part). O(the bodies joined and left and the positions at or below their
+/// writes' written since the reset before each).
+pub(crate) fn moved_by_changes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, joined: &[CommitId], left: &[(CommitId, Form)]) -> Result<Option<BTreeSet<CommitId>>> {
     let held = held_writes(tx, tid, ak)?;
-    for x in joined {
-        let Some(xai) = held_part(tx.core, x, tid, ak) else { continue };
-        let Some(f) = crate::apply::held_fragment(tx, x, xai)? else { continue };
-        for s in f.held_writes().iter() {
+    let k = (*tid, ak.clone());
+    let mut gone: Vec<Arc<BodyWrites>> = Vec::new();
+    for (c, f) in left {
+        let Some(b) = tx.core.left_bodies.iter().find(|x| x.0 == k && x.1 == *c && x.2.form == *f) else { return Ok(None) };
+        gone.push(b.2.clone());
+    }
+    let mut out: BTreeSet<CommitId> = joined.iter().copied().collect();
+    let mut moved = |tx: &Tx<'_>, w: &Winners| {
+        for s in w.iter() {
             for w in held.holds.moved_by(&s) {
                 out.extend(tx.core.commit_of(tid, ak, &w.stamp.dot));
                 out.extend(held.carried.get(&w).into_iter().flatten().map(|v| v.1));
             }
         }
+    };
+    for b in joined.iter().filter_map(|x| held.bodies.get(x)).chain(&gone) {
+        moved(tx, &b.writes);
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
 /// The dead writes that date held valid part `ai` of `c` (`deaths`), a snapshot's leaving out
@@ -315,15 +327,13 @@ fn dating_deaths(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, tid: &Tid
 /// What `dated_replaced_at` reads of the held bodies of an aspect, by write (`osis_crdt::ByWrite`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct HeldWrites {
-    /// The aspect's held commits read (`Indexes::by_aspect`) and those with a part invalid here
-    /// (`Indexes::invalid`): each body's writes below are a function of the body and its
-    /// validity alone, so a body joining adds its own (`amend_held_writes`).
-    bodies: Vec<(Ts, CommitId)>,
-    invalid: BTreeSet<CommitId>,
-    /// The writes each held body holds, winning there or not (`Fragment::held_writes`), as the
-    /// state joins it (an invalid delta's writes left out, a valid snapshot's body whole, an
-    /// invalid snapshot's giving nothing).
-    holds: ByWrite<()>,
+    /// Each held valid body of the aspect (`noted`), with what it adds below: a function of the
+    /// body and its form alone, so a body joining adds its own and one leaving takes its own
+    /// away (`amend_held_writes`).
+    bodies: BTreeMap<CommitId, Arc<BodyWrites>>,
+    /// The writes the bodies hold, winning there or not (`Fragment::held_writes`), as the state
+    /// joins them (a valid snapshot's body whole), each with how many bodies hold it.
+    holds: ByWrite<usize>,
     /// What decides which value removals hide which set element writes, of the copies the held
     /// bodies hold, joined as the state joins them (`osis_crdt::Hiders`).
     hiders: Hiders,
@@ -332,100 +342,140 @@ pub(crate) struct HeldWrites {
     carried: ByWrite<Vec<(Ts, CommitId)>>,
 }
 
+/// What one held valid body adds to its aspect's `HeldWrites` (`note_body`).
+#[derive(Debug, PartialEq)]
+pub(crate) struct BodyWrites {
+    ts: Ts,
+    /// The form it was read in (`Form`).
+    form: Form,
+    /// Every write it holds (`Fragment::held_writes`).
+    writes: Winners,
+    /// A valid snapshot's with values: its winners, which it carries.
+    winners: Option<Winners>,
+    /// The copies it holds, for `Hiders`.
+    hiders: Hiders,
+}
+
+/// How a held valid part is held, which decides the writes its body gives: as a leftover
+/// (`Meta::stripped`), and bare (`Meta::bare`).
+pub(crate) type Form = (bool, bool);
+
+/// The form of part `(tid, ak)` of `c` when held and valid (a body the held writes note).
+pub(crate) fn form(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<Form> {
+    let ai = held_part(core, c, tid, ak)?;
+    let m = core.ix.commits.get(c)?;
+    m.valid_at(ai).then(|| (m.stripped(ai), m.bare(ai)))
+}
+
+impl HeldWrites {
+    /// Adds body `c` (`b`).
+    fn add(&mut self, c: CommitId, b: Arc<BodyWrites>) {
+        self.holds.note(&b.writes, |_, n| *n += 1);
+        if let Some(w) = &b.winners {
+            self.carried.note(w, |_, v| {
+                v.push((b.ts, c));
+                v.sort();
+            });
+        }
+        self.hiders.add(&b.hiders);
+        self.bodies.insert(c, b);
+    }
+    /// Takes body `c` away: what adding only the others gives.
+    fn forget(&mut self, c: &CommitId) -> Option<Arc<BodyWrites>> {
+        let b = self.bodies.remove(c)?;
+        self.holds.forget(&b.writes, |_, n| {
+            *n -= 1;
+            *n > 0
+        });
+        if let Some(w) = &b.winners {
+            self.carried.forget(w, |_, v| {
+                v.retain(|x| *x != (b.ts, *c));
+                !v.is_empty()
+            });
+        }
+        self.hiders.forget(&b.hiders);
+        Some(b)
+    }
+}
+
 /// `HeldWrites` of `(tid, ak)`, kept as a row per aspect (`Core::held_writes_rows`, a
 /// `memo::Cutoff`): a reader depends on the row, which moves only when the held writes do, not on
-/// each held body read. Derived through `Core::held_writes` (a memo): read anew, or, when the
-/// aspect only gained bodies since, amended by theirs (`amend_held_writes`), so a join reads its
-/// own body, not the aspect's.
+/// each held body read. Read anew, or amended by the bodies that joined or left since
+/// (`amend_held_writes`), so a join reads its own body, not the aspect's.
 pub(super) fn held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Arc<HeldWrites>> {
-    osis_base::memo::Cutoff::get_in(tx, |tx| &tx.core.held_writes_rows, &(*tid, ak.clone()), |tx, (t, k)| held_writes_kept(tx, t, k))
+    osis_base::memo::Cutoff::get_amended_in(tx, |tx| &tx.core.held_writes_rows, &(*tid, ak.clone()), |tx, (t, k)| read_held_writes(tx, t, k).map(Arc::new), |tx, (t, k), old| amend_held_writes(tx, t, k, old))
 }
 
-/// `held_writes` through its memo (`Core::held_writes`, amended): what its row is derived by.
-fn held_writes_kept(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Arc<HeldWrites>> {
-    osis_base::memo::Memo::get_amended_in(
-        tx,
-        |tx| &tx.core.held_writes,
-        &(*tid, ak.clone()),
-        |tx| read_held_writes(tx, tid, ak).map(Arc::new),
-        |tx, old| Ok(amend_held_writes(tx, tid, ak, old)?.map(Arc::new)),
-    )
-}
-
-/// The commits with a part of `(tid, ak)` invalid here, and its held commits: what
-/// `amend_held_writes` compares, read inside `memo::accounted`.
-fn aspect_bodies(core: &Core, tid: &Tid, ak: &Ak) -> (BTreeSet<CommitId>, Vec<(Ts, CommitId)>) {
+/// The held commits of `(tid, ak)` (`Indexes::by_aspect`) with the form of each the held writes
+/// note (`form`): what `amend_held_writes` compares, read inside `memo::accounted`.
+fn noted_bodies(core: &Core, tid: &Tid, ak: &Ak) -> BTreeMap<CommitId, (Ts, Form)> {
     let k = (*tid, ak.clone());
-    osis_base::memo::accounted(|| (core.ix.invalid.get(&k).cloned().unwrap_or_default(), core.ix.by_aspect.get(&k).into_iter().flatten().cloned().collect()))
+    osis_base::memo::accounted(|| core.ix.by_aspect.get(&k).into_iter().flatten().filter_map(|(ts, c)| Some((*c, (*ts, form(core, c, tid, ak)?)))).collect())
 }
 
-/// `HeldWrites` of `(tid, ak)` read anew: every held body of the aspect, each part whole.
+/// `HeldWrites` of `(tid, ak)` read anew: every held valid body of the aspect, each part whole.
 pub(super) fn read_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<HeldWrites> {
-    let (invalid, on) = aspect_bodies(tx.core, tid, ak);
-    let mut out = HeldWrites { bodies: on.clone(), invalid, ..HeldWrites::default() };
-    for (ts, x) in on {
-        note_body(tx, tid, ak, ts, x, &mut out)?;
+    let _s = osis_base::costs::span("held writes");
+    let mut out = HeldWrites::default();
+    for (c, (ts, f)) in noted_bodies(tx.core, tid, ak) {
+        out.add(c, note_body(tx, tid, ak, ts, c, f)?);
     }
     Ok(out)
 }
 
-/// `old` brought up to date when the aspect's held commits only grew and none of `old`'s flipped
-/// (`HeldWrites::invalid`, read at both): each new body's writes noted, what a fresh read gives.
-/// `None` (read it anew) when a commit left the aspect or an old one's validity moved. The
-/// aspect's commits and invalid parts are its accounted reads (`aspect_bodies`): any other move
-/// of what `old` read (a held body's part dropped, a late part come, a rollback of records)
-/// reads it anew.
-fn amend_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, old: &HeldWrites) -> Result<Option<HeldWrites>> {
-    let (invalid, on) = aspect_bodies(tx.core, tid, ak);
-    // both sorted: each of `old.bodies` still held, the rest new
-    let mut was = old.bodies.iter().peekable();
-    let mut new = Vec::new();
-    for x in &on {
-        match was.peek() {
-            Some(w) if *w == x => {
-                was.next();
-            }
-            Some(w) if *w < x => return Ok(None),
-            _ => new.push(*x),
+/// `old` brought up to date: the bodies no longer noted in the form `old` read them taken away
+/// (their reads go with them, `memo::release`; each reported to the dating pass,
+/// `Core::left_bodies`), those noted since added, each reading its own body alone; what a fresh
+/// read gives. The aspect's commits and each one's form are its accounted reads
+/// (`noted_bodies`, and the form of each body that left it), each body's own reads its part
+/// (`memo::part`): any other move of what `old` read (a held body's record rewritten in place)
+/// reads it anew. The value is edited in place when the row holds the only copy.
+fn amend_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut old: Arc<HeldWrites>) -> Result<Amended<Arc<HeldWrites>>> {
+    let now = noted_bodies(tx.core, tid, ak);
+    let gone: Vec<CommitId> = old.bodies.iter().filter(|(c, b)| now.get(*c).is_none_or(|x| x.1 != b.form)).map(|x| *x.0).collect();
+    for c in gone.iter().filter(|c| !now.contains_key(*c)) {
+        // read again: it left the aspect's commits, or its part is no longer a held valid body
+        osis_base::memo::accounted(|| form(tx.core, c, tid, ak));
+    }
+    let new: Vec<(CommitId, Ts, Form)> = now.iter().filter(|(c, x)| old.bodies.get(*c).is_none_or(|b| b.form != x.1) || gone.contains(*c)).map(|(c, x)| (*c, x.0, x.1)).collect();
+    if gone.is_empty() && new.is_empty() {
+        return Ok(Amended::Kept(old, false));
+    }
+    if Arc::get_mut(&mut old).is_none() {
+        tx.core.held_writes_copied += old.bodies.len() as u64;
+    }
+    let v = Arc::make_mut(&mut old);
+    for c in gone {
+        osis_base::memo::release(&c);
+        if let Some(b) = v.forget(&c) {
+            tx.core.left_bodies.push(((*tid, ak.clone()), c, b));
         }
     }
-    if was.next().is_some() {
-        return Ok(None);
+    for (c, ts, f) in new {
+        let b = note_body(tx, tid, ak, ts, c, f)?;
+        v.add(c, b);
     }
-    // the old commits invalid now are those invalid then
-    if !invalid.iter().filter(|c| !new.iter().any(|x| x.1 == **c)).eq(old.invalid.iter()) {
-        return Ok(None);
-    }
-    let mut out = old.clone();
-    out.bodies = on;
-    out.invalid = invalid;
-    for (ts, x) in new {
-        note_body(tx, tid, ak, ts, x, &mut out)?;
-    }
-    Ok(Some(out))
+    Ok(Amended::Kept(old, true))
 }
 
-/// Notes held body `(ts, x)` of `(tid, ak)` in `out` (`HeldWrites`), its part read whole; an
-/// invalid part gives nothing (un-merge takes all an invalid delta's body carries, `apply::rebuilt`).
-fn note_body(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ts: Ts, x: CommitId, out: &mut HeldWrites) -> Result<()> {
-    let Some(xai) = held_part(tx.core, &x, tid, ak) else { return Ok(()) };
-    let Some(m) = tx.core.ix.commits.get(&x) else { return Ok(()) };
-    if !m.valid_at(xai) {
-        return Ok(());
-    }
-    let snap = m.header.kind.is_compaction();
-    let carries = snap && !m.bare(xai);
-    let Some(f) = crate::apply::held_fragment(tx, &x, xai)? else { return Ok(()) };
-    drop(osis_base::costs::span("deaths: a body"));
-    if carries {
-        out.carried.note(&f.winners(), |_, v| {
-            v.push((ts, x));
-            v.sort();
-        });
-    }
-    out.holds.note(&f.held_writes(), |_, _| ());
-    out.hiders.note(&f);
-    Ok(())
+/// What held valid body `(ts, x)` of `(tid, ak)`, in form `form`, adds to the held writes, its
+/// part read whole, its reads its own (`memo::part`: they go when it leaves) and accounted (one
+/// that moved while it stays is read again only where its form moved, so the amend gives way).
+fn note_body(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ts: Ts, x: CommitId, form: Form) -> Result<Arc<BodyWrites>> {
+    // accounted too: its form's reads are `noted_bodies`', the rest go with the part
+    osis_base::memo::part(&x, || osis_base::memo::accounted(|| {
+        let mut out = BodyWrites { ts, form, writes: Winners::default(), winners: None, hiders: Hiders::default() };
+        let Some(xai) = held_part(tx.core, &x, tid, ak) else { return Ok(Arc::new(out)) };
+        let snap = tx.core.ix.commits.get(&x).is_some_and(|m| m.header.kind.is_compaction());
+        let Some(f) = crate::apply::held_fragment(tx, &x, xai)? else { return Ok(Arc::new(out)) };
+        drop(osis_base::costs::span("deaths: a body"));
+        if snap && !form.1 {
+            out.winners = Some(f.winners());
+        }
+        out.writes = f.held_writes();
+        out.hiders.note(&f);
+        Ok(Arc::new(out))
+    }))
 }
 
 /// The writes of held part `ai` of `c` the state supersedes (spec/crdt.md §4.8): the part's
@@ -561,7 +611,7 @@ impl Engine {
     /// Brings each aspect's held writes row (`held_writes`) up to date: whether any moved
     /// (`Engine::follow`).
     pub(crate) fn follow_held_writes(&mut self) -> Result<bool> {
-        osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.held_writes_rows, |e, (t, k)| e.read(|tx| held_writes_kept(tx, t, k)))
+        osis_base::memo::Cutoff::refresh_amended_in(self, |e| &e.core.held_writes_rows, |e, (t, k)| e.read(|tx| read_held_writes(tx, t, k).map(Arc::new)), |e, (t, k), old| e.read(|tx| amend_held_writes(tx, t, k, old)))
     }
 
     /// Keep-at-least bound (wall ms, 0: none) of each part of known commit `c`, by aspect index
