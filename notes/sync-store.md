@@ -6,6 +6,7 @@ Spec: spec/sync-ids.md §5-§6, spec/sync-streams.md §3, spec/sync-inbox.md §3
 **Principle:** one store of ciphertext per node, for every sync ID read or kept unread: it decrypts nothing and judges no open; every operation is one transaction (a crash keeps all of its rows or none) and every row change stamps, so memos and `Effects` may read it. What a peer makes it keep is charged to that peer.
 
 ## What it owns
+A repair's freshly encrypted blobs are linked only by the repair, so a source deleting one refuses it (no purger missed that reuse).
 Entries (wrap or filler, stamp, deposited flag, own, role, class, expiry; held elsewhere in a row of its own, status's), tombstones with what the entry was (also by blob, `tombstoned_under`: read's forgetting asks whether a delete of a commit's blob is recent under any sync ID), blob bytes once per node, the path per sync ID (steps and claim sets), the node log with a per-sync-ID index (osis-store `nodelog`; a join costs that sync ID's events), usage per sync ID against the caps and the deposit budget, charges against each peer's budget, and the rows a source keeps for `read` (stands, deletes seen). Row layout: `store/rows.rs`' module doc.
 
 ## Two parts, one rule set
