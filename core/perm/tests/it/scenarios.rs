@@ -90,7 +90,7 @@ fn self_witnessed_grant_falls() {
     assert_eq!((edge_role(&tl, z, g), edge_role(&tl, n[1], g)), (None, None));
 }
 
-/// §5.1 step 3-4: two edge-admin paths to doc D through teams T1, T2. Removing one path is no
+/// §5.1 step 3-4: two edge-admin paths to doc D through holders T1, T2. Removing one path is no
 /// fall; removing the second audits the grant unless that remover had received it.
 #[test]
 fn two_admin_paths_class_attribution() {

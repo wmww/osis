@@ -244,11 +244,11 @@ fn components(rng: &mut Rng, at: &str, seen: &mut Seen) {
     assert_eq!(inc.update(&w.held()), 0);
 }
 
-/// §5.1 step 5: two sibling teams that are admins of each other (authority on each may come
+/// §5.1 step 5: two sibling holders that are admins of each other (authority on each may come
 /// through the other): each write in timeline order continues the walk (`extend`),
 /// equal to evaluating from scratch.
 #[test]
-fn mutual_admin_teams_extend() {
+fn mutual_admin_holders_extend() {
     use osis_base::Role::{Admin, Write};
     let mut w = World::new();
     let n = w.nodes(4);
@@ -739,14 +739,14 @@ fn late_write_before_a_drop_goes_on_spec_permissions_5_1() {
     let n = w.nodes(5);
     let (k, a, b, m) = (n[0], n[1], n[2], n[3]);
     let g = w.thing(k);
-    let team = w.thing(k);
+    let org = w.thing(k);
     w.set(k, g, a, edge(Admin), 1, &[]);
     w.set(k, g, b, edge(Read), 1, &[]);
-    w.set(k, g, team, edge(Read), 1, &[]);
-    w.set(k, team, a, edge(Read), 1, &[]);
+    w.set(k, g, org, edge(Read), 1, &[]);
+    w.set(k, org, a, edge(Read), 1, &[]);
     w.set(a, g, m, edge(Write), 2, &[]);
     w.set(k, g, a, None, 6, &[]);
-    let late = [w.set(k, g, b, edge(Write), 3, &[]), w.set(k, g, team, edge(Admin), 4, &[]), w.set(k, team, a, edge(Admin), 5, &[])];
+    let late = [w.set(k, g, b, edge(Write), 3, &[]), w.set(k, g, org, edge(Admin), 4, &[]), w.set(k, org, a, edge(Admin), 5, &[])];
     let mut skip: BTreeSet<_> = late.into_iter().collect();
     let mut prev = w.held_without(&skip);
     let mut inc = Timelines::new();
@@ -761,7 +761,7 @@ fn late_write_before_a_drop_goes_on_spec_permissions_5_1() {
         assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
         prev = held;
     }
-    // a keeps edge admin through the team: no fall, nothing dropped
+    // a keeps edge admin through the org: no fall, nothing dropped
     assert!(inc.get(&g).unwrap().dropped().is_empty());
 }
 
@@ -829,7 +829,7 @@ fn late_write_idle_only_in_final_walk_spec_permissions_5_1() {
 }
 
 /// Random small histories built to drop and un-drop (few nodes, every one an admin at first;
-/// grants, removals, demotions with partial frontiers, invites, `until`, a team; two nodes
+/// grants, removals, demotions with partial frontiers, invites, `until`, a holder thing; two nodes
 /// only some writes name, one with its
 /// `created.0` held, one without), the second half arriving late in random order through
 /// `update_touched`: equal to an evaluation from scratch after every arrival. Returns how many
@@ -840,19 +840,19 @@ fn adversarial(rng: &mut Rng, at: &str, seen: &mut Seen) {
     let mut n = w.nodes(5);
     let k = n[0];
     let g = w.thing(k);
-    let team = w.thing(k);
+    let org = w.thing(k);
     let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
-    let targets = [g, g, g, team];
+    let targets = [g, g, g, org];
     for (i, x) in n.iter().enumerate().skip(1) {
-        w.set(k, if i == 4 { team } else { g }, *x, edge(Admin), 1, &[]);
+        w.set(k, if i == 4 { org } else { g }, *x, edge(Admin), 1, &[]);
     }
-    w.set(k, g, team, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
+    w.set(k, g, org, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
     let mut late = Vec::new();
     for _ in 0..10 + rng.below(10) {
         let author = if rng.below(10) == 0 { extra[rng.below(2)] } else { n[if rng.below(6) == 0 { 0 } else { 1 + rng.below(4) }] };
         let target = targets[rng.below(targets.len())];
         let holder = match rng.below(10) {
-            0 if target == g => team,
+            0 if target == g => org,
             1 => extra[rng.below(2)],
             _ => n[1 + rng.below(4)],
         };
@@ -907,10 +907,10 @@ fn late_writes_placed_in_walk_spec_permissions_5_1() {
     let n = w.nodes(8);
     let (k, a, b) = (n[0], n[1], n[2]);
     let g = w.thing(k);
-    let team = w.thing(k);
+    let org = w.thing(k);
     w.set(k, g, a, edge(Admin), 1, &[]);
     w.set(k, g, b, edge(Admin), 1, &[]);
-    w.set(k, g, team, edge(Write), 1, &[]);
+    w.set(k, g, org, edge(Write), 1, &[]);
     for i in 0..200u64 {
         let m = n[3 + (i % 3) as usize];
         let e = match i % 4 {
@@ -919,7 +919,7 @@ fn late_writes_placed_in_walk_spec_permissions_5_1() {
             _ => edge(Write),
         };
         let author = if i % 2 == 0 { a } else { b };
-        w.set(author, if i % 5 == 0 { team } else { g }, m, e, 10 + 2 * i, &[(m, 10 + 2 * i)]);
+        w.set(author, if i % 5 == 0 { org } else { g }, m, e, 10 + 2 * i, &[(m, 10 + 2 * i)]);
     }
     w.set(b, g, n[3], edge(Admin), 300, &[]);
     w.set(n[3], g, n[4], edge(Read), 310, &[]);
@@ -927,7 +927,7 @@ fn late_writes_placed_in_walk_spec_permissions_5_1() {
     let late = [
         (w.set(a, g, n[6], edge(Read), 101, &[]), true),
         (w.set(b, g, n[7], edge(Write), 151, &[]), true),
-        (w.set(a, team, n[6], edge(Write), 201, &[]), true),
+        (w.set(a, org, n[6], edge(Write), 201, &[]), true),
         (w.set(a, g, n[4], edge(Read), 251, &[]), false),
         (w.set(a, g, n[3], edge(Admin), 203, &[]), false),
     ];
@@ -1106,7 +1106,7 @@ fn check_more(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -
 }
 
 /// Random histories over a record chain (P's mint admin the key, Q's P, R's Q), two nested
-/// teams and a thing as holder, with `until` on every role, invites of every level, removals,
+/// holder things and a thing as holder, with `until` on every role, invites of every level, removals,
 /// widenings, two-op commits; half the commits arrive late, one to three at a time, in random
 /// order through `update_touched`, with restarts from saved walks now and then; equal to an
 /// evaluation from scratch after every arrival. Returns (updates `append` did alone, commits
@@ -1120,19 +1120,19 @@ fn adversarial_shapes(rng: &mut Rng, at: &str, seen: &mut Seen) {
     let q = w.thing(p);
     let r = w.thing(q);
     let g = w.thing(k);
-    let team = w.thing(k);
-    let team2 = w.thing(p);
+    let org = w.thing(k);
+    let org2 = w.thing(p);
     let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
-    let targets = [p, q, r, g, g, team, team2];
-    let holders = [team, team2, p];
+    let targets = [p, q, r, g, g, org, org2];
+    let holders = [org, org2, p];
     // everyone has a write on every target before the late ones (so they may be placed)
     w.set(k, p, n[1], edge(Admin), 1, &[]);
     w.set(k, p, n[2], edge(Admin), 1, &[]);
     w.set(k, g, n[3], edge(Admin), 1, &[]);
-    w.set(k, g, team, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
-    w.set(k, team, n[4], edge(Admin), 1, &[]);
-    w.set(k, team, team2, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
-    w.set(k, team2, n[5], edge(Admin), 1, &[]);
+    w.set(k, g, org, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
+    w.set(k, org, n[4], edge(Admin), 1, &[]);
+    w.set(k, org, org2, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
+    w.set(k, org2, n[5], edge(Admin), 1, &[]);
     for a in &n[1..] {
         for t in targets {
             w.set(*a, t, *a, edge(Admin), 2, &[]);
@@ -1322,26 +1322,26 @@ fn created_late_after_writes_naming_it_spec_permissions_5_1() {
     let n = w.nodes(6);
     let (k, a) = (n[0], n[1]);
     let g = w.thing(k);
-    let team = w.thing(k);
-    let doc = w.thing(team);
+    let org = w.thing(k);
+    let doc = w.thing(org);
     w.set(k, g, a, edge(Admin), 1, &[]);
-    w.set(k, team, n[5], edge(Admin), 35, &[]);
+    w.set(k, org, n[5], edge(Admin), 35, &[]);
     for i in 0..60u64 {
         w.set(a, g, n[2 + (i % 3) as usize], edge(if i % 2 == 0 { Read } else { Write }), 2 + i, &[]);
     }
-    w.set(a, g, team, edge(Write), 40, &[]);
+    w.set(a, g, org, edge(Write), 40, &[]);
     w.set(n[5], doc, n[4], edge(Write), 45, &[]);
     for i in 0..10u64 {
         w.set(a, g, n[2 + (i % 3) as usize], None, 70 + i, &[]);
     }
-    for late in [team, doc] {
+    for late in [org, doc] {
         let mut prev = w.held();
-        prev.created.remove(&team);
+        prev.created.remove(&org);
         prev.created.remove(&doc);
         let mut inc = Timelines::new();
         inc.update(&prev);
         let mut held = w.held();
-        held.created.remove(&[team, doc].into_iter().find(|t| *t != late).unwrap());
+        held.created.remove(&[org, doc].into_iter().find(|t| *t != late).unwrap());
         let c = inc.update_touched(&held, &touched(&prev, &held));
         assert!(c.evaluated.is_empty(), "{late:?}: {c:?}");
         assert!(c.extended.contains(&late), "{c:?}");
@@ -1363,19 +1363,19 @@ fn saved_walk_restored_after_a_node_joined_spec_permissions_5_1() {
     let n = w.nodes(5);
     let (k, a) = (n[0], n[1]);
     let g = w.thing(k);
-    let team = w.thing(k);
+    let org = w.thing(k);
     w.set(k, g, a, edge(Admin), 1, &[]);
     for i in 0..40u64 {
         w.set(a, g, n[2 + (i % 3) as usize], edge(if i % 2 == 0 { Read } else { Write }), 2 + i, &[]);
     }
-    w.set(a, g, team, edge(Read), 30, &[]);
+    w.set(a, g, org, edge(Read), 30, &[]);
     let mut held = w.held();
-    held.created.remove(&team);
+    held.created.remove(&org);
     let mut inc = Timelines::new();
     inc.update(&held);
     let mut disk = Disk::new();
     store(&mut disk, inc.to_save(SALT, 1, true));
-    let root = *n.iter().chain([&g, &team]).min().unwrap();
+    let root = *n.iter().chain([&g, &org]).min().unwrap();
     let (y, yrec) = key_actors(8, 31).into_iter().find(|(t, _)| *t > root).unwrap();
     w.created.insert(y, yrec);
     w.set(a, g, y, edge(Write), 50, &[]);
@@ -1418,7 +1418,7 @@ fn saved_walk_under_old_root_deleted_after_restart() {
 /// Random histories built for the placement paths' corners (spec/permissions.md §5.1 steps
 /// 2-5): no writes before the late ones (a late write is often its author's first on its
 /// target, so falls before the old first write appear), ties in ts, a record chain through
-/// things (a doc under a team, a sub-doc under the doc) and things as holders, invites,
+/// things (a doc minted with an org as admin, a sub-doc minted with the doc) and things as holders, invites,
 /// `until`, removals, two-op commits, late writes by the key actor at the top, and
 /// `created.0` records of named things and of new nodes arriving late, with commits or
 /// alone; restarts from saved walks now and then. Equal to an evaluation from scratch after
@@ -1429,16 +1429,16 @@ fn adversarial_corners(rng: &mut Rng, at: &str, seen: &mut Seen) {
     let mut n = w.nodes(6);
     let k = n[0];
     let g = w.thing(k);
-    let team = w.thing(k);
-    let doc = w.thing(team);
+    let org = w.thing(k);
+    let doc = w.thing(org);
     let sub = w.thing(doc);
     let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
-    let targets = [g, g, team, doc, sub];
-    let holders = [team, doc];
+    let targets = [g, g, org, doc, sub];
+    let holders = [org, doc];
     w.set(k, g, n[1], edge(Admin), 1, &[]);
     w.set(k, g, n[2], edge(Admin), 1, &[]);
-    w.set(k, team, n[3], edge(Admin), 1, &[]);
-    w.set(k, g, team, edge([Admin, Write, Read][rng.below(3)]), 1, &[]);
+    w.set(k, org, n[3], edge(Admin), 1, &[]);
+    w.set(k, g, org, edge([Admin, Write, Read][rng.below(3)]), 1, &[]);
     let mut late = Vec::new();
     let op = |rng: &mut Rng, n: &[Tid]| {
         let target = targets[rng.below(targets.len())];
@@ -1456,9 +1456,9 @@ fn adversarial_corners(rng: &mut Rng, at: &str, seen: &mut Seen) {
         };
         (target, holder, e)
     };
-    // admins and the team's admin edge removed and given back: classes fall and return
+    // admins and the org's admin edge removed and given back: classes fall and return
     let toggle = |rng: &mut Rng, n: &[Tid]| {
-        let (target, holder) = [(g, n[1]), (g, n[2]), (team, n[3]), (g, team), (team, n[4]), (doc, n[5])][rng.below(6)];
+        let (target, holder) = [(g, n[1]), (g, n[2]), (org, n[3]), (g, org), (org, n[4]), (doc, n[5])][rng.below(6)];
         (target, holder, [None, edge(Admin), edge(Write)][rng.below(3)])
     };
     for _ in 0..10 + rng.below(16) {
@@ -1482,9 +1482,9 @@ fn adversarial_corners(rng: &mut Rng, at: &str, seen: &mut Seen) {
             late.push(id);
         }
     }
-    // `created.0` records held late: a team or doc the history names, the node with one
+    // `created.0` records held late: an org or doc the history names, the node with one
     let mut created_late: Vec<(Tid, usize)> = Vec::new();
-    for t in [team, doc, extra[0]] {
+    for t in [org, doc, extra[0]] {
         if rng.below(3) == 0 {
             created_late.push((t, rng.below(late.len() + 1)));
         }
@@ -1557,7 +1557,7 @@ fn shadow_cost_guard_changes_no_outcome_spec_permissions_5_1() {
     assert!(placed[0] < placed[1], "{placed:?}");
 }
 
-/// §5.1 step 5: a late admin grant to a team whose holders write on the thing in every later
+/// §5.1 step 5: a late admin grant to a holder thing whose holders write on the thing in every later
 /// commit (each later item re-judged): with 520 later items the cost guard walks on from the
 /// write; with the guard off it is placed by re-judging them. Both equal an evaluation from
 /// scratch.
@@ -1569,16 +1569,16 @@ fn long_rest_both_paths_equal_spec_permissions_5_1() {
     let n = w.nodes(8);
     let k = n[0];
     let g = w.thing(k);
-    let team = w.thing(k);
+    let org = w.thing(k);
     w.set(k, g, n[1], edge(Admin), 1, &[]);
-    w.set(k, team, n[1], edge(Admin), 1, &[]);
-    w.set(k, team, n[2], edge(Write), 1, &[]);
+    w.set(k, org, n[1], edge(Admin), 1, &[]);
+    w.set(k, org, n[2], edge(Write), 1, &[]);
     w.set(n[1], g, n[3], edge(Read), 2, &[]);
     for i in 0..520u64 {
         let m = n[3 + (i % 5) as usize];
         w.set(n[1], g, m, if i % 3 == 0 { None } else { edge([Read, Write][(i % 2) as usize]) }, 10 + i, &[]);
     }
-    let late = w.set(k, g, team, edge(Admin), 5, &[]);
+    let late = w.set(k, g, org, edge(Admin), 5, &[]);
     let skip = BTreeSet::from([late]);
     let prev = w.held_without(&skip);
     let held = w.held();
@@ -1598,8 +1598,8 @@ fn long_rest_both_paths_equal_spec_permissions_5_1() {
     assert_eq!(placed, [0, 1]);
 }
 
-/// Random histories of admins removed and given back by the key actor (directly and through a
-/// team), with rare writes of their own on G, a doc under it and the team: a late write
+/// Random histories of admins removed and given back by the key actor (directly and through an
+/// org), with rare writes of their own on G, a doc minted with it and the org: a late write
 /// is often its author's first on its target, and the class falls between it and the old first
 /// write are recorded only with it (spec/permissions.md §5.1 step 4); frontiers cover some of
 /// them, so some of those falls drop it. Ties in ts. Equal to an evaluation from scratch after
@@ -1611,13 +1611,13 @@ fn adversarial_falls(rng: &mut Rng, at: &str, seen: &mut Seen) {
     let k = n[0];
     let g = w.thing(k);
     let doc = w.thing(g);
-    let team = w.thing(k);
+    let org = w.thing(k);
     for x in &n[1..3] {
         w.set(k, g, *x, edge(Admin), 1, &[]);
     }
-    w.set(k, g, team, edge(Admin), 1, &[]);
-    w.set(k, team, n[3], edge(Admin), 1, &[]);
-    w.set(k, team, n[4], edge(Write), 1, &[]);
+    w.set(k, g, org, edge(Admin), 1, &[]);
+    w.set(k, org, n[3], edge(Admin), 1, &[]);
+    w.set(k, org, n[4], edge(Write), 1, &[]);
     let mut late = Vec::new();
     for _ in 0..12 + rng.below(16) {
         let t = 2 + rng.below(14) as u64;
@@ -1625,12 +1625,12 @@ fn adversarial_falls(rng: &mut Rng, at: &str, seen: &mut Seen) {
         let id = if rng.below(5) < 3 {
             // the key actor (or an admin) takes a class away or gives it back
             let author = if rng.below(4) == 0 { n[1 + rng.below(2)] } else { k };
-            let (target, holder) = [(g, n[1]), (g, n[2]), (g, team), (team, n[3]), (team, n[4]), (doc, n[3])][rng.below(6)];
+            let (target, holder) = [(g, n[1]), (g, n[2]), (g, org), (org, n[3]), (org, n[4]), (doc, n[3])][rng.below(6)];
             let e = [None, None, edge(Admin), edge(Write), edge_inv(Admin, None, Some(t + 1 + rng.below(6) as u64))][rng.below(5)];
             w.set(author, target, holder, e, t, &recv)
         } else {
             let author = n[1 + rng.below(4)];
-            let target = [g, doc, doc, team][rng.below(4)];
+            let target = [g, doc, doc, org][rng.below(4)];
             let holder = n[1 + rng.below(5)];
             let e = [None, edge(Read), edge(Write), edge(Admin), edge_inv(Write, Some(Read), None)][rng.below(5)];
             w.set(author, target, holder, e, t, &recv)
@@ -1674,10 +1674,10 @@ fn created_late_for_a_dropped_write_spec_permissions_5_1() {
         let n = w.nodes(4);
         let (k, a) = (n[0], n[1]);
         let g = w.thing(k);
-        let team = w.thing(k);
-        let doc = w.thing(team);
+        let org = w.thing(k);
+        let doc = w.thing(org);
         w.set(k, g, a, edge(Admin), 1, &[]);
-        w.set(k, team, n[2], edge(Admin), 1, &[]);
+        w.set(k, org, n[2], edge(Admin), 1, &[]);
         for i in 0..20u64 {
             w.set(a, g, n[3], edge(Read), 2 + i, &[]);
         }
@@ -1819,7 +1819,7 @@ fn creation_histories(rng: &mut Rng, at: &str, seen: &mut Seen) {
     let n = w.nodes(4);
     let k = n[0];
     let late_node = w.nodes_salted(1, 0x79)[0];
-    // held from the start: two things and a team
+    // held from the start: two things and an org
     let base = [w.thing(k), w.thing(k), w.thing(n[1])];
     w.set(k, base[0], n[1], edge(Admin), 1, &[]);
     w.set(n[1], base[2], n[2], edge(Admin), 1, &[]);

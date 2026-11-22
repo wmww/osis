@@ -13,16 +13,16 @@ use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// An organization: key actor K is mint admin of root actor R (10 admins), mint admin of
-/// 20 teams; each team is mint admin of 10 docs; 300 holder nodes; `n` edge writes (grants,
-/// changes, removals on teams and docs) by admins, a few percent received late.
+/// 20 departments; each department is mint admin of 10 docs; 300 holder nodes; `n` edge writes (grants,
+/// changes, removals on departments and docs) by admins, a few percent received late.
 fn org(n: usize) -> (World, Vec<Tid>, Tid, Vec<Tid>) {
     let mut rng = Rng(0x5eed_0401);
     let mut w = World::new();
     let nodes = w.nodes(311);
     let k = nodes[0];
     let root = w.thing(k);
-    let teams: Vec<Tid> = (0..20).map(|_| w.thing(root)).collect();
-    let docs: Vec<Tid> = teams.iter().flat_map(|t| (0..10).map(|_| *t).collect::<Vec<_>>()).map(|t| w.thing(t)).collect();
+    let depts: Vec<Tid> = (0..20).map(|_| w.thing(root)).collect();
+    let docs: Vec<Tid> = depts.iter().flat_map(|t| (0..10).map(|_| *t).collect::<Vec<_>>()).map(|t| w.thing(t)).collect();
     let admins = &nodes[1..11];
     for (i, a) in admins.iter().enumerate() {
         w.set(k, root, *a, edge(Admin), 0, &[(nodes[i], 0)]);
@@ -31,8 +31,8 @@ fn org(n: usize) -> (World, Vec<Tid>, Tid, Vec<Tid>) {
     for i in 0..n {
         let t = 1 + i as u64;
         let author = admins[rng.below(admins.len())];
-        let target = if rng.below(3) == 0 { teams[rng.below(teams.len())] } else { docs[rng.below(docs.len())] };
-        let holder = if rng.below(10) == 0 { teams[rng.below(teams.len())] } else { holders[rng.below(holders.len())] };
+        let target = if rng.below(3) == 0 { depts[rng.below(depts.len())] } else { docs[rng.below(docs.len())] };
+        let holder = if rng.below(10) == 0 { depts[rng.below(depts.len())] } else { holders[rng.below(holders.len())] };
         let e = match rng.below(5) {
             0 => None,
             1 => edge(Read),
@@ -152,7 +152,7 @@ fn late_write_placed_without_rewalk() {
 
 /// The commits each of five late writes in the middle of the org's history at `n` walks, each
 /// through `update_touched` after the ones before: a read grant, a removal of a held edge, an
-/// admin grant, a write grant on a team, a read grant by the key actor at the top.
+/// admin grant, a write grant on a department, a read grant by the key actor at the top.
 fn late_walks(n: usize) -> Vec<u64> {
     {
         let (mut w, nodes, ..) = org(n);
@@ -170,7 +170,7 @@ fn late_walks(n: usize) -> Vec<u64> {
             }
             last.into_iter().find(|(_, e)| e.is_some()).map(|(m, _)| m)
         };
-        let (doc, team, held_holder) = w
+        let (doc, dept, held_holder) = w
             .created
             .iter()
             .rev()
@@ -183,7 +183,7 @@ fn late_walks(n: usize) -> Vec<u64> {
             ("a read grant", nodes[2], doc, nodes[201], edge(Read)),
             ("a removal", nodes[3], doc, held_holder, None),
             ("an admin grant", nodes[4], doc, nodes[202], edge(Admin)),
-            ("a write grant on a team", nodes[5], team, nodes[203], edge(Write)),
+            ("a write grant on a department", nodes[5], dept, nodes[203], edge(Write)),
             ("a read grant by the top", nodes[0], doc, nodes[204], edge(Read)),
         ];
         let ids: Vec<_> = cases.iter().enumerate().map(|(i, (_, a, t, m, e))| w.set(*a, *t, *m, *e, mid + i as u64, &[])).collect();

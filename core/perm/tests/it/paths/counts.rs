@@ -666,10 +666,10 @@ fn a_dispute_probe_reads_its_component_alone() {
     assert_eq!(per[0], per[1], "{per:?}");
 }
 
-/// One team on A, every part in one component (each rests on an edge a held write sets): H grants
+/// Admins of A, every part in one component (each rests on an edge a held write sets): H grants
 /// Y admin (ts 1); Y grants Z (ts 2) and W (ts 3) admin; W grants V read (ts 4); Z grants `n`
 /// holders read (ts 10..).
-fn team_on_a(n: u32) -> Vec<Commit> {
+fn admins_of_a(n: u32) -> Vec<Commit> {
     const Y: u32 = 30;
     const Z: u32 = 31;
     const W: u32 = 32;
@@ -681,7 +681,7 @@ fn team_on_a(n: u32) -> Vec<Commit> {
 
 // The budget the walk is built to (spec/requirements.md, Cost: a role change arriving out of
 // order may cost in proportion to the role history after it on that thing; issues/
-// perm-eval-cost.md). Over `team_on_a` (n = 100, 1000): (a) a grant appended at the end costs its
+// perm-eval-cost.md). Over `admins_of_a` (n = 100, 1000): (a) a grant appended at the end costs its
 // own step at both; (b) a grant by Y backdated to ts 5, before Z's n grants, at most itself and
 // the n parts after its key; (c) H removing W at the end listing nothing, dropping W's grant of V
 // (one restart): itself, then at most the history from its earliest drop on (the drop, Z's n
@@ -690,7 +690,7 @@ fn team_on_a(n: u32) -> Vec<Commit> {
 fn an_update_costs_what_it_changes_at_n_and_10n() {
     let cost = |n: u32, c: Commit| {
         let mut p = Paths::new(&records(), BTreeSet::new());
-        p.add(&team_on_a(n));
+        p.add(&admins_of_a(n));
         let before = p.counts();
         p.add(&[c]);
         (delta(before, p.counts()), p)

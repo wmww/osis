@@ -968,7 +968,7 @@ mod tests {
     }
 
     /// Two edge-admin paths to one doc D (actor 2, mint admin node 0): node 3 is admin of
-    /// realms T1 and T2 (actors 0 and 1), both admins of D. 3 grants node 4 admin on D at t=1,
+    /// holders T1 and T2 (actors 0 and 1), both admins of D. 3 grants node 4 admin on D at t=1,
     /// seen by nobody. Removing T1's path (t=3) leaves 3's class on D at edge admin: no audit.
     /// Removing T2's (t=4) drops the grant unless that remover had received it.
     #[test]
