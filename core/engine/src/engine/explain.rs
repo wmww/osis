@@ -255,8 +255,8 @@ impl Engine {
         let v = &m.view;
         let mut out = format!("c:{} {:?} by {} as {}", short(c), v.kind, label(core, &v.signer), label(core, &v.purge_author));
         let parts: Vec<String> = v.aspects.iter().enumerate().map(|(ai, a)| {
-            let valid = if m.valid.get(ai).copied().unwrap_or(false) { "" } else { " invalid" };
-            let hold = m.hold.get(ai).map_or("no hold".to_owned(), |h| format!("{h:?}"));
+            let valid = if m.valid_at(ai) { "" } else { " invalid" };
+            let hold = m.hold(ai).map_or("no hold".to_owned(), |h| format!("{h:?}"));
             format!("{} {}{valid} {hold}", label(core, &a.tid), a.ak)
         }).collect();
         let _ = write!(out, " on [{}]", parts.join(", "));
