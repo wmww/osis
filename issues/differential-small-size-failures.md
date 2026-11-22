@@ -15,3 +15,6 @@
 
 ## A node lacks a read the model has
 - Seed 3994064562 (gate offset 3994064557; fails on main's binary ec950c4ef): `node 1 reads thing 1: None, the model reads it`. The reverse of the earlier "reads what the model holds unread" facet; not shrunk.
+
+## A storm past the delivery cap
+- Seed 594660024526 (fails on main 038a90b45 as on a cleanup branch): `storm: past the cap of 30000 deliveries`, with no partition and nothing still flowing. Not shrunk: shrink first, then find which messages keep answering each other (the settle round counters: notes/test-harnesses.md, Measuring).
