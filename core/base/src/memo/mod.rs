@@ -974,9 +974,9 @@ pub fn accounted<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-/// Runs `f`, reads made for part `id` (by its stamp hash) of an answer an amend may drop whole (`release`): one
-/// body of the aspect's held writes (`retention::bounds::held_writes`). A read made for two
-/// parts, or also outside any, is for none. Elsewhere it is a plain read.
+/// Runs `f`, reads made for part `id` (`part_id`) of an answer an amend may drop whole
+/// (`release`): one body of the aspect's held writes (`retention::bounds::held_writes`). A read
+/// made for two parts, or also outside any, is for none. Elsewhere it is a plain read.
 pub fn part<T>(id: &(impl Hash + ?Sized), f: impl FnOnce() -> T) -> T {
     struct Restore(Option<(usize, u64)>);
     impl Drop for Restore {
@@ -985,9 +985,17 @@ pub fn part<T>(id: &(impl Hash + ?Sized), f: impl FnOnce() -> T) -> T {
         }
     }
     let top = FRAMES.with(|fr| fr.borrow().len().checked_sub(1));
-    let id = hash(id);
+    let id = part_id(id);
     let _restore = Restore(PART.replace(top.map(|t| (t, id))));
     f()
+}
+
+/// Part `id`'s name in `Dep::part`, keyed per process: two parts sharing one would release each
+/// other's reads (a stale answer, where a shared stamp key only moves an answer more often), so
+/// no input may choose ids that collide (`hash`'s key is fixed).
+fn part_id(id: &(impl Hash + ?Sized)) -> u64 {
+    static KEY: std::sync::OnceLock<std::collections::hash_map::RandomState> = std::sync::OnceLock::new();
+    std::hash::BuildHasher::hash_one(KEY.get_or_init(std::collections::hash_map::RandomState::new), id)
 }
 
 /// The amend running (`Cutoff::get_amended_in`) dropped part `id` of the answer: the kept
@@ -996,7 +1004,7 @@ pub fn release(id: &(impl Hash + ?Sized)) {
     if RECORDING.load(Ordering::Relaxed) == 0 {
         return;
     }
-    let id = hash(id);
+    let id = part_id(id);
     FRAMES.with(|f| {
         if let Some(top) = f.borrow_mut().last_mut() {
             top.released.insert(id);

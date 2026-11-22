@@ -1149,7 +1149,9 @@ pub struct Core {
     pub(crate) dated_as: Vec<(CommitId, usize, crate::retention::leaving::Noted)>,
     /// The bodies the running transaction's amends of held writes took away (aspect, commit,
     /// what it added there, in the form it was held: `retention::bounds::held_writes`), for
-    /// `date_due` to date what they dated (the body may be gone from the store).
+    /// `date_due` to date what they dated. The amend is the one place every way a body leaves
+    /// (dropped, stripped, forgotten) is seen, and it runs once the body may be gone from the
+    /// store, so it hands on what it took away rather than each removal dating first.
     pub(crate) left_bodies: Vec<((Tid, Ak), CommitId, Arc<crate::retention::bounds::BodyWrites>)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look. A name goes with its commit (forgotten, or dropped from pending while not
