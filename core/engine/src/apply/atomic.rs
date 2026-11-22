@@ -298,7 +298,8 @@ pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usiz
         #[cfg(test)]
         if let Some(n) = tx.core.piece_fault.as_mut() {
             if *n == 0 {
-                failed = Some(Error::Corrupt("test: piece fault"));
+                // a store failure: the transaction fails (a fault would set the commit aside)
+                failed = Some(Error::Store(osis_store::Error::Misuse("test: piece fault")));
                 return Err(STOPPED);
             }
             *n -= 1;

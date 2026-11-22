@@ -1,13 +1,12 @@
-# A broken engine invariant on one commit stops the node, and spins it on reloads
-> Summary: an engine `Corrupt` (or other local-class error) while applying a commit is lossless but a deterministic one stops the node for good: node-sync's step fails at every retry, and one in a re-examination round reloads the store in a loop with no pending commit of that round applying. No peer input is known to reach one on apply (spec/commits.md §4: no local error from peer bytes; a compaction snapshot's local error costs its aspect alone, notes/engine-retention-trigger.md); the failure mode for an engine bug stays: proposal below (set the faulting commit aside as locally unappliable).
+# A broken engine invariant outside any commit stops the node
+> Summary: a fault (`Error::is_fault`) taking a received commit sets that commit aside (notes/engine-apply.md, Faults set a commit aside); a deterministic fault outside any commit still stops the node: node-sync's step fails at every retry, or a re-examination round's shared part fails and `run_taken` reloads at every tick. No peer input is known to reach one (audit below).
 > Priority: normal
 > Tags: engine, sync, security
 
-What happens:
-- Arrival: core/engine/src/sync/bodies.rs `open_entry_once` passes a local-class ingest error up (never `Opened::Bad`); core/sync/src/streams/pull.rs `take_body` takes nothing and the step fails at the next settle (`streams::an_owed_body_settles_only_once_taken_under_its_sync_id_spec_sync_streams_4`: refetched after a restart). Right for a transient store failure; for a logic invariant it repeats forever.
-- Re-examination: `run_taken` (a `reexamine` round, `promote_loose`) failing sets `taken_failed`; the next transaction reloads as an open does and examines every pending commit (`Wake::Open`) in one round, so one commit whose examination errs rolls back the whole round again. `reload_owed` keeps `next_timer` at now: each tick reloads and fails. Arrivals not pending still apply, each after a whole reload. Read from the code, not built.
-
-Tests: `LocalPeer::receive_with` panics on `Error::Corrupt`, so engine tests and the simulator fail at the receive that trips one.
+What is left:
+- A re-examination round's transaction-end work (`Engine::run`: `end_drops`' re-judge, `judge_replaced_at`, `retention::needed::settle`) or shared part (`reach::round`, `read_pending`, `promote_loose`'s `learn_records_in`) faulting sets `taken_failed`: each tick reloads and fails again (`reload_owed` keeps `next_timer` at now). `Engine::fail_round` plants the shared-part case.
+- A tick's own work faulting (`judge_replaced_at` at a tick or a setting change) fails every tick.
+- An arrival whose transaction faults outside the commit (end work about other state) faults again in the set-aside transaction: the step fails, for good.
 
 ## Peer-reachable local errors (audit of `Error::Corrupt` and local-class errors on apply, join, judge, purge, covers, ingest)
 | site | what reaches it | peer-caused? |
@@ -19,16 +18,5 @@ Tests: `LocalPeer::receive_with` panics on `Error::Corrupt`, so engine tests and
 | a compaction snapshot's local error (`Engine::compactions`: one it cannot encode, e.g. root tables over `MAX_BLOB`) | any writer growing an aspect | Yes, but contained: that aspect stays uncompacted, the step goes on (notes/engine-retention-trigger.md). A link tree has the levels its array needs. |
 | `flows/account.rs` "the account's open epoch" | sealing a box (a local write) | No (local action). |
 | the rest (about 150 sites: index rows, records, pages, keys, counters this node wrote) | reading back the node's own store | No: store damage only. |
-
-## Proposal: a faulting commit is set aside, the node goes on
-Rule: a commit whose apply or examination fails with a local-class error that is not a store I/O error is **locally unappliable**: kept (its blob and record), not blamed on the peer (never `Opened::Bad`, never refused or forgotten), taken out of every round (other commits of the round apply as if it were pending on something never met), reported to the host as a node fault (an event and a status read: commit, aspect, error), and retried at the next open of a new build (and on an explicit host call); not on each tick.
-What it needs:
-- the error split: store I/O (transient: retry as now) vs logic (`Corrupt` raised on an invariant, crdt `Mismatch`); today both are `Corrupt`/local.
-- a durable `unappliable` row per commit with the build that set it, read at open: a newer build clears them and the commits are examined again.
-- `run_taken` examining commits one transaction each after a round fails (or bisecting the round), so the round's other commits apply; `reload_owed` dropped for logic faults.
-- sync: an unappliable commit counts as received (cursors pass it) but its parts as missing for judging, so peers' copies are not fetched in a loop; held for retry.
-- a set-aside commit counts as not applied for everything the node writes or claims: frontiers of its snapshots and covers (else a cover drops peers' bodies it does not carry), addenda, a removal's frontier.
-- `Corrupt` from store damage (a bad row) is not a logic fault: setting aside commits for it hides the damage; it stays a node error.
-- tests: a planted fault on one commit of a round (a test hook in the apply path) leaves the others applied, the node serving, the fault reported, and the commit applied after a reopen with the hook cleared.
 
 Also owed (notes/sync-facade.md Pending): one small world per wait reason and waking event asserting `lost_wakes` empty; a box the reading-only budget refused, freed by room alone, has no wake until the next arrival or tick.

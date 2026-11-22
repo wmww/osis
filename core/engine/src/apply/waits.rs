@@ -37,7 +37,7 @@ pub enum Wake {
 /// there reaches its stored copy, `retention::pending_drops`).
 pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_commit::Header>) -> Vec<Wake> {
     let mut out = match r {
-        Reason::Parked | Reason::Unexamined => vec![Wake::Open],
+        Reason::Parked | Reason::Unexamined | Reason::Fault => vec![Wake::Open],
         Reason::MissingChain(_) | Reason::UnknownCreated(_) => Vec::new(),
         Reason::Outside(t) => vec![Wake::Enters(*t)],
         Reason::Drift => match h {

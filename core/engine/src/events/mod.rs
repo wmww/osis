@@ -163,6 +163,11 @@ pub enum DiagnosticKind {
     /// A connection to another node came up or ended, or a dial failed (osis-sync's driver;
     /// `detail`: the connection, the address dialed, why it ended).
     Connection,
+    /// Applying a received commit failed for a fault of this node (a broken invariant of this
+    /// build, or damaged storage read back as one), never a judgment of the commit: it is set aside,
+    /// pending, and tried again at the next open (spec/commits.md §4; `commit`: it, `tids`: its
+    /// things, `detail`: the error).
+    Fault,
 }
 
 /// A structured diagnostic: kind, the things and commit it names, the peer it came from.

@@ -26,6 +26,8 @@ mod tests_paged;
 mod tests_steps;
 #[cfg(test)]
 mod tests_failed_writes;
+#[cfg(test)]
+mod tests_faults;
 
 pub(crate) use unindex::{unindex_commit, unindex_unreceived, unjudge_part};
 pub use waits::Wake;
@@ -71,6 +73,10 @@ pub enum Reason {
     Parked,
     /// Stored pending; not examined since the node opened.
     Unexamined,
+    /// Set aside: applying it failed for a fault of this node (`Error::is_fault`: a broken
+    /// invariant of this build), never a judgment of the commit; examined again at the next open
+    /// (`set_aside`).
+    Fault,
     /// An account's commit at an epoch whose minting rotation is not held (spec/permissions.md
     /// §5.5).
     Epoch(CommitId),
@@ -515,6 +521,8 @@ fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<
     let things: Vec<Tid> = if b.header.kind.is_role() { b.header.aspects.iter().map(|a| a.tid).collect() } else { Vec::new() };
     match tx.step(Step::Commit, |tx| ingest_blob(tx, b, Origin::Remote)) {
         Ok(out) => Ok(Some(out)),
+        // one bad commit never rolls back the round beside it (`set_aside`)
+        Err(e) if e.is_fault() => Ok(Some(set_aside(tx, &id, None, &e)?)),
         Err(e) if e.class() == ErrorClass::BadInput => {
             // a kept first copy proved junk (named in `examine`): a true copy may be held, so the
             // name and what was opened of the commit stay for its carriers to bring it again
@@ -951,6 +959,15 @@ pub(crate) fn unjudgeable(core: &crate::engine::Core, h: &Header, view: &crate::
 /// A memory commit (session-form content or commit-form snapshot, spec/commits.md §2-§3) is applied as memory work: every row it
 /// derives stays in the store's memory overlay, pending ones included.
 fn ingest_blob(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Result<Ingested> {
+    let planted = tx.core.apply_fault.is_some_and(|c| c == blob.id());
+    let out = ingest_blob_class(tx, blob, origin);
+    if planted {
+        return out.and(Err(Error::Corrupt("a planted fault (tests)")));
+    }
+    out
+}
+
+fn ingest_blob_class(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Result<Ingested> {
     match (blob.header.ephemeral, blob.header.form) {
         (None, _) => ingest_class(tx, blob, origin),
         (Some(osis_commit::EphClass::Plain), osis_commit::Form::Session(_) | osis_commit::Form::Commit) => tx.in_class(true, |tx| ingest_class(tx, blob, origin)),
@@ -967,6 +984,36 @@ fn arrive(tx: &mut Tx<'_>, id: &CommitId, blob: CommitBlob, blobs: bool) -> Resu
         return Ok(out);
     }
     ingest_blob(tx, blob, Origin::Remote)
+}
+
+/// Tells the app that received commit `id` (on `things`) failed to apply for fault `e` of this
+/// node (`set_aside`).
+fn tell_fault(core: &mut crate::engine::Core, id: Option<CommitId>, things: Vec<Tid>, e: &Error) {
+    core.events.diagnostic(Diagnostic { kind: DiagnosticKind::Fault, tids: things, commit: id, peer: None, detail: e.to_string() }, core.hlc.mono());
+}
+
+/// Received commit `id` failed to apply for a fault of this node (`e`), never a judgment of it
+/// (spec/commits.md §4 No local error from peer bytes): it pends set aside (`Reason::Fault`),
+/// counted as not received like any pending commit, so nothing this node holds, writes or
+/// claims reads it, and examined again only at the next open (an upgrade may apply it); the
+/// app is told. Its stored copy stays if it had one, else `bytes` (as it came) are kept.
+///
+/// Where: a round's examinations each run as a step (`retry_pending`), so a fault leaves the
+/// round's others applying; an arrival's transaction failing with a fault is followed by one that
+/// only sets the commit aside (`Engine::set_aside_arrival`: its transaction-end work included, and
+/// a streamed apply keeps spilling, which a step around it would stop).
+fn set_aside(tx: &mut Tx<'_>, id: &CommitId, bytes: Option<&[u8]>, e: &Error) -> Result<Ingested> {
+    let mut things = Vec::new();
+    if !tx.core.ix.pending.contains_key(id) {
+        let Some(b) = bytes.map(CommitBlob::decode).transpose()? else { return Err(Error::Misuse("set aside: no copy")) };
+        things = b.header.aspects.iter().map(|a| a.tid).collect();
+        pend(tx, id, PendingKind::Pending, None, &b.encode(), Reason::Fault, Some(&b.header))?;
+    }
+    // what its parts awaited wakes it no more: an open does
+    tx.core.waits.unawaits(id);
+    set_pending(tx.core, id, Some((Reason::Fault, None)));
+    tell_fault(tx.core, Some(*id), things, e);
+    Ok(Ingested::Pending(*id, Reason::Fault))
 }
 
 /// What a copy of commit `id` held or pending here returns when it brings nothing: each part it
@@ -1413,7 +1460,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commi
             Reason::Outside(_) => "own commit not applicable: a thing outside the node closure",
             Reason::Drift => "own commit not applicable: ts drift",
             Reason::WaitBlobs => "own commit not applicable: blobs missing",
-            Reason::Parked | Reason::Unexamined => "own commit not applicable: parked",
+            Reason::Parked | Reason::Unexamined | Reason::Fault => "own commit not applicable: parked",
         })),
     }
 }
@@ -1547,7 +1594,9 @@ impl Engine {
     /// `records` and `chain` (its author's chain to its actor) then `fire`, in one transaction
     /// kept only when the fire applies valid and no chain commit brought is parked or applies
     /// invalid; else nothing of it is written (`None`), so a stranger's records and chain are
-    /// learned only with a fire that checks out. Decode errors of `fire` are the caller's.
+    /// learned only with a fire that checks out. Decode errors of `fire` are the caller's. Its
+    /// transaction failing for a fault of this node (`Error::is_fault`) keeps nothing either, and
+    /// judges nothing: `Pending(fire, Reason::Fault)`, told to the app.
     pub(crate) fn ingest_sealed_fire(&mut self, records: Vec<CreationRecord>, chain: &[Vec<u8>], fire: CommitBlob) -> Result<Option<Ingested>> {
         let mut blobs = Vec::new();
         for c in chain {
@@ -1599,6 +1648,14 @@ impl Engine {
         for c in &ids {
             self.openings_done(c);
         }
+        // (a refusal rolls back by an error of its own)
+        if !refused
+            && let Err(e) = &r
+            && e.is_fault()
+        {
+            tell_fault(&mut self.core, Some(id), Vec::new(), e);
+            return Ok(Some(Ingested::Pending(id, Reason::Fault)));
+        }
         if refused {
             return Ok(None);
         }
@@ -1636,9 +1693,14 @@ impl Engine {
         for b in blobs {
             self.openings_done(&b.id());
         }
-        match out {
-            Some(k) => Ok(k),
-            None => r.and(Err(Error::Misuse("trial"))),
+        match (out, r) {
+            (Some(k), _) => Ok(k),
+            // judged neither way: none kept, the app told (`set_aside`)
+            (None, Err(e)) if e.is_fault() => {
+                tell_fault(&mut self.core, None, Vec::new(), &e);
+                Ok(BTreeSet::new())
+            }
+            (None, r) => r.and(Err(Error::Misuse("trial"))),
         }
     }
 
@@ -1667,6 +1729,18 @@ impl Engine {
             carriers::taken(tx, &id, from)?;
             Ok(out)
         });
+        let set_aside = Ingested::Pending(id, Reason::Fault);
+        // (a refusal rolls back by an error of its own)
+        let r = match r {
+            r if refused => r,
+            Err(e) if e.is_fault() && refuse(&self.core, &id, &ais, &set_aside) => {
+                tell_fault(&mut self.core, Some(id), Vec::new(), &e);
+                refused = true;
+                Ok(set_aside)
+            }
+            Err(e) if e.is_fault() => self.set_aside_arrival(&id, bytes, from, &e),
+            r => r,
+        };
         // written where kept, or nothing of it is kept (`sync_ids::opened`)
         self.openings_done(&id);
         if refused {
@@ -1715,6 +1789,23 @@ impl Engine {
         // the due records were taken outside its transaction (`run_taken`)
         let n = self.run_taken(|tx| learn_records_in(tx, recs));
         Ok(n? > 0)
+    }
+
+    /// The transaction taking received commit `id` (`bytes`, as it came) failed for fault `e` of
+    /// this node: one that only sets it aside (`set_aside`), carried by `carrier` (`None`: a
+    /// memory commit, or by nothing). An error here (the same fault again, outside the commit)
+    /// is the node's.
+    fn set_aside_arrival(&mut self, id: &CommitId, bytes: &[u8], carrier: Option<carriers::Carrier>, e: &Error) -> Result<Ingested> {
+        let memory = CommitBlob::decode(bytes).is_ok_and(|b| b.header.ephemeral.is_some());
+        self.run(|tx| {
+            if memory {
+                tx.set_memory();
+            }
+            let out = set_aside(tx, id, Some(bytes), e)?;
+            crate::sync_ids::opened::persist(tx, id)?;
+            carriers::taken(tx, id, carrier)?;
+            Ok(out)
+        })
     }
 
     /// `ingest` of an account's rotation with list blobs that came with it (under the
@@ -1791,6 +1882,11 @@ impl Engine {
         if fresh && r.is_ok() {
             self.blobs_stored();
         }
+        let r = match (r, seen) {
+            // a memory commit's copy is the memory lane's
+            (Err(e), Some(id)) if e.is_fault() => self.set_aside_arrival(&id, bytes, (!memory).then_some(carriers::Carrier::Entry), &e),
+            (r, _) => r,
+        };
         if let Some(id) = rotation.filter(|_| r.is_ok()) {
             self.loose_lists_held(&id);
         }

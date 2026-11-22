@@ -629,6 +629,10 @@ impl Engine {
         // section's (spec/crypto.md §5 Passing on)
         self.note_opened(&commit.header, &[(*t, under, commit.parts.iter().collect())]);
         let Some(ingested) = self.ingest_sealed_fire(records, &chain, commit)? else { return Ok(Opened::Bad) };
+        // a fault of this node's is no judgment of the blob: kept to open again
+        if matches!(ingested, crate::Ingested::Pending(_, crate::Reason::Fault)) {
+            return Ok(Opened::NotOpen);
+        }
         if let Some(g) = grant {
             self.take_role_parts(&g, GRANT_PARTS, id)?;
         }

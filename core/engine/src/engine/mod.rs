@@ -1205,6 +1205,10 @@ pub struct Core {
     /// Tests: steps of a kind fail (`Tx::step`).
     #[cfg(test)]
     pub(crate) step_fault: Option<StepFault>,
+    /// Tests (osis-sync's too): applying this received commit faults every time, once it ran in
+    /// full (`apply::ingest_blob`). Not carried over a reload.
+    #[doc(hidden)]
+    pub apply_fault: Option<CommitId>,
     /// Tests: the facts this node's snapshots state, over the true ones (`snapshot::facts_of`).
     #[cfg(test)]
     pub(crate) lie_facts: Option<osis_crdt::Facts>,
@@ -2060,6 +2064,7 @@ impl Core {
             piece_fault: _,
             #[cfg(test)]
             step_fault: _,
+            apply_fault: _,
             #[cfg(test)]
             lie_facts: _,
             #[cfg(test)]
@@ -2280,6 +2285,7 @@ impl Core {
             piece_fault: None,
             #[cfg(test)]
             step_fault: None,
+            apply_fault: None,
             #[cfg(test)]
             lie_facts: None,
             #[cfg(test)]

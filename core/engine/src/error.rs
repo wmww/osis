@@ -79,6 +79,18 @@ impl Classified for Error {
     }
 }
 
+impl Error {
+    /// A local error that is no store failure: a broken invariant of this build, or damage read
+    /// back as one. Received commit data never causes one (spec/commits.md §4 No local error from
+    /// peer bytes), so applying a received commit, it sets the commit aside
+    /// (`apply::Reason::Fault`) where a store failure fails the transaction, to be tried again.
+    pub fn is_fault(&self) -> bool {
+        use osis_crdt::{Error as C, PageError::Storage};
+        let store = matches!(self, Error::Store(_) | Error::Data(osis_commit::Error::Storage(_) | osis_commit::Error::Delta(C::Page(Storage))) | Error::Crdt(C::Page(Storage)));
+        self.class() == ErrorClass::Local && !store
+    }
+}
+
 macro_rules! from {
     ($t:ty, $v:ident) => {
         impl From<$t> for Error {

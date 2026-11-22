@@ -415,6 +415,35 @@ fn a_store_failure_restarts_in_place_once_per_stretch() {
     let _ = &mut st;
 }
 
+// spec/commits.md §4 (No local error from peer bytes): a received commit whose apply faults here
+// every time (a broken invariant of this build, planted) is set aside, pending, and reported; the
+// node's steps go on and it takes what comes after (else each step failed at that commit, and
+// restarted, for good).
+#[test]
+fn a_commit_faulting_on_apply_is_set_aside_and_sync_goes_on_spec_commits_4() {
+    use crate::harness::history::{Gives, three, value_ak};
+    use osis_base::{Ak, Value};
+    use osis_engine::{DiagnosticKind, Event, Mutation, Reason};
+    let (mut w, t, _) = three(Gives::Reads, 1);
+    let rx = w.engine(2).subscribe();
+    let write = |w: &mut World, ak: Ak, v: &str| w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str(v.into())).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    let c = write(&mut w, value_ak(), "set aside");
+    w.engine(2).core.apply_fault = Some(c);
+    write(&mut w, Ak::new("u:w.0").unwrap(), "after");
+    w.run();
+    assert_eq!(w.restarts(2), 0, "no step failed");
+    let e = w.engine(2);
+    assert_eq!(e.get(&t, &Ak::new("u:w.0").unwrap()).unwrap(), Some(Value::Str("after".into())));
+    assert_ne!(e.get(&t, &value_ak()).unwrap(), Some(Value::Str("set aside".into())));
+    assert_eq!(e.pending().into_iter().find(|(x, _)| *x == c).map(|(_, r)| r), Some(Reason::Fault));
+    let told = rx.try_iter().any(|e| matches!(e, Event::Diagnostic(d) if d.kind == DiagnosticKind::Fault && d.commit == Some(c)));
+    assert!(told, "reported");
+}
+
 // a failed step sends nothing it queued (notes/sync-driver.md, Failures): here a listener's
 // Hello, queued as the connection came up in a step whose store write failed; the dialer sees
 // a dropped connection, and the next dial comes up whole.
