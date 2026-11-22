@@ -17,6 +17,7 @@ osis-perm/paths::content::paths_content_agree_large rate:OSIS_PERM_SEED=26511399
 osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=13 issues/seq-cold-edits-follow-gaps.md same delta as on the whole state
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=192781816512 issues/custody-differential-failures.md T paired by A: needs Write on
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=357482902476 issues/custody-differential-failures.md node \w+: dropped a taken revocation
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=852227602733,OSIS_ORDER_LEN=60 issues/held-set-mint-admin-applied.md applied: model false, node true; parts \[[^]]*mint admin
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=210455287849 issues/custody-differential-failures.md \w+ acting: certificate engine None, model Some
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=146887569055 issues/custody-differential-failures.md node \w+, account \w+: seeds held: engine
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=219566677909 issues/differential-small-size-failures.md the new node's card: Store\(Backend\(Crashed\)\)
