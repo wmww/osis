@@ -929,6 +929,17 @@ fn thing_wait(
     (!a.ak.external() && !chain.contains(&h.signer) && !validity::reaches(core, &h.signer, &chain)).then_some(Reason::MissingChain(h.signer))
 }
 
+/// Whether part `ai` of an applied commit (`h`, its view `view`), held or not, cannot be judged
+/// here (spec/commits.md §4 Unjudgeable): the author's or the acting thing's record is not held,
+/// its thing's path opens nowhere here (a split commit's, spec/wire.md §4 `Split`), or what
+/// `thing_wait` reads of its thing is missing; the rule `examine` reads of a held part. Its
+/// validity flag reads false meanwhile, but it is not judged invalid (`retention::drops_invalid`).
+pub(crate) fn unjudgeable(core: &crate::engine::Core, h: &Header, view: &crate::engine::View, ai: usize) -> bool {
+    let Some(a) = h.aspects.get(ai) else { return false };
+    let held = |t: &Tid| core.created(t).cloned();
+    held(&h.signer).is_none() || held(&h.purge_author()).is_none() || view.paths.as_deref().is_some_and(|p| !p.contains_key(&a.tid)) || thing_wait(core, h, a, &held, &|t, core| core.created(t).cloned()).is_some()
+}
+
 /// Applies or stores one decoded commit blob.
 /// A memory commit (session-form content or commit-form snapshot, spec/commits.md §2-§3) is applied as memory work: every row it
 /// derives stays in the store's memory overlay, pending ones included.

@@ -433,10 +433,17 @@ fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
     m.holds(ai) && drops_invalid(core, m, ai)
 }
 
-/// Whether part `ai` of `m` is judged invalid here and so is not held, nor missing: invalid,
-/// and neither a role commit's nor this node's own (`goes_invalid`).
+/// Whether part `ai` of `m` is judged invalid here and so is not held, nor missing: invalid and
+/// judgeable (a part judged on missing evidence is never judged invalid, spec/commits.md §4
+/// Unjudgeable: `apply::unjudgeable`), and neither a role commit's nor this node's own
+/// (`goes_invalid`).
 fn drops_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
-    !m.valid_at(ai) && Some(m.view.signer) != core.me() && !m.view.kind.is_role()
+    !m.valid_at(ai) && Some(m.view.signer) != core.me() && !m.view.kind.is_role() && !crate::apply::unjudgeable(core, &m.header, &m.view, ai)
+}
+
+/// Whether part `ai` of `m` goes once judged invalid, held or missing (`drop_invalid`).
+fn goes_invalid_any(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
+    (m.holds(ai) || m.missing(ai)) && drops_invalid(core, m, ai)
 }
 
 /// Whether commit `m` holds no part and is known only for a part dropped while invalid (its
@@ -467,9 +474,12 @@ pub(crate) fn kept_purged(core: &Core, c: &CommitId, m: &crate::engine::Meta) ->
     (0..n).any(purged) && (0..n).all(|ai| !m.holds(ai) || purged(ai)) && !m.header.aspects.iter().any(kept)
 }
 
-/// Drops every held part judged invalid in this transaction (`Core::drop_due`) but those
-/// `goes_invalid` keeps: its writes are none of the state's, so no read changes and no aspect is
-/// rebuilt (spec/crdt.md §4.6, spec/permissions.md §5.2). Run at the transaction's end, after
+/// Drops every part judged invalid in this transaction (`Core::drop_due`), held or missing, but
+/// those `drops_invalid` keeps: its writes are none of the state's, so no read changes and no
+/// aspect is rebuilt (spec/crdt.md §4.6, spec/permissions.md §5.2). A missing one (never
+/// received, or reopened to be fetched, `valid_again`) is dropped as invalid with no body, as one
+/// held throughout would be: what it is missing for is the same at every node holding the same
+/// (`drop_missing_invalid`). Run at the transaction's end, after
 /// this node's addenda (a witness lists what it received, `flows::addenda`). A memory
 /// transaction writes no durable row: it drops memory parts only.
 pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
@@ -482,11 +492,15 @@ pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
         crate::apply::run_batched(tx, |tx| {
             for c in &due {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
-                let parts: Vec<usize> = (0..m.view.aspects.len()).filter(|ai| goes_invalid(tx.core, m, *ai)).collect();
+                let parts: Vec<(usize, bool)> = (0..m.view.aspects.len()).filter(|ai| goes_invalid_any(tx.core, m, *ai)).map(|ai| (ai, m.holds(ai))).collect();
                 let memory = m.view.memory;
                 tx.in_class(memory, |tx| {
-                    for ai in parts {
-                        drop_part_for(tx, c, ai, DropFor::Invalid)?;
+                    for (ai, held) in parts {
+                        if held {
+                            drop_part_for(tx, c, ai, DropFor::Invalid)?;
+                        } else {
+                            drop_missing_invalid(tx, c, ai)?;
+                        }
                     }
                     Ok(())
                 })?;
@@ -594,6 +608,15 @@ fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
         tx.core.put_meta(*c, m);
     }
     Ok(())
+}
+
+/// Missing part `ai` of `c` judged invalid is dropped as invalid (`drop_invalid`): no body, so
+/// nothing its body judged is kept.
+fn drop_missing_invalid(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
+    tx.core.touch();
+    m.set_hold(ai, Hold::Dropped(Dropped { why: DropFor::Invalid, ..Dropped::default() }));
+    tx.in_class(m.view.memory, |tx| tx.put_meta_record(c, m))
 }
 
 /// Dropped part `ai` of `c` (as covered, purged, its thing destroyed) is dropped as invalid in

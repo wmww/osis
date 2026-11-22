@@ -1017,6 +1017,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     // verdicts first (the core read only), each held commit once: by thing, a commit under the
     // first re-judged thing among its aspects; then the commits re-judged whole
     let mut news: Vec<(CommitId, Vec<bool>)> = Vec::new();
+    // a missing part judged again and still invalid may be judgeable now (a record come): it
+    // drops if judged invalid (`retention::drop_invalid`)
+    let mut missing_due: Vec<CommitId> = Vec::new();
     {
         let core: &Core = tx.core;
         let mut judge = Judge::new(core);
@@ -1030,6 +1033,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 let v = judge.part(&m.header, &m.view, id, ai);
                 let old = m.valid_at(ai);
+                if !v && !old && m.missing(ai) {
+                    missing_due.push(*id);
+                }
                 if v != old {
                     let n = now.get_or_insert_with(|| m.valid().to_vec());
                     if let Some(x) = n.get_mut(ai) {
@@ -1128,6 +1134,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         tx.core.index_validity(&id);
     }
     drop(judge);
+    tx.core.drop_due.extend(missing_due);
     for (t, ak) in falls {
         crate::sync::falls::fell(tx, &t, &ak)?;
     }

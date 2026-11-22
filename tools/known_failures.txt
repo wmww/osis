@@ -20,5 +20,4 @@ osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=210455287849 issues/custody-differential-failures.md \w+ acting: certificate engine None, model Some
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=146887569055 issues/custody-differential-failures.md node \w+, account \w+: seeds held: engine
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=594660024526 issues/differential-small-size-failures.md storm: past the cap of \d+ deliveries
-osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=915130969958,OSIS_ORDER_LEN=60 issues/order-roster-admin-edge.md shows other than the node keeping every body
 osis-crdt/tests_seq::slots_join_follows_cache_plain_spec_7 rate:OSIS_CRDT_START=828121608434 issues/slots-join-floor-small-size.md joins on slots: \d+ over \d+ seeds, under the floor

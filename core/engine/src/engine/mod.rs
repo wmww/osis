@@ -2428,8 +2428,9 @@ impl Core {
         let bared: Vec<(Tid, BTreeSet<Ak>)> = m.view.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == osis_commit::retention::RETENTION && self.ix.commits.get(&id).is_some_and(|o| o.bare(*ai) != m.bare(*ai))).map(|(_, a)| (a.tid, crate::apply::validity::enabled(self, &a.tid))).collect();
         let had = self.ix.commits.get(&id).map(covers_of).unwrap_or_default();
         self.index_covers(&id, &had, &covers_of(&m));
-        // a part held invalid (a late part joining, a leftover kept) goes at the transaction's end
-        if (0..m.parts()).any(|ai| !m.valid_at(ai) && m.holds(ai)) {
+        // a part held or missing invalid (a late part joining, a leftover kept, one reopened)
+        // goes at the transaction's end if judged so (`retention::drop_invalid`)
+        if (0..m.parts()).any(|ai| !m.valid_at(ai) && (m.holds(ai) || m.missing(ai))) {
             self.drop_due.insert(id);
         }
         self.note_none(&m);
@@ -2580,7 +2581,8 @@ impl Core {
                 self.ix.invalid.remove(&k, id);
             } else {
                 self.ix.invalid.insert(k.clone(), *id);
-                if m.holds(ai) {
+                // held or missing, it drops if judged invalid (`retention::drop_invalid`)
+                if m.holds(ai) || m.missing(ai) {
                     self.drop_due.insert(*id);
                 }
             }

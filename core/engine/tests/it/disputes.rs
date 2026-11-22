@@ -316,10 +316,9 @@ fn a_thing_released_while_its_minting_was_invalid_comes_back_whole_with_the_side
 // `b`, mints Y with the strong on `t`'s `holds.0`. Peer 3 takes `a`'s side, then `b`'s again
 // before the pass ends; peer 2 is given the same and stays on `b`'s side. Both then release Y
 // alike. Fails where the part stays missing: a missing part on a held thing keeps its commit's
-// other things needed, so peer 3 keeps Y's record and reads its roster.
+// other things needed, so peer 3 would keep Y's record and read its roster.
 #[test]
-#[ignore = "issues/order-roster-admin-edge.md"]
-fn repro_a_part_missing_again_that_turns_invalid_drops_as_invalid() {
+fn a_part_missing_again_that_turns_invalid_drops_as_invalid() {
     let mut f = fight(4);
     let (w, r) = (f.w.clone(), f.r.clone());
     let before = ids(&f.lp, 0);
