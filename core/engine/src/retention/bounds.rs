@@ -496,7 +496,7 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
 /// body's date is judged again (`leaving::date_due`), as writes may have left the held set.
 pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
     if bounded(tx.core, tid, ak) {
-        tx.core.to_date.push((*tid, ak.clone(), false));
+        tx.core.to_date.push(*tid, ak.clone(), false);
     }
 }
 

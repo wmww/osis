@@ -265,7 +265,7 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()
     match (from, k.dated()) {
         (None, false) => Ok(()),
         (None, true) => {
-            tx.core.to_date.push((*tid, ak.clone(), true));
+            tx.core.to_date.push(*tid, ak.clone(), true);
             set_from(tx, tid, ak, Some((u64::MAX, None)))
         }
         (Some((_, out)), false) => {
@@ -321,10 +321,56 @@ fn noted(m: &crate::engine::Meta, ai: usize) -> Noted {
 }
 
 /// Whether a dated aspect's rows may lag its held set in the running transaction: a commit with
-/// a part on it changed, or it was rebuilt, since the rows were last dated (`date_due`).
+/// a part on it changed (`Commits::changed_on`), or it was rebuilt (`ToDate::has`), since the
+/// rows were last dated (`date_due`). Two lookups, whatever the transaction changed.
 pub(crate) fn dating_due(core: &Core, tid: &Tid, ak: &Ak) -> bool {
-    core.to_date.iter().any(|(t, a, _)| t == tid && a == ak)
-        || core.ix.commits.before().into_iter().any(|(c, old)| core.ix.commits.get(c).into_iter().chain(old).any(|m| m.aspect(tid, ak).is_some()))
+    core.to_date.has(tid, ak) || core.ix.commits.changed_on(tid, ak)
+}
+
+/// Dated aspects whose every part's replaced-at the running transaction may have moved (a
+/// rebuild; `true`: turned dated, a row landing in history told), dated whole at its end
+/// (`date_due`): a list cut back to a mark's length by a rollback, and its aspects counted, so
+/// `has` is one lookup.
+#[derive(Clone, Default)]
+pub(crate) struct ToDate {
+    list: Vec<(Tid, Ak, bool)>,
+    on: BTreeMap<(Tid, Ak), usize>,
+}
+
+impl ToDate {
+    pub(crate) fn push(&mut self, tid: Tid, ak: Ak, tell: bool) {
+        *self.on.entry((tid, ak.clone())).or_default() += 1;
+        self.list.push((tid, ak, tell));
+    }
+    pub(crate) fn len(&self) -> usize {
+        self.list.len()
+    }
+    /// Cuts the list back to its first `n` (a rollback to a mark).
+    pub(crate) fn truncate(&mut self, n: usize) {
+        for (t, a, _) in self.list.drain(n.min(self.list.len())..) {
+            let k = (t, a);
+            if let Some(c) = self.on.get_mut(&k) {
+                *c -= 1;
+                if *c == 0 {
+                    self.on.remove(&k);
+                }
+            }
+        }
+    }
+    /// The list, emptied.
+    pub(crate) fn take(&mut self) -> Vec<(Tid, Ak, bool)> {
+        self.on.clear();
+        std::mem::take(&mut self.list)
+    }
+    pub(crate) fn clear(&mut self) {
+        self.take();
+    }
+    /// Whether `(tid, ak)` is listed. Debug builds check it against the list.
+    pub(crate) fn has(&self, tid: &Tid, ak: &Ak) -> bool {
+        let has = self.on.contains_key(&(*tid, ak.clone()));
+        debug_assert_eq!(has, self.list.iter().any(|(t, a, _)| t == tid && a == ak), "to_date's count of {tid:?} {ak:?}");
+        has
+    }
 }
 
 /// At a transaction's end: each dated aspect's rows follow its held set, so a row is its part's
@@ -343,7 +389,7 @@ pub(crate) fn dating_due(core: &Core, tid: &Tid, ak: &Ak) -> bool {
 pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
     // per aspect: whole (telling rows landing in history), or the changed and joined commits
     let mut whole: BTreeMap<(Tid, Ak), bool> = BTreeMap::new();
-    for (t, a, tell) in std::mem::take(&mut tx.core.to_date) {
+    for (t, a, tell) in tx.core.to_date.take() {
         *whole.entry((t, a)).or_default() |= tell;
     }
     let mut changed: BTreeMap<(Tid, Ak), (BTreeSet<CommitId>, Vec<CommitId>)> = BTreeMap::new();
@@ -507,7 +553,7 @@ pub(crate) fn forget_aspects(tx: &mut Tx<'_>, keys: impl IntoIterator<Item = (Ti
             remove_row(tx, &tid, &ak, p)?;
         }
         set_from(tx, &tid, &ak, None)?;
-        tx.core.to_date.push((tid, ak, false));
+        tx.core.to_date.push(tid, ak, false);
     }
     Ok(())
 }

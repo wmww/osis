@@ -1491,3 +1491,45 @@ fn a_set_grown_one_element_a_write_writes_what_it_gained() {
     let (small, big) = (set_adds(150), set_adds(1500));
     flat("an add: store bytes written", small.io.written_bytes, big.io.written_bytes);
 }
+
+/// A fresh reader gets n commits each replacing the last on a kept register (`t:kept.0`, dated),
+/// all before the thing's record and its grant (they pend), then those, waking them in one
+/// transaction, the reader listening to commits: its work.
+fn kept_backlog(n: usize) -> Work {
+    use crate::common::KEPT;
+    let mut lp = net(2, 0);
+    let t = crate::common::new_shared(&mut lp, 0);
+    let base: BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
+    for i in 0..n {
+        let mut m = Mutation::new();
+        m.set(t, &KEPT, &s(&format!("v{i}"))).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+    }
+    let pks = crate::common::packages_to(&mut lp, 0, 1);
+    for p in pks.iter().filter(|p| !base.contains(&p.id)) {
+        lp.deliver(1, p).unwrap();
+    }
+    // a listener reads each woken part's keep bound in the transaction (its listing)
+    lp.peers[1].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
+    let (_, w) = measured_at(&mut lp, 1, |lp| {
+        for p in pks.iter().filter(|p| base.contains(&p.id)) {
+            lp.deliver(1, p).unwrap();
+        }
+    });
+    let k = ak("t:kept.0");
+    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(s(&format!("v{}", n - 1))));
+    w
+}
+
+// spec/commits.md §5 (when a body was replaced); spec/requirements.md, Scale (no operation
+// O(history)): a transaction applying n and 10n commits on a dated aspect reads each part's
+// date inside it, and a read asks whether the transaction changed the aspect in one lookup: the
+// transaction's change log is read a fixed number of times, not once per date read.
+#[test]
+fn a_dated_read_in_a_transaction_reads_no_change_log_spec_commits_5() {
+    let (a, b) = (kept_backlog(30), kept_backlog(300));
+    let (ra, rb) = (a.n("replaced reads"), b.n("replaced reads"));
+    assert!(ra >= 30 && rb >= 300, "a date read per commit applied: {ra}, {rb}");
+    flat("change log entries read per date read", a.n("commits log entries read") / ra, b.n("commits log entries read") / rb);
+    all_linear("a kept backlog woken", &a, &b);
+}

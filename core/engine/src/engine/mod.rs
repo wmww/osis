@@ -1134,10 +1134,9 @@ pub struct Core {
     /// Commits with a write a join of the running transaction superseded, on listened aspects
     /// (`listing::listing_moved`).
     pub(crate) killed: Vec<(Tid, Ak, CommitId)>,
-    /// Dated aspects whose every part's replaced-at the running transaction may have moved (a
-    /// rebuild; `true`: turned dated, a row landing in history told): their history rows are
-    /// dated whole at its end (`retention::leaving::date_due`).
-    pub(crate) to_date: Vec<(Tid, Ak, bool)>,
+    /// Dated aspects whose every part's replaced-at the running transaction may have moved
+    /// (`retention::leaving::ToDate`).
+    pub(crate) to_date: crate::retention::leaving::ToDate,
     /// What of each part a `date_due` of the running transaction dated (commit, aspect index,
     /// `leaving::Noted`), newest last: a later pass compares with it, not with the meta before
     /// the transaction.
@@ -2200,7 +2199,7 @@ impl Core {
             commit_listeners: None,
             listed_before: Vec::new(),
             killed: Vec::new(),
-            to_date: Vec::new(),
+            to_date: Default::default(),
             dated_as: Vec::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),

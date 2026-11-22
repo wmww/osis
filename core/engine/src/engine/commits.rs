@@ -229,9 +229,13 @@ impl Meta {
 pub struct Commits {
     map: BTreeMap<CommitId, Meta>,
     stamps: Stamps,
-    log: Vec<(CommitId, Option<Meta>)>,
+    /// Each change: the commit, its meta before, its view (a commit's own, fixed).
+    log: Vec<(CommitId, Option<Meta>, Arc<View>)>,
     /// The keys `log` holds since the last mark.
     seen: BTreeSet<CommitId>,
+    /// The aspects the commits `log` holds have parts on, each with its count of entries: grown
+    /// and cut back with `log` (`changed_on`).
+    on: BTreeMap<(Tid, Ak), usize>,
 }
 
 /// A copy's metas read the copy's stamps.
@@ -242,7 +246,7 @@ impl Clone for Commits {
         for (c, m) in map.iter_mut() {
             m.rec = Rec(Some((stamps.reader(), *c)));
         }
-        Commits { map, stamps, log: self.log.clone(), seen: self.seen.clone() }
+        Commits { map, stamps, log: self.log.clone(), seen: self.seen.clone(), on: self.on.clone() }
     }
 }
 
@@ -306,10 +310,13 @@ impl Commits {
             }
         }
     }
-    /// Journals `c`'s value before this transaction's first change of it.
-    fn note(&mut self, c: &CommitId, old: &Option<Meta>) {
+    /// Journals `c`'s value before this transaction's first change of it (`view`: its view).
+    fn note(&mut self, c: &CommitId, old: Option<&Meta>, view: &Arc<View>) {
         if self.seen.insert(*c) {
-            self.log.push((*c, old.as_ref().map(Meta::clone_raw)));
+            for a in &view.aspects {
+                *self.on.entry((a.tid, a.ak.clone())).or_default() += 1;
+            }
+            self.log.push((*c, old.map(Meta::clone_raw), view.clone()));
         }
     }
     fn attach(&self, c: &CommitId, m: &mut Meta) {
@@ -318,21 +325,21 @@ impl Commits {
     pub fn insert(&mut self, c: CommitId, mut m: Meta) -> Option<Meta> {
         self.stamp(&c, self.map.get(&c), Some(&m));
         self.attach(&c, &mut m);
+        let view = m.view.clone();
         let mut old = self.map.insert(c, m);
-        self.note(&c, &old);
+        self.note(&c, old.as_ref(), &view);
         if let Some(o) = &mut old {
             o.rec = Rec::default();
         }
         old
     }
     pub fn remove(&mut self, c: &CommitId) -> Option<Meta> {
-        let mut old = self.map.remove(c);
-        self.stamp(c, old.as_ref(), None);
-        self.note(c, &old);
-        if let Some(o) = &mut old {
-            o.rec = Rec::default();
-        }
-        old
+        // an absent commit: nothing changes, nothing is journaled
+        let mut old = self.map.remove(c)?;
+        self.stamp(c, Some(&old), None);
+        self.note(c, Some(&old), &old.view.clone());
+        old.rec = Rec::default();
+        Some(old)
     }
     /// Changes `c`'s meta in place by `f`, if it is held.
     pub fn update(&mut self, c: &CommitId, f: impl FnOnce(&mut Meta)) {
@@ -352,16 +359,29 @@ impl Commits {
     }
     /// What the running transaction changed, each commit with its meta before it.
     pub fn before(&self) -> BTreeMap<&CommitId, Option<&Meta>> {
+        osis_base::costs::count("commits log entries read", self.log.len() as u64);
         let mut out = BTreeMap::new();
-        for (k, v) in &self.log {
+        for (k, v, _) in &self.log {
             out.entry(k).or_insert(v.as_ref());
         }
         out
     }
     /// The commits the running transaction changed.
     pub fn logged(&self) -> Vec<CommitId> {
-        let s: BTreeSet<&CommitId> = self.log.iter().map(|(k, _)| k).collect();
+        let s: BTreeSet<&CommitId> = self.log.iter().map(|(k, ..)| k).collect();
         s.into_iter().copied().collect()
+    }
+    /// Whether a commit the running transaction changed has a part on `(tid, ak)`: one lookup.
+    /// Debug builds check it against the log (a missed aspect reads a stale history row).
+    pub fn changed_on(&self, tid: &Tid, ak: &Ak) -> bool {
+        let on = self.on.contains_key(&(*tid, ak.clone()));
+        #[cfg(debug_assertions)]
+        {
+            let scan = self.log.iter().any(|(c, old, _)| self.map.get(c).into_iter().chain(old).any(|m| m.aspect(tid, ak).is_some()));
+            // one changed and gone in one step counts here alone: a date judged afresh, safe
+            assert!(on || !scan, "the commits log's aspects miss {tid:?} {ak:?}");
+        }
+        on
     }
 }
 
@@ -384,6 +404,7 @@ impl Journaled for Commits {
     fn commit(&mut self) {
         self.log.clear();
         self.seen.clear();
+        self.on.clear();
     }
     // a key changed after the mark is journaled again: its entry restores the value at the mark
     fn mark(&mut self) -> usize {
@@ -393,7 +414,16 @@ impl Journaled for Commits {
     fn rollback_to(&mut self, m: usize) {
         self.seen.clear();
         while self.log.len() > m {
-            let Some((c, old)) = self.log.pop() else { break };
+            let Some((c, old, view)) = self.log.pop() else { break };
+            for a in &view.aspects {
+                let k = (a.tid, a.ak.clone());
+                if let Some(n) = self.on.get_mut(&k) {
+                    *n -= 1;
+                    if *n == 0 {
+                        self.on.remove(&k);
+                    }
+                }
+            }
             self.stamp(&c, self.map.get(&c), old.as_ref());
             match old {
                 Some(mut v) => {
