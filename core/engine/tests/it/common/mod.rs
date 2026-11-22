@@ -140,6 +140,19 @@ pub fn net(n: usize, seed: u64) -> LocalPeer {
     .0
 }
 
+/// Every order of `0..n` (n small).
+pub fn perms(n: usize) -> Vec<Vec<usize>> {
+    let mut out = vec![Vec::new()];
+    for i in 0..n {
+        out = out.into_iter().flat_map(|p: Vec<usize>| (0..=p.len()).map(move |at| {
+            let mut q = p.clone();
+            q.insert(at, i);
+            q
+        })).collect();
+    }
+    out
+}
+
 /// `n` peers, each its own account, that have met no other (`LocalPeer::new` at `T0`).
 pub fn net_apart(n: usize, seed: u64) -> LocalPeer {
     LocalPeer::cached(&format!("common::net_apart/{n}/{seed}"), || (LocalPeer::new_apart(n, seed, T0).unwrap(), ())).0

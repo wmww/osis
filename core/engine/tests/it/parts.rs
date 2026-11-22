@@ -221,14 +221,6 @@ fn parked_part_waits_alone_spec_versioning_2() {
     }
 }
 
-fn permutations(n: usize) -> Vec<Vec<usize>> {
-    let mut out = vec![vec![]];
-    for i in 0..n {
-        out = out.into_iter().flat_map(|p: Vec<usize>| (0..=p.len()).map(move |at| { let mut q = p.clone(); q.insert(at, i); q }).collect::<Vec<_>>()).collect();
-    }
-    out
-}
-
 // spec/commits.md §4, spec/crypto.md §4: a part waiting alone is pending like a whole commit: its
 // boxes are read, in either order, since they may open what it waits for.
 #[test]
@@ -389,7 +381,7 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     assert_eq!((&got.0, &got.1, got.2), (&Some(s("one")), &Some(s("two")), true));
     assert!(got.3.is_empty());
     let parts = [&p_one[..], &p_two[..], &p_bad[..]];
-    for order in permutations(3) {
+    for order in crate::common::perms(3) {
         let seq: Vec<&[u8]> = order.iter().map(|i| parts[*i]).collect();
         assert_eq!(read(&seq), got, "order {order:?}");
         // the first two alone: what is good of them shows
@@ -477,7 +469,7 @@ fn shapes(played: &Played, i: usize) -> Vec<Vec<Vec<u8>>> {
     let whole = played.packs[i].bytes.clone();
     let cut = cuts(played, i);
     let mut out = vec![vec![whole.clone()], vec![whole.clone(), whole.clone()]];
-    for perm in permutations(cut.len()) {
+    for perm in crate::common::perms(cut.len()) {
         let order: Vec<Vec<u8>> = perm.iter().map(|x| cut[*x].clone()).collect();
         let mut again = order.clone();
         again.push(whole.clone());

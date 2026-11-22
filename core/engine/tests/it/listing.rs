@@ -422,23 +422,6 @@ fn author_items_are_bounded_spec_wire_4() {
     }
 }
 
-
-/// Every order of `n` items.
-fn perms(n: usize) -> Vec<Vec<usize>> {
-    if n == 0 {
-        return vec![Vec::new()];
-    }
-    let mut out = Vec::new();
-    for p in perms(n - 1) {
-        for i in 0..n {
-            let mut q = p.clone();
-            q.insert(i, n - 1);
-            out.push(q);
-        }
-    }
-    out
-}
-
 // spec/permissions.md §6, spec/commits.md §5: a purge by author drops exactly the author's deltas
 // stamped before it, each only if the request holds the right over that delta at its own key. The
 // same in every arrival order of the delta, the setting
@@ -477,7 +460,7 @@ fn purge_by_author_any_order_spec_perm_6() {
             let items = [&pc, &setting, &pd, &prq];
             // a fresh node holding `base`, copied for each order
             let mut start = fresh(&mut lp, d, &base);
-            for (k, order) in perms(4).iter().enumerate() {
+            for (k, order) in crate::common::perms(4).iter().enumerate() {
                 // only the author's own request by the first class: the orders are the same work
                 if k > 0 && by != PurgeBy::AuthorOrAdmin && order[0] != 0 {
                     continue;

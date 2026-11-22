@@ -123,6 +123,24 @@ fn one_writer(n: usize) -> (LocalPeer, Tid) {
     })
 }
 
+/// Peer 0 inserts `items` at the start of list `a` on `t`, expiring at T0 + 1 h.
+fn put_expiring(lp: &mut LocalPeer, t: Tid, a: &osis_schema::Aspect<Value>, items: &[&str]) -> osis_base::CommitId {
+    let mut m = Mutation::new();
+    m.expires(t, a, WallMs(T0.0 + 3_600_000)).unwrap();
+    m.op(t, a, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: items.iter().map(|x| s(x)).collect() } }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap()
+}
+
+/// `one_writer(3)` with `put_expiring` of "hello" in `t:list.0`, synced: built once.
+fn hello_synced() -> (LocalPeer, Tid) {
+    LocalPeer::cached("waits::hello_synced", || {
+        let (mut lp, t) = one_writer(3);
+        put_expiring(&mut lp, t, &LIST, &["hello"]);
+        lp.sync_all().unwrap();
+        (lp, t)
+    })
+}
+
 /// Gives peer `to` of `lp` write on `t` and every commit of peer 0.
 fn writer(lp: &mut LocalPeer, t: Tid, to: usize) {
     let w = lp.peers[to].engine.me();
@@ -361,10 +379,7 @@ fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
     for (a, b) in [(0, 1), (1, 0)] {
         sync(&mut lp, a, b);
     }
-    let mut m = Mutation::new();
-    m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
-    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello")] } }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put_expiring(&mut lp, t, &LIST, &["hello"]);
     sync(&mut lp, 0, 1);
     lp.advance(10);
     let mut m = Mutation::new();
@@ -390,12 +405,7 @@ fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
 #[test]
 fn list_element_stays_beside_snapshot_before_expiry_spec_crdt_4_7() {
     let k = ak("t:list.0");
-    let (mut lp, t) = one_writer(3);
-    let mut m = Mutation::new();
-    m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
-    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello")] } }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, t) = hello_synced();
     lp.advance(10);
     lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
     lp.sync_all().unwrap();
@@ -466,10 +476,7 @@ fn expired_list_element_survives_unmerge_spec_crdt_4_6() {
     writer(&mut lp, t, 1);
     writer(&mut lp, t, 2);
     lp.sync_all().unwrap();
-    let mut m = Mutation::new();
-    m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
-    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello"), s("kept")] } }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    put_expiring(&mut lp, t, &LIST, &["hello", "kept"]);
     lp.sync_all().unwrap();
     lp.advance(10);
     let mut m = Mutation::new();
@@ -501,12 +508,7 @@ fn expired_list_element_survives_unmerge_spec_crdt_4_6() {
 #[test]
 fn snapshot_past_expiry_beside_body_spec_crdt_4_7() {
     let k = ak("t:list.0");
-    let (mut lp, t) = one_writer(3);
-    let mut m = Mutation::new();
-    m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
-    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello")] } }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, t) = hello_synced();
     lp.peers[1].clock.advance(3_600_000 + 1_000);
     lp.peers[2].clock.advance(3_600_000 - 1_000);
     lp.peers[1].tick().unwrap();
@@ -527,10 +529,7 @@ fn snapshot_past_expiry_beside_body_spec_crdt_4_7() {
 fn list_element_expiry_in_any_order_spec_crdt_5_7() {
     let k = ak("t:list.0");
     let (mut lp, t) = one_writer(2);
-    let mut m = Mutation::new();
-    m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
-    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello")] } }).unwrap();
-    let put = lp.peers[0].commit(m).unwrap().unwrap();
+    let put = put_expiring(&mut lp, t, &LIST, &["hello"]);
     sync(&mut lp, 0, 1);
     lp.advance(10);
     let mut m = Mutation::new();
@@ -882,10 +881,7 @@ fn removed_text_entry_key_goes_spec_crdt_5_6() {
 fn list_element_in_snapshot_before_expiry_reads_alike_spec_crdt_5_7() {
     let k = ak("t:listtext.0");
     let (mut lp, t) = one_writer(3);
-    let mut m = Mutation::new();
-    m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
-    m.op(t, &LISTTEXT, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("abc")] } }).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let c = put_expiring(&mut lp, t, &LISTTEXT, &["abc"]);
     sync(&mut lp, 0, 1);
     lp.advance(10);
     let mut m = Mutation::new();

@@ -2589,21 +2589,6 @@ fn purge_item(played: &Played, p: &Peer, item: &osis_commit::PurgeItem) -> Strin
     }
 }
 
-/// Every permutation of `0..n` (n small).
-fn perms(n: usize) -> Vec<Vec<usize>> {
-    if n == 0 {
-        return vec![Vec::new()];
-    }
-    let mut out = Vec::new();
-    for p in perms(n - 1) {
-        for i in 0..=p.len() {
-            let mut q = p.clone();
-            q.insert(i, n - 1);
-            out.push(q);
-        }
-    }
-    out
-}
 
 /// How much of the order space a check covers.
 #[derive(Clone, Copy, Debug)]
@@ -2702,7 +2687,7 @@ fn orders(played: &Played, held: &[usize], cfg: Cfg, rng: &mut Rng) -> Vec<Vec<u
     let mut out = vec![held.to_vec(), held.iter().rev().copied().collect(), fill_order(played, held)];
     let rest: Vec<usize> = held.iter().copied().filter(|&i| i >= played.base).collect();
     if (n == played.packs.len() || cfg.every_held) && rest.len() <= cfg.all_up_to {
-        for p in perms(rest.len()) {
+        for p in crate::common::perms(rest.len()) {
             out.push((0..played.base).chain(p.into_iter().map(|i| rest[i])).collect());
         }
     }
