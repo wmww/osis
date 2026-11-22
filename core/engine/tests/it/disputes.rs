@@ -309,3 +309,40 @@ fn a_thing_released_while_its_minting_was_invalid_comes_back_whole_with_the_side
     pass_end(&mut f.lp.peers[3].engine);
     assert_eq!(f.lp.peers[3].engine.get(&y, &ak("t:reg.0")).unwrap(), Some(s("y")));
 }
+
+// spec/commits.md §5 Invalid, What a held thing needs: a part dropped while invalid and made
+// valid again (missing, to fetch) that turns invalid again before it arrives is dropped as
+// invalid, as one held throughout: neither held nor missing. `a`, past its backdated removal of
+// `b`, mints Y with the strong on `t`'s `holds.0`. Peer 3 takes `a`'s side, then `b`'s again
+// before the pass ends; peer 2 is given the same and stays on `b`'s side. Both then release Y
+// alike. Fails where the part stays missing: a missing part on a held thing keeps its commit's
+// other things needed, so peer 3 keeps Y's record and reads its roster.
+#[test]
+#[ignore = "issues/order-roster-admin-edge.md"]
+fn repro_a_part_missing_again_that_turns_invalid_drops_as_invalid() {
+    let mut f = fight(4);
+    let (w, r) = (f.w.clone(), f.r.clone());
+    let before = ids(&f.lp, 0);
+    let (y, _) = f.lp.peers[0].engine.create_with_admin(&f.t).unwrap();
+    let ys = new_ids(&f.lp, 0, &before);
+    for i in [2, 3] {
+        send_carried(&mut f.lp, 1, i, &w);
+        send_carried(&mut f.lp, 0, i, &r);
+        send_carried(&mut f.lp, 0, i, &ys);
+    }
+    let p = &mut f.lp.peers[3];
+    let (ds, _) = p.engine.disputes(usize::MAX);
+    let d = ds.iter().find(|d| d.side.is_some_and(|s| s.trust)).expect("b's side taken by default").clone();
+    p.engine.choose(d.commit, d.op, d.holder, false).unwrap();
+    assert!(p.engine.commit_parts_missing().get(&ys[0]).is_some_and(|m| !m.is_empty()), "a's side: the minting's part on t is fetched again");
+    p.engine.choose(d.commit, d.op, d.holder, true).unwrap();
+    assert!(p.engine.commit_parts_missing().get(&ys[0]).is_none_or(|m| m.is_empty()), "b's side again: nothing to fetch");
+    for i in [2, 3] {
+        let e = &mut f.lp.peers[i].engine;
+        e.role_duties().unwrap();
+        let left: BTreeSet<Tid> = e.left_closure().into_keys().collect();
+        e.released(&left).unwrap();
+        e.settle_needs().unwrap();
+    }
+    assert_eq!(f.lp.peers[3].engine.roster(&y), f.lp.peers[2].engine.roster(&y));
+}
