@@ -255,13 +255,15 @@ fn left_out_at(core: &Core, a: &Tid, m: &Tid, r: Role) -> BTreeMap<Epoch, osis_p
 /// only where a record names it.
 pub(crate) fn left_out_for_good(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<bool> {
     let out = left_out_at(tx.core, a, m, r);
-    if out.is_empty() || tx.core.is_key_actor(m) || !tx.core.key_holders(a).into_iter().any(|(h, role)| h == *m && keyed_role(tx.core, a, m, role).is_some_and(|k| k >= r)) {
+    if out.is_empty() || tx.core.is_key_actor(m) {
         return Ok(false);
     }
     let held = keysets_of(tx, m, r, None)?;
     let epochs = tx.core.epochs(m);
     let current = |q: &Epoch| epochs.as_ref().is_some_and(|e| e.role(r).is_current(q));
-    Ok(osis_keys::left_out_for_good(&held, &tainted(tx, m, r)?, &out, current))
+    // `a`'s holders scanned last, only for a rotation the rule makes: a hostile writer recording
+    // every holder of `a` costs a pass of `a` no scan of them per holder
+    Ok(osis_keys::left_out_for_good(&held, &tainted(tx, m, r)?, &out, current) && tx.core.key_holders(a).into_iter().any(|(h, role)| h == *m && keyed_role(tx.core, a, m, role).is_some_and(|k| k >= r)))
 }
 
 /// How a rotation, grant or re-seal of an actor boxes one holder (`sealed`).
