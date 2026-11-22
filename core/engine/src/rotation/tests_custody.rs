@@ -1252,18 +1252,25 @@ impl Run {
     }
 
     /// A certificate X forges of the merge of `a` and `b` (every tip's seed held), as `signer`,
-    /// boxed to P's devices.
-    fn x_cert(&mut self, a: &Line, b: &Line, signer: usize) -> Option<u32> {
+    /// boxed to P's devices, signed at the tip of line `at` (any tip may sign, spec/wire.md §4
+    /// field 15), else at the least tip by commit ID.
+    fn x_cert(&mut self, a: &Line, b: &Line, signer: usize, at: Option<&Line>) -> Option<u32> {
         let line: Line = a.union(b).copied().collect();
         let mut tips: Vec<CommitId> = self.w.tips(&line).iter().map(|t| self.eid[*t as usize - 1]).collect();
         tips.sort();
+        if let Some(i) = at.and_then(|at| tips.iter().position(|t| self.w.line(self.m(t)) == *at)) {
+            let first = tips.remove(i);
+            tips.insert(0, first);
+        }
         let tip_seeds: Vec<Secret32> = tips.iter().map(|t| self.x_seed(&self.w.line(self.m(t)))).collect::<Option<_>>()?;
         let seed = osis_crypto::merge_seed(&tip_seeds.iter().collect::<Vec<_>>());
         let keys = AccountEpochKeys::from_seed(&seed);
         let tip_keys: Vec<AccountEpochKeys> = tip_seeds.iter().map(AccountEpochKeys::from_seed).collect();
         let boxed: [bool; N] = std::array::from_fn(|m| m < OWN);
         let seeds = self.boxes(&seed, &boxed);
-        let header = osis_commit::RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: tips.clone(), names: tips[1..].to_vec(), takes: Vec::new(), revokes: false, devices: Vec::new(), list_root: [0; 32], seeds };
+        let mut sup = tips.clone();
+        sup.sort();
+        let header = osis_commit::RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: sup, names: tips[1..].to_vec(), takes: Vec::new(), revokes: false, devices: Vec::new(), list_root: [0; 32], seeds };
         let rec = self.lp.peers[A].engine.core.created(&self.ids.p).unwrap().clone();
         self.lp.advance(1);
         let ts = osis_base::Ts::make(self.lp.peers[X].engine.now(), 0).unwrap();
@@ -1272,7 +1279,8 @@ impl Run {
         let more: Vec<&Secret32> = tip_keys[1..].iter().map(|k| &k.inner).chain([&keys.inner]).collect();
         let (c, bytes) = self.seal(&bytes, None, &tip_keys[0], signer, &more);
         let pk = Package { id: c, bytes, blobs: Vec::new(), lists: Vec::new() };
-        let (_, tlines) = self.note_merge(&c, &header);
+        self.note_merge(&c, &header);
+        let tlines: Vec<Line> = tips.iter().map(|t| self.w.line(self.m(t))).collect();
         let at = tlines[0].clone();
         let id = self.add(MK::Cert { joined: tlines, takes: vec![], answers: vec![] }, X, signer, at, None, c, Some(pk), boxed, Self::everyone());
         self.reached.x_certs = true;
@@ -1374,7 +1382,7 @@ impl Run {
                 if !pairs.is_empty() {
                     let (a, b) = pairs[self.rng.below(pairs.len())].clone();
                     let signer = [X, Z][self.rng.below(2)];
-                    made.extend(self.x_cert(&a, &b, signer));
+                    made.extend(self.x_cert(&a, &b, signer, None));
                 }
             }
             _ => {
@@ -1984,7 +1992,7 @@ fn a_taken_revocation_is_carried_once_whatever_the_preferred_head_spec_permissio
     let b1 = *made.iter().find(|id| matches!(r.w.item(**id).kind, MK::Plain { .. })).expect("B takes X's revocation in a plain rotation");
     assert_eq!(r.w.takes(b1), [rx]);
     let lx = r.w.line(x0);
-    let cert = r.x_cert(&lx, &la, X).unwrap();
+    let cert = r.x_cert(&lx, &la, X, None).unwrap();
     r.send(cert, B);
     let j = r.judge(B);
     assert_eq!(j.preferred, r.w.mints(cert), "the merge is B's preferred head");
@@ -2059,7 +2067,7 @@ fn a_rejected_merge_is_answered_once_spec_permissions_5_5() {
     let b1 = r.script_rotation(B).unwrap();
     r.send(b1, X);
     let (lx, lb) = (r.w.line(x), r.w.line(b1));
-    let m = r.x_cert(&lx, &lb, X).unwrap();
+    let m = r.x_cert(&lx, &lb, X, None).unwrap();
     for id in [x, rm] {
         r.send(id, B);
     }
@@ -2120,7 +2128,8 @@ fn a_re_added_node_holds_the_seeds_its_held_boxes_carry_spec_crypto_9() {
     let only_x: [bool; N] = std::array::from_fn(|m| m == X);
     let x2 = r.x_rotation(&r.w.line(c1), vec![], vec![], X, vec![], vec![], only_x, true).unwrap();
     let (lx, lx2) = (r.w.line(x), r.w.line(x2));
-    let xm = r.x_cert(&lx, &lx2, X).unwrap();
+    // xm signed at x, which T holds (at x2, which it never holds, T could not take it)
+    let xm = r.x_cert(&lx, &lx2, X, Some(&lx)).unwrap();
     let rm = r.act(A, Some(X), false)[0];
     r.w.removal = rm;
     r.send(c1, A);

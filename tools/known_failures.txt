@@ -25,4 +25,3 @@ osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=61254442551 issues/differential-small-size-failures.md must-hold bodies with no entry at quiet
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=2609037846 issues/order-role-commit-one-path.md a role commit's things are reached along one path
 osis-engine/order::held_set_decides_exhaustive rate:OSIS_ORDER_SEED=2609037846 issues/order-role-commit-one-path.md a role commit's things are reached along one path
-osis-engine/rotation::tests_custody::a_re_added_node_holds_the_seeds_its_held_boxes_carry_spec_crypto_9 - issues/custody-differential-failures.md T holds x's and xm's seeds again
