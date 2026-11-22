@@ -283,19 +283,15 @@ pub(crate) fn role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid,
     }
 }
 
-/// May `node` (this node or a key actor it signs as) write `ak` of `tid` at `ts`? Things
-/// created by the commit take their mint admin's, through mint admins the commit creates too.
-pub(crate) fn check_authority(core: &Core, node: Tid, creates: &Creates, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
-    check_authority_with(core, node, &|t| creates.get(t), tid, ak, ts)
+/// May `node` (this node or a key actor it signs as) write `ak` of `tid` at `ts`? Things not
+/// held yet (`records`: those the commit creates) take their mint admin's, through mint admins
+/// the commit creates too.
+pub(crate) fn check_authority(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
+    check_role(core, node, records, tid, ak, required_role(ak), ts)
 }
 
-/// `check_authority` with the records not yet held looked up by `records`.
-pub(crate) fn check_authority_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
-    check_role_with(core, node, records, tid, ak, required_role(ak), ts)
-}
-
-/// `check_authority_with` needing role `need`.
-pub(crate) fn check_role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, need: Role, ts: Ts) -> Result<()> {
+/// `check_authority` needing role `need`.
+pub(crate) fn check_role(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, need: Role, ts: Ts) -> Result<()> {
     let role = role_with(core, node, records, tid, ts);
     if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, records, tid)) {
         return Ok(());
@@ -329,7 +325,7 @@ pub(crate) fn may_write(tx: &mut Tx<'_>, node: Tid, tid: &Tid, ak: &str, need: O
         return Ok(MayWrite::No);
     }
     if let Some(need) = need
-        && check_role_with(tx.core, node, &|_| None, tid, ak, need, ts).is_err()
+        && check_role(tx.core, node, &|_| None, tid, ak, need, ts).is_err()
     {
         return Ok(MayWrite::No);
     }
@@ -1296,7 +1292,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         // a sealed fire's sender holds no setting of the thing and is bound by none: its
         // readers judge it (spec/sync-inbox.md §2)
         if !m.unchecked && !sealed {
-            check_authority(tx.core, node, &base.creates, &tid, ak.as_str(), ts)?;
+            check_authority(tx.core, node, &|t| base.creates.get(t), &tid, ak.as_str(), ts)?;
         }
         // a content write is written under the setting: one known and not held yet is waited
         // for, never read as none (`secrets::usable_role`, spec/commits.md §5 The setting)

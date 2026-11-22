@@ -83,7 +83,7 @@ impl Engine {
             if !self.core.writable(tid) {
                 return Err(Error::UnknownThing(*tid));
             }
-            check_authority(&self.core, node, &Default::default(), tid, ak.as_str(), ts)?;
+            check_authority(&self.core, node, &|_| None, tid, ak.as_str(), ts)?;
             if am.purge_by.is_some_and(|r| r != osis_base::PurgeBy::Writer) {
                 return Err(Error::Misuse("an ephemeral write's purge-by is `writer`"));
             }

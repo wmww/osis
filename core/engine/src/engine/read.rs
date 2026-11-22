@@ -165,15 +165,8 @@ impl Engine {
             return Ok(Vec::new());
         }
         let mut out = self.read(|tx| {
-            let mut aks = Vec::new();
-            let prefix = [records::ASPECTS, tid.as_bytes()].concat();
-            tx.scan(&prefix, |k, _| {
-                let mut r = records::Rd::new(k);
-                aks.push(r.ak()?);
-                Ok(())
-            })?;
             let mut out = Vec::new();
-            for ak in aks {
+            for ak in tx.state_aks(&tid)? {
                 if tx.present_within(&tid, &ak, max)? {
                     out.push(ak);
                 }
@@ -252,14 +245,7 @@ pub(crate) fn has_content_in(tx: &mut super::Tx<'_>, tid: &Tid) -> Result<bool> 
     if !tx.core.exists(tid) {
         return Ok(false);
     }
-    let mut aks = Vec::new();
-    let prefix = [records::ASPECTS, tid.as_bytes()].concat();
-    tx.scan(&prefix, |k, _| {
-        let mut r = records::Rd::new(k);
-        aks.push(r.ak()?);
-        Ok(())
-    })?;
-    for ak in aks.iter().filter(|a| ct::counts_as_content(a.as_str())) {
+    for ak in tx.state_aks(tid)?.iter().filter(|a| ct::counts_as_content(a.as_str())) {
         if tx.present_within(tid, ak, None)? {
             return Ok(true);
         }

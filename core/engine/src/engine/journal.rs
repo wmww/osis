@@ -116,11 +116,15 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> JMap<K, V> {
         self.map.contains_key(k)
     }
     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
-        self.note(&k, |m| m.get(&k).cloned());
-        let added = !self.map.contains_key(&k);
-        self.stamps.wrote_added(&k, true, added);
-        self.wrote_also(&k, added);
+        self.will_set(&k);
         self.map.insert(k, v)
+    }
+    /// Journals and stamps a write setting `k`, present or not.
+    fn will_set(&mut self, k: &K) {
+        self.note(k, |m| m.get(k).cloned());
+        let added = !self.map.contains_key(k);
+        self.stamps.wrote_added(k, true, added);
+        self.wrote_also(k, added);
     }
     pub fn remove(&mut self, k: &K) -> Option<V> {
         if self.map.contains_key(k) {
@@ -160,10 +164,7 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> JMap<K, V> {
     }
     /// The value of `k`, inserted from `default` if absent, to change in place.
     pub fn entry_or(&mut self, k: K, default: impl FnOnce() -> V) -> &mut V {
-        self.note(&k, |m| m.get(&k).cloned());
-        let added = !self.map.contains_key(&k);
-        self.stamps.wrote_added(&k, true, added);
-        self.wrote_also(&k, added);
+        self.will_set(&k);
         self.map.entry(k).or_insert_with(default)
     }
     /// Changes the value of `k` (from `default` if absent) by `f`, journaled only if it changed.

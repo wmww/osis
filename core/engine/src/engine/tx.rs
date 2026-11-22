@@ -132,6 +132,16 @@ impl Tx<'_> {
         Ok(self.txn.get_aspect(tid, ak)?.map(|u| u.state).unwrap_or_default())
     }
 
+    /// The AKs of `t` with a state stored (`records::ASPECTS`), in key order.
+    pub(crate) fn state_aks(&mut self, t: &Tid) -> Result<Vec<Ak>> {
+        let mut aks = Vec::new();
+        self.scan(&[records::ASPECTS, t.as_bytes()].concat(), |k, _| {
+            aks.push(records::Rd::new(k).ak()?);
+            Ok(())
+        })?;
+        Ok(aks)
+    }
+
     /// Loads the state of `(tid, ak)` into the cache: a paged state lazily (its skeleton; pages
     /// as `ensure_*` and `load` need them), a state stored as its body from that body's part in
     /// its commit record. The one reader of stored states.

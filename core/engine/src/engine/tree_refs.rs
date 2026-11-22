@@ -19,7 +19,6 @@ use super::Tx;
 use super::blobs::TxBlobs;
 use super::large::{Opens, Trees, below, links_in, opens, tree_blobs};
 use osis_base::memo::Memo;
-use super::records;
 use crate::error::{Error, Result};
 use osis_base::{Ak, BlobId, CommitId, Link, Tid};
 use osis_crypto::Secret32;
@@ -83,12 +82,7 @@ fn trees_of(tx: &mut Tx<'_>, t: &Tid, s: &Source) -> Result<Trees> {
 /// Every source of thing `t`: each aspect with a state or a held commit, each commit held on it
 /// unless `states` (the states alone).
 fn sources(tx: &mut Tx<'_>, t: &Tid, states: bool) -> Result<BTreeSet<Source>> {
-    let mut out = BTreeSet::new();
-    let prefix = [records::ASPECTS, t.as_bytes()].concat();
-    tx.scan(&prefix, |k, _| {
-        out.insert(Source::State(records::Rd::new(k).ak()?));
-        Ok(())
-    })?;
+    let mut out: BTreeSet<Source> = tx.state_aks(t)?.into_iter().map(Source::State).collect();
     for ((_, ak), cs) in tx.core.aspects_of(t) {
         out.insert(Source::State(ak.clone()));
         if !states {

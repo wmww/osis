@@ -790,7 +790,7 @@ pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, a
     }
     // as its commit would judge the creation, before anything is held of it
     let creates = BTreeMap::from([(t, rec.clone())]);
-    crate::engine::write::check_authority(tx.core, tx.core.writer()?, &creates, &t, osis_commit::retention::CREATED, tx.core.hlc.peek())?;
+    crate::engine::write::check_authority(tx.core, tx.core.writer()?, &|x| creates.get(x), &t, osis_commit::retention::CREATED, tx.core.hlc.peek())?;
     let Some((c, rot, to)) = own_secrets_rot(tx, t, Some(rec), also, done)? else { return Err(Error::Misuse("a new thing takes secrets of its own")) };
     recorded(tx, t, c, &rot, &to, done)?;
     Ok(t)

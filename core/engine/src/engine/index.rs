@@ -540,30 +540,50 @@ fn put_setmap<K: Rec + Ord + Clone + std::hash::Hash + Send + Sync + 'static, T:
 
 /// Writes a role commit's `PERM_PARTS` row (with its record).
 pub(crate) fn put_perm(tx: &mut Tx<'_>, id: &CommitId, parts: &crate::apply::validity::PermParts, shred: Shred) -> Result<()> {
-    let t = tx.txn.index(PERM_PARTS)?;
-    tx.txn.table_put(t, &id.0, enc(parts), shred)?;
-    Ok(())
-}
-
-/// Removes a commit's `PERM_PARTS` row, shredded (with its record).
-pub(crate) fn remove_perm(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
-    let t = tx.txn.index(PERM_PARTS)?;
-    tx.txn.table_remove(t, &id.0, Shred::Yes)?;
-    Ok(())
+    put_commit_row(tx, PERM_PARTS, id, parts, shred)
 }
 
 /// Writes an addendum commit's `ADDENDA` row (with its record).
 pub(crate) fn put_addenda(tx: &mut Tx<'_>, id: &CommitId, parts: &crate::apply::validity::AddendaParts, shred: Shred) -> Result<()> {
-    let t = tx.txn.index(ADDENDA)?;
-    tx.txn.table_put(t, &id.0, enc(parts), shred)?;
-    Ok(())
+    put_commit_row(tx, ADDENDA, id, parts, shred)
+}
+
+/// Removes a commit's `PERM_PARTS` row, shredded (with its record).
+pub(crate) fn remove_perm(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    remove_commit_row(tx, PERM_PARTS, id)
 }
 
 /// Removes a commit's `ADDENDA` row, shredded (with its record).
 pub(crate) fn remove_addenda(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
-    let t = tx.txn.index(ADDENDA)?;
+    remove_commit_row(tx, ADDENDA, id)
+}
+
+/// Writes commit `id`'s row of index `name`, a table keyed by commit.
+fn put_commit_row<T: Rec>(tx: &mut Tx<'_>, name: &[u8], id: &CommitId, row: &T, shred: Shred) -> Result<()> {
+    let t = tx.txn.index(name)?;
+    tx.txn.table_put(t, &id.0, enc(row), shred)?;
+    Ok(())
+}
+
+fn remove_commit_row(tx: &mut Tx<'_>, name: &[u8], id: &CommitId) -> Result<()> {
+    let t = tx.txn.index(name)?;
     tx.txn.table_remove(t, &id.0, Shred::Yes)?;
     Ok(())
+}
+
+/// Every row of index `name`, a table keyed by commit; an error (`what`) when one does not
+/// decode (the open then rebuilds).
+fn load_commit_rows<T: Rec>(tx: &mut Tx<'_>, name: &[u8], what: &'static str) -> Result<BTreeMap<CommitId, T>> {
+    let t = tx.txn.index(name)?;
+    let mut out = BTreeMap::new();
+    scan_table(&mut tx.txn, t, &[], None, |k, v| {
+        let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt(what))?);
+        let lim = osis_base::Limits::new(2 * osis_base::format::MAX_OBJECT_DEPTH, v.len());
+        let v = osis_base::decode(&v, &lim).map_err(|_| Error::Corrupt(what))?;
+        out.insert(id, Rec::from(&v).ok_or(Error::Corrupt(what))?);
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 /// Every addendum's `ADDENDA` row, from the in-memory index (after a rebuild, which read the
@@ -581,16 +601,7 @@ fn write_addenda_all(tx: &mut Tx<'_>) -> Result<()> {
 /// The `ADDENDA` rows (what each addendum commit says); an error when one does not decode (the
 /// open then rebuilds).
 pub(crate) fn load_addenda(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::AddendaParts>> {
-    let t = tx.txn.index(ADDENDA)?;
-    let lim = |n: usize| osis_base::Limits::new(2 * osis_base::format::MAX_OBJECT_DEPTH, n);
-    let mut out = BTreeMap::new();
-    scan_table(&mut tx.txn, t, &[], None, |k, v| {
-        let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("addenda row key"))?);
-        let v = osis_base::decode(&v, &lim(v.len())).map_err(|_| Error::Corrupt("addenda row"))?;
-        out.insert(id, Rec::from(&v).ok_or(Error::Corrupt("addenda row"))?);
-        Ok(())
-    })?;
-    Ok(out)
+    load_commit_rows(tx, ADDENDA, "addenda row")
 }
 
 /// Every role commit's `PERM_PARTS` row, from its record (after a rebuild).
@@ -607,16 +618,7 @@ fn write_perm_all(tx: &mut Tx<'_>) -> Result<()> {
 /// decode (the open then rebuilds).
 pub(crate) fn load_perm(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::PermParts>> {
     let _s = osis_base::costs::span("open: edges rows");
-    let t = tx.txn.index(PERM_PARTS)?;
-    let lim = |n: usize| osis_base::Limits::new(2 * osis_base::format::MAX_OBJECT_DEPTH, n);
-    let mut out = BTreeMap::new();
-    scan_table(&mut tx.txn, t, &[], None, |k, v| {
-        let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("edges row key"))?);
-        let v = osis_base::decode(&v, &lim(v.len())).map_err(|_| Error::Corrupt("edges row"))?;
-        out.insert(id, Rec::from(&v).ok_or(Error::Corrupt("edges row"))?);
-        Ok(())
-    })?;
-    Ok(out)
+    load_commit_rows(tx, PERM_PARTS, "edges row")
 }
 
 /// What of a commit its record holds ahead of its blob (version 1): received, origin, dropped

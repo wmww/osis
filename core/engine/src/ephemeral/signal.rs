@@ -6,7 +6,7 @@
 
 use super::Engine;
 use crate::engine::secrets::{CommitSecrets, published_keys};
-use crate::engine::write::{Creates, check_role_with, run_ops};
+use crate::engine::write::{Creates, check_role, run_ops};
 use crate::error::{Error, Result};
 use super::Written;
 use crate::engine::listing::{CommitRow, PartBody, PartRow};
@@ -155,7 +155,7 @@ impl Engine {
         let mut signals = Vec::new();
         for (ai, s) in &decoded {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && counts && crate::apply::validity::acts_for(core, h, purge_author, &id) && check_role_with(core, h.signer, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
+            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && counts && crate::apply::validity::acts_for(core, h, purge_author, &id) && check_role(core, h.signer, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
             if valid && let Some(v) = s.fragment.read() {
                 signals.push((a.tid, a.ak.clone(), v));
             }
