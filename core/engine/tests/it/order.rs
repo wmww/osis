@@ -4893,6 +4893,29 @@ fn a_superseder_turning_invalid_dates_its_victim_before_the_timeline_walks_spec_
     assert_eq!(order_checks(&played, &order), Ok(()));
 }
 
+// spec/commits.md §5 The setting (an aspect turning dated has every held part dated): a purge-on-
+// replace write to G's register, then a setting keeping every aspect's history whose commit also
+// writes the register: at the node applying the setting the register turns dated in the same
+// transaction its earlier body is replaced, and that body is dated (the rows debug check).
+#[test]
+fn a_register_turning_dated_beside_its_replacing_write_dates_its_bodies_spec_commits_5() {
+    use Step::*;
+    let a = |s| Aim(Box::new(s));
+    let h = vec![a(PurgeSet { by: 0, t: 1, op: 11, v: 1, fits: false }), a(Setting { by: 2, t: 1, op: 22, rule: 3 })];
+    check(2, &h, Cfg { random: 0, partial: 0, clock: 0, reopens: 0, model: false, ..ORDERS }).unwrap();
+}
+
+// spec/commits.md §5 Bodies and deaths: 0's setting (beside a register write) and 1's
+// purge-on-replace write, given with late parts: one transaction takes the setting's late part
+// (dated at the end's first pass) and drops it under purge on replace before its last pass,
+// which dates it again from what the first pass dated (the rows debug check).
+#[test]
+fn a_part_held_and_dropped_in_one_transaction_is_dated_out_spec_commits_5() {
+    use Step::*;
+    let h = vec![Setting { by: 0, t: 0, op: 30, rule: 3 }, PurgeSet { by: 1, t: 0, op: 30, v: 1, fits: false }, Aim(Box::new(Typed { by: 1, t: 1, op: 26, k: 1, v: 6 }))];
+    check(301049014002, &h, Cfg { reopens: 0, random: 0, partial: 0, all_up_to: 0, clock: 0, ..ORDERS }).unwrap();
+}
+
 // spec/commits.md §4 (Unjudgeable): as above, the creation arriving only after the waiting commit
 // applied without its part on the thing: the record wakes the part, fetched again from the copy the
 // node kept of the commit (node-sync keeps its entry, `reopen_undropped`).

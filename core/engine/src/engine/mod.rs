@@ -968,6 +968,7 @@ pub(crate) struct CoreMark {
     listed_before: usize,
     killed: usize,
     to_date: usize,
+    dated_as: usize,
     /// `wrote_on`'s length: a write undone owes no holding.
     wrote_on: usize,
     stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
@@ -1137,6 +1138,10 @@ pub struct Core {
     /// rebuild; `true`: turned dated, a row landing in history told): their history rows are
     /// dated whole at its end (`retention::leaving::date_due`).
     pub(crate) to_date: Vec<(Tid, Ak, bool)>,
+    /// What of each part a `date_due` of the running transaction dated (commit, aspect index,
+    /// `leaving::Noted`), newest last: a later pass compares with it, not with the meta before
+    /// the transaction.
+    pub(crate) dated_as: Vec<(CommitId, usize, crate::retention::leaving::Noted)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look. A name goes with its commit (forgotten, or dropped from pending while not
     /// applied), so it holds at most one per commit held. Sync reads none of it.
@@ -1729,6 +1734,7 @@ impl Core {
             listed_before: self.listed_before.len(),
             killed: self.killed.len(),
             to_date: self.to_date.len(),
+            dated_as: self.dated_as.len(),
             wrote_on: self.wrote_on.len(),
             stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
             batched: self.batched.clone(),
@@ -1761,6 +1767,7 @@ impl Core {
             ("listed_before", self.listed_before.len() != m.listed_before),
             ("killed", self.killed.len() != m.killed),
             ("to_date", self.to_date.len() != m.to_date),
+            ("dated_as", self.dated_as.len() != m.dated_as),
             ("wrote_on", self.wrote_on.len() != m.wrote_on),
             ("stale", stale != (&m.stale.0, &m.stale.1, &m.stale.2, &m.stale.3, m.stale.4)),
             ("batched", self.batched != m.batched),
@@ -1814,6 +1821,7 @@ impl Core {
         self.listed_before.truncate(m.listed_before);
         self.killed.truncate(m.killed);
         self.to_date.truncate(m.to_date);
+        self.dated_as.truncate(m.dated_as);
         self.wrote_on.truncate(m.wrote_on);
         self.batched = m.batched;
         self.memory_tx = m.memory_tx;
@@ -1835,6 +1843,7 @@ impl Core {
             listed_before: _,
             killed: _,
             to_date: _,
+            dated_as: _,
             wrote_on: _,
             written: _,
             compaction: _,
@@ -2192,6 +2201,7 @@ impl Core {
             listed_before: Vec::new(),
             killed: Vec::new(),
             to_date: Vec::new(),
+            dated_as: Vec::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
@@ -3229,8 +3239,6 @@ impl Engine {
                 r = then(r, || listing::listing_moved(&mut tx));
                 tx.core.listed_before.clear();
                 tx.core.killed.clear();
-                r = then(r, || crate::retention::leaving::date_due(&mut tx));
-                tx.core.to_date.clear();
                 // the node closure follows every change above (spec/sync-set.md §2), and holds
                 // what this transaction made
                 r = then(r, || crate::sync::units::settle(&mut tx).and_then(|()| crate::sync::units::check_written(&mut tx)));
@@ -3242,6 +3250,10 @@ impl Engine {
                 tx.core.carriers_due.clear();
                 // the blob waits of what pends no more go (`apply::reach::settle`)
                 crate::apply::reach::settle(tx.core);
+                // the history rows follow every change of what is held above
+                r = then(r, || crate::retention::leaving::date_due(&mut tx));
+                tx.core.to_date.clear();
+                tx.core.dated_as.clear();
                 // every state written above stored in its form (`Tx::settle_states`)
                 r = then(r, || tx.settle_placements().and_then(|()| tx.settle_states()));
                 r = then(r, || Core::commit_changes(&mut tx));

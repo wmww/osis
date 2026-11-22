@@ -310,9 +310,11 @@ fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts
     Ok(super::purged_by(tx, &h, c, ai)?.map(|_| h.ts))
 }
 
-/// What of part `ai` of `m` the aspect's held writes note (`bounds::HeldWrites`): held, valid,
-/// bare.
-fn noted(m: &crate::engine::Meta, ai: usize) -> (bool, bool, bool) {
+/// What of a part the aspect's held writes note (`bounds::HeldWrites`): held, valid, bare.
+pub(crate) type Noted = (bool, bool, bool);
+
+/// `Noted` of part `ai` of `m`.
+fn noted(m: &crate::engine::Meta, ai: usize) -> Noted {
     (m.holds(ai), m.valid_at(ai), m.bare(ai))
 }
 
@@ -329,10 +331,13 @@ pub(crate) fn dating_due(core: &Core, tid: &Tid, ak: &Ak) -> bool {
 /// ones and those whose writes the new bodies' writes may date anew (`bounds::moved_by_joins`):
 /// O(what they supersede), whatever the aspect's history. Where a noted body left or changed
 /// (dropped, stripped, turned invalid), the aspect was rebuilt (`Core::to_date`) or turned dated
-/// (`true`: a row landing in history is told), every part is dated again: O(the aspect's
+/// (`true`, also on a dated aspect with no cursor yet: a row landing in history is told), every
+/// part is dated again: O(the aspect's
 /// history), as the rebuild. A row that moves is marked for node-sync, and told where it crosses
 /// the clock; the cursor moves back past a row that lands in history before it; each aspect
-/// touched rearms. Debug builds check every row of each aspect dated against `index_date`.
+/// touched rearms. A transaction's end dates twice: a later pass compares each part with what an
+/// earlier one dated (`Core::dated_as`). Debug builds check every row of each aspect dated
+/// against `index_date`.
 pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
     // per aspect: whole (telling rows landing in history), or the changed and joined commits
     let mut whole: BTreeMap<(Tid, Ak), bool> = BTreeMap::new();
@@ -340,6 +345,9 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
         *whole.entry((t, a)).or_default() |= tell;
     }
     let mut changed: BTreeMap<(Tid, Ak), (BTreeSet<CommitId>, Vec<CommitId>)> = BTreeMap::new();
+    // what an earlier pass of this transaction dated, else the meta before it
+    let seen: BTreeMap<(CommitId, usize), Noted> = tx.core.dated_as.iter().map(|(c, ai, n)| ((*c, *ai), *n)).collect();
+    let mut now_as = Vec::new();
     for (id, old) in tx.core.ix.commits.before() {
         let new = tx.core.ix.commits.get(id);
         let Some(view) = new.or(old).map(|m| m.view.clone()) else { continue };
@@ -348,7 +356,14 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
                 continue;
             }
             let k = (a.tid, a.ak.clone());
-            let (was, is) = (old.map(|m| noted(m, ai)), new.map(|m| noted(m, ai)));
+            let was = match seen.get(&(*id, ai)) {
+                Some(n) => Some(*n),
+                None => old.map(|m| noted(m, ai)),
+            };
+            let is = new.map(|m| noted(m, ai));
+            if let Some(n) = is {
+                now_as.push((*id, ai, n));
+            }
             if was == is {
                 continue;
             }
@@ -362,12 +377,16 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
             }
         }
     }
+    tx.core.dated_as.extend(now_as);
     let keys: BTreeSet<(Tid, Ak)> = whole.keys().chain(changed.keys()).cloned().collect();
     let now = tx.now().0;
     for (tid, ak) in keys {
         let k = history::of(tx.core, &tid, &ak);
         let key = (tid, ak.clone());
-        let tell = whole.get(&key).copied();
+        // kept by a setting with no cursor: turned dated in this transaction (before
+        // `settings_changed` gave it one), its rows not kept so far
+        let fresh = k.keeps() && !tx.core.ix.leave_from.contains_key(&key);
+        let tell = if fresh { Some(true) } else { whole.get(&key).copied() };
         let on: BTreeSet<CommitId> = if !k.dated() {
             tx.core.ix.leaving.get(&key).into_iter().flatten().map(|p| p.1).collect()
         } else if tell.is_some() {
@@ -403,6 +422,9 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
             if crossed && crate::engine::listing::listened(tx.core, &tid, &ak) {
                 tx.core.commits_named(tid, ak.clone(), c);
             }
+        }
+        if fresh && !tx.core.ix.leave_from.contains_key(&key) {
+            set_from(tx, &tid, &ak, Some((u64::MAX, None)))?;
         }
         #[cfg(debug_assertions)]
         if k.dated() {
