@@ -6,68 +6,119 @@
 //! spec/permissions.md §1, §2, §5.1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::{agree, agree_all, invited, paired};
+use super::{agree, agree_all, invited, paired, rows};
 use roles_model::paths::*;
 use roles_model::Role::{self, Admin, None as Gone, Read, Write};
 use std::collections::BTreeMap;
 
 // ---- Descent, self-removal by path end, `until` ----
 
-// spec/permissions.md §1: a write by descent rests on the record edges; a lowering of a record
-// edge audits what goes through it.
 #[test]
-fn a_write_by_descent_is_judged_along_the_record_edges() {
-    let (mut w, ..) = paired();
-    w.edge(H, 3, &[A, T1], D1, A2, Write, &[]);
-    let low = w.edge(H, 5, &[A], D1, T1, Gone, &[]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[low]);
-}
-
-// notes/a1-spec/README.md Open 21: H takes admin on T1 (its direct edge, by [A]) and removes A's
-// record edge on T1 by the descent []: later content and grants by H stated along the descent or
-// through [A] rest on the removed record edge and apply nowhere; marking the hop H to T1 direct
-// (H's own grant), they apply, as in the model.
-#[test]
-fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
-    let mut w = account();
-    let g = w.edge(H, 1, &[A], T1, H, Admin, &[]);
-    let cut = w.edge(H, 2, &[], T1, A, Gone, &[g]);
-    w.edge(H, 4, &[], T1, B, Write, &[]);
-    w.edge(H, 4, &[A], T1, N5, Write, &[]);
-    w.content(H, 3, &[], T1);
-    w.content(H, 3, &[A], T1);
-    w.push_marked(H, 3, &[], T1, Kind::Content, &[0]);
-    w.push_marked(H, 5, &[], T1, Kind::set(Z, Write), &[0]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[cut]);
-}
-
-// The one-encoding rule (draft §1 Path, Direct mark): a mark on a hop not otherwise read as a
-// descent of two steps or more applies nowhere (B's direct grant; A's record edge, on H's path
-// through A; a hop past the members); H's marked hop applies where it holds a direct edge, nowhere
-// before. A's own writes stand nowhere: its record names a mint admin, so its key hop gives
-// nothing.
-#[test]
-fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
-    let mut w = account();
-    w.content(H, 2, &[A], T1);
-    w.push_marked(H, 2, &[A], T1, Kind::Content, &[0]);
-    w.push_marked(H, 2, &[A], T1, Kind::Content, &[1]);
-    w.push_marked(H, 2, &[A], T1, Kind::set(Z, Write), &[1]);
-    w.push(H, 1, &[A], T1, Kind::set(B, Admin));
-    w.content(B, 2, &[], T1);
-    w.push_marked(B, 2, &[], T1, Kind::Content, &[0]);
-    w.push_marked(B, 2, &[], T1, Kind::set(N5, Write), &[0]);
-    w.content(A, 2, &[], T1);
-    w.push_marked(A, 2, &[], T1, Kind::Content, &[0]);
-    w.push_marked(B, 2, &[], T1, Kind::Content, &[1]);
-    w.push_marked(H, 2, &[], T1, Kind::Content, &[0]);
-    w.push_marked(H, 2, &[], T1, Kind::set(Z, Write), &[0]);
-    w.content(H, 2, &[], T1);
-    w.push(H, 3, &[A], T1, Kind::set(H, Write));
-    w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
-    agree_all(&w, &[]);
+fn descent_leaves_and_until() {
+    rows(&[
+        // spec/permissions.md §1: a write by descent rests on the record edges; a lowering of a record
+        // edge audits what goes through it.
+        ("a_write_by_descent_is_judged_along_the_record_edges", || {
+            let (mut w, ..) = paired();
+            w.edge(H, 3, &[A, T1], D1, A2, Write, &[]);
+            let low = w.edge(H, 5, &[A], D1, T1, Gone, &[]);
+            (w, vec![vec![], vec![low]])
+        }),
+        // notes/a1-spec/README.md Open 21: H takes admin on T1 (its direct edge, by [A]) and removes A's
+        // record edge on T1 by the descent []: later content and grants by H stated along the descent or
+        // through [A] rest on the removed record edge and apply nowhere; marking the hop H to T1 direct
+        // (H's own grant), they apply, as in the model.
+        ("a_detached_things_owner_writes_it_only_by_a_marked_direct_hop", || {
+            let mut w = account();
+            let g = w.edge(H, 1, &[A], T1, H, Admin, &[]);
+            let cut = w.edge(H, 2, &[], T1, A, Gone, &[g]);
+            w.edge(H, 4, &[], T1, B, Write, &[]);
+            w.edge(H, 4, &[A], T1, N5, Write, &[]);
+            w.content(H, 3, &[], T1);
+            w.content(H, 3, &[A], T1);
+            w.push_marked(H, 3, &[], T1, Kind::Content, &[0]);
+            w.push_marked(H, 5, &[], T1, Kind::set(Z, Write), &[0]);
+            (w, vec![vec![], vec![cut]])
+        }),
+        // The one-encoding rule (draft §1 Path, Direct mark): a mark on a hop not otherwise read as a
+        // descent of two steps or more applies nowhere (B's direct grant; A's record edge, on H's path
+        // through A; a hop past the members); H's marked hop applies where it holds a direct edge, nowhere
+        // before. A's own writes stand nowhere: its record names a mint admin, so its key hop gives
+        // nothing.
+        ("a_mark_off_a_descent_of_two_steps_applies_nowhere", || {
+            let mut w = account();
+            w.content(H, 2, &[A], T1);
+            w.push_marked(H, 2, &[A], T1, Kind::Content, &[0]);
+            w.push_marked(H, 2, &[A], T1, Kind::Content, &[1]);
+            w.push_marked(H, 2, &[A], T1, Kind::set(Z, Write), &[1]);
+            w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+            w.content(B, 2, &[], T1);
+            w.push_marked(B, 2, &[], T1, Kind::Content, &[0]);
+            w.push_marked(B, 2, &[], T1, Kind::set(N5, Write), &[0]);
+            w.content(A, 2, &[], T1);
+            w.push_marked(A, 2, &[], T1, Kind::Content, &[0]);
+            w.push_marked(B, 2, &[], T1, Kind::Content, &[1]);
+            w.push_marked(H, 2, &[], T1, Kind::Content, &[0]);
+            w.push_marked(H, 2, &[], T1, Kind::set(Z, Write), &[0]);
+            w.content(H, 2, &[], T1);
+            w.push(H, 3, &[A], T1, Kind::set(H, Write));
+            w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
+            (w, vec![vec![]])
+        }),
+        // The thief with the far ancestor's key (draft §1 Path, Direct mark): backdated marked writes
+        // fall with the removal of H's direct grant, trusted or not.
+        ("a_removed_far_ancestors_backdated_marked_writes_fall", || {
+            let mut w = account();
+            let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
+            let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
+            w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
+            let r = w.push(B, 5, &[], T1, Kind::set(H, Gone));
+            w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
+            w.push_marked(H, 4, &[], T1, Kind::set(Z, Admin), &[0]);
+            w.push(H, 4, &[], T1, Kind::set(N5, Admin));
+            (w, vec![vec![], vec![r]])
+        }),
+        // spec/permissions.md §5.1: a lowering of h puts a self-removal of h in question like a write
+        // through h (control `-leave`).
+        ("a_backdated_leave_undoes_nothing_the_removed_node_made", || {
+            let (mut w, _, gb) = paired();
+            let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
+            let g5 = w.edge(X, 3, &[], A, N5, Admin, &[]);
+            let r = w.edge(H, 6, &[], A, X, Gone, &[down, g5]);
+            w.edge(X, 2, &[], A, X, Gone, &[]);
+            (w, vec![vec![r], vec![]])
+        }),
+        ("a_backdated_leave_shields_nothing_from_the_removal", || {
+            let (mut w, ..) = paired();
+            w.edge(X, 4, &[], A, Z, Admin, &[]);
+            w.edge(X, 5, &[], A, X, Gone, &[]);
+            let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+            (w, vec![vec![r], vec![]])
+        }),
+        ("a_holder_things_leave_is_put_in_question_by_a_removal_of_its_edge", || {
+            let mut w = account();
+            w.edge(H, 1, &[], A, X, Admin, &[]);
+            w.edge(H, 1, &[], A, B, Admin, &[]);
+            let g2 = w.edge(H, 1, &[A], T1, A2, Admin, &[]);
+            w.edge(X, 2, &[A], T1, A, Gone, &[]);
+            let gn = w.edge(B, 3, &[A], T1, N6, Write, &[]);
+            let rk = w.edge(K, 6, &[A2], T1, A, Gone, &[g2, gn]);
+            (w, vec![vec![], vec![rk]])
+        }),
+        // spec/permissions.md §5.1: the edge as restored reads each value's role with its `until`
+        // disregarded, a value already ended at its own `ts` included: H gives B admin ending at 2 at 3
+        // (a lowering), B grants N5 at 4 (holding nothing), H removes B at 5 listing nothing: restored at
+        // admin, the removal falls and drops B's grant. (No model hand test: the walk's own world.)
+        ("an_ended_value_restores_its_role", || {
+            let mut w = account();
+            let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+            let ended = w.edge(H, 3, &[], A, B, Admin, &[gb]);
+            w.set_until(ended, 2);
+            w.edge(B, 4, &[], A, N5, Admin, &[]);
+            let r = w.edge(H, 5, &[], A, B, Gone, &[]);
+            (w, vec![vec![], vec![r]])
+        }),
+    ]);
 }
 
 // A final hop marked direct is the path's last edge (draft §1 Path's last edge): the path's
@@ -106,22 +157,6 @@ fn a_party_with_both_routes_is_cut_off_by_removing_both() {
         agree_all(&w, &[r]);
         agree_all(&w, &[detach]);
     }
-}
-
-// The thief with the far ancestor's key (draft §1 Path, Direct mark): backdated marked writes
-// fall with the removal of H's direct grant, trusted or not.
-#[test]
-fn a_removed_far_ancestors_backdated_marked_writes_fall() {
-    let mut w = account();
-    let gh = w.push(H, 1, &[A], T1, Kind::set(H, Admin));
-    let gb = w.push(H, 1, &[A], T1, Kind::set(B, Admin));
-    w.push(H, 2, &[], T1, Kind::set(A, Gone).listing(w.cut(&[gh, gb])));
-    let r = w.push(B, 5, &[], T1, Kind::set(H, Gone));
-    w.push_marked(H, 4, &[], T1, Kind::Content, &[0]);
-    w.push_marked(H, 4, &[], T1, Kind::set(Z, Admin), &[0]);
-    w.push(H, 4, &[], T1, Kind::set(N5, Admin));
-    agree_all(&w, &[]);
-    agree_all(&w, &[r]);
 }
 
 // notes/path-model-findings.md 43: a self-removal rewriting its holder's own admin unchanged keeps
@@ -183,29 +218,6 @@ fn a_self_removal_by_path_end_audits_nothing() {
     agree_all(&w, &[]);
 }
 
-// spec/permissions.md §5.1: a lowering of h puts a self-removal of h in question like a write
-// through h (control `-leave`).
-#[test]
-fn a_backdated_leave_undoes_nothing_the_removed_node_made() {
-    let (mut w, _, gb) = paired();
-    let down = w.edge(X, 3, &[], A, B, Write, &[gb]);
-    let g5 = w.edge(X, 3, &[], A, N5, Admin, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[down, g5]);
-    w.edge(X, 2, &[], A, X, Gone, &[]);
-    agree_all(&w, &[r]);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn a_backdated_leave_shields_nothing_from_the_removal() {
-    let (mut w, ..) = paired();
-    w.edge(X, 4, &[], A, Z, Admin, &[]);
-    w.edge(X, 5, &[], A, X, Gone, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    agree_all(&w, &[r]);
-    agree_all(&w, &[]);
-}
-
 #[test]
 fn a_timed_self_removal_is_put_in_question_like_a_leave() {
     for (role, until) in [(Admin, 2), (Write, 20)] {
@@ -220,19 +232,6 @@ fn a_timed_self_removal_is_put_in_question_like_a_leave() {
     }
 }
 
-#[test]
-fn a_holder_things_leave_is_put_in_question_by_a_removal_of_its_edge() {
-    let mut w = account();
-    w.edge(H, 1, &[], A, X, Admin, &[]);
-    w.edge(H, 1, &[], A, B, Admin, &[]);
-    let g2 = w.edge(H, 1, &[A], T1, A2, Admin, &[]);
-    w.edge(X, 2, &[A], T1, A, Gone, &[]);
-    let gn = w.edge(B, 3, &[A], T1, N6, Write, &[]);
-    let rk = w.edge(K, 6, &[A2], T1, A, Gone, &[g2, gn]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[rk]);
-}
-
 // spec/permissions.md §5.1: an `until` passing audits nothing; the next explicit write does.
 #[test]
 fn an_until_passing_audits_nothing_the_next_explicit_write_does() {
@@ -242,22 +241,6 @@ fn an_until_passing_audits_nothing_the_next_explicit_write_does() {
     w.edge(B, 3, &[], A, N5, Admin, &[]);
     agree_all(&w, &[]);
     let r = w.edge(H, 7, &[], A, B, Gone, &[]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r]);
-}
-
-// spec/permissions.md §5.1: the edge as restored reads each value's role with its `until`
-// disregarded, a value already ended at its own `ts` included: H gives B admin ending at 2 at 3
-// (a lowering), B grants N5 at 4 (holding nothing), H removes B at 5 listing nothing: restored at
-// admin, the removal falls and drops B's grant. (No model hand test: the walk's own world.)
-#[test]
-fn an_ended_value_restores_its_role() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let ended = w.edge(H, 3, &[], A, B, Admin, &[gb]);
-    w.set_until(ended, 2);
-    w.edge(B, 4, &[], A, N5, Admin, &[]);
-    let r = w.edge(H, 5, &[], A, B, Gone, &[]);
     agree_all(&w, &[]);
     agree_all(&w, &[r]);
 }
@@ -305,107 +288,128 @@ fn two_nodes_removing_each_other_never_leave_no_admin() {
 
 // ---- Each lowering judged once: void, applied, drops that only grow ----
 
-// spec/permissions.md §5.1 step 3: a removal whose drops take its own standing is void (control
-// `-no-void`).
 #[test]
-fn a_removal_whose_drops_take_its_own_standing_is_void() {
-    let (mut w, ..) = paired();
-    let rx = w.edge(X, 5, &[], A, H, Gone, &[]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[rx]);
-}
-
-#[test]
-fn two_lowerings_unapplying_each_other_settle_on_the_earlier() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    w.edge(B, 3, &[], A, H, Gone, &[gb]);
-    w.edge(N5, 4, &[], A, H, Gone, &[g5]);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn a_lowering_dropped_later_keeps_its_drops() {
-    let mut w = account();
-    w.edge(H, 1, &[], A, B, Admin, &[]);
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    w.edge(H, 2, &[], A, N5, Gone, &[]);
-    let lb = w.edge(B, 3, &[], A, H, Gone, &[0, g5]);
-    w.edge(N5, 4, &[], A, B, Gone, &[]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[lb]);
-}
-
-#[test]
-fn a_void_write_has_no_effect() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[], A, N5, Admin, &[]);
-    w.edge(B, 2, &[], A, Z, Admin, &[]);
-    w.edge(Z, 3, &[], A, H, Gone, &[gb]);
-    w.edge(Z, 4, &[], A, B, Gone, &[]);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn a_lowering_dropping_the_grant_it_rests_on_is_void() {
-    let mut w = account();
-    w.edge(H, 3, &[], A, B, Admin, &[]);
-    let g6 = w.edge(H, 3, &[], A, N6, Admin, &[]);
-    let again = w.edge(N6, 5, &[], A, B, Admin, &[g6]);
-    w.edge(N6, 5, &[], A, H, Gone, &[g6, again]);
-    w.edge(B, 6, &[], A, N6, Gone, &[]);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn an_earlier_void_write_has_no_effect() {
-    let mut w = account();
-    let g1 = w.edge(H, 2, &[], A, B, Admin, &[]);
-    w.edge(H, 10, &[], A, B, Admin, &[]);
-    w.edge(B, 9, &[], A, H, Gone, &[]);
-    w.edge(B, 10, &[], A, H, Gone, &[g1]);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn small_world_830267_judged_once() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    let g5 = w.edge(H, 3, &[], A, N5, Admin, &[]);
-    let g6 = w.edge(H, 3, &[], A, N6, Admin, &[]);
-    let n6 = w.edge(N5, 3, &[], A, N6, Admin, &[gb, g5]);
-    w.edge(B, 4, &[], A, N5, Gone, &[g6, gb]);
-    w.edge(N6, 4, &[], A, H, Gone, &[g5, n6]);
-    w.edge(N6, 8, &[], A, B, Gone, &[]);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn small_world_360379_judged_once() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[], A, N6, Admin, &[gb]);
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let r5 = w.edge(N5, 1, &[], A, H, Gone, &[gb, g5]);
-    w.edge(B, 2, &[], A, N5, Gone, &[g5]);
-    w.edge(H, 9, &[], A, B, Gone, &[gb, r5]);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn small_world_234147_judged_once() {
-    let mut w = account();
-    let g5 = w.edge(H, 3, &[], A, N5, Admin, &[]);
-    let gz = w.edge(N5, 3, &[], A, Z, Admin, &[g5]);
-    w.edge(Z, 3, &[], A, H, Gone, &[g5, gz]);
-    w.edge(N5, 8, &[], A, N6, Admin, &[g5]);
-    let r6 = w.edge(N6, 8, &[], A, Z, Gone, &[]);
-    w.edge(H, 9, &[], A, N6, Gone, &[g5]);
-    w.edge(N5, 10, &[], A, H, Gone, &[r6]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r6]);
+fn each_lowering_judged_once() {
+    rows(&[
+        // spec/permissions.md §5.1 step 3: a removal whose drops take its own standing is void (control
+        // `-no-void`).
+        ("a_removal_whose_drops_take_its_own_standing_is_void", || {
+            let (mut w, ..) = paired();
+            let rx = w.edge(X, 5, &[], A, H, Gone, &[]);
+            (w, vec![vec![], vec![rx]])
+        }),
+        ("two_lowerings_unapplying_each_other_settle_on_the_earlier", || {
+            let mut w = account();
+            let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+            let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+            w.edge(B, 3, &[], A, H, Gone, &[gb]);
+            w.edge(N5, 4, &[], A, H, Gone, &[g5]);
+            (w, vec![vec![]])
+        }),
+        ("a_lowering_dropped_later_keeps_its_drops", || {
+            let mut w = account();
+            w.edge(H, 1, &[], A, B, Admin, &[]);
+            let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+            w.edge(H, 2, &[], A, N5, Gone, &[]);
+            let lb = w.edge(B, 3, &[], A, H, Gone, &[0, g5]);
+            w.edge(N5, 4, &[], A, B, Gone, &[]);
+            (w, vec![vec![], vec![lb]])
+        }),
+        ("a_void_write_has_no_effect", || {
+            let mut w = account();
+            let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+            w.edge(H, 1, &[], A, N5, Admin, &[]);
+            w.edge(B, 2, &[], A, Z, Admin, &[]);
+            w.edge(Z, 3, &[], A, H, Gone, &[gb]);
+            w.edge(Z, 4, &[], A, B, Gone, &[]);
+            (w, vec![vec![]])
+        }),
+        ("a_lowering_dropping_the_grant_it_rests_on_is_void", || {
+            let mut w = account();
+            w.edge(H, 3, &[], A, B, Admin, &[]);
+            let g6 = w.edge(H, 3, &[], A, N6, Admin, &[]);
+            let again = w.edge(N6, 5, &[], A, B, Admin, &[g6]);
+            w.edge(N6, 5, &[], A, H, Gone, &[g6, again]);
+            w.edge(B, 6, &[], A, N6, Gone, &[]);
+            (w, vec![vec![]])
+        }),
+        ("an_earlier_void_write_has_no_effect", || {
+            let mut w = account();
+            let g1 = w.edge(H, 2, &[], A, B, Admin, &[]);
+            w.edge(H, 10, &[], A, B, Admin, &[]);
+            w.edge(B, 9, &[], A, H, Gone, &[]);
+            w.edge(B, 10, &[], A, H, Gone, &[g1]);
+            (w, vec![vec![]])
+        }),
+        ("small_world_830267_judged_once", || {
+            let mut w = account();
+            let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+            let g5 = w.edge(H, 3, &[], A, N5, Admin, &[]);
+            let g6 = w.edge(H, 3, &[], A, N6, Admin, &[]);
+            let n6 = w.edge(N5, 3, &[], A, N6, Admin, &[gb, g5]);
+            w.edge(B, 4, &[], A, N5, Gone, &[g6, gb]);
+            w.edge(N6, 4, &[], A, H, Gone, &[g5, n6]);
+            w.edge(N6, 8, &[], A, B, Gone, &[]);
+            (w, vec![vec![]])
+        }),
+        ("small_world_360379_judged_once", || {
+            let mut w = account();
+            let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+            w.edge(H, 1, &[], A, N6, Admin, &[gb]);
+            let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+            let r5 = w.edge(N5, 1, &[], A, H, Gone, &[gb, g5]);
+            w.edge(B, 2, &[], A, N5, Gone, &[g5]);
+            w.edge(H, 9, &[], A, B, Gone, &[gb, r5]);
+            (w, vec![vec![]])
+        }),
+        ("small_world_234147_judged_once", || {
+            let mut w = account();
+            let g5 = w.edge(H, 3, &[], A, N5, Admin, &[]);
+            let gz = w.edge(N5, 3, &[], A, Z, Admin, &[g5]);
+            w.edge(Z, 3, &[], A, H, Gone, &[g5, gz]);
+            w.edge(N5, 8, &[], A, N6, Admin, &[g5]);
+            let r6 = w.edge(N6, 8, &[], A, Z, Gone, &[]);
+            w.edge(H, 9, &[], A, N6, Gone, &[g5]);
+            w.edge(N5, 10, &[], A, H, Gone, &[r6]);
+            (w, vec![vec![], vec![r6]])
+        }),
+        // spec/permissions.md §5.1 step 4: the void check reads its grant chain back.
+        ("a_lowering_dropping_its_granters_grant_is_void", || {
+            let mut w = account();
+            w.edge(H, 4, &[], A, Z, Admin, &[]);
+            let g5 = w.edge(Z, 8, &[], A, N5, Admin, &[]);
+            w.edge(N5, 10, &[], A, H, Gone, &[g5]);
+            (w, vec![vec![]])
+        }),
+        ("a_lowering_taking_nothing_is_judged_when_a_restart_gives_it_the_edge", || {
+            let (mut w, ..) = paired();
+            let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+            let out = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
+            let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
+            w.edge(X, 2, &[], A, N5, Gone, &[g5]);
+            w.edge(N5, 2, &[], A, Z, Admin, &[]);
+            (w, vec![vec![], vec![r]])
+        }),
+        ("a_stray_drop_in_a_fight_of_admins_is_shown", || {
+            let mut w = account();
+            let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+            let g6 = w.edge(N5, 1, &[], A, N6, Admin, &[g5]);
+            let gb = w.edge(N5, 7, &[], A, B, Admin, &[]);
+            let gz = w.edge(B, 8, &[], A, Z, Admin, &[gb]);
+            w.edge(N6, 8, &[], A, B, Gone, &[gb, gz, g6]);
+            w.edge(Z, 9, &[], A, N6, Gone, &[g5, gz]);
+            let rz = w.edge(H, 10, &[], A, Z, Gone, &[]);
+            (w, vec![vec![], vec![rz]])
+        }),
+        ("a_removal_whose_author_falls_later_keeps_its_verdict", || {
+            let (mut w, ..) = paired();
+            w.edge(X, 2, &[], A, N5, Admin, &[]);
+            w.edge(B, 3, &[A], T1, A2, Write, &[]);
+            w.edge(N5, 4, &[], A, B, Gone, &[]);
+            let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+            (w, vec![vec![], vec![r]])
+        }),
+    ]);
 }
 
 #[test]
@@ -419,42 +423,6 @@ fn a_lowerings_check_does_not_read_what_its_drops_free() {
     for t in [&[][..], &[r1], &[l], &[r2]] {
         agree_all(&w, t);
     }
-}
-
-// spec/permissions.md §5.1 step 4: the void check reads its grant chain back.
-#[test]
-fn a_lowering_dropping_its_granters_grant_is_void() {
-    let mut w = account();
-    w.edge(H, 4, &[], A, Z, Admin, &[]);
-    let g5 = w.edge(Z, 8, &[], A, N5, Admin, &[]);
-    w.edge(N5, 10, &[], A, H, Gone, &[g5]);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn a_lowering_taking_nothing_is_judged_when_a_restart_gives_it_the_edge() {
-    let (mut w, ..) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let out = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
-    w.edge(X, 2, &[], A, N5, Gone, &[g5]);
-    w.edge(N5, 2, &[], A, Z, Admin, &[]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r]);
-}
-
-#[test]
-fn a_stray_drop_in_a_fight_of_admins_is_shown() {
-    let mut w = account();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let g6 = w.edge(N5, 1, &[], A, N6, Admin, &[g5]);
-    let gb = w.edge(N5, 7, &[], A, B, Admin, &[]);
-    let gz = w.edge(B, 8, &[], A, Z, Admin, &[gb]);
-    w.edge(N6, 8, &[], A, B, Gone, &[gb, gz, g6]);
-    w.edge(Z, 9, &[], A, N6, Gone, &[g5, gz]);
-    let rz = w.edge(H, 10, &[], A, Z, Gone, &[]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[rz]);
 }
 
 #[test]
@@ -479,17 +447,6 @@ fn a_thiefs_lowering_after_the_removal_holds_nothing() {
     w.edge(M, 1, &[], A, H, Admin, &[]);
     let gx = w.edge(M, 1, &[], A, X, Admin, &[]);
     w.edge(X, 4, &[], A, M, Gone, &[gx]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r]);
-}
-
-#[test]
-fn a_removal_whose_author_falls_later_keeps_its_verdict() {
-    let (mut w, ..) = paired();
-    w.edge(X, 2, &[], A, N5, Admin, &[]);
-    w.edge(B, 3, &[A], T1, A2, Write, &[]);
-    w.edge(N5, 4, &[], A, B, Gone, &[]);
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     agree_all(&w, &[]);
     agree_all(&w, &[r]);
@@ -571,47 +528,72 @@ fn a_remover_keeps_what_it_received_first() {
 }
 
 #[test]
-fn a_removed_node_writing_a_grant_to_the_remover_stays_removed() {
-    let (mut w, ..) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let out = w.edge(X, 2, &[], A, N5, Gone, &[g5]);
-    w.edge(N5, 3, &[], A, H, Admin, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
-    agree_all(&w, &[r]);
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn a_made_up_key_regranting_the_remover_holds_nothing() {
-    let (mut w, ..) = paired();
-    let tg = w.edge(X, 2, &[], A, H, Admin, &[]);
-    w.set_until(tg, 7);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    agree_all(&w, &[r]);
-}
-
-#[test]
-fn a_party_removed_before_the_theft_stays_removed() {
-    let (mut w, ..) = paired();
-    let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
-    let out = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
-    let x5 = w.edge(X, 5, &[], A, H, Gone, &[]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[out, x5]);
-    w.edge(N5, 2, &[], A, H, Admin, &[]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r]);
-}
-
-// spec/permissions.md §5.1 Trust set: a node trusting nothing is shown the removal as a dispute.
-#[test]
-fn a_node_trusting_nothing_is_shown_the_removal_as_a_dispute() {
-    let (mut w, gx, gb) = paired();
-    let tg = w.edge(X, 4, &[], A, H, Admin, &[]);
-    w.set_until(tg, 7);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    w.edge(X, 7, &[], A, H, Gone, &[gx, gb]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r]);
+fn lists_trust_seeds_disputes() {
+    rows(&[
+        ("a_removed_node_writing_a_grant_to_the_remover_stays_removed", || {
+            let (mut w, ..) = paired();
+            let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+            let out = w.edge(X, 2, &[], A, N5, Gone, &[g5]);
+            w.edge(N5, 3, &[], A, H, Admin, &[]);
+            let r = w.edge(H, 6, &[], A, X, Gone, &[out]);
+            (w, vec![vec![r], vec![]])
+        }),
+        ("a_made_up_key_regranting_the_remover_holds_nothing", || {
+            let (mut w, ..) = paired();
+            let tg = w.edge(X, 2, &[], A, H, Admin, &[]);
+            w.set_until(tg, 7);
+            let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+            (w, vec![vec![r]])
+        }),
+        ("a_party_removed_before_the_theft_stays_removed", || {
+            let (mut w, ..) = paired();
+            let g5 = w.edge(H, 1, &[], A, N5, Admin, &[]);
+            let out = w.edge(X, 3, &[], A, N5, Gone, &[g5]);
+            let x5 = w.edge(X, 5, &[], A, H, Gone, &[]);
+            let r = w.edge(H, 6, &[], A, X, Gone, &[out, x5]);
+            w.edge(N5, 2, &[], A, H, Admin, &[]);
+            (w, vec![vec![], vec![r]])
+        }),
+        // spec/permissions.md §5.1 Trust set: a node trusting nothing is shown the removal as a dispute.
+        ("a_node_trusting_nothing_is_shown_the_removal_as_a_dispute", || {
+            let (mut w, gx, gb) = paired();
+            let tg = w.edge(X, 4, &[], A, H, Admin, &[]);
+            w.set_until(tg, 7);
+            let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+            w.edge(X, 7, &[], A, H, Gone, &[gx, gb]);
+            (w, vec![vec![], vec![r]])
+        }),
+        ("a_dispute_whose_write_is_a_no_op_where_trusted_is_shown", || {
+            let (mut w, ..) = paired();
+            w.edge(K, 1, &[], A2, X, Admin, &[]);
+            let gs = w.edge(B, 2, &[A], T1, A2, Admin, &[]);
+            w.edge(X, 3, &[A], T1, A2, Gone, &[]);
+            w.edge(X, 3, &[A2], T1, A, Gone, &[gs]);
+            let r = w.edge(H, 6, &[], A, X, Gone, &[]);
+            let r3 = w.edge(B, 6, &[A], T1, A2, Gone, &[]);
+            (w, vec![vec![], vec![r3], vec![r]])
+        }),
+        // spec/permissions.md §5.1 Trust set: dispute candidates are explicit lowerings (control
+        // `-all-candidates`).
+        ("an_honest_holder_leave_is_no_dispute", || {
+            let mut w = account();
+            w.edge(H, 1, &[A], T1, A2, Admin, &[]);
+            w.edge(K, 2, &[A2], T1, Z, Write, &[]);
+            w.edge(K, 3, &[A2], T1, A2, Gone, &[]);
+            (w, vec![vec![]])
+        }),
+        // spec/permissions.md §5.1 Seeds: a trusted demotion to write keeps the grants made by flag
+        // (control `-seeds-all`).
+        ("a_trusted_demotion_to_write_keeps_the_grants_made_by_flag", || {
+            let mut w = account();
+            w.edge(H, 1, &[], A, B, Admin, &[]);
+            w.push(H, 1, &[A], T1, Kind::set(A2, Admin));
+            w.edge(K, 1, &[], A2, X, Write, &[]);
+            w.push(X, 4, &[A2], T1, Kind::set(G, Read));
+            let kiosk = w.push(B, 6, &[A], T1, Kind::set(A2, Write).may_grant());
+            (w, vec![vec![], vec![kiosk]])
+        }),
+    ]);
 }
 
 #[test]
@@ -628,79 +610,64 @@ fn a_removal_of_two_hops_holds_against_a_lowering_above_its_signer() {
     agree_all(&w, &[r, r3]);
 }
 
-#[test]
-fn a_dispute_whose_write_is_a_no_op_where_trusted_is_shown() {
-    let (mut w, ..) = paired();
-    w.edge(K, 1, &[], A2, X, Admin, &[]);
-    let gs = w.edge(B, 2, &[A], T1, A2, Admin, &[]);
-    w.edge(X, 3, &[A], T1, A2, Gone, &[]);
-    w.edge(X, 3, &[A2], T1, A, Gone, &[gs]);
-    let r = w.edge(H, 6, &[], A, X, Gone, &[]);
-    let r3 = w.edge(B, 6, &[A], T1, A2, Gone, &[]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r3]);
-    agree_all(&w, &[r]);
-}
-
-// spec/permissions.md §5.1 Trust set: dispute candidates are explicit lowerings (control
-// `-all-candidates`).
-#[test]
-fn an_honest_holder_leave_is_no_dispute() {
-    let mut w = account();
-    w.edge(H, 1, &[A], T1, A2, Admin, &[]);
-    w.edge(K, 2, &[A2], T1, Z, Write, &[]);
-    w.edge(K, 3, &[A2], T1, A2, Gone, &[]);
-    agree_all(&w, &[]);
-}
-
-// spec/permissions.md §5.1 Seeds: a trusted demotion to write keeps the grants made by flag
-// (control `-seeds-all`).
-#[test]
-fn a_trusted_demotion_to_write_keeps_the_grants_made_by_flag() {
-    let mut w = account();
-    w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.push(H, 1, &[A], T1, Kind::set(A2, Admin));
-    w.edge(K, 1, &[], A2, X, Write, &[]);
-    w.push(X, 4, &[A2], T1, Kind::set(G, Read));
-    let kiosk = w.push(B, 6, &[A], T1, Kind::set(A2, Write).may_grant());
-    agree_all(&w, &[]);
-    agree_all(&w, &[kiosk]);
-}
-
 // ---- May-grant and finalizes ----
 
-// notes/write-path-design.md §1 G1, G2: a may-grant grant applies by its path's flag (controls
-// `-no-flag`, `-last-hop`).
 #[test]
-fn a_may_grant_grant_applies_by_its_paths_flag() {
-    let mut w = invited();
-    w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read));
-    w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Write));
-    w.push(X, 2, &[A2], T1, Kind::set(N5, Read));
-    w.push(X, 3, &[A2, GU], T1, Kind::set(Z, Read).until(9));
-    w.push(X, 4, &[A2, GU], T1, Kind::set(Z, Gone));
-    agree_all(&w, &[]);
-}
-
-#[test]
-fn a_may_grant_grant_needs_its_role_on_every_hop() {
-    let mut w = account();
-    w.push(H, 1, &[A], T1, Kind::set(GU, Write).may_grant());
-    w.edge(K, 1, &[], A2, X, Read, &[]);
-    w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read));
-    w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Write));
-    agree_all(&w, &[]);
-}
-
-// spec/permissions.md §5.1 step 3: a lowering falls in role or flag (control `-admin-falls`).
-#[test]
-fn a_may_grant_grant_by_a_removed_writer_falls_unless_listed() {
-    let mut w = invited();
-    let z = w.push(X, 3, &[A2, GU], T1, Kind::set(Z, Read));
-    w.push(X, 4, &[A2, GU], T1, Kind::set(N6, Read));
-    let r = w.edge(K, 6, &[], A2, X, Gone, &[z]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r]);
+fn may_grant_and_finalizes() {
+    rows(&[
+        // notes/write-path-design.md §1 G1, G2: a may-grant grant applies by its path's flag (controls
+        // `-no-flag`, `-last-hop`).
+        ("a_may_grant_grant_applies_by_its_paths_flag", || {
+            let mut w = invited();
+            w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read));
+            w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Write));
+            w.push(X, 2, &[A2], T1, Kind::set(N5, Read));
+            w.push(X, 3, &[A2, GU], T1, Kind::set(Z, Read).until(9));
+            w.push(X, 4, &[A2, GU], T1, Kind::set(Z, Gone));
+            (w, vec![vec![]])
+        }),
+        ("a_may_grant_grant_needs_its_role_on_every_hop", || {
+            let mut w = account();
+            w.push(H, 1, &[A], T1, Kind::set(GU, Write).may_grant());
+            w.edge(K, 1, &[], A2, X, Read, &[]);
+            w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read));
+            w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Write));
+            (w, vec![vec![]])
+        }),
+        // spec/permissions.md §5.1 step 3: a lowering falls in role or flag (control `-admin-falls`).
+        ("a_may_grant_grant_by_a_removed_writer_falls_unless_listed", || {
+            let mut w = invited();
+            let z = w.push(X, 3, &[A2, GU], T1, Kind::set(Z, Read));
+            w.push(X, 4, &[A2, GU], T1, Kind::set(N6, Read));
+            let r = w.edge(K, 6, &[], A2, X, Gone, &[z]);
+            (w, vec![vec![], vec![r]])
+        }),
+        // spec/permissions.md §5.1 step 2: a lowering applied by its verdict that would set its edge's
+        // flag (its role not above the edge as restored) applies only by admin along its path. N6,
+        // admin by H's grant, gives Z write and then read with the flag (a fall, judged and applied); B
+        // gave Z read at 2; B removes H not listing H's grant of N6, and the restart finds N6 with no
+        // authority: Z stays at B's read, with no flag. (No model hand test: the walk's own.)
+        ("a_lowering_applied_by_its_verdict_sets_no_flag", || {
+            let mut w = account();
+            let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+            w.edge(H, 1, &[], A, N6, Admin, &[]);
+            w.edge(B, 2, &[], A, Z, Read, &[]);
+            w.edge(N6, 3, &[], A, Z, Write, &[]);
+            w.push(N6, 3, &[], A, Kind::set(Z, Read).may_grant());
+            let r = w.edge(B, 7, &[], A, H, Gone, &[gb]);
+            (w, vec![vec![], vec![r]])
+        }),
+        // spec/permissions.md §5.1 step 2: a lowering applied by its verdict only lowers (finding 27).
+        ("a_lowering_applied_by_its_verdict_raises_nothing", || {
+            let mut w = account();
+            let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
+            w.edge(H, 1, &[], A, N6, Admin, &[]);
+            w.edge(N6, 3, &[], A, Z, Write, &[]);
+            w.edge(N6, 3, &[], A, Z, Role::Read, &[]);
+            let r = w.edge(B, 7, &[], A, H, Gone, &[gb]);
+            (w, vec![vec![], vec![r]])
+        }),
+    ]);
 }
 
 // spec/permissions.md §2 (Finalize).
@@ -749,24 +716,6 @@ fn a_self_removal_lowers_in_every_component() {
         w.push(Z, 3, &[], T1, k);
         agree_all(&w, &[]);
     }
-}
-
-// spec/permissions.md §5.1 step 2: a lowering applied by its verdict that would set its edge's
-// flag (its role not above the edge as restored) applies only by admin along its path. N6,
-// admin by H's grant, gives Z write and then read with the flag (a fall, judged and applied); B
-// gave Z read at 2; B removes H not listing H's grant of N6, and the restart finds N6 with no
-// authority: Z stays at B's read, with no flag. (No model hand test: the walk's own.)
-#[test]
-fn a_lowering_applied_by_its_verdict_sets_no_flag() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[], A, N6, Admin, &[]);
-    w.edge(B, 2, &[], A, Z, Read, &[]);
-    w.edge(N6, 3, &[], A, Z, Write, &[]);
-    w.push(N6, 3, &[], A, Kind::set(Z, Read).may_grant());
-    let r = w.edge(B, 7, &[], A, H, Gone, &[gb]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r]);
 }
 
 #[test]
@@ -822,19 +771,6 @@ fn a_flag_kept_below_the_granted_role_keeps_the_grants_it_still_covers() {
     w.edit(plain, |k| k.listing(BTreeMap::from([(A, Set::from([z]))])));
     assert_eq!(roles(&w), (Read, Gone));
     agree_all(&w, &[]);
-}
-
-// spec/permissions.md §5.1 step 2: a lowering applied by its verdict only lowers (finding 27).
-#[test]
-fn a_lowering_applied_by_its_verdict_raises_nothing() {
-    let mut w = account();
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    w.edge(H, 1, &[], A, N6, Admin, &[]);
-    w.edge(N6, 3, &[], A, Z, Write, &[]);
-    w.edge(N6, 3, &[], A, Z, Role::Read, &[]);
-    let r = w.edge(B, 7, &[], A, H, Gone, &[gb]);
-    agree_all(&w, &[]);
-    agree_all(&w, &[r]);
 }
 
 // ---- Several edge writes in one commit ----

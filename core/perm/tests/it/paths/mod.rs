@@ -305,6 +305,25 @@ pub fn agree_all(w: &World, trust: &[Id]) {
     agree(w, &all(w, trust));
 }
 
+/// A world named for the roles-model test it mirrors (or the walk's own, said so), and the trust
+/// sets that test reads it under, every commit held.
+pub type Row = (&'static str, fn() -> (World, Vec<Vec<Id>>));
+
+/// Each row's world read alike by the walk and the model under each of its trust sets
+/// (`agree_all`); every failing row named.
+pub fn rows(rows: &[Row]) {
+    let mut fails = Vec::new();
+    for (name, world) in rows {
+        let (w, trusts) = world();
+        for t in &trusts {
+            if let Some(d) = diff(&w, &all(&w, t), true) {
+                fails.push(format!("{name}, trusting {t:?}: {d}\n{}", m::tiny_trace(&w)));
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{}", fails.join("\n\n"));
+}
+
 /// The model's A with H (mint), X and B paired by H at 1.
 pub fn paired() -> (World, Id, Id) {
     let mut w = m::account();
