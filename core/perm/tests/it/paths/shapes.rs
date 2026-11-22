@@ -279,7 +279,8 @@ fn hostile_addenda_and_snapshots_judge_alike_without_panicking() {
     let made_up: Vec<u32> = (0..64).map(|i| 5000 + i).collect();
     let mut odd = delta(T1, &[A], Role::Write, DeltaClass::Plain);
     if let PartKind::Delta(d) = &mut odd.kind {
-        d.purge_author = 2;
+        // past its members [Y, A, T1] (index 2 names T1 itself, a member: spec/permissions.md §6)
+        d.purge_author = 3;
     }
     let junk = vec![
         commit(9, ms(6), Y, vec![delta(T1, &made_up, Role::Write, DeltaClass::Plain)]),
