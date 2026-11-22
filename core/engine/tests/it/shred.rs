@@ -400,38 +400,40 @@ fn partless_commit_applies_as_its_header_spec_commits_4() {
 fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let aspects = [ak("t:reg.0"), ak("t:list.0"), ak("t:big.0")];
+    let mut base = net2_one(); // 1 a node of 0's account
+    let lp = &mut base;
+    let t = new_thing(lp, 0);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("old")).unwrap();
+    m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
+    m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(s("old")) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let t3 = new_thing(lp, 0);
+    lp.sync(0, 1).unwrap();
+    let had: std::collections::BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
+    let t2 = new_thing(lp, 0);
+    let rec: Vec<_> = lp.packages_for(0, 1).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("SECRET-9c2e")).unwrap();
+    m.op(t, &LIST, PathOp { path: Vec::new(), op: Op::Insert { at: 1, items: vec![s("SECRET-L7a1")] } }).unwrap();
+    m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s("SECRET-K3b8"))], op: Op::Set(s("SECRET-V5d0")) }).unwrap();
+    m.set(t2, &REG, &s("other")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t3, &REG, &s("other3")).unwrap();
+    for a in &aspects {
+        m.purge_commit(c, t, a.clone());
+    }
+    let p = lp.peers[0].commit(m).unwrap().unwrap();
+    let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
+    let groups = [rec, vec![whole], vec![request]];
+    let markers = ["SECRET-9c2e", "SECRET-L7a1", "SECRET-K3b8", "SECRET-V5d0"];
     let mut reads = Vec::new();
     for order in [[0usize, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
-        let mut lp = net2_one(); // 1 a node of 0's account
-        let t = new_thing(&mut lp, 0);
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s("old")).unwrap();
-        m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
-        m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(s("old")) }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap();
-        let t3 = new_thing(&mut lp, 0);
-        lp.sync(0, 1).unwrap();
-        let had: std::collections::BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
-        let t2 = new_thing(&mut lp, 0);
-        let rec: Vec<_> = lp.packages_for(0, 1).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
-        lp.advance(5);
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s("SECRET-9c2e")).unwrap();
-        m.op(t, &LIST, PathOp { path: Vec::new(), op: Op::Insert { at: 1, items: vec![s("SECRET-L7a1")] } }).unwrap();
-        m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s("SECRET-K3b8"))], op: Op::Set(s("SECRET-V5d0")) }).unwrap();
-        m.set(t2, &REG, &s("other")).unwrap();
-        let c = lp.peers[0].commit(m).unwrap().unwrap();
-        let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
-        lp.advance(5);
-        let mut m = Mutation::new();
-        m.set(t3, &REG, &s("other3")).unwrap();
-        for a in &aspects {
-            m.purge_commit(c, t, a.clone());
-        }
-        let p = lp.peers[0].commit(m).unwrap().unwrap();
-        let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
-        let groups = [rec, vec![whole], vec![request]];
-        let markers = ["SECRET-9c2e", "SECRET-L7a1", "SECRET-K3b8", "SECRET-V5d0"];
+        let mut lp = base.copy().unwrap();
         for (i, g) in order.iter().enumerate() {
             for pk in &groups[*g] {
                 lp.deliver(1, pk).unwrap();
@@ -472,30 +474,32 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
 // comes: outside::a_part_waiting_aside_is_purged_where_it_waits.)
 #[test]
 fn purge_of_a_commit_in_two_copies_reads_alike_spec_commits_5() {
+    let mut base = net2();
+    let lp = &mut base;
+    let t = new_shared(lp, 0);
+    let t2 = new_shared(lp, 0);
+    let t3 = new_shared(lp, 0);
+    lp.sync(0, 1).unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("SECRET-R4e1")).unwrap();
+    m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
+    m.set(t2, &REG, &s("other")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t3, &REG, &s("other3")).unwrap();
+    m.purge_commit(c, t, ak("t:reg.0"));
+    let p = lp.peers[0].commit(m).unwrap().unwrap();
+    let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
+    let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
+    let list = part.header.aspects.iter().position(|a| a.tid == t && a.ak == ak("t:list.0")).unwrap();
+    let mut rest = part.clone();
+    part.parts.retain(|q| q.ai != list);
+    rest.parts.retain(|q| q.ai == list);
     for order in [[0usize, 1, 2], [1, 0, 2], [0, 2, 1], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
-        let mut lp = net2();
-        let t = new_shared(&mut lp, 0);
-        let t2 = new_shared(&mut lp, 0);
-        let t3 = new_shared(&mut lp, 0);
-        lp.sync(0, 1).unwrap();
-        lp.advance(5);
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s("SECRET-R4e1")).unwrap();
-        m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
-        m.set(t2, &REG, &s("other")).unwrap();
-        let c = lp.peers[0].commit(m).unwrap().unwrap();
-        let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
-        lp.advance(5);
-        let mut m = Mutation::new();
-        m.set(t3, &REG, &s("other3")).unwrap();
-        m.purge_commit(c, t, ak("t:reg.0"));
-        let p = lp.peers[0].commit(m).unwrap().unwrap();
-        let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
-        let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
-        let list = part.header.aspects.iter().position(|a| a.tid == t && a.ak == ak("t:list.0")).unwrap();
-        let mut rest = part.clone();
-        part.parts.retain(|q| q.ai != list);
-        rest.parts.retain(|q| q.ai == list);
+        let mut lp = base.copy().unwrap();
         for g in order {
             match g {
                 0 => drop(lp.peers[1].receive(&part.encode(), Vec::new()).unwrap()),

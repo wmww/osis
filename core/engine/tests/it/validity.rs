@@ -312,23 +312,32 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §5.1 (frontier; had received as of): a backdated frontier lists Bob's
-// commits Alice received by its cutoff, not those received after.
-// spec/permissions.md §5.1 (frontier received)
+// spec/permissions.md §5.1 (frontier; had received as of; a commit is listed whether a still holds
+// its body, dropped it or compacted it): a backdated frontier lists Bob's commits Alice received by
+// its cutoff, not those received after. Bob writes "1" before the cut and "2" after, then
+// snapshots both; Alice receives the snapshot after the cut too. Only "1" is listed (a frontier
+// now lists both writes), so after the backdated revoke the snapshot and "2" are invalid and
+// "1", covered by the snapshot, stays.
 #[test]
 fn backdated_frontier_lists_by_cutoff_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup();
+    let reg = ak("t:reg.0");
     let one = put(&mut lp, 1, d, &REG, &s("1"));
     sync(&mut lp, 1, 0);
     lp.advance(1_000);
     let cut = lp.peers[0].engine.now();
     lp.advance(1_000);
     let two = put(&mut lp, 1, d, &REG, &s("2"));
+    let snap = lp.peers[1].engine.snapshot(&d, &reg).unwrap().unwrap();
     sync(&mut lp, 1, 0);
+    assert_eq!(lp.peers[0].engine.covered(&snap, &one, &d, &reg).unwrap(), Some(true));
+    lp.advance(1_000);
+    let now = frontier_now(&mut lp, 0, &of(b, d));
+    assert!(now.commits.contains(&one) && now.commits.contains(&two), "{now:?}");
     let f = lp.peers[0].engine.frontier(&of(b, d), cut).unwrap();
-    assert!(f.commits.contains(&one) && !f.commits.contains(&two), "{f:?}");
-    let f = frontier_now(&mut lp, 0, &of(b, d));
-    assert!(f.commits.contains(&one) && f.commits.contains(&two), "{f:?}");
+    assert!(f.commits.contains(&one) && !f.commits.contains(&two) && !f.commits.contains(&snap), "{f:?}");
+    set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
+    assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("1")), "received by the cut, should stay");
 }
 
 // spec/commits.md §3, §4 (counter ranges on one aspect overlap are both invalid): role commits use commit form and a session-form one
@@ -2366,54 +2375,85 @@ fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
     assert_eq!(got[0], got[1], "Carol's copy first, then the removal");
 }
 
+/// The tag writes (`t:tags.0`) on D Alice (0) holds.
+fn tag_writes(lp: &mut LocalPeer, d: Tid) -> BTreeSet<osis_base::CommitId> {
+    let tags_ak = ak("t:tags.0");
+    let e = &mut lp.peers[0].engine;
+    e.commit_ids().into_iter().filter(|x| e.header(x).is_some_and(|h| h.kind == osis_commit::Kind::Content && h.aspects.iter().any(|a| a.tid == d && a.ak == tags_ak))).collect()
+}
+
+/// Bob's (1) removal of "ash" from D's tags, then Alice's (0) revoke of each of `revoked` (not
+/// having seen it): the removal's package for `obs`, and what else `obs` is sent past `known`.
+fn removal_then_revokes(lp: &mut LocalPeer, obs: &mut osis_engine::local_peer::Peer, d: Tid, revoked: &[Tid], known: &BTreeSet<osis_base::CommitId>) -> (osis_engine::local_peer::Package, Vec<osis_engine::local_peer::Package>) {
+    lp.advance(1_000);
+    let rm = put_op(lp, 1, d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("ash")) });
+    let rm_pk = package_for_peer(lp, 1, obs, rm);
+    lp.advance(1_000);
+    for h in revoked {
+        revoke(lp, 0, d, *h);
+    }
+    let rv = packages_for_peer(lp, 0, obs).into_iter().filter(|p| !known.contains(&p.id)).collect();
+    (rm_pk, rv)
+}
+
+/// A fresh copy of `obs` pushed, holding `before`: its index.
+fn push_holding(lp: &mut LocalPeer, obs: &mut osis_engine::local_peer::Peer, before: &[osis_engine::local_peer::Package]) -> usize {
+    let at = lp.peers[0].engine.now();
+    lp.peers.push(fresh_copy(obs, at));
+    let i = lp.peers.len() - 1;
+    for pk in before {
+        lp.deliver(i, pk).unwrap();
+    }
+    i
+}
+
+/// Peer `i` drops the body of each of `xs` on D's tags as covered by `snap`.
+fn drop_covered(lp: &mut LocalPeer, i: usize, snap: &osis_base::CommitId, xs: &BTreeSet<osis_base::CommitId>, d: Tid) {
+    let (e, tags_ak) = (&mut lp.peers[i].engine, ak("t:tags.0"));
+    for x in xs {
+        assert_eq!(e.covered(snap, x, &d, &tags_ak).unwrap(), Some(true));
+        e.drop_body(x, &d, &tags_ak).unwrap();
+    }
+}
+
+/// Peer `i` takes Bob's removal `rm` and the revokes `rv`: the removal first (applied while
+/// valid, D's tags then `left`) or after `rv` and `between`; then reexamines.
+fn take_removal_and_revokes(lp: &mut LocalPeer, i: usize, d: Tid, removal_first: bool, (rm, rv): &(osis_engine::local_peer::Package, Vec<osis_engine::local_peer::Package>), left: &[&str], between: impl FnOnce(&mut LocalPeer)) {
+    if removal_first {
+        lp.deliver(i, rm).unwrap();
+        assert_eq!(tags(lp, i, d), left.iter().map(|x| x.to_string()).collect(), "the removal applied while valid");
+    }
+    for pk in rv {
+        lp.deliver(i, pk).unwrap();
+    }
+    between(lp);
+    if !removal_first {
+        lp.deliver(i, rm).unwrap();
+    }
+    lp.peers[i].reexamine().unwrap();
+}
+
 // spec/permissions.md §5.2, spec/crdt.md §4.6: Alice's element, its delta dropped as covered by
 // her snapshot S, is removed by Bob, whose revoke then voids the removal. A node that applied
 // the removal while valid and one that got the revoke first both read the element: the rebuild
-// takes it again from S's copy, the dropped delta giving nothing (was
-// issue sim-work-sets-tag-lost (closed), sim work_sets seeds 15061, 15110).
+// takes it again from S's copy, the dropped delta giving nothing (sim work_sets).
 #[test]
 fn covered_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
-    let mut lp = net(2, 0);
-    lp.sync_all().unwrap();
-    let d = new_thing(&mut lp, 0);
-    let b = lp.peers[1].engine.me();
-    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    let (mut lp, d, b, _) = setup();
     let mut obs = reader(&mut lp, 0, d, 0x5f8b);
     add_tag(&mut lp, 0, d, "ash");
     let tags_ak = ak("t:tags.0");
-    let added: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|x| lp.peers[0].engine.header(x).is_some_and(|h| h.kind == osis_commit::Kind::Content && h.aspects.iter().any(|a| a.ak == tags_ak))).collect();
+    let added = tag_writes(&mut lp, d);
     lp.advance(1_000);
     let snap = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
     lp.sync_all().unwrap();
     let before = packages_for_peer(&mut lp, 0, &mut obs);
-    lp.advance(1_000);
-    let rm = put_op(&mut lp, 1, d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("ash")) });
-    let rm_pk = package_for_peer(&mut lp, 1, &mut obs, rm);
-    lp.advance(1_000);
-    revoke(&mut lp, 0, d, b); // without having seen the removal
-    let known: BTreeSet<_> = before.iter().map(|p| p.id).collect();
-    let rv: Vec<_> = packages_for_peer(&mut lp, 0, &mut obs).into_iter().filter(|p| !known.contains(&p.id)).collect();
+    let late = removal_then_revokes(&mut lp, &mut obs, d, &[b], &before.iter().map(|p| p.id).collect());
     let mut got = Vec::new();
-    for (i, removal_first) in [(2, true), (3, false)] {
-        { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
-        for pk in &before {
-            lp.deliver(i, pk).unwrap();
-        }
-        for c in &added {
-            assert_eq!(lp.peers[i].engine.covered(&snap, c, &d, &tags_ak).unwrap(), Some(true));
-            lp.peers[i].engine.drop_body(c, &d, &tags_ak).unwrap();
-        }
-        if removal_first {
-            lp.deliver(i, &rm_pk).unwrap();
-            assert!(tags(&mut lp, i, d).is_empty(), "the removal applied while valid");
-        }
-        for pk in &rv {
-            lp.deliver(i, pk).unwrap();
-        }
-        if !removal_first {
-            lp.deliver(i, &rm_pk).unwrap();
-        }
-        lp.peers[i].reexamine().unwrap();
+    for removal_first in [true, false] {
+        let i = push_holding(&mut lp, &mut obs, &before);
+        drop_covered(&mut lp, i, &snap, &added, d);
+        take_removal_and_revokes(&mut lp, i, d, removal_first, &late, &[], |_| {});
         got.push((tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap()));
     }
     assert_eq!(got[0].0, BTreeSet::from(["ash".to_string()]), "removal applied, then voided");
@@ -2434,47 +2474,26 @@ fn covered_drop_coverer_and_remover_revoked_alike_spec_perm_5_2() {
     add_tag(&mut lp, 0, d, "ash");
     lp.sync_all().unwrap();
     let tags_ak = ak("t:tags.0");
-    let added: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|x| lp.peers[0].engine.header(x).is_some_and(|h| h.kind == osis_commit::Kind::Content && h.aspects.iter().any(|a| a.ak == tags_ak))).collect();
+    let added = tag_writes(&mut lp, d);
     let before = packages_for_peer(&mut lp, 0, &mut obs);
     lp.advance(1_000);
     let snap = lp.peers[2].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
     let snap_pk = package_for_peer(&mut lp, 2, &mut obs, snap);
-    lp.advance(1_000);
-    let rm = put_op(&mut lp, 1, d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("ash")) });
-    let rm_pk = package_for_peer(&mut lp, 1, &mut obs, rm);
-    lp.advance(1_000);
-    revoke(&mut lp, 0, d, c); // without having seen the removal or Carol's snapshot
-    revoke(&mut lp, 0, d, b);
-    let known: BTreeSet<_> = before.iter().map(|p| p.id).collect();
-    let rv: Vec<_> = packages_for_peer(&mut lp, 0, &mut obs).into_iter().filter(|p| !known.contains(&p.id)).collect();
+    // without having seen the removal or Carol's snapshot
+    let late = removal_then_revokes(&mut lp, &mut obs, d, &[c, b], &before.iter().map(|p| p.id).collect());
     let mut got = Vec::new();
     // dropped under Carol's cover: the removal applied valid, or arrived voided; held throughout
-    for (i, drop, removal_first) in [(3, true, true), (4, true, false), (5, false, false)] {
-        { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
-        for pk in &before {
-            lp.deliver(i, pk).unwrap();
-        }
+    for (drop, removal_first) in [(true, true), (true, false), (false, false)] {
+        let i = push_holding(&mut lp, &mut obs, &before);
         if drop {
             lp.deliver(i, &snap_pk).unwrap();
-            for x in &added {
-                assert_eq!(lp.peers[i].engine.covered(&snap, x, &d, &tags_ak).unwrap(), Some(true));
-                lp.peers[i].engine.drop_body(x, &d, &tags_ak).unwrap();
+            drop_covered(&mut lp, i, &snap, &added, d);
+        }
+        take_removal_and_revokes(&mut lp, i, d, removal_first, &late, &[], |lp| {
+            if !drop {
+                lp.deliver(i, &snap_pk).unwrap();
             }
-        }
-        if removal_first {
-            lp.deliver(i, &rm_pk).unwrap();
-            assert!(tags(&mut lp, i, d).is_empty(), "the removal applied while valid");
-        }
-        for pk in &rv {
-            lp.deliver(i, pk).unwrap();
-        }
-        if !drop {
-            lp.deliver(i, &snap_pk).unwrap();
-        }
-        if !removal_first {
-            lp.deliver(i, &rm_pk).unwrap();
-        }
-        lp.peers[i].reexamine().unwrap();
+        });
         if drop {
             assert!(tags(&mut lp, i, d).is_empty(), "removal first: {removal_first}; the dropped delta missing");
             lp.peers[i].engine.rebuild_state(&d, &tags_ak).unwrap();
@@ -2509,7 +2528,7 @@ fn chained_cover_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
     add_tag(&mut lp, 0, d, "ash");
     let mut obs = reader(&mut lp, 0, d, 0x5fd1);
     let tags_ak = ak("t:tags.0");
-    let added: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|x| lp.peers[0].engine.header(x).is_some_and(|h| h.kind == osis_commit::Kind::Content && h.aspects.iter().any(|a| a.ak == tags_ak))).collect();
+    let added = tag_writes(&mut lp, d);
     lp.advance(1_000);
     let s1 = lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
     lp.advance(1_000);
@@ -2520,39 +2539,14 @@ fn chained_cover_drop_restored_after_remover_revoked_alike_spec_perm_5_2() {
     let all = packages_for_peer(&mut lp, 0, &mut obs);
     let s2_pk = all.iter().find(|p| p.id == s2).unwrap().clone();
     let before: Vec<_> = all.into_iter().filter(|p| p.id != s2).collect();
-    lp.advance(1_000);
-    let rm = put_op(&mut lp, 1, d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("ash")) });
-    let rm_pk = package_for_peer(&mut lp, 1, &mut obs, rm);
-    lp.advance(1_000);
-    revoke(&mut lp, 0, d, b);
-    let known: BTreeSet<_> = before.iter().map(|p| p.id).chain([s2]).collect();
-    let rv: Vec<_> = packages_for_peer(&mut lp, 0, &mut obs).into_iter().filter(|p| !known.contains(&p.id)).collect();
+    let late = removal_then_revokes(&mut lp, &mut obs, d, &[b], &before.iter().map(|p| p.id).chain([s2]).collect());
     let mut got = Vec::new();
-    for (i, removal_first) in [(3, true), (4, false)] {
-        { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
-        for pk in &before {
-            lp.deliver(i, pk).unwrap();
-        }
-        let e = &mut lp.peers[i].engine;
-        for x in &added {
-            assert_eq!(e.covered(&s1, x, &d, &tags_ak).unwrap(), Some(true));
-            e.drop_body(x, &d, &tags_ak).unwrap();
-        }
+    for removal_first in [true, false] {
+        let i = push_holding(&mut lp, &mut obs, &before);
+        drop_covered(&mut lp, i, &s1, &added, d);
         lp.deliver(i, &s2_pk).unwrap();
-        let e = &mut lp.peers[i].engine;
-        assert_eq!(e.covered(&s2, &s1, &d, &tags_ak).unwrap(), Some(true));
-        e.drop_body(&s1, &d, &tags_ak).unwrap();
-        if removal_first {
-            lp.deliver(i, &rm_pk).unwrap();
-            assert_eq!(tags(&mut lp, i, d), BTreeSet::from(["elm".to_string()]), "the removal applied while valid");
-        }
-        for pk in &rv {
-            lp.deliver(i, pk).unwrap();
-        }
-        if !removal_first {
-            lp.deliver(i, &rm_pk).unwrap();
-        }
-        lp.peers[i].reexamine().unwrap();
+        drop_covered(&mut lp, i, &s2, &BTreeSet::from([s1]), d);
+        take_removal_and_revokes(&mut lp, i, d, removal_first, &late, &["elm"], |_| {});
         got.push((tags(&mut lp, i, d), lp.peers[i].engine.state(&d, &tags_ak).unwrap()));
     }
     assert_eq!(got[0].0, BTreeSet::from(["ash".to_string(), "elm".to_string()]), "removal applied, then voided");
@@ -3184,28 +3178,6 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
 }
 
 
-
-// spec/permissions.md §5.1 (frontier; had received as of; a commit is listed whether a still holds its body, dropped it or compacted it): Alice receives Bob's write before a backdated
-// revoke's cut and Bob's own snapshot covering it after. The snapshot is not listed (received
-// late), so it is invalid after the removal; the write must be listed and stay.
-#[test]
-fn backdated_frontier_lists_write_covered_after_cut_spec_perm_5_1() {
-    let (mut lp, d, b, _) = setup();
-    let reg = ak("t:reg.0");
-    let first = put(&mut lp, 1, d, &REG, &s("bob"));
-    sync(&mut lp, 1, 0);
-    lp.advance(1_000);
-    let cut = lp.peers[0].engine.now();
-    lp.advance(1_000);
-    let snap = lp.peers[1].engine.snapshot(&d, &reg).unwrap().unwrap();
-    sync(&mut lp, 1, 0);
-    assert_eq!(lp.peers[0].engine.covered(&snap, &first, &d, &reg).unwrap(), Some(true));
-    lp.advance(1_000);
-    let f = lp.peers[0].engine.frontier(&of(b, d), cut).unwrap();
-    assert!(f.commits.contains(&first) && !f.commits.contains(&snap), "{f:?}");
-    set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.clone()));
-    assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("bob")), "received by the cut, should stay");
-}
 
 // spec/permissions.md §5.1 (frontier; a commit is listed whether a still holds its body, dropped it or compacted it),
 // notes/revocation.md, Frontier encoding: Bob writes a kept register twice and Carol, any writer, snapshots it
@@ -3944,7 +3916,16 @@ fn acting_on_two() -> (LocalPeer, Tid, Tid, osis_base::CommitId, osis_commit::Co
 /// Alice (0) mints D, P and the holder H; Bob (1) holds write on H, H on D, Bob on P directly;
 /// Carol (2) reads P alone. Bob's write on D goes through H, on P along the empty path: one
 /// write of both states the split form.
+/// Built once (`LocalPeer::cached`).
 fn two_paths_world() -> (LocalPeer, Tid, Tid, Tid) {
+    let (lp, (h, d, p)) = LocalPeer::cached("validity::two_paths_world", || {
+        let (lp, h, d, p) = two_paths_world_built();
+        (lp, (h, d, p))
+    });
+    (lp, h, d, p)
+}
+
+fn two_paths_world_built() -> (LocalPeer, Tid, Tid, Tid) {
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let (h, d, p) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
@@ -3964,8 +3945,43 @@ fn bob_writes_both(lp: &mut LocalPeer, d: Tid, p: Tid) -> (osis_base::CommitId, 
     m.set(d, &REG, &s("on d")).unwrap();
     m.set(p, &REG, &s("on p")).unwrap();
     let id = lp.peers[1].commit(m).unwrap().unwrap();
-    let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
-    (id, osis_commit::CommitBlob::decode(&pk.bytes).unwrap())
+    (id, held(lp, 1, &id))
+}
+
+/// `two_paths_world` with Bob's write of both made (`bob_writes_both`): D, P, its ID and opened
+/// form. Built once (`LocalPeer::cached`).
+fn split_world() -> (LocalPeer, (Tid, Tid, osis_base::CommitId, osis_commit::CommitBlob)) {
+    LocalPeer::cached("validity::split_world", || {
+        let (mut lp, _, d, p) = two_paths_world();
+        let (id, c) = bob_writes_both(&mut lp, d, p);
+        (lp, (d, p, id, c))
+    })
+}
+
+/// Commit `id` as peer `i` holds it, opened.
+fn held(lp: &mut LocalPeer, i: usize, id: &osis_base::CommitId) -> osis_commit::CommitBlob {
+    osis_commit::CommitBlob::decode(&lp.peers[i].engine.package(id).unwrap().unwrap().bytes).unwrap()
+}
+
+/// Where thing `t` is among commit `c`'s things.
+fn place(c: &osis_commit::CommitBlob, t: Tid) -> usize {
+    c.header.things().iter().position(|x| *x == t).unwrap()
+}
+
+/// Split commit `c`'s entries.
+fn entries(c: &osis_commit::CommitBlob) -> Vec<Vec<u8>> {
+    let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
+    sp.entries.clone()
+}
+
+/// The path keys each section of `c` carries as its writer seals it: its own thing's.
+fn own(c: &osis_commit::CommitBlob) -> impl Fn(usize) -> BTreeMap<usize, [u8; 32]> + Copy + '_ {
+    |i| BTreeMap::from([(i, c.keys[&i])])
+}
+
+/// An entry of `n` bytes that opens under no key.
+fn junk(n: usize) -> Vec<u8> {
+    (0..n).map(|i| (i * 37 % 251) as u8).collect()
 }
 
 /// Each thing's path as commit `c` states it: read off its one path, or its entry opened.
@@ -4007,18 +4023,11 @@ fn a_write_through_different_actors_is_one_split_commit_spec_wire_4() {
 // one thing's copy before the other's), its live index what its store loads.
 #[test]
 fn split_paths_judge_alike_however_parts_come_spec_wire_4() {
-    let fresh = || {
-        LocalPeer::cached("validity::two_paths_world", || {
-            let (mut lp, _, d, p) = two_paths_world();
-            let (id, c) = bob_writes_both(&mut lp, d, p);
-            (lp, (d, p, id, c))
-        })
-    };
-    let (_, (d, p, id, c)) = fresh();
+    let (_, (d, p, id, c)) = split_world();
     assert!(c.header.is_split());
     let only = |keep: Option<Tid>| osis_commit::rewrite(&c, |ai| Some(c.header.aspects[ai].tid) != keep).encode();
     for (name, order) in [("whole", vec![c.encode()]), ("header, p, d", vec![only(None), only(Some(p)), only(Some(d))]), ("header, d, p", vec![only(None), only(Some(d)), only(Some(p))]), ("p, d", vec![only(Some(p)), only(Some(d))])] {
-        let (mut lp, _) = fresh();
+        let (mut lp, _) = split_world();
         let a = &mut lp.peers[0];
         for b in &order {
             unless_refused(a.engine.ingest(b, Vec::new()));
@@ -4038,27 +4047,23 @@ fn split_paths_judge_alike_however_parts_come_spec_wire_4() {
 // while D's path opens nowhere at her and waits; Alice opens both sections and decides both.
 #[test]
 fn a_sealed_split_commit_gives_each_reader_its_own_things_keys_spec_wire_4() {
-    let (mut lp, (d, p, id, _)) = LocalPeer::cached("validity::two_paths_world", || {
-        let (mut lp, _, d, p) = two_paths_world();
-        let (id, c) = bob_writes_both(&mut lp, d, p);
-        (lp, (d, p, id, c))
-    });
+    let (mut lp, (d, p, id, _)) = split_world();
     let pks = lp.sealed(1, &[id]).unwrap();
     assert_eq!(pks.len(), 1);
     for i in [2, 0] {
         assert!(lp.deliver_sealed(i, &pks).unwrap().is_empty(), "peer {i} opened a section");
     }
-    let held = |lp: &mut LocalPeer, i: usize| {
+    let stated = |lp: &mut LocalPeer, i: usize| {
+        let c = held(lp, i, &id);
         let e = &mut lp.peers[i].engine;
-        let c = osis_commit::CommitBlob::decode(&e.package(&id).unwrap().unwrap().bytes).unwrap();
         let things = c.header.things();
         let keys: Vec<Tid> = c.keys.keys().map(|i| things[*i]).collect();
         let paths = e.core.ix.commits.get(&id).unwrap().view.paths.clone().unwrap();
         (keys, paths.get(&d).copied(), paths.get(&p).copied(), e.core.ix.paths_unknown.contains(&id))
     };
-    assert_eq!(held(&mut lp, 2), (vec![p], None, Some(true), true), "Carol: P's key alone, D waits");
+    assert_eq!(stated(&mut lp, 2), (vec![p], None, Some(true), true), "Carol: P's key alone, D waits");
     assert_eq!(lp.peers[2].engine.get(&p, &ak("t:reg.0")).unwrap(), Some(s("on p")));
-    let alice = held(&mut lp, 0);
+    let alice = stated(&mut lp, 0);
     assert_eq!((alice.1, alice.2, alice.3), (Some(true), Some(true), false), "Alice decides both");
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on d")));
     for i in [0, 2] {
@@ -4116,47 +4121,37 @@ fn opened_sections(f: &osis_commit::CommitBlob, c: &osis_commit::CommitBlob, pla
 // secret seals, `engine::write::path_secret`).
 #[test]
 fn hostile_split_commits_harm_only_their_forged_things_alike_everywhere_spec_wire_4() {
-    let fresh = || {
-        LocalPeer::cached("validity::two_paths_world", || {
-            let (mut lp, _, d, p) = two_paths_world();
-            let (id, c) = bob_writes_both(&mut lp, d, p);
-            (lp, (d, p, id, c))
-        })
-    };
-    let (mut lp, (d, p, _, c)) = fresh();
+    let (mut lp, (d, p, _, c)) = split_world();
     let h = *paths_stated(&c).iter().find(|(t, _)| *t == d).unwrap().1.first().unwrap();
     let bob = lp.peers[1].engine.me();
-    let things = c.header.things();
-    let (id_, ip) = (things.iter().position(|t| *t == d).unwrap(), things.iter().position(|t| *t == p).unwrap());
-    let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
-    let own = |i: usize| BTreeMap::from([(i, c.keys[&i])]);
-    let junk: Vec<u8> = (0..sp.entries[id_].len()).map(|i| (i * 37 % 251) as u8).collect();
+    let (id_, ip, es) = (place(&c, d), place(&c, p), entries(&c));
+    let own = own(&c);
     let mine = [7u8; 32];
     let with = |i: usize, e: Vec<u8>| {
-        let mut es = sp.entries.clone();
+        let mut es = es.clone();
         es[i] = e;
         es
     };
-    let mut swapped = sp.entries.clone();
+    let mut swapped = es.clone();
     swapped.swap(0, 1);
     type Keys<'a> = Box<dyn Fn(usize) -> BTreeMap<usize, [u8; 32]> + 'a>;
     // (name, entries, author, the keys each section carries, D applies, P applies)
     type Case<'a> = (&'a str, Vec<Vec<u8>>, Option<Tid>, Keys<'a>, bool, bool);
     let cases: Vec<Case<'_>> = vec![
-        ("honest", sp.entries.clone(), None, Box::new(own), true, true),
-        ("a forged entry", with(id_, junk), None, Box::new(own), false, true),
+        ("honest", es.clone(), None, Box::new(own), true, true),
+        ("a forged entry", with(id_, junk(es[id_].len())), None, Box::new(own), false, true),
         ("an entry under another key", with(id_, osis_commit::Split::seal(&mine, &[h], 0).unwrap()), None, Box::new(own), false, true),
         ("an entry under the writer's own key, carried", with(id_, osis_commit::Split::seal(&mine, &[h], 0).unwrap()), None, Box::new(|i| if i == id_ { BTreeMap::from([(i, mine)]) } else { own(i) }), true, true),
         ("entries swapped", swapped, None, Box::new(own), false, false),
         ("a list naming the signer", with(id_, osis_commit::Split::seal(&c.keys[&id_], &[bob], 0).unwrap()), None, Box::new(own), false, true),
-        ("a purge author off P's path", sp.entries.clone(), Some(h), Box::new(own), true, false),
-        ("a key beyond P's section's things", sp.entries.clone(), None, Box::new(|i| if i == ip { c.keys.clone() } else { own(i) }), true, false),
+        ("a purge author off P's path", es.clone(), Some(h), Box::new(own), true, false),
+        ("a key beyond P's section's things", es.clone(), None, Box::new(|i| if i == ip { c.keys.clone() } else { own(i) }), true, false),
     ];
     let reg = |lp: &mut LocalPeer, i: usize, t: Tid| lp.peers[i].engine.get(&t, &ak("t:reg.0")).unwrap();
     for (name, entries, author, keys, d_ok, p_ok) in cases {
         let f = resigned(&mut lp, &c, entries, author);
         for (order, deliveries) in [("both", vec![vec![id_, ip]]), ("p, d", vec![vec![ip], vec![id_]]), ("d, p", vec![vec![id_], vec![ip]])] {
-            let (mut w, _) = fresh();
+            let (mut w, _) = split_world();
             let before = (reg(&mut w, 0, d), reg(&mut w, 0, p));
             for places in &deliveries {
                 unless_refused(w.peers[0].engine.ingest(&opened_sections(&f, &c, places, &*keys), Vec::new()));
@@ -4269,6 +4264,19 @@ mod p1305 {
     }
 }
 
+/// Poly1305's `r` (clamped) and `s` from keystream `ks`'s one-time key.
+fn r_s(ks: &osis_crypto::aead::Keystream) -> (p1305::N, u128) {
+    let pk = ks.poly_key();
+    let mut r = pk;
+    for i in [3, 7, 11, 15] {
+        r[i] &= 15;
+    }
+    for i in [4, 8, 12] {
+        r[i] &= 252;
+    }
+    (p1305::block(&r[..16], 0), u128::from_le_bytes(pk[16..].try_into().unwrap()))
+}
+
 /// A split entry of class 4 committing to `k1` whose ciphertext opens under both `k1` and `k2`:
 /// XChaCha20-Poly1305 commits to no key, so whoever picks both keys solves one linear equation
 /// over Poly1305's field for one ciphertext block. Under `k1` it opens to a canonical list of four
@@ -4278,18 +4286,7 @@ fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
     use osis_crypto::aead::{Keystream, ZERO_NONCE, open};
     use p1305::*;
     let (ks1, ks2) = (Keystream::new(k1, &ZERO_NONCE), Keystream::new(k2, &ZERO_NONCE));
-    let rs = |ks: &Keystream| {
-        let pk = ks.poly_key();
-        let mut r = pk;
-        for i in [3, 7, 11, 15] {
-            r[i] &= 15;
-        }
-        for i in [4, 8, 12] {
-            r[i] &= 252;
-        }
-        (block(&r[..16], 0), u128::from_le_bytes(pk[16..].try_into().unwrap()))
-    };
-    let ((r1, s1), (r2, s2)) = (rs(&ks1), rs(&ks2));
+    let ((r1, s1), (r2, s2)) = (r_s(&ks1), r_s(&ks2));
     // the MAC's blocks: the class's 67-byte ciphertext (four tids and two zero bytes of padding)
     // padded to five, then the lengths (no AD)
     const LEN: usize = 67;
@@ -4350,30 +4347,20 @@ fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
 // (one key per (commit, thing)) and void D's write that the other order applies.
 #[test]
 fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
-    let fresh = || {
-        LocalPeer::cached("validity::two_paths_world", || {
-            let (mut lp, _, d, p) = two_paths_world();
-            let (id, c) = bob_writes_both(&mut lp, d, p);
-            (lp, (d, p, id, c))
-        })
-    };
-    let (mut lp, (d, p, _, c)) = fresh();
-    let things = c.header.things();
-    let (id_, ip) = (things.iter().position(|t| *t == d).unwrap(), things.iter().position(|t| *t == p).unwrap());
-    let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
+    let (mut lp, (d, p, _, c)) = split_world();
+    let (id_, ip, mut es) = (place(&c, d), place(&c, p), entries(&c));
     let (k1, k2) = ([11u8; 32], [22u8; 32]);
-    let mut es = sp.entries.clone();
     es[id_] = entry_under_two_keys(&k1, &k2);
     let f = resigned(&mut lp, &c, es, None);
     assert!(matches!(f.header.open_path(id_, &k1), Some(osis_commit::ThingPath::Known(_))), "a path under one key");
     assert_eq!(f.header.open_path(id_, &k2), None, "the other is no key of the entry");
-    assert!(osis_crypto::aead::open(&k2, &osis_crypto::aead::ZERO_NONCE, &[], &f_entry(&f, id_)[osis_commit::COMMITMENT_LEN..]).is_ok(), "though the ciphertext opens under it");
+    assert!(osis_crypto::aead::open(&k2, &osis_crypto::aead::ZERO_NONCE, &[], &entries(&f)[id_][osis_commit::COMMITMENT_LEN..]).is_ok(), "though the ciphertext opens under it");
     let under = |k: [u8; 32], places: &[usize]| opened_sections(&f, &c, places, &|i| BTreeMap::from([(i, if i == id_ { k } else { c.keys[&i] })]));
     let (one, other) = (under(k1, &[id_]), under(k2, &[id_, ip]));
     let reg = |w: &mut LocalPeer, t: Tid| w.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap();
     let id = f.header.id();
     for order in [vec![&one, &other], vec![&other, &one], vec![&one], vec![&other]] {
-        let (mut w, _) = fresh();
+        let (mut w, _) = split_world();
         let before = (reg(&mut w, d), reg(&mut w, p));
         for b in &order {
             unless_refused(w.peers[0].engine.ingest(b, Vec::new()));
@@ -4385,8 +4372,7 @@ fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
             if reopened {
                 crate::flows::reopen(&mut w, 0).unwrap();
             }
-            let held = osis_commit::CommitBlob::decode(&w.peers[0].engine.package(&id).unwrap().unwrap().bytes).unwrap();
-            assert_eq!(held.keys.get(&id_), order.contains(&&one).then_some(&k1), "{at}: D's key ({reopened})");
+            assert_eq!(held(&mut w, 0, &id).keys.get(&id_), order.contains(&&one).then_some(&k1), "{at}: D's key ({reopened})");
             assert_eq!(reg(&mut w, d), if order.contains(&&one) { Some(s("on d")) } else { before.0.clone() }, "{at}: D ({reopened})");
             assert_eq!(reg(&mut w, p), if order.contains(&&other) { Some(s("on p")) } else { before.1.clone() }, "{at}: P ({reopened})");
         }
@@ -4405,19 +4391,9 @@ fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
 // (debug builds, `apply::paths::missed`).
 #[test]
 fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
-    let fresh = || {
-        LocalPeer::cached("validity::two_paths_world", || {
-            let (mut lp, _, d, p) = two_paths_world();
-            let (id, c) = bob_writes_both(&mut lp, d, p);
-            (lp, (d, p, id, c))
-        })
-    };
-    let (mut lp, (d, p, _, c)) = fresh();
-    let things = c.header.things();
-    let (id_, ip) = (things.iter().position(|t| *t == d).unwrap(), things.iter().position(|t| *t == p).unwrap());
-    let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
+    let (mut lp, (d, p, _, c)) = split_world();
+    let (id_, ip, mut es) = (place(&c, d), place(&c, p), entries(&c));
     let (mine, roles) = ([33u8; 32], c.keys[&id_]);
-    let mut es = sp.entries.clone();
     es[id_] = entry_under_two_keys(&mine, &roles);
     let f = resigned(&mut lp, &c, es, None);
     assert_eq!(f.header.open_path(id_, &roles), None, "the roles secret's key is no key of D's entry");
@@ -4430,7 +4406,7 @@ fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
         (paths.get(&d).copied(), e.core.ix.paths_unknown.contains(&id), e.get(&d, &ak("t:reg.0")).unwrap())
     };
     for (name, first) in [("P's section alone", opened_sections(&f, &c, &[ip], &keyed(mine))), ("D's section carrying the roles key", opened_sections(&f, &c, &[id_, ip], &keyed(roles)))] {
-        let (mut w, _) = fresh();
+        let (mut w, _) = split_world();
         let before = w.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap();
         unless_refused(w.peers[0].engine.ingest(&first, Vec::new()));
         w.peers[0].reexamine().unwrap();
@@ -4442,12 +4418,6 @@ fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
         w.peers[0].engine.check_index();
         assert_eq!(state(&mut w), (Some(true), false, Some(s("on d"))), "{name}, then D's section carrying the committed key");
     }
-}
-
-/// Entry `i` of split commit `c`.
-fn f_entry(c: &osis_commit::CommitBlob, i: usize) -> Vec<u8> {
-    let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
-    sp.entries[i].clone()
 }
 
 /// A section wrap (spec/wire.md §4: nonce, then the section key sealed under `kdf("section", read
@@ -4466,18 +4436,7 @@ fn section_wrap_under_two_secrets(e1: &osis_crypto::Secret32, e2: &osis_crypto::
         let mut nonce = [0u8; 24];
         nonce.copy_from_slice(&osis_base::hash::hash(&n.to_le_bytes())[..24]);
         let (ks1, ks2) = (Keystream::new(&w1, &nonce), Keystream::new(&w2, &nonce));
-        let rs = |ks: &Keystream| {
-            let pk = ks.poly_key();
-            let mut r = pk;
-            for i in [3, 7, 11, 15] {
-                r[i] &= 15;
-            }
-            for i in [4, 8, 12] {
-                r[i] &= 252;
-            }
-            (block(&r[..16], 0), u128::from_le_bytes(pk[16..].try_into().unwrap()))
-        };
-        let ((r1, s1), (r2, s2)) = (rs(&ks1), rs(&ks2));
+        let ((r1, s1), (r2, s2)) = (r_s(&ks1), r_s(&ks2));
         // the MAC's blocks: AD (two), ciphertext (two), lengths; ciphertext block 1 solved for
         let coef = |r: &N, i: usize| pow(r, &[5 - i as u64, 0, 0]);
         let ct0: [u8; 16] = osis_base::hash::hash(&(n + 1_000_000).to_le_bytes())[..16].try_into().unwrap();
@@ -4521,18 +4480,13 @@ fn section_wrap_under_two_secrets(e1: &osis_crypto::Secret32, e2: &osis_crypto::
 // encryption as bad input, as any section a held secret unwraps to a key opening nothing.
 #[test]
 fn a_section_wrap_opening_under_two_epochs_reads_alike_spec_wire_4() {
-    let (_, (d, _, _, c)) = LocalPeer::cached("validity::two_paths_world", || {
-        let (mut lp, _, d, p) = two_paths_world();
-        let (id, c) = bob_writes_both(&mut lp, d, p);
-        (lp, (d, p, id, c))
-    });
+    let (_, (d, _, _, c)) = split_world();
     let id = c.id();
-    let things = c.header.things();
-    let i = things.iter().position(|t| *t == d).unwrap();
+    let i = place(&c, d);
     let (e1, e2) = (osis_crypto::Secret32::from_bytes([0xe1; 32]), osis_crypto::Secret32::from_bytes([0xe2; 32]));
     // D's section as the writer seals it, its contents taken and sealed again under the solved key
     let ps: Vec<&osis_commit::Part> = c.parts.iter().filter(|p| c.header.aspects[p.ai].tid == d).collect();
-    let honest = osis_commit::Section::seal(&id, &ps, Some(&BTreeMap::from([(i, c.keys[&i])])), Vec::new(), &e1, &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
+    let honest = osis_commit::Section::seal(&id, &ps, Some(&own(&c)(i)), Vec::new(), &e1, &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     let sk = osis_crypto::unwrap_section(&e1, &id, &honest.wrap).unwrap();
     let contents = osis_crypto::open_section(&id, &sk, &honest.ciphertext).unwrap();
     let (wrap, k1) = section_wrap_under_two_secrets(&e1, &e2, &id);
@@ -4566,13 +4520,11 @@ fn a_stated_index_acts_no_wider_than_the_acting_check_spec_permissions_5_2() {
     lp.sync_all().unwrap();
     // Bob's write of D alone (one path, `[H]`) and of D and P (split)
     let one_id = put(&mut lp, 1, d, &REG, &s("forged d"));
-    let one = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&one_id).unwrap().unwrap().bytes).unwrap();
+    let one = held(&mut lp, 1, &one_id);
     let (_, both) = bob_writes_both(&mut lp, d, p);
-    let osis_commit::Paths::Split(sp) = &both.header.path else { panic!("split") };
-    let things = both.header.things();
-    let id_ = things.iter().position(|t| *t == d).unwrap();
+    let (id_, es) = (place(&both, d), entries(&both));
     let with_d = |listed: &[Tid]| {
-        let mut es = sp.entries.clone();
+        let mut es = es.clone();
         es[id_] = Split::seal(&both.keys[&id_], listed, 0).unwrap();
         es
     };
@@ -4584,7 +4536,7 @@ fn a_stated_index_acts_no_wider_than_the_acting_check_spec_permissions_5_2() {
         ("clear, an index past its things", &one, clear(2, vec![h]), false, false),
         ("clear, naming a made-up thing", &one, clear(1, vec![made_up]), false, false),
         ("clear, H then Q, naming Q", &one, clear(2, vec![h, q]), false, false),
-        ("split, naming H", &both, Paths::Split(Split { author: Some(h), entries: sp.entries.clone() }), true, false),
+        ("split, naming H", &both, Paths::Split(Split { author: Some(h), entries: es.clone() }), true, false),
         ("split, naming Q listed on D's entry", &both, Paths::Split(Split { author: Some(q), entries: with_d(&[q]) }), false, false),
         ("split, naming a made-up thing listed on D's entry", &both, Paths::Split(Split { author: Some(made_up), entries: with_d(&[made_up]) }), false, false),
     ];
@@ -4621,15 +4573,12 @@ fn a_creation_under_a_forged_entry_makes_nothing_spec_wire_4() {
     m.set(x, &REG, &s("made")).unwrap();
     m.set(p, &REG, &s("beside")).unwrap();
     let id = lp.peers[1].commit(m).unwrap().unwrap();
-    let c = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&id).unwrap().unwrap().bytes).unwrap();
-    let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
-    let things = c.header.things();
-    let ix = things.iter().position(|t| *t == x).unwrap();
-    let mut es = sp.entries.clone();
-    es[ix] = (0..es[ix].len()).map(|i| (i * 37 % 251) as u8).collect();
+    let c = held(&mut lp, 1, &id);
+    let (ix, mut es) = (place(&c, x), entries(&c));
+    es[ix] = junk(es[ix].len());
     let f = resigned(&mut lp, &c, es, None);
-    let all: Vec<usize> = (0..things.len()).collect();
-    unless_refused(lp.peers[0].engine.ingest(&opened_sections(&f, &c, &all, &|i| BTreeMap::from([(i, c.keys[&i])])), Vec::new()));
+    let all: Vec<usize> = (0..c.header.things().len()).collect();
+    unless_refused(lp.peers[0].engine.ingest(&opened_sections(&f, &c, &all, &own(&c)), Vec::new()));
     lp.peers[0].reexamine().unwrap();
     let e = &mut lp.peers[0].engine;
     assert!(!e.knows(&x), "no minting of X");
@@ -4743,9 +4692,10 @@ fn a_purge_request_is_judged_alike_in_both_path_forms_spec_permissions_6() {
 // with no restart.
 #[test]
 fn a_path_waiting_opens_when_its_roles_secret_comes_spec_commits_4() {
-    let (mut lp, _, d, p) = two_paths_world();
+    // Interim (issues/copied-engine-misses-path-wake.md): built, not copied
+    let (mut lp, _, d, p) = two_paths_world_built();
     let (id, c) = bob_writes_both(&mut lp, d, p);
-    let ip = c.header.things().iter().position(|t| *t == p).unwrap();
+    let ip = place(&c, p);
     let only_p = osis_commit::CommitBlob { keys: BTreeMap::from([(ip, c.keys[&ip])]), ..osis_commit::rewrite(&c, |ai| c.header.aspects[ai].tid != p) };
     unless_refused(lp.peers[2].engine.ingest(&only_p.encode(), Vec::new()));
     lp.peers[2].reexamine().unwrap();
@@ -4778,14 +4728,11 @@ fn split_commits_waiting_on_a_path_cost_an_unrelated_write_nothing_spec_commits_
             m.set(d, &REG, &s(&format!("on d {n}"))).unwrap();
             m.set(p, &REG, &s(&format!("on p {n}"))).unwrap();
             let id = lp.peers[1].commit(m).unwrap().unwrap();
-            let c = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&id).unwrap().unwrap().bytes).unwrap();
-            let osis_commit::Paths::Split(sp) = &c.header.path else { panic!("split") };
-            let things = c.header.things();
-            let (id_, ip) = (things.iter().position(|t| *t == d).unwrap(), things.iter().position(|t| *t == p).unwrap());
-            let mut es = sp.entries.clone();
-            es[id_] = (0..es[id_].len()).map(|i| (i * 37 % 251) as u8).collect();
+            let c = held(&mut lp, 1, &id);
+            let (id_, ip, mut es) = (place(&c, d), place(&c, p), entries(&c));
+            es[id_] = junk(es[id_].len());
             let f = resigned(&mut lp, &c, es, None);
-            unless_refused(lp.peers[0].engine.ingest(&opened_sections(&f, &c, &[ip], &|i| BTreeMap::from([(i, c.keys[&i])])), Vec::new()));
+            unless_refused(lp.peers[0].engine.ingest(&opened_sections(&f, &c, &[ip], &own(&c)), Vec::new()));
             lp.peers[0].reexamine().unwrap();
         }
         assert_eq!(lp.peers[0].engine.core.ix.paths_unknown.len(), k);
@@ -5109,7 +5056,7 @@ fn one_path_in_the_clear_only_where_it_shows_no_reader_another_roster_spec_wire_
     m.set(d, &REG, &s("on d")).unwrap();
     m.set(p, &REG, &s("on p")).unwrap();
     let id = lp.peers[1].commit(m).unwrap().unwrap();
-    let c = osis_commit::CommitBlob::decode(&lp.peers[1].engine.package(&id).unwrap().unwrap().bytes).unwrap();
+    let c = held(&mut lp, 1, &id);
     assert!(c.header.is_split(), "two grants past one holder: {:?}", c.header.path);
     let mut got = paths_stated(&c);
     got.sort();

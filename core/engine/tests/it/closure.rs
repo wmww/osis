@@ -9,6 +9,13 @@ use osis_engine::{Engine, Mutation};
 use osis_schema::core_types as ct;
 
 /// Writes (`on`) or removes a strong from `from`'s `holds.0` to `to`.
+/// One person's node (`people(1)`) and its account root D.
+fn alone() -> (osis_engine::local_peer::LocalPeer, Tid) {
+    let (lp, _) = people(1);
+    let d = lp.peers[0].engine.account_root().unwrap();
+    (lp, d)
+}
+
 fn strong(e: &mut Engine, from: Tid, to: Tid, on: bool) {
     let v = Value::Strong(to);
     let mut m = Mutation::new();
@@ -61,9 +68,8 @@ fn the_node_closure_follows_strongs_spec_sync_set_2() {
 
 /// The removal work (`closure:` counts) of `edit` after `setup`, both given `n`.
 fn work(n: usize, setup: impl Fn(&mut Engine, Tid, usize) -> (Tid, Tid)) -> u64 {
-    let (mut lp, _) = people(1);
+    let (mut lp, d) = alone();
     let e = &mut lp.peers[0].engine;
-    let d = e.account_root().unwrap();
     let (from, to) = setup(e, d, n);
     osis_base::costs::take();
     strong(e, from, to, false);
@@ -138,9 +144,8 @@ fn removal_costs_what_it_held_spec_sync_set_2() {
 // A -> X takes it out of both, and both are noted, whatever order the walk drops them in.
 #[test]
 fn a_thing_leaving_two_units_at_once_notes_both_spec_sync_set_3() {
-    let (mut lp, _) = people(1);
+    let (mut lp, d) = alone();
     let e = &mut lp.peers[0].engine;
-    let d = e.account_root().unwrap();
     let a = make(e, d, d);
     e.make_independent(&a).unwrap();
     let x = make(e, a, a);
@@ -207,9 +212,8 @@ fn a_strong_nothing_carries_is_named_spec_sync_set_2() {
 /// (independent, minted with admin D) holding `m` dependent things, A sourced at another node, the sync set followed
 /// before and after.
 fn cut_work(n: usize, m: usize, edit: impl Fn(&mut Engine, Tid, Tid)) -> u64 {
-    let (mut lp, _) = people(1);
+    let (mut lp, d) = alone();
     let e = &mut lp.peers[0].engine;
-    let d = e.account_root().unwrap();
     for _ in 0..n {
         make(e, d, d);
     }
@@ -264,9 +268,8 @@ fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
         assert!(b >= 8 * a && b <= 12 * a, "{name}: {a} below A at {n}, {b} at {m}");
     }
     // what leaves and comes back
-    let (mut lp, _) = people(1);
+    let (mut lp, d) = alone();
     let e = &mut lp.peers[0].engine;
-    let d = e.account_root().unwrap();
     let x = make(e, d, d);
     let a = make(e, d, d);
     e.make_independent(&a).unwrap();
@@ -455,9 +458,8 @@ fn nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2() {
 #[test]
 fn adding_costs_what_it_adds_and_a_cycle_goes_whole_spec_sync_set_2() {
     let add = |n: usize| {
-        let (mut lp, _) = people(1);
+        let (mut lp, d) = alone();
         let e = &mut lp.peers[0].engine;
-        let d = e.account_root().unwrap();
         for _ in 0..n {
             make(e, d, d);
         }
@@ -466,9 +468,8 @@ fn adding_costs_what_it_adds_and_a_cycle_goes_whole_spec_sync_set_2() {
         osis_base::costs::take().into_iter().filter(|(k, _, _)| k.starts_with("closure:")).map(|(_, _, c)| c).sum::<u64>()
     };
     assert_eq!(add(6), add(60));
-    let (mut lp, _) = people(1);
+    let (mut lp, d) = alone();
     let e = &mut lp.peers[0].engine;
-    let d = e.account_root().unwrap();
     let c1 = make(e, d, d);
     let c2 = make(e, d, c1);
     strong(e, c2, c1, true);
@@ -482,9 +483,8 @@ fn adding_costs_what_it_adds_and_a_cycle_goes_whole_spec_sync_set_2() {
 // the node closure before its release is kept as it was, and its release drops nothing.
 #[test]
 fn a_released_thing_goes_with_its_writes_spec_sync_set_3() {
-    let (mut lp, _) = people(1);
+    let (mut lp, d) = alone();
     let e = &mut lp.peers[0].engine;
-    let d = e.account_root().unwrap();
     let reg = crate::common::REG;
     let log = crate::common::LOG;
     let (x, y) = (make(e, d, d), make(e, d, d));
@@ -871,9 +871,8 @@ fn own_things_are_released_whole_spec_sync_set_3() {
 #[test]
 fn a_strong_in_held_history_holds_its_target_until_the_body_goes_spec_data_model_8() {
     for (holds, by_cover) in [(false, false), (true, true), (true, false)] {
-        let (mut lp, _) = people(1);
+        let (mut lp, d) = alone();
         let e = &mut lp.peers[0].engine;
-        let d = e.account_root().unwrap();
         let t = make(e, d, d);
         let keep = osis_schema::History::Keep { until: None, after: Some(10 * 60_000) };
         let setting = |holds| ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(keep), ..Default::default() }), history_holds_targets: holds, ..Default::default() };
@@ -1458,6 +1457,11 @@ fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
 // pends for W's record (spec/commits.md §4 Unjudgeable) and is kept across pass ends and a
 // restart while carried (§4 Pending storage, §5 What a held thing needs: W held for itself while
 // awaited), so C bringing W's record with the strong, pulling nothing, still finds it.
+// spec/commits.md §4 Outside the node closure (carried while the node cannot judge the thing's
+// sync units): D, pending, makes W's record learned from a record blob; W is outside the node
+// closure, so D's part on W waits, and peer 1, not holding the commit minting W, cannot judge W in
+// no sync unit it syncs: D stays across the pass end, and C, bringing W's record again with the
+// strong in one transaction and pulling nothing, finds it (the last order).
 #[test]
 fn a_record_arriving_with_the_strong_pulls_nothing_and_ends_alike_spec_sync_judgement_3() {
     let ends = record_with_strong(&[
@@ -1472,6 +1476,7 @@ fn a_record_arriving_with_the_strong_pulls_nothing_and_ends_alike_spec_sync_judg
         &["D", "restart", "C"],
         &["D", "pass end", "C on X", "pass end", "C on W"],
         &["D", "W's record", "C"],
+        &["D", "W's record", "pass end", "C"],
     ]);
     for e in &ends[1..] {
         assert_eq!((&e.2, &e.3), (&ends[0].2, &ends[0].3), "{} ends as {}", e.0, ends[0].0);
@@ -1479,18 +1484,6 @@ fn a_record_arriving_with_the_strong_pulls_nothing_and_ends_alike_spec_sync_judg
     assert_eq!(ends[0].1, 0, "C whole: its record came with the strong, nothing pulled anew");
     assert!(ends[1].1 > 0 && ends[2].1 > 0, "C on W first: the strong reaches a thing outside the node closure, pulled anew");
     assert_eq!((ends[4].1, ends[5].1), (0, 0), "D first, C whole: nothing pulled anew, D kept pending");
-}
-
-// spec/commits.md §4 Outside the node closure (carried while the node cannot judge the thing's
-// sync units), spec/sync-judgement.md §3 Dropped bodies: D, pending, makes W's record learned from
-// a record blob; W is outside the node closure, so D's part on W waits, and peer 1, not holding
-// the commit minting W, cannot judge W in no sync unit it syncs: D stays across the pass end, and C,
-// bringing W's record again with the strong in one transaction and pulling nothing, finds it. Ends
-// as C then D.
-#[test]
-fn a_commit_before_its_record_blob_and_its_strong_waits_for_them_spec_commits_4() {
-    let ends = record_with_strong(&[&["C", "D"], &["D", "W's record", "pass end", "C"]]);
-    assert_eq!((&ends[1].2, &ends[1].3), (&ends[0].2, &ends[0].3), "{} ends as {}", ends[1].0, ends[0].0);
 }
 
 // spec/commits.md §4 Pending storage, §5 What a held thing needs (held for itself while awaited):
@@ -1591,7 +1584,7 @@ fn a_commit_minting_with_the_strong_applies_whole_in_its_transaction_spec_commit
 #[test]
 fn every_order_of_a_commit_its_record_and_its_minting_ends_alike_spec_commits_4() {
     let cs: [&[&str]; 2] = [&["C"], &["C on W", "C on X"]];
-    let mut orders: Vec<Vec<&str>> = Vec::new();
+    let mut orders: Vec<Vec<&str>> = vec![vec!["C", "D"]];
     for c in cs {
         let items: [&[&str]; 3] = [&["D"], &["W's record"], c];
         for p in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
@@ -1609,8 +1602,8 @@ fn every_order_of_a_commit_its_record_and_its_minting_ends_alike_spec_commits_4(
     }
     let refs: Vec<&[&str]> = orders.iter().map(|o| o.as_slice()).collect();
     let ends = record_with_strong(&refs);
-    let first = record_with_strong(&[&["C", "D"]]).remove(0);
-    for e in &ends {
+    let first = &ends[0];
+    for e in &ends[1..] {
         assert_eq!((&e.2, &e.3), (&first.2, &first.3), "{} ends as {}", e.0, first.0);
     }
 }
