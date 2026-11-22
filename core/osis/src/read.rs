@@ -169,9 +169,31 @@ pub(crate) struct Reader<'a> {
     pub(crate) actor: Option<Tid>,
 }
 
+/// How a handle reads (its bound and acting actor), carried into callbacks that outlive it.
+#[derive(Clone, Copy)]
+pub(crate) struct ReadAs {
+    pub(crate) limit: usize,
+    pub(crate) actor: Option<Tid>,
+}
+
+impl ReadAs {
+    /// The node's own read that materializes nothing (a check, a digest of grants).
+    pub(crate) const NODE: ReadAs = ReadAs { limit: 0, actor: None };
+
+    /// A reader on `e`, an engine already locked.
+    pub(crate) fn on(self, e: &mut Engine) -> Reader<'_> {
+        Reader { e, limit: self.limit, actor: self.actor }
+    }
+
+    /// Reads with `f` on `db`'s engine, under its lock.
+    pub(crate) fn read<R>(self, db: &ReadOnly, f: impl FnOnce(&mut Reader<'_>) -> R) -> R {
+        db.locked(|l| f(&mut self.on(l.engine())))
+    }
+}
+
 /// `Reader::knows` on an engine already locked (a check inside a commit).
 pub(crate) fn knows_in(e: &mut Engine, tid: Tid) -> Result<bool> {
-    Reader { e, limit: 0, actor: None }.knows(tid)
+    ReadAs::NODE.on(e).knows(tid)
 }
 
 impl Reader<'_> {
@@ -401,11 +423,15 @@ impl Reader<'_> {
 }
 
 impl ReadOnly {
+    /// How this handle reads.
+    pub(crate) fn read_as(&self) -> ReadAs {
+        ReadAs { limit: self.inner.limit, actor: self.acting }
+    }
+
     /// Runs `f` on this process's engine (callers pick the source first).
     pub(crate) fn read_local<R>(&self, f: impl FnOnce(&mut Reader<'_>) -> R) -> R {
-        let (limit, actor) = (self.inner.limit, self.acting);
         drop(osis_base::costs::span("read: engine"));
-        self.engine(|e| f(&mut Reader { e, limit, actor }))
+        self.read_as().read(self, f)
     }
 
     /// An aspect, for reads (`None` when absent or the thing is unknown), paths and callbacks.
@@ -490,9 +516,8 @@ impl ReadOnly {
     /// Reads with `read` and runs `also` under the same engine lock (the dispatcher queues the
     /// events whose effect the read shows).
     pub(crate) fn read_with<R>(&self, read: impl FnOnce(&mut Reader<'_>) -> R, also: impl FnOnce()) -> R {
-        let (limit, actor) = (self.inner.limit, self.acting);
-        self.locked(|l| {
-            let v = read(&mut Reader { e: l.engine(), limit, actor });
+        self.read_as().read(self, |r| {
+            let v = read(r);
             also();
             v
         })
@@ -520,9 +545,9 @@ impl Osis {
     /// atomic with the registration: nothing committed after it is missed or seen twice);
     /// `initial` queues one `Delivery::Initial` call through the dispatcher.
     pub(crate) fn subscribe(&self, filter: Filter, initial: bool, make: impl FnOnce(&mut Reader<'_>) -> Callback) -> Subscription {
-        let (limit, actor) = (self.inner.limit, self.acting);
+        let ra = self.read_as();
         self.locked(|l| {
-            let cb = make(&mut Reader { e: l.engine(), limit, actor });
+            let cb = make(&mut ra.on(l.engine()));
             self.subscribe_in(l, filter, initial, cb)
         })
     }
@@ -583,17 +608,11 @@ impl Osis {
             return self.remote_grants_watch(&at, thing, f);
         }
         Ok(self.subscribe(Filter::Grants(thing), true, move |r| {
-            let mut last = r.grants(thing);
+            let first = r.grants(thing);
+            let mut last = Some(first.clone());
             Box::new(move |db, d| match d {
-                Delivery::Initial => f(db, Ok(last.clone())),
-                Delivery::Grants | Delivery::Due => match db.grants(thing) {
-                    Ok(r) if r == last => {}
-                    Ok(r) => {
-                        last = r.clone();
-                        f(db, Ok(r));
-                    }
-                    Err(e) => f(db, Err(e)),
-                },
+                Delivery::Initial => f(db, Ok(first.clone())),
+                Delivery::Grants | Delivery::Due => crate::watch::tell_new(&mut last, db.grants(thing), |g| f(db, g)),
                 _ => {}
             })
         }))

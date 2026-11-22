@@ -9,7 +9,7 @@ use crate::commits::Address;
 use crate::CommitId;
 use crate::error::Result;
 use crate::handle::{Locked, Osis, ReadOnly};
-use crate::read::Reader;
+use crate::read::{ReadAs, Reader};
 use crate::watch::{Callback, Delivery, DerivedFrom, Digest, Filter, Origin, ReadAt, Subscription, Watch, digest, lock};
 use osis_base::{Ak, Tid, Value};
 use std::collections::HashMap;
@@ -135,10 +135,10 @@ impl ReadOnly {
     /// The value `read` reads at `(tid, ak)`, listened to at that address on a tracking handle.
     pub(crate) fn read_value(&self, tid: Tid, ak: &Ak, key: String, read: ReadAt) -> Result<Option<Value>> {
         let Some(set) = self.tracking.clone() else { return self.read_local(|r| read.0(r)) };
-        let (ak, limit, actor) = (ak.clone(), self.inner.limit, self.acting);
+        let (ak, ra) = (ak.clone(), self.read_as());
         self.locked(|l| {
             drop(osis_base::costs::span("read: engine"));
-            let v = read.0(&mut Reader { e: l.engine(), limit, actor });
+            let v = read.0(&mut ra.on(l.engine()));
             self.track_in(l, &set, key, digest(&v), |gate| {
                 let w = Arc::downgrade(&set);
                 (Filter::Aspect(tid, ak, read), value_callback(gate, w))
@@ -152,20 +152,20 @@ impl ReadOnly {
     /// (`Filter::follows`), so a change no event tells (an `until` passing) reaches it.
     pub(crate) fn read_answer<A: std::fmt::Debug>(&self, key: impl FnOnce() -> String, at: Filter, read: impl Fn(&mut Reader<'_>) -> A + Send + Sync + 'static) -> A {
         let Some(set) = self.tracking.clone() else { return self.read_local(|r| read(r)) };
-        let (limit, actor) = (self.inner.limit, self.acting);
+        let ra = self.read_as();
         let read = Arc::new(read);
         self.locked(|l| {
             drop(osis_base::costs::span("read: engine"));
-            let a = read(&mut Reader { e: l.engine(), limit, actor });
+            let a = read(&mut ra.on(l.engine()));
             let last = Some(answer_digest(&a));
             let w = Arc::downgrade(&set);
             let follows = at.follows();
             let again = read.clone();
             let id = self.track_in(l, &set, key(), last, move |gate| {
-                (at, answer_callback(gate, w, move |r| answer_digest(&again(r)), limit, actor))
+                (at, answer_callback(gate, w, move |r| answer_digest(&again(r)), ra))
             });
             if let Some(id) = id.filter(|_| follows) {
-                self.inner.dispatch.follow(id, Box::new(move |e| answer_digest(&read(&mut Reader { e, limit, actor }))));
+                self.inner.dispatch.follow(id, Box::new(move |e| answer_digest(&read(&mut ra.on(e)))));
             }
             a
         })
@@ -212,10 +212,10 @@ fn value_callback(gate: Arc<Gate>, set: Weak<SetInner>) -> Callback {
 
 /// A listener on any other read: an event there reads it again, and it is told when the answer
 /// differs from the last read.
-fn answer_callback(gate: Arc<Gate>, set: Weak<SetInner>, read: impl Fn(&mut Reader<'_>) -> Digest + Send + Sync + 'static, limit: usize, actor: Option<Tid>) -> Callback {
+fn answer_callback(gate: Arc<Gate>, set: Weak<SetInner>, read: impl Fn(&mut Reader<'_>) -> Digest + Send + Sync + 'static, ra: ReadAs) -> Callback {
     Box::new(move |db, d| match d {
         Delivery::Due | Delivery::Grants => {
-            let now = db.locked(|l| read(&mut Reader { e: l.engine(), limit, actor }));
+            let now = ra.read(db, |r| read(r));
             if *lock(&gate.last) != Some(now) {
                 gate.fire(&set, db);
             }

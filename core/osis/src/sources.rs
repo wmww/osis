@@ -167,7 +167,7 @@ impl ReadOnly {
         if self.has_store() {
             return Ok(None);
         }
-        match self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect::<Vec<_>>()).as_slice() {
+        match self.remote_addrs().as_slice() {
             [one] => Ok(Some(one.clone())),
             _ => Err(Error::Unsupported(format!("{what} through several nodes"))),
         }

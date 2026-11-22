@@ -195,6 +195,22 @@ pub(crate) fn digest(v: &Result<Option<Value>>) -> Option<Digest> {
     }
 }
 
+/// Tells `f` `now` unless it is the value `last` told: an error always, and the value after it
+/// again (as a value watch's digest does).
+pub(crate) fn tell_new<T: PartialEq + Clone>(last: &mut Option<T>, now: Result<T>, f: impl FnOnce(Result<T>)) {
+    match now {
+        Ok(v) if last.as_ref() == Some(&v) => {}
+        Ok(v) => {
+            *last = Some(v.clone());
+            f(Ok(v));
+        }
+        Err(e) => {
+            *last = None;
+            f(Err(e));
+        }
+    }
+}
+
 /// How a value watch reads its value: what its `get` reads, the same address.
 #[derive(Clone)]
 pub(crate) struct ReadAt(pub Arc<ReadFn>);
@@ -499,7 +515,7 @@ impl Dispatch {
         let (mut things, mut ids) = (Vec::new(), Vec::new());
         for k in f.fx.due() {
             let moved = match &k {
-                Followed::Grants(t) => f.fx.settle(&k, || crate::track::answer_digest(&crate::read::Reader { e: &mut *e, limit: 0, actor: None }.grants(*t))),
+                Followed::Grants(t) => f.fx.settle(&k, || crate::track::answer_digest(&crate::read::ReadAs::NODE.on(e).grants(*t))),
                 Followed::Answer(id) => match f.answers.get(id) {
                     Some(read) => f.fx.settle(&k, || read(&mut *e)),
                     None => None,

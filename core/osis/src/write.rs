@@ -373,9 +373,10 @@ impl<'d> Write<'d> {
         if db.acting.is_none()
             && let crate::sources::Source::Node(at) = db.source_of_all(&self.things())?
         {
-            return db.remote_write(&at, self.wire()?);
+            let c: Option<Commit> = db.remote_write(&at, crate::port::method::WRITE, self.wire()?)?;
+            return Ok(c.map(|c| c.reporting(db)));
         }
-        let limit = db.inner.limit;
+        let ra = db.read_as();
         // a thing made here expiring sets the commit's expiry, which `expires` must then agree with
         let made = self.ops.iter().find_map(|o| match o {
             WriteOp::Create(r) => r.expires().map(Time),
@@ -395,24 +396,23 @@ impl<'d> Write<'d> {
             {
                 return Err(Error::UnknownThing { tid: t });
             }
-            let actor = db.acting;
             // what the acting actor may not read is a thing this node does not know, writes
             // included (spec/wire.md §11.2): no Permission tells it apart
-            if actor.is_some() {
-                let r = Reader { e: &mut *e, limit, actor };
+            if ra.actor.is_some() {
+                let r = ra.on(e);
                 if let Some(t) = self.things().into_iter().find(|t| r.hidden(*t)) {
                     return Err(Error::UnknownThing { tid: t });
                 }
             }
             let who = self.actor;
             let strongs = self.strongs_written();
-            let mut m = self.build(&mut Reader { e, limit, actor }, expires)?;
+            let mut m = self.build(&mut ra.on(e), expires)?;
             // whatever actor the write names, an acting handle's write is that actor's alone
-            if let Some(a) = actor {
+            if let Some(a) = ra.actor {
                 m.confine(a);
             }
             let r = match e.write(m)? {
-                Some(w) => Some(crate::commits::written_in(&mut Reader { e, limit, actor }, w, who)?.reporting(db)),
+                Some(w) => Some(crate::commits::written_in(&mut ra.on(e), w, who)?.reporting(db)),
                 None => None,
             };
             // a strong it writes whose target nothing carries is no error: it is reported at once

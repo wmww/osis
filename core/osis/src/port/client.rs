@@ -174,17 +174,19 @@ impl Cx<'_> {
         r.was_up = false;
     }
 
-    /// Sends `m` on `r`'s connection, for `asked`.
-    fn send(&mut self, r: &mut Remote, m: Msg, asked: Asked) -> bool {
-        self.send_id(r, m, asked).is_some()
-    }
-
-    /// `send`, giving the request's id.
-    fn send_id(&mut self, r: &mut Remote, m: Msg, asked: Asked) -> Option<RequestId> {
-        let (id, out) = self.node.port_request(r.conn?, m)?;
+    /// Sends `m` on `r`'s connection, for `asked`: the request's id; `Network` when the
+    /// connection is gone.
+    fn request(&mut self, r: &mut Remote, m: Msg, asked: Asked) -> Result<RequestId> {
+        let lost = || Error::Network(format!("connection to {} lost", r.addr));
+        let (id, out) = r.conn.and_then(|c| self.node.port_request(c, m)).ok_or_else(lost)?;
         self.out.extend(out);
         r.calls.insert(id, asked);
-        Some(id)
+        Ok(id)
+    }
+
+    /// `request` where a connection gone is told otherwise (its loss fails what waits on it).
+    fn send(&mut self, r: &mut Remote, m: Msg, asked: Asked) {
+        let _ = self.request(r, m, asked);
     }
 
     /// `r` is up as `w`: what waited goes, writes without an answer again (marked) and the live
@@ -481,7 +483,7 @@ impl ReadOnly {
         let (tx, rx) = channel();
         on_addr(self, at, |cx, r| {
             cx.usable(r)?;
-            if cx.send(r, Msg::Call { id: 0, max_reply, method, args }, Asked::Call(tx)) { Ok(()) } else { Err(Error::Network(format!("connection to {at} lost"))) }
+            cx.request(r, Msg::Call { id: 0, max_reply, method, args }, Asked::Call(tx)).map(drop)
         })?;
         self.wait_for(rx)
     }
@@ -492,8 +494,10 @@ impl ReadOnly {
         R::from_wire(self.remote_call(at, method, args, super::VALUE_REPLY)?)
     }
 
-    /// Write row `method` at the node at `at` under the next nonce (`args` after it).
-    fn remote_nonced(&self, at: &Address, method: u64, args: Vec<Value>) -> Result<Value> {
+    /// Write row `method` at the node at `at` under the next nonce (`args` after it), as
+    /// `forward`: a write, undo, redo or revert.
+    pub(crate) fn remote_write<A: Form, R: Form>(&self, at: &Address, method: u64, args: A) -> Result<R> {
+        let args = list(args.to_wire(), "arguments")?;
         let (tx, rx) = channel();
         on_addr(self, at, |cx, r| {
             cx.usable(r)?;
@@ -502,47 +506,21 @@ impl ReadOnly {
             let mut a = vec![Value::uint(n)];
             a.extend(args.iter().cloned());
             r.writes.insert(n, Pending { method, args, tx });
-            if !cx.send(r, Msg::Call { id: 0, max_reply: super::VALUE_REPLY, method, args: a }, Asked::Write(n)) {
+            cx.request(r, Msg::Call { id: 0, max_reply: super::VALUE_REPLY, method, args: a }, Asked::Write(n)).map(drop).inspect_err(|_| {
                 r.writes.remove(&n);
-                return Err(Error::Network(format!("connection to {at} lost")));
-            }
-            Ok(())
+            })
         })?;
-        self.wait_for(rx)
-    }
-
-    /// `Opt(commit)` as the commit, reporting here.
-    fn made(&self, v: Value) -> Result<Option<crate::commits::Commit>> {
-        Ok(Option::<crate::commits::Commit>::from_wire(v)?.map(|c| c.reporting(self)))
-    }
-
-    /// A write at the node at `at`: `args` as `Write::wire` made them.
-    pub(crate) fn remote_write(&self, at: &Address, args: Vec<Value>) -> Result<Option<crate::commits::Commit>> {
-        let v = self.remote_nonced(at, method::WRITE, args)?;
-        self.made(v)
-    }
-
-    /// `undo` (`redo`: `redo`) of `scope` at the node at `at`.
-    pub(crate) fn remote_undo(&self, at: &Address, scope: &crate::Scope, redo: bool) -> Result<Option<crate::commits::Commit>> {
-        let v = self.remote_nonced(at, if redo { method::REDO } else { method::UNDO }, vec![scope.to_wire()])?;
-        self.made(v)
-    }
-
-    /// `revert` of `id` at the node at `at`.
-    pub(crate) fn remote_revert(&self, at: &Address, id: crate::CommitId) -> Result<crate::commits::Commit> {
-        let v = self.remote_nonced(at, method::REVERT, vec![id.to_wire()])?;
-        Ok(crate::commits::Commit::from_wire(v)?.reporting(self))
-    }
-
-    /// `undo_target` (`redo`: `redo_target`) of `scope` at the node at `at`.
-    pub(crate) fn remote_target(&self, at: &Address, scope: &crate::Scope, redo: bool) -> Result<Option<crate::commits::Commit>> {
-        let c: Option<crate::commits::Commit> = self.forward(at, if redo { method::REDO_TARGET } else { method::UNDO_TARGET }, (scope.clone(),))?;
-        Ok(c.map(|c| c.reporting(self)))
+        R::from_wire(self.wait_for(rx)?)
     }
 
     /// The value at `path` of `tid`'s `ak` at the node at `at`, untyped.
     pub(crate) fn remote_get(&self, at: &Address, tid: Tid, ak: &Ak, path: &Path) -> Result<Option<Value>> {
         self.forward(at, method::GET, (tid, ak.clone(), path.clone()))?
+    }
+
+    /// The nodes this process is connected to (as a thin client, or for things read there).
+    pub(crate) fn remote_addrs(&self) -> Vec<Address> {
+        self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect())
     }
 
     /// Who this process is at the node at `at`.
@@ -636,7 +614,7 @@ fn merged<'a>(all: impl Iterator<Item = &'a Status>) -> Status {
 impl ReadOnly {
     /// How sync stands at this thin client's nodes, merged (`Osis::status`).
     pub(crate) fn remote_status(&self) -> Result<Status> {
-        let all: Vec<Address> = self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect());
+        let all = self.remote_addrs();
         let mut out = Vec::new();
         for a in &all {
             out.push(self.forward(a, method::STATUS, ())?);
@@ -674,7 +652,10 @@ impl crate::Osis {
                     return Ok(());
                 }
                 let m = Msg::Sub { id: 0, max_reply: super::VALUE_REPLY, filter: filter.clone() };
-                if cx.send(r, m, Asked::Sub(local, wait.then_some(tx))) || !wait { Ok(()) } else { Err(Error::Network(format!("connection to {a} lost"))) }
+                match cx.request(r, m, Asked::Sub(local, wait.then_some(tx))) {
+                    Err(e) if wait => Err(e),
+                    _ => Ok(()),
+                }
             })?;
             if wait {
                 waits.push(rx);
@@ -751,17 +732,7 @@ impl crate::Osis {
                 Pushed::TooLarge(source) => Err(Error::TooLarge { limit: limit_of(&source) }),
                 Pushed::Failed(e) => Err(e),
             };
-            match now {
-                Ok(g) if last.as_ref() == Some(&g) => {}
-                Ok(g) => {
-                    last = Some(g.clone());
-                    f(db, Ok(g));
-                }
-                Err(e) => {
-                    last = None;
-                    f(db, Err(e));
-                }
-            }
+            crate::watch::tell_new(&mut last, now, |g| f(db, g));
         })
     }
 
@@ -769,7 +740,7 @@ impl crate::Osis {
     /// change. A node that cannot be reached shows as not connected, its things each
     /// `NotConnected`; nothing fails.
     pub(crate) fn remote_status_watch(&self, mut f: impl FnMut(&crate::Osis, Status) + Send + 'static) -> Result<Subscription> {
-        let all: Vec<Address> = self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect());
+        let all = self.remote_addrs();
         let filter = Value::List(vec![Value::uint(super::filter::STATUS)]);
         let mut each: Vec<(Address, Status)> = Vec::new();
         let mut last: Option<Status> = None;
@@ -848,9 +819,7 @@ impl ReadOnly {
             r.waited += 1;
             let local = r.waited;
             // its id known as sent: the Notify is matched to it whatever comes first
-            let Some(sub) = cx.send_id(r, Msg::Sub { id: 0, max_reply: super::SMALL_REPLY, filter }, Asked::Wait(local)) else {
-                return Err(Error::Network(format!("connection to {at} lost")));
-            };
+            let sub = cx.request(r, Msg::Sub { id: 0, max_reply: super::SMALL_REPLY, filter }, Asked::Wait(local))?;
             r.waits.insert(local, Waiter { sub, tx });
             Ok(local)
         })?;

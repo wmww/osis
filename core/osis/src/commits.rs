@@ -10,6 +10,7 @@
 use crate::commit_id::{CommitFrom, CommitId, CommitPos};
 use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis, ReadOnly};
+use crate::port::method;
 use std::borrow::Borrow;
 use crate::read::{AspectRef, Reader, Stamp, ak_of, lenient};
 use crate::watch::{Delivery, Filter, Subscription, lock};
@@ -370,7 +371,8 @@ impl ReadOnly {
 
     fn target(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
         if let Some(at) = self.scope_at(scope)? {
-            return self.remote_target(&at, scope, redo);
+            let c: Option<Commit> = self.forward(&at, if redo { method::REDO_TARGET } else { method::UNDO_TARGET }, (scope.clone(),))?;
+            return Ok(c.map(|c| c.reporting(self)));
         }
         self.track_commits(&Address::Writes(scope.clone()), None)?;
         let Some(c) = self.target_id(scope, redo)? else { return Ok(None) };
@@ -381,9 +383,9 @@ impl ReadOnly {
     /// ephemeral signal's commit as it arrived (nobody holds it); `None` when it is not listed at
     /// `a` the caller may read.
     pub(crate) fn commit_told_here(&self, a: &Address, id: CommitId, fired: Option<CommitRow>) -> Result<Option<Commit>> {
-        let (mat, actor) = (self.inner.limit, self.acting);
+        let ra = self.read_as();
         let c = self.locked(|l| {
-            let mut r = Reader { e: l.engine(), limit: mat, actor };
+            let mut r = ra.on(l.engine());
             // the commit's aspects at `a` the caller may read: judged from the commit, never from
             // the whole scope
             let at = |r: &Reader<'_>, t: Tid, k: &Ak| !r.hidden(t) && a.holds(t, k);
@@ -393,7 +395,7 @@ impl ReadOnly {
                     if !row.parts.iter().any(|p| at(&r, p.tid, &p.ak)) {
                         return Ok(None);
                     }
-                    commit_of(&mut r, &mut Relations::default(), row, mat).map(Some)
+                    commit_of(&mut r, &mut Relations::default(), row, ra.limit).map(Some)
                 }
                 None => {
                     let Some(h) = r.e.header(&id.0) else { return Ok(None) };
@@ -411,7 +413,7 @@ impl ReadOnly {
     /// Commit `id` as listed at `a` now, wherever it is read; `None` when it is not listed there.
     fn listed_commit(&self, a: &Address, id: CommitId) -> Result<Option<Commit>> {
         if let Some(at) = self.remote_of(&a.things(), "commit")? {
-            let c: Option<Commit> = self.forward(&at, crate::port::method::LISTED_COMMIT, (a.clone(), id))?;
+            let c: Option<Commit> = self.forward(&at, method::LISTED_COMMIT, (a.clone(), id))?;
             return Ok(c.map(|c| c.reporting(self)));
         }
         self.track_commits(a, Some(id))?;
@@ -484,12 +486,9 @@ impl Osis {
     /// Reverts any held commit or revert, durable or ephemeral, this node may write (an admin
     /// reverting someone else's).
     pub fn revert(&self, id: CommitId) -> Result<Commit> {
-        if !self.has_store() {
-            // a commit names no thing to find its node by: a thin client of one node reverts there
-            return match self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect::<Vec<_>>()).as_slice() {
-                [at] => self.remote_revert(at, id),
-                _ => Err(Error::Unsupported("revert by id through several nodes".into())),
-            };
+        // a commit names no thing to find its node by: a thin client of one node reverts there
+        if let Some(at) = self.process_at("revert by id")? {
+            return self.remote_write(&at, method::REVERT, (id,)).map(|c: Commit| c.reporting(self));
         }
         let _g = lock(&self.inner.undo);
         self.revert_one(id)
@@ -498,7 +497,8 @@ impl Osis {
     /// Undo or redo, serialized under one lock: choose by query, then revert.
     fn step(&self, scope: &Scope, redo: bool) -> Result<Option<Commit>> {
         if let Some(at) = self.scope_at(scope)? {
-            return self.remote_undo(&at, scope, redo);
+            let c: Option<Commit> = self.remote_write(&at, if redo { method::REDO } else { method::UNDO }, (scope.clone(),))?;
+            return Ok(c.map(|c| c.reporting(self)));
         }
         let _g = lock(&self.inner.undo);
         self.target_id(scope, redo)?.map(|c| self.revert_one(c)).transpose()
@@ -508,7 +508,7 @@ impl Osis {
     fn revert_one(&self, target: CommitId) -> Result<Commit> {
         let me = self.me();
         let blocked = |reason| Error::NotUndoable { commit: target, reason };
-        let (mat, actor) = (self.inner.limit, self.acting);
+        let ra = self.read_as();
         let c = self.locked(|l| {
             let e = l.engine();
             let c = target.0;
@@ -527,7 +527,7 @@ impl Osis {
                 None => e.revert_commit(c, me)?,
             };
             match r {
-                Reverted::Written(w) => written_in(&mut Reader { e: l.engine(), limit: mat, actor }, w, me),
+                Reverted::Written(w) => written_in(&mut ra.on(l.engine()), w, me),
                 Reverted::Superseded => Err(blocked(NotUndoableReason::Superseded)),
                 Reverted::NotKept => Err(blocked(NotUndoableReason::NotKept)),
             }
@@ -628,7 +628,7 @@ impl crate::handle::ReadOnly {
     /// A page of the commits listed at `a`, wherever it is read.
     pub(crate) fn listing(&self, a: &Address, q: &CommitQuery) -> Result<CommitPage> {
         if let Some(at) = self.remote_of(&a.things(), "commit listing")? {
-            let mut p: CommitPage = self.forward(&at, crate::port::method::LISTING, (a.clone(), q.clone()))?;
+            let mut p: CommitPage = self.forward(&at, method::LISTING, (a.clone(), q.clone()))?;
             p.commits = p.commits.into_iter().map(|c| c.reporting(self)).collect();
             return Ok(p);
         }
@@ -686,14 +686,14 @@ impl crate::handle::ReadOnly {
     /// A page of the commits listed at `a` at this engine, at most `budget` bytes of bodies.
     pub(crate) fn listing_here(&self, a: &Address, q: &CommitQuery, budget: usize) -> Result<CommitPage> {
         let aks = self.address_aspects(a)?;
-        let (mat, actor) = (self.inner.limit, self.acting);
-        let budget = budget.min(mat);
+        let ra = self.read_as();
+        let budget = budget.min(ra.limit);
         let limit = q.limit.unwrap_or(COMMIT_PAGE);
         let (cut, limit) = (limit > COMMIT_PAGE, limit.min(COMMIT_PAGE));
         self.locked(|l| {
             let complete = true;
-            let mut r = Reader { e: l.engine(), limit: mat, actor };
-            let shown = move |e: &mut osis_engine::Engine, t: &Tid| actor.is_none_or(|a| e.readable_by(&a, t));
+            let mut r = ra.on(l.engine());
+            let shown = move |e: &mut osis_engine::Engine, t: &Tid| ra.actor.is_none_or(|a| e.readable_by(&a, t));
             let (mut commits, mut more, mut used, mut from) = (Vec::new(), false, 0usize, q.from.into());
             let mut rel = Relations::default();
             // a fire's versions: each read as written, on the one aspect `aks` holds (none when the

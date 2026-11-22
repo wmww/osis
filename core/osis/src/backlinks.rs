@@ -129,7 +129,7 @@ impl Osis {
     /// and the page again once it is back.
     pub fn on_backlinks_change(&self, tid: Tid, q: &BacklinkQuery, mut f: impl FnMut(&Osis, Result<BacklinkPage>) + Send + 'static) -> Result<Subscription> {
         self.local_at(tid, "on_backlinks_change")?;
-        let (q, limit, actor) = (q.clone(), self.inner.limit, self.acting);
+        let (q, ra) = (q.clone(), self.read_as());
         let mut failed = None;
         let sub = self.subscribe(watch(self, tid, q.aspect.as_ref()), true, |r| {
             r.e.watch_references();
@@ -147,17 +147,7 @@ impl Osis {
                         f(db, Ok(p));
                     }
                 }
-                Delivery::Due => match db.locked(|l| Reader { e: l.engine(), limit, actor }.backlinks(tid, &q)) {
-                    Ok(p) if last.as_ref() == Some(&p) => {}
-                    Ok(p) => {
-                        last = Some(p.clone());
-                        f(db, Ok(p));
-                    }
-                    Err(e) => {
-                        last = None;
-                        f(db, Err(e));
-                    }
-                },
+                Delivery::Due => crate::watch::tell_new(&mut last, ra.read(db, |r| r.backlinks(tid, &q)), |p| f(db, p)),
                 _ => {}
             })
         });

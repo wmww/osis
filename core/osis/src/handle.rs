@@ -525,16 +525,13 @@ fn node_secret(e: &mut Engine, cfg: &Config, salt: u64) -> Result<osis_transport
         let b: [u8; 32] = b.as_slice().try_into().map_err(|_| Error::Storage("node key record".into()))?;
         return Ok(osis_transport::StaticSecret::from_bytes(b));
     }
-    let mut b = [0u8; 32];
-    rng(cfg, salt ^ 3).fill_bytes(&mut b);
-    e.set_app_record(NODE_KEY, &b)?;
-    Ok(osis_transport::StaticSecret::from_bytes(b))
+    new_node_secret(e, &mut *rng(cfg, salt ^ 3))
 }
 
-/// A new dialable secret in place of the old (`rotate_peer_address`).
-pub(crate) fn new_node_secret(e: &mut Engine) -> Result<osis_transport::StaticSecret> {
+/// A new dialable secret from `rng`, in place of any old one (first use, `rotate_peer_address`).
+pub(crate) fn new_node_secret(e: &mut Engine, rng: &mut dyn osis_crypto::RngCore) -> Result<osis_transport::StaticSecret> {
     let mut b = [0u8; 32];
-    osis_crypto::RngCore::fill_bytes(&mut OsRng, &mut b);
+    rng.fill_bytes(&mut b);
     e.set_app_record(NODE_KEY, &b)?;
     Ok(osis_transport::StaticSecret::from_bytes(b))
 }
@@ -806,7 +803,7 @@ impl Osis {
             return;
         }
         // the nodes this process watches at: their Notifies for commits so far come first
-        let remotes: Vec<Address> = if self.inner.has_sources.load(std::sync::atomic::Ordering::Acquire) { self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect()) } else { Vec::new() };
+        let remotes: Vec<Address> = if self.inner.has_sources.load(std::sync::atomic::Ordering::Acquire) { self.remote_addrs() } else { Vec::new() };
         for a in remotes {
             let _: Result<()> = self.forward(&a, crate::port::method::SETTLE, ());
         }

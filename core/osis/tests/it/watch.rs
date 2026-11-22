@@ -278,26 +278,28 @@ fn an_until_passing_tells_a_roster_watcher_spec_permissions_2() {
     drop(subs);
 }
 
-/// Blocks the dispatcher inside a callback until the returned sender fires.
-fn block_dispatcher(db: &Osis) -> (osis::Subscription, std::sync::mpsc::Sender<()>) {
-    let t = thing(db);
-    let k = ak("t:gate.0");
+/// Blocks the dispatcher inside a call on `t`'s `k` until the returned sender fires; the count
+/// is of the calls that returned.
+fn block_dispatcher(db: &Osis, t: osis::Tid, k: &osis::Ak) -> (osis::Subscription, std::sync::mpsc::Sender<()>, Arc<Mutex<usize>>) {
     let (go_tx, go_rx) = channel::<()>();
     let (in_tx, in_rx) = channel();
     let go_rx = Mutex::new(go_rx);
+    let done = Arc::new(Mutex::new(0));
+    let d2 = done.clone();
     let s = db
         .at(t, osis::DynamicAspectKey::untyped(k.clone()))
         .on_change(move |_, c| {
             if c.origin != Origin::Initial {
                 in_tx.send(()).unwrap();
                 go_rx.lock().unwrap().recv().unwrap();
+                *d2.lock().unwrap() += 1;
             }
         })
         .unwrap();
     db.settle();
     db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     recv(&in_rx);
-    (s, go_tx)
+    (s, go_tx, done)
 }
 
 // notes/api.md Watching: a call that folds several queued commits in carries the newest
@@ -311,7 +313,7 @@ fn coalesced_call_carries_newest_source() {
     let _s = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     db.settle();
     assert_eq!(recv(&rx).origin, Origin::Initial);
-    let (_gate, go) = block_dispatcher(&db);
+    let (_gate, go, _) = block_dispatcher(&db, thing(&db), &ak("t:gate.0"));
     db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     let last = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(2)));
     go.send(()).unwrap();
@@ -367,25 +369,8 @@ fn panicking_callback_is_a_diagnostic() {
 #[test]
 fn drop_waits_for_call_in_flight() {
     let db = db(0);
-    let k = ak("t:x.0");
-    let t = thing(&db);
-    let done = Arc::new(Mutex::new(0));
-    let d2 = done.clone();
-    let (in_tx, in_rx) = channel();
-    let (go_tx, go_rx) = channel::<()>();
-    let go_rx = Mutex::new(go_rx);
-    let s = db
-        .at(t, osis::DynamicAspectKey::untyped(k.clone()))
-        .on_change(move |_, c| {
-            if c.origin != Origin::Initial {
-                in_tx.send(()).unwrap();
-                go_rx.lock().unwrap().recv().unwrap();
-                *d2.lock().unwrap() += 1;
-            }
-        })
-        .unwrap();
-    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
-    recv(&in_rx);
+    let (k, t) = (ak("t:x.0"), thing(&db));
+    let (s, go_tx, done) = block_dispatcher(&db, t, &k);
     let h = std::thread::spawn(move || go_tx.send(()).unwrap());
     drop(s);
     assert_eq!(*done.lock().unwrap(), 1);

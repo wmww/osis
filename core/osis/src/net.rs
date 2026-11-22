@@ -262,7 +262,7 @@ impl crate::Osis {
     pub fn rotate_peer_address(&self) -> Result<()> {
         self.local("rotate_peer_address")?;
         let secret = self.locked(|l| -> Result<StaticSecret> {
-            let s = crate::handle::new_node_secret(l.engine())?;
+            let s = crate::handle::new_node_secret(l.engine(), &mut osis_crypto::OsRng)?;
             let mut c = l.node.config().clone();
             c.key = Some(osis_sync::NodeKey(s.public_key()));
             l.node.set_config(c);
