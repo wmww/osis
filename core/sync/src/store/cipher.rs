@@ -115,8 +115,7 @@ impl osis_store::CipherHost for Inner {
     /// §3 Dropped bodies). A verified Delete's tombstone stays.
     fn unreceived(&mut self, id: &BlobId) -> Res<()> {
         let unreceived = |t: &mut Transaction<'_>, env: &mut super::Env<'_>| {
-            let tombed: Vec<osis_base::SyncId> = t.scan_local(&[rows::TOMB_BY_BLOB, &id.0].concat(), b"", usize::MAX)?.into_iter().filter_map(|(k, _)| k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).map(osis_base::SyncId)).collect();
-            for s in tombed {
+            for s in super::entries::tombed(t, id)? {
                 if super::entries::tombstone(t, &s, id)?.is_some_and(|x| !x.deleted) {
                     super::entries::lift(t, env, &s, id)?;
                 }

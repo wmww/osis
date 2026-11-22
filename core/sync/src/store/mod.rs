@@ -350,9 +350,7 @@ impl Inner {
             }
             let ended = full && !conns_left && !t.records_any_row(s, ROOM_AT, b"")?;
             if ended {
-                for (k, _) in t.scan_local(&[rows::ROOM, &s.0].concat(), b"", usize::MAX)? {
-                    t.remove_local(&k, Shred::No)?;
-                }
+                remove_room_rows(t, s)?;
             }
             Ok(ended)
         })?;
@@ -363,14 +361,19 @@ impl Inner {
             }
         }
         if ended {
-            let keys: Vec<(SyncId, Cap)> = self.room.range((*s, Cap::Own)..=(*s, Cap::MemoryTotal)).map(|(k, _)| *k).collect();
-            for k in &keys {
-                self.room.remove(k);
-                self.room_fx.unwant(k);
-            }
+            self.forget_room(s);
             self.room_gone.insert(*s);
         }
         Ok(())
+    }
+
+    /// S full under no cap, in memory (its `R/` rows go with `remove_room_rows`).
+    fn forget_room(&mut self, s: &SyncId) {
+        let keys: Vec<(SyncId, Cap)> = self.room.range((*s, Cap::Own)..=(*s, Cap::MemoryTotal)).map(|(k, _)| *k).collect();
+        for k in &keys {
+            self.room.remove(k);
+            self.room_fx.unwant(k);
+        }
     }
 
     /// Runs `f` in a transaction of its own of the durable store, or of the memory part's
@@ -743,11 +746,7 @@ impl Store {
         let [d, m] = g.each(|t, _| {
             let mut alone = BTreeSet::new();
             for b in &of_s {
-                let mut only = true;
-                for p in [rows::BY_BLOB, rows::TOMB_BY_BLOB] {
-                    only &= t.scan_local(&[p, &b.0[..]].concat(), b"", usize::MAX)?.iter().all(|(k, _)| k.ends_with(&s.0));
-                }
-                if only {
+                if entries::naming(t, b)?.iter().chain(&entries::tombed(t, b)?).all(|x| x == s) {
                     alone.insert(*b);
                 }
             }
@@ -772,13 +771,7 @@ impl Store {
     /// The sync IDs holding a durable tombstone of blob `b` (each within `TOMBSTONE_LIFETIME`:
     /// the sweep lifts it then).
     pub fn tombstoned_under(&self, b: &BlobId) -> Result<Vec<SyncId>> {
-        self.lock().read(|t, _| {
-            let mut v = Vec::new();
-            for (k, _) in t.scan_local(&[rows::TOMB_BY_BLOB, &b.0].concat(), b"", usize::MAX)? {
-                v.push(SyncId(k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).unwrap_or_default()));
-            }
-            Ok(v)
-        })
+        self.lock().read(|t, _| entries::tombed(t, b))
     }
 
     /// A cursor over the sync IDs shredded from now on (`shred`).
@@ -1111,7 +1104,7 @@ impl Store {
             let Some((_, head)) = path::head(t, s)?.filter(|_| !unheld) else { return Ok(Err(Code::REFUSED)) };
             match rows::verify_stamp(&head.keys.write, s, &b, &e.wrap, &stamp) {
                 Some(ok) => Ok(Ok(ok)),
-                None if path::earlier_write(t, s, |k| osis_blob::verify_stamp(k, s, &b, &e.wrap, &stamp).is_ok())? => Ok(Err(Code::NOT_HEAD_KEY)),
+                None if path::earlier(t, s, |st| osis_blob::verify_stamp(&st.keys.write, s, &b, &e.wrap, &stamp).is_ok())? => Ok(Err(Code::NOT_HEAD_KEY)),
                 None => Ok(Err(Code::REFUSED)),
             }
         })?;
@@ -1237,7 +1230,7 @@ impl Store {
         let mut ephemeral = Vec::new();
         let tomb = || Removal::Tomb(Tombstone { at: now, deleted: true, note: Vec::new() });
         let out = g.write(|t, env| {
-            let Some((hi, head)) = path::head(t, s)?.filter(|_| !unheld) else { return Ok(vec![Code::UNKNOWN_SYNC_ID; items.len()]) };
+            let Some((_, head)) = path::head(t, s)?.filter(|_| !unheld) else { return Ok(vec![Code::UNKNOWN_SYNC_ID; items.len()]) };
             let mut out = Vec::with_capacity(items.len());
             for d in items {
                 let b = d.blob;
@@ -1258,17 +1251,10 @@ impl Store {
                     } else {
                         Code::REFUSED
                     }
+                } else if path::earlier(t, s, |st| d.verify(st, prefix.as_ref()).is_ok())? {
+                    Code::NOT_HEAD_KEY
                 } else {
-                    let mut earlier = false;
-                    for i in (0..hi).rev() {
-                        if let Some(st) = path::step(t, s, i)?
-                            && d.verify(&st, prefix.as_ref()).is_ok()
-                        {
-                            earlier = true;
-                            break;
-                        }
-                    }
-                    if earlier { Code::NOT_HEAD_KEY } else { Code::REFUSED }
+                    Code::REFUSED
                 };
                 out.push(code);
             }
@@ -1453,16 +1439,9 @@ impl Store {
             t.changed_forget(s)?;
             t.remove_local(&[rows::ANEW, &s.0].concat(), Shred::No)?;
             t.remove_local(&[rows::FIRST, &s.0].concat(), Shred::No)?;
-            for (k, _) in t.scan_local(&[rows::ROOM, &s.0].concat(), b"", usize::MAX)? {
-                t.remove_local(&k, Shred::No)?;
-            }
-            Ok(())
+            remove_room_rows(t, s)
         })?;
-        let full: Vec<(SyncId, Cap)> = g.room.range((*s, Cap::Own)..=(*s, Cap::MemoryTotal)).map(|(k, _)| *k).collect();
-        for k in &full {
-            g.room.remove(k);
-            g.room_fx.unwant(k);
-        }
+        g.forget_room(s);
         g.room_gone.remove(s);
         g.room_conn.remove(s);
         g.mem.forget(s);
@@ -2238,6 +2217,14 @@ fn room_now(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, cap: Cap) ->
 
 fn room_key(s: &SyncId, cap: Cap) -> Vec<u8> {
     [rows::ROOM, &s.0, &[cap as u8]].concat()
+}
+
+/// S's `R/` rows go.
+fn remove_room_rows(t: &mut Transaction<'_>, s: &SyncId) -> Result<()> {
+    for (k, _) in t.scan_local(&[rows::ROOM, &s.0].concat(), b"", usize::MAX)? {
+        t.remove_local(&k, Shred::No)?;
+    }
+    Ok(())
 }
 
 /// The full sync IDs' least needs (`R/`).

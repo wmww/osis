@@ -177,11 +177,8 @@ impl Live<'_, '_> {
     /// The sync IDs with an entry of blob `b` that carry a body of `c` (`Engine::sync_body`), in
     /// order.
     fn body_ids_naming(&mut self, b: &BlobId, c: &CommitId) -> Result<Vec<SyncId>> {
-        let mut named = self.cx.store.naming(b)?;
-        named.sort_unstable();
-        named.dedup();
         let mut out = Vec::new();
-        for x in named {
+        for x in self.cx.store.naming(b)? {
             if self.cx.engine.sync_body(&x, c)?.is_some() {
                 out.push(x);
             }

@@ -306,10 +306,7 @@ impl Follow {
         match self.entries.as_mut() {
             Some(f) => {
                 for (s, b) in f.added() {
-                    if self.read.contains_key(&s) {
-                        let e = store.entry(&s, &b)?;
-                        park(engine, &mut self.parked, &mut self.creds, s, b, e.as_ref());
-                    }
+                    park_read(engine, store, &self.read, &mut self.parked, &mut self.creds, s, b)?;
                 }
             }
             None => self.entries = Some(store.entry_feed()),
@@ -325,10 +322,7 @@ impl Follow {
                         engine.unnamed_blob(&b)?;
                     }
                     for s in naming {
-                        if self.read.contains_key(&s) {
-                            let e = store.entry(&s, &b)?;
-                            park(engine, &mut self.parked, &mut self.creds, s, b, e.as_ref());
-                        }
+                        park_read(engine, store, &self.read, &mut self.parked, &mut self.creds, s, b)?;
                     }
                 }
             }
@@ -437,17 +431,13 @@ impl Follow {
         // entries the feed has not yet given (a clone of the cursor reads on alone)
         if let Some(mut f) = self.entries.clone() {
             for (s, b) in f.added() {
-                if self.read.contains_key(&s) {
-                    park(engine, &mut parked, &mut creds, s, b, store.entry(&s, &b)?.as_ref());
-                }
+                park_read(engine, store, &self.read, &mut parked, &mut creds, s, b)?;
             }
         }
         if let Some(mut u) = self.unheld.clone() {
             for b in u.moved(engine)? {
                 for s in store.naming(&b)? {
-                    if self.read.contains_key(&s) {
-                        park(engine, &mut parked, &mut creds, s, b, store.entry(&s, &b)?.as_ref());
-                    }
+                    park_read(engine, store, &self.read, &mut parked, &mut creds, s, b)?;
                 }
             }
         }
@@ -534,6 +524,14 @@ fn park(engine: &mut Engine, parked: &mut Parked, creds: &mut Effects<Awaits, Ke
         None => BTreeSet::new(),
     };
     parked.set(creds, s, b, now);
+}
+
+/// `park` of entry `b` of S as the store holds it, where S is read.
+fn park_read(engine: &mut Engine, store: &Store, read: &BTreeMap<SyncId, BTreeSet<Tid>>, parked: &mut Parked, creds: &mut Effects<Awaits, Keys>, s: SyncId, b: BlobId) -> Result<()> {
+    if read.contains_key(&s) {
+        park(engine, parked, creds, s, b, store.entry(&s, &b)?.as_ref());
+    }
+    Ok(())
 }
 
 /// Opens the entries parked under `a`, the only ones its read secrets may open; one that gives

@@ -175,8 +175,18 @@ fn tomb_ends(t: &Transaction<'_>, at: WallMs) -> WallMs {
 
 /// The sync IDs whose entries in `t`'s part name blob `b`.
 pub(crate) fn naming(t: &mut Transaction<'_>, b: &BlobId) -> Result<Vec<SyncId>> {
-    let named = t.scan_local(&[rows::BY_BLOB, &b.0].concat(), b"", usize::MAX)?;
-    Ok(named.into_iter().map(|(k, _)| SyncId(k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).unwrap_or_default())).collect())
+    under(t, rows::BY_BLOB, b)
+}
+
+/// The sync IDs holding a tombstone of blob `b` in `t`'s part.
+pub(crate) fn tombed(t: &mut Transaction<'_>, b: &BlobId) -> Result<Vec<SyncId>> {
+    under(t, rows::TOMB_BY_BLOB, b)
+}
+
+/// The sync IDs a per-blob index (keys `index b s`) lists for `b`.
+fn under(t: &mut Transaction<'_>, index: &[u8], b: &BlobId) -> Result<Vec<SyncId>> {
+    let rows = t.scan_local(&[index, &b.0].concat(), b"", usize::MAX)?;
+    Ok(rows.into_iter().map(|(k, _)| SyncId(k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).unwrap_or_default())).collect())
 }
 
 /// Sets what blob `b` costs held past its bytes (`Memory::estimate`) for every entry naming it;

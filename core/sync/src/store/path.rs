@@ -365,13 +365,13 @@ pub(crate) fn behind(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId, named: 
     }
 }
 
-/// Whether `sig`-style key `k` is the write key of a step on S's path before its head: a stamp
-/// under it is under a superseded key (code 9, spec/sync-ids.md §6).
-pub(crate) fn earlier_write(t: &mut Transaction<'_>, s: &SyncId, ok: impl Fn(&VerifyingKey) -> bool) -> Result<bool> {
+/// Whether `ok` holds of a step on S's path before its head: a stamp or Delete verifying under
+/// such a step's keys only is under superseded keys (code 9, spec/sync-ids.md §6).
+pub(crate) fn earlier(t: &mut Transaction<'_>, s: &SyncId, ok: impl Fn(&Step) -> bool) -> Result<bool> {
     let n = len(t, s)?;
     for i in (0..n.saturating_sub(1)).rev() {
         if let Some(st) = step(t, s, i)?
-            && ok(&st.keys.write)
+            && ok(&st)
         {
             return Ok(true);
         }
