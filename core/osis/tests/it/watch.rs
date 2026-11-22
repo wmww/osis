@@ -798,3 +798,80 @@ fn a_watch_reads_as_its_acting_subscriber() {
     }
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+// notes/api.md Watching (a callback reads as its subscriber; a followed roster per thing and
+// reader), spec/permissions.md §2 (until): an `until` that ends only an
+// acting actor's way to a thing (its membership of a group holding the thing, at a node that
+// reads both but administers neither, so no commit on either follows) is told to that
+// actor's grants watch at its time. Invariant: the node's own watch hears nothing (its view did
+// not move). Differential: the actor's last word equals its handle's read, which then differs
+// from the node's. Inputs: alice grants the thing and the group; bob's clock passes.
+#[test]
+fn an_until_ending_an_actors_way_in_tells_its_roster_watch() {
+    let c = clock();
+    let net = osis::internals::ManualNet::new(c.clone());
+    let mut o = cfg(2, MemStore::new(), &c);
+    o.app.internals.net = Some(net.clone());
+    let bob = osis::internals::create(o).unwrap();
+    let alice = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let (actor, _) = bob.add_client(None).unwrap();
+    deliver(&bob, &alice);
+    alice.hold(actor).unwrap();
+    let (grp, t) = (thing(&alice), thing(&alice));
+    alice.grant(grp, actor, Role::Read, osis::GrantOpts { until: Some(osis::Time(T0 + 60_000)), ..Default::default() }).unwrap();
+    // bob reads both itself: the node's view stays
+    for x in [grp, t] {
+        alice.grant(x, bob.me(), Role::Read, osis::GrantOpts::default()).unwrap();
+    }
+    alice.grant(t, grp, Role::Read, osis::GrantOpts::default()).unwrap();
+    deliver(&alice, &bob);
+    let a = bob.acting_as(actor);
+    assert!(a.grants(t).unwrap().contains_key(&grp), "the actor reads t's roster through grp");
+    let (atx, arx) = channel();
+    let (ntx, nrx) = channel();
+    let _s = (a.on_grants_change(t, move |_, g| atx.send(g.unwrap()).unwrap()).unwrap(), bob.on_grants_change(t, move |_, g| ntx.send(g.unwrap()).unwrap()).unwrap());
+    bob.settle();
+    assert_eq!((arx.try_iter().count(), nrx.try_iter().count()), (1, 1));
+    net.advance(90_000);
+    bob.settle();
+    assert!(a.grants(t).unwrap().is_empty() && !bob.grants(t).unwrap().is_empty(), "the case is reached");
+    assert_eq!(arx.try_iter().last(), Some(a.grants(t).unwrap()), "the actor's watch heard the roster hidden");
+    assert_eq!(nrx.try_iter().count(), 0, "the node's view did not move");
+}
+
+// notes/api.md Watching (`on_thing_change`): an aspect the subscriber heard is told going absent,
+// whether removed or no longer readable to its acting actor; one it never heard is not told
+// absent. Inputs: the node writes and grants.
+#[test]
+fn a_thing_watch_tells_an_aspect_it_heard_going_absent() {
+    let db = db(0);
+    let (k, k2) = (untyped("t:x.0"), untyped("t:y.0"));
+    let (t, u) = (thing(&db), thing(&db));
+    let (actor, _) = db.add_client(None).unwrap();
+    for x in [t, u] {
+        db.grant(x, actor, Role::Read, osis::GrantOpts::default()).unwrap();
+        db.commit_set(x, k.clone(), &Value::Int(1)).unwrap();
+    }
+    let a = db.acting_as(actor);
+    let told: Arc<Mutex<Vec<(osis::Tid, String, bool)>>> = Default::default();
+    let mut subs = Vec::new();
+    for x in [t, u] {
+        let l = told.clone();
+        subs.push(a.on_thing_change(x, move |_, ch| l.lock().unwrap().push((x, ch.ak.to_string(), matches!(ch.value, Ok(None))))).unwrap());
+    }
+    db.settle();
+    told.lock().unwrap().clear();
+    // t: removed; u: the actor's access ends, then the node writes again
+    db.commit_with(|w| w.at(t, k.clone()).remove()).unwrap();
+    db.set_role(u, actor, None, osis::SetRoleOpts::default()).unwrap();
+    db.commit_set(u, k.clone(), &Value::Int(2)).unwrap();
+    db.commit_set(u, k2.clone(), &Value::Int(3)).unwrap();
+    db.settle();
+    let told = told.lock().unwrap().clone();
+    let x = ak("t:x.0").to_string();
+    assert!(told.contains(&(t, x.clone(), true)), "a removal is told: {told:?}");
+    assert!(told.contains(&(u, x.clone(), true)), "a lost one is told absent: {told:?}");
+    assert!(told.iter().all(|(_, _, absent)| *absent), "nothing it may not read is told: {told:?}");
+    let y = ak("t:y.0").to_string();
+    assert!(!told.iter().any(|(_, a, _)| *a == y), "one never heard is not told absent: {told:?}");
+}
