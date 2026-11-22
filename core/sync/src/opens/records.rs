@@ -174,11 +174,12 @@ fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
     Ok((Member { class, own, by, until, departed }, basis))
 }
 
-/// Record `id` as its rows hold it: none once it is gone. O(its members and its filter's
-/// entries): what a connection taking it needs.
-pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>> {
+/// Record `id` as its rows hold it: none once it is gone. O(its members, and with `filter` its
+/// filter's entries: what a connection taking it needs; without, the peer filter is left unheld,
+/// read at a take).
+pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId, filter: bool) -> Res<Option<Record>> {
     let Some(rec) = t.record(id)? else { return Ok(None) };
-    let mut r = Record { r: rec.r, named: rec.named, kept: true, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walk: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None };
+    let mut r = Record { r: rec.r, named: rec.named, kept: true, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walk: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None, told: false };
     if let Some(v) = t.record_get_wide_row(id, OPENS, b"")? {
         let mut d = Rd(&v);
         r.acked_pos = d.u64()?;
@@ -189,11 +190,11 @@ pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>
         if d.u8()? == 1 {
             let generation = d.u64()?;
             let f = d.u8()?;
-            r.peer = Some(PeerFilter { generation, f, whole: d.u64()?, added: d.u64()?, arrived: d.u64()?, values: Default::default(), held: true });
+            r.peer = Some(PeerFilter { generation, f, whole: d.u64()?, added: d.u64()?, arrived: d.u64()?, values: Default::default(), held: filter });
         }
         d.end()?;
     }
-    if let Some(p) = r.peer.as_mut() {
+    if let Some(p) = r.peer.as_mut().filter(|_| filter) {
         p.values = std::sync::Arc::new(filter_values(t, id, p.f)?);
     }
     for (s, _, v) in t.record_tag_rows(id, MEMBER)? {

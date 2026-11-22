@@ -113,11 +113,14 @@ pub struct Table {
     /// The members whose J is followed (`Holds::standing`), with the actors their peer names.
     pub followed: BTreeMap<(RecordId, SyncId), Vec<Tid>>,
     standing_due: BTreeSet<(RecordId, SyncId)>,
+    /// Actors that may be no one (spec/sync-opens.md §3 who it may be: a revoked key, a removed
+    /// node): a peer naming only these is no one.
+    no_one: BTreeSet<Tid>,
 }
 
 impl Table {
     pub fn new(seed: u64) -> Table {
-        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), until: 100, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new(), recorded: BTreeMap::new(), followed: BTreeMap::new(), standing_due: BTreeSet::new() }
+        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), until: 100, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new(), recorded: BTreeMap::new(), followed: BTreeMap::new(), standing_due: BTreeSet::new(), no_one: BTreeSet::new() }
     }
 
     /// S's credentials are now `c` (none: S left the sync set).
@@ -143,6 +146,15 @@ impl Table {
     }
 }
 
+impl Table {
+    /// `actor` may be no one now: each member whose peer names it comes due.
+    pub fn no_one(&mut self, actor: Tid) {
+        self.no_one.insert(actor);
+        let due = self.followed.iter().filter(|(_, a)| a.contains(&actor)).map(|(k, _)| *k);
+        self.standing_due.extend(due);
+    }
+}
+
 impl Holds for Table {
     fn rng(&mut self) -> &mut dyn NodeRng {
         &mut self.rng
@@ -163,11 +175,12 @@ impl Holds for Table {
         let js: Vec<J> = actors.iter().filter_map(|a| self.j.get(&(*s, *a)).copied()).collect();
         [J::Reader, J::SyncHolder, J::Departed].into_iter().find(|j| js.contains(j)).unwrap_or(J::Unknown)
     }
-    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &osis_store::Named) -> J {
+    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &osis_store::Named) -> Option<J> {
         let actors = self.counts(named);
         let j = self.judge(s, &actors);
+        let no_one = !actors.is_empty() && actors.iter().all(|a| self.no_one.contains(a));
         self.followed.insert((rec, *s), actors);
-        j
+        (!no_one).then_some(j)
     }
     fn standing_due(&mut self) -> Vec<(RecordId, SyncId)> {
         std::mem::take(&mut self.standing_due).into_iter().collect()

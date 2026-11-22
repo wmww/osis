@@ -160,9 +160,11 @@ pub trait Holds {
     /// J for S of the peer record `rec` names (`named`), now (`judge` of `counts`), for member S
     /// of `rec`, which is followed from then on, across its connections: `standing_due` gives it
     /// once anything this read moves (the peer's removal or demotion, its account's revocation,
-    /// an `until` passing; spec/sync-opens.md §6). Followed and nothing it read moved, the value
-    /// kept, read nothing again.
-    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &Named) -> J;
+    /// its node's removal, an `until` passing; spec/sync-opens.md §6). Followed and nothing it
+    /// read moved, the value kept, read nothing again. `None`: the peer is no one (`awaited` of
+    /// a `named` that names someone is empty; spec/sync-opens.md §3 who it may be), so it never
+    /// resumes the record.
+    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &Named) -> Option<J>;
     /// The members followed (`standing`) whose J may have moved since the last call.
     fn standing_due(&mut self) -> Vec<(RecordId, SyncId)>;
     /// Member S of `rec` is followed no more.
@@ -208,7 +210,7 @@ pub struct Fx {
     set: crate::set::SyncsFollow,
     creds: Effects<SyncId, Option<[u8; 32]>>,
     /// Per member of a record, J of its peer for S (`Holds::standing`).
-    standing: Effects<(RecordId, SyncId), J>,
+    standing: Effects<(RecordId, SyncId), Option<J>>,
 }
 
 impl Default for Fx {
@@ -373,17 +375,21 @@ impl Holds for NodeHolds<'_, '_> {
         self.cx.engine.judge_peer(s, actors).unwrap_or(J::Unknown)
     }
 
-    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &Named) -> J {
+    fn standing(&mut self, rec: RecordId, s: &SyncId, named: &Named) -> Option<J> {
         let k = (rec, *s);
         if let Some(j) = self.fx.standing.current(&k) {
             return j;
         }
         self.fx.standing.want(k);
         let engine = &mut *self.cx.engine;
-        let mut j = J::Unknown;
+        let mut j = None;
         self.fx.standing.settle(&k, || {
-            let actors = counted(engine, named);
-            j = engine.judge_peer(s, &actors).unwrap_or(J::Unknown);
+            j = if *named != Named::default() && awaited(engine, named).is_empty() {
+                None
+            } else {
+                let actors = counted(engine, named);
+                Some(engine.judge_peer(s, &actors).unwrap_or(J::Unknown))
+            };
             j
         });
         j

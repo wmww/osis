@@ -855,6 +855,35 @@ fn standing_is_followed_per_record_across_connections_spec_sync_opens_6() {
     assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "closed at the reconnect too");
 }
 
+// spec/sync-opens.md §6 (closes once no connection holds its record; while one does, that
+// session's proofs stand): b's open by a's read secret stays while b's connection lasts, its session's proofs
+// standing; once it ends, the member closes and what the modules keep of it goes. Away first,
+// it closes in the step of the change.
+#[test]
+fn a_peer_that_is_no_one_closes_once_no_connection_holds_its_record_spec_sync_opens_6() {
+    use osis_sync::store::Source;
+    let mut p = readers();
+    let rid = p.a.opens.record(p.ca).unwrap();
+    p.a.table.no_one(tid(2));
+    p.a.settle();
+    assert!(p.a.open(p.ca, &S), "connected: its session's proofs stand");
+    p.close();
+    p.a.moved.clear();
+    p.a.settle();
+    assert!(p.a.opens.member_at(Source::Record(rid), &S).is_none(), "closed once its connection ended");
+    assert!(p.a.moved.contains(&Moved::Gone(rid, S)), "{:?}", p.a.moved);
+    let mut p = readers();
+    let rid = p.a.opens.record(p.ca).unwrap();
+    p.close();
+    p.a.settle();
+    assert!(p.a.opens.member_at(Source::Record(rid), &S).is_some(), "away, a member stays");
+    p.a.moved.clear();
+    p.a.table.no_one(tid(2));
+    p.a.settle();
+    assert!(p.a.opens.member_at(Source::Record(rid), &S).is_none(), "closed in the step of the change");
+    assert!(p.a.moved.contains(&Moved::Gone(rid, S)), "{:?}", p.a.moved);
+}
+
 // spec/sync-opens.md §6 (whether or not a connection holds its record), §1
 // (one connection per pair): b's node holds two records at a (its first one lost to it, so it met a
 // as a first contact again). After a's restart b's new record is taken on one connection and its
@@ -2462,6 +2491,75 @@ fn a_device_revoked_while_away_is_served_nothing_after_it_spec_sync_opens_6() {
         w.run();
     };
     assert!(!served_after_a_change(w, t, s, revoked));
+}
+
+/// Node 1's rows of what record `rid`'s source showed of S (presence, spec/sync-judgement.md §3
+/// `known`), and whether S is a member there.
+fn shown_rows(w: &crate::harness::World, rid: osis_sync::types::RecordId, s: &SyncId) -> (usize, bool) {
+    w.store(1)
+        .with_read(|t| Ok((t.record_tag_rows(&rid, b'k')?.into_iter().filter(|(x, ..)| x == s).count(), t.record_tag_rows(&rid, b'M')?.into_iter().any(|(x, ..)| x == *s))))
+        .unwrap()
+}
+
+// spec/sync-judgement.md §3 (`known`: kept while S is a member there), spec/sync-opens.md §6
+// (closes once no connection holds its record): what a source showed lives with its membership. Node 2
+// reads t from node 1 and goes away. Away, it stays a member and node 1 keeps what it showed;
+// its account then removes it (its epoch revoked, §3 who it may be: no one), so it never resumes
+// its record, and node 1 keeps nothing of what it showed of S nor its member, though it never
+// comes back.
+#[test]
+fn a_peer_that_is_no_one_keeps_nothing_it_showed_spec_sync_judgement_3() {
+    let (mut w, (t, s, n)) = paired_away_and_back();
+    let conn = w.links_of(1).into_iter().find(|(_, j)| *j == 2).expect("node 2 is connected to node 1").0;
+    let rid = w.node(1).node.opens().record(conn).expect("node 2's record");
+    for x in [0, 1, n] {
+        w.partition(x, 2);
+    }
+    let _ = write_value(&mut w, t, &s, 2);
+    w.run();
+    let (shown, member) = shown_rows(&w, rid, &s);
+    assert!(shown > 0 && member, "away, a member keeps what it showed");
+    let n2 = w.engine(2).tid();
+    w.write(n, |e| e.remove_device(&n2)).unwrap();
+    w.run();
+    let _ = write_value(&mut w, t, &s, 3);
+    w.run();
+    assert_eq!(shown_rows(&w, rid, &s), (0, false), "no one: nothing of what it showed, no member");
+}
+
+// The same for a peer judged departed (§6: at a reader source it closes at once): node 2,
+// away, is removed from t.
+#[test]
+fn a_departed_peer_keeps_nothing_it_showed_spec_sync_judgement_3() {
+    let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
+    let conn = w.links_of(1).into_iter().find(|(_, j)| *j == 2).expect("node 2 is connected to node 1").0;
+    let rid = w.node(1).node.opens().record(conn).expect("node 2's record");
+    w.partition(0, 2);
+    w.partition(1, 2);
+    w.run();
+    let (shown, member) = shown_rows(&w, rid, &s);
+    assert!(shown > 0 && member, "away, a member keeps what it showed");
+    removed(&mut w, t);
+    assert_eq!(shown_rows(&w, rid, &s), (0, false), "departed: nothing of what it showed, no member");
+}
+
+// The same where node 1 restarted while node 2 was away (§6: re-judged whether or not a
+// connection holds its record, a restart's records included).
+#[test]
+fn a_peer_departed_after_a_restart_keeps_nothing_it_showed_spec_sync_judgement_3() {
+    let (mut w, (t, s)) = away_and_back(crate::harness::history::Gives::Reads);
+    let conn = w.links_of(1).into_iter().find(|(_, j)| *j == 2).expect("node 2 is connected to node 1").0;
+    let rid = w.node(1).node.opens().record(conn).expect("node 2's record");
+    w.partition(0, 2);
+    w.partition(1, 2);
+    w.run();
+    w.power_off(1);
+    w.power_on(1);
+    w.run();
+    let (shown, member) = shown_rows(&w, rid, &s);
+    assert!(shown > 0 && member, "away across a restart, a member keeps what it showed");
+    removed(&mut w, t);
+    assert_eq!(shown_rows(&w, rid, &s), (0, false), "departed: nothing of what it showed, no member");
 }
 
 // spec/sync-opens.md §4 Departed, §6 (at each change of J of its peer): node 2's account
