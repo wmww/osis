@@ -262,7 +262,7 @@ impl Node {
             self.closed(c, "closed here", &mut out);
         }
         // messages in hand let go during the settle: no longer counted received
-        self.streams.take_kept(&mut self.driver.sessions);
+        self.take_kept();
         self.driver.sessions.take_sends(&mut out);
         // a failing stretch wakes no sooner than its retry (a wake due now would fail again)
         let floor = self.driver.failing.map(|f| f.retry_at);
@@ -472,6 +472,16 @@ impl Node {
         self.rounds
     }
 
+    /// Tells each session whose messages in hand moved what they hold now (counted received,
+    /// spec/sync-transport.md §5 Served connections).
+    fn take_kept(&mut self) {
+        for (c, held) in self.streams.take_kept() {
+            if let Some(s) = self.driver.sessions.get_mut(c) {
+                s.keep(crate::session::Kept::InHand, held);
+            }
+        }
+    }
+
     fn step(&mut self, input: Input, out: &mut Vec<Out>) -> Result<()> {
         match input {
             Input::Up { conn, peer, rank, dialed, listener, source } => {
@@ -608,7 +618,7 @@ impl Node {
         let Some(s) = self.driver.sessions.get_mut(conn) else { return };
         let r = s.receive(bytes, &mut cx!(self, out));
         self.dispatch(conn, r, out);
-        self.streams.take_kept(&mut self.driver.sessions);
+        self.take_kept();
         // past the node-wide bound on bytes received (what modules keep of the peers' counted),
         // the connection holding the most closes (spec/sync-transport.md §5 Served connections)
         while let Some(c) = self.driver.sessions.over_in() {

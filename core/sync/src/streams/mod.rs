@@ -268,14 +268,10 @@ impl Streams {
         product(cx, sessions, opens, reported, |ctx| self.message(ctx, conn, m));
     }
 
-    /// Tells each session whose messages in hand moved what they hold now (`Kept::InHand`).
-    pub fn take_kept(&mut self, sessions: &mut Sessions) {
-        for c in std::mem::take(&mut self.kept_moved) {
-            let held = self.pull.get(&c).map_or(0, |p| p.held_bytes);
-            if let Some(s) = sessions.get_mut(c) {
-                s.keep(crate::session::Kept::InHand, held);
-            }
-        }
+    /// Each connection whose messages in hand moved since the last call, with their bytes now
+    /// (`Kept::InHand`, counted received).
+    pub fn take_kept(&mut self) -> Vec<(ConnId, u64)> {
+        std::mem::take(&mut self.kept_moved).into_iter().map(|c| (c, self.pull.get(&c).map_or(0, |p| p.held_bytes))).collect()
     }
 
     /// Whether anything acted.
@@ -339,13 +335,6 @@ impl Streams {
     /// The Pulls sent so far: a Pull sent after this reads a greater place (`caught_since`).
     pub fn pull_seq(&self) -> u64 {
         self.pulls_sent
-    }
-
-    /// Tests only: the bytes of a connection's messages in hand, as counted received
-    /// (`take_kept`).
-    #[doc(hidden)]
-    pub fn held_bytes(&self, conn: ConnId) -> u64 {
-        self.pull.get(&conn).map_or(0, |p| p.held_bytes)
     }
 
     /// Tests only: what a connection's pulling holds for its peer (messages in hand, queued and
