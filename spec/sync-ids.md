@@ -81,7 +81,7 @@
   - One role commit may carry the `sync.0` deltas of many things.
 
 ## 5. The store per sync ID
-A node keeps one store of ciphertext for all the sync IDs it holds, read and kept unread alike; plaintext and everything derived from a secret is the engine's, above the store. The store is the truth for ciphertext and the engine's view a cache of it: after a crash between the two, a row with no engine state is derived again and engine state with no row is dropped.
+A node keeps one store of ciphertext for all the sync IDs it holds, read and kept unread alike; plaintext and everything derived from a secret is the engine's, above the store. The store is the truth for ciphertext: after a crash, a node derives again what a stored row gives that it lacks, and drops whatever it derived from a row the store does not hold.
 
 Per sync ID:
 - **Path**: the steps from the genesis step to the head (§3): every step's role keys, step key, `prev` and signature; each step's claim set and entry boxes until it has been superseded for `ROLE_KEEP`, longer by policy. A node reading S holds the path its `sync.0` records; a node keeping S unread the path registered with it.

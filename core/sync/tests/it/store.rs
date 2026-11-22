@@ -1021,7 +1021,7 @@ fn tombstones_end_after_their_lifetime_spec_sync_ids_5() {
     assert_eq!(st.take_stamped(&s.id, &e, x, &[]).unwrap(), Code::OK);
 }
 
-// spec/sync-ids.md §5 (Across sync IDs): blob bytes are stored once per node and deleted when no
+// spec/sync-ids.md §5 (Across sync IDs): a blob's bytes, held once per node, are deleted when no
 // sync ID references them (nor the engine); a blob fetched under one sync ID is taken under every
 // other held sync ID whose entries name it.
 #[test]
