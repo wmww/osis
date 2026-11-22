@@ -42,7 +42,7 @@ pub struct Applied {
     pub explicit: bool,
     /// The edge as restored just before it: what it gave and what it let grant (§5.1).
     pub restored: Option<Role>,
-    pub restored_invite: Option<Role>,
+    pub restored_grant: Option<Role>,
 }
 
 impl Applied {
@@ -948,7 +948,7 @@ impl Walk {
             How::Flag => (stored.max(raw), stored_grant.max(raw_grant)),
             _ => (stored, stored_grant),
         };
-        let a = Applied { key: it.key, value: it.value, before: old, explicit, restored, restored_invite: rgrant };
+        let a = Applied { key: it.key, value: it.value, before: old, explicit, restored, restored_grant: rgrant };
         self.apply(s, how, Entry { a, slot: s, restored: new, rgrant: new_grant });
         for j in drops {
             self.note(j);
@@ -1116,7 +1116,7 @@ impl Walk {
         let it = self.it(s);
         Some(match it.how {
             _ if !it.live => return None,
-            Some(How::Flag) => Status::Invited,
+            Some(How::Flag) => Status::MayGrant,
             Some(_) => Status::Applied,
             None if it.dropped.is_some() || it.seeded => Status::Dropped,
             None if it.verdict == Some(Verdict::Void) => Status::Void,

@@ -865,6 +865,22 @@ fn a_commit_whose_drops_together_take_its_path_applies_only_what_keeps_it() {
     agree_all(&w, &[ids[0]]);
 }
 
+// spec/permissions.md §5.1 step 4: in `keeps`, a lowering left after the passing over decides by
+// its value, never read through its own check. N5 (X's admin grant) lowers B to write, X raises B
+// back to admin; B's removal of X drops X's grants (N5's and B's raise), so B's own edge is read
+// back to N5's lowering, which decides: B's removal is void and X stays admin (passing over the
+// lowering because N5's own grant is dropped would reach H's grant of B and apply it).
+#[test]
+fn a_lowering_whose_own_path_falls_still_decides_its_edge_in_keeps() {
+    let (mut w, ..) = paired();
+    w.edge(X, 2, &[], A, N5, Admin, &[]);
+    w.edge(N5, 3, &[], A, B, Write, &[]);
+    w.edge(X, 4, &[], A, B, Admin, &[]);
+    let r = w.edge(B, 10, &[], A, X, Gone, &[]);
+    agree_all(&w, &[]);
+    agree_all(&w, &[r]);
+}
+
 // spec/permissions.md §5.1 step 2: a commit's later part is taken in the same pass as an earlier
 // part's drops, before the restart: X's commit removes B on A (dropping B's grant of X on ORG) and
 // N5 on ORG through that grant, which still stands there, so the second applies, falls and is

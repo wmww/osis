@@ -139,7 +139,7 @@ pub fn input(w: &World, v: &View) -> Input {
 
 fn model_status(rd: &Reading, i: Id) -> Status {
     if rd.applied.contains(&i) {
-        if rd.by_flag.contains(&i) { Status::Invited } else { Status::Applied }
+        if rd.by_flag.contains(&i) { Status::MayGrant } else { Status::Applied }
     } else if rd.dropped.contains(&i) {
         Status::Dropped
     } else if rd.voided.contains(&i) {

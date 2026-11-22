@@ -314,7 +314,7 @@ pub(crate) fn walks_differ(e: &osis_engine::Engine) -> Vec<String> {
     for (nid, (w, t)) in &ids {
         let tl = e.core.timelines.get(t).unwrap();
         let old = tl.is_applied(w);
-        let new = matches!(paths.status(nid), Some(osis_perm::paths::Status::Applied | osis_perm::paths::Status::Invited));
+        let new = matches!(paths.status(nid), Some(osis_perm::paths::Status::Applied | osis_perm::paths::Status::MayGrant));
         if old != new {
             let (signer, holder, _) = tl.edge_op(w).unwrap();
             out.push(format!("edge write {:?} by {signer:?} on ({holder:?}, {t:?}): old {old}, new {:?}", w.0, paths.status(nid)));

@@ -194,6 +194,22 @@ fn a_re_grant_counts_from_the_latest_edges_first_chained_write() {
     assert_eq!(verdict(&w, &all(&w, &[]), late), Some(Content::Valid(By::Held)));
 }
 
+// spec/permissions.md §5.2 Re-grant: a may-grant grant is made by right, so it is its edge's first
+// point: GU holds write on T1 with the flag, X (K's writer on A2, GU's mint) grants N5 write
+// through it; N5's write, cut by H's removal of N5, counts again once H grants N5 write back.
+#[test]
+fn a_may_grant_grant_is_made_by_right_for_the_re_grant() {
+    let mut w = account();
+    w.push(H, 1, &[A], T1, Kind::set(GU, Write).may_grant());
+    w.edge(K, 1, &[], A2, X, Write, &[]);
+    w.push(X, 2, &[A2, GU], T1, Kind::set(N5, Write));
+    let early = w.content(N5, 3, &[], T1);
+    w.edge(H, 5, &[A], T1, N5, Gone, &[]);
+    w.edge(H, 7, &[A], T1, N5, Write, &[]);
+    agree_all(&w, &[]);
+    assert_eq!(verdict(&w, &all(&w, &[]), early), Some(Content::Valid(By::Regranted)));
+}
+
 // spec/permissions.md §4: a write no record or earlier chained write gives (a stranger's) is no
 // chained write, so it moves no first point back (the walk's own world, read by the model too).
 #[test]

@@ -194,8 +194,8 @@ impl Right {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
     Applied,
-    /// Applied as an invite grant (draft §2).
-    Invited,
+    /// Applied as a may-grant grant (draft §2).
+    MayGrant,
     /// A lowering judged void: its drops would take its authority.
     Void,
     /// In D: put in question by a lowering, or a trusted write's seed.
@@ -551,7 +551,7 @@ impl<S: Store> Paths<S> {
     }
 
     /// The final role of each edge the settled walk set (and each record edge), every `until`
-    /// counted removed, and the invite it gives.
+    /// counted removed, and what it lets grant.
     pub fn finals(&self) -> BTreeMap<(Tid, Tid), (Option<Role>, Option<Role>)> {
         self.timeline.finals()
     }
@@ -582,11 +582,11 @@ impl<S: Store> Paths<S> {
             let mut trust = held.clone();
             trust.insert(id);
             let ch = self.set_trust(trust);
-            let invited = self.status(&id) == Some(Status::Invited);
+            let by_flag = self.status(&id) == Some(Status::MayGrant);
             let reached = self.facts.reached(&ch);
             let with = self.probe(&ch, &reached, counts);
             self.set_trust(held.clone());
-            if !invited && self.probe(&ch, &reached, counts) != with {
+            if !by_flag && self.probe(&ch, &reached, counts) != with {
                 out.insert(id);
             }
         }
@@ -597,7 +597,7 @@ impl<S: Store> Paths<S> {
     /// What a dispute compares, read only where `ch` reaches: whether each part it reports
     /// applies, the final role of each edge it reports, whether each delta `reached` is valid.
     fn probe(&self, ch: &Changed, reached: &BTreeSet<WriteId>, counts: &mut Counts) -> (Vec<bool>, Vec<Option<Role>>, Vec<bool>) {
-        let applied = ch.parts.iter().map(|id| matches!(self.status(id), Some(Status::Applied | Status::Invited))).collect();
+        let applied = ch.parts.iter().map(|id| matches!(self.status(id), Some(Status::Applied | Status::MayGrant))).collect();
         let finals = ch.regrant.iter().map(|(h, e)| self.timeline.final_of(h, e)).collect();
         let valid = reached.iter().map(|id| matches!(self.content_counted(id, counts), Some(Content::Valid(_)))).collect();
         (applied, finals, valid)
