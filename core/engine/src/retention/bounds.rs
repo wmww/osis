@@ -437,7 +437,7 @@ fn amend_held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut old: Arc<HeldWrite
         // read again: it left the aspect's commits, or its part is no longer a held valid body
         osis_base::memo::accounted(|| form(tx.core, c, tid, ak));
     }
-    let new: Vec<(CommitId, Ts, Form)> = now.iter().filter(|(c, x)| old.bodies.get(*c).is_none_or(|b| b.form != x.1) || gone.contains(*c)).map(|(c, x)| (*c, x.0, x.1)).collect();
+    let new: Vec<(CommitId, Ts, Form)> = now.iter().filter(|(c, x)| old.bodies.get(*c).is_none_or(|b| b.form != x.1)).map(|(c, x)| (*c, x.0, x.1)).collect();
     if gone.is_empty() && new.is_empty() {
         return Ok(Amended::Kept(old, false));
     }

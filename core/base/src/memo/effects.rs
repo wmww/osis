@@ -158,6 +158,7 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
     }
 
     /// The name it counts and fails under.
+    #[cfg(debug_assertions)]
     pub(super) fn name(&self) -> &'static str {
         self.name
     }
