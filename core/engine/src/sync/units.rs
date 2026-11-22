@@ -3,8 +3,9 @@
 //! the node root.
 //!
 //! One structure holds both (`Closure`): a spanning tree over vertices (context, thing) rooted at
-//! (local, node root). A context is the node root's local part, a sync unit read (`Ctx::Read`) or
-//! one kept unread (`Ctx::Unread`). A vertex's out-list (`out_of`) is what the walk takes from
+//! (local, node root). A context is the node root's local part, a sync unit read (`Ctx::Read`),
+//! one kept unread (`Ctx::Unread`) or a thing entered on a ticket's word (`Ctx::Ticket`). A
+//! vertex's out-list (`given_by`) is what the walk takes from
 //! it: in the local part its strongs to dependent things; in T's read sync unit its strongs to
 //! things T's keys open; from either, a strong to an independent thing the context does not
 //! follow enters that thing's sync unit by the secrets the node holds of it, and so does a strong
