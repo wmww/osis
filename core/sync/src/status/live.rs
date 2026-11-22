@@ -75,6 +75,9 @@ impl Net for Live<'_, '_> {
 }
 
 impl Ground for Live<'_, '_> {
+    fn mono(&self) -> osis_base::Mono {
+        self.cx.mono
+    }
     fn now(&self) -> WallMs {
         self.cx.now
     }

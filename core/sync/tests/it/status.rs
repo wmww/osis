@@ -50,7 +50,10 @@ fn store(r: RecordId) -> Src {
 
 #[derive(Default)]
 struct Fake {
+    /// The monotonic clock, and the wall clock but where `wall` reads otherwise.
     now: u64,
+    /// The wall clock where it is not `now` (frozen, set back).
+    wall: Option<u64>,
     set: Stamped<(), Arc<SyncSet>>,
     caught: Stamped<(ConnId, SyncId), WallMs>,
     full: StampedSet<(ConnId, SyncId)>,
@@ -107,8 +110,11 @@ impl Net for Fake {
 }
 
 impl Ground for Fake {
+    fn mono(&self) -> osis_base::Mono {
+        osis_base::Mono(self.now)
+    }
     fn now(&self) -> WallMs {
-        WallMs(self.now)
+        WallMs(self.wall.unwrap_or(self.now))
     }
     fn passes_begun(&mut self) -> Result<BTreeMap<SyncId, WallMs>> {
         Ok(self.begun.clone())
@@ -618,7 +624,7 @@ fn complete_pass_gives_up_on_away_peer() {
     t.at(10);
     want(&mut t, S, 10);
     assert!(t.g.passes.is_empty());
-    assert_eq!(t.st.next_wake(), Some(WallMs(10 + PASS_WAIT_MS)));
+    assert_eq!(t.st.next_wake(), Some(osis_base::Mono(10 + PASS_WAIT_MS)));
     t.at(10 + PASS_WAIT_MS - 1);
     assert!(t.g.passes.is_empty());
     t.at(10 + PASS_WAIT_MS);
@@ -641,10 +647,82 @@ fn a_pass_under_way_at_a_restart_ends_by_its_first_start_spec_sync_status_1() {
         t.at(10 + k * PASS_WAIT_MS / 4);
         assert!(t.g.passes.is_empty(), "restart {k}: under way");
         assert_eq!(t.st.of(&S, &t.g).unwrap().pass_waits, Some([RB].into()), "restart {k}: begun again");
-        assert_eq!(t.st.next_wake(), Some(WallMs(10 + PASS_WAIT_MS)), "restart {k}");
+        assert_eq!(t.st.next_wake(), Some(osis_base::Mono(10 + PASS_WAIT_MS)), "restart {k}");
     }
     t.at(10 + PASS_WAIT_MS);
     assert_eq!(t.g.passes.len(), 1, "ended at its first start's deadline");
+    assert!(t.g.begun.is_empty(), "its row goes with it");
+}
+
+// spec/sync-status.md §1 (PASS_WAIT_MS: a pass's start is dated durably): a sync ID leaving the
+// sync set takes its pass under way and its start row with it, at once (unsync all: no row left).
+#[test]
+fn a_sync_id_leaving_takes_its_pass_and_row_spec_sync_status_1() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.g.records.insert(S, [RB].into());
+    t.at(10);
+    want(&mut t, S, 10);
+    assert!(t.st.of(&S, &t.g).unwrap().pass_waits.is_some());
+    t.g.set.insert((), Arc::new(SyncSet::default()));
+    t.settle();
+    assert!(t.g.begun.is_empty(), "no row left");
+    t.at(10 + PASS_WAIT_MS);
+    assert!(t.g.passes.is_empty() && t.g.begun.is_empty(), "no pass left to end");
+}
+
+// spec/sync-status.md §1 (PASS_WAIT_MS: the wait runs on the monotonic clock): a wall clock frozen
+// while the node runs holds no pass past PASS_WAIT_MS.
+#[test]
+fn a_frozen_wall_clock_holds_no_pass_spec_sync_status_1() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.g.records.insert(S, [RB].into());
+    t.g.wall = Some(10);
+    t.at(10);
+    want(&mut t, S, 10);
+    t.at(10 + PASS_WAIT_MS);
+    assert_eq!(t.g.passes.len(), 1, "ended by the monotonic clock");
+}
+
+// spec/sync-status.md §1 (PASS_WAIT_MS: a pass begun again having waited what the wall clock
+// shows): the wall clock set back at every restart, a quarter of PASS_WAIT_MS apart. Set back past
+// the row, it counts as now and the row is rewritten so; set back by less than a run, the wait
+// credited adds up, and the run after the restart crediting 3/4 of PASS_WAIT_MS ends the pass.
+// Each run waits at most PASS_WAIT_MS on the monotonic clock. Fails with the row not rewritten.
+#[test]
+fn a_wall_clock_set_back_at_each_restart_still_ends_a_pass_spec_sync_status_1() {
+    const Q: u64 = PASS_WAIT_MS / 4;
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.g.records.insert(S, [RB].into());
+    let w0 = 10 * PASS_WAIT_MS;
+    t.g.wall = Some(w0);
+    t.at(10);
+    want(&mut t, S, 10);
+    assert_eq!(t.g.begun, [(S, WallMs(w0))].into());
+    // the run waits a quarter; the clock is set back a half across the restart: ahead of the row
+    let mut wall = w0 + Q - 2 * Q;
+    let mut mono = 10 + Q;
+    t.st = Status::default();
+    t.g.wall = Some(wall);
+    t.at(mono);
+    assert_eq!(t.g.begun, [(S, WallMs(wall))].into(), "a row ahead of the wall clock counts as now");
+    assert_eq!(t.st.next_wake(), Some(osis_base::Mono(mono + PASS_WAIT_MS)), "nothing credited");
+    // then each run a quarter on both clocks, the clock set back an eighth at each restart: an
+    // eighth more credited per restart, so the run after the 6th ends it
+    for k in 1..=7u64 {
+        mono += Q;
+        wall += Q;
+        t.g.wall = Some(wall);
+        t.at(mono);
+        assert_eq!(t.g.passes.len(), usize::from(k == 7), "run {k}");
+        if k == 7 {
+            break;
+        }
+        wall -= Q / 2;
+        t.st = Status::default();
+        t.g.wall = Some(wall);
+        t.at(mono);
+        assert_eq!(t.st.next_wake(), Some(osis_base::Mono(mono + PASS_WAIT_MS - k * Q / 2)), "restart {k}: credited");
+    }
     assert!(t.g.begun.is_empty(), "its row goes with it");
 }
 

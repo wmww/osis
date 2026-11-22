@@ -912,10 +912,10 @@ impl Node {
     fn next_wake(&mut self) -> Option<Mono> {
         let engine = self.engine.next_timer().ok().flatten().map(WallMs);
         let clock = self.engine.clock_next();
-        let wall = [self.store.next_wake(), self.read.next_wake(), self.status.next_wake(), engine, clock].into_iter().flatten().min();
+        let wall = [self.store.next_wake(), self.read.next_wake(), engine, clock].into_iter().flatten().min();
         let (wall_now, mono) = (self.engine.now(), self.engine.mono());
         let wall = wall.map(|t| mono.after(t.0.saturating_sub(wall_now.0)));
-        [self.driver.sessions.next_wake(), self.driver.dials.next_wake(), self.opens.next_wake(), self.streams.next_wake(), self.inbox.next_wake(), wall].into_iter().flatten().min()
+        [self.driver.sessions.next_wake(), self.driver.dials.next_wake(), self.opens.next_wake(), self.streams.next_wake(), self.inbox.next_wake(), self.status.next_wake(), wall].into_iter().flatten().min()
     }
 
     /// Reads the clocks into the node's step (`now` and `mono` never go back).

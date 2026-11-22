@@ -24,9 +24,13 @@
 //!   Lost access); with no such S, at once. Told to the engine (`removal_done`);
 //! - complete passes (§1) of each sync ID the engine wants one of, a fresh Pull at each source,
 //!   ended by every source caught up since and every recorded peer read at its next connection,
-//!   or `PASS_WAIT_MS` past its start; each end told to the engine (`note_complete_pass`). Its
-//!   start is a wall-dated row (`Ground::set_pass_begun`), kept while it is under way: a start
-//!   begins again each pass under way at the stop, from that start, so restarts never hold one;
+//!   or `PASS_WAIT_MS` on the monotonic clock; each end told to the engine
+//!   (`note_complete_pass`). Its start is also a wall-dated row (`Ground::set_pass_begun`), kept
+//!   while it is under way and only to say how much was waited before a restart: a start begins
+//!   each pass under way at the stop again, its wait cut by the wall time since the row, between
+//!   0 and `PASS_WAIT_MS`; a row ahead of the wall clock (set back across a restart) counts as
+//!   now and is rewritten so, so each run waits at most `PASS_WAIT_MS` and what the wall clock
+//!   shows waited across restarts adds up;
 //! - per read S, whether this node is stranded there (spec/permissions.md §4, `stranding`): the
 //!   engine's word (a current read epoch of S's thing known, none held) once S is heard out, the
 //!   reading of "after a complete pass there"; or, with no source, opens' walk stopped at a
@@ -46,7 +50,7 @@ use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Holding, Position, RecordId, Result, Scope, SourceClass, Waiting};
 use crate::unread::Unread;
 use osis_base::memo::{Clock, Effects, Stamped, StampedSet};
-use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, CommitId, Mono, SyncId, Tid, WallMs};
 use osis_engine::sync::{Stranding, SyncSet};
 use osis_proto::limits::PASS_WAIT_MS;
 use std::collections::{BTreeMap, BTreeSet};
@@ -165,7 +169,10 @@ pub trait Net {
 /// What status reads and does at a settle besides `Net` (the product's is `Live`; a test's a
 /// fake). Reads are stamped.
 pub trait Ground: Net {
-    /// The latest wall reading (a pass's `PASS_WAIT_MS` runs from its wall-dated start).
+    /// The monotonic clock (a pass's `PASS_WAIT_MS` runs on it).
+    fn mono(&self) -> Mono;
+    /// The latest wall reading: dates a pass's start row, which says only how much a pass begun
+    /// again at a start waited already.
     fn now(&self) -> WallMs;
     /// The start of each pass under way, kept durably: one row per S, written as it begins.
     fn passes_begun(&mut self) -> Result<BTreeMap<SyncId, WallMs>>;
@@ -239,9 +246,9 @@ pub trait Ground: Net {
 /// A complete pass of S under way (§1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Pass {
-    /// When it began, on the wall clock (begun again at a start: when the pass under way at the
-    /// stop began): its `PASS_WAIT_MS` deadline runs from it.
-    began: WallMs,
+    /// When it gives up on the recorded peers, on the monotonic clock: `PASS_WAIT_MS` after it
+    /// began, less what it waited before a restart.
+    deadline: Mono,
     /// Its pass place (`Ground::begin_pass`): what the engine is told, and what the engine's
     /// and leave's wants are compared with.
     noted: u64,
@@ -510,9 +517,9 @@ impl Status {
     /// One settle over `g`: whether anything another module reads changed. `pulls`: the
     /// connections a pass wants a fresh Pull on.
     pub fn settle_on(&mut self, g: &mut impl Ground, pulls: &mut Vec<ConnId>) -> Result<bool> {
-        self.clock.set(g.now().0);
+        self.clock.set(g.mono().0);
         let mut acted = false;
-        self.sync_set(g);
+        self.sync_set(g)?;
         self.count_lacking(g)?;
         acted |= self.held_elsewhere(g)?;
         self.leaving.clear();
@@ -526,14 +533,16 @@ impl Status {
     }
 
     /// The projection of the sync IDs this node syncs: a row per S held, read or kept unread (§3), and own commits
-    /// followed per read S.
-    fn sync_set(&mut self, g: &mut impl Ground) {
+    /// followed per read S. A sync ID leaving the set takes its pass and its row with it, unless
+    /// another module still wants that pass.
+    fn sync_set(&mut self, g: &mut impl Ground) -> Result<()> {
         self.set.want(());
         if self.set.due().is_empty() {
-            return;
+            return Ok(());
         }
-        let Some(set) = whole(&mut self.set, || g.syncs()) else { return };
+        let Some(set) = whole(&mut self.set, || g.syncs()) else { return Ok(()) };
         let gone: Vec<SyncId> = self.holding.keys().filter(|s| !set.ids.contains_key(*s)).copied().collect();
+        let wanted = if gone.is_empty() { Arc::default() } else { g.module_passes() };
         for s in gone {
             self.holding.remove(&s);
             self.done.remove(&s);
@@ -541,6 +550,13 @@ impl Status {
             self.wanted_fx.unwant(&s);
             self.forget_own(&s);
             self.unstrand(&s);
+            // its pass goes with it, but where a release waits on it (crate::leave: a thing that
+            // left the node closure waits for a pass of each sync ID that carried it)
+            if !wanted.contains_key(&s) && self.passes.remove(&s).is_some() {
+                self.pass_fx.unwant(&s);
+                self.again.remove(&s);
+                g.set_pass_begun(&s, None)?;
+            }
         }
         for (s, (_, h)) in &set.ids {
             if self.holding.insert(*s, *h) != Some(*h) {
@@ -556,6 +572,7 @@ impl Status {
                 }
             }
         }
+        Ok(())
     }
 
     fn unstrand(&mut self, s: &SyncId) {
@@ -727,11 +744,23 @@ impl Status {
     /// engine wants one of, each pass's end told.
     fn passes(&mut self, g: &mut impl Ground, pulls: &mut Vec<ConnId>) -> Result<bool> {
         let mut acted = false;
-        // a pass under way at the stop is under way again, from when it began: a restart never
-        // starts its wait again (spec/sync-status.md §1)
+        // a pass under way at the stop is begun again, having waited what the wall clock shows
+        // since its row, between 0 and PASS_WAIT_MS (spec/sync-status.md §1); a row ahead of the
+        // wall clock counts as now, rewritten so: what is waited from here counts at a later start
         if !self.resumed {
-            for (s, began) in g.passes_begun()? {
-                self.begin_at(g, s, began, pulls)?;
+            let (wall, mono) = (g.now(), g.mono());
+            let wanted = g.module_passes();
+            for (s, at) in g.passes_begun()? {
+                // a sync ID out of the sync set no module wants a pass of takes its row with it
+                if !self.holding.contains_key(&s) && !wanted.contains_key(&s) {
+                    g.set_pass_begun(&s, None)?;
+                    continue;
+                }
+                if at > wall {
+                    g.set_pass_begun(&s, Some(wall))?;
+                }
+                let waited = wall.0.saturating_sub(at.0).min(PASS_WAIT_MS);
+                self.begin_at(g, s, mono.after(PASS_WAIT_MS - waited), pulls)?;
             }
             self.resumed = true;
         }
@@ -802,19 +831,19 @@ impl Status {
 
     /// Begins a pass of S now, its start kept durably while it is under way.
     fn begin(&mut self, g: &mut impl Ground, s: SyncId, pulls: &mut Vec<ConnId>) -> Result<()> {
-        let began = g.now();
-        g.set_pass_begun(&s, Some(began))?;
-        self.begin_at(g, s, began, pulls)
+        let at = g.now();
+        g.set_pass_begun(&s, Some(at))?;
+        self.begin_at(g, s, g.mono().after(PASS_WAIT_MS), pulls)
     }
 
-    /// Begins a pass of S, its deadline from `began`: a fresh Pull at each source, the recorded
+    /// Begins a pass of S giving up at `deadline`: a fresh Pull at each source, the recorded
     /// peers to wait for, and a new pass place (one begun again at a start counts for what
     /// wants a pass after a moment before the start).
-    fn begin_at(&mut self, g: &mut impl Ground, s: SyncId, began: WallMs, pulls: &mut Vec<ConnId>) -> Result<()> {
+    fn begin_at(&mut self, g: &mut impl Ground, s: SyncId, deadline: Mono, pulls: &mut Vec<ConnId>) -> Result<()> {
         let noted = g.begin_pass();
         let waits = g.records_holding(&s)?;
         pulls.extend(sources_of(&self.members, &self.up, &s).into_keys());
-        self.passes.insert(s, Pass { began, noted, waits, pulled: g.pull_seq() });
+        self.passes.insert(s, Pass { deadline, noted, waits, pulled: g.pull_seq() });
         self.pass_fx.want(s);
         Ok(())
     }
@@ -913,10 +942,9 @@ impl Status {
         }
     }
 
-    /// When the earliest pass waiting on a recorded peer gives up (`PASS_WAIT_MS`), on the wall
-    /// clock.
-    pub fn next_wake(&self) -> Option<WallMs> {
-        self.clock.next().map(WallMs)
+    /// When the earliest pass waiting on a recorded peer gives up (`PASS_WAIT_MS`).
+    pub fn next_wake(&self) -> Option<Mono> {
+        self.clock.next().map(Mono)
     }
 
     /// Tests only: the work counted so far.
@@ -1003,7 +1031,7 @@ fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: 
             fresh_all = false;
         }
     }
-    let deadline = p.began.0.saturating_add(PASS_WAIT_MS);
+    let deadline = p.deadline.0;
     let timed_out = clock.until(Some(deadline)) >= deadline;
     // a record that no longer holds S has nothing of S left to read (closed: a Lost, or
     // its peer judged this node departed)
