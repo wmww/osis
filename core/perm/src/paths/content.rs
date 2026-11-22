@@ -369,6 +369,15 @@ impl<S: Store> Facts<S> {
         Fact { id, ts: c.ts, signer: c.signer, pos: Key::start(c.ts), on: p.on, aspect: d.aspect.clone(), needs: d.needs, class, hops: sh.hops, well: sh.well && purge_author.is_some(), purge_author, purge_by: d.purge_by, chain }
     }
 
+    /// The right part `ix` of `c`, a purge request, holds over the held set, held or not (`None`
+    /// where it is no request).
+    pub(super) fn judge_right(&self, tl: &Walk, c: &Commit, ix: u32, counts: &mut Counts) -> Option<Right> {
+        let p = c.parts.get(usize::try_from(ix).ok()?)?;
+        let PartKind::Delta(d) = &p.kind else { return None };
+        let f = self.fact(c, WriteId(c.id, ix), p, d);
+        matches!(f.class, FactClass::Purge(_)).then(|| self.right_fact(tl, &f, counts))
+    }
+
     /// The verdict part `ix` of `c` has as a delta of the held set, held or not (a point query,
     /// as `content`; `None` where it is no delta). One not held is named by what is held, and
     /// an addendum's own vouching reads the held addenda's stored verdicts.

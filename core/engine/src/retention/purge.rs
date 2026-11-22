@@ -149,15 +149,21 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
     if core.ix.void.contains(pc) {
         return false;
     }
-    let Some(m) = core.ix.commits.get(pc) else { return false };
     if p.kind.is_compaction() {
-        let valid = m.aspect(&a.tid, &a.ak).is_some_and(|ai| m.valid_at(ai));
+        let valid = core.ix.commits.get(pc).is_some_and(|m| m.aspect(&a.tid, &a.ak).is_some_and(|ai| m.valid_at(ai)));
         return valid && role_right(core, &p.signer, &a.tid, a.by, &a.purge_author, Point { ts: p.ts, node: p.signer, commit: *pc });
     }
     // its items on one (thing, aspect) are one request there: one path, one right
     let Some(j) = p.purge.iter().position(|it| item_names(it).0 == &a.tid && item_names(it).1 == &a.ak) else { return false };
-    let Some(r) = core.timelines.paths().right(&crate::apply::validity::request_id(m, pc, j)) else { return false };
-    let on_path = || crate::apply::validity::chain(&m.header, &m.view, &a.tid).is_some_and(|c| c.contains(&a.purge_author));
+    // a point query over what is held, the request held yet or not (a writer checks its own
+    // before it applies); one not held states its path in the clear or is read as stating none
+    let view = match core.ix.commits.get(pc) {
+        Some(m) => m.view.clone(),
+        None => std::sync::Arc::new(crate::engine::View::of(p, None)),
+    };
+    let reading = crate::apply::validity::reading_of(core, pc, p, &view).deltas();
+    let Some(r) = core.timelines.paths().judge_right(&reading, crate::apply::validity::request_part(p, j)) else { return false };
+    let on_path = || crate::apply::validity::chain(p, &view, &a.tid).is_some_and(|c| c.contains(&a.purge_author));
     r.admin || r.write && (a.by.writer() || a.by.author() && on_path())
 }
 

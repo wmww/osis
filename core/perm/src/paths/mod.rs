@@ -535,6 +535,12 @@ impl<S: Store> Paths<S> {
         self.facts.judge(&self.timeline, c, ix, &mut Counts::default())
     }
 
+    /// The right part `ix` of `c`, a purge request, holds over what is held, whether `c` is held
+    /// or not (`None`: no request): the same point query as `right`.
+    pub fn judge_right(&self, c: &Commit, ix: u32) -> Option<Right> {
+        self.facts.judge_right(&self.timeline, c, ix, &mut Counts::default())
+    }
+
     /// `content`, counting its work into `counts`.
     pub fn content_counted(&self, id: &WriteId, counts: &mut Counts) -> Option<Content> {
         self.facts.content(&self.timeline, id, counts)

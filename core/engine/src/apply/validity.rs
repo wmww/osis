@@ -727,7 +727,7 @@ pub(crate) fn reading(core: &Core, id: &CommitId) -> Option<osis_perm::Held> {
 }
 
 /// `reading` of a commit by its header and view, held or about to be.
-fn reading_of(core: &Core, id: &CommitId, h: &Header, view: &View) -> osis_perm::Held {
+pub(crate) fn reading_of(core: &Core, id: &CommitId, h: &Header, view: &View) -> osis_perm::Held {
     let void = core.ix.void.contains(id);
     let mut judge = Judge::new(core);
     let none = |a: &osis_commit::AspectEntry| Part { on: a.tid, path: Vec::new(), direct: 0, kind: PartKind::None };
@@ -777,9 +777,9 @@ pub(crate) fn chain(h: &Header, view: &View, t: &Tid) -> Option<Vec<Tid>> {
     stated(h, view, t).map(|(along, _, _)| std::iter::once(h.signer).chain(along).collect())
 }
 
-/// The walk's ID of purge item `j` of commit `id` (`reading`).
-pub(crate) fn request_id(m: &Meta, id: &CommitId, j: usize) -> WriteId {
-    WriteId(*id, (m.header.aspects.len() + j) as u32)
+/// The walk's index of purge item `j` of a commit with header `h` (`reading`).
+pub(crate) fn request_part(h: &Header, j: usize) -> u32 {
+    (h.aspects.len() + j) as u32
 }
 
 impl osis_perm::HeldSet for Core {
