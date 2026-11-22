@@ -11,7 +11,7 @@ use crate::engine::{Core, Engine, LazyHeader, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::{AspectEntry, Header, PurgeItem};
-use osis_perm::{HeldSet, Point};
+use osis_perm::Point;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -90,15 +90,40 @@ pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid
     let Some(a) = m.aspect(tid, ak).and_then(|ai| m.header.aspects.get(ai)) else { return false };
     let author = m.view.purge_author;
     let point = Point { ts, node: *who, commit: CommitId([0xff; 32]) };
-    core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(who, &a.tid, a.purge_by, &author, point))
+    role_right(core, who, &a.tid, a.purge_by, &author, point)
+}
+
+/// Whether `who`'s effective role on `tid` just before `point` gives the right over a delta of
+/// purge-by `by` and purge author `author` (spec/permissions.md §6): what a commit not written
+/// yet would hold (`would_hold_right`) and what a snapshot standing for a body holds
+/// (`right_holds`).
+fn role_right(core: &Core, who: &Tid, tid: &Tid, by: osis_base::PurgeBy, author: &Tid, point: Point) -> bool {
+    match core.timelines.role(who, tid, osis_perm::At::before(point)) {
+        Some(osis_base::Role::Admin) => true,
+        Some(osis_base::Role::Write) => by.writer() || by.author() && author == who,
+        _ => false,
+    }
+}
+
+/// What a purge item names (`osis_perm::paths::Names`) and the aspect it is a request on: a
+/// request on `created.0` is a destruction (spec/commits.md §5). A by-commit item is read by the
+/// walk as naming nothing held (the engine names its targets itself, `names_t`; the walk gives
+/// the request's right).
+pub(crate) fn names(item: &PurgeItem) -> (&Tid, &Ak, osis_perm::paths::Names) {
+    use osis_perm::paths::Names;
+    let whole = |ak: &Ak| if ak.as_str() == osis_commit::retention::CREATED { Names::Destroy } else { Names::Aspect };
+    match item {
+        PurgeItem::Aspect { tid, ak } => (tid, ak, whole(ak)),
+        PurgeItem::Author { tid, ak, author } => (tid, ak, Names::Author(*author)),
+        PurgeItem::Commit { tid, ak, .. } => (tid, ak, Names::Commit(CommitId([0; 32]))),
+    }
 }
 
 /// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
-/// delta `a` of a commit with header `ch`, at its own key (spec/permissions.md §6): its signer
-/// does, and so does its own purge author (`p_author`, which the old walk reads it as acting for:
-/// Interim, spec/permissions.md §5.2), neither by a role a demotion's frontier took from this
-/// commit. Judging the request's own purge author holds a client to its own rights in any arrival
-/// order: its node's would reach a delta of the account it acts for that the node did not hold yet. A function of the role timeline, the
+/// delta `a` of a commit with header `ch` (spec/permissions.md §6): a request by its right as the
+/// walk judges it along the path it states for the thing (admin; write where the delta's
+/// purge-by is `writer`, or `author_or_admin` with the delta's purge author on its path), a
+/// snapshot by its own validity and its signer's role at its key. A function of the walk, the
 /// void set and the headers, so any node holding them judges alike, in any arrival order;
 /// `rejudge_purges` follows it when those change.
 pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header) -> bool {
@@ -124,56 +149,16 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
     if core.ix.void.contains(pc) {
         return false;
     }
-    let point = Point { ts: p.ts, node: p.signer, commit: *pc };
-    let (by, purge_author) = (a.by, a.purge_author);
-    let p_author = p.purge_author();
-    let judge = |tl: &osis_perm::Timeline| tl.purge_stands(&p.signer, &a.tid, by, &purge_author, point) && (p_author == p.signer || tl.purge_stands(&p_author, &a.tid, by, &purge_author, point));
-    // a destruction is judged by the thing's history before it: nothing written on the thing after it
-    // counts (spec/commits.md §5 Destruction), so an edge write on it stamped later, held here before
-    // the destruction arrived, is left out of the walk that judges it. Such a write is not held once
-    // the thing was destroyed (`destroy::Destruction`): a walk from scratch only while one is, only for signers
-    // that could ever hold the right (held inputs only grow, so neither can a cut's), and only
-    // over what authority on the thing and the delta's purge author comes from (`Held::upstream`), not
-    // the node's whole role graph
-    if a.ak.as_str() == osis_commit::retention::CREATED {
-        // the edge writes on the thing stamped after the request (the cut is the held set as of
-        // the request on the thing)
-        let held = &core.ix.held;
-        let later: BTreeSet<CommitId> = HeldSet::edge_commits(held, &a.tid).iter().filter(|c| c.point().ts > p.ts).map(|c| c.id).collect();
-        if !later.is_empty() {
-            if !signers_could(core, p, a) {
-                return false;
-            }
-            let things = core.ix.held.upstream(&BTreeSet::from([a.tid, purge_author]));
-            osis_base::costs::count("destruction: cut walk things", things.len() as u64);
-            let cut = Cut { held: &core.ix.held, things, later };
-            return judge(&osis_perm::Timeline::evaluate_with(&cut, &core.sides.trust()));
-        }
+    let Some(m) = core.ix.commits.get(pc) else { return false };
+    if p.kind.is_compaction() {
+        let valid = m.aspect(&a.tid, &a.ak).is_some_and(|ai| m.valid_at(ai));
+        return valid && role_right(core, &p.signer, &a.tid, a.by, &a.purge_author, Point { ts: p.ts, node: p.signer, commit: *pc });
     }
-    core.timelines.get(&a.tid).is_some_and(judge)
-}
-
-/// The held set over `things` (closed upstream: roles on them come from them alone) without
-/// commits `later` (`holds_right`).
-struct Cut<'a> {
-    held: &'a crate::engine::held::Held,
-    things: BTreeSet<Tid>,
-    later: BTreeSet<CommitId>,
-}
-
-impl HeldSet for Cut<'_> {
-    fn things(&self) -> Vec<Tid> {
-        self.things.iter().copied().collect()
-    }
-    fn edge_commits(&self, thing: &Tid) -> Vec<std::sync::Arc<osis_perm::RoleCommit>> {
-        if !self.things.contains(thing) {
-            return Vec::new();
-        }
-        self.held.edge_commits(thing).into_iter().filter(|c| !self.later.contains(&c.id)).collect()
-    }
-    fn created(&self, thing: &Tid) -> Option<osis_base::CreationRecord> {
-        self.things.contains(thing).then(|| HeldSet::created(self.held, thing)).flatten()
-    }
+    // its items on one (thing, aspect) are one request there: one path, one right
+    let Some(j) = p.purge.iter().position(|it| names(it).0 == &a.tid && names(it).1 == &a.ak) else { return false };
+    let Some(r) = core.timelines.paths().right(&crate::apply::validity::request_id(m, pc, j)) else { return false };
+    let on_path = || crate::apply::validity::chain(&m.header, &m.view, &a.tid).is_some_and(|c| c.contains(&a.purge_author));
+    r.admin || r.write && (a.by.writer() || a.by.author() && on_path())
 }
 
 /// The writer's check of its own request `pc` (header `p`), built but not applied: each item that

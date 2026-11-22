@@ -756,16 +756,21 @@ pub(crate) fn reading(core: &Core, id: &CommitId) -> Option<osis_perm::Held> {
     }
     if !void {
         for item in &h.purge {
-            let (t, ak) = item.aspect();
-            let kind = match (stated(h, &m.view, t), crate::retention::purge::names(core, item)) {
-                (Some((_, _, purge_author)), Some(names)) => PartKind::Delta(Delta { aspect: ak.clone(), needs: Role::Write, purge_author, purge_by: osis_base::PurgeBy::Admin, class: DeltaClass::Purge { names } }),
-                _ => PartKind::None,
+            let (t, ak, names) = crate::retention::purge::names(item);
+            let kind = match stated(h, &m.view, t) {
+                Some((_, _, purge_author)) => PartKind::Delta(Delta { aspect: ak.clone(), needs: Role::Write, purge_author, purge_by: osis_base::PurgeBy::Admin, class: DeltaClass::Purge { names } }),
+                None => PartKind::None,
             };
             let (path, direct) = stated(h, &m.view, t).map(|x| (x.0, x.1)).unwrap_or_default();
             parts.push(Part { on: *t, path, direct, kind });
         }
     }
     Some(osis_perm::Held { id: *id, ts: h.ts, signer: h.signer, parts, role: core.ix.held.counted(id) })
+}
+
+/// [signer, the things `t` is written along] of the path commit `h` states for `t` (`stated`).
+pub(crate) fn chain(h: &Header, view: &View, t: &Tid) -> Option<Vec<Tid>> {
+    stated(h, view, t).map(|(along, _, _)| std::iter::once(h.signer).chain(along).collect())
 }
 
 /// The walk's ID of purge item `j` of commit `id` (`reading`).

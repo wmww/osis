@@ -376,7 +376,8 @@ impl<S: Store> Facts<S> {
                     PartKind::Delta(d) => {
                         let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, None, false);
                         let chain: Vec<Tid> = std::iter::once(c.signer).chain(p.path.iter().copied()).collect();
-                        let purge_author = usize::try_from(d.purge_author).ok().and_then(|i| chain.get(i).copied());
+                        // a member of its path: the signer, a listed thing, or the thing written (§6 Purge author)
+                        let purge_author = usize::try_from(d.purge_author).ok().and_then(|i| chain.get(i).copied().or((i == chain.len()).then_some(p.on)));
                         let class = match &d.class {
                             DeltaClass::Plain => FactClass::Plain,
                             DeltaClass::RoleClass => {

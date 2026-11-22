@@ -110,7 +110,8 @@ pub struct Delta {
     /// The role its aspect needs: write; admin for an admin-only aspect, `sync.0`, `keys.0`,
     /// `secrets.0` and a snapshot carrying one (draft §5.2, Compaction snapshot).
     pub needs: Role,
-    /// Its purge author: an index into [signer, A1..Ak] (draft §6); past the path, bad input.
+    /// Its purge author: an index into its members [signer, A1..Ak, the thing] (spec/permissions.md
+    /// §6 Purge author); past them, bad input.
     pub purge_author: u32,
     pub purge_by: PurgeBy,
     pub class: DeltaClass,
