@@ -76,35 +76,59 @@ fn long(i: usize) -> Value {
     s(&format!("{i:08}{}", "v".repeat(192)))
 }
 
-/// Map edits at n entries: (store bytes of an edit; a new session's first read of one key in
-/// pages loaded; its first edit in pages loaded and written and store bytes). `nested`: the map
-/// sits in an entry of a root map.
-fn map_edit(n: usize, nested: bool) -> [u64; 5] {
-    let mut lp = net(1, 0);
-    let b = lp.peers[0].backend.clone();
-    let t = new_thing(&mut lp, 0);
-    let a = ak("app:big.0");
-    let inner: osis_base::ValueMap = (0..n).map(|i| (s(&format!("k{i:06}")), long(i))).collect();
-    let at = |k: usize| {
-        let key = PathSeg::Key(s(&format!("k{k:06}")));
-        if nested { vec![PathSeg::Key(s("inner")), key] } else { vec![key] }
-    };
-    let v = if nested { Value::Map(osis_base::ValueMap::from([(s("inner"), Value::Map(inner)), (s("x"), Value::Int(1))])) } else { Value::Map(inner) };
-    let mut m = Mutation::new();
-    m.set(t, &a, &v).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    let edit = |lp: &mut LocalPeer, k: usize, v: &str| {
+/// One node holding a new thing of its own (`new_thing` on `net(1, 0)`): built once.
+fn one_thing() -> (LocalPeer, Tid) {
+    LocalPeer::cached("scale::one_thing", || {
+        let mut lp = net(1, 0);
+        let t = new_thing(&mut lp, 0);
+        (lp, t)
+    })
+}
+
+/// `app:big.0`, the paged map of `big_map`.
+fn big() -> Ak {
+    ak("app:big.0")
+}
+
+/// The path of entry `k` of `big_map`'s map.
+fn entry(k: usize, nested: bool) -> Vec<PathSeg> {
+    let key = PathSeg::Key(s(&format!("k{k:06}")));
+    if nested { vec![PathSeg::Key(s("inner")), key] } else { vec![key] }
+}
+
+/// `one_thing` with `app:big.0` a map of n `long` entries, written in one commit; `nested`: the
+/// map sits in an entry of a root map. Built once per (n, nested).
+fn big_map(n: usize, nested: bool) -> (LocalPeer, Tid) {
+    LocalPeer::cached(&format!("scale::big_map/{n}/{nested}"), || {
+        let (mut lp, t) = one_thing();
+        let inner: osis_base::ValueMap = (0..n).map(|i| (s(&format!("k{i:06}")), long(i))).collect();
+        let v = if nested { Value::Map(osis_base::ValueMap::from([(s("inner"), Value::Map(inner)), (s("x"), Value::Int(1))])) } else { Value::Map(inner) };
         let mut m = Mutation::new();
-        set_key(&mut m, t, &a, at(k), s(v));
-        lp.peers[0].commit(m).unwrap().unwrap()
-    };
-    let (_, w0) = measured(&b, || edit(&mut lp, n / 2, "x"));
+        m.set(t, &big(), &v).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        (lp, t)
+    })
+}
+
+/// Peer 0 sets entry `k` of `big_map`'s map to `v`.
+fn edit_entry(lp: &mut LocalPeer, t: Tid, k: usize, nested: bool, v: &str) -> osis_base::CommitId {
+    let mut m = Mutation::new();
+    set_key(&mut m, t, &big(), entry(k, nested), s(v));
+    lp.peers[0].commit(m).unwrap().unwrap()
+}
+
+/// Map edits at n entries (`big_map`): (store bytes of an edit; a new session's first read of
+/// one key in pages loaded; its first edit in pages loaded and written and store bytes).
+fn map_edit(n: usize, nested: bool) -> [u64; 5] {
+    let (mut lp, t) = big_map(n, nested);
+    let (b, a) = (lp.peers[0].backend.clone(), big());
+    let (_, w0) = measured(&b, || edit_entry(&mut lp, t, n / 2, nested, "x"));
     lp.peers[0].restart(1).unwrap();
-    let (got, read) = measured(&b, || lp.peers[0].engine.get_at(&t, &a, &at(n / 3)).unwrap());
+    let (got, read) = measured(&b, || lp.peers[0].engine.get_at(&t, &a, &entry(n / 3, nested)).unwrap());
     assert_eq!(got, Some(long(n / 3)));
     lp.peers[0].restart(2).unwrap();
-    let (_, first) = measured(&b, || edit(&mut lp, n / 4, "y"));
-    assert_eq!(lp.peers[0].engine.get_at(&t, &a, &at(n / 4)).unwrap(), Some(s("y")));
+    let (_, first) = measured(&b, || edit_entry(&mut lp, t, n / 4, nested, "y"));
+    assert_eq!(lp.peers[0].engine.get_at(&t, &a, &entry(n / 4, nested)).unwrap(), Some(s("y")));
     [w0.io.written_bytes, read.loads(), first.loads(), first.page_writes(), first.io.written_bytes]
 }
 
@@ -122,32 +146,21 @@ fn map_edit_is_flat() {
     }
 }
 
-/// A covered drop at n entries of a paged map: two one-entry edits (one replacing the other's
-/// write, one live), a snapshot covering both, then each dropped as covered: (store bytes,
-/// pages written) per drop.
+/// A covered drop at n entries of a paged map (`big_map`): two one-entry edits (one replacing the
+/// other's write, one live), a snapshot covering both, then each dropped as covered: (store
+/// bytes, pages written) per drop.
 fn covered_drop(n: usize) -> [u64; 2] {
-    let mut lp = net(1, 0);
-    let b = lp.peers[0].backend.clone();
-    let t = new_thing(&mut lp, 0);
-    let a = ak("app:big.0");
-    let fill: osis_base::ValueMap = (0..n).map(|i| (s(&format!("k{i:06}")), long(i))).collect();
-    let mut m = Mutation::new();
-    m.set(t, &a, &Value::Map(fill)).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    let edit = |lp: &mut LocalPeer, k: usize, v: &str| {
-        let mut m = Mutation::new();
-        set_key(&mut m, t, &a, vec![PathSeg::Key(s(&format!("k{k:06}")))], s(v));
-        lp.peers[0].commit(m).unwrap().unwrap()
-    };
-    let (dead, live) = (edit(&mut lp, n / 2, "x"), edit(&mut lp, n / 3, "y"));
-    edit(&mut lp, n / 2, "z");
+    let (mut lp, t) = big_map(n, false);
+    let (b, a) = (lp.peers[0].backend.clone(), big());
+    let (dead, live) = (edit_entry(&mut lp, t, n / 2, false, "x"), edit_entry(&mut lp, t, n / 3, false, "y"));
+    edit_entry(&mut lp, t, n / 2, false, "z");
     lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
     let (_, w) = measured(&b, || {
         for c in [dead, live] {
             lp.peers[0].engine.drop_body(&c, &t, &a).unwrap();
         }
     });
-    assert_eq!(lp.peers[0].engine.get_at(&t, &a, &[PathSeg::Key(s(&format!("k{:06}", n / 3)))]).unwrap(), Some(s("y")));
+    assert_eq!(lp.peers[0].engine.get_at(&t, &a, &entry(n / 3, false)).unwrap(), Some(s("y")));
     [w.io.written_bytes / 2, w.page_writes() / 2]
 }
 
@@ -163,9 +176,8 @@ fn covered_drop_is_flat() {
 
 /// Set ops by value at n elements, each in a new session: pages loaded and written per op.
 fn set_ops(n: usize) -> Vec<(u64, u64)> {
-    let mut lp = net(1, 0);
+    let (mut lp, t) = one_thing();
     let b = lp.peers[0].backend.clone();
-    let t = new_thing(&mut lp, 0);
     let a = crate::common::TAGS;
     let e = |i: usize| s(&format!("{i:08}{}", "e".repeat(92)));
     let mut m = Mutation::new();
@@ -203,9 +215,8 @@ fn set_by_value_is_flat() {
 /// A set of n tids: a removal of a member (spec/crdt.md §5.5, what `delete` writes in a `holds.0`) and
 /// an add back, each in a new session: pages loaded and written, and the commit's bytes.
 fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
-    let mut lp = net(1, 0);
+    let (mut lp, x) = one_thing();
     let b = lp.peers[0].backend.clone();
-    let x = new_thing(&mut lp, 0);
     let t = |i: usize| {
         let mut b = [0u8; 15];
         b[7..].copy_from_slice(&(i as u64).to_be_bytes());
@@ -340,9 +351,8 @@ fn text_edits_are_flat() {
 #[ignore = "issues/text-move-loads-placement.md"]
 fn repro_text_move_loads_placement() {
     let n = 80_000;
-    let mut lp = net(1, 0);
+    let (mut lp, t) = one_thing();
     let b = lp.peers[0].backend.clone();
-    let t = new_thing(&mut lp, 0);
     let mut rng = SeededRng::from_u64(0);
     let text: String = (0..n).map(|_| char::from(b'a' + (osis_crypto::RngCore::next_u64(&mut rng) % 26) as u8)).collect();
     let mut m = Mutation::new();
@@ -438,9 +448,8 @@ fn roster_removal_is_linear() {
 
 /// Store bytes per write overwriting one entry of a map of n 100-byte entries.
 fn replacing_edit(n: usize, map: &osis_schema::Aspect<Value>) -> u64 {
-    let mut lp = net(1, 0);
+    let (mut lp, t) = one_thing();
     let b = lp.peers[0].backend.clone();
-    let t = new_thing(&mut lp, 0);
     let fill: osis_base::ValueMap = (0..n).map(|i| (s(&format!("k{i:05}")), s(&"f".repeat(100)))).collect();
     let mut m = Mutation::new();
     m.set(t, map, &Value::Map(fill)).unwrap();
@@ -492,25 +501,32 @@ fn add(lp: &mut LocalPeer, by: usize, t: Tid, asp: &osis_schema::Aspect<Value>, 
     lp.peers[by].commit(m).unwrap().unwrap()
 }
 
-/// Peer 0 mint admin of a new thing, the others granted `roles` on it, synced.
-fn shared_thing(lp: &mut LocalPeer, roles: &[Role]) -> Tid {
-    let t = new_thing(lp, 0);
-    for (i, r) in roles.iter().enumerate() {
-        let x = lp.peers[i + 1].engine.me();
-        set_edge(&mut lp.peers[0].engine, t, x, Some(edge(*r)), None);
-    }
-    lp.sync_all().unwrap();
-    t
+/// `net(n, 0)`, peer 0 mint admin of a new thing, peers 1.. granted `roles` on it in turn,
+/// synced: built once per (n, roles).
+fn shared_thing(n: usize, roles: &[Role]) -> (LocalPeer, Tid) {
+    LocalPeer::cached(&format!("scale::shared_thing/{n}/{roles:?}"), || {
+        let mut lp = net(n, 0);
+        let t = new_thing(&mut lp, 0);
+        for (i, r) in roles.iter().enumerate() {
+            let x = lp.peers[i + 1].engine.me();
+            set_edge(&mut lp.peers[0].engine, t, x, Some(edge(*r)), None);
+        }
+        lp.sync_all().unwrap();
+        (lp, t)
+    })
 }
 
 /// Late deltas into a set of n one-element commits (`asp`, compacted after them or not): a late
 /// delta older than all of them arriving and the first commit judged, then one 5 commits late.
 fn late_deltas(n: usize, asp: &osis_schema::Aspect<Value>, compact: bool) -> [Work; 2] {
-    let mut lp = net(2, 0);
-    let t = shared_thing(&mut lp, &[Role::Write]);
-    let late: Vec<_> = (0..3).map(|i| add(&mut lp, 1, t, asp, format!("late{i}"))).collect();
-    lp.advance(1_000);
-    let ids: Vec<_> = (0..n).map(|i| add(&mut lp, 0, t, asp, format!("e{i}"))).collect();
+    // the world before the compaction, alike with and without it: built once per (n, asp)
+    let (mut lp, (t, late, ids)) = LocalPeer::cached(&format!("scale::late_deltas/{n}/{}", asp.ak()), || {
+        let (mut lp, t) = shared_thing(2, &[Role::Write]);
+        let late: Vec<_> = (0..3).map(|i| add(&mut lp, 1, t, asp, format!("late{i}"))).collect();
+        lp.advance(1_000);
+        let ids: Vec<_> = (0..n).map(|i| add(&mut lp, 0, t, asp, format!("e{i}"))).collect();
+        (lp, (t, late, ids))
+    });
     let k = ak(asp.ak());
     if compact {
         lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
@@ -593,11 +609,13 @@ fn late_delta_deaths_are_flat_spec_crdt_4_8() {
 
 /// n one-element commits by the mint admin (0) and one add by writer B (1); admin C (2), who
 /// never saw it, revokes B: (the revoke arriving at 0, flipping the add invalid; B's add written
-/// after the revoke arriving invalid). No peer writes addenda (`net_off`): 0's would keep B's add.
+/// after the revoke arriving invalid). No peer writes addenda (`Engine::write_addenda`): 0's would keep B's add.
 fn validity_flip(n: usize) -> [Work; 2] {
     use crate::common::TAGS;
-    let mut lp = crate::common::net_off(3, 0);
-    let t = shared_thing(&mut lp, &[Role::Write, Role::Admin]);
+    let (mut lp, t) = shared_thing(3, &[Role::Write, Role::Admin]);
+    for p in &mut lp.peers {
+        p.engine.write_addenda(false);
+    }
     let (b, k) = (lp.peers[1].engine.me(), ak("t:tags.0"));
     for i in 0..n {
         add(&mut lp, 0, t, &TAGS, format!("e{i}"));
@@ -630,8 +648,7 @@ fn validity_flip(n: usize) -> [Work; 2] {
 /// B (1) holds n set elements as the mint admin's delta; the mint admin adds one and
 /// snapshots; B joins the snapshot, then one ordinary delta: (the join, the delta).
 fn snapshot_join(n: usize, asp: &osis_schema::Aspect<Value>) -> [Work; 2] {
-    let mut lp = net(2, 0);
-    let t = shared_thing(&mut lp, &[Role::Write]);
+    let (mut lp, t) = shared_thing(2, &[Role::Write]);
     let mut m = Mutation::new();
     // 1000-byte elements: the set pages at both sizes
     m.set(t, asp, &Value::Set((0..n).map(|i| Value::Str(format!("{i:08}{}", "e".repeat(992)))).collect())).unwrap();
@@ -650,14 +667,23 @@ fn snapshot_join(n: usize, asp: &osis_schema::Aspect<Value>) -> [Work; 2] {
     [join, delta]
 }
 
+/// `net(2, 0)`, peer 0 mint admin of a new thing peer 1 reads (`new_shared`; content of a thing
+/// outside a node's closure waits, spec/commits.md §4): the thing and the commits held then.
+/// Built once.
+fn reader_net() -> (LocalPeer, (Tid, BTreeSet<osis_base::CommitId>)) {
+    LocalPeer::cached("scale::reader_net", || {
+        let mut lp = net(2, 0);
+        let t = crate::common::new_shared(&mut lp, 0);
+        let base = lp.commit_ids(0).into_iter().collect();
+        (lp, (t, base))
+    })
+}
+
 /// A fresh node gets the mint admin's snapshot of a set of n one-element commits, then the
 /// commits: the work of the commits.
 fn snapshot_first(n: usize) -> Work {
     use crate::common::TAGS;
-    let mut lp = net(2, 0);
-    // peer 1 a reader: content of a thing outside its node closure waits (spec/commits.md §4)
-    let t = crate::common::new_shared(&mut lp, 0);
-    let base: BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
+    let (mut lp, (t, base)) = reader_net();
     for i in 0..n {
         add(&mut lp, 0, t, &TAGS, format!("e{i}"));
     }
@@ -715,9 +741,7 @@ fn commits_after_their_snapshot_are_linear_spec_permissions_5_2() {
 /// then those: (its work, pending commits examined again).
 fn first_sync(n: usize) -> (Work, u64) {
     use crate::common::TAGS;
-    let mut lp = net(2, 0);
-    let t = crate::common::new_shared(&mut lp, 0);
-    let base: BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
+    let (mut lp, (t, base)) = reader_net();
     // 200-byte elements: the state is paged at either size
     for i in 0..n {
         add(&mut lp, 0, t, &TAGS, format!("{i:08}{}", "e".repeat(192)));
@@ -751,28 +775,30 @@ fn a_first_sync_is_linear_spec_commits_4() {
 /// makes, 3 its admin) holds write on t and gains a member E (4) by 3: the work of that grant
 /// arriving at 0.
 fn addenda_rejudge(n: usize, with: bool) -> Work {
-    use crate::common::TAGS;
-    let mut lp = net(5, 0);
-    lp.sync_all().unwrap();
-    let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
-    let t = shared_thing(&mut lp, &[Role::Write, Role::Write, Role::Write]);
-    let realm = new_thing(&mut lp, 0);
-    set_edge(&mut lp.peers[0].engine, realm, ids[3], Some(edge(Role::Admin)), None);
-    set_edge(&mut lp.peers[0].engine, t, realm, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    for i in 0..n {
-        add(&mut lp, 0, t, &TAGS, format!("e{i}"));
-    }
-    lp.advance(1_000);
-    let bs = add(&mut lp, 1, t, &TAGS, "b".into());
-    let pk = lp.packages_for(1, 2).unwrap().into_iter().find(|p| p.id == bs).unwrap();
-    lp.deliver(2, &pk).unwrap();
-    lp.advance(1_000);
-    let d = osis_engine::flows::Demotion { holder: ids[1], new: None, retain: None };
-    let rv = *lp.peers[0].engine.demote(&t, &d).unwrap().commits.last().unwrap();
-    lp.advance(1_000);
-    let pk = lp.packages_for(0, 2).unwrap().into_iter().find(|p| p.id == rv).unwrap();
-    lp.deliver(2, &pk).unwrap();
+    // the world up to C's addendum, alike with and without it: built once per n
+    let (mut lp, (t, realm, ids)) = LocalPeer::cached(&format!("scale::addenda_rejudge/{n}"), || {
+        use crate::common::TAGS;
+        let (mut lp, t) = shared_thing(5, &[Role::Write, Role::Write, Role::Write]);
+        let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
+        let realm = new_thing(&mut lp, 0);
+        set_edge(&mut lp.peers[0].engine, realm, ids[3], Some(edge(Role::Admin)), None);
+        set_edge(&mut lp.peers[0].engine, t, realm, Some(edge(Role::Write)), None);
+        lp.sync_all().unwrap();
+        for i in 0..n {
+            add(&mut lp, 0, t, &TAGS, format!("e{i}"));
+        }
+        lp.advance(1_000);
+        let bs = add(&mut lp, 1, t, &TAGS, "b".into());
+        let pk = lp.packages_for(1, 2).unwrap().into_iter().find(|p| p.id == bs).unwrap();
+        lp.deliver(2, &pk).unwrap();
+        lp.advance(1_000);
+        let d = osis_engine::flows::Demotion { holder: ids[1], new: None, retain: None };
+        let rv = *lp.peers[0].engine.demote(&t, &d).unwrap().commits.last().unwrap();
+        lp.advance(1_000);
+        let pk = lp.packages_for(0, 2).unwrap().into_iter().find(|p| p.id == rv).unwrap();
+        lp.deliver(2, &pk).unwrap();
+        (lp, (t, realm, ids))
+    });
     if with {
         // C's addendum, then B's add again once vouched for
         lp.sync(2, 0).unwrap();
@@ -795,30 +821,35 @@ fn addenda_rejudge_spec_permissions_5_2() {
     all_linear("a member joining a holder, an addendum held", &addenda_rejudge(20, true), &addenda_rejudge(200, true));
 }
 
-/// A kept set (D one day) edited every 8 hours `edits` times (its window: 3 edits), compacted every 2 edits,
+/// Peer 0 applies `o` to `t`'s kept set (`t:keptset.0`, D one day) a millisecond on.
+fn kept_op(lp: &mut LocalPeer, t: Tid, o: Op) -> osis_base::CommitId {
+    lp.advance(1);
+    let mut m = Mutation::new();
+    m.op(t, &crate::common::KEPTSET, PathOp { path: Vec::new(), op: o }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap()
+}
+
+/// `one_thing` with n elements `e{i}` added to its kept set, one per commit (`kept_op`): the
+/// commits.
+fn kept_set(n: usize) -> (LocalPeer, Tid, Vec<osis_base::CommitId>) {
+    let (mut lp, t) = one_thing();
+    let ids = (0..n).map(|i| kept_op(&mut lp, t, Op::Add(Value::Str(format!("e{i}"))))).collect();
+    (lp, t, ids)
+}
+
+/// A kept set (D one day, `kept_set`) edited every 8 hours `edits` times (its window: 3 edits), compacted every 2 edits,
 /// each edit killing one long-lived element; after each edit every held snapshot is judged and
 /// those past their bound and covered by the newest dropped, as node-sync does: (snapshots held
 /// at the end, the work of the last edit's judging).
 fn kept_snapshots(edits: usize) -> (usize, Work) {
-    use crate::common::KEPTSET;
-    let mut lp = net(1, 0);
-    let t = new_thing(&mut lp, 0);
+    let (mut lp, t, _) = kept_set(edits);
     let k = ak("t:keptset.0");
-    let op = |lp: &mut LocalPeer, o: Op| {
-        lp.advance(1);
-        let mut m = Mutation::new();
-        m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: o }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap()
-    };
-    for i in 0..edits {
-        op(&mut lp, Op::Add(Value::Str(format!("e{i}"))));
-    }
     let mut snaps = Vec::new();
     let mut last = None;
     for i in 0..edits {
         lp.advance(8 * 3_600_000);
-        op(&mut lp, Op::Remove(Value::Str(format!("e{i}"))));
-        op(&mut lp, Op::Add(Value::Str(format!("n{i}"))));
+        kept_op(&mut lp, t, Op::Remove(Value::Str(format!("e{i}"))));
+        kept_op(&mut lp, t, Op::Add(Value::Str(format!("n{i}"))));
         if i % 2 == 0 {
             lp.advance(1);
             snaps.push(lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap());
@@ -856,24 +887,15 @@ fn kept_snapshots_stay_within_their_window_spec_commits_5() {
     }
 }
 
-/// A kept set (D one day) of n elements added one per commit, compacted, then each removed one
+/// A kept set (`kept_set`) of n elements, compacted, then each removed one
 /// per commit; then every held body judged once, as a sync pass does:
 /// (bodies judged, the work).
 fn judge_every_body(n: usize) -> (u64, Work) {
-    use crate::common::KEPTSET;
-    let mut lp = net(1, 0);
-    let t = new_thing(&mut lp, 0);
+    let (mut lp, t, mut ids) = kept_set(n);
     let k = ak("t:keptset.0");
-    let op = |lp: &mut LocalPeer, o: Op| {
-        lp.advance(1);
-        let mut m = Mutation::new();
-        m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: o }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap()
-    };
-    let mut ids: Vec<_> = (0..n).map(|i| op(&mut lp, Op::Add(Value::Str(format!("e{i}"))))).collect();
     lp.advance(1);
     ids.push(lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap());
-    ids.extend((0..n).map(|i| op(&mut lp, Op::Remove(Value::Str(format!("e{i}"))))));
+    ids.extend((0..n).map(|i| kept_op(&mut lp, t, Op::Remove(Value::Str(format!("e{i}"))))));
     let (_, w) = measured_at(&mut lp, 0, |lp| {
         for c in &ids {
             lp.peers[0].engine.replaced_at(c, &t, &k).unwrap();
@@ -900,9 +922,7 @@ fn purge_rejudge(n: usize) -> [Work; 3] {
     static S: StaticSchema = StaticSchema::new("purgecost.osis", "revision 1; purge_by(author, admin) aspect l:msg.0: string;\n");
     const MSG: Aspect<Value> = Aspect::new("l:msg.0", &S);
     let r = n / 10;
-    let mut lp = net(4, 0);
-    lp.sync_all().unwrap();
-    let t = shared_thing(&mut lp, &[Role::Admin]);
+    let (mut lp, t) = shared_thing(4, &[Role::Admin]);
     let k = ak("l:msg.0");
     let x = lp.peers[1].engine.me();
     let mut ids = Vec::new();
@@ -948,9 +968,8 @@ fn purge_rejudge_is_linear_in_requests_spec_permissions_6() {
 /// each dropped at its cover once the next replaces it: B's demotion frontier for the mint
 /// admin, in listed commits and encoded bytes.
 fn dropped_frontier(k: usize) -> (usize, usize) {
-    let mut lp = net(2, 0);
+    let (mut lp, t) = shared_thing(2, &[Role::Write]);
     let me = lp.peers[0].engine.me();
-    let t = shared_thing(&mut lp, &[Role::Write]);
     let key = ak("t:gonemap.0");
     for i in 0..k {
         for j in 0..2 {
@@ -1018,9 +1037,7 @@ const MSGS: osis_schema::Aspect<Value> = osis_schema::Aspect::new("l:msg.0", &LO
 /// every node holding them: (one more write at writer 1, it arriving at the mint admin, the
 /// mint admin removing writer 2 (a fall of its writes)).
 fn long_aspect(n: usize) -> [Work; 3] {
-    let mut lp = net(4, 0);
-    lp.sync_all().unwrap();
-    let t = shared_thing(&mut lp, &[Role::Write, Role::Write, Role::Write]);
+    let (mut lp, t) = shared_thing(4, &[Role::Write, Role::Write, Role::Write]);
     let w = |lp: &mut LocalPeer, by: usize, i: usize| {
         let mut m = Mutation::new();
         m.set(t, &MSGS, &s(&format!("{i:08}{}", "m".repeat(192)))).unwrap();
@@ -1182,8 +1199,7 @@ fn setting_change_and_window_passing_are_flat_spec_commits_5() {
 /// A thing keeping `t:kept.0` a day, overwritten n times by its admin, a minute apart: the work of
 /// one more overwrite.
 fn kept_overwrite(n: usize) -> Work {
-    let mut lp = net(1, 0);
-    let t = new_thing(&mut lp, 0);
+    let (mut lp, t) = one_thing();
     let kept = ak("t:kept.0");
     let put = |lp: &mut LocalPeer, v: String| {
         lp.advance(60_000);
@@ -1216,8 +1232,7 @@ fn kept_overwrite_dates_what_it_replaces_spec_commits_5() {
 /// peer's bound of what the snapshot carries valued.
 fn expiries(n: usize) -> ([Work; 2], Vec<usize>) {
     const HOUR: u64 = 3_600_000;
-    let mut lp = net(2, 0);
-    let t = shared_thing(&mut lp, &[Role::Write]);
+    let (mut lp, t) = shared_thing(2, &[Role::Write]);
     let k = ak(BIG.ak());
     let now0 = lp.peers[0].engine.now().0;
     let mut ids = Vec::new();
@@ -1279,8 +1294,7 @@ fn expiry_is_flat_spec_crdt_4_7() {
 /// after a first round asked about the thing once.
 fn chunk_drop(n: usize) -> (u64, u64) {
     use crate::common::BLOB;
-    let mut lp = net(1, 0);
-    let t = new_thing(&mut lp, 0);
+    let (mut lp, t) = one_thing();
     let k = ak(BLOB.ak());
     let mut m = Mutation::new();
     for i in 0..n {
@@ -1323,56 +1337,13 @@ fn chunk_drop_judgment_is_flat() {
     flat("chunk drop: tree links", small.1, big.1);
 }
 
-/// Bob reads alice's thing `d` (three writes on it) and writes `n` times on a thing of his own;
-/// alice removes him from `d`. The commits his drop of the lost secrets looks at (`forget: commits
-/// scanned`); his indexes then read as an open of his store does.
-fn lost_forget(n: usize) -> u64 {
-    use crate::flows::{edge_of, people, spread, thing_of};
-    let (mut lp, ps) = people(2);
-    let reg = ak("t:reg.0");
-    let d = thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&d, &ps[1], &edge_of(Role::Read)).unwrap();
-    let write = |lp: &mut LocalPeer, i: usize, t: Tid, v: usize| {
-        let mut m = Mutation::new();
-        m.set(t, &reg, &Value::Int(v as i64)).unwrap();
-        lp.peers[i].engine.commit(m).unwrap().unwrap();
-    };
-    for v in 0..3 {
-        write(&mut lp, 0, d, v);
-    }
-    let mine = thing_of(&mut lp, 1, ps[1]);
-    for v in 0..n {
-        write(&mut lp, 1, mine, v);
-    }
-    spread(&mut lp);
-    assert!(lp.peers[1].engine.get(&d, &reg).unwrap().is_some());
-    lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: None }).unwrap();
-    spread(&mut lp);
-    osis_base::costs::take();
-    let lost = lp.peers[1].engine.drop_lost_secrets().unwrap();
-    let cs = osis_base::costs::take();
-    assert!(lost.contains(&d), "{lost:?}");
-    assert_eq!(lp.peers[1].engine.get(&d, &reg).unwrap(), None, "forgotten");
-    assert!(lp.peers[1].engine.get(&mine, &reg).unwrap().is_some(), "kept");
-    lp.peers[1].engine.check_index();
-    cs.iter().filter(|c| c.0 == "forget: commits scanned").map(|c| c.2).sum()
-}
-
-// spec/permissions.md §3 (Lost access): forgetting what a lost read reached costs what it
-// forgets: the commits on the lost things alone, found through the indexes and moved in place,
-// at n and 10n own commits elsewhere (each held commit looked at would be linear).
-#[test]
-fn losing_access_forgets_what_was_lost() {
-    let (a, b) = (lost_forget(3), lost_forget(30));
-    assert!(a > 0 && a == b, "commits looked at, with 3 own commits elsewhere {a}, with 30 {b}");
-}
-
-/// `lost_forget`'s two people, bob's own thing holding `n` rows of each table a forgetting
-/// clears of what it forgets: expiry timers (writes expiring tomorrow), purge requests' named
-/// permanent drops and freed links (8 KiB values kept forever, each purged), and commits pending
-/// (alice's writes on a second thing bob reads, stamped past his drift). The store rows bob's drop
-/// of the lost secrets reads.
-fn lost_forget_rows(n: usize) -> u64 {
+/// Bob reads alice's things `d` (three writes on it) and `other`, his own thing holding `n` rows
+/// of each table a forgetting clears of what it forgets: expiry timers (writes expiring
+/// tomorrow), purge requests' named permanent drops and freed links (8 KiB values kept forever,
+/// each purged), and commits pending (alice's writes on `other`, stamped past his drift). Alice
+/// removes him from `d`: (the commits his drop of the lost secrets looks at, `forget: commits
+/// scanned`; the store rows it reads). His indexes then read as an open of his store does.
+fn lost_forget(n: usize) -> (u64, u64) {
     use crate::flows::{edge_of, people, spread, thing_of};
     let (mut lp, ps) = people(2);
     let (reg, big) = (ak("t:reg.0"), ak("x:b.0"));
@@ -1380,6 +1351,11 @@ fn lost_forget_rows(n: usize) -> u64 {
     let other = thing_of(&mut lp, 0, ps[0]);
     for t in [d, other] {
         lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    }
+    for v in 0..3 {
+        let mut m = Mutation::new();
+        m.set(d, &reg, &Value::Int(v)).unwrap();
+        lp.peers[0].engine.commit(m).unwrap().unwrap();
     }
     let mine = thing_of(&mut lp, 1, ps[1]);
     let e = &mut lp.peers[1].engine;
@@ -1404,6 +1380,7 @@ fn lost_forget_rows(n: usize) -> u64 {
         lp.advance(1);
     }
     spread(&mut lp);
+    assert!(lp.peers[1].engine.get(&d, &reg).unwrap().is_some());
     lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: None }).unwrap();
     spread(&mut lp);
     lp.peers[0].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
@@ -1417,17 +1394,22 @@ fn lost_forget_rows(n: usize) -> u64 {
     let (lost, w) = measured_at(&mut lp, 1, |lp| lp.peers[1].engine.drop_lost_secrets().unwrap());
     assert!(lost.contains(&d), "{lost:?}");
     assert_eq!(lp.peers[1].engine.get(&d, &reg).unwrap(), None, "forgotten");
+    assert!(lp.peers[1].engine.get(&mine, &reg).unwrap().is_some(), "kept");
     assert_eq!(lp.peers[1].engine.pending().len(), n, "alice's writes on the other thing wait on");
     lp.peers[1].engine.check_index();
-    w.n("store rows read")
+    (w.n("forget: commits scanned"), w.n("store rows read"))
 }
 
-// spec/permissions.md §3 (Lost access): forgetting what a lost read reached reads what it
-// forgets, not every timer, pending commit, purge drop or freed link held elsewhere: the store
-// rows read are flat at n and 10n of each on another thing.
+// spec/permissions.md §3 (Lost access): forgetting what a lost read reached costs what it
+// forgets: it looks at the commits on the lost things alone, found through the indexes and moved
+// in place (each held commit looked at would be linear), and reads the store rows of what it
+// forgets, not every timer, pending commit, purge drop or freed link held elsewhere: at n and 10n
+// of each on another thing, the commits looked at are the same and the store rows read flat.
 #[test]
-fn losing_access_reads_no_rows_of_what_stays() {
-    flat("forget: store rows read", lost_forget_rows(3), lost_forget_rows(30));
+fn losing_access_costs_what_was_lost() {
+    let (a, b) = (lost_forget(3), lost_forget(30));
+    assert!(a.0 > 0 && a.0 == b.0, "commits looked at, with 3 rows of each elsewhere {}, with 30 {}", a.0, b.0);
+    flat("forget: store rows read", a.1, b.1);
 }
 
 /// Alice grants bob read on her thing and removes him `n` times (each a role commit at her
@@ -1462,9 +1444,8 @@ fn an_open_decodes_no_role_commit_record() {
 /// root's `holds.0` gains a strong per made thing), compactions included.
 fn set_adds(n: usize) -> Work {
     const K: usize = 10;
-    let mut lp = net(1, 0);
+    let (mut lp, t) = one_thing();
     let b = lp.peers[0].backend.clone();
-    let t = new_thing(&mut lp, 0);
     let a = crate::common::TAGS;
     let e = |i: usize| s(&format!("{i:08}{}", "e".repeat(16)));
     let mut m = Mutation::new();
@@ -1497,9 +1478,7 @@ fn a_set_grown_one_element_a_write_writes_what_it_gained() {
 /// transaction, the reader listening to commits: its work.
 fn kept_backlog(n: usize) -> Work {
     use crate::common::KEPT;
-    let mut lp = net(2, 0);
-    let t = crate::common::new_shared(&mut lp, 0);
-    let base: BTreeSet<_> = lp.commit_ids(0).into_iter().collect();
+    let (mut lp, (t, base)) = reader_net();
     for i in 0..n {
         let mut m = Mutation::new();
         m.set(t, &KEPT, &s(&format!("v{i}"))).unwrap();
