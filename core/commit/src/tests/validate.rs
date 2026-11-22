@@ -54,7 +54,7 @@ fn validate_kinds() {
     x.validate().unwrap();
 }
 
-// spec/wire.md §4 (header flags): field 18, a trailing uint, present only when nonzero; bit 0 the
+// spec/wire.md §4 (header flags): field 17, a trailing uint, present only when nonzero; bit 0 the
 // own cover, on a durable content snapshot only (a header without flags keeps its bytes); a
 // flags of 0 or a reserved bit is bad.
 #[test]
@@ -87,7 +87,7 @@ fn own_cover_flag_spec_wire_4() {
     assert!(invalid(&x).to_string().contains("own cover"), "an ephemeral own cover");
 }
 
-// spec/wire.md §4 (header flags): field 18 bit 1, the adminless mark, on a role commit only, one byte.
+// spec/wire.md §4 (header flags): field 17 bit 1, the adminless mark, on a role commit only, one byte.
 #[test]
 fn adminless_flag_spec_wire_4() {
     let mut x = role_header("roles.0");

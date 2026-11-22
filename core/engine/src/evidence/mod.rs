@@ -101,8 +101,6 @@ pub struct Write<C, T> {
     /// (keys-open travel) It gives read or above (any `until`) and is no self-removal: a step by
     /// which keys open.
     pub gives_read: bool,
-    /// The remaining admin its header names.
-    pub relies: Option<T>,
     /// The creation of the entry it resets, as its reset names it (spec/permissions.md §2).
     pub creation: Option<CopyId<C, T>>,
     /// (leaves) The things its list root holds a leaf pair for (notes/a3-spec/permissions.md §5.1
@@ -1041,19 +1039,13 @@ where
         p.hops.as_ref().is_some_and(|hops| hops.iter().filter(|h| !h.record).all(|h| first(self.ix.grants.get(&(h.edge, h.need))).is_some_and(|f| f < p.pos)))
     }
 
-    /// The edges body `c` brings: each joined part's path edges, each edge write's remaining
-    /// admin edge.
+    /// The edges body `c` brings: each joined part's path edges.
     fn body_edges(&self, c: &CopyId<C, T>) -> Vec<Edge<T>> {
         let Some(h) = self.ix.copies.get(c) else { return vec![] };
         let mut out = vec![];
         for (p, j) in h.parts.iter().zip(&h.joined) {
             if *j {
                 out.extend(p.hops.iter().flatten().map(|h| h.edge));
-            }
-            if let Kind::Write(w) = &p.kind
-                && let Some(n) = w.relies
-            {
-                out.push((n, c.1));
             }
         }
         out
@@ -1211,7 +1203,7 @@ fn remove_by_key<E: Ord, K: Ord, V: Ord>(m: &mut BTreeMap<E, BTreeMap<K, BTreeSe
 
 /// The closure step (draft §4 Evidence of a commit), from `work` over the held copies: an edge
 /// brings every held copy with a chained write on it; a copy (outside the unit) brings its joined
-/// parts' path edges, its writes' remaining admin edges and the creations their resets name.
+/// parts' path edges and the creations their resets name.
 /// Returns the edges and members it added.
 fn close<C, T, K>(ix: &Ix<C, T, K>, unit: &BTreeSet<T>, cl: &mut Closure<C, T>, mut work: Vec<Item<C, T>>, counts: &mut Counts) -> (Vec<Edge<T>>, Vec<CopyId<C, T>>)
 where
@@ -1243,13 +1235,10 @@ where
                     if *j {
                         work.extend(p.hops.iter().flatten().map(|h| Item::Edge(h.edge)));
                     }
-                    if let Kind::Write(w) = &p.kind {
-                        if let Some(n) = w.relies {
-                            work.push(Item::Edge((n, c.1)));
-                        }
-                        if let Some(cr) = w.creation {
-                            work.push(Item::Copy(cr, Reason::Creation(c)));
-                        }
+                    if let Kind::Write(w) = &p.kind
+                        && let Some(cr) = w.creation
+                    {
+                        work.push(Item::Copy(cr, Reason::Creation(c)));
                     }
                 }
             }

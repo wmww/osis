@@ -151,18 +151,17 @@ fn one_path_reads_each_things_own() {
 }
 
 // spec/wire.md §4: the commit ID, and so the signature, covers `signer`, `path` (a split form's
-// author and entries included) and `remains`.
+// author and entries included).
 #[test]
-fn signer_path_and_remains_are_signed() {
+fn signer_and_path_are_signed() {
     for b in [content(1), split(2)] {
         let c = built(b);
         let k = key().verifying_key();
         verify_signature(&c.id(), &c.sigs, &k).unwrap();
-        let flips: [&dyn Fn(&mut Header); 6] = [
+        let flips: [&dyn Fn(&mut Header); 5] = [
             &|h| h.signer = t(77),
             &|h| h.path = Paths::One(Path::default()),
             &|h| h.path = Paths::One(Path { purge: 0, things: vec![t(2)], direct: 0 }),
-            &|h| h.remains = Some(t(5)),
             &|h| if let Paths::Split(s) = &mut h.path { s.author = None } else { h.signer = t(78) },
             &|h| if let Paths::Split(s) = &mut h.path { s.entries.swap(0, 1) } else { h.signer = t(79) },
         ];
@@ -450,38 +449,18 @@ fn interim_acting_is_the_one_purge_author() {
     r.validate().unwrap();
 }
 
-// spec/wire.md §4 field 17: `remains` sits only on a role commit writing `roles.0`, without the
-// adminless mark.
-#[test]
-fn remains_only_beside_edge_writes() {
-    let mut r = crate::tests::validate::role_header("roles.0");
-    r.remains = Some(t(9));
-    assert_eq!(Header::decode(&r.encode()).unwrap(), r);
-    r.validate().unwrap();
-    let mut x = r.clone();
-    x.adminless = true;
-    assert!(x.validate().is_err(), "beside the adminless mark");
-    let x = Header { remains: Some(t(9)), ..crate::tests::validate::role_header("keys.0") };
-    assert!(x.validate().is_err(), "no edge write");
-    let x = Header { remains: Some(t(9)), ..sample_header() };
-    assert!(x.validate().is_err(), "content commit");
-}
-
-// notes/path-form.md Bytes: a commit writing one thing along the empty path spends 19 bytes on
-// `signer`, `path` and `remains` (16 + 2 + 1); one listed thing adds 16, a remaining admin 16;
+// notes/path-form.md Bytes: a commit writing one thing along the empty path spends 18 bytes on
+// `signer` and `path` (16 + 2); one listed thing adds 16;
 // several things along one path cost what one does; the split form 3 bytes, an author's 16, and
 // an entry per thing (117 B up to four listed things), each section 38 B for its thing's key.
 #[test]
-fn header_bytes_of_signer_path_and_remains() {
+fn header_bytes_of_signer_and_path() {
     let mut h = sample_header();
     h.path = Paths::default();
     let base = h.encode().len();
     let signer = osis_base::cbor::Item::parse(&h.encode(), &osis_base::Limits::new(512, 1 << 20)).unwrap().as_list().unwrap().iter().nth(1).unwrap().bytes().len();
-    assert_eq!((signer, Path::default().encode().len(), 1), (16, 2, 1));
+    assert_eq!((signer, Path::default().encode().len()), (16, 2));
     h.path = Paths::One(Path::through(t(2)));
-    assert_eq!(h.encode().len(), base + 16);
-    h.path = Paths::default();
-    h.remains = Some(t(9));
     assert_eq!(h.encode().len(), base + 16);
     assert_eq!(path_len(&built(content(3)).header), path_len(&built(content(1)).header));
     let mut b = split(2);

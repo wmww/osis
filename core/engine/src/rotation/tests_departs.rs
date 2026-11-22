@@ -405,7 +405,7 @@ fn a_removal_of_ones_own_absent_grant_states_the_empty_path_spec_permissions_2()
     let e = &lp.peers[W].engine;
     let leave = new.iter().filter_map(|id| e.header(id)).find(|hd| hd.kind.is_role()).unwrap();
     let osis_commit::Paths::One(p) = &leave.path else { panic!("one path") };
-    assert!(p.things.is_empty() && leave.frontier.is_none() && leave.remains.is_none(), "{p:?}");
+    assert!(p.things.is_empty() && leave.frontier.is_none(), "{p:?}");
     lp.sync_all().unwrap();
     for i in 0..3 {
         assert_eq!(lp.peers[i].engine.roster(&g).get(&tids[W]), None, "peer {i}");

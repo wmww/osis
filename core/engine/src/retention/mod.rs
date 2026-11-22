@@ -214,7 +214,7 @@ pub(crate) fn own_kept_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &
 }
 
 /// Whether `s` is another node's own cover at a removal (its header's marker, spec/wire.md §4
-/// field 18; spec/permissions.md §5.1, Own cover). It stands on that removal, which may fall (its
+/// field 17; spec/permissions.md §5.1, Own cover). It stands on that removal, which may fall (its
 /// author removed by an admin that never received it), so only the node that wrote it drops a
 /// body under it (spec/commits.md §5 Covered), whether or not the removal is held yet: every other
 /// holder keeps what it held as before.

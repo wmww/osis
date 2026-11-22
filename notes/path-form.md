@@ -4,7 +4,7 @@
 **Principle: a thing's path is header data, readable exactly by the nodes that judge that thing's parts.** A write is never refused or split for its paths (the owner's rule): one commit may write things its signer reaches through different holders.
 
 ## Ahead of the code
-The spec has no `remains` (spec/wire.md §4: `flags` is field 17) and lets `signer` name a key other than its thing's record's; osis-commit still writes `remains` (1 B on every commit, counted below) and a bare tid, until the walk's rebuild (notes/redesign-plan.md, A1 State). The purge-author index 0 is the thing signed as.
+The spec lets `signer` name a key other than its thing's record's; osis-commit writes a bare tid until accounts are ordinary things (notes/redesign-plan.md, A4). The purge-author index 0 is the thing signed as.
 
 ## Who reads a path
 A thing T's path is read by every node that judges T's parts: T's holders, who hold the read roles secrets of T's independent (spec/crypto.md §3, §4: derived, boxed, or below a floor from history entries). A node holding the header but no secret of T's independent at the entry's epoch and no encryption of T's parts never needs T's path: T's content applies nothing there (spec/commits.md §4 Outside the node closure).
@@ -49,8 +49,8 @@ A thing T's path is read by every node that judges T's parts: T's holders, who h
 Each thing's own path with the fewest edges, then the fewest hops marked direct (`write::path_with`, memoized per (thing, role): a far mint ancestor's direct edge giving the need is stated, marked, before the descent, so the write rests on that one edge and a lowering of the record chain (a detach, a removal from the folder) does not drop it; +2 B a commit, for such holders only), through X where acting for X; the clear form where they are read off one `Path` and `clear_tells_nothing` holds; else split. Never a longer route for one thing so one path serves all (a part rests on its stated path's edges alone). Role commits: `write::role_path` (one path, notes/a1-spec/README.md step 3); an account's rotation and seed re-seal state `[0]`. Interim `interim_path`: a commit where no path gives the role (a fire valid by its setting), the Open 16 case. `validity::every_stated_path_is_a_chain_of_held_edges_spec_wire_4` checks honest paths are held chains.
 
 ## Bytes
-`signer` 16, `path`, `remains` 1 (from `thing_cost` and `osis_commit` tests):
-| commit | path bytes (+ signer and remains: 17) |
+`signer` 16, `path` (from `thing_cost` and `osis_commit` tests):
+| commit | path bytes (+ signer: 16) |
 |---|---|
 | own things (`[0]`) | 2 |
 | dependent creation under the account root (`[0]`) | 2 |

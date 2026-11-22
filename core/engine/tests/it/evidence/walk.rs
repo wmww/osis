@@ -140,7 +140,6 @@ impl Node {
                             removal: role.is_none_or(|r| r < Role::Write) && !finalize,
                             gives_write: role.is_some_and(|r| r >= Role::Write),
                             gives_read: role.is_some_and(|r| r >= Role::Read) && !leave,
-                            relies: None,
                             creation: creations.get(&WriteId(c.id, i as u32)).copied(),
                             leaves: vec![],
                         };

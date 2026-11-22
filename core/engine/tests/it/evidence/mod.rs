@@ -55,9 +55,6 @@ fn part(w: &World, ch: &Set, i: Id) -> Part<Id, Thing, Key> {
             removal: w.removes(i).is_some(),
             gives_write: *role >= Role::Write,
             gives_read: *role >= Role::Read && !pw.leave(i),
-            // Interim (issues/last-admin-rule-in-perm-engine.md): the model names no remaining
-            // admin; the field goes with the engine's rule
-            relies: None,
             creation: w.creation(i).map(|j| (pw.cid(j), pw.commits[j].on)),
             leaves: vec![],
         }),

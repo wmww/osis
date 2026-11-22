@@ -320,17 +320,14 @@ pub struct Header {
     /// commit. Its commit ID names the epoch it mints.
     pub rotation: Option<RotationHeader>,
     /// A content snapshot that is its writer's own cover at a removal (spec/permissions.md §5.1,
-    /// Own cover; spec/wire.md §4 field 18): only its writer drops a body under it.
+    /// Own cover; spec/wire.md §4 field 17): only its writer drops a body under it.
     pub own_cover: bool,
     /// A role commit its signer means to leave a thing with no standing admin (spec/wire.md §4
-    /// field 18, bit 1; spec/permissions.md §2 Adminless mark): read only by the writer's check.
+    /// field 17, bit 1; spec/permissions.md §2 Adminless mark): read only by the writer's check.
     pub adminless: bool,
     /// A seed re-seal (spec/wire.md §4): seed boxes of an existing epoch of the account's chain,
     /// only on an account's role commit that is no rotation.
     pub reseal: Option<SeedReseal>,
-    /// The holder of the remaining admin edge the commit's edge writes rely on (spec/wire.md §4
-    /// field 17): laid out, read by nothing yet.
-    pub remains: Option<Tid>,
 }
 
 /// A header's `reseal` (spec/wire.md §4 `Reseal`, spec/crypto.md §9 Custody): the signing key of
@@ -648,7 +645,7 @@ impl Header {
     fn encode_with(&self, out: &mut Vec<u8>, position: &dyn Fn(&Header, &mut Vec<u8>, ListField)) {
         // the flags are trailing, absent when none is set
         let flags = self.flags();
-        put_array(out, if flags != 0 { 19 } else { 18 });
+        put_array(out, if flags != 0 { 18 } else { 17 });
         put_uint(out, FORMAT_VERSION);
         put_tid_bytes(out, &self.signer);
         self.path.put(out);
@@ -666,13 +663,12 @@ impl Header {
         put_opt(out, self.epoch, |out, c| put_bytes(out, &c.0));
         put_opt(out, self.rotation.as_ref(), |out, r| r.put(out));
         put_opt(out, self.reseal.as_ref(), |out, r| r.put(out));
-        put_opt(out, self.remains.as_ref(), put_tid_bytes);
         if flags != 0 {
             put_uint(out, flags);
         }
     }
 
-    /// The header's `flags` (spec/wire.md §4 field 18): bit 0 own cover, bit 1 adminless.
+    /// The header's `flags` (spec/wire.md §4 field 17): bit 0 own cover, bit 1 adminless.
     fn flags(&self) -> u64 {
         u64::from(self.own_cover) | u64::from(self.adminless) << 1
     }
@@ -936,15 +932,15 @@ impl Header {
             return Err(Error::Malformed("format version"));
         }
         let all: Vec<Item> = items.into_iter().collect();
-        let flags = match all.get(18) {
+        let flags = match all.get(17) {
             None => 0,
-            Some(m) if all.len() == 19 => match item::uint(*m)? {
+            Some(m) if all.len() == 18 => match item::uint(*m)? {
                 f @ 1..=3 => f,
                 _ => return Err(Error::Malformed("header flags")),
             },
             Some(_) => return Err(Error::Malformed("header arity")),
         };
-        let Some([_, signer, path, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation, reseal, remains]) = all.get(..18).and_then(|x| <[Item; 18]>::try_from(x).ok()) else {
+        let Some([_, signer, path, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation, reseal]) = all.get(..17).and_then(|x| <[Item; 17]>::try_from(x).ok()) else {
             return Err(Error::Malformed("header arity"));
         };
         let signer = item::tid(signer)?;
@@ -968,7 +964,6 @@ impl Header {
             reseal: item::opt(reseal)?.map(SeedReseal::read).transpose()?,
             own_cover: flags & 1 != 0,
             adminless: flags & 2 != 0,
-            remains: item::opt(remains)?.map(item::tid).transpose()?,
         };
         h.take_position(ListField::Aspects, aspects, stored)?;
         h.take_position(ListField::Purge, purge, stored)?;

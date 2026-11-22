@@ -70,14 +70,12 @@ pub struct CommitBuilder {
     /// A rotation of the account's signing chain, with, for a merge certificate, a key per tip
     /// it names (in that order) signing the merge epoch's ID.
     pub rotation: Option<(RotationHeader, Vec<SigningSecret>)>,
-    /// The own-cover marker (spec/wire.md §4 field 18).
+    /// The own-cover marker (spec/wire.md §4 field 17).
     pub own_cover: bool,
     /// The adminless mark (`Header::adminless`).
     pub adminless: bool,
     /// A seed re-seal of an epoch of the signing account's chain (spec/crypto.md §9, Custody).
     pub reseal: Option<SeedReseal>,
-    /// The holder of the remaining admin edge its edge writes rely on (spec/wire.md §4 field 17).
-    pub remains: Option<Tid>,
     /// The blob bound the commit is checked against: `MAX_BLOB` (tests shrink it).
     pub(crate) max_blob: usize,
 }
@@ -125,7 +123,7 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, signer: Tid, path: Path, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, signer, path, split: None, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, account: None, rotation: None, reseal: None, remains: None, own_cover: false, adminless: false, max_blob: MAX_BLOB }
+        CommitBuilder { kind, ts, signer, path, split: None, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, account: None, rotation: None, reseal: None, own_cover: false, adminless: false, max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
@@ -215,7 +213,6 @@ impl CommitBuilder {
             epoch: self.account.as_ref().map(|a| a.epoch),
             rotation: self.rotation.as_ref().map(|r| r.0.clone()),
             reseal: self.reseal.clone(), own_cover: self.own_cover, adminless: self.adminless,
-            remains: self.remains,
         };
         if self.rotation.as_ref().is_some_and(|(r, keys)| r.names.len() != keys.len()) {
             return Err(Error::Build("a merge signature per named tip"));

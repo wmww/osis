@@ -2744,7 +2744,7 @@ fn listed(lp: &mut LocalPeer, peer: usize, r: &CommitId) -> Vec<CommitId> {
     }).collect()
 }
 
-/// The own covers among `ids` (spec/wire.md §4 field 18), as `peer` holds them.
+/// The own covers among `ids` (spec/wire.md §4 field 17), as `peer` holds them.
 fn own_covers(lp: &LocalPeer, peer: usize, ids: &[CommitId]) -> Vec<CommitId> {
     ids.iter().copied().filter(|c| lp.peers[peer].engine.header(c).is_some_and(|h| h.own_cover)).collect()
 }

@@ -17,7 +17,7 @@ fn hop(a: u16, b: u16) -> Hop<u16> {
     Hop { edge: (a, b), record: false, need: Need::Role(osis_base::Role::Write) }
 }
 fn write(holder: u16) -> Kind<u32, u16> {
-    Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, relies: None, creation: None, leaves: vec![] })
+    Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, creation: None, leaves: vec![] })
 }
 
 fn minus(a: Counts, b: Counts) -> Counts {
@@ -358,7 +358,7 @@ impl Lists {
     }
     /// A removal of `holder` from `on` with leaves for `leaves`.
     fn removal(&mut self, holder: u16, on: u16, leaves: Vec<u16>) -> (u32, u16) {
-        self.add(on, Kind::Write(Write { holder, grant: None, removal: true, gives_write: false, gives_read: false, relies: None, creation: None, leaves }), vec![rec(X, on)])
+        self.add(on, Kind::Write(Write { holder, grant: None, removal: true, gives_write: false, gives_read: false, creation: None, leaves }), vec![rec(X, on)])
     }
     /// A sync ID of `d`, A granted write on it (by its record), the grant a body there.
     fn doc(&mut self, d: u16) {

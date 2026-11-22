@@ -44,10 +44,6 @@ impl Header {
                 }
             }
         }
-        // the remaining admin rides on a role commit's edge writes (spec/wire.md §4 field 17)
-        if self.remains.is_some() && (self.kind != Kind::Role || self.adminless || !self.aspects.iter().any(|a| a.ak.as_str() == "roles.0")) {
-            return Err(Error::Invalid("remains outside a role commit's edge writes, or beside the adminless mark"));
-        }
 
         let kind = self.kind;
         // session form belongs to content commits: role writes are commit form, so no later commit
@@ -161,11 +157,11 @@ impl Header {
                 return Err(Error::Invalid("merge certificate carrying more than its join"));
             }
         }
-        // the adminless mark is a role commit's (spec/wire.md §4 field 18)
+        // the adminless mark is a role commit's (spec/wire.md §4 field 17)
         if self.adminless && kind != Kind::Role {
             return Err(Error::Invalid("adminless mark not on a role commit"));
         }
-        // an own cover is a durable content snapshot (spec/wire.md §4 field 18)
+        // an own cover is a durable content snapshot (spec/wire.md §4 field 17)
         if self.own_cover && (kind != Kind::ContentSnapshot || self.ephemeral.is_some()) {
             return Err(Error::Invalid("own cover not a durable content snapshot"));
         }

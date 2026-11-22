@@ -5074,15 +5074,15 @@ fn one_path_in_the_clear_only_where_it_shows_no_reader_another_roster_spec_wire_
 }
 
 // spec/wire.md §4 field 2; notes/path-form.md One path: a creation states one path in the
-// clear: under the account root along the empty path (19 B on `signer`, `path`, `remains`); under a
-// parent the signer holds by a grant along `[D]` (35 B), the new thing one record edge past it. A
+// clear: under the account root along the empty path (18 B on `signer` and `path`); under a
+// parent the signer holds by a grant along `[D]` (34 B), the new thing one record edge past it. A
 // write acting for D whose path to E does not go through D states the Interim `[D]` (Open 16).
 #[test]
 fn the_engine_states_one_path_for_a_creation_spec_wire_4() {
     let path_bytes = |h: &osis_commit::Header| {
         let all = h.encode();
         let l = osis_base::cbor::Item::parse(&all, &osis_base::Limits::new(512, 1 << 24)).unwrap().as_list().unwrap();
-        [1, 2, 17].iter().map(|i| l.get(*i).unwrap().bytes().len()).sum::<usize>()
+        [1, 2].iter().map(|i| l.get(*i).unwrap().bytes().len()).sum::<usize>()
     };
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
@@ -5091,7 +5091,7 @@ fn the_engine_states_one_path_for_a_creation_spec_wire_4() {
     let h = lp.peers[0].engine.header(&made(&lp, 0, t)).unwrap();
     assert!(h.things().len() > 1, "a creation writes the thing and its holder");
     assert_eq!(h.path, osis_commit::Paths::One(osis_commit::Path::default()));
-    assert_eq!(path_bytes(&h), 19);
+    assert_eq!(path_bytes(&h), 18);
     // under a parent Bob holds by a grant
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Admin)), None);
@@ -5102,7 +5102,7 @@ fn the_engine_states_one_path_for_a_creation_spec_wire_4() {
     lp.peers[1].commit(m).unwrap();
     let h = lp.peers[1].engine.header(&made(&lp, 1, x)).unwrap();
     assert_eq!(h.path, osis_commit::Paths::One(osis_commit::Path { purge: 0, things: vec![t], direct: 0 }));
-    assert_eq!(path_bytes(&h), 35);
+    assert_eq!(path_bytes(&h), 34);
     let (_, d, _, _, c) = acting_on_two();
     assert_eq!(c.header.things().len(), 2);
     assert_eq!(c.header.path, osis_commit::Paths::One(osis_commit::Path::through(d)));

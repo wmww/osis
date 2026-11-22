@@ -43,8 +43,8 @@ fn invite(role: Role, invite: Role) -> ct::Edge {
 /// leaves T1 itself; B invites D to T4 by H4's invite and C invites B by its own; a timed grant
 /// on T1 ends and B finalizes it; C redeems a single-use link to T7; on T6, B grants D write and
 /// writes content only C receives, A removes B (the grant falls), and C writes an addendum for the
-/// content, then leaves T6 itself (an admin's leave, naming a remaining admin); A removes
-/// C from T8, which A reaches by a descent of two steps (naming a remaining admin). With
+/// content, then leaves T6 itself (an admin's leave); A removes
+/// C from T8, which A reaches by a descent of two steps. With
 /// `interim`, every node's role commits state the Interim empty path.
 pub(crate) fn world(interim: bool) -> World {
     let (mut lp, ps) = people(4);
@@ -230,12 +230,9 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
                 };
                 *seen.entry(kind).or_default() += 1;
             }
-            if h.remains.is_some() {
-                *seen.entry("remains").or_default() += 1;
-            }
         }
     }
-    for k in ["leave", "leave through a holder", "redemption", "invite", "finalize", "admin edge write", "rotation", "remains"] {
+    for k in ["leave", "leave through a holder", "redemption", "invite", "finalize", "admin edge write", "rotation"] {
         assert!(seen.contains_key(k), "no {k}: {seen:?}");
     }
     assert!(lens.contains_key(&1) && lens.contains_key(&3), "paths through one and three holders: {lens:?}");
@@ -247,7 +244,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
 
 /// The new walk (`osis_perm::paths`, notes/perm-paths.md) over the role commits engine `e` holds
 /// as it holds them: each edge write a part along the path its commit states for its target (the
-/// old walk's own reading of its value and frontier, the header's `remains` and adminless mark);
+/// old walk's own reading of its value and frontier);
 /// `e`'s trust set; records for every thing named. With each edge part's
 /// old-walk ID and target.
 pub(crate) fn new_walk(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTreeMap<osis_perm::WriteId, (osis_perm::WriteId, Tid)>) {
@@ -362,12 +359,11 @@ fn one_path(h: &osis_commit::Header) -> Vec<Tid> {
     p.things.clone()
 }
 
-// spec/permissions.md §1 Path, §2 Self-removal, §1 The last admin: B, admin of holder H,
-// removes H from T, where B's only admin on T is through H: a self-removal (its path, [H], ends at
-// the holder), carrying no frontier and naming T's mint admin A as the admin that remains
-// (roles-model `an_honest_holder_leave_is_no_dispute`: K makes A2 leave T1 by [A2], naming A).
+// spec/permissions.md §1 Path, §2 Self-removal: B, admin of holder H, removes H from T, where
+// B's only admin on T is through H: a self-removal (its path, [H], ends at the holder), carrying
+// no frontier (roles-model `an_honest_holder_leave_is_no_dispute`: K makes A2 leave T1 by [A2]).
 // With a direct admin grant of its own on T, the same removal is explicit: the empty path, a
-// frontier, and B's own edge the last edge, nothing named.
+// frontier, and B's own edge the last edge.
 #[test]
 fn removing_the_holder_one_acts_through_is_a_self_removal_spec_permissions_2() {
     for direct in [false, true] {
@@ -385,9 +381,9 @@ fn removing_the_holder_one_acts_through_is_a_self_removal_spec_permissions_2() {
         for i in 0..2 {
             let (hd, st) = newest_write(&lp, i, t, h);
             if direct {
-                assert!(one_path(&hd).is_empty() && hd.frontier.is_some() && hd.remains.is_none(), "peer {i}: {:?} {:?}", hd.path, hd.remains);
+                assert!(one_path(&hd).is_empty() && hd.frontier.is_some(), "peer {i}: {:?}", hd.path);
             } else {
-                assert!(one_path(&hd) == [h] && hd.frontier.is_none() && hd.remains == Some(pa), "peer {i}: {:?} {:?}", hd.path, hd.remains);
+                assert!(one_path(&hd) == [h] && hd.frontier.is_none(), "peer {i}: {:?}", hd.path);
             }
             assert_eq!(st, Some(osis_perm::paths::Status::Applied), "peer {i} direct {direct}");
             assert!(walks_differ(&lp.peers[i].engine).is_empty(), "peer {i}: {:?}", walks_differ(&lp.peers[i].engine));

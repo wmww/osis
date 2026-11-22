@@ -575,48 +575,6 @@ fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(T
     Ok(one)
 }
 
-/// The holder whose edge on `t` an edge write of `plan` stating `path` names as its remaining
-/// admin (header `remains`, spec/permissions.md §1 The last admin), where the commit
-/// takes a standing admin edge of `t` (`edges`: its edge writes, (target, holder, new edge)) and
-/// its path's last edge into `t` is none, one it takes, or standing no more with the commit's
-/// writes in effect. The last edge is the path's final hop where that is one edge from its end Ak
-/// (the signer for the empty path): Ak's direct edge, or `t`'s record edge where Ak is its mint
-/// admin; a descent of two steps and a self-removal's path have none. Named, among the holders
-/// whose edge stands as a standing admin with the commit's writes in effect and that the commit
-/// does not take: `t`'s mint admin (its record edge, the last edge of a descent the write already
-/// rests on); else one the commit leaves as it is (its writes ordered before the lowering or not,
-/// it stands either way), the least by tid; else one it raises. None where there is none (the
-/// last-admin rule then refuses the write).
-fn remains_of(core: &Core, plan: &CommitPlan, path: &osis_commit::Path, edges: &[(Tid, Tid, Option<osis_perm::Edge>)]) -> Option<Tid> {
-    let standing = |e: Option<&osis_perm::Edge>| e.is_some_and(|e| e.role == Role::Admin && e.until.is_none());
-    let (t, _, _) = edges.first()?;
-    let held: BTreeMap<Tid, osis_perm::Edge> = match core.timelines.on(t) {
-        Some(on) => on.holders().into_iter().collect(),
-        None => core.mint_admin(t).map(|a| (a, osis_perm::Edge::new(Role::Admin))).into_iter().collect(),
-    };
-    let written: BTreeMap<Tid, Option<osis_perm::Edge>> = edges.iter().map(|(_, h, e)| (*h, *e)).collect();
-    let after = |h: &Tid| match written.get(h) {
-        Some(e) => standing(e.as_ref()),
-        None => standing(held.get(h)),
-    };
-    let taken: BTreeSet<Tid> = written.iter().filter(|(h, e)| standing(held.get(h)) && !standing(e.as_ref())).map(|(h, _)| *h).collect();
-    if taken.is_empty() {
-        return None;
-    }
-    let end = path.things.last().copied().unwrap_or(plan.signer);
-    let mint = |x: &Tid| plan.creates.get(x).or_else(|| core.created(x)).and_then(CreationRecord::mint_admin);
-    let up_two = std::iter::successors(mint(t).and_then(|p| mint(&p)), |a| mint(a)).take(osis_base::format::MAX_CHAIN_DEPTH).any(|a| a == end);
-    // a final hop marked direct is one edge: the end's direct edge
-    let marked = path.direct >> path.to(t).len() & 1 == 1;
-    let leave = matches!(role_way(core, plan, t, edges), Some(RoleWay::Leave(_)));
-    let last = (!leave && (!up_two || marked)).then_some(end);
-    if last.is_some_and(|l| !taken.contains(&l) && after(&l)) {
-        return None;
-    }
-    let cands: BTreeSet<Tid> = held.keys().chain(written.keys()).copied().filter(|h| !taken.contains(h) && after(h)).collect();
-    mint(t).filter(|m| cands.contains(m)).or_else(|| cands.iter().find(|h| !written.contains_key(h)).or_else(|| cands.iter().next()).copied())
-}
-
 #[cfg(test)]
 thread_local! {
     /// Lib tests (`apply::tests_validity::split_and_clear_forms_apply_alike_spec_wire_4`): every
@@ -1017,7 +975,6 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, osis_commit::Path::default(), plan.form);
     match stated {
         Stated::One(p) => {
-            b.remains = if tx.core.interim_role_paths || adminless { None } else { remains_of(tx.core, &plan, &p, &edges) };
             b.path = p;
         }
         Stated::Split(author, paths) => {
