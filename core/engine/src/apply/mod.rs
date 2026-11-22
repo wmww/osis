@@ -633,11 +633,10 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.signer, acting]).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
     let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created(t).cloned().or_else(|| carried.get(t).cloned()) };
     let record = |t: &Tid| -> Option<CreationRecord> { held.get(t).cloned().or_else(|| carried.get(t).cloned()) };
-    let Some(author) = record(&h.signer) else { return Ok(Exam::Awaits(Reason::MissingChain(h.signer))) };
-    // it acts for one thing on all: the commit awaits its record
-    if record(&acting).is_none() {
-        return Ok(Exam::Awaits(Reason::UnknownCreated(acting)));
-    }
+    let author = match header_wait(&h, &record) {
+        Ok(a) => a,
+        Err(r) => return Ok(Exam::Awaits(r)),
+    };
     // a part it cannot judge (its thing's record, record chain or the author's reach) waits; with
     // every held part such the commit is unjudgeable (spec/commits.md §4), found before a missing
     // epoch or a `ts` ahead names another wait
@@ -898,6 +897,14 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     Ok(judged)
 }
 
+/// The signer's record of commit `h`, else what it waits for whole: that record, or the record
+/// of the thing it acts for on all (Interim, notes/a1-spec/README.md step 3: its one purge author).
+fn header_wait(h: &Header, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> std::result::Result<CreationRecord, Reason> {
+    let author = record(&h.signer).ok_or(Reason::MissingChain(h.signer))?;
+    let acting = h.purge_author();
+    record(&acting).map(|_| author).ok_or(Reason::UnknownCreated(acting))
+}
+
 /// What thing `a.tid` waits for: its `created.0` record, the record chain up to a key actor, the
 /// author's chain certificates (spec/permissions.md §4). A function of the thing, not of the part.
 fn thing_wait(
@@ -930,14 +937,14 @@ fn thing_wait(
 }
 
 /// Whether part `ai` of an applied commit (`h`, its view `view`), held or not, cannot be judged
-/// here (spec/commits.md §4 Unjudgeable): the author's or the acting thing's record is not held,
-/// its thing's path opens nowhere here (a split commit's, spec/wire.md §4 `Split`), or what
-/// `thing_wait` reads of its thing is missing; the rule `examine` reads of a held part. Its
-/// validity flag reads false meanwhile, but it is not judged invalid (`retention::drops_invalid`).
+/// here (spec/commits.md §4 Unjudgeable): what `examine` waits for, read from the held records
+/// (`header_wait`, `thing_wait`), or its thing's path opens nowhere here (a split commit's,
+/// spec/wire.md §4 `Split`). Its validity flag reads false meanwhile, but it is not judged
+/// invalid (`retention::drops_invalid`).
 pub(crate) fn unjudgeable(core: &crate::engine::Core, h: &Header, view: &crate::engine::View, ai: usize) -> bool {
     let Some(a) = h.aspects.get(ai) else { return false };
     let held = |t: &Tid| core.created(t).cloned();
-    held(&h.signer).is_none() || held(&h.purge_author()).is_none() || view.paths.as_deref().is_some_and(|p| !p.contains_key(&a.tid)) || thing_wait(core, h, a, &held, &|t, core| core.created(t).cloned()).is_some()
+    header_wait(h, &held).is_err() || view.paths.as_deref().is_some_and(|p| !p.contains_key(&a.tid)) || thing_wait(core, h, a, &held, &|t, core| core.created(t).cloned()).is_some()
 }
 
 /// Applies or stores one decoded commit blob.

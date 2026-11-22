@@ -345,3 +345,40 @@ fn a_part_missing_again_that_turns_invalid_drops_as_invalid() {
     }
     assert_eq!(f.lp.peers[3].engine.roster(&y), f.lp.peers[2].engine.roster(&y));
 }
+
+// spec/commits.md §5 Invalid, spec/permissions.md §6 Invalid deltas: a part never received that a
+// node judges invalid is dropped as invalid with no body, not fetched; valid again (the other side
+// taken) it counts as never received, is fetched and applies. `a`, past its backdated removal of
+// `b`, writes two aspects of `t` in one commit; peer 3, on `b`'s side, receives one part only;
+// peer 2 receives that part before the removals, judging it valid first, and ends alike.
+#[test]
+fn a_part_never_received_dropped_as_invalid_is_fetched_once_valid() {
+    use crate::common::{ak, s, REG, TAGS};
+    let mut f = fight(4);
+    let (w, r, t) = (f.w.clone(), f.r.clone(), f.t);
+    let mut m = osis_engine::Mutation::new();
+    m.set(t, &REG, &s("x")).unwrap();
+    m.set(t, &TAGS, &osis_base::Value::Set([s("a")].into_iter().collect())).unwrap();
+    let id = f.lp.peers[0].commit(m).unwrap().unwrap();
+    send_carried(&mut f.lp, 1, 3, &w);
+    send_carried(&mut f.lp, 0, 3, &r);
+    let h = f.lp.peers[0].engine.header(&id).unwrap();
+    let tags = h.aspects.iter().position(|a| a.ak.as_str() == "t:tags.0").unwrap();
+    let reg = h.aspects.iter().position(|a| a.ak.as_str() == "t:reg.0").unwrap();
+    let pk = f.lp.peers[0].engine.package_of_parts(&id, &BTreeSet::from([tags])).unwrap().unwrap();
+    f.lp.deliver(3, &pk).unwrap();
+    f.lp.deliver(2, &pk).unwrap();
+    assert!(f.lp.peers[2].engine.commit_parts_missing().get(&id).is_some_and(|m| m.contains(&reg)), "valid: fetched");
+    send_carried(&mut f.lp, 1, 2, &w);
+    send_carried(&mut f.lp, 0, 2, &r);
+    assert_eq!(f.lp.peers[2].engine.commit_parts_missing().get(&id), f.lp.peers[3].engine.commit_parts_missing().get(&id), "either order");
+    let p = &mut f.lp.peers[3];
+    assert_ne!(p.engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("x")));
+    assert!(p.engine.commit_parts_missing().get(&id).is_some_and(|m| !m.contains(&reg)), "b's side: the part never received is not fetched");
+    let (ds, _) = p.engine.disputes(usize::MAX);
+    let d = ds.iter().find(|d| d.side.is_some_and(|s| s.trust)).expect("b's side taken by default").clone();
+    p.engine.choose(d.commit, d.op, d.holder, false).unwrap();
+    assert!(p.engine.commit_parts_missing().get(&id).is_some_and(|m| m.contains(&reg)), "a's side: it is fetched");
+    send_carried(&mut f.lp, 0, 3, &[id]);
+    assert_eq!(f.lp.peers[3].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("x")));
+}
