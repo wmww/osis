@@ -482,11 +482,7 @@ fn touched_walk(d: &Fragment, t: &Paths, path: &mut Vec<Step>, out: &mut PagedTo
         if matches!(d, Fragment::Seq(_)) {
             out.seqs.insert(path.clone(), d.clone());
         }
-        let values: std::collections::BTreeSet<&Value> = match d {
-            Fragment::Map(m) => m.entries.keys().filter_map(Eid::key).collect(),
-            Fragment::Set(x) => x.elems.values().flat_map(crate::fragment::Elem::references).collect(),
-            _ => Default::default(),
-        };
+        let values: std::collections::BTreeSet<&Value> = dots.iter().flat_map(|x| d.dot_values(x)).collect();
         if !values.is_empty() {
             out.values.entry(path.clone()).or_default().extend(values.into_iter().cloned());
         }
