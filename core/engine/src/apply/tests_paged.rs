@@ -2126,6 +2126,60 @@ fn commits_sharing_pages_are_each_woken_once_per_page_spec_commits_4() {
     assert_eq!(get("examine"), 2, "each examined once, when it lacks nothing");
 }
 
+/// spec/requirements.md (peer input never causes unbounded allocation): a waiting commit keeps
+/// only what it lacks. W forged commits linking one held tree of L links, each lacking a page
+/// never sent, keep W frontiers: walk memory O(W + L), at W and 10W, never O(W × L) (each walk
+/// keeping the tree it reached).
+#[test]
+fn commits_over_one_held_tree_keep_only_what_they_lack_spec_commits_4() {
+    // room in a root list for more than one link
+    let params = osis_crdt::PageParams { target: 1000, ..small_pages() };
+    let _pages = osis_crdt::PageParams::set_test(Some(params));
+    let a = aks()[1].clone();
+    let mut w = world_under(params);
+    let map = |n: u64| Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, 0))).collect());
+    let forge = |w: &mut World, reroot: Option<Reroot<'_>>| {
+        w.lp.advance(1_000);
+        let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
+        let mut wr = osis_crdt::Writer::new(now, made_up(0x80), 1 << 40);
+        let f = osis_crdt::create(&mut wr, &osis_crdt::AnyView, &map(200)).unwrap();
+        forge_snapshot_in(w, 0, &a, now, f, &|_, _| {}, false, reroot)
+    };
+    let held = forge(&mut w, None);
+    let delta = &osis_commit::CommitBlob::decode(&held.bytes).unwrap().parts[0].delta;
+    let mut top = Vec::new();
+    osis_base::visit_link_sites(delta, &osis_base::Limits::DEFAULT, &mut |s| {
+        if let (osis_base::LinkSite::List { links, .. }, true) = (s, top.is_empty()) {
+            top = links;
+        }
+    })
+    .unwrap();
+    let e = &mut w.lp.peers[3].engine;
+    e.ingest(&held.bytes, Vec::new()).unwrap();
+    e.put_blobs(held.blobs.clone()).unwrap();
+    assert!(e.pending().is_empty(), "the tree's commit applied");
+    let links = held.blobs.len();
+    assert!(links >= 20 && top.len() >= 2, "{links} links, {} in the root list", top.len());
+    let mut kept = Vec::new();
+    let mut made = 0u64;
+    for n in [3, 30] {
+        while made < n {
+            made += 1;
+            // the held tree's root list, its first link a page never sent
+            let mut lacked = top[0];
+            lacked.blob.0[..8].copy_from_slice(&made.to_le_bytes());
+            let reroot: Reroot<'_> = &|_, _| std::iter::once(lacked).chain(top.iter().skip(1).copied()).collect();
+            let pk = forge(&mut w, Some(reroot));
+            w.lp.peers[3].engine.ingest(&pk.bytes, Vec::new()).unwrap();
+        }
+        let e = &w.lp.peers[3].engine;
+        assert_eq!(e.pending().len() as u64, n);
+        kept.push(e.core.walks.kept_entries());
+    }
+    // each walk: the page it lacks and the tree it lies in
+    assert_eq!(kept, [2 * 3, 2 * 30], "walk entries kept at 3 and 30 commits over {links} links");
+}
+
 /// spec/wire.md §6 (page by page), notes/decode-bounds.md (Link trees): a page that makes its
 /// tree refusable refuses the commit's part as soon as it is held, delivered one page at a time:
 /// arriving first (held before the link page naming it), while a sibling page stays missing for
