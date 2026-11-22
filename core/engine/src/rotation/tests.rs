@@ -2689,6 +2689,9 @@ fn derived_write_after_own_secrets_is_merged_spec_crypto_4() {
     // owed nothing, judged without letting go of it (a read writes nothing); a run lets go
     lp.peers[1].engine.run(|tx| {
         tx.core.ix.derived_written.upsert(t, std::collections::BTreeSet::new, |s| s.extend(noted.iter().copied()));
+        for e in &noted {
+            tx.txn.put_local(&crate::rotation::merge::key(&t, e), &[], osis_store::Shred::No)?;
+        }
         Ok(())
     }).unwrap();
     assert!(!lp.peers[1].engine.role_duty_due(&t).unwrap(), "a carried epoch is not current");

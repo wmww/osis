@@ -965,6 +965,8 @@ pub(crate) struct CoreMark {
     written: usize,
     /// `accounts_undo`'s length.
     accounts: usize,
+    /// `epochs_judged_from`: what the restored judgment of the account's epochs was made from.
+    epochs_judged_from: Option<crate::flows::account::JudgedFrom>,
     events: usize,
     commits_named: usize,
     listed_before: usize,
@@ -1745,6 +1747,7 @@ impl Core {
             schemas: self.schemas.mark(),
             written: self.written.len(),
             accounts: self.accounts_undo.len(),
+            epochs_judged_from: self.epochs_judged_from,
             events: self.events.queued(),
             commits_named: self.commits_named.len(),
             listed_before: self.listed_before.len(),
@@ -1853,13 +1856,16 @@ impl Core {
         self.wrote_on.truncate(m.wrote_on);
         self.batched = m.batched;
         self.fallen = m.fallen;
+        self.epochs_judged_from = m.epochs_judged_from;
         self.memory_tx = m.memory_tx;
     }
 
     /// What `rollback_to` does with each field: fails to compile when a field is added, so every
     /// new one is classified. A cache filled from a restored field goes in the dropped class.
-    #[allow(dead_code)]
-    fn rollback_classes(c: &Core) {
+    /// Returns the fields set outside transactions, which every transaction leaves as they were
+    /// (debug builds compare them around each: one a transaction writes belongs in another class).
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    fn rollback_classes(c: &Core) -> String {
         let Core {
             // restored to the mark: journaled (`ix`, `sides`, `schemas`; `timelines` follows `ix.held`)
             // or copied or cut back to its length
@@ -1878,7 +1884,7 @@ impl Core {
             accounts: _,
             left: _,
             accounts_undo: _,
-            compaction: _,
+            epochs_judged_from: _,
             stale_things: _,
             stale_authors: _,
             stale_under: _,
@@ -1957,9 +1963,6 @@ impl Core {
             // caches, dropped when anything changed (`states` and `pages` per written aspect)
             states: _,
             pages: _,
-            rotation_seq: _,
-            place: _,
-            epochs_judged_from: _,
             waits: _,
             touches: _,
             generation: _,
@@ -1968,6 +1971,12 @@ impl Core {
             memory_generation: _,
             // work lists and hints a superset of which is harmless (the consumer re-checks each
             // entry against the restored state), and what a step only moves forward
+            signing_due: _,
+            rotation_seq: _,
+            place: _,
+            // the trigger's estimates and arms: a failed write counted more than landed, which
+            // costs a weighing at most
+            compaction: _,
             drop_due: _,
             kept_due: _,
             kept_things_due: _,
@@ -2003,32 +2012,34 @@ impl Core {
             replaced_reads: _,
             death_walks: _,
             rebuilds: _,
-            // set outside steps: identity, configuration, node-sync's settings, test hooks, what
-            // a transaction's end records
+            // set at each transaction's start, and what its end records (taken at the commit,
+            // dropped at a rollback)
+            time: _,
             walks_done: _,
-            id: _,
-            detect: _,
-            walk_cache_min: _,
-            key_salt: _,
-            addenda_on: _,
-            skip_writer_rules: _,
-            interim_role_paths: _,
-            leave_adminless: _,
-            commits_watched: _,
-            refs_watched: _,
-            commit_listeners: _,
-            forge_bad: _,
+            // set outside transactions: identity, configuration, node-sync's settings; checked
+            // unchanged by every transaction (the value below, `Engine::run`)
+            id,
+            detect,
+            walk_cache_min,
+            key_salt,
+            addenda_on,
+            skip_writer_rules,
+            interim_role_paths,
+            leave_adminless,
+            commits_watched,
+            refs_watched,
+            commit_listeners,
+            forge_bad,
+            key_actors,
+            held_keys,
+            followed_links,
+            account,
+            keep_bodies,
+            list_bound,
+            sourced_elsewhere,
+            // test hooks and debug bookkeeping, set and taken anywhere
             forged: _,
             header_fault: _,
-            key_actors: _,
-            held_keys: _,
-            followed_links: _,
-            account: _,
-            time: _,
-            signing_due: _,
-            keep_bodies: _,
-            list_bound: _,
-            sourced_elsewhere: _,
             #[cfg(debug_assertions)]
             unchecked_tx: _,
             #[cfg(debug_assertions)]
@@ -2053,6 +2064,15 @@ impl Core {
             #[cfg(test)]
             faults: _,
         } = c;
+        let actors = |m: &mut dyn Iterator<Item = &Tid>| m.copied().collect::<Vec<_>>();
+        format!(
+            "{:?}",
+            (
+                (id.tid(), detect, walk_cache_min, key_salt, addenda_on, skip_writer_rules, interim_role_paths, leave_adminless),
+                (commits_watched, refs_watched, commit_listeners.is_some(), forge_bad, keep_bodies, list_bound, sourced_elsewhere),
+                (actors(&mut key_actors.keys()), actors(&mut held_keys.keys()), followed_links.all(), account.get()),
+            )
+        )
     }
 
     /// Begins new plain and expiring sessions (spec/crdt.md §2.1), once an own session-form
@@ -3123,6 +3143,9 @@ impl Engine {
         {
             self.core.unchecked_tx = false;
         }
+        // debug builds: what is set outside transactions, which this one leaves as it is
+        #[cfg(debug_assertions)]
+        let outside = memo::unrecorded(|| Core::rollback_classes(&self.core));
         // debug builds: whether the transaction changed a state or a part
         #[cfg(debug_assertions)]
         let mut changed = false;
@@ -3343,6 +3366,8 @@ impl Engine {
                     self.core.timelines.aside().saved(d);
                 }
                 self.core.commit_journal();
+                #[cfg(debug_assertions)]
+                assert_eq!(memo::unrecorded(|| Core::rollback_classes(&self.core)), outside, "a transaction changed what is set outside transactions (`Core::rollback_classes`)");
                 // the blob waits wanting what it held are due (`apply::reach::Walks`)
                 for b in &newly_held {
                     self.core.walks.held(b);
@@ -3387,8 +3412,10 @@ impl Engine {
                 crate::apply::reach::rolled_back(&mut self.core, walked);
                 #[cfg(debug_assertions)]
                 {
+                    assert_eq!(memo::unrecorded(|| Core::rollback_classes(&self.core)), outside, "a rolled-back transaction changed what is set outside transactions (`Core::rollback_classes`)");
                     osis_base::trace::mark_since(trace_mark, " (rolled back)");
                     osis_base::trace::note(|| format!("tx rolled back at {}:{}: {e:?} ({e})", caller.file().rsplit("src/").next().unwrap_or(caller.file()), caller.line()));
+                    self.check_rolled_back();
                 }
                 Err(e)
             }
@@ -3486,6 +3513,15 @@ impl Engine {
         // key actors are derived: held exactly while `hold_key_actor` or a followed link names them
         let named: BTreeSet<Tid> = self.core.held_keys.keys().chain(self.core.followed_links.all().values().map(|(_, l)| l)).copied().collect();
         assert_eq!(self.core.key_actors.keys().copied().collect::<BTreeSet<_>>(), named, "key actors: held or named by a followed link");
+        // each account taken up holds exactly the seeds in custody (what an open takes up)
+        let held: Vec<(Tid, BTreeSet<osis_crypto::VerifyingKey>)> = self.core.accounts.iter().map(|(p, a)| (*p, a.keys.keys().copied().collect())).collect();
+        for (p, keys) in held {
+            let kept = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(|tx| crate::flows::custody::seeds(tx, &p)))));
+            match kept {
+                Err(e @ Error::Store(_)) => return Err(e),
+                r => assert_eq!(r.map(|s| s.into_keys().collect::<BTreeSet<_>>()).ok(), Some(keys), "account {p:?}: the seeds taken up, as in custody"),
+            }
+        }
         match self.checked_closure() {
             Err(e @ Error::Store(_)) => return Err(e),
             r => assert!(r.is_ok(), "node closure walked afresh: {:?}", r.err()),
@@ -3657,6 +3693,25 @@ impl Drop for Engine {
 
 #[cfg(debug_assertions)]
 impl Engine {
+    /// Debug builds, after a rolled-back transaction: memory is what the store loads
+    /// (`check_index`: an open and a rebuild of it), so a field a rollback leaves changed fails
+    /// the transaction that changed it, not a later reload or a restart. Skipped as the drop's
+    /// check is, and where the rolled-back write's outcome is unknown.
+    fn check_rolled_back(&mut self) {
+        if std::thread::panicking() || self.loading || self.store.writes().unknown != self.failed_seen.1 || !osis_base::testenv::end_checks() {
+            return;
+        }
+        #[cfg(test)]
+        if self.index_poked {
+            return;
+        }
+        // what the check's loads decode is not the history's (tests count decodes)
+        let decoded = self.core.decoded.clone();
+        let r = self.checked_index();
+        self.core.decoded = decoded;
+        assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "after a rollback: {:?}", r.err());
+    }
+
     /// Debug builds: no addendum trigger missed (`flows::addenda::missed`), and no
     /// waiting split path a fresh attempt opens (`apply::paths::missed`), counting nothing.
     fn check_missed_wakes(&mut self, when: &str) {

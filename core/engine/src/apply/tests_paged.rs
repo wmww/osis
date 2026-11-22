@@ -1273,9 +1273,11 @@ fn failed_streamed_apply_leaves_nothing_spec_commits_4() {
     // part's skeleton, its page
     for k in [1usize, 2, 3] {
         p.engine.core.piece_fault = Some(k);
+        let wrote = p.backend.faults().writes();
         let e = p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap_err();
         assert!(e.to_string().contains("piece fault"), "{e}");
-        assert!(p.backend.dump().iter().any(|(k, _)| k.first() == Some(&b'j')), "nothing spilled");
+        // spilled (the next transaction's start rolls the spills back: a debug check's, at once)
+        assert!(p.backend.faults().writes() > wrote, "nothing spilled");
         assert_eq!(read(p), before, "after a fault at piece {k}");
     }
     p.engine.core.piece_fault = None;

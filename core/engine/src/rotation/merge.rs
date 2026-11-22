@@ -110,7 +110,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 }
 
 /// The `records::DERIVED_WRITTEN` key of (`t`, `e`).
-fn key(t: &Tid, e: &Epoch) -> Vec<u8> {
+pub(crate) fn key(t: &Tid, e: &Epoch) -> Vec<u8> {
     [records::DERIVED_WRITTEN, t.as_bytes().as_slice(), &e.n().to_be_bytes(), e.nonce()].concat()
 }
 
