@@ -2259,58 +2259,6 @@ fn a_freed_link_is_dropped_deleted_at_stores_then_done_spec_sync_compaction_1() 
     assert!(!w.g.freed.contains_key(&(bid(10), t)));
 }
 
-/// The bodies and judgements read settles (`read: bodies`, `read: judged`) and the engine's settles of what is published and certified
-/// (`sync_ids::published`, `sync::certified`) node 0 makes for one more thing published under an
-/// actor G of its account (a thing with a sync ID whose mint admin is G, in no other sync unit: its `sync.0` and
-/// `created.0` commits go under G's sync IDs as published), after `n` such things, run to quiet.
-fn judged_per_publish(n: usize) -> u64 {
-    let mut w = crate::harness::history::world_of(0, 1, 1);
-    let account = w.node(0).account.expect("an account");
-    let g = w.write(0, |e| {
-        let mut m = osis_engine::Mutation::new();
-        let g = e.new_thing(&mut m, account);
-        e.commit(m).expect("made");
-        e.make_independent(&g).expect("secrets of its own");
-        g
-    });
-    w.run();
-    let publish = |w: &mut crate::harness::World| {
-        w.write(0, |e| {
-            let mut m = osis_engine::Mutation::new();
-            let t = e.new_thing(&mut m, g);
-            e.commit(m).expect("made");
-            e.make_independent(&t).expect("secrets of its own");
-        });
-        w.run();
-    };
-    for _ in 0..n {
-        publish(&mut w);
-    }
-    // bodies and judgements, and the engine's keys of what is published and certified that moved
-    let counted = ["read: bodies", "read: judged", "published", "sync: certified things", "sync: certified inboxes", "sync: certified authored", "sync: certified pieces"];
-    // the least of three publishes: G's `holds.0` compacts once its bodies outweigh a snapshot
-    // (spec/sync-compaction.md §1), a cost the trigger spreads over the writes it covers
-    let mut least = u64::MAX;
-    for i in 0..3 {
-        osis_base::costs::take();
-        publish(&mut w);
-        assert_eq!(w.engine(0).published_under(&g).len(), n + i + 1, "each published under G");
-        let all = osis_base::costs::take();
-        least = least.min(all.iter().filter(|(k, _, _)| counted.contains(k)).map(|(_, _, n)| n).sum());
-    }
-    least
-}
-
-// spec/sync.md §2 (Work in proportion to change), spec/sync-judgement.md §1 (Entitlement: a part
-// published there): a thing coming to be published under G judges its own
-// commits, not every body under G's sync IDs, and moves no other thing's publisher, inbox or
-// certificates: the same counts after n and 10n such things.
-#[test]
-fn a_thing_published_under_an_actor_judges_what_it_moved_spec_sync_2() {
-    let (a, b) = (judged_per_publish(2), judged_per_publish(20));
-    assert_eq!(a, b, "judgements per publish grow with the things published before");
-}
-
 /// The thing whose mintings the minting tests copy under S (its record goes there; S's closure
 /// lacks it).
 const T: Tid = Tid::from_bytes([7; 15]);

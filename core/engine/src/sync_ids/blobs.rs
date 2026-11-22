@@ -31,8 +31,8 @@ pub struct Body {
     /// A per-sync-ID copy: `parts` in one section under the blob key (`Engine::seal_to`), never
     /// shared with another sync ID (spec/sync-judgement.md §1): a role commit with a part on a thing other
     /// than the actor (its boxes give the readers that thing's secrets), or a part whose thing's
-    /// read secret derives from neither the actor nor an actor of its closure (a cross-published
-    /// `created.0`, a thing added from another actor's tree, read by role).
+    /// read secret derives from neither the actor nor an actor of its closure (a thing added from
+    /// another actor's tree, read by role).
     pub to_sync_id: bool,
 }
 
@@ -119,7 +119,6 @@ pub struct BodyCtx {
     /// moves with the things it names, never with the unit's other members.
     pub unit: Tid,
     pub actor: Tid,
-    pub published: super::published::PublishedView,
 }
 
 impl BodyCtx {
@@ -130,7 +129,7 @@ impl BodyCtx {
 
     /// Whether a commit (its `View`) may have bodies under the sync IDs of this sync unit's thing.
     pub(crate) fn touches(&self, core: &crate::engine::Core, v: &crate::engine::View) -> bool {
-        v.aspects.iter().any(|a| self.holds(core, &a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"))
+        v.aspects.iter().any(|a| self.holds(core, &a.tid))
     }
 }
 
@@ -505,10 +504,9 @@ impl Engine {
         Ok(c.encode())
     }
 
-    /// What `commit_bodies_under` needs of a sync unit's root: the unit, actor and the things its sync
-    /// ID publishes.
+    /// What `commit_bodies_under` needs of a sync unit's root: the unit and its actor.
     pub fn body_ctx(&mut self, g: &Tid) -> BodyCtx {
-        BodyCtx { unit: *g, actor: self.core.reader_of(g), published: self.published_view(g) }
+        BodyCtx { unit: *g, actor: self.core.reader_of(g) }
     }
 
     /// The parts of commit `id` (its held parts, or `parts`) the actor of `ctx` may read
@@ -575,7 +573,7 @@ impl Engine {
     }
 
     /// The body of commit `id` a sync ID of `ctx`'s sync unit must hold (spec/sync-judgement.md §1):
-    /// with the parts its independent may read among those inside the sync unit (or published there),
+    /// with the parts its independent may read among those inside the sync unit,
     /// when there are any; else, for a lasting commit, its header alone.
     pub fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
         self.bodies_under(ctx, id, false)
@@ -593,9 +591,7 @@ impl Engine {
         if !ctx.touches(&self.core, &h) {
             return Ok(Vec::new());
         }
-        let touches = h.aspects.iter().any(|a| ctx.holds(&self.core, &a.tid));
-        let published = |ai: usize| h.aspects.get(ai).is_some_and(|a| !ctx.holds(&self.core, &a.tid) && ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"));
-        let inside = |ai: usize| h.aspects.get(ai).is_some_and(|a| touches && ctx.holds(&self.core, &a.tid)) || published(ai);
+        let inside = |ai: usize| h.aspects.get(ai).is_some_and(|a| ctx.holds(&self.core, &a.tid));
         // the parts inside held as their bodies (what the record carries), with `unheld` the
         // missing and dropped ones: each part's hold read alone, so another part arriving or
         // dropping moves no body here
@@ -618,7 +614,7 @@ impl Engine {
                 // judged on what the actor reads; the blob carries every held part (`body_plaintext`),
                 // unless the sync ID's readers could not open a section of it: a per-sync-ID copy
                 // (spec/sync-judgement.md §1, `Body::to_sync_id`): a role commit on another thing (its
-                // rotation, its grants, a cross-published `sync.0`), whose boxes are what gives
+                // rotation, its grants), whose boxes are what gives
                 // the readers that thing's secrets, so its own section cannot be under them
                 // (certificate blobs are copies for the same reason), or a part whose thing's
                 // secret neither derives from the actor's nor comes through the closure (a destroyed
@@ -634,7 +630,7 @@ impl Engine {
         // nothing of it here and a lasting header on the sync ID's things: its header alone
         // (spec/commits.md §5, spec/sync-judgement.md §2)
         let forever = |a: &crate::engine::AspectView| !h.memory && osis_commit::retention::fixed_purge_by(a.ak.as_str()).is_none() && crate::retention::history::of(&self.core, &a.tid, &a.ak).forever(h.ts);
-        if out.is_empty() && touches && (h.purges || h.aspects.iter().any(forever)) {
+        if out.is_empty() && (h.purges || h.aspects.iter().any(forever)) {
             let on = |core: &crate::engine::Core, t: &Tid| ctx.holds(core, t) && core.may_read(&ctx.actor, &core.reader_of(t));
             if self.run(|tx| crate::retention::lasting(tx, &id, &on))?
                 && let Some(blind) = self.core.ix.commits.get(&id).map(|m| m.header.blind)

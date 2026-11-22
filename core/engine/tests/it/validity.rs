@@ -3319,8 +3319,7 @@ fn stranger_card_makes_no_node_spec_perm_4() {
 }
 
 // spec/sync-ids.md §4 (owner): a thing's sync IDs are its `sync.0` state: a stranger's header-only commit
-// listing `sync.0` on a thing (it applies, its part invalid) gives the thing no sync ID here:
-// it is not a thing with a sync ID, nor published under its mint admin's sync ID.
+// listing `sync.0` on a thing (it applies, its part invalid) gives the thing no sync ID here.
 #[test]
 fn stranger_sync_id_listing_sync_ids_nothing_spec_sync_2() {
     let mut lp = net_bare(2, 0);
@@ -3332,15 +3331,12 @@ fn stranger_sync_id_listing_sync_ids_nothing_spec_sync_2() {
     lp.hold(t);
     let e = &mut lp.peers[0].engine;
     assert!(e.things_with_sync_ids().contains(&p.root), "the account root's sync ID");
-    let before = e.published_under(&p.root);
     let mut blob = forge_on(&mut lp, t, "sync.0");
     blob.parts.clear();
     let id = blob.id();
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id));
     assert!(!e.things_with_sync_ids().contains(&t), "a listing sync IDs nothing");
-    assert!(!e.published_under(&p.root).contains(&t));
-    assert_eq!(e.published_under(&p.root), before);
     // nor after a reopen
     e.reload().unwrap();
     assert!(!e.things_with_sync_ids().contains(&t));

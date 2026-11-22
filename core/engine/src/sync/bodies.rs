@@ -130,18 +130,14 @@ pub(crate) fn reachers(core: &crate::engine::Core, c: &CommitId, m: &crate::engi
 }
 
 impl Engine {
-    /// The things whose sync IDs may carry a body of commit `c`: those its parts are on, the
-    /// sync units holding them, and for a `sync.0` or `created.0` part on a thing with a sync ID its
-    /// publisher (`Engine::publisher`, spec/sync-ids.md §2).
+    /// The things whose sync IDs may carry a body of commit `c`: those its parts are on and the
+    /// sync units holding them (spec/sync-judgement.md §1).
     fn body_things(&mut self, c: &CommitId) -> BTreeSet<Tid> {
         let Some(v) = self.core.ix.commits.get(c).map(|m| m.view.clone()) else { return BTreeSet::new() };
         let mut out = BTreeSet::new();
         for a in v.aspects.iter() {
             out.insert(a.tid);
             out.extend(self.units_holding(&a.tid));
-            if matches!(a.ak.as_str(), "sync.0" | "created.0") {
-                out.extend(self.publisher(&a.tid));
-            }
         }
         out
     }
@@ -155,12 +151,11 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_bodies, c, |e| e.sync_bodies_read(c))
     }
 
-    /// Brings the per-entry values a body reads (`published`, `certified`) up to date before a
+    /// Brings the per-entry values a body reads (the read things, `certified`) up to date before a
     /// memo of bodies is asked: a hit asks neither, and its reads of them hold only once they are
     /// (notes/engine.md, Derived values: Per-key rows).
     fn follow_bodies(&mut self) -> Result<()> {
         self.follow_read_things()?;
-        self.follow_published();
         self.follow_certificates()?;
         Ok(())
     }

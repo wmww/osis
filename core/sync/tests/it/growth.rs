@@ -864,9 +864,10 @@ fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
 
 // spec/sync-judgement.md §3 (Restart and forgetting: an own entry logs a commit held here),
 // spec/sync-set.md §3 (Nothing of R stays): node 0 makes an independent thing under its
-// account, held from D, and releases it; no own entry of a commit forgotten then stays under any
-// sync ID, D's included (its creation commit's and role commit's certificate copies there, which
-// go once nothing held needs the thing).
+// account, held from D, grants the account admin on it by an edge write and releases it; no own
+// entry of a commit forgotten then stays under any sync ID, D's included (the grant's commit goes
+// there as a grant naming the account, spec/sync-judgement.md §2, until nothing held needs the
+// thing).
 #[test]
 fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3() {
     use osis_schema::core_types::HOLDS;
@@ -878,6 +879,7 @@ fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3(
         let mut m = Mutation::new();
         m.set(t, &value_ak(), &Value::Str("new".into())).unwrap();
         e.commit(m).unwrap();
+        e.grant(&t, &p, &edge(Role::Admin)).unwrap();
         t
     });
     w.run();

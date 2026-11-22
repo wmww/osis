@@ -93,3 +93,26 @@ fn a_covered_body_leaves_by_time_alone_spec_commits_5() {
         assert!(entries_of(&mut w, i, &s, &one).is_empty(), "node {i} still holds the covered body's entry");
     }
 }
+
+// spec/sync-ids.md §2 (A thing's `sync.0` and `created.0` writes go where its other parts go),
+// spec/commits.md §5 (What a held thing needs): node 0 mints t, gives node 1's account read on
+// it, mints u under t, gives node 1 sync on u (u gets a sync ID, written to `sync.0` on u) and
+// node 1 holds both. Node 0 then drops t's strong to u and forgets u whole; node 1, which still
+// holds u, carries u's `sync.0` write under u's sync ID only, never under t's, so the quiet
+// check (a caught-up reader of t's sync ID lacks no body a holder there must hold) passes.
+#[test]
+fn a_released_things_sync_id_write_stays_off_its_mint_admins_sync_id_spec_sync_ids_2() {
+    use crate::harness::history::Holder;
+    let mut w = world_of(0, 2, 2);
+    let _ = play(&mut w, &[New(0), Give(0, 0, Holder::Node(1), Gives::Reads), NewIn(0, 0), Run, Strong(1, None, 1), Give(0, 1, Holder::Node(1), Gives::Syncs), Strong(1, None, 0), Run], String::new());
+    let (t, u) = (w.history.things[0].0, w.history.things[1].0);
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let writes: Vec<CommitId> = w.engine(0).commit_ids().into_iter().filter(|c| w.engine(0).header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == u && a.ak.as_str() == "sync.0"))).collect();
+    assert!(!writes.is_empty(), "u's sync ID is written");
+    let _ = play(&mut w, &[Unstrong(0, Some(0), 1), Run], String::new());
+    assert!(w.engine(0).core.created(&u).is_none(), "node 0 forgot u");
+    for c in &writes {
+        assert!(w.engine(1).holds_commit(c), "node 1 holds u's sync.0 write {c:?}");
+        assert!(!w.engine(1).sync_bodies(c).unwrap().contains_key(&s), "t's sync ID carries u's sync.0 write {c:?}");
+    }
+}

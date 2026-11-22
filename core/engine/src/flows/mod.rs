@@ -214,25 +214,6 @@ impl Core {
         matches!(self.created(tid), Some(CreationRecord::KeyActor { .. }))
     }
 
-    /// `a`'s record chain through standing record edges (spec/permissions.md §1): `a`, then its
-    /// mint admin while `a`'s record edge stands here (any role), and so on up, the top
-    /// included (a key actor, or a thing whose record is not held). The one walk for node rules
-    /// that read the record chain as standing: inboxes, `sync.0` cross-publishing, inbox stamps
-    /// and copies (spec/sync-ids.md §2, spec/sync-judgement.md §1; spec/data-model.md §9).
-    /// Derivation and entitlement read the records alone (`record_chain`).
-    pub fn standing_chain(&self, a: &Tid) -> Vec<Tid> {
-        let mut out = Vec::new();
-        for step in self.record_chain(a) {
-            let Some(thing) = step.thing() else { break };
-            out.push(thing);
-            let osis_base::ChainStep::Up { admin, .. } = step else { break };
-            if !self.edge_holders(&thing).iter().any(|(m, _)| *m == admin) {
-                break;
-            }
-        }
-        out
-    }
-
     /// Current holders of `actor` with their role and `until` (alive edges), its record edge
     /// included while it stands (with no timeline here, nothing wrote it: the mint admin alone).
     pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {

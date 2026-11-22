@@ -451,8 +451,7 @@ impl Engine {
 
     // Held parts and bodies
 
-    /// Brings the facade values kept per entry (`Core::published`, per thing with a sync ID;
-    /// `Core::read_things` per sync ID; `Core::step_write_keys` per sync ID and step;
+    /// Brings the facade values kept per entry (`Core::read_things` per sync ID; `Core::step_write_keys` per sync ID and step;
     /// `Core::wrap_blocks`, per actor and walk; `Core::held_writes_rows`, per aspect; each read
     /// thing's certificates per piece and commit, `certified`; its thing lists per rotation,
     /// `listed`; `Core::read_facts`, per sync ID and commit; `Core::held_fates`, per commit) up to date with what moved since
@@ -464,7 +463,7 @@ impl Engine {
     /// so a burst of n transactions between two sync steps would cost n walks, not one
     /// (notes/engine.md).
     pub fn follow(&mut self) -> Result<bool> {
-        let moved = self.take_carried()? | self.follow_published();
+        let moved = self.take_carried()?;
         self.follow_rows()?;
         let moved = self.follow_read_things()? | moved;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.step_write_keys, |e, (s, step)| e.step_write_key_now(s, step))? | moved;

@@ -1423,9 +1423,6 @@ pub struct Core {
     pub(crate) step_write_keys: memo::Cutoff<(SyncId, osis_blob::StepId), crate::sync::set::WriteKey>,
     /// `Engine::setting_wants` (`memo`).
     pub(crate) setting_wants: memo::Memo<(), Arc<BTreeMap<SyncId, u64>>>,
-    /// `Engine::published_under` for every actor, followed per thing with a sync ID
-    /// (`sync_ids::published`).
-    pub(crate) published: crate::sync_ids::published::Published,
     /// `Engine::own_commits` per sync ID asked, followed per candidate (`sync::own`).
     pub(crate) own_commits: crate::sync::own::OwnCommits,
     /// `Engine::held_links` (`memo`).
@@ -1916,7 +1913,6 @@ impl Core {
             account_views: _,
             account_epochs_of: _,
             secrets_read: _,
-            published: _,
             own_commits: _,
             head_keys: _,
             read_credentials: _,
@@ -2354,7 +2350,6 @@ impl Core {
             read_things: memo::Cutoff::new("sync: read things"),
             step_write_keys: memo::Cutoff::new("sync: step write keys"),
             setting_wants: memo::Memo::new("sync: setting wants"),
-            published: Default::default(),
             own_commits: Default::default(),
             links: memo::Memo::new("held links"),
             caught_up: memo::Memo::new("sync: caught up"),
