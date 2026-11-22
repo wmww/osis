@@ -357,7 +357,7 @@ fn open10_show_random() {
 fn e1_the_edge_writes_on_a_writes_key_hop_are_evidence_in_every_variant() {
     const KEY: Thing = paths::KEYS | 0x40;
     let (mut w, [x, _, _, q]) = base();
-    let list = w.write(x, |p| p.edge(X, 2, &[], A, KEY, Role::Admin, &[]));
+    let grant = w.write(x, |p| p.edge(X, 2, &[], A, KEY, Role::Admin, &[]));
     w.write(x, |p| p.push_signed(KEY, A, 3, &[], A, paths::Kind::set(Q, Role::Write)));
     let c = w.write(q, |p| p.content(Q, 4, &[A], D));
     for (name, p) in by_variant(&w, &Open10::ALL) {
@@ -366,7 +366,7 @@ fn e1_the_edge_writes_on_a_writes_key_hop_are_evidence_in_every_variant() {
     let mut w = w;
     let rule = Open10::Granted.set(&mut w, Rule::fixed());
     let st = w.run(&rule, |_| {});
-    assert!(st.entries[&D].contains(&list));
+    assert!(st.entries[&D].contains(&grant));
     assert_eq!(w.verdicts(&w.reader(&rule, &st, D, &Set::new()), &Set::from([c]))[&c], Verdict::Valid);
 }
 
@@ -382,19 +382,19 @@ fn a_key_hop_no_write_puts_pends_until_one_is_held() {
     const KEY: Thing = paths::KEYS | 0x40;
     for v in Open10::ALL {
         let (mut w, [x, _, _, q]) = base();
-        let list = w.write(x, |p| p.edge(X, 2, &[], A, KEY, Role::Admin, &[]));
+        let grant = w.write(x, |p| p.edge(X, 2, &[], A, KEY, Role::Admin, &[]));
         let g = w.write(x, |p| p.push_signed(KEY, A, 3, &[], A, paths::Kind::set(Q, Role::Write)));
         let c = w.write(q, |p| p.content(Q, 4, &[A], D));
         let rule = v.set(&mut w, Rule::fixed());
         let st = w.run(&rule, |_| {});
         let ids = Set::from([g, c]);
-        let lacking: Vec<Verdict> = w.verdicts(&w.full(&st, &Set::from([list])), &ids).into_values().collect();
+        let lacking: Vec<Verdict> = w.verdicts(&w.full(&st, &Set::from([grant])), &ids).into_values().collect();
         assert_eq!(lacking, [Pending, Pending], "{}", v.name());
         let all: Vec<Verdict> = w.verdicts(&w.full(&st, &Set::new()), &ids).into_values().collect();
         assert_eq!(all, [Valid, Valid], "{}", v.name());
         // the grant chains (spec/permissions.md §4 Chained writes), and its stated path is
-        // joined (OPEN 10 (b)), only with its key hop listed
-        for (without, yes) in [(Set::from([list]), false), (Set::new(), true)] {
+        // joined (OPEN 10 (b)), only with the key's grant held
+        for (without, yes) in [(Set::from([grant]), false), (Set::new(), true)] {
             let h = w.full(&st, &without).v.held;
             let ch = w.chained(&h);
             assert_eq!((ch.contains(&g), w.joined(&h, &ch, g)), (yes, yes), "{}", v.name());
