@@ -453,9 +453,10 @@ mod tests {
         due
     }
 
-    // notes/engine.md (Stamps): a commit's meta is read facet by facet, so a reader of one part's
-    // hold moves when that part's state does, not with the commit's other parts; the fixed facts
-    // move only as the commit comes or goes; a reader of every part, or a copy, with any part.
+    // spec/sync.md §2 (work in proportion to change), notes/engine.md (Stamps): a commit's meta is
+    // read facet by facet, so a reader of one part's hold moves when that part's state does, not
+    // with the commit's other parts; the fixed facts move only as the commit comes or goes; a
+    // reader of every part, or a copy, with any part.
     #[test]
     fn a_part_moves_what_read_it_alone() {
         let (c, meta) = two_parts();
