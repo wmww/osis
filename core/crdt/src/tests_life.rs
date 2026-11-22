@@ -1260,3 +1260,35 @@ fn sweep_laws_spec_sync_7() {
         assert!(swept >= 3, "type {i} swept {swept} times in {s} seeds");
     }
 }
+
+/// §4.1 copy order, §5.6: one dot may name several keys in a state, so no reader rule forbids it
+/// in a blob. The writer's delta holds the creation and Y's write under "a", a valid snapshot a
+/// forged copy of Y's write under "b"; each names one key, their join sits Y's write under "b"
+/// and the creation under "a", and the joining node's own snapshot carries both and decodes.
+#[test]
+fn one_dot_under_two_keys_by_join_spec_5_6() {
+    use crate::fragment::{Eid, Entry, Map, Meta, RegWrite, Register};
+    use crate::stamp::Stamp;
+    use std::collections::BTreeMap;
+    let d = Dot::new(node(1), 1);
+    let c = Stamp::new(ts(1 << 16), node(1), 1);
+    let w = Stamp::new(ts(2 << 16), node(2), 1);
+    let reg = || Some(Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: w.clone(), value: Some(Value::Int(7)) }) })));
+    let rec = |key: &str, created: Option<Stamp>| {
+        let mut m = Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(Eid::new(d.clone(), Some(Value::Str(key.into()))), Entry { reset: None, frag: reg(), created })])));
+        m.prune(None, &mut crate::Changes::new());
+        m
+    };
+    let a = rec("a", Some(c.clone())); // the delta's: creation and w under "a"
+    let b = rec("b", None); // a forged snapshot's copy of w under "b"
+    for x in [&a, &b] {
+        let bytes = crate::testutil::snapshot_bytes(x);
+        decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap();
+    }
+    let both = joined(&a, &b);
+    let bytes = crate::testutil::snapshot_bytes(&both);
+    let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+    assert_eq!(back, both);
+    let Fragment::Map(m) = &both else { panic!("a map") };
+    assert_eq!(m.entries.keys().filter(|id| id.dot == d && id.key.is_some()).count(), 2, "two keyed records of one dot");
+}
