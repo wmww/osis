@@ -6,8 +6,8 @@
 //! spec/permissions.md §5.1, §5.2, §6.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::{agree, agree_all, cid, verdict, walk};
-use osis_base::{Ak, CommitId, PurgeBy, Role as R, Tid, Ts, WallMs};
+use super::{agree, agree_all, all, cid, commit, invited, model_cid, ms, paired, t, verdict, walk};
+use osis_base::{Ak, PurgeBy, Role as R, Tid};
 use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::paths::*;
@@ -15,28 +15,6 @@ use roles_model::Role::{Admin, None as Gone, Write};
 use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-
-/// A with H (mint), X and B paired by H at 1.
-fn paired() -> (World, Id, Id) {
-    let mut w = account();
-    let gx = w.edge(H, 1, &[], A, X, Admin, &[]);
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    (w, gx, gb)
-}
-
-/// The may-grant world of the model's tests: A2 (K's) shares T1 at write and GU holds read with
-/// the flag, by H through A; K gives X write on A2.
-fn invited() -> World {
-    let mut w = account();
-    w.push(H, 1, &[A], T1, Kind::set(A2, Write));
-    w.push(H, 1, &[A], T1, Kind::set(GU, roles_model::Role::Read).may_grant());
-    w.edge(K, 1, &[], A2, X, Write, &[]);
-    w
-}
-
-fn all(w: &World, trust: &[Id]) -> View {
-    View::all(w).trusting(trust)
-}
 
 // ---- Safety and liveness ----
 
@@ -326,7 +304,7 @@ fn a_cover_by_a_writer_not_yet_holding_the_removal_carries_the_late_write() {
         let v = m.view(n, &Rules::fixed());
         agree(&m.w, &v);
         let (_, p) = walk(&m.w, &v);
-        assert!(p.copies().contains(&cid(m.w.cid(late))), "node {n}");
+        assert!(p.copies().contains(&model_cid(&m.w, late)), "node {n}");
     }
 }
 
@@ -379,34 +357,14 @@ fn a_reader_with_the_leaves_of_its_evidence_reads_as_a_member() {
 
 // ---- The walk's own: draft sentences no model test reaches ----
 
-fn t(n: u32) -> Tid {
-    let mut b = [0u8; 15];
-    b[..4].copy_from_slice(&n.to_be_bytes());
-    Tid::from_bytes(b)
-}
-
-fn ms(n: u64) -> Ts {
-    Ts::make(WallMs(n), 0).unwrap()
-}
-
 fn role_class(on: u32, path: &[u32]) -> Part {
     let d = Delta { aspect: Ak::new("keys.0").unwrap(), needs: R::Admin, purge_author: 0, purge_by: PurgeBy::Admin, class: DeltaClass::RoleClass };
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
 fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, listing: Option<&[u64]>) -> Part {
-    let frontier = listing.map(|l| Arc::new(super::whole(&[KH, KX, KB, KA, KT, KS, KZ, KY, KG].map(t), l.iter().map(|&i| c(i)))));
+    let frontier = listing.map(|l| Arc::new(super::whole(&[KH, KX, KB, KA, KT, KS, KZ, KY, KG].map(t), l.iter().map(|&i| cid(i)))));
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier }) }
-}
-
-fn c(i: u64) -> CommitId {
-    let mut b = [0u8; 32];
-    b[..8].copy_from_slice(&i.to_be_bytes());
-    CommitId(b)
-}
-
-fn commit(id: u64, ts: u64, signer: u32, parts: Vec<Part>) -> Commit {
-    Commit { id: c(id), ts: ms(ts), signer: t(signer), parts }
 }
 
 const KH: u32 = 1;
@@ -428,20 +386,20 @@ fn admin() -> Option<Edge> {
 // itself along the empty path is valid with no edge read; along any other path it names S twice.
 #[test]
 fn a_key_actor_writes_on_itself_as_its_only_member() {
-    let commits = [commit(1, 2, KX, vec![role_class(KX, &[])]), commit(2, 2, KX, vec![role_class(KX, &[KA])])];
+    let commits = [commit(1, ms(2), KX, vec![role_class(KX, &[])]), commit(2, ms(2), KX, vec![role_class(KX, &[KA])])];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
-    assert_eq!(p.content(&WriteId(c(1), 0)), Some(Content::Valid(By::Held)));
-    assert_eq!(p.content(&WriteId(c(2), 0)), Some(Content::Invalid));
+    assert_eq!(p.content(&WriteId(cid(1), 0)), Some(Content::Valid(By::Held)));
+    assert_eq!(p.content(&WriteId(cid(2), 0)), Some(Content::Invalid));
 }
 
 // spec/permissions.md §1: no edge write targets a key actor: one on its own signer, a
 // self-removal of its grant on itself included, applies nowhere.
 #[test]
 fn an_edge_write_on_its_signer_is_bad_input() {
-    let commits = [commit(1, 2, KX, vec![edge(KX, &[], KX, None, Some(&[]))]), commit(2, 2, KX, vec![edge(KX, &[], KB, admin(), Some(&[]))])];
+    let commits = [commit(1, ms(2), KX, vec![edge(KX, &[], KX, None, Some(&[]))]), commit(2, ms(2), KX, vec![edge(KX, &[], KB, admin(), Some(&[]))])];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
-    assert_eq!(p.status(&WriteId(c(1), 0)), Some(Status::Unapplied));
-    assert_eq!(p.status(&WriteId(c(2), 0)), Some(Status::Unapplied));
+    assert_eq!(p.status(&WriteId(cid(1), 0)), Some(Status::Unapplied));
+    assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Unapplied));
 }
 
 // spec/permissions.md §5.1: a removal saying retain (`until` 0, role read) restores read in the
@@ -450,9 +408,9 @@ fn an_edge_write_on_its_signer_is_bad_input() {
 #[test]
 fn a_retain_removal_restores_read_as_the_draft_reads_it() {
     let commits = [
-        commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, 5, KH, vec![edge(KA, &[], KX, Some(Edge::kept_end()), Some(&[]))]),
-        commit(3, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
+        commit(1, ms(1), KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
+        commit(2, ms(5), KH, vec![edge(KA, &[], KX, Some(Edge::kept_end()), Some(&[]))]),
+        commit(3, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
     ];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
     let w = p.writes(&t(KX), &t(KA));
@@ -475,22 +433,22 @@ fn admin_only(on: u32, path: &[u32], class: DeltaClass) -> Part {
 fn an_addendum_vouches_for_admin_only_content_only_by_admin() {
     const KN: u32 = 4;
     let base = vec![
-        commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, 1, KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
-        commit(3, 1, KH, vec![edge(KA, &[], KN, Some(Edge::new(R::Write)), Some(&[]))]),
-        commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
-        commit(5, 2, KX, vec![role_class(KT, &[KA])]),
-        commit(6, 2, KX, vec![Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc.0").unwrap(), needs: R::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain }), ..role_class(KT, &[KA]) }]),
-        commit(7, 5, KH, vec![edge(KA, &[], KX, Some(Edge::new(R::Write)), Some(&[]))]),
+        commit(1, ms(1), KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
+        commit(2, ms(1), KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
+        commit(3, ms(1), KH, vec![edge(KA, &[], KN, Some(Edge::new(R::Write)), Some(&[]))]),
+        commit(4, ms(2), KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
+        commit(5, ms(2), KX, vec![role_class(KT, &[KA])]),
+        commit(6, ms(2), KX, vec![Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc.0").unwrap(), needs: R::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain }), ..role_class(KT, &[KA]) }]),
+        commit(7, ms(5), KH, vec![edge(KA, &[], KX, Some(Edge::new(R::Write)), Some(&[]))]),
     ];
-    let by = |signer, id| commit(id, 6, signer, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: c(7), list: Frontier::new([c(4), c(5)]) })]);
+    let by = |signer, id| commit(id, ms(6), signer, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: cid(7), list: Frontier::new([cid(4), cid(5)]) })]);
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &[base.clone(), vec![by(KN, 8)]].concat());
-    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Invalid));
-    assert_eq!(p.content(&WriteId(c(6), 0)), Some(Content::Valid(By::Held)));
+    assert_eq!(p.content(&WriteId(cid(4), 0)), Some(Content::Invalid));
+    assert_eq!(p.content(&WriteId(cid(6), 0)), Some(Content::Valid(By::Held)));
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &[base, vec![by(KB, 8)]].concat());
-    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Valid(By::Vouched)));
+    assert_eq!(p.content(&WriteId(cid(4), 0)), Some(Content::Valid(By::Vouched)));
     // a role-class delta is no content an addendum vouches for
-    assert_eq!(p.content(&WriteId(c(5), 0)), Some(Content::Invalid));
+    assert_eq!(p.content(&WriteId(cid(5), 0)), Some(Content::Invalid));
 }
 
 // spec/permissions.md §5.2: a commit carrying a purge request is no content an addendum vouches
@@ -498,16 +456,16 @@ fn an_addendum_vouches_for_admin_only_content_only_by_admin() {
 #[test]
 fn an_addendum_vouches_for_no_commit_carrying_a_purge_request() {
     let base = vec![
-        commit(1, 1, KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
-        commit(2, 1, KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
-        commit(4, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain), Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc^.0").unwrap(), needs: R::Write, purge_author: 1, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names: osis_perm::paths::Names::Author(t(KA)) } }), ..role_class(KT, &[KA]) }]),
-        commit(5, 2, KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
-        commit(7, 5, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
-        commit(8, 6, KB, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: c(7), list: Frontier::new([c(4), c(5)]) })]),
+        commit(1, ms(1), KH, vec![edge(KA, &[], KX, admin(), Some(&[]))]),
+        commit(2, ms(1), KH, vec![edge(KA, &[], KB, admin(), Some(&[]))]),
+        commit(4, ms(2), KX, vec![admin_only(KT, &[KA], DeltaClass::Plain), Part { direct: 0, kind: PartKind::Delta(Delta { aspect: Ak::new("doc^.0").unwrap(), needs: R::Write, purge_author: 1, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names: osis_perm::paths::Names::Author(t(KA)) } }), ..role_class(KT, &[KA]) }]),
+        commit(5, ms(2), KX, vec![admin_only(KT, &[KA], DeltaClass::Plain)]),
+        commit(7, ms(5), KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
+        commit(8, ms(6), KB, vec![admin_only(KT, &[KA], DeltaClass::Addendum { removal: cid(7), list: Frontier::new([cid(4), cid(5)]) })]),
     ];
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &base);
-    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Invalid));
-    assert_eq!(p.content(&WriteId(c(5), 0)), Some(Content::Valid(By::Vouched)));
+    assert_eq!(p.content(&WriteId(cid(4), 0)), Some(Content::Invalid));
+    assert_eq!(p.content(&WriteId(cid(5), 0)), Some(Content::Valid(By::Vouched)));
 }
 
 // ---- Rules no model control names: one world each, failing where the rule is dropped ----
@@ -526,16 +484,16 @@ fn plain(on: u32) -> Part {
 }
 
 fn addendum(on: u32, removal: u64, list: &[u64]) -> Part {
-    doc(on, &[KA], "addenda.0", DeltaClass::Addendum { removal: c(removal), list: Frontier::new(list.iter().map(|&i| c(i))) })
+    doc(on, &[KA], "addenda.0", DeltaClass::Addendum { removal: cid(removal), list: Frontier::new(list.iter().map(|&i| cid(i))) })
 }
 
 fn snapshot(on: u32, aspect: &str, carries: &[u64]) -> Part {
-    doc(on, &[KA], aspect, DeltaClass::Snapshot { carries: Frontier::new(carries.iter().map(|&i| c(i))), stated: BTreeMap::new(), own: false })
+    doc(on, &[KA], aspect, DeltaClass::Snapshot { carries: Frontier::new(carries.iter().map(|&i| cid(i))), stated: BTreeMap::new(), own: false })
 }
 
 /// H grants each of `who` admin on A at 1 (commit IDs 100 on).
 fn admins(who: &[u32]) -> Vec<Commit> {
-    (0u64..).zip(who).map(|(i, &k)| commit(100 + i, 1, KH, vec![edge(KA, &[], k, admin(), Some(&[]))])).collect()
+    (0u64..).zip(who).map(|(i, &k)| commit(100 + i, ms(1), KH, vec![edge(KA, &[], k, admin(), Some(&[]))])).collect()
 }
 
 fn verdicts(commits: &[Commit]) -> Paths {
@@ -548,18 +506,18 @@ fn verdicts(commits: &[Commit]) -> Paths {
 #[test]
 fn an_addendum_vouches_for_nothing_stamped_after_its_removal() {
     let mut w = admins(&[KX, KB]);
-    w.push(commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]));
-    w.push(commit(8, 8, KX, vec![plain(KT)]));
-    w.push(commit(9, 9, KB, vec![addendum(KT, 7, &[8])]));
-    assert_eq!(verdicts(&w).content(&WriteId(c(8), 0)), Some(Content::Invalid));
+    w.push(commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))]));
+    w.push(commit(8, ms(8), KX, vec![plain(KT)]));
+    w.push(commit(9, ms(9), KB, vec![addendum(KT, 7, &[8])]));
+    assert_eq!(verdicts(&w).content(&WriteId(cid(8), 0)), Some(Content::Invalid));
 }
 
 // spec/permissions.md §5.2 Addenda: an addendum vouches only for deltas on its own thing: B's
 // addendum on S names X's write on T in vain; the same on T vouches.
 #[test]
 fn an_addendum_vouches_only_on_its_own_thing() {
-    let base = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![plain(KT)]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))])]].concat();
-    let on = |thing| verdicts(&[base.clone(), vec![commit(9, 7, KB, vec![addendum(thing, 7, &[4])])]].concat()).content(&WriteId(c(4), 0));
+    let base = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![plain(KT)]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))])]].concat();
+    let on = |thing| verdicts(&[base.clone(), vec![commit(9, ms(7), KB, vec![addendum(thing, 7, &[4])])]].concat()).content(&WriteId(cid(4), 0));
     assert_eq!(on(KS), Some(Content::Invalid));
     assert_eq!(on(KT), Some(Content::Valid(By::Vouched)));
 }
@@ -571,8 +529,8 @@ fn an_addendum_vouches_only_on_its_own_thing() {
 #[test]
 fn a_snapshot_names_and_copies_only_its_own_thing_and_aspect() {
     let with = |s: Part| {
-        let w = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![plain(KT)]), commit(5, 3, KB, vec![s]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[5]))])]].concat();
-        verdicts(&w).content(&WriteId(c(4), 0))
+        let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![plain(KT)]), commit(5, ms(3), KB, vec![s]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[5]))])]].concat();
+        verdicts(&w).content(&WriteId(cid(4), 0))
     };
     assert_eq!(with(snapshot(KT, "other.0", &[4])), Some(Content::Invalid));
     assert_eq!(with(snapshot(KS, "doc.0", &[4])), Some(Content::Invalid));
@@ -583,8 +541,8 @@ fn a_snapshot_names_and_copies_only_its_own_thing_and_aspect() {
 // invalid whatever B's addendum lists.
 #[test]
 fn an_addendum_vouches_for_no_snapshot() {
-    let w = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![snapshot(KT, "doc.0", &[])]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))]), commit(9, 7, KB, vec![addendum(KT, 7, &[4])])]].concat();
-    assert_eq!(verdicts(&w).content(&WriteId(c(4), 0)), Some(Content::Invalid));
+    let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![snapshot(KT, "doc.0", &[])]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))]), commit(9, ms(7), KB, vec![addendum(KT, 7, &[4])])]].concat();
+    assert_eq!(verdicts(&w).content(&WriteId(cid(4), 0)), Some(Content::Invalid));
 }
 
 // spec/permissions.md §5.2 Addenda (A is valid: the least fixpoint): validity passes along a chain
@@ -596,19 +554,19 @@ fn validity_passes_along_a_chain_of_addenda() {
     let base = [
         admins(&[KX, KB, KY, KZ]),
         vec![
-            commit(10, 2, KX, vec![plain(KT)]),
-            commit(11, 5, KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
-            commit(12, 6, KY, vec![addendum(KT, 11, &[10])]),
-            commit(13, 7, KH, vec![edge(KA, &[], KY, None, Some(&[]))]),
-            commit(14, 8, KZ, vec![addendum(KT, 13, &[12])]),
-            commit(15, 9, KH, vec![edge(KA, &[], KZ, None, Some(&[]))]),
+            commit(10, ms(2), KX, vec![plain(KT)]),
+            commit(11, ms(5), KH, vec![edge(KA, &[], KX, None, Some(&[]))]),
+            commit(12, ms(6), KY, vec![addendum(KT, 11, &[10])]),
+            commit(13, ms(7), KH, vec![edge(KA, &[], KY, None, Some(&[]))]),
+            commit(14, ms(8), KZ, vec![addendum(KT, 13, &[12])]),
+            commit(15, ms(9), KH, vec![edge(KA, &[], KZ, None, Some(&[]))]),
         ],
     ]
     .concat();
-    let ids = [10, 12, 14].map(|i| WriteId(c(i), 0));
+    let ids = [10, 12, 14].map(|i| WriteId(cid(i), 0));
     let p = verdicts(&base);
     assert!(ids.iter().all(|id| p.content(id) == Some(Content::Invalid)));
-    let p = verdicts(&[base, vec![commit(16, 10, KB, vec![addendum(KT, 15, &[14])])]].concat());
+    let p = verdicts(&[base, vec![commit(16, ms(10), KB, vec![addendum(KT, 15, &[14])])]].concat());
     assert!(ids.iter().all(|id| p.content(id) == Some(Content::Valid(By::Vouched))), "{:?}", ids.map(|id| p.content(&id)));
 }
 
@@ -621,15 +579,15 @@ fn addenda_naming_each_other_support_nothing() {
     let w = [
         admins(&[KB, KY, KZ]),
         vec![
-            commit(12, 5, KY, vec![addendum(KT, 15, &[14])]),
-            commit(14, 5, KZ, vec![addendum(KT, 13, &[12])]),
-            commit(13, 6, KH, vec![edge(KA, &[], KY, None, Some(&[]))]),
-            commit(15, 6, KH, vec![edge(KA, &[], KZ, None, Some(&[]))]),
+            commit(12, ms(5), KY, vec![addendum(KT, 15, &[14])]),
+            commit(14, ms(5), KZ, vec![addendum(KT, 13, &[12])]),
+            commit(13, ms(6), KH, vec![edge(KA, &[], KY, None, Some(&[]))]),
+            commit(15, ms(6), KH, vec![edge(KA, &[], KZ, None, Some(&[]))]),
         ],
     ]
     .concat();
     let p = verdicts(&w);
-    assert_eq!((p.content(&WriteId(c(12), 0)), p.content(&WriteId(c(14), 0))), (Some(Content::Invalid), Some(Content::Invalid)));
+    assert_eq!((p.content(&WriteId(cid(12), 0)), p.content(&WriteId(cid(14), 0))), (Some(Content::Invalid), Some(Content::Invalid)));
 }
 
 // spec/permissions.md §5.2 Copies: no snapshot carries a role commit, so no list names one through
@@ -637,12 +595,12 @@ fn addenda_naming_each_other_support_nothing() {
 // X's key rotation, which stays cut.
 #[test]
 fn no_snapshot_carries_a_role_commit() {
-    let snap = doc(KT, &[KA], "keys.0", DeltaClass::Snapshot { carries: Frontier::new([c(4)]), stated: BTreeMap::new(), own: false });
+    let snap = doc(KT, &[KA], "keys.0", DeltaClass::Snapshot { carries: Frontier::new([cid(4)]), stated: BTreeMap::new(), own: false });
     let snap = Part { kind: PartKind::Delta(Delta { needs: R::Admin, ..match snap.kind { PartKind::Delta(d) => d, _ => unreachable!() } }), ..snap };
-    let w = [admins(&[KX, KB]), vec![commit(4, 2, KX, vec![role_class(KT, &[KA])]), commit(5, 3, KB, vec![snap]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[5]))])]].concat();
+    let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![role_class(KT, &[KA])]), commit(5, ms(3), KB, vec![snap]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[5]))])]].concat();
     let p = verdicts(&w);
-    assert_eq!(p.content(&WriteId(c(5), 0)), Some(Content::Valid(By::Held)));
-    assert_eq!(p.content(&WriteId(c(4), 0)), Some(Content::Invalid));
+    assert_eq!(p.content(&WriteId(cid(5), 0)), Some(Content::Valid(By::Held)));
+    assert_eq!(p.content(&WriteId(cid(4), 0)), Some(Content::Invalid));
     assert!(p.copies().is_empty());
 }
 
@@ -651,10 +609,10 @@ fn no_snapshot_carries_a_role_commit() {
 // cut by it, whatever the signers' tids; listed, it stands.
 #[test]
 fn a_role_class_delta_in_its_removals_millisecond_is_ordered_before_it() {
-    let w = [admins(&[KX, KB]), vec![commit(4, 6, KX, vec![role_class(KT, &[KA])]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[]))])]].concat();
-    assert_eq!(verdicts(&w).content(&WriteId(c(4), 0)), Some(Content::Invalid));
-    let w = [admins(&[KX, KB]), vec![commit(4, 6, KX, vec![role_class(KT, &[KA])]), commit(7, 6, KH, vec![edge(KA, &[], KX, None, Some(&[4]))])]].concat();
-    assert_eq!(verdicts(&w).content(&WriteId(c(4), 0)), Some(Content::Valid(By::Listed)));
+    let w = [admins(&[KX, KB]), vec![commit(4, ms(6), KX, vec![role_class(KT, &[KA])]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[]))])]].concat();
+    assert_eq!(verdicts(&w).content(&WriteId(cid(4), 0)), Some(Content::Invalid));
+    let w = [admins(&[KX, KB]), vec![commit(4, ms(6), KX, vec![role_class(KT, &[KA])]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[4]))])]].concat();
+    assert_eq!(verdicts(&w).content(&WriteId(cid(4), 0)), Some(Content::Valid(By::Listed)));
 }
 
 // ---- A cut's list answers that cut alone (notes/evidence-model-findings.md 26) ----

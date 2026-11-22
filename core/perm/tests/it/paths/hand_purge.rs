@@ -9,7 +9,7 @@
 //! spec/commits.md §4 Could hold the right, §5 Purge.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::{agree, as_known, cid, tid, walk};
+use super::{agree, all, as_known, model_cid, tid, walk};
 use osis_base::{Ak, Role as R};
 use osis_perm::paths::{Content, DeltaClass, PartKind, Paths, Stated};
 use osis_perm::WriteId;
@@ -32,10 +32,6 @@ fn content(w: &mut World, n: Thing, t: u32, path: &[Thing], by: PurgeBy) -> Id {
     i
 }
 
-fn all(w: &World, trust: &[Id]) -> View {
-    View::all(w).trusting(trust)
-}
-
 /// The walk's purged deltas and purged copies at view `v` (model ids), once it agrees with the
 /// model there.
 #[track_caller]
@@ -46,7 +42,7 @@ fn purged(w: &World, v: &View) -> Set {
     let back: BTreeMap<WriteId, Id> = inp.ids.iter().map(|(&i, &id)| (id, i)).collect();
     let mut out: Set = p.purged().iter().map(|id| back[id]).collect();
     let copies = p.purged_copies();
-    out.extend((0..w.commits.len()).filter(|&j| matches!(w.commits[j].kind, Kind::Content) && copies.contains(&cid(w.cid(j)))));
+    out.extend((0..w.commits.len()).filter(|&j| matches!(w.commits[j].kind, Kind::Content) && copies.contains(&model_cid(&w, j))));
     out
 }
 
@@ -56,7 +52,7 @@ fn shows(w: &World, v: &View, i: Id) -> bool {
     agree(w, v);
     let w = as_known(w, v);
     let (inp, p) = walk(&w, v);
-    inp.ids.get(&i).is_some_and(|id| matches!(p.content(id), Some(Content::Valid(_)))) || p.copies().contains(&cid(w.cid(i)))
+    inp.ids.get(&i).is_some_and(|id| matches!(p.content(id), Some(Content::Valid(_)))) || p.copies().contains(&model_cid(&w, i))
 }
 
 // ---- the model's hand worlds ----
@@ -252,13 +248,13 @@ fn a_copy_is_purged_only_by_what_every_snapshot_states() {
     let late = View::all(&w).without(&[d]);
     assert!(purged(&w, &late).contains(&d));
     let mut inp = super::input(&w, &late);
-    let c = cid(w.cid(c1));
+    let c = model_cid(&w, c1);
     let snap = inp.commits.iter_mut().find(|x| x.id == c).unwrap();
     let PartKind::Delta(delta) = &mut snap.parts[0].kind else { panic!() };
     let DeltaClass::Snapshot { stated, .. } = &mut delta.class else { panic!() };
-    stated.insert(cid(w.cid(d)), Stated { ts: osis_base::Ts::make(osis_base::WallMs(2), 0).unwrap(), purge_author: tid(B), purge_by: osis_base::PurgeBy::Admin });
+    stated.insert(model_cid(&w, d), Stated { ts: osis_base::Ts::make(osis_base::WallMs(2), 0).unwrap(), purge_author: tid(B), purge_by: osis_base::PurgeBy::Admin });
     let p = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
-    assert!(p.copies().contains(&cid(w.cid(d))) && p.purged_copies().is_empty());
+    assert!(p.copies().contains(&model_cid(&w, d)) && p.purged_copies().is_empty());
 }
 
 // spec/commits.md §5 Destruction: a destruction names every delta of its thing, of every aspect;
@@ -359,18 +355,18 @@ fn a_misstated_fact_steers_a_purge_only_where_the_original_is_not_held() {
     w.purge(W, 4, &[], T1, W);
     let forge = |v: &View| {
         let mut inp = super::input(&w, v);
-        let c = cid(w.cid(s));
+        let c = model_cid(&w, s);
         let snap = inp.commits.iter_mut().find(|x| x.id == c).unwrap();
         let PartKind::Delta(delta) = &mut snap.parts[0].kind else { panic!() };
         let DeltaClass::Snapshot { stated, .. } = &mut delta.class else { panic!() };
-        stated.insert(cid(w.cid(h)), Stated { ts: osis_base::Ts::make(osis_base::WallMs(2), 0).unwrap(), purge_author: tid(W), purge_by: osis_base::PurgeBy::Writer });
+        stated.insert(model_cid(&w, h), Stated { ts: osis_base::Ts::make(osis_base::WallMs(2), 0).unwrap(), purge_author: tid(W), purge_by: osis_base::PurgeBy::Writer });
         let p = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
         (inp, p)
     };
     // honest statements: nothing purged, held or not
     assert!(purged(&w, &all(&w, &[])).is_empty() && purged(&w, &View::all(&w).without(&[h])).is_empty());
     let (_, p) = forge(&View::all(&w).without(&[h]));
-    assert!(p.copies().contains(&cid(w.cid(h))) && p.purged_copies() == BTreeSet::from([cid(w.cid(h))]));
+    assert!(p.copies().contains(&model_cid(&w, h)) && p.purged_copies() == BTreeSet::from([model_cid(&w, h)]));
     let (inp, p) = forge(&all(&w, &[]));
     assert!(p.purged().is_empty() && p.purged_copies().is_empty() && matches!(p.content(&inp.ids[&h]), Some(Content::Valid(_))));
 }

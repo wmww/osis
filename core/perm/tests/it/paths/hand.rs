@@ -6,18 +6,10 @@
 //! spec/permissions.md §1, §2, §5.1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::{agree, agree_all};
+use super::{agree, agree_all, invited, paired};
 use roles_model::paths::*;
 use roles_model::Role::{self, Admin, None as Gone, Read, Write};
 use std::collections::BTreeMap;
-
-/// A with H (mint), X and B paired by H at 1.
-fn paired() -> (World, Id, Id) {
-    let mut w = account();
-    let gx = w.edge(H, 1, &[], A, X, Admin, &[]);
-    let gb = w.edge(H, 1, &[], A, B, Admin, &[]);
-    (w, gx, gb)
-}
 
 // ---- Descent, self-removal by path end, `until` ----
 
@@ -55,7 +47,7 @@ fn a_detached_things_owner_writes_it_only_by_a_marked_direct_hop() {
 // descent of two steps or more applies nowhere (B's direct grant; A's record edge; a hop past the
 // members); H's marked hop applies where it holds a direct edge, nowhere before.
 #[test]
-#[ignore = "D2: walk rebuilt after D (notes/redesign-plan.md)"]
+#[ignore = "issues/perm-walk-mark-off-descent.md"]
 fn a_mark_off_a_descent_of_two_steps_applies_nowhere() {
     let mut w = account();
     w.push(H, 1, &[A], T1, Kind::set(B, Admin));
@@ -671,15 +663,6 @@ fn a_trusted_demotion_to_write_keeps_the_grants_made_by_flag() {
 }
 
 // ---- May-grant and finalizes ----
-
-/// The model's: A2 shares T1 at write, GU (A2's guests) holds read with the flag on T1.
-fn invited() -> World {
-    let mut w = account();
-    w.push(H, 1, &[A], T1, Kind::set(A2, Write));
-    w.push(H, 1, &[A], T1, Kind::set(GU, Read).may_grant());
-    w.edge(K, 1, &[], A2, X, Write, &[]);
-    w
-}
 
 // notes/write-path-design.md §1 G1, G2: a may-grant grant applies by its path's flag (controls
 // `-no-flag`, `-last-hop`).

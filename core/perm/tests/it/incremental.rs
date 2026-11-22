@@ -122,6 +122,54 @@ fn touched(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeS
     all.into_iter().filter(|t| key(a, t) != key(b, t)).collect()
 }
 
+/// `w` held but for `late`, `inc` updated on it; then the late commits arriving.
+struct Late<'a> {
+    w: &'a World,
+    skip: BTreeSet<osis_base::CommitId>,
+    held: osis_perm::MemoryHeldSet,
+    inc: Timelines,
+}
+
+impl<'a> Late<'a> {
+    fn new(w: &'a World, late: impl IntoIterator<Item = osis_base::CommitId>) -> Self {
+        let skip: BTreeSet<_> = late.into_iter().collect();
+        let held = w.held_without(&skip);
+        let mut inc = Timelines::new();
+        inc.update(&held);
+        Late { w, skip, held, inc }
+    }
+
+    /// `ids` arrive; `update` takes the held sets before and after.
+    fn arrive(&mut self, ids: impl IntoIterator<Item = osis_base::CommitId>, update: impl FnOnce(&mut Timelines, &osis_perm::MemoryHeldSet, &osis_perm::MemoryHeldSet) -> osis_perm::Changed) -> osis_perm::Changed {
+        for id in ids {
+            self.skip.remove(&id);
+        }
+        let held = self.w.held_without(&self.skip);
+        let c = update(&mut self.inc, &held, &self.held);
+        self.held = held;
+        c
+    }
+
+    /// `ids` arrive by `update_moved`.
+    fn moved(&mut self, ids: impl IntoIterator<Item = osis_base::CommitId>) {
+        self.arrive(ids, update_moved);
+    }
+
+    /// `ids` arrive in one `update_touched`, taken by `Timelines::append` alone (nothing evaluated
+    /// anew), equal to an evaluation from scratch at `watch` when given: how many were placed
+    /// without walking again.
+    #[track_caller]
+    fn alone(&mut self, ids: &[osis_base::CommitId], watch: Option<&[Tid]>) -> usize {
+        let c = self.arrive(ids.iter().copied(), |inc, held, prev| inc.update_touched(held, &touched(prev, held)));
+        assert!(c.evaluated.is_empty(), "{ids:?}: {c:?}");
+        assert_eq!(self.inc.appended(), 1, "{ids:?}");
+        if let Some(d) = watch.and_then(|n| check(&self.held, &self.inc, n)) {
+            panic!("{ids:?}: {d}");
+        }
+        self.inc.placed()
+    }
+}
+
 /// What the shapes reached: updates `Timelines::append` did alone, commits placed without
 /// walking again, components restored from saved walks; samples per shape.
 #[derive(Default)]
@@ -297,25 +345,21 @@ fn created_late_every_order() {
     let c1 = w.set(k, g, x, edge(osis_base::Role::Admin), 10, &[]);
     let c2 = w.set(x, d, k, edge(osis_base::Role::Write), 11, &[]);
     // Arrivals: 0 = g's created.0, 1 = c1, 2 = c2.
-    let perms = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
-    for order in perms {
-        let mut inc = Timelines::new();
-        let mut have: BTreeSet<usize> = BTreeSet::new();
-        for a in order {
-            have.insert(a);
-            let skip: BTreeSet<_> = [(1, c1), (2, c2)].into_iter().filter(|(i, _)| !have.contains(i)).map(|(_, c)| c).collect();
-            let mut held = w.held_without(&skip);
-            if !have.contains(&0) {
-                held.created.remove(&g);
-            }
-            inc.update(&held);
-            if let Some(dd) = check(&held, &inc, &n) {
-                panic!("order {order:?} after {a}: {dd}");
-            }
-            let full = Timeline::evaluate(&held);
-            assert_eq!(inc.get(&d).map(|t| t.role(&x, &d, At::END)), Some(full.role(&x, &d, At::END)), "order {order:?}");
+    let mut step = |inc: &mut Timelines, order: &[usize], a: usize| {
+        let have: BTreeSet<usize> = order.iter().copied().chain([a]).collect();
+        let skip: BTreeSet<_> = [(1, c1), (2, c2)].into_iter().filter(|(i, _)| !have.contains(i)).map(|(_, c)| c).collect();
+        let mut held = w.held_without(&skip);
+        if !have.contains(&0) {
+            held.created.remove(&g);
         }
-    }
+        inc.update(&held);
+        if let Some(dd) = check(&held, inc, &n) {
+            panic!("order {order:?} then {a}: {dd}");
+        }
+        let full = Timeline::evaluate(&held);
+        assert_eq!(inc.get(&d).map(|t| t.role(&x, &d, At::END)), Some(full.role(&x, &d, At::END)), "order {order:?} then {a}");
+    };
+    every_order(3, Timelines::new(), &mut step, &mut |_, _| {});
 }
 
 /// §1, §5.1: a record edge removed by another admin (cut, stored nowhere) and the record of
@@ -334,47 +378,40 @@ fn record_edge_cut_late_record_every_order_spec_permissions_1() {
     let c4 = w.set(n[1], d, n[2], edge(osis_base::Role::Read), 14, &[]);
     let cs = [c1, c2, c3, c4];
     // arrivals: 0 = g's created.0, 1 = d's, 2.. = the commits
-    let mut orders: Vec<Vec<usize>> = vec![vec![]];
-    for k in 0..6 {
-        orders = orders.into_iter().flat_map(|o: Vec<usize>| (0..=o.len()).map(move |p| { let mut o = o.clone(); o.insert(p, k); o })).collect();
-    }
-    for order in orders {
-        for touched_only in [false, true] {
-            let held_with = |have: &BTreeSet<usize>| {
-                let skip: BTreeSet<_> = cs.iter().enumerate().filter(|(i, _)| !have.contains(&(i + 2))).map(|(_, c)| *c).collect();
-                let mut h = w.held_without(&skip);
-                for (i, t) in [(0, g), (1, d)] {
-                    if !have.contains(&i) {
-                        h.created.remove(&t);
-                    }
-                }
-                h
-            };
-            let mut have = BTreeSet::new();
-            let mut prev = held_with(&have);
-            let mut inc = Timelines::new();
-            inc.update(&prev);
-            for &a in &order {
-                have.insert(a);
-                let held = held_with(&have);
-                if touched_only {
-                    inc.update_touched(&held, &touched(&prev, &held));
-                } else {
-                    inc.update(&held);
-                }
-                if let Some(dd) = check(&held, &inc, &n) {
-                    panic!("order {order:?} touched {touched_only} after {a}: {dd}");
-                }
-                prev = held;
+    let held_with = |have: &[usize]| {
+        let skip: BTreeSet<_> = cs.iter().enumerate().filter(|(i, _)| !have.contains(&(i + 2))).map(|(_, c)| *c).collect();
+        let mut h = w.held_without(&skip);
+        for (i, t) in [(0, g), (1, d)] {
+            if !have.contains(&i) {
+                h.created.remove(&t);
             }
-            let full = Timeline::evaluate(&prev);
-            assert_eq!(full.role(&n[0], &g, At::END), None, "the removed mint admin");
-            assert!(!full.is_applied(&WriteId(c3, 0)));
-            assert_eq!(full.role(&n[2], &d, At::END), Some(osis_base::Role::Read));
+        }
+        h
+    };
+    let full = Timeline::evaluate(&w.held());
+    assert_eq!(full.role(&n[0], &g, At::END), None, "the removed mint admin");
+    assert!(!full.is_applied(&WriteId(c3, 0)));
+    assert_eq!(full.role(&n[2], &d, At::END), Some(osis_base::Role::Read));
+    for touched_only in [false, true] {
+        let mut inc = Timelines::new();
+        inc.update(&held_with(&[]));
+        let mut step = |inc: &mut Timelines, order: &[usize], a: usize| {
+            let (prev, held) = (held_with(order), held_with(&[order, &[a]].concat()));
+            if touched_only {
+                inc.update_touched(&held, &touched(&prev, &held));
+            } else {
+                inc.update(&held);
+            }
+            if let Some(dd) = check(&held, inc, &n) {
+                panic!("order {order:?} touched {touched_only} then {a}: {dd}");
+            }
+        };
+        let mut end = |inc: &mut Timelines, order: &[usize]| {
             for t in [g, d] {
                 assert_eq!(inc.get(&t).map(|tl| tl.roster(&t, At::END)), Some(full.roster(&t, At::END)), "order {order:?} touched {touched_only}");
             }
-        }
+        };
+        every_order(6, inc, &mut step, &mut end);
     }
 }
 
@@ -386,31 +423,23 @@ fn record_edge_cut_late_record_every_order_spec_permissions_1() {
 fn kept_standing_absent_edge_every_order() {
     let (w, n, _) = joint_world(&crate::differential::absent_edge_removal_spread_hist(), 1);
     let ids: Vec<_> = w.commits.iter().map(|c| c.id).collect();
-    let genesis = 2;
-    let mut orders = vec![vec![]];
-    for k in genesis..ids.len() {
-        orders = orders.into_iter().flat_map(|o: Vec<usize>| (0..=o.len()).map(move |p| { let mut o = o.clone(); o.insert(p, k); o })).collect();
-    }
-    for order in orders {
-        for touched_only in [false, true] {
-            let mut skip: BTreeSet<_> = ids[genesis..].iter().copied().collect();
-            let mut prev = w.held_without(&skip);
-            let mut inc = Timelines::new();
-            inc.update(&prev);
-            for &i in &order {
-                skip.remove(&ids[i]);
-                let held = w.held_without(&skip);
-                if touched_only {
-                    inc.update_touched(&held, &touched(&prev, &held));
-                } else {
-                    inc.update(&held);
-                }
-                if let Some(d) = check(&held, &inc, &n) {
-                    panic!("order {order:?} (touched {touched_only}) after {i}: {d}");
-                }
-                prev = held;
+    let late = &ids[2..];
+    let held_with = |have: &[usize]| w.held_without(&late.iter().enumerate().filter(|(i, _)| !have.contains(i)).map(|(_, c)| *c).collect());
+    for touched_only in [false, true] {
+        let mut inc = Timelines::new();
+        inc.update(&held_with(&[]));
+        let mut step = |inc: &mut Timelines, order: &[usize], i: usize| {
+            let (prev, held) = (held_with(order), held_with(&[order, &[i]].concat()));
+            if touched_only {
+                inc.update_touched(&held, &touched(&prev, &held));
+            } else {
+                inc.update(&held);
             }
-        }
+            if let Some(d) = check(&held, inc, &n) {
+                panic!("order {order:?} (touched {touched_only}) then {i}: {d}");
+            }
+        };
+        every_order(late.len(), inc, &mut step, &mut |_, _| {});
     }
 }
 
@@ -428,8 +457,7 @@ fn leaves_and_appends_extend() {
     let mut held = w.held();
     held.created.remove(&leaf);
     let mut inc = Timelines::new();
-    let touched: BTreeSet<Tid> = held.things().into_iter().collect();
-    inc.update_touched(&held, &touched);
+    inc.update_touched(&held, &held.things().into_iter().collect());
     // chain certificates asked before the leaf's record came are not kept past it
     for m in &n {
         let _ = inc.get(&g).unwrap().certificates(m, &leaf);
@@ -444,7 +472,7 @@ fn leaves_and_appends_extend() {
     let prev = w.held();
     w.set(k, g, leaf, edge(osis_base::Role::Read), 20, &[]);
     let held = w.held();
-    let c = inc.update_touched(&held, &touched_of(&prev, &held));
+    let c = inc.update_touched(&held, &touched(&prev, &held));
     assert_eq!(c.extended, BTreeSet::from([g]), "{c:?}");
     assert_eq!(inc.appended(), 1);
     assert!(check(&held, &inc, &n).is_none());
@@ -482,7 +510,7 @@ fn late_write_mid_history_keeps_states_exact() {
         }
     }
     let all = w.held();
-    let c = inc.update_touched(&all, &touched_of(&held, &all));
+    let c = inc.update_touched(&all, &touched(&held, &all));
     assert!(c.evaluated.is_empty(), "{c:?}");
     assert_eq!(inc.appended(), 1);
     assert!(check(&all, &inc, &n).is_none(), "{:?}", check(&all, &inc, &n));
@@ -509,7 +537,7 @@ fn region_reads_each_component_once() {
     inc.update_touched(&held, &all);
     w.set(k, g, p, edge(Write), 200, &[]);
     let joined = w.held();
-    inc.update_touched(&joined, &touched_of(&held, &joined));
+    inc.update_touched(&joined, &touched(&held, &joined));
     assert_eq!(inc.appended(), 0, "the general path");
     assert!(inc.region_queued() <= 2 * n.len(), "{} things queued for {} things", inc.region_queued(), n.len());
     assert!(check(&joined, &inc, &n).is_none(), "{:?}", check(&joined, &inc, &n));
@@ -539,13 +567,9 @@ fn applied_on_indexes_a_timeline_once() {
     let prev = w.held();
     w.set(k, things[3], n[20], edge(Write), 100, &[]);
     let held = w.held();
-    inc.update_touched(&held, &touched_of(&prev, &held));
+    inc.update_touched(&held, &touched(&prev, &held));
     let tl = inc.get(&things[3]).unwrap();
     assert_eq!(tl.applied_on(&things[3]).count(), 2, "the write after it");
-}
-
-fn touched_of(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeSet<Tid> {
-    touched(a, b)
 }
 
 const SALT: &[u8] = b"rules";
@@ -747,22 +771,13 @@ fn late_write_before_a_drop_goes_on_spec_permissions_5_1() {
     w.set(a, g, m, edge(Write), 2, &[]);
     w.set(k, g, a, None, 6, &[]);
     let late = [w.set(k, g, b, edge(Write), 3, &[]), w.set(k, g, org, edge(Admin), 4, &[]), w.set(k, org, a, edge(Admin), 5, &[])];
-    let mut skip: BTreeSet<_> = late.into_iter().collect();
-    let mut prev = w.held_without(&skip);
-    let mut inc = Timelines::new();
-    inc.update(&prev);
-    assert_eq!(inc.get(&g).unwrap().dropped().len(), 1);
+    let mut l = Late::new(&w, late);
+    assert_eq!(l.inc.get(&g).unwrap().dropped().len(), 1);
     for id in late {
-        skip.remove(&id);
-        let held = w.held_without(&skip);
-        let c = inc.update_touched(&held, &touched(&prev, &held));
-        assert!(c.evaluated.is_empty(), "{c:?}");
-        assert_eq!(inc.appended(), 1);
-        assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
-        prev = held;
+        l.alone(&[id], Some(&n));
     }
     // a keeps edge admin through the org: no fall, nothing dropped
-    assert!(inc.get(&g).unwrap().dropped().is_empty());
+    assert!(l.inc.get(&g).unwrap().dropped().is_empty());
 }
 
 /// §5.1 step 2: late writes in the middle of a history that apply nothing there (by a node with
@@ -787,18 +802,9 @@ fn late_writes_applying_nothing_spec_permissions_5_1() {
     }
     // late: x's writes in the middle (rejected)
     let late = [w.set(x, h, n[3], edge(Write), 41, &[]), w.set(x, g, n[2], edge(Admin), 43, &[])];
-    let mut skip: BTreeSet<_> = late.into_iter().collect();
-    let mut prev = w.held_without(&skip);
-    let mut inc = Timelines::new();
-    inc.update(&prev);
+    let mut l = Late::new(&w, late);
     for id in late {
-        skip.remove(&id);
-        let held = w.held_without(&skip);
-        let c = inc.update_touched(&held, &touched(&prev, &held));
-        assert!(c.evaluated.is_empty(), "{c:?}");
-        assert_eq!(inc.appended(), 1);
-        assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
-        prev = held;
+        l.alone(&[id], Some(&n));
     }
 }
 
@@ -878,20 +884,13 @@ fn adversarial(rng: &mut Rng, at: &str, seen: &mut Seen) {
         }
     }
     n.extend(extra);
-    let order = rng.perm(late.len());
-    let mut skip: BTreeSet<_> = late.iter().copied().collect();
-    let mut prev = w.held_without(&skip);
-    let mut inc = Timelines::new();
-    inc.update(&prev);
-    for (step, i) in order.into_iter().enumerate() {
-        skip.remove(&late[i]);
-        let held = w.held_without(&skip);
-        update_moved(&mut inc, &held, &prev);
-        seen.appended += inc.appended();
-        if let Some(d) = check(&held, &inc, &n) {
+    let mut l = Late::new(&w, late.iter().copied());
+    for (step, i) in rng.perm(late.len()).into_iter().enumerate() {
+        l.moved([late[i]]);
+        seen.appended += l.inc.appended();
+        if let Some(d) = check(&l.held, &l.inc, &n) {
             panic!("{at} step {step}: {d}");
         }
-        prev = held;
     }
 }
 
@@ -931,19 +930,9 @@ fn late_writes_placed_in_walk_spec_permissions_5_1() {
         (w.set(a, g, n[4], edge(Read), 251, &[]), false),
         (w.set(a, g, n[3], edge(Admin), 203, &[]), false),
     ];
-    let mut skip: BTreeSet<_> = late.iter().map(|l| l.0).collect();
-    let mut prev = w.held_without(&skip);
-    let mut inc = Timelines::new();
-    inc.update(&prev);
+    let mut l = Late::new(&w, late.iter().map(|x| x.0));
     for (id, placed) in late {
-        skip.remove(&id);
-        let held = w.held_without(&skip);
-        let c = inc.update_touched(&held, &touched(&prev, &held));
-        assert!(c.evaluated.is_empty(), "{c:?}");
-        assert_eq!(inc.appended(), 1);
-        assert_eq!(inc.placed() == 1, placed, "{id:?}");
-        assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
-        prev = held;
+        assert_eq!(l.alone(&[id], Some(&n)) == 1, placed, "{id:?}");
     }
 }
 
@@ -976,28 +965,13 @@ fn late_writes_across_kept_states_spec_permissions_5_1() {
     }
     late.push((20, w.set(b, g, n[6], None, 51, &[]), true));
     late.push((21, w.set(k, g, a, None, 199, &[]), false));
-    let mut skip: BTreeSet<_> = late.iter().map(|l| l.1).collect();
-    let mut prev = w.held_without(&skip);
-    let mut inc = Timelines::new();
-    inc.update(&prev);
+    let mut l = Late::new(&w, late.iter().map(|x| x.1));
     let watch = [a, n[3], n[6], n[7], n[9], n[47]];
-    let mut i = 0;
-    while i < late.len() {
-        let batch: Vec<_> = late.iter().skip(i).take_while(|l| l.0 == late[i].0).collect();
-        i += batch.len();
-        for l in &batch {
-            skip.remove(&l.1);
-        }
-        let held = w.held_without(&skip);
-        let c = inc.update_touched(&held, &touched(&prev, &held));
-        assert!(c.evaluated.is_empty(), "{c:?}");
-        assert_eq!(inc.appended(), 1);
-        let want = batch.iter().take_while(|l| l.2).count();
-        assert_eq!(inc.placed(), want, "batch {}", batch[0].0);
-        if batch[0].0 % 5 == 0 || batch[0].0 > 14 {
-            assert!(check(&held, &inc, &watch).is_none(), "batch {}: {:?}", batch[0].0, check(&held, &inc, &watch));
-        }
-        prev = held;
+    for batch in late.chunk_by(|x, y| x.0 == y.0) {
+        let ids: Vec<_> = batch.iter().map(|x| x.1).collect();
+        let checked = batch[0].0 % 5 == 0 || batch[0].0 > 14;
+        let want = batch.iter().take_while(|x| x.2).count();
+        assert_eq!(l.alone(&ids, checked.then_some(&watch[..])), want, "batch {}", batch[0].0);
     }
 }
 
@@ -1026,25 +1000,12 @@ fn new_holder_joins_walk_spec_permissions_5_1() {
     let (v, vrec) = above(23);
     let mut nodes = n.clone();
     nodes.extend([y, z, v]);
-    let steps = [
-        (w.set(a, g, y, edge(Write), 60, &[]), true),
-        (w.set(y, g, y, edge(Read), 61, &[]), true),
-        (w.set(a, g, z, edge(Admin), 30, &[]), true),
-        (w.set(z, g, n[2], None, 62, &[]), true),
-    ];
-    let mut skip: BTreeSet<_> = steps.iter().map(|s| s.0).collect();
-    let mut prev = w.held_without(&skip);
-    let mut inc = Timelines::new();
-    inc.update(&prev);
-    for (id, alone) in steps {
-        skip.remove(&id);
-        let held = w.held_without(&skip);
-        let c = inc.update_touched(&held, &touched(&prev, &held));
-        assert!(c.evaluated.is_empty(), "{c:?}");
-        assert_eq!(inc.appended() == 1, alone);
-        assert!(check(&held, &inc, &nodes).is_none(), "{:?}", check(&held, &inc, &nodes));
-        prev = held;
+    let steps = [w.set(a, g, y, edge(Write), 60, &[]), w.set(y, g, y, edge(Read), 61, &[]), w.set(a, g, z, edge(Admin), 30, &[]), w.set(z, g, n[2], None, 62, &[])];
+    let mut l = Late::new(&w, steps);
+    for id in steps {
+        l.alone(&[id], Some(&nodes));
     }
+    let Late { held: prev, mut inc, .. } = l;
     w.set(a, g, v, edge(Write), 63, &[]);
     w.created.insert(v, vrec);
     let held = w.held();
@@ -1173,34 +1134,26 @@ fn adversarial_shapes(rng: &mut Rng, at: &str, seen: &mut Seen) {
     }
     n.extend(extra);
     let order = rng.perm(late.len());
-    let mut skip: BTreeSet<_> = late.iter().copied().collect();
-    let mut prev = w.held_without(&skip);
-    let mut inc = Timelines::new();
-    inc.update(&prev);
+    let mut l = Late::new(&w, late.iter().copied());
     let mut i = 0;
     while i < order.len() {
         let take = if rng.below(3) == 0 { 1 + rng.below(3) } else { 1 };
-        for j in order.iter().skip(i).take(take) {
-            skip.remove(&late[*j]);
-        }
+        l.moved(order.iter().skip(i).take(take).map(|j| late[*j]));
         i += take;
-        let held = w.held_without(&skip);
-        update_moved(&mut inc, &held, &prev);
-        seen.appended += inc.appended();
-        seen.placed += inc.placed();
-        if let Some(d) = check_more(&held, &inc, &n) {
+        seen.appended += l.inc.appended();
+        seen.placed += l.inc.placed();
+        if let Some(d) = check_more(&l.held, &l.inc, &n) {
             panic!("{at} arrival {i}: {d}");
         }
         // now and then a restart from the walks saved now: later arrivals go on from them
         if rng.below(4) == 0 {
             let mut disk = Disk::new();
-            store(&mut disk, inc.to_save(SALT, 1, true));
-            inc = reopen(&held, &disk, SALT);
-            if let Some(d) = check_more(&held, &inc, &n) {
+            store(&mut disk, l.inc.to_save(SALT, 1, true));
+            l.inc = reopen(&l.held, &disk, SALT);
+            if let Some(d) = check_more(&l.held, &l.inc, &n) {
                 panic!("{at} arrival {i} after a restart: {d}");
             }
         }
-        prev = held;
     }
 }
 
@@ -1293,21 +1246,11 @@ fn late_writes_read_later_placed_spec_permissions_5_1() {
         (w.set(a, e, n[8], edge(Admin), 107, &[]), false),
         (w.set(b, e, n[11], edge(Read), 109, &[]), false),
     ];
-    let mut skip: BTreeSet<_> = late.iter().map(|l| l.0).collect();
-    let mut prev = w.held_without(&skip);
-    let mut inc = Timelines::new();
-    inc.update(&prev);
+    let mut l = Late::new(&w, late.iter().map(|x| x.0));
     for (id, placed) in late {
-        skip.remove(&id);
-        let held = w.held_without(&skip);
-        let c = inc.update_touched(&held, &touched(&prev, &held));
-        assert!(c.evaluated.is_empty(), "{c:?}");
-        assert_eq!(inc.appended(), 1);
-        assert_eq!(inc.placed() == 1, placed, "{id:?}");
-        assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
-        prev = held;
+        assert_eq!(l.alone(&[id], Some(&n)) == 1, placed, "{id:?}");
     }
-    let full = Timeline::evaluate(&prev);
+    let full = Timeline::evaluate(&l.held);
     assert!(!full.demotions(&n[6], &g).is_empty(), "the removal demotes");
     assert!(!full.falls(&b, &d).is_empty(), "b's class on d falls");
 }
@@ -1640,25 +1583,17 @@ fn adversarial_falls(rng: &mut Rng, at: &str, seen: &mut Seen) {
         }
     }
     let order = rng.perm(late.len());
-    let mut skip: BTreeSet<_> = late.iter().copied().collect();
-    let mut prev = w.held_without(&skip);
-    let mut inc = Timelines::new();
-    inc.update(&prev);
+    let mut l = Late::new(&w, late.iter().copied());
     let mut i = 0;
     while i < order.len() {
         let take = if rng.below(4) == 0 { 2 } else { 1 };
-        for j in order.iter().skip(i).take(take) {
-            skip.remove(&late[*j]);
-        }
+        l.moved(order.iter().skip(i).take(take).map(|j| late[*j]));
         i += take;
-        let held = w.held_without(&skip);
-        update_moved(&mut inc, &held, &prev);
-        seen.appended += inc.appended();
-        seen.placed += inc.placed();
-        if let Some(d) = check(&held, &inc, &n) {
+        seen.appended += l.inc.appended();
+        seen.placed += l.inc.placed();
+        if let Some(d) = check(&l.held, &l.inc, &n) {
             panic!("{at} arrival {i}: {d}");
         }
-        prev = held;
     }
 }
 
@@ -1771,7 +1706,7 @@ fn leaves_past_record_depth_spec_permissions_1() {
     for l in &leaves {
         let prev = held.clone();
         held.created.insert(*l, w.created[l].clone());
-        inc.update_touched(&held, &touched_of(&prev, &held));
+        inc.update_touched(&held, &touched(&prev, &held));
         if let Some(d) = check(&held, &inc, &n) {
             panic!("leaf at {}: {d}", chain.iter().position(|t| t == l).unwrap());
         }
@@ -2204,19 +2139,12 @@ fn invite_turns(rng: &mut Rng, at: &str, _: &mut Seen) {
             late.push(id);
         }
     }
-    let order = rng.perm(late.len());
-    let mut skip: BTreeSet<_> = late.iter().copied().collect();
-    let mut prev = w.held_without(&skip);
-    let mut inc = Timelines::new();
-    inc.update(&prev);
-    for (step, i) in order.into_iter().enumerate() {
-        skip.remove(&late[i]);
-        let held = w.held_without(&skip);
-        update_moved(&mut inc, &held, &prev);
-        if let Some(d) = check(&held, &inc, &n) {
+    let mut l = Late::new(&w, late.iter().copied());
+    for (step, i) in rng.perm(late.len()).into_iter().enumerate() {
+        l.moved([late[i]]);
+        if let Some(d) = check(&l.held, &l.inc, &n) {
             panic!("{at} step {step}: {d}");
         }
-        prev = held;
     }
 }
 

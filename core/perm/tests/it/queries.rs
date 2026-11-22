@@ -340,13 +340,11 @@ fn certificates_carry_demotion_on_later_path_spec_permissions_4() {
     assert_eq!(cert_check(&w), None);
 }
 
-/// OSIS_PERM_SEED=115000: n0 lowers itself on A1 to Write at 2 (w0); n1 makes n0 an admin
-/// of A0 (an admin of A1 through A2) at 4 and removes n0 from A1 at 6; n2 removes n1 from A0
-/// at 7, unseen by n1.
-#[test]
-fn certificates_self_demotion_regained_spec_permissions_4() {
+/// `nodes` nodes; n2 mints A0 and A2, A0 mints A1; n0 and n1 admins of A1, n1 of A0, A2 an admin
+/// of A0 and A1 and A0 of A2, n2 a writer of A2; every node holding all of it from 0.
+fn self_demotion_genesis(nodes: usize) -> (World, Vec<Tid>, [Tid; 3]) {
     let mut w = World::new();
-    let n = w.nodes(3);
+    let n = w.nodes(nodes);
     let a0 = w.thing(n[2]);
     let a1 = w.thing(a0);
     let a2 = w.thing(n[2]);
@@ -358,6 +356,15 @@ fn certificates_self_demotion_regained_spec_permissions_4() {
     w.set(n[2], a2, a0, edge(Admin), 0, &all0);
     w.set(n[2], a0, a2, edge(Admin), 0, &all0);
     w.set(n[2], a1, a2, edge(Admin), 0, &all0);
+    (w, n, [a0, a1, a2])
+}
+
+/// OSIS_PERM_SEED=115000: n0 lowers itself on A1 to Write at 2 (w0); n1 makes n0 an admin
+/// of A0 (an admin of A1 through A2) at 4 and removes n0 from A1 at 6; n2 removes n1 from A0
+/// at 7, unseen by n1.
+#[test]
+fn certificates_self_demotion_regained_spec_permissions_4() {
+    let (mut w, n, [a0, a1, _]) = self_demotion_genesis(3);
     let r = |a: u64, b: u64, c: u64| vec![(n[0], a), (n[1], b), (n[2], c)];
     w.commit_id(cid(2921343996), n[0], 2, &[(a1, n[0], edge(Write))], &r(2, LATE, 1));
     w.commit_id(cid(3991304582), n[1], 4, &[(a0, n[0], edge(Admin))], &r(2, 4, LATE));
@@ -371,19 +378,7 @@ fn certificates_self_demotion_regained_spec_permissions_4() {
 /// applied it, and that walk kept n0's class when n1 removed n0 from A1.
 #[test]
 fn certificates_self_demotion_regained_indirect_spec_permissions_4() {
-    let mut w = World::new();
-    let n = w.nodes(4);
-    let a0 = w.thing(n[2]);
-    let a1 = w.thing(a0);
-    let a2 = w.thing(n[2]);
-    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
-    w.set(n[2], a1, n[0], edge(Admin), 0, &all0);
-    w.set(n[2], a0, n[1], edge(Admin), 0, &all0);
-    w.set(n[2], a1, n[1], edge(Admin), 0, &all0);
-    w.set(n[2], a2, n[2], edge(Write), 0, &all0);
-    w.set(n[2], a2, a0, edge(Admin), 0, &all0);
-    w.set(n[2], a0, a2, edge(Admin), 0, &all0);
-    w.set(n[2], a1, a2, edge(Admin), 0, &all0);
+    let (mut w, n, [a0, a1, _]) = self_demotion_genesis(4);
     let r = |a: u64, b: u64, c: u64, d: u64| vec![(n[0], a), (n[1], b), (n[2], c), (n[3], d)];
     w.set(n[0], a1, n[0], edge(Write), 2, &r(2, LATE, 1, 2));
     w.set(n[1], a0, n[3], edge(Admin), 3, &r(3, 3, LATE, 3));

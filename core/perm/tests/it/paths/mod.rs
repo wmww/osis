@@ -40,10 +40,30 @@ pub fn tid(t: Thing) -> Tid {
     Tid::from_bytes(b)
 }
 
-fn cid(i: Id) -> CommitId {
+/// Thing `n` of a hand-built input (one the walk reads directly, not a model world's).
+pub fn t(n: u32) -> Tid {
+    let mut b = [0u8; 15];
+    b[..4].copy_from_slice(&n.to_be_bytes());
+    Tid::from_bytes(b)
+}
+
+pub fn cid(n: u64) -> CommitId {
     let mut b = [0u8; 32];
-    b[..8].copy_from_slice(&(i as u64).to_be_bytes());
+    b[..8].copy_from_slice(&n.to_be_bytes());
     CommitId(b)
+}
+
+/// The commit ID of model commit `i` of `w`.
+pub fn model_cid(w: &World, i: Id) -> CommitId {
+    cid(w.cid(i) as u64)
+}
+
+pub fn ms(n: u64) -> Ts {
+    Ts::make(WallMs(n), 0).unwrap()
+}
+
+pub fn commit(id: u64, ts: Ts, signer: u32, parts: Vec<Part>) -> Commit {
+    Commit { id: cid(id), ts, signer: t(signer), parts }
 }
 
 fn role(r: roles_model::Role) -> Option<Role> {
@@ -63,32 +83,28 @@ pub fn purge_by(r: m::PurgeBy) -> PurgeBy {
     }
 }
 
-fn ts(t: u32) -> Ts {
-    Ts::make(WallMs(t as u64), 0).unwrap()
-}
-
 /// A delta of the model's content-class kinds: content and purge requests on `doc.0` (a
 /// destruction on `created.0`), covers its snapshots (stating each carried commit's own stamp,
 /// purge author and purge-by, as an honest snapshot does), addenda on `addenda.0`.
 fn delta(w: &World, i: Id) -> Delta {
     let k = &w.commits[i];
-    let ids = |s: &m::Set| Frontier::new(s.iter().map(|&j| cid(w.cid(j))));
+    let ids = |s: &m::Set| Frontier::new(s.iter().map(|&j| model_cid(w, j)));
     let (aspect, class) = match &k.kind {
         Kind::Content => ("doc.0", DeltaClass::Plain),
         Kind::Purge { names } => {
             let names = match *names {
                 m::Names::Author(a) => Names::Author(tid(a)),
                 m::Names::Aspect => Names::Aspect,
-                m::Names::Commit(j) => Names::Commit(cid(w.cid(j))),
+                m::Names::Commit(j) => Names::Commit(model_cid(w, j)),
                 m::Names::Destroy => Names::Destroy,
             };
             (if names == Names::Destroy { "created.0" } else { "doc.0" }, DeltaClass::Purge { names })
         }
         Kind::Cover { carries } => {
-            let stated = carries.iter().map(|&j| (cid(w.cid(j)), Stated { ts: ts(w.commits[j].ts), purge_author: tid(w.purge_author(j)), purge_by: purge_by(w.commits[j].purge_by) })).collect();
+            let stated = carries.iter().map(|&j| (model_cid(w, j), Stated { ts: ms(w.commits[j].ts as u64), purge_author: tid(w.purge_author(j)), purge_by: purge_by(w.commits[j].purge_by) })).collect();
             ("doc.0", DeltaClass::Snapshot { carries: ids(carries), stated, own: k.own })
         }
-        Kind::Addendum { removal, list } => ("addenda.0", DeltaClass::Addendum { removal: cid(w.cid(*removal)), list: ids(list) }),
+        Kind::Addendum { removal, list } => ("addenda.0", DeltaClass::Addendum { removal: model_cid(w, *removal), list: ids(list) }),
         _ => unreachable!("content-class kinds only"),
     };
     Delta { aspect: Ak::new(aspect).unwrap(), needs: Role::Write, purge_author: w.chain(i).iter().position(|&t| t == w.purge_author(i)).unwrap() as u32, purge_by: purge_by(k.purge_by), class }
@@ -115,14 +131,14 @@ pub fn input(w: &World, v: &View) -> Input {
         let first = &w.commits[parts[0]];
         let mut out = vec![];
         for (n, &i) in parts.iter().enumerate() {
-            ids.insert(i, WriteId(cid(c), n as u32));
+            ids.insert(i, WriteId(cid(c as u64), n as u32));
             let k = &w.commits[i];
             let seen = |t: &Thing| v.leaves.as_ref().is_none_or(|l| l.contains(t));
             let kind = match &k.kind {
                 Kind::Edge { holder, role: r, until, frontier, may_grant, finalize } => {
                     // the walk's invite level: the role itself where the model's grant carries the flag
                     let value = role(*r).map(|v| Edge { role: v, until: until.map(|u| WallMs(u as u64)), invite: may_grant.then_some(v), retain: false, floor: None });
-                    let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(t, l)| l.iter().map(|&j| (tid(*t), cid(w.cid(j)))));
+                    let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(t, l)| l.iter().map(|&j| (tid(*t), model_cid(w, j))));
                     let frontier = (!finalize).then(|| Arc::new(List::new(listed)));
                     PartKind::Edge(EdgeWrite { holder: tid(*holder), value, frontier })
                 }
@@ -131,7 +147,7 @@ pub fn input(w: &World, v: &View) -> Input {
             let direct = k.direct.iter().fold(0, |m, &j| m | 1 << j);
             out.push(Part { on: tid(k.on), path: k.path.iter().map(|&t| tid(t)).collect(), direct, kind });
         }
-        commits.push(Commit { id: cid(c), ts: ts(first.ts), signer: tid(first.signer), parts: out });
+        commits.push(Commit { id: cid(c as u64), ts: ms(first.ts as u64), signer: tid(first.signer), parts: out });
     }
     let trust = v.trust.iter().filter_map(|i| ids.get(i).copied()).collect();
     Input { records, commits, trust, ids }
@@ -191,7 +207,7 @@ fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &mu
             return Some(format!("part {i}: model {a:?}, walk {b:?}"));
         }
     }
-    let copied: BTreeSet<CommitId> = rd.copied.iter().map(|&i| cid(w.cid(i))).collect();
+    let copied: BTreeSet<CommitId> = rd.copied.iter().map(|&i| model_cid(w, i)).collect();
     if copied != p.copies() {
         return Some(format!("copies: model {copied:?}, walk {:?}", p.copies()));
     }
@@ -199,7 +215,7 @@ fn compare(w: &World, v: &View, rules: &Rules, rd: &Reading, inp: &Input, p: &mu
     if purged != p.purged() {
         return Some(format!("purged: model {purged:?}, walk {:?}", p.purged()));
     }
-    let copies: BTreeSet<CommitId> = rd.purged.iter().filter(|i| !v.held.contains(i)).map(|&i| cid(w.cid(i))).collect();
+    let copies: BTreeSet<CommitId> = rd.purged.iter().filter(|i| !v.held.contains(i)).map(|&i| model_cid(w, i)).collect();
     if copies != p.purged_copies() {
         return Some(format!("purged copies: model {copies:?}, walk {:?}", p.purged_copies()));
     }
@@ -257,7 +273,6 @@ pub fn walk(w: &World, v: &View) -> (Input, Paths) {
     (inp, p)
 }
 
-/// The walk's verdict on model delta `i` in `v` of `w`.
 /// A list naming each of `commits` whole: in the leaf of each of `things` (as A1's single list
 /// reads, for hand worlds whose rule is not the leaf's).
 pub fn whole(things: &[Tid], commits: impl IntoIterator<Item = CommitId>) -> List {
@@ -265,6 +280,7 @@ pub fn whole(things: &[Tid], commits: impl IntoIterator<Item = CommitId>) -> Lis
     List::new(things.iter().flat_map(|&t| cs.iter().map(move |&c| (t, c))))
 }
 
+/// The walk's verdict on model delta `i` in `v` of `w`.
 pub fn verdict(w: &World, v: &View, i: Id) -> Option<Content> {
     let (inp, p) = walk(w, v);
     p.content(inp.ids.get(&i)?)
@@ -279,9 +295,32 @@ pub fn agree(w: &World, v: &View) {
 }
 
 /// Every commit held, trusting `trust`.
+pub fn all(w: &World, trust: &[Id]) -> View {
+    View::all(w).trusting(trust)
+}
+
+/// `agree` with every commit held, trusting `trust`.
 #[track_caller]
 pub fn agree_all(w: &World, trust: &[Id]) {
-    agree(w, &View::all(w).trusting(trust));
+    agree(w, &all(w, trust));
+}
+
+/// The model's A with H (mint), X and B paired by H at 1.
+pub fn paired() -> (World, Id, Id) {
+    let mut w = m::account();
+    let gx = w.edge(m::H, 1, &[], m::A, m::X, roles_model::Role::Admin, &[]);
+    let gb = w.edge(m::H, 1, &[], m::A, m::B, roles_model::Role::Admin, &[]);
+    (w, gx, gb)
+}
+
+/// The model's may-grant world: A2 (K's) shares T1 at write and GU (A2's guests) holds read with
+/// the flag, by H through A; K gives X write on A2.
+pub fn invited() -> World {
+    let mut w = m::account();
+    w.push(m::H, 1, &[m::A], m::T1, Kind::set(m::A2, roles_model::Role::Write));
+    w.push(m::H, 1, &[m::A], m::T1, Kind::set(m::GU, roles_model::Role::Read).may_grant());
+    w.edge(m::K, 1, &[], m::A2, m::X, roles_model::Role::Write, &[]);
+    w
 }
 
 const MODES: [TinyMode; 9] = [

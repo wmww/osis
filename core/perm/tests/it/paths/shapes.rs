@@ -8,36 +8,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::incremental::{check, reading};
-use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
+use super::{cid, commit, ms, t};
+use osis_base::{Ak, PurgeBy, Role, Tid, Ts, WallMs};
 use osis_perm::paths::{Changed, Commit, Content, Delta, DeltaClass, EdgeWrite, List, Names, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
 use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-fn t(n: u32) -> Tid {
-    let mut b = [0u8; 15];
-    b[..4].copy_from_slice(&n.to_be_bytes());
-    Tid::from_bytes(b)
-}
-
-fn cid(n: u64) -> CommitId {
-    let mut b = [0u8; 32];
-    b[..8].copy_from_slice(&n.to_be_bytes());
-    CommitId(b)
-}
-
-fn ms(n: u64) -> Ts {
-    Ts::make(WallMs(n), 0).unwrap()
-}
-
 fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, frontier: Option<&[u64]>) -> Part {
     let frontier = frontier.map(|f| Arc::new(super::whole(&[H, Y, Z, A, LK, T1].map(t), f.iter().map(|&c| cid(c)))));
     Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier }) }
-}
-
-fn commit(id: u64, ts: Ts, signer: u32, parts: Vec<Part>) -> Commit {
-    Commit { id: cid(id), ts, signer: t(signer), parts }
 }
 
 /// Commits arriving one at a time in `order`: each `Changed` equals the readings' difference, and
@@ -201,8 +182,8 @@ fn hostile_shapes_judge_alike_without_panicking() {
 }
 
 /// A random soup of parts over 8 things: records with cycles, paths repeating things, any holder,
-/// value, frontier (naming any commit, held or not), remaining admin, mark; several parts
-/// per commit; ties in `ts` and signer.
+/// value (`until`, invite, floor), frontier (naming any commit, held or not), deltas of every
+/// class; several parts per commit; ties in `ts` and signer.
 pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
     let mut r = Rng(i);
     let thing = |r: &mut Rng| 1 + r.below(8) as u32;

@@ -5,11 +5,11 @@
 //! spec/permissions.md §5.1, §5.2.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::incremental::{check, check_renewed, reading};
-use super::{input, rules, MODES};
+use super::incremental::{check, check_renewed, in_every_order, reading};
+use super::{cid, commit, input, ms, rules, t, MODES};
 use crate::common::{seeded, sharded};
 use osis_base::Tid;
-use osis_base::{Ak, CommitId, PurgeBy, Role, Ts, WallMs};
+use osis_base::{Ak, CommitId, PurgeBy, Role, Ts};
 use osis_perm::paths::{Commit, Delta, DeltaClass, EdgeWrite, Fact, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::ops::Bound;
 use osis_perm::{Edge, WriteId};
@@ -228,32 +228,16 @@ fn any_lookup_order_reads_alike() {
     }
 }
 
-fn th(n: u32) -> Tid {
-    let mut b = [0u8; 15];
-    b[..4].copy_from_slice(&n.to_be_bytes());
-    Tid::from_bytes(b)
-}
-
-fn cm(n: u64) -> CommitId {
-    let mut b = [0u8; 32];
-    b[..8].copy_from_slice(&n.to_be_bytes());
-    CommitId(b)
-}
-
-fn mk(id: u64, ts: u64, signer: u32, parts: Vec<Part>) -> Commit {
-    Commit { id: cm(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: th(signer), parts }
-}
-
 /// An edge write on `on` along `path` setting `holder` to `role` (none: a removal), its frontier
 /// listing `list`.
 fn ew(on: u32, path: &[u32], holder: u32, role: Option<Role>, list: &[u64]) -> Part {
-    let frontier = Some(Arc::new(super::whole(&[H, M, X, Y, Z, W, A, B, C, N].map(th), list.iter().map(|&c| cm(c)))));
-    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: th(holder), value: role.map(Edge::new), frontier }) }
+    let frontier = Some(Arc::new(super::whole(&[H, M, X, Y, Z, W, A, B, C, N].map(t), list.iter().map(|&c| cid(c)))));
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value: role.map(Edge::new), frontier }) }
 }
 
 fn role_delta(on: u32, path: &[u32]) -> Part {
     let d = Delta { aspect: Ak::new("keys.0").unwrap(), needs: Role::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::RoleClass };
-    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
 const H: u32 = 1;
@@ -269,15 +253,7 @@ const C: u32 = 12;
 const N: u32 = 20;
 
 fn recs() -> BTreeMap<Tid, Tid> {
-    BTreeMap::from([(th(A), th(H)), (th(B), th(H)), (th(C), th(H)), (th(N), th(M))])
-}
-
-fn perms(n: usize) -> Vec<Vec<usize>> {
-    let mut out = vec![vec![]];
-    for k in 0..n {
-        out = out.into_iter().flat_map(|o: Vec<usize>| (0..=o.len()).map(move |at| [&o[..at], &[k], &o[at..]].concat())).collect();
-    }
-    out
+    BTreeMap::from([(t(A), t(H)), (t(B), t(H)), (t(C), t(H)), (t(N), t(M))])
 }
 
 /// A world of every forget case: a lowering with drops (5, dropping X's grant of Y), a lowering
@@ -286,15 +262,15 @@ fn perms(n: usize) -> Vec<Vec<usize>> {
 fn forget_world() -> Vec<Commit> {
     let admin = Some(Role::Admin);
     vec![
-        mk(1, 1, H, vec![ew(A, &[], X, admin, &[])]),
-        mk(2, 2, X, vec![ew(A, &[], Y, admin, &[])]),
-        mk(3, 2, H, vec![ew(B, &[], A, admin, &[])]),
-        mk(4, 3, H, vec![ew(B, &[A], W, Some(Role::Write), &[])]),
-        mk(5, 5, H, vec![ew(A, &[], X, None, &[])]),
-        mk(6, 4, Y, vec![ew(A, &[], X, None, &[])]),
-        mk(7, 6, H, vec![ew(A, &[], Z, admin, &[]), ew(C, &[], Z, admin, &[])]),
-        mk(8, 1, M, vec![ew(N, &[], A, admin, &[])]),
-        mk(9, 3, X, vec![role_delta(N, &[A])]),
+        commit(1, ms(1), H, vec![ew(A, &[], X, admin, &[])]),
+        commit(2, ms(2), X, vec![ew(A, &[], Y, admin, &[])]),
+        commit(3, ms(2), H, vec![ew(B, &[], A, admin, &[])]),
+        commit(4, ms(3), H, vec![ew(B, &[A], W, Some(Role::Write), &[])]),
+        commit(5, ms(5), H, vec![ew(A, &[], X, None, &[])]),
+        commit(6, ms(4), Y, vec![ew(A, &[], X, None, &[])]),
+        commit(7, ms(6), H, vec![ew(A, &[], Z, admin, &[]), ew(C, &[], Z, admin, &[])]),
+        commit(8, ms(1), M, vec![ew(N, &[], A, admin, &[])]),
+        commit(9, ms(3), X, vec![role_delta(N, &[A])]),
     ]
 }
 
@@ -333,8 +309,8 @@ fn every_forget_of_a_world_of_every_case_reads_as_from_scratch() {
     let c = forget_world();
     let p = Paths::evaluate(&recs(), BTreeSet::new(), &c);
     // the cases are there: 5 drops 2, 6 void, 4 applied joining A and B
-    assert_eq!((p.status(&WriteId(cm(2), 0)), p.status(&WriteId(cm(6), 0)), p.status(&WriteId(cm(4), 0))), (Some(Status::Dropped), Some(Status::Void), Some(Status::Applied)));
-    for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cm(5), 0)]), BTreeSet::from([WriteId(cm(6), 0)])] {
+    assert_eq!((p.status(&WriteId(cid(2), 0)), p.status(&WriteId(cid(6), 0)), p.status(&WriteId(cid(4), 0))), (Some(Status::Dropped), Some(Status::Void), Some(Status::Applied)));
+    for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cid(5), 0)]), BTreeSet::from([WriteId(cid(6), 0)])] {
         every_forget(&trust, &c);
     }
 }
@@ -342,14 +318,14 @@ fn every_forget_of_a_world_of_every_case_reads_as_from_scratch() {
 /// A `doc.0` delta on `on` along `path` of `purge_by`, its signer its purge author.
 fn doc(on: u32, path: &[u32], purge_by: PurgeBy) -> Part {
     let d = Delta { aspect: Ak::new("doc.0").unwrap(), needs: Role::Write, purge_author: 0, purge_by, class: DeltaClass::Plain };
-    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
 /// A purge request on `on` along `path` naming `names` on `doc.0` (a destruction: on `created.0`).
 fn req(on: u32, path: &[u32], names: Names) -> Part {
     let aspect = Ak::new(if names == Names::Destroy { "created.0" } else { "doc.0" }).unwrap();
     let d = Delta { aspect, needs: Role::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Purge { names } };
-    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Delta(d) }
 }
 
 /// A world of every purge case (draft §6): H grants X admin on A (1); H's `writer` delta on A
@@ -359,12 +335,12 @@ fn req(on: u32, path: &[u32], names: Names) -> Part {
 fn purge_world() -> Vec<Commit> {
     let admin = Some(Role::Admin);
     vec![
-        mk(1, 1, H, vec![ew(A, &[], X, admin, &[])]),
-        mk(2, 2, H, vec![doc(A, &[], PurgeBy::Writer)]),
-        mk(3, 3, X, vec![req(A, &[], Names::Aspect)]),
-        mk(4, 4, X, vec![req(A, &[], Names::Destroy)]),
-        mk(5, 5, H, vec![ew(A, &[], X, None, &[])]),
-        mk(6, 6, H, vec![ew(A, &[], X, admin, &[])]),
+        commit(1, ms(1), H, vec![ew(A, &[], X, admin, &[])]),
+        commit(2, ms(2), H, vec![doc(A, &[], PurgeBy::Writer)]),
+        commit(3, ms(3), X, vec![req(A, &[], Names::Aspect)]),
+        commit(4, ms(4), X, vec![req(A, &[], Names::Destroy)]),
+        commit(5, ms(5), H, vec![ew(A, &[], X, None, &[])]),
+        commit(6, ms(6), H, vec![ew(A, &[], X, admin, &[])]),
     ]
 }
 
@@ -375,24 +351,16 @@ fn purge_world() -> Vec<Commit> {
 #[test]
 fn every_order_and_forget_of_a_purge_world_reads_as_from_scratch() {
     let c = purge_world();
-    let d = WriteId(cm(2), 0);
+    let d = WriteId(cid(2), 0);
     let read = |cs: &[Commit]| Paths::evaluate(&recs(), BTreeSet::new(), cs).purged().contains(&d);
-    let without = |gone: &[u64]| c.iter().filter(|x| !gone.iter().any(|g| x.id == cm(*g))).cloned().collect::<Vec<_>>();
+    let without = |gone: &[u64]| c.iter().filter(|x| !gone.iter().any(|g| x.id == cid(*g))).cloned().collect::<Vec<_>>();
     assert!(read(&c) && read(&without(&[6])) && read(&without(&[3, 6])));
     assert!(!read(&without(&[4, 6])) && read(&without(&[4])) && read(&without(&[4, 5])));
-    for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cm(5), 0)])] {
+    for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cid(5), 0)])] {
         every_forget(&trust, &c);
     }
     let scratch = Paths::evaluate(&recs(), BTreeSet::new(), &c);
-    for order in perms(c.len()) {
-        let mut p = Paths::new(&recs(), BTreeSet::new());
-        for &k in &order {
-            let before = p.clone();
-            let ch = p.add(std::slice::from_ref(&c[k]));
-            assert_eq!(check(&before, &p, &ch), None, "order {order:?}, adding {k}");
-        }
-        assert!(reading(&p) == reading(&scratch), "order {order:?}");
-    }
+    in_every_order(&recs(), &c, |p, order| assert!(reading(p) == reading(&scratch), "order {order:?}"));
 }
 
 /// A destruction racing cuts of its path on an edge into another thing (draft §6 Destruction:
@@ -403,12 +371,12 @@ fn every_order_and_forget_of_a_purge_world_reads_as_from_scratch() {
 fn destruction_race() -> Vec<Commit> {
     let admin = Some(Role::Admin);
     vec![
-        mk(1, 1, M, vec![ew(N, &[], A, admin, &[])]),
-        mk(2, 1, H, vec![ew(A, &[], X, admin, &[])]),
-        mk(3, 2, M, vec![doc(N, &[], PurgeBy::Writer)]),
-        mk(4, 5, X, vec![req(N, &[A], Names::Destroy)]),
-        mk(5, 4, H, vec![ew(A, &[], X, None, &[])]),
-        mk(6, 6, H, vec![ew(A, &[], X, None, &[4])]),
+        commit(1, ms(1), M, vec![ew(N, &[], A, admin, &[])]),
+        commit(2, ms(1), H, vec![ew(A, &[], X, admin, &[])]),
+        commit(3, ms(2), M, vec![doc(N, &[], PurgeBy::Writer)]),
+        commit(4, ms(5), X, vec![req(N, &[A], Names::Destroy)]),
+        commit(5, ms(4), H, vec![ew(A, &[], X, None, &[])]),
+        commit(6, ms(6), H, vec![ew(A, &[], X, None, &[4])]),
     ]
 }
 
@@ -419,27 +387,19 @@ fn destruction_race() -> Vec<Commit> {
 #[test]
 fn every_order_and_forget_of_a_destruction_racing_a_cut_reads_as_from_scratch() {
     let c = destruction_race();
-    let d = WriteId(cm(3), 0);
+    let d = WriteId(cid(3), 0);
     let read = |cs: &[Commit]| Paths::evaluate(&recs(), BTreeSet::new(), cs).purged().contains(&d);
-    let without = |gone: &[u64]| c.iter().filter(|x| !gone.iter().any(|g| x.id == cm(*g))).cloned().collect::<Vec<_>>();
+    let without = |gone: &[u64]| c.iter().filter(|x| !gone.iter().any(|g| x.id == cid(*g))).cloned().collect::<Vec<_>>();
     assert!(!read(&c) && read(&without(&[5])) && read(&without(&[5, 6])) && !read(&without(&[4])));
     let mut unlisted = without(&[5]);
-    unlisted.retain(|x| x.id != cm(6));
-    unlisted.push(mk(6, 6, H, vec![ew(A, &[], X, None, &[])]));
+    unlisted.retain(|x| x.id != cid(6));
+    unlisted.push(commit(6, ms(6), H, vec![ew(A, &[], X, None, &[])]));
     assert!(!read(&unlisted));
-    for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cm(6), 0)])] {
+    for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cid(6), 0)])] {
         every_forget(&trust, &c);
     }
     let scratch = Paths::evaluate(&recs(), BTreeSet::new(), &c);
-    for order in perms(c.len()) {
-        let mut p = Paths::new(&recs(), BTreeSet::new());
-        for &k in &order {
-            let before = p.clone();
-            let ch = p.add(std::slice::from_ref(&c[k]));
-            assert_eq!(check(&before, &p, &ch), None, "order {order:?}, adding {k}");
-        }
-        assert!(reading(&p) == reading(&scratch), "order {order:?}");
-    }
+    in_every_order(&recs(), &c, |p, order| assert!(reading(p) == reading(&scratch), "order {order:?}"));
 }
 
 // A frontier leaf arriving (`update`) that makes a lowering list what it dropped, and going again:
@@ -448,17 +408,17 @@ fn every_order_and_forget_of_a_destruction_racing_a_cut_reads_as_from_scratch() 
 fn a_leaf_arriving_that_lists_a_drop_reads_as_from_scratch() {
     let c = forget_world();
     let mut listing = c.clone();
-    listing[4] = mk(5, 5, H, vec![ew(A, &[], X, None, &[2])]);
-    for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cm(5), 0)])] {
+    listing[4] = commit(5, ms(5), H, vec![ew(A, &[], X, None, &[2])]);
+    for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cid(5), 0)])] {
         let mut p = Paths::evaluate(&recs(), trust.clone(), &c);
         for (now, version) in [(&listing, &listing[4]), (&c, &c[4])] {
             let before = p.clone();
             let ch = p.update(std::slice::from_ref(version));
-            assert_eq!(check_renewed(&before, &p, &ch, &BTreeSet::from([cm(5)])), None);
+            assert_eq!(check_renewed(&before, &p, &ch, &BTreeSet::from([cid(5)])), None);
             let mut scratch = Paths::evaluate(&recs(), trust.clone(), now);
             assert_eq!(differs(&mut p, &mut scratch, true), None);
         }
-        assert_eq!(Paths::evaluate(&recs(), trust.clone(), &listing).status(&WriteId(cm(2), 0)), Some(Status::Applied));
+        assert_eq!(Paths::evaluate(&recs(), trust.clone(), &listing).status(&WriteId(cid(2), 0)), Some(Status::Applied));
     }
 }
 
@@ -472,26 +432,18 @@ fn liveness_reads_alike_in_every_arrival_order() {
     const Q: u32 = 7;
     let admin = Some(Role::Admin);
     let c = vec![
-        mk(1, 1, H, vec![ew(A, &[], X, admin, &[])]),
-        mk(2, 2, X, vec![ew(A, &[], Y, admin, &[])]),
-        mk(3, 3, Y, vec![ew(A, &[], Z, admin, &[])]),
-        mk(4, 2, Q, vec![ew(A, &[], W, admin, &[])]),
-        mk(5, 3, W, vec![ew(A, &[], Q, admin, &[])]),
-        mk(6, 1, H, vec![ew(A, &[], Q, admin, &[])]),
+        commit(1, ms(1), H, vec![ew(A, &[], X, admin, &[])]),
+        commit(2, ms(2), X, vec![ew(A, &[], Y, admin, &[])]),
+        commit(3, ms(3), Y, vec![ew(A, &[], Z, admin, &[])]),
+        commit(4, ms(2), Q, vec![ew(A, &[], W, admin, &[])]),
+        commit(5, ms(3), W, vec![ew(A, &[], Q, admin, &[])]),
+        commit(6, ms(1), H, vec![ew(A, &[], Q, admin, &[])]),
     ];
     let mut scratch = Paths::evaluate(&recs(), BTreeSet::new(), &c);
-    assert!((1..=6).all(|k| scratch.status(&WriteId(cm(k), 0)) == Some(Status::Applied)));
+    assert!((1..=6).all(|k| scratch.status(&WriteId(cid(k), 0)) == Some(Status::Applied)));
     let pair = Paths::evaluate(&recs(), BTreeSet::new(), &c[3..5]);
     assert!(pair.statuses().values().all(|s| *s == Status::Unapplied));
-    for order in perms(c.len()) {
-        let mut p = Paths::new(&recs(), BTreeSet::new());
-        for &k in &order {
-            let before = p.clone();
-            let ch = p.add(std::slice::from_ref(&c[k]));
-            assert_eq!(check(&before, &p, &ch), None, "order {order:?}, adding {k}");
-        }
-        assert_eq!(differs(&mut p, &mut scratch, false), None, "order {order:?}");
-    }
+    in_every_order(&recs(), &c, |p, order| assert_eq!(differs(p, &mut scratch, false), None, "order {order:?}"));
     assert_eq!(alike(&recs(), &BTreeSet::new(), &c, 3, true), None);
 }
 

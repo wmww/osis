@@ -7,6 +7,7 @@
 //! spec: none (cost, notes/perm-paths.md; the rules are those of spec/permissions.md §5.1).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use super::{cid, t};
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
 use osis_perm::paths::{By, Commit, Content, Counts, Delta, DeltaClass, EdgeWrite, Fact, List, Holding, Key, MemStore, NameKey, Names, Pair, Part, PartKind, Paths, Right, Status, Store};
 use std::cell::Cell;
@@ -15,12 +16,6 @@ use std::rc::Rc;
 use osis_perm::{Edge, Frontier, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-
-fn t(n: u32) -> Tid {
-    let mut b = [0u8; 15];
-    b[..4].copy_from_slice(&n.to_be_bytes());
-    Tid::from_bytes(b)
-}
 
 const H: u32 = 1;
 const X: u32 = 2;
@@ -43,12 +38,6 @@ fn write(id: u64, signer: u32, ts: u64, path: &[u32], on: u32, holder: u32, role
     let frontier = Some(Arc::new(List::default()));
     let ew = EdgeWrite { holder: t(holder), value: role.map(Edge::new), frontier };
     Commit { id: cid(id), ts: Ts::make(WallMs(ts), 0).unwrap(), signer: t(signer), parts: vec![Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(ew) }] }
-}
-
-fn cid(id: u64) -> CommitId {
-    let mut b = [0u8; 32];
-    b[..8].copy_from_slice(&id.to_be_bytes());
-    CommitId(b)
 }
 
 fn delta(a: Counts, b: Counts) -> Counts {

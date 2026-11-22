@@ -253,21 +253,20 @@ fn paths_incremental_agrees_large() {
 pub(super) fn every_order(w: &m::World) {
     super::agree_all(w, &[]);
     let inp = input(w, &m::View::all(w));
-    let n = inp.commits.len();
-    let mut orders = vec![vec![]];
-    for k in 0..n {
-        orders = orders.into_iter().flat_map(|o: Vec<usize>| (0..=o.len()).map(move |at| [&o[..at], &[k], &o[at..]].concat())).collect();
-    }
     let scratch = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
-    for order in orders {
-        let mut p = Paths::new(&inp.records, BTreeSet::new());
-        for &k in &order {
-            let before = p.clone();
-            let ch = p.add(std::slice::from_ref(&inp.commits[k]));
-            assert_eq!(check(&before, &p, &ch), None, "order {order:?}, adding {k}");
-        }
-        assert!(reading(&p) == reading(&scratch), "order {order:?}");
-    }
+    in_every_order(&inp.records, &inp.commits, |p, order| assert!(reading(p) == reading(&scratch), "order {order:?}"));
+}
+
+/// Every arrival order of `commits`, from nothing held and trusting nothing (prefixes shared):
+/// each `Changed` exact; `end` reads each whole order.
+#[track_caller]
+pub(super) fn in_every_order(records: &BTreeMap<Tid, Tid>, commits: &[Commit], mut end: impl FnMut(&mut Paths, &[usize])) {
+    let mut add = |p: &mut Paths, order: &[usize], k: usize| {
+        let before = p.clone();
+        let ch = p.add(std::slice::from_ref(&commits[k]));
+        assert_eq!(check(&before, p, &ch), None, "order {order:?}, adding {k}");
+    };
+    crate::common::every_order(commits.len(), Paths::new(records, BTreeSet::new()), &mut add, &mut end);
 }
 
 // A commit arriving before a lowering's verdict undoes it: H removes B at 5, so B's removal of X

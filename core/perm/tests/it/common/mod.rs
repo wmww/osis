@@ -322,3 +322,24 @@ pub fn sharded<T: Send>(samples: u64, seed: u64, run: impl Fn(u64, u64) -> T + S
         hs.into_iter().map(|h| h.join().unwrap_or_else(|_| panic!("a shard of seed {seed:#x} failed (message above)"))).collect()
     })
 }
+
+/// Every arrival order of items `0..n`, prefixes shared: `step(state, order, k)` adds item `k`
+/// after `order` (once per distinct prefix), `end(state, order)` reads each whole order.
+pub fn every_order<S: Clone>(n: usize, start: S, step: &mut impl FnMut(&mut S, &[usize], usize), end: &mut impl FnMut(&mut S, &[usize])) {
+    fn go<S: Clone>(s: &S, order: &mut Vec<usize>, n: usize, step: &mut impl FnMut(&mut S, &[usize], usize), end: &mut impl FnMut(&mut S, &[usize])) {
+        if order.len() == n {
+            end(&mut s.clone(), order);
+        }
+        for k in 0..n {
+            if order.contains(&k) {
+                continue;
+            }
+            let mut t = s.clone();
+            step(&mut t, order, k);
+            order.push(k);
+            go(&t, order, n, step, end);
+            order.pop();
+        }
+    }
+    go(&start, &mut vec![], n, step, end);
+}
