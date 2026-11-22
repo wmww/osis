@@ -69,3 +69,6 @@ HANDSHAKE_TIMEOUT  removed
 CLOSE_WAIT  removed
 RUSTUP_HOME  third-party: rustup environment variable
 CARGO_HOME  third-party: cargo environment variable
+Backdate  rejected: a removal mode notes/api.md turns down
+Executable  third-party: cargo test --no-run output
+Monitor  third-party: a Claude Code tool

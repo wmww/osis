@@ -3,12 +3,15 @@
 backticks exists, so a rename or deletion fails the branch that made it, not a later reader.
 Checked, in each inline backtick span of notes/ and issues/ (fenced blocks are sketches, not citations):
   names: each segment of an `a::b` path, a name called (`foo(`), a name with `_` (`foo_bar`,
-      `MAX_PROOFS`) and a CamelCase name with an inner capital (`LocalPeer`): the word occurs in a
+      `MAX_PROOFS`), a CamelCase name with an inner capital (`LocalPeer`) and a span that is one
+      capitalised word (`Payloads`): the word occurs in a
       repo file outside docs/ (not Markdown, but spec/'s), is a repo file's name without its
       extension (a TLA model's .cfg), or is a test's name less its `_spec_...` tail. A word match,
       not a definition: a name only a comment keeps passes. Skipped: a name starting or ending in
       `_`, shorter than 3, or beside `*`, `<`, `>`, `{`, `}`, `$`, `-`, `/` (a pattern, placeholder,
       flag or alternative); `a_{b,c}` names `a_b` and `a_c`.
+  families: a name ending in `_` followed by `*` (a test family, not after another pattern
+      character): some code word starts with it, so a family whose tests all went fails.
   paths: a span that is a relative path of a source extension (`core/x/src/y.rs`, `apply/mod.rs`):
       a repo file's path ends with it, also with `src/` left out (`store/store.rs`) or its crate
       named by package (`osis-keys/tests/it/x.rs`).
@@ -18,7 +21,7 @@ of what ran then), spec/ (its names are wire and grammar terms). Names not in ou
 (third-party, placeholder, planned, rejected, removed) are listed in tools/code_refs_allow.txt with a
 reason; a listed name that is in the code, or that no note or issue cites, fails.
 Usage: python3 tools/code_refs.py   (exit 1 on any stale name; policy.py runs it)"""
-import os, re, subprocess, sys
+import bisect, os, re, subprocess, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rustsrc import members
@@ -33,6 +36,7 @@ WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 SPAN = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
 FENCE = re.compile(r"^[ \t]*```.*?^[ \t]*```[^\n]*$", re.M | re.S)
 CAMEL = re.compile(r"[A-Z][a-z0-9]+[A-Z]")
+CAPITAL = re.compile(r"[A-Z][a-z0-9]+")
 PATHLIKE = re.compile(r"^(?:\./)?[A-Za-z0-9_-][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_.-]+)*$")
 # beside these a word is a pattern, a placeholder or a flag (`foo_*`, `<name>`, `--no-lan`, `X/Y`)
 GLOB = set("*<>{}$-/")
@@ -54,10 +58,14 @@ def cited(text):
         for w in WORD.finditer(span):
             name, a, b = w.group(0), w.start(), w.end()
             before, after = span[max(0, a - 1):a], span[b:b + 1]
+            # `foo_*` names a family: some code word starts with `foo_`
+            if name.endswith("_") and after == "*" and not name.startswith("_") and len(name) >= 3 and before not in GLOB:
+                yield line, name, "prefix"
+                continue
             if name.startswith("_") or name.endswith("_") or len(name) < 3 or GLOB & {before, after}:
                 continue
             pathy = span[max(0, a - 2):a] == "::" or span[b:b + 2] == "::"
-            if pathy or after == "(" or "_" in name or CAMEL.match(name):
+            if pathy or after == "(" or "_" in name or CAMEL.match(name) or CAPITAL.fullmatch(span):
                 yield line, name, "name"
 
 
@@ -88,13 +96,19 @@ def allow_list(root):
 def stale(docs, words, ends, allow):
     """Stale citations in `docs` ({path: text}) against the code's `words` and path tails `ends`,
     and stale lines of `allow` ({name: (line, reason)})."""
-    used = set()
+    used, by_order = set(), sorted(words)
+
+    def found(name, kind):
+        if kind == "prefix":
+            i = bisect.bisect_left(by_order, name)
+            return i < len(by_order) and by_order[i].startswith(name)
+        return name in words if kind == "name" else name in ends
     for rel, text in docs.items():
         seen = set()
         for line, name, kind in cited(skipped(rel, text)):
             if name in allow:
                 used.add(name)
-            elif not (name in words if kind == "name" else name in ends) and name not in seen:
+            elif not found(name, kind) and name not in seen:
                 seen.add(name)
                 yield f"{rel}:{line}: `{name}`: no such {kind} in the code ({ALLOW} for a third-party name or placeholder)"
     for name, (n, why) in sorted(allow.items(), key=lambda x: x[1][0]):

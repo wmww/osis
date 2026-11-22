@@ -10,7 +10,7 @@
 - A party removed from the thing at the rotation minting e holds the roles secret of the epoch e supersedes. Every grant and re-seal giving e is wrapped there, so the removed party opens their role parts (`roles.0`, `keys.0`, `secrets.0`: who was granted, the sealed boxes) as it opens e's rotation, for as long as it opens S: until S's step for e reaches the peers it uses (admin-only, so for a writer's removal until an admin next writes).
 
 ## Why it exists
-A recipient may hold only an older epoch: a link left out of a profile rotation has no inbox and reads its re-seal only from the sync ID (osis-sync `keep::a_taken_inbox_*`, `growth::a_lowered_writers_*`; notes/crypto.md, A commit giving read epochs). Wrapping under the newest epoch would leave it unable to open the commit that gives it that epoch.
+A recipient may hold only an older epoch: a link left out of a profile rotation has no inbox and reads its re-seal only from the sync ID (osis-sync `growth::a_lowered_writers_*`; notes/crypto.md, A commit giving read epochs). Wrapping under the newest epoch would leave it unable to open the commit that gives it that epoch.
 
 ## Candidates
 Every candidate (per-recipient wrap, a wrap derived from e, the plain rule with inbox delivery, splitting the role section) either shrinks the leak (box keys still show who was boxed; the header stays readable) or needs anonymous per-holder delivery with trial decryption of every box (O(holders^2) per rotation) and a new entry form: notes/keys-establishment.md, The superseded-epoch wrap.

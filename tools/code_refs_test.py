@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests tools/code_refs.py's citation forms on fabricated notes against a fabricated code: each
-form passes when its name or file is in the code and fails when it is not, words that are no code
+form passes when its name, family or file is in the code and fails when it is not, words that are no code
 name are not checked, and a stale allow-list line fails. Exit 1 on a mismatch."""
 import os, sys
 
@@ -30,9 +30,17 @@ CASES = [
     ("`apply/mod.rs`", False),
     ("`core/engine/src/apply/mod.rs`", False),
     ("`core/engine/src/apply/gone.rs`", True),
-    ("`Gone`", False),                            # a plain word
+    ("`Engine`", False),
+    ("`Gone`", True),                             # a span of one capitalised word
+    ("`Gone away`", False),                       # a plain word
     ("`gone`", False),
-    ("`foo_*`", False),                           # a pattern
+    ("`held_*`", False),                          # a family: some word starts with it
+    ("`admin_only_*`", False),
+    ("`foo_*`", True),                            # a family whose tests are all gone
+    ("`held_sets_*`", True),
+    ("`held_*_bar_*`", False),                    # a pattern: its lead is checked, not `_bar_`
+    ("`foo_*_bar_*`", True),
+    ("`foo*`", False),
     ("`<my_name>`", False),                       # a placeholder
     ("`--no_such`", False),                       # a flag
     ("`_large`", False),                          # a suffix

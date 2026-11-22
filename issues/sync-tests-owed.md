@@ -8,6 +8,7 @@ Test conventions: notes/sync-test-harness.md (one harness, one fast test per spe
 ## Reference graph properties with no sync world test
 Each needs a sync world (three nodes, contacts or siblings, inbox delivery) unless it says otherwise.
 - Security on a recording world (`w.record`; the old metadata and shred modules are in git at e499872aa^ core/sync/tests/it): a node keeping S unread holds in clear, live or overwritten, no value, map key, content or core AK, role secret, or writer's node tid or signing key, and every blob it keeps has a Padmé length (by hand: what an attack on its whole device decrypts holds none of them but the core AKs its own things carry); a purge reaching a reader while away, and a dropped blob's wraps and key row (one sync ID or several), leave nothing the forensic attack recovers; a crash at every write of sync's forget (notes/test-security.md).
+- A reader outside an account keeps reading the account's writes across a node removal: the account's rotations reach it with their chains under the sync ID the account writes under (issues/account-side-shared.md, Sync side).
 - D's deposit seed is fresh after a node removal: the removed node's deposit to the inbox is refused (an account removal from a thing: engine `flows::removal_refreshes_deposit_seed_*`).
 
 ## Scenarios from the old sync's issues
@@ -32,6 +33,7 @@ Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry
 
 ## Built, untested end to end
 - A record lacking its creation whose delta is not reflected stays unswept (notes/crdt.md, Hidden writes go by a sweep): no world where a record's creation is invalid at a sweep, then a re-grant makes it valid and the entry reads with the edits made into it (osis-crdt `sweep_takes_what_a_parent_reset_hid` and engine `partial_receipt_survives_compaction` cover the unit and the not-yet-received case).
+- A dead expiring write is covered before its expiry (notes/ephemeral.md, Ephemeral expiry is durable expiry): B's expiring write overwrites A's on an ephemeral register, a writer's snapshot covers A's then, and every holder forgets it while B's live write stays to its expiry; no engine or world test (`expiry_covers` before T).
 - HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does): the engine's `fall_mark`.
 - `Live::fresh` (held blobs handed to `Engine::seal_body`): no World test; a mutation passing none fails no osis-sync test (the engine's `rotation::tests_reseal::facade_*` cover the contract). Cheapest found: a purge of one thing's part of a commit spanning two things, the other thing's section then logged again verbatim.
 
@@ -41,7 +43,7 @@ Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry
 
 ## API behaviours the rebuild's deletion left untested
 Names from `git show 28641727e`; each goes through the facade.
-- libs/chat across synced nodes (libs/chat/tests/it has create, edits, purge sets, cursors on hand-carried commits, a chat made, joined by link and relayed over sync; a kick's validity flip: core/osis/tests/it/backlinks.rs): deletes and tombstones reaching a new node.
+- libs/chat across synced nodes (libs/chat/tests/it has create, edits, purge sets, cursors on hand-carried commits, a chat made, joined by link and relayed over sync; a kick's validity flip: core/osis/tests/it/backlinks.rs): deletes and tombstones reaching a new node; a participant kicked while offline: its late post rejected and told, then revived by its re-adding (design E, notes/chat.md Left out).
 - Redeem edges (spec/permissions.md §7, spec/sync-inbox.md §6): after a joiner left, a node removal, an expired delivery, a mismatched target, a stalled pull, one refusing peer (old sharing.rs `redeem_*`).
 - Cross-node rules other notes list as awaiting sync tests: retention dating (notes/engine-retention-dating.md), destruction (notes/expiry-creation-design.md), paged scale checks (notes/engine-paged.md).
 
