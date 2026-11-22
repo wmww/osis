@@ -310,6 +310,80 @@ fn a_thing_released_while_its_minting_was_invalid_comes_back_whole_with_the_side
     assert_eq!(f.lp.peers[3].engine.get(&y, &ak("t:reg.0")).unwrap(), Some(s("y")));
 }
 
+// spec/commits.md §4 Outside the node closure, §5 What a held thing needs, spec/sync-judgement.md
+// §3 Dropped bodies: `a`, past its backdated removal of `b`, mints W under its own account (a
+// record valid on either side) with `t`'s strong to it, then writes W's content apart (D). Peer 3,
+// on `b`'s side, holds the minting with its part on `t` dropped while invalid: W is outside its
+// node closure with its minting held, so at the pass end D counts as never received, and W,
+// needed by nothing, goes whole. Taking `a`'s side, `t`'s strong reaches W again: W is pulled
+// anew, so D comes back. Fails where W's going forgets the minting whole (it then arrives as a
+// commit held nothing of, W's record counted learned with the strong, and nothing pulls D again)
+// or where W's record in the minting's late part counts as learned.
+#[test]
+fn content_dropped_as_not_carried_comes_back_with_a_minting_valid_again_spec_sync_judgement_3() {
+    use crate::common::{ak, s, REG, TAGS};
+    let mut f = fight(4);
+    let (w, r, t, a) = (f.w.clone(), f.r.clone(), f.t, f.a);
+    let strong = |m: &mut osis_engine::Mutation, y: Tid| {
+        m.op(t, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(osis_base::Value::Strong(y)) }).unwrap();
+    };
+    // Z under `t`, `a` granted write on it by `t`'s mint admin: a write of `a` on either side
+    let before = ids(&f.lp, 2);
+    let e2 = &mut f.lp.peers[2].engine;
+    let rec = e2.thing_record(t, None);
+    let mut m = osis_engine::Mutation::new();
+    let z = m.create(rec);
+    strong(&mut m, z);
+    e2.commit(m).unwrap().unwrap();
+    e2.grant(&z, &a, &edge_of(Role::Write)).unwrap();
+    let zs = new_ids(&f.lp, 2, &before);
+    send_carried(&mut f.lp, 2, 0, &zs);
+    let e0 = &mut f.lp.peers[0].engine;
+    let rec = e0.thing_record(z, None);
+    let mut m = osis_engine::Mutation::new();
+    let y = m.create(rec);
+    m.set(y, &REG, &s("y")).unwrap();
+    strong(&mut m, y);
+    let mc = f.lp.peers[0].commit(m).unwrap().unwrap();
+    f.lp.peers[0].clock.advance(5);
+    let tags = osis_base::Value::Set([s("d")].into_iter().collect());
+    let mut m = osis_engine::Mutation::new();
+    m.set(y, &TAGS, &tags).unwrap();
+    let d = f.lp.peers[0].commit(m).unwrap().unwrap();
+    send_carried(&mut f.lp, 2, 3, &zs);
+    send_carried(&mut f.lp, 1, 3, &w);
+    send_carried(&mut f.lp, 0, 3, &r);
+    send_carried(&mut f.lp, 0, 3, &[mc, d]);
+    let pass_end = |e: &mut osis_engine::Engine| {
+        e.role_duties().unwrap();
+        let left: BTreeSet<Tid> = e.left_closure().into_keys().collect();
+        e.released(&left).unwrap();
+        e.settle_needs().unwrap();
+    };
+    let p = &mut f.lp.peers[3];
+    pass_end(&mut p.engine);
+    assert!(!p.engine.closure_holds(&y) && p.engine.header(&d).is_none() && p.engine.get(&y, &ak("t:reg.0")).unwrap().is_none(), "b's side: W outside, D never received");
+    let (ds, _) = p.engine.disputes(usize::MAX);
+    let dp = ds.iter().find(|d| d.side.is_some_and(|s| s.trust)).expect("b's side taken by default");
+    p.engine.choose(dp.commit, dp.op, dp.holder, false).unwrap();
+    // the sync exchange: what the node counts missing, the minting where it holds none of it
+    // (its signer logs it again), then all again where it pulls anew
+    p.pulled_anew.clear();
+    let mut missing: Vec<CommitId> = p.engine.commit_parts_missing().into_iter().filter(|(_, m)| !m.is_empty()).map(|(c, _)| c).collect();
+    if p.engine.header(&mc).is_none() {
+        missing.push(mc);
+    }
+    send_carried(&mut f.lp, 0, 3, &missing);
+    if !f.lp.peers[3].pulled_anew.is_empty() {
+        send_carried(&mut f.lp, 0, 3, &[mc, d]);
+    }
+    assert!(f.lp.peers[3].engine.closure_holds(&y), "W entered");
+    pass_end(&mut f.lp.peers[3].engine);
+    let e3 = &mut f.lp.peers[3].engine;
+    assert_eq!(e3.get(&y, &ak("t:reg.0")).unwrap(), Some(s("y")), "the minting's content");
+    assert_eq!(e3.get(&y, &ak("t:tags.0")).unwrap(), Some(tags), "D");
+}
+
 // spec/commits.md §5 Invalid, What a held thing needs: a part dropped while invalid and made
 // valid again (missing, to fetch) that turns invalid again before it arrives is dropped as
 // invalid, as one held throughout: neither held nor missing. `a`, past its backdated removal of
