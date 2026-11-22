@@ -1395,6 +1395,9 @@ impl Streams {
         let covered: BTreeSet<SyncId> = batch.reply.iter().flat_map(|r| r.covered.intersection(&members).copied()).collect();
         let Some(p) = self.pull.get_mut(&conn) else { return };
         let src = p.src;
+        // the joins a reply answers of members still in the stream they were asked in: one that
+        // left since its Pull went (and maybe opened again: another join) is not among them
+        let answered: BTreeSet<SyncId> = batch.reply.iter().flat_map(|r| r.asked.iter()).filter(|(s, g)| members.contains(s) && p.joins.get(s).is_none_or(|j| j.generation == *g)).map(|(s, _)| *s).collect();
         if batch.reply.as_ref().is_some_and(|r| r.whole) && p.listing.is_none() {
             // the whole listing covers the members its first page does: their joins from the
             // start are part of it
@@ -1485,8 +1488,8 @@ impl Streams {
                 }
             } else {
                 // a member that left since its Pull went keeps where it stopped (`left`), or where
-                // a pull anew put it: the reply moves nothing of it
-                for (s, _) in r.asked.iter().filter(|(s, _)| members.contains(s)) {
+                // a pull anew or a join after it opened again put it: the reply moves nothing of it
+                for (s, _) in r.asked.iter().filter(|(s, _)| answered.contains(s)) {
                     touched.push(*s);
                     match r.joins.get(s) {
                         // a join from the start keeps its stored start until it ends

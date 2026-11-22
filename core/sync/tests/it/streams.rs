@@ -3230,3 +3230,35 @@ fn a_listing_of_made_up_ids_grows_nothing_spec_sync_streams_4() {
     };
     assert_eq!(flood(2), flood(20));
 }
+
+// spec/sync-streams.md §4 (Joining: no reply applied after a member left moves where it stopped,
+// nor a join of it after it opened again): as above, but S opens again (a join from the start)
+// before the old join's reply lands, and leaves again before the new join's reply; S's next join,
+// from where a crossing Lost says it stopped, is from the start.
+#[test]
+fn a_reply_after_its_member_opened_again_moves_nothing_of_it_spec_sync_streams_4() {
+    let (mut p, k) = Pair::kept();
+    k.stamped(&mut p.a, 3000, true);
+    p.join(k.id);
+    p.run();
+    p.b.leave(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run_with(|ab, m| ab && m.kind() == 42);
+    assert_eq!(p.held.len(), 1, "the join's reply held back");
+    let Some(Msg::Pull(q)) = p.sent_by_b(41).last().copied() else { panic!("b's join") };
+    let [(_, Some(stopped))] = q.joins.as_slice() else { panic!("joined from where it stopped: {q:?}") };
+    let stopped = stopped.clone().into_bytes();
+    p.b.leave(p.now, k.id);
+    p.b.hold(k.id, Holding::Read);
+    p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
+    p.b.join(p.now, k.id);
+    p.release();
+    p.run_with(|ab, m| ab && m.kind() == 42);
+    assert!(matches!(p.sent_by_b(41).last(), Some(Msg::Pull(q)) if q.joins == vec![(k.id, None)]), "opened again: joined from the start");
+    p.b.leave(p.now, k.id);
+    p.release();
+    let pulls = p.sent_by_b(41).len();
+    p.b.join_on(p.now, C, k.id, Rejoin::From(Some(stopped)));
+    p.run();
+    assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])), "joined from the start");
+}
