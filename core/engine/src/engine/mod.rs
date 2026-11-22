@@ -1170,8 +1170,9 @@ pub struct Core {
     /// (`apply::load`), for `Engine::check_index` to compare with the persisted rows.
     #[cfg(debug_assertions)]
     pub(crate) rebuilt_perm: BTreeMap<CommitId, crate::apply::validity::PermParts>,
-    /// The blob `Engine::commit_forged` built (its own node drops the bad part).
-    pub(crate) forged: Option<Vec<u8>>,
+    /// Each commit built past the writer's rules, as sent, by ID (`Engine::take_forged`): one
+    /// transaction may build more than the commit asked for (a writer's compaction after it).
+    pub(crate) forged: BTreeMap<CommitId, Vec<u8>>,
     /// This open's session (spec/crdt.md §2.1): the own source of its content commits, durable
     /// and memory; its counters live in the store's memory overlay.
     pub session: osis_crdt::Session,
@@ -2264,7 +2265,7 @@ impl Core {
             unchecked_rows: BTreeSet::new(),
             #[cfg(debug_assertions)]
             rebuilt_perm: BTreeMap::new(),
-            forged: None,
+            forged: BTreeMap::new(),
             session,
             expiring,
             later_sessions: 0,

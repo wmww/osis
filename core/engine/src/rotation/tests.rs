@@ -1513,24 +1513,28 @@ fn removal_with(bad: &[&str], leave_out: bool) -> Vec<String> {
     let (mut lp, g, ids) = granted(4, &[(1, Role::Admin), (2, Role::Write), (3, Role::Read)]);
     let before: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
     lp.advance(1000);
+    lp.peers[0].engine.core.forged.clear();
     lp.peers[0].engine.core.skip_writer_rules = true;
     lp.peers[0].engine.core.forge_bad = bad.iter().map(|a| (g, osis_base::Ak::new(*a).unwrap())).collect();
     lp.peers[0].engine.demote(&g, &Demotion { holder: ids[3], new: None, retain: None }).unwrap();
     lp.peers[0].engine.core.forge_bad = Default::default();
     lp.peers[0].engine.core.skip_writer_rules = false;
-    let forged = lp.peers[0].engine.core.forged.take().unwrap();
-    let forged_id = osis_commit::CommitBlob::decode(&forged).unwrap().id();
+    // what the demotion built, as sent: the rotation's parts on `bad` do not decode
+    let forged = std::mem::take(&mut lp.peers[0].engine.core.forged);
+    assert!(forged.values().any(|f| osis_commit::CommitBlob::decode(f).unwrap().header.aspects.iter().any(|a| bad.contains(&a.ak.as_str()))));
     for i in [1, 2, 3] {
         for pk in lp.packages_for(0, i).unwrap() {
             if before.contains(&pk.id) {
                 continue;
             }
             // the hostile admin sends its forged commit whole
-            let b = osis_commit::CommitBlob::decode(&forged).unwrap();
-            let bytes = match (pk.id == forged_id, leave_out) {
-                (true, true) => osis_commit::rewrite(&b, |ai| bad.contains(&b.header.aspects[ai].ak.as_str())).encode(),
-                (true, false) => forged.clone(),
-                _ => pk.bytes.clone(),
+            let bytes = match (forged.get(&pk.id), leave_out) {
+                (Some(f), true) => {
+                    let b = osis_commit::CommitBlob::decode(f).unwrap();
+                    osis_commit::rewrite(&b, |ai| bad.contains(&b.header.aspects[ai].ak.as_str())).encode()
+                }
+                (Some(f), false) => f.clone(),
+                (None, _) => pk.bytes.clone(),
             };
             assert!(matches!(lp.peers[i].receive(&bytes, pk.blobs.clone()).unwrap(), crate::Ingested::Applied(_)));
         }

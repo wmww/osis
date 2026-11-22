@@ -155,17 +155,18 @@ impl Engine {
     #[doc(hidden)]
     pub fn commit_hostile(&mut self, mut m: crate::Mutation) -> Result<Option<CommitId>> {
         m.unchecked();
+        self.core.forged.clear();
         let was = std::mem::replace(&mut self.core.skip_writer_rules, true);
         let r = self.commit(m);
         self.core.skip_writer_rules = was;
         r
     }
 
-    /// The last commit built while `skip_writer_rules` or `forge_bad` was set, as sent (tests:
-    /// what this node's own copy may have dropped of it).
+    /// Commit `id` as sent, built while `skip_writer_rules` or `forge_bad` was set (tests: what
+    /// this node's own copy may have dropped of it); since the last `commit_hostile` began.
     #[doc(hidden)]
-    pub fn take_forged(&mut self) -> Option<Vec<u8>> {
-        self.core.forged.take()
+    pub fn take_forged(&mut self, id: &CommitId) -> Option<Vec<u8>> {
+        self.core.forged.remove(id)
     }
 
     /// `commit_hostile` with every delta on the aspects `bad` replaced by bytes that do not decode
@@ -175,8 +176,7 @@ impl Engine {
         self.core.forge_bad = bad;
         let r = self.commit_hostile(m);
         self.core.forge_bad = Default::default();
-        let forged = self.core.forged.take();
-        Ok(r?.zip(forged))
+        Ok(r?.and_then(|id| Some((id, self.take_forged(&id)?))))
     }
 
     /// Rotates `roles` of each of `actors` in one commit as a hostile writer would: boxing only

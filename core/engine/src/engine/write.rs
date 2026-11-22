@@ -908,7 +908,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     }
     // hostile test authors: the blob as sent, whatever this node's own copy drops of it
     if !tx.core.forge_bad.is_empty() || tx.core.skip_writer_rules {
-        tx.core.forged = Some(built.commit.encode());
+        tx.core.forged.insert(id, built.commit.encode());
     }
     let received = tx.now();
     crate::apply::apply_local(tx, &built.commit, built.signed, received)?;

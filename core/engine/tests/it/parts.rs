@@ -583,6 +583,30 @@ fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     assert_eq!(p.redelivered, 0);
 }
 
+// Harness (`Engine::commit_forged`): the blob it returns is its own commit's, also when the writer
+// covers what the commit replaced in the same transaction (purge on replace); else a history's
+// forged pack carries the cover under the forged commit's ID.
+#[test]
+fn commit_forged_returns_its_own_commit_beside_its_cover() {
+    use crate::common::*;
+    let mut lp = net(2, 0);
+    let (g, h) = (new_shared(&mut lp, 0), new_shared(&mut lp, 0));
+    let mut m = Mutation::new();
+    let gone = osis_schema::core_types::RetentionEntry { history: Some(osis_schema::History::PurgeOnReplace), ..Default::default() };
+    m.set(h, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::from_iter([(reg(), gone)])).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(h, &REG, &s("a")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let before = lp.peers[0].engine.commit_ids().len();
+    let mut m = Mutation::new();
+    m.set(h, &REG, &s("b")).unwrap();
+    m.set(g, &REG, &s("bad")).unwrap();
+    let (id, bytes) = lp.peers[0].engine.commit_forged(m, [(g, reg())].into()).unwrap().unwrap();
+    assert!(lp.peers[0].engine.commit_ids().len() > before + 1, "the writer covers the replaced body");
+    assert_eq!(CommitBlob::decode(&bytes).unwrap().id(), id);
+}
+
 // spec/commits.md §4 Unjudgeable: a commit pending for drift whose parts are one on a thing whose
 // record is unknown and one bad, once judged, pends for the record (its bad part gone), and
 // applies when the record comes.

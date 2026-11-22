@@ -985,7 +985,7 @@ mod tests {
         let mut m = Mutation::new();
         m.op(t, &x, PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str("j".into()))], op: Op::Put(Value::Int(2)) }).unwrap();
         let bad = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
-        let bytes = lp.peers[1].engine.take_forged().unwrap();
+        let bytes = lp.peers[1].engine.take_forged(&bad).unwrap();
         lp.peers[0].receive(&bytes, Vec::new()).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(e.kept_invalid(&bad) && e.forgettable(&bad).unwrap(), "R's commit known for an invalid part only");
