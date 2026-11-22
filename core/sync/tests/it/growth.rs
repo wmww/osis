@@ -395,11 +395,25 @@ fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
     }
 }
 
-/// Node 0 mints a dependent thing with its account root D as admin held from D, an independent thing with
-/// its account as admin (held from D), and a dependent thing minted with its node root as admin held from it, writes each,
-/// removes every strong to them and runs (a pass releases them), `rounds` times; then what it
-/// holds `aged`.
-fn own_rounds(w: &mut World, rounds: usize) -> Held {
+/// `round` played for rounds 0..10 on `w`: a copy taken after the first is ended by `end`, then
+/// the original after the tenth: what two worlds playing 1 and 10 rounds end with (a copy goes on
+/// as its original would).
+fn one_and_ten<T>(mut w: World, mut round: impl FnMut(&mut World, usize), end: impl Fn(&mut World) -> T) -> [(World, T); 2] {
+    round(&mut w, 0);
+    let mut one = w.copy();
+    let at_one = end(&mut one);
+    for k in 1..10 {
+        round(&mut w, k);
+    }
+    let at_ten = end(&mut w);
+    [(one, at_one), (w, at_ten)]
+}
+
+/// A round: node 0 mints a dependent thing with its account root D as admin held from D, an
+/// independent thing with its account as admin (held from D), and a dependent thing minted with
+/// its node root as admin held from it, writes each, removes every strong to them and runs (a pass
+/// releases them).
+fn own_round(w: &mut World) {
     use osis_schema::core_types::HOLDS;
     let (root, d) = (w.engine(0).node_root().unwrap(), w.engine(0).account_root().unwrap());
     let p = w.engine(0).account().unwrap().unwrap().0;
@@ -408,41 +422,38 @@ fn own_rounds(w: &mut World, rounds: usize) -> Held {
         let op = if on { osis_crdt::Op::Add(v) } else { osis_crdt::Op::Remove(v) };
         m.op(from, &HOLDS, osis_crdt::PathOp { path: vec![], op }).unwrap();
     };
-    for _ in 0..rounds {
-        let ts = w.write(0, |e| {
-            let mut ts = Vec::new();
-            for from in [d, root] {
-                let mut m = Mutation::new();
-                let t = m.create(e.thing_record(from, None));
-                strong(&mut m, from, t, true);
-                e.commit(m).unwrap();
-                ts.push((t, from));
-            }
-            ts.push((e.create_with_admin(&p).unwrap().0, d));
-            for (t, _) in &ts {
-                let mut m = Mutation::new();
-                m.set(*t, &value_ak(), &Value::Str("new".into())).unwrap();
-                e.commit(m).unwrap();
-            }
-            ts
-        });
-        w.run();
-        w.write(0, |e| {
-            for (t, from) in &ts {
-                let mut m = Mutation::new();
-                strong(&mut m, *from, *t, false);
-                e.commit(m).unwrap();
-            }
-        });
-        w.run();
-        for (t, _) in &ts {
-            if w.engine(0).core.created(t).is_some() {
-                panic!("released: {t:?} keeps its record\n{}", why_kept(w, 0, t));
-            }
+    let ts = w.write(0, |e| {
+        let mut ts = Vec::new();
+        for from in [d, root] {
+            let mut m = Mutation::new();
+            let t = m.create(e.thing_record(from, None));
+            strong(&mut m, from, t, true);
+            e.commit(m).unwrap();
+            ts.push((t, from));
         }
-        w.advance(1_000);
+        ts.push((e.create_with_admin(&p).unwrap().0, d));
+        for (t, _) in &ts {
+            let mut m = Mutation::new();
+            m.set(*t, &value_ak(), &Value::Str("new".into())).unwrap();
+            e.commit(m).unwrap();
+        }
+        ts
+    });
+    w.run();
+    w.write(0, |e| {
+        for (t, from) in &ts {
+            let mut m = Mutation::new();
+            strong(&mut m, *from, *t, false);
+            e.commit(m).unwrap();
+        }
+    });
+    w.run();
+    for (t, _) in &ts {
+        if w.engine(0).core.created(t).is_some() {
+            panic!("released: {t:?} keeps its record\n{}", why_kept(w, 0, t));
+        }
     }
-    aged(w)
+    w.advance(1_000);
 }
 
 /// Node 0 snapshots its roots' `holds.0` and D's `tickets.0` (what the trigger leaves held moves
@@ -567,12 +578,12 @@ fn leaked(_: &mut World, _: usize, _: &mut World, _: usize, _: &[String]) -> Str
     String::new()
 }
 
-/// A fresh node of one account with its roots snapshotted, as `own_rounds` (and `expiry_rounds`,
-/// `history_rounds`) end at 0 rounds: the world and what it holds. Built once per process.
+/// A fresh node of one account with its roots snapshotted, as the rounds' worlds end (`aged`) at 0
+/// rounds: the world and what it holds. Built once per process.
 fn fresh_node() -> (World, Held) {
     fixture_with("growth fresh node", || {
         let mut w = world_of(0, 1, 1);
-        let h = own_rounds(&mut w, 0);
+        let h = aged(&mut w);
         (w, h)
     })
 }
@@ -585,36 +596,32 @@ fn fresh_node() -> (World, Held) {
 // notes/test-harnesses.md, Why kept and row dumps).
 #[test]
 fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
-    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world_of(0, 1, 1), world_of(0, 1, 1));
-    let (a, b) = (own_rounds(&mut wa, 1), own_rounds(&mut wb, 10));
+    let (mut wf, fresh) = fresh_node();
+    let [(mut wa, a), (mut wb, b)] = one_and_ten(world_of(0, 1, 1), |w, _| own_round(w), aged);
     as_fresh(&a, &fresh, 4, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
     as_fresh(&b, &fresh, 10 * 4, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
     assert_eq!(a.0.get("cv/"), b.0.get("cv/"), "cv/ flat");
 }
 
-/// Node 0 mints a thing with its account root D as admin expiring a second later, held from D and
-/// written in the same commit (a disappearing message), and lets it expire, `rounds` times; then
-/// as `own_rounds` ends.
-fn expiry_rounds(w: &mut World, rounds: usize) -> Held {
+/// A round: node 0 mints a thing with its account root D as admin expiring a second later, held
+/// from D and written in the same commit (a disappearing message), and lets it expire.
+fn expiry_round(w: &mut World) {
     use osis_schema::core_types::HOLDS;
     let d = w.engine(0).account_root().unwrap();
-    for _ in 0..rounds {
-        let t = w.write(0, |e| {
-            let at = osis_base::WallMs(e.now().0 + 1_000);
-            let mut m = Mutation::new();
-            let t = m.create(e.thing_record(d, Some(at)));
-            m.op(d, &HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
-            m.set(t, &value_ak(), &Value::Str("brief".into())).unwrap();
-            m.expires_all(at);
-            e.commit(m).unwrap();
-            t
-        });
-        w.run();
-        w.advance(2_000);
-        w.run();
-        assert!(!w.engine(0).knows(&t), "expired");
-    }
-    aged(w)
+    let t = w.write(0, |e| {
+        let at = osis_base::WallMs(e.now().0 + 1_000);
+        let mut m = Mutation::new();
+        let t = m.create(e.thing_record(d, Some(at)));
+        m.op(d, &HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
+        m.set(t, &value_ak(), &Value::Str("brief".into())).unwrap();
+        m.expires_all(at);
+        e.commit(m).unwrap();
+        t
+    });
+    w.run();
+    w.advance(2_000);
+    w.run();
+    assert!(!w.engine(0).knows(&t), "expired");
 }
 
 // S1, its expiry arm, spec/commits.md §5 (Destruction: a thing goes by ordinary expiry at its
@@ -625,18 +632,18 @@ fn expiry_rounds(w: &mut World, rounds: usize) -> Held {
 // snapshot, a few bytes each.
 #[test]
 fn expired_things_return_storage_to_a_fresh_nodes_spec_commits_5() {
-    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world_of(0, 1, 1), world_of(0, 1, 1));
-    let (a, b) = (expiry_rounds(&mut wa, 1), expiry_rounds(&mut wb, 10));
+    let (mut wf, fresh) = fresh_node();
+    let [(mut wa, a), (mut wb, b)] = one_and_ten(world_of(0, 1, 1), |w, _| expiry_round(w), aged);
     // each expired strong stays in D's holds.0 snapshot as its value-less record (notes/crdt.md,
     // An expired set element keeps its record), about two removals' tombstones of bytes
     as_fresh(&a, &fresh, 2, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
     as_fresh(&b, &fresh, 2 * 10, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
 }
 
-/// Node 0 mints A with its account root as admin, keeping 10 minutes of history whose strongs hold
-/// their targets (`history_holds_targets`), and B, held by A alone: A's strong to B is removed
-/// (B held by A's history), then the root's to A. `rounds` times; then as `own_rounds` ends.
-fn history_rounds(w: &mut World, rounds: usize) -> Held {
+/// A round: node 0 mints A with its account root as admin, keeping 10 minutes of history whose
+/// strongs hold their targets (`history_holds_targets`), and B, held by A alone: A's strong to B
+/// is removed (B held by A's history), then the root's to A.
+fn history_round(w: &mut World) {
     use osis_schema::core_types::{self as ct, HOLDS};
     let d = w.engine(0).account_root().unwrap();
     let strong = |m: &mut Mutation, from: Tid, to: Tid, on: bool| {
@@ -646,43 +653,40 @@ fn history_rounds(w: &mut World, rounds: usize) -> Held {
     };
     let keep = osis_schema::History::Keep { until: None, after: Some(10 * 60_000) };
     let setting = ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(keep), ..Default::default() }), history_holds_targets: true, ..Default::default() };
-    for _ in 0..rounds {
-        let (a, b) = w.write(0, |e| {
-            let mut m = Mutation::new();
-            let a = m.create(e.thing_record(d, None));
-            strong(&mut m, d, a, true);
-            e.commit(m).unwrap();
-            let mut m = Mutation::new();
-            m.set(a, &ct::RETENTION, &setting).unwrap();
-            e.commit(m).unwrap();
-            let mut m = Mutation::new();
-            let b = m.create(e.thing_record(d, None));
-            strong(&mut m, a, b, true);
-            e.commit(m).unwrap();
-            let mut m = Mutation::new();
-            m.set(b, &value_ak(), &Value::Str("new".into())).unwrap();
-            e.commit(m).unwrap();
-            let mut m = Mutation::new();
-            strong(&mut m, a, b, false);
-            e.commit(m).unwrap();
-            (a, b)
-        });
-        w.run();
-        assert!(w.engine(0).closure_holds(&b), "B held by A's history");
-        w.write(0, |e| {
-            let mut m = Mutation::new();
-            strong(&mut m, d, a, false);
-            e.commit(m).unwrap();
-        });
-        w.run();
-        for t in [a, b] {
-            if w.engine(0).core.created(&t).is_some() {
-                panic!("released: {t:?} keeps its record\n{}", why_kept(w, 0, &t));
-            }
+    let (a, b) = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let a = m.create(e.thing_record(d, None));
+        strong(&mut m, d, a, true);
+        e.commit(m).unwrap();
+        let mut m = Mutation::new();
+        m.set(a, &ct::RETENTION, &setting).unwrap();
+        e.commit(m).unwrap();
+        let mut m = Mutation::new();
+        let b = m.create(e.thing_record(d, None));
+        strong(&mut m, a, b, true);
+        e.commit(m).unwrap();
+        let mut m = Mutation::new();
+        m.set(b, &value_ak(), &Value::Str("new".into())).unwrap();
+        e.commit(m).unwrap();
+        let mut m = Mutation::new();
+        strong(&mut m, a, b, false);
+        e.commit(m).unwrap();
+        (a, b)
+    });
+    w.run();
+    assert!(w.engine(0).closure_holds(&b), "B held by A's history");
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        strong(&mut m, d, a, false);
+        e.commit(m).unwrap();
+    });
+    w.run();
+    for t in [a, b] {
+        if w.engine(0).core.created(&t).is_some() {
+            panic!("released: {t:?} keeps its record\n{}", why_kept(w, 0, &t));
         }
-        w.advance(1_000);
     }
-    aged(w)
+    w.advance(1_000);
 }
 
 // Releasing everything, its history arm, spec/data-model.md §8 What counts, spec/sync-set.md
@@ -691,14 +695,14 @@ fn history_rounds(w: &mut World, rounds: usize) -> Held {
 // tombstones (one removal a round).
 #[test]
 fn releasing_held_history_returns_storage_to_a_fresh_nodes_spec_data_model_8() {
-    let ((mut wf, fresh), mut wa, mut wb) = (fresh_node(), world_of(0, 1, 1), world_of(0, 1, 1));
-    let (a, b) = (history_rounds(&mut wa, 1), history_rounds(&mut wb, 10));
+    let (mut wf, fresh) = fresh_node();
+    let [(mut wa, a), (mut wb, b)] = one_and_ten(world_of(0, 1, 1), |w, _| history_round(w), aged);
     as_fresh(&a, &fresh, 1, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
     as_fresh(&b, &fresh, 10, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
     assert_eq!(a.0.get("cv/"), b.0.get("cv/"), "cv/ flat");
 }
 
-/// Each node's roots snapshotted (`own_rounds`), then the inbox lifetime, the role keep and the
+/// Each node's roots snapshotted (`snapshot_roots`), then the inbox lifetime, the role keep and the
 /// tombstone lifetime and two days: what each node holds.
 fn settled(w: &mut World) -> Vec<Held> {
     use osis_base::format::{INBOX_LIFETIME_MS, ROLE_KEEP_MS};
@@ -715,35 +719,40 @@ fn settled(w: &mut World) -> Vec<Held> {
 /// store rows it reads (`store rows read <- read`).
 type Work = [u64; 2];
 
-/// Node 0 mints a thing with its account root as admin, writes it, and gives node 1's account read on
-/// it: node 1 accepts (`accept`, a strong from its account root) or declines (no accept, the
-/// fire left in its inbox); node 0 writes again, removes node 1's account, and both let the thing
-/// go (node 0 its strong, node 1 its accept). `rounds` times, the first by `redeem_round` with
-/// `redeem`; then `settled`. With read's work per round.
-fn grant_rounds(rounds: usize, accept: bool, redeem: bool) -> (World, Vec<Held>, Vec<Work>) {
-    use crate::harness::history::Holder;
+/// Two accounts' world for `grant_rounds`, quiet.
+fn grant_world() -> World {
     let mut w = world_of(0, 2, 2);
     w.cap = 2_000_000;
+    w
+}
+
+/// Round `k`: node 0 mints a thing with its account root as admin, writes it, and gives node 1's
+/// account read on it: node 1 accepts (`accept`, a strong from its account root) or declines (no
+/// accept, the fire left in its inbox); node 0 writes again, removes node 1's account, and both
+/// let the thing go (node 0 its strong, node 1 its accept). The first by `redeem_round` with
+/// `redeem`. 1 and 10 rounds (`one_and_ten`), each ended by `settled`, with read's work per round
+/// of the ten.
+fn grant_rounds(accept: bool, redeem: bool) -> ([(World, Vec<Held>); 2], Vec<Work>) {
+    use crate::harness::history::Holder;
     let mut work = Vec::new();
-    for k in 0..rounds {
+    let round = |w: &mut World, k: usize| {
         osis_base::costs::take();
         if redeem && k == 0 {
-            redeem_round(&mut w);
-            work.push(round_work());
-            continue;
+            redeem_round(w);
+        } else {
+            let give = if accept { Grant(0, k, 1, Gives::Reads) } else { Give(0, k, Holder::Node(1), Gives::Reads) };
+            let mut steps = vec![New(0), Write(0, k), give, Run, Write(0, k), Run, Remove(0, k, 1), Run];
+            if accept {
+                steps.push(Unstrong(1, None, k));
+            }
+            steps.extend([Unstrong(0, None, k), Run]);
+            let _ = play(w, &steps, String::new());
+            w.advance(1_000);
         }
-        let give = if accept { Grant(0, k, 1, Gives::Reads) } else { Give(0, k, Holder::Node(1), Gives::Reads) };
-        let mut steps = vec![New(0), Write(0, k), give, Run, Write(0, k), Run, Remove(0, k, 1), Run];
-        if accept {
-            steps.push(Unstrong(1, None, k));
-        }
-        steps.extend([Unstrong(0, None, k), Run]);
-        let _ = play(&mut w, &steps, String::new());
-        w.advance(1_000);
         work.push(round_work());
-    }
-    let held = settled(&mut w);
-    (w, held, work)
+    };
+    let worlds = one_and_ten(grant_world(), round, settled);
+    (worlds, work)
 }
 
 /// Read's work since the last `costs::take` (`Work`).
@@ -818,15 +827,16 @@ fn redeem_round(w: &mut World) {
     w.advance(1_000);
 }
 
-/// `grant_rounds` at 1 and 10 rounds: each node as a fresh world's (`as_fresh`: `grant_rounds`
-/// at 0 rounds, the same for every arm, built once per process), each round's set removals at
-/// most `removals` a node.
+/// `grant_rounds` at 1 and 10 rounds: each node as a fresh world's (`as_fresh`: `grant_world`
+/// `settled` at 0 rounds, the same for every arm, built once per process), each round's set
+/// removals at most `removals` a node.
 fn grants_as_fresh(accept: bool, redeem: bool, removals: usize) {
     let (mut wf, fresh) = fixture_with("growth grants fresh", || {
-        let (w, held, _) = grant_rounds(0, true, false);
+        let mut w = grant_world();
+        let held = settled(&mut w);
         (w, held)
     });
-    let ((mut wa, a, _), (mut wb, b, work)) = (grant_rounds(1, accept, redeem), grant_rounds(10, accept, redeem));
+    let ([(mut wa, a), (mut wb, b)], work) = grant_rounds(accept, redeem);
     flat_work(&work, if accept { "accepted" } else { "declined" });
     // the redeem round's set removals: the link's seed thing's and K's strongs and tickets beside the thing's
     let extra = if redeem { 4 } else { 0 };

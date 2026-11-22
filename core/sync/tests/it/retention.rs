@@ -5,7 +5,7 @@
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, value_ak, world_of};
-use crate::harness::{World, play};
+use crate::harness::{World, fixture_with, play};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{BlobId, CommitId, SyncId, Tid, Value};
 use osis_engine::Mutation;
@@ -14,35 +14,38 @@ use osis_schema::core_types as ct;
 const HOUR_MS: u64 = 3_600_000;
 
 /// Thing 0 with its value kept an hour after replaced, written ("one", returned), replaced and
-/// covered by node 0's snapshot, synced.
+/// covered by node 0's snapshot, synced. Built once per process (`fixture_with`).
 fn covered_in_history() -> (World, Tid, SyncId, CommitId) {
-    let mut w = world_of(0, 3, 3);
-    w.cap = 20_000;
-    // `run` looks a minute ahead, never to the keep bound: only `advance` passes it
-    w.horizon_ms = 60_000;
-    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
-    let t = w.history.things[0].0;
-    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
-    let keep: ct::RetentionSetting = [(value_ak(), ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(HOUR_MS) }), ..Default::default() })].into_iter().collect();
-    let set = |w: &mut World, v: &str| {
+    let (w, (t, s, one)) = fixture_with("retention covered in history", || {
+        let mut w = world_of(0, 3, 3);
+        w.cap = 20_000;
+        // `run` looks a minute ahead, never to the keep bound: only `advance` passes it
+        w.horizon_ms = 60_000;
+        let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+        let t = w.history.things[0].0;
+        let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+        let keep: ct::RetentionSetting = [(value_ak(), ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(HOUR_MS) }), ..Default::default() })].into_iter().collect();
+        let set = |w: &mut World, v: &str| {
+            w.write(0, |e| {
+                let mut m = Mutation::new();
+                m.set(t, &value_ak(), &Value::Str(v.into())).unwrap();
+                e.commit(m).unwrap().unwrap()
+            })
+        };
         w.write(0, |e| {
             let mut m = Mutation::new();
-            m.set(t, &value_ak(), &Value::Str(v.into())).unwrap();
-            e.commit(m).unwrap().unwrap()
-        })
-    };
-    w.write(0, |e| {
-        let mut m = Mutation::new();
-        m.set(t, &ct::RETENTION, &keep).unwrap();
-        e.commit(m).unwrap();
+            m.set(t, &ct::RETENTION, &keep).unwrap();
+            e.commit(m).unwrap();
+        });
+        w.run();
+        let one = set(&mut w, "one");
+        w.run();
+        w.advance(10);
+        set(&mut w, "two");
+        w.write(0, |e| e.snapshot(&t, &value_ak())).unwrap().expect("a snapshot");
+        w.run();
+        (w, (t, s, one))
     });
-    w.run();
-    let one = set(&mut w, "one");
-    w.run();
-    w.advance(10);
-    set(&mut w, "two");
-    w.write(0, |e| e.snapshot(&t, &value_ak())).unwrap().expect("a snapshot");
-    w.run();
     (w, t, s, one)
 }
 

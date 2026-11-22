@@ -14,7 +14,7 @@ Spec: spec/sync-set.md, spec/sync-inbox.md §5 (tickets). Model: notes/closure-m
 - **One mechanism.** A ticket is the one way to say "here is how to sync this", wherever it is stored; core never copies one.
 - **Nothing grows only.** No set of everything ever seen, accepted or granted. Storage: issues/storage-owners.md.
 
-Why a sync unit stops where its root has no read access: a closure granted read on a large thing carries just what it references of it, so one row of a table syncs without the table and without keys per cell (spec/requirements.md, no unit synced whole). So Alice's A, admin of T, references T; Bob, a reader of A, adds a strong to T from his B; Alice removes hers: B never carried T (Bob reads T, B does not), so T is gone for both, unless Alice shared T with Bob or with B (sync `holding::the_last_reference_gone_the_thing_is_gone_for_everyone_*`).
+Why a sync unit stops where its root has no read access: a closure granted read on a large thing carries just what it references of it, so one row of a table syncs without the table and without keys per cell (spec/requirements.md, no unit synced whole). So Alice's A, admin of T, references T; Bob, a reader of A, adds a strong to T from his B; Alice removes hers: B never carried T (Bob reads T, B does not), so T is gone for both, unless Alice shared T with Bob or with B (sync `holding::a_strong_grants_nothing_and_its_removal_revokes_nothing_*`).
 
 An edit of a thing carried under two sync IDs reaches a node syncing only one of them through a node that syncs both (notes/closure-model.md (d)); in an admin dispute the sides differ on what is valid, and so on what belongs.
 

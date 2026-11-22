@@ -65,30 +65,22 @@ fn entries(w: &World, i: usize, s: &SyncId) -> BTreeSet<BlobId> {
 // spec/sync-judgement.md §1 (chunk and tree-node blobs): they go under S too, as the same blobs
 // with a filler wrap. Node 0 writes a large value while node 2 reaches only node 1, which keeps the
 // thing unread; node 2 reads it whole through node 1 alone.
+// spec/sync-compaction.md §1 (freed links): deleted at each peer keeping S unread holding an entry
+// of it, its bytes dropped. Healed, node 0 purges its large write; its pieces leave every store
+// and the engine's.
 #[test]
-fn a_large_value_reads_whole_through_a_node_keeping_it_unread_spec_sync_judgement_1() {
+fn a_large_value_reads_whole_through_a_node_keeping_it_unread_and_a_purge_deletes_its_pieces_spec_sync_judgement_1() {
     let (mut w, t, s) = three(Gives::Reads);
     w.partition(0, 2);
     let v = big(1);
-    write_big(&mut w, 0, t, v.clone());
+    let c = write_big(&mut w, 0, t, v.clone());
     w.run();
     let pieces = live(&mut w, 0, &t);
     assert!(pieces.len() > 2, "chunked: {}", pieces.len());
     assert!(pieces.is_subset(&entries(&w, 1, &s)), "every piece kept unread at node 1");
     assert_eq!(read_big(&mut w, 2, &t), Some(Value::Bytes(v)), "read whole at node 2");
     assert!(pieces.is_subset(&entries(&w, 2, &s)), "node 2 logs the pieces it took");
-}
-
-// spec/sync-compaction.md §1 (freed links): deleted at each peer keeping S unread holding an entry
-// of it, its bytes dropped. Node 0 purges its large write; its pieces leave its own store, node
-// 1's and the engine's.
-#[test]
-fn a_purge_deletes_the_pieces_it_frees_at_peers_spec_sync_compaction_1() {
-    let (mut w, t, s) = three(Gives::Reads);
-    let c = write_big(&mut w, 0, t, big(2));
-    w.run();
-    let pieces = live(&mut w, 0, &t);
-    assert!(pieces.is_subset(&entries(&w, 1, &s)));
+    w.heal();
     purge(&mut w, 0, t, c);
     w.run();
     for i in 0..3 {

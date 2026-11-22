@@ -123,7 +123,9 @@ fn d_tickets(w: &mut World, i: usize, t: &Tid) -> usize {
 // spec/sync-set.md §2, spec/permissions.md §3: a strong grants nothing; removing a
 // reference revokes nothing. Bob writes a strong to Alice's T he has no role on: nothing of
 // T reaches him, the strong is NotCarried. Alice grants Bob read, Bob accepts, then Alice writes
-// and drops her own strong: Bob's roster entry and his reads stay.
+// and drops her own strong: she lets T go, Bob's roster entry and his reads stay.
+// spec/sync-set.md §3: a thing goes when its last reference goes, waiting for no absent peer:
+// once Bob drops his strong too, T is gone at both.
 #[test]
 fn a_strong_grants_nothing_and_its_removal_revokes_nothing_spec_sync_set_2() {
     let mut w = contacts();
@@ -145,8 +147,14 @@ fn a_strong_grants_nothing_and_its_removal_revokes_nothing_spec_sync_set_2() {
     });
     strong(&mut w, 0, None, t, false);
     w.run();
+    assert_eq!(value(&mut w, 0, &t), None, "Alice let it go");
     assert_eq!(w.engine(1).roster(&t).get(&bob).map(|e| e.role), Some(Role::Read), "Bob's roster entry stays");
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("after".into())), "Bob still reads");
+    strong(&mut w, 1, None, t, false);
+    w.run();
+    for i in [0, 1] {
+        assert!(!w.engine(i).closure_holds(&t) && value(&mut w, i, &t).is_none(), "node {i}: gone");
+    }
 }
 
 // spec/sync-set.md §3: a strong to a thing no node holds reads as not held. A
@@ -284,35 +292,24 @@ fn a_key_change_keeps_a_sync_only_holder_spec_sync_set_2() {
     assert!(w.store(1).entries(&s).unwrap().len() > before, "the store takes what came after");
 }
 
-// spec/sync-set.md §3: a thing goes when its last reference goes, waiting for no
-// absent peer. Alice's T, read by Bob through his strong: Alice dropping hers leaves T held by
-// Bob's; once Bob drops his too, T is gone at both.
-#[test]
-fn the_last_reference_gone_the_thing_is_gone_for_everyone_spec_sync_set_3() {
-    let (mut w, (t, _)) = granted();
-    strong(&mut w, 1, None, t, true);
-    w.run();
-    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())));
-    strong(&mut w, 0, None, t, false);
-    w.run();
-    assert_eq!(value(&mut w, 0, &t), None, "Alice let it go");
-    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())), "Bob's strong still holds it");
-    strong(&mut w, 1, None, t, false);
-    w.run();
-    for i in [0, 1] {
-        assert!(!w.engine(i).closure_holds(&t) && value(&mut w, i, &t).is_none(), "node {i}: gone");
-    }
+/// On `siblings`, Bob's node 1 makes T (`make`); run. Built once per process (`fixture_with`): the
+/// world and T.
+fn bobs_thing() -> (World, Tid) {
+    fixture_with("holding bobs thing", || {
+        let mut w = siblings();
+        let t = make(&mut w, 1, None, "hi");
+        w.run();
+        (w, t)
+    })
 }
 
-/// Two nodes of Bob's account (1 and 2, cut off from each other) key Bob's dependent T at once: node
-/// `first` grants Alice read, the other grants her read too or, with `rotate`, rotates T; each
-/// makes T independent with a sync ID of its own. Alice holds T with only node `first` reachable,
-/// then all heal.
+/// Two nodes of Bob's account (1 and 2, cut off from each other) key Bob's dependent T
+/// (`bobs_thing`) at once: node `first` grants Alice read, the other grants her read too or, with
+/// `rotate`, rotates T; each makes T independent with a sync ID of its own. Alice holds T with
+/// only node `first` reachable, then all heal.
 /// Whichever she took first, she ends on T's sync ID and reads T's newest value.
 fn independent_at_once(first: usize, rotate: bool) {
-    let mut w = siblings();
-    let t = make(&mut w, 1, None, "hi");
-    w.run();
+    let (mut w, t) = bobs_thing();
     let alice = w.node(0).account.unwrap();
     w.partition(1, 2);
     w.partition(0, 3 - first);
@@ -358,21 +355,6 @@ fn a_grant_beside_a_siblings_keying_reaches_the_grantee_spec_permissions_3() {
     for first in [1, 2] {
         independent_at_once(first, true);
     }
-}
-
-// spec/sync-set.md §3 (lowering from read to sync is no release: S becomes kept unread with its
-// store): Bob reads T; Alice lowers him to sync: he reads nothing and
-// keeps T unread.
-#[test]
-fn a_reader_lowered_to_sync_keeps_the_thing_unread_spec_sync_set_3() {
-    let (mut w, (t, bob)) = granted();
-    strong(&mut w, 1, None, t, true);
-    w.run();
-    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())));
-    w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new: Some(edge(Role::Sync)), retain: None })).unwrap();
-    w.run();
-    assert_eq!(value(&mut w, 1, &t), None, "lowered: reads nothing");
-    assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread), "kept unread");
 }
 
 
@@ -814,10 +796,8 @@ fn a_role_by_chain_through_an_unaccepted_thing_counts_nothing_spec_sync_inbox_5(
 // through T0, takes it and reads T2 no more, as node 2.
 #[test]
 fn a_removed_record_edge_reaches_its_mint_admins_readers_spec_permissions_4() {
-    let mut w = siblings();
+    let (mut w, t0) = bobs_thing();
     let alice = w.node(0).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    w.run();
     let t2 = make_in(&mut w, 2, t0, "t2");
     w.write(2, |e| e.grant(&t2, &alice, &edge(Role::Sync))).unwrap();
     w.write(2, |e| e.leaving_adminless(|e| e.demote(&t2, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None }))).unwrap();
@@ -1289,17 +1269,20 @@ fn a_reader_down_a_chain_lowered_to_sync_reads_the_thing_no_more_spec_permission
     assert!(!holds_value(&mut w, 0, &t2), "Alice holds T2's value");
 }
 
-// spec/sync-set.md §3 (Lowering from read to sync), spec/permissions.md §3 (Lost access): Bob reads
-// T; lowered to sync he keeps T unread, holding none of its content, and so across a restart.
+// spec/sync-set.md §3 (Lowering from read to sync is no release: S becomes kept unread with its
+// store), spec/permissions.md §3 (Lost access): Bob reads T; lowered to sync he reads nothing and
+// keeps T unread, holding none of its content, and so across a restart.
 #[test]
 fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3() {
     let (mut w, (t, bob)) = granted();
     strong(&mut w, 1, None, t, true);
     w.run();
+    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())));
     assert!(holds_value(&mut w, 1, &t));
     w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new: Some(edge(Role::Sync)), retain: None })).unwrap();
     w.run();
-    assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread));
+    assert_eq!(value(&mut w, 1, &t), None, "lowered: reads nothing");
+    assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread), "kept unread");
     assert!(!holds_value(&mut w, 1, &t), "lowered: holds T's value");
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     refile(&mut w, 0, 1, &s);
@@ -1523,15 +1506,19 @@ fn an_ended_way_found_keyless_drops_its_copy_spec_permissions_3() {
 // one her ticket names), which she holds. Once the sibling is back, every writer syncs T1 by the
 // greater sync ID: Alice learns it by a ticket and holds the sibling's grant as Bob does.
 fn a_reader_follows_a_forked_sync_id(cycle: bool) {
-    let mut w = siblings();
+    // up to Bob's grants, built once per process (`fixture_with`)
+    let (mut w, (t0, t1)) = fixture_with("holding forked sync id", || {
+        let mut w = siblings();
+        let t0 = make(&mut w, 1, None, "t0");
+        let t1 = make(&mut w, 1, None, "t1");
+        w.run();
+        w.partition(0, 2);
+        w.partition(1, 2);
+        w.write(2, |e| e.grant(&t1, &t0, &edge(Role::Read))).unwrap();
+        w.advance(1000);
+        (w, (t0, t1))
+    });
     let alice = w.node(0).account.unwrap();
-    let t0 = make(&mut w, 1, None, "t0");
-    let t1 = make(&mut w, 1, None, "t1");
-    w.run();
-    w.partition(0, 2);
-    w.partition(1, 2);
-    w.write(2, |e| e.grant(&t1, &t0, &edge(Role::Read))).unwrap();
-    w.advance(1000);
     if cycle {
         w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
     }
