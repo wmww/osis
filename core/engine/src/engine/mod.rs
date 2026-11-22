@@ -2735,9 +2735,10 @@ pub struct Engine {
     pub(crate) eph: crate::ephemeral::Eph,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) cfg: Config,
-    /// Debug builds: a durable transaction changed a state or a commit's parts since
-    /// `check_index` last ran; it runs at the end of the engine's history (its drop). A copy
-    /// starts clear: its original checks their shared past.
+    /// Debug builds: a durable transaction changed a state or a commit's parts, or a transaction
+    /// rolled back, since `check_index` last ran; it runs at the end of the engine's history (its
+    /// drop) or before a reload (`check_before_reload`). A copy starts clear: its original checks
+    /// their shared past.
     #[cfg(debug_assertions)]
     index_unchecked: bool,
     /// Debug builds: a transaction ran since `checked_verdicts` last did; it runs at the end of
@@ -2755,8 +2756,8 @@ pub struct Engine {
     /// Tests: an index was edited in memory past the store, so `check_index` does not run.
     #[cfg(test)]
     pub(crate) index_poked: bool,
-    /// Tests, set by hand: `check_index` after every transaction that changed something, not
-    /// only at the end (to find the transaction that diverged).
+    /// Tests, set by hand: `check_index` after every transaction that changed something or
+    /// rolled back, not only at the end (to find the transaction that diverged).
     #[cfg(test)]
     pub(crate) check_every_tx: bool,
     /// Tests: the next round of `reexamine` fails before examining what it took, as a round
@@ -3112,6 +3113,11 @@ impl Engine {
             let w = self.store.writes();
             let seen = std::mem::replace(&mut self.failed_seen, (w.failed, w.unknown));
             let taken = std::mem::take(&mut self.taken_failed);
+            // debug builds: what the reload replaces was what the store loads
+            #[cfg(debug_assertions)]
+            if w.unknown == seen.1 && self.index_unchecked {
+                self.check_before_reload();
+            }
             if w.unknown != seen.1 {
                 self.core.fresh_session();
             }
@@ -3415,7 +3421,13 @@ impl Engine {
                     assert_eq!(memo::unrecorded(|| Core::rollback_classes(&self.core)), outside, "a rolled-back transaction changed what is set outside transactions (`Core::rollback_classes`)");
                     osis_base::trace::mark_since(trace_mark, " (rolled back)");
                     osis_base::trace::note(|| format!("tx rolled back at {}:{}: {e:?} ({e})", caller.file().rsplit("src/").next().unwrap_or(caller.file()), caller.line()));
-                    self.check_rolled_back();
+                    // memory must be what the store loads: checked at the end of history, or
+                    // before a reload replaces it (`check_before_reload`)
+                    self.index_unchecked = true;
+                }
+                #[cfg(all(test, debug_assertions))]
+                if self.check_every_tx && !self.index_poked && self.store.writes().unknown == self.failed_seen.1 {
+                    self.check_before_reload();
                 }
                 Err(e)
             }
@@ -3693,12 +3705,13 @@ impl Drop for Engine {
 
 #[cfg(debug_assertions)]
 impl Engine {
-    /// Debug builds, after a rolled-back transaction: memory is what the store loads
-    /// (`check_index`: an open and a rebuild of it), so a field a rollback leaves changed fails
-    /// the transaction that changed it, not a later reload or a restart. Skipped as the drop's
-    /// check is, and where the rolled-back write's outcome is unknown.
-    fn check_rolled_back(&mut self) {
-        if std::thread::panicking() || self.loading || self.store.writes().unknown != self.failed_seen.1 || !osis_base::testenv::end_checks() {
+    /// Debug builds, before a reload replaces memory (a write failed, or work taken outside a
+    /// transaction that failed): memory is what the store loads (`check_index`: an open and a
+    /// rebuild of it), so a field a rolled-back transaction left changed fails before the reload
+    /// hides it. Every other rollback is checked at the end of history (the drop). Skipped as the
+    /// drop's check is.
+    fn check_before_reload(&mut self) {
+        if std::thread::panicking() || self.loading || !osis_base::testenv::end_checks() {
             return;
         }
         #[cfg(test)]
@@ -3709,7 +3722,7 @@ impl Engine {
         let decoded = self.core.decoded.clone();
         let r = self.checked_index();
         self.core.decoded = decoded;
-        assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "after a rollback: {:?}", r.err());
+        assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "before a reload: {:?}", r.err());
     }
 
     /// Debug builds: no addendum trigger missed (`flows::addenda::missed`), and no
