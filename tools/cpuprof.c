@@ -38,13 +38,15 @@ static void dump(void) {
     struct itimerval off = {0};
     setitimer(ITIMER_PROF, &off, NULL);
     const char *out = getenv("CPUPROF_OUT");
-    int m = atomic_load(&n);
+    int taken = atomic_load(&n), m = taken;
     if (!out || m == 0) return;
     if (m > MAXS) m = MAXS;
     char fn[4096];
     snprintf(fn, sizeof fn, "%s.%d", out, getpid());
     FILE *f = fopen(fn, "w");
     if (!f) return;
+    // every sample taken, kept or not: past MAXS only the run's start is kept (the report says so)
+    fprintf(f, "# taken %d\n", taken);
     Dl_info info;
     // objects by absolute path: the main binary's dli_fname is as it was run (often relative), and
     // the report may run from another directory. One cached name: frames mostly share an object.

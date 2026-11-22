@@ -14,7 +14,9 @@ filt = sys.argv[3] if len(sys.argv) > 3 else None
 sym = shutil.which("llvm-symbolizer") or next(iter(sorted(glob.glob("/usr/bin/llvm-symbolizer-*"), reverse=True)), None)
 if sym is None:
     sys.exit("cpuprof: no llvm-symbolizer on PATH")
-samples = [line.split() for line in open(path) if line.strip()]
+lines = [line for line in open(path) if line.strip()]
+taken = next((int(x.split()[2]) for x in lines if x.startswith("# taken ")), None)
+samples = [line.split() for line in lines if not line.startswith("#")]
 addrs = collections.defaultdict(set)
 for s in samples:
     for f in s:
@@ -38,6 +40,9 @@ for s in samples:
         own[fns[0]] += 1
     incl.update(set(fns))
 print(f"{path}: {total} samples of {len(samples)}")
+if taken and taken > len(samples):
+    print(f"TRUNCATED: the first {len(samples)} of {taken} samples taken, so only the run's start: rerun with "
+          f"CPUPROF_INSTR about {taken / len(samples):.1f}x larger")
 print("--- inclusive")
 for f, c in incl.most_common(n):
     print(f"{100 * c / max(total, 1):5.1f}% {f[:160]}")
