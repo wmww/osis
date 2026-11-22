@@ -84,7 +84,7 @@ fn frontier_of(lp: &LocalPeer, peer: usize, r: &CommitId) -> (std::collections::
     let core = &lp.peers[peer].engine.core;
     let rm = core.ix.commits.get(r).unwrap();
     let f = rm.view.frontier.as_ref().unwrap();
-    let own = f.commits().iter().filter(|c| core.ix.commits.get(*c).is_some_and(|m| m.view.kind.is_compaction() && m.view.signer == rm.view.signer)).copied().collect();
+    let own = f.commits().iter().filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() && m.view.signer == rm.view.signer)).copied().collect();
     (f.commits().iter().copied().collect(), own)
 }
 

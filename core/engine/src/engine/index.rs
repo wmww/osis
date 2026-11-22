@@ -648,19 +648,19 @@ impl RecordHead {
 }
 
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
-    let mut w = records::Wr::new().u8(1).u64(m.received.0).u8(match (m.origin, &m.repair) {
+    let mut w = records::Wr::new().u8(1).u64(m.received.0).u8(match (m.origin, m.repair()) {
         (Origin::Local, None) => 0,
         (Origin::Remote, _) => 1,
         (Origin::Local, Some(_)) => 2,
     });
     // a repair's blobs encrypted afresh
-    if let (Origin::Local, Some(fresh)) = (m.origin, &m.repair) {
+    if let (Origin::Local, Some(fresh)) = (m.origin, m.repair()) {
         w = w.u32(fresh.len() as u32);
         for b in fresh.iter() {
             w = w.raw(&b.0);
         }
     }
-    w = w.raw(&m.signed.to_bytes()).u32(m.dropped_parts().count() as u32);
+    w = w.raw(&m.signed().to_bytes()).u32(m.dropped_parts().count() as u32);
     for (a, d) in m.dropped_parts() {
         let role = d.role.map_or(0, |r| 1 + r as u8);
         w = w.u32(a as u32).u8(u8::from(d.as_cover()) | role << 2 | u8::from(d.overreach) << 5 | u8::from(d.why == super::DropFor::Invalid) << 6).u32(d.covered_by.len() as u32);
@@ -704,10 +704,10 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
 
 /// A commit's `METAS` row: version 1, the part count, a byte per part, the view.
 pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
-    let mut out = Vec::with_capacity(64 + 48 * m.valid.len());
+    let mut out = Vec::with_capacity(64 + 48 * m.parts());
     out.push(1);
-    out.extend_from_slice(&(m.valid.len() as u32).to_be_bytes());
-    for (ai, v) in m.valid.iter().enumerate() {
+    out.extend_from_slice(&(m.parts() as u32).to_be_bytes());
+    for (ai, v) in m.valid().iter().enumerate() {
         let role = core.ix.rotation_role.get(&(*id, ai)).map_or(0, |r| 1 + *r as u8);
         out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 4) | (u8::from(m.missing(ai)) << 5) | (u8::from(m.whole(ai)) << 6));
     }
@@ -1093,7 +1093,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         if let Some(s) = &sigs {
             crate::apply::note_role_sigs(tx.core, view.kind, view.epoch.is_some(), &id, s);
         }
-        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, repair: head.repair.clone(), signed: head.signed, valid, hold });
+        tx.core.put_meta(id, Meta::of(view, header, head.received, head.origin, head.repair.clone(), head.signed, valid, hold));
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }
@@ -1174,8 +1174,10 @@ mod tests {
             Hold::Dropped(invalid),
             Hold::Missing(Missing::Plain),
         ];
-        assert_eq!(meta.hold.len(), states.len());
-        meta.hold = states.to_vec();
+        assert_eq!(meta.parts(), states.len());
+        for (ai, h) in states.iter().enumerate() {
+            meta.set_hold(ai, h.clone());
+        }
         let head = super::record_head(&meta);
         let row = super::meta_row(&e.core, &id, &meta);
         let (mut head, _) = super::parse_head(&head).unwrap();
@@ -1185,11 +1187,11 @@ mod tests {
         // an own commit and an own repair (`Meta::repair`) read back as written
         assert!(head.origin == crate::events::Origin::Local && head.repair.is_none());
         let fresh: std::collections::BTreeSet<osis_base::BlobId> = [osis_base::BlobId([7; 32]), osis_base::BlobId([9; 32])].into();
-        meta.repair = Some(std::sync::Arc::new(fresh.clone()));
+        meta.set_repair(Some(std::sync::Arc::new(fresh.clone())));
         let (head, _) = super::parse_head(&super::record_head(&meta)).unwrap();
         assert!(head.origin == crate::events::Origin::Local && head.repair.as_deref() == Some(&fresh));
         // memory only: read back as a plain missing part
-        meta.hold[6] = Hold::Missing(Missing::ToFetch);
+        meta.set_hold(6, Hold::Missing(Missing::ToFetch));
         let row = super::meta_row(&e.core, &id, &meta);
         let (parts, _) = super::parse_meta_row(&row).unwrap();
         assert_eq!(parts[6] & (32 | 64 | 128), 32);

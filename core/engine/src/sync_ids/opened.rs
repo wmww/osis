@@ -288,8 +288,8 @@ pub(crate) fn persist(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
 /// nothing of them is encrypted again, and kept they would follow the bodies' churn
 /// (`Tx::put_commit`, with its record `m`).
 pub(crate) fn prune(tx: &mut Tx<'_>, c: &CommitId, m: &crate::engine::Meta) -> Result<()> {
-    let empty = |ai: usize| matches!(m.hold.get(ai), Some(Hold::Leftover { valued: false, .. } | Hold::Dropped(_)));
-    if !(0..m.hold.len()).any(empty) {
+    let empty = |ai: usize| matches!(m.hold(ai), Some(Hold::Leftover { valued: false, .. } | Hold::Dropped(_)));
+    if !(0..m.parts()).any(empty) {
         return Ok(());
     }
     remove_where(tx, c, |k| k.get(..4).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes).is_some_and(|ai| empty(ai as usize)))
@@ -393,7 +393,7 @@ pub(crate) fn passes_on(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, ak: &
 /// Whether held commit `c` holds no content of part `ai`: dropped, held value-less, or missing
 /// (nothing of it to pass on).
 fn holds_no_content(tx: &Tx<'_>, c: &CommitId, ai: usize) -> bool {
-    tx.core.ix.commits.get(c).is_some_and(|m| matches!(m.hold.get(ai), Some(Hold::Leftover { valued: false, .. } | Hold::Dropped(_) | Hold::Missing(_))))
+    tx.core.ix.commits.get(c).is_some_and(|m| matches!(m.hold(ai), Some(Hold::Leftover { valued: false, .. } | Hold::Dropped(_) | Hold::Missing(_))))
 }
 
 /// The floor clause: of `under` (a part's openings), those under an epoch of thing `t` whose

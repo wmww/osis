@@ -55,7 +55,7 @@ pub(crate) fn unindex_commit(core: &mut Core, id: &CommitId, v: &View) {
 pub(crate) fn index_validity(core: &mut Core, id: &CommitId) {
     let Some(m) = core.ix.commits.get(id).filter(|m| m.view.aspects.iter().any(|a| a.replaces.is_some())) else { return };
     let v = m.view.clone();
-    let valid = m.valid.clone();
+    let valid = m.valid().to_vec();
     for (ai, a) in signal_parts(&v) {
         let Some(k) = claim(&v, a) else { continue };
         if valid.get(ai).copied().unwrap_or(false) {
@@ -166,7 +166,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
     let mut whole: BTreeSet<(Tid, Ak, CommitId)> = std::mem::take(&mut tx.core.refold);
     let mut claims: BTreeSet<(Tid, Ak, CommitId, CommitId, Ts)> = BTreeSet::new();
     let changed: Vec<(CommitId, std::sync::Arc<View>, bool, bool)> = tx.core.ix.commits.before().iter().filter_map(|(id, old)| {
-        let new = tx.core.ix.commits.get(*id);
+        let new = tx.core.ix.commits.get(id);
         Some((**id, new.or(*old)?.view.clone(), old.is_none(), new.is_none()))
     }).collect();
     for (id, view, added, gone) in changed {

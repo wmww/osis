@@ -276,10 +276,11 @@ impl Engine {
         let id = *c;
         let parts: PartSet = match named.parts.is_empty() {
             false => {
-                let held: PartSet = osis_base::memo::Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?.map(|b| b.parts.into_iter().collect()).unwrap_or_default();
                 let ctx = self.body_ctx(t);
                 let carried = self.body_carried(&ctx, &h);
-                named.parts.iter().copied().filter(|ai| held.contains(ai) && !carried.contains(ai)).collect()
+                // each named part's hold read alone: held as its body (what the record carries)
+                let held = |ai: &usize| self.core.ix.commits.get(&id).is_some_and(|m| matches!(m.hold(*ai), Some(crate::engine::Hold::Body { .. })));
+                named.parts.iter().copied().filter(|ai| !carried.contains(ai) && held(ai)).collect()
             }
             true => PartSet::new(),
         };
@@ -337,7 +338,9 @@ impl Engine {
     /// here.
     pub fn body_facts(&mut self, s: &SyncId, c: &CommitId) -> Result<BodyFacts> {
         let Some(b) = self.sync_body_now(s, c)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, invalid: false, kept: false, hosts_from: 0, covered: Some(false), sole_certificate: false, lasting_header: false }) };
-        let (Some(m), Some(h)) = (self.core.ix.commits.get(c).cloned(), self.header(c)) else { return Err(Error::UnknownCommit(*c)) };
+        let Some(h) = self.header(c) else { return Err(Error::UnknownCommit(*c)) };
+        let keeps = self.part_keeps(c)?;
+        let Some(m) = self.core.ix.commits.get(c) else { return Err(Error::UnknownCommit(*c)) };
         // dropped here: no part of the body held (a part dropped beside a held one leaves the
         // body judged by what is held)
         let dropped = if b.parts.iter().all(|ai| m.dropped(*ai).is_some()) { b.parts.iter().find_map(|ai| m.dropped(*ai).map(|d| d.why)) } else { None };
@@ -345,7 +348,6 @@ impl Engine {
         // a request holding a right over some delta is in force whatever its parts are
         // (`Engine::forgettable`): a re-grant gives it force with its parts still invalid
         let invalid = !m.view.kind.is_role() && b.parts.iter().any(|ai| bad(*ai)) && b.parts.iter().all(|ai| bad(*ai) || m.dropped(*ai).is_some_and(|d| d.why == DropFor::Cover)) && (!m.view.purges || crate::retention::purge::drops_nothing(&self.core, c, &h));
-        let keeps = self.part_keeps(c)?;
         // a bound still ahead wakes the judgement when it passes
         let kept = b.parts.iter().any(|ai| keeps.get(*ai).is_some_and(|k| self.core.time.until(Some(*k)) < *k));
         // a dropped part's own bound as it dropped (`Dropped::hosts_from`), a held one's keep
@@ -594,10 +596,10 @@ impl Engine {
         let Some(t) = self.body_thing(s, c)? else { return Ok(false) };
         let Some(meta) = self.sync_body_now(s, c)? else { return Ok(false) };
         let Some(h) = self.header(c) else { return Ok(false) };
-        let held: BTreeSet<usize> = match self.core.ix.commits.get(c) {
-            Some(m) => m.hold.iter().enumerate().filter(|(_, x)| matches!(x, crate::engine::Hold::Body { .. })).map(|(ai, _)| ai).collect(),
-            None => return Ok(false),
-        };
+        if !self.core.ix.commits.contains_key(c) {
+            return Ok(false);
+        }
+        let held_here = |e: &Engine, ai: &usize| e.core.ix.commits.get(c).is_some_and(|m| matches!(m.hold(*ai), Some(crate::engine::Hold::Body { .. })));
         // the body's parts whose bodies are not gone here: a strip logs the rest
         let body: Vec<usize> = match self.core.ix.commits.get(c) {
             Some(m) => meta.parts.iter().copied().filter(|ai| !strips(&self.core, c, m, *ai)).collect(),
@@ -612,7 +614,7 @@ impl Engine {
                 continue;
             }
             if !row.copy {
-                carried.extend(row.parts.iter().copied().filter(|ai| held.contains(ai)));
+                carried.extend(row.parts.iter().copied().filter(|ai| held_here(self, ai)));
             }
             let fits = (meta.certificate && row.copy && row.parts == meta.parts) || (!row.copy && !meta.copy);
             let parts: Vec<usize> = row.parts.iter().copied().collect();
@@ -620,7 +622,11 @@ impl Engine {
                 return Ok(true);
             }
         }
-        // a fresh encryption
+        // a fresh encryption: of every part held, whatever the body
+        let held: BTreeSet<usize> = match self.core.ix.commits.get(c) {
+            Some(m) => m.hold_all().iter().enumerate().filter(|(_, x)| matches!(x, crate::engine::Hold::Body { .. })).map(|(ai, _)| ai).collect(),
+            None => return Ok(false),
+        };
         let ctx = self.body_ctx(&t);
         let copy = meta.certificate || meta.copy || self.commit_bodies_under(&ctx, c)?.first().is_some_and(|b| b.to_sync_id);
         let sealed: Vec<usize> = match copy || body.is_empty() {

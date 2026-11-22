@@ -626,7 +626,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &view, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
     let hold = (0..h.aspects.len()).map(|ai| if missing.contains(&ai) { Hold::Missing(Missing::Plain) } else { Hold::Body { whole: false } }).collect();
-    let meta = Meta { view: view.clone(), header: crate::engine::LazyHeader::ready(h.clone()), received, origin, repair: None, signed: parts.signed, valid: valid.clone(), hold };
+    let meta = Meta::of(view.clone(), crate::engine::LazyHeader::ready(h.clone()), received, origin, None, parts.signed, valid.clone(), hold);
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
     // a commit applying late (its receipt known) may be a removal's candidate, or bring one into question
@@ -771,7 +771,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         if !super::paths::undecided(&h, meta.view.paths.as_deref()) {
             tx.core.ix.paths_unknown.remove(id);
         }
-        meta.valid = (0..meta.valid.len()).map(|ai| validity::part_valid(tx.core, &h, &meta.view, id, ai)).collect();
+        let v = (0..meta.parts()).map(|ai| validity::part_valid(tx.core, &h, &meta.view, id, ai)).collect();
+        meta.set_valid(v);
         tx.core.stale_commits.insert(*id);
     }
     for ai in parts.ais() {
@@ -802,8 +803,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         held_changed |= judge_late(tx, &h, id, &parts, &read, &mut meta);
     }
     let with_keys = read.first(n);
-    let pend = super::keys::before_join(tx, &h, id, &with_keys, &meta.valid)?;
-    let mut j = joins(tx, &h, id, merged, &parts, &meta.valid)?;
+    let pend = super::keys::before_join(tx, &h, id, &with_keys, meta.valid())?;
+    let mut j = joins(tx, &h, id, merged, &parts, meta.valid())?;
     // the record's `node/perm` row: the commit's held parts read, also its edge writes again
     let perm_parts = h.kind.is_role().then(|| read.perm());
     tx.put_commit(id, merged, &meta, Shred::No, perm_parts)?;
@@ -831,7 +832,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         tx.core.update_timelines();
     }
     observe_all(tx, &j)?;
-    super::keys::after_join(tx, &h, with_keys.all(), &meta.valid, pend)?;
+    super::keys::after_join(tx, &h, with_keys.all(), meta.valid(), pend)?;
     let flipped = rejudged(tx, held_changed)?;
     // late role parts pass_due: a pass after them is one after the commit (spec/permissions.md §3)
     if meta.origin == Origin::Remote && h.kind.is_role() {
@@ -869,7 +870,7 @@ fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, all: &s
     let mut flipped = false;
     for ai in parts.ais() {
         let v = validity::part_valid(tx.core, h, &meta.view, id, ai);
-        if let Some(x) = meta.valid.get_mut(ai)
+        if let Some(x) = meta.valid_mut().get_mut(ai)
             && *x != v
         {
             *x = v;
@@ -877,9 +878,8 @@ fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, all: &s
         }
     }
     if flipped {
-        if let Some(m) = tx.core.ix.commits.get_mut(id) {
-            m.valid = meta.valid.clone();
-        }
+        let v = meta.valid().to_vec();
+        tx.core.ix.commits.update(id, |m| m.set_valid(v));
         tx.core.index_validity(id);
     }
     flipped

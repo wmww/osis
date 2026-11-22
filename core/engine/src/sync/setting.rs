@@ -61,7 +61,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 pub(crate) fn unreceived(core: &Core, t: &Tid) -> BTreeSet<CommitId> {
     let Ok(ak) = osis_base::Ak::new(osis_commit::retention::RETENTION) else { return BTreeSet::new() };
     core.ix.missing.get(&(ak.clone(), *t)).into_iter().flatten().filter(|c| {
-        core.ix.commits.get(*c).and_then(|m| Some((m, m.aspect(t, &ak)?))).is_some_and(|(m, ai)| m.valid_at(ai) && m.missing_as(ai) == Some(crate::engine::Missing::Plain))
+        core.ix.commits.get(c).and_then(|m| Some((m, m.aspect(t, &ak)?))).is_some_and(|(m, ai)| m.valid_at(ai) && m.missing_as(ai) == Some(crate::engine::Missing::Plain))
     }).copied().collect()
 }
 

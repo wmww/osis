@@ -181,11 +181,6 @@ impl Engine {
     /// as the plaintext. `None`: not held, or no part of it held (a lasting header is
     /// `commit_bodies_under`'s).
     pub fn body(&mut self, c: &CommitId) -> Result<Option<Body>> {
-        self.body_with(c, true)
-    }
-
-    /// `body`, with the plaintext only if `plaintext` (a sync ID pass projects it only to seal).
-    pub(crate) fn body_with(&mut self, c: &CommitId, plaintext: bool) -> Result<Option<Body>> {
         let id = *c;
         let Some(blob) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
         if blob.parts.is_empty() {
@@ -197,7 +192,7 @@ impl Engine {
             parts: blob.parts.iter().map(|p| p.ai).collect(),
             expires: osis_commit::blob_expiry(&resolved),
             blind: blob.header.blind,
-            plaintext: if plaintext { blob.encode() } else { Vec::new() },
+            plaintext: blob.encode(),
             order: fetch_order(&resolved),
             to_sync_id: false,
         }))
@@ -322,7 +317,7 @@ impl Engine {
         // of its parts held stripped or dropped (a purge's or an expiry's leftover)
         let whole: Vec<Section> = {
             let m = self.core.ix.commits.get(&id);
-            extra.iter().filter(|s| s.ais.iter().all(|ai| m.is_none_or(|m| matches!(m.hold.get(*ai), None | Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Missing(_)))))).cloned().collect()
+            extra.iter().filter(|s| s.ais.iter().all(|ai| m.is_none_or(|m| matches!(m.hold(*ai), None | Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Missing(_)))))).cloned().collect()
         };
         // per thing, every part of it here: its sections' epoch is chosen from them all (a
         // rotation's roles.0 section goes under the epoch it supersedes too)
@@ -597,30 +592,30 @@ impl Engine {
     pub(crate) fn bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId, unheld: bool) -> Result<Vec<Body>> {
         drop(osis_base::costs::span("pass: bodies of a commit"));
         let id = *id;
-        // the view: the header is decoded only for bodies the cache misses
         let Some(h) = self.core.ix.commits.get(&id).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
         if !ctx.touches(&self.core, &h) {
             return Ok(Vec::new());
         }
         let touches = h.aspects.iter().any(|a| ctx.holds(&self.core, &a.tid));
-        let mut body = Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?;
-        let gone: Vec<usize> = if unheld { self.core.ix.commits.get(&id).map(|m| m.missing_parts().chain(m.dropped_parts().map(|(ai, _)| ai)).collect()).unwrap_or_default() } else { Vec::new() };
-        if !gone.is_empty() {
-            body = match body {
-                Some(mut b) => {
-                    b.parts.extend(gone);
-                    b.parts.sort_unstable();
-                    b.parts.dedup();
-                    Some(b)
-                }
-                None => self.header(&id).map(|full| Body { commit: id, parts: gone, expires: osis_commit::blob_expiry(&full), blind: full.blind, plaintext: Vec::new(), order: fetch_order(&full), to_sync_id: false }),
-            };
-        }
+        let published = |ai: usize| h.aspects.get(ai).is_some_and(|a| !ctx.holds(&self.core, &a.tid) && ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"));
+        let inside = |ai: usize| h.aspects.get(ai).is_some_and(|a| touches && ctx.holds(&self.core, &a.tid)) || published(ai);
+        // the parts inside held as their bodies (what the record carries), with `unheld` the
+        // missing and dropped ones: each part's hold read alone, so another part arriving or
+        // dropping moves no body here
+        let parts: Vec<usize> = match self.core.ix.commits.get(&id) {
+            Some(m) => (0..m.parts()).filter(|ai| inside(*ai)).filter(|ai| match m.hold(*ai) {
+                Some(crate::engine::Hold::Body { .. }) => true,
+                Some(crate::engine::Hold::Missing(_) | crate::engine::Hold::Dropped(_)) => unheld,
+                _ => false,
+            }).collect(),
+            None => Vec::new(),
+        };
+        let body = match parts.is_empty() {
+            true => None,
+            false => self.header(&id).map(|full| Body { commit: id, parts: Vec::new(), expires: osis_commit::blob_expiry(&full), blind: full.blind, plaintext: Vec::new(), order: fetch_order(&full), to_sync_id: false }),
+        };
         let mut out = Vec::new();
         if let Some(mut b) = body {
-            let published = |ai: usize| h.aspects.get(ai).is_some_and(|a| !ctx.holds(&self.core, &a.tid) && ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"));
-            let inside = |ai: usize| h.aspects.get(ai).is_some_and(|a| touches && ctx.holds(&self.core, &a.tid)) || published(ai);
-            let parts: Vec<usize> = b.parts.iter().copied().filter(|ai| inside(*ai)).collect();
             let readable = self.readable_parts(ctx, &id, &parts);
             if !readable.is_empty() {
                 // judged on what the actor reads; the blob carries every held part (`body_plaintext`),

@@ -189,7 +189,8 @@ pub(crate) fn set_paths(tx: &mut Tx<'_>, id: &osis_base::CommitId, paths: Option
     }
     m.view = Arc::new(crate::engine::View { paths, ..(*m.view).clone() });
     let h = m.header.clone();
-    m.valid = (0..m.valid.len()).map(|ai| crate::apply::validity::part_valid(tx.core, &h, &m.view, id, ai)).collect();
+    let v = (0..m.parts()).map(|ai| crate::apply::validity::part_valid(tx.core, &h, &m.view, id, ai)).collect();
+    m.set_valid(v);
     tx.core.put_meta(*id, m);
     tx.core.index_validity(id);
     tx.core.stale_commits.insert(*id);

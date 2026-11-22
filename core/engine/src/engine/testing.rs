@@ -341,7 +341,7 @@ impl Engine {
     pub fn body_valid(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<bool> {
         let m = self.core.ix.commits.get(c)?;
         let ai = m.aspect(tid, ak)?;
-        Some(m.valid.get(ai).copied().unwrap_or(true))
+        Some(m.valid().get(ai).copied().unwrap_or(true))
     }
 
     /// The (target, AK) of each strong `source`'s held history holds (`refs::kept`; tests: the
@@ -584,7 +584,7 @@ impl Engine {
                 let rows: Vec<(CommitId, Vec<u8>)> = tx.core.ix.commits.iter().map(|(id, m)| {
                     let mut row = meta_row(tx.core, id, m);
                     // every part valid, nothing else needed
-                    row.iter_mut().skip(5).take(m.valid.len()).for_each(|p| *p = 1);
+                    row.iter_mut().skip(5).take(m.parts()).for_each(|p| *p = 1);
                     (*id, row)
                 }).collect();
                 for (id, row) in rows {
@@ -706,7 +706,7 @@ impl Engine {
             let h = &m.header;
             let dropped = m.dropped(ai);
             let missing = m.missing(ai);
-            let valid = m.valid.get(ai).copied().unwrap_or(true);
+            let valid = m.valid().get(ai).copied().unwrap_or(true);
             let _ = writeln!(out, "  {c:?} {:?} by {} ts {:?}: dropped {:?} missing {missing} valid {valid} covered by {:?}", h.kind, h.signer, h.ts, dropped.is_some(), dropped.map(|d| &d.covered_by));
         }
         let state = self.state(tid, ak).map(|s| format!("{s:?}")).unwrap_or_else(|e| format!("error {e}"));
@@ -820,9 +820,9 @@ fn derived_written(ix: &super::Indexes) -> BTreeMap<Tid, &std::collections::BTre
 
 /// A commit's `CommitDigest`, its `rest` empty, and what `rest` shows.
 fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::WallMs, &crate::events::Origin, &super::View)) {
-    let n = m.hold.len();
+    let n = m.parts();
     let stands_in = m.dropped_parts().filter(|(_, d)| d.stands_in).map(|(ai, _)| ai).collect();
-    let d = CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped_parts().map(|x| x.0).collect(), stands_in, stripped: m.stripped_parts().collect(), valued: (0..n).filter(|ai| m.valued(*ai)).collect(), missing: m.missing_parts().collect(), whole: (0..n).filter(|ai| m.whole(*ai)).collect(), rest: String::new() };
+    let d = CommitDigest { kind: m.view.kind, valid: m.valid().to_vec(), dropped: m.dropped_parts().map(|x| x.0).collect(), stands_in, stripped: m.stripped_parts().collect(), valued: (0..n).filter(|ai| m.valued(*ai)).collect(), missing: m.missing_parts().collect(), whole: (0..n).filter(|ai| m.whole(*ai)).collect(), rest: String::new() };
     (d, (&m.received, &m.origin, &*m.view))
 }
 

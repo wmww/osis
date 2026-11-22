@@ -430,7 +430,7 @@ fn owed(core: &Core, r: &CommitId, g: &Gathered, me: Tid, now: Ts) -> BTreeMap<T
         if mine < Some(Role::Write) {
             continue;
         }
-        let held: Vec<(&CommitId, &BTreeSet<Role>)> = cs.iter().filter(|(c, _)| core.ix.commits.contains_key(*c)).collect();
+        let held: Vec<(&CommitId, &BTreeSet<Role>)> = cs.iter().filter(|(c, _)| core.ix.commits.contains_key(c)).collect();
         let own = crate::apply::validity::vouching_on(core, n);
         let vouched = |c: &CommitId, q: Role| {
             let Some(cm) = core.ix.commits.get(c) else { return false };

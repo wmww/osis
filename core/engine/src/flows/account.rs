@@ -968,7 +968,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
                 cands.extend(super::lists::named_by(tx, e)?.into_iter().map(|(c, _)| c));
                 for (t, s) in tx.core.ix.addenda_keyed.get(e).into_iter().flatten() {
                     let listed = tx.core.ix.addenda.get(&(*t, *s)).into_iter().flat_map(|x| x.entries.iter()).filter(|(k, _)| k == e).flat_map(|(_, l)| l.iter());
-                    cands.extend(listed.filter(|c| tx.core.ix.commits.get(*c).is_some_and(|m| m.view.signer == p)));
+                    cands.extend(listed.filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| m.view.signer == p)));
                 }
                 // invariant: every rotation that counts here is due this node's answer once it
                 // counts. One read as void when it arrived (its minter not known yet: the seed

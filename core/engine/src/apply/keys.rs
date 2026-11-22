@@ -1338,7 +1338,7 @@ mod tests {
         let sealed = lp.sealed(w, &[wc]).unwrap();
         for i in [r, o] {
             send(&mut lp, a, i, &[rot]);
-            assert!(lp.peers[i].engine.core.ix.commits.get(&rot).is_some_and(|m| !m.valid.iter().any(|v| *v)), "peer {i}: A's rotation is invalid");
+            assert!(lp.peers[i].engine.core.ix.commits.get(&rot).is_some_and(|m| !m.valid().iter().any(|v| *v)), "peer {i}: A's rotation is invalid");
             assert!(lp.deliver_sealed(i, &sealed).unwrap().is_empty(), "peer {i}: W's write opens");
             assert_eq!(lp.peers[i].engine.get(&t, &ak).unwrap(), Some(Value::Int(7)), "peer {i} reads W's write");
         }

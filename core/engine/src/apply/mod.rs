@@ -338,7 +338,7 @@ fn epoch_key(core: &crate::engine::Core, author: &Tid, epoch: Option<CommitId>, 
 pub(crate) fn signature(core: &crate::engine::Core, id: &CommitId, sigs: &osis_commit::Sigs, key: &VerifyingKey, known: Option<osis_commit::Signed>) -> Option<osis_commit::Signed> {
     // the held verdict only spares the check, its answer is the check's: read unrecorded, so no
     // memo asking moves with the commit's meta
-    let held = osis_base::memo::unrecorded(|| core.ix.commits.get(id).map(|m| m.signed));
+    let held = osis_base::memo::unrecorded(|| core.ix.commits.get(id).map(|m| m.signed()));
     if let Some(s) = known.into_iter().chain(held).find(|s| s.vouches(id, sigs, key)) {
         return Some(s);
     }
@@ -942,7 +942,7 @@ fn rearrival(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob) -> Result<Option
     if blob.header.ephemeral.is_some() {
         return Ok(None);
     }
-    let held: BTreeSet<usize> = tx.core.ix.commits.get(id).map(|m| blob.parts.iter().map(|p| p.ai).filter(|ai| matches!(m.hold.get(*ai), Some(crate::engine::Hold::Body { .. }))).collect()).unwrap_or_default();
+    let held: BTreeSet<usize> = tx.core.ix.commits.get(id).map(|m| blob.parts.iter().map(|p| p.ai).filter(|ai| matches!(m.hold(*ai), Some(crate::engine::Hold::Body { .. }))).collect()).unwrap_or_default();
     let Some(reason) = tx.core.ix.pending.get(id).cloned() else {
         let applied = tx.core.ix.commits.contains_key(id) && held.len() == blob.parts.len();
         return Ok(applied.then_some(Ingested::Duplicate(*id)));
@@ -1350,7 +1350,7 @@ fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet
     let mut held = Arc::unwrap_or_clone(tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?);
     let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let mut skip: BTreeSet<usize> = held.parts.iter().map(|p| p.ai).collect();
-    for ai in (0..meta.hold.len()).filter(|ai| meta.body_gone(*ai)) {
+    for ai in (0..meta.parts()).filter(|ai| meta.body_gone(*ai)) {
         if !crate::retention::takes_late(tx, id, ai) {
             skip.insert(ai);
         }
@@ -1375,7 +1375,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commi
             }
             apply_verified(tx, &b, parts, Origin::Local, received)?;
             // never emit a delta others would un-merge
-            if !tx.core.skip_writer_rules && tx.core.ix.commits.get(&id).is_some_and(|m| m.valid.iter().any(|v| !v)) {
+            if !tx.core.skip_writer_rules && tx.core.ix.commits.get(&id).is_some_and(|m| m.valid().iter().any(|v| !v)) {
                 return Err(Error::Permission { tid: b.header.aspects.first().map_or(b.header.signer, |a| a.tid), needs: osis_base::Role::Write });
             }
             Ok(())
@@ -1964,7 +1964,7 @@ impl Engine {
     /// Whether commit `id` is applied, not pending, with the body of every part held: a copy
     /// delivered again can bring nothing (`late_parts`).
     pub(crate) fn holds_whole(&self, id: &CommitId) -> bool {
-        !self.core.ix.pending.contains_key(id) && self.core.ix.commits.get(id).is_some_and(|m| m.hold.iter().all(|h| matches!(h, crate::engine::Hold::Body { .. })))
+        !self.core.ix.pending.contains_key(id) && self.core.ix.commits.get(id).is_some_and(|m| m.hold_all().iter().all(|h| matches!(h, crate::engine::Hold::Body { .. })))
     }
 
     /// IDs of applied durable commits (no memory commit), in (`ts`, ID) order.
@@ -2526,8 +2526,8 @@ pub(crate) fn stores_part(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<b
 /// Decoded parts of a held commit on the aspects `keep` selects, with their aspect indexes (a
 /// stripped part as its leftover).
 pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Vec<(usize, Decoded)>> {
-    let Some(stored) = tx.get_commit(id)? else { return Ok(Vec::new()) };
-    let Some((header, stripped)) = tx.core.ix.commits.get(id).map(|m| (m.header.clone(), m.stripped_parts().filter(|ai| keep(*ai)).collect::<Vec<_>>())) else { return Ok(Vec::new()) };
+    let Some(stored) = tx.commit_for_parts(id, keep)? else { return Ok(Vec::new()) };
+    let Some((header, stripped)) = tx.core.ix.commits.get(id).map(|m| (m.header.clone(), (0..m.parts()).filter(|ai| keep(*ai) && m.stripped(*ai)).collect::<Vec<_>>())) else { return Ok(Vec::new()) };
     // each stored part decoded once per write of the record (`Core::decoded`)
     let at = tx.commit_stamp(id);
     let mut out = Vec::new();
@@ -2669,7 +2669,7 @@ mod tests {
         let pk = p1.engine.package(&id).unwrap().unwrap();
         assert_eq!(lp.deliver(0, &pk).unwrap(), Ingested::Applied(id));
         let p0 = &mut lp.peers[0];
-        assert!(p0.engine.core.ix.commits.get(&id).unwrap().valid.iter().all(|v| *v));
+        assert!(p0.engine.core.ix.commits.get(&id).unwrap().valid().iter().all(|v| *v));
         assert!(p0.engine.pending().is_empty());
         for (i, t) in [a, b, c].into_iter().enumerate() {
             assert!(p0.engine.creation(&t).is_some());

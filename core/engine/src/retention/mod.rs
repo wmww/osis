@@ -2076,7 +2076,7 @@ mod tests {
         m.set(t, &reg, &Value::Str("secret".into())).unwrap();
         let c = lp.peers[2].commit(m).unwrap().unwrap();
         lp.sync_all().unwrap();
-        let hold = |lp: &LocalPeer| lp.peers[2].engine.core.ix.commits[&c].hold[0].clone();
+        let hold = |lp: &LocalPeer| lp.peers[2].engine.core.ix.commits[&c].hold_all()[0].clone();
         let own = |lp: &LocalPeer| lp.peers[2].engine.core.ix.own_replaces.get(&(t, reg.clone(), w)).is_some_and(|s| s.iter().any(|x| x.1 == c));
         assert_eq!(hold(&lp), Hold::Body { whole: true });
         // x purges it; the owner removes x before hearing of it, so the purge falls
@@ -2154,7 +2154,7 @@ mod tests {
         let (c0, c2) = (cs[0], cs[1]);
         lp.sync_all().unwrap();
         lp.peers[2].engine.drop_body(&c0, &t, &reg).unwrap();
-        let hold = |lp: &LocalPeer, c: &CommitId| lp.peers[2].engine.core.ix.commits[c].hold[0].clone();
+        let hold = |lp: &LocalPeer, c: &CommitId| lp.peers[2].engine.core.ix.commits[c].hold_all()[0].clone();
         assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "covered by C2, C3");
         lp.advance(10);
         let (p, ds) = falling_purge(&mut lp, t, c2, &reg, &other, x);
@@ -2233,7 +2233,7 @@ mod tests {
         }
         let e = &mut lp.peers[2].engine;
         assert!(!e.core.ix.commits[&sw.id].valid_at(0), "W's snapshot fell");
-        assert!(matches!(e.core.ix.commits[&c].hold[0], Hold::Dropped(_)), "S2 carries C");
+        assert!(matches!(e.core.ix.commits[&c].hold_all()[0], Hold::Dropped(_)), "S2 carries C");
         assert!(e.suspects().is_empty(), "no flag");
         assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Int(2)));
         e.check_index();

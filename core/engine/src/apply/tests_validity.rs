@@ -57,7 +57,7 @@ mod tests {
             (0..3).map(|i| {
                 let e = &mut lp.peers[i].engine;
                 let vals: Vec<_> = [t, g, o, x].iter().map(|y| e.get(y, &a).unwrap()).collect();
-                (vals, e.core.ix.commits.get(&id).map(|m| m.valid.clone()))
+                (vals, e.core.ix.commits.get(&id).map(|m| m.valid().to_vec()))
             }).collect::<Vec<_>>()
         };
         let clear = run(false);
@@ -85,7 +85,7 @@ mod tests {
         let h = lp.peers[0].engine.header(&grant).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "secrets.0").unwrap();
         // an admin's grant writes remove + put (no exemption needed): valid as the admin's
-        assert!(lp.peers[0].engine.core.ix.commits.get(&grant).unwrap().valid[ai], "an honest grant");
+        assert!(lp.peers[0].engine.core.ix.commits.get(&grant).unwrap().valid()[ai], "an honest grant");
         // a grant of c that also writes a box keyed to b
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let (bk, bx) = s.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(b)).map(|(k, v)| (k.clone(), v.clone())).unwrap();
@@ -122,7 +122,7 @@ mod tests {
         lp.sync_all().unwrap();
         let h = lp.peers[3].engine.header(&id).unwrap();
         let ki = h.aspects.iter().position(|x| x.ak.as_str() == "keys.0" && x.tid == t).unwrap();
-        assert!(lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid[ki], "the invite grant's records are valid");
+        assert!(lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid()[ki], "the invite grant's records are valid");
         let noted = lp.peers[3].engine.core.ix.sealed.iter().any(|(k, v)| k.0 == t && v.by.contains(&id) && v.keysets.contains_key(&team));
         assert!(noted, "the receiver notes the team's records");
         // the invite holder grants c and records a box keyed to the admin as well
@@ -138,7 +138,7 @@ mod tests {
         lp.sync_all().unwrap();
         let h = lp.peers[3].engine.header(&id).unwrap();
         let ki = h.aspects.iter().position(|x| x.ak.as_str() == "keys.0").unwrap();
-        assert!(!lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid[ki], "a record past its grantee is invalid");
+        assert!(!lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid()[ki], "a record past its grantee is invalid");
     }
     // spec/permissions.md §2 (writing inside an entry it does not create is bad input; a new entry holding the whole grant): a received `roles.0` delta
     // writing inside an entry it did not create is bad input, whoever signed it.
@@ -193,7 +193,7 @@ mod tests {
         assert!(lp.peers[3].engine.header(&id).is_some() && !lp.peers[3].engine.core.ix.pending.contains_key(&id), "applied without its secrets.0 part");
         lp.deliver(3, &pk).unwrap();
         let m = lp.peers[3].engine.core.ix.commits.get(&id).unwrap();
-        assert!(!m.valid[si], "the late overreaching part is invalid");
+        assert!(!m.valid()[si], "the late overreaching part is invalid");
         assert!(lp.peers[3].engine.core.ix.grant_overreach.contains(&(id, si)));
     }
     // spec/permissions.md §2: an invite grant's `secrets.0` delta carries only puts of its
@@ -559,7 +559,7 @@ mod tests {
             lp.deliver(0, &pk).unwrap();
             let h = lp.peers[0].engine.header(&id).unwrap();
             let si = h.aspects.iter().position(|x| x.ak.as_str() == "secrets.0").unwrap();
-            lp.peers[0].engine.core.ix.commits.get(&id).unwrap().valid[si]
+            lp.peers[0].engine.core.ix.commits.get(&id).unwrap().valid()[si]
         };
         // the reader's self-removal plus a put of z at admin (no authority: fails)
         assert!(!commit(&mut lp, z, ct::Edge { role: Role::Admin, ..read.clone() }, 1), "no exemption beside a failing put");
@@ -708,7 +708,7 @@ mod keys_tests {
             .unwrap();
         let pk = lp.peers[1].engine.package(&snap).unwrap().unwrap();
         lp.deliver(0, &pk).unwrap();
-        assert!(!lp.peers[0].engine.core.ix.commits.get(&snap).unwrap().valid[0], "a writer's keys.0 snapshot is invalid");
+        assert!(!lp.peers[0].engine.core.ix.commits.get(&snap).unwrap().valid()[0], "a writer's keys.0 snapshot is invalid");
         assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap(), before);
     }
 
@@ -743,7 +743,7 @@ mod keys_tests {
         lp.peers[0].engine.drop_body(&g, &t, &secrets).unwrap();
         lp.peers[0].engine.drop_body(&c1, &t, &secrets).unwrap();
         lp.deliver(0, &p2).unwrap();
-        let v = |lp: &LocalPeer| lp.peers[0].engine.core.ix.commits.get(&c2).unwrap().valid[0];
+        let v = |lp: &LocalPeer| lp.peers[0].engine.core.ix.commits.get(&c2).unwrap().valid()[0];
         assert!(v(&lp), "a writer's removal of a read box");
         let d0 = lp.peers[0].engine.index_digest();
         lp.peers[0].engine.rebuild_index().unwrap();
@@ -754,7 +754,7 @@ mod keys_tests {
         let want = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         assert!(!want.boxes.contains_key(&rk));
         for i in 0..4 {
-            assert!(lp.peers[i].engine.core.ix.commits.get(&c2).unwrap().valid[0], "peer {i}");
+            assert!(lp.peers[i].engine.core.ix.commits.get(&c2).unwrap().valid()[0], "peer {i}");
             assert_eq!(lp.peers[i].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), want, "peer {i}");
         }
     }
@@ -840,9 +840,9 @@ mod keys_tests {
         let id = lp.peers[1].commit(m).unwrap().unwrap();
         let rm = lp.peers[1].engine.package(&id).unwrap().unwrap();
         lp.deliver(2, &rm).unwrap();
-        assert!(lp.peers[2].engine.core.ix.commits.get(&id).unwrap().valid[0], "a read box's removal, before the box");
+        assert!(lp.peers[2].engine.core.ix.commits.get(&id).unwrap().valid()[0], "a read box's removal, before the box");
         lp.deliver(2, &grant).unwrap();
-        assert!(lp.peers[2].engine.core.ix.commits.get(&id).unwrap().valid[0], "and after it");
+        assert!(lp.peers[2].engine.core.ix.commits.get(&id).unwrap().valid()[0], "and after it");
         lp.deliver(0, &rm).unwrap();
         for i in [0, 1, 2] {
             assert!(!lp.peers[i].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.contains_key(&rk), "peer {i}");

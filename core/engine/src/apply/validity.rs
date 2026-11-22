@@ -974,8 +974,8 @@ fn misjudged_on<'a>(core: &Core, things: impl Iterator<Item = &'a Tid>) -> Optio
 fn misjudged_one(core: &Core, id: &CommitId, m: &Meta) -> Option<String> {
     let h = &m.header;
     let now: Vec<bool> = (0..h.aspects.len()).map(|ai| part_valid(core, h, &m.view, id, ai)).collect();
-    (now != m.valid).then(|| {
-        let parts: Vec<_> = h.aspects.iter().zip(m.valid.iter().zip(&now)).filter(|(_, (a, b))| a != b).map(|(x, (a, _))| (x.tid, x.ak.as_str(), *a)).collect();
+    (now != m.valid()).then(|| {
+        let parts: Vec<_> = h.aspects.iter().zip(m.valid().iter().zip(&now)).filter(|(_, (a, b))| a != b).map(|(x, (a, _))| (x.tid, x.ak.as_str(), *a)).collect();
         format!("validity of {id:?} ({:?} by {}): {parts:?}", h.kind, h.signer)
     })
 }
@@ -1031,7 +1031,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 let v = judge.part(&m.header, &m.view, id, ai);
                 let old = m.valid_at(ai);
                 if v != old {
-                    let n = now.get_or_insert_with(|| m.valid.clone());
+                    let n = now.get_or_insert_with(|| m.valid().to_vec());
                     if let Some(x) = n.get_mut(ai) {
                         *x = v;
                     }
@@ -1081,16 +1081,16 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     // removal notices turned valid: taken as arriving ones (`flows::inbox::notice_due`)
     let mut notices: Vec<CommitId> = Vec::new();
     for (id, now) in news {
-        let Some(m) = tx.core.ix.commits.get_mut(&id) else { continue };
+        let Some(m) = tx.core.ix.commits.get(&id) else { continue };
         let h = m.header.clone();
-        if (Some(h.signer) == me || accounts.contains(&h.signer)) && h.kind.has_own_writes() && m.valid.iter().zip(&now).any(|(a, b)| *a && !*b) {
+        if (Some(h.signer) == me || accounts.contains(&h.signer)) && h.kind.has_own_writes() && m.valid().iter().zip(&now).any(|(a, b)| *a && !*b) {
             // an account's commit may be a sibling's: told apart by the session, ours or not
             if Some(h.signer) == me {
                 own_fell.push((id, h.aspects.iter().map(|a| a.tid).collect::<BTreeSet<_>>().into_iter().collect()));
             }
             fresh |= matches!(h.form, osis_commit::Form::Session(n) if current.contains(&n));
         }
-        for (ai, (a, b)) in m.valid.iter().zip(&now).enumerate() {
+        for (ai, (a, b)) in m.valid().iter().zip(&now).enumerate() {
             if a != b
                 && let Some(x) = h.aspects.get(ai)
             {
@@ -1124,7 +1124,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
             }
         }
-        m.valid = now;
+        tx.core.ix.commits.update(&id, |m| m.set_valid(now));
         tx.core.index_validity(&id);
     }
     drop(judge);
@@ -1168,7 +1168,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                     // a snapshot turned invalid gives nothing (its writer no longer vouches for it,
                     // spec/permissions.md §5.2): parts dropped under its cover alone are missing again
                     // (an own replace likewise, spec/commits.md §5 Own replaces)
-                    let snaps = fell.get(&k).into_iter().flatten().any(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() || (0..m.hold.len()).any(|ai| m.whole(ai))));
+                    let snaps = fell.get(&k).into_iter().flatten().any(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() || (0..m.parts()).any(|ai| m.whole(ai))));
                     let _s = osis_base::costs::span("rejudge: rebuild");
                     if snaps {
                         crate::retention::uncover(tx, tid, ak)?;

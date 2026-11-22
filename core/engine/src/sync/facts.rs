@@ -63,11 +63,12 @@ impl Engine {
         {
             f.must_not = self.card_must_not(c, &h, &node);
         }
-        let (Some(b), Some(m), Some(h)) = (self.sync_body_now(s, c)?, self.core.ix.commits.get(c).cloned(), self.header(c)) else { return Ok(f) };
+        let (Some(b), Some(h)) = (self.sync_body_now(s, c)?, self.header(c)) else { return Ok(f) };
+        let Some(m) = self.core.ix.commits.get(c) else { return Ok(f) };
         f.own = m.origin == crate::events::Origin::Local;
-        f.repair_fresh = m.repair.clone().unwrap_or_default();
+        f.repair_fresh = m.repair().cloned().unwrap_or_default();
         f.role = h.kind.is_role() || m.view.purges;
-        f.missing = self.body_missing(c, &m, b.parts.iter().copied());
+        f.missing = self.body_missing(c, m, b.parts.iter().copied());
         let (id, parts) = (*c, b.parts.clone());
         let purged = self.read(|tx| {
             for ai in &parts {
@@ -108,11 +109,15 @@ impl Engine {
     /// covering it; per part dropped as covered, the held valid snapshots of its chain of covers
     /// (spec/permissions.md §5.2). One of each must be held where the body leaves.
     pub(crate) fn carriers_now(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BTreeSet<CommitId>>> {
-        let (Some(b), Some(m), Some(h)) = (self.sync_body_now(s, c)?, self.core.ix.commits.get(c).cloned(), self.header(c)) else { return Ok(Vec::new()) };
+        let (Some(b), Some(h)) = (self.sync_body_now(s, c)?, self.header(c)) else { return Ok(Vec::new()) };
+        if !self.core.ix.commits.contains_key(c) {
+            return Ok(Vec::new());
+        }
         let mut out = Vec::new();
         for ai in &b.parts {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let covering: BTreeSet<CommitId> = if m.dropped(*ai).is_some_and(|d| d.as_cover()) {
+            let covered_drop = self.core.ix.commits.get(c).is_some_and(|m| m.dropped(*ai).is_some_and(|d| d.as_cover()));
+            let covering: BTreeSet<CommitId> = if covered_drop {
                 // the chain of covers it dropped under (spec/permissions.md §5.2): its held valid
                 // snapshots carry it
                 let carries = |x: &CommitId| self.core.ix.commits.get(x).is_some_and(|sm| sm.view.kind.is_compaction() && sm.aspect(&a.tid, &a.ak).is_some_and(|sai| sm.valid_at(sai) && !sm.is_dropped(sai) && !sm.missing(sai)));

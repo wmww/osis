@@ -52,7 +52,7 @@ fn write(p: &mut Peer, t: Tid, v: &str) -> CommitId {
 type Seen = (Vec<Option<Vec<bool>>>, usize, Vec<Option<Value>>);
 
 fn seen(p: &mut Peer, ids: &[CommitId], things: &[Tid]) -> Seen {
-    let on = |m: &osis_engine::engine::Meta| m.view.aspects.iter().zip(&m.valid).filter(|(a, _)| things.contains(&a.tid)).map(|(_, v)| *v).collect();
+    let on = |m: &osis_engine::engine::Meta| m.view.aspects.iter().zip(m.valid()).filter(|(a, _)| things.contains(&a.tid)).map(|(_, v)| *v).collect();
     let v = ids.iter().map(|id| p.engine.core.ix.commits.get(id).map(on)).collect();
     let r = things.iter().map(|t| p.engine.get(t, &reg()).unwrap()).collect();
     (v, p.engine.pending().len(), r)

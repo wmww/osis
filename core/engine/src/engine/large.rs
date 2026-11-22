@@ -616,7 +616,7 @@ impl Engine {
         let fresh = Arc::new(fresh);
         self.run(|tx| {
             let Some(mut meta) = tx.core.ix.commits.get(&id).cloned() else { return Ok(()) };
-            meta.repair = Some(fresh.clone());
+            meta.set_repair(Some(fresh.clone()));
             tx.put_meta_record(&id, meta)
         })?;
         Ok(Some(id))

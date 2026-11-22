@@ -7,6 +7,8 @@
 pub(crate) mod acting;
 pub(crate) mod blobs;
 pub(crate) mod clock;
+pub(crate) mod commits;
+pub use commits::{Commits, Meta};
 pub(crate) mod decoded;
 pub(crate) mod edits;
 pub(crate) mod held;
@@ -38,7 +40,7 @@ pub use write::Mutation;
 
 use crate::apply::Reason;
 use crate::error::{Error, Result};
-use crate::events::{Event, Events, Origin};
+use crate::events::{Event, Events};
 use crate::identity::Identity;
 use clock::Hlc;
 use osis_commit::{CommitBlob, Form, Header};
@@ -67,25 +69,6 @@ impl Default for Config {
     }
 }
 
-/// An applied commit as the engine indexes it.
-#[derive(Clone, Debug)]
-pub struct Meta {
-    /// What the per-commit indexes read of the header (an open reads it from the index).
-    pub view: Arc<View>,
-    /// Decoded on first use (an open decodes no header the indexes do not need).
-    pub header: LazyHeader,
-    pub received: WallMs,
-    pub origin: Origin,
-    /// An own commit a repair wrote (`Engine::relink`, spec/sync-ids.md §1 Repair), with the blobs
-    /// it encrypted afresh: those are never repaired by way of it (the chunks it reused are).
-    pub repair: Option<Arc<BTreeSet<BlobId>>>,
-    /// Its held signatures' verdict (`apply::signature`), kept in its record's head.
-    pub signed: osis_commit::Signed,
-    /// Validity per aspect (spec/permissions.md §5.2).
-    pub valid: Vec<bool>,
-    /// What this node holds of each part, by aspect index (`Hold`).
-    pub hold: Vec<Hold>,
-}
 
 /// What a node holds of one part of an applied commit: one state, so no part is both dropped
 /// and missing, or held as its leftover and dropped.
@@ -258,109 +241,6 @@ impl HeldKeyset {
 /// A snapshot part's frontiers and `Absorbed` (commit, signer).
 pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>, osis_crdt::Facts);
 
-impl Meta {
-    /// A commit's meta from its decoded header: parts in `missing` missing, the rest as `head`
-    /// says (`Hold::stored`).
-    pub(crate) fn new(header: Arc<Header>, paths: Option<Arc<BTreeMap<Tid, bool>>>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        let hold = (0..valid.len()).map(|ai| Hold::stored(ai, &mut head, missing.contains(&ai), false)).collect();
-        Meta { view: Arc::new(View::of(&header, paths)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, repair: head.repair.clone(), signed: head.signed, valid, hold }
-    }
-    /// The index of aspect `(tid, ak)` in the commit.
-    pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
-        self.view.aspect(tid, ak.as_str())
-    }
-    /// Whether part `ai` is valid here.
-    pub(crate) fn valid_at(&self, ai: usize) -> bool {
-        self.valid.get(ai).copied().unwrap_or(false)
-    }
-    /// Sets what is held of part `ai`.
-    pub(crate) fn set_hold(&mut self, ai: usize, h: Hold) {
-        if let Some(x) = self.hold.get_mut(ai) {
-            *x = h;
-        }
-    }
-    /// Whether part `ai` is held: its body or its leftover.
-    pub fn holds(&self, ai: usize) -> bool {
-        matches!(self.hold.get(ai), Some(Hold::Body { .. } | Hold::Leftover { .. }))
-    }
-    /// Whether part `ai` is held as its leftover (`Hold::Leftover`).
-    pub fn stripped(&self, ai: usize) -> bool {
-        matches!(self.hold.get(ai), Some(Hold::Leftover { .. }))
-    }
-    /// Whether part `ai` is held as a leftover holding values (`Hold::Leftover::valued`).
-    pub fn valued(&self, ai: usize) -> bool {
-        matches!(self.hold.get(ai), Some(Hold::Leftover { valued: true, .. }))
-    }
-    /// Whether part `ai` is held as a leftover for its own writes gone value-less (expired,
-    /// purged): no values to keep, so no keep bounds.
-    pub fn bare(&self, ai: usize) -> bool {
-        matches!(self.hold.get(ai), Some(Hold::Leftover { valued: false, .. }))
-    }
-    /// Whether held part `ai` replaces its aspect whole (`Hold::Body::whole`).
-    pub fn whole(&self, ai: usize) -> bool {
-        matches!(self.hold.get(ai), Some(Hold::Body { whole: true } | Hold::Leftover { whole: true, .. }))
-    }
-    /// Marks held part `ai` as a whole replace.
-    pub(crate) fn set_whole(&mut self, ai: usize) {
-        if let Some(Hold::Body { whole } | Hold::Leftover { whole, .. }) = self.hold.get_mut(ai) {
-            *whole = true;
-        }
-    }
-    /// Whether part `ai` is missing (`Hold::Missing`).
-    pub fn missing(&self, ai: usize) -> bool {
-        matches!(self.hold.get(ai), Some(Hold::Missing(_)))
-    }
-    /// Why part `ai` is missing, if it is.
-    pub fn missing_as(&self, ai: usize) -> Option<Missing> {
-        match self.hold.get(ai) {
-            Some(Hold::Missing(x)) => Some(*x),
-            _ => None,
-        }
-    }
-    /// What dropped part `ai` keeps, if it is dropped.
-    pub fn dropped(&self, ai: usize) -> Option<&Dropped> {
-        match self.hold.get(ai) {
-            Some(Hold::Dropped(d)) => Some(d),
-            _ => None,
-        }
-    }
-    /// `dropped`, to change what it keeps.
-    pub(crate) fn dropped_mut(&mut self, ai: usize) -> Option<&mut Dropped> {
-        match self.hold.get_mut(ai) {
-            Some(Hold::Dropped(d)) => Some(d),
-            _ => None,
-        }
-    }
-    /// Whether part `ai` is dropped.
-    pub fn is_dropped(&self, ai: usize) -> bool {
-        self.dropped(ai).is_some()
-    }
-    /// The dropped parts, by aspect index.
-    pub fn dropped_parts(&self) -> impl Iterator<Item = (usize, &Dropped)> + '_ {
-        self.hold.iter().enumerate().filter_map(|(ai, h)| match h {
-            Hold::Dropped(d) => Some((ai, d)),
-            _ => None,
-        })
-    }
-    /// The missing parts, by aspect index.
-    pub fn missing_parts(&self) -> impl Iterator<Item = usize> + '_ {
-        self.hold.iter().enumerate().filter(|(_, h)| matches!(h, Hold::Missing(_))).map(|(ai, _)| ai)
-    }
-    /// The parts held as their leftover, by aspect index.
-    pub fn stripped_parts(&self) -> impl Iterator<Item = usize> + '_ {
-        self.hold.iter().enumerate().filter(|(_, h)| matches!(h, Hold::Leftover { .. })).map(|(ai, _)| ai)
-    }
-    /// Whether part `ai` has no body to log or keep at peers: dropped, or held as its leftover
-    /// (spec/commits.md §5: purged, expired).
-    pub fn body_gone(&self, ai: usize) -> bool {
-        matches!(self.hold.get(ai), Some(Hold::Dropped(_) | Hold::Leftover { .. }))
-    }
-    /// Whether part `ai` was dropped while invalid (`DropFor::Invalid`).
-    pub fn dropped_invalid(&self, ai: usize) -> bool {
-        self.dropped(ai).is_some_and(|d| d.why == DropFor::Invalid)
-    }
-}
-
 impl Hold {
     /// Part `ai` as stored: `head`'s dropped and stripped parts (its `Dropped` taken), then the
     /// meta row's `missing` and `whole` bits (`index::meta_row`).
@@ -531,6 +411,16 @@ impl LazyHeader {
         match &self.0 {
             Lazy::Ready(h) => Some(h.clone()),
             Lazy::Stored(got, s) => got.get_or_init(|| s.decode()).as_ref().ok().cloned(),
+        }
+    }
+
+    /// Whether `o` holds this header's very value (shared bytes or decode): what an index write
+    /// compares to tell a commit's fixed facts unchanged (`commits::Commits`).
+    pub(crate) fn same(&self, o: &LazyHeader) -> bool {
+        match (&self.0, &o.0) {
+            (Lazy::Ready(a), Lazy::Ready(b)) => Arc::ptr_eq(a, b),
+            (Lazy::Stored(_, a), Lazy::Stored(_, b)) => Arc::ptr_eq(a, b),
+            _ => false,
         }
     }
 
@@ -728,7 +618,7 @@ macro_rules! indexes {
 indexes! {
     /// Perm inputs: applied role commits, `created.0` records.
     pub held: held::Held,
-    pub commits: JMap<CommitId, Meta>,
+    pub commits: Commits,
     /// Commits with a part invalid here, per aspect (`Core::index_validity`).
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held commits with a part not held (`Hold::Missing`), per aspect, AK first: among
@@ -1465,9 +1355,6 @@ pub struct Core {
     /// stored costs a re-read of the watched aspects and entries holding one (an aspect's re-read
     /// already costs its size).
     pub missed: BTreeSet<(Tid, Ak, Option<CommitId>)>,
-    /// `Engine::body` per commit without its plaintext (`commit_bodies_under`, `memo`): the
-    /// sync ID pass asks it per commit.
-    pub(crate) bodies: memo::Memo<CommitId, Option<crate::sync_ids::Body>>,
     /// `Engine::delta_live` per delta (`memo`).
     pub(crate) live_bodies: memo::Memo<(CommitId, Tid, Ak), bool>,
     /// `retention::snapshot::covered` per (cover, body, aspect) (`memo`).
@@ -1690,7 +1577,6 @@ impl Core {
             resnapshots_due: self.resnapshots_due.clone(),
             openings: self.openings.clone(),
             missed: self.missed.clone(),
-            bodies: self.bodies.clone(),
             live_bodies: self.live_bodies.clone(),
             covers: self.covers.clone(),
             sync_body: self.sync_body.clone(),
@@ -2148,7 +2034,6 @@ impl Core {
             // memos: each answer holds while what it read does (`memo`); the stamps of what a
             // rollback restores move
             epochs_of: _,
-            bodies: _,
             live_bodies: _,
             covers: _,
             sync_body: _,
@@ -2564,7 +2449,6 @@ impl Core {
             resnapshots_due: BTreeSet::new(),
             openings: BTreeMap::new(),
             missed: BTreeSet::new(),
-            bodies: memo::Memo::new("sync ID body"),
             live_bodies: memo::Memo::new("delta live"),
             covers: memo::Memo::new("covered"),
             sync_body: memo::Memo::new("sync body"),
@@ -2716,7 +2600,7 @@ impl Core {
         let had = self.ix.commits.get(&id).map(covers_of).unwrap_or_default();
         self.index_covers(&id, &had, &covers_of(&m));
         // a part held invalid (a late part joining, a leftover kept) goes at the transaction's end
-        if (0..m.valid.len()).any(|ai| !m.valid_at(ai) && m.holds(ai)) {
+        if (0..m.parts()).any(|ai| !m.valid_at(ai) && m.holds(ai)) {
             self.drop_due.insert(id);
         }
         self.note_none(&m);
@@ -3577,6 +3461,19 @@ impl Tx<'_> {
         let b = Arc::new(decode_commit_record(&v)?.1);
         self.core.decoded.keep_record(*id, at, b.clone(), &v);
         Ok(Some(b))
+    }
+
+    /// `get_commit` for the bytes of the parts `keep` selects alone, read at those parts' holds
+    /// in the index (`Meta::hold`) rather than at the record's row: a part's bytes are fixed by
+    /// the commit's ID, and every record write adding or stripping one changes that part's hold
+    /// in the same transaction, so a reader of some parts moves with those parts alone, not with
+    /// another part of the commit arriving or dropping.
+    pub(crate) fn commit_for_parts(&mut self, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Option<Arc<CommitBlob>>> {
+        let Some(m) = self.core.ix.commits.get(id) else { return self.get_commit(id) };
+        for ai in (0..m.parts()).filter(|ai| keep(*ai)) {
+            m.hold(ai);
+        }
+        osis_base::memo::unrecorded(|| self.get_commit(id))
     }
 
     /// The change stamp of commit `id`'s record (`Transaction::local_stamp`): what `Core::decoded`
@@ -4715,8 +4612,7 @@ mod tests {
         lp.peers[0].engine.new_thing(&mut m, a);
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         let mut meta = lp.peers[0].engine.core.ix.commits[&id].clone();
-        meta.hold = vec![Hold::Body { whole: true }];
-        meta.valid = vec![true];
+        meta = super::Meta::of(meta.view.clone(), meta.header.clone(), meta.received, meta.origin, None, meta.signed(), vec![true], vec![Hold::Body { whole: true }]);
         // (holds, body gone, leftover, valued, bare, whole, dropped, missing)
         let answers = |m: &super::Meta| (m.holds(0), m.body_gone(0), m.stripped(0), m.valued(0), m.bare(0), m.whole(0), m.is_dropped(0), m.missing(0));
         let cases = [
@@ -4734,10 +4630,10 @@ mod tests {
         // marking a part not held a whole replace changes nothing
         meta.set_hold(0, Hold::Missing(Missing::Plain));
         meta.set_whole(0);
-        assert_eq!(meta.hold[0], Hold::Missing(Missing::Plain));
+        assert_eq!(meta.hold_all()[0], Hold::Missing(Missing::Plain));
         // no such part: nothing held, nothing set
         meta.set_hold(1, Hold::Body { whole: true });
-        assert!(meta.hold.len() == 1 && !meta.holds(1) && !meta.missing(1));
+        assert!(meta.parts() == 1 && !meta.holds(1) && !meta.missing(1));
     }
 
     fn digest(p: &Peer) -> String {

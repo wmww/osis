@@ -138,14 +138,14 @@ fn rows(tx: &mut Tx<'_>, prefix: &[u8]) -> Result<Vec<Freed>> {
 /// The links part `ai` of held commit `c` holds: its delta's tree roots and pages, or, held as its
 /// leftover, the leftover's values' roots.
 pub(crate) fn part_links(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Vec<Link>> {
-    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(Vec::new()) };
+    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(Vec::new()) };
     let mut out = Vec::new();
     if m.stripped(ai) {
-        let Some(a) = m.header.aspects.get(ai) else { return Ok(out) };
-        if let Some(l) = super::leftover::get(tx, &a.tid, &a.ak, c, ai)? {
+        let Some((t, ak)) = m.header.aspects.get(ai).map(|a| (a.tid, a.ak.clone())) else { return Ok(out) };
+        if let Some(l) = super::leftover::get(tx, &t, &ak, c, ai)? {
             l.fragment.values(&mut |v| crate::engine::large::links_in(v, &mut out));
         }
-    } else if let Some(blob) = tx.get_commit(c)?
+    } else if let Some(blob) = tx.commit_for_parts(c, &|x| x == ai)?
         && let Some(p) = blob.part(ai)
     {
         out = crate::engine::large::delta_roots(&p.delta);

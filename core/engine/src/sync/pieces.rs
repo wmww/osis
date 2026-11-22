@@ -37,14 +37,11 @@ impl Engine {
         let c = *c;
         let parts = parts.clone();
         self.read(|tx| {
-            let Some(m) = tx.core.ix.commits.get(&c).cloned() else { return Ok(Vec::new()) };
-            let mut out = Vec::new();
-            for ai in parts.iter().copied().filter(|ai| m.holds(*ai)) {
-                let Some(t) = m.header.aspects.get(ai).map(|a| a.tid) else { continue };
+            let Some(m) = tx.core.ix.commits.get(&c) else { return Ok(Vec::new()) };
+            let held: Vec<(usize, Tid)> = parts.iter().copied().filter(|ai| m.holds(*ai)).filter_map(|ai| Some((ai, m.header.aspects.get(ai)?.tid))).collect();
+            let mut out: Vec<PieceLink> = osis_commit::ListField::ALL.into_iter().filter_map(|f| m.header.links.get(f).copied()).map(|l| PieceLink::new(l, None, false)).collect();
+            for (ai, t) in held {
                 out.extend(crate::retention::freed::part_links(tx, &c, ai)?.into_iter().map(|l| PieceLink::new(l, Some(t), false)));
-            }
-            if let Some(blob) = tx.get_commit(&c)? {
-                out.extend(osis_commit::ListField::ALL.into_iter().filter_map(|f| blob.header.links.get(f).copied()).map(|l| PieceLink::new(l, None, false)));
             }
             out.sort_unstable();
             out.dedup();
