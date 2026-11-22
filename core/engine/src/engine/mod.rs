@@ -3005,6 +3005,8 @@ impl Engine {
     fn over(store: Store, store_rng: SeededRng, blobs: Arc<dyn osis_store::Ciphertext>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn osis_crypto::NodeRng>, id: Identity) -> Engine {
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
+        // its one writer is `run`, each transaction undone whole (`memo::Undoable`)
+        let store = store.undoable();
         Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, failed_seen: (0, 0), taken_failed: false, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] verdicts_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false, #[cfg(test)] fail_round: false }
     }
 
@@ -3324,6 +3326,9 @@ impl Engine {
         // a rolled-back transaction leaves what a computation running it read as it was
         // (`memo::Undoable`: the journaled indexes and the store are undone whole)
         let undoable = memo::Undoable::start();
+        // the ciphertext store committed, or the engine's store tried to: a failure past here
+        // undoes less than the transaction wrote, so it ends the stretch kept
+        let mut committing = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, bound: None };
@@ -3355,6 +3360,7 @@ impl Engine {
                 match persisted {
                     Ok(v) => {
                         let Tx { mut txn, mut blobs, .. } = tx;
+                        committing = true;
                         let held: Vec<BlobId> = blobs.newly_held().copied().collect();
                         let _s = osis_base::costs::span("tx: store commit");
                         // add before, remove after: the ciphertext store's holds commit first,
@@ -3441,7 +3447,7 @@ impl Engine {
                 let walked = start.walked;
                 self.core.rollback_to(start);
                 crate::apply::reach::rolled_back(&mut self.core, walked);
-                undoable.end(true);
+                undoable.end(!committing);
                 #[cfg(debug_assertions)]
                 {
                     assert_eq!(memo::unrecorded(|| Core::rollback_classes(&self.core)), outside, "a rolled-back transaction changed what is set outside transactions (`Core::rollback_classes`)");

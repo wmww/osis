@@ -187,7 +187,7 @@ impl Default for Stamping {
             };
             (0..KINDS + 512).map(|i| &*Box::leak(name(i).into_boxed_str())).collect()
         });
-        Stamping { families: names.iter().map(|n| Stamps::named(n).undoable()).collect(), all: Stamps::named("store: catalog"), log: Vec::new() }
+        Stamping { families: names.iter().map(|n| Stamps::named(n)).collect(), all: Stamps::named("store: catalog"), log: Vec::new() }
     }
 }
 
@@ -372,6 +372,15 @@ impl Store {
     /// `MEM_ROW_COST`): O(rows).
     pub fn memory_held(&self) -> u64 {
         self.mem.held()
+    }
+
+    /// The store with its rows' stamps undoable (`memo::Stamps::undoable`): for a store whose
+    /// writes inside a `memo::Undoable` stretch all go to one transaction of it, aborted when the
+    /// stretch is undone (the engine's own store, `Engine::run`). Not the sync store: the
+    /// engine's memory holds commit to its memory part at once.
+    pub fn undoable(mut self) -> Store {
+        self.stamping.families = std::mem::take(&mut self.stamping.families).into_iter().map(Stamps::undoable).collect();
+        self
     }
 
     /// Counts the changes of the store's rows, each write and each undo (`Stamping`): equal at
