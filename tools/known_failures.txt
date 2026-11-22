@@ -25,3 +25,4 @@ osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=
 osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=61254442551 issues/differential-small-size-failures.md must-hold bodies with no entry at quiet
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=2609037846 issues/order-role-commit-one-path.md a role commit's things are reached along one path
 osis-engine/order::held_set_decides_exhaustive rate:OSIS_ORDER_SEED=2609037846 issues/order-role-commit-one-path.md a role commit's things are reached along one path
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=915130969958,OSIS_ORDER_LEN=60 issues/order-roster-admin-edge.md shows other than the node keeping every body
