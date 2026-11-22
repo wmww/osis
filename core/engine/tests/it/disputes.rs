@@ -262,3 +262,50 @@ fn a_removed_partys_grant_the_removal_does_not_list_falls_where_it_was_held_spec
     lp.sync(2, 0).unwrap();
     assert_eq!(roles(&lp, 0), roles(&lp, 2), "H, having received L's grant from W, reads alike");
 }
+
+// spec/sync-set.md §3 Release, spec/commits.md §5 A released thing and Invalid,
+// spec/sync-judgement.md §3 Dropped bodies: `a`, past its backdated removal of `b`, mints Y under
+// `t` (the strong to Y on `t`'s `holds.0` and Y's record in one commit) and writes Y's content.
+// Peer 3, given `b`'s removal first, sides with `b`: `a`'s writes are invalid, the pass ends and Y,
+// out of the node closure, is released. Taking `a`'s side then makes the minting's part on `t`
+// valid again: the node keeps that commit known through the release and fetches it again, and,
+// Y's record arriving again, pulls anew what it forgot of Y, so it reads Y as a node that always
+// stood on `a`'s side. Fails where a release forgets whole a commit whose other part was dropped
+// while invalid (nothing left to fetch), or where a record arriving again counts as new (a strong
+// reaching a thing whose record its transaction brought pulls nothing anew).
+#[test]
+fn a_thing_released_while_its_minting_was_invalid_comes_back_whole_with_the_side_taken_spec_sync_set_3() {
+    use crate::common::{ak, s, REG};
+    let mut f = fight(4);
+    let (w, r) = (f.w.clone(), f.r.clone());
+    let before = ids(&f.lp, 0);
+    let (y, _) = f.lp.peers[0].engine.create_with_admin(&f.t).unwrap();
+    let mut m = osis_engine::Mutation::new();
+    m.set(y, &REG, &s("y")).unwrap();
+    f.lp.peers[0].commit(m).unwrap().unwrap();
+    let ys = new_ids(&f.lp, 0, &before);
+    send_carried(&mut f.lp, 1, 3, &w);
+    send_carried(&mut f.lp, 0, 3, &r);
+    send_carried(&mut f.lp, 0, 3, &ys);
+    let p = &mut f.lp.peers[3];
+    let pass_end = |e: &mut osis_engine::Engine| {
+        e.role_duties().unwrap();
+        let left: BTreeSet<Tid> = e.left_closure().into_keys().collect();
+        e.released(&left).unwrap();
+        e.settle_needs().unwrap();
+    };
+    pass_end(&mut p.engine);
+    assert_eq!(p.engine.get(&y, &ak("t:reg.0")).unwrap(), None, "b's side: Y never applied");
+    let (ds, _) = p.engine.disputes(usize::MAX);
+    let d = ds.iter().find(|d| d.side.is_some_and(|s| s.trust)).expect("b's side taken by default");
+    p.engine.choose(d.commit, d.op, d.holder, false).unwrap();
+    // the sync exchange: what the node counts missing, then all again where it pulls anew
+    p.pulled_anew.clear();
+    let missing: Vec<CommitId> = p.engine.commit_parts_missing().into_iter().filter(|(_, m)| !m.is_empty()).map(|(c, _)| c).collect();
+    assert!(missing.contains(&ys[0]), "the minting is fetched again: {missing:?}");
+    send_carried(&mut f.lp, 0, 3, &missing);
+    assert!(!f.lp.peers[3].pulled_anew.is_empty(), "Y's record arriving again pulls Y anew");
+    send_carried(&mut f.lp, 0, 3, &ys);
+    pass_end(&mut f.lp.peers[3].engine);
+    assert_eq!(f.lp.peers[3].engine.get(&y, &ak("t:reg.0")).unwrap(), Some(s("y")));
+}

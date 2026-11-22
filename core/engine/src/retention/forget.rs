@@ -24,7 +24,7 @@
 //! lists go.
 
 use crate::engine::records::{self, Rd};
-use crate::engine::{Core, Tx};
+use crate::engine::{Core, DropFor, Tx};
 use crate::error::Result;
 use crate::events::{Cause, Event};
 use osis_commit::{CommitBlob, Header};
@@ -277,8 +277,12 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         let blob = tx.get_commit(&id)?;
         let rest = blob.as_ref().map(|b| osis_commit::rewrite(b, |ai| ais.contains(&ai)));
         // whole when no part it keeps stays (a leftover is held outside the blob's parts) and
-        // none it would take is missing (spec/commits.md §5 A released thing)
-        let keeps = m.view.aspects.iter().enumerate().any(|(ai, a)| !ais.contains(&ai) && (m.holds(ai) || (m.missing(ai) && super::needed::takes_part(tx.core, &a.tid, &a.ak))));
+        // none it would take may come back: missing, or dropped while invalid or as covered
+        // (each comes back as missing, `retention::valid_again`, `uncover`), so a part on a held
+        // thing dropped while invalid is fetched again once a side taken makes it valid
+        // (spec/commits.md §5 A released thing, Invalid)
+        let returns = |ai: usize| m.missing(ai) || m.dropped(ai).is_some_and(|d| matches!(d.why, DropFor::Invalid | DropFor::Cover));
+        let keeps = m.view.aspects.iter().enumerate().any(|(ai, a)| !ais.contains(&ai) && (m.holds(ai) || (returns(ai) && super::needed::takes_part(tx.core, &a.tid, &a.ak))));
         if rest.is_some() && !keeps {
             whole.insert(id, m.view.aspects.iter().map(|a| a.tid).collect());
             crate::apply::unindex_unreceived(tx, &id)?;

@@ -569,7 +569,9 @@ fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(T
         each.insert(t, osis_commit::Path { purge: 0, things: listed, direct });
     }
     let one = osis_commit::Path::one_of(each.iter(), node, node);
-    debug_assert!(one.is_some() || each.is_empty(), "a role commit's things are reached along one path: {each:?}");
+    // the shape rules (spec/commits.md §2: one grant per role commit) give one path; a hostile
+    // writer past them (`skip_writer_rules`: edge writes on several things) states the Interim one
+    debug_assert!(one.is_some() || each.is_empty() || core.skip_writer_rules, "a role commit's things are reached along one path: {each:?}");
     Ok(one)
 }
 

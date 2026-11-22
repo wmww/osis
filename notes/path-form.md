@@ -39,7 +39,7 @@ A thing T's path is read by every node that judges T's parts: T's holders, who h
 - **Waits**: a commit awaits its purge author's record (as one clear path's actor); no per-part pending wait (held parts always know their path; unheld ones wait as above).
 - **Purge, level-2 keys, cover facts, listings, stamps, signals**: the one purge author, in the clear (`Header::purge_author`).
 - **Undo**: a part not held on a thing whose path is not known here: the commit is not undone there (`undo::undone_parts`, `NotKept`).
-- Role commits state one path in the clear (a `Split` on kind 1 or 3 is bad input): `write::role_path`, one `Path` serving every thing a role commit writes (several only where all hang off one path: an account's creation, its root and records off the empty path; debug-asserted), notes/a1-spec/README.md step 3, Role paths.
+- Role commits state one path in the clear (a `Split` on kind 1 or 3 is bad input): `write::role_path`, one `Path` serving every thing a role commit writes (several only where all hang off one path: an account's creation, its root and records off the empty path; debug-asserted, but for a hostile writer past the shape rules, `skip_writer_rules`, which states the Interim path), notes/a1-spec/README.md step 3, Role paths.
 
 ## Whom a write is by (`act_as`, a1-spec Open 16)
 - One purge author per commit; it must be among each thing's members in a split commit (else that thing's entry is bad).

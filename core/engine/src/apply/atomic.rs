@@ -509,8 +509,12 @@ pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment
 }
 
 /// Records the creation records durable commit `h` carries on `created.0` that are not held
-/// yet; whether any was new.
-fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]) -> Result<bool> {
+/// yet; whether any was new. `first`: the node receives `h` for the first time, so a strong
+/// newly reaching a thing whose record it brings pulls nothing anew (`learn_record`); a part
+/// of a commit already known (counted never received: a released thing's record, forgotten
+/// with its content) arrives again, and the content it lost is fetched again (spec/sync-
+/// judgement.md §3 Dropped bodies).
+fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], first: bool) -> Result<bool> {
     let mut any = false;
     if h.ephemeral.is_some() {
         return Ok(false);
@@ -530,15 +534,26 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]) -> Resu
         }
         let rec = d.fragment().read().as_ref().and_then(CreationRecord::from_value).ok_or(Error::BadInput("created.0"))?;
         if rec.tid() == a.tid {
-            any |= learn_record(tx, rec)?;
+            any |= if first { learn_record(tx, rec)? } else { hold_record(tx, rec)? };
         }
     }
     Ok(any)
 }
 
 /// Holds creation record `rec` (from a `created.0` delta or a record blob: a record proves itself
-/// by its hash, spec/permissions.md §1); whether it was new.
+/// by its hash, spec/permissions.md §1), learned in this transaction (`Core::learned`); whether
+/// it was new.
 pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool> {
+    let t = rec.tid();
+    let new = hold_record(tx, rec)?;
+    if new {
+        tx.core.learned.insert(t);
+    }
+    Ok(new)
+}
+
+/// `learn_record`, not counted learned: a record arriving again in a part counted never received.
+fn hold_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool> {
     let t = rec.tid();
     if tx.core.created(&t).is_some() {
         return Ok(false);
@@ -548,7 +563,6 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     tx.core.ix.held.create(rec);
     // judged once the pass that brought it ends (`Engine::settle_needs`)
     tx.core.note_pass_due(t);
-    tx.core.learned.insert(t);
     Ok(true)
 }
 
@@ -580,7 +594,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
 
     // creation records first: perm and dedup secrets need them
-    let mut held_changed = note_created(tx, &h, &parts.whole)?;
+    let mut held_changed = note_created(tx, &h, &parts.whole, true)?;
     let view = Arc::new(crate::engine::View::of(&h, super::paths::decided(tx.core, &h, &blob.keys)));
     let read = super::PartsRead::of(&h, &parts.whole);
     if h.kind.is_role() {
@@ -785,7 +799,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         tx.core.index_validity(id);
     }
     let late = parts.ais();
-    let mut held_changed = note_created(tx, &h, &parts.whole)?;
+    let mut held_changed = note_created(tx, &h, &parts.whole, false)?;
     let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
     // a late role-class part may change what perm reads of the commit: its edge writes or the
     // role another part needs (`validity::add_role_commit`)

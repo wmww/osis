@@ -395,6 +395,33 @@ fn removing_the_team_one_acts_through_is_a_self_removal_spec_permissions_2() {
     }
 }
 
+// spec/commits.md §2: a role commit changes at most one grant, a shape rule binding the writer
+// alone; a receiver judges each edge write on its own. B, admin of T1 by its own grant and
+// of T2 only through H, writes past the writer's rules one role commit granting C write on both.
+// No one path serves both things, so it states the Interim one; it is written, and a receiver
+// judges T1's edge write on its own. Fails where the writer asserts one path for every role
+// commit, shape rules skipped or not.
+#[test]
+fn a_hostile_role_commit_on_things_reached_apart_is_written_spec_commits_2() {
+    let (mut lp, ps) = people(3);
+    let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
+    let t1 = thing_of(&mut lp, 0, pa);
+    let t2 = thing_of(&mut lp, 0, pa);
+    let h = thing_of(&mut lp, 0, pa);
+    spread(&mut lp);
+    grant(&mut lp, 0, t1, pb, edge_of(Role::Admin));
+    grant(&mut lp, 0, t2, h, edge_of(Role::Admin));
+    grant(&mut lp, 0, h, pb, edge_of(Role::Admin));
+    let mut m = Mutation::new();
+    for t in [t1, t2] {
+        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::Weak(pc))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge_of(Role::Write))) }).unwrap();
+    }
+    lp.peers[1].engine.commit_hostile(m).unwrap().expect("the commit writes");
+    lp.advance(1000);
+    spread(&mut lp);
+    assert_eq!(lp.peers[0].engine.roster(&t1).get(&pc).map(|e| e.role), Some(Role::Write));
+}
+
 // spec/permissions.md §2 May-grant grant ("an edge write whose path gives admin on T is
 // explicit, whatever it sets"): B holds admin on T through H and a direct write grant inviting
 // read; its grant of read to C states the admin path [H], not its own invite (the empty path),
