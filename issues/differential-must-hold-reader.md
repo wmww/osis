@@ -1,7 +1,7 @@
 # A cross-published sync.0 a reader of the publisher released: spec rules conflict
 > Summary: osis-sync `differential::histories_hold_their_closure_plain` fails at `OSIS_SYNC_START=285299238820` ("must-hold bodies a caught-up reader lacks at quiet"): a thing's `sync.0` write is in its mint admin's sync ID's required set (spec/sync-ids.md §2, cross-published) whether or not a strong reaches it, but a reader that released the thing forgets it whole (spec/commits.md §5), so readers holding the thing elsewhere judge must-hold what the others dropped. Needs a direction call.
 > Priority: normal
-> Tags: sync, engine, tess-call
+> Tags: sync, engine
 
 Shrunk script (2 accounts: nodes 0 and 2 are A, node 1 is B; fails 50 of 50 worlds, OSIS_SYNC_START=1000):
 ```
