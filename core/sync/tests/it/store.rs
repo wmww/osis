@@ -255,6 +255,42 @@ fn a_removed_admin_cannot_branch_below_the_head_spec_sync_ids_6() {
     assert_eq!(before.take_register(&s.id, &[(&e, Some(&ce)), (&f, Some(&cf))], osis_base::Mono(0)).unwrap(), Code::OK);
 }
 
+// spec/sync-ids.md §6 (register: a branch only off a step bearing the head's delete key): which
+// sibling rotated the admin secret decides. A store on a sibling keeping the fork's admin secret
+// is moved onto the deeper branch, whether or not that branch rotated it; a store on a sibling
+// that rotated it is not, whatever the winner did (issues/sibling-admin-step-store-stuck.md).
+#[test]
+fn a_branch_moves_a_store_whose_sibling_kept_the_admin_secret_spec_sync_ids_6() {
+    let s = Sid::new(10);
+    // the next step under a new admin secret, signed by the old one's delete key
+    let rotate_admin = |x: &mut Sid, b: u8| {
+        let old = x.delete();
+        x.write = Secret32::from_bytes([b; 32]);
+        x.admin = Secret32::from_bytes([b + 1; 32]);
+        let st = x.issue_by(&[], &old);
+        x.steps.push(st.clone());
+        st
+    };
+    let (mut kept, mut rotated) = (s.clone(), s.clone());
+    let (ka, _) = kept.rotate(60);
+    let (ra, _) = rotate_admin(&mut rotated, 64);
+    // the winners: one rotating the admin secret, one not, each two deep
+    let (mut win_rot, mut win_kept) = (s.clone(), s.clone());
+    let (wb, _) = rotate_admin(&mut win_rot, 70);
+    let (wc, _) = win_rot.rotate(74);
+    let (kb, _) = win_kept.rotate(80);
+    let (kc, _) = win_kept.rotate(84);
+    for (loser, winner, moves) in [(&ka, [&wb, &wc], true), (&ka, [&kb, &kc], true), (&ra, [&wb, &wc], false), (&ra, [&kb, &kc], false)] {
+        let dev = Dev::new();
+        let mut st = unread(&dev, &s);
+        assert_eq!(st.take_register(&s.id, &[(loser, None)], osis_base::Mono(0)).unwrap(), Code::OK);
+        let code = st.take_register(&s.id, &[(winner[0], None), (winner[1], None)], osis_base::Mono(0)).unwrap();
+        assert_eq!(code == Code::OK, moves, "loser keeps the admin secret: {}", loser.id() == ka.id());
+        let head = st.head(&s.id).unwrap().map(|h| h.id());
+        assert_eq!(head, Some(if moves { winner[1].id() } else { loser.id() }));
+    }
+}
+
 // spec/sync-ids.md §6 (claim set hash): a claim set registered with a step must hash to the
 // step's; one that does not is refused with the step.
 #[test]
