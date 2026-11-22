@@ -16,7 +16,7 @@
 //! the root decode met them, which for canonical bytes is the order the check's root re-encode
 //! meets them.
 
-use crate::codec::{PageAt, Pager, Visit, leaf_items, walk_tree, put_absorbed, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
+use crate::codec::{PageAt, Pager, Visit, walk_tree, put_absorbed, canonical, check_root, decode_items, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
 use crate::error::Error;
 use crate::fragment::{Bag, Eid, Encoding, Entry, Enum, Fragment, Map, Meta, Set, Struct};
 use crate::page::{PageParams, PageSource};
@@ -331,37 +331,8 @@ fn position(dec: &mut Dec, mut enc: Option<&mut Enc>, d: &Deferred, (path, want)
 /// One leaf page of a collection of encoding `e`, as that collection holding only its elements
 /// (no reset, no `W`).
 fn decode_page(dec: &mut Dec, page: Item, e: Encoding) -> Result<Fragment, Error> {
-    let items = || leaf_items(page);
-    let meta = Meta::default();
-    let mut elems = BTreeMap::new();
-    let f = match e {
-        Encoding::Counter | Encoding::Max | Encoding::Min => {
-            let kind = e.bag_kind().ok_or(Error::Malformed("bag"))?;
-            decode_elem_items(dec, items()?, false, &mut elems)?;
-            Fragment::Bag(Bag { kind, meta, elems })
-        }
-        Encoding::Set => {
-            decode_elem_items(dec, items()?, true, &mut elems)?;
-            Fragment::Set(Set::new(meta, elems))
-        }
-        Encoding::Map => {
-            let mut entries = BTreeMap::new();
-            decode_entries(dec, items()?, &mut entries)?;
-            Fragment::Map(Map::new(meta, entries))
-        }
-        Encoding::List | Encoding::Text => {
-            let mut s = Seq::new(e == Encoding::Text, meta, BTreeMap::new());
-            crate::seq::decode_elems(&mut s, items()?, dec)?;
-            Fragment::Seq(s)
-        }
-        Encoding::Struct | Encoding::Enum => {
-            let mut fields = BTreeMap::new();
-            let step = if e == Encoding::Struct { Step::Field } else { Step::Case };
-            decode_fields(dec, page, true, step, &mut fields)?;
-            if e == Encoding::Struct { Fragment::Struct(Struct { meta, fields }) } else { Fragment::Enum(Enum { meta, case: None, payloads: fields }) }
-        }
-        Encoding::Register | Encoding::Slots => return Err(Error::Malformed("not a collection")),
-    };
+    let mut f = Fragment::empty(e).ok_or(Error::Malformed("not a collection"))?;
+    decode_items(dec, &mut f, page, true)?;
     if !derived_ok(&f) {
         return Err(Error::Malformed("write with a Derived stamp"));
     }

@@ -5,10 +5,10 @@
 //! order, maximal runs, `W`) is enforced by that one comparison.
 
 use crate::error::Error;
-use crate::fragment::{Bag, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
+use crate::fragment::{Bag, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Slots};
 use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::paging::Step;
-use crate::seq::{self, Seq};
+use crate::seq;
 use crate::stamp::{Dot, DotRange, Interner, Source, SourceKind, Stamp, max_opt};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint};
 use osis_base::cbor::{Item, List, encode_into, head_len, link_len, put_array, put_bool, put_bytes, put_link, put_map, put_tid, put_uint};
@@ -785,25 +785,58 @@ fn leaf_pages(cx: &mut Dec, v: Item, top: Vec<osis_base::Link>) -> Result<(Vec<(
     Ok((leaves, link_pages))
 }
 
-/// A leaf page's items: a non-empty array.
-pub(crate) fn leaf_items(page: Item) -> Result<List, Error> {
-    page.as_list().filter(|l| !l.is_empty()).ok_or(Error::Malformed("page is not a non-empty array"))
+/// A leaf page (§8): a non-empty map of fields, or a non-empty array of elements, entries or runs.
+fn leaf_ok(fields: bool, page: Item) -> Result<(), Error> {
+    match (fields, page.as_map()) {
+        (true, Some(m)) if !m.is_empty() => Ok(()),
+        (true, Some(_)) => Err(Error::Malformed("empty page")),
+        (true, None) => Err(Error::Malformed("page is not a map")),
+        (false, _) if page.as_list().is_some_and(|l| !l.is_empty()) => Ok(()),
+        (false, _) => Err(Error::Malformed("page is not a non-empty array")),
+    }
 }
 
-/// The items of an element array through `each`, inline or a leaf page at a time, link pages
-/// resolved (§8); then its pages to `Dec::done`.
-pub(crate) fn elem_items(cx: &mut Dec, v: Item, each: &mut dyn FnMut(&mut Dec, List) -> Result<(), Error>) -> Result<(), Error> {
-    let items = as_array(v)?;
-    let Some(top) = links(items)? else { return each(cx, items) };
+/// The elements, entries or fields of collection `f` (empty) written at `v`: inline, or paged
+/// (§8), every leaf page's shape checked before any is decoded; then its pages to `Dec::done`.
+fn decode_position(cx: &mut Dec, f: &mut Fragment, v: Item) -> Result<(), Error> {
+    let fields = matches!(f, Fragment::Struct(_) | Fragment::Enum(_));
+    let top = match v.as_list() {
+        _ if fields && v.as_map().is_some() => None,
+        Some(items) if fields => Some(links(items)?.ok_or(Error::Malformed("expected a map or links"))?),
+        None if fields => return Err(Error::Malformed("expected a map")),
+        _ => links(as_array(v)?)?,
+    };
+    let Some(top) = top else { return decode_items(cx, f, v, false) };
     let (leaves, link_pages) = leaf_pages(cx, v, top)?;
     for (p, _) in &leaves {
-        leaf_items(p.item())?;
+        leaf_ok(fields, p.item())?;
     }
     for (p, _) in &leaves {
-        each(cx, leaf_items(p.item())?)?;
+        decode_items(cx, f, p.item(), true)?;
     }
     cx.done(leaves, link_pages);
     Ok(())
+}
+
+/// One leaf page (`paged`) or the inline form of collection `f`'s items into `f`.
+pub(crate) fn decode_items(cx: &mut Dec, f: &mut Fragment, page: Item, paged: bool) -> Result<(), Error> {
+    let fields = match f {
+        Fragment::Register(_) | Fragment::Slots(_) => return Err(Error::Malformed("not a collection")),
+        Fragment::Struct(_) | Fragment::Enum(_) => true,
+        _ => false,
+    };
+    if paged {
+        leaf_ok(fields, page)?;
+    }
+    match f {
+        Fragment::Bag(b) => decode_elem_items(cx, as_array(page)?, false, &mut b.elems),
+        Fragment::Set(x) => decode_elem_items(cx, as_array(page)?, true, &mut x.elems),
+        Fragment::Map(m) => decode_entries(cx, as_array(page)?, m),
+        Fragment::Seq(s) => seq::decode_elems(s, as_array(page)?, cx),
+        Fragment::Struct(x) => decode_fields(cx, page, Step::Field, &mut x.fields),
+        Fragment::Enum(x) => decode_fields(cx, page, Step::Case, &mut x.payloads),
+        Fragment::Register(_) | Fragment::Slots(_) => Err(Error::Malformed("not a collection")),
+    }
 }
 
 impl Dec<'_> {
@@ -851,14 +884,8 @@ fn decode_meta(cx: &mut Dec, r: Item, w: Item) -> Result<Meta, Error> {
     Ok(Meta { reset: cx.opt_level_stamp(r)?, w, w_valueless })
 }
 
-fn decode_elems(cx: &mut Dec, v: Item, set: bool) -> Result<BTreeMap<Dot, Elem>, Error> {
-    let mut out = BTreeMap::new();
-    elem_items(cx, v, &mut |cx, items| decode_elem_items(cx, items, set, &mut out))?;
-    Ok(out)
-}
-
 /// Bag or set elements into `out`; a set's value removals too (§3.2).
-pub(crate) fn decode_elem_items(cx: &mut Dec, items: List, set: bool, out: &mut BTreeMap<Dot, Elem>) -> Result<(), Error> {
+fn decode_elem_items(cx: &mut Dec, items: List, set: bool, out: &mut BTreeMap<Dot, Elem>) -> Result<(), Error> {
     for e in items {
         let a = as_array(e)?;
         let (d, r, f, gone) = match (a.tuple(), a.tuple()) {
@@ -915,30 +942,10 @@ pub(crate) fn decode_elem_items(cx: &mut Dec, items: List, set: bool, out: &mut 
     Ok(())
 }
 
-/// A field or payload map, inline or paged (§8); fields ascend across pages (the re-encode
-/// check then pins the cuts).
-fn decode_children(cx: &mut Dec, v: Item, step: fn(u64) -> Step) -> Result<BTreeMap<u64, Fragment>, Error> {
-    let mut out = BTreeMap::new();
-    if v.as_map().is_some() {
-        decode_fields(cx, v, false, step, &mut out)?;
-        return Ok(out);
-    }
-    let items = v.as_list().ok_or(Error::Malformed("expected a map"))?;
-    let top = links(items)?.ok_or(Error::Malformed("expected a map or links"))?;
-    let (leaves, link_pages) = leaf_pages(cx, v, top)?;
-    for (page, _) in &leaves {
-        decode_fields(cx, page.item(), true, step, &mut out)?;
-    }
-    cx.done(leaves, link_pages);
-    Ok(out)
-}
-
-/// The fields of one field map or page of one (`paged`: not empty) into `out`, ascending.
-pub(crate) fn decode_fields(cx: &mut Dec, page: Item, paged: bool, step: fn(u64) -> Step, out: &mut BTreeMap<u64, Fragment>) -> Result<(), Error> {
+/// The fields of one field map or page of one into `out`; fields ascend across pages (the
+/// re-encode check then pins the cuts).
+fn decode_fields(cx: &mut Dec, page: Item, step: fn(u64) -> Step, out: &mut BTreeMap<u64, Fragment>) -> Result<(), Error> {
     let Some(mut m) = page.as_map() else { return Err(Error::Malformed("page is not a map")) };
-    if paged && m.is_empty() {
-        return Err(Error::Malformed("empty page"));
-    }
     while let (Some(k), Some(f)) = (m.next(), m.next()) {
         let k = as_uint(k)?;
         if out.last_key_value().is_some_and(|(l, _)| *l >= k) {
@@ -952,8 +959,8 @@ pub(crate) fn decode_fields(cx: &mut Dec, page: Item, paged: bool, step: fn(u64)
     Ok(())
 }
 
-/// Map entry records.
-pub(crate) fn decode_entries(cx: &mut Dec, items: List, entries: &mut BTreeMap<Eid, Entry>) -> Result<(), Error> {
+/// Map entry records into `m`.
+fn decode_entries(cx: &mut Dec, items: List, m: &mut Map) -> Result<(), Error> {
     for e in items {
         // `[Dot, Ci?, R, Key?, Opt(Fragment)]`: a `Ci` is an int, an `R` an array
         let mut rest = as_array(e)?;
@@ -995,7 +1002,8 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: List, entries: &mut BTreeMap<E
         if reset.is_none() && created.is_none() && !paged && frag.as_deref().is_none_or(Fragment::is_empty) {
             return Err(Error::Malformed("record without a write"));
         }
-        entries.insert(id, Entry { reset, frag, created });
+        m.index_id(&id);
+        m.entries.insert(id, Entry { reset, frag, created });
     }
     Ok(())
 }
@@ -1124,6 +1132,17 @@ pub(crate) fn derived_ok(f: &Fragment) -> bool {
     }
 }
 
+/// Collection `f` (empty) with `meta`, its items at `v` decoded or left for streaming (`defer`).
+fn collection(cx: &mut Dec, mut f: Fragment, meta: Meta, v: Item) -> Result<Fragment, Error> {
+    if let Some(m) = f.meta_mut() {
+        *m = meta;
+    }
+    if !defer(cx, v, f.encoding())? {
+        decode_position(cx, &mut f, v)?;
+    }
+    Ok(f)
+}
+
 fn decode_fragment_at(cx: &mut Dec, v: Item, may_reset: bool) -> Result<Fragment, Error> {
     let a = as_array(v)?;
     let id = as_uint(a.first().ok_or(Error::Malformed("empty fragment"))?)?;
@@ -1131,24 +1150,11 @@ fn decode_fragment_at(cx: &mut Dec, v: Item, may_reset: bool) -> Result<Fragment
     const ARITY: Error = Error::Malformed("fragment arity");
     Ok(match enc {
         Encoding::Register => Fragment::Register(decode_register(cx, a, may_reset)?),
-        Encoding::Counter | Encoding::Max | Encoding::Min => {
-            let Some([_, r, w, e]) = a.tuple() else { return Err(ARITY) };
-            let kind = enc.bag_kind().ok_or(Error::Malformed("bag"))?;
-            let meta = decode_meta(cx, r, w)?;
-            let elems = if defer(cx, e, enc)? { BTreeMap::new() } else { decode_elems(cx, e, false)? };
-            Fragment::Bag(Bag { kind, meta, elems })
-        }
-        Encoding::Set => {
-            let Some([_, r, w, e]) = a.tuple() else { return Err(ARITY) };
-            let meta = decode_meta(cx, r, w)?;
-            let elems = if defer(cx, e, enc)? { BTreeMap::new() } else { decode_elems(cx, e, true)? };
-            Fragment::Set(Set::new(meta, elems))
-        }
-        Encoding::Struct => {
+        Encoding::Counter | Encoding::Max | Encoding::Min | Encoding::Set | Encoding::Struct | Encoding::Map | Encoding::List | Encoding::Text => {
             let Some([_, r, w, c]) = a.tuple() else { return Err(ARITY) };
+            let f = Fragment::empty(enc).ok_or(Error::Malformed("bag"))?;
             let meta = decode_meta(cx, r, w)?;
-            let fields = if defer(cx, c, enc)? { BTreeMap::new() } else { decode_children(cx, c, Step::Field)? };
-            Fragment::Struct(Struct { meta, fields })
+            collection(cx, f, meta, c)?
         }
         Encoding::Enum => {
             let Some([_, r, w, k, c]) = a.tuple() else { return Err(ARITY) };
@@ -1161,26 +1167,7 @@ fn decode_fragment_at(cx: &mut Dec, v: Item, may_reset: bool) -> Result<Fragment
                     _ => Err(Error::Malformed("case")),
                 }
             })?;
-            let payloads = if defer(cx, c, enc)? { BTreeMap::new() } else { decode_children(cx, c, Step::Case)? };
-            Fragment::Enum(Enum { meta, case, payloads })
-        }
-        Encoding::Map => {
-            let Some([_, r, w, es]) = a.tuple() else { return Err(ARITY) };
-            let meta = decode_meta(cx, r, w)?;
-            let mut entries = BTreeMap::new();
-            if !defer(cx, es, enc)? {
-                elem_items(cx, es, &mut |cx, items| decode_entries(cx, items, &mut entries))?;
-            }
-            Fragment::Map(Map::new(meta, entries))
-        }
-        Encoding::List | Encoding::Text => {
-            let Some([_, r, w, es]) = a.tuple() else { return Err(ARITY) };
-            let meta = decode_meta(cx, r, w)?;
-            let mut s = Seq::new(enc == Encoding::Text, meta, BTreeMap::new());
-            if !defer(cx, es, enc)? {
-                elem_items(cx, es, &mut |cx, runs| seq::decode_elems(&mut s, runs, cx))?;
-            }
-            Fragment::Seq(s)
+            collection(cx, Fragment::Enum(Enum { case, ..Enum::default() }), meta, c)?
         }
         Encoding::Slots => {
             let Some([_, reg, ms]) = a.tuple() else { return Err(ARITY) };
