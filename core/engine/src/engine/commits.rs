@@ -9,7 +9,7 @@
 use super::journal::Journaled;
 use super::{Dropped, DropFor, Hold, LazyHeader, Missing, View, index};
 use crate::events::Origin;
-use osis_base::memo::{Reader, Stamps};
+use osis_base::memo::{Reader, UndoableStamps};
 use osis_base::{Ak, BlobId, CommitId, Tid, WallMs};
 use osis_commit::Header;
 use std::collections::{BTreeMap, BTreeSet};
@@ -228,7 +228,7 @@ impl Meta {
 #[derive(Debug, Default)]
 pub struct Commits {
     map: BTreeMap<CommitId, Meta>,
-    stamps: Stamps,
+    stamps: UndoableStamps,
     /// Each change: the commit, its meta before, its view (a commit's own, fixed).
     log: Vec<(CommitId, Option<Meta>, Arc<View>)>,
     /// The keys `log` holds since the last mark.

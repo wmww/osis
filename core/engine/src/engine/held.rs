@@ -10,7 +10,7 @@
 //! it, its reads stamped by what they can see (`Read`).
 
 use super::journal::Journaled;
-use osis_base::memo::Stamps;
+use osis_base::memo::{Stamps, UndoableStamps};
 use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid};
 use osis_perm::{HeldSet, RoleCommit};
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,12 +57,12 @@ pub struct Held {
     /// commit re-derived (`add_commit`) keeps its standing.
     uncounted: BTreeSet<CommitId>,
     /// Stamps `created`, per thing.
-    records_read: Stamps,
+    records_read: UndoableStamps,
     /// Stamps everything else, per key of each map (`Row`).
-    rest: Stamps,
+    rest: UndoableStamps,
     /// Stamps each (holder, thing) pair of `holders` as it comes or goes (`is_named`,
     /// `pairs_feed`).
-    pairs: Stamps,
+    pairs: UndoableStamps,
 }
 
 /// A key of `Held`'s maps, as `Held::rest` stamps it.

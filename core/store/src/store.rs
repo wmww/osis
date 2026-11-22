@@ -187,7 +187,7 @@ impl Default for Stamping {
             };
             (0..KINDS + 512).map(|i| &*Box::leak(name(i).into_boxed_str())).collect()
         });
-        Stamping { families: names.iter().map(|n| Stamps::named(n)).collect(), all: Stamps::named("store: catalog"), log: Vec::new() }
+        Stamping { families: names.iter().map(|n| Stamps::named(n).undoable()).collect(), all: Stamps::named("store: catalog"), log: Vec::new() }
     }
 }
 

@@ -66,6 +66,8 @@ struct Table {
     /// its name, else where its stamps were made.
     name: Option<&'static str>,
     born: &'static std::panic::Location<'static>,
+    /// Every write of it inside an `Undoable` stretch is undone if the stretch is (`Stamps::undoable`).
+    undoable: bool,
 }
 
 /// One change in a `Table`'s log.
@@ -96,7 +98,7 @@ impl std::fmt::Debug for Logged {
 impl Default for Table {
     #[track_caller]
     fn default() -> Table {
-        Table { ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::default(), removed: Default::default(), prefixes: BTreeMap::new(), log: Default::default(), marks: BTreeMap::new(), name: None, born: std::panic::Location::caller() }
+        Table { ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::default(), removed: Default::default(), prefixes: BTreeMap::new(), log: Default::default(), marks: BTreeMap::new(), name: None, born: std::panic::Location::caller(), undoable: false }
     }
 }
 
@@ -255,9 +257,19 @@ impl Stamps {
         lock(&self.0).name = Some(name);
     }
 
+    /// The stamps of a container every write of which inside an `Undoable` stretch is undone if
+    /// the stretch is (a journaled index, a store's rows): such a stretch undone leaves what read
+    /// its keys before their first write in it holding (`Undoable::end`).
+    pub fn undoable(self) -> Stamps {
+        lock(&self.0).undoable = true;
+        self
+    }
+
     /// Key `k` was written (`present`) or removed.
     pub fn wrote<Q: Hash + ?Sized>(&self, k: &Q, present: bool) {
-        lock(&self.0).wrote(hash(k), present, None);
+        let mut t = lock(&self.0);
+        undo_note(&self.0, &t, Some(hash(k)));
+        t.wrote(hash(k), present, None);
     }
 
     /// `k`'s stamp key.
@@ -267,17 +279,21 @@ impl Stamps {
 
     /// `wrote` of a key named by its stamp key.
     pub fn wrote_key(&self, k: StampKey, present: bool) {
-        lock(&self.0).wrote(k.0, present, None);
+        let mut t = lock(&self.0);
+        undo_note(&self.0, &t, Some(k.0));
+        t.wrote(k.0, present, None);
     }
 
     /// Byte key `k` was written or removed: moves what read it and what read a prefix of it
     /// (`read_prefix`).
     pub fn wrote_bytes(&self, k: &[u8], present: bool) {
         let mut t = lock(&self.0);
+        undo_note(&self.0, &t, Some(hash(k)));
         t.wrote(hash(k), present, None);
         let v = t.ver;
         let under: Vec<u64> = t.prefixes.iter().filter_map(|(n, ps)| k.get(..*n).map(prefix_hash).filter(|h| ps.contains(h))).collect();
         for h in under {
+            undo_note(&self.0, &t, Some(h));
             t.keys.insert(h, v);
             t.log(Logged::Key { h, present: true, added: None });
         }
@@ -289,6 +305,7 @@ impl Stamps {
         let mut t = lock(&self.0);
         // the key itself goes to the log only while a reader may take it
         let key = (added && present && !t.marks.is_empty()).then(|| Arc::new(k.clone()) as Arc<dyn std::any::Any + Send + Sync>);
+        undo_note(&self.0, &t, Some(hash(k)));
         t.wrote(hash(k), present, key);
     }
 
@@ -296,6 +313,7 @@ impl Stamps {
     pub fn wrote_removed<Q: Hash + Clone + Send + Sync + 'static>(&self, k: &Q) {
         let mut t = lock(&self.0);
         let key = (!t.marks.is_empty()).then(|| Arc::new(k.clone()) as Arc<dyn std::any::Any + Send + Sync>);
+        undo_note(&self.0, &t, Some(hash(k)));
         t.wrote(hash(k), false, key);
     }
 
@@ -312,6 +330,7 @@ impl Stamps {
     /// The container changed, but no key's value: moves only what read it whole.
     pub fn moved(&self) {
         let mut t = lock(&self.0);
+        undo_note(&self.0, &t, None);
         t.ver += 1;
         t.log(Logged::Whole);
     }
@@ -319,6 +338,7 @@ impl Stamps {
     /// The container changed in a way no key names.
     pub fn wrote_all(&self) {
         let mut t = lock(&self.0);
+        undo_note(&self.0, &t, None);
         t.ver += 1;
         t.absent = [t.ver; ABSENT_BUCKETS];
         t.keys.clear();
@@ -380,6 +400,118 @@ fn record(t: &Arc<Mutex<Table>>, key: impl FnOnce() -> Option<u64>) {
         let Some(top) = f.last_mut() else { return };
         top.note((Arc::as_ptr(t) as usize, key), accounted, || Dep { table: t.clone(), key, seen: lock(t).stamp(key), accounted });
     });
+}
+
+/// Per (undoable table, key or `None` for the whole), its stamp before an `Undoable` stretch first
+/// wrote it.
+type Written = HashMap<(usize, Option<u64>), u64, Ids>;
+
+thread_local! {
+    /// The `Undoable` stretches open on this thread, innermost last: `Written` for one begun
+    /// under a frame recording.
+    static UNDOABLE: RefCell<Vec<Option<Written>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Table `t` (`table`, locked) of an undoable container is about to write `key` (and so move
+/// its whole stamp): the innermost `Undoable` stretch keeps their stamps before its first write.
+fn undo_note(t: &Arc<Mutex<Table>>, table: &Table, key: Option<u64>) {
+    if !table.undoable {
+        return;
+    }
+    UNDOABLE.with(|u| {
+        if let Some(Some(top)) = u.borrow_mut().last_mut() {
+            let p = Arc::as_ptr(t) as usize;
+            top.entry((p, None)).or_insert(table.ver);
+            if let Some(h) = key {
+                top.entry((p, key)).or_insert_with(|| table.stamp(Some(h)));
+            }
+        }
+    });
+}
+
+/// A stretch of writes that may be undone whole (a transaction): ended undone, every undoable
+/// container (`Stamps::undoable`) holds again what it held at the start. So a frame open across
+/// it that read such a key before the stretch first wrote it still reads what it read; one that
+/// read it first inside the stretch, after the stretch wrote it, read what the stretch made of
+/// the frame's earlier reads, which still give it. Either read is moved to the key's stamp now:
+/// a computation that runs a transaction and rolls it back (a trial) depends on what it read,
+/// not on its own undone writes. A read made before the stretch at another stamp than the key's
+/// at the stretch's first write of it moves as usual, as does every other reader. A stretch
+/// begun with no frame recording keeps nothing.
+pub struct Undoable {
+    depth: usize,
+    /// Each frame open at the start, the reads it had noted by then.
+    frames: Vec<usize>,
+    ended: bool,
+}
+
+impl Undoable {
+    pub fn start() -> Undoable {
+        let frames: Vec<usize> = if RECORDING.load(Ordering::Relaxed) != 0 { FRAMES.with(|fr| fr.borrow().iter().map(|f| f.deps.len()).collect()) } else { Vec::new() };
+        let depth = UNDOABLE.with(|u| {
+            let mut u = u.borrow_mut();
+            u.push((!frames.is_empty()).then(HashMap::default));
+            u.len() - 1
+        });
+        Undoable { depth, frames, ended: false }
+    }
+
+    /// The stretch ends, `undone` or kept: what it wrote counts toward the stretch around it.
+    pub fn end(mut self, undone: bool) {
+        self.ended = true;
+        let Some(Some(written)) = UNDOABLE.with(|u| {
+            let mut u = u.borrow_mut();
+            let w = u.drain(self.depth..).next();
+            if let (Some(Some(w)), Some(Some(outer))) = (&w, u.last_mut()) {
+                for (k, b) in w {
+                    outer.entry(*k).or_insert(*b);
+                }
+            }
+            w
+        }) else {
+            return;
+        };
+        if !undone || written.is_empty() {
+            return;
+        }
+        // a key read first inside the stretch, after its own write there, read what the stretch
+        // made of what it read before: still what the frame's other reads give
+        FRAMES.with(|fr| {
+            for (frame, at) in fr.borrow_mut().iter_mut().zip(&self.frames) {
+                for (i, d) in frame.deps.iter_mut().enumerate() {
+                    if written.get(&d.id()).is_some_and(|b| *b == d.seen || i >= *at) {
+                        d.seen = lock(&d.table).stamp(d.key);
+                    }
+                }
+            }
+        });
+    }
+}
+
+impl Drop for Undoable {
+    fn drop(&mut self) {
+        if !self.ended {
+            UNDOABLE.with(|u| u.borrow_mut().truncate(self.depth));
+        }
+    }
+}
+
+/// `Stamps::undoable` as a field a journaled container's derived `Default` makes.
+#[derive(Clone, Debug)]
+pub struct UndoableStamps(Stamps);
+
+impl Default for UndoableStamps {
+    #[track_caller]
+    fn default() -> UndoableStamps {
+        UndoableStamps(Stamps::default().undoable())
+    }
+}
+
+impl Deref for UndoableStamps {
+    type Target = Stamps;
+    fn deref(&self) -> &Stamps {
+        &self.0
+    }
 }
 
 /// A container's key reads (`Stamps::read`), made away from the container (`Stamps::reader`): for

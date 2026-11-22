@@ -3321,6 +3321,9 @@ impl Engine {
         let mut durable = false;
         // the blobs it held, once committed
         let mut newly_held: Vec<BlobId> = Vec::new();
+        // a rolled-back transaction leaves what a computation running it read as it was
+        // (`memo::Undoable`: the journaled indexes and the store are undone whole)
+        let undoable = memo::Undoable::start();
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, bound: None };
@@ -3389,6 +3392,7 @@ impl Engine {
         };
         match r {
             Ok(v) => {
+                undoable.end(false);
                 if let Some(d) = self.core.walks_done.take() {
                     self.core.timelines.aside().saved(d);
                 }
@@ -3437,6 +3441,7 @@ impl Engine {
                 let walked = start.walked;
                 self.core.rollback_to(start);
                 crate::apply::reach::rolled_back(&mut self.core, walked);
+                undoable.end(true);
                 #[cfg(debug_assertions)]
                 {
                     assert_eq!(memo::unrecorded(|| Core::rollback_classes(&self.core)), outside, "a rolled-back transaction changed what is set outside transactions (`Core::rollback_classes`)");

@@ -658,6 +658,44 @@ mod tests {
         assert_eq!(e.due(), [1], "written during its own settle");
     }
 
+    // spec: none (internal: `Undoable`). A settle running a stretch it undoes (a trial) moves with
+    // what it read, never with the stretch's own undone writes, in an undoable container: a key
+    // read before the stretch wrote it, and one read first after the stretch wrote it. In a
+    // container not undoable, in a stretch kept, or with a key written between the read and the
+    // stretch, it moves as usual; a later write of a key it read moves it.
+    #[test]
+    fn a_settle_undoing_its_own_writes_moves_only_with_what_it_read() {
+        use super::super::Undoable;
+        let trial = |t: &Stamps, undone: bool, between: bool| {
+            let mut e: Effects<u8, u8> = Effects::new("test trial");
+            settle_once(&mut e, || {
+                t.read(&1u8);
+                if between {
+                    t.wrote(&1u8, true);
+                }
+                let s = Undoable::start();
+                t.wrote(&1u8, true);
+                t.wrote(&2u8, true);
+                t.read(&2u8);
+                t.wrote(&1u8, false);
+                t.wrote(&2u8, false);
+                s.end(undone);
+                0
+            });
+            e
+        };
+        let undoable = Stamps::named("test undoable").undoable();
+        let mut e = trial(&undoable, true, false);
+        assert_eq!(e.due(), Vec::<u8>::new(), "undone: its own writes move nothing");
+        undoable.wrote(&3u8, true);
+        assert_eq!(e.due(), Vec::<u8>::new(), "a key it did not read");
+        undoable.wrote(&2u8, true);
+        assert_eq!(e.due(), [1], "a key it read, written since");
+        assert_eq!(trial(&undoable, false, false).due(), [1], "kept");
+        assert_eq!(trial(&undoable, true, true).due(), [1], "written between the read and the stretch");
+        assert_eq!(trial(&Stamps::named("test plain"), true, false).due(), [1], "not undoable");
+    }
+
     // spec: none (internal). `current` is a followed key's value while nothing it read moved:
     // none before its first settle, once a read is written (before any `due`), while `due` gave
     // it and it is not settled since, and once unwanted.

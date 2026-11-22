@@ -257,12 +257,15 @@ fn chain_under(engine: &mut Engine, store: &Store, s: &SyncId, chain: &osis_engi
 }
 
 /// The commit deposit `b` of S holds: as opened or sealed here, else opened now (a deposit a
-/// peer left is opened once, under a read S).
+/// peer left, under a read S). One refused (a sealed fire applying invalid, or with a part
+/// waiting) is opened again only when what its rolled-back ingest read moves (`judge`'s
+/// `Effects` key, `memo::Undoable`), never for the ingest's own undone writes.
 fn deposit_commit(engine: &mut Engine, store: &Store, s: &SyncId, e: &Entry) -> Result<Option<CommitId>> {
     if let Some(c) = engine.blob_commit(&e.blob) {
         return Ok(Some(c));
     }
     let Some(bytes) = store.bytes(&e.blob)? else { return Ok(None) };
+    osis_base::costs::count("inbox: deposit opened", 1);
     Ok(match crate::store::open_entry(engine, store, s, &e.blob, &e.wrap, &bytes)? {
         Opened::Commit(c, _) => Some(c),
         _ => None,

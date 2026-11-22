@@ -1643,3 +1643,59 @@ fn an_ended_keyless_grant_keeps_no_copy_spec_permissions_3() {
     assert!(w.engine(0).kept_copies().is_empty(), "no copy kept");
     assert_eq!(value(&mut w, 0, &t0), None, "Alice reads T0 no more: {}", w.why_role(0, &t0));
 }
+
+/// Node `i` writes its account's inbox setting with `ticket@~0` enabled as at creation, or not.
+fn inbox_tickets(w: &mut World, i: usize, enabled: bool) {
+    w.write(i, |e| {
+        let me = e.me();
+        let inbox = e.inbox_thing(&me).unwrap();
+        let mut x = e.get_typed(&inbox, &ct::RETENTION).unwrap().unwrap();
+        let keep = ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(osis_base::format::INBOX_LIFETIME_MS) }), ..Default::default() };
+        if enabled {
+            x.rules.insert(Ak::new("ticket@~0").unwrap(), keep);
+        } else {
+            x.rules.remove(&Ak::new("ticket@~0").unwrap());
+        }
+        let mut m = Mutation::new();
+        m.set(inbox, &ct::RETENTION, &x).unwrap();
+        e.commit(m).unwrap();
+    });
+}
+
+// spec/sync-inbox.md §4 (A sealed fire), notes/principles.md (work in proportion to change): Bob's
+// inbox enables no ticket fires; Alice grants Bob read on T, her ticket fire deposited sealed at
+// Bob's node, which refuses it. Writes of Bob's own elsewhere open the refused deposit no more
+// often for being ten times as many; Bob enabling ticket fires takes it: the ticket is his.
+#[test]
+fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sync_inbox_4() {
+    let mut w = contacts();
+    inbox_tickets(&mut w, 1, false);
+    w.run();
+    let t = make(&mut w, 0, None, "hi");
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    w.run();
+    let inbox = w.engine(1).inbox_thing(&bob).unwrap();
+    let s = w.engine(1).sync_id_of(&inbox).unwrap().unwrap();
+    assert!(w.store(1).entries(&s).unwrap().iter().any(|e| e.deposited && !e.own), "Alice's fire deposited at Bob's node");
+    assert!(w.engine(1).ticket_for(&t).unwrap().is_none(), "refused: no ticket");
+    let x = make(&mut w, 1, None, "x");
+    w.run();
+    let opens = |w: &mut World, n: usize| {
+        osis_base::costs::take();
+        for i in 0..n {
+            w.write(1, |e| {
+                let mut m = Mutation::new();
+                m.set(x, &ak(), &Value::Int(i as i64)).unwrap();
+                e.commit(m).unwrap();
+            });
+            w.run();
+        }
+        osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "inbox: deposit opened").map(|(.., c)| c).sum::<u64>()
+    };
+    let (few, many) = (opens(&mut w, 1), opens(&mut w, 10));
+    assert!(many <= few, "opens of the refused deposit grow with unrelated writes: {few} at 1, {many} at 10");
+    inbox_tickets(&mut w, 1, true);
+    w.run();
+    assert!(w.engine(1).ticket_for(&t).unwrap().is_some(), "enabled: the fire is taken");
+}
