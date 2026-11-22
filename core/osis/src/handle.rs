@@ -263,15 +263,9 @@ impl std::ops::Deref for Osis {
 
 /// What a `ReadOnly` cannot do, checked at compile time; what it can:
 /// ```
-/// use osis::{Config, MemStore, Osis, ReadSet, Store};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
-/// # let set = ReadSet::new(|_| {});
-/// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
-/// # w.commit().unwrap();
+/// # use osis::internals::checks::N;
+/// # let (db, t) = osis::internals::checks::node().unwrap();
+/// # let set = osis::ReadSet::new(|_| {});
 /// # let r = db.tracking(&set);
 ///
 /// let _ = r.at(t, N).get().unwrap();
@@ -280,15 +274,9 @@ impl std::ops::Deref for Osis {
 ///
 /// writes:
 /// ```compile_fail,E0599
-/// use osis::{Config, MemStore, Osis, ReadSet, Store};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
-/// # let set = ReadSet::new(|_| {});
-/// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
-/// # w.commit().unwrap();
+/// # use osis::internals::checks::N;
+/// # let (db, t) = osis::internals::checks::node().unwrap();
+/// # let set = osis::ReadSet::new(|_| {});
 /// # let r = db.tracking(&set);
 ///
 /// let _ = r.write();
@@ -296,15 +284,9 @@ impl std::ops::Deref for Osis {
 ///
 /// listeners:
 /// ```compile_fail,E0599
-/// use osis::{Config, MemStore, Osis, ReadSet, Store};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
-/// # let set = ReadSet::new(|_| {});
-/// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
-/// # w.commit().unwrap();
+/// # use osis::internals::checks::N;
+/// # let (db, t) = osis::internals::checks::node().unwrap();
+/// # let set = osis::ReadSet::new(|_| {});
 /// # let r = db.tracking(&set);
 ///
 /// let _ = r.at(t, N).on_change(|_, _| {});
@@ -312,15 +294,9 @@ impl std::ops::Deref for Osis {
 ///
 /// a listener at a path:
 /// ```compile_fail,E0599
-/// use osis::{Config, MemStore, Osis, ReadSet, Store};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
-/// # let set = ReadSet::new(|_| {});
-/// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
-/// # w.commit().unwrap();
+/// # use osis::internals::checks::N;
+/// # let (db, t) = osis::internals::checks::node().unwrap();
+/// # let set = osis::ReadSet::new(|_| {});
 /// # let r = db.tracking(&set);
 ///
 /// let _ = r.at(t, N).path(osis::p![]).on_change::<i64>(|_, _| {});
@@ -328,15 +304,9 @@ impl std::ops::Deref for Osis {
 ///
 /// text sessions:
 /// ```compile_fail,E0599
-/// use osis::{Config, MemStore, Osis, ReadSet, Store};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
-/// # let set = ReadSet::new(|_| {});
-/// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
-/// # w.commit().unwrap();
+/// # use osis::internals::checks::N;
+/// # let (db, t) = osis::internals::checks::node().unwrap();
+/// # let set = osis::ReadSet::new(|_| {});
 /// # let r = db.tracking(&set);
 ///
 /// let _ = r.at(t, N).path(osis::p![]).edit_text();
@@ -344,15 +314,9 @@ impl std::ops::Deref for Osis {
 ///
 /// the clock:
 /// ```compile_fail,E0599
-/// use osis::{Config, MemStore, Osis, ReadSet, Store};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
-/// # let set = ReadSet::new(|_| {});
-/// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
-/// # w.commit().unwrap();
+/// # use osis::internals::checks::N;
+/// # let (db, t) = osis::internals::checks::node().unwrap();
+/// # let set = osis::ReadSet::new(|_| {});
 /// # let r = db.tracking(&set);
 ///
 /// let _ = r.now();
@@ -360,15 +324,9 @@ impl std::ops::Deref for Osis {
 ///
 /// creating the profile:
 /// ```compile_fail,E0599
-/// use osis::{Config, MemStore, Osis, ReadSet, Store};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
-/// # let set = ReadSet::new(|_| {});
-/// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
-/// # w.commit().unwrap();
+/// # use osis::internals::checks::N;
+/// # let (db, t) = osis::internals::checks::node().unwrap();
+/// # let set = osis::ReadSet::new(|_| {});
 /// # let r = db.tracking(&set);
 ///
 /// let _ = r.profile();
@@ -376,15 +334,9 @@ impl std::ops::Deref for Osis {
 ///
 /// escalating to a full handle:
 /// ```compile_fail,E0599
-/// use osis::{Config, MemStore, Osis, ReadSet, Store};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
-/// # let set = ReadSet::new(|_| {});
-/// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
-/// # w.commit().unwrap();
+/// # use osis::internals::checks::N;
+/// # let (db, t) = osis::internals::checks::node().unwrap();
+/// # let set = osis::ReadSet::new(|_| {});
 /// # let r = db.tracking(&set);
 ///
 /// let _ = r.downgrade();
@@ -392,15 +344,9 @@ impl std::ops::Deref for Osis {
 ///
 /// tracking again:
 /// ```compile_fail,E0599
-/// use osis::{Config, MemStore, Osis, ReadSet, Store};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:n.0: int;\n");
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
-/// # let set = ReadSet::new(|_| {});
-/// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
-/// # w.commit().unwrap();
+/// # use osis::internals::checks::N;
+/// # let (db, t) = osis::internals::checks::node().unwrap();
+/// # let set = osis::ReadSet::new(|_| {});
 /// # let r = db.tracking(&set);
 ///
 /// let _ = r.tracking(&set);

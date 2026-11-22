@@ -213,6 +213,24 @@ pub use osis_proto as proto;
 pub use osis_crypto::Secret32;
 pub use osis_blob as blob;
 
+/// What the compile-time checks of key kinds and of `ReadOnly` (doc tests) share: a signal
+/// `PING` and a value aspect `N`.
+pub mod checks {
+    static S: crate::generated::StaticSchema = crate::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
+    pub const PING: crate::Signal<i64> = crate::Signal::new("t:ping~0", &S);
+    pub const N: crate::Aspect<i64> = crate::Aspect::new("t:n.0", &S);
+
+    /// A node in memory and a thing it holds.
+    pub fn node() -> crate::Result<(crate::Osis, crate::Tid)> {
+        let db = crate::Osis::create(crate::Store::Memory(crate::MemStore::new()), crate::Config::default())?;
+        let mut w = db.write();
+        let t = w.create(db.account_root(), None)?;
+        w.hold(db.account_root(), t)?;
+        w.commit()?;
+        Ok((db, t))
+    }
+}
+
 /// The client socket's directory and path rules (`Osis::listen_socket`).
 pub use crate::sources::{socket_dir, socket_path_under};
 pub use osis_transport::unix::{MAX_PATH as SOCKET_MAX_PATH, own_uid};

@@ -102,14 +102,9 @@ pub mod core {
 /// at run time). The first test is the same setup taking every allowed call, so each failing
 /// one fails for its one forbidden call.
 /// ```
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// # let keep = osis::core::RetentionEntry { history: Some(osis::History::FOREVER), ..Default::default() };
 /// # w.at(t, osis::core::RETENTION).set(&osis::core::RetentionSetting { rules: [(osis::Ak::new("t:ping~0").unwrap(), keep)].into(), ..Default::default() }).unwrap();
 /// // what each kind takes
@@ -139,210 +134,130 @@ pub mod core {
 ///
 /// `get` on a signal:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = db.at(t, PING).get();
 /// ```
 ///
 /// `path` reads on a signal:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = db.at(t, PING).path(p![]).get::<i64>();
 /// ```
 ///
 /// `on_change` on a signal:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = db.at(t, PING).on_change(|_, _| {});
 /// ```
 ///
 /// `writes` on a signal:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = db.at(t, PING).writes(&CommitQuery::default());
 /// ```
 ///
 /// `on_write` on a signal:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = db.at(t, PING).on_write(|_, _| {});
 /// ```
 ///
 /// `keep_alive` on a signal:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = db.at(t, PING).keep_alive(&1);
 /// ```
 ///
 /// `set` on a signal:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = w.at(t, PING).set(&1);
 /// ```
 ///
 /// `edit` on a signal:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = w.at(t, PING).edit(&1, &2);
 /// ```
 ///
 /// `overwrite` on a signal:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = w.at(t, PING).overwrite(&1);
 /// ```
 ///
 /// `remove` on a signal:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = w.at(t, PING).remove();
 /// ```
 ///
 /// path writes on a signal:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = w.at(t, PING).path(p![]).set(&1i64);
 /// ```
 ///
 /// `fire` on a value key:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = w.at(t, N).fire(&1);
 /// ```
 ///
 /// `fired` on a value key:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = db.at(t, N).fired(&CommitQuery::default());
 /// ```
 ///
 /// `on_fire` on a value key:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// let _ = db.at(t, N).on_fire(|_, _| {});
 /// ```
 ///
 /// `replace` on a value key:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// # let id: osis::CommitId = "00".repeat(32).parse().unwrap();
 /// let _ = w.at(t, N).replace(id, &1);
 /// ```
 ///
 /// `versions` on a value key:
 /// ```compile_fail,E0599
-/// # use osis::{Config, MemStore, Osis, Store, CommitQuery, p};
-/// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\nsignal t:ping~0: int;\naspect t:n.0: int;\n");
-/// # const PING: osis::Signal<i64> = osis::Signal::new("t:ping~0", &S);
-/// # const N: osis::Aspect<i64> = osis::Aspect::new("t:n.0", &S);
-/// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
+/// # use osis::{CommitQuery, p, internals::checks::{N, PING}};
+/// # let (db, t) = osis::internals::checks::node().unwrap();
 /// # let mut w = db.write();
-/// # let t = w.create(db.account_root(), None).unwrap();
-/// # w.hold(db.account_root(), t).unwrap();
 /// # let id: osis::CommitId = "00".repeat(32).parse().unwrap();
 /// let _ = db.at(t, N).versions(id, &CommitQuery::default());
 /// ```
