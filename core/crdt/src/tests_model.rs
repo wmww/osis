@@ -195,22 +195,23 @@ fn piece_laws(x: &Fragment, y: &Fragment, honest: bool) {
     }
 }
 
-/// A join of `y` changes the values a state reads (`each_read_value`) only at `y`'s reach
-/// (`Fragment::reach`, `reach_after`): `before` and `after` differ as their pieces at the reach do (the engine's
-/// reference index counts a join there alone, notes/engine-refs.md). The writes it supersedes,
-/// read at the reaches as the engine dates them (`Killed::note`), are the whole state's: a range
+/// A join of `y` changes the references a state reads (in `each_read_value`) only at `y`'s
+/// reach (`Fragment::reach`, `reach_after`): `before` and `after` differ as their pieces at the
+/// reach do (the engine's reference index counts a join there alone, notes/engine-refs.md; a
+/// set's equal values without references read once with no reach of each other). The writes it
+/// supersedes, read at the reaches as the engine dates them (`Killed::note`), are the whole state's: a range
 /// record the join split is reached at each of its elements.
 pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fragment) {
     let diff = |a: &Fragment, b: &Fragment| {
         let mut m: BTreeMap<osis_base::Value, i64> = BTreeMap::new();
-        a.each_read_value(&mut |v| *m.entry(v.clone()).or_default() -= 1);
-        b.each_read_value(&mut |v| *m.entry(v.clone()).or_default() += 1);
+        a.each_read_value(&mut |v| v.each_reference(&mut |r| *m.entry(r.clone()).or_default() -= 1));
+        b.each_read_value(&mut |v| v.each_reference(&mut |r| *m.entry(r.clone()).or_default() += 1));
         m.retain(|_, n| *n != 0);
         m
     };
     let at = before.reach(y);
     let at_after = after.reach_after(y, &at);
-    assert_eq!(diff(&at, &at_after), diff(before, after), "a join changes read values only at its reach");
+    assert_eq!(diff(&at, &at_after), diff(before, after), "a join changes read references only at its reach");
     let dead = |b: &Fragment, a: &Fragment| {
         let mut w = b.winners();
         w.extend(y.winners());

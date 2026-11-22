@@ -288,8 +288,9 @@ pub struct PagedTouch {
     pub seqs: BTreeMap<Vec<Step>, Fragment>,
     /// Per paged map or set, the values whose records the join reaches wherever they are: a
     /// map's keys its records hold (a key reads as the join of its records, §5.6, so the join
-    /// reaches every record of a key it reaches, `Fragment::reach`), a set's references its
-    /// elements and value removals name (the records of each hide or are hidden by them, §5.5).
+    /// reaches every record of a key it reaches, `Fragment::reach`), a set's values holding
+    /// references its elements and value removals name (equal values read once, and a value
+    /// removal hides or is hidden by the records of its reference, §5.5).
     pub values: BTreeMap<Vec<Step>, Vec<Value>>,
 }
 
@@ -350,9 +351,9 @@ impl Fragment {
     }
 
     /// The values whose records the records of dot `d` here are read with (`PagedTouch::values`):
-    /// a map's keys of the dot's records, content or not; a set's references its element and value
-    /// removal there name (a join may replace that copy, §4.1, so what it hid or was hidden by
-    /// is read again).
+    /// a map's keys of the dot's records, content or not; a set's values holding references its
+    /// element and value removal there name (a join may replace that copy, §4.1, so the records
+    /// equal to it, or that it hid or was hidden by, are read again).
     pub fn dot_values(&self, d: &Dot) -> Vec<&Value> {
         match self {
             Fragment::Map(m) => m.of_dot(d).filter_map(|(id, _)| id.key()).collect(),

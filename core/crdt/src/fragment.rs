@@ -169,9 +169,13 @@ impl Elem {
             _ => None,
         }
     }
-    /// The references the record's element holds and its value removal names (§5.5).
+    /// The value the record's element holds and the reference its value removal names (§5.5).
+    pub(crate) fn values(&self) -> impl Iterator<Item = &Value> {
+        self.removes().into_iter().chain(self.written().and_then(|w| w.0))
+    }
+    /// `values` holding a reference at any depth (spec/data-model.md §8).
     pub(crate) fn references(&self) -> impl Iterator<Item = &Value> {
-        self.removes().into_iter().chain(self.written().and_then(|w| w.0)).filter(|v| v.is_reference())
+        self.values().filter(|v| v.holds_reference())
     }
 }
 
@@ -302,9 +306,10 @@ pub struct Set {
 }
 
 impl Set {
-    /// The records at `d`'s dots, and with `refs` the records of the references named there by
-    /// `d`'s records, this set's and `prior`'s (a copy's reference is payload, decided by copy
-    /// order, §4.1), which hide or are hidden by them (§5.5): what a join of `d` supersedes.
+    /// The records at `d`'s dots, and with `refs` the records of the values holding references
+    /// named there by `d`'s records, this set's and `prior`'s (a copy's value is payload, decided
+    /// by copy order, §4.1): equal values read once, and a value removal hides or is hidden by
+    /// them (§5.5), so these are what a join of `d` supersedes and moves the references read of.
     fn at(&self, d: &Set, prior: Option<&Set>, refs: bool) -> Set {
         let mut keep: BTreeMap<Dot, Elem> = d.elems.keys().filter_map(|k| Some((k.clone(), self.elems.get(k)?.clone()))).collect();
         if refs {
@@ -312,7 +317,7 @@ impl Set {
             let named: BTreeSet<Value> = d.elems.iter().flat_map(|(k, e)| e.references().chain(keep.get(k).into_iter().flat_map(Elem::references)).chain(theirs(k).into_iter().flat_map(Elem::references))).cloned().collect();
             if !named.is_empty() {
                 for (k, e) in &self.elems {
-                    if e.references().any(|v| named.contains(v)) {
+                    if e.values().any(|v| named.contains(v)) {
                         keep.entry(k.clone()).or_insert_with(|| e.clone());
                     }
                 }
@@ -526,9 +531,10 @@ impl Fragment {
     /// narrowed the same way), of a map every record of the dots `x` holds records of, of a set
     /// or bag the elements `x` holds, of a sequence the records holding a dot of `x`'s, each with
     /// this fragment's meta; anything else whole. A narrowed field left empty is left out (a join
-    /// drops empty children). Of a set also the records of the references `x` names or this
-    /// fragment's records at `x`'s dots name (they hide or are hidden by those, §5.5; a copy's
-    /// reference is payload, §4.1): what a join of `x` supersedes.
+    /// drops empty children). Of a set also the records of the values holding references `x`
+    /// names or this fragment's records at `x`'s dots name (equal values read once, and a value
+    /// removal hides or is hidden by them, §5.5; a copy's value is payload, §4.1): what a join of
+    /// `x` supersedes.
     pub fn part_at(&self, x: &Fragment) -> Fragment {
         self.piece_at(x, true)
     }

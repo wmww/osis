@@ -29,6 +29,51 @@ fn rows_carry_the_kind_spec_data_model_8() {
     assert!(rows(&mut lp, 0, &me).iter().any(|r| r.0 == t && r.1 == "created.0" && r.2 == RefKind::Weak));
 }
 
+// spec/data-model.md §8 What counts, spec/crdt.md §5.5 Read: equal values a set's elements hold
+// read once, so a reference two writers add unseen counts once (a strong added again, a list
+// holding a strong added again, and a map key's set put again, whose records' sets join), and
+// a removal of the value takes its row. Unpaged and paged (the map past a page).
+#[test]
+fn equal_set_values_count_once_spec_data_model_8() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let (mut lp, things) = r2_world();
+    let (t, x) = (things[0], things[1]);
+    let small = ak("x:a.0");
+    let mut m = Mutation::new();
+    m.set(t, &small, &Value::Map([(Value::Int(2), Value::Set(Default::default()))].into_iter().collect())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let nested = Value::List(vec![Value::Strong(x)]);
+    let add = |lp: &mut LocalPeer, by: usize| {
+        let mut m = Mutation::new();
+        for v in [Value::Weak(x), nested.clone()] {
+            m.op(t, &REFS, PathOp { path: vec![], op: Op::Add(v) }).unwrap();
+        }
+        for a in [&small, &ak(MAP)] {
+            m.op(t, a, PathOp { path: vec![PathSeg::Key(Value::Int(2))], op: Op::Put(Value::Set([Value::Strong(x)].into_iter().collect())) }).unwrap();
+        }
+        lp.peers[by].commit(m).unwrap().unwrap()
+    };
+    let cs = [add(&mut lp, 1), add(&mut lp, 2)];
+    for (i, c) in cs.iter().enumerate() {
+        let pk = lp.peers[i + 1].engine.package(c).unwrap().unwrap();
+        for j in (0..3).filter(|j| *j != i + 1) {
+            lp.deliver(j, &pk).unwrap();
+        }
+    }
+    let want = |a: &str, k: RefKind, n: u64| (t, a.to_string(), k, n);
+    for i in 0..3 {
+        let got: Vec<_> = rows(&mut lp, i, &x).into_iter().filter(|r| r.0 == t).collect();
+        // the paged map names X at key 1 too
+        assert_eq!(got, vec![want("t:refs.0", RefKind::Strong, 1), want("t:refs.0", RefKind::Weak, 1), want("x:a.0", RefKind::Strong, 1), want("x:m.0", RefKind::Strong, 2)], "node {i}");
+    }
+    let mut m = Mutation::new();
+    m.op(t, &REFS, PathOp { path: vec![], op: Op::Remove(Value::Weak(x)) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let got: Vec<_> = rows(&mut lp, 0, &x).into_iter().filter(|r| r.0 == t && r.1 == "t:refs.0").collect();
+    assert_eq!(got, vec![want("t:refs.0", RefKind::Strong, 1)], "the weak removed");
+}
+
 /// Every reference at any depth of `v` (map keys and payloads too), counted by (target, kind).
 fn scan(v: &Value, out: &mut BTreeMap<(Tid, RefKind), u64>) {
     let mut one = |t: Tid, k: RefKind| *out.entry((t, k)).or_default() += 1;

@@ -48,7 +48,7 @@ fn walk(f: &Fragment, at: &mut Pos, out: &mut Vec<Pos>) {
         Fragment::Set(x) => {
             for (d, e) in &x.elems {
                 under(Seg::Dot(d.clone()), out);
-                for v in e.references() {
+                for v in e.values().filter(|v| v.is_reference()) {
                     let mut p = at.clone();
                     p.extend([Seg::Key(Key(std::sync::Arc::new(v.clone()))), Seg::Dot(d.clone())]);
                     out.push(p);

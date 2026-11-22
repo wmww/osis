@@ -248,30 +248,14 @@ impl Delta {
     }
 }
 
-/// Calls `f` on every reference at any depth of `v`, with its kind and the reference itself: map
-/// keys, set elements, enum payloads, unknown tags' content; not inside a ticket (its tids are no
-/// references), a link (a chunked value) or a string.
+/// Calls `f` on every reference at any depth of `v` (`Value::each_reference`), with its kind and
+/// the reference itself.
 pub(crate) fn references(v: &Value, f: &mut dyn FnMut(RefKind, Tid, &Value)) {
-    match v {
-        Value::Strong(_) | Value::Weak(_) | Value::Ticket(_) => {
-            if let Some((k, t)) = RefKind::of(v) {
-                f(k, t, v);
-            }
+    v.each_reference(&mut |r| {
+        if let Some((k, t)) = RefKind::of(r) {
+            f(k, t, r);
         }
-        Value::Enum(_, Some(p)) => references(p, f),
-        Value::Map(m) => m.iter().for_each(|(k, x)| {
-            references(k, f);
-            references(x, f);
-        }),
-        Value::List(x) => x.iter().for_each(|x| references(x, f)),
-        Value::Set(x) => x.iter().for_each(|x| references(x, f)),
-        Value::Unknown(u) => {
-            if let Ok(x) = u.content().to_value() {
-                references(&x, f);
-            }
-        }
-        _ => {}
-    }
+    });
 }
 
 fn from_prefix(source: &Tid, ak: &Ak) -> Vec<u8> {

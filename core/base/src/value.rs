@@ -159,6 +159,33 @@ impl Value {
     pub fn is_reference(&self) -> bool {
         matches!(self, Value::Strong(_) | Value::Weak(_) | Value::Ticket(_))
     }
+    /// Calls `f` on every reference at any depth of this value (spec/data-model.md §8 What
+    /// counts): map keys, set elements, enum payloads, unknown tags' content; not inside a ticket
+    /// (its tids are no references), a link (a chunked value) or a string.
+    pub fn each_reference(&self, f: &mut dyn FnMut(&Value)) {
+        match self {
+            Value::Strong(_) | Value::Weak(_) | Value::Ticket(_) => f(self),
+            Value::Enum(_, Some(p)) => p.each_reference(f),
+            Value::Map(m) => m.iter().for_each(|(k, x)| {
+                k.each_reference(f);
+                x.each_reference(f);
+            }),
+            Value::List(x) => x.iter().for_each(|x| x.each_reference(f)),
+            Value::Set(x) => x.iter().for_each(|x| x.each_reference(f)),
+            Value::Unknown(u) => {
+                if let Ok(x) = u.content().to_value() {
+                    x.each_reference(f);
+                }
+            }
+            _ => {}
+        }
+    }
+    /// Whether some reference is at any depth of this value (`each_reference`).
+    pub fn holds_reference(&self) -> bool {
+        let mut any = false;
+        self.each_reference(&mut |_| any = true);
+        any
+    }
     pub fn as_list(&self) -> Option<&[Value]> {
         match self {
             Value::List(l) => Some(l),

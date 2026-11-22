@@ -598,7 +598,8 @@ impl Fragment {
         self.values_with(Values::Written, f);
     }
 
-    /// `each_value` of what a read shows (§5): of a map, each key whose live records' join reads
+    /// `each_value` of what a read shows (§5): of a set, each distinct live value once (§5.5); of
+    /// a map, each key whose live records' join reads
     /// (§5.6), so a record a removal or a later shape at its key hides holds none; of an enum, the
     /// live case's payload alone (§5.4), so one under a reset case holds none; of a list, its
     /// visible elements (§5.7). O(`each_value`)
@@ -626,7 +627,17 @@ impl Fragment {
             Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values().for_each(|x| x.values_with(mode, f)),
             Fragment::Bag(Bag { elems, .. }) if all => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|x| x.values_with(mode, f)),
             Fragment::Bag(_) => {}
-            // a value removal names no value it holds; an element it hides is dead (§4.8, §5.5)
+            // a value removal names no value it holds; an element it hides is dead (§4.8, §5.5);
+            // equal values of several live elements read once, the lowest dot's (§5.5)
+            Fragment::Set(s) if mode == Values::Read => {
+                let mut seen = std::collections::BTreeSet::new();
+                for (_, _, v) in crate::fragment::live_elems(&s.elems) {
+                    if !seen.contains(&v) {
+                        f(&v);
+                        seen.insert(v);
+                    }
+                }
+            }
             Fragment::Set(s) => {
                 let gone = crate::fragment::removed(&s.elems);
                 s.elems.iter().filter(|(d, e)| !crate::fragment::hidden(d, e, &gone)).filter_map(|(_, e)| e.frag.as_deref()).for_each(|x| x.values_with(mode, f));
