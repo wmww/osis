@@ -1686,3 +1686,34 @@ fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sy
     w.run();
     assert!(w.engine(1).ticket_for(&t).unwrap().is_some(), "enabled: the fire is taken");
 }
+
+// spec/sync-inbox.md §3 (opens a deposit it takes): Bob's node 1 reads T, which
+// keeps fires of `x:ping@~0`, and fires it, by deposit (it does not write T). Its sibling, node 2,
+// also reads T and declares it keeps T unread, so node 1 offers it the Deposit item; Alice
+// promotes the deposit in place. Node 2 holds the blob's bytes from the deposit, so the stamp
+// fetches nothing: it reads the fire only because it opened the deposit it took.
+#[test]
+fn a_reader_opens_a_deposit_it_takes_spec_sync_inbox_3() {
+    let mut w = siblings();
+    w.lie(2, Some(crate::harness::lies::Lie::Declare { unread: true }));
+    let ping = Ak::new("x:ping@~0").unwrap();
+    let t = make(&mut w, 0, None, "hi");
+    let x = ct::RetentionSetting::of(ping.clone(), osis_schema::History::FOREVER);
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ct::RETENTION, &x).unwrap();
+        e.commit(m).unwrap();
+    });
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    w.run();
+    strong(&mut w, 1, None, t, true);
+    w.run();
+    assert_eq!(value(&mut w, 2, &t), Some(Value::Str("hi".into())), "node 2 reads T");
+    w.write(1, |e| e.fire_open(&t, ping.as_str(), Value::Str("ping".into()))).unwrap();
+    w.run();
+    for i in [0, 1, 2] {
+        let fires: Vec<Option<Value>> = w.engine(i).body_page(&t, &ping, true, 0, 10).unwrap().into_iter().map(|b| b.value).collect();
+        assert_eq!(fires, [Some(Value::Str("ping".into()))], "node {i} reads Bob's fire");
+    }
+}

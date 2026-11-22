@@ -4,6 +4,7 @@
 //! Every entry added or changed reaches this module through the store's entry feed, and each is
 //! judged by one `Effects` key over what it reads (the entry, the engine's verdicts), so a change
 //! costs what it touched. Per entry:
+//! - a peer's deposit under a sync ID this node reads: opened (`deposit_commit`);
 //! - a deposit under a sync ID this node reads and writes that `promotion` says read promotes:
 //!   kept from clearing (read stamps it in place, its own-store rule: one mechanism stamps what
 //!   this node logs under S);
@@ -284,10 +285,10 @@ fn judge(engine: &mut Engine, store: &Store, k: &Key) -> Result<Act> {
     if e.own && holding.is_some() {
         return Ok(Act::Offer);
     }
-    // a peer's deposit (an own one here holds no S) under a read S this node writes: whether
-    // read promotes it
+    // a peer's deposit (an own one here holds no S) under a read S: opened as any entry a reader
+    // takes, whether or not this node writes S (spec/sync-inbox.md §3 Who takes it: a stamp
+    // arriving later for its bytes fetches nothing); where it writes S, whether read promotes it
     if holding == Some(Holding::Read)
-        && engine.signers(s, None)?.stamp.is_some()
         && let Some(c) = deposit_commit(engine, store, s, &e)?
         && promotion(engine, store, s, &c, b)? == Promotion::Yes
     {

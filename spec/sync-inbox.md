@@ -23,6 +23,7 @@
 ## 3. Deposits
 - **Deposit** (an Offer Deposit item, spec/wire.md §11.2: `[S, blob, wrap, sig]`, `sig` by S's head's deposit key): add one entry with the given wrap (filler for a sealed fire) and no stamp, flagged deposited.
 - **Who takes it**: every node holding S, read or kept unread, by one rule: it takes a Deposit item whose signature verifies under its head's deposit key and whose blob is of the durable or ephemeral class, within S's deposit budget and its peer budget (spec/sync-ids.md §5), whatever the connection proved and whoever offers it. Answers: 0 taken (also when the blob is held or was dropped: nothing changes); refused for now (4 rate, 5 budget full, 12 cap); else 14 (a bad signature, an unknown sync ID, a relay-only blob), never the head.
+  - A node reading S opens a deposit it takes as any entry it takes (spec/sync-streams.md §4 Fill order), whether or not it writes S: a stamp arriving later for the blob it holds fetches nothing.
   - An ephemeral deposit is held as an ephemeral entry, counting toward S's ephemeral cap and the deposit budget alike.
   - **Budget**: local policy, with a recommended minimum (spec/wire.md §2), one per sync ID, shared by its durable and ephemeral deposits. An entry leaves the budget when stamped, deleted or expired, or with the node's restart for an ephemeral one.
   - A Deposit item for a sync ID the node will hold but does not yet (in its sync set, no head held yet: its grant or registration arriving) is refused for now (4); one for a sync ID it does not sync, 14.
