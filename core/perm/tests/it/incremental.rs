@@ -49,14 +49,14 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
         if part.standing_since_all(None).remove(&t).unwrap_or_default() != part.standing_since(&t) {
             return Some(format!("standing since of {t:?} in one pass"));
         }
-        // the edge history too: roles before every applied write
+        // the edge history too: roles before every applied write (`role` is `roles_on`'s entry:
+        // each side's map walked once per point, not once per node)
         for a in full.applied().values() {
+            let at = At::before(a.point);
+            let (mine, whole) = (part.roles_on(&t, at), full.roles_on(&t, at));
             for n in nodes {
-                if part.role(n, &t, At::before(a.point)) != full.role(n, &t, At::before(a.point)) {
+                if mine.get(n) != whole.get(n) {
                     return Some(format!("role of {n:?} on {t:?} before {:?}", a.point));
-                }
-                if part.roles_on(&t, At::before(a.point)).get(n).copied() != full.role(n, &t, At::before(a.point)) {
-                    return Some(format!("role of {n:?} on {t:?} before {:?}, walked backward", a.point));
                 }
                 // layer 2 there (re-grant's `first_held` is carried over `extend`)
                 let p = osis_perm::Point { node: *n, commit: osis_base::CommitId([0xee; 32]), ..a.point };
