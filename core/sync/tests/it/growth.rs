@@ -839,11 +839,6 @@ fn grants_as_fresh(accept: bool, redeem: bool, removals: usize) {
         (w, held)
     });
     let ([(mut wa, a), (mut wb, b)], work) = grant_rounds(accept, redeem);
-    // the redeem arm's rounds after the first are the grant arm's, whose work that arm checks:
-    // here a one-round spike of the same work lands in the last three
-    if !redeem {
-        flat_work(&work, if accept { "accepted" } else { "declined" });
-    }
     // the redeem round's set removals: the link's seed thing's and K's strongs and tickets beside the thing's
     let extra = if redeem { 4 } else { 0 };
     for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
@@ -851,6 +846,7 @@ fn grants_as_fresh(accept: bool, redeem: bool, removals: usize) {
         as_fresh(&b[i], &fresh[i], 10 * removals + extra, &format!("{who}, 10 rounds"), &mut |f| leaked(&mut wb, i, &mut wf, i, f));
         assert_eq!(a[i].0.get("cv/"), b[i].0.get("cv/"), "{who}: cv/ flat");
     }
+    flat_work(&work, if accept { "accepted" } else { "declined" });
 }
 
 // Releasing everything, its grant, fire, accept and revoke arm (issues/storage-owners.md),
