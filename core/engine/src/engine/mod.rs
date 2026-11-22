@@ -3665,8 +3665,9 @@ impl Engine {
                 assert_eq!(fresh.perm_digest(false), self.core.perm_digest(false), "{at}: role timelines");
             }
             if !rebuild {
-                let decoded = fresh.ix.commits.values().filter(|m| !m.view.linked && m.header.is_decoded()).count();
-                assert_eq!(decoded, 0, "{at}: headers decoded");
+                // Interim (notes/perm-paths.md, The switch, Left 4): an open reads every header to
+                // give the walk its delta facts (`validity::reading`), until the walk's store is
+                // the engine's index; then: no header of an unlinked commit is decoded
                 assert_eq!(crate::apply::validity::misjudged(&fresh), None, "{at}: judged anew");
             }
         }

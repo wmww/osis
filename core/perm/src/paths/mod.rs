@@ -529,6 +529,12 @@ impl<S: Store> Paths<S> {
         self.facts.content(&self.timeline, id, &mut Counts::default())
     }
 
+    /// The verdict part `ix` of `c` has as a delta over what is held, whether `c` is held or not
+    /// (`None`: no delta): the same point query as `content`.
+    pub fn judge(&self, c: &Commit, ix: u32) -> Option<Content> {
+        self.facts.judge(&self.timeline, c, ix, &mut Counts::default())
+    }
+
     /// `content`, counting its work into `counts`.
     pub fn content_counted(&self, id: &WriteId, counts: &mut Counts) -> Option<Content> {
         self.facts.content(&self.timeline, id, counts)

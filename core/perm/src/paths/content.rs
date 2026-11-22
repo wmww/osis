@@ -353,6 +353,36 @@ impl<S: Store> Facts<S> {
         (self.commits.len() + self.named.values().map(BTreeSet::len).sum::<usize>() + self.ever.len()) as u64
     }
 
+    /// The facts of delta `d`, part `p` of commit `c`, under ID `id`.
+    fn fact(&self, c: &Commit, id: WriteId, p: &crate::paths::Part, d: &crate::paths::Delta) -> Fact {
+        let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, None, false);
+        let chain: Vec<Tid> = std::iter::once(c.signer).chain(p.path.iter().copied()).collect();
+        // a member of its path: the signer, a listed thing, or the thing written (§6 Purge author)
+        let purge_author = usize::try_from(d.purge_author).ok().and_then(|i| chain.get(i).copied().or((i == chain.len()).then_some(p.on)));
+        let class = match &d.class {
+            DeltaClass::Plain => FactClass::Plain,
+            DeltaClass::RoleClass => FactClass::Role,
+            DeltaClass::Snapshot { carries, stated, own } => FactClass::Snapshot { carries: carries.clone(), stated: stated.clone(), own: *own },
+            DeltaClass::Addendum { removal, list } => FactClass::Addendum(*removal, list.clone()),
+            DeltaClass::Purge { names } => FactClass::Purge(*names),
+        };
+        Fact { id, ts: c.ts, signer: c.signer, pos: Key::start(c.ts), on: p.on, aspect: d.aspect.clone(), needs: d.needs, class, hops: sh.hops, well: sh.well && purge_author.is_some(), purge_author, purge_by: d.purge_by, chain }
+    }
+
+    /// The verdict part `ix` of `c` has as a delta of the held set, held or not (a point query,
+    /// as `content`; `None` where it is no delta). One not held is named by what is held, and
+    /// an addendum's own vouching reads the held addenda's stored verdicts.
+    pub(super) fn judge(&self, tl: &Walk, c: &Commit, ix: u32, counts: &mut Counts) -> Option<Content> {
+        let p = c.parts.get(usize::try_from(ix).ok()?)?;
+        let PartKind::Delta(d) = &p.kind else { return None };
+        let f = self.fact(c, WriteId(c.id, ix), p, d);
+        Some(match self.valid(tl, &f, counts) {
+            Some(b) => Content::Valid(b),
+            None if self.copied(tl, &f, counts) => Content::Copied,
+            None => Content::Invalid,
+        })
+    }
+
     /// Takes in new commits (the walks took their edge-class parts). Returns the new deltas, the
     /// snapshots' carried commits, the role commits and the addenda that arrived.
     pub(super) fn take(&mut self, commits: &[&Commit]) -> Taken {
@@ -374,38 +404,13 @@ impl<S: Store> Facts<S> {
                         }
                     }
                     PartKind::Delta(d) => {
-                        let sh = shape(&self.mint, c.signer, &p.path, p.direct, p.on, None, false);
-                        let chain: Vec<Tid> = std::iter::once(c.signer).chain(p.path.iter().copied()).collect();
-                        // a member of its path: the signer, a listed thing, or the thing written (§6 Purge author)
-                        let purge_author = usize::try_from(d.purge_author).ok().and_then(|i| chain.get(i).copied().or((i == chain.len()).then_some(p.on)));
-                        let class = match &d.class {
-                            DeltaClass::Plain => FactClass::Plain,
-                            DeltaClass::RoleClass => {
-                                role = true;
-                                FactClass::Role
-                            }
-                            DeltaClass::Snapshot { carries, stated, own } => {
-                                out.carried.extend(carries.commits().iter().copied());
-                                FactClass::Snapshot { carries: carries.clone(), stated: stated.clone(), own: *own }
-                            }
-                            DeltaClass::Addendum { removal, list } => FactClass::Addendum(*removal, list.clone()),
-                            DeltaClass::Purge { names } => FactClass::Purge(*names),
-                        };
-                        facts.push(Fact {
-                            id,
-                            ts: c.ts,
-                            signer: c.signer,
-                            pos: Key::start(c.ts),
-                            on: p.on,
-                            aspect: d.aspect.clone(),
-                            needs: d.needs,
-                            class,
-                            hops: sh.hops,
-                            well: sh.well && purge_author.is_some(),
-                            purge_author,
-                            purge_by: d.purge_by,
-                            chain,
-                        });
+                        let f = self.fact(c, id, p, d);
+                        match &f.class {
+                            FactClass::Role => role = true,
+                            FactClass::Snapshot { carries, .. } => out.carried.extend(carries.commits().iter().copied()),
+                            _ => {}
+                        }
+                        facts.push(f);
                         out.deltas.push(id);
                     }
                     PartKind::None => {}

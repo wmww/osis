@@ -30,6 +30,13 @@ pub struct Held {
     pub role: Option<Arc<RoleCommit>>,
 }
 
+impl Held {
+    /// Its parts but its edge writes, as the walk's input.
+    pub fn deltas(self) -> paths::Commit {
+        paths::Commit { id: self.id, ts: self.ts, signer: self.signer, parts: self.parts }
+    }
+}
+
 /// What the node holds that the walk reads. Applied, verified commits only (pending ones are
 /// not held, spec/commits.md §4).
 pub trait HeldSet {
@@ -396,6 +403,12 @@ impl<S: Store> Timeline<S> {
     /// it set a value (spec/permissions.md §2: the next edge write resets the entry it created).
     pub fn in_force(&self, holder: &Tid, target: &Tid) -> Option<CommitId> {
         self.paths.last(holder, target).filter(|(_, a)| a.value.is_some()).map(|(w, _)| w.0)
+    }
+
+    /// The verdict part `ix` of `h` (`Held::deltas`) has over what is held, whether `h` is held
+    /// or not (`Paths::judge`).
+    pub fn judge(&self, h: &paths::Commit, ix: u32) -> Option<paths::Content> {
+        self.paths.judge(h, ix)
     }
 
     /// A held delta's verdict (`Paths::content`), by (commit, part).

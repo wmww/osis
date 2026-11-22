@@ -723,7 +723,11 @@ fn stated(h: &Header, view: &View, t: &Tid) -> Option<(Vec<Tid>, osis_base::form
 /// writes are its `RoleCommit`'s where it counts.
 pub(crate) fn reading(core: &Core, id: &CommitId) -> Option<osis_perm::Held> {
     let m = core.ix.commits.get(id)?;
-    let h = &m.header;
+    Some(reading_of(core, id, &m.header, &m.view))
+}
+
+/// `reading` of a commit by its header and view, held or about to be.
+fn reading_of(core: &Core, id: &CommitId, h: &Header, view: &View) -> osis_perm::Held {
     let void = core.ix.void.contains(id);
     let mut judge = Judge::new(core);
     let none = |a: &osis_commit::AspectEntry| Part { on: a.tid, path: Vec::new(), direct: 0, kind: PartKind::None };
@@ -731,7 +735,7 @@ pub(crate) fn reading(core: &Core, id: &CommitId) -> Option<osis_perm::Held> {
     for (ai, a) in h.aspects.iter().enumerate() {
         let ak = a.ak.as_str();
         let read = !void && !perm_ak(ak) && ak != "listing.0" && !too_deep(core, &a.tid) && judge.counts(h, id, a);
-        let Some((path, direct, purge_author)) = stated(h, &m.view, &a.tid).filter(|_| read) else {
+        let Some((path, direct, purge_author)) = stated(h, view, &a.tid).filter(|_| read) else {
             parts.push(none(a));
             continue;
         };
@@ -757,15 +761,15 @@ pub(crate) fn reading(core: &Core, id: &CommitId) -> Option<osis_perm::Held> {
     if !void {
         for item in &h.purge {
             let (t, ak, names) = crate::retention::purge::item_names(item);
-            let kind = match stated(h, &m.view, t) {
+            let kind = match stated(h, view, t) {
                 Some((_, _, purge_author)) => PartKind::Delta(Delta { aspect: ak.clone(), needs: Role::Write, purge_author, purge_by: osis_base::PurgeBy::Admin, class: DeltaClass::Purge { names } }),
                 None => PartKind::None,
             };
-            let (path, direct) = stated(h, &m.view, t).map(|x| (x.0, x.1)).unwrap_or_default();
+            let (path, direct) = stated(h, view, t).map(|x| (x.0, x.1)).unwrap_or_default();
             parts.push(Part { on: *t, path, direct, kind });
         }
     }
-    Some(osis_perm::Held { id: *id, ts: h.ts, signer: h.signer, parts, role: core.ix.held.counted(id) })
+    osis_perm::Held { id: *id, ts: h.ts, signer: h.signer, parts, role: core.ix.held.counted(id) }
 }
 
 /// [signer, the things `t` is written along] of the path commit `h` states for `t` (`stated`).
@@ -794,6 +798,8 @@ pub(crate) struct Judge<'a> {
     standings: BTreeMap<CommitId, EpochStanding>,
     /// Per thing, its current setting (`setting_now`), found once.
     settings: BTreeMap<Tid, Option<Arc<ct::RetentionSetting>>>,
+    /// Per commit, its deltas as the walk reads them (`reading_of`), found once.
+    readings: BTreeMap<CommitId, osis_perm::paths::Commit>,
 }
 
 /// A thing's `retention^.0` deltas: each one's key and what it says.
@@ -801,7 +807,7 @@ pub(crate) type Settings = Vec<(Point, Arc<ct::RetentionSetting>)>;
 
 impl<'a> Judge<'a> {
     pub(crate) fn new(core: &'a Core) -> Judge<'a> {
-        Judge { core, standings: BTreeMap::new(), settings: BTreeMap::new() }
+        Judge { core, standings: BTreeMap::new(), settings: BTreeMap::new(), readings: BTreeMap::new() }
     }
 
     /// What the epoch rule says of commit `id` (`h` its header).
@@ -858,14 +864,14 @@ impl<'a> Judge<'a> {
         // current one is a function of the held valid settings alone; every move of it re-judges
         // the thing's external fires (`setting_moved`).
         if a.ak.external() {
-            return self.by_path(h, id, ai, a) || self.settings.entry(a.tid).or_insert_with(|| setting_now(core, &a.tid)).as_ref().is_some_and(|s| s.enables(&a.ak));
+            return self.by_path(h, view, id, ai, a) || self.settings.entry(a.tid).or_insert_with(|| setting_now(core, &a.tid)).as_ref().is_some_and(|s| s.enables(&a.ak));
         }
-        self.by_path(h, id, ai, a)
+        self.by_path(h, view, id, ai, a)
     }
 
     /// `part` of a part past the epoch rule: valid along the path its commit states for its
     /// thing (spec/permissions.md §5.2), as the walk judges it.
-    fn by_path(&mut self, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
+    fn by_path(&mut self, h: &Header, view: &View, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
         let core = self.core;
         let ak = a.ak.as_str();
         // a thing more than `MAX_CHAIN_DEPTH` record links below its key actor: nothing written on
@@ -895,7 +901,10 @@ impl<'a> Judge<'a> {
                 return true;
             }
         }
-        matches!(core.timelines.content(&WriteId(*id, ai as u32)), Some(Content::Valid(_)))
+        // a point query over what is held, the commit itself held yet or not: a commit is judged
+        // as it applies, before the walk takes it
+        let c = self.readings.entry(*id).or_insert_with(|| reading_of(core, id, h, view).deltas());
+        matches!(core.timelines.judge(c, ai as u32), Some(Content::Valid(_)))
     }
 }
 
