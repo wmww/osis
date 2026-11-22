@@ -611,43 +611,46 @@ fn rotation_history_as(seed: u64, interim: bool) -> (Reached, Verdicts) {
             }
         }
     }
-    // X: an admin of G that stays one at peer 0, given everything but some departing commits
-    // (and, rarely, others), re-seals and rotates
+    // X: an honest admin of G that stays one at peer 0, given everything but some departing
+    // commits (and, rarely, others), re-seals and rotates
     let g = run.actors[0].0;
-    let x = (1..N).find(|p| !run.hostile.contains(p) && run.lp.peers[0].engine.core.role_now(&run.tids[*p], &g) == Some(Role::Admin)).unwrap_or(0);
-    let mut all = Vec::new();
-    for p in (0..N).filter(|p| *p != x) {
-        all.extend(run.lp.packages_for(p, x).unwrap());
-    }
-    // drawn in history order (ts, signer), not by commit ID: an ID hashes the path a role commit
-    // states, so the role-paths property's two runs of a seed withhold the same writes
-    let order = |c: &CommitId| (0..N).find_map(|p| run.lp.peers[p].engine.core.ix.commits.get(c).map(|m| (m.header.ts, m.header.signer)));
-    let mut lowering: Vec<CommitId> = departing.iter().copied().collect();
-    lowering.sort_by_key(&order);
-    all.sort_by_key(|p| order(&p.id));
-    let mut withheld: BTreeSet<CommitId> = lowering.into_iter().filter(|_| run.rng.next(2) == 0).collect();
-    withheld.extend(all.iter().map(|p| p.id).filter(|_| run.rng.next(8) == 0));
-    for pk in all.iter().filter(|p| !withheld.contains(&p.id)) {
-        let _ = run.lp.peers[x].receive(&pk.bytes, pk.blobs.clone());
-    }
-    reached.withheld = !withheld.is_empty();
-    run.log.push(format!("withheld at {x}: {}", withheld.len()));
-    for _ in 0..2 {
-        let before = run.before(x);
-        for t in run.all() {
-            let _ = run.reseal(x, t);
-            run.note();
-            let made = run.lp.peers[x].engine.ensure_rotated(&t).is_ok_and(|d| !d.0.commits.is_empty());
-            run.rotated(x, t, made);
-            run.note();
-            if run.rng.next(2) == 0 {
-                let rot: BTreeSet<Role> = ROLES.into_iter().filter(|_| run.rng.next(2) == 0).collect();
-                let _ = run.rotate(x, t, &rot, false);
+    // a hostile node acts no more (a hostile admin of a holder actor boxing a departed peer is
+    // no rule's to stop): with no honest admin of G (its mint admin a forger), no X
+    if let Some(x) = (1..N).chain([0]).find(|p| !run.hostile.contains(p) && run.lp.peers[0].engine.core.role_now(&run.tids[*p], &g) == Some(Role::Admin)) {
+        let mut all = Vec::new();
+        for p in (0..N).filter(|p| *p != x) {
+            all.extend(run.lp.packages_for(p, x).unwrap());
+        }
+        // drawn in history order (ts, signer), not by commit ID: an ID hashes the path a role commit
+        // states, so the role-paths property's two runs of a seed withhold the same writes
+        let order = |c: &CommitId| (0..N).find_map(|p| run.lp.peers[p].engine.core.ix.commits.get(c).map(|m| (m.header.ts, m.header.signer)));
+        let mut lowering: Vec<CommitId> = departing.iter().copied().collect();
+        lowering.sort_by_key(&order);
+        all.sort_by_key(|p| order(&p.id));
+        let mut withheld: BTreeSet<CommitId> = lowering.into_iter().filter(|_| run.rng.next(2) == 0).collect();
+        withheld.extend(all.iter().map(|p| p.id).filter(|_| run.rng.next(8) == 0));
+        for pk in all.iter().filter(|p| !withheld.contains(&p.id)) {
+            let _ = run.lp.peers[x].receive(&pk.bytes, pk.blobs.clone());
+        }
+        reached.withheld = !withheld.is_empty();
+        run.log.push(format!("withheld at {x}: {}", withheld.len()));
+        for _ in 0..2 {
+            let before = run.before(x);
+            for t in run.all() {
+                let _ = run.reseal(x, t);
+                run.note();
+                let made = run.lp.peers[x].engine.ensure_rotated(&t).is_ok_and(|d| !d.0.commits.is_empty());
+                run.rotated(x, t, made);
+                run.note();
+                if run.rng.next(2) == 0 {
+                    let rot: BTreeSet<Role> = ROLES.into_iter().filter(|_| run.rng.next(2) == 0).collect();
+                    let _ = run.rotate(x, t, &rot, false);
+                }
+                run.note();
             }
+            run.record(x, &before);
             run.note();
         }
-        run.record(x, &before);
-        run.note();
     }
     // the re-key after a hostile node's lockout (notes/keys.md, Lockouts): an honest admin
     // removes each hostile peer still holding an edge on an actor, and each holder actor whose
@@ -833,7 +836,7 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
             // (but a secret a grant left it reading: `left_reading`);
             // nor does any epoch made by a rotator that saw the peer lose access (it held the
             // commit that cost the peer the thing, directly or below, and the peer reads it in
-            // none of the rotator's rosters), unless a grant (on the thing or on a holder actor
+            // none of the rotator's rosters, nor in the settled ones just after it), unless a grant (on the thing or on a holder actor
             // of it) handed it on (its author's own departure, or the grant counting, then
             // rotates the role, so the first holds), the history of a later epoch the peer held as a holder in its rotator's view
             // carried it (access regained, here or through a holder actor, reads earlier
@@ -855,7 +858,12 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                 // the commits that cost it `r` of `t`: its departure from `r` on `t` itself, and
                 // the one that cut its last path to `t` (through holder actors too)
                 let lost: Vec<CommitId> = departure(run, o, t, d, r).into_iter().chain(path_loss(run, o, d, t, r)).collect();
-                let regained = |e: &Epoch| run.made.iter().any(|((t2, r2, e2), m)| *t2 == t && *r2 == r && !m.below.contains(&d) && m.carried.contains(e) && run.ever[d].contains(&(t, r, *e2)));
+                // the epochs it held access to `r` of `t` at, just after their rotation commits, in
+                // the settled rosters: a holder then (a grant concurrent with the rotation, here or
+                // on a holder actor the epoch boxes, its maker unaware) is entitled to the epoch and
+                // its history (spec/crypto.md §4, the three promises: 2)
+                let holder_at: BTreeSet<Epoch> = run.made.keys().filter(|(t2, r2, e2)| *t2 == t && *r2 == r && run.lp.peers[o].engine.core.ix.epoch_intro.get(&(t, r, *e2)).and_then(|(_, c)| run.after(o, c)).is_some_and(|p| access_at(run, o, d, t, r, Some(p)))).map(|k| k.2).collect();
+                let regained = |e: &Epoch| run.made.iter().any(|((t2, r2, e2), m)| *t2 == t && *r2 == r && (!m.below.contains(&d) || holder_at.contains(e2)) && m.carried.contains(e) && run.ever[d].contains(&(t, r, *e2)));
                 // the boxes within the limit for `d` (`excused`), in any epoch of the history: a
                 // cascade seals a holder actor blind in an epoch of an actor `t`'s epoch boxes
                 let made = run.made.iter().flat_map(|((t2, r2, e2), m)| m.blind.iter().map(move |(bm, k)| ((*t2, *r2, *e2, *bm), *k, &m.held)));
@@ -868,7 +876,7 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
                 let settled = super::tests::openable_but(&mut run.lp, o, &all, run.tids[d], base.clone(), &limit);
                 let met = opens_in(&run.lp, &run.states, &run.secrets, run.tids[d], base.clone(), &BTreeSet::new());
                 let met_unlimited = opens_in(&run.lp, &run.states, &run.secrets, run.tids[d], base, &limit);
-                let leaks = run.made.iter().filter(|((mt, mr, e), Made { held, below, .. })| *mt == t && *mr == r && below.contains(&d) && lost.iter().any(|c| held.contains(c)) && !regained(e));
+                let leaks = run.made.iter().filter(|((mt, mr, e), Made { held, below, .. })| *mt == t && *mr == r && below.contains(&d) && !holder_at.contains(e) && lost.iter().any(|c| held.contains(c)) && !regained(e));
                 // excused only when boxes within the limit were its one way to it: a leak if the
                 // settled boxes open it without them, or it holds it and no state met opens it,
                 // or one opens it without them

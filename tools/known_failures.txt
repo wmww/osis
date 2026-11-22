@@ -17,6 +17,4 @@ osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec
 osis-crdt/tests_seq::slots_join_follows_cache_plain_spec_7 rate:OSIS_CRDT_START=828121608434 issues/slots-join-floor-small-size.md joins on slots: \d+ over \d+ seeds, under the floor
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
 osis-engine/rotation::tests_property::rotation_holds_large_spec_crypto_4 rate:OSIS_ROTATION_START=147083058899 issues/rotation-holder-lacks-box.md with key access lacks a box
-osis-engine/rotation::tests_property::rotation_holds_large_spec_crypto_4 rate:OSIS_ROTATION_START=214919900839 issues/rotation-removed-peer-opens-epoch.md \(now None\) opens Tid\(\S+\) \w+ epoch .* encrypts under
-osis-engine/rotation::tests_property::rotation_holds_large_spec_crypto_4 rate:OSIS_ROTATION_START=611521595787 issues/rotation-removed-peer-opens-epoch.md opens
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=169360654999,OSIS_ORDER_LEN=60 issues/order-addenda-seed.md histories judged differently by what was held
