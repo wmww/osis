@@ -4,7 +4,7 @@
 //! syncs the closure for the first time. Counted at n and 5n members, never timed.
 
 use crate::harness::Step::*;
-use crate::harness::history::{Gives, world};
+use crate::harness::history::{Gives, Holder, world, world_of};
 use crate::harness::{World, fixture, play};
 use osis_base::BlobId;
 use std::collections::BTreeMap;
@@ -177,6 +177,33 @@ fn a_node_holding_an_entry_of_s_has_its_head_logged_spec_sync_streams_4() {
         assert!(*held > 0, "node {i} holds entries");
         assert!(missing.is_empty(), "node {i} holds entries of {missing:?} with no head logged");
     }
+}
+
+// spec/sync-judgement.md §3 (Own store: another's body logged only once S's first sync here ended
+// or a complete pass of S did), spec/sync-status.md §1 (PASS_WAIT_MS: a complete pass with no
+// source waits for a peer to be waited for): node 0, cut off from both peers, gives node 1's
+// account sync on node 2's thing, a new sync ID S. Its log of node 2's bodies under S waits for
+// the pass, still under way when a run shorter than `PASS_WAIT_MS` is quiet (as one is after a
+// failed step restarts a node late in a run): no lost log; once the pass ends every must-hold body
+// is logged (`World::run`'s quiet check).
+#[test]
+fn a_log_waits_out_its_pass_spec_sync_judgement_3() {
+    let mut w = world_of(0, 2, 3);
+    let _ = play(&mut w, &[New(2), Run, Partition(0, 1), Partition(0, 2)], String::new());
+    let t = w.history.things[0].0;
+    w.horizon_ms = osis_proto::limits::PASS_WAIT_MS / 2;
+    let _ = play(&mut w, &[Give(0, 0, Holder::Node(1), Gives::Syncs), Run], String::new());
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    assert!(w.node(0).node.status_of(&s).is_some_and(|x| x.pass_waits.is_some()), "the pass waits");
+    let unlogged = |w: &mut World| {
+        let must: Vec<_> = w.engine(0).commit_ids().into_iter().filter(|c| w.node(0).node.verdict(&s, c) == Some(osis_sync::read::Verdict::Must)).collect();
+        must.iter().filter(|c| !w.engine(0).commit_blobs(c).unwrap().iter().any(|b| w.store(0).entry(&s, b).unwrap().is_some())).count()
+    };
+    assert!(unlogged(&mut w) > 0, "node 2's bodies wait for the pass");
+    w.horizon_ms = crate::harness::HORIZON_MS;
+    w.run();
+    assert!(w.node(0).node.status_of(&s).is_some_and(|x| x.pass_waits.is_none()), "the pass ended");
+    assert_eq!(unlogged(&mut w), 0, "logged once it ended");
 }
 
 /// By hand: every counter and the frame census of the first sync at n and 10n members

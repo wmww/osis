@@ -1089,7 +1089,8 @@ impl World {
 
     /// At quiet, each node logs every body it judges must-hold under S, wherever a reader can
     /// pull S from it and the body counts as held (spec/sync-judgement.md §2: must-hold only what
-    /// it may log under S; §3 Own store).
+    /// it may log under S; §3 Own store), unless the complete pass of S its log waits for is
+    /// still under way there.
     fn unlogged_must_holds(&mut self) {
         let mut stuck = Vec::new();
         for i in 0..self.nodes.len() {
@@ -1100,7 +1101,15 @@ impl World {
                     if self.node(i).node.verdict(s, &c) != Some(osis_sync::read::Verdict::Must) {
                         continue;
                     }
-                    if !reach && self.node(i).node.status_of(s).is_none_or(|x| x.sources.is_empty()) {
+                    let status = self.node(i).node.status_of(s);
+                    if !reach && status.as_ref().is_none_or(|x| x.sources.is_empty()) {
+                        continue;
+                    }
+                    // another's body is logged once a complete pass of S ends (§3 Own store): one
+                    // still under way at quiet waits out `PASS_WAIT_MS` on a peer to be waited
+                    // for, begun within the run's horizon (say after a failed step restarted
+                    // the node), its wake set
+                    if status.is_some_and(|x| x.pass_waits.is_some()) && self.net.wakes.contains_key(&i) {
                         continue;
                     }
                     if self.engine(i).read_facts(s, &c).unwrap().missing {
@@ -1113,7 +1122,8 @@ impl World {
                 }
             }
         }
-        assert!(stuck.is_empty(), "must-hold bodies with no entry at quiet (node, S, commit): {stuck:?}");
+        let statuses: BTreeSet<String> = stuck.iter().map(|(i, s, _)| format!("\n  node {i} {s:?}: {:?}", self.node(*i).node.status_of(s))).collect();
+        assert!(stuck.is_empty(), "must-hold bodies with no entry at quiet (node, S, commit): {stuck:?}\nS's status there:{}", statuses.into_iter().collect::<String>());
         self.unreached_must_holds();
     }
 
