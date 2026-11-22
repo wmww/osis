@@ -416,10 +416,16 @@ impl ReadOnly {
     /// The aspects that read as present on the thing, core ones included (`created.0`). A register
     /// whose live write was purged reads absent, and is not listed.
     pub fn aspects(&self, tid: Tid) -> Result<Vec<Ak>> {
-        if let Some(at) = self.remote(tid, "aspects")? {
-            return self.forward(&at, crate::port::method::ASPECTS, (tid,));
+        self.thing_read(tid, "aspects", crate::port::method::ASPECTS, thing(tid), move |r| r.aspects(tid))
+    }
+
+    /// A read of thing `tid` (`what`): through method row `method` at the node it is read at, else
+    /// `read` here, listened to at `at` on a tracking handle.
+    pub(crate) fn thing_read<R: crate::port::codec::Form + std::fmt::Debug>(&self, tid: Tid, what: &'static str, method: u64, at: Filter, read: impl Fn(&mut Reader<'_>) -> Result<R> + Send + Sync + 'static) -> Result<R> {
+        if let Some(node) = self.remote(tid, what)? {
+            return self.forward(&node, method, (tid,));
         }
-        self.read_answer(|| thing_key("aspects", tid), thing(tid), move |r| r.aspects(tid))
+        self.read_answer(|| thing_key(what, tid), at, read)
     }
 
     /// Where a read of `t` goes when not here: the node's address. A tracked read (`tracking`)
@@ -447,30 +453,21 @@ impl ReadOnly {
     /// thing a link's actor stands for): a node holds others' grants it is not entitled to show.
     /// Whoever holds through those: `holders`.
     pub fn grants(&self, thing: Tid) -> Result<Grants> {
-        if let Some(at) = self.remote(thing, "grants")? {
-            return self.forward(&at, crate::port::method::GRANTS, (thing,));
-        }
-        Ok(self.read_answer(|| thing_key("grants", thing), Filter::Grants(thing), move |r| r.grants(thing)))
+        self.thing_read(thing, "grants", crate::port::method::GRANTS, Filter::Grants(thing), move |r| Ok(r.grants(thing)))
     }
 
     /// This node's effective role on `tid` now (`None`: no access). A write or admin role reads as
     /// read until this node can write the thing: the keys a write needs can arrive after the role
     /// (on another node of the account, say), and a write before then fails `Permission`.
     pub fn role_on(&self, tid: Tid) -> Result<Option<Role>> {
-        if let Some(at) = self.remote(tid, "role_on")? {
-            return self.forward(&at, crate::port::method::ROLE_ON, (tid,));
-        }
-        self.read_answer(|| thing_key("role_on", tid), Filter::Due(Watch::RoleGraph), move |r| r.role_on(tid))
+        self.thing_read(tid, "role_on", crate::port::method::ROLE_ON, Filter::Due(Watch::RoleGraph), move |r| r.role_on(tid))
     }
 
     /// Whether the thing is here with content. `false` for an unknown thing and for one with no
     /// content, one cleared and equally one never written: a thing just created, or only
     /// granted. Its creation being here needs no content, and is all a write needs.
     pub fn has_content(&self, tid: Tid) -> Result<bool> {
-        if let Some(at) = self.remote(tid, "has_content")? {
-            return self.forward(&at, crate::port::method::HAS_CONTENT, (tid,));
-        }
-        self.read_answer(|| thing_key("has_content", tid), thing(tid), move |r| r.knows(tid))
+        self.thing_read(tid, "has_content", crate::port::method::HAS_CONTENT, thing(tid), move |r| r.knows(tid))
     }
 
     pub(crate) fn has_record(&self, tid: Tid) -> bool {
@@ -480,20 +477,14 @@ impl ReadOnly {
     /// When the thing was created: the oldest valid commit carrying its creation; `None` while it
     /// is unknown here, or once it was destroyed (`Write::purge`, an expiry).
     pub fn created(&self, tid: Tid) -> Result<Option<Stamp>> {
-        if let Some(at) = self.remote(tid, "created")? {
-            return self.forward(&at, crate::port::method::CREATED, (tid,));
-        }
-        Ok(self.read_answer(|| thing_key("created", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.created(tid)))
+        self.thing_read(tid, "created", crate::port::method::CREATED, Filter::Due(Watch::CommitsOf(tid)), move |r| Ok(r.created(tid)))
     }
 
     /// When the thing's content last changed (membership and sharing are no content write, a delete
     /// is); its creation if never since. A commit known here only from a `CommitKind::Snapshot` is
     /// not seen.
     pub fn changed(&self, tid: Tid) -> Result<Option<Stamp>> {
-        if let Some(at) = self.remote(tid, "changed")? {
-            return self.forward(&at, crate::port::method::CHANGED, (tid,));
-        }
-        Ok(self.read_answer(|| thing_key("changed", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.changed(tid)))
+        self.thing_read(tid, "changed", crate::port::method::CHANGED, Filter::Due(Watch::CommitsOf(tid)), move |r| Ok(r.changed(tid)))
     }
 
     /// Reads with `read` and runs `also` under the same engine lock (the dispatcher queues the

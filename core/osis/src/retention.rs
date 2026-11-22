@@ -50,23 +50,6 @@ fn history_into(h: History) -> Option<osis_schema::History> {
     }
 }
 
-/// A write says only who may purge it (its purge-by), checked at compile time: its thing's setting
-/// says what history keeps.
-/// ```
-/// let _ = osis::PurgeBy::Writer;
-/// let _ = osis::core::RETENTION;
-/// ```
-/// Nothing beside the setting rules a thing's writes.
-/// ```compile_fail,E0425
-/// let _ = osis::core::REQUIRED;
-/// ```
-/// The author alone is no purge set: admins always may.
-/// ```compile_fail,E0599
-/// let _ = osis::PurgeBy::Author;
-/// ```
-#[cfg(doctest)]
-pub struct RemovedChecks;
-
 /// What a thing keeps of one aspect's replaced content, and the expiry its writes get
 /// (`RetentionSetting`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

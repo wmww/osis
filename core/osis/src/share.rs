@@ -373,10 +373,7 @@ impl ReadOnly {
     /// this node (on a client with its own actor, that actor) does not read: its roster is not
     /// shown here (`grants`).
     pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
-        if let Some(at) = self.remote(target, "holders")? {
-            return self.forward(&at, crate::port::method::HOLDERS, (target,));
-        }
-        Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::RoleGraph), move |r| holders_in(r, target)))
+        self.thing_read(target, "holders", crate::port::method::HOLDERS, crate::watch::Filter::Due(crate::watch::Watch::RoleGraph), move |r| Ok(holders_in(r, target)))
     }
 
     /// Holds `t` on this node: a strong in its node root (spec/sync-set.md §1), so this node syncs

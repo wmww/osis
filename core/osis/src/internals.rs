@@ -79,30 +79,19 @@ pub fn faulty_store(faults: Faults) -> crate::MemStore {
 
 /// What tests measure of a `MemStore`.
 pub trait MemStoreMeasures {
-    /// The bytes the node's stores hold, the engine's and its ciphertext store's.
-    fn held_bytes(&self) -> u64;
     /// Rows in the engine's store now.
     fn rows(&self) -> usize;
     /// The bytes held in rows, and in blobs with their number, over both stores.
     fn held_split(&self) -> (u64, u64, u64);
-    /// An independent copy of the store as it is now, as a node backup takes it: opening it
-    /// later is a restore.
-    fn backup(&self) -> crate::MemStore;
 }
 
 impl MemStoreMeasures for crate::MemStore {
-    fn held_bytes(&self) -> u64 {
-        self.backend.held_bytes() + self.blobs.held_bytes()
-    }
     fn rows(&self) -> usize {
         self.backend.dump().len()
     }
     fn held_split(&self) -> (u64, u64, u64) {
         let (a, b) = (self.backend.held_split(), self.blobs.held_split());
         (a.0 + b.0, a.1 + b.1, a.2 + b.2)
-    }
-    fn backup(&self) -> crate::MemStore {
-        crate::MemStore { backend: self.backend.copy(), root: self.root.copy(), opens: self.opens.clone(), blobs: self.blobs.copy(), blobs_root: self.blobs_root.copy() }
     }
 }
 
@@ -225,5 +214,5 @@ pub use osis_crypto::Secret32;
 pub use osis_blob as blob;
 
 /// The client socket's directory and path rules (`Osis::listen_socket`).
-pub use crate::sources::{socket_dir, socket_path, socket_path_under};
+pub use crate::sources::{socket_dir, socket_path_under};
 pub use osis_transport::unix::{MAX_PATH as SOCKET_MAX_PATH, own_uid};
