@@ -128,6 +128,8 @@ pub struct Timeline<S: Store = MemStore> {
     roles: BTreeMap<CommitId, (Arc<RoleCommit>, Vec<paths::Part>)>,
     /// Per target, the held commits with an edge write on it.
     on: BTreeMap<Tid, BTreeSet<CommitId>>,
+    /// The trust set as given (`set_trust`): edge writes (commit, op), held or not yet.
+    trusted: BTreeSet<WriteId>,
 }
 
 impl Default for Timeline<MemStore> {
@@ -145,7 +147,7 @@ impl Timeline<MemStore> {
 
 impl<S: Store> Timeline<S> {
     pub fn with_store(trust: BTreeSet<WriteId>, store: S) -> Timeline<S> {
-        Timeline { paths: Paths::with_store(&BTreeMap::new(), trust, store), records: Records::default(), now: Edges::default(), log: BTreeMap::new(), into: BTreeMap::new(), waiting: BTreeMap::new(), roles: BTreeMap::new(), on: BTreeMap::new() }
+        Timeline { paths: Paths::with_store(&BTreeMap::new(), BTreeSet::new(), store), records: Records::default(), now: Edges::default(), log: BTreeMap::new(), into: BTreeMap::new(), waiting: BTreeMap::new(), roles: BTreeMap::new(), on: BTreeMap::new(), trusted: trust.clone() }
     }
 
     /// The walk.
@@ -234,6 +236,15 @@ impl<S: Store> Timeline<S> {
         }
         let went_things: Vec<Tid> = went.iter().map(|x| x.0).collect();
         out.walk = self.paths.sync(&came, &went_things, &gone, &given);
+        // a trusted write that came or went: the walk's trust set names it by its part
+        let named = |c: &CommitId| self.trusted.range(WriteId(*c, 0)..=WriteId(*c, u32::MAX)).next().is_some();
+        if given.iter().map(|c| &c.id).chain(&gone).any(named) {
+            let trust: BTreeSet<WriteId> = self.trusted.iter().filter_map(|w| self.part_of(w)).collect();
+            if trust != *self.paths.trust() {
+                let more = self.paths.set_trust(trust);
+                merge(&mut out.walk, more);
+            }
+        }
         // a record edge that came or went does so from the start
         for (t, a) in came.iter().chain(&went) {
             let last = self.paths.last(a, t).map(|(_, w)| w.value);
@@ -245,6 +256,7 @@ impl<S: Store> Timeline<S> {
 
     /// Replaces the trust set (spec/permissions.md §5.1 Trust set): edge writes (commit, op).
     pub fn set_trust(&mut self, trust: &BTreeSet<WriteId>) -> Changed {
+        self.trusted = trust.clone();
         let trust = trust.iter().filter_map(|w| self.part_of(w)).collect();
         let mut out = Changed { walk: self.paths.set_trust(trust), ..Changed::default() };
         self.follow(&mut out);
@@ -666,4 +678,24 @@ fn commit_of(h: &Held) -> paths::Commit {
         parts.extend(r.ops.iter().map(|o| paths::Part { on: o.target, path: r.path_to(&o.target).to_vec(), direct: r.direct, kind: paths::PartKind::Edge(paths::EdgeWrite { holder: o.holder, value: o.edge, frontier: list.clone() }) }));
     }
     paths::Commit { id: h.id, ts: h.ts, signer: h.signer, parts }
+}
+
+/// Adds what a second update of one reading changed to the first's.
+fn merge(w: &mut paths::Changed, o: paths::Changed) {
+    let had = w.parts.clone();
+    w.parts.extend(o.parts);
+    for (e, k) in o.edges {
+        let at = w.edges.entry(e).or_insert(k);
+        *at = (*at).min(k);
+    }
+    for (e, k) in o.cuts {
+        let at = w.cuts.entry(e).or_insert(k);
+        *at = (*at).max(k);
+    }
+    w.regrant.extend(o.regrant);
+    w.named.extend(o.named);
+    w.purges.extend(o.purges);
+    w.chained.extend(o.chained);
+    // applied before the first update: the second's reading before is the first's after
+    w.was_applied.extend(o.was_applied.into_iter().filter(|p| !had.contains(p)));
 }
