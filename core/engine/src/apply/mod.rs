@@ -2352,8 +2352,12 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         let actors: BTreeSet<Tid> = tx.core.ix.commits.values().flat_map(|m| m.view.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid)).collect();
         keys::rebuild_keysets(tx, &actors)?;
     }
-    // the split commits' paths the loaded secrets open (`paths::refresh`)
-    paths::refresh(tx);
+    // the split commits' paths the loaded secrets open (`paths::refresh`); persisted, as decided
+    if fast {
+        paths::follow_loaded(tx);
+    } else {
+        paths::refresh(tx);
+    }
     // what addenda are owed is re-derived, never kept (`flows::addenda`)
     crate::flows::addenda::all_due(tx.core);
     if fast {

@@ -86,31 +86,50 @@ type Openers = Vec<(Tid, Vec<osis_crypto::Epoch>, Vec<osis_crypto::VerifyingKey>
 /// The wait of held split commits with a thing whose path opens nowhere here
 /// (`Indexes::paths_unknown`, journaled): each followed (`memo::Effects`) by what may open it
 /// (`openers`), opened again only when that moves (notes/sync-facade.md Pending). In memory only:
-/// an open, a reload and a rollback build it again from `paths_unknown`, taking what they find as
-/// tried (each commit's view was decided against what was held when it was last judged).
+/// a rollback and an open rebuilding the index build it again from `paths_unknown`, trying each
+/// commit there once (what moved since its view was decided is unknown: a rollback may come
+/// between a commit's judging and a roles secret's arrival); an open from the persisted index
+/// takes each as tried (`follow_loaded`).
+#[derive(Clone)]
 pub(crate) struct Wait {
     fx: osis_base::memo::Effects<osis_base::CommitId, Openers>,
-    /// `paths_unknown`'s additions since: followed, and tried on their first settle.
+    /// `paths_unknown`'s additions since: followed, and tried at their first settle.
     added: osis_base::memo::Feed<osis_base::CommitId>,
+}
+
+impl Wait {
+    /// Following every commit in `paths_unknown`, none settled yet.
+    fn new(core: &Core) -> Wait {
+        let mut fx = osis_base::memo::Effects::new("paths: wait");
+        for id in core.ix.paths_unknown.iter() {
+            fx.want(*id);
+        }
+        Wait { fx, added: core.ix.paths_unknown.feed() }
+    }
+}
+
+/// An open from the persisted index: the wait follows each commit in `paths_unknown` as tried,
+/// its view decided against what the store holds with it (no wake was missed at a durable
+/// transaction's end: `missed`). Decodes no header.
+pub(crate) fn follow_loaded(tx: &mut Tx<'_>) {
+    let mut w = Wait::new(tx.core);
+    let core: &Core = tx.core;
+    for id in w.fx.due() {
+        w.fx.settle(&id, || openers(core, &id));
+    }
+    tx.core.paths_wait = Some(w);
 }
 
 /// Opens again the paths of the held split commits waiting in `Indexes::paths_unknown` whose
 /// openers moved (`Wait`): where more are decided, a commit's view takes them and its parts are
 /// judged again. Such a thing has no key held (a held part carries its own), so only roles
-/// secrets are tried. Costs the commits whose openers moved, never the commits waiting.
+/// secrets are tried. Costs the commits whose openers moved, never the commits waiting (but
+/// each once where the wait is built again).
 pub(crate) fn refresh(tx: &mut Tx<'_>) {
-    let built = tx.core.paths_wait.is_none();
-    let mut w = tx.core.paths_wait.take().unwrap_or_else(|| Wait { fx: osis_base::memo::Effects::new("paths: wait"), added: tx.core.ix.paths_unknown.feed() });
-    let mut fresh = std::collections::BTreeSet::new();
-    if built {
-        for id in tx.core.ix.paths_unknown.iter() {
-            w.fx.want(*id);
-        }
-    }
+    let mut w = tx.core.paths_wait.take().unwrap_or_else(|| Wait::new(tx.core));
     for id in w.added.added() {
         if tx.core.ix.paths_unknown.contains(&id) {
             w.fx.want(id);
-            fresh.insert(id);
         }
     }
     for id in w.fx.due() {
@@ -123,14 +142,8 @@ pub(crate) fn refresh(tx: &mut Tx<'_>) {
             osis_base::costs::count("paths: waits settled", 1);
             openers(core, &id)
         });
-        // a commit followed anew is tried once (what came in its own transaction); one built
-        // from the index again, only once its openers move
-        let tried = match moved {
-            Some((Some(_), _)) => true,
-            Some((None, _)) => fresh.contains(&id),
-            None => false,
-        };
-        if tried {
+        // tried at its first settle (followed anew) and whenever its openers move
+        if moved.is_some() {
             reopen(tx, &id);
             if !tx.core.ix.paths_unknown.contains(&id) {
                 w.fx.unwant(&id);

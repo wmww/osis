@@ -3919,23 +3919,18 @@ fn acting_on_two() -> (LocalPeer, Tid, Tid, osis_base::CommitId, osis_commit::Co
 /// Built once (`LocalPeer::cached`).
 fn two_paths_world() -> (LocalPeer, Tid, Tid, Tid) {
     let (lp, (h, d, p)) = LocalPeer::cached("validity::two_paths_world", || {
-        let (lp, h, d, p) = two_paths_world_built();
+        let mut lp = net(3, 0);
+        lp.sync_all().unwrap();
+        let (h, d, p) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+        let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        set_edge(&mut lp.peers[0].engine, h, b, Some(edge(Role::Write)), None);
+        set_edge(&mut lp.peers[0].engine, d, h, Some(edge(Role::Write)), None);
+        set_edge(&mut lp.peers[0].engine, p, b, Some(edge(Role::Write)), None);
+        set_edge(&mut lp.peers[0].engine, p, c, Some(edge(Role::Read)), None);
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
         (lp, (h, d, p))
     });
-    (lp, h, d, p)
-}
-
-fn two_paths_world_built() -> (LocalPeer, Tid, Tid, Tid) {
-    let mut lp = net(3, 0);
-    lp.sync_all().unwrap();
-    let (h, d, p) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    set_edge(&mut lp.peers[0].engine, h, b, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, d, h, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, p, b, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, p, c, Some(edge(Role::Read)), None);
-    lp.sync_all().unwrap();
-    lp.advance(1_000);
     (lp, h, d, p)
 }
 
@@ -4689,29 +4684,37 @@ fn a_purge_request_is_judged_alike_in_both_path_forms_spec_permissions_6() {
 // examined again when the held role inputs move), notes/sync-facade.md Pending: Carol, a reader
 // of P, holds Bob's split commit without D's part: D's path opens nowhere at her. Granted D (the
 // grant alone delivered, no part of the commit), she opens D's entry from D's roles secret at once,
-// with no restart.
+// with no restart; so too after a transaction of hers that changed something rolled back between.
 #[test]
 fn a_path_waiting_opens_when_its_roles_secret_comes_spec_commits_4() {
-    // Interim (issues/copied-engine-misses-path-wake.md): built, not copied
-    let (mut lp, _, d, p) = two_paths_world_built();
-    let (id, c) = bob_writes_both(&mut lp, d, p);
-    let ip = place(&c, p);
-    let only_p = osis_commit::CommitBlob { keys: BTreeMap::from([(ip, c.keys[&ip])]), ..osis_commit::rewrite(&c, |ai| c.header.aspects[ai].tid != p) };
-    unless_refused(lp.peers[2].engine.ingest(&only_p.encode(), Vec::new()));
-    lp.peers[2].reexamine().unwrap();
-    assert_eq!(lp.peers[2].engine.get(&p, &ak("t:reg.0")).unwrap(), Some(s("on p")));
-    assert!(lp.peers[2].engine.core.ix.paths_unknown.contains(&id), "D's path opens nowhere at Carol");
-    let carol = lp.peers[2].engine.me();
-    let grant = lp.peers[0].engine.grant(&d, &carol, &edge(Role::Read)).unwrap().commits;
-    for g in grant {
-        let pk = lp.peers[0].engine.package(&g).unwrap().unwrap();
-        unless_refused(lp.peers[2].engine.ingest(&pk.bytes, pk.blobs.clone()));
+    for rolled_back in [false, true] {
+        let (mut lp, _, d, p) = two_paths_world();
+        let (id, c) = bob_writes_both(&mut lp, d, p);
+        let ip = place(&c, p);
+        let only_p = osis_commit::CommitBlob { keys: BTreeMap::from([(ip, c.keys[&ip])]), ..osis_commit::rewrite(&c, |ai| c.header.aspects[ai].tid != p) };
+        unless_refused(lp.peers[2].engine.ingest(&only_p.encode(), Vec::new()));
+        lp.peers[2].reexamine().unwrap();
+        assert_eq!(lp.peers[2].engine.get(&p, &ak("t:reg.0")).unwrap(), Some(s("on p")));
+        assert!(lp.peers[2].engine.core.ix.paths_unknown.contains(&id), "D's path opens nowhere at Carol");
+        if rolled_back {
+            let r: osis_engine::Result<()> = lp.peers[2].engine.run(|tx| {
+                tx.core.touch();
+                Err(osis_engine::Error::BadInput("rolled back"))
+            });
+            assert!(r.is_err());
+        }
+        let carol = lp.peers[2].engine.me();
+        let grant = lp.peers[0].engine.grant(&d, &carol, &edge(Role::Read)).unwrap().commits;
+        for g in grant {
+            let pk = lp.peers[0].engine.package(&g).unwrap().unwrap();
+            unless_refused(lp.peers[2].engine.ingest(&pk.bytes, pk.blobs.clone()));
+        }
+        lp.peers[2].reexamine().unwrap();
+        assert!(lp.peers[2].engine.epochs(&d).is_some_and(|e| !e.read.held_roles().is_empty()), "Carol holds D's roles secret");
+        assert!(!lp.peers[2].engine.core.ix.paths_unknown.contains(&id), "D's path opened (rolled back: {rolled_back})");
+        assert_eq!(lp.peers[2].engine.core.ix.commits.get(&id).unwrap().view.paths.as_ref().unwrap().get(&d), Some(&true));
+        lp.peers[2].engine.check_index();
     }
-    lp.peers[2].reexamine().unwrap();
-    assert!(lp.peers[2].engine.epochs(&d).is_some_and(|e| !e.read.held_roles().is_empty()), "Carol holds D's roles secret");
-    assert!(!lp.peers[2].engine.core.ix.paths_unknown.contains(&id), "D's path opened");
-    assert_eq!(lp.peers[2].engine.core.ix.commits.get(&id).unwrap().view.paths.as_ref().unwrap().get(&d), Some(&true));
-    lp.peers[2].engine.check_index();
 }
 
 // spec/commits.md §4 Unjudgeable; notes/principles.md Fast by construction, notes/sync-facade.md Pending: a split commit whose

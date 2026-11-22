@@ -1020,7 +1020,7 @@ pub struct Core {
     /// it read.
     pub(crate) dial_departed: memo::Effects<(), crate::sync::dial::Departed>,
     /// The held split commits waiting for a path to open (`apply::paths::Wait`): built again
-    /// from `Indexes::paths_unknown` where `None` (an open, a rollback, a copy).
+    /// from `Indexes::paths_unknown` where `None` (an open, a rollback).
     pub(crate) paths_wait: Option<crate::apply::paths::Wait>,
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
     /// copy, and it decodes role parts.
@@ -1452,7 +1452,7 @@ impl Core {
             dial_peers: self.dial_peers.clone(),
             roster_holders: self.roster_holders.clone(),
             dial_departed: self.dial_departed.clone(),
-            paths_wait: None,
+            paths_wait: self.paths_wait.clone(),
             holders_named: self.holders_named.clone(),
             certified: self.certified.clone(),
             listed: self.listed.clone(),
