@@ -3,7 +3,7 @@
 //! party's nodes hold or can open from the actor's `secrets.0` (a new node of it included).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Key, edge, granted, independent_thing, openable, rotate_leaving_out, synced};
+use super::tests::{Key, edge, granted, independent_thing, newest_read, openable, rotate_leaving_out};
 use crate::flows::edges::History;
 use crate::local_peer::LocalPeer;
 use osis_base::{Role, Tid};
@@ -30,6 +30,23 @@ fn fresh(lp: &mut LocalPeer, i: usize, g: Tid, x: Tid) -> BTreeSet<Epoch> {
     openable(lp, i, &[g], x, BTreeSet::new()).into_iter().filter(|k: &Key| k.1 == Role::Read).map(|k| k.2).collect()
 }
 
+/// Peer `i`'s newest read epoch of `g`.
+fn newest(lp: &LocalPeer, i: usize, g: Tid) -> Epoch {
+    newest_read(lp, i, g).unwrap()
+}
+
+/// Peer `i` rotates `g`'s read leaving nobody out; returns the new epoch.
+fn rot(lp: &mut LocalPeer, i: usize, g: Tid) -> Epoch {
+    rotate_leaving_out(lp, i, g, &BTreeSet::from(READ), &[]);
+    newest(lp, i, g)
+}
+
+/// Peer `i` grants `x` role `r` on `g` without history; returns the cut (its newest read epoch).
+fn cut_for(lp: &mut LocalPeer, i: usize, g: Tid, x: Tid, r: Role) -> Epoch {
+    lp.peers[i].engine.grant_with(&g, &x, &edge(r), History::None).unwrap();
+    newest(lp, i, g)
+}
+
 /// Rounds of every peer's re-seals, history adds and due rotations, synced, until none writes.
 fn settle_all(lp: &mut LocalPeer, g: Tid) {
     for _ in 0..8 {
@@ -48,20 +65,19 @@ fn settle_all(lp: &mut LocalPeer, g: Tid) {
 
 /// Peers: 0 = admin A (`g`'s mint admin), 1 = reader P (with history), 2 = N (granted without
 /// history by A once `g` has `before` read epochs past its first). Returns the peers, `g`, the
-/// tids and the cut's epoch.
+/// tids and the cut's epoch. Settled (`settle_all`); built once per process, a copy each call.
 fn cut_world(before: usize) -> (LocalPeer, Tid, Vec<Tid>, Epoch) {
-    let mut lp = synced(3);
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    for _ in 0..before {
-        rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
-    }
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
-    lp.sync_all().unwrap();
+    let (lp, (g, tids, cut)) = LocalPeer::cached(&format!("rotation::tests_cut::cut_world/{before}"), || {
+        let (mut lp, g, tids) = granted(3, &[(1, Role::Read)]);
+        for _ in 0..before {
+            rot(&mut lp, 0, g);
+        }
+        lp.sync_all().unwrap();
+        let cut = cut_for(&mut lp, 0, g, tids[2], Role::Read);
+        lp.sync_all().unwrap();
+        settle_all(&mut lp, g);
+        (lp, (g, tids, cut))
+    });
     (lp, g, tids, cut)
 }
 
@@ -71,16 +87,15 @@ fn cut_world(before: usize) -> (LocalPeer, Tid, Vec<Tid>, Epoch) {
 #[test]
 fn cut_grant_opens_nothing_before_it_spec_crypto_4() {
     let (mut lp, g, tids, cut) = cut_world(2);
-    settle_all(&mut lp, g);
     let n = reaches(&mut lp, 0, g, tids[2]);
     assert!(n.contains(&cut), "N lacks the cut");
     assert!(n.iter().all(|e| e.n() >= cut.n()), "N reaches an epoch before its cut: {n:?} (cut {cut:?})");
     let e = lp.peers[2].engine.epochs(&g).unwrap();
     assert_eq!(e.read.current(), vec![cut], "the cut is N's current epoch");
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
+    rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
     settle_all(&mut lp, g);
-    let after = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let after = newest(&lp, 0, g);
     assert!(lp.peers[2].engine.epochs(&g).unwrap().read.secret(&after).is_some(), "N does not read A's later epoch");
     let n = reaches(&mut lp, 0, g, tids[2]);
     assert!(n.iter().all(|e| e.n() >= cut.n()), "a later rotation hands N an epoch before its cut: {n:?}");
@@ -88,16 +103,11 @@ fn cut_grant_opens_nothing_before_it_spec_crypto_4() {
     assert_eq!(fresh(&mut lp, 0, g, tids[1]), all, "a new node of P, with history, lacks an epoch");
 }
 
-/// Peers: 0 = admin A, 1 = admin B, 2 = reader P (with history), 3 = N, all granted by A and
+/// `n` peers: 0 = admin A, 1 = admin B, 2 = reader P (with history), the rest ungranted, all
 /// synced, `g` rotated once by A (so it has an epoch below the cut that no first box opens).
-fn two_admins() -> (LocalPeer, Tid, Vec<Tid>) {
-    let mut lp = synced(4);
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
+fn two_admins(n: usize) -> (LocalPeer, Tid, Vec<Tid>) {
+    let (mut lp, g, tids) = granted(n, &[(1, Role::Admin), (2, Role::Read)]);
+    rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
     (lp, g, tids)
 }
@@ -117,31 +127,22 @@ fn reaches_nothing_before(lp: &mut LocalPeer, g: Tid, x: Tid, cut: &Epoch, besid
 // history opens the past), and reads the merge.
 #[test]
 fn fork_beside_the_cut_never_reaches_the_newcomer_spec_crypto_4() {
-    let mut lp = synced(5);
-    let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let (mut lp, g, tids) = two_admins(5);
+    let cut = cut_for(&mut lp, 0, g, tids[3], Role::Read);
     // Q, granted with history by A, never boxed at B's fork (B holds neither grant): its fork
     // reaches Q only by a tip add once A's rotation drops it
     lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Read)).unwrap();
-    rotate_leaving_out(&mut lp, 1, g, &BTreeSet::from(READ), &[]);
-    let fork = lp.peers[1].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let fork = rot(&mut lp, 1, g);
     assert_ne!(fork, cut);
     lp.sync_all().unwrap();
     // forks stand: A rotates over them (the model's merge) before anyone re-seals Q at the fork
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
+    rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
     settle_all(&mut lp, g);
     reaches_nothing_before(&mut lp, g, tids[3], &cut, &BTreeSet::from([fork]), "a fork beside the cut");
-    let newest = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
-    assert!(newest.n() > cut.n(), "no merge");
-    assert!(lp.peers[3].engine.epochs(&g).unwrap().read.secret(&newest).is_some(), "N does not read the merge");
+    let merge = newest(&lp, 0, g);
+    assert!(merge.n() > cut.n(), "no merge");
+    assert!(lp.peers[3].engine.epochs(&g).unwrap().read.secret(&merge).is_some(), "N does not read the merge");
     let all = read_epochs(&lp, g);
     for p in [1, 2, 4] {
         assert_eq!(fresh(&mut lp, 0, g, tids[p]), all, "a new node of peer {p}, with history, lacks an epoch");
@@ -155,7 +156,6 @@ fn fork_beside_the_cut_never_reaches_the_newcomer_spec_crypto_4() {
 #[test]
 fn a_rotation_before_the_cut_wraps_under_what_it_supersedes_or_not_at_all_spec_crypto_5() {
     let (mut lp, g, _, cut) = cut_world(2);
-    settle_all(&mut lp, g);
     let at_a = lp.peers[0].engine.epochs(&g).unwrap();
     let before: Vec<Epoch> = at_a.read.held().map(|x| x.0).filter(|e| e.n() > 0 && e.n() < cut.n()).collect();
     assert!(!before.is_empty(), "no rotation before the cut");
@@ -176,16 +176,11 @@ fn a_rotation_before_the_cut_wraps_under_what_it_supersedes_or_not_at_all_spec_c
 // floor), boxing N.
 #[test]
 fn holder_lacking_the_rotation_before_the_cut_reseals_nothing_below_it_spec_crypto_4() {
-    let mut lp = synced(4);
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, tids) = granted(4, &[(1, Role::Admin)]);
     let before = super::tests::commit_ids(&mut lp, 0);
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
+    rot(&mut lp, 0, g);
     let r1: BTreeSet<osis_base::CommitId> = super::tests::commit_ids(&mut lp, 0).difference(&before).copied().collect();
-    lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let cut = cut_for(&mut lp, 0, g, tids[3], Role::Read);
     for pk in lp.packages_for(0, 1).unwrap() {
         if !r1.contains(&pk.id) {
             lp.deliver(1, &pk).unwrap();
@@ -219,17 +214,11 @@ fn holder_lacking_the_rotation_before_the_cut_reseals_nothing_below_it_spec_cryp
 // it was not given), so R opens nothing before B's cut. N still none before its own.
 #[test]
 fn grants_with_history_after_a_cut_open_everything_spec_crypto_4() {
-    let mut lp = synced(6);
-    let tids: Vec<Tid> = (0..6).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    let (mut lp, g, tids) = granted(6, &[(2, Role::Read)]);
+    rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
-    lp.peers[0].engine.grant_with(&g, &tids[1], &edge(Role::Admin), History::None).unwrap();
-    let b_cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let cut = cut_for(&mut lp, 0, g, tids[3], Role::Read);
+    let b_cut = cut_for(&mut lp, 0, g, tids[1], Role::Admin);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &tids[4], &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -292,10 +281,9 @@ fn hostile_rotation(lp: &mut LocalPeer, i: usize, g: Tid, lists: &BTreeSet<Epoch
 // before its cut.
 #[test]
 fn hostile_low_floor_epoch_takes_no_earlier_secret_spec_crypto_4() {
-    let (mut lp, g, tids) = two_admins();
-    let before = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
-    lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Write), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let (mut lp, g, tids) = two_admins(4);
+    let before = newest(&lp, 0, g);
+    let cut = cut_for(&mut lp, 0, g, tids[3], Role::Write);
     lp.sync_all().unwrap();
     let h = hostile_rotation(&mut lp, 3, g, &BTreeSet::from([before]), 0);
     lp.sync_all().unwrap();
@@ -309,20 +297,15 @@ fn hostile_low_floor_epoch_takes_no_earlier_secret_spec_crypto_4() {
 // rotates again. A's last rotation carries no epoch before the cut to N.
 #[test]
 fn floor_above_n_carries_nothing_past_a_later_cut_spec_crypto_4() {
-    let mut lp = synced(4);
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, tids) = granted(4, &[(1, Role::Write)]);
     let cur: BTreeSet<Epoch> = lp.peers[1].engine.epochs(&g).unwrap().read.current().into_iter().collect();
     hostile_rotation(&mut lp, 1, g, &cur, 1000);
     lp.sync_all().unwrap();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
+    rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let cut = cut_for(&mut lp, 0, g, tids[3], Role::Read);
     lp.sync_all().unwrap();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
+    rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
     settle_all(&mut lp, g);
     reaches_nothing_before(&mut lp, g, tids[3], &cut, &BTreeSet::new(), "a floor above n");
@@ -335,19 +318,13 @@ fn floor_above_n_carries_nothing_past_a_later_cut_spec_crypto_4() {
 // next epoch, which carries neither W's epoch nor anything before the cut.
 #[test]
 fn low_floor_over_the_cut_hands_the_newcomer_nothing_before_it_spec_crypto_4() {
-    let mut lp = synced(4);
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let (mut lp, g, tids) = granted(4, &[(1, Role::Write)]);
+    let cut = cut_for(&mut lp, 0, g, tids[3], Role::Read);
     lp.sync_all().unwrap();
     let w = hostile_rotation(&mut lp, 1, g, &BTreeSet::from([cut]), 0);
     lp.sync_all().unwrap();
     settle_all(&mut lp, g);
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
-    let next = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let next = rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
     settle_all(&mut lp, g);
     assert!(lp.peers[3].engine.epochs(&g).unwrap().read.secret(&next).is_some(), "N does not read A's next epoch");
@@ -494,19 +471,12 @@ impl Logged {
 /// knowing the removal). Returns the peers, `g`, the tids, what M read before its removal (every
 /// read epoch held then) and the epochs made since (R's and the one after).
 fn removed_member(b_cut: bool) -> (LocalPeer, Tid, Vec<Tid>, BTreeSet<Epoch>, BTreeSet<Epoch>) {
-    let mut lp = synced(3);
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    if !b_cut {
-        lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
-    }
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
+    let (mut lp, g, tids) = granted(3, if b_cut { &[(2, Role::Read)] } else { &[(1, Role::Admin), (2, Role::Read)] });
+    rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
     let read = read_epochs(&lp, g);
     lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[2], new: None, retain: None }).unwrap();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
+    rot(&mut lp, 0, g);
     let gone: BTreeSet<Epoch> = read_epochs(&lp, g).difference(&read).copied().collect();
     if b_cut {
         lp.peers[0].engine.grant_with(&g, &tids[1], &edge(Role::Admin), History::None).unwrap();
@@ -534,13 +504,12 @@ fn readd_holds(lp: &mut LocalPeer, g: Tid, m: Tid, read: &BTreeSet<Epoch>, gone:
 #[test]
 fn readd_without_history_opens_what_it_read_before_spec_crypto_4() {
     let (mut lp, g, tids, read, mut gone) = removed_member(false);
-    lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let cut = cut_for(&mut lp, 0, g, tids[2], Role::Read);
     // the re-add's own boxes, before any tip add
     let f = fresh(&mut lp, 0, g, tids[2]);
     assert!(f.is_superset(&read), "the re-add leaves out {:?}", read.difference(&f).collect::<Vec<_>>());
-    rotate_leaving_out(&mut lp, 1, g, &BTreeSet::from(READ), &[]);
-    gone.insert(lp.peers[1].engine.epochs(&g).unwrap().read.newest_held().unwrap().0);
+    rot(&mut lp, 1, g);
+    gone.insert(newest(&lp, 1, g));
     lp.sync_all().unwrap();
     settle_all(&mut lp, g);
     readd_holds(&mut lp, g, tids[2], &read, &gone);
@@ -565,14 +534,9 @@ fn readd_by_a_history_less_admin_opens_what_it_read_before_spec_crypto_4() {
 // and N still none before its cut.
 #[test]
 fn compacted_cut_keeps_its_floors_spec_crypto_4() {
-    let mut lp = synced(4);
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
-    lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let (mut lp, g, tids) = granted(4, &[(1, Role::Read)]);
+    rot(&mut lp, 0, g);
+    let cut = cut_for(&mut lp, 0, g, tids[2], Role::Read);
     lp.sync_all().unwrap();
     let all_before = super::tests::commit_ids(&mut lp, 0);
     for k in ["secrets.0", "keys.0"].map(|k| osis_base::Ak::new(k).unwrap()) {
@@ -614,17 +578,13 @@ fn reaches_via(lp: &mut LocalPeer, i: usize, actors: &[Tid], g: Tid, x: Tid) -> 
 // epoch current and it comes to open them all.
 #[test]
 fn cut_through_a_holder_actor_spec_crypto_4() {
-    let mut lp = synced(4);
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Read)).unwrap();
+    let (mut lp, g, tids) = granted(4, &[(1, Role::Read)]);
     let t = independent_thing(&mut lp, 2);
     lp.peers[2].engine.grant(&t, &tids[3], &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
+    rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant_with(&g, &t, &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let cut = cut_for(&mut lp, 0, g, t, Role::Read);
     lp.sync_all().unwrap();
     settle_all(&mut lp, g);
     for i in 0..4 {
@@ -652,21 +612,11 @@ fn cut_through_a_holder_actor_spec_crypto_4() {
 // an epoch N reads.
 #[test]
 fn forged_floor_on_a_fork_beside_the_cut_carries_nothing_spec_crypto_4() {
-    let mut lp = synced(5);
-    let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
-    lp.sync_all().unwrap();
-    lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let (mut lp, g, tids) = two_admins(5);
+    let cut = cut_for(&mut lp, 0, g, tids[3], Role::Read);
     lp.peers[0].engine.grant_with(&g, &tids[4], &edge(Role::Write), History::None).unwrap();
-    rotate_leaving_out(&mut lp, 1, g, &BTreeSet::from(READ), &[]);
-    let fork1 = lp.peers[1].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
-    rotate_leaving_out(&mut lp, 1, g, &BTreeSet::from(READ), &[]);
-    let fork = lp.peers[1].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let fork1 = rot(&mut lp, 1, g);
+    let fork = rot(&mut lp, 1, g);
     lp.sync_all().unwrap();
     lp.peers[4]
         .engine
@@ -690,10 +640,10 @@ fn forged_floor_on_a_fork_beside_the_cut_carries_nothing_spec_crypto_4() {
         })
         .unwrap();
     lp.sync_all().unwrap();
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
+    rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
     settle_all(&mut lp, g);
-    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from(READ), &[]);
+    rot(&mut lp, 0, g);
     lp.sync_all().unwrap();
     settle_all(&mut lp, g);
     reaches_nothing_before(&mut lp, g, tids[3], &cut, &BTreeSet::from([fork1, fork]), "a forged floor on the fork");
@@ -720,12 +670,7 @@ fn content(lp: &mut LocalPeer, i: usize, g: Tid) -> BTreeSet<String> {
 // it holds the removal: its rotation would box M at an epoch made knowing M's removal.
 #[test]
 fn low_floor_waits_for_the_names_spec_crypto_4() {
-    let mut lp = synced(4);
-    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
+    let (mut lp, g, tids) = granted(4, &[(1, Role::Admin), (2, Role::Read)]);
     let read = read_epochs(&lp, g);
     let before = super::tests::commit_ids(&mut lp, 0);
     lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[2], new: None, retain: None }).unwrap();
@@ -754,9 +699,8 @@ fn edits_on(lp: &LocalPeer, i: usize, g: Tid) -> BTreeSet<osis_base::CommitId> {
 // wrapped nor sealed again there, and A owes T's state a snapshot as `g`'s own.
 #[test]
 fn dependent_thing_below_a_cut_keeps_its_floor_spec_crypto_4() {
-    let mut lp = synced(2);
-    let n = lp.peers[1].engine.me();
-    let g = independent_thing(&mut lp, 0);
+    let (mut lp, g, tids) = granted(2, &[]);
+    let n = tids[1];
     let t = {
         let mut m = crate::Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, g);
@@ -766,8 +710,7 @@ fn dependent_thing_below_a_cut_keeps_its_floor_spec_crypto_4() {
     };
     put(&mut lp, 0, t, "before");
     let old = edits_on(&lp, 0, t);
-    lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Read), History::None).unwrap();
-    let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
+    let cut = cut_for(&mut lp, 0, g, n, Role::Read);
     let (_, f) = lp.peers[0].engine.core.seal_epoch(&t).unwrap();
     assert_eq!(f, cut.n(), "T's content is sealed below the cut's floor");
     for c in &old {
@@ -785,9 +728,8 @@ fn dependent_thing_below_a_cut_keeps_its_floor_spec_crypto_4() {
 #[test]
 fn cut_state_cost_does_not_grow_with_history_spec_crypto_4() {
     let cost = |rounds: usize| {
-        let mut lp = synced(2);
-        let n = lp.peers[1].engine.me();
-        let g = independent_thing(&mut lp, 0);
+        let (mut lp, g, tids) = granted(2, &[]);
+        let n = tids[1];
         for r in 0..rounds {
             let mut m = crate::Mutation::new();
             for a in 0..8 {
@@ -823,9 +765,7 @@ fn own_snapshots(lp: &LocalPeer, i: usize) -> usize {
 // into steps (the test writes owed snapshots after each, as a pass end would).
 #[test]
 fn late_bodies_a_cut_covers_owe_no_snapshot_spec_crypto_4() {
-    let mut lp = synced(3);
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
+    let (mut lp, g, tids) = granted(3, &[]);
     let mut logged = Logged::default();
     for r in 0..3 {
         let mut m = crate::Mutation::new();
@@ -835,8 +775,7 @@ fn late_bodies_a_cut_covers_owe_no_snapshot_spec_crypto_4() {
         lp.peers[0].commit(m).unwrap();
         logged.log(&mut lp, g, &[0]);
     }
-    let cut = lp.peers[0].engine.grant_with(&g, &tids[1], &edge(Role::Read), History::None).unwrap();
-    let _ = cut;
+    cut_for(&mut lp, 0, g, tids[1], Role::Read);
     logged.log(&mut lp, g, &[0]);
     let done = lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Write)).unwrap();
     logged.log(&mut lp, g, &[0]);
@@ -874,9 +813,8 @@ fn late_bodies_a_cut_covers_owe_no_snapshot_spec_crypto_4() {
 // tree as written: the snapshot is a few hundred bytes and no chunk is encrypted again.
 #[test]
 fn cut_snapshot_of_a_large_value_reuses_its_chunks_spec_crypto_4() {
-    let mut lp = synced(2);
-    let n = lp.peers[1].engine.me();
-    let g = independent_thing(&mut lp, 0);
+    let (mut lp, g, tids) = granted(2, &[]);
+    let n = tids[1];
     let ak = osis_base::Ak::new("x:b.0").unwrap();
     let mut x = vec![0u8; 1 << 20];
     osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(3), &mut x);
@@ -904,9 +842,8 @@ static BIG: osis_schema::StaticSchema = osis_schema::StaticSchema::new("cutbig.o
 // replaced version reaches (history, kept) is never passed on, under the cut's epoch or any.
 #[test]
 fn a_repair_after_a_cut_passes_on_live_state_alone_spec_sync_ids_1() {
-    let mut lp = synced(2);
-    let n = lp.peers[1].engine.me();
-    let g = independent_thing(&mut lp, 0);
+    let (mut lp, g, tids) = granted(2, &[]);
+    let n = tids[1];
     let key: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("k:b.0", &BIG);
     let ak = osis_base::Ak::new("k:b.0").unwrap();
     let mut m = crate::Mutation::new();
@@ -972,11 +909,7 @@ fn keys(v: &[&str]) -> BTreeSet<String> {
 // early at an honest node holding the value's own delta. Fails with expiring snapshots covering.
 #[test]
 fn forged_expiring_snapshot_ends_no_lasting_value_spec_commits_5() {
-    let mut lp = synced(3);
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    let (mut lp, g, _) = granted(3, &[(1, Role::Write), (2, Role::Read)]);
     put(&mut lp, 0, g, "x");
     lp.sync_all().unwrap();
     let ak = osis_base::Ak::new("x:m.0").unwrap();
@@ -1010,9 +943,7 @@ fn forged_expiring_snapshot_ends_no_lasting_value_spec_commits_5() {
 // cuts' snapshots pile up until "e" ends).
 #[test]
 fn each_cut_replaces_the_last_cuts_expiring_snapshots_spec_commits_5() {
-    let mut lp = synced(3);
-    let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
-    let g = independent_thing(&mut lp, 0);
+    let (mut lp, g, tids) = granted(3, &[]);
     let ak = osis_base::Ak::new("x:m.0").unwrap();
     let t = lp.peers[0].engine.now().0 + 100_000;
     put_expiring(&mut lp, 0, g, "e", t);
@@ -1055,13 +986,7 @@ fn expiring_snapshots_read_alike_whatever_arrives_and_is_covered_plain_spec_crdt
     let (mut compared, mut dropped, mut ended) = (0, 0, 0);
     for seed in 1..=10u64 {
         let mut rng = super::tests::Rng(seed * 0x9e37_79b9 + 11);
-        let mut lp = synced(4);
-        let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
-        let g = independent_thing(&mut lp, 0);
-        lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Write)).unwrap();
-        lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
-        lp.peers[0].engine.grant(&g, &tids[3], &edge(Role::Write)).unwrap();
-        lp.sync_all().unwrap();
+        let (mut lp, g, _) = granted(4, &[(1, Role::Write), (2, Role::Read), (3, Role::Write)]);
         let start: BTreeSet<osis_base::CommitId> = lp.peers[0].engine.core.ix.commits.keys().copied().collect();
         // key name -> (its commit, its expiry)
         let mut expiring_keys: Vec<(String, osis_base::CommitId, u64)> = Vec::new();
