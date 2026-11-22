@@ -619,7 +619,7 @@ impl Fragment {
                     f(v);
                 }
             }
-            Fragment::Enum(e) if mode == Values::Read => {
+            Fragment::Enum(e) if mode.reads() => {
                 if let Some(x) = e.case.as_ref().and_then(|c| c.case).and_then(|id| e.payloads.get(&id)) {
                     x.values_with(mode, f);
                 }
@@ -642,7 +642,7 @@ impl Fragment {
                 let gone = crate::fragment::removed(&s.elems);
                 s.elems.iter().filter(|(d, e)| !crate::fragment::hidden(d, e, &gone)).filter_map(|(_, e)| e.frag.as_deref()).for_each(|x| x.values_with(mode, f));
             }
-            Fragment::Map(m) if mode == Values::Read => {
+            Fragment::Map(m) if mode.reads() => {
                 for (k, x) in m.read_records() {
                     if x.read().is_some() {
                         f(k);
@@ -663,7 +663,7 @@ impl Fragment {
             Fragment::Seq(s) => {
                 // as read, the visible elements alone (§5.7 Live): a write into an element whose
                 // creation a reset took holds none
-                for e in s.elems().values().filter(|e| mode != Values::Read || crate::seq::is_visible(e, s.text)) {
+                for e in s.elems().values().filter(|e| !mode.reads() || crate::seq::is_visible(e, s.text)) {
                     if let SeqContent::Frag(x) = &e.content {
                         x.values_with(mode, f);
                     }
@@ -980,6 +980,18 @@ pub(crate) enum Values {
     Written,
     /// As a read shows them (`each_read_value`).
     Read,
+    /// `Read`, but a set's equal live values once per element: a reach holds a set's elements
+    /// apart, equal values without references (which a reach need not hold together) included
+    /// (`tests_model::reach_holds_the_change`).
+    #[cfg(test)]
+    ReadEach,
+}
+
+impl Values {
+    /// Whether these are values as read (`Read`, `ReadEach`).
+    fn reads(self) -> bool {
+        !matches!(self, Values::All | Values::Written)
+    }
 }
 
 /// A slot of a position: the register slot (a plain register too) or another fragment.

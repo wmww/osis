@@ -195,23 +195,31 @@ fn piece_laws(x: &Fragment, y: &Fragment, honest: bool) {
     }
 }
 
-/// A join of `y` changes the references a state reads (in `each_read_value`) only at `y`'s
-/// reach (`Fragment::reach`, `reach_after`): `before` and `after` differ as their pieces at the
-/// reach do (the engine's reference index counts a join there alone, notes/engine-refs.md; a
-/// set's equal values without references read once with no reach of each other). The writes it
-/// supersedes, read at the reaches as the engine dates them (`Killed::note`), are the whole state's: a range
-/// record the join split is reached at each of its elements.
+/// A join of `y` changes the values a state reads only at `y`'s reach (`Fragment::reach`,
+/// `reach_after`): `before` and `after` differ as their pieces at the reach do, each set element
+/// read apart (`Values::ReadEach`), and the references they read (`each_read_value`, a set's
+/// equal values once) likewise: the engine's reference index counts a join there alone
+/// (notes/engine-refs.md), so the reach holds every element equal to a value holding a
+/// reference it reaches; equal values without one read once as well, which nothing counts, so
+/// the reach need not hold them together. The writes it supersedes, read at the reaches as the
+/// engine dates them (`Killed::note`), are the whole state's: a range record the join split is
+/// reached at each of its elements.
 pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fragment) {
-    let diff = |a: &Fragment, b: &Fragment| {
-        let mut m: BTreeMap<osis_base::Value, i64> = BTreeMap::new();
-        a.each_read_value(&mut |v| v.each_reference(&mut |r| *m.entry(r.clone()).or_default() -= 1));
-        b.each_read_value(&mut |v| v.each_reference(&mut |r| *m.entry(r.clone()).or_default() += 1));
+    type Counts = BTreeMap<osis_base::Value, i64>;
+    type Each<'a> = &'a dyn Fn(&Fragment, &mut dyn FnMut(&osis_base::Value));
+    let diff = |a: &Fragment, b: &Fragment, each: Each<'_>| {
+        let mut m = Counts::new();
+        each(a, &mut |v| *m.entry(v.clone()).or_default() -= 1);
+        each(b, &mut |v| *m.entry(v.clone()).or_default() += 1);
         m.retain(|_, n| *n != 0);
         m
     };
+    let elems = |f: &Fragment, g: &mut dyn FnMut(&osis_base::Value)| f.values_with(crate::state::Values::ReadEach, g);
+    let refs = |f: &Fragment, g: &mut dyn FnMut(&osis_base::Value)| f.each_read_value(&mut |v| v.each_reference(g));
     let at = before.reach(y);
     let at_after = after.reach_after(y, &at);
-    assert_eq!(diff(&at, &at_after), diff(before, after), "a join changes read references only at its reach");
+    assert_eq!(diff(&at, &at_after, &elems), diff(before, after, &elems), "a join changes read values only at its reach");
+    assert_eq!(diff(&at, &at_after, &refs), diff(before, after, &refs), "a join changes read references only at its reach");
     let dead = |b: &Fragment, a: &Fragment| {
         let mut w = b.winners();
         w.extend(y.winners());
@@ -232,6 +240,16 @@ pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fr
     for w in killed {
         assert!(by.first_superseding(&w, &hiders, |s, _| Some(s.ts)).is_some(), "a write dead at the reach dies by a write held there: {w:?}");
     }
+}
+
+/// The references `each_read_value` names are those of the read (spec/data-model.md §8 What
+/// counts): a set's equal values once, a hidden write none.
+fn read_references_are_the_reads(st: &Fragment) {
+    let mut by_values: BTreeMap<osis_base::Value, u64> = BTreeMap::new();
+    st.each_read_value(&mut |v| v.each_reference(&mut |r| *by_values.entry(r.clone()).or_default() += 1));
+    let mut by_read: BTreeMap<osis_base::Value, u64> = BTreeMap::new();
+    st.read().iter().for_each(|v| v.each_reference(&mut |r| *by_read.entry(r.clone()).or_default() += 1));
+    assert_eq!(by_values, by_read, "the references read values name are the read's");
 }
 
 /// What a node dates a held body by (spec/commits.md §5, `retention::bounds::judge_replaced_at`):
@@ -293,6 +311,7 @@ fn joins(r: &mut Rng, c: &Case) -> Option<MFrag> {
                 assert_eq!(ours, ostate(&model), "state after joining delta {k}");
                 assert_eq!(ours.read(), mread(&model), "read after delta {k}");
                 read_at_is_read_then_walk(&ours);
+                read_references_are_the_reads(&ours);
                 assert!(crate::testutil::contains(&ours, &fd), "a join contains its parts");
             }
         }

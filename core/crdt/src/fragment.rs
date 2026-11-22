@@ -583,7 +583,8 @@ impl Fragment {
 
     /// The invariant (`tests_model::reach_holds_the_change`): with `at = st.reach(x)` and `st'`
     /// the join, `at` and `st'.reach_after(x, &at)` change and supersede exactly what `st` and
-    /// `st'` do: the read values differ as the whole states', and every winner of `at` or `x` the
+    /// `st'` do: the read values differ as the whole states' (each set element apart, and the
+    /// references as `each_read_value` names them, a set's equal values once), and every winner of `at` or `x` the
     /// join kills is missing from the after-reach, and a write held in `at` or `x` (winning or
     /// not) supersedes it (the engine dates deaths by those, `Killed::note`; none is `Corrupt`). So wherever a join
     /// changes a record's shape (a sequence range split, a map key's records), the after-reach
