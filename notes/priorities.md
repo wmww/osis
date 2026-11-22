@@ -9,7 +9,6 @@
 
 ## First: main's failing properties
 A property failing on main is the next task (notes/coordination.md, Known failures). Found by the gate's random seeds and failing on main, each with its replay line and a line in tools/known_failures.txt:
-- issues/differential-small-size-failures.md (the sync differential at the gate's size on fresh seeds: a storm past the delivery cap, not shrunk).
 - issues/perm-paths-incremental-differs.md (the unwired permission walk: by component, incremental and after a forget it disagrees with the single walk in two invite worlds; taken with stage D's call on the walk, before any A1 switch).
 - the app test of issues/app-tile-unreadable-emails-test.md.
 - The story property's `counts:` baseline (roles-model `paths`, `dispute`: two backdated lowerings hiding each other from a node with no order): issues/masked-backdated-lowerings.md.

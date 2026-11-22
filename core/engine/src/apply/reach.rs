@@ -140,7 +140,7 @@ pub(crate) type Arrived = BTreeMap<CommitId, BTreeSet<(Slot, BlobId)>>;
 /// The kept walks of blob waits (notes/sync-facade.md, Blob waits): memory only, a slot kept
 /// only while its walk lacks a blob. A function of the commits and the blobs held; derived again
 /// at open (every pending commit examined), and after a failed step or transaction for the
-/// commits it touched (`forget_since`, then `lost`).
+/// commits it touched (`rolled_back`, then `lost`).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Walks {
     kept: BTreeMap<(CommitId, Slot), Walk>,
@@ -286,8 +286,8 @@ impl Walks {
     }
 
     /// A step or transaction from `n` failed: the walks of the commits it touched go, those
-    /// commits due again (`lost`).
-    pub fn forget_since(&mut self, n: usize) {
+    /// commits due again (`lost`) where a round has work for them (`rolled_back`).
+    fn forget_since(&mut self, n: usize) {
         for c in self.log.split_off(n.min(self.log.len())) {
             let slots: Vec<Slot> = self.kept.range((c, Slot::Header)..=(c, Slot::Trees(usize::MAX))).map(|(k, _)| k.1).collect();
             for s in slots {
@@ -550,6 +550,20 @@ pub(crate) fn advance(tx: &mut Tx<'_>, c: &CommitId, arrived: &BTreeSet<(Slot, B
         }
     }
     Ok(ready)
+}
+
+/// A step or transaction from walks' log length `n` failed and `core` is rolled back: the walks
+/// of the commits it touched go, each a round has work for (`round`: pending, or an applied
+/// memory commit) due again; one the failure took away is due nowhere, as are trees asked of it
+/// (`trees_of`). Else a transaction failing every time it is tried (a sealed fire refused,
+/// `Engine::ingest_sealed_fire`) leaves a round due that finds nothing, so the next timer is now
+/// and a driver ticking at it tries the transaction again: a loop.
+pub(crate) fn rolled_back(core: &mut crate::engine::Core, n: usize) {
+    core.walks.forget_since(n);
+    let ix = &core.ix;
+    let known = |c: &CommitId| ix.pending.contains_key(c) || ix.commits.get(c).is_some_and(|m| m.view.memory);
+    core.walks.lost.retain(known);
+    core.walks.trees_due.retain(known);
 }
 
 /// The start of a `reexamine` round: the walks the arrivals reached taken on, the lost commits'

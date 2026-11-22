@@ -979,7 +979,7 @@ pub(crate) struct CoreMark {
     records: u64,
     /// `reach_log`'s length.
     reached: usize,
-    /// `walks`' log length (`Walks::forget_since`).
+    /// `walks`' log length (`reach::rolled_back`).
     walked: usize,
 }
 
@@ -1859,7 +1859,7 @@ impl Core {
             fallen: _,
             // a call's parameter (`memory_room`) and caches true of the store whatever a
             // rollback undoes (`memory_waits`: a pending row's class never changes); `walks`
-            // drops what a failed step or transaction touched (`Walks::forget_since`)
+            // drops what a failed step or transaction touched (`reach::rolled_back`)
             memory_room: _,
             memory_waits: _,
             walks: _,
@@ -3352,8 +3352,9 @@ impl Engine {
             Err(e) => {
                 self.core.walks_done = None;
                 self.core.forget_reach_since(start.reached);
-                self.core.walks.forget_since(start.walked);
+                let walked = start.walked;
                 self.core.rollback_to(start);
+                crate::apply::reach::rolled_back(&mut self.core, walked);
                 #[cfg(debug_assertions)]
                 {
                     osis_base::trace::mark_since(trace_mark, " (rolled back)");

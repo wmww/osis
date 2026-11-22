@@ -182,3 +182,31 @@ fn an_arrival_waking_a_wait_whose_round_fails() {
     assert_eq!(pending(&lp, 2), Vec::new(), "nothing waits");
     assert_eq!(lp.peers[2].engine.get(&t, &Ak::new(X).unwrap()).unwrap(), Some(Value::Str("written".into())));
 }
+
+// spec/commits.md §4 (Apply: a transaction that fails or is refused leaves the node as it was,
+// waits included): a transaction or step that fails leaves no blob wait due for a commit only it
+// brought, so the next timer stays as it was. A wait kept for commit C, unknown here, and its
+// trees asked, in a transaction that then fails (a sealed fire applied
+// with a part waiting for a page, refused: `Engine::ingest_sealed_fire`), and in a step that fails
+// inside one that commits: a round due for C finds nothing, yet put the next timer at now, and
+// a driver ticking then tried the refused fire again, refused again: a loop.
+#[test]
+fn a_failed_transaction_leaves_no_wait_due_for_what_it_brought() {
+    let mut lp = LocalPeer::fresh(1, T0);
+    let e = &mut lp.peers[0].engine;
+    let before = e.next_timer().unwrap();
+    let c = CommitId([7; 32]);
+    let waits = |tx: &mut crate::engine::Tx<'_>| -> crate::Result<()> {
+        crate::apply::reach::wait_part(tx, &c, 0, &[], false)?;
+        tx.core.walks.trees_of(c);
+        Err(crate::Error::Misuse("fails"))
+    };
+    assert!(e.run(waits).is_err());
+    assert_eq!(e.next_timer().unwrap(), before, "a failed transaction");
+    e.run(|tx| {
+        assert!(tx.step(crate::engine::Step::Commit, waits).is_err());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(e.next_timer().unwrap(), before, "a failed step");
+}

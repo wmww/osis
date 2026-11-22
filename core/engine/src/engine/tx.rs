@@ -76,8 +76,9 @@ impl Tx<'_> {
                 self.txn.rollback_to(sp);
                 self.blobs.rollback_to(held);
                 self.core.forget_reach_since(m.reached);
-                self.core.walks.forget_since(m.walked);
+                let walked = m.walked;
                 self.core.rollback_to(m);
+                crate::apply::reach::rolled_back(self.core, walked);
                 Err(e)
             }
         }
