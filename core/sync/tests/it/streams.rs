@@ -3051,6 +3051,35 @@ fn a_pull_anew_while_away_reaches_the_place_held_spec_sync_streams_4() {
     assert!(p.b.store.entry(&k.id, &x).unwrap().is_some());
 }
 
+// spec/sync-streams.md §4 (Joining: no reply applied after a member left moves where it stopped,
+// nor a pull of it from the start since), spec/sync-opens.md §6 (A pull of S from the start at
+// that source meanwhile: stands over where a Lost said it stopped): the reply to b's join of S
+// arrives after S left again and was raised to read (pulled anew there); S's next join, from
+// where a crossing Lost says it stopped, is from the start, so what b refused kept unread is
+// shown again.
+#[test]
+fn a_reply_after_its_member_left_moves_nothing_of_it_spec_sync_streams_4() {
+    let (mut p, k) = Pair::kept();
+    k.stamped(&mut p.a, 3000, true);
+    p.join(k.id);
+    p.run();
+    p.b.leave(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run_with(|ab, m| ab && m.kind() == 42);
+    assert_eq!(p.held.len(), 1, "the join's reply held back");
+    let Some(Msg::Pull(q)) = p.sent_by_b(41).last().copied() else { panic!("b's join") };
+    let [(_, Some(stopped))] = q.joins.as_slice() else { panic!("joined from where it stopped: {q:?}") };
+    let stopped = stopped.clone().into_bytes();
+    p.b.leave(p.now, k.id);
+    p.b.hold(k.id, Holding::Read);
+    p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
+    p.release();
+    let pulls = p.sent_by_b(41).len();
+    p.b.join_on(p.now, C, k.id, Rejoin::From(Some(stopped)));
+    p.run();
+    assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])), "joined from the start");
+}
+
 // spec/sync-status.md §1 (caught up: on the connection S is open on, this node's last Pull there
 // answered with `more` false): a record
 // taken again, its place saying every member at the stream, is caught up on the new connection

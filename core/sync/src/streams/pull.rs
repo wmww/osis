@@ -1484,7 +1484,9 @@ impl Streams {
                     touched.push(*s);
                 }
             } else {
-                for (s, _) in &r.asked {
+                // a member that left since its Pull went keeps where it stopped (`left`), or where
+                // a pull anew put it: the reply moves nothing of it
+                for (s, _) in r.asked.iter().filter(|(s, _)| members.contains(s)) {
                     touched.push(*s);
                     match r.joins.get(s) {
                         // a join from the start keeps its stored start until it ends
