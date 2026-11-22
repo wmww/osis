@@ -8,7 +8,7 @@ use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, Stamp};
 use crate::testutil::{TyView, frag, history, history_honest, sess, sink_no_seq, ts};
-use crate::winners::{ByWrite, Hiders, Kind, Place, Won};
+use crate::winners::{ByWrite, Hiders, Kind, Place, Winners, Won};
 use crdt_model::ops::Ty;
 use osis_base::{Tid, Ts, Value};
 use proptest::prelude::*;
@@ -289,6 +289,12 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
     let commits = if honest { history_honest(&mut r, types, 3, 4) } else { history(&mut r, types, 3, 4) };
     let bodies: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
     first_superseding_check(&bodies);
+    // bodies and joins of them, as snapshots, leaving and coming
+    let mut some = bodies.clone();
+    for _ in 0..2 {
+        some.push(bodies.iter().filter(|_| r.chance(1, 2)).fold(Fragment::default(), |f, b| join(&f, b)));
+    }
+    changes_check(&some, &mut r);
     for _ in 0..6 {
         let mut pick = || bodies.iter().filter(|_| r.chance(1, 2)).fold(Fragment::default(), |f, b| join(&f, b));
         let (a, b) = (pick(), pick());
@@ -401,6 +407,58 @@ fn moved_by_check(bodies: &[Fragment]) {
             assert!(now == was || named.contains(w), "{w:?} moved from {was:?} to {now:?}, unnamed by {:?}", hw.iter().collect::<Vec<_>>());
         }
         held.extend(hw.iter());
+    }
+}
+
+/// The held writes and hiders of `bodies`, each body's writes counted (`ByWrite::note`).
+fn index_of<'a>(bodies: impl IntoIterator<Item = &'a Fragment>) -> (ByWrite<usize>, Hiders) {
+    let (mut ix, mut hiders) = (ByWrite::default(), Hiders::default());
+    for b in bodies {
+        ix.note(&b.held_writes(), |_, n| *n += 1);
+        hiders.note(b);
+    }
+    (ix, hiders)
+}
+
+/// `forget` and `moved_by` over bodies leaving: from a random set of the bodies to another, the
+/// leaving ones forgotten (`ByWrite::forget`, `Hiders::forget`) and the new ones noted, the
+/// index is what noting the second set gives; and every write held in both whose earliest
+/// superseding write moved is one that `moved_by`, on the index after, names for a write of a
+/// body that left or came.
+fn changes_check(bodies: &[Fragment], r: &mut crate::testutil::SeedRng) {
+    for _ in 0..4 {
+        let from: Vec<bool> = bodies.iter().map(|_| r.chance(1, 2)).collect();
+        let to: Vec<bool> = bodies.iter().map(|_| r.chance(1, 2)).collect();
+        let pick = |s: &[bool]| bodies.iter().zip(s.to_vec()).filter(|x| x.1).map(|x| x.0).collect::<Vec<_>>();
+        let (was, was_hiders) = index_of(pick(&from));
+        let (mut ix, mut hiders) = (was.clone(), was_hiders.clone());
+        let mut changed = Winners::default();
+        for (i, b) in bodies.iter().enumerate() {
+            let hw = b.held_writes();
+            if from[i] && !to[i] {
+                ix.forget(&hw, |_, n| {
+                    *n -= 1;
+                    *n > 0
+                });
+                let mut own = Hiders::default();
+                own.note(b);
+                hiders.forget(&own);
+                changed.extend(hw);
+            } else if to[i] && !from[i] {
+                ix.note(&hw, |_, n| *n += 1);
+                hiders.note(b);
+                changed.extend(hw);
+            }
+        }
+        let (want, want_hiders) = index_of(pick(&to));
+        assert_eq!(ix, want, "the index after bodies left and came is the one noting those held");
+        assert_eq!(hiders, want_hiders, "the hiders after bodies left and came are those noting the copies held");
+        let named: BTreeSet<Won> = changed.iter().flat_map(|s| ix.moved_by(&s)).collect();
+        let held = |s: &[bool]| -> BTreeSet<Won> { pick(s).into_iter().flat_map(|b| b.held_writes().iter().collect::<Vec<_>>()).collect() };
+        for w in held(&from).intersection(&held(&to)) {
+            let (a, b) = (was.first_superseding(w, &was_hiders, |s, _| Some(s.ts)), ix.first_superseding(w, &hiders, |s, _| Some(s.ts)));
+            assert!(a == b || named.contains(w), "{w:?} moved from {a:?} to {b:?}, unnamed by the writes that left or came");
+        }
     }
 }
 
