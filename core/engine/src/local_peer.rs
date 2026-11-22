@@ -637,6 +637,12 @@ impl LocalPeer {
         osis_base::copying::cached(key, build, |(lp, t)| (lp.copy().unwrap_or_else(|e| panic!("copy of {key}: {e}")), t.clone()))
     }
 
+    /// `cached` for a world holding peers beside state that is not `Clone` (a property's run):
+    /// `copy` copies it whole, its peers by `copy`.
+    pub fn cached_world<W: Send + 'static>(key: &str, build: impl FnOnce() -> W, copy: impl FnOnce(&mut W) -> W) -> W {
+        osis_base::copying::cached(key, build, copy)
+    }
+
     /// Every other peer holding no role on `t` is granted read on it through the flow by peer
     /// `admin`, an admin of it, and holds it (`hold`): each keeps what it receives of `t`, as only
     /// content of a thing in the node closure applies (spec/commits.md §4 Outside the node

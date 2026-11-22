@@ -11,7 +11,7 @@
 //! forks, departures, forgeries, cycles); every feature stays on its own draws.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Key, Rng, Via, edge, independent_thing, openable, opens_by, opens_in};
+use super::tests::{Key, Rng, Via, edge, independent_thing, openable, opens_by, opens_in, synced};
 use super::tests_departs::{Forge, leave};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -40,6 +40,7 @@ struct Reached {
 type BoxAt = (Tid, Role, Epoch, Tid);
 
 /// A rotator's view when it made an epoch.
+#[derive(Clone)]
 struct Made {
     /// The commits it held, the rotation commit included.
     held: BTreeSet<CommitId>,
@@ -132,6 +133,29 @@ impl Run {
         run.log.push(format!("actors {:?} (owners), peers {:?}", run.actors, run.tids));
         run.note();
         run
+    }
+
+    /// A copy, its world copied (notes/test-harnesses.md, Copied worlds).
+    fn copy(&mut self) -> Run {
+        Run {
+            lp: self.lp.copy().unwrap(),
+            tids: self.tids.clone(),
+            actors: self.actors.clone(),
+            ever: self.ever.clone(),
+            handed: self.handed.clone(),
+            made: self.made.clone(),
+            resealed: self.resealed.clone(),
+            boxed: self.boxed.clone(),
+            rng: self.rng.clone(),
+            hostile: self.hostile.clone(),
+            log: self.log.clone(),
+            states: self.states.clone(),
+            state_step: self.state_step.clone(),
+            stale: self.stale.clone(),
+            secrets: self.secrets.clone(),
+            first: self.first.clone(),
+            holder_rotated: self.holder_rotated,
+        }
     }
 
     fn all(&self) -> Vec<Tid> {
@@ -1076,8 +1100,7 @@ fn step(run: &mut Run, i: usize, f: impl FnOnce(&mut Run)) {
 // received it: e1 is handed on, not leaked (`Run::grant` counts every box at a handed keyset).
 #[test]
 fn handed_keyset_opens_boxes_its_author_never_received_spec_crypto_4() {
-    let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(N);
     let (a, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
     let g = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 0);
@@ -1112,6 +1135,22 @@ fn handed_keyset_opens_boxes_its_author_never_received_spec_crypto_4() {
     check(&mut run, 1, true);
 }
 
+/// Peer 0 removes `holder` from `g` `at` ms on: one new `role` epoch of `g` (the removal's
+/// rotation alone), which peer `d`, given what peer 0 holds, does not open.
+fn removal_rotates_once(run: &mut Run, g: Tid, role: Role, holder: Tid, at: u64, d: usize) {
+    let made = |run: &Run| run.made.keys().filter(|k| k.0 == g && k.1 == role).map(|k| k.2).collect::<BTreeSet<Epoch>>();
+    let before = made(run);
+    step(run, 0, |run| {
+        run.lp.peers[0].clock.advance(at);
+        run.lp.peers[0].engine.demote(&g, &Demotion { holder, new: None, retain: None }).unwrap();
+    });
+    let new: Vec<Epoch> = made(run).difference(&before).copied().collect();
+    assert_eq!(new.len(), 1, "the removal's rotation alone");
+    run.lp.sync(0, d).unwrap();
+    run.note();
+    assert!(!run.ever[d].contains(&(g, role, new[0])), "peer {d} opens an epoch of G the removal made");
+}
+
 // A removal's cascade rotates none of the target's roles the removal rotates (seed
 // 750502401262): M (peer 1's) a sync holder of G (peer 0's), D (peer 2) a sync holder of M, A
 // (peer 3) an admin of M. A removes D from M; M's admin, unaware, rotates M to k, boxing D. Peer
@@ -1120,8 +1159,7 @@ fn handed_keyset_opens_boxes_its_author_never_received_spec_crypto_4() {
 // drop that box, D opening the cascade's epoch by it.
 #[test]
 fn a_removal_boxes_none_it_removes_spec_permissions_3() {
-    let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(N);
     let (d, a) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
     let g = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 1);
@@ -1145,17 +1183,7 @@ fn a_removal_boxes_none_it_removes_spec_permissions_3() {
         run.lp.sync(from, to).unwrap();
     }
     run.note();
-    let sync = |run: &Run| run.made.keys().filter(|k| k.0 == g && k.1 == Role::Sync).map(|k| k.2).collect::<BTreeSet<Epoch>>();
-    let before = sync(&run);
-    step(&mut run, 0, |run| {
-        run.lp.peers[0].clock.advance(3_000);
-        run.lp.peers[0].engine.demote(&g, &Demotion { holder: m, new: None, retain: None }).unwrap();
-    });
-    let new: Vec<Epoch> = sync(&run).difference(&before).copied().collect();
-    assert_eq!(new.len(), 1, "the removal's rotation alone");
-    run.lp.sync(0, 2).unwrap();
-    run.note();
-    assert!(!run.ever[2].contains(&(g, Role::Sync, new[0])), "D opens no epoch of G the removal made");
+    removal_rotates_once(&mut run, g, Role::Sync, m, 3_000, 2);
     settle(&mut run, 1, true);
     check(&mut run, 1, true);
 }
@@ -1167,8 +1195,7 @@ fn a_removal_boxes_none_it_removes_spec_permissions_3() {
 // directly or through Y's cascade below, must not rotate G's read before the removal (boxing M).
 #[test]
 fn a_removal_boxes_none_it_removes_through_the_upward_cascade_spec_permissions_3() {
-    let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(N);
     let (x, m) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
     let g = independent_thing(&mut lp, 0);
     let h = independent_thing(&mut lp, 0);
@@ -1187,17 +1214,7 @@ fn a_removal_boxes_none_it_removes_through_the_upward_cascade_spec_permissions_3
     });
     run.lp.sync(2, 0).unwrap();
     run.note();
-    let read = |run: &Run| run.made.keys().filter(|k| k.0 == g && k.1 == Role::Read).map(|k| k.2).collect::<BTreeSet<Epoch>>();
-    let before = read(&run);
-    step(&mut run, 0, |run| {
-        run.lp.peers[0].clock.advance(2_000);
-        run.lp.peers[0].engine.demote(&g, &Demotion { holder: m, new: None, retain: None }).unwrap();
-    });
-    let new: Vec<Epoch> = read(&run).difference(&before).copied().collect();
-    assert_eq!(new.len(), 1, "the removal's rotation alone");
-    run.lp.sync(0, 3).unwrap();
-    run.note();
-    assert!(!run.ever[3].contains(&(g, Role::Read, new[0])), "M opens no epoch of G the removal made");
+    removal_rotates_once(&mut run, g, Role::Read, m, 2_000, 3);
     settle(&mut run, 1, true);
     check(&mut run, 1, true);
 }
@@ -1208,8 +1225,7 @@ fn a_removal_boxes_none_it_removes_through_the_upward_cascade_spec_permissions_3
 // G the act made.
 #[test]
 fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3() {
-    let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    let mut lp = synced(N);
     let (e, m) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
     let g = independent_thing(&mut lp, 0);
     lp.sync_all().unwrap();
@@ -1219,18 +1235,8 @@ fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3()
     lp.peers[0].engine.demote(&g, &Demotion { holder: e, new: Some(ct::Edge { until: Some(until), ..edge(Role::Read) }), retain: None }).unwrap();
     lp.sync_all().unwrap();
     let mut run = Run::new(lp, vec![(g, 0)], Rng(1));
-    let read = |run: &Run| run.made.keys().filter(|k| k.0 == g && k.1 == Role::Read).map(|k| k.2).collect::<BTreeSet<Epoch>>();
-    let before = read(&run);
-    step(&mut run, 0, |run| {
-        run.lp.peers[0].clock.advance(2_000);
-        run.lp.peers[0].engine.demote(&g, &Demotion { holder: m, new: None, retain: None }).unwrap();
-    });
-    let new: Vec<Epoch> = read(&run).difference(&before).copied().collect();
-    assert_eq!(new.len(), 1, "the removal's rotation alone");
+    removal_rotates_once(&mut run, g, Role::Read, m, 2_000, 3);
     assert!(run.lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "it covers E's departure too");
-    run.lp.sync(0, 3).unwrap();
-    run.note();
-    assert!(!run.ever[3].contains(&(g, Role::Read, new[0])), "M opens no epoch of G the removal made");
     settle(&mut run, 1, true);
     check(&mut run, 1, true);
 }
@@ -1264,9 +1270,13 @@ fn a_grant_audited_by_its_authors_demotion_rotates_spec_crypto_4() {
 
 /// `a_grant_by_a_demoted_admin_leaves_its_grantee_reading_spec_crypto_4`'s history, A's grant
 /// before its demotion (`first`) or after, settled: the run, G, M and X.
+/// Built once per order, a copy each call.
 fn demoted_granter(first: bool) -> (Run, Tid, Tid, Tid) {
-    let mut lp = LocalPeer::new(N, 0, WallMs(1_700_000_000_000)).unwrap();
-    lp.sync_all().unwrap();
+    LocalPeer::cached_world(&format!("rotation::tests_property::demoted_granter/{first}"), || demoted_granter_built(first), |(run, g, m, x)| (run.copy(), *g, *m, *x))
+}
+
+fn demoted_granter_built(first: bool) -> (Run, Tid, Tid, Tid) {
+    let mut lp = synced(N);
     let (a, x) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
     let g = independent_thing(&mut lp, 0);
     let m = independent_thing(&mut lp, 0);

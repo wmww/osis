@@ -172,6 +172,7 @@ pub(super) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypt
     lp.peers[i].engine.epochs(&t).and_then(|e| e.read.newest_held().map(|x| x.0))
 }
 
+#[derive(Clone)]
 pub(super) struct Rng(pub(super) u64);
 impl Rng {
     pub(super) fn next(&mut self, n: u64) -> u64 {
