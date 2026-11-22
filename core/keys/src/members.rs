@@ -100,8 +100,7 @@ pub enum Seal {
 /// (`Keysets::past`): else no keyset could ever be, and M would be out for good.
 pub fn seal_keyset(keysets: &Keysets, anchors: &BTreeSet<Epoch>, tainted: &BTreeSet<Epoch>, left_out: &BTreeMap<Epoch, osis_perm::Point>) -> Seal {
     let anchors: Vec<&Epoch> = anchors.iter().filter(|q| keysets.valid.contains_key(q)).collect();
-    let past = |k: &&Epoch| left_out.iter().filter(|(q, _)| keysets.valid.contains_key(q)).all(|(q, at)| keysets.past(k, q, at));
-    let candidates: Vec<&Epoch> = keysets.valid.keys().filter(|k| !tainted.contains(k)).filter(past).collect();
+    let candidates = candidates(keysets, tainted, left_out);
     let joins_all = |k: &&&Epoch| joins(***k, anchors.iter().copied(), |x| keysets.parents(x));
     if keysets.heads {
         let all: BTreeSet<Epoch> = candidates.iter().filter(joins_all).map(|k| **k).collect();
@@ -119,6 +118,39 @@ pub fn seal_keyset(keysets: &Keysets, anchors: &BTreeSet<Epoch>, tainted: &BTree
     }
     let top: BTreeSet<Epoch> = joint.iter().filter(|k| !joint.iter().any(|x| x != *k && keysets.descends(x, k))).copied().collect();
     if top.is_empty() { Seal::Out } else { Seal::At(top) }
+}
+
+/// Seal's candidates: the held valid keysets of M not `tainted` and past each keyset of
+/// `left_out` held valid (`seal_keyset`).
+fn candidates<'k>(keysets: &'k Keysets, tainted: &BTreeSet<Epoch>, left_out: &BTreeMap<Epoch, osis_perm::Point>) -> Vec<&'k Epoch> {
+    let past = |k: &&Epoch| left_out.iter().filter(|(q, _)| keysets.valid.contains_key(q)).all(|(q, at)| keysets.past(k, q, at));
+    keysets.valid.keys().filter(|k| !tainted.contains(k)).filter(past).collect()
+}
+
+/// Left out for good (spec/crypto.md §4, Left out): whether a thing A, recording holder actor M
+/// left out at `left_out` for one role (as `seal_keyset` takes them), leaves M out until M next
+/// rotates: some recorded keyset is held valid, none of those is `current` at the node, and M
+/// has no candidate. A node that may rotate that role of M then rotates it (the due rotation):
+/// the fresh keyset lists M's current keysets and its body is ordered after every record the
+/// node holds, so it is past each (`Keysets::past`) and the rule is off at it afterwards.
+///
+/// Invariant (hostile inputs): the rule makes M's rotators rotate M only, as any rotation of M,
+/// boxing M's current holders for keys and no one else, so it hands no party anything a rotation
+/// of M would not. What makes it true is a valid rotation of A recording M at a keyset no held
+/// valid keyset descends from (M's descent runs through one held invalid), honest or by a hostile
+/// writer of A, so it forces at most one rotation of M per eligible rotator per such rotation of
+/// A, a hostile writer's ended with its removal from A: a record
+/// naming a keyset not held valid counts nothing (a forged list), and a keyset planted invalid by
+/// a removed writer of M only breaks descent, which the order fallback and this rotation mend.
+/// A recorded keyset current at the node is left to the knowing re-key: a rotator of A records a
+/// keyset blocked at it (a departure from M it knows of), and a rotator of M still holding that
+/// keyset current may not hold the departure yet: its rotation would be ignorant of it and
+/// ordered after it, which a sealer of A lacking M's secrets seals to (judged by order). One not
+/// current here was superseded by what this node holds; a departure it still lacks is the stated
+/// residual of any rotation of M made without knowing one (spec/crypto.md §4, Holder actors).
+pub fn left_out_for_good(keysets: &Keysets, tainted: &BTreeSet<Epoch>, left_out: &BTreeMap<Epoch, osis_perm::Point>, current: impl Fn(&Epoch) -> bool) -> bool {
+    let mut recorded = left_out.keys().filter(|q| keysets.valid.contains_key(q)).peekable();
+    recorded.peek().is_some() && !recorded.any(current) && candidates(keysets, tainted, left_out).is_empty()
 }
 
 /// Stale (rule 2): whether a box of A to holder actor M naming M's epoch `k` is stale: `k` is
@@ -362,6 +394,30 @@ mod tests {
         k.valid.insert(ep(2, 9), set(&[ep(1, 1)]));
         k.since.insert(ep(2, 9), at(5 << 20));
         assert_eq!(seal_keyset(&k, &set(&[]), &set(&[]), &recorded(1)), Seal::At(BTreeSet::from([ep(2, 9)])), "a descendant held: descent only (2.7, newer, no longer past)");
+    }
+
+    // spec/crypto.md §4 (Left out: the due rotation of M): M recorded at 1.1, which no held valid
+    // keyset descends from (3.3 lists the invalid 2.2) and nothing is ordered after the record,
+    // is left out for good while 1.1 is not current here; not while 1.1 is current (left to the
+    // knowing re-key), nor for a record not held valid (a forged list), nor once a keyset is past
+    // it (a fresh rotation, ordered after the record).
+    #[test]
+    fn left_out_for_good_needs_no_candidate_and_no_current_record() {
+        let mut k = Keysets::default();
+        k.valid.insert(ep(1, 1), set(&[]));
+        k.invalid.insert(ep(2, 2));
+        k.valid.insert(ep(3, 3), set(&[ep(2, 2)]));
+        k.since.extend([(ep(1, 1), at(1 << 20)), (ep(3, 3), at(3 << 20))]);
+        let recorded = |q: Epoch| BTreeMap::from([(q, at(4 << 20))]);
+        let current = |e: &Epoch| *e == ep(3, 3);
+        assert!(left_out_for_good(&k, &set(&[]), &recorded(ep(1, 1)), current));
+        assert!(!left_out_for_good(&k, &set(&[]), &recorded(ep(1, 1)), |e| *e == ep(1, 1) || current(e)), "1.1 current here");
+        assert!(!left_out_for_good(&k, &set(&[]), &recorded(ep(9, 9)), current), "a record not held valid counts nothing");
+        assert!(!left_out_for_good(&k, &set(&[]), &BTreeMap::new(), current), "no record");
+        k.valid.insert(ep(4, 4), set(&[ep(3, 3)]));
+        k.since.insert(ep(4, 4), at(5 << 20));
+        assert!(!left_out_for_good(&k, &set(&[]), &recorded(ep(1, 1)), |e| *e == ep(4, 4)), "the fresh rotation is past the record by order");
+        assert!(left_out_for_good(&k, &set(&[ep(4, 4)]), &recorded(ep(1, 1)), |e| *e == ep(4, 4)), "a tainted keyset is no candidate");
     }
 
     // spec/crypto.md §4 (Descends): through held valid keysets only; a forged keyset (invalid)

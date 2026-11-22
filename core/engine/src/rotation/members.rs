@@ -248,6 +248,22 @@ fn left_out_at(core: &Core, a: &Tid, m: &Tid, r: Role) -> BTreeMap<Epoch, osis_p
     out
 }
 
+/// Whether `a` leaves its holder actor `m` out of `r` for good (`osis_keys::left_out_for_good`,
+/// spec/crypto.md §4 Left out): `m` holds `r` or more on `a` for keys, with key access, and `a`'s
+/// current keysets of `r` record it with no keyset of `m` past the record. A node that may rotate
+/// `r` of `m` rotates it at the end of a complete pass of `a`'s sync IDs. `m`'s keysets are read
+/// only where a record names it.
+pub(crate) fn left_out_for_good(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<bool> {
+    let out = left_out_at(tx.core, a, m, r);
+    if out.is_empty() || tx.core.is_key_actor(m) || !tx.core.key_holders(a).into_iter().any(|(h, role)| h == *m && keyed_role(tx.core, a, m, role).is_some_and(|k| k >= r)) {
+        return Ok(false);
+    }
+    let held = keysets_of(tx, m, r, None)?;
+    let epochs = tx.core.epochs(m);
+    let current = |q: &Epoch| epochs.as_ref().is_some_and(|e| e.role(r).is_current(q));
+    Ok(osis_keys::left_out_for_good(&held, &tainted(tx, m, r)?, &out, current))
+}
+
 /// How a rotation, grant or re-seal of an actor boxes one holder (`sealed`).
 pub(crate) enum Sealed {
     /// These boxes.

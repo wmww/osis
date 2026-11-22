@@ -280,8 +280,9 @@ pub(crate) fn blocked_roles(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTree
 enum Due {
     /// Only what encrypting under the actor waits for (`ensure_rotated`).
     Encrypt,
-    /// Also withdraws (`pass_end_rotations`).
-    PassEnd,
+    /// Also withdraws and the like, at the end of a complete pass of this actor's sync IDs
+    /// (`pass_end_rotations`), for it and the holder actors below it.
+    PassEnd(Tid),
 }
 
 /// The roles of `a` that `who` may rotate, but `kept` (`Keep`), whose rotation is due
@@ -292,8 +293,9 @@ enum Due {
 /// (`orphaned`), or is a derived read epoch this node wrote under (`merge::due`); one due only
 /// for current epochs whose secret this node lacks, where its new epoch boxes a rotator
 /// (`boxes_rotator`). With `Due::PassEnd` also when an unsuperseded epoch is not current here
-/// and `who` withdraws it, or when a current read epoch's floor is below a holder's
-/// (`floors::low_floor_due`). A fork alone is due nothing else: it stands until the role next
+/// and `who` withdraws it, when a current read epoch's floor is below a holder's
+/// (`floors::low_floor_due`), or when `a` is a holder actor the pass's actor leaves out for good
+/// (`members::left_out_for_good`). A fork alone is due nothing else: it stands until the role next
 /// rotates (spec/crypto.md §4). No secret of the role is needed; the commit must be
 /// `wrappable`, else the rotation waits for a re-seal.
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
@@ -329,9 +331,15 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<
         // or by any node that may rotate when its maker may not (or is unknown: a snapshot's
         // epoch); withdraws by several fork, which stands
         let current = epochs.role(r).current();
-        due = due || mode == Due::PassEnd && epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
+        due = due || matches!(mode, Due::PassEnd(_)) && epochs.role(r).unsuperseded().iter().any(|e| !current.contains(e) && maker(tx.core, who, a, r, e).is_none_or(|m| m.me || !m.may_rotate));
         // a current read epoch a holder's floor bars it from (spec/crypto.md §4, Floors)
-        due = due || mode == Due::PassEnd && r == Role::Read && floors::low_floor_due(tx, who, a)?;
+        due = due || matches!(mode, Due::PassEnd(_)) && r == Role::Read && floors::low_floor_due(tx, who, a)?;
+        // the pass's actor records `a` left out with no keyset of it past the record
+        if let Due::PassEnd(p) = mode
+            && p != *a
+        {
+            due = due || members::left_out_for_good(tx, &p, a, r)?;
+        }
         if due {
             out.insert(r);
         }
@@ -728,7 +736,8 @@ fn owed_below(tx: &mut Tx<'_>, who: Tid, a: Tid) -> Result<bool> {
 /// history adds are, never by `ensure_rotated`: no epoch they supersede is one this node would
 /// encrypt under while it misses a departure.
 fn pass_end_rotations(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<()> {
-    let rotated = rotate_below(tx, who, a, None, Due::PassEnd, done)?;
+    let Some(a) = secret_actor_up(tx.core, &a) else { return Ok(()) };
+    let rotated = rotate_below(tx, who, a, None, Due::PassEnd(a), done)?;
     rotate_above(tx, who, rotated, None, done)
 }
 
