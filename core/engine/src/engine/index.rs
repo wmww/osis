@@ -724,8 +724,14 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     w = w.raw(v.purge_author.as_bytes());
     if let Some(p) = &v.paths {
         w = w.raw(&(p.len() as u32).to_be_bytes());
-        for (t, known) in p.iter() {
-            w = w.raw(t.as_bytes()).u8(u8::from(*known));
+        for (t, path) in p.iter() {
+            w = w.raw(t.as_bytes()).u8(u8::from(path.is_some()));
+            if let Some(path) = path {
+                w = w.u32(path.purge as u32).raw(&path.direct.to_be_bytes()).u32(path.things.len() as u32);
+                for x in &path.things {
+                    w = w.raw(x.as_bytes());
+                }
+            }
         }
     }
     if let Some(e) = &v.epoch {
@@ -775,7 +781,15 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     } else {
         let mut m = std::collections::BTreeMap::new();
         for _ in 0..r.u32()? {
-            m.insert(r.tid()?, r.u8()? != 0);
+            let t = r.tid()?;
+            let path = if r.u8()? != 0 {
+                let (purge, direct, n) = (r.u32()? as usize, u128::from_be_bytes(r.arr()?), r.u32()?);
+                let things = (0..n).map(|_| r.tid()).collect::<Result<Vec<Tid>>>()?;
+                Some(osis_commit::Path { purge, things, direct })
+            } else {
+                None
+            };
+            m.insert(t, path);
         }
         Some(Arc::new(m))
     };

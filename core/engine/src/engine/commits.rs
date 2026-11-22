@@ -79,7 +79,7 @@ pub struct Meta {
 impl Meta {
     /// A commit's meta from its decoded header: parts in `missing` missing, the rest as `head`
     /// says (`Hold::stored`).
-    pub(crate) fn new(header: Arc<Header>, paths: Option<Arc<BTreeMap<Tid, bool>>>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
+    pub(crate) fn new(header: Arc<Header>, paths: Option<Arc<super::Decided>>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
         let hold = (0..valid.len()).map(|ai| Hold::stored(ai, &mut head, missing.contains(&ai), false)).collect();
         Meta::of(Arc::new(View::of(&header, paths)), LazyHeader::ready(header), head.received, head.origin, head.repair.clone(), head.signed, valid, hold)
     }

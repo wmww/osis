@@ -260,6 +260,11 @@ impl Hold {
     }
 }
 
+/// What a node decided of the path a split commit states for each thing it writes
+/// (`apply::paths::decided`): the path opened, `None` where its entry opens to a bad list, absent
+/// while it opens nowhere here.
+pub type Decided = BTreeMap<Tid, Option<osis_commit::Path>>;
+
 /// What the per-commit indexes (`apply::index_commit`, validity, the role filter) read of
 /// a header; persisted in the commit's parts row (`engine::index`), so an open builds them
 /// without decoding headers.
@@ -273,10 +278,9 @@ pub struct View {
     /// (notes/a1-spec/README.md step 3): the old walk reads it as the thing the commit acts for on
     /// every thing it writes.
     pub purge_author: Tid,
-    /// In a split commit, what this node decided of each thing's path (`apply::paths::decided`:
-    /// `true` known, `false` bad, absent while it opens nowhere here): a part on a thing not known
-    /// is judged invalid. `None` where the path is in the clear.
-    pub paths: Option<Arc<BTreeMap<Tid, bool>>>,
+    /// In a split commit, what this node decided of each thing's path (`Decided`): a part on a
+    /// thing whose path is not known is judged invalid. `None` where the path is in the clear.
+    pub paths: Option<Arc<Decided>>,
     /// Some list goes by link: the header is resolved from blobs at open (decoded there).
     pub linked: bool,
     /// A memory commit (the ephemeral marker): held in memory, never durable to node-sync,
@@ -310,7 +314,7 @@ pub struct AspectView {
 
 impl View {
     /// The view of `h`, the things of a split commit whose paths are known here `paths`.
-    pub fn of(h: &Header, paths: Option<Arc<BTreeMap<Tid, bool>>>) -> View {
+    pub fn of(h: &Header, paths: Option<Arc<Decided>>) -> View {
         // what `View::aspect` searches by (spec/wire.md §4)
         debug_assert!(h.aspects.is_sorted_by_key(|a| (a.tid, a.ak.as_str().len(), a.ak.as_str().as_bytes())), "aspects sorted");
         View {
@@ -337,7 +341,7 @@ impl View {
 
     /// Whether the path it states for thing `t` is known here and not bad (`paths`).
     pub fn path_known(&self, t: &Tid) -> bool {
-        self.paths.as_ref().is_none_or(|p| p.get(t) == Some(&true))
+        self.paths.as_ref().is_none_or(|p| p.get(t).is_some_and(Option::is_some))
     }
 
     /// The index of aspect `(tid, ak)` (`osis_commit::aspect_position`).
@@ -1113,6 +1117,9 @@ pub struct Core {
     /// are a function of the received commits turns it off, `Engine::write_addenda`).
     pub addenda_on: bool,
     pub stale_under: BTreeSet<Tid>,
+    /// What the purge requests whose right moved name (`osis_perm::paths::Changed::purges`),
+    /// until `rejudge_all` judges the purges they cover again.
+    pub purges_moved: BTreeSet<osis_perm::paths::Scope>,
     pub stale_commits: BTreeSet<CommitId>,
     pub stale_all: bool,
     /// The local schema of each app AK, registered or written with here (`records::SCHEMAS`):
@@ -1522,22 +1529,20 @@ impl Core {
     /// only for those upstream of a changed edge's holder or a new record, and only down from
     /// its target or that record; what is below a new record has a new record chain.
     pub(crate) fn timelines_changed(&mut self, c: osis_perm::Changed) {
-        // a removal whose own change in the walk differs (it started or stopped applying, or
-        // lowers or audits otherwise: perm names every such commit, `Changed::commits`) is
-        // judged again for addenda: the one input a removal not applying reads
-        crate::flows::addenda::note_changed(self, &c.commits);
-        crate::flows::addenda::note_evaluated(self, &c.evaluated);
-        self.stale_things.extend(c.evaluated);
+        // an edge write that is new or whose status moved is judged again for addenda (the one
+        // input a removal not applying reads), and with its commit's other parts: a may-grant
+        // grant's boxes rest on how it applies (`validity::Judge::by_path`)
+        let commits: BTreeSet<CommitId> = c.ops.iter().map(|w| w.0).collect();
+        crate::flows::addenda::note_changed(self, &commits);
+        self.stale_commits.extend(commits);
+        // the deltas the walk's change reaches (`osis_perm::paths::Changed`)
+        self.stale_commits.extend(c.reached.iter().map(|w| w.0));
         self.stale_things.extend(self.ix.held.below(&c.created));
-        // a write may have stopped or started applying with no role of its author moving, and an
-        // invite grant's boxes rest on that (`validity::valid_on`)
-        self.stale_commits.extend(c.commits);
-        let holders: BTreeSet<Tid> = c.edges.iter().map(|p| p.0).chain(c.created.iter().copied()).collect();
-        let targets: BTreeSet<Tid> = c.edges.iter().map(|p| p.1).chain(c.created.iter().copied()).collect();
+        let holders: BTreeSet<Tid> = c.edges().map(|p| p.0).chain(c.created.iter().copied()).collect();
+        let targets: BTreeSet<Tid> = c.edges().map(|p| p.1).chain(c.created.iter().copied()).collect();
         let moved = self.ix.held.upstream(&holders);
         let under = self.ix.held.reach(&targets);
         crate::flows::addenda::note_roles_moved(self, &moved, &under);
-        self.stale_authors.extend(moved);
         // a role moved there, this node's maybe: a held purge-on-replace body may now be owed a
         // cover (`retention::settle_none`), an aspect weighed while this node could not write it
         // a weighing (`compact::Trigger::wake`)
@@ -1550,7 +1555,11 @@ impl Core {
                 }
             }
         }
+        // what rests on a thing's roles besides validity (`rejudge_once` reads it for purges)
+        self.stale_authors.extend(moved);
         self.stale_under.extend(under);
+        // purge requests whose right moved: the deltas each names (`retention::rejudge_purges`)
+        self.purges_moved.extend(c.walk.purges.iter().cloned());
     }
 
     /// The commits of `index` (by (thing, author)) on `under` by `authors`: O(the things and their
@@ -1560,8 +1569,8 @@ impl Core {
     }
 
     /// The commits on `under` by `authors` (`rejudge_once`), and those acting for one of `under`.
-    pub(crate) fn authored_under<'a>(&'a self, under: &'a BTreeSet<Tid>, authors: &'a BTreeSet<Tid>) -> (impl Iterator<Item = CommitId> + 'a, impl Iterator<Item = CommitId> + 'a) {
-        (Self::by_authors(&self.ix.by_thing, under, authors), Self::by_authors(&self.ix.by_actor, under, authors))
+    pub(crate) fn authored_under<'a>(&'a self, under: &'a BTreeSet<Tid>, authors: &'a BTreeSet<Tid>) -> impl Iterator<Item = CommitId> + 'a {
+        Self::by_authors(&self.ix.by_thing, under, authors)
     }
 
     /// The held commits acting for `actor` by another author (a range of `by_actor`).
@@ -1691,9 +1700,12 @@ impl Core {
     /// changed timelines wait for `rejudge_all`.
     pub fn update_timelines(&mut self) {
         let _s = osis_base::costs::span("timelines");
-        let touched = self.ix.held.take_touched();
-        if !touched.is_empty() {
-            let changed = self.timelines.update_touched(&self.ix.held, &touched);
+        if self.ix.held.is_touched() {
+            let touched = self.ix.held.take_touched();
+            let commits = self.ix.held.take_touched_commits();
+            let mut tl = std::mem::take(&mut self.timelines);
+            let changed = tl.update(&*self, &commits, &touched);
+            self.timelines = tl;
             let ever = self.ix.held.take_ever();
             self.timelines.ever_moved(&ever);
             self.timelines_changed(changed);
@@ -2247,6 +2259,7 @@ impl Core {
             stale_authors: BTreeSet::new(),
             addenda_on: true,
             stale_under: BTreeSet::new(),
+            purges_moved: BTreeSet::new(),
             stale_commits: BTreeSet::new(),
             stale_all: true,
             dirty: false,
@@ -2521,6 +2534,7 @@ impl Core {
         if self.ix.handed.contains_key(&id) {
             self.handed_due.insert(id);
         }
+        self.ix.held.touch_commit(id);
         self.ix.commits.insert(id, m);
         for (t, before) in bared {
             crate::apply::validity::setting_moved(self, &t, Some(before));
@@ -2559,6 +2573,7 @@ impl Core {
 
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
+        self.ix.held.touch_commit(*id);
         osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         self.note_kept(id, &m);
         let had = missing_of(&m);

@@ -6,7 +6,7 @@
 //! one opening nowhere here waits (`Wait`) and is opened again when a roles secret or a record
 //! that may open it moves (`refresh`) or a late encryption brings its key (`atomic::join_late`).
 
-use crate::engine::{Core, Tx};
+use crate::engine::{Core, Decided, Tx};
 use osis_base::Tid;
 use osis_commit::{Header, ThingPath};
 use std::collections::BTreeMap;
@@ -40,19 +40,27 @@ pub(crate) fn open(core: &Core, h: &Header, key: Option<&[u8; 32]>, i: usize, t:
     None
 }
 
-/// What this node decided of the path split commit header `h` states for each thing: `true` known
-/// and not bad, `false` bad; a thing whose path opens nowhere here yet is absent. `keys`: the path
+/// What this node decided of the path split commit header `h` states for each thing: its path,
+/// `None` where bad; a thing whose path opens nowhere here yet is absent. `keys`: the path
 /// keys its held encryptions carried. `None` where its path is in the clear (`View::paths`).
-pub(crate) fn decided(core: &Core, h: &Header, keys: &BTreeMap<usize, [u8; 32]>) -> Option<Arc<BTreeMap<Tid, bool>>> {
+pub(crate) fn decided(core: &Core, h: &Header, keys: &BTreeMap<usize, [u8; 32]>) -> Option<Arc<Decided>> {
     if !h.is_split() {
         return None;
     }
-    let out = h.things().into_iter().enumerate().filter_map(|(i, t)| Some((t, matches!(open(core, h, keys.get(&i), i, &t)?, ThingPath::Known(_))))).collect();
+    let out = h.things().into_iter().enumerate().filter_map(|(i, t)| Some((t, known(open(core, h, keys.get(&i), i, &t)?)))).collect();
     Some(Arc::new(out))
 }
 
+/// An opened entry as `Decided` keeps it.
+fn known(p: ThingPath) -> Option<osis_commit::Path> {
+    match p {
+        ThingPath::Known(p) => Some(p),
+        ThingPath::Bad => None,
+    }
+}
+
 /// Whether a split commit's view leaves a thing undecided (`decided`).
-pub(crate) fn undecided(h: &Header, paths: Option<&BTreeMap<Tid, bool>>) -> bool {
+pub(crate) fn undecided(h: &Header, paths: Option<&Decided>) -> bool {
     paths.is_some_and(|p| h.things().iter().any(|t| !p.contains_key(t)))
 }
 
@@ -185,7 +193,7 @@ fn reopen(tx: &mut Tx<'_>, id: &osis_base::CommitId) {
         if !now.contains_key(&t)
             && let Some(p) = open(tx.core, &h, None, i, &t)
         {
-            now.insert(t, matches!(p, ThingPath::Known(_)));
+            now.insert(t, known(p));
         }
     }
     if now.len() != before {
@@ -195,7 +203,7 @@ fn reopen(tx: &mut Tx<'_>, id: &osis_base::CommitId) {
 
 /// Commit `id`'s view with the paths decided here `paths`: its parts judged again, and it leaves
 /// `Indexes::paths_unknown` once none is undecided.
-pub(crate) fn set_paths(tx: &mut Tx<'_>, id: &osis_base::CommitId, paths: Option<Arc<BTreeMap<Tid, bool>>>) {
+pub(crate) fn set_paths(tx: &mut Tx<'_>, id: &osis_base::CommitId, paths: Option<Arc<Decided>>) {
     let Some(mut m) = tx.core.ix.commits.get(id).cloned() else { return };
     if !undecided(&m.header, paths.as_deref()) {
         tx.core.ix.paths_unknown.remove(id);
@@ -207,4 +215,5 @@ pub(crate) fn set_paths(tx: &mut Tx<'_>, id: &osis_base::CommitId, paths: Option
     tx.core.put_meta(*id, m);
     tx.core.index_validity(id);
     tx.core.stale_commits.insert(*id);
+    tx.core.ix.held.touch_commit(*id);
 }
