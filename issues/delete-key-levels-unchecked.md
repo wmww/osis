@@ -1,11 +1,10 @@
-# Receivers never check which delete keys a header lists per level
-> Summary: A node checks only how many delete keys a header lists per level and that one level-2 key serves the whole commit, never which keys (notes/sync-reasons.md, Delete keys). A hostile writer can list its own key at level 1 or 3 and so delete its own blob at nodes keeping S unread where only an admin's key was due (purge-by admin), or list junk so no admin can delete it there by levels (only S's head delete key can).
-> Priority: normal
-> Tags: security, sync
+# A commit's signer can delete its own blobs at stores whatever their purge-by
+> Summary: No node can check which delete keys a header lists per level (stated limit, spec/sync-hostile.md §2), so a commit's signer listing its own key deletes that commit's blobs at nodes keeping S unread even where purge-by is fixed `admin` (role-class, `created.0`, `addenda.0`), also after demotion. spec/requirements.md Deletion says such a node acts on a deletion "by anyone who ever held the right": does it accept "or by the data's own author"?
+> Priority: low
+> Tags: security, sync, tess-call
 
-Assessment: a writer, not a reader or stranger (the header is inside its own signed blob). It reaches only blobs it wrote: commitments are fixed by the writer's own prefix. Effects at nodes keeping S unread:
-- it erases its own writes there although purge-by gave that right to admins only; holders log each body back once, its next Delete stands (the same shape as issues/demoted-writer-deletes-at-stores.md);
-- it can make its blob deletable at stores by nobody but a holder of S's head delete key.
-Readers hold the body anyway, so nothing a reader holds is lost; a reader syncing only through such a store lacks it.
+Why it is a limit, not a fix (notes/sync-reasons.md, Delete keys): a node keeping S unread sees only blinded commitments (A' = h·A, the blind in the encrypted header), and readers cannot judge listed keys alike: a lagging writer honestly lists an older epoch's key, superseded keysets drop after `ROLE_KEEP`, and readers hold no admin or write secret. A check against what a reader holds would make validity depend on what it holds (honest old commits invalid at late joiners).
 
-What would fix it: readers judge a header's listed keys against the thing's published keys at each level (`keys.0`, spec/crypto.md §7) as part of the commit's validity, so a header listing the wrong keys makes the commit invalid for every reader; a store, which cannot read, then relies on readers dropping and deleting it. Check first whether engine validity already does part of this (the note's claim is the receivers' check in osis-blob and the store).
+Bound: only the commit's signer, holding S's sync key, over blobs of commits it signed; holders log each back once (spec/sync-judgement.md §4); readers keep their copies. For content deltas it adds nothing: purge-by there is the writer's choice (spec/commits.md §5), and `author_or_admin` gives the same at stores. Listing keys no one holds leaves the blobs deletable at stores only by S's delete key or at expiry, which is within "any writer can fill a sync ID's cap with junk" (notes/sync-reasons.md, Open).
+
+For Tess: the excess is on fixed `admin` purge-by aspects a non-admin writes (a may-grant holder's grant, a `secrets.0` box, a minted thing's `created.0`): their signer can keep them out of stores that cannot read, so a reader syncing only through such a store lacks them. Options: accept, with the requirements line reading "anyone who ever held the right, or the data's own author"; or raise it as a real requirements break (no design found that closes it). It also limits issues/demoted-writer-deletes-at-stores.md option 1: "anyone holding write now" does not hold for a signer that mis-listed its keys while a writer.
