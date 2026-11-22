@@ -7,7 +7,7 @@
 //! read the parts it understands. A thing references others in its values; a node holds what its
 //! node root reaches by strong references.
 //! A running osis with its own store is a **node**, and `Osis` is a handle to one. An **account** is
-//! an identity held by a set of nodes: a person's, a realm's, a bot's. Anything that can hold a role and
+//! an identity held by a set of nodes: a person's, an organization's, a bot's. Anything that can hold a role and
 //! act (an account, a node, a shared space) is an **actor**.
 //!
 //! # A first write

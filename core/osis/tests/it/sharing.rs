@@ -144,27 +144,27 @@ fn grant_never_lowers_and_set_role_writes_only_changes() {
     assert_eq!(commits(&alice), n, "no role, nothing to remove");
 }
 
-// notes/api.md Sharing and roles (`holders`): a holder through a realm is listed with the realm
-// between, at the least role along the way, after the realm itself (nearest first); an actor
+// notes/api.md Sharing and roles (`holders`): a holder through an organization is listed with the organization
+// between, at the least role along the way, after the organization itself (nearest first); an actor
 // with two ways in is listed once per way.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn holders_list_every_way_in_nearest_first() {
     let (alice, bob) = alice_knows_bob();
     let b = bob.me();
-    let (g, realm) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
-    alice.grant(realm, b, Role::Admin, Default::default()).unwrap();
-    alice.grant(g, realm, Role::Read, Default::default()).unwrap();
+    let (g, org) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
+    alice.grant(org, b, Role::Admin, Default::default()).unwrap();
+    alice.grant(g, org, Role::Read, Default::default()).unwrap();
     let hs = alice.holders(g).unwrap();
     let pos = |actor, through: &[osis::Tid]| hs.iter().position(|h| h.actor == actor && h.through == through).unwrap_or_else(|| panic!("{hs:?}"));
-    assert!(pos(realm, &[]) < pos(b, &[realm]), "nearest first: {hs:?}");
-    assert_eq!(hs[pos(b, &[realm])].role, Role::Read, "the least along the way");
-    assert_eq!(hs[pos(realm, &[])].kind, osis::HolderKind::Actor);
+    assert!(pos(org, &[]) < pos(b, &[org]), "nearest first: {hs:?}");
+    assert_eq!(hs[pos(b, &[org])].role, Role::Read, "the least along the way");
+    assert_eq!(hs[pos(org, &[])].kind, osis::HolderKind::Actor);
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
     let hs = alice.holders(g).unwrap();
     let ways: Vec<_> = hs.iter().filter(|h| h.actor == b).map(|h| (h.role, h.through.clone())).collect();
     assert_eq!(ways.len(), 2, "{hs:?}");
-    assert!(ways.contains(&(Role::Write, vec![])) && ways.contains(&(Role::Read, vec![realm])));
+    assert!(ways.contains(&(Role::Write, vec![])) && ways.contains(&(Role::Read, vec![org])));
 }
 
 // notes/api.md Sharing and roles (`leave`): leaving with no way in writes nothing; this node,
@@ -175,18 +175,18 @@ fn holders_list_every_way_in_nearest_first() {
 #[test]
 fn leave_ends_only_own_ways_and_refuses_before_writing() {
     let (alice, bob) = alice_knows_bob();
-    let (g, realm) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
+    let (g, org) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
     let n = commits(&alice);
-    alice.leave(realm, g, SetRoleOpts::default()).unwrap();
+    alice.leave(org, g, SetRoleOpts::default()).unwrap();
     assert_eq!(commits(&alice), n, "no way in: nothing written");
-    alice.grant(g, realm, Role::Write, Default::default()).unwrap();
+    alice.grant(g, org, Role::Write, Default::default()).unwrap();
     alice.make_link(g, Role::Write, Default::default()).unwrap();
     let k = alice.links_of(g).unwrap()[0].id.actor();
-    alice.grant(k, realm, Role::Read, Default::default()).unwrap();
+    alice.grant(k, org, Role::Read, Default::default()).unwrap();
     let n = commits(&alice);
-    assert!(matches!(alice.leave(realm, g, SetRoleOpts::default()), Err(Error::Invalid(_))));
+    assert!(matches!(alice.leave(org, g, SetRoleOpts::default()), Err(Error::Invalid(_))));
     assert_eq!(commits(&alice), n, "refused before anything is written");
-    assert!(alice.grants(k).unwrap().contains_key(&realm), "the join of the link stays");
+    assert!(alice.grants(k).unwrap().contains_key(&org), "the join of the link stays");
     // bob's own thing, alice a writer of it who makes a link: her leave ends her role only
     deliver(&alice, &bob);
     let t = bob.commit_with(|w| w.create_held()).unwrap();
@@ -294,7 +294,7 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
 
 // The owner's rule (notes/path-form.md; spec/wire.md §4 `Split`): one `Write` changing things its
 // signer reaches through different actors is one commit, never refused or split: Bob writes G,
-// which he reaches through realm H, and his own thing O, and makes a thing under G. Carol, who reads
+// which he reaches through organization H, and his own thing O, and makes a thing under G. Carol, who reads
 // both G and O, and Alice, who reads G alone, each read what that commit wrote on what they read.
 #[test]
 fn the_owners_rule_one_write_through_different_actors_is_one_commit_spec_wire_4() {
@@ -349,13 +349,13 @@ fn mesh(dbs: &[&osis::Osis]) {
 }
 
 // spec/requirements.md Permissions (a role M holds on G never depends on who is in M),
-// spec/crypto.md §4 (Carried demotions): Carol reads G, which realm M (Bob's, Alice a reader of it
+// spec/crypto.md §4 (Carried demotions): Carol reads G, which organization M (Bob's, Alice a reader of it
 // too) writes; Bob removes Erin, a writer of M. Carol's node holds the removal with M's new keyset
 // (it is how G's writers count Erin out), but it shows her no roster of M, before or after: only
 // G's, and M's to Bob. Once Carol reads M her watch on M's grants hears its roster, and hears it
 // hidden once she reads it no more.
 #[test]
-fn a_parents_reader_sees_no_roster_of_its_member_realm_spec_crypto_4() {
+fn a_parents_reader_sees_no_roster_of_its_member_org_spec_crypto_4() {
     let (alice, bob, carol, erin) = (db(1), db(2), db(3), db(4));
     let all = [&alice, &bob, &carol, &erin];
     mesh(&all);
@@ -363,7 +363,7 @@ fn a_parents_reader_sees_no_roster_of_its_member_realm_spec_crypto_4() {
     bob.grant(m, erin.me(), Role::Write, Default::default()).unwrap();
     bob.grant(m, alice.me(), Role::Read, Default::default()).unwrap();
     mesh(&all);
-    // alice holds the realm she reads
+    // alice holds the organization she reads
     alice.hold(m).unwrap();
     mesh(&all);
     let g = alice.commit_with(|w| w.create_held()).unwrap();

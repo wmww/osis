@@ -1415,7 +1415,7 @@ fn lowered_holder_adds_no_history_above_its_role_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Departure: a maker that no longer holds r): an honest maker whose role
-// on M runs through realm T (keyed) is lowered on T, then re-granted. The admin rotates M once
+// on M runs through holder T (keyed) is lowered on T, then re-granted. The admin rotates M once
 // for it; re-granted, P has departed nothing, and no further pass rotates M (bounded: the
 // maker's departure ends with its epoch, superseded).
 #[test]
@@ -1917,13 +1917,13 @@ fn unrecorded(lp: &mut LocalPeer, boxer: usize, other: usize, a: Tid) -> Vec<(Ti
     out
 }
 
-/// The world of the box-record tests: G {a1, W, A}, A {a1}, realms T0, T1 {t1, P, Q}; peers a1,
-/// t1, P, Q, W. Returns it with P, Q, the realms and A.
+/// The world of the box-record tests: G {a1, W, A}, A {a1}, holders T0, T1 {t1, P, Q}; peers a1,
+/// t1, P, Q, W. Returns it with P, Q, the holders and A.
 fn boxes_world() -> (LocalPeer, [Tid; 2], [Tid; 2], Tid) {
     let mut lp = synced(5);
     let [_, _, p, q, w] = std::array::from_fn(|i| lp.peers[i].engine.me());
-    let realms: Vec<Tid> = (0..2).map(|_| independent_thing(&mut lp, 1)).collect();
-    for t in &realms {
+    let holders: Vec<Tid> = (0..2).map(|_| independent_thing(&mut lp, 1)).collect();
+    for t in &holders {
         for h in [p, q] {
             lp.peers[1].engine.grant(t, &h, &edge(Role::Read)).unwrap();
         }
@@ -1934,7 +1934,7 @@ fn boxes_world() -> (LocalPeer, [Tid; 2], [Tid; 2], Tid) {
     lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
-    (lp, [p, q], [realms[0], realms[1]], a)
+    (lp, [p, q], [holders[0], holders[1]], a)
 }
 
 /// A step of the box-record tests on A.
@@ -1942,26 +1942,26 @@ fn boxes_world() -> (LocalPeer, [Tid; 2], [Tid; 2], Tid) {
 enum BoxStep {
     /// a1 grants `holder` read on A, or removes it when on A.
     Flip(Tid),
-    /// t1 grants member `m` on realm `t`, or removes it (rotating the realm) when on it.
+    /// t1 grants member `m` on holder `t`, or removes it (rotating the holder) when on it.
     Member(Tid, Tid),
     /// a1 rotates A.
     Rotate,
-    /// t1 rotates both realms.
-    RotateRealms,
+    /// t1 rotates both holders.
+    RotateHolders,
     /// a1 re-seals A.
     Reseal,
 }
 
 /// Runs `step` and syncs every peer; `Err` naming what it did and every box of A's current epochs
 /// to a holder actor left unrecorded at W, G's admin, if any.
-fn box_step(lp: &mut LocalPeer, realms: [Tid; 2], a: Tid, step: BoxStep) -> Result<(), String> {
+fn box_step(lp: &mut LocalPeer, holders: [Tid; 2], a: Tid, step: BoxStep) -> Result<(), String> {
     let did = match step {
         BoxStep::Flip(holder) if !lp.peers[0].engine.roster(&a).contains_key(&holder) => format!("grant {holder:?}: {:?}", lp.peers[0].engine.grant(&a, &holder, &edge(Role::Read)).map(|d| d.commits.len())),
         BoxStep::Flip(holder) => format!("remove {holder:?}: {:?}", lp.peers[0].engine.demote(&a, &Demotion { holder, new: None, retain: None }).map(|d| d.commits.len())),
         BoxStep::Member(t, m) if lp.peers[1].engine.roster(&t).contains_key(&m) => format!("t1 removes {m:?} from {t:?}: {:?}", lp.peers[1].engine.demote(&t, &Demotion { holder: m, new: None, retain: None }).map(|d| d.commits.len())),
         BoxStep::Member(t, m) => format!("t1 grants {m:?} on {t:?}: {:?}", lp.peers[1].engine.grant(&t, &m, &edge(Role::Read)).map(|d| d.commits.len())),
         BoxStep::Rotate => format!("a1 rotates: {:?}", lp.peers[0].engine.ensure_rotated(&a).map(|d| d.0.commits.len())),
-        BoxStep::RotateRealms => format!("t1 rotates: {:?}", realms.iter().map(|t| lp.peers[1].engine.ensure_rotated(t).map(|d| d.0.commits.len()).ok()).collect::<Vec<_>>()),
+        BoxStep::RotateHolders => format!("t1 rotates: {:?}", holders.iter().map(|t| lp.peers[1].engine.ensure_rotated(t).map(|d| d.0.commits.len()).ok()).collect::<Vec<_>>()),
         BoxStep::Reseal => format!("a1 re-seals: {:?}", lp.peers[0].engine.reseal_after_pass(&a).map(|d| d.commits.len())),
     };
     lp.sync_all().unwrap();
@@ -1970,23 +1970,23 @@ fn box_step(lp: &mut LocalPeer, realms: [Tid; 2], a: Tid, step: BoxStep) -> Resu
 }
 
 // spec/crypto.md §4 (Stale: every box to a holder actor is recorded beside it, whoever writes it):
-// after each of a1's grants on A (a realm, an account), a realm's member removed (the realm rotates)
-// and granted again, a1's re-seal and rotation of A, t1's rotation of the realms and a1's removals,
+// after each of a1's grants on A (a holder, an account), a holder's member removed (the holder rotates)
+// and granted again, a1's re-seal and rotation of A, t1's rotation of the holders and a1's removals,
 // W, G's admin, holds a record of every box at A's current epochs naming the keysets the box
 // names. (Which sync IDs carry the records is the osis `sharing` tests': LocalPeer delivers every
 // commit.)
 #[test]
 fn every_box_is_recorded_beside_it_spec_crypto_4() {
     use BoxStep::*;
-    let (mut lp, [p, q], realms, a) = boxes_world();
-    let steps = [Flip(realms[0]), Flip(p), Member(realms[0], q), Reseal, Member(realms[0], q), Flip(realms[1]), Rotate, Member(realms[1], p), RotateRealms, Reseal, Flip(p), Flip(realms[0])];
+    let (mut lp, [p, q], holders, a) = boxes_world();
+    let steps = [Flip(holders[0]), Flip(p), Member(holders[0], q), Reseal, Member(holders[0], q), Flip(holders[1]), Rotate, Member(holders[1], p), RotateHolders, Reseal, Flip(p), Flip(holders[0])];
     for (i, step) in steps.into_iter().enumerate() {
-        box_step(&mut lp, realms, a, step).unwrap_or_else(|e| panic!("step {i}, {e}"));
+        box_step(&mut lp, holders, a, step).unwrap_or_else(|e| panic!("step {i}, {e}"));
     }
 }
 
 // As above, over random steps: grants, removals, rotations and re-seals of A's holder actors
-// (realms and accounts), and removals inside the realms; 12 steps a seed. Small size (a tenth of
+// (holders and accounts), and removals inside the holders; 12 steps a seed. Small size (a tenth of
 // large) or large under `OSIS_FULL=1`; seeds: OSIS_ROTATION_START, OSIS_ROTATION_SEEDS.
 #[test]
 #[ignore = "property"]
@@ -1995,19 +1995,19 @@ fn every_box_is_recorded_beside_it_randomized_plain_spec_crypto_4() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_ROTATION_START", "OSIS_ROTATION_SEEDS", osis_base::testenv::large(0..60));
     let replay = |s: u64| format!("OSIS_ROTATION_START={s} OSIS_ROTATION_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact {name}");
     s.run(name, replay, |seed| {
-        let (mut lp, [p, q], realms, a) = boxes_world();
+        let (mut lp, [p, q], holders, a) = boxes_world();
         let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         for i in 0..12 {
             let pick = rng.next(6);
-            let holder = [p, q, realms[0], realms[1]][rng.next(4) as usize];
+            let holder = [p, q, holders[0], holders[1]][rng.next(4) as usize];
             let step = match pick {
                 0 | 1 => BoxStep::Flip(holder),
-                2 => BoxStep::Member(realms[rng.next(2) as usize], if rng.next(2) == 0 { p } else { q }),
+                2 => BoxStep::Member(holders[rng.next(2) as usize], if rng.next(2) == 0 { p } else { q }),
                 3 => BoxStep::Rotate,
-                4 => BoxStep::RotateRealms,
+                4 => BoxStep::RotateHolders,
                 _ => BoxStep::Reseal,
             };
-            box_step(&mut lp, realms, a, step).unwrap_or_else(|e| panic!("seed {seed} step {i}, {e}"));
+            box_step(&mut lp, holders, a, step).unwrap_or_else(|e| panic!("seed {seed} step {i}, {e}"));
         }
     });
 }
@@ -2016,22 +2016,22 @@ fn every_box_is_recorded_beside_it_randomized_plain_spec_crypto_4() {
 // replacing the record of an honest grant's box (naming a keyset nobody holds) hides nothing:
 // every node reads the records
 // of every valid body noted at the epoch, so the honest one still makes the epoch stale once the
-// realm moves on. A false record can only add staleness, which A's next rotation ends.
+// holder moves on. A false record can only add staleness, which A's next rotation ends.
 #[test]
 fn a_false_record_hides_no_honest_one_spec_crypto_4() {
     let mut lp = synced(4);
     let [_, _, w, d] = std::array::from_fn(|i| lp.peers[i].engine.me());
-    let realm = independent_thing(&mut lp, 1);
-    lp.peers[1].engine.grant(&realm, &d, &edge(Role::Read)).unwrap();
+    let holder = independent_thing(&mut lp, 1);
+    lp.peers[1].engine.grant(&holder, &d, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let a = independent_thing(&mut lp, 0);
     lp.peers[0].engine.grant(&a, &w, &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.grant(&a, &realm, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&a, &holder, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let e = newest_read(&lp, 0, a).unwrap();
-    let k = sealed_at(&mut lp, 0, a, realm).unwrap();
-    let key = osis_keys::aspects::box_key(realm, Role::Read, &e);
-    let fake = Epoch::derive(&realm, Role::Read, 99, &osis_crypto::Secret32::from_bytes([5; 32])).unwrap();
+    let k = sealed_at(&mut lp, 0, a, holder).unwrap();
+    let key = osis_keys::aspects::box_key(holder, Role::Read, &e);
+    let fake = Epoch::derive(&holder, Role::Read, 99, &osis_crypto::Secret32::from_bytes([5; 32])).unwrap();
     lp.peers[2]
         .engine
         .run(|tx| {
@@ -2043,17 +2043,17 @@ fn a_false_record_hides_no_honest_one_spec_crypto_4() {
         .unwrap();
     lp.sync_all().unwrap();
     for i in [0, 3] {
-        let rec = lp.peers[i].engine.core.ix.sealed.get(&(a, Role::Read, e)).unwrap().keysets.get(&realm).cloned().unwrap();
+        let rec = lp.peers[i].engine.core.ix.sealed.get(&(a, Role::Read, e)).unwrap().keysets.get(&holder).cloned().unwrap();
         assert!(rec.contains(&k) && rec.contains(&fake), "peer {i}: both records read: {rec:?}");
     }
-    // the realm moves on: A's epoch is stale by the honest record
-    removal(&mut lp, 1, realm, d);
+    // the holder moves on: A's epoch is stale by the honest record
+    removal(&mut lp, 1, holder, d);
     lp.sync_all().unwrap();
     let stale = lp.peers[3].engine.run(|tx| super::members::stale_at(tx, &a, Role::Read, &e)).unwrap();
     assert!(stale, "A's epoch stale where its records are read");
 }
 
-// spec/crypto.md §4 (Stale), counted: a realm's grant on A records only its own boxes, one per
+// spec/crypto.md §4 (Stale), counted: a holder's grant on A records only its own boxes, one per
 // role and current epoch, whatever A's size: the same at 2 and at 20 holder actors on A. (A
 // rotation records each holder actor it boxes, as it boxes each.)
 #[test]
@@ -2076,7 +2076,7 @@ fn a_grants_records_do_not_grow_with_the_actor_spec_crypto_4() {
 
 // spec/crypto.md §4 (Carried: with the keysets a commit's boxes name go those epochs' box
 // records; Stale): G's grant boxing A at its epoch e is logged (the sync facade's
-// `logged_with`), beside e's rotation commit, with the commit recording A's box to realm M at e
+// `logged_with`), beside e's rotation commit, with the commit recording A's box to holder M at e
 // (M's grant on A), whose `keys.0` holds a box record and no keyset. A node reading
 // G's sync IDs but none of A's holds e's records so. Certificates carry A's newest keysets only, so
 // for a keyset of A below its newest n (a fork G seals jointly) this is the one way they arrive.
@@ -2095,7 +2095,7 @@ fn a_keysets_records_travel_with_it_spec_crypto_4() {
 }
 
 // spec/permissions.md §4 (current `keys.0` commits: the newest writing more than box records):
-// a deposit seed refresh, then realm grants on A recording their boxes; A's current `keys.0`
+// a deposit seed refresh, then holder grants on A recording their boxes; A's current `keys.0`
 // commits still carry the refresh (the inbox and deposit seed a stranded report deposits under).
 #[test]
 fn box_records_do_not_displace_the_newest_card_spec_permissions_4() {

@@ -31,7 +31,7 @@ fn live(e: &Grant, now: osis::Time) -> bool {
 }
 
 /// Who can see `t`: its holders (its mint admin among them while that edge stands), through
-/// the things holding roles (shared tags, a home, a realm) down to people, the actors no one holds
+/// the things holding roles (shared tags, a home, an organization) down to people, the actors no one holds
 /// a role on; me, my nodes and my account root are "you". Grants with an `until` count until it
 /// passes.
 pub fn reach(cx: &Reader, t: Tid) -> Result<Reach> {

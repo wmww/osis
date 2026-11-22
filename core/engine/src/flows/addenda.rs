@@ -130,7 +130,7 @@ pub(crate) fn note_applied(core: &mut Core, id: &CommitId, h: &osis_commit::Head
 /// candidate, only by a commit ordered no later than R moving a path of a party
 /// that reaches a holder R names or R's author (`Held::reach` climbs to what a party holds): a
 /// commit of its own, or an edge write whose holder it is or stands behind (`Held::upstream`):
-/// a member joining a realm R names, a named holder's or a member's other path to what R lowers
+/// a member joining a holder R names, a named holder's or a member's other path to what R lowers
 /// taken away, the remover's authority lowered. So the climb is from the signer, the edge writes'
 /// targets and everything upstream of their holders. Live traffic (stamped after every filed
 /// removal) costs a comparison, and a backdated or late commit that climb; one with no edge
@@ -172,7 +172,7 @@ fn wake(core: &mut Core, id: &CommitId, signer: Tid, ts: Ts) {
 
 /// Files removal `r` (its edge commit `rc`) under the parties a commit ordered before it must
 /// reach to change what it reads (`wake`): the holders its edge writes name and its author. One
-/// entry each, however many parties stand behind a holder (a realm's members reach it).
+/// entry each, however many parties stand behind a holder (a holder's members reach it).
 fn file_wake(core: &mut Core, r: &CommitId) {
     let Some(rc) = core.ix.held.edge_commit(r) else { return };
     let ts = rc.ts;

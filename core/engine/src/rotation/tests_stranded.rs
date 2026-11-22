@@ -9,9 +9,9 @@ use crate::local_peer::LocalPeer;
 use osis_base::{CommitId, Role, Tid};
 use std::collections::BTreeSet;
 
-/// Peer 2's realm T holds read on G, an independent thing of peer 0's; everyone synced. (lp, G, T)
-fn realm_on_g() -> (LocalPeer, Tid, Tid) {
-    let (lp, (g, t)) = LocalPeer::cached("rotation::tests_stranded::realm_on_g", || {
+/// Peer 2's holder T holds read on G, an independent thing of peer 0's; everyone synced. (lp, G, T)
+fn holder_on_g() -> (LocalPeer, Tid, Tid) {
+    let (lp, (g, t)) = LocalPeer::cached("rotation::tests_stranded::holder_on_g", || {
         let mut lp = synced(3);
         let t = independent_thing(&mut lp, 2);
         lp.sync_all().unwrap();
@@ -36,7 +36,7 @@ fn ids_of(keys: &osis_blob::HolderKeys) -> Vec<CommitId> {
 // unseen by peer 0; the holder keys of T from peer 2 bring T's new keyset to peer 0.
 #[test]
 fn holder_keys_bring_the_holders_new_keyset_spec_permissions_4() {
-    let (mut lp, _, t) = realm_on_g();
+    let (mut lp, _, t) = holder_on_g();
     let k = lp.peers[2].engine.rotate_leaving_out(&t, &[Role::Read], &[]).unwrap().unwrap();
     assert!(lp.peers[0].engine.header(&k).is_none(), "peer 0 lacks T's new keyset");
     let keys = lp.peers[2].engine.holder_keys(&t).unwrap();
@@ -51,7 +51,7 @@ fn holder_keys_bring_the_holders_new_keyset_spec_permissions_4() {
 // none of them; X's keys named under X itself are taken only as a holder's (X holds nothing).
 #[test]
 fn holder_keys_take_nothing_off_the_chain_spec_permissions_4() {
-    let (mut lp, _, t) = realm_on_g();
+    let (mut lp, _, t) = holder_on_g();
     let x = independent_thing(&mut lp, 2);
     let keys = lp.peers[2].engine.holder_keys(&x).unwrap();
     let mut ids = ids_of(&keys);
@@ -81,7 +81,7 @@ fn an_asked_reseal_writes_only_what_differs_spec_permissions_3() {
 // peer 0 without it.
 #[test]
 fn holder_keys_take_no_edge_write_off_the_chain_spec_permissions_4() {
-    let (mut lp, _, t) = realm_on_g();
+    let (mut lp, _, t) = holder_on_g();
     let x = independent_thing(&mut lp, 2);
     lp.sync_all().unwrap();
     let p1 = lp.peers[1].engine.me();

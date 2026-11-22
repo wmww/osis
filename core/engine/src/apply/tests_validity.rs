@@ -100,8 +100,8 @@ mod tests {
         assert!(lp.peers[0].engine.core.ix.grant_overreach.contains(&(id, ai)));
     }
     // spec/permissions.md §2 (may-grant grant: its keys.0 only the records of its boxes), spec/crypto.md §4 (Stale: every box to a holder
-    // actor is recorded beside it, whoever boxes): an invite holder granting a realm carries the
-    // realm's box records in `keys.0` as puts keyed to its grantee: valid at a receiver, which
+    // actor is recorded beside it, whoever boxes): an invite holder granting an organization carries the
+    // organization's box records in `keys.0` as puts keyed to its grantee: valid at a receiver, which
     // notes them. One also recording a box keyed to another holder gets no invite exemption.
     #[test]
     fn invite_grant_records_its_grantees_boxes_spec_perm_2() {
@@ -112,19 +112,19 @@ mod tests {
         let read = ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
         let mut m = Mutation::new();
-        let realm = lp.peers[2].engine.new_thing(&mut m, c);
+        let holder = lp.peers[2].engine.new_thing(&mut m, c);
         lp.peers[2].commit(m).unwrap();
-        lp.hold(realm);
-        lp.peers[2].engine.make_independent(&realm).unwrap();
+        lp.hold(holder);
+        lp.peers[2].engine.make_independent(&holder).unwrap();
         lp.sync_all().unwrap();
-        let done = lp.peers[1].engine.grant(&t, &realm, &read).unwrap();
+        let done = lp.peers[1].engine.grant(&t, &holder, &read).unwrap();
         let id = *done.commits.last().unwrap();
         lp.sync_all().unwrap();
         let h = lp.peers[3].engine.header(&id).unwrap();
         let ki = h.aspects.iter().position(|x| x.ak.as_str() == "keys.0" && x.tid == t).unwrap();
         assert!(lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid()[ki], "the invite grant's records are valid");
-        let noted = lp.peers[3].engine.core.ix.sealed.iter().any(|(k, v)| k.0 == t && v.by.contains(&id) && v.keysets.contains_key(&realm));
-        assert!(noted, "the receiver notes the realm's records");
+        let noted = lp.peers[3].engine.core.ix.sealed.iter().any(|(k, v)| k.0 == t && v.by.contains(&id) && v.keysets.contains_key(&holder));
+        assert!(noted, "the receiver notes the organization's records");
         // the invite holder grants c and records a box keyed to the admin as well
         let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let ak = s.boxes.keys().find(|k| k.holder == osis_base::Weak(a)).unwrap().clone();

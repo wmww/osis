@@ -771,18 +771,18 @@ fn a_first_sync_is_linear_spec_commits_4() {
 }
 
 /// n one-element commits on t by its mint admin (0); B (1) writes one, received by C (2)
-/// alone; 0 removes B and C's addendum keeps B's add (held at 0 if `with`). Realm T (a thing 0
+/// alone; 0 removes B and C's addendum keeps B's add (held at 0 if `with`). Holder T (a thing 0
 /// makes, 3 its admin) holds write on t and gains a member E (4) by 3: the work of that grant
 /// arriving at 0.
 fn addenda_rejudge(n: usize, with: bool) -> Work {
     // the world up to C's addendum, alike with and without it: built once per n
-    let (mut lp, (t, realm, ids)) = LocalPeer::cached(&format!("scale::addenda_rejudge/{n}"), || {
+    let (mut lp, (t, holder, ids)) = LocalPeer::cached(&format!("scale::addenda_rejudge/{n}"), || {
         use crate::common::TAGS;
         let (mut lp, t) = shared_thing(5, &[Role::Write, Role::Write, Role::Write]);
         let ids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
-        let realm = new_thing(&mut lp, 0);
-        set_edge(&mut lp.peers[0].engine, realm, ids[3], Some(edge(Role::Admin)), None);
-        set_edge(&mut lp.peers[0].engine, t, realm, Some(edge(Role::Write)), None);
+        let holder = new_thing(&mut lp, 0);
+        set_edge(&mut lp.peers[0].engine, holder, ids[3], Some(edge(Role::Admin)), None);
+        set_edge(&mut lp.peers[0].engine, t, holder, Some(edge(Role::Write)), None);
         lp.sync_all().unwrap();
         for i in 0..n {
             add(&mut lp, 0, t, &TAGS, format!("e{i}"));
@@ -797,7 +797,7 @@ fn addenda_rejudge(n: usize, with: bool) -> Work {
         lp.advance(1_000);
         let pk = lp.packages_for(0, 2).unwrap().into_iter().find(|p| p.id == rv).unwrap();
         lp.deliver(2, &pk).unwrap();
-        (lp, (t, realm, ids))
+        (lp, (t, holder, ids))
     });
     if with {
         // C's addendum, then B's add again once vouched for
@@ -806,7 +806,7 @@ fn addenda_rejudge(n: usize, with: bool) -> Work {
     }
     let Some(Value::Set(v)) = lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap() else { panic!() };
     assert_eq!(v.len(), n + usize::from(with), "C's addendum keeps B's add");
-    let g = set_edge(&mut lp.peers[3].engine, realm, ids[4], Some(edge(Role::Write)), None);
+    let g = set_edge(&mut lp.peers[3].engine, holder, ids[4], Some(edge(Role::Write)), None);
     let pk = lp.packages_for(3, 0).unwrap().into_iter().find(|p| p.id == g).unwrap();
     measured_at(&mut lp, 0, |lp| lp.deliver(0, &pk).unwrap()).1
 }

@@ -931,7 +931,7 @@ mod tests {
         assert_eq!(of_y(&mut lp, t, y, &on_y), (false, false), "Y's record or roster under T");
     }
 
-    // spec/permissions.md §4 (Role changes travel), spec/sync-set.md §2 Cost: granting read realm
+    // spec/permissions.md §4 (Role changes travel), spec/sync-set.md §2 Cost: granting read holder
     // actor X on one more thing places X's chain to it alone: the `held on` work of the last of n
     // grants is the same at n and 10n (X's chains as placed checked whole after).
     #[test]

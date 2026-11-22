@@ -282,38 +282,38 @@ fn forge_addendum(lp: &mut LocalPeer, by: usize, t: Tid, r: CommitId, lists: &[C
     id
 }
 
-/// A realm T (a thing peer 3 makes and administers) holds write on N; Bob (1) is a member of T;
+/// A holder T (a thing peer 3 makes and administers) holds write on N; Bob (1) is a member of T;
 /// Mallory (2) writes N and only reads T, as Alice (0) does. Alice (0) removes T from N; Bob's write on N acting for T
 /// reached nobody before the removal. Returns (lp, N, T, removal, Bob's write).
-fn realm_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
-    let (lp, (n, realm, r, e)) = LocalPeer::cached("apply::tests_addenda::realm_world", || {
-        let (lp, n, realm, r, e) = build_realm();
-        (lp, (n, realm, r, e))
+fn holder_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
+    let (lp, (n, holder, r, e)) = LocalPeer::cached("apply::tests_addenda::holder_world", || {
+        let (lp, n, holder, r, e) = build_holder();
+        (lp, (n, holder, r, e))
     });
-    (lp, n, realm, r, e)
+    (lp, n, holder, r, e)
 }
 
-fn build_realm() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
+fn build_holder() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     let (mut lp, n) = build(4, &[Role::Read, Role::Write]);
     let (bob, me3) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
     let mut m = Mutation::new();
-    let realm = lp.peers[3].engine.new_thing(&mut m, me3);
+    let holder = lp.peers[3].engine.new_thing(&mut m, me3);
     lp.peers[3].commit(m).unwrap();
-    lp.hold(realm);
+    lp.hold(holder);
     lp.sync_all().unwrap();
-    lp.peers[0].engine.grant(&n, &realm, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&n, &holder, &edge(Role::Write)).unwrap();
     let mut m = Mutation::new();
-    m.op(realm, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(bob))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
+    m.op(holder, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(bob))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
     lp.peers[3].commit(m).unwrap().unwrap();
     // Alice and Mallory read T: they hold what is written on it
-    lp.share(3, realm);
+    lp.share(3, holder);
     lp.sync_all().unwrap();
     lp.advance(1000);
-    let e = write_as(&mut lp, 1, realm, n, "x:e.0", 7);
+    let e = write_as(&mut lp, 1, holder, n, "x:e.0", 7);
     lp.advance(1000);
-    let r = *lp.peers[0].engine.demote(&n, &Demotion { holder: realm, new: None, retain: None }).unwrap().commits.last().unwrap();
+    let r = *lp.peers[0].engine.demote(&n, &Demotion { holder, new: None, retain: None }).unwrap().commits.last().unwrap();
     lp.advance(1000);
-    (lp, n, realm, r, e)
+    (lp, n, holder, r, e)
 }
 
 // spec/permissions.md §5.2 (addenda: with the old walk's Acting check, notes/redesign-plan.md, Interim in code): a lying writer of N (Mallory, received
@@ -322,8 +322,8 @@ fn build_realm() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
 // holder acting for itself: a writer can always vouch for the removed side's earlier writes on
 // a thing it writes (stated limit, notes/revocation.md).
 #[test]
-fn lying_writer_vouches_for_a_removed_realms_write_spec_perm_5_2() {
-    let (mut lp, n, _, r, e) = realm_world();
+fn lying_writer_vouches_for_a_removed_holders_write_spec_perm_5_2() {
+    let (mut lp, n, _, r, e) = holder_world();
     lp.sync(1, 2).unwrap();
     lp.sync(0, 2).unwrap();
     assert!(!valid(&lp, 2, &e, n, "x:e.0"), "Mallory received it after the removal");
@@ -340,8 +340,8 @@ fn lying_writer_vouches_for_a_removed_realms_write_spec_perm_5_2() {
 // commit, until a writer of T vouches on T.
 #[test]
 fn acting_unvouched_invalidates_every_part_spec_perm_5_2() {
-    let (mut lp, n, realm, r, e) = realm_world();
-    let rt = remove(&mut lp, 3, realm, 1);
+    let (mut lp, n, holder, r, e) = holder_world();
+    let rt = remove(&mut lp, 3, holder, 1);
     lp.sync(1, 2).unwrap();
     lp.sync(0, 2).unwrap();
     lp.sync(3, 2).unwrap();
@@ -350,8 +350,8 @@ fn acting_unvouched_invalidates_every_part_spec_perm_5_2() {
     for p in [0, 2, 3] {
         assert!(!valid(&lp, p, &e, n, "x:e.0"), "peer {p}: Acting unvouched");
     }
-    // the realm's own node vouches on T (a writer of T)
-    forge_addendum(&mut lp, 3, realm, rt, &[e]);
+    // the holder's own node vouches on T (a writer of T)
+    forge_addendum(&mut lp, 3, holder, rt, &[e]);
     lp.sync_all().unwrap();
     for p in [0, 2, 3] {
         assert!(valid(&lp, p, &e, n, "x:e.0"), "peer {p}: both parts vouched");
@@ -1410,7 +1410,7 @@ fn a_role_change_elsewhere_rescans_no_candidates_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.2 (Addenda; Writing: whenever its own current view shows a content
-// commit of X ordered before R...): Bob (1) holds write on `t` directly and through realm Q
+// commit of X ordered before R...): Bob (1) holds write on `t` directly and through holder Q
 // (Dave's thing, Bob its admin). Bob writes e, received by Carol (2) alone. Dave (3), an admin
 // of `t`, removes Q's grant (R1); then Alice (0) removes Bob's own grant (R), holding neither
 // e nor R1. Carol receives R first: Bob keeps write through Q, so R demotes nobody below write
@@ -1454,32 +1454,32 @@ fn a_late_removal_of_anothers_path_makes_an_addendum_owed_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (Addenda; Writing): Yan (1), a reader of `t`, holds write on it through two realms
+// spec/permissions.md §5.2 (Addenda; Writing): Yan (1), a reader of `t`, holds write on it through two holders
 // it minted, X and P. Yan writes e, received by Carol (2) alone. Dave removes
 // P's grant (R1); then Alice (0) removes X's (R), holding neither e nor R1. Carol receives R
 // first: Yan keeps write through P, so nothing is owed. R1 then reaches her, ordered before R:
 // Yan falls below write at R, and Carol owes an addendum for e, though R1 names neither X nor
 // Alice and Yan is filed nowhere. e stands at every node.
 #[test]
-fn a_late_removal_of_a_members_other_realm_makes_an_addendum_owed_spec_perm_5_2() {
+fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2() {
     let (mut lp, t) = world(4, &[Role::Read, Role::Write, Role::Admin]);
     let yan = lp.peers[1].engine.me();
-    let mut realms = Vec::new();
+    let mut holders = Vec::new();
     for _ in 0..2 {
         let mut m = Mutation::new();
         let q = lp.peers[1].engine.new_thing(&mut m, yan);
         lp.peers[1].commit(m).unwrap();
         lp.hold(q);
-        realms.push(q);
+        holders.push(q);
     }
     lp.sync_all().unwrap();
-    for q in &realms {
+    for q in &holders {
         lp.peers[0].engine.grant(&t, q, &edge(Role::Write)).unwrap();
     }
     lp.advance(1000);
     lp.sync_all().unwrap();
-    let (x, p) = (realms[0], realms[1]);
-    assert_eq!(lp.peers[2].engine.core.timelines.role(&yan, &t, osis_perm::At::END), Some(Role::Write), "Yan writes through the realms");
+    let (x, p) = (holders[0], holders[1]);
+    assert_eq!(lp.peers[2].engine.core.timelines.role(&yan, &t, osis_perm::At::END), Some(Role::Write), "Yan writes through the holders");
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     lp.sync(1, 2).unwrap();
     let r1 = *lp.peers[3].engine.demote(&t, &Demotion { holder: p, new: None, retain: None }).unwrap().commits.last().unwrap();

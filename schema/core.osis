@@ -65,7 +65,7 @@ aspect tag.0: struct {
 
 // ---- Rights ----
 // Who may read, write or administer a thing. Rights are granted to actors (people, devices,
-// realms) and pass along chains of grants (spec/permissions.md).
+// organizations) and pass along chains of grants (spec/permissions.md).
 
 /// Each role includes the ones below it: sync < read < write < admin. Sync holds and serves the
 /// thing's data without reading it.

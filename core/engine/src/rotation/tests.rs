@@ -2545,7 +2545,7 @@ fn departs_mark_void_elsewhere_through_holder_actor_spec_crypto_4() {
     assert!(!(opens && removed_reader_reads(&mut lp, g, &tids, 4)), "A encrypts under P's epoch, which V re-sealed to M");
 }
 
-/// D (0's) whose admin is T, a dependent thing of realm H (granted past the writer rules); H's writers
+/// D (0's) whose admin is T, a dependent thing of holder H (granted past the writer rules); H's writers
 /// W1 (1), W2 (2) read D; with a peer 3, it is a direct admin of D. D's maker (0) has left.
 /// (lp, H, T, D).
 fn admin_through_a_dependent_thing(n: usize) -> (LocalPeer, Tid, Tid, Tid) {
@@ -2586,7 +2586,7 @@ fn admin_through_a_dependent_thing(n: usize) -> (LocalPeer, Tid, Tid, Tid) {
 
 // spec/crypto.md §4 (orphaned): a rotation due only because an epoch is orphaned is made only
 // when its new epoch boxes a holder that may rotate the role, so orphaned rotations do not trade
-// back and forth. D's admin is T, a thing of realm H with no keyset (granted past the writer
+// back and forth. D's admin is T, a thing of holder H with no keyset (granted past the writer
 // rules: a dependent holder actor, as a thing whose only keyset part turned invalid is), so every
 // rotation leaves T out; H's writers W1, W2 read D directly and write it through T. D's maker
 // leaves: W1 rotates (its departure), a write epoch boxed to nobody that may rotate write, so
@@ -2620,7 +2620,7 @@ fn orphaned_rotations_do_not_trade_spec_crypto_4() {
 
 // spec/crypto.md §4 (Encrypting under: a current epoch whose secret the node lacks, ordered
 // after a departure, is the rotators' boxed at it to judge): rotations stop once every epoch is
-// covered where it is read. D's admins are A (direct) and T, a dependent thing of realm H (no
+// covered where it is read. D's admins are A (direct) and T, a dependent thing of holder H (no
 // keyset: every rotation leaves it out); H's writers W1, W2 read D directly, so each may rotate
 // D's write role and holds only the write epochs it makes. D's maker leaves; W1 rotates. Each
 // write epoch boxes A, which judges it; W2, lacking W1's, rotated, then W1, lacking W2's, for good.

@@ -885,11 +885,11 @@ fn read_box_at(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid) -> Option<osis_cryp
 
 // spec/crypto.md §4 (Encrypting under: an account's epochs minted before a node's removal from
 // its account root do not cover it): Carol (peer 0) removes her lost node L (peer 1) from her
-// account P, which rotates P. T, a realm of peer 2 she only reads, still boxes P at P's first
+// account P, which rotates P. T, an organization of peer 2's she only reads, still boxes P at P's first
 // epoch, whose seed L holds. Her X boxes T at that epoch of T, so she rotates X leaving T out and
 // L opens nothing of it; once T's admin moves T onto P's new epoch, she seals T again.
 #[test]
-fn lost_node_opens_nothing_through_a_realm_its_account_reads_spec_crypto_4() {
+fn lost_node_opens_nothing_through_a_holder_its_account_reads_spec_crypto_4() {
     use super::tests::{all_boxed, independent_thing, held_by, leaked, newest_read, openable, settle};
     let (mut lp, a, _) = world(3, 2);
     let p = a.account;
