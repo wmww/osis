@@ -453,7 +453,8 @@ type ClassWorld = (&'static str, Option<&'static str>, LocalPeer);
 /// The classes' worlds this binary builds (notes/a1-spec/README.md step 3, For the wiring).
 fn class_worlds() -> Vec<ClassWorld> {
     let mut out: Vec<ClassWorld> = vec![("representative", None, world(false).lp)];
-    // the last-admin rule as a validity rule: A, T's mint admin, and B, granted admin, leave at once
+    // A, T's mint admin, and B, granted admin, leave at once: no reader judges a last admin
+    // (spec/permissions.md §1, The last admin), so both walks apply both leaves
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
     grant(&mut lp, 0, t, ps[1], edge_of(Role::Admin));
@@ -462,7 +463,7 @@ fn class_worlds() -> Vec<ClassWorld> {
     }
     lp.advance(1000);
     spread(&mut lp);
-    out.push(("concurrent leaves", Some("a leave whose named remaining admin left first applies nothing"), lp));
+    out.push(("concurrent leaves", None, lp));
     // a single-use link redeemed by a forger first, unseen by the sharer, then by P1, whom the
     // sharer saw; the sharer's removal of L lists P1's redemption alone: the forger's grant falls
     // and its leave with it, P1 is in (notes/a1-spec/README.md Open 23)
@@ -529,6 +530,15 @@ fn class_worlds() -> Vec<ClassWorld> {
     lp.advance(1000);
     spread(&mut lp);
     out.push(("a writer's two invites in one commit", None, lp));
+    // an invite level below its grant's role: B holds write with invite read on T and grants C
+    // read by it; the new walk reads the level as no may-grant flag (spec/permissions.md §2), so
+    // the grant applies nowhere there
+    let (mut lp, ps) = people(3);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    spread(&mut lp);
+    grant(&mut lp, 0, t, ps[1], invite(Role::Write, Role::Read));
+    grant(&mut lp, 1, t, ps[2], edge_of(Role::Read));
+    out.push(("an invite below its grant's role", Some("an invite level below the grant's role is no flag"), lp));
     out
 }
 
@@ -550,8 +560,8 @@ fn new_walk_differs_only_by_design() {
             }
             let fits = match class {
                 None => d.is_empty(),
-                Some(c) if c.starts_with("a leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
-                Some(c) if c.starts_with("a no-op leave") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Dropped)")),
+                Some(c) if c.starts_with("an invite level") => !d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Unapplied)") || x.contains("roles on")),
+                Some(c) if c.starts_with("a no-op leave") =>!d.is_empty() && d.iter().all(|x| x.contains("old true, new Some(Dropped)")),
                 Some(c) => panic!("no rule for class {c}"),
             };
             let shown = class.is_none() || lp.peers.iter().any(|p| !walks_differ(&p.engine).is_empty());
