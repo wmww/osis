@@ -1475,6 +1475,67 @@ fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
     assert!(w.engine(0).read_secrets(&t0).is_empty(), "T0's secrets go");
 }
 
+// spec/permissions.md §3 (Retain: an ended way judged over the writes before its removal),
+// spec/crypto.md §4 Key access: Bob grants Alice read on T1 only; his offline sibling grants T0 read
+// on T1, then Bob T1 read on T0 (keyed at Bob). Bob removes T1's grant saying retain: Alice keeps a
+// copy of T0. The sibling's grant arrives, ordered first: T1's grant was keyless before its removal,
+// so the copy goes, as at a node that held every write together.
+#[test]
+fn an_ended_way_found_keyless_drops_its_copy_spec_permissions_3() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    let t1 = make(&mut w, 1, None, "t1");
+    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+    for t in [t0, t1] {
+        strong(&mut w, 0, None, t, true);
+    }
+    w.run();
+    w.partition(0, 2);
+    w.partition(1, 2);
+    w.write(2, |e| e.grant(&t1, &t0, &edge(Role::Read))).unwrap();
+    w.advance(1000);
+    w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
+    w.write(1, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: t1, new: None, retain: Some(true) })).unwrap();
+    w.run();
+    assert_eq!(w.engine(0).kept_copies(), vec![t0], "a copy of T0 kept: {}", w.why_role(0, &t0));
+    w.heal();
+    w.run();
+    assert!(w.engine(0).roster(&t1).contains_key(&t0), "Alice holds the sibling's grant");
+    assert!(w.engine(0).kept_copies().is_empty(), "the copy of T0 goes: {}", w.why_role(0, &t0));
+    assert_eq!(value(&mut w, 0, &t0), None, "Alice reads T0 no more");
+    assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
+}
+
+// spec/permissions.md §5.1, spec/sync-set.md: Bob's offline sibling grants T0 read on T1; Bob then
+// grants T1 read on T0 (a cycle the sibling's grant, ordered first, closes) and Alice read on T1,
+// which she holds. Once the sibling is back, Bob holds its grant: Alice, reading T1, should hold it
+// too (T1's live roster); she never does. Without Bob's grant on T0 she does.
+#[test]
+#[ignore = "issues/earlier-ordered-role-commit-not-delivered.md"]
+fn repro_an_earlier_ordered_grant_reaches_a_later_reader_spec_permissions_5() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    let t1 = make(&mut w, 1, None, "t1");
+    w.run();
+    w.partition(0, 2);
+    w.partition(1, 2);
+    w.write(2, |e| e.grant(&t1, &t0, &edge(Role::Read))).unwrap();
+    w.advance(1000);
+    w.write(1, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t1, true);
+    w.run();
+    w.heal();
+    w.run();
+    assert!(w.engine(1).roster(&t1).contains_key(&t0), "Bob holds the sibling's grant");
+    assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
+    assert!(w.engine(0).roster(&t1).contains_key(&t0), "Alice holds the sibling's grant: {}", w.why_role(0, &t1));
+}
+
 // spec/permissions.md §3 (Retain: an ended way by a grant with key access just before its removal
 // keeps): Bob grants T1 read on T0 (both his own, the grant keyed) and Alice read on T1 only; she
 // holds both. Bob removes T1's grant saying retain: she keeps a copy of T0 and still reads T1.

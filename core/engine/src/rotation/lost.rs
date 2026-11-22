@@ -355,8 +355,8 @@ fn contested(core: &Core, k: &Tid) -> bool {
 /// One way a lost actor's copy may hang on holder `via`.
 #[derive(Clone, Copy)]
 struct Way {
-    /// The grant had key access (as it last stood for keys) and is alive (an edge, a record edge
-    /// included, from a holder that is itself kept), or ended by a removal saying retain or by its
+    /// The grant had key access as it last stood for keys, and is alive (an edge, a record edge
+    /// included, from a holder that is itself kept) or ended by a removal saying retain or by its
     /// `until` passing on a grant written to retain.
     retain: bool,
     /// The write that ended it: the node must have read the holder just before it.
