@@ -111,9 +111,14 @@ impl Hiders {
     }
 }
 
+/// Write `w` at position `path`.
+fn won(path: &[Place], w: &(Kind, Stamp)) -> Won {
+    Won { path: path.to_vec(), kind: w.0, stamp: w.1.clone() }
+}
+
 impl Winners {
     pub fn iter(&self) -> impl Iterator<Item = Won> + '_ {
-        self.0.iter().flat_map(|(p, s)| s.iter().map(move |(k, st)| Won { path: p.clone(), kind: *k, stamp: st.clone() }))
+        self.0.iter().flat_map(|(p, s)| s.iter().map(move |w| won(p, w)))
     }
     /// The writes here that do not win in `o`. A register write winning there wins as a reset at
     /// its own stamp too: it implies one (§5.1, §7), so a reset of that stamp (a copy, §4.1, of
@@ -123,9 +128,7 @@ impl Winners {
         for (p, s) in &self.0 {
             let theirs = o.0.get(p);
             let wins = |w: &(Kind, Stamp)| theirs.is_some_and(|t| t.contains(w) || w.0 == Kind::Reset && t.contains(&(Kind::Value, w.1.clone())));
-            for w in s.iter().filter(|w| !wins(w)) {
-                out.insert(Won { path: p.clone(), kind: w.0, stamp: w.1.clone() });
-            }
+            out.extend(s.iter().filter(|w| !wins(w)).map(|w| won(p, w)));
         }
         out
     }
@@ -225,21 +228,20 @@ impl<T> ByWrite<T> {
     pub fn moved_by(&self, s: &Won) -> Vec<Won> {
         let mut out = vec![s.clone()];
         let depth = s.path.len();
+        let of_kind = |p: &[Place], at: &BTreeMap<(Kind, Stamp), T>, k: Kind| at.keys().filter(move |x| x.0 == k).map(|x| won(p, x)).collect::<Vec<_>>();
         for (p, at) in self.0.range(s.path.clone()..).take_while(|(p, _)| p.starts_with(&s.path)) {
             for k in Kind::ALL {
-                let below = at.range(..=(k, s.stamp.clone())).rev().take_while(|x| x.0.0 == k).map(|x| Won { path: p.clone(), kind: k, stamp: x.0.1.clone() }).find(|w| w != s);
-                if let Some(w) = below.filter(|w| supersedes(depth, s.kind, &s.stamp, w)) {
-                    out.push(w);
-                }
+                let below = at.range(..=(k, s.stamp.clone())).rev().take_while(|x| x.0.0 == k).map(|x| won(p, x.0)).find(|w| w != s);
+                out.extend(below.filter(|w| supersedes(depth, s.kind, &s.stamp, w)));
                 if s.kind == Kind::Undelete && k == Kind::Created && *p == s.path {
-                    out.extend(at.keys().filter(|x| x.0 == k).map(|x| Won { path: p.clone(), kind: k, stamp: x.1.clone() }));
+                    out.extend(of_kind(p, at, k));
                 }
             }
         }
         if let [set @ .., Place::Gone(_)] = s.path.as_slice() {
             let elems = self.0.range(set.to_vec()..).take_while(|(p, _)| p.starts_with(set));
             for (p, at) in elems.filter(|(p, _)| matches!(p.get(set.len()..), Some([Place::Elem(_), Place::In]))) {
-                out.extend(at.keys().filter(|x| x.0 == Kind::Value).map(|x| Won { path: p.clone(), kind: Kind::Value, stamp: x.1.clone() }));
+                out.extend(of_kind(p, at, Kind::Value));
             }
         }
         out
@@ -401,18 +403,16 @@ fn elems<S: Sink>(out: &mut S, path: &mut Vec<Place>, m: &Meta, es: &BTreeMap<Do
     for (d, e) in es {
         out.elem(path, d, e);
         if let Some(g) = &e.gone {
-            path.push(Place::Gone(d.clone()));
-            out.put(path, Kind::Reset, &g.stamp);
-            path.pop();
+            under(path, Place::Gone(d.clone()), out, |path, out| out.put(path, Kind::Reset, &g.stamp));
         }
-        path.push(Place::Elem(d.clone()));
-        opt(out, path, Kind::Reset, &e.reset);
-        if let Some(f) = e.frag.as_deref()
-            && !crate::fragment::hidden(d, e, &gone)
-        {
-            inside(f, path, out);
-        }
-        path.pop();
+        under(path, Place::Elem(d.clone()), out, |path, out| {
+            opt(out, path, Kind::Reset, &e.reset);
+            if let Some(f) = e.frag.as_deref()
+                && !crate::fragment::hidden(d, e, &gone)
+            {
+                inside(f, path, out);
+            }
+        });
     }
 }
 
@@ -428,22 +428,14 @@ fn collect<S: Sink>(f: &Fragment, path: &mut Vec<Place>, out: &mut S) {
         Fragment::Bag(Bag { meta: m, elems: es, .. }) | Fragment::Set(Set { meta: m, elems: es, .. }) => elems(out, path, m, es),
         Fragment::Struct(Struct { meta: m, fields }) => {
             meta(out, path, m);
-            for (k, x) in fields {
-                path.push(Place::Field(*k));
-                collect(x, path, out);
-                path.pop();
-            }
+            fields.iter().for_each(|(k, x)| under(path, Place::Field(*k), out, |path, out| collect(x, path, out)));
         }
         Fragment::Enum(Enum { meta: m, case, payloads }) => {
             meta(out, path, m);
             if let Some(c) = case {
                 out.put(path, Kind::Case, &c.stamp);
             }
-            for (k, x) in payloads {
-                path.push(Place::Case(*k));
-                collect(x, path, out);
-                path.pop();
-            }
+            payloads.iter().for_each(|(k, x)| under(path, Place::Case(*k), out, |path, out| collect(x, path, out)));
         }
         Fragment::Map(m) => map(out, path, m),
         Fragment::Seq(s) => seq(out, path, s),
@@ -463,22 +455,16 @@ fn map<S: Sink>(out: &mut S, path: &mut Vec<Place>, m: &Map) {
             recs.push(e);
             it.next();
         }
-        path.push(Place::Entry(id.dot.clone()));
-        opt(out, path, Kind::Reset, &recs.iter().filter_map(|e| e.reset.clone()).max());
-        opt(out, path, Kind::Created, &recs.iter().filter_map(|e| e.created.clone()).max());
-        let mut frags = recs.iter().filter_map(|e| e.frag.as_deref());
-        if let Some(x) = frags.next() {
-            match frags.next() {
-                None => inside(x, path, out),
-                Some(y) => {
-                    let mut j = x.clone();
-                    j.join(y.clone());
-                    frags.for_each(|z| _ = j.join(z.clone()));
-                    inside(&j, path, out);
-                }
+        under(path, Place::Entry(id.dot.clone()), out, |path, out| {
+            opt(out, path, Kind::Reset, &recs.iter().filter_map(|e| e.reset.clone()).max());
+            opt(out, path, Kind::Created, &recs.iter().filter_map(|e| e.created.clone()).max());
+            let mut frags = recs.iter().filter_map(|e| e.frag.as_deref());
+            if let Some(x) = frags.next() {
+                let mut j = std::borrow::Cow::Borrowed(x);
+                frags.for_each(|z| _ = j.to_mut().join(z.clone()));
+                inside(&j, path, out);
             }
-        }
-        path.pop();
+        });
     }
 }
 
@@ -488,9 +474,7 @@ fn seq<S: Sink>(out: &mut S, path: &mut Vec<Place>, s: &Seq) {
         for k in 0..e.span {
             let piece = (e.span > 1).then(|| crate::seq_span::piece(d, e, k, 1));
             let (d, e) = piece.as_ref().map_or((d, e), |(d, e)| (d, e));
-            path.push(Place::Item(d.clone()));
-            item(out, path, s.text, d, e);
-            path.pop();
+            under(path, Place::Item(d.clone()), out, |path, out| item(out, path, s.text, d, e));
         }
     }
 }
@@ -525,7 +509,12 @@ fn item<S: Sink>(out: &mut S, path: &mut Vec<Place>, text: bool, d: &Dot, e: &Se
 
 /// A record's content, at `Place::In` below it.
 fn inside<S: Sink>(f: &Fragment, path: &mut Vec<Place>, out: &mut S) {
-    path.push(Place::In);
-    collect(f, path, out);
+    under(path, Place::In, out, |path, out| collect(f, path, out));
+}
+
+/// `f` at the position `p` below `path`.
+fn under<S: Sink>(path: &mut Vec<Place>, p: Place, out: &mut S, f: impl FnOnce(&mut Vec<Place>, &mut S)) {
+    path.push(p);
+    f(path, out);
     path.pop();
 }

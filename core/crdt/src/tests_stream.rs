@@ -594,7 +594,7 @@ fn stream_memory_child(arg: &str) {
         let mut sink = Blobs::new(PageParams::FORMAT);
         let _ = std::fs::write("/proc/self/clear_refs", "5");
         let start = rss_kib();
-        let ok = if old { oracle::encode_delta(&delta, &cx, Some(&mut sink)) } else { crate::codec::encode_delta_in(&delta, &cx, Some(&mut sink)) };
+        let ok = if old { oracle::encode_delta(&delta, &cx, Some(&mut sink)) } else { crate::codec::write_delta(crate::wire::Enc::new(&cx, Some(&mut sink)), &delta) };
         assert_eq!(ok.unwrap(), read("delta"));
         println!("MEM {phase} delta: peak {} KiB above start", peak_kib().saturating_sub(start));
         return;

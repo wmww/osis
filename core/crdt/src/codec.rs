@@ -503,17 +503,13 @@ pub fn sources_of(f: &Fragment, cx: &DeltaCtx) -> Result<BTreeSet<Source>, Error
 /// Encodes a delta (§3.2) against its header facts.
 pub fn encode_delta(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
     #[cfg(test)]
-    return oracle::twin(pages, |p| encode_delta_in(d, cx, p), |p| oracle::encode_delta(d, cx, p));
+    return oracle::twin(pages, |p| write_delta(Enc::new(cx, p), d), |p| oracle::encode_delta(d, cx, p));
     #[cfg(not(test))]
-    encode_delta_in(d, cx, pages)
-}
-
-pub(crate) fn encode_delta_in(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
     write_delta(Enc::new(cx, pages), d)
 }
 
 /// `[nonce, Sources, Commits, Fragment]`, both passes by `enc`.
-fn write_delta(mut enc: Enc, d: &Delta) -> Result<Vec<u8>, Error> {
+pub(crate) fn write_delta(mut enc: Enc, d: &Delta) -> Result<Vec<u8>, Error> {
     collect(&mut enc, &d.fragment)?;
     let mut out = Vec::new();
     put_array(&mut out, 4);
@@ -1072,13 +1068,9 @@ fn embedded_under_reset(f: &Fragment, e: Option<Stamp>) -> bool {
     let under = |m: &Meta| max_opt(e.clone(), m.reset.clone());
     match f {
         Fragment::Register(_) | Fragment::Bag(_) | Fragment::Set(_) => true,
-        Fragment::Struct(x) => {
-            let e = under(&x.meta);
-            x.fields.values().all(|y| embedded_under_reset(y, e.clone()))
-        }
-        Fragment::Enum(x) => {
-            let e = under(&x.meta);
-            x.payloads.values().all(|y| embedded_under_reset(y, e.clone()))
+        Fragment::Struct(crate::fragment::Struct { meta, fields: m }) | Fragment::Enum(Enum { meta, payloads: m, .. }) => {
+            let e = under(meta);
+            m.values().all(|y| embedded_under_reset(y, e.clone()))
         }
         Fragment::Map(x) => {
             let e = under(&x.meta);
@@ -1096,11 +1088,7 @@ fn embedded_under_reset(f: &Fragment, e: Option<Stamp>) -> bool {
             })
         }
         Fragment::Slots(x) => {
-            let reg = x.reg.as_ref();
-            let mut e = max_opt(e, reg.and_then(|r| max_opt(r.reset.clone(), r.write.as_ref().map(|w| w.stamp.clone()))));
-            for y in x.slots.values() {
-                e = max_opt(e, y.reset());
-            }
+            let e = max_opt(max_opt(e, f.reset()), x.reg.as_ref().and_then(|r| r.write.as_ref()).map(|w| w.stamp.clone()));
             x.slots.values().all(|y| embedded_under_reset(y, e.clone()))
         }
     }

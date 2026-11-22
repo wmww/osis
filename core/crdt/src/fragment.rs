@@ -313,8 +313,7 @@ impl Set {
     fn at(&self, d: &Set, prior: Option<&Set>, refs: bool) -> Set {
         let mut keep: BTreeMap<Dot, Elem> = d.elems.keys().filter_map(|k| Some((k.clone(), self.elems.get(k)?.clone()))).collect();
         if refs {
-            let theirs = |k: &Dot| prior.and_then(|p| p.elems.get(k));
-            let named: BTreeSet<Value> = d.elems.iter().flat_map(|(k, e)| e.references().chain(keep.get(k).into_iter().flat_map(Elem::references)).chain(theirs(k).into_iter().flat_map(Elem::references))).cloned().collect();
+            let named: BTreeSet<Value> = d.elems.iter().flat_map(|(k, e)| [Some(e), keep.get(k), prior.and_then(|p| p.elems.get(k))].into_iter().flatten().flat_map(Elem::references)).cloned().collect();
             if !named.is_empty() {
                 for (k, e) in &self.elems {
                     if e.values().any(|v| named.contains(v)) {
@@ -648,30 +647,27 @@ impl Fragment {
     /// element's or entry's, tombstones included; `has_reset` judges the top alone); a sequence
     /// counts as having one (its deletes and moves are not judged here).
     pub fn has_any_reset(&self) -> bool {
-        let elems = |m: &Meta, e: &BTreeMap<Dot, Elem>| m.reset.is_some() || e.values().any(|x| x.reset.is_some() || x.gone.is_some() || x.frag.as_deref().is_some_and(Fragment::has_any_reset));
-        match self {
-            Fragment::Register(r) => r.reset.is_some(),
-            Fragment::Bag(Bag { meta, elems: e, .. }) | Fragment::Set(Set { meta, elems: e, .. }) => elems(meta, e),
-            Fragment::Struct(s) => s.meta.reset.is_some() || s.fields.values().any(Fragment::has_any_reset),
-            Fragment::Enum(x) => x.meta.reset.is_some() || x.payloads.values().any(Fragment::has_any_reset),
-            Fragment::Map(m) => m.meta.reset.is_some() || m.entries.values().any(|e| e.reset.is_some() || e.frag.as_deref().is_some_and(Fragment::has_any_reset)),
-            Fragment::Seq(_) => true,
-            Fragment::Slots(s) => s.reg.as_ref().is_some_and(|r| r.reset.is_some()) || s.slots.values().any(Fragment::has_any_reset),
-        }
+        self.resets_in(true)
     }
 
     /// Whether a position reset is written anywhere in this fragment (a composite's or a
     /// register's; not an element's or entry's tombstone, nor below a sequence's elements).
     pub fn has_position_reset(&self) -> bool {
-        match self {
-            Fragment::Register(r) => r.reset.is_some(),
-            Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems, .. }) => meta.reset.is_some() || elems.values().any(|x| x.frag.as_deref().is_some_and(Fragment::has_position_reset)),
-            Fragment::Struct(s) => s.meta.reset.is_some() || s.fields.values().any(Fragment::has_position_reset),
-            Fragment::Enum(x) => x.meta.reset.is_some() || x.payloads.values().any(Fragment::has_position_reset),
-            Fragment::Map(m) => m.meta.reset.is_some() || m.entries.values().any(|e| e.frag.as_deref().is_some_and(Fragment::has_position_reset)),
-            Fragment::Seq(x) => x.meta.reset.is_some(),
-            Fragment::Slots(s) => s.reg.as_ref().is_some_and(|r| r.reset.is_some()) || s.slots.values().any(Fragment::has_position_reset),
-        }
+        self.resets_in(false)
+    }
+
+    /// `has_any_reset` (`records`) or `has_position_reset`.
+    fn resets_in(&self, records: bool) -> bool {
+        let inner = |f: Option<&Fragment>| f.is_some_and(|x| x.resets_in(records));
+        self.reset().is_some()
+            || match self {
+                Fragment::Register(_) => false,
+                Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().any(|x| records && (x.reset.is_some() || x.gone.is_some()) || inner(x.frag.as_deref())),
+                Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values().any(|x| inner(Some(x))),
+                Fragment::Map(m) => m.entries.values().any(|e| records && e.reset.is_some() || inner(e.frag.as_deref())),
+                Fragment::Seq(_) => records,
+                Fragment::Slots(s) => s.slots.values().any(|x| inner(Some(x))),
+            }
     }
 
     /// The empty fragment of `enc`; `Slots` has none (it is formed by join).

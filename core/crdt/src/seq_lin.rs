@@ -534,8 +534,17 @@ impl Placement {
 
     /// The row at `c` (normalized) and its depth.
     fn row_c(&self, c: Cursor) -> Option<(&Row, i64)> {
-        let b = *self.order.get(c.k)?;
-        self.block(b).get(c.o).map(|r| (r, r.depth + self.shift_of(b)))
+        self.row_at(*self.order.get(c.k)?, c.o)
+    }
+
+    /// The row at offset `o` of block `b` and its depth.
+    fn row_at(&self, b: usize, o: usize) -> Option<(&Row, i64)> {
+        self.block(b).get(o).map(|r| (r, r.depth + self.shift_of(b)))
+    }
+
+    /// The row at offset `o` of block `b`, to change (its block unshared).
+    fn row_mut(&mut self, b: usize, o: usize) -> Option<&mut Row> {
+        self.blocks.get_mut(b).map(Arc::make_mut).and_then(|x| x.rows.get_mut(o))
     }
 
     /// From the row at `c` (normalized), the first later row whose depth is at most `d`, or the
@@ -599,11 +608,7 @@ impl Placement {
         let tail = x.rows.split_off(o.min(x.rows.len()));
         x.recount();
         let id = self.alloc(Block::new(tail), self.shift_of(b));
-        if let Some(m) = at {
-            for r in self.block(id) {
-                m.set(r.dot.clone(), id);
-            }
-        }
+        point(at, self.block(id), id);
         self.order.insert(k + 1, id);
         k + 1
     }
@@ -618,11 +623,7 @@ impl Placement {
         }
         let d = self.shift_of(b) - self.shift_of(a);
         let tail: Vec<Row> = self.block(b).iter().map(|r| Row { depth: r.depth + d, ..r.clone() }).collect();
-        if let Some(m) = at {
-            for r in &tail {
-                m.set(r.dot.clone(), a);
-            }
-        }
+        point(at, &tail, a);
         if let Some(x) = self.blocks.get_mut(a).map(Arc::make_mut) {
             x.rows.extend(tail);
             x.recount();
@@ -782,11 +783,7 @@ impl Placement {
             return;
         }
         let mut at = at;
-        if let Some(m) = at.as_deref_mut() {
-            for r in &rows {
-                m.set(r.dot.clone(), b);
-            }
-        }
+        point(at.as_deref_mut(), &rows, b);
         let s = self.shift_of(b);
         let Some(x) = self.blocks.get_mut(b).map(Arc::make_mut) else { return };
         let o = o.min(x.rows.len());
@@ -811,12 +808,17 @@ impl Placement {
         let first = self.order.iter().position(|y| *y == b).map_or(self.order.len(), |k| k + 1);
         for (k, tail) in (first..).zip(tails.into_iter().rev()) {
             let id = self.alloc(Block::new(tail), s);
-            if let Some(m) = at.as_deref_mut() {
-                for r in self.block(id) {
-                    m.set(r.dot.clone(), id);
-                }
-            }
+            point(at.as_deref_mut(), self.block(id), id);
             self.order.insert(k, id);
+        }
+    }
+}
+
+/// Points `at`'s entries of `rows` at block `b`.
+fn point(at: Option<&mut DotMap>, rows: &[Row], b: usize) {
+    if let Some(m) = at {
+        for r in rows {
+            m.set(r.dot.clone(), b);
         }
     }
 }
@@ -969,6 +971,19 @@ pub(crate) enum Plan {
     /// A row starts at this element: a record split there (whether or not the record changed
     /// anything).
     Cut,
+}
+
+impl Plan {
+    /// `Held` over `span` elements of state record `r`.
+    fn held(span: u64, r: &SeqElem) -> Plan {
+        Plan::Held { span, pos: r.pos.clone(), created: r.created.is_some() }
+    }
+}
+
+/// Whether delta record `de`, lined up with `span` elements of state record `r`, leaves `r`'s
+/// creation as it is and adds position writes only to a single element.
+fn keeps(de: &SeqElem, r: &SeqElem, span: u64) -> bool {
+    de.created.as_ref().is_none_or(|c| r.created.as_ref() == Some(c)) && (span == 1 || de.pos.iter().all(|p| r.pos.iter().any(|q| q.0 == p.0)))
 }
 
 /// The element after `x` when both are inside record `(k, r)`: where a node splits once
@@ -1242,13 +1257,10 @@ impl Lin {
             }
             next = k.ctr.saturating_add(off).saturating_add(len);
             let (pd, pe) = if off == 0 { (k.clone(), Cow::Borrowed(r)) } else { let (d, e) = piece(k, r, off, len); (d, Cow::Owned(e)) };
-            if writes {
-                let (_, dp) = piece(dot, de, pd.ctr - dot.ctr, len);
-                if dp.created.as_ref().is_some_and(|c| pe.created.as_ref() != Some(c)) || len != 1 && !dp.pos.iter().all(|p| pe.pos.iter().any(|q| q.0 == p.0)) {
-                    return false;
-                }
+            if writes && !keeps(&piece(dot, de, pd.ctr - dot.ctr, len).1, &pe, len) {
+                return false;
             }
-            out.push((pd, Plan::Held { span: len, pos: pe.pos.clone(), created: pe.created.is_some() }));
+            out.push((pd, Plan::held(len, &pe)));
         }
         // the state's record holding the element after it is split there too
         let end = nth(dot, de.span);
@@ -1287,14 +1299,7 @@ impl Lin {
                 Some(Plan::New { stamp, anchor, cut })
             }
             Some((k, r)) => {
-                if k != dot || r.span != de.span || de.created.as_ref().is_some_and(|c| r.created.as_ref() != Some(c)) {
-                    return None;
-                }
-                // new position writes only on a single element
-                if r.span != 1 && !de.pos.iter().all(|p| r.pos.iter().any(|q| q.0 == p.0)) {
-                    return None;
-                }
-                Some(Plan::Held { span: r.span, pos: r.pos.clone(), created: r.created.is_some() })
+                (k == dot && r.span == de.span && keeps(de, r, r.span)).then(|| Plan::held(r.span, r))
             }
         }
     }
@@ -1542,7 +1547,7 @@ impl Lin {
         };
         // the rows looked at for it in its block
         *work += o + 1;
-        let Some(row) = self.p.block(b).get(o).cloned() else { return false };
+        let Some((row, d)) = self.p.row_at(b, o).map(|(r, d)| (r.clone(), d)) else { return false };
         if row.dot == *x {
             return true;
         }
@@ -1552,9 +1557,8 @@ impl Lin {
         // its position, by the counts of the blocks before it
         *work += self.p.order.len();
         let off = x.ctr - row.dot.ctr;
-        let d = row.depth + self.p.shift_of(b);
         let i = self.p.base(b) + o;
-        if let Some(r) = self.p.blocks.get_mut(b).map(Arc::make_mut).and_then(|x| x.rows.get_mut(o)) {
+        if let Some(r) = self.p.row_mut(b, o) {
             r.span = off;
         }
         let dd = i64::from(row.created);
@@ -1571,14 +1575,14 @@ impl Lin {
     fn depth_below(&self, key: &Option<Dot>) -> Option<i64> {
         let Some(x) = key else { return Some(0) };
         let (b, o) = self.ending(x)?;
-        Some(self.p.block(b).get(o)?.depth + self.p.shift_of(b) + 1)
+        Some(self.p.row_at(b, o)?.1 + 1)
     }
 
     /// Moves the subtree of `dot` below `anchor` with sibling key `stamp`; `false`: rebuild (the
     /// element or the anchor is not placed, or the anchor is in the subtree: a cycle).
     fn place_moved(&mut self, sibs: &Sibs, dot: &Dot, stamp: Stamp, anchor: Anchor, fresh: Option<&Stamp>, work: &mut usize) -> bool {
         let Some((b, o)) = self.loc(dot) else { return false };
-        let Some(d) = self.p.block(b).get(o).map(|r| r.depth + self.p.shift_of(b)) else { return false };
+        let Some((_, d)) = self.p.row_at(b, o) else { return false };
         let i = self.p.base(b) + o;
         let e = self.p.end_of(i, d);
         let key = match anchor {
@@ -1594,7 +1598,7 @@ impl Lin {
         let (Some(q), Some(nd)) = (self.slot(sibs, &key, &stamp, fresh, i..e, work), self.depth_below(&key)) else { return false };
         self.p.relocate(i..e, q, nd - d, Some(&mut self.at));
         let Some((b, o)) = self.loc(dot) else { return false };
-        let Some(row) = self.p.blocks.get_mut(b).map(Arc::make_mut).and_then(|x| x.rows.get_mut(o)) else { return false };
+        let Some(row) = self.p.row_mut(b, o) else { return false };
         row.head = key.is_none();
         row.parent = key;
         true
@@ -1610,12 +1614,8 @@ impl Lin {
         let (mut c, d, want) = match key {
             None => (self.p.norm(Cursor { k: 0, o: 0, at: 0 }), -1, Anchor::Head),
             Some(x) => {
-                let (b, o) = self.holder(x)?;
-                let r = self.p.block(b).get(o)?;
-                if x.ctr - r.dot.ctr + 1 != r.span {
-                    return None;
-                }
-                let d = r.depth + self.p.shift_of(b);
+                let (b, o) = self.ending(x)?;
+                let (_, d) = self.p.row_at(b, o)?;
                 let k = self.p.order.iter().position(|y| *y == b)?;
                 (self.p.norm(Cursor { k, o: o + 1, at: self.p.base(b) + o + 1 }), d, Anchor::Dot(x.clone()))
             }
