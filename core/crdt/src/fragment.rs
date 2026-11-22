@@ -566,9 +566,10 @@ impl Fragment {
     }
 
     /// What of this fragment a join of `x` can supersede: `part_at`, but whole wherever `x`
-    /// resets the position (its own reset, or a register write, which implies one, §5.1, §7),
-    /// and in a map every record sharing a key with those (a key reads as its records' join,
-    /// §5.6, so a write in one moves what the others read): O(the records of those keys).
+    /// resets the position (its own reset, or a register write, which implies one, §5.1, §7) or
+    /// writes its `W` (a `Slots` position has one, §7: the join may drop a slot whole), and in a
+    /// map every record sharing a key with those (a key reads as its records' join, §5.6, so a
+    /// write in one moves what the others read): O(the records of those keys).
     pub fn reach(&self, x: &Fragment) -> Fragment {
         self.reach_with(x, None)
     }
@@ -590,7 +591,7 @@ impl Fragment {
     /// changes a record's shape (a sequence range split, a map key's records), the after-reach
     /// holds every element and key the before-reach held.
     fn reach_with(&self, x: &Fragment, before: Option<&Fragment>) -> Fragment {
-        if x.reset().is_some() || matches!(x, Fragment::Register(_) | Fragment::Slots(_)) {
+        if x.reset().is_some() || x.meta().is_some_and(|m| m.w.is_some()) || matches!(x, Fragment::Register(_) | Fragment::Slots(_)) {
             return self.clone();
         }
         match (self, x) {

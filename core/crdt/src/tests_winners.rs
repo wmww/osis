@@ -943,6 +943,22 @@ fn a_slots_presence_write_beats_a_lower_one_in_another_slot_spec_7() {
     assert!(crdt_model::wire::decode_snapshot(&b, mcx).is_err(), "the model refuses both slots' W");
 }
 
+/// §7 One presence write per position: a delta writing a text's `W` above a list slot's drops
+/// that slot, so the join leaves the text alone; its reach is the whole position, before and
+/// after, or the text's chars, outside the delta's footprint, would read as dying at the reach.
+#[test]
+fn a_presence_write_reaches_the_whole_slots_position_spec_7() {
+    let w = |t: u64| Meta { w: Some(Stamp::new(ts(t), x(), t)), ..Meta::default() };
+    let list = Fragment::Seq(Seq::new(false, w(1), BTreeMap::new()));
+    let before = join(&list, &edit(&Fragment::default(), 3, 10, vec![Op::Insert { at: 0, items: vec![s("ac")] }]));
+    assert!(matches!(before, Fragment::Slots(_)));
+    let y = Fragment::Seq(Seq::new(true, w(5), BTreeMap::new()));
+    let after = join(&before, &y);
+    assert_eq!(after.read(), Some(s("ac")));
+    assert!(matches!(after, Fragment::Seq(_)), "the list slot goes: {after:?}");
+    crate::tests_model::reach_holds_the_change(&before, &after, &y);
+}
+
 fn string_reg(s: &Stamp, v: &str) -> Fragment {
     Fragment::Register(crate::fragment::Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: Some(Value::Str(v.into())) }) })
 }
