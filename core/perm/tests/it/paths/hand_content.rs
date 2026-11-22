@@ -402,6 +402,16 @@ fn an_edge_write_on_its_signer_is_bad_input() {
     assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Unapplied));
 }
 
+// spec/permissions.md §1: an edge write whose holder is its target is not applied, whoever
+// writes it: KA's mint admin granting KA admin on KA sets no edge.
+#[test]
+fn an_edge_write_whose_holder_is_its_target_is_not_applied() {
+    let commits = [commit(1, ms(2), KH, vec![edge(KA, &[], KA, admin(), Some(&[]))])];
+    let p = Paths::evaluate(&recs(), BTreeSet::new(), &commits);
+    assert_eq!(p.status(&WriteId(cid(1), 0)), Some(Status::Unapplied));
+    assert!(p.history(&t(KA), &t(KA)).is_empty());
+}
+
 // spec/permissions.md §5.1: a removal saying retain (`until` 0, role read) restores read in the
 // edge as restored, as the draft's words read it (notes/a1-spec/README.md Open 15, not decided):
 // a second explicit removal of the same holder then falls from read to none and is judged.
