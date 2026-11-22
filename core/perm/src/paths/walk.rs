@@ -675,6 +675,9 @@ impl Walk {
             let now = self.ids.get(&id).and_then(|&s| self.status_of(s));
             if now.is_some() && was != now {
                 ch.parts.insert(id);
+                if matches!(was, Some(Status::Applied | Status::MayGrant)) {
+                    ch.was_applied.insert(id);
+                }
             }
         }
         for ((e, k), was) in j.hist {

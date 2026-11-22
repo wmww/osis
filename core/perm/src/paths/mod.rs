@@ -265,6 +265,8 @@ pub struct Changed {
     /// Edge-class parts whose chained-ness changed (draft §4), a held one turning chained on
     /// arrival and a chained one forgotten included.
     pub chained: BTreeSet<WriteId>,
+    /// Of `parts`, the edge-class parts the walk applied before the update.
+    pub was_applied: BTreeSet<WriteId>,
 }
 
 /// The walk over a held set of commits, under a trust set, reading delta facts through `S`.
@@ -414,7 +416,7 @@ impl<S: Store> Paths<S> {
     }
 
     /// Whether commit `c` is held: by its edge-class parts, its role facts or its deltas.
-    fn holds(&self, c: &CommitId) -> bool {
+    pub fn holds(&self, c: &CommitId) -> bool {
         self.timeline.holds(c) || self.facts.holds(c)
     }
 

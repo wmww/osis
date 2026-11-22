@@ -3,21 +3,19 @@
 //! `osis` API the one home of dispute types outside osis-perm (the coherence rule;
 //! tools/policy.py).
 //!
-//! A side is recorded once per dispute (R, M): at detection by default, or by `Engine::choose`.
-//! The default is first received: R is trusted iff it applied here before the write that voids
-//! it arrived (`Detected::stood`). A node holds its own writes first, so sides with itself. A
-//! recorded side stays until chosen otherwise, so switching back and forth returns to the same
-//! trust set; a trusted write the walk cannot apply is void there (a shrink round per
-//! evaluation, and no fast path for a component a trusted op names: step 3's cost, stated in
-//! notes/disputes.md).
+//! A side is recorded once per dispute (R, holder): by default at detection, or by
+//! `Engine::choose`. The default is held first (spec/permissions.md §5.1 Sides): R is trusted
+//! iff the reading before the update that brought its dispute applied it. A node holds its own
+//! writes first, so sides with itself. A recorded side stays until chosen otherwise; a trusted
+//! write the walk cannot apply is void there.
 
 use crate::engine::journal::{JMap, Journaled};
 use crate::engine::{records, Core, Tx};
 use crate::error::{Error, Result};
 use crate::events::{Diagnostic, DiagnosticKind, Event};
 use osis_base::{CommitId, Tid, Value};
-use osis_perm::{Trust, WriteId};
-use std::collections::BTreeMap;
+use osis_perm::WriteId;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The side taken in one dispute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,8 +99,8 @@ impl Sides {
     }
 
     /// The trust set: the ops of the sides that trust R.
-    pub(crate) fn trust(&self) -> Trust {
-        Trust { ops: self.map.iter().filter(|(_, s)| s.trust).map(|(k, _)| k.0).collect() }
+    pub(crate) fn trust(&self) -> BTreeSet<WriteId> {
+        self.map.iter().filter(|(_, s)| s.trust).map(|(k, _)| k.0).collect()
     }
 
     pub(crate) fn get(&self, op: WriteId, holder: Tid) -> Option<Side> {
@@ -143,57 +141,45 @@ impl Journaled for Sides {
     }
 }
 
-/// Records a default side for every dispute the last timeline update detected and not recorded
-/// yet, feeds the trust set to the walk when a side trusts, reports each (`Event::DisputeDetected`)
-/// and the candidates left unexamined (`DiagnosticKind::DisputesUnexamined`). An unexamined op
-/// that stood here keeps its side (trusted, fail safe: a flood of contestable writes cannot
-/// hand the walk's side to the backdated write that voided it); it is not told, maybe being
-/// no dispute.
-pub(crate) fn after_update(core: &mut Core) {
-    let det = core.timelines.aside().take_detected();
+/// Records a default side for every dispute held after the timeline update that reported `c`
+/// and not recorded yet (spec/permissions.md §5.1 Sides, Held first: trusted iff the reading
+/// before the update applied it, other than as a may-grant grant; a lowering that came with the
+/// update takes none), feeds the trust set to the walk when a side trusts, and reports each
+/// (`Event::DisputeDetected`).
+pub(crate) fn after_update(core: &mut Core, c: &osis_perm::Changed) {
+    if c.ops.is_empty() {
+        return;
+    }
+    let found = core.timelines.aside().disputes();
     let mut trusts = false;
-    for d in det.found {
-        let (op, holder) = (d.dispute.op, d.dispute.holder);
+    for op in found {
+        let Some((author, holder, target)) = core.timelines.edge_op(&op) else { continue };
         if core.sides.get(op, holder).is_some() {
             continue;
         }
-        let trust = d.stood;
+        let was = if c.ops.contains(&op) { c.was_applied.contains(&op) } else { core.timelines.is_applied(&op) };
+        let trust = !c.fresh.contains(&op.0) && was && core.timelines.way(&op) != Some(osis_perm::paths::Way::MayGrant);
         core.sides.set(op, holder, Side { trust, chosen: false });
         trusts |= trust;
-        core.events.queue(Event::DisputeDetected { commit: op.0, op: op.1, holder, target: d.target, author: d.author, trust });
-    }
-    for d in &det.kept {
-        if core.sides.get(d.op, d.holder).is_none() {
-            core.sides.set(d.op, d.holder, Side { trust: true, chosen: false });
-            trusts = true;
-        }
+        core.events.queue(Event::DisputeDetected { commit: op.0, op: op.1, holder, target, author, trust });
     }
     if trusts {
         feed(core);
     }
-    if det.unexamined + det.kept.len() > 0 {
-        let detail = format!("beyond what one update examines: {} role writes that stopped applying kept their side, {} newly held ones took the walk's", det.kept.len(), det.unexamined);
-        core.events.diagnostic(Diagnostic { kind: DiagnosticKind::DisputesUnexamined, tids: Vec::new(), commit: None, peer: None, detail }, core.hlc.mono());
-    }
-}
-
-/// Drops what an update detected: a rollback's restored held set brings nothing new.
-pub(crate) fn discard(core: &mut Core) {
-    core.timelines.aside().take_detected();
 }
 
 /// After a rollback restored the sides: the walk's trust set follows them (the stale flags the
 /// rollback clears; validity flags are restored with the commits).
 pub(crate) fn restored(core: &mut Core) {
     let trust = core.sides.trust();
-    core.timelines.change(|t| t.set_trust(&core.ix.held, trust));
+    core.timelines.change(|t| t.set_trust(&trust));
 }
 
 /// Feeds the recorded sides to the walk as its trust set; the things whose validity may have
 /// changed wait for `rejudge_all` as after any timeline change.
 fn feed(core: &mut Core) {
     let trust = core.sides.trust();
-    let changed = core.timelines.change(|t| t.set_trust(&core.ix.held, trust));
+    let changed = core.timelines.change(|t| t.set_trust(&trust));
     core.timelines_changed(changed);
 }
 
@@ -212,36 +198,31 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.sides = Sides::decode(&b)?;
         let trust = tx.core.sides.trust();
         if !trust.is_empty() {
-            tx.core.timelines.change(|t| t.set_trust(&tx.core.ix.held, trust));
+            tx.core.timelines.change(|t| t.set_trust(&trust));
         }
     }
     Ok(())
 }
 
 impl crate::engine::Engine {
-    /// The disputes this node knows: the open ones in every held timeline (trusting a removal
-    /// closes its dispute: the walk then applies it), and every side recorded whose removal is
-    /// still held, each with the side taken here. Examines at most `max` candidates by a walk
-    /// (a removed admin can sign any number; those past the bound are counted, not listed):
-    /// (disputes, unexamined).
+    /// The disputes this node knows: the open ones (trusting a removal closes its dispute: the
+    /// walk then applies it), and every side recorded whose removal is still held, each with the
+    /// side taken here; at most `max` open ones are listed: (disputes, those left out). Reads a
+    /// copy of the timeline (each candidate's trust is switched on and back).
     pub fn disputes(&self, max: usize) -> (Vec<DisputeInfo>, usize) {
         let mut out: BTreeMap<(WriteId, Tid), DisputeInfo> = BTreeMap::new();
-        let mut left = 0;
-        let mut budget = max;
-        for tl in self.core.timelines.each() {
-            let (ds, walked, l) = tl.disputes_up_to(budget);
-            budget = budget.saturating_sub(walked);
-            left += l;
-            for d in ds {
-                let Some((author, holder, target)) = tl.edge_op(&d.op) else { continue };
-                out.insert((d.op, d.holder), DisputeInfo { commit: d.op.0, op: d.op.1, holder, target, author, side: self.core.sides.get(d.op, d.holder) });
-            }
+        let mut tl: osis_perm::Timeline = (*self.core.timelines).clone();
+        let open = tl.disputes();
+        let left = open.len().saturating_sub(max);
+        for op in open.into_iter().take(max) {
+            let Some((author, holder, target)) = tl.edge_op(&op) else { continue };
+            out.insert((op, holder), DisputeInfo { commit: op.0, op: op.1, holder, target, author, side: self.core.sides.get(op, holder) });
         }
         for ((op, holder), side) in self.core.sides.map.iter() {
             if out.contains_key(&(*op, *holder)) {
                 continue;
             }
-            if let Some((author, h, target)) = self.core.timelines.each().find_map(|tl| tl.edge_op(op)).filter(|x| x.1 == *holder) {
+            if let Some((author, h, target)) = tl.edge_op(op).filter(|x| x.1 == *holder) {
                 out.insert((*op, *holder), DisputeInfo { commit: op.0, op: op.1, holder: h, target, author, side: Some(*side) });
             }
         }
@@ -284,7 +265,7 @@ impl crate::engine::Engine {
     /// when no held edge write is that.
     pub fn choose(&mut self, commit: CommitId, op: u32, holder: Tid, trust: bool) -> Result<()> {
         let w = WriteId(commit, op);
-        if !self.core.timelines.each().any(|tl| tl.edge_op(&w).is_some_and(|(_, h, _)| h == holder)) {
+        if !self.core.timelines.edge_op(&w).is_some_and(|(_, h, _)| h == holder) {
             return Err(Error::UnknownCommit(commit));
         }
         self.run(|tx| {

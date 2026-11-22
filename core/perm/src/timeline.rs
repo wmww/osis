@@ -85,6 +85,10 @@ pub struct Changed {
     pub reached: BTreeSet<WriteId>,
     /// The edge writes (commit, op) that are new or whose status changed.
     pub ops: BTreeSet<WriteId>,
+    /// Of `ops`, those the walk applied before the update.
+    pub was_applied: BTreeSet<WriteId>,
+    /// The commits given that were not held before.
+    pub fresh: BTreeSet<CommitId>,
 }
 
 impl Changed {
@@ -178,6 +182,7 @@ impl<S: Store> Timeline<S> {
         }
         let mut gone = Vec::new();
         let mut given = Vec::new();
+        let held_before: BTreeSet<CommitId> = again.iter().filter(|c| self.paths.holds(c)).copied().collect();
         for id in &again {
             let now = held.commit(id);
             let was = self.roles.get(id);
@@ -200,6 +205,9 @@ impl<S: Store> Timeline<S> {
             }
             match now {
                 Some(h) => {
+                    if !held_before.contains(id) {
+                        out.fresh.insert(*id);
+                    }
                     let c = commit_of(&h);
                     self.await_records(&c);
                     if let Some(role) = h.role {
@@ -291,6 +299,7 @@ impl<S: Store> Timeline<S> {
         }
         out.reached = self.paths.reached(&out.walk);
         out.ops = out.walk.parts.iter().filter_map(|w| self.op_of(w)).collect();
+        out.was_applied = out.walk.was_applied.iter().filter_map(|w| self.op_of(w)).collect();
     }
 
     /// The walk's ID of edge write `w` (commit, op).

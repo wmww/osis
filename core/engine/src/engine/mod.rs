@@ -1706,9 +1706,10 @@ impl Core {
             self.timelines = tl;
             let ever = self.ix.held.take_ever();
             self.timelines.ever_moved(&ever);
+            let detect = self.detect.then(|| changed.clone());
             self.timelines_changed(changed);
-            if self.detect {
-                crate::sides::after_update(self);
+            if let Some(c) = detect {
+                crate::sides::after_update(self, &c);
             }
         }
     }
@@ -1874,7 +1875,6 @@ impl Core {
             self.timelines = tl;
             let ever = self.ix.held.take_ever();
             self.timelines.ever_moved(&ever);
-            crate::sides::discard(self);
         }
         if sides_back {
             crate::sides::restored(self);
@@ -3737,7 +3737,6 @@ impl Engine {
     /// on may raise one.
     fn start_detection(&mut self) {
         self.core.detect = true;
-        self.core.timelines.aside().detect(true);
     }
 }
 
