@@ -348,7 +348,7 @@ impl Reader<'_> {
         if !self.shows_roster(thing) {
             return Grants::new();
         }
-        self.e.roster(&thing).into_iter().map(|(m, e)| (m, Grant { role: e.role, until: e.until, retain_copy: e.until.is_some() && e.retain, may_grant: e.may_grant(), from_now: e.floor.is_some() })).collect()
+        self.e.roster(&thing).into_iter().map(|(m, e)| (m, Grant { role: e.role, until: e.until, retain_copy: e.until.is_some() && e.retain, may_grant: e.may_grant, from_now: e.floor.is_some() })).collect()
     }
 
     /// Whether `thing`'s roster is shown here: to a reader of it, or of the target a link's actor
