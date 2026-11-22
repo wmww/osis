@@ -39,6 +39,24 @@ fn account_created_commit_verifies_at_an_outsider_spec_wire_4() {
     assert_eq!(lp.peers[1].engine.open_inner(&blob), None);
 }
 
+/// `peers(2)`, peer 0 creating an account that peer 1, an outsider, holds: the peers, the
+/// account, its first epoch's keys, its creation record and a `ts` of peer 1's now. Built once
+/// per process, a copy each call.
+fn outsider() -> (LocalPeer, CreatedAccount, AccountEpochKeys, CreationRecord, Ts) {
+    let (lp, (a, first, rec, ts)) = LocalPeer::cached("rotation::tests_account::outsider", || {
+        let mut lp = peers(2);
+        let (a, bytes) = created(&mut lp);
+        let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
+        let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
+        let e = &mut lp.peers[1].engine;
+        assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
+        let rec = e.core.created(&a.account).unwrap().clone();
+        let ts = Ts::make(e.now(), 0).unwrap();
+        (lp, (a, first, rec, ts))
+    });
+    (lp, a, first, rec, ts)
+}
+
 struct Dedup(CreationRecord, osis_crypto::VerifyingKey);
 impl osis_commit::Secrets for Dedup {
     fn dedup(&self, t: &Tid) -> Option<Secret32> {
@@ -109,20 +127,13 @@ pub(super) fn seal_inner_as(b: &mut CommitBlob, at: &AccountEpochKeys, more: &[&
 fn box_to_a_revoked_epoch_reads_stale_spec_crypto_4() {
     let none = BTreeSet::new();
     for revoking in [false, true] {
-        let mut lp = peers(2);
-        let (a, bytes) = created(&mut lp);
-        let e = &mut lp.peers[1].engine;
-        assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
-        let rec = e.core.created(&a.account).unwrap().clone();
-        let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-        let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
+        let (mut lp, a, first, rec, ts) = outsider();
         let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([77; 32]));
         let first_name = account_epoch(0, &first.signing.verifying_key()).unwrap();
         let next_name = account_epoch(1, &next.signing.verifying_key()).unwrap();
         let e = &mut lp.peers[1].engine;
         let ks = e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap();
         assert!(!stale(&first_name, &ks, &none), "open before the rotation");
-        let ts = Ts::make(e.now(), 0).unwrap();
         let rot = if revoking { revoking_rotation(rec, &first, &next, ts) } else { rotation(rec, &first, &next, ts) };
         assert!(matches!(e.ingest(&rot, Vec::new()).unwrap(), Ingested::Applied(_)));
         let ks = e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap();
@@ -162,15 +173,9 @@ fn account_key_open_follows_the_rotations_held_spec_sync_10() {
 // rejects tells nothing
 #[test]
 fn forked_account_reads_the_head_held_first_spec_permissions_5_4() {
-    let mut lp = peers(2);
-    let (a, bytes) = created(&mut lp);
-    let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
+    let (mut lp, a, first, rec, ts) = outsider();
     let (x, y) = (AccountEpochKeys::from_seed(&Secret32::from_bytes([70; 32])), AccountEpochKeys::from_seed(&Secret32::from_bytes([71; 32])));
     let e = &mut lp.peers[1].engine;
-    assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
-    let rec = e.core.created(&a.account).unwrap().clone();
-    let ts = Ts::make(e.now(), 0).unwrap();
     let mut ids = Vec::new();
     for k in [&x, &y] {
         let r = revoking_rotation(rec.clone(), &first, k, ts);
@@ -195,13 +200,8 @@ fn forked_account_reads_the_head_held_first_spec_permissions_5_4() {
 /// a device: the bytes of its judgment of the account as persisted (`node/epochs`), which every
 /// rotation writes again.
 fn judged_bytes(n: u8) -> usize {
-    let mut lp = peers(2);
-    let (a, bytes) = created(&mut lp);
-    let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let e = &mut lp.peers[1].engine;
-    assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
-    let rec = e.core.created(&a.account).unwrap().clone();
-    let mut prev = (FIRST_EPOCH, AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed()));
+    let (mut lp, a, first, rec, _) = outsider();
+    let mut prev = (FIRST_EPOCH, first);
     for i in 0..n {
         let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([i; 32]));
         let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![prev.0], names: Vec::new(), takes: Vec::new(), revokes: true, devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
@@ -242,15 +242,9 @@ fn actor_of(lp: &mut LocalPeer, a: &Tid) -> Tid {
 // spec/crypto.md §4 (Seal), §3: a grant to an account is boxed at its open epoch by that epoch's public keys, not its first
 #[test]
 fn grant_boxes_at_the_open_epoch_spec_crypto_4() {
-    let mut lp = peers(2);
-    let (a, bytes) = created(&mut lp);
-    let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
+    let (mut lp, a, first, rec, ts) = outsider();
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([77; 32]));
     let e = &mut lp.peers[1].engine;
-    assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
-    let rec = e.core.created(&a.account).unwrap().clone();
-    let ts = Ts::make(e.now(), 0).unwrap();
     assert!(matches!(e.ingest(&rotation(rec, &first, &next, ts), Vec::new()).unwrap(), Ingested::Applied(_)));
     let t = actor_of(&mut lp, &a.account);
     let e = &mut lp.peers[1].engine;
@@ -314,15 +308,9 @@ fn account_session_nonce_is_new_after_a_restart_spec_crdt_2() {
 // spec/crypto.md §4 (Carried): a box at an account's new epoch carries that epoch's rotation
 #[test]
 fn a_box_at_an_account_epoch_carries_its_rotation_spec_crypto_4() {
-    let mut lp = peers(2);
-    let (a, bytes) = created(&mut lp);
-    let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
+    let (mut lp, a, first, rec, ts) = outsider();
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([80; 32]));
     let e = &mut lp.peers[1].engine;
-    e.ingest(&bytes, Vec::new()).unwrap();
-    let rec = e.core.created(&a.account).unwrap().clone();
-    let ts = Ts::make(e.now(), 0).unwrap();
     let rot = rotation(rec, &first, &next, ts);
     let id = CommitBlob::decode(&rot).unwrap().header.id();
     e.ingest(&rot, Vec::new()).unwrap();
@@ -336,15 +324,9 @@ fn a_box_at_an_account_epoch_carries_its_rotation_spec_crypto_4() {
 // spec/wire.md §4 (the epoch an account signer signs at): the request gate reads a signer's signature at the header's epoch: a commit signed at the first epoch verifies only there
 #[test]
 fn request_gate_reads_the_header_epoch_spec_sync_3() {
-    let mut lp = peers(2);
-    let (a, bytes) = created(&mut lp);
-    let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
+    let (mut lp, a, first, rec, ts) = outsider();
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([79; 32]));
     let e = &mut lp.peers[1].engine;
-    e.ingest(&bytes, Vec::new()).unwrap();
-    let rec = e.core.created(&a.account).unwrap().clone();
-    let ts = Ts::make(e.now(), 0).unwrap();
     let rot = rotation(rec, &first, &next, ts);
     e.ingest(&rot, Vec::new()).unwrap();
     let blob = CommitBlob::decode(&rot).unwrap();
@@ -620,16 +602,10 @@ fn a_removed_nodes_proved_forks_are_bounded_at_n_and_10n_spec_sync_opens_2() {
 // keeps that line, lists the dispute, and its user may choose it, which it then follows.
 #[test]
 fn a_proved_answer_warns_and_can_be_chosen_spec_permissions_5_4() {
-    let mut lp = peers(2);
-    let (a, bytes) = created(&mut lp);
+    let (mut lp, a, first, rec, ts) = outsider();
     let p = a.account;
-    let held = lp.peers[0].engine.core.accounts.get(&p).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
     let (kf, k1, k2) = (AccountEpochKeys::from_seed(&Secret32::from_bytes([81; 32])), AccountEpochKeys::from_seed(&Secret32::from_bytes([82; 32])), AccountEpochKeys::from_seed(&Secret32::from_bytes([83; 32])));
     let e = &mut lp.peers[1].engine;
-    e.ingest(&bytes, Vec::new()).unwrap();
-    let rec = e.core.created(&p).unwrap().clone();
-    let ts = Ts::make(e.now(), 0).unwrap();
     let f = rotation_at(rec.clone(), (FIRST_EPOCH, &first), &[], &kf, rotation_to(&kf, vec![FIRST_EPOCH]), ts);
     let fid = CommitBlob::decode(&f).unwrap().id();
     e.take_rotations(vec![header_only(&f)]).unwrap();
@@ -660,29 +636,18 @@ fn a_rotation_carrying_a_removal_revokes_the_epochs_below_it_spec_permissions_5_
     let ts_of = |e: &crate::Engine| Ts::make(e.now(), 0).unwrap();
     let key = |k: &AccountEpochKeys| k.signing.verifying_key().to_bytes();
     let header = |next: &AccountEpochKeys, sup: CommitId, revokes: bool| RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![sup], names: Vec::new(), takes: Vec::new(), revokes, devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
-    let setup = || {
-        let mut lp = peers(2);
-        let (a, bytes) = created(&mut lp);
-        let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-        let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
-        let e = &mut lp.peers[1].engine;
-        assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
-        (lp, a, first)
-    };
     let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([77; 32]));
     for (what, revoked) in [("no removal", false), ("a removal", true)] {
-        let (mut lp, a, first) = setup();
+        let (mut lp, a, first, rec, _) = outsider();
         let e = &mut lp.peers[1].engine;
-        let rec = e.core.created(&a.account).unwrap().clone();
         let r = rotation_at(rec, (FIRST_EPOCH, &first), &[], &next, header(&next, FIRST_EPOCH, revoked), ts_of(e));
         assert!(matches!(e.ingest(&r, Vec::new()).unwrap(), Ingested::Applied(_)));
         assert_eq!(e.account_key_revoked(&a.account, &key(&first)), revoked, "{what}");
         assert!(!e.account_key_revoked(&a.account, &key(&next)), "{what}: the rotation's own epoch is not");
     }
     // a fork not followed: the rotation held first (an earlier millisecond) names no removal
-    let (mut lp, a, first) = setup();
+    let (mut lp, a, first, rec, _) = outsider();
     let fork = AccountEpochKeys::from_seed(&Secret32::from_bytes([78; 32]));
-    let rec = lp.peers[1].engine.core.created(&a.account).unwrap().clone();
     let r = rotation_at(rec.clone(), (FIRST_EPOCH, &first), &[], &next, header(&next, FIRST_EPOCH, false), ts_of(&lp.peers[1].engine));
     assert!(matches!(lp.peers[1].engine.ingest(&r, Vec::new()).unwrap(), Ingested::Applied(_)));
     lp.peers[1].clock.advance(5);
