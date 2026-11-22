@@ -1,5 +1,5 @@
 # A role through holders works only where the node syncs the holders
-> Summary: Tess decided "a role counts wherever its grants are held; syncing is a separate choice" (account write on A, A admin of B, B admin of C, the account syncing only C writes on C). Not built: the role filter (notes/node-closure.md Roles taken up, clause 3) is not what blocks it. A node gets a thing's secrets only through a ticket or a holder's sync ID it syncs, and only the account's grants could point it at holders to fetch, which a stranger controls. Needs Tess's choice among the options below.
+> Summary: Tess decided "a role counts wherever its grants are held; syncing is a separate choice" (account write on A, A admin of B, B admin of C, the account syncing only C writes on C). Not built: the role filter (notes/node-closure.md Roles taken up, clause 3) is not what blocks it. A node gets a thing's secrets only through a ticket or a holder's sync ID it syncs, and only the account's grants could point it at holders to fetch, which a stranger controls. Studied in notes/holder-access-study.md, which recommends holding each holder on the path for keys only (its role entries, by taken grants) and lists five questions for Tess; the options below are the earlier ones.
 > Priority: normal
 > Tags: sync, engine, spec, tess-call
 
@@ -30,3 +30,6 @@ For a node syncing only C, C's secrets come through A's and B's key material, un
 2. A lighter choice than a strong: the account marks a holder to act through, and the node syncs that sync ID's role commits and boxes only, not its sync unit. A new holding mode and a sync filter by entry kind; still a choice per holder.
 3. Roles decide which key material is fetched (every holder on the account's paths). Nodes sync on a stranger's say.
 4. Clause 3 dropped alone: changes nothing in the measured world and brings back the class above.
+
+## Study
+notes/holder-access-study.md costs the baseline (a removal from a holder already rotates everything below it, and copies each of those rotations' boxes to every reader of the holder) and three candidates. Its recommendation is option 2 made automatic and driven by taken grants instead of a mark per holder: a node holds for keys every thing on a chain of taken grants from an own actor to a thing its strongs reach, an edge counts only while its holder is held, and nothing new is placed under any unit below. Waiting on Tess: the study's For Tess 1 to 5.
