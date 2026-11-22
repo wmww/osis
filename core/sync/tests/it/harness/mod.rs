@@ -739,6 +739,52 @@ impl World {
         self.engine(i).why_role(t)
     }
 
+    /// Debug: per node, how it syncs thing `t`, one line each: the sync IDs its sync store syncs
+    /// with `t` among their things and how (`Store::syncs`), those `t` owns by its held `sync.0`
+    /// (`Engine::sync_ids`, `hint` marked), those carrying it (`Engine::carrying`), and the held
+    /// ticket it opens for `t` (`Engine::ticket_for`: sync ID, role, epoch, holder). Sync IDs as
+    /// the trace prints them, so a reader syncing another sync ID than its writers shows at once.
+    pub fn sync_ids_of(&mut self, t: &Tid) -> String {
+        let s = trace::short;
+        let mut out = Vec::new();
+        for i in 0..self.nodes.len() {
+            let synced: Vec<String> = self.store(i).syncs().into_iter().filter(|(_, (ts, _))| ts.contains(t)).map(|(x, (_, h))| format!("{} {h:?}", s(&x))).collect();
+            let e = self.engine(i);
+            let line = osis_base::costs::paused(|| {
+                let owned: Vec<String> = e.sync_ids(t).map(|v| v.iter().map(|o| format!("{}{}", s(&o.id), if o.hint { " hint" } else { "" })).collect()).unwrap_or_else(|x| vec![format!("{x:?}")]);
+                let carrying: Vec<String> = e.carrying(t).map(|v| v.iter().map(s).collect()).unwrap_or_else(|x| vec![format!("{x:?}")]);
+                let ticket = match e.ticket_for(t) {
+                    Ok(Some(k)) => format!("{} {:?} e{} to {}", s(&k.sync_id), k.role, k.epoch.0, k.holder),
+                    Ok(None) => "none".into(),
+                    Err(x) => format!("{x:?}"),
+                };
+                format!("n{i}: syncs [{}]; owns [{}]; carrying [{}]; ticket {ticket}", synced.join(", "), owned.join(", "), carrying.join(", "))
+            });
+            out.push(line);
+        }
+        out.join("\n")
+    }
+
+    /// Debug builds: commit `c` named, for a trace's `C..` (`Engine::describe_commit`, by the
+    /// first node holding its record), each node's own and account tid marked `(n<j>)` and
+    /// `(n<j> account)`.
+    #[cfg(debug_assertions)]
+    pub fn describe_commit(&mut self, c: &osis_base::CommitId) -> String {
+        let names: Vec<(String, String)> = (0..self.nodes.len()).flat_map(|j| {
+            let e = self.engine(j);
+            let mut v = vec![(e.tid().to_string(), format!("n{j}"))];
+            v.extend(e.account_tid().map(|a| (a.to_string(), format!("n{j} account"))));
+            v
+        }).collect();
+        let Some(mut d) = (0..self.nodes.len()).find_map(|i| self.engine(i).describe_commit(c)) else {
+            return format!("{c:?}: held by no node");
+        };
+        for (tid, name) in names {
+            d = d.replace(&tid, &format!("{tid} ({name})"));
+        }
+        d
+    }
+
     /// Debug builds: node `i`'s local rows, its engine's (`"engine"`) and its sync store's
     /// (`"store"`), described by its engine (`Engine::describe_rows`), where the family starts
     /// with `prefix` and, with `tid`, the row names it.
@@ -827,6 +873,10 @@ impl World {
         if self.trace {
             self.stepped.push((i, restarted, out.iter().filter(|o| matches!(o, Out::Send(..))).count()));
         }
+        // round counts a test reads with `costs::take` (notes/test-harnesses.md, Measuring)
+        osis_base::costs::count("settle steps", 1);
+        osis_base::costs::count("settle rounds", rounds);
+        osis_base::costs::peak("settle rounds most", rounds);
         if rounds > ROUND_CAP {
             panic!("settle loop: {rounds} rounds in one step ({seen:?})");
         }

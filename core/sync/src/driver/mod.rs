@@ -760,7 +760,9 @@ impl Node {
                 cx.engine.forget_unread()?;
             }
             // the round's one follow: every module below sees what earlier rounds wrote
-            acted |= acts.by(Act::Follow, cx.engine.follow()?);
+            let followed = cx.engine.follow()?;
+            osis_base::costs::count("settle follows moved", u64::from(followed));
+            acted |= acts.by(Act::Follow, followed);
             // leave first: what this node syncs, which every other module follows
             acted |= acts.by(Act::Leave, self.leave.settle(&mut crate::leave::Live { cx: &mut cx, status: &self.status })?);
             acted |= acts.by(Act::Store, osis_base::costs::scoped("driver store", || self.driver.store.settle(cx.engine, cx.store, cx.now))?);

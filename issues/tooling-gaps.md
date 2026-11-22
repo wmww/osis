@@ -1,5 +1,5 @@
 # Debugging and differential tooling gaps
-> Summary: Tool gaps several agents met: no per-node cost attribution or NotOpen trace line, `verify_stamp`'s bool misread as "verified", no safe way to build main's library sources beside a branch's, comment-only manifest edits selecting the whole gate, run.sh negative controls passing on any failure, cpuprof without a by-caller, callee or inline-aware split, and debug dumps missing kept copies, per-node sync IDs, commit names and round counts.
+> Summary: Tool gaps several agents met: no per-node cost attribution or NotOpen trace line, `verify_stamp`'s bool misread as "verified", no safe way to build main's library sources beside a branch's, comment-only manifest edits selecting the whole gate, run.sh negative controls passing on any failure, cpuprof without a by-caller, callee or inline-aware split, and debug dumps missing a generator census, a push-holding knob and bail-out reasons.
 > Priority: low
 > Tags: tests, tools, sync
 
@@ -23,11 +23,6 @@ Each met by several agents:
 
 ## Debug dumps that cost probe builds
 Each cost a fix or review several probe builds (osis-sync and osis-engine builds take 1-5 min):
-- **`why_role` shows no kept copy**: "content held, reads false" names no cause when the content is a retained copy (`Fate::Kept`); printing the kept marks (`ix.kept`) and each mark's holders would.
-- **No per-node sync IDs per thing**: a reader syncing another sync ID of a thing than its writers (a sync ID fork) showed only through `OSIS_SYNC_TRACE` plus `Engine::carrying` per node; a `World` dump of each node's sync IDs for a thing beside `why_role` would show it at once.
-- **No commit describer**: the trace's `+commit C..` lines are opaque; naming a commit (the grant, the rotation, the re-seal) took env-gated engine probes.
-- **No round or follow counter outside `ROUND_CAP`**: measuring settle rounds per step across the osis-sync suite took a throwaway logger in the driver (`Node::rounds` is checked, never reported).
 - **No census of what generators write**: which of a model's generators write a shape took a temporary panic in `World::put` plus the `_plain` runs.
-- **Named order tests print no tallies**: "outputs identical" across a change needed a throwaway dump of each `check`'s `Seen` and the judgment files, built on both revisions.
 - **No knob holding pushes back**: in the sync harness streams push in the settle round before `Life` drops, so an end-to-end test cannot tell an at-once lost-access drop from release's pass wait; a no-room knob would make such window tests discriminating.
 - **Bare-bool misses**: a held-in-part placement reports misses and bail-outs as bools, so finding the bailing walk took a script rewriting every `return false` into a probe.

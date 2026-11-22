@@ -228,7 +228,58 @@ fn role_lines(tx: &mut crate::engine::Tx<'_>, t: &Tid, out: &mut String) -> Resu
     Ok(())
 }
 
+/// `why_role`'s kept-copy line for `t` (`retention::forget`'s retain decision): whether it is
+/// held as a kept copy and of which actor, whether a held path reads it (which keeps it whole
+/// instead), and the kept marks (`Core::ix.kept`) on `t` and on the actor its secrets derive
+/// from, each with the holders it hangs on.
+fn kept_lines(core: &Core, t: &Tid, out: &mut String) {
+    let copy = match crate::retention::forget::copy_of(core, t) {
+        Some(a) => format!("yes, of {}", label(core, &a)),
+        None => "no".into(),
+    };
+    let on: BTreeSet<Tid> = [Some(*t), core.secret_actor(t)].into_iter().flatten().collect();
+    let marks: Vec<String> = on.iter().filter_map(|x| core.ix.kept.get(x).map(|hs| format!("{} on {}", label(core, x), hs.iter().map(|h| label(core, h)).collect::<Vec<_>>().join(", ")))).collect();
+    let marks = if marks.is_empty() { "none".to_owned() } else { marks.join("; ") };
+    let _ = write!(out, "\n  kept copy: {copy} (a held path reads it: {}); kept marks: {marks} ({} in all)", crate::retention::forget::read_path(core, t), core.ix.kept.len());
+}
+
 impl Engine {
+    /// Debug builds: what node-held commit `c` is, for naming a trace's `C..`: its kind, its
+    /// signer and the thing it acts for (`View::purge_author`), each thing and aspect it writes
+    /// with that part's validity and hold here, and its rotation, re-seal, undo or expiry if any.
+    /// `None` when this node holds no record of it.
+    #[doc(hidden)]
+    pub fn describe_commit(&self, c: &CommitId) -> Option<String> {
+        let core = &self.core;
+        let m = core.ix.commits.get(c)?;
+        let v = &m.view;
+        let mut out = format!("c:{} {:?} by {} as {}", short(c), v.kind, label(core, &v.signer), label(core, &v.purge_author));
+        let parts: Vec<String> = v.aspects.iter().enumerate().map(|(ai, a)| {
+            let valid = if m.valid.get(ai).copied().unwrap_or(false) { "" } else { " invalid" };
+            let hold = m.hold.get(ai).map_or("no hold".to_owned(), |h| format!("{h:?}"));
+            format!("{} {}{valid} {hold}", label(core, &a.tid), a.ak)
+        }).collect();
+        let _ = write!(out, " on [{}]", parts.join(", "));
+        if let Some(h) = osis_base::costs::paused(|| m.header.decoded()) {
+            if h.rotation.is_some() {
+                out.push_str(", a rotation");
+            }
+            if h.reseal.is_some() {
+                out.push_str(", a seed re-seal");
+            }
+            if let Some(u) = &h.undoes {
+                let _ = write!(out, ", undoes c:{}", short(u));
+            }
+            if let Some(x) = h.expires {
+                let _ = write!(out, ", expires {x}");
+            }
+        }
+        if v.memory {
+            out.push_str(", a memory commit");
+        }
+        Some(out)
+    }
+
     /// Debug builds: why `t` is still held, from the retention rule's own needs
     /// (`retention::needed::search`): rooted (in the node closure, by its path of strongs from
     /// the node root and their contexts, or otherwise), the chain of needs to the first rooted
@@ -296,6 +347,7 @@ impl Engine {
                     let _ = write!(out, "\n  lost access ({}): {due}", label(tx.core, &a));
                     let cl = &tx.core.ix.closure;
                     let _ = write!(out, "\n  node closure: contexts {:?}, left {:?}, reads {}, content held {}", cl.contexts(&t), cl.left().get(&t), cl.reads(&t), crate::retention::needed::holds_content(tx.core, &t));
+                    kept_lines(tx.core, &t, &mut out);
                     Ok(out)
                 })
             })

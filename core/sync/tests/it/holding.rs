@@ -1471,6 +1471,9 @@ fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
     let mut want = vec![t0, t1];
     want.sort();
     assert_eq!(kept, want, "copies of T1 and T0 kept: {}", w.why_role(0, &t0));
+    // the debug dump names the retain decision (notes/test-harnesses.md, Why kept and row dumps)
+    let why = w.why_role(0, &t0);
+    assert!(why.contains("kept copy: yes, of ") && why.contains(&format!("kept marks: {t0} on ")), "{why}");
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "the copy of T0 reads");
     assert!(w.engine(0).read_secrets(&t0).is_empty(), "T0's secrets go");
 }

@@ -2934,9 +2934,14 @@ impl Seen {
 }
 
 /// Checks one written history (`play`): what it reached, or the first mismatch found, described
-/// (a panic counts).
+/// (a panic counts). The named tests' one entry: it prints what a passing history reached
+/// (`Seen`), shown under `--nocapture`, so two revisions' outputs compare by a diff.
 fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
-    caught(|| check_orders(1, seed, steps, cfg, true))
+    let r = caught(|| check_orders(1, seed, steps, cfg, true));
+    if let Ok(seen) = &r {
+        println!("order check (seed {seed}): {seen:?}");
+    }
+    r
 }
 
 /// `check` of a drawn history (`play_with`), so it shrinks, with its orders on up to `threads`

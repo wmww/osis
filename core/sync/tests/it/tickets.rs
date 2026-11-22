@@ -77,6 +77,37 @@ fn an_accepted_ticket_syncs_its_thing_spec_sync_inbox_5() {
     assert_eq!(w.engine(1).sync_holder(&k.sync_id).unwrap(), Some(([t].into(), Holding::Read)), "T's own sync ID");
 }
 
+// spec: none (debug dumps, notes/test-harnesses.md): after Bob accepts Alice's grant,
+// `sync_ids_of` shows each node syncing T's sync ID and Bob holding its ticket; `describe_commit`
+// names Alice's next write on T; the settle round counters count that write's steps.
+#[test]
+fn debug_dumps_name_sync_ids_commits_and_rounds() {
+    let (mut w, t) = granted();
+    let k = w.engine(1).ticket_for(&t).unwrap().expect("the ticket reached Bob's inbox");
+    accept(&mut w, t, &[]);
+    let s = crate::harness::trace::short(&k.sync_id);
+    let d = w.sync_ids_of(&t);
+    let lines: Vec<&str> = d.lines().collect();
+    assert!(lines[0].starts_with(&format!("n0: syncs [{s} ")), "{d}");
+    assert!(lines[1].starts_with(&format!("n1: syncs [{s} ")) && lines[1].contains(&format!("ticket {s} Read")), "{d}");
+    osis_base::costs::take();
+    let c = w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak(), &Value::Str("again".into())).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    let costs: std::collections::BTreeMap<&str, u64> = osis_base::costs::take().into_iter().map(|(n, _, k)| (n, k)).collect();
+    let (steps, rounds, most) = (costs["settle steps"], costs["settle rounds"], costs["settle rounds most"]);
+    assert!(steps > 0 && rounds >= steps && most <= crate::harness::ROUND_CAP && costs["settle follows moved"] <= rounds, "{costs:?}");
+    #[cfg(debug_assertions)]
+    {
+        let d = w.describe_commit(&c);
+        assert!(d.contains("Content by ") && d.contains("(n0 account)") && d.contains(&format!("{t} x:v.0")), "{d}");
+    }
+    let _ = c;
+}
+
 // spec/sync-hostile.md (a ticket's sync ID is its issuer's word), spec/sync-inbox.md §5 Ticket
 // sync IDs: beside the grant's ticket, Bob holds one for T naming the sync ID of Alice's profile,
 // which Bob reads as her contact, and one naming the sync ID of a thing of Alice's he may not
