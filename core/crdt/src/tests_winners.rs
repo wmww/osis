@@ -411,17 +411,20 @@ proptest! {
         winners_check(seed, &[sink_no_seq()], seed % 2 == 0);
     }
 
-    /// §4.8, §5.6, §5.7, §7: sequences at any depth, and positions written in several encodings.
-    /// The seed picks the type and honesty, so each takes an eighth of the cases.
+    /// §4.8, §5.6, §5.7, §7: sequences at any depth, and positions written in several encodings
+    /// (the last: composites created empty, so several slots' `W`s meet without a reset). The seed
+    /// picks the type and honesty, so each takes a tenth of the cases.
     #[test]
     fn seq_winners_from_scratch_spec_4_8(seed in any::<u64>()) {
+        let r = || Box::new(Ty::Register);
         let types = [
             vec![Ty::Text],
             vec![Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect())))],
             vec![Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text))],
             vec![Ty::Text, Ty::Register, sink_no_seq()],
+            vec![Ty::Set(r()), Ty::Map(r(), r()), Ty::List(r())],
         ];
-        winners_check(seed, &types[(seed / 2 % 4) as usize], seed % 2 == 0);
+        winners_check(seed, &types[(seed / 2 % 5) as usize], seed % 2 == 0);
     }
 }
 

@@ -105,12 +105,12 @@ proptest! {
     }
 
     /// §4.1 copy order across encodings at one position (§7: a text slot holds the register's
-    /// embedding, and only the winning copy's).
+    /// embedding, and only the winning copy's; composites created empty meet with each slot's `W`).
     #[test]
     fn forged_copies_across_encodings_spec_7(seed in any::<u64>()) {
-        let set = Ty::Set(Box::new(Ty::Register));
+        let reg = || Box::new(Ty::Register);
         let mut r = crate::testutil::rng(seed);
-        let all = [Ty::Register, Ty::Text, Ty::Counter, set, sink_no_seq()];
+        let all = [Ty::Register, Ty::Text, Ty::Counter, Ty::Set(reg()), Ty::Map(reg(), reg()), Ty::List(reg()), sink_no_seq()];
         let pick: Vec<Ty> = (0..3).map(|_| all[r.below(all.len())].clone()).collect();
         forged_laws(seed, &pick);
     }
