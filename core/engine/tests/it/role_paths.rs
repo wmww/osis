@@ -73,11 +73,12 @@ pub(crate) fn world(interim: bool) -> World {
     grant(&mut lp, 0, h5, pb, edge_of(Role::Admin));
     remove(&mut lp, 1, t5, h5);
     remove(&mut lp, 2, t1, pc);
-    // invites: by a holder's invite and by one's own
-    grant(&mut lp, 0, t4, h4, invite(Role::Write, Role::Read));
+    // invites: by a holder's invite and by one's own, each at its grant's own role (the may-grant flag,
+    // spec/permissions.md §2: the new walk reads a lower invite level as no flag)
+    grant(&mut lp, 0, t4, h4, invite(Role::Write, Role::Write));
     grant(&mut lp, 0, h4, pb, edge_of(Role::Write));
     grant(&mut lp, 1, t4, pd, edge_of(Role::Read));
-    grant(&mut lp, 0, t4, pc, invite(Role::Write, Role::Read));
+    grant(&mut lp, 0, t4, pc, invite(Role::Write, Role::Write));
     grant(&mut lp, 2, t4, pb, edge_of(Role::Read));
     // a finalize of an ended grant
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 500);
@@ -283,7 +284,7 @@ pub(crate) fn new_walk(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTr
                         let things = |x: &osis_base::CommitId| e.header(x).map(|lh| lh.aspects.iter().map(|a| a.tid).collect::<Vec<Tid>>()).unwrap_or_default();
                         std::sync::Arc::new(osis_perm::paths::List::new(f.commits().iter().flat_map(|x| things(x).into_iter().map(move |t| (t, *x))).collect::<Vec<_>>()))
                     });
-                    parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier, remains: h.remains, adminless: h.adminless }) });
+                    parts.push(Part { on: t, path: path.clone(), direct: p.direct, kind: PartKind::Edge(EdgeWrite { holder: op.holder, value: op.edge, frontier }) });
                 }
             }
         }

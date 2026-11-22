@@ -380,7 +380,7 @@ fn role_class(on: u32, path: &[u32]) -> Part {
 
 fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, listing: Option<&[u64]>) -> Part {
     let frontier = listing.map(|l| Arc::new(super::whole(&[KH, KX, KB, KA, KT, KS, KZ, KY, KG].map(t), l.iter().map(|&i| c(i)))));
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier, remains: None, adminless: false }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier }) }
 }
 
 fn c(i: u64) -> CommitId {

@@ -67,7 +67,7 @@ impl World {
 }
 
 fn edge_part(path: &[u8], on: u8, holder: u8, value: Option<Edge>, frontier: Option<Arc<List>>) -> PPart {
-    PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: tid(holder), value, frontier, remains: None, adminless: false }) }
+    PPart { on: tid(on), path: path.iter().map(|&t| tid(t)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: tid(holder), value, frontier }) }
 }
 fn content_part(path: &[u8], on: u8) -> PPart {
     let delta = Delta { aspect: Ak::new("doc.0").unwrap(), needs: Role::Write, purge_author: 0, purge_by: PurgeBy::AuthorOrAdmin, class: DeltaClass::Plain };
@@ -140,7 +140,7 @@ impl Node {
                             removal: role.is_none_or(|r| r < Role::Write) && !finalize,
                             gives_write: role.is_some_and(|r| r >= Role::Write),
                             gives_read: role.is_some_and(|r| r >= Role::Read) && !leave,
-                            relies: e.remains,
+                            relies: None,
                             creation: creations.get(&WriteId(c.id, i as u32)).copied(),
                             leaves: vec![],
                         };

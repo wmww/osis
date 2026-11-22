@@ -594,7 +594,7 @@ impl<S: Store> Facts<S> {
     }
 
     /// (d): its path is re-granted for `r` and it is positioned after the latest of each edge's
-    /// first chained write giving `r` (a record edge: from the start).
+    /// first write giving `r` made by right (a record edge: from the start).
     fn regranted(&self, tl: &Walk, d: &Fact, r: Role, counts: &mut Counts) -> bool {
         let mut bound: Option<Key> = None;
         for &(h, t) in &d.hops {
@@ -603,7 +603,7 @@ impl<S: Store> Facts<S> {
                 return false;
             }
             if !self.record((h, t)) {
-                let Some(k) = tl.first_chained(&h, &t, r) else { return false };
+                let Some(k) = tl.first_by_right(&h, &t, r) else { return false };
                 bound = Some(bound.map_or(k, |b| b.max(k)));
             }
         }

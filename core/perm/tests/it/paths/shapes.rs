@@ -31,9 +31,9 @@ fn ms(n: u64) -> Ts {
     Ts::make(WallMs(n), 0).unwrap()
 }
 
-fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, frontier: Option<&[u64]>, remains: Option<u32>) -> Part {
+fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, frontier: Option<&[u64]>) -> Part {
     let frontier = frontier.map(|f| Arc::new(super::whole(&[H, Y, Z, A, LK, T1].map(t), f.iter().map(|&c| cid(c)))));
-    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier, remains: remains.map(t), adminless: false }) }
+    Part { on: t(on), path: path.iter().map(|&x| t(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: t(holder), value, frontier }) }
 }
 
 fn commit(id: u64, ts: Ts, signer: u32, parts: Vec<Part>) -> Commit {
@@ -122,8 +122,8 @@ fn records() -> BTreeMap<Tid, Tid> {
 // path; the grant is taken first and applies.
 #[test]
 fn a_part_is_taken_before_its_commits_own_path_part() {
-    let grant = commit(1, ms(1), H, vec![edge(LK, &[A], Y, Some(Edge::new(Role::Admin)), Some(&[]), None)]);
-    let both = commit(2, ms(3), Y, vec![edge(LK, &[], Y, None, None, Some(A)), edge(LK, &[], Z, Some(Edge::new(Role::Admin)), Some(&[]), None)]);
+    let grant = commit(1, ms(1), H, vec![edge(LK, &[A], Y, Some(Edge::new(Role::Admin)), Some(&[]))]);
+    let both = commit(2, ms(3), Y, vec![edge(LK, &[], Y, None, None), edge(LK, &[], Z, Some(Edge::new(Role::Admin)), Some(&[]))]);
     let p = Paths::evaluate(&records(), BTreeSet::new(), &[grant, both]);
     assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Applied), "the self-removal");
     assert_eq!(p.status(&WriteId(cid(2), 1)), Some(Status::Applied), "the grant");
@@ -138,10 +138,10 @@ fn a_frontier_less_removal_of_the_signers_own_grant_is_explicit() {
     const N5: u32 = 4;
     let timed = Some(Edge { until: Some(WallMs(3)), ..Edge::new(Role::Admin) });
     let commits = [
-        commit(1, ms(1), H, vec![edge(A, &[], Z, Some(Edge::new(Role::Admin)), Some(&[]), None)]),
-        commit(2, ms(1), H, vec![edge(T1, &[A], Z, timed, Some(&[]), None)]),
-        commit(3, ms(2), Z, vec![edge(T1, &[], N5, Some(Edge::new(Role::Write)), Some(&[]), None)]),
-        commit(4, ms(5), Z, vec![edge(T1, &[A], Z, None, None, None)]),
+        commit(1, ms(1), H, vec![edge(A, &[], Z, Some(Edge::new(Role::Admin)), Some(&[]))]),
+        commit(2, ms(1), H, vec![edge(T1, &[A], Z, timed, Some(&[]))]),
+        commit(3, ms(2), Z, vec![edge(T1, &[], N5, Some(Edge::new(Role::Write)), Some(&[]))]),
+        commit(4, ms(5), Z, vec![edge(T1, &[A], Z, None, None)]),
     ];
     let p = robust(&records(), &commits, &mut Rng(1));
     assert_eq!(p.status(&WriteId(cid(4), 0)), Some(Status::Applied));
@@ -155,46 +155,46 @@ fn hostile_shapes_judge_alike_without_panicking() {
     let mut rng = Rng(7);
     let admin = Some(Edge::new(Role::Admin));
     let made_up = |n: u32| (0..n).map(|i| 5000 + i).collect::<Vec<u32>>();
-    let gy = commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]), None)]);
+    let gy = commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]))]);
 
     // paths of 0, 64 and 200 made-up things: a stranger's grant applies nowhere
     for n in [0, 64, 200] {
-        let c = commit(2, ms(2), 999, vec![edge(T1, &made_up(n), Z, admin, Some(&[]), None)]);
+        let c = commit(2, ms(2), 999, vec![edge(T1, &made_up(n), Z, admin, Some(&[]))]);
         let p = robust(&records(), &[gy.clone(), c], &mut rng);
         assert_eq!(p.status(&WriteId(cid(2), 0)), Some(Status::Unapplied), "path of {n}");
     }
     // a path naming a thing twice is bad input, also when the repeat is the signer or the target
-    let twice = commit(2, ms(2), Y, vec![edge(T1, &[A, Y], Z, admin, Some(&[]), None)]);
-    let into = commit(3, ms(2), Y, vec![edge(T1, &[A, T1], Z, admin, Some(&[]), None)]);
+    let twice = commit(2, ms(2), Y, vec![edge(T1, &[A, Y], Z, admin, Some(&[]))]);
+    let into = commit(3, ms(2), Y, vec![edge(T1, &[A, T1], Z, admin, Some(&[]))]);
     let p = robust(&records(), &[gy.clone(), twice, into], &mut rng);
     assert_eq!((p.status(&WriteId(cid(2), 0)), p.status(&WriteId(cid(3), 0))), (Some(Status::Unapplied), Some(Status::Unapplied)));
     // a part setting an edge of its own path (the record edge its descent ends with), alone and
     // beside another part
-    let own = commit(2, ms(2), H, vec![edge(T1, &[A], A, None, Some(&[]), None)]);
-    let mixed = commit(3, ms(3), H, vec![edge(T1, &[A], A, Some(Edge::new(Role::Write)), Some(&[]), None), edge(T1, &[A], Z, admin, Some(&[]), None)]);
+    let own = commit(2, ms(2), H, vec![edge(T1, &[A], A, None, Some(&[]))]);
+    let mixed = commit(3, ms(3), H, vec![edge(T1, &[A], A, Some(Edge::new(Role::Write)), Some(&[])), edge(T1, &[A], Z, admin, Some(&[]))]);
     robust(&records(), &[gy.clone(), own, mixed], &mut rng);
     // a repeated holder makes the whole commit bad input
-    let rep = commit(2, ms(2), Y, vec![edge(A, &[], Z, admin, Some(&[]), None), edge(A, &[], Z, Some(Edge::new(Role::Read)), Some(&[]), None), edge(A, &[], 77, admin, Some(&[]), None)]);
+    let rep = commit(2, ms(2), Y, vec![edge(A, &[], Z, admin, Some(&[])), edge(A, &[], Z, Some(Edge::new(Role::Read)), Some(&[])), edge(A, &[], 77, admin, Some(&[]))]);
     let p = robust(&records(), &[gy.clone(), rep], &mut rng);
     assert!((0..3).all(|i| p.status(&WriteId(cid(2), i)) == Some(Status::Unapplied)));
     // holders holding each other, and a record cycle (descent bounded by MAX_CHAIN_DEPTH)
     let cyc = BTreeMap::from([(t(A), t(H)), (t(20), t(21)), (t(21), t(20))]);
     let holders = [
         gy.clone(),
-        commit(2, ms(2), Y, vec![edge(A, &[], 20, admin, Some(&[]), None)]),
-        commit(3, ms(3), 20, vec![edge(21, &[], 21, admin, Some(&[]), None)]),
-        commit(4, ms(4), 21, vec![edge(20, &[], 20, admin, Some(&[]), None), edge(A, &[20], Y, None, Some(&[]), Some(H))]),
-        commit(5, ms(5), H, vec![edge(A, &[], Y, None, Some(&[]), None)]),
+        commit(2, ms(2), Y, vec![edge(A, &[], 20, admin, Some(&[]))]),
+        commit(3, ms(3), 20, vec![edge(21, &[], 21, admin, Some(&[]))]),
+        commit(4, ms(4), 21, vec![edge(20, &[], 20, admin, Some(&[])), edge(A, &[20], Y, None, Some(&[]))]),
+        commit(5, ms(5), H, vec![edge(A, &[], Y, None, Some(&[]))]),
     ];
     robust(&cyc, &holders, &mut rng);
     // extreme times: ts 0 and the greatest; an `until` in the past, at the ts, far ahead
     let until = |u: u64| Some(Edge { until: Some(WallMs(u)), ..Edge::new(Role::Admin) });
     let times = [
-        commit(1, Ts::ZERO, H, vec![edge(A, &[], Y, until(0), Some(&[]), None)]),
-        commit(2, Ts::ZERO, H, vec![edge(A, &[], Z, until(u64::MAX), Some(&[]), None)]),
-        commit(3, ms(5), H, vec![edge(A, &[], 30, until(5), Some(&[]), None), edge(A, &[], 31, until(4), Some(&[]), None)]),
-        commit(4, Ts::MAX, Z, vec![edge(A, &[], Y, None, None, None)]),
-        commit(5, Ts::MAX, Y, vec![edge(A, &[], 40, admin, Some(&[]), None)]),
+        commit(1, Ts::ZERO, H, vec![edge(A, &[], Y, until(0), Some(&[]))]),
+        commit(2, Ts::ZERO, H, vec![edge(A, &[], Z, until(u64::MAX), Some(&[]))]),
+        commit(3, ms(5), H, vec![edge(A, &[], 30, until(5), Some(&[])), edge(A, &[], 31, until(4), Some(&[]))]),
+        commit(4, Ts::MAX, Z, vec![edge(A, &[], Y, None, None)]),
+        commit(5, Ts::MAX, Y, vec![edge(A, &[], 40, admin, Some(&[]))]),
     ];
     let p = robust(&records(), &times, &mut rng);
     assert_eq!(p.status(&WriteId(cid(5), 0)), Some(Status::Unapplied), "Y's grant ended at 0");
@@ -242,8 +242,7 @@ pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
                     floor: (r.below(6) == 0).then(|| r.below(3) as u64),
                 });
                 let frontier = (r.below(4) > 0).then(|| Arc::new(List::new((0..r.below(4)).map(|_| (t(thing(&mut r)), cid(r.below(40) as u64))))));
-                let remains = (r.below(3) == 0).then(|| t(thing(&mut r)));
-                PartKind::Edge(EdgeWrite { holder: t(thing(&mut r)), value, frontier, remains, adminless: r.below(8) == 0 })
+                PartKind::Edge(EdgeWrite { holder: t(thing(&mut r)), value, frontier })
             };
             parts.push(Part { on, path, direct: 0, kind });
         }
@@ -278,10 +277,10 @@ fn ids(l: &[u64]) -> Frontier {
 fn hostile_addenda_and_snapshots_judge_alike_without_panicking() {
     let mut rng = Rng(11);
     let admin = Some(Edge::new(Role::Admin));
-    let gy = commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]), None)]);
-    let gz = commit(2, ms(2), Y, vec![edge(A, &[], Z, admin, Some(&[]), None)]);
+    let gy = commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]))]);
+    let gz = commit(2, ms(2), Y, vec![edge(A, &[], Z, admin, Some(&[]))]);
     let zc = commit(3, ms(3), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Plain)]);
-    let rz = commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]), None)]);
+    let rz = commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]))]);
     let base = [gy, gz, zc, rz];
     let with = |more: Vec<Commit>| base.iter().cloned().chain(more).collect::<Vec<_>>();
     // an addendum keyed by a grant and by itself, naming role commits and itself
@@ -325,10 +324,10 @@ fn thousands_of_addenda_naming_one_commit_cost_one_read_each() {
     let mut per = vec![];
     for k in [200u64, 2000] {
         let mut c = vec![
-            commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]), None)]),
-            commit(2, ms(1), H, vec![edge(A, &[], Z, admin, Some(&[]), None)]),
+            commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]))]),
+            commit(2, ms(1), H, vec![edge(A, &[], Z, admin, Some(&[]))]),
             commit(3, ms(3), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Plain)]),
-            commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]), None)]),
+            commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]))]),
         ];
         // Z's own (vouching for nothing of its signer), then one by Y that vouches
         c.extend((0..k).map(|i| commit(100 + i, ms(5), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Addendum { removal: cid(4), list: ids(&[3]) })])));
@@ -362,10 +361,10 @@ fn hostile_requests_judge_alike_without_panicking() {
     let mut rng = Rng(12);
     let admin = Some(Edge::new(Role::Admin));
     let base = [
-        commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]), None)]),
-        commit(2, ms(2), H, vec![edge(A, &[], Z, admin, Some(&[]), None)]),
+        commit(1, ms(1), H, vec![edge(A, &[], Y, admin, Some(&[]))]),
+        commit(2, ms(2), H, vec![edge(A, &[], Z, admin, Some(&[]))]),
         commit(3, ms(3), Z, vec![delta(T1, &[A], Role::Write, DeltaClass::Plain)]),
-        commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[3]), None)]),
+        commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[3]))]),
     ];
     let with = |more: Vec<Commit>| base.iter().cloned().chain(more).collect::<Vec<_>>();
     let made_up: Vec<u32> = (0..64).map(|i| 5000 + i).collect();
@@ -413,8 +412,8 @@ fn thousands_of_requests_naming_one_delta_cost_what_none_do() {
     let mut per = vec![];
     for k in [0u64, 200, 2000] {
         let mut c = vec![
-            commit(1, ms(1), H, vec![edge(A, &[], Y, write, Some(&[]), None)]),
-            commit(2, ms(1), H, vec![edge(A, &[], Z, admin, Some(&[]), None)]),
+            commit(1, ms(1), H, vec![edge(A, &[], Y, write, Some(&[]))]),
+            commit(2, ms(1), H, vec![edge(A, &[], Z, admin, Some(&[]))]),
             commit(3, ms(3), H, vec![{
                 let mut d = delta(T1, &[A], Role::Write, DeltaClass::Plain);
                 if let PartKind::Delta(x) = &mut d.kind {
@@ -422,7 +421,7 @@ fn thousands_of_requests_naming_one_delta_cost_what_none_do() {
                 }
                 d
             }]),
-            commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]), None)]),
+            commit(4, ms(4), H, vec![edge(A, &[], Z, None, Some(&[]))]),
         ];
         c.extend((0..k).map(|i| commit(100 + i, ms(5), Y, vec![request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin)])));
         c.extend((0..k).map(|i| commit(100_000 + i, ms(5), Z, vec![request(T1, &[A], Names::Aspect, PurgeBy::AuthorOrAdmin)])));

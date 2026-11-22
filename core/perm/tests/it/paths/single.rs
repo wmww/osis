@@ -1,5 +1,5 @@
 //! The walk by components reads exactly as the walk with partitioning off (`Paths::single`: every
-//! part walked, inert or not, in one component): a part's verdict reads only its own component
+//! part walked in one component): a part's verdict reads only its own component
 //! (notes/perm-paths.md, Components). Compared on every differential world kind and on random
 //! part soups, from scratch, after arrival in a shuffled order and after forgetting half.
 //! spec/permissions.md §5.1, §5.2.
@@ -248,7 +248,7 @@ fn mk(id: u64, ts: u64, signer: u32, parts: Vec<Part>) -> Commit {
 /// listing `list`.
 fn ew(on: u32, path: &[u32], holder: u32, role: Option<Role>, list: &[u64]) -> Part {
     let frontier = Some(Arc::new(super::whole(&[H, M, X, Y, Z, W, A, B, C, N].map(th), list.iter().map(|&c| cm(c)))));
-    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: th(holder), value: role.map(Edge::new), frontier, remains: None, adminless: false }) }
+    Part { on: th(on), path: path.iter().map(|&x| th(x)).collect(), direct: 0, kind: PartKind::Edge(EdgeWrite { holder: th(holder), value: role.map(Edge::new), frontier }) }
 }
 
 fn role_delta(on: u32, path: &[u32]) -> Part {
@@ -462,7 +462,7 @@ fn a_leaf_arriving_that_lists_a_drop_reads_as_from_scratch() {
     }
 }
 
-// notes/perm-paths.md, Inert parts: liveness grows in any order. A chain of grants each resting on
+// notes/perm-paths.md, Components: parts join in any order. A chain of grants each resting on
 // the one before (X grants Y, Y grants Z), two writes each resting on the other's edge (Q grants
 // W, W grants Q: neither live while nothing else sets those edges), and H's grant of Q backdated
 // before both, which makes the pair live at once: every arrival order reads as from scratch and as
@@ -495,13 +495,13 @@ fn liveness_reads_alike_in_every_arrival_order() {
     assert_eq!(alike(&recs(), &BTreeSet::new(), &c, 3, true), None);
 }
 
-// notes/perm-paths.md, Components and inert parts: a part arriving inert (B holds nothing on A,
+// notes/perm-paths.md, Components: a part that cannot apply (B holds nothing on A,
 // so its path through [A] waits) ordered before a lowering already judged on an edge it rests on
 // (H's removal of A's record edge on T1, by H's marked direct hop) is put in question by that
 // lowering as from scratch: its component is walked again from it. Arriving last, it was left
 // out of the lowering's drops.
 #[test]
-fn an_inert_part_arriving_before_a_judged_lowering_is_dropped_by_it() {
+fn a_part_arriving_before_a_judged_lowering_is_dropped_by_it() {
     let mut w = m::account();
     let g = w.push(m::H, 1, &[m::A], m::T1, m::Kind::set(m::H, roles_model::Role::Admin));
     w.push_marked(m::H, 6, &[], m::T1, m::Kind::set(m::A, roles_model::Role::None).listing(w.cut(&[g])), &[0]);

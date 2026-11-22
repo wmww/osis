@@ -88,10 +88,6 @@ pub struct EdgeWrite {
     pub value: Option<Edge>,
     /// A removal of another holder's grant with none that is no self-removal is a finalize.
     pub frontier: Option<Arc<List>>,
-    /// The holder whose edge on `on` is the remaining admin the write names (header `remains`).
-    pub remains: Option<Tid>,
-    /// The adminless mark (header flags bit 1).
-    pub adminless: bool,
 }
 
 /// A delta judged as content (draft §5.2).
@@ -200,7 +196,7 @@ pub enum Status {
     Applied,
     /// Applied as an invite grant (draft §2).
     Invited,
-    /// A lowering judged void: its drops would take its authority or its remaining admin.
+    /// A lowering judged void: its drops would take its authority.
     Void,
     /// In D: put in question by a lowering, or a trusted write's seed.
     Dropped,
@@ -245,7 +241,7 @@ pub struct Changed {
     pub edges: BTreeMap<(Tid, Tid), Key>,
     /// Per edge, the latest key of a cut added or removed.
     pub cuts: BTreeMap<(Tid, Tid), Key>,
-    /// Edges whose final role or first chained point changed.
+    /// Edges whose final role or first point (spec/permissions.md §5.2 Re-grant) changed.
     pub regrant: BTreeSet<(Tid, Tid)>,
     /// Commits whose namers changed: carried by a new snapshot; an own cover a lowering of its
     /// signer lists whose status changed.
@@ -264,9 +260,6 @@ pub struct Paths<S: Store = MemStore> {
     /// The walk, the timeline.
     timeline: walk::Walk,
     trust: BTreeSet<WriteId>,
-    /// The held trusted edge writes walked as trusted, and those void (draft §5.1 Trust set).
-    active: BTreeSet<WriteId>,
-    void: BTreeSet<WriteId>,
     facts: content::Facts<S>,
 }
 
@@ -276,20 +269,11 @@ impl Paths<MemStore> {
         Paths::with_store(records, trust, MemStore::default())
     }
 
-    /// As `new`, partitioning off: every part walked, inert or not, in one component. A test
-    /// mode: the walk by components must read exactly as this (notes/perm-paths.md, Components).
+    /// As `new`, every part walked in one component. A test mode: the walk by components must
+    /// read exactly as this (notes/perm-paths.md, Components).
     pub fn single(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>) -> Paths {
         let mut p = Paths::new(records, trust);
-        p.timeline = walk::Walk::new(records, true, true);
-        p
-    }
-
-    /// As `new`, every part of a component after an update's earliest change walked again, not
-    /// only those whose reads changed. A test mode: the walk by reach must read exactly as this
-    /// (notes/perm-paths.md, Reach).
-    pub fn whole(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>) -> Paths {
-        let mut p = Paths::new(records, trust);
-        p.timeline = walk::Walk::new(records, false, true);
+        p.timeline = walk::Walk::new(records, true);
         p
     }
 
@@ -305,10 +289,8 @@ impl<S: Store> Paths<S> {
     /// An empty held set over `records` and `trust`, delta facts kept in `store`.
     pub fn with_store(records: &BTreeMap<Tid, Tid>, trust: BTreeSet<WriteId>, store: S) -> Paths<S> {
         Paths {
-            timeline: walk::Walk::new(records, false, false),
+            timeline: walk::Walk::new(records, false),
             trust,
-            active: BTreeSet::new(),
-            void: BTreeSet::new(),
             facts: content::Facts::new(records, store),
         }
     }
@@ -326,7 +308,7 @@ impl<S: Store> Paths<S> {
         }
         self.begin();
         let taken = self.take(&fresh);
-        self.settle(&BTreeSet::new());
+        self.timeline.settle(&self.trust, &BTreeSet::new());
         self.finish(taken)
     }
 
@@ -339,7 +321,7 @@ impl<S: Store> Paths<S> {
         }
         self.begin();
         let gone = self.let_go(&held);
-        self.settle(&BTreeSet::new());
+        self.timeline.settle(&self.trust, &BTreeSet::new());
         self.finish(gone)
     }
 
@@ -367,7 +349,7 @@ impl<S: Store> Paths<S> {
         taken.carried.extend(t.carried);
         taken.deltas.extend(t.deltas);
         taken.addenda.extend(t.addenda);
-        self.settle(&BTreeSet::new());
+        self.timeline.settle(&self.trust, &BTreeSet::new());
         self.finish(taken)
     }
 
@@ -376,7 +358,7 @@ impl<S: Store> Paths<S> {
         let changed: BTreeSet<WriteId> = self.trust.symmetric_difference(&trust).copied().collect();
         self.trust = trust;
         self.begin();
-        self.settle(&changed);
+        self.timeline.settle(&self.trust, &changed);
         self.finish(content::Taken::default())
     }
 
@@ -403,8 +385,6 @@ impl<S: Store> Paths<S> {
     /// Forgets `held` from the walks and the facts.
     fn let_go(&mut self, held: &[CommitId]) -> content::Taken {
         self.timeline.forget(held);
-        self.active.retain(|id| !held.contains(&id.0));
-        self.void.retain(|id| !held.contains(&id.0));
         self.facts.forget(held)
     }
 
@@ -424,48 +404,6 @@ impl<S: Store> Paths<S> {
         ch.purges.extend(taken.scopes);
         ch.parts.extend(taken.deltas);
         ch
-    }
-
-    /// Settles every component an input change reached, each as from scratch under the trust set
-    /// (draft §5.1 Trust set): its void trusted writes walked as trusted again, then the walk,
-    /// and the trusted writes it does not apply void, all at once, the walk again, until none is
-    /// (notes/perm-paths.md, Trust per component). `changed`: trusted writes added to or taken
-    /// from the trust set.
-    fn settle(&mut self, changed: &BTreeSet<WriteId>) {
-        let held: BTreeSet<WriteId> = self.trust.iter().filter(|id| self.timeline.is_edge_write(id)).copied().collect();
-        self.active.retain(|id| held.contains(id));
-        self.void.retain(|id| held.contains(id));
-        for id in &held {
-            if !self.void.contains(id) {
-                self.active.insert(*id);
-            }
-        }
-        let extra: BTreeSet<_> = changed.iter().filter_map(|id| self.timeline.comp_of(id)).collect();
-        let mut seen = BTreeSet::new();
-        loop {
-            // a component walked again reads as from scratch: its void trusted writes count again
-            let touched: BTreeSet<_> = self.timeline.touched().into_iter().chain(extra.iter().copied()).filter(|c| !seen.contains(c)).collect();
-            let again: Vec<WriteId> = self.void.iter().filter(|id| self.timeline.comp_of(id).is_some_and(|c| touched.contains(&c))).copied().collect();
-            for id in again {
-                self.void.remove(&id);
-                self.active.insert(id);
-            }
-            seen.extend(touched);
-            self.timeline.set_active(&self.active);
-            if self.timeline.touched().into_iter().any(|c| !seen.contains(&c)) {
-                continue;
-            }
-            self.timeline.run_dirty();
-            let gone = self.timeline.unapplied_trusted();
-            if gone.is_empty() && !self.timeline.is_dirty() {
-                return;
-            }
-            self.timeline.counts.scratch += 1;
-            for r in gone {
-                self.active.remove(&r);
-                self.void.insert(r);
-            }
-        }
     }
 
     pub fn status(&self, id: &WriteId) -> Option<Status> {
@@ -556,9 +494,16 @@ impl<S: Store> Paths<S> {
         self.timeline.is_chained(id)
     }
 
-    /// Per edge, the key of its first chained write giving write and giving admin (draft §4).
+    /// Per edge a chained write set, the key of its first chained write giving write and giving
+    /// admin (spec/permissions.md §4 Chained writes).
     pub fn chained(&self) -> BTreeMap<(Tid, Tid), [Option<Key>; 2]> {
         self.timeline.chained()
+    }
+
+    /// Per edge with one, its first points for write and for admin (spec/permissions.md §5.2
+    /// Re-grant): the key of its first held write giving the role made by right.
+    pub fn first_points(&self) -> BTreeMap<(Tid, Tid), [Option<Key>; 2]> {
+        self.timeline.first_points()
     }
 
     /// A held delta's path edges and position (the start of its `ts`): where the engine indexes
@@ -613,7 +558,7 @@ impl<S: Store> Paths<S> {
 
     /// Trusted writes the timeline does not apply (void: their seeds lost).
     pub fn void_trusted(&self) -> BTreeSet<WriteId> {
-        self.void.clone()
+        self.timeline.void_trusted().clone()
     }
 
 
@@ -630,7 +575,7 @@ impl<S: Store> Paths<S> {
     /// compared.
     pub fn disputes_counted(&mut self, counts: &mut Counts) -> BTreeSet<WriteId> {
         let mut out = BTreeSet::new();
-        let cands = self.timeline.candidates();
+        let cands = self.timeline.candidates(&self.trust);
         let base = self.counts();
         let held = self.trust.clone();
         for id in cands {

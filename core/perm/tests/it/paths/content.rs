@@ -71,9 +71,12 @@ pub fn world(i: u64) -> (World, View) {
                     let a = if rng.below(2) == 0 { Role::Admin } else { Role::None };
                     let role = if role == Role::Write && rng.below(2) == 0 { Role::Admin } else { role };
                     let (fa, ft) = (w.cut(&l), w.cut(&list(&mut rng, &|_| true)));
-                    let on_a = w.push(s, ts, &[], m::A, Kind::set(h, a).listing(fa));
-                    let on_t = w.push(s, ts, &[m::A], m::T1, Kind::set(m::A2, role).listing(ft));
-                    w.group(&[on_a, on_t]);
+                    // in the commit's part order (spec/permissions.md §5.1 step 1): the signer's
+                    // own edge on A is a hop of the path stated for T1, so its part comes last
+                    let on_a = |w: &mut World| w.push(s, ts, &[], m::A, Kind::set(h, a).listing(fa.clone()));
+                    let on_t = |w: &mut World| w.push(s, ts, &[m::A], m::T1, Kind::set(m::A2, role).listing(ft.clone()));
+                    let ids = if h == s { [on_t(&mut w), on_a(&mut w)] } else { [on_a(&mut w), on_t(&mut w)] };
+                    w.group(&ids);
                 }
             }
             3 | 4 => {

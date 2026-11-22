@@ -8,12 +8,7 @@ held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 rate:OS
 osis-app/fields::a_tile_tells_of_emails_it_cannot_read - issues/app-tile-unreadable-emails-test.md Err\(osis::Error::TooLarge
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=647344785567 issues/custody-differential-failures.md FAIL flip: node \w+ at \d+ dropped a taken revocation
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=567669682357 issues/custody-differential-failures.md FAIL writes: node \w+ settled without \w+'s write \d+ on \w+
-osis-perm/paths::single::paths_components_agree_large rate:OSIS_PERM_SEED=513418300552 issues/perm-paths-incremental-differs.md Unapplied, Some\(Dropped\)
-osis-perm/paths::incremental::paths_incremental_agrees_large rate:OSIS_PERM_SEED=328756246695 issues/perm-paths-incremental-differs.md incremental and from scratch differ
-osis-perm/paths::incremental::paths_forget_agrees_large rate:OSIS_PERM_SEED=328756246695 issues/perm-paths-incremental-differs.md updated and from scratch differ
 roles-model/paths::tests::random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/masked-backdated-lowerings.md counts:dispute=4 OSIS_ROLES_START=\d+: \{
-osis-perm/paths::paths_story_agree_large rate:OSIS_PERM_SEED=3994064557 issues/perm-walk-trails-model.md model valid false, walk Some\(Valid\(Regranted\)\)
-osis-perm/paths::content::paths_content_agree_large rate:OSIS_PERM_SEED=265113995329 issues/perm-walk-trails-model.md model valid false, walk Some\(Valid\(Regranted\)\)
 osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=13 issues/seq-cold-edits-follow-gaps.md same delta as on the whole state
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=192781816512 issues/custody-differential-failures.md T paired by A: needs Write on
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=357482902476 issues/custody-differential-failures.md node \w+: dropped a taken revocation

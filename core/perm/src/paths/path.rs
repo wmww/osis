@@ -14,11 +14,6 @@ pub(crate) struct Shape {
     pub leave: bool,
     /// Its path's edges (holder, target) in order; none where not `well`.
     pub hops: Vec<(Tid, Tid)>,
-    /// The final hop where it joins Ak (the signer for an empty path) to the thing in one edge
-    /// (draft §1 Path's last edge); none for a self-removal.
-    pub last: Option<(Tid, Tid)>,
-    /// The final edge of the hops joining Ak to the thing (read by the order within a commit).
-    pub final_hop: Option<(Tid, Tid)>,
 }
 
 /// The edges joining consecutive members `p`, `q` (draft §1 Hops): the record edges from `p`
@@ -51,9 +46,8 @@ pub(crate) fn shape(mint: &BTreeMap<Tid, Tid>, signer: Tid, path: &[Tid], direct
     let ak = *path.last().unwrap_or(&signer);
     let leave = holder.is_some_and(|h| h == ak);
     let marked = |j: usize| j < PathMarks::BITS as usize && direct >> j & 1 == 1;
-    let final_hop = if marked(path.len()) { Some((ak, on)) } else { joins(mint, ak, on).last().copied() };
     if !edge_class && on == signer && path.is_empty() && direct == 0 {
-        return Shape { well: true, leave: false, hops: vec![], last: None, final_hop };
+        return Shape { well: true, leave: false, hops: vec![] };
     }
     let mut members = vec![signer];
     members.extend(path);
@@ -77,8 +71,7 @@ pub(crate) fn shape(mint: &BTreeMap<Tid, Tid>, signer: Tid, path: &[Tid], direct
         }
     }
     if !well {
-        return Shape { well, leave, hops: vec![], last: None, final_hop };
+        return Shape { well, leave, hops: vec![] };
     }
-    let last = hops.last().copied().filter(|&l| l == (ak, on) && !leave);
-    Shape { well, leave, hops, last, final_hop }
+    Shape { well, leave, hops }
 }

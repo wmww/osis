@@ -17,7 +17,6 @@ mod hand_content;
 mod hand_purge;
 mod incremental;
 mod purge;
-mod reach;
 mod shapes;
 mod single;
 
@@ -125,10 +124,7 @@ pub fn input(w: &World, v: &View) -> Input {
                     let value = role(*r).map(|v| Edge { role: v, until: until.map(|u| WallMs(u as u64)), invite: may_grant.then_some(v), retain: false, floor: None });
                     let listed = frontier.iter().filter(|(t, _)| seen(t)).flat_map(|(t, l)| l.iter().map(|&j| (tid(*t), cid(w.cid(j)))));
                     let frontier = (!finalize).then(|| Arc::new(List::new(listed)));
-                    // Interim (issues/last-admin-rule-in-perm-engine.md): the model has no
-                    // last-admin rule, so every write carries the mark turning the walk's off; the
-                    // rebuilt walk reads neither field
-                    PartKind::Edge(EdgeWrite { holder: tid(*holder), value, frontier, remains: None, adminless: true })
+                    PartKind::Edge(EdgeWrite { holder: tid(*holder), value, frontier })
                 }
                 _ => PartKind::Delta(delta(w, i)),
             };
@@ -324,8 +320,8 @@ fn story_run(start: u64, n: u64, disputes: bool) -> Vec<String> {
     let mut fails = vec![];
     for i in start..start + n {
         let s = m::random_world(i, &Rules::fixed());
-        // Interim (issues/perm-walk-trails-model.md): the walk's rebuild brings owner keys; until
-        // then a world with a list write or a commit signed by a key other than its signer's own
+        // Interim (issues/perm-walk-trails-model.md): the walk takes owner keys at A4; until then
+        // a world with a list write or a commit signed by a key other than its signer's own
         // (moves 54, 55) is the model's alone
         if (0..s.w.commits.len()).any(|j| s.w.list_write(j) || s.w.commits[j].key != m::own_key(s.w.commits[j].signer)) {
             continue;

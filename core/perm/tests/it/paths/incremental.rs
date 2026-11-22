@@ -21,7 +21,7 @@ type Purges = (BTreeSet<CommitId>, BTreeMap<WriteId, Right>, BTreeMap<WriteId, b
 pub(super) fn reading<S: Store>(p: &Paths<S>) -> Reading {
     let rights = p.store().all().into_iter().filter_map(|id| Some((id, p.right(&id)?))).collect();
     let chained = p.statuses().into_keys().filter_map(|id| Some((id, p.is_chained(&id)?))).collect();
-    (p.statuses(), p.histories(), p.finals(), p.contents(), p.copies(), p.purged(), p.chained(), (p.purged_copies(), rights, chained))
+    (p.statuses(), p.histories(), p.finals(), p.contents(), p.copies(), p.purged(), p.first_points(), (p.purged_copies(), rights, chained))
 }
 
 fn valid(c: Option<&Content>) -> bool {
@@ -453,7 +453,7 @@ fn paths_forget_agrees_large() {
     assert!(f.is_empty(), "{}", f.join("\n"));
 }
 
-// notes/perm-paths.md, Reach, What stays component-wide: which of two lowerings a pass reaches
+// notes/perm-paths.md, One definition: which of two lowerings a pass reaches
 // first is set by the component's restart sequence, so an update forgets every verdict given after
 // its key. X (admin on A by H) grants B admin on T1 at 40 (j: sets g = B's edge, rests on X's);
 // B removes Z from T1 at 60 along g (Q); H removes X from A at 70 listing nothing (E: drops j, the

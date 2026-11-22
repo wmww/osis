@@ -3,9 +3,9 @@
 > Priority: normal
 > Tags: permissions, performance
 
-Stage A1 (notes/redesign-plan.md): the walk's rebuild counts work per update at n and 10n edge writes with replay from a checkpoint (osis-perm `paths`: rebuild the walk; A1 brief 6); items 1 to 3 are of today's walk and are read again against the rebuild.
+Items 1 to 3 are of today's walk (osis-perm `walk`), which the engine reads until stage A1 switches it to `paths` (notes/redesign-plan.md); they are read again against `paths` then.
 
-**Checkpoint replay is the walk (Tess).** Simplest correct wins; a very large number of role changes being fast is not a priority. spec/requirements.md, Cost: a role change arriving out of order may cost in proportion to the role history after it on that thing. The A1 rebuild is one walk per component with a checkpoint per restart point, an update replaying from the earliest key it touches (notes/redesign-plan.md, A1). osis-perm `paths::counts::an_update_costs_what_it_changes_at_n_and_10n` is restated to that bound: an appended write costs the same at n and 10n; a backdated write or a removal costs at most the role history after its key in its component.
+**Checkpoint replay is the walk (Tess).** Simplest correct wins; a very large number of role changes being fast is not a priority. spec/requirements.md, Cost: a role change arriving out of order may cost in proportion to the role history after it on that thing. osis-perm `paths` is built so (notes/perm-paths.md, One definition): one walk per component, an update replaying from the earliest key it touches. Counted (`paths::counts::an_update_costs_what_it_changes_at_n_and_10n`, n = 100 and 1000): an appended write costs one step at both; a write backdated before n grants at most n + 1; a removal at the end with one early drop one restart and at most n + 3. Still to count at A1 brief 6: the engine's work per write once wired, restarts per applying lowering, disputes raised in honest histories.
 
 Repro: osis-perm `scale::repro_late_write_rejudges_flat`, `scale::repro_evaluate_with_drops_linear` (`osis_perm::commits_walked` at 10^2 and 10^3 edge writes; notes/test-scale.md Scale checks).
 
