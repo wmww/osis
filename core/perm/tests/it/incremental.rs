@@ -49,21 +49,22 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
         if part.standing_since_all(None).remove(&t).unwrap_or_default() != part.standing_since(&t) {
             return Some(format!("standing since of {t:?} in one pass"));
         }
-        // the edge history too: roles before every applied write (`role` is `roles_on`'s entry:
-        // each side's map walked once per point, not once per node)
-        for a in full.applied().values() {
-            let at = At::before(a.point);
+        // the edge history too: roles before every applied write and at the start of its `ts`,
+        // each side's map read once per point
+        let points: BTreeSet<osis_perm::Point> = full.applied().values().flat_map(|a| [a.point, osis_perm::Point::start(a.point.ts)]).collect();
+        for p in points {
+            let at = At::before(p);
             let (mine, whole) = (part.roles_on(&t, at), full.roles_on(&t, at));
-            for n in nodes {
-                if mine.get(n) != whole.get(n) {
-                    return Some(format!("role of {n:?} on {t:?} before {:?}", a.point));
-                }
-                // layer 2 there (re-grant's `first_held` is carried over `extend`)
-                let p = osis_perm::Point { node: *n, commit: osis_base::CommitId([0xee; 32]), ..a.point };
-                for r in [osis_base::Role::Read, osis_base::Role::Write, osis_base::Role::Admin] {
-                    if part.delta_valid(p, &t, r) != full.delta_valid(p, &t, r) {
-                        return Some(format!("validity of {n:?}'s {r:?} delta on {t:?} at {p:?}"));
-                    }
+            if let Some(n) = nodes.iter().find(|n| mine.get(n) != whole.get(n)) {
+                return Some(format!("role of {n:?} on {t:?} before {p:?}"));
+            }
+        }
+        // layer 2: a delta at any point is judged by the role before its `ts`'s start (above),
+        // the demotions (above) and the re-grant bound (`first_held`, carried over `extend`)
+        for n in nodes {
+            for r in [osis_base::Role::Read, osis_base::Role::Write, osis_base::Role::Admin] {
+                if part.valid_from(n, &t, r) != full.valid_from(n, &t, r) {
+                    return Some(format!("re-grant bound of {n:?}'s {r:?} deltas on {t:?}"));
                 }
             }
         }
