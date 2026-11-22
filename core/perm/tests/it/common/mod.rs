@@ -143,12 +143,35 @@ impl World {
         for (t, r) in &self.created {
             h.created.insert(*t, r.clone());
         }
+        // `frontier` per commit in one sweep: each author's receipts sorted once, a frontier per
+        // distinct prefix of them
+        let mut got: BTreeMap<Tid, Vec<(u64, CommitId)>> = BTreeMap::new();
+        for c in self.commits.iter().filter(|c| !c.fin) {
+            got.entry(c.author).or_insert_with(|| {
+                let mut g: Vec<(u64, CommitId)> = self.commits.iter().map(|x| (x.recv.get(&c.author).copied().unwrap_or(LATE), x.id)).collect();
+                g.sort();
+                g
+            });
+        }
+        let mut made: BTreeMap<(Tid, usize), Arc<Frontier>> = BTreeMap::new();
+        let mut frontier = |a: Tid, t: u64| {
+            let g = &got[&a];
+            let k = g.partition_point(|x| x.0 < t);
+            made.entry((a, k))
+                .or_insert_with(|| {
+                    let mut ids: Vec<CommitId> = g[..k].iter().map(|x| x.1).collect();
+                    ids.sort();
+                    ids.dedup();
+                    Arc::new(Frontier::of_sorted(ids.into()))
+                })
+                .clone()
+        };
         for c in self.commits.iter().filter(|c| !skip.contains(&c.id)) {
             h.add_commit(RoleCommit {
                 id: c.id,
                 ts: ts(c.t),
                 signer: c.author,
-                frontier: (!c.fin).then(|| Arc::new(self.frontier(c.author, c.t))),
+                frontier: (!c.fin).then(|| frontier(c.author, c.t)),
                 ops: c.ops.iter().map(|&(target, holder, edge)| EdgeOp { target, holder, edge }).collect(),
             });
         }

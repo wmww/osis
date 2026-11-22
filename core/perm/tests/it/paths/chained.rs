@@ -5,9 +5,9 @@
 //! `Changed::chained` reporting each flip, on arrival and on forget.
 //! spec/permissions.md §4 Chained writes.
 
-use super::incremental::check;
+use super::incremental::Tracked;
 use super::{input, rules, MODES};
-use osis_perm::paths::Paths;
+use osis_perm::paths::{Changed, Paths};
 use roles_model::paths::{self as m, Id, Kind, View, World};
 use roles_model::Role::{Admin, None as Gone, Read, Write};
 use std::collections::BTreeSet;
@@ -101,17 +101,14 @@ fn chained_flips_are_reported_on_arrival_and_forget() {
     let (w, [gn, inv, _, _, fin, ..]) = kinds();
     let v = View::all(&w);
     let inp = input(&w, &v);
-    let full = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
     // arrivals in reverse: each part turning chained when what it reads arrives
-    let mut p = Paths::new(&inp.records, BTreeSet::new());
+    let mut t = Tracked::new(Paths::new(&inp.records, BTreeSet::new()));
     for c in inp.commits.iter().rev() {
-        let before = p.clone();
-        let ch = p.add(std::slice::from_ref(c));
-        assert_eq!(check(&before, &p, &ch), None, "adding {:?}", c.id);
+        assert_eq!(t.step(|p| p.add(std::slice::from_ref(c))), None, "adding {:?}", c.id);
     }
-    let mut p = full.clone();
-    let ch = p.forget(&[inp.ids[&gn].0]);
-    assert_eq!(check(&full, &p, &ch), None);
+    let mut t = Tracked::new(Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits));
+    let mut ch = Changed::default();
+    assert_eq!(t.step(|p| { ch = p.forget(&[inp.ids[&gn].0]); ch.clone() }), None);
     assert_eq!(ch.chained, BTreeSet::from([inp.ids[&gn], inp.ids[&inv], inp.ids[&fin]]));
-    assert_eq!(p.is_chained(&inp.ids[&inv]), Some(false));
+    assert_eq!(t.p.is_chained(&inp.ids[&inv]), Some(false));
 }

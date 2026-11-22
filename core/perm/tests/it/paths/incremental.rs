@@ -14,7 +14,7 @@ use roles_model::Rng;
 use std::collections::{BTreeMap, BTreeSet};
 
 type Finals = BTreeMap<(Tid, Tid), (Option<Role>, Option<Role>)>;
-type Reading = (BTreeMap<WriteId, Status>, BTreeMap<(Tid, Tid), History>, Finals, BTreeMap<WriteId, Content>, BTreeSet<CommitId>, BTreeSet<WriteId>, BTreeMap<(Tid, Tid), [Option<Key>; 2]>, Purges);
+pub(super) type Reading = (BTreeMap<WriteId, Status>, BTreeMap<(Tid, Tid), History>, Finals, BTreeMap<WriteId, Content>, BTreeSet<CommitId>, BTreeSet<WriteId>, BTreeMap<(Tid, Tid), [Option<Key>; 2]>, Purges);
 /// The purged copies, each request's right, each edge-class part's chained-ness.
 type Purges = (BTreeSet<CommitId>, BTreeMap<WriteId, Right>, BTreeMap<WriteId, bool>);
 
@@ -28,21 +28,50 @@ fn valid(c: Option<&Content>) -> bool {
     matches!(c, Some(Content::Valid(_)))
 }
 
+/// A `Paths` beside its reading, so an update reads only the state it leaves: the reading before
+/// is the one the last update left.
+#[derive(Clone)]
+pub(super) struct Tracked {
+    pub(super) p: Paths,
+    pub(super) r: Reading,
+}
+
+impl Tracked {
+    pub(super) fn new(p: Paths) -> Self {
+        Tracked { r: reading(&p), p }
+    }
+
+    /// `f`'s update: the state before it and what it reported.
+    pub(super) fn update(&mut self, f: impl FnOnce(&mut Paths) -> Changed) -> (Tracked, Changed) {
+        let before = Tracked { p: self.p.clone(), r: std::mem::take(&mut self.r) };
+        let ch = f(&mut self.p);
+        self.r = reading(&self.p);
+        (before, ch)
+    }
+
+    /// `f`'s update checked (`differs_by`): the first difference.
+    pub(super) fn step(&mut self, f: impl FnOnce(&mut Paths) -> Changed) -> Option<String> {
+        self.renewing(&BTreeSet::new(), f)
+    }
+
+    /// `step`, where every part of a commit in `renewed` (updated in place: `Paths::update`) may
+    /// be reported as new.
+    pub(super) fn renewing(&mut self, renewed: &BTreeSet<CommitId>, f: impl FnOnce(&mut Paths) -> Changed) -> Option<String> {
+        let (before, ch) = self.update(f);
+        differs_by(&before, self, &ch, renewed)
+    }
+}
+
 /// Whether `ch`, reported by the update from `a` to `b`, is what the two readings differ by:
 /// exact for edge-class statuses, history, cuts and re-grant points; every new part reported;
 /// any other delta reported is one whose validity changed (an addendum's); and every delta whose
-/// verdict or purge changed is reachable from `ch` by `Changed`'s rule.
-pub(super) fn check(a: &Paths, b: &Paths, ch: &Changed) -> Option<String> {
-    check_renewed(a, b, ch, &BTreeSet::new())
-}
-
-/// `check`, where every part of a commit `renewed` (updated in place: `Paths::update`) may be
-/// reported as new.
-pub(super) fn check_renewed(a: &Paths, b: &Paths, ch: &Changed, renewed: &BTreeSet<CommitId>) -> Option<String> {
-    let (sa, ha, fa, ca, _, pa, xa, (_, ra, _)) = reading(a);
-    let (sb, hb, fb, cb, _, pb, xb, (_, rb, _)) = reading(b);
+/// verdict or purge changed is reachable from `ch` by `Changed`'s rule. A part of a commit in
+/// `renewed` may be reported as new.
+fn differs_by(ta: &Tracked, tb: &Tracked, ch: &Changed, renewed: &BTreeSet<CommitId>) -> Option<String> {
+    let ((sa, ha, fa, ca, _, pa, xa, (_, ra, ka)), a) = (&ta.r, &ta.p);
+    let ((sb, hb, fb, cb, _, pb, xb, (_, rb, kb)), b) = (&tb.r, &tb.p);
     let mut want = Changed::default();
-    for (id, s) in &sb {
+    for (id, s) in sb {
         if sa.get(id) != Some(s) {
             want.parts.insert(*id);
         }
@@ -80,7 +109,7 @@ pub(super) fn check_renewed(a: &Paths, b: &Paths, ch: &Changed, renewed: &BTreeS
     // chained-ness: exactly the parts that flipped (a part of a commit updated in place may be
     // reported as it leaves and comes back)
     for id in sa.keys().chain(sb.keys()) {
-        if a.is_chained(id).unwrap_or(false) != b.is_chained(id).unwrap_or(false) {
+        if ka.get(id).copied().unwrap_or(false) != kb.get(id).copied().unwrap_or(false) {
             want.chained.insert(*id);
         }
     }
@@ -106,7 +135,7 @@ pub(super) fn check_renewed(a: &Paths, b: &Paths, ch: &Changed, renewed: &BTreeS
     if !want.purges.is_subset(&ch.purges) || ch.purges.iter().any(|s| !want.purges.contains(s) && !renewed_scopes.contains(s)) {
         return Some(format!("reported purges {:?}, rights changed for {:?}", ch.purges, want.purges));
     }
-    let (judged, moved) = rejudged(a, b, ch);
+    let (judged, moved) = rejudged(ta, tb, ch);
     if let Some(id) = moved.difference(&judged).next() {
         return Some(format!("delta {id:?} moved from {:?} to {:?} (purged {} to {}) unreached by {ch:?}", ca.get(id), cb.get(id), pa.contains(id), pb.contains(id)));
     }
@@ -118,8 +147,8 @@ pub(super) fn check_renewed(a: &Paths, b: &Paths, ch: &Changed, renewed: &BTreeS
 /// `parts`, its commit in `named`, a hop in `edges` before its position, in `cuts` at or after
 /// it, in `regrant`, a scope in `purges` covering it), then, while one judged again moved, every
 /// delta it names; and the deltas whose verdict or purge moved.
-pub(super) fn rejudged(a: &Paths, b: &Paths, ch: &Changed) -> (BTreeSet<WriteId>, BTreeSet<WriteId>) {
-    let (ca, cb, pa, pb) = (a.contents(), b.contents(), a.purged(), b.purged());
+pub(super) fn rejudged(ta: &Tracked, tb: &Tracked, ch: &Changed) -> (BTreeSet<WriteId>, BTreeSet<WriteId>) {
+    let ((ca, pa, a), (cb, pb, b)) = ((&ta.r.3, &ta.r.5, &ta.p), (&tb.r.3, &tb.r.5, &tb.p));
     let direct = |id: &WriteId| -> bool {
         ch.parts.contains(id)
             || ch.named.contains(&id.0)
@@ -152,31 +181,28 @@ fn shuffled(w: &m::World, v: &m::View, seed: u64) -> Option<String> {
     for k in (1..order.len()).rev() {
         order.swap(k, rng.below(k + 1));
     }
-    let mut p = Paths::new(&inp.records, inp.trust.clone());
+    let start = Tracked::new(Paths::new(&inp.records, inp.trust.clone()));
+    let mut t = start.clone();
     for c in &order {
-        let before = p.clone();
-        let ch = p.add(std::slice::from_ref(c));
-        if let Some(d) = check(&before, &p, &ch) {
+        if let Some(d) = t.step(|p| p.add(std::slice::from_ref(c))) {
             return Some(format!("adding {:?}: {d}\n{}", c.id, m::tiny_trace(w)));
         }
     }
-    let scratch = Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits);
-    if reading(&p) != reading(&scratch) {
+    let scratch = reading(&Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits));
+    if t.r != scratch {
         return Some("incremental and from scratch differ".to_string());
     }
     // the same order in batches of one to four commits
-    let mut p = Paths::new(&inp.records, inp.trust.clone());
+    let mut t = start;
     let mut rest = &order[..];
     while !rest.is_empty() {
         let (batch, more) = rest.split_at((1 + rng.below(4)).min(rest.len()));
-        let before = p.clone();
-        let ch = p.add(batch);
-        if let Some(d) = check(&before, &p, &ch) {
+        if let Some(d) = t.step(|p| p.add(batch)) {
             return Some(format!("adding {:?}: {d}\n{}", batch.iter().map(|c| c.id).collect::<Vec<_>>(), m::tiny_trace(w)));
         }
         rest = more;
     }
-    (reading(&p) != reading(&scratch)).then(|| "batched and from scratch differ".to_string())
+    (t.r != scratch).then(|| "batched and from scratch differ".to_string())
 }
 
 /// Tiny worlds of every kind and content worlds `start..start + n`: the failures, at most three.
@@ -214,17 +240,16 @@ fn changed_reaches_every_moved_delta_and_little_more() {
     for i in 0..200 {
         let (w, v) = super::content::world(i);
         let inp = input(&w, &v);
-        let mut p = Paths::new(&inp.records, inp.trust.clone());
+        let mut t = Tracked::new(Paths::new(&inp.records, inp.trust.clone()));
         for c in &inp.commits {
-            let before = p.clone();
-            let ch = p.add(std::slice::from_ref(c));
-            let (j, m) = rejudged(&before, &p, &ch);
+            let (before, ch) = t.update(|p| p.add(std::slice::from_ref(c)));
+            let (j, m) = rejudged(&before, &t, &ch);
             assert!(m.is_subset(&j), "content world {i}, adding {:?}: {:?} unreached", c.id, m.difference(&j).collect::<Vec<_>>());
             // new deltas are judged by the engine anyway: count the rest
-            let new: BTreeSet<WriteId> = p.contents().keys().filter(|id| before.content(id).is_none()).copied().collect();
+            let new: BTreeSet<WriteId> = t.r.3.keys().filter(|id| !before.r.3.contains_key(id)).copied().collect();
             judged += j.difference(&new).count();
             moved += m.difference(&new).count();
-            held += before.contents().len();
+            held += before.r.3.len();
         }
     }
     println!("judged again {judged}, moved {moved}, held {held}");
@@ -253,20 +278,18 @@ fn paths_incremental_agrees_large() {
 pub(super) fn every_order(w: &m::World) {
     super::agree_all(w, &[]);
     let inp = input(w, &m::View::all(w));
-    let scratch = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
-    in_every_order(&inp.records, &inp.commits, |p, order| assert!(reading(p) == reading(&scratch), "order {order:?}"));
+    let scratch = reading(&Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits));
+    in_every_order(&inp.records, &inp.commits, |t, order| assert!(t.r == scratch, "order {order:?}"));
 }
 
 /// Every arrival order of `commits`, from nothing held and trusting nothing (prefixes shared):
 /// each `Changed` exact; `end` reads each whole order.
 #[track_caller]
-pub(super) fn in_every_order(records: &BTreeMap<Tid, Tid>, commits: &[Commit], mut end: impl FnMut(&mut Paths, &[usize])) {
-    let mut add = |p: &mut Paths, order: &[usize], k: usize| {
-        let before = p.clone();
-        let ch = p.add(std::slice::from_ref(&commits[k]));
-        assert_eq!(check(&before, p, &ch), None, "order {order:?}, adding {k}");
+pub(super) fn in_every_order(records: &BTreeMap<Tid, Tid>, commits: &[Commit], mut end: impl FnMut(&mut Tracked, &[usize])) {
+    let mut add = |t: &mut Tracked, order: &[usize], k: usize| {
+        assert_eq!(t.step(|p| p.add(std::slice::from_ref(&commits[k]))), None, "order {order:?}, adding {k}");
     };
-    crate::common::every_order(commits.len(), Paths::new(records, BTreeSet::new()), &mut add, &mut end);
+    crate::common::every_order(commits.len(), Tracked::new(Paths::new(records, BTreeSet::new())), &mut add, &mut end);
 }
 
 // A commit arriving before a lowering's verdict undoes it: H removes B at 5, so B's removal of X
@@ -320,13 +343,13 @@ fn a_trust_switch_equals_evaluating_under_it() {
             t.v.trust.clear();
             let inp = input(&t.w, &t.v);
             let lows: Vec<WriteId> = (0..t.w.commits.len()).filter(|&k| t.w.lowers(k).is_some() && !t.w.leave(k)).map(|k| inp.ids[&k]).collect();
-            let mut p = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
+            let mut t = Tracked::new(Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits));
+            let none = t.r.clone();
             for r in lows {
                 for trust in [BTreeSet::from([r]), BTreeSet::new()] {
-                    let before = p.clone();
-                    let ch = p.set_trust(trust.clone());
-                    assert_eq!(check(&before, &p, &ch), None, "world {i} {mode:?} trust {trust:?}");
-                    assert!(reading(&p) == reading(&Paths::evaluate(&inp.records, trust.clone(), &inp.commits)), "world {i} {mode:?} trust {trust:?}");
+                    assert_eq!(t.step(|p| p.set_trust(trust.clone())), None, "world {i} {mode:?} trust {trust:?}");
+                    let scratch = if trust.is_empty() { none.clone() } else { reading(&Paths::evaluate(&inp.records, trust.clone(), &inp.commits)) };
+                    assert!(t.r == scratch, "world {i} {mode:?} trust {trust:?}");
                 }
             }
         }
@@ -337,14 +360,13 @@ fn a_trust_switch_equals_evaluating_under_it() {
         v.trust.clear();
         let inp = input(&w, &v);
         let lows: Vec<WriteId> = v.held.iter().filter(|&&k| w.lowers(k).is_some() && !w.leave(k)).map(|k| inp.ids[k]).collect();
-        let mut p = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
+        let mut t = Tracked::new(Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits));
+        let none = t.r.clone();
         for r in lows {
             for trust in [BTreeSet::from([r]), BTreeSet::new()] {
-                let before = p.clone();
-                let ch = p.set_trust(trust.clone());
-                assert_eq!(check(&before, &p, &ch), None, "content world {i} trust {trust:?}");
-                let scratch = Paths::evaluate(&inp.records, trust.clone(), &inp.commits);
-                assert!(reading(&p) == reading(&scratch), "content world {i} trust {trust:?}");
+                assert_eq!(t.step(|p| p.set_trust(trust.clone())), None, "content world {i} trust {trust:?}");
+                let scratch = if trust.is_empty() { none.clone() } else { reading(&Paths::evaluate(&inp.records, trust.clone(), &inp.commits)) };
+                assert!(t.r == scratch, "content world {i} trust {trust:?}");
             }
         }
     }
@@ -358,26 +380,25 @@ fn forgetting(w: &m::World, v: &m::View, seed: u64) -> Option<String> {
     let inp = input(w, v);
     let n = inp.commits.len();
     let mut rng = Rng(seed);
-    let mut p = Paths::new(&inp.records, inp.trust.clone());
+    let mut t = Tracked::new(Paths::new(&inp.records, inp.trust.clone()));
     let mut held = vec![false; n];
     for step in 0..3 * n {
         let pick: Vec<usize> = (0..1 + rng.below(3)).map(|_| rng.below(n)).collect();
-        let before = p.clone();
         let forget = rng.below(5) < 2;
-        let ch = if forget {
-            pick.iter().for_each(|&i| held[i] = false);
-            p.forget(&pick.iter().map(|&i| inp.commits[i].id).collect::<Vec<_>>())
+        pick.iter().for_each(|&i| held[i] = !forget);
+        let d = if forget {
+            t.step(|p| p.forget(&pick.iter().map(|&i| inp.commits[i].id).collect::<Vec<_>>()))
         } else {
-            pick.iter().for_each(|&i| held[i] = true);
-            p.add(&pick.iter().map(|&i| inp.commits[i].clone()).collect::<Vec<_>>())
+            t.step(|p| p.add(&pick.iter().map(|&i| inp.commits[i].clone()).collect::<Vec<_>>()))
         };
-        if let Some(d) = check(&before, &p, &ch) {
+        if let Some(d) = d {
             return Some(format!("step {step}, {} {pick:?}: {d}\n{}", if forget { "forgetting" } else { "adding" }, m::tiny_trace(w)));
         }
     }
     let rest: Vec<Commit> = (0..n).filter(|&i| held[i]).map(|i| inp.commits[i].clone()).collect();
     let mut scratch = Paths::evaluate(&inp.records, inp.trust.clone(), &rest);
-    if reading(&p) != reading(&scratch) || p.void_trusted() != scratch.void_trusted() {
+    let mut p = t.p;
+    if t.r != reading(&scratch) || p.void_trusted() != scratch.void_trusted() {
         return Some(format!("forgetting and from scratch differ, held {held:?}\n{}", m::tiny_trace(w)));
     }
     if seed.is_multiple_of(8) && p.disputes() != scratch.disputes() {
@@ -395,7 +416,7 @@ fn leaves_arriving(w: &m::World, v: &m::View, seed: u64) -> Option<String> {
     let mut full = v.clone();
     full.leaves = None;
     let (a, b) = (input(w, &part), input(w, &full));
-    let mut p = Paths::evaluate(&a.records, a.trust.clone(), &a.commits);
+    let mut t = Tracked::new(Paths::evaluate(&a.records, a.trust.clone(), &a.commits));
     let mut rng = Rng(seed);
     let mut order: Vec<usize> = (0..b.commits.len()).collect();
     for k in (1..order.len()).rev() {
@@ -406,15 +427,13 @@ fn leaves_arriving(w: &m::World, v: &m::View, seed: u64) -> Option<String> {
         let (batch, more) = rest.split_at((1 + rng.below(3)).min(rest.len()));
         let cs: Vec<Commit> = batch.iter().map(|&i| b.commits[i].clone()).collect();
         let renewed: BTreeSet<CommitId> = cs.iter().map(|c| c.id).collect();
-        let before = p.clone();
-        let ch = p.update(&cs);
-        if let Some(d) = check_renewed(&before, &p, &ch, &renewed) {
+        if let Some(d) = t.renewing(&renewed, |p| p.update(&cs)) {
             return Some(format!("updating {renewed:?}: {d}\n{}", m::tiny_trace(w)));
         }
         rest = more;
     }
     let scratch = Paths::evaluate(&b.records, b.trust.clone(), &b.commits);
-    (reading(&p) != reading(&scratch)).then(|| format!("updated and from scratch differ\n{}", m::tiny_trace(w)))
+    (t.r != reading(&scratch)).then(|| format!("updated and from scratch differ\n{}", m::tiny_trace(w)))
 }
 
 /// Tiny worlds of every kind and content worlds `start..start + n`, forgetting and leaves
@@ -488,17 +507,16 @@ fn a_verdict_kept_past_a_later_restart_would_misjudge() {
         every_order(&w);
         let n = w.commits.len();
         let inp = input(&w, &all);
-        let full = Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits);
-        assert_eq!(full.status(&inp.ids[&q]) == Some(Status::Applied), variant < 2, "variant {variant}");
+        let full = Tracked::new(Paths::evaluate(&inp.records, BTreeSet::new(), &inp.commits));
+        assert_eq!(full.p.status(&inp.ids[&q]) == Some(Status::Applied), variant < 2, "variant {variant}");
         for mask in 0u32..1 << n {
             let gone: Vec<usize> = (0..n).filter(|k| mask >> k & 1 == 1).collect();
             let kept: m::Set = (0..n).filter(|k| mask >> k & 1 == 0).collect();
             super::agree(&w, &m::View { held: kept.clone(), leaves: None, trust: m::Set::new() });
-            let mut p = full.clone();
-            let ch = p.forget(&gone.iter().map(|&k| inp.commits[k].id).collect::<Vec<_>>());
-            assert_eq!(check(&full, &p, &ch), None, "variant {variant} forgetting {gone:?}");
+            let mut t = full.clone();
+            assert_eq!(t.step(|p| p.forget(&gone.iter().map(|&k| inp.commits[k].id).collect::<Vec<_>>())), None, "variant {variant} forgetting {gone:?}");
             let rest: Vec<Commit> = (0..n).filter(|k| kept.contains(k)).map(|k| inp.commits[k].clone()).collect();
-            assert!(reading(&p) == reading(&Paths::evaluate(&inp.records, BTreeSet::new(), &rest)), "variant {variant} forgetting {gone:?}");
+            assert!(t.r == reading(&Paths::evaluate(&inp.records, BTreeSet::new(), &rest)), "variant {variant} forgetting {gone:?}");
         }
     }
 }
@@ -528,18 +546,17 @@ fn two_lowerings_on_one_thing_fall_together_in_every_order_and_forget() {
             let all = m::View::all(&w).trusting(&trust);
             let inp = input(&w, &all);
             let n = inp.commits.len();
-            let full = Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits);
+            let full = Tracked::new(Paths::evaluate(&inp.records, inp.trust.clone(), &inp.commits));
             for mask in 0u32..1 << n {
                 let gone: Vec<CommitId> = (0..n).filter(|k| mask >> k & 1 == 1).map(|k| inp.commits[k].id).collect();
                 let held: m::Set = all.held.iter().copied().filter(|&i| !gone.contains(&inp.ids[&i].0)).collect();
                 super::agree(&w, &m::View { held, leaves: None, trust: all.trust.clone() });
-                let mut p = full.clone();
-                let ch = p.forget(&gone);
-                assert_eq!(check(&full, &p, &ch), None, "{listed} {trust:?} forgetting {gone:?}");
+                let mut t = full.clone();
+                assert_eq!(t.step(|p| p.forget(&gone)), None, "{listed} {trust:?} forgetting {gone:?}");
                 let rest: Vec<Commit> = inp.commits.iter().filter(|c| !gone.contains(&c.id)).cloned().collect();
-                assert!(reading(&p) == reading(&Paths::evaluate(&inp.records, inp.trust.clone(), &rest)), "{listed} {trust:?} forgetting {gone:?}");
+                assert!(t.r == reading(&Paths::evaluate(&inp.records, inp.trust.clone(), &rest)), "{listed} {trust:?} forgetting {gone:?}");
             }
-            let st = |i| full.status(&inp.ids[&i]);
+            let st = |i| full.p.status(&inp.ids[&i]);
             let fallen = if listed { Status::Applied } else { Status::Dropped };
             assert_eq!((st(out), st(low)), (Some(fallen), Some(fallen)), "{listed} {trust:?}");
         }

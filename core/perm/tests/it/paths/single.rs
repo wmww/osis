@@ -5,7 +5,7 @@
 //! spec/permissions.md §5.1, §5.2.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::incremental::{check, check_renewed, in_every_order, reading};
+use super::incremental::{in_every_order, reading, Tracked};
 use super::{cid, commit, input, ms, rules, t, MODES};
 use crate::common::{seeded, sharded};
 use osis_base::Tid;
@@ -279,24 +279,21 @@ fn forget_world() -> Vec<Commit> {
 /// as the single walk; then added again in reverse order, each `Changed` exact, as all held.
 fn every_forget(trust: &BTreeSet<WriteId>, commits: &[Commit]) {
     let n = commits.len();
-    let full = Paths::evaluate(&recs(), trust.clone(), commits);
+    let full = Tracked::new(Paths::evaluate(&recs(), trust.clone(), commits));
     for mask in 0u32..1 << n {
         let gone: Vec<usize> = (0..n).filter(|k| mask >> k & 1 == 1).collect();
         let rest: Vec<Commit> = (0..n).filter(|k| mask >> k & 1 == 0).map(|k| commits[k].clone()).collect();
-        let mut p = full.clone();
-        let ch = p.forget(&gone.iter().map(|&k| commits[k].id).collect::<Vec<_>>());
-        assert_eq!(check(&full, &p, &ch), None, "forgetting {gone:?} under {trust:?}");
+        let mut t = full.clone();
+        assert_eq!(t.step(|p| p.forget(&gone.iter().map(|&k| commits[k].id).collect::<Vec<_>>())), None, "forgetting {gone:?} under {trust:?}");
         let mut scratch = Paths::evaluate(&recs(), trust.clone(), &rest);
-        assert_eq!(differs(&mut p, &mut scratch, mask % 61 == 0), None, "forgetting {gone:?} under {trust:?}");
+        assert_eq!(differs(&mut t.p, &mut scratch, mask % 61 == 0), None, "forgetting {gone:?} under {trust:?}");
         let mut one = Paths::single(&recs(), trust.clone());
         one.add(&rest);
-        assert_eq!(differs(&mut p, &mut one, false), None, "forgetting {gone:?} under {trust:?}, single");
+        assert_eq!(differs(&mut t.p, &mut one, false), None, "forgetting {gone:?} under {trust:?}, single");
         for &k in gone.iter().rev() {
-            let before = p.clone();
-            let ch = p.add(std::slice::from_ref(&commits[k]));
-            assert_eq!(check(&before, &p, &ch), None, "adding {k} again after {gone:?} under {trust:?}");
+            assert_eq!(t.step(|p| p.add(std::slice::from_ref(&commits[k]))), None, "adding {k} again after {gone:?} under {trust:?}");
         }
-        assert!(reading(&p) == reading(&full) && p.void_trusted() == full.void_trusted(), "re-added {gone:?} under {trust:?}");
+        assert!(t.r == full.r && t.p.void_trusted() == full.p.void_trusted(), "re-added {gone:?} under {trust:?}");
     }
 }
 
@@ -359,8 +356,8 @@ fn every_order_and_forget_of_a_purge_world_reads_as_from_scratch() {
     for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cid(5), 0)])] {
         every_forget(&trust, &c);
     }
-    let scratch = Paths::evaluate(&recs(), BTreeSet::new(), &c);
-    in_every_order(&recs(), &c, |p, order| assert!(reading(p) == reading(&scratch), "order {order:?}"));
+    let scratch = reading(&Paths::evaluate(&recs(), BTreeSet::new(), &c));
+    in_every_order(&recs(), &c, |t, order| assert!(t.r == scratch, "order {order:?}"));
 }
 
 /// A destruction racing cuts of its path on an edge into another thing (draft §6 Destruction:
@@ -398,8 +395,8 @@ fn every_order_and_forget_of_a_destruction_racing_a_cut_reads_as_from_scratch() 
     for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cid(6), 0)])] {
         every_forget(&trust, &c);
     }
-    let scratch = Paths::evaluate(&recs(), BTreeSet::new(), &c);
-    in_every_order(&recs(), &c, |p, order| assert!(reading(p) == reading(&scratch), "order {order:?}"));
+    let scratch = reading(&Paths::evaluate(&recs(), BTreeSet::new(), &c));
+    in_every_order(&recs(), &c, |t, order| assert!(t.r == scratch, "order {order:?}"));
 }
 
 // A frontier leaf arriving (`update`) that makes a lowering list what it dropped, and going again:
@@ -410,13 +407,11 @@ fn a_leaf_arriving_that_lists_a_drop_reads_as_from_scratch() {
     let mut listing = c.clone();
     listing[4] = commit(5, ms(5), H, vec![ew(A, &[], X, None, &[2])]);
     for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cid(5), 0)])] {
-        let mut p = Paths::evaluate(&recs(), trust.clone(), &c);
+        let mut t = Tracked::new(Paths::evaluate(&recs(), trust.clone(), &c));
         for (now, version) in [(&listing, &listing[4]), (&c, &c[4])] {
-            let before = p.clone();
-            let ch = p.update(std::slice::from_ref(version));
-            assert_eq!(check_renewed(&before, &p, &ch, &BTreeSet::from([cid(5)])), None);
+            assert_eq!(t.renewing(&BTreeSet::from([cid(5)]), |p| p.update(std::slice::from_ref(version))), None);
             let mut scratch = Paths::evaluate(&recs(), trust.clone(), now);
-            assert_eq!(differs(&mut p, &mut scratch, true), None);
+            assert_eq!(differs(&mut t.p, &mut scratch, true), None);
         }
         assert_eq!(Paths::evaluate(&recs(), trust.clone(), &listing).status(&WriteId(cid(2), 0)), Some(Status::Applied));
     }
@@ -443,7 +438,7 @@ fn liveness_reads_alike_in_every_arrival_order() {
     assert!((1..=6).all(|k| scratch.status(&WriteId(cid(k), 0)) == Some(Status::Applied)));
     let pair = Paths::evaluate(&recs(), BTreeSet::new(), &c[3..5]);
     assert!(pair.statuses().values().all(|s| *s == Status::Unapplied));
-    in_every_order(&recs(), &c, |p, order| assert_eq!(differs(p, &mut scratch, false), None, "order {order:?}"));
+    in_every_order(&recs(), &c, |t, order| assert_eq!(differs(&mut t.p, &mut scratch, false), None, "order {order:?}"));
     assert_eq!(alike(&recs(), &BTreeSet::new(), &c, 3, true), None);
 }
 

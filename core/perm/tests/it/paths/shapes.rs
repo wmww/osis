@@ -7,7 +7,7 @@
 //! update path: notes/perm-paths.md, One definition.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::incremental::{check, reading};
+use super::incremental::{reading, Reading, Tracked};
 use super::{cid, commit, ms, t};
 use osis_base::{Ak, PurgeBy, Role, Tid, Ts, WallMs};
 use osis_perm::paths::{Changed, Commit, Content, Delta, DeltaClass, EdgeWrite, List, Names, Part, PartKind, Paths, Status};
@@ -22,18 +22,15 @@ fn edge(on: u32, path: &[u32], holder: u32, value: Option<Edge>, frontier: Optio
 }
 
 /// Commits arriving one at a time in `order`: each `Changed` equals the readings' difference, and
-/// the end reads as from scratch. The first difference, if any.
-fn arrive(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, commits: &[Commit], order: &[usize]) -> Option<String> {
-    let mut p = Paths::new(records, trust.clone());
+/// the end reads as `scratch`, the reading from scratch. The first difference, if any.
+fn arrive(records: &BTreeMap<Tid, Tid>, trust: &BTreeSet<WriteId>, commits: &[Commit], order: &[usize], scratch: &Reading) -> Option<String> {
+    let mut t = Tracked::new(Paths::new(records, trust.clone()));
     for &k in order {
-        let before = p.clone();
-        let ch = p.add(std::slice::from_ref(&commits[k]));
-        if let Some(d) = check(&before, &p, &ch) {
+        if let Some(d) = t.step(|p| p.add(std::slice::from_ref(&commits[k]))) {
             return Some(format!("adding commit {k}: {d}"));
         }
     }
-    let scratch = Paths::evaluate(records, trust.clone(), commits);
-    (reading(&p) != reading(&scratch)).then(|| "arrival and from scratch differ".to_string())
+    (t.r != *scratch).then(|| "arrival and from scratch differ".to_string())
 }
 
 /// Every check of this module on one input: from scratch, arrival forward, backward and in a
@@ -45,44 +42,44 @@ fn robust(records: &BTreeMap<Tid, Tid>, commits: &[Commit], rng: &mut Rng) -> Pa
     let fwd: Vec<usize> = (0..n).collect();
     let back: Vec<usize> = (0..n).rev().collect();
     let shuffled = rng.perm(n);
+    let scratch = Tracked::new(Paths::evaluate(records, none.clone(), commits));
     for order in [&fwd, &back, &shuffled] {
-        if let Some(d) = arrive(records, &none, commits, order) {
+        if let Some(d) = arrive(records, &none, commits, order, &scratch.r) {
             panic!("{d}\norder {order:?}\n{commits:#?}");
         }
     }
     // forgetting (notes/perm-paths.md, Forget and update): a commit never added changes nothing;
     // a shuffled half forgotten one at a time reads as from scratch over the rest; added again,
     // as never forgotten
-    let mut p = Paths::evaluate(records, none.clone(), commits);
-    assert_eq!(p.forget(&[cid(1 << 40)]), Changed::default());
+    let mut t = scratch.clone();
+    let mut ch = Changed::default();
+    assert_eq!(t.step(|p| { ch = p.forget(&[cid(1 << 40)]); ch.clone() }), None);
+    assert_eq!(ch, Changed::default());
     let gone: Vec<usize> = shuffled.iter().copied().filter(|&k| k % 2 == 0).collect();
     for &k in &gone {
-        let before = p.clone();
-        let ch = p.forget(&[commits[k].id]);
-        assert_eq!(check(&before, &p, &ch), None, "forgetting {k}\n{commits:#?}");
+        assert_eq!(t.step(|p| p.forget(&[commits[k].id])), None, "forgetting {k}\n{commits:#?}");
     }
     let rest: Vec<Commit> = (0..n).filter(|k| !gone.contains(k)).map(|k| commits[k].clone()).collect();
-    assert!(reading(&p) == reading(&Paths::evaluate(records, none.clone(), &rest)), "forgetting {gone:?}\n{commits:#?}");
+    assert!(t.r == reading(&Paths::evaluate(records, none.clone(), &rest)), "forgetting {gone:?}\n{commits:#?}");
     for &k in &gone {
-        let before = p.clone();
-        let ch = p.add(std::slice::from_ref(&commits[k]));
-        assert_eq!(check(&before, &p, &ch), None, "adding {k} again\n{commits:#?}");
+        assert_eq!(t.step(|p| p.add(std::slice::from_ref(&commits[k]))), None, "adding {k} again\n{commits:#?}");
     }
-    assert!(reading(&p) == reading(&Paths::evaluate(records, none.clone(), commits)), "forgotten and added again\n{commits:#?}");
-    let _ = p.disputes();
-    let ids: Vec<WriteId> = p.statuses().into_keys().collect();
+    assert!(t.r == scratch.r, "forgotten and added again\n{commits:#?}");
+    // the dispute set's switches leave the reading as it was
+    let _ = t.p.disputes();
+    assert!(t.r == reading(&t.p), "the reading after disputes\n{commits:#?}");
+    let ids: Vec<WriteId> = t.r.0.keys().copied().collect();
     for id in ids.iter().take(6) {
         for trust in [BTreeSet::from([*id]), BTreeSet::new()] {
-            let before = p.clone();
-            let ch = p.set_trust(trust.clone());
-            assert_eq!(check(&before, &p, &ch), None, "trust {trust:?}\n{commits:#?}");
-            assert!(reading(&p) == reading(&Paths::evaluate(records, trust.clone(), commits)), "trust {trust:?}");
-            if !trust.is_empty() && arrive(records, &trust, commits, &shuffled).is_some() {
+            assert_eq!(t.step(|p| p.set_trust(trust.clone())), None, "trust {trust:?}\n{commits:#?}");
+            let under = if trust.is_empty() { scratch.r.clone() } else { reading(&Paths::evaluate(records, trust.clone(), commits)) };
+            assert!(t.r == under, "trust {trust:?}");
+            if !trust.is_empty() && arrive(records, &trust, commits, &shuffled, &under).is_some() {
                 panic!("arrival under trust {trust:?} differs\n{commits:#?}");
             }
         }
     }
-    p
+    t.p
 }
 
 const H: u32 = 1;
