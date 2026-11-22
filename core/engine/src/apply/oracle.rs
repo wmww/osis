@@ -33,7 +33,7 @@ pub(super) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
         d
     });
     if let Some(dead) = dead {
-        dead.note(&before, &st, &d)?;
+        dead.note(&before, &st, &d);
     }
     let after = crate::retention::compact::roots(ak, &st, &d);
     let st = tx.kept(tid, ak, st)?;

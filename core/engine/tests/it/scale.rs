@@ -479,7 +479,8 @@ fn measured_at<T>(lp: &mut LocalPeer, i: usize, f: impl FnOnce(&mut LocalPeer) -
     let c0 = c(lp);
     let (r, mut w) = measured(&b, || f(&mut *lp));
     for (k, (x, y)) in ["death walks", "replaced reads", "examined", "perm commits walked", "perm entries moved"].into_iter().zip(c0.into_iter().zip(c(lp))) {
-        w.spans.insert(k, y - x);
+        // a restart counts from 0 again
+        w.spans.insert(k, if y >= x { y - x } else { y });
     }
     (r, w)
 }
@@ -1196,15 +1197,13 @@ fn kept_overwrite(n: usize) -> Work {
     measured_at(&mut lp, 0, |lp| put(lp, "last".into())).1
 }
 
-// notes/engine-retention-history.md Leaving history; spec/commits.md §5, spec/requirements.md Scale: an overwrite of a kept register sets
-// the replaced body's history row from the killing write's stamp (`leaving::Dating::Killed`),
-// reading no held body, at n and 10n.
+// notes/engine-retention-dating.md Rows; spec/commits.md §5, spec/requirements.md Scale: an overwrite of a kept register dates
+// the body it replaces and itself from the held writes, reading its own body alone (noted in the
+// held writes) and no other, at n and 10n.
 #[test]
-fn kept_overwrite_reads_no_body_spec_commits_5() {
+fn kept_overwrite_reads_its_own_body_spec_commits_5() {
     let (a, b) = (kept_overwrite(20), kept_overwrite(200));
-    for k in ["deaths: a body", "death walks", "replaced reads"] {
-        assert_eq!((a.n(k), b.n(k)), (0, 0), "{k}");
-    }
+    assert_eq!((a.n("deaths: a body"), b.n("deaths: a body")), (1, 1), "its own body noted");
     all_flat("an overwrite of a kept register", &a, &b);
 }
 

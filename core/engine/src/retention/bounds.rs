@@ -178,53 +178,117 @@ fn part_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Res
     dated_replaced_at(tx, h, c, ai)
 }
 
-/// When part `ai` of `c` was replaced, whatever its aspect's bounds (also what purge on replace
-/// asks, `replace::under_purge`). A write of the held valid part is dead when it wins in the part
-/// and not once the part joins the state (spec/crdt.md §4.8, `Fragment::winners`); it died at the
-/// earliest `ts` among the held valid writes superseding it alone, a value removal hiding it
-/// judged in the held copies as joined (`HeldWrites::hiders`), read from any held body holding one
-/// (`HeldWrites::holds`: its own commit, or a snapshot carrying it), by the write's own `ts`
-/// wherever it is read (a valid snapshot's copy of a write whose own delta is
-/// held invalid counts as the write itself, spec/crdt.md §4.8 When). The part is replaced at the
-/// latest of its writes' deaths, a snapshot's leaving out those a held valid snapshot stamped
-/// later holds as winners (`HeldWrites::carried`: that one keeps their history); `None`: no such
-/// write is dead, so it is past a relative bound. So a cover dropping a body redates nothing in
-/// history: no date is read from which body holds a write, the cover carries the body's live
-/// writes with their stamps, and any write it alone dated was replaced no later than it
-/// (notes/engine-retention-dating.md Invariant). A node holding more bodies
-/// dates no later. Invalid parts and bare leftovers (no values to keep) are not judged. A memo
-/// (`Core::replaced_dates`): judged again only when what it read moved (the aspect's held
-/// bodies, their validity and the state), the aspect's held bodies read once for every
-/// judgment until then (`held_writes`).
+/// When part `ai` of `c` was replaced (spec/commits.md §5 Bodies and deaths), a function of the
+/// held set: `index_date`, kept on a dated aspect as the part's history row (`leaving::date_due`
+/// dates every part it may move at a transaction's end), so a read is the part's row alone.
+/// Judged from the held writes where the row may lag: on an aspect no setting dates (purge on
+/// replace asks, `replace::under_purge`), and on one a running transaction changed before its
+/// rows are dated (`leaving::dating_due`).
 pub(super) fn dated_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
     let Some(a) = h.aspects.get(ai) else { return Ok(None) };
     if a.ak.signal() {
         return Ok(Some(h.ts));
     }
-    // a date reads its aspect's held writes as a row: up to date before a hit is trusted
-    osis_base::memo::Cutoff::refresh_in(tx, |tx| &tx.core.held_writes_rows, |tx, (t, k)| held_writes_kept(tx, t, k))?;
-    osis_base::memo::Memo::get_in(tx, |tx| &tx.core.replaced_dates, &(*c, ai), |tx| judge_replaced_at(tx, h, c, ai))
-}
-
-/// `dated_replaced_at` judged anew.
-fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
-    let Some(a) = h.aspects.get(ai) else { return Ok(None) };
     let (tid, ak) = (a.tid, a.ak.clone());
-    if held_part(tx.core, c, &tid, &ak) != Some(ai) || tx.core.ix.commits.get(c).is_none_or(|m| m.bare(ai) || !m.valid_at(ai)) {
+    if !judged(tx.core, c, ai, &tid, &ak) {
         return Ok(None);
     }
+    if !bounded(tx.core, &tid, &ak) || super::leaving::dating_due(tx.core, &tid, &ak) {
+        return index_date(tx, h, c, ai);
+    }
+    Ok(tx.core.ix.dated.get(&(*c, tid, ak)).copied())
+}
+
+/// Whether part `ai` of `c` on `(tid, ak)` is dated at all: held whole with values (a bare
+/// leftover has none to keep) and valid.
+fn judged(core: &Core, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> bool {
+    held_part(core, c, tid, ak) == Some(ai) && core.ix.commits.get(c).is_some_and(|m| !m.bare(ai) && m.valid_at(ai))
+}
+
+/// When held valid part `ai` of `c` was replaced, judged from the aspect's held writes
+/// (`HeldWrites`): a winner of the part (`Fragment::winners`, spec/crdt.md §4.8) is dead when a
+/// held valid write supersedes it, and died at the earliest `ts` among those (`first_superseding`,
+/// a value removal hiding it judged in the held copies as joined, a write dated by its own stamp
+/// whichever body holds it: a valid snapshot's copy of a write whose own delta is held invalid
+/// counts as the write itself, spec/crdt.md §4.8 When). The part is replaced at the latest of
+/// its writes' deaths, a snapshot's leaving out those a held valid snapshot stamped later holds
+/// as winners (`HeldWrites::carried`: that one keeps their history); `None`: no write dead, so
+/// it is past a relative bound. So a cover dropping a body redates nothing in history: no date
+/// is read from which body holds a write, the cover carries the body's live writes with their
+/// stamps, and any write it alone dated was replaced no later than it
+/// (notes/engine-retention-dating.md Invariant). A node holding more bodies dates no later.
+/// O(the part) plus a path walk per winner; debug builds compare it with the state's deaths
+/// (`whole_date`).
+pub(super) fn index_date(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(None) };
+    let (tid, ak) = (a.tid, a.ak.clone());
+    if !judged(tx.core, c, ai, &tid, &ak) {
+        return Ok(None);
+    }
+    let Some(f) = crate::apply::held_fragment(tx, c, ai)? else { return Ok(None) };
+    drop(osis_base::costs::span("replaced at"));
+    let held = held_writes(tx, &tid, &ak)?;
+    let snap = h.kind.is_compaction();
+    let mut out: Option<Ts> = None;
+    for w in winners_of(tx, &f).iter() {
+        if snap && held.carried.get(&w).is_some_and(|v| v.iter().any(|(t, x)| *t > h.ts && x != c)) {
+            continue;
+        }
+        out = out.max(held.holds.first_superseding(&w, &held.hiders, |s, _| Some(s.ts)));
+    }
+    // a test hook wrote states no body gives (`Core::unchecked_tx`): no check reads them
+    #[cfg(debug_assertions)]
+    if !tx.core.unchecked_tx {
+        let whole = unseen(tx, |tx| whole_date(tx, h, c, ai))?;
+        assert_eq!(out, whole, "{c:?} on {tid:?} {ak:?}: dated from the held writes vs the state's deaths");
+    }
+    Ok(out)
+}
+
+/// Runs debug check `f` unseen: its reads record nothing, its costs and death walks count none.
+#[cfg(debug_assertions)]
+pub(super) fn unseen<R>(tx: &mut Tx<'_>, f: impl FnOnce(&mut Tx<'_>) -> R) -> R {
+    let walks = tx.core.death_walks;
+    let r = osis_base::costs::paused(|| osis_base::memo::unrecorded(|| f(tx)));
+    tx.core.death_walks = walks;
+    r
+}
+
+/// `index_date` by the state: the part's winners the state supersedes (`deaths`), each dated by
+/// the earliest held write superseding it (none: `Error::Corrupt`). The debug check.
+#[cfg(debug_assertions)]
+fn whole_date(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Option<Ts>> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(None) };
+    let (tid, ak) = (a.tid, a.ak.clone());
     let dead = dating_deaths(tx, h, c, ai, &tid, &ak)?;
     if dead.is_empty() {
         return Ok(None);
     }
     let held = held_writes(tx, &tid, &ak)?;
-    // the state is the join of the held bodies (un-merged, spec/crdt.md §4.6), so a held body
-    // holds each superseder, dated by its own stamp whichever body holds it. The part's own body
-    // may hold it: a removal that hides the joined copy of a write, not the part's (§4.1 copies)
     let mut out: Option<Ts> = None;
     for w in &dead {
         let d = held.holds.first_superseding(w, &held.hiders, |s, _| Some(s.ts)).ok_or(Error::Corrupt("a dead write no held body supersedes"))?;
         out = out.max(Some(d));
+    }
+    Ok(out)
+}
+
+/// The held bodies of `(tid, ak)` whose `index_date` may have moved when bodies `joined` were
+/// noted in its held writes (`HeldWrites`, read after): each joined one, and for each write a
+/// joined body holds, the owner and the snapshots carrying each write it may date anew
+/// (`ByWrite::moved_by`). O(the joined bodies and the positions at or below their writes').
+pub(crate) fn moved_by_joins(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, joined: &[CommitId]) -> Result<BTreeSet<CommitId>> {
+    let mut out: BTreeSet<CommitId> = joined.iter().copied().collect();
+    let held = held_writes(tx, tid, ak)?;
+    for x in joined {
+        let Some(xai) = held_part(tx.core, x, tid, ak) else { continue };
+        let Some(f) = crate::apply::held_fragment(tx, x, xai)? else { continue };
+        for s in f.held_writes().iter() {
+            for w in held.holds.moved_by(&s) {
+                out.extend(tx.core.commit_of(tid, ak, &w.stamp.dot));
+                out.extend(held.carried.get(&w).into_iter().flatten().map(|v| v.1));
+            }
+        }
     }
     Ok(out)
 }
@@ -377,59 +441,21 @@ pub(crate) fn deaths_and_whole(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak
     Ok(Some((deaths(tx, c, ai, tid, ak)?, oracle::deaths(tx, c, ai, tid, ak)?)))
 }
 
-/// The aspect index of `(tid, ak)` in `c` if that part is held with values (a bare leftover has
-/// no values to keep: `Meta::bare`), for an aspect with a relative bound (`bounded`).
-fn bounded_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
-    held_part(core, c, tid, ak).filter(|ai| core.ix.commits.get(c).is_some_and(|m| !m.bare(*ai)))
-}
-
-/// The writes joins on an aspect superseded (spec/crdt.md §4.8), for `mark_killed`, by dot;
-/// `at`, the latest among them of the earliest stamp superseding each (`ByWrite::first_superseding`)
-/// among the join's writes (`d`'s, the state's at its reach), winning or not: no earlier than
-/// any death (that write is held), and a function of the dying write and what lies on its path,
-/// so the same however a delta was split. Noted join by join (a whole delta, each of its
-/// pieces, a paged reset's skeleton and each page): the reaches together are the whole join's,
-/// so how a delta was split never shows. Rejected: the latest winner at the join's reach (a
-/// map's reach takes in every record of the keys it names: a whole delta's more than a piece's,
-/// so a whole join dated a death later).
+/// The writes joins on an aspect superseded (spec/crdt.md §4.8), by dot, for listing
+/// (`mark_killed`). Noted join by join (a whole delta, each of its pieces, a paged reset's
+/// skeleton and each page): the reaches together are the whole join's.
 #[derive(Debug, Default)]
 pub(crate) struct Killed {
     pub dots: BTreeSet<osis_crdt::Dot>,
-    pub at: Option<Ts>,
 }
 
 impl Killed {
     /// Notes the writes the join of `d` into `st` superseded: `before` (`Killed::before`) against
     /// `st` after the join, at the same records of each key (`Fragment::reach_after`: a record
-    /// the join took out of `d`'s reach is no death). Each dies at the earliest write held at the
-    /// join's reach, before or after it, or in `d`, that supersedes it, winning or not
-    /// (spec/crdt.md §4.8 When: a creation beating a move stamped below it supersedes it though a
-    /// delete beat the creation), or at the earliest value removal among those hiding it
-    /// (`osis_crdt::Hiders`: read in the copies of the same three as joined, §4.1 copies, so a
-    /// reset pruning the write in the join hides nothing of the removal).
-    ///
-    /// Invariant: hostile input never produces a local error. Any writer can send any bytes the
-    /// decoders accept, forged copies of others' writes included, so for every such input one of
-    /// those supersedes every dead write (osis-crdt `tests_model::reach_holds_the_change`, over
-    /// honest, twin and hostile histories); a death with none is a bug in this node, `Corrupt`.
-    pub(crate) fn note(&mut self, before: &KillBefore, st: &Fragment, d: &Fragment) -> Result<()> {
+    /// the join took out of `d`'s reach is no death).
+    pub(crate) fn note(&mut self, before: &KillBefore, st: &Fragment, d: &Fragment) {
         let reach = st.reach_after(d, &before.reach);
-        let dead = before.winners.minus(&reach.winners());
-        if dead.is_empty() {
-            return Ok(());
-        }
-        let mut by = osis_crdt::ByWrite::<()>::default();
-        let mut hiders = Hiders::default();
-        for f in [&before.reach, d, &reach] {
-            by.note(&f.held_writes(), |_, _| ());
-            hiders.note(f);
-        }
-        for w in dead {
-            let first = by.first_superseding(&w, &hiders, |s, _| Some(s.ts)).ok_or(Error::Corrupt("a dead write nothing in its join supersedes"))?;
-            self.at = self.at.max(Some(first));
-            self.dots.insert(w.stamp.dot);
-        }
-        Ok(())
+        self.dots.extend(before.winners.minus(&reach.winners()).into_iter().map(|w| w.stamp.dot));
     }
     /// What `note` compares with: the winners `st ⊔ d` may supersede (of `st` at `d`'s reach,
     /// and of `d`), and that reach.
@@ -447,44 +473,24 @@ pub(crate) struct KillBefore {
     winners: Winners,
 }
 
-/// A join on `(tid, ak)` superseded `dead`: the held bodies with a relative bound it may have
-/// replaced (the dying writes' own commits, and the aspect's snapshots, which may carry them) are
-/// judged again by sync, and the history row of each is set no earlier
-/// than `Killed::at` (`Core::to_date`, `Dating::Killed`: no body read; a snapshot whether or not it
-/// carries a dying write, as telling which would read it).
+/// A join on `(tid, ak)` superseded `dead`: listeners are told of the commits it may have
+/// replaced (the dying writes' own commits, and the aspect's snapshots, which may carry them).
+/// Their dates follow from the held set (`leaving::date_due`).
 pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     if dead.dots.is_empty() {
         return;
     }
     let core = &*tx.core;
-    let owners: BTreeSet<CommitId> = dead.dots.iter().filter_map(|d| core.commit_of(tid, ak, d)).collect();
-    let mut on = owners.clone();
+    let mut on: BTreeSet<CommitId> = dead.dots.iter().filter_map(|d| core.commit_of(tid, ak, d)).collect();
     on.extend(core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1));
     crate::engine::listing::note_killed(tx, tid, ak, &on);
-    if !bounded(tx.core, tid, ak) {
-        return;
-    }
-    for c in on {
-        if bounded_part(tx.core, &c, tid, ak).is_some()
-            && let Some(t) = dead.at
-        {
-            tx.core.to_date.push((*tid, ak.clone(), c, super::leaving::Dating::Killed(t)));
-        }
-    }
 }
 
-/// The state of `(tid, ak)` was rebuilt (a validity flip, an un-merge, a drop): every held body
-/// with a relative bound is judged again by sync and its history row dated again, as when it
-/// was replaced may have moved.
+/// The state of `(tid, ak)` was rebuilt (a validity flip, an un-merge, a drop): every held
+/// body's date is judged again (`leaving::date_due`), as writes may have left the held set.
 pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
-    if !bounded(tx.core, tid, ak) {
-        return;
-    }
-    let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-    for c in on {
-        if bounded_part(tx.core, &c, tid, ak).is_some() {
-            tx.core.to_date.push((*tid, ak.clone(), c, super::leaving::Dating::Full(false)));
-        }
+    if bounded(tx.core, tid, ak) {
+        tx.core.to_date.push((*tid, ak.clone(), false));
     }
 }
 

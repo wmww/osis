@@ -1133,10 +1133,10 @@ pub struct Core {
     /// Commits with a write a join of the running transaction superseded, on listened aspects
     /// (`listing::listing_moved`).
     pub(crate) killed: Vec<(Tid, Ak, CommitId)>,
-    /// Parts on dated aspects whose replaced-at the running transaction may have moved (a kill, a
-    /// rebuild, `retention::leaving::Dating`): their history rows are set again at its end
-    /// (`retention::leaving::date_due`).
-    pub(crate) to_date: Vec<(Tid, Ak, CommitId, crate::retention::leaving::Dating)>,
+    /// Dated aspects whose every part's replaced-at the running transaction may have moved (a
+    /// rebuild; `true`: turned dated, a row landing in history told): their history rows are
+    /// dated whole at its end (`retention::leaving::date_due`).
+    pub(crate) to_date: Vec<(Tid, Ak, bool)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look. A name goes with its commit (forgotten, or dropped from pending while not
     /// applied), so it holds at most one per commit held. Sync reads none of it.
@@ -1272,9 +1272,6 @@ pub struct Core {
     /// `held_writes` per aspect as a row (`memo::Cutoff`): a part's date reads the row, not the
     /// aspect's every body, so it copies one read where the memo would copy one per body.
     pub(crate) held_writes_rows: memo::Cutoff<(Tid, Ak), Arc<crate::retention::bounds::HeldWrites>>,
-    /// When each held part was replaced, per (commit, aspect index)
-    /// (`retention::bounds::dated_replaced_at`, `memo`).
-    pub(crate) replaced_dates: memo::Memo<(CommitId, usize), Option<osis_base::Ts>>,
     /// What a waiting snapshot part carries, per (commit, aspect index), as a held snapshot's
     /// bound (`retention::snapshot::Carried`; `None`: no snapshot it can join): decoded once while
     /// its commit waits (`retention::pending`, `memo`).
@@ -1910,7 +1907,6 @@ impl Core {
             closure_follow: _,
             node_root: _,
             held_writes: _,
-            replaced_dates: _,
             waiting_carried: _,
             part_bounds: _,
             tree_roots: _,
@@ -2251,7 +2247,6 @@ impl Core {
             touches: Default::default(),
             held_writes: memo::Memo::new("held writes"),
             held_writes_rows: memo::Cutoff::new("held writes: rows"),
-            replaced_dates: memo::Memo::new("replaced at"),
             waiting_carried: memo::Memo::new("waiting snapshot: bound"),
             part_bounds: memo::Memo::new("part bounds"),
             tree_roots: memo::Memo::new("tree roots"),
@@ -3167,9 +3162,9 @@ impl Engine {
                 }
                 tx.core.drop_due.clear();
                 if !tx.core.settings_due.is_empty() {
-                    // the new timelines walk rows dated by this transaction's kills and
-                    // validity changes: a row is never early (a superseder turning invalid moves
-                    // its victims' rows later), so the walk tells no body early
+                    // the new timelines walk rows dated by this transaction's joins and validity
+                    // changes (a superseder turning invalid moves its victims' rows later), so the
+                    // walk tells no body early
                     r = then(r, || crate::retention::leaving::date_due(&mut tx));
                     r = then(r, || crate::retention::settings_changed(&mut tx));
                 }

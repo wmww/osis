@@ -213,6 +213,37 @@ impl<T> ByWrite<T> {
         }
         best
     }
+
+    /// The writes noted here whose `first_superseding` (by stamp) may have moved when write `s`
+    /// was noted, with its copy's hiders: `s` itself (its hiding is read in its copies as
+    /// joined); per kind at each position at or below `s`'s, the greatest write stamped no later
+    /// than `s` but `s`, where `s` supersedes it (every lower one is superseded by that one,
+    /// stamped no later than `s`, so `s` dates it no earlier); of an undelete, its element's
+    /// creations (the latest undelete decides which deletes count); of a value removal, every
+    /// element register write of its set (which it hides is read in the copies as joined).
+    /// O(the positions at or below `s`'s), a value removal's set's elements.
+    pub fn moved_by(&self, s: &Won) -> Vec<Won> {
+        let mut out = vec![s.clone()];
+        let depth = s.path.len();
+        for (p, at) in self.0.range(s.path.clone()..).take_while(|(p, _)| p.starts_with(&s.path)) {
+            for k in Kind::ALL {
+                let below = at.range(..=(k, s.stamp.clone())).rev().take_while(|x| x.0.0 == k).map(|x| Won { path: p.clone(), kind: k, stamp: x.0.1.clone() }).find(|w| w != s);
+                if let Some(w) = below.filter(|w| supersedes(depth, s.kind, &s.stamp, w)) {
+                    out.push(w);
+                }
+                if s.kind == Kind::Undelete && k == Kind::Created && *p == s.path {
+                    out.extend(at.keys().filter(|x| x.0 == k).map(|x| Won { path: p.clone(), kind: k, stamp: x.1.clone() }));
+                }
+            }
+        }
+        if let [set @ .., Place::Gone(_)] = s.path.as_slice() {
+            let elems = self.0.range(set.to_vec()..).take_while(|(p, _)| p.starts_with(set));
+            for (p, at) in elems.filter(|(p, _)| matches!(p.get(set.len()..), Some([Place::Elem(_), Place::In]))) {
+                out.extend(at.keys().filter(|x| x.0 == Kind::Value).map(|x| Won { path: p.clone(), kind: Kind::Value, stamp: x.1.clone() }));
+            }
+        }
+        out
+    }
 }
 
 /// Whether the write `kind` stamped `s`, `depth` steps down `w`'s path, supersedes `w` (§4.8), as a

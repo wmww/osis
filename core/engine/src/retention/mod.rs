@@ -1551,7 +1551,7 @@ mod tests {
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::core_types as ct;
 
-    // spec/commits.md §5 (replaced), scale: a reset killing every write of a filled map judges
+    // spec/commits.md §5 (replaced), scale: a reset killing every write of a filled map dates
     // the fill and a snapshot of it walking each held part a few times for its winners, never
     // once per death: the same count for 10 times the writes.
     #[test]
@@ -1573,10 +1573,10 @@ mod tests {
             lp.advance(10);
             let mut m = Mutation::new();
             m.set(t, &x, &Value::Int(0)).unwrap();
+            let w0 = lp.peers[0].engine.death_walks();
             let reset = lp.peers[0].commit(m).unwrap().unwrap();
             let e = &mut lp.peers[0].engine;
             let at = Some(e.header(&reset).unwrap().ts);
-            let w0 = e.death_walks();
             assert_eq!([e.replaced_at(&fill, &t, &x).unwrap(), e.replaced_at(&snap, &t, &x).unwrap()], [at, at]);
             e.death_walks() - w0
         };
@@ -1586,8 +1586,9 @@ mod tests {
     }
 
     // spec/commits.md §5 (replaced), issues/derived-state-recomputed.md: a replaced body's keep
-    // bound is judged once per change of what it reads (its aspect's held bodies and state): asked
-    // again, or after writes on another aspect, it judges nothing.
+    // bound is judged once per change of what it reads (its date, held as its row): asked again,
+    // after writes on another aspect, or after a write on its aspect superseding another body's
+    // writes, it judges nothing; the body that write replaces is judged again.
     #[test]
     fn replaced_bound_judged_once_per_change_of_its_aspect_spec_commits_5() {
         let mut lp = LocalPeer::new(1, 954, WallMs(1_700_000_000_000)).unwrap();
@@ -1605,22 +1606,26 @@ mod tests {
             lp.peers[0].commit(m).unwrap().unwrap()
         };
         let first = write(&mut lp, &x, 1);
-        write(&mut lp, &x, 2);
-        let judged = |lp: &mut LocalPeer| {
+        let second = write(&mut lp, &x, 2);
+        let judged_of = |lp: &mut LocalPeer, c: &CommitId| {
             osis_base::costs::take();
-            let k = lp.peers[0].engine.part_keeps(&first).unwrap();
+            let k = lp.peers[0].engine.part_keeps(c).unwrap();
             let n = |name: &str, c: &[(&str, std::time::Duration, u64)]| c.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
             let c = osis_base::costs::take();
             (k, n("part bounds", &c) + n("replaced at", &c) + n("held writes", &c) + n("deaths: a body", &c))
         };
+        let judged = |lp: &mut LocalPeer| judged_of(lp, &first);
         let (k, n) = judged(&mut lp);
         assert!(n > 0 && k.iter().any(|k| *k > 0), "judged: {k:?}");
         assert_eq!(judged(&mut lp), (k.clone(), 0), "asked again");
         write(&mut lp, &y, 1);
         write(&mut lp, &y, 2);
         assert_eq!(judged(&mut lp), (k.clone(), 0), "writes on another aspect");
+        let live = judged_of(&mut lp, &second);
         write(&mut lp, &x, 3);
-        assert!(judged(&mut lp).1 > 0, "a write on its aspect");
+        assert_eq!(judged(&mut lp), (k.clone(), 0), "a write on its aspect replacing another body");
+        let (dated, n) = judged_of(&mut lp, &second);
+        assert!(n > 0 && dated != live.0, "the body it replaces judged again: {live:?} then {dated:?}");
     }
 
     /// One peer, a thing whose `x:m.0` keeps history an hour (so replaced bodies are dated), and
@@ -2187,6 +2192,52 @@ mod tests {
         assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "nothing fetches it back");
         assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(Value::Int(2)));
         lp.peers[2].engine.check_index();
+    }
+
+    // spec/commits.md §5 Bodies and deaths (a write of a delta invalid here supersedes nothing):
+    // reader R holds A's C1 on a register kept an hour after replaced and W's C2 replacing it;
+    // A's removal of W, written before C2, reaches R last: C2 turns invalid and C1's date moves
+    // back to none (live again), its row with it.
+    #[test]
+    fn a_superseder_judged_invalid_later_moves_its_victims_date_back_spec_commits_5() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (a, w, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let reg = Ak::new("x:a.0").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(reg.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
+        let edge = |role| ct::Edge { role, until: None, invite: None, retain: false, floor: None };
+        lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&t, &r, &edge(Role::Read)).unwrap();
+        let set = |lp: &mut LocalPeer, p: usize, v: i64| {
+            lp.advance(10);
+            let mut m = Mutation::new();
+            m.set(t, &reg, &Value::Int(v)).unwrap();
+            lp.peers[p].commit(m).unwrap().unwrap()
+        };
+        let c1 = set(&mut lp, 0, 1);
+        lp.sync_all().unwrap();
+        lp.advance(10);
+        let d = lp.peers[0].engine.demote(&t, &Demotion { holder: w, new: None, retain: None }).unwrap();
+        let ds: Vec<_> = d.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
+        let c2 = set(&mut lp, 1, 2);
+        let c2p = lp.peers[1].engine.package(&c2).unwrap().unwrap();
+        lp.deliver(2, &c2p).unwrap();
+        let e = &mut lp.peers[2].engine;
+        let at = e.header(&c2).unwrap().ts;
+        assert_eq!(e.replaced_at(&c1, &t, &reg).unwrap(), Some(at), "C2 replaced C1");
+        assert_eq!(e.core.ix.dated.get(&(c1, t, reg.clone())), Some(&at), "its row");
+        for d in &ds {
+            lp.deliver(2, d).unwrap();
+        }
+        let e = &mut lp.peers[2].engine;
+        assert!(!e.core.ix.commits[&c2].valid_at(0), "C2 fell with W's removal");
+        assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Int(1)));
+        assert_eq!(e.replaced_at(&c1, &t, &reg).unwrap(), None, "C1 live again");
+        assert_eq!(e.core.ix.dated.get(&(c1, t, reg.clone())), None, "its row gone");
     }
 
     // spec/permissions.md §5.2, spec/commits.md §5 Forgetting: a coverer forgotten while a body

@@ -381,6 +381,27 @@ fn first_superseding_check(bodies: &[Fragment]) {
         let by_stamp = all.iter().filter(|s| counts(s)).map(|s| s.w.stamp.ts).min();
         assert_eq!(ix.first_superseding(&w.w, &hiders, |s, _| Some(s.ts)), by_stamp, "the earliest write superseding {w:?}");
     }
+    moved_by_check(bodies);
+}
+
+/// `moved_by`: noting the bodies one at a time, every write held before whose earliest
+/// superseding write moves is one the new body's writes name.
+fn moved_by_check(bodies: &[Fragment]) {
+    let mut ix: ByWrite<()> = ByWrite::default();
+    let mut hiders = Hiders::default();
+    let mut held: BTreeSet<Won> = BTreeSet::new();
+    for b in bodies {
+        let was: Vec<Option<Ts>> = held.iter().map(|w| ix.first_superseding(w, &hiders, |s, _| Some(s.ts))).collect();
+        let hw = b.held_writes();
+        ix.note(&hw, |_, _| ());
+        hiders.note(b);
+        let named: BTreeSet<Won> = hw.iter().flat_map(|s| ix.moved_by(&s)).collect();
+        for (w, was) in held.iter().zip(was) {
+            let now = ix.first_superseding(w, &hiders, |s, _| Some(s.ts));
+            assert!(now == was || named.contains(w), "{w:?} moved from {was:?} to {now:?}, unnamed by {:?}", hw.iter().collect::<Vec<_>>());
+        }
+        held.extend(hw.iter());
+    }
 }
 
 proptest! {

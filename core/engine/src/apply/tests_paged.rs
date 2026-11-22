@@ -758,8 +758,8 @@ fn removal_of_one_entry_of_a_key_kills_it_alone_spec_commits_5() {
 /// Node 3 holds node 0's entry; node 1 overwrites it, ten minutes later node 2, holding that,
 /// overwrites it again; node 3 gets the two overwrites in either order. The entry was replaced
 /// by node 1's write (spec/commits.md §5), so in either order it is judged replaced then and is
-/// never told leaving history before an hour after it; the order the second overwrite came
-/// first in may tell it late (a row is a schedule, never early: notes/engine-retention-history.md).
+/// told leaving history an hour after it, never earlier and alike in either order (its row is
+/// its replaced-at: notes/engine-retention-dating.md Rows).
 #[test]
 fn overwrites_in_either_order_never_tell_early_spec_commits_5() {
     let at = |first_later: bool| {
@@ -805,7 +805,8 @@ fn overwrites_in_either_order_never_tell_early_spec_commits_5() {
     };
     let (in_order, reversed) = (at(false), at(true));
     assert_eq!(in_order.0, reversed.0, "judged replaced alike in either order");
-    assert!(in_order.1.is_some_and(|i| i >= 1) && reversed.1.is_some_and(|i| i >= 1), "never told early: {in_order:?} {reversed:?}");
+    assert!(in_order.1.is_some_and(|i| i >= 1), "never told early: {in_order:?}");
+    assert_eq!(in_order, reversed, "told alike in either order");
 }
 
 /// Node 3 holds node 0's fill; three hours later node 0 overwrites its first entry and
@@ -2021,11 +2022,13 @@ fn a_trickled_fill_reads_each_page_a_bounded_number_of_times_spec_commits_4() {
         }
     }
     eprintln!("(delivery, entries, blobs given, pages read, walk opens, examines, signature checks): {out:#?}");
-    // per page: one walk step (and the compaction trigger's weighing after), two reads (the
-    // checked decode once it lacks nothing, the streamed apply); per commit one examination
+    // per page: one walk step (and the compaction trigger's weighing after), three reads (the
+    // checked decode once it lacks nothing, the streamed apply, and the body's writes noted for
+    // dating: `mix` keeps history, `retention::bounds::moved_by_joins`); per commit one
+    // examination
     for (how, n, given, read, opened, examines, sigs) in &out {
         let (given, commits) = (*given as u64, if *how == Deliver::Interleaved { 2 } else { 1 });
-        assert!(*read <= 2 * given && *opened <= 2 * given, "{how:?} {n}: reads per blob delivered bounded: {out:?}");
+        assert!(*read <= 3 * given && *opened <= 2 * given, "{how:?} {n}: reads per blob delivered bounded: {out:?}");
         assert!(*examines <= commits && *sigs <= commits, "{how:?} {n}: examined once: {out:?}");
     }
 }

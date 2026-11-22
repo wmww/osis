@@ -1704,7 +1704,7 @@ pub(crate) fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
     let before = dead.as_ref().map(|_| Killed::before(&j, d));
     let mut changes = j.join(d.clone());
     if let (Some(k), Some(w)) = (dead.as_deref_mut(), before) {
-        k.note(&w, &j, d)?;
+        k.note(&w, &j, d);
     }
     let t = table(txn, tid, ak)?;
     let kt = txn.create_table(tid, ak, KEY_TABLE)?;
@@ -1734,7 +1734,7 @@ pub(crate) fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
             let before = dead.as_ref().map(|_| Killed::before(&g, &dp));
             let ch = g.join(dp.clone());
             if let (Some(k), Some(w)) = (dead.as_deref_mut(), before) {
-                k.note(&w, &g, &dp)?;
+                k.note(&w, &g, &dp);
             }
             if let Some(x) = g.at_steps(p) {
                 moved.add(x, 1);
