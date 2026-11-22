@@ -24,3 +24,10 @@ Commit / snapshot with pages 21 / 22 MB. Write 2.2 GB, 135 s (snapshot 2.3 GB, 2
 - Tree roots of a state with a collection paged inside another's elements (`pages::each_piece` with keys: `None`): read whole, as a key's records then reach into pages below.
 
 Store transaction memory is bounded already (the pager spills past `StoreConfig::spill_bytes`, 16 MiB).
+
+## Parked: a page-walking snapshot writer (branch `mizzen-snapshot-stream`, 4e60f9b08)
+A snapshot encoder pulling stored pages in wire order was built and reviewed twice, then parked. What it taught:
+- Stripping expiring values does not commute with paging: an expiring write inside a keyed map record moves to that dot's key-erased record (notes/crdt.md, A snapshot of a paged state: the key is part of every write's value inside the entry, so the rule stays). A page walk must gather those writes from every stored collection under that dot into one output, a multi-source merge (`snap_walk.rs`, ~470 lines; the branch +1,400 lines in all).
+- The merge's memory is bounded for honest states (each entry has its own dot: at most about 2^depth sources) but not for hostile ones: readers never check that a dot names one key, so a forged state with N keys on one dot opens N sources at once (`tests_walk::one_dot_many_keys_memory_spec_8`, ignored, failing: 3 KB at 4 keys, 41 KB at 64).
+- Before resuming, settle first whether a dot may name more than one key at all (a decoder/validation rule, as spec/crdt.md §3.3 rule 7 was for embedded chars): if not, the source count is bounded by construction and the merge's bound holds; else a per-source cursor (re-reading below a cut) bounds it at a re-read cost in the hostile case only. Weigh whether the whole page walk is worth its size against the priority of this issue.
+

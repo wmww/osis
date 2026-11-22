@@ -17,6 +17,7 @@ A property failing on main is the next task (notes/coordination.md, Known failur
 - Deferred to stage A4, which deletes what they test: the custody model and differential (issues/custody-differential-failures.md).
 
 ## Unlanded branches
+- `mizzen-snapshot-stream` (pushed): a page-walking snapshot writer, parked (issues/durable-decode-bound.md, Parked): byte-identical but unbounded memory on forged states; a one-key-per-dot rule may be the root fix.
 - `windlass-wiring-1`: the A1 debug shadow (the new permission walk beside today's on every engine and sync test; every difference in a designed class or the test fails). Reviewed, not landed: at the gate's seed offsets three differences fall in no class (a thing given a role on itself; an admin rewriting its own grant to add `invite: Admin`; STATED_CUT lapsing for a rotation's key parts), each written up on that branch, in the perm-paths note's section on the switch. Taken up after stage D of notes/redesign-plan.md, which changes the walk it shadows; then also owed: the shadow comparing only readings that moved (it is quadratic in history), snapshots and purge requests in the adapter, the saved store, its properties at several offsets.
 - `s1-first-fetch-wip` (local only): a Fetch naming several sync IDs, held back by the caught-up race it exposes (notes/redesign-plan.md S1, State).
 
