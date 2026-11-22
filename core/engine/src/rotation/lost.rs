@@ -355,8 +355,9 @@ fn contested(core: &Core, k: &Tid) -> bool {
 /// One way a lost actor's copy may hang on holder `via`.
 #[derive(Clone, Copy)]
 struct Way {
-    /// An ended edge's removal said retain, or its `until` passed on a grant written to retain, or the
-    /// way is alive (an edge, a record edge included, from a holder that is itself kept).
+    /// The grant had key access (as it last stood for keys) and is alive (an edge, a record edge
+    /// included, from a holder that is itself kept), or ended by a removal saying retain or by its
+    /// `until` passing on a grant written to retain.
     retain: bool,
     /// The write that ended it: the node must have read the holder just before it.
     end: Option<osis_perm::Point>,
@@ -365,19 +366,27 @@ struct Way {
 /// The ways to each of `actors` the timeline shows.
 fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>> {
     let ts = now_ts(core);
-    let live = Way { retain: true, end: None };
     let keyless = crate::rotation::members::key_access(core);
     let mut out: BTreeMap<Tid, BTreeMap<Tid, Way>> = BTreeMap::new();
     for a in actors {
         let w = out.entry(*a).or_default();
+        // every way by a grant with key access: a keyless one reads nothing of `a` through it
+        // (spec/crypto.md §4 Key access), so it keeps the node nothing
         if let Some(tl) = core.timelines.get(a) {
+            // an ended grant as it last stood for keys: one no removal ended (an `until` passed)
+            // still stands and is judged with the standing grants; one a removal ended, over the
+            // permission-checked writes before that removal (`members::keyed_before`)
+            let standing = tl.standing_since(a);
+            let keyed = |h: &Tid, end: Option<osis_perm::Point>| match end {
+                Some(p) if !standing.contains_key(h) => crate::rotation::members::keyed_before(tl, a, h, p),
+                _ => !keyless.contains(&(*a, *h)),
+            };
             // an ended grant of sync read nothing to keep
-            w.extend(tl.ended(a, ts).into_iter().filter(|(_, (_, _, r))| *r >= Role::Read).map(|(h, (retain, end, _))| (h, Way { retain, end })));
+            w.extend(tl.ended(a, ts).into_iter().filter(|(_, (_, _, r))| *r >= Role::Read).map(|(h, (retain, end, _))| (h, Way { retain: retain && keyed(&h, end), end })));
         }
         // the roster now at read or above (a grant of sync reads nothing to keep), its record
-        // edge included while it stands, by grants with key access: a keyless one reads nothing
-        // of `a` through it (spec/crypto.md §4 Key access), so it keeps the node nothing
-        w.extend(core.current_holders(a).into_iter().filter(|(h, r, _)| *r >= Role::Read && !keyless.contains(&(*a, *h))).map(|(h, _, _)| (h, live)));
+        // edge included while it stands
+        w.extend(core.current_holders(a).into_iter().filter(|(_, r, _)| *r >= Role::Read).map(|(h, _, _)| (h, Way { retain: !keyless.contains(&(*a, h)), end: None })));
     }
     out
 }

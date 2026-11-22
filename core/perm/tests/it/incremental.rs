@@ -46,7 +46,7 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
         if part.standing_since(&t) != full.standing_since(&t) {
             return Some(format!("standing since of {t:?}"));
         }
-        if part.standing_since_all().remove(&t).unwrap_or_default() != part.standing_since(&t) {
+        if part.standing_since_all(None).remove(&t).unwrap_or_default() != part.standing_since(&t) {
             return Some(format!("standing since of {t:?} in one pass"));
         }
         // the edge history too: roles before every applied write

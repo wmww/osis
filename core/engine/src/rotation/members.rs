@@ -58,16 +58,32 @@ pub(crate) fn key_access(core: &Core) -> Arc<BTreeSet<(Tid, Tid)>> {
 /// `grants` gathers them. A keyless grant closes a cycle of actor grants (`osis_keys::key_access`),
 /// and a cycle lies in one component, so the union over components is the answer over all.
 pub(crate) fn keyless_in(tl: &osis_perm::Timeline) -> BTreeSet<(Tid, Tid)> {
+    let standing = tl.standing_since_all(None);
+    // counted: tests read that making a thing judges no component's grants anew
+    osis_base::costs::count("keys: grants judged for key access", standing.values().map(|on| on.len() as u64).sum());
+    keyless_among(tl, standing)
+}
+
+/// Whether `h`'s grant on `a`, ended by the removal at `p`, had key access just before it: it
+/// stood then and was no keyless grant among the actor grants standing over the writes before
+/// `p` (`keyless_in`'s rule there; spec/permissions.md §3 Retain). Invariant: it reads only
+/// applied, permission-checked writes and `p`, the removal's own point, so a writer choosing `p`
+/// gets the answer an honest removal written there would have.
+pub(crate) fn keyed_before(tl: &osis_perm::Timeline, a: &Tid, h: &Tid, p: osis_perm::Point) -> bool {
+    let standing = tl.standing_since_all(Some(p));
+    standing.get(a).is_some_and(|on| on.contains_key(h)) && !keyless_among(tl, standing).contains(&(*a, *h))
+}
+
+/// The keyless grants among the actor grants `standing` (per thing, each holder's standing since).
+fn keyless_among(tl: &osis_perm::Timeline, standing: BTreeMap<Tid, BTreeMap<Tid, Option<osis_perm::Point>>>) -> BTreeSet<(Tid, Tid)> {
     let mut grants = Vec::new();
-    for (t, on) in tl.standing_since_all() {
+    for (t, on) in standing {
         for (h, since) in on {
             if !tl.records().is_key(&h) {
                 grants.push(Grant { order: (1, since), target: t, holder: h });
             }
         }
     }
-    // counted: tests read that making a thing judges no component's grants anew
-    osis_base::costs::count("keys: grants judged for key access", grants.len() as u64);
     osis_keys::key_access(grants)
 }
 

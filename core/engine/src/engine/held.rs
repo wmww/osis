@@ -1234,7 +1234,7 @@ mod tests {
                 }
                 let full = Timeline::evaluate(&h);
                 let mut grants = Vec::new();
-                for (t, on) in full.standing_since_all() {
+                for (t, on) in full.standing_since_all(None) {
                     for (m, since) in on {
                         if !matches!(h.created(&m), Some(CreationRecord::KeyActor { .. })) {
                             grants.push(osis_keys::Grant { order: (1u8, since), target: t, holder: m });

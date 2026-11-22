@@ -945,15 +945,15 @@ impl Timeline {
     }
 
     /// `standing_since` of every thing of the component with a holder, in one pass over the
-    /// walk's history.
-    pub fn standing_since_all(&self) -> BTreeMap<Tid, BTreeMap<Tid, Option<Point>>> {
+    /// walk's history: over its writes before `before` (`None`: all of them).
+    pub fn standing_since_all(&self, before: Option<Point>) -> BTreeMap<Tid, BTreeMap<Tid, Option<Point>>> {
         let mut out: BTreeMap<Tid, BTreeMap<Tid, Option<Point>>> = BTreeMap::new();
         for (t, l) in self.input.records.links() {
             if let osis_base::RecordLink::Admin(a) = l {
                 out.entry(*t).or_default().insert(*a, None);
             }
         }
-        for c in &self.walked.history {
+        for c in self.walked.history.iter().filter(|c| before.is_none_or(|p| c.point < p)) {
             let on = out.entry(c.target).or_default();
             if c.edge.is_some_and(|e| !e.says_retain()) {
                 on.entry(c.holder).or_insert(Some(c.point));

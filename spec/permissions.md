@@ -154,7 +154,8 @@
 - **Retain**: a node that lost read access to thing A retains a read-only copy of A's things when one of its ways to A retains.
   - A **way** is a holder H of A, in one of these forms (a record edge is a grant here; the account's own grant on A only while taken up, spec/sync-set.md §2 Taken up):
     - a grant of H on A at read or above that ended saying retain (its role the last value's before a removal), the node holding read or above on H just before the write that last changed it;
-    - a grant of H on A at read or above alive, with key access (spec/crypto.md §4 Key access: a keyless grant reads nothing through it).
+    - a grant of H on A at read or above alive.
+  - Either way only through a grant with key access (spec/crypto.md §4 Key access: a keyless grant reads nothing through it), as it last stood for keys: an ended grant no removal ended stands for keys (every `until` disregarded) and is judged so; one a removal ended, over the writes that applied before that removal.
   - An ended grant says what the last write on it on the timeline (§5.1, the writes that applied) says:
     - a removal, for itself (§2);
     - a value with another `until`, passed: its `retain` (§2).
