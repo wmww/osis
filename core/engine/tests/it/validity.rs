@@ -1043,7 +1043,7 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_engine::Resu
     lp.peers[i].commit(m)
 }
 
-// spec/permissions.md §1 (a path climbs role grants, record edges included), §4 (chain certificates): n0 is mint
+// spec/permissions.md §1 (a path climbs role grants, record edges included), §4; Interim (issues/chains-retired.md): n0 is mint
 // admin of A, A writes B, B admin of C (n1 mint admin of B and C). n0's write on C applies at n0 and a receiver; a
 // node with no path may not write C. A fresh reader of C given n0's certificates for C but A's
 // raw record (the record-link step) holds nothing of the write until that record arrives.

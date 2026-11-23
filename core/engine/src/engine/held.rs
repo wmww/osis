@@ -133,7 +133,7 @@ impl Held {
     }
 
     /// Whether `holder` is named on `thing` by an edge write (`named_by_write`), not by `thing`'s
-    /// record alone: where holder rules apply (spec/sync-judgement.md §2 A grant naming a holder).
+    /// record alone: where holder rules apply (spec/permissions.md §4 Key part).
     pub fn is_holder_by_write(&self, holder: &Tid, thing: &Tid) -> bool {
         self.is_named(holder, thing) && (self.created(thing).and_then(CreationRecord::mint_admin) != Some(*holder) || self.named_by_write(holder, thing))
     }

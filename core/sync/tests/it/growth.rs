@@ -783,8 +783,8 @@ fn flat_work(work: &[Work], who: &str) {
 /// `grant_rounds`' first accepting round, by a link: node 0 makes thing 0, writes it and makes a
 /// read link to it, which node 1 redeems; node 0 writes again, ends the link (its seed thing goes
 /// with it) and takes K off the thing (node 1's account leaves K), and both let everything go:
-/// node 0 the thing and K, node 1 the strongs its redeem wrote to both (spec/sync-set.md §4 A
-/// redeem is an accept).
+/// node 0 the thing and K, node 1 the strongs its redeem wrote to both (spec/sync-set.md §4:
+/// a redeem writes them).
 fn redeem_round(w: &mut World) {
     use osis_schema::core_types::HOLDS;
     let strongs = |w: &mut World, i: usize| -> std::collections::BTreeSet<Tid> {
@@ -858,7 +858,7 @@ fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3
     grants_as_fresh(true, false, 4);
 }
 
-// Its redeem arm (spec/sync-set.md §4 A redeem is an accept, §3 Nothing of R stays): as the
+// Its redeem arm (spec/sync-set.md §4, §3 Nothing of R stays): as the
 // grant arm, the first round granting by a link redeemed and ended (`redeem_round`): the link's
 // seed thing goes with its end, the removal notice the sharer owes K's inbox once it holds
 // nothing of K. Fails: the grantee keeps the certificate copy of the sharer's account creation
@@ -871,7 +871,8 @@ fn repro_a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_s
     grants_as_fresh(true, true, 4);
 }
 
-// S1, its decline arm (spec/sync-set.md §4 (Declining)): as the grant arm, the fire never accepted.
+// S1, its decline arm (spec/sync-set.md §4 (nothing else makes a node hold a thing it is granted a
+// role on)): as the grant arm, the fire never accepted (Interim (issues/tickets-retired.md)).
 #[test]
 fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(false, false, 4);

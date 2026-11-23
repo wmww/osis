@@ -1735,7 +1735,7 @@ fn a_may_grant_grant_needs_its_role_on_every_hop() {
     assert_eq!(rd.role(N6, T1), Write);
 }
 
-/// A grant through a hop carrying no flag is not chained (spec/permissions.md §4 Chained writes,
+/// A grant through a hop carrying no flag is not chained (Interim (issues/chains-retired.md),
 /// G1): X grants N5 write through [A2], whose share carries no flag, at 2; N5 writes T1 at 3; H
 /// grants N5 write at 5. N5's path is re-granted from H's grant, its first chained one, so the
 /// write at 3 stays invalid; were X's grant chained it would count from 2.

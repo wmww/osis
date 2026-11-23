@@ -1,4 +1,4 @@
-//! Chain certificates (spec/permissions.md §4): every held chained edge write between two things
+//! Chain certificates (Interim (issues/chains-retired.md)): every held chained edge write between two things
 //! on a path from a thing to a thing, closed under signers, read off the walk's chained-ness per
 //! edge write (`osis_perm::Timeline::is_chained`) and the records. Interim (issues/stated-path-certificates.md): along the stated
 //! path alone.

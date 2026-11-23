@@ -1,5 +1,5 @@
-//! Tickets and the account's tickets (spec/data-model.md §8 Tickets, spec/sync-set.md §1, §2,
-//! spec/sync-inbox.md §5).
+//! Tickets and the account's tickets (spec/sync-set.md §1, §2, spec/sync-inbox.md §5;
+//! Interim (issues/tickets-retired.md)).
 
 use crate::common::REG;
 use crate::flows::{edge_of, people};
@@ -9,7 +9,7 @@ use osis_crdt::{Op, PathOp};
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 
-// spec/sync-set.md §1 The account's tickets: the account's creation leaves D holding a ticket
+// spec/sync-set.md §1; Interim (issues/tickets-retired.md): the account's creation leaves D holding a ticket
 // for the profile and for the inbox, sealed to the account, which its node opens.
 #[test]
 fn creation_writes_the_account_tickets_spec_sync_set_1() {
@@ -104,9 +104,9 @@ fn a_fires_delivery_outlives_a_restart_follows_a_key_change_and_ends_when_taken_
     assert!(lp.peers[0].engine.fires_owed().is_empty(), "ended for good");
 }
 
-// spec/sync-inbox.md §5 (Removal notice: taken as a carried commit, checked against the roster
-// held; it releases T or keeps the retained copy the removal says), spec/permissions.md §3
-// (Retain): Bob reads X by Alice's grant; she removes him saying erase, or retain, and only her
+// spec/sync-inbox.md §5 (Carried commits); Interim (issues/tickets-retired.md): a removal notice is taken as a carried
+// commit, checked against the roster held; it releases T or keeps the retained copy the removal
+// says; spec/permissions.md §3 (Retain): Bob reads X by Alice's grant; she removes him saying erase, or retain, and only her
 // removal notice, sealed on his inbox, reaches him. Erased, X leaves his node closure and goes;
 // retained, his copy reads as before.
 #[test]
@@ -188,7 +188,7 @@ fn a_ticket_lookup_reads_the_targets_tickets_alone_at_n_and_10n() {
     assert_eq!(small, large, "the lookup reads the target's tickets alone");
 }
 
-// spec/data-model.md §8 Tickets, spec/sync-set.md §2 (What a held ticket does): a ticket lets its holder sync
+// spec/sync-set.md §2; Interim (issues/tickets-retired.md): a ticket lets its holder sync
 // the target from a strong on. Placed by hand in a thing account 1 holds (no inbox), before any
 // of T's commits: a read ticket's sync ID is synced at once and, given T's commits sealed and the
 // role commits its fire carries, T reads; a sync ticket's is synced and T stays unread; one
@@ -245,7 +245,7 @@ fn a_ticket_enters_its_target_at_a_strong_spec_sync_set_2() {
     }
 }
 
-// spec/sync-inbox.md §5 Ticket sync IDs: a sync ID the tickets of several things
+// spec/sync-inbox.md §5; Interim (issues/tickets-retired.md): a sync ID the tickets of several things
 // name is synced once and what arrives under it is judged for each of them, until the genuine
 // thing's own `sync.0` arrives and the sync ID is its alone. Account 1 takes A's and B's grants'
 // tickets from its inbox and holds one for A naming B's sync ID (what anyone holding its public

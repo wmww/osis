@@ -348,7 +348,7 @@ fn followed(core: &Core, k: &Tid) -> Option<OwnedSyncId> {
     (followable(core, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), endorsed: Arc::default(), hint: true })
 }
 
-/// The sync IDs the held tickets for `g` name (spec/sync-inbox.md §5 Ticket sync IDs: its
+/// The sync IDs the held tickets for `g` name (Interim (issues/tickets-retired.md): its
 /// issuer's word until a held `sync.0` records `g`'s), as hints with no recorded path. Each is
 /// untrusted: one another thing owns here (an applied `sync.0` records it, a followed link names
 /// it) is not `g`'s, so a forged one cuts nothing off.

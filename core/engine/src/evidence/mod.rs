@@ -1,4 +1,4 @@
-//! The evidence a sync ID requires (notes/evidence-derivation.md; draft notes/a2-spec/permissions.md
+//! The evidence a sync ID requires (notes/evidence-derivation.md; spec/permissions.md
 //! §4 Evidence of a commit, Evidence of a sync ID, with OPEN 10's proposal: chained writes along
 //! joined paths). Built unused beside `sync/certified.rs`: nothing reads it yet.
 //!

@@ -1151,7 +1151,7 @@ impl<'a> Decoder<'a> {
         Ok(Link { hash, blob, suite, key, salt, del })
     }
 
-    /// A ticket's content (spec/data-model.md §8 Tickets).
+    /// A ticket's content (Interim (issues/tickets-retired.md)).
     fn ticket(&mut self, inner: usize) -> Result<crate::refs::Ticket, DecodeError> {
         let v = self.item::<Value>(inner)?;
         crate::refs::Ticket::from_value(&v).ok_or(DecodeError::TagContent(TAG_TICKET))

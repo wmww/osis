@@ -2,7 +2,7 @@
 > Summary: The full list of what a node keeping a sync ID unread learns and what it must not, the padding and wrap costs, and an index of the choices elsewhere that keep the list this short (each with where its reason lives). The requirement: spec/requirements.md, Data a node cannot read; the leaks accepted: spec/sync-hostile.md §2. Neighbours: notes/sync-reasons.md, notes/sync-access.md, notes/networking.md (transport keys).
 
 ## Learns
-- Of each thing it keeps unread, the tickets it holds: the tid, its sync ID and sync secret, and the issuer's profile tid (spec/sync-ids.md §2 What a sync holder learns, spec/data-model.md §8 Tickets).
+- Of each thing it keeps unread, the tickets it holds: the tid, its sync ID and sync secret, and the issuer's profile tid (spec/sync-ids.md §2 What a sync holder learns; Interim (issues/tickets-retired.md)).
 - Overlaps between sync IDs (shared commit blobs and certificate copies; inbox, list and record blobs and per-sync-ID copies share nothing). Nesting only as far as overlap shows it.
 - Blob counts, padded sizes, each blob's class (durable, ephemeral, relay-only), which entries carry a filler wrap (chunk, tree-node and page blobs), the delete-key commitments per level (which kinds of right may delete), expiry times, arrival times, deletions and pending deletion times.
 - Which sync IDs one connection opens (so: holds a credential of), and client addresses.

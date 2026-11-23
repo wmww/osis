@@ -1100,8 +1100,8 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     f.fx.want((v, y));
     // a thing the context does not follow by its keys, whose read secret is not established
     // here: each held ticket for it the node can open has its secret taken now the strong reaches
-    // it, and its sync ID noted (spec/sync-set.md §2, spec/sync-inbox.md §5 Nothing before the
-    // strong): O(its tickets)
+    // it, and its sync ID noted (spec/sync-set.md §2; Interim (issues/tickets-retired.md)):
+    // O(its tickets)
     let ticketed = !tx.core.is_key_actor(&y) && !tx.core.reads_established(&y) && !tx.core.keys_open_from(v.0, &y);
     let mut any = false;
     if ticketed {

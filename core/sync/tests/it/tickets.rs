@@ -1,5 +1,5 @@
-//! Entering a thing by a ticket over real connections (spec/sync-inbox.md §5 Ticket sync IDs,
-//! spec/sync-set.md §2, spec/sync-hostile.md): a grant's ticket reaches the grantee's inbox, the
+//! Entering a thing by a ticket over real connections (spec/sync-set.md §2,
+//! spec/sync-hostile.md; Interim (issues/tickets-retired.md)): a grant's ticket reaches the grantee's inbox, the
 //! grantee accepts, syncs the ticket's sync ID and reads the thing; a ticket's sync ID is its
 //! issuer's word, so a forged one pulls in and cuts off nothing.
 
@@ -63,7 +63,7 @@ fn forged(w: &mut World, t: &Tid, s: SyncId) -> Ticket {
     Ticket { sync_id: s, ..k }
 }
 
-// spec/sync-inbox.md §5 (Delivery of a grant; Ticket sync IDs), spec/sync-set.md §4 (Accepting):
+// spec/sync-inbox.md §5, spec/sync-set.md §4; Interim (issues/tickets-retired.md):
 // Alice grants Bob read on T; her ticket reaches Bob's inbox; Bob accepts by a strong in his
 // account root, syncs the ticket's sync ID over real connections and reads T, then holds it by
 // its own `sync.0`.
@@ -108,11 +108,11 @@ fn debug_dumps_name_sync_ids_commits_and_rounds() {
     let _ = c;
 }
 
-// spec/sync-hostile.md (a ticket's sync ID is its issuer's word), spec/sync-inbox.md §5 Ticket
-// sync IDs: beside the grant's ticket, Bob holds one for T naming the sync ID of Alice's profile,
+// spec/sync-hostile.md (a ticket's sync ID is its issuer's word), Interim (issues/tickets-retired.md):
+// beside the grant's ticket, Bob holds one for T naming the sync ID of Alice's profile,
 // which Bob reads as her contact, and one naming the sync ID of a thing of Alice's he may not
 // read. The first cuts nothing off (the profile keeps its sync ID); the second pulls nothing in
-// (that thing is neither held nor read at Bob; issues/forged-ticket-sync-id-entries.md for the
+// (that thing is neither held nor read at Bob; issues/tickets-retired.md for the
 // entries he stores under its sync ID meanwhile); the genuine one is fetched and T read.
 #[test]
 fn a_forged_ticket_sync_id_pulls_in_and_cuts_off_nothing_spec_sync_hostile() {
@@ -143,7 +143,7 @@ fn a_forged_ticket_sync_id_pulls_in_and_cuts_off_nothing_spec_sync_hostile() {
 }
 
 
-// spec/sync-set.md §1 (The account's tickets), §2: a node paired to an account enters the
+// spec/sync-set.md §1, §2; Interim (issues/tickets-retired.md): a node paired to an account enters the
 // account's profile by D's ticket for it, though the secrets its account's boxes give read the
 // profile as derived from the account until the profile's keyset arrives: it holds the profile
 // and syncs its sync ID, across a restart.
@@ -163,7 +163,7 @@ fn a_paired_node_enters_the_profile_by_ds_ticket_spec_sync_set_1() {
     }
 }
 
-// spec/sync-inbox.md §5 Ticket sync IDs, spec/sync-hostile.md: Alice grants Bob
+// spec/sync-hostile.md; Interim (issues/tickets-retired.md): Alice grants Bob
 // read on A and B; Bob accepts both at once, holding beside their tickets one for the lower tid
 // naming the other's sync ID (a writer of something Bob holds can have him accept one). That sync
 // ID is synced once for both, so each thing still fetches its own and Bob reads both. What
@@ -208,8 +208,8 @@ fn quiet_deliveries(w: &mut World) -> u64 {
     w.deliveries - d
 }
 
-// spec/sync-hostile.md, spec/sync-inbox.md §5 (S's things: a forged claim only adds a thing whose
-// secrets open nothing there): beside the
+// spec/sync-hostile.md; Interim (issues/tickets-retired.md) (a forged claim only adds a thing whose secrets open nothing
+// there): beside the
 // grant's ticket for T, Bob accepts a ticket for T at an epoch not T's (stale), or one for a
 // thing its issuer does not hold, naming T's sync ID. Each opens nothing (Bob reads T by the
 // genuine one; the other thing is not held) and nothing is retried: the quiet spell after costs
@@ -249,7 +249,7 @@ fn a_stale_or_unheld_targets_forged_ticket_opens_and_retries_nothing_spec_sync_h
     }
 }
 
-// spec/sync-inbox.md §1, §5 (Delivery of a grant): an account that paired a second node before
+// spec/sync-inbox.md §1, §5 (Reaching a holder; Contact card): an account that paired a second node before
 // its contact card was made is reached all the same: its contact knows its inbox and a grant's
 // ticket reaches it.
 #[test]
@@ -380,7 +380,7 @@ fn hold_in_profile(w: &mut World, k: Ticket) {
     w.run();
 }
 
-// spec/sync-set.md §1 (The account's tickets), spec/sync.md §3 (Kept sync IDs), spec/crypto.md
+// spec/sync-set.md §1; Interim (issues/tickets-retired.md); spec/sync.md §3 (Kept sync IDs), spec/crypto.md
 // §4 Uses: Bob keeps T unread by Alice's sync grant. A ticket for T naming its sync ID at a
 // higher epoch with a secret of its maker's choosing (what any holder of Bob's public record can
 // box), held before Bob accepts T or after, is established by no step of T's path, so D's ticket
@@ -413,7 +413,7 @@ fn ds_ticket_for_a_thing_kept_unread_boxes_the_newest_established_secret_spec_sy
     }
 }
 
-// spec/sync-set.md §1 (The account's tickets; D's tickets follow what the node holds), spec/permissions.md
+// spec/sync-set.md §1; Interim (issues/tickets-retired.md) (D's tickets follow what the node holds); spec/permissions.md
 // §3 Lost access: Bob keeps T unread by a sync grant, is given read, then removed. His node,
 // losing read and keeping T unread by the sync ticket's word, takes D's read ticket for T out
 // with the read secrets, so a node of his paired after enters T by sync alone and reads nothing.

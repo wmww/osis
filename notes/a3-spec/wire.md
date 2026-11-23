@@ -1,7 +1,7 @@
 # A3 draft: spec/wire.md
 > Summary: Draft wire text for stage A3 (not in spec, not built): a lowering's field 12 as a list root (role entries, then a sorted (key, hash) pair per leaf), the leaf and its key and hash, the leaf blob. Map: notes/a3-spec/README.md.
 
-Written over spec/wire.md §4 with A1's header and A2's certificate copy (notes/a2-spec/wire.md, whose (A3) section this replaces). Replaces field 12 `frontier`; adds List root, Leaf, Leaf blob.
+Written over spec/wire.md §4 with A1's header and A2's certificate copy. Replaces field 12 `frontier`; adds List root, Leaf, Leaf blob.
 
 ## 4. Commits
 ```

@@ -180,8 +180,8 @@ fn a_strong_to_a_thing_never_fetched_holds_nothing_spec_sync_set_3() {
     assert_eq!(w.engine(1).sync_set().unwrap().ids, before, "nothing synced for either");
 }
 
-// spec/sync-inbox.md §5 (Nothing before the strong), spec/sync-set.md §4 (Accepting):
-// a grant's ticket reaches Bob; until he accepts, nothing of T is fetched or synced (his
+// spec/sync-set.md §4 (nothing else makes a node hold a thing it is granted a role on),
+// spec/sync-inbox.md §5; Interim (issues/tickets-retired.md): a grant's ticket reaches Bob; until he accepts, nothing of T is fetched or synced (his
 // sync set and store hold nothing of it); declining is never accepting; accepting is the strong.
 #[test]
 fn nothing_is_fetched_before_the_strong_spec_sync_inbox_5() {
@@ -196,7 +196,7 @@ fn nothing_is_fetched_before_the_strong_spec_sync_inbox_5() {
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())), "accepted: read");
 }
 
-// spec/sync-set.md §1 (The account's tickets): node 1 accepts a grant; D gets a
+// spec/sync-set.md §1; Interim (issues/tickets-retired.md): node 1 accepts a grant; D gets a
 // ticket for it, so its sibling and a node paired later hold it without the inbox; node 1
 // releasing it removes D's ticket, and every node of the account lets it go. Its sibling accepts
 // it again from the shared D: every node reads it again (release forgot all of it, so this is
@@ -338,7 +338,7 @@ fn independent_at_once(first: usize, rotate: bool) {
     assert_eq!(value(&mut w, 0, &t), Some(Value::Str("after".into())), "first {first}, rotate {rotate}: Alice reads T");
 }
 
-// spec/permissions.md §3, spec/sync-ids.md §2, spec/sync-inbox.md §5 (Ticket sync IDs): two
+// spec/permissions.md §3, spec/sync-ids.md §2; ticket sync IDs: Interim (issues/tickets-retired.md): two
 // siblings make T's first grant to Alice at once; she reads T whichever she took first.
 #[test]
 fn concurrent_first_grants_by_two_nodes_reach_the_grantee_spec_permissions_3() {
@@ -347,7 +347,7 @@ fn concurrent_first_grants_by_two_nodes_reach_the_grantee_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §3, spec/sync-ids.md §2, spec/sync-inbox.md §5 (Ticket sync IDs): one
+// spec/permissions.md §3, spec/sync-ids.md §2; ticket sync IDs: Interim (issues/tickets-retired.md): one
 // sibling grants Alice read on T while another makes T independent by a rotation; she reads T's
 // newest value whichever sibling granted (so whether hers is T's sync ID or not).
 #[test]
@@ -459,7 +459,8 @@ fn a_keyless_grant_reads_nothing_through_it_spec_crypto_4() {
     }
 }
 
-// spec/sync-set.md §2 (What a held ticket does), §4 (Declining is doing nothing): Alice's T1 is
+// spec/sync-set.md §2, §4 (nothing else makes a node hold a thing it is granted a role on);
+// Interim (issues/tickets-retired.md): Alice's T1 is
 // minted with admin T0 and held from it; Bob keeps T1 unread by a sync ticket, then is granted read on
 // T0, T1's mint admin, which gives him read on T1 by chain. A ticket's secret is taken only at a
 // strong to its thing, so until he accepts T0 he holds no secret of T0, no role commit of T1 and
@@ -531,7 +532,7 @@ fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_
     assert_eq!(value(&mut w, 1, &t1), Some(Value::Str("v2".into())), "Bob accepts later and reads");
 }
 
-// spec/sync-inbox.md §5 (Removal notice): Alice grants Bob read on T0, so he may read T1 under
+// spec/sync-inbox.md §5; removal notices: Interim (issues/tickets-retired.md): Alice grants Bob read on T0, so he may read T1 under
 // it by the chain. One of her nodes removes him from T0 while the other, not yet knowing it,
 // grants him sync on T1, boxing him T1's read secret; Bob accepts T1 alone, and a node he pairs
 // next logs his chain for T1 there. His first node takes the removal notice before it holds
@@ -634,7 +635,7 @@ fn a_self_removal_of_the_makers_only_path_reaches_the_reader_spec_permissions_3(
     assert_eq!(roster, vec![bob], "Bob holds the removal");
 }
 
-// spec/sync-inbox.md §5 (Removal notice): cut off from his sibling, one of Bob's nodes removes
+// spec/sync-inbox.md §5; removal notices: Interim (issues/tickets-retired.md): cut off from his sibling, one of Bob's nodes removes
 // Alice from T, never having seen the grant his other node gives her. The removal stands; its
 // writer, holding no grant as it wrote it, fired no notice. Every node applying it with the
 // grant held owes one (the sibling, and the writer once the grant reaches it), and Alice, who
@@ -681,7 +682,7 @@ fn a_read_secret_boxed_beside_a_removal_goes_once_the_role_shows_sync_spec_permi
     assert_eq!(holding(&mut w, 0, &t1), Some(Holding::Unread), "she keeps T1 unread");
 }
 
-// spec/sync-inbox.md §5 (Ticket sync IDs), spec/sync-set.md §2 (What a held ticket does): Alice
+// spec/sync-inbox.md §5, spec/sync-set.md §2; Interim (issues/tickets-retired.md): Alice
 // grants Bob read on T, lowers him to sync and grants read again, each a ticket on his inbox;
 // Bob's sibling accepts T. T, entered on the tickets' word, moves to read once its role commits
 // make it keyed, while no `sync.0` of it is held: the tickets' sync ID stays synced through the
@@ -703,8 +704,8 @@ fn a_thing_entered_on_a_ticket_keeps_its_sync_id_as_it_becomes_independent_spec_
     }
 }
 
-// spec/sync-judgement.md §2 (A grant naming a holder travels under the holder's sync ID),
-// spec/sync-set.md §2: Alice grants H read on T; Bob reads H and holds T from his account root,
+// spec/sync-judgement.md §2 (the key part of S's actor: a grant's edge piece travels under its holder's sync
+// ID), spec/sync-set.md §2: Alice grants H read on T; Bob reads H and holds T from his account root,
 // not from H. His keys open T by the chain through H; the grant travels under H's sync ID with
 // T's boxes to H and T's `sync.0`, so he learns T's sync ID and reads T, though no one
 // writes him a ticket and he may not write H.
@@ -725,8 +726,8 @@ fn a_reader_by_a_chain_through_a_holder_thing_reads_spec_sync_judgement_2() {
     assert_eq!(holding(&mut w, 1, &t), Some(Holding::Read));
 }
 
-// spec/sync-inbox.md §5 (Delivery of a grant), §1, spec/sync-judgement.md §2 (A
-// grant naming a holder): Bob's T1 holds T0 by a strong; Alice, who knows T1's public key record
+// spec/sync-inbox.md §5 (Grant from outside), §1, spec/sync-judgement.md §2 (the key part of S's actor);
+// ticket fires: Interim (issues/tickets-retired.md): Bob's T1 holds T0 by a strong; Alice, who knows T1's public key record
 // but neither reads nor syncs T1 (she reads T4, holder on T3 minted with admin T1), grants T1 read
 // on T0. T1 takes no tickets from outside, so Bob, T1's reader, does not read T0; once T1's admin
 // enables its inbox signals (as chat and kit do at creation: spec/permissions.md §5.2 External
@@ -767,8 +768,8 @@ fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_i
     assert_eq!(w.engine(0).mint_admin(&t3), None, "T3's record goes with T4");
 }
 
-// spec/sync-inbox.md §5 (Nothing before the strong), spec/sync-set.md §2 (What a held ticket
-// does): Bob held T1 by a read ticket, then lost his own grant; T1 is granted sync to T0 and Bob
+// spec/sync-inbox.md §5, spec/sync-set.md §2; Interim (issues/tickets-retired.md):
+// Bob held T1 by a read ticket, then lost his own grant; T1 is granted sync to T0 and Bob
 // sync on T0, which he has not accepted. T0's grant to Bob is taken only at a strong to T0, so he
 // holds no role on T0 and none on T1 through it: his strong to T1 holds nothing.
 #[test]
@@ -789,8 +790,9 @@ fn a_role_by_chain_through_an_unaccepted_thing_counts_nothing_spec_sync_inbox_5(
     assert_eq!(value(&mut w, 1, &t1), None);
 }
 
-// spec/permissions.md §4 (Role changes travel), spec/sync-judgement.md §2 (role commits naming an
-// actor: one with an edge write naming holder A is in A's own sync ID's required set): Bob's node 2 makes T2 under
+// spec/permissions.md §4 (Role changes travel), spec/sync-judgement.md §2 (the key part of S's actor: a later
+// edge write on the edge of a grant A takes, a removal among them, is in A's own sync ID's
+// required set): Bob's node 2 makes T2 under
 // his T0, grants Alice sync on it (T2 keyed) and removes T0's record edge there. That removal
 // names T0 by an edge write, so it travels under T0's sync ID: Bob's node 1, reading T2 only
 // through T0, takes it and reads T2 no more, as node 2.
@@ -869,8 +871,8 @@ fn an_entry_of_a_commit_forgotten_whole_opens_again_at_a_pull_anew_spec_sync_jud
     assert_eq!(value(&mut w, 0, &x), Some(Value::Str("x".into())), "Alice reads X again");
 }
 
-// spec/sync-judgement.md §2 (A grant naming a holder travels under the holder's sync ID),
-// spec/permissions.md §3 (a commit of which it holds the header alone was read by no secret and
+// spec/sync-judgement.md §2 (the key part of S's actor: a grant's edge piece travels under its holder's sync
+// ID), spec/permissions.md §3 (a commit of which it holds the header alone was read by no secret and
 // stays): Alice's node 2 makes T0 and T1 and grants Bob read on T0 while her node 0 grants T0
 // sync on T1. Bob, reading T0, takes T0's certificates of T1 (its minting as a header alone, its
 // `sync.0`, its boxes to T0), so he holds T1's sync secrets and no read: he loses access to T1,
@@ -893,7 +895,7 @@ fn a_reader_of_a_holder_holds_its_targets_boxes_to_it_spec_sync_judgement_2() {
 }
 
 
-// spec/sync-set.md §2 (What a held ticket does), spec/permissions.md §3 (Lost access): Bob reads
+// spec/sync-set.md §2, spec/permissions.md §3 (Lost access); Interim (issues/tickets-retired.md): Bob reads
 // T1, which Alice granted sync on T2 and then removed, so T1's certificates bring Bob T2's sync
 // record and the role commits naming T1 alone. Alice grants Bob sync on T2 directly and he
 // accepts it after T1: those role commits show no role of his on T2, so they neither keep his ticket out nor
@@ -1336,7 +1338,7 @@ fn a_grantee_reads_a_value_minted_under_its_mint_admin_spec_sync_judgement_1() {
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2's minting value");
 }
 
-// spec/sync-set.md §2 (Taken up), spec/sync-inbox.md §5 (Nothing before the strong): Alice
+// spec/sync-set.md §2, spec/sync-inbox.md §5; taking up: Interim (issues/tickets-retired.md): Alice
 // grants Bob read on T1; Bob accepts, then drops his strong to T1 while Alice grants T1 sync on
 // T2 and he writes a strong to T2: his grant on T1 is no longer taken up, so the chain through it
 // gives him nothing on T2, which he does not hold.
@@ -1358,7 +1360,7 @@ fn a_chain_through_a_grant_accepted_then_dropped_gives_nothing_spec_sync_set_2()
     assert_eq!(holding(&mut w, 1, &t2), None, "no role on T2 through T1, no longer accepted");
 }
 
-// spec/sync-set.md §1 (The account's tickets), §2 (Taken up): Bob holds T2 kept unread by a chain
+// spec/sync-set.md §1, §2; Interim (issues/tickets-retired.md): Bob holds T2 kept unread by a chain
 // through T1, which he reads (T1 holds sync on T2), so D's ticket for T2 records no ticket's word
 // and none is written; Bob drops his strong to T1, and with it every role on T2: T2 goes, and
 // no ticket of D's own keeps it.
@@ -1381,7 +1383,7 @@ fn a_thing_kept_unread_by_a_chain_goes_once_the_chain_is_dropped_spec_sync_set_1
     assert_eq!(holding(&mut w, 1, &t2), None, "the chain dropped, T2 goes");
 }
 
-// spec/sync-set.md §2 (Taken up): Alice grants Bob read on T0 and T1, mints T2 with admin T1 and
+// spec/sync-set.md §2; taking up: Interim (issues/tickets-retired.md): Alice grants Bob read on T0 and T1, mints T2 with admin T1 and
 // grants T0 read on T2. Bob accepts T0 alone and holds T2 from his root, reading it through T0
 // (T2's certificates bring T1's roster, his grant on T1 among it). Alice lowers Bob to sync on
 // T0: his grant on T1, never accepted, gives no read of T2.
@@ -1501,7 +1503,7 @@ fn an_ended_way_found_keyless_drops_its_copy_spec_permissions_3() {
 }
 
 // spec/sync-ids.md §2 (two admins making a thing independent at once: the greatest sync ID),
-// spec/sync-inbox.md §5 Key changes: Bob's offline sibling grants T0 read on T1, making T1
+// key-change tickets: Interim (issues/tickets-retired.md): Bob's offline sibling grants T0 read on T1, making T1
 // independent with a sync ID of its own; Bob, apart, grants Alice read on T1 (another sync ID, the
 // one her ticket names), which she holds. Once the sibling is back, every writer syncs T1 by the
 // greater sync ID: Alice learns it by a ticket and holds the sibling's grant as Bob does.

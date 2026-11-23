@@ -1,7 +1,7 @@
 # A3 draft: spec/commits.md
 > Summary: Draft spec text for stage A3 (not in spec, not built): §4 Unjudgeable's leaf clause read only where the lowering cuts the part; Provisional: after a complete pass a verdict still moves when a removal written earlier reaches the sync ID (finding 33), so a delete at a store resting on a verdict can lose a write while one lags. Map: notes/a3-spec/README.md.
 
-Written over notes/a2-spec/commits.md. Replaces its **(A3)** Unjudgeable sub-bullet and the last sentence of Provisional. Every other bullet *stands*.
+Written over spec/commits.md as A2 leaves it. Replaces its **(A3)** Unjudgeable sub-bullet and the last sentence of Provisional. Every other bullet *stands*.
 
 ## 4. Verification and application
 - **Unjudgeable**, the leaf sub-bullet: it has no edge-class part, rests on the edge of a held lowering that cuts it (notes/a3-spec/permissions.md §5.1 Reading a list: the lowering takes away what the part needs there, by the held chained writes on that edge), the lowering's list root holds a pair for the part's thing, and the node does not hold that leaf.

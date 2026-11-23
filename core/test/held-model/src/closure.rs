@@ -88,7 +88,7 @@ impl World {
         self.roles_with(g, None)
     }
     /// `roles_from` for a holder that takes a grant naming it only at a strong to its thing
-    /// (an account: spec/sync-inbox.md §5 Nothing before the strong): its own grants count on
+    /// (an account: taking up at a strong, Interim (issues/tickets-retired.md)): its own grants count on
     /// the things in `reached` alone, and nothing counts through the others.
     pub fn roles_from_reached(&self, g: T, reached: &Set) -> BTreeMap<T, Role> {
         self.roles_with(g, Some(reached))
@@ -425,7 +425,8 @@ pub struct Closure {
     /// root's strongs walked by the node's keys).
     pub carried: Set,
     /// The node's keys: those of every independent thing read. An open ticket gives its keys only where
-    /// the walk enters its thing (spec/sync-set.md §4 Declining is doing nothing).
+    /// the walk enters its thing (spec/sync-set.md §4: syncing a thing granted is the account's own
+    /// choice, a strong).
     pub keys: Set,
     /// The independent things whose sync secret the node's keys give (they hold sync or above there).
     pub synced: Set,

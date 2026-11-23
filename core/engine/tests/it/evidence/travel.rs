@@ -1,5 +1,5 @@
-//! Keys-open travel (spec/permissions.md §4 Role changes travel, as notes/a2-spec/permissions.md
-//! drafts it): hand worlds per finding (notes/evidence-model-findings.md 19, 21) and per held-model
+//! Keys-open travel (spec/permissions.md §4 Role changes
+//! travel): hand worlds per finding (notes/evidence-model-findings.md 19, 21) and per held-model
 //! `spec_reach.rs` test (same names), each a differential at every step (`assert_agrees`: A3's rule
 //! and A2's) plus the copy the draft's words decide, with the switch that decides it off where only
 //! it brings that copy.

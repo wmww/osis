@@ -13,8 +13,8 @@
 //! in, or first awaiting its record, writes on (`Indexes::pend_by`),
 //! one in the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a
 //! part the node fetches again), one in the node closure an edge write on it names holder (not by its
-//! record: the holder's sync ID carries the grant with its chain, spec/sync-judgement.md §2 A
-//! grant naming a holder). A thing is rooted, kept for itself (`Root`): held (in the node closure
+//! record: the holder's sync ID carries the grant with its chain, spec/permissions.md §4 Key
+//! part). A thing is rooted, kept for itself (`Root`): held (in the node closure
 //! or leaving it), a retained copy, a thing an own self-removal still waits to seal under, or a
 //! thing whose record what waits under Pending storage awaits (nothing on it applies before its
 //! record: what came for it pends, kept while carried, `apply::carriers`).
@@ -285,8 +285,7 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     let waiting = core.on_thing(t).flat_map(|c| core.ix.commits.get(&c).into_iter().flat_map(move |m| m.missing_parts().filter_map(move |ai| m.view.aspects.get(ai).map(|a| (a.tid, Need::Missing(c)))))).filter(|(x, _)| core.ix.closure.holds(x));
     // a thing in the node closure an edge write on it names holder (not by its record alone,
     // `Held::is_holder_by_write`; a write removing a record edge names it too): the
-    // holder's sync ID carries the grant with its chain (spec/sync-judgement.md §2 A grant naming
-    // a holder), so its readers read it through the holder
+    // holder's sync ID carries the grant with its chain (spec/permissions.md §4 Key part), so its readers read it through the holder
     let holding = core.ix.held.holders_of(t).filter(|h| core.ix.closure.holds(h) && core.ix.held.is_holder_by_write(h, t)).map(|h| (*h, Need::Holding));
     // a device a held account's chain names (its creation device, or one a held rotation adds,
     // on any line): its account root's holder by the chain (D bears no edge write,

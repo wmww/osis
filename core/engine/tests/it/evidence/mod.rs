@@ -1,5 +1,5 @@
 //! The evidence derivation (`osis_engine::evidence`, notes/evidence-derivation.md; spec/permissions.md
-//! §4, as notes/a2-spec/permissions.md and notes/a3-spec/permissions.md draft it) against
+//! §4, and notes/a3-spec/permissions.md for A3) against
 //! held-model `evidence` (`World::req` under OPEN 10's (iv), `Open10::Granted`, entry creations
 //! on, keys-open travel on: `Stage::A2`), the oracle: at every step of a world, for every node's
 //! held set and every sync ID's held entries, under every sync ID, the copies the derivation keeps
@@ -100,7 +100,7 @@ fn copies_of(w: &World, h: &Set) -> BTreeMap<CopyId<Id, Thing>, Vec<Id>> {
 /// `h` holds some parts of a commit on a thing and not others. The model writes each part of a
 /// commit as an event of its own; no node holds such a set: a commit's edge writes on a thing are
 /// one `roles.0` delta (spec/crdt.md §2: one delta per tid and aspect), and a copy is held whole or
-/// not at all (notes/a2-spec/permissions.md §4 Copies). Not compared.
+/// not at all (spec/permissions.md §4 Copies). Not compared.
 fn splits_a_copy(w: &World, h: &Set) -> bool {
     copies_of(w, h).iter().any(|(c, held)| w.w.part_ids(c.0).filter(|&p| w.on(p) == c.1).count() != held.len())
 }

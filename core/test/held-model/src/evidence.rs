@@ -100,7 +100,7 @@ pub enum Lists {
 pub enum Takes {
     /// Every held one on a closure edge, whatever its validity (the draft; `paths::evidence`).
     All,
-    /// Chained ones only (spec/permissions.md §4 Chained writes, `World::chained`): what no
+    /// Chained ones only (Interim (issues/chains-retired.md), `World::chained`): what no
     /// non-admin can make, and a superset of what any walk applies.
     Chained,
     /// Those the logging node's own walk over its holdings applies (non-monotone: a write may
@@ -112,8 +112,8 @@ pub enum Takes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Closure {
     pub takes: Takes,
-    /// Today's chain certificates (spec/permissions.md §4 Chain certificates, as main builds
-    /// them: the engine's `sync_ids::chain`) in place of stated paths: a member brings every
+    /// Today's chain certificates (Interim (issues/chains-retired.md): the engine's
+    /// `sync_ids::chain`) in place of stated paths: a member brings every
     /// taken write on an edge between two things of its signer's **chain** to its thing (the
     /// signer and the things on any path from it to the thing over record edges and edges chained
     /// grants set, at any time), and an edge write also its signer's chain to its holder (closed
@@ -136,13 +136,13 @@ pub enum CommitEdges {
     Off,
     /// The creation (`World::creation`) of each entry the commit's parts on its thing reset.
     Creations,
-    /// Every taken edge write on each edge the commit's parts on its thing set (the draft's
-    /// words, notes/a2-spec/permissions.md §4).
+    /// Every taken edge write on each edge the commit's parts on its thing set (spec/permissions.md
+    /// §4 Evidence of a commit).
     AllWrites,
 }
 
 impl Closure {
-    /// The draft (notes/a2-spec/permissions.md §4 Evidence of a commit): `paths::evidence` with
+    /// The spec's (spec/permissions.md §4 Evidence of a commit): `paths::evidence` with
     /// finding 9's clause in the draft's words.
     pub fn drafted() -> Closure {
         Closure { takes: Takes::All, any_path: false, joined: false, commit_edges: CommitEdges::AllWrites }
@@ -156,8 +156,8 @@ impl Closure {
 /// When a commit pends for want of evidence (`World::pend`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pend {
-    /// An edge it reads has no held edge write ordered before it, or the latest such pends (the
-    /// draft: notes/a2-spec/commits.md §4 Unjudgeable).
+    /// An edge it reads has no held edge write ordered before it, or the latest such pends (spec/commits.md
+    /// §4 Unjudgeable).
     Any,
     /// An edge it reads has no held chained grant ordered before it, or the latest held chained
     /// edge write ordered before it pends: a write no chained write reaches waits, as one no write
@@ -318,7 +318,7 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// The drafted closure (notes/a2-spec/permissions.md §4) with lazy delivery and lists whole;
+    /// The drafted closure (spec/permissions.md §4) with lazy delivery and lists whole;
     /// `Stage::A2` puts OPEN 10's (iv) and keys-open travel on it.
     pub fn fixed() -> Rule {
         Rule { placement: Placement::Function, keys_open: false, author_reach: false, records: true, lists: Lists::Whole, closure: Closure::drafted(), keysets: true, deposit: false }
@@ -603,8 +603,7 @@ impl World {
             _ => None,
         }
     }
-    /// The things of `a`'s chain to `t` over `h` (spec/permissions.md §4 Chain certificates, as
-    /// main builds them): `a` and the things on any path from `a` to `t` over record edges and
+    /// The things of `a`'s chain to `t` over `h` (Interim (issues/chains-retired.md)): `a` and the things on any path from `a` to `t` over record edges and
     /// edges chained grants of `ch` set, at any time.
     pub fn chain_things(&self, h: &Set, ch: &Set, a: Thing, t: Thing) -> Things {
         let edges: Vec<Edge> = self.w.records.iter().copied().chain(h.iter().filter(|&&i| ch.contains(&i) && self.grant(i)).filter_map(|&i| self.w.sets(i))).collect();
@@ -842,8 +841,8 @@ impl World {
         self.closure(rule, &mine, &known).into_iter().filter(|&i| held.contains(&i) && (own.contains(&i) || self.removes(i).is_none())).collect()
     }
     /// What node `n` delivers over `held` besides what it logs by its view: a grant naming a
-    /// holder goes under the holder's sync ID by its granter (spec/sync-inbox.md §5 Delivery of a
-    /// grant), with its closure.
+    /// holder goes under the holder's sync ID by its granter (spec/permissions.md §4 Delivering
+    /// an edge piece), with its closure.
     fn deliveries(&self, rule: &Rule, st: &State, n: usize, held: &Set) -> BTreeMap<Sid, Set> {
         let mut out: BTreeMap<Sid, Set> = BTreeMap::new();
         if !self.nodes[n].honest {
@@ -1243,7 +1242,7 @@ impl World {
         out
     }
     /// The model's own check: every edge-class commit the node holding everything applies is
-    /// chained (spec/permissions.md §4 Chained writes: "Every write the walk applies is chained").
+    /// chained (Interim (issues/chains-retired.md): every write the walk applies is chained).
     pub fn p0_applied_chained(&self, st: &State) -> Vec<Fail> {
         let full = self.full(st, &Set::new());
         let ch = self.chained(&full.v.held);

@@ -1,4 +1,4 @@
-//! The certificates of the things this node reads (`Engine::sync_certificates`), kept per piece
+//! The certificates of the things this node reads (`Engine::sync_certificates`; Interim (issues/chains-retired.md)), kept per piece
 //! and indexed per commit (`Certified`): `sync_bodies` reads one commit's row, the record module
 //! one thing's records. A thing's certificates are the union of pieces (`Piece`), each one
 //! derivation read by what it is made of, shared by every read thing it goes under: a change
@@ -906,7 +906,7 @@ mod tests {
         (r.records.contains(&y), on_y.iter().any(|c| r.commits.contains_key(c) || r.headers.contains(c)))
     }
 
-    // spec/permissions.md §4 (Chained writes; Chain certificates), spec/requirements.md (readers
+    // spec/permissions.md §4; Interim (issues/chains-retired.md); spec/requirements.md (readers
     // learn the rosters of actors holding a role, never the entries of other rosters): W, a writer
     // of T and no admin, grants private Y read on T. The grant never applies; node 0, holding Y's
     // roster, logs nothing of Y under T.
@@ -921,7 +921,7 @@ mod tests {
         assert_eq!(of_y(&mut lp, t, y, &on_y), (false, false), "Y's record or roster under T");
     }
 
-    // spec/permissions.md §4 (Chain certificates), as above: W writes T acting for Y, holding no
+    // spec/permissions.md §4; Interim (issues/chains-retired.md), as above: W writes T acting for Y, holding no
     // role on Y: its chain to Y carries nothing of Y (the commit is invalid without it).
     #[test]
     fn acting_for_an_actor_one_holds_no_role_on_logs_nothing_of_it_spec_permissions_4() {

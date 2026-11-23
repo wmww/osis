@@ -55,7 +55,7 @@ pub(crate) fn fire_ticket(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[T
             match fire(tx, inbox, TICKET_FIRE, osis_schema::codec::rt::struct_value(vec![(0, v)]), to.clone()) {
                 // the holder's setting takes no ticket here: the grant or key change stands, and
                 // the holder's readers, as this node, hold it with no ticket: it travels under
-                // the holder's sync ID (spec/sync-judgement.md §2, A grant naming a holder)
+                // the holder's sync ID (spec/permissions.md §4 Key part)
                 Err(e) if refused_by_setting(&e) => {}
                 r => r?,
             }
@@ -97,7 +97,7 @@ fn make_ticket_under(tx: &mut Tx<'_>, target: Tid, role: Role, holder: Tid, sync
 }
 
 /// The epochs of role `r` the node holds a thing by under sync ID `s`, secrets held
-/// (spec/sync-set.md §1 The account's tickets): its current ones; for a thing kept unread (sync,
+/// (Interim (issues/tickets-retired.md)): its current ones; for a thing kept unread (sync,
 /// no read secret held: it reads none of its role commits), of the sync secrets it holds that a
 /// step of `s`'s stored path bears the sync key of, which is what establishes them there
 /// (spec/crypto.md §4, spec/sync.md §3), those of the greatest n: a ticket's epoch is its maker's
@@ -271,8 +271,8 @@ fn boxed_to(ticket: &Value, thing: &Tid) -> Option<Tid> {
 }
 
 /// The parts a ticket fire's `grant` carries: the role commit's parts on the ticket's thing that
-/// give the holder its epochs and the thing's `sync.0` (spec/sync-inbox.md §5 Delivery of a
-/// grant).
+/// give the holder its epochs and the thing's `sync.0` (spec/sync-inbox.md §5 Grant from outside;
+/// the ticket around it: Interim (issues/tickets-retired.md)).
 const GRANT_PARTS: &[&str] = &["roles.0", "keys.0", "secrets.0", "sync.0"];
 
 /// A sealed fire's ID: BLAKE3 of `[thing, ak, value]`, so the same fire is owed once.
@@ -722,8 +722,8 @@ fn owed_account_tickets(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<(Role, Vec<os
 }
 
 /// The sync IDs a node syncs `t` under at role `r`: its sync ID (by its held `sync.0`); one it keeps
-/// unread, whose `sync.0` it never reads, each its held tickets name (spec/sync-inbox.md §5 Ticket
-/// sync IDs).
+/// unread, whose `sync.0` it never reads, each its held tickets name
+/// (Interim (issues/tickets-retired.md)).
 fn ticket_sync_ids(tx: &mut Tx<'_>, t: &Tid, r: Role) -> Result<Vec<osis_base::SyncId>> {
     if let Some(s) = super::sync_id_of(tx, t)? {
         return Ok(vec![s]);

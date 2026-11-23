@@ -63,7 +63,7 @@ impl Default for SyncRows {
 
 /// The sync set's entry of one sync ID from the things synced under it (`Engine::sync_set`'s
 /// fold): every one of them, whatever their order; read while any reads it, else kept unread
-/// (spec/sync-inbox.md §5 Ticket sync IDs, spec/sync.md §3).
+/// (Interim (issues/tickets-retired.md); spec/sync.md §3).
 pub(crate) fn fold(m: &BTreeMap<Tid, Holding>) -> Option<Held> {
     if m.is_empty() {
         return None;

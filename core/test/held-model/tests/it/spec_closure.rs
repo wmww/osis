@@ -928,7 +928,7 @@ fn p5_subtree_drop_needs_reattaching() {
 }
 
 
-// spec/sync-inbox.md §5 (Nothing before the strong), spec/sync-set.md §2: an account takes a grant
+// spec/sync-set.md §2; taking up: Interim (issues/tickets-retired.md): an account takes a grant
 // naming it only at a strong to its thing, so its role on T1 by a chain through T0 counts only
 // once T0 is reached. Account 0, T0 = 1, T1 = 2 independent: 0 holds sync on T0, T0 sync on T1.
 #[test]

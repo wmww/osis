@@ -25,7 +25,7 @@ pub const TAG_STRUCT_RESERVED: u64 = 1619;
 pub const TAG_STRONG: u64 = 1620;
 /// A weak reference (spec/data-model.md §5, §8).
 pub const TAG_WEAK: u64 = 1621;
-/// A ticket (spec/data-model.md §5, §8 Tickets).
+/// A ticket (Interim (issues/tickets-retired.md)).
 pub const TAG_TICKET: u64 = 1622;
 
 /// Largest blob, prefix and ciphertext (spec/wire.md §2, §5). fixed.

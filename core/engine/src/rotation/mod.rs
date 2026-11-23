@@ -490,7 +490,7 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
 /// commit is wrapped under that epoch, so they cannot open it from the sync ID (a grant this node
 /// learned of after an epoch that left it out, the single-use link race's winner); while `a`
 /// owns several sync IDs here (a fork), every holder it boxes. They get it by inbox
-/// (spec/permissions.md §3, spec/sync-inbox.md §5 Key changes). Called before the rotation is
+/// (spec/permissions.md §3; key-change tickets: Interim (issues/tickets-retired.md)). Called before the rotation is
 /// committed.
 pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<Tid>> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };

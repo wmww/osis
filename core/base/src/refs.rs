@@ -95,7 +95,7 @@ impl Ref {
 }
 
 impl Ticket {
-    /// The ticket's content as a value (spec/data-model.md §8 Tickets), without its tag.
+    /// The ticket's content as a value (Interim (issues/tickets-retired.md)), without its tag.
     pub fn to_value(&self) -> Value {
         Value::List(vec![
             Value::bytes(self.target.as_bytes()),

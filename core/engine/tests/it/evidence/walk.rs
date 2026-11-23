@@ -1,6 +1,6 @@
 //! The derivation against the real walk (osis-perm `paths`), not the model: a reader holding a
 //! sync ID's bodies plus exactly the copies `Evidence` says it requires judges each body as the node
-//! holding everything (draft notes/a2-spec/permissions.md §4; spec/sync-judgement.md §1). Commits
+//! holding everything (spec/permissions.md §4; spec/sync-judgement.md §1). Commits
 //! are built by hand with real stated paths, the walk's plain input, with a minimal adapter (`Node`) from it to the derivation's `Part`s; chained-ness per write from the
 //! walk's first chained keys per edge (no may-grant grants: the walk does not report a may-grant
 //! grant's chained-ness, notes/evidence-derivation.md).

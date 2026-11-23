@@ -2665,8 +2665,8 @@ fn a_start_after_a_session_finds_nothing_owed_at_n_and_10n_spec_sync_judgement_3
 
 
 // spec/sync-judgement.md §2 (required set: a copy is in it by the deltas it holds, a header-only
-// copy of a rotation while its account's chain is), spec/permissions.md §4 (Chain certificates:
-// an account's rotation past its current `keys.0` goes as a header alone): a certificate copy
+// copy of a rotation while its account's chain is), spec/permissions.md §4 (Evidence of a commit:
+// an account's rotations go as header-only copies): a certificate copy
 // logged while S named its part stays while the body is must-hold as a header alone, until a
 // complete pass after the move; then it leaves the own store with no tombstone, a header-only
 // copy is logged in its place, and the old copy is deleted at K only once K holds another entry

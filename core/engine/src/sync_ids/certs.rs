@@ -1,4 +1,4 @@
-//! Certificate blobs (spec/permissions.md §4; spec/sync-judgement.md §1): this node's chain certificates
+//! Certificate blobs (spec/permissions.md §4; spec/sync-judgement.md §1): this node's chain certificates (Interim (issues/chains-retired.md))
 //! for an independent thing and its node card as (commit, parts) to place, partial bodies of a commit and the
 //! blobs its parts link.
 //! Sync IDs come with secrets of their own (`rotation::own_secrets`), steps by sync once their rotations are logged (`Engine::due_step`, `issue_due_step`).

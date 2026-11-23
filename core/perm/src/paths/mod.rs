@@ -617,14 +617,14 @@ impl<S: Store> Paths<S> {
         self.facts.could_hold(id, purge_by, author)
     }
 
-    /// Whether held edge-class part `id` is chained (spec/permissions.md §4 Chained writes; a self-removal by
+    /// Whether held edge-class part `id` is chained (Interim (issues/chains-retired.md); a self-removal by
     /// admin on its path, a finalize by write).
     pub fn is_chained(&self, id: &WriteId) -> Option<bool> {
         self.timeline.is_chained(id)
     }
 
     /// Per edge a chained write set, the key of its first chained write giving write and giving
-    /// admin (spec/permissions.md §4 Chained writes).
+    /// admin (Interim (issues/chains-retired.md)).
     pub fn chained(&self) -> BTreeMap<(Tid, Tid), [Option<Key>; 2]> {
         self.timeline.chained()
     }

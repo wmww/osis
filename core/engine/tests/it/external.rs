@@ -132,7 +132,7 @@ fn open(lp: &mut LocalPeer, to: usize, out: &osis_engine::sync::SealedFireOut) -
     lp.peers[to].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap()
 }
 
-// spec/sync-inbox.md §5 Removal notice, Carried commits; spec/permissions.md §5.2 External fires:
+// spec/sync-inbox.md §5 Carried commits; removal notices: Interim (issues/tickets-retired.md); spec/permissions.md §5.2 External fires:
 // Alice removes Bob from X; her removal notice reaches Bob's inbox sealed. With `removal@~0`
 // disabled there it is refused whole and nothing of it is taken (Bob still reads X by his
 // timeline); enabled, the same sealed fire is taken and the removal applies; disabled again,
@@ -164,7 +164,7 @@ fn a_removal_notice_is_taken_only_while_enabled_spec_sync_inbox_5() {
     assert_eq!(lp.peers[1].engine.role_on(&x), None, "what was taken stands");
 }
 
-// spec/sync-inbox.md §5 (Delivery of a grant), spec/permissions.md §5.2
+// spec/sync-inbox.md §5; ticket fires: Interim (issues/tickets-retired.md); spec/permissions.md §5.2
 // External fires: with `ticket@~0` disabled on Bob's inbox, Alice's ticket fire is refused and
 // Bob holds no ticket; enabled, the same fire is taken and Bob holds the ticket.
 #[test]

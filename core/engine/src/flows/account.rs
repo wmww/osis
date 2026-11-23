@@ -1409,7 +1409,7 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     done.add(Engine::commit_tx(tx, m)?);
     super::roots::hold_in(tx, d)?;
     // the account's tickets for the profile and the inbox, which the walk now enters from D
-    // (spec/sync-set.md §1 The account's tickets)
+    // (Interim (issues/tickets-retired.md))
     crate::sync::units::settle(tx)?;
     for t in [profile, inbox] {
         done.add(super::inbox::write_account_ticket(tx, &t)?);

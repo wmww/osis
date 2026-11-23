@@ -1,4 +1,4 @@
-//! Tickets held (spec/data-model.md §8 Tickets, spec/sync-inbox.md §5, spec/sync.md §3): found
+//! Tickets held (Interim (issues/tickets-retired.md); spec/sync.md §3): found
 //! among the known references by their target's tid, opened as a `secrets.0` box of the target
 //! to its holder is, and the secrets they give.
 
@@ -61,7 +61,7 @@ fn opened_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Ticket, Opened)>> {
     Ok(held_in(tx, t)?.into_iter().filter_map(|k| tx.core.open_ticket(&k).map(|o| (k, o))).collect())
 }
 
-/// The node's role on `t` now (spec/sync-set.md §2 What a held ticket does), the one judgement
+/// The node's role on `t` now (spec/sync-set.md §2; held tickets: Interim (issues/tickets-retired.md)), the one judgement
 /// both entering `t` by a ticket (`take_in`, `units::given_by`) and the lost-access trigger
 /// (`rotation::lost`) read: the best its role commits show (`rotation::role_here`) and, while a
 /// held strong reaches `t` with a ticket that opens here (`Closure::accepted`), a ticket's word
@@ -171,8 +171,7 @@ impl Engine {
 }
 
 impl Engine {
-    /// The held ticket for `t` this node can open (spec/data-model.md §8 Tickets, spec/sync-set.md
-    /// §2): of the read role before the sync role, the newest epoch first.
+    /// The held ticket for `t` this node can open (Interim (issues/tickets-retired.md)): of the read role before the sync role, the newest epoch first.
     pub fn ticket_for(&mut self, t: &Tid) -> Result<Option<Ticket>> {
         let mut all = self.opened_tickets(t)?;
         all.sort_by_key(|(k, _)| (k.role == Role::Read, k.epoch.0));

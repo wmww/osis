@@ -126,7 +126,7 @@ impl Engine {
     }
 
     /// Tests: a ticket for `target` of `role` boxed to `holder` from the secrets held here, as a
-    /// grant fires one (spec/data-model.md §8 Tickets), to place by hand.
+    /// grant fires one (Interim (issues/tickets-retired.md)), to place by hand.
     #[doc(hidden)]
     pub fn ticket_of(&mut self, target: &Tid, role: osis_base::Role, holder: &Tid) -> Result<Option<osis_base::Ticket>> {
         let (t, h) = (*target, *holder);

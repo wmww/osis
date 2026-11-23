@@ -46,7 +46,7 @@ fn forged(lp: &mut LocalPeer, i: usize, target: Tid, holder: Tid) -> Ticket {
         .unwrap()
 }
 
-// spec/sync-inbox.md §5 Taking its secret, spec/sync-set.md §2: a ticket arriving after the
+// spec/sync-set.md §2; Interim (issues/tickets-retired.md): a ticket arriving after the
 // strong to its target enters it, and a forged ticket for it held first does not keep the honest
 // one's secret out.
 #[test]
@@ -87,7 +87,8 @@ fn ticket_after_strong(forge: bool) {
     assert!(e1.epochs(&t).is_some_and(|x| x.read.secret(&honest).is_some()), "the honest secret is taken (forged first: {forge})");
 }
 
-// spec/sync-set.md §2 (counts as independent; a read secret a ticket gives establishes nothing): a forged ticket for a dependent thing P of another account, with a
+// spec/sync-set.md §2 (counts as independent); Interim (issues/tickets-retired.md): a read secret a ticket gives establishes
+// nothing: a forged ticket for a dependent thing P of another account, with a
 // strong to P from a thing whose keys do not open it, does not make P independent here: the forged
 // secret is taken but P is not entered read, so the node closure does not hold it (nor writes
 // D's ticket for it), and with the strong gone nothing of it is left.
@@ -173,8 +174,8 @@ fn a_part_taken_on_a_tickets_word_is_redelivered_once_held_whole_spec_commits_4(
 }
 
 // spec/permissions.md §3 Lost access (drop those role secrets and every local unit it can no
-// longer read), spec/sync-set.md §2 (a read secret a ticket gives establishes nothing; On a
-// ticket's word), spec/commits.md §4 (Outside the node closure): Bob holds T's read secret from
+// longer read), spec/sync-set.md §2; Interim (issues/tickets-retired.md): a read secret a ticket gives
+// establishes nothing, on a ticket's word; spec/commits.md §4 (Outside the node closure): Bob holds T's read secret from
 // his ticket while T counts as dependent here (he holds no keyset commit of it), so T is held on
 // the ticket's word alone, outside the node closure: T's value waits, unread; his timed grant
 // ends and its secrets go, the value still unread.

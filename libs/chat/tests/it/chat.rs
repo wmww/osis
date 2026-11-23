@@ -181,7 +181,7 @@ fn texts(db: &Osis, c: Tid) -> Vec<String> {
     since(db, c, None, 100).unwrap().messages.iter().map(|k| text(&k.at(c, MSG).unwrap().body)).collect()
 }
 
-// spec/sync-set.md §4 (Accepting; A redeem is an accept): a chat made through the library is
+// spec/sync-set.md §4 (a node writing a link's join for its account): a chat made through the library is
 // held by the maker's account root, so it reaches the maker's other node, and one joined by its link
 // syncs both ways, with no write besides create, the join and the posts.
 #[test]

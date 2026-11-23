@@ -764,8 +764,7 @@ impl Model {
     /// spec/sync-set.md §2); a ticket gives its keys only where the walk enters its thing (§4).
     fn closure(&self, h: &Made, a: usize) -> (hc::Closure, hc::Set) {
         // the account's grants count on what its node closure reaches by strongs alone (a grant
-        // naming it is taken at a strong to its thing, spec/sync-inbox.md §5 Nothing before the
-        // strong), so nothing counts through a thing it never accepted, nor through one it keeps
+        // naming it is taken at a strong to its thing, Interim (issues/tickets-retired.md)), so nothing counts through a thing it never accepted, nor through one it keeps
         // unread, whose strongs it cannot read (spec/sync-set.md §2): the least fixpoint
         let na = self.accounts.len();
         let mut reached: hc::Set = hc::targets(&self.edges, na + a).collect();

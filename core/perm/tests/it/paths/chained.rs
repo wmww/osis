@@ -1,9 +1,9 @@
-//! Chained-ness per edge-class part (spec/permissions.md §4 Chained writes; what A2's evidence derivation reads,
+//! Chained-ness per edge-class part (Interim (issues/chains-retired.md); what A2's evidence derivation reads,
 //! notes/evidence-derivation.md): `Paths::is_chained` against held-model's `evidence::World::chained`
 //! over the differential worlds at every view, and hand worlds of each kind of part (a may-grant
 //! grant by its path's may-grant, a removal, a finalize by write, a self-removal), with
 //! `Changed::chained` reporting each flip, on arrival and on forget.
-//! spec/permissions.md §4 Chained writes.
+//! spec/permissions.md §4; Interim (issues/chains-retired.md).
 
 use super::incremental::Tracked;
 use super::{input, rules, MODES};

@@ -270,7 +270,7 @@ fn a_sync_id_kept_unread_by_ticket_stays_synced_across_a_restart_spec_sync_set_2
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), unread, "kept unread after the restart");
 }
 
-// spec/sync-set.md §1 (The account's tickets): node 1 keeps S unread by the ticket its grant fired
+// spec/sync-set.md §1; Interim (issues/tickets-retired.md): node 1 keeps S unread by the ticket its grant fired
 // on its inbox; past the inbox's lifetime that fire is gone, and D's ticket, written as the walk
 // entered the thing, keeps it kept unread.
 #[test]

@@ -1,4 +1,4 @@
-//! Hand worlds (spec/permissions.md §4, as notes/a2-spec/permissions.md drafts it): each held-model `evidence` hand test that names a rule or finding, as a
+//! Hand worlds (spec/permissions.md §4): each held-model `evidence` hand test that names a rule or finding, as a
 //! differential at every step (`assert_agrees`) plus the copy the rule decides (its reason where only that rule brings it);
 //! and the derivation's own (a path entry waiting to open).
 use super::*;

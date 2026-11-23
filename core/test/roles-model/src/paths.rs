@@ -231,8 +231,8 @@ pub enum Regrant {
     /// of each edge giving the role whose grantor held the right at its key in the reading,
     /// dropped or not (notes/write-path-design.md §1, Judging content, C2: `first_by_right`).
     FirstChained,
-    /// Control `-chain-ever`: from each edge's first chained write (spec/permissions.md §4 Chained
-    /// writes: by every value an earlier chained write set, never removed, `until` disregarded),
+    /// Control `-chain-ever`: from each edge's first chained write (Interim (issues/chains-retired.md):
+    /// by every value an earlier chained write set, never removed, `until` disregarded),
     /// so an idle grant by a party with no right moves a first point back (notes/path-model-findings.md 56).
     ChainedEver,
 }
@@ -1646,7 +1646,7 @@ fn grantable_at(w: &World, p: &Pass, e: Edge, pos: Key) -> Role {
     })
 }
 
-/// The chained writes of `held` (spec/permissions.md §4 Chained writes): in key order, each whose
+/// The chained writes of `held` (Interim (issues/chains-retired.md)): in key order, each whose
 /// author has, along every hop it rests on (`World::rests`, its key hop first), over record edges
 /// and record key hops and the edges chained writes earlier set (applied or not, each at the
 /// highest role and may-grant role it let its holder grant, `until` disregarded): admin on its

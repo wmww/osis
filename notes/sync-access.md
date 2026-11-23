@@ -48,7 +48,7 @@
 ## Owner of a sync ID
 - **A sync ID is g's only by g's sync key** (spec/sync-ids.md §4 Owner; `sync_ids::actors::owns`, `Core::owns_sync_id`): any admin of g writes g's `sync.0` and can name any sync ID there, so an entry counts only when a step on a verified path from its genesis bears the sync key of a sync secret of g held here. Steps chain by signature to the genesis delete key the sync ID commits to, so only the owner's admins make a step bear g's key. Ignored, never judged invalid: the check turns on held secrets.
   - The sync key, not the genesis delete key (admin secret): every holder holds a sync secret, only admins the admin secret. Every holder holds the older secrets by history boxes, so some step always matches.
-  - While this node holds no sync secret of g's own (it reads g by derived secrets no step bears), g's entries are hints (a ticket's sync ID is its issuer's word: spec/sync-inbox.md §5 Ticket sync IDs). Bounded: such a g holds no secret deriving that sync ID's keys, so it registers and deletes nothing.
+  - While this node holds no sync secret of g's own (it reads g by derived secrets no step bears), g's entries are hints (a ticket's sync ID is its issuer's word: Interim (issues/tickets-retired.md)). Bounded: such a g holds no secret deriving that sync ID's keys, so it registers and deletes nothing.
   - An admin of t that also holds sync on u can give t u's sync secret as a new epoch (nothing checks a rotation's secrets are fresh) and so list u's sync ID as t's. Hostile admins are out of scope.
 
 ## What removal, compaction and re-sealing leave

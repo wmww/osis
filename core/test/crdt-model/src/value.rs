@@ -18,7 +18,7 @@ pub enum Value {
     Bytes(Vec<u8>),
     Strong([u8; 15]),
     Weak([u8; 15]),
-    /// A ticket: its tag content, a list of seven (spec/data-model.md §8 Tickets).
+    /// A ticket: its tag content, a list of seven (Interim (issues/tickets-retired.md)).
     Ticket(Box<Value>),
     List(Vec<Value>),
     /// Sorted by canonical key bytes, unique keys. Structs are maps with int keys.

@@ -445,7 +445,7 @@ impl<S: Store> Timeline<S> {
         self.roles.values().flat_map(|(c, _)| (0u32..).zip(&c.ops).map(move |(k, _)| (WriteId(c.id, k), c.point())))
     }
 
-    /// Whether `w` is chained (spec/permissions.md §4 Chained writes).
+    /// Whether `w` is chained (Interim (issues/chains-retired.md)).
     pub fn is_chained(&self, w: &WriteId) -> bool {
         self.part_of(w).and_then(|p| self.paths.is_chained(&p)) == Some(true)
     }

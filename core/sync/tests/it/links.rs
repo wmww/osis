@@ -337,7 +337,7 @@ fn a_joined_redeem_is_followed_past_the_follow_time_until_its_join_is_held_spec_
 }
 
 // spec/permissions.md §7 (Redeem: a redeemer keeps the seed until its grant is at a source and
-// SHOULD discard it then), spec/sync-set.md §4 (A redeem is an accept), spec/sync-ids.md §2
+// SHOULD discard it then), spec/sync-set.md §4 (a node writing a link's join for its account), spec/sync-ids.md §2
 // (One sync ID per independent thing: every holder of a role on it syncs it through that sync ID):
 // node 1 redeems node 0's single-use link; once node 0 holds the join, node 1 forgets the link (L
 // acted for no more) and syncs K read through D's strong to it: what node 0 writes

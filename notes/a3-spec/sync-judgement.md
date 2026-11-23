@@ -1,7 +1,7 @@
 # A3 draft: spec/sync-judgement.md
 > Summary: Draft spec text for stage A3 (not in spec, not built): the required set's removal clause (under the openers' sync IDs while held, in place of `ROLE_KEEP`) and leaf blobs as evidence. Map: notes/a3-spec/README.md.
 
-Written over notes/a2-spec/sync-judgement.md. Replaces its **(A3)** sentence in §2 and adds a leaf-blob clause to §1 Certificate blobs and §2. Every other bullet *stands*.
+Written over spec/sync-judgement.md as A2 leaves it. Replaces its **(A3)** sentence in §2 and adds a leaf-blob clause to §1 Certificate blobs and §2. Every other bullet *stands*.
 
 ## 1. What goes under a sync ID
 - **Certificate blobs**, its lead: certificate copies, header-only copies, leaf blobs (spec/wire.md §4: one lowering's leaf for one thing), list blobs **(until A4)** and record blobs. A leaf blob is one blob wrapped under each sync ID it is logged under, as a certificate copy is.

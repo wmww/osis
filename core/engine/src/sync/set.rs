@@ -99,7 +99,7 @@ impl Engine {
     /// of it is held; an independent thing and none is unsyncable; a dependent thing has none of its own. Reads only `t`'s keys.
     pub(crate) fn thing_sync_now(&mut self, t: &Tid) -> Result<ThingSync> {
         // read: by its own secrets, or on a ticket's word (its sync ID the ticket's until a held
-        // `sync.0` records it, spec/sync-inbox.md §5 Ticket sync IDs)
+        // `sync.0` records it, Interim (issues/tickets-retired.md))
         if (self.core.is_independent(t) || self.core.ix.closure.on_ticket(t))
             && self.holds_read(t)
         {
@@ -325,7 +325,7 @@ impl Engine {
 
     /// `s`'s things: every thing owning sync ID `s` here (`owned_sync_ids` lists it), by a held
     /// `sync.0`, as a followed link's, or on the word of the
-    /// held tickets naming it (spec/sync-inbox.md §5 Ticket sync IDs: a sync ID several things'
+    /// held tickets naming it (Interim (issues/tickets-retired.md): a sync ID several things'
     /// tickets name is each one's, whatever their order).
     pub(crate) fn sync_things_of(&mut self, s: &SyncId) -> Result<Vec<Tid>> {
         let mut things: BTreeSet<Tid> = self.core.ix.sync_recorders.get(s).into_iter().flatten().copied().collect();
