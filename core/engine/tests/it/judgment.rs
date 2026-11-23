@@ -1,8 +1,8 @@
 //! Judgment conformance vectors (core/test/vectors/README.md, `judgment/`): histories played by
 //! the order harness (`order::play`), delivered as a peer holding the sync IDs holds them, judged
 //! by a fresh node in a given arrival order; the expected verdicts are what this engine judges.
-//! `judgment_vectors_spec_permissions_5_2` replays every generated case (its inputs only) through
-//! a fresh engine and compares; `judgment_vectors_can_fail` (ignored) checks a changed verdict
+//! `judgment_vectors_<file>_*`, one test per file, replay every generated case (its inputs only)
+//! through a fresh engine and compare; `judgment_vectors_can_fail` (ignored) checks a changed verdict
 //! fails each case, and a shorter order some case of each file.
 
 use crate::order::{Played, Step, play};
@@ -352,14 +352,25 @@ fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
     VecFile { header, cases }
 }
 
-/// The judgment files (`judgment/<name>.vec`, never written out), generated in memory.
-fn files() -> Vec<(&'static str, String)> {
-    vec![
-        ("judgment/models.vec", generate("spec/permissions.md §5", models(), false).render()),
-        ("judgment/rules.vec", generate("spec/permissions.md §2, §5, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(edges()).chain(may_grants()).chain(remerges()).chain(bounds()).collect(), false).render()),
-        ("judgment/sync IDs.vec", generate("spec/commits.md §4, spec/sync-judgement.md §1", sync_ids(), true).render()),
-        ("judgment/blobs.vec", generate("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1", blobs(), false).render()),
-    ]
+/// The judgment files (`judgment/<name>.vec`, never written out): their names, one test each.
+const FILES: [&str; 6] = ["models", "rules", "edges", "bounds", "sync IDs", "blobs"];
+
+/// The judgment file `judgment/<name>.vec`, generated in memory: its path and text.
+fn file(name: &str) -> (String, String) {
+    let (spec, scenarios, second) = match name {
+        "models" => ("spec/permissions.md §5", models(), false),
+        "rules" => ("spec/permissions.md §3, §5, spec/commits.md §5, spec/crdt.md §4", rules(), false),
+        "edges" => ("spec/permissions.md §2, §5, §7", edges().into_iter().chain(may_grants()).collect(), false),
+        "bounds" => ("spec/permissions.md §5, spec/commits.md §5, spec/crdt.md §4", remerges().into_iter().chain(bounds()).collect(), false),
+        "sync IDs" => ("spec/commits.md §4, spec/sync-judgement.md §1", sync_ids(), true),
+        "blobs" => ("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1", blobs(), false),
+        _ => unreachable!("no judgment file {name}"),
+    };
+    (format!("judgment/{name}.vec"), generate(spec, scenarios, second).render())
+}
+
+fn files() -> Vec<(String, String)> {
+    FILES.iter().map(|n| file(n)).collect()
 }
 
 /// The roles model's pinned reference scenarios played on the engine (core/test/roles-model):
@@ -847,16 +858,55 @@ fn replay_cases(path: &str, text: &str, only: Option<&str>) -> Result<usize, Str
     Ok(f.live().count())
 }
 
-// spec/permissions.md §5, spec/commits.md §5: every judgment vector (core/test/vectors/README.md,
-// `judgment/`), generated in memory, has its inputs and entries that parse, and replayed from
-// its text judges as generated (each input judged once by a fresh engine: `judged`).
+/// Every case of judgment file `name` has its inputs and entries that parse, and replayed from
+/// its text judges as generated (each input judged once by a fresh engine: `judged`).
+fn vectors(name: &str) {
+    let (path, text) = file(name);
+    osis_vectors::subjects::judgment::check(&VecFile::parse(&text).unwrap()).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let n = replay_file(&path, &text).unwrap_or_else(|e| panic!("{e}"));
+    assert!(n > 0, "{path}: no cases");
+}
+
+// spec/permissions.md §5.1, §5.2: the judgment vectors (core/test/vectors/README.md,
+// `judgment/`) of models.vec, the roles model's reference scenarios (`vectors`).
 #[test]
-fn judgment_vectors_spec_permissions_5_2() {
-    for (path, text) in files() {
-        osis_vectors::subjects::judgment::check(&VecFile::parse(&text).unwrap()).unwrap_or_else(|e| panic!("{path}: {e}"));
-        let n = replay_file(path, &text).unwrap_or_else(|e| panic!("{e}"));
-        assert!(n > 0, "{path}: no cases");
-    }
+fn judgment_vectors_models_spec_permissions_5_2() {
+    vectors("models");
+}
+
+// spec/permissions.md §3, §5.1, §5.2, spec/commits.md §5, spec/crdt.md §4.6: the judgment
+// vectors of rules.vec, one scenario per rule family (`vectors`).
+#[test]
+fn judgment_vectors_rules_spec_permissions_5_2() {
+    vectors("rules");
+}
+
+// spec/permissions.md §2, §5.1, §5.2, §7: the judgment vectors of edges.vec, an edge's `until`
+// and may-grant (`vectors`).
+#[test]
+fn judgment_vectors_edges_spec_permissions_5_1() {
+    vectors("edges");
+}
+
+// spec/permissions.md §5.2, spec/commits.md §5, spec/crdt.md §4.6, §4.7, §4.8: the judgment
+// vectors of bounds.vec, a re-merge, keep bounds and expiry (`vectors`).
+#[test]
+fn judgment_vectors_bounds_spec_commits_5() {
+    vectors("bounds");
+}
+
+// spec/commits.md §4, spec/sync-judgement.md §1, spec/permissions.md §5.1: the judgment vectors
+// of sync IDs.vec, commits with bodies under two sync IDs (`vectors`).
+#[test]
+fn judgment_vectors_sync_ids_spec_commits_4() {
+    vectors("sync IDs");
+}
+
+// spec/commits.md §4, spec/crdt.md §8, spec/data-model.md §6, spec/wire.md §4, spec/permissions.md
+// §5.1: the judgment vectors of blobs.vec, blobs a commit references (`vectors`).
+#[test]
+fn judgment_vectors_blobs_spec_commits_4() {
+    vectors("blobs");
 }
 
 // spec/requirements.md Decentralization, spec/commits.md §4: one held set, its parts in two
@@ -896,11 +946,11 @@ fn judgment_vectors_can_fail() {
             };
             let own = c.fields.iter().find(|(k, _)| !INPUTS.contains(&k.as_str())).unwrap_or_else(|| panic!("{name}: no own line"));
             let flip = if own.1.contains("unapplied") { own.1.replace("unapplied", "applied") } else if own.1.contains("invalid") { own.1.replace("invalid", "valid") } else { format!("{} x", own.1) };
-            let e = replay_cases(path, &in_case(&own.0, &flip), Some(name)).expect_err(&format!("{name}: a changed verdict passes"));
+            let e = replay_cases(&path, &in_case(&own.0, &flip), Some(name)).expect_err(&format!("{name}: a changed verdict passes"));
             assert!(e.contains(name), "{e}");
             let order = c.req("order").unwrap();
             let shorter = &order[..order.rfind(',').unwrap()];
-            if let Err(e) = replay_cases(path, &in_case("order", shorter), Some(name)) {
+            if let Err(e) = replay_cases(&path, &in_case("order", shorter), Some(name)) {
                 assert!(e.contains(name), "{e}");
                 shown = true;
             }

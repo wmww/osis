@@ -2276,23 +2276,34 @@ impl Tree {
     }
 }
 
-/// A task of `walk`: the tree below a node, from a copy of a node at a branch (taking it after the
-/// last other way on has copied it) given the move into it; an end; a task of its own.
+/// A task of `walk`: the tree below a node, from a node at a branch (`At`) given the move into
+/// it; an end; a task of its own.
 enum Task<'t> {
-    Down(&'t Tree, Option<Move>, std::sync::Arc<std::sync::Mutex<Peer>>),
-    End(End, std::sync::Arc<std::sync::Mutex<Peer>>),
+    Down(&'t Tree, Option<Move>, std::sync::Arc<At>),
+    End(End, std::sync::Arc<At>),
     Job(usize),
 }
 
-/// The node at a branch, for one way on: copied, or itself once every other way has its copy.
-fn take_node(played: &Played, at: std::sync::Arc<std::sync::Mutex<Peer>>) -> Peer {
-    match std::sync::Arc::try_unwrap(at) {
-        Ok(m) => m.into_inner().unwrap_or_else(|e| e.into_inner()),
-        Err(at) => {
-            played.copies.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            at.lock().unwrap_or_else(|e| e.into_inner()).copy().unwrap()
-        }
+/// A node at a branch and how many ways on have yet to take it: each takes a copy but the last,
+/// which takes the node itself, so a branch of n ways makes n - 1 copies however its tasks
+/// interleave on the pool's threads.
+struct At(std::sync::Mutex<(Option<Peer>, usize)>);
+
+impl At {
+    fn new(p: Peer, ways: usize) -> std::sync::Arc<At> {
+        std::sync::Arc::new(At(std::sync::Mutex::new((Some(p), ways))))
     }
+}
+
+/// The node at a branch, for one way on (`At`).
+fn take_node(played: &Played, at: &At) -> Peer {
+    let mut a = at.0.lock().unwrap_or_else(|e| e.into_inner());
+    a.1 -= 1;
+    if a.1 == 0 {
+        return a.0.take().unwrap();
+    }
+    played.copies.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    a.0.as_mut().unwrap().copy().unwrap()
 }
 
 /// Node `p` takes move `m`, as `deliver_with` without clock or `each`.
@@ -2344,19 +2355,20 @@ fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], alike: bool,
         setup = (kid, [setup.1, vec![m]].concat());
     }
     match after_setup(played, &setup.1) {
-        None => tasks.push(Task::Down(tree, None, std::sync::Arc::new(std::sync::Mutex::new(judged_node(played))))),
+        None => tasks.push(Task::Down(tree, None, At::new(judged_node(played), 1))),
         Some(p) => {
-            let after = Task::Down(setup.0, None, std::sync::Arc::new(std::sync::Mutex::new(p)));
+            let after = Task::Down(setup.0, None, At::new(p, 1));
             if tree.kids.len() == 1 && tree.ends.is_empty() {
                 tasks.push(after);
             } else {
                 // as a `Task::Down` at the root: the first node met, its ends, then its ways on
                 let mut root = judged_node(played);
                 assert!(first((6, tree.shape()), &mut root));
-                let root = std::sync::Arc::new(std::sync::Mutex::new(root));
+                let others: Vec<(&Move, &Tree)> = tree.kids.iter().filter(|(m, _)| **m != setup.1[0]).collect();
+                let root = At::new(root, tree.ends.len() + others.len());
                 tasks.extend(tree.ends.iter().map(|&e| Task::End(e, root.clone())));
                 tasks.push(after);
-                tasks.extend(tree.kids.iter().filter(|(m, _)| **m != setup.1[0]).map(|(&m, kid)| Task::Down(kid, Some(m), root.clone())));
+                tasks.extend(others.into_iter().map(|(&m, kid)| Task::Down(kid, Some(m), root.clone())));
             }
         }
     }
@@ -2366,12 +2378,12 @@ fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], alike: bool,
         }
         let r = match task {
             Task::Job(j) => (jobs[j].0, caught(&jobs[j].1)),
-            Task::End(e, at) => (e.key(), caught(|| judge(e, take_node(played, at)))),
+            Task::End(e, at) => (e.key(), caught(|| judge(e, take_node(played, &at)))),
             Task::Down(below, m, at) => {
                 // down to the next branch or end; a failure on the way is every end's below, ranked
                 // as the first of them
                 let walked = caught(|| {
-                    let (mut t, mut p) = (below, take_node(played, at));
+                    let (mut t, mut p) = (below, take_node(played, &at));
                     if let Some(m) = m {
                         take_move(played, &mut p, m);
                     }
@@ -2399,7 +2411,7 @@ fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], alike: bool,
                         put(t.first().key(), Ok(Seen { alike: t.count(), ..Seen::default() }));
                         return;
                     }
-                    let at = std::sync::Arc::new(std::sync::Mutex::new(p));
+                    let at = At::new(p, t.ends.len() + t.kids.len());
                     for &e in &t.ends {
                         add(Task::End(e, at.clone()));
                     }
@@ -2921,9 +2933,11 @@ impl Seen {
 
 /// Checks one written history (`play`): what it reached, or the first mismatch found, described
 /// (a panic counts). The named tests' one entry: it prints what a passing history reached
-/// (`Seen`), shown under `--nocapture`, so two revisions' outputs compare by a diff.
+/// (`Seen`), shown under `--nocapture`, so two revisions' outputs compare by a diff. Its orders
+/// run on the process's permits as a drawn history's do (`check_on`): a test's wall is its
+/// longest chain of deliveries, not their sum.
 fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
-    let r = caught(|| check_orders(1, seed, steps, cfg, true));
+    let r = caught(|| check_orders(threads("OSIS_SEED_THREADS"), seed, steps, cfg, true));
     if let Ok(seen) = &r {
         println!("order check (seed {seed}): {seen:?}");
     }
