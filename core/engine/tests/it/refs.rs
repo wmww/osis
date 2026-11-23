@@ -140,9 +140,64 @@ fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
     }
 }
 
+// spec/data-model.md §8 Held history, §6: a strong in a chunked set element of a held body holds
+// its target as one inline: once the element is removed, history holding its targets keeps X at
+// the writer; a reader given both commits without the element's chunks holds it once they
+// arrive; the flag off lets X go at both.
+#[test]
+fn a_strong_in_a_chunked_element_of_held_history_holds_its_target_spec_data_model_8() {
+    use osis_crdt::{Op, PathOp};
+    let a = ak("x:a.0");
+    let mut lp = net(2, 0);
+    let s = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.set(s, &ct::RETENTION, &r2_setting(true)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.share(0, s);
+    lp.sync_all().unwrap();
+    let reader = lp.peers[1].engine.me();
+    let had = lp.commit_ids(0);
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    // minted held by nothing but the element
+    let x = m.create(e.thing_record(e.dependents_admin(), None));
+    m.set(x, &REG, &Value::Str("x".into())).unwrap();
+    let elem = Value::List(vec![Value::Strong(x), Value::Str("p".repeat(osis_base::format::CHUNK_THRESHOLD))]);
+    m.set(s, &a, &Value::Set([elem.clone()].into_iter().collect())).unwrap();
+    let w = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].engine.grant(&x, &reader, &edge(osis_base::Role::Read)).unwrap();
+    let mut m = Mutation::new();
+    m.op(s, &a, PathOp { path: vec![], op: Op::Remove(elem) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let held = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.history_strongs_from(&s).unwrap().contains(&(x, a.clone()));
+    assert_eq!(rows(&mut lp, 0, &x), vec![], "removed: no backlink");
+    assert!(held(&mut lp, 0) && lp.peers[0].engine.closure_holds(&x), "the writer's history holds X");
+    let mut late = Vec::new();
+    for c in lp.commit_ids(0).difference(&had) {
+        let mut pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+        if *c == w {
+            late = std::mem::take(&mut pk.blobs);
+        }
+        lp.deliver(1, &pk).unwrap();
+    }
+    assert!(!late.is_empty(), "the element is chunked");
+    assert!(!held(&mut lp, 1) && !lp.peers[1].engine.closure_holds(&x), "the reader, the chunks not held");
+    lp.peers[1].engine.put_blobs(late).unwrap();
+    lp.peers[1].reexamine().unwrap();
+    assert!(held(&mut lp, 1) && lp.peers[1].engine.closure_holds(&x), "the reader, its chunks held");
+    let mut m = Mutation::new();
+    m.set(s, &ct::RETENTION, &r2_setting(false)).unwrap();
+    let off = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&off).unwrap().unwrap();
+    lp.deliver(1, &pk).unwrap();
+    for i in 0..2 {
+        assert!(!held(&mut lp, i) && !lp.peers[i].engine.closure_holds(&x), "node {i}, the flag off: X goes");
+    }
+}
+
 // notes/engine-refs.md (Large values): a chunked element's references are read when it is first
-// read and never again: adding one to a set of n chunked elements reads that one, removing one
-// reads none, at n and 10n.
+// read and never again, by the state and held history alike: adding one to a set of n chunked
+// elements reads that one, removing one reads none, at n and 10n.
 #[test]
 fn a_chunked_elements_references_are_read_once_spec_data_model_6() {
     use osis_crdt::{Op, PathOp};
@@ -154,6 +209,8 @@ fn a_chunked_elements_references_are_read_once_spec_data_model_6() {
         let s = new_thing(&mut lp, 0);
         let elem = |i: usize| Value::List(vec![Value::Weak(s), Value::Str(format!("{i}{}", "p".repeat(osis_base::format::CHUNK_THRESHOLD)))]);
         let mut m = Mutation::new();
+        // held history reads the bodies' large values too: from the same rows
+        m.set(s, &ct::RETENTION, &r2_setting(true)).unwrap();
         m.set(s, &a, &Value::Set((0..n).map(elem).collect())).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         let op = |lp: &mut LocalPeer, op: Op| {
@@ -208,11 +265,29 @@ fn app(ak: &str) -> bool {
 fn scan_bodies(e: &mut Engine, s: &Tid, a: &str, written: bool, out: &mut BTreeMap<(Tid, RefKind), u64>) {
     let a = ak(a);
     for b in e.body_page(s, &a, true, 0, usize::MAX).unwrap() {
+        let mut vs = Vec::new();
         match b.valid.then(|| e.body_fragment(&b.id, s, &a).unwrap()).flatten() {
-            Some(f) if written => f.each_value(&mut |v| scan(v, out)),
-            Some(f) => f.read().iter().for_each(|v| scan(v, out)),
+            Some(f) if written => f.each_value(&mut |v| vs.push(v.clone())),
+            Some(f) => vs.extend(f.read()),
             None => {}
         }
+        // large values read whole: the references in their chunks count
+        vs.iter().for_each(|v| scan(&whole(e, s, v), out));
+    }
+}
+
+/// `v` with each large value read whole.
+fn whole(e: &mut Engine, s: &Tid, v: &Value) -> Value {
+    match v {
+        Value::Link(l) => {
+            let v = e.read_large(s, l).unwrap();
+            whole(e, s, &v)
+        }
+        Value::Enum(c, Some(p)) => Value::Enum(*c, Some(Box::new(whole(e, s, p)))),
+        Value::Map(m) => Value::Map(m.iter().map(|(k, x)| (whole(e, s, k), whole(e, s, x))).collect()),
+        Value::List(x) => Value::List(x.iter().map(|x| whole(e, s, x)).collect()),
+        Value::Set(x) => Value::Set(x.iter().map(|x| whole(e, s, x)).collect()),
+        v => v.clone(),
     }
 }
 

@@ -337,7 +337,7 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitI
     }
     let mut late = false;
     for (_, (l, n)) in std::mem::take(&mut d.2).into_iter().filter(|x| x.1.1 != 0) {
-        let (refs, earlier) = move_link(tx, source, ak, &l, n)?;
+        let (refs, earlier) = move_link(tx, source, ak, &l.hash, Some(&l), n, false)?;
         d.count_all(&refs, n + earlier as i64);
         late |= earlier > 0;
     }
@@ -350,13 +350,15 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitI
     Ok(())
 }
 
-/// What a `LINKS` row holds: a link to the large value, how many times `(source, AK)` reads it,
-/// and its references (`large::link_references`), or the blob they wait for.
+/// What a `LINKS` row holds: a link to the large value, how many times `(source, AK)`'s state
+/// or held fires read it (`count`) and its held history counted by `kept` (`kept`), and its
+/// references (`large::link_references`), or the blob they wait for.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct LinkRow {
+pub(super) struct LinkRow {
     link: Link,
     count: u64,
-    refs: std::result::Result<Vec<Value>, BlobId>,
+    pub(super) kept: u64,
+    pub(super) refs: std::result::Result<Vec<Value>, BlobId>,
 }
 
 impl LinkRow {
@@ -365,19 +367,19 @@ impl LinkRow {
             Ok(r) => Value::List(r.clone()),
             Err(b) => Value::Bytes(b.0.to_vec()),
         };
-        osis_base::encode(&Value::List(vec![Value::link(self.link), Value::Int(self.count as i64), refs]))
+        osis_base::encode(&Value::List(vec![Value::link(self.link), Value::Int(self.count as i64), Value::Int(self.kept as i64), refs]))
     }
     fn decode(v: &[u8]) -> Result<LinkRow> {
         let bad = || Error::Corrupt("large value row");
         let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, v.len());
         let Value::List(items) = osis_base::decode(v, &lim).map_err(|_| bad())? else { return Err(bad()) };
-        let [Value::Link(link), Value::Int(n), refs] = items.as_slice() else { return Err(bad()) };
+        let [Value::Link(link), Value::Int(n), Value::Int(kept), refs] = items.as_slice() else { return Err(bad()) };
         let refs = match refs {
             Value::List(r) => Ok(r.clone()),
             Value::Bytes(b) => Err(BlobId(b.as_slice().try_into().map_err(|_| bad())?)),
             _ => return Err(bad()),
         };
-        Ok(LinkRow { link: **link, count: u64::try_from(*n).map_err(|_| bad())?, refs })
+        Ok(LinkRow { link: **link, count: u64::try_from(*n).map_err(|_| bad())?, kept: u64::try_from(*kept).map_err(|_| bad())?, refs })
     }
 }
 
@@ -408,41 +410,73 @@ fn put_link(tx: &mut Tx<'_>, lk: &[u8], row: Option<&LinkRow>, was: Option<BlobI
     Ok(())
 }
 
-/// Moves how many times `(source, ak)` reads the large value `l` (by content hash) by `n`: its
-/// row made as it is first read (its references read then, or a wait for the blob they lack;
-/// a row still waiting tries each link of that content given again), gone with its last read.
-/// Returns the references it counts, and how many earlier reads they count for first now.
-fn move_link(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, l: &Link, n: i64) -> Result<(Vec<Value>, u64)> {
-    tx.in_class(ak.ephemeral(), |tx| {
-        let lk = link_key(source, ak, &l.hash);
+/// Moves how many times `(source, ak)` reads the large value with content hash `h` (`l` a link
+/// to it, needed for a first read) by `n`: its state's or held fires' reads, or, `kept`, its held
+/// history's (`kept`). Its row made as it is first read (its references read then, or a wait
+/// for the blob they lack; a row still waiting tries each link of that content given again),
+/// gone with its last read of either. Returns the references it counts, and how many earlier
+/// reads of the same side they count for first now; the other side's earlier reads are counted
+/// here (`count_earlier`).
+pub(super) fn move_link(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, h: &[u8; 32], l: Option<&Link>, n: i64, kept: bool) -> Result<(Vec<Value>, u64)> {
+    let moved = tx.in_class(ak.ephemeral(), |tx| {
+        let lk = link_key(source, ak, h);
         let links = tx.txn.index(LINKS)?;
         let old = tx.txn.table_get(links, &lk)?.map(|v| LinkRow::decode(&v)).transpose()?;
         let was = old.as_ref().and_then(|r| r.refs.as_ref().err().copied());
-        let mut row = match old {
-            Some(r) => r,
-            None if n > 0 => LinkRow { link: *l, count: 0, refs: Err(l.blob) },
+        let mut row = match (old, l) {
+            (Some(r), _) => r,
+            (None, Some(l)) if n > 0 => LinkRow { link: *l, count: 0, kept: 0, refs: Err(l.blob) },
             // read nowhere: nothing counted
-            None => return Ok((Vec::new(), 0)),
+            _ => return Ok(None),
         };
-        let mut earlier = 0;
-        if n > 0 && row.refs.is_err() && (was.is_none() || row.link != *l) {
+        let mut earlier = None;
+        if let Some(l) = l.filter(|l| n > 0 && row.refs.is_err() && (was.is_none() || row.link != **l)) {
             match crate::engine::large::link_references(tx, source, l)? {
                 Ok(refs) => {
-                    (row.link, row.refs, earlier) = (*l, Ok(refs), row.count);
+                    earlier = Some((row.count, row.kept));
+                    (row.link, row.refs) = (*l, Ok(refs));
                 }
                 Err(b) if was.is_none() => row.refs = Err(b),
                 Err(_) => {}
             }
         }
-        row.count = u64::try_from(row.count as i64 + n).map_err(|_| Error::Corrupt("large value count below zero"))?;
+        let side = if kept { &mut row.kept } else { &mut row.count };
+        *side = u64::try_from(*side as i64 + n).map_err(|_| Error::Corrupt("large value count below zero"))?;
         let refs = row.refs.clone().unwrap_or_default();
-        put_link(tx, &lk, (row.count > 0).then_some(&row), was)?;
-        Ok((refs, earlier))
-    })
+        put_link(tx, &lk, (row.count + row.kept > 0).then_some(&row), was)?;
+        Ok(Some((refs, earlier)))
+    })?;
+    let Some((refs, earlier)) = moved else { return Ok((Vec::new(), 0)) };
+    let Some((count, held)) = earlier else { return Ok((refs, 0)) };
+    if kept {
+        count_earlier(tx, source, ak, &refs, count, 0)?;
+        Ok((refs, held))
+    } else {
+        count_earlier(tx, source, ak, &refs, 0, held)?;
+        Ok((refs, count))
+    }
+}
+
+/// A large value's row turned whole with references `refs`: they count for the reads made of it
+/// before, `count` by the state or held fires, `kept` by held history.
+fn count_earlier(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, refs: &[Value], count: u64, kept: u64) -> Result<()> {
+    if kept > 0 {
+        kept::credit(tx, source, ak, refs, kept)?;
+    }
+    if count == 0 {
+        return Ok(());
+    }
+    // a signal's ticket rows per fire afresh
+    if ak.signal() {
+        return resync_fires(tx, source, ak);
+    }
+    let mut d = Delta::default();
+    d.count_all(refs, count as i64);
+    note(tx, source, ak, None, d)
 }
 
 /// The `LINKS` rows of `(source, ak)` by content hash.
-fn stored_links(tx: &mut Tx<'_>, source: &Tid, ak: &Ak) -> Result<BTreeMap<[u8; 32], LinkRow>> {
+pub(super) fn stored_links(tx: &mut Tx<'_>, source: &Tid, ak: &Ak) -> Result<BTreeMap<[u8; 32], LinkRow>> {
     let links = tx.txn.index(LINKS)?;
     let pre = from_prefix(source, ak);
     let end = [pre.as_slice(), &[0xff; 33]].concat();
@@ -460,14 +494,14 @@ fn stored_links(tx: &mut Tx<'_>, source: &Tid, ak: &Ak) -> Result<BTreeMap<[u8; 
 fn set_links(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, want: &BTreeMap<[u8; 32], (Link, i64)>) -> Result<BTreeMap<[u8; 32], Vec<Value>>> {
     let old = stored_links(tx, source, ak)?;
     for (h, r) in &old {
-        if !want.contains_key(h) {
-            move_link(tx, source, ak, &r.link, -(r.count as i64))?;
+        if !want.contains_key(h) && r.count > 0 {
+            move_link(tx, source, ak, h, None, -(r.count as i64), false)?;
         }
     }
     let mut out = BTreeMap::new();
     for (h, (l, n)) in want.iter().filter(|x| x.1.1 != 0) {
         let had = old.get(h).map_or(0, |r| r.count as i64);
-        out.insert(*h, move_link(tx, source, ak, l, n - had)?.0);
+        out.insert(*h, move_link(tx, source, ak, h, Some(l), n - had, false)?.0);
     }
     Ok(out)
 }
@@ -496,12 +530,7 @@ pub(crate) fn fetched(tx: &mut Tx<'_>, ids: &[BlobId]) -> Result<()> {
             row.refs = crate::engine::large::link_references(tx, &source, &row.link)?;
             put_link(tx, &lk, Some(&row), Some(was))?;
             let Ok(refs) = &row.refs else { return Ok(()) };
-            if ak.signal() {
-                return resync_fires(tx, &source, &ak);
-            }
-            let mut d = Delta::default();
-            d.count_all(refs, row.count as i64);
-            note(tx, &source, &ak, None, d)
+            count_earlier(tx, &source, &ak, refs, row.count, row.kept)
         })?;
     }
     Ok(())
@@ -765,7 +794,7 @@ pub(crate) fn check_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// their references), each one's references what a read gives now, or a wait for a blob not held.
 #[cfg(debug_assertions)]
 fn check_links(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, all: &mut Delta) -> Result<()> {
-    let rows = stored_links(tx, source, ak)?;
+    let rows: BTreeMap<_, _> = stored_links(tx, source, ak)?.into_iter().filter(|x| x.1.count > 0).collect();
     let counts: BTreeMap<[u8; 32], u64> = all.2.iter().filter(|x| x.1.1 != 0).map(|(h, (_, n))| (*h, *n as u64)).collect();
     debug_assert_eq!(rows.iter().map(|(h, r)| (*h, r.count)).collect::<BTreeMap<_, _>>(), counts, "large-value rows of {source:?} {ak:?} differ from its reads");
     let waits = tx.txn.index(WAITS)?;
