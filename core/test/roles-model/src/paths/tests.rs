@@ -3243,12 +3243,10 @@ fn a_choice_drops_an_earlier_lowering_of_its_own_path() {
     }
 }
 
-/// Open 2 (notes/write-path-design.md): two removed keys' backdated lowerings of one admin mask
-/// each other from the dispute test at a node with no order. X removed N5 at 3; after H removes
-/// X, the thief backdates a demotion of B to 2 with X's key (move 50) and another with N5's (move
-/// 48). A node holding both removals first records both and keeps B's share. A node trusting
-/// nothing applies both demotions at their keys; trusting either removal alone leaves the other
-/// demotion acting, so neither is shown and B's share is lost with nothing to choose.
+/// W10, reach-back candidates tried together: two removed keys' backdated lowerings of one admin.
+/// X removed N5 at 3; after H removes X, the thief backdates a demotion of B to 2 with X's key
+/// (move 50) and another with N5's (move 48). A node holding both removals first records both and
+/// keeps B's share.
 #[test]
 fn two_backdated_lowerings_are_taken_where_their_removals_were_held_first() {
     let (m, rules) = masked();
@@ -3263,15 +3261,27 @@ fn masked() -> (Sim, Rules) {
     (Sim::build(&s, &rules, &[Move { kind: 50, ts: 2, made: 7 }, Move { kind: 48, ts: 2, made: 8 }], &mut Rng(0)), rules)
 }
 
+/// W10, the same world at a node trusting nothing (N6): both demotions apply at their keys and B's
+/// share is dropped. Trusting either removal alone leaves the other demotion dropping it, so each
+/// removal, whose drops include a lowering of another holder's edge, is tried beside the other:
+/// both are shown, and choosing them brings the share back. Control `-alone` (each candidate tried
+/// alone): nothing is shown and the share is lost.
 #[test]
-#[ignore = "notes/write-path-design.md Open 2: two backdated lowerings mask each other from the dispute test"]
-fn repro_two_backdated_lowerings_mask_each_other_where_nothing_is_trusted() {
+fn masking_lowerings_removals_are_shown_together() {
     let (m, rules) = masked();
-    let v = m.view(N6, &rules);
-    let rd = judge(&m.w, &rules, &v);
-    assert!(!rd.applied.contains(&m.gs), "{rd:?}");
-    assert!(!disputes(&m.w, &rules, &v).is_empty(), "B's share is lost and no dispute is shown");
+    let out5 = m.out5.unwrap();
+    for joint in [true, false] {
+        let rules = Rules { joint, ..rules };
+        let v = m.view(N6, &rules);
+        assert!(v.trust.is_empty() && !judge(&m.w, &rules, &v).applied.contains(&m.gs), "{joint}");
+        let shown = disputes(&m.w, &rules, &v);
+        assert_eq!(shown, if joint { vec![out5, m.r] } else { vec![] }, "{joint}");
+        let chosen = shown.iter().fold(v, |v, &r| choose(&m.w, &rules, &v, r));
+        let rd = judge(&m.w, &rules, &chosen);
+        assert_eq!(rd.applied.contains(&m.gs) && rd.role(B, A) == Admin, joint, "{joint}: {rd:?}");
+    }
 }
+
 // ---- A cut's list answers that cut alone (notes/evidence-model-findings.md 26) ----
 
 const CT: Thing = 43;

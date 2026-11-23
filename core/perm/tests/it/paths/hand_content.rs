@@ -339,6 +339,23 @@ fn a_fallen_cover_takes_nothing_honest() {
     assert_eq!(verdict(&w, &all(&w, &[r]), x), Some(Content::Valid(By::Listed)));
 }
 
+// ---- Disputes ----
+
+// spec/permissions.md §5.1 Trust set: two removals each undoing one of two removed keys' backdated
+// demotions of B (X's and N5's, after X removed N5 and H removed X) change nothing trusted alone,
+// so each is tried beside the other: at a node trusting nothing both are shown, and the walk and
+// the model agree on them and on the reading once both are chosen.
+#[test]
+fn masking_lowerings_removals_are_shown_together() {
+    let s = Setup { n5: 3, ..Setup::default() };
+    let m = Sim::build(&s, &Rules::fixed(), &[Move { kind: 50, ts: 2, made: 7 }, Move { kind: 48, ts: 2, made: 8 }], &mut Rng(0));
+    let v = m.view(N6, &Rules::fixed());
+    agree(&m.w, &v);
+    let (_, mut p) = walk(&m.w, &v);
+    assert_eq!(p.disputes().len(), 2);
+    agree(&m.w, &v.trusting(&[m.r, m.out5.unwrap()]));
+}
+
 // ---- Alike: a reader outside A ----
 
 // spec/permissions.md §5.2: a reader holding the leaves of its evidence reads as a member.

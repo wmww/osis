@@ -6,7 +6,6 @@
 # panic) must match (tools/gate_failures.py).
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=647344785567 issues/custody-differential-failures.md FAIL flip: node \w+ at \d+ dropped a taken revocation
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=567669682357 issues/custody-differential-failures.md FAIL writes: node \w+ settled without \w+'s write \d+ on \w+
-roles-model/paths::tests::random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/masked-backdated-lowerings.md counts:dispute=4 OSIS_ROLES_START=\d+: \{
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=192781816512 issues/custody-differential-failures.md T paired by A: needs Write on
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=357482902476 issues/custody-differential-failures.md node \w+: dropped a taken revocation
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=210455287849 issues/custody-differential-failures.md \w+ acting: certificate engine None, model Some

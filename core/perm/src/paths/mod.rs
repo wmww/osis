@@ -732,7 +732,9 @@ impl<S: Store> Paths<S> {
     /// final roles (draft §5.1 Trust set, dispute; `Candidates::Explicit`): per candidate the
     /// trust switched on and back in place, each an update of the candidate's component, the
     /// readings compared only where the switch's `Changed` reaches (notes/perm-paths.md, Trust
-    /// per component). The reading after equals the reading before.
+    /// per component); and, where two or more candidates' drops each include another candidate's
+    /// lowering, each of those switched off and back with the others trusted (two that undo
+    /// masking lowerings change nothing alone). The reading after equals the reading before.
     pub fn disputes(&mut self) -> BTreeSet<WriteId> {
         self.disputes_counted(&mut Counts::default())
     }
@@ -744,20 +746,48 @@ impl<S: Store> Paths<S> {
         let cands = self.timeline.candidates(&self.trust);
         let base = self.counts();
         let held = self.trust.clone();
-        for id in cands {
+        // a candidate applied as a may-grant grant where trusted is none
+        let mut flagged = BTreeSet::new();
+        for &(id, _) in &cands {
             let mut trust = held.clone();
             trust.insert(id);
-            let ch = self.set_trust(trust);
-            let by_flag = self.status(&id) == Some(Status::MayGrant);
-            let reached = self.facts.reached(&ch);
-            let with = self.probe(&ch, &reached, counts);
-            self.set_trust(held.clone());
-            if !by_flag && self.probe(&ch, &reached, counts) != with {
+            let (by_flag, differs) = self.switch(trust, id, counts);
+            if by_flag {
+                flagged.insert(id);
+            } else if differs {
                 out.insert(id);
             }
         }
+        let back: BTreeSet<WriteId> = cands.iter().filter(|c| c.1).map(|c| c.0).collect();
+        if back.len() > 1 {
+            let all: BTreeSet<WriteId> = held.union(&back).copied().collect();
+            self.set_trust(all.clone());
+            for &id in back.iter().filter(|id| !out.contains(id) && !flagged.contains(id)).collect::<Vec<_>>() {
+                let mut others = all.clone();
+                others.remove(&id);
+                if let (false, true) = self.switch(others, id, counts) {
+                    out.insert(id);
+                }
+            }
+            self.set_trust(held);
+        }
         counts.add(&self.counts().since(&base));
         out
+    }
+
+    /// Switches the trust set from the current one to `trust` and back, `id` trusted on one side
+    /// alone: whether `id` applies as a may-grant grant where trusted, and whether the reading
+    /// differs where the switch reaches.
+    fn switch(&mut self, trust: BTreeSet<WriteId>, id: WriteId, counts: &mut Counts) -> (bool, bool) {
+        let held = self.trust.clone();
+        let ch = self.set_trust(trust);
+        let reached = self.facts.reached(&ch);
+        let there = self.probe(&ch, &reached, counts);
+        let flag_there = self.status(&id) == Some(Status::MayGrant);
+        self.set_trust(held);
+        let flag_here = self.status(&id) == Some(Status::MayGrant);
+        let by_flag = if self.trust.contains(&id) { flag_here } else { flag_there };
+        (by_flag, self.probe(&ch, &reached, counts) != there)
     }
 
     /// What a dispute compares, read only where `ch` reaches: whether each part it reports

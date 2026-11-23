@@ -1350,16 +1350,19 @@ impl Walk {
     }
 
     /// The dispute candidates (§5.1 Trust set): the held lowerings of another holder's edge,
-    /// not in `trust`, not dropped by a trusted write, that have a seed.
-    pub(super) fn candidates(&mut self, trust: &BTreeSet<WriteId>) -> Vec<WriteId> {
+    /// not in `trust`, not dropped by a trusted write, that have a seed; each with whether its
+    /// drops include another lowering of another holder's edge (a reach-back candidate).
+    pub(super) fn candidates(&mut self, trust: &BTreeSet<WriteId>) -> Vec<(WriteId, bool)> {
         let slots: Vec<Slot> = self.ids.values().copied().collect();
+        let contested = |w: &Self, s: Slot| w.it(s).lowering() && w.ed(w.it(s).e).name.0 != w.it(s).signer;
+        let back: BTreeSet<Slot> = slots.iter().filter(|&&s| contested(self, s)).filter_map(|&s| self.it(s).dropped).collect();
         let mut out = vec![];
         for s in slots {
             let it = self.it(s);
             let by_trusted = it.seeded || it.dropped.is_some_and(|d| trust.contains(&self.it(d).id));
             let id = it.id;
-            if it.lowering() && self.ed(it.e).name.0 != it.signer && !trust.contains(&id) && !by_trusted && !self.seeds_of(s).is_empty() {
-                out.push(id);
+            if contested(self, s) && !trust.contains(&id) && !by_trusted && !self.seeds_of(s).is_empty() {
+                out.push((id, back.contains(&s)));
             }
         }
         out

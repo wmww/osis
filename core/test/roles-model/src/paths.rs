@@ -355,6 +355,12 @@ pub struct Rules {
     pub commit_drops: bool,
     /// Which held writes are dispute candidates.
     pub candidates: Candidates,
+    /// A candidate whose drops in the reading include another explicit lowering of another
+    /// holder's edge (a reach-back candidate) is a dispute also where trusting it beside every
+    /// other reach-back candidate changes the reading from trusting those others alone
+    /// (notes/write-path-design.md §1 W10). False (control `-alone`): each candidate is tried
+    /// alone, so two that each undo one of two masking lowerings show nothing.
+    pub joint: bool,
     /// A commit rests on its key hop (notes/write-path-design.md, Keys K3): a path's role
     /// reads it, a lowering of the key's grant puts the commit in question. False (control
     /// `-no-key-hop`): the key hop is never read, so a removed key keeps signing.
@@ -487,6 +493,7 @@ impl Rules {
             stands: false,
             own_end: false,
             candidates: Candidates::All,
+            joint: false,
             seeds_by_need: false,
             drops: Drops::Part,
             answers: Answers::AnyCut,
@@ -519,6 +526,7 @@ impl Rules {
             cover_facts: false,
             commit_drops: true,
             candidates: Candidates::Explicit,
+            joint: true,
             key_hop: true,
             seeds_by_need: true,
             refuse_shapes: false,
@@ -2032,7 +2040,8 @@ fn unjustified(w: &World, rules: &Rules, v: &View, rd: &Reading) -> Set {
 /// Disputes: the candidates (`Candidates`: held edge writes of another holder's edge giving it
 /// below admin at their `ts`, but finalizes; under `Candidates::Explicit` no self-removal and none
 /// applied as a may-grant grant where trusted), not trusted and not dropped by a trusted write's
-/// seeds, whose trust changes the reading (what applies, what is valid, the roles).
+/// seeds, whose trust changes the reading (what applies, what is valid, the roles), or (`joint`)
+/// a reach-back candidate whose trust beside the others changes it from the others alone.
 /// spec/permissions.md §5.1 asks instead that the walk not apply it, that it apply once trusted and
 /// lower its edge (finding 21); a removal that applies but whose reach-back the walk cannot undo
 /// (its drops of a lowering that dropped in turn, or of a grant a lowering applied under) changes
@@ -2047,21 +2056,36 @@ pub fn disputes(w: &World, rules: &Rules, v: &View) -> Vec<Id> {
 pub fn disputes_by(w: &World, rules: &Rules, v: &View, differs: impl Fn(&Reading, &Reading) -> bool) -> Vec<Id> {
     let rd = judge(w, rules, v);
     let explicit = rules.candidates == Candidates::Explicit;
+    let cands: Vec<Id> = v
+        .held
+        .iter()
+        .copied()
+        .filter(|&r| {
+            let Kind::Edge { holder, .. } = &w.commits[r].kind else { return false };
+            *holder != w.commits[r].signer
+                && rules.lowering(w, r).is_some()
+                && !(explicit && w.leave(r))
+                && !v.trust.contains(&r)
+                && !rd.dropper.get(&r).is_some_and(|d| v.trust.contains(d))
+                // trusted, a write with no seeds of its own reads as untrusted: the same walk
+                && !seeds(w, rules, v, &Set::from([r])).is_empty()
+        })
+        .collect();
+    // the reach-back candidates: those whose drops include another candidate-shaped lowering;
+    // tried together, each left out in turn (one alone is the plain test)
+    let back: Set = if rules.joint { cands.iter().copied().filter(|&r| rd.dropper.iter().any(|(&j, &d)| d == r && candidate(w, rules, j))).collect() } else { Set::new() };
+    let trusting = |s: &Set| View { trust: v.trust.union(s).copied().collect(), ..v.clone() };
+    let joint = (back.len() > 1).then(|| judge(w, rules, &trusting(&back)));
     let mut out = vec![];
-    for &r in &v.held {
-        let Kind::Edge { holder, .. } = &w.commits[r].kind else { continue };
-        if *holder == w.commits[r].signer || rules.lowering(w, r).is_none() || (explicit && w.leave(r)) || v.trust.contains(&r) || rd.dropper.get(&r).is_some_and(|d| v.trust.contains(d)) {
-            continue;
-        }
-        // trusted, a write with no seeds of its own reads as untrusted: the same walk
-        if seeds(w, rules, v, &Set::from([r])).is_empty() {
-            continue;
-        }
+    for r in cands {
         let t = judge(w, rules, &v.clone().trusting_also(r));
         if explicit && t.by_flag.contains(&r) {
             continue;
         }
-        if differs(&t, &rd) {
+        let jointly = || {
+            joint.as_ref().is_some_and(|all| back.contains(&r) && !all.by_flag.contains(&r) && differs(all, &judge(w, rules, &trusting(&back.iter().copied().filter(|&x| x != r).collect()))))
+        };
+        if differs(&t, &rd) || jointly() {
             out.push(r);
         }
     }

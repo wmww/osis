@@ -2130,6 +2130,7 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-facts" => Rules { cover_facts: true, ..f },
         "-own-drops" => Rules { commit_drops: false, ..f },
         "-all-candidates" => Rules { candidates: Candidates::All, ..f },
+        "-alone" => Rules { joint: false, ..f },
         "-seeds-all" => Rules { seeds_by_need: false, ..f },
         "-refuse-shapes" => Rules { refuse_shapes: true, ..f },
         "-until-at-key" => Rules { until: Until::AtKey, ..f },
