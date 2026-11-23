@@ -2294,14 +2294,14 @@ fn paste_out_of_clipboard_order_fails_spec_5_7() {
     assert!(b.apply(&op(Op::Paste { dots: qd, at: 3 }), &view).is_err(), "d lies before q");
 }
 
-/// §4.7, §5.7; spec/requirements.md, Scale: an expired list element stays as a value-less record
-/// (a later insert may anchor at it), held in a range record as its creation `ts` and, when not
-/// anchored at its source's element before, its anchor: the bytes a state holds
-/// (`approx_bytes`) per element added from n to 10n elements, each appended by a commit of its
-/// own and expired, at the writer (compacted) and decoded from its snapshot, about what the snapshot encodes
+/// §5.7; spec/requirements.md, Scale: a deleted list element stays as a dead record (a later
+/// insert may anchor at it), held in a range record as its creation `ts` and, when not anchored
+/// at its source's element before, its anchor: the bytes a state holds (`approx_bytes`) per
+/// element added from n to 10n elements, each appended by a commit of its own and all deleted by
+/// one, at the writer (compacted) and decoded from its snapshot, about what the snapshot encodes
 /// at most, for a list of registers and one of structs, one writer appending or two taking turns.
 #[test]
-fn expired_elements_cost_a_ts_and_anchor_each_spec_4_7() {
+fn deleted_elements_cost_a_ts_and_anchor_each_spec_5_7() {
     for (ty, item) in [(Ty::List(Box::new(Ty::Register)), (|c: usize| s(&c.to_string())) as fn(usize) -> Value), (list_ty(), |c: usize| item(c as i64, 1))] {
         let view = TyView(ty);
         for writers in [1u8, 2] {
@@ -2313,17 +2313,17 @@ fn expired_elements_cost_a_ts_and_anchor_each_spec_4_7() {
                     let st = ws[k].state.clone();
                     ws.iter_mut().for_each(|w| w.state = st.clone());
                 }
+                ws[0].grow(10 + n as u64, &[op(Op::Delete { at: 0, len: n })], &view);
                 let mut st = ws[0].state.clone();
-                st.strip(&|_: &crate::stamp::Dot| true);
                 st.compact();
                 let snap = via_snapshot(&st);
                 assert_eq!(snap, st);
-                assert_eq!(st.read(), None, "every element expired");
+                assert_eq!(st.read(), Some(Value::List(vec![])), "every element deleted");
                 [st.approx_bytes(), snap.approx_bytes(), crate::testutil::snapshot_bytes(&snap).len()]
             };
             let (x, y) = (cost(20), cost(200));
             let per: Vec<usize> = (0..3).map(|i| (y[i] - x[i]) / 180).collect();
-            assert!(per[0] <= 8 + 24 * usize::from(writers - 1) && per[1] == per[0] && per[0] <= per[2] + 2, "bytes per expired element with {writers} writers (state, snapshot decoded, encoded): {per:?}");
+            assert!(per[0] <= 8 + 24 * usize::from(writers - 1) && per[1] == per[0] && per[0] <= per[2] + 2, "bytes per deleted element with {writers} writers (state, snapshot decoded, encoded): {per:?}");
         }
     }
 }
