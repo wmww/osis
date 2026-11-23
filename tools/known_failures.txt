@@ -20,3 +20,4 @@ osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=300644506442,OSIS
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=610442177300,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
 osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=689880325750,OSIS_SEQ_COLD_SEEDS=1 issues/seq-cold-placement-kept.md placement kept
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=421200482733,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=278997924631,OSIS_ORDER_LEN=60 issues/order-settings-seed.md applied: model false, node true; parts \[.*created\.0 mint admin
