@@ -28,6 +28,7 @@ In-flight lines name issues in words, not paths: a branch that closes its issue 
 - osprey box has no base unit in notes/time-limits.md: `tools/heavy tools/limits.py unit` before a gate runs there.
 
 ## Habits that saved time
+- Gate and land with `tools/merge-branch gate NAME` (background, claudewait) and `tools/merge-branch land NAME`: claim, rebase, policy, gate, verify and clean-up in one checked tool (notes/gate.md).
 - Gate commands: `mkdir` the log dir and set `L=` in their own step, never after an `&&` chain that can fail first (a missing dir or an unset `L` means the gate never ran). After `tools/land`, check main moved before deleting the local branch.
 - Never `cd` into a worktree path by guess: `git worktree list`, then the path whose branch matches.
 - Land only after `git merge-base --is-ancestor origin/main HEAD`; if main moved, test the crates both sides changed.
