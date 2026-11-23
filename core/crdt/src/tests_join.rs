@@ -2,7 +2,7 @@
 //! per encoding built directly (§4.3, §5.2-§5.4). The join's differential is `tests_model`.
 
 use crate::fragment::Fragment;
-use crate::testutil::{frag, history, sess, sink_no_seq};
+use crate::testutil::{frag, history, node, sink_no_seq};
 use crdt_model::ops::Ty;
 use proptest::prelude::*;
 
@@ -15,12 +15,12 @@ fn settled(seed: u64, types: &[Ty]) {
     let mut r = crate::testutil::rng(seed | 1);
     // a writer per type
     let ds: Vec<Fragment> = history(&mut r, types, types.len(), 4).iter().map(|c| frag(&c.delta)).collect();
-    let low = Fragment::Register(Register { reset: Some(Stamp::new(crate::testutil::ts(0), sess(osis_base::Tid::from_bytes([7; 15])), 1)), write: None });
+    let low = Fragment::Register(Register { reset: Some(Stamp::new(crate::testutil::ts(0), node(7), 1)), write: None });
     assert!(ds.iter().any(|d| crate::testutil::joined(&low, d) != low));
     let at = crate::testutil::ts(1 << 45);
     assert!(ds.iter().all(|d| matches!(d, Fragment::Register(_)) || !d.settled_above(at)));
     assert!(!Fragment::default().settled_above(crate::testutil::ts(0)));
-    let stamp = Stamp::new(at, sess(osis_base::Tid::from_bytes([7; 15])), 1);
+    let stamp = Stamp::new(at, node(7), 1);
     let meta = Meta { reset: Some(stamp.clone()), w: None, ..Meta::default() };
     let states = [
         Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: stamp.clone(), value: Some(osis_base::Value::Int(1)) }) }),

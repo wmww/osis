@@ -6,7 +6,7 @@ use crate::fragment::{Elem, Fragment, Meta, RegWrite};
 use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, Stamp};
-use crate::testutil::{TyView, frag, history, history_honest, joined, sess, sink_no_seq, ts};
+use crate::testutil::{TyView, frag, history, history_honest, joined, node, sink_no_seq, ts};
 use crate::winners::{ByWrite, Hiders, Kind, Place, Winners, Won};
 use crdt_model::ops::Ty;
 use osis_base::{Tid, Ts, Value};
@@ -480,7 +480,7 @@ proptest! {
 }
 
 fn x() -> Source {
-    sess(Tid::from_bytes([1; 15]))
+    node(1)
 }
 
 fn text_view() -> TyView {
@@ -545,7 +545,7 @@ fn move_beaten_as_cur_dies_kept_as_prev_spec_4_8() {
 fn text_flag_below_creation_dies_kept_in_record_spec_4_8() {
     let d = Dot::new(x(), 5);
     let c = Stamp::new(ts(4), x(), 5);
-    let del = Stamp::new(ts(2), sess(Tid::from_bytes([2; 15])), 9);
+    let del = Stamp::new(ts(2), node(2), 9);
     let one = |el: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), el)])));
     let flag = one(SeqElem { deleted: Some((del.clone(), true)), ..SeqElem::bare() });
     let created = one(SeqElem { created: Some((c.clone(), crate::seq::Anchor::Head)), content: SeqContent::Char('a'), pos: vec![(c, crate::seq::Anchor::Head, None)], ..SeqElem::bare() });
@@ -860,8 +860,8 @@ fn a_removal_dates_only_writes_it_hides_spec_5_5() {
 #[test]
 fn a_move_dies_by_a_deleted_creation_above_it_spec_4_8() {
     let d = Dot::new(x(), 3);
-    let mv = Stamp::new(ts(17), sess(Tid::from_bytes([4; 15])), 1);
-    let (c, del) = (Stamp::new(ts(19), x(), 3), Stamp::new(ts(38), sess(Tid::from_bytes([4; 15])), 6));
+    let mv = Stamp::new(ts(17), node(4), 1);
+    let (c, del) = (Stamp::new(ts(19), x(), 3), Stamp::new(ts(38), node(4), 6));
     let one = |el: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), el)])));
     let moved = one(SeqElem { pos: vec![(mv.clone(), crate::seq::Anchor::Head, None)], ..SeqElem::bare() });
     let created = one(SeqElem { created: Some((c.clone(), crate::seq::Anchor::Head)), content: SeqContent::Char('a'), pos: vec![(c, crate::seq::Anchor::Head, None)], deleted: Some((del, true)), ..SeqElem::bare() });

@@ -7,7 +7,7 @@ use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::stamp::Interner;
 use crate::stream::Piece;
 use crate::tests_decoder::{mutate, mutate_tree};
-use crate::testutil::{MCommit, frag, history_bulk, history_with, mapply, sess};
+use crate::testutil::{MCommit, frag, history_bulk, history_with, mapply, node};
 use crate::testutil::{joined, snap_cx, writer_cx};
 use crate::wire::{Delta, DeltaCtx, Frontiers, Snapshot};
 use crate::{Checked, Fragment, decode_checked, decode_delta, decode_snapshot, stream_checked, stream_delta, stream_snapshot};
@@ -583,7 +583,7 @@ fn stream_memory_child(arg: &str) {
     let n: usize = String::from_utf8(read("pages")).unwrap().parse().unwrap();
     let mut pages = Blobs::new(PageParams::FORMAT);
     pages.pages = (0..n).map(|k| read(&format!("p{k}"))).collect();
-    let node = sess(osis_base::Tid::from_bytes([1; 15]));
+    let node = node(1);
     let snapshot = name == "snapshot";
     let cx = if snapshot { snap_cx() } else { DeltaCtx { ts: crate::testutil::ts(1 << 20), own: node, range: crate::CounterRange { lo: range[0], hi: range[1] }, kind: crate::DeltaKind::Writer } };
     if let Some(old) = phase.strip_prefix("encode-").map(|x| x == "old") {
@@ -626,7 +626,7 @@ fn stream_memory_child(arg: &str) {
 /// A writer's delta creating a 10^5-key map, its context, and the map value (an encode step
 /// keeps it: freed, its memory would hide the encoder's peak).
 fn big_map() -> (Fragment, DeltaCtx, osis_base::Value) {
-    let node = sess(osis_base::Tid::from_bytes([1; 15]));
+    let node = node(1);
     let map = osis_base::Value::Map((0..100_000).map(|i| (osis_base::Value::Str(format!("key {i}")), osis_base::Value::Int(i))).collect());
     let mut w = crate::Writer::new(crate::testutil::ts(1 << 20), node.clone(), 1);
     let d = crate::create(&mut w, &crate::testutil::TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))), &map).unwrap();
@@ -696,8 +696,8 @@ fn stream_memory_big_map() {
 fn map_dot_prunes_across_pages_spec_3_3() {
     use crate::fragment::{Eid, Entry, Map, Meta, RegWrite, Register};
     use crate::stamp::{Dot, Stamp};
-    use osis_base::{Tid, Value};
-    let node = sess(Tid::from_bytes([1; 15]));
+    use osis_base::Value;
+    let node = node(1);
     let st = |t: u64, c: u64| Stamp::new(crate::testutil::ts(t << 16), node.clone(), c);
     let reg = |s: Stamp| Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(1)) }) }));
     let (mut straddled, mut seen) = ([0, 0], 0);

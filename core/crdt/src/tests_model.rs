@@ -8,7 +8,7 @@ use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot}
 use crate::fragment::Fragment;
 use crate::seq::SeqContent;
 use crate::stamp::{Dot, Interner};
-use crate::testutil::{MCommit, check_bound, check_lin, frag, history_twins, history_with, mapply, ostate, sink_no_seq, source, value};
+use crate::testutil::{node, MCommit, check_bound, check_lin, frag, history_twins, history_with, mapply, ostate, sink_no_seq, source, value};
 use crate::tests_seq::{as_carried, map_of_text};
 use crate::testutil::{joined, snap_cx, writer_cx};
 use crate::wire::{Delta, Frontiers, Snapshot};
@@ -594,8 +594,8 @@ fn implied_creation_pos_decodes_back_spec_3_3() {
     use crate::fragment::{Eid, Entry, Map, Meta};
     use crate::seq::{Anchor, Seq, SeqElem};
     use crate::stamp::Stamp;
-    use crate::testutil::{sess, ts};
-    let (s1, s2) = (sess(osis_base::Tid::from_bytes([1; 15])), sess(osis_base::Tid::from_bytes([2; 15])));
+    use crate::testutil::ts;
+    let (s1, s2) = (node(1), node(2));
     let st = |t: u64, s: &crate::stamp::Source, c: u64| Stamp::new(ts(t << 16), s.clone(), c);
     let d = Dot::new(s1.clone(), 1);
     let e = Dot::new(s1.clone(), 2);
