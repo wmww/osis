@@ -175,6 +175,37 @@ pub(crate) fn merge(mem: Vec<(Vec<u8>, Vec<u8>)>, durable: Vec<(Vec<u8>, Vec<u8>
     out
 }
 
+/// `merge` for two descending pages.
+pub(crate) fn merge_rev(mem: Vec<(Vec<u8>, Vec<u8>)>, durable: Vec<(Vec<u8>, Vec<u8>)>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut out = Vec::with_capacity(limit.min(mem.len() + durable.len()));
+    let (mut a, mut b) = (mem.into_iter().peekable(), durable.into_iter().peekable());
+    while out.len() < limit {
+        let next = match (a.peek(), b.peek()) {
+            (Some(x), Some(y)) if x.0 == y.0 => {
+                b.next();
+                a.next()
+            }
+            (Some(x), Some(y)) if x.0 > y.0 => a.next(),
+            (Some(_), Some(_)) => b.next(),
+            (Some(_), None) => a.next(),
+            (None, Some(_)) => b.next(),
+            (None, None) => None,
+        };
+        let Some(n) = next else { break };
+        out.push(n);
+    }
+    out
+}
+
+/// The rows of `m` with `start <= key < end`, greatest first, at most `limit`.
+pub(crate) fn range_rev(m: Option<&Rows>, start: &[u8], end: &[u8], limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let Some(m) = m else { return Vec::new() };
+    if start >= end {
+        return Vec::new();
+    }
+    m.range(start.to_vec()..end.to_vec()).rev().take(limit).map(|(k, v)| (k.clone(), v.clone())).collect()
+}
+
 /// The rows of `m` with `start <= key < end`, at most `limit`.
 pub(crate) fn range(m: Option<&Rows>, start: &[u8], end: Option<&[u8]>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
     let Some(m) = m else { return Vec::new() };

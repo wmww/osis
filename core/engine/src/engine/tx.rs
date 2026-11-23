@@ -642,6 +642,9 @@ impl Tx<'_> {
         self.core.note_kept(id, meta);
         let leaving: Vec<usize> = self.core.ix.commits.get(id).map(|m| (0..m.view.aspects.len()).filter(|ai| m.holds(*ai) && !m.stripped(*ai) && blob.part(*ai).is_none()).collect()).unwrap_or_default();
         self.pin_states(id, &leaving)?;
+        for ai in &leaving {
+            crate::apply::remove_page_index(self, id, Some(*ai))?;
+        }
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
         crate::sync_ids::opened::prune(self, id, meta)?;
@@ -666,6 +669,7 @@ impl Tx<'_> {
     /// Removes a commit record (shredded) with what the index keeps beside it.
     pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
+        crate::apply::remove_page_index(self, id, None)?;
         crate::sync_ids::opened::forget(self, id)?;
         index::remove_perm(self, id)?;
         index::remove_addenda(self, id)

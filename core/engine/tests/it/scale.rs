@@ -366,35 +366,31 @@ fn text_ops(n: usize) -> Vec<[u64; 5]> {
     out
 }
 
-// spec/crdt.md §5.7 (index paths never go on the wire): ops resolve by index against the placement, §6, §8; spec/requirements.md,
-// Scale: in a paged text of n and 10n chars, each op in a new session: a read of 100 chars, an
-// insert, a delete, a move of a few chars, an edit as a text session writes it, an undo, a move of
-// a few blocks, loads and writes only its pages and placement rows (through the stored placement)
-// and reads a fixed number of store rows. 10n is 800k chars: about 4-7 minutes in a debug build.
+// spec/crdt.md §5.7 (index paths never go on the wire): ops resolve by index against the placement, §6, §8; spec/commits.md §5
+// (when a body was replaced: dated from the held writes); spec/requirements.md, Scale: in a
+// paged text of n and 10n chars written in one kept commit, each op in a new session: a read of
+// 100 chars, an insert, a delete, a move of a few chars, an edit as a text session writes it, an
+// undo, a move of a few blocks, loads and writes only its pages and placement rows (through the
+// stored placement), reads a fixed number of store rows, and reads no blob of the kept first
+// commit (its held writes and its date are rows) but an undo, which reads the pages holding the
+// chars it restores: at most two wire pages (`CHUNK_MAX` each: a dot's leaf and the one a run
+// before it may reach from), where the text's one page at n is no measure for a page at 10n.
+// 10n is 800k chars: about 4 minutes in a debug build.
 #[test]
-#[ignore = "by hand: an 800k-char text, about 4-7 minutes in a debug build"]
+#[ignore = "by hand: an 800k-char text, about 4 minutes in a debug build"]
 fn text_edits_are_flat() {
     let (small, big) = (text_ops(80_000), text_ops(800_000));
     for (i, what) in TEXT_STEPS.iter().enumerate() {
         for (k, count) in ["pages loaded", "pages written", "store bytes", "store rows read"].iter().enumerate() {
             flat(&format!("{what}: {count}"), small[i][k], big[i][k]);
         }
-    }
-}
-
-// issues/kept-edits-read-whole-bodies.md: on a kept text written whole in one commit, every edit
-// in a new session reads that commit's body whole (the held writes read anew, a part dated by spec/commits.md §5
-// whole, undo's kept-history reads): store blob bytes read grow with the text, where
-// spec/requirements.md, Scale wants O(change). Fails until fixed.
-#[test]
-#[ignore = "repro: issues/kept-edits-read-whole-bodies.md; by hand, about 4-7 minutes in a debug build"]
-fn repro_text_edits_read_whole_bodies() {
-    let (small, big) = (text_ops(80_000), text_ops(800_000));
-    for (i, what) in TEXT_STEPS.iter().enumerate() {
         println!("{what}: store blob bytes read: {} at n, {} at 10n", small[i][4], big[i][4]);
-    }
-    for (i, what) in TEXT_STEPS.iter().enumerate() {
-        flat(&format!("{what}: store blob bytes read"), small[i][4], big[i][4]);
+        if *what == "undo of the edit" {
+            let pages = 2 * osis_base::format::CHUNK_MAX as u64;
+            assert!(small[i][4] <= pages && big[i][4] <= pages, "{what}: blob bytes read {} at n, {} at 10n: more than two pages of the kept body", small[i][4], big[i][4]);
+        } else {
+            assert_eq!((small[i][4], big[i][4]), (0, 0), "{what}: reads a blob of the kept body");
+        }
     }
 }
 
@@ -515,10 +511,10 @@ fn purge_on_replace_pays_its_state() {
 /// pending commits read again, perm commits walked) added as spans.
 fn measured_at<T>(lp: &mut LocalPeer, i: usize, f: impl FnOnce(&mut LocalPeer) -> T) -> (T, Work) {
     let b = lp.peers[i].backend.clone();
-    let c = |lp: &LocalPeer| [lp.peers[i].engine.death_walks(), lp.peers[i].engine.replaced_reads(), lp.peers[i].engine.examined(), osis_perm::commits_walked(), lp.peers[i].engine.held_writes_copied()];
+    let c = |lp: &LocalPeer| [lp.peers[i].engine.death_walks(), lp.peers[i].engine.replaced_reads(), lp.peers[i].engine.examined(), osis_perm::commits_walked()];
     let c0 = c(lp);
     let (r, mut w) = measured(&b, || f(&mut *lp));
-    for (k, (x, y)) in ["death walks", "replaced reads", "examined", "perm commits walked", "held writes copied"].into_iter().zip(c0.into_iter().zip(c(lp))) {
+    for (k, (x, y)) in ["death walks", "replaced reads", "examined", "perm commits walked"].into_iter().zip(c0.into_iter().zip(c(lp))) {
         // a restart counts from 0 again
         w.spans.insert(k, if y >= x { y - x } else { y });
     }
@@ -982,7 +978,7 @@ fn kept_set_changes(n: usize) -> [Work; 2] {
 fn a_body_joining_or_leaving_dates_only_what_it_moves_spec_commits_5() {
     let (a, b) = (kept_set_changes(20), kept_set_changes(200));
     for (what, a, b) in [("an element added", &a[0], &b[0]), ("a covered body dropped", &a[1], &b[1])] {
-        for k in ["deaths: a body", "held writes", "held writes copied", "replaced at"] {
+        for k in ["deaths: a body", "held writes", "replaced at"] {
             flat(&format!("{what}: {k}"), a.n(k), b.n(k));
         }
     }
@@ -1219,7 +1215,7 @@ const PAGED_HISTORY: usize = 64;
 // edge writes on one thing one by one does linear work, and at the end of the history a grant,
 // a removal and their arrival do flat work: perm places each write without walking the
 // history, and the node re-judges only the commits whose writes apply otherwise
-// (`Changed::commits`).
+// (`Changed::reached`).
 #[test]
 fn role_history_join_is_linear() {
     let (a, b) = (role_history_join(12), role_history_join(120));

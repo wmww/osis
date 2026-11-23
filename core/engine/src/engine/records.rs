@@ -66,6 +66,14 @@ pub const LEAVING: &[u8] = b"hr/";
 /// History cursors (`Indexes::leave_from`): `hf/` + aspect key, the due wall ms (8 bytes), then
 /// 0, or 1 + the last place out (`Ts`, commit ID).
 pub const LEAVE_FROM: &[u8] = b"hf/";
+/// A paged part's page index (`osis_crdt::PageIndex::to_bytes`, `apply::held_part_at`): `pi/` +
+/// commit ID + aspect index (4 bytes), in its commit's class; written when the part is applied,
+/// gone with the part.
+pub const PAGE_INDEX: &[u8] = b"pi/";
+/// An aspect's held writes (`retention::bounds::settle_index`): `hx/` + tid + 16 bytes of the
+/// AK's hash, then the rows of `osis_crdt::Held` (module doc there) and `!`, empty: the index
+/// is built.
+pub const HELD: &[u8] = b"hx/";
 /// Things held destroyed (`Indexes::destroyed`): `dt/` + tid, empty.
 pub const DESTROYED: &[u8] = b"dt/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.

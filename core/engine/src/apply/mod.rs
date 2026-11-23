@@ -2656,7 +2656,17 @@ pub(crate) fn each_held_page(tx: &mut Tx<'_>, id: &CommitId, ai: usize, want: Op
 pub(crate) fn held_part_at(tx: &mut Tx<'_>, id: &CommitId, ai: usize, at: &osis_crdt::Fragment) -> Result<(osis_crdt::Fragment, Option<Option<crate::engine::Gives>>)> {
     let stored = if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped(ai)) { None } else { tx.get_commit(id)?.and_then(|b| b.part(ai).cloned()) };
     let stamp = tx.commit_stamp(id);
-    let kept = stored.as_ref().and_then(|p| tx.core.decoded.page_index(id, stamp, p));
+    let mut kept = stored.as_ref().and_then(|p| tx.core.decoded.page_index(id, stamp, p));
+    // a paged part's index is stored beside it since its apply: a session streams no page to
+    // find the pages of a position
+    if kept.is_none()
+        && let Some(p) = &stored
+        && let Some(x) = stored_page_index(tx, id, ai)?
+    {
+        let x = Arc::new(x);
+        tx.core.decoded.keep_page_index(*id, stamp, p, x.clone());
+        kept = Some(x);
+    }
     // a part with no pages is its skeleton: read decoded once per write of its record, not
     // streamed whole at each read
     if let Some(p) = &stored
@@ -2685,6 +2695,54 @@ pub(crate) fn held_part_at(tx: &mut Tx<'_>, id: &CommitId, ai: usize, at: &osis_
         tx.core.decoded.keep_page_index(*id, stamp, p, Arc::new(x));
     }
     Ok((part, gives))
+}
+
+/// The root of the held part of commit `id` on aspect `ai`: its skeleton, no page read (a
+/// stripped part's leftover whole). What its root's own writes read (a whole reset).
+pub(crate) fn held_root(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Option<osis_crdt::Fragment>> {
+    let mut root = None;
+    let none = |_: &[osis_crdt::Step], _: &[usize]| false;
+    let held = each_held_page(tx, id, ai, Some(&none), &mut |_, p| {
+        if let osis_crdt::Piece::Skeleton(f) = p {
+            root = Some(f);
+        }
+        Ok(())
+    })?;
+    Ok(held.and(root))
+}
+
+fn page_index_key(id: &CommitId, ai: usize) -> Vec<u8> {
+    [crate::engine::records::PAGE_INDEX, &id.0[..], &(ai as u32).to_be_bytes()].concat()
+}
+
+/// The stored page index of part `ai` of commit `id` (`put_page_index`), if it has one: a paged
+/// part applied here.
+pub(crate) fn stored_page_index(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Option<osis_crdt::PageIndex>> {
+    match tx.txn.get_local(&page_index_key(id, ai))? {
+        Some(b) => Ok(Some(osis_crdt::PageIndex::from_bytes(&b)?)),
+        None => Ok(None),
+    }
+}
+
+/// Keeps the page index of paged part `ai` of commit `id`, in the commit's class.
+pub(crate) fn put_page_index(tx: &mut Tx<'_>, id: &CommitId, ai: usize, x: &osis_crdt::PageIndex) -> Result<()> {
+    let memory = tx.is_memory_commit(id);
+    let (k, v) = (page_index_key(id, ai), x.to_bytes());
+    tx.in_class(memory, |tx| Ok(tx.txn.put_local(&k, &v, osis_store::Shred::No)?))
+}
+
+/// Forgets the page index of part `ai` of commit `id` (its body goes), every part's with `None`.
+pub(crate) fn remove_page_index(tx: &mut Tx<'_>, id: &CommitId, ai: Option<usize>) -> Result<()> {
+    match ai {
+        Some(ai) => drop(tx.txn.remove_local(&page_index_key(id, ai), osis_store::Shred::Yes)?),
+        None => {
+            let prefix = [crate::engine::records::PAGE_INDEX, &id.0[..]].concat();
+            for (k, _) in tx.txn.scan_local(&prefix, &[], usize::MAX)? {
+                tx.txn.remove_local(&k, osis_store::Shred::Yes)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether commit `id` holds a body on aspect `ai` to read (what `each_held_piece` reads): a

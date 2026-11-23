@@ -40,7 +40,9 @@ struct Aspect {
     due: BTreeSet<Place>,
     /// Parts not fetched yet (`Hold::Missing`).
     missing: BTreeSet<Place>,
-    /// Snapshot parts: what they hold is read whole, never by position.
+    /// Snapshot parts, and paged parts (their stored page index finds a position's pages,
+    /// `apply::held_part_at`): what they hold is read where an undo reads, never filed by
+    /// position, so indexing a paged part reads none of it.
     snaps: BTreeSet<Place>,
 }
 
@@ -138,6 +140,12 @@ fn examine(tx: &mut Tx<'_>, k: &(Tid, Ak), place: Place) -> Result<()> {
     if !holds {
         return Ok(());
     }
+    if crate::apply::stored_page_index(tx, &c, ai)?.is_some() {
+        if let Some(a) = tx.core.touches.aspects.get_mut(k) {
+            a.snaps.insert(place);
+        }
+        return Ok(());
+    }
     match crate::apply::held_part(tx, &c, ai)? {
         Some(d) => tx.core.touches.file(k, (ts, c), osis_crdt::touches(d.fragment())),
         // its record not written yet in this transaction: read at the next check
@@ -183,7 +191,7 @@ pub(crate) fn candidates(core: &Core, tid: &Tid, ak: &Ak, need: &[Pos]) -> BTree
 /// The indexed parts of `(tid, ak)` writing at or below `p`.
 pub(crate) fn inside(core: &Core, tid: &Tid, ak: &Ak, p: &[Seg]) -> BTreeSet<Place> {
     let Some(a) = core.touches.aspects.get(&(*tid, ak.clone())) else { return BTreeSet::new() };
-    below(&a.by_pos, p).flat_map(|(_, s)| s.iter().copied()).collect()
+    below(&a.by_pos, p).flat_map(|(_, s)| s.iter().copied()).chain(a.snaps.iter().copied()).collect()
 }
 
 /// Whether a valid part of `(tid, ak)` ordered before `at` is not fetched yet (`ensure` first).

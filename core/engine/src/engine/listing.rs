@@ -145,7 +145,8 @@ pub(crate) fn in_kept_history(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak,
     if crate::retention::history::of(tx.core, tid, ak).kept_whenever_replaced(written, now) {
         return Ok(true);
     }
-    Ok(crate::retention::bounds::delta_live(tx, c, tid, ak)? || crate::retention::bounds::body_history_keep(tx, c, tid, ak)? > now)
+    // its history first: a row read, where liveness may read the body
+    Ok(crate::retention::bounds::body_history_keep(tx, c, tid, ak)? > now || crate::retention::bounds::delta_live(tx, c, tid, ak)?)
 }
 
 /// Part `ai` of `c` as listed, `None` when it is not (the listing rule, above). `itself`: an

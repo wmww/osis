@@ -105,6 +105,34 @@ fn shredded_drops_rotate_once() {
     assert_eq!(t.scan_local(b"b/", b"", 100).unwrap(), vec![]);
 }
 
+// spec: none (node-local bookkeeping): `scan_local_rev` gives the rows of a key range greatest
+// first, across leaves (2000 rows) and the memory overlay, as a filter of the ascending scan.
+#[test]
+fn local_rows_scan_descending() {
+    let (_dev, mut rng, mut s) = fresh(cfg());
+    let mut t = s.transaction(&mut rng).unwrap();
+    let key = |i: u32| [b"r/", &(i * 3).to_be_bytes()[..]].concat();
+    for i in 0..2000u32 {
+        t.put_local(&key(i), &[i as u8; 40], Shred::No).unwrap();
+    }
+    t.put_local(b"q/x", b"below", Shred::No).unwrap();
+    t.put_local(b"s/x", b"above", Shred::No).unwrap();
+    t.commit().unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.set_memory(true);
+    t.put_local(&[b"r/", &10u32.to_be_bytes()[..]].concat(), b"memory", Shred::No).unwrap();
+    t.set_memory(false);
+    let all = t.scan_local(b"r/", b"", usize::MAX).unwrap();
+    assert_eq!(all.len(), 2001);
+    for (from, before, limit) in [(0u32, 6000u32, 5000usize), (0, 6000, 7), (10, 11, 5), (10, 10, 5), (11, 13, 5), (2999, 3001, 5), (5990, 9000, 3), (40, 30, 3), (1, 5999, 1)] {
+        let (f, b) = (from.to_be_bytes(), before.to_be_bytes());
+        let got = t.scan_local_rev(b"r/", &f, &b, limit).unwrap();
+        let (lo, hi) = ([b"r/", &f[..]].concat(), [b"r/", &b[..]].concat());
+        let want: Vec<_> = all.iter().rev().filter(|(k, _)| *k >= lo && *k < hi).take(limit).cloned().collect();
+        assert_eq!(got, want, "{from}..{before}, limit {limit}");
+    }
+}
+
 // spec: none (node-local bookkeeping); notes/local-store.md, Units: `*_local` records.
 #[test]
 fn local_records() {

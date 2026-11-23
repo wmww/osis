@@ -538,11 +538,6 @@ impl Engine {
         self.core.death_walks
     }
 
-    /// Bodies of held writes an amend copied (`Core::held_writes_copied`).
-    #[doc(hidden)]
-    pub fn held_writes_copied(&self) -> u64 {
-        self.core.held_writes_copied
-    }
 
     /// Aspect rebuilds run so far. Tests: a validity change on a signal rebuilds nothing.
     #[doc(hidden)]

@@ -34,6 +34,7 @@ mod undo;
 mod view;
 mod walk;
 mod winners;
+mod held;
 mod wire;
 
 // test support, also built for the fuzz targets (`--cfg fuzzing`, core/test/fuzz); test code
@@ -72,7 +73,8 @@ mod tests_stream;
 mod tests_winners;
 
 pub use changes::Changes;
-pub use winners::{ByWrite, Hiders, Kind, Place, Winners, Won};
+pub use winners::{Kind, Place, Winners, Won};
+pub use held::{BUCKET, Body, BodyWrites, Corrupt, Held, HeldWrite, MemRows, Row, Rows};
 pub use copies::CopyIndex;
 pub use codec::{LinkTree, PageAt, TreePlace, decoded_bound, decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array, page_items, sources_of};
 pub use error::Error;

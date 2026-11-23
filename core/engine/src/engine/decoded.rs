@@ -16,8 +16,9 @@
 //! cache's to check: `apply::check_rebuilt` reads held bodies with their pages past it.
 //!
 //! Beside them, a paged part's page index (`osis_crdt::PageIndex`, one entry per leaf page),
-//! found by its first read, so a read at some positions (`apply::held_part_at`) fetches only
-//! the pages holding them.
+//! read from its stored row (`apply::stored_page_index`, written at the part's apply) or found
+//! by a first read streaming the part, so a read at some positions (`apply::held_part_at`)
+//! fetches only the pages holding them.
 //!
 //! Bounded by bytes, which a memo (`osis_base::memo`) is not: its values are whole bodies.
 
@@ -233,17 +234,17 @@ mod tests {
     }
 
     // A cover judgment reads of a snapshot its root and the pages holding the body's positions
-    // (spec/commits.md §5 Covered), found by the snapshot's page index, which its first read
-    // builds and keeps per write of its record: past that read, a judgment's work is flat in the
-    // snapshot's size and judging every body is O(snapshot + bodies). The index holds one entry
-    // per page.
+    // (spec/commits.md §5 Covered), found by the snapshot's page index, stored when the snapshot
+    // was applied and read into memory per write of its record: a judgment's work, the first of
+    // a session too, is flat in the snapshot's size. The index holds one entry per page.
     #[test]
     fn cover_judgments_read_the_bodys_pages_spec_commits_5() {
         use osis_crdt::{Op, PathOp, PathSeg};
         const BODIES: i64 = 100;
-        // per size: (bytes streamed by the first judgment, by the rest, pieces streamed by the
-        // rest, the snapshot's part walked by the rest, the index kept)
-        let judge = |n: i64| -> (u64, u64, u64, u64, usize) {
+        // per size: (bytes streamed by the first judgment after the decoded parts are dropped, by
+        // the rest, pieces streamed by the rest, the snapshot's part walked by the rest, the
+        // index kept, the snapshot's bytes with its pages)
+        let judge = |n: i64| -> (u64, u64, u64, u64, usize, u64) {
             let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
             let e = &mut lp.peers[0].engine;
             let me = e.me();
@@ -260,6 +261,8 @@ mod tests {
                 })
                 .collect();
             let s = e.snapshot(&t, &ak).unwrap().unwrap();
+            let pkg = e.package(&s).unwrap().unwrap();
+            let whole = (pkg.bytes.len() + pkg.blobs.iter().map(|b| b.1.len()).sum::<usize>()) as u64;
             e.core.decoded.clear();
             let mut judge = |c| assert_eq!(e.run(|tx| crate::retention::snapshot::covered(tx, &s, c, &t, &ak)).unwrap(), Some(true));
             let count = |costs: &[(&str, std::time::Duration, u64)], name: &str| costs.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
@@ -271,14 +274,14 @@ mod tests {
             let blob = e.run(|tx| tx.get_commit(&s)).unwrap().unwrap();
             let at = e.run(|tx| Ok(tx.commit_stamp(&s))).unwrap();
             let index = e.core.decoded.page_index(&s, at, &blob.parts[0]).unwrap().approx_bytes();
-            (count(&first, "stream: bytes"), count(&rest, "stream: bytes"), count(&rest, "apply: piece"), count(&rest, "covered: snapshot part bytes"), index)
+            (count(&first, "stream: bytes"), count(&rest, "stream: bytes"), count(&rest, "apply: piece"), count(&rest, "covered: snapshot part bytes"), index, whole)
         };
         let (small, large) = (judge(500), judge(5_000));
         let each = (BODIES - 1) as u64;
-        assert!(small.0 > 0 && large.0 > 5 * small.0, "the first judgment streams the snapshot whole: {small:?} {large:?}");
+        assert!(small.0 > 0 && large.0 <= 2 * (large.1 / each), "the first judgment streams what the rest do, never the snapshot whole: {small:?} {large:?}");
         assert_eq!((small.2, large.2), (3 * each, 3 * each), "the rest stream the body, the snapshot's skeleton and the body's page");
-        assert!(large.1 / each < large.0 / 4, "a page and the root, far below the snapshot: {large:?}");
+        assert!(large.1 / each < large.5 / 4, "a page and the root, far below the snapshot: {large:?}");
         assert_eq!(small.3, large.3, "the part walked is flat in the snapshot's size");
-        assert!(large.4 > 5 * small.4 && large.4 < large.0 as usize / 100, "the index grows with the pages, far below the snapshot: {small:?} {large:?}");
+        assert!(large.4 > 5 * small.4 && large.4 < large.5 as usize / 100, "the index grows with the pages, far below the snapshot: {small:?} {large:?}");
     }
 }

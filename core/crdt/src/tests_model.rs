@@ -231,14 +231,9 @@ pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fr
     // write held there before or after the join or in the delta, winning or not, or by a value
     // removal hiding it in the copies as joined (`hiders`): every input, forged copies included,
     // since a node that found none would fail the join with a local error
-    let mut by: crate::ByWrite<()> = crate::ByWrite::default();
-    let mut hiders = crate::Hiders::default();
-    for f in [&at, y, &at_after] {
-        by.note(&f.held_writes(), |_, _| ());
-        hiders.note(f);
-    }
+    let mut by = crate::tests_winners::held_of([&at, y, &at_after]);
     for w in killed {
-        assert!(by.first_superseding(&w, &hiders, |s, _| Some(s.ts)).is_some(), "a write dead at the reach dies by a write held there: {w:?}");
+        assert!(by.dies(&w).unwrap().is_some(), "a write dead at the reach dies by a write held there: {w:?}");
     }
 }
 
@@ -254,19 +249,15 @@ fn read_references_are_the_reads(st: &Fragment) {
 
 /// What a node dates a held body by (spec/commits.md §5, `retention::bounds::dated_replaced_at`):
 /// each write of a body that the join of `bodies` supersedes dies by a write one of them holds,
-/// winning or not, or by a removal hiding it as their copies join (`Hiders`): every input,
+/// winning or not, or by a removal hiding it as their copies join (`Held`): every input,
 /// forged copies included, since a node that found none would fail its tick with a local error.
 fn held_set_supersedes(bodies: &[Fragment]) {
     let all = bodies.iter().fold(Fragment::default(), |f, b| joined(&f, b));
-    let (mut by, mut hiders) = (crate::ByWrite::<()>::default(), crate::Hiders::default());
-    for b in bodies {
-        by.note(&b.held_writes(), |_, _| ());
-        hiders.note(b);
-    }
+    let mut by = crate::tests_winners::held_of(bodies);
     let won = all.winners();
     for b in bodies {
         for w in b.winners().minus(&won) {
-            assert!(by.first_superseding(&w, &hiders, |s, _| Some(s.ts)).is_some(), "a held body's write the held set supersedes dies by a held write: {w:?}");
+            assert!(by.dies(&w).unwrap().is_some(), "a held body's write the held set supersedes dies by a held write: {w:?}");
         }
     }
 }

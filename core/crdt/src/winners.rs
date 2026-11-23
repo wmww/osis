@@ -2,10 +2,9 @@
 //! write of `a` is dead in `a ⊔ b` iff it wins in `a` and not in `a ⊔ b`; retention dates bodies
 //! from that set (spec/commits.md §5).
 
-use crate::fragment::{Bag, Elem, Enum, Fragment, Map, Meta, Register, Removal, Set, Slots, Struct};
+use crate::fragment::{Bag, Elem, Enum, Fragment, Map, Meta, Register, Set, Slots, Struct};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Stamp};
-use osis_base::{Ts, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A step from a position into one inside it. A `Slots` position adds none: its slots are one
@@ -27,7 +26,7 @@ pub enum Place {
     /// A set's value removal, beside its elements, by its record's dot (§5.5). Its reference and
     /// parts are payload, decided by copy order like a value (§4.1), never which write it is: so
     /// are a set element's value, so its register sits at `In` whatever it holds. Which elements
-    /// a removal hides is read in the copies held as they join (`Hiders`).
+    /// a removal hides is read in the copies held as they join (`held::Held`).
     Gone(Dot),
 }
 
@@ -71,133 +70,6 @@ pub struct Won {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Winners(BTreeMap<Vec<Place>, BTreeSet<(Kind, Stamp)>>);
 
-/// What decides which value removals hide which set element writes (§5.5), of every copy noted
-/// (`note`, any fragments: the bodies or states a join reads): each element register write's
-/// value and each removal's reference and parts, by write (set path, dot, stamp), the copies of
-/// one write joined by copy order (§4.1) as the state joins them. So hiding is judged write
-/// against write in the copies as joined, whether or not a reset prunes either from a state
-/// (§4.8 When: each superseder judged against the write alone): a death by hiding is dated by
-/// these (`first_superseding`).
-///
-/// Every copy is kept, so the copies of one body can leave again (`forget`): a write's joined
-/// copy is the greatest of those noted.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Hiders {
-    /// Each element register write's value per copy, least first (`opt_value_cmp`).
-    values: BySetWrite<Vec<Option<Value>>>,
-    /// Each value removal's copies, least first: the greatest is the joined one (§5.5).
-    removals: BySetWrite<Vec<Removal>>,
-    /// Each set's removals by the reference their joined copy names.
-    named: BySet<BTreeMap<Value, BTreeSet<(Dot, Stamp)>>>,
-}
-
-/// By a set's path.
-type BySet<T> = BTreeMap<Vec<Place>, T>;
-
-/// By a set's path, then by a write's record dot and stamp.
-type BySetWrite<T> = BySet<BTreeMap<(Dot, Stamp), T>>;
-
-impl Hiders {
-    /// Notes every element write and value removal `f` holds, winning or not.
-    pub fn note(&mut self, f: &Fragment) {
-        collect(f, &mut Vec::new(), self);
-    }
-    /// Notes every copy `o` holds (the `note` of another fragment).
-    pub fn add(&mut self, o: &Hiders) {
-        for (set, ws) in &o.values {
-            for (k, vs) in ws {
-                vs.iter().for_each(|v| self.value(set, k, v.as_ref()));
-            }
-        }
-        for (set, ws) in &o.removals {
-            for (k, gs) in ws {
-                gs.iter().for_each(|g| self.removal(set, k, g, true));
-            }
-        }
-    }
-    /// Forgets every copy `o` holds, noted here before (`add`): what noting the rest gives.
-    pub fn forget(&mut self, o: &Hiders) {
-        for (set, ws) in &o.values {
-            let Some(at) = self.values.get_mut(set) else { continue };
-            for (k, vs) in ws {
-                let Some(x) = at.get_mut(k) else { continue };
-                for v in vs {
-                    if let Some(i) = x.iter().position(|y| y == v) {
-                        x.remove(i);
-                    }
-                }
-                if x.is_empty() {
-                    at.remove(k);
-                }
-            }
-            if at.is_empty() {
-                self.values.remove(set);
-            }
-        }
-        for (set, ws) in &o.removals {
-            for (k, gs) in ws {
-                gs.iter().for_each(|g| self.removal(set, k, g, false));
-            }
-        }
-    }
-    /// Notes a copy `v` of element register write `k` of the set at `set`.
-    fn value(&mut self, set: &[Place], k: &(Dot, Stamp), v: Option<&Value>) {
-        let at = self.values.entry(set.to_vec()).or_default().entry(k.clone()).or_default();
-        let i = at.partition_point(|x| crate::state::opt_value_cmp(x.as_ref(), v).is_le());
-        at.insert(i, v.cloned());
-    }
-    /// Notes (`add`) or forgets a copy `g` of value removal `k` of the set at `set`; `named`
-    /// follows its greatest copy.
-    fn removal(&mut self, set: &[Place], k: &(Dot, Stamp), g: &Removal, add: bool) {
-        let at = self.removals.entry(set.to_vec()).or_default();
-        let copies = at.entry(k.clone()).or_default();
-        let was = copies.last().map(|x| x.value.clone());
-        if add {
-            let i = copies.partition_point(|x| x <= g);
-            copies.insert(i, g.clone());
-        } else if let Some(i) = copies.iter().position(|x| x == g) {
-            copies.remove(i);
-        }
-        let now = copies.last().map(|x| x.value.clone());
-        if copies.is_empty() {
-            at.remove(k);
-        }
-        if at.is_empty() {
-            self.removals.remove(set);
-        }
-        if was == now {
-            return;
-        }
-        let named = self.named.entry(set.to_vec()).or_default();
-        if let Some(old) = was
-            && let Some(ks) = named.get_mut(&old)
-        {
-            ks.remove(k);
-            if ks.is_empty() {
-                named.remove(&old);
-            }
-        }
-        if let Some(v) = now {
-            named.entry(v).or_default().insert(k.clone());
-        }
-        if named.is_empty() {
-            self.named.remove(set);
-        }
-    }
-    /// The value removals noted that hide `w`, a set element's register write, as `Won`s.
-    fn hiding<'a>(&'a self, w: &'a Won) -> impl Iterator<Item = Won> + 'a {
-        let at = match (w.kind, w.path.as_slice()) {
-            (Kind::Value, [set @ .., Place::Elem(d), Place::In]) => self.values.get(set).and_then(|x| x.get(&(d.clone(), w.stamp.clone()))).and_then(|v| v.last()?.as_ref()).map(|v| (set, d, v)),
-            _ => None,
-        };
-        at.into_iter().flat_map(move |(set, d, v)| {
-            let rs = self.removals.get(set);
-            let named = self.named.get(set).and_then(|m| m.get(v)).into_iter().flatten();
-            named.filter_map(move |k| Some((k, rs?.get(k)?.last()?))).filter(move |(_, r)| r.hides(d, &w.stamp)).map(move |((rd, rs), _)| Won { path: [set, &[Place::Gone(rd.clone())]].concat(), kind: Kind::Reset, stamp: rs.clone() })
-        })
-    }
-}
-
 /// Write `w` at position `path`.
 fn won(path: &[Place], w: &(Kind, Stamp)) -> Won {
     Won { path: path.to_vec(), kind: w.0, stamp: w.1.clone() }
@@ -219,241 +91,20 @@ impl Winners {
         }
         out
     }
+    /// How many writes.
+    pub fn len(&self) -> usize {
+        self.0.values().map(BTreeSet::len).sum()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn contains(&self, w: &Won) -> bool {
+        self.0.get(&w.path).is_some_and(|s| s.contains(&(w.kind, w.stamp.clone())))
+    }
     pub fn extend(&mut self, o: Winners) {
         for (p, s) in o.0 {
             self.0.entry(p).or_default().extend(s);
         }
-    }
-}
-
-/// The positions on `w`'s path held in `m`, each with its depth (`supersedes`).
-fn on_path<'a, V>(m: &'a BTreeMap<Vec<Place>, V>, w: &'a Won) -> impl Iterator<Item = (usize, &'a V)> + 'a {
-    (0..=w.path.len()).filter_map(move |n| m.get(w.path.get(..n)?).map(|s| (n, s)))
-}
-
-/// Writes by position, each with a note: writes of several fragments (`note`: their winners, or
-/// every write they hold, `Fragment::held_writes`), read
-/// by write (`get`) or by the earliest of those superseding one (`first_superseding`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct ByWrite<T> {
-    at: BTreeMap<Vec<Place>, BTreeMap<(Kind, Stamp), T>>,
-    /// Per position at or above a noted write, the greatest stamp noted at or below it (`below`).
-    tops: BTreeMap<Vec<Place>, Top>,
-}
-
-/// A position's greatest stamp noted at or below it, and its steps down by theirs.
-#[derive(Clone, Debug, Default, PartialEq)]
-struct Top {
-    top: Option<Stamp>,
-    steps: BTreeSet<(Stamp, Place)>,
-}
-
-impl<T> Default for ByWrite<T> {
-    fn default() -> Self {
-        ByWrite { at: BTreeMap::new(), tops: BTreeMap::new() }
-    }
-}
-
-impl<T: Default> ByWrite<T> {
-    /// Notes each write of `w` (a `winners` or `held_writes` set) with `f`, given its stamp.
-    pub fn note(&mut self, w: &Winners, mut f: impl FnMut(&Stamp, &mut T)) {
-        for (p, s) in &w.0 {
-            let at = self.at.entry(p.clone()).or_default();
-            for k in s {
-                f(&k.1, at.entry(k.clone()).or_default());
-            }
-            if let Some(top) = s.iter().map(|k| &k.1).max() {
-                self.raise(p, top);
-            }
-        }
-    }
-}
-
-impl<T> ByWrite<T> {
-    pub fn get(&self, w: &Won) -> Option<&T> {
-        self.at.get(&w.path)?.get(&(w.kind, w.stamp.clone()))
-    }
-    /// Notes stamp `st` at `p` in `tops`, up to the first position already as high.
-    fn raise(&mut self, p: &[Place], st: &Stamp) {
-        for n in (0..=p.len()).rev() {
-            let Some(q) = p.get(..n) else { continue };
-            if !self.tops.contains_key(q) {
-                self.tops.insert(q.to_vec(), Top::default());
-            }
-            let Some(t) = self.tops.get_mut(q) else { continue };
-            if t.top.as_ref().is_some_and(|x| x >= st) {
-                return;
-            }
-            let old = t.top.replace(st.clone());
-            if let Some((step, up)) = q.split_last() {
-                let steps = &mut self.tops.entry(up.to_vec()).or_default().steps;
-                if let Some(o) = old {
-                    steps.remove(&(o, step.clone()));
-                }
-                steps.insert((st.clone(), step.clone()));
-            }
-        }
-    }
-    /// Forgets each write of `w` noted here, as `f` says (given its stamp and note: whether it is
-    /// still noted); one no longer noted leaves, and `tops` follows: what noting only the writes
-    /// left gives. O(the writes of `w` and, per greatest one left, its position's writes).
-    pub fn forget(&mut self, w: &Winners, mut f: impl FnMut(&Stamp, &mut T) -> bool) {
-        for (p, s) in &w.0 {
-            let Some(at) = self.at.get_mut(p) else { continue };
-            let mut gone: Option<Stamp> = None;
-            for k in s {
-                if let Some(t) = at.get_mut(k)
-                    && !f(&k.1, t)
-                {
-                    at.remove(k);
-                    gone = gone.max(Some(k.1.clone()));
-                }
-            }
-            if at.is_empty() {
-                self.at.remove(p);
-            }
-            if let Some(st) = gone {
-                self.lower(p, &st);
-            }
-        }
-    }
-    /// A write stamped `st` at `p` left: `tops` at `p` and above, while `st` was a position's
-    /// greatest, drops to the greatest left there.
-    fn lower(&mut self, p: &[Place], st: &Stamp) {
-        for n in (0..=p.len()).rev() {
-            let Some(q) = p.get(..n) else { continue };
-            let Some(t) = self.tops.get(q) else { return };
-            if t.top.as_ref().is_none_or(|x| x > st) {
-                return;
-            }
-            let own = self.at.get(q).and_then(|s| s.keys().map(|k| &k.1).max());
-            let new = own.max(t.steps.last().map(|x| &x.0)).cloned();
-            if new.as_ref() == t.top.as_ref() {
-                return;
-            }
-            match &new {
-                Some(x) => {
-                    if let Some(t) = self.tops.get_mut(q) {
-                        t.top = Some(x.clone());
-                    }
-                }
-                None => _ = self.tops.remove(q),
-            }
-            if let Some((step, up)) = q.split_last()
-                && let Some(u) = self.tops.get_mut(up)
-            {
-                u.steps.remove(&(st.clone(), step.clone()));
-                if let Some(x) = new {
-                    u.steps.insert((x, step.clone()));
-                }
-            }
-        }
-    }
-    /// The positions at or below `p` holding a write stamped at or after `floor` (every one,
-    /// `None`), and some above those: O(those positions times their depth below `p`).
-    fn below(&self, p: &[Place], floor: Option<&Stamp>) -> Vec<Vec<Place>> {
-        let high = |t: &Stamp| floor.is_none_or(|f| t >= f);
-        let mut out = Vec::new();
-        let mut todo = vec![p.to_vec()];
-        while let Some(q) = todo.pop() {
-            let Some(t) = self.tops.get(&q).filter(|t| t.top.as_ref().is_some_and(high)) else { continue };
-            todo.extend(t.steps.iter().rev().take_while(|x| high(&x.0)).map(|x| [q.as_slice(), std::slice::from_ref(&x.1)].concat()));
-            out.push(q);
-        }
-        out
-    }
-    /// The greatest reset or register write (one implies a reset, §5.1) stamped before `st` on
-    /// the positions at and above `p`: it supersedes every write at or below `p` stamped before
-    /// it, no later than one stamped `st` would.
-    fn floor(&self, p: &[Place], st: &Stamp) -> Option<&Stamp> {
-        let mut out: Option<&Stamp> = None;
-        for at in (0..=p.len()).filter_map(|n| self.at.get(p.get(..n)?)) {
-            for k in [Kind::Reset, Kind::Value] {
-                let f = at.range(..(k, st.clone())).next_back().filter(|x| x.0.0 == k).map(|x| &x.0.1);
-                out = out.max(f);
-            }
-        }
-        out
-    }
-    /// The least `date` among the writes here that supersede `w` (`supersedes`; `date` is given
-    /// each one's stamp and note, `None`: not counted), given that no write dates before its
-    /// stamp's `ts`: per kind at each position on `w`'s path, the writes are read in stamp order
-    /// from `w`'s until one stamped at or after the least date found, so about as many as
-    /// supersede `w` earliest; and of a set element's register write, the value removals
-    /// `hiders` (noted from the same copies as these) say hide it, as noted here. A text element's creation
-    /// dies only by a delete beating the latest undelete of the element noted here: stamped after
-    /// it, or a copy of its stamp, a delete winning the tie (spec/crdt.md §4.1, §4.8 When).
-    ///
-    /// Invariant: `winners` and `held_writes` name writes by one walk (`collect`), an embedded
-    /// char's creation as its register write (§7), so each write the join of the noted fragments
-    /// supersedes is beaten or pruned there by a write noted here (or hidden by a removal
-    /// `hiders` holds), whatever bytes the fragments came from; one with none is a bug. The
-    /// embedding's creations beat on their records only writes stamped below them and at or
-    /// above the register write, the register write's own stamp alone, which no decoder lets in
-    /// (spec/crdt.md §3.3 rule 7); judged alone (§4.8 When), a text copy of a register write
-    /// prunes and beats as the register write, also where no register copy is held.
-    pub fn first_superseding(&self, w: &Won, hiders: &Hiders, date: impl Fn(&Stamp, &T) -> Option<Ts>) -> Option<Ts> {
-        let undeleted = if w.kind == Kind::Created { self.at.get(&w.path).and_then(|s| s.keys().filter(|x| x.0 == Kind::Undelete).map(|x| &x.1).max()) } else { None };
-        let mut best: Option<Ts> = None;
-        for h in hiders.hiding(w) {
-            if let Some(d) = self.get(&h).and_then(|t| date(&h.stamp, t)) {
-                best = Some(best.map_or(d, |b| b.min(d)));
-            }
-        }
-        for (n, s) in on_path(&self.at, w) {
-            for k in Kind::ALL {
-                for ((_, st), t) in s.range((k, w.stamp.clone())..).take_while(|x| x.0.0 == k) {
-                    if best.is_some_and(|b| st.ts >= b) {
-                        break;
-                    }
-                    if k == Kind::Delete && n == w.path.len() && undeleted.is_some_and(|u| st < u) {
-                        continue;
-                    }
-                    if supersedes(n, k, st, w)
-                        && let Some(d) = date(st, t)
-                    {
-                        best = Some(best.map_or(d, |b| b.min(d)));
-                    }
-                }
-            }
-        }
-        best
-    }
-
-    /// The writes noted here whose `first_superseding` (by stamp) may have moved when write `s`
-    /// was noted, with its copy's hiders: `s` itself (its hiding is read in its copies as
-    /// joined); per kind at each position at or below `s`'s, the greatest write stamped no later
-    /// than `s` but `s`, where `s` supersedes it (every lower one is superseded by that one,
-    /// stamped no later than `s`, so `s` dates it no earlier); of an undelete, its element's
-    /// creations (the latest undelete decides which deletes count); of a value removal, every
-    /// element register write of its set (which it hides is read in the copies as joined). None
-    /// stamped before the `floor` of `s` (of its set, for a value removal): superseded by that
-    /// reset, stamped before `s`, so `s` dates it no earlier. So a reset reads only what came
-    /// since the reset before it: O(the positions at or below `s`'s written since its floor).
-    pub fn moved_by(&self, s: &Won) -> Vec<Won> {
-        let mut out = vec![s.clone()];
-        let depth = s.path.len();
-        let floor = self.floor(&s.path, &s.stamp);
-        let high = |st: &Stamp| floor.is_none_or(|f| st >= f);
-        for p in self.below(&s.path, floor) {
-            let Some(at) = self.at.get(&p) else { continue };
-            for k in Kind::ALL {
-                let below = at.range(..=(k, s.stamp.clone())).rev().take_while(|x| x.0.0 == k).map(|x| won(&p, x.0)).find(|w| w != s);
-                out.extend(below.filter(|w| high(&w.stamp) && supersedes(depth, s.kind, &s.stamp, w)));
-                if s.kind == Kind::Undelete && k == Kind::Created && p == s.path {
-                    out.extend(at.keys().filter(|x| x.0 == k).map(|x| won(&p, x)));
-                }
-            }
-        }
-        if let [set @ .., Place::Gone(_)] = s.path.as_slice() {
-            let floor = self.floor(set, &s.stamp);
-            let high = |st: &Stamp| floor.is_none_or(|f| st >= f);
-            for p in self.below(set, floor).into_iter().filter(|p| matches!(p.get(set.len()..), Some([Place::Elem(_), Place::In]))) {
-                let Some(at) = self.at.get(&p) else { continue };
-                out.extend(at.keys().filter(|x| x.0 == Kind::Value && high(&x.1)).map(|x| won(&p, x)));
-            }
-        }
-        out
     }
 }
 
@@ -467,7 +118,7 @@ impl<T> ByWrite<T> {
 ///   `w`, or a list element's reset above it: pruned;
 /// - a delete at `w`'s own element stamped no earlier than `w` when `w` is its creation or an
 ///   undelete (a delete wins the flag on a tie).
-fn supersedes(depth: usize, kind: Kind, s: &Stamp, w: &Won) -> bool {
+pub(crate) fn supersedes(depth: usize, kind: Kind, s: &Stamp, w: &Won) -> bool {
     let same = depth == w.path.len();
     if same && kind == Kind::Delete && (w.kind == Kind::Created || w.kind == Kind::Undelete) {
         return *s >= w.stamp;
@@ -510,16 +161,14 @@ impl Sink for Held {
     }
 }
 
-impl Sink for Hiders {
+/// Every set or bag element record, to a callback (`Fragment::each_set_elem`).
+struct Elems<'a>(&'a mut dyn FnMut(&[Place], &Dot, &Elem));
+
+impl Sink for Elems<'_> {
     const ALL: bool = true;
     fn put(&mut self, _: &[Place], _: Kind, _: &Stamp) {}
     fn elem(&mut self, path: &[Place], d: &Dot, e: &Elem) {
-        if let Some((v, s)) = e.written() {
-            self.value(path, &(d.clone(), s.clone()), v);
-        }
-        if let Some(g) = &e.gone {
-            self.removal(path, &(d.clone(), g.stamp.clone()), g, true);
-        }
+        (self.0)(path, d, e)
     }
 }
 
@@ -558,6 +207,29 @@ impl Fragment {
         let mut out = Held(Winners::default());
         collect(self, &mut Vec::new(), &mut out);
         out.0
+    }
+
+    /// Whether every element the fragment holds is found by its dot alone: structs, enums,
+    /// registers and sequences all the way down, no map (read by key), set or bag (by value)
+    /// nor a position in several encodings. A read of a part at such a fragment's positions
+    /// (`positions_at`) holds what any reader of those elements reads.
+    pub fn found_by_dot(&self) -> bool {
+        match self {
+            Fragment::Register(_) => true,
+            Fragment::Struct(s) => s.fields.values().all(Fragment::found_by_dot),
+            Fragment::Enum(e) => e.payloads.values().all(Fragment::found_by_dot),
+            Fragment::Seq(s) => s.elems().iter().all(|(_, e)| match &e.content {
+                SeqContent::Frag(x) => x.found_by_dot(),
+                _ => true,
+            }),
+            Fragment::Bag(_) | Fragment::Set(_) | Fragment::Map(_) | Fragment::Slots(_) => false,
+        }
+    }
+
+    /// Calls `f` with every set or bag element record the fragment holds, hidden or not: its
+    /// set's position, its dot and the record.
+    pub(crate) fn each_set_elem(&self, f: &mut dyn FnMut(&[Place], &Dot, &Elem)) {
+        collect(self, &mut Vec::new(), &mut Elems(f));
     }
 
     /// How many write copies the fragment carries, winning or not: a sequence element's `prev`

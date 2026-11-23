@@ -117,6 +117,117 @@ impl PageIndex {
     }
 }
 
+impl PageIndex {
+    /// Its stored form: a node keeps a paged part's index beside the part, so a read at
+    /// positions in a later session streams no page to find its pages.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        use crate::held::{put_dot, put_u64};
+        let mut out = Vec::new();
+        put_u64(&mut out, self.paths.len() as u64);
+        for (path, l) in &self.paths {
+            put_u64(&mut out, path.len() as u64);
+            for s in path {
+                match s {
+                    Step::Field(n) => {
+                        out.push(0);
+                        put_u64(&mut out, *n);
+                    }
+                    Step::Case(n) => {
+                        out.push(1);
+                        put_u64(&mut out, *n);
+                    }
+                    Step::Entry(e) => {
+                        out.push(2);
+                        put_dot(&mut out, &e.dot);
+                        match &e.key {
+                            None => out.push(0),
+                            Some(k) => {
+                                out.push(1);
+                                osis_base::cbor::encode_into(&k.0, &mut out);
+                            }
+                        }
+                    }
+                }
+            }
+            out.push(l.enc.map_or(0xff, Encoding::id));
+            out.push(u8::from(l.empty));
+            put_u64(&mut out, l.leaves.len() as u64);
+            for x in &l.leaves {
+                put_u64(&mut out, x.at.len() as u64);
+                x.at.iter().for_each(|i| put_u64(&mut out, *i as u64));
+                match &x.first {
+                    First::Dot(d) => {
+                        out.push(0);
+                        put_dot(&mut out, d);
+                    }
+                    First::Field(n) => {
+                        out.push(1);
+                        put_u64(&mut out, *n);
+                    }
+                }
+                match &x.reach {
+                    None => out.push(0),
+                    Some(d) => {
+                        out.push(1);
+                        put_dot(&mut out, d);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// `to_bytes` read back.
+    pub fn from_bytes(b: &[u8]) -> Result<PageIndex, crate::held::Corrupt> {
+        use crate::held::{Corrupt, Rd};
+        let bad = Corrupt("page index row");
+        let mut r = Rd(b);
+        let mut paths = BTreeMap::new();
+        for _ in 0..r.u64()? {
+            let mut path = Vec::new();
+            for _ in 0..r.u64()? {
+                path.push(match r.u8()? {
+                    0 => Step::Field(r.u64()?),
+                    1 => Step::Case(r.u64()?),
+                    2 => {
+                        let dot = r.dot()?;
+                        let key = match r.u8()? {
+                            0 => None,
+                            _ => Some(r.value()?),
+                        };
+                        Step::Entry(crate::fragment::Eid::new(dot, key))
+                    }
+                    _ => return Err(bad),
+                });
+            }
+            let enc = match r.u8()? {
+                0xff => None,
+                id => Some(Encoding::from_id(u64::from(id)).ok_or(bad)?),
+            };
+            let empty = r.u8()? != 0;
+            let mut leaves = Vec::new();
+            for _ in 0..r.u64()? {
+                let mut at = Vec::new();
+                for _ in 0..r.u64()? {
+                    at.push(r.u64()? as usize);
+                }
+                let first = match r.u8()? {
+                    0 => First::Dot(r.dot()?),
+                    _ => First::Field(r.u64()?),
+                };
+                let reach = match r.u8()? {
+                    0 => None,
+                    _ => Some(r.dot()?),
+                };
+                leaves.push(Leaf { at, first, reach });
+            }
+            paths.insert(path, Leaves { enc, empty, leaves });
+        }
+        r.end()?;
+        Ok(PageIndex { paths })
+    }
+}
+
 impl Leaves {
     /// The leaves holding the records `positions_at(b)` takes here; `None`: every leaf.
     fn holding(&self, b: &Fragment) -> Option<BTreeSet<PageAt>> {

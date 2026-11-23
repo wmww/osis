@@ -754,6 +754,18 @@ impl Transaction<'_> {
         osis_base::costs::count_scoped("store rows read", rows.len() as u64 + 1);
         Ok(rows)
     }
+    /// Catalog entries under `prefix` from `prefix || from` up to `prefix || before` (exclusive),
+    /// greatest key first, read as a scan of the prefix.
+    pub(crate) fn cat_scan_rev(&mut self, prefix: &[u8], from: &[u8], before: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
+        self.st.s.read_prefix(prefix);
+        let c = self.catalog();
+        let (start, end) = ([prefix, from].concat(), [prefix, before].concat());
+        let mem = crate::overlay::range_rev(Some(&self.mem.o.cat), &start, &end, limit);
+        let durable = if start < end { btree::range_rev(self, c, &start, &end, limit)? } else { Vec::new() };
+        let rows = if mem.is_empty() { durable } else { crate::overlay::merge_rev(mem, durable, limit) };
+        osis_base::costs::count_scoped("store rows read", rows.len() as u64 + 1);
+        Ok(rows)
+    }
     /// Runs `f` on every catalog entry under `prefix` in key order, reading a page at a time;
     /// `f` may remove the entry it is given.
     pub(crate) fn cat_each(&mut self, prefix: &[u8], mut f: impl FnMut(&mut Self, Vec<u8>, Vec<u8>) -> Result<(), Error>) -> Result<(), Error> {
@@ -1093,6 +1105,22 @@ impl Transaction<'_> {
         let p = [&[kind::LOCAL], prefix].concat();
         let end = [&p[..], before].concat();
         Ok(self.cat_scan_to(&p, end, limit)?.into_iter().map(|(k, v)| (k.get(1..).unwrap_or_default().to_vec(), v)).collect())
+    }
+
+    /// Local records with keys from `prefix || from` up to `prefix || before` (exclusive), least
+    /// key first.
+    pub fn scan_local_range(&mut self, prefix: &[u8], from: &[u8], before: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
+        let p = [&[kind::LOCAL], prefix].concat();
+        self.st.s.read_prefix(&p);
+        let end = [&p[..], before].concat();
+        Ok(self.cat_range(&p, from, Some(end), limit)?.into_iter().map(|(k, v)| (k.get(1..).unwrap_or_default().to_vec(), v)).collect())
+    }
+
+    /// Local records with keys from `prefix || from` up to `prefix || before` (exclusive),
+    /// greatest key first: the last row at or below a key is one seek.
+    pub fn scan_local_rev(&mut self, prefix: &[u8], from: &[u8], before: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
+        let p = [&[kind::LOCAL], prefix].concat();
+        Ok(self.cat_scan_rev(&p, from, before, limit)?.into_iter().map(|(k, v)| (k.get(1..).unwrap_or_default().to_vec(), v)).collect())
     }
 
     // Blob ciphertexts (already opaque; deleted for space).

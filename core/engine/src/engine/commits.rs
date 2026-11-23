@@ -236,6 +236,9 @@ pub struct Commits {
     /// The aspects the commits `log` holds have parts on, each with its count of entries: grown
     /// and cut back with `log` (`changed_on`).
     on: BTreeMap<(Tid, Ak), usize>,
+    /// Every change of the running transaction in order, one changed twice twice (`log` holds a
+    /// commit once per step): `log`'s length then, the commit, its view. Cut back with `log`.
+    changes: Vec<(usize, CommitId, Arc<View>)>,
 }
 
 /// A copy's metas read the copy's stamps.
@@ -246,7 +249,7 @@ impl Clone for Commits {
         for (c, m) in map.iter_mut() {
             m.rec = Rec(Some((stamps.reader(), *c)));
         }
-        Commits { map, stamps, log: self.log.clone(), seen: self.seen.clone(), on: self.on.clone() }
+        Commits { map, stamps, log: self.log.clone(), seen: self.seen.clone(), on: self.on.clone(), changes: self.changes.clone() }
     }
 }
 
@@ -318,6 +321,7 @@ impl Commits {
             }
             self.log.push((*c, old.map(Meta::clone_raw), view.clone()));
         }
+        self.changes.push((self.log.len(), *c, view.clone()));
     }
     fn attach(&self, c: &CommitId, m: &mut Meta) {
         m.rec = Rec(Some((self.stamps.reader(), *c)));
@@ -371,6 +375,17 @@ impl Commits {
         let s: BTreeSet<&CommitId> = self.log.iter().map(|(k, ..)| k).collect();
         s.into_iter().copied().collect()
     }
+    /// How many changes the running transaction made so far.
+    pub fn changes_len(&self) -> usize {
+        self.changes.len()
+    }
+    /// The commits with a part on `(tid, ak)` among the transaction's changes from the `from`th
+    /// on: a reader following the changes reads each once (counted as `before`'s entries).
+    pub fn changed_from(&self, from: usize, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
+        let tail = self.changes.get(from..).unwrap_or_default();
+        osis_base::costs::count("commits log entries read", tail.len() as u64);
+        tail.iter().filter(|(_, _, v)| v.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak)).map(|x| x.1).collect()
+    }
     /// Whether a commit the running transaction changed has a part on `(tid, ak)`: one lookup.
     /// Debug builds check it against the log (a missed aspect reads a stale history row).
     pub fn changed_on(&self, tid: &Tid, ak: &Ak) -> bool {
@@ -405,6 +420,7 @@ impl Journaled for Commits {
         self.log.clear();
         self.seen.clear();
         self.on.clear();
+        self.changes.clear();
     }
     // a key changed after the mark is journaled again: its entry restores the value at the mark
     fn mark(&mut self) -> usize {
@@ -412,6 +428,8 @@ impl Journaled for Commits {
         self.log.len()
     }
     fn rollback_to(&mut self, m: usize) {
+        // a change after the mark journaled its commit again, so the log was longer by then
+        self.changes.retain(|x| x.0 <= m);
         osis_base::memo::undoing(|| {
             self.seen.clear();
             while self.log.len() > m {

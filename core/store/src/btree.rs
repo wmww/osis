@@ -495,6 +495,36 @@ fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit
     Ok(())
 }
 
+/// Up to `limit` entries with `start <= key` and `key < end`, descending.
+pub(crate) fn range_rev(u: &mut dyn Units, root: u64, start: &[u8], end: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
+    let mut out = Vec::new();
+    collect_rev(u, root, start, end, limit, &mut out)?;
+    Ok(out)
+}
+
+fn collect_rev(u: &mut dyn Units, slot: u64, start: &[u8], end: &[u8], limit: usize, out: &mut Vec<KeyValue>) -> Result<(), Error> {
+    match &*u.page(slot)? {
+        Page::Leaf(es) => {
+            for e in es.iter().take(es.partition_point(|e| &e.key[..] < end)).rev() {
+                if out.len() >= limit || &e.key[..] < start {
+                    break;
+                }
+                out.push((e.key.to_vec(), resolve(u, &e.val)?));
+            }
+        }
+        Page::Inner(es) => {
+            let lo = child_index(es, start);
+            for e in es.iter().take(child_index(es, end) + 1).skip(lo).rev() {
+                if out.len() >= limit {
+                    break;
+                }
+                collect_rev(u, e.child, start, end, limit, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Entries in the table.
 pub(crate) fn len(u: &mut dyn Units, root: u64) -> Result<u64, Error> {
     Ok(u.page(root)?.count())

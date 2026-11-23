@@ -1673,25 +1673,23 @@ mod tests {
         assert_eq!(per_join(80), (1, 0), "at 80 bodies");
     }
 
-    // spec: none (internal: notes/engine.md, Derived values). The aspect's held writes, amended or
-    // read anew, are what a fresh read gives: after a join, a snapshot's join, a join undone by a
-    // failed transaction that asked for them, and a body dropped as covered.
+    // spec: none (internal: notes/engine-retention-dating.md, Rows). The aspect's held writes, kept
+    // in rows and followed by each join and leave, are those its held bodies give from nothing,
+    // row for row: after a join, a snapshot's join, a join undone by a failed transaction that
+    // brought them up to date, and a body dropped as covered.
+    #[cfg(debug_assertions)]
     #[test]
-    fn held_writes_kept_are_a_fresh_reads() {
+    fn held_writes_kept_are_those_of_the_held_bodies() {
         use crate::error::Error;
         let (mut lp, t, x) = kept_register(958);
         let check = |lp: &mut LocalPeer, what: &str| {
             lp.peers[0]
                 .engine
-                .run(|tx| {
-                    let kept = super::bounds::held_writes(tx, &t, &x)?;
-                    assert_eq!(*kept, super::bounds::read_held_writes(tx, &t, &x)?, "{what}");
-                    Ok(())
-                })
+                .run(|tx| super::bounds::index_exact(tx, &t, &x, what))
                 .unwrap();
         };
         let first = write_x(&mut lp, t, &x, 0);
-        check(&mut lp, "read anew");
+        check(&mut lp, "built");
         write_x(&mut lp, t, &x, 1);
         check(&mut lp, "a join");
         lp.advance(10);
@@ -1701,11 +1699,11 @@ mod tests {
             let mut m = Mutation::new();
             m.set(t, &x, &Value::Int(2)).unwrap();
             crate::engine::write::commit_in(tx, m)?;
-            super::bounds::held_writes(tx, &t, &x)?;
+            super::bounds::settle_index(tx, &t, &x)?;
             Err::<(), _>(Error::Misuse("test: undo"))
         });
         assert!(r.is_err());
-        check(&mut lp, "a join undone after it was amended");
+        check(&mut lp, "a join undone after it was followed");
         write_x(&mut lp, t, &x, 3);
         check(&mut lp, "a join after the undone one");
         lp.advance(3_600_000);
@@ -1714,11 +1712,12 @@ mod tests {
         assert!(lp.peers[0].engine.core.ix.commits.get(&snap).is_some());
     }
 
-    // spec: none (internal: notes/engine.md, Derived values). The aspect's held writes kept are
-    // what a fresh read gives when a part invalid here joins (un-merged: it gives nothing), and
-    // when a valid one joins inside its record.
+    // spec: none (internal: notes/engine-retention-dating.md, Rows). The aspect's held writes kept
+    // are those of its held bodies when a part invalid here joins (un-merged: it gives nothing),
+    // and when a valid one joins inside its record.
+    #[cfg(debug_assertions)]
     #[test]
-    fn held_writes_over_an_invalid_part_are_a_fresh_reads() {
+    fn held_writes_over_an_invalid_part_are_those_of_the_held_bodies() {
         let mut lp = LocalPeer::new(4, 959, WallMs(1_700_000_000_000)).unwrap();
         let a = lp.peers[0].engine.me();
         let x = Ak::new("x:m.0").unwrap();
@@ -1736,11 +1735,7 @@ mod tests {
         let check = |lp: &mut LocalPeer, what: &str| {
             lp.peers[3]
                 .engine
-                .run(|tx| {
-                    let kept = super::bounds::held_writes(tx, &t, &x)?;
-                    assert_eq!(*kept, super::bounds::read_held_writes(tx, &t, &x)?, "{what}");
-                    Ok(())
-                })
+                .run(|tx| super::bounds::index_exact(tx, &t, &x, what))
                 .unwrap();
         };
         // node 2 puts a map at `a`, node 1 writes inside it; node 0 removes node 2 before seeing it
@@ -1772,7 +1767,7 @@ mod tests {
         check(&mut lp, "an invalid part joined");
         lp.deliver(3, &inside).unwrap();
         check(&mut lp, "a join inside the invalid part's record");
-        // with the invalid part held, a join amends them: it reads its own body alone
+        // with the invalid part held, a join reads its own body alone
         let mut m = Mutation::new();
         m.op(t, &x, PathOp { path: vec![PathSeg::Key(Value::Str("d".into()))], op: Op::Set(Value::Int(3)) }).unwrap();
         lp.advance(10);
@@ -1780,42 +1775,11 @@ mod tests {
         let more = lp.peers[1].engine.package(&more).unwrap().unwrap();
         osis_base::costs::take();
         lp.deliver(3, &more).unwrap();
-        lp.peers[3].engine.run(|tx| super::bounds::held_writes(tx, &t, &x).map(drop)).unwrap();
         let c = osis_base::costs::take();
         let count = |name: &str| c.iter().filter(|s| s.0 == name).map(|s| s.2).sum::<u64>();
-        assert_eq!((count("deaths: a body"), count("held writes")), (1, 0), "a join beside an invalid part");
+        // a small aspect (`bounds::SMALL_BODIES`): its two valid bodies are read, no row built
+        assert_eq!((count("deaths: a body"), count("held writes")), (2, 0), "a join beside an invalid part");
         check(&mut lp, "a join beside an invalid part");
-    }
-
-    // spec: none (internal: notes/engine.md, Derived values: a reader depends on the rows as
-    // last refreshed). A follower of an aspect's held writes row is due after `Engine::follow`
-    // alone once a body joins the aspect: under no history setting nothing in the join dates a
-    // part, so no date's refresh moves the row first.
-    #[test]
-    fn a_held_writes_reader_is_due_after_follow_alone() {
-        use osis_base::memo::Effects;
-        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-        let x = Ak::new("x:m.0").unwrap();
-        let set = |m: &mut Mutation, t, k: &str| {
-            m.op(t, &x, PathOp { path: vec![PathSeg::Key(Value::Str(k.into()))], op: Op::Set(Value::Int(1)) }).unwrap();
-        };
-        let e = &mut lp.peers[0].engine;
-        let me = e.me();
-        let mut m = Mutation::new();
-        let t = e.new_thing(&mut m, me);
-        set(&mut m, t, "k0");
-        e.commit(m).unwrap().unwrap();
-        let mut fx: Effects<(), std::sync::Arc<super::bounds::HeldWrites>> = Effects::new("held writes reader");
-        fx.want(());
-        let first = fx.settle(&(), || e.run(|tx| super::bounds::held_writes(tx, &t, &x)).unwrap()).unwrap().1;
-        assert!(fx.due().is_empty());
-        let mut m = Mutation::new();
-        set(&mut m, t, "k1");
-        e.commit(m).unwrap().unwrap();
-        e.follow().unwrap();
-        assert_eq!(fx.due(), vec![()], "due after follow alone");
-        let (old, now) = fx.settle(&(), || e.run(|tx| super::bounds::held_writes(tx, &t, &x)).unwrap()).unwrap();
-        assert!(old == Some(first) && now != *old.as_ref().unwrap(), "the row moved with the join");
     }
 
     // spec: none (internal: notes/engine.md, Derived values). A memo reading a commit's leftover

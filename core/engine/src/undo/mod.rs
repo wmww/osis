@@ -61,7 +61,7 @@ fn kept(tx: &mut Tx<'_>, c: &CommitId, ci: usize, tid: &Tid, ak: &Ak, now: u64) 
 type Strip<'a> = &'a dyn Fn(&Core, &mut Fragment);
 
 /// The join `kept_before` builds: parts newest first, down to the newest kept whole reset, which
-/// supersedes every write stamped before it (`resets_whole`).
+/// supersedes every write stamped before it (`snapshot::replaces`).
 struct Before {
     at: (Ts, CommitId),
     f: Fragment,
@@ -71,20 +71,36 @@ struct Before {
 
 impl Before {
     /// Joins part `(ts, c)` of `(tid, ak)` if it is a valid part ordered before `at` and kept;
-    /// `false` once past the floor (no older part counts).
-    fn add(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, (ts, c): (Ts, CommitId), now: u64) -> Result<bool> {
+    /// a paged part is read at `read`'s positions (`apply::held_part_at`: its pages there
+    /// alone) where those are found by dot alone (`Fragment::found_by_dot`: an undo of a map or
+    /// set write reads records of other dots, by key or value), else whole; `false` once past
+    /// the floor (no older part counts).
+    fn add(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, (ts, c): (Ts, CommitId), now: u64, read: Option<&Fragment>) -> Result<bool> {
         if self.floor.is_some_and(|x| ts < x) {
             return Ok(false);
         }
         let ci = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak).filter(|ci| m.valid_at(*ci)));
         let Some(ci) = ci.filter(|_| (ts, c) < self.at && self.seen.insert(c)) else { return Ok(true) };
-        if kept(tx, &c, ci, tid, ak, now)?
-            && let Some(d) = crate::apply::held_part(tx, &c, ci)?
-        {
-            if self.floor.is_none() && resets_whole(&d) {
-                self.floor = Some(ts);
+        if kept(tx, &c, ci, tid, ak, now)? {
+            let delta = tx.core.ix.commits.get(&c).is_some_and(|m| !m.view.kind.is_compaction());
+            let at = match read.filter(|x| x.found_by_dot()) {
+                Some(x) if crate::apply::stored_page_index(tx, &c, ci)?.is_some() => Some(x),
+                _ => None,
+            };
+            let f = match at {
+                Some(x) => {
+                    let (f, held) = crate::apply::held_part_at(tx, &c, ci, x)?;
+                    held.map(|_| f)
+                }
+                None => crate::apply::held_part(tx, &c, ci)?.map(Decoded::into_fragment),
+            };
+            if let Some(f) = f {
+                // a part at positions keeps its root's own writes
+                if self.floor.is_none() && delta && crate::retention::snapshot::replaces(&f) {
+                    self.floor = Some(ts);
+                }
+                self.f.join(f);
             }
-            self.f.join(d.into_fragment());
         }
         Ok(true)
     }
@@ -109,7 +125,7 @@ fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), delta: &
     touch::ensure(tx, tid, ak)?;
     let mut b = Before { at, f: Fragment::default(), floor: None, seen: BTreeSet::new() };
     for p in touch::candidates(tx.core, tid, ak, &need).range(..at).rev() {
-        if !b.add(tx, tid, ak, *p, now)? {
+        if !b.add(tx, tid, ak, *p, now, Some(delta))? {
             break;
         }
     }
@@ -137,7 +153,7 @@ fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), delta: &
             if b.seen.contains(&p.1) {
                 continue;
             }
-            if !b.add(tx, tid, ak, p, now)? {
+            if !b.add(tx, tid, ak, p, now, None)? {
                 break;
             }
             strip(tx.core, &mut b.f);
@@ -154,7 +170,7 @@ fn kept_before(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), delta: &
 fn kept_join(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), now: u64, strip: Strip<'_>) -> Result<Fragment> {
     let mut b = Before { at, f: Fragment::default(), floor: None, seen: BTreeSet::new() };
     for p in parts_before(tx.core, tid, ak, at).into_iter().rev() {
-        if !b.add(tx, tid, ak, (p.0, p.1), now)? {
+        if !b.add(tx, tid, ak, (p.0, p.1), now, None)? {
             break;
         }
     }
@@ -196,7 +212,7 @@ fn kept_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: (Ts, CommitId), strip: Stri
 /// at wall ms `now`, judged by each part's own retention and age (spec/commits.md §7), never by
 /// the undone part's own. A write does not record what it overwrote, so the valid parts of the
 /// aspect ordered before it count, newest first. A part is excused only by a kept part that
-/// supersedes it: a delta resetting the aspect whole stamped after it (`resets_whole`; the walk
+/// supersedes it: a delta resetting the aspect whole stamped after it (`snapshot::replaces`; the walk
 /// stops there), or a snapshot whose tables reach it (`retention::reaches`: what of it was still
 /// live is in that snapshot). A snapshot part is excused only by a later reset: tables name
 /// only commits with writes of their own, and a node may hold a snapshot without the parts that
@@ -227,7 +243,7 @@ fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::As
         if kept(tx, &c, ci, &a.tid, &a.ak, now)? {
             if tx.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_compaction()) {
                 snaps.push(c);
-            } else if floor.is_none() && crate::apply::held_part(tx, &c, ci)?.is_some_and(|d| resets_whole(&d)) {
+            } else if floor.is_none() && crate::apply::held_root(tx, &c, ci)?.is_some_and(|f| crate::retention::snapshot::replaces(&f)) {
                 floor = Some(ts);
             }
             continue;
@@ -244,12 +260,6 @@ fn replaced_kept(tx: &mut Tx<'_>, h: &Header, id: &CommitId, a: &osis_commit::As
     }
     let forgotten = tx.core.ix.forgotten.get(&k);
     Ok(forgotten.is_none_or(|t| floor.is_some_and(|f| *t < f)))
-}
-
-/// Whether part `d` is a delta resetting the aspect whole (its root reset, or a register write,
-/// which implies one, spec/crdt.md §5.1), so superseding every write stamped before it.
-fn resets_whole(d: &Decoded) -> bool {
-    matches!(d, Decoded::Delta(x) if crate::retention::snapshot::replaces(&x.fragment))
 }
 
 /// The expiry of the write dotted `d` in `(tid, ak)` an undo copies back (`undo_expiring`): its

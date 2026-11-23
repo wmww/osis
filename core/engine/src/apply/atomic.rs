@@ -284,7 +284,16 @@ pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &Comm
         PartRef::Streamed(s) => s,
     };
     let p = blob.part(s.ai).ok_or(Error::Corrupt("streamed part"))?;
-    stream_stored(tx, h, id, s.ai, super::checked(&p.delta), &s.dedup, None, &mut |tx, p| f(tx, piece_fragment(p))).map(|_| ())
+    // its page index is kept from this first stream of it (`held_part_at`)
+    let mut index = osis_crdt::PageIndex::default();
+    stream_stored(tx, h, id, s.ai, super::checked(&p.delta), &s.dedup, None, &mut |tx, p| {
+        index.add(&p);
+        f(tx, piece_fragment(p))
+    })?;
+    if !index.unpaged() {
+        super::put_page_index(tx, id, s.ai, &index)?;
+    }
+    Ok(())
 }
 
 /// Decodes the checked delta of commit `id`'s part on aspect `ai` (header `h`, its thing's

@@ -974,8 +974,8 @@ pub(crate) struct CoreMark {
     listed_before: usize,
     killed: usize,
     to_date: usize,
-    dated_as: usize,
-    left_bodies: usize,
+    dates_moved: usize,
+    bodies_rewritten: usize,
     /// `wrote_on`'s length: a write undone owes no holding.
     wrote_on: usize,
     stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
@@ -1142,16 +1142,21 @@ pub struct Core {
     /// Dated aspects whose every part's replaced-at the running transaction may have moved
     /// (`retention::leaving::ToDate`).
     pub(crate) to_date: crate::retention::leaving::ToDate,
-    /// What of each part a `date_due` of the running transaction dated (commit, aspect index,
-    /// `leaving::Noted`), newest last: a later pass compares with it, not with the meta before
-    /// the transaction.
-    pub(crate) dated_as: Vec<(CommitId, usize, crate::retention::leaving::Noted)>,
-    /// The bodies the running transaction's amends of held writes took away (aspect, commit,
-    /// what it added there, in the form it was held: `retention::bounds::held_writes`), for
-    /// `date_due` to date what they dated. The amend is the one place every way a body leaves
-    /// (dropped, stripped, forgotten) is seen, and it runs once the body may be gone from the
-    /// store, so it hands on what it took away rather than each removal dating first.
-    pub(crate) left_bodies: Vec<((Tid, Ak), CommitId, Arc<crate::retention::bounds::BodyWrites>)>,
+    /// The bodies whose replaced-at the running transaction's changes of the held writes may
+    /// have moved (`retention::bounds::settle_index`), for `date_due` to row.
+    pub(crate) dates_moved: Vec<(Tid, Ak, CommitId)>,
+    /// The parts whose leftover the running transaction wrote or removed (`leftover::put`): a
+    /// body whose bytes may have changed under an unchanged form, joined again in its aspect's
+    /// held writes (`retention::bounds::settle_index`).
+    pub(crate) bodies_rewritten: Vec<(Tid, Ak, CommitId)>,
+    /// Per dated aspect, how far the running transaction's changes are in its held writes
+    /// (`retention::bounds::settle_index`): the lengths of the commits log and of
+    /// `bodies_rewritten` then. Emptied by a rollback (every change is looked at again).
+    pub(crate) index_settled: BTreeMap<(Tid, Ak), (usize, usize)>,
+    /// The held writes of the small dated aspects the running transaction asked about, each as
+    /// of its `index_settled` (`retention::bounds::settle_index`: read whole from the bodies,
+    /// kept in no row). Emptied with `index_settled`.
+    pub(crate) small_held: BTreeMap<(Tid, Ak), osis_crdt::Held<osis_crdt::MemRows>>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look. A name goes with its commit (forgotten, or dropped from pending while not
     /// applied), so it holds at most one per commit held. Sync reads none of it.
@@ -1294,10 +1299,6 @@ pub struct Core {
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     /// Per aspect undo has checked, which held parts write each position (`undo::touch`).
     pub(crate) touches: crate::undo::touch::Touches,
-    /// What judging when bodies were replaced reads of an aspect's held bodies, per aspect, as a
-    /// row (`retention::bounds::held_writes`, a `memo::Cutoff` amended in place): a part's date
-    /// reads the row, not the aspect's every body.
-    pub(crate) held_writes_rows: memo::Cutoff<(Tid, Ak), Arc<crate::retention::bounds::HeldWrites>>,
     /// What a waiting snapshot part carries, per (commit, aspect index), as a held snapshot's
     /// bound (`retention::snapshot::Carried`; `None`: no snapshot it can join): decoded once while
     /// its commit waits (`retention::pending`, `memo`).
@@ -1401,9 +1402,6 @@ pub struct Core {
     /// Held parts walked for their winners judging deaths (`retention::bounds::winners_of`), for
     /// cost tests: a few per part judged, never per death.
     pub death_walks: u64,
-    /// Bodies of held writes copied by an amend that found the row's value shared
-    /// (`retention::bounds::held_writes`), for cost tests: none outside a copied world.
-    pub held_writes_copied: u64,
     /// Aspect rebuilds run (`apply::rebuild`). Tests: what a validity change costs.
     pub rebuilds: u64,
     /// Stored commit records and their parts, decoded once per write of the record
@@ -1810,8 +1808,8 @@ impl Core {
             listed_before: self.listed_before.len(),
             killed: self.killed.len(),
             to_date: self.to_date.len(),
-            dated_as: self.dated_as.len(),
-            left_bodies: self.left_bodies.len(),
+            dates_moved: self.dates_moved.len(),
+            bodies_rewritten: self.bodies_rewritten.len(),
             wrote_on: self.wrote_on.len(),
             stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
             batched: self.batched.clone(),
@@ -1846,7 +1844,7 @@ impl Core {
             ("listed_before", self.listed_before.len() != m.listed_before),
             ("killed", self.killed.len() != m.killed),
             ("to_date", self.to_date.len() != m.to_date),
-            ("dated_as", self.dated_as.len() != m.dated_as),
+            ("dates_moved", self.dates_moved.len() != m.dates_moved),
             ("wrote_on", self.wrote_on.len() != m.wrote_on),
             ("stale", stale != (&m.stale.0, &m.stale.1, &m.stale.2, &m.stale.3, m.stale.4)),
             ("batched", self.batched != m.batched),
@@ -1905,8 +1903,10 @@ impl Core {
         self.listed_before.truncate(m.listed_before);
         self.killed.truncate(m.killed);
         self.to_date.truncate(m.to_date);
-        self.dated_as.truncate(m.dated_as);
-        self.left_bodies.truncate(m.left_bodies);
+        self.dates_moved.truncate(m.dates_moved);
+        self.bodies_rewritten.truncate(m.bodies_rewritten);
+        self.index_settled.clear();
+        self.small_held.clear();
         self.wrote_on.truncate(m.wrote_on);
         self.batched = m.batched;
         self.fallen = m.fallen;
@@ -1932,8 +1932,10 @@ impl Core {
             listed_before: _,
             killed: _,
             to_date: _,
-            dated_as: _,
-            left_bodies: _,
+            dates_moved: _,
+            bodies_rewritten: _,
+            index_settled: _,
+            small_held: _,
             wrote_on: _,
             written: _,
             accounts: _,
@@ -1993,7 +1995,6 @@ impl Core {
             wrap_blocks: _,
             read_facts: _,
             held_fates: _,
-            held_writes_rows: _,
             acting_of: _,
             sync_ids: _,
             sync_rows: _,
@@ -2065,7 +2066,6 @@ impl Core {
             later_sessions: _,
             replaced_reads: _,
             death_walks: _,
-            held_writes_copied: _,
             rebuilds: _,
             // set at each transaction's start, and what its end records (taken at the commit,
             // dropped at a rollback)
@@ -2302,8 +2302,10 @@ impl Core {
             listed_before: Vec::new(),
             killed: Vec::new(),
             to_date: Default::default(),
-            dated_as: Vec::new(),
-            left_bodies: Vec::new(),
+            dates_moved: Vec::new(),
+            bodies_rewritten: Vec::new(),
+            index_settled: BTreeMap::new(),
+            small_held: BTreeMap::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
@@ -2361,7 +2363,6 @@ impl Core {
             entered: None,
             batched: None,
             touches: Default::default(),
-            held_writes_rows: memo::Cutoff::new("held writes: rows"),
             waiting_carried: memo::Memo::new("waiting snapshot: bound"),
             part_bounds: memo::Memo::new("part bounds"),
             tree_roots: memo::Memo::new("tree roots"),
@@ -2396,7 +2397,6 @@ impl Core {
             pieces_below: memo::Memo::new("pieces: below"),
             replaced_reads: 0,
             death_walks: 0,
-            held_writes_copied: 0,
             rebuilds: 0,
             decoded: Default::default(),
             generation: 0,
@@ -3045,8 +3045,10 @@ fn end_settle<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
     // the history rows follow every change of what is held above
     r = then(r, || crate::retention::leaving::date_due(tx));
     tx.core.to_date.clear();
-    tx.core.dated_as.clear();
-    tx.core.left_bodies.clear();
+    tx.core.dates_moved.clear();
+    tx.core.bodies_rewritten.clear();
+    tx.core.index_settled.clear();
+    tx.core.small_held.clear();
     // every state written above stored in its form (`Tx::settle_states`)
     r = then(r, || tx.settle_placements().and_then(|()| tx.settle_states()));
     r = then(r, || Core::commit_changes(tx));

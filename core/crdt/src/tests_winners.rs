@@ -7,7 +7,8 @@ use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, Stamp};
 use crate::testutil::{TyView, frag, history, history_honest, joined, node, sink_no_seq, snapshot, ts};
-use crate::winners::{ByWrite, Hiders, Kind, Place, Winners, Won};
+use crate::held::{Body, BodyWrites, Held, MemRows};
+use crate::winners::{Kind, Place, Winners, Won};
 use crdt_model::ops::Ty;
 use osis_base::{Tid, Ts, Value};
 use proptest::prelude::*;
@@ -273,10 +274,11 @@ fn unsuperseded(all: &[Raw]) -> BTreeSet<Won> {
 
 /// Random histories of `types`, joins of random subsets of their commits (as snapshots carry
 /// them): `winners` is the from-scratch set of each, and the writes of one dead in a join of two
-/// are those the other's writes supersede, so one the other holds supersedes each (`ByWrite`
-/// of its `held_writes`; any clocks). Every write the bodies (deltas, and joins of them as snapshots) hold, noted by write
-/// (`ByWrite`), each dated at its body's latest stamp: the earliest superseding a write is the
-/// earliest body holding any write that supersedes it alone.
+/// are those the other's writes supersede, so one a side holds supersedes each (`Held` of
+/// their `held_writes`; any clocks). Every write the bodies (deltas, and joins of them as
+/// snapshots) hold, joined into `Held`: each dies at the earliest `ts` among the writes
+/// superseding it alone, and the index kept as bodies join and leave is the one built from
+/// those held (`first_superseding_check`, `changes_check`).
 fn winners_check(seed: u64, types: &[Ty], honest: bool) {
     let mut r = crate::testutil::rng(seed | 1);
     let commits = if honest { history_honest(&mut r, types, 3, 4) } else { history(&mut r, types, 3, 4) };
@@ -302,22 +304,12 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
         let want: BTreeSet<Won> = a.winners().iter().filter(|w| !both.contains(w)).collect();
         let dead = a.winners().minus(&ab.winners());
         assert_eq!(dead, want, "dead in a join: the winners the other side's writes supersede");
-        let mut other: ByWrite<()> = ByWrite::default();
-        other.note(&b.held_writes(), |_, _| ());
-        // what the engine dates a death by (`Killed::note`): the writes held before and after the
-        // join, winning or not (§4.8 When: a creation beats a position write below it though a
-        // delete beat the creation)
-        let mut held: ByWrite<()> = ByWrite::default();
-        for x in [&a, &b, &ab] {
-            held.note(&x.held_writes(), |_, _| ());
-        }
-        let mut hiders = Hiders::default();
-        hiders.note(&a);
-        hiders.note(&b);
+        // what the engine dates a death by: the writes the bodies hold, winning or not (§4.8
+        // When: a creation beats a position write below it though a delete beat the creation)
+        let mut held = held_of([&a, &b]);
         for w in &dead {
-            assert!(held.first_superseding(w, &hiders, |s, _| Some(s.ts)).is_some(), "a dead write dies by a write held before or after the join: {w:?} in {ab:?}");
+            assert!(held.dies(w).unwrap().is_some(), "a dead write dies by a write a side holds: {w:?} in {ab:?}");
             assert!(a.holds_stamp(&w.stamp) || a.held_writes().iter().any(|x| x == *w && x.kind == Kind::Value), "a dead write is the side's by exact stamp (a register write's: or its embedding's): {w:?}");
-            assert!(other.first_superseding(w, &hiders, |_, _| Some(w.stamp.ts)).is_some(), "a dead write dies by a write the other side holds: {w:?} in {ab:?}");
         }
     }
 }
@@ -348,110 +340,84 @@ fn as_joined(all: &mut [Raw]) {
     }
 }
 
-/// `first_superseding` against the from-scratch earliest: each write's stamp, read from a body
-/// holding it, and the bodies' own latest stamps as notes; a text element's creation only by
-/// deletes after the latest undelete held (§4.8 When); hiding read in the copies as joined.
+/// Body `i` of a test's held set: every other one a snapshot, so writes held twice are carried.
+fn body(i: usize) -> Body {
+    Body { c: osis_base::CommitId([i as u8 + 1; 32]), ts: ts((i as u64 + 1) << 16), snap: i % 2 == 1 }
+}
+
+/// The index of `bodies` (`Held`), each joined whole as body `i`.
+pub(crate) fn held_of<'a>(bodies: impl IntoIterator<Item = &'a Fragment>) -> Held<MemRows> {
+    let mut ix = Held::new(MemRows::default());
+    for (i, b) in bodies.into_iter().enumerate() {
+        ix.join(&body(i), &BodyWrites::of(b, true), &[]).unwrap();
+    }
+    ix
+}
+
+/// The index of sets of writes, no body winning any.
+pub(crate) fn held_of_writes(sets: &[&Winners]) -> Held<MemRows> {
+    let mut ix = Held::new(MemRows::default());
+    for (i, w) in sets.iter().enumerate() {
+        ix.join(&body(i), &BodyWrites::of_writes((*w).clone()), &[]).unwrap();
+    }
+    ix
+}
+
+/// `Held::dies` against the from-scratch earliest: the least `ts` among the writes of `bodies`
+/// superseding each write; a text element's creation only by deletes after the latest undelete
+/// held (§4.8 When); hiding read in the copies as joined. Then the index kept as bodies come
+/// (`incremental_check`).
 fn first_superseding_check(bodies: &[Fragment]) {
-    let date = |b: &Fragment| own(b).iter().map(|x| x.w.stamp.ts).max().unwrap_or_default();
-    let mut ix: ByWrite<Option<Ts>> = ByWrite::default();
-    for b in bodies {
-        let d = date(b);
-        ix.note(&b.held_writes(), |_, x| *x = Some(x.map_or(d, |y| y.min(d))));
-    }
-    // each write with its body's date; an embedded char's creation with its register write's
-    // earliest (held wherever the write is, §4.8 When)
+    let mut ix = held_of(bodies);
     let mut all: Vec<Raw> = bodies.iter().flat_map(own).collect();
-    let mut dates: Vec<Ts> = bodies.iter().flat_map(|b| std::iter::repeat_n(date(b), own(b).len())).collect();
     as_joined(&mut all);
-    let n = all.len();
     let all = embedded(all);
-    for r in &all[n..] {
-        let Some(Place::Item(d)) = r.w.path.last() else { unreachable!() };
-        let of = Won { path: r.w.path[..r.w.path.len() - 1].to_vec(), kind: Kind::Value, stamp: Stamp { ts: r.w.stamp.ts, dot: d.origin().clone() } };
-        dates.push(all[..n].iter().zip(&dates).filter(|(x, _)| x.w == of).map(|(_, t)| *t).min().unwrap());
-    }
-    let mut hiders = Hiders::default();
-    bodies.iter().for_each(|b| hiders.note(b));
     for w in all.iter().filter(|w| !w.shadow) {
         let undeleted = all.iter().filter(|s| s.w.kind == Kind::Undelete && s.w.path == w.w.path).map(|s| &s.w.stamp).max();
         let counts = |s: &Raw| kills(s, w) && !(w.text_creation && s.w.kind == Kind::Delete && undeleted.is_some_and(|u| s.w.stamp < *u));
-        let want = all.iter().zip(&dates).filter(|(s, _)| counts(s)).map(|(_, d)| *d).min();
-        assert_eq!(ix.first_superseding(&w.w, &hiders, |_, x| *x), want, "the earliest body superseding {w:?}");
         let by_stamp = all.iter().filter(|s| counts(s)).map(|s| s.w.stamp.ts).min();
-        assert_eq!(ix.first_superseding(&w.w, &hiders, |s, _| Some(s.ts)), by_stamp, "the earliest write superseding {w:?}");
+        assert_eq!(ix.dies(&w.w).unwrap(), by_stamp, "the earliest write superseding {w:?}");
     }
-    moved_by_check(bodies);
+    incremental_check(bodies);
 }
 
-/// `moved_by`: noting the bodies one at a time, every write held before whose earliest
-/// superseding write moves is one the new body's writes name.
-fn moved_by_check(bodies: &[Fragment]) {
-    let mut ix: ByWrite<()> = ByWrite::default();
-    let mut hiders = Hiders::default();
-    let mut held: BTreeSet<Won> = BTreeSet::new();
-    for b in bodies {
-        let was: Vec<Option<Ts>> = held.iter().map(|w| ix.first_superseding(w, &hiders, |s, _| Some(s.ts))).collect();
-        let hw = b.held_writes();
-        ix.note(&hw, |_, _| ());
-        hiders.note(b);
-        let named: BTreeSet<Won> = hw.iter().flat_map(|s| ix.moved_by(&s)).collect();
-        for (w, was) in held.iter().zip(was) {
-            let now = ix.first_superseding(w, &hiders, |s, _| Some(s.ts));
-            assert!(now == was || named.contains(w), "{w:?} moved from {was:?} to {now:?}, unnamed by {:?}", hw.iter().collect::<Vec<_>>());
-        }
-        held.extend(hw.iter());
+/// The index kept as bodies join one at a time is, after each, the one joining those held from
+/// nothing gives, row for row, its deaths those its rows date (`Held::check`).
+fn incremental_check(bodies: &[Fragment]) {
+    let mut ix = Held::new(MemRows::default());
+    for (i, b) in bodies.iter().enumerate() {
+        ix.join(&body(i), &BodyWrites::of(b, true), &[]).unwrap();
+        assert_eq!(ix.check().unwrap(), Ok(()), "after body {i} joined");
+        assert!(ix.rows == held_of(&bodies[..=i]).rows, "after body {i} joined: the rows of a fresh index");
     }
 }
 
-/// The held writes and hiders of `bodies`, each body's writes counted (`ByWrite::note`).
-fn index_of<'a>(bodies: impl IntoIterator<Item = &'a Fragment>) -> (ByWrite<usize>, Hiders) {
-    let (mut ix, mut hiders) = (ByWrite::default(), Hiders::default());
-    for b in bodies {
-        ix.note(&b.held_writes(), |_, n| *n += 1);
-        hiders.note(b);
-    }
-    (ix, hiders)
-}
-
-/// `forget` and `moved_by` over bodies leaving: from a random set of the bodies to another, the
-/// leaving ones forgotten (`ByWrite::forget`, `Hiders::forget`) and the new ones noted, the
-/// index is what noting the second set gives; and every write held in both whose earliest
-/// superseding write moved is one that `moved_by`, on the index after, names for a write of a
-/// body that left or came.
+/// Bodies leaving and joining: from a random set of the bodies to another, the leaving ones
+/// taken away (`Held::leave`) and the new ones joined, in a random order, the index is the one
+/// joining the second set from nothing gives, row for row (so every death and every body's
+/// date moved with them), and its deaths are those its rows date.
 fn changes_check(bodies: &[Fragment], r: &mut crate::testutil::SeedRng) {
     for _ in 0..4 {
         let from: Vec<bool> = bodies.iter().map(|_| r.chance(1, 2)).collect();
         let to: Vec<bool> = bodies.iter().map(|_| r.chance(1, 2)).collect();
-        let pick = |s: &[bool]| bodies.iter().zip(s.to_vec()).filter(|x| x.1).map(|x| x.0).collect::<Vec<_>>();
-        let (was, was_hiders) = index_of(pick(&from));
-        let (mut ix, mut hiders) = (was.clone(), was_hiders.clone());
-        let mut changed = Winners::default();
-        for (i, b) in bodies.iter().enumerate() {
-            let hw = b.held_writes();
-            if from[i] && !to[i] {
-                ix.forget(&hw, |_, n| {
-                    *n -= 1;
-                    *n > 0
-                });
-                let mut own = Hiders::default();
-                own.note(b);
-                hiders.forget(&own);
-                changed.extend(hw);
-            } else if to[i] && !from[i] {
-                ix.note(&hw, |_, n| *n += 1);
-                hiders.note(b);
-                changed.extend(hw);
+        let build = |s: &[bool]| {
+            let mut ix = Held::new(MemRows::default());
+            for (i, b) in bodies.iter().enumerate().filter(|(i, _)| s[*i]) {
+                ix.join(&body(i), &BodyWrites::of(b, true), &[]).unwrap();
             }
+            ix
+        };
+        let mut ix = build(&from);
+        let mut order: Vec<usize> = (0..bodies.len()).filter(|i| from[*i] != to[*i]).collect();
+        for i in (1..order.len()).rev() {
+            order.swap(i, r.below(i + 1));
         }
-        let (want, want_hiders) = index_of(pick(&to));
-        assert_eq!(ix, want, "the index after bodies left and came is the one noting those held");
-        assert_eq!(hiders, want_hiders, "the hiders after bodies left and came are those noting the copies held");
-        let named: BTreeSet<Won> = changed.iter().flat_map(|s| ix.moved_by(&s)).collect();
-        let held = |s: &[bool]| -> BTreeSet<Won> { pick(s).into_iter().flat_map(|b| b.held_writes().iter().collect::<Vec<_>>()).collect() };
-        for w in held(&from).intersection(&held(&to)) {
-            let (a, b) = (was.first_superseding(w, &was_hiders, |s, _| Some(s.ts)), ix.first_superseding(w, &hiders, |s, _| Some(s.ts)));
-            assert!(a == b || named.contains(w), "{w:?} moved from {a:?} to {b:?}, unnamed by the writes that left or came");
+        for i in order {
+            let w = BodyWrites::of(&bodies[i], true);
+            if to[i] { ix.join(&body(i), &w, &[]).unwrap() } else { ix.leave(&body(i)).unwrap() }
+            assert_eq!(ix.check().unwrap(), Ok(()), "after body {i} joined or left");
         }
+        assert!(ix.rows == build(&to).rows, "the index after bodies left and came is the one joining those held");
     }
 }
 
@@ -500,6 +466,46 @@ fn s(v: &str) -> Value {
 /// The writes of `a` dead in `a ⊔ b`, by kind and stamp.
 fn dead(a: &Fragment, b: &Fragment) -> Vec<(Kind, Stamp)> {
     a.winners().minus(&joined(a, b).winners()).into_iter().map(|w| (w.kind, w.stamp)).collect()
+}
+
+/// §4.8 When, spec/requirements.md Scale: a text written in one run of 1000 chars costs the index
+/// a row per bucket, not per char; a delete of 10 chars dates those alone (the run's body at the
+/// delete), a reset the rest (the body at the reset, the delete's at the reset too: its flag
+/// writes die there); the delete leaving, its chars die at the reset; each step's index is the
+/// one built from nothing.
+#[test]
+fn a_run_is_held_by_bucket_and_dated_by_element_spec_4_8() {
+    let empty = Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::new()));
+    let text = edit(&empty, 3, 1, vec![Op::Insert { at: 0, items: vec![s(&"abcdefghij".repeat(100))] }]);
+    let del = edit(&text, 5, 2000, vec![Op::Delete { at: 300, len: 10 }]);
+    let both = joined(&text, &del);
+    let reset = edit(&both, 9, 3000, vec![Op::Replace(s("z"))]);
+    let bodies = [text, del, reset];
+    let mut ix = Held::new(MemRows::default());
+    ix.join(&body(0), &BodyWrites::of(&bodies[0], true), &[]).unwrap();
+    let buckets = ix.rows.0.keys().filter(|k| k.get(16) == Some(&b'B')).count();
+    assert!(buckets <= 5 && ix.rows.0.len() <= 30, "1000 chars: {buckets} bucket rows of {} rows", ix.rows.0.len());
+    assert_eq!(ix.date(&body(0).c).unwrap(), None, "nothing dead");
+    ix.join(&body(1), &BodyWrites::of(&bodies[1], true), &[]).unwrap();
+    assert_eq!(ix.date(&body(0).c).unwrap(), Some(ts(5)), "10 chars died at the delete");
+    assert_eq!(ix.date(&body(1).c).unwrap(), None);
+    ix.join(&body(2), &BodyWrites::of(&bodies[2], true), &[]).unwrap();
+    assert_eq!(ix.date(&body(0).c).unwrap(), Some(ts(9)), "the rest died at the reset");
+    assert_eq!(ix.date(&body(1).c).unwrap(), Some(ts(9)), "the delete's flags died at the reset");
+    assert_eq!(ix.check().unwrap(), Ok(()));
+    assert!(ix.rows == held_of(&bodies).rows, "the rows of a fresh index");
+    let c = body(0).c.0;
+    let dated = |ix: &mut Held<MemRows>, t: u64| ix.rows.0.get(&[&c[..16], b"D", &c[16..], &(!ts(t).to_u64()).to_be_bytes()].concat()).map(|v| u64::from_be_bytes(v.as_slice().try_into().unwrap()));
+    assert_eq!((dated(&mut ix, 5), dated(&mut ix, 9)), (Some(10), Some(990)), "the run's deaths by date");
+    ix.leave(&body(1)).unwrap();
+    assert_eq!((dated(&mut ix, 5), dated(&mut ix, 9)), (None, Some(1000)), "the delete gone: every char at the reset");
+    assert_eq!(ix.check().unwrap(), Ok(()));
+    let mut fresh = Held::new(MemRows::default());
+    for i in [0, 2] {
+        fresh.join(&body(i), &BodyWrites::of(&bodies[i], true), &[]).unwrap();
+    }
+    assert!(ix.rows == fresh.rows, "the delete gone: the rows of a fresh index");
+    incremental_check(&bodies);
 }
 
 /// §4.1, §4.8: a register beaten by a greater stamp dies, a late older write dies on arrival,
@@ -629,13 +635,8 @@ fn killed(st: &Fragment, y: &Fragment) -> Vec<(Won, Option<Ts>)> {
     let at_after = after.reach_after(y, &at);
     let mut before = at.winners();
     before.extend(y.winners());
-    let mut by: ByWrite<()> = ByWrite::default();
-    let mut hiders = Hiders::default();
-    for f in [&at, y, &at_after] {
-        by.note(&f.held_writes(), |_, _| ());
-        hiders.note(f);
-    }
-    before.minus(&at_after.winners()).into_iter().map(|w| { let t = by.first_superseding(&w, &hiders, |s, _| Some(s.ts)); (w, t) }).collect()
+    let mut by = held_of([&at, y, &at_after]);
+    before.minus(&at_after.winners()).into_iter().map(|w| { let t = by.dies(&w).unwrap(); (w, t) }).collect()
 }
 
 /// §4.1 Copy order, §4.8 Which write: copies of a set element's write (one stamp) holding a
@@ -710,12 +711,7 @@ fn held_date(held: &[&Fragment], w: &Won) -> Option<Option<Ts>> {
     if joined.winners().iter().any(|x| x == *w) {
         return None;
     }
-    let (mut by, mut hiders) = (ByWrite::<()>::default(), Hiders::default());
-    for b in held {
-        by.note(&b.held_writes(), |_, _| ());
-        hiders.note(b);
-    }
-    Some(by.first_superseding(w, &hiders, |s, _| Some(s.ts)))
+    Some(held_of(held.iter().copied()).dies(w).unwrap())
 }
 
 fn perms(v: &[usize]) -> Vec<Vec<usize>> {
@@ -941,16 +937,11 @@ fn an_embedding_copy_carries_its_register_writes_reset_spec_7() {
     }
     let empty = Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::new()));
     let older = edit(&empty, 3, 1, vec![Op::Insert { at: 0, items: vec![s("q")] }]);
-    let mut ix: ByWrite<()> = ByWrite::default();
-    let mut hiders = Hiders::default();
-    for b in [&older, &under] {
-        ix.note(&b.held_writes(), |_, _| ());
-        hiders.note(b);
-    }
+    let mut ix = held_of([&older, &under]);
     let dead = dead(&older, &under);
     assert!(!dead.is_empty(), "the older char dies in the join");
     for w in older.winners().iter() {
-        let first = ix.first_superseding(&w, &hiders, |s, _| Some(s.ts));
+        let first = ix.dies(&w).unwrap();
         assert_eq!(first.is_some(), dead.contains(&(w.kind, w.stamp.clone())), "{w:?}: superseded in the held writes iff dead in the join");
         assert!(first.is_none_or(|t| t == ts(5)), "{w:?} dies at s: {first:?}");
     }
@@ -975,12 +966,9 @@ fn a_slots_presence_write_beats_a_lower_one_in_another_slot_spec_7() {
         assert_eq!(joined(a, b), list, "the list alone");
     }
     assert_eq!(dead(&map, &list), vec![(Kind::W, Stamp::new(ts(3), x(), 1))], "the map's W dies");
-    let mut ix: ByWrite<()> = ByWrite::default();
-    for b in [&map, &list] {
-        ix.note(&b.held_writes(), |_, _| ());
-    }
+    let mut ix = held_of([&map, &list]);
     for w in map.winners().iter() {
-        assert_eq!(ix.first_superseding(&w, &Hiders::default(), |s, _| Some(s.ts)), Some(ts(5)), "{w:?}");
+        assert_eq!(ix.dies(&w).unwrap(), Some(ts(5)), "{w:?}");
     }
     first_superseding_check(&[map.clone(), list.clone()]);
     let both = Fragment::Slots(Slots { reg: None, slots: [(map.encoding(), map.clone()), (list.encoding(), list.clone())].into_iter().collect() });

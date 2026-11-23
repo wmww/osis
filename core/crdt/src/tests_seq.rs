@@ -1445,14 +1445,12 @@ fn each_element_of_a_split_range_record_dies_at_its_own_delete_spec_commits_5() 
         let after = joined(&st, &y);
         let won = after.reach_after(&y, &at).winners();
         let dead = before.minus(&won);
-        let mut by = crate::winners::ByWrite::<()>::default();
-        by.note(&before, |_, _| ());
-        by.note(&won, |_, _| ());
+        let mut by = crate::tests_winners::held_of_writes(&[&before, &won]);
         let item = Dot::new(source(&MSource::session(1, 0)), hit as u64 + 1);
         assert_eq!(dead.len(), 1, "join {i}: one write dies");
         for w in &dead {
             assert_eq!(w.path.last(), Some(&crate::winners::Place::Item(item.clone())), "join {i}: the hit element's");
-            assert_eq!(by.first_superseding(w, &Default::default(), |s, _| Some(s.ts)), Some(ts(t << 16)), "join {i}: dated by its own delete");
+            assert_eq!(by.dies(w).unwrap(), Some(ts(t << 16)), "join {i}: dated by its own delete");
         }
         st = after;
     }
@@ -1475,13 +1473,9 @@ fn a_move_below_its_creation_dies_at_the_creation_though_a_delete_beats_it_spec_
     let dead = before.minus(&after.reach_after(&y, &at).winners());
     assert_eq!(dead.iter().map(|w| w.kind).collect::<Vec<_>>(), vec![crate::winners::Kind::Pos], "the move dies");
     let w = dead.first().unwrap();
-    let mut winning = crate::winners::ByWrite::<()>::default();
-    winning.note(&before, |_, _| ());
-    winning.note(&after.winners(), |_, _| ());
-    assert_eq!(winning.first_superseding(w, &Default::default(), |s, _| Some(s.ts)), None, "no winning write supersedes it");
-    let mut held = crate::winners::ByWrite::<()>::default();
-    held.note(&at.held_writes(), |_, _| ());
-    held.note(&y.held_writes(), |_, _| ());
-    assert_eq!(held.first_superseding(w, &Default::default(), |s, _| Some(s.ts)), Some(ts(10 << 16)), "dated by the creation");
+    let mut winning = crate::tests_winners::held_of_writes(&[&before, &after.winners()]);
+    assert_eq!(winning.dies(w).unwrap(), None, "no winning write supersedes it");
+    let mut held = crate::tests_winners::held_of_writes(&[&at.held_writes(), &y.held_writes()]);
+    assert_eq!(held.dies(w).unwrap(), Some(ts(10 << 16)), "dated by the creation");
     crate::tests_model::reach_holds_the_change(&state, &after, &y);
 }

@@ -452,7 +452,7 @@ impl Engine {
     // Held parts and bodies
 
     /// Brings the facade values kept per entry (`Core::read_things` per sync ID; `Core::step_write_keys` per sync ID and step;
-    /// `Core::wrap_blocks`, per actor and walk; `Core::held_writes_rows`, per aspect; each read
+    /// `Core::wrap_blocks`, per actor and walk; each read
     /// thing's certificates per piece and commit, `certified`; its thing lists per rotation,
     /// `listed`; `Core::read_facts`, per sync ID and commit; `Core::held_fates`, per commit) up to date with what moved since
     /// the last call: whether any entry moved. Each refreshes itself when asked, but an `Effects`
@@ -470,7 +470,6 @@ impl Engine {
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.pass_wanted, |e, s| e.pass_wanted_fresh(s))? | moved;
         self.follow_own()?;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.wrap_blocks, |e, (a, walk)| e.wrap_blocked_read(a, *walk))? | moved;
-        let moved = self.follow_held_writes()? | moved;
         // `listed` follows `certified` first: one follow of each
         let moved = self.follow_lists()? | moved;
         let moved = self.follow_cert_records()? | moved;
