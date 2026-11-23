@@ -54,8 +54,8 @@ enum Secret {
 
 /// Admin 0 writes over an older value with a secret on `t`, 1 applying each; 0 purges the secret
 /// and 1 applies the request (node-sync, which would write the re-snapshot at once, does not run).
-/// Where 1 held the secret's body it holds its leftover and reads nothing, whichever came first
-/// (spec/commits.md §5 Purge, spec/crdt.md §4.7: a value-less winner reads absent).
+/// Where 1 got the secret's body it reads the older value again, whichever came first
+/// (spec/commits.md §5 Purge, spec/crdt.md §4.7: a gone write has no effect on the read).
 fn purged(lp: &mut LocalPeer, t: Tid, secret: Secret) {
     let send = |lp: &mut LocalPeer, id: CommitId| {
         let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
@@ -89,7 +89,7 @@ fn purged(lp: &mut LocalPeer, t: Tid, secret: Secret) {
         Secret::LateHeader => send(lp, c.unwrap()),
     }
     if !matches!(secret, Secret::LateHeader) {
-        assert_eq!(lp.peers[1].engine.get(&t, &reg()).unwrap(), None, "the purge applied, {secret:?}");
+        assert_eq!(lp.peers[1].engine.get(&t, &reg()).unwrap(), Some(Value::Str("old".into())), "the purge applied, {secret:?}");
     }
 }
 
@@ -144,13 +144,12 @@ fn owed_resnapshot_whichever_comes_first_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 Purge, spec/requirements.md Convergence: admin and writer read nothing in the
-// purged secret's place, whichever of it and the request reached the writer first, also after
-// exchanging their re-snapshots. A writer given only the secret's header (0 dropped its body)
-// never held it, so it lacks its leftover and reads what it replaced until a writer that held
-// the body re-snapshots (0 here: its snapshot carries the secret value-less)
+// spec/commits.md §5 Purge, spec/crdt.md §4.7, spec/requirements.md Convergence: admin and writer
+// read the value the purged secret replaced, whichever of it and the request reached the writer
+// first (a writer given only the secret's header reads as one that held and removed it), also
+// after exchanging their re-snapshots
 #[test]
-fn purged_secret_reads_nothing_whatever_reaches_first_spec_commits_5() {
+fn purged_secret_reads_what_it_replaced_whatever_reaches_first_spec_commits_5() {
     for secret in [Secret::First, Secret::LateBody, Secret::LateHeader] {
         let (mut lp, t, _) = world(true);
         purged(&mut lp, t, secret);
@@ -160,7 +159,7 @@ fn purged_secret_reads_nothing_whatever_reaches_first_spec_commits_5() {
         lp.sync(1, 0).unwrap();
         lp.sync(0, 1).unwrap();
         for i in [0, 1] {
-            assert_eq!(lp.peers[i].engine.get(&t, &reg()).unwrap(), None, "peer {i}, {secret:?}");
+            assert_eq!(lp.peers[i].engine.get(&t, &reg()).unwrap(), Some(Value::Str("old".into())), "peer {i}, {secret:?}");
         }
     }
 }

@@ -62,12 +62,14 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
 }
 
 // spec/commits.md §4, §6: an expiring commit with a delta missing applies what is held at once; at
-// the commit's expiry its held part goes.
+// the commit's expiry its held part goes and what it replaced reads again.
 #[test]
 fn expiring_commit_applies_without_missing_delta_spec_commits_4() {
     let mut lp = net(2, 0);
     let t = new_shared(&mut lp, 0);
     sync(&mut lp, 0, 1);
+    let before = lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap();
+    assert_ne!(before, Some(s("held")));
     let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
     let mut m = Mutation::new();
     m.set(t, &BRIEF, &s("gone soon")).unwrap();
@@ -84,8 +86,8 @@ fn expiring_commit_applies_without_missing_delta_spec_commits_4() {
     lp.peers[1].tick().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
     assert!(lp.peers[1].engine.commit_ids().contains(&id));
-    // the expired write applied before T stays its value-less winner (spec/crdt.md §4.7)
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
+    // the expired write is gone: what it replaced reads (spec/crdt.md §4.7)
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), before);
 }
 
 // spec/commits.md §4: a part that does not hash to its header entry is dropped alone; the

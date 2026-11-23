@@ -203,11 +203,11 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
     }
 }
 
-// spec/crdt.md §4.7, §5.6 Live: a map entry an expiring delta created stays past T with another
-// writer's later lasting write inside it, under that write's own key, whatever the arrival order,
-// under purge on replace.
+// spec/crdt.md §4.7, §5.6 Live: a map entry an expiring delta created goes past T with another
+// writer's later lasting put on its key (a put on a live key writes into the entry), whatever the
+// arrival order, under purge on replace: the put reads as at a node that never held the entry.
 #[test]
-fn expired_entry_keeps_nested_write_alike_spec_crdt_4_7() {
+fn expired_entry_takes_nested_write_alike_spec_crdt_4_7() {
     let map = ak("t:gonemap.0");
     let r = by_writer().unwrap();
     let mut lp = net(4, 0);
@@ -241,7 +241,7 @@ fn expired_entry_keeps_nested_write_alike_spec_crdt_4_7() {
         lp.peers[p].tick().unwrap();
     }
     assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), lp.peers[3].engine.get(&t, &map).unwrap());
-    assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), Some(osis_base::Value::Map([(s("k"), s("b"))].into_iter().collect())), "the put keeps the entry");
+    assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), Some(osis_base::Value::Map(Default::default())), "the put goes with the entry");
 }
 
 // spec/commits.md §4: a creation record applies alone: the thing's next commit shows, and the part away holds only its own commit.
@@ -367,10 +367,11 @@ fn cross_thing_part_shows_spec_commits_4() {
     assert_eq!(read(), (Some(s("t")), Some(s("t")), Some(s("u"))));
 }
 
-// spec/crdt.md §5.7 Live: an expiring list element whose content another lasting write replaced
-// whole stays past T with that value, rebuilt and at a late node holding a snapshot alike.
+// spec/crdt.md §4.7, §5.7 Live: an expiring list element whose content another lasting write replaced
+// whole goes past T, that write with it (no creation, no live element), rebuilt and at a late node
+// holding a snapshot alike.
 #[test]
-fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
+fn list_element_overwritten_goes_past_expiry_spec_crdt_5_7() {
     let k = ak("t:list.0");
     let mut lp = net(2, 0);
     let t = new_shared(&mut lp, 0);
@@ -387,11 +388,11 @@ fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(2 * 3_600_000);
     lp.peers[1].tick().unwrap();
-    let edited = Some(Value::List(vec![s("edited")]));
+    let edited = Some(Value::List(Vec::new()));
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), edited);
     lp.peers[1].engine.rebuild_index().unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), edited, "rebuilt");
-    // past T, a snapshot carries the value-less creation to a node without the expired commit
+    // past T, a snapshot carries the edit alone to a node without the expired commit
     lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
     let mut late = fresh_copy(&mut obs, lp.peers[1].engine.now());
     for pk in &packages_for_peer(&mut lp, 1, &mut late) {
@@ -400,7 +401,7 @@ fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
     assert_eq!(late.engine.get(&t, &k).unwrap(), edited, "a late node");
 }
 
-// spec/crdt.md §4.7: a snapshot written before T carries the element's creation value-less: a holder
+// spec/crdt.md §4.7: a snapshot written before T carries no write of the expiring delta: a holder
 // of the body reads it until T, whichever came first, and past T the list goes.
 #[test]
 fn list_element_stays_beside_snapshot_before_expiry_spec_crdt_4_7() {
@@ -420,11 +421,11 @@ fn list_element_stays_beside_snapshot_before_expiry_spec_crdt_4_7() {
     }
 }
 
-// spec/crdt.md §4.7, §5.7 Live: a purge of a list element's creation takes only its value: the
-// element shows another writer's edit in it whichever of the request, the creation and the edit
-// arrives first.
+// spec/crdt.md §4.7, §5.7 Live: a purge of a list element's creation takes the element: another
+// writer's edit in it stays held but shows nothing, whichever of the request, the creation and the
+// edit arrives first.
 #[test]
-fn purged_list_element_keeps_edit_in_any_order_spec_crdt_4_7() {
+fn purged_list_element_takes_edit_in_any_order_spec_crdt_4_7() {
     let k = ak("t:list.0");
     let mut lp = net(3, 0);
     let t = new_shared(&mut lp, 0);
@@ -460,16 +461,16 @@ fn purged_list_element_keeps_edit_in_any_order_spec_crdt_4_7() {
         for x in order {
             q.receive(&x.bytes, x.blobs.clone()).unwrap();
         }
-        assert_eq!(q.engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])));
+        assert_eq!(q.engine.get(&t, &k).unwrap(), Some(Value::List(Vec::new())));
         digests.push(q.engine.state_digest(&t, &k).unwrap());
     }
     assert!(digests.iter().all(|d| *d == digests[0]), "{digests:?}");
 }
 
-// spec/crdt.md §4.6, §5.7 Live: an un-merge past T rebuilds the state from the leftover: the expired
-// element still shows another writer's edit in it, the one holding only its own value stays gone.
+// spec/crdt.md §4.6, §4.7, §5.7 Live: an un-merge past T rebuilds the state from the bodies held
+// without the gone writes: the expired elements stay gone, the one another writer edited too.
 #[test]
-fn expired_list_element_survives_unmerge_spec_crdt_4_6() {
+fn expired_list_element_stays_gone_through_unmerge_spec_crdt_4_6() {
     let k = ak("t:list.0");
     let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
@@ -496,19 +497,23 @@ fn expired_list_element_survives_unmerge_spec_crdt_4_6() {
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("late"), s("edited"), s("kept")])));
     lp.advance(2 * 3_600_000);
     lp.peers[1].tick().unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("late"), s("edited")])));
+    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("late")])));
     let pk = lp.peers[0].engine.package(&d).unwrap().unwrap();
     lp.deliver(1, &pk).unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])), "un-merged");
+    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(Vec::new())), "un-merged");
 }
 
-// spec/crdt.md §4.7 (Snapshots: one without an expiry carries the delta's value-carrying writes value-less): a snapshot carries the delta's list creations value-less, before and after T,
-// spec/permissions.md §5.2: a snapshot from past T joins at a node before T still holding the body,
-// whose valued copy wins: the element reads there until its own T.
+// spec/crdt.md §4.7 (Snapshots: one without an expiry carries no write of a delta with an expiry),
+// spec/permissions.md §5.2: a snapshot from past T, carrying a lasting element anchored at the
+// expired one, joins at a node before T still holding the expiring body: the expiring element reads
+// there beside it until its own T, then the lasting one alone.
 #[test]
 fn snapshot_past_expiry_beside_body_spec_crdt_4_7() {
     let k = ak("t:list.0");
     let (mut lp, t) = hello_synced();
+    let mut m = Mutation::new();
+    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 1, items: vec![s("kept")] } }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
     lp.peers[1].clock.advance(3_600_000 + 1_000);
     lp.peers[2].clock.advance(3_600_000 - 1_000);
     lp.peers[1].tick().unwrap();
@@ -517,14 +522,16 @@ fn snapshot_past_expiry_beside_body_spec_crdt_4_7() {
     lp.peers[2].drain_events();
     lp.deliver(2, &pk).unwrap();
     lp.peers[2].reexamine().unwrap();
-    assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("hello")])));
+    assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("hello"), s("kept")])));
     lp.peers[2].clock.advance(2_000);
     lp.peers[2].tick().unwrap();
-    assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), None, "past its own T");
+    assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("kept")])), "past its own T");
+    assert_eq!(lp.peers[2].engine.state_digest(&t, &k).unwrap(), lp.peers[1].engine.state_digest(&t, &k).unwrap(), "as the snapshot's writer holds it");
 }
 
 // spec/crdt.md §5.7 Live, §4.7: an expiring list element is a function of the commits held: another
-// writer's edit in it arriving first or last, before or after T, reads and holds alike, and keeps it.
+// writer's edit in it arriving first or last, before or after T, reads and holds alike, and goes
+// from the read with it past T.
 #[test]
 fn list_element_expiry_in_any_order_spec_crdt_5_7() {
     let k = ak("t:list.0");
@@ -558,7 +565,7 @@ fn list_element_expiry_in_any_order_spec_crdt_5_7() {
             p.clock.advance(2 * 3_600_000);
             p.tick().unwrap();
         }
-        assert_eq!(p.engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])), "past {past}");
+        assert_eq!(p.engine.get(&t, &k).unwrap(), Some(Value::List(Vec::new())), "past {past}");
         digests.push(p.engine.state_digest(&t, &k).unwrap());
     }
     assert!(digests.iter().all(|d| *d == digests[0]), "{digests:?}");
@@ -874,9 +881,9 @@ fn removed_text_entry_key_goes_spec_crdt_5_6() {
     }
 }
 
-// spec/crdt.md §4.7, §5.7 Live: a snapshot written before T carries the element's creation value-less,
+// spec/crdt.md §4.7, §5.7 Live: a snapshot written before T carries no write of the expiring delta,
 // so a node holding only it, past T and with no way to get the expired commit, reads as a node that
-// held the commit: others' writes in the element show at both.
+// held the commit: others' writes in the element are held at both and show at neither.
 #[test]
 fn list_element_in_snapshot_before_expiry_reads_alike_spec_crdt_5_7() {
     let k = ak("t:listtext.0");
@@ -899,7 +906,7 @@ fn list_element_in_snapshot_before_expiry_reads_alike_spec_crdt_5_7() {
         lp.peers[i].tick().unwrap();
     }
     let held = lp.peers[1].engine.get(&t, &k).unwrap();
-    assert_eq!(held, Some(Value::List(vec![s("X")])), "the other writer's char shows");
+    assert_eq!(held, Some(Value::List(Vec::new())), "the other writer's char goes with the element");
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), held);
 }
 

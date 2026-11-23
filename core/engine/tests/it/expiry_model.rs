@@ -1,6 +1,6 @@
-//! Expiry takes a commit's own values and nothing else (spec/crdt.md §4.7, §5.6, §5.7 Live,
-//! spec/commits.md §5 Expiry): an entry or element shows while it holds a live value, its
-//! creation's or another commit's inside it.
+//! Expiry takes a commit's own writes, as if never held (spec/crdt.md §4.7, §5.6, §5.7 Live,
+//! spec/commits.md §5 Expiry): an entry or element shows while its creation lives, others' writes
+//! inside it only with it, and what an expired write replaced shows again.
 
 use crate::common;
 use common::*;
@@ -24,9 +24,9 @@ struct Holder {
     entry: fn(Option<Value>) -> Option<Value>,
 }
 
+/// Text in an entry commit 1 creates: commit 2's chars show only inside a live entry.
 fn text(c1: bool, c2: Option<bool>) -> Option<Value> {
-    let t = format!("{}{}", if c1 { "ab" } else { "" }, if c2 == Some(true) { "cd" } else { "" });
-    (!t.is_empty()).then(|| s(&t))
+    c1.then(|| s(&format!("ab{}", if c2 == Some(true) { "cd" } else { "" })))
 }
 
 fn holders() -> [Holder; 4] {
@@ -71,7 +71,7 @@ fn holders() -> [Holder; 4] {
             },
         },
         // a record: commit 1 creates it with both fields, commit 2 sets field 1; commit 2 expired,
-        // its value-less write still beats commit 1's (a value-less winner reads absent)
+        // commit 1's field 1 shows again
         Holder {
             name: "record",
             ak: "t:map.0",
@@ -79,20 +79,8 @@ fn holders() -> [Holder; 4] {
             create: || PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(item("a", 1)) },
             edit: || PathOp { path: vec![PathSeg::Key(s("k")), PathSeg::Field(1)], op: Op::Set(Value::Int(2)) },
             expect: |c1, c2| {
-                let mut m = osis_base::ValueMap::new();
-                if c1 {
-                    m.insert(Value::Int(0), s("a"));
-                }
-                match c2 {
-                    None if c1 => {
-                        m.insert(Value::Int(1), Value::Int(1));
-                    }
-                    Some(true) => {
-                        m.insert(Value::Int(1), Value::Int(2));
-                    }
-                    _ => {}
-                }
-                (!m.is_empty()).then_some(Value::Map(m))
+                let field = if c2 == Some(true) { 2 } else { 1 };
+                c1.then(|| Value::Map([(Value::Int(0), s("a")), (Value::Int(1), Value::Int(field))].into_iter().collect()))
             },
             entry: |v| match v {
                 Some(Value::Map(m)) => m.get(&s("k")).cloned(),
@@ -200,10 +188,14 @@ fn run(h: &Holder, e1: Option<u64>, c2: Option<Option<u64>>) {
         }
         if !late {
             late = true;
-            let snap = lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
-            drop_covered_by(&mut lp.peers[1].engine, &snap, &t, &k);
-            let p = pk(&mut lp, &snap);
-            lp.deliver(5, &p).unwrap();
+            // none where every write held has expired: the aspect holds nothing
+            if let Some(snap) = lp.peers[1].engine.snapshot(&t, &k).unwrap() {
+                drop_covered_by(&mut lp.peers[1].engine, &snap, &t, &k);
+                let p = pk(&mut lp, &snap);
+                lp.deliver(5, &p).unwrap();
+            } else {
+                assert_eq!(lp.peers[1].engine.state(&t, &k).unwrap(), None, "{}: no snapshot of a held state", h.name);
+            }
             let now = lp.peers[0].engine.now().0;
             // the expiring commits still live, which no snapshot covers
             for (p, e) in pks.iter().zip([Some(e1), c2]) {
@@ -218,13 +210,13 @@ fn run(h: &Holder, e1: Option<u64>, c2: Option<Option<u64>>) {
 
 // spec/crdt.md §4.7, §5.6, §5.7 Live, spec/commits.md §5 Expiry: commit 1 creates an entry (a map
 // entry or list element holding text, or a record) and commit 2 writes inside it. At each one's
-// expiry only its own values go: the entry stays while either holds a live value. Expiring
-// commit 1 with no commit 2: the entry goes; with lasting commit 2: commit 2's content stays;
-// with commit 2 expiring later: the entry goes then; lasting commit 1 with expiring commit 2:
-// commit 2's content goes alone. Alike in either arrival order, at a node holding a snapshot
-// in place of commit 1, and through compaction before and after the expiry.
+// expiry its own writes go as if never held: past commit 1's expiry the entry goes, commit 2's
+// writes inside it with it (a plain text's chars of commit 2, elements of their own, stay); past
+// commit 2's alone its content goes and what it replaced shows again. Alike in either arrival
+// order, at a node holding a snapshot in place of commit 1, and through compaction before and
+// after the expiry.
 #[test]
-fn expiry_takes_only_its_commits_values_spec_crdt_4_7() {
+fn expiry_takes_its_commits_writes_spec_crdt_4_7() {
     for h in &holders() {
         for (e1, c2) in [(Some(HOUR), None), (Some(HOUR), Some(None)), (Some(HOUR), Some(Some(2 * HOUR))), (None, Some(Some(HOUR))), (Some(2 * HOUR), Some(Some(HOUR)))] {
             run(h, e1, c2);

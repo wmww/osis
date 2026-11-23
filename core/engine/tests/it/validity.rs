@@ -4628,6 +4628,7 @@ fn a_purge_request_is_judged_alike_in_both_path_forms_spec_permissions_6() {
     for beside in [false, true] {
         let (mut lp, _, d, p) = two_paths_world();
         let by = osis_base::PurgeBy::AuthorOrAdmin;
+        let before = lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap();
         let mut m = Mutation::new();
         m.set(d, &REG, &s("his")).unwrap();
         m.purge_by(d, &REG, by).unwrap();
@@ -4651,7 +4652,7 @@ fn a_purge_request_is_judged_alike_in_both_path_forms_spec_permissions_6() {
         assert!(lp.peers[1].commit(m).is_err(), "no right on hers");
         lp.sync_all().unwrap();
         let reads = (0..3).map(|i| (lp.peers[i].engine.get(&d, &ak("t:reg.0")).unwrap(), lp.peers[i].engine.get(&p, &ak("t:reg.0")).unwrap())).collect::<Vec<_>>();
-        assert_eq!(reads[0].0, None, "his write purged ({beside})");
+        assert_eq!(reads[0].0, before, "his write purged: what it replaced reads ({beside})");
         assert_eq!(reads[0].1, Some(s("hers")), "hers stays ({beside})");
         outcomes.push(reads);
     }

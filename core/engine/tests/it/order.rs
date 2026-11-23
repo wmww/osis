@@ -3822,32 +3822,6 @@ fn seq_death_delete_first_spec_crdt_4_8() {
     assert!(death((0..b).chain([b + 1, b]).collect()).is_some(), "the delete held first dates it");
 }
 
-// spec/crdt.md §5.6 (the records of a dot are one entry), spec/commits.md §5:
-// an expiring put of k0, a kept write of k1, a snapshot (k0's records
-// key-erased, value-less), then a put into k0's entry (nested writes, keyed). A node holding the
-// snapshot and the later put, not the expiring put, dates the snapshot's body at the later put: its
-// value-less copies in the key-erased record are beaten by the keyed record's writes (was: no
-// death, the records never met in the state).
-#[test]
-fn map_death_across_key_erased_record_spec_crdt_5_6() {
-    use Step::*;
-    let h = vec![Write { by: 0, t: 0, op: 28, k: 0, v: 3 }, Typed { by: 0, t: 0, op: 22, k: 1, v: 2 }, Compact { by: 0, t: 0, op: 28 }, Nested { by: 0, other: 2, t: 0, k: 0, text: false, compact: false, also: false }];
-    let played = play(0, &h);
-    let snap = played.base + 2;
-    let held: Vec<usize> = (0..played.base).chain([snap, snap + 1]).collect();
-    let mut o = fresh(&played);
-    o.engine.keep_bodies(true);
-    for &i in &held {
-        let pk = &played.packs[i];
-        o.receive(&pk.bytes, pk.blobs.clone()).unwrap();
-    }
-    let mut p = deliver(&played, &held);
-    let (id, t, a) = (played.packs[snap].id, played.things[0], ak("t:map.0"));
-    let want = o.engine.replaced_at(&id, &t, &a).unwrap();
-    assert!(want.is_some(), "the node keeping every body dates it");
-    assert_eq!(p.engine.replaced_at(&id, &t, &a).unwrap(), want);
-}
-
 // spec/commits.md §4: not only hostile, not only chains: one commit on G and H, at a node lacking
 // H's creation record. Whichever part comes first, H's waits alone and G's applies.
 #[test]
@@ -4030,10 +4004,10 @@ fn live_write_outlives_its_body_at_the_bound_spec_commits_5() {
     check(0, &[w(0, 0), w(0, 1)], NAMED).unwrap();
 }
 
-// spec/crdt.md §4.7-4.8: a purged register write stays held value-less (its leftover), so it
-// still kills the write before it.
+// spec/crdt.md §4.7-4.8 (Revival): a purged register write is gone and supersedes nothing, so the
+// write before it dies at the next valid write, not at the purged one.
 #[test]
-fn register_deaths_purged_killer_spec_crdt_4_8() {
+fn register_death_skips_a_purged_killer_spec_crdt_4_8() {
     let mut lp = local_peer_off(1, 0, T0);
     let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
@@ -4058,15 +4032,15 @@ fn register_deaths_purged_killer_spec_crdt_4_8() {
     };
     let w1 = put("1", None);
     let w2 = put("2", None);
-    put("3", Some(w2));
+    let w3 = put("3", Some(w2));
     let mut p = fresh_holding(lp.peers[0].engine.now(), t);
     p.engine.keep_bodies(true);
     for pk in &packs {
         p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
     assert!(!p.engine.body_not_dropped(&w2, &t, &ak("t:kept.0")), "the purge dropped w2");
-    let w2_ts = p.engine.header(&w2).unwrap().ts;
-    assert_eq!(p.engine.replaced_at(&w1, &t, &ak("t:kept.0")).unwrap(), Some(w2_ts));
+    let w3_ts = p.engine.header(&w3).unwrap().ts;
+    assert_eq!(p.engine.replaced_at(&w1, &t, &ak("t:kept.0")).unwrap(), Some(w3_ts));
 }
 
 // spec/commits.md §5, spec/crdt.md §4.8 When (a text element's creation dies at the earliest
@@ -4156,12 +4130,11 @@ fn snapshot_dropped_by_earlier_stamped_kill_joins_again_spec_commits_5() {
 }
 
 // spec/crdt.md §4.6 Un-merge, §4.7 (gone writes), spec/commits.md §5 (purge): a purged delta whose
-// body was dropped as covered keeps its leftover from the coverer's copies, which the purge strips
-// next; a later write that superseded it in the state and is un-merged does not take it along
-// (was: made order "old" came back, demotion first absent). The purger's re-snapshot would hide
-// it once it reaches the node.
+// body was dropped as covered is gone from the coverer's copies too, and a later write that
+// superseded it and is un-merged changes nothing of that: the older write the cover never held
+// reads in either order of the demotion and the rest.
 #[test]
-fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
+fn purged_covered_write_reads_alike_through_unmerge_spec_crdt_4_6() {
     let mut lp = local_peer_off(3, 0, T0);
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
@@ -4241,15 +4214,14 @@ fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
         assert!(!p.engine.body_not_dropped(&snap, &g, &ak("t:reg.0")), "the purge drops the snapshot");
         got.push(p.engine.get(&g, &ak("t:reg.0")).unwrap());
     }
-    assert_eq!(got, vec![None, None]);
+    assert_eq!(got, vec![Some(s("old")), Some(s("old"))]);
 }
 
 // spec/crdt.md §4.7 (gone writes), spec/permissions.md §5.2: a purged delta whose body was dropped
-// as covered takes its leftover from the coverer's copies and is held again from then on; when
-// the coverer turns invalid the leftover stays (a held body, no longer the cover's), so the
-// value-less winner hides "old" alike at once, after a rebuild and after a restart.
+// as covered is gone from the coverer's copies; when the coverer turns invalid nothing of it comes
+// back: "old", which it replaced, reads alike at once, after a rebuild and after a restart.
 #[test]
-fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
+fn purged_covered_write_stays_gone_when_its_cover_falls_spec_perm_5_2() {
     let mut lp = local_peer_off(3, 0, T0);
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
@@ -4312,14 +4284,14 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), after, "rebuilt");
     p.restart(FRESH + 1).unwrap();
     assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), after, "restarted");
-    assert_eq!(after, None, "the leftover from the cover's copies stays: the value-less winner");
+    assert_eq!(after, Some(s("old")), "the purged write gone: what it replaced reads");
 }
 
-// spec/crdt.md §4.7 (gone writes): a part of an expired
-// delta arriving after T, later than the rest of its commit (dropped at expiry while missing),
-// joins value-less (was skipped: the whole commit hid "old", the split one showed it).
+// spec/crdt.md §4.7 (gone writes): a part of an expired delta arriving after T, later than the
+// rest of its commit (dropped at expiry while missing), reads as the whole commit does: gone, so
+// "old" reads.
 #[test]
-fn expired_late_part_joins_valueless_spec_crdt_4_7() {
+fn expired_late_part_reads_alike_spec_crdt_4_7() {
     let mut lp = local_peer_off(2, 0, T0);
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.me()).collect();
@@ -4364,7 +4336,7 @@ fn expired_late_part_joins_valueless_spec_crdt_4_7() {
         let _ = p.reexamine();
         got.push(p.engine.get(&g, &ak("t:reg.0")).unwrap());
     }
-    assert_eq!(got, vec![None, None]);
+    assert_eq!(got, vec![Some(s("old")), Some(s("old"))]);
 }
 
 // A snapshot carries another's writes nested in an expiring put's entry in the
@@ -4393,7 +4365,7 @@ fn invalid_snapshot_key_erased_copies_go_spec_permissions_5_2() {
 // spec/crdt.md §4.6, §4.7: 2 puts k0 expiring in a second, 1 writes inside it, 0 passes the
 // expiry and compacts (its copy of 2's writes key-erased), then demotes 2 below the put. A node
 // that held all of it before the expiry and one given it after read alike once both are past
-// it. 1's write carries the key as its own value: only the put's values go, 1's stays.
+// it. Only the put's writes go: 1's write stays held, hidden (its entry has no creation).
 #[test]
 fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
     use Step::*;

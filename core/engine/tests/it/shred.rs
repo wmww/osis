@@ -394,8 +394,8 @@ fn partless_commit_applies_as_its_header_spec_commits_4() {
 
 // spec/commits.md §5, spec/requirements.md (Deterministic): a commit, its thing's record and a purge
 // request naming its parts on a register, a list and a map (resetting nothing), in every order: the node
-// holds each aspect as its author does (the parts value-less, their non-value writes kept), whether the
-// parts waited when the request came or not, flags nothing and keeps no purged value.
+// holds each aspect as its author does (the parts gone, what they replaced back), whether the parts
+// waited when the request came or not, flags nothing and keeps no purged value.
 #[test]
 fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -463,7 +463,7 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
         }
         reads.push(read);
     }
-    assert_eq!(reads[0][0], None, "the value-less write wins over \"old\"");
+    assert_eq!(reads[0][0], Some(s("old")), "the purged write gone: \"old\" reads again");
     assert!(reads.iter().all(|r| *r == reads[0]), "{reads:?}");
 }
 
@@ -575,8 +575,8 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
 // spec/commits.md §4, §5, §6, spec/crdt.md §4.7: a commit past its expiry, every part of it (one
 // expiry per commit), given with a true part and a relay's junk (a stripped slot) and without its
 // third part: nothing waits for it, so it applies at once, no aspect is
-// flagged (no part went while pending), and the true part joins value-less: the older value is
-// superseded, as at a node that held the commit before T.
+// flagged (no part went while pending), and the true part is gone: the older value reads, as at a
+// node that held the commit before T.
 #[test]
 fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     let mut lp = net2();
@@ -604,12 +604,12 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
     assert!(lp.peers[1].engine.commit_ids().contains(&c));
     assert!(lp.peers[1].engine.suspects().is_empty());
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), None, "the true part joined value-less");
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("old")), "the true part gone: the older value reads");
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:brief.0")).unwrap(), None);
     // the writer past T reads the same
     lp.peers[0].clock.advance(120_000);
     lp.peers[0].tick().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("old")));
     assert_eq!(lp.peers[0].engine.state_digest(&t, &ak("t:reg.0")).unwrap(), lp.peers[1].engine.state_digest(&t, &ak("t:reg.0")).unwrap());
 }
 
@@ -750,9 +750,9 @@ fn past_expiry_and_purge_alike(every: bool) {
     let out = outcomes.into_inner().unwrap();
     assert_eq!(out.len(), 1, "{out:#?}");
     let (only, _) = out.iter().next().unwrap();
-    // every part expires with the commit (spec/commits.md §6): the list's element too, and with
-    // it the list (a value-less creation makes nothing present, spec/crdt.md §4.3)
-    assert!(only.starts_with("gone true applied true pending [] stripped 0 flags [] reads None None None"), "{only}");
+    // every part expires with the commit (spec/commits.md §6) and is gone (spec/crdt.md §4.7): the
+    // register reads the record's "new" it replaced, the list and brief nothing, as before `c`
+    assert!(only.starts_with("gone true applied true pending [] stripped 0 flags [] reads Some(Str(\"new\")) None None"), "{only}");
 }
 
 // spec/commits.md §4, §5: a purged permanent delta reads alike whatever came first and whatever the
@@ -1073,11 +1073,11 @@ fn into_entry(lp: &mut LocalPeer, t: Tid, key: &str, n: i64) -> osis_base::Commi
     put_op(lp, 0, t, &MAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key)), osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Set(Value::Int(n)) })
 }
 
-// spec/crdt.md §4.7, §5.6, spec/commits.md §5: a purge of an entry's creation takes the creation's
-// values only: a later edit into the entry carries the key as its own value and keeps the entry,
-// on both nodes; purged too, nothing of the key is left
+// spec/crdt.md §4.7, §5.6, spec/commits.md §5: a purge of an entry's creation takes the entry from
+// the read on both nodes: a later edit into it stays held under its own copy of the key but reads as
+// at a node that never held the creation (no live record); purged too, nothing of the key is left
 #[test]
-fn purge_leaves_later_edits_own_key_spec_crdt_4_7() {
+fn purge_of_an_entry_hides_later_edits_into_it_spec_crdt_4_7() {
     let mut lp = net2_one();
     let t = new_thing(&mut lp, 0);
     let marker = "ENTRY-KEY-MARK-3f0b";
@@ -1099,8 +1099,9 @@ fn purge_leaves_later_edits_own_key_spec_crdt_4_7() {
     purge(&mut lp, made, "other");
     let at = |f: u64| [osis_crdt::PathSeg::Key(s(marker)), osis_crdt::PathSeg::Field(f)];
     for i in [0, 1] {
-        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &at(1)).unwrap(), Some(Value::Int(2)), "peer {i}: the edit's value keeps the entry");
-        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &at(0)).unwrap(), None, "peer {i}: the creation's value went");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &[osis_crdt::PathSeg::Key(s(marker))]).unwrap(), None, "peer {i}: the entry went with its creation");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &at(1)).unwrap(), None, "peer {i}: the edit into it reads as never held");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &[osis_crdt::PathSeg::Key(s("other"))]).unwrap(), Some(item("w", 3)), "peer {i}");
     }
     lp.advance(5);
     purge(&mut lp, edit, "other2");
@@ -1109,8 +1110,9 @@ fn purge_leaves_later_edits_own_key_spec_crdt_4_7() {
     }
 }
 
-// spec/crdt.md §4.7, §5.6: an edit into an expiring entry keeps its own expiry (none) and, past the
-// entry's T, the entry under its own copy of the key
+// spec/crdt.md §4.7, §5.6: an edit into an expiring entry keeps its own expiry (none); past the
+// entry's T the entry is gone and the edit into it reads as at a node that never held the entry,
+// while another entry and the edit into it stay
 #[test]
 fn edit_into_expiring_entry_keeps_its_expiry_spec_crdt_4_7() {
     let mut lp = net2_one();
@@ -1133,14 +1135,16 @@ fn edit_into_expiring_entry_keeps_its_expiry_spec_crdt_4_7() {
     }
     let at = |key: &str, f: u64| [osis_crdt::PathSeg::Key(s(key)), osis_crdt::PathSeg::Field(f)];
     for i in [0, 1] {
-        assert_eq!(lp.peers[i].engine.get_at(&t, &ak("t:map.0"), &at(marker, 1)).unwrap(), Some(Value::Int(2)), "peer {i}: the edit outlives the entry's creation");
-        assert_eq!(lp.peers[i].engine.get_at(&t, &ak("t:map.0"), &at(marker, 0)).unwrap(), None, "peer {i}: the creation's value expired");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &ak("t:map.0"), &[osis_crdt::PathSeg::Key(s(marker))]).unwrap(), None, "peer {i}: the entry expired");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &ak("t:map.0"), &at(marker, 1)).unwrap(), None, "peer {i}: the edit goes with the entry's creation");
         assert_eq!(lp.peers[i].engine.get_at(&t, &ak("t:map.0"), &at("kept", 1)).unwrap(), Some(Value::Int(3)));
     }
 }
 
 // spec/crdt.md §4.7, §5.7, spec/commits.md §5: an undo of a text delete carries the chars as its
-// own values (an undelete): a purge of the insert leaves them, one of the undo too takes them
+// own values (an undelete): a purge of the insert takes the elements' creations, so the text reads
+// as never inserted (an element without its creation shows no char) though the undelete's chars
+// stay held; a purge of the undo too takes them
 #[test]
 fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
     let mut lp = net2_one();
@@ -1167,7 +1171,7 @@ fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
     lp.peers[0].commit(m).unwrap();
     lp.sync(0, 1).unwrap();
     for i in [0, 1] {
-        assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), Some(s(marker)), "peer {i}: the undelete's chars show");
+        assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), Some(s("")), "peer {i}: no creation, no char");
     }
     lp.advance(5);
     let mut m = Mutation::new();
@@ -1220,8 +1224,9 @@ fn undo_revives_no_purged_value_spec_crdt_4_6() {
 
 // spec/requirements.md Deletion (granularity is one edit of one aspect; who may purge it):
 // 1 writes message `e`; 0 (the mint admin) reacts to `e` and posts message `m2` in one delta `d`, then
-// edits `m2` in `c`. 1, `e`'s author, purges `e`. Only `e`'s values go: `d` and `c` are 0's edits,
-// which 1 has no right to purge, and `d`'s reaction keeps `e` under its own copy of the key.
+// edits `m2` in `c`. 1, `e`'s author, purges `e`. Only `e`'s writes go: `d` and `c` are 0's edits,
+// which 1 has no right to purge; `d`'s reaction stays held but goes from the read with `e`'s
+// creation (spec/crdt.md §4.7).
 #[test]
 fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -1254,17 +1259,17 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     lp.peers[1].commit(m).unwrap();
     lp.sync(1, 0).unwrap();
     for i in [0, 1] {
-        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &[PathSeg::Key(s("e")), PathSeg::Field(0)]).unwrap(), None, "peer {i}: e purged");
-        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &[PathSeg::Key(s("e")), PathSeg::Field(1)]).unwrap(), Some(Value::Int(2)), "peer {i}: the reaction kept");
+        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "peer {i}: e purged, its reaction with it");
         assert_eq!(m2(&mut lp, i), Some(item("M2-MARK", 9)), "peer {i}: 0's message and edit kept");
     }
 }
 
 // spec/requirements.md Data model, spec/crdt.md §4.7: 0 reacts to an expiring message `e` and posts a
 // lasting message `m2` in one write: the commit takes no expiry, the reaction its own. Past `e`'s T
-// only `e`'s own value is gone: the reaction keeps `e`, and `m2` and its edit stay.
+// `e` is gone and the reaction with it (it reads as at a node that never held `e`); `m2` and its
+// edit, written by the same commit, stay.
 #[test]
-fn reaction_outlives_expiring_message_spec_crdt_4_7() {
+fn reaction_goes_with_its_expiring_message_spec_crdt_4_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let mut lp = net(1, 0);
     let t = new_thing(&mut lp, 0);
@@ -1283,7 +1288,7 @@ fn reaction_outlives_expiring_message_spec_crdt_4_7() {
     assert_eq!(lp.peers[0].engine.header(&c).unwrap().expires, None, "the reaction's own expiry");
     lp.advance(60_001);
     lp.peers[0].tick().unwrap();
-    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), Some(Value::Map([(Value::Int(1), Value::Int(2))].into_iter().collect())), "e's own value expired, the reaction kept");
+    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired, its reaction with it");
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)), "m2 and its edit kept");
 }
 
@@ -1521,8 +1526,8 @@ fn part_pending_for_its_ts_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
 }
 
 // spec/commits.md §5 (Purge), spec/crdt.md §4.7 (Gone writes): a compaction snapshot carrying a write's
-// value, pending for its `ts`, the write purged before it comes or while it waits: held as its
-// leftover while it waits, and joined so once it applies.
+// value, pending for its `ts`, the write purged before it comes or while it waits: held without the
+// purged write while it waits, and joined so once it applies: the record's value it replaced reads.
 #[test]
 fn waiting_snapshot_drops_a_purged_copy_spec_commits_5() {
     for purge_first in [false, true] {
@@ -1553,7 +1558,7 @@ fn waiting_snapshot_drops_a_purged_copy_spec_commits_5() {
         lp.peers[1].reexamine().unwrap();
         let e = &mut lp.peers[1].engine;
         assert!(e.pending().is_empty() && e.commit_ids().contains(&snap), "{:?}", e.pending());
-        assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None, "purged");
+        assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "purged: the replaced value reads");
         assert!(e.suspects().is_empty());
         assert!(!recoverable(&mut lp.peers[1], b"SECRET-W9b4"));
     }
