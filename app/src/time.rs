@@ -8,6 +8,7 @@ use jiff::tz::{Offset, TimeZone};
 use jiff::Timestamp;
 
 pub use osis_kit::time::*;
+
 /// A wall time as `localtime` ms (the civil time read as if it were UTC).
 fn ms_of(dt: DateTime) -> i64 {
     dt.to_zoned(TimeZone::UTC).map(|z| z.timestamp().as_millisecond()).unwrap_or(0)
@@ -20,17 +21,18 @@ fn civil(ms: i64) -> Option<DateTime> {
 
 /// A zone name or fixed `+HH:MM` / `-HH:MM` offset.
 fn zone(name: &str) -> Option<TimeZone> {
-    if let Some(rest) = name.strip_prefix('+').map(|r| (1, r)).or_else(|| name.strip_prefix('-').map(|r| (-1, r))) {
-        let (sign, rest) = rest;
-        let (h, m) = rest.split_once(':')?;
-        let digits = |x: &str| !x.is_empty() && x.len() <= 2 && x.bytes().all(|b| b.is_ascii_digit());
-        if !digits(h) || !digits(m) {
-            return None;
-        }
-        let mins = h.parse::<i32>().ok()? * 60 + m.parse::<i32>().ok()?;
-        return Offset::from_seconds(sign * mins * 60).ok().map(TimeZone::fixed);
+    let sign = match name.as_bytes().first() {
+        Some(b'+') => 1,
+        Some(b'-') => -1,
+        _ => return TimeZone::get(name).ok(),
+    };
+    let (h, m) = name[1..].split_once(':')?;
+    let digits = |x: &str| !x.is_empty() && x.len() <= 2 && x.bytes().all(|b| b.is_ascii_digit());
+    if !digits(h) || !digits(m) {
+        return None;
     }
-    TimeZone::get(name).ok()
+    let mins = h.parse::<i32>().ok()? * 60 + m.parse::<i32>().ok()?;
+    Offset::from_seconds(sign * mins * 60).ok().map(TimeZone::fixed)
 }
 
 /// A wall time as the viewer's local wall time.
@@ -358,12 +360,10 @@ pub fn occurrences_in(start: &Start, end: Option<&End>, r: &Repeat, from: i64, t
     out
 }
 
-
 /// An event's time as one line: "Mon 14 Oct · 09:30–09:45", "Mon 14 Oct" for a day.
-/// In the viewer's local time (`time::span`).
-pub fn fmt_when(start: &crate::event::Start, end: Option<&crate::event::End>) -> String {
-    use crate::time::DAY;
-    let (s, e, all_day) = crate::time::span(start, end);
+/// In the viewer's local time (`span`).
+pub fn fmt_when(start: &Start, end: Option<&End>) -> String {
+    let (s, e, all_day) = span(start, end);
     let (sd, ed) = (s.div_euclid(DAY), e.saturating_sub(1).max(s).div_euclid(DAY));
     if all_day {
         return if ed > sd { format!("{} – {}", fmt_day(sd), fmt_day(ed)) } else { fmt_day(sd) };

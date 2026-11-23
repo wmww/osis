@@ -1,7 +1,7 @@
 //! The view types that are a stack of facets (notes/app.md Content view): each lists its parts and
 //! says when it fits.
 
-use super::{ViewType, always, part, sample_collection, sample_main, sample_note};
+use super::{ViewType, always, sample_collection, sample_main, sample_note};
 use crate::store::Reader;
 use osis::{Result, Tid};
 
@@ -30,4 +30,4 @@ fn look_fits(cx: &Reader, t: Tid) -> Result<bool> {
 pub static RAW: ViewType = ViewType { id: "raw", label: "All fields", fits: None, parts: &[always("name"), always("fields")], always_offered: false, custom: None, sample: sample_note, grow: None };
 
 /// The opener's chrome below its content: places, Add, who can see it, change and undo.
-pub static CHROME: ViewType = ViewType { id: "chrome", label: "Chrome", fits: None, parts: &[part("places"), part("add"), part("about")], always_offered: false, custom: None, sample: sample_note, grow: None };
+pub static CHROME: ViewType = ViewType { id: "chrome", label: "Chrome", fits: None, parts: &[always("places"), always("add"), always("about")], always_offered: false, custom: None, sample: sample_note, grow: None };

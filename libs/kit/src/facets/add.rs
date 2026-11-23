@@ -1,6 +1,5 @@
 //! "Add" on every designed view: the same offers that made it (notes/app.md Create).
 
-use crate::store::Reader;
 use crate::view::{Block, Chip, Cx, Do, Facet, Icon, Section, Toggle};
 use crate::schema::ADDING;
 use osis::{Result, Tid};
@@ -11,12 +10,6 @@ pub static FACET: AddFacet = AddFacet;
 impl Facet for AddFacet {
     fn id(&self) -> &'static str {
         "add"
-    }
-    fn applies(&self, _: &Reader, _: Tid) -> Result<bool> {
-        Ok(true)
-    }
-    fn universal(&self) -> bool {
-        true
     }
     fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
         let open = cx.flag(ADDING, &cx.path())?;

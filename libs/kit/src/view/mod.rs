@@ -357,7 +357,8 @@ pub struct Offer {
 /// Everything the app knows about one family of aspects (notes/app.md Facet).
 pub trait Facet: Sync {
     fn id(&self) -> &'static str;
-    /// Whether `ak` belongs to this family (none: a facet of every thing).
+    /// Whether `ak` belongs to this family. A facet claiming none applies to nothing: a view
+    /// shows it as an `always` part (chrome, raw rows).
     fn claims(&self, _ak: &str) -> bool {
         false
     }

@@ -140,7 +140,7 @@ impl Widget for MenuItem {
     type Action = MenuPick;
 
     fn on_access_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &AccessEvent) {
-        if event.action == masonry::accesskit::Action::Click {
+        if super::clicked(event) {
             ctx.submit_action::<MenuPick>(MenuPick(self.command));
         }
     }
@@ -181,8 +181,7 @@ impl Widget for MenuItem {
     }
 
     fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, node: &mut Node) {
-        node.set_label(label(self.command));
-        node.add_action(masonry::accesskit::Action::Click);
+        super::clickable(node, label(self.command));
     }
 
     fn children_ids(&self) -> ChildrenIds {

@@ -31,9 +31,9 @@ fn two_people() -> (Data, Data) {
     (a, b)
 }
 
-/// `d` accepts `t`, granted to it: its home holds `t` (a node writes only what it holds,
-/// spec/sync-set.md §2 Writing).
-fn accept(d: &Data, t: osis::Tid) {
+/// `d`'s home holds `t`, granted to it (a node writes only what it holds, spec/sync-set.md §2
+/// Writing).
+fn hold(d: &Data, t: osis::Tid) {
     let mut w = d.db.write();
     w.hold(d.home().unwrap(), t).unwrap();
     w.commit().unwrap();
@@ -70,7 +70,7 @@ fn reach_through_someone_elses_tag() {
     let (a, b) = two_people();
     let tag = shared_tag(&a, &b, Role::Write);
     sync(&a, &b);
-    accept(&b, tag);
+    hold(&b, tag);
     let nb = osis_kit::facets::create(&b, "note").unwrap();
     b.add_tag(nb, tag).unwrap();
     b.db.grant(nb, tag, Role::Write, GrantOpts::default()).unwrap();
@@ -115,7 +115,7 @@ fn undo_is_mine_and_keeps_the_thing() {
     w.at(n, NAME).set(&"alice".to_string()).unwrap();
     w.commit().unwrap();
     sync(&a, &b);
-    accept(&b, tag);
+    hold(&b, tag);
     let mut w = b.db.write();
     w.at(n, NAME).set(&"bob".to_string()).unwrap();
     w.commit().unwrap();

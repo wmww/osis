@@ -60,10 +60,11 @@ pub fn sample_offer(d: &Data, id: &str) -> Tid {
 #[allow(clippy::expect_used)]
 pub fn sample_note(d: &Data) -> Tid {
     let t = sample_offer(d, "note");
-    let mut w = d.db.write();
-    let set = w.at(t, osis::core::NAME).set(&"A note".to_string()).and_then(|()| w.at(t, osis::core::BODY).set(&"Text".to_string()));
-    set.expect("sample: a note");
-    w.commit().expect("sample: a note");
+    d.commit(|w| {
+        w.at(t, osis::core::NAME).set(&"A note".to_string())?;
+        w.at(t, osis::core::BODY).set(&"Text".to_string())
+    })
+    .expect("sample: a note");
     t
 }
 
@@ -87,14 +88,16 @@ pub fn sample_main(d: &Data) -> Tid {
 #[allow(clippy::expect_used)]
 pub fn grow_tag(d: &Data, t: Tid, n: usize) {
     let g = d.home().expect("grow: home");
-    let mut w = d.db.write();
-    for i in 0..n {
-        let x = w.create(g, None).expect("grow: a thing");
-        w.at(x, osis::core::NAME).set(&format!("grown {i}")).expect("grow: a name");
-        w.hold(g, x).expect("grow: held");
-        w.hold(t, x).expect("grow: tagged");
-    }
-    w.commit().expect("grow: a commit");
+    d.commit(|w| {
+        for i in 0..n {
+            let x = w.create(g, None)?;
+            w.at(x, osis::core::NAME).set(&format!("grown {i}"))?;
+            w.hold(g, x)?;
+            w.hold(t, x)?;
+        }
+        Ok(())
+    })
+    .expect("grow: notes");
 }
 
 /// The raw view.

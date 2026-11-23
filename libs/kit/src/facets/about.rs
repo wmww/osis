@@ -135,12 +135,6 @@ impl Facet for AboutFacet {
     fn id(&self) -> &'static str {
         "about"
     }
-    fn applies(&self, _: &Reader, _: Tid) -> Result<bool> {
-        Ok(true)
-    }
-    fn universal(&self) -> bool {
-        true
-    }
     fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
         let r = reach(cx, t)?;
         let mut who = r.who();

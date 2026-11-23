@@ -502,7 +502,7 @@ impl Reader {
 
 impl Data {
     /// `f`'s writes, in one commit.
-    pub(crate) fn commit(&self, f: impl FnOnce(&mut osis::Write<'_>) -> Result<()>) -> Result<()> {
+    pub fn commit(&self, f: impl FnOnce(&mut osis::Write<'_>) -> Result<()>) -> Result<()> {
         let mut w = self.db.write();
         f(&mut w)?;
         w.commit()?;

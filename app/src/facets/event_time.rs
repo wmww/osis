@@ -20,38 +20,28 @@ fn start(data: &Data, w: &mut osis::Write<'_>, t: Tid) -> Result<()> {
     w.at(t, END).set(&End::After(ONE))
 }
 
-/// An event's span in local wall time (`time::span`); `None` when not scheduled.
-pub fn span(d: &Reader, t: Tid) -> Result<Option<(i64, i64, bool)>> {
-    let Some(s) = d.db.at(t, START).get()? else { return Ok(None) };
-    Ok(Some(crate::time::span(&s, d.db.at(t, END).get()?.as_ref())))
-}
-
 /// Moves and lengthens an event as `time::nudged_in` in the system zone. A concurrent change to
 /// another part survives.
 pub fn nudge(d: &Data, t: Tid, by: i64, longer: i64) -> Result<()> {
     let Some(start) = d.db.at(t, START).get()? else { return Ok(()) };
     let end = d.db.at(t, END).get()?;
     let (new_start, new_end) = crate::time::nudged_in(&start, end.as_ref(), by, longer, &crate::time::system());
-    let mut w = d.db.write();
-    w.at(t, START).set(&new_start)?;
-    match (&end, &new_end) {
-        (_, Some(ne)) => w.at(t, END).set(ne)?,
-        (Some(_), None) => w.at(t, END).remove()?,
-        (None, None) => {}
-    }
-    w.commit()?;
-    Ok(())
+    d.commit(|w| {
+        w.at(t, START).set(&new_start)?;
+        match (&end, &new_end) {
+            (_, Some(ne)) => w.at(t, END).set(ne),
+            (Some(_), None) => w.at(t, END).remove(),
+            (None, None) => Ok(()),
+        }
+    })
 }
 
 /// Makes an event repeat every period of `freq` from its start (`None`: not at all).
 pub fn set_repeat(d: &Data, t: Tid, freq: Option<RepeatFreq>) -> Result<()> {
-    let mut w = d.db.write();
-    match freq {
-        Some(freq) => w.at(t, REPEAT).set(&Repeat { freq, interval: 1, weekdays: Default::default(), monthdays: Default::default(), until: None, count: None, skip: Default::default() })?,
-        None => w.at(t, REPEAT).remove()?,
-    }
-    w.commit()?;
-    Ok(())
+    d.commit(|w| match freq {
+        Some(freq) => w.at(t, REPEAT).set(&Repeat { freq, interval: 1, weekdays: Default::default(), monthdays: Default::default(), until: None, count: None, skip: Default::default() }),
+        None => w.at(t, REPEAT).remove(),
+    })
 }
 
 /// Occurrences each series replaced, over everything held: one memo over one per-item memo each.
@@ -87,30 +77,6 @@ fn spans_of(d: &Reader, t: Tid, from: i64, to: i64, over: &BTreeMap<Tid, Vec<Occ
         }
     }
     Ok(out)
-}
-
-/// A day (local wall ms) with what is on it.
-pub type DayOn = (i64, Vec<(Tid, Span)>);
-
-/// The occurrences of everything held touching the week from `monday` (each day with those on
-/// it), repeats expanded, by start.
-pub fn week(d: &Reader, monday: i64) -> Result<Vec<DayOn>> {
-    let things = d.things()?;
-    let over = overridden(d)?;
-    let mut evs = Vec::new();
-    for t in things.iter() {
-        for s in spans_of(d, *t, monday, monday + 7 * DAY, &over)? {
-            evs.push((*t, s));
-        }
-    }
-    evs.sort_by_key(|(t, s)| (s.start, *t));
-    Ok((0..7)
-        .map(|i| {
-            let day = monday + i * DAY;
-            let on = evs.iter().filter(|(_, s)| s.start < day + DAY && (s.end > day || s.start >= day)).copied().collect();
-            (day, on)
-        })
-        .collect())
 }
 
 #[derive(Clone, Debug, PartialEq)]

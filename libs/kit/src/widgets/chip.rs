@@ -5,7 +5,7 @@
 
 use crate::view::ChipMark;
 use crate::text;
-use super::{brighten, fill_card, key_press, lean, primary, repaint_on};
+use super::{brighten, clickable, clicked, fill_card, key_press, lean, pressed, primary, repaint_on};
 use crate::theme::{Card, Look, fade};
 use masonry::accesskit::{Node, Role};
 use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget};
@@ -60,20 +60,13 @@ impl Widget for Chip {
     type Action = ChipPress;
 
     fn on_pointer_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &PointerEvent) {
-        match event {
-            PointerEvent::Down(e) if primary(e) => {
-                let x = ctx.local_position(e.state.position).x;
-                self.down_on_x = self.removable && x > ctx.size().width - X_W - 4.0;
-                ctx.capture_pointer();
-                ctx.request_paint_only();
-            }
-            PointerEvent::Up(..) => {
-                if ctx.is_active() && ctx.is_hovered() {
-                    ctx.submit_action::<ChipPress>(if self.down_on_x { ChipPress::Remove } else { ChipPress::Open });
-                }
-                ctx.request_paint_only();
-            }
-            _ => {}
+        if let PointerEvent::Down(e) = event
+            && primary(e)
+        {
+            self.down_on_x = self.removable && ctx.local_position(e.state.position).x > ctx.size().width - X_W - 4.0;
+        }
+        if pressed(ctx, event) {
+            ctx.submit_action::<ChipPress>(if self.down_on_x { ChipPress::Remove } else { ChipPress::Open });
         }
     }
 
@@ -91,7 +84,7 @@ impl Widget for Chip {
     }
 
     fn on_access_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &AccessEvent) {
-        if event.action == masonry::accesskit::Action::Click {
+        if clicked(event) {
             ctx.submit_action::<ChipPress>(ChipPress::Open);
         }
     }
@@ -154,8 +147,7 @@ impl Widget for Chip {
     }
 
     fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, node: &mut Node) {
-        node.set_label(self.label.clone());
-        node.add_action(masonry::accesskit::Action::Click);
+        clickable(node, &self.label);
     }
 
     fn children_ids(&self) -> ChildrenIds {

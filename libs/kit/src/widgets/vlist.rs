@@ -236,12 +236,7 @@ impl VirtualList {
 
     /// Lays the rows out in lines of `width`: their tops, and the height (one gap past the last).
     fn place_rows(&mut self, ctx: &mut LayoutCtx<'_>, width: f64, gap: f64) -> (Vec<f64>, f64) {
-        let min = self.look.sp(self.min);
-        let mut cols = (((width + gap) / (min + gap)).floor() as usize).max(1);
-        if self.max_cols > 0 {
-            cols = cols.min(self.max_cols);
-        }
-        let cw = ((width - gap * (cols as f64 - 1.0)) / cols as f64).max(0.0);
+        let (cols, cw) = super::grid::columns(width, self.look.sp(self.min), gap, self.max_cols);
         // lines in list coordinates; columns from `first` stay put while the window moves, unless
         // labels break the grid
         let aligned = !self.spans.iter().any(|s| *s);

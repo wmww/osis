@@ -18,7 +18,7 @@ pub enum FormAct {
     AddKey { ak: &'static str },
 }
 
-/// A row of a kind's own form (a contact's fields).
+/// A row of the contact form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FormRow {
     pub label: String,
@@ -27,21 +27,21 @@ pub struct FormRow {
     pub act: FormAct,
 }
 
-fn text_row(ak: &str, path: Path, label: &str, value: String, optional: bool) -> Row {
-    Row { ak: ak.into(), path, depth: 0, label: label.into(), ty: String::new(), value, edit: Edit::Text, optional }
-}
-
 /// A contact's form: names, nickname, title, organisation, emails, phones.
 pub fn contact_form(d: &Reader, t: Tid) -> Result<Vec<FormRow>> {
     let n = d.db.at(t, NAMES).get()?;
     let o = d.db.at(t, ORG).get()?;
-    let field = |label: &str, ph: &str, row: Row| FormRow { label: label.into(), value: row.value.clone(), placeholder: ph.into(), act: FormAct::Field(row) };
+    // a text field of `ak` at `path`
+    let field = |label: &str, ak: &str, path: Path, name: &str, value: String, optional: bool| {
+        let row = Row { ak: ak.into(), path, depth: 0, label: name.into(), ty: String::new(), value: value.clone(), edit: Edit::Text, optional };
+        FormRow { label: label.into(), value, placeholder: String::new(), act: FormAct::Field(row) }
+    };
     let mut out = vec![
-        field("Given name", "", text_row("contact:names.0", Path::root().push(names::GIVEN), "given", n.as_ref().and_then(|n| n.given.clone()).unwrap_or_default(), true)),
-        field("Family name", "", text_row("contact:names.0", Path::root().push(names::FAMILY), "family", n.as_ref().and_then(|n| n.family.clone()).unwrap_or_default(), true)),
-        field("Nickname", "", text_row("contact:nickname.0", Path::root(), "nickname", d.db.at(t, NICKNAME).get()?.unwrap_or_default(), false)),
-        field("Title", "", text_row("contact:org.0", Path::root().push(org::TITLE), "title", o.as_ref().map(|o| o.title.clone()).unwrap_or_default(), false)),
-        field("Organisation", "", text_row("contact:org.0", Path::root().push(org::NAME), "name", o.as_ref().map(|o| o.name.clone()).unwrap_or_default(), false)),
+        field("Given name", "contact:names.0", Path::root().push(names::GIVEN), "given", n.as_ref().and_then(|n| n.given.clone()).unwrap_or_default(), true),
+        field("Family name", "contact:names.0", Path::root().push(names::FAMILY), "family", n.as_ref().and_then(|n| n.family.clone()).unwrap_or_default(), true),
+        field("Nickname", "contact:nickname.0", Path::root(), "nickname", d.db.at(t, NICKNAME).get()?.unwrap_or_default(), false),
+        field("Title", "contact:org.0", Path::root().push(org::TITLE), "title", o.as_ref().map(|o| o.title.clone()).unwrap_or_default(), false),
+        field("Organisation", "contact:org.0", Path::root().push(org::NAME), "name", o.as_ref().map(|o| o.name.clone()).unwrap_or_default(), false),
     ];
     for (ak, key, label, add) in [("contact:emails.0", EMAILS, "Email", "Add an email"), ("contact:phones.0", PHONES, "Phone", "Add a phone")] {
         for k in d.db.at(t, key).get()?.unwrap_or_default().into_keys() {
@@ -59,33 +59,24 @@ pub fn form_apply(d: &Data, t: Tid, act: &FormAct, text: &str) -> Result<()> {
         // a field of an absent struct is written alone (reads fill the others from defaults):
         // writing the whole struct first would overwrite a concurrent write to a sibling
         FormAct::Field(row) => d.set_field(t, row, text),
-        FormAct::RenameKey { ak, old } => {
+        FormAct::RenameKey { ak, old } if text != old => {
             let key = d.db.aspect_key(ak)?;
-            let entry: Labeled = d.db.at(t, key.clone()).path(Path::root().push(old.as_str())).get()?.unwrap_or(Labeled { label: String::new(), pref: false });
-            if text == old {
-                return Ok(());
-            }
-            let mut w = d.db.write();
-            w.at(t, key.clone()).path(Path::root().push(old.as_str())).remove()?;
-            if !text.is_empty() {
-                w.at(t, key.clone()).path(Path::root().push(text)).set(&entry)?;
-            }
-            w.commit()?;
-            Ok(())
+            let entry = d.db.at(t, key.clone()).path(Path::root().push(old.as_str())).get()?.unwrap_or(Labeled { label: String::new(), pref: false });
+            d.commit(|w| {
+                w.at(t, key.clone()).path(Path::root().push(old.as_str())).remove()?;
+                if !text.is_empty() {
+                    w.at(t, key.clone()).path(Path::root().push(text)).set(&entry)?;
+                }
+                Ok(())
+            })
         }
-        FormAct::AddKey { ak } => {
-            if text.is_empty() {
-                return Ok(());
-            }
+        FormAct::AddKey { ak } if !text.is_empty() => {
             let key = d.db.aspect_key(ak)?;
-            let mut w = d.db.write();
-            w.at(t, key).path(Path::root().push(text)).set(&Labeled { label: String::new(), pref: false })?;
-            w.commit()?;
-            Ok(())
+            d.commit(|w| w.at(t, key).path(Path::root().push(text)).set(&Labeled { label: String::new(), pref: false }))
         }
+        FormAct::RenameKey { .. } | FormAct::AddKey { .. } => Ok(()),
     }
 }
-
 
 pub struct ContactFacet;
 pub static FACET: ContactFacet = ContactFacet;

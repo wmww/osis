@@ -17,7 +17,7 @@
 use super::vlist::{GUTTER, MIN_THUMB, VirtualList, paint_thumb};
 use crate::theme::Look;
 use masonry::accesskit::{Action, Node, Role};
-use masonry::core::{AccessCtx, AccessEvent, AllowRawMut, BoxConstraints, ChildrenIds, EventCtx, LayoutCtx, NewWidget, PaintCtx, PointerEvent, PointerScrollEvent, PropertiesMut, PropertiesRef, RegisterCtx, ScrollDelta, Update, UpdateCtx, Widget, WidgetId, WidgetPod};
+use masonry::core::{AccessCtx, AccessEvent, AllowRawMut, BoxConstraints, ChildrenIds, EventCtx, LayoutCtx, NewWidget, PaintCtx, PointerEvent, PointerScrollEvent, PropertiesMut, PropertiesRef, RegisterCtx, ScrollDelta, Update, UpdateCtx, Widget, WidgetId, WidgetMut, WidgetPod};
 use masonry::kurbo::{Point, Size};
 use masonry::vello::Scene;
 use std::cell::RefCell;
@@ -87,6 +87,15 @@ pub(crate) fn into_view(y0: f64, y1: f64, v: f64) -> f64 {
         (y1 - v).min(y0)
     } else {
         0.0
+    }
+}
+
+/// `f(list, d)` on the page's list, for `mutate_widget_later`.
+fn on_list(f: fn(&mut WidgetMut<'_, VirtualList>, f64), d: f64) -> impl FnOnce(WidgetMut<'_, dyn Widget>) {
+    move |mut w| {
+        if let Some(mut list) = w.try_downcast::<VirtualList>() {
+            f(&mut list, d);
+        }
     }
 }
 
@@ -228,21 +237,26 @@ impl Page {
             }
             l.t = to;
             drop(l);
-            ctx.mutate_widget_later(id, move |mut w| {
-                if let Some(mut list) = w.try_downcast::<VirtualList>() {
-                    VirtualList::scroll_by(&mut list, d);
-                }
-            });
+            ctx.mutate_widget_later(id, on_list(VirtualList::scroll_by, d));
             return true;
         }
         drop(l);
-        let to = (self.s + d).clamp(0.0, self.range);
+        let moved = self.scroll_to(self.s + d);
+        if moved {
+            ctx.request_layout();
+        }
+        moved
+    }
+
+    /// Sets the page's own scroll (no list) to `to`, clamped, as moved by input. `false`: it was
+    /// there; else the caller lays the page out again.
+    fn scroll_to(&mut self, to: f64) -> bool {
+        let to = to.clamp(0.0, self.range);
         if (to - self.s).abs() < 0.01 {
             return false;
         }
         self.s = to;
         self.moved = true;
-        ctx.request_layout();
         true
     }
 
@@ -289,10 +303,7 @@ impl Widget for Page {
                 let on = p.y >= y && p.y < y + h;
                 let grab = if on { p.y - y } else { h / 2.0 };
                 self.grab = Some(grab);
-                if !on {
-                    let to = (p.y - self.view_y - grab) / (self.v - h).max(1.0) * self.range;
-                    self.s = to.clamp(0.0, self.range);
-                    self.moved = true;
+                if !on && self.scroll_to((p.y - self.view_y - grab) / (self.v - h).max(1.0) * self.range) {
                     ctx.request_layout();
                 }
                 ctx.set_handled();
@@ -300,9 +311,9 @@ impl Widget for Page {
             PointerEvent::Move(e) if self.grab.is_some() => {
                 let (h, _) = self.thumb().unwrap_or((0.0, 0.0));
                 let y = ctx.local_position(e.current.position).y - self.view_y - self.grab.unwrap_or(0.0);
-                self.s = (y / (self.v - h).max(1.0) * self.range).clamp(0.0, self.range);
-                self.moved = true;
-                ctx.request_layout();
+                if self.scroll_to(y / (self.v - h).max(1.0) * self.range) {
+                    ctx.request_layout();
+                }
             }
             PointerEvent::Up(..) | PointerEvent::Cancel(..) if self.grab.is_some() => {
                 self.grab = None;
@@ -350,19 +361,11 @@ impl Widget for Page {
             if d == 0.0 {
                 return;
             }
-            ctx.mutate_widget_later(id, move |mut w| {
-                if let Some(mut list) = w.try_downcast::<VirtualList>() {
-                    VirtualList::bring_by(&mut list, d);
-                }
-            });
+            ctx.mutate_widget_later(id, on_list(VirtualList::bring_by, d));
             return;
         }
         drop(l);
-        let d = into_view(r.y0 - self.view_y, r.y1 - self.view_y, self.v);
-        let to = (self.s + d).clamp(0.0, self.range);
-        if to != self.s {
-            self.s = to;
-            self.moved = true;
+        if self.scroll_to(self.s + into_view(r.y0 - self.view_y, r.y1 - self.view_y, self.v)) {
             ctx.request_layout();
         }
     }

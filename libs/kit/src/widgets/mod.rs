@@ -36,6 +36,35 @@ pub(crate) fn primary(e: &masonry::core::PointerButtonEvent) -> bool {
     matches!(e.button, None | Some(masonry::core::PointerButton::Primary))
 }
 
+/// A button's pointer: a primary press takes it, and its release over the button is a press
+/// (`true`). Either repaints: the look follows.
+pub(crate) fn pressed(ctx: &mut masonry::core::EventCtx<'_>, event: &masonry::core::PointerEvent) -> bool {
+    use masonry::core::PointerEvent;
+    match event {
+        PointerEvent::Down(e) if primary(e) => {
+            ctx.capture_pointer();
+            ctx.request_paint_only();
+            false
+        }
+        PointerEvent::Up(..) => {
+            ctx.request_paint_only();
+            ctx.is_active() && ctx.is_hovered()
+        }
+        _ => false,
+    }
+}
+
+/// A screen reader's click.
+pub(crate) fn clicked(event: &masonry::core::AccessEvent) -> bool {
+    event.action == masonry::accesskit::Action::Click
+}
+
+/// What a screen reader learns of something pressable: its label and that it clicks.
+pub(crate) fn clickable(node: &mut masonry::accesskit::Node, label: impl Into<String>) {
+    node.set_label(label.into());
+    node.add_action(masonry::accesskit::Action::Click);
+}
+
 /// Enter or Space released on a focused button: a press.
 pub(crate) fn key_press(event: &masonry::core::TextEvent) -> bool {
     use masonry::core::keyboard::{Key, NamedKey};

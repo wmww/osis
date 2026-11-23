@@ -1,7 +1,7 @@
 //! A borderless icon button (back, favorite, delete, ...): the icon on a faint hover fill;
 //! `on` fills the icon in the main colour (a set favorite). Emits `Press`.
 
-use super::{Press, key_press, primary, repaint_on};
+use super::{Press, clickable, clicked, key_press, pressed, repaint_on};
 use crate::icons::Icon;
 use crate::theme::{Look, fade};
 use masonry::accesskit::{Node, Role};
@@ -33,18 +33,8 @@ impl Widget for IconButton {
     type Action = Press;
 
     fn on_pointer_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &PointerEvent) {
-        match event {
-            PointerEvent::Down(e) if primary(e) => {
-                ctx.capture_pointer();
-                ctx.request_paint_only();
-            }
-            PointerEvent::Up(..) => {
-                if ctx.is_active() && ctx.is_hovered() {
-                    ctx.submit_action::<Press>(Press);
-                }
-                ctx.request_paint_only();
-            }
-            _ => {}
+        if pressed(ctx, event) {
+            ctx.submit_action::<Press>(Press);
         }
     }
 
@@ -55,7 +45,7 @@ impl Widget for IconButton {
     }
 
     fn on_access_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &AccessEvent) {
-        if event.action == masonry::accesskit::Action::Click {
+        if clicked(event) {
             ctx.submit_action::<Press>(Press);
         }
     }
@@ -91,8 +81,7 @@ impl Widget for IconButton {
     }
 
     fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, node: &mut Node) {
-        node.set_label(self.label.clone());
-        node.add_action(masonry::accesskit::Action::Click);
+        clickable(node, &self.label);
     }
 
     fn children_ids(&self) -> ChildrenIds {

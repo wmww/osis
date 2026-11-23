@@ -76,9 +76,9 @@ pub fn registry() -> Registry {
         .with_facet_before("body", &facets::contact::FACET)
         .with_facet_before("body", &facets::log::FACET)
         .with_facet_before("body", &facets::color::FACET)
-        .with_view_before("note", &crate::views::stream::VIEW)
-        .with_view_before("note", &crate::views::event::VIEW)
-        .with_view_before("note", &crate::views::person::VIEW)
+        .with_view_before("note", &crate::views::STREAM)
+        .with_view_before("note", &crate::views::EVENT)
+        .with_view_before("note", &crate::views::PERSON)
 }
 
 /// The app's `Data` over `db`.
@@ -91,14 +91,4 @@ pub fn data(db: Osis) -> Data {
         }
     }
     d
-}
-
-/// Whether demo data was added to this account's home.
-pub fn has_demo(d: &Data) -> Result<bool> {
-    for g in d.homes()? {
-        if d.db.at(g, crate::schema::DEMO).get()? == Some(true) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }

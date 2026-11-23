@@ -5,13 +5,11 @@ use crate::contact::{EMAILS, Labeled, ORG, Org, PHONES};
 use osis_kit::store::{Data, start_setting};
 use crate::event::{END, End, LOCATION, START, Start, Wall};
 use crate::schema::{COLOR, DEMO};
+use crate::time::{DAY, HOUR};
 use osis_kit::schema::FAVORITES;
 use osis::core::{BODY, NAME, TAG, Tag};
 use osis::{Result, Tid, Weak, Write};
 use std::collections::BTreeMap;
-
-const DAY_MS: i64 = 86_400_000;
-const HOUR_MS: i64 = 3_600_000;
 
 struct Ctx<'a, 'w> {
     w: &'a mut Write<'w>,
@@ -70,9 +68,9 @@ impl Ctx<'_, '_> {
     #[allow(clippy::too_many_arguments)]
     fn event(&mut self, key: &'static str, name: &str, tags: &[&str], monday: i64, day: i64, h: f64, len: f64, place: &str, body: &str) -> Result<Tid> {
         let t = self.thing(key, name, tags)?;
-        let start = monday + day * DAY_MS + (h * HOUR_MS as f64) as i64;
+        let start = monday + day * DAY + (h * HOUR as f64) as i64;
         self.w.at(t, START).set(&Start::At(Wall { time: start, zone: None }))?;
-        self.w.at(t, END).set(&End::After((len * HOUR_MS as f64) as i64))?;
+        self.w.at(t, END).set(&End::After((len * HOUR as f64) as i64))?;
         self.w.at(t, LOCATION).set(&place.to_string())?;
         if !body.is_empty() {
             self.w.at(t, BODY).set(&body.to_string())?;
@@ -83,8 +81,10 @@ impl Ctx<'_, '_> {
 
 /// Adds the demo data unless this account has it already; returns whether it added it.
 pub fn add(data: &Data) -> Result<bool> {
-    if crate::store::has_demo(data)? {
-        return Ok(false);
+    for g in data.homes()? {
+        if data.db.at(g, DEMO).get()? == Some(true) {
+            return Ok(false);
+        }
     }
     let home = data.home()?;
     let db = &data.db;

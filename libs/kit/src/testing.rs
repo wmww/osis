@@ -347,12 +347,11 @@ fn put(d: &Data, t: Tid, ak: &str, v: Option<Value>) {
 fn try_put(d: &Data, t: Tid, ak: &str, v: Option<Value>) -> bool {
     let Ok(ak) = Ak::new(ak) else { return false };
     let k = DynamicAspectKey::untyped(ak);
-    let mut w = d.db.write();
-    let set = match &v {
+    d.commit(|w| match &v {
         Some(v) => w.at(t, k).set(v),
         None => w.at(t, k).remove(),
-    };
-    set.is_ok() && w.commit().is_ok()
+    })
+    .is_ok()
 }
 
 /// `t` put in or taken out of `g`'s `holds.0`.
@@ -360,9 +359,7 @@ fn held(d: &Data, g: Tid, t: Tid, add: bool) -> bool {
     if g == t {
         return false;
     }
-    let mut w = d.db.write();
-    let changed = if add { w.hold(g, t) } else { w.unhold(g, t) };
-    changed.is_ok() && w.commit().is_ok()
+    d.commit(|w| if add { w.hold(g, t) } else { w.unhold(g, t) }).is_ok()
 }
 
 fn mutated(v: &Value) -> Option<Value> {

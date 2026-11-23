@@ -8,6 +8,14 @@ use masonry::kurbo::{Point, Size};
 use masonry::vello::Scene;
 use std::sync::Arc;
 
+/// How many equal columns of at least `min` fit `width` with `gap` between them (at most `max`
+/// unless it is 0, at least one), and their width.
+pub(crate) fn columns(width: f64, min: f64, gap: f64, max: usize) -> (usize, f64) {
+    let fit = (((width + gap) / (min + gap)).floor() as usize).max(1);
+    let cols = if max > 0 { fit.min(max) } else { fit };
+    (cols, ((width - gap * (cols as f64 - 1.0)) / cols as f64).max(0.0))
+}
+
 pub struct TileGrid {
     children: Vec<WidgetPod<dyn Widget>>,
     look: Arc<Look>,
@@ -54,11 +62,7 @@ impl Widget for TileGrid {
         let gap = self.look.sp(self.gap);
         let min = self.look.sp(self.min);
         let width = if bc.is_width_bounded() { bc.max().width } else { min * 3.0 + gap * 2.0 };
-        let mut cols = (((width + gap) / (min + gap)).floor() as usize).max(1);
-        if self.max_cols > 0 {
-            cols = cols.min(self.max_cols);
-        }
-        let cw = ((width - gap * (cols as f64 - 1.0)) / cols as f64).max(0.0);
+        let (cols, cw) = columns(width, min, gap, self.max_cols);
         let mut y = 0.0;
         for row in self.children.chunks_mut(cols) {
             let mut h: f64 = 0.0;

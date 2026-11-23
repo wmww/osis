@@ -222,13 +222,14 @@ impl Facet for LogFacet {
         }
         blocks.push(list);
         let mut foot = Vec::new();
-        if let Some(r) = reply.filter(|_| cx.config().get("composer") != Some("none")) {
+        let composing = cx.config().get("composer") != Some("none");
+        if let Some(r) = reply.filter(|_| composing) {
             let quoted = (*quote_memo(cx, t, r)?).clone();
             let what = format!("Replying to {}", quoted.unwrap_or_else(|| r.to_string()));
             foot.push(Block::Line(what));
             foot.push(Block::Chips(vec![Chip::action(Icon::Back, "Don't reply", Do::new(Reply(node.clone(), None)))]));
         }
-        if cx.config().get("composer") != Some("none") && let Some(win) = cx.window_opt()? {
+        if composing && let Some(win) = cx.window_opt()? {
             foot.push(Block::Composer(Composer {
                 fields: vec![
                     ComposerField { thing: win, ak: "osis_app:draft.0".into(), key: field(&node, "subject"), placeholder: "Subject (optional)".into() },

@@ -4,7 +4,6 @@
 //! edited as text and written at its path. Lists, sets, counters, texts and untyped values are
 //! shown, not edited.
 
-use crate::store::Reader;
 use crate::store::Data;
 use crate::view::{Act, Action, Block, Cx, Do, Facet, FormRow, Input, Section};
 use osis::{Float, NestedType, Path, Result, Step, Tid, Value, ValueType};
@@ -237,12 +236,6 @@ pub static FACET: FieldsFacet = FieldsFacet;
 impl Facet for FieldsFacet {
     fn id(&self) -> &'static str {
         "fields"
-    }
-    fn applies(&self, _: &Reader, _: Tid) -> Result<bool> {
-        Ok(true)
-    }
-    fn universal(&self) -> bool {
-        true
     }
     fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
         let rows = (**cx).field_rows(t)?;

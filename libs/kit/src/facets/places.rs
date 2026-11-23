@@ -1,6 +1,5 @@
 //! Which tags a thing is in. Tagging places and nests only, and shares nothing (notes/tags.md).
 
-use crate::store::Reader;
 use crate::view::{Act, Action, Block, Chip, ChipMark, Cx, Do, Facet, Icon, Input, Section, Toggle};
 use crate::schema::PICKING;
 use osis::{Result, Tid};
@@ -27,12 +26,6 @@ impl Action for RemoveTag {
 impl Facet for PlacesFacet {
     fn id(&self) -> &'static str {
         "places"
-    }
-    fn applies(&self, _: &Reader, _: Tid) -> Result<bool> {
-        Ok(true)
-    }
-    fn universal(&self) -> bool {
-        true
     }
     fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
         let open = cx.flag(PICKING, &cx.path())?;

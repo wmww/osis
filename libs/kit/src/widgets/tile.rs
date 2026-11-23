@@ -4,7 +4,7 @@
 //! tile shadow; rows are flat until hovered, and the current row is a card. Emits `Press` when
 //! clicked (or Enter/Space when focused).
 
-use super::{Press, brighten, fill_card, key_press, lean, primary, repaint_on, shadow};
+use super::{Press, brighten, clickable, clicked, fill_card, key_press, lean, pressed, primary, repaint_on, shadow};
 use crate::icons::Icon;
 use crate::text;
 use crate::theme::{Card, Look, fade};
@@ -106,24 +106,13 @@ impl Widget for Tile {
             PointerEvent::Down(e) if primary(e) => {
                 self.down = Some(ctx.local_position(e.state.position));
                 self.dragged = false;
-                ctx.capture_pointer();
-                ctx.request_paint_only();
             }
-            PointerEvent::Move(e) => {
-                // moved past a tremble: a drag (a reorderable grid above may take it), not a click
-                if let Some(d) = self.down
-                    && (ctx.local_position(e.current.position) - d).hypot() > 6.0
-                {
-                    self.dragged = true;
-                }
-            }
-            PointerEvent::Up(..) => {
-                if ctx.is_active() && !self.dragged && ctx.is_hovered() {
-                    ctx.submit_action::<Press>(Press);
-                }
-                ctx.request_paint_only();
-            }
+            // moved past a tremble: a drag (a reorderable grid above may take it), not a click
+            PointerEvent::Move(e) if self.down.is_some_and(|d| (ctx.local_position(e.current.position) - d).hypot() > 6.0) => self.dragged = true,
             _ => {}
+        }
+        if pressed(ctx, event) && !self.dragged {
+            ctx.submit_action::<Press>(Press);
         }
     }
 
@@ -134,7 +123,7 @@ impl Widget for Tile {
     }
 
     fn on_access_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &AccessEvent) {
-        if event.action == masonry::accesskit::Action::Click {
+        if clicked(event) {
             ctx.submit_action::<Press>(Press);
         }
     }
@@ -269,8 +258,7 @@ impl Widget for Tile {
     }
 
     fn accessibility(&mut self, _ctx: &mut AccessCtx<'_>, _props: &PropertiesRef<'_>, node: &mut Node) {
-        node.set_label(format!("{}: {}", if self.name.is_empty() { "Untitled" } else { &self.name }, self.sub));
-        node.add_action(masonry::accesskit::Action::Click);
+        clickable(node, format!("{}: {}", if self.name.is_empty() { "Untitled" } else { &self.name }, self.sub));
     }
 
     fn children_ids(&self) -> ChildrenIds {

@@ -95,10 +95,7 @@ fn creating(cx: &Cx, _: &ViewSpec) -> Result<Section> {
 #[allow(clippy::expect_used)]
 fn sample_creating(d: &crate::store::Data) -> osis::Tid {
     let win = d.window().expect("sample: a window");
-    let mut w = d.db.write();
-    let set = w.at(win, crate::schema::CREATING).path(osis::Path::root().push("shell")).set(&true);
-    set.expect("sample: creating");
-    w.commit().expect("sample: creating");
+    d.commit(|w| w.at(win, crate::schema::CREATING).path(osis::Path::root().push("shell")).set(&true)).expect("sample: creating");
     super::sample_main(d)
 }
 
