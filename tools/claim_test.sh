@@ -2,7 +2,7 @@
 # Tests tools/claim against a temp repo with a bare origin and a fake `wt` (claim: a git worktree
 # of BRANCH, made from BASE when new; list: path and branch): a new branch starts at origin/main, a
 # stale local branch is reset to its pushed copy (naming the refs still holding what it dropped), an ancestor fast-forwards, a dirty worktree moves
-# nothing, and the known-failures merge driver is set. Exit 1 on a mismatch.
+# nothing, a leftover bisect is ended, and the known-failures merge driver is set. Exit 1 on a mismatch.
 set -eu
 claim=$(cd "$(dirname "$0")" && pwd)/claim
 d=$(mktemp -d)
@@ -19,6 +19,7 @@ claim)
     n=$(ls "$top/.wts" 2> /dev/null | wc -l); p="$top/.wts/w$n"
     if git rev-parse -q --verify "refs/heads/$2" > /dev/null; then git worktree add -q "$p" "$2"; else git worktree add -q -b "$2" "$p" "$3"; fi
     [ -z "${FAKE_DIRTY:-}" ] || echo x > "$p/junk"
+    [ -z "${FAKE_BISECT:-}" ] || git -C "$p" bisect start -q HEAD HEAD~1 > /dev/null
     echo "$2" > "$top/.wtclaim$n"; echo "$p" ;;
 list) for c in "$top"/.wtclaim*; do n=${c##*.wtclaim}; echo "$top/.wts/w$n $(cat "$c") (claimed)"; done ;;
 esac
@@ -54,5 +55,8 @@ git branch dirty origin/main~1
 git push -q origin "$(git rev-parse origin/main)":refs/heads/coord-dirty
 FAKE_DIRTY=1 "$claim" dirty > /dev/null 2>&1 && rc=0 || rc=$?
 check "dirty: refused, nothing moved" "$rc $(git -C "$d/a/.wts/w3" rev-parse HEAD)" "1 $(git rev-parse origin/main~1)"
+# an earlier task's bisect left in the worktree is ended
+w5=$(FAKE_BISECT=1 "$claim" bisected 2> /dev/null)
+check "bisect ended" "$(git -C "$w5" bisect log > /dev/null 2>&1 && echo bisecting || echo none) $(git -C "$w5" rev-parse HEAD)" "none $(git rev-parse origin/main)"
 check "no branch: usage" "$("$claim" > /dev/null 2>&1 && echo 0 || echo $?)" "1"
 exit $fail

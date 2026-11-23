@@ -52,6 +52,8 @@ CASES = [
     ("spec/s.md §2 (TLA S4)", False),             # an acronym
     ("spec/s.md §2 (the anchor)", False),         # lowercase: an anchor, not a section
     ("spec/s.md §2. The next sentence", False),
+    ("spec/s.md §2; Interim (issues/i.md)", False),  # `;` ends the pointer
+    ("spec/s.md §2, Interim (issues/i.md)", True),   # `,` names a section
     ("notes/n.md One call", False),
     ("notes/n.md Handle and lifecycle: x", False),
     ("notes/n.md Handle and sync: x", True),
@@ -71,5 +73,10 @@ for text, stale in CASES:
     if bool(got) != stale:
         bad += 1
         print(f"FAIL {text!r}: expected {'stale' if stale else 'fine'}, got {got}")
+# a `,` that names no section suggests the `;` form
+got = list(doc_refs.refs("x.rs", "spec/s.md §2, Interim (issues/i.md)", DOCS.get))
+if not got or "`spec/s.md §2; Interim`" not in got[0][1]:
+    bad += 1
+    print(f"FAIL the `;` hint: got {got}")
 print(f"doc_refs_test: {len(CASES) - bad}/{len(CASES)} passed")
 sys.exit(1 if bad else 0)

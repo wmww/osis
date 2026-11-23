@@ -2,7 +2,7 @@
 """Run a command that uses every core under the box-wide heavy lock, logging what it cost.
 
   tools/heavy [--limit NAME] [--log FILE] CMD [ARGS...]   wait for the lock, run CMD, release; exits with CMD's code
-  tools/heavy --short [--log FILE] CMD [ARGS...]   run CMD in the short lane, beside any hold; stopped past its caps
+  tools/heavy --short [--log FILE] CMD [ARGS...]   run CMD in the short lane, beside any hold; past its caps, rerun in a hold
   tools/heavy --report [--since HOURS]   the lock's use and the box's CPU from the log
   tools/heavy --record BIN [ARGS...]   internal: cargo's runner while a cargo test/run builds
 
@@ -35,14 +35,14 @@ tools/agent-times.py charges each acquisition to the agent whose command ran it.
 
 The short lane (--short): a run small enough to cost a hold beside it little needs no wait for one.
 It takes only the lane's own lock (one short run at a time, so the lane adds at most one all-core run
-beside a hold) and is stopped, its whole process tree killed (exit 137), once its CPU-s or wall pass
-limit `heavy.short` or its processes' resident memory passes SHORT_RSS. The run's CPU-s counts every
-process it started, finished or running; for a cargo test, only the copies' run (the build is
-unlocked anyway). Never for a command that edits the tree (tools/mutate.py): a stop leaves its edit
-in place. Every hold prints whether it would have fit the lane. A stop prints the CPU-s used and the
-plain tools/heavy command to run instead; a --short of a command whose last logged run was stopped
-in the lane or took more CPU-s than its cap in a hold is refused at once (exit 2, the same line),
-before any build: the run it would repeat is the one that queues for a hold.
+beside a hold) and is stopped, its whole process tree killed, once its CPU-s or wall pass
+limit `heavy.short` or its processes' resident memory passes SHORT_RSS, and then rerun at once in a
+hold (queueing for the heavy lock as a plain tools/heavy would): a cargo test from the binary the
+lane stopped on, with the binaries already run kept as they went. So --short never strands a run:
+past the lane it costs at most one cap's CPU-s of work redone. The run's CPU-s counts every process
+it started, finished or running; for a cargo test, only the copies' run (the build is unlocked
+anyway). Never for a command that edits the tree (tools/mutate.py): a stop leaves its edit in place
+and the rerun repeats it. Every hold prints whether it would have fit the lane.
 
 A quiet hold yields (notes/build.md, Heavy lock): the lock keeps all-core runs apart, so a hold
 whose process tree has used under YIELD_CORES cores over the last YIELD_WINDOW_S, at most SHORT_RSS
@@ -274,11 +274,6 @@ def run(cmd, name, out=None, short=False):
         lane, why = limits.limit("heavy.short")
         if lane is None:
             sys.exit(f"heavy: --short: {why}; run it without --short")
-        past = past_cost(who["cmd"], lane)
-        if past:
-            print(f"heavy: --short refused: this command {past}, past the lane's {lane[0]:.0f} CPU-s; run it in a hold:\n"
-                  f"  {plain(cmd, out)}", file=sys.stderr)
-            return 2
     sub = cargo_sub(cmd)
     refused = sub and refusal(cmd, top)
     if refused:
@@ -316,32 +311,6 @@ def refusal(cmd, top):
     return None
 
 
-def plain(cmd, out):
-    """The tools/heavy command that runs cmd in a hold, as the short lane's caller gave it."""
-    return shlex.join(["tools/heavy", *(["--log", out.name] if out else []), *cmd])
-
-
-def past_cost(cmd, lane):
-    """How the log's last run of cmd (as `acq` records it) went past the lane's CPU cap: stopped in
-    the lane, or over its CPU-s in a hold; None if it fit or never ran. So a command the lane
-    stopped once is sent to a hold at once, not built and stopped again."""
-    last = None
-    acq = {}
-    for o in limits.jsonl((LOG + ".1", LOG)):
-        if o["ev"] == "acq":
-            acq[o["pid"]] = o
-        elif o["ev"] == "rel" and acq.get(o["pid"], {}).get("cmd") == cmd:
-            last = o
-            acq.pop(o["pid"])
-    if last is None:
-        return None
-    if last.get("stop"):
-        return f"was stopped in the lane ({last['stop']}, after {last['cpu']:.0f} CPU-s)"
-    if last["cpu"] > lane[0]:
-        return f"last took {last['cpu']:.0f} CPU-s in a hold"
-    return None
-
-
 def note(out, msg):
     """msg in --log's file when there is one, then on stderr (a reader of stderr finds it in the file)."""
     if out:
@@ -349,10 +318,11 @@ def note(out, msg):
     print(msg, file=sys.stderr, flush=True)
 
 
-def hold(cmd, name, out, who, runs, sub, lane=None):
+def hold(cmd, name, out, who, runs, sub, lane=None, failed=False):
     """Take the lock (with lane, the short lane's: its (CPU-s, wall) caps) and run each of runs in
     order. A cargo test stops at the first failing binary unless --no-fail-fast, and exits 101 when
-    any failed, as cargo does."""
+    any failed (failed: one did before a lane's stop), as cargo does. A run the lane stops goes on
+    in a hold from the stopped one."""
     path = SHORT_LOCK if lane else LOCK
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
     t0, (b0, a0) = time.time(), stat()
@@ -382,7 +352,7 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
     for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(s, lambda n, _f: cur[0] and cur[0].send_signal(n))
     keep_going = "--no-fail-fast" in cmd[:cmd.index("--")] if "--" in cmd else "--no-fail-fast" in cmd
-    rc, failed, stop = 0, False, None
+    rc, stop = 0, None
     yfd = None  # while yielded: the yield lock, held
 
     def say(msg):
@@ -412,7 +382,7 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
         _, live, rss = tree(p.pid)
         return ru.ru_utime + ru.ru_stime - ru0.ru_utime - ru0.ru_stime + live, rss
 
-    for r in runs:
+    for at, r in enumerate(runs):
         if yfd is not None:
             retake()
         if r.get("line"):
@@ -465,11 +435,8 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
                 if stop:
                     kill_tree(p.pid)
                     p.wait()
-                    msg = (f"heavy: --short run stopped, {stop} (limit heavy.short, SHORT_RSS) after {cpu:.0f} CPU-s in "
-                           f"{time.time() - t1:.0f} s; run it in a hold (a later --short of it is refused):\n  {plain(cmd, out)}")
-                    print(msg, file=out or sys.stderr)
-                    if out:
-                        print(msg, file=sys.stderr)
+                    note(out, f"heavy: --short run stopped, {stop} (limit heavy.short, SHORT_RSS) after {cpu:.0f} CPU-s in "
+                              f"{time.time() - t1:.0f} s; rerunning it in a hold")
                     break
         if stop:
             rc = 137
@@ -490,7 +457,8 @@ def hold(cmd, name, out, who, runs, sub, lane=None):
     held = time.time() - t1 - waited[1]
     log("rel", held=round(held, 1), cpu=round(cpu, 1), rc=rc, **(dict(stop=stop) if stop else {}))
     if lane:
-        return rc
+        os.close(fd)  # the lane is free while the rerun queues
+        return hold(cmd, name, out, who, runs[at:], sub, None, failed) if stop else rc
     limits.safe_check(name, cpu, held)
     fits, _ = limits.limit("heavy.short")
     if fits and cpu <= fits[0] and held <= fits[1] and ru.ru_maxrss * 1024 <= SHORT_RSS:

@@ -23,7 +23,7 @@ vendored crates under libs/kit/patches/ are not ours and are skipped; exit 1 on 
 --baseline prints and fails on only the violations REF (default origin/main) does not have, matched
 by message with line numbers dropped; REF's own policy runs on its tree, its output cached per commit
 under target/policy-baseline/."""
-import collections, functools, glob, multiprocessing, os, re, shutil, subprocess, sys, tempfile
+import collections, functools, glob, multiprocessing, os, re, shutil, stat, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import code_refs, doc_refs, gate_failures, spec_map
@@ -564,6 +564,16 @@ def baseline(ref):
         return [l for l in f.read().splitlines() if not l.startswith("policy: ")]
 
 
+def verdict(failed, what):
+    """The last line, then the exit: FAILED or ok first, so a tail of the output shows which. A pipe
+    gives the shell its last command's exit, not policy's, so `policy.py | tail && git commit`
+    commits past a failure: piped, a failure says so."""
+    piped = stat.S_ISFIFO(os.fstat(1).st_mode)
+    hide = "; exit 1, which this pipe hides from `&&`: run policy.py unpiped" if failed and piped else ""
+    print(f"policy: {'FAILED' if failed else 'ok'}: {what}{hide}", flush=True)
+    sys.exit(1 if failed else 0)
+
+
 if "--baseline" in sys.argv:
     i = sys.argv.index("--baseline")
     ref = sys.argv[i + 1] if i + 1 < len(sys.argv) else "origin/main"
@@ -577,10 +587,8 @@ if "--baseline" in sys.argv:
             new.append(e)
     for e in new:
         print(e)
-    print(f"policy: {len(errs)} violations, {len(new)} new against {ref}, {len(errs) - len(new)} already there")
-    sys.exit(1 if new else 0)
+    verdict(bool(new), f"{len(errs)} violations, {len(new)} new against {ref}, {len(errs) - len(new)} already there")
 
 for e in errs:
     print(e)
-print(f"policy: {len(members)} members, {len(external)} external deps, {len(errs)} violations")
-sys.exit(1 if errs else 0)
+verdict(bool(errs), f"{len(errs)} violations ({len(members)} members, {len(external)} external deps)")

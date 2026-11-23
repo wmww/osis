@@ -145,28 +145,39 @@ expect("short logged", [o.get("lane") for o in log if o["ev"] == "acq"][-1], "sh
 expect("short refuses --limit", heavy("--short", "--limit", "gate", "true")[0], 1)
 fcntl.flock(lock, fcntl.LOCK_UN)
 
-# past a cap the lane kills the run's whole tree (exit 137); caps and polling given directly, as
-# limit heavy.short's are too large to wait for in a test
+# past a cap the lane kills the run's whole tree and reruns it in a hold; caps and polling given
+# directly, as limit heavy.short's are too large to wait for in a test. Each command spins (or
+# sleeps, or takes memory) on its first run and prints on its rerun, told apart by a marker file.
 LANE = r"""
 import importlib.machinery, importlib.util, json, sys
 l = importlib.machinery.SourceFileLoader("heavy", sys.argv[1])
 h = importlib.util.module_from_spec(importlib.util.spec_from_loader("heavy", l)); l.exec_module(h)
-cpu, wall, rss, cmd = float(sys.argv[2]), float(sys.argv[3]), int(sys.argv[4]), sys.argv[5:]
+cpu, wall, rss, sub, cmds = float(sys.argv[2]), float(sys.argv[3]), int(sys.argv[4]), sys.argv[5] or None, json.loads(sys.argv[6])
 h.SHORT_RSS, h.SHORT_POLL_S = rss, 0.1
 who = dict(who="t", branch="t", sess="", via="", cmd="t")
-rc = h.hold(cmd, "heavy", None, who, [dict(argv=cmd, cwd=None, env=None)], None, (cpu, wall))
+rc = h.hold(["t", "--no-fail-fast"], "heavy", None, who, [dict(argv=c, bin=c[0], cwd=None, env=None) for c in cmds], sub, (cpu, wall))
 print(rc)
 """
 spin = "while :; do :; done"
 pidf = os.path.join(d, "pids")
 
 
-def lane(cpu, wall, rss, *cmd):
-    """(the exit code printed, stderr); output through files, so a survivor cannot hang a pipe"""
+def lane(cpu, wall, rss, *cmds, sub=""):
+    """(the exit code printed, stdout lines before it, stderr, the log's acq events as lanes);
+    output through files, so a survivor cannot hang a pipe"""
+    open(os.path.join(d, ".cache/osis/heavy.log"), "w").close()
     with open(os.path.join(d, "lane.out"), "w+") as o, open(os.path.join(d, "lane.err"), "w+") as e:
-        subprocess.run([sys.executable, "-c", LANE, HEAVY, str(cpu), str(wall), str(rss), *cmd], env=ENV, stdout=o, stderr=e, cwd=d)
+        subprocess.run([sys.executable, "-c", LANE, HEAVY, str(cpu), str(wall), str(rss), sub, json.dumps(cmds)], env=ENV, stdout=o, stderr=e, cwd=d)
         o.seek(0), e.seek(0)
-        return o.read().split()[-1:], e.read()
+        out, err = [x for x in o.read().split("\n") if x and not x.startswith("   limit ")], e.read()
+    log = [json.loads(x) for x in open(os.path.join(d, ".cache/osis/heavy.log"))]
+    return out[-1:], out[:-1], err, [o.get("lane", "hold") for o in log if o["ev"] == "acq"]
+
+
+def once(n, first, then):
+    """sh: `first` on the first run, `then` on later ones"""
+    m = os.path.join(d, f"mark{n}")
+    return ["sh", "-c", f"if [ -e {m} ]; then {then}; else touch {m}; {first}; fi"]
 
 
 def alive(pid):
@@ -177,32 +188,24 @@ def alive(pid):
 
 
 big = str(1 << 40)
-got, err = lane(0.5, 60, big, "sh", "-c", rf'sh -c "echo \$\$ >> {pidf}; {spin}" & sh -c "echo \$\$ >> {pidf}; {spin}"; wait')
-expect("CPU cap over a tree", (got, "CPU-s" in err), (["137"], True))
+got, out, err, acqs = lane(0.5, 60, big, once(1, rf'sh -c "echo \$\$ >> {pidf}; {spin}" & sh -c "echo \$\$ >> {pidf}; {spin}"; wait', "echo again"))
+expect("CPU cap over a tree, rerun in a hold", (got, out, "CPU-s" in err, "rerunning it in a hold" in err, acqs), (["0"], ["again"], True, True, ["short", "hold"]))
 left = [int(p) for p in open(pidf).read().split() if alive(p)]
 expect("the whole tree killed", left, [])
 for p in left:
     os.kill(p, 9)
-got, err = lane(60, 1, big, "sleep", "30")
-expect("wall cap", (got, "wall" in err), (["137"], True))
-expect("a stop names the hold to use and the CPU-s", ("\n  tools/heavy sleep 30" in err, " CPU-s in " in err), (True, True))
-got, err = lane(60, 60, "1", "sleep", "30")
-expect("memory cap", (got, "resident" in err), (["137"], True))
-got, _ = lane(60, 60, big, "sh", "-c", "exit 5")
-expect("within the caps: the command's code", got, ["5"])
-
-# a --short of a command the lane stopped, or a hold found over the lane's cap, is refused at once
-# with the plain command; another command runs
-logf = os.path.join(d, ".cache/osis/heavy.log")
-with open(logf, "a") as f:
-    for pid, cmd, rel in ((9001, "sh -c 'echo once'", dict(cpu=130.0, stop="CPU-s 130 past the lane's 115")), (9002, "sh -c 'echo big'", dict(cpu=1e6))):
-        f.write(json.dumps(dict(ev="acq", t=time.time(), pid=pid, cmd=cmd)) + "\n")
-        f.write(json.dumps(dict(ev="rel", t=time.time(), pid=pid, held=1, rc=137, **rel)) + "\n")
-for what in ("once", "big"):
-    rc, out, err = heavy("--short", "sh", "-c", f"echo {what}")
-    expect(f"refused after {what}", (rc, out, f"\n  tools/heavy sh -c 'echo {what}'" in err), (2, [], True))
+got, out, err, _ = lane(60, 1, big, once(2, "sleep 30", "exit 6"))
+expect("wall cap", (got, "wall" in err), (["6"], True))
+got, out, err, _ = lane(60, 60, "1", once(3, "sleep 30", "exit 7"))
+expect("memory cap", (got, "resident" in err), (["7"], True))
+got, _, _, acqs = lane(60, 60, big, ["sh", "-c", "exit 5"])
+expect("within the caps: the command's code, no hold", (got, acqs), (["5"], ["short"]))
+# a cargo test: binaries before the stop are not rerun, and a failure among them still fails it
+got, out, _, acqs = lane(60, 1, big, ["sh", "-c", "echo a; exit 1"], once(4, "sleep 30", "echo b"), sub="test")
+expect("test reruns from the stopped binary", (got, out, acqs), (["101"], ["a", "b"], ["short", "hold"]))
+# a command once stopped runs in the lane again (no memory of past runs)
 rc, out, _ = heavy("--short", "sh", "-c", "echo fits")
-expect("another command runs", (rc, out), (0, ["fits"]))
+expect("a --short runs", (rc, out), (0, ["fits"]))
 
 # a quiet hold yields to a waiter: window and sampling shrunk to fit a test
 HOLD = r"""

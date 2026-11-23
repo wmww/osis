@@ -10,7 +10,8 @@ Usage: python3 tools/mutate.py FILE OLD NEW [+ FILE OLD NEW]... [FILE OLD NEW ..
 A `+` between two FILE OLD NEW sites makes them one mutation (a control spanning two sites:
 both planted together, one row).
 
-OLD must occur exactly once in FILE; NEW must be non-empty and differ from OLD. One mutation is a
+OLD must occur exactly once in FILE, or once starting on line N with FILE:N (two identical call
+sites); NEW must be non-empty and differ from OLD. One mutation is a
 plain edit. Several are built once: each OLD, an expression, becomes
 `(if <OSIS_MUTANT is i> { NEW } else { OLD })` (an OLD inside another's is planted inside that
 one's OLD branch; two crossing without one inside the other are refused, as are two sites of one
@@ -38,7 +39,7 @@ given): read a row's log by the path printed with it, and recheck a "none" by ha
 MUTATE_PER_HOLD mutations per hold (never run mutate.py itself under it: a batch would hold the
 lock for its whole length).
 The variable is read once per site, so a plant in a hot path costs nothing per call."""
-import importlib.machinery, importlib.util, json, os, shutil, subprocess, sys, tempfile
+import importlib.machinery, importlib.util, json, os, re, shutil, subprocess, sys, tempfile
 
 VAR = "OSIS_MUTANT"
 TOOLS = os.path.dirname(os.path.abspath(__file__))
@@ -103,23 +104,31 @@ def main(argv):
         sys.exit(__doc__)
     k = argv.index("--")
     # sites (FILE, OLD, NEW), each with its mutation's index: a `+` joins a site to the one before
-    muts, group, i = [], [], 0
+    muts, lines, group, i = [], [], [], 0
     while i < k:
         joined = argv[i] == "+" and bool(muts)
         i += joined
         if i + 3 > k or "+" in argv[i : i + 3]:
             sys.exit(__doc__)
-        muts.append(tuple(argv[i : i + 3]))
+        f, old, new = argv[i : i + 3]
+        m = re.fullmatch(r"(.+):(\d+)", f)
+        path, line = (m.group(1), int(m.group(2))) if m and not os.path.exists(f) else (f, None)
+        muts.append((path, old, new))
+        lines.append(line)
         group.append(group[-1] if joined else len(set(group)))
         i += 3
     n = len(set(group))
     rest = argv[k + 1 :]
     cargo_args, test_args = (rest[: rest.index("--")], rest[rest.index("--") + 1 :]) if "--" in rest else (rest, [])
     texts = {}
-    for path, old, new in muts:
-        texts.setdefault(path, open(path).read())
-        if texts[path].count(old) != 1:
-            sys.exit(f"mutate: OLD occurs {texts[path].count(old)} times in {path}; it must occur once: {old!r}")
+    starts = []
+    for (path, old, new), line in zip(muts, lines):
+        t = texts.setdefault(path, open(path).read())
+        found = [a for a in range(len(t)) if t.startswith(old, a) and (line is None or t.count("\n", 0, a) + 1 == line)]
+        if len(found) != 1:
+            where = f"{path} line {line}" if line else path
+            sys.exit(f"mutate: OLD occurs {len(found)} times in {where}; it must occur once (FILE:LINE names the line it starts on): {old!r}")
+        starts.append(found[0])
         if not new or new == old:
             sys.exit("mutate: NEW must be non-empty and differ from OLD")
         for x in (old, new) if n > 1 else ():
@@ -130,7 +139,7 @@ def main(argv):
     # expression) is planted in the outer's OLD branch; spans crossing are refused
     spans = {}
     for i, (path, old, new) in enumerate(muts):
-        at = texts[path].index(old)
+        at = starts[i]
         spans.setdefault(path, []).append((at, at + len(old), i))
     mutated, sites = dict(texts), [None] * len(muts)
 

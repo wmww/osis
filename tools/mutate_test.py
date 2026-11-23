@@ -128,6 +128,18 @@ with tempfile.TemporaryDirectory(prefix="mutate-test-") as d:
     check("nested: file put back", open(src).read(), "fn f() -> bool { a < b && c }\n")
     os.remove(env["FAKE_ARGS"])
 
+    # an OLD occurring twice is refused; FILE:N names the one starting on line N
+    with open(src, "w") as f:
+        f.write("fn f() -> bool { cc }\nfn g() -> bool { cc }\n")
+    p = mutate(src, "cc", "!cc", "--", "--lib")
+    _, err = p.communicate()
+    check("OLD twice refused", (p.returncode, "occurs 2 times" in err, os.path.exists(env["FAKE_ARGS"])), (1, True, False))
+    p = mutate(f"{src}:2", "cc", "!cc", "--", "-p", "x", FAKE_SRC=src, FAKE_SEEN=seen)
+    p.communicate()
+    check("FILE:N plants line N", (p.returncode, open(seen).read(), open(src).read()),
+          (0, "fn f() -> bool { cc }\nfn g() -> bool { !cc }\n", "fn f() -> bool { cc }\nfn g() -> bool { cc }\n"))
+    os.remove(env["FAKE_ARGS"])
+
     # a method-call suffix or a statement among several mutations: refused before any build
     for old in (".then_with(g)", "x;"):
         with open(src, "w") as f:

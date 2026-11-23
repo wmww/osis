@@ -8,6 +8,8 @@ file that exists, and a pointer into a notes or spec file names a part of it tha
   `<file> §N[.M]`, also `§N, §M`, `§N and §M`, `§N-§M`: a heading numbered N[.M] exists.
   `<file> §N Section` / `<file> §N (Section)`: as above, within §N (within the file when several
       sections are named).
+  Words after a pointer that name no section (`<file> §N; Interim (issues/<name>.md)`) follow `;`: after
+  `,` or a space they are read as a section name.
 Deleted issues and renamed sections otherwise leave pointers that rot unseen. Skipped: docs/
 (may lag), vendored patches, complaints (consumed), the tools' own test fixtures.
 Usage: python3 tools/doc_refs.py   (exit 1 on any stale pointer; policy.py runs it)"""
@@ -114,7 +116,8 @@ def refs(rel, text, read, cache=None):
         ok, term = named(rest, cands(p, nums))
         if not ok:
             at = f" §{nums[0]}" if len(nums) == 1 else ""
-            yield where(), f"{p}{at}, \"{term}\": no such section, bold lead, list item or `Lead:` paragraph there"
+            hint = f" (words after the pointer that name no section follow `;`, not `,`: `{p}{at}; {re.split(r'[(:;.,\n]', rest)[0].strip()}`)" if n.group(1).startswith(",") else ""
+            yield where(), f"{p}{at}, \"{term}\": no such section, bold lead, list item or `Lead:` paragraph there{hint}"
 
 
 def check():

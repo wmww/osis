@@ -6,7 +6,8 @@ path claimed; then brings the branch to its pushed copy: REF, or else the one re
 a local branch that is no ancestor of it (`wt claim` checks out a local branch as it is, ignoring the
 base: a reviewer got a stale pre-rebase copy twice). With no pushed copy, a branch lacking
 origin/main is reported (a claim of an old local branch). Sets the repo's known-failures merge
-driver (tools/known_failures_merge.py) on the way. Prints the worktree's path, last, on stdout:
+driver (tools/known_failures_merge.py) on the way, and ends a `git bisect` an earlier task left in
+the worktree. Prints the worktree's path, last, on stdout:
 `W=$(tools/claim BRANCH)`.
 
 Exit 1 when the claim failed (a release still holding BRANCH says so: retry once `wt list` shows
@@ -61,6 +62,10 @@ def main(argv):
         sys.exit(f"claim: `wt list` does not show {branch} on {path}:\n" + "\n".join(listed))
     if git("status", "--porcelain", cwd=path):
         sys.exit(f"claim: {path} is not clean: nothing moved")
+    # an earlier task's bisect survives `wt release` and misleads later git commands
+    if os.path.exists(os.path.join(path, git("rev-parse", "--git-path", "BISECT_LOG", cwd=path))):
+        git("bisect", "reset", "HEAD", cwd=path)
+        print("claim: ended an earlier task's `git bisect` left in the worktree", file=sys.stderr)
     head = git("rev-parse", "HEAD", cwd=path)
     if ref:
         to = git("rev-parse", ref)
