@@ -12,7 +12,6 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 - After it: a removal as evidence, accounts as ordinary things, public things and cards, core without accounts (notes/redesign-plan.md A3 to A6), each one branch, delete first; cut them to what is still needed before starting.
 
 ## In flight beside it
-- `mizzen-wait-order` (fresh reviewer gating; built): issues/stated-path-wait-order.md; held-model's `Pend::Any` to the reworded spec/commits.md §4 Unjudgeable.
 - `mizzen-walk-inputs` (worker): issues/walk-inputs-via-stale.md.
 
 - `mizzen-slow-alarm-2` (worker): the per-test alarm flags by wall time and fires on box load; make it load-independent. Until it lands, a NEW-SLOW line is noise unless `tools/icount` shows the test's instructions grew against main's binary.
