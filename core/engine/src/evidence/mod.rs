@@ -40,36 +40,36 @@ type PartId<C, T> = (CopyId<C, T>, usize);
 
 /// What a part needs of one hop of its stated path, at least (spec/permissions.md §5.1 step 3, a
 /// part's least need): a role (write for content, admin for an edge write, write for a finalize,
-/// a may-grant grant's level on its path's hops but the last), or an invite (a may-grant grant's level
-/// on its path's last hop). A grant joins the hop for the part only giving it (notes/a2-spec
+/// a may-grant grant's level on its path's hops but the last), or may-grant (a may-grant grant's
+/// level on its path's last hop). A grant joins the hop for the part only giving it (notes/a2-spec
 /// README.md OPEN 16: a hop granted too little joins nothing, so the part waits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Need {
     Role(Role),
-    Invite(Role),
+    MayGrant(Role),
 }
 
 impl Need {
-    const ALL: [Need; 8] = [Need::Role(Role::Sync), Need::Role(Role::Read), Need::Role(Role::Write), Need::Role(Role::Admin), Need::Invite(Role::Sync), Need::Invite(Role::Read), Need::Invite(Role::Write), Need::Invite(Role::Admin)];
+    const ALL: [Need; 8] = [Need::Role(Role::Sync), Need::Role(Role::Read), Need::Role(Role::Write), Need::Role(Role::Admin), Need::MayGrant(Role::Sync), Need::MayGrant(Role::Read), Need::MayGrant(Role::Write), Need::MayGrant(Role::Admin)];
 }
 
-/// What a grant gives a hop, `until` disregarded: its role, and the invite it gives (every invite
-/// for an admin grant, else its invite field at most its role; None: no invite).
+/// What a grant gives a hop, `until` disregarded: its role, and the level it may grant up to (its
+/// role for an admin grant or one carrying the may-grant flag; None: it may grant nothing).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Gives {
     pub role: Role,
-    pub invite: Option<Role>,
+    pub may_grant: Option<Role>,
 }
 
 impl Gives {
-    /// A grant of `role` carrying no invite (an admin grant gives every invite).
+    /// A grant of `role` without the may-grant flag (an admin grant may grant up to admin).
     pub fn role(role: Role) -> Gives {
-        Gives { role, invite: (role == Role::Admin).then_some(Role::Admin) }
+        Gives { role, may_grant: (role == Role::Admin).then_some(Role::Admin) }
     }
     pub fn meets(&self, n: Need) -> bool {
         match n {
             Need::Role(l) => self.role >= l,
-            Need::Invite(l) => self.invite.is_some_and(|i| i >= l),
+            Need::MayGrant(l) => self.may_grant.is_some_and(|i| i >= l),
         }
     }
 }

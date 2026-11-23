@@ -61,7 +61,7 @@ Trust (§5.1 Trust set) is the same machinery: seeds are a function of the held 
 
 **The key hop** keeps no edge until accounts are ordinary things (notes/redesign-plan.md A4): it gives admin where the signer's record holds its key (names no mint admin) and nothing elsewhere, since no key grant exists yet (a part signed as a thing with a mint admin is not `well`, `path::shape`), and the walk takes no write on one; both come with A4: an edge per (key, thing), first on every path, written and judged like any (notes/write-path-design.md, Keys), so the walk gains an edge whose holder is a key and no rule.
 
-**The may-grant flag** (`Edge::may_grant`): `roles.0` carries a bool; `types::Edge` holds it as `invite`, the role the value lets grant (its own role where flagged), the form `timeline`'s walk reads, until that walk goes.
+**The may-grant flag** (`Edge::may_grant`): `roles.0` carries a bool, and `types::Edge` holds it as `may_grant: bool`; a path gives may-grant at r where every hop gives r and its last hop gives admin or carries the flag.
 ## Cost shapes
 - A part appended at the end of key order: its own step: a point query per hop, plus, for a lowering that falls, the parts resting on its edge (the index `resting` per edge) and its void check. Under a trust set the same (the new part alone is checked against the active trusted writes).
 - A void check (`keeps`) reads back along the setters of its path, each grant's own path in turn, each part's own check made once and each run of parts passed over for good (dropped, or a grant that does not keep) read once (`skip`): one check through an edge of m dropped grants reads about 2m setters. k void lowerings at the end of a chain of k grants cost k² (finding 17, accepted: notes/a1-spec/README.md Open 2).

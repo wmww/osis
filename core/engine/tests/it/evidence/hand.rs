@@ -107,8 +107,8 @@ fn f14_a_dropped_chained_grant_is_evidence_spec_permissions_4() {
 }
 
 /// Finding 15 (`f15_a_writers_finalizes_and_an_inviters_grants_are_chained_and_copied`): a
-/// writer's finalizes on a used edge are chained, each a copy (27 more for 27 more); an
-/// inviter's invite grants likewise. OPEN 10's junk (`open10_junk_by_a_non_admin_adds_no_copy_but_under_the_draft`):
+/// writer's finalizes on a used edge are chained, each a copy (27 more for 27 more); a
+/// may-grant holder's grants likewise. OPEN 10's junk (`open10_junk_by_a_non_admin_adds_no_copy_but_under_the_draft`):
 /// a non-admin's grants are none; an admin's (`open10_an_admins_writes_on_a_used_edge_are_copies_in_every_variant`)
 /// each one.
 #[test]
@@ -125,7 +125,7 @@ fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
         copies(&w)
     };
     assert_eq!(finalizes(30) - finalizes(3), 27);
-    let invites = |n: u32| {
+    let may_grants = |n: u32| {
         let (mut w, [x, _, k, q]) = base();
         w.write(x, |p| p.push(X, 1, &[], A, PKind::set(K, Role::Write).may_grant()));
         w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
@@ -135,7 +135,7 @@ fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
         w.write(q, |p| p.content(Q, 2 + n, &[A], D));
         copies(&w)
     };
-    assert_eq!(invites(30) - invites(3), 27);
+    assert_eq!(may_grants(30) - may_grants(3), 27);
     let junk = |n: u32| {
         let (mut w, [x, _, k, q]) = base();
         w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));

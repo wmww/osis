@@ -51,7 +51,7 @@ fn part(w: &World, ch: &Set, i: Id) -> Part<Id, Thing, Key> {
     let kind = match &c.kind {
         paths::Kind::Edge { holder, role, may_grant, .. } => Kind::Write(Write {
             holder: *holder,
-            grant: w.grant(i).then(|| Gives { role: level(*role), invite: (*role == Role::Admin || *may_grant).then(|| level(*role)) }),
+            grant: w.grant(i).then(|| Gives { role: level(*role), may_grant: (*role == Role::Admin || *may_grant).then(|| level(*role)) }),
             removal: w.removes(i).is_some(),
             gives_write: *role >= Role::Write,
             gives_read: *role >= Role::Read && !pw.leave(i),
@@ -83,7 +83,7 @@ fn need(w: &World, i: Id, e: paths::Edge) -> Need {
         return Need::Role(osis_base::Role::Read);
     }
     match w.need(i, e) {
-        (r, true) => Need::Invite(level(r)),
+        (r, true) => Need::MayGrant(level(r)),
         (r, false) => Need::Role(level(r)),
     }
 }
