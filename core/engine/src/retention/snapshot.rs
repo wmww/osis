@@ -565,11 +565,12 @@ pub(crate) fn replaces(f: &Fragment) -> bool {
     f.reset().is_some() || matches!(f, Fragment::Register(_) | Fragment::Slots(_))
 }
 
-/// Whether held body `f` (whole or a leftover, which keeps every reset) of a part of commit `m`
-/// on `ak` stands as a whole replace (`Hold::Body::whole`): a plain durable commit's delta on an
-/// own aspect replacing it whole, as apply and a load from the commit records judge it.
+/// Whether held body `f` of a part of commit `m` on `ak` stands as a whole replace
+/// (`Hold::Body::whole`): a plain durable commit's delta with no expiry (its writes go at T,
+/// spec/crdt.md §4.7, so it covers nothing) on an own aspect replacing it whole, as apply and a
+/// load from the commit records judge it.
 pub(crate) fn whole_replace(m: &crate::engine::Meta, ak: &Ak, f: &Fragment) -> bool {
-    m.view.kind == Kind::Content && !m.view.memory && own_aspect(ak) && replaces(f)
+    m.view.kind == Kind::Content && !m.view.memory && m.header.expires.is_none() && own_aspect(ak) && replaces(f)
 }
 
 /// `author`'s valid own replaces of `(tid, ak)` held here, oldest first.

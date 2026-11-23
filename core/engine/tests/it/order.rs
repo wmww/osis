@@ -1688,20 +1688,6 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     Oracle { held: held.to_vec(), now, later }
 }
 
-/// spec/requirements.md Decentralization (the arrival-order limit): "an expiring edit still
-/// incomplete at a node when it expires never applies there, so that node may read what came
-/// before it, and so may a node that never held an expiring edit", until a writer compacts. Every
-/// node checked is given the history at `played.now` or earlier, the keep-everything node at
-/// `played.now`, so a commit whose expiry is at or before it reaches some node only past its
-/// expiry, and one part of it missing there for any reason (unjudgeable, dropped while invalid,
-/// late) when it arrives or is purged counts as never received (spec/commits.md §4 Unjudgeable,
-/// §5 Never received): what nodes read on the aspects its header lists may differ. One expiring
-/// later reaches every node before its expiry, and each fetches what it counts missing before
-/// then. From the history alone.
-fn expired_by_now(played: &Played) -> BTreeSet<(String, String)> {
-    played.packs.iter().filter_map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).ok()).filter(|b| b.header.expires.is_some_and(|t| t <= played.now.0)).flat_map(|b| b.header.aspects.iter().map(|a| (format!("{:?}", a.tid), a.ak.as_str().to_string())).collect::<Vec<_>>()).collect()
-}
-
 /// Past every keep bound and expiry the ops draw (30 min) from any death by `played.now`; close
 /// enough that a body held long past its bound shows.
 fn later_than(played: &Played) -> WallMs {
@@ -1866,12 +1852,11 @@ fn node_checks(p: &mut Peer, played: &Played, o: &Oracle) -> Result<(), String> 
         }
         fetch_missing(p, played, &o.held);
         let after = shown(p, &played.things);
-        let ex = expired_by_now(played);
         if let Some(d) = value_past_end(p, played, at) {
             return Err(format!("{when}, after the sync exchange: {d}"));
         }
         played.judged[0].fetch_add(after.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        if let Some(d) = shown_differs(want, &after, &|k| ex.contains(k)) {
+        if let Some(d) = shown_differs(want, &after, &|_| false) {
             return Err(format!("{when}, after the sync exchange: shows other than the node keeping every body: {d}"));
         }
         let back = after.iter().filter(|(k, v)| before.get(*k) != Some(*v)).count();
@@ -4888,14 +4873,13 @@ fn covered_away_judged_on_the_walks_side() {
     check(0, &h, Cfg { away: true, ..NAMED }).unwrap();
 }
 
-// spec/requirements.md Deterministic, the limit for expiring edits (spec/commits.md §4
-// Unjudgeable): 0 makes a thing reading "n", then writes G and the thing's register in one commit
-// expiring in a second. A node given that commit past its expiry before the thing's record throws
-// the thing's part out, and once the record comes the part counts as never received: it reads
-// "n" where a node given the record first reads nothing. So the order property compares no aspect
-// a commit expired by the history's end lists (`expired_by_now`).
+// spec/crdt.md §4.7 (a gone write has no effect on the read), spec/commits.md §4 Unjudgeable: 0
+// makes a thing reading "n", then writes G and the thing's register in one commit expiring in a
+// second. A node given that commit past its expiry before the thing's record throws the thing's
+// part out, and once the record comes the part counts as never received; a node given the record
+// first holds the part until it expires. Both read "n".
 #[test]
-fn expired_part_given_before_its_record_reads_what_came_before_spec_requirements() {
+fn expired_part_given_before_its_record_reads_what_came_before_spec_crdt_4_7() {
     use Step::*;
     let h = vec![New { by: 0, parent: 0, write: true }, Forged { by: 0, a: 1, b: 0, how: 1, op: 27, k: 2, v: 4 }, Advance { who: None, ms: 2_000 }];
     let played = play(0, &h);
@@ -4906,10 +4890,36 @@ fn expired_part_given_before_its_record_reads_what_came_before_spec_requirements
         shown(&mut p, &played.things)
     };
     let k = (format!("{:?}", played.things[1]), "t:reg.0".to_string());
-    assert_eq!(read((0..n).collect())[&k], "Ok(None)");
+    assert_eq!(read((0..n).collect())[&k], "Ok(Some(Str(\"n\")))");
     assert_eq!(read((0..n).rev().collect())[&k], "Ok(Some(Str(\"n\")))");
-    assert!(expired_by_now(&played).contains(&k));
     check(0, &h, NAMED).unwrap();
+}
+
+// spec/crdt.md §4.7, spec/commits.md §5 Purge: a purged write has no effect on the read at any
+// node, whether or not it held the body. 0 writes m4 and 1 m8 on G's register; 0 demotes 1
+// backdated and grants it write again, so m8 is valid; 2, holding none of it, purges 1's deltas
+// there. Given it in that order a node drops m8 as invalid, counts it missing once valid, and holds
+// it missing when purged; given m8 last, valid under the purge, it holds m8 and removes its
+// writes. Both read m4, the value m8 replaced.
+#[test]
+fn a_purged_write_reads_as_never_held_whatever_reaches_first_spec_crdt_4_7() {
+    use Step::*;
+    let h = vec![Message { by: 0, t: 0, v: 4 }, Advance { who: None, ms: 1000 }, Message { by: 1, t: 0, v: 8 }, Advance { who: None, ms: 1000 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }, Edge { by: 0, t: 0, holder: 1, role: Some(Role::Write) }, Advance { who: None, ms: 1000 }, PurgeAuthor { by: 2, t: 0, of: 1 }];
+    let played = play(0, &h);
+    let n = played.packs.len();
+    // the last four packs: m8, the demotion, the re-grant, the purge
+    let whole: Vec<usize> = (0..n).collect();
+    let late: Vec<usize> = (0..n - 4).chain([n - 3, n - 2, n - 1, n - 4]).collect();
+    let k = (format!("{:?}", played.things[0]), msg().as_str().to_string());
+    let reads = |order: &[usize]| {
+        let mut p = deliver(&played, order);
+        fetch_missing(&mut p, &played, &whole);
+        shown(&mut p, &played.things)[&k].clone()
+    };
+    assert_eq!(reads(&whole), "Ok(Some(Str(\"m4\")))", "m8 missing when purged");
+    assert_eq!(reads(&late), "Ok(Some(Str(\"m4\")))", "m8 held, then removed");
+    order_checks(&played, &whole).unwrap();
+    order_checks(&played, &late).unwrap();
 }
 
 // spec/commits.md §5 The setting (a body leaves history no earlier than replaced) and Bodies and
@@ -4974,13 +4984,12 @@ fn record_after_a_waiting_commit_applied_fetches_its_thrown_out_part_spec_commit
     caught_up(&[NewTop { by: 0 }, TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Write }], 1, 0, true);
 }
 
-// spec/commits.md §5 Purge, Never received: the keep-everything node judges 2's m8 invalid under
-// 0's backdated demotion of 2 and drops it; walking 2's side of the dispute (2 removed 0) turns it
-// valid and 2's purge of it standing at once, so it is missing when purged: never received, not
-// fetched again, and that node reads 1's m4 where a node that held m8 reads its leftover, until
-// it holds 2's re-snapshot (`Engine::purge_resnapshots`, which the history's writers make).
+// spec/commits.md §5 Purge, Never received, spec/crdt.md §4.7: the keep-everything node judges 2's
+// m8 invalid under 0's backdated demotion of 2 and drops it; walking 2's side of the dispute (2
+// removed 0) turns it valid and 2's purge of it standing at once, so it is missing when purged:
+// never received, not fetched again. It reads 1's m4, as a node that held m8 and removed it does.
 #[test]
-fn purge_of_a_part_dropped_while_invalid_reads_alike_by_the_resnapshot_spec_commits_5() {
+fn purge_of_a_part_dropped_while_invalid_reads_alike_spec_commits_5() {
     use Step::*;
     let h = vec![Message { by: 1, t: 0, v: 4 }, Demote { by: 0, t: 0, holder: 2, at: 0, to_read: true }, RemoveFlow { by: 2, t: 0, holder: 0, lower: false }, Message { by: 2, t: 0, v: 8 }, PurgeNamed { by: 2, t: 0, of: 2, back: 0, v: 1 }];
     let played = play(0, &h);
