@@ -12,13 +12,13 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 - After it: a removal as evidence, accounts as ordinary things, public things and cards, core without accounts (notes/redesign-plan.md A3 to A6), each one branch, delete first; cut them to what is still needed before starting.
 
 ## In flight beside it
-- `mizzen-seq-runs` (worker): issues/seq-cold-edits-follow-gaps.md, the multi-op case.
+- `mizzen-seq-runs` (worker): issues/seq-cold-edits-follow-gaps.md, the multi-op case; sent back once (it stopped charging repeated work instead of removing it): load ahead what every op needs, or keep progress across loads.
+- `mizzen-until-deadline` (worker): issues/held-model-until-no-deadline.md.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
 ## Safe parallel work queue (outside the rewrite)
 - issues/text-move-writes-grow.md: engine pages / osis-crdt.
 - issues/masked-backdated-lowerings.md: osis-perm walk.
-- issues/held-model-until-no-deadline.md: cause never read.
 - Workflow agent about half the time; one cleanup always.
 
 ## Small, waiting on Tess
