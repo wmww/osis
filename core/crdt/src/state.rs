@@ -1123,6 +1123,7 @@ fn join_slots_kept(mut sa: Slots, b: Fragment, e: Option<&Stamp>, ch: &mut Chang
     }
     for (k, mut fb) in mb {
         if let Some(r) = sa.reg.as_ref() {
+            // `fb` is the other side's: what joins of it reports a change
             fit_embedding(&mut fb, r);
         }
         match sa.slots.get_mut(&k) {
@@ -1155,7 +1156,14 @@ fn join_slots_whole(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut
     let (ra, mut ma) = parts(a);
     let (rb, mb) = parts(b);
     let reg = match (ra, rb) {
-        (None, x) | (x, None) => x,
+        (x, None) => x,
+        (None, Some(y)) => {
+            // the other side's register lands (an empty one is dropped in `assemble`)
+            if !Fragment::Register(y.clone()).is_empty() {
+                ch.touch();
+            }
+            Some(y)
+        }
         (Some(x), Some(y)) => Some(join_regs(x, y, ch)),
     };
     for (k, fb) in mb {
@@ -1175,19 +1183,21 @@ fn join_slots_whole(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut
 /// of the write with another value goes, and the embedding is joined in after. Copies are told by
 /// stamp, as everywhere: a write of the dot under another stamp is its own, and a greater write
 /// or reset that beats `s` beats every copy too, so the result does not depend on whether `s`
-/// arrived before it was beaten.
-fn fit_embedding(f: &mut Fragment, r: &Register) {
+/// arrived before it was beaten. Whether it changed `f`.
+fn fit_embedding(f: &mut Fragment, r: &Register) -> bool {
     match f {
         Fragment::Seq(x) => seq::fit_embedding(x, r),
         Fragment::Bag(b) => {
-            let Some(w) = &r.write else { return };
+            let Some(w) = &r.write else { return false };
             if let Some(Fragment::Register(x)) = b.elems.get_mut(&w.stamp.dot).and_then(|el| el.frag.as_deref_mut())
                 && x.write.as_ref().is_some_and(|y| y.stamp == w.stamp && *y != *w)
             {
                 x.write = Some(w.clone());
+                return true;
             }
+            false
         }
-        _ => {}
+        _ => false,
     }
 }
 
@@ -1200,7 +1210,9 @@ pub(crate) fn prune_slots(reg: Option<Register>, slots: BTreeMap<Encoding, Fragm
     let mut slots = slots;
     if let Some(r) = &reg {
         for (k, f) in slots.iter_mut() {
-            fit_embedding(f, r);
+            if fit_embedding(f, r) {
+                ch.touch();
+            }
             if let Some(e) = embed(r, *k) {
                 f.join_into(e, None, ch);
             }

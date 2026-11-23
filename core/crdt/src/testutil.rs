@@ -1,6 +1,7 @@
 //! Test support: conversion from the reference model (core/test/crdt-model) and random op sequences from
 //! its generator (notes/crdt.md, Reference model).
 
+use crate::Changes;
 use crate::fragment::{Bag, BagKind, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
 use crate::seq_span::nth;
@@ -139,10 +140,18 @@ pub fn node(n: u8) -> Source {
     sess(Tid::from_bytes([n; 15]))
 }
 
-/// `a` joined with `b`.
+/// `a` joined with `b`. Where `a` is a state (pruned, as every join leaves one), the join
+/// reports any change of it: a node stores a joined state only then (an empty state of any
+/// encoding is none).
 pub fn joined(a: &Fragment, b: &Fragment) -> Fragment {
     let mut x = a.clone();
-    x.join(b.clone());
+    let ch = x.join(b.clone());
+    let state = || {
+        let mut p = a.clone();
+        p.prune(None, &mut Changes::new());
+        p == *a
+    };
+    assert!(ch.is_changed() || x == *a || x.is_empty() && a.is_empty() || !state(), "a join changing the state reports it:\n{a:?}\n joined with {b:?}\n gives {x:?}");
     x
 }
 

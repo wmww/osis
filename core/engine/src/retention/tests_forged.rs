@@ -250,6 +250,31 @@ fn an_embedding_losing_by_copy_order_fails_no_node_spec_crdt_4_1() {
     assert!(forged_pair(&slots, &mstring(&s, "é")).is_some());
 }
 
+// spec/crdt.md §7 Embedding, Canonical form: a node holding a char of a text gets a forged
+// text holding register write "c"'s embedding (its reset and char) and another char, then the
+// register write, which re-encodes the position as `Slots` though the read (the text, chosen)
+// stays "qac". Each order, the node reopened holds the state its bodies rebuild (a debug check
+// on close) and reads alike. Fails with a register slot a join adds not reported as a change
+// (the joined state never stored).
+#[test]
+fn a_register_write_joining_a_text_holding_its_embedding_is_stored_spec_crdt_7() {
+    use crdt_model::state::{Anchor as MAnchor, Composite, Content, SeqElem as MSeqElem};
+    let s = mstamp(5, 3);
+    let first = MFrag::Seq { text: true, c: Composite::default(), elems: [(mdot(1), MSeqElem::new(mstamp(7, 1), MAnchor::Head, Content::Char('q')))].into_iter().collect() };
+    let mut elems = membedded(&s, "c");
+    elems.insert(mdot(4), MSeqElem::new(mstamp(6, 4), MAnchor::Head, Content::Char('a')));
+    let text = MFrag::Seq { text: true, c: Composite { reset: Some(s.clone()), w: None, w_valueless: false }, elems };
+    let (mut lp, t) = world();
+    let made: Vec<CommitId> = [first, text, mstring(&s, "c")].iter().map(|f| forge(&mut lp, t, carried(f).expect("a wire form")).expect("the forger makes it")).collect();
+    for (p, order) in [(0, [0, 2, 1]), (2, [0, 1, 2])] {
+        for i in order {
+            deliver(&mut lp, p, &made[i]);
+        }
+        lp.peers[p].restart(p as u64).unwrap();
+        assert_eq!(lp.peers[p].engine.get(&t, &ak()).unwrap(), Some(Value::Str("qac".into())), "peer {p}");
+    }
+}
+
 /// Seed `k`'s forged history (crdt-model's generators, notes/crdt.md Tests): writers 0 and 1
 /// sharing a source and clock (copies of one write differing in payload, one dot under two
 /// stamps) on a random type, or hostile single-record text and list writes.
@@ -380,3 +405,4 @@ fn a_kill_by_a_removal_and_a_reset_in_one_body_is_told_at_the_removal_spec_commi
     let told = lp.peers[2].drain_events().into_iter().any(|e| matches!(e, crate::Event::Commits(ch) if ch.iter().any(|x| x.id == cw)));
     assert!(told, "W's body is told leaving a day after the removal");
 }
+

@@ -12,7 +12,8 @@ impl Changes {
     pub fn new() -> Changes {
         Changes::default()
     }
-    /// The aspect's read may differ from before the join.
+    /// The state may differ from before the join (a node stores a joined state only then), its
+    /// read or only its form (a register slot beside the text it embeds into, §7).
     pub fn is_changed(&self) -> bool {
         self.changed
     }
