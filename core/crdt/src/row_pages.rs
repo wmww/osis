@@ -29,9 +29,14 @@ pub struct PagedRows<R: Rows> {
     key_max: usize,
     /// Pages changed and not written yet, by key (`None`: gone).
     changed: BTreeMap<Vec<u8>, Option<Page>>,
+    /// Stored pages read, decoded as stored, by key: each is decoded once while this is held
+    /// (`held::Held` holds one per join, leave or check), its writes kept here too.
+    read: BTreeMap<Vec<u8>, Page>,
 }
 
 type Page = BTreeMap<Vec<u8>, Vec<u8>>;
+
+static EMPTY: Page = BTreeMap::new();
 
 fn page_key(first: &[u8]) -> Vec<u8> {
     [b"P", first].concat()
@@ -140,7 +145,7 @@ fn size(p: &Page) -> usize {
 
 impl<R: Rows> PagedRows<R> {
     pub fn new(inner: R, key_max: usize) -> PagedRows<R> {
-        PagedRows { inner, key_max, changed: BTreeMap::new() }
+        PagedRows { inner, key_max, changed: BTreeMap::new(), read: BTreeMap::new() }
     }
 
     /// `key` as a page's key holds it.
@@ -148,67 +153,84 @@ impl<R: Rows> PagedRows<R> {
         key.get(..self.key_max).unwrap_or(key)
     }
 
-    /// The last page keyed below `bound` (a page key's bytes after `P`; `None`: the last of
-    /// all), as changed if it was.
-    fn page_below(&mut self, bound: Option<&[u8]>) -> Result<Option<(Vec<u8>, Page)>, R::Err> {
+    /// Page `first` as it stands: changed, else as read.
+    fn page(&self, first: &[u8]) -> &Page {
+        match self.changed.get(first) {
+            Some(p) => p.as_ref().unwrap_or(&EMPTY),
+            None => self.read.get(first).unwrap_or(&EMPTY),
+        }
+    }
+
+    /// Page `first`, held as changed until `flush`.
+    fn page_mut(&mut self, first: &[u8]) -> &mut Page {
+        let read = &self.read;
+        self.changed.entry(first.to_vec()).or_insert_with(|| Some(read.get(first).cloned().unwrap_or_default())).get_or_insert_with(Page::new)
+    }
+
+    /// Stored page `key` (its bytes `v`), decoded once.
+    fn stored(&mut self, key: Vec<u8>, v: &[u8]) -> Result<Vec<u8>, R::Err> {
+        if !self.read.contains_key(&key) {
+            let p = decode(v)?;
+            self.read.insert(key.clone(), p);
+        }
+        Ok(key)
+    }
+
+    /// The key of the last page keyed below `bound` (a page key's bytes after `P`; `None`: the
+    /// last of all), changed or stored.
+    fn page_below(&mut self, bound: Option<&[u8]>) -> Result<Option<Vec<u8>>, R::Err> {
         let held = match bound {
             Some(b) => self.changed.range(..b.to_vec()).rev().find(|x| x.1.is_some()),
             None => self.changed.iter().rev().find(|x| x.1.is_some()),
         };
-        let held = held.map(|(k, p)| (k.clone(), p.clone().unwrap_or_default()));
+        let held = held.map(|(k, _)| k.clone());
         let mut to = match bound {
             Some(b) => [b"P".as_slice(), b].concat(),
             None => b"Q".to_vec(),
         };
         // the last stored page below it that no change replaced
-        let stored = loop {
-            let Some((k, v)) = self.inner.scan_back(b"P", &to, 1)?.pop() else { break None };
+        loop {
+            let Some((k, v)) = self.inner.scan_back(b"P", &to, 1)?.pop() else { return Ok(held) };
             let key = k.get(1..).unwrap_or_default().to_vec();
-            if held.as_ref().is_some_and(|h| h.0 >= key) {
-                break None;
+            if held.as_ref().is_some_and(|h| *h >= key) {
+                return Ok(held);
             }
             if !self.changed.contains_key(&key) {
-                break Some((key, decode(&v)?));
+                return self.stored(key, &v).map(Some);
             }
             to = k;
-        };
-        Ok(stored.or(held))
+        }
     }
 
-    /// The page holding `key`'s place: its key and rows; none kept yet: an empty first page.
-    fn page_of(&mut self, key: &[u8]) -> Result<(Vec<u8>, Page), R::Err> {
+    /// The key of the page holding `key`'s place; none kept yet: the empty first page.
+    fn page_of(&mut self, key: &[u8]) -> Result<Vec<u8>, R::Err> {
         let bound = [self.cut(key), &[0]].concat();
         Ok(self.page_below(Some(&bound))?.unwrap_or_default())
     }
 
-    /// The first page after the one keyed `first`, as changed if it was.
-    fn next_page(&mut self, first: &[u8]) -> Result<Option<(Vec<u8>, Page)>, R::Err> {
+    /// The key of the first page after the one keyed `first`, changed or stored.
+    fn next_page(&mut self, first: &[u8]) -> Result<Option<Vec<u8>>, R::Err> {
         let after = [first, &[0]].concat();
-        let held = self.changed.range(after.clone()..).find(|x| x.1.is_some()).map(|(k, p)| (k.clone(), p.clone().unwrap_or_default()));
+        let held = self.changed.range(after.clone()..).find(|x| x.1.is_some()).map(|(k, _)| k.clone());
         let mut from = [b"P".as_slice(), &after].concat();
-        let stored = loop {
-            let Some((k, v)) = self.inner.scan(&from, b"Q", 1)?.pop() else { break None };
+        loop {
+            let Some((k, v)) = self.inner.scan(&from, b"Q", 1)?.pop() else { return Ok(held) };
             let key = k.get(1..).unwrap_or_default().to_vec();
-            if held.as_ref().is_some_and(|h| h.0 <= key) {
-                break None;
+            if held.as_ref().is_some_and(|h| *h <= key) {
+                return Ok(held);
             }
             if !self.changed.contains_key(&key) {
-                break Some((key, decode(&v)?));
+                return self.stored(key, &v).map(Some);
             }
             from = [&k[..], &[0]].concat();
-        };
-        Ok(stored.or(held))
-    }
-
-    /// Holds page `first` as `p` until `flush`.
-    fn hold(&mut self, first: &[u8], p: Page) {
-        self.changed.insert(first.to_vec(), (!p.is_empty()).then_some(p));
+        }
     }
 
     /// Writes page `first` as `p`: gone when empty, split in two past twice `PAGE_BYTES` (rows
     /// whose cut keys agree stay together whatever their size).
     fn write(&mut self, first: &[u8], mut p: Page) -> Result<(), R::Err> {
         if p.is_empty() {
+            self.read.remove(first);
             return self.inner.del(&page_key(first));
         }
         let mut stored = encode(&p);
@@ -233,7 +255,9 @@ impl<R: Rows> PagedRows<R> {
             self.write(&key, upper)?;
             stored = encode(&p);
         }
-        self.inner.put(&page_key(first), &stored)
+        self.inner.put(&page_key(first), &stored)?;
+        self.read.insert(first.to_vec(), p);
+        Ok(())
     }
 
     /// Writes `rows` where nothing is kept: a run of rows at a time (eight pages of bytes before
@@ -257,12 +281,12 @@ impl<R: Rows> PagedRows<R> {
 impl<R: Rows> Rows for PagedRows<R> {
     type Err = R::Err;
     fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, R::Err> {
-        Ok(self.page_of(key)?.1.remove(key))
+        let first = self.page_of(key)?;
+        Ok(self.page(&first).get(key).cloned())
     }
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<(), R::Err> {
-        let (first, mut p) = self.page_of(key)?;
-        p.insert(key.to_vec(), val.to_vec());
-        self.hold(&first, p);
+        let first = self.page_of(key)?;
+        self.page_mut(&first).insert(key.to_vec(), val.to_vec());
         Ok(())
     }
     fn flush(&mut self) -> Result<(), R::Err> {
@@ -272,9 +296,13 @@ impl<R: Rows> Rows for PagedRows<R> {
         Ok(())
     }
     fn del(&mut self, key: &[u8]) -> Result<(), R::Err> {
-        let (first, mut p) = self.page_of(key)?;
-        if p.remove(key).is_some() {
-            self.hold(&first, p);
+        let first = self.page_of(key)?;
+        if self.page(&first).contains_key(key) {
+            let p = self.page_mut(&first);
+            p.remove(key);
+            if p.is_empty() {
+                self.changed.insert(first, None);
+            }
         }
         Ok(())
     }
@@ -283,16 +311,17 @@ impl<R: Rows> Rows for PagedRows<R> {
         if from >= to {
             return Ok(out);
         }
-        let (mut first, mut p) = self.page_of(from)?;
+        let to_cut = self.cut(to).to_vec();
+        let mut first = self.page_of(from)?;
         loop {
-            for (k, v) in p.range(from.to_vec()..) {
+            for (k, v) in self.page(&first).range(from.to_vec()..) {
                 if k.as_slice() >= to || out.len() >= limit {
                     return Ok(out);
                 }
                 out.push((k.clone(), v.clone()));
             }
             match self.next_page(&first)? {
-                Some((f, next)) if f.as_slice() <= self.cut(to) => (first, p) = (f, next),
+                Some(f) if f <= to_cut => first = f,
                 _ => return Ok(out),
             }
         }
@@ -302,18 +331,19 @@ impl<R: Rows> Rows for PagedRows<R> {
         if from >= to {
             return Ok(out);
         }
+        let from_cut = self.cut(from).to_vec();
         // the page of the last key below `to`, then the pages before it
         let mut bound = [self.cut(to), &[0]].concat();
         loop {
-            let Some((k, p)) = self.page_below(Some(&bound))? else { return Ok(out) };
-            for (key, val) in p.range(from.to_vec()..to.to_vec()).rev() {
+            let Some(k) = self.page_below(Some(&bound))? else { return Ok(out) };
+            for (key, val) in self.page(&k).range(from.to_vec()..to.to_vec()).rev() {
                 if out.len() >= limit {
                     return Ok(out);
                 }
                 out.push((key.clone(), val.clone()));
             }
             // a page keyed at or below `from` holds the range's start
-            if k.as_slice() <= self.cut(from) || out.len() >= limit {
+            if k <= from_cut || out.len() >= limit {
                 return Ok(out);
             }
             bound = k;
