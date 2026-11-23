@@ -12,9 +12,7 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 - After it: a removal as evidence, accounts as ordinary things, public things and cards, core without accounts (notes/redesign-plan.md A3 to A6), each one branch, delete first; cut them to what is still needed before starting.
 
 ## In flight beside it
-- `mizzen-walk-inputs` (worker): issues/walk-inputs-via-stale.md.
 
-- `mizzen-walk-inputs`: the gate showed its debug assert costs ~4x main's instructions; the worker is making the check cost what changed.
 
 ## Safe parallel work queue (outside the rewrite)
 - issues/seq-cold-edits-follow-gaps.md (cross-op case), issues/text-move-writes-grow.md: engine pages / osis-crdt.
