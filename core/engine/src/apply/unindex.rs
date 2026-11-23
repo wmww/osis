@@ -183,9 +183,12 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
 
 /// The rows part `ai` of `c`'s judgment derived (the roles its `secrets.0` or `keys.0` delta
 /// needs, a grant's overreach) go: the part went missing
-/// (`retention::reopen_in`) or its commit is forgotten.
+/// (`retention::reopen_in`) or its commit is forgotten. The commit's reading moves with them
+/// (`validity::reading`): touched, the caller giving it to the walk.
 pub(crate) fn unjudge_part(core: &mut crate::engine::Core, c: &CommitId, ai: usize) {
-    core.ix.rotation_role.remove(&(*c, ai));
+    if core.ix.rotation_role.remove(&(*c, ai)).is_some() {
+        core.ix.held.touch_commit(*c);
+    }
     core.ix.grant_overreach.remove(&(*c, ai));
 }
 

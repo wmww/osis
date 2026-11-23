@@ -1693,7 +1693,20 @@ impl Core {
     /// operation gives its changes at its end and reads no walk before): no read sees it behind.
     pub fn timelines(&self) -> &held::Timelines {
         debug_assert!(!self.ix.held.is_touched(), "the walk read behind the held set");
+        // every commit whose judged inputs moved (`stale_commits`) is read by the walk as now:
+        // each input of `validity::reading` touches where it moves
+        #[cfg(debug_assertions)]
+        {
+            let behind = self.walk_behind(self.stale_commits.iter());
+            debug_assert!(behind.is_none(), "the walk read behind an input of {behind:?}");
+        }
         &self.timelines
+    }
+
+    /// The first of `ids` the walk reads behind the index (`held::Timelines::behind`), uncounted.
+    #[cfg(debug_assertions)]
+    pub(crate) fn walk_behind<'a>(&self, ids: impl Iterator<Item = &'a CommitId>) -> Option<CommitId> {
+        osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.timelines.behind(self, ids))))
     }
 
     /// The walk to change in place (`sides`), brought up to the held set first.
@@ -1709,7 +1722,15 @@ impl Core {
             return None;
         }
         let touched = self.ix.held.take_touched();
-        let commits = self.ix.held.take_touched_commits();
+        let mut commits = self.ix.held.take_touched_commits();
+        // a record that came or went moves whether the things below it have a held chain, an
+        // input of the reading of every commit on them (`validity::too_deep`)
+        let moved = self.timelines.records_moved(&self.ix.held, &touched);
+        if !moved.is_empty() {
+            for t in self.ix.held.below(&moved) {
+                commits.extend(self.on_thing(&t));
+            }
+        }
         let mut tl = std::mem::take(&mut self.timelines);
         let changed = tl.update(&*self, &commits, &touched);
         self.timelines = tl;
@@ -2539,8 +2560,10 @@ impl Core {
         if self.ix.handed.contains_key(&id) {
             self.handed_due.insert(id);
         }
+        let addenda: Vec<Tid> = m.view.aspects.iter().enumerate().filter(|(ai, a)| osis_schema::core_types::is_addenda(a.ak.as_str()) && self.ix.commits.get(&id).is_some_and(|o| o.valid_at(*ai)) != m.valid_at(*ai)).map(|(_, a)| a.tid).collect();
         self.ix.held.touch_commit(id);
         self.ix.commits.insert(id, m);
+        self.addenda_moved(&id, &addenda);
         for (t, before) in bared {
             crate::apply::validity::setting_moved(self, &t, Some(before));
         }
@@ -2671,18 +2694,34 @@ impl Core {
         }
     }
 
+    /// The verdicts of commit `id`'s addenda on `things` moved: what they list against a rotation
+    /// reads them (`validity::Judge::counts`), touched and judged again. Whether any was.
+    fn addenda_moved(&mut self, id: &CommitId, things: &[Tid]) -> bool {
+        let listed: BTreeSet<CommitId> = things.iter().filter_map(|t| self.ix.addenda.get(&(*t, *id))).flat_map(|x| x.entries.iter().flat_map(|(_, l)| l.iter().copied())).filter(|c| self.ix.commits.contains_key(c)).collect();
+        for c in &listed {
+            self.ix.held.touch_commit(*c);
+        }
+        let any = !listed.is_empty();
+        self.stale_commits.extend(listed);
+        any
+    }
+
     /// Re-indexes which parts of commit `id` are invalid here (call after setting `Meta::valid`).
     pub fn index_validity(&mut self, id: &CommitId) {
         let due = self.ix.commits.get(id).map(|m| self.kept_parts(id, m)).unwrap_or_default();
         self.kept_due.extend(due);
         let Some(m) = self.ix.commits.get(id) else { return };
         let mut settings = Vec::new();
+        let mut addenda = Vec::new();
         for (ai, a) in m.view.aspects.iter().enumerate() {
             let k = (a.tid, a.ak.clone());
-            if m.valid_at(ai) {
-                self.ix.invalid.remove(&k, id);
-            } else {
-                self.ix.invalid.insert(k.clone(), *id);
+            let flipped = if m.valid_at(ai) { self.ix.invalid.remove(&k, id) } else { self.ix.invalid.insert(k.clone(), *id) };
+            // an addendum's verdict is an input of the reading of what it lists against a
+            // rotation (`validity::Judge::counts`)
+            if flipped && osis_schema::core_types::is_addenda(a.ak.as_str()) {
+                addenda.push(a.tid);
+            }
+            if !m.valid_at(ai) {
                 // held or missing, it drops if judged invalid (`retention::drop_invalid`)
                 if m.holds(ai) || m.missing(ai) {
                     self.drop_due.insert(*id);
@@ -2705,6 +2744,9 @@ impl Core {
                 self.settings_due.insert(t);
                 self.kept_things_due.insert(t);
             }
+        }
+        if self.addenda_moved(id, &addenda) {
+            self.update_timelines();
         }
         edits::index_validity(self, id);
     }
@@ -3703,6 +3745,10 @@ impl Engine {
                 })
             })
         });
+        // and the walk reads every held commit as the index says now: an input moved untouched
+        // would leave it behind for good
+        let behind = core.walk_behind(core.ix.commits.keys());
+        assert!(behind.is_none(), "end of history: the walk reads {behind:?} behind the index");
     }
 
     /// Debug builds: each aspect valid joins or covered drops changed since the rebuild check

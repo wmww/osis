@@ -95,6 +95,20 @@ fn chainless_part_waits_alone_spec_commits_4() {
     assert_eq!(pending, 1, "kept pending under its applied commit");
 }
 
+// spec/commits.md §4: a part's chain arriving after the part moves the walk's reading of it at
+// once (whether its thing has a held chain is an input of that reading), not at a later
+// re-judge: the walk reads every held commit as the index says.
+#[test]
+fn a_chain_arriving_late_reaches_the_walk_of_the_part_below_it_spec_commits_4() {
+    let hs = histories();
+    let three = &hs[2];
+    let mut order = in_order(three, &[three.base + 2]);
+    order.push((three.base + 2, None));
+    let mut p = deliver(three, &order);
+    assert_eq!(p.engine.get(&three.things[2], &reg()).unwrap(), v("v1"));
+    p.engine.check_index();
+}
+
 // spec/commits.md §4: a commit's parts wait alone, so what a role commit does to one thing's
 // roster reads alike however the other part came.
 #[test]

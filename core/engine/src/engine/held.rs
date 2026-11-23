@@ -757,6 +757,18 @@ impl<'a> On<'a> {
 }
 
 impl Timelines {
+    /// Of `things`, those whose record `held` holds and the walk does not, or the other way.
+    pub(crate) fn records_moved(&self, held: &Held, things: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        things.iter().filter(|t| held.created(t).is_some_and(|r| r.tid() == **t) != self.of.records().link(t).is_some()).copied().collect()
+    }
+
+    /// The first of `ids` the walk does not hold as `held` reads it now (`Timeline::reads_now`),
+    /// unstamped: debug checks that no input of a reading moved without a touch.
+    #[cfg(debug_assertions)]
+    pub(crate) fn behind<'a>(&self, held: &dyn osis_perm::HeldSet, mut ids: impl Iterator<Item = &'a CommitId>) -> Option<CommitId> {
+        ids.find(|c| !self.of.reads_now(held, c)).copied()
+    }
+
     /// The timeline where it knows `thing` (a record or an edge write on it held), read whole.
     pub fn get(&self, thing: &Tid) -> Option<&osis_perm::Timeline> {
         self.stamps.read(&Read::Known(*thing));

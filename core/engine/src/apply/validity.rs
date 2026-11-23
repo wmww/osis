@@ -190,6 +190,12 @@ fn set_addendum(core: &mut Core, t: Tid, id: CommitId, a: Option<Addendum>) -> O
             core.ix.addenda_keyed.remove(r, &(t, id));
         }
     }
+    // what it lists reads it against a rotation (`Judge::counts`)
+    for c in was.iter().chain(&now).flat_map(|x| x.entries.iter().flat_map(|(_, l)| l.iter())) {
+        if core.ix.commits.contains_key(c) {
+            core.ix.held.touch_commit(*c);
+        }
+    }
     core.update_timelines();
     was
 }
@@ -652,10 +658,12 @@ fn entry_maps(f: &Fragment) -> Option<Vec<(u64, &osis_crdt::Map)>> {
 
 /// Records the roles `secrets.0` and `keys.0` deltas of a commit need, and the `secrets.0` parts
 /// of a role commit that write beyond its grantees' boxes. `read`: every held part of the
-/// commit (a late `secrets.0` part is judged with the `roles.0` part held before it).
+/// commit (a late `secrets.0` part is judged with the `roles.0` part held before it). The
+/// commit's reading moves with them (`reading`): touched, the caller giving it to the walk.
 pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &super::PartsRead<'_>) {
     let parts = read.all();
     core.stale_commits.insert(*id);
+    core.ix.held.touch_commit(*id);
     for (ai, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
             && let Some(r) = rotation_required(a.ak.as_str(), d.fragment())
@@ -1140,13 +1148,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let mut things = std::mem::take(&mut tx.core.stale_things);
     let authors = std::mem::take(&mut tx.core.stale_authors);
     let under = std::mem::take(&mut tx.core.stale_under);
-    // a commit judged again for an input of its own is read again by the walk first: its
-    // reading holds those inputs (`reading`)
-    let named: Vec<CommitId> = tx.core.stale_commits.iter().copied().collect();
-    for c in named {
-        tx.core.ix.held.touch_commit(c);
-    }
-    tx.core.update_timelines();
     let explicit = std::mem::take(&mut tx.core.stale_commits);
     let all = std::mem::take(&mut tx.core.stale_all);
     // an addendum's validity may change with its author's role or its commit's void flag, and
@@ -1231,7 +1232,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let mut falls: Vec<(Tid, Ak)> = Vec::new();
     // removal notices turned valid: taken as arriving ones (`flows::inbox::notice_due`)
     let mut notices: Vec<CommitId> = Vec::new();
-    let mut listed: Vec<CommitId> = Vec::new();
     for (id, now) in news {
         let Some(m) = tx.core.ix.commits.get(&id) else { continue };
         let h = m.header.clone();
@@ -1271,13 +1271,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 if x.ak.as_str() == "secrets.0" {
                     secrets_flips.push((id, ai, *b));
                 }
-                // an addendum's verdict moved: what it lists against a rotation rests on it
-                // (`Judge::counts`; against a removal the walk names what it reaches)
-                if ct::is_addenda(x.ak.as_str())
-                    && let Some(l) = tx.core.ix.addenda.get(&(x.tid, id)).cloned()
-                {
-                    listed.extend(l.entries.iter().flat_map(|(_, cs)| cs.iter().copied()));
-                }
                 if x.ak.as_str() == "keys.0" {
                     keyset_flips.insert(x.tid);
                 }
@@ -1287,7 +1280,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         tx.core.index_validity(&id);
     }
     drop(judge);
-    tx.core.stale_commits.extend(listed.into_iter().filter(|c| tx.core.ix.commits.contains_key(c)));
     tx.core.drop_due.extend(missing_due);
     for (t, ak) in falls {
         crate::sync::falls::fell(tx, &t, &ak)?;

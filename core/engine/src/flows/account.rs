@@ -899,8 +899,8 @@ pub(crate) fn things_of(v: &crate::engine::View) -> BTreeSet<Tid> {
 /// it, those a rotation whose
 /// count moved lists, and the commits due; with the listings among their names and what those
 /// name, until nothing is added. They are judged by the epoch rule over the held rotations and
-/// their names alone, go to `stale_commits`, and a role commit among them counts in the timeline
-/// or not as the rule now says (`Held::set_counted`). So a rotation or a list costs the commits it
+/// their names alone, are given to the walk and go to `stale_commits`, and a role commit among
+/// them counts in the timeline or not as the rule now says (`Held::set_counted`). So a rotation or a list costs the commits it
 /// moves, never the account's history. Returns whether a role commit's count moved.
 /// A device this node's account `p`'s chain `v` names whose record is not held: the account
 /// root's sync IDs, which carry its card, are pulled anew (spec/sync-judgement.md §3 Dropped
@@ -1054,10 +1054,6 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<()> {
             false if trivial => drop(tx.core.ix.epochs.remove(&p)),
             false => drop(tx.core.ix.epochs.insert(p, judged.clone())),
         }
-        // a seed of the account come to be held: the boxes sealed to the account open now
-        if more_keyed {
-            super::reopen_dependents(tx, p)?;
-        }
         for c in cands {
             let Some(m) = tx.core.ix.commits.get(&c) else { continue };
             if m.view.signer != p {
@@ -1071,9 +1067,15 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<()> {
             for t in things_of(&m.view) {
                 crate::retention::replace::standing_moved(tx.core, &t);
             }
+            // its standing is an input of its reading (`validity::reading`)
+            tx.core.ix.held.touch_commit(c);
             tx.core.stale_commits.insert(c);
         }
         tx.core.update_timelines();
+        // a seed of the account come to be held: the boxes sealed to the account open now
+        if more_keyed {
+            super::reopen_dependents(tx, p)?;
+        }
     }
     Ok(())
 }

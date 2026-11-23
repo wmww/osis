@@ -316,6 +316,19 @@ impl<S: Store> Timeline<S> {
         out
     }
 
+    /// Whether the timeline holds commit `id` as `held` reads it now: an update naming it would
+    /// take nothing (checks that no input of a reading moved unnamed).
+    pub fn reads_now(&self, held: &dyn HeldSet, id: &CommitId) -> bool {
+        match held.commit(id) {
+            None => !self.paths.holds(id) && !self.roles.contains_key(id),
+            Some(h) if !self.records.is_key(&h.signer) => self.waiting.get(&h.signer).is_some_and(|s| s.contains(id)),
+            Some(h) => match self.roles.get(id) {
+                Some((role, parts)) => h.role.as_ref().is_some_and(|r| r == role) && h.parts == *parts,
+                None => h.role.is_none() && self.paths.reads(&h.commit(), &h.carriers),
+            },
+        }
+    }
+
     /// Replaces the trust set (spec/permissions.md §5.1 Trust set): edge writes (commit, op).
     pub fn set_trust(&mut self, trust: &BTreeSet<WriteId>) -> Changed {
         self.trusted = trust.clone();
