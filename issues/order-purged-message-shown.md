@@ -1,12 +1,12 @@
-# The order harness: a node shows a message the node keeping every body does not
-> Summary: osis-engine `order::held_set_decides_plain` at `OSIS_ORDER_SEED=512007751 OSIS_ORDER_LEN=60` (Addenda): after the sync exchange a node holding part of the history reads `t:msg.0` as `m9` where the node keeping every body reads nothing. Not shrunk; cause not read.
+# A purged write reads differently by whether its body was ever held
+> Summary: Deleting someone's latest message shows nothing at a node that held the message's body when the purge came (its value-less leftover still wins, spec/crdt.md §4.7), but the previous message at a node that was missing the body then (dropped while invalid, so "never received", spec/commits.md §5), until a writer holding both re-snapshots, which may never happen. A read that depends on arrival order, possibly for good. Expiry has the same shape (the order oracle's `expired_by_now` excuse). engine `order::held_set_decides_plain` seed 512007751.
 > Priority: normal
-> Tags: engine, tests
+> Tags: crdt, engine, tess-call
 
-Replay: `OSIS_ORDER_SEED=512007751 OSIS_ORDER_LEN=60 cargo test -p osis-engine --test it -- --ignored --exact order::held_set_decides_plain` (`OSIS_ORDER_DUMP=1` prints the index differences). It fails with main's engine too once the harness's `applied differs` check is off: the stated-path wait (notes/engine-apply.md, Chain certificates missing) uncovered it, it did not make it.
+Repro (5 steps, Lists family): `Message{0,t0,m4}, Message{1,t0,m8}, Demote{0 → 1, backdated}, Edge{0 re-grants 1 write}, PurgeAuthor{2, of 1}`, time advancing between; the node getting m8 last reads m4, the in-order node reads nothing. Worked-out options on branch `mizzen-purged-shown` (complaints and test; its order-oracle exception for this case is not landed).
 
-What the dump shows (held 85 of 110 commits, order #8, "now, after the sync exchange"): two `t:msg.0` commits of peer 1 on the thing (#86, #92) are held stripped at the node keeping every body (a purge request names them) and are dropped `Other` at the node, valid at both; three other commits on the thing have parts dropped as covered at the node only. Both nodes pend the same commits. So the node's read keeps a value the purge took at the other: a body dropped before the request arrived, whose value then came back another way (a snapshot's copy, or the sync exchange's refetch), is the lead.
+The purge request cannot stand for the leftover: a leftover's effect comes from its body's structure (keys, stamps, resets, positions), which the header lacks, and a purger often holds none of the bodies it names (by author, whole aspect, later arrivals).
 
-A shrink (`OSIS_ORDER_SHRINK=1`) did not end within 26 minutes of hold: shrink with `OSIS_SHRINK_MATCH='shows other than the node keeping every body'` in a hold of its own.
-
-Also seed 134782623960 (Purges), failing on a main binary.
+**Options (for Tess):**
+- **A. A purged write has no effect on the read**, at every node, body held or not: one rule, no body, no fetch, no wire change. Visible: purging a write brings back what it replaced everywhere (delete the newest message → the previous one shows; purge a map clear or list delete → that content returns; others' writes nested under a purged creation vanish everywhere). Expiry takes the same rule and `expired_by_now` goes. Coordinator's lean.
+- **B. Leftovers verifiable and fetchable**: each delta split into a structure part and a values part, both hashed in the header; a purge deletes only values; nodes fetch a missing structure part. Keeps today's meaning (a purged write still wins, reads nothing). Cost: wire, stores and sync logging (the sync rewrite's area); structure kept and served for good, to check against requirements Deletion "No fingerprint".

@@ -15,4 +15,4 @@ osis-crdt/tests_seq::slots_join_follows_cache_plain_spec_7 rate:OSIS_CRDT_START=
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
 osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=47 issues/seq-cold-edits-follow-gaps.md same delta as on the whole state
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=512007751,OSIS_ORDER_LEN=60 issues/order-purged-message-shown.md shows other than the node keeping every body: Tid\(\S+\) t:msg\.0
-osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=134782623960,OSIS_ORDER_LEN=60 issues/order-purged-message-shown.md shows other than the node keeping every body: Tid\(\S+\) t:msg\.0
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=134782623960,OSIS_ORDER_LEN=60 issues/split-path-wake-missed.md a split path's wake missed
