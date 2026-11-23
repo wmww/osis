@@ -13,7 +13,6 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 
 ## In flight beside it
 In-flight lines name issues in words, not paths: a branch that closes its issue would fail policy on this note.
-- `mizzen-seq-runs` (worker): issues/seq-cold-edits-follow-gaps.md, the multi-op case; sent back once (it stopped charging repeated work instead of removing it): load ahead what every op needs, or keep progress across loads.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
 ## Safe parallel work queue (outside the rewrite)
