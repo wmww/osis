@@ -151,10 +151,12 @@ impl Held {
     }
 
     /// The points of the commits with an edge write (a grant or a removal, of any validity) on
-    /// `holder`'s edge on `thing`, ascending.
-    pub fn writes_on(&self, holder: &Tid, thing: &Tid) -> impl Iterator<Item = &Point> {
+    /// `holder`'s edge on `thing`, ascending, those after `after` alone where given.
+    pub fn writes_on(&self, holder: &Tid, thing: &Tid, after: Option<&Point>) -> impl Iterator<Item = &Point> {
+        use std::ops::Bound::{Excluded, Unbounded};
         self.rest.read(&Row::Writes(thing));
-        self.writes.get(thing).and_then(|m| m.get(holder)).into_iter().flat_map(|m| m.keys())
+        let from = after.map_or(Unbounded, Excluded);
+        self.writes.get(thing).and_then(|m| m.get(holder)).into_iter().flat_map(move |m| m.range((from, Unbounded)).map(|(p, _)| p))
     }
 
     /// `from` and everything authority flows to from them: what they own, the things they are
@@ -1030,7 +1032,7 @@ mod tests {
                 1 => ids(&h.edge_commits(t)),
                 2 => tids(&mut h.holders_of(t)),
                 3 => tids(&mut h.named_on(t)),
-                4 => at.iter().flat_map(|x| h.writes_on(x, t)).map(|p| p.commit.0).collect(),
+                4 => at.iter().flat_map(|x| h.writes_on(x, t, None)).map(|p| p.commit.0).collect(),
                 _ => tids(&mut h.mint_admin_of(t)),
             }
         };

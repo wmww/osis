@@ -4720,6 +4720,34 @@ fn compaction_dropped_while_invalid_repairs_nothing_spec_commits_5() {
     assert_ne!(o.now[&g], "Ok(Some(Str(\"g\")))");
 }
 
+// spec/commits.md §4 Provisional, §5 Invalid: 0 lowers 2 to read on G and grants it write again;
+// 2 makes thing T under G (its strong in G's `holds.0`) and writes T's `t:docs.0`. A node given
+// all but the re-grant judges the strong on the lowering, ordered before it: invalid, dropped.
+// Valid once the re-grant arrives, it is missing, so T is in no node closure there and nothing on
+// T applies, until a writer compacts G's `holds.0` (`settled` compacts holds before content): a
+// node given the compactions last reads T as the node keeping every body does.
+#[test]
+fn strong_dropped_while_invalid_comes_back_by_a_holds_compaction_spec_commits_5() {
+    use Step::*;
+    let h = settled(vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) }, New { by: 2, parent: 0, write: false }, Typed { by: 2, t: 1, op: 26, k: 2, v: 4 }]);
+    let played = settling(play(0, &h), &h);
+    let docs = (format!("{:?}", played.things[1]), "t:docs.0".to_string());
+    assert!(played.settled_last.contains(&docs), "every writer compacts T's docs last: {:?}", played.tally);
+    let n = played.packs.len();
+    let o = oracle(&played, &(0..n).collect::<Vec<_>>());
+    assert_eq!(o.now[&docs], "Ok(Some(Map({Str(\"k2\"): Str(\"v4\")})))");
+    let f = played.settle_from.unwrap();
+    let aspects = |i: usize| osis_commit::CommitBlob::decode_stored(&played.packs[i].bytes).map(|b| b.header.aspects.iter().map(|a| (a.tid, a.ak.as_str().to_string())).collect::<Vec<_>>()).unwrap_or_default();
+    let making = (played.base..f).find(|&i| aspects(i).iter().any(|a| a.1 == "holds.0")).unwrap();
+    let regrant = (played.base..f).filter(|&i| played.authors[i] == 0 && aspects(i).contains(&(played.things[0], "roles.0".to_string()))).nth(1).unwrap();
+    let ahead: Vec<usize> = (0..f).filter(|&i| i != regrant).chain([regrant]).collect();
+    let read = |p: &mut Peer| shown(p, &played.things).get(&docs).cloned().unwrap_or(NOTHING);
+    let mut p = deliver(&played, &ahead);
+    assert!(p.engine.commit_parts_missing().into_iter().any(|(c, m)| c == played.packs[making].id && !m.is_empty()), "the strong is dropped while invalid and missing");
+    assert_eq!(read(&mut p), NOTHING, "T is in no node closure");
+    assert_eq!(read(&mut deliver(&played, &ahead.into_iter().chain(f..n).collect::<Vec<_>>())), o.now[&docs]);
+}
+
 // spec/commits.md §4 Unjudgeable: 2 makes thing T under G (its strong in G's `holds.0`) and
 // writes T's `t:docs.0`; then 0 lowers 2 to write on G. A node given that lowering, then the
 // commit making T, before 2's admin grant on G: the lowering, ordered after the strong, is no

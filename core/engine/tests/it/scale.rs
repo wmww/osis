@@ -1597,3 +1597,51 @@ fn open_is_linear_in_role_commits() {
     let (a, b) = (grants_and_open(20), grants_and_open(200));
     all_linear("open", &a, &b);
 }
+
+/// The path wait's work for a write acting as `r` on `x` at a node holding `n` forged edge writes
+/// on each of three layers of `x`'s edges, each one unjudgeable (spec/commits.md §4 Unjudgeable)
+/// though its part is held (it also writes its own path's end, which is judgeable): `n` through
+/// fresh things `f_i` on `e`'s edge, one through `e` on `n` things `q_j`'s, one through each `q_j`
+/// on `r`'s. The write reads `r`'s edge: `n` writes, each reading its `q_j`'s, each reading `e`'s.
+fn forged_layers(n: usize) -> u64 {
+    use osis_engine::Ingested;
+    let mut lp = net(2, 0);
+    let x = crate::common::new_shared(&mut lp, 0);
+    let fs: Vec<Tid> = (0..n).map(|_| new_thing(&mut lp, 0)).collect();
+    let qs: Vec<Tid> = (0..n).map(|_| new_thing(&mut lp, 0)).collect();
+    let (e, r) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    crate::common::sync(&mut lp, 0, 1);
+    let rec = lp.peers[0].engine.get_typed(&x, &ct::CREATED).unwrap().unwrap();
+    let mut lo = 1u64 << 40;
+    let mut forge = |lp: &mut LocalPeer, via: Tid, to: &[Tid]| {
+        lp.advance(1_000);
+        lo += 1 << 20;
+        let mut v = osis_base::ValueMap::from([(Value::Weak(via), edge(Role::Read).to_value())]);
+        v.extend(to.iter().map(|t| (Value::Weak(*t), edge(Role::Admin).to_value())));
+        let f = crate::validity::forge_by(&lp.peers[0].engine, rec.clone(), x, &ak("roles.0"), &Value::Map(v), lo, osis_commit::Kind::Role, osis_commit::Path { purge: 0, things: vec![via], direct: 0 });
+        assert!(matches!(lp.peers[1].receive(&f, Vec::new()).unwrap(), Ingested::Applied(_)));
+    };
+    for &f in &fs {
+        forge(&mut lp, f, &[e]);
+    }
+    forge(&mut lp, e, &qs);
+    for &q in &qs {
+        forge(&mut lp, q, &[r]);
+    }
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(x, &crate::common::REG, &s("as r")).unwrap();
+    m.act_as(r);
+    lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
+    let (_, w) = measured_at(&mut lp, 1, |lp| crate::common::sync(lp, 0, 1));
+    assert!(lp.peers[1].engine.pending().iter().any(|(_, why)| matches!(why, osis_engine::Reason::MissingChain(_))), "the write waits");
+    w.n("path wait: write read")
+}
+
+// spec/commits.md §4 Unjudgeable, spec/requirements.md Scale: the path wait reads each held write
+// on an edge once per part judged, however many writes' paths share that edge: linear in the
+// writes held, n forged writes on each layer.
+#[test]
+fn the_path_wait_reads_each_write_once_spec_commits_4() {
+    linear("path wait: writes read", forged_layers(3), forged_layers(30));
+}

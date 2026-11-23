@@ -464,16 +464,19 @@ pub(crate) fn write_place(mint: &BTreeMap<Tid, Tid>, signer: Tid, along: &[Tid],
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn unreached(core: &Core, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: &Tid, edge_class: bool, leaves: bool, at: Place, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> bool {
     let holder = leaves.then(|| along.last().copied().unwrap_or(signer));
-    Reach { core, record, judged: BTreeMap::new() }.unreached(signer, along, direct, *t, edge_class, holder, at)
+    Reach::new(core, record).unreached(signer, along, direct, *t, edge_class, holder, at)
 }
 
-/// The path wait over the held edge writes, each held write judged once (`judged`: whether it is
-/// itself unjudgeable, by commit, holder and target). Every write it reads is ordered strictly
-/// before the one it judges, so it ends.
+/// The path wait over the held edge writes. Each edge's writes are judged in order, each once, up
+/// to the first not itself unjudgeable (`first`): a part's wait reads each held write at most once.
+/// A write's judgment reads only writes ordered strictly before it, so it ends, and never reads an
+/// edge past where that edge's judging stands.
 struct Reach<'a> {
     core: &'a Core,
     record: &'a dyn Fn(&Tid) -> Option<CreationRecord>,
-    judged: BTreeMap<(CommitId, Tid, Tid), bool>,
+    /// Edge (holder, thing) -> its writes judged: the first not itself unjudgeable (`Ok`), or the
+    /// last of those before it judged so far (`Err`), all unjudgeable.
+    first: BTreeMap<(Tid, Tid), std::result::Result<Point, Point>>,
 }
 
 /// The record chains of `members` (`record` the records read): what a path's descents read.
@@ -493,6 +496,10 @@ fn chains(members: impl IntoIterator<Item = Tid>, record: &dyn Fn(&Tid) -> Optio
 }
 
 impl<'a> Reach<'a> {
+    fn new(core: &'a Core, record: &'a dyn Fn(&Tid) -> Option<CreationRecord>) -> Self {
+        Reach { core, record, first: BTreeMap::new() }
+    }
+
     fn mint(&self, members: impl IntoIterator<Item = Tid>) -> BTreeMap<Tid, Tid> {
         chains(members, self.record)
     }
@@ -505,38 +512,47 @@ impl<'a> Reach<'a> {
     }
 
     /// Whether a held edge write on `p`'s edge on `q`, not itself unjudgeable, is ordered before
-    /// `at`.
+    /// `at`: whether the first such is.
     fn arrived(&mut self, p: Tid, q: Tid, at: Place) -> bool {
-        let held = &self.core.ix.held;
-        let ts = match at {
-            Place::Start(ts) | Place::Write(Point { ts, .. }, _) => ts,
-        };
-        // ascending: none past `at`'s `ts` is before it
-        for point in held.writes_on(&p, &q).take_while(|x| x.ts <= ts) {
-            let Some(c) = held.edge_commit(&point.commit) else { continue };
-            let along = c.path_to(&q);
-            if !at.after(point, || write_place(&self.mint([c.signer, q].into_iter().chain(along.iter().copied())), c.signer, along, c.direct, q, p)) {
-                continue;
+        let core: &'a Core = self.core;
+        loop {
+            let after = match self.first.get(&(p, q)) {
+                Some(Ok(w)) => return self.before(core.ix.held.edge_commit(&w.commit), w, p, q, at),
+                Some(Err(w)) => Some(*w),
+                None => None,
+            };
+            let Some(&w) = core.ix.held.writes_on(&p, &q, after.as_ref()).next() else { return false };
+            let c = core.ix.held.edge_commit(&w.commit);
+            // ascending: none past one not before `at` is before it
+            if !self.before(c, &w, p, q, at) {
+                return false;
             }
-            if !self.write_unreached(c, p, q) {
+            osis_base::costs::count("path wait: write read", 1);
+            // its judgment reads this edge only before `w`: judged, as `first` says
+            let judgeable = c.is_some_and(|c| !self.write_unreached(c, p, q));
+            self.first.insert((p, q), if judgeable { Ok(w) } else { Err(w) });
+            if judgeable {
                 return true;
             }
         }
-        false
+    }
+
+    /// Whether the write of `c` (held, at `w`) on `p`'s edge on `q` is ordered before `at`.
+    fn before(&self, c: Option<&RoleCommit>, w: &Point, p: Tid, q: Tid, at: Place) -> bool {
+        at.after(w, || {
+            let Some(c) = c else { return (true, q, p) };
+            let along = c.path_to(&q);
+            write_place(&self.mint([c.signer, q].into_iter().chain(along.iter().copied())), c.signer, along, c.direct, q, p)
+        })
     }
 
     /// Whether the held edge write of `c` on `holder`'s edge on `target` is itself unjudgeable.
-    fn write_unreached(&mut self, c: &'a RoleCommit, holder: Tid, target: Tid) -> bool {
-        if let Some(&u) = self.judged.get(&(c.id, holder, target)) {
-            return u;
-        }
+    fn write_unreached(&mut self, c: &RoleCommit, holder: Tid, target: Tid) -> bool {
         let along = c.path_to(&target);
         let end = along.last().copied().unwrap_or(c.signer);
         let mint = self.mint([c.signer, target].into_iter().chain(along.iter().copied()));
         let at = Place::Write(c.point(), Some(write_place(&mint, c.signer, along, c.direct, target, holder)));
-        let u = self.unreached(c.signer, along, c.direct, target, true, (holder == end).then_some(holder), at);
-        self.judged.insert((c.id, holder, target), u);
-        u
+        self.unreached(c.signer, along, c.direct, target, true, (holder == end).then_some(holder), at)
     }
 }
 
@@ -552,13 +568,14 @@ pub(crate) fn writes_unreached(core: &Core, h: &Header, id: &CommitId, ai: usize
     let end = along.last().copied().unwrap_or(h.signer);
     let point = Point { ts: h.ts, node: h.signer, commit: *id };
     let ops = if known && !too_deep(core, &a.tid) { edge_ops(core, &a.tid, es, Owned::of(h, id, ai).as_ref()).0 } else { Vec::new() };
+    let mut reach = Reach::new(core, record);
     if ops.is_empty() {
-        return unreached(core, h.signer, along, p.direct, &a.tid, true, false, Place::Write(point, None), record);
+        return reach.unreached(h.signer, along, p.direct, a.tid, true, None, Place::Write(point, None));
     }
     let mint = chains([h.signer, a.tid].into_iter().chain(along.iter().copied()), record);
     ops.iter().all(|o| {
         let at = Place::Write(point, Some(write_place(&mint, h.signer, along, p.direct, a.tid, o.holder)));
-        unreached(core, h.signer, along, p.direct, &a.tid, true, o.holder == end, at, record)
+        reach.unreached(h.signer, along, p.direct, a.tid, true, (o.holder == end).then_some(end), at)
     })
 }
 
