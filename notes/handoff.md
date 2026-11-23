@@ -21,7 +21,7 @@ One worker (fable) owns it, resumed across sessions. Done on the branch: delete 
 - issues/seq-cold-edits-follow-gaps.md (cross-op case), issues/text-move-writes-grow.md: engine pages / osis-crdt.
 - issues/masked-backdated-lowerings.md: osis-perm walk.
 - issues/held-model-until-no-deadline.md: cause never read.
-- issues/order-purged-message-shown.md: read first whether the rewrite's area.
+- The purged-message order seed (issue on `mizzen-order-seeds`, lands with it): read first whether it is in the rewrite's area.
 - Workflow agent about half the time; one cleanup always.
 
 ## Small, waiting on Tess
