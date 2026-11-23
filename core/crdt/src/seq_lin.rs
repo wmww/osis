@@ -1534,6 +1534,11 @@ impl Lin {
         Some((old.first() != now.first()).then(|| (p.0.clone(), dot.clone(), p.1.clone(), sib_key(p).clone())))
     }
 
+    /// Looks up element `x` as a follow does (`placed`), misses noted.
+    pub(crate) fn look(&self, x: &Dot) {
+        let _ = self.placed(x);
+    }
+
     /// Whether element `x` is placed: `Some(Some(cut))`, with the element after it when both
     /// are in its row (where the row splits once something anchors at `x`), `Some(None)` if
     /// not placed; `None` if a row or chunk looked at is not loaded (a miss noted).

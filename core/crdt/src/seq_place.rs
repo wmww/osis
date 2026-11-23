@@ -160,6 +160,15 @@ impl SeqPlace {
     pub fn shown(&self) -> usize {
         self.0.p.shown()
     }
+    /// The placement position of the node starting at `d`; misses noted.
+    pub fn index(&self, d: &Dot) -> Option<usize> {
+        self.0.index(d)
+    }
+    /// Looks up element `d` as a follow placing it does (the dot-map chunk where it is or would
+    /// go, the row at or before it); misses noted.
+    pub fn look(&self, d: &Dot) {
+        self.0.look(d)
+    }
     /// The visible elements `r` (by index, clamped), in order; misses noted.
     pub fn visible(&self, r: std::ops::Range<usize>) -> Vec<Dot> {
         self.0.p.vis_range(r).into_iter().map(|x| x.dot.clone()).collect()

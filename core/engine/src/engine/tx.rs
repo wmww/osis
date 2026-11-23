@@ -318,14 +318,15 @@ impl Tx<'_> {
 
     /// Loads what `ops` on `(tid, ak)` read: the `paths` they address, else (ops by index into
     /// paged sequences, `edits`) the pages they attach to through the stored placements
-    /// (`pages::attach_ops`), else the whole state. Whether they attached (`run_attached`).
-    pub(crate) fn load_for_ops(&mut self, tid: &Tid, ak: &Ak, paths: Option<Vec<Vec<osis_crdt::PathSeg>>>, ops: &[osis_crdt::PathOp], edits: &[Option<large::ListEdit>]) -> Result<bool> {
+    /// (`pages::attach_ops`; `new`: the first element the ops would create), else the whole
+    /// state. Whether they attached (`run_attached`).
+    pub(crate) fn load_for_ops(&mut self, tid: &Tid, ak: &Ak, paths: Option<Vec<Vec<osis_crdt::PathSeg>>>, ops: &[osis_crdt::PathOp], edits: &[Option<large::ListEdit>], new: &osis_crdt::Dot) -> Result<bool> {
         if let Some(paths) = paths {
             self.ensure_paths(tid, ak, &paths)?;
             return Ok(false);
         }
         self.load_lazy(tid, ak)?;
-        if self.held_in_part(tid, ak) && self.with_pages(tid, ak, |txn, idx, f| pages::attach_ops(txn, tid, ak, idx, f, ops, edits))? == Some(true) {
+        if self.held_in_part(tid, ak) && self.with_pages(tid, ak, |txn, idx, f| pages::attach_ops(txn, tid, ak, idx, f, ops, edits, new))? == Some(true) {
             return Ok(true);
         }
         self.load(tid, ak)?;

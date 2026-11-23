@@ -1373,7 +1373,12 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
             Some(f) => super::large::list_edits(&am.ops, am.schema.as_deref(), ak.as_str(), &f.dedup)?,
             None => Vec::new(),
         };
-        let attached = tx.load_for_ops(&tid, &ak, paths, &am.ops, &edits)?;
+        let lo = match form {
+            Form::Commit => next_ctr,
+            // a session's counters: memory rows, gone with the session
+            Form::Session(n) => tx.txn.counter(&tid, &ak, &n)?,
+        };
+        let attached = tx.load_for_ops(&tid, &ak, paths, &am.ops, &edits, &osis_crdt::Dot::new(own_source(form, node), lo))?;
         // depth counts a value as read (spec/data-model.md §5): checked before large values
         // become links, which count as leaves after
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
@@ -1394,11 +1399,6 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         if sealed && !chunks.is_empty() {
             return Err(Error::Misuse("a sealed fire's value fits inline"));
         }
-        let lo = match form {
-            Form::Commit => next_ctr,
-            // a session's counters: memory rows, gone with the session
-            Form::Session(n) => tx.txn.counter(&tid, &ak, &n)?,
-        };
         let empty = Fragment::default();
         // map removals carry their key only where keys are public ids (spec/crdt.md §5.6)
         let keyed = osis_schema::core_types::is_role_class(ak.as_str());

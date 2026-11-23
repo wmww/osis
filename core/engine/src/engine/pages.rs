@@ -674,7 +674,7 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut State
                     }
                     // an element of a sequence: through its stored placement
                     PathSeg::Index(i) if is_seq(set) && !set.whole => {
-                        if !step_index(txn, tid, ak, t, set, &mut idx.bound, f, &p, *i)? {
+                        if !step_index(txn, tid, ak, t, set, &mut idx.bound, f, &p, *i..i.saturating_add(1))? {
                             ensure_set(txn, tid, ak, t, set, &mut idx.bound, f)?;
                         }
                     }
@@ -1207,16 +1207,157 @@ fn place_whole(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet,
     Ok(())
 }
 
+/// What a sequence op does to the visible indices the ops after it in a commit name.
+#[derive(Clone, Copy, Debug)]
+enum Shift {
+    /// `n` elements inserted before `at`.
+    In { at: usize, n: usize },
+    /// `len` elements from `at` deleted.
+    Out { at: usize, len: usize },
+    /// `len` elements from `at` moved to start at `to` of the sequence without them.
+    Moved { at: usize, len: usize, to: usize },
+}
+
+/// `op`'s shift (`text`: a text's items are strings of chars); `None` if known only once it
+/// runs (an edit, a paste).
+fn shift(op: &osis_crdt::Op, text: bool) -> Option<Shift> {
+    use osis_crdt::Op;
+    match op {
+        Op::Insert { at, items } => {
+            let n = items.iter().map(|v| match v {
+                Value::Str(x) if text => x.chars().count(),
+                _ => 1,
+            });
+            Some(Shift::In { at: *at, n: n.sum() })
+        }
+        Op::Delete { at, len } => Some(Shift::Out { at: *at, len: *len }),
+        Op::Move { at, len, to } => Some(Shift::Moved { at: *at, len: *len, to: *to }),
+        _ => None,
+    }
+}
+
+/// The visible indices `op` reads, on the sequence it runs on, and whether it reads their
+/// records too (else their rows only): an insert's anchor (HEAD: the first element; placed by
+/// the placement alone), a delete's range, a move's range and the anchors before it and at its
+/// destination.
+fn needs(op: &osis_crdt::Op) -> Vec<(Span<usize>, bool)> {
+    use osis_crdt::Op;
+    let anchor = |i: usize| i.saturating_sub(1)..i.max(1);
+    match op {
+        Op::Insert { at, .. } => vec![(anchor(*at), false)],
+        Op::Delete { at, len } => vec![(*at..at.saturating_add(*len), true)],
+        Op::Move { at, len, to } => {
+            // `to` is on the sequence without the range: taken back to the sequence with it
+            let q = if *to > *at { to.saturating_add(*len) } else { *to };
+            vec![(anchor(*at), true), (*at..at.saturating_add(*len), true), (anchor(q), true)]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The ranges of visible indices `r`, named after the ops of `shifts` ran, on the sequence
+/// before them (what those ops inserted left out).
+fn back(shifts: &[Shift], r: Span<usize>) -> Vec<Span<usize>> {
+    // the part of `a..b` in `lo..hi`, offset by `add` or `sub`
+    fn part(out: &mut Vec<Span<usize>>, a: usize, b: usize, lo: usize, hi: usize, add: usize, sub: usize) {
+        let (a, b) = (a.max(lo), b.min(hi));
+        if a < b {
+            out.push(a + add - sub..b + add - sub);
+        }
+    }
+    let mut rs = vec![r];
+    for s in shifts.iter().rev() {
+        let mut out = Vec::new();
+        for r in rs {
+            let (a, b) = (r.start, r.end);
+            match *s {
+                Shift::In { at, n } => {
+                    part(&mut out, a, b, 0, at, 0, 0);
+                    part(&mut out, a, b, at.saturating_add(n), usize::MAX, 0, n);
+                }
+                Shift::Out { at, len } => {
+                    part(&mut out, a, b, 0, at, 0, 0);
+                    part(&mut out, a, b, at, usize::MAX, len, 0);
+                }
+                Shift::Moved { at, len, to } => {
+                    // the sequence without the range (`w`), then the range at `to`
+                    let mut w = Vec::new();
+                    part(&mut w, a, b, 0, to, 0, 0);
+                    part(&mut out, a, b, to, to.saturating_add(len), at, to);
+                    part(&mut w, a, b, to.saturating_add(len), usize::MAX, 0, len);
+                    for x in w {
+                        part(&mut out, x.start, x.end, 0, at, 0, 0);
+                        part(&mut out, x.start, x.end, at, usize::MAX, len, 0);
+                    }
+                }
+            }
+        }
+        rs = out;
+    }
+    rs
+}
+
+/// Loads the rows of the visible elements `r` of the paged sequence `set` and their dot-map
+/// chunks, and with `records` the pages holding their records. `false`: a row is missing or
+/// damaged.
+#[allow(clippy::too_many_arguments)]
+fn load_ahead(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, r: Span<usize>, records: bool) -> Result<bool> {
+    let Some(pl) = held(txn, tid, ak, set)? else { return Ok(false) };
+    let Some(dots) = load_rows(txn, tid, ak, set, pl, r)? else { return Ok(false) };
+    let (Some(mut pl), Some(pt)) = (set.stored().cloned(), txn.table(tid, ak, PLACE_TABLE)?) else { return Ok(false) };
+    for d in &dots {
+        pl.index(d);
+    }
+    let m = pl.misses();
+    if !fill_place(txn, pt, set, &mut pl, &m.blocks, &m.chunks)? {
+        set.lose_place();
+        return Ok(false);
+    }
+    set.place = Place::Held(pl);
+    if records {
+        for d in &dots {
+            ensure_dot(txn, t, set, bound, f, d)?;
+        }
+    }
+    Ok(true)
+}
+
+/// Loads where the commit's first new element `new` goes in the paged sequence `set`: its
+/// dot-map chunk, the row at or before it there, and the page whose records it would join.
+/// `false`: a row is missing or damaged.
+#[allow(clippy::too_many_arguments)]
+fn load_new(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, new: &Dot) -> Result<bool> {
+    let (Some(mut pl), Some(pt)) = (held(txn, tid, ak, set)?, txn.table(tid, ak, PLACE_TABLE)?) else { return Ok(false) };
+    // the chunk, then the block its entry names
+    for _ in 0..2 {
+        pl.look(new);
+        let m = pl.misses();
+        if !fill_place(txn, pt, set, &mut pl, &m.blocks, &m.chunks)? {
+            set.lose_place();
+            return Ok(false);
+        }
+    }
+    set.place = Place::Held(pl);
+    ensure_dot(txn, t, set, bound, f, new)?;
+    Ok(true)
+}
+
 /// Prepares the ops `ops` on paged sequences (by index, an edit, anything inside an element at
 /// an index) to run on the pages loaded: loads the pages along their paths and attaches each
 /// sequence's stored placement; the caller runs them and loads what they missed (`absorb`)
-/// until nothing is. A list edit whose items have large parts (`edits`, by op) first loads the
-/// elements at its window, whose links it takes (`large::window_links`). `false`: not that kind
+/// until nothing is. What the ops read by index, and where an insert's new elements (from `new`,
+/// the commit's first) go, is loaded before the first run (notes/engine-paged.md, Loaded
+/// ahead). A list edit whose items have large parts (`edits`, by op) first loads the elements
+/// at its window, whose links it takes (`large::window_links`). `false`: not that kind
 /// (another op, a sequence not paged, loaded whole or without a placement, a list edit taking
 /// links from the whole list): load whole.
-pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, ops: &[osis_crdt::PathOp], edits: &[Option<super::large::ListEdit>]) -> Result<bool> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, ops: &[osis_crdt::PathOp], edits: &[Option<super::large::ListEdit>], new: &Dot) -> Result<bool> {
     use osis_crdt::Op;
     let t = table(txn, tid, ak)?;
+    let mut shifts: BTreeMap<Vec<Step>, Option<Vec<Shift>>> = BTreeMap::new();
+    // the sequences where the new elements' place is loaded
+    let mut inserted: BTreeSet<Vec<Step>> = BTreeSet::new();
     for (n, op) in ops.iter().enumerate() {
         // ops by index; an edit (resolved around its change when the read there matches its
         // base); anything inside an element at an index (never paged apart from its sequence)
@@ -1228,13 +1369,41 @@ pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
         let at = walk(txn, tid, ak, t, idx, f, op.path.get(..k.unwrap_or(op.path.len())).unwrap_or_default())?;
         let [p] = at.as_slice() else { return Ok(false) };
         let Some(set) = idx.sets.get_mut(p).filter(|s| is_seq(s) && !s.whole) else { return Ok(false) };
+        // the commit's ops before this one on the sequence, by what they do to its indices
+        // (`None`: an edit or paste, whose effect is known only once it runs)
+        let before = shifts.entry(p.clone()).or_insert_with(|| Some(Vec::new()));
         if let Some(PathSeg::Index(i)) = k.and_then(|k| op.path.get(k)) {
             // the element loaded up front: a large value's lookup (`chunk_ops`) finds it held
-            if !step_index(txn, tid, ak, t, set, &mut idx.bound, f, p, *i)? {
+            // (none if an op before made it)
+            let r = match before {
+                Some(b) => back(b, *i..*i + 1).into_iter().next().unwrap_or(0..0),
+                None => *i..*i + 1,
+            };
+            if !step_index(txn, tid, ak, t, set, &mut idx.bound, f, p, r)? {
                 return Ok(false);
             }
             continue;
         }
+        // what the op reads by index, on the sequence as stored: its rows, their dot-map chunks
+        // and records loaded before the first run, so a later op does not miss only after the
+        // ops before it ran (each run repeating them)
+        if let Some(b) = before.as_ref() {
+            for (r, records) in needs(&op.op).into_iter().flat_map(|(r, records)| back(b, r).into_iter().map(move |r| (r, records))) {
+                if !load_ahead(txn, tid, ak, t, set, &mut idx.bound, f, r, records)? {
+                    return Ok(false);
+                }
+            }
+        }
+        if matches!(op.op, Op::Insert { .. }) && !inserted.contains(p) {
+            inserted.insert(p.clone());
+            if !load_new(txn, tid, ak, t, set, &mut idx.bound, f, new)? {
+                return Ok(false);
+            }
+        }
+        *before = before.take().and_then(|mut b| {
+            b.push(shift(&op.op, set.enc == Encoding::Text)?);
+            Some(b)
+        });
         let Some(pl) = held(txn, tid, ak, set)? else { return Ok(false) };
         // the skeleton holds no sequence without a reset or `W`: its first page restores it
         if f.at_steps(p).is_none() {
@@ -1334,7 +1503,16 @@ pub fn seq_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StateP
 /// placement `pl`: loads the blocks holding them and the pages holding their records; `None`
 /// if a row is missing or damaged (then noted missing).
 #[allow(clippy::too_many_arguments)]
-fn load_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, mut pl: SeqPlace, r: Span<usize>) -> Result<Option<Vec<Dot>>> {
+fn load_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, pl: SeqPlace, r: Span<usize>) -> Result<Option<Vec<Dot>>> {
+    let Some(dots) = load_rows(txn, tid, ak, set, pl, r)? else { return Ok(None) };
+    for d in &dots {
+        ensure_dot(txn, t, set, bound, f, d)?;
+    }
+    Ok(Some(dots))
+}
+
+/// `load_range`'s rows only: the blocks holding the visible elements `r`, their dots in order.
+fn load_rows(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet, mut pl: SeqPlace, r: Span<usize>) -> Result<Option<Vec<Dot>>> {
     let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? else { return Ok(None) };
     let total = pl.shown();
     // a reversed range is empty
@@ -1356,20 +1534,18 @@ fn load_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
         return Ok(None);
     }
     set.place = Place::Held(pl);
-    for d in &dots {
-        ensure_dot(txn, t, set, bound, f, d)?;
-    }
     Ok(Some(dots))
 }
 
-/// For a step at index `i` into the paged sequence `set`: loads the block and page holding
-/// visible element `i` through the stored placement and attaches it, so what reads or writes
+/// For a step at an index into the paged sequence `set`: loads the block and page holding the
+/// visible element there (`r`, on the sequence as stored; empty for one the commit made) through
+/// the stored placement and attaches it, so what reads or writes
 /// inside the element resolves on the pages loaded. `false`: no placement (load the sequence
 /// whole).
 #[allow(clippy::too_many_arguments)]
-fn step_index(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, p: &[Step], i: usize) -> Result<bool> {
+fn step_index(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, p: &[Step], r: Span<usize>) -> Result<bool> {
     let Some(pl) = held(txn, tid, ak, set)? else { return Ok(false) };
-    if load_range(txn, tid, ak, t, set, bound, f, pl, i..i.saturating_add(1))?.is_none() {
+    if load_range(txn, tid, ak, t, set, bound, f, pl, r)?.is_none() {
         return Ok(false);
     }
     if f.at_steps(p).is_none() {
@@ -2458,7 +2634,7 @@ mod tests {
                 // the pages loaded through the stored placement, it writes what it writes on the
                 // whole state
                 if wi == 0
-                    && attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, std::slice::from_ref(&op), &[]).unwrap()
+                    && attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, std::slice::from_ref(&op), &[], &Dot::new(nodes[wi].clone(), ctrs[wi])).unwrap()
                 {
                     let got = run_cold(&mut txn, &tid, &ak, &mut idx, &mut f, &op, &view, || Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
                     assert!(got == Some((delta.clone(), range)), "step {step}: {:?} on the pages loaded\n got {got:?}\n want {:?}", op.op, (&delta, range));
@@ -2699,11 +2875,11 @@ mod tests {
     }
 
     // spec/crdt.md §5.7, §6, §8: an own commit of an insert and a move far apart, in a new session:
-    // each run stops at its first miss, so it takes many runs of little work each (more than a
-    // fixed count would allow); they go on until one misses nothing, and the commit writes what
-    // it writes on the whole state, through the stored placement, which the join keeps.
+    // the move names indices after the insert; taken back to the stored sequence, what both read
+    // (and where the new elements go) is loaded before the first run, so one run writes what the
+    // whole state gives, through the stored placement, which the join keeps.
     #[test]
-    fn seq_ops_far_apart_run_until_done_spec_crdt_6_1() {
+    fn seq_insert_and_move_loaded_ahead_spec_crdt_6_1() {
         let mut rng = osis_crypto::SeededRng::from_u64(0);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
@@ -2728,9 +2904,9 @@ mod tests {
         let want = run(&st).unwrap();
         runs.set(0);
         let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-        assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[]).unwrap());
+        assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[], &Dot::new(sess(1), ctr)).unwrap());
         assert!(run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).flatten().as_ref() == Some(&want), "same delta as on the whole state");
-        assert!(runs.get() > 8, "{} runs", runs.get());
+        assert_eq!(runs.get(), 1, "loaded before the first run");
         let t = touch_of(&want.0, Some(&idx)).unwrap();
         assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
         f.join(want.0.clone());
@@ -2784,7 +2960,7 @@ mod tests {
         let run = |f: &Fragment| make(f, &own, 1, 3, ctr);
         let want = run(&st).unwrap();
         let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-        assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &own, &[]).unwrap());
+        assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &own, &[], &Dot::new(sess(1), ctr)).unwrap());
         assert!(run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).flatten().as_ref() == Some(&want), "same delta as on the whole state");
         let t = touch_of(&want.0, Some(&idx)).unwrap();
         assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
@@ -2792,6 +2968,90 @@ mod tests {
         st.join(want.0);
         assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)));
         kept(&mut txn, &idx, &st);
+    }
+
+    // spec/crdt.md §5.7: `back` takes each visible index named after a run of inserts, deletes
+    // and moves to the element's index before them, and leaves out what they inserted: against
+    // the ops run on a list of the elements' first indices.
+    #[test]
+    fn back_takes_indices_before_the_ops() {
+        let mut x = 7u64;
+        let mut r = |n: usize| {
+            x = mix(x);
+            (x % n.max(1) as u64) as usize
+        };
+        for _ in 0..200 {
+            let mut v: Vec<Option<usize>> = (0..40).map(Some).collect();
+            let mut shifts = Vec::new();
+            for _ in 0..4 {
+                let s = match r(3) {
+                    0 => Shift::In { at: r(v.len() + 1), n: 1 + r(5) },
+                    1 if v.len() > 1 => {
+                        let at = r(v.len() - 1);
+                        Shift::Out { at, len: 1 + r(v.len() - at - 1) }
+                    }
+                    _ if v.len() > 1 => {
+                        let at = r(v.len() - 1);
+                        let len = 1 + r(v.len() - at - 1);
+                        Shift::Moved { at, len, to: r(v.len() - len + 1) }
+                    }
+                    _ => continue,
+                };
+                match s {
+                    Shift::In { at, n } => drop(v.splice(at..at, std::iter::repeat_n(None, n))),
+                    Shift::Out { at, len } => drop(v.drain(at..at + len)),
+                    Shift::Moved { at, len, to } => {
+                        let m: Vec<_> = v.drain(at..at + len).collect();
+                        v.splice(to..to, m);
+                    }
+                }
+                shifts.push(s);
+            }
+            for (i, e) in v.iter().enumerate() {
+                let got: Vec<usize> = back(&shifts, i..i + 1).into_iter().flatten().collect();
+                assert_eq!(got, e.iter().copied().collect::<Vec<_>>(), "{shifts:?} at {i}");
+            }
+        }
+    }
+
+    // spec/crdt.md §5.7, §6, §8: an own commit of many deletes and inserts at far-apart places,
+    // in a new session: each op names indices on the state the ops before it made, so run by
+    // run op j would miss its rows only after ops 1..j-1 ran, each run repeating them. What
+    // every op reads by index, and where its new elements go, is taken back to the stored
+    // sequence and loaded before the first run: one run, the delta the whole state gives.
+    #[test]
+    fn seq_far_apart_ops_of_one_commit_spec_crdt_6_1() {
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
+        let view = SeqView::Root(true);
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
+        let st = create(&mut w, &view, &seq_value(true, 4_000)).unwrap();
+        let ctr = w.range().hi;
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
+        let own: Vec<PathOp> = (0..24)
+            .map(|j| {
+                let at = 50 + 140 * j;
+                let op = match j % 2 {
+                    0 => Op::Delete { at, len: 40 },
+                    _ => Op::Insert { at, items: seq_items(true, j as u64, 2) },
+                };
+                PathOp { path: vec![PathSeg::Field(1)], op }
+            })
+            .collect();
+        let runs = std::cell::Cell::new(0);
+        let run = |f: &Fragment| {
+            runs.set(runs.get() + 1);
+            let mut b = DeltaBuilder::new(f, Writer::new(Ts::from_u64(3 << 16).unwrap(), sess(1), ctr));
+            own.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
+        };
+        let want = run(&st).unwrap();
+        runs.set(0);
+        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+        assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &own, &[], &Dot::new(sess(1), ctr)).unwrap());
+        assert!(run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).flatten().as_ref() == Some(&want), "same delta as on the whole state");
+        assert_eq!(runs.get(), 1, "loaded before the first run");
     }
 
     // spec/crdt.md §5.7, §6, §8: a stretch of a text split into rows of two chars (a char inserted
@@ -2918,7 +3178,7 @@ mod tests {
             ctrs[wi] = range.hi;
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
             if wi == 0 {
-                assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[]).unwrap(), "step {step}: through the placement");
+                assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[], &Dot::new(nodes[wi].clone(), lo)).unwrap(), "step {step}: through the placement");
                 let got = run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).flatten();
                 assert!(got == Some((delta.clone(), range)), "step {step}: same delta as on the whole state");
             } else {
@@ -2976,7 +3236,7 @@ mod tests {
         };
         if Some(Value::Str(x.clone())) != st.at(&field()).and_then(|s| s.read()) {
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &stale, &[]).unwrap());
+            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &stale, &[], &Dot::new(nodes[0].clone(), ctrs[0])).unwrap());
             let got = run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).unwrap_or_else(|| {
                 load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
                 run(&f)
@@ -3044,7 +3304,7 @@ mod tests {
             let Some((delta, range)) = run(&st) else { continue };
             ctr = range.hi;
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[]).unwrap(), "step {step}: through the placement");
+            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[], &Dot::new(node.clone(), lo)).unwrap(), "step {step}: through the placement");
             let got = run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).flatten();
             assert!(got == Some((delta.clone(), range)), "step {step}: same delta as on the whole state");
             let t = touch_of(&delta, Some(&idx)).unwrap();
@@ -3277,8 +3537,9 @@ mod tests {
             let want = run(&st).unwrap();
             ctr = want.1.hi;
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[]).unwrap());
-            let got = run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).unwrap_or_else(|| {
+            // the damage found up front (loading ahead) or by a run: loaded whole
+            let attached = attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[], &Dot::new(me.clone(), lo)).unwrap();
+            let got = attached.then(|| run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run)).flatten().unwrap_or_else(|| {
                 load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
                 run(&f)
             });
