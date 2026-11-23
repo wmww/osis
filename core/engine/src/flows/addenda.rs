@@ -13,13 +13,14 @@
 //! re-derives it (`all_due`) and nothing about it is durable. A judgement gathers (`gather`:
 //! whether R applies, its candidates) and then decides (`owed`: this node's roles, its own
 //! counting addenda); the gathering is kept (`Gathered`) and a removal is due again only when
-//! something it reads moves: R's own change in the walk (`note_changed`: the only input of one
-//! not applying), a commit ordered no later than
-//! it applying or changing its standing and reaching a party R names or R's author (`wake`,
-//! filed per such party, `Indexes::addenda_wake`), this node's roles moving on a thing it is
+//! something it reads moves: R's own status in the walk (`note_changed`: the only input of one
+//! not applying), the history of an edge R writes changing at or before it, or a delta stated
+//! through such an edge, ordered no later than R and received before it, coming (`wake`, filed
+//! per edge, `Indexes::addenda_wake`), this node's roles moving on a thing it is
 //! filed under (`note_roles_moved`: decided again, the gathering kept), a thing it is filed under
-//! entering the node closure (`note_entered`: likewise). Another party's role change, or a
-//! removed party's commits that change no walk, judge nothing. The window closes at R's own
+//! entering the node closure (`note_entered`: likewise). Another edge's change, or a removed
+//! party's commits on edges R does not write, judge nothing, so a commit wakes in proportion to
+//! the edges it names and the removals on them, never to what its author reaches. The window closes at R's own
 //! arrival, so its candidates' receipts are final once R is held. So a removal owing nothing
 //! costs nothing per step, and a node ingesting a history it received after it (a joiner)
 //! judges each removal once.
@@ -51,20 +52,20 @@ pub(crate) fn note_due(core: &mut Core, r: &CommitId) {
     core.ix.addenda_gathered.remove(r);
 }
 
-/// The walk changed: of `commits` (`osis_perm::Changed::commits`: every commit whose change in
-/// the walk's history differs, so every one that started or stopped applying), the removals
-/// are due again, gathered anew. A removal not applying reads nothing else (`owed`), so this is
-/// its only trigger: no write elsewhere judges it, however many such removals are held.
-pub(crate) fn note_changed(core: &mut Core, commits: &BTreeSet<CommitId>) {
-    for r in commits {
-        let Some(m) = core.ix.commits.get(r) else { continue };
-        let (removal, signer, ts) = (m.view.kind.is_role() && m.view.frontier.is_some(), m.view.signer, m.view.ts);
-        if removal {
-            note_due(core, r);
+/// The walk changed (`osis_perm::Changed`): the removals whose gathering may have moved are due
+/// again, gathered anew (`wake`). A removal not applying reads nothing else (`owed`), so its
+/// own edge write's status moving is its only trigger: no write elsewhere judges it, however
+/// many such removals are held.
+pub(crate) fn note_changed(core: &mut Core, c: &osis_perm::Changed) {
+    for w in &c.ops {
+        if core.ix.commits.get(&w.0).is_some_and(|m| m.view.kind.is_role() && m.view.frontier.is_some()) {
+            note_due(core, &w.0);
         }
-        // and a commit ordered before a removal whose standing changed may change what it reads
-        wake(core, r, signer, ts);
     }
+    if core.ix.addenda_wake.is_empty() {
+        return;
+    }
+    wake(core, c);
 }
 
 /// Roles moved for the parties `moved` (`Held::upstream` of a changed edge's holder or a new
@@ -104,72 +105,60 @@ pub(crate) fn note_entered(core: &mut Core, came: &BTreeSet<Tid>) {
     }
 }
 
-/// Commit `id` (header `h`) applied here (whole or by late parts): it may be a candidate of a
-/// removal received in time that applied only now (pending meanwhile), or a grant bringing a
-/// party under one's demotion (`wake`).
-pub(crate) fn note_applied(core: &mut Core, id: &CommitId, h: &osis_commit::Header) {
-    wake(core, id, h.signer, h.ts);
-}
-
-/// Commit `id` by `signer` stamped `ts` applied or changed its standing in the walk: the
-/// removals stamped no earlier, filed under a party it reaches (`Indexes::addenda_wake`), are due
-/// again, gathered anew. A party comes to be demoted at R or not, or a commit of one becomes a
-/// candidate, only by a commit ordered no later than R moving a path of a party
-/// that reaches a holder R names or R's author (`Held::reach` climbs to what a party holds): a
-/// commit of its own, or an edge write whose holder it is or stands behind (`Held::upstream`):
-/// a member joining a holder R names, a named holder's or a member's other path to what R lowers
-/// taken away, the remover's authority lowered. So the climb is from the signer, the edge writes'
-/// targets and everything upstream of their holders. Live traffic (stamped after every filed
-/// removal) costs a comparison, and a backdated or late commit that climb; one with no edge
-/// write wakes only the removals it arrived before (`window`), so a removed party's backdated
-/// content judges nothing.
+/// The removals a walk change `c` may have moved the gathering of (`gather`) are due again,
+/// gathered anew; the work is per edge and delta `c` names, never per party behind them. A
+/// gathering reads, besides R's own status (`note_changed`), only R's edge histories before R
+/// (whether each write is a cut: the edge as restored before it) and the held deltas stated
+/// through R's edges (`Paths::through`, `rests`: facts of their own commits). So R, filed under
+/// each edge its writes are on (`file_wake`), is woken by an edge whose history changed at or
+/// before R's `ts`, a record edge of its target coming or going, and a delta new in the walk
+/// stated through its edge, stamped no later than R and received before it (`window`: a
+/// removed party's backdated content judges nothing).
 ///
-/// Invariant: every input a kept gathering reads besides R's own change in the walk
-/// (`note_changed`) moves only by such a
-/// commit: who is demoted at R and whether R applies are read from the walk before R; the
-/// candidates are commits held before R's arrival.
-fn wake(core: &mut Core, id: &CommitId, signer: Tid, ts: Ts) {
-    let Some(&(newest, _)) = core.ix.addenda_wake_ts.last() else { return };
-    if ts > newest {
-        return;
+/// Invariant: every input a kept gathering reads besides R's own status moves only by such a
+/// change: who R cuts and whether R applies are read from R's edges' histories, the
+/// candidates are held deltas stated along R's edges.
+fn wake(core: &mut Core, c: &osis_perm::Changed) {
+    let mut due: BTreeSet<CommitId> = BTreeSet::new();
+    let on = |core: &Core, (holder, target): (Tid, Tid), from: Ts, due: &mut BTreeSet<CommitId>, got: Option<osis_base::WallMs>| {
+        osis_base::costs::count("addenda: wake lookups", 1);
+        let lo = (target, holder, from, CommitId([0; 32]));
+        let hi = (target, holder, Ts::MAX, CommitId([0xff; 32]));
+        due.extend(core.ix.addenda_wake.range(lo..=hi).map(|x| x.3).filter(|r| got.is_none_or(|g| core.ix.commits.get(r).is_none_or(|rm| g < rm.received))));
+    };
+    for (&e, k) in &c.walk.edges {
+        on(core, e, k.ts, &mut due, None);
     }
-    osis_base::costs::count("addenda: wake climbs", 1);
-    let mut from: BTreeSet<Tid> = BTreeSet::from([signer]);
-    let edges = core.ix.held.edge_commit(id);
-    if let Some(rc) = edges {
-        let holders: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).collect();
-        from.extend(core.ix.held.upstream(&holders));
-        from.extend(rc.ops.iter().map(|o| o.target));
+    // a record edge coming or going moves every edge into its thing as restored
+    for t in &c.created {
+        osis_base::costs::count("addenda: wake lookups", 1);
+        let (lo, hi) = (Tid::from_bytes([0; osis_base::format::TID_LEN]), Tid::from_bytes([0xff; osis_base::format::TID_LEN]));
+        due.extend(core.ix.addenda_wake.range((*t, lo, Ts::ZERO, CommitId([0; 32]))..=(*t, hi, Ts::MAX, CommitId([0xff; 32]))).map(|x| x.3));
     }
-    // one with no edge write moves no walk: it matters only as a candidate, received before R
-    let got = core.ix.commits.get(id).map(|m| m.received);
-    let edges = edges.is_some();
-    let parties = core.ix.held.reach(&from);
-    osis_base::costs::count("addenda: wake parties", u64::try_from(parties.len()).unwrap_or(u64::MAX));
-    for t in parties {
-        let lo = (t, ts, CommitId([0; 32]));
-        let hi = (t, Ts::MAX, CommitId([0xff; 32]));
-        let due: Vec<CommitId> = core.ix.addenda_wake.range(lo..=hi).map(|(_, _, r)| *r).filter(|r| edges || got.is_none_or(|g| core.ix.commits.get(r).is_none_or(|rm| g < rm.received))).collect();
-        for r in due {
-            osis_base::costs::count("addenda: removals woken", 1);
-            note_due(core, &r);
+    for w in &c.walk.parts {
+        let Some((hops, k)) = core.timelines().paths().rests(w) else { continue };
+        let got = core.ix.commits.get(&w.0).map(|m| m.received);
+        for e in hops {
+            on(core, e, k.ts, &mut due, got);
         }
     }
+    for r in due {
+        osis_base::costs::count("addenda: removals woken", 1);
+        note_due(core, &r);
+    }
 }
 
-/// Files removal `r` (its edge commit `rc`) under the parties a commit ordered before it must
-/// reach to change what it reads (`wake`): the holders its edge writes name and its author. One
-/// entry each, however many parties stand behind a holder (a holder's members reach it).
+/// Files removal `r` (its edge commit `rc`) under the edges its writes are on (`wake`): one
+/// entry each, keyed (target, holder, `ts`, R).
 fn file_wake(core: &mut Core, r: &CommitId) {
     let Some(rc) = core.ix.held.edge_commit(r) else { return };
     let ts = rc.ts;
-    let parties: BTreeSet<Tid> = rc.ops.iter().map(|o| o.holder).chain(std::iter::once(rc.signer)).collect();
-    for t in parties {
-        if core.ix.addenda_wake.insert((t, ts, *r)) {
+    let edges: BTreeSet<(Tid, Tid)> = rc.ops.iter().map(|o| (o.target, o.holder)).collect();
+    for (target, holder) in edges {
+        if core.ix.addenda_wake.insert((target, holder, ts, *r)) {
             osis_base::costs::count("addenda: wake entries", 1);
         }
     }
-    core.ix.addenda_wake_ts.insert((ts, *r));
 }
 
 /// Every held removal due (an open: what is owed is re-derived, never kept).
@@ -192,9 +181,9 @@ pub(crate) fn window(got: osis_base::WallMs, r_ts: Ts, r_got: osis_base::WallMs)
 /// What a judgement of removal R gathers (`gather`): whether it applies, and its candidates, read
 /// off R's standing in the walk (applied, the cuts it makes) and the commits held before it with their
 /// receipts. Kept per removal (`Indexes::addenda_gathered`) and
-/// gathered anew only when one of those may have changed: R's own change in the walk
-/// (`note_changed`), a commit ordered no later
-/// than it applying (`note_applied`), its late parts (`note_due`), an open. Receipts are final
+/// gathered anew only when one of those may have changed: R's own status in the walk
+/// (`note_changed`), an edge R writes changing at or before it or a delta stated through one
+/// coming (`wake`), its late parts (`note_due`), an open. Receipts are final
 /// once R is held (its window closes at its arrival), and a commit arriving after R is in no
 /// window, so nothing else adds a candidate. Debug builds check a kept gathering against a fresh
 /// one at each judgement.
@@ -209,8 +198,8 @@ pub struct Gathered {
 impl Gathered {
     /// The things a judgement of it is filed under (`Indexes::addenda_watch`): those of its
     /// candidates. Nothing for one not applying (only its own change in the walk makes it due,
-    /// `note_changed`) or with nothing to gather (only a commit ordered before it applying can
-    /// bring one, `note_applied`).
+    /// `note_changed`) or with nothing to gather (only a delta stated through its edge coming can
+    /// bring one, `wake`).
     fn watched(&self) -> BTreeSet<Tid> {
         if !self.applies {
             return BTreeSet::new();

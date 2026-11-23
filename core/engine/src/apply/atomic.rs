@@ -655,8 +655,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let meta = Meta::of(view.clone(), crate::engine::LazyHeader::ready(h.clone()), received, origin, None, parts.signed, valid.clone(), hold);
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
-    // a commit applying late (its receipt known) may be a removal's candidate, or bring one into question
-    crate::flows::addenda::note_applied(tx.core, &id, &h);
     // held now: what it names is judged (`lists::put_names`)
     crate::flows::lists::note_listing(tx, &h, &id, &parts.whole)?;
     crate::retention::note_requests(tx, &id, &h)?;
@@ -821,8 +819,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if edges && meta.view.frontier.is_some() {
         crate::flows::addenda::note_due(tx.core, id);
     }
-    // a late part may make the commit a removal's candidate (`flows::addenda::wake`)
-    crate::flows::addenda::note_applied(tx.core, id, &h);
     let (held, n) = with_held(tx, &h, id, &parts)?;
     let read = super::PartsRead::of(&h, &held);
     if h.kind.is_role() {

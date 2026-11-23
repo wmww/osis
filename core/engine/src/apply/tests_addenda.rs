@@ -1398,7 +1398,7 @@ fn elsewhere_cost(n: usize) -> (u64, u64) {
     let c = osis_base::costs::take();
     let get = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
     assert_eq!(lp.peers[2].engine.core.timelines().role(&dave, &t, osis_perm::At::END), Some(Role::Write));
-    assert_eq!(get("addenda: wake climbs"), 0, "live traffic climbs to no filed party");
+    assert_eq!(get("addenda: removals woken"), 0, "a grant on another edge wakes no filed removal");
     (get("addenda: removals judged"), get("addenda: commits scanned"))
 }
 

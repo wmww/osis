@@ -130,7 +130,6 @@ What the engine reads short of spec/permissions.md, each to finish against the m
 - a by-commit purge item is read as naming nothing (the engine names its own targets; only the request's right is the walk's), `signers_could` reads possible admins and writers, not `Paths::could_hold`;
 - the list (§5.1): the frontier leaves out no commit with edge-class parts that would end the lowering's authority;
 - the epoch rule's addenda against a rotation (§5.5) are read off the stored verdicts of the addenda on the thing with a re-judge of what a moved verdict lists (`Judge::counts`), not one least fixpoint over every account's epochs;
-- a removal's addenda are gathered anew when its own status moves (`note_changed`) or a commit ordered before it applies (`wake`); a walk replay that changes whether it cuts with its status unmoved (`Changed.cuts`) does not make it due;
 - sides: "cannot stand beside" and "the counter-removal is told" are not read; `Engine::disputes` clones the timeline per call;
 - certificates search any path over chained writes, not the stated path alone, the index built per call (issues/stated-path-certificates.md);
 - `rotation::members::keyless_in` runs over the whole timeline at every edge change;

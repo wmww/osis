@@ -854,13 +854,10 @@ indexes! {
     /// What each removal's judgement gathered (`flows::addenda::Gathered`), kept while it is
     /// filed or due: gathered anew only when what it reads may have changed. Memory only.
     pub addenda_gathered: JMap<CommitId, Arc<crate::flows::addenda::Gathered>>,
-    /// The removals judged by `flows::addenda`, by the holders their edge writes name and their
-    /// author: (party, the removal's `ts`, removal). A commit ordered no later than the removal,
-    /// applying and reaching one (`Held::reach` from its author, its edge targets and everything
-    /// upstream of its edge holders), makes it due again (`flows::addenda::wake`).
-    pub addenda_wake: JSet<(Tid, osis_base::Ts, CommitId)>,
-    /// `addenda_wake`'s removals by `ts`: a commit stamped after the newest wakes none.
-    pub addenda_wake_ts: JSet<(osis_base::Ts, CommitId)>,
+    /// The removals judged by `flows::addenda`, by the edges their writes are on: (target,
+    /// holder, the removal's `ts`, removal). A walk change naming such an edge at or before the
+    /// removal, or a delta stated through it, makes it due again (`flows::addenda::wake`).
+    pub addenda_wake: JSet<(Tid, Tid, osis_base::Ts, CommitId)>,
     /// Accounts' rotations applied and not yet answered with this node's listing or addenda
     /// (`flows::signing::answer_rotations`; `records::ROTATIONS_DUE`).
     pub rotations_due: JSet<CommitId>,
@@ -1521,11 +1518,11 @@ impl Core {
     /// only for those upstream of a changed edge's holder or a new record, and only down from
     /// its target or that record; what is below a new record has a new record chain.
     pub(crate) fn timelines_changed(&mut self, c: osis_perm::Changed) {
-        // an edge write that is new or whose status moved is judged again for addenda (the one
-        // input a removal not applying reads), and with its commit's other parts: a may-grant
-        // grant's boxes rest on how it applies (`validity::Judge::by_path`)
+        // the removals whose gathering it may move are due again for addenda; an edge write that
+        // is new or whose status moved is judged again with its commit's other parts: a
+        // may-grant grant's boxes rest on how it applies (`validity::Judge::by_path`)
+        crate::flows::addenda::note_changed(self, &c);
         let commits: BTreeSet<CommitId> = c.ops.iter().map(|w| w.0).collect();
-        crate::flows::addenda::note_changed(self, &commits);
         self.stale_commits.extend(commits);
         // the deltas the walk's change reaches (`osis_perm::paths::Changed`)
         self.stale_commits.extend(c.reached.iter().map(|w| w.0));

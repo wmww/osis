@@ -852,6 +852,50 @@ fn addenda_rejudge_spec_permissions_5_2() {
     all_linear("a member joining a holder, an addendum held", &addenda_rejudge(20, true), &addenda_rejudge(200, true));
 }
 
+/// Bob (1), a writer of t holding k things of his own, writes 3 edits of t and 3 grants on his
+/// things to Alice (0); before they reach her she removes him from t, judging her removal's
+/// addenda. The work of his commits, stamped before the removal, arriving at Alice.
+fn addenda_wake(k: usize) -> Work {
+    use crate::common::TAGS;
+    let (mut lp, t) = shared_thing(3, &[Role::Write, Role::Write]);
+    let (alice, bob) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+    let mut mine = Vec::new();
+    for _ in 0..k {
+        let q = new_thing(&mut lp, 1);
+        lp.hold(q);
+        mine.push(q);
+    }
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let mut sent = Vec::new();
+    for (i, q) in mine.iter().take(3).enumerate() {
+        sent.push(add(&mut lp, 1, t, &TAGS, format!("b{i}")));
+        sent.push(set_edge(&mut lp.peers[1].engine, *q, alice, Some(edge(Role::Read)), None));
+    }
+    lp.advance(1_000);
+    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None }).unwrap();
+    lp.advance(1_000);
+    lp.peers[0].tick().unwrap();
+    let pks: Vec<_> = lp.packages_for(1, 0).unwrap().into_iter().filter(|p| sent.contains(&p.id)).collect();
+    assert_eq!(pks.len(), sent.len(), "Bob's commits sent");
+    measured_at(&mut lp, 0, |lp| {
+        for pk in &pks {
+            lp.deliver(0, pk).unwrap();
+        }
+    })
+    .1
+}
+
+// spec/permissions.md §5.2 (Addenda); spec/requirements.md, Scale; notes/principles.md
+// (Fast by construction): a removed party's commits stamped before its removal arriving after
+// it, edge writes among them, cost the same whatever the removed party holds: the removal is
+// woken by what the commits name (their edges and stated paths), never by the removed party's
+// reach.
+#[test]
+fn addenda_wake_is_flat_in_the_removed_partys_reach_spec_permissions_5_2() {
+    all_flat("a removed party's backdated commits", &addenda_wake(10), &addenda_wake(100));
+}
+
 /// Peer 0 applies `o` to `t`'s kept set (`t:keptset.0`, D one day) a millisecond on.
 fn kept_op(lp: &mut LocalPeer, t: Tid, o: Op) -> osis_base::CommitId {
     lp.advance(1);
