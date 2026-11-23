@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Establishment by names (spec/crypto.md §4): random rotation histories of one role (forks,
 //! departures in plain commits and in the rotation commits themselves, keyset lists, rotators
 //! each holding a random part of what came before, writers' forged history entries, invalid

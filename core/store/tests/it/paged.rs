@@ -1,10 +1,7 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Paged large aspect state (notes/local-store.md, Units; spec/requirements.md, Scale: a change
 //! inside a huge value costs O(change); large values stream).
 
-use crate::common;
-
-use common::*;
+use crate::common::*;
 use osis_crypto::SeededRng;
 use osis_store::{Shred, Store, StoreConfig};
 use std::collections::HashSet;

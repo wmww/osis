@@ -1,11 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Shredding: after a shredded drop, an attacker holding the device (every key the current root
 //! yields) and every byte ever written (freed pages, old versions) recovers nothing
 //! (spec/commits.md §5; spec/requirements.md, Deletion: forward secure).
 
-use crate::common;
-
-use common::*;
+use crate::common::*;
 use osis_base::{BlobId, CommitId};
 use osis_crypto::SeededRng;
 use osis_store::{AspectUnit, Evidence, PendingKind, Shred, Store};

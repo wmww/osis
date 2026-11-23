@@ -1,10 +1,7 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! spec: none (the record's layout is the store's own; spec/sync-opens.md §3 and
 //! core/test/tla/net/ASSUMPTIONS.md: a record and the log are one durable unit).
 
-use crate::common;
-
-use common::*;
+use crate::common::*;
 use osis_base::SyncId;
 use osis_crypto::SeededRng;
 use osis_store::{Named, RecordId, Shred, Store, Transaction};

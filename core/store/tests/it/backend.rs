@@ -1,4 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! The trait-generic `Backend` suite, run against every backend (notes/architecture.md §2).
 //! spec: none (storage abstraction; spec/commits.md §4 needs atomic batches).
 

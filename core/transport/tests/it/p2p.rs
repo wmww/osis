@@ -1197,36 +1197,28 @@ fn peer_no_route_fails_spec_sync_10() {
     drop(lb);
 }
 
-// spec/sync-transport.md §3: a direct item the dialer can reach connects, the target's key proven.
+// spec/sync-transport.md §3: a route the dialer can reach connects, the target's key proven: a
+// direct item; a relay the target registered at, with no direct item; two hosts behind one NAT
+// at their LAN addresses.
 #[test]
-fn peer_direct_item_connects_spec_sync_10() {
-    let mut w = world(0, anyone());
-    let b = P2p::new(host(&w.net, B_PUBLIC, B_PUBLIC, None));
-    let lb = listen_at(&mut w, b, format!("peer://{B_PUBLIC}:7000"), 2);
-    let a = P2p::new(host(&w.net, "10.9.0.2", "203.0.113.1", Some(Nat::CONE)));
-    dial_route(&mut w, a, peer_addr(&[format!("{B_PUBLIC}:7000")], 2), lb).unwrap();
-}
-
-// spec/sync-transport.md §3: a relay the target registered at connects, with no direct item.
-#[test]
-fn peer_relay_connects_spec_sync_10() {
-    let mut w = world(0, anyone());
-    let b = P2p::new(host(&w.net, "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC)));
-    let item = w.relay.item();
-    let lb = listen_at(&mut w, b, format!("peer://10.0.0.2:7000 {item}"), 2);
-    let a = P2p::new(host(&w.net, "10.9.0.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
-    dial_route(&mut w, a, peer_addr(&[item], 2), lb).unwrap();
-}
-
-// spec/sync-transport.md §3: two hosts behind one NAT reach each other at their LAN addresses; a host
-// behind another NAT does not.
-#[test]
-fn peer_lan_address_connects_spec_sync_10() {
-    let mut w = world(0, anyone());
-    let b = P2p::new(host(&w.net, "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC)));
-    let lb = listen_at(&mut w, b, "peer://10.0.0.2:7000".into(), 2);
-    let a = P2p::new(w.net.udp(ip("10.0.0.3"), Some(ip(B_PUBLIC))));
-    dial_route(&mut w, a, peer_addr(&["10.0.0.2:7000".to_owned()], 2), lb).unwrap();
+fn peer_routes_connect_spec_sync_10() {
+    for case in ["direct", "relay", "lan"] {
+        let mut w = world(0, anyone());
+        let item = w.relay.item();
+        let behind = |w: &World| host(&w.net, "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC));
+        let (b, url, items) = match case {
+            "direct" => (host(&w.net, B_PUBLIC, B_PUBLIC, None), format!("peer://{B_PUBLIC}:7000"), vec![format!("{B_PUBLIC}:7000")]),
+            "relay" => (behind(&w), format!("peer://10.0.0.2:7000 {item}"), vec![item]),
+            _ => (behind(&w), "peer://10.0.0.2:7000".to_owned(), vec!["10.0.0.2:7000".to_owned()]),
+        };
+        let lb = listen_at(&mut w, P2p::new(b), url, 2);
+        let a = match case {
+            "direct" => host(&w.net, "10.9.0.2", "203.0.113.1", Some(Nat::CONE)),
+            "relay" => host(&w.net, "10.9.0.2", "203.0.113.1", Some(Nat::SYMMETRIC)),
+            _ => w.net.udp(ip("10.0.0.3"), Some(ip(B_PUBLIC))),
+        };
+        dial_route(&mut w, P2p::new(a), peer_addr(&items, 2), lb).unwrap_or_else(|e| panic!("{case}: {e:?}"));
+    }
 }
 
 // spec/sync-transport.md §1 (route rank), §3 (a LAN listener serves ALPN `osis-lan` only), §4, by hand, loopback QUIC: a session dial offers

@@ -1,11 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Established epochs (spec/crypto.md §4; spec/permissions.md §3 re-seal): the TLC traces of
 //! core/test/tla/rotation/AMBIGUITIES.md (R9, `MC_reorder`), snapshot establishment, the `secrets.0`
 //! records a compaction snapshot carries.
 
-use crate::common::Applied;
-use crate::common;
-use common::*;
+use crate::common::*;
 use osis_base::{Role, Tid};
 use osis_keys::aspects::{box_key, history_key, to_schema};
 use osis_keys::{

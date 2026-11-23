@@ -441,12 +441,12 @@ pub fn box_holder(
     let mut out = box_at(actor, held, hist, rcpt, roles, &|_, _| true, rng)?;
     // a grant with history also boxes each dropped epoch held that the holder's floor allows: no
     // history entry carries it on (spec/crypto.md §4, Floors)
-    if let Some(w) = &mut out {
-        let re = held.role(Role::Read);
-        let items: Vec<Item> = re.dropped().into_iter().filter(|_| roles.contains(&Role::Read) && rcpt.role >= Role::Read).filter(|f| re.allows(f, rcpt.floor)).filter_map(|f| re.secret(&f).map(|s| Item { role: Role::Read, epoch: f, secret: s })).collect();
-        if !box_items(actor, rcpt, &items, rng, w)? {
-            return Ok(None);
-        }
+    if let Some(w) = &mut out
+        && roles.contains(&Role::Read)
+        && rcpt.role >= Role::Read
+        && !box_items(actor, rcpt, &dropped_items(held, rcpt, held.role(Role::Read).dropped()), rng, w)?
+    {
+        return Ok(None);
     }
     Ok(out)
 }
@@ -461,10 +461,14 @@ pub fn box_epoch(actor: &Tid, rcpt: &Recipient, role: Role, epoch: Epoch, secret
 /// The **tip add** (spec/crypto.md §4, Floors): boxes of the dropped epochs `epochs` (secrets
 /// held) to `rcpt`, each that its floor allows. `Ok(None)` when a needed keyset is unknown.
 pub fn box_dropped(actor: &Tid, held: &ActorEpochs, rcpt: &Recipient, epochs: &BTreeSet<Epoch>, rng: &mut dyn CryptoRngCore) -> Result<Option<SecretsWrite>, Error> {
-    let re = held.role(Role::Read);
-    let items: Vec<Item> = epochs.iter().filter(|f| re.allows(f, rcpt.floor)).filter_map(|f| re.secret(f).map(|s| Item { role: Role::Read, epoch: *f, secret: s })).collect();
     let mut out = SecretsWrite::default();
-    Ok(box_items(actor, rcpt, &items, rng, &mut out)?.then_some(out))
+    Ok(box_items(actor, rcpt, &dropped_items(held, rcpt, epochs.iter().copied()), rng, &mut out)?.then_some(out))
+}
+
+/// The items of dropped read epochs `epochs` whose secret is held and `rcpt`'s floor allows.
+fn dropped_items<'a>(held: &'a ActorEpochs, rcpt: &Recipient, epochs: impl IntoIterator<Item = Epoch>) -> Vec<Item<'a>> {
+    let re = held.role(Role::Read);
+    epochs.into_iter().filter(|f| re.allows(f, rcpt.floor)).filter_map(|f| re.secret(&f).map(|s| Item { role: Role::Read, epoch: f, secret: s })).collect()
 }
 
 /// The re-seal the trigger asks for (`reseal_needed`): `box_holder` at only the current epochs

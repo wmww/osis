@@ -1,9 +1,6 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Epochs, rotations, forks and the `secrets.0` delta rules (spec/crypto.md §3, §4).
 
-use crate::common::Applied;
-use crate::common;
-use common::*;
+use crate::common::*;
 use osis_base::Role;
 use osis_crypto::{Epoch, Secret32, thing_role_secret};
 use osis_keys::aspects::{box_key, history_key};

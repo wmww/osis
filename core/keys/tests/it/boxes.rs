@@ -1,8 +1,6 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Grants, re-seals, history re-writes, box checks and sizes (spec/crypto.md §4, spec/wire.md §7).
 
-use crate::common;
-use common::*;
+use crate::common::*;
 use osis_base::Role;
 use osis_crypto::{BoxItem, BoxSlot, Secret32, seal_box};
 use osis_keys::aspects::{box_key, history_key, to_schema};

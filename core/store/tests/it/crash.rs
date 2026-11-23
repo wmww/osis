@@ -1,12 +1,9 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Crash safety: a crash at any durable write of a transaction (or of the recovery after it)
 //! leaves the store as before or as after, never between; a shredding transaction counts as
 //! committed exactly when its new root record is durable (spec/commits.md §4: one storage
 //! transaction per commit applied; notes/local-store.md, Key tree: crash safety).
 
-use crate::common;
-
-use common::*;
+use crate::common::*;
 use osis_crypto::SeededRng;
 use osis_store::{Error, Fault, MemoryRoot, RootStorage, Shred, Store, StoreConfig, Transaction};
 use proptest::prelude::*;

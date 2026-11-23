@@ -1,9 +1,7 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Wrap epochs, sync ID epochs and delete keys (spec/crypto.md §5, §7, spec/sync-ids.md §2,
 //! spec/sync-ids.md §6).
 
-use crate::common;
-use common::*;
+use crate::common::*;
 use osis_base::Role;
 use osis_crypto::{Epoch, RoleKey, Secret32, role_key};
 use osis_keys::{

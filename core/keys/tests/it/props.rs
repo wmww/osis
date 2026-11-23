@@ -1,10 +1,8 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Random role histories of one actor (spec/crypto.md §4, spec/permissions.md §3): a
 //! holder departed from a role before an epoch was made opens nothing of that role at it; every
 //! current holder opens the newest epoch of each of its roles after every step.
 
-use crate::common;
-use common::*;
+use crate::common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::{Epoch, Secret32};
 use osis_keys::{

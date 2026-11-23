@@ -1,10 +1,7 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Key-actor holders across rotations, wrap epochs, supersession read from the commits alone
 //! (spec/crypto.md §4, §5; spec/permissions.md §3).
 
-use crate::common::Applied;
-use crate::common;
-use common::*;
+use crate::common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::{Epoch, Secret32};
 use osis_keys::aspects::box_key;

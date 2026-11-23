@@ -30,11 +30,8 @@ impl Rng {
     }
     pub(crate) fn bytes32(&mut self) -> [u8; 32] {
         let mut out = [0u8; 32];
-        for c in out.chunks_mut(8) {
-            let w = self.next_u64().to_le_bytes();
-            for (d, s) in c.iter_mut().zip(w) {
-                *d = s;
-            }
+        for c in out.as_chunks_mut::<8>().0 {
+            *c = self.next_u64().to_le_bytes();
         }
         out
     }

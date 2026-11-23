@@ -1,10 +1,7 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! spec: none (the node log's layout is the store's own; spec/sync-streams.md §3,
 //! and core/test/tla/net/README.md `SN_inc`, `SN_copies`, `SN_history` state its properties).
 
-use crate::common;
-
-use common::*;
+use crate::common::*;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, SyncId};
 use osis_crypto::SeededRng;

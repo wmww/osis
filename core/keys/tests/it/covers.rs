@@ -1,9 +1,7 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! The covers rule (by names) and re-seal trigger scenarios (spec/crypto.md §3, §4;
 //! spec/permissions.md §3).
 
-use crate::common;
-use common::*;
+use crate::common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::Secret32;
 use osis_keys::{

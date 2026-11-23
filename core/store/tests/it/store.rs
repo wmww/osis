@@ -1,9 +1,6 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Typed units and transactions (notes/local-store.md, Units) on every backend.
 
-use crate::common;
-
-use common::*;
+use crate::common::*;
 use osis_base::{BlobId, CommitId};
 use osis_crypto::SeededRng;
 use osis_store::{AspectUnit, Error, Fault, MemoryBackend, MemoryRoot, Pending, PendingKind, Shred, Store, StoreConfig};

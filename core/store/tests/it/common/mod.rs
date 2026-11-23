@@ -106,9 +106,7 @@ impl Disk {
             }
         }
     }
-}
 
-impl Disk {
     /// An open's cache drop: an fsync attempt, then the file reads its bytes on disk (Linux keeps
     /// pages whose sync failed in the cache, clean, until dropped).
     fn drop_cache(&mut self, path: &std::path::Path) {
@@ -244,8 +242,7 @@ impl FaultyFile {
     fn fault(&self) -> std::io::Result<()> {
         let n = self.trap.load(Ordering::SeqCst);
         self.trap.store(n.saturating_sub(1), Ordering::SeqCst);
-        let hit = n == 1;
-        if hit || self.faults.crashed() {
+        if n == 1 || self.faults.crashed() {
             return Err(std::io::Error::other("injected write fault"));
         }
         Ok(())
