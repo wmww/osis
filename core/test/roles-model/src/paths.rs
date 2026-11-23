@@ -214,6 +214,12 @@ pub struct Commit {
     own_path: bool,
     /// The member pairs its path marks as joined by their direct edge (`World::push_marked`).
     pub direct: Vec<usize>,
+    /// The role a content-class part needs of its path (spec/permissions.md §5.2): write, or admin
+    /// for a delta of an admin-only aspect. No generator here writes one needing admin.
+    pub needs: Role,
+    /// Whether an addendum may vouch for it (spec/permissions.md §5.2 Addenda: a content commit's
+    /// delta, its commit carrying no purge request; a request never is, whatever this says).
+    pub vouchable: bool,
 }
 
 /// Where a re-granted path's writes count from.
@@ -624,7 +630,7 @@ impl World {
         // the hop it gives up alone, as a self-removal does)
         let rest = if well && !own_hop { self.path_hops(key, &all, direct) } else { vec![] };
         let i = self.commits.len();
-        self.commits.push(Commit { signer, key, ts, path: path.to_vec(), on, kind, rest, well, leave, pa: 0, purge_by: PurgeBy::AuthorOrAdmin, own: false, cid: i, own_path: false, direct: direct.to_vec() });
+        self.commits.push(Commit { signer, key, ts, path: path.to_vec(), on, kind, rest, well, leave, pa: 0, purge_by: PurgeBy::AuthorOrAdmin, own: false, cid: i, own_path: false, direct: direct.to_vec(), needs: Role::Write, vouchable: true });
         i
     }
     /// The hops a path of members `all` (signer first) signed by `key` rests on: the key hop
@@ -1716,9 +1722,12 @@ fn known(w: &World, rules: &Rules, v: &View) -> Set {
 
 /// Valid content-class commits, and the addenda among them that vouch.
 fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
-    let chained = first_by_right(w, rules, p, &v.held, Role::Write);
+    // per role a part needs (write; admin for an admin-only delta), each edge's first point
+    let needed: BTreeSet<Role> = v.held.iter().filter(|&&i| !w.edge_class(i)).map(|&i| w.commits[i].needs).chain([Role::Write]).collect();
+    let chained: BTreeMap<Role, BTreeMap<Edge, Key>> = needed.into_iter().map(|r| (r, first_by_right(w, rules, p, &v.held, r))).collect();
     let fin = finals(p);
-    let vouches = |a: Id| rest_of(w, rules, a).iter().all(|&e| role_at(w, p, e, w.pos(a)) >= Role::Write);
+    let gives = |a: Id, r: Role| rest_of(w, rules, a).iter().all(|&e| role_at(w, p, e, w.pos(a)) >= r);
+    let vouches = |a: Id| gives(a, Role::Write);
     let mut valid = Set::new();
     loop {
         let mut next = Set::new();
@@ -1732,41 +1741,42 @@ fn content(w: &World, rules: &Rules, v: &View, p: &Pass) -> (Set, Set) {
                 continue;
             }
             let pos = w.pos(i);
+            let r = w.commits[i].needs;
             // an own cover stands while an explicit lowering by its writer naming it applies,
             // whatever it takes from its edge where this node holds it, its path having given the
             // role just before it (§5.2 Own cover)
             let lowering = |l: Id| w.lowers(l).is_some() && !w.leave(l) && !p.by_flag.contains(&l);
             if rules.own_cover
                 && w.commits[i].own
-                && hops.iter().all(|&e| role_at(w, p, e, pos) >= Role::Write)
+                && hops.iter().all(|&e| role_at(w, p, e, pos) >= r)
                 && p.applied.iter().any(|&l| lowering(l) && w.commits[l].signer == w.commits[i].signer && w.key(l) >= pos && listed(w, v, l, i))
             {
                 next.insert(i);
                 continue;
             }
-            let cuts: Vec<&Low> = p.lows.iter().filter(|l| l.explicit && hops.contains(&l.edge) && l.before >= Role::Write && l.after < Role::Write).collect();
-            // a cut is answered by its own list, or by a valid addendum against it (an addendum
-            // vouches for no purge request: spec/permissions.md §6)
+            let cuts: Vec<&Low> = p.lows.iter().filter(|l| l.explicit && hops.contains(&l.edge) && l.before >= r && l.after < r).collect();
+            // a cut is answered by its own list, or by a valid addendum against it whose path gives
+            // the role the delta needs (an addendum vouches for no purge request: spec/permissions.md §6)
             let answers = |l: &Low| {
                 listed(w, v, l.id, i)
                     || valid.iter().any(|&a| match &w.commits[a].kind {
-                        Kind::Addendum { removal, list } if !matches!(w.commits[i].kind, Kind::Purge { .. }) => {
+                        Kind::Addendum { removal, list } if w.commits[i].vouchable && !matches!(w.commits[i].kind, Kind::Purge { .. }) => {
                             w.commits[a].on == w.commits[i].on
                                 && list.iter().any(|&c| w.names(c, i))
                                 && !(rules.no_own_addendum && w.commits[a].signer == w.commits[i].signer)
                                 && l.id == *removal
                                 && w.key(l.id) > pos
                                 && w.key(l.id) < w.pos(a)
-                                && vouches(a)
+                                && gives(a, r)
                         }
                         _ => false,
                     })
             };
-            let ok = stands(w, rules, p, &hops, pos, w.commits[i].ts, Role::Write, &cuts, &answers)
-                || (hops.iter().all(|e| fin.get(e).is_some_and(|r| *r >= Role::Write)) && {
+            let ok = stands(w, rules, p, &hops, pos, w.commits[i].ts, r, &cuts, &answers)
+                || (hops.iter().all(|e| fin.get(e).is_some_and(|x| *x >= r)) && {
                     let from = match rules.regrant {
                         Regrant::FirstApplied => first_applied(w, p, &hops),
-                        Regrant::FirstChained | Regrant::ChainedEver => hops.iter().map(|e| chained.get(e).copied()).collect::<Option<Vec<Key>>>().and_then(|k| k.into_iter().max()),
+                        Regrant::FirstChained | Regrant::ChainedEver => hops.iter().map(|e| chained[&r].get(e).copied()).collect::<Option<Vec<Key>>>().and_then(|k| k.into_iter().max()),
                     };
                     from.is_some_and(|k| k == (0, 0, 0) || pos > k)
                 });
@@ -1806,8 +1816,6 @@ fn purges(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, copied: &Se
                     Names::Destroy => true,
                 }
         };
-        // the author class: the request's chain holds the delta's purge author
-        let on_chain = |d: Id| !rules.purge_chain || w.chain(q).contains(&w.purge_author(d)) || (rules.author_thing && w.purge_author(d) == on);
         if !rules.purge_classes {
             let Names::Author(a) = names else { continue };
             if !valid.contains(&q) || (rules.purge_chain && !w.chain(q).contains(&a) && !(rules.author_thing && a == on)) {
@@ -1816,22 +1824,41 @@ fn purges(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, copied: &Se
             out.extend(cands.iter().copied().filter(|&d| named(d)));
             continue;
         }
-        let destroy = names == Names::Destroy;
-        let admin = holds(w, rules, v, p, valid, q, Role::Admin, destroy);
-        // a destruction holds the `admin` right alone (`created.0` is purgeable by admin)
-        let write = !destroy && holds(w, rules, v, p, valid, q, Role::Write, false);
-        out.extend(cands.iter().copied().filter(|&d| {
-            named(d)
-                && (admin
-                    || (write
-                        && match w.commits[d].purge_by {
-                            PurgeBy::Admin => false,
-                            PurgeBy::AuthorOrAdmin => on_chain(d),
-                            PurgeBy::Writer => true,
-                        }))
-        }));
+        let right = right_of(w, rules, v, p, valid, q);
+        out.extend(cands.iter().copied().filter(|&d| named(d) && right.over(w, rules, q, d)));
     }
     out
+}
+
+/// The roles a content-class part holds as a purge request (spec/permissions.md §6 Holding a
+/// role), each judged at its key along its path (`holds`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Right {
+    pub admin: bool,
+    pub write: bool,
+}
+
+impl Right {
+    /// Whether part `q`, holding these roles, holds a right over delta `d` (spec/permissions.md §6
+    /// The right): `admin` over any; `write` over one purgeable by `writer`, or by
+    /// `author_or_admin` where `q`'s chain holds `d`'s purge author.
+    pub fn over(self, w: &World, rules: &Rules, q: Id, d: Id) -> bool {
+        let on_chain = || !rules.purge_chain || w.chain(q).contains(&w.purge_author(d)) || (rules.author_thing && w.purge_author(d) == w.commits[q].on);
+        self.admin
+            || (self.write
+                && match w.commits[d].purge_by {
+                    PurgeBy::Admin => false,
+                    PurgeBy::AuthorOrAdmin => on_chain(),
+                    PurgeBy::Writer => true,
+                })
+    }
+}
+
+/// `Right` of part `q`: a destruction holds the `admin` right alone (`created.0` is purgeable by
+/// admin).
+fn right_of(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, q: Id) -> Right {
+    let destroy = matches!(w.commits[q].kind, Kind::Purge { names: Names::Destroy });
+    Right { admin: holds(w, rules, v, p, valid, q, Role::Admin, destroy), write: !destroy && holds(w, rules, v, p, valid, q, Role::Write, false) }
 }
 
 /// Whether request `q` holds role `r` on its thing (spec/permissions.md §6: exactly when a
@@ -1906,7 +1933,7 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
     if let Some(rd) = KEPT.with(|k| k.borrow().as_ref().filter(|k| ours(k)).and_then(|k| k.1.get(rules)?.get(v).cloned())) {
         return rd;
     }
-    let rd = judge_afresh(w, rules, v);
+    let rd = judge_afresh(w, rules, v, None);
     KEPT.with(|k| {
         if let Some(k) = k.borrow_mut().as_mut().filter(|k| ours(k)) {
             k.1.entry(*rules).or_default().insert(v.clone(), rd.clone());
@@ -1915,7 +1942,15 @@ pub fn judge(w: &World, rules: &Rules, v: &View) -> Reading {
     rd
 }
 
-fn judge_afresh(w: &World, rules: &Rules, v: &View) -> Reading {
+/// `judge`, and the roles each held content-class part holds as a purge request (`Right`): what a
+/// model with its own naming of deltas (held-model) reads a request's right from.
+pub fn judge_rights(w: &World, rules: &Rules, v: &View) -> (Reading, BTreeMap<Id, Right>) {
+    let mut rights = BTreeMap::new();
+    let rd = judge_afresh(w, rules, v, Some(&mut rights));
+    (rd, rights)
+}
+
+fn judge_afresh(w: &World, rules: &Rules, v: &View, rights: Option<&mut BTreeMap<Id, Right>>) -> Reading {
     let mut active: Set = v.trust.iter().copied().filter(|i| v.held.contains(i) && w.sets(*i).is_some()).collect();
     let mut void = Set::new();
     let (mut rounds, mut passes, mut walked, mut checked) = (0, 0, 0, 0);
@@ -1942,6 +1977,9 @@ fn judge_afresh(w: &World, rules: &Rules, v: &View) -> Reading {
             Set::new()
         };
         let purged = purges(w, rules, v, &wk.pass, &valid, &copied);
+        if let Some(rights) = rights {
+            rights.extend(v.held.iter().filter(|&&q| !w.edge_class(q)).map(|&q| (q, right_of(w, rules, v, &wk.pass, &valid, q))));
+        }
         let mut dropper = wk.dropper;
         dropper.extend(d0);
         let (keys, fin): (BTreeMap<Edge, Role>, BTreeMap<Edge, Role>) = finals(&wk.pass).into_iter().partition(|(e, _)| is_key(e.0));
