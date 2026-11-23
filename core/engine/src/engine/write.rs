@@ -469,8 +469,9 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
         };
         let Some(path) = path.filter(|(p, _)| p.things.iter().collect::<BTreeSet<_>>().len() == p.things.len() && !p.things.contains(&node)) else {
             // acting as a thing whose authority does not reach the write is refused: no path
-            // through it gives the role (spec/permissions.md §1 Path)
-            if actor != node {
+            // through it gives the role (spec/permissions.md §1 Path); a writer past the rules
+            // (tests: `skip_writer_rules`) states the thing alone
+            if actor != node && !core.skip_writer_rules {
                 return Err(Error::Permission { tid: t, needs: r });
             }
             return Ok(fallback);

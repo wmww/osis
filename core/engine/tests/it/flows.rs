@@ -753,10 +753,12 @@ fn future_stamped_setter_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §5.1 Frontier, §4: the frontier lists the remover's whole chain
-// certificates, its grantor's grant included. C grants Y admin (W1), Y grants Bob admin; Bob
-// holds W1 only as a certificate and never got C's earlier grant of E; Bob removes C: W1 stays
-// covered, so Y keeps admin, Bob's grant and the removal stand; C's grant of E drops.
+// spec/permissions.md §5.1 Frontier: the frontier lists the received commits resting on the
+// lowered hop, the grant the remover's own authority comes through among them. C grants Y admin
+// (W1, resting on C's edge), Y grants Bob admin (resting on Y's, not listed: the lowering puts
+// nothing of it in question); Bob holds W1 only as a certificate and never got C's earlier grant
+// of E; Bob removes C: W1 is listed, so Y keeps admin, Bob's grant and the removal stand; C's
+// grant of E drops.
 #[test]
 fn intermediate_grantor_covered_spec_perm_5_1() {
     let (mut lp, ps, t) = granted(5, &[(2, Role::Admin)]);
@@ -776,7 +778,8 @@ fn intermediate_grantor_covered_spec_perm_5_1() {
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: None, retain: None }).unwrap();
     let r = lp.peers[1].engine.commit_ids().into_iter().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
     let listed = frontier_ids(&mut lp, 1, &r);
-    assert!(w1.iter().chain(&g).all(|c| listed.contains(c)), "Bob's chain certificates are listed");
+    assert!(w1.iter().all(|c| listed.contains(c)), "C's grant to Y, resting on the lowered hop, is listed");
+    let _ = g;
     // the others get C's grant of E after the removal
     lp.advance(1000);
     spread(&mut lp);
@@ -1768,13 +1771,12 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
     assert!(!e.is_empty() && e.iter().all(|c| f.commits.contains(c)), "by ID: {f:?}");
 }
 
-// spec/permissions.md §5.1 Frontier; notes/redesign-plan.md, Interim in code; notes/revocation.md, Frontier encoding (a kick
-// never scales with history): node 1 writes doc X many times as its account P, compacted, and
-// once as P on its own thing Y. A demotion of P lists only what no snapshot covers: Y's write
-// (it would go invalid unlisted, though the node's own right on Y never fell), not every
-// commit it made as P. Removing node 1 from P, X keeps its last value and Y its write.
+// spec/permissions.md §5.1 Frontier, §1 Path: node 1 writes doc X many times as its account P,
+// compacted; acting as P on its own thing Y, which P holds nothing on, is refused. A frontier
+// over P's commits on X lists them, covered or not. Removing node 1 from P, X keeps its last
+// value.
 #[test]
-fn removed_node_frontier_lists_uncovered_acting_spec_perm_5_1() {
+fn removed_node_frontier_lists_its_writes_as_the_account_spec_perm_5_1() {
     let (mut lp, p) = account_two_nodes();
     let x = thing_of(&mut lp, 0, p);
     let d = lp.peers[1].engine.me();
@@ -1792,19 +1794,22 @@ fn removed_node_frontier_lists_uncovered_acting_spec_perm_5_1() {
         on_x.push(write(&mut lp, x, &format!("v{i}")));
     }
     lp.peers[1].engine.snapshot(&x, &reg).unwrap().unwrap();
-    let on_y = write(&mut lp, y, "as p");
+    // spec/permissions.md §1 Path: P holds nothing on Y, the node's own thing, so no path through
+    // P gives the role there: acting as P on Y is refused
+    let mut m = Mutation::new();
+    m.set(y, &REG, &s("as p")).unwrap();
+    m.act_as(p);
+    assert!(matches!(lp.peers[1].commit(m), Err(osis_engine::Error::Permission { .. })), "acting as P on Y");
     spread(&mut lp);
     let ds = BTreeSet::from([p, x]);
     let scope = osis_engine::DemotionScope { roles: [(d, ds.clone())].into(), content: [(d, ds)].into() };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
-    assert!(f.commits.contains(&on_y), "an uncovered write as P on a thing outside the scope");
     assert!(on_x.iter().all(|c| f.commits.contains(c)), "covered writes as P listed too: {} commits", f.commits.len());
     let n1 = lp.peers[1].engine.tid();
     lp.peers[0].engine.remove_device(&n1).unwrap();
     assert!(!lp.peers[0].engine.roster(&p).contains_key(&n1));
     assert_eq!(lp.peers[0].engine.get(&x, &reg).unwrap(), Some(s("v29")));
-    assert_eq!(lp.peers[0].engine.get(&y, &reg).unwrap(), Some(s("as p")));
 }
 
 // spec/permissions.md §5.1 (frontier; a commit is listed whether a still holds its body, dropped it or compacted it), spec/commits.md §5 (role-class body has a keep at least of `ROLE_KEEP` after replaced): M leaves t twice

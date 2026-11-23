@@ -4322,7 +4322,7 @@ fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
         unless_refused(w.peers[0].engine.ingest(&first, Vec::new()));
         w.peers[0].reexamine().unwrap();
         w.peers[0].engine.check_index();
-        assert_eq!(state(&mut w), (None, true, before), "{name}: D waits");
+        assert_eq!(state(&mut w), (None, true, before.clone()), "{name}: D waits");
         assert_eq!(w.peers[0].engine.get(&p, &ak("t:reg.0")).unwrap(), Some(s("on p")), "{name}: P applies");
         unless_refused(w.peers[0].engine.ingest(&opened_sections(&f, &c, &[id_], &keyed(mine)), Vec::new()));
         w.peers[0].reexamine().unwrap();

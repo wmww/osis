@@ -586,14 +586,14 @@ pub struct Timelines {
     ways: Ways,
 }
 
-/// `Timelines::ways`: a cache of the current edges, empty in a copy.
+/// `Timelines::ways`: a cache of the current edges.
 #[derive(Default)]
 struct Ways(std::sync::Mutex<BTreeMap<(Tid, osis_perm::Need), WaysAt>>);
 type WaysAt = (Arc<osis_perm::graph::Ways>, osis_base::Ts, Option<osis_base::WallMs>);
 
 impl Clone for Ways {
     fn clone(&self) -> Ways {
-        Ways::default()
+        Ways(std::sync::Mutex::new(self.0.lock().map(|m| m.clone()).unwrap_or_default()))
     }
 }
 
