@@ -148,7 +148,7 @@ fn writer(lp: &mut LocalPeer, t: Tid, to: usize) {
     sync(lp, 0, to);
 }
 
-// spec/commits.md §5, spec/crdt.md §8 (a delta with an expiry is covered only once none of its values lives): a snapshot lists
+// spec/commits.md §5, spec/crdt.md §8 (Values): a snapshot lists
 // a live expiring part this node never received, carrying none of its value, as a holder's does:
 // the part stays to join when it comes, before its T.
 #[test]

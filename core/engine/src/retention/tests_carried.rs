@@ -61,7 +61,7 @@ fn request(lp: &mut LocalPeer, by: usize, t: Tid, item: PurgeItem) -> CommitId {
     p
 }
 
-// spec/commits.md §5 Purge (Without the header), spec/crdt.md §4.7 Copies, §8 Facts: a node that
+// spec/commits.md §5 Purge (Without the header), spec/crdt.md §4.7 Gone writes, §8 Facts: a node that
 // never received the purged commit, holding only a snapshot carrying it and the request, in
 // either order, holds its copy value-less: by stamp or by author, an admin's request or its
 // author's under `author_or_admin`. Its author's under `admin` takes nothing, there as where the

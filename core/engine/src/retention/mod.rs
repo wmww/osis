@@ -862,7 +862,7 @@ fn expire_snapshot(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(T
 }
 
 /// Snapshot part `ai` of `c` carries a copy of a value of a write on its aspect's value-less list
-/// (spec/crdt.md §4.7 Copies, spec/commits.md §5): held as its leftover from now on, those copies
+/// (spec/crdt.md §4.7 Gone writes, spec/commits.md §5): held as its leftover from now on, those copies
 /// value-less. Store only: the state took the copies stripped (`apply::join_into_state`), or the
 /// caller rebuilds the aspect.
 pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
@@ -893,7 +893,7 @@ pub(crate) fn hold_carrier(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut body: F
 /// and arrival. Invariant: no held body holds the value of a write the node holds value-less
 /// (purged, expired), its own or a snapshot's copy under its dot; no body loses a value of a write
 /// not held value-less, but a carrier held through its purge's fall (`purge::rejudge_purges`).
-/// So every listed write loses its value (`Fragment::strip`), and a rebuild reads the same with it.
+/// So every listed write goes (`Fragment::remove_gone`), and a rebuild reads the same with it.
 fn strip_leftover(core: &Core, h: &Header, ai: usize, body: &mut Fragment) {
     let Some(list) = h.aspects.get(ai).and_then(|a| core.ix.valueless.get(&(a.tid, a.ak.clone()))) else { return };
     body.remove_gone(&|d| sorted_owns(list, d));

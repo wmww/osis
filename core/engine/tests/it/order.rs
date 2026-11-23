@@ -4155,7 +4155,7 @@ fn snapshot_dropped_by_earlier_stamped_kill_joins_again_spec_commits_5() {
     assert_eq!(order_checks(&played, &rev), Ok(()));
 }
 
-// spec/crdt.md §4.6 Un-merge, §4.7 (leftovers), spec/commits.md §5 (purge): a purged delta whose
+// spec/crdt.md §4.6 Un-merge, §4.7 (gone writes), spec/commits.md §5 (purge): a purged delta whose
 // body was dropped as covered keeps its leftover from the coverer's copies, which the purge strips
 // next; a later write that superseded it in the state and is un-merged does not take it along
 // (was: made order "old" came back, demotion first absent). The purger's re-snapshot would hide
@@ -4244,7 +4244,7 @@ fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
     assert_eq!(got, vec![None, None]);
 }
 
-// spec/crdt.md §4.7 (leftovers), spec/permissions.md §5.2: a purged delta whose body was dropped
+// spec/crdt.md §4.7 (gone writes), spec/permissions.md §5.2: a purged delta whose body was dropped
 // as covered takes its leftover from the coverer's copies and is held again from then on; when
 // the coverer turns invalid the leftover stays (a held body, no longer the cover's), so the
 // value-less winner hides "old" alike at once, after a rebuild and after a restart.
@@ -4315,7 +4315,7 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     assert_eq!(after, None, "the leftover from the cover's copies stays: the value-less winner");
 }
 
-// spec/crdt.md §4.7 (strips the value from any copy that arrives later): a part of an expired
+// spec/crdt.md §4.7 (gone writes): a part of an expired
 // delta arriving after T, later than the rest of its commit (dropped at expiry while missing),
 // joins value-less (was skipped: the whole commit hid "old", the split one showed it).
 #[test]
@@ -4873,7 +4873,7 @@ fn covered_away_judged_on_the_walks_side() {
     check(0, &h, Cfg { away: true, ..NAMED }).unwrap();
 }
 
-// spec/crdt.md §4.7 (a gone write has no effect on the read), spec/commits.md §4 Unjudgeable: 0
+// spec/crdt.md §4.7 (gone writes), spec/commits.md §4 Unjudgeable: 0
 // makes a thing reading "n", then writes G and the thing's register in one commit expiring in a
 // second. A node given that commit past its expiry before the thing's record throws the thing's
 // part out, and once the record comes the part counts as never received; a node given the record

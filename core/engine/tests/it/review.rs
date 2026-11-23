@@ -191,7 +191,7 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     check(&mut lp.peers[j].engine, "snapshot part last, restarted");
 }
 
-// spec/crdt.md §4.7 Copies, spec/commits.md §5 Purge: a snapshot copying a write held value-less
+// spec/crdt.md §4.7 Gone writes, spec/commits.md §5 Purge: a snapshot copying a write held value-less
 // here (purged, nothing written over it), arriving alone after the purge, brings no value back
 #[test]
 fn late_snapshot_of_purged_value_reads_nothing_spec_crdt_4_7() {

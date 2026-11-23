@@ -132,7 +132,7 @@ RULES = [
     ("spec/commits.md", "5", "purge not role-class", "It MUST NOT name role-class deltas"),
     ("spec/commits.md", "5", "fire kept", "A writer MUST NOT write a fire the setting it holds would not keep"),
     ("spec/crdt.md", "4.6", "undo rights", "MUST hold the rights any write of the same deltas needs"),
-    ("spec/crdt.md", "4.6", "undo revives nothing", "MUST NOT write back content it holds value-less"),
+    ("spec/crdt.md", "4.6", "undo revives nothing", "MUST NOT write back content of writes gone there"),
     ("spec/crdt.md", "4.6", "undo expiry", "MUST give the commit an expiry no later than"),
     ("spec/crdt.md", "4.6", "undo needs kept history", "MUST NOT undo a delta whose inverse **restores** replaced content"),
     ("spec/crypto.md", "1", "batch verification", "Batch and single verification MUST agree"),

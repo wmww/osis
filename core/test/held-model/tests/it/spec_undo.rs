@@ -65,7 +65,7 @@ fn undo_of_a_text_delete_shows_the_char_again_spec_crdt_4_6() {
     assert_eq!(read(&hd, TEXT), text(&[7]));
 }
 
-// spec/crdt.md §4.6 (an expiry no later than; must not write back content it holds value-less): an undo expires with the delta it copies, and a copy already
+// spec/crdt.md §4.6 (an expiry no later than; must not write back content of writes gone there): an undo expires with the delta it copies, and a copy already
 // value-less by its time is not written back (here the text was then absent before: a reset)
 #[test]
 fn undo_takes_the_expiry_of_what_it_copies_spec_crdt_4_6() {

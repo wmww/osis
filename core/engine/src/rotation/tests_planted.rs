@@ -66,7 +66,7 @@ fn based(lp: &LocalPeer, i: usize, g: Tid, e: &Epoch) -> bool {
 }
 
 // spec/crypto.md §4 (A `secrets.0` compaction snapshot leaves out every live box: keys only epochs established at its writer, names
-// aside), spec/commits.md §5 (covered by a snapshot: join). Invariant: a reader's history add or a writer's
+// aside), spec/commits.md §5 (Covered: join). Invariant: a reader's history add or a writer's
 // box at an epoch no valid rotation made never stops an admin compacting `secrets.0`, is never
 // based anywhere (the snapshot carries it to nobody), and is lost nowhere (its commit stays
 // beside the snapshot, uncovered); a node granted after and fed only by the compactor judges every

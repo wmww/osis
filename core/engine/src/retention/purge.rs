@@ -538,7 +538,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     }
     // a body stripped for carrying others' values (a snapshot; a delta carrying a copy) stays held
     // as its leftover: its copies of the values coming back stay value-less, so the valued copy
-    // wins wherever one joins (spec/crdt.md §4.7 Join), and every other write it carries stays
+    // wins wherever one joins (spec/crdt.md §4.7 Gone writes), and every other write it carries stays
     off_valueless(tx, tid, ak, &leaving);
     // until each comes back, this node may read less than one that kept it
     suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &back)?;

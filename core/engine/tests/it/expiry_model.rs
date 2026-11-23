@@ -281,7 +281,7 @@ fn big() -> Ak {
     Ak::new(osis_schema::RawKey::ak(&BIG)).unwrap()
 }
 
-// spec/crdt.md §4.7 Copies, §8: a forged snapshot's valued copies of an expiring write, on pages
+// spec/crdt.md §4.7 Gone writes, §8: a forged snapshot's valued copies of an expiring write, on pages
 // the write does not touch, go at its expiry at every holder, also after a restart (debug
 // builds: the state equals a rebuild).
 #[test]
@@ -311,7 +311,7 @@ fn forged_copy_of_expiring_write_goes_at_expiry_spec_crdt_4_7() {
     }
 }
 
-// spec/crdt.md §4.7 Copies, notes/engine-refs.md: a forged snapshot's valued copies of an
+// spec/crdt.md §4.7 Gone writes, notes/engine-refs.md: a forged snapshot's valued copies of an
 // expiring write linking a thing count as references until the write expires; then backlinks no
 // longer list the aspect, at every holder, also after a restart.
 #[test]

@@ -13,7 +13,7 @@ use osis_crdt::{Fragment, Frontiers};
 use osis_schema::core_types::{is_content, is_role_class};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// What a held snapshot carries (spec/crdt.md §4.7 Copies, spec/permissions.md §5.2 Copies): per
+/// What a held snapshot carries (spec/crdt.md §4.7 Gone writes, spec/permissions.md §5.2 Copies): per
 /// source, the counters of the writes its held body holds (`Fragment::write_ranges`), and of
 /// those it holds valued (`Fragment::each_valued`) and value-less. The commits it carries copies
 /// of are the held ones whose counters on the aspect meet a write (`carried`, `carriers`): what

@@ -49,7 +49,7 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 
 /// Snapshot part `ai` of pending commit `id` (in `blob`, header `h`) carrying a copy of a value of
 /// a write on its aspect's value-less list (purged): held as its leftover from now on, those
-/// copies value-less, as an applied carrier is (spec/crdt.md §4.7 Copies, `strip_carried`), its
+/// copies value-less, as an applied carrier is (spec/crdt.md §4.7 Gone writes, `strip_carried`), its
 /// slot emptied (`emptied`); it joins as that leftover, frontiers, `Absorbed` and facts kept. One
 /// that cannot be read yet (a page away, parked) is stripped once it can, at the latest when it
 /// joins (`drop_gone`). Called at every look at the stored copy (`reexamine`), so a request

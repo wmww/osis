@@ -37,7 +37,7 @@ pub enum LeftoverWhy {
     Purged,
     /// A waiting part a purge request names (spec/commits.md §5).
     PendingPurged,
-    /// It carries a copy of a value the node holds value-less (spec/crdt.md §4.7 Copies).
+    /// It carries a copy of a value the node holds value-less (spec/crdt.md §4.7 Gone writes).
     Copy,
 }
 
@@ -1014,7 +1014,7 @@ fn fate(
             return (Fate::Leftover(LeftoverWhy::PendingPurged), false);
         }
         // a waiting body keeps its body, copies of value-less values included, until its commit
-        // applies (spec/commits.md §5, spec/crdt.md §4.7 Copies)
+        // applies (spec/commits.md §5, spec/crdt.md §4.7 Gone writes)
         return (Fate::Keep(KeepWhy::Pending), false);
     }
     // a signal body is never covered (no state to snapshot): kept until its keep bound, then it

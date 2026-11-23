@@ -99,7 +99,7 @@ fn a_purged_setting_keeps_nothing_spec_commits_5() {
     assert!(o.history.is_empty());
 }
 
-// spec/commits.md §5 (Purge), spec/crdt.md §4.7 (Copies)
+// spec/commits.md §5 (Purge), spec/crdt.md §4.7 (Gone writes)
 #[test]
 fn snapshot_copy_of_a_purged_value_is_a_leftover_spec_commits_5() {
     let cs = vec![

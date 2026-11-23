@@ -927,7 +927,7 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 (holding one as its leftover destroys every copy of its values), spec/crdt.md
+// spec/commits.md §5 (Dropping a body), spec/crdt.md
 // §4.7: a snapshot stripped for one purged delta still carries the other values it copied; a second
 // request purging one of those replaces the leftover, and the old leftover row's bytes must go with
 // it (was: the row was overwritten unshredded, so the old page kept the value).
@@ -1036,7 +1036,7 @@ fn big_put(lp: &mut LocalPeer, i: usize, t: Tid, key: &str, val: &str, purge: Op
     lp.peers[i].commit(m).unwrap().unwrap()
 }
 
-// spec/commits.md §5 (holding one as its leftover destroys every copy of its values), spec/crdt.md §4.7:
+// spec/commits.md §5 (Dropping a body), spec/crdt.md §4.7:
 // a snapshot's leftover keeps the other values it copied and stays held through its purge's fall,
 // so a second request purging one of those strips it there too and leaves no copy behind.
 // spec/commits.md §5: the leftover indexes as an open rebuilding the index reads it.
@@ -1520,7 +1520,7 @@ fn part_pending_for_its_ts_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
     assert_eq!(seen[0], seen[1], "ticked at T or not");
 }
 
-// spec/commits.md §5 (Purge), spec/crdt.md §4.7 (Copies): a compaction snapshot carrying a write's
+// spec/commits.md §5 (Purge), spec/crdt.md §4.7 (Gone writes): a compaction snapshot carrying a write's
 // value, pending for its `ts`, the write purged before it comes or while it waits: held as its
 // leftover while it waits, and joined so once it applies.
 #[test]
@@ -1612,7 +1612,7 @@ fn waiting_snapshots_decoded(n: usize) -> [u64; 4] {
     [idle, purged, expiring, expired]
 }
 
-// notes/principles.md (Check scaling), spec/crdt.md §4.7 (Copies): a waiting snapshot's carried
+// notes/principles.md (Check scaling), spec/crdt.md §4.7 (Gone writes): a waiting snapshot's carried
 // copies are judged by its bound, as a held snapshot's (`Carried`), decoded once while it waits:
 // a purge or an expiry of writes none of them carries decodes none, at n and 10n.
 #[test]
