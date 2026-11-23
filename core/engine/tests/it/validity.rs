@@ -3050,6 +3050,46 @@ fn a_minting_never_restores_a_destroyed_thing_spec_commits_5() {
     }
 }
 
+// spec/permissions.md §6 (Destruction: judged as any request), spec/requirements.md Deletion (a
+// purge counts only if its author had the right, judged as an edit's validity is): Alice grants
+// Bob admin on d by a direct edge; Bob destroys d; Alice, not holding it, removes Bob from d
+// later, listing nothing (as she would a thief's destruction backdated before her removal: one
+// held set). Carol, given both in either order, reads d live, and with its value once synced, as
+// Alice does: the removal is read for the destruction's right whatever its stamp.
+#[test]
+fn a_destruction_falls_with_a_later_removal_on_its_thing_in_either_order_spec_permissions_6() {
+    for first in [false, true] {
+        let (mut lp, d, b, _) = setup();
+        set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
+        let q = {
+            let e = &mut lp.peers[1].engine;
+            let mut m = Mutation::new();
+            let now = e.now();
+            m.set(d, &osis_schema::core_types::PURGE, &now).unwrap();
+            m.purge(osis_commit::PurgeItem::Aspect { tid: d, ak: osis_schema::core_types::CREATED.name() });
+            e.commit(m).unwrap().unwrap()
+        };
+        lp.advance(1_000);
+        let r = edge_write(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::core_types::Frontier::default()));
+        if first {
+            crate::flows::send_carried(&mut lp, 1, 2, &[q]);
+            assert!(!lp.peers[2].engine.knows(&d), "destroyed while the removal is not held");
+            crate::flows::send_carried(&mut lp, 0, 2, &[r]);
+        } else {
+            crate::flows::send_carried(&mut lp, 0, 2, &[r]);
+            crate::flows::send_carried(&mut lp, 1, 2, &[q]);
+        }
+        // what Carol dropped comes back from Alice, who kept it
+        lp.sync_all().unwrap();
+        for i in [0, 2] {
+            assert!(lp.peers[i].engine.knows(&d), "first {first}: d live at peer {i}");
+            assert_eq!(lp.peers[i].engine.get_typed(&d, &REG).unwrap(), Some(s("new")), "first {first}: peer {i}");
+        }
+    }
+}
+
 // spec/commits.md §2 (created one minting): Bob's
 // commits whose `created.0` reads the record but is no minting of it (padded with a reset, or
 // written untyped) are refused whole; his commit carrying one minting applies, and the honest

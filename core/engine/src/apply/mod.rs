@@ -944,9 +944,14 @@ fn thing_wait(
     record: &dyn Fn(&Tid) -> Option<CreationRecord>,
     chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>,
 ) -> Option<Reason> {
-    // a destroyed thing is unknown, but for what judges its destruction written before it
-    // (`retention::destroy`); a minting never restores it, so one waits while it is destroyed
-    let destroyed = || !crate::retention::destroy::judges_destruction(a.ak.as_str()) || a.ak.as_str() == osis_commit::retention::CREATED || crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h));
+    // a destroyed thing is unknown, but for what judges its destruction written before it and its
+    // edge writes whatever their stamp (`retention::destroy`); a minting never restores it, so one
+    // waits while it is destroyed
+    let destroyed = || {
+        !crate::retention::destroy::judges_destruction(a.ak.as_str())
+            || a.ak.as_str() == osis_commit::retention::CREATED
+            || !validity::edge_ak(a.ak.as_str()) && crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h))
+    };
     if record(&a.tid).is_none() || core.destroyed(&a.tid) && destroyed() {
         return Some(Reason::UnknownCreated(a.tid));
     }

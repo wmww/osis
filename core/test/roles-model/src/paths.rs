@@ -1863,19 +1863,18 @@ impl Right {
 }
 
 /// `Right` of part `q`: a destruction holds the `admin` right alone (`created.0` is purgeable by
-/// admin).
+/// admin), judged as any request.
 fn right_of(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, q: Id) -> Right {
     let destroy = matches!(w.commits[q].kind, Kind::Purge { names: Names::Destroy });
-    Right { admin: holds(w, rules, v, p, valid, q, Role::Admin, destroy), write: !destroy && holds(w, rules, v, p, valid, q, Role::Write, false) }
+    Right { admin: holds(w, rules, v, p, valid, q, Role::Admin), write: !destroy && holds(w, rules, v, p, valid, q, Role::Write) }
 }
 
 /// Whether request `q` holds role `r` on its thing (spec/permissions.md §6: exactly when a
 /// delta of it needing `r`, along its path, at its key would be valid, spec §5.2): it stands
 /// against each cut of its path below `r` (`stands`), a cut answered by its list or by a valid
-/// addendum by a holder of `r` against it (`purge_addenda`), or the path is re-granted for `r`. A destruction's right reads no cut on an
-/// edge into its own thing stamped after it. Under `purge_at_key` the first clause's role alone.
-#[allow(clippy::too_many_arguments)]
-fn holds(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, q: Id, r: Role, destroy: bool) -> bool {
+/// addendum by a holder of `r` against it (`purge_addenda`), or the path is re-granted for `r`.
+/// Under `purge_at_key` the first clause's role alone.
+fn holds(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, q: Id, r: Role) -> bool {
     let hops = rest_of(w, rules, q);
     if !w.well(q) {
         return false;
@@ -1885,7 +1884,7 @@ fn holds(w: &World, rules: &Rules, v: &View, p: &Pass, valid: &Set, q: Id, r: Ro
     if rules.purge_at_key {
         return at;
     }
-    let cuts: Vec<&Low> = p.lows.iter().filter(|l| l.explicit && hops.contains(&l.edge) && l.before >= r && l.after < r && !(destroy && l.edge.1 == on && w.key(l.id) > pos)).collect();
+    let cuts: Vec<&Low> = p.lows.iter().filter(|l| l.explicit && hops.contains(&l.edge) && l.before >= r && l.after < r).collect();
     let gives = |a: Id| rest_of(w, rules, a).iter().all(|&e| role_at(w, p, e, w.pos(a)) >= r);
     let answers = |l: &Low| {
         listed(w, v, l.id, q)

@@ -335,8 +335,8 @@ fn req(on: u32, path: &[u32], names: Names) -> Part {
 
 /// A world of every purge case (draft §6): H grants X admin on A (1); H's `writer` delta on A
 /// (2); X's request by aspect (3) and destruction of A (4); H removes X listing nothing (5: it takes
-/// the request's right, not the destruction's: a cut on an edge into A stamped after it); H grants
-/// X admin again (6: the request re-granted, as an edit made before the cut would be).
+/// both rights, the destruction's as any request's); H grants X admin again (6: both re-granted, as
+/// edits made before the cut would be).
 fn purge_world() -> Vec<Commit> {
     let admin = Some(Role::Admin);
     vec![
@@ -351,16 +351,16 @@ fn purge_world() -> Vec<Commit> {
 
 // spec/permissions.md §6: draft purges a reading, restore: in every arrival order and under every
 // subset of the purge world forgotten, purges read as from scratch, `Changed` exact (each request
-// whose right moved reported by its scope), the single walk alike; without the destruction the
-// removal takes the request's right and the re-grant gives it back.
+// whose right moved reported by its scope), the single walk alike; the removal takes both
+// requests' rights and the re-grant gives them back.
 #[test]
 fn every_order_and_forget_of_a_purge_world_reads_as_from_scratch() {
     let c = purge_world();
     let d = WriteId(cid(2), 0);
     let read = |cs: &[Commit]| Paths::evaluate(&recs(), BTreeSet::new(), cs).purged().contains(&d);
     let without = |gone: &[u64]| c.iter().filter(|x| !gone.iter().any(|g| x.id == cid(*g))).cloned().collect::<Vec<_>>();
-    assert!(read(&c) && read(&without(&[6])) && read(&without(&[3, 6])));
-    assert!(!read(&without(&[4, 6])) && read(&without(&[4])) && read(&without(&[4, 5])));
+    assert!(read(&c) && !read(&without(&[6])) && !read(&without(&[3, 6])) && read(&without(&[3, 5, 6])));
+    assert!(!read(&without(&[4, 6])) && read(&without(&[4])) && read(&without(&[4, 5])) && read(&without(&[3])));
     for trust in [BTreeSet::new(), BTreeSet::from([WriteId(cid(5), 0)])] {
         every_forget(&trust, &c);
     }

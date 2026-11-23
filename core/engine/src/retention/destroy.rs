@@ -2,16 +2,17 @@
 //! exists while a creation of it is held live; once every held creation of it is value-less the
 //! thing goes in the transaction that made it so: its parts as bodies dropped (node-sync then
 //! deletes them at peers by the dropped-body path), its states and per-aspect rows, but what
-//! judges its destruction (`judges_destruction`: its record, its value-less mintings, its `roles.0`
-//! and `sync.0` parts, the destroying requests' parts). Records are identity, `created.0` is
-//! existence: authority that passed through it stands as its frozen history says. What stays is
+//! judges its destruction (`judges_destruction`: its record, its value-less mintings, its role-class
+//! parts, the destroying requests' parts). Records are identity, `created.0` is existence: authority
+//! that passed through it stands as its held edge writes say. What stays is
 //! held by the ordinary rules, never its own: while the thing is in the node closure or a held thing
 //! needs it (`retention::needed`), released whole as any thing; the requests are commits carrying a
 //! purge request, kept as any (spec/commits.md §5 Forgetting, lasting). So a minting arriving later
 //! falls under a held request as any named delta does. What a dependent needs travels with the
 //! dependent: its holders place the record and frozen history under its sync IDs
 //! (`Engine::destroyed_upstream`). `Core::exists` says the thing is gone all the same. A later write
-//! on it is a write on an unknown thing.
+//! on it is a write on an unknown thing, but an edge write: the walk reads every held edge write
+//! whatever its stamp, so a destruction's right is judged as any request's (`kept_whole`).
 
 use crate::engine::records;
 use crate::engine::{Core, DropFor, Tx};
@@ -31,6 +32,14 @@ const ROLES: &str = "roles.0";
 /// sync IDs, as role history always stays) and the destroying requests' parts on it.
 pub(crate) fn judges_destruction(ak: &str) -> bool {
     ak == CREATED || osis_schema::core_types::is_role_class(ak) || osis_commit::retention::destroying_request(ak)
+}
+
+/// Aspects a destroyed thing keeps whatever their stamp: its mintings, and its edge writes (the
+/// walk's input, taken whatever their stamp, `thing_wait`): its destruction's right is judged as
+/// any request's, by every held edge write (spec/commits.md §5 Destruction), so a removal stamped
+/// after it reads the same in every arrival order.
+pub(crate) fn kept_whole(ak: &str) -> bool {
+    ak == CREATED || ak == ROLES
 }
 
 /// When a held minting is destroyed (spec/commits.md §5 Destruction): at its expiry `At(T, None)`,
@@ -179,14 +188,10 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
         reopen_fallen(tx, t)?;
         reads_again(t, &mut changed);
     }
-    let mut held_changed = false;
     for t in &due {
-        held_changed |= destroy_thing(tx, t, &mut changed)?;
+        destroy_thing(tx, t, &mut changed)?;
     }
-    if held_changed {
-        tx.core.update_timelines();
-    }
-    crate::apply::rejudged(tx, held_changed)?;
+    crate::apply::rejudged(tx, false)?;
     if !changed.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
     }
@@ -269,33 +274,16 @@ fn reads_again(t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) {
 }
 
 /// Drops everything of `t` (`apply_destructions`) but what judges its destruction
-/// (`judges_destruction`) written before it (the module doc). Whether the role timelines' inputs
-/// changed: an edge write on it stamped after its destruction went.
-fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<bool> {
+/// (`judges_destruction`) written before it, and its edge writes whatever their stamp (the module
+/// doc).
+fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     // what stays still reads as gone (`Core::exists`): observers hear it
     reads_again(t, changed);
-    // the holders its `roles.0` entries keyed go with the entries: read while the parts are held;
-    // an edge write on it stamped after its destruction goes (`Destruction::after`), judged once
-    // while the late writes are still held
     let destruction = Destruction::of(tx.core, t);
     let late = |core: &Core, id: &CommitId| destruction.as_ref().is_some_and(|e| core.ix.commits.get(id).is_some_and(|m| e.after(&m.header)));
-    let edge_commits: Vec<CommitId> = tx.core.ix.held.commits_on(t).iter().map(|c| c.id).filter(|c| late(tx.core, c)).collect();
-    for id in &edge_commits {
-        let parts = crate::apply::perm_parts(tx, id)?;
-        let view = tx.core.ix.commits.get(id).map(|m| m.view.clone());
-        for (ai, es) in &parts.edges {
-            let Some(v) = view.as_ref().filter(|v| v.aspects.get(*ai).is_some_and(|a| a.tid == *t)) else { continue };
-            // the entries it created (a reset of another's entry keys nothing: that one's commit
-            // may stay)
-            let own = crate::engine::Owned::of_view(v, id, *ai);
-            for (d, _, _) in es.iter().filter(|(d, _, _)| own.as_ref().is_some_and(|o| o.owns(d.origin()))) {
-                tx.core.ix.holder_keys.remove(&(*t, d.clone()));
-            }
-        }
-    }
     let aspects: Vec<(Ak, Vec<CommitId>)> = tx.core.aspects_of(t).filter(|((_, ak), _)| !judges_destruction(ak.as_str())).map(|((_, ak), s)| (ak.clone(), s.iter().map(|x| x.1).collect())).collect();
     // what it keeps but for its parts written after the destruction
-    let partly: Vec<(Ak, Vec<CommitId>)> = tx.core.aspects_of(t).filter(|((_, ak), _)| judges_destruction(ak.as_str()) && ak.as_str() != CREATED).map(|((_, ak), s)| (ak.clone(), s.iter().map(|x| x.1).filter(|c| late(tx.core, c)).collect::<Vec<_>>())).filter(|(_, cs)| !cs.is_empty()).collect();
+    let partly: Vec<(Ak, Vec<CommitId>)> = tx.core.aspects_of(t).filter(|((_, ak), _)| judges_destruction(ak.as_str()) && !kept_whole(ak.as_str())).map(|((_, ak), s)| (ak.clone(), s.iter().map(|x| x.1).filter(|c| late(tx.core, c)).collect::<Vec<_>>())).filter(|(_, cs)| !cs.is_empty()).collect();
     for (ak, commits) in aspects.iter().chain(&partly) {
         for c in commits {
             if let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(t, ak)) {
@@ -306,16 +294,6 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
     for (ak, _) in &partly {
         crate::apply::rebuild(tx, t, ak)?;
         changed.insert((*t, ak.clone()));
-    }
-    let held_changed = !edge_commits.is_empty();
-    for id in edge_commits {
-        // a role commit keeps its row and its place, empty once its last edge goes: as an open reads it
-        let mut parts = crate::apply::perm_parts(tx, &id)?;
-        let Some((view, m)) = tx.core.ix.commits.get(&id).map(|m| (m.view.clone(), m.clone())) else { continue };
-        // the parts it dropped are not held (a role commit's record keeps them)
-        parts.retain(|ai| m.holds(ai));
-        crate::apply::validity::hold_role_commit(tx.core, &view, &m.header.path, &id, &parts);
-        crate::engine::index::put_perm(tx, &id, &parts, Shred::Yes)?;
     }
     for (ak, _) in &aspects {
         let k = (*t, ak.clone());
@@ -337,7 +315,7 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         tx.core.valueless_dirty.insert(k.clone());
         changed.insert(k);
     }
-    Ok(held_changed)
+    Ok(())
 }
 
 /// Every per-aspect row of `(t, ak)` goes, as on a node that never held a part of it.

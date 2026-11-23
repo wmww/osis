@@ -614,12 +614,11 @@ impl<S: Store> Facts<S> {
     }
 
     /// (a): every hop gives `r` just before the delta's position and no cut of its path below
-    /// `r` is ordered at or after it (a destruction of thing `spare` reads no cut on an edge into
-    /// it ordered after it: draft §6 Destruction).
-    fn holds_role(&self, tl: &Walk, d: &Fact, r: Role, spare: Option<Tid>, counts: &mut Counts) -> bool {
+    /// `r` is ordered at or after it.
+    fn holds_role(&self, tl: &Walk, d: &Fact, r: Role, counts: &mut Counts) -> bool {
         d.hops.iter().all(|&(h, t)| {
             counts.content += 1;
-            tl.role_before(&h, &t, &d.pos) >= Some(r) && (spare == Some(t) || tl.last_cut(&h, &t, r).is_none_or(|k| k < d.pos))
+            tl.role_before(&h, &t, &d.pos) >= Some(r) && tl.last_cut(&h, &t, r).is_none_or(|k| k < d.pos)
         })
     }
 
@@ -648,10 +647,10 @@ impl<S: Store> Facts<S> {
     /// gives `r` just before it, or its last write before it is an answered cut that the hop gave
     /// `r` just before, read at `d`'s `ts`. A cut's answer speaks for that cut alone: valid as if
     /// the cuts answering it had not cut it, the others standing.
-    fn stands(tl: &Walk, d: &Fact, r: Role, spare: Option<Tid>, answered: &BTreeSet<WriteId>, counts: &mut Counts) -> bool {
+    fn stands(tl: &Walk, d: &Fact, r: Role, answered: &BTreeSet<WriteId>, counts: &mut Counts) -> bool {
         d.hops.iter().all(|&(h, t)| {
             counts.content += 1;
-            let later = if spare == Some(t) { vec![] } else { tl.cuts_from(&h, &t, r, &d.pos) };
+            let later = tl.cuts_from(&h, &t, r, &d.pos);
             counts.content += later.len() as u64;
             later.iter().all(|c| answered.contains(c))
                 && (tl.role_before(&h, &t, &d.pos) >= Some(r)
@@ -661,9 +660,9 @@ impl<S: Store> Facts<S> {
 
     /// (b): it stands against every cut of its path below `r`, each answered by its own
     /// frontier.
-    fn listed(&self, tl: &Walk, d: &Fact, r: Role, spare: Option<Tid>, counts: &mut Counts) -> bool {
+    fn listed(&self, tl: &Walk, d: &Fact, r: Role, counts: &mut Counts) -> bool {
         let answered = self.answered(tl, d, false, counts);
-        !answered.is_empty() && Self::stands(tl, d, r, spare, &answered, counts)
+        !answered.is_empty() && Self::stands(tl, d, r, &answered, counts)
     }
 
     /// Whether the delta is content an addendum may vouch for: a plain delta or an addendum of a
@@ -730,9 +729,9 @@ impl<S: Store> Facts<S> {
     fn base(&self, tl: &Walk, d: &Fact, counts: &mut Counts) -> Option<By> {
         if !d.well {
             None
-        } else if self.holds_role(tl, d, d.needs, None, counts) {
+        } else if self.holds_role(tl, d, d.needs, counts) {
             Some(By::Held)
-        } else if self.listed(tl, d, d.needs, None, counts) {
+        } else if self.listed(tl, d, d.needs, counts) {
             Some(By::Listed)
         } else if self.regranted(tl, d, d.needs, counts) {
             Some(By::Regranted)
@@ -759,7 +758,7 @@ impl<S: Store> Facts<S> {
         }
         let lists = self.answered(tl, d, false, counts);
         let answered = self.answered(tl, d, true, counts);
-        answered.len() > lists.len() && Self::stands(tl, d, d.needs, None, &answered, counts)
+        answered.len() > lists.len() && Self::stands(tl, d, d.needs, &answered, counts)
     }
 
     pub(super) fn content(&self, tl: &Walk, id: &WriteId, counts: &mut Counts) -> Option<Content> {
@@ -830,11 +829,9 @@ impl<S: Store> Facts<S> {
     // ---- purges (draft §6): a reading, by point query over the requests holding a right ----
 
     /// Whether request `q` holds role `r` (draft §6 Holding a role): exactly where a delta of it
-    /// needing `r` would be valid by (a), (b) or (d), no addendum vouching; a destruction reads no
-    /// cut on an edge into its own thing ordered after it.
+    /// needing `r` would be valid by (a), (b) or (d), no addendum vouching; a destruction alike.
     fn holds_right(&self, tl: &Walk, q: &Fact, r: Role, counts: &mut Counts) -> bool {
-        let spare = matches!(q.class, FactClass::Purge(Names::Destroy)).then_some(q.on);
-        q.well && (self.holds_role(tl, q, r, spare, counts) || self.listed(tl, q, r, spare, counts) || self.regranted(tl, q, r, counts))
+        q.well && (self.holds_role(tl, q, r, counts) || self.listed(tl, q, r, counts) || self.regranted(tl, q, r, counts))
     }
 
     /// The right request `q` holds: admin, and write (none for a destruction, which holds the

@@ -60,20 +60,25 @@ fn a_removed_signers_backdated_request_or_destruction_takes_nothing() {
     }
 }
 
-/// A destruction is judged without the cuts on edges into its own thing stamped after it (spec/
-/// commits.md §5 Destruction): Z, admin of T1 by H's direct grant, destroys T1; H's later removal of
-/// Z from T1, listing nothing, does not undo it. Z admin of A instead, the same removal on (Z, A) does.
+/// A destruction is judged as any request (spec/permissions.md §6 Destruction): Z, admin of T1 by
+/// H's direct grant (or of A), destroys T1 at 4; H's removal of Z from that edge at 6, listing
+/// nothing, takes its right, as it would from a thief's backdated destruction made after the
+/// removal (one held set); listed by the removal it stands.
 #[test]
-fn a_destruction_stands_against_a_later_cut_on_its_own_thing_alone() {
+fn a_destruction_falls_with_a_later_cut_as_any_request() {
     for on_thing in [true, false] {
         let mut w = base();
         let h = content(&mut w, H, 2, &[A], PurgeBy::Admin);
         let (path, edge): (&[Thing], Thing) = if on_thing { (&[], T1) } else { (&[A], A) };
         let at: &[Thing] = if on_thing { &[A] } else { &[] };
         w.edge(H, 1, at, edge, Z, Admin, &[]);
-        w.request(Z, 4, path, T1, Names::Destroy);
+        let q = w.request(Z, 4, path, T1, Names::Destroy);
         let r = w.edge(H, 6, at, edge, Z, Gone, &[]);
-        assert_eq!(read(&w, &Rules::purging(), &[r]).purged.contains(&h), on_thing);
+        for trust in [vec![], vec![r]] {
+            assert!(!read(&w, &Rules::purging(), &trust).purged.contains(&h), "{on_thing} {trust:?}");
+        }
+        w.edit(r, |k| k.listing(BTreeMap::from([(T1, Set::from([q]))])));
+        assert!(read(&w, &Rules::purging(), &[r]).purged.contains(&h), "{on_thing}");
     }
 }
 
@@ -244,7 +249,7 @@ fn purge_worlds_hold_plain() {
 #[ignore = "property"]
 fn purge_worlds_hold_large() {
     let st = purge_run_from(0, 4000, &Rules::purging());
-    // the noted counts (an excused destruction among them) are the run's to read
+    // the noted counts are the run's to read
     st.print("paths-purge");
     let others: u64 = st.fails.iter().filter(|(k, _)| **k != "purge witnessed").map(|(_, n)| n).sum();
     assert!(others == 0 && st.fails.contains_key("purge witnessed"), "{:?} {:?}", st.fails, st.first);

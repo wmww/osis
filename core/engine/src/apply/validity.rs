@@ -249,11 +249,6 @@ impl PermParts {
         out.edges.sort_by_key(|x| x.0);
         out
     }
-
-    /// Keeps only the parts of the aspects `keep` says are held.
-    pub(crate) fn retain(&mut self, keep: impl Fn(usize) -> bool) {
-        self.edges.retain(|(ai, _)| keep(*ai));
-    }
 }
 
 /// Records the holder of every `roles.0` entry these deltas create: (target, entry dot) ->

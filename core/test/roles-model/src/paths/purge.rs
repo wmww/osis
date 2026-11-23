@@ -464,12 +464,8 @@ pub fn purge_check(m: &PWorld, rules: &Rules, st: &mut PStats) {
             // (X's grant on A2 is stamped 1: a request stamped 1 is ordered before it)
             (X, [A2]) => by(if c.ts > 1 { xa2 } else { Role::None }),
             // X along [ORG]: past B's cut of (ORG, T1) at 3 and M's of (X, ORG), each answered by
-            // its own list alone, after X's grant (stamped 1); a destruction stamped by 3 reads no
-            // cut into T1 after it (§6)
-            (X, [ORG]) => {
-                let past_b = m.rb.is_some_and(|rb| w.in_frontier(rb, q)) || (matches!(c.kind, Kind::Purge { names: Names::Destroy }) && c.ts <= 3);
-                by(if c.ts > 1 && past_b && m.rm.is_some_and(|rm| w.in_frontier(rm, q)) { Role::Admin } else { Role::None })
-            }
+            // its own list alone, after X's grant (stamped 1); a destruction alike (§6)
+            (X, [ORG]) => by(if c.ts > 1 && m.rb.is_some_and(|rb| w.in_frontier(rb, q)) && m.rm.is_some_and(|rm| w.in_frontier(rm, q)) { Role::Admin } else { Role::None }),
             // X along [A]: before the removal, kept by H's list where X's grant on A (stamped 1)
             // gave it admin: a list answers its cut, never a role the path did not give
             (X, _) => by(if w.in_frontier(m.r, q) && c.ts > 1 { Role::Admin } else { Role::None }),
@@ -504,12 +500,6 @@ pub fn purge_check(m: &PWorld, rules: &Rules, st: &mut PStats) {
         }
         let (mut rule, mut req) = (Set::new(), Set::new());
         for &q in v.held.iter().filter(|&&q| matches!(w.commits[q].kind, Kind::Purge { .. })) {
-            let c = &w.commits[q];
-            // the story's one excuse: X's destruction along [ORG] stamped by B's cut of (ORG, T1)
-            // at 3, which only the destruction rule lets stand (issues/destruction-by-removed-direct-admin.md)
-            if c.signer == X && c.path == [ORG] && matches!(c.kind, Kind::Purge { names: Names::Destroy }) && (2..=3).contains(&c.ts) && !m.rb.is_some_and(|rb| w.in_frontier(rb, q)) && m.rm.is_some_and(|rm| w.in_frontier(rm, q)) {
-                st.note("destroyed past a cut into its thing (issues/destruction-by-removed-direct-admin.md)", i, format!("node {n}: X's destruction {q} along [ORG] stamped {}", c.ts));
-            }
             let (base, with) = story(q, &v.held);
             let base = if rules.purge_addenda { with } else { base };
             for &d in cands.iter().filter(|&&d| named(w, q, d)) {
