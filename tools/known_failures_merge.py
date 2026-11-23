@@ -45,7 +45,7 @@ def merge(base, ours, theirs, issue_exists):
             report.append(f"dropped (removed on {'ours' if line not in os_ else 'theirs'}): {line}")
             continue
         f = line.split(None, 3)
-        if len(f) == 4 and not issue_exists(f[2]):
+        if len(f) >= 3 and not issue_exists(f[2]):
             report.append(f"dropped ({f[2]} is gone): {line}")
             continue
         if line not in bs and not (line in os_ and line in ts):

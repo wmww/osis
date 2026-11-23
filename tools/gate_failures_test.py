@@ -6,14 +6,17 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gate_failures
 
+# the per-test bound the summaries check against (on a real box: the `test` wall limit)
+os.environ["GATE_SLOW_S"] = "15"
+
 # `cargo test --no-fail-fast` (cargo 1.99's format): one target with a seed harness failure in
 # both seed formats and a plain one, then a passing doctest target
 KNOWN_ONLY = """     Running unittests src/lib.rs (target/debug/deps/probe-1)
 
 running 3 tests
-test ok ... ok
-test order::known_plain ... FAILED
-test other_large ... FAILED
+test ok ... ok <0.010s>
+test order::known_plain ... FAILED <0.010s>
+test other_large ... FAILED <0.010s>
 
 failures:
 
@@ -52,7 +55,7 @@ error: test failed, to rerun pass `--test exit`
 KILLED = """     Running tests/kill.rs (target/debug/deps/kill-3)
 
 running 2 tests
-test a ... ok
+test a ... ok <0.010s>
 error: test failed, to rerun pass `--test kill`
 
 Caused by:
@@ -62,10 +65,10 @@ Caused by:
 HUNG = """     Running tests/hang.rs (target/debug/deps/hang-6)
 
 running 3 tests
-test fine ... ok
+test fine ... ok <0.010s>
 test slow::spin has been running for over 60 seconds
 test quick has been running for over 60 seconds
-test quick ... ok
+test quick ... ok <0.010s>
 gate: hung: no test finished for 110 s
 gate: hung test: slow::spin
 gate: hung: stopped 77 (hang-6), 1 processes
@@ -78,7 +81,7 @@ Caused by:
 LATE = """     Running tests/late.rs (target/debug/deps/late-4)
 
 running 1 test
-test fine ... ok
+test fine ... ok <0.010s>
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
@@ -234,12 +237,12 @@ rc, out = summary(LISTED, [], ["default-tests"])
 check("no results at all (the hold never ran) is NEW", (rc, "NEW   default-tests  did not run" in out), (1, True))
 rc, out = summary(LISTED, [("default-tests", "0", ""), ("gate.sim", "0", "")])
 check("pass", (rc, out), (0, "== test stages: 2 run of 2, 0 failed\n"))
-rc, out = summary(f"{LISTED}ok 1 issues/known.md x\n", [("default-tests", "0", "test ok ... ok\n")])
+rc, out = summary(f"{LISTED}ok 1 issues/known.md x\n", [("default-tests", "0", "test ok ... ok <0.010s>\n")])
 check("pass with a stale line: exit 0, listed", (rc, out.split("\n")[-2]), (0, "   KNOWN-BUT-PASSED: ok (default-tests; issues/known.md)"))
 # a listed test that ran and passed is reported, its exit unchanged; one failing elsewhere is not
 rc, out = summary(f"{LISTED}ok 1 issues/known.md x\nfine 1 issues/known.md x\ndrift_parks 1 issues/sim.md x\nsim-sweep:drift_parks 1 issues/sim.md x\n", [("default-tests", "101", KNOWN_ONLY + COUNT1), ("gate.gui", "0", HUNG.replace("test fine ... ok", "test ok ... ok")), ("gate.sim", "1", SIM)])
 check("known but passed", (rc, [l for l in out.split("\n") if "KNOWN-BUT-PASSED:" in l], out.split("\n")[-2].endswith("; 2 KNOWN-BUT-PASSED to remove")), (3, ["   KNOWN-BUT-PASSED: ok (default-tests, gate.gui; issues/known.md)", "   KNOWN-BUT-PASSED: sim-sweep:drift_parks (gate.sim; issues/sim.md)"], True))
-rc, out = summary(f"{LISTED}quick 1 issues/known.md x\n", [("default-tests", "0", "test quick ... ok\n"), ("gate.gui", "101", "     Running tests/q.rs (q-1)\n\nrunning 1 test\ntest quick ... FAILED\n\nfailures:\n\n---- quick stdout ----\nx\n\nfailures:\n    quick\n\ntest result: FAILED. 0 passed; 1 failed\n\nerror: test failed, to rerun pass `--test q`\n" + COUNT1)])
+rc, out = summary(f"{LISTED}quick 1 issues/known.md x\n", [("default-tests", "0", "test quick ... ok <0.010s>\n"), ("gate.gui", "101", "     Running tests/q.rs (q-1)\n\nrunning 1 test\ntest quick ... FAILED\n\nfailures:\n\n---- quick stdout ----\nx\n\nfailures:\n    quick\n\ntest result: FAILED. 0 passed; 1 failed\n\nerror: test failed, to rerun pass `--test q`\n" + COUNT1)])
 check("known, passed in one stage, failed in another: not reported", (rc, "KNOWN-BUT-PASSED" in out), (3, False))
 # a line failing at a rate: passing is expected, said so; a name with one plain line keeps the question
 rc, out = summary(f"{LISTED}ok rate:S=1 issues/known.md x\nfine rate:S=1 issues/known.md x\nfine 2 issues/sim.md y\n", [("default-tests", "101", KNOWN_ONLY + COUNT1), ("gate.gui", "0", HUNG.replace("test fine ... ok", "test ok ... ok") + "test fine ... ok\n")])
@@ -293,6 +296,52 @@ rc, out = summary(LINE.replace("family: ", "other: "), [("gate.properties", "101
 check("counts line, other text: NEW-TEXT", (rc, "NEW-TEXT" in out), (1, True))
 rc, out = summary("x 1 issues/gone.md p\n", [("default-tests", "0", "")])
 check("a bad list fails the gate", (rc, "NEW   known list" in out), (1, True))
+
+# per-test times (tools/test_time.sh's `<W.WWWs>`): over the bound NEW-SLOW, a `slow:` line holds a
+# test up to its seconds and is stale once the test runs under half the bound
+TIMES = """     Running tests/it/main.rs (target/debug/deps/it-7)
+
+running 4 tests
+test quick ... ok <0.120s>
+test big::one ... ok <20.400s>
+test listed::slow ... ok <30.000s>
+test listed::grown ... ok <90.000s>
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 90.00s
+
+   Doc-tests probe
+
+running 1 test
+test src/lib.rs - f (line 1) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+"""
+check("times", gate_failures.times(TIMES), ({"quick": 0.12, "big::one": 20.4, "listed::slow": 30.0, "listed::grown": 90.0}, 0))
+SLOWS = "c/listed::slow slow:40 issues/known.md\nc/listed::grown slow:40 issues/known.md\n"
+rc, out = summary(SLOWS, [("default-tests", "0", TIMES)])
+check("slow: unlisted and grown are NEW-SLOW, listed within is not", (rc, [l for l in out.split("\n") if "SLOW" in l or "per-test" in l], out.split("\n")[-2]), (1, [
+    "== per-test times: 4 tests, bound 15 s; 1 listed `slow:` within their line",
+    "   NEW-SLOW default-tests  listed::grown: 90.0 s, over its listed slow:40 (issues/known.md): slim it, or raise the line to slow:180 with the reason in its issue",
+    "   NEW-SLOW default-tests  big::one: 20.4 s, over the per-test bound 15 s (the `test` wall limit): slim it, or list it in tools/known_failures.txt as `CRATE/big::one slow:41 ISSUE` with the reason in ISSUE"],
+    "== gate FAILED: 2 NEW, 0 KNOWN"))
+rc, out = summary(SLOWS + "c/big::one slow:41 issues/known.md\nc/quick slow:30 issues/known.md\n", [("default-tests", "0", TIMES.replace("<90.000s>", "<40.000s>"))])
+check("slow: listed within passes; one under half the bound is stale", (rc, out.split("\n")[-3:-1]), (0, [
+    "== KNOWN-BUT-PASSED (1): listed, not `rate:`, passing in this run. Remove each line from tools/known_failures.txt in this landing (and its issue, if fixed), or mark it `rate:` if its issue shows it fails on some seeds only",
+    "   KNOWN-BUT-PASSED: quick (default-tests; issues/known.md; slow:30, ran 0.1 s, under 15 s / 2)"]))
+rc, out = summary("c/quick slow:30 issues/known.md\n", [("default-tests", "0", TIMES.replace("<0.120s>", "<9.000s>").replace("<20.400s>", "<1.000s>").replace("<30.000s>", "<1.000s>").replace("<90.000s>", "<1.000s>"))])
+check("slow: a listed test between half the bound and its line is neither flagged nor stale", (rc, out), (0, "== per-test times: 4 tests, bound 15 s; 1 listed `slow:` within their line\n== test stages: 1 run of 1, 0 failed\n"))
+rc, out = summary("", [("default-tests", "0", TIMES.replace("<20.400s>", "<1.000s>").replace("<30.000s>", "<1.000s>").replace("<90.000s>", "<1.000s>")), ("gate.gui-tests", "0", "test quick ... ok <16.000s>\n")])
+check("slow: the longest wall of a test over the timed stages", (rc, "NEW-SLOW gate.gui-tests  quick: 16.0 s" in out), (1, True))
+rc, out = summary("", [("default-tests", "0", TIMES.replace(" <20.400s>", ""))])
+check("a test without a time is NEW (the runner did not apply)", (rc, "NEW   default tests  1 tests ran without a time" in out), (1, True))
+rc, out = summary("", [("gate.properties", "0", TIMES)])
+check("properties are not timed against the bound", rc, 0)
+# a slow-listed test's failure still matches its failure lines; its slow line is no failure pattern
+rc, out = summary(f"{SEEDS}\nc/other_large slow:30 issues/known.md\n", [("default-tests", "101", KNOWN_ONLY + COUNT1)])
+check("a slow line matches no failure", (rc, "1 NEW, 1 KNOWN" in out, "NEW   default-tests  other_large\n" in out), (1, True, True))
+ns, errs = known("c/a slow:12 issues/known.md\nc/b slow:12 issues/known.md x\nc/c slow:0 issues/known.md\nc/d slow:1.5 issues/known.md\nc/e slow:3 issues/gone.md\nc/f slow:3 issues/known.md\nc/f slow:4 issues/known.md\n")
+check("known slow", ([(k.issue, k.slow, k.pattern) for k in ns["a"]], [e.split(": ", 1)[1][:30] for e in errs]), ([("issues/known.md", 12, None)], ["want `NAME slow:SECONDS ISSUE`", "want `NAME slow:SECONDS ISSUE`", "want `NAME slow:SECONDS ISSUE`", "issues/gone.md: no such issue ", "f: more than one `slow:` line"]))
 
 shutil.rmtree(d)
 print(f"gate failures: {'ok' if not fails else 'FAILED'}")

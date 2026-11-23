@@ -27,6 +27,13 @@ stage that did not run, a target that ended before its summary (a crash, a signa
 exit, a hang naming no test) or exited non-zero after it, an `error` cargo printed outside a target, a failed-target count that does not
 add up, a sim sweep without its closing tally. tools/policy.py checks the list (`known`).
 
+A line `NAME slow:S ISSUE` lists a slow default test instead (notes/gate.md, The summary: Slow
+tests). Each test's wall in the default-test stages (libtest's `<W.WWWs>`, tools/test_time.sh;
+its longest over the stages) is checked: over the per-test bound (the `test` wall limit on this
+box, or GATE_SLOW_S) and unlisted, or over a listed S, it is NEW-SLOW, counted NEW, with the line
+to add or raise; a listed test under the bound over HEADROOM is a stale line (KNOWN-BUT-PASSED). A
+test such a stage ran without a time (doctests aside) is NEW: the runner did not apply.
+
 A listed NAME that ran and passed in every stage that ran it (a `test NAME ... ok` line, a sim
 tally of 0 failed) and failed in none is listed under `KNOWN-BUT-PASSED`: its line is stale (the
 landing removes it) unless it fails at a rate; when every line of NAME is a `rate:` one, it says
@@ -38,14 +45,16 @@ process (tools/prop_run.py's `gate: cost NAME: W s, C CPU-s`), or in a log witho
 line ending `..., W s, C CPU-s` (osis_base::testenv::run_jobs, sim-sweep, the order harness's
 `NAME (SIZE): ...` line, which names test NAME_SIZE), then each test the stage ran with neither.
 """
-import collections, os, re, sys
+import collections, math, os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KNOWN = "tools/known_failures.txt"
 SEGMENT = re.compile(r"^\s+(Running |Doc-tests )")
 RESULT = re.compile(r"^test result: (ok|FAILED)\.")
-FAILED = re.compile(r"^test (.+) \.\.\. FAILED$")
-PASSED = re.compile(r"^test (.+) \.\.\. ok$")
+# libtest's result lines, with `--report-time`'s ` <W.WWWs>` (tools/test_time.sh) or without
+FAILED = re.compile(r"^test (.+?) \.\.\. FAILED(?: <[\d.]+s>)?$")
+PASSED = re.compile(r"^test (.+?) \.\.\. ok(?: <[\d.]+s>)?$")
+TIMED = re.compile(r"^test (.+?) \.\.\. (?:ok|FAILED) <([\d.]+)s>$")
 HINT = re.compile(r"^error: (?:doc)?test failed, to rerun pass `(.*)`$")
 TARGETS = re.compile(r"^error: (\d+) targets? failed:$")
 # `seed N (replay: CMD): why` (osis_base::testenv) or `seed N, EMPHASIS (replay: CMD; ...` (order)
@@ -60,9 +69,17 @@ CPU = re.compile(r"^(\S+?)(?: \(([^()]*)\))?: .*, ([\d.]+) s, ([\d.]+) CPU-s(?:;
 # tools/prop_run.py's line: one test's own process
 PROCESS_CPU = re.compile(r"^gate: cost (\S+): ([\d.]+) s, ([\d.]+) CPU-s$")
 COST_STAGES = ("gate.properties", "gate.sim")
+# The default-test stages, run with per-test times (tools/test_watch.py) and checked against the bound
+TIMED_STAGES = ("default-tests", "gate.gui-tests")
+# R: minor consequence. A test's wall in a gate swings with the box's load (1-2.5x at the loads
+# gates see): a `slow:` line is suggested at this multiple of the wall seen, and is stale once its
+# test runs under the bound divided by it. 1: a listed test flags, and a stale one comes back, on
+# any load rise; infinity: a listed test grows unseen and its line never goes.
+HEADROOM = 2
 
 
-Known = collections.namedtuple("Known", "issue pattern rate counts env")
+Known = collections.namedtuple("Known", "issue pattern rate counts env slow")
+SLOW = re.compile(r"^slow:(\d+)$")
 COUNTS = re.compile(r"^counts:((?:[^\s=,]+=\d+)(?:,[^\s=,]+=\d+)*)$")
 SETTING = re.compile(r"^-$|^(\w+=[^\s,]*)(,\w+=[^\s,]*)*$")
 
@@ -85,6 +102,15 @@ def known(root=ROOT):
         seen[line] = n
         f = line.split(None, 3)
         counts, env = None, {}
+        if len(f) > 1 and f[1].startswith("slow:"):
+            m = SLOW.match(f[1])
+            if len(f) != 3 or not m or int(m.group(1)) == 0:
+                errs.append(f"{KNOWN}:{n}: want `NAME slow:SECONDS ISSUE` (SECONDS a whole number over 0), got {line!r}")
+            elif not (f[2].startswith("issues/") and f[2].endswith(".md") and os.path.isfile(os.path.join(root, f[2]))):
+                errs.append(f"{KNOWN}:{n}: {f[2]}: no such issue file (fixed? drop the line)")
+            else:
+                names.setdefault(test_path(f[0]), []).append(Known(f[2], None, False, None, {}, int(m.group(1))))
+            continue
         if len(f) == 4 and f[3].startswith("counts:"):
             c, _, pat = f[3].partition(" ")
             m = COUNTS.match(c)
@@ -109,16 +135,18 @@ def known(root=ROOT):
         except re.error as e:
             errs.append(f"{KNOWN}:{n}: bad pattern {pat!r}: {e}")
             continue
-        names.setdefault(test_path(name), []).append(Known(issue, pat, repro.startswith("rate:"), counts, env))
+        names.setdefault(test_path(name), []).append(Known(issue, pat, repro.startswith("rate:"), counts, env, None))
     for name, ks in names.items():
-        if any(k.counts is not None for k in ks) and len(ks) > 1:
+        if sum(k.slow is not None for k in ks) > 1:
+            errs.append(f"{KNOWN}: {name}: more than one `slow:` line")
+        if any(k.counts is not None for k in ks) and sum(k.slow is None for k in ks) > 1:
             errs.append(f"{KNOWN}: {name}: a test with a `counts:` line has no other line (its counts are the whole of its failure)")
     return names, errs
 
 
 def counted_envs(root=ROOT):
     """{test path: its `counts:` line's settings}: what tools/prop_run.py runs each at."""
-    return {name: ks[0].env for name, ks in known(root)[0].items() if ks[0].counts is not None}
+    return {name: k.env for name, ks in known(root)[0].items() for k in ks if k.counts is not None}
 
 
 def failing_counts(unit, pattern):
@@ -279,6 +307,31 @@ def costs(text):
     return sorted(rows, reverse=True), [t for t in dict.fromkeys(ran) if t not in named]
 
 
+def times(text):
+    """{test: its longest wall in s} of a stage log's `--report-time` result lines, and the count
+    of tests a `Running` target passed or failed without one (doctests have none)."""
+    out, bare, doc = {}, 0, False
+    for l in text.split("\n"):
+        m = SEGMENT.match(l)
+        if m:
+            doc = m.group(1).startswith("Doc")
+        elif m := TIMED.match(l):
+            out[m.group(1)] = max(out.get(m.group(1), 0.0), float(m.group(2)))
+        elif not doc and (PASSED.match(l) or FAILED.match(l)):
+            bare += 1
+    return out, bare
+
+
+def bound():
+    """(The per-test wall bound in s, None) or (None, why): the `test` wall limit on this box
+    (notes/time-limits.md, Limits), or GATE_SLOW_S (tools/gate_failures_test.py)."""
+    if os.environ.get("GATE_SLOW_S"):
+        return float(os.environ["GATE_SLOW_S"]), None
+    import limits
+    lim, why = limits.limit("test")
+    return (lim[1], None) if lim else (None, why)
+
+
 def main():
     if len(sys.argv) not in (3, 4):
         sys.exit(__doc__)
@@ -311,7 +364,7 @@ def main():
             if name is None:
                 rows.append(("NEW", stage, us))
                 continue
-            listed = names.get(name, [])
+            listed = [k for k in names.get(name, []) if k.slow is None]
             hit = [next((k.issue for k in listed if k.pattern.search(u)), None) for u in us]
             base = listed[0].counts if listed else None
             now = None
@@ -342,24 +395,55 @@ def main():
             print(f"   {c:8.1f} CPU-s {w:7.1f} s  {name}")
         for name in bare:
             print(f"          (no CPU line)  {name}")
+    # each default test's wall against the bound, or its `slow:` line
+    walls, bare = {}, 0
+    for stage, _, log in ((r + ["", ""])[:3] for r in results):
+        if stage in TIMED_STAGES and os.path.exists(log):
+            t, b = times(open(log, errors="replace").read())
+            bare += b
+            for n, w in t.items():
+                if w >= walls.get(n, (-1.0, ""))[0]:
+                    walls[n] = (w, stage)
+    limit, why = bound()
+    slow_lines = {n: k for n, ks in names.items() for k in ks if k.slow is not None}
+    stale_slow = {}
+    if bare:
+        rows.append(("NEW", "default tests", f"{bare} tests ran without a time (tools/test_watch.py runs them under tools/test_time.sh, which adds one): read its output"))
+    if walls and limit is None:
+        print(f"== per-test times not checked: {why}")
+    elif walls:
+        within = 0
+        for n, (w, stage) in sorted(walls.items(), key=lambda x: -x[1][0]):
+            k = slow_lines.get(n)
+            if k and w <= k.slow:
+                within += 1
+                if w <= limit / HEADROOM:
+                    stale_slow[n] = f"{stage}; {k.issue}; slow:{k.slow}, ran {w:.1f} s, under {limit:.0f} s / {HEADROOM}"
+            elif k:
+                rows.append(("NEW-SLOW", stage, f"{n}: {w:.1f} s, over its listed slow:{k.slow} ({k.issue}): slim it, or raise the line to slow:{math.ceil(HEADROOM * w)} with the reason in its issue"))
+            elif w > limit:
+                rows.append(("NEW-SLOW", stage, f"{n}: {w:.1f} s, over the per-test bound {limit:.0f} s (the `test` wall limit): slim it, or list it in {KNOWN} as `CRATE/{n} slow:{math.ceil(HEADROOM * w)} ISSUE` with the reason in ISSUE"))
+        print(f"== per-test times: {len(walls)} tests, bound {limit:.0f} s; {within} listed `slow:` within their line")
     failed = sum(1 for r in results if r[1:2] != ["0"])
     print(f"== test stages: {len(results)} run of {max(sum(expected.values()), len(results))}, {failed} failed")
     for kind, stage, text in rows:
         print(f"   {kind:5} {stage}  {text}" if kind else f"         {text}")
     stale = []
-    for name in sorted(n for n in names if n in ok and n not in bad):
+    fails_known = {n: [k for k in ks if k.slow is None] for n, ks in names.items()}
+    for name in sorted(n for n, ks in fails_known.items() if ks and n in ok and n not in bad):
         stages = ', '.join(sorted(ok[name]))
-        if all(k.rate for k in names[name]):
-            issues = ', '.join(dict.fromkeys(k.issue for k in names[name]))
+        if all(k.rate for k in fails_known[name]):
+            issues = ', '.join(dict.fromkeys(k.issue for k in fails_known[name]))
             print(f"   KNOWN, passed: {name} ({stages}): fails at a rate ({issues}): passing this run is expected")
         else:
-            stale.append(f"   KNOWN-BUT-PASSED: {name} ({stages}; {', '.join(dict.fromkeys(k.issue for k in names[name] if not k.rate))})")
+            stale.append(f"   KNOWN-BUT-PASSED: {name} ({stages}; {', '.join(dict.fromkeys(k.issue for k in fails_known[name] if not k.rate))})")
+    stale += [f"   KNOWN-BUT-PASSED: {n} ({why})" for n, why in sorted(stale_slow.items())]
     if stale:
         print(f"== KNOWN-BUT-PASSED ({len(stale)}): listed, not `rate:`, passing in this run. Remove each line from {KNOWN} "
               "in this landing (and its issue, if fixed), or mark it `rate:` if its issue shows it fails on some seeds only")
         print("\n".join(stale))
     tail = f"; {len(stale)} KNOWN-BUT-PASSED to remove" if stale else ""
-    new = sum(1 for k, _, _ in rows if k in ("NEW", "NEW-TEXT", "NEW-COUNTS"))
+    new = sum(1 for k, _, _ in rows if k in ("NEW", "NEW-TEXT", "NEW-COUNTS", "NEW-SLOW"))
     old = sum(1 for k, _, _ in rows if k == "KNOWN")
     if new:
         print(f"== gate FAILED: {new} NEW, {old} KNOWN{tail}")

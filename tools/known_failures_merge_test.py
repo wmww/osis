@@ -33,6 +33,8 @@ expect("concurrent additions", text, base + f"{d}\ncrate/t_e - issues/e.md pate\
 # resolving in a checkout: a line naming a gone issue drops
 text, report = merge(base, base, base + f"{d}\n", lambda i: i != "issues/d.md")
 expect("gone issue dropped", (text, report[-1].startswith("dropped (issues/d.md is gone)")), (base, True))
+text, report = merge(base, base, base + "crate/t_s slow:30 issues/d.md\n", lambda i: i != "issues/d.md")
+expect("gone issue of a slow line dropped", (text, report[-1].startswith("dropped (issues/d.md is gone)")), (base, True))
 
 # a test's lines changed on both sides are a conflict the driver leaves to a person
 import known_failures_merge as kfm  # noqa: E402

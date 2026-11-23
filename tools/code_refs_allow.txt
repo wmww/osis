@@ -30,7 +30,6 @@ ptrace_scope  third-party: Linux sysctl
 GLIBC_TUNABLES  third-party: glibc
 trim_threshold  third-party: glibc tunable
 mmap_threshold  third-party: glibc tunable
-RUSTC_BOOTSTRAP  third-party: rustc
 PROPTEST_RNG_SEED  third-party: proptest
 WAYLAND_DISPLAY  third-party: Wayland
 run_in_background  third-party: Claude Code's Bash tool

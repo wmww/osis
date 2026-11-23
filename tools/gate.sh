@@ -44,7 +44,8 @@ limited() { local n; n=$1; shift; step "$@"; python3 "$tools/limits.py" check "$
 # it returns 0 whatever CMD did, so no failure ends a later stage. Its stdin is /dev/null: one
 # reading stdin would eat the held runner's later lines. A stage of default tests (held to the
 # `test` limit) runs under tools/test_watch.py, which stops a target where no test finishes for a
-# multiple of that limit and names its running tests "hung" (notes/gate.md, Hung tests).
+# multiple of that limit and names its running tests "hung" (notes/gate.md, Hung tests), and times
+# each test for the summary's per-test bound (notes/gate.md, The summary).
 tested() {
   local n log s c; n=$1; log=$2; shift 2
   printf '== %s\n' "$*"; s=$(date +%s); cpu; c=$cpu

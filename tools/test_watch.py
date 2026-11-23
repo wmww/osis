@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Runs a `cargo test` command with a hang bound (notes/gate.md, Hung tests): its output (stderr
-merged) passes through unchanged, and when no test of the running target has finished for HANG
+"""Runs a `cargo test` command with a hang bound (notes/gate.md, Hung tests) and per-test times:
+each test binary runs under cargo's runner tools/test_time.sh (libtest's `--report-time`: `test
+NAME ... ok <W.WWWs>`, which tools/gate_failures.py checks against the per-test bound). Its output
+(stderr merged) passes through unchanged, and when no test of the running target has finished for HANG
 times the `test` wall limit (notes/time-limits.md, Limits), and at least twice libtest's 60-second
 notice, counted from the target's start or its last finished test, the target is stopped: every
 process below each `cargo` process in CMD's tree (the test binary or rustdoc and what they
@@ -19,7 +21,9 @@ import ctypes, os, re, select, signal, subprocess, sys, time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import limits
+import limits, test_select
+
+TIMER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_time.sh")
 
 # R: a run-away bound. 0: every target is stopped before its first test ends; infinity: a hung test
 # holds the gate and the box-wide heavy lock until someone notices. Past it a test has run 10 times
@@ -118,7 +122,8 @@ def main():
     hang = bound()
     # PR_SET_CHILD_SUBREAPER: a process orphaned below (its cargo killed) stays in this tree
     ctypes.CDLL(None).prctl(36, 1, 0, 0, 0)
-    child = subprocess.Popen(sys.argv[1:], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    env = dict(os.environ, **{test_select.runner_var(): TIMER})
+    child = subprocess.Popen(sys.argv[1:], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
 
     def quit(sig, _):
         stop(child.pid, everything=True)
