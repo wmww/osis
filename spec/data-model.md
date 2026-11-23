@@ -1,5 +1,5 @@
 # Data model and value encoding
-> Summary: The data everything else carries: things, tids, aspects, types, canonical value encoding, large values, hashing, references (strong, weak, ticket), `holds.0` and tags, core aspects and schemas.
+> Summary: The data everything else carries: things, tids, aspects, types, canonical value encoding, large values, hashing, references (strong, weak), `holds.0` and tags, core aspects and schemas.
 
 ## 1. Things and tids
 - Every datum is an **aspect** of a **thing**. A thing holds aspects and nothing else.
@@ -31,7 +31,7 @@
 
 ## 3. Types
 - Scalars: `string` (UTF-8), `blob` (bytes), `bool`, `int` (i64), `float` (f64).
-- References (§8): `strong`, `weak`, `ticket`, and `ref`: a strong or a weak, the writer choosing per value. No type, encoding or API gives a reference a default kind.
+- References (§8): `strong`, `weak`, and `ref`: a strong or a weak, the writer choosing per value. No type, encoding or API gives a reference a default kind.
 - `enum { id case, id case(T), ... }`: cases with explicit non-negative integer IDs and optional payload type.
 - `struct { id field: T, ... }`: fields with explicit non-negative integer IDs and an optional constant default.
 - `list<T>`, `map<K, V>`, `set<T>`: any type as element, key or value.
@@ -67,11 +67,10 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 | set | tag 258 around an array sorted by canonical encoded bytes of the elements |
 | strong | tag 1620 (STRONG) around the target's tid, a 15-byte byte string |
 | weak | tag 1621 (WEAK) around the target's tid, a 15-byte byte string |
-| ticket | tag 1622 (TICKET) around `[target, sync_id, role, epoch, box, holder, profile]` (§8) |
 | enum | tag 1617 (ENUM) around `[case_id]` or `[case_id, payload]`; `case_id` a major-0 integer at most 2^63 - 1 |
 | link | tag 1618 (LINK) around `[content hash, blob ID, suite byte || key, salt, [[level, pk]*]]` (§6) |
 
-- Tag numbers ENUM = 1617, LINK = 1618, STRONG = 1620, WEAK = 1621, TICKET = 1622 (unassigned in the IANA CBOR tags registry); 1619 (STRUCT) is reserved, unused; 1616 is retired, never reused: a decoder rejects it. Each encodes as `0xd9` plus two big-endian bytes.
+- Tag numbers ENUM = 1617, LINK = 1618, STRONG = 1620, WEAK = 1621 (unassigned in the IANA CBOR tags registry); 1619 (STRUCT) is reserved, unused; 1616 is retired, never reused: a decoder rejects it. Each encodes as `0xd9` plus two big-endian bytes.
 - RFC 8949 §4.2.1 core deterministic rules: shortest integer and length heads, definite lengths only, sorted map keys, no duplicate keys. Deviation: floats are always 8 bytes, so a float's bytes are its bit pattern.
 - A set with two elements, or a map with two keys, that are equal under §4 and §6 (distinct bytes, links of one content hash) is rejected.
 - No `null`, `undefined` or simple values other than true and false.
@@ -85,10 +84,10 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
   - A role-class aspect's values (§9) stay inline, whatever their size.
   - A delta on any other aspect holding such a value unchunked is bad by itself (spec/commits.md §4), judged without its type: a `Str` or `Bytes` in a register value, a set or bag element's whole value, a map key.
 - Chunking: content-defined boundaries over the canonical bytes, chunker of spec/wire.md §6, giving a tree: leaves are chunks, interior nodes hold links with the plaintext length under each; the value's place in the enclosing CBOR holds the root link. Chunker, tree shape and node layout: spec/wire.md §6.
-- Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync-ids.md §1). A **link** = (keyed content hash of the subtree, blob ID, suite byte || 32-byte blob key, the blob's 16-byte prefix salt, its delete keys: `[level, pk]` pairs, levels 1 to 3 strictly ascending, `pk` 32 bytes) (spec/crypto.md §6, §7): what reads the blob and what deletes it. A decoder rejects any other shape (as tag content); a link's salt and delete keys are its writer's claim, never checked when reading; the root's content hash is a function of the value's canonical bytes alone (spec/wire.md §6).
+- Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync-ids.md §1). A **link** = (keyed content hash of the subtree, blob ID, suite byte || 32-byte blob key, the blob's 16-byte prefix salt, its delete keys: `[level, pk]` pairs, levels 1 to 3 strictly ascending, `pk` 32 bytes) (spec/crypto.md §6, §7): what reads the blob and what deletes it. A decoder rejects any other shape (as tag content); a link's salt is its writer's claim, never checked when reading, and its delete keys are checked against its delta's (spec/crypto.md §7 Checked keys); the root's content hash is a function of the value's canonical bytes alone (spec/wire.md §6).
 - Equality of a large value is equality of its keyed content hash, never of its link bytes.
 - A link stands only where the type takes one: a blob, string or `any` position, or a set element or map key (or a position inside one) whose type is not **small**.
-  - Small types can never exceed `CHUNK_THRESHOLD`: `bool`, `int`, `float`, `strong`, `weak`, `ref`, `ticket`, counter, max, min, and an enum whose cases carry no payload.
+  - Small types can never exceed `CHUNK_THRESHOLD`: `bool`, `int`, `float`, `strong`, `weak`, `ref`, counter, max, min, and an enum whose cases carry no payload.
   - A link anywhere else is a type mismatch (spec/versioning.md §5): a typed read reports it without fetching the link.
   - In a core aspect (§9) it is bad input (spec/crdt.md §3.3 rule 7).
 - A read that materializes a link it cannot read (a blob of its tree not held, which includes a blob ID nothing holds, failing to decrypt or verify under the thing's dedup secret, spec/crypto.md §6, or a value nesting deeper than its position leaves room for, §5) MUST fail only that position: the link reads as absent (its list or set element, its map entry or struct field, and an enum whose payload it is, read as absent; at the aspect root the aspect reads absent), the rest of the value reads, and the node reports a diagnostic.
@@ -104,32 +103,15 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - There is no thing hash and no state hash.
 
 ## 8. References
-- A **reference** (ref) is a strong, a weak or a ticket inside a value. A **strong** makes its target part of the closure of the thing holding it (spec/sync-set.md §2); a **weak** only points; a **ticket** is a weak that also carries what syncing its target needs (Tickets). A strong and a weak to one tid are different values.
+- A **reference** (ref) is a strong or a weak inside a value. A **strong** makes its target part of the closure of the thing holding it (spec/sync-set.md §2); a **weak** only points. A strong and a weak to one tid are different values.
 - A reference grants nothing: anyone who may write a value may write a reference to any tid in it, and removing one revokes nothing (spec/permissions.md §1).
 - Types bind the local writer only (spec/versioning.md §5): a reference counts by the kind written, whatever type its position has or whether any schema types it.
-- **What counts**: a thing's references are those in the current value of each of its aspects as an untyped read returns it (`roles.0`: its roster, §9), at any depth (map keys, set elements and unknown tags' content included; a ticket's content holds tids, no references) and any value size (§6), an ephemeral aspect's while the node holds its value. History counts only as Held history says, a value-less write never. A signal has no current value: a reference in a fire adds nothing to a closure.
-- **Held history**: on a thing whose current setting has `history_holds_targets` (spec/commits.md §5 The setting), a strong in a held valid body (spec/commits.md §5 Bodies and deaths, live or replaced, a snapshot's included) of a durable aspect of it that is no signal and has no fixed retention (spec/commits.md §5 Fixed retention) makes its target part of the closure as a strong in a current value does, while the node holds that body: until it drops (as covered, by expiry, by purge request, as invalid) or the thing is released. Weaks and tickets in history count for nothing; nor are such strongs known references.
-- **Known references**: a node knows every reference in the current values (What counts) and in the held fires of the things it holds and may read, each with its kind, the thing and AK holding it. Backlinks of a thing list every known reference to it, from any aspect. A ticket for a thing is found among them by the thing's tid (spec/sync-set.md §2).
+- **What counts**: a thing's references are those in the current value of each of its aspects as an untyped read returns it (`roles.0`: its roster, §9), at any depth (map keys, set elements and unknown tags' content included) and any value size (§6), an ephemeral aspect's while the node holds its value. History counts only as Held history says, a value-less write never. A signal has no current value: a reference in a fire adds nothing to a closure.
+- **Held history**: on a thing whose current setting has `history_holds_targets` (spec/commits.md §5 The setting), a strong in a held valid body (spec/commits.md §5 Bodies and deaths, live or replaced, a snapshot's included) of a durable aspect of it that is no signal and has no fixed retention (spec/commits.md §5 Fixed retention) makes its target part of the closure as a strong in a current value does, while the node holds that body: until it drops (as covered, by expiry, by purge request, as invalid) or the thing is released. Weaks in history count for nothing; nor are such strongs known references.
+- **Known references**: a node knows every reference in the current values (What counts) and in the held fires of the things it holds and may read, each with its kind, the thing and AK holding it. Backlinks of a thing list every known reference to it, from any aspect.
 
-### Tickets
-- A ticket's content is `[target, sync_id, role, epoch, box, holder, profile]`:
-  - `target`: the target's tid; `sync_id`: its sync ID (spec/sync-ids.md §2), 16 bytes;
-  - `role`: the role of the secret as a uint, its `role` case ID (§9): read (0) or sync (3);
-  - `epoch`: `[n, nonce]`, the secret's epoch (spec/crypto.md §4), `n` a uint, `nonce` 32 bytes;
-  - `box`: a `box` value (§9) holding the target's secret of `role` at `epoch`, boxed to `holder` exactly as a `secrets.0` box of the target to that holder is (spec/crypto.md §4 Boxes; AD and payload: spec/wire.md §7);
-  - `holder`: the tid of the thing the box is to; `profile`: the tid of the issuer's profile (spec/sync-set.md §1).
-  - Tids are 15-byte byte strings. A decoder rejects any other shape (as tag content), and any other role.
-- A ticket carries no address and adds nothing to a closure: it is a weak to its target.
-- A node **can open** a ticket when it holds a key its box opens under (spec/crypto.md §4 Boxes). The opened secret is held as the secret of the epoch the box names, as any box's, establishes nothing (spec/crypto.md §4) and is taken only as spec/permissions.md §3 No secret taken back allows.
-- A ticket is made from a secret of the target its maker holds, boxed to a holder of `role` or above on the target as the maker judges it, by one of:
-  - a node that may grant `role` on the target (spec/permissions.md §2: by a path giving admin on it, or may-grant at `role` or above);
-  - a node changing the target's keys, for each holder the change boxes (spec/sync-inbox.md §5 Key changes);
-  - a node for its own account: it grants nothing, the account already holds the role.
-- Anyone may copy one. Nothing signs it: its `sync_id` is its issuer's word (spec/sync-inbox.md §5 Ticket sync IDs) and `profile` a dial hint, never proof of who issued it.
-
-### `holds.0`, `tickets.0` and tags
-- `holds.0` (`set<ref>`: strongs and weaks, never a ticket) is a plain container: its references count as any (What counts). The node root and the account root hold their strongs there (spec/sync-set.md §1).
-- `tickets.0` (`set<ticket>`) is a plain container of tickets, as `holds.0` is of strongs and weaks: its tickets work as any held ticket (spec/sync-set.md §2). The account root holds its tickets there (spec/sync-set.md §1 The account's tickets).
+### `holds.0` and tags
+- `holds.0` (`set<ref>`: strongs and weaks) is a plain container: its references count as any (What counts). The node root and the account root hold their strongs there (spec/sync-set.md §1).
 - A **tag** is a thing with `holds.0` and `tag.0`: what it tags is what its `holds.0` references. `tag.0` marks it as one users see.
 
 ## 9. Core schema
@@ -139,15 +121,15 @@ The core aspects form the core schema, evolving under spec/versioning.md. `schem
 - `signers.0` (a map keyed by the canonical bytes of a `signing_key` value, its values grants as `roles.0`'s): the thing's key grants (spec/permissions.md §1, §2 Key grants), written as `roles.0` is: an edge write granting or changing a key's grant puts a new entry keyed by it holding the whole grant (spec/crdt.md §5.6 `put_new`); every edge write on it resets that key's current entry (spec/permissions.md §2 Edge writes). A grant's value here holds its role, its may-grant flag and optionally `until`. A delta writing inside an entry it does not create, a value that is no well-formed grant or carries `retain` or `floor` or `until` 0, or a key that is no `signing_key` value is bad by itself (spec/commits.md §4). It reads as the role timeline's key grants (spec/permissions.md §5.1), beside the key the thing's creation record holds, not as the join of the stored deltas.
 - `addenda.0` is read per delta, never as state.
 - `keys.0`: spec/crypto.md §3, spec/sync-ids.md §2; `signing` is set only on an account's (the current epoch's signing key; `key` beside it is that epoch's KEM key). `secrets.0`: spec/crypto.md §4. `sync.0`: spec/sync-ids.md §4. `reach.0`: spec/sync-transport.md §3 (a node's dialable key, its global addresses and relays). Box payloads, history box layout and AD tuples: spec/wire.md §7.
-- **References in core aspects**: every thing a core aspect's value names (schema/core.osis) is named by a weak: a creation record's `admin` and `link`, `roles.0`'s holders, box keys' holders, `left_out`'s holders, `reach.0`'s account, `keys.0`'s inbox, `caps^.0`'s things, `clients^.0`'s client actors; but `holds.0` holds refs and `tickets.0` tickets.
-- `node.0`, `reach.0` are written on node things; `caps^.0`, `clients^.0` on the node root (spec/sync-set.md §1); `dial^.0` on an account's profile; `ticket@~0`, `removal@~0`, `stranded@~0` on an inbox and on each thing with a sync ID that is not an account (spec/sync-inbox.md §1). `node.0` and `reach.0` go under the account root D's sync ID only (spec/permissions.md §4). A node's last sync is its own record; stranded reports go over connections and as `stranded@~0` fires, suspect lists over connections only (spec/permissions.md §4).
+- **References in core aspects**: every thing a core aspect's value names (schema/core.osis) is named by a weak: a creation record's `admin` and `link`, `roles.0`'s holders, box keys' holders, `left_out`'s holders, `reach.0`'s account, `keys.0`'s inbox, `caps^.0`'s things, `clients^.0`'s client actors; but `holds.0` holds refs.
+- `node.0`, `reach.0` are written on node things; `caps^.0`, `clients^.0` on the node root (spec/sync-set.md §1); `dial^.0` on an account's profile; `grant@~0`, `stranded@~0` on an inbox and on each thing with a sync ID that is not an account (spec/sync-inbox.md §1). `node.0` and `reach.0` go under the account root D's sync ID only (spec/permissions.md §4). A node's last sync is its own record; stranded reports go over connections and as `stranded@~0` fires, suspect lists over connections only (spec/permissions.md §4).
 - **`account.0`** on an account's D: `set<blob>`, the 32-byte signing public keys (spec/crypto.md §3) of the epochs whose seeds the account's commits on D box: added by the commit creating the account and D (its first epoch), by each rotation (the epoch it mints) and by each seed re-seal (the epoch whose seed it boxes, spec/crypto.md §9). It marks D as the account's.
 - **`listing.0`**: `map<blob, set<blob>>`, a rotation's 32-byte commit ID to the 32-byte commit IDs a listing names (spec/permissions.md §5.5); entries only put, never reset. Read per delta, never as state.
 - `retention^.0`: what the thing keeps of replaced content per AK, the expiry a writer gives its writes there, `final` (a writer replaces no fire there) (spec/commits.md §5 The setting), and its removal default (`retain`, spec/permissions.md §2, §3); admin-only, ordinary retention.
 - `purge.0`: the delta a purge request naming no aspect to reset carries (spec/commits.md §5).
-- `holds.0`, `tickets.0`, `tag.0`: §8.
+- `holds.0`, `tag.0`: §8.
 - **`caps^.0`**: the limits (`policy`, per-thing `things`, applied to each sync ID the thing owns) on what peers may make the node store of the sync IDs it keeps unread (spec/sync-ids.md §5); local policy, absent: the defaults.
-- **`ticket@~0`**, **`removal@~0`** and **`stranded@~0`** (spec/sync-inbox.md §1), the only core signals, all external (`@`): a `ticket@~0` fire is `struct { thing 0: ticket, profile 1: option<ticket>, grant 2: option<struct { commit 0: blob, chain 1: list<blob>, records 2: list<blob> }> }` (spec/sync-inbox.md §5; `grant` as a removal notice's fields); a `removal@~0` fire is `struct { commit 0: blob, chain 1: list<blob>, records 2: list<blob> }`, a removal notice (spec/sync-inbox.md §5); a `stranded@~0` fire is `struct { sync_id 0: blob, holder 1: weak, keys 2: list<blob>, records 3: list<blob> }`, a stranded notice (spec/permissions.md §4 Stranded): the sync ID, the holder, and its holder keys (`keys` the `CommitBlobPlaintext` values, `records` the `creation` values, spec/wire.md §9 Holder keys).
+- **`grant@~0`** and **`stranded@~0`** (spec/sync-inbox.md §1), the only core signals, both external (`@`): a `grant@~0` fire is `struct { grant 0: blob, evidence 1: list<blob>, records 2: list<blob> }`, a grant from outside (spec/sync-inbox.md §5): the role commit's certificate copy on its target and that copy's evidence (`CommitBlobPlaintext` values, spec/wire.md §4) and their records (`creation` values, spec/wire.md §3); a `stranded@~0` fire is `struct { sync_id 0: blob, holder 1: weak, keys 2: list<blob>, records 3: list<blob> }`, a stranded notice (spec/permissions.md §4 Stranded): the sync ID, the holder, and its holder keys (`keys` the `CommitBlobPlaintext` values, `records` the `creation` values, spec/wire.md §9 Holder keys).
 - **`dial^.0`** on an account's profile: `map<blob, list<text>>`, a node's dialable key to its URLs (spec/sync-set.md §1; spec/sync-opens.md §1); written by the account, each node keeping its own entry; read by contacts.
 - **`clients^.0`**: clients acting as a thing of their own, by client actor (spec/sync-transport.md §6).
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
