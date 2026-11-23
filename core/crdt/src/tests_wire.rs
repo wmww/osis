@@ -69,7 +69,7 @@ fn decoded(b: &[u8]) -> Result<Fragment, (ErrorClass, String)> {
 // where it names the rule): non-canonical CBOR, out-of-range indices, own counters out of
 // range, non-canonical forms, foreign stamps, a nested register reset, too-deep values, a
 // commit-level write off the delta stamp (only creations and position writes take counters
-// above `lo`); an unknown encoding parks (§3.1; spec/versioning.md §2 (park unknown)).
+// above `lo`), a value-less write; an unknown encoding parks (§3.1; spec/versioning.md §2 (park unknown)).
 #[test]
 fn writer_delta_rejections_spec_3_3() {
     let ok = decoded(&delta(vec![], vec![], set_with(vec![elem(i(3), 1), elem(i(4), 2)]))).unwrap();
@@ -86,6 +86,12 @@ fn writer_delta_rejections_spec_3_3() {
     let deep = (0..70).fold(i(1), |v, _| l(vec![v]));
     let at4 = || l(vec![i(0), i(4)]);
     let bad = ErrorClass::BadInput;
+    // one list element created at HEAD, its content a register, with or without a trailing marker
+    let list_run = |marker: bool| {
+        let creation = l([vec![i(0), l(vec![l(vec![i(0), i(1)])])], marker.then_some(Value::Bool(false)).into_iter().collect()].concat());
+        delta(vec![], vec![], l(vec![i(8), l(vec![]), l(vec![]), l(vec![l(vec![i(3), i(1), creation, l(vec![l(vec![i(0), l(vec![]), i(0), i(1)])]), l(vec![]), l(vec![])])])]))
+    };
+    assert!(decoded(&list_run(false)).is_ok(), "{:?}", decoded(&list_run(false)));
     let rows: Vec<(&str, Vec<u8>, ErrorClass, &str)> = vec![
         ("non-shortest int", non_shortest, bad, ""),
         ("src 1 with an empty sources table", one(elem(l(vec![i(1), i(2)]), 1)), bad, ""),
@@ -108,6 +114,11 @@ fn writer_delta_rejections_spec_3_3() {
         ("a reset off the delta stamp", delta(vec![], vec![], l(vec![i(6), l(vec![at4()]), l(vec![]), l(vec![])])), bad, ""),
         ("a W off the delta stamp", delta(vec![], vec![], l(vec![i(6), l(vec![]), l(vec![at4()]), l(vec![])])), bad, ""),
         ("an element reset off the delta stamp", one(l(vec![i(4), l(vec![at4()]), l(vec![])])), bad, ""),
+        // no value-less forms (§3.2, §4.7: a gone write is removed, never held without its value)
+        ("a register write without its value", delta(vec![], vec![], l(vec![i(0), l(vec![]), i(0)])), bad, ""),
+        ("a value-less W", delta(vec![], vec![], l(vec![i(6), l(vec![]), l(vec![i(0), Value::Bool(false)]), l(vec![])])), bad, ""),
+        ("a case write without its case", delta(vec![], vec![], l(vec![i(5), l(vec![]), l(vec![]), l(vec![l(vec![i(0)])]), Value::Map(Default::default())])), bad, ""),
+        ("a list creation marked value-less", list_run(true), bad, ""),
         ("an unknown encoding", delta(vec![], vec![], l(vec![i(42), l(vec![])])), ErrorClass::Parked, ""),
     ];
     for (what, b, class, msg) in rows {
