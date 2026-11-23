@@ -13,7 +13,7 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 
 ## In flight beside it
 In-flight lines name issues in words, not paths: a branch that closes its issue would fail policy on this note.
-- `mizzen-dating-redesign` (worker, fable; built, reads flat; sent back to pack its held-writes rows into pages and drop its small-aspect mode, which a roster scale test fails on bytes): every write on a kept aspect reads a big earlier body whole once per session; a position-based durable held-writes index, incremental dating, long runs split across pages. Its state section is in notes/engine-retention-dating.md.
+- `mizzen-dating-redesign` (worker, fable; built, reads flat; rows packed into pages; now: rows only from an aspect's first death (no small mode), keys in path order for the roster write): every write on a kept aspect reads a big earlier body whole once per session; a position-based durable held-writes index, incremental dating, long runs split across pages. Its state section is in notes/engine-retention-dating.md.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
 ## Safe parallel work queue (outside the rewrite)
