@@ -292,10 +292,13 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Ve
         if v.is_some() {
             continue;
         }
-        match core.ix.holder_keys.get(&(*target, d.clone())) {
-            Some(m) if k.is_some_and(|k| k != *m) => {}
+        // the entry's creation: one held, else this delta's own (`note_keys` records it so once
+        // the commit is held)
+        let own_key = || es.iter().find(|(x, m, _)| x == d && m.is_some() && own.is_some_and(|o| o.owns(x.origin()))).and_then(|x| x.1);
+        match core.ix.holder_keys.get(&(*target, d.clone())).copied().or_else(own_key) {
+            Some(m) if k.is_some_and(|k| k != m) => {}
             Some(m) => {
-                removed.insert(*m);
+                removed.insert(m);
             }
             None => known &= k.as_ref().is_some_and(live_put),
         }
@@ -414,31 +417,48 @@ pub(crate) fn note_notices(core: &mut Core, id: &CommitId) {
     core.notices_due.extend(edges);
 }
 
-/// Does a path of held grants and record links lead from `author` to a thing on `chain`
-/// (spec/commits.md §4 Unjudgeable)? A path climbs role grants and record links, as perm's
-/// effective role counts them (spec/permissions.md §1): a removal names a holder but leads
-/// nowhere. Searched backward from `chain`, as perm's `roles_to_any`: from a thing to its mint
-/// admin and to the holders granted on it, so the search stays within what has authority over the
-/// chain.
-pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
-    let held = &core.ix.held;
-    let mut stack: Vec<Tid> = chain.to_vec();
-    let mut seen: BTreeSet<Tid> = chain.iter().copied().collect();
-    while let Some(t) = stack.pop() {
-        let first = match held.created(&t) {
-            Some(CreationRecord::Thing { admin, .. }) => Some(admin),
-            _ => None,
-        };
-        for y in first.into_iter().chain(held.granted_on(&t)) {
-            if y == author {
-                return true;
+/// Whether an edge of the path a part states has not arrived (spec/commits.md §4 Unjudgeable):
+/// one that is no record edge and that no held edge write puts a grant on, of any validity and
+/// whatever followed (a removed author keeps its grant's write and still applies, judged
+/// invalid). The part is by `signer` on `t` along `along`, its hops `direct` marked; `edge_class`
+/// for a `roles.0` part, `leaves` for one read as a self-removal, whose path ends at its holder,
+/// the last thing listed or the signer (spec/permissions.md §1 Path). A path stating no edges (a
+/// thing named twice, a bad mark) is judged as it is. `record`: the records held, or carried by
+/// the commit. No other path is read: one that would also lead to `t` judges nothing (§1).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn unreached(core: &Core, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: &Tid, edge_class: bool, leaves: bool, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> bool {
+    // the record chains of the path's members: what its descents read
+    let mut mint: BTreeMap<Tid, Tid> = BTreeMap::new();
+    for start in [signer, *t].into_iter().chain(along.iter().copied()) {
+        let mut x = start;
+        for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH {
+            let Some(up) = record(&x).and_then(|r| r.mint_admin()) else { break };
+            if mint.insert(x, up).is_some() {
+                break;
             }
-            if seen.insert(*y) {
-                stack.push(*y);
-            }
+            x = up;
         }
     }
-    false
+    let holder = leaves.then(|| along.last().copied().unwrap_or(signer));
+    let hops = osis_perm::paths::hops(&mint, signer, along, direct, *t, holder, edge_class);
+    hops.iter().any(|(p, q)| mint.get(q) != Some(p) && !core.ix.held.granted_on(q).any(|h| h == p))
+}
+
+/// Whether the `roles.0` part of aspect `ai` of commit `id` (`es` its entries, `known`: every
+/// edge part held of the commit resolved, `resolved`) makes a self-removal: an edge write on the
+/// holder its thing's path ends at (the last thing listed, or the signer). A commit with a reset
+/// whose creation is not held makes no edge write yet (`add_role_commit`), nor does a split one
+/// or a part on a thing too deep.
+pub(crate) fn leaves(core: &Core, h: &Header, id: &CommitId, ai: usize, es: &[Entry], known: bool) -> bool {
+    let (Some(a), osis_commit::Paths::One(p)) = (h.aspects.get(ai), &h.path) else { return false };
+    let end = p.to(&a.tid).last().copied().unwrap_or(h.signer);
+    known && !too_deep(core, &a.tid) && edge_ops(core, &a.tid, es, Owned::of(h, id, ai).as_ref()).0.iter().any(|o| o.holder == end)
+}
+
+/// Whether every reset of the `roles.0` entries `es` of aspect `ai` of commit `id` names a write
+/// held here (`edge_ops`).
+pub(crate) fn resolved(core: &Core, h: &Header, id: &CommitId, ai: usize, es: &[Entry]) -> bool {
+    h.aspects.get(ai).is_none_or(|a| too_deep(core, &a.tid) || edge_ops(core, &a.tid, es, Owned::of(h, id, ai).as_ref()).1)
 }
 
 /// The role a `keys.0` or `secrets.0` delta needs (spec/permissions.md §3). `keys.0`: a writer

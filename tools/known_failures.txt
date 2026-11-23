@@ -13,9 +13,5 @@ osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=146887569055 issues/custody-differential-failures.md node \w+, account \w+: seeds held: engine
 osis-crdt/tests_seq::slots_join_follows_cache_plain_spec_7 rate:OSIS_CRDT_START=828121608434 issues/slots-join-floor-small-size.md joins on slots: \d+ over \d+ seeds, under the floor
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
-osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=300644506442,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
-osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=610442177300,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
-osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=421200482733,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
-osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=278997924631,OSIS_ORDER_LEN=60 issues/order-settings-seed.md applied: model false, node true; parts \[.*created\.0 mint admin
 osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=47 issues/seq-cold-edits-follow-gaps.md same delta as on the whole state
-osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=410914575349,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=512007751,OSIS_ORDER_LEN=60 issues/order-purged-message-shown.md shows other than the node keeping every body: Tid\(\S+\) t:msg\.0

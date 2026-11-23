@@ -921,8 +921,9 @@ mod tests {
         assert_eq!(of_y(&mut lp, t, y, &on_y), (false, false), "Y's record or roster under T");
     }
 
-    // spec/permissions.md §4; Interim (issues/chains-retired.md), as above: W writes T acting for Y, holding no
-    // role on Y: its chain to Y carries nothing of Y (the commit is invalid without it).
+    // spec/permissions.md §4, spec/commits.md §4 Unjudgeable; Interim (issues/chains-retired.md), as
+    // above: W writes T acting for Y, holding no role on Y: no write is held on the edge its path
+    // states from W to Y, so the commit pends at node 0, which logs nothing of Y for it.
     #[test]
     fn acting_for_an_actor_one_holds_no_role_on_logs_nothing_of_it_spec_permissions_4() {
         let (mut lp, _, y, t, on_y) = private_world();
@@ -931,7 +932,7 @@ mod tests {
         m.act_as(y);
         let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
         lp.sync_all().unwrap();
-        assert!(lp.peers[0].engine.kept_invalid(&c), "the write for Y is invalid at node 0");
+        assert!(lp.peers[0].engine.pending().iter().any(|(id, r)| *id == c && matches!(r, crate::Reason::MissingChain(_))), "the write for Y cannot be judged at node 0");
         assert_eq!(of_y(&mut lp, t, y, &on_y), (false, false), "Y's record or roster under T");
     }
 

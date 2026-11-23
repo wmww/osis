@@ -468,16 +468,17 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
-// spec/permissions.md §1 Path, §5.2 Content: Bob, a writer of D, signs a write stated through
-// Carol though he holds no write on her: its path gives nothing, so receivers judge it invalid
-// and it never reads as Carol's; the same write stated as Bob himself is valid.
+// spec/permissions.md §1 Path, spec/commits.md §4 Unjudgeable: Bob, a writer of D, signs a write
+// stated through Carol though nothing was ever granted him on her: no write is held on that edge
+// of its path, so receivers cannot judge it; it pends and never reads as Carol's. The same write
+// stated as Bob himself is valid.
 #[test]
 fn forged_actor_invalid_spec_perm_5_2() {
     let (mut lp, d, b, c) = setup();
     lp.advance(1_000);
     let forged = forge_acting(&mut lp, d, c, "as carol");
-    lp.peers[0].receive(&forged, Vec::new()).unwrap();
-    assert!(lp.peers[0].engine.pending().is_empty());
+    let r = lp.peers[0].receive(&forged, Vec::new()).unwrap();
+    assert!(matches!(r, Ingested::Pending(_, osis_engine::Reason::MissingChain(x)) if x == b), "{r:?}");
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("new")), "a write acting for an actor its author cannot act for applied");
     lp.advance(1_000);
     let own = forge_acting(&mut lp, d, b, "as bob");
@@ -2897,7 +2898,12 @@ fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi), None).map_err(|e| format!("{e:?}"))?;
     let mut aw = AspectWrite::new(rec.tid(), ak("created.0"), r.lo, r.hi, bytes);
     aw.purge_by = purge_by;
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, osis_commit::Path::default(), form);
+    // stated along its mint admin, as a writer of it mints (spec/permissions.md §1 Path)
+    let path = match rec.mint_admin() {
+        Some(up) if up != author => osis_commit::Path { purge: 0, things: vec![up], direct: 0 },
+        _ => osis_commit::Path::default(),
+    };
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, path, form);
     cb.aspects.push(aw);
     cb.expires = expires;
     let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
@@ -4250,9 +4256,11 @@ fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
 // to `k1`), and seals D's parts twice: `one` holds D's parts carrying `k1`; `other` D's parts
 // carrying `k2` and P's. Alice takes both in either order, or one alone. `k2` is no key of the
 // entry, so `other`'s D section holds nothing, wherever it comes: P's write applies wherever
-// `other` is held, and the key Alice keeps for D is `k1` in both orders, before and after a
-// reopen (D's write, stated along the made-up path `k1` opens, applies nowhere). Without the commitment, `other` after `one` would replace D's key
-// (one key per (commit, thing)) and void D's write that the other order applies.
+// `other` is held, and `k2` never stands for D's key: `other` after `one` leaves D's entry opened
+// under `k1`, and `one` after `other` is taken, its part on D waiting with its key, before and
+// after a reopen (D's write, stated along the made-up path `k1` opens, cannot be judged and applies
+// nowhere; with `one` alone the commit pends whole). Without the commitment, `other` after `one`
+// would replace D's key (one key per (commit, thing)).
 #[test]
 fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
     let (mut lp, (d, p, _, c)) = split_world();
@@ -4280,10 +4288,18 @@ fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
             if reopened {
                 crate::flows::reopen(&mut w, 0).unwrap();
             }
-            assert_eq!(held(&mut w, 0, &id).keys.get(&id_), order.contains(&&one).then_some(&k1), "{at}: D's key ({reopened})");
-            // spec/permissions.md §1 Path (nothing but the stated path judges a part): under `k1`
-            // the entry states a path of four made-up things, which gives nothing, so D's write
-            // applies in no order; which key is kept is what the orders must agree on
+            // `k1` is kept where `one` is held: with the commit where it came first, else with
+            // its part on D, which waits; `k2` opens nothing in any order
+            let e = &mut w.peers[0].engine;
+            let opened = e.core.ix.commits.get(&id).and_then(|m| m.view.paths.clone()).and_then(|p| p.get(&d).cloned());
+            let on_d = f.header.aspects.iter().position(|a| a.tid == d).unwrap();
+            let waits = e.pending_parts(&id).unwrap().is_some_and(|p| p.contains(&on_d));
+            assert_eq!(opened.map(|p| p.is_some()), (order.len() == 2 && order[0] == &one).then_some(true), "{at}: D's path ({reopened})");
+            assert_eq!(waits, order.contains(&&one), "{at}: D's part waits ({reopened})");
+            // spec/permissions.md §1 Path, spec/commits.md §4 Unjudgeable: under `k1` the entry
+            // states a path of four made-up things, no edge of which a held write set, so D's
+            // write cannot be judged and applies in no order; which key opens the entry is what
+            // the orders must agree on
             assert_eq!(reg(&mut w, d), before.0.clone(), "{at}: D ({reopened})");
             assert_eq!(reg(&mut w, p), if order.contains(&&other) { Some(s("on p")) } else { before.1.clone() }, "{at}: P ({reopened})");
         }
@@ -4297,8 +4313,8 @@ fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
 // own, `mine`, its ciphertext also opening (to no list) under the key Alice derives from D's roles
 // secret. Holding P's section alone, Alice tries her roles secret: it is no key of D's entry, so
 // D's path waits (undecided, the commit in `paths_unknown`), as it does where D's section carries
-// a key the entry does not commit to; once D's section carrying `mine` comes, D's path is known
-// and D's write applies. Every durable step checks that no waiting entry opens to a fresh attempt
+// a key the entry does not commit to; once D's section carrying `mine` comes, D's part is held,
+// its path opened (made-up things, so it waits unjudged). Every durable step checks that no waiting entry opens to a fresh attempt
 // (debug builds, `apply::paths::missed`).
 #[test]
 fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
@@ -4311,10 +4327,11 @@ fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
     let id = f.header.id();
     let ck = &c.keys;
     let keyed = |k: [u8; 32]| move |i: usize| BTreeMap::from([(i, if i == id_ { k } else { ck[&i] })]);
+    let on_d = f.header.aspects.iter().position(|a| a.tid == d).unwrap();
+    // whether D's part is held (waiting), and D's register
     let state = |w: &mut LocalPeer| {
         let e = &mut w.peers[0].engine;
-        let paths = e.core.ix.commits.get(&id).unwrap().view.paths.clone().unwrap();
-        (paths.get(&d).map(Option::is_some), e.core.ix.paths_unknown.contains(&id), e.get(&d, &ak("t:reg.0")).unwrap())
+        (e.pending_parts(&id).unwrap().is_some_and(|p| p.contains(&on_d)), e.get(&d, &ak("t:reg.0")).unwrap())
     };
     for (name, first) in [("P's section alone", opened_sections(&f, &c, &[ip], &keyed(mine))), ("D's section carrying the roles key", opened_sections(&f, &c, &[id_, ip], &keyed(roles)))] {
         let (mut w, _) = split_world();
@@ -4322,14 +4339,16 @@ fn a_roles_secret_opens_an_entry_only_as_its_committed_key_spec_wire_4() {
         unless_refused(w.peers[0].engine.ingest(&first, Vec::new()));
         w.peers[0].reexamine().unwrap();
         w.peers[0].engine.check_index();
-        assert_eq!(state(&mut w), (None, true, before.clone()), "{name}: D waits");
+        assert_eq!(state(&mut w), (false, before.clone()), "{name}: nothing of D is held");
+        assert!(w.peers[0].engine.core.ix.paths_unknown.contains(&id), "{name}: D's entry opens nowhere");
         assert_eq!(w.peers[0].engine.get(&p, &ak("t:reg.0")).unwrap(), Some(s("on p")), "{name}: P applies");
         unless_refused(w.peers[0].engine.ingest(&opened_sections(&f, &c, &[id_], &keyed(mine)), Vec::new()));
         w.peers[0].reexamine().unwrap();
         w.peers[0].engine.check_index();
-        // spec/permissions.md §1 Path: the committed key opens the entry (its path is known, it
-        // waits no more) to a path of four made-up things, which gives nothing: D's write stays out
-        assert_eq!(state(&mut w), (Some(true), false, before), "{name}, then D's section carrying the committed key");
+        // spec/permissions.md §1 Path, spec/commits.md §4 Unjudgeable: the committed key opens
+        // the entry to a path of four made-up things, no edge of which a held write set: D's
+        // part is held, waiting unjudged, and its write stays out
+        assert_eq!(state(&mut w), (true, before), "{name}, then D's section carrying the committed key");
     }
 }
 

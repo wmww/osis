@@ -778,12 +778,12 @@ fn a_part_missing_outside_the_node_closure_keeps_nothing_spec_commits_5() {
     assert!(r.engine.core.created(&t).is_none(), "{}", r.engine.why_kept(&t));
 }
 
-// spec/commits.md §5 What a held thing needs, §4 Unjudgeable: a held commit needs the things its
-// path lists, whose records judge it. Peer 0 writes X acting as T, a thing of its own outside
-// peer 1's node closure, holding no role on X: nothing else needs T at peer 1, and its record
-// stays past the pass's end with the commit.
+// spec/commits.md §5 What a held thing needs, §4 Unjudgeable: a commit needs the things its path
+// lists, whose records judge it. Peer 0 writes X acting as T, a thing of its own outside peer 1's
+// node closure, holding no role on X: no write is held on T's edge on X, so the commit pends at
+// peer 1; nothing else needs T there, and its record stays past the pass's end with the commit.
 #[test]
-fn a_held_commit_needs_the_thing_it_acts_as_spec_commits_5() {
+fn a_commit_needs_the_thing_it_acts_as_spec_commits_5() {
     let mut lp = crate::common::net(2, 0);
     let d = lp.peers[0].engine.account_root().unwrap();
     let x = crate::common::new_shared(&mut lp, 0);
@@ -796,7 +796,7 @@ fn a_held_commit_needs_the_thing_it_acts_as_spec_commits_5() {
     lp.sync(0, 1).unwrap();
     let e1 = &mut lp.peers[1].engine;
     e1.settle_needs().unwrap();
-    assert!(e1.commit_ids().contains(&c) && e1.commit_purge_author(&c) == Some(t), "the commit acting as T applies");
+    assert!(e1.pending().iter().any(|(id, r)| *id == c && matches!(r, osis_engine::Reason::MissingChain(_))), "the commit acting as T pends: {:?}", e1.pending());
     assert!(e1.core.created(&t).is_some(), "T's record stays with the commit acting as it: {}", e1.why_kept(&t));
 }
 

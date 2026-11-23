@@ -118,12 +118,14 @@ fn pending_until_created_spec_commits_4() {
     assert!(lp2.peers[0].engine.pending().iter().any(|(c, _)| *c == pk.id));
 }
 
-// spec/commits.md §4 (Unjudgeable): only a grant leads from its holder to a thing (a path climbs
-// grants, spec/permissions.md §1); a removal names its holder and leads nowhere. 1 makes t and u,
-// u's mint admin t, removes from t the grant 0 never had, then grants 0 read; 0 forges one commit
-// granting itself admin on both. A node holding all but the grant: nothing leads from 0 to t or u
-// (the removal names 0), so it keeps nothing of the forgery; with the grant it does, and holds it
-// invalid: both rosters stay as 1 wrote them.
+// spec/commits.md §4 (Unjudgeable): only a held grant makes an edge of a stated path arrived (a
+// path climbs grants, spec/permissions.md §1); a removal names its holder and sets no edge. 1
+// makes t and u, u's mint admin t, removes from t the grant 0 never had, then grants 0 read; 0
+// forges one commit granting 2 admin on both, each along its own edge on the thing. A node holding
+// all but the grant: no grant is held on 0's edge on t or u (the removal names 0), so it keeps
+// nothing of the forgery; with the grant its part on t is held, invalid, and its part on u still
+// waits (the path it states to u is 0's own edge on u, which no write set: the record edge from t
+// to u is no edge of it, §1 Path): both rosters stay as 1 wrote them.
 #[test]
 fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -151,8 +153,8 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     }
     let mut m = Mutation::new();
     for x in [t, u] {
-        m.op(x, &ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(a)) }).unwrap();
-        m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(a))], op: Op::Set(Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None }.to_value()) }).unwrap();
+        m.op(x, &ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(r)) }).unwrap();
+        m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(r))], op: Op::Set(Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None }.to_value()) }).unwrap();
     }
     let forged = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     let forged = package_for(&mut lp, 0, 2, forged);
@@ -161,18 +163,50 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
         lp.deliver(2, p).unwrap();
     }
     let before = rosters(&mut lp);
-    let r = lp.deliver(2, &forged).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(x)) if x == a), "{r:?}");
+    let got = lp.deliver(2, &forged).unwrap();
+    assert!(matches!(got, Ingested::Pending(_, Reason::MissingChain(x)) if x == a), "{got:?}");
     assert!(!lp.peers[2].engine.commit_ids().contains(&forged.id));
     assert_eq!(rosters(&mut lp), before);
-    // a grant leads from g's mint admin to t, and through t's record to u
+    // the grant is the held write on 0's edge on t
     lp.deliver(2, &grant).unwrap();
     let before = rosters(&mut lp);
     assert_eq!(before[0].get(&a).map(|e| e.role), Some(Role::Read));
     lp.deliver(2, &forged).unwrap();
     assert!(lp.peers[2].engine.commit_ids().contains(&forged.id));
+    let on_u = lp.peers[2].engine.header(&forged.id).unwrap().aspects.iter().position(|x| x.tid == u).unwrap();
+    assert_eq!(lp.peers[2].engine.pending_parts(&forged.id).unwrap(), Some(std::collections::BTreeSet::from([on_u])), "its part on u waits");
     assert_eq!(rosters(&mut lp), before);
-    assert!(!before[1].contains_key(&a));
+    assert_eq!(before[0].get(&r).map(|e| e.role), Some(Role::Read));
+    assert!(!before[1].contains_key(&a) && !before[1].contains_key(&r));
+}
+
+// spec/commits.md §4 (Unjudgeable), spec/permissions.md §1 Path (nothing but the stated path
+// judges a part: another path that would also give the role does not): 0 makes x and o, both its
+// own, so its record chain leads to each; it shares x with 1 and writes x stating its path through
+// o, which holds nothing on x. No write is held on o's edge on x, so 1 cannot judge the write: it
+// pends, whatever else leads from 0 to x. Once 0 grants o write on x, stamped after the write, 1
+// judges it along its path: applied, and invalid (o's edge gave nothing at its `ts`).
+#[test]
+fn a_part_waits_for_the_edges_of_its_stated_path_spec_commits_4() {
+    let mut lp = net(2, 0);
+    let x = new_shared(&mut lp, 0);
+    let o = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.set(x, &REG, &s("before")).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    let mut m = Mutation::new();
+    m.set(x, &REG, &s("through o")).unwrap();
+    m.act_as(o);
+    let c = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.pending().iter().any(|(id, r)| *id == c && matches!(r, Reason::MissingChain(_))), "no write held on o's edge on x: {:?}", e1.pending());
+    assert_eq!(e1.get(&x, &REG.name()).unwrap(), Some(s("before")));
+    edge_write(&mut lp.peers[0].engine, x, o, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.commit_ids().contains(&c) && !e1.pending().iter().any(|(id, _)| *id == c), "the grant is the write its path waited for: {:?}", e1.pending());
+    assert_eq!(e1.get(&x, &REG.name()).unwrap(), Some(s("before")), "stamped before o's grant: invalid");
 }
 
 // spec/commits.md §4 (Unjudgeable): commits awaiting a thing's `created.0` pend and apply once

@@ -651,7 +651,12 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         if skip.contains(&ai) || blob.part(ai).is_none() {
             continue;
         }
-        if let Some(wait) = thing_wait(tx.core, &h, a, &record, &chain_rec) {
+        // a node's own commit is no arrival: it stated its paths by its own walk as it wrote
+        let path = match blob.path(&a.tid) {
+            Some(osis_commit::ThingPath::Known(p)) if origin != Origin::Local => Some(p),
+            _ => None,
+        };
+        if let Some(wait) = thing_wait(tx.core, &h, a, path.as_ref().map(|p| (p.to(&a.tid), p.direct)), &record, &chain_rec) {
             unjudged.insert(ai, wait);
         } else if origin == Origin::Remote && record(&a.tid).is_some_and(|r| !crate::retention::needed::applies_on(tx.core, &a.tid, &a.ak, &r)) {
             // nothing but certificates applies on a thing outside the node closure: content waits
@@ -783,6 +788,12 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             Err(e) => return Err(e),
         };
         aside.add(wait, [p.ai]);
+    }
+    // an edge part whose every write rests on an edge not arrived cannot be judged either
+    let edges = if origin == Origin::Local { Vec::new() } else { edge_unreached(tx.core, &h, id, &out.whole, &chain_rec) };
+    for ai in edges {
+        out.whole.retain(|x| x.0 != ai);
+        unjudged.insert(ai, Reason::MissingChain(h.signer));
     }
     if !bad.is_empty() {
         // only bad parts beside parts of it awaiting a record (`note_unjudged`): unjudgeable,
@@ -918,6 +929,7 @@ fn thing_wait(
     core: &crate::engine::Core,
     h: &Header,
     a: &osis_commit::AspectEntry,
+    path: Option<(&[Tid], osis_base::format::PathMarks)>,
     record: &dyn Fn(&Tid) -> Option<CreationRecord>,
     chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>,
 ) -> Option<Reason> {
@@ -927,20 +939,41 @@ fn thing_wait(
     if record(&a.tid).is_none() || core.destroyed(&a.tid) && destroyed() {
         return Some(Reason::UnknownCreated(a.tid));
     }
-    let mut chain = vec![a.tid];
     // a chain deeper than `MAX_CHAIN_DEPTH` is not waited for further: its deltas are invalid
     // (`validity::too_deep`, spec/permissions.md §1)
     for step in osis_base::record_chain(a.tid, |t| chain_rec(t, core).map(|r| r.record_link())) {
         match step {
-            ChainStep::Up { admin: up, .. } => chain.push(up),
-            ChainStep::Key(_) | ChainStep::TooDeep => {}
             ChainStep::Unknown(t) => return Some(Reason::MissingChain(t)),
+            ChainStep::TooDeep => return None,
+            ChainStep::Up { .. } | ChainStep::Key(_) => {}
         }
     }
-    // it is on the record chain, or held edge writes lead from it to the chain (a revoked author
-    // keeps its certificates and still applies, judged invalid); an external fire needs no path
-    // (spec/permissions.md §5.2 External fires)
-    (!a.ak.external() && !chain.contains(&h.signer) && !validity::reaches(core, &h.signer, &chain)).then_some(Reason::MissingChain(h.signer))
+    // every edge of the path stated for the thing is a record edge or granted by a held edge
+    // write; an external fire needs no path (spec/permissions.md §5.2 External fires), and a
+    // path not opened here holds no part. An edge part is read here as a self-removal, the least
+    // any edge write needs (its path to the holder it ends at): `examine` reads its writes once
+    // decoded (`edge_unreached`)
+    let (along, direct) = path.filter(|_| !a.ak.external())?;
+    let edge = validity::edge_ak(a.ak.as_str());
+    validity::unreached(core, h.signer, along, direct, &a.tid, edge, edge, &|t| chain_rec(t, core)).then_some(Reason::MissingChain(h.signer))
+}
+
+/// The decoded `roles.0` parts among `whole` whose every edge write is unjudgeable
+/// (spec/commits.md §4): no self-removal (`validity::leaves`), and an edge of the path to their
+/// thing has not arrived (`validity::unreached`). `skip`: parts held before, read by what the
+/// index holds of them (`Indexes::unresolved`).
+fn edge_unreached(core: &crate::engine::Core, h: &Header, id: &CommitId, whole: &[(usize, Decoded)], chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>) -> Vec<usize> {
+    let osis_commit::Paths::One(p) = &h.path else { return Vec::new() };
+    // nothing written on a thing too deep applies (spec/permissions.md §1): judged as it is
+    let deep = |t: &Tid| matches!(osis_base::record_chain(*t, |x| chain_rec(x, core).map(|r| r.record_link())).end(), ChainStep::TooDeep);
+    let whole: Vec<(usize, Decoded)> = whole.iter().filter(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str()) && !deep(&a.tid))).cloned().collect();
+    let perm = validity::PermParts::of(h, &whole);
+    let known = !core.ix.unresolved.contains(id) && perm.edges.iter().all(|(ai, es)| validity::resolved(core, h, id, *ai, es));
+    let unreached = |(ai, es): &(usize, Vec<validity::Entry>)| {
+        let a = h.aspects.get(*ai)?;
+        (!validity::leaves(core, h, id, *ai, es, known) && validity::unreached(core, h.signer, p.to(&a.tid), p.direct, &a.tid, true, false, &|t| chain_rec(t, core))).then_some(*ai)
+    };
+    perm.edges.iter().filter_map(unreached).collect()
 }
 
 /// Whether part `ai` of an applied commit (`h`, its view `view`), held or not, cannot be judged
@@ -951,7 +984,8 @@ fn thing_wait(
 pub(crate) fn unjudgeable(core: &crate::engine::Core, h: &Header, view: &crate::engine::View, ai: usize) -> bool {
     let Some(a) = h.aspects.get(ai) else { return false };
     let held = |t: &Tid| core.created(t).cloned();
-    header_wait(h, &held).is_err() || view.paths.as_deref().is_some_and(|p| !p.contains_key(&a.tid)) || thing_wait(core, h, a, &held, &|t, core| core.created(t).cloned()).is_some()
+    let path = validity::stated(h, view, &a.tid);
+    header_wait(h, &held).is_err() || view.paths.as_deref().is_some_and(|p| !p.contains_key(&a.tid)) || thing_wait(core, h, a, path.as_ref().map(|p| (p.0.as_slice(), p.1)), &held, &|t, core| core.created(t).cloned()).is_some()
 }
 
 /// Applies or stores one decoded commit blob.

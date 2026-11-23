@@ -150,7 +150,8 @@ impl Held {
         self.named.get(thing).into_iter().flatten()
     }
 
-    /// Holders an edge write puts a grant for on `thing`, of any validity and whatever followed.
+    /// Holders an edge write puts a grant for on `thing`, of any validity and whatever followed (a
+    /// removal saying retain, written as a grant gone at every clock, puts none).
     pub fn granted_on(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
         self.rest.read(&Row::Granted(thing));
         self.granted.get(thing).into_iter().flat_map(|m| m.keys())
@@ -327,7 +328,7 @@ impl Held {
     }
 
     fn count_granted(&mut self, c: &RoleCommit, add: bool) {
-        for o in c.ops.iter().filter(|o| o.edge.is_some()) {
+        for o in c.ops.iter().filter(|o| o.edge.is_some_and(|e| !e.says_retain())) {
             let on = self.granted.entry(o.target).or_default();
             let n = on.entry(o.holder).or_default();
             if add {
