@@ -13,7 +13,7 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 
 ## In flight beside it
 In-flight lines name issues in words, not paths: a branch that closes its issue would fail policy on this note.
-- `mizzen-chunked-refs` (worker): references inside chunked elements are not indexed (strong refs there keep nothing).
+- `mizzen-history-links` (worker): kept history ignores strongs inside large values.
 - `mizzen-dating-redesign` (worker, fable, may span sessions): every write on a kept aspect reads a big earlier body whole once per session; a position-based durable held-writes index, incremental dating, long runs split across pages. Its state section is in notes/engine-retention-dating.md.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
