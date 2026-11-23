@@ -162,6 +162,11 @@ fn run(h: &Holder, e1: Option<u64>, c2: Option<Option<u64>>) {
     if c2.is_some() && !lasting2 {
         lp.deliver(4, &pks[1]).unwrap();
     }
+    // lasting commit 1 when the snapshot does not cover it: its write commit 2 superseded is
+    // in no snapshot (spec/crdt.md §4.7 Snapshots), so it travels as its body
+    if e1.is_none() && lp.peers[1].engine.body_not_dropped(&c1, &t, &k) {
+        lp.deliver(4, &pks[0]).unwrap();
+    }
     let live = |x: Option<u64>, now: u64| x.is_none_or(|x| now < now0 + x);
     let read = |lp: &mut LocalPeer, i: usize| (h.entry)(lp.peers[i].engine.get(&t, &k).unwrap());
     // every holder reads the entry by the model, and the whole aspect alike
@@ -188,8 +193,19 @@ fn run(h: &Holder, e1: Option<u64>, c2: Option<Option<u64>>) {
         }
         if !late {
             late = true;
-            // none where every write held has expired: the aspect holds nothing
-            if let Some(snap) = lp.peers[1].engine.snapshot(&t, &k).unwrap() {
+            // none where every write held has expired: the aspect holds nothing. The snapshot's
+            // sweep of the entry commit 2 wrote into (its creation gone, spec/sync-compaction.md
+            // §1 Sweep) is a write of its own: every holder gets it
+            let had: std::collections::BTreeSet<CommitId> = lp.peers[1].engine.commit_ids().into_iter().collect();
+            let snapped = lp.peers[1].engine.snapshot(&t, &k).unwrap();
+            let swept: Vec<CommitId> = lp.peers[1].engine.commit_ids().into_iter().filter(|c| !had.contains(c) && Some(*c) != snapped).collect();
+            for c in &swept {
+                let p = pk(&mut lp, c);
+                for i in [0, 2, 3, 4, 5] {
+                    lp.deliver(i, &p).unwrap();
+                }
+            }
+            if let Some(snap) = snapped {
                 drop_covered_by(&mut lp.peers[1].engine, &snap, &t, &k);
                 let p = pk(&mut lp, &snap);
                 lp.deliver(5, &p).unwrap();
@@ -197,11 +213,15 @@ fn run(h: &Holder, e1: Option<u64>, c2: Option<Option<u64>>) {
                 assert_eq!(lp.peers[1].engine.state(&t, &k).unwrap(), None, "{}: no snapshot of a held state", h.name);
             }
             let now = lp.peers[0].engine.now().0;
-            // the expiring commits still live, which no snapshot covers
+            // the expiring commits still live, which no snapshot covers, and lasting commit 1 where
+            // the snapshot does not cover it
             for (p, e) in pks.iter().zip([Some(e1), c2]) {
                 if e.is_some_and(|e| e.is_some() && live(e, now)) {
                     lp.deliver(5, p).unwrap();
                 }
+            }
+            if e1.is_none() && lp.peers[1].engine.body_not_dropped(&c1, &t, &k) {
+                lp.deliver(5, &pks[0]).unwrap();
             }
         }
         check(&mut lp, when);
