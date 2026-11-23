@@ -93,7 +93,7 @@ fn link_redeem_and_finalize_spec_permissions_7() {
     assert!(o.valid[&(7, 0)] && o.valid[&(10, 0)]);
 }
 
-// spec/permissions.md §1 (mint admin, Path), §5.2: a path through an account's record edge; an
+// spec/permissions.md §1 (mint admin; Path), §5.2: a path through an account's record edge; an
 // admin of the account writes along [account], and loses that with an explicit demotion
 #[test]
 fn record_edge_through_an_account_spec_permissions_1() {
