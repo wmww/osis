@@ -507,10 +507,8 @@ impl R<'_> {
 
     fn pick(&mut self, cols: usize, options: &[Pick]) -> NewWidget<dyn Widget> {
         let look = self.look.clone();
-        let mut g = TileGrid::new(look.clone(), 120.0).gap(4.0);
-        if cols > 0 {
-            g = g.max_cols(cols);
-        }
+        // 0 columns: as many as fit
+        let mut g = TileGrid::new(look.clone(), 120.0).gap(4.0).max_cols(cols);
         for o in options {
             let w = NewWidget::new(Tile::new(TileStyle::Row, tile_icon(&o.mark), &o.label, "", tint(&o.tint), look.clone()).current(o.current));
             self.press(w.id(), o.press.clone());
