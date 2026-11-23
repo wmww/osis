@@ -15,7 +15,7 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 In-flight lines name issues in words, not paths: a branch that closes its issue would fail policy on this note.
 - `mizzen-compact-seq` (worker): dead list/text records held compact in memory (decided A).
 - `mizzen-purge-no-effect` (worker): a purged write has no effect on any read (Tess, decided).
-- `mizzen-dating-redesign` (built and green; a fresh reviewer gates and lands it): every write on a kept aspect reads a big earlier body whole once per session; a position-based durable held-writes index, incremental dating, long runs split across pages. Its state section is in notes/engine-retention-dating.md.
+- `mizzen-dating-redesign` (reviewed sound; gate failed on test cost only, ~2x main in engine tests; a worker is making the held-writes path cheap, then a fresh review and gate): every write on a kept aspect reads a big earlier body whole once per session; a position-based durable held-writes index, incremental dating, long runs split across pages. Its state section is in notes/engine-retention-dating.md.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
 ## Safe parallel work queue (outside the rewrite)
