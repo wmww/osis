@@ -12,13 +12,14 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 - After it: a removal as evidence, accounts as ordinary things, public things and cards, core without accounts (notes/redesign-plan.md A3 to A6), each one branch, delete first; cut them to what is still needed before starting.
 
 ## In flight beside it
-
+- `mizzen-purged-shown` (worker): issues/order-purged-message-shown.md, the one order property class failing on main; stops if the cause is in the rewrite's area.
+- `mizzen-seq-runs` (worker): issues/seq-cold-edits-follow-gaps.md, the multi-op case.
+- Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
 ## Safe parallel work queue (outside the rewrite)
-- issues/seq-cold-edits-follow-gaps.md (cross-op case), issues/text-move-writes-grow.md: engine pages / osis-crdt.
+- issues/text-move-writes-grow.md: engine pages / osis-crdt.
 - issues/masked-backdated-lowerings.md: osis-perm walk.
 - issues/held-model-until-no-deadline.md: cause never read.
-- The purged-message order seed (issue on `mizzen-order-seeds`, lands with it): read first whether it is in the rewrite's area.
 - Workflow agent about half the time; one cleanup always.
 
 ## Small, waiting on Tess
