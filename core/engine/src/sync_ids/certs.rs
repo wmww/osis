@@ -438,7 +438,9 @@ impl Engine {
     /// edge write on `t` with its write certificates (its author's chains, its holder's).
     fn history_certificates(&self, t: &Tid) -> super::chain::Certificates {
         let mut out = super::chain::Certificates::default();
-        let Some(tl) = self.core.timelines.get(t) else { return out };
+        if self.core.timelines.get(t).is_none() {
+            return out;
+        }
         for cm in self.core.ix.held.commits_on(t) {
             for (i, _) in cm.ops.iter().enumerate().filter(|(_, o)| o.target == *t) {
                 let Some(cs) = u32::try_from(i).ok().and_then(|i| super::chain::write_certificates(&self.core, &osis_perm::WriteId(cm.id, i))) else { continue };

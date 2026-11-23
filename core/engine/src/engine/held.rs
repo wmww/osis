@@ -574,7 +574,7 @@ impl Held {
 /// sees (`Read`): the whole of it (`get`), what is written on a thing's edges (`on`), the roles
 /// on a thing (`roles_on`, `role`), each moved only by what it can see; and the keyless actor
 /// grants over it (`keyless`), kept up to date at each update.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Timelines {
     of: osis_perm::Timeline,
     stamps: TlStamps,
@@ -677,12 +677,6 @@ enum Read {
     Known(Tid),
     /// `Timelines::keyless`: moved when it changes.
     Keyless,
-}
-
-impl Default for Timelines {
-    fn default() -> Self {
-        Timelines { of: osis_perm::Timeline::default(), stamps: TlStamps::default(), keyless: Arc::default(), ways: Ways::default() }
-    }
 }
 
 impl std::ops::Deref for Timelines {
@@ -1178,7 +1172,7 @@ mod tests {
     #[test]
     fn timeline_reads_match_a_fresh_read_through_random_writes() {
         use osis_base::memo::Memo;
-        use osis_perm::{At, Timeline};
+        use osis_perm::At;
         let (now, later) = (At::now(Ts::make(osis_base::WallMs(5), 0).unwrap()), At::now(Ts::make(osis_base::WallMs(9), 0).unwrap()));
         let read = |tl: &Timelines, (r, t): &(u8, Tid)| -> String {
             let on = || tl.on(t);

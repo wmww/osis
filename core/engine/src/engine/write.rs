@@ -442,7 +442,7 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
         return Ok(Stated::One(osis_commit::Path::default()));
     }
     if plan.kind.is_role() {
-        let real = if core.interim_role_paths { None } else { role_path(core, plan, writes, edges)? };
+        let real = role_path(core, plan, writes, edges)?;
         return Ok(Stated::One(real.unwrap_or_else(|| interim_path(node, node))));
     }
     let mut need: BTreeMap<Tid, Role> = BTreeMap::new();

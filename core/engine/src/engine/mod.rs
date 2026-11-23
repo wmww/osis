@@ -1094,9 +1094,6 @@ pub struct Core {
     /// dispute detection is on (after open: a held set loaded again has no arrivals).
     pub sides: crate::sides::Sides,
     pub detect: bool,
-    /// Components with fewer commits and snapshots are not saved (`index::WALK_CACHE_MIN`;
-    /// tests lower it).
-    pub walk_cache_min: usize,
     /// The running transaction called `touch` (`rollback` drops the caches).
     pub dirty: bool,
     /// The paged maps' key index hash key, derived from the node's seed.
@@ -1130,8 +1127,6 @@ pub struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side role rules (to test receivers).
     pub skip_writer_rules: bool,
-    /// Tests: role commits state the Interim empty path (`Engine::interim_role_paths`).
-    pub(crate) interim_role_paths: bool,
     /// The edge writes signed meanwhile may leave a thing adminless, marked (`Engine::leaving_adminless`).
     pub(crate) leave_adminless: bool,
     /// Someone may listen to commit changes (`Engine::watch_commits`).
@@ -2054,11 +2049,9 @@ impl Core {
             // unchanged by every transaction (the value below, `Engine::run`)
             id,
             detect,
-            walk_cache_min,
             key_salt,
             addenda_on,
             skip_writer_rules,
-            interim_role_paths,
             leave_adminless,
             commits_watched,
             refs_watched,
@@ -2105,7 +2098,7 @@ impl Core {
         format!(
             "{:?}",
             (
-                (id.tid(), detect, walk_cache_min, key_salt, addenda_on, skip_writer_rules, interim_role_paths, leave_adminless),
+                (id.tid(), detect, key_salt, addenda_on, skip_writer_rules, leave_adminless),
                 (commits_watched, refs_watched, commit_listeners.is_some(), forge_bad, keep_bodies, list_bound, sourced_elsewhere),
                 (actors(&mut key_actors.keys()), actors(&mut held_keys.keys()), followed_links.all(), account.get()),
             )
@@ -2254,7 +2247,6 @@ impl Core {
             timelines: held::Timelines::default(),
             sides: crate::sides::Sides::default(),
             detect: false,
-            walk_cache_min: index::WALK_CACHE_MIN,
             stale_things: BTreeSet::new(),
             stale_authors: BTreeSet::new(),
             addenda_on: true,
@@ -2277,7 +2269,6 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
-            interim_role_paths: false,
             leave_adminless: false,
             commits_watched: false,
             refs_watched: false,
@@ -3559,7 +3550,6 @@ impl Engine {
         fresh.refs_watched = self.core.refs_watched;
         fresh.commit_listeners = self.core.commit_listeners.clone();
         fresh.skip_writer_rules = self.core.skip_writer_rules;
-        fresh.walk_cache_min = self.core.walk_cache_min;
         fresh.account.set(self.core.account.get());
         // caches keyed on it (the sync engine's sync IDs and co-readers) never see an old value again
         fresh.generation = self.core.generation.wrapping_add(1);

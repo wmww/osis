@@ -50,11 +50,6 @@ pub(super) const ADDENDA: &[u8] = b"node/addenda";
 /// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::PermParts`): written with the commit record (`Tx::put_commit`), so an open
 /// adapts these rows instead of decoding the bodies.
 pub(super) const PERM_PARTS: &[u8] = b"node/perm";
-/// Saved role walks (osis-perm `Timelines::to_save`), by component root: a cache unit
-/// tagged with these rules and its exact inputs; one that does not match is evaluated anew.
-pub(super) const WALKS: &[u8] = b"node/walks";
-/// Components with fewer commits and snapshots are evaluated at open rather than saved.
-pub(crate) const WALK_CACHE_MIN: usize = 64;
 
 /// A record key or value of the persisted index.
 pub(crate) trait Rec: Sized {

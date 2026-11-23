@@ -12,7 +12,7 @@
 use crate::engine::journal::{JMap, Journaled};
 use crate::engine::{records, Core, Tx};
 use crate::error::{Error, Result};
-use crate::events::{Diagnostic, DiagnosticKind, Event};
+use crate::events::Event;
 use osis_base::{CommitId, Tid, Value};
 use osis_perm::WriteId;
 use std::collections::{BTreeMap, BTreeSet};

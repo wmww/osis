@@ -7,7 +7,7 @@
 use crate::common;
 use crate::flows::{edge_of, follow, people, spread, thing_of};
 use common::*;
-use osis_base::{Role, Tid, Ts};
+use osis_base::{Role, Tid};
 use osis_engine::flows::{Demotion, LinkSpec};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
@@ -18,7 +18,6 @@ use std::collections::BTreeMap;
 /// The representative world's peers (accounts `pa`..`pd`, written as their accounts) and things.
 pub(crate) struct World {
     pub lp: LocalPeer,
-    pub things: Vec<Tid>,
 }
 
 fn grant(lp: &mut LocalPeer, by: usize, t: Tid, to: Tid, e: ct::Edge) {
@@ -44,13 +43,9 @@ fn may_grant(role: Role) -> ct::Edge {
 /// on T1 ends and B finalizes it; C redeems a single-use link to T7; on T6, B grants D write and
 /// writes content only C receives, A removes B (the grant falls), and C writes an addendum for the
 /// content, then leaves T6 itself (an admin's leave); A removes
-/// C from T8, which A reaches by a descent of two steps. With
-/// `interim`, every node's role commits state the Interim empty path.
-pub(crate) fn world(interim: bool) -> World {
+/// C from T8, which A reaches by a descent of two steps.
+pub(crate) fn world() -> World {
     let (mut lp, ps) = people(4);
-    for p in &mut lp.peers {
-        p.engine.interim_role_paths(interim);
-    }
     let (pa, pb, pc, pd) = (ps[0], ps[1], ps[2], ps[3]);
     let mut things: Vec<Tid> = (0..13).map(|_| thing_of(&mut lp, 0, pa)).collect();
     let &[t1, h1, t3, k1, k2, k3, t5, h5, t4, h4, t6, t7, g8] = &things[..] else { unreachable!() };
@@ -107,26 +102,7 @@ pub(crate) fn world(interim: bool) -> World {
     // a removal by a descent of two steps
     grant(&mut lp, 0, t8, pc, edge_of(Role::Admin));
     remove(&mut lp, 0, t8, pc);
-    World { lp, things }
-}
-
-/// Every role commit's edge writes at peer `i`, by (ts, signer, target, holder): whether the
-/// old walk applies it; and every thing's roster.
-type Verdicts = (BTreeMap<(Ts, Tid, Tid, Tid), bool>, BTreeMap<Tid, BTreeMap<Tid, osis_perm::Edge>>);
-
-fn verdicts(w: &World, i: usize) -> Verdicts {
-    let e = &w.lp.peers[i].engine;
-    let mut out = BTreeMap::new();
-    let mut rosters = BTreeMap::new();
-    for t in &w.things {
-        if let Some(tl) = e.core.timelines.get(t) {
-            for (wid, c, op) in tl.held_on(t) {
-                out.insert((c.ts, c.signer, op.target, op.holder), tl.is_applied(&wid));
-            }
-        }
-        rosters.insert(*t, e.roster(t));
-    }
-    (out, rosters)
+    World { lp }
 }
 
 /// Whether `p` is on `q`'s record chain (above `q`).
@@ -158,7 +134,7 @@ fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> O
 // invite on the last edge for an invite grant. Every kind the table names is met.
 #[test]
 fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
-    let w = world(false);
+    let w = world();
     let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
     let mut lens: BTreeMap<usize, usize> = BTreeMap::new();
     for (i, id) in (0..4).flat_map(|i| w.lp.peers[i].engine.commit_ids().into_iter().map(move |id| (i, id))) {
@@ -322,7 +298,7 @@ pub(crate) fn walks_differ(e: &osis_engine::Engine) -> Vec<String> {
 // the old walk's final role, at every node of the representative world.
 #[test]
 fn the_new_walk_judges_the_stated_role_paths_as_the_old_walk_does() {
-    let w = world(false);
+    let w = world();
     for i in 0..4 {
         assert_eq!(walks_differ(&w.lp.peers[i].engine), Vec::<String>::new(), "peer {i}");
     }
@@ -433,7 +409,7 @@ type ClassWorld = (&'static str, Option<&'static str>, LocalPeer);
 
 /// The classes' worlds this binary builds (notes/a1-spec/README.md step 3, For the wiring).
 fn class_worlds() -> Vec<ClassWorld> {
-    let mut out: Vec<ClassWorld> = vec![("representative", None, world(false).lp)];
+    let mut out: Vec<ClassWorld> = vec![("representative", None, world().lp)];
     // A, T's mint admin, and B, granted admin, leave at once: no reader judges a last admin
     // (spec/permissions.md §1, The last admin), so both walks apply both leaves
     let (mut lp, ps) = people(2);

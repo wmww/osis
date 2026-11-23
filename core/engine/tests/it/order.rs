@@ -2022,11 +2022,9 @@ fn ingests(played: &Played, order: &[usize], split: Option<u64>) -> Vec<Move> {
     out
 }
 
-/// The node every delivery starts from: fresh, every component's walk saved, so reopens restore
-/// them.
+/// The node every delivery starts from.
 fn judged_node(played: &Played) -> Peer {
-    let mut p = fresh(played);
-    p
+    fresh(played)
 }
 
 /// For a written history (`Played::setup`) whose delivery `moves` takes the setup's commits

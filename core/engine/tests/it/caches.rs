@@ -156,7 +156,7 @@ fn crash_at_every_write_keeps_caches_exact() {
         let blob_disk = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()));
         let open = |create: bool, seed: u64| -> osis_engine::Result<Engine> {
             let c: Arc<dyn Clock> = clock.clone();
-            let mut e = if create {
+            let e = if create {
                 Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?
             } else {
                 Engine::open(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed)?, Config::default(), c, Box::new(SeededRng::from_u64(seed)))?

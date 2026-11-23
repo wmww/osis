@@ -39,7 +39,6 @@ use crate::error::Result;
 use crate::events::{Diagnostic, DiagnosticKind};
 use osis_base::{CommitId, Role, Tid, Ts, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
-use osis_perm::Point;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,18 +64,6 @@ pub(crate) fn note_changed(core: &mut Core, commits: &BTreeSet<CommitId>) {
         }
         // and a commit ordered before a removal whose standing changed may change what it reads
         wake(core, r, signer, ts);
-    }
-}
-
-/// The components of `things` were walked anew (`osis_perm::Changed::evaluated`: anything about
-/// them may have changed): the removals filed under one of them (`Indexes::addenda_watch`) are
-/// due again, gathered anew.
-pub(crate) fn note_evaluated(core: &mut Core, things: &BTreeSet<Tid>) {
-    for t in things {
-        let rs: Vec<CommitId> = core.ix.addenda_watch.get(t).into_iter().flatten().copied().collect();
-        for r in rs {
-            note_due(core, &r);
-        }
     }
 }
 

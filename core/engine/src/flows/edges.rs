@@ -557,7 +557,9 @@ impl Engine {
                 _ => Err(Error::Misuse("D's roster changes only by its account's rotations")),
             };
         }
-        let who = signer.unwrap_or(self.core.writer()?);
+        if signer.is_none() {
+            self.core.writer()?;
+        }
         let t = *target;
         let new = match self.core.timelines.get(&t) {
             Some(tl) => written(&self.core, &t, tl.edges_at(None).get(&d.holder, &t), d)?,

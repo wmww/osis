@@ -480,7 +480,6 @@ mod tests {
         use osis_base::format::MAX_CHAIN_DEPTH;
         use osis_base::Tid;
         use osis_crdt::{Op, PathOp, PathSeg};
-        use osis_perm::HeldSet;
         use osis_schema::Codec;
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();

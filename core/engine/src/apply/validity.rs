@@ -77,7 +77,7 @@ fn plain_commit(h: &Header) -> bool {
 /// What a held `addenda.0` delta says (`Indexes::addenda`): its commit's key and the entries it
 /// creates.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Addendum {
+pub struct Addendum {
     pub point: Point,
     pub entries: Vec<AddendumEntry>,
 }
