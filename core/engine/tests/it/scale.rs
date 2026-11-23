@@ -1598,11 +1598,11 @@ fn open_is_linear_in_role_commits() {
     all_linear("open", &a, &b);
 }
 
-/// The path wait's work for a write acting as `r` on `x` at a node holding `n` forged edge writes
-/// on each of three layers of `x`'s edges, each one unjudgeable (spec/commits.md §4 Unjudgeable)
-/// though its part is held (it also writes its own path's end, which is judgeable): `n` through
-/// fresh things `f_i` on `e`'s edge, one through `e` on `n` things `q_j`'s, one through each `q_j`
-/// on `r`'s. The write reads `r`'s edge: `n` writes, each reading its `q_j`'s, each reading `e`'s.
+/// The path wait's work for a write acting as `r` on `x` at a node holding three layers of forged
+/// edge writes on `x`, each unjudgeable (spec/commits.md §4 Unjudgeable) though its part is held
+/// (it also writes its own path's end, which is judgeable): one through each of `n` fresh things
+/// (`fs`) on `e`'s edge, one through `e` on each of `n` things' (`qs`), one through each of those
+/// on `r`'s. The write reads `r`'s edge: `n` writes, each reading one `qs` edge, each reading `e`'s.
 fn forged_layers(n: usize) -> u64 {
     use osis_engine::Ingested;
     let mut lp = net(2, 0);
