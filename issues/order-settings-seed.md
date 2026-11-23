@@ -1,0 +1,6 @@
+# The order harness judges a Settings history differently by what was held
+> Summary: osis-engine `order::held_set_decides_plain` fails on main since the A1 switch (a4611a866) at `OSIS_ORDER_SEED=300644506442 OSIS_ORDER_LEN=60` (Settings family): one history judged differently by what was held. Not shrunk; cause not read. Could be the snapshot-carries gap (issues/snapshot-carries-unread.md) or another switch gap.
+> Priority: normal
+> Tags: engine, perm, tests
+
+Replay: `OSIS_ORDER_SEED=300644506442 OSIS_ORDER_LEN=60 cargo test -p osis-engine --test it -- --ignored --exact order::held_set_decides_plain` (`OSIS_ORDER_SHRINK=1` shrinks it). Shrink first; check whether the carries fix closes it.
