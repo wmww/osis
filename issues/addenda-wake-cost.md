@@ -7,4 +7,4 @@
 
 Measured (debug probe, a removed party X holding k things, j backdated commits after R): content: 0 removals judged, k+3 parties per commit; edge writes (junk grants to the remover): 1 judgement of R and about k+30 parties per commit (43 at k = 10, 137 at k = 100). perm already re-walks the component from that commit's point, which this does not exceed in kind.
 
-Wanted: perm's `Changed` naming the removals whose demotions (`Timeline::demoted_by`) moved, so the wake reads that instead of climbing. Count test: a removed party with reach k writing j backdated edge writes after R: parties climbed at k and 10k equal.
+Wanted: perm's `Changed` naming the removals whose demotions moved, so the wake reads that instead of climbing. Count test: a removed party with reach k writing j backdated edge writes after R: parties climbed at k and 10k equal.

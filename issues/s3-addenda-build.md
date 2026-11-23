@@ -6,7 +6,7 @@
 Spec: spec/permissions.md §5.2 Addenda (Writing, admin-only), §5.1 Frontier. Oracle: roles-model `addenda::GAPS` (core/test/roles-model/README.md, Addenda gaps). Plan: notes/redesign-plan.md S3.
 
 ## Built
-- **Addenda, the window, the gaps, the triggers**: notes/addenda.md (Rules), notes/engine-roles.md (Write: what makes a removal due again, and why nothing is missed). Tests `apply::tests_addenda` (window, granted after R, admin-only kept by an admin witness and not by a writer's, an edit applying late); perm `differential::addenda_model_agrees` on `addenda::GAPS`.
+- **Addenda, the window, the gaps, the triggers**: notes/addenda.md (Rules), notes/engine-roles.md (Write: what makes a removal due again, and why nothing is missed).
 
 ## Left, in order
 1. **The remover's leaving out** (notes/account-membership-design.md §4, The list): not in spec/permissions.md §5.1 Frontier; for stage A1 (notes/write-path-design.md §1, The list is its writer's). With today's writer rule it would change nothing reachable: the engine writes R only where its author holds the authority at R's key in its own walk, in which every received write it lists already stands, and a listed write is neither audited by R nor one of R's seeds; trusting R adds only R's seeds, unlisted writes, which leaving out cannot help (one corner: X's writes on a thing T reaches where X's class does not fall are seeds but not listed; if the remover's authority rests on one, R trusted applies with no list at all, and the per-entry rule would leave out everything). Build it in A1 with a test that reaches it.

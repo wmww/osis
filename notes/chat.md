@@ -42,7 +42,7 @@ Not here, on purpose: wrappers over one osis call (grant, `set_role`, `make_link
 - Rejected: segments, adding without history as a chain of chats (the core option does it with no chain); an admin creates C2, grants every current participant and the newcomer, copies the settings, and adds C2 to C1's `chat:next^.0` (admin-only set). Old participants stitch by time; the newcomer holds only C2 and learns nothing of C1. Any admin re-applies roster changes across segments on seeing `next`; links made on C1 die at each segment; a kick is one commit per segment; `next` is a set, so a fork shows both branches to old participants and one to each newcomer. About 15 KB per member per segment.
 - Unbuilt core: stopping a fetch short of old messages (issues/partial-history-fetch.md; a sync ID fills newest first, so old messages reach a new node late, each past a cursor), kicks past the frontier cap (frontier heads), realms (below).
 - Not done: reactions, read marker, typing, hidden set, segments, attachments, the leave audit.
-- Known and small: an edit not held here when a delete is written still shows, as a new message could. Re-adding a participant revives posts it made while kicked (forced by design E; the rule: osis-perm `content::regrant_validates_gap_until_next_removal`; no chat test across synced nodes, issues/sync-tests-owed.md). A kicked account's new node gets nothing, its own messages included.
+- Known and small: an edit not held here when a delete is written still shows, as a new message could. Re-adding a participant revives posts it made while kicked. A kicked account's new node gets nothing, its own messages included.
 
 ## Costs
 Counted (notes/test-scale.md Scale checks):

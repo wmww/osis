@@ -68,7 +68,6 @@ Format: `file:line test | action | why safe | confidence`.
 - `rotation/tests_departs.rs:164` | delete | a diagnostic baseline | low
 
 **perm**
-- `incremental.rs:280 created_late_every_order` | delete | `record_edge_cut_late_record_every_order` (:315) has the same structure in all 720 orders | medium-high
 
 **held-model**
 - `props.rs:201, :225, :280` | share one reference per seed | medium
