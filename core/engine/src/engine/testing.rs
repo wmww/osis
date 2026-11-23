@@ -849,11 +849,10 @@ impl super::Core {
         let held = &self.ix.held;
         // from scratch: one update over every held commit and record, under the same trust set
         let full = from_scratch.then(|| {
-            let mut tl = osis_perm::Timeline::default();
+            let mut tl = self.timelines.emptied();
             let commits: BTreeSet<CommitId> = self.ix.commits.keys().copied().collect();
             let things: BTreeSet<Tid> = held.all_things().into_iter().collect();
             tl.update(self, &commits, &things);
-            tl.set_trust(&self.sides.trust());
             tl
         });
         let get = |t: &Tid| full.as_ref().or_else(|| self.timelines.get(t));

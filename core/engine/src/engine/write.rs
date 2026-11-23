@@ -673,7 +673,7 @@ fn held_path_secret(core: &Core, plan: &CommitPlan, t: &Tid) -> Option<osis_cryp
 }
 
 /// May `node` act for `actor` at `ts`: it is the actor or holds write on it? A receiver judges a
-/// commit invalid otherwise (`validity::acts_for`, spec/permissions.md §5.2).
+/// commit invalid otherwise: its path through the actor gives nothing (spec/permissions.md §1 Path).
 pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &Tid, ts: Ts) -> Result<()> {
     if node == *actor || role_with(core, node, records, actor, ts) >= Some(Role::Write) { Ok(()) } else { Err(Error::Permission { tid: *actor, needs: Role::Write }) }
 }

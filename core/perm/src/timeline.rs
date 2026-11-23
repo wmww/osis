@@ -297,6 +297,11 @@ impl<S: Store> Timeline<S> {
         out
     }
 
+    /// A timeline holding nothing under this one's trust set (tests: a from-scratch evaluation).
+    pub fn emptied(&self) -> Timeline {
+        Timeline::new(self.trusted.clone())
+    }
+
     /// The held trusted edge writes.
     pub fn trust(&self) -> BTreeSet<WriteId> {
         self.paths.trust().iter().filter_map(|w| self.op_of(w)).collect()

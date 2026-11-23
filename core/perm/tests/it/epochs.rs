@@ -1,6 +1,6 @@
 //! The epoch rule (spec/permissions.md §5.5): a commit at a closed epoch counts iff a counting
 //! rotation's thing list names it, a counting listing names it, or a counting addendum vouches
-//! for it (here: every addendum given counts; their own fixpoint is `Timeline::vouching`'s). Hand
+//! for it (here: every addendum given counts; their own fixpoint is the node's). Hand
 //! worlds on synthetic commits (a rotation's ID is the epoch it mints, the root 0; commits 100 and
 //! up; X is the removed node), then a differential against core/test/roles-model `epochs`, chain
 //! (roles-model `custody`) and layer 2 alike, at every observer and receipt prefix of every world.

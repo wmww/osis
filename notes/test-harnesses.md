@@ -10,7 +10,7 @@
 
 Crate-wide seeds:
 - **osis-crdt**: every `testutil::rng(seed)` samples other runs with `OSIS_CRDT_SEED=<n>` (hashed into each run's seed; unset, the committed seeds); a panicking test prints the effective seed. Properties take `OSIS_CRDT_START`/`_SEEDS` (`testutil::crdt_seeds`) and draw from `testutil::fixed`, so the printed replay line is the whole replay. `OSIS_SHRINK=<seed> cargo test -p osis-crdt --lib -- --ignored shrink_script` shrinks a failing `fuzz_seq::tests::random_scripts_replay_plain_spec_5_7` script.
-- **osis-perm**: `differential`, `queries`, `incremental` sample other histories with `OSIS_PERM_SEED=<n>`; each run is 16 shards seeded `seed ^ i << 40` (a fixed count, so a failing seed reproduces anywhere; the panic names the shard's seed). `OSIS_PERM_SHRINK=1` shrinks counterexamples.
+- **osis-perm**: `differential`, `queries`, `incremental` sample other histories with `OSIS_PERM_SEED=<n>`; each run is 16 shards seeded `seed ^ i << 40` (a fixed count, so a failing seed reproduces anywhere; the panic names the shard's seed).
 - **order harness** (`held_set_decides`): `OSIS_ORDER_START`, `_SEEDS`, `_SEED` (one seed), `_LEN`, `_CLOCK`.
   - `OSIS_ORDER_SHRINK=1` shrinks each failure (`order::shrink`, at most `SHRINK_CANDIDATES` candidates) and prints the history as Rust a scripted test compiles (`rust_of`). A candidate counts only when it fails as the original did (`failure_class`), so it cannot drift to another bug; `OSIS_SHRINK_MATCH=<text>` keeps to failures containing the text instead, `OSIS_SHRINK_ANY=1` to any. A `settled` history's tail stays whole.
   - `OSIS_ORDER_STATS=1` prints each history and the tallies; `OSIS_ORDER_DUMP=1` explains a failing node (what it prints: its readers' docs in order.rs).

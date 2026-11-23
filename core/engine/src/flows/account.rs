@@ -416,7 +416,7 @@ impl AccountView {
 /// chain and reads no list: per held epoch, what a commit signed at it that no word names stands
 /// as, and for a rotation held with its chain whether it counts. The held commits at closed
 /// epochs a counting thing list or listing names are `Indexes::named`'s. An addendum's saving is
-/// §5.2's fixpoint (`Timeline::vouching`).
+/// read where a part is judged (`validity::Judge`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JudgedEpochs {
     epochs: BTreeMap<CommitId, (EpochStanding, Option<bool>)>,

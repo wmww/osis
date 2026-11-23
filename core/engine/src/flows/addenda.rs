@@ -14,7 +14,7 @@
 //! whether R applies, its candidates) and then decides (`owed`: this node's roles, its own
 //! counting addenda); the gathering is kept (`Gathered`) and a removal is due again only when
 //! something it reads moves: R's own change in the walk (`note_changed`: the only input of one
-//! not applying), its component walked anew (`note_evaluated`), a commit ordered no later than
+//! not applying), a commit ordered no later than
 //! it applying or changing its standing and reaching a party R names or R's author (`wake`,
 //! filed per such party, `Indexes::addenda_wake`), this node's roles moving on a thing it is
 //! filed under (`note_roles_moved`: decided again, the gathering kept), a thing it is filed under
@@ -125,7 +125,7 @@ pub(crate) fn note_applied(core: &mut Core, id: &CommitId, h: &osis_commit::Head
 /// content judges nothing.
 ///
 /// Invariant: every input a kept gathering reads besides R's own change in the walk
-/// (`note_changed`) and a re-walk of its component (`note_evaluated`) moves only by such a
+/// (`note_changed`) moves only by such a
 /// commit: who is demoted at R and whether R applies are read from the walk before R; the
 /// candidates are commits held before R's arrival.
 fn wake(core: &mut Core, id: &CommitId, signer: Tid, ts: Ts) {
@@ -190,10 +190,10 @@ pub(crate) fn window(got: osis_base::WallMs, r_ts: Ts, r_got: osis_base::WallMs)
 }
 
 /// What a judgement of removal R gathers (`gather`): whether it applies, and its candidates, read
-/// off R's standing in the walk (applied, `demoted_by`) and the commits held before it with their
+/// off R's standing in the walk (applied, the cuts it makes) and the commits held before it with their
 /// receipts. Kept per removal (`Indexes::addenda_gathered`) and
 /// gathered anew only when one of those may have changed: R's own change in the walk
-/// (`note_changed`), its component walked anew (`note_evaluated`), a commit ordered no later
+/// (`note_changed`), a commit ordered no later
 /// than it applying (`note_applied`), its late parts (`note_due`), an open. Receipts are final
 /// once R is held (its window closes at its arrival), and a commit arriving after R is in no
 /// window, so nothing else adds a candidate. Debug builds check a kept gathering against a fresh

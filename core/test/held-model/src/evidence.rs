@@ -113,7 +113,7 @@ pub enum Takes {
 pub struct Closure {
     pub takes: Takes,
     /// Today's chain certificates (spec/permissions.md §4 Chain certificates, as main builds
-    /// them: `osis_perm` `Timeline::certificates`) in place of stated paths: a member brings every
+    /// them: the engine's `sync_ids::chain`) in place of stated paths: a member brings every
     /// taken write on an edge between two things of its signer's **chain** to its thing (the
     /// signer and the things on any path from it to the thing over record edges and edges chained
     /// grants set, at any time), and an edge write also its signer's chain to its holder (closed

@@ -57,7 +57,7 @@ pub struct Held {
     /// have lost its last dependent).
     unnamed: BTreeSet<Tid>,
     /// Role commits held that do not count (an account's at a closed epoch no word names):
-    /// left out of what perm reads (`HeldSet::edge_commits`). By ID, whether held or not, so a
+    /// left out of what perm reads (`Held::counted`). By ID, whether held or not, so a
     /// commit re-derived (`add_commit`) keeps its standing.
     uncounted: BTreeSet<CommitId>,
     /// Stamps `created`, per thing.

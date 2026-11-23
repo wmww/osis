@@ -270,7 +270,7 @@ impl Engine {
     }
 
     /// `g`'s own certificates as a read thing (`sync_certificates`): `shared_certificates`, every
-    /// actor's chain certificates for `g` (`Timelines::certificates_into`: what reaches it over
+    /// actor's chain certificates for `g` (`chain::certificates_into`: what reaches it over
     /// chained writes, each account with its signing chain), and under D's sync ID every node's card
     /// commits (each node of D logs its own there). The same at every node judging `g`: what this
     /// node logs of its own (`certificates`) decides nothing of S's required set, else two honest
@@ -311,7 +311,7 @@ impl Engine {
 
     /// Author `a`'s chain certificates for `x` (spec/permissions.md §4, a commit's author's
     /// chain), the parts and records they name: read from the paths into `x` alone
-    /// (`Timelines::certificates`).
+    /// (`chain::certificates`).
     pub(crate) fn chain_piece(&mut self, a: &Tid, x: &Tid) -> Certs {
         let mut out = Certs::deferring();
         let found = super::chain::certificates(&self.core, a, x);
@@ -505,8 +505,8 @@ impl Engine {
     }
 
     /// What a verifier needs beside `parts` of commit `c` to judge them (spec/permissions.md
-    /// §4): its author's chain certificates to each thing the parts touch and to its actor
-    /// (`validity::acts_for`), minus `parts` themselves. `None` when `c` is not applied here: a
+    /// §4): its author's chain certificates to each thing the parts touch and to its purge
+    /// author, minus `parts` themselves. `None` when `c` is not applied here: a
     /// node that cannot verify it cannot tell.
     pub fn author_chain(&mut self, c: &CommitId, parts: &Parts) -> Option<Certs> {
         if self.core.ix.pending.contains_key(c) {

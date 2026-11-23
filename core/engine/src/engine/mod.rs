@@ -720,9 +720,8 @@ indexes! {
     /// on each thing it names, spec/commits.md §5): what finds a thing's requests
     /// (`retention::destroy`) without reading its other commits.
     pub purges_on: JSetMap<Tid, CommitId>,
-    /// Held commits per (acting thing, signer), where those differ: re-judging
-    /// `validity::acts_for` when the actor's timeline changes, a demotion's frontier, the
-    /// actors this node acts for (`Core::acting`).
+    /// Held commits per (purge author, signer), where those differ: the things this node has
+    /// written as (`Core::acting`).
     pub by_actor: JSetMap<(Tid, Tid), CommitId>,
     /// Node- and session-form ranges per (tid, ak, own source): (lo, commit) -> hi. Keyed by
     /// commit too: equivocating commits of one range are all held (spec/commits.md §4).
@@ -3667,9 +3666,7 @@ impl Engine {
     /// Debug builds: the whole verdict checks, run at the end of the history (not per
     /// transaction: each costs O(everything held)) when a transaction ran since they last did.
     /// Every held commit's flags are what judging it now gives (`validity::misjudged`: what was
-    /// not re-judged has not changed), and every re-grant bound a timeline memoizes is what a
-    /// search at every change finds (`Timeline::check_first_held`; after the judging, which asks
-    /// for most of them). Panics with the first difference.
+    /// not re-judged has not changed). Panics with the first difference.
     #[cfg(debug_assertions)]
     fn checked_verdicts(&mut self) {
         if !std::mem::take(&mut self.verdicts_unchecked) {

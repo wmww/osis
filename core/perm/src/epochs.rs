@@ -15,7 +15,7 @@
 //!
 //! Addenda are not judged here: an addendum counts by §5.2's least fixpoint, which may run
 //! through other accounts' epochs (a witness's addendum at its own closed epoch), so it is
-//! `Timeline::vouching`'s, fed each addendum's `EpochStanding`. Lists and listings save whole
+//! the node's, which holds each addendum's `EpochStanding`. Lists and listings save whole
 //! commits (role commits among them), so the timeline reads `counts`, which no addendum moves.
 
 use crate::chain::{Chain, Devices, Rotation};

@@ -8,19 +8,17 @@
 //! holds its record edge (admin) in genesis, removable like any edge (§1). Modules by spec
 //! section:
 //! - `joint`: §5.1 steps 1-5 over several actors (record edges, actor holders, mutual
-//!   roles, commit-ID ties); `joint::walk`, `joint::random_hist`. osis-perm `joint_model_agrees`.
+//!   roles, commit-ID ties); `joint::walk`, `joint::random_hist`.
 //! - `edges`: §2 (`until`, invite power, self-removal) and §7 (links) on one target, with
-//!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`. osis-perm
-//!   `edges_model_agrees`.
+//!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`.
 //! - `trust`: disputes and trust sets over `edges` and `joint` (notes/disputes.md), below.
-//!   osis-perm `trust_model_agrees`.
 //! - `content`: §5.2 per-delta content validity: scenarios.
 //! - `addenda`: addenda (spec/permissions.md §5.2): layer 2 with several authors over `joint`
 //!   timelines (`JHist::steps`), witnesses' addenda as a least fixpoint, bodies dropped and
 //!   refetched, forged addenda, cost, which covered commits lists leave out (`Cover`).
 //!   Searches `addenda` (random), `addenda-exh` (exhaustive families), `addenda-covers`;
 //!   S3 brief 3's `Gaps` (admin-only content, writing on first holding the role): `addenda-gaps`.
-//!   osis-perm `addenda_model_agrees`; results: notes/addenda.md, Addenda model.
+//!   Results: notes/addenda.md, Addenda model.
 //! - `forget`: forgetting a commit's ID under a cover and the remover's own cover
 //!   (spec/commits.md §5 Forgetting), per node with real body drops, against listing every
 //!   commit. Search `forget`.

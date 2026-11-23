@@ -1,7 +1,6 @@
-//! Validity through osis-perm (spec/permissions.md §5): role commits become perm's edge-write
-//! records (the node's `HeldSet` is perm's `MemoryHeldSet`,
-//! kept current), each delta is judged on its own (layer 2), and a change of the held set
-//! re-judges every held delta; an aspect with a flip is rebuilt from its held bodies
+//! Validity through osis-perm (spec/permissions.md §5): each held commit is given to the walk as
+//! its reading (`reading`: edge writes, deltas along their stated paths), each delta is judged by
+//! a point query (layer 2), and a change of the walk re-judges the deltas it reaches; an aspect with a flip is rebuilt from its held bodies
 //! (un-merge or re-merge, spec/crdt.md §4.6). Also the role-commit content rules
 //! osis-commit cannot see (spec/commits.md §2).
 
@@ -63,7 +62,7 @@ fn plain_part(h: &Header, a: &osis_commit::AspectEntry) -> bool {
 /// Whether a part of commit `h` on aspect `a` is content an addendum against a removal may
 /// vouch for (spec/permissions.md §5.2, Addenda): a content commit (no compaction snapshot)
 /// carrying no purge request, on no role-class or addenda aspect; on an admin-only one only by
-/// a witness holding admin (`Vouching::witnesses` with admin).
+/// an addendum whose path gives admin.
 fn listable_part(h: &Header, a: &osis_commit::AspectEntry) -> bool {
     let ak = a.ak.as_str();
     plain_commit(h) && !ct::is_role_class(ak) && !ct::is_addenda(ak) && ak != "created.0"
