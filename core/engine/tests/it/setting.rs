@@ -536,8 +536,8 @@ fn a_covered_drop_redates_nothing_spec_commits_5() {
 
 // spec/commits.md §5 (when a body was replaced): a date is a function of the held bodies, so a
 // body leaving before its bound (`Engine::drop_body` skips it) takes its superseding writes with
-// it: what it replaced dies at the next held superseder (`bounds::moved_by_changes` following a
-// leaving body; a row left at the dropped one is early).
+// it: what it replaced dies at the next held superseder (`osis_crdt::Held::leave` moving the
+// deaths its writes gave; a row left at the dropped one is early).
 #[test]
 fn a_body_leaving_redates_what_it_replaced_spec_commits_5() {
     let (mut lp, d) = setup();

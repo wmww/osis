@@ -1847,6 +1847,8 @@ impl Core {
             ("killed", self.killed.len() != m.killed),
             ("to_date", self.to_date.len() != m.to_date),
             ("dates_moved", self.dates_moved.len() != m.dates_moved),
+            ("bodies_rewritten", self.bodies_rewritten.len() != m.bodies_rewritten),
+            ("died", self.died.len() != m.died),
             ("wrote_on", self.wrote_on.len() != m.wrote_on),
             ("stale", stale != (&m.stale.0, &m.stale.1, &m.stale.2, &m.stale.3, m.stale.4)),
             ("batched", self.batched != m.batched),

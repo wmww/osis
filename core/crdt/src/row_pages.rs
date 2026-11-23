@@ -327,8 +327,8 @@ mod tests {
     use crate::held::MemRows;
 
     /// spec: none (internal: how a node stores an index's rows). `pack` gives back its input
-    /// through `unpack` for random and repeating bytes and shrinks repeats; damaged bytes are an
-    /// error, never a panic.
+    /// through `unpack` for random and repeating bytes and shrinks repeats; damaged or random bytes
+    /// are an error as a page, never a panic.
     #[test]
     fn packed_bytes_unpack_as_they_were() {
         let mut r = crate::testutil::rng(43);
@@ -350,8 +350,10 @@ mod tests {
                 let at = r.below(bad.len());
                 bad[at] ^= 1 << r.below(8);
                 bad.truncate(1 + r.below(bad.len()));
-                let _ = unpack(&bad);
+                let _ = decode(&bad);
             }
+            let noise: Vec<u8> = (0..r.below(200)).map(|_| r.below(256) as u8).collect();
+            let _ = decode(&noise);
         }
         let repeating: Vec<u8> = (0..4000u32).map(|i| (i % 37) as u8).collect();
         assert!(pack(&repeating).len() < 200, "{} B", pack(&repeating).len());
