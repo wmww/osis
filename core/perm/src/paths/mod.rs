@@ -507,6 +507,14 @@ impl<S: Store> Paths<S> {
         self.facts.reached(ch)
     }
 
+    /// The held commits resting on (holder, target) (spec/permissions.md §5.1 Frontier): those
+    /// with an edge-class part resting on it or a delta stated along it.
+    pub fn resting(&self, holder: &Tid, target: &Tid) -> BTreeSet<CommitId> {
+        let mut out = self.timeline.resting(holder, target);
+        out.extend(self.facts.store.through(&(*holder, *target), std::ops::Bound::Unbounded, std::ops::Bound::Unbounded).into_iter().map(|w| w.0));
+        out
+    }
+
     /// The held commits with a part resting on or setting (holder, target), or a delta along it.
     pub fn through(&self, holder: &Tid, target: &Tid) -> BTreeSet<CommitId> {
         let mut out = self.timeline.through(holder, target);

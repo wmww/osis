@@ -211,19 +211,26 @@ impl DemotionScope {
 }
 
 /// What lowering the edges `edges` (holder, target) puts in question (spec/permissions.md §5.1
-/// Frontier): every held commit with a part resting on one of them (an edge-class part by its
-/// path, a delta along it: `osis_perm::paths::Paths::through`), by signer and the things it
-/// writes. The frontier lists each signer's received commits on those things: every commit
-/// resting on the edges, and those of the same signers there along other paths, which a list
-/// names to no effect.
+/// Frontier): every commit with a part resting on one of them. Of those held, their signers and
+/// the things they write (an edge-class part by its path, a delta along it:
+/// `osis_perm::paths::Paths::resting`). Of those not held (forgotten under a cover, or never
+/// received: Own cover), who could have signed one and where: whatever reaches the holder by held
+/// grants and records, on whatever the target reaches. The frontier lists each signer's received
+/// commits on those things: every commit resting on the edges, and those of the same signers
+/// there along other paths, which a list names to no effect.
 pub(crate) fn scope_of(core: &Core, edges: &[(Tid, Tid)]) -> DemotionScope {
     let mut scope = DemotionScope::default();
     for (holder, target) in edges {
-        for c in core.timelines.paths().through(holder, target) {
+        for c in core.timelines.paths().resting(holder, target) {
             let Some(m) = core.ix.commits.get(&c) else { continue };
             let things: BTreeSet<Tid> = m.view.aspects.iter().map(|a| a.tid).collect();
             scope.roles.entry(m.view.signer).or_default().extend(things.iter().copied());
             scope.content.entry(m.view.signer).or_default().extend(things);
+        }
+        let below = core.ix.held.reach(&BTreeSet::from([*target]));
+        for signer in core.ix.held.upstream(&BTreeSet::from([*holder])) {
+            scope.roles.entry(signer).or_default().extend(below.iter().copied());
+            scope.content.entry(signer).or_default().extend(below.iter().copied());
         }
     }
     scope

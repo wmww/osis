@@ -413,6 +413,12 @@ impl Walk {
         }
     }
 
+    /// The held commits with an edge-class part resting on (holder, target) (§5.1 Rests on).
+    pub(super) fn resting(&self, holder: &Tid, target: &Tid) -> BTreeSet<CommitId> {
+        let Some(ed) = self.edge(holder, target) else { return BTreeSet::new() };
+        ed.resting.iter().map(|&(_, s)| self.it(s).id.0).collect()
+    }
+
     /// The held commits with an edge-class part setting or resting on (holder, target).
     pub(super) fn through(&self, holder: &Tid, target: &Tid) -> BTreeSet<CommitId> {
         let Some(ed) = self.edge(holder, target) else { return BTreeSet::new() };
