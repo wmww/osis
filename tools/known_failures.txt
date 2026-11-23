@@ -19,3 +19,4 @@ osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=610442177300,OSIS
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=421200482733,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=278997924631,OSIS_ORDER_LEN=60 issues/order-settings-seed.md applied: model false, node true; parts \[.*created\.0 mint admin
 osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=47 issues/seq-cold-edits-follow-gaps.md same delta as on the whole state
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=410914575349,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held

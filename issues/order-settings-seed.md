@@ -20,3 +20,5 @@ Not the snapshot-carries class (content judged by a list naming a snapshot, note
 Seed 421200482733 (PartsAway) fails on main too (466eb5afb); not yet read whether it states the same.
 
 Seed 278997924631 (Addenda) fails on main (5fa1ed684) with the same model-false/node-true shape of a content commit minting a thing (`holds.0`, `created.0`, `t:reg.0` parts), not a role commit's `roles.0`; not yet read whether it shares the cause.
+
+Also seed 410914575349 (PartsAway), failing on a main binary.
