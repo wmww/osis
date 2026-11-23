@@ -2999,7 +2999,11 @@ fn end_drops<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
     }
     tx.core.needs_due.clear();
     // what the held changes above moved in the walk is judged here: a transaction leaves the
-    // next nothing of its own to judge
+    // next nothing of its own to judge, a split path the steps above let open included
+    // (`apply::paths::refresh`: a commit whose path opens turns stale)
+    if r.is_ok() {
+        crate::apply::paths::refresh(tx);
+    }
     while r.is_ok() && tx.core.stale() {
         r = then(r, || crate::apply::rejudged(tx, false).and_then(|_| crate::retention::drop_invalid(tx)));
         tx.core.drop_due.clear();

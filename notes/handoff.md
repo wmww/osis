@@ -17,7 +17,6 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 
 ## Safe parallel work queue (outside the rewrite)
 - issues/text-move-writes-grow.md: engine pages / osis-crdt.
-- issues/split-path-wake-missed.md: a waiting commit never retried after its split path opens (engine apply).
 - issues/masked-backdated-lowerings.md: osis-perm walk.
 - issues/held-model-until-no-deadline.md: cause never read.
 - Workflow agent about half the time; one cleanup always.

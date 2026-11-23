@@ -4702,6 +4702,32 @@ fn a_path_waiting_opens_when_its_roles_secret_comes_spec_commits_4() {
     }
 }
 
+// spec/commits.md §4 Unjudgeable, notes/sync-facade.md Pending: a roles secret that opens a
+// waiting path opens it in the transaction that brought it, however it came. Carol holds Bob's
+// split commit without D's part; Alice's grant of D comes from her clock far ahead, so it pends
+// for drift, yet its box gives Carol D's roles secret (reading): D's entry opens at once.
+#[test]
+fn a_path_waiting_opens_when_a_pending_commit_gives_its_roles_secret_spec_commits_4() {
+    let (mut lp, _, d, p) = two_paths_world();
+    let (id, c) = bob_writes_both(&mut lp, d, p);
+    let ip = place(&c, p);
+    let only_p = osis_commit::CommitBlob { keys: BTreeMap::from([(ip, c.keys[&ip])]), ..osis_commit::rewrite(&c, |ai| c.header.aspects[ai].tid != p) };
+    unless_refused(lp.peers[2].engine.ingest(&only_p.encode(), Vec::new()));
+    lp.peers[2].reexamine().unwrap();
+    assert!(lp.peers[2].engine.core.ix.paths_unknown.contains(&id), "D's path opens nowhere at Carol");
+    let carol = lp.peers[2].engine.me();
+    lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    let grant = lp.peers[0].engine.grant(&d, &carol, &edge(Role::Read)).unwrap().commits;
+    for g in grant {
+        let pk = lp.peers[0].engine.package(&g).unwrap().unwrap();
+        assert!(matches!(lp.peers[2].engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap(), osis_engine::Ingested::Pending(_, osis_engine::Reason::Drift)));
+    }
+    assert!(lp.peers[2].engine.epochs(&d).is_some_and(|e| e.read.epochs().any(|(ep, _)| e.read.roles_secret(ep).is_some())), "Carol reads D's roles secret");
+    assert!(!lp.peers[2].engine.core.ix.paths_unknown.contains(&id), "D's path opened");
+    assert_eq!(lp.peers[2].engine.core.ix.commits.get(&id).unwrap().view.paths.as_ref().unwrap().get(&d).map(Option::is_some), Some(true));
+    lp.peers[2].engine.check_index();
+}
+
 // spec/commits.md §4 Unjudgeable; notes/principles.md Fast by construction, notes/sync-facade.md Pending: a split commit whose
 // path opens nowhere waits on what may open it, never on everything: k commits forged by Bob
 // with D's entry opening nowhere, held at Alice, cost an unrelated write of hers nothing, at k = 1
