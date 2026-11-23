@@ -656,7 +656,6 @@ fn expired_undelete_hides_alike_spec_5_7() {
         pos: if created { vec![(c.clone(), Anchor::Head, None)] } else { vec![] },
         deleted,
         undel,
-        valueless: false,
         span: 1,
         each: None,
     };

@@ -59,7 +59,7 @@ pub fn writes(f: &Frag) -> Vec<(Name, Frag)> {
                 }
                 if let Some(s) = &c.w {
                     let mut w = bare();
-                    *w.composite_mut().unwrap() = Composite { reset: None, w: Some(s.clone()), w_valueless: c.w_valueless };
+                    *w.composite_mut().unwrap() = Composite { reset: None, w: Some(s.clone()) };
                     put(vec![Step::W(s.clone())], w);
                 }
             }
@@ -147,7 +147,7 @@ pub fn writes(f: &Frag) -> Vec<(Name, Frag)> {
                         if let Some(c) = &el.created {
                             let content = if let Content::Char(x) = el.content { Content::Char(x) } else { Content::None };
                             let pos = el.pos.iter().filter(|p| own(p)).cloned().collect();
-                            put(vec![at.clone(), Step::Created(c.0.clone())], one(SeqElem { created: Some(c.clone()), content, pos, valueless: el.valueless, ..none.clone() }));
+                            put(vec![at.clone(), Step::Created(c.0.clone())], one(SeqElem { created: Some(c.clone()), content, pos, ..none.clone() }));
                         }
                         for p in el.pos.iter().filter(|p| !own(p)) {
                             put(vec![at.clone(), Step::Pos(p.0.clone())], one(SeqElem { pos: vec![p.clone()], ..none.clone() }));

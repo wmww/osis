@@ -124,19 +124,12 @@ fn join_meta(s: &mut Meta, d: Meta, e_parent: Option<&Stamp>, ch: &mut Changes) 
     let raised = join_write(&mut s.reset, d.reset, ch);
     prune_write(&mut s.reset, e_parent, ch);
     let e = max_opt(e_parent.cloned(), s.reset.clone());
-    // later wins; of copies of one `W` the valued one (§4.1 copy order)
+    // later wins
     match (&s.w, &d.w) {
         (_, None) => {}
-        (Some(a), Some(b)) if a == b => {
-            if s.w_valueless && !d.w_valueless {
-                s.w_valueless = false;
-                ch.touch();
-            }
-        }
-        (Some(a), Some(b)) if a > b => {}
+        (Some(a), Some(b)) if a >= b => {}
         _ => {
             s.w = d.w;
-            s.w_valueless = d.w_valueless;
             ch.touch();
         }
     }
@@ -156,9 +149,6 @@ fn prune_meta(m: &mut Meta, e_parent: Option<&Stamp>, ch: &mut Changes) -> Optio
 /// Prunes a composite's `W` under `e`.
 fn prune_w(m: &mut Meta, e: Option<&Stamp>, ch: &mut Changes) {
     prune_write(&mut m.w, e, ch);
-    if m.w.is_none() {
-        m.w_valueless = false;
-    }
 }
 
 /// Prunes a keyed child map (struct fields, enum payloads), dropping empty children.

@@ -16,8 +16,6 @@ pub struct Composite {
     pub reset: Option<Stamp>,
     /// Explicit presence write `W` (§4.3). The presence stamp is computed: see `Frag::written`.
     pub w: Option<Stamp>,
-    /// The `W` is held value-less (§4.7): it writes the value "an empty composite".
-    pub w_valueless: bool,
 }
 
 /// Whether set element `e` at dot `d` is hidden by a value removal among `elems` (§5.5): one of
@@ -118,20 +116,18 @@ pub struct SeqElem {
     /// Text: the char the surviving `deleted` write carries (an undelete's own value, §5.7); never with a `true`
     /// flag. What an undeleted element shows.
     pub undel: Option<char>,
-    /// List: the creation is held value-less (§4.7). A text creation's value is its char.
-    pub valueless: bool,
 }
 
 impl SeqElem {
     pub fn new(created: Stamp, anchor: Anchor, content: Content) -> SeqElem {
-        SeqElem { created: Some((created.clone(), anchor.clone())), content, pos: vec![(created, anchor, None)], deleted: None, undel: None, valueless: false }
+        SeqElem { created: Some((created.clone(), anchor.clone())), content, pos: vec![(created, anchor, None)], deleted: None, undel: None }
     }
     pub fn write(content: Content, pos: Vec<Pos>, deleted: Option<(Stamp, bool)>) -> SeqElem {
-        SeqElem { created: None, content, pos, deleted, undel: None, valueless: false }
+        SeqElem { created: None, content, pos, deleted, undel: None }
     }
     /// A text flag write: a delete, or an undelete carrying `undel` (§5.7).
     pub fn flag(s: Stamp, deleted: bool, undel: Option<char>) -> SeqElem {
-        SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((s, deleted)), undel: undel.filter(|_| !deleted), valueless: false }
+        SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((s, deleted)), undel: undel.filter(|_| !deleted) }
     }
     /// A text element's char as it reads (§5.7): one register over the creation and the flag writes, by stamp, a
     /// flag winning a tie. The creation winning: its char; an undelete: the undelete's own; a delete: none. None
@@ -182,17 +178,13 @@ pub fn origin(d: &Dot) -> &Dot {
 }
 
 impl SeqElem {
-    /// Whether the creation write counts toward presence (§4.3): a valued one (text: its char held; list: not held
-    /// value-less), or one under a flag write (text) or element reset (list).
+    /// Whether the creation write counts toward presence (§4.3): a list's always; a text's with its char held or
+    /// under a flag write.
     fn creation_counts(&self, text: bool) -> bool {
-        if text {
-            matches!(self.content, Content::Char(_)) || self.deleted.is_some()
-        } else {
-            !self.valueless || self.deleted.as_ref().map_or(false, |d| d.1)
-        }
+        !text || matches!(self.content, Content::Char(_)) || self.deleted.is_some()
     }
     /// Not live (§5.7 Live). Text: no char to show. List: no creation held, the creation at or below the element's
-    /// reset, or content that is not present or, under a value-less creation, holds no live value.
+    /// reset, or content that is not present.
     pub fn is_deleted(&self, text: bool) -> bool {
         if text {
             return self.char().is_none();
@@ -201,7 +193,7 @@ impl SeqElem {
         if self.deleted.as_ref().is_some_and(|(r, _)| *c <= *r) {
             return true;
         }
-        !matches!(&self.content, Content::Frag(f) if f.present() && (!self.valueless || f.live_value()))
+        !matches!(&self.content, Content::Frag(f) if f.present())
     }
     /// Whether the element reads (§5.7 Live).
     pub fn shows(&self, text: bool) -> bool {
@@ -322,7 +314,7 @@ impl Frag {
         match self {
             Frag::Register { write, .. } => write.as_ref().filter(|w| w.1.is_some()).map(|w| w.0.clone()),
             Frag::Slots { .. } => self.chosen().written(),
-            f => max_opt(f.composite().unwrap().w.clone().filter(|_| !f.composite().unwrap().w_valueless), f.inner_max(true)),
+            f => max_opt(f.composite().unwrap().w.clone(), f.inner_max(true)),
         }
     }
 
@@ -393,13 +385,7 @@ impl Frag {
     pub fn join_raw(self, o: Frag) -> Frag {
         assert_eq!(self.enc(), o.enc());
         fn jc(a: Composite, b: Composite) -> Composite {
-            // later wins; of copies of one `W` the valued one (§4.1 copy order)
-            let w_valueless = match a.w.cmp(&b.w) {
-                std::cmp::Ordering::Less => b.w_valueless,
-                std::cmp::Ordering::Greater => a.w_valueless,
-                std::cmp::Ordering::Equal => a.w_valueless && b.w_valueless,
-            };
-            Composite { reset: max_opt(a.reset, b.reset), w: max_opt(a.w, b.w), w_valueless }
+            Composite { reset: max_opt(a.reset, b.reset), w: max_opt(a.w, b.w) }
         }
         fn jopt(a: Option<Box<Frag>>, b: Option<Box<Frag>>) -> Option<Box<Frag>> {
             match (a, b) {
@@ -497,14 +483,8 @@ impl Frag {
                             };
                             let mut pos = na.pos;
                             pos.extend(nb.pos);
-                            // a list creation's valued copy over its value-less one (§4.1 copy order)
-                            let valueless = match (&na.created, &nb.created) {
-                                (Some(_), Some(_)) => na.valueless && nb.valueless,
-                                (Some(_), None) => na.valueless,
-                                (None, _) => nb.valueless,
-                            };
                             let created = na.created.max(nb.created);
-                            ea.insert(d, SeqElem { created, content, pos: top2(pos), deleted, undel, valueless });
+                            ea.insert(d, SeqElem { created, content, pos: top2(pos), deleted, undel });
                         }
                     }
                 }
@@ -568,7 +548,6 @@ impl Frag {
             for c in slots.values_mut().filter_map(Frag::composite_mut) {
                 if c.w.is_some() && c.w < w {
                     c.w = None;
-                    c.w_valueless = false;
                 }
             }
             *self = assemble(reg, slots);
@@ -717,7 +696,6 @@ impl Frag {
                     el.pos.retain(|p| survives(&p.0, e));
                     if el.created.as_ref().map_or(false, |c| !survives(&c.0, e)) {
                         el.created = None;
-                        el.valueless = false;
                     }
                     if let Some(d) = &el.deleted {
                         if !survives(&d.0, e) {
@@ -757,7 +735,7 @@ impl Frag {
         match self {
             Frag::Register { write, .. } => write.as_ref().is_some_and(|w| w.1.is_some()),
             Frag::Slots { .. } => self.chosen().live_value(),
-            f if f.composite().is_some_and(|c| c.w.is_some() && !c.w_valueless) => true,
+            f if f.composite().is_some_and(|c| c.w.is_some()) => true,
             Frag::Bag { elems, .. } => elems.values().any(|e| e.frag.as_ref().is_some_and(|f| f.present())),
             Frag::Set { elems, .. } => !crate::ops::live_elems(elems).is_empty(),
             Frag::Struct { fields, .. } => fields.values().any(|f| f.live_value()),
@@ -890,7 +868,6 @@ impl Frag {
             }
             if !k(&c.w) {
                 c.w = None;
-                c.w_valueless = false;
             }
         }
         match self {
@@ -933,7 +910,6 @@ impl Frag {
             Frag::Seq { elems, .. } => elems.retain(|d, el| {
                 if !keep(origin(d)) {
                     el.created = None;
-                    el.valueless = false;
                     if matches!(el.content, Content::Char(_)) {
                         el.content = Content::None;
                     }
@@ -985,7 +961,6 @@ fn prune_written(c: &mut Composite, e: Option<&Stamp>) {
     if let Some(w) = &c.w {
         if !survives(w, e) {
             c.w = None;
-            c.w_valueless = false;
         }
     }
 }

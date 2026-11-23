@@ -417,7 +417,7 @@ fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
     // chars at random: creation copies of one dot and undeletes may carry other chars (forged
     // copies, §4.1 copy order, §5.7)
     let any_char = |r: &mut Rng| char::from(b'a' + r.below(4) as u8);
-    let seq = |elems: BTreeMap<Dot, MElem>, reset: Option<MStamp>| Frag::Seq { text: !list, c: Composite { reset, w: None, w_valueless: false }, elems };
+    let seq = |elems: BTreeMap<Dot, MElem>, reset: Option<MStamp>| Frag::Seq { text: !list, c: Composite { reset, w: None }, elems };
     // stamps: ts in a small range so writes interleave; position write counters apart from dots
     let mut pos_ctr = 100u64;
     let mut out = Vec::new();

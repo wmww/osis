@@ -2,11 +2,9 @@
 //! uniform: no position write but the creation, one deleted write or element reset, either no
 //! creation or creations (element `i` created at `dot + i` at its own `ts`, never below the one
 //! before, anchored anywhere, by default at element `i - 1`: `SeqElem::each`) on one side of
-//! its flag write (text: the flag wins for all or none, §5.7, `seq::flag_cut`), and no content
-//! or, for a list without an element reset, the same value-less content written at each
-//! creation's own stamp (a template: the first element's, `template`). Value-less records
-//! (deleted, expired, purged) so cost a `ts` and an anchor each at most, about what the wire
-//! holds. Decoding (a page's records among themselves) and `Fragment::compact` make maximal
+//! its flag write (text: the flag wins for all or none, §5.7, `seq::flag_cut`), and no content.
+//! Dead records (deleted, expired, purged) so cost a `ts` and an anchor each at most, about
+//! what the wire holds. Decoding (a page's records among themselves) and `Fragment::compact` make maximal
 //! ranges (`coalesce`); join, prune and linearization split a range only where a write lands or
 //! anchors inside it, and linearization before each element not anchored at the one before (its
 //! nodes are creation chains). Element `i` of a record is `piece(.., i, 1)`.
@@ -15,7 +13,6 @@
 //! dot sits between `(S, c)` and `(S, c + 1)`, so an `S` range never spans such a key; the record
 //! holding a dot is then the one at or before it.
 
-use crate::fragment::{Enum, Fragment, Meta, Register, Struct};
 use crate::seq::{Anchor, Each, SeqContent, SeqElem};
 use crate::stamp::{Dot, SourceKind, Stamp};
 use osis_base::Ts;
@@ -42,13 +39,8 @@ pub(crate) fn piece(d: &Dot, e: &SeqElem, off: u64, len: u64) -> (Dot, SeqElem) 
     let start = nth(d, off);
     let created = e.creation_at(d, off).zip(e.anchor_at(d, off));
     let pos = created.iter().map(|(s, a)| (s.clone(), a.clone(), None)).collect();
-    // a template written at the first creation's stamp, at this one's
-    let content = match (&e.content, &e.created, &created) {
-        (SeqContent::Frag(f), Some((from, _)), Some((to, _))) => SeqContent::Frag(Box::new(restamped(f, from, to))),
-        _ => SeqContent::None,
-    };
     let each = each(usize::try_from(off).unwrap_or(usize::MAX));
-    (start, SeqElem { created, content, pos, deleted: e.deleted.clone(), undel: None, valueless: e.valueless, span: len, each })
+    (start, SeqElem { created, content: SeqContent::None, pos, deleted: e.deleted.clone(), undel: None, span: len, each })
 }
 
 /// A stamp of the record's first element (its creation) moved to the last element.
@@ -62,82 +54,13 @@ pub(crate) fn last_of(d: &Dot, e: &SeqElem, st: &Stamp) -> Stamp {
     }
 }
 
-/// Whether `f` is a range's content template at creation stamp `s`: non-empty, value-less, every
-/// write stamped `s`, and no record of its own (registers, structs and enums only), so element
-/// `i`'s content is `f` at its own creation stamp (`restamped`).
-pub(crate) fn template(f: &Fragment, s: &Stamp) -> bool {
-    let at = |x: &Option<Stamp>| x.as_ref().is_none_or(|x| x == s);
-    let meta = |m: &Meta| at(&m.reset) && at(&m.w) && (m.w.is_none() || m.w_valueless);
-    !f.is_empty()
-        && match f {
-            Fragment::Register(Register { reset, write }) => at(reset) && write.as_ref().is_none_or(|w| w.stamp == *s && w.value.is_none()),
-            Fragment::Struct(Struct { meta: m, fields }) => meta(m) && fields.values().all(|x| template(x, s)),
-            Fragment::Enum(Enum { meta: m, case, payloads }) => meta(m) && case.as_ref().is_none_or(|c| c.stamp == *s && c.case.is_none()) && payloads.values().all(|x| template(x, s)),
-            _ => false,
-        }
-}
-
-/// Template `f` (`template` at `from`) with every write at `to`.
-pub(crate) fn restamped(f: &Fragment, from: &Stamp, to: &Stamp) -> Fragment {
-    let mut f = f.clone();
-    restamp(&mut f, from, to);
-    f
-}
-
-fn restamp(f: &mut Fragment, from: &Stamp, to: &Stamp) {
-    let at = |x: &mut Option<Stamp>| {
-        if let Some(x) = x.as_mut().filter(|x| **x == *from) {
-            *x = to.clone();
-        }
-    };
-    let meta = |m: &mut Meta| {
-        at(&mut m.reset);
-        at(&mut m.w);
-    };
-    match f {
-        Fragment::Register(r) => {
-            at(&mut r.reset);
-            if let Some(w) = r.write.as_mut().filter(|w| w.stamp == *from) {
-                w.stamp = to.clone();
-            }
-        }
-        Fragment::Struct(x) => {
-            meta(&mut x.meta);
-            x.fields.values_mut().for_each(|y| restamp(y, from, to));
-        }
-        Fragment::Enum(x) => {
-            meta(&mut x.meta);
-            if let Some(c) = x.case.as_mut().filter(|c| c.stamp == *from) {
-                c.stamp = to.clone();
-            }
-            x.payloads.values_mut().for_each(|y| restamp(y, from, to));
-        }
-        _ => {}
-    }
-}
-
-/// How many writes template `f` holds (`walk` visits each per element of its range).
-pub(crate) fn template_writes(f: &Fragment) -> usize {
-    let n = |x: &Option<Stamp>| usize::from(x.is_some());
-    match f {
-        Fragment::Register(r) => n(&r.reset) + usize::from(r.write.is_some()),
-        Fragment::Struct(x) => n(&x.meta.reset) + n(&x.meta.w) + x.fields.values().map(template_writes).sum::<usize>(),
-        Fragment::Enum(x) => n(&x.meta.reset) + n(&x.meta.w) + usize::from(x.case.is_some()) + x.payloads.values().map(template_writes).sum::<usize>(),
-        _ => 0,
-    }
-}
-
 /// Whether an element may be part of a range record.
 fn uniform(d: &Dot, e: &SeqElem) -> bool {
-    e.undel.is_none()
+    matches!(e.content, SeqContent::None)
+        && e.undel.is_none()
         && match &e.created {
-            None => e.pos.is_empty() && matches!(e.content, SeqContent::None),
+            None => e.pos.is_empty(),
             Some(c) => c.0.dot == *d && e.pos.len() == 1 && e.pos.first().is_some_and(|p| crate::seq::is_creation(p, c)),
-        }
-        && match (&e.content, &e.created) {
-            (SeqContent::None, _) => true,
-            (SeqContent::Frag(f), Some((c, _))) => e.deleted.is_none() && template(f, c),
-            _ => false,
         }
 }
 
@@ -280,7 +203,7 @@ pub(crate) fn expand(m: Elems) -> Elems {
 
 /// Whether record `(d, e)` continues range record `(a, ea)`: the next dot, both uniform, the same
 /// deleted write, both without creation or both with (`ts` never falling), one side of the flag
-/// write, and the same content template. `last`: the creation `ts` of the range's last element.
+/// write. `last`: the creation `ts` of the range's last element.
 fn continues(a: &Dot, ea: &SeqElem, last: Option<Ts>, d: &Dot, e: &SeqElem) -> bool {
     let at = |x: &Dot, k: u64| x.src == a.src && Some(x.ctr) == a.ctr.checked_add(k);
     let chain = match (&ea.created, &e.created) {
@@ -289,12 +212,7 @@ fn continues(a: &Dot, ea: &SeqElem, last: Option<Ts>, d: &Dot, e: &SeqElem) -> b
         (Some(_), Some((y, ay))) => last.is_some_and(|t| y.ts >= t && (!a.src.is_derived() || (y.ts == t && *ay == Anchor::Dot(nth(a, ea.span - 1))))),
         _ => false,
     };
-    let content = match (&ea.content, &e.content, &ea.created, &e.created) {
-        (SeqContent::None, SeqContent::None, ..) => true,
-        (SeqContent::Frag(x), SeqContent::Frag(y), Some((s, _)), Some((t, _))) => restamped(x, s, t) == **y,
-        _ => false,
-    };
-    uniform(a, ea) && uniform(d, e) && at(d, ea.span) && chain && content && ea.deleted == e.deleted && ea.valueless == e.valueless && ea.win_flag().is_some() == e.win_flag().is_some()
+    uniform(a, ea) && uniform(d, e) && at(d, ea.span) && chain && ea.deleted == e.deleted && ea.win_flag().is_some() == e.win_flag().is_some()
 }
 
 /// Merges adjacent uniform records into maximal ranges: what decoding and `Fragment::compact`

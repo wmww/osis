@@ -11,7 +11,7 @@ use crate::paging::Step;
 use crate::seq;
 use crate::stamp::{Dot, DotRange, Interner, Source, SourceKind, Stamp, max_opt};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint};
-use osis_base::cbor::{Item, List, encode_into, head_len, link_len, put_array, put_bool, put_bytes, put_link, put_map, put_uint};
+use osis_base::cbor::{Item, List, encode_into, head_len, link_len, put_array, put_bytes, put_link, put_map, put_uint};
 use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
 use osis_base::{CanonicalBytes, Limits, Link, PageCutter, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -385,13 +385,9 @@ fn head(cx: &mut Enc, out: &mut Vec<u8>, enc: Encoding, meta: &Meta, len: usize)
     put_uint(out, u64::from(enc.id()));
     // sources are noted in encoding order (§3.3 rule 1): the reset first
     cx.opt_stamp(out, meta.reset.as_ref());
-    // a value-less `W` (§3.2, §4.7)
-    put_array(out, usize::from(meta.w.is_some()) + usize::from(meta.w_valueless));
+    put_array(out, usize::from(meta.w.is_some()));
     if let Some(w) = &meta.w {
         cx.stamp(out, w);
-    }
-    if meta.w_valueless {
-        put_bool(out, false);
     }
 }
 
@@ -873,11 +869,7 @@ pub(crate) fn prune_stable(f: &Fragment, e: Option<&Stamp>) -> Result<Fragment, 
 }
 
 fn decode_meta(cx: &mut Dec, r: Item, w: Item) -> Result<Meta, Error> {
-    let (w, w_valueless) = match as_array(w)?.tuple() {
-        Some([s, f]) if f.as_bool() == Some(false) => (Some(cx.level_stamp(s)?), true),
-        _ => (cx.opt_level_stamp(w)?, false),
-    };
-    Ok(Meta { reset: cx.opt_level_stamp(r)?, w, w_valueless })
+    Ok(Meta { reset: cx.opt_level_stamp(r)?, w: cx.opt_level_stamp(w)? })
 }
 
 /// Bag or set elements into `out`; a set's value removals too (§3.2).
@@ -1024,10 +1016,9 @@ fn decode_register(cx: &mut Dec, mut a: List, may_reset: bool) -> Result<Registe
     if reset.is_some() && !may_reset {
         return Err(Error::Malformed("nested register with a reset"));
     }
-    let write = match (a.is_empty(), a.tuple(), a.tuple()) {
-        (true, _, _) => None,
-        (_, Some([s]), _) => Some(RegWrite { stamp: cx.level_stamp(s)?, value: None }),
-        (_, _, Some([s, v])) => {
+    let write = match (a.is_empty(), a.tuple()) {
+        (true, _) => None,
+        (_, Some([s, v])) => {
             let v = v.to_value()?;
             check_value(cx, &v)?;
             Some(RegWrite { stamp: cx.level_stamp(s)?, value: Some(v) })
@@ -1149,9 +1140,8 @@ fn decode_fragment_at(cx: &mut Dec, v: Item, may_reset: bool) -> Result<Fragment
             let meta = decode_meta(cx, r, w)?;
             let case = opt_stamp_only(k, |c| {
                 let c = as_array(c)?;
-                match (c.tuple(), c.tuple()) {
-                    (Some([s]), _) => Ok(CaseWrite { stamp: cx.level_stamp(s)?, case: None }),
-                    (_, Some([s, id])) => Ok(CaseWrite { stamp: cx.level_stamp(s)?, case: Some(as_uint(id)?) }),
+                match c.tuple() {
+                    Some([s, id]) => Ok(CaseWrite { stamp: cx.level_stamp(s)?, case: Some(as_uint(id)?) }),
                     _ => Err(Error::Malformed("case")),
                 }
             })?;

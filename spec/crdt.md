@@ -111,7 +111,7 @@ Register := [0, R] | [0, R, Stamp, Value]
 Slots    := [10, Opt(Register), [Fragment*]]  ; §7: register slot, then non-register slots by ascending encoding id, at least two slots in all
 Bag      := [1|2|3, R, W, [Elem*]]           ; Elem as in Set; the value register holds int|float (anything else, only from §7, reads as nothing)
 Struct   := [4, R, W, {field_id: Fragment}]          ; or paged: [Link+], §8
-Enum     := [5, R, W, Case, {case_id: Fragment}]   Case := Opt([Stamp, case_id] | [Stamp])   ; payload map paged: [Link+], §8
+Enum     := [5, R, W, Case, {case_id: Fragment}]   Case := Opt([Stamp, case_id])   ; payload map paged: [Link+], §8
 Set      := [6, R, W, [Elem*]]               Elem  := [Dot, R, Opt(Fragment)] | [Dot, R, Opt(Fragment), Stamp, Value, [Seen+]]   ; the second carries a value removal (§5.5), sets only
 Seen     := [Dot, n]                         ; the dots of Dot's source with counters in [ctr, ctr + n), n >= 1
 Map      := [7, R, W, [Entry*]]              Entry := [Dot, Opt(Ci), R, Value, Opt(Fragment)] | [Dot, Opt(Ci), R, Opt(Fragment)]   ; Value is the key; omitted: key not carried. Opt(Ci) here is the bare Ci or nothing: the entry's creation commit (§5.6), carried for a creation of another commit than this one

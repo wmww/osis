@@ -61,8 +61,6 @@ struct Open {
     carries: bool,
     content: bool,
     creation: bool,
-    /// The run's list creations are held value-less (§4.7).
-    valueless: bool,
     pos_empty: bool,
     deleted: Option<(Stamp, bool)>,
     prev: Dot,
@@ -100,7 +98,7 @@ impl Runs {
             return false;
         }
         if o.creation {
-            matches!(&e.created, Some((_, Anchor::Dot(a))) if *a == o.prev) && e.valueless == o.valueless
+            matches!(&e.created, Some((_, Anchor::Dot(a))) if *a == o.prev)
         } else {
             e.created.is_none() && e.pos.is_empty() && o.pos_empty && e.deleted == o.deleted
         }
@@ -108,9 +106,9 @@ impl Runs {
 
     /// Adds record `(k, e)`, the next in wire order; runs it closes wait for `flush`.
     pub(crate) fn push(&mut self, k: &Dot, e: &SeqElem, cx: &mut Enc) -> Result<(), Error> {
-        // a range whose creations differ in `ts` or anchor or that holds a content template: per
-        // element, as the wire carries each one's segment, run and content
-        if e.span > 1 && (e.each.is_some() || !matches!(e.content, SeqContent::None)) {
+        // a range whose creations differ in `ts` or anchor: per element, as the wire carries each
+        // one's segment and run
+        if e.span > 1 && e.each.is_some() {
             for i in 0..e.span {
                 let (pk, pe) = piece(k, e, i, 1);
                 self.push(&pk, &pe, cx)?;
@@ -135,7 +133,7 @@ impl Runs {
                     cx.note_dot(&a);
                 }
                 let deleted = e.deleted.clone();
-                self.open = Some(Open { src: k.src.clone(), carries: carries(e, self.text), content: has_content(e), creation: e.created.is_some(), valueless: e.valueless, pos_empty: e.pos.is_empty(), deleted, prev: d0, n: 0, parts: Vec::new(), fs: Vec::new(), nfs: 0, held: Default::default() });
+                self.open = Some(Open { src: k.src.clone(), carries: carries(e, self.text), content: has_content(e), creation: e.created.is_some(), pos_empty: e.pos.is_empty(), deleted, prev: d0, n: 0, parts: Vec::new(), fs: Vec::new(), nfs: 0, held: Default::default() });
             }
             let Some(o) = self.open.as_mut() else { return Err(Error::Malformed("run")) };
             let take = (e.span - off).min(MAX_RUN - o.n);
@@ -169,7 +167,7 @@ impl Runs {
         let (fs, nfs) = (std::mem::take(&mut o.fs), std::mem::take(&mut o.nfs));
         let content = (!self.text && o.content).then_some((fs.as_slice(), nfs));
         self.starts.push(self.closed.len());
-        encode_run(self.text, &parts, content, o.valueless, cx, &mut self.closed)?;
+        encode_run(self.text, &parts, content, cx, &mut self.closed)?;
         let [p, f] = cx.undefer();
         o.held[0].extend(p);
         o.held[1].extend(f);
@@ -217,7 +215,7 @@ pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc, p: &mut crate::codec::Pager) -
 }
 
 /// One run of `parts`; `content`: its list content as written, and how many fragments.
-fn encode_run(text: bool, parts: &[Part], content: Option<(&[u8], usize)>, valueless: bool, cx: &mut Enc, out: &mut Vec<u8>) -> Result<(), Error> {
+fn encode_run(text: bool, parts: &[Part], content: Option<(&[u8], usize)>, cx: &mut Enc, out: &mut Vec<u8>) -> Result<(), Error> {
     let Some(p0) = parts.first() else { return Err(Error::Malformed("empty run")) };
     let n: u64 = parts.iter().map(|p| p.len).sum();
     put_array(out, 6);
@@ -226,8 +224,7 @@ fn encode_run(text: bool, parts: &[Part], content: Option<(&[u8], usize)>, value
     match &p0.created {
         None => put_array(out, 0),
         Some((_, a)) => {
-            // value-less list creations (§3.2, §4.7)
-            put_array(out, 2 + usize::from(valueless));
+            put_array(out, 2);
             anchor(cx, out, a);
             let mut segs: Vec<(u64, u64)> = Vec::new();
             for p in parts {
@@ -243,9 +240,6 @@ fn encode_run(text: bool, parts: &[Part], content: Option<(&[u8], usize)>, value
                 put_array(out, 2);
                 put_uint(out, c);
                 put_uint(out, k);
-            }
-            if valueless {
-                put_bool(out, false);
             }
         }
     }
@@ -355,16 +349,10 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: List, cx: &mut Dec) -> Result<(), 
         // creation: the first anchor and segments `(offset, length, ts)`
         let mut anchor0 = Anchor::Head;
         let mut segs: Vec<(u64, u64, Ts)> = Vec::new();
-        let mut valueless = false;
         let mut cr = as_array(creation)?;
         match (cr.len(), cr.next(), cr.next()) {
             (0, _, _) => {}
-            (2 | 3, Some(a), Some(ss)) => {
-                match cr.next() {
-                    None => {}
-                    Some(f) if f.as_bool() == Some(false) && !s.text => valueless = true,
-                    Some(_) => return Err(Error::Malformed("creation")),
-                }
+            (2, Some(a), Some(ss)) => {
                 if writer && first.src.is_derived() {
                     return Err(Error::Malformed("embedded characters in a writer's delta"));
                 }
@@ -553,9 +541,8 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: List, cx: &mut Dec) -> Result<(), 
                     return Err(Error::Malformed("element in two runs"));
                 }
                 let undel = undels.and_then(|(from, u)| u.get((at - from) as usize).copied());
-                let valueless = valueless && created.is_some();
                 read.push(dot.clone());
-                s.elems_mut().insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), undel, valueless, span: len, each: None });
+                s.elems_mut().insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), undel, span: len, each: None });
                 at += len;
             }
         }

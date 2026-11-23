@@ -306,7 +306,7 @@ mod tests {
     fn a_run_reaching_past_the_next_pages_first_names_its_page_spec_crdt_8() {
         let s = Source::session(Session { node: osis_base::Tid::from_bytes([1; 15]), nonce: [0; crate::stamp::SESSION_NONCE_LEN] });
         let derived = Source::derived(Dot::new(s.clone(), 5)).unwrap();
-        let rec = |span| SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, valueless: false, span, each: None };
+        let rec = |span| SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, span, each: None };
         let seq = |d: Dot, span| Fragment::Seq(Seq::new(true, Default::default(), [(d, rec(span))].into()));
         let mut ix = PageIndex::default();
         ix.add(&Piece::Page { path: Vec::new(), at: vec![0], fragment: seq(Dot::new(s.clone(), 1), 10) });

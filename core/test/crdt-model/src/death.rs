@@ -1,4 +1,4 @@
-//! Death of a write (§4.8), the writes a state holds and covering (spec/commits.md §5), value-less writes (§4.7).
+//! Death of a write (§4.8), the writes a state holds and covering (spec/commits.md §5), writes held without their value.
 //! Each is stated over `writes::writes` (a fragment as the set of its writes) and join.
 use crate::stamp::{Source, Stamp};
 use crate::state::{drop_deleted_chars, Content, Frag};
@@ -131,17 +131,12 @@ pub fn valued(w: &Frag) -> bool {
     }
 }
 
-/// The stamps of the value-carrying writes `f` holds value-less (§4.7): a register, case or `W` without its value,
-/// a creation in a map dot's key-erased record, a list creation held value-less, a text undelete without its char,
+/// The stamps of the value-carrying writes `f` holds without their value: a register or case without its value,
+/// a creation in a map dot's keyless record, a text undelete without its char,
 /// and a text creation without its char unless its element is deleted in `f` or something in `f` anchors at it (a
 /// deleted element's char is never on the wire, §3.3 rule 5, §4.5). Embedded chars are their register's.
 pub fn valueless(f: &Frag) -> Vec<Stamp> {
     fn go(f: &Frag, out: &mut Vec<Stamp>) {
-        if let Some(c) = f.composite() {
-            if let (Some(w), true) = (&c.w, c.w_valueless) {
-                out.push(w.clone());
-            }
-        }
         match f {
             Frag::Register { write: Some((s, None)), .. } => out.push(s.clone()),
             Frag::Register { .. } => {}
@@ -175,9 +170,6 @@ pub fn valueless(f: &Frag) -> Vec<Stamp> {
                     if let Some((c, _)) = &el.created {
                         let deleted = el.deletes();
                         if *text && !derived && !matches!(el.content, Content::Char(_)) && !deleted && !anchored.contains(d) {
-                            out.push(c.clone());
-                        }
-                        if !*text && el.valueless {
                             out.push(c.clone());
                         }
                     }

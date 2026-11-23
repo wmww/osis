@@ -261,7 +261,7 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
             _ => Vec::new(),
         };
         let anchor: Option<&MDot> = if !rare.is_empty() && r.chance(1, 2) { Some(rare[r.below(rare.len())]) } else { order.get(r.below(order.len() + 1)) };
-        let mut d = MFrag::Seq { text: true, c: Composite { reset: None, w: None, w_valueless: false }, elems: Default::default() };
+        let mut d = MFrag::Seq { text: true, c: Composite { reset: None, w: None }, elems: Default::default() };
         let cs = crdt_model::r#gen::random_text(&mut r, 3);
         if !cs.is_empty() {
             crdt_model::ops::insert_run(&mut w, &mut d, anchor.map_or(MAnchor::Head, |x| MAnchor::Dot(x.clone())), chars(&cs));
@@ -732,7 +732,7 @@ fn one(d: Dot, e: SeqElem) -> Fragment {
 /// A created char `c` of `dot` at `t`, anchored at `at`.
 fn char_at(dot: Dot, t: u64, at: Anchor, c: char) -> SeqElem {
     let s = Stamp { ts: ts(t << 16), dot };
-    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at, None)], deleted: None, undel: None, valueless: false, span: 1, each: None }
+    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at, None)], deleted: None, undel: None, span: 1, each: None }
 }
 /// `len` chars typed by node 1 at t = 1, chained from HEAD.
 fn chain(len: u64) -> BTreeMap<Dot, SeqElem> {
@@ -1117,7 +1117,7 @@ fn long_runs_match_model_spec_3_3() {
     mapply(&mut state, seq(Composite::default(), BTreeMap::from([(MDot { source: src.clone(), ctr: 2000 }, mv)])));
     for reset in [false, true] {
         if reset {
-            mapply(&mut state, seq(Composite { reset: Some(by2(7, 3)), w: None, w_valueless: false }, BTreeMap::new()));
+            mapply(&mut state, seq(Composite { reset: Some(by2(7, 3)), w: None }, BTreeMap::new()));
         }
         let st = state.as_ref().unwrap();
         let ours = frag(st);

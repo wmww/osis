@@ -519,7 +519,7 @@ fn a_position_write_stamped_with_its_elements_dot_is_bad_input_spec_3_2() {
     let src = MSource::session(1, 0);
     let (a, other) = (MDot { source: src.clone(), ctr: 1 }, MDot { source: src.clone(), ctr: 9 });
     let at = |t: u64, d: &MDot| MStamp { ts: t << 16, dot: d.clone() };
-    let text = |e: MElem| MFrag::Seq { text: true, c: Composite { reset: None, w: None, w_valueless: false }, elems: BTreeMap::from([(a.clone(), e)]) };
+    let text = |e: MElem| MFrag::Seq { text: true, c: Composite { reset: None, w: None }, elems: BTreeMap::from([(a.clone(), e)]) };
     let mut beside = MElem::new(at(10, &a), MAnchor::Head, Content::Char('a'));
     beside.pos.insert(0, (at(30, &other), MAnchor::Head, None));
     let alone = MElem::write(Content::None, vec![(at(30, &other), MAnchor::Head, None)], None);

@@ -68,8 +68,6 @@ pub struct SeqElem {
     /// Text: the char the surviving `deleted` write carries (an undelete's own value, §5.7),
     /// read where the creation's is not held; never with a `true` flag.
     pub(crate) undel: Option<char>,
-    /// List: the creation is held value-less (§4.7); a text creation's value is its char.
-    pub(crate) valueless: bool,
     /// Elements this record stands for (a range record above 1, `seq_span`); the fields are
     /// the first element's.
     pub(crate) span: u64,
@@ -92,7 +90,7 @@ pub(crate) struct Each {
 /// Per element, whatever the arrays' storage.
 impl PartialEq for SeqElem {
     fn eq(&self, o: &SeqElem) -> bool {
-        (&self.created, &self.content, &self.pos, &self.deleted, self.undel, self.valueless, self.span) == (&o.created, &o.content, &o.pos, &o.deleted, o.undel, o.valueless, o.span)
+        (&self.created, &self.content, &self.pos, &self.deleted, self.undel, self.span) == (&o.created, &o.content, &o.pos, &o.deleted, o.undel, o.span)
             && ((self.each.is_none() && o.each.is_none()) || (1..self.span).all(|i| self.ts_at(i) == o.ts_at(i) && self.own_anchor(i) == o.own_anchor(i)))
     }
 }
@@ -266,7 +264,7 @@ impl SeqElem {
     }
     /// An empty record (a delta's element edit or flag write fills it).
     pub(crate) fn bare() -> SeqElem {
-        SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, valueless: false, span: 1, each: None }
+        SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, span: 1, each: None }
     }
     /// The creation `ts` of element `i` (a range record's, `seq_span`).
     pub(crate) fn ts_at(&self, i: u64) -> Option<osis_base::Ts> {
@@ -293,11 +291,10 @@ impl SeqElem {
     pub(crate) fn creation_at(&self, d: &Dot, i: u64) -> Option<Stamp> {
         Some(Stamp { ts: self.ts_at(i)?, dot: nth(d, i) })
     }
-    /// Whether the creation counts toward presence (§4.3): a valued one (text: its char held;
-    /// list: not held value-less), or one under a flag write (text: snapshots drop a deleted
-    /// char, an undelete carries its own) or element reset (list).
+    /// Whether the creation counts toward presence (§4.3): a list's always; a text's with its
+    /// char held or under a flag write (snapshots drop a deleted char, an undelete carries its own).
     fn creation_counts(&self, text: bool) -> bool {
-        if text { matches!(self.content, SeqContent::Char(_)) || self.deleted.is_some() } else { !self.valueless || self.flag() }
+        !text || matches!(self.content, SeqContent::Char(_)) || self.deleted.is_some()
     }
     /// The deleted flag (text) or element reset (list) is set.
     pub(crate) fn flag(&self) -> bool {
@@ -332,7 +329,6 @@ fn prune_elem(el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes)
 fn prune_fields(el: &mut SeqElem, e: Option<&Stamp>, ch: &mut Changes) {
     prune_write(&mut el.created, e, ch);
     if el.created.is_none() {
-        el.valueless = false;
         el.each = None;
     }
     if let Some(e) = e {
@@ -393,7 +389,6 @@ fn merge_elem(se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: 
             se.pos.retain(|p| !is_creation(p, &old));
             se.created = de.created.take();
             se.each = de.each.take();
-            se.valueless = de.valueless;
             if text {
                 se.content = std::mem::replace(&mut de.content, SeqContent::None);
             }
@@ -408,16 +403,6 @@ fn merge_elem(se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: 
             }
         }
         _ => {
-            // of two copies of one stamp, a list creation's valued one (§4.1 copy order)
-            let valueless = match (&de.created, &se.created) {
-                (Some(_), Some(_)) => de.valueless && se.valueless,
-                (Some(_), None) => de.valueless,
-                _ => se.valueless,
-            };
-            if valueless != se.valueless {
-                se.valueless = valueless;
-                ch.touch();
-            }
             if de.created > se.created {
                 se.created = de.created.take();
                 se.each = de.each.take();
@@ -703,19 +688,13 @@ fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&St
 }
 
 /// Whether range records `de` and `se` of one span join whole, staying ranges: one has no
-/// creation or both the same creations, and both no content or the same template (a
-/// template beside an element reset or another creation would not stay uniform).
+/// creation or both the same creations, and neither content.
 fn whole_merge(de: &SeqElem, se: &SeqElem) -> bool {
     let chains = match (&de.created, &se.created) {
         (Some(a), Some(b)) => a == b && (1..de.span).all(|i| de.ts_at(i) == se.ts_at(i) && de.own_anchor(i) == se.own_anchor(i)),
         _ => true,
     };
-    let content = match (&de.content, &se.content) {
-        (SeqContent::None, SeqContent::None) => true,
-        (SeqContent::Frag(x), SeqContent::Frag(y)) => x == y && de.created == se.created && de.deleted == se.deleted,
-        _ => false,
-    };
-    chains && content
+    chains && matches!((&de.content, &se.content), (SeqContent::None, SeqContent::None))
 }
 
 /// For a text range record whose creations straddle its flag write: the first element created
@@ -761,9 +740,8 @@ pub(crate) fn inner_max(s: &Seq, valued: bool) -> Option<Stamp> {
             m = max_opt(m, Some(last_of(d, e, &p.0)));
         }
         m = max_opt(m, e.reset());
-        // a range's content template: its last element's is greatest
         if let SeqContent::Frag(f) = &e.content {
-            m = max_opt(m, if valued { max_opt(f.written(), f.reset()) } else { f.all_max() }.map(|x| last_of(d, e, &x)));
+            m = max_opt(m, if valued { max_opt(f.written(), f.reset()) } else { f.all_max() });
         }
     }
     m
@@ -1042,13 +1020,12 @@ pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
         return e.char().is_some();
     }
     // a list element is live while its creation is held and above the element's reset, and its
-    // content is present and, under a value-less creation, holds a live value (§5.7 Live): a
-    // write newer than the reset never shows the element again
+    // content is present (§5.7 Live): a write newer than the reset never shows the element again
     let Some((c, _)) = &e.created else { return false };
     if e.reset().is_some_and(|r| *c <= r) {
         return false;
     }
-    matches!(&e.content, SeqContent::Frag(f) if f.present() && (!e.valueless || f.live_value()))
+    matches!(&e.content, SeqContent::Frag(f) if f.present())
 }
 
 /// Whether an element shows (`Fragment::live_value` of a sequence).
@@ -1104,7 +1081,6 @@ pub(crate) fn filter_by(s: &mut Seq, t: &Seq, keep: crate::lifecycle::Keep) {
         };
         if !keep.stays(el.created.is_some() && st(&el.created) == st(&te.created)) {
             el.created = None;
-            el.valueless = false;
         }
         el.pos.retain(|p| keep.stays(te.pos.iter().any(|q| q.0 == p.0)));
         if !keep.stays(el.deleted.is_some() && el.deleted.as_ref().map(|x| &x.0) == te.deleted.as_ref().map(|x| &x.0)) {
@@ -1150,7 +1126,6 @@ pub(crate) fn remove_writes(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
         }
         if theirs {
             el.created = None;
-            el.valueless = false;
             if !matches!(el.content, SeqContent::Frag(_)) {
                 el.content = SeqContent::None;
             }
@@ -1176,7 +1151,7 @@ pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
     for (i, c) in text.chars().enumerate() {
         let d = Dot::new(src.clone(), i as u64 + 1);
         let st = Stamp { ts: w.stamp.ts, dot: d.clone() };
-        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev, None)], deleted: None, undel: None, valueless: false, span: 1, each: None });
+        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev, None)], deleted: None, undel: None, span: 1, each: None });
         prev = Anchor::Dot(d);
     }
     out

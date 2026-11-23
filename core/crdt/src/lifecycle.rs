@@ -51,9 +51,10 @@ impl Fragment {
         Fragment::Map(Map::new(m.meta.clone(), out)).writes().into_iter().map(|(d, _)| d).collect()
     }
 
-    /// Adds to `out` the origin dot of every value-less write here (§4.7): a register write or
-    /// enum case without its value, a value-less `W`, a key-erased map entry creation, a text
-    /// element's creation without its char (not deleted), a list creation held value-less.
+    /// Adds to `out` the origin dot of every value-less write here: a register write or enum case
+    /// without its value, a keyless map entry creation, a text element's creation without its char
+    /// (not deleted). No wire form carries one (spec/crdt.md §3.2): Interim (issues/gone-writes-followup.md),
+    /// goes with the engine's value-less spans.
     pub fn valueless_dots(&self, out: &mut std::collections::BTreeSet<Dot>) {
         let reg = |r: &Register, out: &mut std::collections::BTreeSet<Dot>| {
             if let Some(w) = &r.write
@@ -62,11 +63,6 @@ impl Fragment {
                 out.insert(w.stamp.dot.origin().clone());
             }
         };
-        if let Some(m) = self.meta()
-            && let (Some(w), true) = (&m.w, m.w_valueless)
-        {
-            out.insert(w.dot.origin().clone());
-        }
         match self {
             Fragment::Slots(Slots { reg: r, slots }) => {
                 r.iter().for_each(|r| reg(r, out));
@@ -95,20 +91,8 @@ impl Fragment {
             }
             Fragment::Seq(s) => {
                 for (d, el) in s.elems() {
-                    let each = |out: &mut std::collections::BTreeSet<Dot>| out.extend((0..el.span).map(|k| crate::seq_span::nth(d, k).origin().clone()));
-                    if el.valueless {
-                        each(out);
-                    }
                     match &el.content {
-                        SeqContent::Frag(f) if el.span == 1 => f.valueless_dots(out),
-                        // a range's template: each element's content, written by its creation
-                        SeqContent::Frag(f) => {
-                            let mut first = std::collections::BTreeSet::new();
-                            f.valueless_dots(&mut first);
-                            if !first.is_empty() {
-                                each(out);
-                            }
-                        }
+                        SeqContent::Frag(f) => f.valueless_dots(out),
                         // a range record: each element is its own value-less creation
                         SeqContent::None if s.text && el.created.is_some() && !el.deletes() => {
                             out.extend((0..el.span).map(|k| crate::seq_span::nth(d, k).origin().clone()));
@@ -132,9 +116,7 @@ impl Fragment {
                 f(w.stamp.dot.origin());
             }
         };
-        if let Some(m) = self.meta()
-            && let (Some(w), false) = (&m.w, m.w_valueless)
-        {
+        if let Some(w) = self.meta().and_then(|m| m.w.as_ref()) {
             f(w.dot.origin());
         }
         match self {
@@ -183,7 +165,7 @@ impl Fragment {
                         f(st.dot.origin());
                     }
                     // a range record's creations (list) or chars (text), each its own
-                    let each = !s.text && el.created.is_some() && !el.valueless || matches!(el.content, SeqContent::Char(_));
+                    let each = !s.text && el.created.is_some() || matches!(el.content, SeqContent::Char(_));
                     if each {
                         (0..el.span).for_each(|k| f(crate::seq_span::nth(d, k).origin()));
                     }
@@ -261,7 +243,6 @@ impl Fragment {
             }
             if !keep.stays(m.w.is_some() && m.w == tm.w) {
                 m.w = None;
-                m.w_valueless = false;
             }
         }
         let missing = keep == Keep::NotHeld;
@@ -477,7 +458,6 @@ impl Fragment {
             }
             if bad(&m.w) {
                 m.w = None;
-                m.w_valueless = false;
             }
         }
         match self {

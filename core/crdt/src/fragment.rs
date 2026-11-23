@@ -89,14 +89,12 @@ impl BagKind {
 pub struct Meta {
     pub(crate) reset: Option<Stamp>,
     pub(crate) w: Option<Stamp>,
-    /// The `W` is held value-less (§4.7): it writes the value "an empty composite".
-    pub(crate) w_valueless: bool,
 }
 
 impl Meta {
-    /// The `W`, if valued: what counts toward presence (§4.3).
+    /// The `W`: what counts toward presence (§4.3).
     pub(crate) fn w_valued(&self) -> Option<&Stamp> {
-        self.w.as_ref().filter(|_| !self.w_valueless)
+        self.w.as_ref()
     }
 }
 

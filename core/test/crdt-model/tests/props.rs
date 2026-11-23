@@ -1053,7 +1053,7 @@ fn decoder_rejects_writer_rule_violations() {
     assert!(decode_delta(&enc(&f), &mut Ctx::new(ts, own.clone(), 5)).is_ok());
     // a run of own elements reaching hi, though its first dot is below lo (§2.3)
     let flags = |n: u64| {
-        let el = || crdt_model::state::SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((Stamp::new(ts, own.clone(), 5), true)), undel: None, valueless: false };
+        let el = || crdt_model::state::SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((Stamp::new(ts, own.clone(), 5), true)), undel: None };
         let elems = (0..n).map(|i| (Dot { source: own.clone(), ctr: 3 + i }, el())).collect();
         enc(&Frag::Seq { text: true, c: Default::default(), elems })
     };
@@ -1184,7 +1184,7 @@ fn decoder_rejects_rule_7_strict() {
     let slots = |set: Frag| Frag::Slots { reg: Some(Box::new(r.clone())), slots: BTreeMap::from([(6u8, set)]) };
     let snap = |f: &Frag| encode_snapshot(f, &[], [0; 16], &mut Ctx::new(1 << 40, Source::session(250, 0), 1));
     let dec = |b: &[u8]| decode_snapshot(b, &mut Ctx::new(1 << 40, Source::session(250, 0), 1));
-    let bare = Frag::Set { c: Composite { reset: Some(s.clone()), w: None, w_valueless: false }, elems: BTreeMap::new() };
+    let bare = Frag::Set { c: Composite { reset: Some(s.clone()), w: None }, elems: BTreeMap::new() };
     assert!(dec(&snap(&slots(bare))).is_err());
     let mut w = Writer::new(Source::session(3, 0), 4 << 16, 1);
     let set = ops::create(&mut w, &Ty::Set(Box::new(Ty::Register)), &Value::set(vec![Value::Int(1)]));

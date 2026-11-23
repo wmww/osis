@@ -332,7 +332,7 @@ fn hostile_moves(base: &Fragment, sibs: usize, moves: usize) -> (Fragment, Fragm
     // delta of their records: what those commits leave, without a whole pass per commit
     let hs = (0..sibs as u64).map(|k| {
         let st = Stamp::new(ts((5000 + k) << 16), node(2), k + 1);
-        (st.dot.clone(), SeqElem { created: Some((st.clone(), Anchor::Head)), content: SeqContent::Char('h'), pos: vec![(st, Anchor::Head, None)], deleted: None, undel: None, valueless: false, span: 1, each: None })
+        (st.dot.clone(), SeqElem { created: Some((st.clone(), Anchor::Head)), content: SeqContent::Char('h'), pos: vec![(st, Anchor::Head, None)], deleted: None, undel: None, span: 1, each: None })
     });
     let mut b = Replica { state: base.clone(), src: node(2), lo: 1 };
     b.state.join(Fragment::Seq(Seq::new(true, crate::fragment::Meta::default(), hs.collect())));
@@ -688,7 +688,7 @@ fn paste_refuses_a_range_with_visible_text_spec_5_7() {
     let mut b = a.fork(2);
     let mut d = crate::seq::Seq::empty(true);
     let st = crate::stamp::Stamp::new(ts(3 << 16), node(2), 1);
-    d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()), None)], deleted: None, undel: None, valueless: false, span: 1, each: None });
+    d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()), None)], deleted: None, undel: None, span: 1, each: None });
     b.state.join(Fragment::Seq(d));
     assert_eq!(read_str(&b.state), "aXef");
     let mut bt = DeltaBuilder::new(&b.state, Writer::new(ts(5 << 16), node(2), 2));
@@ -1172,12 +1172,12 @@ fn hostile_cuts_join_bounded_spec_6() {
     let chain = 2000u64;
     let mut elems = std::collections::BTreeMap::new();
     let del = Some((Stamp::new(ts(2 << 16), b.clone(), 1), true));
-    elems.insert(Dot::new(a.clone(), 1), SeqElem { created: Some((Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head)), content: SeqContent::None, pos: vec![(Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head, None)], deleted: del, undel: None, valueless: false, span: chain, each: None });
+    elems.insert(Dot::new(a.clone(), 1), SeqElem { created: Some((Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head)), content: SeqContent::None, pos: vec![(Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head, None)], deleted: del, undel: None, span: chain, each: None });
     // a typed chain of 2000 chars below the range's last element: depth 2000
     let mut prev = Anchor::Dot(Dot::new(a.clone(), chain));
     for k in 1..=2000u64 {
         let st = Stamp::new(ts(3 << 16), c.clone(), k);
-        elems.insert(st.dot.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(st.clone(), prev, None)], deleted: None, undel: None, valueless: false, span: 1, each: None });
+        elems.insert(st.dot.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(st.clone(), prev, None)], deleted: None, undel: None, span: 1, each: None });
         prev = Anchor::Dot(st.dot);
     }
     let base = Fragment::Seq(Seq::new(true, crate::fragment::Meta::default(), elems));
