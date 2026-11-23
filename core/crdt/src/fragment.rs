@@ -173,9 +173,10 @@ impl Elem {
     pub(crate) fn values(&self) -> impl Iterator<Item = &Value> {
         self.removes().into_iter().chain(self.written().and_then(|w| w.0))
     }
-    /// `values` holding a reference at any depth (spec/data-model.md §8).
+    /// `values` that may hold a reference: one at any depth, or a link, whose content may
+    /// (spec/data-model.md §6, §8).
     pub(crate) fn references(&self) -> impl Iterator<Item = &Value> {
-        self.values().filter(|v| v.holds_reference())
+        self.values().filter(|v| v.holds_reference_or_link())
     }
 }
 

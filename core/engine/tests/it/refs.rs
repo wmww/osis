@@ -74,6 +74,103 @@ fn equal_set_values_count_once_spec_data_model_8() {
     assert_eq!(got, vec![want("t:refs.0", RefKind::Strong, 1)], "the weak removed");
 }
 
+// spec/data-model.md §6 (A reference inside a chunked set element or map key counts as any
+// other), §8 What counts (any value size): seen once the node holds its chunks; a set element holding a strong to
+// X, just at `CHUNK_THRESHOLD` (inline) and just over it (chunked), counts alike: X is a backlink
+// target and in the node closure at its writer; a reader given the commit without its chunks sees
+// the chunked one's reference once they arrive, and then holds X and reads it. Removing the
+// element takes the reference at both.
+#[test]
+fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
+    use osis_crdt::{Op, PathOp};
+    let a = ak("x:a.0");
+    for over in [false, true] {
+        let mut lp = net(2, 0);
+        let s = new_thing(&mut lp, 0);
+        lp.share(0, s);
+        lp.sync_all().unwrap();
+        let reader = lp.peers[1].engine.me();
+        let had = lp.commit_ids(0);
+        let e = &mut lp.peers[0].engine;
+        let mut m = Mutation::new();
+        // minted held by nothing but the element
+        let x = m.create(e.thing_record(e.dependents_admin(), None));
+        m.set(x, &REG, &Value::Str("x".into())).unwrap();
+        // the element's encoding at the threshold, or a byte past it
+        let elem = |n: usize| Value::List(vec![Value::Strong(x), Value::Str("p".repeat(n))]);
+        let mut n = osis_base::format::CHUNK_THRESHOLD - 64;
+        while osis_base::encode(&elem(n)).len() < osis_base::format::CHUNK_THRESHOLD + usize::from(over) {
+            n += 1;
+        }
+        let elem = elem(n);
+        m.set(s, &a, &Value::Set([elem.clone()].into_iter().collect())).unwrap();
+        let w = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.peers[0].engine.grant(&x, &reader, &edge(osis_base::Role::Read)).unwrap();
+        let chunked = matches!(lp.peers[0].engine.get(&s, &a).unwrap(), Some(Value::Set(v)) if v.iter().all(|v| matches!(v, Value::Link(_))));
+        assert_eq!(chunked, over, "over {over}: chunked as sized");
+        let row = (s, "x:a.0".to_string(), RefKind::Strong, 1);
+        assert_eq!(rows(&mut lp, 0, &x), vec![row.clone()], "over {over}: the writer's backlink");
+        assert!(lp.peers[0].engine.closure_holds(&x), "over {over}: the writer holds X");
+        // the reader: every new commit, the write's chunks held back
+        let mut late = Vec::new();
+        for c in lp.commit_ids(0).difference(&had) {
+            let mut pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+            if *c == w && over {
+                late = std::mem::take(&mut pk.blobs);
+            }
+            lp.deliver(1, &pk).unwrap();
+        }
+        assert_eq!(late.is_empty(), !over, "over {over}: the write's chunks held back");
+        let seen = if over { vec![] } else { vec![row.clone()] };
+        assert_eq!(rows(&mut lp, 1, &x), seen, "over {over}: the reader, the write's chunks not held");
+        lp.peers[1].engine.put_blobs(late).unwrap();
+        lp.peers[1].reexamine().unwrap();
+        assert_eq!(rows(&mut lp, 1, &x), vec![row], "over {over}: the reader, its chunks held");
+        assert!(lp.peers[1].engine.closure_holds(&x), "over {over}: the reader holds X");
+        assert_eq!(lp.peers[1].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(Value::Str("x".into())), "over {over}: the reader reads X");
+        let mut m = Mutation::new();
+        m.op(s, &a, PathOp { path: vec![], op: Op::Remove(elem) }).unwrap();
+        let r = lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = lp.peers[0].engine.package(&r).unwrap().unwrap();
+        lp.deliver(1, &pk).unwrap();
+        for i in 0..2 {
+            assert_eq!(rows(&mut lp, i, &x), vec![], "over {over}: node {i}, removed");
+            assert!(!lp.peers[i].engine.closure_holds(&x), "over {over}: node {i} lets X go");
+        }
+    }
+}
+
+// notes/engine-refs.md (Large values): a chunked element's references are read when it is first
+// read and never again: adding one to a set of n chunked elements reads that one, removing one
+// reads none, at n and 10n.
+#[test]
+fn a_chunked_elements_references_are_read_once_spec_data_model_6() {
+    use osis_crdt::{Op, PathOp};
+    let a = ak("x:a.0");
+    let reads = || osis_base::costs::take().into_iter().filter(|(k, _, _)| *k == "refs: large value read").map(|(_, _, c)| c).sum::<u64>();
+    let mut got = Vec::new();
+    for n in [1usize, 10] {
+        let mut lp = net(1, 0);
+        let s = new_thing(&mut lp, 0);
+        let elem = |i: usize| Value::List(vec![Value::Weak(s), Value::Str(format!("{i}{}", "p".repeat(osis_base::format::CHUNK_THRESHOLD)))]);
+        let mut m = Mutation::new();
+        m.set(s, &a, &Value::Set((0..n).map(elem).collect())).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let op = |lp: &mut LocalPeer, op: Op| {
+            let mut m = Mutation::new();
+            m.op(s, &a, PathOp { path: vec![], op }).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap();
+        };
+        reads();
+        op(&mut lp, Op::Add(elem(n)));
+        let added = reads();
+        op(&mut lp, Op::Remove(elem(0)));
+        got.push((added, reads()));
+        assert_eq!(rows(&mut lp, 0, &s).into_iter().filter(|r| r.1 == "x:a.0").collect::<Vec<_>>(), vec![(s, "x:a.0".into(), RefKind::Weak, n as u64)], "n {n}");
+    }
+    assert_eq!(got, vec![(1, 0), (1, 0)]);
+}
+
 /// Every reference at any depth of `v` (map keys and payloads too), counted by (target, kind).
 fn scan(v: &Value, out: &mut BTreeMap<(Tid, RefKind), u64>) {
     let mut one = |t: Tid, k: RefKind| *out.entry((t, k)).or_default() += 1;
@@ -128,7 +225,8 @@ fn index_and_scan(e: &mut Engine, sources: &[Tid], targets: &[Tid]) -> (Rows, Ro
         by_source.extend(e.references_from(s).unwrap().into_iter().filter(|r| app(r.ak.as_str())).map(|r| (r.source, r.target, r.ak.as_str().to_string(), r.kind, r.count)));
         for a in e.aspects(s).unwrap().into_iter().filter(|a| app(a.as_str())) {
             let mut c = BTreeMap::new();
-            if let Some(v) = e.get(s, &a).unwrap() {
+            // large values read whole: the references in their chunks count
+            if let Some(v) = e.get_full(s, &a).unwrap() {
                 scan(&v, &mut c);
             }
             scanned.extend(c.into_iter().map(|((t, k), n)| (*s, t, a.as_str().to_string(), k, n)));
@@ -209,7 +307,7 @@ fn r2_world() -> (LocalPeer, Vec<Tid>) {
 // and of the held valid fires, and the strongs held history holds equal a scan of the held valid
 // bodies where the setting says so. Three authors (an admin, two writers) on two things:
 // nested values of any shape at any position (map keys, enum payloads, sets in lists), a large
-// value, expiring writes and fires, removed aspects, replaced fires, purges of any held body,
+// value (paged, or a chunked set element), expiring writes and fires, removed aspects, replaced fires, purges of any held body,
 // compactions, history bounds passing, the setting's flag turned on and off, and the writers
 // removed and granted again; every commit reaches each other node in a random order, so writes
 // arrive before or after the grants and removals judging them (valid, then invalid, or back).
@@ -267,9 +365,12 @@ fn known_references_are_a_scan_of_held_values_plain_spec_data_model_8() {
                 0..=2 | 13..=14 => drop(m.set(t, &a, &nested(&mut rng, 3)).unwrap()),
                 3 => drop(m.remove_aspect(t, &a).unwrap()),
                 4 => {
-                    // a large value: paged in the store
-                    let pad = Value::Str("p".repeat(70_000));
-                    m.set(t, &ak("x:big.0"), &Value::List(vec![pad, nested(&mut rng, 2), reference(&mut rng)])).unwrap();
+                    // a large value: paged in the store, or a set element past `CHUNK_THRESHOLD`
+                    // (chunked, its references read from its chunks)
+                    let chunked = rng.below(2) == 0;
+                    let pad = Value::Str("p".repeat(if chunked { osis_base::format::CHUNK_THRESHOLD } else { 70_000 }));
+                    let v = Value::List(vec![pad, nested(&mut rng, 2), reference(&mut rng)]);
+                    m.set(t, &ak("x:big.0"), &if chunked { Value::Set([v].into_iter().collect()) } else { v }).unwrap();
                 }
                 5 => {
                     let x = reference(&mut rng);

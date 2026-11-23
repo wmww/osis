@@ -349,6 +349,10 @@ impl crate::engine::Tx<'_> {
                 stored.push(id);
             }
         }
+        // the references of large values waiting for them (`refs::fetched`)
+        if !stored.is_empty() {
+            crate::engine::refs::fetched(self, &stored)?;
+        }
         if !stored.is_empty() && !self.core.missed.is_empty() {
             let (mut changed, mut entries) = (Vec::new(), Vec::new());
             for (tid, ak, entry) in &self.core.missed {

@@ -192,10 +192,10 @@ fn piece_laws(x: &Fragment, y: &Fragment, honest: bool) {
 /// A join of `y` changes the values a state reads only at `y`'s reach (`Fragment::reach`,
 /// `reach_after`): `before` and `after` differ as their pieces at the reach do, each set element
 /// read apart (`Values::ReadEach`), and the references they read (`each_read_value`, a set's
-/// equal values once) likewise: the engine's reference index counts a join there alone
-/// (notes/engine-refs.md), so the reach holds every element equal to a value holding a
-/// reference it reaches; equal values without one read once as well, which nothing counts, so
-/// the reach need not hold them together. The writes it supersedes, read at the reaches as the
+/// equal values once) likewise, and the links (a link's content may hold references): the
+/// engine's reference index counts a join there alone (notes/engine-refs.md), so the reach holds
+/// every element equal to a value holding a reference or link it reaches; equal values without
+/// one read once as well, which nothing counts, so the reach need not hold them together. The writes it supersedes, read at the reaches as the
 /// engine dates them (`Killed::note`), are the whole state's: a range record the join split is
 /// reached at each of its elements.
 pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fragment) {
@@ -209,7 +209,7 @@ pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fr
         m
     };
     let elems = |f: &Fragment, g: &mut dyn FnMut(&osis_base::Value)| f.values_with(crate::state::Values::ReadEach, g);
-    let refs = |f: &Fragment, g: &mut dyn FnMut(&osis_base::Value)| f.each_read_value(&mut |v| v.each_reference(g));
+    let refs = |f: &Fragment, g: &mut dyn FnMut(&osis_base::Value)| f.each_read_value(&mut |v| v.each_reference_or_link(g));
     let at = before.reach(y);
     let at_after = after.reach_after(y, &at);
     assert_eq!(diff(&at, &at_after, &elems), diff(before, after, &elems), "a join changes read values only at its reach");
@@ -236,13 +236,13 @@ pub(crate) fn reach_holds_the_change(before: &Fragment, after: &Fragment, y: &Fr
     }
 }
 
-/// The references `each_read_value` names are those of the read (spec/data-model.md §8 What
-/// counts): a set's equal values once, a hidden write none.
+/// The references and links `each_read_value` names are those of the read (spec/data-model.md
+/// §8 What counts): a set's equal values once, a hidden write none.
 fn read_references_are_the_reads(st: &Fragment) {
     let mut by_values: BTreeMap<osis_base::Value, u64> = BTreeMap::new();
-    st.each_read_value(&mut |v| v.each_reference(&mut |r| *by_values.entry(r.clone()).or_default() += 1));
+    st.each_read_value(&mut |v| v.each_reference_or_link(&mut |r| *by_values.entry(r.clone()).or_default() += 1));
     let mut by_read: BTreeMap<osis_base::Value, u64> = BTreeMap::new();
-    st.read().iter().for_each(|v| v.each_reference(&mut |r| *by_read.entry(r.clone()).or_default() += 1));
+    st.read().iter().for_each(|v| v.each_reference_or_link(&mut |r| *by_read.entry(r.clone()).or_default() += 1));
     assert_eq!(by_values, by_read, "the references read values name are the read's");
 }
 

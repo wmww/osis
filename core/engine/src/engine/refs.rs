@@ -12,7 +12,7 @@ pub(crate) mod kept;
 use super::{Tx, records, scan_table};
 use crate::error::{Error, Result};
 use crate::events::Event;
-use osis_base::{Ak, CommitId, RefKind, Ticket, Tid, Value};
+use osis_base::{Ak, BlobId, CommitId, Link, RefKind, Ticket, Tid, Value};
 use osis_crdt::Fragment;
 use osis_store::Shred;
 use std::collections::BTreeMap;
@@ -27,6 +27,13 @@ pub(crate) const FROM: &[u8] = b"node/refs from";
 /// target's tickets reads its rows alone (`tickets_to`), never the source's state, its other
 /// references or a signal's other fires.
 pub(crate) const TICKETS: &[u8] = b"node/refs tickets";
+/// The large values `(source, AK)` reads (spec/data-model.md §6), by content hash: source ‖ AK
+/// length ‖ AK ‖ hash, a `LinkRow`. A large value's references count from its row, read once
+/// when it is first read there (or when the blob it waited for came), never again.
+pub(crate) const LINKS: &[u8] = b"node/refs links";
+/// Large values whose references wait for a blob not held: blob ‖ source ‖ AK length ‖ AK ‖
+/// hash, empty. Read again when the blob is stored (`fetched`).
+pub(crate) const WAITS: &[u8] = b"node/refs waits";
 
 /// Whether `ak` is indexed: every aspect with a state, and every durable signal by its held
 /// valid fires (an ephemeral signal's fires are held by none).
@@ -57,7 +64,18 @@ pub(crate) fn resync_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if !indexed(ak) {
         return Ok(());
     }
-    let per = fires(tx, tid, ak)?;
+    let mut per = fires(tx, tid, ak)?;
+    let mut want: BTreeMap<[u8; 32], (Link, i64)> = BTreeMap::new();
+    for (_, f) in &per {
+        for (h, (l, n)) in &f.2 {
+            let e = want.entry(*h).or_insert((*l, 0));
+            e.1 += n;
+        }
+    }
+    let held = set_links(tx, tid, ak, &want)?;
+    for (_, f) in &mut per {
+        f.count_links(&held);
+    }
     let old = stored(tx, tid, ak)?;
     // the ticket rows it had, per fire, go; each fire's are written again
     for (t, _) in old.keys().filter(|(_, k)| *k == RefKind::Ticket) {
@@ -203,22 +221,43 @@ pub struct Reference {
     pub count: u64,
 }
 
-/// Count changes by target and kind, and of each ticket.
+/// Count changes by target and kind, of each ticket, and of each large value read (by content
+/// hash, with a link to it), whose references `note` counts from its row (`move_link`).
 #[derive(Default, Debug, PartialEq, Eq)]
-pub(crate) struct Delta(BTreeMap<(Tid, RefKind), i64>, BTreeMap<Ticket, i64>);
+pub(crate) struct Delta(BTreeMap<(Tid, RefKind), i64>, BTreeMap<Ticket, i64>, BTreeMap<[u8; 32], (Link, i64)>);
 
 impl Delta {
-    /// Adds `sign` for every reference in the values `f` reads as (`Fragment::each_read_value`).
+    /// Adds `sign` for every reference and large value in the values `f` reads as
+    /// (`Fragment::each_read_value`).
     pub(crate) fn add(&mut self, f: &Fragment, sign: i64) {
         f.each_read_value(&mut |v| {
             drop(osis_base::costs::span("refs: value read"));
-            references(v, &mut |k, t, v| {
-                *self.0.entry((t, k)).or_default() += sign;
-                if let Value::Ticket(x) = v {
-                    *self.1.entry((**x).clone()).or_default() += sign;
-                }
+            v.each_reference_or_link(&mut |r| match r {
+                Value::Link(l) => self.2.entry(l.hash).or_insert((**l, 0)).1 += sign,
+                r => self.count(r, sign),
             });
         });
+    }
+    /// Adds `n` for reference `r`.
+    fn count(&mut self, r: &Value, n: i64) {
+        if let Some((k, t)) = RefKind::of(r) {
+            *self.0.entry((t, k)).or_default() += n;
+            if let Value::Ticket(x) = r {
+                *self.1.entry((**x).clone()).or_default() += n;
+            }
+        }
+    }
+    /// Adds `n` for each of `refs`.
+    fn count_all(&mut self, refs: &[Value], n: i64) {
+        for r in refs {
+            self.count(r, n);
+        }
+    }
+    /// Counts each large value's references, `held` by content hash, as many times as it is read.
+    fn count_links(&mut self, held: &BTreeMap<[u8; 32], Vec<Value>>) {
+        for (h, (_, n)) in std::mem::take(&mut self.2) {
+            self.count_all(held.get(&h).map(Vec::as_slice).unwrap_or_default(), n);
+        }
     }
     /// The references at the reach of `delta` in `st` (`Fragment::reach`: all a join of it can
     /// change), taken off, and that reach: the state the join leaves adds its own at
@@ -248,10 +287,10 @@ impl Delta {
     }
 }
 
-/// Calls `f` on every reference at any depth of `v` (`Value::each_reference`), with its kind and
-/// the reference itself.
+/// Calls `f` on every reference at any depth of `v` (`Value::each_reference_or_link`), with its
+/// kind and the reference itself; not those inside a large value.
 pub(crate) fn references(v: &Value, f: &mut dyn FnMut(RefKind, Tid, &Value)) {
-    v.each_reference(&mut |r| {
+    v.each_reference_or_link(&mut |r| {
         if let Some((k, t)) = RefKind::of(r) {
             f(k, t, r);
         }
@@ -292,12 +331,180 @@ fn count_of(v: &[u8]) -> Result<u64> {
 
 /// Applies the count changes `d` to the rows of `(source, ak)`, `fire` the signal fire they come
 /// from (none: a state's).
-pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitId>, d: Delta) -> Result<()> {
+pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitId>, mut d: Delta) -> Result<()> {
     if !indexed(ak) {
         return Ok(());
     }
+    let mut late = false;
+    for (_, (l, n)) in std::mem::take(&mut d.2).into_iter().filter(|x| x.1.1 != 0) {
+        let (refs, earlier) = move_link(tx, source, ak, &l, n)?;
+        d.count_all(&refs, n + earlier as i64);
+        late |= earlier > 0;
+    }
     note_tickets(tx, source, ak, fire, &d)?;
-    note_rows(tx, source, ak, d)
+    note_rows(tx, source, ak, d)?;
+    // a signal's earlier reads were other fires': its ticket rows per fire afresh
+    if late && fire.is_some() {
+        resync_fires(tx, source, ak)?;
+    }
+    Ok(())
+}
+
+/// What a `LINKS` row holds: a link to the large value, how many times `(source, AK)` reads it,
+/// and its references (`large::link_references`), or the blob they wait for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LinkRow {
+    link: Link,
+    count: u64,
+    refs: std::result::Result<Vec<Value>, BlobId>,
+}
+
+impl LinkRow {
+    fn encode(&self) -> Vec<u8> {
+        let refs = match &self.refs {
+            Ok(r) => Value::List(r.clone()),
+            Err(b) => Value::Bytes(b.0.to_vec()),
+        };
+        osis_base::encode(&Value::List(vec![Value::link(self.link), Value::Int(self.count as i64), refs]))
+    }
+    fn decode(v: &[u8]) -> Result<LinkRow> {
+        let bad = || Error::Corrupt("large value row");
+        let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, v.len());
+        let Value::List(items) = osis_base::decode(v, &lim).map_err(|_| bad())? else { return Err(bad()) };
+        let [Value::Link(link), Value::Int(n), refs] = items.as_slice() else { return Err(bad()) };
+        let refs = match refs {
+            Value::List(r) => Ok(r.clone()),
+            Value::Bytes(b) => Err(BlobId(b.as_slice().try_into().map_err(|_| bad())?)),
+            _ => return Err(bad()),
+        };
+        Ok(LinkRow { link: **link, count: u64::try_from(*n).map_err(|_| bad())?, refs })
+    }
+}
+
+fn link_key(source: &Tid, ak: &Ak, hash: &[u8; 32]) -> Vec<u8> {
+    [from_prefix(source, ak).as_slice(), hash].concat()
+}
+
+fn wait_key(blob: &BlobId, lk: &[u8]) -> Vec<u8> {
+    [blob.0.as_slice(), lk].concat()
+}
+
+/// Writes row `row` at `lk` (`None`: removes it), with the wait it names, `was` the wait before.
+fn put_link(tx: &mut Tx<'_>, lk: &[u8], row: Option<&LinkRow>, was: Option<BlobId>) -> Result<()> {
+    let (links, waits) = (tx.txn.index(LINKS)?, tx.txn.index(WAITS)?);
+    let now = row.and_then(|r| r.refs.as_ref().err().copied());
+    if was != now {
+        if let Some(b) = was {
+            tx.txn.table_remove(waits, &wait_key(&b, lk), Shred::Yes)?;
+        }
+        if let Some(b) = now {
+            tx.txn.table_put(waits, &wait_key(&b, lk), Vec::new(), Shred::No)?;
+        }
+    }
+    match row {
+        Some(r) => drop(tx.txn.table_put(links, lk, r.encode(), Shred::No)?),
+        None => drop(tx.txn.table_remove(links, lk, Shred::Yes)?),
+    }
+    Ok(())
+}
+
+/// Moves how many times `(source, ak)` reads the large value `l` (by content hash) by `n`: its
+/// row made as it is first read (its references read then, or a wait for the blob they lack;
+/// a row still waiting tries each link of that content given again), gone with its last read.
+/// Returns the references it counts, and how many earlier reads they count for first now.
+fn move_link(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, l: &Link, n: i64) -> Result<(Vec<Value>, u64)> {
+    tx.in_class(ak.ephemeral(), |tx| {
+        let lk = link_key(source, ak, &l.hash);
+        let links = tx.txn.index(LINKS)?;
+        let old = tx.txn.table_get(links, &lk)?.map(|v| LinkRow::decode(&v)).transpose()?;
+        let was = old.as_ref().and_then(|r| r.refs.as_ref().err().copied());
+        let mut row = match old {
+            Some(r) => r,
+            None if n > 0 => LinkRow { link: *l, count: 0, refs: Err(l.blob) },
+            // read nowhere: nothing counted
+            None => return Ok((Vec::new(), 0)),
+        };
+        let mut earlier = 0;
+        if n > 0 && row.refs.is_err() && (was.is_none() || row.link != *l) {
+            match crate::engine::large::link_references(tx, source, l)? {
+                Ok(refs) => {
+                    (row.link, row.refs, earlier) = (*l, Ok(refs), row.count);
+                }
+                Err(b) if was.is_none() => row.refs = Err(b),
+                Err(_) => {}
+            }
+        }
+        row.count = u64::try_from(row.count as i64 + n).map_err(|_| Error::Corrupt("large value count below zero"))?;
+        let refs = row.refs.clone().unwrap_or_default();
+        put_link(tx, &lk, (row.count > 0).then_some(&row), was)?;
+        Ok((refs, earlier))
+    })
+}
+
+/// The `LINKS` rows of `(source, ak)` by content hash.
+fn stored_links(tx: &mut Tx<'_>, source: &Tid, ak: &Ak) -> Result<BTreeMap<[u8; 32], LinkRow>> {
+    let links = tx.txn.index(LINKS)?;
+    let pre = from_prefix(source, ak);
+    let end = [pre.as_slice(), &[0xff; 33]].concat();
+    let mut out = BTreeMap::new();
+    scan_table(&mut tx.txn, links, &pre, Some(&end), |k, v| {
+        let h = k.get(pre.len()..).and_then(|h| <[u8; 32]>::try_from(h).ok()).ok_or(Error::Corrupt("large value row"))?;
+        out.insert(h, LinkRow::decode(&v)?);
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// Sets how many times `(source, ak)` reads each large value to `want` (by content hash);
+/// the references each counts after.
+fn set_links(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, want: &BTreeMap<[u8; 32], (Link, i64)>) -> Result<BTreeMap<[u8; 32], Vec<Value>>> {
+    let old = stored_links(tx, source, ak)?;
+    for (h, r) in &old {
+        if !want.contains_key(h) {
+            move_link(tx, source, ak, &r.link, -(r.count as i64))?;
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (h, (l, n)) in want.iter().filter(|x| x.1.1 != 0) {
+        let had = old.get(h).map_or(0, |r| r.count as i64);
+        out.insert(*h, move_link(tx, source, ak, l, n - had)?.0);
+    }
+    Ok(out)
+}
+
+/// Blobs `ids` were stored: each large value whose references waited for one is read again,
+/// and once whole its references count for every read of it (spec/data-model.md §6: seen once
+/// the node holds its chunks). A seek per blob stored.
+pub(crate) fn fetched(tx: &mut Tx<'_>, ids: &[BlobId]) -> Result<()> {
+    let waits = tx.txn.index(WAITS)?;
+    let mut due = Vec::new();
+    for id in ids {
+        let end = [id.0.as_slice(), &[0xff; 16]].concat();
+        scan_table(&mut tx.txn, waits, &id.0, Some(&end), |k, _| {
+            due.push(k);
+            Ok(())
+        })?;
+    }
+    for k in due {
+        let lk = k.get(32..).ok_or(Error::Corrupt("large value wait"))?.to_vec();
+        let mut r = records::Rd::new(&lk);
+        let (source, ak) = (r.tid()?, r.ak()?);
+        tx.in_class(ak.ephemeral(), |tx| {
+            let links = tx.txn.index(LINKS)?;
+            let Some(mut row) = tx.txn.table_get(links, &lk)?.map(|v| LinkRow::decode(&v)).transpose()? else { return Ok(()) };
+            let Err(was) = row.refs else { return Ok(()) };
+            row.refs = crate::engine::large::link_references(tx, &source, &row.link)?;
+            put_link(tx, &lk, Some(&row), Some(was))?;
+            let Ok(refs) = &row.refs else { return Ok(()) };
+            if ak.signal() {
+                return resync_fires(tx, &source, &ak);
+            }
+            let mut d = Delta::default();
+            d.count_all(refs, row.count as i64);
+            note(tx, &source, &ak, None, d)
+        })?;
+    }
+    Ok(())
 }
 
 /// `note` of the rows by target and by source.
@@ -371,6 +578,8 @@ pub(crate) fn resync(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, f: Option<&Fragment
         return Ok(());
     }
     let mut d = Delta::of(f);
+    let held = set_links(tx, source, ak, &d.2)?;
+    d.count_links(&held);
     let old = stored(tx, source, ak)?;
     for (k, n) in stored_tickets(tx, source, ak, &old)? {
         *d.1.entry(k).or_default() -= n as i64;
@@ -520,7 +729,8 @@ pub(crate) fn check(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, f: Option<&Fragment>
     if !indexed(ak) {
         return Ok(());
     }
-    let all = Delta::of(f);
+    let mut all = Delta::of(f);
+    check_links(tx, source, ak, &mut all)?;
     let want: BTreeMap<(Tid, RefKind), u64> = all.0.into_iter().filter(|x| x.1 != 0).map(|(t, n)| (t, n as u64)).collect();
     let got = stored(tx, source, ak)?;
     debug_assert_eq!(got, want, "reference rows of {source:?} {ak:?} differ from its state");
@@ -540,9 +750,37 @@ pub(crate) fn check_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         for (k, n) in d.0 {
             *all.0.entry(k).or_default() += n;
         }
+        for (h, (l, n)) in d.2 {
+            all.2.entry(h).or_insert((l, 0)).1 += n;
+        }
     }
+    check_links(tx, tid, ak, &mut all)?;
     let want: BTreeMap<(Tid, RefKind), u64> = all.0.into_iter().filter(|x| x.1 != 0).map(|(t, n)| (t, n as u64)).collect();
     let got = stored(tx, tid, ak)?;
     debug_assert_eq!(got, want, "reference rows of signal {tid:?} {ak:?} differ from its held fires");
+    Ok(())
+}
+
+/// Debug: the large-value rows of `(source, ak)` count the reads of `all` (which then counts
+/// their references), each one's references what a read gives now, or a wait for a blob not held.
+#[cfg(debug_assertions)]
+fn check_links(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, all: &mut Delta) -> Result<()> {
+    let rows = stored_links(tx, source, ak)?;
+    let counts: BTreeMap<[u8; 32], u64> = all.2.iter().filter(|x| x.1.1 != 0).map(|(h, (_, n))| (*h, *n as u64)).collect();
+    debug_assert_eq!(rows.iter().map(|(h, r)| (*h, r.count)).collect::<BTreeMap<_, _>>(), counts, "large-value rows of {source:?} {ak:?} differ from its reads");
+    let waits = tx.txn.index(WAITS)?;
+    let mut held = BTreeMap::new();
+    for (h, r) in rows {
+        let now = crate::engine::large::link_references(tx, source, &r.link)?;
+        match &r.refs {
+            Ok(refs) => debug_assert_eq!(now.as_ref().ok(), Some(refs), "large value of {source:?} {ak:?}: its references"),
+            Err(b) => {
+                debug_assert!(now.is_err(), "large value of {source:?} {ak:?}: whole, its references uncounted");
+                debug_assert!(tx.txn.table_get(waits, &wait_key(b, &link_key(source, ak, &h)))?.is_some(), "large value of {source:?} {ak:?}: no wait");
+            }
+        }
+        held.insert(h, r.refs.unwrap_or_default());
+    }
+    all.count_links(&held);
     Ok(())
 }

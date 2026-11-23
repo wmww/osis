@@ -424,6 +424,71 @@ pub(crate) fn links_in(v: &Value, out: &mut Vec<Link>) {
     }
 }
 
+/// The references the large value link `l` of `tid` holds (spec/data-model.md §6, §8 What
+/// counts): those at any depth of its content (`Value::each_reference_or_link`), a link inside
+/// it read likewise, each distinct one once however often it is named. `Err` names a blob of its
+/// trees not held: none count until it is. A link that cannot be read otherwise reads as absent,
+/// holding none; a byte or text string holds none, told by its first chunk (the rest unread).
+pub(crate) fn link_references(tx: &mut Tx<'_>, tid: &Tid, l: &Link) -> Result<std::result::Result<Vec<Value>, BlobId>> {
+    let Some(dedup) = tx.core.dedup(tid) else { return Ok(Ok(Vec::new())) };
+    let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
+    let mut read = HashMap::new();
+    Ok(references_below(&mut blobs, &dedup, l, osis_base::format::MAX_VALUE_DEPTH, &mut read))
+}
+
+/// `link_references` of `l` read within `room` levels, `read` the links done.
+fn references_below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, l: &Link, room: usize, read: &mut HashMap<[u8; 32], Vec<Value>>) -> std::result::Result<Vec<Value>, BlobId> {
+    if let Some(refs) = read.get(&l.hash) {
+        return Ok(refs.clone());
+    }
+    osis_base::costs::count("refs: large value read", 1);
+    let mut src = Asked { r: BlobReader::new(dedup, blobs), last: l.blob };
+    let v = match large_content(l, dedup, &mut src, room) {
+        Ok(v) => v,
+        Err(osis_commit::Error::Missing) => return Err(src.last),
+        // unreadable: absent
+        Err(_) => None,
+    };
+    let (mut refs, mut inner) = (Vec::new(), Vec::new());
+    if let Some(v) = v {
+        v.each_reference_or_link(&mut |r| match r {
+            Value::Link(x) => inner.push(**x),
+            r => refs.push(r.clone()),
+        });
+    }
+    // a link inside counts as the value it reads as, a level down at least
+    for x in inner.iter().filter(|_| room > 1) {
+        refs.extend(references_below(blobs, dedup, x, room - 1, read)?);
+    }
+    read.insert(l.hash, refs.clone());
+    Ok(refs)
+}
+
+/// The value large value `l` reads as within `room` levels; `None` for a byte or text string,
+/// told by its first chunk.
+fn large_content(l: &Link, dedup: &Secret32, src: &mut dyn osis_blob::LinkSource, room: usize) -> std::result::Result<Option<Value>, osis_commit::Error> {
+    let mut tree = osis_blob::TreeReader::new(*l, ChunkParams::FORMAT.min, MAX_READ);
+    if let Some(c) = tree.next_chunk(dedup, src)?
+        && matches!(osis_blob::string_head(&c), Ok(Some(_)))
+    {
+        return Ok(None);
+    }
+    Ok(Some(osis_blob::read_value(*l, dedup, src, LargeParams::FORMAT, MAX_READ, room)?.0))
+}
+
+/// A `LinkSource` that notes the last blob asked for: the one a `Missing` names.
+struct Asked<'a> {
+    r: BlobReader<'a>,
+    last: BlobId,
+}
+
+impl osis_blob::LinkSource for Asked<'_> {
+    fn plaintext(&mut self, link: &Link) -> std::result::Result<Vec<u8>, osis_commit::Error> {
+        self.last = link.blob;
+        osis_blob::LinkSource::plaintext(&mut self.r, link)
+    }
+}
+
 /// What a link reaches one step down: a tree node's children (with whether they are chunks),
 /// or the links inside a page or link page; `Ok(None)` for anything else (a chunk);
 /// `Err(Missing)` when the blob is not held.
