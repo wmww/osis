@@ -646,7 +646,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     if h.kind.is_role() && view.frontier.is_some() {
         crate::flows::addenda::note_due(tx.core, &id);
     }
-    let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &view, &id, ai)).collect();
+    let valid = validity::parts_valid(tx.core, &h, &view, &id);
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
     let hold = (0..h.aspects.len()).map(|ai| if missing.contains(&ai) { Hold::Missing(Missing::Plain) } else { Hold::Body { whole: false } }).collect();
     let meta = Meta::of(view.clone(), crate::engine::LazyHeader::ready(h.clone()), received, origin, None, parts.signed, valid.clone(), hold);
@@ -794,7 +794,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         if !super::paths::undecided(&h, meta.view.paths.as_deref()) {
             tx.core.ix.paths_unknown.remove(id);
         }
-        let v = (0..meta.parts()).map(|ai| validity::part_valid(tx.core, &h, &meta.view, id, ai)).collect();
+        let v = validity::parts_valid(tx.core, &h, &meta.view, id);
         meta.set_valid(v);
         tx.core.stale_commits.insert(*id);
     }

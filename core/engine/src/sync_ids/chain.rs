@@ -5,7 +5,7 @@
 
 use crate::engine::Core;
 use osis_base::{CommitId, Tid};
-use osis_perm::{RoleCommit, WriteId};
+use osis_perm::{EdgeOp, RoleCommit, Timeline, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The certificate records of a chain.
@@ -19,54 +19,35 @@ pub struct Certificates {
     pub keys: BTreeSet<Tid>,
 }
 
-/// The chained edge writes held and the edges they set.
+/// The chained edge writes held and the edges they set, read off the timeline by target as a
+/// search reaches each thing: a certificate costs the things on its paths, not the held set.
 struct Index<'a> {
-    core: &'a Core,
-    /// Holder -> target -> the commits with a chained write on that edge.
-    by_edge: BTreeMap<Tid, BTreeMap<Tid, Vec<&'a RoleCommit>>>,
-    writes: BTreeSet<WriteId>,
-    /// The edges chained writes set, both ways.
-    targets: BTreeMap<Tid, BTreeSet<Tid>>,
-    holders: BTreeMap<Tid, BTreeSet<Tid>>,
+    tl: &'a Timeline,
 }
 
 impl<'a> Index<'a> {
-    /// Over every held edge write. O(the held edge writes).
     fn of(core: &'a Core) -> Index<'a> {
-        let tl = core.timelines().unstamped();
-        let mut x = Index { core, by_edge: BTreeMap::new(), writes: BTreeSet::new(), targets: BTreeMap::new(), holders: BTreeMap::new() };
-        let things = tl.things();
-        for t in things {
-            for (w, c, op) in tl.held_on_owned(t) {
-                if !tl.is_chained(&w) {
-                    continue;
-                }
-                x.writes.insert(w);
-                let on = x.by_edge.entry(op.holder).or_default().entry(op.target).or_default();
-                if !on.iter().any(|l| l.id == c.id) {
-                    on.push(c);
-                }
-                if op.edge.is_some_and(|e| !e.says_retain()) {
-                    x.targets.entry(op.holder).or_default().insert(op.target);
-                    x.holders.entry(op.target).or_default().insert(op.holder);
-                }
-            }
-        }
-        x
+        Index { tl: core.timelines().unstamped() }
     }
 
-    /// What `seeds` reach (`forward`) or what reaches them over record edges and the edges
-    /// chained writes set.
-    fn reach(&self, seeds: impl IntoIterator<Item = Tid>, forward: bool) -> BTreeSet<Tid> {
-        let records = self.core.timelines().unstamped().records();
+    /// The chained edge writes held on `t`.
+    fn chained_on(&self, t: Tid) -> impl Iterator<Item = (WriteId, &'a RoleCommit, &'a EdgeOp)> + 'a {
+        let tl = self.tl;
+        tl.held_on_owned(t).filter(move |(w, _, _)| tl.is_chained(w))
+    }
+
+    /// The holders of the edges into `t` that chained writes set.
+    fn holders(&self, t: Tid) -> impl Iterator<Item = Tid> + 'a {
+        self.chained_on(t).filter(|(_, _, op)| op.edge.is_some_and(|e| !e.says_retain())).map(|(_, _, op)| op.holder)
+    }
+
+    /// What reaches `seeds` over record edges and the edges chained writes set.
+    fn reach(&self, seeds: impl IntoIterator<Item = Tid>) -> BTreeSet<Tid> {
+        let records = self.tl.records();
         let mut seen: BTreeSet<Tid> = seeds.into_iter().collect();
         let mut stack: Vec<Tid> = seen.iter().copied().collect();
         while let Some(e) = stack.pop() {
-            let next: Vec<Tid> = if forward {
-                records.mint_admin_of(&e).iter().chain(self.targets.get(&e).into_iter().flatten()).copied().collect()
-            } else {
-                records.mint_admin(&e).into_iter().chain(self.holders.get(&e).into_iter().flatten().copied()).collect()
-            };
+            let next: Vec<Tid> = records.mint_admin(&e).into_iter().chain(self.holders(e)).collect();
             for y in next {
                 if seen.insert(y) {
                     stack.push(y);
@@ -76,9 +57,35 @@ impl<'a> Index<'a> {
         seen
     }
 
+    /// What lies on a path from `n` to a thing `t` (`down`: `reach([t])`): what `n` reaches of
+    /// `down`, `n` among it. A thing on such a path reaches that thing, so the
+    /// search stays inside `down`, walked by its members' own edges: O(`down`), not O(what `n`
+    /// reaches), which for an account root is every thing it minted.
+    fn between(&self, n: Tid, down: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        let records = self.tl.records();
+        let mut next: BTreeMap<Tid, Vec<Tid>> = BTreeMap::new();
+        for y in down {
+            for p in records.mint_admin(y).into_iter().chain(self.holders(*y)) {
+                if down.contains(&p) {
+                    next.entry(p).or_default().push(*y);
+                }
+            }
+        }
+        let mut seen = BTreeSet::from([n]);
+        let mut stack = vec![n];
+        while let Some(e) = stack.pop() {
+            for y in next.get(&e).into_iter().flatten() {
+                if seen.insert(*y) {
+                    stack.push(*y);
+                }
+            }
+        }
+        seen
+    }
+
     /// The record chain and keys of each of `things`.
     fn records_of(&self, things: impl IntoIterator<Item = Tid>, out: &mut Certificates) {
-        let records = self.core.timelines().unstamped().records();
+        let records = self.tl.records();
         for c in things {
             out.created.extend(osis_base::record_chain(c, |x| records.link(x)).filter_map(|s| s.thing()));
             if records.link(&c).is_some() {
@@ -91,32 +98,25 @@ impl<'a> Index<'a> {
         let mut out = Certificates::default();
         let mut todo: BTreeSet<(Tid, Tid)> = seeds.into_iter().collect();
         let mut seen: BTreeSet<(Tid, Tid)> = BTreeSet::new();
-        let mut ups: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
         let mut downs: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
         let mut on_paths: BTreeSet<Tid> = BTreeSet::new();
-        let mut edges_in: BTreeSet<(Tid, Tid)> = BTreeSet::new();
         while let Some((n, t)) = todo.pop_first() {
             if !seen.insert((n, t)) {
                 continue;
             }
-            let up = ups.entry(n).or_insert_with(|| self.reach([n], true));
-            let down = downs.entry(t).or_insert_with(|| self.reach([t], false));
-            let mut things: BTreeSet<Tid> = up.intersection(down).copied().collect();
-            things.insert(n);
+            let down = downs.entry(t).or_insert_with(|| self.reach([t]));
+            let things = self.between(n, down);
             let fresh: Vec<Tid> = things.iter().copied().filter(|c| on_paths.insert(*c)).collect();
             self.records_of(fresh, &mut out);
-            for (m, by_target) in things.iter().filter_map(|m| self.by_edge.get(m).map(|x| (*m, x))) {
-                for (tg, ws) in things.iter().filter_map(|tg| by_target.get(tg).map(|ws| (tg, ws))) {
-                    if !edges_in.insert((m, *tg)) {
-                        continue;
-                    }
-                    for cm in ws {
-                        if out.commits.insert(cm.id) {
-                            for (k, o) in (0u32..).zip(&cm.ops) {
-                                if self.writes.contains(&WriteId(cm.id, k)) {
-                                    todo.insert((cm.signer, o.target));
-                                    todo.insert((cm.signer, o.holder));
-                                }
+            // the commits with a chained write on an edge between two of them, each taken once
+            // (every op of a held role commit is held on its target)
+            for tg in &things {
+                for (_, cm, _) in self.chained_on(*tg).filter(|(_, _, op)| things.contains(&op.holder)) {
+                    if out.commits.insert(cm.id) {
+                        for (k, o) in (0u32..).zip(&cm.ops) {
+                            if self.tl.is_chained(&WriteId(cm.id, k)) {
+                                todo.insert((cm.signer, o.target));
+                                todo.insert((cm.signer, o.holder));
                             }
                         }
                     }
@@ -150,18 +150,12 @@ fn read(core: &Core, things: &[Tid], out: &Certificates, node: Option<&Tid>) {
 pub(crate) fn certificates_into(core: &Core, thing: &Tid) -> Certificates {
     let x = Index::of(core);
     let mut out = Certificates::default();
-    let on = x.reach([*thing], false);
+    let on = x.reach([*thing]);
     let mut things: BTreeSet<Tid> = on.clone();
-    for m in &on {
-        let Some(by_target) = x.by_edge.get(m) else { continue };
-        for (tg, ws) in by_target {
-            if !on.contains(tg) {
-                continue;
-            }
-            for cm in ws {
-                out.commits.insert(cm.id);
-                things.insert(cm.signer);
-            }
+    for tg in &on {
+        for (_, cm, _) in x.chained_on(*tg).filter(|(_, _, op)| on.contains(&op.holder)) {
+            out.commits.insert(cm.id);
+            things.insert(cm.signer);
         }
     }
     x.records_of(things, &mut out);

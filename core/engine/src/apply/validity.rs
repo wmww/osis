@@ -694,6 +694,13 @@ pub(crate) fn part_valid(core: &Core, h: &Header, view: &crate::engine::View, id
     Judge::new(core).part(h, view, id, ai)
 }
 
+/// `part_valid` of every aspect of commit `id`, judged by one `Judge` (the commit's reading
+/// found once, not once per part).
+pub(crate) fn parts_valid(core: &Core, h: &Header, view: &crate::engine::View, id: &CommitId) -> Vec<bool> {
+    let mut judge = Judge::new(core);
+    (0..h.aspects.len()).map(|ai| judge.part(h, view, id, ai)).collect()
+}
+
 /// Whether a removal from `tid` retains by default: the `retain` of its current setting
 /// (spec/permissions.md §3; none: it erases).
 pub(crate) fn retain_default(core: &Core, tid: &Tid) -> bool {
@@ -987,7 +994,7 @@ fn misjudged_on<'a>(core: &Core, things: impl Iterator<Item = &'a Tid>) -> Optio
 
 fn misjudged_one(core: &Core, id: &CommitId, m: &Meta) -> Option<String> {
     let h = &m.header;
-    let now: Vec<bool> = (0..h.aspects.len()).map(|ai| part_valid(core, h, &m.view, id, ai)).collect();
+    let now = parts_valid(core, h, &m.view, id);
     (now != m.valid()).then(|| {
         let parts: Vec<_> = h.aspects.iter().zip(m.valid().iter().zip(&now)).filter(|(_, (a, b))| a != b).map(|(x, (a, _))| (x.tid, x.ak.as_str(), *a)).collect();
         format!("validity of {id:?} ({:?} by {}): {parts:?}", h.kind, h.signer)
