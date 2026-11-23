@@ -110,3 +110,6 @@ Rejected: `opt-level` 2 for the workspace (3-10%); fake or memoized crypto in te
 
 ## Method
 Per test or per module: `tools/pertest.py` (`top`, `compare`; `run --modules` for what a gate pays). Whole binaries: `tools/icount <bin> -q`, under `tools/heavy`. Profile: `tools/cpuprof OUT <bin> -q`, or callgrind. Why a judgement re-ran: `osis_base::costs::take()` around the step, read the `"<effects> <- <cause>"` counts (notes/engine.md, Why a key went due). CPU seconds move 20-40% between identical runs: compare instructions.
+
+## Over the per-test bound (listed `slow:` in tools/known_failures.txt)
+First timed gate: engine `judgment::judgment_vectors_spec_permissions_5_2` 32.5 s, osis-sync `delete_keys::a_party_without_the_right_signs_no_delete_a_store_or_its_peer_path_takes_spec_sync_ids_6` 16.6 s, engine `order::a_removal_from_an_actor_audits_what_the_actors_grants_reach_spec_permissions_5_1` 15.9 s (bound 15 s). Each wants slimming or a split; none was read yet.

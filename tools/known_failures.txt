@@ -17,3 +17,6 @@ osis-crdt/tests_seq::slots_join_follows_cache_plain_spec_7 rate:OSIS_CRDT_START=
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
 osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=47 issues/seq-cold-edits-follow-gaps.md same delta as on the whole state
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=512007751,OSIS_ORDER_LEN=60 issues/order-purged-message-shown.md shows other than the node keeping every body: Tid\(\S+\) t:msg\.0
+osis-engine/judgment::judgment_vectors_spec_permissions_5_2 slow:65 issues/test-time.md
+osis-sync/delete_keys::a_party_without_the_right_signs_no_delete_a_store_or_its_peer_path_takes_spec_sync_ids_6 slow:34 issues/test-time.md
+osis-engine/order::a_removal_from_an_actor_audits_what_the_actors_grants_reach_spec_permissions_5_1 slow:32 issues/test-time.md
