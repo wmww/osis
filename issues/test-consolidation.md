@@ -113,4 +113,4 @@ Helpers are listed in (c). Per-test items:
 - **Bodies only skimmed** (names and comments only): engine `it` order's scripted bodies, scale, finalize, sessions, crash; osis port, runtime, listing, watch, commits, ephemeral, tracking, undo; engine most rotation files, undo, retention/mod.rs, sync_ids; perm scale and robust bodies; held-model most `spec_*` bodies; keys `established`/`names`, store `nodelog`/`record`, roles-model addenda/epochs/forget/edges/trust bodies.
 - **Not read**: osis-sync's tests (written after this read).
 - **Not done**: the ephemeral random harnesses; whether `judgment_vectors_spec_permissions_5_2`'s replay repeats `check()`; whether the crdt Slots mode reaches a deleted embedded character.
-- **Doc follow-ups if the removals land**: notes/crdt.md "Beside it" list; notes/engine-validity.md (names `unmerge_spec_4_6`).
+- **Doc follow-ups if the removals land**: notes/crdt.md "Beside it" list; notes/engine-validity.md (names `unmerge_rejoin_and_bootstrap_spec_4_6`).

@@ -43,26 +43,21 @@ proptest! {
         law_types().iter().for_each(|ty| expiry_laws(seed, ty));
     }
 
-    /// §4.6: un-merge of held bodies equals the model's and is order-independent (texts and lists:
-    /// created elements lose their creations).
+    /// One random history per law type, three laws over it. §4.6: un-merge of held bodies equals
+    /// the model's and is order-independent (texts and lists: created elements lose their
+    /// creations). §4.8, §8: a state without a set of commits' writes (`remove_writes`) holds none
+    /// of them, and joined with those commits reads as the state: others' writes nested in their
+    /// records stay. §8: a node bootstrapped from a snapshot and then editing converges with the
+    /// source node; frontiers cover every commit.
     #[test]
-    fn unmerge_spec_4_6(seed in any::<u64>()) {
-        law_types().iter().for_each(|ty| unmerge_check(seed, ty));
-    }
-
-    /// §4.8, §8: a state without a set of commits' writes (`remove_writes`) holds none of them,
-    /// and joined with those commits reads as the state: others' writes nested in their records
-    /// stay.
-    #[test]
-    fn remove_writes_rejoins_spec_4_8(seed in any::<u64>()) {
-        law_types().iter().for_each(|ty| remove_writes_check(seed, ty));
-    }
-
-    /// §8: a node bootstrapped from a snapshot and then editing converges with the source node;
-    /// frontiers cover every commit.
-    #[test]
-    fn bootstrap_then_edit_spec_8(seed in any::<u64>()) {
-        law_types().iter().for_each(|ty| bootstrap_check(seed, ty));
+    fn unmerge_rejoin_and_bootstrap_spec_4_6(seed in any::<u64>()) {
+        for ty in &law_types() {
+            let mut r = crate::testutil::rng(seed | 1);
+            let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
+            unmerge_check(&commits);
+            remove_writes_check(&mut r, &commits);
+            bootstrap_check(&mut r, ty, &commits);
+        }
     }
 }
 
@@ -110,13 +105,11 @@ fn expiry_laws(seed: u64, ty: &Ty) {
     assert_eq!(strip(&joined(a, &strip(a))), strip(a), "valued copy wins, stripped");
 }
 
-/// §4.6 un-merge over a random history of type `ty`.
-fn unmerge_check(seed: u64, ty: &Ty) {
-    let mut r = crate::testutil::rng(seed | 1);
-    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
+/// §4.6 un-merge over a random history.
+fn unmerge_check(commits: &[crate::testutil::MCommit]) {
     let bad = source(&MSource::session(2, 0));
     let (mut model, mut whole, mut ours) = (None, None, Fragment::default());
-    for c in &commits {
+    for c in commits {
         mapply(&mut whole, c.delta.clone());
         let mut m = c.delta.clone();
         m.unmerge(&|d| d.source == MSource::session(2, 0));
@@ -131,7 +124,7 @@ fn unmerge_check(seed: u64, ty: &Ty) {
     let held: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).chain(std::iter::once(ostate(&whole))).collect();
     type Pred = Box<dyn Fn(&Dot) -> bool>;
     let mut preds: Vec<Pred> = vec![Box::new(move |d: &Dot| d.src == bad)];
-    for c in &commits {
+    for c in commits {
         let (src, lo, hi) = (source(&c.w.source), c.w.lo, c.w.hi());
         preds.push(Box::new(move |d: &Dot| d.src == src && lo <= d.ctr && d.ctr < hi));
     }
@@ -149,12 +142,10 @@ fn unmerge_check(seed: u64, ty: &Ty) {
     }
 }
 
-/// `remove_writes` over a random history of type `ty`: for random sets of its commits.
-fn remove_writes_check(seed: u64, ty: &Ty) {
-    let mut r = crate::testutil::rng(seed | 1);
-    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
+/// `remove_writes` over a random history: for random sets of its commits.
+fn remove_writes_check(r: &mut crate::testutil::SeedRng, commits: &[crate::testutil::MCommit]) {
     let mut state = Fragment::default();
-    for c in &commits {
+    for c in commits {
         state.join(frag(&c.delta));
     }
     for _ in 0..4 {
@@ -180,13 +171,11 @@ fn remove_writes_check(seed: u64, ty: &Ty) {
     }
 }
 
-/// §8 bootstrap from a snapshot, then concurrent edits of type `ty`.
-fn bootstrap_check(seed: u64, ty: &Ty) {
-    let mut r = crate::testutil::rng(seed | 1);
-    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
+/// §8 bootstrap from a snapshot of a random history of `ty`, then concurrent edits.
+fn bootstrap_check(r: &mut crate::testutil::SeedRng, ty: &Ty, commits: &[crate::testutil::MCommit]) {
     let mut a = Fragment::default();
     let mut received = crdt_model::received::Received::default();
-    for c in &commits {
+    for c in commits {
         a.join(frag(&c.delta));
         received.add(&c.w.source, c.w.lo, c.w.hi());
     }
@@ -202,12 +191,12 @@ fn bootstrap_check(seed: u64, ty: &Ty) {
     assert_eq!(got.frontiers.without_zeros(), fr);
     assert_eq!(b.read(), a.read());
     // b edits; a edits concurrently; both exchange
-    let v = crate::testutil::value(&crdt_model::r#gen::random_value(&mut r, ty, 0));
+    let v = crate::testutil::value(&crdt_model::r#gen::random_value(r, ty, 0));
     let mut bb = DeltaBuilder::new(&b, Writer::new(ts(1 << 30), node(9), 1));
     bb.apply(&PathOp { path: vec![], op: Op::Set(v) }, &TyView(ty.clone())).unwrap();
     let mut mw = crdt_model::ops::Writer::new(MSource::session(1, 0), (1 << 30) + 1, 100);
     mw.next_commit((1 << 30) + 2);
-    let da = random_op(&mut r, &mut mw, ty, None).map(|d| frag(&d));
+    let da = random_op(r, &mut mw, ty, None).map(|d| frag(&d));
     for d in bb.finish().map(|x| x.0).into_iter().chain(da) {
         a.join(d.clone());
         b.join(d);
