@@ -370,7 +370,7 @@ fn creations_last_read_like_creations_first(seeds: Vec<u64>) {
 }
 
 /// The shapes `histories_reach_destructions_unknown_things_and_settings_plain` asks the generator for.
-const SHAPES: [&str; 9] = ["expiry", "purge", "unknown", "late setting", "invalid setting", "history", "signal history", "purge on replace", "signal past its bound"];
+const SHAPES: [&str; 12] = ["expiry", "purge", "unknown", "late setting", "invalid setting", "history", "signal history", "purge on replace", "signal past its bound", "path through a thing", "path giving nothing", "listed purge author"];
 
 /// The commit `late_commit_converges_after_repair` withholds from `h`, seed's history.
 fn late_of(seed: u64, h: &Held) -> usize {
@@ -379,7 +379,9 @@ fn late_of(seed: u64, h: &Held) -> usize {
 
 /// What seed's history reaches, by name: each of `SHAPES` (things destroyed by expiry and by purge,
 /// parts thrown out as unknown, a late and an invalid setting, a body in history, a signal's, a
-/// body under purge on replace, a signal a node may drop past its keep bound), a body a node may drop as covered, and the fate of each part of
+/// body under purge on replace, a signal a node may drop past its keep bound, a content write valid
+/// along a path through a listed thing, one whose path gives nothing, a valid one naming a listed
+/// thing its purge author), a body a node may drop as covered, and the fate of each part of
 /// the commit `late_of` withholds.
 fn kinds(seed: u64) -> BTreeSet<String> {
     let h = history(seed, LEN);
@@ -391,6 +393,8 @@ fn kinds(seed: u64) -> BTreeSet<String> {
             c.expires.is_some_and(|x| h.now >= x) == by_expiry
         })
     };
+    // a content commit stating a path through a listed thing, a part of it judged `v`
+    let along = |f: &dyn Fn(&Commit, bool) -> bool| h.commits.iter().filter(|c| c.kind == CommitKind::Content && c.paths.values().any(|p| !p.things.is_empty())).any(|c| (0..c.parts.len()).any(|i| o.valid.get(&(c.id, i)).is_some_and(|v| f(c, *v))));
     let reached = [
         destroyed(true),
         destroyed(false),
@@ -402,6 +406,9 @@ fn kinds(seed: u64) -> BTreeSet<String> {
         o.history.keys().any(|k| k.1.signal),
         !o.under_purge.is_empty(),
         o.fates.values().any(|f| *f == Fate::MayDrop(DropWhy::PastBound)),
+        along(&|c, v| v && c.author == c.signer),
+        along(&|_, v| !v),
+        along(&|c, v| v && c.author != c.signer),
     ];
     let mut k: BTreeSet<String> = SHAPES.iter().zip(reached).filter(|x| x.1).map(|x| x.0.to_string()).collect();
     let kind = |f: &Fate| match f {

@@ -7,3 +7,6 @@
 - The engine reached the old walk through a few seams (`Timelines::get`, `On`, `validity::Judge`, `timelines_changed`); keeping `RoleCommit` and (commit, op) IDs in the query layer made most of the 250 call sites compile unchanged. The brief's per-file list overstated the churn and understated the model questions (snapshot carries, the epoch rule's addenda, sides defaults).
 - `tools/bin-at REV OUT --patch` made the scale test's count on main a five-minute question (two builds); guessing at it from the branch cost most of a session's budget for that test before.
 - The gate-size engine properties (`--ignored evidence:: order:: role_paths::`) were first run in the sixth session, after everything default was green: the held-model differential should run as soon as the engine's tests build.
+- The brief's replay line (`OSIS_ORDER_SEED=0 OSIS_ORDER_LEN=60`) runs one seed: the property's verdict needs the run with no seed set, which is what the gate does.
+- roles-model `paths` judged content at write only and exposed no request's right: "held-model reads roles-model's judgment" needed three small additions there (`needs`, `vouchable`, `judge_rights`) before any held-model line; the sizing had counted it as a builder alone.
+- `claudewait` takes the task ID the tool prints (`bcxi8xyzm`), not a `bash_N` name.

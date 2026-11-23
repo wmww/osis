@@ -149,3 +149,48 @@ fn a_delta_along_an_account_rests_on_its_signers_edge_there_spec_permissions_5_2
     let o = evaluate(&held(5, vec![edge_on(5, 2, 0, ACCOUNT, EdgeWrite::role(1, Some(Role::Write)), None), as_account(11, 1, 1)]));
     assert!(o.valid[&(11, 0)]);
 }
+
+// spec/permissions.md §1 (Path: nothing but the stated path judges a part), §5.2: node 1 holds
+// write on T by its own grant and through K; a write stated along [K] falls with K's grant though
+// 1's own grant stands, and one stating no thing falls with 1's own grant though K's stands
+#[test]
+fn only_the_stated_path_judges_a_delta_spec_permissions_1() {
+    let cs = |removed: NodeId| {
+        held(5, vec![
+            edge_on(5, MINT_ADMIN, 0, T, EdgeWrite::role(LINK_K, Some(Role::Write)), None),
+            edge_on(6, MINT_ADMIN, 0, LINK_K, EdgeWrite::role(1, Some(Role::Write)), None),
+            edge_on(7, MINT_ADMIN, 0, T, EdgeWrite::role(1, Some(Role::Write)), None),
+            reg(10, 1, 1, REG, PurgeBy::AuthorOrAdmin, 1),
+            reg(11, 1, 2, REG, PurgeBy::AuthorOrAdmin, 2).along(&[LINK_K]),
+            edge_on(8, MINT_ADMIN, 3, T, EdgeWrite::role(removed, None), Some(vec![])),
+        ])
+    };
+    let o = evaluate(&cs(LINK_K));
+    assert!(o.valid[&(10, 0)] && !o.valid[&(11, 0)], "K's grant is the hop of the path along K alone");
+    let o = evaluate(&cs(1));
+    assert!(!o.valid[&(10, 0)] && o.valid[&(11, 0)], "1's own grant is the hop of the direct path alone");
+}
+
+// spec/permissions.md §6 (The right: author): a request holding write holds the author right over
+// a delta only where its own path holds the delta's purge author. Node 1 writes T along [K] as K;
+// node 2, a writer of K, purges it along [K]; node 3, a writer of T by its own grant, does not,
+// but takes a delta purgeable by `writer`
+#[test]
+fn the_author_right_needs_the_purge_author_on_the_requests_path_spec_permissions_6() {
+    let cs = |by: PurgeBy, requester: NodeId, path: &[ThingId]| {
+        let mut v = vec![
+            edge_on(5, MINT_ADMIN, 0, T, EdgeWrite::role(LINK_K, Some(Role::Write)), None),
+            edge_on(6, MINT_ADMIN, 0, LINK_K, EdgeWrite::role(1, Some(Role::Write)), None),
+            edge_on(7, MINT_ADMIN, 0, LINK_K, EdgeWrite::role(2, Some(Role::Write)), None),
+            edge_on(8, MINT_ADMIN, 0, T, EdgeWrite::role(3, Some(Role::Write)), None),
+            Commit { author: LINK_K, ..reg(10, 1, 1, REG, by, 1).along(&[LINK_K]) },
+        ];
+        v.push(purge(20, requester, 2, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }).along(path));
+        evaluate(&held(5, v))
+    };
+    let o = cs(PurgeBy::AuthorOrAdmin, 2, &[LINK_K]);
+    assert!(o.valid[&(10, 0)] && o.purged.contains_key(&(10, 0)), "K is on the request's path");
+    assert!(!cs(PurgeBy::AuthorOrAdmin, 3, &[]).purged.contains_key(&(10, 0)), "a writer whose path does not hold K");
+    assert!(cs(PurgeBy::Writer, 3, &[]).purged.contains_key(&(10, 0)), "any writer's request takes a `writer` delta");
+    assert!(!cs(PurgeBy::Admin, 2, &[LINK_K]).purged.contains_key(&(10, 0)), "an `admin` delta is no writer's");
+}
