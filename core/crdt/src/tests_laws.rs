@@ -123,7 +123,7 @@ proptest! {
 /// encodings at one position).
 mod entry_copies {
     use crate::fragment::Fragment;
-    use crate::testutil::{frag, joined, ostate, source};
+    use crate::testutil::{frag, joined, ostate, snapshot, source};
     use crdt_model::r#gen::Rng;
     use crdt_model::stamp::{Dot, Source, Stamp};
     use crdt_model::state::{Anchor, BagKind, Content, Elem, Entry, Frag, SeqElem};
@@ -400,7 +400,7 @@ mod entry_copies {
     }
 
     fn snapshot_bytes(f: &Fragment) -> Vec<u8> {
-        let s = crate::wire::Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Default::default() };
+        let s = crate::wire::Snapshot { nonce: [3; 16], ..snapshot(f) };
         crate::codec::encode_snapshot(&s, &crate::testutil::snap_cx(), None).unwrap()
     }
 

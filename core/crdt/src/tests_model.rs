@@ -8,7 +8,7 @@ use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot}
 use crate::fragment::Fragment;
 use crate::seq::SeqContent;
 use crate::stamp::{Dot, Interner};
-use crate::testutil::{node, MCommit, check_bound, check_lin, frag, history_twins, history_with, mapply, ostate, sink_no_seq, source, value};
+use crate::testutil::{MCommit, check_bound, check_lin, frag, history_twins, history_with, mapply, node, ostate, sink_no_seq, snapshot, source, value};
 use crate::tests_seq::{as_carried, map_of_text};
 use crate::testutil::{joined, snap_cx, writer_cx};
 use crate::wire::{Delta, Frontiers, Snapshot};
@@ -393,7 +393,7 @@ fn snapshots(st: &MFrag, mfr: &[(MSource, u64)], gone: &Gone, honest: bool, twin
         for (s, c) in mfr {
             assert!(frontiers.insert(&source(s), *c), "a session frontier");
         }
-        let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers };
+        let s = Snapshot { nonce: [3; 16], frontiers, ..snapshot(&frag(st)) };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert_eq!(sbytes, msnap, "{what} snapshot bytes equal the model's");
         let mback = crdt_model::wire::decode_snapshot(&sbytes, &mut snap_mcx()).map(|x| frag(&x.0));
@@ -616,7 +616,7 @@ fn implied_creation_pos_decodes_back_spec_3_3() {
     let mut pruned = f.clone();
     pruned.prune(None, &mut crate::Changes::new());
     assert_eq!(pruned, f, "canonical");
-    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() };
+    let s = Snapshot { nonce: [3; 16], ..snapshot(&f) };
     let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
     let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap();
     assert_eq!(back.fragment, f, "a canonical state's snapshot decodes back to it");

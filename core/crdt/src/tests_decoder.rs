@@ -4,9 +4,9 @@
 
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::stamp::Interner;
-use crate::testutil::{MCommit, frag, history_with, mapply};
+use crate::testutil::{MCommit, frag, history_with, mapply, snapshot};
 use crate::testutil::{joined, snap_cx, writer_cx};
-use crate::wire::{Delta, Frontiers, Snapshot};
+use crate::wire::{Delta, Snapshot};
 use crdt_model::ops::Ty;
 use crdt_model::r#gen::{Rng, kitchen_sink};
 use crdt_model::stamp::Source as MSource;
@@ -194,7 +194,7 @@ fn differential(seed: u64, types: &[Ty], per: usize) -> Result<(), String> {
         mapply(&mut state, c.delta.clone());
     }
     if let Some(st) = &state {
-        let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
+        let s = Snapshot { nonce: [3; 16], ..snapshot(&frag(st)) };
         let bytes = encode_snapshot(&s, &snap_cx(), None).map_err(|e| e.to_string())?;
         same_snapshot(&bytes)?;
         for _ in 0..per * 4 {

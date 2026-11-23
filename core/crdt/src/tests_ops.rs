@@ -4,7 +4,7 @@ use crate::delta::DeltaBuilder;
 use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
 use crate::stamp::{CounterRange, Dot, Source};
-use crate::testutil::{TyView, build, frag, history, joined, mapply, node, ostate, sink_no_seq, source, ts, value, writer, wrote};
+use crate::testutil::{TyView, build, frag, history, joined, mapply, node, ostate, sink_no_seq, snapshot, source, ts, value, writer, wrote};
 use crate::undo::{Undone, undo};
 use crate::view::AnyView;
 use crdt_model::r#gen::{Rng, random_op, random_value};
@@ -692,9 +692,9 @@ fn approx_bytes_tracks_content() {
 /// false when `f` would be paged (ephemeral deltas are not).
 fn check_snapshot_bound(f: Fragment) -> bool {
     use crate::codec::{decode_snapshot, encode_snapshot};
-    use crate::wire::{DeltaCtx, DeltaKind, Snapshot};
+    use crate::wire::{DeltaCtx, DeltaKind};
     let cx = DeltaCtx { ts: ts(1 << 40), own: node(9), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f, frontiers: Default::default() };
+    let s = snapshot(&f);
     let Ok(bytes) = encode_snapshot(&s, &cx, None) else { return false };
     let back = decode_snapshot(&bytes, &cx, &mut crate::stamp::Interner::new(), None).unwrap();
     crate::testutil::check_bound(&bytes, &back.fragment);

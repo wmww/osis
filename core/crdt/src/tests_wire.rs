@@ -4,7 +4,7 @@
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::{Elem, Fragment, Meta, RegWrite, Register, Set};
 use crate::stamp::{CounterRange, Dot, Interner, Source, Stamp};
-use crate::testutil::{frag, sess, sess_value, snap_cx, source, ts, writer_cx};
+use crate::testutil::{frag, sess, sess_value, snap_cx, snapshot, source, ts, writer_cx};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
@@ -177,7 +177,7 @@ fn snapshot_frontiers_spec_8() {
     let fragment = Fragment::Set(Set::new(Meta::default(), elems));
     let first = crate::Session { node: tid(5), nonce: [0; crate::SESSION_NONCE_LEN] };
     let frontiers = Frontiers { sessions: BTreeMap::from([(first, 7)]) };
-    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment, frontiers };
+    let s = Snapshot { frontiers, ..snapshot(&fragment) };
     let b = encode_snapshot(&s, &scx, None).unwrap();
     let back = decode_snapshot(&b, &scx, &mut Interner::new(), None).unwrap();
     assert!(back.frontiers.lists(&Source::session(session)) && back.frontiers.of(&Source::session(session)) == 0, "the session is listed with 0");
@@ -337,7 +337,7 @@ fn rejects_set_value_of_another_source_spec_5_5() {
     use crate::stamp::{Dot, Stamp};
     let reg = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: Stamp::new(ts(5 << 16), sess(tid(3)), 1), value: Some(i(1)) }) });
     let f = Fragment::Set(Set::new(Meta::default(), BTreeMap::from([(Dot::new(sess(tid(1)), 3), Elem { reset: None, frag: Some(Box::new(reg)), gone: None })])));
-    let b = encode_snapshot(&Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f, frontiers: Frontiers::default() }, &cx, None).unwrap();
+    let b = encode_snapshot(&snapshot(&f), &cx, None).unwrap();
     assert!(!snap_ok(&b, &cx), "node 3 wrote node 1's element value");
 }
 

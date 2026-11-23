@@ -6,7 +6,7 @@ use crate::fragment::{Elem, Fragment, Meta, RegWrite};
 use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, Stamp};
-use crate::testutil::{TyView, frag, history, history_honest, joined, node, sink_no_seq, ts};
+use crate::testutil::{TyView, frag, history, history_honest, joined, node, sink_no_seq, snapshot, ts};
 use crate::winners::{ByWrite, Hiders, Kind, Place, Winners, Won};
 use crdt_model::ops::Ty;
 use osis_base::{Tid, Ts, Value};
@@ -933,7 +933,7 @@ fn an_embedding_copy_carries_its_register_writes_reset_spec_7() {
     let st = Stamp::new(ts(5), x(), 3);
     let (bare, under) = (embedded_text(&st, ts(5), &[(1, 'a')]), embedded_text_under(&st, ts(5), &[(1, 'a')], Some(st.clone())));
     for (f, ok) in [(&bare, false), (&under, true)] {
-        let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Default::default() };
+        let snap = Snapshot { nonce: [3; 16], ..snapshot(f) };
         let b = encode_snapshot(&snap, &crate::testutil::snap_cx(), None).unwrap();
         assert_eq!(decode_snapshot(&b, &crate::testutil::snap_cx(), &mut crate::stamp::Interner::new(), None).is_ok(), ok, "{f:?}");
         let mcx = &mut crdt_model::wire::Ctx::new(1 << 40, crdt_model::stamp::Source::session(250, 0), 1);
@@ -984,7 +984,7 @@ fn a_slots_presence_write_beats_a_lower_one_in_another_slot_spec_7() {
     }
     first_superseding_check(&[map.clone(), list.clone()]);
     let both = Fragment::Slots(Slots { reg: None, slots: [(map.encoding(), map.clone()), (list.encoding(), list.clone())].into_iter().collect() });
-    let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: both, frontiers: Default::default() };
+    let snap = Snapshot { nonce: [3; 16], ..snapshot(&both) };
     let b = encode_snapshot(&snap, &crate::testutil::snap_cx(), None).unwrap();
     assert!(decode_snapshot(&b, &crate::testutil::snap_cx(), &mut crate::stamp::Interner::new(), None).is_err(), "both slots' W refused");
     let mcx = &mut crdt_model::wire::Ctx::new(1 << 40, crdt_model::stamp::Source::session(250, 0), 1);
