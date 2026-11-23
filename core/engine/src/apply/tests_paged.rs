@@ -1080,6 +1080,8 @@ fn unknown_encoding(p: &mut Vec<u8>) {
 fn ephemeral_page_past_items_refused_spec_crdt_8() {
     let mut w = world(false);
     let ak = Ak::new("t:big+.0").unwrap();
+    // after the writer's grant: a snapshot stamped at its ms is ordered before it and waits
+    w.lp.advance(1_000);
     let now = osis_base::Ts::make(w.lp.peers[0].engine.now(), 0).unwrap();
     let mut wr = osis_crdt::Writer::new(now, made_up(0x80), 1 << 40);
     let v = Value::Map(osis_base::ValueMap::from([(Value::Int(1), Value::Str("t".repeat(osis_base::format::MAX_PAGE_ITEMS + 1)))]));

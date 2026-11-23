@@ -3981,7 +3981,8 @@ fn settled_writers_fetch_what_their_first_side_dropped_before_compacting() {
 // missing until a copy arrives or a writer next compacts. 1 writes G's register and 0 lowers 1
 // to read (keeping the write), then 2 and itself: no writer is left to compact G, so the settled
 // check spares G's register before the sync exchange. A node given 1's write after its lowering
-// and before its grant drops the write as invalid and reads "g" there until it fetches it.
+// and before its grant keeps it waiting (spec/commits.md §4 Unjudgeable: the lowering, ordered
+// after it, is no evidence) and reads it once the grant comes, never dropping it.
 #[test]
 fn settled_check_spares_aspects_no_writer_compacted_spec_commits_5() {
     use Step::*;
@@ -3996,7 +3997,7 @@ fn settled_check_spares_aspects_no_writer_compacted_spec_commits_5() {
     order.extend((played.base..played.packs.len()).rev());
     order.push(grant);
     let mut p = deliver(&played, &order);
-    assert_eq!(shown(&mut p, &played.things)[&g], "Ok(Some(Str(\"g\")))", "1's write dropped while invalid");
+    assert_eq!(shown(&mut p, &played.things)[&g], "Ok(Some(Str(\"v1\")))", "1's write waited for its grant");
     order_checks(&played, &order).unwrap();
 }
 
@@ -4719,15 +4720,13 @@ fn compaction_dropped_while_invalid_repairs_nothing_spec_commits_5() {
     assert_ne!(o.now[&g], "Ok(Some(Str(\"g\")))");
 }
 
-// spec/commits.md §5 Invalid: 2 makes thing T under G (its strong in G's `holds.0`) and writes
-// T's `t:docs.0`; then 0 lowers 2 to write on G. A node given that lowering, then the commit
-// making T, before 2's admin grant on G judges the strong invalid (2's only edge there is later)
-// and drops it; valid once the grant arrives, it is missing, so T is in no node closure there
-// and nothing on T applies, until the strong is fetched again or a writer compacts G's
-// `holds.0` (spec/requirements.md Deterministic). `settled` compacts holds before content, so a
-// node given the compactions last reads T as the node keeping every body does.
+// spec/commits.md §4 Unjudgeable: 2 makes thing T under G (its strong in G's `holds.0`) and
+// writes T's `t:docs.0`; then 0 lowers 2 to write on G. A node given that lowering, then the
+// commit making T, before 2's admin grant on G: the lowering, ordered after the strong, is no
+// evidence for it, so the strong waits for the grant, never judged on the lowering alone nor
+// dropped, and that node reads T as the node keeping every body does, before the compactions too.
 #[test]
-fn strong_dropped_while_invalid_comes_back_by_a_holds_compaction_spec_commits_5() {
+fn a_strong_after_a_lowering_waits_for_its_grant_spec_commits_4() {
     use Step::*;
     let h = settled(vec![New { by: 2, parent: 0, write: false }, Typed { by: 2, t: 1, op: 26, k: 2, v: 4 }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) }]);
     let played = settling(play(0, &h), &h);
@@ -4743,8 +4742,8 @@ fn strong_dropped_while_invalid_comes_back_by_a_holds_compaction_spec_commits_5(
     let ahead: Vec<usize> = (0..played.base).filter(|&i| i != grant).chain([lower]).chain((played.base..f).filter(|&i| i != lower)).chain([grant]).collect();
     let read = |p: &mut Peer| shown(p, &played.things).get(&docs).cloned().unwrap_or(NOTHING);
     let mut p = deliver(&played, &ahead);
-    assert!(p.engine.commit_parts_missing().into_iter().any(|(c, m)| c == played.packs[making].id && !m.is_empty()), "the strong is dropped while invalid and missing");
-    assert_eq!(read(&mut p), NOTHING, "T is in no node closure");
+    assert!(!p.engine.commit_parts_missing().into_iter().any(|(c, m)| c == played.packs[making].id && !m.is_empty()), "the strong is never dropped");
+    assert_eq!(read(&mut p), o.now[&docs]);
     assert_eq!(read(&mut deliver(&played, &ahead.into_iter().chain(f..n).collect::<Vec<_>>())), o.now[&docs]);
 }
 
