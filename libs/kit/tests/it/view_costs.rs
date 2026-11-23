@@ -15,13 +15,7 @@ mod rows {
     use osis_kit::facets::create;
     use osis_kit::testing::Screen;
     use osis_kit::view::{Config, Costs, Cx, Tree, ViewSpec, WindowState};
-    use crate::view_tree::data;
-
-    fn name(d: &osis_kit::store::Data, t: osis::Tid, n: &str) {
-        let mut w = d.db.write();
-        w.at(t, NAME).set(&n.to_string()).unwrap();
-        w.commit().unwrap();
-    }
+    use crate::view_tree::{data, name};
 
     /// Rows built by changing one row and by adding one, and the memo runs of the change.
     fn work(arrange: &str, n: usize) -> (u64, u64, u64) {

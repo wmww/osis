@@ -135,9 +135,6 @@ impl Facet for AboutFacet {
     fn id(&self) -> &'static str {
         "about"
     }
-    fn claims(&self, _: &str) -> bool {
-        false
-    }
     fn applies(&self, _: &Reader, _: Tid) -> Result<bool> {
         Ok(true)
     }
@@ -145,13 +142,12 @@ impl Facet for AboutFacet {
         true
     }
     fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
-        let d = cx;
         let r = reach(cx, t)?;
         let mut who = r.who();
         if !r.via.is_empty() {
-            let via: Result<Vec<String>> = r.via.iter().map(|g| d.name(*g)).collect();
+            let via: Result<Vec<String>> = r.via.iter().map(|g| cx.name(*g)).collect();
             who = format!("{who} · via {}", via?.join(", "));
         }
-        Ok(Section::of(vec![Block::Chips(vec![Chip::info(Icon::Eye, &who), Chip::info(Icon::Clock, &d.edited(t)?), undo_chip(cx, t)?])]))
+        Ok(Section::of(vec![Block::Chips(vec![Chip::info(Icon::Eye, &who), Chip::info(Icon::Clock, &cx.edited(t)?), undo_chip(cx, t)?])]))
     }
 }

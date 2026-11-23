@@ -357,8 +357,10 @@ pub struct Offer {
 /// Everything the app knows about one family of aspects (notes/app.md Facet).
 pub trait Facet: Sync {
     fn id(&self) -> &'static str;
-    /// Whether `ak` belongs to this family.
-    fn claims(&self, ak: &str) -> bool;
+    /// Whether `ak` belongs to this family (none: a facet of every thing).
+    fn claims(&self, _ak: &str) -> bool {
+        false
+    }
     /// The aspects are present.
     fn applies(&self, cx: &Reader, t: Tid) -> Result<bool> {
         Ok(cx.aspects(t)?.iter().any(|a| self.claims(a)))

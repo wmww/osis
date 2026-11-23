@@ -28,9 +28,6 @@ impl Facet for PlacesFacet {
     fn id(&self) -> &'static str {
         "places"
     }
-    fn claims(&self, _: &str) -> bool {
-        false
-    }
     fn applies(&self, _: &Reader, _: Tid) -> Result<bool> {
         Ok(true)
     }
@@ -38,10 +35,9 @@ impl Facet for PlacesFacet {
         true
     }
     fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
-        let d = cx;
         let open = cx.flag(PICKING, &cx.path())?;
-        let tags = d.tags_of(t)?;
-        let tag_chip = |g: Tid, press: Do, remove: Option<Do>| -> Result<Chip> { Ok(Chip { label: d.name(g)?, color: d.own_color(g)?, mark: ChipMark::Dot, flat: false, press: Some(press), remove }) };
+        let tags = cx.tags_of(t)?;
+        let tag_chip = |g: Tid, press: Do, remove: Option<Do>| -> Result<Chip> { Ok(Chip { label: cx.name(g)?, color: cx.own_color(g)?, mark: ChipMark::Dot, flat: false, press: Some(press), remove }) };
         let mut chips = Vec::new();
         for g in &tags {
             chips.push(tag_chip(*g, Do::new(crate::view::Open(Some(*g))), Some(Do::new(RemoveTag(t, *g))))?);
@@ -49,7 +45,7 @@ impl Facet for PlacesFacet {
         chips.push(Chip::action(Icon::Plus, if open { "Done" } else { "Tag" }, Do::new(Toggle(PICKING, cx.path()))));
         let mut blocks = vec![Block::Chips(chips)];
         if open {
-            let others: Vec<Tid> = d.all_tags()?.into_iter().filter(|g| !tags.contains(g) && *g != t).collect();
+            let others: Vec<Tid> = cx.all_tags()?.into_iter().filter(|g| !tags.contains(g) && *g != t).collect();
             blocks.push(Block::Label("Add a tag".into()));
             if others.is_empty() {
                 blocks.push(Block::Line("No other tags yet.".into()));

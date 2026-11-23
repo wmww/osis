@@ -38,6 +38,20 @@ pub(crate) fn data() -> Data {
     d
 }
 
+/// Names `t` `n`, in a commit of its own.
+pub(crate) fn name(d: &Data, t: Tid, n: &str) {
+    let mut w = d.db.write();
+    w.at(t, NAME).set(&n.to_string()).unwrap();
+    w.commit().unwrap();
+}
+
+/// A new note named `n`.
+pub(crate) fn note(d: &Data, n: &str) -> Tid {
+    let t = d.create_note().unwrap();
+    name(d, t, n);
+    t
+}
+
 fn view_type(d: &Data, t: Tid) -> String {
     let w = WindowState::default();
     let n = page(&Cx::new(d, &w, false), t).unwrap();
@@ -64,9 +78,7 @@ fn kit_alone_opens_things() {
 fn chrome_is_not_content() {
     let d = data();
     let t = create(&d, "tag").unwrap();
-    let mut w = d.db.write();
-    w.at(t, NAME).set(&"T".to_string()).unwrap();
-    w.commit().unwrap();
+    name(&d, t, "T");
     let wn = WindowState::default();
     let n = page(&Cx::new(&d, &wn, false), t).unwrap();
     assert!(n.children.iter().any(|c| c.spec.view_type == "chrome"));
@@ -79,13 +91,8 @@ fn chrome_is_not_content() {
 #[test]
 fn undo_works_on_a_kit_created_thing() {
     let d = data();
-    let t = d.create_note().unwrap();
-    let mut w = d.db.write();
-    w.at(t, NAME).set(&"one".to_string()).unwrap();
-    w.commit().unwrap();
-    let mut w = d.db.write();
-    w.at(t, NAME).set(&"two".to_string()).unwrap();
-    w.commit().unwrap();
+    let t = note(&d, "one");
+    name(&d, t, "two");
     assert!(d.undo(t).unwrap());
     assert_eq!(d.name(t).unwrap(), "one");
     d.delete(t).unwrap();

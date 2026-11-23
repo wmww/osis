@@ -12,9 +12,6 @@ impl Facet for AddFacet {
     fn id(&self) -> &'static str {
         "add"
     }
-    fn claims(&self, _: &str) -> bool {
-        false
-    }
     fn applies(&self, _: &Reader, _: Tid) -> Result<bool> {
         Ok(true)
     }

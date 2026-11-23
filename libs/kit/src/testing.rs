@@ -75,11 +75,7 @@ impl Surface for Screen {
 /// each failure; nothing means every view passed.
 pub fn check_views(d: &Data) -> Vec<String> {
     let mut fails = Vec::new();
-    let probe = |t: Tid, v: i64| {
-        let mut w = d.db.write();
-        w.at(t, DynamicAspectKey::untyped(Ak::new(PROBE).unwrap())).set(&Value::Int(v)).unwrap();
-        w.commit().unwrap();
-    };
+    let probe = |t: Tid| put(d, t, PROBE, Some(Value::Int(0)));
     // a thing nothing shows: nothing reads it unless the view shows everything, then its address is
     let other = {
         let mut w = d.db.write();
@@ -89,13 +85,13 @@ pub fn check_views(d: &Data) -> Vec<String> {
         w.commit().unwrap();
         t
     };
-    probe(other, 0);
+    probe(other);
     let spare = crate::facets::create(d, "tag").unwrap();
     for v in d.registry.views.iter().copied() {
         let mut reached = Reached::default();
         for query in ["", "a"] {
             let t = (v.sample)(d);
-            probe(t, 0);
+            probe(t);
             check_view(d, v, t, (other, spare), query, &mut fails, &mut reached);
         }
         // a sample that shows nothing or whose reads cannot be moved checked nothing
@@ -240,8 +236,8 @@ fn check_view(d: &Data, v: &ViewType, t: Tid, (other, spare): (Tid, Tid), query:
     };
     // a write nothing here read runs nothing at all
     if !snap.iter().any(|n| n.reads.iter().any(|(a, _)| a.contains(&other.to_string()))) {
-        let (ran, c) = run(&mut tree, &mut screen, &|| set(d, other, PROBE, Value::Int(1)));
-        set(d, other, PROBE, Value::Int(0));
+        let (ran, c) = run(&mut tree, &mut screen, &|| put(d, other, PROBE, Some(Value::Int(1))));
+        put(d, other, PROBE, Some(Value::Int(0)));
         if !ran.is_empty() || c != Costs::default() {
             fails.push(format!("{name}: a write to another thing ran {ran:?} ({c:?})"));
         }
@@ -271,6 +267,8 @@ fn check_view(d: &Data, v: &ViewType, t: Tid, (other, spare): (Tid, Tid), query:
     let mut tids: BTreeSet<Tid> = addresses.iter().flat_map(|a| tids_in(a)).collect();
     tids.insert(t);
     let mut moved = false;
+    // the views that read `address` itself, which must run
+    let readers = |address: &str| -> Vec<&str> { snap.iter().filter(|n| n.view && n.reads.iter().any(|(x, _)| *x == address)).map(|n| n.key.as_str()).collect() };
     let mut check_write = |tree: &mut Tree, screen: &mut Screen, what: String, allowed: BTreeSet<&str>, must: Vec<&str>| {
         let (ran, _) = run(tree, screen, &|| ());
         let after = w.graph.snapshot();
@@ -291,37 +289,38 @@ fn check_view(d: &Data, v: &ViewType, t: Tid, (other, spare): (Tid, Tid), query:
         let address = format!("value {tid} {ak} Path([])");
         let prefix = format!("value {tid} {ak} ");
         let allowed = closure(&snap, |n| n.reads.iter().any(|(x, _)| x.contains(&prefix) || whole(x, tid)));
-        let readers: Vec<&str> = snap.iter().filter(|n| n.view && n.reads.iter().any(|(x, _)| *x == address)).map(|n| n.key.as_str()).collect();
-        check_write(&mut tree, &mut screen, format!("a write to {address}"), allowed, readers);
+        check_write(&mut tree, &mut screen, format!("a write to {address}"), allowed, readers(&address));
         put(d, tid, &ak, Some(old));
         update(&mut tree, &mut screen).unwrap();
     }
     // the set of aspects, and what holds a thing
+    // also what reads `spare`, for a backlink: the write is to it
+    let spare_s = spare.to_string();
     for a in &addresses {
-        if let Some(rest) = a.strip_prefix("aspects ") {
+        let (tid, backlink) = if let Some(rest) = a.strip_prefix("aspects ") {
             let Ok(tid) = rest.parse::<Tid>() else { continue };
             if !try_put(d, tid, ADDED, Some(Value::Int(1))) {
                 continue;
             }
-            moved = true;
-            let allowed = closure(&snap, |n| n.reads.iter().any(|(x, _)| x == a || whole(x, tid)));
-            let readers: Vec<&str> = snap.iter().filter(|n| n.view && n.reads.iter().any(|(x, _)| x == a)).map(|n| n.key.as_str()).collect();
-            check_write(&mut tree, &mut screen, format!("a write to {a}"), allowed, readers);
-            put(d, tid, ADDED, None);
-            update(&mut tree, &mut screen).unwrap();
+            (tid, false)
         } else if let Some(rest) = a.strip_prefix("backlinks ") {
             let Some(Ok(tid)) = rest.split(' ').next().map(str::parse::<Tid>) else { continue };
             if !held(d, spare, tid, true) {
                 continue;
             }
-            moved = true;
-            let spare_s = spare.to_string();
-            let allowed = closure(&snap, |n| n.reads.iter().any(|(x, _)| x == a || x.contains(&spare_s) || whole(x, tid)));
-            let readers: Vec<&str> = snap.iter().filter(|n| n.view && n.reads.iter().any(|(x, _)| x == a)).map(|n| n.key.as_str()).collect();
-            check_write(&mut tree, &mut screen, format!("a write to {a}"), allowed, readers);
+            (tid, true)
+        } else {
+            continue;
+        };
+        moved = true;
+        let allowed = closure(&snap, |n| n.reads.iter().any(|(x, _)| x == a || (backlink && x.contains(&spare_s)) || whole(x, tid)));
+        check_write(&mut tree, &mut screen, format!("a write to {a}"), allowed, readers(a));
+        if backlink {
             held(d, spare, tid, false);
-            update(&mut tree, &mut screen).unwrap();
+        } else {
+            put(d, tid, ADDED, None);
         }
+        update(&mut tree, &mut screen).unwrap();
     }
     reached.moved |= moved;
 }
@@ -339,18 +338,9 @@ fn closure(snap: &[NodeReads], pick: impl Fn(&NodeReads) -> bool) -> BTreeSet<&s
     seen
 }
 
-fn set(d: &Data, t: Tid, ak: &str, v: Value) {
-    put(d, t, ak, Some(v));
-}
-
+/// Sets or removes `ak` on `t`.
 fn put(d: &Data, t: Tid, ak: &str, v: Option<Value>) {
-    let mut w = d.db.write();
-    let k = DynamicAspectKey::untyped(Ak::new(ak).unwrap());
-    match v {
-        Some(v) => w.at(t, k).set(&v).unwrap(),
-        None => w.at(t, k).remove().unwrap(),
-    }
-    w.commit().unwrap();
+    assert!(try_put(d, t, ak, v), "write {ak} on {t}");
 }
 
 /// `put`, for a write the store may refuse (not every aspect read can be written here).

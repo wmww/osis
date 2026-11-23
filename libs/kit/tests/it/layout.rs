@@ -3,8 +3,7 @@
 //! the rail does not; the screen is rebuilt only when the rail comes or goes. A page fills its
 //! height and width: one scrollable reaches all of it at any height, nothing scrolls when
 //! everything fits, and a wider window adds columns.
-use crate::view_tree::data;
-use osis::core::NAME;
+use crate::view_tree::{data, name, note};
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source};
 use osis_kit::masonry::accesskit::{Action, ActionRequest, Node, NodeId, Role};
 use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
@@ -54,11 +53,7 @@ impl Screen {
         w.at(d.home().unwrap(), COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange, element: None }).unwrap();
         w.commit().unwrap();
         for i in 0..n {
-            let t = d.create_note().unwrap();
-            let mut w = d.db.write();
-            w.at(t, NAME).set(&format!("fav {i}")).unwrap();
-            w.commit().unwrap();
-            d.toggle_favorite(t).unwrap();
+            d.toggle_favorite(note(&d, &format!("fav {i}"))).unwrap();
         }
         d.set_open(None).unwrap();
         Screen::show(d, width, height)
@@ -71,11 +66,7 @@ impl Screen {
         d.set_theme("glass").unwrap();
         let tag = osis_kit::views::sample_offer(&d, "tag");
         for i in 0..n {
-            let t = d.create_note().unwrap();
-            let mut w = d.db.write();
-            w.at(t, NAME).set(&format!("fav {i}")).unwrap();
-            w.commit().unwrap();
-            d.add_tag(t, tag).unwrap();
+            d.add_tag(note(&d, &format!("fav {i}")), tag).unwrap();
         }
         d.set_open(Some(tag)).unwrap();
         Screen::show(d, width, height)
@@ -236,6 +227,31 @@ impl Screen {
         (l.iter().any(|l| l == "osis: Home"), l.iter().any(|l| l == "Home"))
     }
 
+    /// The rect in the window of the widget a screen reader knows as `id`.
+    fn rect_of(&self, id: u64) -> Rect {
+        fn find(w: WidgetRef<'_, dyn Widget>, id: u64) -> Option<Rect> {
+            if w.id().to_raw() == id {
+                return Some(Rect::from_origin_size(w.ctx().window_origin(), w.ctx().size()));
+            }
+            w.children().into_iter().find_map(|c| find(c, id))
+        }
+        find(self.rr.get_layer_root(0), id).unwrap()
+    }
+
+    /// The top of the highest favorite tile.
+    fn top(&mut self) -> f64 {
+        self.tiles().iter().map(|t| t.2.y0).fold(f64::INFINITY, f64::min)
+    }
+
+    /// Focuses the note body's text field.
+    fn focus_body(&mut self) -> WidgetId {
+        let (id, _) = body(self);
+        self.rr.handle_access_event(ActionRequest { action: Action::Focus, target: NodeId(id.to_raw()), data: None });
+        self.rr.redraw();
+        assert_eq!(self.rr.focused_widget(), Some(id));
+        id
+    }
+
     /// The screen under the root: a new one means everything on it was rebuilt.
     fn screen(&self) -> WidgetId {
         self.rr.get_widget_with_tag(ROOT).unwrap().children()[0].id()
@@ -381,11 +397,10 @@ fn the_bar_is_on_what_scrolls() {
     let nodes = s.nodes();
     let scrolls: Vec<u64> = nodes.iter().filter(|(_, n)| n.supports_action(Action::ScrollDown)).map(|(id, _)| *id).collect();
     assert_eq!(scrolls.len(), 1, "the page around the rows does not fit");
-    let top = |s: &mut Screen| s.tiles().iter().map(|t| t.2.y0).fold(f64::INFINITY, f64::min);
-    let before = top(&mut s);
+    let before = s.top();
     s.rr.handle_access_event(ActionRequest { action: Action::ScrollDown, target: NodeId(scrolls[0]), data: None });
     s.rr.redraw();
-    assert!(top(&mut s) < before - 1.0, "the rows moved from {before} to {}", top(&mut s));
+    assert!(s.top() < before - 1.0, "the rows moved from {before} to {}", s.top());
 }
 
 /// Bringing something into view (a screen reader's scroll-into-view) scrolls the page to it:
@@ -396,13 +411,7 @@ fn scroll_into_view_shows_it() {
     s.resize_to(360, 190);
     let nodes = s.nodes();
     let id = *nodes.iter().find(|(_, n)| n.label() == Some("Undo")).expect("Undo").0;
-    fn find(w: WidgetRef<'_, dyn Widget>, id: u64) -> Option<Rect> {
-        if w.id().to_raw() == id {
-            return Some(Rect::from_origin_size(w.ctx().window_origin(), w.ctx().size()));
-        }
-        w.children().into_iter().find_map(|c| find(c, id))
-    }
-    let rect = |s: &Screen| find(s.rr.get_layer_root(0), id).unwrap();
+    let rect = |s: &Screen| s.rect_of(id);
     assert!(rect(&s).y0 >= 190.0, "starts below the window: {:?}", rect(&s));
     s.rr.handle_access_event(ActionRequest { action: Action::ScrollIntoView, target: NodeId(id), data: None });
     s.rr.redraw();
@@ -487,9 +496,7 @@ fn a_new_things_title_asks_for_the_keyboard_once() {
     assert_eq!(*keys.borrow(), vec![true]);
     let typing = s.rr.focused_ime_text().map(|(id, _)| id).unwrap();
     // another device names it: the merge rebuilds what shows the name
-    let mut w = s.d.db.write();
-    w.at(t, NAME).set(&"named elsewhere".to_string()).unwrap();
-    w.commit().unwrap();
+    name(&s.d, t, "named elsewhere");
     s.ui.wake(&mut s.rr);
     // the screen rebuilt: the rail goes
     s.resize(300);
@@ -506,8 +513,7 @@ fn touch_scrolls_the_page_in_order() {
     let n = 8;
     let mut s = Screen::home(360, 190, n);
     let (low, high) = (Point::new(180.0, 175.0), Point::new(180.0, 15.0));
-    let top = |s: &mut Screen| s.tiles().iter().map(|t| t.2.y0).fold(f64::INFINITY, f64::min);
-    let start = top(&mut s);
+    let start = s.top();
     let mut seen = BTreeSet::new();
     let mut t = 1_000_000_000;
     for _ in 0..100 {
@@ -524,19 +530,19 @@ fn touch_scrolls_the_page_in_order() {
     }
     assert_eq!(seen.len(), n, "reached {seen:?}");
     for _ in 0..100 {
-        if (top(&mut s) - start).abs() < 0.5 {
+        if (s.top() - start).abs() < 0.5 {
             break;
         }
         t = s.swipe(high, 150.0, 2000, t) + 1_000_000_000;
         s.frames(1000);
     }
-    assert!((top(&mut s) - start).abs() < 0.5, "back at the top: {start} -> {}", top(&mut s));
+    assert!((s.top() - start).abs() < 0.5, "back at the top: {start} -> {}", s.top());
     // a flick: the page goes on moving after the lift, then stops asking for frames
     s.swipe(low, -40.0, 50, t);
-    let lifted = top(&mut s);
+    let lifted = s.top();
     let ran = s.frames(10_000);
     assert!(ran > 1 && ran < 10_000, "{ran} frames");
-    assert!(top(&mut s) < lifted - 10.0, "{lifted} -> {}", top(&mut s));
+    assert!(s.top() < lifted - 10.0, "{lifted} -> {}", s.top());
 }
 
 /// Every widget a screen reader names as `want` says, outermost first, with its rect in the window,
@@ -651,13 +657,7 @@ fn a_following_list_keeps_the_order_when_the_window_shrinks() {
         s.rr.redraw();
         pump(&mut s.ui, &mut s.rr, &s.signals);
     }
-    fn find(w: WidgetRef<'_, dyn Widget>, id: u64) -> Option<Rect> {
-        if w.id().to_raw() == id {
-            return Some(Rect::from_origin_size(w.ctx().window_origin(), w.ctx().size()));
-        }
-        w.children().into_iter().find_map(|c| find(c, id))
-    }
-    let field = |s: &Screen| find(s.rr.get_layer_root(0), search).unwrap();
+    let field = |s: &Screen| s.rect_of(search);
     let top = field(&s);
     assert!(top.y0 >= 0.0 && top.y1 <= 700.0, "the search field shows: {top:?}");
     let (first, y) = first_row(&mut s).expect("a row shows");
@@ -770,9 +770,8 @@ fn caret(s: &Screen) -> Option<Rect> {
 fn long_note(width: u32, height: u32, lines: usize) -> Screen {
     let d = data();
     d.set_theme("glass").unwrap();
-    let t = d.create_note().unwrap();
+    let t = note(&d, "long");
     let mut w = d.db.write();
-    w.at(t, NAME).set(&"long".to_string()).unwrap();
     w.at(t, osis::core::BODY).set(&(0..lines).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n")).unwrap();
     w.commit().unwrap();
     d.set_open(Some(t)).unwrap();
@@ -792,10 +791,7 @@ fn body(s: &mut Screen) -> (WidgetId, Rect) {
 #[test]
 fn a_focused_field_stays_in_view_when_the_space_shrinks() {
     let mut s = long_note(360, 700, 6);
-    let (id, _) = body(&mut s);
-    s.rr.handle_access_event(ActionRequest { action: Action::Focus, target: NodeId(id.to_raw()), data: None });
-    s.rr.redraw();
-    assert_eq!(s.rr.focused_widget(), Some(id));
+    s.focus_body();
     while caret(&s).is_some() {}
     // a keyboard takes all but 150 px at the bottom
     s.ui.set_insets(&mut s.rr, [0.0, 0.0, 0.0, 550.0]);
@@ -822,10 +818,7 @@ fn a_caret_moved_by_keys_stays_in_view() {
     use osis_kit::masonry::core::TextEvent;
     use osis_kit::masonry::core::keyboard::{Key, NamedKey};
     let mut s = long_note(360, 300, 60);
-    let (id, _) = body(&mut s);
-    s.rr.handle_access_event(ActionRequest { action: Action::Focus, target: NodeId(id.to_raw()), data: None });
-    s.rr.redraw();
-    assert_eq!(s.rr.focused_widget(), Some(id));
+    let id = s.focus_body();
     let mut last = None;
     for _ in 0..40 {
         s.rr.handle_text_event(TextEvent::key_down(Key::Named(NamedKey::ArrowDown)));
@@ -852,10 +845,7 @@ fn a_caret_moved_by_keys_stays_in_view() {
 #[test]
 fn a_scroll_away_from_the_caret_stays() {
     let mut s = long_note(360, 300, 60);
-    let (id, _) = body(&mut s);
-    s.rr.handle_access_event(ActionRequest { action: Action::Focus, target: NodeId(id.to_raw()), data: None });
-    s.rr.redraw();
-    assert_eq!(s.rr.focused_widget(), Some(id));
+    s.focus_body();
     // the caret a few lines down, well inside the page
     for _ in 0..4 {
         s.rr.handle_text_event(osis_kit::masonry::core::TextEvent::key_down(osis_kit::masonry::core::keyboard::Key::Named(osis_kit::masonry::core::keyboard::NamedKey::ArrowDown)));

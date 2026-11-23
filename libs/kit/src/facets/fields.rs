@@ -46,25 +46,26 @@ impl crate::store::Reader {
         aks.retain(|a| !crate::store::SYSTEM.contains(&a.as_str()));
         aks.sort();
         let mut rows = Vec::new();
+        // an aspect shown as one read-only row
+        let opaque = |ak: &str, ty: &str, value: String| Row { ak: ak.into(), path: Path::root(), depth: 0, label: ak.into(), ty: ty.into(), value, edit: Edit::None, optional: false };
         for ak in aks {
             let key = self.db.aspect_key(&ak)?;
             let value = match self.db.at(t, key.clone()).get() {
                 Ok(v) => v,
                 // shown read-only: an empty editable row could overwrite it
                 Err(e @ osis::Error::TooLarge { .. }) => {
-                    rows.push(Row { ak: ak.clone(), path: Path::root(), depth: 0, label: ak.clone(), ty: "unreadable".into(), value: e.to_string(), edit: Edit::None, optional: false });
+                    rows.push(opaque(&ak, "unreadable", e.to_string()));
                     continue;
                 }
                 Err(e) => return Err(e),
             };
             match key.value_type() {
                 Some(ty) => flatten(&ak, &ty.name(), &ty.get(), value.as_ref(), Path::root(), ak.clone(), 0, &mut rows),
-                None => rows.push(Row { ak: ak.clone(), path: Path::root(), depth: 0, label: ak.clone(), ty: "untyped".into(), value: value.map(|v| show(&v)).unwrap_or_default(), edit: Edit::None, optional: false }),
+                None => rows.push(opaque(&ak, "untyped", value.map(|v| show(&v)).unwrap_or_default())),
             }
         }
         Ok(rows)
     }
-
 }
 
 impl Data {
@@ -95,10 +96,7 @@ impl Data {
             };
             if row.optional { Value::Enum(1, Some(Box::new(inner))) } else { inner }
         };
-        let mut w = self.db.write();
-        w.at(t, key).path(row.path.clone()).set(&v)?;
-        w.commit()?;
-        Ok(())
+        self.commit(|w| w.at(t, key).path(row.path.clone()).set(&v))
     }
 }
 
@@ -239,9 +237,6 @@ pub static FACET: FieldsFacet = FieldsFacet;
 impl Facet for FieldsFacet {
     fn id(&self) -> &'static str {
         "fields"
-    }
-    fn claims(&self, _: &str) -> bool {
-        false
     }
     fn applies(&self, _: &Reader, _: Tid) -> Result<bool> {
         Ok(true)

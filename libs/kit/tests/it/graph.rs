@@ -1,6 +1,6 @@
 //! The view graph counts work, never time (notes/fast-design.md): what runs after a change is what
 //! read it, nothing runs twice, equal output stops propagation.
-use crate::view_tree::data;
+use crate::view_tree::{data, name};
 use osis::core::{BODY, NAME};
 use osis_kit::facets::create;
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source};
@@ -9,12 +9,6 @@ use osis_kit::view::{Act, Cx, Graph, Section, Surface, Tree, WindowState};
 use osis_kit::views::{open_spec, page};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-
-fn name(d: &osis_kit::store::Data, t: osis::Tid, n: &str) {
-    let mut w = d.db.write();
-    w.at(t, NAME).set(&n.to_string()).unwrap();
-    w.commit().unwrap();
-}
 
 /// The screen a tree draws on: what each path shows, and which paths came and went.
 #[derive(Default)]
