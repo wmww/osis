@@ -100,13 +100,7 @@ pub const WRAP_LEN: usize = 1 + 32 + 8 + TAG_LEN;
 /// Wrap of a blob key under a sync ID read secret: nonce = blob ID[..24], empty AD (spec/wire.md §5).
 /// `order` is the fetch order (spec/crypto.md §5).
 pub fn wrap(read_secret: &Secret32, blob: &BlobId, blob_key: &Secret32, order: u64) -> Result<[u8; WRAP_LEN], Error> {
-    let mut pt = Zeroizing::new([SUITE_1; 41]);
-    if let Some(k) = pt.get_mut(1..33) {
-        k.copy_from_slice(blob_key.expose());
-    }
-    if let Some(o) = pt.get_mut(33..) {
-        o.copy_from_slice(&order.to_le_bytes());
-    }
+    let pt = Zeroizing::new([&[SUITE_1][..], blob_key.expose(), &order.to_le_bytes()].concat());
     aead::seal(wrap_key(read_secret).expose(), &wrap_nonce(blob), b"", &pt[..])?.try_into().map_err(|_| Error::Malformed("wrap length"))
 }
 
@@ -205,9 +199,7 @@ pub const SECTION_WRAP_LEN: usize = aead::NONCE_LEN + 32 + TAG_LEN;
 /// and nothing else), AD = the commit ID (spec/wire.md §4). Returns the section key and the
 /// ciphertext.
 pub fn seal_section(commit: &CommitId, plaintext: &[u8], rng: &mut dyn CryptoRngCore) -> Result<(Secret32, Vec<u8>), Error> {
-    let mut k = [0u8; 32];
-    rng.fill_bytes(&mut k);
-    let key = Secret32::from_bytes(k);
+    let key = Secret32::random(rng);
     let ct = aead::seal(key.expose(), &aead::ZERO_NONCE, &commit.0, plaintext)?;
     Ok((key, ct))
 }
@@ -224,10 +216,7 @@ pub fn wrap_section(read_secret: &Secret32, commit: &CommitId, key: &Secret32, r
     let mut nonce = [0u8; aead::NONCE_LEN];
     rng.fill_bytes(&mut nonce);
     let sealed = aead::seal(section_key(read_secret).expose(), &nonce, &commit.0, key.expose())?;
-    let mut out = [0u8; SECTION_WRAP_LEN];
-    out.get_mut(..aead::NONCE_LEN).ok_or(Error::Malformed("section wrap length"))?.copy_from_slice(&nonce);
-    out.get_mut(aead::NONCE_LEN..).ok_or(Error::Malformed("section wrap length"))?.copy_from_slice(&sealed);
-    Ok(out)
+    [&nonce[..], &sealed].concat().try_into().map_err(|_| Error::Malformed("section wrap length"))
 }
 
 /// Opens a section wrap under a read secret; a reader tries the secrets of the section's

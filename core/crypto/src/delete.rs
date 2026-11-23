@@ -1,6 +1,6 @@
 //! Delete keys and their blinded prefix commitments (spec/crypto.md §7).
 
-use crate::kdf::{self, kdf, kdf_xof};
+use crate::kdf::{self, kdf, kdf16, kdf_xof};
 use crate::{Domain, Secret32, Signature, VerifyingKey};
 use curve25519_dalek::Scalar;
 use ed25519_dalek::hazmat::{ExpandedSecretKey, raw_sign};
@@ -78,10 +78,7 @@ pub fn blind(vk: &VerifyingKey, salt: &[u8; 16], hb: &[u8; 16]) -> VerifyingKey 
 /// `kdf("link blind", blob key)`, so whoever holds a link to the blob can compute its
 /// commitments, and nobody else (spec/crypto.md §7).
 pub fn link_blind(key: &[u8; 32]) -> [u8; 16] {
-    let k = kdf(kdf::LINK_BLIND, key, b"");
-    let mut b = [0u8; 16];
-    b.copy_from_slice(&k.expose()[..16]);
-    b
+    kdf16(kdf::LINK_BLIND, key, b"")
 }
 
 /// The blind a linked blob's commitments use: the first 16 bytes of `kdf("thing blind",
@@ -89,10 +86,7 @@ pub fn link_blind(key: &[u8; 32]) -> [u8; 16] {
 /// through a link binds the link's thing, so a link to a blob of another thing names commitments
 /// the blob does not bear (spec/crypto.md §7).
 pub fn thing_blind(link_blind: &[u8; 16], thing: &[u8]) -> [u8; 16] {
-    let k = kdf(kdf::THING_BLIND, link_blind, thing);
-    let mut b = [0u8; 16];
-    b.copy_from_slice(&k.expose()[..16]);
-    b
+    kdf16(kdf::THING_BLIND, link_blind, thing)
 }
 
 /// Prefix commitment `level || blind(vk, salt, hb)`; level 1..=3.

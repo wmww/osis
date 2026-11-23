@@ -11,6 +11,13 @@ pub fn kdf(purpose: &str, secret: &[u8], input: &[u8]) -> Secret32 {
     Secret32::from_bytes(blake3::keyed_hash(&kdf_key(purpose, secret), input).into())
 }
 
+/// The first 16 bytes of `kdf`: the public tags and blinds the spec cuts to 16 bytes.
+pub(crate) fn kdf16(purpose: &str, secret: &[u8], input: &[u8]) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&kdf(purpose, secret, input).expose()[..16]);
+    out
+}
+
 /// The XOF form of `kdf`, filling `out` (spec/crypto.md §1: where more than 32 bytes are needed).
 pub fn kdf_xof(purpose: &str, secret: &[u8], input: &[u8], out: &mut [u8]) {
     let mut h = blake3::Hasher::new_keyed(&kdf_key(purpose, secret));
@@ -198,23 +205,23 @@ pub fn sync_proof(seed: &Secret32) -> [u8; 32] {
 /// dialer challenge, listener challenge)`.
 pub type Side<'a> = (bool, &'a [u8; 32], &'a [u8; 32], &'a [u8; 32]);
 
-fn bound(side: Side<'_>, beacon: &[u8; 32]) -> Vec<u8> {
+/// `kdf(purpose, match || L, side || listener key || challenges || beacon)`: a Hit or its reply.
+fn bound(purpose: &str, match_value: &[u8; 32], sync_id: &[u8; 16], side: Side<'_>, beacon: &[u8; 32]) -> [u8; 32] {
     let (by_listener, key, dialer, listener) = side;
-    [&[u8::from(by_listener)], &key[..], &dialer[..], &listener[..], &beacon[..]].concat()
+    let input = [&[u8::from(by_listener)], &key[..], &dialer[..], &listener[..], &beacon[..]].concat();
+    *kdf(purpose, &[&match_value[..], &sync_id[..]].concat(), &input).expose()
 }
 
 /// A Hit (spec/wire.md §11.2): a beacon as one side shows it on one connection. A beacon is the same
 /// value on both sides, so a Hit carries its sender's side, the listener's key and both challenges:
 /// a peer that reflects one to its sender, or carries it to another connection, shows nothing.
 pub fn beacon_hit(match_value: &[u8; 32], sync_id: &[u8; 16], beacon: &[u8; 32], side: Side<'_>) -> [u8; 32] {
-    let input = bound(side, beacon);
-    *kdf(BEACON_HIT, &[&match_value[..], &sync_id[..]].concat(), &input).expose()
+    bound(BEACON_HIT, match_value, sync_id, side, beacon)
 }
 
 /// The tag answering a Hit, by the replier's side: computable only with the credential.
 pub fn beacon_reply(match_value: &[u8; 32], sync_id: &[u8; 16], beacon: &[u8; 32], side: Side<'_>) -> [u8; 32] {
-    let input = bound(side, beacon);
-    *kdf(BEACON_REPLY, &[&match_value[..], &sync_id[..]].concat(), &input).expose()
+    bound(BEACON_REPLY, match_value, sync_id, side, beacon)
 }
 
 /// A connection's place among the connections of one record (spec/sync-opens.md §3, pair key): the

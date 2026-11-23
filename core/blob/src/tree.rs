@@ -308,9 +308,6 @@ impl<'a> BlobReader<'a> {
         BlobReader { dedup, fetch }
     }
 
-}
-
-impl BlobReader<'_> {
     fn open_link(&mut self, link: &Link) -> Result<Vec<u8>, Error> {
         if link.suite != SUITE_1 {
             return Err(Error::Crypto(osis_crypto::Error::UnknownSuite(u64::from(link.suite))));

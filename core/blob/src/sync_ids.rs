@@ -16,13 +16,8 @@ pub fn step_record(step: &Step, claims: Option<&ClaimSet>) -> StepRecord {
 /// Parses a record: canonical step bytes, and a claim set that hashes to the step's (spec/sync.md
 /// §5: a set MUST hash to its step's).
 pub fn parse_record(r: &StepRecord) -> Result<(Step, Option<ClaimSet>), Error> {
-    parse_step(&r.step, r.claims.as_deref())
-}
-
-/// `parse_record` of the canonical bytes of a step and its claim set.
-pub(crate) fn parse_step(step: &[u8], claims: Option<&[u8]>) -> Result<(Step, Option<ClaimSet>), Error> {
-    let step = Step::parse(step)?;
-    let claims = claims.map(ClaimSet::parse).transpose()?;
+    let step = Step::parse(&r.step)?;
+    let claims = r.claims.as_deref().map(ClaimSet::parse).transpose()?;
     if claims.as_ref().is_some_and(|c| c.hash() != step.claims_hash) {
         return Err(Error::Verify("claim set does not hash to the step's"));
     }

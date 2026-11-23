@@ -1,6 +1,7 @@
 //! A stranded report's holder keys (spec/wire.md §11.2 Stranded).
 
 use crate::Error;
+use crate::cbor::{records_from, records_value};
 use osis_base::{CreationRecord, Value};
 
 /// A stranded report's holder keys (spec/wire.md §11.2 Stranded): the holder's current `keys.0` commits, each
@@ -26,21 +27,4 @@ impl HolderKeys {
         }
         Ok(HolderKeys { commits: commits.clone(), records: records_from(records)? })
     }
-}
-
-/// Creation records ascending by tid, distinct.
-fn records_value(records: &[CreationRecord]) -> Value {
-    let mut records: Vec<&CreationRecord> = records.iter().collect();
-    records.sort_by_key(|r| r.tid());
-    records.dedup_by_key(|r| r.tid());
-    Value::List(records.into_iter().map(CreationRecord::to_value).collect())
-}
-
-/// Creation records, which must be ascending by tid and distinct.
-fn records_from(records: &[Value]) -> Result<Vec<CreationRecord>, Error> {
-    let records = records.iter().map(|r| CreationRecord::from_value(r).ok_or(Error::Malformed("creation record"))).collect::<Result<Vec<_>, _>>()?;
-    if !records.windows(2).all(|w| matches!(w, [x, y] if x.tid() < y.tid())) {
-        return Err(Error::Malformed("creation records not sorted by tid"));
-    }
-    Ok(records)
 }

@@ -3,6 +3,7 @@
 //! The commit travels as its `CommitBlobPlaintext` value; osis-commit parses it.
 
 use crate::blob::Prefix;
+use crate::cbor::{records_from, records_value};
 use crate::step::OBJECT_LIMITS;
 use crate::Error;
 use osis_base::cbor::{decode, encode};
@@ -21,10 +22,7 @@ pub struct SealedFire {
 
 impl SealedFire {
     pub fn to_value(&self) -> Value {
-        let mut records: Vec<&CreationRecord> = self.records.iter().collect();
-        records.sort_by_key(|r| r.tid());
-        records.dedup_by_key(|r| r.tid());
-        Value::List(vec![self.commit.clone(), Value::List(self.chain.clone()), Value::List(records.into_iter().map(CreationRecord::to_value).collect())])
+        Value::List(vec![self.commit.clone(), Value::List(self.chain.clone()), records_value(&self.records)])
     }
 
     pub fn from_value(v: Value) -> Result<SealedFire, Error> {
@@ -34,11 +32,7 @@ impl SealedFire {
         if !chain.iter().all(|c| matches!(c, Value::List(_))) {
             return Err(bad());
         }
-        let records = records.iter().map(|r| CreationRecord::from_value(r).ok_or(Error::Malformed("creation record"))).collect::<Result<Vec<_>, _>>()?;
-        if !records.windows(2).all(|w| matches!(w, [x, y] if x.tid() < y.tid())) {
-            return Err(Error::Malformed("creation records not sorted by tid"));
-        }
-        Ok(SealedFire { commit, chain, records })
+        Ok(SealedFire { commit, chain, records: records_from(&records)? })
     }
 }
 

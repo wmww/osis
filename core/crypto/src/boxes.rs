@@ -38,7 +38,7 @@ impl Epoch {
     /// `kdf("epoch", r, actor tid || role byte || le64(n))`.
     pub fn derive_roles(actor: &Tid, role: Role, n: u64, r: &Secret32) -> Result<Epoch, Error> {
         let n = i64::try_from(n).map_err(|_| Error::TooLarge)?;
-        let input = [actor.as_bytes().as_slice(), &[role_byte(role)], &n.to_le_bytes()].concat();
+        let input = [actor.as_bytes().as_slice(), &[role.id()], &n.to_le_bytes()].concat();
         Ok(Epoch { n, nonce: *kdf(kdf::EPOCH, r.expose(), &input).expose() })
     }
 
@@ -111,8 +111,7 @@ impl BoxSlot {
     /// The actor whose epochs the box carries.
     pub fn actor(&self) -> &Tid {
         match self {
-            BoxSlot::Secrets { actor, .. } => actor,
-            BoxSlot::Entry { actor, .. } => actor,
+            BoxSlot::Secrets { actor, .. } | BoxSlot::Entry { actor, .. } => actor,
         }
     }
 
@@ -191,11 +190,7 @@ pub fn open_entry(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8])
     if slot.key().is_some() {
         return Err(Error::Malformed("not an entry box slot"));
     }
-    match form {
-        BoxForm::Sealed { keyset: None, suite, .. } if suite != u64::from(SUITE_1) => return Err(Error::UnknownSuite(suite)),
-        BoxForm::Symmetric { .. } | BoxForm::Joint { .. } => return Err(Error::Malformed("entry box form")),
-        BoxForm::Sealed { .. } => {}
-    }
+    sealed_form(form, "entry box form")?;
     let payload = open_sealed(kem, &slot.ad(form)?, sealed)?;
     let value = decode(&payload, &Limits::DEFAULT).map_err(|_| Error::Malformed("box payload"))?;
     let out = parse_entry_item(&value, slot.actor());
@@ -232,13 +227,18 @@ pub fn open_box(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8]) -
     if slot.key().is_none() {
         return Err(Error::Malformed("an entry box is opened by open_entry"));
     }
-    match form {
-        BoxForm::Sealed { keyset: None, suite, .. } if suite != u64::from(SUITE_1) => return Err(Error::UnknownSuite(suite)),
-        BoxForm::Symmetric { .. } | BoxForm::Joint { .. } => return Err(Error::Malformed("not the sealed form")),
-        BoxForm::Sealed { .. } => {}
-    }
+    sealed_form(form, "not the sealed form")?;
     let payload = open_sealed(kem, &slot.ad(form)?, sealed)?;
     box_item(slot, &payload)
+}
+
+/// A sealed form (else `Malformed(other)`); without a keyset, an unknown suite parks.
+fn sealed_form(form: BoxForm, other: &'static str) -> Result<(), Error> {
+    match form {
+        BoxForm::Sealed { keyset: None, suite, .. } if suite != u64::from(SUITE_1) => Err(Error::UnknownSuite(suite)),
+        BoxForm::Symmetric { .. } | BoxForm::Joint { .. } => Err(Error::Malformed(other)),
+        BoxForm::Sealed { .. } => Ok(()),
+    }
 }
 
 /// Joint form (spec/crypto.md §4, Seal): the sealed payload sealed to `recipients[last]`, that
@@ -281,13 +281,11 @@ fn joint_keysets(keysets: &[Epoch]) -> bool {
 
 /// The sealed payload `[role, n, secret]` of `item`, checked against `slot`.
 fn box_payload(slot: &BoxSlot, item: &BoxItem) -> Result<Zeroizing<Vec<u8>>, Error> {
-    if slot.key().is_none() {
-        return Err(Error::Malformed("an entry box is sealed by seal_entry"));
-    }
+    let key = slot.key().ok_or(Error::Malformed("an entry box is sealed by seal_entry"))?;
     if !item.epoch.names(slot.actor(), item.role, &item.secret) {
         return Err(Error::Malformed("box item epoch"));
     }
-    if slot.key().is_some_and(|k| k != (item.role, item.epoch)) {
+    if key != (item.role, item.epoch) {
         return Err(Error::Malformed("box carries no secret of its key"));
     }
     let value = Value::List(vec![role_value(item.role), Value::Int(item.epoch.n), Value::Bytes(item.secret.expose().to_vec())]);
@@ -452,11 +450,7 @@ fn uint(n: u64) -> Result<Value, Error> {
 }
 
 pub(crate) fn role_value(r: Role) -> Value {
-    Value::Int(i64::from(role_byte(r)))
-}
-
-fn role_byte(r: Role) -> u8 {
-    r.id()
+    Value::Int(i64::from(r.id()))
 }
 
 fn get_role(v: &Value) -> Result<Role, Error> {

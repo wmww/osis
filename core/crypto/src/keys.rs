@@ -1,6 +1,6 @@
 //! Key derivations per actor kind (spec/crypto.md §3) and keyed content hashes (§6).
 
-use crate::kdf::{self, DEDUP, kdf};
+use crate::kdf::{self, DEDUP, kdf, kdf16};
 use crate::{Domain, KemSecret, Secret32, Signature, SigningSecret, VerifyingKey};
 use osis_base::{Role, Tid};
 
@@ -92,10 +92,7 @@ pub const SEED_TAG_LEN: usize = 16;
 /// `kdf("seed box", seed, device tid)`, so a holder of the seed reads whom the epoch is boxed to
 /// and no one else does (spec/crypto.md §9, Custody).
 pub fn seed_tag(seed: &Secret32, device: &Tid) -> [u8; SEED_TAG_LEN] {
-    let k = kdf(kdf::SEED_BOX, seed.expose(), device.as_bytes());
-    let mut t = [0u8; SEED_TAG_LEN];
-    t.copy_from_slice(&k.expose()[..SEED_TAG_LEN]);
-    t
+    kdf16(kdf::SEED_BOX, seed.expose(), device.as_bytes())
 }
 
 fn seeds_ad(account: &Tid, epoch: &VerifyingKey) -> Vec<u8> {
@@ -200,10 +197,7 @@ pub fn delta_hash(dedup: &Secret32, delta: &[u8]) -> [u8; 32] {
 /// Keyed state digest of an aspect: the first 16 bytes of `kdf("state", dedup secret, AK || 0 ||
 /// state bytes)` (spec/permissions.md §4).
 pub fn state_digest(dedup: &Secret32, ak: &str, state: &[u8]) -> [u8; 16] {
-    let h = kdf(kdf::STATE, dedup.expose(), &[ak.as_bytes(), &[0], state].concat());
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&h.expose()[..16]);
-    out
+    kdf16(kdf::STATE, dedup.expose(), &[ak.as_bytes(), &[0], state].concat())
 }
 
 /// Link content hash of a chunk, page or link page: `kdf("link", d, bytes)` (spec/wire.md §6).
