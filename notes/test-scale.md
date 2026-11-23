@@ -30,6 +30,7 @@ Default tests against spec/requirements.md (Scale): each runs one operation at a
 | addenda | engine `scale::addenda_rejudge_spec_permissions_5_2` (20 / 200) | a member joining a holder re-judges 1 commit; with an addendum held the thing is judged whole (28 / 208) |
 | purge requests | engine `scale::purge_rejudge_is_linear_in_requests_spec_permissions_6` (30 / 300) | a join flat; a requester's fall and rise rebuild the aspect once |
 | grant and open | engine `scale::grant_is_flat_in_content_commits` (30 / 300) | a grant flat in content commits; open rebuilds nothing |
+| open with role history | engine `scale::open_is_linear_in_role_commits` (20 / 200 grants on one thing) | the walk given the role commits once: grants judged for key access 30 / 210 |
 | one aspect, many kept writes (chat) | engine `scale::long_aspect_writes_are_flat` (40 / 400) | a write and its arrival flat (17 rows); removing a writer re-judges its writes (11 / 101) |
 | role history at a joiner | engine `scale::role_history_join_is_linear` (30 / 300 edge writes) | ingesting them linear (perm commits walked 16 / 151); a grant, a removal and their arrival flat |
 | history moves | engine `scale::setting_change_and_window_passing_are_flat_spec_commits_5`, `kept_overwrite_dates_what_it_replaces_spec_commits_5` (20 / 200) | a setting change, a window passing, a shortening: no store row read, commits told 1-3; an overwrite of a kept register dates two bodies (the one it replaces and itself) and notes its own alone in the held writes |

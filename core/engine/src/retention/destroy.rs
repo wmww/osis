@@ -314,7 +314,7 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         let Some((view, m)) = tx.core.ix.commits.get(&id).map(|m| (m.view.clone(), m.clone())) else { continue };
         // the parts it dropped are not held (a role commit's record keeps them)
         parts.retain(|ai| m.holds(ai));
-        crate::apply::validity::add_role_commit(tx.core, &view, &m.header.path, &id, &parts);
+        crate::apply::validity::hold_role_commit(tx.core, &view, &m.header.path, &id, &parts);
         crate::engine::index::put_perm(tx, &id, &parts, Shred::Yes)?;
     }
     for (ak, _) in &aspects {

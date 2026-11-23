@@ -1573,3 +1573,27 @@ fn a_whole_write_redates_only_what_it_replaces_spec_commits_5() {
     let (a, b) = (whole_text_writes(20), whole_text_writes(200));
     flat("bodies dated (replaced at)", a.n("replaced at"), b.n("replaced at"));
 }
+
+/// n grants on one thing to holders that are no key actor, then an open.
+fn grants_and_open(n: usize) -> Work {
+    let mut lp = net(1, 0);
+    let t = new_thing(&mut lp, 0);
+    for i in 0..n {
+        let mut b = [7u8; 15];
+        b[..2].copy_from_slice(&(i as u16).to_be_bytes());
+        edge_write(&mut lp.peers[0].engine, t, Tid::from_bytes(b), Some(edge(Role::Read)), None);
+    }
+    let roster = lp.peers[0].engine.roster(&t);
+    let (_, open) = measured_at(&mut lp, 0, |lp| lp.peers[0].restart(1).unwrap());
+    assert_eq!(lp.peers[0].engine.roster(&t), roster);
+    open
+}
+
+// spec/permissions.md §5.1; spec/requirements.md, Scale (no operation O(history)): an open holding n and 10n role commits
+// on one thing gives the walk its role commits once, not one update each (each judging every
+// grant for key access).
+#[test]
+fn open_is_linear_in_role_commits() {
+    let (a, b) = (grants_and_open(20), grants_and_open(200));
+    all_linear("open", &a, &b);
+}

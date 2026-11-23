@@ -424,7 +424,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
     for id in roles {
         let Some((view, path)) = tx.core.ix.commits.get(&id).map(|m| (m.view.clone(), m.header.path.clone())) else { continue };
         let parts = crate::apply::perm_parts(tx, &id)?;
-        crate::apply::validity::add_role_commit(tx.core, &view, &path, &id, &parts);
+        crate::apply::validity::hold_role_commit(tx.core, &view, &path, &id, &parts);
         crate::engine::index::put_perm(tx, &id, &parts, Shred::Yes)?;
     }
     for t in &gone {

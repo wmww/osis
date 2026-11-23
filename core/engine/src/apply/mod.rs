@@ -2276,7 +2276,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             // every row is what its record reads now (rewritten with it: late parts, drops;
             // `Engine::check_index` compares them)
             let parts = edges.remove(&id).ok_or(Error::Corrupt("edges row missing"))?;
-            validity::add_role_commit(tx.core, &v, &path, &id, &parts);
+            validity::hold_role_commit(tx.core, &v, &path, &id, &parts);
         }
         // what each addendum says, from its row
         for (id, parts) in crate::engine::index::load_addenda(tx)? {
@@ -2393,12 +2393,14 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 }
             }
             let (v, path) = tx.core.ix.commits.get(&id).map(|m| (m.view.clone(), m.header.path.clone())).ok_or(Error::Corrupt("commit meta"))?;
-            validity::add_role_commit(tx.core, &v, &path, &id, read.perm());
+            validity::hold_role_commit(tx.core, &v, &path, &id, read.perm());
             #[cfg(debug_assertions)]
             tx.core.rebuilt_perm.insert(id, read.perm().clone());
         }
     }
-    // which role commits of accounts count (spec/permissions.md §5.5), before any timeline
+    // the role commits given to the walk at once (held one by one, each update would judge the
+    // grants anew); which of accounts' count (spec/permissions.md §5.5) is judged over it
+    tx.core.update_timelines();
     crate::flows::account::refresh_epochs(tx)?;
     // a commit read before the record it needs (a nested edge write `ts`-ordered before its
     // grant: another node's clock) is derived now, as it was when that record arrived
@@ -2406,8 +2408,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     if fast {
         let _s = osis_base::costs::span("open: walks");
         crate::engine::index::update_timelines_loaded(tx)?;
-    } else {
-        tx.core.update_timelines();
     }
     crate::rotation::load_lost(tx)?;
     crate::rotation::load_kept(tx)?;

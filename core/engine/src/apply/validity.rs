@@ -356,8 +356,8 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pat
     core.update_timelines();
 }
 
-/// `add_role_commit` short of giving it to the walk.
-fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Paths, id: &CommitId, parts: &PermParts) {
+/// `add_role_commit` short of giving it to the walk: a batch's, which gives its changes at its end.
+pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Paths, id: &CommitId, parts: &PermParts) {
     core.stale_commits.insert(*id);
     // the epoch rule filters before the timeline (spec/permissions.md §5.5)
     let counts = core.standing(id, h) == osis_perm::EpochStanding::Counts;
