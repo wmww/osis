@@ -1558,14 +1558,16 @@ fn kept_backlog(n: usize) -> Work {
 }
 
 // spec/commits.md §5 (when a body was replaced); spec/requirements.md, Scale (no operation
-// O(history)): a transaction applying n and 10n commits on a dated aspect reads each part's
-// date inside it, and a read asks whether the transaction changed the aspect in one lookup: the
+// O(history)): a transaction applying n and 10n commits on a dated aspect reads each replaced
+// part's date inside it, and a read asks whether the transaction changed the aspect in one lookup: the
 // transaction's change log is read a fixed number of times, not once per date read.
 #[test]
 fn a_dated_read_in_a_transaction_reads_no_change_log_spec_commits_5() {
     let (a, b) = (kept_backlog(30), kept_backlog(300));
     let (ra, rb) = (a.n("replaced reads"), b.n("replaced reads"));
-    assert!(ra >= 30 && rb >= 300, "a date read per commit applied: {ra}, {rb}");
+    // each woken part but the live one: a live write's listing reads its state, no keep bound
+    // (`listing::keep_bound`)
+    assert!(ra >= 29 && rb >= 299, "a date read per commit replaced: {ra}, {rb}");
     flat("change log entries read per date read", a.n("commits log entries read") / ra, b.n("commits log entries read") / rb);
     all_linear("a kept backlog woken", &a, &b);
 }
