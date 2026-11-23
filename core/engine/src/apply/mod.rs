@@ -509,7 +509,6 @@ fn learn_records_in(tx: &mut Tx<'_>, records: Vec<CreationRecord>) -> Result<usi
         n += usize::from(atomic::learn_record(tx, r)?);
     }
     if n > 0 {
-        tx.core.update_timelines();
         atomic::rejudged(tx, true)?;
     }
     Ok(n)

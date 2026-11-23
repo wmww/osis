@@ -61,7 +61,7 @@ impl Judge<'_> {
         }
         let core = self.core;
         for x in &self.actors {
-            let reached = self.ever.entry(*x).or_insert_with(|| core.timelines.get(x).map(|tl| tl.roles_ever(x)).unwrap_or_default());
+            let reached = self.ever.entry(*x).or_insert_with(|| core.timelines().get(x).map(|tl| tl.roles_ever(x)).unwrap_or_default());
             if reached.contains_key(&a) {
                 return Judgment::Departed;
             }

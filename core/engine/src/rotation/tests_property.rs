@@ -733,13 +733,13 @@ fn access(run: &Run, at: usize, d: usize, t: Tid, r: Role) -> bool {
 fn access_at(run: &Run, at: usize, d: usize, t: Tid, r: Role, point: Option<osis_perm::Point>) -> bool {
     let core = &run.lp.peers[at].engine.core;
     let holders_of = |a: &Tid| -> Vec<(Tid, Role)> {
-        match (point, core.timelines.get(a)) {
+        match (point, core.timelines().get(a)) {
             (Some(p), Some(tl)) => tl.edges_at(Some(p)).holders(a).filter_map(|(m, e)| Some((*m, super::key_role(Some(e))?))).collect(),
             _ => core.key_holders(a),
         }
     };
     let keyless: BTreeSet<(Tid, Tid)> = match point {
-        Some(p) => run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| super::members::keyless_before(tl, p)).collect(),
+        Some(p) => run.all().iter().filter_map(|a| core.timelines().get(a)).flat_map(|tl| super::members::keyless_before(tl, p)).collect(),
         None => (*super::members::key_access(core)).clone(),
     };
     let mut reach: BTreeSet<Tid> = BTreeSet::new();
@@ -880,7 +880,7 @@ fn held_while_current(run: &Run, o: usize, d: usize, t: Tid, r: Role, e: &Epoch)
     let ep = core.epochs(&t).unwrap_or_default();
     let end = ep.role(r).epochs().flat_map(|(_, info)| info.rotations.iter().filter(|(_, list)| list.contains(e)).filter_map(|(c, _)| point(c))).min();
     let before_end = |p: &osis_perm::Point| end.is_none_or(|x| *p < x);
-    let writes = run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| tl.applied_writes().into_values()).filter(|p| *p > start).collect::<BTreeSet<_>>();
+    let writes = run.all().iter().filter_map(|a| core.timelines().get(a)).flat_map(|tl| tl.applied_writes().into_values()).filter(|p| *p > start).collect::<BTreeSet<_>>();
     std::iter::once(start).chain(writes).map(just_after).filter(before_end).any(|p| access_at(run, o, d, t, r, Some(p)))
 }
 
@@ -899,7 +899,7 @@ fn left_reading(run: &Run, o: usize, d: usize, k: &Key) -> bool {
     if run.first.get(&(d, *k)).is_none_or(|f| *f <= h.step) {
         return false;
     }
-    let Some(tl) = run.lp.peers[o].engine.core.timelines.get(&h.on) else { return false };
+    let Some(tl) = run.lp.peers[o].engine.core.timelines().get(&h.on) else { return false };
     let write = h.commits.iter().filter_map(|c| tl.role_commit(c)).find_map(|mc| mc.ops.iter().position(|op| op.target == h.on && op.holder == run.tids[d]).map(|ix| (mc, ix)));
     let Some((mc, ix)) = write else { return false };
     let applies = tl.is_applied(&osis_perm::WriteId(mc.id, ix as u32));
@@ -982,7 +982,7 @@ fn path_loss(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<CommitId>
 /// `path_loss`, at its point in the key order.
 fn path_loss_point(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<osis_perm::Point> {
     let core = &run.lp.peers[o].engine.core;
-    let points: BTreeSet<osis_perm::Point> = run.all().iter().filter_map(|a| core.timelines.get(a)).flat_map(|tl| tl.applied_writes().into_values()).collect();
+    let points: BTreeSet<osis_perm::Point> = run.all().iter().filter_map(|a| core.timelines().get(a)).flat_map(|tl| tl.applied_writes().into_values()).collect();
     let last = points.last().map(|p| osis_perm::Point { commit: CommitId([0xff; 32]), ..*p });
     // whether `d` reads `t` just before each point, then just after the last
     let reads: Vec<bool> = points.iter().copied().chain(last).map(|p| access_at(run, o, d, t, r, Some(p))).collect();
@@ -996,7 +996,7 @@ fn path_loss_point(run: &Run, o: usize, d: usize, t: Tid, r: Role) -> Option<osi
 /// every tail write giving `r` or more that counts); else `departure_point`.
 fn tail_departure_point(run: &Run, o: usize, m: Tid, d: usize, r: Role) -> Option<osis_perm::Point> {
     let core = &run.lp.peers[o].engine.core;
-    let on = core.timelines.on(&m)?;
+    let on = core.timelines().on(&m)?;
     let log = super::departures::edge_logs(core, &on, &m).remove(&run.tids[d]);
     let key = log.and_then(|l| osis_keys::Departure::holder(run.tids[d], r).edge(l).newest_needed(r));
     let point = key.and_then(|k| Some(osis_perm::Point { ts: osis_base::Ts::from_u64(k.ts)?, node: k.node, commit: k.commit }));
@@ -1005,7 +1005,7 @@ fn tail_departure_point(run: &Run, o: usize, m: Tid, d: usize, r: Role) -> Optio
 
 /// `departure`, at its point in the key order.
 fn departure_point(run: &Run, o: usize, t: Tid, d: usize, r: Role) -> Option<osis_perm::Point> {
-    let tl = run.lp.peers[o].engine.core.timelines.get(&t)?;
+    let tl = run.lp.peers[o].engine.core.timelines().get(&t)?;
     let h = run.tids[d];
     // the edge value write `w` sets on `d`'s edge into `t`, if it is one
     let on_edge = |w: &osis_perm::WriteId| tl.role_commit(&w.0).and_then(|mc| mc.ops.get(w.1 as usize)).filter(|op| op.target == t && op.holder == h).map(|op| op.edge.as_ref());

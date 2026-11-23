@@ -100,7 +100,7 @@ pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
     let own = own_actors(core);
     let roles = core.roles_now_without(a, &skip);
     let keyless = crate::rotation::members::key_access(core);
-    let keyed = (!keyless.is_empty()).then(|| core.timelines.roles_on(a, osis_perm::At::KEYS, &keyless.union(&skip).copied().collect()));
+    let keyed = (!keyless.is_empty()).then(|| core.timelines().roles_on(a, osis_perm::At::KEYS, &keyless.union(&skip).copied().collect()));
     own.iter().map(|m| roles.get(m).copied().min(keyed.as_ref().map_or(Some(Role::Admin), |k| k.get(m).copied()))).max().flatten()
 }
 
@@ -166,7 +166,7 @@ pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
 /// opens the sync ID before it holds the grant to its key; the trigger judges `a` once role
 /// commits on it apply).
 pub(crate) fn may_learn(core: &Core, a: &Tid, r: Role) -> bool {
-    may_take_role(core, a, r) || core.timelines.get(a).is_none_or(|tl| !tl.ended(a, now_ts(core)).keys().any(|h| ours(core, h)))
+    may_take_role(core, a, r) || core.timelines().get(a).is_none_or(|tl| !tl.ended(a, now_ts(core)).keys().any(|h| ours(core, h)))
 }
 
 /// Whether the node holds secrets of `a` no current role of its there covers (lost access): a
@@ -185,7 +185,7 @@ fn over_held(core: &Core, a: &Tid) -> bool {
 /// written with `until` 0, gone at every clock, so it never counts.
 pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     let ts = osis_base::Ts::default();
-    let Some(tl) = core.timelines.get(a) else { return false };
+    let Some(tl) = core.timelines().get(a) else { return false };
     // a role giving what the node holds: read for read secrets (a lowering to sync with times
     // ahead is no loss by time), sync for a sync-only holder
     let reads = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| *r != Role::Sync && e.role(*r).holds_any()));
@@ -287,7 +287,7 @@ pub(crate) fn authentic(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_b
 /// Whether `author` may grant on `x` now: admin, or a may-grant (spec/permissions.md §2).
 fn may_grant(core: &Core, author: &Tid, x: &Tid) -> bool {
     let at = At::now(now_ts(core));
-    core.role_now(author, x) == Some(Role::Admin) || core.timelines.get(x).and_then(|t| t.may_grant(author, x, at)).is_some()
+    core.role_now(author, x) == Some(Role::Admin) || core.timelines().get(x).and_then(|t| t.may_grant(author, x, at)).is_some()
 }
 
 /// Of `cands`, the actors this node holds a secret of and lost read access to
@@ -337,7 +337,7 @@ fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>
 /// sync IDs) it would get back. A redemption is a commit removing its signer's own edge on `k`
 /// beside a grant: a plain leave followed by a void grant (a leaver's forgery) defers nothing.
 fn contested(core: &Core, k: &Tid) -> bool {
-    let Some(tl) = core.timelines.get(k) else { return false };
+    let Some(tl) = core.timelines().get(k) else { return false };
     let op = |mc: &osis_perm::RoleCommit, i: usize| osis_perm::WriteId(mc.id, i as u32);
     // the index of the redemption's self-removal
     let leave = |mc: &osis_perm::RoleCommit| {
@@ -372,7 +372,7 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
         let w = out.entry(*a).or_default();
         // every way by a grant with key access: a keyless one reads nothing of `a` through it
         // (spec/crypto.md §4 Key access), so it keeps the node nothing
-        if let Some(tl) = core.timelines.get(a) {
+        if let Some(tl) = core.timelines().get(a) {
             // an ended grant as it last stood for keys: one no removal ended (an `until` passed)
             // still stands and is judged with the standing grants; one a removal ended, over the
             // permission-checked writes before that removal (`members::keyed_before`)
@@ -404,7 +404,7 @@ fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>
     let ways = ways(core, &all);
     let read_then = |a: &Tid, h: &Tid, end: Option<osis_perm::Point>| {
         let Some(p) = end else { return true };
-        own(h) || core.timelines.get(a).is_some_and(|tl| me.iter().chain(core.key_actors.keys()).any(|x| tl.role(x, h, At::before(p)) >= Some(Role::Read)))
+        own(h) || core.timelines().get(a).is_some_and(|tl| me.iter().chain(core.key_actors.keys()).any(|x| tl.role(x, h, At::before(p)) >= Some(Role::Read)))
     };
     // a holder lost but not dropped in this judging (left to node-sync, or held by a pending grant):
     // the node still has it until it is judged, and a copy hanging on it is judged again then
@@ -592,7 +592,7 @@ fn loss_seen(core: &Core, a: &Tid) -> bool {
     // made them readable is gone
     let stale = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| !core.waits.read_any(&u.commit)))));
     // an edge of ours ended, or lowered (to sync: it stays alive) on an actor reaching `a`
-    stale || role_shown(core, a).is_some() || reaching(core, a).iter().any(|x| core.timelines.on(x).is_some_and(|on| on.holders_gone(ts).keys().chain(on.holders_lowered(ts).iter()).any(|h| ours(core, h))))
+    stale || role_shown(core, a).is_some() || reaching(core, a).iter().any(|x| core.timelines().on(x).is_some_and(|on| on.holders_gone(ts).keys().chain(on.holders_lowered(ts).iter()).any(|h| ours(core, h))))
 }
 
 /// Whether held actor `a` is lost and its drop is this trigger's (spec/permissions.md §3): lost

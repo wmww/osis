@@ -154,7 +154,7 @@ pub(crate) fn owe_removal_notices(tx: &mut Tx<'_>) -> Result<()> {
     let now = tx.now().0;
     let mut owed = Vec::new();
     for (x, t) in due {
-        let Some(tl) = tx.core.timelines.get(&t) else { continue };
+        let Some(tl) = tx.core.timelines().get(&t) else { continue };
         for (w, c, op) in tl.held_on(&t) {
             if op.holder != x || c.ts.wall_ms().0.saturating_add(osis_base::format::ROLE_KEEP_MS) < now || !matches!(tl.way(&w), Some(osis_perm::paths::Way::Explicit | osis_perm::paths::Way::MayGrant)) {
                 continue;
@@ -834,7 +834,7 @@ fn fire_parts(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<Value>> {
 fn removals_due(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let cl = &tx.core.ix.closure;
     let read_ticket = || cl.accepted(t) && cl.ticket_words(t).iter().any(|(_, r)| *r == Role::Read);
-    if tx.core.timelines.get(t).is_none() && !read_ticket() {
+    if tx.core.timelines().get(t).is_none() && !read_ticket() {
         return Ok(());
     }
     let Some(a) = tx.core.member() else { return Ok(()) };

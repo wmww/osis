@@ -1179,7 +1179,7 @@ fn a_later_default_changes_no_timed_ending_spec_permissions_3() {
         lp.peers[p].clock.advance(1_000);
     }
     let ts = crate::flows::now_ts(&lp.peers[1].engine.core);
-    let ended = lp.peers[1].engine.core.timelines.get(&g).unwrap().ended(&g, ts);
+    let ended = lp.peers[1].engine.core.timelines().get(&g).unwrap().ended(&g, ts);
     assert!(ended[&tids[1]].0, "the ending says retain, as written");
     let me = tids[0];
     let fin = lp.peers[0].engine.run(|tx| Ok(crate::flows::edges::finalizable(tx.core, &me, &g))).unwrap();

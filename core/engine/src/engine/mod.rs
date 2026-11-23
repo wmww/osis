@@ -1088,7 +1088,7 @@ pub struct Core {
     pub(crate) held_fates: memo::Cutoff<CommitId, Option<crate::sync::HeldFate>>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::StatePages>,
-    pub timelines: held::Timelines,
+    timelines: held::Timelines,
     /// The sides taken in admin disputes (`crate::sides`), the walk's trust set; `detect`:
     /// dispute detection is on (after open: a held set loaded again has no arrivals).
     pub sides: crate::sides::Sides,
@@ -1631,12 +1631,12 @@ impl Core {
             }
         };
         for t in actors {
-            let up = self.timelines.roles_on(&t, at, &BTreeSet::new());
+            let up = self.timelines().roles_on(&t, at, &BTreeSet::new());
             for x in std::iter::once(t).chain(up.keys().copied()) {
                 if !seen.insert(x) {
                     continue;
                 }
-                let Some(on) = self.timelines.on(&x) else { continue };
+                let Some(on) = self.timelines().on(&x) else { continue };
                 for (_, e) in on.holders() {
                     if let Some(u) = e.until {
                         later(u.0);
@@ -1688,18 +1688,40 @@ impl Core {
         crate::retention::valueless(self, c, ai) || m.dropped(ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed))
     }
 
-    /// Re-evaluates the timelines around the things whose held inputs changed; the things of
-    /// changed timelines wait for `rejudge_all`.
+    /// The walk over the held set (`held::Timelines`), the one way to read it. Every change of
+    /// the held set is given to it before the change returns (`update_timelines`; a batch
+    /// operation gives its changes at its end and reads no walk before): no read sees it behind.
+    pub fn timelines(&self) -> &held::Timelines {
+        debug_assert!(!self.ix.held.is_touched(), "the walk read behind the held set");
+        &self.timelines
+    }
+
+    /// The walk to change in place (`sides`), brought up to the held set first.
+    pub(crate) fn timelines_mut(&mut self) -> &mut held::Timelines {
+        self.update_timelines();
+        &mut self.timelines
+    }
+
+    /// Gives the walk the held set's changes since it last took them: what moved, or `None`
+    /// when nothing was touched.
+    fn walk_held(&mut self) -> Option<osis_perm::Changed> {
+        if !self.ix.held.is_touched() {
+            return None;
+        }
+        let touched = self.ix.held.take_touched();
+        let commits = self.ix.held.take_touched_commits();
+        let mut tl = std::mem::take(&mut self.timelines);
+        let changed = tl.update(&*self, &commits, &touched);
+        self.timelines = tl;
+        let ever = self.ix.held.take_ever();
+        self.timelines.ever_moved(&ever);
+        Some(changed)
+    }
+
+    /// Brings the walk up to the held set; what moved in it waits for `rejudge_all`.
     pub fn update_timelines(&mut self) {
         let _s = osis_base::costs::span("timelines");
-        if self.ix.held.is_touched() {
-            let touched = self.ix.held.take_touched();
-            let commits = self.ix.held.take_touched_commits();
-            let mut tl = std::mem::take(&mut self.timelines);
-            let changed = tl.update(&*self, &commits, &touched);
-            self.timelines = tl;
-            let ever = self.ix.held.take_ever();
-            self.timelines.ever_moved(&ever);
+        if let Some(changed) = self.walk_held() {
             let detect = self.detect.then(|| changed.clone());
             self.timelines_changed(changed);
             if let Some(c) = detect {
@@ -1759,12 +1781,12 @@ impl Core {
     }
 
     /// A point to undo back to (`rollback_to`): the start of a transaction or of a step
-    /// (`Tx::step`). The timelines take every held change made so far first, so what is stale by
-    /// them is in the mark: a rollback's update of the timelines then only undoes (it reads again
+    /// (`Tx::step`). The walk holds every held change made so far (`timelines`), so what is stale
+    /// by it is in the mark: a rollback's update of the walk then only undoes (it reads again
     /// what was touched since, as the restored index has it), and what it reports is nothing a
     /// flag restored with the index rests on.
     pub(crate) fn mark(&mut self) -> CoreMark {
-        self.update_timelines();
+        debug_assert!(!self.ix.held.is_touched(), "a mark with the walk behind the held set");
         CoreMark {
             ix: self.ix.mark(),
             sides: self.sides.mark(),
@@ -1862,15 +1884,7 @@ impl Core {
         self.schemas.rollback_to(m.schemas);
         // the timelines follow the restored held set: back to what they were at the mark, which
         // took every change before it (`mark`); validity flags are restored with `commits`
-        if self.ix.held.is_touched() {
-            let touched = self.ix.held.take_touched();
-            let commits = self.ix.held.take_touched_commits();
-            let mut tl = std::mem::take(&mut self.timelines);
-            tl.update(&*self, &commits, &touched);
-            self.timelines = tl;
-            let ever = self.ix.held.take_ever();
-            self.timelines.ever_moved(&ever);
-        }
+        self.walk_held();
         if sides_back {
             crate::sides::restored(self);
         }
@@ -2530,6 +2544,7 @@ impl Core {
         for (t, before) in bared {
             crate::apply::validity::setting_moved(self, &t, Some(before));
         }
+        self.update_timelines();
     }
 
     /// `t` arrived: judged at the next `Engine::settle_needs`.
@@ -2948,15 +2963,11 @@ fn end_drops<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
         }
     }
     tx.core.needs_due.clear();
-    // the walk takes every held change made above (a commit indexed after the last update, one
-    // let go), and what that moves is judged here: a transaction leaves the next nothing of its
-    // own to walk or judge (`Core::mark` takes what one still leaves)
-    while r.is_ok() && tx.core.ix.held.is_touched() {
-        tx.core.update_timelines();
-        if tx.core.stale() {
-            r = then(r, || crate::apply::rejudged(tx, false).and_then(|_| crate::retention::drop_invalid(tx)));
-            tx.core.drop_due.clear();
-        }
+    // what the held changes above moved in the walk is judged here: a transaction leaves the
+    // next nothing of its own to judge
+    while r.is_ok() && tx.core.stale() {
+        r = then(r, || crate::apply::rejudged(tx, false).and_then(|_| crate::retention::drop_invalid(tx)));
+        tx.core.drop_due.clear();
     }
     r
 }

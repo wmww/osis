@@ -70,12 +70,12 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     let admin = crate::engine::secrets::usable_role(tx, &target, role)? == Some(Role::Admin);
     // a non-writer of the target's sync ID deposits its may-grant grant (spec/sync-judgement.md §1)
     let ts = now_ts(tx.core);
-    let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
-    let may_grant = tx.core.timelines.get(&target).and_then(|tl| tl.may_grant(&who, &target, At::now(ts)));
+    let old = tx.core.timelines().get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
+    let may_grant = tx.core.timelines().get(&target).and_then(|tl| tl.may_grant(&who, &target, At::now(ts)));
     // below the holder's edge for keys (one past its `until` included, still in the state) a
     // grant would be the holder's departure, whose rotation it does not carry (spec/permissions.md
     // §3): a demotion makes it
-    let below = tx.core.timelines.get(&target).is_some_and(|tl| rotation::key_role(tl.edges_at(None).get(&holder, &target)) > Some(edge.role));
+    let below = tx.core.timelines().get(&target).is_some_and(|tl| rotation::key_role(tl.edges_at(None).get(&holder, &target)) > Some(edge.role));
     if admin && below {
         return Err(Error::Misuse("a grant below the holder's edge lowers it (use demote)"));
     }
@@ -216,7 +216,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
 /// finalize resets it in the state while the edge stands). At most one: a role commit creates
 /// one entry per holder.
 fn current_entry(tx: &Tx<'_>, target: &Tid, holder: &Tid) -> Option<(osis_crdt::Dot, osis_base::Value)> {
-    let c = tx.core.timelines.get(target)?.in_force(holder, target)?;
+    let c = tx.core.timelines().get(target)?.in_force(holder, target)?;
     let view = &tx.core.ix.commits.get(&c)?.view;
     let ai = view.aspect(target, "roles.0")?;
     let own = crate::engine::Owned::of_view(view, &c, ai)?;
@@ -258,7 +258,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let who = signer.unwrap_or(tx.core.writer()?);
     let holder = d.holder;
     let ts = now_ts(tx.core);
-    let tl = tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?;
+    let tl = tx.core.timelines().get(&target).ok_or(Error::UnknownThing(target))?;
     let old = tl.edges_at(None).get(&holder, &target).copied();
     let new = written(tx.core, &target, old.as_ref(), d)?;
     let new_p = new.as_ref().map(perm_edge);
@@ -358,8 +358,8 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
 pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -> Vec<(Tid, PermEdge, bool)> {
     let ts = now_ts(core);
     // read by the edges into `target` and what reaches it (`Timelines::on`, `role`)
-    let Some(on) = core.timelines.on(target) else { return Vec::new() };
-    let role = core.timelines.role(who, target, At::now(ts));
+    let Some(on) = core.timelines().on(target) else { return Vec::new() };
+    let role = core.timelines().role(who, target, At::now(ts));
     if role < Some(Role::Write) {
         return Vec::new();
     }
@@ -475,14 +475,14 @@ impl Engine {
     /// wrong (`check_content_rules`).
     pub fn needs_frontier(&self, target: &Tid, holder: &Tid, edge: Option<&Edge>) -> bool {
         let new = edge.map(perm_edge);
-        new.is_none() || self.core.timelines.get(target).is_some_and(|tl| tl.audits(holder, target, new, self.core.hlc.peek()))
+        new.is_none() || self.core.timelines().get(target).is_some_and(|tl| tl.audits(holder, target, new, self.core.hlc.peek()))
     }
 
     /// The role for keys of `holder`'s edge on `target` in the state (one past its `until`
     /// included): a grant below it would be the holder's departure, which only a demotion makes
     /// (spec/permissions.md §3).
     pub fn key_role(&self, target: &Tid, holder: &Tid) -> Option<Role> {
-        rotation::key_role(self.core.timelines.get(target)?.edges_at(None).get(holder, target))
+        rotation::key_role(self.core.timelines().get(target)?.edges_at(None).get(holder, target))
     }
 
     /// The things a demotion of `holder` on `target` puts in question (spec/permissions.md §5.1):
@@ -501,7 +501,7 @@ impl Engine {
     /// before the lowering. `None`: an unknown target.
     fn demotion_frontier(&mut self, target: Tid, ops: Vec<osis_perm::EdgeOp>) -> Result<(Option<osis_perm::Frontier>, Vec<CommitId>)> {
         let as_of = self.now();
-        if self.core.timelines.get(&target).is_none() {
+        if self.core.timelines().get(&target).is_none() {
             return Ok((None, Vec::new()));
         }
         let edges: Vec<(Tid, Tid)> = ops.iter().map(|o| (o.holder, o.target)).collect();
@@ -561,7 +561,7 @@ impl Engine {
             self.core.writer()?;
         }
         let t = *target;
-        let new = match self.core.timelines.get(&t) {
+        let new = match self.core.timelines().get(&t) {
             Some(tl) => written(&self.core, &t, tl.edges_at(None).get(&d.holder, &t), d)?,
             None => None,
         };

@@ -41,6 +41,7 @@ pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId, c
     }
     if !was {
         core.ix.held.touch_commit(*id);
+        core.update_timelines();
     }
 }
 
@@ -68,6 +69,7 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
         }
         // it carries nothing from here on (`retention::snapshot::carried`)
         core.ix.held.touch_commit(*id);
+        core.update_timelines();
         crate::retention::names::snapshots_moved(core, tid, ak);
     }
 }
@@ -570,6 +572,7 @@ fn hold_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool> {
     let key = [records::CREATED, t.as_bytes()].concat();
     tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
     tx.core.ix.held.create(rec);
+    tx.core.update_timelines();
     // judged once the pass that brought it ends (`Engine::settle_needs`)
     tx.core.note_pass_due(t);
     Ok(true)
@@ -612,9 +615,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         validity::note_notices(tx.core, &id);
         held_changed = true;
     }
-    if held_changed {
-        tx.core.update_timelines();
-    }
 
     // overlapping session-form counters void both commits
     let ov = overlaps(tx.core, &id, &h);
@@ -646,9 +646,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     if h.kind.is_role() && view.frontier.is_some() {
         crate::flows::addenda::note_due(tx.core, &id);
     }
-    // judged over the walk as it stands with what this transaction held so far (a record or an
-    // edge write taken in just before)
-    tx.core.update_timelines();
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &view, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
     let hold = (0..h.aspects.len()).map(|ai| if missing.contains(&ai) { Hold::Missing(Missing::Plain) } else { Hold::Body { whole: false } }).collect();
@@ -797,7 +794,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         if !super::paths::undecided(&h, meta.view.paths.as_deref()) {
             tx.core.ix.paths_unknown.remove(id);
         }
-        tx.core.update_timelines();
         let v = (0..meta.parts()).map(|ai| validity::part_valid(tx.core, &h, &meta.view, id, ai)).collect();
         meta.set_valid(v);
         tx.core.stale_commits.insert(*id);
@@ -855,9 +851,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         validity::note_notices(tx.core, id);
         held_changed = true;
     }
-    if held_changed {
-        tx.core.update_timelines();
-    }
     observe_all(tx, &j)?;
     super::keys::after_join(tx, &h, with_keys.all(), meta.valid(), pend)?;
     let flipped = rejudged(tx, held_changed)?;
@@ -896,7 +889,6 @@ fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, all: &s
     validity::note_required(tx.core, h, id, all);
     let mut flipped = false;
     for ai in parts.ais() {
-        tx.core.update_timelines();
         let v = validity::part_valid(tx.core, h, &meta.view, id, ai);
         if let Some(x) = meta.valid_mut().get_mut(ai)
             && *x != v

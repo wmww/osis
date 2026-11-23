@@ -438,7 +438,7 @@ impl Engine {
     /// edge write on `t` with its write certificates (its author's chains, its holder's).
     fn history_certificates(&self, t: &Tid) -> super::chain::Certificates {
         let mut out = super::chain::Certificates::default();
-        if self.core.timelines.get(t).is_none() {
+        if self.core.timelines().get(t).is_none() {
             return out;
         }
         for cm in self.core.ix.held.commits_on(t) {
@@ -666,7 +666,7 @@ pub(crate) fn judged_valid(core: &crate::engine::Core, c: &CommitId, parts: &[us
     }
     let targets: BTreeSet<Tid> = m.header.aspects.iter().filter(|a| crate::apply::validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
     targets.iter().all(|t| {
-        let Some(tl) = core.timelines.get(t) else { return true };
+        let Some(tl) = core.timelines().get(t) else { return true };
         let Some(mc) = tl.role_commit(c) else { return true };
         mc.ops.iter().enumerate().filter(|(_, op)| op.target == *t).all(|(i, _)| u32::try_from(i).is_ok_and(|i| tl.is_applied(&osis_perm::WriteId(*c, i))))
     })

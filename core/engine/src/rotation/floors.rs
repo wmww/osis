@@ -37,7 +37,7 @@ pub(crate) fn holder_floor(core: &Core, a: &Tid, p: &Tid) -> u64 {
 
 /// Whether some edge on `a` in force carries a floor: else every party's is 0.
 fn any_floor(core: &Core, a: &Tid) -> bool {
-    core.timelines.on(a).is_some_and(|on| on.holders().iter().any(|(_, e)| e.floor.is_some()))
+    core.timelines().on(a).is_some_and(|on| on.holders().iter().any(|(_, e)| e.floor.is_some()))
 }
 
 /// `party_floor`, `seen` the parties on the way (a cycle of grants reads as the greatest of its
@@ -46,7 +46,7 @@ fn floor_in(core: &Core, a: &Tid, p: &Tid, seen: &mut BTreeSet<Tid>) -> u64 {
     if !seen.insert(*p) {
         return 0;
     }
-    let Some(on) = core.timelines.on(a) else { return 0 };
+    let Some(on) = core.timelines().on(a) else { return 0 };
     let mut paths = Vec::new();
     if let Some(e) = on.edge_at(p, None) {
         let author = on.in_force(p).and_then(|c| core.ix.commits.get(&c)).map(|m| m.view.signer).filter(|x| x != p);
@@ -112,7 +112,7 @@ pub(crate) fn sealed_below_floor(core: &Core, c: &osis_base::CommitId, t: &Tid, 
 
 /// The greatest floor of a holder of `a`.
 fn greatest(core: &Core, a: &Tid) -> u64 {
-    let Some(on) = core.timelines.on(a) else { return 0 };
+    let Some(on) = core.timelines().on(a) else { return 0 };
     let holders: Vec<Tid> = on.holders().into_iter().map(|(h, _)| h).collect();
     holders.iter().map(|h| party_floor(core, a, h)).max().unwrap_or(0)
 }
@@ -122,7 +122,7 @@ fn greatest(core: &Core, a: &Tid) -> u64 {
 /// left. Empty without an applied removal of `x`, or when it went without its rotation. `before`:
 /// only a removal ordered before that point (the re-add's grant).
 pub(crate) fn removal_listed(core: &Core, a: &Tid, x: &Tid, view: &ActorEpochs, before: Option<osis_perm::Point>) -> BTreeSet<osis_crypto::Epoch> {
-    let Some(on) = core.timelines.on(a) else { return BTreeSet::new() };
+    let Some(on) = core.timelines().on(a) else { return BTreeSet::new() };
     let rm = on
         .applied()
         .filter(|(c, o)| o.holder == *x && o.edge.is_none_or(|e| e.says_retain()) && before.is_none_or(|p| c.point() < p))
@@ -142,7 +142,7 @@ pub(crate) fn removal_listed(core: &Core, a: &Tid, x: &Tid, view: &ActorEpochs, 
 /// those its removal's rotation listed, when its grant in force is without history and follows
 /// that removal; else none.
 pub(crate) fn readd_epochs(core: &Core, a: &Tid, x: &Tid, view: &ActorEpochs) -> BTreeSet<osis_crypto::Epoch> {
-    let Some(on) = core.timelines.on(a) else { return BTreeSet::new() };
+    let Some(on) = core.timelines().on(a) else { return BTreeSet::new() };
     if !on.edge_at(x, None).is_some_and(|e| e.floor.is_some()) {
         return BTreeSet::new();
     }

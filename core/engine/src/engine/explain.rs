@@ -137,7 +137,7 @@ fn widest_to(core: &Core, t: &Tid) -> BTreeMap<Tid, (Role, Option<Tid>)> {
     let mut stack = vec![*t];
     while let Some(x) = stack.pop() {
         let Some(&(level, _)) = best.get(&x) else { continue };
-        let holders: Vec<(Tid, Role)> = match core.timelines.on(&x) {
+        let holders: Vec<(Tid, Role)> = match core.timelines().on(&x) {
             Some(on) => on.roster(at).into_iter().map(|(m, e)| (m, e.role)).collect(),
             None => core.mint_admin(&x).map(|a| (a, Role::Admin)).into_iter().collect(),
         };
@@ -154,7 +154,7 @@ fn widest_to(core: &Core, t: &Tid) -> BTreeMap<Tid, (Role, Option<Tid>)> {
 
 /// One edge of a path: holder `h` on `x`, by the role commit in force or its record edge.
 fn edge(core: &Core, h: &Tid, x: &Tid) -> String {
-    let on = core.timelines.on(x);
+    let on = core.timelines().on(x);
     let r = match &on {
         Some(o) => o.roster(osis_perm::At::now(crate::flows::now_ts(core))).get(h).map(|e| format!("{:?}{}", e.role, e.until.map_or(String::new(), |u| format!(" until {}", u.0)))),
         None => Some("Admin".into()),

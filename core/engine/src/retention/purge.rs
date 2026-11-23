@@ -98,7 +98,7 @@ pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid
 /// yet would hold (`would_hold_right`) and what a snapshot standing for a body holds
 /// (`right_holds`).
 fn role_right(core: &Core, who: &Tid, tid: &Tid, by: osis_base::PurgeBy, author: &Tid, point: Point) -> bool {
-    match core.timelines.role(who, tid, osis_perm::At::before(point)) {
+    match core.timelines().role(who, tid, osis_perm::At::before(point)) {
         Some(osis_base::Role::Admin) => true,
         Some(osis_base::Role::Write) => by.writer() || by.author() && author == who,
         _ => false,
@@ -162,7 +162,7 @@ fn right_holds(core: &Core, p: &Header, pc: &CommitId, a: &Right) -> bool {
         None => std::sync::Arc::new(crate::engine::View::of(p, crate::apply::paths::decided(core, p, &BTreeMap::new()))),
     };
     let reading = crate::apply::validity::reading_of(core, pc, p, &view).deltas();
-    let Some(r) = core.timelines.paths().judge_right(&reading, crate::apply::validity::request_part(p, j)) else { return false };
+    let Some(r) = core.timelines().paths().judge_right(&reading, crate::apply::validity::request_part(p, j)) else { return false };
     let on_path = || crate::apply::validity::chain(p, &view, &a.tid).is_some_and(|c| c.contains(&a.purge_author));
     r.admin || r.write && (a.by.writer() || a.by.author() && on_path())
 }

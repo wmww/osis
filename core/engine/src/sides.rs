@@ -150,15 +150,15 @@ pub(crate) fn after_update(core: &mut Core, c: &osis_perm::Changed) {
     if c.ops.is_empty() {
         return;
     }
-    let found = core.timelines.aside().disputes();
+    let found = core.timelines_mut().aside().disputes();
     let mut trusts = false;
     for op in found {
-        let Some((author, holder, target)) = core.timelines.edge_op(&op) else { continue };
+        let Some((author, holder, target)) = core.timelines().edge_op(&op) else { continue };
         if core.sides.get(op, holder).is_some() {
             continue;
         }
-        let was = if c.ops.contains(&op) { c.was_applied.contains(&op) } else { core.timelines.is_applied(&op) };
-        let trust = !c.fresh.contains(&op.0) && was && core.timelines.way(&op) != Some(osis_perm::paths::Way::MayGrant);
+        let was = if c.ops.contains(&op) { c.was_applied.contains(&op) } else { core.timelines().is_applied(&op) };
+        let trust = !c.fresh.contains(&op.0) && was && core.timelines().way(&op) != Some(osis_perm::paths::Way::MayGrant);
         core.sides.set(op, holder, Side { trust, chosen: false });
         trusts |= trust;
         core.events.queue(Event::DisputeDetected { commit: op.0, op: op.1, holder, target, author, trust });
@@ -172,14 +172,14 @@ pub(crate) fn after_update(core: &mut Core, c: &osis_perm::Changed) {
 /// rollback clears; validity flags are restored with the commits).
 pub(crate) fn restored(core: &mut Core) {
     let trust = core.sides.trust();
-    core.timelines.change(|t| t.set_trust(&trust));
+    core.timelines_mut().change(|t| t.set_trust(&trust));
 }
 
 /// Feeds the recorded sides to the walk as its trust set; the things whose validity may have
 /// changed wait for `rejudge_all` as after any timeline change.
 fn feed(core: &mut Core) {
     let trust = core.sides.trust();
-    let changed = core.timelines.change(|t| t.set_trust(&trust));
+    let changed = core.timelines_mut().change(|t| t.set_trust(&trust));
     core.timelines_changed(changed);
 }
 
@@ -198,7 +198,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.sides = Sides::decode(&b)?;
         let trust = tx.core.sides.trust();
         if !trust.is_empty() {
-            tx.core.timelines.change(|t| t.set_trust(&trust));
+            tx.core.timelines_mut().change(|t| t.set_trust(&trust));
         }
     }
     Ok(())
@@ -211,7 +211,7 @@ impl crate::engine::Engine {
     /// copy of the timeline (each candidate's trust is switched on and back).
     pub fn disputes(&self, max: usize) -> (Vec<DisputeInfo>, usize) {
         let mut out: BTreeMap<(WriteId, Tid), DisputeInfo> = BTreeMap::new();
-        let mut tl: osis_perm::Timeline = (*self.core.timelines).clone();
+        let mut tl: osis_perm::Timeline = (**self.core.timelines()).clone();
         let open = tl.disputes();
         let left = open.len().saturating_sub(max);
         for op in open.into_iter().take(max) {
@@ -265,7 +265,7 @@ impl crate::engine::Engine {
     /// when no held edge write is that.
     pub fn choose(&mut self, commit: CommitId, op: u32, holder: Tid, trust: bool) -> Result<()> {
         let w = WriteId(commit, op);
-        if !self.core.timelines.edge_op(&w).is_some_and(|(_, h, _)| h == holder) {
+        if !self.core.timelines().edge_op(&w).is_some_and(|(_, h, _)| h == holder) {
             return Err(Error::UnknownCommit(commit));
         }
         self.run(|tx| {

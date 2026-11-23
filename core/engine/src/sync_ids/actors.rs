@@ -165,7 +165,7 @@ impl Core {
     /// (`role_now`); an account root has no grants.
     pub(crate) fn keyed_role_now(&self, x: &Tid, a: &Tid) -> Option<Role> {
         let role = self.role_now(x, a);
-        if role.is_none() || self.timelines.keyless().is_empty() || self.root_holders(a).is_some() {
+        if role.is_none() || self.timelines().keyless().is_empty() || self.root_holders(a).is_some() {
             return role;
         }
         role.min(crate::rotation::members::role_for_keys(self, x, a))
@@ -197,7 +197,7 @@ impl Engine {
     /// for tests modelling what reads through grants.
     #[doc(hidden)]
     pub fn keyless_grants(&self) -> BTreeSet<(Tid, Tid)> {
-        (*self.core.timelines.keyless()).clone()
+        (*self.core.timelines().keyless()).clone()
     }
 
     /// Things with a `sync.0` state.

@@ -92,7 +92,7 @@ impl Engine {
 
     /// The things `actor` holds a current edge on.
     pub fn grants_of(&self, actor: &Tid) -> Vec<Tid> {
-        let Some(tl) = self.core.timelines.get(actor) else { return Vec::new() };
+        let Some(tl) = self.core.timelines().get(actor) else { return Vec::new() };
         let ts = self.acting_ts();
         let edges = tl.edges_at(At::now(ts).point);
         let mut out: Vec<Tid> = edges.targets(actor).copied().collect();

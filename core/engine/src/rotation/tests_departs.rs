@@ -203,7 +203,7 @@ fn leaver_through_keyless_grant_spec_crypto_4() {
     let w_held: BTreeSet<Epoch> = leave(&mut lp, W, g, Forge::Rotating).unwrap().into_iter().filter(|(r, _)| *r == Role::Read).map(|(_, e)| e).collect();
     lp.sync_all().unwrap();
     for i in [A, X] {
-        assert_eq!(lp.peers[i].engine.core.timelines.get(&g).unwrap().role(&tids[W], &g, osis_perm::At::KEYS), Some(Role::Read), "peer {i}: W holds read on G through H (a role all the same)");
+        assert_eq!(lp.peers[i].engine.core.timelines().get(&g).unwrap().role(&tids[W], &g, osis_perm::At::KEYS), Some(Role::Read), "peer {i}: W holds read on G through H (a role all the same)");
         assert!(super::tests::blocked_at(&mut lp, i, g).contains(&Role::Read), "peer {i}: W's departure covered");
         lp.peers[i].engine.ensure_rotated(&g).unwrap();
         let now = newest_read(&lp, i, g).unwrap();

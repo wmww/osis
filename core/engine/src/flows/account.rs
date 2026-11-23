@@ -916,7 +916,7 @@ fn fetch_devices(tx: &mut Tx<'_>, p: &Tid, v: &AccountView) -> Result<()> {
     }
 }
 
-pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
+pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<()> {
     let mut by_account: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
     for c in tx.core.ix.names_due.iter().copied().collect::<Vec<_>>() {
         tx.core.ix.names_due.remove(&c);
@@ -936,7 +936,6 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         tx.core.ix.epochs_due.remove(&p);
         by_account.entry(p).or_default();
     }
-    let mut moved_roles = false;
     for (p, due) in by_account {
         // this node's account: the merge seeds it derives first (a merge's tips are plain, so
         // one round), as they open who certified what
@@ -1066,7 +1065,6 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             }
             if m.view.kind.is_role() {
                 let counts = m.view.epoch.is_some_and(|e| judged.standing(&c, &e, tx.core.ix.named.contains(&p, &c)) == EpochStanding::Counts);
-                moved_roles |= tx.core.ix.held.edge_commit(&c).is_some();
                 tx.core.ix.held.set_counted(c, counts);
             }
             // a snapshot waiting for what it would carry to last (`signing::lasts`) is weighed again
@@ -1075,8 +1073,9 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             }
             tx.core.stale_commits.insert(c);
         }
+        tx.core.update_timelines();
     }
-    Ok(moved_roles)
+    Ok(())
 }
 
 /// The KEM key of epoch `e` of account `p`: the first epoch's from `keys.0`, a rotation's from

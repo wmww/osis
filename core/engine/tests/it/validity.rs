@@ -518,7 +518,7 @@ fn an_edge_write_on_a_key_actor_is_refused_and_applies_nowhere_spec_permissions_
         assert!(e.header(&id).is_some(), "peer {i} holds the write");
         assert_eq!(e.roster(&k2).get(&b), None, "peer {i}");
         assert_eq!(e.key_role(&k2, &b), None, "peer {i}");
-        if let Some(tl) = e.core.timelines.get(&k2) {
+        if let Some(tl) = e.core.timelines().get(&k2) {
             assert!(tl.held_on(&k2).all(|(w, _, _)| !tl.is_applied(&w)), "peer {i}: applied");
         }
     }

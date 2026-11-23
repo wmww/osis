@@ -590,7 +590,7 @@ pub(crate) fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, 
 /// itself.
 pub(crate) fn above(core: &Core, a: &Tid) -> Vec<Tid> {
     let mut out = vec![*a];
-    if let Some(tl) = core.timelines.get(a) {
+    if let Some(tl) = core.timelines().get(a) {
         let edges = tl.edges_at(None);
         out.extend(edges.targets(a).copied());
     }
@@ -813,7 +813,6 @@ type OwnRot = (Option<osis_base::CommitId>, Rotation, Vec<Tid>);
 fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecord>, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<Option<OwnRot>> {
     if let Some(r) = &rec {
         crate::apply::atomic::learn_record(tx, r.clone())?;
-        tx.core.update_timelines();
     }
     if tx.core.is_independent(&t) || tx.core.is_key_actor(&t) {
         return Ok(None);

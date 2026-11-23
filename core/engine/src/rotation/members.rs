@@ -26,8 +26,8 @@ type Order = (u8, Option<osis_perm::Point>);
 fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
     let mut grants = Vec::new();
     let actors = |m: &Tid| !core.is_key_actor(m);
-    for t in &core.timelines.things() {
-        let Some(on) = core.timelines.on(t) else { continue };
+    for t in &core.timelines().things() {
+        let Some(on) = core.timelines().on(t) else { continue };
         if !on.holders().iter().any(|(m, _)| actors(m)) {
             continue;
         }
@@ -38,7 +38,7 @@ fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
         }
     }
     for t in also {
-        if core.timelines.get(t).is_none()
+        if core.timelines().get(t).is_none()
             && let Some(a) = core.mint_admin(t).filter(actors)
         {
             grants.push(Grant { order: (1, None), target: *t, holder: a });
@@ -50,7 +50,7 @@ fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
 /// The keyless grants (target, holder) among those this node holds (`grants`,
 /// `osis_keys::key_access`), kept by the timelines (`held::Timelines::keyless`).
 pub(crate) fn key_access(core: &Core) -> Arc<BTreeSet<(Tid, Tid)>> {
-    core.timelines.keyless()
+    core.timelines().keyless()
 }
 
 /// The keyless grants among the actor grants of one component's timeline `tl`: each holder
@@ -98,7 +98,7 @@ fn keyless_among(tl: &osis_perm::Timeline, standing: BTreeMap<Tid, BTreeMap<Tid,
 /// only: a keyless grant gives no read through it (spec/requirements.md Permissions), so a party
 /// holding `a` only so has left it.
 pub(crate) fn role_for_keys(core: &Core, who: &Tid, a: &Tid) -> Option<Role> {
-    core.timelines.roles_on(a, osis_perm::At::KEYS, &key_access(core)).get(who).copied()
+    core.timelines().roles_on(a, osis_perm::At::KEYS, &key_access(core)).get(who).copied()
 }
 
 /// Whether holder `h` of `a` has key access to it (`keyed_role`).

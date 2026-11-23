@@ -119,7 +119,7 @@ fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> O
     } else if above(e, p, q) {
         return Some((Role::Admin, Some(Role::Admin)));
     }
-    let tl = e.core.timelines.get(&q)?;
+    let tl = e.core.timelines().get(&q)?;
     let edges = tl.edges_at(Some(point));
     let x = edges.get(&p, &q).filter(|x| x.alive_at(Some(point.ts)))?;
     Some((x.role, if x.role == Role::Admin { Some(Role::Admin) } else { x.may_grant.then_some(x.role) }))
@@ -158,15 +158,15 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
         for t in h.things() {
             let listed = p.to(&t).to_vec();
             let end = listed.last().copied().unwrap_or(h.signer);
-            let tl = e.core.timelines.get(&t);
+            let tl = e.core.timelines().get(&t);
             let ops: Vec<(Tid, Option<osis_perm::Edge>)> = tl.map(|tl| tl.held_on(&t).filter(|(w, _, _)| w.0 == id).map(|(_, _, op)| (op.holder, op.edge)).collect()).unwrap_or_default();
             let leave = !ops.is_empty() && ops.iter().any(|(m, _)| *m == end);
             // a key actor writing itself: [S] (spec/permissions.md §1 Path)
             let members: Vec<Tid> = std::iter::once(h.signer).chain(listed.iter().copied()).chain((!leave && t != h.signer).then_some(t)).collect();
-            let hops: Vec<(Role, Option<Role>)> = members.windows(2).enumerate().map(|(j, x)| hop(e, x[0], x[1], p.direct >> j & 1 == 1, point).unwrap_or_else(|| panic!("{id:?}: {:?} holds nothing on {:?} (path to {t:?}: {listed:?}; {:?}, effective {:?}, record {:?})", x[0], x[1], h.aspects.iter().map(|a| (a.tid, a.ak.as_str().to_string())).collect::<Vec<_>>(), e.core.timelines.role(&h.signer, &t, At::before(point)), e.core.created(&t)))).collect();
+            let hops: Vec<(Role, Option<Role>)> = members.windows(2).enumerate().map(|(j, x)| hop(e, x[0], x[1], p.direct >> j & 1 == 1, point).unwrap_or_else(|| panic!("{id:?}: {:?} holds nothing on {:?} (path to {t:?}: {listed:?}; {:?}, effective {:?}, record {:?})", x[0], x[1], h.aspects.iter().map(|a| (a.tid, a.ak.as_str().to_string())).collect::<Vec<_>>(), e.core.timelines().role(&h.signer, &t, At::before(point)), e.core.created(&t)))).collect();
             let role = hops.iter().map(|x| x.0).min().unwrap_or(Role::Admin);
             let has = |ak: &str| h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == ak);
-            let effective = e.core.timelines.role(&h.signer, &t, At::before(point));
+            let effective = e.core.timelines().role(&h.signer, &t, At::before(point));
             if leave {
                 assert_eq!(role, Role::Admin, "{id:?}: a self-removal's path gives admin up to its holder");
                 *seen.entry(if listed.is_empty() { "leave" } else { "leave through a holder" }).or_default() += 1;
@@ -226,7 +226,7 @@ pub(crate) fn walk_afresh(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, 
         for t in things {
             named.insert(t);
             let path = p.to(&t).to_vec();
-            if let Some(tl) = e.core.timelines.get(&t) {
+            if let Some(tl) = e.core.timelines().get(&t) {
                 let mut ops: Vec<_> = tl.held_on(&t).filter(|(w, _, _)| w.0 == id).collect();
                 ops.sort_by_key(|(_, _, op)| op.holder);
                 for (w, c, op) in ops {
@@ -268,7 +268,7 @@ pub(crate) fn differs_from_afresh(e: &osis_engine::Engine) -> Vec<String> {
     let (paths, ids) = walk_afresh(e);
     let mut out = Vec::new();
     for (nid, (w, t)) in &ids {
-        let tl = e.core.timelines.get(t).unwrap();
+        let tl = e.core.timelines().get(t).unwrap();
         let old = tl.is_applied(w);
         let new = matches!(paths.status(nid), Some(osis_perm::paths::Status::Applied | osis_perm::paths::Status::MayGrant));
         if old != new {
@@ -280,7 +280,7 @@ pub(crate) fn differs_from_afresh(e: &osis_engine::Engine) -> Vec<String> {
     let mut targets: std::collections::BTreeSet<Tid> = finals.keys().map(|k| k.1).collect();
     targets.extend(ids.values().map(|x| x.1));
     for t in targets {
-        let Some(tl) = e.core.timelines.get(&t) else { continue };
+        let Some(tl) = e.core.timelines().get(&t) else { continue };
         let edges = tl.edges_at(None);
         let old: BTreeMap<Tid, Role> = edges.holders(&t).filter(|(_, x)| x.until.is_none()).map(|(m, x)| (*m, x.role)).collect();
         let new: BTreeMap<Tid, Role> = finals.iter().filter(|(k, v)| k.1 == t && v.0.is_some()).map(|(k, v)| (k.0, v.0.unwrap())).collect();
@@ -306,7 +306,7 @@ fn the_engine_judges_stated_role_paths_as_a_walk_afresh_does() {
 /// afresh's status of that edge write.
 fn newest_write(lp: &LocalPeer, i: usize, t: Tid, holder: Tid) -> (std::sync::Arc<osis_commit::Header>, Option<osis_perm::paths::Status>) {
     let e = &lp.peers[i].engine;
-    let tl = e.core.timelines.get(&t).unwrap();
+    let tl = e.core.timelines().get(&t).unwrap();
     let (w, _, _) = tl.held_on(&t).filter(|(_, _, op)| op.holder == holder).max_by_key(|(_, c, _)| c.ts).unwrap();
     let (paths, ids) = walk_afresh(e);
     let nid = ids.iter().find(|(_, (x, _))| *x == w).map(|(n, _)| *n).unwrap();
@@ -469,7 +469,7 @@ fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
     assert_eq!(path(both), marked, "the direct edge, fewer edges than the descent");
     assert!(!role.is_empty() && role.iter().all(|id| path(*id) == marked), "{role:?}");
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("detached")), "B reads A's write");
-    assert_eq!(lp.peers[1].engine.core.timelines.role(&ps[1], &t, At::END), Some(Role::Write));
+    assert_eq!(lp.peers[1].engine.core.timelines().role(&ps[1], &t, At::END), Some(Role::Write));
     for p in &lp.peers {
         let d = differs_from_afresh(&p.engine);
         assert!(d.is_empty(), "{d:?}");

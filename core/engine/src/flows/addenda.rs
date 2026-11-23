@@ -230,10 +230,6 @@ pub(crate) fn write_owed(tx: &mut Tx<'_>) -> Result<()> {
         return Ok(());
     }
     let Some(me) = tx.core.member() else { return Ok(()) };
-    // the candidates are read off the walk (`gather`: `Paths::through`, `rests`), which takes a
-    // commit applied with nothing else moving only at its next update: brought up to the held
-    // set first, so a candidate applied late in this transaction is one
-    tx.core.update_timelines();
     // an addendum is content: writing one moves no component, so makes no removal due here; the
     // content it makes valid may bring a thing into the node closure, and the transaction's end
     // runs this again for what that makes due (`note_entered`)
@@ -357,7 +353,7 @@ fn gather(core: &Core, r: &CommitId, me: Tid, count: bool) -> Option<Gathered> {
     let m = core.ix.commits.get(r)?;
     let frontier = m.view.frontier.clone()?;
     let rc = core.ix.held.edge_commit(r)?;
-    let tl = core.timelines.get(&rc.ops.first()?.target)?;
+    let tl = core.timelines().get(&rc.ops.first()?.target)?;
     // R not applying (dropped, or its author's authority in dispute) owes nothing; it may come
     // to apply, and then its change enters the walk's history: judged again then
     // (`note_changed`)
@@ -367,7 +363,7 @@ fn gather(core: &Core, r: &CommitId, me: Tid, count: bool) -> Option<Gathered> {
     }
     // each cut R makes (spec/permissions.md §5.2 Writing): an applied write taking its hop
     // below write, or below admin
-    let paths = core.timelines.paths();
+    let paths = core.timelines().paths();
     for (k, op) in (0u32..).zip(&rc.ops) {
         let Some(a) = tl.applied(&osis_perm::WriteId(*r, k)) else { continue };
         // below write it cuts plain content, below admin admin-only content (a removal both)
@@ -423,7 +419,7 @@ fn owed(core: &Core, r: &CommitId, g: &Gathered, me: Tid, now: Ts) -> BTreeMap<T
     // an addendum is positioned after R: applying R moved the clock past its `ts` (`Hlc::observe`)
     debug_assert!(core.ix.commits.get(r).is_none_or(|m| now > m.view.ts), "the clock is past an applied removal's ts");
     for (n, cs) in &g.addenda {
-        let Some(tn) = core.timelines.get(n) else { continue };
+        let Some(tn) = core.timelines().get(n) else { continue };
         // an addendum written now vouches as a holder of the role a part needs
         let mine = tn.role(&me, n, osis_perm::At::now(now));
         if mine < Some(Role::Write) {

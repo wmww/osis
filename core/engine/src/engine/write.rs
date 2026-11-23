@@ -260,7 +260,7 @@ pub(crate) fn snapshot_role(ak: &str) -> Role {
 }
 
 pub fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role> {
-    core.timelines.role(node, tid, At::now(ts))
+    core.timelines().role(node, tid, At::now(ts))
 }
 
 /// What a fire its thing's setting keeps no history for fails with (spec/commits.md §5 Signals:
@@ -408,7 +408,7 @@ pub(crate) fn path_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid,
             }
             Some((listed, marks, true))
         }
-        Some(ChainStep::Unknown(t)) => core.timelines.path_now(&node, &t, need, ts),
+        Some(ChainStep::Unknown(t)) => core.timelines().path_now(&node, &t, need, ts),
         Some(ChainStep::Key(_) | ChainStep::TooDeep) | None => None,
     }
 }
@@ -514,7 +514,7 @@ fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Tid, Option<
     let on: Vec<(Tid, Option<osis_perm::Edge>)> = edges.iter().filter(|(x, _, _)| x == t).map(|(_, h, e)| (*h, *e)).collect();
     let (h, _) = on.first()?;
     let node = plan.signer;
-    let old = |m: &Tid| match core.timelines.get(t) {
+    let old = |m: &Tid| match core.timelines().get(t) {
         Some(tl) => tl.edges_at(None).get(m, t).copied(),
         None => (core.mint_admin(t) == Some(*m)).then(|| osis_perm::Edge::new(Role::Admin)),
     };

@@ -31,7 +31,7 @@ impl Core {
             return h.into_iter().map(|(m, role)| (m, Edge::new(role))).collect();
         }
         self.time.at(|now| {
-            let r = self.timelines.on(thing).map(|on| on.roster(At::now(crate::flows::ts_at(now)))).unwrap_or_default();
+            let r = self.timelines().on(thing).map(|on| on.roster(At::now(crate::flows::ts_at(now)))).unwrap_or_default();
             let until = r.values().filter_map(|e| e.until).map(|u| u.0).filter(|u| *u > now).min();
             (r, until)
         })

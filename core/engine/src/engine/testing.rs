@@ -625,7 +625,7 @@ impl Engine {
     /// Whether an edge write of commit `c` on `t` applies in the settled walk (tests).
     #[doc(hidden)]
     pub fn edge_write_applied(&self, t: &Tid, c: &CommitId) -> bool {
-        self.core.timelines.get(t).is_some_and(|tl| tl.held_on(t).any(|(w, mc, _)| mc.id == *c && tl.is_applied(&w)))
+        self.core.timelines().get(t).is_some_and(|tl| tl.held_on(t).any(|(w, mc, _)| mc.id == *c && tl.is_applied(&w)))
     }
 
     /// Damages the role commits' `PERM_PARTS` rows (tests): 0 truncates one, 1 garbles one,
@@ -863,13 +863,13 @@ impl super::Core {
         let held = &self.ix.held;
         // from scratch: one update over every held commit and record, under the same trust set
         let full = from_scratch.then(|| {
-            let mut tl = self.timelines.emptied();
+            let mut tl = self.timelines().emptied();
             let commits: BTreeSet<CommitId> = self.ix.commits.keys().copied().collect();
             let things: BTreeSet<Tid> = held.all_things().into_iter().collect();
             tl.update(self, &commits, &things);
             tl
         });
-        let get = |t: &Tid| full.as_ref().or_else(|| self.timelines.get(t));
+        let get = |t: &Tid| full.as_ref().or_else(|| self.timelines().get(t));
         let (mut rosters, mut applied, mut dropped) = (Vec::new(), BTreeMap::new(), BTreeSet::new());
         for t in held.all_things() {
             let Some(tl) = get(&t) else {
@@ -886,7 +886,7 @@ impl super::Core {
         }
         let keyless = match &full {
             Some(tl) => crate::rotation::members::keyless_in(tl),
-            None => (*self.timelines.keyless()).clone(),
+            None => (*self.timelines().keyless()).clone(),
         };
         (rosters, applied, dropped, keyless)
     }

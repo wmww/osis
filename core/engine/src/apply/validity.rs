@@ -190,6 +190,7 @@ fn set_addendum(core: &mut Core, t: Tid, id: CommitId, a: Option<Addendum>) -> O
             core.ix.addenda_keyed.remove(r, &(t, id));
         }
     }
+    core.update_timelines();
     was
 }
 
@@ -351,6 +352,12 @@ pub(crate) fn check_holders_parts(h: &Header, id: &CommitId, parts: &[(usize, De
 /// it stands for (spec/crypto.md §4 Met): a finalize held without the write it ends removes nobody
 /// here, and one partly applied would let its name cover a holder it left in place.
 pub(crate) fn add_role_commit(core: &mut Core, h: &View, path: &osis_commit::Paths, id: &CommitId, parts: &PermParts) {
+    hold_role_commit(core, h, path, id, parts);
+    core.update_timelines();
+}
+
+/// `add_role_commit` short of giving it to the walk.
+fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Paths, id: &CommitId, parts: &PermParts) {
     core.stale_commits.insert(*id);
     // the epoch rule filters before the timeline (spec/permissions.md §5.5)
     let counts = core.standing(id, h) == osis_perm::EpochStanding::Counts;
@@ -641,19 +648,16 @@ pub(crate) fn setting_moved(core: &mut Core, t: &Tid, before: Option<BTreeSet<Ak
 }
 
 /// Re-derives the edge writes of commits whose removed keys were unknown.
-pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
+pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<()> {
     let ids: Vec<CommitId> = tx.core.ix.unresolved.iter().copied().collect();
-    let mut any = false;
     for id in ids {
         let Some(v) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
         let parts = super::perm_parts(tx, &id)?;
-        let before = tx.core.ix.held.edge_commit(&id).map(|c| c.ops.clone());
         let Some(path) = tx.core.ix.commits.get(&id).map(|m| m.header.path.clone()) else { continue };
         add_role_commit(tx.core, &v, &path, &id, &parts);
         note_notices(tx.core, &id);
-        any |= tx.core.ix.held.edge_commit(&id).map(|c| &c.ops) != before.as_ref();
     }
-    Ok(any)
+    Ok(())
 }
 
 /// Whether `t`'s record chain is not known to end at a key actor within `MAX_CHAIN_DEPTH` links,
@@ -906,9 +910,9 @@ impl<'a> Judge<'a> {
         // against all of them), so a self-removal beside a failing put exempts nothing
         if matches!(ak, "secrets.0" | "keys.0")
             && !core.ix.grant_overreach.contains(&(*id, ai))
-            && let Some(c) = core.timelines.role_commit(id)
+            && let Some(c) = core.timelines().role_commit(id)
         {
-            let grant = |i: usize| core.timelines.way(&WriteId(*id, i as u32)) == Some(Way::MayGrant);
+            let grant = |i: usize| core.timelines().way(&WriteId(*id, i as u32)) == Some(Way::MayGrant);
             let mut puts = c.ops.iter().enumerate().filter(|(_, o)| o.target == a.tid && o.edge.is_some()).peekable();
             if puts.peek().is_some() && puts.all(|(i, _)| grant(i)) {
                 return true;
@@ -917,7 +921,7 @@ impl<'a> Judge<'a> {
         // a point query over what is held, the commit itself held yet or not: a commit is judged
         // as it applies, before the walk takes it
         let c = self.readings.entry(*id).or_insert_with(|| read(core, id, h, view, false).deltas());
-        matches!(core.timelines.judge(c, ai as u32), Some(Content::Valid(_)))
+        matches!(core.timelines().judge(c, ai as u32), Some(Content::Valid(_)))
     }
 }
 
@@ -936,11 +940,6 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     loop {
         super::paths::refresh(tx);
         out.extend(rejudge_once(tx, rebuild)?);
-        // a part `uncover` made missing loses the role its body required (`parts_moved`): perm
-        // reads the commit anew
-        if tx.core.ix.held.is_touched() {
-            tx.core.update_timelines();
-        }
         if !tx.core.stale() {
             return Ok(out.into_iter().collect());
         }
@@ -978,10 +977,8 @@ fn misjudged_one(core: &Core, id: &CommitId, m: &Meta) -> Option<String> {
 /// One pass of `rejudge_all`.
 fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     // the epoch rule first: it decides which role commits the timelines read
-    let epochs = crate::flows::account::refresh_epochs(tx)?;
-    if resolve_unresolved(tx)? | epochs {
-        tx.core.update_timelines();
-    }
+    crate::flows::account::refresh_epochs(tx)?;
+    resolve_unresolved(tx)?;
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     // aspects where something became valid again: re-merging needs the held bodies
     let mut rose: BTreeSet<(Tid, Ak)> = BTreeSet::new();
@@ -1231,7 +1228,7 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, holder: &Tid
     if author == holder {
         return true;
     }
-    let Some(tl) = core.timelines.get(target) else { return false };
+    let Some(tl) = core.timelines().get(target) else { return false };
     if tl.role(author, holder, At::now(ts)) != Some(Role::Admin) {
         return false;
     }
@@ -1279,7 +1276,7 @@ pub(crate) fn edge_writes<'f>(core: &Core, parts: impl IntoIterator<Item = (Tid,
 /// thing so at the writer.
 pub(crate) fn leaves_no_admin(core: &Core, t: &Tid, writes: &[(Tid, Option<Edge>)]) -> bool {
     let standing = |e: &Edge| e.role == Role::Admin && e.until.is_none();
-    let now: Vec<(Tid, Edge)> = match core.timelines.on(t) {
+    let now: Vec<(Tid, Edge)> = match core.timelines().on(t) {
         Some(on) => on.holders(),
         None => core.mint_admin(t).map(|a| (a, Edge::new(Role::Admin))).into_iter().collect(),
     };
@@ -1333,7 +1330,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
     }
     // a frontier rides on an explicit write that audits (spec/permissions.md §5.1 step 4): one
     // below the edge as restored, a removal (of an absent edge too, §2) included
-    let audits = changed.iter().any(|(target, m, new)| new.is_none() || core.timelines.get(target).is_some_and(|tl| tl.audits(m, target, *new, h.ts)));
+    let audits = changed.iter().any(|(target, m, new)| new.is_none() || core.timelines().get(target).is_some_and(|tl| tl.audits(m, target, *new, h.ts)));
     if h.frontier.is_some() && !audits && !changed.is_empty() {
         return Err(Error::BadInput("a frontier on a commit that audits nothing"));
     }
@@ -1343,7 +1340,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
     // holder's it puts in question drops, received or not
     if h.frontier.is_none() {
         for (target, m, new) in &changed {
-            let Some(tl) = core.timelines.get(target) else { continue };
+            let Some(tl) = core.timelines().get(target) else { continue };
             let old = tl.edges_at(None).get(m, target).copied();
             let selfr = self_removal(core, &h.signer, target, m, h.ts);
             let removes = *m != h.signer && new.as_ref().is_none_or(|e| e.says_retain()) && !selfr;

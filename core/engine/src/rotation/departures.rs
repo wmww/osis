@@ -113,7 +113,7 @@ pub(crate) fn edge_logs<'t>(core: &Core, on: &On<'t>, a: &Tid) -> BTreeMap<Tid, 
 /// ID).
 pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> osis_keys::Names {
     let mut list = BTreeSet::new();
-    if let Some(on) = core.timelines.on(a) {
+    if let Some(on) = core.timelines().on(a) {
         for (m, log) in edge_logs(core, &on, a) {
             list.extend(log.names(m));
         }
@@ -127,7 +127,7 @@ pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> os
 /// lowered edge's target reaches, spec/permissions.md §5.1 step 4), and that the party has not
 /// regained. A reader's removal records none: it stays hidden from what holds `a`.
 pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {
-    let Some(tl) = core.timelines.get(a) else { return BTreeSet::new() };
+    let Some(tl) = core.timelines().get(a) else { return BTreeSet::new() };
     // the cuts (spec/permissions.md §5.2) of the edges into `a` and into what reaches it, whose
     // holder holds less on `a` at the end than the cut took
     let now = tl.roles_on(a, At::END);
@@ -158,7 +158,7 @@ pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {
 fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     let current: BTreeMap<Tid, Role> = tx.core.key_holders(a).into_iter().collect();
     let mut out = BTreeSet::new();
-    if let Some(on) = tx.core.timelines.on(a) {
+    if let Some(on) = tx.core.timelines().on(a) {
         for (m, log) in edge_logs(tx.core, &on, a) {
             // what the edge holds it at now, or more by another path (a destroyed actor's stand-in)
             let from = above_role(current.get(&m).copied().max(log.now()));
@@ -217,9 +217,9 @@ pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
     let keyless = super::members::key_access(core);
     // the role read back from `a` (`Timelines::role`): moved by the edges into what reaches it
     let role = match keyless.is_empty() {
-        true => core.timelines.role(who, a, at),
+        true => core.timelines().role(who, a, at),
         false => {
-            let Some(tl) = core.timelines.get(a) else { return BTreeSet::new() };
+            let Some(tl) = core.timelines().get(a) else { return BTreeSet::new() };
             tl.roles_without(who, at, &keyless).get(a).copied()
         }
     };
@@ -236,7 +236,7 @@ pub fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Op
 /// The commit of departure `d` from `a` when it is this node's own self-removal
 /// (`own_removal_on`). From stored commits only, so a restart keeps it.
 pub(super) fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_base::CommitId> {
-    own_removal_on(core, core.timelines.get(a)?, a, &d.holder)
+    own_removal_on(core, core.timelines().get(a)?, a, &d.holder)
 }
 
 /// The newest applied write on `holder`'s edge on `a` that changed its role for keys
@@ -269,5 +269,5 @@ pub(crate) fn own_self_removal(core: &Core, c: &osis_base::CommitId, targets: &B
     if m.origin != crate::events::Origin::Local && a != core.id.tid() && core.account.get() != Some(a) && !core.key_actors.contains_key(&a) {
         return false;
     }
-    targets.iter().any(|t| core.timelines.get(t).is_some_and(|tl| edge_writes(tl, t).any(|(mc, op)| mc.id == *c && own_removal_on(core, tl, t, &op.holder) == Some(*c))))
+    targets.iter().any(|t| core.timelines().get(t).is_some_and(|tl| edge_writes(tl, t).any(|(mc, op)| mc.id == *c && own_removal_on(core, tl, t, &op.holder) == Some(*c))))
 }

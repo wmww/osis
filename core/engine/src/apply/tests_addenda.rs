@@ -1397,7 +1397,7 @@ fn elsewhere_cost(n: usize) -> (u64, u64) {
     lp.sync(0, 2).unwrap();
     let c = osis_base::costs::take();
     let get = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
-    assert_eq!(lp.peers[2].engine.core.timelines.role(&dave, &t, osis_perm::At::END), Some(Role::Write));
+    assert_eq!(lp.peers[2].engine.core.timelines().role(&dave, &t, osis_perm::At::END), Some(Role::Write));
     assert_eq!(get("addenda: wake climbs"), 0, "live traffic climbs to no filed party");
     (get("addenda: removals judged"), get("addenda: commits scanned"))
 }
@@ -1445,13 +1445,13 @@ fn a_cut_of_the_stated_path_owes_an_addendum_whatever_another_path_gives_spec_pe
     lp.advance(1000);
     lp.peers[2].tick().unwrap();
     let carol = lp.peers[2].engine.me();
-    assert_eq!(lp.peers[2].engine.core.timelines.role(&bob, &t, osis_perm::At::END), Some(Role::Write), "Bob keeps write through Q");
+    assert_eq!(lp.peers[2].engine.core.timelines().role(&bob, &t, osis_perm::At::END), Some(Role::Write), "Bob keeps write through Q");
     assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol answers R: e rests on Bob's own grant, whatever Q gives");
     let pk = lp.peers[3].engine.package(&r1).unwrap().unwrap();
     lp.deliver(2, &pk).unwrap();
     lp.advance(1000);
     lp.peers[2].tick().unwrap();
-    assert!(lp.peers[2].engine.core.timelines.role(&bob, &t, osis_perm::At::END) < Some(Role::Write), "R1 ordered before R: Bob falls at R");
+    assert!(lp.peers[2].engine.core.timelines().role(&bob, &t, osis_perm::At::END) < Some(Role::Write), "R1 ordered before R: Bob falls at R");
     assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol answers once R1 arrives");
     lp.sync_all().unwrap();
     for p in 0..4 {
@@ -1484,7 +1484,7 @@ fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2
     lp.advance(1000);
     lp.sync_all().unwrap();
     let (x, p) = (holders[0], holders[1]);
-    assert_eq!(lp.peers[2].engine.core.timelines.role(&yan, &t, osis_perm::At::END), Some(Role::Write), "Yan writes through the holders");
+    assert_eq!(lp.peers[2].engine.core.timelines().role(&yan, &t, osis_perm::At::END), Some(Role::Write), "Yan writes through the holders");
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     lp.sync(1, 2).unwrap();
     let r1 = *lp.peers[3].engine.demote(&t, &Demotion { holder: p, new: None, retain: None }).unwrap().commits.last().unwrap();
@@ -1497,16 +1497,47 @@ fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2
     lp.advance(1000);
     lp.peers[2].tick().unwrap();
     let carol = lp.peers[2].engine.me();
-    assert_eq!(lp.peers[2].engine.core.timelines.role(&yan, &t, osis_perm::At::END), Some(Role::Write), "Yan keeps write through P");
+    assert_eq!(lp.peers[2].engine.core.timelines().role(&yan, &t, osis_perm::At::END), Some(Role::Write), "Yan keeps write through P");
     assert!(addenda(&lp, 2, t).iter().all(|(a, _)| *a != carol), "nothing owed while Yan keeps write");
     let pk = lp.peers[3].engine.package(&r1).unwrap().unwrap();
     lp.deliver(2, &pk).unwrap();
     lp.advance(1000);
     lp.peers[2].tick().unwrap();
-    assert!(lp.peers[2].engine.core.timelines.role(&yan, &t, osis_perm::At::END) < Some(Role::Write), "R1 ordered before R: Yan falls at R");
+    assert!(lp.peers[2].engine.core.timelines().role(&yan, &t, osis_perm::At::END) < Some(Role::Write), "R1 ordered before R: Yan falls at R");
     assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol answers once R1 arrives");
     lp.sync_all().unwrap();
     for p in 0..4 {
         assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: e stands");
     }
+}
+
+// spec/permissions.md §5.1 Frontier: a lowering's scope holds every thing a commit resting on the
+// lowered edge writes. Bob writes `t` and `u` (both granted him directly) in one commit; read in
+// the transaction that applies it at Alice, the scope of lowering Bob on `t` holds `u`, which
+// no other route reaches (the walk is read only once it holds what the transaction applied).
+#[test]
+fn a_lowerings_scope_holds_what_a_commit_just_applied_writes_spec_perm_5_1() {
+    let (mut lp, t) = world(2, &[Role::Write]);
+    let (alice, bob) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+    let mut m = Mutation::new();
+    let u = lp.peers[0].engine.new_thing(&mut m, alice);
+    lp.peers[0].commit(m).unwrap();
+    lp.hold(u);
+    lp.peers[0].engine.grant(&u, &bob, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1000);
+    let mut m = Mutation::new();
+    m.set(t, &ak("x:e.0"), &Value::Int(1)).unwrap();
+    m.set(u, &ak("x:e.0"), &Value::Int(2)).unwrap();
+    let e = lp.peers[1].commit(m).unwrap().unwrap();
+    let pk = lp.peers[1].engine.package(&e).unwrap().unwrap();
+    let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let mut scope = None;
+    lp.peers[0].engine.ingest_trial(&[blob], |core| {
+        assert!(core.ix.commits.contains_key(&e), "the commit applies");
+        scope = Some(crate::apply::receipt::scope_of(core, &[(bob, t)]));
+        std::collections::BTreeSet::new()
+    }).unwrap();
+    let scope = scope.unwrap();
+    assert!(scope.content.get(&bob).is_some_and(|s| s.contains(&u)), "{scope:?}");
 }

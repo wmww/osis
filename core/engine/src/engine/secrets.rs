@@ -478,7 +478,7 @@ impl NamesHeld<'_> {
 
     /// Some edge write of commit `c` on `holder`'s edge into the actor applies here.
     fn applies(&self, c: &CommitId, holder: &Tid) -> bool {
-        let Some(tl) = self.core.timelines.get(&self.actor) else { return false };
+        let Some(tl) = self.core.timelines().get(&self.actor) else { return false };
         tl.role_commit(c).is_some_and(|mc| {
             mc.ops.iter().enumerate().any(|(i, op)| op.target == self.actor && op.holder == *holder && tl.is_applied(&osis_perm::WriteId(*c, i as u32)))
         })
@@ -488,7 +488,7 @@ impl NamesHeld<'_> {
     /// all stand here (`EdgeWrite::stands`: apply, or would over some edge before them; only
     /// their author's authority is judged), and there is one.
     fn stands(&self, key: &osis_keys::Key, holder: Option<&Tid>) -> bool {
-        let logs = self.logs.get_or_init(|| self.core.timelines.on(&self.actor).map(|on| crate::rotation::departures::edge_logs(self.core, &on, &self.actor)).unwrap_or_default());
+        let logs = self.logs.get_or_init(|| self.core.timelines().on(&self.actor).map(|on| crate::rotation::departures::edge_logs(self.core, &on, &self.actor)).unwrap_or_default());
         let mut ws = logs.iter().filter(|(m, _)| holder.is_none_or(|h| h == *m)).flat_map(|(_, l)| l.writes.iter()).filter(|w| w.key == *key).peekable();
         ws.peek().is_some() && ws.all(|w| w.stands)
     }

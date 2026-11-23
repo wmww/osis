@@ -138,7 +138,7 @@ impl Engine {
     /// on its way.
     pub fn edge_gone(&mut self, thing: &Tid, holder: &Tid) -> bool {
         let ts = super::now_ts(&self.core);
-        self.core.timelines.get(thing).is_some_and(|tl| tl.ended(thing, ts).contains_key(holder))
+        self.core.timelines().get(thing).is_some_and(|tl| tl.ended(thing, ts).contains_key(holder))
     }
 
     /// Whether a link being redeemed has ended here (spec/permissions.md §7): the held role history
@@ -171,7 +171,7 @@ impl Engine {
         if self.mint_admin(k) == Some(me) {
             return false;
         }
-        let edge = self.core.timelines.get(k).and_then(|tl| tl.edges_at(None).get(&me, k).copied());
+        let edge = self.core.timelines().get(k).and_then(|tl| tl.edges_at(None).get(&me, k).copied());
         self.core.time.at(|now| (edge.is_some_and(|e| e.alive_at(Some(super::ts_at(now)))), edge.and_then(|e| e.until).map(|u| u.0)))
     }
 
@@ -238,7 +238,7 @@ impl Engine {
         let mut out = Vec::new();
         for h in self.held_links()?.iter() {
             let (k, l) = (&h.k, &h.l);
-            let Some(tl) = self.core.timelines.get(k) else { continue };
+            let Some(tl) = self.core.timelines().get(k) else { continue };
             let due = match tl.edges_at(None).get(l, k) {
                 Some(e) => (!e.alive_at(Some(ts))).then_some(e.until),
                 None => tl.lowered_unaudited(l, k).then_some(None),
@@ -260,7 +260,7 @@ impl Engine {
         let mut next: Option<u64> = None;
         for h in self.held_links()?.iter() {
             let (k, l) = (&h.k, &h.l);
-            let Some(tl) = self.core.timelines.get(k) else { continue };
+            let Some(tl) = self.core.timelines().get(k) else { continue };
             if let Some(e) = tl.edges_at(None).get(l, k)
                 && let Some(u) = e.until
                 && e.alive_at(Some(ts))
@@ -278,7 +278,7 @@ impl Engine {
     /// already gone from K (a used single-use link): the joiner alone.
     pub fn revoke_joiner(&mut self, k: &Tid, l: Option<&Tid>, joiner: &Tid, retain: Option<bool>) -> Result<Done> {
         let d = crate::flows::Demotion { holder: *joiner, new: None, retain };
-        let Some(l) = l.filter(|l| self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some())) else {
+        let Some(l) = l.filter(|l| self.core.timelines().get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some())) else {
             return self.remove_signed(None, k, &d, &[]);
         };
         let keeps = self.link_seeds(k, l)?;

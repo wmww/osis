@@ -176,7 +176,7 @@ impl Core {
             return h.get(node).copied();
         }
         self.time.at(|now| {
-            let (role, until) = self.timelines.role_now(node, tid, ts_at(now));
+            let (role, until) = self.timelines().role_now(node, tid, ts_at(now));
             (role, until.map(|u| u.0))
         })
     }
@@ -187,7 +187,7 @@ impl Core {
             return Arc::new(h);
         }
         self.time.at(|now| {
-            let (roles, until) = self.timelines.roles_now(tid, ts_at(now));
+            let (roles, until) = self.timelines().roles_now(tid, ts_at(now));
             (roles, until.map(|u| u.0))
         })
     }
@@ -198,7 +198,7 @@ impl Core {
             return Arc::new(h);
         }
         self.time.at(|now| {
-            let (roles, until) = self.timelines.roles_now_without(tid, ts_at(now), skip);
+            let (roles, until) = self.timelines().roles_now_without(tid, ts_at(now), skip);
             (roles, until.map(|u| u.0))
         })
     }
@@ -221,7 +221,7 @@ impl Core {
             return h.into_iter().map(|(m, r)| (m, r, None)).collect();
         }
         let ts = now_ts(self);
-        match self.timelines.on(actor) {
+        match self.timelines().on(actor) {
             Some(on) => on.roster(At::now(ts)).into_iter().map(|(m, e)| (m, e.role, e.until)).collect(),
             None => self.mint_admin(actor).map(|a| (a, Role::Admin, None)).into_iter().collect(),
         }
@@ -258,7 +258,7 @@ impl Core {
         if let Some(p) = self.held_account_of_root(actor) {
             return self.devices_roster(&p).into_iter().map(|m| (m, Role::Admin)).collect();
         }
-        match self.timelines.on(actor) {
+        match self.timelines().on(actor) {
             Some(on) => on.holders().into_iter().filter_map(|(m, e)| Some((m, crate::rotation::key_role(Some(&e))?))).collect(),
             None => self.mint_admin(actor).map(|a| (a, Role::Admin)).into_iter().collect(),
         }
