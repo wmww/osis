@@ -153,8 +153,8 @@ fn rev(mut v: Vec<WriteId>) -> Vec<WriteId> {
 }
 
 impl Store for Reversed {
-    fn put(&mut self, f: Fact) {
-        self.0.put(f)
+    fn put(&mut self, f: Fact, carries: &[CommitId]) {
+        self.0.put(f, carries)
     }
     fn remove(&mut self, id: &WriteId) -> Option<Fact> {
         self.0.remove(id)
@@ -170,6 +170,14 @@ impl Store for Reversed {
     }
     fn carrying(&self, c: &CommitId) -> Vec<WriteId> {
         rev(self.0.carrying(c))
+    }
+    fn carried(&self, s: &WriteId) -> Vec<CommitId> {
+        let mut v = self.0.carried(s);
+        v.reverse();
+        v
+    }
+    fn carry(&mut self, s: &WriteId, c: CommitId, on: bool) {
+        self.0.carry(s, c, on)
     }
     fn latest(&self, key: &NameKey, holding: Holding) -> Option<Ts> {
         self.0.latest(key, holding)

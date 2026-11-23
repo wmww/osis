@@ -50,8 +50,9 @@ impl Fact {
 pub enum FactClass {
     Plain,
     Role,
-    /// What it carries, what it states of each, and whether it is its signer's own cover.
-    Snapshot { carries: Frontier, stated: BTreeMap<CommitId, Stated>, own: bool },
+    /// What it states of each commit it carries, and whether it is its signer's own cover. The
+    /// commits it carries are the store's (`Store::carried`).
+    Snapshot { stated: BTreeMap<CommitId, Stated>, own: bool },
     /// Its removal and list.
     Addendum(CommitId, Frontier),
     /// A purge request.
@@ -102,7 +103,8 @@ fn holdings(f: &Fact, r: Right) -> BTreeSet<Holding> {
 /// the engine backs it with its store index, `MemStore` keeps it in memory. Its indexes follow
 /// `put` and `remove`; the stored addenda verdicts are its too.
 pub trait Store {
-    fn put(&mut self, f: Fact);
+    /// Holds delta `f`: a snapshot's with the commits it carries.
+    fn put(&mut self, f: Fact, carries: &[CommitId]);
     fn remove(&mut self, id: &WriteId) -> Option<Fact>;
     fn get(&self, id: &WriteId) -> Option<Fact>;
     /// The deltas of commit `c` (on thing `on`).
@@ -111,6 +113,10 @@ pub trait Store {
     fn listing(&self, c: &CommitId) -> Vec<WriteId>;
     /// The snapshots carrying `c`.
     fn carrying(&self, c: &CommitId) -> Vec<WriteId>;
+    /// The commits snapshot `s` carries.
+    fn carried(&self, s: &WriteId) -> Vec<CommitId>;
+    /// Sets whether snapshot `s` carries `c`.
+    fn carry(&mut self, s: &WriteId, c: CommitId, on: bool);
     /// The greatest stamp of the requests indexed by `key` (thing, aspect, what they name) whose
     /// stored right (`set_right`) gives `holding`: a delta's purge is a point lookup, whatever
     /// the number of requests naming it.
@@ -141,6 +147,8 @@ pub struct MemStore {
     by_commit_on: BTreeMap<(CommitId, Tid), BTreeSet<WriteId>>,
     listing: BTreeMap<CommitId, BTreeSet<WriteId>>,
     carrying: BTreeMap<CommitId, BTreeSet<WriteId>>,
+    /// `carrying` by snapshot: one entry each way per (snapshot, commit it carries).
+    carried: BTreeMap<WriteId, BTreeSet<CommitId>>,
     requests: BTreeMap<(NameKey, Holding), BTreeSet<(Ts, WriteId)>>,
     requests_on: BTreeMap<Pair, BTreeSet<(Key, WriteId)>>,
     rights: BTreeMap<WriteId, Right>,
@@ -168,8 +176,9 @@ fn in_range(m: &BTreeMap<Pair, BTreeSet<(Key, WriteId)>>, e: &Pair, from: Bound<
 }
 
 impl MemStore {
-    /// Every index entry `f` has: (commit, thing), what it lists or carries, its request edges,
-    /// its addenda edges, an own cover's signer (a request's named key follows its right).
+    /// Every index entry `f` has: (commit, thing), what it lists, its request edges, its addenda
+    /// edges, an own cover's signer (a request's named key follows its right; what a snapshot
+    /// carries follows `carry`).
     fn index(&mut self, f: &Fact, add: bool) {
         set(&mut self.by_commit_on, (f.commit(), f.on), f.id, add);
         for e in &f.hops {
@@ -184,10 +193,7 @@ impl MemStore {
                     set(&mut self.addenda_on, *e, (f.pos, f.id), add);
                 }
             }
-            FactClass::Snapshot { carries, own, .. } => {
-                for x in carries.commits() {
-                    set(&mut self.carrying, *x, f.id, add);
-                }
+            FactClass::Snapshot { own, .. } => {
                 if *own {
                     set(&mut self.own, f.signer, f.id, add);
                 }
@@ -215,14 +221,20 @@ fn set<K: Ord, V: Ord>(m: &mut BTreeMap<K, BTreeSet<V>>, k: K, v: V, add: bool) 
 }
 
 impl Store for MemStore {
-    fn put(&mut self, f: Fact) {
+    fn put(&mut self, f: Fact, carries: &[CommitId]) {
         self.index(&f, true);
+        for c in carries {
+            self.carry(&f.id, *c, true);
+        }
         self.facts.insert(f.id, f);
     }
     fn remove(&mut self, id: &WriteId) -> Option<Fact> {
         self.set_right(id, Right::default());
         let f = self.facts.remove(id)?;
         self.index(&f, false);
+        for c in self.carried.remove(id).unwrap_or_default() {
+            set(&mut self.carrying, c, *id, false);
+        }
         self.valid.remove(id);
         Some(f)
     }
@@ -240,6 +252,13 @@ impl Store for MemStore {
     }
     fn carrying(&self, c: &CommitId) -> Vec<WriteId> {
         self.carrying.get(c).into_iter().flatten().copied().collect()
+    }
+    fn carried(&self, s: &WriteId) -> Vec<CommitId> {
+        self.carried.get(s).into_iter().flatten().copied().collect()
+    }
+    fn carry(&mut self, s: &WriteId, c: CommitId, on: bool) {
+        set(&mut self.carrying, c, *s, on);
+        set(&mut self.carried, *s, c, on);
     }
     fn latest(&self, key: &NameKey, holding: Holding) -> Option<Ts> {
         self.requests.get(&(key.clone(), holding)).and_then(|s| s.last()).map(|x| x.0)
@@ -362,7 +381,7 @@ impl<S: Store> Facts<S> {
         let class = match &d.class {
             DeltaClass::Plain => FactClass::Plain,
             DeltaClass::RoleClass => FactClass::Role,
-            DeltaClass::Snapshot { carries, stated, own } => FactClass::Snapshot { carries: carries.clone(), stated: stated.clone(), own: *own },
+            DeltaClass::Snapshot { stated, own, .. } => FactClass::Snapshot { stated: stated.clone(), own: *own },
             DeltaClass::Addendum { removal, list } => FactClass::Addendum(*removal, list.clone()),
             DeltaClass::Purge { names } => FactClass::Purge(*names),
         };
@@ -393,7 +412,7 @@ impl<S: Store> Facts<S> {
     }
 
     /// Takes in new commits (the walks took their edge-class parts). Returns the new deltas, the
-    /// snapshots' carried commits, the role commits and the addenda that arrived.
+    /// snapshots with what each carries, and the addenda that arrived.
     pub(super) fn take(&mut self, commits: &[&Commit]) -> Taken {
         let mut out = Taken::default();
         for c in commits {
@@ -414,23 +433,26 @@ impl<S: Store> Facts<S> {
                     }
                     PartKind::Delta(d) => {
                         let f = self.fact(c, id, p, d);
-                        match &f.class {
-                            FactClass::Role => role = true,
-                            FactClass::Snapshot { carries, .. } => out.carried.extend(carries.commits().iter().copied()),
-                            _ => {}
+                        role |= matches!(f.class, FactClass::Role);
+                        let carries = match &d.class {
+                            DeltaClass::Snapshot { carries, .. } => carries.clone(),
+                            _ => Frontier::default(),
+                        };
+                        if matches!(f.class, FactClass::Snapshot { .. }) {
+                            out.snapshots.push((c.id, p.on, carries.commits().to_vec()));
                         }
-                        facts.push(f);
+                        facts.push((f, carries));
                         out.deltas.push(id);
                     }
                     PartKind::None => {}
                 }
             }
             // an addendum written by a role commit is no addendum: it names nothing
-            for f in facts {
+            for (f, carries) in facts {
                 if !role && matches!(f.class, FactClass::Addendum(..)) {
                     out.addenda.push(f.id);
                 }
-                self.store.put(f);
+                self.store.put(f, carries.commits());
             }
             if role {
                 for (id, f) in &cf.lists {
@@ -450,8 +472,9 @@ impl<S: Store> Facts<S> {
     }
 
     /// Forgets held commits: each delta leaves the store (no verdict was stored but an
-    /// addendum's); a frontier, an addendum or a snapshot forgotten changes what names the
-    /// commits it listed or carried, which `carried` reports. Work: per delta its path and lists.
+    /// addendum's); a frontier or an addendum forgotten changes what names the commits it
+    /// listed, which `carried` reports, a snapshot those it carried (`snapshots`). Work: per
+    /// delta its path and lists.
     pub(super) fn forget(&mut self, commits: &[CommitId]) -> Taken {
         let mut out = Taken::default();
         for c in commits {
@@ -481,10 +504,11 @@ impl<S: Store> Facts<S> {
             for id in self.store.of_commit(c, None) {
                 // a request holding a right takes it with it
                 let right = self.store.right(&id);
+                let carried = self.store.carried(&id);
                 let Some(f) = self.store.remove(&id) else { continue };
                 match &f.class {
                     FactClass::Addendum(_, list) => out.carried.extend(list.commits()),
-                    FactClass::Snapshot { carries, .. } => out.carried.extend(carries.commits()),
+                    FactClass::Snapshot { .. } => out.snapshots.push((*c, f.on, carried)),
                     FactClass::Purge(_) if right.any() => out.scopes.extend(f.scope()),
                     _ => {}
                 }
@@ -498,12 +522,55 @@ impl<S: Store> Facts<S> {
         let mut out = BTreeSet::new();
         for c in cs {
             for id in self.store.of_commit(c, None) {
-                if let Some(FactClass::Snapshot { carries, .. }) = self.store.get(&id).map(|f| f.class) {
-                    out.extend(carries.commits());
-                }
+                out.extend(self.store.carried(&id));
             }
         }
         out
+    }
+
+    /// Whether a held list names commit `c` for thing `on`: a frontier's leaf or an addendum.
+    pub(super) fn in_a_list(&self, c: &CommitId, on: &Tid) -> bool {
+        self.named_on(c, on).next().is_some() || !self.addenda_listing(c).is_empty()
+    }
+
+    /// The held snapshots (delta, thing) that carry commit `c` and are not of `by`, or are of
+    /// `by` and do not carry it.
+    pub(super) fn carriers_moved(&self, c: &CommitId, by: &[WriteId]) -> Vec<(WriteId, Tid)> {
+        let snapshot = |s: &WriteId| self.store.get(s).filter(|f| matches!(f.class, FactClass::Snapshot { .. })).map(|f| f.on);
+        let want: BTreeSet<WriteId> = by.iter().filter(|s| snapshot(s).is_some()).copied().collect();
+        let now: BTreeSet<WriteId> = self.store.carrying(c).into_iter().collect();
+        now.symmetric_difference(&want).filter_map(|s| Some((*s, snapshot(s)?))).collect()
+    }
+
+    /// Brings the held snapshots carrying commit `c` to those of `by` held as snapshots. Returns
+    /// each snapshot (commit, thing) that carries `c` or stopped carrying it by this.
+    pub(super) fn set_carriers(&mut self, c: &CommitId, by: &[WriteId]) -> Vec<(CommitId, Tid)> {
+        let moved = self.carriers_moved(c, by);
+        for (s, _) in &moved {
+            self.store.carry(s, *c, by.contains(s));
+        }
+        moved.into_iter().map(|(s, on)| (s.0, on)).collect()
+    }
+
+    /// Whether `c`, a commit with no edge write, is held exactly as given: its deltas' facts, and
+    /// what its snapshots carry (with no edge write, what is kept of a role commit is a function
+    /// of those).
+    pub(super) fn reads(&self, c: &Commit) -> bool {
+        let mut deltas = 0;
+        for (ix, p) in (0u32..).zip(c.parts.iter()) {
+            let PartKind::Delta(d) = &p.kind else { continue };
+            let id = WriteId(c.id, ix);
+            deltas += 1;
+            if self.store.get(&id) != Some(self.fact(c, id, p, d)) {
+                return false;
+            }
+            if let DeltaClass::Snapshot { carries, .. } = &d.class
+                && self.store.carried(&id) != carries.commits()
+            {
+                return false;
+            }
+        }
+        self.store.of_commit(&c.id, None).len() == deltas
     }
 
     // ---- judging a delta ----
@@ -746,11 +813,11 @@ impl<S: Store> Facts<S> {
         let mut out = BTreeSet::new();
         for id in self.store.all() {
             let Some(s) = self.store.get(&id) else { continue };
-            let FactClass::Snapshot { carries, .. } = &s.class else { continue };
+            let FactClass::Snapshot { .. } = &s.class else { continue };
             if self.valid(tl, &s, counts).is_none() {
                 continue;
             }
-            for c in carries.commits().iter().filter(|c| !self.commits.contains_key(c)) {
+            for c in self.store.carried(&id).iter().filter(|c| !self.commits.contains_key(c)) {
                 let valid_held = self.store.of_commit(c, Some(&s.on)).iter().filter_map(|n| self.store.get(n)).any(|d| d.aspect == s.aspect && self.valid(tl, &d, counts).is_some());
                 if !valid_held && *c != s.commit() {
                     out.insert(*c);
@@ -856,11 +923,11 @@ impl<S: Store> Facts<S> {
         let mut shown: BTreeMap<(CommitId, Tid, Ak), Vec<Stated>> = BTreeMap::new();
         for id in self.store.all() {
             let Some(s) = self.store.get(&id) else { continue };
-            let FactClass::Snapshot { carries, stated, .. } = &s.class else { continue };
+            let FactClass::Snapshot { stated, .. } = &s.class else { continue };
             if self.valid(tl, &s, counts).is_none() {
                 continue;
             }
-            for c in carries.commits().iter().filter(|c| !self.commits.contains_key(c) && **c != s.commit()) {
+            for c in self.store.carried(&id).iter().filter(|c| !self.commits.contains_key(c) && **c != s.commit()) {
                 shown.entry((*c, s.on, s.aspect.clone())).or_default().extend(stated.get(c));
             }
         }
@@ -1057,8 +1124,8 @@ impl<S: Store> Facts<S> {
         let mut out = own.clone();
         for s in own {
             let Some(sf) = self.store.get(&s) else { continue };
-            let FactClass::Snapshot { carries, .. } = &sf.class else { continue };
-            for x in carries.commits() {
+            let FactClass::Snapshot { .. } = &sf.class else { continue };
+            for x in &self.store.carried(&s) {
                 out.extend(self.store.of_commit(x, Some(&on)).into_iter().filter(|n| self.store.get(n).is_some_and(|d| d.aspect == sf.aspect)));
             }
         }
@@ -1077,9 +1144,11 @@ enum Namer {
 #[derive(Default)]
 pub(super) struct Taken {
     pub deltas: Vec<WriteId>,
-    /// Commits whose namers changed: carried by a snapshot taken or forgotten, listed by an
-    /// addendum or a frontier forgotten.
+    /// Commits whose namers changed: listed by an addendum or a frontier forgotten.
     pub carried: BTreeSet<CommitId>,
+    /// The snapshots taken or forgotten (commit, thing), and those that came to carry a commit
+    /// or stopped, each with the commits concerned.
+    pub snapshots: Vec<(CommitId, Tid, Vec<CommitId>)>,
     /// The new addenda.
     pub addenda: Vec<WriteId>,
     /// The scopes of the requests forgotten holding a right.

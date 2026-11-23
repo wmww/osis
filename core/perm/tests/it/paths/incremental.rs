@@ -136,7 +136,14 @@ fn differs_by(ta: &Tracked, tb: &Tracked, ch: &Changed, renewed: &BTreeSet<Commi
         return Some(format!("reported purges {:?}, rights changed for {:?}", ch.purges, want.purges));
     }
     let (judged, moved) = rejudged(ta, tb, ch);
-    if let Some(id) = moved.difference(&judged).next() {
+    // a delta `carried` alone reaches moved between a copy and invalid, its purge unmoved: an
+    // engine holding copies invalid skips it
+    let copy = |c: Option<&Content>| matches!(c, Some(Content::Copied | Content::Invalid));
+    let skipped = |id: &WriteId| ch.carried.contains(&id.0) && copy(ca.get(id)) && copy(cb.get(id)) && pa.contains(id) == pb.contains(id);
+    if let Some(id) = ch.carried.iter().find(|c| ch.named.contains(c)) {
+        return Some(format!("{id:?} both named and carried: {ch:?}"));
+    }
+    if let Some(id) = moved.difference(&judged).find(|id| !skipped(id)) {
         return Some(format!("delta {id:?} moved from {:?} to {:?} (purged {} to {}) unreached by {ch:?}", ca.get(id), cb.get(id), pa.contains(id), pb.contains(id)));
     }
     None

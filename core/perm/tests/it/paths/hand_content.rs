@@ -614,6 +614,50 @@ fn no_snapshot_carries_a_role_commit() {
     assert!(p.copies().is_empty());
 }
 
+// spec/permissions.md §5.2 Copies: only a list reads what a snapshot carries for validity. B's
+// snapshot of X's cut write, coming and going, is reported in `carried` where no held list names
+// it (the write turns a copy and back, never valid) and in `named` where H's removal lists it (the
+// write turns valid and back): the two never hold the same commit.
+#[test]
+fn a_snapshot_reports_what_it_carries_as_named_only_where_a_list_names_it() {
+    let write = WriteId(cid(4), 0);
+    let snap = commit(5, ms(3), KB, vec![snapshot(KT, "doc.0", &[4])]);
+    for (list, with) in [(&[][..], Content::Copied), (&[5][..], Content::Valid(By::Listed))] {
+        let w = [admins(&[KX, KB]), vec![commit(4, ms(2), KX, vec![plain(KT)]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(list))])]].concat();
+        let mut p = verdicts(&w);
+        assert_eq!(p.content(&write), Some(Content::Invalid));
+        for (add, now) in [(true, with), (false, Content::Invalid)] {
+            let ch = if add { p.add(std::slice::from_ref(&snap)) } else { p.forget(&[cid(5)]) };
+            let (named, carried) = (ch.named.contains(&cid(4)), ch.carried.contains(&cid(4)));
+            assert_eq!((named, carried), (!list.is_empty(), list.is_empty()), "{list:?}: {ch:?}");
+            assert_eq!(p.content(&write), Some(now), "{list:?}");
+        }
+    }
+}
+
+// spec/permissions.md §5.2 Copies: a snapshot's reading lists the commits it carries among those
+// held when it is read, and a carried commit arriving later brings its own pair (`Paths::sync`):
+// X's write arriving after B's snapshot of it, which H's removal lists, reads as where the
+// snapshot listed it from the start, with the snapshot not given again; going, it takes the pair.
+#[test]
+fn a_commit_arriving_after_its_snapshot_is_carried_by_it() {
+    let (write, s) = (commit(4, ms(2), KX, vec![plain(KT)]), WriteId(cid(5), 0));
+    let rest = |carries: &[u64]| [admins(&[KX, KB]), vec![commit(5, ms(3), KB, vec![snapshot(KT, "doc.0", carries)]), commit(7, ms(6), KH, vec![edge(KA, &[], KX, None, Some(&[5]))])]].concat();
+    let mut p = verdicts(&rest(&[]));
+    assert!(!p.reads(&write, &[s]));
+    let ch = p.sync(&[], &[], &[], std::slice::from_ref(&write), &BTreeMap::from([(cid(4), vec![s])]));
+    assert!(ch.parts.contains(&WriteId(cid(4), 0)), "{ch:?}");
+    assert_eq!(p.content(&WriteId(cid(4), 0)), Some(Content::Valid(By::Listed)));
+    let whole = verdicts(&[rest(&[4]), vec![write.clone()]].concat());
+    assert_eq!(p.content(&s), whole.content(&s));
+    // read as it is: giving either again changes nothing
+    assert!(p.reads(&write, &[s]) && !p.reads(&write, &[]));
+    assert!(p.reads(&commit(5, ms(3), KB, vec![snapshot(KT, "doc.0", &[4])]), &[]));
+    // gone, it is no copy the snapshot's list still names
+    p.sync(&[], &[], &[cid(4)], &[], &BTreeMap::from([(cid(4), vec![])]));
+    assert!(p.copies().is_empty() && p.reads(&commit(5, ms(3), KB, vec![snapshot(KT, "doc.0", &[])]), &[]));
+}
+
 // spec/permissions.md §5.2 Position: a commit with no edge-class part is ordered at the start of
 // its `ts`, so X's key rotation stamped in the millisecond of H's removal is ordered before it and
 // cut by it, whatever the signers' tids; listed, it stands.

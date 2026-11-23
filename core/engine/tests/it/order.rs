@@ -3787,6 +3787,27 @@ fn seq_stripped_copies_leave_no_records_spec_crdt_4_6() {
     assert!(!as_made.contains("created: None, content: None, pos: [], deleted: None"), "no record without a write: {as_made}");
 }
 
+// spec/permissions.md §5.2 (Copies: a list naming a snapshot names the commits it carries): 2 sets
+// the register and compacts it; 0 receives the snapshot alone, then removes 2, so its frontier
+// lists the snapshot and not the write. A node holding everything holds 2's write valid, by the
+// snapshot the removal's list names, in whichever order the three arrive.
+#[test]
+fn a_list_naming_a_snapshot_keeps_the_write_it_carries_spec_permissions_5_2() {
+    use Step::*;
+    let h = vec![Typed { by: 2, t: 0, op: 0, k: 0, v: 9 }, Compact { by: 2, t: 0, op: 0 }, Send { from: 2, to: 0, back: 0 }, Demote { by: 0, t: 0, holder: 2, at: u8::MAX, to_read: false }];
+    let played = play(0, &h);
+    let b = played.base;
+    assert_eq!(played.packs.len(), b + 3, "the write, the snapshot, the removal");
+    let (write, t, a) = (played.packs[b].id, played.things[0], ak("t:reg.0"));
+    let removal = osis_commit::CommitBlob::decode_stored(&played.packs[b + 2].bytes).unwrap().header;
+    let listed: Vec<CommitId> = removal.frontier.iter().flat_map(|f| f.iter().copied()).collect();
+    assert!(listed.contains(&played.packs[b + 1].id) && !listed.contains(&write), "the frontier names the snapshot and not the write: {listed:?}");
+    for last in [b, b + 1, b + 2] {
+        let order: Vec<usize> = (0..b + 3).filter(|i| *i != last).chain([last]).collect();
+        assert_eq!(deliver(&played, &order).engine.body_valid(&write, &t, &a), Some(true), "{last} last");
+    }
+}
+
 // spec/crdt.md §4.8, spec/commits.md §5: a kept text's insert dies at its delete's `ts` whether
 // the delete is held after it or before it.
 #[test]

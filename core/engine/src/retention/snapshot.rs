@@ -13,81 +13,154 @@ use osis_crdt::{Fragment, Frontiers};
 use osis_schema::core_types::{is_content, is_role_class};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// What a held snapshot carries, bounded (spec/crdt.md §4.7 Copies): per source, the least and
-/// greatest counter of a write its held body holds valued (`Fragment::each_valued`), and apart
-/// of one it holds value-less, O(sources). An honest snapshot holds an expiring write
-/// value-less (§8), so its valued bound need not meet one; an expiry strips the state in place
-/// only where no held snapshot's valued bound meets its writes (`meets`), else it rebuilds,
-/// which finds the carriers. The value-less bound says where a cover may hold a write
-/// value-less (`covered_join`: such a cover covers no body of it not held value-less here).
+/// What a held snapshot carries (spec/crdt.md §4.7 Copies, spec/permissions.md §5.2 Copies): per
+/// source, the counters of the writes its held body holds (`Fragment::write_ranges`), and of
+/// those it holds valued (`Fragment::each_valued`) and value-less. The commits it carries copies
+/// of are the held ones whose counters on the aspect meet a write (`carried`, `carriers`): what
+/// the body holds, never what its frontiers or `Absorbed` claim (spec/crdt.md §8). An honest
+/// snapshot holds an expiring write value-less (§8), so its valued counters need not meet one; an
+/// expiry strips the state in place only where no held snapshot holds a value of its writes
+/// (`meets`), else it rebuilds, which finds the carriers. The value-less counters say where a
+/// cover holds a write value-less (`covered_join`: such a cover covers no body of it not held
+/// value-less here).
+///
+/// Memory: one `(lo, hi)` per run of consecutive counters of a source, in each of the three: a
+/// session writing the aspect alone is one run however many writes the body holds of it; one
+/// writing other aspects between is a run per stretch, at most one per commit carried.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Carried {
-    valued: Hull,
-    valueless: Hull,
+    writes: Spans,
+    valued: Spans,
+    valueless: Spans,
 }
 
-/// Per source, the least and greatest counter of the writes it bounds.
+/// Per source, counters as runs `lo..hi`: ascending, disjoint, none adjacent to the next.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Hull(BTreeMap<osis_crdt::Source, (u64, u64)>);
+pub(crate) struct Spans(BTreeMap<osis_crdt::Source, Vec<(u64, u64)>>);
 
-impl Hull {
-    fn add(&mut self, d: &osis_crdt::Dot) {
-        let e = self.0.entry(d.src.clone()).or_insert((d.ctr, d.ctr));
-        e.0 = e.0.min(d.ctr);
-        e.1 = e.1.max(d.ctr);
+impl Spans {
+    /// Adds counters `lo..hi` of `src`, joined with the runs they meet or touch.
+    fn add(&mut self, src: &osis_crdt::Source, lo: u64, hi: u64) {
+        if lo >= hi {
+            return;
+        }
+        let v = self.0.entry(src.clone()).or_default();
+        let (from, to) = (v.partition_point(|r| r.1 < lo), v.partition_point(|r| r.0 <= hi));
+        let run = v.get(from..to).into_iter().flatten().fold((lo, hi), |(a, b), r| (a.min(r.0), b.max(r.1)));
+        v.splice(from..to, [run]);
     }
-    /// Whether the bound may hold a write of `own`.
-    fn meets(&self, own: &[Owned]) -> bool {
-        let hull = |src: &osis_crdt::Source| self.0.get(src).copied();
+    fn add_dot(&mut self, d: &osis_crdt::Dot) {
+        self.add(&d.src, d.ctr, d.ctr.saturating_add(1));
+    }
+    /// Whether a counter of `src` in `lo..hi` is here.
+    fn meets(&self, src: &osis_crdt::Source, lo: u64, hi: u64) -> bool {
+        self.0.get(src).is_some_and(|v| v.get(v.partition_point(|r| r.1 <= lo)).is_some_and(|r| r.0 < hi))
+    }
+    /// Whether a write of `own` is here.
+    fn meets_owned(&self, own: &[Owned]) -> bool {
         own.iter().any(|o| match o {
-            Owned::Range { src, lo, hi } => hull(src).is_some_and(|(a, b)| a < *hi && *lo <= b),
-            Owned::Commit(c) => hull(&osis_crdt::Source::commit(*c)).is_some(),
-            Owned::Dots { src, ctrs } => hull(src).is_some_and(|(a, b)| ctrs.iter().any(|c| (a..=b).contains(c))),
+            Owned::Range { src, lo, hi } => self.meets(src, *lo, *hi),
+            Owned::Commit(c) => self.0.contains_key(&osis_crdt::Source::commit(*c)),
+            Owned::Dots { src, ctrs } => ctrs.iter().any(|c| self.meets(src, *c, c.saturating_add(1))),
         })
     }
     #[cfg(debug_assertions)]
-    fn holds(&self, o: &Hull) -> bool {
-        o.0.iter().all(|(s, (lo, hi))| self.0.get(s).is_some_and(|(a, b)| a <= lo && hi <= b))
+    fn holds(&self, o: &Spans) -> bool {
+        o.entries().all(|(s, lo, hi)| self.0.get(s).is_some_and(|v| v.get(v.partition_point(|r| r.1 <= lo)).is_some_and(|r| r.0 <= lo && hi <= r.1)))
     }
-    pub(crate) fn entries(&self) -> impl Iterator<Item = (&osis_crdt::Source, &(u64, u64))> {
-        self.0.iter()
+    /// Its runs: (source, lo, hi).
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&osis_crdt::Source, u64, u64)> {
+        self.0.iter().flat_map(|(s, v)| v.iter().map(move |(lo, hi)| (s, *lo, *hi)))
     }
-    pub(crate) fn of(v: impl IntoIterator<Item = (osis_crdt::Source, (u64, u64))>) -> Hull {
-        Hull(v.into_iter().collect())
+    pub(crate) fn of(v: impl IntoIterator<Item = (osis_crdt::Source, u64, u64)>) -> Spans {
+        let mut out = Spans::default();
+        v.into_iter().for_each(|(s, lo, hi)| out.add(&s, lo, hi));
+        out
     }
 }
 
 impl Carried {
-    /// Widens the bounds by what `f` holds, valued and value-less.
+    /// Adds what `f` holds: every write, those valued, those value-less.
     pub(crate) fn add(&mut self, f: &Fragment) {
-        f.each_valued(&mut |d| self.valued.add(d));
+        f.write_ranges(&mut |src, lo, hi| self.writes.add(src, lo, hi));
+        f.each_valued(&mut |d| self.valued.add_dot(d));
         let mut none = BTreeSet::new();
         f.valueless_dots(&mut none);
-        none.iter().for_each(|d| self.valueless.add(d));
+        none.iter().for_each(|d| self.valueless.add_dot(d));
     }
-    /// Whether the bound may hold a value of a write of `own`.
+    /// Whether it holds a value of a write of `own`.
     pub(crate) fn meets(&self, own: &[Owned]) -> bool {
-        self.valued.meets(own)
+        self.valued.meets_owned(own)
     }
-    /// Whether the bound may hold a write of `own` value-less.
+    /// Whether it holds a write of `own` value-less.
     pub(crate) fn meets_valueless(&self, own: &[Owned]) -> bool {
-        self.valueless.meets(own)
+        self.valueless.meets_owned(own)
     }
-    /// Whether these bounds hold every write `o` bounds.
+    /// Whether it holds every write `o` does, valued and value-less alike.
     #[cfg(debug_assertions)]
     pub(crate) fn holds(&self, o: &Carried) -> bool {
-        self.valued.holds(&o.valued) && self.valueless.holds(&o.valueless)
+        self.writes.holds(&o.writes) && self.valued.holds(&o.valued) && self.valueless.holds(&o.valueless)
     }
-    /// The sources of its valued bound, each one entry.
+    /// Whether it holds the writes `o` does: the commits carried are the same.
+    pub(crate) fn same_writes(&self, o: &Carried) -> bool {
+        self.writes == o.writes
+    }
+    /// The runs of its writes (its memory: the valued and value-less runs lie within them).
     pub(crate) fn len(&self) -> usize {
-        self.valued.0.len()
+        self.writes.0.values().map(Vec::len).sum()
     }
-    pub(crate) fn hulls(&self) -> (&Hull, &Hull) {
-        (&self.valued, &self.valueless)
+    /// Its writes, those valued, those value-less.
+    pub(crate) fn spans(&self) -> [&Spans; 3] {
+        [&self.writes, &self.valued, &self.valueless]
     }
-    pub(crate) fn of(valued: Hull, valueless: Hull) -> Carried {
-        Carried { valued, valueless }
+    pub(crate) fn of([writes, valued, valueless]: [Spans; 3]) -> Carried {
+        Carried { writes, valued, valueless }
     }
+}
+
+/// The held commits held snapshot `s` of `(tid, ak)` carries copies of (spec/permissions.md §5.2
+/// Copies: a list naming `s` names them): those with a delta on the aspect whose counters meet a
+/// write its held body holds, found per run in `ix.ranges`, no body read; none while its body is
+/// not held (no row). A void commit is carried by none: the walk reads nothing of it, and the
+/// other commits of a source have disjoint counters on an aspect (spec/commits.md §4), so the
+/// one holding a run's first counter is the last starting at or below it.
+pub(crate) fn carried(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
+    let Some(row) = core.ix.snapshots.get(&(*tid, ak.clone())).and_then(|v| v.iter().find(|x| x.1 == *s)) else { return Vec::new() };
+    let zero = CommitId([0; 32]);
+    let mut out = Vec::new();
+    for (src, runs) in &row.4.writes.0 {
+        match src.kind() {
+            osis_crdt::SourceKind::Commit(c) => out.extend(core.ix.commits.get(c).filter(|m| by_id(m.view.kind, m.view.form) && m.view.aspect(tid, ak.as_str()).is_some()).map(|_| *c)),
+            osis_crdt::SourceKind::Session(_) => {
+                let Some(m) = core.ix.ranges.get(&(*tid, ak.clone(), src.clone())) else { continue };
+                for (lo, hi) in runs {
+                    let before = m.range(..(*lo, zero)).next_back().filter(|(_, end)| **end > *lo);
+                    out.extend(before.into_iter().chain(m.range((*lo, zero)..(*hi, zero))).map(|((_, c), _)| *c));
+                }
+            }
+            osis_crdt::SourceKind::Derived(_) => {}
+        }
+    }
+    out.retain(|c| c != s && !core.ix.void.contains(c));
+    osis_base::costs::count("snapshot: carried commits", out.len() as u64);
+    out
+}
+
+/// The held snapshots' parts carrying commit `c` (view `v`, held or about to be): `carried` from
+/// the commit's side, per aspect of it a lookup in each held snapshot's writes.
+pub(crate) fn carriers(core: &Core, c: &CommitId, v: &crate::engine::View) -> Vec<osis_perm::WriteId> {
+    if !v.kind.has_own_writes() || core.ix.void.contains(c) {
+        return Vec::new();
+    }
+    let src = v.form.own_source(v.signer, *c);
+    let mut out = Vec::new();
+    for a in &v.aspects {
+        let meets = |w: &Spans| if v.form.counted() { a.lo < a.hi && w.meets(&src, a.lo, a.hi) } else { by_id(v.kind, v.form) && w.0.contains_key(&src) };
+        for x in core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && meets(&x.4.writes)) {
+            out.extend(core.ix.commits.get(&x.1).and_then(|m| m.view.aspect(&a.tid, a.ak.as_str())).map(|sai| osis_perm::WriteId(x.1, sai as u32)));
+        }
+    }
+    out
 }
 
 /// Whether a held snapshot of `(tid, ak)` may carry a value of a write of `own` (`Carried`).

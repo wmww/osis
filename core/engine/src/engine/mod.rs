@@ -1759,12 +1759,12 @@ impl Core {
     }
 
     /// A point to undo back to (`rollback_to`): the start of a transaction or of a step
-    /// (`Tx::step`). Every held change is given to the timelines by then (each change of the held
-    /// set runs `update_timelines` before returning): a rollback re-evaluates the timelines
-    /// around what it restores, which would absorb an earlier change without marking what it
-    /// moved.
+    /// (`Tx::step`). The timelines take every held change made so far first, so what is stale by
+    /// them is in the mark: a rollback's update of the timelines then only undoes (it reads again
+    /// what was touched since, as the restored index has it), and what it reports is nothing a
+    /// flag restored with the index rests on.
     pub(crate) fn mark(&mut self) -> CoreMark {
-        debug_assert!(self.ix.held.touched().is_empty(), "a mark with held record or edge changes the timelines lack");
+        self.update_timelines();
         CoreMark {
             ix: self.ix.mark(),
             sides: self.sides.mark(),
@@ -1860,7 +1860,8 @@ impl Core {
         self.waits.retake_rolled_back();
         self.ix.rollback_to(m.ix);
         self.schemas.rollback_to(m.schemas);
-        // the timelines follow the restored held set; validity flags are restored with `commits`
+        // the timelines follow the restored held set: back to what they were at the mark, which
+        // took every change before it (`mark`); validity flags are restored with `commits`
         if self.ix.held.is_touched() {
             let touched = self.ix.held.take_touched();
             let commits = self.ix.held.take_touched_commits();
@@ -2947,6 +2948,16 @@ fn end_drops<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
         }
     }
     tx.core.needs_due.clear();
+    // the walk takes every held change made above (a commit indexed after the last update, one
+    // let go), and what that moves is judged here: a transaction leaves the next nothing of its
+    // own to walk or judge (`Core::mark` takes what one still leaves)
+    while r.is_ok() && tx.core.ix.held.is_touched() {
+        tx.core.update_timelines();
+        if tx.core.stale() {
+            r = then(r, || crate::apply::rejudged(tx, false).and_then(|_| crate::retention::drop_invalid(tx)));
+            tx.core.drop_due.clear();
+        }
+    }
     r
 }
 

@@ -251,9 +251,10 @@ pub enum By {
 
 /// What an update changed. A delta's verdict can change only where: it is in `parts` (new), an
 /// edge of its path is in `edges` at a key before its position, in `cuts` at a key at or after
-/// it, or in `regrant`, its commit is in `named`, or an addendum in `parts` names it. Whether a
-/// delta or copy is purged changes only where it is new, a `purges` scope covers it, or (a copy)
-/// a snapshot carrying it changed its verdict.
+/// it, or in `regrant`, its commit is in `named`, or an addendum in `parts` names it; and
+/// between `Content::Copied` and `Content::Invalid` alone where its commit is in `carried`.
+/// Whether a delta or copy is purged changes only where it is new, a `purges` scope covers it,
+/// or (a copy) a snapshot carrying it changed its verdict.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Changed {
     /// Edge-class parts whose status changed, every new part, addenda whose validity changed.
@@ -264,9 +265,15 @@ pub struct Changed {
     pub cuts: BTreeMap<(Tid, Tid), Key>,
     /// Edges whose final role or first point (spec/permissions.md §5.2 Re-grant) changed.
     pub regrant: BTreeSet<(Tid, Tid)>,
-    /// Commits whose namers changed: carried by a new snapshot; an own cover a lowering of its
-    /// signer lists whose status changed.
+    /// Commits whose namers changed: listed by a frontier or an addendum that went or was read
+    /// further, carried by a snapshot a held list names that came, went or changed what it
+    /// carries; an own cover a lowering of its signer lists whose status changed.
     pub named: BTreeSet<CommitId>,
+    /// Commits, none in `named`, that a snapshot no held list names came or went carrying: a
+    /// list alone reads what a snapshot carries for validity (spec/permissions.md §5.2 Copies),
+    /// so each can only have turned a copy or stopped being one. A reader holding a copy
+    /// invalid judges none of them again.
+    pub carried: BTreeSet<CommitId>,
     /// What the requests whose right changed, arrived holding one or went name (draft §6): a
     /// description, never a list of deltas.
     pub purges: BTreeSet<Scope>,
@@ -372,6 +379,7 @@ impl<S: Store> Paths<S> {
         taken.carried.extend(t.carried);
         taken.deltas.extend(t.deltas);
         taken.addenda.extend(t.addenda);
+        taken.snapshots.extend(t.snapshots);
         self.timeline.settle(&self.trust, &BTreeSet::new());
         self.finish(taken)
     }
@@ -379,8 +387,11 @@ impl<S: Store> Paths<S> {
     /// One update of everything that moved: the records that came (thing, mint admin) and went
     /// (a held part whose hops read one is the caller's to give again: `through`), the
     /// commits no longer held, and the commits held now, each added or, where held already,
-    /// replaced by the version given (`update`).
-    pub fn sync(&mut self, records: &[(Tid, Tid)], records_gone: &[Tid], gone: &[CommitId], commits: &[Commit]) -> Changed {
+    /// replaced by the version given (`update`); then, per commit of `carriers`, the held
+    /// snapshots carrying it are those given (none for one that went): a snapshot's reading lists
+    /// the commits it carries among those held when it is read, and a carried commit that comes
+    /// or goes later moves that list by itself alone.
+    pub fn sync(&mut self, records: &[(Tid, Tid)], records_gone: &[Tid], gone: &[CommitId], commits: &[Commit], carriers: &BTreeMap<CommitId, Vec<WriteId>>) -> Changed {
         let mut seen = BTreeSet::new();
         let given: Vec<&Commit> = commits.iter().filter(|c| seen.insert(c.id)).collect();
         self.begin();
@@ -405,6 +416,11 @@ impl<S: Store> Paths<S> {
         taken.carried.extend(t.carried);
         taken.deltas.extend(t.deltas);
         taken.addenda.extend(t.addenda);
+        taken.snapshots.extend(t.snapshots);
+        for (c, by) in carriers {
+            let moved = self.facts.set_carriers(c, by);
+            taken.snapshots.extend(moved.into_iter().map(|(s, on)| (s, on, vec![*c])));
+        }
         self.timeline.settle(&self.trust, &BTreeSet::new());
         self.finish(taken)
     }
@@ -421,6 +437,13 @@ impl<S: Store> Paths<S> {
     fn fresh<'a>(&self, commits: &'a [Commit]) -> Vec<&'a Commit> {
         let mut seen = BTreeSet::new();
         commits.iter().filter(|c| !self.holds(&c.id) && seen.insert(c.id)).collect()
+    }
+
+    /// Whether `c` is read exactly as given already (a commit with an edge-class part reads as
+    /// changed), and `carriers` are the held snapshots carrying it:
+    /// giving it again would change nothing.
+    pub fn reads(&self, c: &Commit, carriers: &[WriteId]) -> bool {
+        self.timeline.parts_of(&c.id).is_empty() && !c.parts.iter().any(|p| matches!(p.kind, PartKind::Edge(_))) && self.facts.reads(c) && self.facts.carriers_moved(&c.id, carriers).is_empty()
     }
 
     /// Whether commit `c` is held: by its edge-class parts, its role facts or its deltas.
@@ -447,12 +470,19 @@ impl<S: Store> Paths<S> {
     /// `Changed` from the timeline's journal, the addenda and what arrived or went.
     fn finish(&mut self, taken: content::Taken) -> Changed {
         let mut ch = self.timeline.changed();
-        // a list naming a snapshot names what it carries
+        // a list naming a snapshot names what it carries: of a list that went or was read
+        // further, and of a snapshot that came, went or changed while a list names it (one held,
+        // or one that went with it)
         let through = self.facts.carried_by(&taken.carried);
+        for (s, on, carried) in taken.snapshots {
+            let listed = taken.carried.contains(&s) || self.facts.in_a_list(&s, &on);
+            if listed { &mut ch.named } else { &mut ch.carried }.extend(carried);
+        }
         ch.named.extend(taken.carried);
         ch.named.extend(through);
         let own = self.facts.own_listed(&ch.parts);
         ch.named.extend(own);
+        ch.carried.retain(|c| !ch.named.contains(c));
         let addenda = self.facts.addenda_update(&self.timeline, &ch, &taken.addenda);
         ch.parts.extend(addenda);
         let purges = self.facts.rights_update(&self.timeline, &ch, &taken.deltas);

@@ -183,6 +183,17 @@ impl Fragment {
 }
 
 impl Fragment {
+    /// Calls `f` with every write's origin dot (as `writes` lists them), as counters `lo..hi` of
+    /// a source: a range record's creations come as one range, never expanded.
+    pub fn write_ranges(&self, f: &mut dyn FnMut(&Source, u64, u64)) {
+        let f = std::cell::RefCell::new(f);
+        let each = |s: &Source, lo: u64, hi: u64| {
+            (f.borrow_mut())(s, lo, hi);
+            false
+        };
+        walk(&mut Any(&each, false), self);
+    }
+
     /// Every write in this fragment by its origin dot: stamps with their `ts`, element
     /// creations (map entries, set and bag elements, sequence elements) with their creation's
     /// `ts` where the record carries it (a map entry's creation, a set or bag element's value

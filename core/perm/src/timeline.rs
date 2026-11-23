@@ -28,6 +28,10 @@ pub struct Held {
     /// queries, along the path the commit states for its target, the frontier naming commits
     /// whole.
     pub role: Option<Arc<RoleCommit>>,
+    /// The held snapshots' deltas carrying copies of its writes (spec/permissions.md §5.2
+    /// Copies). A snapshot's own part lists the commits it carries among those held
+    /// (`DeltaClass::Snapshot`): the two say the same of every pair held.
+    pub carriers: Vec<WriteId>,
 }
 
 impl Held {
@@ -181,8 +185,9 @@ impl<S: Store> Timeline<S> {
 
     /// Brings the timeline up to what `held` holds: `commits` names every commit whose reading
     /// (`HeldSet::commit`) may have changed since the last update, held or not, `things` every
-    /// thing whose record came or went. A commit with edge writes given as it was is not taken
-    /// again (its component would be walked again from its key).
+    /// thing whose record came or went. A commit read as it was is not taken again (one with
+    /// edge writes would have its component walked again from its key), so the update reports
+    /// what moved, never what was touched.
     pub fn update(&mut self, held: &dyn HeldSet, commits: &BTreeSet<CommitId>, things: &BTreeSet<Tid>) -> Changed {
         let mut out = Changed::default();
         let (mut came, mut went) = (Vec::new(), Vec::new());
@@ -218,6 +223,8 @@ impl<S: Store> Timeline<S> {
         let held_on_before: BTreeSet<Tid> = again.iter().filter_map(|c| self.roles.get(c)).flat_map(|(r, _)| r.ops.iter().map(|o| o.target)).collect();
         let mut gone = Vec::new();
         let mut given = Vec::new();
+        // per commit read again or gone, the held snapshots carrying it now
+        let mut carriers: BTreeMap<CommitId, Vec<WriteId>> = BTreeMap::new();
         let held_before: BTreeSet<CommitId> = again.iter().filter(|c| self.paths.holds(c)).copied().collect();
         for id in &again {
             let now = held.commit(id);
@@ -246,6 +253,7 @@ impl<S: Store> Timeline<S> {
                 // Key actor, Interim)
                 Some(h) if !self.records.is_key(&h.signer) => {
                     self.waiting.entry(h.signer).or_default().insert(*id);
+                    carriers.insert(*id, Vec::new());
                     gone.push(*id);
                 }
                 Some(h) => {
@@ -253,6 +261,11 @@ impl<S: Store> Timeline<S> {
                         out.fresh.insert(*id);
                     }
                     let c = h.commit();
+                    // read as it was (a touch that moved nothing the walk reads): not taken again
+                    if h.role.is_none() && !forced.contains(id) && self.paths.reads(&c, &h.carriers) {
+                        continue;
+                    }
+                    carriers.insert(*id, h.carriers.clone());
                     self.await_records(&c);
                     if let Some(role) = h.role {
                         for o in &role.ops {
@@ -265,7 +278,10 @@ impl<S: Store> Timeline<S> {
                     }
                     given.push(c);
                 }
-                None => gone.push(*id),
+                None => {
+                    carriers.insert(*id, Vec::new());
+                    gone.push(*id);
+                }
             }
         }
         // known by a record or a held edge write: a thing whose edge writes changed was known
@@ -280,7 +296,7 @@ impl<S: Store> Timeline<S> {
             return out;
         }
         let went_things: Vec<Tid> = went.iter().map(|x| x.0).collect();
-        out.walk = self.paths.sync(&came, &went_things, &gone, &given);
+        out.walk = self.paths.sync(&came, &went_things, &gone, &given, &carriers);
         // a trusted write that came or went: the walk's trust set names it by its part
         let named = |c: &CommitId| self.trusted.range(WriteId(*c, 0)..=WriteId(*c, u32::MAX)).next().is_some();
         if given.iter().map(|c| &c.id).chain(&gone).any(named) {
@@ -745,6 +761,8 @@ fn merge(w: &mut paths::Changed, o: paths::Changed) {
     }
     w.regrant.extend(o.regrant);
     w.named.extend(o.named);
+    w.carried.extend(o.carried);
+    w.carried.retain(|c| !w.named.contains(c));
     w.purges.extend(o.purges);
     w.chained.extend(o.chained);
     // applied before the first update: the second's reading before is the first's after

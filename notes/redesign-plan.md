@@ -117,7 +117,6 @@ Accounts unchanged: today's account key is the signer.
 - **What it is**: spec/wire.md §4 (`signer`, `path`, the split form, the purge-author index), spec/commits.md §1 and §4, spec/permissions.md §1, §2, §5 and §6 along one path (notes/write-path-design.md §1), spec/crypto.md §7 (level 2 is the purge author's); osis-commit; osis-perm `paths`, the walk along stated paths, and the query layer `Timeline` over it (notes/perm-paths.md); the engine judging every part along the path it states and writing real paths (`Write::act_as` names the purge author); held-model judging by roles-model `paths`. Nothing searches for another path. Open questions and settled readings: notes/a1-spec/README.md.
 - **State**: built. Left:
   - certificates and the purge-author indexes along stated paths, A1's second branch (issues/stated-path-certificates.md);
-  - the engine reading a snapshot's carries (issues/snapshot-carries-unread.md);
   - the walk's store over the engine's index, and an open rebuilding the walk from every header (issues/perm-eval-cost.md);
   - the rest the engine reads short of the spec, each to finish against the model (notes/perm-paths.md, Read short of the spec);
   - vouches for purge requests, if notes/a1-spec/README.md Open 20 settles that way;

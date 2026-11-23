@@ -969,7 +969,7 @@ mod tests {
         }
         fn commit(&self, id: &CommitId) -> Option<osis_perm::Held> {
             let c = self.0.counted(id)?;
-            Some(osis_perm::Held { id: *id, ts: c.ts, signer: c.signer, parts: Vec::new(), role: Some(c) })
+            Some(osis_perm::Held { id: *id, ts: c.ts, signer: c.signer, parts: Vec::new(), role: Some(c), carriers: Vec::new() })
         }
     }
 

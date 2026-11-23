@@ -58,7 +58,7 @@ O(aspect history) per flip (`scale::validity_flip_is_linear_and_invalid_arrival_
 
 ## Snapshot authority and carried writes
 ### Authority
-- A snapshot's part is judged along its stated path like any delta, by the role its aspect needs (`snapshot_role`, never the rotation role; `Paths::content` from `Judge::part`). The engine reads no snapshot's carries yet: it is judged as its signer's write and a list naming it names nothing it carries (issues/snapshot-carries-unread.md).
+- A snapshot's part is judged along its stated path like any delta, by the role its aspect needs (`snapshot_role`, never the rotation role; `Paths::content` from `Judge::part`). A list naming it names the held commits it carries (notes/perm-paths.md, Snapshot carries).
 - An invalid snapshot gives nothing: its copies never join (on apply, late, or in `rebuilt`), it is left out of dating replaced bodies (`retention::bounds::note_body`), and it covers nothing (`covered` → `Some(false)`), so a demoter lists the commits it would have covered.
 - Frontiers and `Absorbed` are no receipts (`validity::inflated_snapshot_claims_count_nothing_spec_crdt_8`), so a demotion frontier does not depend on a snapshot's validity (`flipped_snapshot_leaves_frontier_alike_spec_perm_5_2`).
 - A commit whose part is away applies without it whatever snapshots are held (`part_listed_by_invalid_snapshot_applies_alike_in_any_order_*`).

@@ -106,8 +106,8 @@ impl Engine {
         })
     }
 
-    /// Per held snapshot of `(tid, ak)`, the entries of the bound of what it carries valued
-    /// (`retention::snapshot::Carried`, one per source).
+    /// Per held snapshot of `(tid, ak)`, the runs of counters of the writes it carries
+    /// (`retention::snapshot::Carried`).
     #[doc(hidden)]
     pub fn carried_bounds(&self, tid: &Tid, ak: &Ak) -> Vec<usize> {
         self.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|s| s.4.len()).collect()

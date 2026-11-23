@@ -545,8 +545,8 @@ impl Counting {
 }
 
 impl Store for Counting {
-    fn put(&mut self, f: Fact) {
-        self.inner.put(f)
+    fn put(&mut self, f: Fact, carries: &[CommitId]) {
+        self.inner.put(f, carries)
     }
     fn remove(&mut self, id: &WriteId) -> Option<Fact> {
         self.inner.remove(id)
@@ -566,6 +566,13 @@ impl Store for Counting {
     fn carrying(&self, c: &CommitId) -> Vec<WriteId> {
         self.tick();
         self.inner.carrying(c)
+    }
+    fn carried(&self, s: &WriteId) -> Vec<CommitId> {
+        self.tick();
+        self.inner.carried(s)
+    }
+    fn carry(&mut self, s: &WriteId, c: CommitId, on: bool) {
+        self.inner.carry(s, c, on)
     }
     fn latest(&self, key: &NameKey, holding: Holding) -> Option<Ts> {
         self.tick();

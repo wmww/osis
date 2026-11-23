@@ -227,24 +227,24 @@ impl Rec for osis_crdt::Frontiers {
         Some(out)
     }
 }
-impl Rec for crate::retention::snapshot::Hull {
+impl Rec for crate::retention::snapshot::Spans {
     fn to(&self) -> Value {
-        Value::List(self.entries().map(|(s, (lo, hi))| Value::List(vec![s.to(), Value::uint(*lo), Value::uint(*hi)])).collect())
+        Value::List(self.entries().map(|(s, lo, hi)| Value::List(vec![s.to(), Value::uint(lo), Value::uint(hi)])).collect())
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let e = x.iter().map(|e| <(osis_crdt::Source, u64, u64) as Rec>::from(e).map(|(s, lo, hi)| (s, (lo, hi)))).collect::<Option<Vec<_>>>()?;
-        Some(crate::retention::snapshot::Hull::of(e))
+        let e = x.iter().map(<(osis_crdt::Source, u64, u64) as Rec>::from).collect::<Option<Vec<_>>>()?;
+        Some(crate::retention::snapshot::Spans::of(e))
     }
 }
 impl Rec for crate::retention::snapshot::Carried {
     fn to(&self) -> Value {
-        let (a, b) = self.hulls();
-        Value::List(vec![a.to(), b.to()])
+        Value::List(self.spans().iter().map(|s| s.to()).collect())
     }
     fn from(v: &Value) -> Option<Self> {
-        let (a, b) = <(crate::retention::snapshot::Hull, crate::retention::snapshot::Hull) as Rec>::from(v)?;
-        Some(crate::retention::snapshot::Carried::of(a, b))
+        use crate::retention::snapshot::Spans;
+        let (a, b, c) = <(Spans, Spans, Spans) as Rec>::from(v)?;
+        Some(crate::retention::snapshot::Carried::of([a, b, c]))
     }
 }
 impl Rec for osis_crdt::Facts {

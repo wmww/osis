@@ -727,6 +727,13 @@ pub(crate) fn reading(core: &Core, id: &CommitId) -> Option<osis_perm::Held> {
 
 /// `reading` of a commit by its header and view, held or about to be.
 pub(crate) fn reading_of(core: &Core, id: &CommitId, h: &Header, view: &View) -> osis_perm::Held {
+    read(core, id, h, view, true)
+}
+
+/// `reading_of`; without `carries`, what a snapshot carries and what carries the commit are left
+/// out: judging the commit's own deltas reads neither (`Judge::by_path`), and listing them
+/// costs O(the commits carried).
+fn read(core: &Core, id: &CommitId, h: &Header, view: &View, carries: bool) -> osis_perm::Held {
     let void = core.ix.void.contains(id);
     let mut judge = Judge::new(core);
     let none = |a: &osis_commit::AspectEntry| Part { on: a.tid, path: Vec::new(), direct: 0, kind: PartKind::None };
@@ -739,9 +746,10 @@ pub(crate) fn reading_of(core: &Core, id: &CommitId, h: &Header, view: &View) ->
             continue;
         };
         let class = if h.kind.is_compaction() {
-            // what it carries is not read here (issues/snapshot-carries-unread.md): it is judged as
-            // its signer's write
-            DeltaClass::Snapshot { carries: Frontier::default(), stated: BTreeMap::new(), own: h.own_cover }
+            // a list naming it names the held commits it carries (spec/permissions.md §5.2
+            // Copies); what it states of them is not read here
+            let carries = if carries { Frontier::new(crate::retention::snapshot::carried(core, id, &a.tid, &a.ak)) } else { Frontier::default() };
+            DeltaClass::Snapshot { carries, stated: BTreeMap::new(), own: h.own_cover }
         } else if ct::is_addenda(ak) && h.kind == Kind::Content {
             // one entry is read (a node writes one per thing and removal, spec/permissions.md
             // §5.2 Writing); without its body it lists nothing
@@ -768,7 +776,8 @@ pub(crate) fn reading_of(core: &Core, id: &CommitId, h: &Header, view: &View) ->
             parts.push(Part { on: *t, path, direct, kind });
         }
     }
-    osis_perm::Held { id: *id, ts: h.ts, signer: h.signer, parts, role: core.ix.held.counted(id) }
+    let carriers = if void || !carries { Vec::new() } else { crate::retention::snapshot::carriers(core, id, view) };
+    osis_perm::Held { id: *id, ts: h.ts, signer: h.signer, parts, role: core.ix.held.counted(id), carriers }
 }
 
 /// [signer, the things `t` is written along] of the path commit `h` states for `t` (`stated`).
@@ -907,7 +916,7 @@ impl<'a> Judge<'a> {
         }
         // a point query over what is held, the commit itself held yet or not: a commit is judged
         // as it applies, before the walk takes it
-        let c = self.readings.entry(*id).or_insert_with(|| reading_of(core, id, h, view).deltas());
+        let c = self.readings.entry(*id).or_insert_with(|| read(core, id, h, view, false).deltas());
         matches!(core.timelines.judge(c, ai as u32), Some(Content::Valid(_)))
     }
 }

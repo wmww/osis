@@ -29,15 +29,18 @@ pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::
     }
 }
 
-/// Notes `c`, the bounds of what held snapshot `id` of `(tid, ak)` carries, from its body
-/// as held (joined, or its leftover): `retention::snapshot::Carried`.
+/// Notes `c`, what held snapshot `id` of `(tid, ak)` carries, from its body as held (joined, or
+/// its leftover): `retention::snapshot::Carried`. Where the writes it holds moved, so did the
+/// commits it carries: the walk reads it again (`validity::reading`).
 pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId, c: Carried) {
     let k = (*tid, ak.clone());
-    if core.ix.snapshots.get(&k).is_some_and(|v| v.iter().any(|x| x.1 == *id && x.4 != c)) {
-        let v = core.ix.snapshots.entry_or_default(k);
-        if let Some(x) = v.iter_mut().find(|x| x.1 == *id) {
-            x.4 = c;
-        }
+    let Some(was) = core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *id && x.4 != c)).map(|x| x.4.same_writes(&c)) else { return };
+    let v = core.ix.snapshots.entry_or_default(k);
+    if let Some(x) = v.iter_mut().find(|x| x.1 == *id) {
+        x.4 = c;
+    }
+    if !was {
+        core.ix.held.touch_commit(*id);
     }
 }
 
@@ -63,6 +66,8 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
         } else {
             core.ix.snapshots.insert(k, v);
         }
+        // it carries nothing from here on (`retention::snapshot::carried`)
+        core.ix.held.touch_commit(*id);
         crate::retention::names::snapshots_moved(core, tid, ak);
     }
 }
