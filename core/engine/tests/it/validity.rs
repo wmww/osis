@@ -4416,14 +4416,13 @@ fn a_section_wrap_opening_under_two_epochs_reads_alike_spec_wire_4() {
     assert!(env.open(|_| vec![e2.clone()]).is_err(), "e2 alone: bad input");
 }
 
-// notes/redesign-plan.md, Interim in code (a commit acts on every thing for its one purge author, which
-// its signer must be or hold write on, the Acting check), spec/wire.md §4: a hand-built purge
-// author acts no wider than that check allows, in either path form. Bob (writer of H, H of D, Bob
+// notes/path-form.md, Whom a write is by (a commit's one purge author is a member of each thing's stated path), spec/wire.md §4:
+// a hand-built purge author acts no wider than the stated paths allow, in either path form. Bob (writer of H, H of D, Bob
 // of P) restates his writes: clear, naming H (accepted), a thing Q he holds nothing on (invalid),
 // an index past its things (refused), a made-up thing (waits for its record, never applies), H then
 // Q naming Q; split, naming H (D's entry lists H: D applies; P's members leave H out: P holds
 // nothing), Q listed on D's entry (invalid), a made-up author (never applies). Each reader ends as
-// the Acting check says.
+// its stated paths give.
 #[test]
 fn a_stated_index_acts_no_wider_than_the_acting_check_spec_permissions_5_2() {
     use osis_commit::{Path, Paths, Split};
@@ -4557,7 +4556,7 @@ fn a_split_commit_with_its_aspect_list_by_link_waits_for_it_spec_commits_4() {
     lp.peers[0].engine.check_index();
 }
 
-// spec/permissions.md §6 (The right); notes/redesign-plan.md, Interim in code (the one purge author, in the clear),
+// spec/permissions.md §6 (The right); notes/path-form.md, Whom a write is by (the one purge author, in the clear),
 // notes/path-form.md Per consumer: a purge request is judged alike in both path forms: Bob purges
 // his own write on D (through H, purgeable by its author) alone (one path, `[H]`) and beside a write
 // of P (split). At every node the outcome is the same in either form: his write goes; Alice's

@@ -1145,7 +1145,7 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
                     m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(e.to_value()) }).unwrap();
                 };
                 match how % 4 {
-                    // half of them acting for thing `b` (notes/redesign-plan.md, Interim in code): valid
+                    // half of them acting for thing `b` (notes/path-form.md, Whom a write is by): valid
                     // only while `by` holds write on it
                     0 => {
                         write_op(&mut m, &mut lp.peers[by].engine, a, op, k, v, true);
