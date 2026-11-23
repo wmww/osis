@@ -483,7 +483,7 @@ fn a_run_is_held_by_bucket_and_dated_by_element_spec_4_8() {
     let bodies = [text, del, reset];
     let mut ix = Held::new(MemRows::default());
     ix.join(&body(0), &BodyWrites::of(&bodies[0], true), &[]).unwrap();
-    let buckets = ix.rows.0.keys().filter(|k| k.get(16) == Some(&b'B')).count();
+    let buckets = ix.rows.0.keys().filter(|k| k.len() == 34 && k.last() == Some(&b'B')).count();
     assert!(buckets <= 5 && ix.rows.0.len() <= 30, "1000 chars: {buckets} bucket rows of {} rows", ix.rows.0.len());
     assert_eq!(ix.date(&body(0).c).unwrap(), None, "nothing dead");
     ix.join(&body(1), &BodyWrites::of(&bodies[1], true), &[]).unwrap();
@@ -495,7 +495,7 @@ fn a_run_is_held_by_bucket_and_dated_by_element_spec_4_8() {
     assert_eq!(ix.check().unwrap(), Ok(()));
     assert!(ix.rows == held_of(&bodies).rows, "the rows of a fresh index");
     let c = body(0).c.0;
-    let dated = |ix: &mut Held<MemRows>, t: u64| ix.rows.0.get(&[&c[..16], b"D", &c[16..], &(!ts(t).to_u64()).to_be_bytes()].concat()).map(|v| u64::from_be_bytes(v.as_slice().try_into().unwrap()));
+    let dated = |ix: &mut Held<MemRows>, t: u64| ix.rows.0.get(&[&[1][..], &c[..], b"D", &(!ts(t).to_u64()).to_be_bytes()].concat()).map(|v| u64::from_be_bytes(v.as_slice().try_into().unwrap()));
     assert_eq!((dated(&mut ix, 5), dated(&mut ix, 9)), (Some(10), Some(990)), "the run's deaths by date");
     ix.leave(&body(1)).unwrap();
     assert_eq!((dated(&mut ix, 5), dated(&mut ix, 9)), (None, Some(1000)), "the delete gone: every char at the reset");

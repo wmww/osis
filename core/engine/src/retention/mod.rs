@@ -1777,8 +1777,9 @@ mod tests {
         lp.deliver(3, &more).unwrap();
         let c = osis_base::costs::take();
         let count = |name: &str| c.iter().filter(|s| s.0 == name).map(|s| s.2).sum::<u64>();
-        // a small aspect (`bounds::SMALL_BODIES`): its two valid bodies are read, no row built
-        assert_eq!((count("deaths: a body"), count("held writes")), (2, 0), "a join beside an invalid part");
+        // nothing held supersedes another write (the invalid part gives none): no held writes
+        // are kept, and the join reads no body
+        assert_eq!((count("deaths: a body"), count("held writes")), (0, 0), "a join beside an invalid part");
         check(&mut lp, "a join beside an invalid part");
     }
 

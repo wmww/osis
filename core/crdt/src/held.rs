@@ -3,8 +3,9 @@
 //! whatever the order. A body joining or leaving reads and writes the rows of its own writes
 //! and of the writes whose death it moves (`moved`), never another body.
 //!
-//! Rows (keys relative to the aspect), each under 16 bytes naming a position (the hash of its
-//! path) or a body (half its commit ID), then a tag, so what one write touches lies together:
+//! Rows (keys relative to the aspect). A position's rows start with 0, a 16-byte hash per step
+//! of its path and 16 zero bytes, so they lie in path order: a position's own rows, then those
+//! of the positions below it. A body's start with 1 and its commit ID.
 //! - position + `W` + kind + stamp: a write: when it died, and its holders;
 //! - position + `B`: the writes on the sequence elements of one bucket (`Bucket`: `BUCKET`
 //!   consecutive counters of one source), run-length coded, so a run record costs a row per
@@ -19,9 +20,8 @@
 //! - body + `N`: a body joined, with the caller's tag; body + `L` + chunk: its own writes, so
 //!   it leaves without being read.
 //!
-//! A position is its path (`Place`s), in a key as a hash of it; a sequence element's has its
-//! bucket before it, and its own writes (creation, position, flag, element reset) live in the
-//! bucket's row.
+//! A sequence element's position has its bucket before it, and its own writes (creation,
+//! position, flag, element reset) live in the bucket's row.
 
 use crate::fragment::{Elem, Fragment, Removal};
 use crate::stamp::{Dot, DotRange, Session, Source, SourceKind, Stamp};
@@ -56,6 +56,11 @@ pub trait Rows {
     fn scan(&mut self, from: &[u8], to: &[u8], limit: usize) -> Result<Vec<Row>, Self::Err>;
     /// Up to `limit` rows with `from <= key < to`, greatest first.
     fn scan_back(&mut self, from: &[u8], to: &[u8], limit: usize) -> Result<Vec<Row>, Self::Err>;
+    /// Writes what the store held back (`row_pages::PagedRows`): called once a caller's change
+    /// is whole.
+    fn flush(&mut self) -> Result<(), Self::Err> {
+        Ok(())
+    }
 }
 
 /// `Rows` in memory.
@@ -370,11 +375,23 @@ fn short(b: &[u8]) -> [u8; 16] {
     out
 }
 
-/// The position, as the hash of its steps, + `tag`: a key's length does not grow with the
-/// depth, and the rows of one position (its writes, its top, its steps down) lie together, so
-/// a write touches few of a store's pages.
+/// The position in path order, + `tag`: 0, a 16-byte hash per step, 16 zero bytes, the tag. A
+/// position's rows (its writes, its top, its steps down) lie together, the positions below it
+/// right after them, so a write, what it supersedes and the tops above it share pages
+/// (`row_pages`).
 fn pos_key(tag: u8, pos: &[Step]) -> Vec<u8> {
-    let mut out = short(&pos_bytes(pos)).to_vec();
+    let mut out = vec![0];
+    for s in pos {
+        let mut b = Vec::new();
+        put_step(&mut b, s);
+        let mut h = short(&b);
+        // no step's hash is the zeros ending a position
+        if h == [0; 16] {
+            h = [1; 16];
+        }
+        out.extend_from_slice(&h);
+    }
+    out.extend_from_slice(&[0; 16]);
     out.push(tag);
     out
 }
@@ -654,10 +671,9 @@ fn inv(b: &[u8]) -> Vec<u8> {
     b.iter().map(|x| !x).collect()
 }
 
-/// A body's rows lie together as a position's do: half its commit ID, `tag`, the other half.
+/// A body's rows lie together, after every position's: 1, its commit ID, `tag`.
 fn of_body(tag: u8, c: &CommitId) -> Vec<u8> {
-    let (a, b) = c.0.split_at(16);
-    [a, &[tag], b].concat()
+    [&[1], &c.0[..], &[tag]].concat()
 }
 
 fn date_key(c: &CommitId, t: Option<Ts>) -> Vec<u8> {
@@ -713,9 +729,14 @@ impl<R: Rows> Held<R> {
         self.rows.get(&body_key(c))
     }
 
+    /// Whether some held write is dead.
+    pub fn any_dead(&mut self) -> Result<bool, R::Err> {
+        Ok(self.rows.scan(&[1], &[2], usize::MAX)?.iter().any(|(k, _)| k.get(33) == Some(&b'D')))
+    }
+
     /// Whether no body is joined: no row is kept.
     pub fn empty(&mut self) -> Result<bool, R::Err> {
-        Ok(self.rows.scan(&[], &[0xff; 17], 1)?.is_empty())
+        Ok(self.rows.scan(&[], &[2], 1)?.is_empty())
     }
 
     /// When body `c` was replaced (spec/commits.md §5): the latest death among the writes it
@@ -785,7 +806,7 @@ impl<R: Rows> Held<R> {
             let now = (was as i64).checked_add(n).filter(|x| *x >= 0).ok_or(Corrupt("held writes: a body's deaths below none"))?;
             if now == 0 { self.rows.del(&key)? } else { self.rows.put(&key, &(now as u64).to_be_bytes())? }
         }
-        Ok(())
+        self.rows.flush()
     }
 
     // ---- tops
@@ -1384,12 +1405,12 @@ impl<R: Rows> Held<R> {
             }
         }
         let mut kept: BTreeMap<(CommitId, Ts), u64> = BTreeMap::new();
-        for (k, v) in self.rows.scan(&[], &[0xff; 17], usize::MAX)? {
-            if k.get(16) != Some(&b'D') || k.len() != 41 {
+        for (k, v) in self.rows.scan(&[1], &[2], usize::MAX)? {
+            if k.get(33) != Some(&b'D') {
                 continue;
             }
-            let c = CommitId([k.get(..16).unwrap_or_default(), k.get(17..33).unwrap_or_default()].concat().try_into().map_err(|_| Corrupt("held writes row: short"))?);
-            let t = Rd(&inv(k.get(33..).unwrap_or_default())).ts()?;
+            let c = CommitId(k.get(1..33).unwrap_or_default().try_into().map_err(|_| Corrupt("held writes row: short"))?);
+            let t = Rd(&inv(k.get(34..).unwrap_or_default())).ts()?;
             kept.insert((c, t), Rd(&v).u64()?);
         }
         if kept != dated {

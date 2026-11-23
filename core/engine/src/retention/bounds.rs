@@ -217,19 +217,13 @@ fn judged(core: &Core, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> bool {
 pub(super) fn held_date(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
     settle_index(tx, tid, ak)?;
     drop(osis_base::costs::span("replaced at"));
-    match tx.core.small_held.get_mut(&(*tid, ak.clone())) {
-        Some(small) => Ok(small.date(c)?),
-        None => index(tx, tid, ak, Shred::No).date(c),
-    }
+    index(tx, tid, ak, Shred::No)?.date(c)
 }
 
 /// When held write `w` of `(tid, ak)` died and the snapshots holding it winning
 /// (`osis_crdt::Held::held`), by the aspect's held writes as last settled (`settle_index`).
 fn held_write(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, w: &Won) -> Result<Option<osis_crdt::HeldWrite>> {
-    match tx.core.small_held.get_mut(&(*tid, ak.clone())) {
-        Some(small) => Ok(small.held(w)?),
-        None => index(tx, tid, ak, Shred::No).held(w),
-    }
+    index(tx, tid, ak, Shred::No)?.held(w)
 }
 
 /// Runs debug check `f` unseen: its reads record nothing, its costs and death walks count none.
@@ -285,24 +279,21 @@ pub(crate) fn form(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<Form
     m.valid_at(ai).then(|| (m.stripped(ai), m.bare(ai)))
 }
 
-/// The rows of `(tid, ak)`'s held writes (`osis_crdt::Rows`): local records under `hx/` + the
-/// aspect, in the aspect's class.
+/// The table of an aspect's unit holding its held writes (`osis_crdt::Held`'s rows in pages,
+/// `osis_crdt::PagedRows`): beside its state pages (0), key index (1) and placement (2), in the
+/// aspect's class, gone with the aspect. It is there from the aspect's first death
+/// (`settle_index`).
+const HELD_TABLE: u8 = 3;
+
+/// The pages of `(tid, ak)`'s held writes as `osis_crdt::Rows`: the rows of `HELD_TABLE`.
 pub(crate) struct IndexRows<'a, 'b> {
     tx: &'a mut Tx<'b>,
-    prefix: Vec<u8>,
-    memory: bool,
+    tid: Tid,
+    ak: Ak,
+    /// The table, once made.
+    table: Option<osis_store::Table>,
     /// A body leaving: what it held goes shredded (its copies of set values, spec/commits.md §5).
     shred: Shred,
-}
-
-impl IndexRows<'_, '_> {
-    fn key(&self, k: &[u8]) -> Vec<u8> {
-        [self.prefix.as_slice(), k].concat()
-    }
-    fn rows(&mut self, r: Vec<osis_store::KeyValue>) -> Vec<osis_store::KeyValue> {
-        let n = self.prefix.len();
-        r.into_iter().map(|(k, v)| (k.get(n..).unwrap_or_default().to_vec(), v)).collect()
-    }
 }
 
 impl From<osis_crdt::Corrupt> for Error {
@@ -314,44 +305,52 @@ impl From<osis_crdt::Corrupt> for Error {
 impl Rows for IndexRows<'_, '_> {
     type Err = Error;
     fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.tx.txn.get_local(&self.key(key))?)
+        match self.table {
+            Some(t) => Ok(self.tx.txn.table_get(t, key)?),
+            None => Ok(None),
+        }
     }
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<()> {
-        let (k, shred) = (self.key(key), self.shred);
-        self.tx.in_class(self.memory, |tx| Ok(tx.txn.put_local(&k, val, shred)?))
+        let t = match self.table {
+            Some(t) => t,
+            None => self.tx.txn.create_table(&self.tid, &self.ak, HELD_TABLE)?,
+        };
+        self.table = Some(t);
+        // counted: what a write costs in held-writes pages (scale tests)
+        osis_base::costs::count("held writes: pages written", 1);
+        self.tx.txn.table_put(t, key, val.to_vec(), self.shred)?;
+        Ok(())
     }
     fn del(&mut self, key: &[u8]) -> Result<()> {
-        self.tx.txn.remove_local(&self.key(key), self.shred)?;
+        if let Some(t) = self.table {
+            self.tx.txn.table_remove(t, key, self.shred)?;
+        }
         Ok(())
     }
     fn scan(&mut self, from: &[u8], to: &[u8], limit: usize) -> Result<Vec<osis_store::KeyValue>> {
-        let r = self.tx.txn.scan_local_range(&self.prefix, from, to, limit)?;
-        Ok(self.rows(r))
+        match self.table {
+            Some(t) => Ok(self.tx.txn.table_range(t, from, Some(to), limit)?),
+            None => Ok(Vec::new()),
+        }
     }
     fn scan_back(&mut self, from: &[u8], to: &[u8], limit: usize) -> Result<Vec<osis_store::KeyValue>> {
-        let r = self.tx.txn.scan_local_rev(&self.prefix, from, to, limit)?;
-        Ok(self.rows(r))
+        match self.table {
+            Some(t) => Ok(self.tx.txn.table_range_rev(t, from, to, limit)?),
+            None => Ok(Vec::new()),
+        }
     }
 }
 
-/// Rows per store scan dropping an index: a page.
-const SCAN: usize = 256;
-
 /// The held writes of `(tid, ak)` (`osis_crdt::Held`) over the transaction's store.
-fn index<'a, 'b>(tx: &'a mut Tx<'b>, tid: &Tid, ak: &Ak, shred: Shred) -> Held<osis_crdt::PagedRows<IndexRows<'a, 'b>>> {
-    Held::new(osis_crdt::PagedRows::new(IndexRows { tx, prefix: index_prefix(tid, ak), memory: ak.ephemeral(), shred }))
+fn index<'a, 'b>(tx: &'a mut Tx<'b>, tid: &Tid, ak: &Ak, shred: Shred) -> Result<Held<osis_crdt::PagedRows<IndexRows<'a, 'b>>>> {
+    let table = tx.txn.table(tid, ak, HELD_TABLE)?;
+    Ok(Held::new(osis_crdt::PagedRows::new(IndexRows { tx, tid: *tid, ak: ak.clone(), table, shred }, PAGE_KEY)))
 }
 
-/// The key prefix of `(tid, ak)`'s held writes: `hx/`, the thing, 16 bytes of the AK's hash
-/// (the rows' own keys are up to 91 bytes, and a store bounds its keys).
-fn index_prefix(tid: &Tid, ak: &Ak) -> Vec<u8> {
-    let h = osis_base::hash::hash(ak.as_str().as_bytes());
-    [crate::engine::records::HELD, tid.as_bytes().as_slice(), h.get(..16).unwrap_or_default()].concat()
-}
-
-/// The row saying `(tid, ak)`'s held writes are kept (built once from every held body, then
-/// followed): after the index's own rows (each starts with 16 bytes and a tag).
-const BUILT: &[u8] = &[0xff; 18];
+/// The most bytes of a row's key in its page's key (`osis_crdt::PagedRows`): a table bounds its
+/// keys at a quarter of the store's page, 128 B at the smallest (512), less the page tag. Seven
+/// steps of a path: deeper positions under one such path share pages.
+const PAGE_KEY: usize = 120;
 
 /// The tag a body joins the held writes with: its `Form`.
 fn tag(f: Form) -> [u8; 2] {
@@ -361,114 +360,74 @@ fn tag(f: Form) -> [u8; 2] {
 /// What held valid body `x` of `(tid, ak)` gives the held writes in form `f`: its part read
 /// whole (a judgment walks it a fixed number of times, `Core::death_walks`).
 fn body_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, x: &CommitId, f: Form) -> Result<Option<(osis_crdt::Body, osis_crdt::BodyWrites)>> {
-    Ok(body_read(tx, tid, ak, x, f)?.map(|x| (x.0, x.1)))
-}
-
-/// `body_writes` with how many writes the body holds.
-fn body_read(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, x: &CommitId, f: Form) -> Result<Option<(osis_crdt::Body, osis_crdt::BodyWrites, usize)>> {
     let Some(xai) = held_part(tx.core, x, tid, ak) else { return Ok(None) };
     let Some((ts, snap)) = tx.core.ix.commits.get(x).map(|m| (m.view.ts, m.header.kind.is_compaction())) else { return Ok(None) };
     let Some(frag) = crate::apply::held_fragment(tx, x, xai)? else { return Ok(None) };
     drop(osis_base::costs::span("deaths: a body"));
     tx.core.death_walks += 1;
-    let w = osis_crdt::BodyWrites::of(&frag, !f.1);
-    let n = w.held().len();
-    Ok(Some((osis_crdt::Body { c: *x, ts, snap }, w, n)))
+    Ok(Some((osis_crdt::Body { c: *x, ts, snap }, osis_crdt::BodyWrites::of(&frag, !f.1))))
 }
-
-/// The most held valid bodies an aspect's held writes are read whole from, kept in no row
-/// (`settle_index`). At 0 every dated aspect keeps rows from its first write (a thing's role
-/// aspects cost several times their bodies); unbounded, every write reads every held body.
-/// The bodies a role aspect or a kept value holds within its window are about this many.
-const SMALL_BODIES: usize = 4;
-
-/// The most writes those bodies hold together: what a pass over a small aspect reads and
-/// indexes in memory, about the writes of a wire page (64 KiB at some 30 B a write). At 0 as
-/// `SMALL_BODIES` at 0; unbounded, an edit of a text written whole reads the text.
-const SMALL_WRITES: usize = 2048;
 
 /// Brings the held writes of dated aspect `(tid, ak)` (`osis_crdt::Held`: every write its held
 /// valid bodies hold, by position, with when each died and each body's deaths by date; durable
 /// rows, so a session reads only the positions a change touches) up to date with what the
-/// running transaction changed. A small aspect (at most `SMALL_BODIES` bodies of `SMALL_WRITES`
-/// writes together) keeps no row: its held writes are read whole from its bodies when asked
-/// (`Core::small_held`), a bounded read, and every body's date is noted moved. Else: each commit changed since the last call (the commits index's
-/// changes from where it stood, and the parts whose leftover was written) leaves if it is joined in another
-/// form than it is held now, or its bytes were rewritten, and joins as it is held: a join reads
-/// its own body, a leave none. Built from every held body where the aspect has none yet (it
-/// turned dated). The bodies whose dates moved are noted for `leaving::date_due`
-/// (`Core::dates_moved`).
+/// running transaction changed.
+///
+/// An aspect keeps them from its first death: while no held write supersedes another, every
+/// date is none and nothing is kept, so a join that supersedes nothing writes nothing (a thing's
+/// role aspects and an aspect only added to cost no row). A join that supersedes a write says so
+/// (`Core::died`, from the state's winners it killed or its own it brought dead:
+/// `retention::Killed`; while none is superseded every held write wins in the state, since a
+/// write the state holds dead is superseded by a live one, which a held body or cover carries).
+/// Where the state was rebuilt or the aspect turned dated (`Core::to_date`, or kept with no
+/// cursor yet) the held bodies are read to see. Then they are built from every held valid body,
+/// once for the aspect: its first death reads its held bodies.
+///
+/// Kept, they are followed: each commit changed since the last call (the commits index's
+/// changes from where it stood, and the parts whose leftover was written) leaves if it is
+/// joined in another form than it is held now, or its bytes were rewritten, and joins as it is
+/// held: a join reads its own body, a leave none. The bodies whose dates moved are noted for
+/// `leaving::date_due` (`Core::dates_moved`).
 pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let k = (*tid, ak.clone());
     // a memory transaction changes no durable body, and every row it writes is memory's
     if tx.txn.is_memory() && !ak.ephemeral() {
         return Ok(());
     }
-    let now = (tx.core.ix.commits.changes_len(), tx.core.bodies_rewritten.len());
+    let now = (tx.core.ix.commits.changes_len(), tx.core.bodies_rewritten.len(), tx.core.died.len(), tx.core.to_date.pushes());
     let from = tx.core.index_settled.get(&k).copied();
     if from == Some(now) {
         return Ok(());
     }
-    let built = index(tx, tid, ak, Shred::No).rows.get(BUILT)?.is_some();
-    let mut read: Vec<(Form, osis_crdt::Body, osis_crdt::BodyWrites)> = Vec::new();
+    let built = tx.txn.table(tid, ak, HELD_TABLE)?.is_some();
     if !built {
-        tx.core.small_held.remove(&k);
-        let noted: Vec<(CommitId, Form)> = tx.core.ix.by_aspect.get(&k).into_iter().flatten().filter_map(|x| Some((x.1, form(tx.core, &x.1, tid, ak)?))).collect();
-        let mut writes = 0;
-        if noted.len() <= SMALL_BODIES {
-            for (c, f) in &noted {
-                if let Some((b, w, n)) = body_read(tx, tid, ak, c, *f)? {
-                    writes += n;
-                    read.push((*f, b, w));
-                }
-            }
-        }
-        if noted.len() <= SMALL_BODIES && writes <= SMALL_WRITES {
-            let mut small = Held::new(osis_crdt::MemRows::default());
-            for (f, b, w) in &read {
-                small.join(b, w, &tag(*f))?;
-            }
-            // a read moves nothing: the rows are as its bodies date them
-            if now != (0, 0) || tx.core.to_date.has(tid, ak) {
-                tx.core.dates_moved.extend(noted.iter().map(|x| (*tid, ak.clone(), x.0)));
-            }
-            tx.core.small_held.insert(k.clone(), small);
-            tx.core.index_settled.insert(k, now);
+        tx.core.index_settled.insert(k.clone(), now);
+        let died = tx.core.died.contains(&k);
+        let unsure = tx.core.to_date.pushed(tid, ak) || super::history::of(tx.core, tid, ak).keeps() && !tx.core.ix.leave_from.contains_key(&k);
+        if !died && !unsure {
             return Ok(());
         }
-        // a transaction that changed nothing builds none (a read writes no row): an aspect is
-        // built by the transaction that turned it dated or first wrote it
-        if now == (0, 0) && !tx.core.to_date.has(tid, ak) {
-            return Ok(());
-        }
-    }
-    if !built {
         // built in memory from every held body, then written: a build reads no row
         let _s = osis_base::costs::span("held writes");
-        drop_index(tx, tid, ak)?;
         let noted: Vec<(CommitId, Form)> = tx.core.ix.by_aspect.get(&k).into_iter().flatten().filter_map(|x| Some((x.1, form(tx.core, &x.1, tid, ak)?))).collect();
         let mut fresh = Held::new(osis_crdt::MemRows::default());
         for (c, f) in noted {
-            let at = read.iter().position(|x| x.1.c == c && x.0 == f);
-            let joining = match at {
-                Some(i) => Some(read.swap_remove(i)),
-                None => body_writes(tx, tid, ak, &c, f)?.map(|(b, w)| (f, b, w)),
-            };
-            if let Some((f, b, w)) = joining {
+            if let Some((b, w)) = body_writes(tx, tid, ak, &c, f)? {
                 fresh.join(&b, &w, &tag(f))?;
             }
         }
-        let moved = fresh.take_moved();
-        if !fresh.rows.0.is_empty() {
-            fresh.rows.0.insert(BUILT.to_vec(), Vec::new());
-            index(tx, tid, ak, Shred::No).rows.fill(&fresh.rows.0)?;
+        // nothing dead: nothing to keep
+        if !fresh.any_dead()? {
+            return Ok(());
         }
+        let moved = fresh.take_moved();
+        index(tx, tid, ak, Shred::No)?.rows.fill(&fresh.rows.0)?;
         tx.core.dates_moved.extend(moved.into_iter().map(|x| (*tid, ak.clone(), x)));
         tx.core.index_settled.insert(k, now);
         return Ok(());
     }
     let (commits, rewritten): (BTreeSet<CommitId>, BTreeSet<CommitId>) = {
-        let (log, re) = from.unwrap_or((0, 0));
+        let (log, re, ..) = from.unwrap_or((0, 0, 0, 0));
         let re: BTreeSet<CommitId> = tx.core.bodies_rewritten.get(re..).unwrap_or_default().iter().filter(|x| x.0 == *tid && x.1 == *ak).map(|x| x.2).collect();
         let mut all = tx.core.ix.commits.changed_from(log, tid, ak);
         all.extend(re.iter().copied());
@@ -477,7 +436,7 @@ pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let mut left = false;
     for c in commits {
         let is = form(tx.core, &c, tid, ak);
-        let was = index(tx, tid, ak, Shred::No).joined(&c)?;
+        let was = index(tx, tid, ak, Shred::No)?.joined(&c)?;
         if was.as_deref() == is.map(tag).as_ref().map(|t| t.as_slice()) && !rewritten.contains(&c) {
             continue;
         }
@@ -485,7 +444,7 @@ pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         if was.is_some() {
             // its `ts` and kind are not read: a leaving body is named by its commit
             let b = osis_crdt::Body { c, ts: Ts::ZERO, snap: false };
-            let mut ix = index(tx, tid, ak, Shred::Yes);
+            let mut ix = index(tx, tid, ak, Shred::Yes)?;
             ix.leave(&b)?;
             moved.extend(ix.take_moved());
             left = true;
@@ -495,34 +454,24 @@ pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             None => None,
         };
         if let Some((f, b, w)) = joining {
-            let mut ix = index(tx, tid, ak, Shred::No);
+            let mut ix = index(tx, tid, ak, Shred::No)?;
             ix.join(&b, &w, &tag(f))?;
             moved.extend(ix.take_moved());
         }
         tx.core.dates_moved.extend(moved.into_iter().map(|x| (*tid, ak.clone(), x)));
     }
     // the last body gone: nothing is kept, so an aspect holding no valid body costs no row
-    if left && index(tx, tid, ak, Shred::No).empty()? {
+    if left && index(tx, tid, ak, Shred::No)?.empty()? {
         return drop_index(tx, tid, ak);
     }
     tx.core.index_settled.insert(k, now);
     Ok(())
 }
 
-/// Forgets the held writes of `(tid, ak)` (it is dated no more, or its rows were forgotten):
-/// every row, shredded. O(the rows).
+/// Forgets the held writes of `(tid, ak)` (it is dated no more, its rows were forgotten, or
+/// its last body left): the table, shredded.
 pub(crate) fn drop_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    let prefix = index_prefix(tid, ak);
-    loop {
-        let page = tx.txn.scan_local(&prefix, &[], SCAN)?;
-        let n = page.len();
-        for (k, _) in page {
-            tx.txn.remove_local(&k, Shred::Yes)?;
-        }
-        if n < SCAN {
-            break;
-        }
-    }
+    tx.txn.drop_table(tid, ak, HELD_TABLE)?;
     tx.core.index_settled.remove(&(*tid, ak.clone()));
     Ok(())
 }
@@ -543,12 +492,11 @@ pub(super) fn index_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, when: &str) -> Re
             fresh.join(&b, &w, &tag(f))?;
         }
     }
-    let mut ix = index(tx, tid, ak, Shred::No);
-    let mut kept: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = ix.rows.scan(&[], &[0xff; 19], usize::MAX)?.into_iter().collect();
-    if kept.remove(BUILT).is_none() {
-        assert!(kept.is_empty(), "{when}: {tid:?} {ak:?} keeps held writes not built");
+    if tx.txn.table(tid, ak, HELD_TABLE)?.is_none() {
         return Ok(fresh);
     }
+    let mut ix = index(tx, tid, ak, Shred::No)?;
+    let kept: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = ix.rows.scan(&[], &[0xff; 2], usize::MAX)?.into_iter().collect();
     let diff: Vec<String> = kept.keys().chain(fresh.rows.0.keys()).filter(|k| kept.get(*k) != fresh.rows.0.get(*k)).take(4).map(|k| format!("{:?}: kept {:?}, fresh {:?}", osis_base::hex::encode(k), kept.get(k).map(|v| osis_base::hex::encode(v)), fresh.rows.0.get(k).map(|v| osis_base::hex::encode(v)))).collect();
     assert!(diff.is_empty(), "{when}: the held writes of {tid:?} {ak:?} differ from those of its held bodies: {diff:?}");
     let checked = ix.check()?;
@@ -614,6 +562,10 @@ pub(crate) struct KillBefore {
 pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     if dead.dots.is_empty() {
         return;
+    }
+    // the aspect's held writes are kept from its first death (`settle_index`)
+    if bounded(tx.core, tid, ak) {
+        tx.core.died.push((*tid, ak.clone()));
     }
     let core = &*tx.core;
     let mut on: BTreeSet<CommitId> = dead.dots.iter().filter_map(|d| core.commit_of(tid, ak, d)).collect();

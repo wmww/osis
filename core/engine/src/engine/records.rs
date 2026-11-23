@@ -70,10 +70,6 @@ pub const LEAVE_FROM: &[u8] = b"hf/";
 /// commit ID + aspect index (4 bytes), in its commit's class; written when the part is applied,
 /// gone with the part.
 pub const PAGE_INDEX: &[u8] = b"pi/";
-/// An aspect's held writes (`retention::bounds::settle_index`): `hx/` + tid + 16 bytes of the
-/// AK's hash, then the rows of `osis_crdt::Held` (module doc there) and `!`, empty: the index
-/// is built.
-pub const HELD: &[u8] = b"hx/";
 /// Things held destroyed (`Indexes::destroyed`): `dt/` + tid, empty.
 pub const DESTROYED: &[u8] = b"dt/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.

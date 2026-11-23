@@ -133,6 +133,28 @@ fn local_rows_scan_descending() {
     }
 }
 
+// spec: none (node-local bookkeeping): `table_range_rev` gives a table's rows of a key range
+// greatest first, as a filter of the ascending range.
+#[test]
+fn table_rows_range_descending() {
+    let (_dev, mut rng, mut s) = fresh(cfg());
+    let mut t = s.transaction(&mut rng).unwrap();
+    let (tid, ak) = (osis_base::Tid::from_bytes([7; 15]), osis_base::Ak::new("x:m.0").unwrap());
+    let table = t.create_table(&tid, &ak, 3).unwrap();
+    for i in 0..600u32 {
+        t.table_put(table, &(i * 3).to_be_bytes(), vec![i as u8; 40], Shred::No).unwrap();
+    }
+    t.commit().unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    let table = t.table(&tid, &ak, 3).unwrap().unwrap();
+    let all = t.table_range(table, b"", None, usize::MAX).unwrap();
+    for (from, before, limit) in [(0u32, 6000u32, 5000usize), (0, 1800, 7), (10, 11, 5), (10, 10, 5), (899, 901, 5), (1790, 9000, 3), (40, 30, 3)] {
+        let (f, b) = (from.to_be_bytes(), before.to_be_bytes());
+        let want: Vec<_> = all.iter().rev().filter(|(k, _)| k.as_slice() >= &f[..] && k.as_slice() < &b[..]).take(limit).cloned().collect();
+        assert_eq!(t.table_range_rev(table, &f, &b, limit).unwrap(), want, "{from}..{before}, limit {limit}");
+    }
+}
+
 // spec: none (node-local bookkeeping); notes/local-store.md, Units: `*_local` records.
 #[test]
 fn local_records() {

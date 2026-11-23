@@ -976,6 +976,7 @@ pub(crate) struct CoreMark {
     to_date: usize,
     dates_moved: usize,
     bodies_rewritten: usize,
+    died: usize,
     /// `wrote_on`'s length: a write undone owes no holding.
     wrote_on: usize,
     stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
@@ -1152,11 +1153,11 @@ pub struct Core {
     /// Per dated aspect, how far the running transaction's changes are in its held writes
     /// (`retention::bounds::settle_index`): the lengths of the commits log and of
     /// `bodies_rewritten` then. Emptied by a rollback (every change is looked at again).
-    pub(crate) index_settled: BTreeMap<(Tid, Ak), (usize, usize)>,
-    /// The held writes of the small dated aspects the running transaction asked about, each as
-    /// of its `index_settled` (`retention::bounds::settle_index`: read whole from the bodies,
-    /// kept in no row). Emptied with `index_settled`.
-    pub(crate) small_held: BTreeMap<(Tid, Ak), osis_crdt::Held<osis_crdt::MemRows>>,
+    pub(crate) index_settled: BTreeMap<(Tid, Ak), (usize, usize, usize, usize)>,
+    /// The dated aspects on which a join of the running transaction superseded a write
+    /// (`retention::mark_killed`): an aspect keeps held writes from its first death
+    /// (`retention::bounds::settle_index`).
+    pub(crate) died: Vec<(Tid, Ak)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look. A name goes with its commit (forgotten, or dropped from pending while not
     /// applied), so it holds at most one per commit held. Sync reads none of it.
@@ -1810,6 +1811,7 @@ impl Core {
             to_date: self.to_date.len(),
             dates_moved: self.dates_moved.len(),
             bodies_rewritten: self.bodies_rewritten.len(),
+            died: self.died.len(),
             wrote_on: self.wrote_on.len(),
             stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
             batched: self.batched.clone(),
@@ -1905,8 +1907,8 @@ impl Core {
         self.to_date.truncate(m.to_date);
         self.dates_moved.truncate(m.dates_moved);
         self.bodies_rewritten.truncate(m.bodies_rewritten);
+        self.died.truncate(m.died);
         self.index_settled.clear();
-        self.small_held.clear();
         self.wrote_on.truncate(m.wrote_on);
         self.batched = m.batched;
         self.fallen = m.fallen;
@@ -1935,7 +1937,7 @@ impl Core {
             dates_moved: _,
             bodies_rewritten: _,
             index_settled: _,
-            small_held: _,
+            died: _,
             wrote_on: _,
             written: _,
             accounts: _,
@@ -2305,7 +2307,7 @@ impl Core {
             dates_moved: Vec::new(),
             bodies_rewritten: Vec::new(),
             index_settled: BTreeMap::new(),
-            small_held: BTreeMap::new(),
+            died: Vec::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
@@ -3048,7 +3050,7 @@ fn end_settle<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
     tx.core.dates_moved.clear();
     tx.core.bodies_rewritten.clear();
     tx.core.index_settled.clear();
-    tx.core.small_held.clear();
+    tx.core.died.clear();
     // every state written above stored in its form (`Tx::settle_states`)
     r = then(r, || tx.settle_placements().and_then(|()| tx.settle_states()));
     r = then(r, || Core::commit_changes(tx));

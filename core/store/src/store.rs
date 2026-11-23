@@ -932,6 +932,20 @@ impl Transaction<'_> {
         let durable = btree::range(self, t.0, start, end, limit)?;
         Ok(if mem.is_empty() { durable } else { crate::overlay::merge(mem, durable, limit) })
     }
+    /// Up to `limit` entries with `start <= key < end`, greatest key first.
+    pub fn table_range_rev(&mut self, t: Table, start: &[u8], end: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
+        let n = start.iter().zip(end).take_while(|(a, b)| a == b).count();
+        self.st.s.read_table_rows(t.1, start.get(..n).unwrap_or_default(), true);
+        if start >= end {
+            return Ok(Vec::new());
+        }
+        let mem = crate::overlay::range_rev(self.mem.o.tables.get(&t.0), start, end, limit);
+        if t.0 & MEM_TABLE != 0 {
+            return Ok(mem);
+        }
+        let durable = btree::range_rev(self, t.0, start, end, limit)?;
+        Ok(if mem.is_empty() { durable } else { crate::overlay::merge_rev(mem, durable, limit) })
+    }
     pub fn table_len(&mut self, t: Table) -> Result<u64, Error> {
         self.st.s.read_owner(t.1);
         match self.pure(t) {

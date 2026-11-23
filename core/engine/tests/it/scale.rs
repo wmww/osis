@@ -360,6 +360,7 @@ fn text_ops(n: usize) -> Vec<[u64; 5]> {
             e.commit(m).unwrap().unwrap()
         });
         last = Some((id, before));
+        println!("{} at {n}: held writes: {} pages written; store units written {}", TEXT_STEPS[step as usize], w.n("held writes: pages written"), w.io.writes);
         out.push(text_counts(&w));
     }
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Str(want.iter().collect())));
@@ -372,20 +373,31 @@ fn text_ops(n: usize) -> Vec<[u64; 5]> {
 // 100 chars, an insert, a delete, a move of a few chars, an edit as a text session writes it, an
 // undo, a move of a few blocks, loads and writes only its pages and placement rows (through the
 // stored placement), reads a fixed number of store rows, and reads no blob of the kept first
-// commit (its held writes and its date are rows) but an undo, which reads the pages holding the
-// chars it restores: at most two wire pages (`CHUNK_MAX` each: a dot's leaf and the one a run
-// before it may reach from), where the text's one page at n is no measure for a page at 10n.
-// 10n is 800k chars: about 4 minutes in a debug build.
+// commit (its held writes and its date are rows), but: the delete, the aspect's first death,
+// which reads the held bodies once to build its held writes (once for the aspect, in no later
+// session: every later step reads none), so its store bytes and rows read are the build's; and
+// the undo, which reads the pages holding the chars it restores: at most two wire pages
+// (`CHUNK_MAX` each: a dot's leaf and the one a run before it may reach from), where the text's
+// one page at n is no measure for a page at 10n. 10n is 800k chars: about 3 minutes in a debug
+// build.
 #[test]
 #[ignore = "by hand: an 800k-char text, about 4 minutes in a debug build"]
 fn text_edits_are_flat() {
     let (small, big) = (text_ops(80_000), text_ops(800_000));
     for (i, what) in TEXT_STEPS.iter().enumerate() {
+        let first_death = *what == "delete";
         for (k, count) in ["pages loaded", "pages written", "store bytes", "store rows read"].iter().enumerate() {
-            flat(&format!("{what}: {count}"), small[i][k], big[i][k]);
+            if first_death && k >= 2 {
+                linear(&format!("{what} (builds the held writes): {count}"), small[i][k], big[i][k]);
+            } else {
+                flat(&format!("{what}: {count}"), small[i][k], big[i][k]);
+            }
         }
         println!("{what}: store blob bytes read: {} at n, {} at 10n", small[i][4], big[i][4]);
-        if *what == "undo of the edit" {
+        if first_death {
+            // the text's body once (its chars and their run records), the insert's beside it
+            assert!(small[i][4] > 0 && small[i][4] <= 2 * 80_000 && big[i][4] <= 2 * 800_000, "{what}: blob bytes read {} at n, {} at 10n: the kept body more than once", small[i][4], big[i][4]);
+        } else if *what == "undo of the edit" {
             let pages = 2 * osis_base::format::CHUNK_MAX as u64;
             assert!(small[i][4] <= pages && big[i][4] <= pages, "{what}: blob bytes read {} at n, {} at 10n: more than two pages of the kept body", small[i][4], big[i][4]);
         } else {

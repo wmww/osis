@@ -344,12 +344,18 @@ pub(crate) fn dating_due(core: &Core, tid: &Tid, ak: &Ak) -> bool {
 pub(crate) struct ToDate {
     list: Vec<(Tid, Ak, bool)>,
     on: BTreeMap<(Tid, Ak), usize>,
+    /// How many were pushed in the running transaction, those a pass took included, and on
+    /// which aspects (one a rollback cut stays: a superset).
+    pushes: usize,
+    pushed: BTreeSet<(Tid, Ak)>,
 }
 
 impl ToDate {
     pub(crate) fn push(&mut self, tid: Tid, ak: Ak, tell: bool) {
         *self.on.entry((tid, ak.clone())).or_default() += 1;
+        self.pushed.insert((tid, ak.clone()));
         self.list.push((tid, ak, tell));
+        self.pushes += 1;
     }
     pub(crate) fn len(&self) -> usize {
         self.list.len()
@@ -373,6 +379,16 @@ impl ToDate {
     }
     pub(crate) fn clear(&mut self) {
         self.take();
+        self.pushes = 0;
+        self.pushed.clear();
+    }
+    /// Whether `(tid, ak)` was pushed since the transaction began, taken or not.
+    pub(crate) fn pushed(&self, tid: &Tid, ak: &Ak) -> bool {
+        self.pushed.contains(&(*tid, ak.clone()))
+    }
+    /// How many were pushed since the transaction began (`clear`), taken or not.
+    pub(crate) fn pushes(&self) -> usize {
+        self.pushes
     }
     /// Whether `(tid, ak)` is listed. Debug builds check it against the list.
     pub(crate) fn has(&self, tid: &Tid, ak: &Ak) -> bool {
