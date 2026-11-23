@@ -13,7 +13,6 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 
 ## In flight beside it
 - `mizzen-wait-order` (worker): issues/stated-path-wait-order.md; held-model's `Pend::Any` to the reworded spec/commits.md §4 Unjudgeable.
-- `mizzen-cost-alarm` (coordinator gating): the gate times every default test and flags one over the per-test bound; its first gate lists today's slow tests (paste the printed `slow:` lines, issue issues/test-time.md).
 - `mizzen-walk-inputs` (worker): issues/walk-inputs-via-stale.md.
 
 ## Safe parallel work queue (outside the rewrite)
