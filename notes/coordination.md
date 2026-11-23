@@ -118,11 +118,12 @@ Seed breadth belongs to the release checks, not to branches (Tess: cut testing t
 - A brief removing a concept has the worker grep notes, issues and the spec drafts for it and sort its senses (most hits are other senses), and grep citations by number after a renumber (`move [0-9]`, `§N`).
 
 ## Rewriting an area
-Spec-first delete-and-rebuild works far better than porting in place; Tess's direction is in notes/principles.md (Rewriting an area). How to run one:
-- Spec, then models, then code: models find holes before any code exists.
-- Foundation first: one agent writes the crate skeleton with every module declared and every shared type in one place; a fresh reviewer checks the shapes by walking two end-to-end flows on paper.
-- With slots to spare, an integration agent runs beside the module agents: it drives the merged modules end to end, files what breaks between them and fixes the seams.
-- One worker and one fresh reviewer per module, each module a branch on main; workers hand off the new-module checklist (Briefs). Reviews find real bugs by reading for what a hostile or removed party controls, mutating the worker's own tests (some pass vacuously), driving a whole product flow or a restart with state in flight, asserting what stays as well as what goes, and running `-p osis`.
+Tess's direction is in notes/principles.md (Rewriting an area). How to run one:
+- **One branch, delete first.** The worker deletes the old code, then writes the replacement and its spec text alongside; one fresh review and one gate at the end. No new code beside the old, no comparison scaffolding or adapters between them, no spec-first job landed alone (it forces a citation-retarget job), no plan of numbered sub-briefs. Gone wrong → revert.
+- A branch only keeps the broken middle out of other workers' way; main working is no value in itself. Parallel jobs stay out of the area, so the branch's rebase is trivial: more than a little rebasing means the split went wrong.
+- Models first where the rule is new: they find holes before code exists.
+- A long rewrite resumes the same worker across sessions; it pushes WIP to its branch.
+- Reviews find real bugs by reading for what a hostile or removed party controls, mutating the worker's own tests (some pass vacuously), driving a whole product flow or a restart with state in flight, asserting what stays as well as what goes, and running `-p osis`.
 - A random-history differential with shrinking finds the cross-module bugs; check the oracle before the code (an unknown-outcome write may have happened). Histories replay twice and must match: no hashed collections in that code.
 - Decide fast but let implementers push back: prefer the rule whose failure is a wrong keep over a wrong drop, and state the weaker property it gives.
 
