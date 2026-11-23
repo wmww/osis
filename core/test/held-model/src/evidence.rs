@@ -156,8 +156,9 @@ impl Closure {
 /// When a commit pends for want of evidence (`World::pend`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pend {
-    /// An edge it reads has no held edge write ordered before it, or the latest such pends (spec/commits.md
-    /// §4 Unjudgeable).
+    /// An edge it reads has no held edge write ordered before it, or the latest such pends
+    /// (notes/write-path-design.md §2; spec/commits.md §4 Unjudgeable reads a write that pends as
+    /// none).
     Any,
     /// An edge it reads has no held chained grant ordered before it, or the latest held chained
     /// edge write ordered before it pends: a write no chained write reaches waits, as one no write

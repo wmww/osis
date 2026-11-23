@@ -4256,11 +4256,11 @@ fn entry_under_two_keys(k1: &[u8; 32], k2: &[u8; 32]) -> Vec<u8> {
 // to `k1`), and seals D's parts twice: `one` holds D's parts carrying `k1`; `other` D's parts
 // carrying `k2` and P's. Alice takes both in either order, or one alone. `k2` is no key of the
 // entry, so `other`'s D section holds nothing, wherever it comes: P's write applies wherever
-// `other` is held, and `k2` never stands for D's key: `other` after `one` leaves D's entry opened
-// under `k1`, and `one` after `other` is taken, its part on D waiting with its key, before and
-// after a reopen (D's write, stated along the made-up path `k1` opens, cannot be judged and applies
-// nowhere; with `one` alone the commit pends whole). Without the commitment, `other` after `one`
-// would replace D's key (one key per (commit, thing)).
+// `other` is held, and `k2` never stands for D's key. Wherever `one` is held its part on D waits
+// with `k1` (D's write, stated along the made-up path `k1` opens, cannot be judged and applies
+// nowhere; with `one` alone the commit pends whole), and the applied commit keeps no key for D and
+// leaves D's path unopened, in either order, before and after a reopen. Without the commitment,
+// `other` after `one` would replace D's key (one key per (commit, thing)).
 #[test]
 fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
     let (mut lp, (d, p, _, c)) = split_world();
@@ -4288,14 +4288,16 @@ fn an_entry_opening_under_two_keys_judges_alike_in_any_order_spec_wire_4() {
             if reopened {
                 crate::flows::reopen(&mut w, 0).unwrap();
             }
-            // `k1` is kept where `one` is held: with the commit where it came first, else with
-            // its part on D, which waits; `k2` opens nothing in any order
+            // `k1` is kept with D's waiting part alone, whichever came first; `k2` opens nothing
             let e = &mut w.peers[0].engine;
             let opened = e.core.ix.commits.get(&id).and_then(|m| m.view.paths.clone()).and_then(|p| p.get(&d).cloned());
             let on_d = f.header.aspects.iter().position(|a| a.tid == d).unwrap();
             let waits = e.pending_parts(&id).unwrap().is_some_and(|p| p.contains(&on_d));
-            assert_eq!(opened.map(|p| p.is_some()), (order.len() == 2 && order[0] == &one).then_some(true), "{at}: D's path ({reopened})");
+            assert_eq!(opened, None, "{at}: D's path ({reopened})");
             assert_eq!(waits, order.contains(&&one), "{at}: D's part waits ({reopened})");
+            if order.contains(&&other) {
+                assert_eq!(held(&mut w, 0, &id).keys.get(&id_), None, "{at}: D's key in the applied commit ({reopened})");
+            }
             // spec/permissions.md §1 Path, spec/commits.md §4 Unjudgeable: under `k1` the entry
             // states a path of four made-up things, no edge of which a held write set, so D's
             // write cannot be judged and applies in no order; which key opens the entry is what

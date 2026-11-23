@@ -135,6 +135,8 @@ impl Aside {
 /// Parts `examine` set aside: stored pending under the commit's ID while the rest apply.
 pub(crate) struct Waiting {
     pub parts: Vec<osis_commit::Part>,
+    /// The entry keys of the things only these parts are on (`CommitBlob::keys`).
+    pub keys: BTreeMap<usize, [u8; 32]>,
     pub reason: Reason,
     /// Any other reason.
     pub others: Vec<Reason>,
@@ -647,13 +649,14 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // every held part such the commit is unjudgeable (spec/commits.md §4), found before a missing
     // epoch or a `ts` ahead names another wait
     let mut unjudged: BTreeMap<usize, Reason> = BTreeMap::new();
+    let hostile = origin == Origin::Local && tx.core.skip_writer_rules;
     for (ai, a) in h.aspects.iter().enumerate() {
         if skip.contains(&ai) || blob.part(ai).is_none() {
             continue;
         }
-        // a node's own commit is no arrival: it stated its paths by its own walk as it wrote
+        // a hostile writer (tests) applies its own commits whatever path they state
         let path = match blob.path(&a.tid) {
-            Some(osis_commit::ThingPath::Known(p)) if origin != Origin::Local => Some(p),
+            Some(osis_commit::ThingPath::Known(p)) if !hostile => Some(p),
             _ => None,
         };
         if let Some(wait) = thing_wait(tx.core, &h, a, path.as_ref().map(|p| (p.to(&a.tid), p.direct)), &record, &chain_rec) {
@@ -790,7 +793,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         aside.add(wait, [p.ai]);
     }
     // an edge part whose every write rests on an edge not arrived cannot be judged either
-    let edges = if origin == Origin::Local { Vec::new() } else { edge_unreached(tx.core, &h, id, &out.whole, &chain_rec) };
+    let edges = if hostile { Vec::new() } else { edge_unreached(tx.core, &h, id, &out.whole, &chain_rec) };
     for ai in edges {
         out.whole.retain(|x| x.0 != ai);
         unjudged.insert(ai, Reason::MissingChain(h.signer));
@@ -824,7 +827,14 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if let Some(reason) = aside.reason {
         let (parts, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut blob.parts).into_iter().partition(|p| aside.keys.contains(&p.ai));
         blob.parts = rest;
-        out.waiting = Some(Waiting { parts, reason, others: aside.others });
+        // a thing whose every held part waits keeps its entry's key with the waiting copy alone:
+        // the applied record decides paths by what joins, whichever copy came first
+        let on = |p: &osis_commit::Part| h.aspects.get(p.ai).map(|a| a.tid);
+        let aside_only = |t: &Tid| parts.iter().any(|p| on(p) == Some(*t)) && !blob.parts.iter().any(|p| on(p) == Some(*t));
+        let things = h.things();
+        let keys: BTreeMap<usize, [u8; 32]> = blob.keys.iter().filter(|(i, _)| things.get(**i).is_some_and(aside_only)).map(|(i, k)| (*i, *k)).collect();
+        blob.keys.retain(|i, _| !keys.contains_key(i));
+        out.waiting = Some(Waiting { parts, keys, reason, others: aside.others });
     }
     // what joins of an emptied slot is the part's leftover: no stored copy holds it
     blob.parts.retain(|p| p.delta != emptied || !h.aspects.get(p.ai).is_some_and(|_| out.stripped.contains(&p.ai)));
@@ -1221,6 +1231,7 @@ fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) 
     note_awaited(tx, id, &w);
     let mut rest = applied.clone();
     rest.parts = w.parts;
+    rest.keys.extend(w.keys);
     // a part past its expiry counts as never received, a purged one is held value-less (`retention::pending_drops`)
     let h = rest.header.clone();
     crate::retention::pending_drops(tx, id, &mut rest, &h)?;
@@ -1470,7 +1481,12 @@ fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet
 pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commit::Signed, received: WallMs) -> Result<()> {
     let id = blob.id();
     let mut b = blob.clone();
+    // a path stating an edge nobody granted its signer gives it nothing (`thing_wait`)
+    let h = blob.header.clone();
+    let ungranted = |ai: usize| Error::Permission { tid: h.aspects.get(ai).map_or(h.signer, |a| a.tid), needs: osis_base::Role::Write };
     match examine(tx, &mut b, &id, &BTreeSet::new(), Origin::Local, &mut Some(signed))? {
+        Exam::Ready(Parts { waiting: Some(w), .. }) if w.reason == Reason::MissingChain(h.signer) => Err(ungranted(w.parts.first().map_or(0, |p| p.ai))),
+        Exam::Awaits(Reason::MissingChain(s)) if s == h.signer => Err(ungranted(0)),
         Exam::Ready(parts) if parts.waiting.is_some() => Err(Error::Misuse("own commit not applicable: a part waits")),
         // a node never writes a part others would drop
         Exam::Ready(Parts { bad: Some(e), .. }) if !tx.core.skip_writer_rules => Err(e),
