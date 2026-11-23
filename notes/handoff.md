@@ -12,7 +12,8 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 - After it: a removal as evidence, accounts as ordinary things, public things and cards, core without accounts (notes/redesign-plan.md A3 to A6), each one branch, delete first; cut them to what is still needed before starting.
 
 ## In flight beside it
-- `mizzen-masked-lowerings` (worker): issues/masked-backdated-lowerings.md (security); reports options if the fix changes what users see.
+In-flight lines name issues in words, not paths: a branch that closes its issue would fail policy on this note.
+- `mizzen-masked-lowerings` (worker): the masked backdated lowerings issue (security); reports options if the fix changes what users see.
 - `mizzen-seq-runs` (worker): issues/seq-cold-edits-follow-gaps.md, the multi-op case; sent back once (it stopped charging repeated work instead of removing it): load ahead what every op needs, or keep progress across loads.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
