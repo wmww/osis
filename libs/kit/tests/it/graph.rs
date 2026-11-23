@@ -5,7 +5,7 @@ use osis::core::{BODY, NAME};
 use osis_kit::facets::create;
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source};
 use osis_kit::schema::RAW;
-use osis_kit::view::{Act, Cx, Graph, Section, Surface, Tree, WindowState};
+use osis_kit::view::{Act, Block, Cx, Graph, Section, Surface, Tree, ViewSpec, WindowState};
 use osis_kit::views::{open_spec, page};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -480,59 +480,59 @@ fn flaky_data() -> osis_kit::store::Data {
     osis_kit::store::Data::new(db, account, reg)
 }
 
+/// The flaky view `view` shown on home at `v`: its window, tree, screen and whether it showed.
+fn show_flaky(view: &str) -> (WindowState, Tree, Screen, osis::Result<()>) {
+    let d = flaky_data();
+    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
+    let shown = tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new(view, d.home().unwrap()));
+    (w, tree, screen, shown)
+}
+
+fn line(s: &str) -> Vec<Block> {
+    vec![Block::Line(s.into())]
+}
+
 /// What a failed node showed once its read recovers: it is in the tree, and its own failure and a
 /// failure two memos down both reach it.
 #[test]
 fn a_failed_view_recovers() {
-    use osis_kit::view::{Block, ViewSpec};
-    let d = flaky_data();
-    let g = d.home().unwrap();
-    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
-    assert!(tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("failing", g)).is_err());
+    let (w, mut tree, mut screen, shown) = show_flaky("failing");
+    assert!(shown.is_err());
     w.set_local(flaky::BAD, false);
     tree.update(&w, &mut screen).unwrap();
-    assert_eq!(screen.models["v"].blocks, vec![Block::Line("ok 1".into())]);
+    assert_eq!(screen.models["v"].blocks, line("ok 1"));
 }
 
 /// A failure handled two memos down still moves the view when it ends.
 #[test]
 fn a_handled_failure_two_memos_down_moves_the_view() {
-    use osis_kit::view::{Block, ViewSpec};
-    let d = flaky_data();
-    let g = d.home().unwrap();
-    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
-    tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("handling", g)).unwrap();
-    assert_eq!(screen.models["v"].blocks, vec![Block::Line("got 0".into())]);
+    let (w, mut tree, mut screen, shown) = show_flaky("handling");
+    shown.unwrap();
+    assert_eq!(screen.models["v"].blocks, line("got 0"));
     w.set_local(flaky::BAD, false);
     tree.update(&w, &mut screen).unwrap();
-    assert_eq!(screen.models["v"].blocks, vec![Block::Line("got 1".into())]);
+    assert_eq!(screen.models["v"].blocks, line("got 1"));
 }
 
 /// A child that fails does not stop its sibling, and shows once it recovers.
 #[test]
 fn a_failing_child_leaves_its_sibling() {
-    use osis_kit::view::{Block, ViewSpec};
-    let d = flaky_data();
-    let g = d.home().unwrap();
-    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
-    assert!(tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("pair", g)).is_err());
-    assert_eq!(screen.models["v/good"].blocks, vec![Block::Line("fine".into())]);
+    let (w, mut tree, mut screen, shown) = show_flaky("pair");
+    assert!(shown.is_err());
+    assert_eq!(screen.models["v/good"].blocks, line("fine"));
     w.set_local(flaky::BAD, false);
     tree.update(&w, &mut screen).unwrap();
-    assert_eq!(screen.models["v/bad"].blocks, vec![Block::Line("ok 1".into())]);
+    assert_eq!(screen.models["v/bad"].blocks, line("ok 1"));
 }
 
 /// A parent that gives a child a new spec in the pass the old child was marked: the new one shows.
 #[test]
 fn a_child_replaced_while_marked_shows_the_new_spec() {
-    use osis_kit::view::{Block, ViewSpec};
-    let d = flaky_data();
-    let g = d.home().unwrap();
-    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
-    tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("parent", g)).unwrap();
-    assert_eq!(screen.models["v/c"].blocks, vec![Block::Line("a 0".into())]);
+    let (w, mut tree, mut screen, shown) = show_flaky("parent");
+    shown.unwrap();
+    assert_eq!(screen.models["v/c"].blocks, line("a 0"));
     w.set_local(flaky::TAG, 1);
     w.set_local(flaky::PICK, "b");
     tree.update(&w, &mut screen).unwrap();
-    assert_eq!(screen.models["v/c"].blocks, vec![Block::Line("b 1".into())]);
+    assert_eq!(screen.models["v/c"].blocks, line("b 1"));
 }

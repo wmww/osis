@@ -1,24 +1,13 @@
 //! Masonry tags (patches/masonry_core): removing a tagged widget frees its tag, so a new widget can
 //! take it and lookups never reach the removed one.
-use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, WindowSizePolicy};
+use osis_kit::masonry::app::RenderRoot;
 use osis_kit::masonry::core::{NewWidget, WidgetTag};
-use osis_kit::masonry::dpi::PhysicalSize;
-use osis_kit::masonry::theme::default_property_set;
 use osis_kit::masonry::widgets::{Flex, Label};
-use std::sync::Arc;
 
 const NOTE: WidgetTag<Label> = WidgetTag::new("note");
 
 fn root() -> RenderRoot {
-    let options = RenderRootOptions {
-        default_properties: Arc::new(default_property_set()),
-        use_system_fonts: false,
-        size_policy: WindowSizePolicy::User,
-        size: PhysicalSize::new(200, 200),
-        scale_factor: 1.0,
-        test_font: None,
-    };
-    RenderRoot::new(NewWidget::new(Flex::column()), |_| {}, options)
+    crate::render_root(NewWidget::new(Flex::column()).erased(), (200, 200), 1.0).0
 }
 
 fn add(root: &mut RenderRoot, text: &str) {

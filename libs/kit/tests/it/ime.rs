@@ -3,12 +3,11 @@
 //! only while the input method alone changes the text, and `ime::Sync` restarts a keyboard
 //! exactly when the text changed under it.
 use osis_kit::ime::{Seen, Sync, Tell, android, byte_of_utf16, utf16_of_byte};
-use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
+use osis_kit::masonry::app::{RenderRoot, RenderRootSignal};
 use osis_kit::masonry::core::keyboard::{Key, NamedKey};
 use osis_kit::masonry::core::{Ime, ImeText, NewWidget, TextEdit, TextEvent, WidgetId, WidgetTag};
-use osis_kit::masonry::dpi::PhysicalSize;
 use osis_kit::masonry::widgets::{TextAction, TextArea};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 
 const AREA: WidgetTag<TextArea<true>> = WidgetTag::new("area");
 
@@ -19,19 +18,10 @@ struct Field {
 
 impl Field {
     fn new(text: &str) -> Field {
-        let (tx, signals) = channel();
         // a bundled font: no system fonts in tests
         let font = osis_kit::masonry::core::StyleProperty::FontStack(osis_kit::masonry::parley::FontStack::Source("Inter".into()));
         let area = NewWidget::new_with_tag(TextArea::new_editable(text).with_style(font), AREA);
-        let opts = RenderRootOptions {
-            default_properties: std::sync::Arc::new(osis_kit::masonry::theme::default_property_set()),
-            use_system_fonts: false,
-            size_policy: WindowSizePolicy::User,
-            size: PhysicalSize::new(400, 200),
-            scale_factor: 1.0,
-            test_font: None,
-        };
-        let mut root = RenderRoot::new(area.erased(), move |s| drop(tx.send(s)), opts);
+        let (mut root, signals) = crate::render_root(area.erased(), (400, 200), 1.0);
         osis_kit::fonts::register(&mut root);
         let id = root.get_widget_with_tag(AREA).unwrap().id();
         root.focus_on(Some(id));

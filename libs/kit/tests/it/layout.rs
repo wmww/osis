@@ -6,7 +6,7 @@
 use crate::view_tree::{data, name, note};
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source};
 use osis_kit::masonry::accesskit::{Action, ActionRequest, Node, NodeId, Role};
-use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
+use osis_kit::masonry::app::{RenderRoot, RenderRootSignal};
 use osis_kit::masonry::core::{PointerEvent, PointerId, PointerInfo, PointerScrollEvent, PointerState, PointerType, ScrollDelta, Widget, WidgetId, WidgetRef, WindowEvent};
 use osis_kit::masonry::dpi::{PhysicalPosition, PhysicalSize};
 use osis_kit::masonry::kurbo::{Point, Rect};
@@ -14,12 +14,11 @@ use osis_kit::platform::{Platform, SelectionMenu, Thresholds};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 use osis_kit::render::{ROOT, Started, Ui, rail_needs, tree};
 use osis_kit::store::Data;
 use osis_kit::theme::{Look, Theme};
 use osis_kit::window::Waker;
-use std::sync::Arc;
 
 struct Screen {
     ui: Started,
@@ -78,16 +77,7 @@ impl Screen {
 
     fn with_platform(d: Data, width: u32, height: u32, platform: Box<dyn Platform>) -> Screen {
         let ui = Started::from(Ui::new(d.clone(), Waker::new(|| {})).unwrap());
-        let opts = RenderRootOptions {
-            default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
-            use_system_fonts: false,
-            size_policy: WindowSizePolicy::User,
-            size: PhysicalSize::new(width, height),
-            scale_factor: 1.0,
-            test_font: None,
-        };
-        let (tx, signals) = channel();
-        let rr = RenderRoot::new(tree(ui.look()), move |s| drop(tx.send(s)), opts);
+        let (rr, signals) = crate::render_root(tree(ui.look()), (width, height), 1.0);
         let mut s = Screen { ui, rr, d, signals };
         s.ui.start(&mut s.rr, platform, 1.0, false);
         s.ui.wake(&mut s.rr);

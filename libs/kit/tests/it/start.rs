@@ -1,9 +1,9 @@
 //! Starting over a store that cannot open (as every shell does, through `Start`): the window says
 //! why, with the error; start fresh moves the store aside, keeping it on disk, and opens a new one.
 use crate::view_tree::Small;
-use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
+use osis_kit::masonry::app::{RenderRoot, RenderRootSignal};
 use osis_kit::masonry::core::{PointerButton, PointerButtonEvent, PointerEvent, PointerId, PointerInfo, PointerState, PointerType, Widget, WidgetId, WidgetRef, WindowEvent};
-use osis_kit::masonry::dpi::{PhysicalPosition, PhysicalSize};
+use osis_kit::masonry::dpi::PhysicalPosition;
 use osis_kit::masonry::widgets::{Label, TextArea};
 use osis_kit::render::{Start, Started, tree};
 use osis_kit::store::{Data, Registry};
@@ -11,7 +11,7 @@ use osis_kit::widgets::Chip;
 use osis_kit::window::Waker;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 
 struct Window {
     ui: Started,
@@ -26,16 +26,7 @@ impl Window {
 
     fn open_with(dir: &Path, data: Box<dyn Fn(osis::Osis) -> Result<Data, String>>) -> Window {
         let mut ui = Start { dir: dir.to_path_buf(), dial: Vec::new(), waker: Waker::new(|| {}), data }.open();
-        let opts = RenderRootOptions {
-            default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
-            use_system_fonts: false,
-            size_policy: WindowSizePolicy::User,
-            size: PhysicalSize::new(800, 700),
-            scale_factor: 1.0,
-            test_font: None,
-        };
-        let (tx, signals) = channel();
-        let mut rr = RenderRoot::new(tree(ui.look()), move |s| drop(tx.send(s)), opts);
+        let (mut rr, signals) = crate::render_root(tree(ui.look()), (800, 700), 1.0);
         ui.start(&mut rr, Box::new(crate::input::Recorder::default()), 1.0, false);
         ui.wake(&mut rr);
         Window { ui, rr, signals }

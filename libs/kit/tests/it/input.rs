@@ -3,15 +3,15 @@
 //! activated or one focused for typing, never for focus alone, and cut, copy and paste go through
 //! the platform's clipboard.
 use osis_kit::input::Input;
-use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
+use osis_kit::masonry::app::{RenderRoot, RenderRootSignal};
 use osis_kit::masonry::core::keyboard::{Key, KeyState, KeyboardEvent, Modifiers};
 use osis_kit::masonry::core::{NewWidget, PointerButton, PointerButtonEvent, PointerEvent, PointerId, PointerInfo, PointerState, PointerType, TextEvent, WidgetId, WidgetTag};
-use osis_kit::masonry::dpi::{PhysicalPosition, PhysicalSize};
+use osis_kit::masonry::dpi::PhysicalPosition;
 use osis_kit::masonry::kurbo::Point;
 use osis_kit::masonry::properties::types::CrossAxisAlignment;
 use osis_kit::masonry::widgets::{Flex, TextArea};
 use osis_kit::platform::{Platform, SelectionMenu, Thresholds};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -75,20 +75,11 @@ struct Screen {
 
 impl Screen {
     fn new() -> Screen {
-        let (tx, signals) = channel();
         let font = || osis_kit::masonry::core::StyleProperty::FontStack(osis_kit::masonry::parley::FontStack::Source("Inter".into()));
         let a = NewWidget::new_with_tag(TextArea::new_editable("hello world").with_style(font()), A);
         let b = NewWidget::new_with_tag(TextArea::new_editable("second field").with_style(font()), B);
         let col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_child(a).with_child(b);
-        let opts = RenderRootOptions {
-            default_properties: std::sync::Arc::new(osis_kit::masonry::theme::default_property_set()),
-            use_system_fonts: false,
-            size_policy: WindowSizePolicy::User,
-            size: PhysicalSize::new(400, 200),
-            scale_factor: 1.0,
-            test_font: None,
-        };
-        let mut root = RenderRoot::new(NewWidget::new(col).erased(), move |s| drop(tx.send(s)), opts);
+        let (mut root, signals) = crate::render_root(NewWidget::new(col).erased(), (400, 200), 1.0);
         osis_kit::fonts::register(&mut root);
         let _ = root.redraw();
         Screen { root, signals, input: Input::new(THRESHOLDS, Box::new(|_, _| {}), look()), platform: Recorder::default(), now: 1_000_000_000 }

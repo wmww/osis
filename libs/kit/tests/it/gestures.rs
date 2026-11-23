@@ -4,10 +4,10 @@
 //! hovered once lifted.
 use crate::input::{Recorder, THRESHOLDS};
 use osis_kit::input::Input;
-use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, RenderRootSignal, WindowSizePolicy};
+use osis_kit::masonry::app::{RenderRoot, RenderRootSignal};
 use osis_kit::masonry::core::{NewWidget, PointerButton, PointerButtonEvent, PointerEvent, PointerId, PointerInfo, PointerState, PointerType, PointerUpdate, Widget, WidgetTag};
 use osis_kit::masonry::core::pointer::PointerButtons;
-use osis_kit::masonry::dpi::{PhysicalPosition, PhysicalSize};
+use osis_kit::masonry::dpi::PhysicalPosition;
 use osis_kit::masonry::kurbo::{Point, Rect};
 use osis_kit::masonry::properties::types::{CrossAxisAlignment, Length};
 use osis_kit::masonry::widgets::{Flex, Portal, SelectionEnd, SizedBox, TextArea};
@@ -16,7 +16,7 @@ use osis_kit::widgets::{ListAction, Press, Tile, TileIcon, TileStyle, VirtualLis
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 
 const ROWS: [WidgetTag<Tile>; 4] = [WidgetTag::new("r0"), WidgetTag::new("r1"), WidgetTag::new("r2"), WidgetTag::new("r3")];
 pub(crate) const FIELD: WidgetTag<TextArea<true>> = WidgetTag::new("field");
@@ -47,16 +47,7 @@ impl Screen {
     }
 
     pub(crate) fn scaled(w: NewWidget<dyn Widget>, scale: f64) -> Screen {
-        let (tx, signals) = channel();
-        let opts = RenderRootOptions {
-            default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
-            use_system_fonts: false,
-            size_policy: WindowSizePolicy::User,
-            size: PhysicalSize::new(400, 300),
-            scale_factor: scale,
-            test_font: None,
-        };
-        let mut root = RenderRoot::new(w, move |s| drop(tx.send(s)), opts);
+        let (mut root, signals) = crate::render_root(w, (400, 300), scale);
         osis_kit::fonts::register(&mut root);
         let _ = root.redraw();
         let alarms = Rc::new(RefCell::new(Vec::new()));

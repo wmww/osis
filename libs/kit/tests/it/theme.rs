@@ -94,21 +94,11 @@ fn extreme_parameters_stay_finite() {
 /// `TextInput` hands its own to its text area, over the area's).
 #[test]
 fn a_text_input_takes_the_looks_caret_and_selection() {
-    use osis_kit::masonry::app::{RenderRoot, RenderRootOptions, WindowSizePolicy};
     use osis_kit::masonry::core::TextInputHints;
-    use osis_kit::masonry::dpi::PhysicalSize;
     use osis_kit::masonry::properties::{CaretColor, SelectionColor};
     let look = Look::new(&Theme::named(None), false, None);
     let (w, id) = osis_kit::widgets::style::input(&look, "hello", "", osis_kit::widgets::style::Text::Body, false, TextInputHints::default());
-    let opts = RenderRootOptions {
-        default_properties: std::sync::Arc::new(osis_kit::masonry::theme::default_property_set()),
-        use_system_fonts: false,
-        size_policy: WindowSizePolicy::User,
-        size: PhysicalSize::new(200, 100),
-        scale_factor: 1.0,
-        test_font: None,
-    };
-    let mut rr = RenderRoot::new(w.erased(), |_| {}, opts);
+    let (mut rr, _) = crate::render_root(w.erased(), (200, 100), 1.0);
     let _ = rr.redraw();
     let area = rr.get_widget(id).unwrap();
     assert_eq!(area.get_prop::<CaretColor>().color, look.caret);

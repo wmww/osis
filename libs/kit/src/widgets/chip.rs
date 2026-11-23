@@ -5,7 +5,7 @@
 
 use crate::view::ChipMark;
 use crate::text;
-use super::{brighten, fill_card, lean, primary, repaint_on};
+use super::{brighten, fill_card, key_press, lean, primary, repaint_on};
 use crate::theme::{Card, Look, fade};
 use masonry::accesskit::{Node, Role};
 use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget};
@@ -79,15 +79,14 @@ impl Widget for Chip {
 
     fn on_text_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &TextEvent) {
         use masonry::core::keyboard::{Key, NamedKey};
-                if let TextEvent::Keyboard(k) = event
+        if key_press(event) {
+            ctx.submit_action::<ChipPress>(ChipPress::Open);
+        } else if let TextEvent::Keyboard(k) = event
             && k.state.is_up()
+            && matches!(k.key, Key::Named(NamedKey::Delete | NamedKey::Backspace))
+            && self.removable
         {
-            match &k.key {
-                Key::Named(NamedKey::Enter) => ctx.submit_action::<ChipPress>(ChipPress::Open),
-                Key::Character(c) if c == " " => ctx.submit_action::<ChipPress>(ChipPress::Open),
-                Key::Named(NamedKey::Delete | NamedKey::Backspace) if self.removable => ctx.submit_action::<ChipPress>(ChipPress::Remove),
-                _ => {}
-            }
+            ctx.submit_action::<ChipPress>(ChipPress::Remove);
         }
     }
 
