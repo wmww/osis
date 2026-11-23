@@ -5,12 +5,12 @@ use std::cmp::Reverse;
 use crate::schema::{CollectionOrder as Order, CollectionSource as Source};
 use crate::schema::Collection;
 use osis::{Result, Tid};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 /// `t`'s view: `collection.0`, else what it holds, placed as cards.
 pub fn of(cx: &Reader, t: Tid) -> Result<Collection> {
-    Ok((*cx.collection(t)?).clone().unwrap_or(Collection { source: Source::Holds, having: BTreeSet::new().into_iter().collect(), order: Order::Own, arrange: crate::schema::Arrange::Cards, element: None }))
+    Ok((*cx.collection(t)?).clone().unwrap_or(Collection { source: Source::Holds, having: Default::default(), order: Order::Own, arrange: crate::schema::Arrange::Cards, element: None }))
 }
 
 /// What `view` holds on `t`, narrowed and ordered, without `t` itself.
@@ -65,15 +65,12 @@ fn held(cx: &Reader, t: Tid, view: &Collection) -> Result<Vec<Tid>> {
 
 /// Whether `t` passes the view's narrowing.
 pub fn having(cx: &Reader, t: Tid, view: &Collection) -> Result<bool> {
-    if view.having.is_empty() {
-        return Ok(true);
-    }
     for p in view.having.iter() {
         if cx.has(t, p)? {
             return Ok(true);
         }
     }
-    Ok(false)
+    Ok(view.having.is_empty())
 }
 
 fn sort(cx: &Reader, v: &mut [Tid], view: &Collection) -> Result<()> {
