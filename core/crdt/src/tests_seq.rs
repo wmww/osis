@@ -85,6 +85,10 @@ proptest! {
         let f = frag(st);
         for g in [f.clone(), via_snapshot(&f)] {
             let ws: Vec<Dot> = g.writes().into_iter().map(|(d, _)| d).collect();
+            // `write_ranges` lists exactly the counters `writes` does
+            let mut runs = std::collections::BTreeSet::new();
+            g.write_ranges(&mut |s, lo, hi| runs.extend((lo..hi).map(|c| Dot::new(s.clone(), c))));
+            prop_assert_eq!(&runs, &ws.iter().cloned().collect());
             for n in 1..=3u8 {
                 let src = node(n);
                 for lo in [1u64, 2, 5, 9, 20] {

@@ -79,7 +79,7 @@ Purging or expiring every minting **destroys** the thing.
 
 ## 4. Open
 - issues/eph-expired-anchors-fill-cap.md: unpruned expired creations stay as anchors for live neighbours.
-- The carried bound is a hull per source: a session writing lasting values on an aspect both before and after an expiring write (a disappearing setting turned off and on in one session) puts that write inside an honest snapshot's hull, so its expiry rebuilds the aspect (O(aspect), correct). A hostile snapshot carrying copies at a source's extreme counters does so for every expiry of that source while held: the cost every expiry pays without the bound. Ranges per source would grow with how often a session alternates.
+- What a held snapshot carries is runs of counters per source (`retention::snapshot::Carried`): an expiring write an honest snapshot holds value-less is in no valued run, so its expiry strips in place. A hostile snapshot holding a value of a write of the expiring commit rebuilds the aspect (O(aspect), correct) at every expiry of that commit while held; its runs grow with how often a session alternates between the aspect and others.
 - A destroyed thing strands, silently, what only its strongs held, as an expired one does.
 
 ## 5. Properties and tests

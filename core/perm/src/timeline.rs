@@ -296,6 +296,7 @@ impl<S: Store> Timeline<S> {
             return out;
         }
         let went_things: Vec<Tid> = went.iter().map(|x| x.0).collect();
+        osis_base::costs::count("timeline: commits given", given.len() as u64);
         out.walk = self.paths.sync(&came, &went_things, &gone, &given, &carriers);
         // a trusted write that came or went: the walk's trust set names it by its part
         let named = |c: &CommitId| self.trusted.range(WriteId(*c, 0)..=WriteId(*c, u32::MAX)).next().is_some();

@@ -473,7 +473,7 @@ impl<S: Store> Facts<S> {
 
     /// Forgets held commits: each delta leaves the store (no verdict was stored but an
     /// addendum's); a frontier or an addendum forgotten changes what names the commits it
-    /// listed, which `carried` reports, a snapshot those it carried (`snapshots`). Work: per
+    /// listed, which `listed` reports, a snapshot those it carried (`snapshots`). Work: per
     /// delta its path and lists.
     pub(super) fn forget(&mut self, commits: &[CommitId]) -> Taken {
         let mut out = Taken::default();
@@ -497,7 +497,7 @@ impl<S: Store> Facts<S> {
                                 self.named.remove(&(x, t));
                             }
                         }
-                        out.carried.insert(x);
+                        out.listed.insert(x);
                     }
                 }
             }
@@ -507,7 +507,7 @@ impl<S: Store> Facts<S> {
                 let carried = self.store.carried(&id);
                 let Some(f) = self.store.remove(&id) else { continue };
                 match &f.class {
-                    FactClass::Addendum(_, list) => out.carried.extend(list.commits()),
+                    FactClass::Addendum(_, list) => out.listed.extend(list.commits()),
                     FactClass::Snapshot { .. } => out.snapshots.push((*c, f.on, carried)),
                     FactClass::Purge(_) if right.any() => out.scopes.extend(f.scope()),
                     _ => {}
@@ -1144,8 +1144,9 @@ enum Namer {
 #[derive(Default)]
 pub(super) struct Taken {
     pub deltas: Vec<WriteId>,
-    /// Commits whose namers changed: listed by an addendum or a frontier forgotten.
-    pub carried: BTreeSet<CommitId>,
+    /// Commits whose namers changed: listed by an addendum or a frontier that went or was read
+    /// further.
+    pub listed: BTreeSet<CommitId>,
     /// The snapshots taken or forgotten (commit, thing), and those that came to carry a commit
     /// or stopped, each with the commits concerned.
     pub snapshots: Vec<(CommitId, Tid, Vec<CommitId>)>,

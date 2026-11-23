@@ -1233,3 +1233,22 @@ impl Engine {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Spans;
+    use osis_crdt::{Session, Source};
+
+    // spec/permissions.md §5.2 Copies: a snapshot carries exactly the commits whose counters meet
+    // a write its body holds, so runs join where they meet or touch and keep every gap.
+    #[test]
+    fn runs_keep_their_gaps() {
+        let (a, b) = (Source::session(Session::from_bytes(&[1; 31])), Source::session(Session::from_bytes(&[2; 31])));
+        let s = Spans::of([(a.clone(), 5, 7), (a.clone(), 1, 3), (a.clone(), 3, 4), (a.clone(), 9, 10), (b.clone(), 4, 5), (a.clone(), 6, 9)]);
+        assert_eq!(s.entries().map(|(x, lo, hi)| (x == &a, lo, hi)).collect::<Vec<_>>(), [(true, 1, 4), (true, 5, 10), (false, 4, 5)]);
+        for (lo, hi, want) in [(0, 1, false), (0, 2, true), (4, 5, false), (3, 5, true), (4, 6, true), (10, 20, false), (9, 10, true)] {
+            assert_eq!(s.meets(&a, lo, hi), want, "{lo}..{hi}");
+        }
+        assert!(!s.meets(&b, 3, 4) && s.meets(&b, 4, 5) && !s.meets(&b, 5, 6));
+    }
+}

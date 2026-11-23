@@ -372,11 +372,11 @@ impl<S: Store> Paths<S> {
         for c in &given {
             for p in &c.parts {
                 if let PartKind::Edge(EdgeWrite { frontier: Some(f), .. }) = &p.kind {
-                    taken.carried.extend(f.keys().map(|(_, c)| c));
+                    taken.listed.extend(f.keys().map(|(_, c)| c));
                 }
             }
         }
-        taken.carried.extend(t.carried);
+        taken.listed.extend(t.listed);
         taken.deltas.extend(t.deltas);
         taken.addenda.extend(t.addenda);
         taken.snapshots.extend(t.snapshots);
@@ -409,11 +409,11 @@ impl<S: Store> Paths<S> {
         for c in &given {
             for p in &c.parts {
                 if let PartKind::Edge(EdgeWrite { frontier: Some(f), .. }) = &p.kind {
-                    taken.carried.extend(f.keys().map(|(_, c)| c));
+                    taken.listed.extend(f.keys().map(|(_, c)| c));
                 }
             }
         }
-        taken.carried.extend(t.carried);
+        taken.listed.extend(t.listed);
         taken.deltas.extend(t.deltas);
         taken.addenda.extend(t.addenda);
         taken.snapshots.extend(t.snapshots);
@@ -473,12 +473,12 @@ impl<S: Store> Paths<S> {
         // a list naming a snapshot names what it carries: of a list that went or was read
         // further, and of a snapshot that came, went or changed while a list names it (one held,
         // or one that went with it)
-        let through = self.facts.carried_by(&taken.carried);
+        let through = self.facts.carried_by(&taken.listed);
         for (s, on, carried) in taken.snapshots {
-            let listed = taken.carried.contains(&s) || self.facts.in_a_list(&s, &on);
+            let listed = taken.listed.contains(&s) || self.facts.in_a_list(&s, &on);
             if listed { &mut ch.named } else { &mut ch.carried }.extend(carried);
         }
-        ch.named.extend(taken.carried);
+        ch.named.extend(taken.listed);
         ch.named.extend(through);
         let own = self.facts.own_listed(&ch.parts);
         ch.named.extend(own);

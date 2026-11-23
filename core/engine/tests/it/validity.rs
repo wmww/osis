@@ -4659,10 +4659,12 @@ fn split_commits_waiting_on_a_path_cost_an_unrelated_write_nothing_spec_commits_
         osis_base::costs::take();
         put(&mut lp, 0, mine, &REG, &s("unrelated"));
         let costs = osis_base::costs::take();
-        ["paths: waits settled", "paths: commits opened again"].map(|n| costs.iter().find(|x| x.0 == n).map_or(0, |x| x.2))
+        ["paths: waits settled", "paths: commits opened again", "timeline: commits given"].map(|n| costs.iter().find(|x| x.0 == n).map_or(0, |x| x.2))
     };
-    assert_eq!(work(1), [0, 0]);
-    assert_eq!(work(10), [0, 0]);
+    // the write is given to the walk once: its later touches (`put_meta`) move nothing the walk
+    // reads (`Paths::reads`)
+    assert_eq!(work(1), [0, 0, 1]);
+    assert_eq!(work(10), [0, 0, 1]);
 }
 
 // The owner's rule (notes/path-form.md), spec/wire.md §4 `Split`: a write making things beside
