@@ -328,8 +328,8 @@ fn a_trusted_void_write_on_a_path_edge_is_a_copy_and_moves_no_verdict_spec_permi
 /// evidence holds the removal (on K's edge) and every write on the edges it writes, the creation
 /// of Q's entry its other part resets among them (X's grant to Q, on no stated path); the reader holding them judges as the writer. The wait
 /// itself (a removal applies only once each reset entry's creation is held, spec/permissions.md §2)
-/// is the engine's (`apply::validity`), not the walk's: its engine test is owed
-/// (notes/evidence-derivation.md, Left).
+/// is the engine's (`apply::validity`), not the walk's: its engine test is
+/// `f9_a_removal_of_two_holders_waits_for_both_creations_at_a_reader_spec_permissions_2`.
 #[test]
 fn f9_a_removal_of_two_holders_brings_both_creations_under_the_walk_spec_permissions_2() {
     let mut w = World::new(&[(X, A), (Y, D)]);

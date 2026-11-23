@@ -35,6 +35,17 @@ impl Held {
     pub fn deltas(self) -> paths::Commit {
         paths::Commit { id: self.id, ts: self.ts, signer: self.signer, parts: self.parts }
     }
+
+    /// Its parts and its edge writes as the walk's input: op k is part `parts.len() + k`, along
+    /// the path the commit states for its target, the frontier naming commits whole.
+    pub fn commit(&self) -> paths::Commit {
+        let mut parts = self.parts.clone();
+        if let Some(r) = &self.role {
+            let list = r.frontier.as_ref().map(|f| Arc::new(paths::List::whole((**f).clone())));
+            parts.extend(r.ops.iter().map(|o| paths::Part { on: o.target, path: r.path_to(&o.target).to_vec(), direct: r.direct, kind: paths::PartKind::Edge(paths::EdgeWrite { holder: o.holder, value: o.edge, frontier: list.clone() }) }));
+        }
+        paths::Commit { id: self.id, ts: self.ts, signer: self.signer, parts }
+    }
 }
 
 /// What the node holds that the walk reads. Applied, verified commits only (pending ones are
@@ -241,7 +252,7 @@ impl<S: Store> Timeline<S> {
                     if !held_before.contains(id) {
                         out.fresh.insert(*id);
                     }
-                    let c = commit_of(&h);
+                    let c = h.commit();
                     self.await_records(&c);
                     if let Some(role) = h.role {
                         for o in &role.ops {
@@ -718,16 +729,6 @@ impl<S: Store> Timeline<S> {
         let edges = self.edges_at(at.point);
         View::at(&edges, at.ts).roles_from_without(node, skip)
     }
-}
-
-/// The walk's input for `h`: its parts, then its edge writes.
-fn commit_of(h: &Held) -> paths::Commit {
-    let mut parts = h.parts.clone();
-    if let Some(r) = &h.role {
-        let list = r.frontier.as_ref().map(|f| Arc::new(paths::List::whole((**f).clone())));
-        parts.extend(r.ops.iter().map(|o| paths::Part { on: o.target, path: r.path_to(&o.target).to_vec(), direct: r.direct, kind: paths::PartKind::Edge(paths::EdgeWrite { holder: o.holder, value: o.edge, frontier: list.clone() }) }));
-    }
-    paths::Commit { id: h.id, ts: h.ts, signer: h.signer, parts }
 }
 
 /// Adds what a second update of one reading changed to the first's.

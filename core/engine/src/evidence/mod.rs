@@ -19,6 +19,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 
+pub mod held;
+
 /// An edge: (holder, target).
 pub type Edge<T> = (T, T);
 /// A copy: a commit's parts on one thing, (commit ID, thing).

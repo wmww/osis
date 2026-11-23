@@ -697,7 +697,7 @@ pub(crate) fn setting_now(core: &Core, tid: &Tid) -> Option<Arc<ct::RetentionSet
 /// The path commit `h` (view `view`) states for thing `t`: the things it writes `t` along, the
 /// hops marked direct, and its purge author as an index into [signer, the things, `t`]. `None`
 /// where a split commit's entry for `t` is bad or opens nowhere here.
-fn stated(h: &Header, view: &View, t: &Tid) -> Option<(Vec<Tid>, osis_base::format::PathMarks, u32)> {
+pub(crate) fn stated(h: &Header, view: &View, t: &Tid) -> Option<(Vec<Tid>, osis_base::format::PathMarks, u32)> {
     let known;
     let p = match &h.path {
         osis_commit::Paths::One(p) => p,

@@ -1853,6 +1853,10 @@ fn node_checks(p: &mut Peer, played: &Played, o: &Oracle) -> Result<(), String> 
         if p.engine.perm_digest(false) != p.engine.perm_digest(true) {
             return Err(format!("{when}: the permission index differs from its walk from scratch"));
         }
+        // the engine side of the joint property (spec/permissions.md §4)
+        if let Some(d) = p.engine.check_evidence().unwrap() {
+            return Err(format!("{when}: evidence: {d}"));
+        }
         let before = shown(p, &played.things);
         // every writer compacted last: nothing is left apart until a copy arrives, on the aspects
         // a writer compacted (rosters: role commits are never dropped)

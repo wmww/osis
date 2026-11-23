@@ -338,6 +338,20 @@ impl Engine {
         Some(m.valid().get(ai).copied().unwrap_or(true))
     }
 
+    /// Removes `holders` from `target` in one commit under one rotation (spec/commits.md §2), as
+    /// a link revocation does (tests: an explicit removal of several holders).
+    #[doc(hidden)]
+    pub fn remove_holders(&mut self, target: &Tid, first: &Tid, others: &[Tid]) -> Result<crate::flows::Done> {
+        self.remove_signed(None, target, &crate::flows::Demotion { holder: *first, new: None, retain: None }, others)
+    }
+
+    /// Whether held commit `c` is a role commit whose removal resets an entry of unknown
+    /// creation, so none of its edge writes applies (`apply::validity::add_role_commit`; tests).
+    #[doc(hidden)]
+    pub fn unresolved(&self, c: &CommitId) -> bool {
+        self.core.ix.unresolved.contains(c)
+    }
+
     /// The (target, AK) of each strong `source`'s held history holds (`refs::kept`; tests: the
     /// reference index property).
     #[doc(hidden)]

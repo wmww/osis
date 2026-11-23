@@ -23,6 +23,13 @@ use std::sync::Arc;
 pub use content::{Fact, FactClass, Holding, MemStore, NameKey, Pair, Store};
 pub use walk::{Applied, Counts, History, Key, Way};
 
+/// The edges a part by `signer` on `on` along `path` (hops `direct` marked) rests on, key hop
+/// first, as the walk reads them (draft §1 Hops); `holder` for an edge write, `edge_class` for an
+/// edge-class part. None where its path is not well formed.
+pub fn hops(mint: &BTreeMap<Tid, Tid>, signer: Tid, path: &[Tid], direct: osis_base::format::PathMarks, on: Tid, holder: Option<Tid>, edge_class: bool) -> Vec<(Tid, Tid)> {
+    path::shape(mint, signer, path, direct, on, holder, edge_class).hops
+}
+
 /// A held commit's parts.
 #[derive(Clone, Debug)]
 pub struct Commit {
