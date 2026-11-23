@@ -610,7 +610,7 @@ fn removed_entry_hides_newer_write_spec_5_6() {
     all_orders(&[created, removal, edit.clone(), again], map(&[(&k, 8)]));
     // no creation held: nothing shows
     all_orders(&[edit], map(&[]));
-    let w_only = Fragment::Struct(crate::fragment::Struct { meta: Meta { reset: None, w: Some(w), ..Meta::default() }, fields: BTreeMap::new() });
+    let w_only = Fragment::Struct(crate::fragment::Struct { meta: Meta { reset: None, w: Some(w) }, fields: BTreeMap::new() });
     all_orders(&[nested_rec(Dot::new(node(9), 1), &Value::Str("secret".into()), w_only)], map(&[]));
 }
 

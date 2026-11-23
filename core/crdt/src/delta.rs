@@ -556,9 +556,9 @@ pub(crate) fn overlay(acc: Fragment, d: Fragment, w: &Writer) -> Fragment {
 /// A later reset drops the delta's earlier content below it (same commit, same stamp).
 fn start<K: Ord, T>(a: Meta, items: BTreeMap<K, T>, b: Meta) -> (Meta, BTreeMap<K, T>) {
     if b.reset.is_some() {
-        return (Meta { reset: b.reset, w: b.w, ..Meta::default() }, BTreeMap::new());
+        return (Meta { reset: b.reset, w: b.w }, BTreeMap::new());
     }
-    (Meta { reset: a.reset, w: b.w.or(a.w), ..Meta::default() }, items)
+    (Meta { reset: a.reset, w: b.w.or(a.w) }, items)
 }
 
 fn overlay_opt(a: Option<Box<Fragment>>, b: Option<Box<Fragment>>, reset: bool, w: &Writer) -> Option<Box<Fragment>> {

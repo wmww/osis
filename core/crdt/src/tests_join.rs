@@ -21,7 +21,7 @@ fn settled(seed: u64, types: &[Ty]) {
     assert!(ds.iter().all(|d| matches!(d, Fragment::Register(_)) || !d.settled_above(at)));
     assert!(!Fragment::default().settled_above(crate::testutil::ts(0)));
     let stamp = Stamp::new(at, node(7), 1);
-    let meta = Meta { reset: Some(stamp.clone()), w: None, ..Meta::default() };
+    let meta = Meta { reset: Some(stamp.clone()), w: None };
     let states = [
         Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: stamp.clone(), value: Some(osis_base::Value::Int(1)) }) }),
         Fragment::Register(Register { reset: Some(stamp.clone()), write: None }),
@@ -139,11 +139,11 @@ mod direct {
     fn presence_spec_4_3() {
         let set = |meta: Meta, elems: Vec<(Dot, Elem)>| Fragment::Set(Set::new(meta, elems.into_iter().collect()));
         let empty = Value::Set(Default::default());
-        assert_eq!(set(Meta { reset: None, w: Some(st(1, 1)), ..Meta::default() }, vec![]).read(), Some(empty.clone()));
+        assert_eq!(set(Meta { reset: None, w: Some(st(1, 1)) }, vec![]).read(), Some(empty.clone()));
         let mut s = set(Meta::default(), vec![(Dot::new(src(1), 1), Elem { reset: None, frag: Some(Box::new(reg(st(1, 1), Value::Int(4)))), gone: None })]);
         s.join(set(Meta::default(), vec![(Dot::new(src(1), 1), Elem::tomb(&st(2, 1)))]));
         assert_eq!(s.read(), Some(empty));
-        s.join(set(Meta { reset: Some(st(3, 1)), w: None, ..Meta::default() }, vec![]));
+        s.join(set(Meta { reset: Some(st(3, 1)), w: None }, vec![]));
         assert_eq!(s.read(), None, "remove_aspect: absent");
         let valueless = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: st(1, 1), value: None }) });
         assert_eq!(valueless.read(), None);
@@ -158,9 +158,9 @@ mod direct {
         let fields = |m: Meta, f: Vec<(u64, Fragment)>| Fragment::Struct(Struct { meta: m, fields: f.into_iter().collect() });
         let mut s = fields(Meta::default(), vec![(1, reg(st(1, 1), Value::Int(1))), (900, reg(st(1, 1), Value::Int(9)))]);
         assert_eq!(s.read(), Some(Value::Map([(Value::Int(1), Value::Int(1)), (Value::Int(900), Value::Int(9))].into_iter().collect())));
-        s.join(fields(Meta { reset: Some(st(2, 1)), w: None, ..Meta::default() }, vec![(2, reg(st(2, 1), Value::Int(2)))]));
+        s.join(fields(Meta { reset: Some(st(2, 1)), w: None }, vec![(2, reg(st(2, 1), Value::Int(2)))]));
         assert_eq!(s.read(), Some(Value::Map([(Value::Int(2), Value::Int(2))].into_iter().collect())));
-        s.join(fields(Meta { reset: Some(st(3, 1)), w: Some(st(3, 1)), ..Meta::default() }, vec![]));
+        s.join(fields(Meta { reset: Some(st(3, 1)), w: Some(st(3, 1)) }, vec![]));
         assert_eq!(s.read(), Some(Value::Map(osis_base::ValueMap::new())));
     }
 
@@ -173,7 +173,7 @@ mod direct {
         let mut e = en(Meta::default(), Some((st(1, 1), 1)), vec![(1, reg(st(1, 1), Value::Int(10)))]);
         assert_eq!(e.read(), Some(Value::Enum(1, Some(Box::new(Value::Int(10))))));
         // case 2 at t3 (reset, case, payload); an edit of case 1's payload at t4
-        e.join(en(Meta { reset: Some(st(3, 1)), w: None, ..Meta::default() }, Some((st(3, 1), 2)), vec![(2, reg(st(3, 1), Value::Int(20)))]));
+        e.join(en(Meta { reset: Some(st(3, 1)), w: None }, Some((st(3, 1), 2)), vec![(2, reg(st(3, 1), Value::Int(20)))]));
         e.join(en(Meta::default(), None, vec![(1, reg(st(4, 1), Value::Int(11)))]));
         assert_eq!(e.read(), Some(Value::Enum(2, Some(Box::new(Value::Int(20))))));
         // an older payload write of case 1 is pruned by the case change

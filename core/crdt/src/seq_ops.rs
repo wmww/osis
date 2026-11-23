@@ -303,7 +303,7 @@ pub(crate) fn wrap_element(d: Dot, content: Fragment) -> Seq {
 pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
     let text = acc.text;
     let d_meta = d.meta.clone();
-    let (mut meta, mut elems) = if d_meta.reset.is_some() { (d_meta, BTreeMap::new()) } else { (Meta { reset: acc.meta.reset.clone(), w: d_meta.w.or(acc.meta.w.clone()), ..Meta::default() }, acc.into_elems()) };
+    let (mut meta, mut elems) = if d_meta.reset.is_some() { (d_meta, BTreeMap::new()) } else { (Meta { reset: acc.meta.reset.clone(), w: d_meta.w.or(acc.meta.w.clone()) }, acc.into_elems()) };
     // whether an element the commit made may now be omitted: one `d` removes, or one a position
     // write of `d` stopped naming (earlier ops left none to omit)
     let mut omit = false;

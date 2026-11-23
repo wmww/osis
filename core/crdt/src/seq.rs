@@ -914,7 +914,7 @@ impl<'s> Layered<'s> {
     pub(crate) fn to_seq(&self) -> Seq {
         let mut elems = self.base.elems.clone();
         elems.extend(self.top.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let s = Seq::new(self.base.text, Meta { reset: self.base.meta.reset.clone(), w: self.w.clone(), ..Meta::default() }, elems);
+        let s = Seq::new(self.base.text, Meta { reset: self.base.meta.reset.clone(), w: self.w.clone() }, elems);
         // (a placement held in part is over records held in part)
         #[cfg(any(test, fuzzing))]
         assert!(self.lin.partial().is_some() || *self.lin == Lin::build(&s.elems, s.text), "layered placement differs from a whole pass");

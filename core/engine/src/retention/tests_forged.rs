@@ -166,7 +166,7 @@ fn forged_copies_of_a_value_removal_fail_no_node_spec_crdt_5_5() {
 fn a_forged_reset_copy_of_a_register_write_fails_no_node_spec_crdt_5_1() {
     use crdt_model::state::Composite;
     let write = MFrag::Register { reset: None, write: Some((mstamp(5, 3), Some(crdt_model::value::Value::Int(2)))) };
-    let reset = MFrag::Seq { text: true, c: Composite { reset: Some(mstamp(5, 3)), w: None, w_valueless: false }, elems: Default::default() };
+    let reset = MFrag::Seq { text: true, c: Composite { reset: Some(mstamp(5, 3)), w: None }, elems: Default::default() };
     assert_eq!(forged_pair(&write, &reset), Some(Value::Int(2)));
 }
 
@@ -230,7 +230,7 @@ fn membedded(s: &crdt_model::stamp::Stamp, cs: &str) -> std::collections::BTreeM
 fn a_forged_copy_of_an_embedding_fails_no_node_spec_crdt_7() {
     use crdt_model::state::Composite;
     let s = mstamp(5, 3);
-    let text = MFrag::Seq { text: true, c: Composite { reset: Some(s.clone()), w: None, w_valueless: false }, elems: membedded(&s, "abc") };
+    let text = MFrag::Seq { text: true, c: Composite { reset: Some(s.clone()), w: None }, elems: membedded(&s, "abc") };
     assert_eq!(forged_pair(&mstring(&s, "a"), &text), Some(Value::Str("a".into())));
 }
 
@@ -246,7 +246,7 @@ fn an_embedding_losing_by_copy_order_fails_no_node_spec_crdt_4_1() {
     let mut elems = membedded(&s, "ab");
     let second = crdt_model::stamp::Dot { source: MSource::Derived(Box::new(s.dot.clone())), ctr: 2 };
     elems.insert(mdot(10), MSeqElem::new(mstamp(6, 10), MAnchor::Dot(second), Content::Char('z')));
-    let slots = MFrag::Slots { reg: Some(Box::new(mstring(&s, "ab"))), slots: [(9, MFrag::Seq { text: true, c: Composite { reset: Some(s.clone()), w: None, w_valueless: false }, elems })].into_iter().collect() };
+    let slots = MFrag::Slots { reg: Some(Box::new(mstring(&s, "ab"))), slots: [(9, MFrag::Seq { text: true, c: Composite { reset: Some(s.clone()), w: None }, elems })].into_iter().collect() };
     assert!(forged_pair(&slots, &mstring(&s, "é")).is_some());
 }
 
@@ -263,7 +263,7 @@ fn a_register_write_joining_a_text_holding_its_embedding_is_stored_spec_crdt_7()
     let first = MFrag::Seq { text: true, c: Composite::default(), elems: [(mdot(1), MSeqElem::new(mstamp(7, 1), MAnchor::Head, Content::Char('q')))].into_iter().collect() };
     let mut elems = membedded(&s, "c");
     elems.insert(mdot(4), MSeqElem::new(mstamp(6, 4), MAnchor::Head, Content::Char('a')));
-    let text = MFrag::Seq { text: true, c: Composite { reset: Some(s.clone()), w: None, w_valueless: false }, elems };
+    let text = MFrag::Seq { text: true, c: Composite { reset: Some(s.clone()), w: None }, elems };
     let (mut lp, t) = world();
     let made: Vec<CommitId> = [first, text, mstring(&s, "c")].iter().map(|f| forge(&mut lp, t, carried(f).expect("a wire form")).expect("the forger makes it")).collect();
     for (p, order) in [(0, [0, 2, 1]), (2, [0, 1, 2])] {
