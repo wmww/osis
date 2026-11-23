@@ -394,20 +394,20 @@ impl Reader {
         Ok(out)
     }
 
-    /// The viewer's arrangement of `t` (the main home's first; `None`: its own).
+    /// The viewer's arrangement of `t` (`None`: its own).
     pub fn arranged(&self, t: Tid) -> Result<Option<Arrange>> {
-        for g in self.homes()? {
-            if let Some(a) = self.db.at(g, ARRANGED).path(p![Weak(t)]).get()? {
-                return Ok(Some(a));
-            }
-        }
-        Ok(None)
+        self.on_homes(ARRANGED, t)
     }
 
     /// Which thing view the viewer chose for `t` (`None`: the default).
     pub fn viewed_as(&self, t: Tid) -> Result<Option<String>> {
+        self.on_homes(VIEWED_AS, t)
+    }
+
+    /// `key`'s entry for `t` on the homes, the main home's first.
+    fn on_homes<T: osis::Codec + 'static>(&self, key: osis::generated::Aspect<BTreeMap<Weak, T>>, t: Tid) -> Result<Option<T>> {
         for g in self.homes()? {
-            if let Some(v) = self.db.at(g, VIEWED_AS).path(p![Weak(t)]).get()? {
+            if let Some(v) = self.db.at(g, key).path(p![Weak(t)]).get()? {
                 return Ok(Some(v));
             }
         }
@@ -489,15 +489,7 @@ impl Reader {
 
     /// This device's window, if it has one (the main home's first).
     pub fn window_opt(&self) -> Result<Option<Tid>> {
-        Ok(*self.memo(("window_opt", ()), |r, _| {
-            let node = r.db.node();
-            for g in r.homes()? {
-                if let Some(w) = r.db.at(g, WINDOWS).path(p![Weak(node)]).get::<Strong>()? {
-                    return Ok(Some(w.0));
-                }
-            }
-            Ok(None)
-        })?)
+        Ok(*self.memo(("window_opt", ()), |r, _| Ok(r.on_homes(WINDOWS, r.db.node())?.map(|w| w.0)))?)
     }
 
     /// The thing this window has open; `None`: home (also when it is held no more).
@@ -509,35 +501,30 @@ impl Reader {
 }
 
 impl Data {
-    /// Remembers how the viewer arranges `t`, on home: `t` need not be writable.
-    pub fn set_arranged(&self, t: Tid, a: &Arrange) -> Result<()> {
-        let g = self.home()?;
+    /// `f`'s writes, in one commit.
+    pub(crate) fn commit(&self, f: impl FnOnce(&mut osis::Write<'_>) -> Result<()>) -> Result<()> {
         let mut w = self.db.write();
-        w.at(g, ARRANGED).path(p![Weak(t)]).set(a)?;
+        f(&mut w)?;
         w.commit()?;
         Ok(())
     }
+    /// Remembers how the viewer arranges `t`, on home: `t` need not be writable.
+    pub fn set_arranged(&self, t: Tid, a: &Arrange) -> Result<()> {
+        let g = self.home()?;
+        self.commit(|w| w.at(g, ARRANGED).path(p![Weak(t)]).set(a))
+    }
     pub fn set_viewed_as(&self, t: Tid, id: &str) -> Result<()> {
         let g = self.home()?;
-        let mut w = self.db.write();
-        w.at(g, VIEWED_AS).path(p![Weak(t)]).set(&id.to_string())?;
-        w.commit()?;
-        Ok(())
+        self.commit(|w| w.at(g, VIEWED_AS).path(p![Weak(t)]).set(&id.to_string()))
     }
     /// Tags `t` with `tag`: a strong in the tag's `holds.0` (a tag in a tag is nested: notes/tags.md).
     /// A strong grants nothing, so tagging shares nothing (notes/tags.md, Sharing a tag).
     pub fn add_tag(&self, t: Tid, tag: Tid) -> Result<()> {
-        let mut w = self.db.write();
-        w.hold(tag, t)?;
-        w.commit()?;
-        Ok(())
+        self.commit(|w| w.hold(tag, t))
     }
     /// Takes `t` out of `tag` (home still holds it): every reference to it in the tag's `holds.0`.
     pub fn remove_tag(&self, t: Tid, tag: Tid) -> Result<()> {
-        let mut w = self.db.write();
-        w.unhold(tag, t)?;
-        w.commit()?;
-        Ok(())
+        self.commit(|w| w.unhold(tag, t))
     }
     /// Undoes my newest commit to `t` (made on any of my nodes; never someone else's); `false`
     /// when there is none. Its creation is not undone: that commit also wrote home's strong to
@@ -574,7 +561,7 @@ impl Data {
             new.push(Weak(t));
             edits.push((g, base, new));
         }
-        self.write_favorites(&edits)
+        self.commit(|w| edits.iter().try_for_each(|(g, base, new)| w.at(*g, FAVORITES).edit(base, new)))
     }
     /// Moves the favorite at `from` to `to` (indices into `favorites()`), by a sequence move
     /// inside the list that holds it: a node removing it meanwhile wins (a move never brings
@@ -606,45 +593,31 @@ impl Data {
             if dest == i && at.len() == 1 {
                 return Ok(());
             }
-            let mut w = self.db.write();
-            for &j in at.iter().skip(1).rev() {
-                w.at(g, FAVORITES).path(p![]).splice(j..j + 1, ())?;
-            }
-            if dest != i {
-                w.at(g, FAVORITES).path(p![]).move_range(i..i + 1, dest)?;
-            }
-            w.commit()?;
-            return Ok(());
+            return self.commit(|w| {
+                for &j in at.iter().skip(1).rev() {
+                    w.at(g, FAVORITES).path(p![]).splice(j..j + 1, ())?;
+                }
+                if dest != i {
+                    w.at(g, FAVORITES).path(p![]).move_range(i..i + 1, dest)?;
+                }
+                Ok(())
+            });
         }
-        Ok(())
-    }
-    fn write_favorites(&self, edits: &[(Tid, Vec<Weak>, Vec<Weak>)]) -> Result<()> {
-        let mut w = self.db.write();
-        for (g, base, new) in edits {
-            w.at(*g, FAVORITES).edit(base, new)?;
-        }
-        w.commit()?;
         Ok(())
     }
     pub fn set_theme(&self, id: &str) -> Result<()> {
-        let g = self.home()?;
-        if self.db.at(g, THEME).get()?.as_deref() == Some(id) {
-            return Ok(());
-        }
-        let mut w = self.db.write();
-        w.at(g, THEME).set(&id.to_string())?;
-        w.commit()?;
-        Ok(())
+        self.set_look(THEME, id.to_string())
     }
     pub fn set_mode(&self, m: Mode) -> Result<()> {
+        self.set_look(MODE, m)
+    }
+    /// Sets `key` on home to `v`, unless it is that already.
+    fn set_look<T: osis::Codec + PartialEq + 'static>(&self, key: osis::generated::Aspect<T>, v: T) -> Result<()> {
         let g = self.home()?;
-        if self.db.at(g, MODE).get()? == Some(m.clone()) {
+        if self.db.at(g, key).get()?.as_ref() == Some(&v) {
             return Ok(());
         }
-        let mut w = self.db.write();
-        w.at(g, MODE).set(&m)?;
-        w.commit()?;
-        Ok(())
+        self.commit(|w| w.at(g, key).set(&v))
     }
     /// This device's window, made on first use: under home, held by home's `ui:windows.0` (so it
     /// syncs, and is not among the things home holds).
@@ -666,13 +639,10 @@ impl Data {
         if here == t {
             return Ok(());
         }
-        let mut w = self.db.write();
-        match t {
-            Some(t) => w.at(win, OPEN).set(&Weak(t))?,
-            None => w.at(win, OPEN).remove()?,
-        }
-        w.commit()?;
-        Ok(())
+        self.commit(|w| match t {
+            Some(t) => w.at(win, OPEN).set(&Weak(t)),
+            None => w.at(win, OPEN).remove(),
+        })
     }
     /// A new thing minted with home as admin and held by it, with an empty `name.0` and whatever `start`
     /// writes, opened on this node.
@@ -697,13 +667,14 @@ impl Data {
     /// open. Clearing its aspects is no part of it: a thing goes with its last reference.
     pub fn delete(&self, t: Tid) -> Result<()> {
         let was = self.opened()? == Some(t);
-        let mut w = self.db.write();
-        for h in self.held_by(t)?.iter().copied() {
-            if self.db.role_on(h)? >= Some(osis::Role::Write) {
-                w.unhold(h, t)?;
+        self.commit(|w| {
+            for h in self.held_by(t)?.iter().copied() {
+                if self.db.role_on(h)? >= Some(osis::Role::Write) {
+                    w.unhold(h, t)?;
+                }
             }
-        }
-        w.commit()?;
+            Ok(())
+        })?;
         if was { self.set_open(None) } else { Ok(()) }
     }
 }
@@ -755,13 +726,11 @@ impl Data {
         let l: osis::ShareLink = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a link: {e}")))?;
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().map_err(|e| osis::Error::Network(e.to_string()))?;
         let got = rt.block_on(async { tokio::time::timeout(JOIN_WAIT, self.db.redeem(&l)).await }).unwrap_or_else(|_| Err(osis::Error::Network("could not confirm this link yet; trying again is safe".into())))?;
-        // accepting is a strong to the target; the account's ticket for it, which brings it to
-        // the account's other nodes, is core's
+        // home holds it; the account's ticket for it, which brings it to the account's other
+        // nodes, is core's
         if !self.things()?.contains(&got) {
             let g = self.home()?;
-            let mut w = self.db.write();
-            w.hold(g, got)?;
-            w.commit()?;
+            self.commit(|w| w.hold(g, got))?;
         }
         Ok(got)
     }

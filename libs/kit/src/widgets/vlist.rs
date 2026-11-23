@@ -319,13 +319,34 @@ impl VirtualList {
         ctx.request_layout();
     }
 
+    /// Puts the loaded row `i` at the top.
+    fn top_row(&mut self, ctx: &mut EventCtx<'_>, i: usize) {
+        (self.part, self.anchor, self.offset) = (Part::Rows, i, 0.0);
+        self.stuck = false;
+        ctx.request_layout();
+    }
+
+    /// Scrolls by `d`, the event handled if it moved.
+    fn scroll_event(&mut self, ctx: &mut EventCtx<'_>, d: f64) {
+        if self.scroll(d) {
+            ctx.request_layout();
+            ctx.set_handled();
+        }
+    }
+
+    /// Asks for `a` unless it is what was asked last.
+    fn ask(&mut self, ctx: &mut LayoutCtx<'_>, a: ListAction) {
+        if self.asked != Some(a) {
+            self.asked = Some(a);
+            ctx.submit_action::<ListAction>(a);
+        }
+    }
+
     /// Asks for the window around `row` of the whole list, or just goes there if it is loaded.
     fn go_to_row(&mut self, ctx: &mut EventCtx<'_>, row: usize) {
         if row >= self.first && row < self.first + self.children.len() {
-            (self.part, self.anchor, self.offset) = (Part::Rows, row - self.first, 0.0);
-            self.stuck = false;
             self.jump = None;
-            ctx.request_layout();
+            self.top_row(ctx, row - self.first);
         } else if self.jump != Some(row) {
             let want = ((self.v * MARGIN / 40.0).ceil() as usize).max(MIN_SIDE);
             self.jump = Some(row);
@@ -400,10 +421,7 @@ impl Widget for VirtualList {
         match event {
             PointerEvent::Scroll(PointerScrollEvent { delta, .. }) => {
                 // at its edge, or not a scroller, the wheel goes on to the page
-                if self.scroll(page::wheel(delta, ctx.get_scale_factor())) {
-                    ctx.request_layout();
-                    ctx.set_handled();
-                }
+                self.scroll_event(ctx, page::wheel(delta, ctx.get_scale_factor()));
             }
             PointerEvent::Down(e) if self.bar.is_some_and(|b| ctx.local_position(e.state.position).x >= b.x) => {
                 let y = ctx.local_position(e.state.position).y;
@@ -499,9 +517,7 @@ impl Widget for VirtualList {
                 } else if self.total.is_some() {
                     self.go_to_row(ctx, 0);
                 } else {
-                    (self.part, self.anchor, self.offset) = (Part::Rows, 0, 0.0);
-                    self.stuck = false;
-                    ctx.request_layout();
+                    self.top_row(ctx, 0);
                 }
                 return;
             }
@@ -521,10 +537,7 @@ impl Widget for VirtualList {
             }
             _ => return,
         };
-        if self.scroll(d) {
-            ctx.request_layout();
-            ctx.set_handled();
-        }
+        self.scroll_event(ctx, d);
     }
 
     fn on_access_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &AccessEvent) {
@@ -533,10 +546,7 @@ impl Widget for VirtualList {
             Action::ScrollDown => self.v * 0.9,
             _ => return,
         };
-        if self.scroll(d) {
-            ctx.request_layout();
-            ctx.set_handled();
-        }
+        self.scroll_event(ctx, d);
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
@@ -682,19 +692,11 @@ impl Widget for VirtualList {
             let short = (self.more_before && have_before * 2 < want_before) || (self.more_after && have_after * 2 < want_after);
             let long = have_before > want_before * 2 + 1 || have_after > want_after * 2 + 1;
             if short || long {
-                let ask = ListAction::Moved { anchor: self.anchor, before: want_before, after: want_after, stuck: false };
-                if self.asked != Some(ask) {
-                    self.asked = Some(ask);
-                    ctx.submit_action::<ListAction>(ask);
-                }
+                self.ask(ctx, ListAction::Moved { anchor: self.anchor, before: want_before, after: want_after, stuck: false });
             }
         } else if self.stuck && self.more_after {
             // scrolled onto the end of a window that is not the list's end: follow it from the end
-            let ask = ListAction::Moved { anchor: self.anchor, before: 0, after: 0, stuck: true };
-            if self.asked != Some(ask) {
-                self.asked = Some(ask);
-                ctx.submit_action::<ListAction>(ask);
-            }
+            self.ask(ctx, ListAction::Moved { anchor: self.anchor, before: 0, after: 0, stuck: true });
         }
         bc.constrain(Size::new(width, vh))
     }

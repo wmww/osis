@@ -10,7 +10,6 @@ use crate::masonry::app::RenderRoot;
 use crate::masonry::core::{ErasedAction, Handled, NewWidget, PointerEvent, Properties, TextCommand, TextEvent, Widget, WidgetId};
 use crate::masonry::peniko::Color;
 use crate::masonry::properties::Padding;
-use crate::masonry::properties::types::{CrossAxisAlignment, Length};
 use crate::masonry::widgets::Flex;
 use crate::platform::Platform;
 use crate::store::Data;
@@ -103,7 +102,7 @@ impl Failed {
     fn show(&mut self, rr: &mut RenderRoot) {
         self.look = Arc::new(Look::new(&Theme::named(None), self.host.dark, None));
         let look = self.look.clone();
-        let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(18.0)));
+        let mut col = style::column(&look, 18.0);
         col = col.with_child(style::heading(&look, "osis", Text::Brand)).with_child(style::prose(&look, "The store could not be opened", Text::Title));
         let error = NewWidget::new(Panel::new(style::prose(&look, &self.error, Text::Body), look.clone(), PanelKind::Inset, (12.0, 14.0)));
         col = col.with_child(error);

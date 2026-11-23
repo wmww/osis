@@ -236,7 +236,6 @@ impl ViewSpec {
     }
 }
 
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct ComposerField {
     pub thing: Tid,
@@ -446,6 +445,21 @@ impl WindowState {
     pub fn set_local<T: Clone + PartialEq + 'static>(&self, cell: Local<T>, v: T) {
         self.0.graph.set_local(cell, v);
     }
+
+    /// Whether the window is dark, and the minute tick started if it has not.
+    pub(crate) fn set_look(&self, db: &osis::Osis, dark: bool) {
+        self.set_local(DARK, dark);
+        if self.graph.peek(TICK) == 0 {
+            self.tick(db);
+        }
+    }
+
+    /// The minute tick, to now.
+    pub(crate) fn tick(&self, db: &osis::Osis) {
+        if let Ok(t) = db.now() {
+            self.set_local(TICK, t.0 / 60_000);
+        }
+    }
 }
 
 /// A view's context: a tracked `db` and `Reader` methods, what it is rendered with (`dark`, the
@@ -469,14 +483,8 @@ impl Cx {
         data.db.settle();
         // no root only if the graph lost it, which nothing does: reads are then simply untracked
         let reader = Graph::begin(&window.graph, data).map_or_else(|| (**data).clone(), |(scope, set)| data.scoped(&set, scope));
-        let cx = Cx { reader, window: window.clone(), node: Default::default() };
-        window.set_local(DARK, dark);
-        if cx.local(TICK).unwrap_or(0) == 0
-            && let Ok(t) = data.db.now()
-        {
-            window.set_local(TICK, t.0 / 60_000);
-        }
-        cx
+        window.set_look(&data.db, dark);
+        Cx { reader, window: window.clone(), node: Default::default() }
     }
 
     /// The context of the node at `path` over `reader`.
@@ -537,19 +545,13 @@ impl<'a> Act<'a> {
     /// Writes node state on this window.
     pub fn set_state<T: osis::Codec>(&self, key: osis::generated::Aspect<BTreeMap<String, T>>, node: &str, v: &T) -> Result<()> {
         let win = self.data.window()?;
-        let mut w = self.data.db.write();
-        w.at(win, key).path(osis::Path::root().push(node)).set(v)?;
-        w.commit()?;
-        Ok(())
+        self.commit(|w| w.at(win, key).path(osis::Path::root().push(node)).set(v))
     }
 
     /// Clears node state on this window.
     pub fn clear_state<T: osis::Codec>(&self, key: osis::generated::Aspect<BTreeMap<String, T>>, node: &str) -> Result<()> {
         let win = self.data.window()?;
-        let mut w = self.data.db.write();
-        w.at(win, key).path(osis::Path::root().push(node)).remove()?;
-        w.commit()?;
-        Ok(())
+        self.commit(|w| w.at(win, key).path(osis::Path::root().push(node)).remove())
     }
 }
 
@@ -585,11 +587,7 @@ impl Action for UseOffer {
                 act.set_local(QUERY, String::new());
                 act.set_local(TYPE_IN, Some((t, crate::facets::name::TITLE)));
             }
-            Some(t) => {
-                let mut w = act.data.db.write();
-                (o.set)(act.data, &mut w, t)?;
-                w.commit()?;
-            }
+            Some(t) => act.commit(|w| (o.set)(act.data, w, t))?,
         }
         Ok(())
     }

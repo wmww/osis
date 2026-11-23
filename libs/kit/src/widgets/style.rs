@@ -92,6 +92,11 @@ pub fn marked(look: &Look, w: NewWidget<impl Widget + ?Sized>, t: Text, lead: bo
     }
 }
 
+/// A column whose children take its width, `gap` (before spacing) apart.
+pub fn column(look: &Look, gap: f64) -> Flex {
+    Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(masonry::properties::types::Length::px(look.sp(gap)))
+}
+
 /// A heading label with its mark.
 pub fn heading(look: &Look, text: &str, t: Text) -> NewWidget<dyn Widget> {
     marked(look, label(look, text, t), t, false)

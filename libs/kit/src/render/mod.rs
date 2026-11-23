@@ -16,7 +16,7 @@ use crate::store::{Data, Reader};
 use crate::view::search::{Paste, classify, search};
 use crate::input::Input as Pointers;
 use crate::platform::Platform;
-use crate::view::{Act, Block, Cx, DARK, Do, Graph, Icon, Input, Open, QUERY, Section, Surface, TICK, TYPE_IN, Tree, ViewSpec, WindowState};
+use crate::view::{Act, Block, Cx, Do, Graph, Icon, Input, Open, QUERY, Section, Surface, TYPE_IN, Tree, ViewSpec, WindowState};
 use crate::view::keyed::{self, ListSteps};
 use crate::view::paged::{Item, LIST_WINDOW, ListRow, ListWindow};
 use crate::view::sessions::Key;
@@ -78,6 +78,13 @@ struct Slot {
     id: WidgetId,
     model: Vec<Block>,
     built: blocks::Built,
+}
+
+impl Slot {
+    /// The empty slot `id`.
+    fn new(id: WidgetId) -> Slot {
+        Slot { id, model: Vec::new(), built: blocks::Built::default() }
+    }
 }
 
 /// What the shell reads from osis: everything that selects a screen, a node of the graph.
@@ -401,12 +408,7 @@ impl Ui {
         self.theme = Theme::named(sh.theme.as_deref());
         self.mode = sh.mode.clone();
         let dark = self.dark();
-        self.state.set_local(DARK, dark);
-        if self.state.graph.peek(TICK) == 0
-            && let Ok(t) = self.data.db.now()
-        {
-            self.state.set_local(TICK, t.0 / 60_000);
-        }
+        self.state.set_look(&self.data.db, dark);
         let look = Look::new(&self.theme, dark, sh.color.as_deref().and_then(parse));
         let layout = Layout { t: sh.t, home: sh.home, rail: !sh.home && self.rail_fits(rr, &look) };
         let rebuild = force || self.built.as_ref() != Some(&layout) || look != *self.look;
@@ -420,9 +422,7 @@ impl Ui {
                 a.input.set_look(rr, &mut *a.platform, self.look.clone());
             }
             // before the new screen's slots exist: what leaves takes its slot along
-            let mut tree = std::mem::take(&mut self.tree);
-            tree.clear(&self.state.clone(), &mut Draw { ui: self, rr });
-            self.tree = tree;
+            self.with_tree(rr, |tree, w, d| tree.clear(w, d));
             self.build(rr, &layout);
             self.show_roots(rr, &layout, main)?;
             // focus rule: keys go to home's search field, else nowhere until a field wants typing
@@ -430,11 +430,7 @@ impl Ui {
             let kept = in_search.and_then(|i| self.search_ids.get(i).copied());
             rr.focus_on(kept.or(id));
             if let Some(input) = kept {
-                rr.edit_widget(input, |mut w| {
-                    let mut a = w.downcast::<TextArea<true>>();
-                    let end = a.widget.text().to_string().len();
-                    TextArea::select_byte_range(&mut a, end, end);
-                });
+                caret_to_end(rr, input);
             }
             self.show_status(rr);
         } else {
@@ -442,10 +438,7 @@ impl Ui {
                 rr.edit_widget(id, |mut w| IndexedStack::set_active_child(&mut w.downcast(), usize::from(sh.searching)));
             }
         }
-        let mut tree = std::mem::take(&mut self.tree);
-        let r = tree.update(&self.state.clone(), &mut Draw { ui: self, rr });
-        self.tree = tree;
-        r?;
+        self.with_tree(rr, |tree, w, d| tree.update(w, d))?;
         self.state.sessions.retain(|k| self.acts.editor_for(k).is_some());
         self.serve_typing(rr);
         Ok(())
@@ -468,11 +461,18 @@ impl Ui {
         }
     }
 
-    /// The tree's roots for a screen just built.
-    fn show_roots(&mut self, rr: &mut RenderRoot, l: &Layout, main: Tid) -> osis::Result<()> {
+    /// `f` with the tree, this window and the surface over this `Ui`.
+    fn with_tree<R>(&mut self, rr: &mut RenderRoot, f: impl FnOnce(&mut Tree, &WindowState, &mut Draw) -> R) -> R {
         let window = self.state.clone();
         let mut tree = std::mem::take(&mut self.tree);
-        let r = (|| {
+        let r = f(&mut tree, &window, &mut Draw { ui: self, rr });
+        self.tree = tree;
+        r
+    }
+
+    /// The tree's roots for a screen just built.
+    fn show_roots(&mut self, rr: &mut RenderRoot, l: &Layout, main: Tid) -> osis::Result<()> {
+        self.with_tree(rr, |tree, window, d| {
             // every root is asked: one failing leaves the others up, and stays to recover
             let mut failed = None;
             let page = if l.home {
@@ -486,8 +486,8 @@ impl Ui {
                 s
             };
             let key = format!("page:{}", l.t);
-            self.fill_blocks(rr, "page", vec![Block::View { key: key.clone(), spec: page.clone() }], None)?;
-            keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, rr }, &views::child_path("page", &key), &page));
+            d.ui.fill_blocks(d.rr, "page", vec![Block::View { key: key.clone(), spec: page.clone() }], None)?;
+            keep_err(&mut failed, tree.show(window, d, &views::child_path("page", &key), &page));
             let results = |rail: bool| {
                 let mut s = ViewSpec::new("results", main);
                 if rail {
@@ -497,20 +497,18 @@ impl Ui {
             };
             if !l.home {
                 let spec = ViewSpec::new("collection", main).config_rail();
-                self.fill_blocks(rr, "rail", vec![Block::View { key: "favorites".into(), spec: spec.clone() }], None)?;
-                keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, rr }, &views::child_path("rail", "favorites"), &spec));
-                keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, rr }, &views::child_path(RAIL, "results"), &results(true)));
+                d.ui.fill_blocks(d.rr, "rail", vec![Block::View { key: "favorites".into(), spec: spec.clone() }], None)?;
+                keep_err(&mut failed, tree.show(window, d, &views::child_path("rail", "favorites"), &spec));
+                keep_err(&mut failed, tree.show(window, d, &views::child_path(RAIL, "results"), &results(true)));
             }
-            if self.slots.contains_key("results") {
-                keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, rr }, "results", &results(false)));
+            if d.ui.slots.contains_key("results") {
+                keep_err(&mut failed, tree.show(window, d, "results", &results(false)));
             }
-            if self.slots.contains_key("new") {
-                keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, rr }, "new", &ViewSpec::new("creating", main)));
+            if d.ui.slots.contains_key("new") {
+                keep_err(&mut failed, tree.show(window, d, "new", &ViewSpec::new("creating", main)));
             }
             failed.map_or(Ok(()), Err)
-        })();
-        self.tree = tree;
-        r
+        })
     }
 
     /// The device line, and the last diagnostic if any.
@@ -520,9 +518,8 @@ impl Ui {
     }
 
     fn status(&mut self, rr: &mut RenderRoot, s: String) {
-        let root = &mut *rr;
-        if root.get_widget_with_tag(STATUS).is_some() {
-            root.edit_widget_with_tag(STATUS, |mut b| {
+        if rr.get_widget_with_tag(STATUS).is_some() {
+            rr.edit_widget_with_tag(STATUS, |mut b| {
                 if let Some(mut l) = SizedBox::child_mut(&mut b) {
                     TextArea::reset_text(&mut Prose::text_mut(&mut l.downcast()), &s);
                 }
@@ -544,7 +541,7 @@ impl Ui {
     /// An empty slot under `key`, filled by `fill`.
     fn slot(&mut self, key: &str) -> NewWidget<SizedBox> {
         let w = NewWidget::new(SizedBox::empty());
-        self.slots.insert(key.to_string(), Slot { id: w.id(), model: Vec::new(), built: blocks::Built::default() });
+        self.slots.insert(key.to_string(), Slot::new(w.id()));
         w
     }
 
@@ -576,9 +573,9 @@ impl Ui {
 
     fn home_widget(&mut self) -> NewWidget<dyn Widget> {
         let look = self.look.clone();
-        let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(18.0)));
+        let mut col = style::column(&look, 18.0);
         col = col.with_child(style::heading(&look, "osis", Text::Brand)).with_child(self.search_field(true));
-        let page = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(18.0))).with_flex_child(self.slot("page"), 1.0).with_child(self.slot("new"));
+        let page = style::column(&look, 18.0).with_flex_child(self.slot("page"), 1.0).with_child(self.slot("new"));
         let results = self.slot("results");
         col = col.with_flex_child(self.search_stack(NewWidget::new(page), results), 1.0);
         col = col.with_child(self.status_widget());
@@ -646,29 +643,24 @@ impl Ui {
         let old = std::mem::take(&mut self.slots.get_mut(key).ok_or(osis::Error::Invalid("slot".into()))?.built);
         self.acts.forget(&old);
         let (w, built) = blocks::blocks(&self.data, &self.state, &self.look, &mut self.acts, key, &model, current);
-        let root = &mut *rr;
-        root.edit_widget(id, |mut b| SizedBox::set_child(&mut b.downcast(), w));
+        rr.edit_widget(id, |mut b| SizedBox::set_child(&mut b.downcast(), w));
         if let Some(input) = place.and_then(|p| built.inputs.get(p).copied())
-            && root.focus_on(Some(input))
+            && rr.focus_on(Some(input))
         {
-            root.edit_widget(input, |mut w| {
-                let mut a = w.downcast::<TextArea<true>>();
-                let end = a.widget.text().to_string().len();
-                TextArea::select_byte_range(&mut a, end, end);
-            });
+            caret_to_end(rr, input);
         }
         if let Some(id) = built.typing {
             self.typing.push(id);
         }
         for (k, c) in &built.children {
             let p = views::child_path(key, k);
-            if let Some(old) = self.slots.insert(p, Slot { id: *c, model: Vec::new(), built: blocks::Built::default() }) {
+            if let Some(old) = self.slots.insert(p, Slot::new(*c)) {
                 self.acts.forget(&old.built);
             }
         }
         for (k, c) in &built.feet {
             let p = views::child_path(key, k);
-            self.slots.insert(format!("{p}#foot"), Slot { id: *c, model: Vec::new(), built: blocks::Built::default() });
+            self.slots.insert(format!("{p}#foot"), Slot::new(*c));
             self.pinned.insert(p.clone());
         }
         for k in &built.pinned {
@@ -684,7 +676,6 @@ impl Ui {
     /// Applies row steps to the lists of the slot `key`: only the rows named are touched, and the
     /// row at the top stays where it is. Returns whether child views came or went.
     fn patch(&mut self, rr: &mut RenderRoot, key: &str, model: &[Block], steps: ListSteps, current: Option<Tid>) -> bool {
-        let root = &mut *rr;
         let mut made = Vec::new();
         let mut views_went = false;
         let Ui { slots, acts, data, state, look, .. } = self;
@@ -694,7 +685,7 @@ impl Ui {
             let Some(Block::List(m)) = model.get(i) else { continue };
             views_went |= list.rows.iter().any(|(_, b)| !b.children.is_empty());
             let mut maker = blocks::Maker { data, window: state, look, acts, current, path: key, style: m.shape.style, rows: &m.rows, children: Vec::new() };
-            root.edit_widget(list.widget, |mut w| {
+            rr.edit_widget(list.widget, |mut w| {
                 let mut w = w.downcast::<VirtualList>();
                 // the row at the top, by key: rows come and go around it
                 let anchor = list.keys().nth(w.widget.anchor()).cloned();
@@ -714,7 +705,7 @@ impl Ui {
         let any = !made.is_empty() || views_went;
         for (k, c) in made {
             let p = views::child_path(key, &k);
-            slots.insert(p, Slot { id: c, model: Vec::new(), built: blocks::Built::default() });
+            slots.insert(p, Slot::new(c));
         }
         any
     }
@@ -722,38 +713,41 @@ impl Ui {
     /// A list asked for another window: its anchor is named by key, so what the graph answers is
     /// placed around that row.
     fn list_moved(&mut self, id: WidgetId, anchor: usize, before: usize, after: usize, stuck: bool) {
-        let Some((window, slot, block)) = self.acts.get(id).and_then(|h| h.list.clone()) else { return };
-        let Some(m) = self.slots.get(&slot) else { return };
-        let scope = match m.model.get(block) {
-            Some(Block::List(l)) => l.shape.scope.clone(),
-            _ => String::new(),
-        };
+        let Some((window, m, block, l)) = self.list_of(id) else { return };
+        let scope = l.shape.scope.clone();
         let v = if stuck {
             ListWindow { scope, ..ListWindow::default() }
         } else {
             let Some(key) = m.built.lists.get(&block).and_then(|l| l.keys().nth(anchor).cloned()) else { return };
-            let row = match m.model.get(block) {
-                Some(Block::List(l)) => l.first().map(|f| f + anchor),
-                _ => None,
-            };
-            ListWindow { anchor: Some(key), row, before, after, scope }
+            ListWindow { anchor: Some(key), row: l.first().map(|f| f + anchor), before, after, scope }
         };
         self.state.graph.set_local_at(LIST_WINDOW, &window, v);
     }
 
     /// A list asked for the window around a row it has no key for.
     fn list_jump(&mut self, id: WidgetId, row: usize, before: usize, after: usize) {
-        let Some((window, slot, block)) = self.acts.get(id).and_then(|h| h.list.clone()) else { return };
-        let scope = match self.slots.get(&slot).and_then(|s| s.model.get(block)) {
-            Some(Block::List(l)) => l.shape.scope.clone(),
-            _ => String::new(),
-        };
-        self.state.graph.set_local_at(LIST_WINDOW, &window, ListWindow { anchor: None, row: Some(row), before, after, scope });
+        let Some((window, _, _, l)) = self.list_of(id) else { return };
+        let v = ListWindow { anchor: None, row: Some(row), before, after, scope: l.shape.scope.clone() };
+        self.state.graph.set_local_at(LIST_WINDOW, &window, v);
     }
 
-    /// Runs an action on the UI thread, then applies what it asked of the shell.
+    /// The list widget `id` shows: its window cell, slot, block index and model.
+    fn list_of(&self, id: WidgetId) -> Option<(String, &Slot, usize, &crate::view::paged::List)> {
+        let (window, slot, block) = self.acts.get(id)?.list.clone()?;
+        let m = self.slots.get(&slot)?;
+        let Block::List(l) = m.model.get(block)? else { return None };
+        Some((window, m, block, l))
+    }
+
+    /// Runs an action on the UI thread.
     fn run(&mut self, rr: &mut RenderRoot, d: Do, input: Input) {
-        if let Err(e) = d.run(&Act::new(&self.data, &self.state), &input) {
+        let r = d.run(&Act::new(&self.data, &self.state), &input);
+        self.report(rr, r);
+    }
+
+    /// A failure shows on the status line.
+    fn report(&mut self, rr: &mut RenderRoot, r: osis::Result<()>) {
+        if let Err(e) = r {
             self.status(rr, format!("error: {e}"));
         }
     }
@@ -797,9 +791,8 @@ impl Ui {
             Ok(t) => {
                 self.state.set_local(QUERY, String::new());
                 self.diag = None;
-                if let Err(e) = self.data.set_open(Some(t)) {
-                    self.status(rr, format!("error: {e}"));
-                }
+                let r = self.data.set_open(Some(t));
+                self.report(rr, r);
             }
             Err(e) => {
                 self.diag = Some(format!("join failed: {e}"));
@@ -819,9 +812,8 @@ impl Ui {
         if let Some(key) = self.acts.get(id).and_then(|h| h.editor.clone()) {
             match a {
                 TextAction::Changed(text) => {
-                    if let Err(e) = self.state.sessions.typed(&key, &text) {
-                        self.status(rr, format!("error: {e}"));
-                    }
+                    let r = self.state.sessions.typed(&key, &text);
+                    self.report(rr, r);
                 }
                 TextAction::Entered(_) => {
                     if let Some(d) = self.acts.get(id).and_then(|h| h.enter.clone()) {
@@ -859,12 +851,11 @@ impl Ui {
 
     /// A merge into an editor's session: show it, the selection mapped through the edits.
     fn show_merge(&mut self, rr: &mut RenderRoot, key: &Key) {
-        let root = &mut *rr;
         let Some((text, shown, reported)) = self.state.sessions.merged(key) else { return };
         if let Some(id) = self.acts.editor_for(key)
-            && root.has_widget(id)
+            && rr.has_widget(id)
         {
-            root.edit_widget(id, |mut w| {
+            rr.edit_widget(id, |mut w| {
                 let mut a = w.downcast::<TextArea<true>>();
                 let now = a.widget.text().to_string();
                 if now == text {
@@ -881,6 +872,15 @@ impl Ui {
             });
         }
     }
+}
+
+/// The caret at the end of the text field `id`.
+fn caret_to_end(rr: &mut RenderRoot, id: WidgetId) {
+    rr.edit_widget(id, |mut w| {
+        let mut a = w.downcast::<TextArea<true>>();
+        let end = a.widget.text().to_string().len();
+        TextArea::select_byte_range(&mut a, end, end);
+    });
 }
 
 /// Keeps the first failure of several things all tried.
@@ -957,9 +957,8 @@ impl Ui {
         if !matches!(self.data.opened(), Ok(Some(_))) {
             return false;
         }
-        if let Err(e) = self.data.set_open(None) {
-            self.status(rr, format!("error: {e}"));
-        }
+        let r = self.data.set_open(None);
+        self.report(rr, r);
         self.update(rr, false);
         true
     }
@@ -980,11 +979,7 @@ impl Ui {
                 }
                 Msg::Merged(k) => self.show_merge(rr, &k),
                 Msg::Redeemed(r) => self.redeemed(rr, r),
-                Msg::Tick => {
-                    if let Ok(now) = self.data.db.now() {
-                        self.state.set_local(TICK, now.0 / 60_000);
-                    }
-                }
+                Msg::Tick => self.state.tick(&self.data.db),
                 Msg::LongPress(seq) => {
                     if let Some(a) = self.host.attached.as_mut() {
                         a.input.long_press(rr, &mut *a.platform, seq);
@@ -1018,10 +1013,7 @@ impl Ui {
                     self.update(rr, false);
                 }
                 ListAction::Reorder { from, to } => {
-                    let first = self.acts.get(id).and_then(|h| h.list.clone()).and_then(|(_, s, b)| match self.slots.get(&s)?.model.get(b)? {
-                        Block::List(l) => l.first(),
-                        _ => None,
-                    });
+                    let first = self.list_of(id).and_then(|(_, _, _, l)| l.first());
                     if let (Some(d), Some(f)) = (self.acts.get(id).and_then(|h| h.reorder.clone()), first) {
                         self.run(rr, d, Input::Reorder { from: from + f, to: to + f });
                     }

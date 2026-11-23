@@ -163,10 +163,9 @@ impl Maker<'_> {
 }
 
 /// The widgets of `blocks`, registering what they do.
-#[allow(clippy::too_many_arguments)]
 pub fn blocks(data: &Data, window: &WindowState, look: &Arc<Look>, acts: &mut Acts, path: &str, blocks: &[Block], current: Option<Tid>) -> (NewWidget<dyn Widget>, Built) {
     let mut r = R { data, window, look, acts, built: Built::default(), current, path, listing: None, list_slot: Some(path.to_string()) };
-    let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(8.0)));
+    let mut col = style::column(look, 8.0);
     // what fills the space takes what the column is given: a lone child view, or a filled one
     let fill = |b: &Block| matches!(b, Block::Filled { .. } | Block::List(_)) || (blocks.len() == 1 && matches!(b, Block::View { .. }));
     for (i, b) in blocks.iter().enumerate() {
@@ -240,14 +239,14 @@ impl R<'_> {
     fn filled(&mut self, key: &str, has_foot: bool, plain: bool, above: &[Block], below: &[Block]) -> NewWidget<dyn Widget> {
         let look = self.look.clone();
         let sp = |x: f64| look.sp(x);
-        let mut head = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(8.0)));
+        let mut head = style::column(&look, 8.0);
         for b in above {
             if let Some(w) = self.block(b) {
                 head = head.with_child(w);
             }
         }
         // the child takes what the page leaves when everything fits
-        let mut body = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(16.0))).with_flex_child(self.child(key), 1.0);
+        let mut body = style::column(&look, 16.0).with_flex_child(self.child(key), 1.0);
         for b in below {
             if let Some(w) = self.block(b) {
                 body = body.with_child(w);
@@ -290,7 +289,7 @@ impl R<'_> {
             return bar.erased();
         }
         let menu = self.chips(menu);
-        NewWidget::new(Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(sp(6.0))).with_child(bar).with_child(menu)).erased()
+        NewWidget::new(style::column(&look, 6.0).with_child(bar).with_child(menu)).erased()
     }
 
     fn chips(&mut self, chips: &[crate::view::Chip]) -> NewWidget<dyn Widget> {
@@ -378,7 +377,7 @@ impl R<'_> {
         let look = self.look.clone();
         let mut g = TileGrid::new(look.clone(), 118.0).max_cols(7).gap(8.0);
         for d in days {
-            let mut day = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(4.0)));
+            let mut day = style::column(&look, 4.0);
             day = day.with_child(style::label(&look, &d.label, if d.today { Text::Body } else { Text::Muted }));
             if d.entries.is_empty() {
                 day = day.with_child(style::label(&look, "Free", Text::Small));
@@ -404,7 +403,7 @@ impl R<'_> {
     fn stream_entry(&mut self, e: &Entry) -> NewWidget<dyn Widget> {
         self.window.graph.add_row();
         let look = self.look.clone();
-        let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(4.0)));
+        let mut col = style::column(&look, 4.0);
         let head = e.author.clone().unwrap_or_else(|| e.title.clone());
         col = col.with_child(style::prose(&look, &head, Text::Small));
         if let Some(q) = &e.quote {
@@ -421,7 +420,7 @@ impl R<'_> {
 
     fn form(&mut self, rows: &[FormRow], wide: bool) -> NewWidget<dyn Widget> {
         let look = self.look.clone();
-        let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(8.0)));
+        let mut col = style::column(&look, 8.0);
         for r in rows {
             let mut label = Flex::column().cross_axis_alignment(CrossAxisAlignment::Start).with_child(style::label(&look, &r.label, Text::Muted));
             if !r.sub.is_empty() {
@@ -456,7 +455,6 @@ impl R<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn editor(&mut self, thing: Tid, ak: &str, map: &Option<String>, placeholder: &str, role: TextRole, multiline: bool, lead: &Option<(Mark, Option<String>)>) -> Option<NewWidget<dyn Widget>> {
         let look = self.look.clone();
         let key = (self.path.to_string(), thing, ak.to_string(), map.clone());
@@ -483,7 +481,7 @@ impl R<'_> {
 
     fn composer(&mut self, c: &Composer) -> NewWidget<dyn Widget> {
         let look = self.look.clone();
-        let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(8.0)));
+        let mut col = style::column(&look, 8.0);
         let last = c.fields.len().saturating_sub(1);
         for (i, f) in c.fields.iter().enumerate() {
             let key = (self.path.to_string(), f.thing, f.ak.clone(), Some(f.key.clone()));
