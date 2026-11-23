@@ -13,6 +13,7 @@ A fresh worker (fable) owns it; the previous one ran out of room before deleting
 
 ## In flight beside it
 - `mizzen-refile-order` (coordinator gating): `Core::enter` counts only the node's own secrets; the both-orders test in osis-sync `holding.rs`.
+- `mizzen-wait-order` (worker): issues/stated-path-wait-order.md; held-model's `Pend::Any` to the reworded spec/commits.md §4 Unjudgeable.
 - `mizzen-walk-inputs` (worker): issues/walk-inputs-via-stale.md.
 - `mizzen-test-cost-5` (worker): fresh test-cost profile after the walk switch; engine lib-vs-it measurement.
 
