@@ -129,11 +129,12 @@ fn a_removal_the_removed_party_made_stands_only_where_listed() {
     assert_eq!(p.status(&inp.ids[&out]), Some(Status::Applied));
 }
 
-// ---- The collateral grantee: re-grant from the first chained write ----
+// ---- The collateral grantee: re-grant from the first write made by right ----
 
-// spec/permissions.md §5.2: a re-granted path's writes count from each edge's first chained write.
+// spec/permissions.md §5.2 Re-grant: a re-granted path's writes count from each hop's first point,
+// its first write made by right.
 #[test]
-fn a_collateral_grantees_writes_count_from_its_first_chained_grant() {
+fn a_collateral_grantees_writes_count_from_its_first_grant_by_right() {
     let (mut w, ..) = paired();
     w.edge(X, 2, &[], A, N5, Admin, &[]);
     let week = w.content(N5, 3, &[A], T1);
@@ -144,8 +145,8 @@ fn a_collateral_grantees_writes_count_from_its_first_chained_grant() {
     assert_eq!(verdict(&w, &all(&w, &[r]), week), Some(Content::Valid(By::Regranted)));
 }
 
-// spec/permissions.md §5.2: a grant the thief backdates is chained, so a holder granted later may
-// stamp content back to it.
+// spec/permissions.md §5.2 Re-grant: a grant the thief backdates is made by right, so a holder
+// granted later may stamp content back to it.
 #[test]
 fn a_backdated_grant_moves_a_current_holders_first_point_back() {
     let (mut w, ..) = paired();
@@ -157,11 +158,11 @@ fn a_backdated_grant_moves_a_current_holders_first_point_back() {
     assert_eq!(verdict(&w, &all(&w, &[r]), early), Some(Content::Valid(By::Regranted)));
 }
 
-// spec/permissions.md §5.2: a re-granted path counts from the latest of its edges' first chained
-// writes: X's write through A2 before A2's share of T1 stays invalid though X's own grant on A2 is
+// spec/permissions.md §5.2 Re-grant: a re-granted path counts from the latest of its hops' first
+// points: X's write through A2 before A2's share of T1 stays invalid though X's own grant on A2 is
 // older (the walk's own world, read by the model too).
 #[test]
-fn a_re_grant_counts_from_the_latest_edges_first_chained_write() {
+fn a_re_grant_counts_from_the_latest_hops_first_point() {
     let mut w = account();
     w.edge(K, 1, &[], A2, X, Write, &[]);
     let early = w.content(X, 3, &[A2], T1);
@@ -188,8 +189,8 @@ fn a_may_grant_grant_is_made_by_right_for_the_re_grant() {
     assert_eq!(verdict(&w, &all(&w, &[]), early), Some(Content::Valid(By::Regranted)));
 }
 
-// spec/permissions.md §4: a write no record or earlier chained write gives (a stranger's) is no
-// chained write, so it moves no first point back (the walk's own world, read by the model too).
+// spec/permissions.md §5.2 Re-grant: a stranger's grant is not made by right, so it moves no first
+// point back (the walk's own world, read by the model too).
 #[test]
 fn a_strangers_grant_moves_no_first_point_back() {
     let mut w = account();

@@ -15,7 +15,6 @@ Format: `file:line test | action | why safe | confidence`.
 
 **engine, perm**
 - `apply/tests_paged.rs first_diff_names_the_entry` | delete | tests a test helper's failure message | medium
-- perm `queries.rs:375-376` `PurgeBy::from_id` asserts | delete | a constant restated | low
 
 **base**
 - `hash.rs blake3_known_answer` | delete | only the blake3 crate; vectors (`kdf_purposes`, `commit_headers`) pin outputs | medium
@@ -33,7 +32,7 @@ Format: `file:line test | action | why safe | confidence`.
 **others**
 - blob `auth.rs stamp_binds_wrap` | delete or one flip | Ed25519/BLAKE3 behaviour; `entry_signatures` covers the binding | medium
 - keys `epoch.rs ordering_keys_match_folds` | delete or shrink | refactor scaffolding comparing against replaced folds; the rule is in `current_and_newest` | medium
-- osis `api.rs:1833` | drop its runtime field-read asserts | keep the compile-time guards | medium
+- osis `api.rs what_public_signatures_show_can_be_named_api_design` | drop its runtime field-read asserts | keep the compile-time guards | medium
 
 ### Category 2: consolidation
 
@@ -58,7 +57,7 @@ Format: `file:line test | action | why safe | confidence`.
 - `listing.rs:422 purge_by_author_any_order` (18 s) | keep the by × who table, run named orders only | medium
 
 **osis**
-- `api.rs:1635` + `:1762`; `:1845` + `:1720` | merge each pair | medium
+- `api.rs commit_place_of_any_time_api_design` + `commit_and_place_text_forms_api_design` | merge | medium
 
 **engine**
 - `apply/keys.rs:1196` | merge into `genuine_grant_applies_after_flood` | medium

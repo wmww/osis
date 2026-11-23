@@ -56,7 +56,7 @@ Ephemeral data has the same semantics as durable data, just held in memory, with
 - A revert's writes on several things are one memory commit (every memory commit spans its things; its bodies are logged under each sync ID holding any of its things, each body the sync ID's actor may read). A commit on things in no synced closure is held and goes nowhere until a closure holds one of them (spec/sync-judgement.md §1).
 
 ## Synced ephemeral data
-**In osis-sync** (tests: core/sync/tests/it/ephemeral.rs):
+**In osis-sync** (tests: core/sync/tests/it/store.rs and streams.rs):
 - `read` judges and logs an ephemeral commit's body as a durable one; the sealed blob's prefix class puts its entry in the store's memory part (store/memory.rs), so a restart loses it and the node log's memory part lists it to each join.
 - A node keeping S unread takes, relays and caps ephemeral entries by the store's rules (spec/sync-ids.md §6), never opening them.
 - A reader opens every entry through `store::open_entry`: `Engine::open_entry` with `Store::memory_room(s)` (S's `memory_bytes` less what S's memory entries count), which sends an ephemeral commit through `ingest_memory`. One held keeps its entry, counted at `Engine::memory_charge` (`Memory::estimate`, at least its bytes), so the next commit opened in the same message sees the room left; own entries count their bytes. `TooLarge` keeps nothing.
