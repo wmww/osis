@@ -157,8 +157,8 @@ impl Engine {
         self.account_chain(&me, &mut out);
         let certs = super::chain::certificates(&self.core, &me, g);
         self.cert_parts(&certs, &mut out);
-        // and to each actor it has acted for (`validity::acts_for`): usually on the chain to
-        // `g` already, the node reaching `g` through it
+        // and to each actor it has acted for in a held commit (`Core::acting`): usually on the
+        // chain to `g` already, the node reaching `g` through it
         for a in self.core.acting().iter() {
             let certs = self.chain_to(&me, a);
             self.cert_parts(&certs, &mut out);

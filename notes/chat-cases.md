@@ -260,7 +260,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 ## Footnotes
 
 5. Once an admin writes an explicit removal of the absent grant, the leave is audited and the post is unlisted.
-6. An admin gives member grants a `may_grant` level; then members may invite.
+6. An admin gives member grants the may-grant flag; then members may invite.
 7. Only if the sharer's node granted the joiner directly on join (links are admin-only).
 11. About 33 B of value-less residue per message.
 12. The grant applies (sender is "connected"); the app leaves automatically.

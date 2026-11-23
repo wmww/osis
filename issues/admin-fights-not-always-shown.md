@@ -10,7 +10,7 @@
 - a node that trusts one of them (the one whose removal it sided with) gets the safe reading: a stolen key or a removed party gains nothing;
 - but which admin wins can depend on a third party's write that, in the end, applies nowhere; and a node trusting none of them is not always shown that a fight happened.
 
-**How often** (the write-path model, roles-model `paths`, as counted, not failing): in 1,000,000 small random worlds about 47 such cases (2 with invites); in 400,000 stolen-node story worlds 1,457 readings, 1,362 of them at nodes trusting nobody (where the thief's own do-nothing writes always tipped it toward the honest remover); with honest writers only (no thief, each list honest, each clock honest) about 9 in 1,000,000. Every case checked is a fight among parties who each held admin at their write; none lets a made-up key or a party removed earlier gain anything at a node trusting the removal.
+**How often** (the write-path model, roles-model `paths`, as counted, not failing): in 1,000,000 small random worlds about 47 such cases (2 with may-grant grants); in 400,000 stolen-node story worlds 1,457 readings, 1,362 of them at nodes trusting nobody (where the thief's own do-nothing writes always tipped it toward the honest remover); with honest writers only (no thief, each list honest, each clock honest) about 9 in 1,000,000. Every case checked is a fight among parties who each held admin at their write; none lets a made-up key or a party removed earlier gain anything at a node trusting the removal.
 
 **The smallest honest case** (notes/path-model-findings.md 36):
 1. H makes B an admin.

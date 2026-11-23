@@ -75,9 +75,9 @@ pub enum Dispute {
     Account { id: DisputeId, account: Tid, versions: Vec<CommitId>, side: Side, chosen: bool },
 }
 
-/// Candidates `disputes` examines at most (each costs a walk of the role history: a removed
-/// admin can sign any number); the rest are counted. A resource bound: at 0 the list is empty
-/// and everything counted, at infinity a hostile flood of k writes costs k walks per call.
+/// Open removal disputes `disputes` lists at most beside those with a recorded side (a removed
+/// admin can sign any number); the rest are counted. A resource bound: at 0 only recorded sides
+/// are listed and the rest counted, at infinity a hostile flood of k removals lists k per call.
 const LIST_MAX: usize = 64;
 
 impl Dispute {
@@ -116,9 +116,9 @@ impl Dispute {
 }
 
 impl Osis {
-    /// The open disputes this node knows of, with the side it stands on in each. Finding them
-    /// costs a walk of a thing's role history per contestable removal, so a hostile flood of
-    /// them leaves some uncounted here: the second value is how many were not examined.
+    /// The open disputes this node knows of, with the side it stands on in each. Every one is
+    /// found, but a hostile flood of them could make the list as long as the flood, so only some
+    /// are listed (always those a side was chosen in): the second value is how many were left out.
     /// `Unsupported` on a thin client.
     pub fn disputes(&self) -> Result<(Vec<Dispute>, usize)> {
         self.local("disputes")?;
