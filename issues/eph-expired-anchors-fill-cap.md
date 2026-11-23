@@ -1,7 +1,7 @@
 # Expired ephemeral writes leave anchors that fill a holder's cap
-> Summary: An expired ephemeral list element or fresh map entry stays in the aspect's state as a value-less record (about 575 B decoded, charged about 1.15 KB at holders), never collected, so an ephemeral event list or per-message map hits the 16 MiB node cap after about 14,000 expired elements over its lifetime; the lattice needs the records. Decided (Tess): option A, a compact form keeping exact convergence; to build.
+> Summary: An expired ephemeral list element or fresh map entry stays in the aspect's state as a value-less record (about 575 B decoded, charged about 1.15 KB at holders), never collected, so an ephemeral event list or per-message map hits the 16 MiB node cap after about 14,000 expired elements over its lifetime; the lattice needs the records. Decided (Tess): option A, a compact form keeping exact convergence; to build. A bound by live data (flat in writes) is out under anchor placement: an element's ancestry is its list's history, so it needs self-contained positions, the same redesign durable sequence tombstones need.
 > Priority: normal
-> Tags: ephemeral, crdt, engine
+> Tags: ephemeral, crdt, engine, tess-call
 
 **Decided (Tess):** compact records (option A below, exact convergence kept); the coordinator's to build.
 
@@ -12,6 +12,12 @@ Follows from the principle (notes/ephemeral.md: durable semantics held in memory
 - **Late writes.** An insert anchored at it or a write into it (a reaction to an expired message) may arrive any time later, and must place and show as at a node that kept the record.
 - **No lattice rule collects it.** A rule over the state's shape ("all writes value-less, nothing anchors at it") does not commute with join: a late child in the other operand keeps the record in `collect(S1 ⊔ S2)` but not in `collect(S1) ⊔ S2`. Rules by time or by every holder having seen the expiry are rejected already (notes/crdt.md Rejected: staleness horizon, stability GC; spec/requirements.md Ephemeral data: nothing kept until everyone has seen it).
 - spec/requirements.md Scale rules out the growth itself too (storage follows live data, never the number of writes ever made; issues/zero-growth.md), beyond the in-memory size.
+
+## Why no collection rule bounds it by live data
+Measured (debug, an ephemeral list, one expiring element per commit, expired and covered by the writer's snapshot, at the holder): 20 elements charge 26 KB (snapshot 875 B), 200 charge 224 KB (3.9 KB): about 1.1 KB charged and 17 B encoded per expired element.
+- A late write naming an expired element `e` (an insert at it, a write into it) comes from a writer that held `e` live, and may arrive any time later; it places and shows alike everywhere only where `e`'s record, or a copy the late write carries, is there.
+- Keeping exactly what something held references is not enough either: a record is needed while any held record anchors at it, so a node holds the whole ancestry of every element it holds. An append anchors at the element before it, so a list's ancestry is its history: with every element expired but the newest, every record stays. A late write carrying its anchor's ancestry is as long.
+- So under the tree placement of spec/crdt.md §6, any state bounded by live data reads a late write by what the node dropped (option B), or forgets after a time or after every holder has seen it (rejected: notes/crdt.md Rejected). A flat bound needs positions that do not lean on other records (dense, Logoot-style identifiers carried by each element), a rewrite of §5.7 and §6 for text and list alike; durable sequence tombstones (notes/growth.md) break spec/requirements.md Scale the same way and would come with it. Tess's call: option A (a constant factor, still per write ever made) or that rewrite.
 
 ## Options (A decided; B and C rejected)
 - **A. A compact form** for value-less records (a stamp and an anchor each, sources interned, chains as runs), charged near its encoded size. Keeps every rule; still O(ever written), at a few bytes (about a million lifetime elements per sync ID at 16 MiB). osis-crdt `Seq` storage and placement work.
