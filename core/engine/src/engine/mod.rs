@@ -3167,13 +3167,6 @@ impl Engine {
         self.reexamine()?;
         self.forget_gone_causes()?;
         self.rejudge_setting_waits()?;
-        // a leftover held from before goes uncovered no longer than a quiet time from here
-        // (spec/sync-compaction.md §1 trigger)
-        let quiet = self.now().0.saturating_add(crate::retention::compact::QUIET_MS);
-        let held: Vec<(Tid, Ak)> = self.core.ix.valueless.iter().filter(|(k, l)| !l.is_empty() && crate::retention::compact::compactable(&k.1)).map(|(k, _)| k.clone()).collect();
-        for k in held {
-            self.core.compaction.arm(k, quiet);
-        }
         // what this node may not write could not be compacted: weighed once it may
         self.owe_unwritable_held()?;
         self.core.timer_floor = self.next_timer()?.unwrap_or(u64::MAX);

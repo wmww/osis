@@ -308,8 +308,8 @@ mod tests {
 
     // spec/commits.md §5 Purge on replace, notes/ephemeral.md Principle: a memory aspect under
     // purge on replace drops a replaced part at once under the replacer's cover, while the
-    // commit's live part on another aspect stays held, and at its expiry is held as its leftover,
-    // value-less (spec/crdt.md §4.7).
+    // commit's live part on another aspect stays held, and goes at its expiry, nothing of it held
+    // (spec/crdt.md §4.7).
     #[test]
     fn memory_purge_on_replace_drops_the_replaced_part_spec_commits_5() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
@@ -339,8 +339,8 @@ mod tests {
         lp.advance(2 * 3_600_000);
         lp.peers[0].tick().unwrap();
         let e = &mut lp.peers[0].engine;
-        assert_eq!(e.get(&g, &ak("t:s+.0")).unwrap(), None, "value-less at its expiry");
-        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.stripped_parts().count() == 1), "held as its leftover");
+        assert_eq!(e.get(&g, &ak("t:s+.0")).unwrap(), None, "gone at its expiry");
+        assert!(e.core.ix.commits.get(&c).is_none_or(|m| m.stripped_parts().count() == 0 && (0..m.view.aspects.len()).all(|ai| !m.holds(ai))), "nothing of it held");
     }
 
     // a memory aspect's state written by a durable transaction

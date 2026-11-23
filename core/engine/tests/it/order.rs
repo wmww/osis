@@ -4417,12 +4417,12 @@ fn held_model_agrees_on_purge_rights_spec_commits_5() {
     assert!(seen.model.compared > 0 && seen.model.reached.get("purged").is_some_and(|n| *n > 0), "{:?}", seen.model);
 }
 
-// A commit that kills the last live write of a body under purge on replace and
-// whose purge request names that body: the node holds the body when it judges both, so it holds
-// its leftover (spec/commits.md §5: a purged leftover is never dropped for keep bounds), in
-// whichever order the request and the named delta arrive.
+// A commit that kills the last live write of a body under purge on replace and whose purge
+// request names that body: in whichever order the request and the named delta arrive, the body
+// goes (spec/commits.md §5, spec/crdt.md §4.7: nothing of a purged delta is held) and the
+// request's write reads.
 #[test]
-fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
+fn kill_and_purge_in_one_commit_drops_the_body_spec_commits_5() {
     use Step::*;
     // 1 writes before the setting reaches it: it owes no cover of its own; a moment after the
     // setting's register write, so its own write wins until the request's kills it
@@ -4443,7 +4443,7 @@ fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
         assert!(p.engine.purge_stands(&purge, &write, &t, &a), "the request names the write and stands");
         let m = p.engine.core.ix.commits.get(&write).unwrap();
         let ai = m.header.aspects.iter().position(|x| x.tid == t && x.ak == a).unwrap();
-        assert!(m.stripped(ai) && !m.is_dropped(ai), "order {order:?}: held as its leftover, not dropped: dropped {:?} stripped {:?}", m.dropped(ai), m.stripped(ai));
+        assert!(m.is_dropped(ai) && !m.stripped(ai), "order {order:?}: dropped: dropped {:?} stripped {:?}", m.dropped(ai), m.stripped(ai));
     }
 }
 

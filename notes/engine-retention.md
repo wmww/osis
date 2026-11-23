@@ -4,7 +4,7 @@
 ## The notes
 - notes/engine-retention-history.md: the `retention^.0` setting, Tess's decisions, leaving history, signals, undo.
 - notes/engine-retention-dating.md: when a body was replaced (keep-for-D), the covered-drop invariant, the unread delete margin.
-- notes/engine-retention-trigger.md: when a writer compacts, owed weighings, cover once quiet.
+- notes/engine-retention-trigger.md: when a writer compacts, owed weighings.
 - notes/engine-retention-covers.md: the cover rule, own live bodies, purge on replace, covering, own replaces, forgetting.
 - notes/engine-retention-purge.md: leftovers, purge requests, waiting parts at expiry or purge.
 

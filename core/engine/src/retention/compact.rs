@@ -6,9 +6,7 @@
 //! `freed_under`), `PART_OVERHEAD` per part (`apply::memory::part_weight`, what the node cap
 //! charges) and `ENTRY_CHARGE`. Bodies kept by history (a replaced one in history, a live one
 //! kept while live, spec/commits.md §5) are not counted: no snapshot drops them; nor are bodies a
-//! held snapshot already covers (`covered_already`): they drop without a new one. An aspect
-//! holding an expired write's leftover is also compacted once quiet for `QUIET_MS`, whatever
-//! `FACTOR` says (`Trigger::quiet`): the snapshot is the leftover's only carrier.
+//! held snapshot already covers (`covered_already`): they drop without a new one.
 
 use crate::apply::memory::{each_page, part_weight};
 use crate::engine::{Engine, Tx};
@@ -32,14 +30,6 @@ pub const FACTOR: usize = 2;
 /// dwarfs their bytes (a peer's cap fills with overhead the trigger never sees), infinity
 /// compacts at every write.
 pub const ENTRY_CHARGE: usize = 1024;
-
-/// How long an aspect with a leftover held here must be quiet (no write held, no expiry) before
-/// this node covers its leftovers whatever `FACTOR` says (spec/sync-compaction.md §1 trigger, cover once
-/// quiet): `MAX_DRIFT`, the window in which nodes may already read an expiring write
-/// differently by their clocks. 0 is one snapshot per expiry (a collection of expiring elements
-/// pays its whole state per element), infinity never covers (a node that missed the write
-/// reads differently for good).
-pub const QUIET_MS: u64 = osis_base::format::MAX_DRIFT_MS;
 
 /// Whether the trigger compacts `ak`: an aspect of ordinary retention (no fixed retention, so not
 /// role-class), content or the thing's setting, but `created.0` (one minting) and a signal (no
@@ -65,14 +55,6 @@ pub struct Trigger {
     /// By wall ms, aspects whose live bodies a setting keeps until then (a `keep` until T
     /// alone): uncounted when applied, weighed once the bound passes (`Engine::tick`).
     at: BTreeMap<u64, BTreeSet<(Tid, Ak)>>,
-    /// Per aspect holding a value-less write here, when it will have been quiet for `QUIET_MS`
-    /// (wall ms): a write held or an expiry on it moves that on (`stirred`); a snapshot does
-    /// not, so writers' quiet snapshots never set each other off. `quiet_at` orders them.
-    quiet: BTreeMap<(Tid, Ak), u64>,
-    quiet_at: BTreeSet<(u64, (Tid, Ak))>,
-    /// Aspects quiet since the last step: weighed then, and a leftover a snapshot would drop
-    /// fires it whatever `FACTOR` says (`Engine::compactions`).
-    quiet_due: BTreeSet<(Tid, Ak)>,
 }
 
 /// What the trigger knows of an aspect (`Trigger::est`).
@@ -91,9 +73,8 @@ struct Est {
     /// and one closed bit by bit costs each body once.
     stops: Stops,
     /// Weighed while this node could not write the aspect: weighed again whatever the estimate
-    /// once it may (`Trigger::wake`), `quiet` when the quiet rule asked it (`Trigger::quiet`).
+    /// once it may (`Trigger::wake`).
     owed: bool,
-    quiet: bool,
 }
 
 impl Trigger {
@@ -123,7 +104,6 @@ impl Trigger {
         if h.kind.is_compaction() {
             return Trigger::snapshot_held(tx, id, &k);
         }
-        Trigger::stirred(tx, &k);
         if !h.kind.has_own_writes() {
             return Ok(());
         }
@@ -268,25 +248,6 @@ impl Trigger {
         }
     }
 
-    /// A write was held on `k` or one of its writes expired (or turned valid or invalid): where
-    /// `k` holds a value-less write here, its quiet time starts again (`quiet`). O(log aspects).
-    pub(crate) fn stirred(tx: &mut Tx<'_>, k: &(Tid, Ak)) {
-        if !compactable(&k.1) || tx.core.ix.valueless.get(k).is_none_or(|l| l.is_empty()) {
-            return;
-        }
-        let at = tx.now().0.saturating_add(QUIET_MS);
-        tx.core.compaction.arm(k.clone(), at);
-        tx.core.timer_floor = tx.core.timer_floor.min(at);
-    }
-
-    /// `k` is quiet at wall ms `at` unless stirred again before.
-    pub(crate) fn arm(&mut self, k: (Tid, Ak), at: u64) {
-        if let Some(old) = self.quiet.insert(k.clone(), at) {
-            self.quiet_at.remove(&(old, k.clone()));
-        }
-        self.quiet_at.insert((at, k));
-    }
-
     /// Asks a weighing of every aspect whose live bound passed by `now` (`at`).
     pub(crate) fn passed(&mut self, now: u64) {
         let later = self.at.split_off(&now.saturating_add(1));
@@ -295,40 +256,23 @@ impl Trigger {
         }
     }
 
-    /// Asks a weighing, for the quiet rule, of every aspect whose quiet time passed by `now`
-    /// (`quiet`). After the expiries due by `now` ran: one stirs its aspect again.
-    pub(crate) fn quiet_passed(&mut self, now: u64) {
-        while let Some((at, k)) = self.quiet_at.first().cloned().filter(|x| x.0 <= now) {
-            self.quiet_at.remove(&(at, k.clone()));
-            self.quiet.remove(&k);
-            self.quiet_due.insert(k.clone());
-            self.weigh(k);
-        }
-    }
-
-    /// When the first live bound in `at` or quiet time passes (`u64::MAX`: none).
+    /// When the first live bound in `at` passes (`u64::MAX`: none).
     pub(crate) fn next_at(&self) -> u64 {
-        let live = self.at.keys().next().copied().unwrap_or(u64::MAX);
-        live.min(self.quiet_at.first().map_or(u64::MAX, |x| x.0))
+        self.at.keys().next().copied().unwrap_or(u64::MAX)
     }
 
     /// `k` was due at a node that may not write it: owed a weighing once it may (`wake`), its
-    /// estimate kept (`quiet`: the quiet rule asked it).
-    pub(crate) fn owe(&mut self, k: (Tid, Ak), quiet: bool) {
-        let e = self.est.entry(k).or_default();
-        e.owed = true;
-        e.quiet |= quiet;
+    /// estimate kept.
+    pub(crate) fn owe(&mut self, k: (Tid, Ak)) {
+        self.est.entry(k).or_default().owed = true;
     }
 
     /// This node may now write on `t` (a role, its minting or delete keys arrived): each aspect
     /// of `t` owed a weighing (`owe`) is weighed at the next step. O(log aspects) plus `t`'s
     /// estimates; nothing for an aspect not owed one.
     pub(crate) fn wake(&mut self, t: &Tid) {
-        let owed: Vec<((Tid, Ak), bool)> = self.est.range((*t, Ak::MIN)..).take_while(|(k, _)| k.0 == *t).filter(|(_, e)| e.owed).map(|(k, e)| (k.clone(), e.quiet)).collect();
-        for (k, quiet) in owed {
-            if quiet {
-                self.quiet_due.insert(k.clone());
-            }
+        let owed: Vec<(Tid, Ak)> = self.est.range((*t, Ak::MIN)..).take_while(|(k, _)| k.0 == *t).filter(|(_, e)| e.owed).map(|(k, _)| k.clone()).collect();
+        for k in owed {
             self.weigh(k);
         }
     }
@@ -510,34 +454,33 @@ fn held_bytes<'b>(tx: &mut Tx<'_>, blobs: impl Iterator<Item = &'b BlobId>) -> R
 /// and its cost: those a cover drops (`retention::drops_as_covered`, the drop's own judgment: a
 /// purge's leftover stays), whose writes the snapshot claims (its frontier walk passes them or
 /// `Absorbed` lists them: `snapshot::claims`, the writer's own judgment; not one behind an
-/// invalid or missing body of its session), and not ones with an expiry before it,
-/// which a snapshot covers only as their leftover. Counted otherwise, a body no snapshot drops
-/// would fire the trigger at every step. A leftover counts as a part with no delta bytes. Also,
+/// invalid or missing body of its session), and not ones with an expiry, which no snapshot
+/// covers. Counted otherwise, a body no snapshot drops would fire the trigger at every step.
+/// A leftover counts as a part with no delta bytes. Also,
 /// per session source with a body held behind a gap its walk did not pass, where it stopped
 /// (`Est::stops`). Whether each is past its keep bound is the caller's (`Load::of`). Where
-/// the setting keeps live bodies, only bodies out of history and leftovers are looked at
+/// the setting keeps live bodies, only bodies out of history are looked at
 /// (`droppable`): kept ones are neither read nor walked past, so a weighing costs what it may
 /// drop, not the kept history.
 fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candidate>, Stops)> {
     let memory = ak.ephemeral();
     let now = tx.now().0;
     let pool = droppable(tx, tid, ak);
-    // (commit, part, judged by ID, a snapshot, a leftover)
-    let ids: Vec<(CommitId, usize, bool, bool, bool)> = pool
+    // (commit, part, judged by ID, a snapshot)
+    let ids: Vec<(CommitId, usize, bool, bool)> = pool
         .into_iter()
         .filter_map(|c| {
             let m = tx.core.ix.commits.get(&c)?;
             let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai) && m.valid_at(*ai) && super::drops_as_covered(m, *ai, now))?;
-            m.header.aspects.get(ai).filter(|_| m.header.expires.is_none() || m.bare(ai))?;
-            let snapshot = m.view.kind.is_compaction();
-            Some((c, ai, super::snapshot::by_id(m.header.kind, m.header.form), snapshot, !snapshot && m.header.expires.is_some()))
+            m.header.aspects.get(ai).filter(|_| m.header.expires.is_none())?;
+            Some((c, ai, super::snapshot::by_id(m.header.kind, m.header.form), m.view.kind.is_compaction()))
         })
         .collect();
     // counted: tests read how many bodies the trigger weighs
     osis_base::costs::count("compact: bodies weighed", ids.len() as u64);
     // per session source of a candidate, the last counter to walk to
     let mut upto: BTreeMap<osis_crdt::Source, u64> = BTreeMap::new();
-    for (c, ai, by_id, snapshot, _) in &ids {
+    for (c, ai, by_id, snapshot) in &ids {
         if *by_id || *snapshot {
             continue;
         }
@@ -549,9 +492,9 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
     let valid_on = |c: &CommitId| super::snapshot::claims(tx.core, c, tid, ak);
     let (frontiers, reflected) = super::snapshot::frontiers_upto(tx, tid, ak, memory, &valid_on, Some(&upto));
     let mut stops = Stops::new();
-    // (commit, part, its weight, a snapshot, a leftover)
+    // (commit, part, its weight, a snapshot)
     let mut weighed = Vec::new();
-    for (c, ai, by_id, snapshot, leftover) in ids {
+    for (c, ai, by_id, snapshot) in ids {
         // a snapshot is no body the trigger counts: each author keeps its own ephemeral one until
         // its next (spec/sync-compaction.md §2), so two authors' would make each compact the other's forever.
         // But the tree blobs it links that no live state links go with it when the new snapshot
@@ -571,23 +514,23 @@ fn candidates(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<(Vec<Candi
             continue;
         }
         let Some(blob) = tx.get_commit(&c)? else { continue };
-        weighed.push((c, ai, body_bytes(tx, &blob, ai)?, snapshot, leftover));
+        weighed.push((c, ai, body_bytes(tx, &blob, ai)?, snapshot));
     }
     // the tree blobs a drop frees: those no live state of the thing links (the tree memo,
     // `tree_refs::state_refs_in`), none while a tree is not all held (as `retention::freed` judges)
     let mut seen = BTreeSet::new();
     let mut trees = Vec::with_capacity(weighed.len());
-    for (c, ai, w, _, _) in &weighed {
+    for (c, ai, w, _) in &weighed {
         trees.push(freed_under(tx, tid, c, *ai, &w.pages, &mut seen)?);
     }
     let all = trees.iter().all(Option::is_some);
     let mut out = Vec::new();
-    for ((c, ai, w, snapshot, leftover), mine) in weighed.into_iter().zip(trees) {
+    for ((c, ai, w, snapshot), mine) in weighed.into_iter().zip(trees) {
         let mine = mine.filter(|_| all).unwrap_or_default();
         let tree = held_bytes(tx, mine.iter())?;
         let cost = if snapshot { tree } else { part_weight(w.bytes.saturating_add(tree)).saturating_add(ENTRY_CHARGE) };
         if cost > 0 {
-            out.push(Candidate { c, ai, cost, body: !snapshot, leftover });
+            out.push(Candidate { c, ai, cost, body: !snapshot });
         }
     }
     Ok((out, stops))
@@ -621,14 +564,11 @@ struct Candidate {
     cost: usize,
     /// A body the trigger counts (not a snapshot: only its replaced tree blobs count).
     body: bool,
-    /// An expired write's leftover (held value-less past its expiry).
-    leftover: bool,
 }
 
 /// The held bodies of `(tid, ak)` a snapshot may drop now. Where its setting keeps live bodies
 /// (spec/commits.md §5 Kept while live), a body is kept while live or in history, so only the
-/// replaced ones out of history (`leaving` rows up to the cursor) and the leftovers (value-less,
-/// named by `Indexes::valueless`) may go; elsewhere every held body (history then keeps only
+/// replaced ones out of history (`leaving` rows up to the cursor) may go; elsewhere every held body (history then keeps only
 /// under a setting that changed, or a purge floor: `Load::of` reads the keep bounds).
 fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
     let key = (*tid, ak.clone());
@@ -678,7 +618,7 @@ fn snapshot_cost(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<
 
 /// An aspect's load at this node (`Engine::compaction_load`): what the bodies held of it a
 /// snapshot would drop cost (`held`), what the snapshot would (`snapshot`), the costliest body and
-/// how many, and how many of those are expired writes' leftovers.
+/// how many.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Load {
     pub tid: Tid,
@@ -687,7 +627,6 @@ pub struct Load {
     pub snapshot: usize,
     pub largest: usize,
     pub bodies: usize,
-    pub leftovers: usize,
 }
 
 impl Load {
@@ -707,8 +646,8 @@ impl Load {
             candidates(tx, tid, ak, me)
         })?;
         let now = e.now().0;
-        let (mut held, mut largest, mut bodies, mut leftovers) = (0usize, 0usize, 0usize, 0usize);
-        for Candidate { c, ai, cost, body, leftover } in cands {
+        let (mut held, mut largest, mut bodies) = (0usize, 0usize, 0usize);
+        for Candidate { c, ai, cost, body } in cands {
             if e.part_keeps(&c)?.get(ai).copied().unwrap_or(0) > now {
                 continue;
             }
@@ -717,7 +656,6 @@ impl Load {
                 largest = largest.max(cost);
                 bodies += 1;
             }
-            leftovers += usize::from(leftover);
         }
         let Some(snapshot) = e.run(|tx| {
             class(tx);
@@ -726,23 +664,23 @@ impl Load {
         else {
             return Ok(None);
         };
-        Ok(Some((Load { tid: *tid, ak: ak.clone(), held, snapshot, largest, bodies, leftovers }, stops)))
+        Ok(Some((Load { tid: *tid, ak: ak.clone(), held, snapshot, largest, bodies }, stops)))
     }
 }
 
 /// Whether this node may write a snapshot of `k` now (`snapshot::may_snapshot`). Where it may not,
-/// `k` is owed a weighing (`Trigger::owe`, `quiet` for the quiet rule) that what lets it write
+/// `k` is owed a weighing (`Trigger::owe`) that what lets it write
 /// wakes (`Trigger::wake`): its minting or delete keys arriving (`Later`: the thing waits in
 /// `Indexes::cover_waits`, `replace::wake_covers`) or a role moving above it
 /// (`Core::timelines_changed`).
-fn owe_unwritable(tx: &mut Tx<'_>, k: &(Tid, Ak), quiet: bool) -> Result<bool> {
+fn owe_unwritable(tx: &mut Tx<'_>, k: &(Tid, Ak)) -> Result<bool> {
     use crate::engine::write::MayWrite;
     let may = super::snapshot::may_snapshot(tx, &k.0, &k.1, k.1.ephemeral(), tx.core.hlc.peek())?;
     if may == MayWrite::Later {
         super::replace::await_cover(tx.core, &k.0);
     }
     if may != MayWrite::Yes {
-        tx.core.compaction.owe(k.clone(), quiet);
+        tx.core.compaction.owe(k.clone());
     }
     Ok(may == MayWrite::Yes)
 }
@@ -751,18 +689,15 @@ impl Engine {
     /// The compaction trigger (spec/sync-compaction.md §1 trigger), at each step: every aspect due whose
     /// estimate passes `FACTOR` times its last snapshot cost (or asked to be weighed) is weighed,
     /// and where the bodies a snapshot would drop, two at least, cost more than `FACTOR` times
-    /// it, or where the aspect has been quiet for `QUIET_MS` (`Trigger::quiet`) and holds an
-    /// expired write's leftover a snapshot would drop, this node writes the snapshot if it may
-    /// write the aspect (`snapshot`). Returns the
+    /// it, this node writes the snapshot if it may write the aspect (`snapshot`). Returns the
     /// snapshots written, by aspect: an ephemeral one's covered bodies are dropped as it applies
     /// (`retention::memory::drop_covered`), a durable one's by node-sync.
     pub fn compactions(&mut self) -> Result<Vec<(Tid, Ak, CommitId)>> {
         let mut due = std::mem::take(&mut self.core.compaction.due);
         let forced = std::mem::take(&mut self.core.compaction.forced);
-        let quiet = std::mem::take(&mut self.core.compaction.quiet_due);
         let mut out = Vec::new();
         while let Some(k) = due.pop_first() {
-            match self.weigh_due(&k, forced.contains(&k), quiet.contains(&k), &mut out) {
+            match self.weigh_due(&k, forced.contains(&k), &mut out) {
                 Ok(()) => {}
                 // a failed store, however the error came back (a store or blob write that failed
                 // owes a reload, `reload_owed`, or a settle, `blobs_unsettled`): the step fails,
@@ -771,7 +706,6 @@ impl Engine {
                     due.insert(k);
                     let c = &mut self.core.compaction;
                     c.forced.extend(due.iter().filter(|k| forced.contains(*k)).cloned());
-                    c.quiet_due.extend(due.iter().filter(|k| quiet.contains(*k)).cloned());
                     c.due.extend(due);
                     return Err(e);
                 }
@@ -791,9 +725,9 @@ impl Engine {
         Ok(out)
     }
 
-    /// `compactions` of due aspect `k` (`forced`: weighed whatever its estimate; `quiet`: its
-    /// quiet time passed), a snapshot written going to `out`.
-    fn weigh_due(&mut self, k: &(Tid, Ak), forced: bool, quiet: bool, out: &mut Vec<(Tid, Ak, CommitId)>) -> Result<()> {
+    /// `compactions` of due aspect `k` (`forced`: weighed whatever its estimate), a snapshot
+    /// written going to `out`.
+    fn weigh_due(&mut self, k: &(Tid, Ak), forced: bool, out: &mut Vec<(Tid, Ak, CommitId)>) -> Result<()> {
         let (est, last) = self.core.compaction.est.get(k).map_or((0, 0), |e| (e.held, e.snapshot));
         if !forced && est <= FACTOR.saturating_mul(last) {
             return Ok(());
@@ -806,30 +740,21 @@ impl Engine {
         }
         // a node that may not write the aspect leaves compaction to one that may, and owes
         // the weighing for when it may (`owe_unwritable`)
-        if !self.run(|tx| owe_unwritable(tx, k, quiet))? {
+        if !self.run(|tx| owe_unwritable(tx, k))? {
             return Ok(());
         }
         let Ok(me) = self.core.writer_for(&tid) else { return Ok(()) };
-        let quiet_owed = self.core.compaction.est.get(k).is_some_and(|e| e.quiet);
         // counted: tests read how often the trigger weighs and fires per write
         osis_base::costs::count("compact: aspects weighed", 1);
         let Some((l, stops)) = Load::of(self, &tid, &ak, me)? else {
             self.core.compaction.est.remove(k);
             return Ok(());
         };
-        // cover once quiet: a leftover is the one carrier of an expired write's creations and
-        // resets to a node that missed it (peers deleted the body at its expiry)
-        let full = l.bodies >= 2 && l.held > FACTOR.saturating_mul(l.snapshot);
-        let fire = full || (quiet || quiet_owed) && l.leftovers > 0;
         let mut held = l.held;
-        if fire {
+        if l.bodies >= 2 && l.held > FACTOR.saturating_mul(l.snapshot) {
             match self.snapshot(&tid, &ak) {
                 Ok(Some(c)) => {
                     osis_base::costs::count("compact: snapshots written", 1);
-                    if !full {
-                        // counted: tests read how often a quiet aspect is covered
-                        osis_base::costs::count("compact: quiet snapshots", 1);
-                    }
                     out.push((tid, ak.clone(), c));
                     held = 0;
                 }
@@ -841,7 +766,7 @@ impl Engine {
         if self.core.ix.by_aspect.get(k).is_none_or(|s| s.len() <= 1) {
             self.core.compaction.est.remove(k);
         } else {
-            self.core.compaction.est.insert(k.clone(), Est { held, snapshot: l.snapshot, stops, owed: false, quiet: false });
+            self.core.compaction.est.insert(k.clone(), Est { held, snapshot: l.snapshot, stops, owed: false });
         }
         Ok(())
     }
@@ -855,7 +780,7 @@ impl Engine {
         self.run(|tx| {
             for k in &aspects {
                 if tx.core.created(&k.0).is_some() {
-                    owe_unwritable(tx, k, false)?;
+                    owe_unwritable(tx, k)?;
                 }
             }
             Ok(())
@@ -1343,95 +1268,6 @@ mod tests {
             assert_eq!(snaps.iter().map(|x| (x.0, x.1.clone())).collect::<Vec<_>>(), vec![(t, m_ak.clone())], "restart {restart}: compacted once it may write");
             assert_eq!(weighed, if restart { 2 } else { 1 }, "restart {restart}: only the owed aspects weighed");
             assert!(e.compactions().unwrap().is_empty(), "restart {restart}: owed once");
-        }
-    }
-
-    /// Sets key `k` of thing `t`'s aspect `x` to `v` at `e`, expiring at `exp` when given: in
-    /// memory where `x` is ephemeral.
-    fn set_until(e: &mut Engine, t: Tid, x: &Ak, k: &str, v: &str, exp: Option<u64>) {
-        let mut m = Mutation::new();
-        m.op(t, x, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Str(k.into()))], op: osis_crdt::Op::Set(Value::Str(v.into())) }).unwrap();
-        if let Some(at) = exp {
-            m.expires(t, x, osis_base::WallMs(at)).unwrap();
-        }
-        let c = if x.ephemeral() { e.commit_in_memory(m) } else { e.commit(m) };
-        c.unwrap().unwrap();
-    }
-
-    /// A writer of aspect `x` holding a large live key `a` and, per entry of `exps`, a key `e<i>`
-    /// written to expire that many ms past the start. Returns the peer and the thing.
-    fn expiring(x: &Ak, exps: &[u64]) -> (LocalPeer, Tid) {
-        let mut lp = LocalPeer::fresh(1, osis_base::WallMs(1_700_000_000_000));
-        let p = &mut lp.peers[0];
-        let me = p.engine.me();
-        let mut m = Mutation::new();
-        let t = p.engine.new_thing(&mut m, me);
-        p.commit(m).unwrap();
-        // a state large beside a body: a few more bodies stay below the trigger
-        set_until(&mut p.engine, t, x, "a", &"v".repeat(20_000), None);
-        let start = p.engine.now().0;
-        for (i, at) in exps.iter().enumerate() {
-            set_until(&mut p.engine, t, x, &format!("e{i}"), "v", Some(start + at));
-        }
-        assert!(p.engine.compactions().unwrap().is_empty(), "below the trigger");
-        (lp, t)
-    }
-
-    /// `lp`'s clock advanced `ms`, then its tick and the trigger's step: the snapshots the quiet
-    /// rule wrote.
-    fn quiet_after(lp: &mut LocalPeer, ms: u64) -> u64 {
-        lp.advance(ms);
-        lp.peers[0].tick().unwrap();
-        osis_base::costs::take();
-        lp.peers[0].engine.compactions().unwrap();
-        osis_base::costs::take().iter().find(|x| x.0 == "compact: quiet snapshots").map_or(0, |x| x.2)
-    }
-
-    fn leftovers(lp: &mut LocalPeer, x: &Ak) -> usize {
-        lp.peers[0].engine.compaction_load().unwrap().into_iter().find(|l| l.ak == *x).map_or(0, |l| l.leftovers)
-    }
-
-    // spec/sync-compaction.md §1 (Cover once quiet): a writer holding an expired write's leftover,
-    // too small for the trigger, writes a snapshot dropping it once the aspect has been quiet at
-    // it for `MAX_DRIFT`, not before, and one per quiet time: later quiet times write none.
-    // Durable and ephemeral alike.
-    #[test]
-    fn leftover_covered_once_quiet_spec_sync_compaction_1() {
-        for x in ["x:m+.0", "x:m.0"].map(|x| Ak::new(x).unwrap()) {
-            let (mut lp, _) = expiring(&x, &[60_000]);
-            assert_eq!(quiet_after(&mut lp, 61_000), 0, "{x}: expired: quiet from here");
-            assert_eq!(leftovers(&mut lp, &x), 1, "{x}: the expired write is held as its leftover, below the trigger");
-            assert_eq!(quiet_after(&mut lp, QUIET_MS - 1), 0, "{x}: not yet quiet for MAX_DRIFT");
-            assert_eq!(leftovers(&mut lp, &x), 1, "{x}");
-            assert_eq!(quiet_after(&mut lp, 1), 1, "{x}: quiet for MAX_DRIFT: covered");
-            assert_eq!(leftovers(&mut lp, &x), 0, "{x}: the snapshot dropped the leftover");
-            assert_eq!(quiet_after(&mut lp, QUIET_MS), 0, "{x}: one per quiet time");
-            assert_eq!(quiet_after(&mut lp, 10 * QUIET_MS), 0, "{x}");
-        }
-    }
-
-    // spec/sync-compaction.md §1 (Cover once quiet): the quiet time starts again at a write of
-    // the aspect held, at another of its writes expiring, and at an open (the node ran
-    // throughout; a durable aspect, whose leftover outlives the restart): the cover comes
-    // `MAX_DRIFT` after the last of these, not after the expiry.
-    #[test]
-    fn quiet_cover_waits_out_churn_and_restarts_spec_sync_compaction_1() {
-        let half = QUIET_MS / 2;
-        for stir in ["write", "expiry", "restart"] {
-            let x = Ak::new(if stir == "restart" { "x:m.0" } else { "x:m+.0" }).unwrap();
-            let exps = if stir == "expiry" { vec![60_000, 61_000 + half] } else { vec![60_000] };
-            let (mut lp, t) = expiring(&x, &exps);
-            assert_eq!(quiet_after(&mut lp, 61_000), 0);
-            assert_eq!(quiet_after(&mut lp, half), 0, "{stir}");
-            match stir {
-                "write" => set_until(&mut lp.peers[0].engine, t, &x, "b", "v", None),
-                "restart" => lp.peers[0].restart(3).unwrap(),
-                _ => {} // the second write expired at that tick
-            }
-            assert_eq!(quiet_after(&mut lp, half + 1), 0, "{stir}: past the first quiet time, stirred since");
-            assert!(leftovers(&mut lp, &x) >= 1, "{stir}");
-            assert_eq!(quiet_after(&mut lp, half), 1, "{stir}: quiet for MAX_DRIFT since");
-            assert_eq!(leftovers(&mut lp, &x), 0, "{stir}");
         }
     }
 

@@ -455,19 +455,19 @@ pub(crate) fn kept_invalid(m: &crate::engine::Meta) -> bool {
     (0..m.view.aspects.len()).all(|ai| !m.holds(ai)) && (0..m.view.aspects.len()).any(|ai| m.missing_as(ai) == Some(Missing::ToFetch) || m.dropped_invalid(ai))
 }
 
-/// Whether content commit `c` holds nothing but purged leftovers, one at least (each held
-/// value-less for a purge request, `held_purged`), no permanent delta (a lasting header stays,
+/// Whether content commit `c` holds no part but those dropped for a purge request, one at least
+/// (each gone for a standing request, `held_purged`), no permanent delta (a lasting header stays,
 /// spec/commits.md §5) and no `created.0` delta (a thing's first commit stays): kept only so that
-/// a fall of the request finds its writes again (`unstrip`) and a copy is fetched, as one
-/// `kept_invalid` is. Either class: node-sync forgets it once each part not dropped as covered
-/// is covered (`Engine::forgettable`); a memory one is charged its own bytes until then.
+/// a fall of the request fetches a copy (`purge::rejudge_purges`), as one `kept_invalid` is.
+/// Either class: node-sync forgets it once each part not dropped as covered is covered
+/// (`Engine::forgettable`); a memory one is charged its own bytes until then.
 pub(crate) fn kept_purged(core: &Core, c: &CommitId, m: &crate::engine::Meta) -> bool {
-    if m.stripped_parts().next().is_none() || m.view.purges || m.view.kind != Kind::Content || core.ix.pending.contains_key(c) {
+    if m.view.purges || m.view.kind != Kind::Content || core.ix.pending.contains_key(c) {
         return false;
     }
     // read on the memo clock: the answer holds until the commit's expiry
     let now = core.time.until(m.header.expires);
-    let purged = |ai: usize| m.bare(ai) && m.header.aspects.get(ai).is_some_and(|a| held_purged(core, c, &a.tid, &a.ak, ai, now));
+    let purged = |ai: usize| m.dropped(ai).is_some_and(|d| d.why == DropFor::Other) && m.header.aspects.get(ai).is_some_and(|a| held_purged(core, c, &a.tid, &a.ak, ai, now));
     let n = m.view.aspects.len();
     // a thing's first commit stays (its `created.0` part never drops)
     let kept = |a: &osis_commit::AspectEntry| a.ak.as_str() == osis_commit::retention::CREATED || history::permanent(core, &m.header, a);
@@ -855,20 +855,16 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     Ok(Some(k))
 }
 
-/// Expiring snapshot part `ai` of `c` past its expiry (spec/crdt.md §4.7, §8): held as its
-/// leftover, every copy value-less, and its aspect rebuilt from the held bodies (another may hold
-/// a write valued: its own delta, a snapshot expiring later). The aspect, when held.
+/// Expiring snapshot part `ai` of `c` past its expiry (spec/crdt.md §4.7, §8): every node drops its
+/// body whole, its aspect rebuilt from the held bodies (another may still hold a write it carried:
+/// its own delta, a snapshot expiring later). The aspect, when held.
 fn expire_snapshot(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Tid, Ak)>> {
-    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(None) };
-    if !m.holds(ai) || m.bare(ai) {
+    if !m.holds(ai) {
         return Ok(None);
     }
-    let (Some(mut body), gives) = held_body(tx, c, ai)? else { return Ok(None) };
-    tx.core.touch();
-    body.remove_gone(&|_| true);
-    put_leftover(tx, c, ai, m, body, gives)?;
-    crate::apply::rebuild(tx, &a.tid, &a.ak)?;
+    drop_part_for(tx, c, ai, DropFor::Other)?;
     Ok(Some((a.tid, a.ak)))
 }
 
@@ -1021,9 +1017,7 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
         if tx.is_memory_commit(c) && tx.core.ix.commits.get(c).is_some_and(|m| m.holds(ai)) {
             memory::drop_covered(tx, &[k.clone()].into(), Some(c), Some(c))?;
         }
-        // the compaction trigger counts leftovers (`retention::compact`), and covers them once
-        // the aspect is quiet
-        crate::retention::compact::Trigger::stirred(tx, &k);
+        // the compaction trigger weighs the aspect again (`retention::compact`)
         tx.core.compaction.weigh(k);
     }
     Ok(())
@@ -1245,8 +1239,8 @@ pub(crate) fn expire_waiting(tx: &mut Tx<'_>, id: &CommitId, pending: &osis_comm
 
 impl Engine {
     /// Runs what is due by the wall clock: expiries, purge floors (`T_FLOOR`, `T_KEPT`), bodies
-    /// leaving history (`leaving`), live bounds and quiet times the compaction trigger waits for
-    /// (`compact::Trigger::passed`, `quiet_passed`), and commits parked for drift.
+    /// leaving history (`leaving`), live bounds the compaction trigger waits for
+    /// (`compact::Trigger::passed`), and commits parked for drift.
     pub fn tick(&mut self) -> Result<()> {
         if !self.core.fallen.is_empty() {
             self.resnapshot_fallen()?;
@@ -1276,8 +1270,6 @@ impl Engine {
             if !changed.is_empty() {
                 tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             }
-            // quiet times passed: after the expiries, which end an aspect's quiet time
-            tx.core.compaction.quiet_passed(now);
             tx.core.timer_floor = tx.core.timer_floor.min(tx.core.compaction.next_at());
             Ok(())
         });
@@ -1345,7 +1337,7 @@ impl Engine {
         self.core.ix.commits.get(c).is_some_and(kept_invalid)
     }
 
-    /// Whether commit `c` is held only as purged leftovers (`kept_purged`): a memory one is
+    /// Whether commit `c` is kept only for its purged parts (`kept_purged`): a memory one is
     /// charged its own bytes against its sync IDs' caps until it is forgotten, not through its
     /// entries, which the purger deletes at peers.
     pub fn kept_purged(&self, c: &CommitId) -> bool {
@@ -1364,8 +1356,8 @@ impl Engine {
     /// would leave a header for good: `growth::several_writers_grow_nothing`; and a writer,
     /// removed or not, could pile up invalid headers for good:
     /// `tests_addenda::a_removed_writers_invalid_commits_are_forgotten_spec_commits_5`; a memory
-    /// one all covered went at once, `forget_if_spent`); or one held only as
-    /// purged leftovers (`kept_purged`, either class): its gone writes read nothing. One
+    /// one all covered went at once, `forget_if_spent`); or one kept only for its purged parts
+    /// (`kept_purged`, either class): its gone writes read nothing. One
     /// carrying a purge request, every part dropped as covered or invalid and one at least as
     /// invalid, goes where its request holds the right over nothing (`purge::drops_nothing`: an
     /// invalid request purges nothing) and it is not lasting. An invalid part that turns valid
@@ -1532,7 +1524,7 @@ mod tests_forged;
 mod tests {
     #![allow(clippy::unwrap_used)]
     use crate::Mutation;
-    use crate::engine::{Hold, Missing};
+    use crate::engine::{DropFor, Hold, Missing};
     use crate::flows::Demotion;
     use crate::local_peer::LocalPeer;
     use osis_base::{Ak, CommitId, Role, Value, WallMs};
@@ -2026,16 +2018,14 @@ mod tests {
         lp.peers[0].commit(m).unwrap().unwrap();
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Str("old".into())), "purged: what it replaced");
-        assert!(e.core.ix.commits.get(&c).unwrap().stripped(0), "the purged part is held as its leftover");
+        assert!(e.core.ix.commits.get(&c).unwrap().dropped(0).is_some_and(|d| d.why == DropFor::Other), "the purged part is dropped: nothing of it is left");
     }
 
-    // spec/commits.md §5 (own replaces; purge): a whole replace held as its leftover stays one
-    // through a fall and a rise of its purge. The fall makes the part missing (its leftover set
-    // aside), and a missing part says nothing of `whole` (`Hold::Missing`); the rise adopts the
-    // leftover and judges the replace on it, as a load from the commit records does
-    // (`check_index` compares them).
+    // spec/commits.md §5 (own replaces; purge), spec/crdt.md §4.7: a purged whole replace is gone,
+    // so no own replace, through a fall (missing: never received) and a rise of its purge
+    // (dropped again); `check_index` compares the index with a load from the commit records.
     #[test]
-    fn whole_replace_through_a_purges_fall_and_rise_spec_commits_5() {
+    fn purged_whole_replace_is_no_own_replace_through_a_fall_and_rise_spec_commits_5() {
         let (mut lp, t, x, w, reg, other) = purger_and_writer();
         lp.advance(10);
         let mut m = Mutation::new();
@@ -2049,14 +2039,14 @@ mod tests {
         lp.advance(10);
         let (p1, ds) = falling_purge(&mut lp, t, c, &reg, &other, x);
         lp.deliver(2, &p1).unwrap();
-        assert_eq!(hold(&lp), Hold::Leftover { whole: true, valued: false }, "purged");
-        assert!(own(&lp));
+        assert!(matches!(hold(&lp), Hold::Dropped(d) if d.why == DropFor::Other), "purged");
+        assert!(!own(&lp));
         for d in &ds {
             lp.deliver(2, d).unwrap();
         }
         assert_eq!(hold(&lp), Hold::Missing(Missing::Plain), "fallen: never received");
         assert!(!own(&lp));
-        // the owner purges it: the leftover set aside is its body again, a whole replace
+        // the owner purges it: dropped again, no own replace
         lp.advance(10);
         let mut m = Mutation::new();
         m.purge_commit(c, t, reg.clone());
@@ -2064,8 +2054,8 @@ mod tests {
         let p2 = lp.peers[0].commit(m).unwrap().unwrap();
         let p2 = lp.peers[0].engine.package(&p2).unwrap().unwrap();
         lp.deliver(2, &p2).unwrap();
-        assert_eq!(hold(&lp), Hold::Leftover { whole: true, valued: false }, "purged again");
-        assert!(own(&lp));
+        assert!(matches!(hold(&lp), Hold::Dropped(d) if d.why == DropFor::Other), "purged again");
+        assert!(!own(&lp));
         lp.peers[2].engine.check_index();
     }
 
@@ -2101,13 +2091,13 @@ mod tests {
         (p1, ds)
     }
 
-    // spec/commits.md §5 (own replaces; purge): an own replace gone missing at its purge's fall
-    // is no cover: a body dropped under it and one other own replace is missing again, as at a
-    // node that holds the same commits and never saw the fall. W writes C0, then whole replaces
-    // C2, C3; C0 is dropped as covered; the admin X purges C2; the owner removes X before hearing
-    // of it, so the purge falls and C2 is missing.
+    // spec/commits.md §5 (own replaces; purge), spec/crdt.md §4.7: a purged own replace is gone,
+    // so no cover: a body dropped under it and one other own replace is missing again at the
+    // purge, and stays so through its fall, as at a node that holds the same commits and never saw
+    // the fall. W writes C0, then whole replaces C2, C3; C0 is dropped as covered; the admin X
+    // purges C2; the owner removes X before hearing of it, so the purge falls and C2 is missing.
     #[test]
-    fn own_replace_missing_at_a_fall_uncovers_spec_commits_5() {
+    fn purged_own_replace_uncovers_spec_commits_5() {
         let (mut lp, t, x, _, reg, other) = purger_and_writer();
         let cs: Vec<CommitId> = (0..3)
             .map(|v| {
@@ -2125,12 +2115,12 @@ mod tests {
         lp.advance(10);
         let (p, ds) = falling_purge(&mut lp, t, c2, &reg, &other, x);
         lp.deliver(2, &p).unwrap();
-        assert!(matches!(hold(&lp, &c0), Hold::Dropped(_)), "C2 purged is still an own replace");
+        assert_eq!(hold(&lp, &c0), Hold::Missing(Missing::Plain), "C2 purged is no own replace: C0 is missing again");
         for d in &ds {
             lp.deliver(2, d).unwrap();
         }
         assert_eq!(hold(&lp, &c2), Hold::Missing(Missing::Plain), "fallen: never received");
-        assert_eq!(hold(&lp, &c0), Hold::Missing(Missing::Plain), "C0 is missing again: one own replace covers nothing");
+        assert_eq!(hold(&lp, &c0), Hold::Missing(Missing::Plain), "C0 stays missing: one own replace covers nothing");
         assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(Value::Int(2)));
         lp.peers[2].engine.check_index();
         // the cycle ends: C2 and C0 fetched back, C0 drops again under C2, C3 and stays dropped
@@ -2341,11 +2331,11 @@ mod tests {
         assert!(lp.peers[0].engine.core.ix.handed.is_empty(), "nor after a restart");
     }
 
-    // spec/commits.md §5 (Forgetting: parts held value-less for a purge request, not past its
-    // `expires`): whether a purged leftover is forgettable is read on the memo clock, with a wake
-    // at its expiry, so a reader following it is due then with nothing else moving.
+    // spec/commits.md §5 (Forgetting: parts dropped for a purge request, not past its `expires`):
+    // whether a purged commit is forgettable is read on the memo clock, with a wake at its expiry,
+    // so a reader following it is due then with nothing else moving.
     #[test]
-    fn a_purged_leftover_wakes_its_reader_at_its_expiry_spec_commits_5() {
+    fn a_purged_commit_wakes_its_reader_at_its_expiry_spec_commits_5() {
         let mut lp = LocalPeer::new(1, 955, WallMs(1_700_000_000_000)).unwrap();
         let a = lp.peers[0].engine.me();
         let x = Ak::new("x:m.0").unwrap();
@@ -2365,15 +2355,15 @@ mod tests {
         m.set(t, &x, &Value::Int(2)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let e = &mut lp.peers[0].engine;
-        assert!(e.kept_purged(&w), "held value-less for the purge");
+        assert!(e.kept_purged(&w), "kept only for its purged part");
         assert_eq!(e.core.time.next(), Some(expires), "a wake at its expiry");
     }
 
     // spec/commits.md §5 (Forgetting: only where forgetting changes no read), spec/crdt.md §4.7:
-    // a purged write has no effect on the read, so its commit, held only as its leftover, may be
-    // forgotten at once, the read unchanged: the write it replaced.
+    // a purged write has no effect on the read, so its commit, kept only for its purged part, may
+    // be forgotten at once, the read unchanged: the write it replaced.
     #[test]
-    fn a_purged_leftover_goes_at_once_spec_commits_5() {
+    fn a_purged_commit_goes_at_once_spec_commits_5() {
         let mut lp = LocalPeer::new(1, 956, WallMs(1_700_000_000_000)).unwrap();
         let a = lp.peers[0].engine.me();
         let x = Ak::new("x:m.0").unwrap();

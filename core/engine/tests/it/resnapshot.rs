@@ -63,6 +63,7 @@ fn purged(lp: &mut LocalPeer, t: Tid, secret: Secret) {
     };
     let mut c = None;
     let mut early = None;
+    let mut old = None;
     for v in ["old", "SECRET"] {
         let mut m = Mutation::new();
         m.purge_by(t, &reg(), PurgeBy::Writer).unwrap();
@@ -75,6 +76,10 @@ fn purged(lp: &mut LocalPeer, t: Tid, secret: Secret) {
         }
         c = Some(id);
         lp.advance(1_000);
+        if v == "old" {
+            // what the secret replaces, as this writer reads it (nothing without the delete keys)
+            old = lp.peers[1].engine.get(&t, &reg()).unwrap();
+        }
     }
     let mut m = Mutation::new();
     m.set(t, &ct::PURGE, &lp.peers[0].engine.now()).unwrap();
@@ -89,7 +94,7 @@ fn purged(lp: &mut LocalPeer, t: Tid, secret: Secret) {
         Secret::LateHeader => send(lp, c.unwrap()),
     }
     if !matches!(secret, Secret::LateHeader) {
-        assert_eq!(lp.peers[1].engine.get(&t, &reg()).unwrap(), Some(Value::Str("old".into())), "the purge applied, {secret:?}");
+        assert_eq!(lp.peers[1].engine.get(&t, &reg()).unwrap(), old, "the purge applied, {secret:?}");
     }
 }
 
