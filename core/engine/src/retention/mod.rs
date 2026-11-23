@@ -831,6 +831,17 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
         d.add(&body, -1);
     }
     strip_leftover(tx.core, &m.header, ai, &mut body);
+    // a delta left with no write (its own all gone, none carried) is nothing: dropped, as gone
+    // (a held one, its fire's references with it; one dropped as covered stays so), the aspect
+    // rebuilt without it
+    if gives.is_none() && body.is_empty() {
+        if m.holds(ai) {
+            drop_part_for(tx, c, ai, DropFor::Other)?;
+        } else {
+            crate::apply::rebuild(tx, &a.tid, &a.ak)?;
+        }
+        return Ok(Some(k));
+    }
     if let Some(d) = &mut fire_refs {
         d.add(&body, 1);
     }
@@ -2390,11 +2401,8 @@ mod tests {
         assert!(e.forgettable(&two).unwrap(), "its writes read nothing");
         e.forget_commits(&[two]).unwrap();
         assert_eq!(e.get(&t, &x).unwrap(), before, "read unchanged");
-        let _ = one;
-        e.drop_body(&one, &t, &x).unwrap();
-        assert!(e.forgettable(&one).unwrap());
-        e.forget_commits(&[one]).unwrap();
-        assert_eq!(e.get(&t, &x).unwrap(), None);
+        assert_eq!(before, Some(Value::Int(1)), "the write it replaced");
+        assert!(!e.forgettable(&one).unwrap(), "the replaced write reads again: kept");
     }
 
     /// Peer 0 makes things `t` and `u` and grants peer 1's account write on `t` and admin on `u`,

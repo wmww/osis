@@ -2570,6 +2570,10 @@ mod tests {
         // writer 1's deltas, for strips of their bodies: whether each is a long insert (a reset
         // run's: past a page), and its counters
         let mut received: Vec<(bool, osis_crdt::CounterRange)> = Vec::new();
+        // every body joined (the first state one), and writer 1's ranges gone: a strip rebuilds
+        // the state as their join without the gone writes, as the engine does (spec/crdt.md §4.7)
+        let mut bodies = vec![st.clone()];
+        let mut gone: Vec<osis_crdt::CounterRange> = Vec::new();
         let mut long_strips = 0;
         let (mut in_place, mut kept, mut fresh_item, mut rebuilt, mut cold, mut kept_placement) = (0, 0, n, 0, 0, 0);
         let idx_of = |unit: &[u8]| open(unit, &SALT).unwrap().1;
@@ -2595,17 +2599,28 @@ mod tests {
                 };
                 kinds[k] += 1;
                 match k {
-                    // an expiry or purge of a received body: its writes held value-less, the
-                    // whole state written again (a rebuild)
+                    // an expiry or purge of a received body: its writes gone, the state rebuilt
+                    // from the bodies without them and written whole again
                     0 => {
                         // a reset run strips a long insert where one was received
                         let at = r(received.len() as u64) as usize;
                         let (long, range) = received.iter().rev().find(|x| reset && x.0).copied().unwrap_or(received[at]);
                         long_strips += usize::from(long);
-                        let pred = move |d: &Dot| d.origin().src == sess(2) && (range.lo..range.hi).contains(&d.origin().ctr);
-                        st.remove_gone(&pred);
-                        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-                        f.remove_gone(&pred);
+                        gone.push(range);
+                        let pred = |d: &Dot| d.origin().src == sess(2) && gone.iter().any(|g| (g.lo..g.hi).contains(&d.origin().ctr));
+                        let mut rebuilt_st: Option<Fragment> = None;
+                        for b in &bodies {
+                            let mut b = b.clone();
+                            b.remove_gone(&pred);
+                            match &mut rebuilt_st {
+                                Some(x) => {
+                                    x.join(b);
+                                }
+                                None => rebuilt_st = Some(b),
+                            }
+                        }
+                        st = rebuilt_st.unwrap();
+                        f = st.clone();
                         let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
                         unit = u;
                         idx = i.unwrap();
@@ -2675,6 +2690,7 @@ mod tests {
                     Some(t) => assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, t).unwrap()),
                     None => load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap(),
                 }
+                bodies.push(delta.clone());
                 st.join(delta.clone());
                 f.join(delta);
                 let done = match &touch {

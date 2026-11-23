@@ -825,9 +825,9 @@ mod tests {
         }
     }
 
-    // An expired reset still resets (its leftover holds it), a purged one is left behind by the
-    // purge's own reset, and an invalid one gives nothing, so the walk passes it. Either way the
-    // undo reads as the whole join does.
+    // An expired or invalid reset gives nothing (spec/crdt.md §4.7, §4.6), so the walk passes it;
+    // a purged one is left behind by the purge's own reset. Either way the undo reads as the whole
+    // join does.
     #[test]
     fn pre_state_at_a_reset_gone_or_invalid() {
         for case in ["expired", "purged", "invalid"] {
@@ -859,9 +859,8 @@ mod tests {
             lp.sync_all().unwrap();
             let before = lp.peers[0].engine.get(&t, &x).unwrap();
             let want_before = match case {
-                "invalid" => Some(map_of(&[("j", 1)])),
                 "purged" => Some(map_of(&[("p", 1)])),
-                _ => None,
+                _ => Some(map_of(&[("j", 1)])),
             };
             assert_eq!(before, want_before, "{case}");
             let last = put(&mut lp, 0, t, &x, "k", 2, keep);
