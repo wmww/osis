@@ -409,13 +409,13 @@ fn snapshots(st: &MFrag, mfr: &[(MSource, u64)], gone: &Gone, honest: bool, twin
     };
     check(st, mfr, "a");
     let mut mst = st.clone();
-    mst.strip(&gone.model());
+    mst.remove_gone(&gone.model());
     let mut ours = frag(st);
-    ours.strip(&gone.ours());
-    assert_eq!(ours, frag(&mst), "strip equals the model");
+    ours.remove_gone(&gone.ours());
+    assert_eq!(ours, frag(&mst), "removal equals the model");
     ours.compact();
     assert_eq!(ours, frag(&mst), "compacting changes nothing");
-    check(&mst, &[], "a stripped");
+    check(&mst, &[], "a without the gone writes");
 }
 
 /// Every writer's delta encodes like the model's and decodes back to itself under the writer's
@@ -448,9 +448,8 @@ fn wire(c: &Case) {
 }
 
 /// Un-merge of one author (§4.6): the join of the bodies each without its writes equals the
-/// model's, in any order. Expiry of `gone`'s dots (§4.7): stripping each body before its join
-/// equals stripping the join, and no expired write's char outlives it.
-fn unmerge_and_strip(c: &Case, reference: &MFrag) {
+/// model's, in any order; likewise without `gone`'s dots (§4.7).
+fn unmerge_and_gone(c: &Case) {
     let bad = source(&c.bad);
     let unmerged = |order: &mut dyn Iterator<Item = &(MFrag, Option<MWriter>)>| {
         let mut out = Fragment::default();
@@ -481,31 +480,33 @@ fn unmerge_and_strip(c: &Case, reference: &MFrag) {
         }
         assert_eq!(ours, never, "un-merged equals never held");
     }
+    // expiry and purge of `gone`'s dots (§4.7): the join of the bodies each without them equals the
+    // model's, in any order, and, every body a writer's own delta, never holding the gone deltas
     let exp = c.gone.ours();
-    let mut late = frag(reference);
-    late.strip(&exp);
-    // held whole, compacted after each strip: joins meet value-less range records
-    for (order, compact) in [(c.deltas.iter().collect::<Vec<_>>(), false), (c.deltas.iter().rev().collect(), true), (c.deltas.iter().collect(), true)] {
-        let mut early = Fragment::default();
+    let mut model = None;
+    for (d, _) in &c.deltas {
+        let mut m = d.clone();
+        m.remove_gone(&c.gone.model());
+        mapply(&mut model, m);
+    }
+    // held whole, compacted after each join: joins meet compact dead range records
+    let held = |order: &mut dyn Iterator<Item = &(MFrag, Option<MWriter>)>, compact: bool| {
+        let mut out = Fragment::default();
         for (d, _) in order {
             let mut b = frag(d);
-            b.strip(&exp);
-            early.join(b);
-            early.strip(&exp);
+            b.remove_gone(&exp);
+            out.join(b);
             if compact {
-                early.compact();
-                check_lin(&early);
+                out.compact();
+                check_lin(&out);
             }
         }
-        assert_eq!(early, late, "expiry commutes with join");
-    }
-    if let Fragment::Seq(sq) = &late {
-        for (d, e) in sq.elems() {
-            let own = matches!(e.content, SeqContent::Char(_)) && exp(d.origin());
-            let undel = e.undel.is_some() && e.deleted.as_ref().is_some_and(|x| exp(x.0.dot.origin()));
-            assert!(!own && !undel, "an expired write's char outlives it: {d:?}");
-        }
-    }
+        out
+    };
+    let ours = held(&mut c.deltas.iter(), false);
+    assert_eq!(ours, ostate(&model), "held bodies without the gone writes equal the model's");
+    assert_eq!(ours, held(&mut c.deltas.iter().rev(), true), "order-independent");
+    assert_eq!(ours, held(&mut c.deltas.iter(), true), "compacting changes nothing");
 }
 
 /// The encodings a state holds, for the coverage tally.
@@ -567,7 +568,7 @@ fn check_case(mut r: crate::testutil::SeedRng, c: &Case) -> BTreeSet<&'static st
     wire(&c);
     let mut seen = BTreeSet::new();
     if let Some(st) = &reference {
-        unmerge_and_strip(&c, st);
+        unmerge_and_gone(&c);
         tally(&frag(st), &mut seen);
     }
     seen

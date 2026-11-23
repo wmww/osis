@@ -428,14 +428,15 @@ fn diff_rewrites_value_less_field_spec_9() {
     let v = |a: i64, b: Option<i64>| Value::Map([(Value::Int(0), Value::Int(a))].into_iter().chain(b.map(|b| (Value::Int(1), Value::Int(b)))).collect());
     let first = node(1);
     let mut w1 = Writer::new(ts(1 << 16), first.clone(), 1);
-    let mut st = create(&mut w1, &view, &v(1, Some(7))).unwrap();
+    let st = create(&mut w1, &view, &v(1, Some(7))).unwrap();
     let mut w2 = Writer::new(ts(2 << 16), node(2), 1);
     let d = diff(&mut w2, Some(&st), &view, &v(2, Some(7))).unwrap().unwrap();
     let Fragment::Struct(s) = &d else { panic!("struct delta") };
     assert_eq!(s.fields.keys().copied().collect::<Vec<_>>(), vec![0], "the live field 1 is not rewritten");
-    st.join(d);
     // the first delta expires: field 1 goes, field 0 keeps the second delta's value
-    st.strip(&|d: &crate::stamp::Dot| d.src == first);
+    let mut st = st;
+    st.remove_gone(&|d: &crate::stamp::Dot| d.src == first);
+    st.join(d);
     assert_eq!(read(&st), Some(v(2, None)));
     let mut w3 = Writer::new(ts(3 << 16), node(3), 1);
     let d = diff(&mut w3, Some(&st), &view, &v(2, Some(7))).unwrap().unwrap();

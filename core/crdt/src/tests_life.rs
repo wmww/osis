@@ -24,11 +24,21 @@ fn in_ranges(r: &[Range]) -> impl Fn(&Dot) -> bool + '_ {
     move |d: &Dot| r.iter().any(|(s, lo, hi)| d.src == *s && (*lo..*hi).contains(&d.ctr))
 }
 
-/// `f` with the writes `expired` names stripped.
-fn stripped(f: &Fragment, expired: &dyn Fn(&Dot) -> bool) -> Fragment {
+/// `f` without the writes `gone` names (§4.7).
+fn stripped(f: &Fragment, gone: &dyn Fn(&Dot) -> bool) -> Fragment {
     let mut g = f.clone();
-    g.strip(expired);
+    g.remove_gone(gone);
     g
+}
+
+/// `held` of every body.
+fn held_all(bodies: &[Fragment], gone: &dyn Fn(&Dot) -> bool) -> Fragment {
+    held(&bodies.iter().collect::<Vec<_>>(), gone)
+}
+
+/// The join of `bodies`, each without the writes `gone` names: a node's state (§4.6, §4.7).
+fn held(bodies: &[&Fragment], gone: &dyn Fn(&Dot) -> bool) -> Fragment {
+    bodies.iter().fold(Fragment::default(), |f, b| joined(&f, &stripped(b, gone)))
 }
 
 /// The types the lifecycle laws run over: every encoding but sequences, nested; a text; a list.
@@ -37,7 +47,7 @@ fn law_types() -> [Ty; 3] {
 }
 
 proptest! {
-    /// §4.7: strip equals the model's, commutes with join, is idempotent; a valued copy wins.
+    /// §4.7: removing gone writes equals the model's and is idempotent.
     #[test]
     fn expiry_laws_spec_4_7(seed in any::<u64>()) {
         law_types().iter().for_each(|ty| expiry_laws(seed, ty));
@@ -61,7 +71,7 @@ proptest! {
     }
 }
 
-/// §4.7 laws of `strip` over three random states of type `ty`, each by its own writer.
+/// §4.7 laws of `remove_gone` over three random states of type `ty`, each by its own writer.
 fn expiry_laws(seed: u64, ty: &Ty) {
     let mut r = crate::testutil::rng(seed | 1);
     let (mut s, mut m, mut ranges) = (Vec::new(), Vec::new(), Vec::new());
@@ -84,25 +94,10 @@ fn expiry_laws(seed: u64, ty: &Ty) {
     let strip = |f: &Fragment| stripped(f, &in_ranges(&expired));
     for (o, mo) in s.iter().zip(&m) {
         let mut ms = mo.clone();
-        ms.strip(&|d| mexpired.iter().any(|(src, lo, hi)| d.source == *src && (*lo..*hi).contains(&d.ctr)));
-        assert_eq!(strip(o), frag(&ms), "strip equals the model");
-        // `each_valued` names every write holding a value, and none `strip` took a value from
-        let mut valued = BTreeSet::new();
-        o.each_valued(&mut |d| {
-            valued.insert(d.clone());
-        });
-        assert_eq!(stripped(o, &|d| !valued.contains(d)), *o, "each_valued names every valued write");
-        let mut left = Vec::new();
-        strip(o).each_valued(&mut |d| left.extend(in_ranges(&expired)(d).then(|| d.clone())));
-        assert!(left.is_empty(), "stripped writes named valued: {left:?}");
+        ms.remove_gone(&|d| mexpired.iter().any(|(src, lo, hi)| d.source == *src && (*lo..*hi).contains(&d.ctr)));
+        assert_eq!(strip(o), frag(&ms), "removal equals the model");
+        assert_eq!(strip(&strip(o)), strip(o), "idempotent");
     }
-    let (a, b) = (&s[0], &s[1]);
-    assert_eq!(strip(&joined(a, b)), joined(&strip(a), &strip(b)), "strip commutes with join");
-    assert_eq!(strip(&strip(a)), strip(a), "idempotent");
-    // a stripped map write moves to its dot's key-erased record (§4.7), which the valued
-    // records' read joins: the same read, and the same state once stripped
-    assert_eq!(joined(a, &strip(a)), *a, "valued copy wins");
-    assert_eq!(strip(&joined(a, &strip(a))), strip(a), "valued copy wins, stripped");
 }
 
 /// §4.6 un-merge over a random history.
@@ -805,16 +800,6 @@ fn paging_large_spec_8() {
     assert_eq!(unpage(&bytes, &mut pages).unwrap(), st);
 }
 
-/// §4.7, §7: a value-less register embeds like its valued copy after stripping.
-#[test]
-fn value_less_embedding_spec_7() {
-    let all = |_: &Dot| true;
-    let reg = create(&mut Writer::new(ts(3 << 16), node(1), 1), &AnyView, &Value::Int(5)).unwrap();
-    let counter = || create(&mut Writer::new(ts(2 << 16), node(2), 1), &TyView(Ty::Counter), &Value::Int(1)).unwrap();
-    let valued = joined(&joined(&reg, &Fragment::empty(crate::Encoding::Counter).unwrap()), &counter());
-    assert_eq!(stripped(&valued, &all), stripped(&joined(&stripped(&reg, &all), &counter()), &all));
-}
-
 /// Model writer 1's list of `n` strings of 128 KiB less `pad` bytes and a 3-digit index, made at
 /// t = 5: the model delta, its context, and our delta.
 fn big_list(n: usize, pad: usize) -> (crdt_model::state::Frag, DeltaCtx, Delta) {
@@ -907,38 +892,6 @@ fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
     assert!(alone.read().is_none_or(|v| v == Value::Map(osis_base::ValueMap::new())), "a creation alone joins nothing: {alone:?}");
 }
 
-/// §4.1 copy order, §4.7, §5.6: two copies of one delta (a forged snapshot's beside the
-/// writer's) put one map entry under two keys, its text element anchored apart. The key is a part
-/// of its own: the element joins as the greater anchor and char under the greater key, so
-/// expiring the delta after the join equals expiring each copy before it (the key decided the
-/// anchor, and the copies held key-erased joined to the other one).
-#[test]
-fn copies_under_two_keys_expire_alike_spec_4_7() {
-    use crate::fragment::{Eid, Entry, Map, Meta};
-    use crate::seq::{Anchor, SeqContent};
-    use crate::stamp::Stamp;
-    use std::collections::BTreeMap;
-    let st = |c: u64| Stamp::new(ts(1 << 16), node(1), c);
-    let (d, e, f) = (Dot::new(node(1), 1), Dot::new(node(1), 2), Dot::new(node(1), 3));
-    let copy = |key: &str, anchor: Anchor, c: char| {
-        let el = SeqElem { created: Some((st(2), anchor.clone())), content: SeqContent::Char(c), pos: vec![(st(2), anchor, None)], ..SeqElem::bare() };
-        let text = Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(e.clone(), el)])));
-        let entry = Entry { reset: None, frag: Some(Box::new(text)), created: Some(st(1)) };
-        let mut m = Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(Eid::new(d.clone(), Some(s(key))), entry)])));
-        m.prune(None, &mut crate::Changes::new());
-        m
-    };
-    let (a, b) = (copy("b", Anchor::Head, 'x'), copy("a", Anchor::Dot(f), 'y'));
-    let both = joined(&a, &b);
-    assert_eq!(both, joined(&b, &a));
-    assert_eq!(both.read(), Some(Value::Map(osis_base::ValueMap::from([(s("b"), s("y"))]))), "the greater key, anchor and char");
-    let strip = |x: &Fragment| stripped(x, &|x: &Dot| x.src == node(1));
-    let late = strip(&both);
-    assert_eq!(strip(&joined(&strip(&a), &strip(&b))), late, "expired before the join");
-    assert_eq!(strip(&joined(&a, &strip(&b))), late, "one copy expired before the join");
-    assert_eq!(strip(&joined(&strip(&a), &b)), late, "the other");
-}
-
 /// spec/commits.md §5 (an element's or entry's tombstone is not one of its creator's): a removed
 /// map entry's tombstone, keyed by its dot, holds the remover's reset, not the creator's write.
 #[test]
@@ -953,8 +906,7 @@ fn entry_tombstone_is_no_live_write_spec_commits_5() {
     assert!(ours(st.writes()) && !ours(st.live_writes()), "live_writes agrees");
 }
 
-/// §4.3, §4.7: a list element keeps its creation write, value-less, when its commit expires: it
-/// anchors, counts toward no presence, and a list whose elements all expired reads absent.
+/// §4.3, §4.7: a list whose commit expired reads absent.
 #[test]
 fn expired_list_reads_absent_spec_crdt_4_3() {
     let f = create(&mut Writer::new(ts(5), node(1), 1), &AnyView, &Value::List(vec![Value::Int(1), Value::Int(2)])).unwrap();
@@ -969,7 +921,7 @@ fn map_list() -> TyView {
 }
 
 /// spec/sync-compaction.md §1: a sweep resets what a removal hid, once, so the join leaves no
-/// repeated key; never a record merely lacking its creation or a value (one expired here), a live
+/// repeated key; never a record merely lacking its creation (one expired here), a live
 /// one or an empty tombstone.
 #[test]
 fn sweep_takes_only_what_is_hidden_spec_sync_7() {
@@ -992,9 +944,9 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     assert!(!after.holds_write(&Dot::new(y.clone(), 1)), "the edit is dead");
     let Fragment::Map(m) = &after else { panic!("a map") };
     assert!(m.entries.keys().all(|id| id.key.is_none()), "the key is gone");
-    let expired = stripped(&joined(&put, &edit), &mine);
-    assert_eq!(expired.read(), Some(kmap(s("b"))), "another's value keeps the entry");
-    none(&expired, "a live entry");
+    let expired = held(&[&put, &edit], &mine);
+    assert_eq!(expired.read(), Some(Value::Map(Default::default())), "another's value goes with the entry");
+    none(&expired, "the creation gone: as not held");
     none(&stripped(&put, &mine), "expired, nothing else in it");
     // a text undelete over its held creation: a live char
     let text = create(&mut Writer::new(ts(5), x.clone(), 1), &TyView(Ty::Text), &s("a")).unwrap();
@@ -1004,9 +956,9 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     // another's removal alone in an expired entry hides it
     let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &kmap(kmap(s("a")))).unwrap();
     let removal = diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &AnyView, &kmap(Value::Map(Default::default()))).unwrap().unwrap();
-    let hid = stripped(&joined(&put, &removal), &mine);
+    let hid = held(&[&put, &removal], &mine);
     assert_eq!(hid.read(), Some(Value::Map(Default::default())));
-    none(&hid, "not removed: a valued write may still arrive");
+    none(&hid, "not removed: the creation may still arrive");
     // a list element, nested in a live one
     let ty = map_list();
     let list = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &Value::List(vec![kmap(s("a"))])).unwrap();
@@ -1014,7 +966,7 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     none(&list, "a live element");
     let over = joined(&list, &new);
     none(&over, "a live element, emptied");
-    let over = stripped(&over, &mine);
+    let over = held(&[&list, &new], &mine);
     assert_eq!(over.read(), Some(Value::List(Vec::new())));
     none(&over, "not removed");
     // a removed element with a newer write inside
@@ -1026,23 +978,6 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     gone.join(sweep);
     none(&gone, "once");
     assert!(!gone.holds_write(&Dot::new(y, 1)));
-}
-
-/// spec/sync-compaction.md §1, spec/crdt.md §5.6 Live: a live map record reads as its fragment
-/// joined with its dot's key-erased record's, and the sweep judges it so. x puts `{k: [1]}`, y
-/// edits the element to 2, x's commit expires: the element's creation moves, value-less, to the
-/// key-erased record while y's write stays under `k`. The element shows y's value; it is not swept
-/// though x's delta is reflected.
-#[test]
-fn sweep_reads_a_live_record_with_its_key_erased_record_spec_sync_7() {
-    let ty = TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::List(Box::new(Ty::Register)))));
-    let val = |i: i64| kmap(Value::List(vec![Value::Int(i)]));
-    let put = create(&mut Writer::new(ts(5), node(1), 1), &ty, &val(1)).unwrap();
-    let edit = diff(&mut Writer::new(ts(9), node(2), 1), Some(&put), &ty, &val(2)).unwrap().unwrap();
-    let xs = [(node(1), 1, 9)];
-    let st = stripped(&joined(&put, &edit), &in_ranges(&xs));
-    assert_eq!(st.read(), Some(val(2)));
-    assert_eq!(st.sweep(&Writer::new(ts(20), node(2), 5).delta_stamp(), &in_ranges(&xs)), None, "the element shows");
 }
 
 /// spec/sync-compaction.md §1: a creation a parent's reset pruned is dead once the state reflects
@@ -1191,13 +1126,14 @@ fn sweep_laws(seed: u64, ty: &Ty) -> usize {
     for _ in 0..6 {
         let expired: Vec<Range> = ranges.iter().filter(|_| r.chance(1, 4)).cloned().collect();
         let gone: Vec<Range> = expired.iter().filter(|_| r.chance(3, 4)).cloned().collect();
-        let mut view = Fragment::default();
-        let mut held: Vec<Range> = Vec::new();
+        let mut mine = Vec::new();
+        let mut held_ranges: Vec<Range> = Vec::new();
         for (b, rg) in bodies.iter().zip(&ranges).filter(|_| r.chance(2, 3)) {
-            view.join(b.clone());
-            held.push(rg.clone());
+            mine.push(b);
+            held_ranges.push(rg.clone());
         }
-        view.strip(&in_ranges(&gone));
+        let view = held(&mine, &in_ranges(&gone));
+        let held = held_ranges;
         let reflected = in_ranges(&held);
         let Some(sw) = view.sweep(&stamp, &reflected) else { continue };
         swept += 1;
@@ -1214,7 +1150,7 @@ fn sweep_laws(seed: u64, ty: &Ty) -> usize {
             stepped.join(part);
         }
         assert!(stripped(&stepped, &in_ranges(&gone)) == after, "swept in steps");
-        let all = stripped(&bodies.iter().fold(Fragment::default(), |f, b| joined(&f, b)), &in_ranges(&expired));
+        let all = held_all(&bodies, &in_ranges(&expired));
         let want = all.read();
         let all = stripped(&joined(&all, &sw), &in_ranges(&expired));
         assert_eq!(all.read().and_then(shown), want.and_then(shown), "the read of a node holding everything");

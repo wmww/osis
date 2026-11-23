@@ -843,23 +843,6 @@ fn ranges_split_where_writes_land_spec_6() {
     assert_eq!(via_snapshot(&a), as_carried(&a));
 }
 
-/// §4.7: a list range record whose elements' creations expire in part (two commits' counters in
-/// one record, as a snapshot may carry them) strips like its elements.
-#[test]
-fn range_strips_like_its_elements_spec_4_7() {
-    let at = |c: u64| if c == 1 { Anchor::Head } else { Anchor::Dot(Dot::new(node(1), c - 1)) };
-    let el = |c: u64, span: u64| SeqElem { created: Some((st(1, 1, c), at(c))), pos: vec![(st(1, 1, c), at(c), None)], deleted: Some((st(2, 2, 1), true)), span, ..SeqElem::bare() };
-    let list = |elems: BTreeMap<Dot, SeqElem>| Fragment::Seq(Seq::new(false, Meta::default(), elems));
-    let ranged = list(BTreeMap::from([(Dot::new(node(1), 1), el(1, 4))]));
-    let flat = list((1..=4).map(|c| (Dot::new(node(1), c), el(c, 1))).collect());
-    let strip = |f: &Fragment| {
-        let mut g = f.clone();
-        g.strip(&|d| d.src == node(1) && d.ctr <= 2);
-        expanded(&g)
-    };
-    assert_eq!(strip(&ranged), strip(&flat));
-}
-
 /// `op` applied by node 4 at t = 9: the delta and the joined state.
 fn apply_op(f: &Fragment, op: crate::ops::Op) -> (Fragment, Fragment) {
     let mut b = crate::delta::DeltaBuilder::new(f, crate::ops::Writer::new(ts(9 << 16), node(4), 1));
@@ -1338,26 +1321,19 @@ mod valid_order {
         assert_eq!(read_valid(&all, 2), text("ayb"));
     }
 
-    /// An expired insert keeps its place (§4.7); once invalid too, it leaves nothing.
+    /// An expired insert leaves nothing (§4.7), as an invalid one (§4.6).
     #[test]
     fn expired_then_invalid_insert_leaves_nothing() {
         let (m, _) = typed("ab");
         let x = mops::seq_insert(&mut mw(2, 2), Some(&m), true, 1, chars("X"));
         let y = mops::seq_insert(&mut mw(3, 3), Some(&view(&[&m, &x])), true, 2, chars("y"));
         let bad = source(&MSource::session(2, 0));
-        let mut xs = frag(&x);
-        xs.strip(&|d| d.src == bad);
         let mut st = Fragment::default();
-        for f in [frag(&m), xs.clone(), frag(&y)] {
+        for mut f in [frag(&m), frag(&x), frag(&y)] {
+            f.remove_gone(&|d| d.src == bad);
             st.join(f);
         }
-        assert_eq!(reads(&st), txt("ayb"), "expired: X keeps its place, no char");
-        let mut un = Fragment::default();
-        for mut f in [frag(&m), xs, frag(&y)] {
-            f.remove_writes(&|d| d.src == bad);
-            un.join(f);
-        }
-        assert_eq!(un, after(&frag(&m), &[&y]), "expired then invalid: as never held");
+        assert_eq!(st, after(&frag(&m), &[&y]), "expired: as never held");
     }
 }
 

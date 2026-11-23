@@ -9,15 +9,13 @@ use crate::stamp::{Dot, Stamp};
 use std::collections::BTreeMap;
 
 impl Fragment {
-    /// Holds the writes `expired` owns value-less (§4.7): what a node past a delta's `T`, or
-    /// holding a purge of it, applies after every join and rebuild, and what a snapshot carries
-    /// of an expiring delta. Takes only those writes' values: their map writes move to their
-    /// dot's key-erased record. Commutes with join. `expired` is asked about origin dots (never
-    /// `Derived`).
-    pub fn strip(&mut self, expired: &dyn Fn(&Dot) -> bool) {
-        self.strip_values(expired, &mut Changes::new());
-        // the moved map writes meet their dot's records; `Derived` records left without a
-        // write go
+    /// Removes the writes `gone` owns (expired, purged: §4.7), every write of their dots (resets,
+    /// flags, positions and creations too), and gives canonical form: `remove_writes`, then prune.
+    /// What a node applies to every body it holds and every copy arriving; a state is rebuilt from
+    /// such bodies, never stripped in place (removing a write does not commute with join: what it
+    /// pruned is back only from a body). `gone` is asked about origin dots (never `Derived`).
+    pub fn remove_gone(&mut self, gone: &dyn Fn(&Dot) -> bool) {
+        self.remove_writes(gone);
         self.prune(None, &mut Changes::new());
     }
 
@@ -194,52 +192,6 @@ impl Fragment {
                     }
                 }
             }
-        }
-    }
-
-    pub(crate) fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
-        let exp = |d: &Dot| expired(d.origin());
-        let reg = |r: &mut Register| {
-            if let Some(w) = &mut r.write
-                && exp(&w.stamp.dot)
-            {
-                w.value = None;
-            }
-        };
-        // `W` writes the value "an empty composite"
-        if let Some(m) = self.meta_mut()
-            && m.w.as_ref().is_some_and(|w| exp(&w.dot))
-            && !m.w_valueless
-        {
-            m.w_valueless = true;
-            ch.touch();
-        }
-        match self {
-            Fragment::Slots(Slots { reg: r, slots }) => {
-                r.iter_mut().for_each(reg);
-                slots.values_mut().for_each(|f| f.strip_values(expired, ch));
-            }
-            Fragment::Register(r) => reg(r),
-            Fragment::Bag(Bag { elems, .. }) => elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired, ch)),
-            Fragment::Set(x) => x.elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired, ch)),
-            Fragment::Struct(s) => s.fields.values_mut().for_each(|f| f.strip_values(expired, ch)),
-            Fragment::Enum(e) => {
-                if let Some(c) = &mut e.case
-                    && exp(&c.stamp.dot)
-                {
-                    c.case = None;
-                }
-                e.payloads.values_mut().for_each(|f| f.strip_values(expired, ch));
-            }
-            Fragment::Map(m) => {
-                // each write repeats its record's key as its own value
-                m.erase_keys(&exp);
-                for f in m.entries.values_mut().filter_map(|en| en.frag.as_mut()) {
-                    f.strip_values(expired, ch);
-                }
-                m.reindex();
-            }
-            Fragment::Seq(s) => seq::strip_values(s, expired, ch),
         }
     }
 

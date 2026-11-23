@@ -1086,43 +1086,6 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
     })
 }
 
-/// Holds value-carrying writes of expired deltas value-less (§4.7); `expired` gets origin dots: a
-/// text creation's char, an undelete's char, a list creation, and inside list content.
-pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
-    let text = s.text;
-    // a range record holds no char or undelete; one whose creations `expired` takes in part
-    // is stripped per element
-    let split: Vec<Dot> = s.elems.iter().filter(|(d, e)| e.span > 1 && e.created.is_some() && (1..e.span).any(|k| expired(nth(d, k).origin()) != expired(d.origin()))).map(|(d, _)| d.clone()).collect();
-    if !split.is_empty() {
-        let elems = s.elems_mut();
-        let held: Elems = split.into_iter().filter_map(|k| elems.remove(&k).map(|e| (k, e))).collect();
-        elems.extend(crate::seq_span::expand(held));
-    }
-    for (d, el) in s.elems_mut().iter_mut() {
-        // an undelete's char is its flag write's own value
-        if el.deleted.as_ref().is_some_and(|x| expired(x.0.dot.origin())) && el.undel.take().is_some() {
-            ch.touch();
-        }
-        if !text && expired(d.origin()) && el.created.is_some() && !el.valueless {
-            el.valueless = true;
-            ch.touch();
-        }
-        match &mut el.content {
-            // a list element loses only the content writes of the expiring delta (§4.7)
-            SeqContent::Frag(f) => f.strip_values(expired, ch),
-            // a text element's char
-            _ if expired(d.origin()) => {
-                el.content = SeqContent::None;
-                if d.src.is_derived() {
-                    // an embedded character's creation is known only from the value (§7)
-                    el.created = None;
-                    el.pos.retain(|p| p.0.dot != *d);
-                }
-            }
-            _ => {}
-        }
-    }
-}
 
 /// `Fragment::filter_by` of a sequence, element by element.
 pub(crate) fn filter_by(s: &mut Seq, t: &Seq, keep: crate::lifecycle::Keep) {

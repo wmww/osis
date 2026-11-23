@@ -296,34 +296,19 @@ Writes of deltas the node judges invalid are not undone. A signal delta is writt
 
 **Un-merge of an ephemeral commit** (revoked signer, spec/sync-compaction.md §2): the aspect is rebuilt from the node's own writes and the valid held parts left. The commit's writes and records go, as at a node that never held it (what anchors at them sits at virtual anchors, §6.1).
 
-### 4.7 Expiry and value-less writes
+### 4.7 Expiry and purge
 A delta with `expires: T` (header, per aspect; `T > wall_ms(ts)`, else the commit is rejected) carries the writes of its source with a counter in its range (commit form: every write of its source in that aspect).
-- **Value-carrying** writes are register values, enum case writes, `W` (the value "an empty composite"), set and bag element values, map writes (each carries its record's key as its own value; a creation's is the entry's key, §5.6) and sequence element creations (the text char, the list element). An undelete's char is its flag write's own value (§5.7). A delta's other writes (resets, deleted flags, position writes) carry no app data.
+- **Value-carrying** writes are register values, enum case writes, `W` (the value "an empty composite"), set and bag element values, map writes (each carries its record's key as its own value) and sequence element creations (the text char, the list element); an undelete's char is its flag write's own value (§5.7). A delta's other writes (resets, deleted flags, position writes) carry no app data. Undo (§4.6) and forgotten commits' names (spec/commits.md §5) tell them apart; expiry and purge do not.
 - **Attribution** is by dot: a write belongs to the delta whose range holds its dot (a `Derived` dot to the delta of its underlying dot); an element's or entry's creation to the delta of the element's dot.
 
 Rules:
-- **Value-less writes.** A value-carrying write may be held without its value: stamp kept, value gone.
-  - **Join**: the copy with the value wins over the copy without (§4.1 copy order).
-  - **Read**: a value-less write takes part in "later wins" like any other but reads as absent:
-    - a register whose winner is value-less is absent;
-    - an enum whose case winner is value-less is absent and its payloads stay hidden until a reset prunes them (§5.4);
-    - a value-less `W` makes nothing present;
-    - a set or bag element whose value is value-less is not live; a map entry or list element whose creation is value-less is live only while it holds a live value (§4.3, §5.6, §5.7);
-    - a text element whose winning flag write is a value-less undelete is not live (§5.7).
-  - **Presence**: value-less writes do not count toward `written` (§4.3).
-  - **Map writes**: a map write held value-less sits in its dot's key-erased record (§5.6), so its key goes with its value; the writes of other deltas in the record stay under its key.
-  - **Text element**: it keeps its creation write (anchor) and drops its char.
-  - **List element**: it keeps its creation write (anchor), held value-less.
-  - **Embedded character** (`Derived` dot, §7): it has no creation write apart from the value, so it goes entirely: creation and content. Position and flag writes of others stay, and a record with none of those is dropped (a node that only ever saw the value-less register has no such record either). Anchors at such a dot: §6.1.
-- **Expiry rule.** Once a node's wall clock reaches T it holds every value-carrying write of the delta value-less, and strips the value from any copy that arrives later (a stale peer, another copy).
-  - Its non-value writes stay, and nothing of other deltas goes: expiry of a delta equals the join with that delta's values stripped.
-  - Its value-carrying writes are dead at T (§4.8) and its body goes (spec/commits.md §6): the node holds the body's **leftover** instead, the same delta with every value-carrying write value-less, a held body like any other (joined, replayed, covering) that is logged under no sync ID. A leftover reveals nothing of a value: stamps, dots, structure, resets, flags and positions only.
-  - **Copies.** No held body carries the value of a write the node holds value-less, and none loses a value of a write the node does not but one stripped for a purge that fell, held through the fall with its value-less copies yielding to a valued one (Join; spec/permissions.md §6), and an expiring snapshot past its expiry (below): a body carrying a copy of one under its dot (a snapshot's) is held as its leftover, those copies value-less, from the moment the node holds that write value-less or the body joins, whichever is later (a waiting part is stripped once the node can read it, spec/commits.md §5). A delta's own writes keep their values there: it is a held body for keep bounds (spec/commits.md §5), and is deleted at peers keeping it unread as a dropped body with live writes (spec/sync-compaction.md §1).
-  - A node holding a valid purge request treats the value-carrying writes it names the same way from the moment it applies it (spec/commits.md §5).
-  - A node that never held the delta's body (gone everywhere at T, spec/commits.md §6) lacks its leftover: it holds others' writes into its entries and elements without their creations, so they do not show there, and lacks its resets. It may so read differently from a holder until a writer holding the leftover has been quiet for `MAX_DRIFT` and its snapshot carries the leftover's writes (spec/sync-compaction.md §1).
-- **Snapshots**: one without an expiry carries the delta's value-carrying writes value-less (§8; its map writes key-erased), before and after T, and covers it only once none of its values lives (spec/commits.md §5). Before T a node holding it but neither the delta nor an expiring snapshot carrying them reads those writes as absent, like any partial receipt.
-  - An **expiring snapshot** (a compaction snapshot whose commit carries `expires: T`, §8) carries values that end at T. At T a node holds its copies value-less, its body as its leftover, and strips them from a copy of it arriving later; it holds no write value-less for it (the writes it copies stay valued in any other body holding them so: their own delta, a snapshot expiring later).
-- **Ephemeral data** (spec/sync-compaction.md §2) follows these rules as durable data does; its leftovers are held in memory like its bodies.
+- **Gone writes.** A delta's writes are **gone** at a node once its wall clock reaches the delta's T (**expiry**), and once it applies a valid purge request naming the delta (spec/commits.md §5 Purge): every write attributed to the delta, its resets, flags, position writes and element and entry creations included.
+  - The node removes them from every body it holds (the delta's own and every copy a snapshot carries under its dots) and from every copy arriving later, as un-merge removes an invalid delta's writes (§4.6 Removed), and its state is the join of the bodies so held (§4.6). A gone write has no effect on any read: what it superseded reads again where a body holding it is held (a register's earlier value, content its reset or delete removed), and others' writes nested in a record it created stay held but read as at a node that never held it (§5.6, §5.7 Live); what anchors at a sequence element it created sits at its virtual anchor unless others' position or flag writes keep the record (§6.1).
+  - Whether a write is gone is judged from the node's clock and the requests it holds, never from what it holds of the delta's body: a node that never held the body reads as one that held and removed it.
+  - Removing writes is not a join: a node gives the state the join of the held bodies again (§4.6), never strips the state in place.
+- **Snapshots**: one without an expiry carries no write of a delta with an expiry, before and after T, nor any write gone at its writer (§8). So it covers no such delta, nor a body holding a write that only such writes superseded (joining it adds the write back, spec/commits.md §5 Covered). Before T a node holding it but not the delta reads as without the delta, like any partial receipt.
+  - An **expiring snapshot** (a compaction snapshot whose commit carries `expires: T`, §8) carries writes that end at T: at T every node drops its body whole, and a copy of it arriving later joins nothing.
+- **Ephemeral data** (spec/sync-compaction.md §2) follows these rules as durable data does.
 
 ### 4.8 Death of a write
 A write is **dead** at a node once the join has superseded it:

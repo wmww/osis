@@ -858,98 +858,14 @@ impl Frag {
         self.keep_writes(&|d| !bad(d));
     }
 
-    // -------------------------------------------------------------- expiry
+    // ----------------------------------------------------- expiry and purge
 
-    /// Hold every value-carrying write owned by an expired commit value-less (§4.7). `expired` is asked about origin
-    /// dots (never `Derived`). Commutes with join; applied after every join on a node past the commit's T, and what a
-    /// snapshot carries of an expiring delta.
-    pub fn strip(&mut self, expired: &dyn Fn(&Dot) -> bool) {
-        self.strip_values(expired);
-        // the moved map writes meet their dot's records; `Derived` records left without a write go
+    /// Remove the writes of expired and purged deltas (§4.7): every write whose origin dot `gone` names, as
+    /// un-merge removes them, in canonical form. Not a join homomorphism: a node applies it to each body it holds,
+    /// then joins.
+    pub fn remove_gone(&mut self, gone: &dyn Fn(&Dot) -> bool) {
+        self.keep_writes(&|d| !gone(d));
         self.prune(None);
-    }
-
-    fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool) {
-        let exp = |d: &Dot| expired(origin(d));
-        // `W` writes the value "an empty composite"
-        if let Some(c) = self.composite_mut() {
-            if c.w.as_ref().is_some_and(|w| exp(&w.dot)) {
-                c.w_valueless = true;
-            }
-        }
-        match self {
-            Frag::Slots { reg, slots } => {
-                reg.iter_mut().for_each(|r| r.strip_values(expired));
-                slots.values_mut().for_each(|f| f.strip_values(expired));
-            }
-            Frag::Register { write, .. } => {
-                if let Some(w) = write {
-                    if exp(&w.0.dot) {
-                        w.1 = None;
-                    }
-                }
-            }
-            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired)),
-            Frag::Struct { fields, .. } => fields.values_mut().for_each(|f| f.strip_values(expired)),
-            Frag::Enum { case, payloads, .. } => {
-                if let Some(k) = case {
-                    if exp(&k.0.dot) {
-                        k.1 = None;
-                    }
-                }
-                payloads.values_mut().for_each(|f| f.strip_values(expired));
-            }
-            Frag::Map { entries, .. } => {
-                // each write repeats its record's key as its own value: the expired ones move, value-less, to their
-                // dot's key-erased record
-                let keyed: Vec<Eid> = entries.keys().filter(|(_, k)| k.is_some()).cloned().collect();
-                for id in keyed {
-                    let en = entries.remove(&id).unwrap();
-                    let mut mine = en.clone();
-                    mine.keep_writes(&id.0, &|d| exp(d));
-                    let mut rest = en;
-                    rest.keep_writes(&id.0, &|d| !exp(d));
-                    if rest.holds() {
-                        entries.insert(id.clone(), rest);
-                    }
-                    if mine.holds() {
-                        let er = (id.0.clone(), None);
-                        let en = match entries.remove(&er) {
-                            None => mine,
-                            Some(o) => Entry { reset: max_opt(o.reset, mine.reset), frag: jopt_any(o.frag, mine.frag), created: max_opt(o.created, mine.created) },
-                        };
-                        entries.insert(er, en);
-                    }
-                }
-                for f in entries.values_mut().filter_map(|en| en.frag.as_mut()) {
-                    f.strip_values(expired);
-                }
-            }
-            Frag::Seq { text, elems, .. } => {
-                let text = *text;
-                for (d, el) in elems.iter_mut() {
-                    // an undelete's char is its flag write's own value
-                    if el.deleted.as_ref().is_some_and(|x| exp(&x.0.dot)) {
-                        el.undel = None;
-                    }
-                    if !text && exp(d) && el.created.is_some() {
-                        el.valueless = true;
-                    }
-                    match &mut el.content {
-                        Content::Frag(f) => f.strip_values(expired),
-                        _ if exp(d) => {
-                            el.content = Content::None;
-                            if matches!(d.source, Source::Derived(_)) {
-                                // an embedded character's creation is known only from the value (§7): it goes entirely
-                                el.created = None;
-                                el.pos.retain(|p| p.0.dot != *d);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
     }
 
     /// Keeps only the writes whose origin dot `keep` accepts; a record stays where a kept write is in it.

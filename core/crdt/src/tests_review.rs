@@ -522,51 +522,6 @@ fn map_removal_reaches_its_dot_spec_5_6() {
     all_orders(&[created, other, entry_map(vec![(c, Some(a), Some(rm), None)])], map(&[]));
 }
 
-/// §5.6, §4.7: the key-erased record of a dot (a value-less creation, as a snapshot of an
-/// expiring delta carries it) joins into the dot's keyed records' read and shows nothing alone,
-/// and its reset reaches every record of the dot, as a keyed record's reset reaches it.
-#[test]
-fn map_key_erased_record_spec_5_6() {
-    let k = Value::Str("k".into());
-    let c = st(1, 1, 1);
-    let rm = st(3, 2, 1);
-    let valued = entry_map(vec![(c.clone(), Some(k.clone()), None, Some(7))]);
-    let mut erased = valued.clone();
-    erased.strip(&|_| true);
-    // the valued creation shows the entry; the key-erased copy alone hides it
-    let mut s = erased.clone();
-    assert_eq!(s.read(), None, "no value");
-    s.join(valued.clone());
-    assert_eq!(s.read(), Some(Value::Map([(k.clone(), Value::Int(7))].into_iter().collect())), "the valued copy shows it");
-    // a keyed removal reaches the key-erased record: nothing of the dot left live or hidden
-    let removal = entry_map(vec![(c.clone(), Some(k.clone()), Some(rm.clone()), None)]);
-    all_orders(&[erased.clone(), valued.clone(), removal.clone()], Some(Value::Map(Default::default())));
-    let s = joined(&erased, &removal);
-    let Fragment::Map(m) = &s else { panic!("map") };
-    assert!(m.entries().all(|(_, _, _, f)| f.is_none()), "{s:?}");
-    // a key-erased removal reaches the keyed records
-    let mut erm = entry_map(vec![(c.clone(), Some(k.clone()), Some(rm), None)]);
-    erm.strip(&|_| true);
-    all_orders(&[valued, erm], Some(Value::Map(Default::default())));
-}
-
-/// §5.6: a dot under two keys (a forged copy), one removed: the removal reaches both records, so a
-/// node holding the stripped copy beside the valued records reads as one without it.
-#[test]
-fn forged_key_removed_with_its_dot_spec_5_6() {
-    let (a, b) = (Value::Str("a".into()), Value::Str("b".into()));
-    let c = st(1, 1, 1);
-    let rm = st(3, 2, 1);
-    let mut x = entry_map(vec![(c.clone(), Some(a.clone()), None, Some(7))]);
-    x.join(entry_map(vec![(c.clone(), Some(a), Some(rm), None)]));
-    x.join(entry_map(vec![(c, Some(b), None, Some(8))]));
-    let mut s = x.clone();
-    s.strip(&|_| true);
-    let y = joined(&x, &s);
-    assert_eq!(x.read(), Some(Value::Map(Default::default())));
-    assert_eq!(y.read(), x.read(), "valued copy wins");
-}
-
 /// §5.7, §3.3 rule 7: a text char is the creation's payload (an undelete's rides its `FlagW`), so
 /// a run carrying `Content` chars without a `Creation` is rejected, and a record holding one in
 /// memory joins as if it held none: folded into a held creation it would read by arrival order.
@@ -687,11 +642,9 @@ fn lone_creation_on_the_wire_spec_5_6() {
     assert_eq!(joined.read(), Some(Value::Map([(k(1), Value::Int(9))].into())), "the content rejoined");
 }
 
-/// §5.7 Live, §4.7: an undelete shows the element by its own char, so one whose char is gone
-/// hides it, as a value-less register winner reads absent. X types "a" (lasting), Z deletes it,
-/// Y undeletes it expiring: past Y's `T` a node holding X's body (the creation's char) and one
-/// bootstrapped from a snapshot taken after the delete (a deleted char is never on the wire)
-/// both show "", whether or not the creation's char is held.
+/// §5.7 Live, §4.7: X types "a" (lasting), Z deletes it, Y undeletes it expiring: past Y's `T`
+/// the delete wins again, at a node holding X's body (the creation's char) and one bootstrapped
+/// from a snapshot taken after the delete (a deleted char is never on the wire) alike.
 #[test]
 fn expired_undelete_hides_alike_spec_5_7() {
     use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
@@ -715,11 +668,11 @@ fn expired_undelete_hides_alike_spec_5_7() {
     let snap = snapshot(&deleted);
     let bytes = encode_snapshot(&snap, &crate::testutil::snap_cx(), None).unwrap();
     let booted = decode_snapshot(&bytes, &crate::testutil::snap_cx(), &mut Interner::new(), None).unwrap().fragment;
-    let past = |mut f: Fragment| {
-        f.join(dy.clone());
-        assert_eq!(f.read(), Some(Value::Str("a".into())));
-        f.strip(&|d| d.src == y);
-        f.read()
+    let past = |f: Fragment| {
+        assert_eq!(joined(&f, &dy).read(), Some(Value::Str("a".into())));
+        let mut gone = dy.clone();
+        gone.remove_gone(&|d| d.src == y);
+        joined(&f, &gone).read()
     };
     assert_eq!(past(deleted), Some(Value::Str(String::new())));
     assert_eq!(past(booted), Some(Value::Str(String::new())));

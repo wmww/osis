@@ -108,11 +108,27 @@ pub fn covers(snap: &Frag, body: &Frag) -> bool {
     canonical(&a) == canonical(&j)
 }
 
-/// Whether single write `w` carries a value (§4.7): stripping it changes it.
+/// Whether single write `w` carries a value (§4.7 Value-carrying): a register value, an enum case, `W`, a set or bag
+/// element's value, any write of a keyed map record (each carries the key), a list creation, a text char (a creation's
+/// or an undelete's).
 pub fn valued(w: &Frag) -> bool {
-    let mut s = w.clone();
-    s.strip(&|_| true);
-    s != *w
+    if w.composite().is_some_and(|c| c.w.is_some()) {
+        return true;
+    }
+    match w {
+        Frag::Register { write, .. } => write.is_some(),
+        Frag::Slots { reg, slots } => reg.as_deref().is_some_and(valued) || slots.values().any(valued),
+        Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values().filter_map(|e| e.frag.as_deref()).any(valued),
+        Frag::Struct { fields, .. } => fields.values().any(valued),
+        Frag::Enum { case, payloads, .. } => case.is_some() || payloads.values().any(valued),
+        Frag::Map { entries, .. } => entries.iter().any(|((_, k), en)| k.is_some() || en.frag.as_deref().is_some_and(valued)),
+        Frag::Seq { text, elems, .. } => elems.values().any(|el| {
+            (!*text && el.created.is_some())
+                || matches!(el.content, Content::Char(_))
+                || el.undel.is_some()
+                || matches!(&el.content, Content::Frag(f) if valued(f))
+        }),
+    }
 }
 
 /// The stamps of the value-carrying writes `f` holds value-less (§4.7): a register, case or `W` without its value,

@@ -601,31 +601,6 @@ fn text_creation_dies_at_delete_kept_in_record_spec_4_8() {
     assert!(joined(&ab, &Fragment::Seq(un)).winners().iter().any(|x| x == gone[0]));
 }
 
-/// §5.6 (the records of a dot are one entry): one put writes k1 and k2 under one stamp; k1's value
-/// held value-less in its key-erased record (a snapshot's copy of an expiring put) is beaten by
-/// a later write in the keyed record: k1's write is dead, k2's not, though each record keeps
-/// its own.
-#[test]
-fn record_pair_cross_death_spec_5_6() {
-    use crate::ops::{create, diff};
-    use crate::view::AnyView;
-    let map = |k1: &str| Value::Map(osis_base::ValueMap::from([(s("k1"), s(k1)), (s("k2"), s("p"))]));
-    let put = create(&mut Writer::new(ts(5), x(), 1), &AnyView, &map("p")).unwrap();
-    let later = diff(&mut Writer::new(ts(8), x(), 20), Some(&put), &AnyView, &map("w")).unwrap().unwrap();
-    let mut erased = put.clone();
-    erased.strip(&|d| d.ctr < 20);
-    let pw: BTreeSet<Won> = put.winners().iter().filter(|w| w.kind == Kind::Value).collect();
-    assert_eq!(pw.len(), 2, "two values");
-    assert_eq!(pw.iter().map(|w| &w.stamp).collect::<BTreeSet<_>>().len(), 1, "under one stamp");
-    for (a, b) in [(&erased, &later), (&later, &erased)] {
-        let ab = joined(a, b);
-        let gone = erased.winners().minus(&ab.winners());
-        assert_eq!(gone.len(), 1, "k1's value alone: {gone:?}");
-        assert!(pw.contains(gone.iter().next().unwrap()));
-        assert!(ab.holds_stamp(&gone.iter().next().unwrap().stamp), "each record keeps its write");
-    }
-}
-
 /// A set of the given element records (§5.5).
 fn set_of(elems: Vec<(Dot, Elem)>) -> Fragment {
     Fragment::Set(crate::fragment::Set { meta: Meta::default(), elems: elems.into_iter().collect() })

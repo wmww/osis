@@ -247,10 +247,6 @@ impl Entry {
     pub(crate) fn holds(&self) -> bool {
         self.reset.is_some() || self.frag.is_some() || self.created.is_some()
     }
-    /// Whether record `dot` holds a write whose origin dot `pred` accepts.
-    fn holds_dots(&self, dot: &Dot, pred: &dyn Fn(&Dot) -> bool) -> bool {
-        self.reset.as_ref().is_some_and(|r| pred(r.dot.origin())) || (self.created.is_some() && pred(dot.origin())) || self.frag.as_deref().is_some_and(|f| f.holds_dots(pred))
-    }
     /// Removes record `dot`'s writes whose origin dot `pred` accepts (`Fragment::remove_writes`):
     /// its reset, its creation (the dot's) and those in its content.
     pub(crate) fn remove_writes(&mut self, dot: &Dot, pred: &dyn Fn(&Dot) -> bool) {
@@ -428,38 +424,6 @@ impl Map {
                 Some(std::borrow::Cow::Owned(j))
             }
             _ => Some(std::borrow::Cow::Borrowed(f)),
-        }
-    }
-    /// Moves the writes of every keyed record whose origin dot `pred` accepts to the record's
-    /// key-erased record (§4.7: each repeats the key as its own value), joined in (the caller
-    /// joins or prunes the result).
-    pub(crate) fn erase_keys(&mut self, pred: &dyn Fn(&Dot) -> bool) {
-        let ids: Vec<Eid> = self.entries.iter().filter(|(id, e)| id.key.is_some() && e.holds_dots(&id.dot, pred)).map(|(id, _)| id.clone()).collect();
-        for id in ids {
-            let Some(mut rest) = self.entries.remove(&id) else { continue };
-            let mut mine = rest.clone();
-            mine.remove_writes(&id.dot, &|d| !pred(d));
-            rest.remove_writes(&id.dot, pred);
-            if rest.holds() {
-                self.entries.insert(id.clone(), rest);
-            }
-            if !mine.holds() {
-                continue;
-            }
-            let slot = self.entries.entry(Eid::erased(id.dot)).or_default();
-            slot.reset = crate::stamp::max_opt(slot.reset.take(), mine.reset);
-            slot.created = crate::stamp::max_opt(slot.created.take(), mine.created);
-            // a join takes canonical sides: `remove_writes` leaves a `Slots` slot without the
-            // register's embedding
-            let mine_frag = mine.frag.map(|mut f| {
-                f.prune(None, &mut crate::changes::Changes::new());
-                f
-            });
-            match (&mut slot.frag, mine_frag) {
-                (Some(a), Some(b)) => a.join_into(*b, None, &mut crate::changes::Changes::new()),
-                (a @ None, b) => *a = b,
-                (_, None) => {}
-            }
         }
     }
     /// What each key reads as: the join of its live records (§5.6, same-key entries read as

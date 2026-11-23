@@ -260,20 +260,7 @@ mod entry_copies {
             (&|d| d.src == w2, &|d| d.source == Source::session(2, 0)),
         ];
         for (i, (e, me)) in exps.iter().enumerate() {
-            let strip = |x: &Fragment| {
-                let mut y = x.clone();
-                y.strip(*e);
-                y
-            };
-            let late = strip(&all);
-            let early = ps[1..].iter().fold(strip(&ps[0]), |a, b| strip(&joined(&a, &strip(b))));
-            assert_eq!(early, late, "expiry {i} before the joins");
-            let mixed = strip(&ps[1..].iter().fold(ps[0].clone(), |a, b| joined(&a, &strip(b))));
-            assert_eq!(mixed, late, "expiry {i} of all but the first");
-            let mut ml = model.clone();
-            ml.strip(*me);
-            assert_eq!(late, ostate(&Some(ml)), "expiry {i}, the model's");
-            // un-merge of each copy (§4.6), joined in either order
+            // expiry and purge (§4.7) are un-merge: of each copy (§4.6), joined in either order
             let un = |x: &Fragment| {
                 let mut y = x.clone();
                 y.remove_writes(*e);
@@ -321,9 +308,8 @@ mod entry_copies {
     }
 
     /// §5.7 with §4.7: no creation prunes a flag. A forged embedded char's creation `a` above a
-    /// delete `b` of its element beats it, and `b` stays held; expiry takes `a` whole (§4.7
-    /// Embedded character) and leaves `b`, so strip(a ⊔ b) = strip(a) ⊔ strip(b), snapshot bytes
-    /// included, and the read before expiry shows `a`'s char.
+    /// delete `b` of its element beats it, and `b` stays held; expiry takes `a` whole and leaves
+    /// `b`, and the read before expiry shows `a`'s char.
     #[test]
     fn creation_above_a_flag_holds_it_through_expiry_spec_5_7() {
         let x = Dot { source: Source::session(1, 0), ctr: 5 };
@@ -335,15 +321,10 @@ mod entry_copies {
         let (fa, fb) = (frag(&a), frag(&b));
         let ab = joined(&fa, &fb);
         assert_eq!(ab.read(), Some(osis_base::Value::Str("z".into())), "the creation beats the delete below it");
-        let strip = |f: &Fragment| {
-            let mut g = f.clone();
-            g.strip(&|_| true);
-            g
-        };
-        let (late, early) = (strip(&ab), joined(&strip(&fa), &strip(&fb)));
-        assert_eq!(late, early);
-        assert_eq!(late, fb, "the delete stays, alone");
-        assert_eq!(snapshot_bytes(&late), snapshot_bytes(&early));
+        // expiry of `a`'s commit: `b` alone, as at a node that never held `a`
+        let mut gone = fa.clone();
+        gone.remove_gone(&|_| true);
+        assert_eq!(joined(&gone, &fb), fb, "the delete stays, alone");
     }
 
     /// §3.2 Content, §3.3 rule 3, §5.7: a creation run whose stamps straddle its flag write (a

@@ -976,8 +976,8 @@ fn list_delete_vs_concurrent_nested_write_spec_5_7() {
     assert_eq!(s1, s2);
 }
 
-/// §7, §4.7, §6.1: an insert anchored at an embedded character keeps its place after the
-/// register write expires, whether a node saw the value or only the value-less register.
+/// §7, §4.7, §6.1: an insert anchored at an embedded character sits at its virtual anchor after
+/// the register write expires, as at a node that never held the register.
 #[test]
 fn derived_anchor_outlives_its_register_spec_7() {
     let reg_w = |v: Option<Value>| {
@@ -1002,14 +1002,11 @@ fn derived_anchor_outlives_its_register_spec_7() {
     p.join(q.clone());
     assert_eq!(read_str(&p), "aqb");
     let expired = |d: &crate::Dot| d.src == node(1) && d.ctr == 1;
-    p.strip(&expired);
-    assert_eq!(read_str(&p), "q");
-    // a node that only saw the value-less register
-    let mut n2 = Fragment::default();
-    n2.join(embedded(reg_w(None)));
-    n2.join(q);
-    n2.strip(&expired);
-    assert_eq!(n2, p);
+    let mut reg = reg_w(Some(s("ab")));
+    reg.remove_gone(&expired);
+    let gone = joined(&reg, &q);
+    assert_eq!(read_str(&gone), "q");
+    assert_eq!(gone, joined(&Fragment::default(), &q));
 }
 
 /// §4.6, §5.7 Undo (restores the prior read): an element moved twice undoes twice: the second
@@ -2130,11 +2127,11 @@ fn long_text_batch_case(seed: u64) {
     assert_eq!(read_str(&a.state), read_str(&one.state));
 }
 
-/// §5.7 Live, §4.7: a list element whose creating delta expires keeps others' values in it: it
-/// shows them alone, whichever of the expiry and the nested write comes first; a value-less copy
-/// (a snapshot's before T) loses to the valued one.
+/// §5.7 Live, §4.7: a list element whose creating delta expires goes, others' values in it
+/// with it, whichever of the expiry and the nested write comes first: as at a node that only
+/// holds the nested write (and as un-merging its creator, §4.6).
 #[test]
-fn expired_list_element_keeps_others_values_spec_5_7() {
+fn expired_list_element_takes_others_values_spec_5_7() {
     let view = TyView(list_ty());
     let mut a = Replica::new(1);
     a.commit(1, &[op(Op::Set(Value::List(vec![item(1, 2)])))], &view);
@@ -2143,31 +2140,13 @@ fn expired_list_element_keeps_others_values_spec_5_7() {
     c.state = base.clone();
     let (newer, _, _) = c.commit(6, &[PathOp { path: vec![PathSeg::Index(0), PathSeg::Field(2)], op: Op::Set(Value::Int(9)) }], &view).unwrap();
     let expired = |d: &crate::stamp::Dot| d.src == a.src;
-    let mut s1 = joined(&base, &newer);
-    assert_eq!(s1.read(), Some(Value::List(vec![item(1, 9)])));
-    s1.strip(&expired);
-    let others = Some(Value::List(vec![Value::Map([(Value::Int(2), Value::Int(9))].into_iter().collect())]));
-    assert_eq!(s1.read(), others, "the other commit's value shows alone");
-    let mut s2 = base.clone();
-    s2.strip(&expired);
-    assert_eq!(s2.read(), None);
-    let newer_alone = newer.clone();
-    s2.join(newer);
-    assert_eq!(s2, s1, "expiry commutes with the nested write");
-    assert_eq!(via_snapshot(&s1).read(), others, "a snapshot carries the creation value-less");
-    let mut copy = base.clone();
-    copy.strip(&expired);
-    let s3 = joined(&base, &copy);
-    assert_eq!(s3.read(), base.read(), "a value-less copy before T");
-    // un-merging its creator takes the creation: the element goes, the aspect reads as where
-    // only the other commit is held (§4.6)
-    let mut s4 = s1.clone();
-    s4.remove_writes(&expired);
-    s4.prune(None, &mut crate::Changes::new());
-    let mut only = Fragment::default();
-    only.join(newer_alone);
-    assert_eq!(s4.read(), only.read());
-    assert!(!matches!(s4.read(), Some(Value::List(ref l)) if !l.is_empty()), "the element goes: {:?}", s4.read());
+    assert_eq!(joined(&base, &newer).read(), Some(Value::List(vec![item(1, 9)])));
+    let mut gone = base.clone();
+    gone.remove_gone(&expired);
+    let only = joined(&Fragment::default(), &newer);
+    assert_eq!(joined(&gone, &newer), only, "the nested write after");
+    assert_eq!(joined(&newer, &gone), only, "and before");
+    assert!(!matches!(only.read(), Some(Value::List(ref l)) if !l.is_empty()), "the element goes: {:?}", only.read());
 }
 
 /// §4.5, §5.7: a text element its commit made and removed, kept because the commit anchors at
