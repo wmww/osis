@@ -5,6 +5,13 @@ use osis::internals::ManualClock;
 use osis::{MemStore, Osis, Store};
 use std::sync::Arc;
 
+/// The app's account over a fresh in-memory node, its home made.
+pub fn data() -> osis_kit::store::Data {
+    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    d.home().unwrap();
+    d
+}
+
 pub fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     c.app.internals.seed = Some(seed);

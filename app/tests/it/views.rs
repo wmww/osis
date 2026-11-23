@@ -12,11 +12,7 @@ use osis_kit::view::paged::Item;
 use osis_kit::views::{Node, expand, page};
 use std::collections::BTreeMap;
 
-fn data() -> Data {
-    let d = make(osis::internals::create(osis::internals::Opening::memory()).unwrap());
-    d.home().unwrap();
-    d
-}
+use crate::common::data;
 
 fn open(d: &Data, t: Tid) -> Node {
     let w = WindowState::default();
@@ -213,22 +209,15 @@ fn an_element_spec_embeds_a_view() {
 /// `arranged.0` works on a thing the account cannot write.
 #[test]
 fn arrangement_on_what_i_cannot_write() {
-    use osis::internals::Internals as _;
-    let (a, b) = (osis::internals::create(osis::internals::Opening::memory()).unwrap(), osis::internals::create(osis::internals::Opening::memory()).unwrap());
-    let (a, b) = (make(a), make(b));
-    let deliver = |from: &Data, to: &Data| {
-        let pks = from.db.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
-        for pk in pks {
-            let _ = to.db.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()));
-        }
+    let (a, b) = (data(), data());
+    let sync = || {
+        crate::common::deliver(&a.db, &b.db);
+        crate::common::deliver(&b.db, &a.db);
     };
-    deliver(&a, &b);
-    deliver(&b, &a);
+    sync();
     let t = create(&a, "tag").unwrap();
     a.db.grant(t, b.db.me(), Role::Read, osis::GrantOpts::default()).unwrap();
-    deliver(&a, &b);
-    deliver(&b, &a);
-    b.home().unwrap();
+    sync();
     b.set_arranged(t, &Arrange::Rows).unwrap();
     assert_eq!(b.arranged(t).unwrap(), Some(Arrange::Rows));
 }
@@ -535,7 +524,7 @@ fn chat_stays_in_its_facet() {
 /// Choosing a look is a tab of the thing holding the choice; embedded or railed collections never carry it.
 #[test]
 fn home_offers_look_as_a_tab_of_home() {
-    let d = make(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let d = data();
     let main = d.home().unwrap();
     let state = Default::default();
     let cx = osis_kit::view::Cx::new(&d, &state, false);

@@ -54,21 +54,19 @@ impl Sync {
     /// After the platform's own input (an input-method edit or a key event) was handled, before
     /// the app reacted to it.
     pub fn after_input(&mut self, now: Option<Seen>) -> Tell {
-        let tell = match (&self.seen, &now) {
-            (Some(s), Some(n)) if s.widget == n.widget => {
-                if (&s.selection, &s.compose) != (&n.selection, &n.compose) { Tell::Selection } else { Tell::Nothing }
-            }
-            (None, None) => Tell::Nothing,
-            _ => Tell::Restart,
-        };
-        self.seen = now;
-        tell
+        self.tell(now, false)
     }
 
     /// After anything else ran: the app's reaction to input, a wakeup, a frame.
     pub fn after_app(&mut self, now: Option<Seen>) -> Tell {
+        self.tell(now, true)
+    }
+
+    /// What the input method is told of `now`; with `same_text`, a text changed since it was last
+    /// seen (another revision) restarts it.
+    fn tell(&mut self, now: Option<Seen>, same_text: bool) -> Tell {
         let tell = match (&self.seen, &now) {
-            (Some(s), Some(n)) if s.widget == n.widget && s.revision == n.revision => {
+            (Some(s), Some(n)) if s.widget == n.widget && (!same_text || s.revision == n.revision) => {
                 if (&s.selection, &s.compose) != (&n.selection, &n.compose) { Tell::Selection } else { Tell::Nothing }
             }
             (None, None) => Tell::Nothing,

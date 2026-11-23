@@ -343,14 +343,9 @@ impl Graph {
             if !free {
                 continue;
             }
-            let Some(n) = i.nodes.remove(&id) else { continue };
-            i.by_key.remove(&*n.key);
-            for (d, _) in n.deps {
-                let Some(x) = i.nodes.get_mut(&d) else { continue };
-                x.dependents.remove(&id);
-                if x.dependents.is_empty() {
-                    i.orphans.push(d);
-                }
+            clear_deps(&mut i, id);
+            if let Some(n) = i.nodes.remove(&id) {
+                i.by_key.remove(&*n.key);
             }
         }
     }

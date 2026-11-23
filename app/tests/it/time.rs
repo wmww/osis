@@ -37,7 +37,7 @@ fn zones() {
 fn week_and_nudge() {
     use osis_app::event::END;
     use osis_kit::view::Facet;
-    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let d = crate::common::data();
     let e = osis_kit::facets::create(&d, "event").unwrap();
     let Some(Start::At(w0)) = d.db.at(e, START).get().unwrap() else { panic!("a new event has a wall start") };
     assert_eq!((w0.time % HOUR, w0.zone), (0, None), "on the hour, floating");
@@ -235,7 +235,7 @@ fn durations_and_series_over_a_dst_change() {
 #[test]
 fn nudge_keeps_the_end_form() {
     use osis_app::event::END;
-    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let d = crate::common::data();
     let e = osis_kit::facets::create(&d, "event").unwrap();
     let t = 20_752 * DAY + 9 * HOUR;
     let mut w = d.db.write();

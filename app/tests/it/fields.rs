@@ -3,7 +3,7 @@ use osis_kit::facets::fields::Edit;
 
 #[test]
 fn rows_and_edits() {
-    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let d = crate::common::data();
     let c = osis_kit::facets::create(&d, "person").unwrap();
     let rows = d.field_rows(c).unwrap();
     let find = |rows: &[osis_kit::facets::fields::Row], ak: &str, label: &str| rows.iter().find(|r| r.ak == ak && r.label == label).cloned().unwrap_or_else(|| panic!("{ak} {label} in {rows:#?}"));
@@ -37,7 +37,7 @@ fn rows_and_edits() {
 fn contact_form() {
     use osis_app::contact::{EMAILS, NAMES, ORG};
     use osis_app::facets::contact::{FormAct, FormRow, contact_form, form_apply};
-    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let d = crate::common::data();
     // a contact with no names or org yet: fields still save
     let c = osis_kit::facets::create(&d, "note").unwrap();
     let form = contact_form(&d, c).unwrap();
@@ -63,7 +63,7 @@ fn contact_form() {
 #[test]
 fn edits_are_well_typed() {
     use osis::core::BODY;
-    let d = osis_app::store::data(osis::internals::create(osis::internals::Opening::memory()).unwrap());
+    let d = crate::common::data();
     let e = osis_kit::facets::create(&d, "event").unwrap();
     osis_app::facets::event_time::set_repeat(&d, e, Some(osis_app::event::RepeatFreq::Weekly)).unwrap();
     let s = d.db.at(e, BODY).path(osis::p![]).edit_text().unwrap();

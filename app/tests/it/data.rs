@@ -1,14 +1,11 @@
 //! The account's state over an in-memory node.
 use osis::core::{NAME, TAG};
-use osis_app::store::data as make;
 use osis_kit::store::Data;
 use osis_kit::view::search::{search, snippet};
 use osis_kit::view::{Cx, WindowState};
 use osis_kit::views::page;
 
-fn data() -> Data {
-    make(osis::internals::create(osis::internals::Opening::memory()).unwrap())
-}
+use crate::common::data;
 
 fn view_of(d: &Data, t: osis::Tid) -> String {
     let w = WindowState::default();
