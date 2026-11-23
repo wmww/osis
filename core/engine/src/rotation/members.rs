@@ -26,7 +26,7 @@ type Order = (u8, Option<osis_perm::Point>);
 fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
     let mut grants = Vec::new();
     let actors = |m: &Tid| !core.is_key_actor(m);
-    for t in core.timelines.things() {
+    for t in &core.timelines.things() {
         let Some(on) = core.timelines.on(t) else { continue };
         if !on.holders().iter().any(|(m, _)| actors(m)) {
             continue;

@@ -789,6 +789,11 @@ impl osis_perm::HeldSet for Core {
     fn commit(&self, id: &CommitId) -> Option<osis_perm::Held> {
         reading(self, id)
     }
+    /// O(the held commits): a key actor's record goes only with what is signed as it
+    /// (`retention::needed`), so this finds none but for a record forgotten out of turn.
+    fn signed_as(&self, signer: &Tid) -> Vec<CommitId> {
+        self.ix.commits.iter().filter(|(_, m)| m.view.signer == *signer).map(|(id, _)| *id).collect()
+    }
 }
 
 /// `part_valid` over many parts: what is per commit or thing looked up once.

@@ -611,6 +611,7 @@ struct TlStamps {
     held: Stamps,
     ever: Stamps,
     things: Stamps,
+    known: Stamps,
     keyless: Stamps,
 }
 
@@ -622,6 +623,7 @@ impl Default for TlStamps {
             held: Stamps::named("timelines: held"),
             ever: Stamps::named("timelines: ever"),
             things: Stamps::named("timelines: things"),
+            known: Stamps::named("timelines: known"),
             keyless: Stamps::named("timelines: keyless"),
         }
     }
@@ -635,11 +637,12 @@ impl TlStamps {
             Read::Held(_) => &self.held,
             Read::Ever(_) => &self.ever,
             Read::Things => &self.things,
+            Read::Known(_) => &self.known,
             Read::Keyless => &self.keyless,
         }
     }
-    fn all(&self) -> [&Stamps; 6] {
-        [&self.whole, &self.into, &self.held, &self.ever, &self.things, &self.keyless]
+    fn all(&self) -> [&Stamps; 7] {
+        [&self.whole, &self.into, &self.held, &self.ever, &self.things, &self.known, &self.keyless]
     }
     fn read(&self, r: &Read) {
         self.of(r).read(r);
@@ -670,6 +673,8 @@ enum Read {
     Ever(Tid),
     /// The set of things known to the timeline.
     Things,
+    /// Whether the timeline knows a thing (its record or an edge write on it held).
+    Known(Tid),
     /// `Timelines::keyless`: moved when it changes.
     Keyless,
 }
@@ -751,22 +756,20 @@ impl<'a> On<'a> {
 }
 
 impl Timelines {
-    /// The timeline where it knows `thing` (a record or an edge write on it held), read whole
-    /// (`None` read as the set of things).
+    /// The timeline where it knows `thing` (a record or an edge write on it held), read whole.
     pub fn get(&self, thing: &Tid) -> Option<&osis_perm::Timeline> {
+        self.stamps.read(&Read::Known(*thing));
         if !self.of.knows(thing) {
-            self.stamps.read(&Read::Things);
             return None;
         }
         self.stamps.read(&Read::Whole);
         Some(&self.of)
     }
 
-    /// `thing`'s edges, read alone (`On`). `None` where the timeline does not know it, read as
-    /// the set of things.
+    /// `thing`'s edges, read alone (`On`). `None` where the timeline does not know it.
     pub fn on(&self, thing: &Tid) -> Option<On<'_>> {
+        self.stamps.read(&Read::Known(*thing));
         if !self.of.knows(thing) {
-            self.stamps.read(&Read::Things);
             return None;
         }
         self.stamps.read(&Read::Into(*thing));
@@ -840,7 +843,7 @@ impl Timelines {
     }
 
     /// Every thing the timeline knows, read as a set.
-    pub fn things(&self) -> impl Iterator<Item = &Tid> {
+    pub fn things(&self) -> BTreeSet<Tid> {
         self.stamps.read(&Read::Things);
         self.of.things()
     }
@@ -853,14 +856,17 @@ impl Timelines {
         if !c.created.is_empty() || c.edges().next().is_some() {
             self.ways.clear();
         }
-        for t in touched {
+        for t in touched.iter().chain(&c.held) {
             self.stamps.wrote(&Read::Held(*t), true);
         }
         for t in c.created.iter().chain(c.edges().map(|(_, t)| t)) {
             self.stamps.wrote(&Read::Into(*t), true);
         }
-        // a thing is known by its record or an edge write on it
-        if !c.created.is_empty() || !touched.is_empty() {
+        // a thing is known by its record or an edge write on it: both are its held inputs
+        for t in &c.known {
+            self.stamps.wrote(&Read::Known(*t), true);
+        }
+        if !c.known.is_empty() {
             self.stamps.wrote(&Read::Things, true);
         }
         if !c.created.is_empty() || c.edges().next().is_some() {
@@ -944,6 +950,9 @@ mod tests {
     impl osis_perm::HeldSet for Bare<'_> {
         fn created(&self, t: &Tid) -> Option<CreationRecord> {
             self.0.created(t).cloned()
+        }
+        fn signed_as(&self, signer: &Tid) -> Vec<CommitId> {
+            self.0.ids.values().filter(|c| c.signer == *signer).map(|c| c.id).collect()
         }
         fn commit(&self, id: &CommitId) -> Option<osis_perm::Held> {
             let c = self.0.counted(id)?;
@@ -1070,7 +1079,7 @@ mod tests {
                 2 => tl.on(t).map(|o| o.standing_since()).iter().map(|x| format!("{x:?}")).collect(),
                 3 => vec![format!("{:?}", tl.roles_on(t, At::KEYS, &tl.keyless()))],
                 4 => vec![format!("{:?}", tl.roles_on(t, At::END, &BTreeSet::new()))],
-                5 => tl.things().map(|x| format!("{x:?}")).collect(),
+                5 => tl.things().iter().map(|x| format!("{x:?}")).collect(),
                 6 => tl.on(t).iter().flat_map(|o| o.held()).map(|x| format!("{x:?}")).collect(),
                 _ => vec![format!("{:?}", tl.keyless())],
             }
@@ -1164,7 +1173,7 @@ mod tests {
                 6 => format!("{:?}", tl.roles_on(t, At::KEYS, &BTreeSet::new())),
                 7 => format!("{:?}", tl.roles_on(t, now, &BTreeSet::new())),
                 8 => format!("{:?}", tl.roles_on(t, At::KEYS, &tl.keyless())),
-                9 => format!("{:?}", tl.things().collect::<Vec<_>>()),
+                9 => format!("{:?}", tl.things()),
                 10 => format!("{:?}", tl.keyless()),
                 _ => format!("{:?}", tl.get(t).map(|x| (x.applied_writes(), x.dropped_writes()))),
             }

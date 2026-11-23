@@ -34,7 +34,7 @@ impl<'a> Index<'a> {
     fn of(core: &'a Core) -> Index<'a> {
         let tl: &osis_perm::Timeline = &core.timelines;
         let mut x = Index { core, by_edge: BTreeMap::new(), writes: BTreeSet::new(), targets: BTreeMap::new(), holders: BTreeMap::new() };
-        let things: Vec<Tid> = tl.things().copied().collect();
+        let things = tl.things();
         for t in things {
             for (w, c, op) in tl.held_on_owned(t) {
                 if !tl.is_chained(&w) {

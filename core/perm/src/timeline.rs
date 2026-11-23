@@ -42,6 +42,8 @@ impl Held {
 pub trait HeldSet {
     /// The `created.0` record of `thing`, if held.
     fn created(&self, thing: &Tid) -> Option<CreationRecord>;
+    /// The held commits signed as `signer`: asked when its record goes.
+    fn signed_as(&self, signer: &Tid) -> Vec<CommitId>;
     /// Held commit `id` as the walk reads it; `None` where it is not held or nothing of it is
     /// read.
     fn commit(&self, id: &CommitId) -> Option<Held>;
@@ -96,6 +98,10 @@ pub struct Changed {
     pub was_applied: BTreeSet<WriteId>,
     /// The commits given that were not held before.
     pub fresh: BTreeSet<CommitId>,
+    /// The things whose held edge writes (`Timeline::held_on`) changed.
+    pub held: BTreeSet<Tid>,
+    /// The things the timeline came to know or know no more (`Timeline::knows`).
+    pub known: BTreeSet<Tid>,
 }
 
 impl Changed {
@@ -166,7 +172,10 @@ impl<S: Store> Timeline<S> {
     pub fn update(&mut self, held: &dyn HeldSet, commits: &BTreeSet<CommitId>, things: &BTreeSet<Tid>) -> Changed {
         let mut out = Changed::default();
         let (mut came, mut went) = (Vec::new(), Vec::new());
+        let was: BTreeMap<Tid, bool> = things.iter().map(|t| (*t, self.knows(t))).collect();
         let mut again: BTreeSet<CommitId> = commits.clone();
+        // given again whatever their reading: a record their shape reads moved
+        let mut forced: BTreeSet<CommitId> = BTreeSet::new();
         for t in things {
             match (held.created(t).filter(|r| r.tid() == *t), self.records.link(t)) {
                 (Some(rec), None) => {
@@ -175,20 +184,24 @@ impl<S: Store> Timeline<S> {
                     if let RecordLink::Admin(a) = rec.record_link() {
                         came.push((*t, a));
                     }
-                    again.extend(self.waiting.remove(t).unwrap_or_default());
+                    forced.extend(self.waiting.remove(t).unwrap_or_default());
                 }
                 (None, Some(l)) => {
                     // a part whose hops read the record edge loses it: given again
                     if let RecordLink::Admin(a) = l {
-                        again.extend(self.paths.through(&a, t));
+                        forced.extend(self.paths.through(&a, t));
                         went.push((*t, a));
                     }
+                    // a commit signed as a thing with no held key gives nothing
+                    forced.extend(held.signed_as(t));
                     self.records.remove(t);
                     out.created.insert(*t);
                 }
                 _ => {}
             }
         }
+        again.extend(forced.iter().copied());
+        let held_on_before: BTreeSet<Tid> = again.iter().filter_map(|c| self.roles.get(c)).flat_map(|(r, _)| r.ops.iter().map(|o| o.target)).collect();
         let mut gone = Vec::new();
         let mut given = Vec::new();
         let held_before: BTreeSet<CommitId> = again.iter().filter(|c| self.paths.holds(c)).copied().collect();
@@ -198,12 +211,13 @@ impl<S: Store> Timeline<S> {
             if let (Some(h), Some((role, parts))) = (&now, was)
                 && h.role.as_ref().is_some_and(|r| Arc::ptr_eq(r, role) || r == role)
                 && h.parts == *parts
-                && commits.contains(id)
+                && !forced.contains(id)
             {
                 continue;
             }
             if let Some((role, _)) = self.roles.remove(id) {
                 for o in &role.ops {
+                    out.held.insert(o.target);
                     if let Some(s) = self.on.get_mut(&o.target) {
                         s.remove(id);
                         if s.is_empty() {
@@ -213,6 +227,13 @@ impl<S: Store> Timeline<S> {
                 }
             }
             match now {
+                // signed as a thing whose record holds no key here (not held, or naming a mint
+                // admin): nothing of it is read until that record comes (spec/permissions.md §1
+                // Key actor, Interim)
+                Some(h) if !self.records.is_key(&h.signer) => {
+                    self.waiting.entry(h.signer).or_default().insert(*id);
+                    gone.push(*id);
+                }
                 Some(h) => {
                     if !held_before.contains(id) {
                         out.fresh.insert(*id);
@@ -221,6 +242,7 @@ impl<S: Store> Timeline<S> {
                     self.await_records(&c);
                     if let Some(role) = h.role {
                         for o in &role.ops {
+                            out.held.insert(o.target);
                             self.on.entry(o.target).or_default().insert(h.id);
                             self.into.entry(o.target).or_default().insert(o.holder);
                         }
@@ -229,6 +251,14 @@ impl<S: Store> Timeline<S> {
                     given.push(c);
                 }
                 None => gone.push(*id),
+            }
+        }
+        // known by a record or a held edge write: a thing whose edge writes changed was known
+        // before by those or by its record, which only `things` move
+        out.known = was.iter().filter(|(t, w)| self.knows(t) != **w).map(|(t, _)| *t).collect();
+        for t in &out.held {
+            if !was.contains_key(t) && self.records.link(t).is_none() && self.on.contains_key(t) != held_on_before.contains(t) {
+                out.known.insert(*t);
             }
         }
         if came.is_empty() && went.is_empty() && gone.is_empty() && given.is_empty() {
@@ -433,10 +463,9 @@ impl<S: Store> Timeline<S> {
         self.records.link(t).is_some() || self.on.contains_key(t)
     }
 
-    /// Every thing with a held record or edge write on it.
-    pub fn things(&self) -> impl Iterator<Item = &Tid> {
-        let extra = self.on.keys().filter(|t| self.records.link(t).is_none());
-        self.records.links().map(|(t, _)| t).chain(extra)
+    /// Every thing with a held record or edge write on it, in tid order.
+    pub fn things(&self) -> BTreeSet<Tid> {
+        self.records.links().map(|(t, _)| *t).chain(self.on.keys().copied()).collect()
     }
 
     /// Whether (`holder`, `target`) as restored (§5.1) gives or lets grant more than its value
