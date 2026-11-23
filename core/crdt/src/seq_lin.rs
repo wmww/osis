@@ -1413,6 +1413,32 @@ impl Lin {
         // chain; sibling keys are below their stamps, so `before` bounds them)
         let edges = || runs.iter().map(|r| &r.1).chain(moves.iter().map(|m| &m.3));
         let fresh = edges().max().filter(|f| before.as_ref().is_some_and(|b| *f > b) && edges().filter(|e| e == f).count() == 1).cloned();
+        // held in part: the rows the placements and flips below look up by dot (and a moved
+        // subtree's end), looked up before anything changes, so one cheap run misses them all instead of
+        // a run per miss repeating every placement before it
+        if let Some(p) = &self.part {
+            let before = p.count();
+            for x in cuts.iter().chain(runs.iter().filter_map(|r| r.0.as_ref())).chain(flags.iter().map(|f| &f.0)) {
+                self.holder(x);
+            }
+            // the dot-map chunks the new elements go into
+            for d in runs.iter().flat_map(|r| &r.2) {
+                self.at.held(self.at.chunk(d));
+            }
+            for (_, dot, anchor, _) in &moves {
+                if let Some((b, o)) = self.loc(dot)
+                    && let Some((_, d)) = self.p.row_at(b, o)
+                {
+                    self.p.end_of(self.p.base(b) + o, d);
+                }
+                if let Anchor::Dot(x) = anchor {
+                    self.holder(x);
+                }
+            }
+            if p.count() != before {
+                return false;
+            }
+        }
         let each = self.p.order.len() + self.p.cap;
         for x in cuts {
             if !self.cut_row(&x, work) || *work > self.p.len.max(1024) {

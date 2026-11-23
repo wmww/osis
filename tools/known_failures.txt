@@ -8,7 +8,6 @@ held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 rate:OS
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=647344785567 issues/custody-differential-failures.md FAIL flip: node \w+ at \d+ dropped a taken revocation
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=567669682357 issues/custody-differential-failures.md FAIL writes: node \w+ settled without \w+'s write \d+ on \w+
 roles-model/paths::tests::random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/masked-backdated-lowerings.md counts:dispute=4 OSIS_ROLES_START=\d+: \{
-osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=13 issues/seq-cold-edits-follow-gaps.md same delta as on the whole state
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=192781816512 issues/custody-differential-failures.md T paired by A: needs Write on
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=357482902476 issues/custody-differential-failures.md node \w+: dropped a taken revocation
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=210455287849 issues/custody-differential-failures.md \w+ acting: certificate engine None, model Some
@@ -17,6 +16,6 @@ osis-crdt/tests_seq::slots_join_follows_cache_plain_spec_7 rate:OSIS_CRDT_START=
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=300644506442,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=610442177300,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
-osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=689880325750,OSIS_SEQ_COLD_SEEDS=1 issues/seq-cold-placement-kept.md placement kept
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=421200482733,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=278997924631,OSIS_ORDER_LEN=60 issues/order-settings-seed.md applied: model false, node true; parts \[.*created\.0 mint admin
+osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=47 issues/seq-cold-edits-follow-gaps.md same delta as on the whole state

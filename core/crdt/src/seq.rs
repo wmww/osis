@@ -511,6 +511,9 @@ fn join_elems_in(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Changes, base:
     let part = part.as_deref();
     // how the cached placement follows each record, decided before that record joins
     let mut plans = s.lin.get().map(|_| Vec::with_capacity(d.elems.len()));
+    // a plan failing on a placement held in part: the rest are still planned (and the plans then
+    // dropped), so one run notes every record's misses, not a run per record
+    let mut failed = false;
     for (dot, de) in d.elems {
         let n = plans.as_ref().map_or(0, Vec::len);
         if let (Some(ps), Some(l)) = (plans.as_mut(), s.lin.get()) {
@@ -518,7 +521,9 @@ fn join_elems_in(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Changes, base:
                 Some(b) => l.plan(&Over { top: &s.elems, base: Covered { elems: b, part }, lists: true }, &dot, &de, ps),
                 None => l.plan(&Covered { elems: &s.elems, part }, &dot, &de, ps),
             };
-            if !ok {
+            if !ok && l.partial().is_some() {
+                failed = true;
+            } else if !ok {
                 plans = None;
             }
         }
@@ -535,6 +540,9 @@ fn join_elems_in(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Changes, base:
         if was {
             ch.touch();
         }
+    }
+    if failed {
+        plans = None;
     }
     let ok = match (plans, s.lin.get_mut()) {
         (Some(ps), Some(l)) => match base {
