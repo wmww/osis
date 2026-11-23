@@ -1,7 +1,7 @@
 # Expired ephemeral writes leave anchors that fill a holder's cap
 > Summary: An expired ephemeral list element or fresh map entry stays in the aspect's state as a value-less record (about 575 B decoded, charged about 1.15 KB at holders), never collected, so an ephemeral event list or per-message map hits the 16 MiB node cap after about 14,000 expired elements over its lifetime; the lattice needs the records. Decided (Tess): option A, a compact form keeping exact convergence; to build. A bound by live data (flat in writes) is out under anchor placement: an element's ancestry is its list's history, so it needs self-contained positions, the same redesign durable sequence tombstones need.
 > Priority: normal
-> Tags: ephemeral, crdt, engine, tess-call
+> Tags: ephemeral, crdt, engine
 
 **Decided (Tess):** compact records (option A below, exact convergence kept); the coordinator's to build.
 
@@ -23,3 +23,5 @@ Measured (debug, an ephemeral list, one expiring element per commit, expired and
 - **A. A compact form** for value-less records (a stamp and an anchor each, sources interned, chains as runs), charged near its encoded size. Keeps every rule; still O(ever written), at a few bytes (about a million lifetime elements per sync ID at 16 MiB). osis-crdt `Seq` storage and placement work.
 - **B. Spent records leave snapshots** (O(live)). A record all of whose writes are value-less and at which no record anchors is spent in a node's state; a snapshot omits spent records, and a body counts as covered when joining it into the snapshot adds only records spent in the node's state (spec/commits.md §5 Covered), so holders drop the leftovers and rebuild without them. The crdt join is unchanged. Cost: a late child or nested write of a record already dropped reads differently there (child at its virtual anchor, nested write hidden) until a writer holding both writes a snapshot, which carries the record again (the writer of the late write holds it). That widens reading by arrival order (spec/requirements.md Decentralization, Deterministic: a node missing data reads as if it never had it) from a node that never held an expiring edit to one that dropped it: Tess's call. Durable too, by the principle: the sweep then can no longer take "no creation held though its delta is reflected" as dead (it would reset a late reaction everywhere), so the sweep needs another test of a pruned creation.
 - **C. A stated limit** in notes/ephemeral.md Bounds: lifetime elements per sync ID about cap / 1.15 KB.
+
+**Decided (Tess, again): build A**, the compact in-memory form charged near its encoded size; the few bytes per element ever written that remain are issues/seq-dead-records-grow.md (low).
