@@ -87,5 +87,4 @@ Each argued from the spec and to be checked by the model; nothing here is built.
 - **Second round**: core removes a node when told and never waits, with nothing tied to collecting first (a general wait until connected nodes are synced, behind a sync button, serves a node being retired: UX, later); a timed admin grant does not count as a standing admin for the last-admin rule; the dial aspect is core's, the schema deciding which thing carries it and who reads it; what nobody received is not kept, on anyone's say-so. A public thing's deposit budget stays open to everyone. Node signing keys showing on public things is accepted with visible mode; a shared signing key for a profile comes if and when shared keys are built. Every special case of public is listed in one place (notes/write-path-design.md, The public thing) in case they are regretted or public readers are redone.
 
 ## Open
-- **The models cut to the design** (stage D2: notes/redesign-plan.md; notes/write-path-design.md §6): done.
 - **The build**: notes/redesign-plan.md, stages S3, A1 to A6.

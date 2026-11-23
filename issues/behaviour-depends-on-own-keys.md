@@ -21,7 +21,7 @@ The mint admin staying special after it is removed (to study):
 - No "made under X" or "under X": the positional picture is not kept to elsewhere (what holds a thing is another matter). Say "minted with admin X", "one of X's dependents".
 - **base actor** (spec/crypto.md §3) is one link up, so it is a dependent thing's mint admin: the word goes.
 - **its independent** for reader actor (spec/sync-judgement.md §1): the nearest independent thing up a dependent thing's chain, itself for an independent one.
-- **actor** (Tess): a part played in a commit, not a kind of thing: a thing on a commit's path from the thing it is signed as to what it writes (issues/actors-one-mechanism.md, Signing keys, actors, profiles and accounts). Today's four uses (anything a role can be on, a holder, an independent thing as in `Engine::mint_actor`, a key actor) become thing, holder, independent thing and owner key (notes/terms.md), each use read. **profile**: the public face of a thing. **account**: the arrangement with an inside view.
+- **actor** (Tess): a part played in a commit, not a kind of thing: a thing on a commit's path from the thing it is signed as to what it writes (issues/actors-one-mechanism.md, Signing keys, actors, profiles and accounts). Today's four uses (anything a role can be on, a holder, an independent thing as in `Engine::mint_actor`, a key actor) become thing, holder, independent thing and signing key (notes/terms.md), each use read. **profile**: the public face of a thing. **account**: the arrangement with an inside view.
 - **team** is no term and gets none (Tess). If a word is ever needed for an actor not tied to one account, a realm may be it (issues/realms-design.md).
 - None of these words reach the API or its docs.
 

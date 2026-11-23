@@ -21,4 +21,4 @@ A contact's `dial^.0` list adds dial candidates with no cap on their count; a ho
 
 - Sources: `Engine::dial_peers` (each account holding a role on a read S: its whole `dial^.0`, written by its profile's admins). Only `Why::Discovered` is capped (`DISCOVERED_KEEP`).
 - Cost per node: memory per candidate, and at most `MAX_PEERS` dials at once, each key once per `REDIAL_MS`; a dial that fails is no amplification beyond one connection attempt per key per 30 s.
-- Likely rule: a cap per account on keys taken from its dial list (its nodes),; past it the rest are ignored. Needs a number that passes notes/arbitrary-values.md.
+- No per-source cap (Tess: no arbitrary per-subsystem memory caps): the memory goes under issues/resource-limits.md's node-wide budget; what is open here is the dials aimed at a victim, a rule for which candidates are worth dialing, not a count.
