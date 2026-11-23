@@ -287,8 +287,9 @@ fn tid_removal_is_flat() {
 }
 
 /// Text ops at n chars, each in a new session: (pages loaded, pages and placement rows written,
-/// store bytes) per step: a read of 100 chars at an index, an insert, a delete, a move, an edit as
-/// a text session writes it, an undo of the edit, a read after them.
+/// store bytes) per step: a read of 100 chars at an index, an insert, a delete, a move of 4
+/// chars, an edit as a text session writes it, an undo of the edit, a move of 600 chars (past a
+/// placement block's 256 rows: it moves whole blocks), a read after them.
 fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
     let mut lp = net(1, 0);
     let b = lp.peers[0].backend.clone();
@@ -303,13 +304,13 @@ fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
     lp.peers[0].commit(m).unwrap().unwrap();
     let mut out = Vec::new();
     let mut last: Option<(osis_base::CommitId, Vec<char>)> = None;
-    for step in 0..7u64 {
+    for step in 0..8u64 {
         lp.peers[0].restart(step).unwrap();
         let at = n / 3 + step as usize * 7;
         let e = &mut lp.peers[0].engine;
         let before = want.clone();
         let op = match step {
-            0 | 6 => {
+            0 | 7 => {
                 let (got, w) = measured(&b, || e.get_range(&t, &a, &[], at..at + 100).unwrap());
                 assert_eq!(got, Some(Value::Str(want[at..at + 100].iter().collect())));
                 out.push((w.loads(), w.page_writes(), w.io.written_bytes));
@@ -323,11 +324,12 @@ fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
                 want.drain(at..at + 5);
                 Op::Delete { at, len: 5 }
             }
-            3 => {
-                let moved: Vec<char> = want.drain(at..at + 4).collect();
+            3 | 6 => {
+                let len = if step == 3 { 4 } else { 600 };
+                let moved: Vec<char> = want.drain(at..at + len).collect();
                 let to = n / 2;
                 want.splice(to..to, moved);
-                Op::Move { at, len: 4, to }
+                Op::Move { at, len, to }
             }
             4 => {
                 let base = Value::Str(want.iter().collect());
@@ -357,17 +359,14 @@ fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
 
 // spec/crdt.md §5.7 (index paths never go on the wire): ops resolve by index against the placement, §6, §8; spec/requirements.md,
 // Scale: in a paged text of n and 10n chars, each op in a new session: a read of 100 chars, an
-// insert, a delete, a move, an edit as a text session writes it, an undo, loads and writes only
-// its pages and placement rows (through the stored placement).
-// 10n is 800k chars: writing it takes most of a minute. The move is left out: issues/text-move-writes-grow.md.
+// insert, a delete, a move of a few chars, an edit as a text session writes it, an undo, a move of
+// a few blocks, loads and writes only its pages and placement rows (through the stored placement).
+// 10n is 800k chars: about 7 minutes in a debug build.
 #[test]
-#[ignore = "by hand: an 800k-char text takes most of a minute"]
+#[ignore = "by hand: an 800k-char text, about 7 minutes in a debug build"]
 fn text_edits_are_flat() {
     let (small, big) = (text_ops(80_000), text_ops(800_000));
-    for (i, what) in ["read of 100 chars", "insert", "delete", "move", "edit", "undo of the edit", "read after them"].iter().enumerate() {
-        if *what == "move" {
-            continue;
-        }
+    for (i, what) in ["read of 100 chars", "insert", "delete", "move of 4", "edit", "undo of the edit", "move of 600", "read after them"].iter().enumerate() {
         flat(&format!("{what}: pages loaded"), small[i].0, big[i].0);
         flat(&format!("{what}: pages written"), small[i].1, big[i].1);
         flat(&format!("{what}: store bytes"), small[i].2, big[i].2);

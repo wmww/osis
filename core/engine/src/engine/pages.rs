@@ -63,8 +63,9 @@ struct PageSet {
     whole: bool,
     /// A sequence's stored placement.
     place: Place,
-    /// Its block list's group rows as stored (`write_place` writes those that change).
-    groups: Vec<Vec<u8>>,
+    /// Its block list's group rows as stored, by first block ID (`write_place` writes those
+    /// that change).
+    groups: BTreeMap<u64, Vec<u8>>,
     /// A change of the sequence may be under way (`ensure_touch`, until `write_touched`): the
     /// stored placement may no longer be the records' (`place_whole` leaves it).
     pending: bool,
@@ -76,7 +77,7 @@ struct PageSet {
 impl PageSet {
     /// A set with no page loaded and its placement not read.
     fn new(id: u32, salt: [u8; 32], path: KeyedPath, enc: Encoding) -> PageSet {
-        PageSet { id, salt, path, enc, loaded: BTreeMap::new(), whole: false, place: Place::Unread, groups: Vec::new(), pending: false, relay: false }
+        PageSet { id, salt, path, enc, loaded: BTreeMap::new(), whole: false, place: Place::Unread, groups: BTreeMap::new(), pending: false, relay: false }
     }
     fn prefix(&self) -> Vec<u8> {
         self.id.to_be_bytes().to_vec()
@@ -730,10 +731,14 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut State
 // A paged sequence keeps its placement (`osis_crdt::SeqPlace`: every node in order, hidden ones
 // included, with its depth, parent and edge, in blocks with their visible counts and least
 // depths, and a dot → block map in chunks by dot) in the aspect's placement table:
-// - top (`set ‖ 0`): `[cap, map entries, [waiting dot*], [broken-cycle dot*], groups, newest]`,
-//   newest `[ts, dot]` a stamp at or above every position write's, or `[]`;
-// - group (`set ‖ 0 ‖ u32 index`): `[[block ID, rows, shown, least depth, shift]*]`, the blocks
-//   in order, `GROUP` per row;
+// - top (`set ‖ 0`): `[cap, map entries, [waiting dot*], [broken-cycle dot*], [group*],
+//   newest]`, the groups by first block ID in order, newest `[ts, dot]` a stamp at or above
+//   every position write's, or `[]`;
+// - group (`set ‖ 0 ‖ u64 first block ID`): `[[block ID, rows, shown, least depth, shift
+//   step]*]`, the blocks in order from the first and from each block whose ID is a multiple of
+//   `GROUP` (so a block added or removed changes its own group's row alone), a block's depth
+//   shift the sum of its and every earlier block's steps (so a subtree moving by depth changes
+//   the rows at its ends alone);
 // - block (`set ‖ 1 ‖ u64 ID`): `[[source*], [row*]]`, a row `[source, ctr, span or n, flags,
 //   parent, depth]` (flags: 1 created, 2 parent is HEAD, 4 shown, 8 a chain of `n` creations
 //   each the only child of the one before; parent `[]` or `[source, ctr]`);
@@ -753,7 +758,8 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut State
 // exact whenever present, and a read never writes. Rebuildable: the unit tag names its
 // rules.
 
-/// Blocks per group row of the block list.
+/// Blocks per group row of the block list, on average: a group starts at each block whose ID is
+/// a multiple of it.
 const GROUP: usize = 32;
 
 /// The page target of `set`'s pages.
@@ -783,10 +789,8 @@ enum Place {
 fn place_key(set: &PageSet, kind: u8, id: u64) -> Vec<u8> {
     let mut k = set.prefix();
     k.push(if kind == 4 { 0 } else { kind });
-    match kind {
-        1 => k.extend_from_slice(&id.to_be_bytes()),
-        4 => k.extend_from_slice(&u32::try_from(id).unwrap_or(u32::MAX).to_be_bytes()),
-        _ => {}
+    if matches!(kind, 1 | 4) {
+        k.extend_from_slice(&id.to_be_bytes());
     }
     k
 }
@@ -956,14 +960,26 @@ fn parse_chunk(b: &[u8]) -> Option<Vec<(Dot, usize)>> {
     Some(out)
 }
 
-fn top_row(t: &PlaceTop, groups: usize) -> Vec<u8> {
+fn top_row(t: &PlaceTop, groups: &[(u64, Vec<u8>)]) -> Vec<u8> {
     let dots = |x: &[Dot]| Value::List(x.iter().map(dot_value).collect());
     let newest = t.newest.as_ref().map_or(Value::List(Vec::new()), |s| Value::List(vec![Value::uint(s.ts.to_u64()), dot_value(&s.dot)]));
-    osis_base::encode(&Value::List(vec![Value::uint(t.cap as u64), Value::uint(t.map_len as u64), dots(&t.waiting), dots(&t.cyc), Value::uint(groups as u64), newest]))
+    osis_base::encode(&Value::List(vec![Value::uint(t.cap as u64), Value::uint(t.map_len as u64), dots(&t.waiting), dots(&t.cyc), Value::List(groups.iter().map(|g| Value::uint(g.0)).collect()), newest]))
 }
 
-fn group_rows(t: &PlaceTop) -> Vec<Vec<u8>> {
-    t.blocks.chunks(GROUP).map(|g| osis_base::encode(&Value::List(g.iter().map(|b| Value::List(vec![Value::uint(b.id as u64), Value::uint(b.len as u64), Value::uint(b.shown as u64), Value::Int(b.min), Value::Int(b.shift)])).collect()))).collect()
+/// The group rows of `t` in order, by first block ID.
+fn group_rows(t: &PlaceTop) -> Vec<(u64, Vec<u8>)> {
+    let mut groups: Vec<(u64, Vec<Value>)> = Vec::new();
+    let mut prev = 0i64;
+    for b in &t.blocks {
+        let step = b.shift.wrapping_sub(prev);
+        prev = b.shift;
+        let v = Value::List(vec![Value::uint(b.id as u64), Value::uint(b.len as u64), Value::uint(b.shown as u64), Value::Int(b.min), Value::Int(step)]);
+        match groups.last_mut() {
+            Some(g) if b.id % GROUP != 0 => g.1.push(v),
+            _ => groups.push((b.id as u64, vec![v])),
+        }
+    }
+    groups.into_iter().map(|(k, g)| (k, osis_base::encode(&Value::List(g)))).collect()
 }
 
 fn chunks_row(t: &PlaceTop) -> Vec<u8> {
@@ -973,9 +989,9 @@ fn chunks_row(t: &PlaceTop) -> Vec<u8> {
 }
 
 /// The top and chunk list of a stored placement (`None`: damaged).
-fn parse_top(top: &[u8], groups: &[Vec<u8>], chunks: &[u8]) -> Option<PlaceTop> {
+fn parse_top(top: &[u8], groups: &BTreeMap<u64, Vec<u8>>, chunks: &[u8]) -> Option<PlaceTop> {
     let row = decode_row(top)?;
-    let [cap, map_len, Value::List(waiting), Value::List(cyc), ng, Value::List(newest)] = <[Value; 6]>::try_from(row).ok()? else { return None };
+    let [cap, map_len, Value::List(waiting), Value::List(cyc), Value::List(keys), Value::List(newest)] = <[Value; 6]>::try_from(row).ok()? else { return None };
     // the newest position write's stamp
     let newest = match newest.as_slice() {
         [] => None,
@@ -984,18 +1000,23 @@ fn parse_top(top: &[u8], groups: &[Vec<u8>], chunks: &[u8]) -> Option<PlaceTop> 
     };
     let n = |v: &Value| int(v).and_then(|x| usize::try_from(x).ok());
     let dots = |x: &[Value]| x.iter().map(|d| dot_of(d).ok()).collect::<Option<Vec<_>>>();
-    if n(&ng)? != groups.len() {
+    // the groups the top lists, each once, no other
+    if keys.len() != groups.len() || keys.iter().collect::<BTreeSet<_>>().len() != keys.len() {
         return None;
     }
     let mut all = Vec::new();
-    for g in groups {
-        all.extend(decode_row(g)?);
+    for k in &keys {
+        all.extend(decode_row(groups.get(&u64::try_from(int(k)?).ok()?)?)?);
     }
+    let mut prev = 0i64;
     let blocks = all
         .iter()
         .map(|b| match b {
             Value::List(x) => match x.as_slice() {
-                [id, len, shown, Value::Int(min), Value::Int(shift)] => Some(PlaceBlock { id: n(id)?, len: n(len)?, shown: n(shown)?, min: *min, shift: *shift }),
+                [id, len, shown, Value::Int(min), Value::Int(d)] => {
+                    prev = prev.wrapping_add(*d);
+                    Some(PlaceBlock { id: n(id)?, len: n(len)?, shown: n(shown)?, min: *min, shift: prev })
+                }
                 _ => None,
             },
             _ => None,
@@ -1027,18 +1048,21 @@ fn held(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet) -> Res
     if let Some(pt) = txn.table(tid, ak, PLACE_TABLE)?
         && let (Some(top), Some(chunks)) = (txn.table_get(pt, &place_key(set, 0, 0))?, txn.table_get(pt, &place_key(set, 2, 0))?)
     {
-        let end = [set.prefix(), vec![1]].concat();
-        let mut groups = Vec::new();
-        scan_table(txn, pt, &place_key(set, 4, 0), Some(&end), |k, v| {
-            groups.push((k, v));
+        let (start, end) = (place_key(set, 4, 0), [set.prefix(), vec![1]].concat());
+        let mut groups = BTreeMap::new();
+        let mut ok = true;
+        scan_table(txn, pt, &start, Some(&end), |k, v| {
+            match k.get(start.len() - 8..).and_then(|x| <[u8; 8]>::try_from(x).ok()) {
+                Some(id) => {
+                    groups.insert(u64::from_be_bytes(id), v);
+                }
+                None => ok = false,
+            }
             Ok(())
         })?;
-        // in order, none missing
-        let ok = groups.iter().enumerate().all(|(i, (k, _))| *k == place_key(set, 4, i as u64));
-        let rows: Vec<Vec<u8>> = groups.into_iter().map(|x| x.1).collect();
-        p = ok.then(|| parse_top(&top, &rows, &chunks)).flatten().and_then(|t| SeqPlace::from_top(&t));
+        p = ok.then(|| parse_top(&top, &groups, &chunks)).flatten().and_then(|t| SeqPlace::from_top(&t));
         if p.is_some() {
-            set.groups = rows;
+            set.groups = groups;
         }
     }
     set.place = p.clone().map_or(Place::Missing, Place::Held);
@@ -1129,16 +1153,17 @@ fn write_place(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet,
         put_place(txn, pt, place_key(set, 2, 0), false, chunks_row(&top))?;
     }
     let groups = group_rows(&top);
-    for (i, g) in groups.iter().enumerate() {
-        if set.groups.get(i) != Some(g) {
-            put_place(txn, pt, place_key(set, 4, i as u64), false, g.clone())?;
+    for (k, g) in &groups {
+        if set.groups.get(k) != Some(g) {
+            put_place(txn, pt, place_key(set, 4, *k), false, g.clone())?;
         }
     }
-    for i in groups.len()..set.groups.len() {
-        txn.table_remove(pt, &place_key(set, 4, i as u64), shred)?;
+    let kept: BTreeSet<u64> = groups.iter().map(|g| g.0).collect();
+    for k in set.groups.keys().filter(|k| !kept.contains(k)) {
+        txn.table_remove(pt, &place_key(set, 4, *k), shred)?;
     }
-    put_place(txn, pt, place_key(set, 0, 0), false, top_row(&top, groups.len()))?;
-    set.groups = groups;
+    put_place(txn, pt, place_key(set, 0, 0), false, top_row(&top, &groups))?;
+    set.groups = groups.into_iter().collect();
     set.place = Place::Held(cur.clone());
     Ok(true)
 }
