@@ -13,7 +13,6 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 
 ## In flight beside it
 In-flight lines name issues in words, not paths: a branch that closes its issue would fail policy on this note.
-- `mizzen-eph-anchors` (worker): expired ephemeral records never collected (an ephemeral list fills the node cap).
 - `mizzen-dating-redesign` (worker, fable; built, reads flat; sent back to pack its held-writes rows into pages and drop its small-aspect mode, which a roster scale test fails on bytes): every write on a kept aspect reads a big earlier body whole once per session; a position-based durable held-writes index, incremental dating, long runs split across pages. Its state section is in notes/engine-retention-dating.md.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
@@ -21,6 +20,7 @@ In-flight lines name issues in words, not paths: a branch that closes its issue 
 - Workflow agent about half the time; one cleanup always.
 
 ## Small, waiting on Tess
+- **Lists and texts grow with every write ever made** (the expired-ephemeral-anchors issue, tess-call once that branch lands): an element's place leans on the element before it, so an expired or deleted element's record can never go (a late insert may name it, and appends chain through the whole history). Her recorded choice was a compact form (a few bytes per write instead of ~1.1 KB), which still grows. The alternative is positions that lean on nothing (each element carries its own place id), a rewrite of list and text placement in spec/crdt.md that would also end sequence tombstones. Asks: keep the compact form, or open the placement rewrite.
 - **Destruction and a late removal** (branch `mizzen-destruction-cut`, built and tested, not gated): a stolen direct-admin key can destroy a thing for good by a request backdated before its removal. The fix judges a destruction like any purge request (a later removal not listing it takes the right), which needs edit writes (`roles.0`) on a destroyed thing kept whatever their stamp; her rule "nobody writes a thing after its destruction" refused them. Without that, the result depends on arrival order. Honest nodes still refuse to write to a thing they hold destroyed; content after a destruction still reads as an unknown thing. Asks: accept the narrowed rule, then gate and land.
 - **Purge and arrival order** (issues/order-purged-message-shown.md, options A and B in plain words there): today a purged write reads differently by whether a node held its body. Coordinator leans A (a purged write has no effect anywhere: deleting the newest message shows the previous one). Branch `mizzen-purged-shown` holds the diagnosis and a hand test; not landed. issues/purge-of-live-write-only-readers-hold.md is the same question for a request naming a live write.
 - CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
