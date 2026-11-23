@@ -210,6 +210,7 @@ pub(crate) fn set_paths(tx: &mut Tx<'_>, id: &osis_base::CommitId, paths: Option
     }
     m.view = Arc::new(crate::engine::View { paths, ..(*m.view).clone() });
     let h = m.header.clone();
+    tx.core.update_timelines();
     let v = (0..m.parts()).map(|ai| crate::apply::validity::part_valid(tx.core, &h, &m.view, id, ai)).collect();
     m.set_valid(v);
     tx.core.put_meta(*id, m);
