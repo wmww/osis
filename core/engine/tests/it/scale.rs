@@ -286,11 +286,20 @@ fn tid_removal_is_flat() {
     }
 }
 
-/// Text ops at n chars, each in a new session: (pages loaded, pages and placement rows written,
-/// store bytes) per step: a read of 100 chars at an index, an insert, a delete, a move of 4
-/// chars, an edit as a text session writes it, an undo of the edit, a move of 600 chars (past a
-/// placement block's 256 rows: it moves whole blocks), a read after them.
-fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
+/// What `text_ops` counts per step: pages loaded, pages and placement rows written, store bytes
+/// written, store rows read and store blob bytes read (spans: debug checks left out).
+fn text_counts(w: &Work) -> [u64; 5] {
+    [w.loads(), w.page_writes(), w.io.written_bytes, w.n("store rows read"), w.n("store blob bytes read")]
+}
+
+/// The steps of `text_ops`.
+const TEXT_STEPS: [&str; 8] = ["read of 100 chars", "insert", "delete", "move of 4", "edit", "undo of the edit", "move of 600", "read after them"];
+
+/// Text ops at n chars, each in a new session: `text_counts` per step (`TEXT_STEPS`): a read of
+/// 100 chars at an index, an insert, a delete, a move of 4 chars, an edit as a text session
+/// writes it, an undo of the edit, a move of 600 chars (past a placement block's 256 rows: it
+/// moves whole blocks), a read after them.
+fn text_ops(n: usize) -> Vec<[u64; 5]> {
     let mut lp = net(1, 0);
     let b = lp.peers[0].backend.clone();
     // kept a day: an undo reverts from kept history
@@ -313,7 +322,7 @@ fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
             0 | 7 => {
                 let (got, w) = measured(&b, || e.get_range(&t, &a, &[], at..at + 100).unwrap());
                 assert_eq!(got, Some(Value::Str(want[at..at + 100].iter().collect())));
-                out.push((w.loads(), w.page_writes(), w.io.written_bytes));
+                out.push(text_counts(&w));
                 continue;
             }
             1 => {
@@ -341,7 +350,7 @@ fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
                 let (r, w) = measured(&b, || e.revert(&id).unwrap());
                 assert!(r.is_some());
                 want = before;
-                out.push((w.loads(), w.page_writes(), w.io.written_bytes));
+                out.push(text_counts(&w));
                 continue;
             }
         };
@@ -351,7 +360,7 @@ fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
             e.commit(m).unwrap().unwrap()
         });
         last = Some((id, before));
-        out.push((w.loads(), w.page_writes(), w.io.written_bytes));
+        out.push(text_counts(&w));
     }
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(Value::Str(want.iter().collect())));
     out
@@ -360,16 +369,32 @@ fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
 // spec/crdt.md §5.7 (index paths never go on the wire): ops resolve by index against the placement, §6, §8; spec/requirements.md,
 // Scale: in a paged text of n and 10n chars, each op in a new session: a read of 100 chars, an
 // insert, a delete, a move of a few chars, an edit as a text session writes it, an undo, a move of
-// a few blocks, loads and writes only its pages and placement rows (through the stored placement).
-// 10n is 800k chars: about 7 minutes in a debug build.
+// a few blocks, loads and writes only its pages and placement rows (through the stored placement)
+// and reads a fixed number of store rows. 10n is 800k chars: about 4-7 minutes in a debug build.
 #[test]
-#[ignore = "by hand: an 800k-char text, about 7 minutes in a debug build"]
+#[ignore = "by hand: an 800k-char text, about 4-7 minutes in a debug build"]
 fn text_edits_are_flat() {
     let (small, big) = (text_ops(80_000), text_ops(800_000));
-    for (i, what) in ["read of 100 chars", "insert", "delete", "move of 4", "edit", "undo of the edit", "move of 600", "read after them"].iter().enumerate() {
-        flat(&format!("{what}: pages loaded"), small[i].0, big[i].0);
-        flat(&format!("{what}: pages written"), small[i].1, big[i].1);
-        flat(&format!("{what}: store bytes"), small[i].2, big[i].2);
+    for (i, what) in TEXT_STEPS.iter().enumerate() {
+        for (k, count) in ["pages loaded", "pages written", "store bytes", "store rows read"].iter().enumerate() {
+            flat(&format!("{what}: {count}"), small[i][k], big[i][k]);
+        }
+    }
+}
+
+// issues/kept-edits-read-whole-bodies.md: on a kept text written whole in one commit, every edit
+// in a new session reads that commit's body whole (the held writes read anew, a part dated by spec/commits.md §5
+// whole, undo's kept-history reads): store blob bytes read grow with the text, where
+// spec/requirements.md, Scale wants O(change). Fails until fixed.
+#[test]
+#[ignore = "repro: issues/kept-edits-read-whole-bodies.md; by hand, about 4-7 minutes in a debug build"]
+fn repro_text_edits_read_whole_bodies() {
+    let (small, big) = (text_ops(80_000), text_ops(800_000));
+    for (i, what) in TEXT_STEPS.iter().enumerate() {
+        println!("{what}: store blob bytes read: {} at n, {} at 10n", small[i][4], big[i][4]);
+    }
+    for (i, what) in TEXT_STEPS.iter().enumerate() {
+        flat(&format!("{what}: store blob bytes read"), small[i][4], big[i][4]);
     }
 }
 
