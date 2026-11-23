@@ -899,8 +899,11 @@ impl Core {
 
     /// How the walk enters independent thing `y` at a strong from a context that does not
     /// follow it (spec/sync-set.md §2): read where the node holds a read secret of it, kept
-    /// unread where it holds a sync secret only, else not at all.
+    /// unread where it holds a sync secret only, else not at all. Secrets of its own only, given
+    /// it by a box: never the reading-only ones read through its mint admin's (`Core::epochs`), so
+    /// a reader of the mint admin enters it by no secret of its own, whatever arrived first.
     pub(crate) fn enter(&self, y: &Tid) -> Option<Ctx> {
+        self.own_record(y)?;
         let e = self.epochs(y)?;
         if e.role(Role::Read).holds_any() {
             Some(Ctx::Read(*y))
