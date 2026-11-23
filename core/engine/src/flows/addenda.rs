@@ -230,6 +230,10 @@ pub(crate) fn write_owed(tx: &mut Tx<'_>) -> Result<()> {
         return Ok(());
     }
     let Some(me) = tx.core.member() else { return Ok(()) };
+    // the candidates are read off the walk (`gather`: `Paths::through`, `rests`), which takes a
+    // commit applied with nothing else moving only at its next update: brought up to the held
+    // set first, so a candidate applied late in this transaction is one
+    tx.core.update_timelines();
     // an addendum is content: writing one moves no component, so makes no removal due here; the
     // content it makes valid may bring a thing into the node closure, and the transaction's end
     // runs this again for what that makes due (`note_entered`)

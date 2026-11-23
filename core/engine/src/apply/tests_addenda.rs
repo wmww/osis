@@ -1294,6 +1294,36 @@ fn an_edit_received_in_time_that_applies_late_is_vouched_for_spec_perm_5_2() {
     assert_eq!(addenda(&lp, 2, t2).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol vouches once it applies");
 }
 
+// spec/permissions.md §5.2 (addenda; writing): Bob's edit, stamped past Carol's clock by more than
+// MAX_DRIFT, waits at Carol, as does Alice's removal of Bob stamped after it. Once Carol's clock
+// catches up both apply in one round, the edit as plain content moving nothing else. Received
+// before the removal, it is a candidate there and then: Carol vouches for it and it stands.
+#[test]
+fn an_edit_applying_in_its_removals_round_is_vouched_for_spec_perm_5_2() {
+    use crate::apply::{Ingested, Reason};
+    let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
+    let ahead = 2 * osis_base::format::MAX_DRIFT_MS;
+    for p in [0, 1] {
+        lp.peers[p].clock.advance(ahead);
+    }
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
+    let r = remove(&mut lp, 0, t, 1);
+    for (from, c) in [(1, e), (0, r)] {
+        let pk = lp.peers[from].engine.package(&c).unwrap().unwrap();
+        assert_eq!(lp.deliver(2, &pk).unwrap(), Ingested::Pending(c, Reason::Drift));
+        lp.peers[2].clock.advance(1);
+    }
+    lp.peers[2].clock.advance(ahead);
+    lp.peers[2].reexamine().unwrap();
+    assert!([e, r].iter().all(|c| lp.peers[2].engine.core.ix.commits.contains_key(c)), "both apply at Carol");
+    let carol = lp.peers[2].engine.me();
+    assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol vouches for the edit");
+    lp.sync_all().unwrap();
+    for p in 0..3 {
+        assert!(valid(&lp, p, &e, t, "x:e.0"), "peer {p}: the edit stands");
+    }
+}
+
 // spec/permissions.md §5.2 (addenda; writing), spec/sync-set.md §2 Writing: Bob mints t2 under t,
 // held by a strong on t in a commit of his own, and writes on t2; Carol receives both, Alice
 // removes Bob from t (and so t2) without them. Applying the removal, Carol drops the strong, so t2
