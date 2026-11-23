@@ -36,7 +36,7 @@ pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 #[cfg(debug_assertions)]
 pub(crate) use atomic::{check_rebuilt, check_states};
-pub(crate) use atomic::{apply_verified, carries_any, forget_snapshot, index_commit, note_carried, note_role_sigs, note_stands_in, ingest_secrets_keys, observe_state, rebuild, rejudged, run_batched, shred_covered, strip_valueless};
+pub(crate) use atomic::{apply_verified, carries_any, forget_snapshot, index_commit, note_carried, note_role_sigs, note_stands_in, ingest_secrets_keys, observe_state, rebuild, rejudged, run_batched, shred_covered, remove_gone_writes};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Step, Tx, decode_commit_record, records};
@@ -1603,7 +1603,7 @@ impl Engine {
             };
             let mut gone = false;
             for p in &copy.parts {
-                if meta.as_ref().is_some_and(|m| m.is_dropped(p.ai) || m.stripped(p.ai) && crate::retention::valueless(tx.core, id, p.ai)) || pending.is_some() && (crate::retention::pending_expired(tx, &h, p.ai) || pending.as_ref().map(|b| crate::retention::waiting_stripped(tx, b, id, p.ai)).transpose()?.unwrap_or(false) || pending.as_ref().is_some_and(|b| !b.parts.iter().any(|q| q.ai == p.ai)) && crate::retention::known_purged(tx, &h, id, p.ai)?) {
+                if meta.as_ref().is_some_and(|m| m.is_dropped(p.ai) || m.stripped(p.ai) && crate::retention::is_gone(tx.core, id, p.ai)) || pending.is_some() && (crate::retention::pending_expired(tx, &h, p.ai) || pending.as_ref().map(|b| crate::retention::waiting_stripped(tx, b, id, p.ai)).transpose()?.unwrap_or(false) || pending.as_ref().is_some_and(|b| !b.parts.iter().any(|q| q.ai == p.ai)) && crate::retention::known_purged(tx, &h, id, p.ai)?) {
                     gone = true;
                     continue;
                 }
@@ -2252,14 +2252,14 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::rotation::merge::load(tx)?;
     crate::retention::load_owed(tx)?;
     let mut vl = Vec::new();
-    tx.scan(records::VALUELESS, |k, v| {
+    tx.scan(records::GONE, |k, v| {
         vl.push((k.to_vec(), v));
         Ok(())
     })?;
     for (k, v) in vl {
         let mut r = records::Rd::new(&k);
         let (tid, ak) = (r.tid()?, r.ak()?);
-        tx.core.ix.valueless.insert((tid, ak), crate::retention::decode_owned(&v)?);
+        tx.core.ix.gone.insert((tid, ak), crate::retention::decode_owned(&v)?);
     }
     let mut secrets = Vec::new();
     tx.scan(crate::engine::records::SECRETS, |k, v| {

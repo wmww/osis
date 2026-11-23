@@ -183,7 +183,7 @@ impl Trigger {
     fn held_counts(tx: &mut Tx<'_>, c: &CommitId, k: &(Tid, Ak), blob: &CommitBlob, ai: usize) -> Result<()> {
         let written = tx.core.ix.commits.get(c).map_or(Ts::ZERO, |m| m.view.ts);
         let live = super::history::of(tx.core, &k.0, &k.1).live_until(written);
-        if live > tx.now().0 && !super::leaving::out_of_history(tx.core, c, &k.0, &k.1) && !super::valueless(tx.core, c, ai) {
+        if live > tx.now().0 && !super::leaving::out_of_history(tx.core, c, &k.0, &k.1) && !super::is_gone(tx.core, c, ai) {
             Trigger::live_until(tx, k.clone(), live);
             return Ok(());
         }
@@ -584,7 +584,7 @@ fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
     if let Some((_, Some(last))) = ix.leave_from.get(&key).copied() {
         out.extend(ix.leaving.get(&key).into_iter().flat_map(|s| s.range(..=last)).map(|p| p.1));
     }
-    for o in ix.valueless.get(&key).into_iter().flatten() {
+    for o in ix.gone.get(&key).into_iter().flatten() {
         match o {
             crate::engine::Owned::Commit(c) => {
                 out.insert(*c);

@@ -148,7 +148,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     }
     // its retention timers
     tx.remove_timers_of(id, None)?;
-    // its writes off the value-less list: a copy arriving again applies as new (a batched
+    // its writes off the gone list: a copy arriving again applies as new (a batched
     // rebuild still to run strips their values first, `apply::run_batched`)
     for (ai, a) in m.header.aspects.iter().enumerate() {
         let owned = crate::retention::writes_of(&m.header, id, ai);
@@ -162,7 +162,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
                 e.unlist.extend(owned);
                 e.memory |= v.memory;
             }
-            None => crate::retention::off_valueless(tx, &a.tid, &a.ak, &owned),
+            None => crate::retention::off_gone(tx, &a.tid, &a.ak, &owned),
         }
     }
     // what its `keys.0` parts gave (held or dropped: `Dropped::keysets`), re-derived from the

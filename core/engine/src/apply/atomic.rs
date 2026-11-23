@@ -157,7 +157,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 /// Joins `delta` (a whole delta, or one piece of one: spec/crdt.md §8) into the state of
 /// `(tid, ak)`: the ordinary valid join (a valid delta holds no write of an invalid one, and a
 /// valid snapshot's copies all join, spec/permissions.md §5.2), after the
-/// value-less list (`strip_valueless`): the one join-time predicate, so no value a delta held
+/// gone list (`remove_gone_writes`): the one join-time predicate, so no value a delta held
 /// value-less here reaches the state from any body (an undelete's copy of a char, a stale
 /// copy, a snapshot's); the same predicate ends every rebuild.
 /// A paged state loads only the pages the join touches, or where it resets or re-encodes a
@@ -167,7 +167,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     tx.load_lazy(tid, ak)?;
     // the state is the join of the held bodies without the gone writes (spec/crdt.md §4.7): the
     // one predicate, applied to each body as it joins here and in a rebuild
-    strip_valueless(tx.core, tid, ak, &mut delta);
+    remove_gone_writes(tx.core, tid, ak, &mut delta);
     // a paged state loads only the pages the join touches
     let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
     if touch.is_none()
@@ -522,8 +522,8 @@ pub(crate) fn carries_any(tx: &mut Tx<'_>, c: &CommitId, ai: usize, owned: &[Own
 /// Removes from body `f` of `(tid, ak)` the writes gone here (expired, purged: the value-less
 /// list, spec/crdt.md §4.7): applied to each body before it joins, never to a state (removal does
 /// not commute with join).
-pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, f: &mut Fragment) {
-    if let Some(v) = core.ix.valueless.get(&(*tid, ak.clone()))
+pub(crate) fn remove_gone_writes(core: &Core, tid: &Tid, ak: &Ak, f: &mut Fragment) {
+    if let Some(v) = core.ix.gone.get(&(*tid, ak.clone()))
         && !v.is_empty()
     {
         f.remove_gone(&|d| crate::retention::sorted_owns(v, d));
@@ -1108,7 +1108,7 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<bool> {
 
 /// Debug builds: each of `aspects` holds exactly the join of its held bodies (`rebuilt`: spec/crdt.md
 /// §4.6 Un-merge), as stored, but for the text chars §5.7 leaves to the node, and the caches
-/// derived from them agree (value-less lists, snapshot bounds, references). Panics with the
+/// derived from them agree (gone lists, snapshot bounds, references). Panics with the
 /// difference. Changes nothing.
 #[cfg(debug_assertions)]
 pub(crate) fn check_states(tx: &mut Tx<'_>, aspects: BTreeSet<(Tid, Ak)>) -> Result<()> {
@@ -1116,9 +1116,9 @@ pub(crate) fn check_states(tx: &mut Tx<'_>, aspects: BTreeSet<(Tid, Ak)>) -> Res
     for (tid, ak) in aspects {
         // unseen: the cached state as it was, and no cost recorded
         let k = (tid, ak.clone());
-        // the value-less list is a cache of the parts' statuses: a part held as a bare leftover
+        // the gone list is a cache of the parts' statuses: a part held as a bare leftover
         // has its own writes on it, one held whole or as a leftover holding values none
-        let list = tx.core.ix.valueless.get(&k).cloned().unwrap_or_default();
+        let list = tx.core.ix.gone.get(&k).cloned().unwrap_or_default();
         for c in tx.core.ix.by_aspect.get(&k).map(|s| s.iter().map(|(_, c)| *c).collect::<Vec<_>>()).unwrap_or_default() {
             let Some(m) = tx.core.ix.commits.get(&c) else { continue };
             let Some(ai) = m.aspect(&tid, &ak) else { continue };
@@ -1204,7 +1204,7 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// Invariant (spec/crdt.md §4.7, spec/commits.md §5; `retention::strip_leftover`): no held body
 /// carries the value of a write this node holds value-less (expired, purged), its own or a copy
 /// under the original's dot (a snapshot's), and none loses a value of a write not so held. Kept
-/// where it can break: while the aspect's value-less list changed in this transaction, this walk
+/// where it can break: while the aspect's gone list changed in this transaction, this walk
 /// reads every held body and holds each snapshot carrying a listed value as its leftover
 /// (`retention::strip_carried`, which lists nothing); a body arriving later joins stripped and is
 /// stored as its leftover (`retention::drop_gone`, no rebuild).
@@ -1233,7 +1233,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     }
     let _s = osis_base::costs::span("rebuild");
     crate::engine::listing::before_rebuild(tx, tid, ak)?;
-    let listed = tx.core.valueless_dirty.contains(&k).then(|| tx.core.ix.valueless.get(&k).cloned()).flatten().filter(|l| !l.is_empty());
+    let listed = tx.core.gone_dirty.contains(&k).then(|| tx.core.ix.gone.get(&k).cloned()).flatten().filter(|l| !l.is_empty());
     let mut carriers = Vec::new();
     let st = rebuilt(tx, tid, ak, listed.as_deref().map(|l| (l, &mut carriers)))?;
     for (c, ai) in &carriers {
@@ -1310,7 +1310,7 @@ pub(crate) fn run_batched<T>(tx: &mut Tx<'_>, f: impl FnOnce(&mut Tx<'_>) -> Res
     for ((tid, ak), b) in asked {
         tx.in_class(b.memory, |tx| {
             rebuild(tx, &tid, &ak)?;
-            crate::retention::off_valueless(tx, &tid, &ak, &b.unlist);
+            crate::retention::off_gone(tx, &tid, &ak, &b.unlist);
             Ok(())
         })?;
     }
@@ -1350,7 +1350,7 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
     let mut fast: Option<Fragment> = None;
     let listed = carrying.as_ref().map(|(l, _)| OwnedSet::of(l));
     // each body without the writes gone here, before it joins (spec/crdt.md §4.7)
-    let gone = tx.core.ix.valueless.get(&(*tid, ak.clone())).filter(|v| !v.is_empty()).cloned();
+    let gone = tx.core.ix.gone.get(&(*tid, ak.clone())).filter(|v| !v.is_empty()).cloned();
     for (ts, c) in &held {
         // a body stamped `ts` carries nothing stamped later (a snapshot's writes included,
         // spec/crdt.md §8)

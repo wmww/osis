@@ -51,59 +51,6 @@ impl Fragment {
         Fragment::Map(Map::new(m.meta.clone(), out)).writes().into_iter().map(|(d, _)| d).collect()
     }
 
-    /// Adds to `out` the origin dot of every value-less write here: a register write or enum case
-    /// without its value, a keyless map entry creation, a text element's creation without its char
-    /// (not deleted). No wire form carries one (spec/crdt.md §3.2): Interim (issues/gone-writes-followup.md),
-    /// goes with the engine's value-less spans.
-    pub fn valueless_dots(&self, out: &mut std::collections::BTreeSet<Dot>) {
-        let reg = |r: &Register, out: &mut std::collections::BTreeSet<Dot>| {
-            if let Some(w) = &r.write
-                && w.value.is_none()
-            {
-                out.insert(w.stamp.dot.origin().clone());
-            }
-        };
-        match self {
-            Fragment::Slots(Slots { reg: r, slots }) => {
-                r.iter().for_each(|r| reg(r, out));
-                slots.values().for_each(|f| f.valueless_dots(out));
-            }
-            Fragment::Register(r) => reg(r, out),
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|f| f.valueless_dots(out)),
-            Fragment::Struct(s) => s.fields.values().for_each(|f| f.valueless_dots(out)),
-            Fragment::Enum(e) => {
-                if let Some(c) = &e.case
-                    && c.case.is_none()
-                {
-                    out.insert(c.stamp.dot.origin().clone());
-                }
-                e.payloads.values().for_each(|f| f.valueless_dots(out));
-            }
-            Fragment::Map(m) => {
-                for (id, en) in &m.entries {
-                    if id.key.is_none() && en.created.is_some() {
-                        out.insert(id.dot.origin().clone());
-                    }
-                    if let Some(f) = en.frag.as_deref() {
-                        f.valueless_dots(out);
-                    }
-                }
-            }
-            Fragment::Seq(s) => {
-                for (d, el) in s.elems() {
-                    match &el.content {
-                        SeqContent::Frag(f) => f.valueless_dots(out),
-                        // a range record: each element is its own value-less creation
-                        SeqContent::None if s.text && el.created.is_some() && !el.deletes() => {
-                            out.extend((0..el.span).map(|k| crate::seq_span::nth(d, k).origin().clone()));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-
     /// Calls `f` with the origin dot of every value-carrying write held here with its value
     /// (§4.7): every write `strip` of its dot would change, and every write of a keyed map record
     /// (each carries the record's key). A dot may come more than once; once stripped of a dot's

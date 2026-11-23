@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// What a held snapshot carries (spec/crdt.md §4.7 Gone writes, spec/permissions.md §5.2 Copies): per
 /// source, the counters of the writes its held body holds (`Fragment::write_ranges`), and of
-/// those it holds valued (`Fragment::each_valued`) and value-less. The commits it carries copies
+/// those it holds valued (`Fragment::each_valued`). The commits it carries copies
 /// of are the held ones whose counters on the aspect meet a write (`carried`, `carriers`): what
 /// the body holds, never what its frontiers or `Absorbed` claim (spec/crdt.md §8). An honest
 /// snapshot holds no write of an expiring delta (§8); one holding a write gone here is held as its
@@ -29,7 +29,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Carried {
     writes: Spans,
     valued: Spans,
-    valueless: Spans,
 }
 
 /// Per source, counters as runs `lo..hi`: ascending, disjoint, none adjacent to the next.
@@ -78,41 +77,34 @@ impl Spans {
 }
 
 impl Carried {
-    /// Adds what `f` holds: every write, those valued, those value-less.
+    /// Adds what `f` holds: every write, and those valued.
     pub(crate) fn add(&mut self, f: &Fragment) {
         f.write_ranges(&mut |src, lo, hi| self.writes.add(src, lo, hi));
         f.each_valued(&mut |d| self.valued.add_dot(d));
-        let mut none = BTreeSet::new();
-        f.valueless_dots(&mut none);
-        none.iter().for_each(|d| self.valueless.add_dot(d));
     }
     /// Whether it holds a write of `own`.
     pub(crate) fn meets(&self, own: &[Owned]) -> bool {
         self.writes.meets_owned(own)
     }
-    /// Whether it holds a write of `own` value-less.
-    pub(crate) fn meets_valueless(&self, own: &[Owned]) -> bool {
-        self.valueless.meets_owned(own)
-    }
-    /// Whether it holds every write `o` does, valued and value-less alike.
+    /// Whether it holds every write `o` does, and every one `o` holds valued.
     #[cfg(debug_assertions)]
     pub(crate) fn holds(&self, o: &Carried) -> bool {
-        self.writes.holds(&o.writes) && self.valued.holds(&o.valued) && self.valueless.holds(&o.valueless)
+        self.writes.holds(&o.writes) && self.valued.holds(&o.valued)
     }
     /// Whether it holds the writes `o` does: the commits carried are the same.
     pub(crate) fn same_writes(&self, o: &Carried) -> bool {
         self.writes == o.writes
     }
-    /// The runs of its writes (its memory: the valued and value-less runs lie within them).
+    /// The runs of its writes (its memory: the valued runs lie within them).
     pub(crate) fn len(&self) -> usize {
         self.writes.0.values().map(Vec::len).sum()
     }
-    /// Its writes, those valued, those value-less.
-    pub(crate) fn spans(&self) -> [&Spans; 3] {
-        [&self.writes, &self.valued, &self.valueless]
+    /// Its writes, and those valued.
+    pub(crate) fn spans(&self) -> [&Spans; 2] {
+        [&self.writes, &self.valued]
     }
-    pub(crate) fn of([writes, valued, valueless]: [Spans; 3]) -> Carried {
-        Carried { writes, valued, valueless }
+    pub(crate) fn of([writes, valued]: [Spans; 2]) -> Carried {
+        Carried { writes, valued }
     }
 }
 
@@ -213,7 +205,7 @@ pub(crate) fn expiring_carriers(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<B
 
 /// Whether part `ai` of held commit `c` is held with its values, valid.
 fn live_valued(core: &Core, c: &CommitId, ai: usize) -> bool {
-    core.ix.commits.get(c).is_some_and(|m| m.holds(ai) && !m.bare(ai) && m.valid_at(ai) && !super::valueless(core, c, ai))
+    core.ix.commits.get(c).is_some_and(|m| m.holds(ai) && !m.bare(ai) && m.valid_at(ai) && !super::is_gone(core, c, ai))
 }
 
 /// The valued copies of the expiring snapshots of `(tid, ak)` held here, valid, by their expiry
@@ -697,7 +689,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     // a snapshot never carries an expiring delta's values (spec/crdt.md §8): held with its
     // values, the join below judges it (covered once no value of it lives); not held and not
     // value-less, the frontier alone would wrongly say covered
-    if !held && m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) && !super::valueless(tx.core, c, cai) {
+    if !held && m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) && !super::is_gone(tx.core, c, cai) {
         return Ok(Some(false));
     }
     // the snapshot not held: nothing is established
@@ -741,19 +733,8 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     // rewrite) joins nothing: covered. Before an own replace the part must really have
     // dropped: a part not fetched yet is not established (a set add or map put still to come).
     if !held {
-        let own = g.is_none();
-        if own && !m.is_dropped(cai) {
+        if g.is_none() && !m.is_dropped(cai) {
             return Ok(None);
-        }
-        // a snapshot holding a write of the body value-less covers it only where this node
-        // holds that write value-less for good (past its expiry; one with an expiry not held is
-        // value-less here, above): a copy stripped for a purge that fell
-        // (`purge::rejudge_purges`), or under the request still standing (it may fall, as a
-        // bare leftover stays, `drops_as_covered`), or written by a node holding a request this
-        // one does not, gives no value, and the body counted covered would never be fetched
-        // again (spec/commits.md §5 Covered)
-        if !own && !m.header.expires.is_some_and(|t| tx.core.time.until(Some(t)) >= t) && holds_valueless(tx, s, sai, &super::writes_of(&m.header, c, cai), tid, ak)? {
-            return Ok(Some(false));
         }
         return Ok(Some(true));
     }
@@ -761,8 +742,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     // body's positions: with its writes under the body's dots taken out and the body joined
     // back, its canonical bytes are unchanged (`covered_body`, a group of pieces at a time). A
     // copy the snapshot holds otherwise leaves the body uncovered whichever wins the copy order
-    // (spec/crdt.md §4.1): the body is kept. A value-less write of the body has no payload to
-    // hold: the snapshot's copy stays and the join decides (a valued copy takes it).
+    // (spec/crdt.md §4.1): the body is kept.
     Ok(Some(body.unchanged))
 }
 
@@ -796,7 +776,7 @@ fn covered_body(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: us
     let root = |tx: &mut Tx<'_>, x: &CommitId, ai: usize| -> Result<usize> { Ok(tx.get_commit(x)?.and_then(|b| b.part(ai).map(|p| p.delta.len())).unwrap_or(0)) };
     let room = root(tx, s, sai)?.saturating_add(root(tx, c, cai)?);
     let mut out = CoveredBody { held: false, gives: None, facts: None, stamps: BTreeSet::new(), part_stamps: BTreeSet::new(), part_bytes: 0, judged: false, unchanged: true };
-    let (mut ix, mut valueless) = (osis_crdt::CopyIndex::default(), BTreeSet::new());
+    let mut ix = osis_crdt::CopyIndex::default();
     let mut skeleton: Option<Fragment> = None;
     // the body joined while it fits one group
     let (mut whole, mut size, mut fits, mut whole_only) = (Fragment::default(), 0usize, true, false);
@@ -818,7 +798,6 @@ fn covered_body(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: us
             }
         };
         let f = read(tx, f);
-        f.valueless_dots(&mut valueless);
         ix.extend(f.copy_index());
         out.stamps.extend(stamps_of(&f));
         // the skeleton, in every group, counts in none
@@ -847,7 +826,7 @@ fn covered_body(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: us
             out.gives = gives;
         }
         let before = crate::engine::state::encode(&part)?;
-        part.remove_writes(&|d| ix.holds(d) && !valueless.contains(d));
+        part.remove_writes(&|d| ix.holds(d));
         part.join(group);
         out.unchanged &= crate::engine::state::encode(&part)? == before;
         Ok(())
@@ -876,25 +855,6 @@ fn covered_body(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: us
         judge(tx, &mut out, group)?;
     }
     Ok(out)
-}
-
-/// Whether held snapshot `s` (part `sai` on `(tid, ak)`) holds a write of `own` value-less. Its
-/// value-less bound (`Carried`) answers most without the body; where it may, the body is read.
-fn holds_valueless(tx: &mut Tx<'_>, s: &CommitId, sai: usize, own: &[Owned], tid: &Tid, ak: &Ak) -> Result<bool> {
-    let meets = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().find(|x| x.1 == *s).is_none_or(|x| x.4.meets_valueless(own));
-    if own.is_empty() || !meets {
-        return Ok(false);
-    }
-    // counted: tests read how often a cover's body is read for it
-    let _s = osis_base::costs::span("covered: value-less copies");
-    let mut found = false;
-    crate::apply::each_held_piece(tx, s, sai, &mut |_, f| {
-        let mut none = BTreeSet::new();
-        f.valueless_dots(&mut none);
-        found |= none.iter().any(|d| own.iter().any(|o| o.owns(d)));
-        Ok(())
-    })?;
-    Ok(found)
 }
 
 /// Whether the state of `(tid, ak)` holds a live write of a node `of` picks that stands only

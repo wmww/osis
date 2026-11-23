@@ -291,7 +291,7 @@ pub(crate) type Copies = BTreeSet<Option<u64>>;
 /// of a write still held is known). Invariant (§4.6, §4.7): an undo never extends a value's
 /// lifetime, and never writes back content gone by expiry or purge: what has expired by `wall`
 /// (the undo's `ts`) is stripped from `pre` first, and the caller strips what the node holds
-/// value-less (`strip_valueless`).
+/// value-less (`remove_gone_writes`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mut pre: Fragment, schema: Option<&osis_schema::Schema>, ak: &Ak, wall: u64, expiry: &dyn Fn(&Dot) -> Option<u64>) -> Result<Option<(Fragment, CounterRange, Copies)>> {
     pre.remove_gone(&|d| expiry(d).is_some_and(|t| t <= wall));
@@ -358,7 +358,7 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, ts: Ts) -> Result<Option<(Vec<
         let carried: Vec<(u64, Owned)> = crate::retention::snapshot::expiring_copies(tx, &tid, &ak)?.into_iter().flat_map(|(t, os)| os.into_iter().map(move |o| (t, o))).collect();
         let held = carried.clone();
         let strip = move |core: &Core, f: &mut Fragment| {
-            crate::apply::strip_valueless(core, &tid, &ak, f);
+            crate::apply::remove_gone_writes(core, &tid, &ak, f);
             f.remove_gone(&|d| copied_expiry(core, &tid, &ak, &held, d).is_some_and(|t| t <= wall));
         };
         let pre = kept_before(tx, &a.tid, &a.ak, (h.ts, target), &delta, &strip)?;

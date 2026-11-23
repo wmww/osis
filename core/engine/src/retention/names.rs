@@ -123,7 +123,7 @@ pub(crate) fn held_again(core: &mut Core, id: &CommitId, aspects: &[crate::engin
 }
 
 /// The stamps `(ts, origin source)` of every value-carrying write (spec/crdt.md §4.7) the held
-/// snapshots of `(tid, ak)` carry, value-less ones included, valid or not: one body read each. A
+/// snapshots of `(tid, ak)` carry, valid or not: one body read each. A
 /// purge acts only on values, so a reset, flag, position write or value removal (a set
 /// element's tombstone among them) needs no name.
 fn carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<(Ts, Source)>> {
@@ -135,7 +135,6 @@ fn carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<(Ts, Source)>
         tx.in_class(memory, |tx| {
             crate::apply::each_held_piece(tx, &s, sai, &mut |_, f| {
                 let mut valued = BTreeSet::new();
-                f.valueless_dots(&mut valued);
                 f.each_valued(&mut |d| _ = valued.insert(d.clone()));
                 out.extend(f.writes().into_iter().filter(|(d, _)| valued.contains(d)).filter_map(|(d, ts)| Some((ts?, osis_crdt::fact_source(&d.src)))));
                 Ok(())

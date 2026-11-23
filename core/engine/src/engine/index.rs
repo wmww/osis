@@ -243,8 +243,8 @@ impl Rec for crate::retention::snapshot::Carried {
     }
     fn from(v: &Value) -> Option<Self> {
         use crate::retention::snapshot::Spans;
-        let (a, b, c) = <(Spans, Spans, Spans) as Rec>::from(v)?;
-        Some(crate::retention::snapshot::Carried::of([a, b, c]))
+        let (a, b) = <(Spans, Spans) as Rec>::from(v)?;
+        Some(crate::retention::snapshot::Carried::of([a, b]))
     }
 }
 impl Rec for osis_crdt::Facts {

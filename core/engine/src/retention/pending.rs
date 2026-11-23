@@ -21,7 +21,7 @@ pub(crate) fn pending_expired(tx: &Tx<'_>, h: &Header, ai: usize) -> bool {
 /// as never received (spec/commits.md §5: no copy past T): they leave the stored copy before it
 /// is kept, and their aspects are flagged suspect (`suspect`: their non-value writes never join
 /// here, where a node that applied them before T keeps them). The others get a timer doing the
-/// same at T (`hold_valueless`). One a held purge request names is held value-less instead
+/// same at T (`hold_gone`). One a held purge request names is held value-less instead
 /// (`strip_purged`), as an applied one is: the request is a held commit, so nodes holding the same
 /// commits read alike; one applied later wakes the commit (`purge_one`). A header whose aspects
 /// are not resolved yet is judged once they are.
@@ -48,7 +48,7 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 }
 
 /// Snapshot part `ai` of pending commit `id` (in `blob`, header `h`) carrying a copy of a value of
-/// a write on its aspect's value-less list (purged): held as its leftover from now on, those
+/// a write on its aspect's gone list (purged): held as its leftover from now on, those
 /// copies value-less, as an applied carrier is (spec/crdt.md §4.7 Gone writes, `strip_carried`), its
 /// slot emptied (`emptied`); it joins as that leftover, frontiers, `Absorbed` and facts kept. One
 /// that cannot be read yet (a page away, parked) is stripped once it can, at the latest when it
@@ -62,7 +62,7 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 fn strip_carried_waiting(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header, ai: usize) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let Some(part) = blob.parts.iter().find(|p| p.ai == ai && p.delta != emptied()).cloned() else { return Ok(()) };
-    let Some(list) = tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).filter(|l| !l.is_empty()).cloned() else { return Ok(()) };
+    let Some(list) = tx.core.ix.gone.get(&(a.tid, a.ak.clone())).filter(|l| !l.is_empty()).cloned() else { return Ok(()) };
     let bound = osis_base::memo::Memo::get_in(tx, |tx| &tx.core.waiting_carried, &(*id, ai), |tx| {
         // read for the answer's life: its commit leaving the pending set moves it, so the memo's
         // sweep drops it (bounded by what waits); a look re-pending it unchanged does not (`pend`)
@@ -95,11 +95,11 @@ fn bound(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &Header, a
 }
 
 /// Snapshot part `part` (aspect `ai` of commit `id`, header `h`) stripped of the copies its
-/// aspect's value-less list names, as its leftover; `None` when it carries none (or is no
+/// aspect's gone list names, as its leftover; `None` when it carries none (or is no
 /// snapshot), `Err` when it cannot be read yet (its thing's record, a page away; parked).
 fn carried(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &Header, ai: usize) -> std::result::Result<Option<leftover::Leftover>, ()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(None) };
-    let Some(list) = tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).filter(|l| !l.is_empty()).cloned() else { return Ok(None) };
+    let Some(list) = tx.core.ix.gone.get(&(a.tid, a.ak.clone())).filter(|l| !l.is_empty()).cloned() else { return Ok(None) };
     let Some(dedup) = tx.core.dedup(&a.tid) else { return Err(()) };
     let Some(Decoded::Snapshot(snap)) = verify_waiting(tx, id, part, h, &dedup)? else { return Ok(None) };
     let mut f = snap.fragment.clone();
@@ -319,7 +319,7 @@ pub(crate) fn take_parts(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>) 
 }
 
 /// Part `ai` of the stored pending copy of `c` (waiting or parked), if any, goes (`pending_drops`,
-/// `hold_valueless`), flagged suspect; sync then forgets the blobs holding it.
+/// `hold_gone`), flagged suspect; sync then forgets the blobs holding it.
 pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some((h, taken)) = rewrite_stored(tx, c, |b| take_slot(b, ai))? else { return Ok(()) };
     forget_waiting_leftover(tx, &h, c, ai)?;

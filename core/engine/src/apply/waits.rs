@@ -339,7 +339,7 @@ pub(crate) struct Waits {
     pub unpended: osis_base::memo::Stamps,
     /// The next `reexamine` wakes `Wake::Open` (an open loaded the pending commits).
     pub open_due: bool,
-    /// Things whose value-less lists or purge requests moved since the last `wake`: `Wake::Thing`.
+    /// Things whose gone lists or purge requests moved since the last `wake`: `Wake::Thing`.
     pub lists_moved: BTreeSet<Tid>,
     /// Epochs an account's chain came to hold since the last `wake` (`account::refresh_epochs`):
     /// `Wake::Epoch` of each.

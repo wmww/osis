@@ -11,7 +11,7 @@
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,
 //! but a re-grant's boxes that may still apply (`rotation::boxes_kept`),
-//! value-less lists, leftovers, purge lists and what they dropped, timers, `secrets.0` waits, the
+//! gone lists, leftovers, purge lists and what they dropped, timers, `secrets.0` waits, the
 //! sync IDs of forgotten things and the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
 //!

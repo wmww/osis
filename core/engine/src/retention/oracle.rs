@@ -28,7 +28,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let held = crate::apply::held_fragment(tx, c, cai)?;
     // a body with an expiry neither held nor value-less: not covered, whether or not the
     // snapshot is held (as `covered_join` judges it before reading the snapshot)
-    if held.is_none() && tx.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.get(cai).is_some() && m.header.expires.is_some()) && !super::valueless(tx.core, c, cai) {
+    if held.is_none() && tx.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.get(cai).is_some() && m.header.expires.is_some()) && !super::is_gone(tx.core, c, cai) {
         return Ok(Some(false));
     }
     if let (Some(m), Some(Decoded::Snapshot(sn))) = (tx.core.ix.commits.get(c), &part) {
@@ -47,13 +47,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     }
     let Some(snap) = part.map(Decoded::into_fragment) else { return Ok(None) };
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
-    let Some(mut body) = held else {
-        let own = super::writes_of(&m.header, c, cai);
-        let mut none = BTreeSet::new();
-        snap.valueless_dots(&mut none);
-        let for_good = m.header.expires.is_some_and(|t| t <= tx.now().0);
-        return Ok(Some(for_good || !none.iter().any(|d| own.iter().any(|o| o.owns(d)))));
-    };
+    let Some(mut body) = held else { return Ok(Some(true)) };
     let is_snapshot = m.header.kind.is_compaction();
     if is_snapshot && !crate::apply::copies::snapshot_valid(tx.core, c, tid, ak) {
         let core = &*tx.core;

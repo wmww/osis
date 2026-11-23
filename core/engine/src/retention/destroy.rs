@@ -168,11 +168,11 @@ pub(crate) fn destroying_requests(core: &Core, t: &Tid) -> BTreeSet<CommitId> {
     per_minting(core, t).into_iter().flat_map(|h| h.by).map(|p| p.commit).collect()
 }
 
-/// Ends the things a value-less list changed on in this transaction (`Core::valueless_dirty`,
+/// Ends the things a gone list changed on in this transaction (`Core::gone_dirty`,
 /// taken at the end of the transaction, so any arrival order lands here).
 pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
     unnamed(tx.core);
-    let dirty: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| ak.as_str() == CREATED).map(|(t, _)| *t).collect();
+    let dirty: BTreeSet<Tid> = tx.core.gone_dirty.iter().filter(|(_, ak)| ak.as_str() == CREATED).map(|(t, _)| *t).collect();
     let (due, fell): (BTreeSet<Tid>, BTreeSet<Tid>) = dirty.into_iter().partition(|t| tx.core.destroyed(t));
     for t in &due {
         note(tx, t, true)?;
@@ -308,11 +308,11 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         super::names::forget_aspect(tx, t, ak)?;
         tx.core.ix.forgotten.remove(&k);
         tx.core.ix.resnapshots_owed.remove(t, ak);
-        if tx.core.ix.valueless.get(&k).is_some() {
+        if tx.core.ix.gone.get(&k).is_some() {
             tx.core.touch();
-            tx.core.ix.valueless.remove(&k);
+            tx.core.ix.gone.remove(&k);
         }
-        tx.core.valueless_dirty.insert(k.clone());
+        tx.core.gone_dirty.insert(k.clone());
         changed.insert(k);
     }
     Ok(())
@@ -324,10 +324,10 @@ pub(super) fn forget_aspect_rows(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()
     let k = (*t, ak.clone());
     tx.core.ix.forgotten.remove(&k);
     tx.core.ix.resnapshots_owed.remove(t, ak);
-    if tx.core.ix.valueless.remove(&k).is_some() {
+    if tx.core.ix.gone.remove(&k).is_some() {
         tx.core.touch();
     }
-    for p in [records::ASPECTS, records::VALUELESS, records::PURGES, records::FORGOTTEN, records::RESNAPSHOTS_OWED] {
+    for p in [records::ASPECTS, records::GONE, records::PURGES, records::FORGOTTEN, records::RESNAPSHOTS_OWED] {
         tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
     }
     super::suspect::forget(tx, t, ak, Shred::Yes)?;

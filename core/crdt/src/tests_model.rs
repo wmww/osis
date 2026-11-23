@@ -185,11 +185,9 @@ fn piece_laws(x: &Fragment, y: &Fragment, honest: bool) {
         assert_eq!(crate::testutil::contains(x, y), unchanged, "a sequence's piece judges as the whole");
     }
     if honest && unchanged {
-        let mut vl = BTreeSet::new();
-        y.valueless_dots(&mut vl);
         let ix = y.copy_index();
         let mut p = part.clone();
-        p.remove_writes(&|d| ix.holds(d) && !vl.contains(d));
+        p.remove_writes(&|d| ix.holds(d));
         p.join(y.clone());
         assert_eq!(p, part, "an honest holder's copies are the body's");
     }

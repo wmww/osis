@@ -520,7 +520,7 @@ impl std::fmt::Debug for LazyHeader {
 pub struct Batched {
     /// Asked in the memory class.
     pub memory: bool,
-    /// Writes of forgotten memory commits to take off the value-less list once rebuilt
+    /// Writes of forgotten memory commits to take off the gone list once rebuilt
     /// (`apply::unindex_commit`): until then the rebuild strips their values.
     pub unlist: Vec<Owned>,
 }
@@ -781,7 +781,7 @@ indexes! {
     /// an event, so no rebuild compares it.
     pub reseal_asks: JMap<(Tid, Tid), crate::sync::stranded::Ask>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
-    pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
+    pub gone: JMap<(Tid, Ak), Vec<Owned>>,
     /// Independent things whose epochs this node holds.
     pub secrets: JMap<Tid, ActorEpochs>,
     /// Things held destroyed (`Core::destroyed`), rows `records::DESTROYED`: kept where a
@@ -1274,8 +1274,8 @@ pub struct Core {
     /// frontier to and each listing is cut to; a thing list, written inline only, fits the smaller
     /// of it and `CHUNK_THRESHOLD`.
     pub list_bound: usize,
-    /// Value-less lists changed in this transaction, written at its end (`retention::persist_valueless`).
-    pub valueless_dirty: BTreeSet<(Tid, Ak)>,
+    /// Value-less lists changed in this transaction, written at its end (`retention::persist_gone`).
+    pub gone_dirty: BTreeSet<(Tid, Ak)>,
     /// Things judged at the end of the transaction for whether a held thing still needs them
     /// (`retention::needed`): a release, `pass_due` at a pass end.
     pub needs_due: BTreeSet<Tid>,
@@ -1681,7 +1681,7 @@ impl Core {
     /// Whether minting `ai` of `c` is held value-less or dropped by a purge or the destruction.
     pub(crate) fn minting_gone(&self, c: &CommitId, ai: usize) -> bool {
         let Some(m) = self.ix.commits.get(c) else { return false };
-        crate::retention::valueless(self, c, ai) || m.dropped(ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed))
+        crate::retention::is_gone(self, c, ai) || m.dropped(ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed))
     }
 
     /// The walk over the held set (`held::Timelines`), the one way to read it. Every change of
@@ -2052,7 +2052,7 @@ impl Core {
             settings_due: _,
             setting_waits_due: _,
             setting_waits_judging: _,
-            valueless_dirty: _,
+            gone_dirty: _,
             needs_due: _,
             pass_due: _,
             lost_due: _,
@@ -2358,7 +2358,7 @@ impl Core {
             accounts: Default::default(),
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
-            valueless_dirty: BTreeSet::new(),
+            gone_dirty: BTreeSet::new(),
             needs_due: BTreeSet::new(),
             // what arrived before the open but was not judged yet: all judged at the first settle
             pass_due: None,
@@ -3015,8 +3015,8 @@ fn end_drops<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
 /// The transaction's end, step 5 (notes/engine.md): what follows every change above, settled
 /// and stored.
 fn end_settle<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
-    r = then(r, || crate::retention::persist_valueless(tx));
-    tx.core.valueless_dirty.clear();
+    r = then(r, || crate::retention::persist_gone(tx));
+    tx.core.gone_dirty.clear();
     r = then(r, || edits::settle(tx));
     tx.core.refold.clear();
     // freed links judged once every rebuild ran: a judged one keeps no key here

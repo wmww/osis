@@ -31,7 +31,7 @@ pub(crate) trait Journaled {
 }
 
 /// A map journaling each key's previous value, once per transaction or step (a rollback restores
-/// the first: a value changed many times in one transaction, as a value-less list growing by one
+/// the first: a value changed many times in one transaction, as a gone list growing by one
 /// per expiry in a round, costs one copy, not one per change).
 #[derive(Clone, Debug)]
 pub struct JMap<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> {

@@ -4,7 +4,7 @@
 //! `rejudge_purges`), and `signers_could`, by roles of any validity at any time, for what must not
 //! turn on arrival (`could_stand`). A header never names role-class deltas (`Header::validate`).
 
-use super::{gone_of, hold_valueless, list_valueless, off_valueless, purged_changed, reopen_to_fetch, suspect, unstrip, writes_of};
+use super::{gone_of, hold_gone, list_gone, off_gone, purged_changed, reopen_to_fetch, suspect, unstrip, writes_of};
 use crate::engine::Owned;
 use crate::engine::records::{self, Rd};
 use crate::engine::{Core, Engine, LazyHeader, Tx};
@@ -475,7 +475,7 @@ impl AspectRequests {
 
 /// Judges the held purge requests on `(tid, ak)` again (spec/permissions.md §6): a part one now
 /// drops is purged as on arrival; one held value-less for a purge that none drops any more
-/// counts as never received from here on: off the value-less list, its leftover set aside
+/// counts as never received from here on: off the gone list, its leftover set aside
 /// (`unstrip`) and its writes gone from the state until a copy comes (sync fetches it; a holder
 /// logs it). A body stripped for carrying others' values stays held
 /// as its leftover (spec/permissions.md §6); no request names a snapshot (`names`). Cost: the aspect's requests
@@ -539,7 +539,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     // a body stripped for carrying others' values (a snapshot; a delta carrying a copy) stays held
     // as its leftover: its copies of the values coming back stay value-less, so the valued copy
     // wins wherever one joins (spec/crdt.md §4.7 Gone writes), and every other write it carries stays
-    off_valueless(tx, tid, ak, &leaving);
+    off_gone(tx, tid, ak, &leaving);
     // until each comes back, this node may read less than one that kept it
     suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &back)?;
     for (c, ai) in back {
@@ -580,7 +580,7 @@ struct Carried {
 /// snapshot and lists no such copy, or has no request.
 pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let k = (*tid, ak.clone());
-    let had: Vec<Owned> = tx.core.ix.valueless.get(&k).into_iter().flatten().filter(|o| matches!(o, Owned::Dots { .. })).cloned().collect();
+    let had: Vec<Owned> = tx.core.ix.gone.get(&k).into_iter().flatten().filter(|o| matches!(o, Owned::Dots { .. })).cloned().collect();
     // no snapshot, nothing carried: the aspect's requests are not read (a signal's, say)
     let mut snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).collect();
     if snaps.is_empty() && had.is_empty() {
@@ -643,8 +643,8 @@ pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut
     }
     let gone: Vec<Owned> = had.iter().filter(|o| !want.contains(o)).cloned().collect();
     let new: Vec<Owned> = want.iter().filter(|o| !had.contains(o)).cloned().collect();
-    off_valueless(tx, tid, ak, &gone);
-    if list_valueless(tx, tid, ak, &new) {
+    off_gone(tx, tid, ak, &gone);
+    if list_gone(tx, tid, ak, &new) {
         owe_resnapshot(tx, tid, ak, BTreeSet::new(), true)?;
     }
     crate::apply::rebuild(tx, tid, ak)?;
@@ -671,7 +671,7 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
     }
     // every held body carrying the purged values, snapshots included, is stripped of them by the
     // rebuild this runs (`apply::rebuild`, spec/commits.md §5)
-    hold_valueless(tx, c, ai, true, changed)?;
+    hold_gone(tx, c, ai, true, changed)?;
     Ok(true)
 }
 

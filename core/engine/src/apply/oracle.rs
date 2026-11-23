@@ -3,7 +3,7 @@
 //! `Core::whole_apply`), joined whole, a reset or encoding change of a paged collection loading
 //! and rewriting the whole state. `tests_paged` requires both to leave the same.
 
-use super::atomic::strip_valueless;
+use super::atomic::remove_gone_writes;
 use crate::engine::Tx;
 use crate::retention::Killed;
 use crate::error::Result;
@@ -16,7 +16,7 @@ use osis_store::Shred;
 /// join differs: every other decision of a part's apply is `join_part`'s in both worlds.
 pub(super) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, dead: Option<&mut Killed>) -> Result<Changes> {
     tx.load_lazy(tid, ak)?;
-    strip_valueless(tx.core, tid, ak, &mut delta);
+    remove_gone_writes(tx.core, tid, ak, &mut delta);
     let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
     tx.ensure_touch(tid, ak, &touch)?;
     let k = (*tid, ak.clone());
