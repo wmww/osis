@@ -1469,76 +1469,14 @@ pub fn settle(w: &mut World) -> u32 {
     t + 1
 }
 
-#[derive(Default, Debug)]
-pub struct Stats {
-    pub worlds: u64,
-    pub failures: u64,
-    /// Failing checks by kind.
-    pub kinds: BTreeMap<String, u64>,
-    pub fail: Vec<(String, World)>,
-    pub lockstep: u64,
-    /// Worlds where a node of P took X's revocation first; of those, one whose own removal.
-    pub x_side: u64,
-    pub own_removal: u64,
-    /// Worlds where a switch was checked taking; settled with B on X's side for good.
-    pub switched: u64,
-    pub b_stays: u64,
-    /// Worlds with two honest certificates of one epoch; with merges of several tips.
-    pub twin_certs: u64,
-    pub merges: u64,
-    /// Worlds with C's t rotation at its epoch closed by a merge, and C's writes on t counting at A.
-    pub cycle: u64,
-    pub withheld: u64,
-    pub forged: u64,
-    /// Node-prefixes of P where X's write at an open epoch an unaware sibling boxed to X counts.
-    pub own_window: u64,
-    /// Worlds where X holds an honest seed minted by an unaware node (the stated limit).
-    pub unaware_leak: u64,
-    /// Worlds where A re-added T.
-    pub readds: u64,
-    /// Worlds where A's re-add waited for its line to carry T's removal.
-    pub readd_waits: u64,
-}
-
-impl crate::Tally for Stats {
-    fn merge(&mut self, o: Stats) {
-        self.worlds += o.worlds;
-        self.failures += o.failures;
-        for (k, n) in o.kinds {
-            *self.kinds.entry(k).or_default() += n;
-        }
-        if self.fail.len() < 4 {
-            self.fail.extend(o.fail.into_iter().take(4 - self.fail.len()));
-        }
-        self.lockstep += o.lockstep;
-        self.x_side += o.x_side;
-        self.own_removal += o.own_removal;
-        self.switched += o.switched;
-        self.b_stays += o.b_stays;
-        self.twin_certs += o.twin_certs;
-        self.merges += o.merges;
-        self.cycle += o.cycle;
-        self.withheld += o.withheld;
-        self.forged += o.forged;
-        self.own_window += o.own_window;
-        self.unaware_leak += o.unaware_leak;
-        self.readds += o.readds;
-        self.readd_waits += o.readd_waits;
-    }
-}
-
-impl Stats {
-    pub fn print(&self, name: &str) {
-        println!("{name}: {} worlds, {} failing checks", self.worlds, self.failures);
-        for (k, n) in &self.kinds {
-            println!("  {k}: {n}");
-        }
-        println!(
-            "  lockstep {}, X's side taken first {} (own removal {}), switches checked {}, B on X's side for good {}, twin certificates {}, multi-tip merges {}, listing-cycle shape {}, withholding {}, signing as Z {}, own window {}, unaware-sibling seeds at X {}, T re-added {} (after waiting {})",
-            self.lockstep, self.x_side, self.own_removal, self.switched, self.b_stays, self.twin_certs, self.merges, self.cycle, self.withheld, self.forged, self.own_window, self.unaware_leak, self.readds, self.readd_waits
-        );
-    }
-}
+/// Counted (`check`): lockstep worlds; worlds where a node of P took X's revocation first, of
+/// those its own removal; switches checked taking, B on X's side for good; two honest
+/// certificates of one epoch, merges of several tips; C's t rotation at its epoch closed by a
+/// merge with C's writes on t counting at A (the listing-cycle shape); X withholding, signing as
+/// Z; node-prefixes of P where X's write at an open epoch an unaware sibling boxed to X counts;
+/// worlds where X holds an honest seed an unaware node minted (the stated limit); T re-added, of
+/// those after waiting for A's line to carry T's removal.
+pub type Stats = crate::Findings<World>;
 
 /// Every seed and t epoch secret a view holds, over the world's epochs.
 pub fn secrets(w: &World, j: &View) -> (BTreeSet<Line>, BTreeSet<u32>) {
@@ -1560,15 +1498,9 @@ pub fn check(w0: &World, st: &mut Stats) {
     st.worlds += 1;
     let w = &w;
     let mut fails: Vec<String> = vec![];
-    if w.sched == Sched::Lockstep {
-        st.lockstep += 1;
-    }
-    if !w.withheld.is_empty() {
-        st.withheld += 1;
-    }
-    if w.items.iter().any(|i| i.signer == Z) {
-        st.forged += 1;
-    }
+    st.count("lockstep", u64::from(w.sched == Sched::Lockstep));
+    st.count("withholding", u64::from(!w.withheld.is_empty()));
+    st.count("signing as Z", u64::from(w.items.iter().any(|i| i.signer == Z)));
     if w.restless {
         fails.push(format!("restless: honest nodes still rotating after {ROUNDS} settle rounds"));
     }
@@ -1623,17 +1555,13 @@ pub fn check(w0: &World, st: &mut Stats) {
             if aware {
                 fails.push(format!("secrecy: X holds the secret of {} by node {}, made where X's removal is taken", i.id, NAMES[i.author]));
             } else {
-                st.unaware_leak += 1;
+                st.count("unaware-sibling seeds at X", 1);
             }
         }
     }
     let x_rot_any = w.items.iter().any(|i| i.author == X && w.is_rot(i.id));
-    if (0..OWN).any(|v| v != X && views[v].iter().any(|j| !j.taken.contains(&w.removal) && j.taken.iter().any(|r| w.item(*r).author == X))) {
-        st.x_side += 1;
-    }
-    if [A, B, C].iter().any(|v| views[*v].iter().any(|j| j.out(*v))) {
-        st.own_removal += 1;
-    }
+    st.count("X's side taken first", u64::from((0..OWN).any(|v| v != X && views[v].iter().any(|j| !j.taken.contains(&w.removal) && j.taken.iter().any(|r| w.item(*r).author == X)))));
+    st.count("own removal", u64::from([A, B, C].iter().any(|v| views[*v].iter().any(|j| j.out(*v)))));
     let mut switched = false;
     for v in (0..N).filter(|v| *v != Z) {
         let vs = &views[v];
@@ -1677,7 +1605,7 @@ pub fn check(w0: &World, st: &mut Stats) {
                 }
                 if let Some(c) = j.valid.iter().find(|c| w.hostile(**c)) {
                     if v < OWN {
-                        st.own_window += 1;
+                        st.count("own window", 1);
                     } else if !w.item(*c).epoch.iter().any(|q| !w.item(*q).boxed[X] && w.item(*q).author != X) && fin(v).valid.contains(c) {
                         fails.push(format!("revocation: node {} counts X's write {c} once settled", NAMES[v]));
                     }
@@ -1696,7 +1624,7 @@ pub fn check(w0: &World, st: &mut Stats) {
         }
         if !j.honest_side(w, v) {
             if v == B {
-                st.b_stays += 1;
+                st.count("B on X's side for good", 1);
             }
             continue;
         }
@@ -1720,13 +1648,11 @@ pub fn check(w0: &World, st: &mut Stats) {
             }
         }
     }
-    if switched {
-        st.switched += 1;
-    }
+    st.count("switches checked", u64::from(switched));
     // a re-add takes: T, re-added on the honest side, is a node of P there once settled
     if w.items.iter().any(|i| i.author == A && w.adds(i.id).contains(&T)) {
-        st.readds += 1;
-        st.readd_waits += u64::from(w.readd_waits > 0);
+        st.count("T re-added", 1);
+        st.count("re-add waited", u64::from(w.readd_waits > 0));
         for v in [A, T] {
             if fin(A).honest_side(w, A) && (!fin(v).roster.contains(&T) || fin(T).out(T)) {
                 fails.push(format!("readd: node {} settled without T on its roster", NAMES[v]));
@@ -1744,7 +1670,7 @@ pub fn check(w0: &World, st: &mut Stats) {
         by_epoch.entry(w.mints(i.id)).or_default().push(i.id);
     }
     for cs in by_epoch.values().filter(|cs| cs.len() > 1) {
-        st.twin_certs += 1;
+        st.count("twin certificates", 1);
         for v in (0..N).filter(|v| *v != Z && *v != X) {
             let j = fin(v);
             let cs: Vec<u32> = cs.iter().copied().filter(|c| j.standing.contains(c)).collect();
@@ -1759,25 +1685,15 @@ pub fn check(w0: &World, st: &mut Stats) {
             }
         }
     }
-    if !by_epoch.is_empty() {
-        st.merges += 1;
-    }
+    st.count("multi-tip merges", u64::from(!by_epoch.is_empty()));
     // the listing-cycle shape: C's t rotation at its own epoch, closed at A once settled
     if let Some(tc) = w.items.iter().find(|i| i.author == C && matches!(i.kind, Kind::TRot { .. })) {
         let a = fin(A);
         if !a.heads.contains(&tc.epoch) && a.tkeys.contains(&tc.id) {
-            st.cycle += 1;
+            st.count("listing-cycle shape", 1);
         }
     }
-    for f in fails {
-        st.failures += 1;
-        let kind = f.split(':').next().unwrap_or("").to_string();
-        let n = st.kinds.entry(kind).or_default();
-        *n += 1;
-        if *n == 1 && st.fail.len() < 4 {
-            st.fail.push((f, w0.clone()));
-        }
-    }
+    st.failed(fails, w0);
 }
 
 pub fn print_world(w: &World) {
@@ -1863,18 +1779,16 @@ pub fn run(samples: u64, mode: &str, control: Control) -> u64 {
 mod tests {
     use super::*;
 
+    /// `n` random worlds from one generator seeded `seed`.
     fn run_random(n: u64, seed: u64, control: Control) -> Stats {
         let mut rng = Rng(seed);
         let mut st = Stats::default();
-        for _ in 0..n {
-            check(&random_world(&mut rng, control), &mut st);
-        }
+        (0..n).for_each(|_| check(&random_world(&mut rng, control), &mut st));
         st
     }
 
     fn plain(w: &mut World, author: usize, signer: usize, at: &Line, removes: &[usize], takes: &[u32], boxed: &[usize], t: u32) -> u32 {
-        let bx: [bool; N] = std::array::from_fn(|m| boxed.contains(&m));
-        let id = w.add(Kind::Plain { at: at.clone(), removes: removes.to_vec(), adds: vec![], takes: takes.to_vec(), answers: vec![] }, author, signer, at.clone(), None, t, bx);
+        let id = w.add(Kind::Plain { at: at.clone(), removes: removes.to_vec(), adds: vec![], takes: takes.to_vec(), answers: vec![] }, author, signer, at.clone(), None, t, self::boxed(boxed));
         w.items[id as usize - 1].script = true;
         id
     }
@@ -1884,6 +1798,13 @@ mod tests {
                 w.items[*id as usize - 1].recv[*n] = t;
             }
         }
+    }
+    /// The first certificate among `made`.
+    fn cert_in(w: &World, made: &[u32]) -> u32 {
+        *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Cert { .. })).expect("a certificate")
+    }
+    fn boxed(to: &[usize]) -> [bool; N] {
+        std::array::from_fn(|m| to.contains(&m))
     }
     const PS: [usize; 5] = [A, B, C, X, T];
     const HONEST: [usize; 4] = [A, B, C, T];
@@ -1939,9 +1860,8 @@ mod tests {
         let made = act(&mut w, B, 2, None, false);
         let b1 = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Plain { .. })).expect("B takes X's revocation in a plain rotation");
         assert_eq!(w.takes(b1), [rx]);
-        let bx: [bool; N] = std::array::from_fn(|m| PS.contains(&m));
         let (lx, la) = (w.line(x0), w.line(a0));
-        let cert = w.add(Kind::Cert { joined: vec![lx.clone(), la], takes: vec![], answers: vec![] }, X, X, lx, None, 3, bx);
+        let cert = w.add(Kind::Cert { joined: vec![lx.clone(), la], takes: vec![], answers: vec![] }, X, X, lx, None, 3, boxed(&PS));
         to(&mut w, &[cert], &[B], 3);
         let j = judge(&w, B, 4);
         assert!(j.preferred == w.mints(cert) && !j.carries(&w, &j.preferred, rx), "the merge is B's preferred head: {j:?}");
@@ -2103,7 +2023,7 @@ mod tests {
         let b = plain(&mut w, B, B, &Line::new(), &[], &[], &PS, 1);
         to(&mut w, &[x, b], &[C], 2);
         let made = act(&mut w, C, 2, None, false);
-        let m1 = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Cert { .. })).unwrap();
+        let m1 = cert_in(&w, &made);
         assert!(w.item(m1).boxed[B]);
         assert!(made.iter().any(|id| matches!(&w.item(*id).kind, Kind::Reseal { e, tagged: false } if *e == w.line(x)) && w.item(*id).boxed[B]));
         to(&mut w, &made, &[B], 3);
@@ -2112,7 +2032,7 @@ mod tests {
         let b2 = plain(&mut w, B, B, &lb, &[], &[], &PS, 3);
         to(&mut w, &[b2], &[C], 4);
         let made = act(&mut w, C, 4, None, false);
-        let m2 = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Cert { .. })).unwrap();
+        let m2 = cert_in(&w, &made);
         assert_eq!(w.tips(&w.mints(m2)), vec![x, b2]);
         assert!(w.item(m2).boxed[B]);
     }
@@ -2178,7 +2098,7 @@ mod tests {
         let b = plain(&mut w, B, B, &Line::new(), &[], &[], &PS, 1);
         to(&mut w, &[x, b], &[B, C], 2);
         let made = act(&mut w, B, 2, None, false);
-        let m = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Cert { .. })).unwrap();
+        let m = cert_in(&w, &made);
         assert!(w.item(m).boxed[A] && w.item(m).boxed[T]);
         to(&mut w, &made, &[C], 3);
         assert_eq!(judge(&w, C, 3).preferred, w.mints(m));
@@ -2195,10 +2115,9 @@ mod tests {
         w.removal = plain(&mut w, A, A, &Line::new(), &[X], &[], &[A, B, C, T], 1);
         let z = plain(&mut w, X, Z, &Line::new(), &[], &[], &PS, 1);
         let f = plain(&mut w, X, X, &Line::new(), &[], &[], &PS, 1);
-        let bx: [bool; N] = std::array::from_fn(|m| PS.contains(&m));
         let joined = vec![w.line(f), w.line(z)];
         let lf = w.line(f);
-        let m = w.add(Kind::Cert { joined, takes: vec![], answers: vec![] }, X, X, lf, None, 1, bx);
+        let m = w.add(Kind::Cert { joined, takes: vec![], answers: vec![] }, X, X, lf, None, 1, boxed(&PS));
         let lm = w.mints(m);
         let rx = plain(&mut w, X, X, &lm, &[A], &[], &PS, 1);
         to(&mut w, &[z, f, m, rx], &[B], 2);
@@ -2218,10 +2137,9 @@ mod tests {
         let mut w = World::default();
         let a = plain(&mut w, A, A, &Line::new(), &[], &[], &PS, 1);
         let f = plain(&mut w, X, X, &Line::new(), &[], &[], &PS, 1);
-        let bx: [bool; N] = std::array::from_fn(|m| PS.contains(&m));
         let joined = vec![w.line(a), w.line(f)];
         let lf = w.line(f);
-        let m = w.add(Kind::Cert { joined, takes: vec![], answers: vec![] }, X, Z, lf, None, 1, bx);
+        let m = w.add(Kind::Cert { joined, takes: vec![], answers: vec![] }, X, Z, lf, None, 1, boxed(&PS));
         let lm = w.mints(m);
         let rx = plain(&mut w, X, X, &lm, &[B], &[], &PS, 1);
         w.removal = rx;
@@ -2243,7 +2161,7 @@ mod tests {
         let c = plain(&mut w, C, C, &Line::new(), &[], &[], &PS, 1);
         to(&mut w, &[a, b, c], &[A, B, C, X], 2);
         let made = act(&mut w, A, 2, None, false);
-        let cert = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Cert { .. })).unwrap();
+        let cert = cert_in(&w, &made);
         to(&mut w, &made, &[A, B, C, X], 3);
         let x = judge(&w, X, 3);
         assert!(!x.keys.holds(&w, &w.mints(cert)));
@@ -2299,7 +2217,7 @@ mod tests {
     #[ignore = "property"]
     fn random_worlds_hold_plain() {
         let st = run_random(40, 1, Control::None);
-        assert!(st.lockstep > 0 && st.twin_certs > 0 && st.cycle > 0, "{st:?}");
+        assert!(st.get("lockstep") > 0 && st.get("twin certificates") > 0 && st.get("listing-cycle shape") > 0, "{st:?}");
         assert_holds(&st, "random");
     }
 

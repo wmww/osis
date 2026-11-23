@@ -87,15 +87,6 @@ pub struct EHist {
     pub recv: Vec<Vec<u32>>,
 }
 
-/// `new` takes something from `old`: absent where `old` was not, or lower in some component.
-pub fn takes_from(new: Option<Edge>, old: Option<Edge>) -> bool {
-    match (new, old) {
-        (_, None) => false,
-        (None, Some(_)) => true,
-        (Some(n), Some(o)) => n.role < o.role || n.invite < o.invite || n.until < o.until,
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Attr {
     Skipped,
@@ -1139,11 +1130,7 @@ mod tests {
         }
         /// Commit; `recv` lists (node, time) receipts, others get LATE.
         fn ops(&mut self, author: usize, ops: &[(usize, Option<Edge>)], t: u32, recv: &[(usize, u32)]) -> usize {
-            let mut r = vec![LATE; self.0.n()];
-            r[author] = t;
-            for &(m, tm) in recv {
-                r[m] = tm;
-            }
+            let r = crate::receipts(self.0.n(), author, t, recv);
             let id = self.0.writes.len() as u32;
             self.0.writes.push(EWrite { author, t, id, ops: ops.to_vec(), fin: false });
             self.0.recv.push(r);
@@ -1229,8 +1216,8 @@ mod tests {
         assert_eq!(o.auth(Z), NONE);
     }
 
-    /// Old link model (L admin of K, spec before invite power): the same finalization holds,
-    /// but any holder can remove an existing holder. With an invite edge it cannot.
+    /// A link holder L holding admin on K can remove an existing holder; holding write with
+    /// invite write it cannot.
     #[test]
     fn link_holder_cannot_remove_holders() {
         for (edge, y_after) in [(eu(Admin, Admin, 5), NONE), (eu(Write, Write, 5), W)] {

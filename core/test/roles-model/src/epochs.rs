@@ -736,74 +736,21 @@ pub fn random_world(rng: &mut Rng, control: Control) -> World {
     build(c, end, rng, control, covers)
 }
 
-#[derive(Default, Debug)]
-pub struct Stats {
-    pub worlds: u64,
-    pub failures: u64,
-    pub kinds: BTreeMap<String, u64>,
-    pub fail: Vec<(String, World)>,
-    /// Worlds whose liveness is not checked: an honest rotation refused by the bound.
-    pub refused: u64,
-    /// Final readings on the honest side where an X write counts by the unaware-reader limit.
-    pub unaware: u64,
-    /// Final readings where a commit at a revoked epoch counts by a word; by an addendum alone.
-    pub named: u64,
-    pub vouched: u64,
-    /// Liveness checks of commits whose own writer's word does not stand there.
-    pub by_others: u64,
-    /// Worlds with covers; (node, write) forgotten at the final reading; own covers written;
-    /// final readings where a write a rotator held only through a cover shows (the own-cover
-    /// checks); where only an own cover carries it.
-    pub covered: u64,
-    pub forgotten: u64,
-    pub own_covers: u64,
-    pub obliged: u64,
-    pub by_own_cover: u64,
-    /// Liveness checks of writes by a node removed and re-added (off its roster at some tick).
-    pub readded: u64,
-}
-
-impl crate::Tally for Stats {
-    fn merge(&mut self, o: Stats) {
-        self.worlds += o.worlds;
-        self.failures += o.failures;
-        for (k, n) in o.kinds {
-            *self.kinds.entry(k).or_default() += n;
-        }
-        if self.fail.len() < 4 {
-            self.fail.extend(o.fail.into_iter().take(4 - self.fail.len()));
-        }
-        self.refused += o.refused;
-        self.unaware += o.unaware;
-        self.named += o.named;
-        self.vouched += o.vouched;
-        self.by_others += o.by_others;
-        self.covered += o.covered;
-        self.forgotten += o.forgotten;
-        self.own_covers += o.own_covers;
-        self.obliged += o.obliged;
-        self.by_own_cover += o.by_own_cover;
-        self.readded += o.readded;
-    }
-}
-
-impl Stats {
-    pub fn print(&self, name: &str) {
-        println!("{name}: {} worlds, {} failing checks", self.worlds, self.failures);
-        for (k, n) in &self.kinds {
-            println!("  {k}: {n}");
-        }
-        println!("  refused {}, unaware-reader limit {}, named at a revoked epoch {}, vouched {}, liveness by others' words {}", self.refused, self.unaware, self.named, self.vouched, self.by_others);
-        println!("  with covers {}: forgotten {}, own covers {}, own-cover checks {} (shown by an own cover alone {}), writes of re-added nodes checked {}", self.covered, self.forgotten, self.own_covers, self.obliged, self.by_own_cover, self.readded);
-    }
-}
+/// Counted (`check`): worlds whose liveness is not checked (an honest rotation refused by the
+/// bound); final readings on the honest side where an X write counts by the unaware-reader
+/// limit; where a commit at a revoked epoch counts by a word, by an addendum alone; liveness
+/// checks of commits whose own writer's word does not stand there; worlds with covers, (node,
+/// write) forgotten at the final reading, own covers written, final readings where a write a
+/// rotator held only through a cover shows (own-cover checks), of those carried by an own cover
+/// alone; liveness checks of writes by a node removed and re-added.
+pub type Stats = crate::Findings<World>;
 
 pub fn check(w: &World, st: &mut Stats) {
     st.worlds += 1;
-    st.refused += u64::from(w.refused);
-    st.covered += u64::from(w.covers);
-    st.forgotten += w.forgot.len() as u64;
-    st.own_covers += w.items.iter().filter(|i| matches!(i.kind, Kind::Cover { own: true, .. })).count() as u64;
+    st.count("refused", u64::from(w.refused));
+    st.count("with covers", u64::from(w.covers));
+    st.count("forgotten", w.forgot.len() as u64);
+    st.count("own covers", w.items.iter().filter(|i| matches!(i.kind, Kind::Cover { own: true, .. })).count() as u64);
     let f = fin(w);
     let mut fails: Vec<String> = vec![];
     // the honest words, for monotone
@@ -825,9 +772,9 @@ pub fn check(w: &World, st: &mut Stats) {
         let ep = Epoch { w: &w.c, j };
         for i in w.items.iter().filter(|i| vd.saved[i.id as usize - 1] && ep.revoked(&i.epoch) && !ep.open(&i.epoch)) {
             if vd.counts[i.id as usize - 1] {
-                st.named += 1;
+                st.count("named at a revoked epoch", 1);
             } else {
-                st.vouched += 1;
+                st.count("vouched", 1);
             }
         }
         if !honest_final(v) {
@@ -840,21 +787,21 @@ pub fn check(w: &World, st: &mut Stats) {
                     continue;
                 }
                 if allowed(w, j, &held, &vd, f, i.id) {
-                    st.unaware += 1;
+                    st.count("unaware-reader limit", 1);
                 } else {
                     fails.push(format!("safety: node {} shows X's write #{} after its removal", cu::NAMES[v], i.id));
                 }
                 continue;
             }
             let own = i.author != X && honest_final(i.author);
-            st.readded += u64::from(own && w.views[i.author].iter().any(|j| j.out(i.author)));
+            st.count("writes of re-added nodes checked", u64::from(own && w.views[i.author].iter().any(|j| j.out(i.author))));
             let by = |p: usize| honest_final(p) && w.reads(p, thing) && (p < OWN || w.writer[p] == Some(thing) && i.kind.plain()) && i.recv[p] != NEVER && {
                 let jp = w.view(p, f);
                 let ep = Epoch { w: &w.c, j: jp };
                 ep.held(&i.epoch) && !ep.open(&i.epoch) && nameable(w, p, jp, i.id, Control::None, 0)
             };
             let others = !own && [A, B, C, T, R1, R2].iter().any(|p| by(*p));
-            st.by_others += u64::from(others);
+            st.count("liveness by others' words", u64::from(others));
             if (own || others) && !sh[k] && !w.refused {
                 fails.push(format!("liveness: node {} without {}'s write #{}{}", cu::NAMES[v], cu::NAMES[i.author], i.id, if own { "" } else { " (named by another's cutoff)" }));
             }
@@ -864,24 +811,16 @@ pub fn check(w: &World, st: &mut Stats) {
             if w.refused || !honest_final(*n) || !w.reads(v, w.item(*c).kind.thing()) || !j.followed.contains(r) {
                 continue;
             }
-            st.obliged += 1;
+            st.count("own-cover checks", 1);
             let k = *c as usize - 1;
             if !sh[k] {
                 fails.push(format!("own cover: node {} without #{} that {}'s rotation #{r} showed only through a cover", cu::NAMES[v], c, cu::NAMES[*n]));
             } else if !vd.saved[k] && covers_of(w, &held, &vd, f, *c).all(|x| matches!(x.kind, Kind::Cover { own: true, .. })) {
-                st.by_own_cover += 1;
+                st.count("by an own cover alone", 1);
             }
         }
     }
-    for m in fails {
-        st.failures += 1;
-        let kind = m.split(':').next().unwrap_or("").to_string();
-        let n = st.kinds.entry(kind).or_default();
-        *n += 1;
-        if *n == 1 && st.fail.len() < 4 {
-            st.fail.push((m, w.clone()));
-        }
-    }
+    st.failed(fails, w);
 }
 
 pub fn print_world(w: &World) {
@@ -908,26 +847,58 @@ pub fn run(samples: u64, control: Control) -> u64 {
 mod tests {
     use super::*;
 
+    /// `n` random worlds from one generator seeded `seed`.
     fn run_random(n: u64, seed: u64, control: Control) -> Stats {
         let mut rng = Rng(seed);
         let mut st = Stats::default();
-        for _ in 0..n {
-            check(&random_world(&mut rng, control), &mut st);
-        }
+        (0..n).for_each(|_| check(&random_world(&mut rng, control), &mut st));
         st
+    }
+
+    /// Each chain item of `made` delivered at `at` to every node but its author and Z.
+    fn deliver(c: &mut cu::World, made: &[u32], at: u32) {
+        for id in made {
+            let i = &mut c.items[*id as usize - 1];
+            for m in (0..N).filter(|m| *m != i.author && *m != Z) {
+                i.recv[m] = at;
+            }
+        }
+    }
+
+    /// `author`'s plain rotation at the first epoch at tick 1, removing `removes`, boxed to
+    /// `boxed`, delivered at 2.
+    fn first_rotation(c: &mut cu::World, author: usize, removes: &[usize], boxed: &[usize]) -> u32 {
+        let bx: [bool; N] = std::array::from_fn(|m| boxed.contains(&m));
+        let r = c.add(cu::Kind::Plain { at: Line::new(), removes: removes.to_vec(), adds: vec![], takes: vec![], answers: vec![] }, author, author, Line::new(), None, 1, bx);
+        deliver(c, &[r], 2);
+        r
     }
 
     /// A chain world: A removes X at tick 1, signed at the first epoch, delivered at 2; nothing
     /// else.
     fn removal_world() -> (cu::World, u32) {
         let mut c = cu::World::default();
-        let bx: [bool; N] = std::array::from_fn(|m| [A, B, C, T].contains(&m));
-        let r = c.add(cu::Kind::Plain { at: Line::new(), removes: vec![X], adds: vec![], takes: vec![], answers: vec![] }, A, A, Line::new(), None, 1, bx);
-        c.removal = r;
-        for m in (0..N).filter(|m| *m != A && *m != Z) {
-            c.items[r as usize - 1].recv[m] = 2;
-        }
+        c.removal = first_rotation(&mut c, A, &[X], &[A, B, C, T]);
         (c, 4)
+    }
+
+    fn checked(w: &World) -> Stats {
+        let mut st = Stats::default();
+        check(w, &mut st);
+        st
+    }
+
+    /// `w` passes every check.
+    fn clean(w: &World) -> Stats {
+        let st = checked(w);
+        assert_eq!(st.failures, 0, "{:?}", st.fail.first().map(|f| &f.0));
+        st
+    }
+
+    /// `w` (a control's world) fails `kind`.
+    fn fails(w: &World, kind: &str) {
+        let st = checked(w);
+        assert!(st.kinds.contains_key(kind), "{:?} fails no {kind}: {:?}", w.control, st.kinds);
     }
 
     /// A hand-built world over `c`: one thing in sync ID 0, every node opening it, R1 its writer.
@@ -951,6 +922,14 @@ mod tests {
         id
     }
 
+    /// Item `id` delivered at `at` to every node but its author and Z.
+    fn to_all(w: &mut World, id: u32, at: u32) {
+        let i = &mut w.items[id as usize - 1];
+        for m in (0..N).filter(|m| *m != i.author && *m != Z) {
+            i.recv[m] = at;
+        }
+    }
+
     /// The honest acts of every tick to the final reading, delivered at once.
     fn play(w: &mut World, from: u32) {
         let mut rng = Rng(0);
@@ -961,9 +940,7 @@ mod tests {
             for n in [A, B, C, T, R1, R2] {
                 let made = act(w, &mut rng, n, t);
                 for id in made {
-                    for m in (0..N).filter(|m| *m != n && *m != Z) {
-                        w.items[id as usize - 1].recv[m] = t + 1;
-                    }
+                    to_all(w, id, t + 1);
                 }
             }
         }
@@ -991,15 +968,11 @@ mod tests {
         }
         let a = judge(&w, w.view(A, fin(&w)), &w.held(A, fin(&w)));
         assert!(a.counts[first as usize - 1]);
-        let mut st = Stats::default();
-        check(&w, &mut st);
-        assert_eq!(st.failures, 0, "{:?}", st.fail.first().map(|f| &f.0));
+        clean(&w);
         let (w, _, second) = cutoff(Control::NoCutoff);
         let a = judge(&w, w.view(A, fin(&w)), &w.held(A, fin(&w)));
         assert!(a.counts[second as usize - 1], "no-cutoff: B names X's later write");
-        let mut st = Stats::default();
-        check(&w, &mut st);
-        assert!(st.kinds.contains_key("safety"));
+        fails(&w, "safety");
     }
 
     /// X's write before its removal reaches only R1 (the thing's writer) in time: R1's addendum
@@ -1020,13 +993,9 @@ mod tests {
             let vd = judge(&w, w.view(v, fin(&w)), &w.held(v, fin(&w)));
             assert!(vd.saved[id as usize - 1] && !vd.counts[id as usize - 1], "{}", cu::NAMES[v]);
         }
-        let mut st = Stats::default();
-        check(&w, &mut st);
-        assert_eq!(st.failures, 0, "{:?}", st.fail.first().map(|f| &f.0));
+        clean(&w);
         let (w, _) = witness(Control::OwnOnly);
-        let mut st = Stats::default();
-        check(&w, &mut st);
-        assert!(st.kinds.contains_key("liveness"), "own-only: the witness's word saves X's write");
+        fails(&w, "liveness");
     }
 
     /// B rotates plainly at the first epoch before A's removal reaches it and writes a role-class
@@ -1057,37 +1026,23 @@ mod tests {
             let vd = judge(&w, j, &held);
             assert!(!held[id as usize - 1] && shows(&w, &held, &vd, fin(&w))[id as usize - 1], "{}", cu::NAMES[v]);
         }
-        let mut st = Stats::default();
-        check(&w, &mut st);
-        assert_eq!(st.failures, 0, "{:?}", st.fail.first().map(|f| &f.0));
-        assert!(st.by_own_cover > 0);
+        let st = clean(&w);
+        assert!(st.get("by an own cover alone") > 0);
         let (w, _) = forgotten(Control::NoOwnCover);
-        let mut st = Stats::default();
-        check(&w, &mut st);
-        assert!(st.kinds.contains_key("own cover"), "no own cover: the write is lost: {:?}", st.kinds);
+        fails(&w, "own cover");
     }
 
     #[test]
     fn a_siblings_write_at_its_epoch_counts_once_listed_after_the_merge() {
         let (mut c, _) = removal_world();
-        let bx: [bool; N] = std::array::from_fn(|m| [A, B, C, X, T].contains(&m));
-        let b = c.add(cu::Kind::Plain { at: Line::new(), removes: vec![], adds: vec![], takes: vec![], answers: vec![] }, B, B, Line::new(), None, 1, bx);
-        for m in (0..N).filter(|m| *m != B && *m != Z) {
-            c.items[b as usize - 1].recv[m] = 2;
-        }
+        let b = first_rotation(&mut c, B, &[], &[A, B, C, X, T]);
         // A merges at 2 (it holds both heads' seeds), delivered at 3
         let made = cu::act(&mut c, A, 2, None, false);
-        for id in &made {
-            for m in (0..N).filter(|m| *m != A && *m != Z) {
-                c.items[*id as usize - 1].recv[m] = 3;
-            }
-        }
+        deliver(&mut c, &made, 3);
         let mut w = hand(c, 4, Control::None);
         let lb = w.c.line(b);
         let id = w.add(Kind::Content { thing: 0, plain: false }, B, lb, 1);
-        for m in (0..N).filter(|m| *m != B && *m != Z) {
-            w.items[id as usize - 1].recv[m] = 2;
-        }
+        to_all(&mut w, id, 2);
         play(&mut w, 2);
         for v in [A, C, R1, R2] {
             let j = w.view(v, fin(&w));
@@ -1095,9 +1050,7 @@ mod tests {
             let vd = judge(&w, j, &w.held(v, fin(&w)));
             assert!(vd.counts[id as usize - 1], "{}", cu::NAMES[v]);
         }
-        let mut st = Stats::default();
-        check(&w, &mut st);
-        assert_eq!(st.failures, 0, "{:?}", st.fail.first().map(|f| &f.0));
+        clean(&w);
     }
 
     /// B rotates at the first epoch unaware of A's removal of X (both at 1, delivered at 2); A
@@ -1109,24 +1062,14 @@ mod tests {
     /// revokes, or named as C's own) carries it on after the merge.
     fn open_head(control: Control) -> (World, Option<u32>, u32) {
         let (mut c, _) = removal_world();
-        let bx: [bool; N] = std::array::from_fn(|m| [A, B, C, X, T].contains(&m));
-        let b = c.add(cu::Kind::Plain { at: Line::new(), removes: vec![], adds: vec![], takes: vec![], answers: vec![] }, B, B, Line::new(), None, 1, bx);
-        for m in (0..N).filter(|m| *m != B && *m != Z) {
-            c.items[b as usize - 1].recv[m] = 2;
-        }
+        let b = first_rotation(&mut c, B, &[], &[A, B, C, X, T]);
         let made = cu::act(&mut c, A, 5, None, false);
         assert!(!made.is_empty());
-        for id in &made {
-            for m in (0..N).filter(|m| *m != A && *m != Z) {
-                c.items[*id as usize - 1].recv[m] = 6;
-            }
-        }
+        deliver(&mut c, &made, 6);
         let mut w = hand(c, 7, control);
         let lb = w.c.line(b);
         let x = w.add(Kind::Content { thing: 0, plain: true }, X, lb.clone(), 2);
-        for m in (0..N).filter(|m| *m != X && *m != Z) {
-            w.items[x as usize - 1].recv[m] = 3;
-        }
+        to_all(&mut w, x, 3);
         let j = w.view(C, 3).clone();
         assert!(j.heads.contains(&lb) && judge(&w, &j, &w.held(C, 3)).counts[x as usize - 1], "X's write counts at C at B's open head");
         let k = cover(&mut w, C, 0, j.preferred.clone(), 3, true, false);
@@ -1141,9 +1084,7 @@ mod tests {
     fn an_open_heads_write_lasts_in_no_snapshot() {
         let (w, k, x) = open_head(Control::None);
         assert!(k.is_none(), "C's snapshot waits");
-        let mut st = Stats::default();
-        check(&w, &mut st);
-        assert_eq!(st.failures, 0, "{:?}", st.fail.first().map(|f| &f.0));
+        clean(&w);
         for v in [A, B, C, R1] {
             let (j, held) = (w.view(v, fin(&w)), w.held(v, fin(&w)));
             assert_eq!(j.heads.len(), 1, "{}", cu::NAMES[v]);
@@ -1151,9 +1092,7 @@ mod tests {
         }
         let (w, k, _) = open_head(Control::OpenCarried);
         assert!(k.is_some());
-        let mut st = Stats::default();
-        check(&w, &mut st);
-        assert!(st.kinds.contains_key("safety"), "open-carried: C's snapshot carries X's write past the merge: {:?}", st.kinds);
+        fails(&w, "safety");
     }
 
     /// C removes T as A removes X (both at 1, delivered at 2); T, offline, wrote at the first
@@ -1163,17 +1102,7 @@ mod tests {
     /// coming back (`NoReanswer`) nothing names it.
     fn readded(control: Control) -> (World, u32) {
         let (mut c, _) = removal_world();
-        let bx: [bool; N] = std::array::from_fn(|m| [A, B, C].contains(&m));
-        let rt = c.add(cu::Kind::Plain { at: Line::new(), removes: vec![T], adds: vec![], takes: vec![], answers: vec![] }, C, C, Line::new(), None, 1, bx);
-        let deliver = |c: &mut cu::World, made: &[u32], at: u32| {
-            for id in made {
-                let by = c.items[*id as usize - 1].author;
-                for m in (0..N).filter(|m| *m != by && *m != Z) {
-                    c.items[*id as usize - 1].recv[m] = at;
-                }
-            }
-        };
-        deliver(&mut c, &[rt], 2);
+        first_rotation(&mut c, C, &[T], &[A, B, C]);
         let merge = cu::act(&mut c, A, 2, None, false);
         assert!(!merge.is_empty(), "A merges the two removals");
         deliver(&mut c, &merge, 3);
@@ -1194,14 +1123,10 @@ mod tests {
             let vd = judge(&w, w.view(v, fin(&w)), &w.held(v, fin(&w)));
             assert!(vd.counts[id as usize - 1], "{}", cu::NAMES[v]);
         }
-        let mut st = Stats::default();
-        check(&w, &mut st);
-        assert_eq!(st.failures, 0, "{:?}", st.fail.first().map(|f| &f.0));
-        assert!(st.readded > 0);
+        let st = clean(&w);
+        assert!(st.get("writes of re-added nodes checked") > 0);
         let (w, _) = readded(Control::NoReanswer);
-        let mut st = Stats::default();
-        check(&w, &mut st);
-        assert!(st.kinds.contains_key("liveness"), "no re-answer: T's write is lost: {:?}", st.kinds);
+        fails(&w, "liveness");
     }
 
     fn assert_holds(st: &Stats, what: &str) {
@@ -1219,7 +1144,7 @@ mod tests {
     #[ignore = "property"]
     fn random_worlds_hold_plain() {
         let st = run_random(20, 5, Control::None);
-        assert!(st.named > 0 && st.unaware > 0 && st.own_covers > 0 && st.obliged > 0, "{st:?}");
+        assert!(["named at a revoked epoch", "unaware-reader limit", "own covers", "own-cover checks"].iter().all(|k| st.get(k) > 0), "{st:?}");
         assert_holds(&st, "random");
     }
 

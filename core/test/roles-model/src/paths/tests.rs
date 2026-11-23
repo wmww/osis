@@ -696,7 +696,7 @@ fn the_other_findings_read_the_same_with_nothing_exempt() {
     assert!(!rd.applied.contains(&leave) && rd.applied.contains(&down) && rd.role(B, A) == Write);
 }
 
-// ---- Descent, self-removal by path end, `until` (brief 3) ----
+// ---- Descent, self-removal by path end, `until` ----
 
 /// X writes D1 (a dependent of T1) stating [A]: by descent its hops are (X, A), (A, T1),
 /// (T1, D1). H's removal of X cuts it unless listed; a lowering of the descent edge (T1, D1)
@@ -829,7 +829,7 @@ fn assert_holds(st: &Stats, what: &str) {
 #[test]
 #[ignore = "property"]
 fn the_notes_rules_fail_liveness_and_alike_plain() {
-    let st = random(400, &Rules::design());
+    let st = random_from(0, 400, &Rules::design());
     for k in ["liveness", "alike"] {
         assert!(st.fails.contains_key(k), "{k}: {:?}", st.fails);
     }
@@ -850,12 +850,12 @@ fn each_fix_is_needed_plain() {
         ("no-receipt", Rules { sides: Sides::NoReceipt, ..f }),
     ];
     for (name, rules) in cases {
-        assert!(random(100, &rules).failures() > 0, "{name}");
+        assert!(random_from(0, 100, &rules).failures() > 0, "{name}");
     }
     // a backdated leave reaches the search through three of the thief's moves: 400 worlds
-    assert!(random(400, &Rules { leave_in_question: false, ..f }).failures() > 0, "leave");
+    assert!(random_from(0, 400, &Rules { leave_in_question: false, ..f }).failures() > 0, "leave");
     // the variant recording a lowering only where it took its hop down fails rarely (finding 52)
-    assert!(random(1000, &Rules { sides: Sides::Lowered, ..f }).failures() > 0, "lowered");
+    assert!(random_from(0, 1000, &Rules { sides: Sides::Lowered, ..f }).failures() > 0, "lowered");
 }
 
 /// Random worlds `OSIS_ROLES_START` (default 0) on, `OSIS_ROLES_SEEDS` many (13,000: about 215
@@ -894,7 +894,7 @@ fn small_family_holds_large() {
 /// by chained writes (control `-chain-ever`), the dead grant is the edge's first, and Z's write
 /// shows by it alone.
 #[test]
-fn a_dead_grant_moves_no_invited_keys_first_point_back() {
+fn a_dead_grant_moves_no_may_grant_grantees_first_point_back() {
     let (mut w, ..) = paired();
     w.edge(K, 1, &[], A2, X, Write, &[]);
     w.edge(H, 1, &[A], T1, A2, Admin, &[]);
@@ -1205,23 +1205,23 @@ fn a_thiefs_lowering_after_the_removal_holds_nothing() {
 fn small_worlds_hold_plain() {
     for (flags, detached, keyed) in [(false, false, false), (true, false, false), (false, true, false), (false, false, true)] {
         for honest in [Honesty::None, Honesty::Lists, Honesty::Writers] {
-            let st = tiny_run(3000, &Rules::fixed(), TinyMode { flags, detached, keys: keyed, honest });
+            let st = tiny_run_from(0, 3000, &Rules::fixed(), TinyMode { flags, detached, keys: keyed, honest });
             // honest writers make few writes that do not apply: their worlds check `honest` alone here
             let ran = |k: &str| st.checked.get(k).is_some_and(|n| *n > 0);
             let keys: &[&str] = if honest == Honesty::Writers { &["honest"] } else { &["void", "honest", "idle N", "unapplied N"] };
             assert!(st.failures() == 0 && keys.iter().all(|k| ran(k)), "{flags} {detached} {keyed} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
         }
     }
-    let no_void = tiny_run(1000, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { flags: false, detached: false, keys: false, honest: Honesty::None });
+    let no_void = tiny_run_from(0, 1000, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { flags: false, detached: false, keys: false, honest: Honesty::None });
     assert!(no_void.fails.get("self-taken").is_some_and(|n| *n > 0), "{:?}", no_void.fails);
     let flags = TinyMode { flags: true, detached: false, keys: false, honest: Honesty::None };
     for (rules, k) in [(Rules { flag_check: false, ..Rules::fixed() }, "may-grant right"), (Rules { flag_falls: false, ..Rules::fixed() }, "may-grant audited")] {
-        let st = tiny_run(3000, &rules, flags);
+        let st = tiny_run_from(0, 3000, &rules, flags);
         assert!(st.fails.get(k).is_some_and(|n| *n > 0), "{k} {:?}", st.fails);
     }
     let keys = TinyMode { flags: false, detached: false, keys: true, honest: Honesty::None };
     for (rules, k) in [(Rules { key_hop: false, ..Rules::fixed() }, "key audited"), (Rules { key_hop: false, ..Rules::fixed() }, "key right")] {
-        let st = tiny_run(3000, &rules, keys);
+        let st = tiny_run_from(0, 3000, &rules, keys);
         assert!(st.fails.get(k).is_some_and(|n| *n > 0), "{k} {:?}", st.fails);
     }
 }
@@ -1691,7 +1691,7 @@ fn a_commits_parts_on_two_things_are_judged_each_on_its_own() {
 /// A with H; A2 (K's) shares T1 at write, and GU (A2's guests, minted with A2) holds read with the
 /// may-grant flag on T1 (by H, through A): the arrangement letting a writer of A2 add readers of T1
 /// and no more (G3); K gives X write on A2, so X's path [A2, GU] gives may-grant at read.
-fn invited() -> World {
+fn guests() -> World {
     let mut w = account();
     w.push(H, 1, &[A], T1, Kind::set(A2, Write));
     w.push(H, 1, &[A], T1, Kind::set(GU, Role::Read).may_grant());
@@ -1706,7 +1706,7 @@ fn invited() -> World {
 /// [A2]; the last hop's role not read grants write through [A2, GU].
 #[test]
 fn a_may_grant_grant_applies_by_its_paths_flag() {
-    let mut w = invited();
+    let mut w = guests();
     let z = w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read));
     let beyond = w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Write));
     let flagless = w.push(X, 2, &[A2], T1, Kind::set(N5, Role::Read));
@@ -1741,7 +1741,7 @@ fn a_may_grant_grant_needs_its_role_on_every_hop() {
 /// write at 3 stays invalid; were X's grant chained it would count from 2.
 #[test]
 fn a_grant_by_a_flagless_hop_is_not_chained() {
-    let mut w = invited();
+    let mut w = guests();
     let x = w.push(X, 2, &[A2], T1, Kind::set(N5, Write));
     let c = w.content(N5, 3, &[], T1);
     let h = w.push(H, 5, &[A], T1, Kind::set(N5, Write));
@@ -1753,7 +1753,7 @@ fn a_grant_by_a_flagless_hop_is_not_chained() {
 /// fall unless the removal lists them, whether the edge fell from admin or from write.
 #[test]
 fn a_may_grant_grant_by_a_removed_writer_falls_unless_listed() {
-    let mut w = invited();
+    let mut w = guests();
     let z = w.push(X, 3, &[A2, GU], T1, Kind::set(Z, Role::Read));
     let n6 = w.push(X, 4, &[A2, GU], T1, Kind::set(N6, Role::Read));
     let r = w.edge(K, 6, &[], A2, X, Gone, &[z]);
@@ -1772,7 +1772,7 @@ fn a_may_grant_grant_by_a_removed_writer_falls_unless_listed() {
 /// timed admin grant), audits nothing and makes nothing standing.
 #[test]
 fn a_finalize_ends_an_ended_grant_and_a_may_grant_grant_follows_it() {
-    let mut w = invited();
+    let mut w = guests();
     let timed = w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read).until(4));
     let early = w.push(K, 3, &[A2], T1, Kind::finalize(Z));
     w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Role::Read));
@@ -1788,7 +1788,7 @@ fn a_finalize_ends_an_ended_grant_and_a_may_grant_grant_follows_it() {
     assert!(rd.applied.contains(&again) && rd.role(Z, T1) == Role::Read);
     // a timed admin grant is finalized by an admin only (its role at least the grant's), not by a
     // writer: the finalize is the grant's departure for keys
-    let mut w = invited();
+    let mut w = guests();
     w.edge(H, 1, &[], A, B, Admin, &[]);
     w.push(H, 2, &[A], T1, Kind::set(N6, Admin).until(4));
     let by_writer = w.push(K, 5, &[A2], T1, Kind::finalize(N6));
@@ -1804,7 +1804,7 @@ fn a_finalize_ends_an_ended_grant_and_a_may_grant_grant_follows_it() {
 /// nothing, which drops the grant Z made through it.
 #[test]
 fn a_frontier_less_removal_of_ones_own_grant_is_no_finalize() {
-    let mut w = invited();
+    let mut w = guests();
     w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read).until(4));
     let leave = w.push(Z, 3, &[], T1, Kind::finalize(Z));
     let fin = w.push(K, 4, &[A2], T1, Kind::finalize(Z));
@@ -1825,7 +1825,7 @@ fn a_frontier_less_removal_of_ones_own_grant_is_no_finalize() {
 #[test]
 fn a_self_removal_lowers_in_every_component() {
     let timed = |k: Kind| {
-        let mut w = invited();
+        let mut w = guests();
         w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read).until(9));
         let leave = w.push(Z, 3, &[], T1, k);
         fixed(&w, &[]).applied.contains(&leave)
@@ -1866,7 +1866,7 @@ fn the_explicit_removal_after_a_finalize_audits_the_grants_made_by_flag() {
 /// Control `-role-falls` (only a fall in role is judged): the unlisted grant stands.
 #[test]
 fn a_write_clearing_the_flag_audits_the_grants_made_by_it() {
-    let mut w = invited();
+    let mut w = guests();
     let z = w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Role::Read));
     let plain = w.push(B, 5, &[A], T1, Kind::set(GU, Role::Read));
     w.edge(H, 1, &[], A, B, Admin, &[]);
@@ -2049,7 +2049,7 @@ fn a_commit_spanning_two_paths_is_judged_per_thing_as_one_commit_per_thing() {
 /// (the model's right is the `author` class alone).
 #[test]
 fn a_purge_holds_the_right_only_through_its_own_chain() {
-    let mut w = invited();
+    let mut w = guests();
     let k = w.content_as(K, 2, &[A2], T1, 1);
     w.edge(H, 1, &[], A, X, Admin, &[]);
     let by_admin = w.purge(X, 3, &[A], T1, A2);
@@ -2064,7 +2064,7 @@ fn a_purge_holds_the_right_only_through_its_own_chain() {
 /// by the removal it stands; a purge through a path the signer keeps still holds.
 #[test]
 fn a_removed_signers_backdated_purge_takes_nothing() {
-    let mut w = invited();
+    let mut w = guests();
     w.edge(H, 1, &[], A, X, Admin, &[]);
     let h = w.content_as(H, 2, &[A], T1, 1);
     let k = w.content_as(K, 2, &[A2], T1, 1);

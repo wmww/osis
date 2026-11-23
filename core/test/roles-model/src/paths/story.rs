@@ -1150,18 +1150,12 @@ pub struct Stats {
 impl crate::Tally for Stats {
     fn merge(&mut self, o: Stats) {
         self.worlds += o.worlds;
-        for (k, n) in o.fails {
-            *self.fails.entry(k).or_default() += n;
-        }
-        for (k, n) in o.checked {
-            *self.checked.entry(k).or_default() += n;
-        }
+        crate::Tally::merge(&mut self.fails, o.fails);
+        crate::Tally::merge(&mut self.checked, o.checked);
         for (k, s) in o.first {
             self.first.entry(k).or_insert(s);
         }
-        for (k, n) in o.noted {
-            *self.noted.entry(k).or_default() += n;
-        }
+        crate::Tally::merge(&mut self.noted, o.noted);
         for (k, n) in o.failing {
             let f = self.failing.entry(k).or_default();
             f.extend(n);
@@ -2022,11 +2016,6 @@ pub fn random_world(i: u64, rules: &Rules) -> Sim {
     m
 }
 
-/// Random worlds `0..n` on every core.
-pub fn random(n: u64, rules: &Rules) -> Stats {
-    random_from(0, n, rules)
-}
-
 /// Random worlds `start..start + n` on every core (a large sample split across runs).
 pub fn random_from(start: u64, n: u64, rules: &Rules) -> Stats {
     crate::on_every_core(|th, threads, st: &mut Stats| {
@@ -2519,15 +2508,9 @@ pub struct TinyStats {
 impl crate::Tally for TinyStats {
     fn merge(&mut self, o: TinyStats) {
         self.worlds += o.worlds;
-        for (k, n) in o.checked {
-            *self.checked.entry(k).or_default() += n;
-        }
-        for (k, n) in o.fails {
-            *self.fails.entry(k).or_default() += n;
-        }
-        for (k, n) in o.noted {
-            *self.noted.entry(k).or_default() += n;
-        }
+        crate::Tally::merge(&mut self.checked, o.checked);
+        crate::Tally::merge(&mut self.fails, o.fails);
+        crate::Tally::merge(&mut self.noted, o.noted);
         for (k, f) in o.first {
             let e = self.first.entry(k).or_insert(f.clone());
             if (f.0, f.1) < (e.0, e.1) {
@@ -2790,11 +2773,6 @@ pub fn shrink_world(t: &Tiny, fails: &dyn Fn(&Tiny) -> bool) -> Tiny {
         }
         return t;
     }
-}
-
-/// `-- N paths-tiny[-flags|-detached][-honest[-writers]][-variant]`: N small worlds.
-pub fn tiny_run(n: u64, rules: &Rules, mode: TinyMode) -> TinyStats {
-    tiny_run_from(0, n, rules, mode)
 }
 
 /// Small worlds `start..start + n`.

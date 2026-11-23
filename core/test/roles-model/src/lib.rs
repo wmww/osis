@@ -134,6 +134,17 @@ pub fn delivery_order(recv: &[Vec<u32>], n: usize) -> Vec<usize> {
     o
 }
 
+/// Receipts of a write by `author` at `t` among `n` nodes: `recv`'s (node, time), the rest
+/// never (`shrink::LATE`).
+pub fn receipts(n: usize, author: usize, t: u32, recv: &[(usize, u32)]) -> Vec<u32> {
+    let mut r = vec![shrink::LATE; n];
+    r[author] = t;
+    for &(m, tm) in recv {
+        r[m] = tm;
+    }
+    r
+}
+
 /// Receipts of a write for a trace: `n0@3` (received at 3), `n1 -` (never); the author left out.
 pub fn fmt_recv(recv: &[u32], author: usize) -> String {
     let v: Vec<String> = recv.iter().enumerate().filter(|&(n, _)| n != author).map(|(n, &r)| if r >= shrink::LATE { format!("n{n} -") } else { format!("n{n}@{r}") }).collect();
@@ -159,6 +170,69 @@ where
         for (a, b) in self.iter_mut().zip(o) {
             *a += b;
         }
+    }
+}
+
+impl<K: Ord + Send> Tally for std::collections::BTreeMap<K, u64> {
+    fn merge(&mut self, o: Self) {
+        for (k, n) in o {
+            *self.entry(k).or_default() += n;
+        }
+    }
+}
+
+/// A search's tally: failing checks by kind (a message's text before its first ':'), the
+/// first world failing each of up to four kinds, and named counts.
+#[derive(Debug)]
+pub struct Findings<W> {
+    pub worlds: u64,
+    pub failures: u64,
+    pub kinds: std::collections::BTreeMap<String, u64>,
+    pub fail: Vec<(String, W)>,
+    pub counts: std::collections::BTreeMap<&'static str, u64>,
+}
+
+impl<W> Default for Findings<W> {
+    fn default() -> Self {
+        Findings { worlds: 0, failures: 0, kinds: Default::default(), fail: vec![], counts: Default::default() }
+    }
+}
+
+impl<W: Send> Tally for Findings<W> {
+    fn merge(&mut self, o: Self) {
+        self.worlds += o.worlds;
+        self.failures += o.failures;
+        Tally::merge(&mut self.kinds, o.kinds);
+        Tally::merge(&mut self.counts, o.counts);
+        let room = 4usize.saturating_sub(self.fail.len());
+        self.fail.extend(o.fail.into_iter().take(room));
+    }
+}
+
+impl<W: Clone> Findings<W> {
+    pub fn count(&mut self, k: &'static str, n: u64) {
+        *self.counts.entry(k).or_default() += n;
+    }
+    pub fn get(&self, k: &str) -> u64 {
+        self.counts.get(k).copied().unwrap_or(0)
+    }
+    /// Each of `fails` (messages `kind: what`) found in world `w`.
+    pub fn failed(&mut self, fails: Vec<String>, w: &W) {
+        for f in fails {
+            self.failures += 1;
+            let n = self.kinds.entry(f.split(':').next().unwrap_or("").to_string()).or_default();
+            *n += 1;
+            if *n == 1 && self.fail.len() < 4 {
+                self.fail.push((f, w.clone()));
+            }
+        }
+    }
+    pub fn print(&self, name: &str) {
+        println!("{name}: {} worlds, {} failing checks", self.worlds, self.failures);
+        for (k, n) in &self.kinds {
+            println!("  {k}: {n}");
+        }
+        println!("  counted: {}", self.counts.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", "));
     }
 }
 

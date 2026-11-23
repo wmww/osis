@@ -395,14 +395,14 @@ fn models() -> Vec<Scenario> {
         Scenario {
             name: "snapshot before the revoke carries the unseen edit",
             spec: "spec/permissions.md §5.2",
-            source: "roles-model content::snapshots_vouch_for_nothing (snapshot at t=4: the delta stays invalid)",
+            source: "spec/permissions.md §5.2 (a snapshot is no role event: at t=4 the delta stays invalid)",
             steps: vec![w(1, 1), Sync { from: 1, to: 2 }, tick.clone(), Compact { by: 2, t: 0, op: 0 }, tick.clone(), revoke.clone()],
             orders: None,
         },
         Scenario {
             name: "snapshot after the revoke carries the unseen edit",
             spec: "spec/permissions.md §5.2",
-            source: "roles-model content::snapshots_vouch_for_nothing (snapshot at t=6)",
+            source: "spec/permissions.md §5.2 (a snapshot is no role event: at t=6 likewise)",
             steps: vec![w(1, 1), Sync { from: 1, to: 2 }, tick.clone(), revoke.clone(), tick.clone(), Compact { by: 2, t: 0, op: 0 }],
             orders: None,
         },

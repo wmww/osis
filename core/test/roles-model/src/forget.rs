@@ -120,24 +120,16 @@ impl Script {
     pub fn new() -> Script {
         Script { roles: genesis(), writes: vec![], snaps: vec![], claims: HashMap::new(), ctr: HashMap::new(), kept: HashSet::new() }
     }
-    fn row(author: usize, t: u32, recv: &[(usize, u32)]) -> Vec<u32> {
-        let mut r = vec![LATE; NN];
-        r[author] = t;
-        for &(n, tn) in recv {
-            r[n] = tn;
-        }
-        r
-    }
     pub fn write(&mut self, id: u32, author: usize, t: u32, recv: &[(usize, u32)]) {
-        self.writes.push(Item { kind: Kind::Plain, author, t, id, thing: 0, acting: None, recv: Self::row(author, t, recv), forged: false });
+        self.writes.push(Item { kind: Kind::Plain, author, t, id, thing: 0, acting: None, recv: crate::receipts(NN, author, t, recv), forged: false });
     }
     pub fn snap(&mut self, id: u32, author: usize, t: u32, recv: &[(usize, u32)]) {
-        self.snaps.push(SnapPlan { id, author, t, recv: Self::row(author, t, recv) });
+        self.snaps.push(SnapPlan { id, author, t, recv: crate::receipts(NN, author, t, recv) });
     }
     /// `by` removes `victim` from the thing at `t`.
     pub fn remove(&mut self, rid: u32, by: usize, victim: usize, t: u32, recv: &[(usize, u32)]) {
         self.roles.writes.push(JWrite { author: by, t, id: rid, target: 0, holder: victim, role: Role::None });
-        self.roles.recv.push(Self::row(by, t, recv));
+        self.roles.recv.push(crate::receipts(NN, by, t, recv));
     }
 }
 
@@ -893,7 +885,7 @@ pub fn attack_family(share: (usize, usize), mut f: impl FnMut(Script)) {
                             }
                             if kind == 1 {
                                 // Bob's own forged snapshot carrying the forged write.
-                                s.writes.push(Item { kind: Kind::Snap(vec![50]), author: BOB, t: t + 1, id: 150, thing: 0, acting: None, recv: { let mut r = Script::row(BOB, 9, &deliver); r[BOB] = LATE; r }, forged: true });
+                                s.writes.push(Item { kind: Kind::Snap(vec![50]), author: BOB, t: t + 1, id: 150, thing: 0, acting: None, recv: { let mut r = crate::receipts(NN, BOB, 9, &deliver); r[BOB] = LATE; r }, forged: true });
                             }
                             f(s);
                         }

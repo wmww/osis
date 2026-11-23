@@ -467,11 +467,11 @@ pub enum Candidates {
 }
 
 impl Rules {
-    /// The first round's reading of the notes, simplest: the findings are its failures.
+    /// The first round's reading of the notes: `fixed` with each fix undone; the findings are its
+    /// failures.
     pub fn design() -> Rules {
         Rules {
             regrant: Regrant::FirstApplied,
-            exempt_chain: false,
             no_own_addendum: false,
             evidence_leaves: false,
             rewrite: false,
@@ -479,30 +479,12 @@ impl Rules {
             self_void: false,
             audit_held: false,
             stands: false,
-            key_order: false,
             own_end: false,
-            sides: Sides::Received,
-            flag_check: true,
-            min_check: true,
-            flag_falls: true,
-            any_fall: true,
-            purge_chain: true,
-            purge_exact: true,
-            author_thing: false,
-            cover_facts: false,
-            commit_drops: true,
             candidates: Candidates::All,
-            key_hop: true,
             seeds_by_need: false,
-            refuse_shapes: false,
-            until: Until::Plain,
-            purge_classes: false,
-            purge_copies: false,
-            purge_addenda: false,
-            purge_at_key: false,
-            own_cover: false,
             drops: Drops::Part,
             answers: Answers::AnyCut,
+            ..Rules::fixed()
         }
     }
     /// The design: every fix the notes state, a removal judged in the world its list makes

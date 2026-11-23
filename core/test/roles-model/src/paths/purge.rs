@@ -372,11 +372,9 @@ pub struct PStats {
 impl crate::Tally for PStats {
     fn merge(&mut self, o: PStats) {
         self.worlds += o.worlds;
-        for (a, b) in [(&mut self.checked, o.checked), (&mut self.fails, o.fails), (&mut self.noted, o.noted)] {
-            for (k, n) in b {
-                *a.entry(k).or_default() += n;
-            }
-        }
+        crate::Tally::merge(&mut self.checked, o.checked);
+        crate::Tally::merge(&mut self.fails, o.fails);
+        crate::Tally::merge(&mut self.noted, o.noted);
         for (k, f) in o.first {
             let e = self.first.entry(k).or_insert(f.clone());
             if f.0 < e.0 {

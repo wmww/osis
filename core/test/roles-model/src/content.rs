@@ -1,13 +1,9 @@
 //! Layer 2 (spec/permissions.md §5.2; spec/commits.md §4): content validity per
 //! delta, given each thing's write timeline for one author X. A thing's timeline is a list of
 //! events on X's role (grant, explicit demotion below write by a revoker, `until` expiry).
-//! A content commit by X carries one delta per thing it touches; a compaction snapshot by an
-//! authorized writer W carries the deltas W had received by its `ts`. A node syncs some of
-//! the things and may be compacted (holds a snapshot instead of the bodies it covers; it
-//! judges by the dots and `ts` the snapshot carries, so it loses nothing but earlier
-//! snapshots it dropped). Scenarios only; validity is a pure function of the held set, so
-//! delivery order cannot matter, and the checks are compacted vs uncompacted and partial
-//! syncing.
+//! A content commit by X carries one delta per thing it touches; a node syncs some of the
+//! things. Scenarios only; validity is a pure function of the held set, so delivery order
+//! cannot matter. Covers (snapshots) are `paths`'.
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Ev {
@@ -24,13 +20,6 @@ pub struct Commit {
     pub things: Vec<usize>,
     /// [node] receipt time.
     pub recv: Vec<u32>,
-}
-
-pub struct Snap {
-    pub thing: usize,
-    pub t: u32,
-    /// Commits whose delta on `thing` it carries.
-    pub carries: Vec<usize>,
 }
 
 pub struct World {
@@ -73,20 +62,6 @@ impl World {
             return true;
         }
         revokes().any(|(t, revoker)| cm.recv[revoker] < t)
-    }
-
-    /// A snapshot changes no delta's validity (§5.2; it vouches for the writes it carries, which
-    /// no model here checks): the delta is judged on its own whatever snapshots
-    /// carry it. (The rejected "stands iff X was authorized at the snapshot's ts" rule was
-    /// `snaps.iter().any(|s| s.carries.contains(&c) && self.authorized(thing, s.t)) || own`.)
-    pub fn valid(&self, c: usize, thing: usize, snaps: &[&Snap]) -> bool {
-        debug_assert!(snaps.iter().all(|s| s.thing < self.timeline.len()));
-        self.own_valid(c, thing)
-    }
-
-    /// The rejected snapshot-authority rule, kept to show its divergence.
-    pub fn valid_snapshot_authority(&self, c: usize, thing: usize, snaps: &[&Snap]) -> bool {
-        snaps.iter().any(|s| s.thing == thing && s.carries.contains(&c) && self.authorized(thing, s.t)) || self.own_valid(c, thing)
     }
 
     /// The rejected per-commit rule as a node syncing `synced` evaluates it: a commit is
@@ -138,42 +113,10 @@ mod tests {
         let w = World { timeline: vec![vec![Ev::Grant(0), Ev::Revoke { t: 4, revoker: A }], vec![Ev::Grant(0)]], commits: vec![commit(3, &[0, 1], &[])] };
         for synced in [vec![0], vec![1], vec![0, 1]] {
             for &t in &synced {
-                assert_eq!(w.valid(0, t, &[]), t == 1, "synced {synced:?} thing {t}");
+                assert_eq!(w.own_valid(0, t), t == 1, "synced {synced:?} thing {t}");
             }
         }
         assert!(w.per_commit_valid(0, &[1]));
         assert!(!w.per_commit_valid(0, &[0, 1]));
-    }
-
-    /// A snapshot changes no delta's validity: X's edit at t=3, A revokes at t=5 without having received
-    /// it. A snapshot by W1 at t=4 or t=6 carrying it changes nothing: invalid everywhere.
-    #[test]
-    fn snapshots_vouch_for_nothing() {
-        let w = World { timeline: vec![vec![Ev::Grant(0), Ev::Revoke { t: 5, revoker: A }]], commits: vec![commit(3, &[0], &[(1, 3)])] };
-        for st in [4, 6] {
-            let s = Snap { thing: 0, t: st, carries: vec![0] };
-            assert!(!w.valid(0, 0, &[&s]), "snapshot at {st}");
-            assert!(!w.valid(0, 0, &[]));
-        }
-        // Re-granted: valid with or without a snapshot.
-        let w = World { timeline: vec![vec![Ev::Grant(0), Ev::Revoke { t: 5, revoker: A }, Ev::Grant(9)]], ..w };
-        let s = Snap { thing: 0, t: 6, carries: vec![0] };
-        assert!(w.valid(0, 0, &[&s]) && w.valid(0, 0, &[]));
-    }
-
-    /// Snapshot of a snapshot: W1 compacts at t=4 carrying X's edit, W2 at t=8 carrying it
-    /// from W1. Under the rejected snapshot-authority rule a node that dropped W1's snapshot as
-    /// covered read the edit invalid while one still holding it read it valid. With snapshots
-    /// vouching for nothing every held set agrees.
-    #[test]
-    fn snapshot_of_snapshot_converges() {
-        let w = World { timeline: vec![vec![Ev::Grant(0), Ev::Revoke { t: 5, revoker: A }]], commits: vec![commit(3, &[0], &[(1, 3)])] };
-        let s1 = Snap { thing: 0, t: 4, carries: vec![0] };
-        let s2 = Snap { thing: 0, t: 8, carries: vec![0] };
-        assert!(w.valid_snapshot_authority(0, 0, &[&s1, &s2]) != w.valid_snapshot_authority(0, 0, &[&s2]));
-        let held: [&[&Snap]; 4] = [&[], &[&s1], &[&s2], &[&s1, &s2]];
-        assert!(held.iter().all(|h| !w.valid(0, 0, h)));
-        let w = World { timeline: vec![vec![Ev::Grant(0), Ev::Revoke { t: 5, revoker: A }, Ev::Grant(9)]], ..w };
-        assert!(held.iter().all(|h| w.valid(0, 0, h)));
     }
 }

@@ -1418,14 +1418,6 @@ mod tests {
             let roles = JHist { nodes: NN, admins: vec![ALICE, ALICE], genesis, writes: vec![], recv: vec![] };
             B { w: World { roles, items: vec![], frontier: HashMap::new(), gaps: Gaps::default() }, next: 100 }
         }
-        fn row(author: usize, t: u32, recv: &[(usize, u32)]) -> Vec<u32> {
-            let mut r = vec![LATE; NN];
-            r[author] = t;
-            for &(n, tn) in recv {
-                r[n] = tn;
-            }
-            r
-        }
         /// Alice sets `holder`'s role on A0 at t, everyone receiving it at t+1.
         fn set(&mut self, holder: usize, role: Role, t: u32) -> u32 {
             self.next += 1;
@@ -1435,7 +1427,7 @@ mod tests {
         }
         fn item(&mut self, kind: Kind, author: usize, t: u32, recv: &[(usize, u32)]) -> u32 {
             self.next += 1;
-            self.w.items.push(Item { kind, author, t, id: self.next, thing: 0, acting: Option::None, recv: Self::row(author, t, recv), forged: false });
+            self.w.items.push(Item { kind, author, t, id: self.next, thing: 0, acting: Option::None, recv: crate::receipts(NN, author, t, recv), forged: false });
             self.next
         }
         fn write(&mut self, author: usize, t: u32, recv: &[(usize, u32)]) -> u32 {
@@ -1602,7 +1594,7 @@ mod tests {
 
     fn forged(w: &World, author: usize, t: u32, removal: u32, lists: Vec<u32>) -> World {
         let mut w = w.clone();
-        w.items.push(Item { kind: Kind::Add { removal, lists }, author, t, id: 900 + w.items.len() as u32, thing: 0, acting: Option::None, recv: B::row(author, t, &[]), forged: true });
+        w.items.push(Item { kind: Kind::Add { removal, lists }, author, t, id: 900 + w.items.len() as u32, thing: 0, acting: Option::None, recv: crate::receipts(NN, author, t, &[]), forged: true });
         w
     }
 
@@ -1678,7 +1670,7 @@ mod tests {
             b.item(Kind::Snap(vec![e]), DAVE, 4, &[(ALICE, 5)]);
             b.next += 1;
             b.w.roles.writes.push(joint::JWrite { author: CAROL, t: 5, id: b.next, target: 0, holder: DAVE, role: None });
-            b.w.roles.recv.push(B::row(CAROL, 5, &[(BOB, 6), (DAVE, 6), (EVE, 6)]));
+            b.w.roles.recv.push(crate::receipts(NN, CAROL, 5, &[(BOB, 6), (DAVE, 6), (EVE, 6)]));
             b.set(BOB, None, 6);
             (b.derive_by(rules, &[]), e)
         };
