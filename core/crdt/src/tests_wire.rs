@@ -101,7 +101,7 @@ fn writer_delta_rejections_spec_3_3() {
         ("a bare tid source", delta(vec![Value::Bytes(vec![9; 15])], vec![], set_with(vec![elem(i(3), 1)])), bad, "source length"),
         ("the own source repeated", delta(vec![sess_value(tid(1))], vec![], set_with(vec![elem(i(3), 1)])), bad, ""),
         ("a bad nonce", osis_base::encode(&l(vec![Value::Bytes(vec![0; 15]), l(vec![]), l(vec![]), set_with(vec![])])), bad, ""),
-        ("a foreign stamp", delta(vec![sess_value(tid(9))], vec![l(vec![i(1), l(vec![l(vec![i(1), i(0), i(1)])])])], l(vec![i(0), l(vec![]), i(1), i(1)])), bad, "foreign stamps"),
+        ("a foreign stamp", delta(vec![sess_value(tid(9))], vec![l(vec![i(1), i(1), i(0), i(1)])], l(vec![i(0), l(vec![]), i(1), i(1)])), bad, "foreign stamps"),
         ("a nested register reset", delta(vec![], vec![], l(vec![i(4), l(vec![]), l(vec![]), Value::Map([(i(1), l(vec![i(0), l(vec![i(0)]), i(0), i(1)]))].into_iter().collect())])), bad, ""),
         ("a value 71 deep", delta(vec![], vec![], l(vec![i(0), l(vec![]), i(0), deep])), bad, ""),
         ("a register value off the delta stamp", reg(at4()), bad, ""),
@@ -146,7 +146,7 @@ fn rejects_bad_slots_spec_3_3() {
     // in a snapshot (stamps foreign: the snapshotter is node 2, writes by node 1)
     let scx = DeltaCtx { ts: ts(9 << 16), own: sess(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let srcs = vec![sess_value(tid(1))];
-    let commits = vec![l(vec![i(1), l(vec![l(vec![i(5), i(0), i(3)])])])];
+    let commits = vec![l(vec![i(1), i(5), i(0), i(3)])];
     let reg = l(vec![i(0), l(vec![]), i(1), i(1)]);
     let set = l(vec![i(6), l(vec![]), l(vec![]), l(vec![l(vec![l(vec![i(1), i(3)]), l(vec![]), l(vec![l(vec![i(0), l(vec![]), i(1), i(1)])])])])]);
     let ok = |slots: Value, reg: Value| delta(srcs.clone(), commits.clone(), l(vec![i(10), reg, slots]));
@@ -257,7 +257,7 @@ fn set_element_is_a_register_spec_3_2() {
 fn position_write_sibling_keys_spec_3_3() {
     let n2 = sess_value(tid(2));
     // node 2's commit at wall 1, base counter 7 (Ci 1)
-    let table = || vec![l(vec![i(1), l(vec![l(vec![i(1), i(0), i(7)])])])];
+    let table = || vec![l(vec![i(1), i(1), i(0), i(7)])];
     // a position write on node 2's element 7: `[i, Stamp, HEAD, key?]`
     let posw = |w: Vec<Value>| l(vec![i(9), l(vec![]), l(vec![]), l(vec![l(vec![l(vec![i(1), i(7)]), i(1), l(vec![]), l(vec![]), l(vec![l(w)]), l(vec![])])])]);
     let alike = |b: &[u8]| {
@@ -292,7 +292,7 @@ fn position_write_sibling_keys_spec_3_3() {
 fn snap(more_src: Vec<Value>, more_commits: Vec<Value>, f: Value) -> (Vec<u8>, DeltaCtx) {
     let scx = DeltaCtx { ts: ts(9 << 16), own: sess(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let srcs = [vec![sess_value(tid(1))], more_src].concat();
-    let commits = [vec![l(vec![i(1), l(vec![l(vec![i(5), i(0), i(3)])])])], more_commits].concat();
+    let commits = [vec![l(vec![i(1), i(5), i(0), i(3)])], more_commits].concat();
     // one frontier entry per session source of the table (§8), claiming nothing
     let fr: Vec<Value> = srcs.iter().enumerate().filter(|(_, s)| matches!(s, Value::Bytes(b) if b.len() == 15 || b.len() == 31)).map(|(k, _)| l(vec![i(k as i64 + 1), i(0)])).collect();
     let commits = l(commits);
@@ -523,11 +523,11 @@ fn a_position_write_stamped_with_its_elements_dot_is_bad_input_spec_3_2() {
     let mut beside = MElem::new(at(10, &a), MAnchor::Head, Content::Char('a'));
     beside.pos.insert(0, (at(30, &other), MAnchor::Head, None));
     let alone = MElem::write(Content::None, vec![(at(30, &other), MAnchor::Head, None)], None);
-    // the commits table's stamp of counter 9 (`[ts, Ci, 9]`) given counter 1
+    // the commits table's entry of base 9 (`[Src, dwall, 0, 9]`) given base 1
     fn patch(v: &mut Value) -> usize {
         match v {
-            Value::List(xs) if matches!(xs.as_slice(), [Value::Int(_), Value::Int(0), Value::Int(9)]) => {
-                xs[2] = Value::Int(1);
+            Value::List(xs) if matches!(xs.as_slice(), [Value::Int(_), Value::Int(_), Value::Int(0), Value::Int(9)]) => {
+                xs[3] = Value::Int(1);
                 1
             }
             Value::List(xs) => xs.iter_mut().map(patch).sum(),

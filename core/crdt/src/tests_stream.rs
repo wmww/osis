@@ -474,17 +474,14 @@ fn unused_commit_entry_refused_spec_3_3() {
     for seed in 0..6 {
         for i in inputs(seed, &types(seed), None).0 {
             let V::List(top) = osis_base::decode(&i.root, &osis_base::Limits::DEFAULT).unwrap() else { panic!() };
-            let Some(V::List(groups)) = top.get(2) else { panic!() };
-            let Some(V::List(g)) = groups.last() else { continue };
-            let Some(V::List(entries)) = g.get(1) else { panic!() };
+            let Some(V::List(entries)) = top.get(2) else { panic!() };
+            let Some(V::List(last)) = entries.last() else { continue };
             for base in [1, i64::MAX] {
+                // one more entry of the last entry's source, a millisecond later
                 let mut e = entries.clone();
-                e.push(V::List(vec![V::Int(1), V::Int(0), V::Int(base)]));
+                e.push(V::List(vec![last[0].clone(), V::Int(1), V::Int(0), V::Int(base)]));
                 let mut t = top.clone();
-                let V::List(gs) = &mut t[2] else { panic!() };
-                let last = gs.len() - 1;
-                let V::List(g) = &mut gs[last] else { panic!() };
-                g[1] = V::List(e);
+                t[2] = V::List(e);
                 let m = Input { root: osis_base::encode(&V::List(t)), pages: None, cx: i.cx.clone(), snapshot: i.snapshot };
                 assert_eq!(m.agree(), Ok(false), "seed {seed} base {base}");
                 n += 1;

@@ -494,24 +494,36 @@ impl<'p> Enc<'p> {
         }
     }
 
+    /// A root table (§3.2 `Sources`, `Commits`; §8 `Frontiers`, `Absorbed`, `Facts`) of `n`
+    /// entries as written, each by `entry`: plain at or below the page target, else paged like an
+    /// element array (§8, spec/wire.md §6), its pages through the sink.
+    pub(crate) fn put_table(&mut self, out: &mut Vec<u8>, n: usize, entry: impl Fn(&Enc, usize, &mut Vec<u8>)) -> Result<(), Error> {
+        let params = self.sink().map_or_else(crate::page::PageParams::wire, |p| p.params());
+        let mut p = crate::codec::Pager::new(false, params);
+        for i in 0..n {
+            entry(self, i, p.out());
+            p.end(self.sink())?;
+        }
+        p.finish(self.sink(), out)
+    }
+
     /// `Frontiers := [[Src, ctr]*]`: one entry per `Session` source of the table, in table order,
     /// `ctr` 0 for a source `fr` has none for (§8; after the collecting pass).
-    pub(crate) fn put_frontiers(&self, out: &mut Vec<u8>, fr: &Frontiers) {
-        let sessions = || self.sources.iter().enumerate().filter(|(_, s)| matches!(s.kind(), SourceKind::Session(_)));
-        put_array(out, sessions().count());
-        for (i, s) in sessions() {
+    pub(crate) fn put_frontiers(&mut self, out: &mut Vec<u8>, fr: &Frontiers) -> Result<(), Error> {
+        let sessions: Vec<usize> = self.sources.iter().enumerate().filter(|(_, s)| matches!(s.kind(), SourceKind::Session(_))).map(|(i, _)| i).collect();
+        self.put_table(out, sessions.len(), |enc, k, out| {
+            let i = sessions.get(k).copied().unwrap_or_default();
             put_array(out, 2);
             put_uint(out, i as u64 + 1);
-            put_uint(out, fr.of(s));
-        }
+            put_uint(out, enc.sources.get(i).map_or(0, |s| fr.of(s)));
+        })
     }
 
     /// `Facts := [Fact*]`, `Fact := by | [by, tid]` (§8): one per `Commits` entry, in table
     /// order; a commit `facts` misses gets `Fact::NARROWEST`.
-    pub(crate) fn put_facts(&self, out: &mut Vec<u8>, facts: &Facts) {
-        put_array(out, self.commits.len());
-        for c in &self.commits {
-            let f = facts.get(&(c.ts, c.src.clone())).copied().unwrap_or(Fact::NARROWEST);
+    pub(crate) fn put_facts(&mut self, out: &mut Vec<u8>, facts: &Facts) -> Result<(), Error> {
+        self.put_table(out, self.commits.len(), |enc, i, out| {
+            let f = enc.commits.get(i).and_then(|c| facts.get(&(c.ts, c.src.clone()))).copied().unwrap_or(Fact::NARROWEST);
             match f.purge_author {
                 None => put_uint(out, f.by as u64),
                 Some(a) => {
@@ -520,7 +532,21 @@ impl<'p> Enc<'p> {
                     put_tid(out, &a);
                 }
             }
+        })
+    }
+
+    /// `Absorbed := [[bytes(32), tid]*]` (§8), ascending by commit ID.
+    pub(crate) fn put_absorbed(&mut self, out: &mut Vec<u8>, absorbed: &BTreeMap<CommitId, Tid>) -> Result<(), Error> {
+        let params = self.sink().map_or_else(crate::page::PageParams::wire, |p| p.params());
+        let mut p = crate::codec::Pager::new(false, params);
+        for (c, a) in absorbed {
+            let out = p.out();
+            put_array(out, 2);
+            put_bytes(out, &c.0);
+            put_tid(out, a);
+            p.end(self.sink())?;
         }
+        p.finish(self.sink(), out)
     }
 
     /// Notes the source of dot `d` where `dot` would, writing nothing.
@@ -603,39 +629,32 @@ impl<'p> Enc<'p> {
     }
 
     /// `Sources := [Source*]`.
-    pub(crate) fn put_sources(&self, out: &mut Vec<u8>) {
-        put_array(out, self.sources.len());
-        for s in &self.sources {
-            match s.kind() {
-                SourceKind::Session(x) => put_bytes(out, &x.to_bytes()),
-                SourceKind::Commit(c) => put_bytes(out, &c.0),
-                SourceKind::Derived(d) => {
-                    put_array(out, 2);
-                    put_uint(out, self.src_index(&d.src));
-                    put_uint(out, d.ctr);
-                }
+    pub(crate) fn put_sources(&mut self, out: &mut Vec<u8>) -> Result<(), Error> {
+        self.put_table(out, self.sources.len(), |enc, i, out| match enc.sources.get(i).map(Source::kind) {
+            Some(SourceKind::Session(x)) => put_bytes(out, &x.to_bytes()),
+            Some(SourceKind::Commit(c)) => put_bytes(out, &c.0),
+            Some(SourceKind::Derived(d)) => {
+                put_array(out, 2);
+                put_uint(out, enc.src_index(&d.src));
+                put_uint(out, d.ctr);
             }
-        }
+            None => {}
+        })
     }
 
-    /// `Commits := [[Src, [[dwall, logical, base]*]]*]`: one group per run of one `Src`.
-    pub(crate) fn put_commits(&self, out: &mut Vec<u8>) {
-        let groups = self.commits.chunk_by(|a, b| a.src == b.src);
-        put_array(out, groups.clone().count());
-        for g in groups {
-            put_array(out, 2);
-            put_uint(out, g.first().map_or(0, |c| self.src_index(&c.src)));
-            put_array(out, g.len());
-            let mut prev = 0;
-            for c in g {
-                let wall = c.ts.wall_ms().0;
-                put_array(out, 3);
-                put_uint(out, wall.saturating_sub(prev));
-                put_uint(out, c.ts.logical());
-                put_uint(out, c.base);
-                prev = wall;
-            }
-        }
+    /// `Commits := [[Src, dwall, logical, base]*]`: `dwall` from the previous entry of the same
+    /// `Src` (absolute for its first).
+    pub(crate) fn put_commits(&mut self, out: &mut Vec<u8>) -> Result<(), Error> {
+        self.put_table(out, self.commits.len(), |enc, i, out| {
+            let Some(c) = enc.commits.get(i) else { return };
+            let prev = i.checked_sub(1).and_then(|j| enc.commits.get(j)).filter(|p| p.src == c.src).map_or(0, |p| p.ts.wall_ms().0);
+            let wall = c.ts.wall_ms().0;
+            put_array(out, 4);
+            put_uint(out, enc.src_index(&c.src));
+            put_uint(out, wall.saturating_sub(prev));
+            put_uint(out, c.ts.logical());
+            put_uint(out, c.base);
+        })
     }
 
     /// Wire order of dots for sorting element, entry and run arrays (§3.3 rule 2): §2.2 order,
@@ -723,7 +742,7 @@ impl<'a> Dec<'a> {
         self.ts
     }
 
-    /// The table's sources in order (after `load_sources`).
+    /// The table's sources in order (after `codec::root_tables`).
     pub(crate) fn sources(&self) -> impl Iterator<Item = &Source> + '_ {
         self.sources.iter()
     }
@@ -845,107 +864,93 @@ impl<'a> Dec<'a> {
         }
     }
 
-    /// Reads `Sources` (§3.2).
-    pub(crate) fn load_sources(&mut self, v: Item) -> Result<(), Error> {
-        self.sources.clear();
-        for s in as_array(v)? {
-            let src = match (s.as_bytes(), s.as_list().map(List::tuple)) {
-                (Some(b), _) => {
-                    if let Ok(x) = <[u8; 31]>::try_from(b) {
-                        Source::session(Session::from_bytes(&x))
-                    } else if let Ok(c) = <[u8; 32]>::try_from(b) {
-                        Source::commit(CommitId(c))
-                    } else {
-                        return Err(Error::Malformed("source length"));
-                    }
+    /// Reads one `Sources` entry (§3.2), in table order.
+    pub(crate) fn add_source(&mut self, s: Item) -> Result<(), Error> {
+        let src = match (s.as_bytes(), s.as_list().map(List::tuple)) {
+            (Some(b), _) => {
+                if let Ok(x) = <[u8; 31]>::try_from(b) {
+                    Source::session(Session::from_bytes(&x))
+                } else if let Ok(c) = <[u8; 32]>::try_from(b) {
+                    Source::commit(CommitId(c))
+                } else {
+                    return Err(Error::Malformed("source length"));
                 }
-                (None, Some(Some([i, c]))) => {
-                    // a Derived source names an earlier entry or own (§3.3 rule 1)
-                    let dot = Dot::new(self.src(i)?, Self::counter(c)?);
-                    Source::derived(dot).ok_or(Error::Malformed("Derived of a Derived source"))?
-                }
-                _ => return Err(Error::Malformed("source")),
-            };
-            if src == self.own || self.sources.contains(&src) {
-                return Err(Error::Malformed("repeated source"));
             }
-            let src = self.interner.intern(&src);
-            self.sources.push(src);
+            (None, Some(Some([i, c]))) => {
+                // a Derived source names an earlier entry or own (§3.3 rule 1)
+                let dot = Dot::new(self.src(i)?, Self::counter(c)?);
+                Source::derived(dot).ok_or(Error::Malformed("Derived of a Derived source"))?
+            }
+            _ => return Err(Error::Malformed("source")),
+        };
+        if src == self.own || self.sources.contains(&src) {
+            return Err(Error::Malformed("repeated source"));
         }
+        let src = self.interner.intern(&src);
+        self.sources.push(src);
         Ok(())
     }
 
-    /// Reads `Commits` (§3.2): groups by strictly ascending `Src`, entries by strictly ascending
-    /// `ts`. A writer's delta lists only its sibling keys' commits (§3.3 rule 7, checked per
-    /// stamp; the re-encoding drops unused entries).
-    pub(crate) fn load_commits(&mut self, v: Item) -> Result<(), Error> {
-        self.commits.clear();
-        let groups = as_array(v)?;
-        let mut last_src: Option<u64> = None;
-        for g in groups {
-            let Some([s, entries]) = as_array(g)?.tuple() else { return Err(Error::Malformed("commit group")) };
-            let si = as_uint(s)?;
-            if last_src.is_some_and(|l| si <= l) {
-                return Err(Error::Malformed("commit groups out of order"));
-            }
-            last_src = Some(si);
-            let src = self.source(si)?;
-            let entries = as_array(entries)?;
-            if entries.is_empty() {
-                return Err(Error::Malformed("empty commit group"));
-            }
-            let mut prev: Option<(u64, Ts)> = None;
-            for e in entries {
-                let Some([dwall, logical, base]) = as_array(e)?.tuple() else { return Err(Error::Malformed("commit entry")) };
-                let dwall = as_uint(dwall)?;
-                let wall = match prev {
-                    None => dwall,
-                    Some((w, _)) => w.checked_add(dwall).ok_or(Error::Malformed("commit wall overflow"))?,
-                };
-                let ts = Ts::make(WallMs(wall), as_uint(logical)?).ok_or(Error::Malformed("commit ts out of range"))?;
-                if prev.is_some_and(|(_, p)| ts <= p) {
-                    return Err(Error::Malformed("commit entries out of order"));
-                }
-                if ts == self.ts && src == self.own {
-                    return Err(Error::Malformed("this commit in the commit table"));
-                }
-                prev = Some((wall, ts));
-                self.commits.push(CommitEntry { ts, src: src.clone(), base: Self::counter(base)? });
-            }
+    /// Reads one `Commits` entry `[Src, dwall, logical, base]` (§3.2), in table order: `Src`
+    /// ascending, within one `Src` strictly ascending `ts`, `dwall` from that `Src`'s previous
+    /// entry (`last`: the previous entry's `Src`, wall and `ts`). A writer's delta lists only its
+    /// sibling keys' commits (§3.3 rule 7, checked per stamp; the re-encoding drops unused
+    /// entries).
+    pub(crate) fn add_commit(&mut self, e: Item, last: &mut Option<(u64, u64, Ts)>) -> Result<(), Error> {
+        let Some([s, dwall, logical, base]) = as_array(e)?.tuple() else { return Err(Error::Malformed("commit entry")) };
+        let si = as_uint(s)?;
+        let src = self.source(si)?;
+        let dwall = as_uint(dwall)?;
+        let prev = match *last {
+            Some((l, _, _)) if si < l => return Err(Error::Malformed("commit entries out of order")),
+            Some((l, w, t)) if si == l => Some((w, t)),
+            _ => None,
+        };
+        let wall = match prev {
+            None => dwall,
+            Some((w, _)) => w.checked_add(dwall).ok_or(Error::Malformed("commit wall overflow"))?,
+        };
+        let ts = Ts::make(WallMs(wall), as_uint(logical)?).ok_or(Error::Malformed("commit ts out of range"))?;
+        if prev.is_some_and(|(_, p)| ts <= p) {
+            return Err(Error::Malformed("commit entries out of order"));
         }
+        if ts == self.ts && src == self.own {
+            return Err(Error::Malformed("this commit in the commit table"));
+        }
+        *last = Some((si, wall, ts));
+        self.commits.push(CommitEntry { ts, src, base: Self::counter(base)? });
         Ok(())
     }
 
-    /// Reads `Facts` (§8): one per `Commits` entry, a purge-by class (0 to 3), a purge author
-    /// only where it is not the commit's signer (its session's tid; a commit-form one's `Absorbed`
-    /// signer where listed). The narrowest are left out of the map.
-    pub(crate) fn load_facts(&self, v: Item, absorbed: &BTreeMap<CommitId, Tid>) -> Result<Facts, Error> {
-        let items = as_array(v)?;
-        if items.len() != self.commits.len() {
-            return Err(Error::Malformed("facts not one per commit entry"));
+    /// `Commits` entries read.
+    pub(crate) fn commit_count(&self) -> usize {
+        self.commits.len()
+    }
+
+    /// Reads the `Facts` entry (§8) of `Commits` entry `k` into `out`: a purge-by class (0 to 3),
+    /// a purge author only where it is not the commit's signer (its session's tid; a
+    /// commit-form one's `Absorbed` signer where listed). The narrowest are left out.
+    pub(crate) fn add_fact(&self, k: usize, f: Item, absorbed: &BTreeMap<CommitId, Tid>, out: &mut Facts) -> Result<(), Error> {
+        let c = self.commits.get(k).ok_or(Error::Malformed("facts not one per commit entry"))?;
+        let (by, purge_author) = match f.as_list().map(List::tuple) {
+            Some(Some([by, a])) if a.as_tid().is_some() => (as_uint(by)?, a.as_tid()),
+            Some(_) => return Err(Error::Malformed("fact")),
+            None => (as_uint(f)?, None),
+        };
+        let by = osis_base::PurgeBy::from_id(by).ok_or(Error::Malformed("fact class"))?;
+        let signer = match fact_source(&c.src).kind() {
+            SourceKind::Session(s) => Some(s.node),
+            SourceKind::Commit(id) => absorbed.get(id).copied(),
+            SourceKind::Derived(_) => None,
+        };
+        if purge_author.is_some() && purge_author == signer {
+            return Err(Error::Malformed("fact purge author is the signer"));
         }
-        let mut out = Facts::new();
-        for (c, f) in self.commits.iter().zip(items) {
-            let (by, purge_author) = match f.as_list().map(List::tuple) {
-                Some(Some([by, a])) if a.as_tid().is_some() => (as_uint(by)?, a.as_tid()),
-                Some(_) => return Err(Error::Malformed("fact")),
-                None => (as_uint(f)?, None),
-            };
-            let by = osis_base::PurgeBy::from_id(by).ok_or(Error::Malformed("fact class"))?;
-            let signer = match fact_source(&c.src).kind() {
-                SourceKind::Session(s) => Some(s.node),
-                SourceKind::Commit(id) => absorbed.get(id).copied(),
-                SourceKind::Derived(_) => None,
-            };
-            if purge_author.is_some() && purge_author == signer {
-                return Err(Error::Malformed("fact purge author is the signer"));
-            }
-            let f = Fact { by, purge_author };
-            if f != Fact::NARROWEST {
-                out.insert((c.ts, c.src.clone()), f);
-            }
+        let f = Fact { by, purge_author };
+        if f != Fact::NARROWEST {
+            out.insert((c.ts, c.src.clone()), f);
         }
-        Ok(out)
+        Ok(())
     }
 
     /// An encoder in check mode over this delta's tables (`stream`): streamed positions
@@ -1009,6 +1014,12 @@ mod tests {
     fn ts(wall: u64, logical: u64) -> Ts {
         Ts::make(WallMs(wall), logical).unwrap()
     }
+    /// `Sources` and `Commits` written as `sources` and `commits` into `dec`.
+    fn tables(dec: &mut Dec, sources: &Value, commits: &Value) -> Result<(), Error> {
+        let (s, c) = (osis_base::encode(sources), osis_base::encode(commits));
+        let (s, c) = (Item::parse(&s, &osis_base::Limits::DEFAULT).unwrap(), Item::parse(&c, &osis_base::Limits::DEFAULT).unwrap());
+        crate::codec::root_tables(dec, s, c)
+    }
 
     /// §3.2, §3.3 rule 1: tables in order of first appearance, commits grouped by `Src` then
     /// `ts` with delta-coded wall times and bases; bare forms where possible; decoding inverts.
@@ -1036,7 +1047,7 @@ mod tests {
                 continue;
             }
             // sources: a, then b (underlying of d), then d
-            let sources = written(|o| enc.put_sources(o));
+            let sources = written(|o| enc.put_sources(o).unwrap());
             assert_eq!(
                 sources,
                 Value::List(vec![
@@ -1045,17 +1056,10 @@ mod tests {
                     Value::List(vec![Value::Int(2), Value::Int(2)]),
                 ])
             );
-            // own group (Src 0) first, then a (20 then 50: dwall 30), then d
-            let commits = written(|o| enc.put_commits(o));
-            let e = |w: i64, l: i64, b: i64| Value::List(vec![Value::Int(w), Value::Int(l), Value::Int(b)]);
-            assert_eq!(
-                commits,
-                Value::List(vec![
-                    Value::List(vec![Value::Int(0), Value::List(vec![e(30, 3, 5)])]),
-                    Value::List(vec![Value::Int(1), Value::List(vec![e(20, 0, 2), e(30, 1, 4)])]),
-                    Value::List(vec![Value::Int(3), Value::List(vec![e(40, 0, 1)])]),
-                ])
-            );
+            // own source (Src 0) first, then a (20 then 50: dwall 30), then d
+            let commits = written(|o| enc.put_commits(o).unwrap());
+            let e = |s: i64, w: i64, l: i64, b: i64| Value::List(vec![Value::Int(s), Value::Int(w), Value::Int(l), Value::Int(b)]);
+            assert_eq!(commits, Value::List(vec![e(0, 30, 3, 5), e(1, 20, 0, 2), e(1, 30, 1, 4), e(3, 40, 0, 1)]));
             // bare where the counter is the base
             assert_eq!(out[0], Value::Int(3));
             assert_eq!(out[1], Value::List(vec![Value::Int(3), Value::Int(6)]));
@@ -1063,8 +1067,7 @@ mod tests {
             assert_eq!(out[6], Value::List(vec![Value::Int(2), Value::Int(1)]));
             let mut interner = Interner::new();
             let mut dec = Dec::new(&cx, &mut interner, None);
-            with(&sources, |i| dec.load_sources(i)).unwrap();
-            with(&commits, |i| dec.load_commits(i)).unwrap();
+            tables(&mut dec, &sources, &commits).unwrap();
             for (s, v) in stamps.iter().zip(&out) {
                 assert_eq!(&with(v, |i| dec.stamp(i)).unwrap(), s);
             }
@@ -1090,8 +1093,8 @@ mod tests {
         assert!(with(&Value::Int(2), |i| dec.dot(i)).is_ok());
         assert!(with(&Value::Int(7), |i| dec.dot(i)).is_err());
         assert!(with(&Value::Int(0), |i| dec.dot(i)).is_err());
-        let foreign = Value::List(vec![Value::List(vec![Value::Int(0), Value::List(vec![Value::List(vec![Value::Int(1), Value::Int(0), Value::Int(1)])])])]);
-        with(&foreign, |i| dec.load_commits(i)).unwrap();
+        let foreign = Value::List(vec![Value::List(vec![Value::Int(0), Value::Int(1), Value::Int(0), Value::Int(1)])]);
+        tables(&mut dec, &Value::List(vec![]), &foreign).unwrap();
         assert!(with(&Value::Int(1), |i| dec.stamp(i)).is_err()); // a write of another commit
         assert_eq!(with(&Value::Int(1), |i| dec.key_stamp(i)).unwrap().ts, ts(1, 0));
     }

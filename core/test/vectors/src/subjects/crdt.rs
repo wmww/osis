@@ -156,15 +156,20 @@ fn snapshot_case(name: &str, spec: &str, state: &Fragment, frontiers: Frontiers,
 fn reject_case(name: &str, spec: &str, w: &W, range: Option<CounterRange>, bytes: Vec<u8>, rule: &str) -> Record {
     let kind = if range.is_some() { "writer" } else { "snapshot" };
     let r = head(name, spec, kind, w, range).with("delta", hex(&bytes)).with("reject", rule);
-    decode(&r).expect_err(name);
+    let e = decode(&r).expect_err(name);
+    // refused for its rule, not for the shape around it
+    assert!(!e.to_string().contains("arity") && !e.to_string().contains("frontier") && !e.to_string().contains("facts"), "{name}: {e}");
     r
 }
 
 fn delta_bytes(sources: Vec<Value>, commits: Vec<Value>, f: Value) -> Vec<u8> {
     osis_base::encode(&l(vec![Value::Bytes(vec![7; 16]), l(sources), l(commits), f]))
 }
+/// A hand-built snapshot: a frontier of 0 per session source, the narrowest fact per commit.
 fn snapshot_bytes(sources: Vec<Value>, commits: Vec<Value>, f: Value) -> Vec<u8> {
-    osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(sources), l(commits), f, l(vec![]), l(vec![])]))
+    let frontiers = (1..).zip(&sources).filter(|(_, s)| matches!(s, Value::Bytes(b) if b.len() == 31)).map(|(k, _)| l(vec![i(k), i(0)])).collect();
+    let facts = commits.iter().map(|_| i(1)).collect();
+    osis_base::encode(&l(vec![Value::Bytes(vec![3; 16]), l(sources), l(commits), f, l(frontiers), l(vec![]), l(facts)]))
 }
 
 pub fn deltas() -> VecFile {
@@ -225,6 +230,18 @@ pub fn deltas() -> VecFile {
     let mut paged = Fragment::default();
     paged.join(bf);
     cases.push(snapshot_case("paged snapshot: a set above PAGE_TARGET", "spec/crdt.md §8, spec/wire.md §6", &paged, fr(&[(1, 136)]), BTreeMap::new()));
+    // 2,100 frontier-only sessions and 1,300 absorbed commits: `Sources` and `Absorbed` paged
+    let many_sessions = Frontiers {
+        sessions: (0..2100u64)
+            .map(|k| {
+                let mut t = [5; 15];
+                t[..8].copy_from_slice(&k.to_be_bytes());
+                (Session { node: Tid::from_bytes(t), nonce: [6; SESSION_NONCE_LEN] }, k + 1)
+            })
+            .collect(),
+    };
+    let many_absorbed = (0..1300u64).map(|k| (CommitId(osis_base::hash::hash(&k.to_le_bytes())), tid(2))).chain([(c, tid(1))]).collect();
+    cases.push(snapshot_case("paged root tables: Sources and Absorbed above PAGE_TARGET", "spec/crdt.md §3.2, §8, spec/wire.md §6", &absorbed, many_sessions, many_absorbed));
 
     // rejections
     let wr = |lo, hi| Some(CounterRange { lo, hi });
@@ -244,13 +261,13 @@ pub fn deltas() -> VecFile {
     // snapshots by session 9 at wall 100 of session 1's commit at wall 5, base 3
     let sw = writer(9, 100, 0);
     let n1 = || Value::Bytes(session(1).to_bytes().to_vec());
-    let c1 = || l(vec![i(1), l(vec![l(vec![i(5), i(0), i(3)])])]);
+    let c1 = || l(vec![i(1), i(5), i(0), i(3)]);
     let reg_rs = l(vec![i(0), l(vec![i(1)]), l(vec![i(1), i(4)]), i(7)]);
     cases.push(reject_case("register reset below its own write", "spec/crdt.md §3.3, §4.2, §5.1", &sw, None, snapshot_bytes(vec![n1()], vec![c1()], reg_rs), "prune"));
     let pruned_child = l(vec![i(4), l(vec![l(vec![i(1), i(4)])]), l(vec![]), Value::Map([(i(1), l(vec![i(0), l(vec![]), i(1), i(7)]))].into_iter().collect())]);
     cases.push(reject_case("struct field below the struct's reset", "spec/crdt.md §3.3, §4.2", &sw, None, snapshot_bytes(vec![n1()], vec![c1()], pruned_child), "prune"));
     let n3 = Value::Bytes(session(3).to_bytes().to_vec());
-    let c3 = l(vec![i(2), l(vec![l(vec![i(5), i(0), i(1)])])]);
+    let c3 = l(vec![i(2), i(5), i(0), i(1)]);
     let foreign_value = set_of(vec![elem(l(vec![i(1), i(3)]), 1, 1)]);
     cases.push(reject_case("set element value written by another source", "spec/crdt.md §3.3, §5.5", &sw, None, snapshot_bytes(vec![n1(), n3], vec![c3], foreign_value), "element-source"));
     let empty_run = |d: Value| l(vec![d, i(2), l(vec![]), l(vec![]), l(vec![]), l(vec![])]);

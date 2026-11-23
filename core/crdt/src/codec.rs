@@ -11,7 +11,7 @@ use crate::paging::Step;
 use crate::seq;
 use crate::stamp::{Dot, DotRange, Interner, Source, SourceKind, Stamp, max_opt};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint};
-use osis_base::cbor::{Item, List, encode_into, head_len, link_len, put_array, put_bool, put_bytes, put_link, put_map, put_tid, put_uint};
+use osis_base::cbor::{Item, List, encode_into, head_len, link_len, put_array, put_bool, put_bytes, put_link, put_map, put_uint};
 use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
 use osis_base::{CanonicalBytes, Limits, Link, PageCutter, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -514,8 +514,8 @@ pub(crate) fn write_delta(mut enc: Enc, d: &Delta) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     put_array(&mut out, 4);
     put_bytes(&mut out, &d.nonce);
-    enc.put_sources(&mut out);
-    enc.put_commits(&mut out);
+    enc.put_sources(&mut out)?;
+    enc.put_commits(&mut out)?;
     encode_fragment(&mut enc, &mut out, &d.fragment)?;
     Ok(out)
 }
@@ -535,12 +535,12 @@ fn write_snapshot(mut enc: Enc, s: &Snapshot) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     put_array(&mut out, 7);
     put_bytes(&mut out, &s.nonce);
-    enc.put_sources(&mut out);
-    enc.put_commits(&mut out);
+    enc.put_sources(&mut out)?;
+    enc.put_commits(&mut out)?;
     encode_fragment(&mut enc, &mut out, &s.fragment)?;
-    enc.put_frontiers(&mut out, &s.frontiers);
-    put_absorbed(&mut out, &s.absorbed);
-    enc.put_facts(&mut out, &s.facts);
+    enc.put_frontiers(&mut out, &s.frontiers)?;
+    enc.put_absorbed(&mut out, &s.absorbed)?;
+    enc.put_facts(&mut out, &s.facts)?;
     Ok(out)
 }
 
@@ -1256,50 +1256,75 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
     Ok(Snapshot { nonce: head.nonce, fragment: whole.done(), frontiers: head.frontiers, absorbed: head.absorbed, facts: head.facts })
 }
 
-/// `[nonce, Sources, Commits]` of a delta or snapshot root into `dec`.
-pub(crate) fn root_tables(dec: &mut Dec, sources: Item, commits: Item) -> Result<(), Error> {
-    dec.load_sources(sources)?;
-    dec.load_commits(commits)
+/// The entries of a root table (§3.2 `Sources`, `Commits`; §8 `Frontiers`, `Absorbed`,
+/// `Facts`) written at `v`, in order, to `each`: inline, or paged like an element array (§8,
+/// spec/wire.md §6: the same tree rule, every leaf page's shape checked before any is read);
+/// then its pages to `Dec::done`. Memory: the table's pages, a multiple of what the author
+/// delivered.
+fn table(cx: &mut Dec, v: Item, each: &mut dyn FnMut(&mut Dec, Item) -> Result<(), Error>) -> Result<(), Error> {
+    let items = as_array(v)?;
+    let Some(top) = links(items)? else { return items.into_iter().try_for_each(|i| each(cx, i)) };
+    let (leaves, link_pages) = leaf_pages(cx, v, top)?;
+    for (p, _) in &leaves {
+        leaf_ok(false, p.item())?;
+    }
+    for (p, _) in &leaves {
+        as_array(p.item())?.try_for_each(|i| each(cx, i))?;
+    }
+    cx.done(leaves, link_pages);
+    Ok(())
 }
 
-/// A snapshot's `Frontiers` and `Absorbed` (§8): one frontier entry per `Session` source of the
-/// table, in table order, 0 included (a source with no write in the fragment has none, so an
-/// absent source is one the snapshot holds nothing of).
-pub(crate) fn snapshot_tail(dec: &Dec, fr: Item, ab: Item, fa: Item) -> Result<(Frontiers, BTreeMap<osis_base::CommitId, osis_base::Tid>, crate::wire::Facts), Error> {
+/// `[nonce, Sources, Commits]` of a delta or snapshot root into `dec`.
+pub(crate) fn root_tables(dec: &mut Dec, sources: Item, commits: Item) -> Result<(), Error> {
+    table(dec, sources, &mut |d, i| d.add_source(i))?;
+    let mut last = None;
+    table(dec, commits, &mut |d, i| d.add_commit(i, &mut last))
+}
+
+/// A snapshot's `Frontiers`, `Absorbed` and `Facts` (§8): one frontier entry per `Session`
+/// source of the table, in table order, 0 included (a source with no write in the fragment has
+/// none, so an absent source is one the snapshot holds nothing of); one fact per `Commits` entry.
+pub(crate) fn snapshot_tail(dec: &mut Dec, fr: Item, ab: Item, fa: Item) -> Result<(Frontiers, BTreeMap<osis_base::CommitId, osis_base::Tid>, crate::wire::Facts), Error> {
     let mut frontiers = Frontiers::default();
-    let mut counted = dec.sources().filter(|s| matches!(s.kind(), SourceKind::Session(_)));
-    for e in as_array(fr)? {
+    // the table index after the last session source an entry named
+    let mut at = 0usize;
+    let next_session = |d: &Dec, from: usize| d.sources().skip(from).position(|s| matches!(s.kind(), SourceKind::Session(_))).map(|k| from + k);
+    table(dec, fr, &mut |d, e| {
         let Some([i, c]) = as_array(e)?.tuple() else { return Err(Error::Malformed("frontier")) };
-        let src = dec.src(i)?;
-        if counted.next() != Some(&src) {
+        let src = d.src(i)?;
+        let want = next_session(d, at);
+        if want.and_then(|k| d.sources().nth(k)) != Some(&src) {
             return Err(Error::Malformed("frontier entries not the fragment's session sources in order"));
         }
+        at = want.map_or(at, |k| k + 1);
         frontiers.insert(&src, as_uint(c)?);
-    }
-    if counted.next().is_some() {
+        Ok(())
+    })?;
+    if next_session(dec, at).is_some() {
         return Err(Error::Malformed("a session source of the fragment without a frontier entry"));
     }
     let mut absorbed = BTreeMap::new();
-    for e in as_array(ab)? {
+    table(dec, ab, &mut |_, e| {
         let Some([c, a]) = as_array(e)?.tuple() else { return Err(Error::Malformed("absorbed commit")) };
         let (Some(c), Some(a)) = (c.as_bytes(), a.as_tid()) else { return Err(Error::Malformed("absorbed commit")) };
         let c = <[u8; 32]>::try_from(c).map_err(|_| Error::Malformed("absorbed commit ID"))?;
         if absorbed.insert(osis_base::CommitId(c), a).is_some() {
             return Err(Error::Malformed("absorbed commit repeated"));
         }
+        Ok(())
+    })?;
+    let mut facts = crate::wire::Facts::new();
+    let mut k = 0usize;
+    table(dec, fa, &mut |d, f| {
+        d.add_fact(k, f, &absorbed, &mut facts)?;
+        k += 1;
+        Ok(())
+    })?;
+    if k != dec.commit_count() {
+        return Err(Error::Malformed("facts not one per commit entry"));
     }
-    let facts = dec.load_facts(fa, &absorbed)?;
     Ok((frontiers, absorbed, facts))
-}
-
-/// The absorbed table as written (§8).
-pub(crate) fn put_absorbed(out: &mut Vec<u8>, absorbed: &BTreeMap<osis_base::CommitId, osis_base::Tid>) {
-    put_array(out, absorbed.len());
-    for (c, a) in absorbed {
-        put_array(out, 2);
-        put_bytes(out, &c.0);
-        put_tid(out, a);
-    }
 }
 
 /// The whole-delta decoder and encoder before streaming. The decoder decodes every page into one
@@ -1444,7 +1469,7 @@ pub mod oracle {
         let mut dec = Dec::new(cx, interner, pages);
         root_tables(&mut dec, sources, commits)?;
         let fragment = decode_fragment(&mut dec, frag, true)?;
-        let (frontiers, absorbed, facts) = snapshot_tail(&dec, fr, ab, fa)?;
+        let (frontiers, absorbed, facts) = snapshot_tail(&mut dec, fr, ab, fa)?;
         let mut replay = replay(&mut dec);
         let s = Snapshot { nonce: nonce(n)?, fragment, frontiers, absorbed, facts };
         canonical(bytes, self::encode_snapshot(&s, cx, Some(&mut replay)))?;

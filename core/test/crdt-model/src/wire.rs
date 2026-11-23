@@ -175,11 +175,11 @@ impl Ctx {
         }
         Ok(())
     }
-    /// `[[src, [[dwall, logical, base]*]]*]`: grouped by source in index order, ascending ts; `dwall` is the
-    /// wall-ms difference to the previous entry of the group (absolute for the first).
+    /// `[[src, dwall, logical, base]*]`: by source index, then ascending ts; `dwall` is the wall-ms difference
+    /// to the previous entry of the same source (absolute for its first).
     pub fn commits_item(&self) -> Item {
-        let mut groups: Vec<(u64, Vec<Item>)> = Vec::new();
         let mut prev: Option<(u64, u64)> = None; // (src idx, wall)
+        let mut out = Vec::new();
         for (t, s, b) in &self.commits {
             let si = self.idx_of(s);
             let (wall, logical) = (t >> 16, t & 0xffff);
@@ -188,54 +188,39 @@ impl Ctx {
                 _ => wall,
             };
             prev = Some((si, wall));
-            let entry = Item::Array(vec![u(dwall), u(logical), u(*b)]);
-            match groups.last_mut() {
-                Some((g, v)) if *g == si => v.push(entry),
-                _ => groups.push((si, vec![entry])),
-            }
+            out.push(Item::Array(vec![u(si), u(dwall), u(logical), u(*b)]));
         }
-        Item::Array(groups.into_iter().map(|(si, v)| Item::Array(vec![u(si), Item::Array(v)])).collect())
+        Item::Array(out)
     }
     fn load_commits(&mut self, it: &Item) -> Result<(), Error> {
         self.commits.clear();
-        let mut last_src: Option<u64> = None;
-        for g in it.array()? {
-            let g = g.array()?;
-            if g.len() != 2 {
-                return Err(Error::Bad("commit group"));
+        // (src idx, wall, ts) of the previous entry
+        let mut last: Option<(u64, u64, Ts)> = None;
+        for c in it.array()? {
+            let a = c.array()?;
+            if a.len() != 4 {
+                return Err(Error::Bad("commit entry"));
             }
-            let si = g[0].uint()?;
-            if last_src.map_or(false, |l| l >= si) {
-                return Err(Error::Bad("commit group order"));
-            }
-            last_src = Some(si);
+            let (si, dwall, logical, base) = (a[0].uint()?, a[1].uint()?, a[2].uint()?, nonzero(a[3].uint()?)?);
             let src = self.source(si)?;
-            let mut wall = 0u64;
-            let mut last_ts: Option<Ts> = None;
-            let entries = g[1].array()?;
-            if entries.is_empty() {
-                return Err(Error::Bad("empty commit group"));
+            if logical > 0xffff {
+                return Err(Error::Bad("logical"));
             }
-            for c in entries {
-                let a = c.array()?;
-                if a.len() != 3 {
-                    return Err(Error::Bad("commit entry"));
-                }
-                let (dwall, logical, base) = (a[0].uint()?, a[1].uint()?, nonzero(a[2].uint()?)?);
-                if logical > 0xffff {
-                    return Err(Error::Bad("logical"));
-                }
-                wall = wall.checked_add(dwall).ok_or(Error::Bad("wall overflow"))?;
-                if wall >= 1 << 47 {
-                    return Err(Error::Bad("wall range"));
-                }
-                let ts = (wall << 16) | logical;
-                if last_ts.map_or(false, |l| l >= ts) || (ts == self.ts && src == self.own) {
-                    return Err(Error::Bad("non-canonical commit table"));
-                }
-                last_ts = Some(ts);
-                self.commits.push((ts, src.clone(), base));
+            let same = match last {
+                Some((l, _, _)) if l > si => return Err(Error::Bad("commit entry order")),
+                Some((l, w, t)) if l == si => Some((w, t)),
+                _ => None,
+            };
+            let wall = same.map_or(0, |(w, _)| w).checked_add(dwall).ok_or(Error::Bad("wall overflow"))?;
+            if wall >= 1 << 47 {
+                return Err(Error::Bad("wall range"));
             }
+            let ts = (wall << 16) | logical;
+            if same.is_some_and(|(_, l)| l >= ts) || (ts == self.ts && src == self.own) {
+                return Err(Error::Bad("non-canonical commit table"));
+            }
+            last = Some((si, wall, ts));
+            self.commits.push((ts, src, base));
         }
         Ok(())
     }

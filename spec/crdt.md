@@ -93,9 +93,9 @@ An `any` position (spec/data-model.md §3) has no encoding of its own: a write c
 ```
 Delta    := [nonce, Sources, Commits, Fragment]
 Snapshot := [nonce, Sources, Commits, Fragment, Frontiers, Absorbed, Facts]   ; snapshot deltas, §8
-Sources  := [Source*]                    ; foreign sources, §3.3 rule 1
+Sources  := [Source*]                    ; foreign sources, §3.3 rule 1; each root table may be paged: [Link+], §8
 Source   := bytes(31) | bytes(32) | [Src, ctr]   ; Session tid ‖ nonce | Commit ID | Derived of a dot whose source is Session or Commit
-Commits  := [[Src, [[dwall, logical, base]*]]*]   ; §3.3 rule 1
+Commits  := [[Src, dwall, logical, base]*]   ; §3.3 rule 1
 Ts       := uint                         ; §2.2
 Src      := uint                         ; index into Sources, 0 = own (session form: the session; commit form: this commit; not stored)
 Ci       := uint                         ; commit index: 0 = this commit, i = Commits entry i (flattened)
@@ -123,9 +123,9 @@ PosW     := [i, Stamp, Anchor] | [i, Stamp, Anchor, Stamp]   ; 0 <= i < n; the f
 FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]   ; inclusive range, 0 <= i_from <= i_to < n; the string (text only): an undelete's chars, one per element of the range (§5.7)
 ```
 **Commits** is the delta's table of every commit other than this one whose stamps appear in the fragment. A commit is a `(ts, source)` pair; `Src` 0 entries name the writer's own earlier commits.
-- **Order.** Entries are grouped by source in `Src` index order; within a group ascending by `ts`.
+- **Order.** Entries are ascending by `Src` index; entries of one `Src` ascending by `ts`.
 - **Fields.**
-  - `dwall`: the difference of `wall_ms` to the previous entry of the group (absolute for the first).
+  - `dwall`: the difference of `wall_ms` to the previous entry of the same `Src` (absolute for its first).
   - `logical`: the low 16 bits of `ts`.
   - `base`: the smallest counter among that commit's stamps in this delta, creation stamps named by segments and entry `Ci`s included.
 - **Index 0.** Commit index 0 is this commit `(header ts, own, lo)`.
@@ -528,9 +528,10 @@ Principle: deltas, state and snapshots are the same grammar, so any fragment's e
 
 - **Grammar extension.**
   - In `Bag`, `Set`, `Map`, `Seq`, the element array may be `[Link+]` (each a LINK-tagged value, spec/data-model.md §5) instead of `[Elem*]`.
+  - Each root table of a delta or snapshot (`Sources`, `Commits`, `Frontiers`, `Absorbed`, `Facts`) may be `[Link+]` instead of its entry array, each entry counting as one element; `Src` and `Ci` index entries with pages expanded in link order.
   - In `Struct` and `Enum`, the field (payload) map may be `[Link+]` instead of `{id: Fragment}`, each field (its key and value) counting as one element.
-  - A page blob is a non-empty canonical CBOR array of elements (`[Elem*]`, `[Entry*]`, `[Run*]`), a non-empty map of consecutive fields, or again `[Link+]` (a link page: the fragment's links lead through as many levels of link pages as the array needs, every leaf page at the same depth; spec/wire.md §6).
-- **When.** A fragment is paged iff its element array or field map as plain CBOR (its own elements inline, nested positions as written, so paging is decided bottom-up) would exceed `PAGE_TARGET`. Paging is mandatory above the threshold and forbidden below. A relay-only commit's deltas (spec/commits.md §2) are never paged: no threshold, each bounded by its blob.
+  - A page blob is a non-empty canonical CBOR array of elements (`[Elem*]`, `[Entry*]`, `[Run*]`, a table's entries), a non-empty map of consecutive fields, or again `[Link+]` (a link page: the fragment's links lead through as many levels of link pages as the array needs, every leaf page at the same depth; spec/wire.md §6).
+- **When.** A fragment is paged iff its element array or field map (a root table: its entry array) as plain CBOR (its own elements inline, nested positions as written, so paging is decided bottom-up) would exceed `PAGE_TARGET`. Paging is mandatory above the threshold and forbidden below. A relay-only commit's deltas (spec/commits.md §2) are never paged: no threshold, each bounded by its blob.
 - **Boundaries.** A paged array or map is split into pages at content-defined boundaries over the canonical bytes of consecutive elements (the chunker values use, spec/data-model.md §6; exact rule and link pages: spec/wire.md §6). A page holds whole elements, so one element above `CHUNK_MAX` is a page by itself.
 - **Blobs.** Pages are blobs under random keys like chunks (spec/data-model.md §6). A delta links each blob at most once (equal pages are separate blobs), and a reader rejects a delta linking one blob twice.
 - **Items per blob.** A delta's `Fragment` (the fourth item of its root array) and each of its pages and link pages count at most `MAX_PAGE_ITEMS` items:

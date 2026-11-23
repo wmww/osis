@@ -262,7 +262,7 @@ fn snapshot_write_below_own_reset_rejected_spec_3_3() {
     // commit 1: source 1 at wall 2 (the reset and the creation of element 2); commit 2: source
     // 2 at wall `w` (a position write on it, to HEAD)
     let snap = |w: i64| {
-        let commits = l(vec![l(vec![int(1), l(vec![l(vec![int(2), int(0), int(2)])])]), l(vec![int(2), l(vec![l(vec![int(w), int(0), int(4)])])])]);
+        let commits = l(vec![l(vec![int(1), int(2), int(0), int(2)]), l(vec![int(2), int(w), int(0), int(4)])]);
         let run = l(vec![l(vec![int(1), int(2)]), int(1), l(vec![int(0), l(vec![l(vec![int(1), int(1)])])]), Value::Str("a".into()), l(vec![l(vec![int(0), int(2), int(0)])]), l(vec![])]);
         let text = l(vec![int(9), l(vec![int(1)]), l(vec![]), l(vec![run])]);
         let frontiers = l(vec![l(vec![int(1), int(0)]), l(vec![int(2), int(0)])]);
@@ -274,7 +274,7 @@ fn snapshot_write_below_own_reset_rejected_spec_3_3() {
     // the other write `winners` leaves out: a deleted text element's creation (source 2 at wall
     // 5), under a reset (source 1 at wall `w`) and a delete (source 1 at wall 9)
     let deleted = |w: i64| {
-        let commits = l(vec![l(vec![int(1), l(vec![l(vec![int(w), int(0), int(4)]), l(vec![int(9 - w), int(0), int(5)])])]), l(vec![int(2), l(vec![l(vec![int(5), int(0), int(2)])])])]);
+        let commits = l(vec![l(vec![int(1), int(w), int(0), int(4)]), l(vec![int(1), int(9 - w), int(0), int(5)]), l(vec![int(2), int(5), int(0), int(2)])]);
         let run = l(vec![l(vec![int(2), int(2)]), int(1), l(vec![int(0), l(vec![l(vec![int(3), int(1)])])]), l(vec![]), l(vec![]), l(vec![l(vec![int(0), int(0), int(2), Value::Bool(true)])])]);
         let text = l(vec![int(9), l(vec![int(1)]), l(vec![]), l(vec![run])]);
         let frontiers = l(vec![l(vec![int(1), int(0)]), l(vec![int(2), int(0)])]);
@@ -345,7 +345,7 @@ fn derived_register_write_rejected_spec_3_3() {
     // the register written by commit 1 at wall 2: of session 1 at counter 2, or of `Derived` at 1
     let snap = |derived: bool| {
         let (sources, src, ctr) = if derived { (vec![session(1), l(vec![int(1), int(2)])], 2, 1) } else { (vec![session(1)], 1, 2) };
-        let commits = l(vec![l(vec![int(src), l(vec![l(vec![int(2), int(0), int(ctr)])])])]);
+        let commits = l(vec![l(vec![int(src), int(2), int(0), int(ctr)])]);
         let reg = l(vec![int(0), l(vec![]), int(1), int(5)]);
         let frontiers = l(vec![l(vec![int(1), int(0)])]);
         let facts = crate::testutil::narrowest_facts(&commits);

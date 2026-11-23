@@ -16,7 +16,7 @@
 //! the root decode met them, which for canonical bytes is the order the check's root re-encode
 //! meets them.
 
-use crate::codec::{PageAt, Pager, Visit, walk_tree, put_absorbed, canonical, check_root, decode_items, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
+use crate::codec::{PageAt, Pager, Visit, walk_tree, canonical, check_root, decode_items, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
 use crate::error::Error;
 use crate::fragment::{Bag, Eid, Encoding, Entry, Enum, Fragment, Map, Meta, Set, Struct};
 use crate::page::{PageParams, PageSource};
@@ -157,7 +157,7 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
     let mut found = dec.streaming.take().map(|x| x.1).unwrap_or_default();
     let skeleton = skeleton?;
     let (frontiers, absorbed, facts) = match tail {
-        Some((fr, ab, fa)) => snapshot_tail(&dec, fr, ab, fa)?,
+        Some((fr, ab, fa)) => snapshot_tail(&mut dec, fr, ab, fa)?,
         None => Default::default(),
     };
     let nonce = nonce(n)?;
@@ -180,16 +180,17 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
     let mut again = Vec::with_capacity(bytes.len());
     put_array(&mut again, if snapshot { 7 } else { 4 });
     put_bytes(&mut again, &nonce);
-    enc.put_sources(&mut again);
-    enc.put_commits(&mut again);
-    let written = encode_fragment(&mut enc, &mut again, &skeleton).map(|()| {
+    let written = (|| {
+        enc.put_sources(&mut again)?;
+        enc.put_commits(&mut again)?;
+        encode_fragment(&mut enc, &mut again, &skeleton)?;
         if snapshot {
-            enc.put_frontiers(&mut again, &frontiers);
-            put_absorbed(&mut again, &absorbed);
-            enc.put_facts(&mut again, &facts);
+            enc.put_frontiers(&mut again, &frontiers)?;
+            enc.put_absorbed(&mut again, &absorbed)?;
+            enc.put_facts(&mut again, &facts)?;
         }
-        again
-    });
+        Ok(again)
+    })();
     canonical(bytes, written)?;
     let log = enc.check.as_mut().and_then(|c| c.log.take()).unwrap_or_default();
     // canonical bytes meet their positions in one order, decoding or encoding (`Checked`)

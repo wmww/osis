@@ -547,6 +547,32 @@ fn deep_link_tree_compacts_syncs_and_reads_spec_crdt_8() {
     }
 }
 
+/// §3.2, §8 end to end: under small wire pages node 0 writes 100 commits, a key each, into one
+/// map and snapshots it, so the snapshot's `Commits` table is paged (its root list links); node 3,
+/// getting the snapshot alone (its table pages reached by sync's walk like any page), applies it
+/// and reads what node 0 reads.
+#[test]
+fn paged_root_tables_compact_sync_and_read_spec_crdt_8() {
+    let small = osis_crdt::PageParams { target: 400, cut: osis_base::ChunkParams { min: 32, max: 160, mask_bits: 5 }, fanout: 3, ..osis_crdt::PageParams::FORMAT };
+    let _pages = osis_crdt::PageParams::set_test(Some(small));
+    let (lp, t) = build(0);
+    let mut w = of(lp, t, false);
+    let a = aks()[0].clone();
+    for k in 0..100u64 {
+        let mut m = Mutation::new();
+        m.op(t, &a, PathOp { path: vec![PathSeg::Key(Value::Int(k as i64))], op: Op::Set(s(k, 0)) }).unwrap();
+        w.lp.peers[0].commit(m).unwrap().unwrap();
+    }
+    let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+    let (_, record) = w.lp.peers[0].engine.package_with_record(&snap).unwrap().unwrap();
+    let Value::List(root) = osis_base::decode(&record.parts[0].delta, &osis_base::Limits::DEFAULT).unwrap() else { panic!() };
+    assert!(matches!(&root[2], Value::List(ls) if !ls.is_empty() && ls.iter().all(|l| matches!(l, Value::Link(_)))), "Commits paged: {:?}", root[2]);
+    let pk = packages(&mut w, 0, &[snap]);
+    w.lp.deliver(3, &pk[0]).unwrap();
+    assert_eq!(w.lp.peers[3].engine.get(&t, &a).unwrap(), w.lp.peers[0].engine.get(&t, &a).unwrap(), "read whole");
+    assert_eq!(w.lp.peers[3].engine.get(&t, &a).unwrap().map(|v| if let Value::Map(m) = v { m.len() } else { 0 }), Some(100));
+}
+
 /// What a commit listener on node 3 hears of `big` once the keep bound (an hour after replaced)
 /// passes (and as it applies), after node 3, holding node 0's fill, gets the snapshot of node 0's replace: the
 /// replaced fill leaves history, and the snapshot's apply judged what it killed as a whole join

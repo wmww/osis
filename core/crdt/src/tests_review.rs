@@ -119,7 +119,7 @@ fn scx() -> DeltaCtx {
 fn snapshot_with(elems: Value) -> Vec<u8> {
     let l = Value::List;
     let source = Value::Bytes([[0; 14].as_slice(), &[1], &[0; 16]].concat());
-    let commits = l(vec![l(vec![Value::Int(1), l(vec![l(vec![Value::Int(5), Value::Int(0), Value::Int(1)])])])]);
+    let commits = l(vec![l(vec![Value::Int(1), Value::Int(5), Value::Int(0), Value::Int(1)])]);
     let frontiers = l(vec![l(vec![Value::Int(1), Value::Int(0)])]);
     let facts = crate::testutil::narrowest_facts(&commits);
     osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![source]), commits, l(vec![Value::Int(6), l(vec![]), l(vec![]), elems]), frontiers, l(vec![]), facts]))
@@ -722,4 +722,85 @@ fn expired_undelete_hides_alike_spec_5_7() {
     };
     assert_eq!(past(deleted), Some(Value::Str(String::new())));
     assert_eq!(past(booted), Some(Value::Str(String::new())));
+}
+
+// ---- root tables (§3.2, §8)
+
+/// A snapshot of a set whose `n` elements each carry a write by a commit of their own: half
+/// commit-form commits (each its own `Sources` entry, `Absorbed` with its signer, a `Facts`
+/// entry naming a purge author), half one session's commits (`Commits` entries), and `n`
+/// frontier-only sessions (`Sources` and `Frontiers` entries). The shape any writer reaches by
+/// writing `n` commits whose writes survive in one aspect.
+fn many_commits(n: u64) -> crate::Snapshot {
+    use crate::fragment::{Elem, Meta, Set};
+    use osis_base::{CommitId, PurgeBy, Tid};
+    let tid = |k: u64, tag: u8| {
+        let mut b = [tag; 15];
+        b[..8].copy_from_slice(&k.to_be_bytes());
+        Tid::from_bytes(b)
+    };
+    let mut elems = BTreeMap::new();
+    let mut s = snapshot(&Fragment::default());
+    let one = node(1);
+    for k in 0..n {
+        let id = CommitId(osis_base::hash::hash(&k.to_le_bytes()));
+        let c = Source::commit(id);
+        s.absorbed.insert(id, tid(k, 2));
+        for (src, ts_, ctr) in [(c, (5_000 + k) << 16, 1), (one.clone(), (100 + k) << 16, k + 1)] {
+            let st = Stamp { ts: ts(ts_), dot: Dot::new(src.clone(), ctr) };
+            let reg = reg(st.clone(), i64::try_from(ts_).unwrap());
+            elems.insert(st.dot.clone(), Elem { reset: None, frag: Some(Box::new(Fragment::Register(reg))), gone: None });
+            s.facts.insert((st.ts, src), crate::Fact { by: PurgeBy::Writer, purge_author: Some(tid(k, 3)) });
+        }
+        let only = Source::session(crate::Session { node: tid(k, 4), nonce: [9; crate::SESSION_NONCE_LEN] });
+        s.frontiers.insert(&only, k + 1);
+    }
+    s.frontiers.insert(&one, n);
+    s.fragment = Fragment::Set(Set { meta: Meta::default(), elems });
+    s
+}
+
+/// §3.2, §8: a snapshot's root tables page like element arrays, so its root blob is bounded
+/// whatever the commits it names: with 2,000 commits (the shape `many_commits` builds), every
+/// table is paged and the root stays within a page target per table and the fragment's link
+/// list, while the snapshot unpaged is over 100 targets. It decodes back to itself, checked,
+/// streamed, decode-only and read at no position (the covering read: tables whole, no leaf).
+/// Who writes the input: any writer of a snapshot of an aspect it may write; its pages come
+/// from whichever holder serves them.
+#[test]
+fn root_tables_page_and_the_root_stays_bounded_spec_8() {
+    let s = many_commits(1000);
+    let mut pages = MemoryPages::with_params(SMALL);
+    let root = encode_snapshot(&s, &scx(), Some(&mut pages)).unwrap();
+    let Value::List(items) = osis_base::decode(&root, &osis_base::Limits::DEFAULT).unwrap() else { panic!() };
+    let paged = |v: &Value| matches!(v, Value::List(ls) if ls.iter().all(|l| matches!(l, Value::Link(_))));
+    assert!(root.len() <= 6 * SMALL.target + 64, "root {} bytes", root.len());
+    for (i, what) in [(1, "Sources"), (2, "Commits"), (4, "Frontiers"), (5, "Absorbed"), (6, "Facts")] {
+        assert!(paged(&items[i]), "{what} paged");
+    }
+    let back = decode_snapshot(&root, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap();
+    assert_eq!((&back.frontiers, &back.absorbed, &back.facts), (&s.frontiers, &s.absorbed, &s.facts));
+    assert_eq!(back.fragment, s.fragment);
+    let head = |h: crate::Head| (h.frontiers, h.absorbed, h.facts);
+    let streamed = crate::stream_snapshot(&root, &scx(), &mut Interner::new(), Some(&mut pages), &mut |_| Ok(())).unwrap();
+    assert_eq!(head(streamed), (s.frontiers.clone(), s.absorbed.clone(), s.facts.clone()), "streamed");
+    let (h, f) = crate::decode_checked(crate::Checked::verified(&root), &scx(), &mut Interner::new(), Some(&mut pages)).unwrap();
+    assert_eq!((head(h), f), ((s.frontiers.clone(), s.absorbed.clone(), s.facts.clone()), s.fragment.clone()), "decode-only");
+    let none = crate::stream_checked_some(crate::Checked::verified(&root), &scx(), &mut Interner::new(), Some(&mut pages), &|_, _| false, &mut |_| Ok(())).unwrap();
+    assert_eq!(head(none), (s.frontiers.clone(), s.absorbed.clone(), s.facts.clone()), "read at no position");
+}
+
+/// §8, spec/wire.md §6: a root table pages by the rule element arrays do: one paged below the
+/// target, or one of its pages linked again by another table, is bad input.
+#[test]
+fn root_table_paging_rejections_spec_8() {
+    let mut pages = MemoryPages::with_params(SMALL);
+    let plain = snapshot_with(Value::List(vec![element(1)]));
+    decode_snapshot(&plain, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap();
+    let Value::List(mut items) = osis_base::decode(&plain, &osis_base::Limits::DEFAULT).unwrap() else { panic!() };
+    let page = pages.put(&osis_base::encode(&items[1])).unwrap();
+    items[1] = Value::List(vec![Value::link(page)]);
+    rejects(&osis_base::encode(&Value::List(items.clone())), &mut pages, "not canonical");
+    items[2] = Value::List(vec![Value::link(page)]);
+    rejects(&osis_base::encode(&Value::List(items)), &mut pages, "twice");
 }

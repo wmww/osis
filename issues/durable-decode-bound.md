@@ -1,5 +1,5 @@
 # Durable deltas decode with no memory bound
-> Summary: Tess's decision B (per-blob item cap `MAX_PAGE_ITEMS`, then verify and join page by page) is built through step 5: a 10^6-key map's commit or snapshot applies in 0.23-0.35 GB; `covered`, presence and tree roots read a piece at a time (notes/decode-bounds.md). Left: a snapshot's writer loads, clones and copy-indexes the whole state (2.3 GB), a write replacing a whole position loads its state whole, `covered` of a body paged below a map entry and roots of a nested paged state read whole, and step 6 (root tables paged, a format change).
+> Summary: Tess's decision B (per-blob item cap `MAX_PAGE_ITEMS`, then verify and join page by page) is built (steps 1-5, plus root tables paged like element arrays, notes/crdt.md Wire): a 10^6-key map's commit or snapshot applies in 0.23-0.35 GB; `covered`, presence and tree roots read a piece at a time (notes/decode-bounds.md). Left: a snapshot's writer loads, clones and copy-indexes the whole state (2.3 GB), a write replacing a whole position loads its state whole, and `covered` of a body paged below a map entry and roots of a nested paged state read whole.
 > Priority: low
 > Tags: security, crdt, engine
 
@@ -14,11 +14,6 @@ The steps cited from code: 1-2 streaming re-encode and piece iterator (osis-crdt
 
 ## Measured (`memory::big_map_apply_memory`, release, in-memory stores, 10^6 keys)
 Commit / snapshot with pages 21 / 22 MB. Write 2.2 GB, 135 s (snapshot 2.3 GB, 277 s); a node holding the thing applies 0.23 GB, 276 s; a node applies the snapshot alone 0.35 GB, 224 s; about 0.23-0.26 GB of each is what the store keeps. Box at load 25-60, so times only roughly comparable.
-
-## Step 6
-6. **Root tables page** (format change, about 300 lines plus spec): `Sources`, `Commits`, `Absorbed` and `Frontiers` may be `[Link+]` like element arrays, decoded first and held as compact tables (about 50 B per entry: 10^6 commits about 50 MB). Needed before snapshots of aspects written by more than about 10^6 session-form or 8 x 10^4 commit-form commits.
-
-- **Snapshot root tables**: they do not always fit. Measured per absorbed commit with surviving stamps: session form 8 B and 4 items (`Commits` entry), so about 10^6 commits fill `MAX_BLOB`; commit form (role commits, multi-node key actors) 107 B (`Sources` 33, `Absorbed` 54, `Commits` 6) and 12 items, about 78 000 commits. An aspect past that cannot be snapshotted (the builder refuses a delta over `MAX_BLOB`; the trigger then leaves that aspect uncompacted, weighing it again each time its estimate doubles, notes/engine-retention-trigger.md; issues/snapshot-root-tables-over-blob.md). `MAX_PAGE_ITEMS` does not count these tables (bounded by `MAX_BLOB`, decoded into small records).
 
 ## Left whole at a reader
 - Tree roots of a state with a collection paged inside another's elements (`pages::each_piece` with keys: `None`): read whole, as a key's records then reach into pages below.
