@@ -12,17 +12,18 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 - After it: a removal as evidence, accounts as ordinary things, public things and cards, core without accounts (notes/redesign-plan.md A3 to A6), each one branch, delete first; cut them to what is still needed before starting.
 
 ## In flight beside it
-- `mizzen-purged-shown` (worker): issues/order-purged-message-shown.md, the one order property class failing on main; stops if the cause is in the rewrite's area.
 - `mizzen-seq-runs` (worker): issues/seq-cold-edits-follow-gaps.md, the multi-op case.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
 ## Safe parallel work queue (outside the rewrite)
 - issues/text-move-writes-grow.md: engine pages / osis-crdt.
+- issues/split-path-wake-missed.md: a waiting commit never retried after its split path opens (engine apply).
 - issues/masked-backdated-lowerings.md: osis-perm walk.
 - issues/held-model-until-no-deadline.md: cause never read.
 - Workflow agent about half the time; one cleanup always.
 
 ## Small, waiting on Tess
+- **Purge and arrival order** (issues/order-purged-message-shown.md, options A and B in plain words there): today a purged write reads differently by whether a node held its body. Coordinator leans A (a purged write has no effect anywhere: deleting the newest message shows the previous one). Branch `mizzen-purged-shown` holds the diagnosis and a hand test; not landed.
 - CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
 
 ## Parked
