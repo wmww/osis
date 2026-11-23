@@ -1390,6 +1390,145 @@ impl World {
     }
 }
 
+// ---- The joint property (notes/holder-access-study.md, With A2) ----
+
+/// What a joint node holds beside its one sync ID, and logs (`World::joint`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Joint {
+    /// The design: the key part of the signer and of every holder on a path from it to a thing
+    /// of the unit; its write logged with what its view requires.
+    Paths,
+    /// Control of `J-act`: the sync ID alone.
+    Unit,
+    /// Control of `J-logged`: its write logged with what S's entries alone require of it.
+    UnitLog,
+    /// Control of `J-act`: of each key part only the writes that remove nothing (`removes`):
+    /// it acts along a removed hop.
+    Grants,
+}
+
+impl World {
+    /// The things signing a written commit that have no sync ID: what a node acts as.
+    pub fn signers(&self, st: &State) -> Things {
+        st.written.iter().map(|&i| self.w.commits[i].signer).filter(|a| !self.sids.contains(a)).collect()
+    }
+    /// The edges a reading gives a role on (records included): the read graph paths run over.
+    fn role_edges(&self, rd: &paths::Reading) -> BTreeSet<Edge> {
+        rd.roles.iter().filter(|&(_, &r)| r > Role::None).map(|(&e, _)| e).chain(self.w.records.iter().copied()).collect()
+    }
+    /// The holders on a path of `edges` from `a` to a thing of `unit`.
+    pub fn path_holders(edges: &BTreeSet<Edge>, a: Thing, unit: &Things) -> Things {
+        let reach = |from: Things, fwd: bool| {
+            let mut seen = from;
+            loop {
+                let more: Vec<Thing> = edges.iter().filter_map(|&(x, y)| if fwd { (seen.contains(&x) && !seen.contains(&y)).then_some(y) } else { (seen.contains(&y) && !seen.contains(&x)).then_some(x) }).collect();
+                if more.is_empty() {
+                    return seen;
+                }
+                seen.extend(more);
+            }
+        };
+        let (f, b) = (reach(Things::from([a]), true), reach(unit.clone(), false));
+        f.intersection(&b).copied().filter(|&x| x != a).collect()
+    }
+    /// A key part at `st`: a holder's, its sync ID's role entries as logged; a signer's (no sync ID
+    /// in the model: its node's own), every written edge write naming it or on it, with their
+    /// evidence.
+    pub fn key_part(&self, rule: &Rule, st: &State, h: Thing) -> Set {
+        if let Some(e) = st.entries.get(&h) {
+            return e.iter().copied().filter(|&i| self.w.edge_class(i)).collect();
+        }
+        let all = self.full(st, &Set::new()).v.held;
+        let seeds: Set = all.iter().copied().filter(|&i| self.w.sets(i).is_some_and(|(x, y)| x == h || y == h)).collect();
+        self.closure(rule, &seeds, &all)
+    }
+    /// What a node acting as `a` and syncing `s` holds: S's entries, and under `j` the key parts
+    /// over the paths of `edges`.
+    pub fn joint_held(&self, rule: &Rule, st: &State, s: Sid, a: Thing, edges: &BTreeSet<Edge>, j: Joint) -> Set {
+        let mut held = st.entries[&s].clone();
+        if j != Joint::Unit {
+            for h in Self::path_holders(edges, a, &st.units[&s]).into_iter().chain([a]) {
+                held.extend(self.key_part(rule, st, h).into_iter().filter(|&i| j != Joint::Grants || self.removes(i).is_none()));
+            }
+        }
+        held
+    }
+    /// The simple paths of `edges` from `a` to `t` with at most three hops, as a write states them
+    /// (the things between).
+    fn candidate_paths(edges: &BTreeSet<Edge>, a: Thing, t: Thing) -> Vec<Vec<Thing>> {
+        let mut out = vec![];
+        let mut todo = vec![vec![a]];
+        while let Some(p) = todo.pop() {
+            let at = *p.last().unwrap_or(&a);
+            for &(_, y) in edges.range((at, 0)..=(at, Thing::MAX)) {
+                if y == t {
+                    out.push(p[1..].to_vec());
+                } else if !p.contains(&y) && p.len() < 3 {
+                    todo.push(p.iter().copied().chain([y]).collect());
+                }
+            }
+        }
+        out
+    }
+    /// The joint property: a node acting as a signer and holding one sync ID plus its paths' key
+    /// parts (`joint_held`) judges and acts as the node holding everything.
+    /// - `J-judge`: each body S should carry that it holds, it judges as S's reference or as the
+    ///   node holding everything (holding a removal S lacks takes it to the latter).
+    /// - `J-act`: a content write it would make now on a thing of S's unit, along any path the
+    ///   world's roles or its own reading's run (`candidate_paths`), it judges valid iff the node
+    ///   holding everything does.
+    /// - `J-logged`: one it judges valid, logged under S with what its view requires there
+    ///   (`req`), S's reader judges as the node holding everything.
+    pub fn joint(&self, rule: &Rule, st: &State, j: Joint) -> Vec<Fail> {
+        let full = self.full(st, &Set::new());
+        let rd = paths::judge(&self.w, &self.rules, &full.v);
+        let edges = self.role_edges(&rd);
+        let fv = self.verdicts(&full, &st.written);
+        let ts = self.w.commits.iter().map(|c| c.ts).max().unwrap_or(0) + 1;
+        let seen = |held: Set| {
+            let trust = self.trust.intersection(&held).copied().collect();
+            Seen { v: View { held, leaves: None, trust } }
+        };
+        let mut out = vec![];
+        for &s in &self.sids {
+            let owed = self.owed_bodies(st, s);
+            let refv = self.verdicts(&self.reference(rule, st, s, &Set::new()), &owed);
+            for a in self.signers(st) {
+                let held = self.joint_held(rule, st, s, a, &edges, j);
+                for (i, v) in self.verdicts(&seen(held.clone()), &owed.intersection(&held).copied().collect()) {
+                    if v != fv[&i] && v != refv[&i] {
+                        out.push(Fail { prop: "J-judge", step: st.step, sid: s, id: i, reader: Some(v), full: Some(fv[&i]) });
+                    }
+                }
+                // the paths it would write along: the world's, and those its own reading shows
+                let cand: BTreeSet<Edge> = edges.union(&self.role_edges(&paths::judge(&self.w, &self.rules, &seen(held.clone()).v))).copied().collect();
+                for &t in &st.units[&s] {
+                    for path in Self::candidate_paths(&cand, a, t) {
+                        let mut w2 = self.clone();
+                        let i = w2.write(0, |p| p.content(a, ts, &path, t));
+                        let mine: Set = held.iter().copied().chain([i]).collect();
+                        let jv = w2.verdicts(&seen(mine.clone()), &Set::from([i]))[&i];
+                        let all: Set = full.v.held.iter().copied().chain([i]).collect();
+                        let f = w2.verdicts(&seen(all), &Set::from([i]))[&i];
+                        if (jv == Verdict::Valid) != (f == Verdict::Valid) {
+                            out.push(Fail { prop: "J-act", step: st.step, sid: s, id: i, reader: Some(jv), full: Some(f) });
+                        }
+                        if jv == Verdict::Valid {
+                            let view = if j == Joint::UnitLog { st.entries[&s].iter().copied().chain([i]).collect() } else { mine.clone() };
+                            let logged: Set = st.entries[&s].union(&w2.req(rule, s, &st.units, &view)).copied().collect();
+                            let r = w2.verdicts(&w2.reader_of(rule, &st.units[&s], logged), &Set::from([i]))[&i];
+                            if r != f {
+                                out.push(Fail { prop: "J-logged", step: st.step, sid: s, id: i, reader: Some(r), full: Some(f) });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 // ---- Worlds ----
 
 pub mod names {

@@ -2,27 +2,34 @@
 //! thing through holders, used without the holders' content. Properties in
 //! tests/it/spec_holders.rs, findings in the study.
 //!
+//! **Taken grants** (direction 2, 3): a grant naming holder `h` is in its target's roster
+//! whoever wrote it. `h` takes it, and it sits under `h`'s own sync ID, iff a writer of `h` wrote it
+//! (`From::Writer`: `h`'s data) or `h`'s admins enabled grants from outside (`Keys::grantable`, the
+//! current setting) and it came from outside (`From::Outside`: an external signal). Only taken
+//! grants give roles, lie on paths and are listed in a holder's key part.
+//!
 //! **The oracle** (`oracle`): a node's role on a thing it syncs is its own actors' effective role
-//! over the world's grants; what it syncs is the walk from its root strongs with read-ness by that
-//! role (roles never feed what syncs: a role opens no thing no strong reaches); `for_keys` is every
-//! holder on every path of grants from an own actor to a synced thing, less what is held whole.
+//! over the world's taken grants; what it syncs is the walk from its root strongs with read-ness by
+//! that role (roles never feed what syncs: a role opens no thing no strong reaches); `for_keys` is
+//! every holder on every path of taken grants from an own actor to a synced thing, less what is
+//! held whole.
 //!
-//! **The key part** of a thing (`Keys`): its edges (the grants naming it as target), one keyset
-//! per epoch and one box per holder per epoch. Revoking a grant on a thing rotates it at once
-//! (a new epoch, boxed to the holders left, each at its current epoch) and leaves every thing below
-//! it stale; a stale thing rotates when next written (`rotate`). A grant boxes the target's
-//! current epoch to the holder.
+//! **The key part** of a thing (`Keys`): its taken grants, one keyset per epoch and one box per
+//! holder per epoch. Revoking a grant on a thing rotates it at once (a new epoch, boxed to the
+//! holders left, each at its current epoch) and leaves every thing below it stale; a stale thing
+//! rotates when next written (`rotate`). A grant boxes the target's current epoch to the holder.
 //!
-//! **A node** (`Node`) finds its paths by a `Search`, fetches from a `Source` and counts every
-//! item it fetches once (`Item`, `Ledger`): edge writes and keysets (role entries), boxes, list
-//! entries and keyed lookups of the search, content. `Rule` names the design and its controls.
+//! **A node** (`Node`) finds its paths down from its own actors' taken grants (the lists of the
+//! holders it opens: `Search::Lists` of the study), fetches from a `Source` and counts every item it
+//! fetches once (`Item`, `Ledger`): edge writes and keysets (role entries), boxes, list entries,
+//! content. `Rule` names the design and its controls.
 //!
 //! Abstracted: every thing is independent; an own actor's secrets are the node's; holding a
 //! thing's epoch `e` gives every earlier one; a thing's rotation is readable under the epoch
 //! before (its own sync ID gives every box but the first); a holder's part is readable by a node
 //! holding the holder's current epoch, an own actor's by the node; a keyless grant
-//! (`World::keyless`) is on no path. Left out: validity (roles-model `paths`), which path a write
-//! states, sealing, the wire.
+//! (`World::keyless`, over the taken grants) is on no path. Left out: validity (roles-model
+//! `paths`; joined in `evidence::joint`), which path a write states, sealing, the wire.
 use super::{keyless_of, walk_with, Closure, Edges, Kind, NodeView, Role, Set, Walk, World, T};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -116,8 +123,9 @@ impl Seen {
 /// The direction's definition: what a node with own actors `own` and root strongs to `roots`
 /// syncs, holds for keys and may do, as a function of the world alone.
 pub fn oracle(k: &Keys, own: &Set, roots: &Set) -> Seen {
-    let all = roles_of(&k.world, own);
-    let mut closure = walk(&k.world, &k.strongs, roots, &all, |_| true);
+    let taken = k.taken_world();
+    let all = roles_of(&taken, own);
+    let mut closure = walk(&taken, &k.strongs, roots, &all, |_| true);
     let synced: Set = closure.read.union(&closure.stored).copied().collect();
     let (holders, _) = on_paths(&k.keyed_edges(), own, &synced);
     closure.for_keys = holders.difference(&closure.held).copied().collect();
@@ -127,13 +135,25 @@ pub fn oracle(k: &Keys, own: &Set, roots: &Set) -> Seen {
 
 // ---- The world's key parts ----
 
+/// Who wrote a grant, as its holder judges it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum From {
+    /// A writer of the holder: the holder's data.
+    Writer,
+    /// Anyone else: an external signal of the holder, taken only while its admins enable it.
+    Outside,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Keys {
+    /// Every grant written: the targets' rosters. `World::keyless` is over the taken ones.
     pub world: World,
+    /// The grants written from outside their holder.
+    pub outside: BTreeSet<(T, T)>,
+    /// The holders whose admins enable grants from outside.
+    pub grantable: Set,
     /// The strongs inside things.
     pub strongs: Edges,
-    /// Per strong inside a thing, the holders its maker names (p3).
-    pub hints: BTreeMap<(T, T), Set>,
     pub epoch: Vec<u32>,
     /// `(x, e, h, eh)`: `x`'s epoch `e` boxed to holder `h` at its epoch `eh`.
     pub boxes: BTreeSet<(T, u32, T, u32)>,
@@ -144,8 +164,6 @@ pub struct Keys {
     pub stale: Set,
     /// The grants standing, in the order made (which of a cycle's is keyless).
     pub order: Vec<(T, T)>,
-    /// Every role commit made.
-    pub log: Vec<(T, T, Option<Role>)>,
     /// A control of the fixpoint: no grant is keyless, so holders may form cycles.
     pub raw_cycles: bool,
 }
@@ -160,29 +178,51 @@ impl Keys {
         self.content.push(0);
         self.epoch.len() - 1
     }
-    /// The role of a grant with key access.
+    /// Whether the holder takes the grant `(h, x)` standing.
+    pub fn taken(&self, h: T, x: T) -> bool {
+        self.world.grants.contains_key(&(h, x)) && (!self.outside.contains(&(h, x)) || self.grantable.contains(&h))
+    }
+    /// The world of taken grants.
+    pub fn taken_world(&self) -> World {
+        World { kinds: self.world.kinds.clone(), grants: self.world.grants.iter().filter(|(e, _)| self.taken(e.0, e.1)).map(|(&e, &r)| (e, r)).collect(), keyless: self.world.keyless.clone() }
+    }
+    fn taken_order(&self) -> Vec<(T, T)> {
+        self.order.iter().copied().filter(|e| self.taken(e.0, e.1)).collect()
+    }
+    /// The role of a taken grant with key access.
     pub fn keyed(&self, h: T, x: T) -> Option<Role> {
-        self.world.grants.get(&(h, x)).copied().filter(|_| !self.world.keyless.contains(&(h, x)))
+        self.world.grants.get(&(h, x)).copied().filter(|_| self.taken(h, x) && !self.world.keyless.contains(&(h, x)))
     }
     pub fn keyed_edges(&self) -> BTreeSet<(T, T)> {
+        self.world.grants.keys().copied().filter(|e| self.keyed(e.0, e.1).is_some()).collect()
+    }
+    /// The grants boxed: every grant written that is not keyless (taken or not).
+    fn boxed_edges(&self) -> BTreeSet<(T, T)> {
         self.world.grants.keys().copied().filter(|e| !self.world.keyless.contains(e)).collect()
     }
     fn rekey(&mut self) {
         if !self.raw_cycles {
-            self.world.keyless = keyless_of(&self.order);
+            self.world.keyless = keyless_of(&self.taken_order());
         }
-        for (g, t) in self.keyed_edges() {
+        for (g, t) in self.boxed_edges() {
             if !self.boxes.range((t, self.epoch[t], g, 0)..=(t, self.epoch[t], g, u32::MAX)).any(|_| true) {
                 self.boxes.insert((t, self.epoch[t], g, self.epoch[g]));
             }
         }
     }
+    /// A grant by a writer of `g`.
     pub fn grant(&mut self, g: T, t: T, r: Role) {
+        self.grant_from(g, t, r, From::Writer);
+    }
+    pub fn grant_from(&mut self, g: T, t: T, r: Role, from: From) {
         if self.world.grants.insert((g, t), r).is_none() {
             self.order.push((g, t));
         }
+        match from {
+            From::Writer => self.outside.remove(&(g, t)),
+            From::Outside => self.outside.insert((g, t)),
+        };
         *self.ver.entry((g, t)).or_default() += 1;
-        self.log.push((g, t, Some(r)));
         self.rekey();
     }
     /// Removes `g`'s grant on `t`: `t` rotates, everything below it is stale.
@@ -191,18 +231,27 @@ impl Keys {
             return false;
         }
         self.order.retain(|&e| e != (g, t));
+        self.outside.remove(&(g, t));
         *self.ver.entry((g, t)).or_default() += 1;
-        self.log.push((g, t, None));
         self.rekey();
-        let below = self.world.keys_of(t);
+        let below = self.taken_world().keys_of(t);
         self.rotate(t);
         self.stale.extend(below.into_iter().filter(|&x| x != t));
         true
     }
+    /// `h`'s admins enable or disable grants from outside (its setting: nothing rotates at the
+    /// targets, whose rosters are unchanged).
+    pub fn set_grantable(&mut self, h: T, on: bool) {
+        match on {
+            true => self.grantable.insert(h),
+            false => self.grantable.remove(&h),
+        };
+        self.rekey();
+    }
     /// A new epoch of `x`, boxed to each holder at its current epoch.
     pub fn rotate(&mut self, x: T) {
         self.epoch[x] += 1;
-        for (g, t) in self.keyed_edges() {
+        for (g, t) in self.boxed_edges() {
             if t == x {
                 self.boxes.insert((x, self.epoch[x], g, self.epoch[g]));
             }
@@ -211,71 +260,32 @@ impl Keys {
     }
     /// Every stale thing rotates, those above first (a thing is boxed to its holders' new epochs).
     pub fn rotate_stale(&mut self) {
-        while let Some(&x) = self.stale.iter().find(|&&x| !self.stale.iter().any(|&y| y != x && self.world.keys_of(y).contains(&x))).or(self.stale.iter().next()) {
+        let w = self.taken_world();
+        while let Some(&x) = self.stale.iter().find(|&&x| !self.stale.iter().any(|&y| y != x && w.keys_of(y).contains(&x))).or(self.stale.iter().next()) {
             self.rotate(x);
         }
     }
     pub fn edit(&mut self, x: T) {
         self.content[x] += 1;
     }
-    pub fn strong(&mut self, from: T, to: T, hint: &Set) {
+    pub fn strong(&mut self, from: T, to: T) {
         self.strongs.insert((from, to));
-        self.hints.insert((from, to), hint.clone());
     }
     pub fn unstrong(&mut self, from: T, to: T) {
         self.strongs.remove(&(from, to));
-        self.hints.remove(&(from, to));
-    }
-    /// The holders of every simple path of keyed grants from one of `own` to `t`, the path a
-    /// write would pick first (best role, then shortest).
-    pub fn paths(&self, own: &Set, t: T) -> Vec<Vec<T>> {
-        fn go(k: &Keys, own: &Set, t: T, at: T, role: Role, path: &mut Vec<T>, out: &mut Vec<(Role, Vec<T>)>) {
-            for (&(_, b), &r) in k.world.grants.range((at, 0)..=(at, T::MAX)) {
-                if k.world.keyless.contains(&(at, b)) || own.contains(&b) || path.contains(&b) {
-                    continue;
-                }
-                if b == t {
-                    out.push((role.min(r), path.clone()));
-                } else {
-                    path.push(b);
-                    go(k, own, t, b, role.min(r), path, out);
-                    path.pop();
-                }
-            }
-        }
-        let mut out = vec![];
-        for &a in own {
-            go(self, own, t, a, Role::Admin, &mut vec![], &mut out);
-        }
-        out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.len().cmp(&b.1.len())).then(a.1.cmp(&b.1)));
-        out.into_iter().map(|x| x.1).collect()
     }
 }
 
 // ---- A node ----
 
-/// How a node finds the holders on its paths (the study's Open: finding the paths).
+/// Which grants a node follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Search {
-    /// (p1) Reads the edge list of every holder its own actors reach by grants, fetches key
-    /// parts only for holders on a path.
-    Lists,
-    /// (p3) alone: keyed lookups among its own actors, the holders a strong names and the
-    /// strong's target.
-    Hint,
-    /// (p2) alone: keyed lookups from what it has opened to the holders the rosters of the things
-    /// it reads name.
-    Roster,
-    /// The lean: (p3), then (p2).
-    HintRoster,
-    /// The lean, reading also the roster of every holder on a path found.
-    HintRosterDeep,
-    /// Backward by rosters: reads the roster of every thing on a chain of grants ending at a thing
-    /// its strongs reach, opened or not (so it needs a holder's roster readable by the readers of
-    /// what the holder has a role on), fetches key parts only for holders on a path.
-    Back,
-    /// Control of (ii): follows every grant naming an own actor or a holder so reached.
-    Follow,
+pub enum Taking {
+    /// The design: the taken grants of the holders it opens.
+    Taken,
+    /// Control of (ii): every grant naming a holder it opens, taken or not (no taking: the
+    /// study's rejected "roles from every grant naming the account").
+    Every,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,23 +312,19 @@ pub enum RolesBy {
     /// Control of (i): over every role commit held, certificates that arrived for another reason
     /// included.
     HeldEdges,
-    /// Control of (iii): the rule before (`World::roles_from_reached`): an own actor's grant
-    /// counts only on a thing a strong reaches.
-    Reached,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rule {
-    pub search: Search,
+    pub taking: Taking,
     pub paths: Paths,
     pub boxes: Boxes,
     pub roles: RolesBy,
 }
 
 impl Rule {
-    pub fn with(search: Search) -> Rule {
-        Rule { search, paths: Paths::All, boxes: Boxes::Own, roles: RolesBy::Chains }
-    }
+    /// The design.
+    pub const DESIGN: Rule = Rule { taking: Taking::Taken, paths: Paths::All, boxes: Boxes::Own, roles: RolesBy::Chains };
 }
 
 /// One fetched thing; a node's ledger is the set of them.
@@ -330,10 +336,7 @@ pub enum Item {
     Keyset(T, u32),
     /// A thing's epoch boxed to a holder.
     Box(T, u32, T),
-    /// A keyed lookup of `(holder, target)` in the holder's part, hit or miss.
-    Probe(T, T, u32),
-    /// An entry of a holder's edge list (or, searching backward, of a target's roster) read by a
-    /// list search.
+    /// An entry of a holder's list of taken grants, read by the search.
     List(T, T, u32),
     Content(T, u32),
 }
@@ -343,7 +346,6 @@ pub struct Ledger {
     pub edges: usize,
     pub keysets: usize,
     pub boxes: usize,
-    pub probes: usize,
     pub lists: usize,
     pub content: usize,
 }
@@ -356,7 +358,6 @@ impl Ledger {
                 Item::Edge(..) => l.edges += 1,
                 Item::Keyset(..) => l.keysets += 1,
                 Item::Box(..) => l.boxes += 1,
-                Item::Probe(..) => l.probes += 1,
                 Item::List(..) => l.lists += 1,
                 Item::Content(..) => l.content += 1,
             }
@@ -388,14 +389,14 @@ impl Source {
 #[derive(Clone, Debug, Default)]
 pub struct Node {
     pub own: Set,
-    /// The node root's strongs: target, and the holders the strong names (p3).
-    pub roots: BTreeMap<T, Set>,
+    /// The node root's strongs.
+    pub roots: Set,
     /// The edges held, each as last fetched: the pieces of its paths and the rosters of what it reads.
     pub edges: BTreeMap<(T, T), Role>,
     /// The newest epoch held of each thing whose secrets it holds.
     pub have: BTreeMap<T, u32>,
-    /// The strongs of each thing read, as last fetched, with their hints.
-    pub inner: BTreeMap<T, BTreeMap<T, Set>>,
+    /// The strongs of each thing read, as last fetched.
+    pub inner: BTreeMap<T, Set>,
     /// Role commits held for another reason (evidence copies, certificates): the grants they show.
     pub certs: BTreeMap<(T, T), Role>,
     /// Everything fetched.
@@ -420,13 +421,20 @@ impl Node {
         self.seen.roles.get(&t).is_some_and(|&r| r >= Role::Write) && self.open(k, t)
     }
     /// Receives the edge write of `(h, x)` as it stands, from whoever made it.
-    pub fn hear(&mut self, k: &Keys, h: T, x: T) {
-        self.piece(k, h, x);
+    pub fn hear(&mut self, k: &Keys, rule: &Rule, h: T, x: T) {
+        self.piece(k, rule, h, x);
+    }
+    /// The role a followed grant gives: a taken keyed one's (any keyed one's under `Taking::Every`).
+    fn follows(k: &Keys, rule: &Rule, h: T, x: T) -> Option<Role> {
+        match rule.taking {
+            Taking::Taken => k.keyed(h, x),
+            Taking::Every => k.world.grants.get(&(h, x)).copied().filter(|_| !k.world.keyless.contains(&(h, x))),
+        }
     }
     /// Fetches the edge `(h, x)` as the world has it.
-    fn piece(&mut self, k: &Keys, h: T, x: T) {
+    fn piece(&mut self, k: &Keys, rule: &Rule, h: T, x: T) {
         self.got.insert(Item::Edge(h, x, k.ver.get(&(h, x)).copied().unwrap_or(0)));
-        match k.keyed(h, x) {
+        match Self::follows(k, rule, h, x) {
             Some(r) => self.edges.insert((h, x), r),
             None => self.edges.remove(&(h, x)),
         };
@@ -477,130 +485,37 @@ impl Node {
         let kinds = k.world.kinds.clone();
         let opened = World { kinds: kinds.clone(), grants: self.edges.iter().filter(|(e, _)| has(e.1)).map(|(&e, &r)| (e, r)).collect(), keyless: BTreeSet::new() };
         let all = World { kinds, grants, keyless: BTreeSet::new() };
-        let roots: Set = self.roots.keys().copied().collect();
-        let strongs: Edges = self.inner.iter().flat_map(|(&x, ts)| ts.keys().map(move |&y| (x, y))).collect();
-        let reached_by = |c: &Closure| -> Set { roots.iter().copied().chain(strongs.iter().filter(|(x, _)| c.read.contains(x)).map(|&(_, y)| y)).collect() };
-        if rule.roles != RolesBy::Reached {
-            let roles = roles_of(&all, &self.own);
-            let c = walk(&opened, &strongs, &roots, &roles, has);
-            let reached = reached_by(&c);
-            return (c, roles, reached);
-        }
-        let mut reached = roots.clone();
-        loop {
-            let mut roles = BTreeMap::new();
-            for &a in &self.own {
-                for (t, r) in all.roles_from_reached(a, &reached) {
-                    let e = roles.entry(t).or_insert(r);
-                    *e = (*e).max(r);
-                }
-            }
-            let c = walk(&opened, &strongs, &roots, &roles, has);
-            let next = reached_by(&c);
-            if next == reached {
-                return (c, roles, reached);
-            }
-            reached = next;
-        }
+        let strongs: Edges = self.inner.iter().flat_map(|(&x, ts)| ts.iter().map(move |&y| (x, y))).collect();
+        let roles = roles_of(&all, &self.own);
+        let c = walk(&opened, &strongs, &self.roots, &roles, has);
+        let reached = self.roots.iter().copied().chain(strongs.iter().filter(|(x, _)| c.read.contains(x)).map(|&(_, y)| y)).collect();
+        (c, roles, reached)
     }
-    fn search(&mut self, k: &Keys, rule: &Rule, src: &Source, c: &Closure, reached: &Set) {
-        let known: BTreeSet<(T, T)> = self.edges.keys().copied().collect();
-        let synced: Set = c.read.union(&c.stored).copied().collect();
-        let mut fwd = self.own.clone();
-        let mut todo: Vec<T> = fwd.iter().copied().collect();
-        while let Some(x) = todo.pop() {
-            for &(_, b) in known.range((x, 0)..=(x, T::MAX)) {
-                if fwd.insert(b) {
-                    todo.push(b);
+    /// Down from the own actors: reads the list of every holder they reach by followed grants,
+    /// fetches the pieces of the paths to what the strongs reach from holders it opens.
+    fn search(&mut self, k: &Keys, rule: &Rule, src: &Source, reached: &Set) {
+        let ver = |h: T, x: T| k.ver.get(&(h, x)).copied().unwrap_or(0);
+        let mut listed = BTreeSet::new();
+        let mut seen = self.own.clone();
+        let mut todo: Vec<T> = seen.iter().copied().collect();
+        while let Some(h) = todo.pop() {
+            if !src.part(h) {
+                continue;
+            }
+            for (&(_, x), _) in k.world.grants.range((h, 0)..=(h, T::MAX)) {
+                if Self::follows(k, rule, h, x).is_none() {
+                    continue;
+                }
+                self.got.insert(Item::List(h, x, ver(h, x)));
+                listed.insert((h, x));
+                if seen.insert(x) {
+                    todo.push(x);
                 }
             }
         }
-        let opened: Vec<T> = fwd.iter().copied().filter(|&h| self.open(k, h) && src.part(h)).collect();
-        let ver = |h: T, x: T| k.ver.get(&(h, x)).copied().unwrap_or(0);
-        match rule.search {
-            Search::Lists => {
-                let mut listed = BTreeSet::new();
-                let mut seen = self.own.clone();
-                let mut todo: Vec<T> = seen.iter().copied().collect();
-                while let Some(h) = todo.pop() {
-                    if !src.part(h) {
-                        continue;
-                    }
-                    for (&(_, x), _) in k.world.grants.range((h, 0)..=(h, T::MAX)) {
-                        if k.world.keyless.contains(&(h, x)) {
-                            continue;
-                        }
-                        self.got.insert(Item::List(h, x, ver(h, x)));
-                        listed.insert((h, x));
-                        if seen.insert(x) {
-                            todo.push(x);
-                        }
-                    }
-                }
-                for (h, x) in on_paths(&listed, &self.own, reached).1 {
-                    if opened.contains(&h) {
-                        self.piece(k, h, x);
-                    }
-                }
-            }
-            Search::Back => {
-                let mut listed = BTreeSet::new();
-                let mut seen = reached.clone();
-                let mut todo: Vec<T> = seen.iter().copied().collect();
-                while let Some(x) = todo.pop() {
-                    if self.own.contains(&x) || !src.part(x) {
-                        continue;
-                    }
-                    for (g, _) in k.keyed_edges().into_iter().filter(|e| e.1 == x) {
-                        self.got.insert(Item::List(g, x, ver(g, x)));
-                        listed.insert((g, x));
-                        if seen.insert(g) {
-                            todo.push(g);
-                        }
-                    }
-                }
-                for (h, x) in on_paths(&listed, &self.own, reached).1 {
-                    if opened.contains(&h) {
-                        self.piece(k, h, x);
-                    }
-                }
-            }
-            Search::Follow => {
-                for &h in &opened {
-                    for (h, x) in k.world.grants.range((h, 0)..=(h, T::MAX)).map(|(&e, _)| e).collect::<Vec<_>>() {
-                        self.piece(k, h, x);
-                    }
-                }
-            }
-            Search::Hint | Search::Roster | Search::HintRoster | Search::HintRosterDeep => {
-                let mut wanted = reached.clone();
-                if rule.search != Search::Roster {
-                    wanted.extend(self.roots.values().flatten());
-                    wanted.extend(self.inner.iter().filter(|(x, _)| c.read.contains(x)).flat_map(|(_, ts)| ts.values().flatten()));
-                }
-                if rule.search != Search::Hint {
-                    wanted.extend(known.iter().filter(|(_, x)| c.read.contains(x)).map(|&(g, _)| g));
-                }
-                if rule.search == Search::HintRosterDeep {
-                    for h in on_paths(&known, &self.own, &synced).0 {
-                        if opened.contains(&h) {
-                            for g in k.keyed_edges().into_iter().filter(|e| e.1 == h).map(|e| e.0).collect::<Vec<_>>() {
-                                self.piece(k, g, h);
-                                wanted.insert(g);
-                            }
-                        }
-                    }
-                }
-                for &h in &opened {
-                    for &x in &wanted {
-                        if x != h && !self.own.contains(&x) {
-                            self.got.insert(Item::Probe(h, x, ver(h, x)));
-                            if k.keyed(h, x).is_some() {
-                                self.piece(k, h, x);
-                            }
-                        }
-                    }
-                }
+        for (h, x) in on_paths(&listed, &self.own, reached).1 {
+            if self.open(k, h) && src.part(h) {
+                self.piece(k, rule, h, x);
             }
         }
     }
@@ -612,21 +527,19 @@ impl Node {
             let before = (self.edges.clone(), self.have.clone(), self.inner.clone());
             for (h, x) in self.edges.keys().copied().collect::<Vec<_>>() {
                 if src.part(h) && self.open(k, h) {
-                    self.piece(k, h, x);
+                    self.piece(k, rule, h, x);
                 }
             }
             self.advance(k, src);
             let (c, _, reached) = self.judge(k, rule);
             for &x in &c.read {
                 if src.unit(x) && self.open(k, x) {
-                    for (g, _) in self.edges.keys().copied().filter(|e| e.1 == x).collect::<Vec<_>>() {
-                        self.piece(k, g, x);
+                    // the roster: every grant on it, taken or not
+                    let roster: Vec<(T, T)> = self.edges.keys().copied().filter(|e| e.1 == x).chain(k.world.grants.keys().copied().filter(|e| e.1 == x)).collect();
+                    for (g, _) in roster {
+                        self.piece(k, rule, g, x);
                     }
-                    for (g, _) in k.keyed_edges().into_iter().filter(|e| e.1 == x) {
-                        self.piece(k, g, x);
-                    }
-                    let strongs = k.strongs.range((x, 0)..=(x, T::MAX)).map(|&(_, y)| (y, k.hints.get(&(x, y)).cloned().unwrap_or_default())).collect();
-                    self.inner.insert(x, strongs);
+                    self.inner.insert(x, k.strongs.range((x, 0)..=(x, T::MAX)).map(|&(_, y)| y).collect());
                     self.got.insert(Item::Content(x, k.content[x]));
                 }
             }
@@ -636,7 +549,7 @@ impl Node {
                 }
             }
             self.inner.retain(|x, _| c.read.contains(x));
-            self.search(k, rule, src, &c, &reached);
+            self.search(k, rule, src, &reached);
             if before == (self.edges.clone(), self.have.clone(), self.inner.clone()) {
                 self.unsettled = false;
                 break;
@@ -645,10 +558,9 @@ impl Node {
         let (c, roles, _) = self.judge(k, rule);
         let synced: Set = c.read.union(&c.stored).copied().collect();
         let known: BTreeSet<(T, T)> = self.edges.keys().copied().collect();
-        let (holders, on) = match (rule.search, rule.paths) {
-            (Search::Follow, _) => (known.iter().flat_map(|&(a, b)| [a, b]).filter(|x| !self.own.contains(x)).collect(), known.clone()),
-            (_, Paths::All) => on_paths(&known, &self.own, &synced),
-            (_, Paths::Chosen) => chosen(&self.edges, &self.own, &synced, &roles),
+        let (holders, on) = match rule.paths {
+            Paths::All => on_paths(&known, &self.own, &synced),
+            Paths::Chosen => chosen(&self.edges, &self.own, &synced, &roles),
         };
         self.edges.retain(|e, _| on.contains(e) || c.read.contains(&e.1));
         self.have.retain(|x, _| synced.contains(x) || holders.contains(x));

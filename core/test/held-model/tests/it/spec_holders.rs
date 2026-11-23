@@ -1,7 +1,7 @@
 //! Holder access (notes/holder-access-study.md, The model), held_model::closure::keys:
 //! properties (i) to (v) and the fixpoint's own over an exhaustive small family and random
-//! histories, per search variant and control; the eleven hand worlds. spec: none (modelled before
-//! any spec).
+//! histories, for the design and each control; the hand worlds. spec: none (modelled before any
+//! spec).
 use crate::util::{env, par_map};
 use held_model::closure::keys::*;
 use held_model::closure::{Role, Set, T};
@@ -19,35 +19,36 @@ fn me() -> Set {
     set(&[ME])
 }
 
-/// A world as written: grants in the order made, strongs inside things and root strongs, each
-/// with the holders it names.
+/// A world as written: grants in the order made (those in `outside` from outside their holder),
+/// the holders taking grants from outside, strongs inside things and root strongs.
 #[derive(Clone, Debug, Default)]
 struct Spec {
     things: usize,
     grants: Vec<(T, T, Role)>,
-    strongs: Vec<(T, T, Vec<T>)>,
-    roots: Vec<(T, Vec<T>)>,
+    outside: Vec<(T, T)>,
+    grantable: Vec<T>,
+    strongs: Vec<(T, T)>,
+    roots: Vec<T>,
 }
 
 fn build(s: &Spec, perm: &dyn Fn(T) -> T) -> (Keys, Node) {
     let mut k = Keys::new(s.things);
-    for &(g, t, r) in &s.grants {
-        k.grant(perm(g), perm(t), r);
+    for &h in &s.grantable {
+        k.set_grantable(perm(h), true);
     }
-    for (a, b, h) in &s.strongs {
-        k.strong(perm(*a), perm(*b), &h.iter().map(|&x| perm(x)).collect());
+    for &(g, t, r) in &s.grants {
+        let from = if s.outside.contains(&(g, t)) { From::Outside } else { From::Writer };
+        k.grant_from(perm(g), perm(t), r, from);
+    }
+    for &(a, b) in &s.strongs {
+        k.strong(perm(a), perm(b));
     }
     let mut n = Node::new(&me());
-    for (t, h) in &s.roots {
-        n.roots.insert(perm(*t), h.iter().map(|&x| perm(x)).collect());
-    }
+    n.roots = s.roots.iter().map(|&t| perm(t)).collect();
     (k, n)
 }
 fn id(x: T) -> T {
     x
-}
-fn roots(n: &Node) -> Set {
-    n.roots.keys().copied().collect()
 }
 fn map_set(s: &Set, p: &dyn Fn(T) -> T) -> Set {
     s.iter().map(|&x| p(x)).collect()
@@ -65,35 +66,39 @@ fn shows(s: &Seen) -> (&Set, &Set, &Set, &BTreeMap<T, Role>) {
     (&s.closure.read, &s.closure.stored, &s.closure.held, &s.roles)
 }
 
-const P1: Rule = Rule { search: Search::Lists, paths: Paths::All, boxes: Boxes::Own, roles: RolesBy::Chains };
-const LEAN: Rule = Rule { search: Search::HintRoster, ..P1 };
+const P1: Rule = Rule::DESIGN;
+const EVERY: Rule = Rule { taking: Taking::Every, ..P1 };
 
-/// The search variants, then the controls (each on the complete search).
+/// The design, then the controls.
 fn variants() -> Vec<(&'static str, Rule)> {
     vec![
-        ("p1 lists", P1),
-        ("p3 hint", Rule::with(Search::Hint)),
-        ("p2 roster", Rule::with(Search::Roster)),
-        ("p3+p2 lean", LEAN),
-        ("p3+p2 deep", Rule::with(Search::HintRosterDeep)),
-        ("back rosters", Rule::with(Search::Back)),
+        ("design", P1),
         ("control held edges", Rule { roles: RolesBy::HeldEdges, ..P1 }),
-        ("control reached", Rule { roles: RolesBy::Reached, ..P1 }),
-        ("control follow", Rule::with(Search::Follow)),
+        ("control every grant", EVERY),
         ("control chosen path", Rule { paths: Paths::Chosen, ..P1 }),
         ("control whole boxes", Rule { boxes: Boxes::Whole, ..P1 }),
     ]
 }
 
+/// A grant written from outside its holder, the world without it, and the holder enabling it.
+struct Flip {
+    edge: (T, T),
+    untaken: Keys,
+    without: Keys,
+    enabled: Keys,
+}
+
 /// A world with what every variant is checked against: the oracle, the same world relabelled,
-/// each stranger's grant that leaves the oracle as it is, each revocation with the oracle after it.
+/// each grant flipped to come from outside, grants of another thing's on no path (taken, and
+/// from outside not taken), each revocation with the oracle after it.
 struct Case {
     things: usize,
     k: Keys,
     node: Node,
     want: Seen,
     relabelled: (Keys, Node, Seen),
-    strangers: Vec<Keys>,
+    flips: Vec<Flip>,
+    off_path: Vec<(Keys, Keys)>,
     revoked: Vec<((T, T), Keys, Seen)>,
 }
 
@@ -103,21 +108,34 @@ fn relabel(things: usize) -> impl Fn(T) -> T {
 
 fn case(s: &Spec) -> Case {
     let (k, node) = build(s, &id);
-    let want = oracle(&k, &me(), &roots(&node));
+    let want = oracle(&k, &me(), &node.roots);
     let synced = want.synced();
     let (kp, np) = build(s, &relabel(s.things));
-    let wantp = oracle(&kp, &me(), &roots(&np));
-    // (ii) a grant naming the account or a holder, on a thing on no path to a synced thing
-    let mut strangers = vec![];
+    let wantp = oracle(&kp, &me(), &np.roots);
+    let mut flips = vec![];
+    for (i, &(g, t, _)) in s.grants.iter().enumerate() {
+        let mut o = s.clone();
+        o.outside.push((g, t));
+        let mut w = s.clone();
+        w.grants.remove(i);
+        let mut e = o.clone();
+        e.grantable.push(g);
+        flips.push(Flip { edge: (g, t), untaken: build(&o, &id).0, without: build(&w, &id).0, enabled: build(&e, &id).0 });
+    }
+    // (ii) a grant naming the account, a holder or a synced thing, on a thing on no path to a
+    // synced thing: taken (its holder's writer's, the stated cost of reading lists), and from
+    // outside, not taken
+    let mut off_path = vec![];
     for &h in [ME].iter().chain(&want.closure.for_keys).chain(&synced) {
         for x in 1..s.things {
             if x == h || synced.contains(&x) || k.world.grants.contains_key(&(h, x)) {
                 continue;
             }
-            let mut k2 = k.clone();
-            k2.grant(h, x, Admin);
-            if on_paths(&k2.keyed_edges(), &set(&[x]), &synced).1.is_empty() && oracle(&k2, &me(), &roots(&node)) == want {
-                strangers.push(k2);
+            let (mut taken, mut outside) = (k.clone(), k.clone());
+            taken.grant(h, x, Admin);
+            outside.grant_from(h, x, Admin, From::Outside);
+            if on_paths(&taken.keyed_edges(), &set(&[x]), &synced).1.is_empty() && oracle(&taken, &me(), &node.roots) == want {
+                off_path.push((taken, outside));
             }
         }
     }
@@ -127,11 +145,15 @@ fn case(s: &Spec) -> Case {
         k2.revoke(g, t);
         // a keyless grant become a path may need more fetched: not this property's case
         if k2.keyed_edges().is_subset(&k.keyed_edges()) {
-            let want2 = oracle(&k2, &me(), &roots(&node));
+            let want2 = oracle(&k2, &me(), &node.roots);
             revoked.push(((g, t), k2, want2));
         }
     }
-    Case { things: s.things, k, node, want, relabelled: (kp, np, wantp), strangers, revoked }
+    Case { things: s.things, k, node, want, relabelled: (kp, np, wantp), flips, off_path, revoked }
+}
+
+fn key_items(n: &Node) -> BTreeSet<Item> {
+    n.got.iter().copied().filter(|i| !matches!(i, Item::List(..))).collect()
 }
 
 /// The properties a world fails under `rule`, by name.
@@ -194,20 +216,41 @@ fn check(case: &Case, rule: &Rule) -> BTreeSet<&'static str> {
     if n2.got != n.got {
         bad.insert("v content");
     }
-    // (ii) a stranger's grant changes no role and no fetch; a lookup made either way is one
-    // lookup, whatever it answers
-    let flat = |n: &Node| -> BTreeSet<Item> { n.got.iter().map(|&i| if let Item::Probe(h, x, _) = i { Item::Probe(h, x, 0) } else { i }).collect() };
-    for k2 in &case.strangers {
-        let mut n2 = case.node.clone();
-        n2.sync(k2, rule, &all);
-        if n2.seen != n.seen {
+    // (ii) a grant from outside its holder's admins did not enable is as if never written (but
+    // as a roster entry of a thing read); enabled, it is a grant like a writer's
+    for f in &case.flips {
+        let mut u = case.node.clone();
+        u.sync(&f.untaken, rule, &all);
+        let mut w = case.node.clone();
+        w.sync(&f.without, rule, &all);
+        let roster = |i: &Item| matches!(*i, Item::Edge(h, x, _) if (h, x) == f.edge);
+        if u.seen != w.seen {
+            bad.insert("ii untaken roles");
+        }
+        if u.got.iter().filter(|i| !roster(i)).ne(w.got.iter().filter(|i| !roster(i))) {
+            bad.insert("ii untaken fetch");
+        }
+        let mut e = case.node.clone();
+        e.sync(&f.enabled, rule, &all);
+        if e.seen != n.seen || e.got != n.got {
+            bad.insert("ii enabled");
+        }
+    }
+    // (ii) a taken grant on a thing on no path changes no role and no key part (its list entries
+    // are the stated cost); the same from outside, not taken, changes nothing
+    for (taken, outside) in &case.off_path {
+        let mut t = case.node.clone();
+        t.sync(taken, rule, &all);
+        if t.seen != n.seen {
             bad.insert("ii roles");
         }
-        for i in flat(&n2).symmetric_difference(&flat(&n)) {
-            bad.insert(match i {
-                Item::Probe(..) | Item::List(..) => "ii lists",
-                _ => "ii key parts",
-            });
+        if key_items(&t) != key_items(&n) {
+            bad.insert("ii key parts");
+        }
+        let mut o = case.node.clone();
+        o.sync(outside, rule, &all);
+        if o.seen != n.seen || o.got != n.got {
+            bad.insert("ii untaken fetch");
         }
     }
     // (iv) a path revoked: what stays writable is writable on hearing it, with no holder newly
@@ -216,7 +259,7 @@ fn check(case: &Case, rule: &Rule) -> BTreeSet<&'static str> {
     let held = Source { units: Some(synced.clone()), parts: Some(want.closure.for_keys.union(&me()).copied().collect()) };
     for ((g, t), k2, want2) in &case.revoked {
         let (mut k2, mut n2) = (k2.clone(), n.clone());
-        n2.hear(&k2, *g, *t);
+        n2.hear(&k2, rule, *g, *t);
         for rotated in [false, true] {
             if rotated {
                 k2.rotate_stale();
@@ -275,30 +318,15 @@ fn grant_sets(things: usize, roles: &[Role], max: usize) -> Vec<Vec<(T, T, Role)
     out
 }
 
-/// The worlds over one grant set: root strongs to thing 1 or to 1 and 2 (every other choice is a
-/// relabelling), no strong inside a thing or one, and each strong naming the holders of one of
-/// the account's paths to its target (`pick`: which).
+/// The worlds over one grant set, every grant its holder's writer's: root strongs to thing 1 or
+/// to 1 and 2 (every other choice is a relabelling), no strong inside a thing or one. Grants from
+/// outside are each grant flipped (`Case::flips`).
 fn worlds(things: usize, grants: &[(T, T, Role)]) -> Vec<Spec> {
-    let mut k = Keys::new(things + 1);
-    for &(g, t, r) in grants {
-        k.grant(g, t, r);
-    }
-    let paths: Vec<Vec<Vec<T>>> = (0..=things).map(|t| k.paths(&me(), t)).collect();
-    let hint = |t: T, pick: usize| if paths[t].is_empty() { vec![] } else { paths[t][pick % paths[t].len()].clone() };
-    let mut out = vec![];
     let inner: Vec<Option<(T, T)>> = std::iter::once(None).chain((1..=things).flat_map(|a| (1..=things).filter(move |&b| b != a).map(move |b| Some((a, b))))).collect();
+    let mut out = vec![];
     for rs in [vec![1], vec![1, 2]] {
         for &i in &inner {
-            let targets: Vec<T> = rs.iter().copied().chain(i.map(|x| x.1)).collect();
-            let picks = targets.iter().map(|&t| paths[t].len()).max().unwrap_or(0).clamp(1, 2);
-            for pick in 0..picks {
-                out.push(Spec {
-                    things: things + 1,
-                    grants: grants.to_vec(),
-                    strongs: i.iter().map(|&(a, b)| (a, b, hint(b, pick))).collect(),
-                    roots: rs.iter().map(|&t| (t, hint(t, pick))).collect(),
-                });
-            }
+            out.push(Spec { things: things + 1, grants: grants.to_vec(), strongs: i.into_iter().collect(), roots: rs.clone(), ..Spec::default() });
         }
     }
     out
@@ -359,27 +387,19 @@ fn print(what: &str, worlds: usize, t: &Tally) {
     }
 }
 
-/// What the complete searches must pass and each control must fail, over a tally.
+/// The design passes everything; each control fails its property.
 fn judge(t: &Tally, worlds: usize) {
     let fails = |v: &str, p: &str| t.iter().find(|(k, _)| k.0 == v && k.1 == p).map_or(0, |(_, x)| x.0);
-    // (p1) is the direction's definition found by lists: everything but (ii) for list reads
-    for (k, x) in t.iter().filter(|(k, _)| k.0 == "p1 lists" && k.1 != "ii lists" || k.0 == "back rosters") {
-        panic!("{} fails {} in {} worlds, smallest {}", k.0, k.1, x.0, x.2);
+    if let Some((k, x)) = t.iter().find(|(k, _)| k.0 == "design") {
+        panic!("the design fails {} in {} worlds, smallest {}", k.1, x.0, x.2);
     }
     for (v, p) in [
-        ("p1 lists", "ii lists"),
         ("control held edges", "i certificates"),
-        ("control reached", "i roles"),
-        ("control follow", "ii key parts"),
+        ("control every grant", "ii untaken roles"),
+        ("control every grant", "ii untaken fetch"),
         ("control chosen path", "iv fetch outstanding"),
     ] {
         assert!(fails(v, p) > 0, "{v} never fails {p} in {worlds} worlds");
-    }
-    // no search but (p1) reads a list at a stranger's say
-    for v in ["p3 hint", "p2 roster", "p3+p2 lean", "p3+p2 deep"] {
-        for p in ["ii lists", "ii key parts", "ii roles", "iii content", "v content", "settles", "fixpoint drop", "i certificates", "i relabel", "iv fetch outstanding"] {
-            assert_eq!(fails(v, p), 0, "{v} fails {p}");
-        }
     }
 }
 
@@ -397,23 +417,15 @@ fn holder_access_small_family_plain() {
     judge(&t, n);
 }
 
-/// Every world of the family under every variant (by hand: `OSIS_HOLDERS_STRIDE=1` is the whole
-/// family, under `tools/heavy`).
-#[test]
-#[ignore = "by hand"]
-fn explore() {
-    let (n, t) = tally(&family(env("OSIS_HOLDERS_STRIDE", 17)), &variants());
-    print("small family", n, &t);
-}
-
 // ---- Random histories ----
 
-/// A random history under `rule`: grants, revocations, rotations owed, content changes, strongs
-/// added and dropped, a stranger granting the account or a holder a thing it builds; three nodes
-/// with the same strongs syncing at random moments from random sources, and two more that after
-/// half the steps reach only a store keeping what they sync unread, with every key part configured
-/// there or none. The properties failed, and whether the store without key parts left its node
-/// behind (the availability gap).
+/// A random history under `rule`: grants (some from outside their holder), revocations,
+/// rotations owed, content changes, strongs added and dropped, a stranger granting the account or
+/// a holder (from outside) a thing it builds, holders' admins enabling and disabling grants from
+/// outside; three nodes with the same strongs syncing at random moments from random sources, and
+/// two more that after half the steps reach only a store keeping what they sync unread, with every
+/// key part configured there or none. The properties failed, and whether the store without key
+/// parts left its node behind (the availability gap).
 fn history(seed: u64, rule: &Rule, steps: usize) -> (BTreeSet<&'static str>, bool) {
     let mut r = Rng::new(seed);
     let base = 7;
@@ -421,18 +433,13 @@ fn history(seed: u64, rule: &Rule, steps: usize) -> (BTreeSet<&'static str>, boo
     let mut nodes: Vec<Node> = (0..5).map(|_| Node::new(&me())).collect();
     let all = Source::all();
     let mut bad = BTreeSet::new();
-    let hint = |k: &Keys, r: &mut Rng, t: T| -> Set {
-        let ps = k.paths(&me(), t);
-        if ps.is_empty() || r.chance(20) {
-            Set::new()
-        } else {
-            ps[r.below(ps.len() as u64) as usize].iter().copied().collect()
-        }
-    };
     for step in 0..steps {
         let (a, b) = (r.below(base as u64) as T, 1 + r.below(base as u64 - 1) as T);
-        match r.below(12) {
-            0..=3 if a != b => k.grant(a, b, r.pick(&[Sync, Read, Write, Write, Admin, Admin])),
+        match r.below(13) {
+            0..=3 if a != b => {
+                let from = if r.chance(25) { From::Outside } else { From::Writer };
+                k.grant_from(a, b, r.pick(&[Sync, Read, Write, Write, Admin, Admin]), from)
+            }
             4 | 5 => {
                 let gs: Vec<(T, T)> = k.world.grants.keys().copied().collect();
                 if !gs.is_empty() {
@@ -448,28 +455,29 @@ fn history(seed: u64, rule: &Rule, steps: usize) -> (BTreeSet<&'static str>, boo
             7 => k.edit(b),
             8 if a != b && a != ME => match k.strongs.contains(&(a, b)) {
                 true => k.unstrong(a, b),
-                false => {
-                    let h = hint(&k, &mut r, b);
-                    k.strong(a, b, &h)
-                }
+                false => k.strong(a, b),
             },
             9 | 10 => {
-                let h = hint(&k, &mut r, b);
                 for n in &mut nodes {
-                    if n.roots.remove(&b).is_none() {
-                        n.roots.insert(b, h.clone());
+                    if !n.roots.remove(&b) {
+                        n.roots.insert(b);
                     }
                 }
             }
-            _ => {
-                // a stranger's thing, granted to the account or a thing, holding a thing of its own
+            11 => {
+                // a stranger's thing, granted from outside to the account or a thing, holding a
+                // thing of its own
                 let (x, y) = (k.thing(), k.thing());
-                k.grant(a, x, Write);
+                k.grant_from(a, x, Write, From::Outside);
                 k.grant(x, y, Admin);
+            }
+            _ => {
+                let on = !k.grantable.contains(&a);
+                k.set_grantable(a, on);
             }
         }
         for (i, n) in nodes.iter_mut().enumerate() {
-            let synced = oracle(&k, &me(), &roots(n)).synced();
+            let synced = oracle(&k, &me(), &n.roots).synced();
             let src = match i {
                 3 | 4 if step == steps / 2 => all.clone(),
                 3 if step > steps / 2 => Source { units: Some(synced), parts: None },
@@ -482,7 +490,7 @@ fn history(seed: u64, rule: &Rule, steps: usize) -> (BTreeSet<&'static str>, boo
         }
     }
     k.rotate_stale();
-    let want = oracle(&k, &me(), &roots(&nodes[0]));
+    let want = oracle(&k, &me(), &nodes[0].roots);
     let ok = |n: &Node| shows(&n.seen) == shows(&want) && n.seen.closure.for_keys == want.closure.for_keys && want.synced().iter().all(|&x| n.have.get(&x) == Some(&k.epoch[x]));
     for n in &mut nodes[..3] {
         n.sync(&k, rule, &all);
@@ -536,10 +544,11 @@ fn judge_histories(seeds: u64) {
         eprintln!("{v:22} {p:36} {c:6} histories, first seed {first}");
     }
     for ((v, p), (c, first)) in &t {
-        assert!(!((*v == "p1 lists" || *v == "back rosters") && !p.starts_with('(')), "{v} fails {p} in {c} histories, first seed {first}");
+        assert!(!(*v == "design" && !p.starts_with('(')), "{v} fails {p} in {c} histories, first seed {first}");
     }
     // the gap is reached, and is the store's lack alone
-    assert!(t.get(&("p1 lists", "(the gap: store without key parts)")).is_some_and(|x| x.0 > 0), "no history reaches the gap");
+    assert!(t.get(&("design", "(the gap: store without key parts)")).is_some_and(|x| x.0 > 0), "no history reaches the gap");
+    assert!(t.get(&("control every grant", "i history")).is_some_and(|x| x.0 > 0), "no history takes a grant from outside");
 }
 
 #[test]
@@ -553,14 +562,10 @@ fn holder_access_histories_plain() {
     judge_histories(env("OSIS_HELD_SEEDS", 600));
 }
 
-// ---- Hand worlds (the study's eleven) ----
+// ---- Hand worlds ----
 
-/// The searches that find every path, and the lean where a world's paths are within its reach.
-const BACK: Rule = Rule { search: Search::Back, ..P1 };
-const DEEP: Rule = Rule { search: Search::HintRosterDeep, ..P1 };
-
-fn spec(things: usize, grants: &[(T, T, Role)], roots: &[(T, &[T])]) -> Spec {
-    Spec { things, grants: grants.to_vec(), strongs: vec![], roots: roots.iter().map(|(t, h)| (*t, h.to_vec())).collect() }
+fn spec(things: usize, grants: &[(T, T, Role)], roots: &[T]) -> Spec {
+    Spec { things, grants: grants.to_vec(), roots: roots.to_vec(), ..Spec::default() }
 }
 fn synced(s: &Spec, rule: &Rule) -> (Keys, Node) {
     let (k, mut n) = build(s, &id);
@@ -572,34 +577,26 @@ fn synced(s: &Spec, rule: &Rule) -> (Keys, Node) {
 fn delta(after: &Node, before: &Node) -> Ledger {
     Ledger::of(after.got.difference(&before.got))
 }
-fn key_items(n: &Node) -> BTreeSet<Item> {
-    n.got.iter().copied().filter(|i| !matches!(i, Item::Probe(..) | Item::List(..))).collect()
-}
 
 // 1. (iii) A to B to C, the node syncing C alone: it reads and writes C, holds A and B for keys,
 // and fetches three edge pieces, one box and one keyset per thing, and no content but C's.
 #[test]
 fn hw1_a_chain_is_used_without_its_holders_content() {
     let (a, b, c) = (1, 2, 3);
-    let s = spec(4, &[(ME, a, Write), (a, b, Admin), (b, c, Admin)], &[(c, &[a, b])]);
-    for rule in [P1, LEAN, DEEP, BACK] {
-        let (mut k, n) = synced(&s, &rule);
-        assert_eq!(n.seen, oracle(&k, &me(), &set(&[c])));
-        assert_eq!((n.seen.roles.get(&c), &n.seen.closure.read, &n.seen.closure.for_keys), (Some(&Write), &set(&[c]), &set(&[a, b])));
-        assert!(n.can_write(&k, c));
-        let l = n.ledger();
-        assert_eq!((l.edges, l.keysets, l.boxes, l.content), (3, 3, 3, 1), "{rule:?}");
-        assert!(n.got.contains(&Item::Content(c, 0)));
-        // (v) the holders' content changes: nothing downloaded
-        k.edit(a);
-        k.edit(b);
-        let mut m = n.clone();
-        m.sync(&k, &rule, &Source::all());
-        assert_eq!(m.got, n.got);
-    }
-    // the rule before: a grant counts only where a strong reaches its thing, so C alone gives nothing
-    let (_, n) = synced(&s, &Rule { roles: RolesBy::Reached, ..P1 });
-    assert!(n.seen.roles.is_empty() && n.seen.closure.held.is_empty());
+    let s = spec(4, &[(ME, a, Write), (a, b, Admin), (b, c, Admin)], &[c]);
+    let (mut k, n) = synced(&s, &P1);
+    assert_eq!(n.seen, oracle(&k, &me(), &set(&[c])));
+    assert_eq!((n.seen.roles.get(&c), &n.seen.closure.read, &n.seen.closure.for_keys), (Some(&Write), &set(&[c]), &set(&[a, b])));
+    assert!(n.can_write(&k, c));
+    let l = n.ledger();
+    assert_eq!((l.edges, l.keysets, l.boxes, l.content), (3, 3, 3, 1));
+    assert!(n.got.contains(&Item::Content(c, 0)));
+    // (v) the holders' content changes: nothing downloaded
+    k.edit(a);
+    k.edit(b);
+    let mut m = n.clone();
+    m.sync(&k, &P1, &Source::all());
+    assert_eq!(m.got, n.got);
 }
 
 // 2. (iv) A to C and D to C. A revoked on C: C is writable on hearing it, D's key part already
@@ -607,8 +604,8 @@ fn hw1_a_chain_is_used_without_its_holders_content() {
 #[test]
 fn hw2_a_revoked_path_leaves_the_other_usable_at_once() {
     let (a, d, c) = (1, 2, 3);
-    let s = spec(4, &[(ME, a, Write), (ME, d, Write), (a, c, Write), (d, c, Write)], &[(c, &[a])]);
-    for (rule, design) in [(P1, true), (LEAN, true), (Rule { paths: Paths::Chosen, ..P1 }, false)] {
+    let s = spec(4, &[(ME, a, Write), (ME, d, Write), (a, c, Write), (d, c, Write)], &[c]);
+    for (rule, design) in [(P1, true), (Rule { paths: Paths::Chosen, ..P1 }, false)] {
         let (mut k, mut n) = synced(&s, &rule);
         assert_eq!(n.seen.closure.for_keys.contains(&d), design);
         let held = Source { units: Some(set(&[c])), parts: Some(n.seen.closure.for_keys.union(&me()).copied().collect()) };
@@ -618,7 +615,7 @@ fn hw2_a_revoked_path_leaves_the_other_usable_at_once() {
         let no_fetch = n.have.keys().all(|x| before.have.contains_key(x));
         assert_eq!(n.can_write(&k, c) && no_fetch, design, "{rule:?}");
         if design {
-            assert_eq!(Ledger { probes: 0, ..delta(&n, &before) }, Ledger { edges: 1, keysets: 1, boxes: 1, ..Ledger::default() }, "the removal, C's rotation, its box to D");
+            assert_eq!(delta(&n, &before), Ledger { edges: 1, keysets: 1, boxes: 1, ..Ledger::default() }, "the removal, C's rotation, its box to D");
             assert_eq!(n.seen.closure.for_keys, set(&[d]));
             k.revoke(d, c);
             n.sync(&k, &rule, &held);
@@ -628,69 +625,71 @@ fn hw2_a_revoked_path_leaves_the_other_usable_at_once() {
 }
 
 /// World 3: the account reaches C through A; a stranger's X, holding roles on `n` things the
-/// stranger builds, grants the account write (`granted`). X is on no path to C.
-fn stranger(n: usize, granted: bool) -> Spec {
+/// stranger builds, grants the account write from outside (`granted`), taken iff the account
+/// enables grants from outside (`enabled`). X is on no path to C.
+fn stranger(n: usize, granted: bool, enabled: bool) -> Spec {
     let (a, c, x) = (1, 2, 3);
-    let mut s = spec(4 + n, &[(ME, a, Write), (a, c, Admin)], &[(c, &[a])]);
+    let mut s = spec(4 + n, &[(ME, a, Write), (a, c, Admin)], &[c]);
     if granted {
         s.grants.push((ME, x, Write));
+        s.outside.push((ME, x));
         s.grants.extend((0..n).map(|i| (x, 4 + i, Admin)));
+    }
+    if enabled {
+        s.grantable.push(ME);
     }
     s
 }
 
-// 3. (ii) A stranger's grant on a thing on no path: no role, no key part, and under every search
-// but (p1) no lookup. (p1) reads the stranger's lists: one entry per thing the stranger built.
+// 3. (ii) A stranger's grant the account did not enable: nothing read at all. Enabled, it is a
+// taken grant on no path: no role and no key part, its lists read (one entry per thing the
+// stranger built: the stated cost of taking it). Following every grant reads them untaken too.
 #[test]
 fn hw3_a_strangers_grant_changes_no_fetch() {
-    for rule in [P1, LEAN, DEEP, BACK, Rule::with(Search::Follow)] {
-        let (_, plain) = synced(&stranger(0, false), &rule);
+    for (rule, enabled, lists) in [(P1, false, [0, 0]), (P1, true, [6, 51]), (EVERY, false, [6, 51])] {
+        let (_, plain) = synced(&stranger(0, false, enabled), &rule);
         let reads: Vec<usize> = [5, 50]
             .iter()
             .map(|&n| {
-                let (_, with) = synced(&stranger(n, true), &rule);
-                assert_eq!(with.seen == plain.seen, rule.search != Search::Follow);
-                assert_eq!(key_items(&with) == key_items(&plain), rule.search != Search::Follow, "{rule:?}");
-                with.ledger().lists + with.ledger().probes - plain.ledger().lists - plain.ledger().probes
+                let (_, with) = synced(&stranger(n, true, enabled), &rule);
+                assert_eq!(with.seen, plain.seen);
+                assert_eq!(key_items(&with), key_items(&plain), "{rule:?}");
+                with.ledger().lists - plain.ledger().lists
             })
             .collect();
-        match rule.search {
-            Search::Lists => assert_eq!(reads, [6, 51], "the stranger's grant and every grant it gave X"),
-            _ => assert_eq!(reads, [0, 0], "{rule:?}"),
-        }
+        assert_eq!(reads, lists, "{rule:?} enabled {enabled}");
     }
 }
 
-// 4. The stranger's X put on a path by C's admin (X granted a role on C), then taken off: held
-// for keys, and back.
+// 4. The stranger's X granted a role on C by C's admin, a grant from outside X: not taken, X is on
+// no path. X's admins enable grants from outside: X is held for keys; revoked, let go.
 #[test]
 fn hw4_a_thing_on_a_path_is_held_for_keys_and_let_go() {
     let (a, c, x) = (1, 2, 3);
-    for rule in [P1, LEAN, DEEP, BACK] {
-        let (mut k, mut n) = synced(&stranger(3, true), &rule);
-        assert_eq!(n.seen.closure.for_keys, set(&[a]));
-        k.grant(x, c, Write);
-        n.sync(&k, &rule, &Source::all());
-        assert_eq!(n.seen.closure.for_keys, set(&[a, x]), "{rule:?}");
-        assert!(n.have.contains_key(&x));
-        k.revoke(x, c);
-        n.sync(&k, &rule, &Source::all());
-        assert_eq!(n.seen.closure.for_keys, set(&[a]));
-        assert!(!n.have.contains_key(&x) && n.can_write(&k, c));
-    }
+    let (mut k, mut n) = synced(&stranger(3, true, true), &P1);
+    assert_eq!(n.seen.closure.for_keys, set(&[a]));
+    k.grant_from(x, c, Write, From::Outside);
+    n.sync(&k, &P1, &Source::all());
+    assert_eq!(n.seen.closure.for_keys, set(&[a]), "not taken");
+    k.set_grantable(x, true);
+    n.sync(&k, &P1, &Source::all());
+    assert_eq!(n.seen.closure.for_keys, set(&[a, x]));
+    assert!(n.have.contains_key(&x));
+    k.revoke(x, c);
+    n.sync(&k, &P1, &Source::all());
+    assert_eq!(n.seen.closure.for_keys, set(&[a]));
+    assert!(!n.have.contains_key(&x) && n.can_write(&k, c));
 }
 
 // 5. The strong to C dropped: A and B are no longer held for keys, every secret goes.
 #[test]
 fn hw5_dropping_the_strong_lets_the_holders_go() {
     let (a, b, c) = (1, 2, 3);
-    let s = spec(4, &[(ME, a, Write), (a, b, Admin), (b, c, Admin)], &[(c, &[a, b])]);
-    for rule in [P1, LEAN, DEEP, BACK] {
-        let (k, mut n) = synced(&s, &rule);
-        n.roots.clear();
-        n.sync(&k, &rule, &Source::all());
-        assert!(n.seen.roles.is_empty() && n.seen.closure.held.is_empty() && n.seen.closure.for_keys.is_empty() && n.have.is_empty() && n.edges.is_empty(), "{rule:?}");
-    }
+    let s = spec(4, &[(ME, a, Write), (a, b, Admin), (b, c, Admin)], &[c]);
+    let (k, mut n) = synced(&s, &P1);
+    n.roots.clear();
+    n.sync(&k, &P1, &Source::all());
+    assert!(n.seen.roles.is_empty() && n.seen.closure.held.is_empty() && n.seen.closure.for_keys.is_empty() && n.have.is_empty() && n.edges.is_empty());
 }
 
 /// World 6: A with `m` members holds admin on `k` things, C the first; the node syncs C through
@@ -698,7 +697,7 @@ fn hw5_dropping_the_strong_lets_the_holders_go() {
 /// the things below A then rotate.
 fn churn(rule: &Rule, m: usize, things: usize) -> [Ledger; 4] {
     let (a, c) = (1, 2);
-    let mut s = spec(2 + things + m, &[(ME, a, Write)], &[(c, &[a])]);
+    let mut s = spec(2 + things + m, &[(ME, a, Write)], &[c]);
     s.grants.extend((0..things).map(|i| (a, c + i, Admin)));
     s.grants.extend((0..m).map(|i| (c + things + i, a, Read)));
     let (mut k, n0) = synced(&s, rule);
@@ -722,31 +721,21 @@ fn churn(rule: &Rule, m: usize, things: usize) -> [Ledger; 4] {
 
 // 6. (v) A's content changes: nothing. A member of A removed: the node's own box of A's rotation
 // and its keyset, then its own box of C's rotation, whatever A's roster and however many things
-// A holds. Fetching whole box sets grows with both; so does each search but the lean in what it
-// reads at first.
+// A holds. Fetching whole box sets grows with both. The search reads A's list: k entries.
 #[test]
 fn hw6_a_holders_churn_costs_its_own_boxes() {
     let one = Ledger { keysets: 1, boxes: 1, ..Ledger::default() };
     let sizes = [(10, 1), (100, 1), (10, 10), (100, 10)];
-    for rule in [P1, LEAN, DEEP, BACK] {
-        let runs: Vec<[Ledger; 4]> = sizes.iter().map(|&(m, k)| churn(&rule, m, k)).collect();
-        for r in &runs {
-            assert_eq!(r[1], Ledger::default(), "content: {rule:?}");
-            assert_eq!(r[3], one, "C's rotation: {rule:?}");
-            assert_eq!((r[0].keysets, r[0].boxes, r[0].content), (2, 2, 1), "first sync: {rule:?}");
-        }
-        // what the search read at first beyond the two edge pieces of the path
-        let (first, removed): (Vec<usize>, Vec<Ledger>) = runs.iter().map(|r| (r[0].lists + r[0].probes + r[0].edges - 2, r[2])).unzip();
-        eprintln!("{:?}: read by the search at first sync, (m, k) = {sizes:?}: {first:?}; a member removed: {:?}", rule.search, removed.iter().map(|x| (x.edges, x.keysets, x.boxes, x.probes, x.lists)).collect::<Vec<_>>());
-        match rule.search {
-            // the lean reads nothing that grows
-            Search::HintRoster => assert!(first.iter().all(|&x| x == first[0]) && removed.iter().all(|&x| x == one)),
-            // (p1) reads A's edge list: k entries
-            Search::Lists => assert!(first[0] == first[1] && first[2] == first[0] + 9 && removed.iter().all(|&x| x == one)),
-            // reading a holder's roster: m entries or more
-            _ => assert!(first[1] >= first[0] + 90 && first[2] == first[0] && removed.iter().all(|x| x.keysets == 1 && x.boxes == 1)),
-        }
+    let runs: Vec<[Ledger; 4]> = sizes.iter().map(|&(m, k)| churn(&P1, m, k)).collect();
+    for r in &runs {
+        assert_eq!(r[1], Ledger::default(), "content");
+        assert_eq!(r[3], one, "C's rotation");
+        assert_eq!((r[0].keysets, r[0].boxes, r[0].content), (2, 2, 1), "first sync");
+        assert_eq!(r[2], one, "a member removed");
     }
+    // what the search read at first beyond the two edge pieces of the path
+    let first: Vec<usize> = runs.iter().map(|r| r[0].lists + r[0].edges - 2).collect();
+    assert_eq!(first, [2, 2, 11, 11]);
     let whole = Rule { boxes: Boxes::Whole, ..P1 };
     let boxes: Vec<(usize, usize)> = sizes.iter().map(|&(m, k)| churn(&whole, m, k)).map(|r| (r[2].boxes, r[3].boxes)).collect();
     assert_eq!(boxes, [(10, 1), (100, 1), (10, 10), (100, 10)], "every remaining box of A's rotation; every thing below A");
@@ -756,12 +745,10 @@ fn hw6_a_holders_churn_costs_its_own_boxes() {
 #[test]
 fn hw7_a_read_hop_gives_read() {
     let (a, b, c) = (1, 2, 3);
-    let s = spec(4, &[(ME, a, Admin), (a, b, Read), (b, c, Admin)], &[(c, &[a, b])]);
-    for rule in [P1, LEAN, DEEP, BACK] {
-        let (k, n) = synced(&s, &rule);
-        assert_eq!(n.seen.roles.get(&c), Some(&Read));
-        assert!(n.seen.closure.read.contains(&c) && !n.can_write(&k, c));
-    }
+    let s = spec(4, &[(ME, a, Admin), (a, b, Read), (b, c, Admin)], &[c]);
+    let (k, n) = synced(&s, &P1);
+    assert_eq!(n.seen.roles.get(&c), Some(&Read));
+    assert!(n.seen.closure.read.contains(&c) && !n.can_write(&k, c));
 }
 
 // 8. A cycle: A holds a role on B and B on A, both above C. The second grant of the cycle reads
@@ -769,21 +756,19 @@ fn hw7_a_read_hop_gives_read() {
 #[test]
 fn hw8_a_cycle_of_holders_ends() {
     let (a, b, c) = (1, 2, 3);
-    let s = spec(4, &[(ME, a, Write), (a, b, Admin), (b, a, Admin), (a, c, Read), (b, c, Admin)], &[(c, &[a, b])]);
+    let s = spec(4, &[(ME, a, Write), (a, b, Admin), (b, a, Admin), (a, c, Read), (b, c, Admin)], &[c]);
     for raw in [false, true] {
-        for rule in [P1, LEAN, DEEP, BACK] {
-            let mut k = Keys::new(s.things);
-            k.raw_cycles = raw;
-            for &(g, t, r) in &s.grants {
-                k.grant(g, t, r);
-            }
-            assert_eq!(k.world.keyless.contains(&(b, a)), !raw);
-            let (_, mut n) = build(&s, &id);
-            n.sync(&k, &rule, &Source::all());
-            assert!(!n.unsettled);
-            assert_eq!(n.seen, oracle(&k, &me(), &set(&[c])), "{rule:?} raw {raw}");
-            assert_eq!((n.seen.roles.get(&c), &n.seen.closure.for_keys), (Some(&Write), &set(&[a, b])));
+        let mut k = Keys::new(s.things);
+        k.raw_cycles = raw;
+        for &(g, t, r) in &s.grants {
+            k.grant(g, t, r);
         }
+        assert_eq!(k.world.keyless.contains(&(b, a)), !raw);
+        let (_, mut n) = build(&s, &id);
+        n.sync(&k, &P1, &Source::all());
+        assert!(!n.unsettled);
+        assert_eq!(n.seen, oracle(&k, &me(), &set(&[c])), "raw {raw}");
+        assert_eq!((n.seen.roles.get(&c), &n.seen.closure.for_keys), (Some(&Write), &set(&[a, b])));
     }
 }
 
@@ -792,14 +777,12 @@ fn hw8_a_cycle_of_holders_ends() {
 fn hw9_held_whole_and_for_keys_is_held_whole() {
     let (a, b, c) = (1, 2, 3);
     let grants = [(ME, a, Write), (a, b, Admin), (b, c, Admin)];
-    for rule in [P1, LEAN, DEEP, BACK] {
-        let (k, both) = synced(&spec(4, &grants, &[(c, &[a, b]), (a, &[])]), &rule);
-        let (_, only_c) = synced(&spec(4, &grants, &[(c, &[a, b])]), &rule);
-        let (_, only_a) = synced(&spec(4, &grants, &[(a, &[])]), &rule);
-        assert_eq!(both.seen, oracle(&k, &me(), &set(&[a, c])));
-        assert_eq!((&both.seen.closure.for_keys, &both.seen.closure.read), (&set(&[b]), &set(&[a, c])));
-        assert_eq!(key_items(&both), key_items(&only_c).union(&key_items(&only_a)).copied().collect(), "{rule:?}");
-    }
+    let (k, both) = synced(&spec(4, &grants, &[c, a]), &P1);
+    let (_, only_c) = synced(&spec(4, &grants, &[c]), &P1);
+    let (_, only_a) = synced(&spec(4, &grants, &[a]), &P1);
+    assert_eq!(both.seen, oracle(&k, &me(), &set(&[a, c])));
+    assert_eq!((&both.seen.closure.for_keys, &both.seen.closure.read), (&set(&[b]), &set(&[a, c])));
+    assert_eq!(key_items(&both), key_items(&only_c).union(&key_items(&only_a)).copied().collect());
 }
 
 // 10. The old class. A certificate naming G on H that arrived with another write gives nothing
@@ -812,13 +795,13 @@ fn hw10_a_role_never_hangs_on_what_happens_to_be_held() {
     let held_edges = Rule { roles: RolesBy::HeldEdges, ..P1 };
     let base = [(ME, a, Read), (a, c, Read), (h, c, Admin), (t1, c, Admin)];
     let run = |grants: &[(T, T, Role)], certs: &[(T, T)], rule: &Rule| {
-        let (k, mut n) = build(&spec(6, grants, &[(c, &[a])]), &id);
+        let (k, mut n) = build(&spec(6, grants, &[c]), &id);
         n.certs = certs.iter().map(|&e| (e, Admin)).collect();
         n.sync(&k, rule, &Source::all());
         assert_eq!(n.seen.closure.for_keys.contains(&t1), k.world.grants.contains_key(&(ME, t1)));
         n.seen.roles.get(&c).copied()
     };
-    for rule in [P1, LEAN, DEEP, BACK, held_edges] {
+    for rule in [P1, held_edges] {
         assert_eq!(run(&base, &[(g, h)], &rule), Some(Read), "G on no path: {rule:?}");
         let standing: Vec<_> = base.iter().copied().chain([(ME, t1, Write)]).collect();
         assert_eq!(run(&standing, &[], &rule), Some(Write));
@@ -835,82 +818,39 @@ fn hw10_a_role_never_hangs_on_what_happens_to_be_held() {
 #[test]
 fn hw11_a_store_without_the_holders_key_part_leaves_the_node_behind() {
     let (a, c, other) = (1, 2, 3);
-    let s = spec(4, &[(ME, a, Write), (a, c, Admin), (other, a, Read)], &[(c, &[a])]);
-    for rule in [P1, LEAN, DEEP, BACK] {
-        for configured in [false, true] {
-            let (mut k, mut n) = synced(&s, &rule);
-            let store = Source { units: Some(set(&[c])), parts: Some(if configured { set(&[a]) } else { Set::new() }) };
-            k.edit(c);
-            k.revoke(other, a);
-            k.rotate_stale();
-            n.sync(&k, &rule, &store);
-            assert_eq!(n.can_write(&k, c), configured, "{rule:?}");
-            assert_eq!(n.have.get(&c) == Some(&k.epoch[c]), configured);
-            assert!(n.got.contains(&Item::Content(c, 1)) == configured, "C's new content is sealed to the epoch it cannot open");
-            n.sync(&k, &rule, &Source::all());
-            assert!(n.can_write(&k, c));
-        }
+    let s = spec(4, &[(ME, a, Write), (a, c, Admin), (other, a, Read)], &[c]);
+    for configured in [false, true] {
+        let (mut k, mut n) = synced(&s, &P1);
+        let store = Source { units: Some(set(&[c])), parts: Some(if configured { set(&[a]) } else { Set::new() }) };
+        k.edit(c);
+        k.revoke(other, a);
+        k.rotate_stale();
+        n.sync(&k, &P1, &store);
+        assert_eq!(n.can_write(&k, c), configured);
+        assert_eq!(n.have.get(&c) == Some(&k.epoch[c]), configured);
+        assert!(n.got.contains(&Item::Content(c, 1)) == configured, "C's new content is sealed to the epoch it cannot open");
+        n.sync(&k, &P1, &Source::all());
+        assert!(n.can_write(&k, c));
     }
 }
 
-// ---- Finding: (p3) then (p2) miss paths ----
-
-// A second path the strong did not name and no roster the node reads names: the account read on H
-// and admin on G, G admin on H, H admin on C, the strong naming H. The world gives admin on C; the
-// lean finds read (G is in no roster it reads). Reading the rosters of the holders found (deep)
-// finds G.
+// 12. The switch turned off: the account reaches C only through A, its grant on A from outside.
+// While the account enables grants from outside it writes C; disabled, the grant is no longer
+// taken and C's secrets go with no rotation anywhere; enabled again, it writes C at once.
 #[test]
-fn finding_the_lean_misses_a_better_path_above_a_named_holder() {
-    let (g, h, c) = (1, 2, 3);
-    let s = spec(4, &[(ME, h, Read), (ME, g, Admin), (g, h, Admin), (h, c, Admin)], &[(c, &[h])]);
-    let want = oracle(&Keys::new(0), &me(), &Set::new());
-    assert!(want.roles.is_empty());
-    for (rule, finds) in [(P1, true), (BACK, true), (DEEP, true), (LEAN, false)] {
-        let (k, n) = synced(&s, &rule);
-        let want = oracle(&k, &me(), &set(&[c]));
-        assert_eq!((want.roles.get(&c), &want.closure.for_keys), (Some(&Admin), &set(&[g, h])));
-        assert_eq!(n.seen == want, finds, "{rule:?}");
-        if !finds {
-            assert_eq!((n.seen.roles.get(&c), &n.seen.closure.for_keys), (Some(&Read), &set(&[h])));
-        }
-    }
-}
-
-// Two unknown hops: the account is granted C directly and also reaches it by X, Y, Z. The strong
-// names nothing (C is its own). C's roster names Z, which the account holds no grant on, and Z's
-// roster is closed to it. The direct grant revoked, the world still gives read on C through
-// X, Y, Z; the lean and deep searches have lost C. Only a search by lists finds the path.
-#[test]
-fn finding_no_roster_search_finds_a_path_two_hops_from_what_it_reads() {
-    let (x, y, z, c) = (1, 2, 3, 4);
-    let s = spec(5, &[(ME, c, Read), (ME, x, Read), (x, y, Read), (y, z, Read), (z, c, Read)], &[(c, &[])]);
-    for (rule, finds) in [(P1, true), (BACK, true), (DEEP, false), (LEAN, false)] {
-        let (mut k, mut n) = synced(&s, &rule);
-        let want = oracle(&k, &me(), &set(&[c]));
-        assert_eq!(want.closure.for_keys, set(&[x, y, z]));
-        assert_eq!(n.seen.closure.for_keys == want.closure.for_keys, finds, "{rule:?}");
-        k.revoke(ME, c);
-        n.sync(&k, &rule, &Source::all());
-        assert_eq!(oracle(&k, &me(), &set(&[c])).roles.get(&c), Some(&Read));
-        assert_eq!(n.seen.roles.get(&c).is_some(), finds, "{rule:?}");
-    }
-}
-
-// What the lean shows depends on when the node synced. World 2 with A revoked on C: the node that
-// was there holds D (C's roster named it) and writes C; a node arriving later with the same
-// strong, naming A, looks up A and C alone, finds no path and cannot read C to learn of D.
-#[test]
-fn finding_the_lean_shows_a_late_node_less() {
-    let (a, d, c) = (1, 2, 3);
-    let s = spec(4, &[(ME, a, Write), (ME, d, Write), (a, c, Write), (d, c, Write)], &[(c, &[a])]);
-    for (rule, same) in [(P1, true), (BACK, true), (DEEP, false), (LEAN, false)] {
-        let (mut k, mut early) = synced(&s, &rule);
-        k.revoke(a, c);
-        early.sync(&k, &rule, &Source::all());
-        let (_, mut late) = build(&s, &id);
-        late.sync(&k, &rule, &Source::all());
-        assert!(early.can_write(&k, c));
-        assert_eq!(late.seen == early.seen, same, "{rule:?}");
-        assert_eq!(late.seen.roles.get(&c).is_some(), same);
-    }
+fn hw12_disabling_grants_from_outside_drops_their_paths() {
+    let (a, c) = (1, 2);
+    let mut s = spec(3, &[(ME, a, Write), (a, c, Admin)], &[c]);
+    s.outside.push((ME, a));
+    s.grantable.push(ME);
+    let (mut k, mut n) = synced(&s, &P1);
+    assert!(n.can_write(&k, c) && n.seen.closure.for_keys == set(&[a]));
+    let epochs = k.epoch.clone();
+    k.set_grantable(ME, false);
+    n.sync(&k, &P1, &Source::all());
+    assert_eq!(n.seen, oracle(&k, &me(), &set(&[c])));
+    assert!(n.seen.roles.is_empty() && n.have.is_empty() && n.edges.is_empty() && k.epoch == epochs);
+    k.set_grantable(ME, true);
+    n.sync(&k, &P1, &Source::all());
+    assert!(n.can_write(&k, c));
 }
