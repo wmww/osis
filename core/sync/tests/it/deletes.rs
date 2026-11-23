@@ -109,7 +109,7 @@ fn a_writers_purge_of_its_own_write_deletes_it_at_a_node_keeping_s_unread_spec_s
     w.power_on(0);
     w.run();
     assert!(gone_at_unread(&mut w, &s, &held), "still gone after restarts");
-    assert_eq!(w.engine(0).get(&t, &value_ak()).unwrap(), None, "the admin reads the purge");
+    assert_eq!(w.engine(0).get(&t, &value_ak()).unwrap(), Some(Value::Str("v1".into())), "the admin reads the purge: what the purged write replaced (spec/crdt.md §4.7)");
 }
 
 // spec/sync-judgement.md §3 (Deletes: a holder of the needed delete key or level keys),

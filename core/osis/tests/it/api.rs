@@ -670,9 +670,9 @@ fn created_not_a_snapshot_spec_commits_2() {
     assert_eq!(b.created(t).unwrap(), None);
 }
 
-// notes/api.md Reads: `aspects` lists what reads as present: a register whose live write was
-// purged reads absent, and is not listed.
-// spec: none (API surface, notes/api.md)
+// notes/api.md Reads, spec/crdt.md §4.7: `aspects` lists what reads as present: a register whose
+// live write was purged reads what that write replaced, and is listed; with that one purged too
+// it reads absent, and is not listed.
 #[test]
 fn aspects_agrees_with_reads_after_a_purge() {
     let db = db(0);
@@ -680,13 +680,19 @@ fn aspects_agrees_with_reads_after_a_purge() {
     let mut w = db.write();
     let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
-    w.commit().unwrap();
+    let first = w.commit().unwrap().unwrap().stamp.id;
     let mut w = db.write();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(2)).unwrap();
     let last = w.commit().unwrap().unwrap().stamp.id;
-    let mut w = db.write();
-    w.at(t, osis::DynamicAspectKey::untyped(k.clone())).purge(osis::Purge::Commit(last)).unwrap();
-    w.commit().unwrap();
+    let purge = |c| {
+        let mut w = db.write();
+        w.at(t, osis::DynamicAspectKey::untyped(k.clone())).purge(osis::Purge::Commit(c)).unwrap();
+        w.commit().unwrap();
+    };
+    purge(last);
+    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).get().unwrap(), Some(Value::Int(1)));
+    assert!(db.aspects(t).unwrap().contains(&k));
+    purge(first);
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).get().unwrap(), None);
     assert!(!db.aspects(t).unwrap().contains(&k));
 }
