@@ -80,7 +80,8 @@ fn line(out: &mut String, what: String, t: [String; 3]) {
 #[test]
 #[ignore]
 fn paths_dump_readings() {
-    let path = std::env::var("OSIS_DUMP").expect("OSIS_DUMP");
+    // by hand: without a file to write, nothing to do
+    let Ok(path) = std::env::var("OSIS_DUMP") else { return };
     let n: u64 = std::env::var("OSIS_DUMP_N").ok().and_then(|x| x.parse().ok()).unwrap_or(300);
     let mut out = String::new();
     for mode in MODES {
