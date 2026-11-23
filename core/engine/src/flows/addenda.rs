@@ -379,13 +379,11 @@ fn gather(core: &Core, r: &CommitId, me: Tid, count: bool) -> Option<Gathered> {
     let paths = core.timelines.paths();
     for (k, op) in (0u32..).zip(&rc.ops) {
         let Some(a) = tl.applied(&osis_perm::WriteId(*r, k)) else { continue };
-        let below = if a.cuts(Role::Write) {
-            Role::Write
-        } else if a.cuts(Role::Admin) {
-            Role::Admin
-        } else {
+        // below write it cuts plain content, below admin admin-only content (a removal both)
+        let cuts: Vec<Role> = [Role::Write, Role::Admin].into_iter().filter(|r| a.cuts(*r)).collect();
+        if cuts.is_empty() {
             continue;
-        };
+        }
         let hop = (op.holder, op.target);
         // the content commits with a delta stated along a path with that hop
         for c in paths.through(&hop.0, &hop.1) {
@@ -400,11 +398,14 @@ fn gather(core: &Core, r: &CommitId, me: Tid, count: bool) -> Option<Gathered> {
                 continue;
             }
             for (ai, x) in (0u32..).zip(&v.aspects) {
-                let listable = match below {
-                    Role::Write => plain_ak(&x.ak),
-                    _ => admin_listable_ak(&x.ak),
+                let below = if plain_ak(&x.ak) {
+                    Role::Write
+                } else if admin_listable_ak(&x.ak) {
+                    Role::Admin
+                } else {
+                    continue;
                 };
-                if listable && paths.rests(&osis_perm::WriteId(c, ai)).is_some_and(|(hops, _)| hops.contains(&hop)) {
+                if cuts.contains(&below) && paths.rests(&osis_perm::WriteId(c, ai)).is_some_and(|(hops, _)| hops.contains(&hop)) {
                     out.addenda.entry(x.tid).or_default().entry(c).or_default().insert(below);
                 }
             }

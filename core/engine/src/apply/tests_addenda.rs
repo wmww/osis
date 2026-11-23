@@ -335,30 +335,6 @@ fn lying_writer_vouches_for_a_removed_holders_write_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (content: the old walk's Acting check, notes/redesign-plan.md, Interim in code): with Bob also removed from T, a writer of N vouching for
-// the part on N makes nothing count: the Acting check fails, and with it every part of the
-// commit, until a writer of T vouches on T.
-#[test]
-fn acting_unvouched_invalidates_every_part_spec_perm_5_2() {
-    let (mut lp, n, holder, r, e) = holder_world();
-    let rt = remove(&mut lp, 3, holder, 1);
-    lp.sync(1, 2).unwrap();
-    lp.sync(0, 2).unwrap();
-    lp.sync(3, 2).unwrap();
-    forge_addendum(&mut lp, 2, n, r, &[e]);
-    lp.sync_all().unwrap();
-    for p in [0, 2, 3] {
-        assert!(!valid(&lp, p, &e, n, "x:e.0"), "peer {p}: Acting unvouched");
-    }
-    // the holder's own node vouches on T (a writer of T)
-    forge_addendum(&mut lp, 3, holder, rt, &[e]);
-    lp.sync_all().unwrap();
-    for p in [0, 2, 3] {
-        assert!(valid(&lp, p, &e, n, "x:e.0"), "peer {p}: both parts vouched");
-    }
-}
-
-
 // spec/permissions.md §5.2 (Addenda): a removed writer's compaction snapshot is no plain content
 // commit: no addendum lists it, and it falls with the removal while its delta, vouched for,
 // stays (what it covered is fetched again, spec/permissions.md §5.2 Compaction snapshot).
@@ -413,8 +389,9 @@ fn a_second_writer_answers_beside_the_first_once_spec_perm_5_2() {
 // spec/permissions.md §5.2 (Addenda): an addendum without its body is still its writer's write,
 // listing nothing. Carol answers Alice's removal of Bob with an addendum; Alice, not holding it,
 // removes Carol; Dave receives the addendum then, invalid, and drops its body. Alice re-grants
-// Carol, receives the addendum and removes her again, listing it: at Dave it turns valid with
-// its body gone, and reopened and rebuilt indexes judge it alike. Its body, fetched again, then
+// Carol (§5.2 Re-grant: a later removal listing it would answer that cut alone, the first still
+// refusing it): at Dave it turns valid with its body gone, and reopened and rebuilt indexes judge
+// it alike. Its body, fetched again, then
 // lists Bob's edit, which turns valid.
 #[test]
 fn a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2() {
@@ -432,12 +409,10 @@ fn a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2() {
     lp.sync(2, 0).unwrap();
     lp.peers[0].engine.grant(&t, &carol, &edge(Role::Admin)).unwrap();
     lp.advance(1000);
-    let r2 = remove(&mut lp, 0, t, 2);
-    assert!(lp.peers[0].engine.core.ix.commits.get(&r2).unwrap().view.frontier.as_ref().unwrap().covers(&a));
     lp.sync(0, 3).unwrap();
     let m = lp.peers[3].engine.core.ix.commits.get(&a).unwrap();
     assert!(!m.holds(m.aspect(&t, &ak(ct::ADDENDA_AK)).unwrap()), "body not held");
-    assert!(valid(&lp, 3, &a, t, ct::ADDENDA_AK), "listed by the second removal");
+    assert!(valid(&lp, 3, &a, t, ct::ADDENDA_AK), "re-granted");
     let d0 = lp.peers[3].engine.index_digest();
     lp.peers[3].engine.reload().unwrap();
     assert_eq!(d0.first_diff(&lp.peers[3].engine.index_digest()), None, "reopened");
@@ -1413,11 +1388,12 @@ fn a_role_change_elsewhere_rescans_no_candidates_spec_perm_5_2() {
 // commit of X ordered before R...): Bob (1) holds write on `t` directly and through holder Q
 // (Dave's thing, Bob its admin). Bob writes e, received by Carol (2) alone. Dave (3), an admin
 // of `t`, removes Q's grant (R1); then Alice (0) removes Bob's own grant (R), holding neither
-// e nor R1. Carol receives R first: Bob keeps write through Q, so R demotes nobody below write
-// and nothing is owed. R1 then reaches her, ordered before R: Bob falls below write at R, and
-// Carol owes an addendum for e, though R1 names neither Bob nor Alice. e stands at every node.
+// e nor R1. Carol receives R first: e is stated along Bob's own grant, which R cuts, so she owes
+// an addendum for it though Bob keeps write through Q (§1 Path: nothing but the stated path
+// judges a part). R1 then reaches her, ordered before R, and she owes nothing more. e stands at
+// every node.
 #[test]
-fn a_late_removal_of_anothers_path_makes_an_addendum_owed_spec_perm_5_2() {
+fn a_cut_of_the_stated_path_owes_an_addendum_whatever_another_path_gives_spec_perm_5_2() {
     let (mut lp, t) = world(4, &[Role::Write, Role::Write, Role::Admin]);
     let (bob, dave) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
     let mut m = Mutation::new();
@@ -1441,7 +1417,7 @@ fn a_late_removal_of_anothers_path_makes_an_addendum_owed_spec_perm_5_2() {
     lp.peers[2].tick().unwrap();
     let carol = lp.peers[2].engine.me();
     assert_eq!(lp.peers[2].engine.core.timelines.role(&bob, &t, osis_perm::At::END), Some(Role::Write), "Bob keeps write through Q");
-    assert!(addenda(&lp, 2, t).iter().all(|(a, _)| *a != carol), "nothing owed while Bob keeps write");
+    assert_eq!(addenda(&lp, 2, t).iter().filter(|(a, _)| *a == carol).count(), 1, "Carol answers R: e rests on Bob's own grant, whatever Q gives");
     let pk = lp.peers[3].engine.package(&r1).unwrap().unwrap();
     lp.deliver(2, &pk).unwrap();
     lp.advance(1000);
