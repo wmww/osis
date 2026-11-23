@@ -86,7 +86,8 @@ fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, at: usize, limit: u
     let too_large = Error::TooLarge { limit };
     let (x, decoded) = match e.read_large_max(tid, l, *budget, osis_base::format::MAX_VALUE_DEPTH.saturating_sub(at)) {
         Ok(x) => x,
-        Err(osis_engine::Error::Data(osis_blob::Error::TooLarge(_))) => return Err(too_large),
+        // past what the budget leaves of the bound: the bound is the read's
+        Err(osis_engine::Error::PastBound { .. }) => return Err(too_large),
         Err(osis_engine::Error::Data(err)) if err == osis_blob::Error::Missing || err.class() != ErrorClass::Local => {
             bad.push(err);
             return Ok(None);
@@ -207,16 +208,7 @@ impl Reader<'_> {
         if self.hidden(tid) {
             return Ok((tid, None));
         }
-        let v = self.e.get_within(&tid, ak, Some(self.limit));
-        Ok((tid, self.bounded(v)?))
-    }
-
-    /// An engine read under the bound (`Engine::get_within`, `aspects_within`): past it `TooLarge`.
-    fn bounded<T>(&self, v: osis_engine::Result<T>) -> Result<T> {
-        match v {
-            Err(osis_engine::Error::Data(osis_blob::Error::TooLarge(_))) => Err(Error::TooLarge { limit: self.limit }),
-            v => Ok(v?),
-        }
+        Ok((tid, self.e.get_within(&tid, ak, Some(self.limit))?))
     }
 
     /// `v` (of `tid`'s `ak`) materialized up to the bound; an unreadable link reads as absent at
@@ -305,8 +297,7 @@ impl Reader<'_> {
         if self.hidden(tid) {
             return Ok(None);
         }
-        let v = self.e.get_at_within(&tid, ak, &crate::write::segs(&Path(to.to_vec()))?, Some(self.limit));
-        let v = self.bounded(v)?;
+        let v = self.e.get_at_within(&tid, ak, &crate::write::segs(&Path(to.to_vec()))?, Some(self.limit))?;
         Ok(v.and_then(|v| value_at(&v, &rest).cloned()))
     }
 
@@ -340,8 +331,7 @@ impl Reader<'_> {
         if self.hidden(tid) {
             return Ok(Vec::new());
         }
-        let v = self.e.aspects_within(&tid, Some(self.limit));
-        self.bounded(v)
+        Ok(self.e.aspects_within(&tid, Some(self.limit))?)
     }
 
     /// What actor `t` is, from its creation record.

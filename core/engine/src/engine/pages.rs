@@ -154,22 +154,36 @@ fn below(paths: &Paths, p: &[Step]) -> Paths {
     Paths { here: false, next: paths.below(p).map(|x| x.next.clone()).unwrap_or_default() }
 }
 
-/// What a bounded read may still hold of the states it loads, in bytes (`Tx::bound`); `None`:
-/// unbounded (every write and join: what they load is bounded by the commits they apply).
-pub type Bound = Option<usize>;
+/// What a bounded read may still hold of the states it loads (`Tx::bound`); `None`: unbounded
+/// (every write and join: what they load is bounded by the commits they apply).
+pub type Bound = Option<Budget>;
+
+/// A bounded read's bound and what it may still hold of it, in bytes.
+#[derive(Clone, Copy, Debug)]
+pub struct Budget {
+    of: usize,
+    left: usize,
+}
+
+impl Budget {
+    /// The budget of a read holding at most `max` bytes.
+    pub fn new(max: usize) -> Budget {
+        Budget { of: max, left: max }
+    }
+}
 
 /// Decodes a stored piece of a state (a unit, a body, a page) of `stored` bytes under `bound`:
 /// refused before decoding when its bytes exceed what is left, then charged the greater of its
 /// bytes and its decode (`Fragment::approx_bytes`, as a link is, notes/decode-bounds.md), so a
-/// read holds at most its bound plus one piece. Past the bound: `TooLarge` (local).
+/// read holds at most its bound plus one piece. Past the bound: `PastBound`.
 pub fn charge(bound: &mut Bound, stored: usize, decode: impl FnOnce() -> Result<Fragment>) -> Result<Fragment> {
-    let too_large = || Error::Data(osis_commit::Error::TooLarge("state above the read bound"));
-    if bound.is_some_and(|b| stored > b) {
-        return Err(too_large());
+    let past = |b: &Budget| Error::PastBound { bound: b.of };
+    if let Some(b) = bound.as_ref().filter(|b| stored > b.left) {
+        return Err(past(b));
     }
     let f = decode()?;
     if let Some(b) = bound {
-        *b = b.checked_sub(stored.max(f.approx_bytes())).ok_or_else(too_large)?;
+        b.left = b.left.checked_sub(stored.max(f.approx_bytes())).ok_or_else(|| past(b))?;
     }
     Ok(f)
 }

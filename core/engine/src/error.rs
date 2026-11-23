@@ -33,8 +33,9 @@ pub enum Error {
     Clash(String),
     /// Stored data this node wrote fails to read back. Local.
     Corrupt(&'static str),
-    /// A sync facade call not built yet (`crate::sync`), named. Local.
-    NotBuilt(&'static str),
+    /// A bounded read (`get_within`, `get_at_within`, `aspects_within`, `read_large_max`) would
+    /// hold more than `bound`, the bound it was given. Local.
+    PastBound { bound: usize },
     /// A transaction would leave a thing it made outside the node closure (spec/sync-set.md §2
     /// Making a thing). Local.
     NotHeld(Tid),
@@ -59,7 +60,7 @@ osis_base::impl_error!(Error {
     Misuse(m) => ("misuse: {m}"),
     Clash(m) => ("{m}"),
     Corrupt(m) => ("corrupt local record: {m}"),
-    NotBuilt(m) => ("not built: {m}"),
+    PastBound { bound } => ("past the read bound ({bound} bytes)"),
     NotHeld(t) => ("{t} would be held by nothing: write a strong to it from a held thing in the same write"),
     LeavesNoAdmin(t) => ("this would leave {t} with no admin"),
 });
@@ -74,7 +75,7 @@ impl Classified for Error {
             Error::Crypto(e) => e.class(),
             Error::Path(e) => e.class(),
             Error::BadInput(_) => ErrorClass::BadInput,
-            Error::Permission { .. } | Error::NotEnabled { .. } | Error::UnknownThing(_) | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) | Error::NotBuilt(_) | Error::NotHeld(_) | Error::LeavesNoAdmin(_) => ErrorClass::Local,
+            Error::Permission { .. } | Error::NotEnabled { .. } | Error::UnknownThing(_) | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) | Error::PastBound { .. } | Error::NotHeld(_) | Error::LeavesNoAdmin(_) => ErrorClass::Local,
         }
     }
 }
@@ -85,9 +86,13 @@ impl Error {
     /// peer bytes), so applying a received commit, it sets the commit aside
     /// (`apply::Reason::Fault`) where a store failure fails the transaction, to be tried again.
     pub fn is_fault(&self) -> bool {
+        self.class() == ErrorClass::Local && !self.is_store()
+    }
+
+    /// Local storage failed: the store, or a blob or page written or read through it.
+    pub fn is_store(&self) -> bool {
         use osis_crdt::{Error as C, PageError::Storage};
-        let store = matches!(self, Error::Store(_) | Error::Data(osis_commit::Error::Storage(_) | osis_commit::Error::Delta(C::Page(Storage))) | Error::Crdt(C::Page(Storage)));
-        self.class() == ErrorClass::Local && !store
+        matches!(self, Error::Store(_) | Error::Data(osis_commit::Error::Storage(_) | osis_commit::Error::Delta(C::Page(Storage))) | Error::Crdt(C::Page(Storage)))
     }
 }
 

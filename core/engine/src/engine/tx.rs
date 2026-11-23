@@ -275,7 +275,7 @@ impl Tx<'_> {
         let k = (*tid, ak.clone());
         let cached = self.core.states.contains_key(&k);
         let whole = !self.held_in_part(tid, ak);
-        self.bound = max;
+        self.bound = max.map(pages::Budget::new);
         let r = f(self);
         self.bound = None;
         if !cached {

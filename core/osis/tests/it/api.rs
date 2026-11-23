@@ -199,6 +199,20 @@ fn aspects_past_the_bound_are_too_large_spec_data_model_6() {
     assert_eq!(db.aspects(t), Err(Error::TooLarge { limit: 1000 }));
 }
 
+// notes/api.md Errors: an engine error the API names is that error whatever call meets it (one
+// conversion, no call site): past a read's bound `TooLarge` with that bound, a revert needing
+// unkept content `NotUndoable`, a blob storage failure `Storage`; nothing else is one of these.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn engine_errors_map_to_their_api_error_spec_api_errors() {
+    use osis::internals::{blob::Error as Data, engine::Error as E, RawCommitId};
+    let raw = RawCommitId([7; 32]);
+    assert_eq!(Error::from(E::PastBound { bound: 1000 }), Error::TooLarge { limit: 1000 });
+    assert_eq!(Error::from(E::NotKept(raw)), Error::NotUndoable { commit: osis::CommitId::from(raw), reason: osis::NotUndoableReason::NotKept });
+    assert!(matches!(Error::from(E::Data(Data::Storage("blob"))), Error::Storage(_)));
+    assert!(matches!(Error::from(E::Data(Data::TooLarge("claim set"))), Error::Invalid(_)), "a format cap is no read bound");
+}
+
 // notes/decode-bounds.md (a read holds at most its bound), spec/wire.md §12: a whole read of an
 // aspect whose state is far above the read limit is refused having loaded about the limit of the
 // state, at any size of it, and leaves none of it loaded; a path read into it still works.

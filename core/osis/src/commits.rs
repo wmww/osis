@@ -657,17 +657,14 @@ impl crate::handle::ReadOnly {
         let c = f.id;
         self.locked(|l| {
             let e = l.engine();
-            let blocked = |reason| Error::NotUndoable { commit: c, reason };
-            let r = match self.acting {
-                Some(a) => e.check_revertible_as(c.0, a),
-                None => e.check_revertible(&c.0),
+            let revertible = match self.acting {
+                Some(a) => e.check_revertible_as(c.0, a)?,
+                None => e.check_revertible(&c.0)?,
             };
-            match r {
-                Ok(true) => Ok(Some(c)),
-                Ok(false) => Err(blocked(NotUndoableReason::Superseded)),
-                Err(osis_engine::Error::NotKept(_)) => Err(blocked(NotUndoableReason::NotKept)),
-                Err(x) => Err(x.into()),
+            if !revertible {
+                return Err(Error::NotUndoable { commit: c, reason: NotUndoableReason::Superseded });
             }
+            Ok(Some(c))
         })
     }
 

@@ -714,8 +714,8 @@ impl Engine {
         })
     }
 
-    /// `read_large` failing with `osis_commit::Error::TooLarge` past `max_len` canonical bytes or
-    /// bytes decoded (the API's materialization bound), with the bytes decoded; a value nesting
+    /// `read_large` failing with `PastBound` past `max_len` canonical bytes or bytes decoded (the
+    /// API's materialization bound), with the bytes decoded; a value nesting
     /// deeper than `room` (the levels left where the link sits) is bad input
     /// (`osis_blob::read_value`).
     pub fn read_large_max(&mut self, tid: &Tid, link: &Link, max_len: usize, room: usize) -> Result<(Value, usize)> {
@@ -724,7 +724,11 @@ impl Engine {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
             let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
             let mut r = BlobReader::new(&dedup, &mut blobs);
-            Ok(osis_blob::read_value(link, &dedup, &mut r, LargeParams::FORMAT, max_len, room)?)
+            // a stored tree too large is past what this read may hold: the bound is the reader's
+            osis_blob::read_value(link, &dedup, &mut r, LargeParams::FORMAT, max_len, room).map_err(|e| match e {
+                osis_commit::Error::TooLarge(_) => Error::PastBound { bound: max_len },
+                e => e.into(),
+            })
         })
     }
 

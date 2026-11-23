@@ -561,7 +561,7 @@ pub fn opening(engine: &mut Engine, store: &crate::store::Store, s: &SyncId, e: 
         // logged by any node counts; read keeps one per set of certificates, `cert_blobs`)
         Ok(Opened::Records(_) | Opened::Lists(_)) => Ok(Opening::Held { gave: true }),
         Ok(Opened::Linked) => Ok(Opening::Taken),
-        Ok(Opened::NotOpen) | Err(crate::types::Error::Engine(osis_engine::Error::NotBuilt(_))) => Ok(Opening::NotOpen),
+        Ok(Opened::NotOpen) => Ok(Opening::NotOpen),
         Ok(Opened::Bad) => Ok(Opening::Bad),
         Err(e) => Err(e),
     }
