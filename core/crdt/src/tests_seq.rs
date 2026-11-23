@@ -374,7 +374,7 @@ fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
 /// §7 (embedding), `seq_lin`: joins at a `Slots` position that leave its register and effective
 /// reset as they are (text edits of a text upgraded from a string) follow the text slot's cached
 /// placement and read like the model (the join itself is checked against a whole pass); nearly all
-/// follow.
+/// follow. Every seed joins on slots.
 #[test]
 #[ignore = "property"]
 fn slots_join_follows_cache_plain_spec_7() {
@@ -399,11 +399,20 @@ fn slots_join_follows_cache_plain_spec_7() {
         let mut r = crate::testutil::fixed(2 * seed + 1);
         let (mut m, mut ours) = (None, Fragment::default());
         put(mops::create(&mut mw(1, 50), &Ty::Text, &MValue::Str("xy".into())), &mut m, &mut ours);
-        put(mops::create(&mut mw(2, 100), &Ty::Register, &MValue::Str("abcdefghij".repeat(4))), &mut m, &mut ours);
+        let string = MValue::Str("abcdefghij".repeat(4));
+        put(mops::create(&mut mw(2, 100), &Ty::Register, &string), &mut m, &mut ours);
         let mut w = mw(3, 101);
-        for k in 0..40 {
+        for k in 0..24 {
             w.next_commit((102 + k) << 16);
-            let Some(d) = crdt_model::r#gen::random_op(&mut r, &mut w, &Ty::Text, m.as_ref()) else { continue };
+            // text ops write against the register's embedding, the first upgrading the position to
+            // `Slots`; a text reset ends the upgrade, and the register written again restarts it
+            let st = m.as_ref().expect("written");
+            let d = if matches!(st, MFrag::Register { .. } | MFrag::Slots { .. }) {
+                crdt_model::r#gen::random_op(&mut r, &mut w, &Ty::Text, Some(&text_slot(st)))
+            } else {
+                Some(mops::create(&mut w, &Ty::Register, &string))
+            };
+            let Some(d) = d else { continue };
             let was = matches!(ours, Fragment::Slots(_));
             let followed = put(d, &mut m, &mut ours);
             if was && matches!(ours, Fragment::Slots(_)) {
@@ -414,8 +423,7 @@ fn slots_join_follows_cache_plain_spec_7() {
         (joins, kept)
     });
     let (joins, kept) = out.iter().fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
-    // a seed may join none on slots (its text never became one)
-    osis_base::testenv::reach_floor("joins on slots", out.iter().map(|x| x.0), 1, 2);
+    osis_base::testenv::reach_floor("joins on slots", out.iter().map(|x| x.0), 1, 1);
     assert!(kept * 10 >= joins * 9, "{kept} of {joins} followed");
 }
 
