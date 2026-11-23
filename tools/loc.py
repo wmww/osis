@@ -4,7 +4,9 @@
 Counts non-blank, non-comment lines (doc comments count as comments).
 Test code: files under tests/, benches/ or fuzz_targets/; items marked
 #[test] or #[cfg(...)] whose predicate needs `test` (e.g. any(test, fuzzing));
-and whole modules pulled in by a test-gated `mod x;`.
+whole modules pulled in by a test-gated `mod x;`; and whole crates that are
+test infrastructure (models, vectors, sim, fuzz, benches: TEST_CRATES).
+Sections, each with its total: core (core/), auxiliary (the rest), gui (GUI_CRATES).
 
 Usage: tools/loc.py [--all] [--files CRATE]
   --all          include vendored crates (libs/kit/patches)
@@ -20,6 +22,14 @@ from rustsrc import mod_paths, sanitize, toml
 
 VENDORED = ("libs/kit/patches/",)
 TEST_DIRS = ("tests", "benches", "fuzz_targets")
+TEST_CRATES = ("core/test/", "core/bench/")
+GUI_CRATES = ("libs/kit", "app", "app/android")
+COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+BOLD, GRAY, NAME, IMPL, TEST = "1", "90", "34", "1;36", "1;32"
+
+
+def paint(text, *codes):
+    return f"\033[{';'.join(codes)}m{text}\033[0m" if COLOR and codes and text else text
 ITEM_KW = {"fn", "mod", "impl", "struct", "enum", "trait", "union", "macro_rules"}
 QUALIFIERS = {"pub", "async", "unsafe", "const", "extern", "default", "safe"}
 
@@ -155,7 +165,8 @@ def main():
             continue
         code, test, _, whole = info[f]
         rel = os.path.relpath(f, c).split(os.sep)
-        whole = (whole or rel[0] in TEST_DIRS or any(f == p or f.startswith(p) for p in test_prefixes))
+        whole = (whole or rel[0] in TEST_DIRS or (c + "/").startswith(TEST_CRATES)
+                 or any(f == p or f.startswith(p) for p in test_prefixes))
         t = len(code) if whole else len(code & test)
         i = len(code) - t
         a = totals.setdefault(c, [0, 0])
@@ -168,19 +179,36 @@ def main():
         if c is None:
             sys.exit(f"no crate {only!r}")
         rows = sorted(per_file.get(c, []), key=lambda r: (-r[0], -r[1]))
-        print(f"{'impl':>7} {'test':>7}  file")
+        print(paint(f"{'impl':>7} {'test':>7}  file", BOLD))
         for i, t, f in rows:
             print(f"{i:>7,} {t:>7,}  {f}")
         return
 
-    rows = sorted(((v[0], v[1], crates[d], d) for d, v in totals.items()), key=lambda r: (-r[0], -r[1]))
-    w = max(len(r[2]) for r in rows)
-    print(f"{'crate':<{w}} {'impl':>7} {'test':>7}  path")
-    for i, t, name, d in rows:
-        print(f"{name:<{w}} {i:>7,} {t:>7,}  {d}")
-    ti = sum(r[0] for r in rows)
-    tt = sum(r[1] for r in rows)
-    print(f"{'total':<{w}} {ti:>7,} {tt:>7,}")
+    rows = sorted(((v[0], v[1], d) for d, v in totals.items()), key=lambda r: (-r[0], -r[1]))
+    # paths split at the last "/": heads right-aligned, so the crate names line up
+    hw = max(len(r[2].rpartition("/")[0]) + 1 for r in rows if "/" in r[2])
+    w = max([hw + len(r[2].rpartition("/")[2]) for r in rows] + [len("auxiliary total")]) + 2
+
+    def group(d):
+        return "gui" if d in GUI_CRATES else "core" if d.startswith("core/") else "auxiliary"
+
+    def row(d, i, t):
+        head, _, last = d.rpartition("/")
+        name = paint(f"{head + '/' if head else '':>{hw}}", GRAY) + paint(last, NAME)
+        print(f"{name}{' ' * (w - hw - len(last))} {i:>7,} {t:>7,}")
+
+    def total(label, sub):
+        i, t = sum(r[0] for r in sub), sum(r[1] for r in sub)
+        print(f"{paint(f'{label:<{w}}', NAME)} {paint(f'{i:>7,}', IMPL)} {paint(f'{t:>7,}', TEST)}")
+
+    print(paint(f"{'path':<{w}} {'impl':>7} {'test':>7}", BOLD))
+    for g in ("core", "auxiliary", "gui"):
+        sub = [r for r in rows if group(r[2]) == g]
+        for i, t, d in sub:
+            row(d, i, t)
+        total(f"{g} total", sub)
+        print()
+    total("total", rows)
 
 
 if __name__ == "__main__":
