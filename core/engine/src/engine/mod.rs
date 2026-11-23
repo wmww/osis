@@ -1693,13 +1693,6 @@ impl Core {
     /// operation gives its changes at its end and reads no walk before): no read sees it behind.
     pub fn timelines(&self) -> &held::Timelines {
         debug_assert!(!self.ix.held.is_touched(), "the walk read behind the held set");
-        // every commit whose judged inputs moved (`stale_commits`) is read by the walk as now:
-        // each input of `validity::reading` touches where it moves
-        #[cfg(debug_assertions)]
-        {
-            let behind = self.walk_behind(self.stale_commits.iter());
-            debug_assert!(behind.is_none(), "the walk read behind an input of {behind:?}");
-        }
         &self.timelines
     }
 
@@ -3644,6 +3637,10 @@ impl Engine {
         #[cfg(debug_assertions)]
         {
             self.checked_verdicts();
+            // the walk reads every held commit as the index says now: an input moved untouched
+            // leaves it behind for good
+            let behind = self.core.walk_behind(self.core.ix.commits.keys());
+            assert!(behind.is_none(), "check_index: the walk reads {behind:?} behind the index");
             self.checked_states()?;
             let rows = std::mem::take(&mut self.core.unchecked_rows);
             osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(|tx| crate::retention::leaving::rows_exact(tx, &rows)))))?;
@@ -3745,10 +3742,6 @@ impl Engine {
                 })
             })
         });
-        // and the walk reads every held commit as the index says now: an input moved untouched
-        // would leave it behind for good
-        let behind = core.walk_behind(core.ix.commits.keys());
-        assert!(behind.is_none(), "end of history: the walk reads {behind:?} behind the index");
     }
 
     /// Debug builds: each aspect valid joins or covered drops changed since the rebuild check

@@ -1148,6 +1148,13 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let mut things = std::mem::take(&mut tx.core.stale_things);
     let authors = std::mem::take(&mut tx.core.stale_authors);
     let under = std::mem::take(&mut tx.core.stale_under);
+    // every commit whose judged inputs moved is read by the walk as now: each input of `reading`
+    // touches where it moves (debug builds; once per pass, so the check costs what moved)
+    #[cfg(debug_assertions)]
+    {
+        let behind = tx.core.walk_behind(tx.core.stale_commits.iter());
+        debug_assert!(behind.is_none(), "the walk reads behind an input of {behind:?}");
+    }
     let explicit = std::mem::take(&mut tx.core.stale_commits);
     let all = std::mem::take(&mut tx.core.stale_all);
     // an addendum's validity may change with its author's role or its commit's void flag, and
