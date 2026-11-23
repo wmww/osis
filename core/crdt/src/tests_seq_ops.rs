@@ -2217,22 +2217,24 @@ fn forged_edge_copy_cached_placement_spec_6() {
                 let (Some((d1, ..)), Some((d2, ..))) = (a1.commit(5, &[op(Op::Move { at, len: 1, to: to1 })], &text_view()), a2.commit(5, &[op(Op::Move { at, len: 1, to: to2 })], &text_view())) else { continue };
                 let mut c = base.fork(2);
                 let d3 = other.and_then(|(at, to)| c.commit(5, &[op(Op::Move { at, len: 1, to })], &text_view())).map(|d| d.0);
-                for (first, second) in [(&d1, &d2), (&d2, &d1)] {
-                    let mut x = base.state.clone();
-                    if let Some(d) = &d3 {
-                        x.join(d.clone());
-                    }
-                    x.join(first.clone());
-                    let _ = x.read();
-                    x.join(second.clone());
-                    crate::testutil::check_lin(&x);
-                    #[cfg(debug_assertions)]
-                    {
-                        let mut y = x.clone();
-                        y.drop_caches();
-                        assert_eq!(x.read(), y.read(), "cached read: move {at} to {to1}/{to2}, other {other:?}");
-                    }
-                }
+                let joined: Vec<Fragment> = [(&d1, &d2), (&d2, &d1)]
+                    .into_iter()
+                    .map(|(first, second)| {
+                        let mut x = d3.iter().fold(base.state.clone(), |x, d| joined(&x, d));
+                        x.join(first.clone());
+                        let _ = x.read();
+                        x.join(second.clone());
+                        crate::testutil::check_lin(&x);
+                        #[cfg(debug_assertions)]
+                        {
+                            let mut y = x.clone();
+                            y.drop_caches();
+                            assert_eq!(x.read(), y.read(), "cached read: move {at} to {to1}/{to2}, other {other:?}");
+                        }
+                        x
+                    })
+                    .collect();
+                assert_eq!(joined[0], joined[1], "both orders: move {at} to {to1}/{to2}, other {other:?}");
             }
         }
     }
