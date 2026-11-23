@@ -14,7 +14,6 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 ## In flight beside it
 - `mizzen-walk-inputs` (worker): issues/walk-inputs-via-stale.md.
 
-- `mizzen-slow-alarm-2` (worker): the per-test alarm flags by wall time and fires on box load; make it load-independent. Until it lands, a NEW-SLOW line is noise unless `tools/icount` shows the test's instructions grew against main's binary.
 - `mizzen-walk-inputs`: the gate showed its debug assert costs ~4x main's instructions; the worker is making the check cost what changed.
 
 ## Safe parallel work queue (outside the rewrite)
