@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""tools/merge-branch gate|land NAME: the gater's loop for task branch NAME (notes/coordination.md,
+The task loop), every step checked and reported, run from any checkout of the repo.
+
+  gate NAME [GATE ARGS]   W = NAME's worktree (the one `wt list` shows holding NAME, else
+      `tools/claim NAME`); `git fetch`; rebase W on origin/main (rerere off), a conflict in
+      notes/handoff.md alone taking main's side, any other stopping with its files (the rebase left in
+      progress in W); prints `git diff origin/main` of the merge-driven lists (check it shows only the
+      branch's own change); W's `tools/policy.py`; W's `tools/gate.sh GATE ARGS` with its log in
+      LOGS/NAME/gate-N.log; prints the gate's summary, the log's path and `gate=EXIT`, and records
+      the exit, HEAD and origin/main in LOGS/NAME/record.json. Exit: the gate's, or 2 refused
+      before it ran.
+  land NAME [--fixed]     in W: refused unless W is clean and its last gate exited 0 or 3 (with
+      --fixed: a NEW failure or failed check was fixed and its tests rerun by name); prints the
+      commits after the checked HEAD (refused if HEAD is no descendant of it); if origin/main moved
+      past the checked base, rebases as gate does, then `cargo clippy --all-targets -- -D warnings`,
+      the same with `-p` for each non-default package both sides changed, and `cargo test -p` each
+      package both sides changed (files changed base..HEAD and base..origin/main); `tools/land
+      --delete` the one pushed copy origin/*-NAME (plain `tools/land` with none); checks origin/main
+      is HEAD; `wt release` of W; `git branch -D NAME`; removes LOGS/NAME. Exit 0 landed, 1 not.
+
+LOGS is gate-logs/ in the repo's common git dir: one place per branch from any worktree, read by
+the next step. A failed check after a land's rebase is recorded like a failed gate."""
+import fnmatch, glob, importlib.machinery, importlib.util, json, os, re, shutil, subprocess, sys, tomllib
+
+sys.dont_write_bytecode = True
+TOOLS = os.path.dirname(os.path.abspath(__file__))
+HANDOFF = "notes/handoff.md"
+
+
+def load(name):
+    loader = importlib.machinery.SourceFileLoader(name, os.path.join(TOOLS, name))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
+claim = load("claim")
+
+
+def say(msg):
+    print(f"merge-branch: {msg}", file=sys.stderr, flush=True)
+
+
+def stop(msg, code):
+    say(msg)
+    sys.exit(code)
+
+
+def run(*a, cwd, check=True):
+    r = subprocess.run(list(a), cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if check and r.returncode:
+        stop(f"{' '.join(a)} in {cwd}: {(r.stderr or r.stdout).strip()}", 1)
+    return r
+
+
+def git(*a, cwd, check=True):
+    return run("git", *a, cwd=cwd, check=check).stdout.strip()
+
+
+def shown(*a, cwd):
+    """Runs a command with its output shown (never piped), returning its exit."""
+    say(f"{' '.join(a)}")
+    return subprocess.run(list(a), cwd=cwd, stdin=subprocess.DEVNULL).returncode
+
+
+def held(name):
+    """The worktree `wt list` shows holding NAME, or None."""
+    for line in run(claim.wt(), "list", cwd=TOOLS).stdout.splitlines():
+        f = line.split()
+        if f[1:2] == [name]:
+            return f[0]
+    return None
+
+
+def logs(w, name):
+    d = os.path.join(git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=w), "gate-logs", name)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def record(d, **kw):
+    p = os.path.join(d, "record.json")
+    if kw:
+        with open(p, "w") as f:
+            json.dump(kw, f)
+    elif os.path.exists(p):
+        with open(p) as f:
+            return json.load(f)
+    return kw or None
+
+
+def mid_rebase(w):
+    gd = git("rev-parse", "--absolute-git-dir", cwd=w)
+    return any(os.path.exists(os.path.join(gd, p)) for p in ("rebase-merge", "rebase-apply", "MERGE_HEAD"))
+
+
+def rebase(w, code):
+    """Rebase W on origin/main; a conflict in notes/handoff.md alone takes main's side (`--ours`
+    in a rebase); any other stops, the rebase left in progress, exiting CODE."""
+    r = run("git", "-c", "rerere.enabled=false", "rebase", "origin/main", cwd=w, check=False)
+    while r.returncode:
+        conflicts = git("diff", "--name-only", "--diff-filter=U", cwd=w).split()
+        if conflicts != [HANDOFF]:
+            stop(f"rebase on origin/main stopped in {w} with conflicts in: {' '.join(conflicts) or '(none listed)'}\n"
+                 f"{(r.stderr or r.stdout).strip()}\nresolve them there (`git -c rerere.enabled=false rebase --continue`), "
+                 f"or `git rebase --abort`; then run this again", code)
+        git("checkout", "--ours", "--", HANDOFF, cwd=w)
+        git("add", "--", HANDOFF, cwd=w)
+        say(f"rebase: {HANDOFF} conflicted alone: took main's version")
+        # the commit may hold nothing else: then there is nothing left to commit
+        step = "--continue" if run("git", "diff", "--cached", "--quiet", cwd=w, check=False).returncode else "--skip"
+        r = run("git", "-c", "core.editor=true", "-c", "rerere.enabled=false", "rebase", step, cwd=w, check=False)
+    say(f"rebased on origin/main: {git('log', '--oneline', '-1', cwd=w)}")
+
+
+def merged_lists(w):
+    """The paths .gitattributes gives a merge driver (union lists, known failures)."""
+    p = os.path.join(w, ".gitattributes")
+    if not os.path.exists(p):
+        return []
+    return [l.split()[0] for l in open(p) if re.search(r"\smerge=", l) and not l.startswith("#")]
+
+
+def gate(name, args):
+    w = held(name)
+    if w:
+        say(f"{name} is held by {w}: gating there")
+        if mid_rebase(w):
+            stop(f"{w} is mid-rebase or mid-merge: finish or abort it, then run this again", 2)
+        if git("status", "--porcelain", "--untracked-files=no", cwd=w):
+            stop(f"{w} has uncommitted changes: commit or drop them first", 2)
+    else:
+        r = subprocess.run([os.path.join(TOOLS, "claim"), name], cwd=TOOLS, stdout=subprocess.PIPE, text=True)
+        if r.returncode:
+            stop("tools/claim failed (above)", 2)
+        w = r.stdout.strip().splitlines()[-1]
+    git("fetch", "-q", "--prune", "origin", cwd=w)
+    rebase(w, 2)
+    lists = merged_lists(w)
+    diff = git("diff", "origin/main", "--", *lists, cwd=w) if lists else ""
+    if diff:
+        say(f"the merge-driven lists against origin/main (only the branch's own change may show):\n{diff}")
+    if shown("python3", "tools/policy.py", cwd=w):
+        stop("policy failed (above): fix it in the branch; the gate did not run", 2)
+    d = logs(w, name)
+    n = 1 + max([int(m.group(1)) for f in os.listdir(d) if (m := re.fullmatch(r"gate-(\d+)\.log", f))], default=0)
+    log = os.path.join(d, f"gate-{n}.log")
+    head, base = git("rev-parse", "HEAD", cwd=w), git("rev-parse", "origin/main", cwd=w)
+    say(f"tools/gate.sh {' '.join(args)} in {w}, log {log}")
+    with open(log, "w") as f:
+        rc = subprocess.run(["sh", "tools/gate.sh", *args], cwd=w, stdout=f, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL).returncode
+        f.write(f"gate={rc}\n")
+    record(d, exit=rc, failed=f"gate exit {rc}", head=head, base=base)
+    lines = open(log).read().splitlines()
+    starts = [i for i, l in enumerate(lines) if l.startswith("== test stages:")]
+    print("\n".join(lines[starts[-1]:] if starts else lines[-20:]))
+    print(f"log: {log}")
+    sys.exit(rc)
+
+
+def packages(w):
+    """{package dir relative to W: (name, default member)} of the workspace."""
+    with open(os.path.join(w, "Cargo.toml"), "rb") as f:
+        ws = tomllib.load(f).get("workspace", {})
+    defaults = ws.get("default-members", ws.get("members", []))
+    out = {}
+    for pattern in ws.get("members", []):
+        for m in sorted(os.path.relpath(p, w) for p in glob.glob(os.path.join(w, pattern))):
+            manifest = os.path.join(w, m, "Cargo.toml")
+            if os.path.exists(manifest):
+                with open(manifest, "rb") as f:
+                    pkg = tomllib.load(f).get("package")
+                if pkg:
+                    out[m] = (pkg["name"], any(fnmatch.fnmatch(m, p) for p in defaults))
+    return out
+
+
+def package_of(path, pkgs):
+    best = None
+    for d in pkgs:
+        if path.startswith(d + "/") and (best is None or len(d) > len(best)):
+            best = d
+    return pkgs[best] if best else None
+
+
+def checks(w, base, head):
+    """Clippy and the tests of the packages both the branch (base..HEAD) and main (base..origin/main)
+    changed; files outside any package are named. True when every one passed."""
+    ours = set(git("diff", "--name-only", f"{base}..{head}", cwd=w).split())
+    theirs = set(git("diff", "--name-only", f"{base}..origin/main", cwd=w).split())
+    both = sorted(ours & theirs)
+    pkgs = packages(w)
+    hit = sorted({p for f in both if (p := package_of(f, pkgs))})
+    loose = [f for f in both if not package_of(f, pkgs)]
+    if loose:
+        say(f"files both sides changed outside any package (no check here; read them): {' '.join(loose)}")
+    say(f"packages both sides changed: {' '.join(n for n, _ in hit) or 'none'}")
+    cmds = [["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]]
+    cmds += [["cargo", "clippy", "-p", n, "--all-targets", "--", "-D", "warnings"] for n, default in hit if not default]
+    cmds += [["cargo", "test", "-p", n] for n, _ in hit]
+    for c in cmds:
+        if shown(*c, cwd=w):
+            say(f"failed: {' '.join(c)}")
+            return False
+    return True
+
+
+def land(name, fixed):
+    w = held(name)
+    if not w:
+        stop(f"no worktree holds {name} (`wt list`): gate it first", 1)
+    if mid_rebase(w) or git("status", "--porcelain", "--untracked-files=no", cwd=w):
+        stop(f"{w} is mid-rebase or has uncommitted changes: finish them first", 1)
+    d = logs(w, name)
+    rec = record(d)
+    if rec is None:
+        stop(f"no gate recorded for {name} ({d}): run `tools/merge-branch gate {name}`", 1)
+    if rec["exit"] not in (0, 3):
+        if not fixed:
+            stop(f"the last check failed ({rec['failed']}): fix it, rerun its tests by name, then land with --fixed", 1)
+        say(f"landing with --fixed after: {rec['failed']}")
+    head = git("rev-parse", "HEAD", cwd=w)
+    if head != rec["head"]:
+        if run("git", "merge-base", "--is-ancestor", rec["head"], head, cwd=w, check=False).returncode:
+            stop(f"HEAD is no descendant of the checked {rec['head'][:9]}: rewritten since; gate it again", 1)
+        say(f"commits after the checked HEAD:\n{git('log', '--oneline', rec['head'] + '..' + head, cwd=w)}")
+    git("fetch", "-q", "--prune", "origin", cwd=w)
+    pushed = [r for r in git("for-each-ref", "--format=%(refname:short)", f"refs/remotes/origin/*-{name}", cwd=w).split() if r]
+    if len(pushed) > 1:
+        stop(f"several pushed copies of {name}: {' '.join(pushed)}: delete the stale one first", 1)
+    main = git("rev-parse", "origin/main", cwd=w)
+    if main != rec["base"]:
+        say(f"origin/main moved since the last check ({rec['base'][:9]} -> {main[:9]}): rebasing")
+        rebase(w, 1)
+        new = git("rev-parse", "HEAD", cwd=w)
+        ok = checks(w, rec["base"], head)
+        rec = dict(exit=0 if ok else 1, failed="checks after the land's rebase", head=new, base=main)
+        record(d, **rec)
+        if not ok:
+            stop("not landed: fix the failure in the branch, then land with --fixed", 1)
+        head = new
+    cmd = ["sh", "tools/land"] + (["--delete", pushed[0][len("origin/"):]] if pushed else [])
+    if not pushed:
+        say(f"no pushed copy origin/*-{name} to delete")
+    land_rc = shown(*cmd, cwd=w)
+    git("fetch", "-q", "origin", "main", cwd=w)
+    if git("rev-parse", "origin/main", cwd=w) != head:
+        stop(f"not landed: origin/main is not HEAD {head[:9]} (tools/land exit {land_rc}, above)", 1)
+    if land_rc:
+        stop(f"landed, but tools/land exited {land_rc} after the push (above): its pushed copy may remain; "
+             f"{w} still holds {name}", 1)
+    say(f"landed: origin/main is {git('log', '--oneline', '-1', cwd=w)}")
+    if shown(claim.wt(), "release", w, cwd=w):
+        stop(f"`wt release {w}` failed (above): {name} kept", 1)
+    top = git("rev-parse", "--show-toplevel", cwd=TOOLS)
+    # -D: the branch is on origin/main (checked above), which a lagging local main may not show
+    r = run("git", "branch", "-D", name, cwd=top, check=False)
+    if r.returncode:
+        stop(f"git branch -D {name}: {(r.stderr or r.stdout).strip()}", 1)
+    shutil.rmtree(d)
+    say(f"released {w}, deleted the local branch {name} and {d}")
+
+
+def main(argv):
+    if len(argv) >= 2 and argv[0] == "gate":
+        gate(argv[1], argv[2:])
+    elif argv[:1] == ["land"] and len(argv) in (2, 3) and argv[2:] in ([], ["--fixed"]):
+        land(argv[1], argv[2:] == ["--fixed"])
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
