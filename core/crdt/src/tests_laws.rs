@@ -2,47 +2,41 @@
 //! and `part_at`; on honest states they follow from `tests_model` (equality with a lawful model).
 
 use crate::fragment::Fragment;
-use crate::testutil::{mapply, ostate, sink_no_seq};
+use crate::testutil::{joined, mapply, ostate, sink_no_seq};
 use crdt_model::r#gen::random_op;
 use crdt_model::ops::{Ty, Writer as MWriter};
 use crdt_model::stamp::Source as MSource;
 use proptest::prelude::*;
 
-fn join(a: &Fragment, b: &Fragment) -> Fragment {
-    let mut x = a.clone();
-    x.join(b.clone());
-    x
-}
-
 /// The join laws on states holding copies of one write with differing payloads, and what the
 /// crdt answers there that the model has no counterpart for (`contains`, `part_at`).
 fn laws(s: &[Fragment]) {
     let (a, b, c) = (&s[0], &s[1], &s[2]);
-    assert_eq!(join(a, b), join(b, a), "commutative");
-    assert_eq!(join(&join(a, b), c), join(a, &join(b, c)), "associative");
-    assert_eq!(join(&join(a, c), b), join(&join(c, b), a), "any order");
-    assert_eq!(join(a, a), a.clone(), "idempotent");
-    assert_eq!(join(&join(a, b), b), join(a, b), "absorbing");
-    assert!(!join(a, a).is_empty() || a.is_empty());
+    assert_eq!(joined(a, b), joined(b, a), "commutative");
+    assert_eq!(joined(&joined(a, b), c), joined(a, &joined(b, c)), "associative");
+    assert_eq!(joined(&joined(a, c), b), joined(&joined(c, b), a), "any order");
+    assert_eq!(joined(a, a), a.clone(), "idempotent");
+    assert_eq!(joined(&joined(a, b), b), joined(a, b), "absorbing");
+    assert!(!joined(a, a).is_empty() || a.is_empty());
     // `contains` (judged on a piece at the other's positions): sound, and true for what a join
     // took in
-    let ab = join(a, b);
+    let ab = joined(a, b);
     for x in [a, b, c, &ab] {
         for y in [a, b, c, &ab] {
             // its soundness rests on this: the piece is below the whole
-            assert_eq!(&join(x, &x.part_at(y)), x, "a piece joins in unchanged");
+            assert_eq!(&joined(x, &x.part_at(y)), x, "a piece joins in unchanged");
             if crate::testutil::contains(x, y) {
-                assert_eq!(&join(x, y), x, "contains only what joins in unchanged");
+                assert_eq!(&joined(x, y), x, "contains only what joins in unchanged");
             }
             // a sequence joins record by record, so its piece decides exactly
             if matches!(x, Fragment::Seq(_)) {
-                assert_eq!(crate::testutil::contains(x, y), &join(x, y) == x, "a sequence's piece judges as the whole");
+                assert_eq!(crate::testutil::contains(x, y), &joined(x, y) == x, "a sequence's piece judges as the whole");
             }
         }
         assert!(crate::testutil::contains(&ab, x) || x == c, "a join contains its parts");
     }
     // §4.3: the short-circuit presence equals the presence stamp's
-    for x in [a, b, c, &join(a, b)] {
+    for x in [a, b, c, &joined(a, b)] {
         assert_eq!(x.present(), x.written().is_some(), "present");
     }
 }
@@ -129,7 +123,7 @@ proptest! {
 /// encodings at one position).
 mod entry_copies {
     use crate::fragment::Fragment;
-    use crate::testutil::{frag, ostate, source};
+    use crate::testutil::{frag, joined, ostate, source};
     use crdt_model::r#gen::Rng;
     use crdt_model::stamp::{Dot, Source, Stamp};
     use crdt_model::state::{Anchor, BagKind, Content, Elem, Entry, Frag, SeqElem};
@@ -224,12 +218,6 @@ mod entry_copies {
         x
     }
 
-    fn join(a: &Fragment, b: &Fragment) -> Fragment {
-        let mut x = a.clone();
-        x.join(b.clone());
-        x
-    }
-
     /// Which dots expire, for the crdt and for the model.
     type Expiry<'a> = (&'a dyn Fn(&crate::stamp::Dot) -> bool, &'a dyn Fn(&Dot) -> bool);
 
@@ -247,15 +235,15 @@ mod entry_copies {
     fn laws(ms: &[Frag]) {
         let n = ms.len();
         let ps: Vec<Fragment> = ms.iter().map(frag).collect();
-        let all = ps[1..].iter().fold(ps[0].clone(), |a, b| join(&a, b));
-        assert_eq!(all, ps[..n - 1].iter().rev().fold(ps[n - 1].clone(), |a, b| join(&a, b)), "commutative");
-        assert_eq!(join(&all, &ps[0]), all, "absorbing");
+        let all = ps[1..].iter().fold(ps[0].clone(), |a, b| joined(&a, b));
+        assert_eq!(all, ps[..n - 1].iter().rev().fold(ps[n - 1].clone(), |a, b| joined(&a, b)), "commutative");
+        assert_eq!(joined(&all, &ps[0]), all, "absorbing");
         if n == 3 {
             for [a, b, c] in [[0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
-                assert_eq!(join(&join(&ps[a], &ps[b]), &ps[c]), all, "order {a} {b} {c}");
+                assert_eq!(joined(&joined(&ps[a], &ps[b]), &ps[c]), all, "order {a} {b} {c}");
             }
             for [a, b, c] in [[0, 1, 2], [1, 0, 2], [2, 0, 1]] {
-                assert_eq!(join(&ps[a], &join(&ps[b], &ps[c])), all, "associative {a} ({b} {c})");
+                assert_eq!(joined(&ps[a], &joined(&ps[b], &ps[c])), all, "associative {a} ({b} {c})");
             }
         }
         let model = ms[1..].iter().fold(ms[0].clone(), |mut a, b| {
@@ -278,9 +266,9 @@ mod entry_copies {
                 y
             };
             let late = strip(&all);
-            let early = ps[1..].iter().fold(strip(&ps[0]), |a, b| strip(&join(&a, &strip(b))));
+            let early = ps[1..].iter().fold(strip(&ps[0]), |a, b| strip(&joined(&a, &strip(b))));
             assert_eq!(early, late, "expiry {i} before the joins");
-            let mixed = strip(&ps[1..].iter().fold(ps[0].clone(), |a, b| join(&a, &strip(b))));
+            let mixed = strip(&ps[1..].iter().fold(ps[0].clone(), |a, b| joined(&a, &strip(b))));
             assert_eq!(mixed, late, "expiry {i} of all but the first");
             let mut ml = model.clone();
             ml.strip(*me);
@@ -291,8 +279,8 @@ mod entry_copies {
                 y.remove_writes(*e);
                 y
             };
-            let fwd = ps[1..].iter().fold(un(&ps[0]), |a, b| join(&a, &un(b)));
-            assert_eq!(fwd, ps[..n - 1].iter().rev().fold(un(&ps[n - 1]), |a, b| join(&a, &un(b))), "un-merge {i}, commutative");
+            let fwd = ps[1..].iter().fold(un(&ps[0]), |a, b| joined(&a, &un(b)));
+            assert_eq!(fwd, ps[..n - 1].iter().rev().fold(un(&ps[n - 1]), |a, b| joined(&a, &un(b))), "un-merge {i}, commutative");
             let mu = ms.iter().map(|m| {
                 let mut m = m.clone();
                 m.unmerge(*me);
@@ -319,8 +307,8 @@ mod entry_copies {
         let a = frag(&one("b", one("q", w.clone(), 2), 1));
         let b = frag(&one("a", one("z", w, 2), 1));
         let want = osis_base::Value::Map(osis_base::ValueMap::from([(osis_base::Value::Str("b".into()), osis_base::Value::Map(osis_base::ValueMap::from([(osis_base::Value::Str("z".into()), osis_base::Value::Str("x".into()))])))]));
-        assert_eq!(join(&a, &b).read(), Some(want));
-        assert_eq!(join(&a, &b), join(&b, &a));
+        assert_eq!(joined(&a, &b).read(), Some(want));
+        assert_eq!(joined(&a, &b), joined(&b, &a));
     }
 
     /// §5.6 with §4.1, §4.7 and §7: forged copies of one entry under several keys, flat and
@@ -345,14 +333,14 @@ mod entry_copies {
         let b = one(SeqElem::flag(st(2, 17), true, None));
         laws(&[a.clone(), b.clone()]);
         let (fa, fb) = (frag(&a), frag(&b));
-        let ab = join(&fa, &fb);
+        let ab = joined(&fa, &fb);
         assert_eq!(ab.read(), Some(osis_base::Value::Str("z".into())), "the creation beats the delete below it");
         let strip = |f: &Fragment| {
             let mut g = f.clone();
             g.strip(&|_| true);
             g
         };
-        let (late, early) = (strip(&ab), join(&strip(&fa), &strip(&fb)));
+        let (late, early) = (strip(&ab), joined(&strip(&fa), &strip(&fb)));
         assert_eq!(late, early);
         assert_eq!(late, fb, "the delete stays, alone");
         assert_eq!(snapshot_bytes(&late), snapshot_bytes(&early));
@@ -385,7 +373,7 @@ mod entry_copies {
             assert_eq!(bytes, mbytes, "the model's bytes");
             let back = crate::codec::decode_snapshot(&bytes, &crate::testutil::snap_cx(), &mut crate::stamp::Interner::new(), None).unwrap();
             assert_eq!(back.fragment, f, "round trip");
-            assert_eq!(join(&back.fragment, &f), f);
+            assert_eq!(joined(&back.fragment, &f), f);
         }
     }
 
@@ -403,7 +391,7 @@ mod entry_copies {
         both.join(flags.clone());
         let mbytes = crdt_model::wire::encode_snapshot(&both, &[], [3; 16], &mut crdt_model::wire::Ctx::new(1 << 40, Source::session(250, 0), 1));
         let (fc, ff) = (frag(&created), frag(&flags));
-        for f in [join(&fc, &ff), join(&ff, &fc)] {
+        for f in [joined(&fc, &ff), joined(&ff, &fc)] {
             let bytes = snapshot_bytes(&f);
             assert_eq!(bytes, mbytes, "the model's bytes");
             let back = crate::codec::decode_snapshot(&bytes, &crate::testutil::snap_cx(), &mut crate::stamp::Interner::new(), None).unwrap();
@@ -425,8 +413,8 @@ mod entry_copies {
         let w = Frag::Register { reset: None, write: Some((st(1, 5), Some(Value::Int(1)))) };
         let reg = Frag::Register { reset: None, write: Some((st(1, 5), Some(Value::Int(7)))) };
         let forged = Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(Dot { source: Source::session(1, 0), ctr: 5 }, Elem { reset: None, frag: Some(Box::new(reg)), gone: None })]) };
-        assert_eq!(join(&frag(&forged), &frag(&w)), frag(&w));
-        assert_eq!(join(&frag(&w), &frag(&forged)), frag(&w));
+        assert_eq!(joined(&frag(&forged), &frag(&w)), frag(&w));
+        assert_eq!(joined(&frag(&w), &frag(&forged)), frag(&w));
         let rec = |k: &str, f: &Frag| Frag::Map { c: Default::default(), entries: BTreeMap::from([((d.clone(), Some(str(k))), Entry { reset: None, frag: Some(Box::new(f.clone())), created: Some(st(1, 1)) })]) };
         laws(&[rec("a", &forged), rec("b", &w)]);
     }
@@ -445,7 +433,7 @@ mod entry_copies {
         let text = Frag::Seq { text: true, c: Default::default(), elems: BTreeMap::from([(d, el)]) };
         for forged in [bag, text] {
             laws(&[s.clone(), forged.clone(), g.clone()]);
-            assert_ne!(join(&frag(&forged), &frag(&g)), frag(&g), "the forged write stays");
+            assert_ne!(joined(&frag(&forged), &frag(&g)), frag(&g), "the forged write stays");
         }
     }
 

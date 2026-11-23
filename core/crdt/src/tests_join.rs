@@ -14,15 +14,11 @@ fn settled(seed: u64, types: &[Ty]) {
     use crate::stamp::Stamp;
     let mut r = crate::testutil::rng(seed | 1);
     // a writer per type
-    let commits = history(&mut r, types, types.len(), 4);
+    let ds: Vec<Fragment> = history(&mut r, types, types.len(), 4).iter().map(|c| frag(&c.delta)).collect();
     let low = Fragment::Register(Register { reset: Some(Stamp::new(crate::testutil::ts(0), sess(osis_base::Tid::from_bytes([7; 15])), 1)), write: None });
-    assert!(commits.iter().any(|c| {
-        let mut j = low.clone();
-        j.join(frag(&c.delta));
-        j != low
-    }));
+    assert!(ds.iter().any(|d| crate::testutil::joined(&low, d) != low));
     let at = crate::testutil::ts(1 << 45);
-    assert!(commits.iter().all(|c| matches!(frag(&c.delta), Fragment::Register(_)) || !frag(&c.delta).settled_above(at)));
+    assert!(ds.iter().all(|d| matches!(d, Fragment::Register(_)) || !d.settled_above(at)));
     assert!(!Fragment::default().settled_above(crate::testutil::ts(0)));
     let stamp = Stamp::new(at, sess(osis_base::Tid::from_bytes([7; 15])), 1);
     let meta = Meta { reset: Some(stamp.clone()), w: None, ..Meta::default() };
@@ -39,10 +35,8 @@ fn settled(seed: u64, types: &[Ty]) {
     for st in states {
         assert!(st.settled_above(crate::testutil::ts((1 << 45) - 1)));
         assert!(!st.settled_above(at));
-        for c in &commits {
-            let mut j = st.clone();
-            j.join(frag(&c.delta));
-            assert_eq!(j, st, "{:?}", c.delta);
+        for d in &ds {
+            assert_eq!(crate::testutil::joined(&st, d), st, "{d:?}");
         }
     }
 }

@@ -59,78 +59,63 @@ pub(crate) fn rejects(bytes: &[u8], cx: &DeltaCtx, class: ErrorClass) {
     }
 }
 
+/// The decoded fragment of writer delta `b` under `wcx`, or its error's class and message.
+fn decoded(b: &[u8]) -> Result<Fragment, (ErrorClass, String)> {
+    decode_delta(b, &wcx(), &mut Interner::new(), None).map(|d| d.fragment).map_err(|e| (e.class(), e.to_string()))
+}
+
+// spec/crdt.md §3.2, §2.3, §3.3 rule 7: writer deltas of node 1 at `wcx`. A
+// valid one reads back; each row breaks one rule and is refused with its class (and message
+// where it names the rule): non-canonical CBOR, out-of-range indices, own counters out of
+// range, non-canonical forms, foreign stamps, a nested register reset, too-deep values, a
+// commit-level write off the delta stamp (only creations and position writes take counters
+// above `lo`); an unknown encoding parks (§3.1; spec/versioning.md §2 (park unknown)).
 #[test]
-fn accepts_a_valid_delta_spec_3_2() {
-    let b = delta(vec![], vec![], set_with(vec![elem(i(3), 1), elem(i(4), 2)]));
-    let d = decode_delta(&b, &wcx(), &mut Interner::new(), None).unwrap();
-    let mut s = crate::Fragment::default();
-    s.join(d.fragment);
+fn writer_delta_rejections_spec_3_3() {
+    let ok = decoded(&delta(vec![], vec![], set_with(vec![elem(i(3), 1), elem(i(4), 2)]))).unwrap();
+    let mut s = Fragment::default();
+    s.join(ok);
     assert_eq!(s.read(), Some(Value::Set([i(1), i(2)].into_iter().collect())));
-}
-
-#[test]
-fn rejects_non_canonical_cbor_spec_3_3() {
-    let mut b = delta(vec![], vec![], l(vec![i(0), l(vec![]), i(0), i(1)]));
-    // replace the final int 1 by its non-shortest form 0x18 0x01
-    b.pop();
-    b.extend([0x18, 0x01]);
-    rejects(&b, &wcx(), ErrorClass::BadInput);
-}
-
-#[test]
-fn rejects_out_of_range_indices_spec_3_3() {
-    // Src 1 with an empty Sources table
-    rejects(&delta(vec![], vec![], set_with(vec![elem(l(vec![i(1), i(2)]), 1)])), &wcx(), ErrorClass::BadInput);
-    // Ci 1 in a writer's delta
-    rejects(&delta(vec![], vec![], l(vec![i(0), l(vec![]), i(1), i(1)])), &wcx(), ErrorClass::BadInput);
-    // counter 0
-    rejects(&delta(vec![], vec![], set_with(vec![elem(i(0), 1)])), &wcx(), ErrorClass::BadInput);
-}
-
-#[test]
-fn rejects_own_counters_out_of_range_spec_2_3() {
-    // a stamp above hi
-    rejects(&delta(vec![], vec![], l(vec![i(0), l(vec![]), l(vec![i(0), i(6)]), i(1)])), &wcx(), ErrorClass::BadInput);
-    // a stamp below lo
-    rejects(&delta(vec![], vec![], l(vec![i(0), l(vec![]), l(vec![i(0), i(2)]), i(1)])), &wcx(), ErrorClass::BadInput);
-    // an own element dot at hi
-    rejects(&delta(vec![], vec![], set_with(vec![elem(i(6), 1)])), &wcx(), ErrorClass::BadInput);
-}
-
-#[test]
-fn rejects_non_canonical_forms_spec_3_3() {
-    // stamp in array form at its base
-    rejects(&delta(vec![], vec![], l(vec![i(0), l(vec![]), l(vec![i(0), i(3)]), i(1)])), &wcx(), ErrorClass::BadInput);
-    // own dot in array form
-    rejects(&delta(vec![], vec![], set_with(vec![elem(l(vec![i(0), i(3)]), 1)])), &wcx(), ErrorClass::BadInput);
-    // unsorted elements
-    rejects(&delta(vec![], vec![], set_with(vec![elem(i(4), 1), elem(i(3), 2)])), &wcx(), ErrorClass::BadInput);
-    // a source the fragment does not use
-    rejects(&delta(vec![Value::Bytes(vec![9; 31])], vec![], set_with(vec![elem(i(3), 1)])), &wcx(), ErrorClass::BadInput);
-    // a source entry of neither 31 nor 32 bytes (a bare tid)
-    let e = decode_delta(&delta(vec![Value::Bytes(vec![9; 15])], vec![], set_with(vec![elem(i(3), 1)])), &wcx(), &mut Interner::new(), None).unwrap_err();
-    assert!(e.to_string().contains("source length"), "{e}");
-    // the own source repeated in Sources
-    let own = sess_value(tid(1));
-    rejects(&delta(vec![own], vec![], set_with(vec![elem(i(3), 1)])), &wcx(), ErrorClass::BadInput);
-    // a bad nonce
-    let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 15]), l(vec![]), l(vec![]), set_with(vec![])]));
-    rejects(&b, &wcx(), ErrorClass::BadInput);
-}
-
-#[test]
-fn rejects_foreign_stamps_in_writer_delta_spec_3_3() {
-    let src = sess_value(tid(9));
-    let commits = vec![l(vec![i(1), l(vec![l(vec![i(1), i(0), i(1)])])])];
-    let f = l(vec![i(0), l(vec![]), i(1), i(1)]);
-    let e = decode_delta(&delta(vec![src], commits, f), &wcx(), &mut Interner::new(), None).unwrap_err();
-    assert!(e.to_string().contains("foreign stamps"), "{e}");
-}
-
-#[test]
-fn rejects_nested_register_reset_spec_3_3() {
-    let s = l(vec![i(4), l(vec![]), l(vec![]), Value::Map([(i(1), l(vec![i(0), l(vec![i(0)]), i(0), i(1)]))].into_iter().collect())]);
-    rejects(&delta(vec![], vec![], s), &wcx(), ErrorClass::BadInput);
+    assert!(decoded(&delta(vec![], vec![], set_with(vec![elem(i(4), 1)]))).is_ok(), "element 4 created, its value at the delta stamp");
+    let reg = |s: Value| delta(vec![], vec![], l(vec![i(0), l(vec![]), s, i(1)]));
+    let one = |e: Value| delta(vec![], vec![], set_with(vec![e]));
+    let mut non_shortest = reg(i(0));
+    // the final int 1 in its non-shortest form 0x18 0x01
+    non_shortest.pop();
+    non_shortest.extend([0x18, 0x01]);
+    let deep = (0..70).fold(i(1), |v, _| l(vec![v]));
+    let at4 = || l(vec![i(0), i(4)]);
+    let bad = ErrorClass::BadInput;
+    let rows: Vec<(&str, Vec<u8>, ErrorClass, &str)> = vec![
+        ("non-shortest int", non_shortest, bad, ""),
+        ("src 1 with an empty sources table", one(elem(l(vec![i(1), i(2)]), 1)), bad, ""),
+        ("ci 1 in a writer's delta", reg(i(1)), bad, ""),
+        ("counter 0", one(elem(i(0), 1)), bad, ""),
+        ("a stamp above hi", reg(l(vec![i(0), i(6)])), bad, ""),
+        ("a stamp below lo", reg(l(vec![i(0), i(2)])), bad, ""),
+        ("an own element dot at hi", one(elem(i(6), 1)), bad, ""),
+        ("a stamp in array form at its base", reg(l(vec![i(0), i(3)])), bad, ""),
+        ("an own dot in array form", one(elem(l(vec![i(0), i(3)]), 1)), bad, ""),
+        ("unsorted elements", delta(vec![], vec![], set_with(vec![elem(i(4), 1), elem(i(3), 2)])), bad, ""),
+        ("a source the fragment does not use", delta(vec![Value::Bytes(vec![9; 31])], vec![], set_with(vec![elem(i(3), 1)])), bad, ""),
+        ("a bare tid source", delta(vec![Value::Bytes(vec![9; 15])], vec![], set_with(vec![elem(i(3), 1)])), bad, "source length"),
+        ("the own source repeated", delta(vec![sess_value(tid(1))], vec![], set_with(vec![elem(i(3), 1)])), bad, ""),
+        ("a bad nonce", osis_base::encode(&l(vec![Value::Bytes(vec![0; 15]), l(vec![]), l(vec![]), set_with(vec![])])), bad, ""),
+        ("a foreign stamp", delta(vec![sess_value(tid(9))], vec![l(vec![i(1), l(vec![l(vec![i(1), i(0), i(1)])])])], l(vec![i(0), l(vec![]), i(1), i(1)])), bad, "foreign stamps"),
+        ("a nested register reset", delta(vec![], vec![], l(vec![i(4), l(vec![]), l(vec![]), Value::Map([(i(1), l(vec![i(0), l(vec![i(0)]), i(0), i(1)]))].into_iter().collect())])), bad, ""),
+        ("a value 71 deep", delta(vec![], vec![], l(vec![i(0), l(vec![]), i(0), deep])), bad, ""),
+        ("a register value off the delta stamp", reg(at4()), bad, ""),
+        ("a reset off the delta stamp", delta(vec![], vec![], l(vec![i(6), l(vec![at4()]), l(vec![]), l(vec![])])), bad, ""),
+        ("a W off the delta stamp", delta(vec![], vec![], l(vec![i(6), l(vec![]), l(vec![at4()]), l(vec![])])), bad, ""),
+        ("an element reset off the delta stamp", one(l(vec![i(4), l(vec![at4()]), l(vec![])])), bad, ""),
+        ("an unknown encoding", delta(vec![], vec![], l(vec![i(42), l(vec![])])), ErrorClass::Parked, ""),
+    ];
+    for (what, b, class, msg) in rows {
+        match decoded(&b) {
+            Ok(f) => panic!("{what}: accepted {f:?}"),
+            Err((c, e)) => assert!(c == class && e.contains(msg), "{what}: {c:?} {e}"),
+        }
+    }
 }
 
 /// §3.2, §3.3 rule 2, §5.6: a removal record carries its entry's key; records of one dot sort
@@ -173,21 +158,6 @@ fn rejects_bad_slots_spec_3_3() {
     rejects(&ok(l(vec![set.clone()]), l(vec![set.clone()])), &scx, ErrorClass::BadInput);
     // repeated encodings
     rejects(&ok(l(vec![set.clone(), set.clone()]), l(vec![reg.clone()])), &scx, ErrorClass::BadInput);
-}
-
-// spec/versioning.md §2 (park unknown)
-#[test]
-fn parks_unknown_encoding_spec_3_1() {
-    rejects(&delta(vec![], vec![], l(vec![i(42), l(vec![])])), &wcx(), ErrorClass::Parked);
-}
-
-#[test]
-fn rejects_deep_values_spec_3_3() {
-    let mut v = i(1);
-    for _ in 0..70 {
-        v = l(vec![v]);
-    }
-    rejects(&delta(vec![], vec![], l(vec![i(0), l(vec![]), i(0), v])), &wcx(), ErrorClass::BadInput);
 }
 
 // §8, §3.3 rule 1: one frontier entry per session source of the table, in table order, 0 where
@@ -333,20 +303,6 @@ fn snap(more_src: Vec<Value>, more_commits: Vec<Value>, f: Value) -> (Vec<u8>, D
 
 fn snap_ok(b: &[u8], cx: &DeltaCtx) -> bool {
     decode_snapshot(b, cx, &mut Interner::new(), None).is_ok()
-}
-
-/// §2.3, §3.3 rule 7: in a writer's delta every commit-level write (register value, reset, `W`,
-/// element reset) has the delta stamp, counter `lo`; only creations and position writes take the
-/// other counters of `[lo, hi)`.
-#[test]
-fn rejects_commit_level_off_delta_stamp_spec_2_3() {
-    let at4 = || l(vec![i(0), i(4)]);
-    rejects(&delta(vec![], vec![], l(vec![i(0), l(vec![]), at4(), i(1)])), &wcx(), ErrorClass::BadInput);
-    rejects(&delta(vec![], vec![], l(vec![i(6), l(vec![at4()]), l(vec![]), l(vec![])])), &wcx(), ErrorClass::BadInput);
-    rejects(&delta(vec![], vec![], l(vec![i(6), l(vec![]), l(vec![at4()]), l(vec![])])), &wcx(), ErrorClass::BadInput);
-    rejects(&delta(vec![], vec![], set_with(vec![l(vec![i(4), l(vec![at4()]), l(vec![])])])), &wcx(), ErrorClass::BadInput);
-    // element 4 created, its value at the delta stamp
-    assert!(decode_delta(&delta(vec![], vec![], set_with(vec![elem(i(4), 1)])), &wcx(), &mut Interner::new(), None).is_ok());
 }
 
 /// §3.3 rules 5, 7, §4.2, §5.1: a delta carries no write its own resets prune: a register's reset

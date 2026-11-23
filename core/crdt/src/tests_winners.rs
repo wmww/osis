@@ -7,7 +7,7 @@ use crate::fragment::{Elem, Fragment, Meta, RegWrite};
 use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, Stamp};
-use crate::testutil::{TyView, frag, history, history_honest, sess, sink_no_seq, ts};
+use crate::testutil::{TyView, frag, history, history_honest, joined, sess, sink_no_seq, ts};
 use crate::winners::{ByWrite, Hiders, Kind, Place, Winners, Won};
 use crdt_model::ops::Ty;
 use osis_base::{Tid, Ts, Value};
@@ -272,12 +272,6 @@ fn unsuperseded(all: &[Raw]) -> BTreeSet<Won> {
     all.iter().filter(|w| !w.shadow && !superseded(w, all)).map(|w| w.w.clone()).collect()
 }
 
-fn join(a: &Fragment, b: &Fragment) -> Fragment {
-    let mut x = a.clone();
-    x.join(b.clone());
-    x
-}
-
 /// Random histories of `types`, joins of random subsets of their commits (as snapshots carry
 /// them): `winners` is the from-scratch set of each, and the writes of one dead in a join of two
 /// are those the other's writes supersede, so one the other holds supersedes each (`ByWrite`
@@ -292,13 +286,13 @@ fn winners_check(seed: u64, types: &[Ty], honest: bool) {
     // bodies and joins of them, as snapshots, leaving and coming
     let mut some = bodies.clone();
     for _ in 0..2 {
-        some.push(bodies.iter().filter(|_| r.chance(1, 2)).fold(Fragment::default(), |f, b| join(&f, b)));
+        some.push(bodies.iter().filter(|_| r.chance(1, 2)).fold(Fragment::default(), |f, b| joined(&f, b)));
     }
     changes_check(&some, &mut r);
     for _ in 0..6 {
-        let mut pick = || bodies.iter().filter(|_| r.chance(1, 2)).fold(Fragment::default(), |f, b| join(&f, b));
+        let mut pick = || bodies.iter().filter(|_| r.chance(1, 2)).fold(Fragment::default(), |f, b| joined(&f, b));
         let (a, b) = (pick(), pick());
-        let ab = join(&a, &b);
+        let ab = joined(&a, &b);
         // joined bodies, as snapshots: a deleted text creation still supersedes
         first_superseding_check(&[a.clone(), b.clone()]);
         for x in [&a, &b, &ab] {
@@ -509,7 +503,7 @@ fn s(v: &str) -> Value {
 
 /// The writes of `a` dead in `a ⊔ b`, by kind and stamp.
 fn dead(a: &Fragment, b: &Fragment) -> Vec<(Kind, Stamp)> {
-    a.winners().minus(&join(a, b).winners()).into_iter().map(|w| (w.kind, w.stamp)).collect()
+    a.winners().minus(&joined(a, b).winners()).into_iter().map(|w| (w.kind, w.stamp)).collect()
 }
 
 /// §4.1, §4.8: a register beaten by a greater stamp dies, a late older write dies on arrival,
@@ -536,12 +530,12 @@ fn beaten_and_pruned_die_spec_4_8() {
 fn move_beaten_as_cur_dies_kept_as_prev_spec_4_8() {
     let ins = edit(&Fragment::default(), 1, 1, vec![Op::Insert { at: 0, items: vec![s("abc")] }]);
     let mv = edit(&ins, 2, 10, vec![Op::Move { at: 0, len: 2, to: 1 }]);
-    let a = join(&ins, &mv);
+    let a = joined(&ins, &mv);
     assert_eq!(a.read(), Some(s("cab")));
     let moved: Vec<Won> = mv.winners().iter().filter(|w| w.kind == Kind::Pos).collect();
     assert_eq!(moved.len(), 2, "one move, two position writes");
     let again = edit(&a, 3, 20, vec![Op::Move { at: 1, len: 1, to: 2 }]);
-    let ab = join(&a, &again);
+    let ab = joined(&a, &again);
     assert_eq!(ab.read(), Some(s("cba")));
     let gone: Vec<Won> = a.winners().minus(&ab.winners()).into_iter().collect();
     assert_eq!(gone.len(), 1, "only the moved element's write: {gone:?}");
@@ -560,7 +554,7 @@ fn text_flag_below_creation_dies_kept_in_record_spec_4_8() {
     let flag = one(SeqElem { deleted: Some((del.clone(), true)), ..SeqElem::bare() });
     let created = one(SeqElem { created: Some((c.clone(), crate::seq::Anchor::Head)), content: SeqContent::Char('a'), pos: vec![(c, crate::seq::Anchor::Head, None)], ..SeqElem::bare() });
     assert_eq!(dead(&flag, &created), vec![(Kind::Delete, del.clone())]);
-    let both = join(&flag, &created);
+    let both = joined(&flag, &created);
     assert_eq!(both.read(), Some(s("a")));
     assert!(both.holds_stamp(&del), "its record keeps it");
     assert!(both.winners().iter().all(|w| w.kind != Kind::Delete));
@@ -572,7 +566,7 @@ fn text_flag_below_creation_dies_kept_in_record_spec_4_8() {
 fn text_creation_dies_at_delete_kept_in_record_spec_4_8() {
     let a = edit(&Fragment::default(), 1, 1, vec![Op::Insert { at: 0, items: vec![s("abc")] }]);
     let del = edit(&a, 2, 10, vec![Op::Delete { at: 1, len: 1 }]);
-    let ab = join(&a, &del);
+    let ab = joined(&a, &del);
     assert_eq!(ab.read(), Some(s("ac")));
     let gone: Vec<Won> = a.winners().minus(&ab.winners()).into_iter().collect();
     assert_eq!(gone.iter().map(|w| w.kind).collect::<Vec<_>>(), vec![Kind::Created], "{gone:?}");
@@ -584,7 +578,7 @@ fn text_creation_dies_at_delete_kept_in_record_spec_4_8() {
     let mut un = Seq::empty(true);
     let Place::Item(d) = gone[0].path[0].clone() else { panic!() };
     un.elems_mut().insert(d, SeqElem { deleted: Some((Stamp::new(ts(3), x(), 30), false)), ..SeqElem::bare() });
-    assert!(join(&ab, &Fragment::Seq(un)).winners().iter().any(|x| x == gone[0]));
+    assert!(joined(&ab, &Fragment::Seq(un)).winners().iter().any(|x| x == gone[0]));
 }
 
 /// §5.6 (the records of a dot are one entry): one put writes k1 and k2 under one stamp; k1's value
@@ -604,7 +598,7 @@ fn record_pair_cross_death_spec_5_6() {
     assert_eq!(pw.len(), 2, "two values");
     assert_eq!(pw.iter().map(|w| &w.stamp).collect::<BTreeSet<_>>().len(), 1, "under one stamp");
     for (a, b) in [(&erased, &later), (&later, &erased)] {
-        let ab = join(a, b);
+        let ab = joined(a, b);
         let gone = erased.winners().minus(&ab.winners());
         assert_eq!(gone.len(), 1, "k1's value alone: {gone:?}");
         assert!(pw.contains(gone.iter().next().unwrap()));
@@ -633,7 +627,7 @@ fn removal_at(s: &Stamp, v: Value, hi: u64) -> Elem {
 /// the writes held at the reach before and after the join and in `y`, and what hides a write in
 /// the join), the reach law checked first.
 fn killed(st: &Fragment, y: &Fragment) -> Vec<(Won, Option<Ts>)> {
-    let after = join(st, y);
+    let after = joined(st, y);
     crate::tests_model::reach_holds_the_change(st, &after, y);
     let at = st.reach(y);
     let at_after = after.reach_after(y, &at);
@@ -688,7 +682,7 @@ fn a_copy_hidden_by_a_removal_dies_at_it_spec_4_8() {
     first_superseding_check(&[base.clone(), copy.clone()]);
     let k = killed(&base, &copy);
     assert_eq!(k.iter().map(|(w, t)| (w.path.clone(), *t)).collect::<Vec<_>>(), vec![(vec![Place::Elem(e.clone()), Place::In], Some(ts(8)))], "e dies at the removal as joined; d shows again");
-    assert_eq!(join(&base, &copy).read(), Some(Value::Set([t_a].into_iter().collect())));
+    assert_eq!(joined(&base, &copy).read(), Some(Value::Set([t_a].into_iter().collect())));
 }
 
 /// §4.8 When, §5.5: a value removal hiding a set element's write supersedes it whether or not a
@@ -702,7 +696,7 @@ fn a_removal_hides_a_write_a_later_reset_prunes_spec_4_8() {
     let w = set_of(vec![(d.clone(), elem_at(&s, b.clone()))]);
     let r = set_of(vec![(Dot::new(x(), 7), removal_at(&Stamp::new(ts(15), x(), 7), b, 4))]);
     let tomb = set_of(vec![(d, Elem::tomb(&Stamp::new(ts(29), x(), 9)))]);
-    let rt = join(&r, &tomb);
+    let rt = joined(&r, &tomb);
     let want = vec![(Kind::Value, s, Some(ts(15)))];
     for (st, y) in [(&w, &r), (&w, &rt), (&rt, &w)] {
         let k: Vec<(Kind, Stamp, Option<Ts>)> = killed(st, y).into_iter().map(|(w, t)| (w.kind, w.stamp, t)).collect();
@@ -716,7 +710,7 @@ fn a_removal_hides_a_write_a_later_reset_prunes_spec_4_8() {
 /// `held` keeps it winning, else the earliest superseder by the held writes and the hiders noted
 /// from `held` in that order (as `dated_replaced_at` reads the held bodies).
 fn held_date(held: &[&Fragment], w: &Won) -> Option<Option<Ts>> {
-    let joined = held.iter().fold(Fragment::default(), |f, b| join(&f, b));
+    let joined = held.iter().fold(Fragment::default(), |f, b| joined(&f, b));
     if joined.winners().iter().any(|x| x == *w) {
         return None;
     }
@@ -774,7 +768,7 @@ fn held_set_dates(bodies: &[Fragment], w: &Won, want: &[Option<Option<Ts>>], mon
         let (mut st, mut mask, mut has_w) = (Fragment::default(), 0usize, false);
         for i in p {
             let k = killed(&st, &bodies[i]);
-            st = join(&st, &bodies[i]);
+            st = joined(&st, &bodies[i]);
             has_w |= bodies[i].held_writes().iter().any(|x| x == *w);
             if i > 0 {
                 mask |= 1 << (i - 1);
@@ -856,7 +850,7 @@ fn a_removal_dates_only_writes_it_hides_spec_5_5() {
         assert_eq!(held_date(&[&w, &r], &won), hides.map(Some), "{what}: the removal alone");
         let want = hides.unwrap_or(ts(29));
         assert_eq!(held_date(&[&w, &r, &tomb], &won), Some(Some(want)), "{what}");
-        for (st, y) in [(w.clone(), join(&r, &tomb)), (join(&w, &r), tomb.clone()), (join(&r, &tomb), w.clone())] {
+        for (st, y) in [(w.clone(), joined(&r, &tomb)), (joined(&w, &r), tomb.clone()), (joined(&r, &tomb), w.clone())] {
             let k: Vec<Option<Ts>> = killed(&st, &y).into_iter().filter(|(k, _)| *k == won).map(|(_, t)| t).collect();
             assert!(k.iter().all(|t| *t == Some(want)), "{what}: the kill {k:?}");
         }
@@ -982,7 +976,7 @@ fn a_slots_presence_write_beats_a_lower_one_in_another_slot_spec_7() {
     let map = Fragment::Map(Map { meta: w(3), entries: BTreeMap::new(), keys: BTreeMap::new() });
     let list = Fragment::Seq(Seq::new(false, w(5), BTreeMap::new()));
     for (a, b) in [(&map, &list), (&list, &map)] {
-        assert_eq!(join(a, b), list, "the list alone");
+        assert_eq!(joined(a, b), list, "the list alone");
     }
     assert_eq!(dead(&map, &list), vec![(Kind::W, Stamp::new(ts(3), x(), 1))], "the map's W dies");
     let mut ix: ByWrite<()> = ByWrite::default();
@@ -1008,10 +1002,10 @@ fn a_slots_presence_write_beats_a_lower_one_in_another_slot_spec_7() {
 fn a_presence_write_reaches_the_whole_slots_position_spec_7() {
     let w = |t: u64| Meta { w: Some(Stamp::new(ts(t), x(), t)), ..Meta::default() };
     let list = Fragment::Seq(Seq::new(false, w(1), BTreeMap::new()));
-    let before = join(&list, &edit(&Fragment::default(), 3, 10, vec![Op::Insert { at: 0, items: vec![s("ac")] }]));
+    let before = joined(&list, &edit(&Fragment::default(), 3, 10, vec![Op::Insert { at: 0, items: vec![s("ac")] }]));
     assert!(matches!(before, Fragment::Slots(_)));
     let y = Fragment::Seq(Seq::new(true, w(5), BTreeMap::new()));
-    let after = join(&before, &y);
+    let after = joined(&before, &y);
     assert_eq!(after.read(), Some(s("ac")));
     assert!(matches!(after, Fragment::Seq(_)), "the list slot goes: {after:?}");
     crate::tests_model::reach_holds_the_change(&before, &after, &y);
@@ -1033,7 +1027,7 @@ fn an_embedding_copy_cut_to_the_winning_copy_is_no_death_spec_7() {
     let text = embedded_text(&st, ts(5), &[(1, 'a'), (2, 'b'), (3, 'c')]);
     assert!(killed(&reg, &text).is_empty(), "the copy joins a state holding s");
     assert!(killed(&text, &reg).is_empty(), "s joins a state holding the copy");
-    assert_eq!(join(&reg, &text).read(), Some(s("a")));
+    assert_eq!(joined(&reg, &text).read(), Some(s("a")));
     let later = string_reg(&Stamp::new(ts(9), x(), 4), "z");
     let won = Won { path: vec![], kind: Kind::Value, stamp: st.clone() };
     let at = |t| Some(Some(ts(t)));
@@ -1052,7 +1046,7 @@ fn an_embedding_losing_by_copy_order_is_no_death_spec_4_1() {
     let st = Stamp::new(ts(5), x(), 3);
     let ab = string_reg(&st, "ab");
     let ins = edit(&ab, 6, 10, vec![Op::Insert { at: 2, items: vec![s("z")] }]);
-    let slots = join(&ab, &ins);
+    let slots = joined(&ab, &ins);
     assert!(matches!(slots, Fragment::Slots(_)), "{slots:?}");
     let e = string_reg(&st, "é");
     // a list winning by copy order embeds no char at all
@@ -1063,7 +1057,7 @@ fn an_embedding_losing_by_copy_order_is_no_death_spec_4_1() {
         }
         first_superseding_check(&[slots.clone(), w.clone()]);
     }
-    assert_eq!(join(&slots, &e).read(), Some(s("éz")));
+    assert_eq!(joined(&slots, &e).read(), Some(s("éz")));
 }
 
 /// §7, §5.7 Join (one creation per dot, the greater stamp wins): a text copy of `s`'s embedding
@@ -1078,7 +1072,7 @@ fn an_embedded_char_created_later_beats_the_copy_as_a_register_write_spec_7() {
     assert_eq!(k, vec![(Kind::Value, st.clone(), Some(ts(7)))]);
     assert!(killed(&late, &copy).iter().all(|(w, _)| w.stamp != Stamp { ts: ts(7), dot: st.dot.clone() }));
     let reg = string_reg(&st, "a");
-    let held = join(&copy, &reg);
+    let held = joined(&copy, &reg);
     assert!(killed(&held, &late).is_empty(), "s held as a register write wins");
     first_superseding_check(&[copy, late, reg]);
 }
