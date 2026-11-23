@@ -850,7 +850,10 @@ impl Timelines {
 
     /// Stamps what an update over `touched` things changed (`c`).
     fn moved(&mut self, touched: &BTreeSet<Tid>, c: &osis_perm::Changed) {
-        if !c.is_empty() {
+        // the whole of it as role state: a delta coming or going moves no edge write's
+        // standing and no edge (what reads a delta's verdict is judged again by `Changed::reached`)
+        let w = &c.walk;
+        if !c.ops.is_empty() || !c.created.is_empty() || !c.held.is_empty() || !w.edges.is_empty() || !w.cuts.is_empty() || !w.regrant.is_empty() || !w.chained.is_empty() {
             self.stamps.wrote(&Read::Whole, true);
         }
         if !c.created.is_empty() || c.edges().next().is_some() {
@@ -869,7 +872,12 @@ impl Timelines {
         if !c.known.is_empty() {
             self.stamps.wrote(&Read::Things, true);
         }
-        if !c.created.is_empty() || c.edges().next().is_some() {
+        // a keyless grant closes a cycle of actor grants (spec/crypto.md §4 Key access): judged
+        // anew where an actor's grant moved (a holder that is no key actor) or a record came or
+        // went other than a new leaf's (its record edge is in no cycle: it holds nothing)
+        let records = self.of.records();
+        let leaf = |t: &Tid| records.link(t).is_some() && records.mint_admin_of(t).is_empty() && !self.of.holds_edge(t);
+        if c.edges().any(|(h, _)| !records.is_key(h)) || c.created.iter().any(|t| !leaf(t)) {
             self.rekey();
         }
     }

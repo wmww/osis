@@ -136,6 +136,9 @@ pub struct Timeline<S: Store = MemStore> {
     on: BTreeMap<Tid, BTreeSet<CommitId>>,
     /// The trust set as given (`set_trust`): edge writes (commit, op), held or not yet.
     trusted: BTreeSet<WriteId>,
+    /// The things an edge write held at some point named as its holder (never taken out: a
+    /// superset of those held now).
+    holders: BTreeSet<Tid>,
 }
 
 impl Default for Timeline<MemStore> {
@@ -153,7 +156,7 @@ impl Timeline<MemStore> {
 
 impl<S: Store> Timeline<S> {
     pub fn with_store(trust: BTreeSet<WriteId>, store: S) -> Timeline<S> {
-        Timeline { paths: Paths::with_store(&BTreeMap::new(), BTreeSet::new(), store), records: Records::default(), now: Edges::default(), log: BTreeMap::new(), into: BTreeMap::new(), waiting: BTreeMap::new(), roles: BTreeMap::new(), on: BTreeMap::new(), trusted: trust.clone() }
+        Timeline { paths: Paths::with_store(&BTreeMap::new(), BTreeSet::new(), store), records: Records::default(), now: Edges::default(), log: BTreeMap::new(), into: BTreeMap::new(), waiting: BTreeMap::new(), roles: BTreeMap::new(), on: BTreeMap::new(), trusted: trust.clone(), holders: BTreeSet::new() }
     }
 
     /// The walk.
@@ -245,6 +248,7 @@ impl<S: Store> Timeline<S> {
                             out.held.insert(o.target);
                             self.on.entry(o.target).or_default().insert(h.id);
                             self.into.entry(o.target).or_default().insert(o.holder);
+                            self.holders.insert(o.holder);
                         }
                         self.roles.insert(h.id, (role, h.parts));
                     }
@@ -456,6 +460,11 @@ impl<S: Store> Timeline<S> {
     /// A held delta's verdict (`Paths::content`), by (commit, part).
     pub fn content(&self, id: &WriteId) -> Option<paths::Content> {
         self.paths.content(id)
+    }
+
+    /// Whether a held edge write names `t` as its holder.
+    pub fn holds_edge(&self, t: &Tid) -> bool {
+        self.holders.contains(t)
     }
 
     /// Whether a thing's record or an edge write on it is held.
