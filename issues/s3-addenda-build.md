@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: perm, engine
 
-Spec: spec/permissions.md §5.2 Addenda (Writing, admin-only), §5.1 Frontier. Oracle: roles-model `addenda::GAPS` (core/test/roles-model/README.md, Addenda gaps). Plan: notes/redesign-plan.md S3.
+Spec: spec/permissions.md §5.2 Addenda (Writing, admin-only), §5.1 Frontier. Plan: notes/redesign-plan.md S3.
 
 ## Built
 - **Addenda, the window, the gaps, the triggers**: notes/addenda.md (Rules), notes/engine-roles.md (Write: what makes a removal due again, and why nothing is missed).

@@ -1,16 +1,9 @@
-//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-gaps|addenda-gaps-exh|addenda-gaps-no-admin|addenda-gaps-no-rewrite|forget|forget-entries|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths[-exh|-tiny[-flags|-detached][-honest[-writers]]][-control] [--from K | --only K] (paths::mode_rules)|paths-purge[-variant] (paths::purge_rules)]`.
-
-use roles_model::{edges, joint};
+//! Search driver for the roles model: `[samples] [epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths[-exh|-tiny[-flags|-detached][-honest[-writers]]][-control] [--from K | --only K] (paths::mode_rules)|paths-purge[-variant] (paths::purge_rules)]`.
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let samples = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(2_000_000);
     match args.get(2).map(String::as_str) {
-        Some("digest") => {
-            for (name, d) in roles_model::digest(samples, 0x5eed) {
-                println!("{name} {d:016x}");
-            }
-        }
         Some(m) if m.starts_with("epochs") => {
             use roles_model::epochs::{run, Control};
             let control = match m {
@@ -59,28 +52,6 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Some("disputes") => roles_model::trust::run(samples, false),
-        Some("disputes-random") => roles_model::trust::run(samples, true),
-        Some("forget-entries") => {
-            if roles_model::forget::entries_search() > 0 {
-                std::process::exit(1);
-            }
-        }
-        Some("forget") => {
-            if roles_model::forget::search() > 0 {
-                std::process::exit(1);
-            }
-        }
-        Some(m) if m.starts_with("addenda-gaps") => {
-            if roles_model::addenda::run_gaps(samples, m) > 0 {
-                std::process::exit(1);
-            }
-        }
-        Some("addenda") => roles_model::addenda::random(samples, 0x5eed).print(),
-        Some("addenda-exh") => roles_model::addenda::exhaustive(false).print(),
-        Some("addenda-covers") => roles_model::addenda::exhaustive(true).print(),
-        Some("joint") => joint::random(samples, 0x5eed).print(),
-        Some("edges") => edges::run(samples),
         m => {
             eprintln!("unknown mode {m:?}");
             std::process::exit(2);

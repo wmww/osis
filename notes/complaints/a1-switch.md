@@ -10,3 +10,4 @@
 - The brief's replay line (`OSIS_ORDER_SEED=0 OSIS_ORDER_LEN=60`) runs one seed: the property's verdict needs the run with no seed set, which is what the gate does.
 - roles-model `paths` judged content at write only and exposed no request's right: "held-model reads roles-model's judgment" needed three small additions there (`needs`, `vouchable`, `judge_rights`) before any held-model line; the sizing had counted it as a builder alone.
 - `claudewait` takes the task ID the tool prints (`bcxi8xyzm`), not a `bash_N` name.
+- Deleting roles-model's pre-path models (`joint`, `edges`, `trust`, `addenda`, `content`, `forget`) was a code change of minutes and a citation sweep of a dozen notes and issues: their result sections (notes/addenda.md Addenda model, notes/disputes.md Model results, issues/zero-growth.md) now report a model that is in git history only, and still owe the notes rewrite.
