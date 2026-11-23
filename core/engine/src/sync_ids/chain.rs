@@ -32,7 +32,7 @@ struct Index<'a> {
 impl<'a> Index<'a> {
     /// Over every held edge write. O(the held edge writes).
     fn of(core: &'a Core) -> Index<'a> {
-        let tl: &osis_perm::Timeline = &core.timelines;
+        let tl = core.timelines.unstamped();
         let mut x = Index { core, by_edge: BTreeMap::new(), writes: BTreeSet::new(), targets: BTreeMap::new(), holders: BTreeMap::new() };
         let things = tl.things();
         for t in things {
@@ -57,7 +57,7 @@ impl<'a> Index<'a> {
     /// What `seeds` reach (`forward`) or what reaches them over record edges and the edges
     /// chained writes set.
     fn reach(&self, seeds: impl IntoIterator<Item = Tid>, forward: bool) -> BTreeSet<Tid> {
-        let records = self.core.timelines.records();
+        let records = self.core.timelines.unstamped().records();
         let mut seen: BTreeSet<Tid> = seeds.into_iter().collect();
         let mut stack: Vec<Tid> = seen.iter().copied().collect();
         while let Some(e) = stack.pop() {
@@ -77,7 +77,7 @@ impl<'a> Index<'a> {
 
     /// The record chain and keys of each of `things`.
     fn records_of(&self, things: impl IntoIterator<Item = Tid>, out: &mut Certificates) {
-        let records = self.core.timelines.records();
+        let records = self.core.timelines.unstamped().records();
         for c in things {
             out.created.extend(osis_base::record_chain(c, |x| records.link(x)).filter_map(|s| s.thing()));
             if records.link(&c).is_some() {
@@ -128,7 +128,19 @@ impl<'a> Index<'a> {
 
 /// The chain certificates of `node` for writes on `thing` (§4).
 pub(crate) fn certificates(core: &Core, node: &Tid, thing: &Tid) -> Certificates {
-    Index::of(core).closure(vec![(*node, *thing)])
+    let out = Index::of(core).closure(vec![(*node, *thing)]);
+    read(core, &[*thing], &out, Some(node));
+    out
+}
+
+/// Stamps what certificates `out` for writes on `things` read: the held inputs of every thing
+/// that ever reaches one of them (a path into it, and whether a write on it is chained, lie
+/// within those) and of each thing whose record goes along; `node`'s too.
+fn read(core: &Core, things: &[Tid], out: &Certificates, node: Option<&Tid>) {
+    let into = core.ix.held.upstream(&things.iter().copied().collect());
+    for t in into.iter().chain(&out.created).chain(node) {
+        core.timelines.read_ever(t);
+    }
 }
 
 /// Every thing's chain certificates for writes on `thing` (§4): the union of `certificates(n,
@@ -152,6 +164,7 @@ pub(crate) fn certificates_into(core: &Core, thing: &Tid) -> Certificates {
         }
     }
     x.records_of(things, &mut out);
+    read(core, &[*thing], &out, None);
     out
 }
 
@@ -159,8 +172,9 @@ pub(crate) fn certificates_into(core: &Core, thing: &Tid) -> Certificates {
 /// target and to the holder (a self-removal's authority) and the holder's chain to the target
 /// with that edge's history.
 pub(crate) fn write_certificates(core: &Core, id: &WriteId) -> Option<Certificates> {
-    let (signer, holder, target) = core.timelines.edge_op(id)?;
+    let (signer, holder, target) = core.timelines.unstamped().edge_op(id)?;
     let mut out = Index::of(core).closure(vec![(signer, target), (signer, holder), (holder, target)]);
     out.commits.insert(id.0);
+    read(core, &[target, holder], &out, Some(&signer));
     Some(out)
 }

@@ -845,13 +845,17 @@ mod tests {
     }
 
     // spec/permissions.md §4, spec/sync-judgement.md §2, spec/commits.md §5 (Forgetting): X writes
-    // T1 acting for Y twice, unseen by Y's admin, who removes X meanwhile, and once as itself: the
-    // writes for Y are invalid, and node 0 forgets them while it still reads T1 and holds X's own
+    // T1 through Y (a writer of T1) twice, unseen by Y's admin, who removes X meanwhile, and once
+    // as itself: the writes through Y are invalid (their path cut, unlisted), and node 0 forgets them while it still reads T1 and holds X's own
     // write there: X's chain to Y (holding the removal) stays while they are held and leaves T1
     // with the last of them; X's chain to T1 stays.
     #[test]
     fn a_chain_to_an_acted_for_actor_leaves_with_the_last_write_acting_for_it_spec_permissions_4() {
         let (mut lp, x, y, ts) = acting_world();
+        // Y holds write on T1, so the path through Y gives it (spec/permissions.md §1 Path)
+        let edge = ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None };
+        lp.peers[0].engine.grant(&ts[0], &y, &edge).unwrap();
+        lp.sync_all().unwrap();
         let acting = [acting_write(&mut lp, ts[0], 1, Some(y)), acting_write(&mut lp, ts[0], 2, Some(y))];
         let own = acting_write(&mut lp, ts[0], 3, None);
         lp.peers[2].engine.demote(&y, &Demotion { holder: x, new: None, retain: None }).unwrap();

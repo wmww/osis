@@ -2249,7 +2249,8 @@ fn raise_by_author_removed_since_lowers_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Met; void): a void name only where its write applies nothing; a raise void here through a holder actor's demotion: P
-// is admin of g through holder k (k admin on g). A removes M (L); Q demotes P to write on k (D).
+// is admin of g through holder k (k admin on g). A removes M (L); Q removes P from k (D: a
+// writer of k would still add M by k's admin on g, spec/permissions.md §2 Path's may-grant).
 // P, holding L but not D, re-grants M on g (R); at A, R applies nothing (P writes g through k)
 // and A rotates g, naming R as a raise of M. A's names hold nothing on k: P, still lacking D,
 // re-seals M at A's epoch, and A must not then encrypt under an epoch M opens.
@@ -2267,7 +2268,7 @@ fn raise_invalid_through_holder_actor_resealed_spec_crypto_4() {
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     let before = commit_ids(&mut lp, 3);
-    lp.peers[3].engine.demote(&k, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), retain: None }).unwrap();
+    lp.peers[3].engine.demote(&k, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     let dem: BTreeSet<_> = commit_ids(&mut lp, 3).difference(&before).copied().collect();
     lp.sync(3, 0).unwrap();
     lp.peers[1].clock.advance(5_000);

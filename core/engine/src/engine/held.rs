@@ -909,6 +909,17 @@ impl Timelines {
         out
     }
 
+    /// The timeline with no read stamped, for a reading that stamps what it reads itself
+    /// (`read_ever`: chain certificates).
+    pub fn unstamped(&self) -> &osis_perm::Timeline {
+        &self.of
+    }
+
+    /// Stamps a read of the edge writes held on `t`, of any validity, and its record (`Read::Ever`).
+    pub fn read_ever(&self, t: &Tid) {
+        self.stamps.read(&Read::Ever(*t));
+    }
+
     /// The timeline for a reading that changes it and puts it back (`Timeline::disputes`).
     pub fn aside(&mut self) -> &mut osis_perm::Timeline {
         &mut self.of
