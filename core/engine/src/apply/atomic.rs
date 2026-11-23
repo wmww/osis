@@ -84,6 +84,7 @@ pub(crate) fn note_role_sigs(core: &mut Core, kind: osis_commit::Kind, at_epoch:
 /// it go with the commit), and a split commit with a path undecided here
 /// to `Indexes::paths_unknown`.
 fn index_acting(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
+    // Interim (issues/stated-path-certificates.md): every listed thing of each stated path, its record needed and chain certified
     if let Some(x) = h.other_purge_author() {
         for a in &h.aspects {
             core.ix.acting_on.insert((a.tid, h.signer, x), *id);

@@ -195,8 +195,8 @@ impl Header {
         // a rotation and a seed re-seal state the empty path, the signer writing itself
         // (spec/wire.md §4 fields 15, 16)
         let own = self.rotation.is_none() && self.reseal.is_none() || p.things.is_empty();
-        // Interim (notes/a1-spec/README.md step 3): a role commit's index names its signer (the
-        // old walk judges an edge write by its signer alone, as acting for itself).
+        // Interim (issues/stated-path-certificates.md): a role commit's index names its signer, until its purge
+        // author is indexed along stated paths
         let interim = self.kind != Kind::Role || p.purge == 0;
         own && interim
     }

@@ -203,9 +203,8 @@ impl Header {
         out
     }
 
-    /// Its one purge author (spec/permissions.md §6), in the clear in either form. Interim
-    /// (notes/a1-spec/README.md step 3): the thing the old walk reads it as acting for on every
-    /// thing it writes.
+    /// Its one purge author (spec/permissions.md §6), in the clear in either form: a member of
+    /// the path it states for every thing it writes.
     pub fn purge_author(&self) -> Tid {
         self.path.purge_author(self.signer)
     }

@@ -708,6 +708,7 @@ indexes! {
     pub chains_on: JSetMap<Tid, (Tid, Tid)>,
     /// Held commits per (thing, author, actor) with a delta on the thing whose actor is not their
     /// author: when the last goes, `chains_on` loses (author, actor).
+    /// Interim (issues/stated-path-certificates.md).
     pub acting_on: JSetMap<(Tid, Tid, Tid), CommitId>,
     /// Held split commits with a thing whose path opens nowhere here yet (`View::paths`), opened
     /// again as role inputs move (`apply::paths::refresh`).
@@ -720,7 +721,7 @@ indexes! {
     /// (`retention::destroy`) without reading its other commits.
     pub purges_on: JSetMap<Tid, CommitId>,
     /// Held commits per (purge author, signer), where those differ: the things this node has
-    /// written as (`Core::acting`).
+    /// written as (`Core::acting`). Interim (issues/stated-path-certificates.md).
     pub by_actor: JSetMap<(Tid, Tid), CommitId>,
     /// Node- and session-form ranges per (tid, ak, own source): (lo, commit) -> hi. Keyed by
     /// commit too: equivocating commits of one range are all held (spec/commits.md §4).
@@ -3653,7 +3654,7 @@ impl Engine {
                 assert_eq!(fresh.perm_digest(false), self.core.perm_digest(false), "{at}: role timelines");
             }
             if !rebuild {
-                // Interim (notes/perm-paths.md, The switch, Left 4): an open reads every header to
+                // Interim (issues/perm-eval-cost.md): an open reads every header to
                 // give the walk its delta facts (`validity::reading`), until the walk's store is
                 // the engine's index; then: no header of an unlinked commit is decoded
                 assert_eq!(crate::apply::validity::misjudged(&fresh), None, "{at}: judged anew");

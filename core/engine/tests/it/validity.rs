@@ -468,9 +468,9 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
-// spec/permissions.md §5.2 (content: the old walk's Acting check, notes/redesign-plan.md, Interim in code): Bob, a writer of D, signs a write naming
-// Carol as its actor though he holds no write on her. Receivers judge it invalid, so it can
-// never read as Carol's; the same write naming Bob himself is valid.
+// spec/permissions.md §1 Path, §5.2 Content: Bob, a writer of D, signs a write stated through
+// Carol though he holds no write on her: its path gives nothing, so receivers judge it invalid
+// and it never reads as Carol's; the same write stated as Bob himself is valid.
 #[test]
 fn forged_actor_invalid_spec_perm_5_2() {
     let (mut lp, d, b, c) = setup();
@@ -4881,7 +4881,7 @@ fn a_path_holds_at_most_max_path_things_spec_wire_2() {
 
 // spec/wire.md §4 field 2, notes/principles.md Check scaling: finding a write's path walks the things reaching what it
 // writes, once per role change: as many at 10n role commits held elsewhere as at n, and none for
-// a second write while the roles stand.
+// a second write while the roles stand; a content write steps the role walk through no part.
 #[test]
 fn finding_a_path_does_not_grow_with_history_spec_wire_4() {
     let walked = |n: usize| {
@@ -4894,7 +4894,9 @@ fn finding_a_path_does_not_grow_with_history_spec_wire_4() {
         lp.sync_all().unwrap();
         let count = |lp: &mut LocalPeer, v: &str| {
             osis_base::costs::take();
+            let parts = osis_perm::commits_walked();
             put(lp, 1, t, &REG, &s(v));
+            assert_eq!(osis_perm::commits_walked(), parts, "{v}: a content write walks no role part");
             osis_base::costs::take().iter().find(|x| x.0 == "perm: ways walked").map_or(0, |x| x.2)
         };
         (count(&mut lp, "first"), count(&mut lp, "second"))

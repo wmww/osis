@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Role commits state real paths (notes/a1-spec/README.md step 3, Role paths; notes/a1-spec/
 //! permissions.md §1 Path, §2): each role commit the engine writes states the path by which its
-//! signer reaches what it writes, and the old walk, which reads the signer alone, judges every
-//! edge write as it did when role commits stated the Interim empty path.
+//! signer reaches what it writes, and the engine judges each edge write as a walk afresh over the
+//! stated paths does (`walk_afresh`).
 
 use crate::common;
 use crate::flows::{edge_of, follow, people, spread, thing_of};
@@ -39,7 +39,7 @@ fn may_grant(role: Role) -> ct::Edge {
 /// Four accounts A (0), B (1), C (2), D (3). B grants through one holder (H1 on T1) and through
 /// three (K1, K2, K3 on T3) and removes D through the three (the removal rotates T3); B, admin of
 /// H5, takes H5 off T5 (a self-removal through a holder: B's only role there is through H5); C
-/// leaves T1 itself; B invites D to T4 by H4's invite and C invites B by its own; a timed grant
+/// leaves T1 itself; B adds D to T4 by H4's may-grant flag and C adds B by its own; a timed grant
 /// on T1 ends and B finalizes it; C redeems a single-use link to T7; on T6, B grants D write and
 /// writes content only C receives, A removes B (the grant falls), and C writes an addendum for the
 /// content, then leaves T6 itself (an admin's leave); A removes
@@ -110,7 +110,7 @@ fn above(e: &osis_engine::Engine, p: Tid, q: Tid) -> bool {
     std::iter::successors(e.core.created(&q).and_then(|r| r.mint_admin()), |y| e.core.created(y).and_then(|r| r.mint_admin())).take(70).any(|x| x == p)
 }
 
-/// The role and invite hop `p` to `q` gives just before `point`: admin for a descent, else `p`'s
+/// The role and the may-grant role hop `p` to `q` gives just before `point`: admin for a descent, else `p`'s
 /// direct edge on `q` (`None`: no edge held).
 fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> Option<(Role, Option<Role>)> {
     // a hop marked direct reads the direct edge, and only off a descent of two steps or more
@@ -125,13 +125,13 @@ fn hop(e: &osis_engine::Engine, p: Tid, q: Tid, marked: bool, point: Point) -> O
     Some((x.role, if x.role == Role::Admin { Some(Role::Admin) } else { x.may_grant.then_some(x.role) }))
 }
 
-// spec/permissions.md §1 Path, §2 Self-removal and Invite grant, spec/wire.md §4 field 2:
+// spec/permissions.md §1 Path, §2 Self-removal and May-grant grant, spec/wire.md §4 field 2:
 // every role commit states a real path. Over the representative world, each role commit A holds
 // states one path, purge index 0, whose hops from its signer to each thing it writes (to the
 // holder, for a self-removal) are held edges or descents just before its key, giving what the
 // commit needs there: the signer's role on the thing (admin for an admin's edge write, its role
-// for a rotation), admin up to the holder for a self-removal, the granted role as an
-// invite on the last edge for an invite grant. Every kind the table names is met.
+// for a rotation), admin up to the holder for a self-removal, the granted role as
+// may-grant on the last edge for a may-grant grant. Every kind the table names is met.
 #[test]
 fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
     let w = world();
@@ -176,8 +176,8 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
             } else if has("roles.0") && effective < Some(Role::Admin) && ops.iter().any(|(_, v)| v.is_some_and(|v| v.until.is_none())) {
                 let granted = ops.iter().filter_map(|(_, v)| v.map(|v| v.role)).max().unwrap();
                 let (last, rest) = hops.split_last().unwrap();
-                assert!(rest.iter().all(|x| x.0 >= granted) && last.1 >= Some(granted), "{id:?}: an invite grant's path gives {granted:?} as an invite: {hops:?}");
-                *seen.entry("invite").or_default() += 1;
+                assert!(rest.iter().all(|x| x.0 >= granted) && last.1 >= Some(granted), "{id:?}: a may-grant grant's path gives {granted:?} as may-grant: {hops:?}");
+                *seen.entry("may-grant").or_default() += 1;
             } else {
                 assert!(Some(role) >= effective, "{id:?}: the path gives {role:?}, the signer's role there is {effective:?}");
                 let kind = if has("roles.0") && h.frontier.is_none() && ops.iter().all(|(_, v)| v.is_none()) {
@@ -193,7 +193,7 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
             }
         }
     }
-    for k in ["leave", "leave through a holder", "redemption", "invite", "finalize", "admin edge write", "rotation"] {
+    for k in ["leave", "leave through a holder", "redemption", "may-grant", "finalize", "admin edge write", "rotation"] {
         assert!(seen.contains_key(k), "no {k}: {seen:?}");
     }
     assert!(lens.contains_key(&1) && lens.contains_key(&3), "paths through one and three holders: {lens:?}");
@@ -203,12 +203,11 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
     assert!(addenda >= 1, "an addendum is written");
 }
 
-/// The new walk (`osis_perm::paths`, notes/perm-paths.md) over the role commits engine `e` holds
-/// as it holds them: each edge write a part along the path its commit states for its target (the
-/// old walk's own reading of its value and frontier);
-/// `e`'s trust set; records for every thing named. With each edge part's
-/// old-walk ID and target.
-pub(crate) fn new_walk(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTreeMap<osis_perm::WriteId, (osis_perm::WriteId, Tid)>) {
+/// A walk afresh (`osis_perm::paths::Paths::evaluate`, notes/perm-paths.md) over the role commits
+/// engine `e` holds: each edge write a part along the path its commit states for its target (its
+/// value and frontier as `e`'s timeline reads them); `e`'s trust set; records for every thing
+/// named. With each part's ID in `e`'s timeline and its target.
+pub(crate) fn walk_afresh(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTreeMap<osis_perm::WriteId, (osis_perm::WriteId, Tid)>) {
     use osis_perm::paths::{Commit, EdgeWrite, Part, PartKind};
     let mut commits = Vec::new();
     let mut ids = BTreeMap::new();
@@ -263,11 +262,10 @@ pub(crate) fn new_walk(e: &osis_engine::Engine) -> (osis_perm::paths::Paths, BTr
     (osis_perm::paths::Paths::evaluate(&records, trust, &commits), ids)
 }
 
-/// Where the new walk judging the stated paths differs from the old walk at engine `e`: each edge
-/// write whose applied/not differs, and each edge whose final role differs (every `until` counted
-/// removed).
-pub(crate) fn walks_differ(e: &osis_engine::Engine) -> Vec<String> {
-    let (paths, ids) = new_walk(e);
+/// Where engine `e`'s timeline differs from `walk_afresh`: each edge write whose applied/not
+/// differs, and each edge whose final role differs (every `until` counted removed).
+pub(crate) fn differs_from_afresh(e: &osis_engine::Engine) -> Vec<String> {
+    let (paths, ids) = walk_afresh(e);
     let mut out = Vec::new();
     for (nid, (w, t)) in &ids {
         let tl = e.core.timelines.get(t).unwrap();
@@ -275,7 +273,7 @@ pub(crate) fn walks_differ(e: &osis_engine::Engine) -> Vec<String> {
         let new = matches!(paths.status(nid), Some(osis_perm::paths::Status::Applied | osis_perm::paths::Status::MayGrant));
         if old != new {
             let (signer, holder, _) = tl.edge_op(w).unwrap();
-            out.push(format!("edge write {:?} by {signer:?} on ({holder:?}, {t:?}): old {old}, new {:?}", w.0, paths.status(nid)));
+            out.push(format!("edge write {:?} by {signer:?} on ({holder:?}, {t:?}): engine {old}, afresh {:?}", w.0, paths.status(nid)));
         }
     }
     let finals = paths.finals();
@@ -287,30 +285,30 @@ pub(crate) fn walks_differ(e: &osis_engine::Engine) -> Vec<String> {
         let old: BTreeMap<Tid, Role> = edges.holders(&t).filter(|(_, x)| x.until.is_none()).map(|(m, x)| (*m, x.role)).collect();
         let new: BTreeMap<Tid, Role> = finals.iter().filter(|(k, v)| k.1 == t && v.0.is_some()).map(|(k, v)| (k.0, v.0.unwrap())).collect();
         if old != new {
-            out.push(format!("roles on {t:?}: old {old:?}, new {new:?}"));
+            out.push(format!("roles on {t:?}: engine {old:?}, afresh {new:?}"));
         }
     }
     out
 }
 
-// notes/a1-spec/README.md step 3 (For the wiring): the new walk judging the paths role commits
-// state gives every edge write the old walk's verdict (spec/permissions.md §5.1) and every edge
-// the old walk's final role, at every node of the representative world.
+// spec/permissions.md §5.1 step 5 (the walk is a function of the held commits): the engine's
+// timeline, updated as commits came, gives every edge write the verdict and every edge the final
+// role a walk afresh over the stated role paths gives, at every node of the representative world.
 #[test]
-fn the_new_walk_judges_the_stated_role_paths_as_the_old_walk_does() {
+fn the_engine_judges_stated_role_paths_as_a_walk_afresh_does() {
     let w = world();
     for i in 0..4 {
-        assert_eq!(walks_differ(&w.lp.peers[i].engine), Vec::<String>::new(), "peer {i}");
+        assert_eq!(differs_from_afresh(&w.lp.peers[i].engine), Vec::<String>::new(), "peer {i}");
     }
 }
 
-/// The newest role commit at peer `i` writing `holder`'s edge on `t`: its header, and the new
-/// walk's status of that edge write.
+/// The newest role commit at peer `i` writing `holder`'s edge on `t`: its header, and a walk
+/// afresh's status of that edge write.
 fn newest_write(lp: &LocalPeer, i: usize, t: Tid, holder: Tid) -> (std::sync::Arc<osis_commit::Header>, Option<osis_perm::paths::Status>) {
     let e = &lp.peers[i].engine;
     let tl = e.core.timelines.get(&t).unwrap();
     let (w, _, _) = tl.held_on(&t).filter(|(_, _, op)| op.holder == holder).max_by_key(|(_, c, _)| c.ts).unwrap();
-    let (paths, ids) = new_walk(e);
+    let (paths, ids) = walk_afresh(e);
     let nid = ids.iter().find(|(_, (x, _))| *x == w).map(|(n, _)| *n).unwrap();
     (e.header(&w.0).unwrap(), paths.status(&nid))
 }
@@ -347,7 +345,7 @@ fn removing_the_holder_one_acts_through_is_a_self_removal_spec_permissions_2() {
                 assert!(one_path(&hd) == [h] && hd.frontier.is_none(), "peer {i}: {:?}", hd.path);
             }
             assert_eq!(st, Some(osis_perm::paths::Status::Applied), "peer {i} direct {direct}");
-            assert!(walks_differ(&lp.peers[i].engine).is_empty(), "peer {i}: {:?}", walks_differ(&lp.peers[i].engine));
+            assert!(differs_from_afresh(&lp.peers[i].engine).is_empty(), "peer {i}: {:?}", differs_from_afresh(&lp.peers[i].engine));
             assert_eq!(lp.peers[i].engine.roster(&t).get(&h), None);
         }
     }
@@ -399,15 +397,15 @@ fn an_admin_holding_the_may_grant_flag_grants_by_its_admin_path_spec_permissions
         let (hd, st) = newest_write(&lp, i, t, pc);
         assert_eq!(one_path(&hd), [h], "peer {i}");
         assert_eq!(st, Some(osis_perm::paths::Status::Applied), "peer {i}");
-        assert!(walks_differ(&lp.peers[i].engine).is_empty(), "peer {i}");
+        assert!(differs_from_afresh(&lp.peers[i].engine).is_empty(), "peer {i}");
     }
 }
 
-// notes/principles.md Check scaling, spec/permissions.md §2 Path's may-grant: finding an
-// invite grant's path (`Need::Invite`: the role on every edge but the last, as an invite on the
-// last) walks the things reaching its target, as many at 10n unrelated role commits held as at n.
+// notes/principles.md Check scaling, spec/permissions.md §2 Path's may-grant: finding a
+// may-grant grant's path (`Need::MayGrant`: the role on every edge, the last giving admin or
+// carrying the flag) walks the things reaching its target, as many at 10n unrelated role commits held as at n.
 #[test]
-fn finding_an_invite_grants_path_does_not_grow_with_history_spec_wire_4() {
+fn finding_a_may_grant_grants_path_does_not_grow_with_history_spec_wire_4() {
     let walked = |n: usize| {
         let (mut lp, ps) = people(3);
         let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
@@ -428,7 +426,7 @@ fn finding_an_invite_grants_path_does_not_grow_with_history_spec_wire_4() {
         (c, h_path == [h])
     };
     let (small, large) = (walked(1), walked(10));
-    assert!(small.1 && large.1, "the invite grant states [H]");
+    assert!(small.1 && large.1, "the may-grant grant states [H]");
     assert!(small.0 > 0 && small == large, "ways walked at n {small:?} and 10n {large:?}");
 }
 
@@ -436,12 +434,12 @@ fn finding_an_invite_grants_path_does_not_grow_with_history_spec_wire_4() {
 // makes G and T under G, takes admin on T by its own grant and removes G's record edge there
 // (detaching T from its folder). A's later content and role writes on T state the empty path with
 // its one hop marked direct (A's own grant: the descent is cut, so no unmarked path gives the
-// role), and are applied by today's walk and by the new walk alike: B, granted write, reads A's
+// role), and are applied by the engine and by a walk afresh alike: B, granted write, reads A's
 // value; no edge write's verdict or final role differs. Before its own grant, A's writes state the
 // descent, unmarked; once it holds the grant, the marked hop (the fewest edges), before the detach
 // too.
 #[test]
-fn a_detached_things_owner_states_a_marked_hop_both_walks_apply_spec_wire_4() {
+fn a_detached_things_owner_states_a_marked_hop_spec_wire_4() {
     let (mut lp, ps) = people(2);
     let g = thing_of(&mut lp, 0, ps[0]);
     let t = thing_of(&mut lp, 0, g);
@@ -473,11 +471,11 @@ fn a_detached_things_owner_states_a_marked_hop_both_walks_apply_spec_wire_4() {
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("detached")), "B reads A's write");
     assert_eq!(lp.peers[1].engine.core.timelines.role(&ps[1], &t, At::END), Some(Role::Write));
     for p in &lp.peers {
-        let d = walks_differ(&p.engine);
+        let d = differs_from_afresh(&p.engine);
         assert!(d.is_empty(), "{d:?}");
-        let (paths, ids) = new_walk(&p.engine);
+        let (paths, ids) = walk_afresh(&p.engine);
         let applied = ids.iter().filter(|(nid, (w, _))| role.contains(&w.0) && matches!(paths.status(nid), Some(osis_perm::paths::Status::Applied))).count();
-        assert_eq!(applied, 1, "the new walk applies A's grant along the marked hop");
+        assert_eq!(applied, 1, "a walk afresh applies A's grant along the marked hop");
     }
 }
 

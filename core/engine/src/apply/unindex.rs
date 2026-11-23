@@ -113,6 +113,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
             core.ix.forgotten.insert(k, v.ts);
         }
     }
+    // Interim (issues/stated-path-certificates.md): every listed thing of each stated path
     if let Some(x) = v.other_purge_author() {
         core.ix.by_actor.remove(&(x, v.signer), id);
         // the last held commit acting as it was a need (`retention::needed::Need::Acting`)

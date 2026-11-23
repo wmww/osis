@@ -283,7 +283,7 @@ fn forge_addendum(lp: &mut LocalPeer, by: usize, t: Tid, r: CommitId, lists: &[C
 }
 
 /// A holder T (a thing peer 3 makes and administers) holds write on N; Bob (1) is a member of T;
-/// Mallory (2) writes N and only reads T, as Alice (0) does. Alice (0) removes T from N; Bob's write on N acting for T
+/// Mallory (2) writes N and only reads T, as Alice (0) does. Alice (0) removes T from N; Bob's write on N, stated through T,
 /// reached nobody before the removal. Returns (lp, N, T, removal, Bob's write).
 fn holder_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     let (lp, (n, holder, r, e)) = LocalPeer::cached("apply::tests_addenda::holder_world", || {
@@ -316,11 +316,10 @@ fn build_holder() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     (lp, n, holder, r, e)
 }
 
-// spec/permissions.md §5.2 (addenda: with the old walk's Acting check, notes/redesign-plan.md, Interim in code): a lying writer of N (Mallory, received
-// Bob's write after the removal) vouches for the part on N; Bob still writes T, so the Acting
-// part needs no vouching and the write counts. The same as a lying witness for a removed
-// holder acting for itself: a writer can always vouch for the removed side's earlier writes on
-// a thing it writes (stated limit, notes/revocation.md).
+// spec/permissions.md §5.2 (Addenda): a lying writer of N (Mallory, received Bob's write after
+// the removal) vouches for it against the removal, which cuts the hop T to N of the path Bob's
+// write states: the write counts. A writer can always vouch for the removed side's earlier
+// writes on a thing it writes (stated limit, notes/revocation.md).
 #[test]
 fn lying_writer_vouches_for_a_removed_holders_write_spec_perm_5_2() {
     let (mut lp, n, _, r, e) = holder_world();
@@ -331,7 +330,7 @@ fn lying_writer_vouches_for_a_removed_holders_write_spec_perm_5_2() {
     lp.sync_all().unwrap();
     for p in [0, 2, 3] {
         assert!(valid(&lp, p, &a, n, ct::ADDENDA_AK), "peer {p}");
-        assert!(valid(&lp, p, &e, n, "x:e.0"), "peer {p}: vouched on N, acting for T unchanged");
+        assert!(valid(&lp, p, &e, n, "x:e.0"), "peer {p}: vouched on N");
     }
 }
 

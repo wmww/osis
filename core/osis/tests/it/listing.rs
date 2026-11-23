@@ -57,7 +57,7 @@ fn ids(evs: &[CommitEvent]) -> Vec<(CommitId, bool)> {
     evs.iter().filter_map(|e| if let CommitEvent::Commit { id, commit } = e { Some((*id, commit.is_some())) } else { None }).collect()
 }
 
-// spec/permissions.md §5.2 (content: the old walk's Acting check, notes/redesign-plan.md, Interim in code), notes/api.md Commits: through
+// spec/permissions.md §5.2 Content, notes/api.md Commits: through
 // the API a page carries value, author, times, kind and validity; the listener tells a new commit
 // with no read of a page; a page past the cap ends early and says more.
 #[test]
