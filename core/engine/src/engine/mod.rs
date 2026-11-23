@@ -828,7 +828,7 @@ indexes! {
     /// What each held `retention^.0` delta of a thing reading as a setting says, in key order,
     /// valid or not (spec/commits.md §5 The setting; `validity::Judge::settings` takes the valid).
     pub retention: JMap<Tid, Vec<(Point, Arc<osis_schema::core_types::RetentionSetting>)>>,
-    /// `secrets.0` parts of role commits that write beyond their grantees' boxes (an invite
+    /// `secrets.0` parts of role commits that write beyond their grantees' boxes (a may-grant
     /// grant may carry only those, spec/permissions.md §2).
     pub grant_overreach: JSet<(CommitId, usize)>,
     /// Keyed boxes per holder: holder -> (actor, box key), from `secrets.0` entries seen.

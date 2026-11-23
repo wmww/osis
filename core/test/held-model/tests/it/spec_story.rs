@@ -1,5 +1,5 @@
 //! Evidence over roles-model's stolen-node story (`evidence::story_world`): the story's role
-//! history (invites, finalizes, `until`, covers, purges, trust, addenda written by the state-based
+//! history (may-grant grants, finalizes, `until`, covers, purges, trust, addenda written by the state-based
 //! rule, commits of several edge writes and of several things, self-removals, paths of
 //! two hops, a dependent by descent) under held-model's units and
 //! delivery, each world under every unit crossing (`STORY_UNITS`). Checked at the end of each tick
@@ -32,7 +32,7 @@ pub fn story_steps(w: &World, sim: &paths::Sim) -> std::collections::BTreeSet<us
 
 /// One story world under (iv) with a retag (ORG joining T2's unit after the removal): the
 /// adapter's default check. Family world with X's role write granting across two things in one
-/// commit, the kiosk (invites kept under a demotion) and the thief removing H and B in one commit.
+/// commit, the kiosk (may-grant grants kept under a demotion) and the thief removing H and B in one commit.
 #[test]
 fn a_story_world_under_a_retag_holds_under_iv() {
     let setup = paths::Setup { x_role: 5, x_a2: 5, h_t1: true, h_t2: true, regrant: true, ..Default::default() };

@@ -60,11 +60,9 @@ PLANTS = [
     ("tools/gate.sh", None, f"\n# {V}PLANTED_UNKNOWN\n"),
     ("core/base/testenv-known.txt", None, f"{V}PLANTED_UNUSED\n"),
     # dispute_types
-    ("core/crdt/src/lib.rs", None, "\nuse osis_perm::trust::Planted;\n"),
     ("core/store/src/lib.rs", None, "\nfn planted(x: X) { x.disputes(); }\n"),
-    ("core/commit/src/lib.rs", None, "\nfn planted() { let _ = Dispute { }; }\n"),
+    ("core/commit/src/lib.rs", None, "\nfn planted(x: X) { x.set_trust(&t); }\n"),
     ("core/keys/src/lib.rs", None, "\nfn planted(_: DisputeInfo) {}\n"),
-    ("libs/chat/src/lib.rs", None, "\nuse osis_perm::Trust;\n"),
     ("libs/chat/src/lib.rs", None, "\nfn near_miss(x: X) { x.disputes(); }\n"),  # outside core: allowed
     # real_lan_tests
     ("core/sync/tests/it/flows.rs", None, "\nfn planted_lan() { Lan::bind(4242); }\n"
@@ -133,11 +131,9 @@ EXPECT = [  # regexes the output must hold
     r"OSIS[_]PROBE_PLANTED is a throwaway probe",
     r"OSIS[_]PLANTED_UNKNOWN is read but not in",
     r"OSIS[_]PLANTED_UNUSED is in core/base/testenv-known\.txt but nothing reads it",
-    r"core/crdt/src/lib\.rs: names osis_perm::trust::Planted",
     r"core/store/src/lib\.rs: calls a dispute query",
     r"core/commit/src/lib\.rs: calls a dispute query",
     r"core/keys/src/lib\.rs: names the trust store",
-    r"libs/chat/src/lib\.rs: names osis_perm::Trust",
     r"core/sync/tests/it/flows\.rs: Lan::bind in a test on a fixed port: fn planted_lan",
     r"core/sync/tests/it/flows\.rs: a test node from a bare Config is on the real LAN: Config \{ runtime",
     r"core/sync/tests/it/flows\.rs: a test node from a bare Config is on the real LAN: let mut cfg",

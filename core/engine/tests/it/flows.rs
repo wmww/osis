@@ -558,7 +558,7 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
 // to its own role, and cannot change or remove anyone else; a holder leaves by self-removal.
 // spec/permissions.md §2 (may-grant scope)
 #[test]
-fn invite_power_spec_perm_2() {
+fn may_grant_power_spec_perm_2() {
     let (mut lp, ps) = people(3);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
@@ -572,9 +572,9 @@ fn invite_power_spec_perm_2() {
         assert_eq!(lp.peers[i].engine.roster(&d).get(&pc).map(|e| e.role), Some(Role::Read), "peer {i}");
     }
     assert_eq!(lp.peers[2].engine.role_on(&d), Some(Role::Read));
-    // no invite holder removes or demotes another holder
+    // no may-grant holder removes or demotes another holder
     assert!(lp.peers[1].engine.demote(&d, &Demotion { holder: pc, new: None, retain: None }).is_err());
-    // an existing holder cannot be invite-granted again
+    // a may-grant holder cannot grant an existing holder again
     assert!(lp.peers[1].engine.grant(&d, &pc, &edge_of(Role::Read)).is_err());
     // carol leaves by herself (a reader: no rotation of d is hers to make)
     lp.peers[2].engine.demote(&d, &Demotion { holder: pc, new: None, retain: None }).unwrap();
@@ -1009,7 +1009,7 @@ fn read_link_followed() -> (LocalPeer, [Tid; 3], Tid, osis_blob::ShareLink) {
     (lp, ps, d, link)
 }
 
-// spec/permissions.md §7: a stranger redeems a read link: signing as L it invite-grants its
+// spec/permissions.md §7: a stranger redeems a read link: signing as L it grants its
 // own actor to K (deposited: read), single use removes L's edge in the same commit, so a
 // second redeemer finds no link; the redeemer reads the target through K.
 #[test]
@@ -1141,7 +1141,7 @@ fn link_bearer_and_until_spec_perm_7() {
 
 // spec/permissions.md §7 (link finalized), §5.1: an expired link is due for finalization on both of the sharer's
 // nodes (the seed thing is the account's); both finalize concurrently without conflict. A seed
-// holder whose clock lags signs an invite grant as L dated before `until`, after both removals:
+// holder whose clock lags signs a grant by its may-grant as L dated before `until`, after both removals:
 // their frontiers do not cover it, so it is void at every peer, whether it arrives before or
 // after the removals (until they arrive it stands: the window the removal closes); the joiner
 // that redeemed while the link worked stays.

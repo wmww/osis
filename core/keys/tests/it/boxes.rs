@@ -291,7 +291,7 @@ fn reading_only_through_history() {
 }
 
 // spec/crypto.md §4: a box carrying a secret that is not its key's epoch's (a lying grant by an
-// invite holder, pending or applied) is ignored on sight, before or after the genuine box: the
+// may-grant holder, pending or applied) is ignored on sight, before or after the genuine box: the
 // genuine secret is held either way.
 #[test]
 fn lying_box_ignored_in_either_order_spec_crypto_4() {
@@ -372,7 +372,7 @@ fn unknown_authors_share_one_budget_spec_crypto_4() {
 }
 
 // spec/crypto.md §4, spec/permissions.md §2: a history key may hold several live entries (an
-// invite holder's put next to the genuine one); a newer garbage entry wins the merged read, so
+// may-grant holder's put next to the genuine one); a newer garbage entry wins the merged read, so
 // readers try each entry and still open the older epochs.
 #[test]
 fn history_alternatives_tried_spec_crypto_4() {
@@ -395,7 +395,7 @@ fn history_alternatives_tried_spec_crypto_4() {
 }
 
 /// `f` granted to a reader G, plus a lying entry next to each fork's genuine history box: put by
-/// an invite holder of the fork's secret, merged read first, listing a made-up secret at each
+/// a may-grant holder of the fork's secret, merged read first, listing a made-up secret at each
 /// older n (each names an epoch of its own). Returns G, its epochs, the state, the alternatives,
 /// the older epochs and the planted ones.
 fn poisoned(f: &mut Forked) -> (osis_base::Tid, ActorEpochs, Secrets, osis_keys::HistoryAlts, Vec<osis_crypto::Epoch>, Vec<osis_crypto::Epoch>) {
@@ -415,7 +415,7 @@ fn poisoned(f: &mut Forked) -> (osis_base::Tid, ActorEpochs, Secrets, osis_keys:
     (g, ge, s, alts, older, planted)
 }
 
-// spec/crypto.md §4: an invite holder's extra history entry listing made-up secrets cannot
+// spec/crypto.md §4: a may-grant holder's extra history entry listing made-up secrets cannot
 // name the older epochs (each secret names its own), so the genuine entry gives every older
 // secret whatever the order of arrival or of the entries; what the lie lists is a planted
 // epoch: never established, so never encrypted under or put in a history box.

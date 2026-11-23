@@ -4,7 +4,7 @@
 dependency has its line in notes/architecture.md §5, no target marked `test = false` /
 `doctest = false` has tests that would silently not run, held-model depends only on crdt-model and roles-model,
 core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name (`env_vars`),
-dispute types stay private (`dispute_types`), no test binds the real LAN port or announces on the
+dispute queries stay in their places (`dispute_types`), no test binds the real LAN port or announces on the
 real LAN (`real_lan_tests`), a test peer ticks through its wake (`peer_ticks`), world copies stay
 test-only (`test_copies`), only the engine's `apply::checked` vouches for checked delta bytes
 (`checked_bytes`), signature verdicts are read back only where kept (`kept_verdicts`), sync keeps
@@ -196,72 +196,27 @@ def env_vars():
     for v in sorted(known - used):
         yield f"{v} is in core/base/testenv-known.txt but nothing reads it"
 
-def paths_of(text, crate):
-    """Every path named under `crate::` in `text` (comments dropped), `{a, b::{c}}` groups
-    expanded; `*` for a glob; `<crate> as` aliases flagged as `as`."""
-    if crate not in text:
-        return []
-    text = code(text)
-    out = []
-    if re.search(rf"\b{crate}\s+as\b", text):
-        out.append("as")
-    def expand(s, i, prefix):
-        # parses a path tree at s[i:], appending full paths; returns the index after it
-        seg = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*|\*|\{)", s[i:])
-        if not seg:
-            return i
-        tok, i = seg.group(1), i + seg.end()
-        if tok == "{":
-            while True:
-                i = expand(s, i, prefix)
-                m = re.match(r"\s*(,|\})", s[i:])
-                if not m:
-                    return i
-                i += m.end()
-                if m.group(1) == "}":
-                    return i
-                if re.match(r"\s*\}", s[i:]):
-                    i += re.match(r"\s*\}", s[i:]).end()
-                    return i
-        path = prefix + [tok]
-        m = re.match(r"\s*::", s[i:])
-        if m and tok != "*":
-            return expand(s, i + m.end(), path)
-        m = re.match(r"\s+as\s+[A-Za-z_][A-Za-z0-9_]*", s[i:])
-        if m:
-            i += m.end()
-        out.append("::".join(path))
-        return i
-    for m in re.finditer(rf"\b{crate}\s*::", text):
-        expand(text, m.end(), [])
-    return out
-
-# notes/disputes.md, the coherence rule: the dispute types are private to osis-perm and
+# notes/disputes.md, the coherence rule: the dispute queries are private to osis-perm and
 # the API layer; nothing else names a side or asks whether a dispute is open.
 # The trust store (core/engine/src/sides.rs) is the rule's second exception: durable sides, fed
 # to the walk; its end-to-end tests are core/engine/tests/it/disputes.rs.
 DISPUTE_DIRS = ("core/perm/", "core/osis/", "core/engine/src/sides.rs", "core/engine/tests/it/disputes.rs")
-DISPUTE_PATHS = {"Trust", "Dispute", "Detected", "trust", "DETECT_MAX"}
-DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes|disputes_up_to|evaluate_with|trusted_active|take_detected)\s*\(|\bTrust\s*\{|\bDispute\s*\{")
-# The engine's own dispute names (the store, its event and diagnostic) outside the store itself:
-# only its hooks (the `Core` field and the update, commit and rollback calls, the load at open,
-# the event's definition and the module's export).
-SIDES_NAMES = re.compile(r"\bsides::|\bDisputeInfo\b|\bDisputeDetected\b|\bDisputesUnexamined\b|\.choose\s*\(")
+DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes)\s*\(")
+# The engine's own dispute names (the store and its event) outside the store itself: only its
+# hooks (the `Core` field and the update, commit and rollback calls, the load at open, the
+# event's definition and the module's export).
+SIDES_NAMES = re.compile(r"\bsides::|\bDisputeInfo\b|\bDisputeDetected\b|\.choose\s*\(")
 SIDES_HOOKS = ("core/engine/src/engine/mod.rs", "core/engine/src/apply/mod.rs", "core/engine/src/events/mod.rs", "core/engine/src/lib.rs")
 
 def dispute_types():
-    for path, rel in walk(CODE_TOPS, ".rs"):
+    for path, rel in walk(("core",), ".rs"):
         if rel.startswith(DISPUTE_DIRS) or rel.startswith("core/test/"):
             continue
-        text = read(path)
-        named = [p for p in paths_of(text, "osis_perm") if p.split("::")[-1] in DISPUTE_PATHS or p.startswith("trust::")]
-        if named:
-            yield f"{rel}: names osis_perm::{named[0]} (dispute types are private to osis-perm and the API layer)"
         # the public `osis` calls (`disputes`, `choose_side`) are for every app; the names
         # are checked inside core only
-        elif rel.startswith("core/") and has(DISPUTE_CALLS, code_of(path)):
+        if has(DISPUTE_CALLS, code_of(path)):
             yield f"{rel}: calls a dispute query of osis-perm (private to osis-perm and the API layer)"
-        elif rel.startswith("core/") and not rel.startswith(SIDES_HOOKS) and has(SIDES_NAMES, code_of(path)):
+        elif not rel.startswith(SIDES_HOOKS) and has(SIDES_NAMES, code_of(path)):
             yield f"{rel}: names the trust store or its dispute event (engine sides.rs, its hooks and the API layer only)"
 
 # notes/testing.md (Conventions): agents run tests side by side, so none binds the real LAN port or

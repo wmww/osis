@@ -139,10 +139,6 @@ pub enum DiagnosticKind {
     /// yet, or named by no blob) or failing verification. That position read as absent
     /// (spec/data-model.md §6; `tids`: the thing).
     Unreadable,
-    /// Contestable role writes arrived or stopped applying beyond what one update examines
-    /// (`osis_perm::DETECT_MAX`): those that stopped applying keep their side (trusted, listed
-    /// as disputes), the newly held ones get the walk's.
-    DisputesUnexamined,
     /// This node could not make a write it makes on its own (its answer to a removal or an
     /// account's rotation, spec/permissions.md §5.2, §5.5; a purge-on-replace cover, spec/commits.md
     /// §5; a compaction snapshot, spec/sync-compaction.md §1): nothing of the attempt was kept; an

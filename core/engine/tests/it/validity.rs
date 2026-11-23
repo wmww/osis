@@ -560,7 +560,7 @@ pub(crate) fn forge_by(by: &osis_engine::Engine, rec: osis_base::CreationRecord,
 }
 
 // spec/permissions.md §3 (lost access): only an unfinalized single-use link race defers a
-// loss. Bob, who held invite on D, left on his own; his later grant of Carol (forged past his
+// loss. Bob, who held read with the may-grant flag on D, left on his own; his later grant of Carol (forged past his
 // writer rules) is void because he left, yet it is no redemption: once Alice removes Carol,
 // Carol drops D's secrets.
 #[test]
@@ -578,8 +578,8 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
         d
     };
     let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let inv = osis_schema::core_types::Edge { may_grant: true, ..edge(Role::Read) };
-    lp.peers[0].engine.grant(&d, &b, &inv).unwrap();
+    let flagged = osis_schema::core_types::Edge { may_grant: true, ..edge(Role::Read) };
+    lp.peers[0].engine.grant(&d, &b, &flagged).unwrap();
     lp.peers[0].engine.grant(&d, &c, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
@@ -4424,7 +4424,7 @@ fn a_section_wrap_opening_under_two_epochs_reads_alike_spec_wire_4() {
 // nothing), Q listed on D's entry (invalid), a made-up author (never applies). Each reader ends as
 // its stated paths give.
 #[test]
-fn a_stated_index_acts_no_wider_than_the_acting_check_spec_permissions_5_2() {
+fn a_stated_purge_author_acts_no_wider_than_its_stated_paths_spec_permissions_5_2() {
     use osis_commit::{Path, Paths, Split};
     let (mut lp, h, d, p) = two_paths_world();
     let q = new_thing(&mut lp, 0);

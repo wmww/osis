@@ -813,7 +813,7 @@ impl Form for Expiry {
     }
 }
 
-const DIAGNOSTICS: [DiagnosticKind; 23] = {
+const DIAGNOSTICS: [DiagnosticKind; 22] = {
     use DiagnosticKind as K;
     [
         K::BadInput,
@@ -832,7 +832,6 @@ const DIAGNOSTICS: [DiagnosticKind; 23] = {
         K::Repair,
         K::OwnWriteInvalid,
         K::Unreadable,
-        K::DisputesUnexamined,
         K::OwnWriteFailed,
         K::SyncStopped,
         K::ClockSkew,

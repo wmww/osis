@@ -3,7 +3,7 @@
 //! A1 steps 3 and 4: notes/perm-paths.md; spec/permissions.md §1, §2,
 //! §5.1, §5.2, §6). For each node's view of a world (what it holds, the frontier leaves it sees,
 //! its trust set) both read: every edge-class part's status, every edge's history, the final
-//! roles and invites, the trusted writes left void, every delta's validity, the copies valid
+//! roles and may-grants, the trusted writes left void, every delta's validity, the copies valid
 //! snapshots show, the purged deltas and copies, what a request could hold, and the dispute set.
 //! spec/permissions.md §5.1, §5.2.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -333,7 +333,7 @@ pub fn paired() -> (World, Id, Id) {
 
 /// The model's may-grant world: A2 (K's) shares T1 at write and GU (A2's guests) holds read with
 /// the flag, by H through A; K gives X write on A2.
-pub fn invited() -> World {
+pub fn may_grant_world() -> World {
     let mut w = m::account();
     w.push(m::H, 1, &[m::A], m::T1, Kind::set(m::A2, roles_model::Role::Write));
     w.push(m::H, 1, &[m::A], m::T1, Kind::set(m::GU, roles_model::Role::Read).may_grant());
@@ -399,7 +399,7 @@ fn story_run(start: u64, n: u64, disputes: bool) -> Vec<String> {
     fails
 }
 
-// spec/permissions.md §5.1: the walk reads small worlds of admins, of invites and of a detached
+// spec/permissions.md §5.1: the walk reads small worlds of admins, of may-grant grants and of a detached
 // thing written by marked direct hops as the model does, at every honesty, disputes included.
 #[test]
 #[ignore = "property"]

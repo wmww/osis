@@ -187,10 +187,10 @@ fn f14_a_dropped_grant_is_read_by_the_regrant_so_applied_only_strands_a_write() 
 /// Finding 15: a writer's finalizes are chained (spec/permissions.md §4 Chained writes: write on
 /// its target, for a removal), so a writer of A without admin still grows a dependent's copies
 /// under (iv) once A's edge it finalizes is a used one: K finalizes Q's edge `n` times; none ends
-/// anything (Q's grant has no `until`), every one is a copy under D. Likewise an inviter's invite
-/// grants onto a holder that has a grant (chained by its invite, applied nowhere).
+/// anything (Q's grant has no `until`), every one is a copy under D. Likewise a may-grant holder's
+/// grants onto a holder that has a grant (chained by its may-grant, applied nowhere).
 #[test]
-fn f15_a_writers_finalizes_and_an_inviters_grants_are_chained_and_copied() {
+fn f15_a_writers_finalizes_and_a_may_grant_holders_grants_are_chained_and_copied() {
     let copies = |n: u32| {
         let (mut w, [x, _, k, q]) = base();
         w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
@@ -204,8 +204,8 @@ fn f15_a_writers_finalizes_and_an_inviters_grants_are_chained_and_copied() {
         w.copies(&st, D).len()
     };
     assert_eq!(copies(30) - copies(3), 27);
-    // an inviter's invite grants onto a holder with a current grant apply nowhere and are chained
-    let invites = |n: u32| {
+    // a may-grant holder's grants onto a holder with a current grant apply nowhere and are chained
+    let grants = |n: u32| {
         let (mut w, [x, _, k, q]) = base();
         w.write(x, |p| p.push(X, 1, &[], A, paths::Kind::set(K, Role::Write).may_grant()));
         w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
@@ -218,7 +218,7 @@ fn f15_a_writers_finalizes_and_an_inviters_grants_are_chained_and_copied() {
         assert_eq!(fails(&w, &rule), vec![]);
         w.copies(&st, D).len()
     };
-    assert_eq!(invites(30) - invites(3), 27);
+    assert_eq!(grants(30) - grants(3), 27);
 }
 
 /// Finding 9, made expressible (`World::creations`: a part resetting an entry waits for its

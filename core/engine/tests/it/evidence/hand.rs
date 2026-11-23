@@ -106,7 +106,7 @@ fn f14_a_dropped_chained_grant_is_evidence_spec_permissions_4() {
     assert!(req.contains_key(&(rg, A)));
 }
 
-/// Finding 15 (`f15_a_writers_finalizes_and_an_inviters_grants_are_chained_and_copied`): a
+/// Finding 15 (`f15_a_writers_finalizes_and_a_may_grant_holders_grants_are_chained_and_copied`): a
 /// writer's finalizes on a used edge are chained, each a copy (27 more for 27 more); a
 /// may-grant holder's grants likewise. OPEN 10's junk (`open10_junk_by_a_non_admin_adds_no_copy_but_under_the_draft`):
 /// a non-admin's grants are none; an admin's (`open10_an_admins_writes_on_a_used_edge_are_copies_in_every_variant`)

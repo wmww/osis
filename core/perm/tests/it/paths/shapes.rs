@@ -179,7 +179,7 @@ fn hostile_shapes_judge_alike_without_panicking() {
 }
 
 /// A random soup of parts over 8 things: records with cycles, paths repeating things, any holder,
-/// value (`until`, invite, floor), frontier (naming any commit, held or not), deltas of every
+/// value (`until`, may-grant, floor), frontier (naming any commit, held or not), deltas of every
 /// class; several parts per commit; ties in `ts` and signer.
 pub(super) fn soup(i: u64) -> (BTreeMap<Tid, Tid>, Vec<Commit>) {
     let mut r = Rng(i);

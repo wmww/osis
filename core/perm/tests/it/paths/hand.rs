@@ -1,12 +1,12 @@
 //! Hand worlds: one counterpart per rule-naming hand test of roles-model `paths` (src/paths/tests.rs,
 //! same names), each read by the walk and the model at the views the model's test reads, so every
 //! rule has a small named world besides the random runs. Each world is built as the model's test
-//! builds it; `agree` compares the whole reading (statuses, histories, final roles and invites,
+//! builds it; `agree` compares the whole reading (statuses, histories, final roles and may-grants,
 //! void trusted writes, disputes). Content commits are left out: the walk judges edge-class parts.
 //! spec/permissions.md §1, §2, §5.1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::{agree, agree_all, invited, paired, rows};
+use super::{agree, agree_all, may_grant_world, paired, rows};
 use roles_model::paths::*;
 use roles_model::Role::{self, Admin, None as Gone, Read, Write};
 use std::collections::BTreeMap;
@@ -122,7 +122,7 @@ fn descent_leaves_and_until() {
 }
 
 // A final hop marked direct is the path's last edge (draft §1 Path's last edge): the path's
-// invite reads the direct edge, as the model.
+// may-grant reads the direct edge, as the model.
 #[test]
 fn a_marked_final_hop_is_the_last_edge() {
     let mut w = account();
@@ -618,7 +618,7 @@ fn may_grant_and_finalizes() {
         // notes/write-path-design.md §1 G1, G2: a may-grant grant applies by its path's flag (controls
         // `-no-flag`, `-last-hop`).
         ("a_may_grant_grant_applies_by_its_paths_flag", || {
-            let mut w = invited();
+            let mut w = may_grant_world();
             w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read));
             w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Write));
             w.push(X, 2, &[A2], T1, Kind::set(N5, Read));
@@ -636,7 +636,7 @@ fn may_grant_and_finalizes() {
         }),
         // spec/permissions.md §5.1 step 3: a lowering falls in role or flag (control `-admin-falls`).
         ("a_may_grant_grant_by_a_removed_writer_falls_unless_listed", || {
-            let mut w = invited();
+            let mut w = may_grant_world();
             let z = w.push(X, 3, &[A2, GU], T1, Kind::set(Z, Read));
             w.push(X, 4, &[A2, GU], T1, Kind::set(N6, Read));
             let r = w.edge(K, 6, &[], A2, X, Gone, &[z]);
@@ -673,7 +673,7 @@ fn may_grant_and_finalizes() {
 // spec/permissions.md §2 (Finalize).
 #[test]
 fn a_finalize_ends_an_ended_grant_and_a_may_grant_grant_follows_it() {
-    let mut w = invited();
+    let mut w = may_grant_world();
     w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read).until(4));
     w.push(K, 3, &[A2], T1, Kind::finalize(Z));
     w.push(X, 2, &[A2, GU], T1, Kind::set(N6, Read));
@@ -682,7 +682,7 @@ fn a_finalize_ends_an_ended_grant_and_a_may_grant_grant_follows_it() {
     w.push(X, 5, &[A2, GU], T1, Kind::set(Z, Read));
     agree_all(&w, &[]);
     agree(&w, &View::all(&w).without(&[fin]));
-    let mut w = invited();
+    let mut w = may_grant_world();
     w.edge(H, 1, &[], A, B, Admin, &[]);
     w.push(H, 2, &[A], T1, Kind::set(N6, Admin).until(4));
     w.push(K, 5, &[A2], T1, Kind::finalize(N6));
@@ -694,7 +694,7 @@ fn a_finalize_ends_an_ended_grant_and_a_may_grant_grant_follows_it() {
 // grant by path end is a self-removal, along a path ending elsewhere an explicit removal.
 #[test]
 fn a_frontier_less_removal_of_ones_own_grant_is_no_finalize() {
-    let mut w = invited();
+    let mut w = may_grant_world();
     w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read).until(4));
     w.push(Z, 3, &[], T1, Kind::finalize(Z));
     w.push(K, 4, &[A2], T1, Kind::finalize(Z));
@@ -711,7 +711,7 @@ fn a_frontier_less_removal_of_ones_own_grant_is_no_finalize() {
 #[test]
 fn a_self_removal_lowers_in_every_component() {
     for k in [Kind::set(Z, Gone), Kind::set(Z, Read).until(5), Kind::set(Z, Read).until(9).may_grant(), Kind::set(Z, Read)] {
-        let mut w = invited();
+        let mut w = may_grant_world();
         w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read).until(9));
         w.push(Z, 3, &[], T1, k);
         agree_all(&w, &[]);
@@ -735,7 +735,7 @@ fn the_explicit_removal_after_a_finalize_audits_the_grants_made_by_flag() {
 
 #[test]
 fn a_write_clearing_the_flag_audits_the_grants_made_by_it() {
-    let mut w = invited();
+    let mut w = may_grant_world();
     let z = w.push(X, 2, &[A2, GU], T1, Kind::set(Z, Read));
     let plain = w.push(B, 5, &[A], T1, Kind::set(GU, Read));
     w.edge(H, 1, &[], A, B, Admin, &[]);
@@ -745,8 +745,8 @@ fn a_write_clearing_the_flag_audits_the_grants_made_by_it() {
     agree_all(&w, &[]);
 }
 
-// G5 with the flag below the role it was granted at (the walk's invite level, the role, falls with
-// it): N5 holds write with the flag on A and grants Z read and N6 write by it; H demotes N5 to
+// G5 with the flag below the role it was granted at (the level it may grant up to, the role, falls
+// with it): N5 holds write with the flag on A and grants Z read and N6 write by it; H demotes N5 to
 // read with the flag (N6's grant falls, Z's stands), then sets it to write without the flag (Z's
 // falls, or stands where listed).
 #[test]

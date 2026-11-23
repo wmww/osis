@@ -742,7 +742,7 @@ impl Osis {
 
     /// Removes `joiner` from link actor `k` and ends the link in the same commit, under one rotation
     /// (spec/permissions.md §7: a joiner may keep the seed); the other joiners stay holders of K and
-    /// need a new link to invite anyone.
+    /// need a new link to add anyone.
     fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts) -> Result<()> {
         let l = self.link_key(k)?;
         self.engine(|e| marked(e, o.leave_adminless, |e| e.revoke_joiner(&k, l.as_ref(), &joiner, o.retain_copy)))?;

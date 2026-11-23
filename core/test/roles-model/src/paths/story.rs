@@ -12,7 +12,7 @@ pub const Z: Thing = 6;
 pub const N6: Thing = 7;
 /// The mint admin of A in `Setup::mint` worlds, who leaves A.
 pub const M: Thing = 8;
-/// A guest X invites to read T1 through A2 (`Setup::x_a2` 1, 2, 5): a may-grant grant.
+/// A guest X grants to read T1 through A2 (`Setup::x_a2` 1, 2, 5): a may-grant grant.
 pub const G: Thing = 9;
 pub const A: Thing = 10;
 pub const A2: Thing = 11;
@@ -22,7 +22,7 @@ pub const T2: Thing = 14;
 /// A dependent of T1 (minted with it, in T1's unit): written by descent.
 pub const D1: Thing = 15;
 /// A holder of admin on D1 (H's grant), writing T2 through D1, which holds write on T2 with the
-/// may-grant flag (J invites RD2): a reader of T2 holds D1's edges on J's path as evidence and not
+/// may-grant flag (J grants RD2 read): a reader of T2 holds D1's edges on J's path as evidence and not
 /// A's direct grant on D1.
 pub const J: Thing = 16;
 /// A2's guests (minted with A2), holding read with the may-grant flag on T1 where X writes A2
@@ -86,9 +86,9 @@ pub struct Setup {
     /// 0: X holds nothing on A2; 1: write on A2; 2: write, and K removes it as H does; 3: admin
     /// on A2, and A2 admin on T1 (X administers T1 through A2 for good); 4: as 3, and B removes A2
     /// from T1 at the removal's tick, stating [A] (a removal of more than one hop); 5: as 1 but A2
-    /// admin on T1, X's invite of G through [A2] at 4, and B demoting A2 on T1 to write with the
+    /// admin on T1, X's grant of G through [A2] at 4, and B demoting A2 on T1 to write with the
     /// flag at the removal's tick, stating [A] (a kiosk: a holder kept at write, the grants made
-    /// by it kept). In 1 and 2, A2's share carries no flag and GU's does: X invites through
+    /// by it kept). In 1 and 2, A2's share carries no flag and GU's does: X grants through
     /// [A2, GU].
     pub x_a2: u8,
     /// B sides with X's removal of H until its user switches at `AFTER`.
@@ -118,9 +118,9 @@ pub struct Move {
 /// X removing A from T1 by [A2] (where it administers T1 through A2); 33 and 34 are X's own edge
 /// set timed by itself (admin until the tick after its `ts`; write until after the story); 35 to 37
 /// are may-grant grants through A2's arrangement (where X writes A2: [A2, GU], GU holding read with
-/// the flag; [A2] in the kiosk's world): Z invited beyond it (at write through [A2, GU], and at
+/// the flag; [A2] in the kiosk's world): Z granted beyond it (at write through [A2, GU], and at
 /// read through [A2] whose share carries no flag), at read, and at read until the next tick,
-/// finalized by X then and invited again; 38 to 40 are purge requests by author: by A on T1 along [A], by A2 on T1 along
+/// finalized by X then and granted again; 38 to 40 are purge requests by author: by A on T1 along [A], by A2 on T1 along
 /// [A2] (X's right where it keeps writing A2), by A on T1 along [A2] (an author not on its chain: no
 /// right); 41 withholds the removal from K until the settle and writes T1 after it, which K
 /// receives at once and compacts T1 carrying (an honest writer compacting before it holds the
@@ -187,7 +187,7 @@ pub struct Sim {
     pub gb5: Option<Id>,
     pub gh: Option<Id>,
     pub gx: Id,
-    /// X's invite of G to read T1 through A2's arrangement (`Setup::x_a2` 1, 2, 5).
+    /// X's grant of G to read T1 through A2's arrangement (`Setup::x_a2` 1, 2, 5).
     pub gi: Option<Id>,
     /// Move 46: K compacts T1 at this tick, not yet holding the removal.
     cover_by_k: Option<(u32, Id)>,
@@ -363,7 +363,7 @@ impl Sim {
         m.put((H, 1, &[A], D1, grant(J, Role::Admin)), 1, rng, false);
         m.put((H, 1, &[A, ORG], T2, grant(D1, Role::Write).may_grant()), 1, rng, false);
         m.put((J, 3, &[D1], T2, Kind::Content), 3, rng, false);
-        // J invites RD2 to read T2 by D1's flag: an edge-class write resting on (D1, T2)
+        // J grants RD2 read on T2 by D1's flag: an edge-class write resting on (D1, T2)
         m.put((J, 3, &[D1], T2, grant(RD2, Role::Read)), 3, rng, false);
         // B removes J from D1 by [A] at 4 (a descent of two steps); J writes T2 after it, and at 10
         // makes D1 leave T2 (an honest holder thing's leave)
@@ -1492,7 +1492,7 @@ pub fn fight_among(w: &World, rules: &Rules, v: &View, rd: &Reading, parts: &[Id
 /// effect in an honest history (`honest`); `void shown`, `unapplied shown`, `idle shown` (only which
 /// writes apply differs). Failing, `idle gains`: an unshown effect making a commit of the thief's
 /// show that is signed by a key that never legitimately held the right (Z, N5's after its removal)
-/// and that holds no right by a path X keeps (`by_right`, safety's own reading: Z invited by X
+/// and that holds no right by a path X keeps (`by_right`, safety's own reading: Z granted by X
 /// through A2 writes by that grant), at any node, or, at a node trusting the removal, made by X
 /// after it through A.
 #[allow(clippy::too_many_arguments)]
@@ -1802,11 +1802,11 @@ fn check_world(m: &Sim, rules: &Rules, st: &mut Stats) {
                 Kind::Content => {
                     in_r(i) || vouched(&[H, B, N5, K], m.r, i, &wrote)
                 }
-                // X's invite of G through A2 stands where the share it rests on does, and where
+                // X's grant of G through A2 stands where the share it rests on does, and where
                 // K removed X from A2, by K's list or H's
                 Kind::Edge { .. } if Some(i) == m.gi => {
                     (!s.sharer_x || x_share.is_some_and(in_r)) && (x_grants > Role::None || m.r2.is_some_and(|r2| w.in_frontier(r2, i)) || in_r(i))
-                        // the kiosk's invite at 4 follows X's removal of A2 from T1 at 3
+                        // the kiosk's grant at 4 follows X's removal of A2 from T1 at 3
                         && !(s.x_a2 == 5 && x_removed_a2 && m.xrole.is_some_and(in_r))
                 }
                 // N5's grant to B, listed by X's removal of N5, stays: X's twin, heard before the

@@ -71,9 +71,9 @@ mod tests {
 
     // spec/permissions.md §1, §2: the role-class aspects are written only by admins, except
     // may-grant grants, which "carry the grantee's boxes for those roles". A grant's `secrets.0` part
-    // that writes another holder's box is not the grantee's: it gets no invite exemption.
+    // that writes another holder's box is not the grantee's: it gets no may-grant exemption.
     #[test]
-    fn invite_grant_secrets_limited_to_grantee_spec_perm_2() {
+    fn may_grant_grant_secrets_limited_to_grantee_spec_perm_2() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.me();
@@ -100,11 +100,11 @@ mod tests {
         assert!(lp.peers[0].engine.core.ix.grant_overreach.contains(&(id, ai)));
     }
     // spec/permissions.md §2 (may-grant grant: its keys.0 only the records of its boxes), spec/crypto.md §4 (Stale: every box to a holder
-    // actor is recorded beside it, whoever boxes): an invite holder granting an organization carries the
+    // actor is recorded beside it, whoever boxes): an may-grant holder granting an organization carries the
     // organization's box records in `keys.0` as puts keyed to its grantee: valid at a receiver, which
-    // notes them. One also recording a box keyed to another holder gets no invite exemption.
+    // notes them. One also recording a box keyed to another holder gets no may-grant exemption.
     #[test]
-    fn invite_grant_records_its_grantees_boxes_spec_perm_2() {
+    fn may_grant_grant_records_its_grantees_boxes_spec_perm_2() {
         let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -125,7 +125,7 @@ mod tests {
         assert!(lp.peers[3].engine.core.ix.commits.get(&id).unwrap().valid()[ki], "the may-grant grant's records are valid");
         let noted = lp.peers[3].engine.core.ix.sealed.iter().any(|(k, v)| k.0 == t && v.by.contains(&id) && v.keysets.contains_key(&holder));
         assert!(noted, "the receiver notes the organization's records");
-        // the invite holder grants c and records a box keyed to the admin as well
+        // the may-grant holder grants c and records a box keyed to the admin as well
         let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let ak = s.boxes.keys().find(|k| k.holder == osis_base::Weak(a)).unwrap().clone();
         let mut m = Mutation::new();
@@ -162,7 +162,7 @@ mod tests {
         assert!(matches!(lp.peers[1].receive(&pk.bytes, pk.blobs), Err(crate::Error::BadInput(_))));
         assert_eq!(lp.peers[1].engine.roster(&t).get(&b).map(|e| e.role), Some(Role::Write));
     }
-    // spec/permissions.md §2, spec/commits.md §4 (is joined on arrival): an invite holder's grant whose
+    // spec/permissions.md §2, spec/commits.md §4 (is joined on arrival): an may-grant holder's grant whose
     // `secrets.0` part boxes beyond its grantee is invalid whatever the arrival order; here the
     // `roles.0` part arrives first and the overreaching `secrets.0` part joins late.
     #[test]
@@ -175,7 +175,7 @@ mod tests {
         let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { may_grant: true, ..read.clone() }).unwrap();
         lp.sync_all().unwrap();
-        // the invite holder grants c and also writes a box keyed to the admin
+        // the may-grant holder grants c and also writes a box keyed to the admin
         let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let (ak, ab) = s.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(a)).map(|(k, v)| (k.clone(), v.clone())).unwrap();
         let mut m = Mutation::new();
@@ -201,12 +201,12 @@ mod tests {
     // or a history box is un-merged at every node whatever the arrival order: validity depends on
     // the delta alone.
     #[test]
-    fn invite_grant_resets_unmerged_any_order_spec_perm_2() {
+    fn may_grant_grant_resets_unmerged_any_order_spec_perm_2() {
         use osis_crdt::{Op, PathOp, PathSeg};
         use osis_schema::Codec;
         let mut lp = LocalPeer::fresh(6, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        // 0 admin, 1 invite holder, 2 grantee, 3 and 4 receivers, 5 a holder whose box is reset
+        // 0 admin, 1 may-grant holder, 2 grantee, 3 and 4 receivers, 5 a holder whose box is reset
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.me();
         let (a, c, e) = (tid(&mut lp, 0), tid(&mut lp, 2), tid(&mut lp, 5));
         let b = tid(&mut lp, 1);
@@ -245,10 +245,10 @@ mod tests {
     // may-grant grant unapplied, its boxes with no exemption: judged again though its author's roles
     // did not move, as where they came in the other order.
     #[test]
-    fn invite_grant_overtaken_on_its_edge_any_order_spec_perm_2() {
+    fn may_grant_grant_overtaken_on_its_edge_any_order_spec_perm_2() {
         let mut lp = LocalPeer::fresh(5, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        // 0 admin, 1 invite holder, 2 grantee, 3 and 4 receivers
+        // 0 admin, 1 may-grant holder, 2 grantee, 3 and 4 receivers
         let (a, b, e) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let t = thing(&mut lp, a);
         let read = ct::Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None };
@@ -258,12 +258,12 @@ mod tests {
         let by_admin = lp.peers[0].engine.package(&by_admin).unwrap().unwrap();
         lp.advance(1000);
         let id = *lp.peers[1].engine.grant(&t, &e, &read).unwrap().commits.last().unwrap();
-        let by_invite = lp.peers[1].engine.package(&id).unwrap().unwrap();
-        lp.deliver(3, &by_invite).unwrap();
+        let by_may_grant = lp.peers[1].engine.package(&id).unwrap().unwrap();
+        lp.deliver(3, &by_may_grant).unwrap();
         assert!(lp.peers[3].engine.edge_write_applied(&t, &id), "applied while alone");
         lp.deliver(3, &by_admin).unwrap();
         lp.deliver(4, &by_admin).unwrap();
-        lp.deliver(4, &by_invite).unwrap();
+        lp.deliver(4, &by_may_grant).unwrap();
         let secrets = osis_base::Ak::new("secrets.0").unwrap();
         for r in [3, 4] {
             assert!(!lp.peers[r].engine.edge_write_applied(&t, &id), "receiver {r}");
@@ -271,15 +271,15 @@ mod tests {
         assert_eq!(lp.peers[3].engine.body_valid(&id, &t, &secrets), lp.peers[4].engine.body_valid(&id, &t, &secrets));
         assert_eq!(lp.peers[3].engine.get_typed(&t, &ct::SECRETS).unwrap(), lp.peers[4].engine.get_typed(&t, &ct::SECRETS).unwrap());
     }
-    // spec/permissions.md §2, §5.1 step 4: a late grant makes an invite holder an admin earlier,
+    // spec/permissions.md §2, §5.1 step 4: a late grant makes an may-grant holder an admin earlier,
     // so its write on another's edge turns from a may-grant grant (no audit) into an audited write
     // (restores what the holder gave up, demotes): the edge's value is the same, the holder's
     // write falls, as where the grant came first.
     #[test]
-    fn invite_grant_turned_audited_any_order_spec_perm_5_1() {
+    fn may_grant_grant_turned_audited_any_order_spec_perm_5_1() {
         let mut lp = LocalPeer::fresh(5, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        // 0 admin, 1 invite holder, 2 holder, 3 and 4 readers receiving
+        // 0 admin, 1 may-grant holder, 2 holder, 3 and 4 readers receiving
         let (a, b, h) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let ak = osis_base::Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
@@ -335,9 +335,9 @@ mod tests {
     }
     // spec/permissions.md §2: a may-grant grant's `secrets.0` entries are new, created by its own
     // delta. A record claiming the grantee's key at another holder's entry dot would merge into
-    // that entry (the stored key wins), overwriting its box: not a put, no invite exemption.
+    // that entry (the stored key wins), overwriting its box: not a put, no may-grant exemption.
     #[test]
-    fn invite_grant_foreign_entry_dot_rejected_spec_perm_2() {
+    fn may_grant_grant_foreign_entry_dot_rejected_spec_perm_2() {
         use osis_crdt::{DeltaBuilder, Dot, Encoding, SlotRef, Op, PathOp, PathSeg, Source, Writer};
         use osis_schema::Codec;
         fn box_entries(f: &osis_crdt::Fragment) -> Vec<(Dot, Option<Value>)> {
@@ -522,10 +522,10 @@ mod tests {
             assert!(!held.edge_commits(&shallow).is_empty(), "peer {r}: the shallow edge counts");
         }
     }
-    // spec/permissions.md §2: the invite exemption is for an applied may-grant grant's boxes. A
+    // spec/permissions.md §2: the may-grant exemption is for an applied may-grant grant's boxes. A
     // reader pairing its own removal (which always applies) with a put that fails gets no
     // exemption: its boxes for the failed grantee and its history boxes are judged as its own
-    // `secrets.0` write (admin), invalid. A redemption-shaped grant by an invite holder stays valid.
+    // `secrets.0` write (admin), invalid. A redemption-shaped grant by an may-grant holder stays valid.
     #[test]
     fn self_removal_beside_failing_grant_no_exemption_spec_perm_2() {
         use osis_base::Tid;
@@ -566,7 +566,7 @@ mod tests {
         assert!(!lp.peers[0].engine.roster(&t).contains_key(&r), "the self-removal applies");
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         assert!(!s.boxes.contains_key(&zk) && s.history.get(&hk) != Some(&vec![0; 48]));
-        // honest shape: an invite holder's grant of g plus its own removal (a redemption)
+        // honest shape: an may-grant holder's grant of g plus its own removal (a redemption)
         lp.peers[0].engine.grant(&t, &z, &ct::Edge { may_grant: true, ..read.clone() }).unwrap();
         lp.sync_all().unwrap();
         assert!(commit(&mut lp, g, ct::Edge { role: Role::Read, ..read.clone() }, 2), "an applied may-grant grant's boxes");
@@ -884,7 +884,7 @@ mod keys_tests {
     // spec/permissions.md §2: a may-grant grant carries the grantee's boxes only; a write of the
     // whole `secrets.0` value is no grantee's box
     #[test]
-    fn invite_grant_cannot_replace_secrets_spec_perm_2() {
+    fn may_grant_grant_cannot_replace_secrets_spec_perm_2() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.me();

@@ -26,7 +26,7 @@ fn made() -> Commit {
 
 /// T lives under `L`, which only the grant's key opens; `ME` holds `MINE` only; the grant is copied
 /// whole under `MINE`.
-fn invited(key: SyncId) -> Library {
+fn granted(key: SyncId) -> Library {
     let records = vec![Record { id: MINT_ADMIN, link: RecordLink::Key }];
     let mut sync_ids = BTreeMap::new();
     sync_ids.insert(T, BTreeSet::from([L]));
@@ -41,12 +41,12 @@ fn reads(lib: &Library, reading_only: bool) -> Option<Value> {
     evaluate(&f.held).reads.get(&(T, REG)).cloned().flatten()
 }
 
-// spec/crypto.md (Reading-only secrets), notes/expiry-creation-design.md §3: an invited node has
+// spec/crypto.md (Reading-only secrets), notes/expiry-creation-design.md §3: a granted node has
 // neither T's record nor its sync ID's key; the grant's box, read from the commit it could not
 // judge, opens the sync ID holding T's record, and the grant then applies
 #[test]
 fn grant_opens_the_sync_id_holding_its_record_spec_crypto() {
-    let lib = invited(L);
+    let lib = granted(L);
     assert_eq!(reads(&lib, true), int(5));
     let f = settle(&lib, &mut |_| {}, true);
     assert!(f.keys.contains(&L));
@@ -56,13 +56,13 @@ fn grant_opens_the_sync_id_holding_its_record_spec_crypto() {
 // the same world, the box thrown out with the part: deadlock. Why the boxes stay.
 #[test]
 fn discarding_boxes_deadlocks_spec_crypto() {
-    assert_eq!(reads(&invited(L), false), None);
+    assert_eq!(reads(&granted(L), false), None);
 }
 
 // spec/crypto.md: a box that opens nothing changes nothing
 #[test]
 fn forged_box_changes_no_read_spec_crypto() {
-    let lib = invited(NO_SYNC_ID);
+    let lib = granted(NO_SYNC_ID);
     assert_eq!(reads(&lib, true), None);
     let f = settle(&lib, &mut |_| {}, true);
     assert!(!f.keys.contains(&L));
@@ -71,7 +71,7 @@ fn forged_box_changes_no_read_spec_crypto() {
 // sibling under another sync ID: the commit's whole copy under a sync ID the node holds, parts judged the same
 #[test]
 fn other_sync_id_sibling_copy_opens_the_sync_id_spec_crypto() {
-    let mut lib = invited(L);
+    let mut lib = granted(L);
     // the content write copied under MINE too: it may arrive before the record
     lib.copies.insert(40, BTreeSet::from([MINE]));
     let mut orders = 0;

@@ -1,6 +1,6 @@
 //! Share links (spec/permissions.md §7, spec/wire.md §10): K an actor whose mint admin is the sharer's actor, with
 //! secrets of its own, a holder of the target with the link's role; L a key actor from the
-//! link's seed with (r, invite r) on K, listed in K's sync ID steps by static entry. Redeem (an
+//! link's seed with (r, may-grant) on K, listed in K's sync ID steps by static entry. Redeem (a
 //! may-grant grant signed as L, single use with L's self-removal in the same commit), bearer use,
 //! finalization and revoking a joiner are demotions by a sharer node.
 
@@ -55,7 +55,7 @@ impl Engine {
     /// Creates a link to `spec.target` for actor `sharer` (an actor this node is admin of):
     /// K (mint admin `sharer`, secrets of its own, its sync ID listing L by
     /// static entry), L (key actor from a fresh seed, `created.0` and `keys.0` signed by itself),
-    /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
+    /// L's edge (r, may-grant, `until`) on K with its boxes, K's edge on the target, and a
     /// thing minted with the account root as admin keeping the seed. Returns the link and the seed thing.
     pub fn create_link(&mut self, sharer: &Tid, spec: &LinkSpec) -> Result<(ShareLink, Tid, Done)> {
         // redeeming reads K's sync ID as L (its roster shows K's grant on the target), which a
@@ -337,7 +337,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     // K's secrets, its sync ID listing L, its inbox: one commit
     let lvk = lkeys.signing.verifying_key();
     rotation::own_secrets_listing(tx, k, &[ReaderKey::Static(lvk, lkeys.kem.public().clone())], &mut done)?;
-    // L's edge (r, invite r, until) with its boxes
+    // L's edge (r, may-grant, until) with its boxes
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
     let rcpt = Recipient { holder: l, role: spec.role, keys: HolderKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None }, floor: 0 };
     let hist = crate::rotation::history_boxes(tx, &sharer, &k)?;

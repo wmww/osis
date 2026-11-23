@@ -2401,8 +2401,7 @@ fn a_single_use_link_redeemed_twice_stays_with_the_redemption_the_sharer_listed(
 /// received it, then demotes B to read with the flag. N5's grant needs write with the flag and
 /// falls; Z's needs read with it, which B keeps: by its own need it stands (control
 /// `-part-drops`), under the rule it falls with N5's (the commit's `roles.0` delta on A is one
-/// part), as today's walk has it (engine `role_paths` class world "a writer's two invites in one
-/// commit"). No generator makes parts of one commit whose needs differ (`tiny_flags` writes no
+/// part), as osis-perm's walk has it. No generator makes parts of one commit whose needs differ (`tiny_flags` writes no
 /// such commit, `tiny` commits no leave beside another part), so `-part-drops` reads every
 /// generated world alike. And B hands A over to N5
 /// (a may-grant grant and a leave in one commit), unseen by H, who then removes B or lowers it to read: N5

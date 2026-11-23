@@ -172,8 +172,8 @@ pub enum Join {
     /// J1: any held chained grant ordered before the part.
     Any,
     /// J2: a held chained grant ordered before the part giving what the part needs on that hop
-    /// (`World::need`: write for content, admin for an edge write, its level for an invite
-    /// grant), `until` disregarded: a hop holding only a grant giving too little joins nothing,
+    /// (`World::need`: write for content, admin for an edge write, its level for a
+    /// may-grant grant), `until` disregarded: a hop holding only a grant giving too little joins nothing,
     /// so the part waits at every node, as one through a hop nobody granted.
     Needed,
     /// J3: joined as `Any`; a hop holding no held chained grant ordered before the part is
@@ -2178,7 +2178,7 @@ pub fn cost_with(n: usize, k: usize, outside: usize, churn: usize, carried: usiz
 /// or a written thing with a unit, from the start or by a retag after the removal.
 pub const STORY_UNITS: usize = 6;
 
-/// roles-model's stolen-node story (`paths::Sim`: invites, finalizes, `until`, covers, purges,
+/// roles-model's stolen-node story (`paths::Sim`: may-grant grants, finalizes, `until`, covers, purges,
 /// addenda by the state-based rule, commits of several edge writes and of several
 /// things, self-removals, paths of two hops, a dependent written by descent)
 /// as an evidence world: its commits written in the order made, by the node of their signer (the

@@ -42,7 +42,7 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
 /// A grant or a raise of `holder`'s edge on `target` by `who` (this node, or a held key actor
 /// signing), with the grantee's boxes for every granted role at each current epoch
 /// (spec/crypto.md §4). An admin's grant, or a may-grant grant (spec/permissions.md §2) where
-/// `who`'s effective invite allows it and the holder has no current edge. `leave`: the signer's
+/// `who`'s effective may-grant allows it and the holder has no current edge. `leave`: the signer's
 /// own edge removed in the same commit (a single-use redemption, spec/permissions.md §7).
 /// `frontier`: the one a grant that audits carries (`Engine::grant_signed`).
 pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_perm::Frontier>) -> Result<Done> {
@@ -71,7 +71,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     // a non-writer of the target's sync ID deposits its may-grant grant (spec/sync-judgement.md §1)
     let ts = now_ts(tx.core);
     let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
-    let invite = tx.core.timelines.get(&target).and_then(|tl| tl.may_grant(&who, &target, At::now(ts)));
+    let may_grant = tx.core.timelines.get(&target).and_then(|tl| tl.may_grant(&who, &target, At::now(ts)));
     // below the holder's edge for keys (one past its `until` included, still in the state) a
     // grant would be the holder's departure, whose rotation it does not carry (spec/permissions.md
     // §3): a demotion makes it
@@ -80,7 +80,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
         return Err(Error::Misuse("a grant below the holder's edge lowers it (use demote)"));
     }
     if !admin {
-        let ok = old.is_none() && invite.is_some_and(|i| edge.role <= i);
+        let ok = old.is_none() && may_grant.is_some_and(|i| edge.role <= i);
         if !ok || below || history == History::None {
             return Err(Error::Permission { tid: target, needs: Role::Admin });
         }
@@ -416,7 +416,7 @@ impl Engine {
     }
 
     /// Grants `holder` the edge `edge` on `target`, or raises its edge (spec/permissions.md §2),
-    /// as an admin of the target or by invite. Gives the target (and a dependent holder) secrets of
+    /// as an admin of the target or by a may-grant. Gives the target (and a dependent holder) secrets of
     /// their own first where needed. Delivers the grant to the holder's inbox (a node: direct).
     pub fn grant(&mut self, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
         self.grant_signed(None, *target, *holder, edge, false, History::All)
@@ -430,8 +430,8 @@ impl Engine {
     }
 
     /// `grant_in` with the frontier of what this node received when the grant audits: an admin's
-    /// grant below the edge as restored (spec/permissions.md §5.1 step 4), such as a lower invite
-    /// or a role below one the holder lost with no explicit write on the edge since. Invariant: an
+    /// grant below the edge as restored (spec/permissions.md §5.1 step 4), such as a may-grant taken
+    /// away or a role below one the holder lost with no explicit write on the edge since. Invariant: an
     /// explicit write that audits carries its author's frontier, else every write of the holder's
     /// it puts in question drops, received or not.
     pub(crate) fn grant_signed(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, history: History) -> Result<Done> {

@@ -1,7 +1,7 @@
 //! Chained-ness per edge-class part (spec/permissions.md §4 Chained writes; what A2's evidence derivation reads,
 //! notes/evidence-derivation.md): `Paths::is_chained` against held-model's `evidence::World::chained`
-//! over the differential worlds at every view, and hand worlds of each kind of part (an invite
-//! grant by its path's invite, a removal, a finalize by write, a self-removal), with
+//! over the differential worlds at every view, and hand worlds of each kind of part (a may-grant
+//! grant by its path's may-grant, a removal, a finalize by write, a self-removal), with
 //! `Changed::chained` reporting each flip, on arrival and on forget.
 //! spec/permissions.md §4 Chained writes.
 
@@ -76,8 +76,8 @@ fn kinds() -> (World, [Id; 7]) {
     (w, [gn, inv, junk, rz, fin, leave, gx])
 }
 
-// spec/permissions.md §4: draft Chained writes: an invite grant is chained by its path's invite
-// (N5 holds write and invite write on A), a grant by a holder with no invite is not; a removal by
+// spec/permissions.md §4: draft Chained writes: a may-grant grant is chained by its path's may-grant
+// (N5 holds write with the flag on A), a grant by a holder with no may-grant is not; a removal by
 // admin, a finalize by write and a self-removal along its empty path are chained.
 #[test]
 fn each_kind_of_part_is_chained_by_what_it_needs() {
@@ -94,7 +94,7 @@ fn each_kind_of_part_is_chained_by_what_it_needs() {
 }
 
 // spec/permissions.md §4: chained-ness flips are reported in every arrival order (a part turning
-// chained when its path's setter arrives), and on forget: H's grant of N5 forgotten, N5's invite
+// chained when its path's setter arrives), and on forget: H's grant of N5 forgotten, N5's may-grant
 // grant and finalize are no longer chained, and `Changed::chained` names exactly those.
 #[test]
 fn chained_flips_are_reported_on_arrival_and_forget() {

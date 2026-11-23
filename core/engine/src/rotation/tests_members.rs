@@ -749,14 +749,14 @@ fn lacking_carried_keyset_spec_crypto_4() {
 // spec/permissions.md §3 (holder actors), spec/requirements.md (Permissions: the inside-member
 // limit), spec/crypto.md §4 (Encrypting under: sealing M at a keyset is encrypting under it): a
 // departure inside M is M's to rotate for. D leaves M by itself (nothing rotates M). A grant of M
-// on T by a node that may not rotate M (T's admin reading M, or an invite holder on T): one that
+// on T by a node that may not rotate M (T's admin reading M, or a may-grant holder on T): one that
 // has not learned the departure seals M at its keyset D holds, so D reads T until M's knowing
 // keyset reaches T's writers, then not (rule 2); one that knows it may not encrypt under that
 // keyset, so its grant waits for M's rotation. M's admin, granting, rotates M first (sealing to it
 // is encrypting under its epoch): D never reads T.
 #[test]
 fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
-    // granter: 0 T's admin reading M, 2 M's admin and T's mint admin, 0 by invite on T whose mint admin is 3; whether
+    // granter: 0 T's admin reading M, 2 M's admin and T's mint admin, 0 by a may-grant on T whose mint admin is 3; whether
     // the granter has learned D's departure
     for (g, first, knows) in [(0, 0, false), (0, 0, true), (2, 2, true), (0, 3, false), (0, 3, true)] {
         let (mut lp, (m, t)) = LocalPeer::cached(&format!("rotation::tests_members::grant_to_unrotated/{first}/{}", first != g), || {

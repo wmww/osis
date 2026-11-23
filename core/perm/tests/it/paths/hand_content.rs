@@ -6,7 +6,7 @@
 //! spec/permissions.md §5.1, §5.2, §6.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::{agree, agree_all, all, cid, commit, invited, model_cid, ms, paired, t, verdict, walk};
+use super::{agree, agree_all, all, cid, commit, may_grant_world, model_cid, ms, paired, t, verdict, walk};
 use osis_base::{Ak, PurgeBy, Role as R, Tid};
 use osis_perm::paths::{By, Commit, Content, Delta, DeltaClass, EdgeWrite, Part, PartKind, Paths, Status};
 use osis_perm::{Edge, Frontier, WriteId};
@@ -265,7 +265,7 @@ fn a_purge_by_author_takes_exactly_that_authors_deltas() {
 // spec/permissions.md §6: the author right is held only through the request's own chain.
 #[test]
 fn a_purge_holds_the_right_only_through_its_own_chain() {
-    let mut w = invited();
+    let mut w = may_grant_world();
     w.content_as(K, 2, &[A2], T1, 1);
     w.edge(H, 1, &[], A, X, Admin, &[]);
     w.purge(X, 3, &[A], T1, A2);
@@ -278,7 +278,7 @@ fn a_purge_holds_the_right_only_through_its_own_chain() {
 // listed by the removal it stands.
 #[test]
 fn a_removed_signers_backdated_purge_takes_nothing() {
-    let mut w = invited();
+    let mut w = may_grant_world();
     w.edge(H, 1, &[], A, X, Admin, &[]);
     w.content_as(H, 2, &[A], T1, 1);
     w.content_as(K, 2, &[A2], T1, 1);

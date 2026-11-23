@@ -5,7 +5,7 @@
 //! cascade and departures live in `crate::rotation`.
 //!
 //! Flows build role commits with `Mutation` (`sign_as` for a held link key,
-//! `frontier`, `unchecked` where perm's invite and self-removal rules decide authority) and
+//! `frontier`, `unchecked` where perm's may-grant and self-removal rules decide authority) and
 //! return the commits written; an inbox delivery a commit owes is recorded in its transaction
 //! (`sync::deliveries::owe`). Where a decision needs sync state (a complete pass of an actor's
 //! sync IDs) it reads what sync noted (`Engine::note_complete_pass`).
