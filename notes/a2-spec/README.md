@@ -27,6 +27,7 @@ The rules are the spec's (written from notes/write-path-design.md §2, §4, F6, 
 11. **Compaction on a provisional verdict** (old OPEN 8): *taken* at once (spec/commits.md §4 Provisional). **Settles**: Tess, only if the window widens.
 12. **Hostile deletes of copies and record blobs at stores**: unchanged (issues/cert-blob-hostile-delete.md).
 13. **The derived-era check** of issues/delete-key-levels-unchecked.md: steps ride as the write's evidence, so a reader of a thing made independent holds its former base's steps through the thing's own unit. Not modelled. **Settles**: the step model of Open 3.
+14. **The edges a member writes**: spec/permissions.md §4 Evidence of a commit takes the writes on a commit's key hop and stated path's edges, and the commit's other edge writes on the thing, but not the other writes on the edges those set; a removal waits for the creations of the entries it resets (spec/permissions.md §2), which are such writes (finding 9). held-model `CommitEdges::AllWrites` and the derivation (notes/evidence-derivation.md, The rule) take every held write on each edge a member writes. **Settles**: the coordinator words it into §4 (likely "and on each edge its edge writes set").
 
 ## Order of the code briefs
 Each lands its code against the spec as written; no brief moves spec text unless an Open item settles.

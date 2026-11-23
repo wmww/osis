@@ -1,11 +1,11 @@
 //! The derivation against the real walk (osis-perm `paths`), not the model: a reader holding a
 //! sync ID's bodies plus exactly the copies `Evidence` says it requires judges each body as the node
 //! holding everything (spec/permissions.md §4; spec/sync-judgement.md §1). Commits
-//! are built by hand with real stated paths, the walk's plain input, with a minimal adapter (`Node`) from it to the derivation's `Part`s; chained-ness per write from the
-//! walk's first chained keys per edge (no may-grant grants: the walk does not report a may-grant
-//! grant's chained-ness, notes/evidence-derivation.md).
+//! are built by hand with real stated paths: engine role commits state the Interim empty path and
+//! the engine does not run the walk yet (A1 step 3), so this is the walk's plain input, with a
+//! minimal adapter (`Node`) from it to the derivation's `Part`s.
 use osis_base::{Ak, CommitId, PurgeBy, Role, Tid, Ts, WallMs};
-use osis_engine::evidence::{Config, CopyId, Evidence, Gives, Hop, Kind, Need, Part, Write};
+use osis_engine::evidence::{Config, CopyId, Evidence, Kind, Part, Write};
 use osis_perm::paths::{Commit, Content, Delta, DeltaClass, EdgeWrite, Key, List, Part as PPart, PartKind, Paths};
 use osis_perm::{Edge, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -102,61 +102,32 @@ fn hops(records: &BTreeMap<Tid, Tid>, c: &Commit, p: &PPart) -> Vec<(Tid, Tid)> 
     vec![]
 }
 
-/// The node holding `held` and what the derivation takes of it: one copy per (commit, thing),
-/// chained-ness from the walk over `held`, each edge write's creation as given.
+/// The node holding `held` and what the derivation takes of it: one copy per (commit, thing).
 struct Node {
     paths: Paths,
     ev: Evidence<CommitId, Tid, Key>,
 }
 
 impl Node {
-    fn new(w: &World, held: &[Commit], trust: BTreeSet<WriteId>, creations: &BTreeMap<WriteId, (CommitId, Tid)>, unit: &[u8]) -> Node {
+    fn new(w: &World, held: &[Commit], trust: BTreeSet<WriteId>, unit: &[u8]) -> Node {
         let paths = Paths::evaluate(&w.records, trust, held);
-        let first = paths.chained();
-        let mut ev = Evidence::new(Config { keys_open: false, leaves: false });
+        let mut ev = Evidence::new(Config { keys_open: false });
         ev.add_sid(tid(D), tid(D));
         for &t in unit {
             ev.join(&tid(D), tid(t));
         }
         for c in held {
-            let start = Key { ts: c.ts, signer: c.signer, commit: c.id, part: 0 };
-            let mut by: BTreeMap<Tid, Vec<Part<CommitId, Tid, Key>>> = BTreeMap::new();
-            for (i, p) in c.parts.iter().enumerate() {
-                let hs = hops(&w.records, c, p);
-                let record = |h: &(Tid, Tid)| w.records.get(&h.1) == Some(&h.0);
-                // admin (slot 1) or write (slot 0) on each hop from a chained write of an earlier commit
-                let has = |slot: usize| hs.iter().all(|h| record(h) || first.get(h).and_then(|f| f[slot]).is_some_and(|k| k < start));
-                let (kind, chained) = match &p.kind {
+            let mut by: BTreeMap<Tid, Vec<Part<Tid, Key>>> = BTreeMap::new();
+            for p in &c.parts {
+                let kind = match &p.kind {
                     PartKind::Edge(e) => {
-                        assert!(e.value.is_none_or(|v| !v.may_grant), "no may-grant grants: the walk does not report one's chained-ness");
                         let leave = e.holder == *p.path.last().unwrap_or(&c.signer);
-                        let finalize = e.value.is_none() && e.frontier.is_none() && !leave;
-                        let role = e.value.map(|v| v.role);
-                        let wr = Write {
-                            holder: e.holder,
-                            grant: role.filter(|_| !leave).map(Gives::role),
-                            removal: role.is_none_or(|r| r < Role::Write) && !finalize,
-                            gives_write: role.is_some_and(|r| r >= Role::Write),
-                            gives_read: role.is_some_and(|r| r >= Role::Read) && !leave,
-                            creation: creations.get(&WriteId(c.id, i as u32)).copied(),
-                            leaves: vec![],
-                        };
-                        (Kind::Write(wr), if finalize { has(0) } else { has(1) })
+                        Kind::Write(Write { holder: e.holder, gives_read: e.value.is_some_and(|v| v.role >= Role::Read) && !leave })
                     }
-                    PartKind::Delta(_) => (Kind::Content, false),
+                    PartKind::Delta(_) => Kind::Content,
                     PartKind::None => continue,
                 };
-                let pos = if matches!(p.kind, PartKind::Delta(_)) { Key::start(c.ts) } else { Key { part: i as u32, ..start } };
-                // what the part needs of each hop: write for content (admin for an admin-only
-                // aspect), write for a finalize, admin for any other edge-class part
-                let need = match &p.kind {
-                    PartKind::Delta(d) => Need::Role(d.needs),
-                    PartKind::None => continue,
-                    PartKind::Edge(e) if e.value.is_none() && e.frontier.is_none() && e.holder != *p.path.last().unwrap_or(&c.signer) => Need::Role(Role::Write),
-                    _ => Need::Role(Role::Admin),
-                };
-                let hops = Some(hs.iter().map(|&edge| Hop { edge, record: record(&edge), need }).collect());
-                by.entry(p.on).or_default().push(Part { kind, hops, pos, chained });
+                by.entry(p.on).or_default().push(Part::new(kind, Some(hops(&w.records, c, p))));
             }
             for (t, parts) in by {
                 ev.add((c.id, t), parts);
@@ -169,39 +140,6 @@ impl Node {
         self.ev.check().unwrap();
         self.ev.required(&tid(D)).unwrap().keys().copied().collect()
     }
-}
-
-/// Each edge write's creation: the first chained grant on its edge before it, over everything
-/// written (the entry its reset names: a fact of the commit, the same at every node).
-fn creations(w: &World) -> BTreeMap<WriteId, (CommitId, Tid)> {
-    let p = Paths::evaluate(&w.records, BTreeSet::new(), &w.commits);
-    let first = p.chained();
-    let key = |c: &Commit, i: usize| Key { ts: c.ts, signer: c.signer, commit: c.id, part: i as u32 };
-    let mut grants: Vec<(Key, (Tid, Tid), CommitId)> = vec![];
-    for c in &w.commits {
-        for (i, part) in c.parts.iter().enumerate() {
-            if let PartKind::Edge(e) = &part.kind
-                && e.value.is_some()
-            {
-                let start = Key { part: 0, ..key(c, i) };
-                let hs = hops(&w.records, c, part);
-                if hs.iter().all(|h| w.records.get(&h.1) == Some(&h.0) || first.get(h).and_then(|f| f[1]).is_some_and(|k| k < start)) {
-                    grants.push((key(c, i), (e.holder, part.on), c.id));
-                }
-            }
-        }
-    }
-    let mut out = BTreeMap::new();
-    for c in &w.commits {
-        for (i, part) in c.parts.iter().enumerate() {
-            if let PartKind::Edge(e) = &part.kind
-                && let Some(g) = grants.iter().filter(|g| g.1 == (e.holder, part.on) && g.0 < key(c, i)).min_by_key(|g| g.0)
-            {
-                out.insert(WriteId(c.id, i as u32), (g.2, part.on));
-            }
-        }
-    }
-    out
 }
 
 /// The reader's held commits: every part on a unit thing, and each required copy's parts on its
@@ -245,13 +183,12 @@ fn verdicts(w: &World, p: &Paths, unit: &[u8], ids: Option<&BTreeMap<WriteId, Wr
 /// The writer holds everything; D's reader holds D's bodies and the copies the writer's derivation
 /// requires: each body judged alike. Returns the required copies and the writer's verdicts.
 fn reader_agrees(w: &World, unit: &[u8], trust: &[WriteId]) -> (BTreeSet<CopyId<CommitId, Tid>>, BTreeMap<WriteId, String>) {
-    let cr = creations(w);
     let trust: BTreeSet<WriteId> = trust.iter().copied().collect();
-    let writer = Node::new(w, &w.commits, trust.clone(), &cr, unit);
+    let writer = Node::new(w, &w.commits, trust.clone(), unit);
     let req = writer.required();
     let (held, ids) = reader_set(w, unit, &req);
     let rtrust = trust.iter().filter_map(|t| ids.get(t).copied()).collect();
-    let reader = Node::new(w, &held, rtrust, &cr, unit);
+    let reader = Node::new(w, &held, rtrust, unit);
     let wv = verdicts(w, &writer.paths, unit, None);
     let rv = verdicts(w, &reader.paths, unit, Some(&ids));
     assert_eq!(wv, rv, "required {req:?}");
@@ -369,27 +306,27 @@ fn a_split_commits_part_on_another_thing_is_neither_held_nor_required_spec_permi
 }
 
 /// A node trusting a write no chain gives authority (Z, a writer, removing K on A): the walk leaves
-/// it void, so it moves no verdict; it is no copy (unchained), and a reader not holding it, its
-/// trust in it moot, judges as the writer. Trust never reaches evidence: only writes some walk
-/// applies change verdicts under a trust set, and those are chained.
+/// it void, so it moves no verdict. Under E1 it is a copy (an edge write on K's path edge, whatever
+/// its validity), with its own evidence (X's grant to Z), and the reader holding them, trusting it
+/// too, judges as the writer: trust never reaches evidence.
 #[test]
-fn a_trusted_write_no_chain_gives_authority_is_void_and_no_copy_spec_permissions_4() {
+fn a_trusted_void_write_on_a_path_edge_is_a_copy_and_moves_no_verdict_spec_permissions_4() {
     let mut w = World::new(&[(X, A), (Y, D)]);
     w.set(1, Y, D, A, Some(Role::Write), &[]);
     let gk = w.set(1, X, A, K, Some(Role::Write), &[]);
-    w.set(1, X, A, Z, Some(Role::Write), &[]);
+    let gz = w.set(1, X, A, Z, Some(Role::Write), &[]);
     let junk = w.set(2, Z, A, K, None, &[]);
     let ck = w.content(3, K, &[A], D);
     let (req, wv) = reader_agrees(&w, &[D], &[WriteId(junk, 0)]);
-    assert_eq!(req, BTreeSet::from([(gk, tid(A))]));
+    assert_eq!(req, BTreeSet::from([(gk, tid(A)), (gz, tid(A)), (junk, tid(A))]));
     assert_eq!(wv[&WriteId(ck, 0)], valid());
     let p = Paths::evaluate(&w.records, BTreeSet::from([WriteId(junk, 0)]), &w.commits);
     assert!(p.void_trusted().contains(&WriteId(junk, 0)));
 }
 
 /// Finding 9 under the walk: X removes K and Q from A in one commit; K writes D through [A]. D's
-/// evidence holds the removal (on K's edge) and the creation of Q's entry its other part resets
-/// (X's grant to Q, on no stated path); the reader holding them judges as the writer. The wait
+/// evidence holds the removal (on K's edge) and every write on the edges it writes, the creation
+/// of Q's entry its other part resets among them (X's grant to Q, on no stated path); the reader holding them judges as the writer. The wait
 /// itself (a removal applies only once each reset entry's creation is held, spec/permissions.md §2)
 /// is the engine's (`apply::validity`), not the walk's: its engine test is owed
 /// (notes/evidence-derivation.md, Left).

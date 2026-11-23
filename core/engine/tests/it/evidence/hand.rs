@@ -4,13 +4,13 @@
 use super::*;
 use held_model::evidence::names::*;
 use held_model::evidence::State;
-use osis_engine::evidence::{Gives, Need, Reason};
+use osis_engine::evidence::Reason;
 use roles_model::paths::Kind as PKind;
 
-/// The derivation over `held` of the end state of `w`'s run under (iv).
+/// The derivation over `held` of the end state of `w`'s run under the spec's rule.
 fn at_end(w: &World, held: impl Fn(&State) -> Set) -> (Driver, State) {
     let mut w = w.clone();
-    let rule = granted(&mut w);
+    let rule = e1(&mut w);
     let st = w.run(&rule, |_| {});
     let mut d = Driver::new(&w, false);
     d.step(&w, &held(&st), &st.units);
@@ -18,7 +18,7 @@ fn at_end(w: &World, held: impl Fn(&State) -> Set) -> (Driver, State) {
 }
 
 /// D's reader at the end: its required copies with their reasons.
-fn reader_of(w: &World, s: Thing) -> BTreeMap<CopyId<Id, Thing>, Reason<Id, Thing>> {
+fn reader_of(w: &World, s: Thing) -> BTreeMap<CopyId<Id, Thing>, Reason<Thing, Key>> {
     let (d, _) = at_end(w, |st| st.entries[&s].clone());
     d.ev.required(&s).cloned().unwrap_or_default()
 }
@@ -36,7 +36,7 @@ fn base() -> (World, [usize; 4]) {
 
 /// Finding 9 (`f9_a_removal_of_two_holders_waits_for_each_creation`): X removes K and Q from A in
 /// one commit C; K writes D after it. C is on K's edge; the creation of Q's entry (X's grant to Q),
-/// on no stated path, is in D's evidence for C's reset.
+/// on no stated path, is in D's evidence: a copy brings every edge write on the edges it writes.
 #[test]
 fn f9_the_creation_a_reset_names_is_evidence_spec_permissions_2() {
     let (mut w, [x, _, _, _]) = base();
@@ -47,7 +47,7 @@ fn f9_the_creation_a_reset_names_is_evidence_spec_permissions_2() {
     assert_agrees("f9", &w);
     let req = reader_of(&w, D);
     assert!(req.contains_key(&(c[0], A)), "{req:?}");
-    assert_eq!(req.get(&(gq, A)), Some(&Reason::Creation((c[0], A))), "{req:?}");
+    assert_eq!(req.get(&(gq, A)), Some(&Reason::Edge((Q, A))), "{req:?}");
 }
 
 const M1: Thing = 30;
@@ -55,10 +55,11 @@ const M2: Thing = 31;
 const V: Thing = 32;
 
 /// Finding 11 (b) (`f11_a_stated_path_no_grant_joins_leaks_a_roster_unless_paths_must_be_joined`):
-/// K states [M1, M2, A] for its write on D, M2 holding nothing on A: the path is not joined, so it
-/// brings nothing, and V's grant of M1 on M2 is not copied under D at U (P9).
+/// K states [M1, M2, A] for its write on D, M2 holding nothing on A: under E1 the path's edges bring
+/// their writes whatever joins them, so V's grant of M1 on M2 is a copy under D at U (the roster
+/// leak P9 that E1 accepts: notes/a2-spec/README.md Open 2).
 #[test]
-fn f11_a_path_no_chained_grant_joins_brings_nothing_spec_permissions_4() {
+fn f11_an_unjoined_path_still_brings_its_edges_writes_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (Y, D), (V, M1), (V, M2)]);
     let mut w = World::new(pw, &[A, D, M1, M2]);
     let (y, v, u, k) = (w.node(true, &[D]), w.node(true, &[M1, M2]), w.node(true, &[M2, D]), w.node(false, &[]));
@@ -68,29 +69,31 @@ fn f11_a_path_no_chained_grant_joins_brings_nothing_spec_permissions_4() {
     w.write(k, |p| p.content(K, 2, &[M1, M2, A], D));
     assert_agrees("f11", &w);
     let (d, _) = at_end(&w, |st| st.held[u].clone());
-    assert!(d.held.contains_key(&(gm, M2)));
-    assert_eq!(d.ev.required(&D).unwrap(), &BTreeMap::new());
+    assert_eq!(d.ev.required(&D).unwrap().get(&(gm, M2)), Some(&Reason::Edge((M1, M2))));
 }
 
 /// Finding 13 (`f13_a_path_set_only_by_junk_waits_at_the_reader_where_the_draft_refuses`): Q writes
-/// D through [A] where (Q, A) holds only K's junk grant: the junk is no copy (P10), and the path
-/// it does not join brings nothing.
+/// D through [A] where (Q, A) holds only K's junk grant: under E1 the junk is a copy (P10, Open 2),
+/// and with it its own evidence, X's grant to K on the junk's path.
 #[test]
-fn f13_junk_on_a_path_edge_is_no_copy_spec_permissions_4() {
-    let (mut w, [_, y, k, q]) = base();
+fn f13_junk_on_a_path_edge_is_a_copy_spec_permissions_4() {
+    let pw = paths::World::new(&[(X, A), (Y, D)]);
+    let mut w = World::new(pw, &[A, D]);
+    let [x, y, k, q] = [w.node(true, &[A]), w.node(true, &[D]), w.node(false, &[A]), w.node(true, &[A])];
+    let gk = w.write(x, |p| p.edge(X, 1, &[], A, K, Role::Write, &[]));
+    w.write(y, |p| p.edge(Y, 1, &[], D, A, Role::Write, &[]));
     let junk = w.write(k, |p| p.edge(K, 2, &[], A, Q, Role::Admin, &[]));
     w.write(q, |p| p.content(Q, 3, &[A], D));
     assert_agrees("f13", &w);
-    let (d, _) = at_end(&w, |st| st.held[q].iter().chain(&st.held[y]).copied().collect());
-    assert!(d.held.contains_key(&(junk, A)));
-    assert_eq!(d.ev.required(&D).unwrap(), &BTreeMap::new());
+    let (d, _) = at_end(&w, |st| st.held[q].iter().chain(&st.held[y]).chain(&st.held[k]).copied().collect());
+    assert_eq!(d.ev.required(&D).unwrap().keys().copied().collect::<Copies>(), Copies::from([(junk, A), (gk, A)]));
 }
 
 /// Finding 14 (`f14_a_dropped_grant_is_read_by_the_regrant_so_applied_only_strands_a_write`): Q's
-/// grant to K (g1), dropped by X's removal of Q, is chained: D's evidence holds it (the re-grant
-/// reads it), on the edge K's write uses.
+/// grant to K (g1), dropped by X's removal of Q: D's evidence holds it (the re-grant reads it), on
+/// the edge K's write uses.
 #[test]
-fn f14_a_dropped_chained_grant_is_evidence_spec_permissions_4() {
+fn f14_a_dropped_grant_is_evidence_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
     let mut w = World::new(pw, &[A, D]);
     let (x, y, q, k) = (w.node(true, &[A]), w.node(true, &[D]), w.node(true, &[A]), w.node(true, &[A]));
@@ -107,10 +110,9 @@ fn f14_a_dropped_chained_grant_is_evidence_spec_permissions_4() {
 }
 
 /// Finding 15 (`f15_a_writers_finalizes_and_a_may_grant_holders_grants_are_chained_and_copied`): a
-/// writer's finalizes on a used edge are chained, each a copy (27 more for 27 more); a
-/// may-grant holder's grants likewise. OPEN 10's junk (`open10_junk_by_a_non_admin_adds_no_copy_but_under_the_draft`):
-/// a non-admin's grants are none; an admin's (`open10_an_admins_writes_on_a_used_edge_are_copies_in_every_variant`)
-/// each one.
+/// writer's finalizes on a used edge are each a copy (27 more for 27 more); an inviter's invite
+/// grants likewise; under E1 a non-admin's junk too (`open10_junk_by_a_non_admin_adds_no_copy_but_under_the_draft`,
+/// P10, Open 2), and an admin's writes (`open10_an_admins_writes_on_a_used_edge_are_copies_in_every_variant`).
 #[test]
 fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
     let copies = |w: &World| reader_of(w, D).len();
@@ -125,7 +127,7 @@ fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
         copies(&w)
     };
     assert_eq!(finalizes(30) - finalizes(3), 27);
-    let may_grants = |n: u32| {
+    let invites = |n: u32| {
         let (mut w, [x, _, k, q]) = base();
         w.write(x, |p| p.push(X, 1, &[], A, PKind::set(K, Role::Write).may_grant()));
         w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
@@ -135,7 +137,7 @@ fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
         w.write(q, |p| p.content(Q, 2 + n, &[A], D));
         copies(&w)
     };
-    assert_eq!(may_grants(30) - may_grants(3), 27);
+    assert_eq!(invites(30) - invites(3), 27);
     let junk = |n: u32| {
         let (mut w, [x, _, k, q]) = base();
         w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
@@ -146,7 +148,7 @@ fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
         assert_agrees("junk", &w);
         copies(&w)
     };
-    assert_eq!(junk(30), junk(3));
+    assert_eq!(junk(30) - junk(3), 27);
     let admin = |n: u32| {
         let (mut w, [x, _, _, q]) = base();
         for i in 0..n {
@@ -183,15 +185,14 @@ fn split_a_part_on_another_thing_brings_nothing_spec_permissions_4() {
 
 /// P4 (`p4_evidence_leaves_with_the_last_commit_that_needed_it`): Q writes D twice through
 /// [A]; forgetting the first keeps X's grant to Q, forgetting the second takes it out of D's
-/// evidence, incrementally as from scratch, as the model. (The family's world keeps K's grant
-/// under (iv): the listed removal's reset names it as its entry's creation.)
+/// evidence, incrementally as from scratch, as the model.
 #[test]
 fn p4_a_copy_leaves_with_the_last_body_that_needed_it_spec_permissions_4() {
     let (mut w, [x, _, _, q]) = base();
     let gq = w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
     let c0 = w.write(q, |p| p.content(Q, 2, &[A], D));
     let c1 = w.write(q, |p| p.content(Q, 3, &[A], D));
-    let rule = granted(&mut w);
+    let rule = e1(&mut w);
     let mut st = w.run(&rule, |_| {});
     let mut d = Driver::new(&w, false);
     d.step(&w, &st.entries[&D], &st.units);
@@ -214,7 +215,7 @@ fn f2_a_retag_turns_what_bodies_still_need_into_copies_spec_permissions_4() {
     (sh.via_org, sh.units, sh.listed) = (true, 4, true);
     let mut w = hm::family(sh);
     assert_agrees("f2", &w);
-    let rule = granted(&mut w);
+    let rule = e1(&mut w);
     let go = (0..w.w.commits.len()).find(|&i| w.w.sets(i) == Some((A, O))).unwrap();
     let mut d = Driver::new(&w, false);
     let mut seen = vec![];
@@ -268,103 +269,82 @@ fn the_models_other_hand_worlds_agree_spec_permissions_4() {
     assert_agrees("risk3", &w);
 }
 
-/// The derivation's own (finding 8, notes/path-form.md): a body whose path entry has not opened
-/// here brings nothing; its opening brings the path's edges, and a chained grant arriving later
-/// joins it. Each step incremental equals from scratch.
-#[test]
-fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
-    type E = Evidence<u32, Thing, u32>;
-    let mut ev = E::new(Config { keys_open: false, leaves: false });
-    let check = |ev: &E| {
-        let inc: Copies32 = ev.required(&D).unwrap().keys().copied().collect();
-        ev.check().unwrap();
-        inc
-    };
-    type Copies32 = BTreeSet<CopyId<u32, Thing>>;
-    ev.add_sid(D, D);
-    ev.join(&D, D);
-    let write = |holder: Thing| Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, creation: None, leaves: vec![] });
-    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
-    let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false, need: Need::Role(osis_base::Role::Write) };
-    // Y grants A write on D (a body); K writes D along [A], its path waiting; X grants K on A
-    // before the write
-    ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
-    ev.add((5, D), vec![Part { kind: Kind::Content, hops: None, pos: 5, chained: false }]);
-    assert_eq!(check(&ev), Copies32::new());
-    ev.add((2, A), vec![Part { kind: write(K), hops: Some(vec![rec(X, A)]), pos: 2, chained: true }]);
-    assert_eq!(check(&ev), Copies32::new());
-    // the path opens onto a joined path
-    ev.open_path(&(5, D), 0, vec![hop(K, A), hop(A, D)]);
-    assert_eq!(check(&ev), Copies32::from([(2, A)]));
-    assert_eq!(ev.required(&D).unwrap().get(&(2, A)), Some(&Reason::Edge((K, A))));
-    ev.forget(&(2, A));
-    assert_eq!(check(&ev), Copies32::new());
-    // a second write's path opens with no grant on (K, A): not joined; a grant ordered between
-    // the two writes joins the later one only
-    ev.add((9, D), vec![Part { kind: Kind::Content, hops: None, pos: 9, chained: false }]);
-    ev.open_path(&(9, D), 0, vec![hop(K, A), hop(A, D)]);
-    assert_eq!(check(&ev), Copies32::new());
-    ev.add((7, A), vec![Part { kind: write(K), hops: Some(vec![rec(X, A)]), pos: 7, chained: true }]);
-    assert_eq!(check(&ev), Copies32::from([(7, A)]));
+type E = Evidence<u32, Thing, u32>;
+type Copies32 = BTreeSet<CopyId<u32, Thing>>;
+
+/// D's required copies, checked incremental against from scratch.
+fn req32(ev: &E) -> Copies32 {
+    ev.check().unwrap();
+    ev.required(&D).unwrap().keys().copied().collect()
 }
 
-/// The derivation's own: a path is joined by the first chained grant on each edge (a later one
-/// joins nothing), and a member copy forgotten leaves though no body's joined-ness moves. Each
-/// step incremental equals from scratch.
-#[test]
-fn the_first_grant_joins_and_a_forgotten_member_leaves_spec_permissions_4() {
-    type E = Evidence<u32, Thing, u32>;
-    type Copies32 = BTreeSet<CopyId<u32, Thing>>;
-    let check = |ev: &E| {
-        let inc: Copies32 = ev.required(&D).unwrap().keys().copied().collect();
-        ev.check().unwrap();
-        inc
-    };
-    let write = |holder: Thing| Kind::Write(Write { holder, grant: Some(Gives::role(osis_base::Role::Write)), removal: false, gives_write: true, gives_read: true, creation: None, leaves: vec![] });
-    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
-    let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false, need: Need::Role(osis_base::Role::Write) };
-    let mut ev = E::new(Config { keys_open: false, leaves: false });
+fn write(holder: Thing) -> Kind<Thing> {
+    Kind::Write(Write { holder, gives_read: true })
+}
+
+/// A sync ID D with D in its unit, keys-open travel as given.
+fn d_unit(keys_open: bool) -> E {
+    let mut ev = E::new(Config { keys_open });
     ev.add_sid(D, D);
     ev.join(&D, D);
-    ev.add((1, D), vec![Part { kind: write(A), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
-    ev.add((2, A), vec![Part { kind: write(K), hops: Some(vec![rec(X, A)]), pos: 2, chained: true }]);
-    ev.add((8, A), vec![Part { kind: write(K), hops: Some(vec![rec(X, A)]), pos: 8, chained: true }]);
-    ev.add((5, D), vec![Part { kind: Kind::Content, hops: Some(vec![hop(K, A), hop(A, D)]), pos: 5, chained: false }]);
-    assert_eq!(check(&ev), Copies32::from([(2, A), (8, A)]));
-    ev.forget(&(8, A));
-    assert_eq!(check(&ev), Copies32::from([(2, A)]));
+    ev
+}
+
+/// The derivation's own (finding 8, notes/path-form.md): a body whose path entry has not opened
+/// here brings nothing; its opening brings the path's edges' writes, whatever their order. Each
+/// step incremental equals from scratch.
+#[test]
+fn a_body_whose_path_waits_brings_nothing_until_it_opens_spec_permissions_4() {
+    let mut ev = d_unit(false);
+    // Y grants A write on D (a body); K writes D along [A], its path waiting; X grants K on A
+    ev.add((1, D), vec![Part::new(write(A), Some(vec![(Y, D)]))]);
+    ev.add((5, D), vec![Part::new(Kind::Content, None)]);
+    ev.add((2, A), vec![Part::new(write(K), Some(vec![(X, A)]))]);
+    assert_eq!(req32(&ev), Copies32::new());
+    ev.open_path(&(5, D), 0, vec![(K, A), (A, D)]);
+    assert_eq!(req32(&ev), Copies32::from([(2, A)]));
+    assert_eq!(ev.required(&D).unwrap().get(&(2, A)), Some(&Reason::Edge((K, A))));
+    // a write on the edge ordered after the body is taken too, and a forgotten member leaves
+    ev.add((7, A), vec![Part::new(write(K), Some(vec![(X, A)]))]);
+    assert_eq!(req32(&ev), Copies32::from([(2, A), (7, A)]));
+    ev.forget(&(2, A));
+    assert_eq!(req32(&ev), Copies32::from([(7, A)]));
+}
+
+/// A member brings every write on each edge it writes (finding 9's clause under E1): X's commit
+/// on A removes K and Q; K's write on D through [A] brings it, and with it X's grant to Q (the
+/// entry it resets), arriving before or after.
+#[test]
+fn a_member_brings_the_writes_on_the_edges_it_writes_spec_permissions_4() {
+    let mut ev = d_unit(false);
+    ev.add((3, D), vec![Part::new(Kind::Content, Some(vec![(K, A), (A, D)]))]);
+    ev.add((5, A), vec![Part::new(write(K), Some(vec![(X, A)])), Part::new(write(Q), Some(vec![(X, A)]))]);
+    assert_eq!(req32(&ev), Copies32::from([(5, A)]));
+    ev.add((1, A), vec![Part::new(write(Q), Some(vec![(X, A)]))]);
+    assert_eq!(req32(&ev), Copies32::from([(1, A), (5, A)]));
+    assert_eq!(ev.required(&D).unwrap().get(&(1, A)), Some(&Reason::Edge((Q, A))));
 }
 
 /// A removal reaches a far thing only with a write it judges there: X removes K on A while A writes
 /// D (Y's grant). With no body of D resting on K's edge, D requires nothing of A; K's write on D
-/// through [A] (before the removal) brings the removal and the grant it ends.
+/// through [A] brings the removal and the grant it ends.
 #[test]
 fn a_removal_is_evidence_only_where_a_body_rests_on_its_edge_spec_permissions_4() {
-    type E = Evidence<u32, Thing, u32>;
-    let rec = |a: Thing, b: Thing| Hop { edge: (a, b), record: true, need: Need::Role(osis_base::Role::Write) };
-    let hop = |a: Thing, b: Thing| Hop { edge: (a, b), record: false, need: Need::Role(osis_base::Role::Write) };
-    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, grant: grant.then(|| Gives::role(osis_base::Role::Write)), removal: !grant, gives_write: grant, gives_read: grant, creation: None, leaves: vec![] });
-    let mut ev = E::new(Config { keys_open: true, leaves: false });
-    ev.add_sid(D, D);
-    ev.join(&D, D);
-    ev.add((1, D), vec![Part { kind: w(A, true), hops: Some(vec![rec(Y, D)]), pos: 1, chained: true }]);
-    ev.add((2, A), vec![Part { kind: w(K, true), hops: Some(vec![rec(X, A)]), pos: 2, chained: true }]);
-    ev.add((5, A), vec![Part { kind: w(K, false), hops: Some(vec![rec(X, A)]), pos: 5, chained: true }]);
-    ev.check().unwrap();
-    assert!(ev.required(&D).unwrap().is_empty(), "{:?}", ev.required(&D));
-    ev.add((3, D), vec![Part { kind: Kind::Content, hops: Some(vec![hop(K, A), hop(A, D)]), pos: 3, chained: false }]);
-    ev.check().unwrap();
-    let req: BTreeSet<CopyId<u32, Thing>> = ev.required(&D).unwrap().keys().copied().collect();
-    assert_eq!(req, BTreeSet::from([(2, A), (5, A)]));
+    let w = |holder: Thing, grant: bool| Kind::Write(Write { holder, gives_read: grant });
+    let mut ev = d_unit(true);
+    ev.add((1, D), vec![Part::new(w(A, true), Some(vec![(Y, D)]))]);
+    ev.add((2, A), vec![Part::new(w(K, true), Some(vec![(X, A)]))]);
+    ev.add((5, A), vec![Part::new(w(K, false), Some(vec![(X, A)]))]);
+    assert!(req32(&ev).is_empty(), "{:?}", ev.required(&D));
+    ev.add((3, D), vec![Part::new(Kind::Content, Some(vec![(K, A), (A, D)]))]);
+    assert_eq!(req32(&ev), Copies32::from([(2, A), (5, A)]));
 }
 
 /// Finding 23 (held-model `gaps_a_write_through_a_read_hop_pends_at_a_reader_lacking_the_read_grant`):
-/// the stolen K writes R through [A, O], A holding only read on O. A hop joins a part only by a
-/// grant giving what the part needs there (write for content), so at a node holding everything
-/// the path is not joined and R's evidence takes nothing of it: no copy of X's grant to K, nor of
-/// W's read grant. Read as joined by any grant, both would be copies.
+/// the stolen K writes R through [A, O], A holding only read on O. Under E1 the path's edges bring
+/// their writes whatever they give: X's grant to K and W's read grant are both copies.
 #[test]
-fn f23_a_read_hop_joins_no_write_spec_permissions_4() {
+fn f23_a_read_hop_brings_its_writes_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (W, O), (Y, R)]);
     let mut w = World::new(pw, &[A, O, R]);
     let (x, wn, y, k) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[R]), w.node(false, &[]));
@@ -372,9 +352,8 @@ fn f23_a_read_hop_joins_no_write_spec_permissions_4() {
     let ga = w.write(wn, |p| p.edge(W, 1, &[], O, A, Role::Read, &[]));
     w.write(y, |p| p.edge(Y, 1, &[], R, O, Role::Write, &[]));
     w.write(k, |p| p.content(K, 5, &[A, O], R));
-    w.join = Join::Needed;
     assert_agrees("f23", &w);
     let (d, _) = at_end(&w, |st| st.written.clone());
     let req = d.ev.required(&R).cloned().unwrap_or_default();
-    assert!(!req.contains_key(&(gk, A)) && !req.contains_key(&(ga, O)), "{req:?}");
+    assert!(req.contains_key(&(gk, A)) && req.contains_key(&(ga, O)), "{req:?}");
 }

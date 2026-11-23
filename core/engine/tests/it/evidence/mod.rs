@@ -1,29 +1,26 @@
-//! The evidence derivation (`osis_engine::evidence`, notes/evidence-derivation.md; spec/permissions.md
-//! §4, and notes/a3-spec/permissions.md for A3) against
-//! held-model `evidence` (`World::req` under OPEN 10's (iv), `Open10::Granted`, entry creations
-//! on, keys-open travel on: `Stage::A2`), the oracle: at every step of a world, for every node's
-//! held set and every sync ID's held entries, under every sync ID, the copies the derivation keeps
-//! incrementally and computes from scratch equal the model's required copies. The derivation's
-//! leaves (`Config::leaves`) have no oracle: held-model carries a lowering's list whole
-//! (notes/write-path-design.md §2, E4), and the leaves go at A3 (notes/redesign-plan.md). Hand
-//! worlds per model test naming a rule or finding (keys-open travel's in `travel.rs`, the leaves'
-//! own in `a3.rs`); the derivation's own (a waiting path entry); count tests.
-use held_model::evidence::{self as hm, Join, Open10, Rule, Shape, Stage, World};
-use osis_engine::evidence::{Config, CopyId, Evidence, Gives, Hop, Kind, Need, Part, Write};
+//! The evidence derivation (`osis_engine::evidence`, notes/evidence-derivation.md;
+//! spec/permissions.md §4) against held-model `evidence` (`World::req` under `Stage::E1`: the
+//! drafted closure, pending on any write, keys-open travel on), the oracle: at every step of a
+//! world, for every node's held set and every sync ID's held entries, under every sync ID, the
+//! copies the derivation keeps incrementally and computes from scratch equal the model's required
+//! copies. Hand worlds per model test naming a rule or finding (keys-open travel's in
+//! `travel.rs`); the derivation's own (a waiting path entry, delete-key steps); count tests.
+use held_model::evidence::{self as hm, Rule, Shape, Stage, World};
+use osis_engine::evidence::{Config, CopyId, Evidence, Kind, Part, Write};
 use roles_model::paths::{self, Id, Key, Rules, Set, Thing, Things};
 use roles_model::Role;
 use std::collections::{BTreeMap, BTreeSet};
 
-mod a3;
 mod counts;
 mod hand;
+mod steps;
 mod travel;
 mod walk;
 
 type Ev = Evidence<Id, Thing, Key>;
 type Copies = BTreeSet<CopyId<Id, Thing>>;
 /// Held copies with their parts as the derivation takes them.
-type HeldCopies = BTreeMap<CopyId<Id, Thing>, Vec<Part<Id, Thing, Key>>>;
+type HeldCopies = BTreeMap<CopyId<Id, Thing>, Vec<Part<Thing, Key>>>;
 
 /// The model's rule as the derivation is built: no carried-demotion seed.
 // Interim (issues/engine-evidence-trails-model.md): goes when the derivation builds the keyset seed
@@ -31,61 +28,20 @@ fn derived() -> Rule {
     Rule { keysets: false, ..Rule::fixed() }
 }
 
-/// `w` set to (iv) with entry creations.
-fn granted(w: &mut World) -> Rule {
+/// `w` set to the spec's rule (`Stage::E1`).
+fn e1(w: &mut World) -> Rule {
     w.rules = Rules::fixed();
-    Open10::Granted.set(w, derived())
+    Stage::E1.set(w, derived())
 }
 
-/// `w` set to A2's rule (`Stage::A2`: (iv), keys-open travel, no leaves).
-fn a2(w: &mut World) -> Rule {
-    w.rules = Rules::fixed();
-    Stage::A2.set(w, derived())
-}
-
-/// Part `i` of the model's world as the derivation's input, over held set `h` whose chained
-/// writes are `ch`.
-fn part(w: &World, ch: &Set, i: Id) -> Part<Id, Thing, Key> {
+/// Part `i` of the model's world as the derivation's input.
+fn part(w: &World, i: Id) -> Part<Thing, Key> {
     let pw = &w.w;
-    let c = &pw.commits[i];
-    let kind = match &c.kind {
-        paths::Kind::Edge { holder, role, may_grant, .. } => Kind::Write(Write {
-            holder: *holder,
-            grant: w.grant(i).then(|| Gives { role: level(*role), may_grant: (*role == Role::Admin || *may_grant).then(|| level(*role)) }),
-            removal: w.removes(i).is_some(),
-            gives_write: *role >= Role::Write,
-            gives_read: *role >= Role::Read && !pw.leave(i),
-            creation: w.creation(i).map(|j| (pw.cid(j), pw.commits[j].on)),
-            leaves: vec![],
-        }),
-        paths::Kind::Addendum { removal, list } => Kind::Addendum { edge: pw.sets(*removal).expect("an addendum against an edge write"), lists: list.iter().map(|&j| (pw.cid(j), pw.commits[j].on)).collect() },
+    let kind = match &pw.commits[i].kind {
+        paths::Kind::Edge { holder, role, .. } => Kind::Write(Write { holder: *holder, gives_read: *role >= Role::Read && !pw.leave(i) }),
         _ => Kind::Content,
     };
-    let hops = pw.hops(i).iter().map(|&edge| Hop { edge, record: pw.records.contains(&edge), need: need(w, i, edge) }).collect();
-    let pos = if pw.edge_class(i) { pw.key(i) } else { pw.pos(i) };
-    Part { kind, hops: Some(hops), pos, chained: ch.contains(&i) }
-}
-
-/// The engine's role for a model role above none.
-fn level(r: Role) -> osis_base::Role {
-    match r {
-        Role::None => panic!("no grant gives none"),
-        Role::Read => osis_base::Role::Read,
-        Role::Write => osis_base::Role::Write,
-        Role::Admin => osis_base::Role::Admin,
-    }
-}
-
-/// What part `i` needs of hop `e` as the model's `Join` reads it: under `Join::Needed` its least
-/// need (`World::need`), else any grant (every grant gives read).
-fn need(w: &World, i: Id, e: paths::Edge) -> Need {
-    if w.join != Join::Needed {
-        return Need::Role(osis_base::Role::Read);
-    }
-    match w.need(i, e) {
-        (r, true) => Need::MayGrant(level(r)),
-        (r, false) => Need::Role(level(r)),
-    }
+    Part::new(kind, Some(pw.hops(i).to_vec()))
 }
 
 /// The held copies of `h` with their held parts in id order.
@@ -114,12 +70,7 @@ struct Driver {
 
 impl Driver {
     fn new(w: &World, keys_open: bool) -> Driver {
-        Driver::with(w, Config { keys_open, leaves: false })
-    }
-
-    /// The derivation with its leaves on (`a3.rs`).
-    fn a3(w: &World) -> Driver {
-        Driver::with(w, A3)
+        Driver::with(w, Config { keys_open })
     }
 
     fn with(w: &World, cfg: Config) -> Driver {
@@ -133,23 +84,14 @@ impl Driver {
         Driver { ev, held: BTreeMap::new(), units: w.sids.iter().map(|&s| (s, Things::new())).collect() }
     }
 
-    /// Moves the derivation to held set `h` and units `units`: new copies, chained flips,
-    /// forgotten copies, retags.
+    /// Moves the derivation to held set `h` and units `units`: new copies, forgotten copies,
+    /// retags.
     fn step(&mut self, w: &World, h: &Set, units: &BTreeMap<Thing, Things>) {
-        let ch = w.chained(h);
-        let now: HeldCopies = copies_of(w, h).into_iter().map(|(c, ids)| (c, ids.iter().map(|&i| part(w, &ch, i)).collect())).collect();
+        let now: HeldCopies = copies_of(w, h).into_iter().map(|(c, ids)| (c, ids.iter().map(|&i| part(w, i)).collect())).collect();
         for (c, parts) in &now {
-            match self.held.get(c) {
-                None => self.ev.add(*c, parts.clone()),
-                // other parts held (the model's per-part events): taken again
-                Some(old) if old.len() != parts.len() || old.iter().zip(parts).any(|(a, b)| a.kind != b.kind || a.hops != b.hops || a.pos != b.pos) => self.ev.add(*c, parts.clone()),
-                Some(old) => {
-                    for (i, (a, b)) in old.iter().zip(parts).enumerate() {
-                        if a.chained != b.chained {
-                            self.ev.set_chained(c, i, b.chained);
-                        }
-                    }
-                }
+            // other parts held (the model's per-part events): taken again
+            if self.held.get(c) != Some(parts) {
+                self.ev.add(*c, parts.clone());
             }
         }
         // forgotten together, as a compaction drops its bodies
@@ -178,9 +120,6 @@ fn model_copies(w: &World, rule: &Rule, s: Thing, units: &BTreeMap<Thing, Things
     w.req(rule, s, units, h).into_iter().filter(|&i| !units[&s].contains(&w.on(i))).map(|i| (w.w.cid(i), w.on(i))).collect()
 }
 
-/// A3's configuration: keys-open travel (Role changes travel whole, finding 31) and leaves.
-const A3: Config = Config { keys_open: true, leaves: true };
-
 /// What a run compared: disagreements, comparisons where the model required some copy; held sets
 /// splitting a copy (not compared).
 #[derive(Default)]
@@ -198,13 +137,13 @@ impl Run {
     }
 }
 
-/// Every disagreement over the run of `w` under A2's rule: per step, per node (its held set) and
+/// Every disagreement over the run of `w` under the spec's rule: per step, per node (its held set) and
 /// per sync ID's reader (its entries), for every sync ID, the derivation's copies against the
 /// model's.
 fn differ(w: &World) -> Run {
     let mut out = Run::default();
     let mut w = w.clone();
-    let rule = a2(&mut w);
+    let rule = e1(&mut w);
     let w = &w;
     let mut nodes: Vec<Driver> = (0..w.nodes.len()).map(|_| Driver::new(w, true)).collect();
     let mut readers: BTreeMap<Thing, Driver> = w.sids.iter().map(|&s| (s, Driver::new(w, true))).collect();

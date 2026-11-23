@@ -21,7 +21,7 @@ By draft section, what the design changes. Spec text is rewritten from this afte
 | commits §4 Provisional, last sentence | stands |
 | wire §4 field 12 as a list root, the leaf, the leaf blob | go: field 12 stands as built |
 
-Goes with the leaf form outside the drafts: the engine's leaves derivation (notes/evidence-derivation.md, Leaves; built unused, its tests ignored), osis-commit's unused leaf encoding if any landed.
+Goes with the leaf form outside the drafts: osis-commit's unused leaf encoding if any landed.
 
 ## Far delivery
 A removal reaches a thing other than its own as today (decided, Tess: no eager delivery): with that thing's next key rotation by a writer holding it (its keyset carries the demotion: spec/crypto.md §4 Carried demotions), and wherever a node holds both the removal and a write it judges (the removal is on the write's path, so in the evidence of the write's sync IDs). Nothing logs a removal anywhere for its own sake. Where neither happens (a thing no remaining member writes, its readers served only by stores), its readers show the removed key's later writes there: an open bug in an issue, not something to build around.

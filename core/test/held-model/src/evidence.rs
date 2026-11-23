@@ -256,8 +256,8 @@ impl Open10 {
 /// closure and judge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
-    /// The design (lazy delivery, notes/write-path-design.md §2 D1 to D3) and the derivation as
-    /// built (`osis_engine::evidence`): Role changes travel whole.
+    /// The design (lazy delivery, notes/write-path-design.md §2 D1 to D3): Role changes travel
+    /// whole.
     A2,
     /// The actor seed alone (Role changes travel's keys-open half left out).
     A2Actor,
@@ -267,6 +267,11 @@ pub enum Stage {
     Today,
     /// Brief 3 with today's any-path chains kept for removals alone (`Rule::author_reach`).
     A2AuthorReach,
+    /// The spec as written (notes/a2-spec/README.md Open 2: E1): the drafted closure (every edge
+    /// write on a stated path's edges and on the edges its commit sets), pending on any write,
+    /// Role changes travel whole; the engine's derivation (`osis_engine::evidence`). Not in `ALL`:
+    /// it gives up P9 and P10 (Open 2).
+    E1,
 }
 
 impl Stage {
@@ -277,16 +282,21 @@ impl Stage {
             Stage::A2Actor => "a2-actor",
             Stage::Today => "today",
             Stage::A2AuthorReach => "a2-author-reach",
+            Stage::E1 => "e1",
         }
     }
-    /// `rule` under (iv) with this stage's delivery; `w` judging as (iv).
+    /// `rule` under (iv) with this stage's delivery, `w` judging as (iv); `E1` under (i).
     pub fn set(self, w: &mut World, rule: Rule) -> Rule {
+        if self == Stage::E1 {
+            return Rule { keys_open: true, ..Open10::Drafted.set(w, rule) };
+        }
         let r = Rule { keys_open: true, ..Open10::Granted.set(w, rule) };
         match self {
             Stage::A2 => r,
             Stage::A2Actor => Rule { keys_open: false, ..r },
             Stage::Today => Rule { closure: Closure { any_path: true, joined: false, ..r.closure }, ..r },
             Stage::A2AuthorReach => Rule { author_reach: true, ..r },
+            Stage::E1 => unreachable!(),
         }
     }
 }

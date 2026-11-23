@@ -1,14 +1,14 @@
 //! Keys-open travel (spec/permissions.md §4 Role changes
 //! travel): hand worlds per finding (notes/evidence-model-findings.md 19, 21) and per held-model
-//! `spec_reach.rs` test (same names), each a differential at every step (`assert_agrees`: A3's rule
-//! and A2's) plus the copy the draft's words decide, with the switch that decides it off where only
+//! `spec_reach.rs` test (same names), each a differential at every step (`assert_agrees`) plus
+//! the copy the spec's words decide, with the switch that decides it off where only
 //! it brings that copy.
 use super::*;
 use held_model::evidence::names::*;
 use held_model::evidence::State;
 use osis_engine::evidence::Reason;
 
-/// The derivation under `cfg` over a held set of `w`'s end state under A2's delivery.
+/// The derivation under `cfg` over a held set of `w`'s end state under the spec's rule.
 fn at_end(w: &World, cfg: Config, held: impl Fn(&State) -> Set) -> (Ev, Set) {
     at_end_records(w, cfg, true, held)
 }
@@ -16,7 +16,7 @@ fn at_end(w: &World, cfg: Config, held: impl Fn(&State) -> Set) -> (Ev, Set) {
 /// `at_end`, with the world's record edges given to the derivation or not (the control).
 fn at_end_records(w: &World, cfg: Config, records: bool, held: impl Fn(&State) -> Set) -> (Ev, Set) {
     let mut w = w.clone();
-    let rule = a2(&mut w);
+    let rule = e1(&mut w);
     let st = w.run(&rule, |_| {});
     let h = held(&st);
     let mut d = Driver::with(&w, cfg);
@@ -35,8 +35,8 @@ fn everything(st: &State) -> Set {
     st.written.clone()
 }
 
-const KEYS: Config = Config { keys_open: true, leaves: false };
-const NO_KEYS: Config = Config { keys_open: false, leaves: false };
+const KEYS: Config = Config { keys_open: true };
+const NO_KEYS: Config = Config { keys_open: false };
 
 /// R's mint admin (finding 19's worlds).
 const V: Thing = 7;
