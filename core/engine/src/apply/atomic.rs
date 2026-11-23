@@ -487,9 +487,12 @@ impl OwnedSet {
         }
         set
     }
-    /// Whether `f` holds a write of theirs (`Fragment::remove_gone` would change it).
+    /// Whether `f` holds a write of theirs (`Fragment::remove_gone` changes it; a record of
+    /// another's writes keyed by their dot is none).
     fn held_in(&self, f: &Fragment) -> bool {
-        f.holds_dots(&|d| self.owns(d))
+        let mut g = f.clone();
+        g.remove_gone(&|d| self.owns(d));
+        g != *f
     }
     /// `Owned::owns` of any of them.
     fn owns(&self, d: &osis_crdt::Dot) -> bool {

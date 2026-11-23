@@ -1354,8 +1354,7 @@ impl Engine {
     /// removed or not, could pile up invalid headers for good:
     /// `tests_addenda::a_removed_writers_invalid_commits_are_forgotten_spec_commits_5`; a memory
     /// one all covered went at once, `forget_if_spent`); or one held only as
-    /// purged leftovers (`kept_purged`, either class) once each part not dropped as covered is
-    /// covered here (`part_covered`: a valid snapshot past the purge carries its kill). One
+    /// purged leftovers (`kept_purged`, either class): its gone writes read nothing. One
     /// carrying a purge request, every part dropped as covered or invalid and one at least as
     /// invalid, goes where its request holds the right over nothing (`purge::drops_nothing`: an
     /// invalid request purges nothing) and it is not lasting. An invalid part that turns valid
@@ -1385,15 +1384,8 @@ impl Engine {
                 return self.read(|tx| Ok(purge::drops_nothing(tx.core, &c, &m.header) && !lasting(tx, &c, &|_, _| true)?));
             }
         }
-        if !kept_purged(&self.core, c, &m) {
-            return Ok(false);
-        }
-        for ai in 0..n {
-            if !covered(ai) && self.part_covered(c, &m.header, ai)? != Some(true) {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        // its gone writes read nothing (spec/crdt.md §4.7): forgetting it changes no read
+        Ok(kept_purged(&self.core, c, &m))
     }
 
     /// Forgets commits `cs`, IDs included: as if they had never applied (`apply::unindex_commit`).
@@ -1988,15 +1980,12 @@ mod tests {
         assert!(e.delta_live(&snap, &t, &ak).unwrap(), "its stamp is live at field 1");
     }
 
-    // spec/crdt.md §4.6 Un-merge, §4.7, issues/drop-rejoin-robust.md item 2 (leftovers are
-    // bodies): every write a node holds of a delta it holds value-less is in a held body, never
-    // in the state alone (`make_leftover`), so after an expiry and after a purge the state is
-    // the join of the held bodies (`apply::check_rebuilt` checks every transaction), and reads
-    // as the value-less winner (absent), not the older value. Were the leftover not stored (the
-    // state stripped alone), the bodies would lack the expired stamp and the join would show
-    // "old".
+    // spec/crdt.md §4.6 Un-merge, §4.7: after an expiry and after a purge the state is the join
+    // of the held bodies without the gone writes (`apply::check_rebuilt` checks every
+    // transaction): it reads the value the gone write replaced, "old", whose body is held (no
+    // snapshot covers it: none carries the expiring write that superseded it).
     #[test]
-    fn leftover_is_a_held_body_spec_crdt_4_7() {
+    fn gone_write_reads_what_it_replaced_spec_crdt_4_7() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let a = lp.peers[0].engine.me();
         let (reg, other) = (Ak::new("x:a.0").unwrap(), Ak::new("x:b.0").unwrap());
@@ -2014,7 +2003,7 @@ mod tests {
         lp.advance(2000);
         lp.peers[0].tick().unwrap();
         let e = &mut lp.peers[0].engine;
-        assert_eq!(e.get(&t, &reg).unwrap(), None, "the value-less winner reads absent");
+        assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Str("old".into())), "expired: what it replaced");
         lp.advance(10);
         let mut m = Mutation::new();
         m.set(t, &reg, &Value::Str("secret".into())).unwrap();
@@ -2025,7 +2014,7 @@ mod tests {
         m.set(t, &other, &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         let e = &mut lp.peers[0].engine;
-        assert_eq!(e.get(&t, &reg).unwrap(), None, "purged: the value-less winner reads absent");
+        assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Str("old".into())), "purged: what it replaced");
         assert!(e.core.ix.commits.get(&c).unwrap().stripped(0), "the purged part is held as its leftover");
     }
 
@@ -2369,11 +2358,11 @@ mod tests {
         assert_eq!(e.core.time.next(), Some(expires), "a wake at its expiry");
     }
 
-    // spec/commits.md §5 (Forgetting: only where forgetting changes no read): a purged write
-    // held value-less still kills the write before it, so it stays until a valid snapshot past
-    // the purge carries the kill; then it and the write it killed go, and the read is unchanged.
+    // spec/commits.md §5 (Forgetting: only where forgetting changes no read), spec/crdt.md §4.7:
+    // a purged write has no effect on the read, so its commit, held only as its leftover, may be
+    // forgotten at once, the read unchanged: the write it replaced.
     #[test]
-    fn a_purged_leftover_goes_once_a_snapshot_carries_its_kill_spec_commits_5() {
+    fn a_purged_leftover_goes_at_once_spec_commits_5() {
         let mut lp = LocalPeer::new(1, 956, WallMs(1_700_000_000_000)).unwrap();
         let a = lp.peers[0].engine.me();
         let x = Ak::new("x:m.0").unwrap();
@@ -2396,16 +2385,12 @@ mod tests {
         let two = set(&mut lp, 2, None);
         set(&mut lp, 0, Some(two));
         let e = &mut lp.peers[0].engine;
-        assert_eq!(e.get(&t, &x).unwrap(), None, "the purge leaves nothing read");
+        let before = e.get(&t, &x).unwrap();
         assert!(e.kept_purged(&two));
-        assert!(!e.forgettable(&two).unwrap(), "its kill carried by nothing else: kept");
-        lp.advance(10);
-        let e = &mut lp.peers[0].engine;
-        e.snapshot(&t, &x).unwrap().unwrap();
-        assert!(e.forgettable(&two).unwrap(), "a valid snapshot past the purge carries the kill");
+        assert!(e.forgettable(&two).unwrap(), "its writes read nothing");
         e.forget_commits(&[two]).unwrap();
-        assert_eq!(e.get(&t, &x).unwrap(), None, "read unchanged");
-        assert_eq!(e.covered_drops(&one).unwrap(), vec![(t, x.clone())], "the killed write is covered too");
+        assert_eq!(e.get(&t, &x).unwrap(), before, "read unchanged");
+        let _ = one;
         e.drop_body(&one, &t, &x).unwrap();
         assert!(e.forgettable(&one).unwrap());
         e.forget_commits(&[one]).unwrap();
