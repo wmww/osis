@@ -12,7 +12,6 @@ A fresh worker (fable) owns it; the previous one ran out of room before deleting
 - After it: a removal as evidence, accounts as ordinary things, public things and cards, core without accounts (notes/redesign-plan.md A3 to A6), each one branch, delete first; cut them to what is still needed before starting.
 
 ## In flight beside it
-- `mizzen-order-seeds` (fresh reviewer gating/landing): the engine's apply wait reads only the stated path (spec/commits.md §4 Unjudgeable); clears issues/order-settings-seed.md's rate lines. Reviewer also judges the own-commit carve-out and two spec readings.
 - `mizzen-refile-order` (coordinator gating): `Core::enter` counts only the node's own secrets; the both-orders test in osis-sync `holding.rs`.
 - `mizzen-walk-inputs` (worker): issues/walk-inputs-via-stale.md.
 - `mizzen-test-cost-5` (worker): fresh test-cost profile after the walk switch; engine lib-vs-it measurement.
