@@ -1,7 +1,7 @@
 //! Share links (spec/permissions.md §7, spec/wire.md §10): K an actor whose mint admin is the sharer's actor, with
 //! secrets of its own, a holder of the target with the link's role; L a key actor from the
 //! link's seed with (r, invite r) on K, listed in K's sync ID steps by static entry. Redeem (an
-//! invite grant signed as L, single use with L's self-removal in the same commit), bearer use,
+//! may-grant grant signed as L, single use with L's self-removal in the same commit), bearer use,
 //! finalization and revoking a joiner are demotions by a sharer node.
 
 use super::sync_ids::ReaderKey;
@@ -73,7 +73,7 @@ impl Engine {
     }
 
     /// Redeems a link once K's sync ID was claimed by L's static entry and downloaded (node-sync;
-    /// `hold_key_actor(link.seed)` came first so L's boxes open): signing as L, an invite grant
+    /// `hold_key_actor(link.seed)` came first so L's boxes open): signing as L, an may-grant grant
     /// of `grantee` (this node's actor, or this node) to K with the link's role and K's boxes;
     /// `single_use` also removes L's own edge in the same commit. Deposited under K's sync ID
     /// unless the role is write or above. Leaves the seed held as it was: a caller holding it

@@ -515,7 +515,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, read: &s
     if h.kind != Kind::Role {
         return;
     }
-    // the edges this commit puts, per target: what an invite grant may box
+    // the edges this commit puts, per target: what an may-grant grant may box
     let mut granted: BTreeMap<(Tid, Tid), Role> = BTreeMap::new();
     for (ai, es) in &read.perm().edges {
         let Some(a) = h.aspects.get(*ai) else { continue };

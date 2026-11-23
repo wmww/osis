@@ -53,7 +53,7 @@ pub struct Mutation {
     pub(crate) purge_named: Vec<(CommitId, Tid, Ak)>,
     pub(crate) undoes: Option<CommitId>,
     pub(crate) frontier: Option<osis_perm::Frontier>,
-    /// Role flows judge their own authority (invite grants, self-removals).
+    /// Role flows judge their own authority (may-grant grants, self-removals).
     pub(crate) unchecked: bool,
     /// A held key actor that signs instead of the node (commit form).
     pub(crate) signer: Option<Tid>,
@@ -227,7 +227,7 @@ impl Mutation {
         self
     }
 
-    /// Skips the plain role check (role flows judge invite grants and self-removals).
+    /// Skips the plain role check (role flows judge may-grant grants and self-removals).
     pub(crate) fn unchecked(&mut self) -> &mut Self {
         self.unchecked = true;
         self
@@ -379,12 +379,10 @@ pub(crate) fn may_write_on(tx: &mut Tx<'_>, tid: &Tid) -> Result<MayWrite> {
     Ok(if tx.core.writable(tid) && super::secrets::ready_to_write_in(tx, tid)? { MayWrite::Yes } else { MayWrite::Later })
 }
 
-// Interim (notes/a1-spec/README.md step 3): a commit no path gives the role on a thing it
-// writes (a fire valid by its thing's setting; a hostile writer's), one acting for a thing not on
-// every thing's path (Open 16), and a relayed signal's snapshot (`ephemeral::signal`) state this.
-/// The one path a commit signed by `signer` acting for `actor` states where it states no real
-/// one (`stated_paths`): empty for the signer itself, else `actor` alone, named as purge author.
-pub(crate) fn interim_path(signer: Tid, actor: Tid) -> osis_commit::Path {
+/// The path a commit signed by `signer` states where no path is found for what it writes (a
+/// fire valid by its thing's setting alone, a relayed signal's snapshot, a writer past the rules
+/// naming `actor`): empty for the signer itself, else `actor` alone, named as purge author.
+pub(crate) fn plain_path(signer: Tid, actor: Tid) -> osis_commit::Path {
     if actor == signer { osis_commit::Path::default() } else { osis_commit::Path::through(actor) }
 }
 
@@ -402,7 +400,7 @@ pub(crate) fn path_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid,
     }
     match record_chain(*tid, |t| records(t).map(CreationRecord::record_link)).next() {
         Some(ChainStep::Up { admin, .. }) => {
-            // the record edge gives every invite: the path to the mint admin needs the role alone
+            // the record edge gives admin, so may-grant: the path to the mint admin needs the role alone
             let (mut listed, marks, descent) = path_with(core, node, records, &admin, Need::Role(need.role()), ts)?;
             // reached by a direct edge, the mint admin is listed; by descent, the descent goes on
             if !descent {
@@ -431,19 +429,19 @@ pub(crate) enum Stated {
 /// (`Path::one_of`) and that path tells no reader of a thing written a roster fact it could not
 /// read already (`clear_tells_nothing`); else the split form. Never a longer route for one thing
 /// so that one path serves all. A role commit states `role_path`; an account's rotation and seed
-/// re-seal the empty path. Interim (`interim_path`): a commit where no path gives the role on a
-/// thing it writes (a fire valid by its thing's setting); a commit acting for a thing that is not
-/// on some thing's path. A path listing more than `MAX_PATH_THINGS` things is refused.
+/// re-seal the empty path. A commit where no path gives the role on a thing it writes states
+/// `plain_path` (a fire valid by its thing's setting); acting as a thing through which no path
+/// gives the role is refused. A path listing more than `MAX_PATH_THINGS` things is refused.
 pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Tid, Option<osis_perm::Edge>)]) -> Result<Stated> {
     let (node, actor) = (plan.signer, plan.actor);
-    let fallback = Stated::One(interim_path(node, actor));
+    let fallback = Stated::One(plain_path(node, actor));
     // the signer writing itself (spec/wire.md §4 fields 15, 16)
     if plan.rotation.is_some() || plan.reseal.is_some() {
         return Ok(Stated::One(osis_commit::Path::default()));
     }
     if plan.kind.is_role() {
         let real = role_path(core, plan, writes, edges)?;
-        return Ok(Stated::One(real.unwrap_or_else(|| interim_path(node, node))));
+        return Ok(Stated::One(real.unwrap_or_else(|| plain_path(node, node))));
     }
     let mut need: BTreeMap<Tid, Role> = BTreeMap::new();
     for w in writes {
@@ -459,7 +457,7 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
             path_with(core, node, records, &t, Need::Role(r), plan.ts).map(|(things, direct, rec)| (osis_commit::Path { purge: 0, things, direct }, rec))
         } else {
             // Open (notes/a1-spec/README.md Open 16): acting for a thing not on this thing's path
-            // states the Interim `[actor]` below, as the Acting check accepts it
+            // is refused below
             path_with(core, node, records, &actor, Need::Role(r), plan.ts).zip(path_with(core, actor, records, &t, Need::Role(r), plan.ts)).map(|((to, to_marks, _), (from, from_marks, rec))| {
                 let purge = to.len() + 1;
                 // `from`'s hops follow `to`'s and the hop into the actor
@@ -501,9 +499,9 @@ pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite
 /// there (spec/permissions.md §2), read off what they write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RoleWay {
-    /// An invite grant of this role (the signer holds no admin on the thing and the commit puts a
-    /// grant): the path giving it as an invite on the thing (§2 Path's invite, Invite grant).
-    Invite(Role),
+    /// An may-grant grant of this role (the signer holds no admin on the thing and the commit puts a
+    /// grant): the path giving may-grant at it on the thing (§2 Path's may-grant).
+    MayGrant(Role),
     /// A self-removal of this holder's grant (every edge write on the thing lowers that grant, and
     /// it is the signer's own or the one the signer's admin on the thing rests on alone,
     /// `validity::self_removal`): the path ending at the holder, giving admin on it (§2
@@ -528,7 +526,7 @@ fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Tid, Option<
     let records: Records<'_> = &|x| plan.creates.get(x);
     let puts = on.iter().filter_map(|(_, e)| e.filter(|e| !e.says_retain()).map(|e| e.role)).max();
     match puts {
-        Some(r) if role_with(core, node, records, t, plan.ts) < Some(Role::Admin) => Some(RoleWay::Invite(r)),
+        Some(r) if role_with(core, node, records, t, plan.ts) < Some(Role::Admin) => Some(RoleWay::MayGrant(r)),
         _ => None,
     }
 }
@@ -537,8 +535,8 @@ fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Tid, Option<
 /// never states the split form, spec/wire.md §4): for each thing it writes, the path from the
 /// signer giving its role there (`role_with`, so a rotation reaches every role it rotates and an
 /// admin's edge write admin), shortest by edges as for content (`path_with`); a compaction
-/// snapshot's, the role it needs (`snapshot_role`); an invite grant's, the path giving the grant's
-/// role as an invite; a self-removal's, the path ending at the holder (`role_way`). A grant the
+/// snapshot's, the role it needs (`snapshot_role`); an may-grant grant's, the path giving the grant's
+/// role as may-grant; a self-removal's, the path ending at the holder (`role_way`). A grant the
 /// signer gives itself on a thing it reaches by descent states a path not ending at the signer
 /// (which would make it a self-removal): the path to the thing's mint admin, then the mint admin
 /// (its record edge the last hop). One `Path` serves every thing a role commit writes
@@ -556,7 +554,7 @@ fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(T
                 }
                 (listed, marks)
             }),
-            Some(RoleWay::Invite(r)) => path_with(core, node, records, &t, Need::MayGrant(r), plan.ts).map(|(listed, marks, _)| (listed, marks)),
+            Some(RoleWay::MayGrant(r)) => path_with(core, node, records, &t, Need::MayGrant(r), plan.ts).map(|(listed, marks, _)| (listed, marks)),
             None => {
                 let need = if plan.kind.is_compaction() { writes.iter().filter(|w| w.tid == t).map(|w| snapshot_role(w.ak.as_str())).max() } else { role_with(core, node, records, &t, plan.ts) };
                 let found = need.and_then(|r| path_with(core, node, records, &t, Need::Role(r), plan.ts));
@@ -578,7 +576,7 @@ fn role_path(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(T
     }
     let one = osis_commit::Path::one_of(each.iter(), node, node);
     // the shape rules (spec/commits.md §2: one grant per role commit) give one path; a hostile
-    // writer past them (`skip_writer_rules`: edge writes on several things) states the Interim one
+    // writer past them (`skip_writer_rules`: edge writes on several things) states the empty one
     debug_assert!(one.is_some() || each.is_empty() || core.skip_writer_rules, "a role commit's things are reached along one path: {each:?}");
     Ok(one)
 }

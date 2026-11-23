@@ -1,5 +1,5 @@
 //! Edge writes (spec/permissions.md §2, §3, §5.3): grants with the grantee's boxes, changes,
-//! removals and demotions carrying the target's rotation, invite grants and self-removals,
+//! removals and demotions carrying the target's rotation, may-grant grants and self-removals,
 //! the frontier, inbox delivery and acceptance
 //! (spec/sync-inbox.md §2, spec/crypto.md §5).
 
@@ -41,7 +41,7 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
 
 /// A grant or a raise of `holder`'s edge on `target` by `who` (this node, or a held key actor
 /// signing), with the grantee's boxes for every granted role at each current epoch
-/// (spec/crypto.md §4). An admin's grant, or an invite grant (spec/permissions.md §2) where
+/// (spec/crypto.md §4). An admin's grant, or an may-grant grant (spec/permissions.md §2) where
 /// `who`'s effective invite allows it and the holder has no current edge. `leave`: the signer's
 /// own edge removed in the same commit (a single-use redemption, spec/permissions.md §7).
 /// `frontier`: the one a grant that audits carries (`Engine::grant_signed`).
@@ -68,7 +68,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     }
     let role = tx.core.role_now(&who, &target);
     let admin = crate::engine::secrets::usable_role(tx, &target, role)? == Some(Role::Admin);
-    // a non-writer of the target's sync ID deposits its invite grant (spec/sync-judgement.md §1)
+    // a non-writer of the target's sync ID deposits its may-grant grant (spec/sync-judgement.md §1)
     let ts = now_ts(tx.core);
     let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
     let invite = tx.core.timelines.get(&target).and_then(|tl| tl.may_grant(&who, &target, At::now(ts)));

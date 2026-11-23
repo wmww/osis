@@ -40,7 +40,7 @@ type PartId<C, T> = (CopyId<C, T>, usize);
 
 /// What a part needs of one hop of its stated path, at least (spec/permissions.md §5.1 step 3, a
 /// part's least need): a role (write for content, admin for an edge write, write for a finalize,
-/// an invite grant's level on its path's hops but the last), or an invite (an invite grant's level
+/// an may-grant grant's level on its path's hops but the last), or an invite (an may-grant grant's level
 /// on its path's last hop). A grant joins the hop for the part only giving it (notes/a2-spec
 /// README.md OPEN 16: a hop granted too little joins nothing, so the part waits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

@@ -1,6 +1,6 @@
 //! Role flows (spec/permissions.md; notes/engine-roles.md, Role flows): accounts, pairing,
 //! grants and inbox delivery, changes and removals with their rotation,
-//! demotions with their frontier, invite grants and self-removal,
+//! demotions with their frontier, may-grant grants and self-removal,
 //! re-seal, registration steps, links, lost-access cleanup. Rotations, the
 //! cascade and departures live in `crate::rotation`.
 //!
@@ -66,7 +66,7 @@ pub(crate) fn ak(s: &str) -> Result<Ak> {
 /// put, so a re-seal or grant re-writing an entry is a new entry there, not a write into one the
 /// holder never got or nothing for an unchanged value (spec/crypto.md §4), and one live entry
 /// per key stays. `new_only`: fresh puts only (`Op::Put`), resetting nothing, a second live entry
-/// where the key is live (an invite grant's shape, spec/permissions.md §2; a history add,
+/// where the key is live (an may-grant grant's shape, spec/permissions.md §2; a history add,
 /// spec/crypto.md §4).
 pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, new_only: bool) -> Result<()> {
     let put = |m: &mut Mutation, field: u64, k: Value, v: Value| -> Result<()> {

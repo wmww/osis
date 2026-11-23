@@ -274,9 +274,8 @@ pub struct View {
     pub kind: osis_commit::Kind,
     pub form: Form,
     pub signer: Tid,
-    /// Its one purge author (`Header::purge_author`), in the clear in either path form. Interim
-    /// (notes/a1-spec/README.md step 3): the old walk reads it as the thing the commit acts for on
-    /// every thing it writes.
+    /// Its one purge author (`Header::purge_author`), in the clear in either path form: a member
+    /// of the path of every thing it writes.
     pub purge_author: Tid,
     /// In a split commit, what this node decided of each thing's path (`Decided`): a part on a
     /// thing whose path is not known is judged invalid. `None` where the path is in the clear.

@@ -293,7 +293,7 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // `Core::root_holders`)
     let device = core.is_key_actor(t) && !core.is_account(t);
     let devices = core.accounts.iter().filter(|(p, _)| device && core.account_view(p).is_some_and(|v| v.named_device(t))).map(|(_, a)| (a.root, Need::Holder));
-    // a held commit acting as it (its one purge author, Interim as `apply::header_wait`), on the
+    // a held commit naming it as purge author (a member of its path, `apply::header_wait`), on the
     // things it writes on: its path lists it, so its record judges the commit (spec/commits.md §4
     // Unjudgeable)
     let acting = core.acting_for(t).flat_map(|c| core.ix.commits.get(&c).into_iter().flat_map(move |m| m.view.aspects.iter().map(move |a| (a.tid, Need::Acting(c)))));

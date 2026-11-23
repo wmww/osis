@@ -635,8 +635,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     blob.settle_paths();
     let h = blob.header.clone();
     let carried = carried_records(&h, blob, id);
-    // Interim (notes/a1-spec/README.md step 3): the record of the one purge author, which the old
-    // walk reads as acting on every thing
+    // the record of its purge author, a member of every thing's path
     let acting = h.purge_author();
     let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.signer, acting]).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
     let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created(t).cloned().or_else(|| carried.get(t).cloned()) };
@@ -906,7 +905,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
 }
 
 /// The signer's record of commit `h`, else what it waits for whole: that record, or the record
-/// of the thing it acts for on all (Interim, notes/a1-spec/README.md step 3: its one purge author).
+/// of its purge author, a member of every thing's path.
 fn header_wait(h: &Header, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> std::result::Result<CreationRecord, Reason> {
     let author = record(&h.signer).ok_or(Reason::MissingChain(h.signer))?;
     let acting = h.purge_author();
