@@ -147,7 +147,7 @@ fn same_delta(bytes: &[u8], c: &MCommit, state: &crate::Fragment) -> Result<(), 
     let imp = decode_delta(bytes, &writer_cx(&c.w), &mut Interner::new(), None);
     // what is accepted joins into the state so far and reads (no panic)
     if let Ok(d) = &imp {
-        let st = joined(&state, &d.fragment);
+        let st = joined(state, &d.fragment);
         let _ = st.read();
     }
     let model = m_decode_delta(bytes, &mut Ctx::writer(c.w.ts, c.w.source.clone(), c.w.lo, c.w.hi()));

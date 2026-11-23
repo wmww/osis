@@ -146,6 +146,22 @@ pub fn joined(a: &Fragment, b: &Fragment) -> Fragment {
     x
 }
 
+/// `ops` as one commit by `w` on `f`; `None` if an op fails or the commit writes nothing.
+pub fn build<V: crate::view::View>(f: &Fragment, w: crate::ops::Writer, ops: &[crate::ops::PathOp], view: &V) -> Option<(Fragment, crate::stamp::CounterRange)> {
+    let mut b = crate::delta::DeltaBuilder::new(f, w);
+    for o in ops {
+        b.apply(o, view).ok()?;
+    }
+    b.finish()
+}
+
+/// The delta of `ops` on `f` by node `[s; 15]` at `t`·2^16 from counter 1; panics if one fails or
+/// it writes nothing.
+#[track_caller]
+pub fn wrote<V: crate::view::View>(f: &Fragment, s: u8, t: u64, ops: &[crate::ops::PathOp], view: &V) -> Fragment {
+    build(f, crate::ops::Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1), ops, view).expect("a delta").0
+}
+
 /// The read of a text, `None` when absent or not a string.
 pub fn reads(f: &Fragment) -> Option<String> {
     match f.read() {

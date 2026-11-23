@@ -957,9 +957,7 @@ fn entry_tombstone_is_no_live_write_spec_commits_5() {
     let mut st = create(&mut Writer::new(ts(1), node(1), 1), &AnyView, &kmap(Value::Int(1))).unwrap();
     let owned = |s: &Source, lo: u64, _: u64| *s == node(1) && lo <= 1;
     assert!(st.holds_owned_write(&owned));
-    let mut builder = DeltaBuilder::new(&st, Writer::new(ts(2), node(2), 1));
-    builder.apply(&PathOp { path: vec![], op: Op::Remove(s("k")) }, &AnyView).unwrap();
-    st.join(builder.finish().unwrap().0);
+    st.join(crate::testutil::build(&st, Writer::new(ts(2), node(2), 1), &[PathOp { path: vec![], op: Op::Remove(s("k")) }], &AnyView).unwrap().0);
     assert!(st.holds_owned(&owned), "the tombstone is keyed by the entry's dot");
     assert!(!st.holds_owned_write(&owned), "but holds no write of its creator");
     let ours = |w: Vec<(crate::Dot, Option<osis_base::Ts>)>| w.iter().any(|(d, _)| owned(&d.src, d.ctr, d.ctr + 1));

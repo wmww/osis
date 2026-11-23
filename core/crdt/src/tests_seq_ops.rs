@@ -5,7 +5,7 @@ use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
 use crate::seq::visible;
 use crate::stamp::{CounterRange, Source};
-use crate::testutil::{Pager, TyView, frag, joined, mapply, node, ostate, ts, value, via_snapshot, writer};
+use crate::testutil::{Pager, TyView, build, frag, joined, mapply, node, ostate, ts, value, via_snapshot, writer};
 use crate::undo::{Undone, undo};
 use crate::wire::{DeltaCtx, DeltaKind};
 use crdt_model::r#gen::{Rng, random_value};
@@ -36,15 +36,6 @@ fn text_view() -> TyView {
 /// Whether `f`'s placement is cached and equals a whole pass.
 fn cached(f: &Fragment) -> bool {
     matches!(f, Fragment::Seq(x) if x.lin_check() == Some(true))
-}
-
-/// `ops` as one commit by `w` on `f`; `None` if an op fails or the commit writes nothing.
-fn build(f: &Fragment, w: Writer, ops: &[PathOp], view: &TyView) -> Option<(Fragment, CounterRange)> {
-    let mut b = DeltaBuilder::new(f, w);
-    for o in ops {
-        b.apply(o, view).ok()?;
-    }
-    b.finish()
 }
 
 /// §8 (pages are joined independently), `seq_place`: `ops` by `w` on sequence `st` held in part
@@ -296,11 +287,7 @@ proptest! {
         let new = base.replacen("beta", if r.chance(1, 2) { "BETA!" } else { "bet" }, 1);
         let ops = diff_values(Some(&s(base)), &s(&new), &text_view()).unwrap();
         let mut plain = a.state.clone();
-        let mut b = DeltaBuilder::new(&plain, Writer::new(ts(3 << 16), node(1), a.lo));
-        for o in &ops {
-            b.apply(o, &text_view()).unwrap();
-        }
-        plain.join(b.finish().unwrap().0);
+        plain.join(build(&plain, Writer::new(ts(3 << 16), node(1), a.lo), &ops, &text_view()).unwrap().0);
         prop_assert_eq!(read_str(&plain), new.clone());
         let mut remote = a.fork(2);
         let (rd, _, _) = remote.commit(2, &[op(Op::Insert { at: base.len(), items: vec![s(" epsilon")] })], &text_view()).unwrap();

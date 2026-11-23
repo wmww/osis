@@ -327,7 +327,7 @@ fn joins_equal(seed: u64, ins: &[Input], commits: &[MCommit]) -> Result<usize, S
             }
         }
         for b in bases.iter().step_by(8).chain(bases.last()) {
-            let want = joined(&b, &whole);
+            let want = joined(b, &whole);
             for rev in [false, true] {
                 if join_pieces(b, &pieces, rev) != want {
                     return Err(format!("seed {seed}: pieces joined differ (reversed {rev}) for root {}", hex(&i.root)));

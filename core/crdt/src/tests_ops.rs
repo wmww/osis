@@ -4,7 +4,7 @@ use crate::delta::DeltaBuilder;
 use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
 use crate::stamp::{CounterRange, Dot, Source};
-use crate::testutil::{TyView, frag, history, joined, mapply, ostate, sess, sink_no_seq, source, ts, value, writer};
+use crate::testutil::{TyView, frag, build, history, joined, mapply, wrote, ostate, sess, sink_no_seq, source, ts, value, writer};
 use crate::undo::{Undone, undo};
 use crate::view::AnyView;
 use crdt_model::r#gen::{Rng, random_op, random_value};
@@ -251,13 +251,7 @@ fn key_writes_follow_what_they_touch_spec_5_6() {
     let src = |i: u8| sess(Tid::from_bytes([i; 15]));
     let list = |xs: &[i64]| Value::List(xs.iter().map(|x| Value::Int(*x)).collect());
     let map = |kv: Vec<(i64, Value)>| Value::Map(kv.into_iter().map(|(k, v)| (Value::Int(k), v)).collect());
-    let write = |st: &Fragment, s: u8, t: u64, ops: Vec<PathOp>| {
-        let mut b = DeltaBuilder::new(st, Writer::new(ts(t << 16), src(s), 1));
-        for op in &ops {
-            b.apply(op, &view).unwrap();
-        }
-        b.finish().unwrap().0
-    };
+    let write = |st: &Fragment, s: u8, t: u64, ops: Vec<PathOp>| wrote(st, s, t, &ops, &view);
     let set = |path: Vec<PathSeg>, v: Value| PathOp { path, op: Op::Set(v) };
     let key = |k: i64| vec![PathSeg::Key(Value::Int(k))];
     let empty = Fragment::default();
@@ -286,11 +280,7 @@ fn key_writes_follow_what_they_touch_spec_5_6() {
 fn text_key_writes_follow_what_they_touch_spec_5_6() {
     let view = TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)));
     let at = |path: Vec<PathSeg>, op: Op| PathOp { path, op };
-    let write = |st: &Fragment, s: u8, t: u64, op: PathOp| {
-        let mut b = DeltaBuilder::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
-        b.apply(&op, &view).unwrap();
-        b.finish().unwrap().0
-    };
+    let write = |st: &Fragment, s: u8, t: u64, op: PathOp| wrote(st, s, t, &[op], &view);
     let key = || vec![PathSeg::Key(Value::Int(0))];
     let text = |s: &str| Value::Map([(Value::Int(0), Value::Str(s.into()))].into_iter().collect());
     let x = write(&Fragment::default(), 1, 1, at(key(), Op::Set(Value::Str("ab".into()))));
@@ -320,11 +310,7 @@ fn text_key_writes_follow_what_they_touch_spec_5_6() {
 fn path_op_into_absent_key_spec_5_6() {
     let view = AnyView;
     let st = Fragment::default();
-    let add = |src: u8, v: i64| {
-        let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 16), sess(Tid::from_bytes([src; 15])), 1));
-        b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Add(Value::Int(v)) }, &view).unwrap();
-        b.finish().unwrap().0
-    };
+    let add = |src: u8, v: i64| wrote(&st, src, 1, &[PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Add(Value::Int(v)) }], &view);
     let mut s = add(1, 1);
     assert_eq!(s.read(), Some(Value::Map([(Value::Int(0), Value::Set([Value::Int(1)].into_iter().collect()))].into_iter().collect())));
     s.join(add(2, 2));
@@ -509,9 +495,8 @@ fn map_put_new_spec_5_6() {
     }
     let Fragment::Map(m) = &st else { panic!("map") };
     assert_eq!(m.entries.len(), 3);
-    let mut builder = DeltaBuilder::new(&st, Writer::new(ts(4 << 16), a, 4));
-    builder.apply(&PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }, &view).unwrap();
-    assert!(!builder.finish().unwrap().0.is_put_only_map(&|_| true));
+    let rm = build(&st, Writer::new(ts(4 << 16), a, 4), &[PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }], &view).unwrap().0;
+    assert!(!rm.is_put_only_map(&|_| true));
 }
 
 /// §5.6 `put_new` away from a map key: a register is written again; a composite (it would merge
@@ -538,18 +523,14 @@ fn concurrent_key() -> Vec<(TyView, Fragment, Value)> {
     let st = |a: (u64, &str)| Value::Map([(Value::Int(a.0 as i64), Value::Str(a.1.into()))].into_iter().collect());
     let mut w = Writer::new(ts(1 << 16), na.clone(), 1);
     let base = create(&mut w, &view, &Value::Map(Default::default())).unwrap();
-    let put = |w: Writer, v: Value| {
-        let mut b = DeltaBuilder::new(&base, w);
-        b.apply(&PathOp { path: vec![PathSeg::Key(k.clone())], op: Op::Set(v) }, &view).unwrap();
-        b.finish().unwrap().0
-    };
+    let put = |w: Writer, v: Value| build(&base, w, &[PathOp { path: vec![PathSeg::Key(k.clone())], op: Op::Set(v) }], &view).unwrap().0;
     let da = put(Writer::new(ts(2 << 16), na, 10), st((1, "a")));
     let db = put(Writer::new(ts(2 << 16), nb, 1), st((2, "b")));
     let both = Value::Map([(k.clone(), Value::Map([(Value::Int(1), Value::Str("a".into())), (Value::Int(2), Value::Str("b".into()))].into_iter().collect()))].into_iter().collect());
     [(&da, &db), (&db, &da)]
         .into_iter()
         .map(|(x, y)| {
-            let mut s = joined(&base, &x);
+            let mut s = joined(&base, x);
             s.join(y.clone());
             assert_eq!(s.read(), Some(both.clone()));
             (TyView(view.0.clone()), s, both.clone())
@@ -564,7 +545,7 @@ fn commit_and_undo(view: &TyView, s: &Fragment, op: PathOp) -> (Fragment, Fragme
     let mut b = DeltaBuilder::new(s, Writer::new(ts(5 << 16), node.clone(), 20));
     b.apply(&op, view).unwrap();
     let (d, range) = b.finish().unwrap();
-    let s1 = joined(&s, &d);
+    let s1 = joined(s, &d);
     let u = Undone { delta: &d, source: &node, range };
     let ud = undo(&mut Writer::new(ts(6 << 16), node.clone(), 40), &u, &s1, s, view).unwrap().unwrap();
     let s2 = joined(&s1, &ud);
@@ -606,11 +587,7 @@ fn undo_into_a_key_of_two_records_spec_4_6() {
     let view = TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::List(Box::new(Ty::Register)))));
     let key = Value::Int(0);
     let set = |v: Value| PathOp { path: vec![PathSeg::Key(key.clone())], op: Op::Set(v) };
-    let write = |st: &Fragment, s: u8, t: u64, v: Value| {
-        let mut b = DeltaBuilder::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
-        b.apply(&set(v), &view).unwrap();
-        b.finish().unwrap().0
-    };
+    let write = |st: &Fragment, s: u8, t: u64, v: Value| wrote(st, s, t, &[set(v)], &view);
     let list = |xs: &[i64]| Value::List(xs.iter().map(|x| Value::Int(*x)).collect());
     let mut s = write(&Fragment::default(), 2, 1, list(&[1]));
     s.join(write(&Fragment::default(), 3, 2, list(&[2])));
@@ -683,9 +660,7 @@ fn undo_absent_keeps_seen_other_write_spec_4_6() {
         b.apply(&op, &view).unwrap();
         let (d1, range) = b.finish().unwrap();
         let s1 = joined(&s, &d1);
-        let mut b = DeltaBuilder::new(&s1, Writer::new(ts(6 << 16), other.clone(), 1));
-        b.apply(&op_b, &view).unwrap();
-        let s2 = joined(&s1, &b.finish().unwrap().0);
+        let s2 = joined(&s1, &build(&s1, Writer::new(ts(6 << 16), other.clone(), 1), &[op_b], &view).unwrap().0);
         let u = Undone { delta: &d1, source: &node, range };
         let ud = undo(&mut Writer::new(ts(7 << 16), node.clone(), 40), &u, &s2, &s, &view).unwrap();
         assert!(!ud.as_ref().is_some_and(Fragment::has_position_reset), "{name}: {ud:?}");
@@ -977,7 +952,7 @@ fn tid_removal_covers_what_the_remover_saw_spec_5_5() {
         }
         assert_eq!(st.read(), empty, "A's held add and B's add seen by header go");
         for (d, what) in [(&add_d, "an add never seen"), (&add_late, "an add after it")] {
-            let x = joined(&st, &d);
+            let x = joined(&st, d);
             assert_eq!(x.read(), just_t, "{what} shows");
         }
         // undoing the removal against the state before it adds the tid back
@@ -998,11 +973,7 @@ fn values_and_each_value_differ_in_bags_and_uncreated_keys_spec_5_6() {
     let ty = Ty::Struct([(1, Ty::Counter), (2, Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register)))].into_iter().collect());
     let view = TyView(ty);
     let (k, x, y) = (Value::Str("k".into()), Value::Str("x".into()), Value::Str("y".into()));
-    let write = |st: &Fragment, s: u8, t: u64, ops: &[PathOp]| {
-        let mut b = DeltaBuilder::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
-        ops.iter().for_each(|op| b.apply(op, &view).unwrap());
-        b.finish().unwrap().0
-    };
+    let write = |st: &Fragment, s: u8, t: u64, ops: &[PathOp]| wrote(st, s, t, ops, &view);
     let at_k = |v: &Value| PathOp { path: vec![PathSeg::Field(2), PathSeg::Key(k.clone())], op: Op::Set(v.clone()) };
     let st = write(&Fragment::default(), 1, 1, &[at_k(&x)]);
     // a write into the key's live record: no creation; and a counter increment
