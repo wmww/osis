@@ -26,7 +26,7 @@
 //! that never hold admin never lower anyone else, and the residue of a removed actor
 //! (`EHist::residue`). Findings: residue is nonzero because drops are sticky
 //! (`sticky_drop_outlives_its_cause`); making drops last only while their cause demotes
-//! removes it but loops forever on removal rings (notes/role-timeline.md).
+//! removes it but loops forever on removal rings (notes/permissions.md).
 //! "Joiner lowers someone" counts are an earlier invite grant with a shorter `until` or
 //! smaller role preempting a later one (the later add finds an edge): first add wins.
 

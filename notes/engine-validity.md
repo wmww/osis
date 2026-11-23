@@ -109,7 +109,7 @@ The one class of honest-use read divergence: validity is a non-monotone function
   - Bounded reach-back by a first witness (a signed receipt frontier, or a log stamp under an epoch the author never held): deterministic but still retroactive; reduces loss, closes no divergence, adds a receipt frontier to every delta.
   - A reach-back window on `ts` (backdated vandalism is what removal prevents); the demoter compacting first (not needed with the rule).
 - **Holes left** (F forged by an authenticated writer, bounded; C clock or arrival, transient; L nodes alike but something lost):
-  - Sticky drops in the role timeline (L; notes/role-timeline.md).
+  - Sticky drops in the role timeline (L; notes/permissions.md).
   - A valid snapshot's copy differing from a held delta's joins by the copy order wherever held (F, no divergence; notes/revocation.md Snapshots and history). Equivocation by a valid writer whose first commit's writes are all dead: nodes that held the first void both, those that forgot it count the second (F; spec/commits.md §5 Forgetting). A forged snapshot listing a part shows the commit partly until the part arrives (F; Authority, above).
   - A keep-at-least bound or an `until` straddled by two clocks (C, seconds; notes/sync-convergence.md); a value read past its T until the next call or Tick, a relay-only signal twice after a restart (C).
   - Session-sources double removal: a write left out of A's frontier because Y's snapshot covered it, then Y removed by a frontier not covering that snapshot: lost alike (L; a demoter listing every commit avoids it).

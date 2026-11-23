@@ -1,7 +1,7 @@
 # roles-model
 > Summary: Rust reference models of the role rules (spec/permissions.md §5), S3's addenda gaps, account custody and epochs (§5.4-§5.5), and of the design for stated paths with signers as members: modules, searches with their sizes, and the latest results.
 
-Independent of any osis crate: an oracle, never patched to match the implementation (osis-perm and osis-engine dev-depend on it for their differentials). Module map and API: `src/lib.rs`; findings behind the role timeline: notes/role-timeline.md; disputes: notes/disputes.md.
+Independent of any osis crate: an oracle, never patched to match the implementation (osis-perm and osis-engine dev-depend on it for their differentials). Module map and API: `src/lib.rs`; findings behind the role timeline: notes/permissions.md; disputes: notes/disputes.md.
 
 ## Searches
 `cargo run --bin roles-model -- <samples> <mode>`; random searches split their samples over every core, exhaustive ones their families.
@@ -10,7 +10,7 @@ Tests: the hand worlds are default tests; every sampled search (random worlds, f
 
 | Mode | Size | Checks |
 |---|---|---|
-| `joint`, `edges`, `disputes` | 2,000,000 | notes/role-timeline.md, notes/disputes.md |
+| `joint`, `edges`, `disputes` | 2,000,000 | notes/permissions.md, notes/disputes.md |
 | `addenda` | 1,000,000 (4 min) | notes/addenda.md, Addenda model |
 | `addenda-exh` | 0 (the cover family, then 2.83M worlds, 11 min) | as above |
 | `addenda-covers` | 0 (the cover family alone, 38,656 worlds, 8 s) | as above, Cover rules |

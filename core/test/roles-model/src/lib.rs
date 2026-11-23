@@ -1,5 +1,5 @@
 //! Throwaway model of the role rules (spec/permissions.md §5; findings in
-//! notes/role-timeline.md). Independent of any real implementation: a differential oracle for
+//! notes/permissions.md). Independent of any real implementation: a differential oracle for
 //! osis-perm. Patched only to follow the spec where it had simplified it (osis-perm's
 //! differential runs exposed each): `joint` judges a demotion against the edge restored as
 //! if the holder still held its role (spec §5.1) and treats removing a holder one is admin of

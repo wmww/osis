@@ -597,7 +597,7 @@ mod tests {
         assert_order_independent(&h, 1 << 2);
         // n1 lowering its own edge on A1 (admin to write) instead: no seed (R's audit drops
         // it as an unlisted write of a class n1 fell through, which gives the genesis edge
-        // back: the accepted cost of auditing self-removals, notes/role-timeline.md).
+        // back: the accepted cost of auditing self-removals, notes/permissions.md).
         h.genesis[1][1] = Admin;
         h.writes[0].role = Write;
         let s1 = side(&h, 1 << 2);
