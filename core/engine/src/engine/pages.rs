@@ -2603,9 +2603,9 @@ mod tests {
                         let (long, range) = received.iter().rev().find(|x| reset && x.0).copied().unwrap_or(received[at]);
                         long_strips += usize::from(long);
                         let pred = move |d: &Dot| d.origin().src == sess(2) && (range.lo..range.hi).contains(&d.origin().ctr);
-                        st.strip(&pred);
+                        st.remove_gone(&pred);
                         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-                        f.strip(&pred);
+                        f.remove_gone(&pred);
                         let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
                         unit = u;
                         idx = i.unwrap();

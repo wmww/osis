@@ -3,7 +3,7 @@
 use crate::roles::{self, Hop, Timeline, World};
 use crate::thing_history;
 use crate::types::*;
-use crdt_model::death::{self, covers, holds, keys, supersedes, valued, winning};
+use crdt_model::death::{self, covers, holds, keys, supersedes, winning};
 use crdt_model::origins::Origins;
 use crdt_model::writes::{writes, Name, Step};
 use std::collections::{BTreeMap, BTreeSet};
@@ -282,23 +282,19 @@ impl Dots {
     pub fn commit(&self, t: ThingId, a: Aspect, d: &Dot) -> Option<CommitId> {
         self.ranged.get(&(t, a)).and_then(|o| o.of(d)).or_else(|| self.commits.of(d)).copied()
     }
-    /// The commits whose values `f` on `(t, a)` holds value-less (spec/crdt.md §4.7).
-    pub fn valueless(&self, t: ThingId, a: Aspect, f: &Frag) -> BTreeSet<CommitId> {
-        death::valueless(f).iter().filter_map(|s| self.commit(t, a, &s.dot)).collect()
-    }
-    /// `f` with the values of the commits `drop` names stripped (spec/crdt.md §4.7).
+    /// `f` without the writes of the commits `drop` names (gone, spec/crdt.md §4.7).
     pub fn strip(&self, t: ThingId, a: Aspect, f: &Frag, drop: &dyn Fn(CommitId) -> bool) -> Frag {
         let mut f = f.clone();
-        f.strip(&|d| self.commit(t, a, d).is_some_and(|c| drop(c)));
+        f.remove_gone(&|d| self.commit(t, a, d).is_some_and(|c| drop(c)));
         f
     }
-    /// The writes of `f` carrying a value of a commit `drop` names, by `death::key`, with it.
+    /// The writes of `f` of a commit `drop` names (gone, spec/crdt.md §4.7), by `death::key`, with it.
     pub fn values_of(&self, t: ThingId, a: Aspect, f: &Frag, drop: &dyn Fn(CommitId) -> bool) -> Vec<(Name, CommitId)> {
         writes(f)
             .into_iter()
-            .filter_map(|(n, w)| {
+            .filter_map(|(n, _)| {
                 let c = self.commit(t, a, &death::stamp(&n).dot)?;
-                (drop(c) && valued(&w)).then(|| (death::key(&n), c))
+                drop(c).then(|| (death::key(&n), c))
             })
             .collect()
     }
@@ -729,14 +725,10 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     let valid_m = o.valid.clone();
     let vl = |c: CommitId, t: ThingId, a: Aspect| vls.contains(&(c, t, a));
 
-    // A body whose own writes are value-less with no reason (a purge that fell) counts as never
-    // received (spec/permissions.md §6). One this node stripped of another delta's values stays
-    // held: its value-less copies yield to a valued one (spec/crdt.md §4.7 Join). A text creation
-    // its own commit inserted and deleted, kept because another write of the delta anchors at it,
-    // comes without its char (spec/crdt.md §4.5): that is no value-less write (`death::valueless`).
-    let never_received = |c: &Commit, p: &Part| -> bool {
-        c.kind == CommitKind::Content && !vl(c.id, p.thing, p.aspect) && body(p).is_some_and(|f| dots.valueless(p.thing, p.aspect, f).contains(&c.id))
-    };
+    // A content body held without its own writes (`Part::stripped`) with no reason (gone for a
+    // purge that fell) counts as never received (spec/permissions.md §6). One this node stripped of
+    // another delta's writes stays held.
+    let never_received = |c: &Commit, p: &Part| -> bool { c.kind == CommitKind::Content && !vl(c.id, p.thing, p.aspect) && body(p).is_some() && p.stripped.contains(&c.id) };
 
     // Snapshot validity and contribution.
     let snap_ok = |c: &Commit, i: usize| valid_m.get(&(c.id, i)) == Some(&true);
@@ -791,8 +783,9 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
 
     // Replaced bodies (spec/commits.md §5 Bodies and deaths): a held valid body holding a write
     // dead in the state (not held there, or held there and not winning, spec/crdt.md §4.8),
-    // joining into the state leaving it unchanged (the write is dead, not un-merged). An expiring delta is judged with its values value-less on both sides (a
-    // snapshot carries them so, spec/crdt.md §8): replaced only once none of its values lives.
+    // joining into the state leaving it unchanged (the write is dead, not un-merged). An expiring delta is judged
+    // against the state without its writes (a snapshot carries none of them, spec/crdt.md §8): replaced only once
+    // others' writes supersede all of it.
     for c in view.iter().filter(|c| !c.is_role()) {
         for (i, p) in c.parts.iter().enumerate() {
             let Some(f) = body(p) else { continue };
@@ -816,7 +809,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
                 continue;
             }
             let own = |x: CommitId| vl(x, t, a) || (x == c.id && c.expires.is_some());
-            let b = dots.strip(t, a, f, &own);
+            let b = dots.strip(t, a, f, &|x| vl(x, t, a));
             let st = if c.expires.is_some() { dots.strip(t, a, st, &own) } else { st.clone() };
             // a write it holds that is dead in the state: not held there, or winning in the body
             // and held there but not winning (spec/crdt.md §4.8: a text element's creation under

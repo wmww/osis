@@ -423,11 +423,7 @@ impl Engine {
     pub fn value_held_of(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<String>> {
         let Some((h, ai)) = self.core.ix.commits.get(c).and_then(|m| Some((m.header.clone(), m.aspect(tid, ak)?))) else { return Ok(None) };
         let owned = crate::retention::writes_of(&h, c, ai);
-        let carries = |f: &osis_crdt::Fragment| {
-            let mut g = f.clone();
-            g.strip(&|d| owned.iter().any(|o| o.owns(d)));
-            g != *f
-        };
+        let carries = |f: &osis_crdt::Fragment| f.holds_dots(&|d| owned.iter().any(|o| o.owns(d)));
         if self.state(tid, ak)?.is_some_and(|f| carries(&f)) {
             return Ok(Some("the state".into()));
         }

@@ -103,7 +103,7 @@ fn carried(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &Header,
     let Some(dedup) = tx.core.dedup(&a.tid) else { return Err(()) };
     let Some(Decoded::Snapshot(snap)) = verify_waiting(tx, id, part, h, &dedup)? else { return Ok(None) };
     let mut f = snap.fragment.clone();
-    f.strip(&|d| super::sorted_owns(&list, d));
+    f.remove_gone(&|d| super::sorted_owns(&list, d));
     if f == snap.fragment {
         return Ok(None);
     }
@@ -182,7 +182,7 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     // done: stripped and emptied; else it goes (spec/commits.md §5; parked: spec/versioning.md §2)
     let done = match verify_waiting(tx, id, p, h, &dedup) {
         Ok(Some(Decoded::Delta(mut d))) => {
-            d.fragment.strip(&|x| o.iter().any(|y| y.owns(x)));
+            d.fragment.remove_gone(&|x| o.iter().any(|y| y.owns(x)));
             let mut kept = leftover::get(tx, &a.tid, &a.ak, id, ai)?.map(|l| l.fragment).unwrap_or_default();
             kept.join(d.fragment);
             p.delta = emptied();
@@ -289,7 +289,7 @@ pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, 
             continue;
         }
         let own = writes_of(&h, id, ai);
-        if let Some(k) = make_leftover(tx, id, ai, &own, &kept, false)? {
+        if let Some(k) = make_leftover(tx, id, ai, &own, &kept)? {
             changed.insert(k);
         }
         if let Some(a) = h.aspects.get(ai)

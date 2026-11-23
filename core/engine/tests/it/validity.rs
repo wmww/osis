@@ -1622,53 +1622,6 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
     }
 }
 
-// spec/crdt.md §4.7 (Join: the copy with the value wins over the copy without),
-// spec/permissions.md §5.2: Carol's snapshot carries Bob's write value-less, as an honest one
-// taken after a purge not yet seen here would. Where Bob's commit is held its value stays;
-// a node holding only the snapshot reads the write as absent until it holds the commit.
-// spec/commits.md §5 (a value-less write of the body): covering copies: payload compared only where the body's write has one:
-// the value-less copy is covered by a later snapshot holding the write valued, as joining it
-// changes nothing (else no honest snapshot would ever cover it while the write lives); covering
-// is the join test, so the value-less copy never covers the valued body.
-#[test]
-fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
-    use osis_crdt::{Writer, create};
-    let (mut lp, d, b, _) = setup();
-    let base = lp.commit_ids(0);
-    lp.advance(1_000);
-    let real = put(&mut lp, 1, d, &REG, &s("real"));
-    sync(&mut lp, 1, 0);
-    let h = lp.peers[1].engine.header(&real).unwrap();
-    let reg = ak("t:reg.0");
-    let lo = h.aspects.iter().find(|x| x.tid == d && x.ak == reg).unwrap().lo;
-    let mut w = Writer::new(h.ts, h.form.own_source(b, osis_base::CommitId([0; 32])), lo);
-    let mut f = create(&mut w, &osis_crdt::AnyView, &s("real")).unwrap();
-    f.strip(&|_| true);
-    lp.advance(1_000);
-    let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
-    let forged = forge_snapshot(&mut lp, 2, d, &reg, now, f);
-    let vl = applied(lp.peers[0].receive(&forged, Vec::new()).unwrap());
-    lp.peers[0].reexamine().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("real")), "the held value wins");
-    lp.advance(1_000);
-    let e = &mut lp.peers[0].engine;
-    let later = e.snapshot(&d, &reg).unwrap().unwrap();
-    assert_eq!(e.covered(&later, &vl, &d, &reg).unwrap(), Some(true), "the value-less copy is covered");
-    assert_eq!(e.covered(&later, &real, &d, &reg).unwrap(), Some(true), "the valued body is covered");
-    assert_eq!(e.covered(&vl, &real, &d, &reg).unwrap(), Some(false), "a value-less copy never covers a valued body");
-    push_reader(&mut lp, d, 0x5fe1);
-    for p in packages_for(&mut lp, 0, 3).iter().filter(|p| base.contains(&p.id)) {
-        lp.deliver(3, p).unwrap();
-    }
-    lp.peers[3].receive(&forged, Vec::new()).unwrap();
-    assert_eq!(lp.peers[3].engine.get(&d, &reg).unwrap(), None, "the snapshot alone: absent");
-    let rpk = package_for(&mut lp, 1, 3, real);
-    lp.deliver(3, &rpk).unwrap();
-    lp.peers[3].reexamine().unwrap();
-    assert_eq!(lp.peers[3].engine.get(&d, &reg).unwrap(), Some(s("real")), "with the commit");
-    assert_eq!(lp.peers[3].engine.state(&d, &reg).unwrap(), lp.peers[0].engine.state(&d, &reg).unwrap(), "states alike");
-}
-
 // spec/permissions.md §5.2, spec/commits.md §5 (compaction): Alice's commit C writes `x:m.0` and
 // `t:reg.0` (another purge-by class, another blob). A node that gets Alice's snapshot of `x:m.0`
 // and the blob of C without its `x:m.0` delta (dropped at the peer after compaction) holds C

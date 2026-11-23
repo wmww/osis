@@ -351,27 +351,30 @@ fn expired_delta_is_a_leftover_and_reads_absent_spec_commits_6() {
     assert!(evaluate(&act(&h, &o, None)).forbidden.is_empty());
 }
 
-// spec/crdt.md §4.7, §5.6: another delta's value inside an entry outlives the entry creation's expiry,
-// under that write's own copy of the key, and its body keeps its value
+// spec/crdt.md §4.7, §5.6: another delta's write inside an entry goes from the read with the entry
+// creation's expiry, as at a node that never held the creation; its body stays held whole
 #[test]
-fn other_write_outlives_an_expired_entry_spec_crdt_4_7() {
+fn other_write_goes_with_an_expired_entry_spec_crdt_4_7() {
     let mut c = content(10, MINT_ADMIN, 1, vec![part(MAP, PurgeBy::AuthorOrAdmin, vec![
         created(1, 10, 3), put(1, 10, 10, 3, 4)
     ])]);
     c.expires = Some(at(3));
     let w = content(11, MINT_ADMIN, 2, vec![part(MAP, PurgeBy::AuthorOrAdmin, vec![put(2, 11, 10, 3, 5)])]);
-    let h = held(4, vec![c, w]);
+    let h = held(4, vec![c, w.clone()]);
     let o = evaluate(&h);
     assert!(!matches!(o.fates[&(11, 0)], Fate::Leftover(_)), "{:?}", o.fates[&(11, 0)]);
-    assert_eq!(read(&h, MAP), map(&[(3, 5)]));
+    assert_eq!(read(&h, MAP), read(&held(4, vec![w]), MAP));
+    assert_ne!(read(&h, MAP), map(&[(3, 5)]));
     assert!(evaluate(&act(&h, &o, None)).forbidden.is_empty());
 }
 
-// spec/permissions.md §6 (Judgment): a leftover with no request dropping it counts as never received
+// spec/permissions.md §6 (Judgment): a leftover (a body without its own writes) with no request
+// dropping it counts as never received
 #[test]
-fn valueless_body_without_reason_is_never_received_spec_commits_5() {
+fn leftover_without_reason_is_never_received_spec_commits_5() {
     let mut c = reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 7);
-    c.parts[0].body = Body::Held(Delta::Writes(set_valueless(1, 10)));
+    c.parts[0].body = Body::Held(Delta::Writes(Frag::Register { reset: None, write: None }));
+    c.parts[0].stripped.insert(10);
     let h = held(2, vec![c]);
     assert_eq!(fate(&h, 10), Fate::NeverReceived);
     assert_eq!(read(&h, REG), None);
@@ -441,11 +444,11 @@ fn copy_leftover_drops_as_covered_spec_commits_5() {
     assert_eq!(fate(&h2, 15), Fate::MayDrop(DropWhy::Covered { by: 16 }));
 }
 
-// spec/permissions.md §6, spec/crdt.md §4.7 Join: a body stripped for a purge that no longer stands
-// stays held as its leftover: its value-less copy hides the write until the valued one joins
+// spec/permissions.md §6, spec/crdt.md §4.7: a snapshot stripped of a write for a purge that no longer
+// stands stays held as its leftover, without it, until the write's own body joins
 #[test]
 fn stripped_copy_of_a_fallen_purge_stays_held_spec_permissions_6() {
-    let mut s = snap(15, MINT_ADMIN, 2, REG, PurgeBy::Writer, vec![set_valueless(1, 10)]);
+    let mut s = snap(15, MINT_ADMIN, 2, REG, PurgeBy::Writer, vec![Frag::Register { reset: None, write: None }]);
     s.parts[0].stripped.insert(10);
     let h = held(3, vec![missing(reg(10, MINT_ADMIN, 1, REG, PurgeBy::AuthorOrAdmin, 7), 0), s.clone()]);
     assert_ne!(fate(&h, 15), Fate::NeverReceived);

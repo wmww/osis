@@ -165,8 +165,8 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, mut dead: Option<&mut Killed>) -> Result<Changes> {
     let _s = osis_base::costs::span("apply: join");
     tx.load_lazy(tid, ak)?;
-    // the state is held stripped and stripping commutes with join (spec/crdt.md §4.7): the
-    // one predicate, applied to what joins and to what a rebuild gives
+    // the state is the join of the held bodies without the gone writes (spec/crdt.md §4.7): the
+    // one predicate, applied to each body as it joins here and in a rebuild
     strip_valueless(tx.core, tid, ak, &mut delta);
     // a paged state loads only the pages the join touches
     let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
@@ -487,11 +487,9 @@ impl OwnedSet {
         }
         set
     }
-    /// Whether `f` carries a value of a write of theirs (`Fragment::strip` would change it).
-    fn valued_in(&self, f: &Fragment) -> bool {
-        let mut g = f.clone();
-        g.strip(&|d| self.owns(d));
-        g != *f
+    /// Whether `f` holds a write of theirs (`Fragment::remove_gone` would change it).
+    fn held_in(&self, f: &Fragment) -> bool {
+        f.holds_dots(&|d| self.owns(d))
     }
     /// `Owned::owns` of any of them.
     fn owns(&self, d: &osis_crdt::Dot) -> bool {
@@ -507,22 +505,25 @@ impl OwnedSet {
     }
 }
 
-/// Whether held part `ai` of `c` carries a value of a write of `owned` (`rebuild`'s invariant).
+/// Whether held part `ai` of `c` holds a write of `owned` (`rebuild`'s invariant).
 pub(crate) fn carries_any(tx: &mut Tx<'_>, c: &CommitId, ai: usize, owned: &[Owned]) -> Result<bool> {
     let set = OwnedSet::of(owned);
     let mut carries = false;
     super::each_held_piece(tx, c, ai, &mut |_, f| {
-        carries = carries || set.valued_in(&f);
+        carries = carries || set.held_in(&f);
         Ok(())
     })?;
     Ok(carries)
 }
 
-pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment) {
+/// Removes from body `f` of `(tid, ak)` the writes gone here (expired, purged: the value-less
+/// list, spec/crdt.md §4.7): applied to each body before it joins, never to a state (removal does
+/// not commute with join).
+pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, f: &mut Fragment) {
     if let Some(v) = core.ix.valueless.get(&(*tid, ak.clone()))
         && !v.is_empty()
     {
-        st.strip(&|d| crate::retention::sorted_owns(v, d));
+        f.remove_gone(&|d| crate::retention::sorted_owns(v, d));
     }
 }
 
@@ -1241,54 +1242,6 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     Ok(())
 }
 
-/// An expiry's change to `(tid, ak)` in place (spec/crdt.md §4.7: expiry of a delta equals the
-/// join with its values stripped, and strip commutes with join): the state held stripped of the
-/// values of `own`, the expired delta's writes, as a join changes it. The held set changed only by
-/// that delta's body turning its leftover, so this is `rebuild`'s result at O(the delta): `at`,
-/// its body before and after the strip, says where its writes sit (a paged state loads those
-/// pages). A rebuild asked in this batch already reads the leftover. Only while no held
-/// snapshot may carry a valued copy of those writes (`retention::snapshot::carried_meets`): a
-/// copy elsewhere would keep showing, so that expiry rebuilds instead.
-pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, own: &[Owned]) -> Result<()> {
-    if ak.signal() {
-        return Ok(());
-    }
-    let k = (*tid, ak.clone());
-    if tx.core.batched.as_ref().is_some_and(|b| b.contains_key(&k)) {
-        return Ok(());
-    }
-    let _s = osis_base::costs::span("expiry: strip");
-    // the state changes: held purge-on-replace bodies are judged again (`retention::settle_none`)
-    if crate::retention::history::of(tx.core, tid, ak).purges() {
-        tx.core.none_due.insert(k.clone());
-    }
-    tx.load_lazy(tid, ak)?;
-    let touch = crate::engine::pages::touch_of(at, tx.core.pages.get(&k));
-    tx.ensure_touch(tid, ak, &touch)?;
-    let Some(mut st) = tx.core.states.get_mut(&k).and_then(Option::take) else { return Ok(()) };
-    tx.core.touch();
-    tx.core.wrote(k.clone());
-    let refs = crate::engine::refs::indexed(ak).then(|| crate::engine::refs::Delta::reach(&st, at));
-    let roots = crate::retention::compact::roots(ak, &st, at);
-    let set = OwnedSet::of(own);
-    st.strip(&|d| set.owns(d));
-    // its value-less sequence elements a few bytes each; a paged state's records stay within
-    // their pages
-    if !tx.core.pages.contains_key(&k) {
-        st.compact();
-    }
-    let refs = refs.map(|(mut d, before)| {
-        d.after(&st, at, &before);
-        d
-    });
-    let after = crate::retention::compact::roots(ak, &st, at);
-    let st = tx.kept(tid, ak, st)?;
-    tx.set_state_touched(tid, ak, st, &touch, Shred::Yes)?;
-    crate::engine::refs::note(tx, tid, ak, None, refs.unwrap_or_default())?;
-    crate::retention::compact::Trigger::unlinked(tx, tid, ak, &roots, &after)?;
-    Ok(())
-}
-
 /// A covered drop's change to `(tid, ak)` (spec/commits.md §5 Covered): its coverer carries the
 /// writes of part `ai` of `c`, so the state keeps its value, and every local copy of the body
 /// goes. So the rows that held its writes are written again shredded, which makes their earlier
@@ -1394,6 +1347,8 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
     let mut settled = false;
     let mut fast: Option<Fragment> = None;
     let listed = carrying.as_ref().map(|(l, _)| OwnedSet::of(l));
+    // each body without the writes gone here, before it joins (spec/crdt.md §4.7)
+    let gone = tx.core.ix.valueless.get(&(*tid, ak.clone())).filter(|v| !v.is_empty()).cloned();
     for (ts, c) in &held {
         // a body stamped `ts` carries nothing stamped later (a snapshot's writes included,
         // spec/crdt.md §8)
@@ -1416,15 +1371,18 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
             continue;
         }
         let mut carries = false;
-        super::each_held_piece(tx, c, ai, &mut |_, f| {
+        super::each_held_piece(tx, c, ai, &mut |_, mut f| {
             if let Some(l) = &listed
                 && !carries
             {
-                carries = l.valued_in(&f);
+                carries = l.held_in(&f);
                 debug_assert!(snap || !carries, "content body {c:?} of {tid:?} {ak:?} holds a listed value: its own go at `make_leftover`, and only a snapshot copies another's");
             }
             if !valid {
                 return Ok(());
+            }
+            if let Some(v) = &gone {
+                f.remove_gone(&|d| crate::retention::sorted_owns(v, d));
             }
             if let Some(x) = fast.as_mut().filter(|_| !settled) {
                 x.join_into(f.clone(), None, &mut Changes::new());
@@ -1437,8 +1395,7 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
         }
     }
     debug_assert!(fast.as_ref().is_none_or(|x| *x == st), "a rebuild of {tid:?} {ak:?} stopped early: {fast:?}, all bodies {st:?}");
-    strip_valueless(tx.core, tid, ak, &mut st);
-    // written whole: its value-less sequence elements a few bytes each
+    // written whole: its dead sequence records a few bytes each
     st.compact();
     Ok((!st.is_empty()).then_some(st))
 }

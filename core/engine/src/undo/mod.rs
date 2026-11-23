@@ -294,7 +294,7 @@ pub(crate) type Copies = BTreeSet<Option<u64>>;
 /// value-less (`strip_valueless`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mut pre: Fragment, schema: Option<&osis_schema::Schema>, ak: &Ak, wall: u64, expiry: &dyn Fn(&Dot) -> Option<u64>) -> Result<Option<(Fragment, CounterRange, Copies)>> {
-    pre.strip(&|d| expiry(d).is_some_and(|t| t <= wall));
+    pre.remove_gone(&|d| expiry(d).is_some_and(|t| t <= wall));
     let out = match schema.and_then(|s| s.view(ak.as_str())) {
         Some(v) => osis_crdt::undo(&mut w, undone, state, &pre, &v)?,
         None => osis_crdt::undo(&mut w, undone, state, &pre, &AnyView)?,
@@ -359,7 +359,7 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, ts: Ts) -> Result<Option<(Vec<
         let held = carried.clone();
         let strip = move |core: &Core, f: &mut Fragment| {
             crate::apply::strip_valueless(core, &tid, &ak, f);
-            f.strip(&|d| copied_expiry(core, &tid, &ak, &held, d).is_some_and(|t| t <= wall));
+            f.remove_gone(&|d| copied_expiry(core, &tid, &ak, &held, d).is_some_and(|t| t <= wall));
         };
         let pre = kept_before(tx, &a.tid, &a.ak, (h.ts, target), &delta, &strip)?;
         #[cfg(debug_assertions)]

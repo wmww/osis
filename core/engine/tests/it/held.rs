@@ -629,12 +629,12 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
     }
     let dots = cv.dots();
     let mut held = hm::Held { now: e.now().0, me, records, commits, dots, external_fires: hm::ExternalFires::Enabled };
-    let ds = hm::Dots::new(&held);
+    // a content part held as its leftover is held without its own writes (a snapshot's strips
+    // only others', which the model reads from the request or expiry alone)
     for (sync_id, i) in leftovers {
         let c = held.commits.iter_mut().find(|c| c.id == sync_id).unwrap();
-        let p = &mut c.parts[i];
-        if let hm::Body::Held(hm::Delta::Writes(f)) = &p.body {
-            p.stripped = ds.valueless(p.thing, p.aspect, f);
+        if c.kind == hm::CommitKind::Content {
+            c.parts[i].stripped.insert(sync_id);
         }
     }
     held.commits.sort_by_key(|c| c.id);

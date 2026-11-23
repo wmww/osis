@@ -18,11 +18,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// those it holds valued (`Fragment::each_valued`) and value-less. The commits it carries copies
 /// of are the held ones whose counters on the aspect meet a write (`carried`, `carriers`): what
 /// the body holds, never what its frontiers or `Absorbed` claim (spec/crdt.md §8). An honest
-/// snapshot holds an expiring write value-less (§8), so its valued counters need not meet one; an
-/// expiry strips the state in place only where no held snapshot holds a value of its writes
-/// (`meets`), else it rebuilds, which finds the carriers. The value-less counters say where a
-/// cover holds a write value-less (`covered_join`: such a cover covers no body of it not held
-/// value-less here).
+/// snapshot holds no write of an expiring delta (§8); one holding a write gone here is held as its
+/// leftover (`meets`). The value-less counters say where a cover holds a write value-less
+/// (`covered_join`: such a cover covers no body of it not held value-less here).
 ///
 /// Memory: one `(lo, hi)` per run of consecutive counters of a source, in each of the three: a
 /// session writing the aspect alone is one run however many writes the body holds of it; one
@@ -88,9 +86,9 @@ impl Carried {
         f.valueless_dots(&mut none);
         none.iter().for_each(|d| self.valueless.add_dot(d));
     }
-    /// Whether it holds a value of a write of `own`.
+    /// Whether it holds a write of `own`.
     pub(crate) fn meets(&self, own: &[Owned]) -> bool {
-        self.valued.meets_owned(own)
+        self.writes.meets_owned(own)
     }
     /// Whether it holds a write of `own` value-less.
     pub(crate) fn meets_valueless(&self, own: &[Owned]) -> bool {
@@ -163,15 +161,10 @@ pub(crate) fn carriers(core: &Core, c: &CommitId, v: &crate::engine::View) -> Ve
     out
 }
 
-/// Whether a held snapshot of `(tid, ak)` may carry a value of a write of `own` (`Carried`).
-pub(crate) fn carried_meets(core: &Core, tid: &Tid, ak: &Ak, own: &[Owned]) -> bool {
-    core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|s| s.4.meets(own))
-}
-
-/// The state of `(tid, ak)` a snapshot of it carries: this node's state with every value whose
-/// lifetime ends held value-less (spec/crdt.md §8: an unexpiring snapshot carries no value of a
-/// delta with an expiry, nor one it holds only from an expiring snapshot, so its copy never
-/// outlives the value; covers one only once it is held value-less, `covered`).
+/// The state of `(tid, ak)` a snapshot of it carries: this node's state without every write whose
+/// lifetime ends (spec/crdt.md §4.7, §8: an unexpiring snapshot carries no write of a delta with
+/// an expiry, nor one it holds only from an expiring snapshot, so its copy never outlives the
+/// write; so it covers no such delta, nor what only those writes superseded, `covered`).
 pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
     let mut expiring: Vec<Owned> = tx
         .core
@@ -196,7 +189,7 @@ pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
         // sorted: a lookup per dot (`sorted_owns`), not a scan of every expiring delta
         expiring.sort();
         expiring.dedup();
-        st.strip(&|d| super::sorted_owns(&expiring, d));
+        st.remove_gone(&|d| super::sorted_owns(&expiring, d));
     }
     Ok(Some(st))
 }

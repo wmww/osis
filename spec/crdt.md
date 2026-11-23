@@ -12,7 +12,7 @@ Notation: `{k: v}` maps in this file have int keys, sorted. `A < B` on stamps is
 - A **delta** is a fragment of the same grammar as a state. Applying a delta is `join`. Join is commutative, associative and idempotent, so delivery order, duplication and partial receipt do not matter.
 - A **reset** is a stamp stored in a fragment or collection element; every write under it with a smaller stamp is dropped. It is the only removal mechanism. Removal drops writes, and a record left with no write goes (§4.2): a newer insert anchored into removed content is placed at its virtual anchor (§6.1), as at a node that never held that content.
 - **Removal is final.**
-  - A map entry or list element is **live** while its creation is held and no reset reaches it, and it holds a live value: its creation's, or one written inside it (§4.3, §5.6, §5.7).
+  - A map entry or list element is **live** while its creation is held and no reset reaches it (§5.6, §5.7).
   - An enum payload shows only while its case is current (§5.4).
   - A write into an element a reset reached stays in the state, hidden, until a reset prunes it. It never shows the element again; only a new creation (a fresh dot) does.
   - At a position (a register, a struct's field, an aspect root) the later write wins: one concurrent with a reset there shows if its stamp is at or above the reset's (§4.2).
@@ -102,12 +102,12 @@ Ci       := uint                         ; commit index: 0 = this commit, i = Co
 Dot      := ctr | [Src, ctr]             ; ctr alone means own source
 Stamp    := Ci | [Ci, ctr]               ; Ci alone means that commit's base counter (own: lo)
 R        := Opt(Stamp)                   ; reset
-W        := Opt(Stamp) | [Stamp, false]  ; explicit presence stamp, see §3.3; [Stamp, false]: value-less (§4.7)
+W        := Opt(Stamp)                   ; explicit presence stamp, see §3.3
 Anchor   := 0 | Dot                      ; 0 = HEAD
 Value    := any osis canonical value
 
 Fragment := Register | Bag | Struct | Enum | Set | Map | Seq | Slots
-Register := [0, R] | [0, R, Stamp] | [0, R, Stamp, Value]   ; [0, R, Stamp]: value-less write (§4.7)
+Register := [0, R] | [0, R, Stamp, Value]
 Slots    := [10, Opt(Register), [Fragment*]]  ; §7: register slot, then non-register slots by ascending encoding id, at least two slots in all
 Bag      := [1|2|3, R, W, [Elem*]]           ; Elem as in Set; the value register holds int|float (anything else, only from §7, reads as nothing)
 Struct   := [4, R, W, {field_id: Fragment}]          ; or paged: [Link+], §8
@@ -117,7 +117,7 @@ Seen     := [Dot, n]                         ; the dots of Dot's source with cou
 Map      := [7, R, W, [Entry*]]              Entry := [Dot, Opt(Ci), R, Value, Opt(Fragment)] | [Dot, Opt(Ci), R, Opt(Fragment)]   ; Value is the key; omitted: key not carried. Opt(Ci) here is the bare Ci or nothing: the entry's creation commit (§5.6), carried for a creation of another commit than this one
 Seq      := [8|9, R, W, [Run*]]
 Run      := [Dot, n, Creation, Content, [PosW*], [FlagW*]]
-Creation := [] | [Anchor, [[Ci, k]*]] | [Anchor, [[Ci, k]*], false]   ; segments: k consecutive elements created by commit Ci; sum k = n; false: list creations held value-less (§4.7)
+Creation := [] | [Anchor, [[Ci, k]*]]   ; segments: k consecutive elements created by commit Ci; sum k = n
 Content  := text: string | []                ; list: [Fragment*] | []; a text run carrying no char has [], never ""
 PosW     := [i, Stamp, Anchor] | [i, Stamp, Anchor, Stamp]   ; 0 <= i < n; the fourth: the write's sibling key (§5.7), its ts below the stamp's
 FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]   ; inclusive range, 0 <= i_from <= i_to < n; the string (text only): an undelete's chars, one per element of the range (§5.7)
@@ -138,7 +138,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
 - **`Content`** lists, in order, the content of the run's elements that **carry content**:
   - text: the creation's char (one Unicode scalar value) of each element not deleted (§5.7: its winning flag write is no delete) after the run's `FlagW` are applied (an undelete's char rides its `FlagW`);
   - list: one fragment per element whose fragment is non-empty (§4.2 Emptiness) after the run's `FlagW` (element resets, §5.7) are applied. A list run is uniform in this (rule 3), so a list `Content` is empty or has exactly `n` fragments;
-  - `[]` means no content carried for any element (a pure flag or position delta, or, with a `Creation`, value-less text creations, §4.7).
+  - `[]` means no content carried for any element (a pure flag or position delta, or, with a `Creation`, text creations whose chars the writer no longer holds under a winning flag write, §5.7).
 - **`PosW`** are position writes other than the creation write; one stamped with its element's dot is bad input (a dot is one write, §2.1: that element's creation).
 - **`FlagW`** are deleted-flag writes for text, an undelete's with the chars it carries, and element resets (`true` only) for lists (§5.7).
 
@@ -148,7 +148,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
 - A sequence element's creation `ts` is its run segment's commit (§3.2 `Creation`).
 - A set or bag element's creation `ts` is its value register's stamp, written only by its creation (§5.5).
 
-**Keys.** Set elements have no key; their value is a `Register` fragment. A map entry record is identified by its dot and its key (§5.6): its creation and nested writes carry the key, each as its own value; a removal carries it only in a role-class aspect (spec/data-model.md §9), else it is the dot's key-erased record (keyless form, §4.7, §5.6).
+**Keys.** Set elements have no key; their value is a `Register` fragment. A map entry record is identified by its dot and its key (§5.6): its creation and nested writes carry the key, each as its own value; a removal carries it only in a role-class aspect (spec/data-model.md §9), else it is the dot's keyless record (§5.6).
 
 ### 3.3 Canonical rules (byte-for-byte determinism)
 1. **Tables.**
@@ -172,7 +172,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
    - A creation run extends over consecutive dots of one source as long as:
      - each element's creation write exists in the state;
      - `e_i` was created anchored at `e_{i-1}`;
-     - "carries something" (text: deleted, §5.7, or has a char; list: has a reset or a non-empty fragment) and, for lists, "has a non-empty fragment" and "held value-less" are the same for all.
+     - "carries something" (text: deleted, §5.7, or has a char; list: has a reset or a non-empty fragment) and, for lists, "has a non-empty fragment" are the same for all.
    - A non-creation run extends over consecutive dots that all have no creation write, no position writes, the same deleted write or element reset, and the same "carries something" and, for lists, "has a non-empty fragment".
    - Runs are formed first. A list run is then cut into consecutive wire runs after each element at which the canonical encodings of its `Content` fragments since the last cut (as written, links included) sum to `CHUNK_MAX` bytes or more. Each piece after the first is a creation run anchored at the previous element (or a non-creation run), and a cut does not restart the `MAX_RUN` count.
 4. `W` is encoded whenever the state holds a surviving explicit presence write (§4.3). A `Slots` position lists its slots in the order of §3.2 (§7); a position with one slot is that slot, never a `Slots`.
@@ -190,7 +190,6 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
      - a list run whose `Content` reaches `CHUNK_MAX` bytes before its last element;
      - a `FlagW` or `PosW` index out of range;
      - a `FlagW` `false` in a list run;
-     - a `Creation` marked value-less in a text run;
      - a `FlagW` string on a `true` write or whose length differs from its range;
      - a run carrying no write (no `Creation`, `Content`, `PosW` or `FlagW`);
      - a text `Content` on a run without a `Creation`;
@@ -236,9 +235,9 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
 ### 4.1 Join
 `join(A, B)` where both are the same encoding: take the union of all writes, keeping for each register the write with the greatest stamp, for each reset the greatest stamp, for each collection the union of elements by dot (joining records of one dot recursively), then **prune** (§4.2). Different encodings: §7. Join of a state with a delta is the same operation; a state is just a fragment with every stamp written in full.
 
-**Copy order.** Two copies of one write (equal stamps; a valid snapshot's copy joins beside the write's own delta's, never compared with it, spec/permissions.md §5.2, so copies may differ) join part by part, each part to the greater. What expiry and purge take from a copy (its key, its value, §4.7) is a part of its own, so it decides no other part:
-1. in a map dot's records (§5.6), the key: the greater (canonical encoding, bytewise; the key-erased record's copy carries none, lowest); a map write's key is its own value;
-2. the value: a valued copy over a value-less one (§4.7; a `W` or a list creation too), then the greater: a register value by its canonical encoding, bytewise (spec/data-model.md §5, links by their bytes); an enum case by its id; a text char by its scalar value;
+**Copy order.** Two copies of one write (equal stamps; a valid snapshot's copy joins beside the write's own delta's, never compared with it, spec/permissions.md §5.2, so copies may differ) join part by part, each part to the greater. Each part is decided on its own:
+1. in a map dot's records (§5.6), the key: the greater (canonical encoding, bytewise; the keyless record's copy carries none, lowest); a map write's key is its own value;
+2. the value: the greater: a register value by its canonical encoding, bytewise (spec/data-model.md §5, links by their bytes); an enum case by its id; a text char by its scalar value;
 3. the rest: a creation or position write by its anchor (`HEAD` lowest, then dot order, §2.2), then a position write by its carried sibling key (none lowest, §5.7); a flag write `true` over `false`, its undelete's char (a value) then taken from the copies of that flag.
 
 A text char is a payload of the write carrying it: the creation's goes with the creation's stamp, an undelete's with its flag write's (§5.7). Copies of one creation under different stamps are one write (§5.7 Join). In a `Slots` position, a text slot's embedded records follow the register's winning copy (§7).
@@ -256,12 +255,12 @@ Every fragment has an **effective reset** `E = max(E_parent, own R)`, with `E_ro
 - A delta, after pruning against the state it joins, may contribute nothing.
 
 ### 4.3 Presence
-- A register is present iff it holds a surviving valued write (a value-less winner, §4.7, is absent).
+- A register is present iff it holds a surviving write.
 - A composite (bag, struct, enum, set, map, seq) has a **presence stamp** `written`: the greatest stamp among all writes inside it, plus any explicit `W` write. It is present iff `written` survives (`written >= E`).
   - **Counted**: its children's writes, element creations (a map entry's: the keyed record's, §5.6), element resets, value removals (§5.5), nested resets, case writes, position and flag writes.
-  - **Excluded**: its own reset and value-less writes (§4.7).
-  - **Sequences**: a creation counts iff it is valued (text: its char is held; list: not held value-less) or the element has a flag write (text: a deleted char is never on the wire, an undelete carries its own) or is reset (list).
-  - `written` is a function of the surviving writes; only explicit `W` writes are stored, so expiry can lower it.
+  - **Excluded**: its own reset.
+  - **Sequences**: a creation counts iff it is valued (text: its char is held; list: always) or the element has a flag write (text: a deleted char is never on the wire, an undelete carries its own) or is reset (list).
+  - `written` is a function of the surviving writes; only explicit `W` writes are stored, so a write going (§4.6, §4.7) can lower it.
 - A fragment **holds a live value** iff it is a register whose write is valued, an enum whose case write is valued, a composite with a valued `W`, a set with a live element (§5.5), a bag with a present element, a map with a live record (§5.6), a sequence with a live element (§5.7), a struct one of whose fields holds one, or a `Slots` position whose chosen slot (§7) holds one. Resets, flags, positions and value-less writes are none.
 - An aspect is present on a thing iff its root fragment is present. `aspects.0` reads the present ones.
 - A writer emits an explicit `W` (a commit-level write at the delta stamp, §2.3) only when creating or replacing a composite with no content writes in the same delta (an empty set, an empty struct). `W` is a write like any other for frontiers and un-merge, and is always carried on the wire while it survives (§3.3 rule 4).
@@ -281,14 +280,14 @@ A delta is a state fragment, so a commit carries the **net effect** of the ops b
 ### 4.6 Undo and un-merge (of invalid deltas)
 An **undo commit** sets `undoes` (spec/commits.md §7). Its deltas are ordinary writes the undoing node chooses; a receiver judges it like any content commit (spec/permissions.md §5.2) and never derives its writes again. The undoing node:
 - MUST hold the rights any write of the same deltas needs (the required role on every aspect it writes), else there is no undo; likewise for ephemeral undo and redo.
-- MUST NOT write back content it holds value-less (§4.7: expired by the undo's `wall_ms(ts)`, named by a purge request it holds, an ephemeral write it no longer holds), nor content outside kept history, and MUST NOT undo a commit outside it (spec/commits.md §7).
+- MUST NOT write back content of writes gone there (§4.7: expired by the undo's `wall_ms(ts)`, named by a purge request it holds) or of an ephemeral write it no longer holds, nor content outside kept history, and MUST NOT undo a commit outside it (spec/commits.md §7).
 - MUST give the commit an expiry no later than that of any write whose content it writes back (a receiver does not check it), and MUST NOT write back in one commit the content of writes that expire at different times (no expiry counting as one): such an undo is refused until the sooner ones have expired.
 - SHOULD make each aspect the undone commit wrote read as it did just before that commit, as kept history gives that state (spec/commits.md §7), where only undo commits changed it since. An undo of a commit that made a thing writes nothing on the things it made (spec/commits.md §7): it reverts the commit's other parts, the strong it wrote among them, and the thing leaves the node closure where nothing else holds it (spec/sync-set.md §3 Release).
 - MUST NOT undo a delta whose inverse **restores** replaced content unless every part it may have replaced is kept (spec/commits.md §7). Judged by the delta's writes alone: it restores when it holds a register write, a case write, a reset, an element or record removal (a set's value removal included), a sequence position or flag write, or such a write nested in a record it did not create; taking away its own creations (a sequence insert, a set or bag element, a map record, with all nested in them) restores nothing.
 
 Writes of deltas the node judges invalid are not undone. A signal delta is written back as nothing: a signal reads absent before it (spec/commits.md §7). Redo is an undo of the undo commit.
 
-**Un-merge** (revocation, spec/permissions.md §5): the state after un-merging is the join of every body the node holds for the aspect, leftovers (§4.7) included, with the writes of invalid deltas removed.
+**Un-merge** (revocation, spec/permissions.md §5): the state after un-merging is the join of every body the node holds for the aspect, with the writes of invalid deltas and the gone writes (§4.7) removed.
 - **Removed.** Exactly the writes of invalid deltas are removed from each delta body, their record creations included. Others' writes nested in a record they created stay: the record, with no creation held, reads as at a node that never held the invalid delta (§5.6 Live, §5.7 Live). A write belongs to a delta as in §4.7, `Derived` dots to the delta of the underlying dot.
 - **A valid snapshot's copies** of those writes stay (spec/permissions.md §5.2): a valid snapshot's body joins whole, so the state holds the snapshot's copy alone, with whatever payload it carries.
 - **Function of the held set.** The result is a function of the held set, never of the order in which the commits and the revocation arrived. A body dropped as covered is held through its valid coverers' copies (spec/commits.md §5); once no valid coverer carries it, it is missing again (spec/permissions.md §5.2) and, until a copy arrives, the node holds less of it than one that kept it.
@@ -314,8 +313,9 @@ Rules:
 A write is **dead** at a node once the join has superseded it:
 - pruned by a reset (§4.2), a register's reset implied by its later write (§5.1) included;
 - beaten as a register, case, flag or position winner by a greater stamp;
-- its element deleted or tombstoned, or a set element hidden by a value removal (§5.5);
-- its value gone by expiry (§4.7).
+- its element deleted or tombstoned, or a set element hidden by a value removal (§5.5).
+
+A gone write (§4.7) is not dead: it is not held.
 
 **Which write.** A write is its position, kind and stamp, never its stamp alone (one op stamps many writes: every value of a map set). Positions: a struct field, an enum payload, a set or bag element, a set's value removal by its dot (§5.5), a map entry by its dot (the dot's records are one entry, §5.6), a sequence element per element (a range record is one per element), and the content of an entry or element, below that one's own writes; a `Slots` position's slots are one position, a slot's embedding of the register the register's writes (§7). A fragment's **winning writes** are the writes it holds but:
 - of a sequence element's position writes only `cur`, when it is not the creation's own (`prev` is beaten);
@@ -327,13 +327,13 @@ Copies of one write (§4.1) are one write: what copy order decides (a key, a val
 
 A write of fragment `A` is dead in `A ⊔ B` iff it wins in `A` and not in `A ⊔ B`.
 
-**When.** It dies at the earliest `ts` among the valid writes the node holds that supersede it, or at T by expiry (which dates no body, spec/commits.md §5).
+**When.** It dies at the earliest `ts` among the valid writes the node holds that supersede it.
 - Each is judged against the write alone, so the order of arrival does not matter; a write is held while any held body holds a copy of it (its own commit, or a snapshot carrying it; a register write also by a copy of its embedding, §7, which supersedes as the register write does).
 - A write's `ts` is its own commit's, also when a snapshot carries it: a valid snapshot's copy of a write whose own delta is held invalid counts as the write itself.
 - A text element's creation dies only by a delete beating the latest undelete of the element the node holds: stamped after it, or a copy of its stamp (a delete wins the tie, §4.1).
 
-**Revival.** Un-merge (§4.6) is the only way a dead write revives.
-- The invalid deltas' writes supersede nothing, so a write only they superseded has no death.
+**Revival.** Un-merge (§4.6) and gone writes (§4.7) are the only ways a dead write revives.
+- The invalid deltas' writes and the gone writes supersede nothing, so a write only they superseded has no death.
 - A valid write un-merged with the record it sits in still dies at a valid superseder (a reset on that record).
 
 **Hidden writes.** A write hidden in an element that is not live (§5.6, §5.7 Live), or in a payload of an enum case that is not current, is not dead by that: it dies when a reset prunes it, or a delete beats a text undelete, a compacting writer's sweep included (spec/sync-compaction.md §1).

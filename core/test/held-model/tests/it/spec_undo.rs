@@ -90,9 +90,9 @@ fn invalid_writes_are_not_undone_spec_crdt_4_6() {
 }
 
 // spec/crdt.md §4.7, §5.7: an undelete's char is its own value: it shows while the element's creation is
-// held, also once the creator's value is purged, and goes with the creation when that is un-merged
+// held, and goes with the creation when that is un-merged or purged
 #[test]
-fn undelete_char_is_its_own_value_spec_crdt_4_7() {
+fn undelete_char_goes_with_its_creation_spec_crdt_4_7() {
     let undel = || {
         Commit { undoes: Some(11), ..content(20, MINT_ADMIN, 3, vec![part(TEXT, PurgeBy::AuthorOrAdmin, vec![undel(3, 20, 10, 7)])]) }
     };
@@ -113,7 +113,7 @@ fn undelete_char_is_its_own_value_spec_crdt_4_7() {
     let mut p = base(false);
     p.commits.push(purge(30, MINT_ADMIN, 4, PurgeItem::Commit { commit: 10, thing: T, aspect: TEXT }));
     assert!(!matches!(fate(&p, 20), Fate::Leftover(_)));
-    assert_eq!(read(&p, TEXT), text(&[7]));
+    assert_eq!(read(&p, TEXT), text(&[]));
 }
 
 // spec/commits.md §7: a commit whose body was dropped cannot be undone

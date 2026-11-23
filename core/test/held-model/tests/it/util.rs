@@ -81,10 +81,6 @@ pub fn map(kv: &[(i64, i64)]) -> Option<Value> {
 pub fn set(h: u64, c: CommitId, v: i64) -> Frag {
     Frag::Register { reset: None, write: Some((st(h, c, 1), int(v))) }
 }
-/// The register write of `set`, held value-less.
-pub fn set_valueless(h: u64, c: CommitId) -> Frag {
-    Frag::Register { reset: None, write: Some((st(h, c, 1), None)) }
-}
 /// Root reset (`remove_aspect`) of a register.
 pub fn reset(h: u64, c: CommitId) -> Frag {
     Frag::Register { reset: Some(st(h, c, 1)), write: None }
