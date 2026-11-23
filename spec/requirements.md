@@ -5,7 +5,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 
 ## Concepts
 - **Thing**: anything with an identity. **Aspect**: one typed datum of a thing. Every datum is an aspect of a thing.
-- **Reference**: a value pointing at a thing. A **strong** reference says its target belongs with the thing holding it; a **weak** one only points; a **ticket** also carries what is needed to sync its target. Holding a reference grants nothing.
+- **Reference**: a value pointing at a thing. A **strong** reference says its target belongs with the thing holding it; a **weak** one only points. Holding a reference grants nothing.
 - **Closure** of a thing: it and everything it references strongly, directly or through other things. Its **sync unit**: the part of its closure it can itself read, which is what syncs as one.
 - **Commit**: one signed, atomic edit. **Part**: what a commit writes on one aspect.
 - A thing is **created** by its creation record, which names its mint admin, and **destroyed** when its creation is purged or expires. A node **releases** a thing when nothing it holds references it strongly any more; a released thing is not destroyed.
@@ -45,7 +45,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 - Nothing is special-cased by how much of a store is readable: a normal store holds some data it can read and some it cannot.
 - No dependence on one transport. Sync works over any ordered byte stream, including files carried by hand.
 - Which nodes a node connects to, identifies itself to and syncs with is its account's (and node's) choice.
-- A node holds exactly what its own references reach. Nothing syncs for having been created with some admin, and a thing is shared only by granting a role and handing over a ticket.
+- A node holds exactly what its own references reach. Nothing syncs for having been created with some admin, and a thing is shared only by granting a role; the grantee's node syncs it once a strong reference it holds reaches it.
 
 ## Cost (goal)
 - Bytes transferred and stored are close to the size of what changed. A small commit carries a small fixed overhead; a thing that was never shared directly costs little more than its content.
