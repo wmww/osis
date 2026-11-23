@@ -701,28 +701,24 @@ pub fn search() -> u64 {
     let c = crate::on_every_core(|th, threads, c: &mut [u64; 8]| {
         let mut rng = Rng(0x5eed ^ th as u64);
         let mut first = true;
-        member_family((th * slice, threads * slice), |base_s| {
-            for kept in 0..3 {
-                let mut s = base_s.clone();
-                s.kept = match kept { 0 => HashSet::new(), 1 => [1].into(), _ => [1, 2].into() };
-                let (b, a) = (run(&s, Policy::ListAll), run(&s, Policy::Any));
-                c[7] += (0..FRANK).any(|v| !lost(&b, &a, v).is_empty()) as u64;
-                let (loses, other) = judge(&s, Policy::HeldList, &b, &mut rng);
-                let o = run(&s, Policy::HeldList);
-                let alice_got: Vec<u32> = s.writes.iter().filter(|w| w.author == BOB && w.recv[ALICE] < 6).map(|w| w.id).collect();
-                let stand_lost = (0..FRANK).any(|v| o.applied[v].contains(&1000) && alice_got.iter().any(|id| b.visible[v].contains(id) && !o.visible[v].contains(id)));
-                let bad_any = (0..FRANK).any(|v| a.visible[v].iter().any(|id| !o.visible[v].contains(id)));
-                let bad_kept = (0..FRANK).any(|v| !o.kept_dropped[v].is_empty());
-                c[0] += 1;
-                c[1] += bad_any as u64;
-                c[2] += stand_lost as u64;
-                c[3] += bad_kept as u64;
-                c[4] += other;
-                c[5] += loses as u64;
-                if first && (bad_any || bad_kept || other > 0) {
-                    first = false;
-                    println!("failure (any {bad_any}, kept {bad_kept}, other {other}), kept {:?}:\n{}", s.kept, show(&s));
-                }
+        member_kept_family((th * slice, threads * slice), |s| {
+            let (b, a) = (run(&s, Policy::ListAll), run(&s, Policy::Any));
+            c[7] += (0..FRANK).any(|v| !lost(&b, &a, v).is_empty()) as u64;
+            let (loses, other) = judge(&s, Policy::HeldList, &b, &mut rng);
+            let o = run(&s, Policy::HeldList);
+            let alice_got: Vec<u32> = s.writes.iter().filter(|w| w.author == BOB && w.recv[ALICE] < 6).map(|w| w.id).collect();
+            let stand_lost = (0..FRANK).any(|v| o.applied[v].contains(&1000) && alice_got.iter().any(|id| b.visible[v].contains(id) && !o.visible[v].contains(id)));
+            let bad_any = (0..FRANK).any(|v| a.visible[v].iter().any(|id| !o.visible[v].contains(id)));
+            let bad_kept = (0..FRANK).any(|v| !o.kept_dropped[v].is_empty());
+            c[0] += 1;
+            c[1] += bad_any as u64;
+            c[2] += stand_lost as u64;
+            c[3] += bad_kept as u64;
+            c[4] += other;
+            c[5] += loses as u64;
+            if first && (bad_any || bad_kept || other > 0) {
+                first = false;
+                println!("failure (any {bad_any}, kept {bad_kept}, other {other}), kept {:?}:\n{}", s.kept, show(&s));
             }
         });
         attack_family((th, threads), |s| c[6] += attack_fails(&s, Policy::HeldList, &run(&s, Policy::ListAll), &mut rng) as u64);
@@ -742,9 +738,8 @@ pub fn entries_search() -> u64 {
     let slice = std::env::var("FORGET_SLICE").ok().and_then(|x| x.parse().ok()).unwrap_or(8);
     // [worlds, travels differs, travels fails a check, stranded differs, entries all, entries travel]
     let c = crate::on_every_core(|th, threads, c: &mut [u64; 6]| {
-        let mut rng = Rng(0x5eed ^ th as u64);
         let mut first = th == 0;
-        let mut one = |s: &Script, c: &mut [u64; 6], rng: &mut Rng, attack: bool| {
+        let mut one = |s: &Script, c: &mut [u64; 6], attack: bool| {
             let o = run(s, Policy::HeldList);
             let t = run(s, Policy::Travels);
             let st = run(s, Policy::Stranded);
@@ -756,7 +751,6 @@ pub fn entries_search() -> u64 {
                 let forged: HashSet<u32> = s.writes.iter().filter(|w| w.forged).map(|w| w.id).collect();
                 (0..FRANK).any(|v| t.visible[v].iter().any(|id| forged.contains(id)) && !o.visible[v].iter().any(|id| forged.contains(id)))
             };
-            let _ = &rng;
             c[2] += checks as u64;
             if differs || checks {
                 println!("travels fails:\n{}", show(s));
@@ -770,14 +764,8 @@ pub fn entries_search() -> u64 {
             c[4] += o.entries_all;
             c[5] += o.entries_travel;
         };
-        member_family((th * slice, threads * slice), |base_s| {
-            for kept in 0..3 {
-                let mut s = base_s.clone();
-                s.kept = match kept { 0 => HashSet::new(), 1 => [1].into(), _ => [1, 2].into() };
-                one(&s, c, &mut rng, false);
-            }
-        });
-        attack_family((th, threads), |s| one(&s, c, &mut rng, true));
+        member_kept_family((th * slice, threads * slice), |s| one(&s, c, false));
+        attack_family((th, threads), |s| one(&s, c, true));
     });
     println!("{}: {} worlds | reads otherwise than the held list {} | fails a check it passes {}", Policy::Travels.name(), c[0], c[1], c[2]);
     println!("  counted: {} reads otherwise in {} worlds; entries held at the end {} (all) vs {} (travels)", Policy::Stranded.name(), c[3], c[4], c[5]);
@@ -795,6 +783,15 @@ fn judge(s: &Script, p: Policy, base: &Out, rng: &mut Rng) -> (bool, u64) {
     // which the rule keeps.
     fails += u64::from((0..FRANK).any(|v| o.forgot[v].difference(&o.used[v]).any(|&id| run_suppressed(s, p, (v, id)).visible[v] != o.visible[v])));
     (loses, fails)
+}
+
+/// The member family, each world with Bob's writes 0, 1 or 2 in kept history.
+pub fn member_kept_family(share: (usize, usize), mut f: impl FnMut(Script)) {
+    member_family(share, |s| {
+        for kept in [HashSet::new(), [1].into(), [1, 2].into()] {
+            f(Script { kept, ..s.clone() });
+        }
+    });
 }
 
 /// Bob's write c (t=1) reaching each of Alice, Carol, Dave, Eve at 2 or late; a second write
