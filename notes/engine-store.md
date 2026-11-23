@@ -29,7 +29,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` store r
 | `sides` | sides taken in admin disputes (`sides.rs`): per (edge write, holder) trusted and chosen flags |
 | `i/v` | the persisted index's rules tag |
 | `hr/`+aspect+replaced-at+commit, `hf/`+aspect | history rows and cursors (`retention/leaving.rs`, notes/engine-retention-dating.md Rows) |
-| `hx/`+tid+16 bytes of the AK's hash | a dated aspect's held writes (`osis_crdt::Held`'s rows, `retention::bounds::settle_index`): a function of its held valid bodies, built again from them when missing; a memory aspect's in memory |
+| `hx/`+tid+16 bytes of the AK's hash | a dated aspect's held writes (`osis_crdt::Held`'s rows in pages, `P` + a page's first key, `osis_crdt::PagedRows`; `retention::bounds::settle_index`): a function of its held valid bodies, built again from them when missing; a memory aspect's in memory |
 | `pi/`+commit+aspect index | a paged part's page index (`apply::held_part_at`), written when the part is applied, gone with it |
 | `sy/`, `ow/`, `iw/`, `ih/`, `cp/`, `ra/`, `hw/`, `fm/`, `bp/` | the tables the engine keeps for sync (notes/sync-facade.md) |
 

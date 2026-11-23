@@ -338,8 +338,8 @@ impl Rows for IndexRows<'_, '_> {
 const SCAN: usize = 256;
 
 /// The held writes of `(tid, ak)` (`osis_crdt::Held`) over the transaction's store.
-fn index<'a, 'b>(tx: &'a mut Tx<'b>, tid: &Tid, ak: &Ak, shred: Shred) -> Held<IndexRows<'a, 'b>> {
-    Held::new(IndexRows { tx, prefix: index_prefix(tid, ak), memory: ak.ephemeral(), shred })
+fn index<'a, 'b>(tx: &'a mut Tx<'b>, tid: &Tid, ak: &Ak, shred: Shred) -> Held<osis_crdt::PagedRows<IndexRows<'a, 'b>>> {
+    Held::new(osis_crdt::PagedRows::new(IndexRows { tx, prefix: index_prefix(tid, ak), memory: ak.ephemeral(), shred }))
 }
 
 /// The key prefix of `(tid, ak)`'s held writes: `hx/`, the thing, 16 bytes of the AK's hash
@@ -460,11 +460,8 @@ pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         }
         let moved = fresh.take_moved();
         if !fresh.rows.0.is_empty() {
-            let mut ix = index(tx, tid, ak, Shred::No);
-            for (key, val) in &fresh.rows.0 {
-                ix.rows.put(key, val)?;
-            }
-            ix.rows.put(BUILT, &[])?;
+            fresh.rows.0.insert(BUILT.to_vec(), Vec::new());
+            index(tx, tid, ak, Shred::No).rows.fill(&fresh.rows.0)?;
         }
         tx.core.dates_moved.extend(moved.into_iter().map(|x| (*tid, ak.clone(), x)));
         tx.core.index_settled.insert(k, now);
