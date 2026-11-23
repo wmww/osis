@@ -6,3 +6,5 @@
 Replay: `OSIS_ORDER_SEED=300644506442 OSIS_ORDER_LEN=60 cargo test -p osis-engine --test it -- --ignored --exact order::held_set_decides_plain` (`OSIS_ORDER_SHRINK=1` shrinks it). Shrink first; check whether the carries fix closes it.
 
 Also seed 610442177300 (Lists family), on main's binary (a4611a866), seen at the invite-leftovers gate. `held_set_decides_plain` now fails at a rate since the switch: every recent gate met a new seed. Shrink each with `OSIS_SHRINK_MATCH`; check them against the carries fix first.
+
+Also seed 421200482733 (PartsAway), failing on main (466eb5afb).
