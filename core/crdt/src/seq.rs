@@ -56,7 +56,7 @@ pub(crate) fn is_creation(p: &PosW, c: &(Stamp, Anchor)) -> bool {
 /// a product of LWW registers and top-2 sets whatever the arrival order. A text flag write below
 /// the creation is held, beaten (one register for the char by stamp, §5.7), as `prev` is; a range
 /// record is uniform in whether its flag write wins (`flag_cut`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct SeqElem {
     /// The creation write `(stamp, anchor)`; text content lives and dies with it.
     pub(crate) created: Option<(Stamp, Anchor)>,
@@ -73,7 +73,30 @@ pub struct SeqElem {
     /// Elements this record stands for (a range record above 1, `seq_span`); the fields are
     /// the first element's.
     pub(crate) span: u64,
+    /// A range record's creation `ts` and anchors per element, where they are not the
+    /// creation's `ts` and the element before (`None`: none differ).
+    pub(crate) each: Option<Box<Each>>,
 }
+
+/// The creations of a range record's elements: element `i`'s `ts` is `ts[from + i]` (else the
+/// creation's) and its anchor `at[from + i]` (`None` there or no `at`: the element before; never
+/// the element before itself, so equal records hold equal entries). The pieces cut from one
+/// record share the arrays.
+#[derive(Clone, Debug)]
+pub(crate) struct Each {
+    pub(crate) ts: Option<Arc<[osis_base::Ts]>>,
+    pub(crate) at: Option<Arc<[Option<Anchor>]>>,
+    pub(crate) from: usize,
+}
+
+/// Per element, whatever the arrays' storage.
+impl PartialEq for SeqElem {
+    fn eq(&self, o: &SeqElem) -> bool {
+        (&self.created, &self.content, &self.pos, &self.deleted, self.undel, self.valueless, self.span) == (&o.created, &o.content, &o.pos, &o.deleted, o.undel, o.valueless, o.span)
+            && ((self.each.is_none() && o.each.is_none()) || (1..self.span).all(|i| self.ts_at(i) == o.ts_at(i) && self.own_anchor(i) == o.own_anchor(i)))
+    }
+}
+impl Eq for SeqElem {}
 
 /// A list or text fragment. Equality is per element, whatever the split into range records.
 pub struct Seq {
@@ -243,7 +266,32 @@ impl SeqElem {
     }
     /// An empty record (a delta's element edit or flag write fills it).
     pub(crate) fn bare() -> SeqElem {
-        SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, valueless: false, span: 1 }
+        SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, valueless: false, span: 1, each: None }
+    }
+    /// The creation `ts` of element `i` (a range record's, `seq_span`).
+    pub(crate) fn ts_at(&self, i: u64) -> Option<osis_base::Ts> {
+        let (c, _) = self.created.as_ref()?;
+        let each = self.each.as_ref().and_then(|x| Some((x.ts.as_ref()?, x.from)));
+        Some(each.and_then(|(ts, from)| ts.get(from + usize::try_from(i).ok()?)).copied().unwrap_or(c.ts))
+    }
+    /// The creation anchor of element `i` of a range record: its own where given, else the
+    /// element before (`d` the record's key).
+    pub(crate) fn anchor_at(&self, d: &Dot, i: u64) -> Option<Anchor> {
+        let (_, a) = self.created.as_ref()?;
+        if i == 0 {
+            return Some(a.clone());
+        }
+        Some(self.own_anchor(i).unwrap_or_else(|| Anchor::Dot(nth(d, i - 1))))
+    }
+    /// Element `i`'s anchor where it is not the element before (`i` above 0).
+    pub(crate) fn own_anchor(&self, i: u64) -> Option<Anchor> {
+        self.created.as_ref()?;
+        let x = self.each.as_ref()?;
+        x.at.as_ref()?.get(x.from + usize::try_from(i).ok()?)?.clone()
+    }
+    /// The creation stamp of element `i` (record key `d`).
+    pub(crate) fn creation_at(&self, d: &Dot, i: u64) -> Option<Stamp> {
+        Some(Stamp { ts: self.ts_at(i)?, dot: nth(d, i) })
     }
     /// Whether the creation counts toward presence (§4.3): a valued one (text: its char held;
     /// list: not held value-less), or one under a flag write (text: snapshots drop a deleted
@@ -285,6 +333,7 @@ fn prune_fields(el: &mut SeqElem, e: Option<&Stamp>, ch: &mut Changes) {
     prune_write(&mut el.created, e, ch);
     if el.created.is_none() {
         el.valueless = false;
+        el.each = None;
     }
     if let Some(e) = e {
         el.pos.retain(|(s, _, _)| {
@@ -343,6 +392,7 @@ fn merge_elem(se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: 
             let old = b.clone();
             se.pos.retain(|p| !is_creation(p, &old));
             se.created = de.created.take();
+            se.each = de.each.take();
             se.valueless = de.valueless;
             if text {
                 se.content = std::mem::replace(&mut de.content, SeqContent::None);
@@ -370,6 +420,7 @@ fn merge_elem(se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: 
             }
             if de.created > se.created {
                 se.created = de.created.take();
+                se.each = de.each.take();
                 ch.touch();
             }
         }
@@ -617,12 +668,11 @@ fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&St
         join_record(s, b, eb, existing, e, ch);
         return;
     }
-    // range creations of other stamps (copies of one creation dot, §4.1): element by element,
-    // each keeping both as position writes
+    // range creations of other stamps (copies of one creation dot, §4.1), or content beside
+    // other writes: element by element, each keeping both creations as position writes
     if existing
         && de.span > 1
-        && let (Some(a), Some(Some(b))) = (&de.created, s.elems.get(&dot).map(|x| &x.created))
-        && a.0 != b.0
+        && s.elems.get(&dot).is_some_and(|se| !whole_merge(&de, se))
     {
         for k in 1..de.span {
             split_at(&mut s.elems, &nth(&dot, k));
@@ -652,13 +702,29 @@ fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&St
     }
 }
 
+/// Whether range records `de` and `se` of one span join whole, staying ranges: one has no
+/// creation or both the same creations, and both no content or the same template (a
+/// template beside an element reset or another creation would not stay uniform).
+fn whole_merge(de: &SeqElem, se: &SeqElem) -> bool {
+    let chains = match (&de.created, &se.created) {
+        (Some(a), Some(b)) => a == b && (1..de.span).all(|i| de.ts_at(i) == se.ts_at(i) && de.own_anchor(i) == se.own_anchor(i)),
+        _ => true,
+    };
+    let content = match (&de.content, &se.content) {
+        (SeqContent::None, SeqContent::None) => true,
+        (SeqContent::Frag(x), SeqContent::Frag(y)) => x == y && de.created == se.created && de.deleted == se.deleted,
+        _ => false,
+    };
+    chains && content
+}
+
 /// For a text range record whose creations straddle its flag write: the first element created
-/// above it (element i is created at `(ts, dot + i)`), from which the creation beats the flag
+/// above it (element i is created at its own `ts`, at `dot + i`), from which the creation beats the flag
 /// (§5.7). Cut there by every join, as decoding cuts its records, a range record stays uniform in
 /// whether its flag wins.
 fn flag_cut(dot: &Dot, el: &SeqElem) -> Option<u64> {
     let (Some((c, _)), Some((f, _))) = (&el.created, &el.deleted) else { return None };
-    let at = |i: u64| Stamp { ts: c.ts, dot: nth(dot, i) };
+    let at = |i: u64| el.creation_at(dot, i).unwrap_or_else(|| c.clone());
     let (mut lo, mut hi) = (0u64, el.span);
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
@@ -695,8 +761,9 @@ pub(crate) fn inner_max(s: &Seq, valued: bool) -> Option<Stamp> {
             m = max_opt(m, Some(last_of(d, e, &p.0)));
         }
         m = max_opt(m, e.reset());
+        // a range's content template: its last element's is greatest
         if let SeqContent::Frag(f) = &e.content {
-            m = max_opt(m, if valued { max_opt(f.written(), f.reset()) } else { f.all_max() });
+            m = max_opt(m, if valued { max_opt(f.written(), f.reset()) } else { f.all_max() }.map(|x| last_of(d, e, &x)));
         }
     }
     m
@@ -1146,7 +1213,7 @@ pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
     for (i, c) in text.chars().enumerate() {
         let d = Dot::new(src.clone(), i as u64 + 1);
         let st = Stamp { ts: w.stamp.ts, dot: d.clone() };
-        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev, None)], deleted: None, undel: None, valueless: false, span: 1 });
+        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev, None)], deleted: None, undel: None, valueless: false, span: 1, each: None });
         prev = Anchor::Dot(d);
     }
     out

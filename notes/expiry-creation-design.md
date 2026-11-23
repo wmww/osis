@@ -78,7 +78,7 @@ Purging or expiring every minting **destroys** the thing.
 **No `delete` call**: undoing a creation reverts its commit (the strong it wrote goes, the creation stays live, a later write recreates). Destruction is `Write::purge` or expiry; a thing no strong reaches is released, not destroyed (spec/sync-set.md §3).
 
 ## 4. Open
-- issues/eph-expired-anchors-fill-cap.md: unpruned expired creations stay as anchors for live neighbours.
+- Unpruned expired creations stay as anchors for live neighbours: a few bytes each in a list or text (issues/seq-dead-records-grow.md), a whole record each for a map entry at a fresh key (issues/eph-expired-map-records.md).
 - What a held snapshot carries is runs of counters per source (`retention::snapshot::Carried`): an expiring write an honest snapshot holds value-less is in no valued run, so its expiry strips in place. A hostile snapshot holding a value of a write of the expiring commit rebuilds the aspect (O(aspect), correct) at every expiry of that commit while held; its runs grow with how often a session alternates between the aspect and others.
 - A destroyed thing strands, silently, what only its strongs held, as an expired one does.
 

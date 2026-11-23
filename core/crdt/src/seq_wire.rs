@@ -2,7 +2,7 @@
 
 use crate::error::Error;
 use crate::seq::{Anchor, PosW, Seq, SeqContent, SeqElem, top2};
-use crate::seq_span::{nth, overlaps};
+use crate::seq_span::{coalesce_fresh, nth, overlaps, piece};
 use crate::stamp::{Dot, Stamp};
 use osis_base::Ts;
 use crate::wire::{Dec, DeltaKind, Enc, MAX_RUN, as_array, as_uint};
@@ -108,6 +108,15 @@ impl Runs {
 
     /// Adds record `(k, e)`, the next in wire order; runs it closes wait for `flush`.
     pub(crate) fn push(&mut self, k: &Dot, e: &SeqElem, cx: &mut Enc) -> Result<(), Error> {
+        // a range whose creations differ in `ts` or anchor or that holds a content template: per
+        // element, as the wire carries each one's segment, run and content
+        if e.span > 1 && (e.each.is_some() || !matches!(e.content, SeqContent::None)) {
+            for i in 0..e.span {
+                let (pk, pe) = piece(k, e, i, 1);
+                self.push(&pk, &pe, cx)?;
+            }
+            return Ok(());
+        }
         let mut off = 0u64;
         while off < e.span {
             // past the first piece of a record the open run is full
@@ -314,9 +323,12 @@ fn dec_anchor(cx: &Dec, v: Item) -> Result<Anchor, Error> {
 }
 
 /// Reads runs (one page or the whole array) into `s`; the canonical re-encode checks the rest.
-/// Allocates per run, not per element: uniform content-less stretches become range records.
+/// Allocates per run, not per element, but for content; the records read become maximal range
+/// records.
 pub(crate) fn decode_elems(s: &mut Seq, runs: List, cx: &mut Dec) -> Result<(), Error> {
     let writer = cx.kind() == DeltaKind::Writer;
+    // the records read
+    let mut read: Vec<Dot> = Vec::new();
     for r in runs {
         let Some([d, n, creation, content, posw, flagw]) = as_array(r)?.tuple() else { return Err(Error::Malformed("run")) };
         let first = cx.dot(d)?;
@@ -542,10 +554,15 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: List, cx: &mut Dec) -> Result<(), 
                 }
                 let undel = undels.and_then(|(from, u)| u.get((at - from) as usize).copied());
                 let valueless = valueless && created.is_some();
-                s.elems_mut().insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), undel, valueless, span: len });
+                read.push(dot.clone());
+                s.elems_mut().insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), undel, valueless, span: len, each: None });
                 at += len;
             }
         }
     }
+    // the records read as maximal range records (`seq_span::coalesce`; one source's runs are
+    // apart where its elements anchor elsewhere than at the one before), none merged with a
+    // record read before (another page's)
+    coalesce_fresh(s.elems_mut(), &read);
     Ok(())
 }

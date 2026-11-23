@@ -21,6 +21,17 @@ impl Fragment {
         self.prune(None, &mut Changes::new());
     }
 
+    /// Holds every sequence at any depth as maximal range records (`seq_span::coalesce`): a
+    /// value-less element then costs about what the wire holds, not a record. Changes no read
+    /// nor equality. For a state held whole: a state laid out in pages keeps its records within
+    /// their pages.
+    pub fn compact(&mut self) {
+        self.seqs_mut(&mut |s| {
+            let elems = std::mem::take(s.elems_mut());
+            *s.elems_mut() = crate::seq_span::coalesce(elems);
+        });
+    }
+
     /// Leaves every live record of each key in `keys` out of the map at field `field` of this
     /// struct (a snapshot's state; nothing for another shape): a writer's choice of what its
     /// snapshot carries (spec/crdt.md §8). A body writing one is then not covered by the snapshot
@@ -86,11 +97,20 @@ impl Fragment {
             }
             Fragment::Seq(s) => {
                 for (d, el) in s.elems() {
+                    let each = |out: &mut std::collections::BTreeSet<Dot>| out.extend((0..el.span).map(|k| crate::seq_span::nth(d, k).origin().clone()));
                     if el.valueless {
-                        out.insert(d.origin().clone());
+                        each(out);
                     }
                     match &el.content {
-                        SeqContent::Frag(f) => f.valueless_dots(out),
+                        SeqContent::Frag(f) if el.span == 1 => f.valueless_dots(out),
+                        // a range's template: each element's content, written by its creation
+                        SeqContent::Frag(f) => {
+                            let mut first = std::collections::BTreeSet::new();
+                            f.valueless_dots(&mut first);
+                            if !first.is_empty() {
+                                each(out);
+                            }
+                        }
                         // a range record: each element is its own value-less creation
                         SeqContent::None if s.text && el.created.is_some() && !el.deletes() => {
                             out.extend((0..el.span).map(|k| crate::seq_span::nth(d, k).origin().clone()));
@@ -655,8 +675,8 @@ impl Visit for HoldsStamp<'_> {
             Rec::Elem(..) => false,
             Rec::Entry(_, e) => e.created.as_ref() == Some(s),
             Rec::Seq(d, el) => {
-                // a range record's creations are its elements' dots at the record's `ts`
-                let created = el.created.as_ref().is_some_and(|(c, _)| c == s || (c.ts == s.ts && crate::seq_span::holds(d, el.span, &s.dot)));
+                // a range record's creations are its elements' dots at their `ts`
+                let created = el.created.is_some() && crate::seq_span::holds(d, el.span, &s.dot) && el.creation_at(d, s.dot.ctr - d.ctr).as_ref() == Some(s);
                 created || el.pos.iter().any(|p| p.0 == *s) || el.deleted.as_ref().is_some_and(|x| x.0 == *s)
             }
         };

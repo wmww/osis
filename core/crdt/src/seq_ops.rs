@@ -21,7 +21,7 @@ pub(crate) fn insert_run(w: &mut Writer, s: &mut Seq, anchor: Anchor, contents: 
     for c in contents {
         let st = w.fresh();
         let d = st.dot.clone();
-        s.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev, None)], deleted: None, undel: None, valueless: false, span: 1 });
+        s.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev, None)], deleted: None, undel: None, valueless: false, span: 1, each: None });
         prev = Anchor::Dot(d);
     }
 }
@@ -327,7 +327,7 @@ pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
             (_, b) => b,
         };
         let undel = if de.deleted.is_some() { de.undel } else { prev.undel };
-        let mut el = SeqElem { created: prev.created.or(de.created), content, pos, deleted: de.deleted.or(prev.deleted), undel, valueless: false, span: 1 };
+        let mut el = SeqElem { created: prev.created.or(de.created), content, pos, deleted: de.deleted.or(prev.deleted), undel, valueless: false, span: 1, each: None };
         if text && w.made(&dot) && el.created.is_some() {
             // a text element the commit made carries its net effect in its creation's char: a flag
             // of the commit, at the delta stamp, lies below the creation and loses to it (§4.5, §5.7)

@@ -277,14 +277,25 @@ pub struct Commit {
 /// (pass it twice) and a clock but choose their ops apart, so copies of one write (equal stamps)
 /// differ in payload and one dot has two stamps, as forged copies carry (spec/permissions.md §5.2).
 pub fn history(r: &mut Rng, types: &[Ty], sources: Vec<Source>, rounds: usize, bulk: bool, honest: bool, twins: bool) -> Vec<Commit> {
+    history_led(r, types, sources, 0, rounds, bulk, honest, twins)
+}
+
+/// `history` opened by `lead` rounds in which writer 0 alone writes, appending one element a
+/// commit at the end of its text or list where it can: creation chains across commits, each
+/// element at its own commit's `ts`, which the others meet in the rounds after.
+#[allow(clippy::too_many_arguments)]
+pub fn history_led(r: &mut Rng, types: &[Ty], sources: Vec<Source>, lead: usize, rounds: usize, bulk: bool, honest: bool, twins: bool) -> Vec<Commit> {
     let n = sources.len();
     // odd writers remove keyed (role-class aspects), even ones keyless (§5.6)
     let mut ws: Vec<Writer> = sources.into_iter().enumerate().map(|(i, s)| Writer { keyed: !honest && i % 2 == 1, ..Writer::new(s, 1 << 16, 0) }).collect();
     let mut states: Vec<Option<Frag>> = vec![None; n];
     let mut seen: Vec<usize> = vec![0; n];
     let mut commits: Vec<Commit> = Vec::new();
-    for round in 0..rounds {
+    for round in 0..lead + rounds {
         for i in 0..n {
+            if round < lead && i > 0 {
+                continue;
+            }
             // catch up on a random prefix of the others' commits
             let upto = seen[i] + r.below(commits.len() - seen[i] + 1);
             for c in &commits[seen[i]..upto] {
@@ -298,7 +309,9 @@ pub fn history(r: &mut Rng, types: &[Ty], sources: Vec<Source>, rounds: usize, b
             let before = ws[i].clone();
             ws[i].next_commit(t);
             let ty = &types[i % types.len()];
-            let op = if bulk && round + 1 == rounds {
+            let op = if round < lead {
+                append(r, &mut ws[i], ty, states[i].as_ref()).or_else(|| random_op(r, &mut ws[i], ty, states[i].as_ref()))
+            } else if bulk && round + 1 == lead + rounds {
                 let v = bulk_value(r, ty, 0);
                 crate::diff::diff(&mut ws[i], states[i].as_ref().and_then(|s| s.slot(ty.enc())).filter(|s| s.present()), ty, &v)
             } else {
@@ -314,6 +327,21 @@ pub fn history(r: &mut Rng, types: &[Ty], sources: Vec<Source>, rounds: usize, b
         }
     }
     commits
+}
+
+/// One element appended at the end of the text or list `state` holds at `ty` (`None`: no
+/// sequence there).
+fn append(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> Option<Frag> {
+    let st = state.and_then(|s| s.slot(ty.enc())).filter(|s| s.present())?;
+    let Frag::Seq { elems, .. } = st else { return None };
+    match ty {
+        Ty::Text => Some(ops::seq_insert(w, Some(st), true, ops::visible(true, elems).len(), vec![Content::Char(random_text(r, 1).chars().next().unwrap_or('a'))])),
+        Ty::List(et) => {
+            let item = Content::Frag(Box::new(ops::create(w, et, &random_value(r, et, 1))));
+            Some(ops::seq_insert(w, Some(st), false, ops::visible(false, elems).len(), vec![item]))
+        }
+        _ => None,
+    }
 }
 
 /// A value of `ty` large enough to page at small page parameters: long texts, many elements.

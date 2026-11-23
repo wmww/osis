@@ -732,7 +732,7 @@ fn one(d: Dot, e: SeqElem) -> Fragment {
 /// A created char `c` of `dot` at `t`, anchored at `at`.
 fn char_at(dot: Dot, t: u64, at: Anchor, c: char) -> SeqElem {
     let s = Stamp { ts: ts(t << 16), dot };
-    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at, None)], deleted: None, undel: None, valueless: false, span: 1 }
+    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at, None)], deleted: None, undel: None, valueless: false, span: 1, each: None }
 }
 /// `len` chars typed by node 1 at t = 1, chained from HEAD.
 fn chain(len: u64) -> BTreeMap<Dot, SeqElem> {

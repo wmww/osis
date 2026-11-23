@@ -118,11 +118,13 @@ impl Graph<'_> {
 }
 
 /// The records as nodes: a range record is split after each element some position write
-/// anchors at, and where a virtual `Derived` anchor sits between its elements in dot order.
+/// anchors at, where a virtual `Derived` anchor sits between its elements in dot order, and
+/// before each element anchored elsewhere than at the element before (`SeqElem::own_anchor`).
 fn nodes(elems: &Elems) -> Vec<Node<'_>> {
-    let mut targets: Vec<&Dot> = Vec::new();
+    let mut targets: Vec<Dot> = Vec::new();
     if elems.values().any(|e| e.span > 1) {
-        targets = elems.values().flat_map(|e| e.pos.iter()).filter_map(|(_, a, _)| if let Anchor::Dot(d) = a { Some(d) } else { None }).collect();
+        let own = elems.iter().filter(|(_, e)| e.each.as_ref().is_some_and(|x| x.at.is_some())).flat_map(|(_, e)| (1..e.span).filter_map(|i| e.own_anchor(i)));
+        targets = elems.values().flat_map(|e| e.pos.iter()).map(|(_, a, _)| a.clone()).chain(own).filter_map(|a| if let Anchor::Dot(d) = a { Some(d) } else { None }).collect();
         targets.sort();
         targets.dedup();
     }
@@ -133,9 +135,10 @@ fn nodes(elems: &Elems) -> Vec<Node<'_>> {
             continue;
         }
         let last = nth(d, e.span - 1);
-        let from = targets.partition_point(|t| *t < d);
-        let mut off = 0;
-        for t in targets.get(from..).unwrap_or_default().iter().take_while(|t| **t < &last) {
+        let from = targets.partition_point(|t| t < d);
+        // offsets where a node ends
+        let mut ends: Vec<u64> = Vec::new();
+        for t in targets.get(from..).unwrap_or_default().iter().take_while(|t| *t < &last) {
             // an element anchored at, or a virtual `Derived(S, c)` anchor (absent from the
             // state, so placed on END between `(S, c)` and `(S, c + 1)`, §6.1) after `(S, c)`
             let c = match t.src.kind() {
@@ -143,8 +146,15 @@ fn nodes(elems: &Elems) -> Vec<Node<'_>> {
                 _ if t.src == d.src => t.ctr,
                 _ => continue,
             };
-            let end = c - d.ctr + 1;
-            if end <= off {
+            ends.push(c - d.ctr + 1);
+        }
+        if e.each.as_ref().is_some_and(|x| x.at.is_some()) {
+            ends.extend((1..e.span).filter(|i| e.own_anchor(*i).is_some()));
+            ends.sort_unstable();
+        }
+        let mut off = 0;
+        for end in ends {
+            if end <= off || end >= e.span {
                 continue;
             }
             let (x, y) = piece(d, e, off, end - off);

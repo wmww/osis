@@ -705,6 +705,7 @@ fn expired_undelete_hides_alike_spec_5_7() {
         undel,
         valueless: false,
         span: 1,
+        each: None,
     };
     let one = |e: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), [(c.dot.clone(), e)].into()));
     let dx = one(el(true, None, None));

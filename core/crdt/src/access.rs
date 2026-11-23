@@ -181,7 +181,10 @@ impl Fragment {
                                 crate::seq::SeqContent::Char(_) => 4 * usize::try_from(e.span).unwrap_or(usize::MAX),
                                 crate::seq::SeqContent::Frag(f) => size_of::<Fragment>() + f.approx_bytes(),
                             };
-                            e.created.as_ref().map_or(0, |_| 2 * STAMP) + (2 * STAMP + 24) * e.pos.len() + e.deleted.as_ref().map_or(0, |_| STAMP) + content
+                            // a range's creation `ts` and anchors per element
+                            let n = usize::try_from(e.span).unwrap_or(usize::MAX);
+                            let each = e.each.as_ref().map_or(0, |x| size_of::<crate::seq::Each>() + x.ts.as_ref().map_or(0, |_| size_of::<osis_base::Ts>() * n) + x.at.as_ref().map_or(0, |_| size_of::<Option<crate::seq::Anchor>>() * n));
+                            e.created.as_ref().map_or(0, |_| 2 * STAMP) + (2 * STAMP + 24) * e.pos.len() + e.deleted.as_ref().map_or(0, |_| STAMP) + content + each
                         })
                         .fold(0usize, usize::saturating_add)
             }

@@ -1263,6 +1263,11 @@ pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, ow
     let roots = crate::retention::compact::roots(ak, &st, at);
     let set = OwnedSet::of(own);
     st.strip(&|d| set.owns(d));
+    // its value-less sequence elements a few bytes each; a paged state's records stay within
+    // their pages
+    if !tx.core.pages.contains_key(&k) {
+        st.compact();
+    }
     let refs = refs.map(|(mut d, before)| {
         d.after(&st, at, &before);
         d
@@ -1424,6 +1429,8 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
     }
     debug_assert!(fast.as_ref().is_none_or(|x| *x == st), "a rebuild of {tid:?} {ak:?} stopped early: {fast:?}, all bodies {st:?}");
     strip_valueless(tx.core, tid, ak, &mut st);
+    // written whole: its value-less sequence elements a few bytes each
+    st.compact();
     Ok((!st.is_empty()).then_some(st))
 }
 

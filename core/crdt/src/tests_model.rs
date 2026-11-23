@@ -50,7 +50,8 @@ enum Mode {
     Sink,
     /// Writers of different encodings at one position, at the root or below struct fields (§7).
     Slots,
-    /// Maps whose entries hold texts and lists; lists of structs (§5.6, §5.7).
+    /// Maps whose entries hold texts and lists; lists of structs (§5.6, §5.7); chains appended
+    /// a commit an element.
     Nested,
     /// Writers 0 and 1 share a source and clock: copies of one write with differing payloads
     /// (§4.1 copy order), one dot under two stamps.
@@ -63,6 +64,7 @@ enum Mode {
 const MODES: [Mode; 5] = [Mode::Sink, Mode::Slots, Mode::Nested, Mode::Twins, Mode::Hostile];
 
 /// A seed's history: deltas in creation order, each with its writer where it has a wire form.
+#[derive(Clone)]
 struct Case {
     mode: Mode,
     deltas: Vec<(MFrag, Option<MWriter>)>,
@@ -75,6 +77,7 @@ struct Case {
 }
 
 /// The dots of one source up to a counter, expiring.
+#[derive(Clone)]
 struct Gone {
     src: MSource,
     upto: u64,
@@ -134,7 +137,10 @@ fn case(k: u64) -> (crate::testutil::SeedRng, Case) {
         Mode::Nested => {
             let types = pick(&mut r, &[map_of_text(), vec![Ty::List(Box::new(inner()))], vec![Ty::Text, Ty::List(Box::new(Ty::Register))]]);
             let srcs = sources(&mut r, 3);
-            (from(history_with(&mut r, &types, srcs, rounds)), true)
+            // half the time the expiring writer first appends alone, a commit an element:
+            // value-less ranges whose creations differ in `ts` (`seq_span`)
+            let lead = if r.chance(1, 2) { 6 } else { 0 };
+            (from(crate::testutil::history_led(&mut r, &types, srcs, lead, rounds)), true)
         }
         Mode::Twins => {
             let types = pick(&mut r, &[vec![kitchen_sink()], vec![Ty::Text], vec![Ty::List(Box::new(Ty::Register))], vec![Ty::Register, Ty::Text, Ty::Counter, Ty::Set(Box::new(Ty::Register))], map_of_text()]);
@@ -416,6 +422,8 @@ fn snapshots(st: &MFrag, mfr: &[(MSource, u64)], gone: &Gone, honest: bool, twin
     let mut ours = frag(st);
     ours.strip(&gone.ours());
     assert_eq!(ours, frag(&mst), "strip equals the model");
+    ours.compact();
+    assert_eq!(ours, frag(&mst), "compacting changes nothing");
     check(&mst, &[], "a stripped");
 }
 
@@ -485,13 +493,18 @@ fn unmerge_and_strip(c: &Case, reference: &MFrag) {
     let exp = c.gone.ours();
     let mut late = frag(reference);
     late.strip(&exp);
-    for order in [c.deltas.iter().collect::<Vec<_>>(), c.deltas.iter().rev().collect()] {
+    // held whole, compacted after each strip: joins meet value-less range records
+    for (order, compact) in [(c.deltas.iter().collect::<Vec<_>>(), false), (c.deltas.iter().rev().collect(), true), (c.deltas.iter().collect(), true)] {
         let mut early = Fragment::default();
         for (d, _) in order {
             let mut b = frag(d);
             b.strip(&exp);
             early.join(b);
             early.strip(&exp);
+            if compact {
+                early.compact();
+                check_lin(&early);
+            }
         }
         assert_eq!(early, late, "expiry commutes with join");
     }
@@ -532,7 +545,13 @@ fn tally(f: &Fragment, seen: &mut BTreeSet<&'static str>) {
 
 /// One seed: the encodings its final state held.
 fn check(k: u64) -> BTreeSet<&'static str> {
-    let (mut r, c) = case(k);
+    let (r, c) = case(k);
+    check_case(r, &c)
+}
+
+/// The differential over case `c`: the encodings its final state held.
+fn check_case(mut r: crate::testutil::SeedRng, c: &Case) -> BTreeSet<&'static str> {
+    let c = c.clone();
     let reference = joins(&mut r, &c);
     let bodies: Vec<Fragment> = c.deltas.iter().map(|(d, _)| frag(d)).collect();
     held_set_supersedes(&bodies);
@@ -651,5 +670,83 @@ fn a_write_stamped_with_its_embedded_chars_register_dot_is_bad_input_spec_3_3() 
     }
     for f in [mv(&other), del(&other)] {
         assert!(decodes(&f), "{f:?}");
+    }
+}
+
+/// A hand-made history on a text or list of `ty`: writer 1 appends an element a commit (a
+/// creation chain across commits, each element at its own commit's `ts`), with `interleaved`
+/// taking turns with writer 4 (each of its elements anchored at writer 4's); writer 2, holding
+/// the first four, inserts after the second, deletes the third and moves the fourth to the
+/// front; writer 3 replaces the sequence at a `ts` between the third and fourth. Writer 1's dots
+/// up to `upto` expire (a value-less range whose creations differ in `ts` and anchor,
+/// `seq_span`, split where expiry stops), writer 2's un-merge.
+fn chain_case(ty: &Ty, upto: u64, interleaved: bool) -> Case {
+    use crdt_model::ops as mops;
+    use crdt_model::state::Content;
+    let text = *ty == Ty::Text;
+    let shown = |st: &Option<MFrag>| match st {
+        Some(MFrag::Seq { elems, .. }) => mops::visible(text, elems).len(),
+        _ => 0,
+    };
+    let (a, b, c) = (MSource::session(1, 0), MSource::session(2, 0), MSource::session(3, 0));
+    let mut deltas: Vec<(MFrag, Option<MWriter>)> = Vec::new();
+    let mut ws = [MWriter::new(a.clone(), 1 << 16, 0), MWriter::new(MSource::session(4, 0), 1 << 16, 0)];
+    let (mut st, mut four) = (None, None);
+    for i in 0..6u64 {
+        let w = &mut ws[usize::from(interleaved && i % 2 == 1)];
+        w.next_commit(((i + 1) * 10) << 16);
+        let item = match ty {
+            Ty::List(et) => Content::Frag(Box::new(mops::create(w, et, &crdt_model::r#gen::random_value(&mut Rng(i), et, 1)))),
+            _ => Content::Char(char::from(b'a' + i as u8)),
+        };
+        let d = mops::seq_insert(w, st.as_ref(), text, shown(&st), vec![item]);
+        mapply(&mut st, d.clone());
+        deltas.push((d, Some(w.clone())));
+        if i == 3 {
+            four = st.clone();
+        }
+    }
+    let mut wb = MWriter::new(b.clone(), 1 << 16, 0);
+    let mut sb = four;
+    for (k, op) in [0usize, 1, 2].into_iter().enumerate() {
+        wb.next_commit((45 + k as u64) << 16);
+        let d = match op {
+            0 => {
+                let item = match ty {
+                    Ty::List(et) => Content::Frag(Box::new(mops::create(&mut wb, et, &crdt_model::r#gen::random_value(&mut Rng(9), et, 1)))),
+                    _ => Content::Char('x'),
+                };
+                Some(mops::seq_insert(&mut wb, sb.as_ref(), text, 2, vec![item]))
+            }
+            1 => mops::seq_delete(&mut wb, sb.as_ref().unwrap(), 3, 1),
+            _ => mops::seq_move(&mut wb, sb.as_ref().unwrap(), 3, 1, 0),
+        };
+        let d = d.expect("writer 2's op applies");
+        mapply(&mut sb, d.clone());
+        deltas.push((d, Some(wb.clone())));
+    }
+    let mut wc = MWriter::new(c, 1 << 16, 0);
+    wc.next_commit((35 << 16) + 3);
+    let v = match ty {
+        Ty::List(et) => crdt_model::value::Value::List(vec![crdt_model::r#gen::random_value(&mut Rng(7), et, 1)]),
+        _ => crdt_model::value::Value::Str("yz".into()),
+    };
+    deltas.push((mops::replace(&mut wc, ty, &v), Some(wc.clone())));
+    Case { mode: Mode::Nested, deltas, honest: true, bad: b, gone: Gone { src: a, upto } }
+}
+
+/// §5.7, `seq_span`: value-less elements of one source made by commits of their own, a chain or
+/// anchored at another writer's elements, held as range records (`SeqElem::each`), equal the
+/// model under joins in any order, the wire, expiry and un-merge, with inserts among them, a
+/// delete, a move and a reset between their creations, for a text and lists of registers and
+/// structs, all or the first few expiring.
+#[test]
+fn value_less_ranges_equal_model_spec_5_7() {
+    for (i, ty) in [Ty::Text, Ty::List(Box::new(Ty::Register)), Ty::List(Box::new(inner()))].iter().enumerate() {
+        for upto in [3, u64::MAX] {
+            for interleaved in [false, true] {
+                check_case(crate::testutil::fixed(i as u64), &chain_case(ty, upto, interleaved));
+            }
+        }
     }
 }

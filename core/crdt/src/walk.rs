@@ -87,11 +87,21 @@ pub(crate) fn walk(v: &mut dyn Visit, f: &Fragment) -> bool {
             meta_v(v, &s.meta)
                 || s.elems().iter().any(|(d, e)| match v.rec(Rec::Seq(d, e)) {
                     Next::Stop => true,
-                    n => n == Next::On && matches!(&e.content, SeqContent::Frag(x) if walk(v, x)),
+                    n => n == Next::On && matches!(&e.content, SeqContent::Frag(x) if walk(v, x) || template_rest(v, d, e, x)),
                 })
         }
         Fragment::Slots(Slots { reg, slots }) => reg.as_ref().is_some_and(|r| reg_v(v, r)) || slots.values().any(|f| walk(v, f)),
     }
+}
+
+/// The content writes of a range record's elements after the first (`seq_span::template`): each
+/// at its element's creation stamp.
+fn template_rest(v: &mut dyn Visit, d: &Dot, e: &SeqElem, x: &Fragment) -> bool {
+    if e.span < 2 {
+        return false;
+    }
+    let n = crate::seq_span::template_writes(x);
+    (1..e.span).filter_map(|k| e.creation_at(d, k)).any(|s| (0..n).any(|_| v.stamp(&s)))
 }
 
 /// Collects the writes of a fragment: every stamp with its `ts`, every element identity

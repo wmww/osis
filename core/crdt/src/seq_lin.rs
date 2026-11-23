@@ -1003,7 +1003,8 @@ impl Lin {
         let p = Placement::of(&placed, text);
         let cyc = placed.cyc.iter().filter_map(|i| placed.nodes.get(*i)).map(|n| n.dot.clone().into_owned()).collect();
         let at = Lin::map_of(&placed, p.cap);
-        let newest = elems.values().flat_map(|e| e.pos.iter().map(|x| &x.0)).max().cloned();
+        // a range's creations: its last element's is newest
+        let newest = elems.iter().flat_map(|(d, e)| e.pos.iter().map(move |x| crate::seq_span::last_of(d, e, &x.0))).max();
         Lin { p, waiting: placed.waiting, cyc, at, origin: next_origin(), part: None, newest }
     }
 
@@ -1340,7 +1341,7 @@ impl Lin {
         if before.is_some() {
             for (dot, plan) in &plans {
                 if let (Plan::New { .. } | Plan::Held { .. }, Some(r)) = (plan, elems.get(dot)) {
-                    self.newest = r.pos.iter().map(|x| &x.0).chain(self.newest.as_ref()).max().cloned();
+                    self.newest = r.pos.iter().map(|x| crate::seq_span::last_of(dot, r, &x.0)).chain(self.newest.clone()).max();
                 }
             }
         }

@@ -284,6 +284,7 @@ pub fn frag(f: &m::Frag) -> Fragment {
                         undel: e.undel,
                         valueless: e.valueless,
                         span: 1,
+                        each: None,
                     };
                     (dot(d), el)
                 })
@@ -375,6 +376,11 @@ pub fn history(r: &mut Rng, types: &[Ty], n: usize, rounds: usize) -> Vec<MCommi
 /// `history` with the given writer sources (commit form: a `Commit` source per writer).
 pub fn history_with(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize) -> Vec<MCommit> {
     crdt_model::r#gen::history(r, types, sources, rounds, false, false, false)
+}
+
+/// `history_with` opened by `lead` rounds of writer 0 alone appending (`gen::history_led`).
+pub fn history_led(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, lead: usize, rounds: usize) -> Vec<MCommit> {
+    crdt_model::r#gen::history_led(r, types, sources, lead, rounds, false, false, false)
 }
 
 /// `history_with` whose writers 0 and 1 share a source (pass it twice) and a clock but choose
