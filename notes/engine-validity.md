@@ -8,20 +8,19 @@ Validity is a function of the held set, never of arrival order: an invalid delta
 
 ## Re-judging
 ### What is re-judged
-- Authors whose role may have moved, on the things it may have moved on (`Core::stale_authors`, `stale_under`: `Held::upstream` and `Held::reach` of what `osis_perm::Changed` reports, via `ix.by_thing`). A thing holding addenda is judged whole: an addendum vouches for others' deltas.
-- Commits whose writes apply otherwise whoever signed them (`Changed::commits`: an invite grant overtaken on its grant loses its boxes' exemption with no role of its author moving). Never every commit on a changed edge: a long role history would re-judge all its holder's writes per arrival.
-- Every delta on the things a component walked anew or a new record's chain reaches (`Core::stale_things`).
-- Commits whose void, required-role or overreach inputs changed (`stale_commits`), and those acting for a thing whose timeline changed.
+`Core::timelines_changed` turns the walk's `Changed` into what to judge again:
+- The held deltas the update reaches (`Changed.reached`: `Paths::reached`, those whose verdict or purge may have moved), into `stale_commits`. The walk reports only what moved, so a lowering costs nothing per delta it does not reach (notes/perm-paths.md, One definition).
+- Every commit with an edge write new or whose status moved (`Changed.ops`), all its parts: a removal's addenda are gathered again (`flows::addenda::note_changed`), and a may-grant grant's boxes rest on how it applies (`validity::Judge::by_path`).
+- Every delta on the things below a new record (`Core::stale_things`).
+- Commits whose void, required-role or overreach inputs changed (`stale_commits`).
 - Everything after a rebuild at open (`stale_all`).
+- Besides validity: the holders upstream of a changed edge and the things below its target (`Held::upstream`, `Held::reach`) feed purge rights (`stale_authors`, `stale_under`), compaction wakes and covers owed.
 
 No delta's validity depends on its thing's `retention^.0` setting: a setting is judged as an admin-only delta and only moves what history keeps (notes/engine-retention-history.md). A rollback restores validity flags with the journal.
 
 `rejudge_all` repeats while a rebuild left something stale (a part `retention::uncover` made missing); it ends, as `uncover` never turns parts back.
 
-Rejected: re-judging every held delta per role commit (O(held commits) each); a grant re-judges no content commit (`scale::grant_is_flat_in_content_commits`).
-
-### How perm reports moves
-A component evaluated anew re-judges all its things; one whose walk only went on or gained leaves, only what authority flows to from the touched things (`Held::reach`). So a new thing, or a grant to a holder new to every walk, re-judges that thing's deltas only.
+Rejected: re-judging every held delta per role commit (O(held commits) each), or every commit on a changed edge (a long role history would re-judge all its holder's writes per arrival); a grant re-judges no content commit (`scale::grant_is_flat_in_content_commits`).
 
 ### Cost per commit
 - A voided commit is re-judged alone.
@@ -32,7 +31,7 @@ An addendum's validity reads its header and the timeline, never its body: `ix.ad
 ### Checks
 - Debug builds assert at each transaction's end that nothing stale is left, after each re-judge that no flag on the things it took changed outside the re-judged set, and at the end of the engine's history the same of every held commit (notes/test-harnesses.md, Verdict checks).
 - `Engine::misjudged` (in `Engine::check_index` and the order harness after a reopen) checks each flag is what judging gives. Judgment inputs from a body (rotation role, overreach) are persisted in the commit's `node/metas` row, so this holds with the body dropped.
-- Arrival order: engine it `apply_order`, perm `incremental` late leaves.
+- Arrival order: engine it `apply_order`; perm `paths::single` (every arrival order of its hand worlds).
 
 ### Possible holders (`Held::ever_admins`, `ever_writers`)
 The one helper for "could this author ever have held the role" where the answer must not depend on arrival (purge rights; spec/commits.md §4); a timeline read would. A least set grown from the thing through mint admins and grants signed by members, of any validity, so it only grows. One set over the thing and its members, not one per member thing (a member could name the holder on the thing anyway; per-thing sets took 20 s per call on a chain of 1000 nested holders).
@@ -59,7 +58,7 @@ O(aspect history) per flip (`scale::validity_flip_is_linear_and_invalid_arrival_
 
 ## Snapshot authority and carried writes
 ### Authority
-- A snapshot's part is valid iff its author could write the aspect at it (`Judge::part`: `delta_valid` with `required_role(ak)`, never the rotation role).
+- A snapshot's part is judged along its stated path like any delta, by the role its aspect needs (`snapshot_role`, never the rotation role; `Paths::content` from `Judge::part`). The engine reads no snapshot's carries yet: it is judged as its signer's write and a list naming it names nothing it carries (issues/snapshot-carries-unread.md).
 - An invalid snapshot gives nothing: its copies never join (on apply, late, or in `rebuilt`), it is left out of dating replaced bodies (`retention::bounds::note_body`), and it covers nothing (`covered` → `Some(false)`), so a demoter lists the commits it would have covered.
 - Frontiers and `Absorbed` are no receipts (`validity::inflated_snapshot_claims_count_nothing_spec_crdt_8`), so a demotion frontier does not depend on a snapshot's validity (`flipped_snapshot_leaves_frontier_alike_spec_perm_5_2`).
 - A commit whose part is away applies without it whatever snapshots are held (`part_listed_by_invalid_snapshot_applies_alike_in_any_order_*`).
@@ -100,7 +99,7 @@ Whenever a cover on the aspect may stop carrying: it turns invalid, arrives agai
 
 ## Flips against dropped data
 The one class of honest-use read divergence: validity is a non-monotone function of the held set (an explicit demotion arriving late turns applied writes invalid, and un-merge is the join of every held body and residue minus the invalid writes), so a node that dropped a body it would need computes a different join than one that kept it. The class is (a validity flip) x (a non-vouching drop under the flipped write).
-- Every flip is an explicit demotion arriving late (a removal, a demotion, a revoke of a snapshot's or cover's author); `until` and self-removals audit nothing and are judged at the write's own `ts`, so they never flip.
+- Every flip is an explicit lowering arriving late (a removal, a demotion, a revoke of a snapshot's or cover's signer); `until` and self-removals audit nothing and are judged at the write's own `ts`, so they never flip.
 - Compaction vouches (a valid snapshot vouches for what it carries), so it does not cause the class. The non-vouching drops are: expiry, purge, a pending part dropped at T, a right-less drop breaking a required retention. In honest use the class needs an aspect with retention bounds (or expiry/purge) written by a holder later demoted with a frontier not covering the write. Each new dropping mechanism re-opens a shape of it, so the fix is a rule, not per-case patches.
 - **The rule** (Tess signed off the requirement sentences, spec/requirements.md Decentralization; spec/commits.md §5, spec/sync-judgement.md §3 Dropped bodies; `retention::takes_late`): a body dropped other than as covered counts as never received, and a copy that arrives again joins and is judged again; a body dropped as covered whose cover turns invalid is the same rule (Uncovering, above). Memory parts stay final. So nodes holding the same bodies read alike; a node lacking a body gets it from any holder, a reader included (deposit, then promotion); with none it is gone alike. Expired and purged copies still arrive value-less or stripped. A part pending at its expiry is dropped as never received and the aspect flagged suspect (`retention::pending_drops`, `strip_pending`). The backstop for what no writer holds is repair (notes/engine-suspects.md).
 - **Rejected: removal rules.** No removal rule removes the class: convergence is decided by what the node dropped, not by the rule.
@@ -109,7 +108,7 @@ The one class of honest-use read divergence: validity is a non-monotone function
   - Bounded reach-back by a first witness (a signed receipt frontier, or a log stamp under an epoch the author never held): deterministic but still retroactive; reduces loss, closes no divergence, adds a receipt frontier to every delta.
   - A reach-back window on `ts` (backdated vandalism is what removal prevents); the demoter compacting first (not needed with the rule).
 - **Holes left** (F forged by an authenticated writer, bounded; C clock or arrival, transient; L nodes alike but something lost):
-  - Sticky drops in the role timeline (L; notes/permissions.md).
+  - Drops in the role walk are never undone within it (L; spec/permissions.md §5.1 step 5).
   - A valid snapshot's copy differing from a held delta's joins by the copy order wherever held (F, no divergence; notes/revocation.md Snapshots and history). Equivocation by a valid writer whose first commit's writes are all dead: nodes that held the first void both, those that forgot it count the second (F; spec/commits.md §5 Forgetting). A forged snapshot listing a part shows the commit partly until the part arrives (F; Authority, above).
   - A keep-at-least bound or an `until` straddled by two clocks (C, seconds; notes/sync-convergence.md); a value read past its T until the next call or Tick, a relay-only signal twice after a restart (C).
   - Session-sources double removal: a write left out of A's frontier because Y's snapshot covered it, then Y removed by a frontier not covering that snapshot: lost alike (L; a demoter listing every commit avoids it).
