@@ -257,7 +257,7 @@ A **holder actor** of A is a holder for keys of A (its mint admin included while
     - A node holding none of them logs no such commit; any holder of one that holds the commit logs it (Passing on), and the recipients take it by inbox (spec/permissions.md §3).
   - A rotation's thing lists (spec/permissions.md §5.5) are role-class parts of it and wrap as it does, under the roles secret: a list blob of rotation r under S goes under `kdf("wrap", roles secret)` of the newest read epoch of S's thing whose secret the node holds that was current when r was made (minted by no rotation, or by one ordered before r by (`ts`, signer, commit ID), spec/permissions.md §5.1), never one r or a later rotation of that thing created.
 - A sync ID's role keys at a peer are those of the epochs the peer's head registers (spec/sync-ids.md §3).
-- **Sealed fire** (spec/sync-inbox.md §2): a commit (header and deltas) with its author's chain to its actor, sealed to the read-role KEM key of the fired thing's newest read keyset the sender holds, in place of a blob key and sections. Its prefix is the commit's (spec/sync-ids.md §1); it has no blob key and its entry's wrap is filler. Bytes: spec/wire.md §9.
+- **Sealed fire** (spec/sync-inbox.md §2): a commit (header and deltas) with its evidence, sealed to the read-role KEM key of the fired thing's newest read keyset the sender holds, in place of a blob key and sections. Its prefix is the commit's (spec/sync-ids.md §1); it has no blob key and its entry's wrap is filler. Bytes: spec/wire.md §9.
 
 ## 6. Hashes and links
 - Keyed content hashes, under the dedup secret:

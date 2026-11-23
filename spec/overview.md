@@ -5,20 +5,20 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 
 ## Documents
 - spec/requirements.md: the concepts, and the properties any build must have: hard requirements, goals, threat model.
-- spec/data-model.md: things, tids, aspects, types, values and their canonical CBOR encoding, large values, references and tickets, `holds.0` and tags, core aspects.
+- spec/data-model.md: things, tids, aspects, types, values and their canonical CBOR encoding, large values, references, `holds.0` and tags, core aspects.
 - spec/versioning.md: format version, extension points, the parking rule, schemas as local knowledge, evolution rules.
 - spec/crdt.md: merge encodings: state, delta grammar, join, read, ops, slots, paging, structural diff.
 - spec/commits.md: commits: header, kinds, dot forms, verification and apply, retention, purge, expiry, undo.
 - spec/crypto.md: primitives, key derivations, sealed boxes, wraps, links, delete keys, agility.
-- spec/permissions.md: actors, role grants, mint admins, rotation, certificates, the validity rules, purge rights, links.
+- spec/permissions.md: actors, role grants, mint admins, rotation, evidence, key parts and taken grants, the validity rules, purge rights, links.
 - spec/wire.md: byte layouts of everything on the wire, constants, the node-to-node protocol, decoder limits.
 - spec/sync.md: overview of sync: its words, the one kind of node, the two holdings of a sync ID (read, kept unread), each area's principle and the sync file map.
-- spec/sync-set.md: the node root and the account's things, sync units, the node closure and the sync set, release, accepting, sources.
+- spec/sync-set.md: the node root and the account's things, sync units, the node closure, holders held for keys and the sync set, release, redeeming, sources.
 - spec/sync-ids.md: blobs, sync IDs and role keys, steps and claim sets, `sync.0`, the store per sync ID and the operations on it.
 - spec/sync-opens.md: connections, connection proofs, records and agreement, the shared set, filters, Offer, ending opens.
 - spec/sync-judgement.md: what goes under a sync ID, the required set and judgement, acting on it, logged again once, destruction and emptying, kept unread.
 - spec/sync-compaction.md: compaction and deletion, ephemeral and relay-only commits.
-- spec/sync-inbox.md: inboxes, external signals and sealed fires, deposits, promotion and clearing, tickets and removal notices, contact cards, links.
+- spec/sync-inbox.md: inboxes, external signals and sealed fires, deposits, promotion and clearing, grants from outside, stranded notices, contact cards, links.
 - spec/sync-streams.md: framing, clock and flow control, pushes, the node log and cursor, the stream, first sync.
 - spec/sync-status.md: sources and caught up, held elsewhere, status and waits.
 - spec/sync-hostile.md: bounds on hostile peers and the stated limits.
