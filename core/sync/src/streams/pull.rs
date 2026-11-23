@@ -172,21 +172,6 @@ struct Batch {
     owed: Vec<(SyncId, BlobId)>,
 }
 
-impl Batch {
-    /// About its bytes as coded: each event's bodies and fixed fields, its cursor, what it owes
-    /// and a reply's lists (an upper bound per item; the same at hold and release).
-    fn bytes(&self) -> u64 {
-        let event = |e: &Event| match e {
-            Event::Added { blob, .. } => 32 + osis_proto::msg::WRAP_LEN + 64 + 16 + blob.as_ref().map_or(0, Vec::len),
-            Event::Head(_) => 512,
-            _ => 48,
-        };
-        let reply = self.reply.as_ref().map_or(0, |r| (r.covered.len() + r.asked.len()) * 32 + r.joins.values().map(|c| 32 + c.as_ref().map_or(0, Vec::len)).sum::<usize>());
-        let n = self.events.iter().map(|(_, e)| 16 + event(e)).sum::<usize>() + self.cursor.as_ref().map_or(0, Vec::len) + self.owed.len() * 48 + reply + 64;
-        n as u64
-    }
-}
-
 #[derive(Clone, Debug)]
 struct ReplyInfo {
     whole: bool,
@@ -228,9 +213,6 @@ pub(super) struct Pulling {
     /// Per member, the pushes in hand carrying an event of it: S is busy here while one is
     /// (spec/sync-status.md §1); a reply in hand keeps the whole connection so (`replies`).
     in_hand: BTreeMap<SyncId, usize>,
-    /// The messages in hand's bytes, about as coded (`Batch::bytes`; counted as received,
-    /// `IN_BOUND`).
-    pub(super) held_bytes: u64,
     replies: usize,
     /// Fetches out: the (sync ID, blob) pairs each asked, and their fill class.
     fetches: BTreeMap<Id, (Vec<(SyncId, BlobId)>, u8)>,
@@ -286,7 +268,6 @@ impl Pulling {
             quiet: false,
             pending: VecDeque::new(),
             in_hand: BTreeMap::new(),
-            held_bytes: 0,
             replies: 0,
             fetches: BTreeMap::new(),
             queue: BTreeMap::new(),
@@ -323,7 +304,6 @@ impl Pulling {
 
     /// Takes a message in hand, last.
     fn hold(&mut self, b: Batch) {
-        self.held_bytes += b.bytes();
         match b.reply {
             Some(_) => self.replies += 1,
             None => {
@@ -338,7 +318,6 @@ impl Pulling {
     /// The first message in hand, no longer held.
     fn next_held(&mut self) -> Option<Batch> {
         let b = self.pending.pop_front()?;
-        self.held_bytes -= b.bytes();
         match b.reply {
             Some(_) => self.replies -= 1,
             None => {
@@ -927,7 +906,6 @@ impl Streams {
                 self.known.hand(s, b, true);
             }
             p.hold(batch);
-            self.kept_moved.insert(conn);
         }
         self.drain(ctx, conn);
     }
@@ -1391,7 +1369,6 @@ impl Streams {
                 return;
             }
             let Some(batch) = self.pull.get_mut(&conn).and_then(|p| p.next_held()) else { return };
-            self.kept_moved.insert(conn);
             for (s, b) in &batch.owed {
                 self.known.hand(s, b, false);
             }

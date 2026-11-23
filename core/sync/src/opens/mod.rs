@@ -576,20 +576,6 @@ impl Opens {
     /// Offer, Shared, Lost.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, conn: ConnId, m: Incoming, moved: &mut Vec<Moved>) {
         self.live(cx, sessions, unread, |o, ctx| o.message(ctx, conn, m, moved));
-        // only a message moves what this side holds of the peer's filter
-        let kept = self.filter_bytes(conn);
-        if let Some(s) = sessions.get_mut(conn) {
-            s.keep(crate::session::Kept::Filter, kept);
-        }
-    }
-
-    /// What this side holds of `conn`'s peer's filter in memory: the generation arriving and the
-    /// held entries of the record the connection holds (counted as received, `IN_BOUND`).
-    pub fn filter_bytes(&self, conn: ConnId) -> u64 {
-        let Some(c) = self.conns.get(&conn) else { return 0 };
-        let arriving = c.peer_gen.as_ref().map_or(0, |g| g.values.bytes());
-        let held = c.rec.and_then(|r| self.records.get(&r)).and_then(|r| r.peer.as_ref()).filter(|p| p.held).map_or(0, |p| p.values.bytes());
-        (arriving + held) as u64
     }
 
     /// `f` over the node's own holds, sessions and store.

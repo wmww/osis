@@ -42,5 +42,5 @@
 - Holding linked lists as bytes: saves about 5x and leaves the count of commits sharing one list unbounded.
 
 ## Left
-- Total over connections: per-connection state grows with peers; the node-wide bound is issues/sync-unbuilt.md (Security).
+- Total over connections: per-connection state grows with peers; no node-wide budget yet: issues/resource-limits.md.
 - A snapshot's writer loads, clones and encodes the whole state (a page-walking writer is parked on branch `mizzen-snapshot-stream`); a write replacing a whole position loads the state there whole; `covered` holds a body paged below a map entry whole; tree roots read a nested paged state whole: issues/durable-decode-bound.md.

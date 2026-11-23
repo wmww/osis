@@ -233,8 +233,6 @@ pub struct Streams {
     /// Sources whose connection ended keeping stops of members closed on it, which go at the
     /// next tick (spec/sync-opens.md §6 Where it stopped).
     unkept: Vec<(Source, Vec<SyncId>)>,
-    /// Connections whose messages in hand moved since `take_kept`.
-    kept_moved: BTreeSet<ConnId>,
 }
 
 impl Streams {
@@ -243,7 +241,7 @@ impl Streams {
     pub fn new(store: Store) -> Streams {
         let (anew, owed) = store.anew_feed();
         let unkept = pull::forget_unkept(store.clone());
-        let mut st = Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew, known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), caught: StampedSet::default(), busy: StampedSet::default(), busy_of: BTreeMap::new(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default(), unkept: Vec::new(), kept_moved: BTreeSet::new() };
+        let mut st = Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew, known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), caught: StampedSet::default(), busy: StampedSet::default(), busy_of: BTreeMap::new(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default(), unkept: Vec::new() };
         st.failed(owed);
         st.failed(unkept);
         st
@@ -266,12 +264,6 @@ impl Streams {
     /// Pull, PullReply, Stream, Applied, Fetch, FetchReply.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, m: Incoming, reported: &mut Vec<Reported>) {
         product(cx, sessions, opens, reported, |ctx| self.message(ctx, conn, m));
-    }
-
-    /// Each connection whose messages in hand moved since the last call, with their bytes now
-    /// (`Kept::InHand`, counted received).
-    pub fn take_kept(&mut self) -> Vec<(ConnId, u64)> {
-        std::mem::take(&mut self.kept_moved).into_iter().map(|c| (c, self.pull.get(&c).map_or(0, |p| p.held_bytes))).collect()
     }
 
     /// Whether anything acted.

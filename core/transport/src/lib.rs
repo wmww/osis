@@ -42,7 +42,8 @@ pub type PublicKey = [u8; 32];
 /// Where a connection comes from, as far as the transport can tell: an IPv4 address (as
 /// IPv4-mapped IPv6), the /64 of an IPv6 address (the usual allocation to one site; minor: a
 /// holder of a larger prefix counts as many sources), an in-process endpoint's name hashed. A
-/// relay and a node's served slots share by it (`evict_for`).
+/// relay shares its connection slots by it (`evict_for`). Connections whose source is unknown
+/// count as one source.
 pub type Source = [u8; 16];
 
 /// The source of a connection from `ip`.
@@ -232,8 +233,7 @@ pub trait Connection: Clone + Send + Sync + 'static {
     fn peer(&self) -> Peer {
         Peer::Key(self.peer_key())
     }
-    /// Where the connection comes from (`Source`). None only for a transport whose peers are
-    /// this process's own uid (unix): a node's main sessions, outside its served slots.
+    /// Where the connection comes from, when the transport can tell (`Source`).
     fn source(&self) -> Option<Source>;
     /// The route rank (spec/sync-transport.md §1): both ends tell alike. `RANK_DIRECT` unless
     /// overridden.

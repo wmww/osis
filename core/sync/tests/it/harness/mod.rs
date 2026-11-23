@@ -267,14 +267,6 @@ pub struct Net {
     paused: BTreeMap<(usize, ConnId), Vec<Input>>,
 }
 
-/// Where a fabric connection from node `n` comes from: one source per node (spec/sync-transport.md
-/// §5 Served connections shares served slots by source).
-fn source_of(n: usize) -> [u8; 16] {
-    let mut s = [0u8; 16];
-    s[..8].copy_from_slice(&(n as u64).to_be_bytes());
-    s
-}
-
 /// splitmix64: one deterministic draw.
 fn mix(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
@@ -380,8 +372,8 @@ impl Net {
         self.ups.push((from, target));
         self.links.insert((from, conn), (target, accepted));
         self.links.insert((target, accepted), (from, conn));
-        self.queue.push_back((from, Input::Up { conn, peer: NodeKey(to.key), rank, dialed: true, listener: NodeKey(to.key), source: None }));
-        self.queue.push_back((target, Input::Up { conn: accepted, peer: eph, rank, dialed: false, listener: NodeKey(to.key), source: Some(source_of(from)) }));
+        self.queue.push_back((from, Input::Up { conn, peer: NodeKey(to.key), rank, dialed: true, listener: NodeKey(to.key) }));
+        self.queue.push_back((target, Input::Up { conn: accepted, peer: eph, rank, dialed: false, listener: NodeKey(to.key) }));
     }
 
     fn send(&mut self, from: usize, conn: ConnId, bytes: &[u8]) {

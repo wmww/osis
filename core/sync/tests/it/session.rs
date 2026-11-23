@@ -11,7 +11,7 @@ use osis_proto::limits::{MAX_MESSAGE, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, T
 use osis_proto::prove::ActorProof;
 use osis_proto::{Code, FrameDecoder, Hello, Msg, OFFSET_DIAGNOSTIC_MS, Prover, Pull, PullReply, encode_frame};
 use osis_store::{MemoryBackend, MemoryRoot};
-use osis_sync::session::{Close, Incoming, IN_BOUND, MAX_SERVED, OUT_BOUND, PINGS, STALL_TIMEOUT_MS, DIAL_TIMEOUT_MS, Session, Sessions, To};
+use osis_sync::session::{Close, Incoming, IN_BOUND, OUT_BOUND, PINGS, STALL_TIMEOUT_MS, DIAL_TIMEOUT_MS, Session, Sessions, To};
 use osis_sync::types::Cx;
 use osis_sync::{ConnId, NodeKey, Out, Store};
 use std::sync::Arc;
@@ -833,116 +833,4 @@ fn a_wait_for_room_closes_the_holders_at_half_the_stall_time_spec_sync_transport
     assert!(ss.tick(Mono(wake.0 - 1)).is_empty(), "not yet");
     let closed: Vec<ConnId> = ss.tick(wake).into_iter().map(|(c, _)| c).collect();
     assert!(!closed.is_empty() && !closed.contains(&took), "closed {closed:?}");
-}
-
-/// A stranger's served connection to node 0 of `w`, from `source`: Hello, a Prove of nothing
-/// and NoRecord sent, its bytes all taken.
-fn stranger(w: &mut World, n: u64, source: u8) -> ConnId {
-    accepted(w, n, Some([source; 16]))
-}
-
-/// As `stranger`, from `source` as the transport tells it (none: a main session's).
-fn accepted(w: &mut World, n: u64, source: Option<[u8; 16]>) -> ConnId {
-    let conn = ConnId(ConnId::ACCEPTED | (1_000 + n));
-    let listener = w.node(0).key;
-    let mut key = [0xc5; 32];
-    key[..8].copy_from_slice(&n.to_be_bytes());
-    w.deliver(0, osis_sync::Input::Up { conn, peer: NodeKey(key), rank: 1, dialed: false, listener, source });
-    let mut b = encode_frame(&Hello::new(w.now().0, [3; 32]).encode());
-    b.extend(frame(&Msg::Prove { id: 1, proofs: Vec::new(), rotations: None }));
-    b.extend(frame(&Msg::NoRecord { id: NO_RECORD_ID }));
-    w.deliver(0, osis_sync::Input::Bytes { conn, bytes: b });
-    w.deliver(0, osis_sync::Input::Taken { conn, bytes: u64::MAX });
-    conn
-}
-
-// spec/sync-transport.md §5 (Served connections): a node serves at most `MAX_SERVED` sessions;
-// past it a newcomer takes the oldest slot of the source holding the most when that holds two
-// more than its own, else it is refused. One source opening connections without end holds the
-// slots only until others come, and then keeps an equal share. Fails if served connections are
-// unbounded, or if the slots go first come first served.
-#[test]
-fn served_slots_are_bounded_and_shared_by_source_spec_sync_transport_5() {
-    let mut w = crate::harness::two_nodes();
-    w.power_off(1);
-    let base = w.node(0).node.connections();
-    let flood: Vec<ConnId> = (0..MAX_SERVED as u64 + 20).map(|n| stranger(&mut w, n, 1)).collect();
-    assert_eq!(w.node(0).node.connections() - base, MAX_SERVED, "the flood holds every slot, no more");
-    assert!(flood[MAX_SERVED..].iter().all(|c| w.node(0).node.session(*c).is_none()), "refused past the slots");
-    // another source: each newcomer takes the flood's oldest slot
-    let others: Vec<ConnId> = (0..10).map(|n| stranger(&mut w, 10_000 + n, 2)).collect();
-    assert!(others.iter().all(|c| w.node(0).node.session(*c).is_some()), "the second source is served");
-    assert!(flood[..10].iter().all(|c| w.node(0).node.session(*c).is_none()), "the flood's oldest gave their slots");
-    assert_eq!(w.node(0).node.connections() - base, MAX_SERVED);
-    // sources each holding an equal share: a newcomer of a source at its share is refused
-    let k = MAX_SERVED as u64 / 2;
-    for n in 0..k {
-        stranger(&mut w, 20_000 + n, 2);
-    }
-    let late = stranger(&mut w, 30_000, 2);
-    assert!(w.node(0).node.session(late).is_none(), "an even share: refused");
-    assert_eq!(w.node(0).node.connections() - base, MAX_SERVED);
-}
-
-// spec/sync-transport.md §5 (Served connections): a main session (unix, the node's own uid)
-// takes no served slot: one comes up while strangers, each from its own source, hold every
-// slot. Fails if it counts as a source, refused once no source holds two.
-#[test]
-fn a_main_session_takes_no_served_slot_spec_sync_transport_5() {
-    let mut w = crate::harness::two_nodes();
-    w.power_off(1);
-    let base = w.node(0).node.connections();
-    let held: Vec<ConnId> = (0..MAX_SERVED as u64).map(|n| stranger(&mut w, n, n as u8)).collect();
-    let main = accepted(&mut w, 1_000, None);
-    assert!(w.node(0).node.session(main).is_some(), "the main session is served");
-    assert!(held.iter().all(|c| w.node(0).node.session(*c).is_some()), "no slot given up");
-    assert_eq!(w.node(0).node.connections() - base, MAX_SERVED + 1);
-}
-
-/// Strangers to node 0 of a fresh world, the `i`th from `source(i, last)`, each holding a
-/// partial frame of the same size, just past `IN_BOUND` together; the last also sent a filter
-/// before them. The connections, and those still up.
-fn received_past_the_bound(source: impl Fn(u64, bool) -> u8) -> (Vec<ConnId>, Vec<ConnId>) {
-    let mut w = crate::harness::two_nodes();
-    w.power_off(1);
-    let n = (1u64 << 16) as usize;
-    let f = osis_proto::filter::filter_width(n);
-    let mut values: Vec<u64> = (0..n as u64).map(|i| i.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> (64 - u32::from(f))).collect();
-    values.sort_unstable();
-    let filter: Vec<u8> = osis_proto::filter::pages(&values, f, 4 << 20).iter().enumerate().flat_map(|(i, p)| frame(&Msg::Beacons { id: TOP_BIT | (i as u32 + 2), generation: 1, base: None, f, lo: p.lo, hi: p.hi, gcs: p.gcs.clone(), more: p.more })).collect();
-    // a frame that claims the largest body and never ends
-    let mut partial = (MAX_MESSAGE as u32).to_be_bytes().to_vec();
-    partial.extend(vec![0x82; MAX_MESSAGE - 4096]);
-    let k = IN_BOUND / partial.len() as u64;
-    let conns: Vec<ConnId> = (0..=k).map(|i| stranger(&mut w, i, source(i, i == k))).collect();
-    w.deliver(0, osis_sync::Input::Bytes { conn: conns[k as usize], bytes: filter });
-    for c in &conns {
-        w.deliver(0, osis_sync::Input::Bytes { conn: *c, bytes: partial.clone() });
-    }
-    let up = conns.iter().copied().filter(|c| w.node(0).node.session(*c).is_some()).collect();
-    (conns, up)
-}
-
-// spec/sync-transport.md §5 (Served connections): what a node keeps of a peer's beyond its
-// frames counts as received. Each stranger from its own source; past `IN_BOUND` the connection
-// holding the most closes: the one holding the filter, though the first by number would go on a
-// tie. Fails if a peer's filter is not counted (memory then grows with the connections, up to
-// about 10 MB a filter).
-#[test]
-fn a_peers_filter_counts_as_received_spec_sync_transport_5() {
-    let (conns, up) = received_past_the_bound(|i, _| i as u8);
-    assert_eq!(up.len(), conns.len() - 1, "one closed past the bound");
-    assert!(!up.contains(conns.last().unwrap()), "the one holding the filter too");
-}
-
-// spec/sync-transport.md §5 (Received): past `IN_BOUND` the connection holding the most of the
-// source holding the most closes. Every stranger but the last from one source: one of theirs
-// closes, though the last (its own source) holds the most of any connection. Fails if the
-// connection holding the most closes whatever its source (one address filling the bound could
-// then close any peer holding a large filter).
-#[test]
-fn received_past_the_bound_closes_at_the_source_holding_the_most_spec_sync_transport_5() {
-    let (conns, up) = received_past_the_bound(|_, last| if last { 2 } else { 1 });
-    assert!(up.len() < conns.len(), "closed past the bound");
-    assert!(up.contains(conns.last().unwrap()), "not the one from its own source");
 }

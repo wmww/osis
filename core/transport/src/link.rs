@@ -16,8 +16,7 @@ use tokio::time::timeout;
 /// after a cancelled `recv`.
 pub const READ_CHUNK: usize = 64 * 1024;
 /// The most the transport holds for one served connection in either direction, outside the
-/// node's counts (spec/sync-transport.md §5 Served connections: the node's slots, `MAX_SERVED`,
-/// are as many as this fits in its received bound): received, the QUIC connection window
+/// node's counts (spec/sync-transport.md §5 Served connections): received, the QUIC connection window
 /// (`quic`'s, which a `peer://` direct connection shares) and one read per stream the peer may
 /// open; sent, the QUIC send window, as large as the connection window. A relayed connection holds
 /// less (its bytes ride its registration's windows, `p2p::RELAY_STREAM_WINDOW` per stream); a
@@ -179,8 +178,7 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, wait: Duration) -> Result
 }
 
 /// Accepts connections on `l` and hands each stream they open to `out` as a session, until
-/// `out` or the listener closes; any number of them (the node bounds the sessions it keeps,
-/// spec/sync-transport.md §5 Served connections; issues/connection-memory-unbounded.md). One
+/// `out` or the listener closes; any number of them (spec/sync-transport.md §5 served connections). One
 /// with no live session for `idle` is closed. The listener, once `out` closes (to listen again
 /// with it, `listen_all`).
 pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>) -> L {

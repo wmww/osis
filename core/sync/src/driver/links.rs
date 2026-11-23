@@ -264,7 +264,7 @@ impl<T: Transport> TransportLinks<T> {
     /// the listener set that took it.
     fn up(&mut self, conn: ConnId, l: Link, dialed: bool, set: Option<Listening>, listener: [u8; 32]) -> Input {
         let took = set.map(|s| (s, listener));
-        let Link { peer_key, rank, tx, mut rx, peer, source, .. } = l;
+        let Link { peer_key, rank, tx, mut rx, peer, .. } = l;
         let unix = matches!(peer, osis_transport::Peer::Unix { .. });
         let ev = self.tx.clone();
         let (reading, mut gate) = tokio::sync::watch::channel(true);
@@ -296,7 +296,7 @@ impl<T: Transport> TransportLinks<T> {
             }
         });
         self.live.insert(conn, Live { tx, unix, took, reading, next_read, tasks: [reader, taken] });
-        Input::Up { conn, peer: NodeKey(peer_key), rank, dialed, listener: NodeKey(listener), source }
+        Input::Up { conn, peer: NodeKey(peer_key), rank, dialed, listener: NodeKey(listener) }
     }
 }
 
