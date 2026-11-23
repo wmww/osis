@@ -12,3 +12,6 @@ osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=146887569055 issues/custody-differential-failures.md node \w+, account \w+: seeds held: engine
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=512007751,OSIS_ORDER_LEN=60 issues/order-purged-message-shown.md shows other than the node keeping every body: Tid\(\S+\) t:msg\.0
+osis-crdt/tests_model::crdt_equals_model_plain rate:OSIS_CRDT_START=34,OSIS_CRDT_SEED=157455058980 issues/crdt-expiry-join-commute.md expiry commutes with join
+osis-crdt/tests_model::crdt_equals_model_large rate:OSIS_CRDT_START=34,OSIS_CRDT_SEED=157455058980 issues/crdt-expiry-join-commute.md expiry commutes with join
+osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=157455058984 issues/differential-closure-read-lost.md node \d+ reads thing \d+: None, the model reads it
