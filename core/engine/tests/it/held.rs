@@ -10,7 +10,8 @@
 //! crdt-model fragments decoded from the engine's wire bytes (`frag`), with every header's dot
 //! form and counter ranges as `Held::dots`; reads are compared as values by their canonical
 //! bytes. Applied role commits are given as the node's role input holds them (`ix.held`), one
-//! model part per edge write; `addenda.0` as its entries; undo, acting and purge actors as headers
+//! model part per edge write; `addenda.0` as its entries; undo, stated paths (a split commit's as
+//! the node opened them) and purge authors as headers
 //! name them.
 //!
 //! Scope (held-model ASSUMPTIONS.md): every content aspect (`core_types::is_content`), of every
@@ -65,7 +66,7 @@ pub(crate) struct Coverage {
     pub(crate) skipped: BTreeMap<&'static str, u64>,
     /// Of the compared aspects: reads present; parts invalid, purged, dropped, held as leftovers;
     /// value-less deltas. Of nodes with a compared aspect: the commits and edges fed of each
-    /// feature (undo, acting, addenda, invites, `until`, self-removals).
+    /// feature (undo, listed things, addenda, may-grant, `until`, self-removals).
     pub(crate) reached: BTreeMap<&'static str, u64>,
     /// Every difference found, by kind (`compare` reports the first).
     pub(crate) differs: BTreeMap<String, u64>,
@@ -321,7 +322,7 @@ impl Conv<'_> {
     }
     /// A role edge write (`floor` dropped: it gives keys, never a role).
     fn edge(&mut self, holder: &Tid, e: Option<&osis_perm::Edge>) -> hm::EdgeWrite {
-        hm::EdgeWrite { holder: self.id(holder), role: e.map(|e| role_of(e.role)), invite: e.and_then(|e| e.may_grant.then_some(e.role)).map(role_of), until: e.and_then(|e| e.until).map(|u| u.0) }
+        hm::EdgeWrite { holder: self.id(holder), role: e.map(|e| role_of(e.role)), may_grant: e.is_some_and(|e| e.may_grant), until: e.and_then(|e| e.until).map(|u| u.0) }
     }
     /// An `addenda.0` body as its entries: per removal (a 32-byte commit ID key), the commits its
     /// `frontier` lists.
@@ -429,9 +430,15 @@ fn scope(e: &mut Engine, hist: &History, held: &[(CommitId, Arc<Header>, bool)])
 }
 
 fn convert(e: &mut Engine, hist: &History) -> Input {
-    // authors take ids in tid order: keys `(ts, author, commit)` order alike (spec/permissions.md §5.1)
-    let authors: BTreeSet<Tid> = hist.headers.values().map(|h| h.signer).chain([e.me()]).collect();
-    let ids = authors.into_iter().enumerate().map(|(i, t)| (t, i as u32)).collect();
+    // the things the headers name take ids in tid order: keys `(ts, signer, commit)` and a
+    // commit's parts by thing order alike (spec/permissions.md §5.1 step 1); a thing only a body
+    // names (a holder) takes the next id
+    let stated = |h: &Header| match &h.path {
+        osis_commit::Paths::One(p) => p.things.clone(),
+        osis_commit::Paths::Split(_) => Vec::new(),
+    };
+    let named: BTreeSet<Tid> = hist.headers.values().flat_map(|h| [h.signer].into_iter().chain(h.aspects.iter().map(|a| a.tid)).chain(stated(h))).chain([e.me()]).collect();
+    let ids = named.into_iter().enumerate().map(|(i, t)| (t, i as u32)).collect();
     let mut cv = Conv { hist, ids, extra: BTreeMap::new(), aspects: BTreeMap::new() };
     let applied: Vec<CommitId> = e.commit_ids();
     let mut held: Vec<(CommitId, Arc<Header>, bool)> = applied.iter().filter_map(|id| Some((*id, e.header(id)?, true))).collect();
@@ -572,10 +579,25 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                 }
             })
             .collect();
-        // a commit none of whose sections opened here holds no part the acting thing judges
-        let (signer, acting) = (cv.id(&h.signer), cv.id(&e.commit_purge_author(id).unwrap_or(h.signer)));
+        let (signer, author) = (cv.id(&h.signer), cv.id(&e.commit_purge_author(id).unwrap_or(h.signer)));
+        // the path stated for each thing written: read off the header's one path, or the entry
+        // of a split commit as this node opened it; one that opened as bad, or not at all, names
+        // the signer, which no path may (the part is invalid)
+        let opened = e.commit_paths(id);
+        let mut paths = BTreeMap::new();
+        for t in h.aspects.iter().map(|a| a.tid).chain(h.purge.iter().map(|p| *p.tid())) {
+            let one = match &h.path {
+                osis_commit::Paths::One(p) => Some(p.clone()),
+                osis_commit::Paths::Split(_) => opened.as_ref().and_then(|d| d.get(&t).cloned().flatten()),
+            };
+            let path = match one {
+                Some(p) => hm::Path { things: p.to(&t).iter().map(|x| cv.id(x)).collect(), direct: (0..128).filter(|j| p.direct >> j & 1 == 1).collect() },
+                None => hm::Path::along(&[signer]),
+            };
+            paths.insert(cv.id(&t), path);
+        }
         let undoes = h.undoes.as_ref().map(|c| cv.commit(c));
-        commits.push(hm::Commit { id: sync_id, signer, acting, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes, own_cover: h.own_cover, boxes: vec![] });
+        commits.push(hm::Commit { id: sync_id, signer, author, paths, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes, own_cover: h.own_cover, boxes: vec![] });
     }
     let me = cv.id(&e.me());
     // every record the node holds of an id named, mint admins naming more
@@ -650,7 +672,7 @@ fn held_body(e: &Engine, c: &CommitId, ai: usize) -> bool {
 /// record is held), and each thing of `minted` (thing, the thing holding a strong to it, the
 /// commit writing that strong: its minting commit, or one of its own) whose holder is in and
 /// whose strong's commit is held valid there, as held-model
-/// judges the held set (`hm::roles::Timeline::valid_delta`).
+/// judges the held set (a part of that commit on the holder valid, `hm::Outcome::valid`).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Walk {
     pub(crate) roots: BTreeSet<Tid>,
@@ -665,7 +687,7 @@ impl Walk {
         let held: BTreeMap<CommitId, hm::CommitId> = input.commits.iter().filter(|(_, (_, applied))| *applied).map(|(m, (c, _))| (*c, *m)).collect();
         let strong_valid = |p: &Tid, c: &CommitId| -> bool {
             let (Some(pm), Some(cm)) = (by.get(p), held.get(c)) else { return false };
-            input.held.commits.iter().find(|x| x.id == *cm).is_some_and(|x| j.tl.valid_delta(x, *pm, hm::r#gen::REG))
+            input.held.commits.iter().find(|x| x.id == *cm).is_some_and(|x| x.parts.iter().enumerate().any(|(i, p)| p.thing == *pm && j.o.valid.get(&(x.id, i)) == Some(&true)))
         };
         // a thing is entered once its record is held (the held set's records or a creation part)
         let recorded = |t: &Tid| by.get(t).is_some_and(|m| input.held.records.iter().any(|r| r.id == *m) || input.held.commits.iter().flat_map(|c| &c.parts).any(|p| p.thing == *m && matches!(p.body, hm::Body::Held(hm::Delta::Created(_)))));
@@ -779,13 +801,14 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
             _ => None,
         });
         reach("undo commits", cs.iter().filter(|c| c.undoes.is_some()).count());
-        reach("acting commits", cs.iter().filter(|c| c.acting != c.signer).count());
+        reach("commits listing a thing", cs.iter().filter(|c| c.paths.values().any(|p| !p.things.is_empty())).count());
+        reach("commits by a listed purge author", cs.iter().filter(|c| c.author != c.signer).count());
         let addenda = cs.iter().flat_map(|c| c.parts.iter()).filter(|p| matches!(&p.body, hm::Body::Held(hm::Delta::Addenda(es)) if !es.is_empty())).count();
         reach("addenda", addenda);
         if addenda > 0 {
-            reach("counting addenda", tl.counting.len());
+            reach("counting addenda", tl.vouching());
         }
-        reach("invites", edges().filter(|(_, e)| e.invite.is_some()).count());
+        reach("may-grant grants", edges().filter(|(_, e)| e.may_grant).count());
         reach("untils", edges().filter(|(_, e)| e.until.is_some()).count());
         reach("own edge writes", edges().filter(|(c, e)| e.holder == c.signer).count());
         reach("removals with no frontier", edges().filter(|(c, e)| e.role.is_none() && e.holder != NOBODY && c.frontier.is_none()).count());
@@ -857,10 +880,10 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
     // the model's walk ends; but this node's account's account root, whose roster is its signing
     // chain's (spec/permissions.md §5.4, Roster)
     if !by_part.is_empty() {
-        let last = tl.applied().last().map_or(&tl.initial, |a| &a.after);
         let own_d = e.core.account_and_root().map(|x| x.1);
         for th in input.held.records.iter().map(|t| t.id).filter(|th| Some(input.ids[th]) != own_d) {
-            let model: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = last.iter().filter(|((t, _), e)| *t == th && e.alive(input.held.now)).map(|((_, h), e)| (*h, (e.role, e.invite, e.until))).collect();
+            let alive = |e: &hm::EdgeWrite| e.until.is_none_or(|u| input.held.now < u);
+            let model: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = tl.roster(th).into_iter().filter(|(_, e)| alive(e)).filter_map(|(h, e)| Some((h, (e.role?, e.role.filter(|_| e.may_grant), e.until)))).collect();
             let t = input.ids[&th];
             let node: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = e.roster(&t).iter().map(|(h, x)| (input.ids.iter().find(|(_, v)| *v == h).map_or(NOBODY, |(k, _)| *k), (role_of(x.role), x.may_grant.then_some(x.role).map(role_of), x.until.map(|u| u.0)))).collect();
             reach_n(cov, "rosters", 1);

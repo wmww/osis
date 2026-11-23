@@ -2090,6 +2090,12 @@ impl Engine {
         self.core.ix.commits.get(id).map(|m| m.view.purge_author)
     }
 
+    /// What this node opened of held split commit `id`'s paths (`View::paths`); `None` where its
+    /// path is in the clear.
+    pub fn commit_paths(&self, id: &CommitId) -> Option<Arc<crate::engine::Decided>> {
+        self.core.ix.commits.get(id).and_then(|m| m.view.paths.clone())
+    }
+
     /// The header of an applied commit (none if its stored bytes fail to decode: `LazyHeader`).
     pub fn header(&self, id: &CommitId) -> Option<Arc<Header>> {
         self.core.ix.commits.get(id).and_then(|m| m.header.decoded())

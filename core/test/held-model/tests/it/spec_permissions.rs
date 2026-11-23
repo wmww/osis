@@ -66,7 +66,7 @@ fn regrant_revives_writes_spec_permissions_5_2() {
     assert_eq!(o.valid[&(11, 0)], true);
 }
 
-// spec/permissions.md §5.1 (puts in question: the old walk's demotes, every applied write of a commit auditing first): an edge admin's fall audits its edge writes the frontier leaves out
+// spec/permissions.md §5.1 step 3 (puts in question, drops): an admin's removal drops the edge writes resting on its edge that the frontier leaves out
 #[test]
 fn demotion_audits_edge_admin_grants_spec_permissions_5_1() {
     let cs = |f: Vec<CommitId>| {
@@ -86,13 +86,13 @@ fn demotion_audits_edge_admin_grants_spec_permissions_5_1() {
     assert_eq!(o.valid[&(10, 0)], true);
 }
 
-// spec/permissions.md §5.1 (puts in question: the old walk's demotes, every applied write of a commit auditing first): every applied write of a commit audits before the walk
-// restarts, so its part order decides nothing. Thing 41's mint admin is 40, 40's is node 0;
-// node 0 makes node 1 admin on 40 (#5) and gives itself admin on 41 (#6). Node 1's commit #7
-// lowers node 0 to read on both: its write on 40 drops #5 (so #7 no longer applies), its write
-// on 41 drops #6.
+// spec/permissions.md §5.1 step 3 (void): a lowering whose drops would take its own authority is
+// void: it does not apply and drops nothing, whatever the order of its commit's parts. Thing 41's
+// mint admin is 40, 40's is node 0; node 0 makes node 1 admin on 40 (#5) and node 2 admin
+// on 41 (#6), both resting on its edge on 40. Node 1's commit #7 lowers node 0 to read on both, listing nothing: its write on 40
+// would drop #5, the grant it rests on; its write on 41 states a path that gives nothing.
 #[test]
-fn commit_audits_all_its_writes_before_restart_spec_permissions_5_1() {
+fn a_lowering_whose_drops_take_its_authority_drops_nothing_spec_permissions_5_1() {
     let mint = |t, link, k| held_model::gen::creation(t, link, MINT_ADMIN, ts(0) - 10 + k, PurgeBy::Admin, None);
     for things in [[40, 41], [41, 40]] {
         let r = Commit {
@@ -103,11 +103,10 @@ fn commit_audits_all_its_writes_before_restart_spec_permissions_5_1() {
             mint(40, RecordLink::Admin(MINT_ADMIN), 0),
             mint(41, RecordLink::Admin(40), 1),
             edge_on(5, MINT_ADMIN, 0, 40, EdgeWrite::role(1, Some(Role::Admin)), None),
-            edge_on(6, MINT_ADMIN, 1, 41, EdgeWrite::role(MINT_ADMIN, Some(Role::Admin)), None),
+            edge_on(6, MINT_ADMIN, 1, 41, EdgeWrite::role(2, Some(Role::Admin)), None),
             r,
         ]));
-        assert!(!o.valid[&(5, 0)], "{things:?}: #7's write on 40 drops #5");
-        assert!(!o.valid[&(6, 0)], "{things:?}: #7's write on 41 drops #6, though #7 then applies nothing");
+        assert!(o.valid[&(5, 0)] && o.valid[&(6, 0)], "{things:?}: #7 is void and drops nothing");
         assert!(!o.valid[&(7, 0)] && !o.valid[&(7, 1)]);
     }
 }
@@ -182,17 +181,26 @@ fn cover_turning_invalid_uncovers_the_dropped_body_spec_permissions_5_2() {
     assert_eq!(act(&h, &o, None).commits[1].parts[0].body, Body::Missing);
 }
 
-// spec/permissions.md §5.2: an earlier removal's frontier keeps counting after a re-grant and
-// a second removal that lists nothing
+// spec/permissions.md §5.2 (Content: an answer speaks for its own cut alone): a write an earlier
+// removal's frontier lists stands against a later cut of its path, after a re-grant, only where
+// that cut's list names it too
 #[test]
-fn earlier_removal_frontier_counts_after_re_removal_spec_permissions_5_2() {
-    let mut cs = writer_history();
-    cs.push(edge(20, MINT_ADMIN, 3, 1, None, Some(vec![10])));
-    cs.push(edge(30, MINT_ADMIN, 4, 1, Some(Role::Write), None));
-    cs.push(edge(40, MINT_ADMIN, 5, 1, Some(Role::Read), Some(vec![])));
-    let o = evaluate(&held(6, cs));
-    assert_eq!(o.valid[&(10, 0)], true);
+fn a_later_cut_needs_its_own_answer_spec_permissions_5_2() {
+    let cs = |second: Vec<CommitId>| {
+        let mut cs = writer_history();
+        cs.push(edge(20, MINT_ADMIN, 3, 1, None, Some(vec![10])));
+        cs.push(edge(30, MINT_ADMIN, 4, 1, Some(Role::Write), None));
+        cs.push(edge(40, MINT_ADMIN, 5, 1, Some(Role::Read), Some(second)));
+        evaluate(&held(6, cs))
+    };
+    let o = cs(vec![]);
+    assert_eq!(o.valid[&(10, 0)], false, "the second cut does not answer it");
     assert_eq!(o.valid[&(11, 0)], false);
+    let o = cs(vec![10]);
+    assert_eq!(o.valid[&(10, 0)], true, "each cut answers it");
+    assert_eq!(o.valid[&(11, 0)], false);
+    let o = cs(vec![11]);
+    assert_eq!(o.valid[&(11, 0)], false, "the first cut does not answer it");
 }
 
 /// An addendum on T by `author` at hour `h` naming `removal` and listing `lists`.

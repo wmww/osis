@@ -203,7 +203,7 @@ pub fn liar_setting() -> World {
 }
 
 /// C, X's write, counts only by W's addendum E; E (W removed after it) only by D, X's addendum
-/// once granted again (and listed by X's second removal); D shares C's counters: D is void iff
+/// once granted again (both listed by X's second removal); D shares C's counters: D is void iff
 /// C counts iff D counts.
 pub fn liar_addenda() -> World {
     let s = session(X, 0);
@@ -215,8 +215,9 @@ pub fn liar_addenda() -> World {
         edge(rw, ADMIN, 4, W, None, Some(vec![])),
         edge(g, ADMIN, 5, X, Some(Role::Write), None),
         sess(d, X, 6, &s, vec![(K, NONE, 1, 2), (Aspect::ADDENDA, addendum(rw, vec![e]), 1, 2)]),
-        // removed again, listing D: a re-grant standing would bring C back by itself
-        edge(FIRST + 6, ADMIN, 7, X, None, Some(vec![d])),
+        // removed again, listing D and C: a re-grant standing would bring C back by itself, and a
+        // cut that left C out would refuse it whatever E says (each cut needs its own answer)
+        edge(FIRST + 6, ADMIN, 7, X, None, Some(vec![d, c])),
     ];
     World { name: "liar_addenda", base: base(), events }
 }
