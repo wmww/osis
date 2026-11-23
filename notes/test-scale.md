@@ -20,7 +20,7 @@ Default tests against spec/requirements.md (Scale): each runs one operation at a
 | map entry edit, at the root and in a map entry | engine `scale::map_edit_is_flat` (500 / 5000 entries of 200 B) | store bytes 28 / 40 KB; a new session's read of one key 2 pages, its first edit 2 loaded and 1 written |
 | set ops by value | engine `scale::set_by_value_is_flat` (10^3 / 10^4) | each op in a new session: 1-2 pages loaded, 0-1 written |
 | tid removal from a set | engine `scale::tid_removal_is_flat` (4000 / 40,000) | remove and add back in a new session: 2 pages loaded, 1 written, a 451-466 B commit |
-| text by index | engine `scale::text_edits_are_flat` (by hand, most of a minute: 80k / 800k chars) | read of 100 chars 1-2 pages; insert, delete, edit 2-3 loaded, 4-6 written; undo 28 / 35 loaded; a move loads every placement block (issues/text-move-loads-placement.md, `repro_text_move_loads_placement`) |
+| text by index | engine `scale::text_edits_are_flat` (by hand, most of a minute: 80k / 800k chars) | read of 100 chars 1-2 pages; insert, delete, edit 2-3 loaded, 4-6 written; undo 28 / 35 loaded; a move's pages written grow, 13 / 72 (issues/text-move-writes-grow.md) |
 | removal from a roster | engine `scale::roster_removal_is_linear` (20 / 200 writers) | rotation commit 2.87 KB per remaining holder (budget 3000 B past 4 KiB); one more `secrets.0` entry flat |
 | purge on replace pays its state | engine `scale::purge_on_replace_pays_its_state` (200 / 2000 entries of 100 B) | store bytes per replacing edit linear (77 / 469 KB); no history 51 / 30 KB |
 | late deltas and deaths | engine `scale::late_delta_deaths_are_flat_spec_crdt_4_8` (30 / 300) | every span, death walks and replaced reads flat (replaced reads 1) |

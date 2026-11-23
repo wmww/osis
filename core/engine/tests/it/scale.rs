@@ -359,7 +359,7 @@ fn text_ops(n: usize) -> Vec<(u64, u64, u64)> {
 // Scale: in a paged text of n and 10n chars, each op in a new session: a read of 100 chars, an
 // insert, a delete, a move, an edit as a text session writes it, an undo, loads and writes only
 // its pages and placement rows (through the stored placement).
-// 10n is 800k chars: writing it takes most of a minute. The move is left out: issues/text-move-loads-placement.md.
+// 10n is 800k chars: writing it takes most of a minute. The move is left out: issues/text-move-writes-grow.md.
 #[test]
 #[ignore = "by hand: an 800k-char text takes most of a minute"]
 fn text_edits_are_flat() {
@@ -372,30 +372,6 @@ fn text_edits_are_flat() {
         flat(&format!("{what}: pages written"), small[i].1, big[i].1);
         flat(&format!("{what}: store bytes"), small[i].2, big[i].2);
     }
-}
-
-// issues/text-move-loads-placement.md; spec/crdt.md §5.7, §8; spec/requirements.md, Scale (a change
-// costs O(change)):
-// a move of 4 chars in an 80k-char text, in a new session, loads every placement block (about
-// 110) where an insert or a delete loads 3.
-#[test]
-#[ignore = "issues/text-move-loads-placement.md"]
-fn repro_text_move_loads_placement() {
-    let n = 80_000;
-    let (mut lp, t) = one_thing();
-    let b = lp.peers[0].backend.clone();
-    let mut rng = SeededRng::from_u64(0);
-    let text: String = (0..n).map(|_| char::from(b'a' + (osis_crypto::RngCore::next_u64(&mut rng) % 26) as u8)).collect();
-    let mut m = Mutation::new();
-    m.set(t, &TEXT, &Value::Str(text)).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    lp.peers[0].restart(1).unwrap();
-    let (_, w) = measured(&b, || {
-        let mut m = Mutation::new();
-        m.op(t, &TEXT, PathOp { path: vec![], op: Op::Move { at: n / 3, len: 4, to: n / 3 + 50 } }).unwrap();
-        lp.peers[0].engine.commit(m).unwrap().unwrap()
-    });
-    assert!(w.loads() <= 6, "a move loaded {} pages and placement blocks", w.loads());
 }
 
 /// Writes a rotation's boxes, history and keysets on `a`.

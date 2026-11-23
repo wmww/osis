@@ -4,7 +4,6 @@
 # random seeds pass it most runs, and its summary says passing is expected); ISSUE: its issues/
 # file; PATTERN: a regex every failing unit of NAME (each seed line of its panic, or its whole
 # panic) must match (tools/gate_failures.py).
-held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 rate:OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=647344785567 issues/custody-differential-failures.md FAIL flip: node \w+ at \d+ dropped a taken revocation
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=567669682357 issues/custody-differential-failures.md FAIL writes: node \w+ settled without \w+'s write \d+ on \w+
 roles-model/paths::tests::random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/masked-backdated-lowerings.md counts:dispute=4 OSIS_ROLES_START=\d+: \{
