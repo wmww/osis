@@ -13,13 +13,11 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 
 ## In flight beside it
 In-flight lines name issues in words, not paths: a branch that closes its issue would fail policy on this note.
-- `mizzen-masked-lowerings` (worker): the masked backdated lowerings issue (security); reports options if the fix changes what users see.
 - `mizzen-seq-runs` (worker): issues/seq-cold-edits-follow-gaps.md, the multi-op case; sent back once (it stopped charging repeated work instead of removing it): load ahead what every op needs, or keep progress across loads.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
 ## Safe parallel work queue (outside the rewrite)
 - issues/text-move-writes-grow.md: engine pages / osis-crdt.
-- issues/masked-backdated-lowerings.md: osis-perm walk.
 - Workflow agent about half the time; one cleanup always.
 
 ## Small, waiting on Tess
