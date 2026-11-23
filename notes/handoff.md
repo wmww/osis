@@ -13,8 +13,9 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 
 ## In flight beside it
 In-flight lines name issues in words, not paths: a branch that closes its issue would fail policy on this note.
+- `mizzen-expiry-commute` (worker): crdt expiry no longer commutes with join since the compact dead records (property failing on main).
+- Failing on main, unassigned: the sync differential's lost closure read (likely the rewrite's area; give it to the rewrite or after it lands).
 - `mizzen-purge-no-effect` (worker, third session): a purged write has no effect on any read (Tess, decided); rule built and engine green but for expiry cost (waits on the dating redesign's index); osis history listing and some osis-sync tests left.
-- `mizzen-dating-redesign` (reviewed sound; gate failed on test cost only, ~2x main in engine tests; a worker is making the held-writes path cheap, then a fresh review and gate): every write on a kept aspect reads a big earlier body whole once per session; a position-based durable held-writes index, incremental dating, long runs split across pages. Its state section is in notes/engine-retention-dating.md.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
 ## Safe parallel work queue (outside the rewrite)
@@ -25,6 +26,8 @@ In-flight lines name issues in words, not paths: a branch that closes its issue 
 - **Grants belong to the thing granted** (replaces "paths found by following grants down; roles are the account's data"): a thing's grants sync with it; references find what a node cares about. Flow: outside grant signal → reference → ordinary sync → permissions, the signal carrying only what bootstraps the reference and sync (an offer, kept as the signal's setting keeps it, 90 days default for outside grants). No account grant list, no taken grants, no fire as proof, no kept-fires rules; keys are found from the synced thing up (holders its grants name, their grant data fetched, up to the node's own actors). This dissolves the replay and finding-the-paths questions.
 
 ## Small, waiting on Tess
+- **History listing marker for a purged current write**: under "purged writes have no effect", a node can't tell whether a purged write would still be live, so the "deleted for everyone" marker for purging a current write with no history can't be placed. (a) keep a small skeleton (positions, stamps) of each purged write while listable; (b) list from headers alone and drop that marker (coordinator's lean).
+- **Convergence clause** (requirements Decentralization): "at the latest once a writer of that data has synced with them" covered the purge divergence; check whether anything else needs it, then drop it?
 - **A second device after the offer lapses**: Bob's first device syncs T from the offer and references T; his second device sees the reference but needs T's sync ID and a box to open it, and the offer may have lapsed (90 days). Today that comes from per-holder records of grants logged under Bob's account (edge pieces). The alternative is a reference that carries the bootstrap — which is what a ticket was.
 - CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
 
