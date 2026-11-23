@@ -175,5 +175,9 @@ fn what_a_reader_costs() {
     }
     eprintln!("grant read to another account: (commits, grant bytes, granter rows, reader rows, granter ops, reader ops) {:?}", each[1]);
     let (commits, bytes, _, reader, _, _) = &each[1];
-    assert!(*commits == 1 && *bytes < 4_000 && *reader < 31_500, "{:?}", each[1]);
+    // the grant replaces writes of the thing's `secrets.0`: its first death, so the reader (and
+    // the granter) keeps its held writes from here on, 4,460 B for its 50 writes (89 B a write,
+    // notes/thing-cost.md): what dating replaced role bodies costs (spec/commits.md §5 Fixed
+    // retention: a replaced one is kept `ROLE_KEEP` after replaced)
+    assert!(*commits == 1 && *bytes < 4_000 && *reader < 36_000, "{:?}", each[1]);
 }

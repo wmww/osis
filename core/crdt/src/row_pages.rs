@@ -1,5 +1,7 @@
 //! Rows packed into pages (`PagedRows`): an ordered store of many small rows kept as few larger
-//! ones, each holding a run of consecutive rows with their keys' shared prefixes left out. A
+//! ones, each holding a run of consecutive rows with their keys' shared prefixes left out and
+//! its bytes' repeats written once (`pack`: the sources, commit IDs, stamps and position hashes
+//! that `held::Held`'s rows of one neighbourhood share). A
 //! write rewrites the page holding its key, so rows lying together (one position's writes, its
 //! top and its steps in `held::Held`) cost one page, and a row costs its own bytes, not a
 //! store row's key beside them.
@@ -13,11 +15,11 @@
 use crate::held::{Corrupt, Row, Rows};
 use std::collections::BTreeMap;
 
-/// Bytes of a page (its rows' keys and values): one grown past twice this is split in two. At
-/// 0 every row is its own page; unbounded, one page holds every row and each write rewrites
-/// them all. As a state page: over a store's inline limit, halves too, so a page is rewritten
-/// alone, not with the store leaf it would lie in.
-pub const PAGE_BYTES: usize = 3072;
+/// Bytes of a page as stored: one grown past twice this is split in two. At 0 every row is its
+/// own page; unbounded, one page holds every row and each write rewrites them all. Half a
+/// store's inline limit, so a page never passes it and a write hands the store a few KB: about
+/// 4 KB of rows before their repeats go.
+pub const PAGE_BYTES: usize = 1024;
 
 /// `Rows` over pages kept in `inner`.
 #[derive(Clone, Debug)]
@@ -35,6 +37,64 @@ fn page_key(first: &[u8]) -> Vec<u8> {
     [b"P", first].concat()
 }
 
+/// `b` with each repeat of four bytes or more written as its distance back and length: ops of
+/// a tag byte, below 128 a run of tag + 1 bytes as they are, else a copy of (tag - 128) + 4
+/// bytes from a two-byte distance back. Greedy, the last place each four bytes were seen.
+fn pack(b: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(b.len() / 2);
+    let mut last = vec![usize::MAX; 1 << 12];
+    let run = |out: &mut Vec<u8>, from: usize, to: usize| {
+        for chunk in b.get(from..to).unwrap_or_default().chunks(128) {
+            out.push(chunk.len() as u8 - 1);
+            out.extend_from_slice(chunk);
+        }
+    };
+    let (mut i, mut plain) = (0, 0);
+    while let Some(four) = b.get(i..i + 4) {
+        let h = (u32::from_le_bytes(four.try_into().unwrap_or([0; 4])).wrapping_mul(2654435761) >> 20) as usize;
+        let seen = last.get(h).copied().unwrap_or(usize::MAX);
+        if let Some(x) = last.get_mut(h) {
+            *x = i;
+        }
+        if seen != usize::MAX && i - seen <= u16::MAX as usize && b.get(seen..seen + 4) == Some(four) {
+            let len = (4..131).find(|n| b.get(i + n).is_none() || b.get(seen + n) != b.get(i + n)).unwrap_or(131);
+            run(&mut out, plain, i);
+            out.push(128 + (len - 4) as u8);
+            out.extend_from_slice(&((i - seen) as u16).to_be_bytes());
+            i += len;
+            plain = i;
+        } else {
+            i += 1;
+        }
+    }
+    run(&mut out, plain, b.len());
+    out
+}
+
+/// `pack` undone.
+fn unpack(mut b: &[u8]) -> Result<Vec<u8>, Corrupt> {
+    let bad = Corrupt("row page");
+    let mut out = Vec::with_capacity(b.len() * 2);
+    while let Some((tag, rest)) = b.split_first() {
+        if *tag < 128 {
+            let (run, rest) = rest.split_at_checked(*tag as usize + 1).ok_or(bad)?;
+            out.extend_from_slice(run);
+            b = rest;
+        } else {
+            let (back, rest) = rest.split_at_checked(2).ok_or(bad)?;
+            let back = u16::from_be_bytes(back.try_into().map_err(|_| bad)?) as usize;
+            let from = out.len().checked_sub(back).filter(|_| back > 0).ok_or(bad)?;
+            // byte by byte: a copy may run into what it writes
+            for k in 0..(*tag as usize - 128 + 4) {
+                let x = *out.get(from + k).ok_or(bad)?;
+                out.push(x);
+            }
+            b = rest;
+        }
+    }
+    Ok(out)
+}
+
 fn encode(p: &Page) -> Vec<u8> {
     let mut out = Vec::new();
     let mut last: &[u8] = &[];
@@ -47,11 +107,13 @@ fn encode(p: &Page) -> Vec<u8> {
         out.extend_from_slice(v);
         last = k;
     }
-    out
+    pack(&out)
 }
 
-fn decode(mut b: &[u8]) -> Result<Page, Corrupt> {
+fn decode(b: &[u8]) -> Result<Page, Corrupt> {
     let bad = Corrupt("row page");
+    let plain = unpack(b)?;
+    let mut b = plain.as_slice();
     let mut out = Page::new();
     let mut last: Vec<u8> = Vec::new();
     let take = |b: &mut &[u8], n: usize| -> Result<Vec<u8>, Corrupt> {
@@ -149,7 +211,8 @@ impl<R: Rows> PagedRows<R> {
         if p.is_empty() {
             return self.inner.del(&page_key(first));
         }
-        while size(&p) > 2 * PAGE_BYTES && p.len() > 1 {
+        let mut stored = encode(&p);
+        while stored.len() > 2 * PAGE_BYTES && p.len() > 1 {
             // the upper half leaves as pages of its own
             // from the first row past half the bytes, never the first row
             let half = size(&p) / 2;
@@ -168,27 +231,26 @@ impl<R: Rows> PagedRows<R> {
             let upper = p.split_off(&at);
             let key = self.cut(&at).to_vec();
             self.write(&key, upper)?;
+            stored = encode(&p);
         }
-        self.inner.put(&page_key(first), &encode(&p))
+        self.inner.put(&page_key(first), &stored)
     }
 
-    /// Writes `rows` where nothing is kept: whole pages, each written once.
+    /// Writes `rows` where nothing is kept: a run of rows at a time (eight pages of bytes before
+    /// their repeats go, which store as about one; `write` splits what stores larger), cut
+    /// where the cut key changes.
     pub fn fill(&mut self, rows: &BTreeMap<Vec<u8>, Vec<u8>>) -> Result<(), R::Err> {
         let mut first: Vec<u8> = Vec::new();
         let mut page = Page::new();
         for (k, v) in rows {
             let new = page.keys().next_back().is_some_and(|l| self.cut(l) != self.cut(k));
-            if size(&page) + k.len() + v.len() > PAGE_BYTES && new {
-                self.inner.put(&page_key(&first), &encode(&page))?;
+            if size(&page) + k.len() + v.len() > 8 * PAGE_BYTES && new {
+                self.write(&first, std::mem::take(&mut page))?;
                 first = self.cut(k).to_vec();
-                page = Page::new();
             }
             page.insert(k.clone(), v.clone());
         }
-        if !page.is_empty() {
-            self.inner.put(&page_key(&first), &encode(&page))?;
-        }
-        Ok(())
+        self.write(&first, page)
     }
 }
 
@@ -264,6 +326,37 @@ mod tests {
     use super::*;
     use crate::held::MemRows;
 
+    /// spec: none (internal: how a node stores an index's rows). `pack` gives back its input
+    /// through `unpack` for random and repeating bytes and shrinks repeats; damaged bytes are an
+    /// error, never a panic.
+    #[test]
+    fn packed_bytes_unpack_as_they_were() {
+        let mut r = crate::testutil::rng(43);
+        for round in 0..300 {
+            let n = r.below(3000);
+            let words: Vec<Vec<u8>> = (0..1 + r.below(6)).map(|_| (0..1 + r.below(40)).map(|_| r.below(256) as u8).collect()).collect();
+            let mut b: Vec<u8> = Vec::new();
+            while b.len() < n {
+                if r.chance(2, 3) {
+                    b.extend_from_slice(&words[r.below(words.len())]);
+                } else {
+                    b.push(r.below(256) as u8);
+                }
+            }
+            let packed = pack(&b);
+            assert!(unpack(&packed).unwrap() == b, "round {round}");
+            let mut bad = packed.clone();
+            if !bad.is_empty() {
+                let at = r.below(bad.len());
+                bad[at] ^= 1 << r.below(8);
+                bad.truncate(1 + r.below(bad.len()));
+                let _ = unpack(&bad);
+            }
+        }
+        let repeating: Vec<u8> = (0..4000u32).map(|i| (i % 37) as u8).collect();
+        assert!(pack(&repeating).len() < 200, "{} B", pack(&repeating).len());
+    }
+
     /// spec: none (internal: how a node stores an index's rows). Random puts, deletes and scans
     /// both ways read as an unpaged store's, pages stay under
     /// the bound (but one row over it), and no page is left once every row is gone.
@@ -308,9 +401,9 @@ mod tests {
         for (k, v) in &paged.inner.0 {
             let p = decode(v).unwrap();
             let one = p.keys().all(|x| x.get(..3) == p.keys().next().and_then(|f| f.get(..3)));
-            assert!(size(&p) <= 2 * PAGE_BYTES || one, "page {k:?} of {} B", size(&p));
+            assert!(v.len() <= 2 * PAGE_BYTES || one, "page {k:?} of {} B stored", v.len());
         }
-        assert!(paged.inner.0.len() > 5 && paged.inner.0.len() < plain.0.len() / 4, "{} pages of {} rows", paged.inner.0.len(), plain.0.len());
+        assert!(paged.inner.0.len() > 2 && paged.inner.0.len() < plain.0.len() / 4, "{} pages of {} rows", paged.inner.0.len(), plain.0.len());
         let mut filled = PagedRows::new(MemRows::default(), 3);
         filled.fill(&plain.0).unwrap();
         assert!(filled.scan(&[], &[0xff; 9], usize::MAX).unwrap() == plain.scan(&[], &[0xff; 9], usize::MAX).unwrap());
