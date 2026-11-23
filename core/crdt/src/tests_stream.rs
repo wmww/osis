@@ -8,7 +8,7 @@ use crate::stamp::Interner;
 use crate::stream::Piece;
 use crate::tests_decoder::{mutate, mutate_tree};
 use crate::testutil::{MCommit, frag, history_bulk, history_with, mapply, sess};
-use crate::testutil::{snap_cx, writer_cx};
+use crate::testutil::{joined, snap_cx, writer_cx};
 use crate::wire::{Delta, DeltaCtx, Frontiers, Snapshot};
 use crate::{Checked, Fragment, decode_checked, decode_delta, decode_snapshot, stream_checked, stream_delta, stream_snapshot};
 use crdt_model::ops::Ty;
@@ -327,8 +327,7 @@ fn joins_equal(seed: u64, ins: &[Input], commits: &[MCommit]) -> Result<usize, S
             }
         }
         for b in bases.iter().step_by(8).chain(bases.last()) {
-            let mut want = b.clone();
-            want.join(whole.clone());
+            let want = joined(&b, &whole);
             for rev in [false, true] {
                 if join_pieces(b, &pieces, rev) != want {
                     return Err(format!("seed {seed}: pieces joined differ (reversed {rev}) for root {}", hex(&i.root)));

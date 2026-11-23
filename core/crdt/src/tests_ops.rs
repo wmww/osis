@@ -4,7 +4,7 @@ use crate::delta::DeltaBuilder;
 use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
 use crate::stamp::{CounterRange, Dot, Source};
-use crate::testutil::{TyView, frag, history, mapply, ostate, sess, sink_no_seq, source, ts, value, writer};
+use crate::testutil::{TyView, frag, history, joined, mapply, ostate, sess, sink_no_seq, source, ts, value, writer};
 use crate::undo::{Undone, undo};
 use crate::view::AnyView;
 use crdt_model::r#gen::{Rng, random_op, random_value};
@@ -106,8 +106,7 @@ proptest! {
         let d = frag(&md);
         // restores the prior read, a spot absent before absent again (§4.6)
         let cmp = |s: &Fragment| read(s);
-        let mut s1 = s0.clone();
-        s1.join(d.clone());
+        let s1 = joined(&s0, &d);
         let src = source(&mw.source);
         let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() } };
         let mut w = Writer::new(ts(82 << 16), sess(Tid::from_bytes([1; 15])), mw.hi());
@@ -118,8 +117,7 @@ proptest! {
             prop_assert_eq!(cmp(&s1), cmp(&s0));
             return Ok(());
         };
-        let mut s2 = s1.clone();
-        s2.join(ud);
+        let s2 = joined(&s1, &ud);
         prop_assert_eq!(cmp(&s2), cmp(&s0));
     }
 
@@ -235,8 +233,7 @@ fn nested_register_replace_decodes_spec_5_1() {
         let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: d.clone() }, &cx, None).unwrap();
         let back = decode_delta(&bytes, &cx, &mut crate::stamp::Interner::new(), None).unwrap();
         assert_eq!(back.fragment, d, "{op:?}");
-        let mut s = state.clone();
-        s.join(back.fragment);
+        let s = joined(&state, &back.fragment);
         assert_eq!(read(&s), Some(want), "{op:?}");
     }
 }
@@ -266,15 +263,13 @@ fn key_writes_follow_what_they_touch_spec_5_6() {
     let empty = Fragment::default();
     let x = write(&empty, 1, 1, vec![set(vec![], map(vec![(0, list(&[1])), (1, Value::Int(10))]))]);
     let y = write(&empty, 2, 2, vec![set(vec![], map(vec![(0, list(&[2])), (1, Value::Int(20))]))]);
-    let mut both = x.clone();
-    both.join(y.clone());
+    let both = joined(&x, &y);
     let z = write(&both, 3, 3, vec![set(key(0), list(&[1, 3])), set(key(1), Value::Int(30))]);
     let Fragment::Map(m) = &z else { panic!("map") };
     let srcs: Vec<_> = m.entries.keys().map(|id| id.dot.src.clone()).collect();
     assert_eq!(srcs, vec![src(1), src(1), src(2), src(2)], "both keys' writes go into both records");
     let w = write(&x, 4, 4, vec![PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }, PathOp { path: vec![], op: Op::Remove(Value::Int(1)) }]);
-    let mut st = both.clone();
-    st.join(z);
+    let mut st = joined(&both, &z);
     assert_eq!(st.read(), Some(map(vec![(0, list(&[1, 3])), (1, Value::Int(30))])));
     st.join(w);
     assert_eq!(st.read(), Some(map(vec![(0, list(&[3])), (1, Value::Int(30))])));
@@ -300,8 +295,7 @@ fn text_key_writes_follow_what_they_touch_spec_5_6() {
     let text = |s: &str| Value::Map([(Value::Int(0), Value::Str(s.into()))].into_iter().collect());
     let x = write(&Fragment::default(), 1, 1, at(key(), Op::Set(Value::Str("ab".into()))));
     let y = write(&Fragment::default(), 2, 2, at(key(), Op::Set(Value::Str("cd".into()))));
-    let mut both = x.clone();
-    both.join(y.clone());
+    let both = joined(&x, &y);
     let Some(Value::Map(m)) = both.read() else { panic!("map") };
     let Some(Value::Str(s)) = m.get(&Value::Int(0)) else { panic!("text") };
     let z = write(&both, 3, 3, at(key(), Op::Set(Value::Str(s.replace(['b', 'c'], "") + "Z"))));
@@ -356,8 +350,7 @@ fn absent_key_typed_spec_5_6() {
     b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Add(Value::Int(2)) }, &sets).unwrap();
     let (d, range) = b.finish().unwrap();
     assert_eq!(range, CounterRange { lo: 1, hi: 3 }, "entry and element only: the no-op took no counter");
-    let mut s = st.clone();
-    s.join(d);
+    let s = joined(&st, &d);
     assert_eq!(s.read(), Some(Value::Map([(Value::Int(0), Value::Set([Value::Int(2)].into_iter().collect()))].into_iter().collect())));
     let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 16), node, 1));
     let partial = PathOp { path: vec![PathSeg::Key(Value::Int(0)), PathSeg::Field(1)], op: Op::Set(Value::Int(5)) };
@@ -556,8 +549,7 @@ fn concurrent_key() -> Vec<(TyView, Fragment, Value)> {
     [(&da, &db), (&db, &da)]
         .into_iter()
         .map(|(x, y)| {
-            let mut s = base.clone();
-            s.join(x.clone());
+            let mut s = joined(&base, &x);
             s.join(y.clone());
             assert_eq!(s.read(), Some(both.clone()));
             (TyView(view.0.clone()), s, both.clone())
@@ -572,12 +564,10 @@ fn commit_and_undo(view: &TyView, s: &Fragment, op: PathOp) -> (Fragment, Fragme
     let mut b = DeltaBuilder::new(s, Writer::new(ts(5 << 16), node.clone(), 20));
     b.apply(&op, view).unwrap();
     let (d, range) = b.finish().unwrap();
-    let mut s1 = s.clone();
-    s1.join(d.clone());
+    let s1 = joined(&s, &d);
     let u = Undone { delta: &d, source: &node, range };
     let ud = undo(&mut Writer::new(ts(6 << 16), node.clone(), 40), &u, &s1, s, view).unwrap().unwrap();
-    let mut s2 = s1.clone();
-    s2.join(ud.clone());
+    let s2 = joined(&s1, &ud);
     (s1, ud, s2)
 }
 
@@ -692,17 +682,14 @@ fn undo_absent_keeps_seen_other_write_spec_4_6() {
         let mut b = DeltaBuilder::new(&s, Writer::new(ts(5 << 16), node.clone(), 20));
         b.apply(&op, &view).unwrap();
         let (d1, range) = b.finish().unwrap();
-        let mut s1 = s.clone();
-        s1.join(d1.clone());
+        let s1 = joined(&s, &d1);
         let mut b = DeltaBuilder::new(&s1, Writer::new(ts(6 << 16), other.clone(), 1));
         b.apply(&op_b, &view).unwrap();
-        let mut s2 = s1.clone();
-        s2.join(b.finish().unwrap().0);
+        let s2 = joined(&s1, &b.finish().unwrap().0);
         let u = Undone { delta: &d1, source: &node, range };
         let ud = undo(&mut Writer::new(ts(7 << 16), node.clone(), 40), &u, &s2, &s, &view).unwrap();
         assert!(!ud.as_ref().is_some_and(Fragment::has_position_reset), "{name}: {ud:?}");
-        let mut s3 = s2.clone();
-        s3.join(ud.unwrap_or_default());
+        let s3 = joined(&s2, &ud.unwrap_or_default());
         assert_ne!(s3.read(), s.read(), "{name}: the other's write stays");
     }
 }
@@ -990,8 +977,7 @@ fn tid_removal_covers_what_the_remover_saw_spec_5_5() {
         }
         assert_eq!(st.read(), empty, "A's held add and B's add seen by header go");
         for (d, what) in [(&add_d, "an add never seen"), (&add_late, "an add after it")] {
-            let mut x = st.clone();
-            x.join(d.clone());
+            let x = joined(&st, &d);
             assert_eq!(x.read(), just_t, "{what} shows");
         }
         // undoing the removal against the state before it adds the tid back
@@ -1000,8 +986,7 @@ fn tid_removal_covers_what_the_remover_saw_spec_5_5() {
         before.join(add_b.clone());
         let mut w = Writer::new(ts(9 << 16), node(9), 1);
         let u = undo(&mut w, &Undone { delta: &rm, source: &node(3), range: CounterRange { lo: 1, hi: 2 } }, &st, &before, &view).unwrap().unwrap();
-        let mut back = st.clone();
-        back.join(u);
+        let back = joined(&st, &u);
         assert_eq!(back.read(), just_t, "undone");
     }
 }
@@ -1032,8 +1017,7 @@ fn values_and_each_value_differ_in_bags_and_uncreated_keys_spec_5_6() {
     };
     assert_eq!(set(&d, true), [k.clone(), y.clone(), Value::Int(5)].into_iter().collect());
     assert_eq!(set(&d, false), [y.clone()].into_iter().collect());
-    let mut s = st.clone();
-    s.join(d);
+    let s = joined(&st, &d);
     assert_eq!(set(&s, true), [k.clone(), y.clone(), Value::Int(5)].into_iter().collect());
     assert_eq!(set(&s, false), [k, y].into_iter().collect());
 }

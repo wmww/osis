@@ -98,13 +98,11 @@ fn bag_redo_spec_4_6() {
     let s0 = create(&mut w, &view, &Value::Int(5)).unwrap();
     let mut wu = Writer::new(ts(20 << 16), node.clone(), 2);
     let u1 = undo(&mut wu, &Undone { delta: &s0, source: &node, range: CounterRange { lo: 1, hi: 2 } }, &s0, &Fragment::default(), &view).unwrap().unwrap();
-    let mut s1 = s0.clone();
-    s1.join(u1.clone());
+    let s1 = joined(&s0, &u1);
     assert_eq!(s1.read(), None, "absent before (§4.6)");
     let mut wr = Writer::new(ts(30 << 16), node.clone(), 3);
     let redo = undo(&mut wr, &Undone { delta: &u1, source: &node, range: wu.range() }, &s1, &s0, &view).unwrap().unwrap();
-    let mut s2 = s1.clone();
-    s2.join(redo);
+    let s2 = joined(&s1, &redo);
     assert_eq!(s2.read(), Some(Value::Int(5)));
 }
 
@@ -384,8 +382,7 @@ fn slots_unmerge_keeps_slot_creation_spec_7() {
     un.remove_writes(&|d| d.src == sess(Tid::from_bytes([4; 15])));
     assert_eq!(un, stripped, "nothing of the fourth author");
     for (name, x) in [("stripped", stripped), ("stripped, un-merged", un)] {
-        let mut y = bdelta.clone();
-        y.join(x);
+        let y = joined(&bdelta, &x);
         assert_eq!(y, full, "{name}");
     }
 }
@@ -544,8 +541,7 @@ fn map_key_erased_record_spec_5_6() {
     // a keyed removal reaches the key-erased record: nothing of the dot left live or hidden
     let removal = entry_map(vec![(c.clone(), Some(k.clone()), Some(rm.clone()), None)]);
     all_orders(&[erased.clone(), valued.clone(), removal.clone()], Some(Value::Map(Default::default())));
-    let mut s = erased.clone();
-    s.join(removal);
+    let s = joined(&erased, &removal);
     let Fragment::Map(m) = &s else { panic!("map") };
     assert!(m.entries().all(|(_, _, _, f)| f.is_none()), "{s:?}");
     // a key-erased removal reaches the keyed records
@@ -566,8 +562,7 @@ fn forged_key_removed_with_its_dot_spec_5_6() {
     x.join(entry_map(vec![(c, Some(b), None, Some(8))]));
     let mut s = x.clone();
     s.strip(&|_| true);
-    let mut y = x.clone();
-    y.join(s);
+    let y = joined(&x, &s);
     assert_eq!(x.read(), Some(Value::Map(Default::default())));
     assert_eq!(y.read(), x.read(), "valued copy wins");
 }
@@ -607,8 +602,7 @@ fn text_flag_below_creation_loses_spec_5_7() {
         let want = Some(Value::Str(want.into()));
         all_orders(&[created.clone(), deleted.clone(), reset.clone()], want.clone());
         // a node that held the bodies, its local chars dropped, and one booted from a snapshot of them
-        let mut held = created.clone();
-        held.join(deleted);
+        let mut held = joined(&created, &deleted);
         let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: held.clone(), frontiers: Frontiers::default() };
         let bytes = encode_snapshot(&snap, &scx(), None).unwrap();
         let mut booted = decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap().fragment;
@@ -651,8 +645,7 @@ fn removed_entry_hides_newer_write_spec_5_6() {
     let edit = nested_rec(c.dot.clone(), &k, Fragment::Register(reg(w.clone(), 9)));
     all_orders(&[created.clone(), removal.clone(), edit.clone()], map(&[]));
     // the stale writer
-    let mut s = created.clone();
-    s.join(edit.clone());
+    let mut s = joined(&created, &edit);
     assert_eq!(s.read(), map(&[(&k, 9)]), "read until the removal arrives");
     s.join(removal.clone());
     assert_eq!(s.read(), map(&[]));
@@ -688,8 +681,7 @@ fn lone_creation_on_the_wire_spec_5_6() {
     let bytes = encode_snapshot(&snap(many.clone()), &scx(), Some(&mut pages)).unwrap();
     assert!(pages.len() > 1, "paged");
     assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap().fragment, many);
-    let mut joined = shell.clone();
-    joined.join(shell.clone());
+    let mut joined = joined(&shell, &shell);
     assert_eq!(joined, shell);
     joined.join(nested_rec(st(1, 1, 1).dot, &k(1), Fragment::Register(reg(st(2, 2, 1), 9))));
     assert_eq!(joined.read(), Some(Value::Map([(k(1), Value::Int(9))].into())), "the content rejoined");
@@ -718,8 +710,7 @@ fn expired_undelete_hides_alike_spec_5_7() {
     let dx = one(el(true, None, None));
     let dz = one(el(false, Some((Stamp { ts: ts(2), dot: Dot::new(z, 1) }, true)), None));
     let dy = one(el(false, Some((Stamp { ts: ts(3), dot: Dot::new(y.clone(), 1) }, false)), Some('a')));
-    let mut deleted = dx.clone();
-    deleted.join(dz);
+    let deleted = joined(&dx, &dz);
     let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: deleted.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &crate::testutil::snap_cx(), None).unwrap();
     let booted = decode_snapshot(&bytes, &crate::testutil::snap_cx(), &mut Interner::new(), None).unwrap().fragment;

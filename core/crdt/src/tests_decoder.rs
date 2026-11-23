@@ -5,7 +5,7 @@
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::stamp::Interner;
 use crate::testutil::{MCommit, frag, history_with, mapply};
-use crate::testutil::{snap_cx, writer_cx};
+use crate::testutil::{joined, snap_cx, writer_cx};
 use crate::wire::{Delta, Frontiers, Snapshot};
 use crdt_model::ops::Ty;
 use crdt_model::r#gen::{Rng, kitchen_sink};
@@ -147,8 +147,7 @@ fn same_delta(bytes: &[u8], c: &MCommit, state: &crate::Fragment) -> Result<(), 
     let imp = decode_delta(bytes, &writer_cx(&c.w), &mut Interner::new(), None);
     // what is accepted joins into the state so far and reads (no panic)
     if let Ok(d) = &imp {
-        let mut st = state.clone();
-        st.join(d.fragment.clone());
+        let st = joined(&state, &d.fragment);
         let _ = st.read();
     }
     let model = m_decode_delta(bytes, &mut Ctx::writer(c.w.ts, c.w.source.clone(), c.w.lo, c.w.hi()));

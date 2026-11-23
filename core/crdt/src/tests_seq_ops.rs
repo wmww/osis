@@ -5,7 +5,7 @@ use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
 use crate::seq::visible;
 use crate::stamp::{CounterRange, Source};
-use crate::testutil::{Pager, TyView, frag, mapply, node, ostate, ts, value, via_snapshot, writer};
+use crate::testutil::{Pager, TyView, frag, joined, mapply, node, ostate, ts, value, via_snapshot, writer};
 use crate::undo::{Undone, undo};
 use crate::wire::{DeltaCtx, DeltaKind};
 use crdt_model::r#gen::{Rng, random_value};
@@ -792,8 +792,7 @@ fn move_undo_keeps_sibling_order_spec_5_7() {
     let ud = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap().unwrap();
     let back = wired(&ud, &src, w.range(), 5);
     assert_eq!(back, ud, "the undo round-trips as a writer's delta");
-    let mut alone = a.state.clone();
-    alone.join(ud);
+    let mut alone = joined(&a.state, &ud);
     assert_eq!(read_str(&alone), "eab");
     // the receiver holds the concurrent insert and a cached placement
     assert_eq!(read_str(&b.state), "x".to_string() + &read_str(&a.state));
@@ -976,14 +975,12 @@ fn list_delete_vs_concurrent_nested_write_spec_5_7() {
     let mut d = Replica::new(4);
     d.state = base.clone();
     let (older, _, _) = d.commit(4, &[field(7)], &view).unwrap();
-    let mut s1 = base.clone();
-    s1.join(del.clone());
+    let mut s1 = joined(&base, &del);
     s1.join(older.clone());
     assert_eq!(s1.read(), Some(Value::List(vec![])), "an older nested write loses to the reset");
     s1.join(newer.clone());
     assert_eq!(s1.read(), Some(Value::List(vec![])), "a newer nested write does not revive the element");
-    let mut stale = base.clone();
-    stale.join(newer.clone());
+    let stale = joined(&base, &newer);
     assert_eq!(stale.read(), Some(Value::List(vec![item(1, 9)])), "read until the delete arrives");
     let mut s2 = base.clone();
     for x in [&newer, &older, &del] {
@@ -1362,8 +1359,7 @@ fn resolved_insert_delete_match_index_ops_spec_6_1() {
             let d2 = crate::ops::leaf(&mut w(), Some(&st), &view, &resolved, true).unwrap();
             assert_eq!(d1, d2, "round {round} step {k}: {by_index:?}");
             let Some(d) = d2 else { continue };
-            let mut next = st.clone();
-            next.join(d);
+            let next = joined(&st, &d);
             let after = full_order(&next);
             match &resolved {
                 Op::InsertAfter { anchor, .. } => {
@@ -2160,8 +2156,7 @@ fn expired_list_element_keeps_others_values_spec_5_7() {
     c.state = base.clone();
     let (newer, _, _) = c.commit(6, &[PathOp { path: vec![PathSeg::Index(0), PathSeg::Field(2)], op: Op::Set(Value::Int(9)) }], &view).unwrap();
     let expired = |d: &crate::stamp::Dot| d.src == a.src;
-    let mut s1 = base.clone();
-    s1.join(newer.clone());
+    let mut s1 = joined(&base, &newer);
     assert_eq!(s1.read(), Some(Value::List(vec![item(1, 9)])));
     s1.strip(&expired);
     let others = Some(Value::List(vec![Value::Map([(Value::Int(2), Value::Int(9))].into_iter().collect())]));
@@ -2175,8 +2170,7 @@ fn expired_list_element_keeps_others_values_spec_5_7() {
     assert_eq!(via_snapshot(&s1).read(), others, "a snapshot carries the creation value-less");
     let mut copy = base.clone();
     copy.strip(&expired);
-    let mut s3 = base.clone();
-    s3.join(copy);
+    let s3 = joined(&base, &copy);
     assert_eq!(s3.read(), base.read(), "a value-less copy before T");
     // un-merging its creator takes the creation: the element goes, the aspect reads as where
     // only the other commit is held (§4.6)
@@ -2291,8 +2285,7 @@ fn move_unplaced_record_converges_spec_5_7() {
         assert_eq!(a.state.read(), Some(s("wyuz")));
         let x = crate::stamp::Dot { src: node(2), ctr: 1 };
         assert!(matches!(&da, Fragment::Seq(sq) if !sq.elems().contains_key(&x)), "no position write for x");
-        let mut alone = a.state.clone();
-        alone.join(undo(&mut Writer::new(ts(8 << 16), sa.clone(), a.lo), &Undone { delta: &da, source: &sa, range: ra }, &a.state, &ab, &view).unwrap().unwrap());
+        let alone = joined(&a.state, &undo(&mut Writer::new(ts(8 << 16), sa.clone(), a.lo), &Undone { delta: &da, source: &sa, range: ra }, &a.state, &ab, &view).unwrap().unwrap());
         assert_eq!(alone.read(), ab.read());
         a.state.join(xc.clone());
         a.state.join(dc.clone());
