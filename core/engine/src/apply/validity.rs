@@ -417,19 +417,69 @@ pub(crate) fn note_notices(core: &mut Core, id: &CommitId) {
     core.notices_due.extend(edges);
 }
 
+/// Where a part sits in the order its path wait reads (spec/permissions.md §5.1 step 1, §5.2
+/// Position).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Place {
+    /// Content: the start of its `ts`, before every edge write there.
+    Start(osis_base::Ts),
+    /// An edge write: its commit's point, then its place among that commit's edge writes
+    /// (`write_place`); `None`: after every one of them, the least a part of the commit can wait.
+    Write(Point, Option<WritePlace>),
+}
+
+/// An edge write's place among its commit's (spec/permissions.md §5.1 step 1): on an edge of a
+/// path the commit states or not, then thing, then holder.
+pub(crate) type WritePlace = (bool, Tid, Tid);
+
+impl Place {
+    /// Whether an edge write of the commit at `at` is ordered before it, `place` its place in
+    /// that commit.
+    fn after(&self, at: &Point, place: impl FnOnce() -> WritePlace) -> bool {
+        match self {
+            Place::Start(ts) => at.ts < *ts,
+            Place::Write(p, mine) => at < p || at == p && mine.is_none_or(|m| place() < m),
+        }
+    }
+}
+
+/// The place of the edge write on `holder`'s edge on `target` in a commit by `signer` stating
+/// `along` (marks `direct`) for `target`, `mint` holding the record chains it reads. Interim
+/// (issues/stated-path-wait-order.md): an edge on another thing's path counts as stated only
+/// where it is on `target`'s, so a write on a record edge down to a thing the commit writes other
+/// than by edge writes may sit apart from the walk's place for it.
+pub(crate) fn write_place(mint: &BTreeMap<Tid, Tid>, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, target: Tid, holder: Tid) -> WritePlace {
+    let stated = osis_perm::paths::hops(mint, signer, along, direct, target, None, true).contains(&(holder, target));
+    (stated, target, holder)
+}
+
 /// Whether an edge of the path a part states has not arrived (spec/commits.md §4 Unjudgeable):
-/// one that is no record edge and that no held edge write puts a grant on, of any validity and
-/// whatever followed (a removed author keeps its grant's write and still applies, judged
-/// invalid). The part is by `signer` on `t` along `along`, its hops `direct` marked; `edge_class`
-/// for a `roles.0` part, `leaves` for one read as a self-removal, whose path ends at its holder,
-/// the last thing listed or the signer (spec/permissions.md §1 Path). A path stating no edges (a
-/// thing named twice, a bad mark) is judged as it is. `record`: the records held, or carried by
-/// the commit. No other path is read: one that would also lead to `t` judges nothing (§1).
+/// one that is no record edge and that no held edge write (a grant or a removal, of any validity)
+/// not itself unjudgeable is ordered before the part, `at`. The part is by `signer` on `t` along
+/// `along`, its hops `direct` marked; `edge_class` for a `roles.0` part, `leaves` for one read as
+/// a self-removal, whose path ends at its holder, the last thing listed or the signer
+/// (spec/permissions.md §1 Path). A path stating no edges (a thing named twice, a bad mark) is
+/// judged as it is. `record`: the records held, or carried by the commit. No other path is read:
+/// one that would also lead to `t` judges nothing (§1).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn unreached(core: &Core, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: &Tid, edge_class: bool, leaves: bool, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> bool {
-    // the record chains of the path's members: what its descents read
+pub(crate) fn unreached(core: &Core, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: &Tid, edge_class: bool, leaves: bool, at: Place, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> bool {
+    let holder = leaves.then(|| along.last().copied().unwrap_or(signer));
+    Reach { core, record, judged: BTreeMap::new() }.unreached(signer, along, direct, *t, edge_class, holder, at)
+}
+
+/// The path wait over the held edge writes, each held write judged once (`judged`: whether it is
+/// itself unjudgeable, by commit, holder and target). Every write it reads is ordered strictly
+/// before the one it judges, so it ends.
+struct Reach<'a> {
+    core: &'a Core,
+    record: &'a dyn Fn(&Tid) -> Option<CreationRecord>,
+    judged: BTreeMap<(CommitId, Tid, Tid), bool>,
+}
+
+/// The record chains of `members` (`record` the records read): what a path's descents read.
+fn chains(members: impl IntoIterator<Item = Tid>, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> BTreeMap<Tid, Tid> {
     let mut mint: BTreeMap<Tid, Tid> = BTreeMap::new();
-    for start in [signer, *t].into_iter().chain(along.iter().copied()) {
+    for start in members {
         let mut x = start;
         for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH {
             let Some(up) = record(&x).and_then(|r| r.mint_admin()) else { break };
@@ -439,20 +489,77 @@ pub(crate) fn unreached(core: &Core, signer: Tid, along: &[Tid], direct: osis_ba
             x = up;
         }
     }
-    let holder = leaves.then(|| along.last().copied().unwrap_or(signer));
-    let hops = osis_perm::paths::hops(&mint, signer, along, direct, *t, holder, edge_class);
-    hops.iter().any(|(p, q)| mint.get(q) != Some(p) && !core.ix.held.granted_on(q).any(|h| h == p))
+    mint
 }
 
-/// Whether the `roles.0` part of aspect `ai` of commit `id` (`es` its entries, `known`: every
-/// edge part held of the commit resolved, `resolved`) makes a self-removal: an edge write on the
-/// holder its thing's path ends at (the last thing listed, or the signer). A commit with a reset
-/// whose creation is not held makes no edge write yet (`add_role_commit`), nor does a split one
-/// or a part on a thing too deep.
-pub(crate) fn leaves(core: &Core, h: &Header, id: &CommitId, ai: usize, es: &[Entry], known: bool) -> bool {
+impl<'a> Reach<'a> {
+    fn mint(&self, members: impl IntoIterator<Item = Tid>) -> BTreeMap<Tid, Tid> {
+        chains(members, self.record)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn unreached(&mut self, signer: Tid, along: &[Tid], direct: osis_base::format::PathMarks, t: Tid, edge_class: bool, holder: Option<Tid>, at: Place) -> bool {
+        let mint = self.mint([signer, t].into_iter().chain(along.iter().copied()));
+        let hops = osis_perm::paths::hops(&mint, signer, along, direct, t, holder, edge_class);
+        hops.into_iter().any(|(p, q)| mint.get(&q) != Some(&p) && !self.arrived(p, q, at))
+    }
+
+    /// Whether a held edge write on `p`'s edge on `q`, not itself unjudgeable, is ordered before
+    /// `at`.
+    fn arrived(&mut self, p: Tid, q: Tid, at: Place) -> bool {
+        let held = &self.core.ix.held;
+        let ts = match at {
+            Place::Start(ts) | Place::Write(Point { ts, .. }, _) => ts,
+        };
+        // ascending: none past `at`'s `ts` is before it
+        for point in held.writes_on(&p, &q).take_while(|x| x.ts <= ts) {
+            let Some(c) = held.edge_commit(&point.commit) else { continue };
+            let along = c.path_to(&q);
+            if !at.after(point, || write_place(&self.mint([c.signer, q].into_iter().chain(along.iter().copied())), c.signer, along, c.direct, q, p)) {
+                continue;
+            }
+            if !self.write_unreached(c, p, q) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether the held edge write of `c` on `holder`'s edge on `target` is itself unjudgeable.
+    fn write_unreached(&mut self, c: &'a RoleCommit, holder: Tid, target: Tid) -> bool {
+        if let Some(&u) = self.judged.get(&(c.id, holder, target)) {
+            return u;
+        }
+        let along = c.path_to(&target);
+        let end = along.last().copied().unwrap_or(c.signer);
+        let mint = self.mint([c.signer, target].into_iter().chain(along.iter().copied()));
+        let at = Place::Write(c.point(), Some(write_place(&mint, c.signer, along, c.direct, target, holder)));
+        let u = self.unreached(c.signer, along, c.direct, target, true, (holder == end).then_some(holder), at);
+        self.judged.insert((c.id, holder, target), u);
+        u
+    }
+}
+
+/// Whether every edge write the `roles.0` part of aspect `ai` of commit `id` makes is unjudgeable
+/// (spec/commits.md §4): an edge of its path (to its holder, for a self-removal: the last thing
+/// listed or the signer) has no held edge write ordered before it (`unreached`). `es` its
+/// entries, `known`: every edge part held of the commit resolved (`resolved`). A part making no
+/// write yet (a reset whose creation is not held, or not all known) is read as one write after
+/// every edge write of its commit, along the whole path.
+pub(crate) fn writes_unreached(core: &Core, h: &Header, id: &CommitId, ai: usize, es: &[Entry], known: bool, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> bool {
     let (Some(a), osis_commit::Paths::One(p)) = (h.aspects.get(ai), &h.path) else { return false };
-    let end = p.to(&a.tid).last().copied().unwrap_or(h.signer);
-    known && !too_deep(core, &a.tid) && edge_ops(core, &a.tid, es, Owned::of(h, id, ai).as_ref()).0.iter().any(|o| o.holder == end)
+    let along = p.to(&a.tid);
+    let end = along.last().copied().unwrap_or(h.signer);
+    let point = Point { ts: h.ts, node: h.signer, commit: *id };
+    let ops = if known && !too_deep(core, &a.tid) { edge_ops(core, &a.tid, es, Owned::of(h, id, ai).as_ref()).0 } else { Vec::new() };
+    if ops.is_empty() {
+        return unreached(core, h.signer, along, p.direct, &a.tid, true, false, Place::Write(point, None), record);
+    }
+    let mint = chains([h.signer, a.tid].into_iter().chain(along.iter().copied()), record);
+    ops.iter().all(|o| {
+        let at = Place::Write(point, Some(write_place(&mint, h.signer, along, p.direct, a.tid, o.holder)));
+        unreached(core, h.signer, along, p.direct, &a.tid, true, o.holder == end, at, record)
+    })
 }
 
 /// Whether every reset of the `roles.0` entries `es` of aspect `ai` of commit `id` names a write

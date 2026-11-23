@@ -230,7 +230,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // a part judged invalid drops as invalid, whatever else asks (spec/permissions.md §6): it
     // stays at peers and comes back once valid. As covered, a memory one would be forgotten,
     // and a holder judging it valid again would find it gone for good
-    let why = if why == DropFor::Cover && goes_invalid(tx.core, &m, ai) { DropFor::Invalid } else { why };
+    let why = if why == DropFor::Cover && goes_invalid(tx.core, c, &m, ai) { DropFor::Invalid } else { why };
     let invalid = why == DropFor::Invalid;
     // a bare leftover stays but past its expiry under a cover, or while invalid: then it gives
     // nothing; a signal's gives nothing ever, and goes at its keep bound
@@ -408,7 +408,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
     let any = !lost.is_empty();
     // until each valid one comes back, this node may read less than one that kept it (an invalid
     // one goes on dropped as invalid, `reopen_to_fetch`)
-    let missing: Vec<(CommitId, usize)> = lost.iter().filter(|(c, ai)| !core.ix.commits.get(c).is_some_and(|m| drops_invalid(core, m, *ai))).cloned().collect();
+    let missing: Vec<(CommitId, usize)> = lost.iter().filter(|(c, ai)| !core.ix.commits.get(c).is_some_and(|m| drops_invalid(core, c, m, *ai))).cloned().collect();
     if !missing.is_empty() {
         suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &missing)?;
     }
@@ -429,21 +429,21 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
 /// whole, spec/sync-inbox.md §4) and a part of this node's own commit (its user is told the write was
 /// refused and may write it again from it, `DiagnosticKind::OwnWriteInvalid`). A memory part
 /// goes as a durable one: its commit stays known while an entry of it is (`forgettable`).
-fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
-    m.holds(ai) && drops_invalid(core, m, ai)
+fn goes_invalid(core: &Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> bool {
+    m.holds(ai) && drops_invalid(core, c, m, ai)
 }
 
 /// Whether part `ai` of `m` is judged invalid here and so is not held, nor missing: invalid and
 /// judgeable (a part judged on missing evidence is never judged invalid, spec/commits.md §4
 /// Unjudgeable: `apply::unjudgeable`), and neither a role commit's nor this node's own
 /// (`goes_invalid`).
-fn drops_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
-    !m.valid_at(ai) && Some(m.view.signer) != core.me() && !m.view.kind.is_role() && !crate::apply::unjudgeable(core, &m.header, &m.view, ai)
+fn drops_invalid(core: &Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> bool {
+    !m.valid_at(ai) && Some(m.view.signer) != core.me() && !m.view.kind.is_role() && !crate::apply::unjudgeable(core, c, &m.header, &m.view, ai)
 }
 
 /// Whether part `ai` of `m` goes once judged invalid, held or missing (`drop_invalid`).
-fn goes_invalid_any(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
-    (m.holds(ai) || m.missing(ai)) && drops_invalid(core, m, ai)
+fn goes_invalid_any(core: &Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> bool {
+    (m.holds(ai) || m.missing(ai)) && drops_invalid(core, c, m, ai)
 }
 
 /// Whether commit `m` holds no part and is known only for a part dropped while invalid (its
@@ -492,7 +492,7 @@ pub(crate) fn drop_invalid(tx: &mut Tx<'_>) -> Result<()> {
         crate::apply::run_batched(tx, |tx| {
             for c in &due {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
-                let parts: Vec<(usize, bool)> = (0..m.view.aspects.len()).filter(|ai| goes_invalid_any(tx.core, m, *ai)).map(|ai| (ai, m.holds(ai))).collect();
+                let parts: Vec<(usize, bool)> = (0..m.view.aspects.len()).filter(|ai| goes_invalid_any(tx.core, c, m, *ai)).map(|ai| (ai, m.holds(ai))).collect();
                 let memory = m.view.memory;
                 tx.in_class(memory, |tx| {
                     for (ai, held) in parts {
@@ -600,7 +600,7 @@ pub(super) fn reopen_in(tx: &mut Tx<'_>, c: &CommitId, m: &mut crate::engine::Me
 /// invalid (spec/sync-judgement.md §2 Judged invalid). It is judged again with the rest: valid,
 /// `valid_again` reopens it.
 fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
-    if tx.core.ix.commits.get(c).is_some_and(|m| m.is_dropped(ai) && drops_invalid(tx.core, m, ai)) {
+    if tx.core.ix.commits.get(c).is_some_and(|m| m.is_dropped(ai) && drops_invalid(tx.core, c, m, ai)) {
         return drop_as_invalid(tx, c, ai);
     }
     if let Some(mut m) = reopen(tx, c, ai)?.filter(|m| m.view.memory) {

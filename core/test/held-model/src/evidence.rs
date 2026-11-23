@@ -156,9 +156,8 @@ impl Closure {
 /// When a commit pends for want of evidence (`World::pend`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pend {
-    /// An edge it reads has no held edge write ordered before it, or the latest such pends
-    /// (notes/write-path-design.md §2; spec/commits.md §4 Unjudgeable reads a write that pends as
-    /// none).
+    /// An edge it reads has no held edge write ordered before it that does not itself pend
+    /// (spec/commits.md §4 Unjudgeable).
     Any,
     /// An edge it reads has no held chained grant ordered before it, or the latest held chained
     /// edge write ordered before it pends: a write no chained write reaches waits, as one no write
@@ -1034,13 +1033,23 @@ impl World {
     // ---- Judging ----
 
     /// `i` pends over `h`: a hop it rests on (`paths::World::rests`, its key hop first), no record
-    /// hop, has no held edge write ordered before it, or the latest such write pends.
+    /// hop, has no held edge write ordered before it that does not itself pend (under
+    /// `Pend::Granted`: no chained grant joining it, or the latest such chained write pends).
     pub fn pend(&self, h: &Set, i: Id) -> bool {
         let ch = (self.pend == Pend::Granted).then(|| self.chained(h));
-        self.pend_with(h, ch.as_ref(), i)
+        self.pend_with(h, ch.as_ref(), i, &mut BTreeMap::new())
     }
-    /// `pend` with `h`'s chained writes given under `Pend::Granted`.
-    fn pend_with(&self, h: &Set, ch: Option<&Set>, i: Id) -> bool {
+    /// `pend` with `h`'s chained writes given under `Pend::Granted`; `memo` what it found of
+    /// parts over this `h`.
+    fn pend_with(&self, h: &Set, ch: Option<&Set>, i: Id, memo: &mut BTreeMap<Id, bool>) -> bool {
+        if let Some(&p) = memo.get(&i) {
+            return p;
+        }
+        let p = self.pends_here(h, ch, i, memo);
+        memo.insert(i, p);
+        p
+    }
+    fn pends_here(&self, h: &Set, ch: Option<&Set>, i: Id, memo: &mut BTreeMap<Id, bool>) -> bool {
         // a keyset is held only with every demotion it carries (spec/crypto.md §4, Held keyset)
         if self.hidden(h, i) || self.keysets.get(&i).is_some_and(|c| !c.is_subset(h)) {
             return true;
@@ -1051,13 +1060,16 @@ impl World {
         // under J3 a hop no chained grant joins is judged, not waited on
         let refused = ch.is_some() && self.join == Join::Refused;
         self.w.rests(i).iter().copied().filter(|&e| !self.w.is_record(e)).any(|e| {
-            let on_e = || h.iter().copied().filter(|&j| self.w.sets(j) == Some(e) && self.before(j, i) && ch.is_none_or(|c| c.contains(&j)));
-            if ch.is_some() && !refused && !on_e().any(|j| self.joins(j, i, e, true)) {
+            let on_e: Vec<Id> = h.iter().copied().filter(|&j| self.w.sets(j) == Some(e) && self.before(j, i) && ch.is_none_or(|c| c.contains(&j))).collect();
+            let Some(ch) = ch else {
+                return on_e.iter().all(|&j| self.pend_with(h, None, j, memo));
+            };
+            if !refused && !on_e.iter().any(|&j| self.joins(j, i, e, true)) {
                 return true;
             }
-            match on_e().max_by_key(|&j| self.w.key(j)) {
+            match on_e.iter().copied().max_by_key(|&j| self.w.key(j)) {
                 None => !refused,
-                Some(j) => self.pend_with(h, ch, j),
+                Some(j) => self.pend_with(h, Some(ch), j, memo),
             }
         })
     }
@@ -1065,10 +1077,11 @@ impl World {
     pub fn verdicts(&self, s: &Seen, ids: &Set) -> BTreeMap<Id, Verdict> {
         let rd = paths::judge(&self.w, &self.rules, &s.v);
         let ch = (self.pend == Pend::Granted).then(|| self.chained(&s.v.held));
+        let mut memo = BTreeMap::new();
         ids.iter()
             .map(|&i| {
                 let ok = if self.w.edge_class(i) { rd.applied.contains(&i) } else { rd.valid.contains(&i) || rd.copied.contains(&i) };
-                let waits = self.pend_with(&s.v.held, ch.as_ref(), i);
+                let waits = self.pend_with(&s.v.held, ch.as_ref(), i, &mut memo);
                 (i, if waits { Verdict::Pending } else if ok { Verdict::Valid } else { Verdict::Invalid })
             })
             .collect()

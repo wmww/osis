@@ -69,15 +69,33 @@ fn unknown_record_up_the_chain_throws_the_part_out_spec_commits_4() {
     assert!(o.revisit.contains(&10));
 }
 
-// spec/commits.md §4 (A held part waits): nothing leads from the author to the thing until an edge does
+// spec/commits.md §4 (Unjudgeable): a part waits until an edge write on each edge of its stated
+// path is held ordered before it: a grant ordered after it is no evidence its writer relied on
 #[test]
 fn author_with_no_way_to_the_thing_waits_spec_commits_4() {
-    let w = reg(10, 2, 1, REG, PurgeBy::AuthorOrAdmin, 1);
+    let w = reg(10, 2, 2, REG, PurgeBy::AuthorOrAdmin, 1);
     let o = evaluate(&held(5, vec![w.clone()]));
     assert!(!o.applied.contains(&10));
-    let o = evaluate(&held(5, vec![w, edge(5, MINT_ADMIN, 2, 2, Some(Role::Write), None)]));
-    assert!(o.applied.contains(&10));
-    assert!(!o.valid[&(10, 0)], "applied, invalid: the grant came after it");
+    let o = evaluate(&held(5, vec![w.clone(), edge(5, MINT_ADMIN, 3, 2, Some(Role::Write), None)]));
+    assert!(!o.applied.contains(&10), "the grant came after it: it still waits");
+    let o = evaluate(&held(5, vec![w.clone(), edge(5, MINT_ADMIN, 1, 2, Some(Role::Write), None)]));
+    assert!(o.applied.contains(&10) && o.valid[&(10, 0)]);
+    // a removal ordered before it is evidence too: applied, invalid
+    let o = evaluate(&held(5, vec![w, edge(5, MINT_ADMIN, 1, 2, None, None)]));
+    assert!(o.applied.contains(&10) && !o.valid[&(10, 0)]);
+}
+
+// spec/commits.md §4 (Unjudgeable): an edge write that is itself unjudgeable is no evidence: a
+// forged grant to 3 by 2 (holding nothing on T) waits, and does not release 3's write after it;
+// an honest grant to 3 ordered after the forgery does
+#[test]
+fn an_unjudgeable_edge_write_is_no_evidence_spec_commits_4() {
+    let forged = edge(5, 2, 1, 3, Some(Role::Write), None);
+    let w = reg(10, 3, 3, REG, PurgeBy::AuthorOrAdmin, 1);
+    let o = evaluate(&held(5, vec![forged.clone(), w.clone()]));
+    assert!(!o.applied.contains(&5) && !o.applied.contains(&10));
+    let o = evaluate(&held(5, vec![forged, edge(6, MINT_ADMIN, 2, 3, Some(Role::Write), None), w]));
+    assert!(o.applied.contains(&10) && o.valid[&(10, 0)]);
 }
 
 // spec/commits.md §4 (A held part waits), spec/versioning.md §2: a parked part waits alone

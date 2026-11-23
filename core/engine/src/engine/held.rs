@@ -12,7 +12,7 @@
 use super::journal::Journaled;
 use osis_base::memo::{Stamps, UndoableStamps};
 use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid};
-use osis_perm::RoleCommit;
+use osis_perm::{Point, RoleCommit};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -33,9 +33,9 @@ pub struct Held {
     holders: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> holders named on it (the same pairs as `holders`).
     named: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Thing -> holders an edge write puts a grant for on it, with counts: the edges a path may
-    /// climb (a removal names a holder but gives it none).
-    granted: BTreeMap<Tid, BTreeMap<Tid, usize>>,
+    /// Thing -> holder -> the points of the commits writing that edge (grants and removals), with
+    /// counts: what a part's path wait reads (`validity::unreached`).
+    writes: BTreeMap<Tid, BTreeMap<Tid, BTreeMap<Point, usize>>>,
     /// Mint admin -> the things whose creation record names it: the record chain's
     /// links down (spec/permissions.md §1).
     mint_admin_of: BTreeMap<Tid, BTreeSet<Tid>>,
@@ -77,7 +77,7 @@ enum Row<'a> {
     Commits(&'a Tid),
     Holder(&'a Tid),
     Named(&'a Tid),
-    Granted(&'a Tid),
+    Writes(&'a Tid),
     MintAdminOf(&'a Tid),
     Id(&'a CommitId),
 }
@@ -150,11 +150,11 @@ impl Held {
         self.named.get(thing).into_iter().flatten()
     }
 
-    /// Holders an edge write puts a grant for on `thing`, of any validity and whatever followed (a
-    /// removal saying retain, written as a grant gone at every clock, puts none).
-    pub fn granted_on(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
-        self.rest.read(&Row::Granted(thing));
-        self.granted.get(thing).into_iter().flat_map(|m| m.keys())
+    /// The points of the commits with an edge write (a grant or a removal, of any validity) on
+    /// `holder`'s edge on `thing`, ascending.
+    pub fn writes_on(&self, holder: &Tid, thing: &Tid) -> impl Iterator<Item = &Point> {
+        self.rest.read(&Row::Writes(thing));
+        self.writes.get(thing).and_then(|m| m.get(holder)).into_iter().flat_map(|m| m.keys())
     }
 
     /// `from` and everything authority flows to from them: what they own, the things they are
@@ -327,22 +327,26 @@ impl Held {
         }
     }
 
-    fn count_granted(&mut self, c: &RoleCommit, add: bool) {
-        for o in c.ops.iter().filter(|o| o.edge.is_some_and(|e| !e.says_retain())) {
-            let on = self.granted.entry(o.target).or_default();
-            let n = on.entry(o.holder).or_default();
+    fn count_writes(&mut self, c: &RoleCommit, add: bool) {
+        for o in &c.ops {
+            let on = self.writes.entry(o.target).or_default();
+            let by = on.entry(o.holder).or_default();
+            let n = by.entry(c.point()).or_default();
             if add {
                 *n += 1;
             } else {
                 *n = n.saturating_sub(1);
                 if *n == 0 {
-                    on.remove(&o.holder);
+                    by.remove(&c.point());
                 }
             }
-            if on.is_empty() {
-                self.granted.remove(&o.target);
+            if by.is_empty() {
+                on.remove(&o.holder);
             }
-            self.rest.wrote(&Row::Granted(&o.target), self.granted.contains_key(&o.target));
+            if on.is_empty() {
+                self.writes.remove(&o.target);
+            }
+            self.rest.wrote(&Row::Writes(&o.target), self.writes.contains_key(&o.target));
         }
     }
 
@@ -358,7 +362,7 @@ impl Held {
         self.touched.insert(c.signer);
         self.moved.insert(c.signer);
         self.count(named(&c), true);
-        self.count_granted(&c, true);
+        self.count_writes(&c, true);
         self.rest.wrote(&Row::Id(&c.id), true);
         self.touched_commits.insert(c.id);
         self.ids.insert(c.id, c);
@@ -382,7 +386,7 @@ impl Held {
             self.moved.insert(o.target);
         }
         self.count(named(&c), false);
-        self.count_granted(&c, false);
+        self.count_writes(&c, false);
         Some(c)
     }
 
@@ -520,7 +524,7 @@ impl Held {
 impl Journaled for Held {
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.granted, self.mint_admin_of, self.ids, self.uncounted)
+        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.writes, self.mint_admin_of, self.ids, self.uncounted)
     }
     type Mark = usize;
     fn commit(&mut self) {
@@ -1015,6 +1019,8 @@ mod tests {
     #[test]
     fn held_reads_move_with_what_they_read() {
         use osis_base::memo::Memo;
+        let a: Vec<CreationRecord> = (0..3).map(actor).collect();
+        let at: Vec<Tid> = a.iter().map(|x| x.tid()).collect();
         // each read alone, by its index here: a memo reading two would move with either
         let read = |h: &Held, (r, t): &(u8, Tid)| -> Vec<[u8; 32]> {
             let ids = |cs: &[Arc<RoleCommit>]| cs.iter().map(|c| c.id.0).collect::<Vec<_>>();
@@ -1024,14 +1030,12 @@ mod tests {
                 1 => ids(&h.edge_commits(t)),
                 2 => tids(&mut h.holders_of(t)),
                 3 => tids(&mut h.named_on(t)),
-                4 => tids(&mut h.granted_on(t)),
+                4 => at.iter().flat_map(|x| h.writes_on(x, t)).map(|p| p.commit.0).collect(),
                 _ => tids(&mut h.mint_admin_of(t)),
             }
         };
         let memo: Memo<(u8, Tid), Vec<[u8; 32]>> = Memo::new("test held read");
         let by_id: Memo<CommitId, Option<CommitId>> = Memo::new("test held commit");
-        let a: Vec<CreationRecord> = (0..3).map(actor).collect();
-        let at: Vec<Tid> = a.iter().map(|x| x.tid()).collect();
         let (g, t) = (thing(at[0], 10), thing(at[1], 11));
         let all = [at[0], at[1], at[2], g.tid(), t.tid()];
         let mut h = Held::default();

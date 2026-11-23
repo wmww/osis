@@ -659,7 +659,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             Some(osis_commit::ThingPath::Known(p)) if !hostile => Some(p),
             _ => None,
         };
-        if let Some(wait) = thing_wait(tx.core, &h, a, path.as_ref().map(|p| (p.to(&a.tid), p.direct)), &record, &chain_rec) {
+        if let Some(wait) = thing_wait(tx.core, &h, id, a, path.as_ref().map(|p| (p.to(&a.tid), p.direct)), &record, &chain_rec) {
             unjudged.insert(ai, wait);
         } else if origin == Origin::Remote && record(&a.tid).is_some_and(|r| !crate::retention::needed::applies_on(tx.core, &a.tid, &a.ak, &r)) {
             // nothing but certificates applies on a thing outside the node closure: content waits
@@ -938,6 +938,7 @@ fn header_wait(h: &Header, record: &dyn Fn(&Tid) -> Option<CreationRecord>) -> s
 fn thing_wait(
     core: &crate::engine::Core,
     h: &Header,
+    id: &CommitId,
     a: &osis_commit::AspectEntry,
     path: Option<(&[Tid], osis_base::format::PathMarks)>,
     record: &dyn Fn(&Tid) -> Option<CreationRecord>,
@@ -958,32 +959,31 @@ fn thing_wait(
             ChainStep::Up { .. } | ChainStep::Key(_) => {}
         }
     }
-    // every edge of the path stated for the thing is a record edge or granted by a held edge
-    // write; an external fire needs no path (spec/permissions.md §5.2 External fires), and a
-    // path not opened here holds no part. An edge part is read here as a self-removal, the least
-    // any edge write needs (its path to the holder it ends at): `examine` reads its writes once
-    // decoded (`edge_unreached`)
+    // every edge of the path stated for the thing is a record edge or has a held edge write
+    // ordered before the part; an external fire needs no path (spec/permissions.md §5.2 External
+    // fires), and a path not opened here holds no part. An edge part is read here as a
+    // self-removal after every edge write of its commit, the least any edge write needs (its path
+    // to the holder it ends at): `examine` reads its writes once decoded (`edge_unreached`)
     let (along, direct) = path.filter(|_| !a.ak.external())?;
     let edge = validity::edge_ak(a.ak.as_str());
-    validity::unreached(core, h.signer, along, direct, &a.tid, edge, edge, &|t| chain_rec(t, core)).then_some(Reason::MissingChain(h.signer))
+    let at = if edge { validity::Place::Write(osis_perm::Point { ts: h.ts, node: h.signer, commit: *id }, None) } else { validity::Place::Start(h.ts) };
+    validity::unreached(core, h.signer, along, direct, &a.tid, edge, edge, at, &|t| chain_rec(t, core)).then_some(Reason::MissingChain(h.signer))
 }
 
 /// The decoded `roles.0` parts among `whole` whose every edge write is unjudgeable
-/// (spec/commits.md §4): no self-removal (`validity::leaves`), and an edge of the path to their
-/// thing has not arrived (`validity::unreached`). `skip`: parts held before, read by what the
+/// (spec/commits.md §4, `validity::writes_unreached`). `skip`: parts held before, read by what the
 /// index holds of them (`Indexes::unresolved`).
 fn edge_unreached(core: &crate::engine::Core, h: &Header, id: &CommitId, whole: &[(usize, Decoded)], chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>) -> Vec<usize> {
-    let osis_commit::Paths::One(p) = &h.path else { return Vec::new() };
+    if !matches!(h.path, osis_commit::Paths::One(_)) {
+        return Vec::new();
+    }
     // nothing written on a thing too deep applies (spec/permissions.md §1): judged as it is
     let deep = |t: &Tid| matches!(osis_base::record_chain(*t, |x| chain_rec(x, core).map(|r| r.record_link())).end(), ChainStep::TooDeep);
     let whole: Vec<(usize, Decoded)> = whole.iter().filter(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str()) && !deep(&a.tid))).cloned().collect();
     let perm = validity::PermParts::of(h, &whole);
     let known = !core.ix.unresolved.contains(id) && perm.edges.iter().all(|(ai, es)| validity::resolved(core, h, id, *ai, es));
-    let unreached = |(ai, es): &(usize, Vec<validity::Entry>)| {
-        let a = h.aspects.get(*ai)?;
-        (!validity::leaves(core, h, id, *ai, es, known) && validity::unreached(core, h.signer, p.to(&a.tid), p.direct, &a.tid, true, false, &|t| chain_rec(t, core))).then_some(*ai)
-    };
-    perm.edges.iter().filter_map(unreached).collect()
+    let record = |t: &Tid| chain_rec(t, core);
+    perm.edges.iter().filter(|(ai, es)| validity::writes_unreached(core, h, id, *ai, es, known, &record)).map(|x| x.0).collect()
 }
 
 /// Whether part `ai` of an applied commit (`h`, its view `view`), held or not, cannot be judged
@@ -991,11 +991,11 @@ fn edge_unreached(core: &crate::engine::Core, h: &Header, id: &CommitId, whole: 
 /// (`header_wait`, `thing_wait`), or its thing's path opens nowhere here (a split commit's,
 /// spec/wire.md §4 `Split`). Its validity flag reads false meanwhile, but it is not judged
 /// invalid (`retention::drops_invalid`).
-pub(crate) fn unjudgeable(core: &crate::engine::Core, h: &Header, view: &crate::engine::View, ai: usize) -> bool {
+pub(crate) fn unjudgeable(core: &crate::engine::Core, id: &CommitId, h: &Header, view: &crate::engine::View, ai: usize) -> bool {
     let Some(a) = h.aspects.get(ai) else { return false };
     let held = |t: &Tid| core.created(t).cloned();
     let path = validity::stated(h, view, &a.tid);
-    header_wait(h, &held).is_err() || view.paths.as_deref().is_some_and(|p| !p.contains_key(&a.tid)) || thing_wait(core, h, a, path.as_ref().map(|p| (p.0.as_slice(), p.1)), &held, &|t, core| core.created(t).cloned()).is_some()
+    header_wait(h, &held).is_err() || view.paths.as_deref().is_some_and(|p| !p.contains_key(&a.tid)) || thing_wait(core, h, id, a, path.as_ref().map(|p| (p.0.as_slice(), p.1)), &held, &|t, core| core.created(t).cloned()).is_some()
 }
 
 /// Applies or stores one decoded commit blob.

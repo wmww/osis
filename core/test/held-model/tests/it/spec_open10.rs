@@ -226,8 +226,11 @@ fn f15_a_writers_finalizes_and_a_may_grant_holders_grants_are_chained_and_copied
 /// A) from A in one commit C; K writes D through [A] after it. D's evidence holds C (on K's edge)
 /// and C's part on Q's edge, not X's grant to Q, the creation of the entry that part resets (Q's
 /// removal takes no write away, so reach brings no witness of it): D's reader never applies C
-/// and shows K's write pending where the node holding everything judges it invalid. The draft's
-/// clause (every write on the commit's other edges on the thing) or the creations alone close it.
+/// and shows K's write pending where the node holding everything judges it invalid (under
+/// `Pend::Granted`, which waits on the latest chained write). The draft's clause (every write on
+/// the commit's other edges on the thing) or the creations alone close it; so does `Pend::Any`
+/// (spec/commits.md §4 Unjudgeable): X's grant to K, ordered before D and judgeable, is evidence
+/// whatever C awaits.
 #[test]
 fn f9_a_removal_of_two_holders_waits_for_each_creation() {
     let (mut w, [x, _, _, _]) = base();
@@ -241,7 +244,7 @@ fn f9_a_removal_of_two_holders_waits_for_each_creation() {
             let mut rule = v.set(&mut w, Rule::fixed());
             rule.closure.commit_edges = ce;
             let f = fails(&w, &rule);
-            if ce == CommitEdges::Off {
+            if ce == CommitEdges::Off && v == Open10::Granted {
                 assert!(f.iter().any(|f| f.prop == "P1" && f.id == c && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid)), "{} {ce:?}: {f:?}", v.name());
             } else {
                 assert_eq!(f, vec![], "{} {ce:?}", v.name());
@@ -400,4 +403,22 @@ fn a_key_hop_no_write_puts_pends_until_one_is_held() {
             assert_eq!((ch.contains(&g), w.joined(&h, &ch, g)), (yes, yes), "{}", v.name());
         }
     }
+}
+
+/// spec/commits.md §4 Unjudgeable (`Pend::Any`): an edge write that itself pends is no evidence,
+/// and hides none that is: Q's grant to K on A (Q holds nothing there) pends, and K's write on A
+/// after it does not, X's grant to K, ordered before both, being evidence. A grant ordered after
+/// a part is none: K's write before X's grant to Q pends.
+#[test]
+fn a_write_that_pends_stalls_no_later_part() {
+    let (mut w, [x, _, k, q]) = base();
+    let forged = w.write(q, |p| p.edge(Q, 3, &[], A, K, Role::Admin, &[]));
+    let honest = w.write(k, |p| p.content(K, 4, &[], A));
+    let early = w.write(q, |p| p.content(Q, 5, &[], A));
+    w.write(x, |p| p.edge(X, 6, &[], A, Q, Role::Write, &[]));
+    w.pend = Pend::Any;
+    let all: Set = (0..w.w.commits.len()).collect();
+    assert!(w.pend(&all, forged));
+    assert!(!w.pend(&all, honest));
+    assert!(w.pend(&all, early));
 }

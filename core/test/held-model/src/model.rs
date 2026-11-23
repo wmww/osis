@@ -364,7 +364,7 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap, dots: &
     let view = loop {
         let out: BTreeSet<PartRef> = waiting.union(&thrown).copied().collect();
         let view: Vec<Commit> = live.iter().filter(|c| applied.contains(&c.id)).map(|c| without(c, &out)).collect();
-        let granted = granted(&view);
+        let edges = edge_writes(&view, &world);
         // a thing exists while a creation of it joins, or while it is known by its record alone,
         // no held commit listing a creation of it (spec/commits.md §5: a record is identity)
         let listed: BTreeSet<ThingId> = live.iter().flat_map(|c| c.parts.iter()).filter(|p| p.aspect == Aspect::CREATED).map(|p| p.thing).collect();
@@ -372,7 +372,7 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap, dots: &
         let parts = || live.iter().flat_map(|c| c.parts.iter().enumerate().map(move |(i, p)| (c, i, p))).filter(|(_, _, p)| held(p));
         // a part the node cannot judge (notes/expiry-creation-design.md §3 Unjudgeable): not held
         let t: BTreeSet<PartRef> = parts()
-            .filter(|(c, _, p)| unknown(&world, &exists, c, p) || (matches!(p.body, Body::Held(_)) && unreached(&granted, c, p, &world)))
+            .filter(|(c, i, p)| unknown(&world, &exists, c, p) || (matches!(p.body, Body::Held(_)) && unreached(&edges, c, *i, &world)))
             .map(|(c, i, _)| (c.id, i))
             .collect();
         // parked parts wait; nothing else does
@@ -444,27 +444,68 @@ fn judgeable(world: &World, c: &Commit) -> bool {
     world.key_actor(c.signer)
 }
 
-/// The edges a held applied part's edge write puts a grant on, whether the walk applies it or
-/// not (a removal sets none).
-fn granted(view: &[Commit]) -> BTreeSet<Hop> {
-    let parts = view.iter().filter(|c| c.is_role()).flat_map(|c| c.parts.iter());
-    parts.filter_map(|p| match &p.body {
-        Body::Held(Delta::Edge(e)) if e.role.is_some() && e.until != Some(0) => Some((e.holder, p.thing)),
-        _ => None,
-    }).collect()
+/// An edge write's place in the order a wait reads (spec/permissions.md §5.1 step 1): its key,
+/// then its place among its commit's edge writes (on an edge its commit states or not, thing,
+/// holder, index).
+type Placed = (Key, (bool, ThingId, NodeId, usize));
+
+/// Where a part sits in that order: an edge write at its place, any other part at the start of
+/// its `ts`, before every edge write there (spec/permissions.md §5.2 Position).
+enum At {
+    Start(u64),
+    Write(Placed),
 }
 
-/// spec/commits.md §4 Unjudgeable: an edge of the part's stated path is neither a record edge
-/// nor set by a held applied part's grant. A fire of an external signal reads none; a path that
-/// states no edges (a thing named twice, a bad mark) is judged as it is.
-fn unreached(granted: &BTreeSet<Hop>, c: &Commit, p: &Part, world: &World) -> bool {
+impl At {
+    fn of(c: &Commit, i: usize, world: &World) -> At {
+        match &c.parts[i].body {
+            Body::Held(Delta::Edge(e)) if c.is_role() => At::Write(placed(c, i, e.holder, &world.stated(c))),
+            _ => At::Start(c.ts),
+        }
+    }
+    /// Whether an edge write at `w` is ordered before it.
+    fn after(&self, w: &Placed) -> bool {
+        match self {
+            At::Start(ts) => w.0.0 < *ts,
+            At::Write(at) => w < at,
+        }
+    }
+}
+
+fn placed(c: &Commit, i: usize, holder: NodeId, stated: &BTreeSet<Hop>) -> Placed {
+    let thing = c.parts[i].thing;
+    (c.key(), (stated.contains(&(holder, thing)), thing, holder, i))
+}
+
+/// The edge writes of the held applied parts, grants and removals, of any validity, by the edge
+/// each sets: a joined part is judgeable, so none is itself unjudgeable.
+fn edge_writes(view: &[Commit], world: &World) -> BTreeMap<Hop, Vec<Placed>> {
+    let mut out: BTreeMap<Hop, Vec<Placed>> = BTreeMap::new();
+    for c in view.iter().filter(|c| c.is_role()) {
+        let stated = world.stated(c);
+        for (i, p) in c.parts.iter().enumerate() {
+            if let Body::Held(Delta::Edge(e)) = &p.body {
+                out.entry((e.holder, p.thing)).or_default().push(placed(c, i, e.holder, &stated));
+            }
+        }
+    }
+    out
+}
+
+/// spec/commits.md §4 Unjudgeable: an edge of the stated path of part `i` of `c` is neither a
+/// record edge nor set by a held edge write ordered before the part. A fire of an external
+/// signal reads none; a path that states no edges (a thing named twice, a bad mark) is judged as
+/// it is.
+fn unreached(edges: &BTreeMap<Hop, Vec<Placed>>, c: &Commit, i: usize, world: &World) -> bool {
+    let p = &c.parts[i];
     let holder = match &p.body {
         Body::Held(Delta::Edge(e)) if c.is_role() => Some(e.holder),
         _ => None,
     };
     let empty = Path::default();
     let hops = world.hops(c.signer, c.paths.get(&p.thing).unwrap_or(&empty), p.thing, holder);
-    !p.aspect.external && hops.is_some_and(|hs| hs.iter().any(|&(e, record)| !record && !granted.contains(&e)))
+    let at = At::of(c, i, world);
+    !p.aspect.external && hops.is_some_and(|hs| hs.iter().any(|&(e, record)| !record && !edges.get(&e).is_some_and(|ws| ws.iter().any(|w| at.after(w)))))
 }
 
 /// The commit as joined: its waiting and thrown parts count as not received.

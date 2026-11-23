@@ -60,6 +60,13 @@ impl World {
         let i = w.push_marked(names.thing(signer), 0, &things, names.thing(thing), kind, &path.direct);
         w.well(i).then(|| w.hops(i).iter().map(|&e| ((names.id(e.0), names.id(e.1)), w.is_record(e))).collect())
     }
+    /// The edges of the path `c` states for each thing it writes, that thing its last member: its
+    /// edge writes on one come after its others (spec/permissions.md §5.1 step 1).
+    pub fn stated(&self, c: &Commit) -> BTreeSet<Hop> {
+        let empty = Path::default();
+        let things: BTreeSet<ThingId> = c.parts.iter().map(|p| p.thing).collect();
+        things.into_iter().flat_map(|t| self.hops(c.signer, c.paths.get(&t).unwrap_or(&empty), t, None).unwrap_or_default()).map(|x| x.0).collect()
+    }
     fn record_edges(&self, names: &Interned) -> Vec<paths::Edge> {
         self.links.iter().filter_map(|(&t, l)| Some((names.thing(l.mint_admin()?), names.thing(t)))).collect()
     }
@@ -296,11 +303,9 @@ impl Timeline {
     /// each with its thing and how many parts it is in the world (an addendum is one per cut its
     /// entries are against, `cuts` giving a commit's).
     fn plan(&self, c: &Commit, void: bool, cuts: &dyn Fn(CommitId) -> usize) -> Vec<(Of, ThingId, usize)> {
-        let empty = Path::default();
         let mut edges: Vec<(bool, ThingId, NodeId, usize)> = Vec::new();
         let mut rest: Vec<(Of, ThingId, usize)> = Vec::new();
-        // the edges of the path stated for each thing written, that thing its last member
-        let stated: BTreeSet<Hop> = c.parts.iter().map(|p| p.thing).collect::<BTreeSet<_>>().into_iter().flat_map(|t| self.world.hops(c.signer, c.paths.get(&t).unwrap_or(&empty), t, None).unwrap_or_default()).map(|x| x.0).collect();
+        let stated = self.world.stated(c);
         for (i, p) in c.parts.iter().enumerate() {
             match &p.body {
                 Body::Held(Delta::Edge(e)) if c.is_role() => edges.push((stated.contains(&(e.holder, p.thing)), p.thing, e.holder, i)),

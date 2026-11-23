@@ -4964,10 +4964,12 @@ fn purge_of_a_part_dropped_while_invalid_reads_alike_by_the_resnapshot_spec_comm
 
 // spec/commits.md §4 Unjudgeable: 2 makes a record-only thing t2 and removes from it G's grant it
 // never had, then makes u under t2; 0 (G's mint admin) forges one commit putting 2 write on t2
-// and u. The removal names G but leads nowhere, so nothing leads from 0 to t2 or u: every node
-// keeps nothing of the forgery, as held-model says (`receive::a_removal_leads_no_author_to_a_thing_spec_commits_4`).
+// and u. The removal, ordered before the forgery, is a held write on G's edge on t2: the forgery's
+// part on t2 is judged there, invalid, and no write is held on the edge of its path to u, so that
+// part waits; every node alike, as held-model says
+// (`receive::a_removal_ordered_before_a_part_is_evidence_spec_commits_4`).
 #[test]
-fn a_removal_leads_no_forger_to_two_record_linked_things_spec_commits_4() {
+fn a_removal_ordered_before_a_forgery_is_evidence_on_two_record_linked_things_spec_commits_4() {
     use Step::*;
     let a = |s| Aim(Box::new(s));
     let h = vec![RecordOnly { by: 0, under: None }, RecordOnly { by: 2, under: None }, a(RemoveFlow { by: 2, t: 2, holder: 3, lower: false }), Sync { from: 2, to: 0 }, a(New { by: 2, parent: 5, write: false }), Forged { by: 0, a: 6, b: 7, how: 2, op: 19, k: 1, v: 5 }];

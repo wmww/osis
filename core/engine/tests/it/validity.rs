@@ -473,7 +473,7 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
 // of its path, so receivers cannot judge it; it pends and never reads as Carol's. The same write
 // stated as Bob himself is valid.
 #[test]
-fn forged_actor_invalid_spec_perm_5_2() {
+fn a_write_stated_through_an_ungranted_actor_pends_spec_commits_4() {
     let (mut lp, d, b, c) = setup();
     lp.advance(1_000);
     let forged = forge_acting(&mut lp, d, c, "as carol");
@@ -484,6 +484,51 @@ fn forged_actor_invalid_spec_perm_5_2() {
     let own = forge_acting(&mut lp, d, b, "as bob");
     lp.peers[0].receive(&own, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("as bob")));
+}
+
+// spec/commits.md §4 (Unjudgeable): an edge write that is itself unjudgeable is no evidence, and
+// hides none that is. 0 makes x (shared with 1), o, o2 and q, all its own. Stating its path
+// through o, which holds nothing on x, it writes one `roles.0` part on x giving o read (its path
+// ends at o: judgeable, so the part is held) and q admin (on o's edge on x, which no write set
+// before it: unjudgeable). A write acting as q on x after it waits at 1: q's grant is no write it
+// could rely on. Once 0 grants q write on x, the same forgery through o2 and a write as q after
+// both apply, the write valid: the forgery after the grant stalls nothing.
+#[test]
+fn an_unjudgeable_edge_write_is_no_evidence_spec_commits_4() {
+    let mut lp = net(2, 0);
+    let x = new_shared(&mut lp, 0);
+    let (o, o2, q) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    sync(&mut lp, 0, 1);
+    let rec = lp.peers[0].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    let forge = |lp: &mut LocalPeer, o: Tid, lo: u64| {
+        lp.advance(1_000);
+        let v = Value::Map(osis_base::ValueMap::from([(Value::Weak(o), edge(Role::Read).to_value()), (Value::Weak(q), edge(Role::Admin).to_value())]));
+        let f = forge_by(&lp.peers[0].engine, rec.clone(), x, &ak("roles.0"), &v, lo, osis_commit::Kind::Role, osis_commit::Path { purge: 0, things: vec![o], direct: 0 });
+        assert!(matches!(lp.peers[1].receive(&f, Vec::new()).unwrap(), Ingested::Applied(_)), "its write on o's edge is judgeable");
+    };
+    let as_q = |lp: &mut LocalPeer, v: &str| {
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        m.set(x, &REG, &s(v)).unwrap();
+        m.act_as(q);
+        let id = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
+        sync(lp, 0, 1);
+        id
+    };
+    forge(&mut lp, o, 1 << 40);
+    let w = as_q(&mut lp, "as q");
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.pending().iter().any(|(id, r)| *id == w && matches!(r, osis_engine::Reason::MissingChain(_))), "only an unjudgeable write on q's edge on x: {:?}", e1.pending());
+    assert_eq!(e1.get(&x, &ak("t:reg.0")).unwrap(), Some(s("new")));
+    lp.advance(1_000);
+    set_edge(&mut lp.peers[0].engine, x, q, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    forge(&mut lp, o2, 1 << 41);
+    let w2 = as_q(&mut lp, "as q again");
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.pending().iter().any(|(id, _)| *id == w2), "{:?}", e1.pending());
+    assert!(e1.pending().iter().any(|(id, _)| *id == w), "a grant ordered after the first write is none of its evidence");
+    assert_eq!(e1.get(&x, &ak("t:reg.0")).unwrap(), Some(s("as q again")));
 }
 
 // spec/permissions.md §1 Key actor ("No edge write targets a key actor: it has no roster"): the
@@ -534,11 +579,13 @@ pub(crate) fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis
 /// `forge_role_commit` of any kind; an AK the core schema does not declare is written untyped.
 fn forge_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64, kind: osis_commit::Kind) -> Vec<u8> {
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    forge_by(&lp.peers[by].engine, rec, t, ak, v, lo, kind)
+    forge_by(&lp.peers[by].engine, rec, t, ak, v, lo, kind, osis_commit::Path::default())
 }
 
-/// A commit by `by` on thing `t`, whose creation record is `rec`, whatever its rights there.
-pub(crate) fn forge_by(by: &osis_engine::Engine, rec: osis_base::CreationRecord, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64, kind: osis_commit::Kind) -> Vec<u8> {
+/// A commit by `by` on thing `t`, whose creation record is `rec`, stating `path`, whatever its
+/// rights there.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn forge_by(by: &osis_engine::Engine, rec: osis_base::CreationRecord, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64, kind: osis_commit::Kind, path: osis_commit::Path) -> Vec<u8> {
     use osis_commit::{AspectWrite, CommitBuilder, Form, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Source, Writer, create, encode_delta};
     let author = by.me();
@@ -554,7 +601,7 @@ pub(crate) fn forge_by(by: &osis_engine::Engine, rec: osis_base::CreationRecord,
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
     aw.purge_by = osis_commit::retention::write_purge_by(ak.as_str(), None, None).unwrap();
-    let mut cb = CommitBuilder::new(kind, ts, author, osis_commit::Path::default(), Form::Commit);
+    let mut cb = CommitBuilder::new(kind, ts, author, path, Form::Commit);
     cb.aspects.push(aw);
     let forge_key = by.sign_forged(&mut cb);
     cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
