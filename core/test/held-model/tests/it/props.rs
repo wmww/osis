@@ -144,8 +144,8 @@ fn settle(mut h: Held, full: Option<&Held>, seed: u64, seen: &mut Seen) -> Held 
 }
 
 /// Whether `me` holds the purge right over the body now.
-fn right_now(h: &Held, c: &Commit, p: &Part) -> bool {
-    timeline(h).right(h.me, h.me, (u64::MAX, h.me, u32::MAX), u32::MAX, p.purge_by, c.acting, p.thing)
+fn right_now(h: &Held, c: &Commit, i: usize) -> bool {
+    timeline(h).my_right(c.parts[i].thing, (c.id, i)).is_some()
 }
 
 // One settled history per seed, four properties of it:
@@ -190,7 +190,7 @@ fn purge_on_replace_gone(h: &Held, o: &Outcome, seed: u64) {
         for (i, p) in c.parts.iter().enumerate() {
             // a body under purge on replace a right holder still holds: a leftover (its own
             // expiry or purge), or before a purge request's floor
-            if matches!(p.body, Body::Held(_)) && o.under_purge.contains(&(c.id, i)) && right_now(h, c, p) {
+            if matches!(p.body, Body::Held(_)) && o.under_purge.contains(&(c.id, i)) && right_now(h, c, i) {
                 let f = o.fates[&(c.id, i)];
                 assert!(matches!(f, Fate::Leftover(LeftoverWhy::Expired | LeftoverWhy::Purged) | Fate::Keep(KeepWhy::Until)), "seed {seed}: {} part {i} is replaced and held at a right holder as {f:?}", c.id);
             }

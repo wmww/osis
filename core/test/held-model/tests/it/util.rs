@@ -138,7 +138,7 @@ pub fn part(aspect: Aspect, purge_by: PurgeBy, ws: Vec<Frag>) -> Part {
     Part { thing: T, aspect, purge_by, body: Body::Held(Delta::Writes(join(ws))), stripped: Default::default(), replaces: None }
 }
 pub fn content(id: CommitId, author: NodeId, h: u64, parts: Vec<Part>) -> Commit {
-    Commit { id, signer: author, acting: author, ts: ts(h), expires: None, kind: CommitKind::Content, parts, purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
+    Commit { id, signer: author, author: author, paths: Default::default(), ts: ts(h), expires: None, kind: CommitKind::Content, parts, purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 /// A one-part register write of `v` by `author` at hour `h`.
 pub fn reg(id: CommitId, author: NodeId, h: u64, a: Aspect, r: PurgeBy, v: i64) -> Commit {

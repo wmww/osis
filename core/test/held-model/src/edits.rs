@@ -88,12 +88,12 @@ fn status(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, c: &Commit
 }
 
 /// The commit `v` names, when it is `v`'s original but for being listed: same (thing, aspect), valid
-/// or a purge tombstone's, no `replaces` of its own, acting on the same thing, sorting before `v`.
+/// or a purge tombstone's, no `replaces` of its own, of the same purge author, sorting before `v`.
 fn named<'a>(o: &Outcome, by_id: &BTreeMap<CommitId, &'a Commit>, v: &Commit, i: usize) -> Option<(&'a Commit, usize)> {
     let p = &v.parts[i];
     let x = *by_id.get(&p.replaces?)?;
     let j = x.parts.iter().position(|q| q.thing == p.thing && q.aspect == p.aspect)?;
-    let ok = o.valid.get(&(x.id, j)) == Some(&true) && x.parts[j].replaces.is_none() && x.acting == v.acting && (x.ts, x.id) < (v.ts, v.id);
+    let ok = o.valid.get(&(x.id, j)) == Some(&true) && x.parts[j].replaces.is_none() && x.author == v.author && (x.ts, x.id) < (v.ts, v.id);
     ok.then_some((x, j))
 }
 

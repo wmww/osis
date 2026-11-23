@@ -1,6 +1,6 @@
 //! `evaluate`: the whole judgment of a held set, recomputed from scratch.
 
-use crate::roles::{addenda, edge_events, namings, Timeline, World};
+use crate::roles::{self, Hop, Timeline, World};
 use crate::thing_history;
 use crate::types::*;
 use crdt_model::death::{self, covers, holds, keys, supersedes, valued, winning};
@@ -121,6 +121,11 @@ pub struct Outcome {
     /// holds the right: the covering snapshot `me` owes in the transaction in which that comes to
     /// hold (`cover`). A node without the right owes none.
     pub owed: BTreeSet<PartRef>,
+    /// Per aspect with an owed body, a path along which `me` holds the purge right over one
+    /// (the first owed): what the cover it writes states (`cover`).
+    pub cover_along: BTreeMap<(ThingId, Aspect), Path>,
+    /// Per thing, a path `me` could state for it now that gives it write (none: no entry).
+    pub my_paths: BTreeMap<ThingId, Path>,
     /// Bodies dropped as covered whose cover no longer stands (invalid or not held):
     /// never received, to be fetched again (spec/permissions.md §5.2).
     pub uncovered: BTreeSet<PartRef>,
@@ -269,6 +274,10 @@ impl Dots {
         }
         Dots { ranged, commits }
     }
+    /// The commits `f` on `(t, a)` holds writes of.
+    pub fn commits(&self, t: ThingId, a: Aspect, f: &Frag) -> BTreeSet<CommitId> {
+        writes(f).iter().filter_map(|(n, _)| self.commit(t, a, &death::stamp(n).dot)).collect()
+    }
     /// The commit a write under `d` on `(t, a)` belongs to.
     pub fn commit(&self, t: ThingId, a: Aspect, d: &Dot) -> Option<CommitId> {
         self.ranged.get(&(t, a)).and_then(|o| o.of(d)).or_else(|| self.commits.of(d)).copied()
@@ -299,16 +308,28 @@ pub(crate) fn expired(c: &Commit, now: u64) -> bool {
     c.expires.is_some_and(|t| now >= t)
 }
 
-fn names(q: &Commit, c: &Commit, p: &Part) -> bool {
-    c.ts < q.ts
-        && !c.is_role()
-        // an expiring request reaches only deltas expiring no later
-        && q.expires.is_none_or(|e| c.expires.is_some_and(|x| x <= e))
-        && q.purge.iter().any(|it| match *it {
-            PurgeItem::Commit { commit, thing, aspect } => commit == c.id && p.thing == thing && p.aspect == aspect,
-            PurgeItem::Aspect { thing, aspect } => p.thing == thing && p.aspect == aspect,
-            PurgeItem::Author { thing, aspect, author } => p.thing == thing && p.aspect == aspect && c.acting == author,
-        })
+/// The items of request `q` naming part `p` of `c`.
+fn names<'a>(q: &'a Commit, c: &'a Commit, p: &'a Part) -> impl Iterator<Item = &'a PurgeItem> {
+    // an expiring request reaches only deltas expiring no later
+    let reaches = c.ts < q.ts && !c.is_role() && q.expires.is_none_or(|e| c.expires.is_some_and(|x| x <= e));
+    q.purge.iter().filter(move |it| {
+        reaches
+            && match **it {
+                PurgeItem::Commit { commit, thing, aspect } => commit == c.id && p.thing == thing && p.aspect == aspect,
+                PurgeItem::Aspect { thing, aspect } => p.thing == thing && p.aspect == aspect,
+                PurgeItem::Author { thing, aspect, author } => p.thing == thing && p.aspect == aspect && c.author == author,
+            }
+    })
+}
+
+/// spec/permissions.md §6: whether request `q` names part `i` of `c` by an item whose request
+/// holds a right over it (an item on `created.0` is a destruction's).
+fn purges(tl: &Timeline, q: &Commit, c: &Commit, i: usize) -> bool {
+    let p = &c.parts[i];
+    names(q, c, p).any(|it| {
+        let (PurgeItem::Commit { aspect, .. } | PurgeItem::Aspect { aspect, .. } | PurgeItem::Author { aspect, .. }) = *it;
+        tl.right(q.id, p.thing, aspect == Aspect::CREATED, (c.id, i))
+    })
 }
 
 /// What applied and joined, and the role timeline over it.
@@ -329,7 +350,7 @@ struct Joined<'a> {
     void: BTreeSet<CommitId>,
 }
 
-fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap) -> Joined<'a> {
+fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap, dots: &Dots) -> Joined<'a> {
     let world = records(h, parked);
     let mut live: Vec<&Commit> = h.commits.iter().filter(|c| !parked.contains(&c.id)).collect();
     live.sort_by_key(|c| c.id);
@@ -343,7 +364,7 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap) -> Join
     let view = loop {
         let out: BTreeSet<PartRef> = waiting.union(&thrown).copied().collect();
         let view: Vec<Commit> = live.iter().filter(|c| applied.contains(&c.id)).map(|c| without(c, &out)).collect();
-        let leads = leads(&world, &live, &view);
+        let granted = granted(&view);
         // a thing exists while a creation of it joins, or while it is known by its record alone,
         // no held commit listing a creation of it (spec/commits.md §5: a record is identity)
         let listed: BTreeSet<ThingId> = live.iter().flat_map(|c| c.parts.iter()).filter(|p| p.aspect == Aspect::CREATED).map(|p| p.thing).collect();
@@ -351,7 +372,7 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap) -> Join
         let parts = || live.iter().flat_map(|c| c.parts.iter().enumerate().map(move |(i, p)| (c, i, p))).filter(|(_, _, p)| held(p));
         // a part the node cannot judge (notes/expiry-creation-design.md §3 Unjudgeable): not held
         let t: BTreeSet<PartRef> = parts()
-            .filter(|(c, _, p)| unknown(&world, &exists, c, p) || (matches!(p.body, Body::Held(_)) && unreached(&leads, c, p, &world)))
+            .filter(|(c, _, p)| unknown(&world, &exists, c, p) || (matches!(p.body, Body::Held(_)) && unreached(&granted, c, p, &world)))
             .map(|(c, i, _)| (c.id, i))
             .collect();
         // parked parts wait; nothing else does
@@ -377,9 +398,10 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>, ov: &Overlap) -> Join
         Overlap::Given(v) => v.clone(),
         Overlap::Valid => BTreeSet::new(),
     };
-    // Role timeline over the joined role commits; a void commit's addenda vouch for nothing.
-    let mut tl = Timeline::walk(world, edge_events(view.iter()));
-    tl.vouch(addenda(view.iter().filter(|c| !void.contains(&c.id))));
+    // The judgment along stated paths over the joined commits; a void commit's addenda vouch for
+    // nothing. A snapshot carries the commits its held body has writes of.
+    let carries = |_: &Commit, p: &Part| body(p).map_or_else(BTreeSet::new, |f| dots.commits(p.thing, p.aspect, f));
+    let tl = Timeline::judge(world, &roles::Joined { live: &live, view: &view, void: &void, carries: &carries, me: h.me });
     Joined { live, applied, waiting, thrown, revisit, view, tl, void }
 }
 
@@ -404,59 +426,45 @@ pub fn promotes(o: &Outcome, c: &Commit, i: usize) -> bool {
     o.applied.contains(&c.id) && o.valid.get(&(c.id, i)) == Some(&true)
 }
 
-/// Notes/expiry-creation-design.md §3: a node holds no part whose author record or thing's
-/// record chain it lacks, nor one on a thing that does not exist (a creation's own thing is
-/// the one it makes).
+/// spec/commits.md §4 Unjudgeable: a node holds no part while its thing's record, a record on
+/// its thing's chain, or the record of a thing its stated path lists (or one up that thing's
+/// chain) is unknown, nor one on a thing that does not exist (a creation's own thing is the one it
+/// makes).
 fn unknown(world: &World, exists: &BTreeSet<ThingId>, c: &Commit, p: &Part) -> bool {
-    let t = p.thing;
-    if !judgeable(world, c) || !world.known(t) || world.chain_above(t).iter().any(|&o| !world.known(o)) {
+    let whole = |t: ThingId| world.known(t) && world.chain_above(t).iter().all(|&o| world.known(o));
+    if !judgeable(world, c) || !whole(p.thing) || c.paths.get(&p.thing).is_some_and(|x| !x.things.iter().all(|&t| whole(t))) {
         return true;
     }
-    creation(p).is_none() && !exists.contains(&t)
+    creation(p).is_none() && !exists.contains(&p.thing)
 }
 
-/// A commit is unjudgeable while its signer's or acting thing's record is unknown.
+/// spec/commits.md §4 Unjudgeable: a commit is unjudgeable while the record of the thing it is
+/// signed as is unknown, or its key hop is not that record's key (no key grant is modelled).
 fn judgeable(world: &World, c: &Commit) -> bool {
-    world.known(c.signer) && world.known(c.acting)
+    world.key_actor(c.signer)
 }
 
-/// Per author, the things something leads to from it (spec/commits.md §4 A held part waits):
-/// record edges, and holders named by a joined part of an applied role commit, whether the walk
-/// applies it or not.
-fn leads(world: &World, live: &[&Commit], view: &[Commit]) -> BTreeMap<NodeId, BTreeSet<ThingId>> {
-    let mut adj: BTreeMap<NodeId, BTreeSet<ThingId>> = BTreeMap::new();
-    for (&t, o) in &world.links {
-        if let RecordLink::Admin(a) = o {
-            adj.entry(*a).or_default().insert(t);
-        }
-    }
-    for (th, _, h, _) in namings(view.iter()) {
-        adj.entry(h).or_default().insert(th);
-    }
-    let authors: BTreeSet<NodeId> = live.iter().map(|c| c.signer).collect();
-    authors
-        .into_iter()
-        .map(|a| {
-            let mut seen = BTreeSet::from([a]);
-            let mut todo = vec![a];
-            while let Some(x) = todo.pop() {
-                for &y in adj.get(&x).into_iter().flatten() {
-                    if seen.insert(y) {
-                        todo.push(y);
-                    }
-                }
-            }
-            (a, seen)
-        })
-        .collect()
+/// The edges a held applied part's edge write puts a grant on, whether the walk applies it or
+/// not (a removal sets none).
+fn granted(view: &[Commit]) -> BTreeSet<Hop> {
+    let parts = view.iter().filter(|c| c.is_role()).flat_map(|c| c.parts.iter());
+    parts.filter_map(|p| match &p.body {
+        Body::Held(Delta::Edge(e)) if e.role.is_some() && e.until != Some(0) => Some((e.holder, p.thing)),
+        _ => None,
+    }).collect()
 }
 
-/// Notes/expiry-creation-design.md §3: nothing leads from the author to the part's thing: not
-/// judgeable (record waits are `unknown`). A fire of an external signal needs no path
-/// (spec/commits.md §4 Unjudgeable).
-fn unreached(leads: &BTreeMap<NodeId, BTreeSet<ThingId>>, c: &Commit, p: &Part, world: &World) -> bool {
-    let t = p.thing;
-    !p.aspect.external && t != c.signer && !world.chain_above(t).contains(&c.signer) && !leads.get(&c.signer).is_some_and(|s| s.contains(&t))
+/// spec/commits.md §4 Unjudgeable: an edge of the part's stated path is neither a record edge
+/// nor set by a held applied part's grant. A fire of an external signal reads none; a path that
+/// states no edges (a thing named twice, a bad mark) is judged as it is.
+fn unreached(granted: &BTreeSet<Hop>, c: &Commit, p: &Part, world: &World) -> bool {
+    let holder = match &p.body {
+        Body::Held(Delta::Edge(e)) if c.is_role() => Some(e.holder),
+        _ => None,
+    };
+    let empty = Path::default();
+    let hops = world.hops(c.signer, c.paths.get(&p.thing).unwrap_or(&empty), p.thing, holder);
+    !p.aspect.external && hops.is_some_and(|hs| hs.iter().any(|&(e, record)| !record && !granted.contains(&e)))
 }
 
 /// The commit as joined: its waiting and thrown parts count as not received.
@@ -575,7 +583,8 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     let by_id: BTreeMap<CommitId, &Commit> = h.commits.iter().map(|c| (c.id, c)).collect();
     let mut o = Outcome::default();
     o.parked = parked(h);
-    let Joined { live, applied, waiting, thrown, revisit, view, tl, void } = join_held(h, &o.parked, ov);
+    let dots = Dots::new(h);
+    let Joined { live, applied, waiting, thrown, revisit, view, tl, void } = join_held(h, &o.parked, ov, &dots);
     o.revisit = revisit;
     o.applied = applied.clone();
     let is_applied = |c: &Commit| applied.contains(&c.id);
@@ -588,7 +597,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
                 _ if p.aspect == Aspect::CREATED => true,
                 CommitKind::Role => tl.applied_part(c.id, i),
                 // no validity depends on a setting but an external fire's (below)
-                _ => tl.valid_delta(c, p.thing, p.aspect),
+                _ => tl.valid_part(c.id, i),
             };
             o.otherwise.insert((c.id, i), v);
             o.valid.insert((c.id, i), v && (p.aspect == Aspect::CREATED || !void.contains(&c.id)));
@@ -601,10 +610,9 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     let mut pending_purged: BTreeSet<PartRef> = BTreeSet::new();
     for q in live.iter().filter(|q| !q.purge.is_empty() && is_applied(q) && !void.contains(&q.id)) {
         for c in live.iter().filter(|c| c.kind != CommitKind::Snapshot) {
-            for (i, p) in c.parts.iter().enumerate() {
+            for i in 0..c.parts.len() {
                 // a part the node does not hold is judged once fetched again
-                let right = tl.right(q.signer, q.acting, q.key(), q.id, p.purge_by, c.acting, p.thing);
-                if thrown.contains(&(c.id, i)) || !names(q, c, p) || !right {
+                if thrown.contains(&(c.id, i)) || !purges(&tl, q, c, i) {
                     continue;
                 }
                 if is_applied(c) && !waiting.contains(&(c.id, i)) {
@@ -643,8 +651,9 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     }
     // An external fire its author's authority does not make valid (a party holding no write on
     // the thing) is valid as the rule says (spec/permissions.md §5.2 External fires); settings
-    // never read fires, so judging them first is exact. Its commit acts for its author.
-    for c in live.iter().filter(|c| is_applied(c) && c.kind == CommitKind::Content && c.acting == c.signer) {
+    // never read fires, so judging them first is exact. It is so judged whatever its stated path
+    // gives (its key hop is its signer's record's key: `judgeable`).
+    for c in live.iter().filter(|c| is_applied(c) && c.kind == CommitKind::Content) {
         for (i, p) in c.parts.iter().enumerate().filter(|(_, p)| p.aspect.external) {
             if o.otherwise[&(c.id, i)] {
                 continue;
@@ -684,7 +693,6 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     // held: its value-less copies yield to a valued one (spec/crdt.md §4.7 Join). A text creation
     // its own commit inserted and deleted, kept because another write of the delta anchors at it,
     // comes without its char (spec/crdt.md §4.5): that is no value-less write (`death::valueless`).
-    let dots = Dots::new(h);
     let never_received = |c: &Commit, p: &Part| -> bool {
         c.kind == CommitKind::Content && !vl(c.id, p.thing, p.aspect) && body(p).is_some_and(|f| dots.valueless(p.thing, p.aspect, f).contains(&c.id))
     };
@@ -849,11 +857,16 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
                 fates.insert((c.id, i), f);
                 if owed {
                     o.owed.insert((c.id, i));
+                    // the path the cover `me` owes states: one holding the right over the body
+                    if let Some(path) = tl.my_right(p.thing, (c.id, i)) {
+                        o.cover_along.entry((p.thing, p.aspect)).or_insert(path);
+                    }
                 }
             }
         }
     }
     o.fates = fates;
+    o.my_paths = tl.writes_along();
 
     // A dropped body whose cover no longer stands counts as never received.
     let stands = |by: CommitId, t: ThingId, a: Aspect| -> bool {
@@ -1012,11 +1025,11 @@ fn fate(
                 q.thing == t && q.aspect == a && o.valid.get(&(s.id, j)) == Some(&true) && !never_received(s, q) && body(q).is_some_and(|sw| covers(sw, &ws))
             })
         })
-        .map(|s| (s.id, tl.right(s.signer, s.acting, s.key(), s.id, p.purge_by, c.acting, t)))
+        .map(|s| (s.id, s.parts.iter().enumerate().any(|(j, q)| q.thing == t && q.aspect == a && tl.part_right((s.id, j), pr))))
         .collect();
     let by_right = covering.iter().find(|x| x.1).map(|x| x.0);
     let by_any = by_right.or(covering.first().map(|x| x.0));
-    let right = tl.right(me, me, (u64::MAX, me, u32::MAX), u32::MAX, p.purge_by, c.acting, t);
+    let right = tl.my_right(t, pr).is_some();
     // spec/commits.md §5 The setting: in history, kept (compaction may not drop it); under purge on
     // replace, gone at every node once a right holder covers it and the clock reaches its
     // replacement, owed by a right holder until then; out of history, any valid writer's cover
@@ -1048,7 +1061,9 @@ fn fate(
 pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId, ts: u64) -> Commit {
     let f = snapshot_state(h, o, thing, aspect);
     let part = Part { thing, aspect, purge_by: PurgeBy::Writer, body: Body::Held(Delta::Writes(f)), stripped: Default::default(), replaces: None };
-    Commit { id, signer: h.me, acting: h.me, ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
+    // along a path holding the right over what it owes there, else one giving `me` write
+    let path = o.cover_along.get(&(thing, aspect)).or(o.my_paths.get(&thing)).cloned().unwrap_or_default();
+    Commit { id, signer: h.me, author: h.me, paths: [(thing, path)].into(), ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
 /// What a snapshot of an aspect carries: the state, writes of expiring deltas value-less

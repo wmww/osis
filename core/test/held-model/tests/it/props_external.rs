@@ -74,7 +74,7 @@ fn unnamed_fires_go_nowhere(rule: ExternalFires, seeds: u64, seen: &mut Seen) ->
             let unset = Held { commits: h.commits.iter().filter(|c| c.parts[0].aspect != Aspect::RETENTION).cloned().collect(), ..h.clone() };
             let unset = fires(&unset, &evaluate(&unset));
             for c in h.commits.iter().filter(|c| c.parts[0].aspect == EXT && o.applied.contains(&c.id)) {
-                let writer = tl.valid_delta(c, THING, EXT);
+                let writer = tl.valid_part(c.id, 0);
                 let valid = o.valid[&(c.id, 0)];
                 if !writer && !named && (promotes(&o, c, 0) || listed.contains(&c.id)) {
                     return Err(format!("seed {seed}: unnamed fire {} by {} promoted or listed (held {:?})", c.id, c.signer, ids(&h)));

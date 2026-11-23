@@ -12,7 +12,7 @@ use crdt_model::ops::{self, Writer};
 use crdt_model::writes::writes;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The undo commit `id` at `ts` by `author` (acting for itself) of `target`, as node `h.me` writes
+/// The undo commit `id` at `ts` by `author` (stating no path) of `target`, as node `h.me` writes
 /// it; None when there is nothing to write.
 pub fn undo(h: &Held, target: CommitId, id: CommitId, ts: u64, author: NodeId) -> Option<Commit> {
     let o = evaluate(h);
@@ -78,5 +78,5 @@ pub fn undo(h: &Held, target: CommitId, id: CommitId, ts: u64, author: NodeId) -
         return None;
     }
     let expires = expiries.into_iter().next().flatten();
-    Some(Commit { id, signer: author, acting: author, ts, expires, kind: CommitKind::Content, parts, purge: vec![], frontier: None, undoes: Some(target), own_cover: false, boxes: vec![] })
+    Some(Commit { id, signer: author, author: author, paths: Default::default(), ts, expires, kind: CommitKind::Content, parts, purge: vec![], frontier: None, undoes: Some(target), own_cover: false, boxes: vec![] })
 }

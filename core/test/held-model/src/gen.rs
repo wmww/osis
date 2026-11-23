@@ -113,7 +113,7 @@ pub const CREATION_ID: CommitId = 2_000_000;
 /// Thing `t`'s creation commit (one `created.0` part), by `author` at `ts`.
 pub fn creation(t: ThingId, link: RecordLink, author: NodeId, ts: u64, purge_by: PurgeBy, expires: Option<u64>) -> Commit {
     let part = Part { thing: t, aspect: Aspect::CREATED, purge_by, body: Body::Held(Delta::Created(link)), stripped: Default::default(), replaces: None };
-    Commit { id: CREATION_ID + t, signer: author, acting: author, ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
+    Commit { id: CREATION_ID + t, signer: author, author: author, paths: Default::default(), ts, expires, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
 /// Every `CREATIONS` thing's creation, an hour before `START`, durable and purgeable by admins.
@@ -211,8 +211,8 @@ fn plain_part(thing: ThingId, aspect: Aspect, purge_by: PurgeBy, d: Delta) -> Pa
 /// A random history of `n` commits on the `CREATIONS` things, after their creations (plus the
 /// covering snapshots writers owe): content under every purge option, signal writes, compaction
 /// snapshots, purges, undos, `retention^.0` settings (things made with one, late ones stamped up to
-/// an hour back, invalid ones by a non-admin), writers following the setting they hold half the time, acting for
-/// the account, edge writes (grants, `until`, invites, self-removals, finalizes, link
+/// an hour back, invalid ones by a non-admin), writers following the setting they hold half the
+/// time, stated paths and purge authors (`stated`), edge writes (grants, `until`, may-grant, self-removals, finalizes, link
 /// redemptions); creations kept for good or `admin` with no history, a few expiring, some
 /// purged; every body held but about one in ten missing and a few parked (creations whole);
 /// sometimes a creation or a key actor's record unknown; `now` up to six hours after the last
@@ -242,13 +242,13 @@ pub fn history(seed: u64, n: usize) -> Held {
             let d = Delta::Retention(setting(&mut r, START));
             let part = plain_part(t, Aspect::RETENTION, PurgeBy::Admin, d);
             let id = new_id(&mut r);
-            commits.push(Commit { id, signer: chief, acting: chief, ts: (START - HOUR / 2) * MS + k as u64, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] });
+            commits.push(Commit { id, signer: chief, author: chief, paths: Default::default(), ts: (START - HOUR / 2) * MS + k as u64, expires: None, kind: CommitKind::Content, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] });
         }
     }
     let base = |id, author, ts| Commit {
         id,
         signer: author,
-        acting: author,
+        author: author, paths: Default::default(),
         ts,
         expires: None,
         kind: CommitKind::Content,
@@ -259,12 +259,12 @@ pub fn history(seed: u64, n: usize) -> Held {
         own_cover: false,
         boxes: vec![],
     };
-    // half the histories set a link up: K's edge on thing 10, L's (invite) edge on K
+    // half the histories set a link up: K's edge on thing 10, L's (may-grant) edge on K
     if r.chance(50) {
         let ts = w * MS;
         let until = r.chance(50).then(|| w + (2 + r.below(8)) * HOUR);
         let k = EdgeWrite::role(LINK_K, Some(Role::Write));
-        let l = EdgeWrite { holder: LINK_L, role: Some(Role::Write), invite: Some(Role::Write), until };
+        let l = EdgeWrite { holder: LINK_L, role: Some(Role::Write), may_grant: true, until };
         let (a, b) = (new_id(&mut r), new_id(&mut r));
         commits.push(Commit { kind: CommitKind::Role, parts: vec![role_part(10, k)], ..base(a, 0, ts) });
         commits.push(Commit { kind: CommitKind::Role, parts: vec![role_part(LINK_K, l)], ..base(b, 0, ts + 1) });
@@ -308,11 +308,11 @@ pub fn history(seed: u64, n: usize) -> Held {
             if sub < 55 {
                 let holder = r.pick(&HOLDERS);
                 let role = r.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Admin)]);
-                let invite = role.filter(|_| r.chance(15));
+                let may_grant = role.is_some() && r.chance(15);
                 let until = (role.is_some() && r.chance(25)).then(|| w + r.below(4) * HOUR);
                 let frontier = (role != Some(Role::Admin))
                     .then(|| commits.iter().filter(|c| c.signer == holder && r.chance(60)).map(|c| c.id).collect());
-                let e = EdgeWrite { holder, role, invite, until };
+                let e = EdgeWrite { holder, role, may_grant, until };
                 Commit { kind: CommitKind::Role, frontier, parts: vec![role_part(thing, e)], ..base(id, author, ts) }
             } else if sub < 70 {
                 // self-removal (or lowering) of the author's own edge
@@ -331,7 +331,7 @@ pub fn history(seed: u64, n: usize) -> Held {
                 let holder = if timed.is_empty() { r.pick(&HOLDERS) } else { r.pick(&timed) };
                 Commit { kind: CommitKind::Role, parts: vec![role_part(thing, EdgeWrite::role(holder, None))], ..base(id, author, ts) }
             } else if sub < 87 {
-                // a link redemption: L invite-grants a node on K, single use removing L's edge
+                // a link redemption: L adds a node on K by may-grant, single use removing L's edge
                 let holder = r.below(NODES) as NodeId;
                 let mut parts = vec![role_part(LINK_K, EdgeWrite::role(holder, Some(r.pick(&[Role::Read, Role::Write]))))];
                 if r.chance(50) {
@@ -421,12 +421,11 @@ pub fn history(seed: u64, n: usize) -> Held {
                     if follows {
                         expires = newest_entry(&commits, thing, aspect, ts).and_then(|e| e.expires).map(|d| w + d).or(expires);
                     }
-                    // node 2 acts for its account on the account's thing half the time
-                    let acting = if thing == 12 && author == 2 && r.chance(50) { ACCOUNT } else { author };
-                    Commit { expires, acting, parts: vec![plain_part(thing, aspect, purge_by, Delta::Writes(ws))], ..base(id, author, ts) }
+                    Commit { expires, parts: vec![plain_part(thing, aspect, purge_by, Delta::Writes(ws))], ..base(id, author, ts) }
                 }
             }
         };
+        let c = stated(&mut r, c, &commits);
         let author = c.signer;
         let content = c.kind == CommitKind::Content;
         commits.push(c);
@@ -459,6 +458,38 @@ pub fn history(seed: u64, n: usize) -> Held {
         commits.retain(|c| c.id != CREATION_ID + gone);
     }
     Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, records, commits, dots: vec![], external_fires: ExternalFires::Any }
+}
+
+/// `c` stating a path for the things it writes (spec/permissions.md §1 Path), where it states
+/// none: half the time, where some thing X holds a grant on each thing it writes and its signer one
+/// on X (by the edge writes of `commits`, applied or not), or X is on the record chain between
+/// them, the path [X]; now and then a path through a thing that gives it nothing. A commit
+/// listing a thing names it as its purge author half the time (node 2 so acts for its account).
+fn stated(r: &mut Rng, c: Commit, commits: &[Commit]) -> Commit {
+    if !c.paths.is_empty() || creates(&c) {
+        return c;
+    }
+    let granted: BTreeSet<(NodeId, ThingId)> = commits
+        .iter()
+        .filter(|k| k.is_role())
+        .flat_map(|k| k.parts.iter())
+        .filter_map(|p| match &p.body {
+            Body::Held(Delta::Edge(e)) if e.role.is_some() => Some((e.holder, p.thing)),
+            _ => None,
+        })
+        .chain(CREATIONS.iter().filter_map(|&(t, link, _)| Some((link.mint_admin()?, t))))
+        .collect();
+    let things: BTreeSet<ThingId> = c.clone().along(&[]).paths.into_keys().collect();
+    let through: Vec<ThingId> = HOLDERS.iter().copied().filter(|&x| x != c.signer && granted.contains(&(c.signer, x)) && things.iter().all(|&t| x != t && granted.contains(&(x, t)))).collect();
+    let x = if !through.is_empty() && r.chance(50) {
+        r.pick(&through)
+    } else if r.chance(3) {
+        r.pick(&HOLDERS)
+    } else {
+        return c;
+    };
+    let author = if r.chance(50) { x } else { c.signer };
+    Commit { author, ..c.along(&[x]) }
 }
 
 /// A random content write on `aspect` from the writer's view `prior` (crdt-model's ops, now and

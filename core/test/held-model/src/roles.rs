@@ -1,57 +1,15 @@
-//! Role timeline and validity (spec/permissions.md §5.1, §5.2, §6). Holders are actors (nodes or
-//! things); effective roles are widest paths over edges (record edges included); authority classes, invites,
-//! `until`, self-removals, finalizes and audits with the edge as restored; addenda (§5.2) as a
-//! least fixpoint over the settled walk. Every query replays the settled walk.
+//! Role timeline and validity (spec/permissions.md §5.1, §5.2, §6), judged by roles-model
+//! `paths`: this module builds a `paths::World` from the joined commits (each part along the path
+//! its commit states for its thing) and reads that judgment. No rule of the walk lives here; what
+//! is this module's own is the translation (ids, times, a commit's parts in the walk's order) and
+//! which paths the node itself could state (`Timeline::my_right`, a writer's choice).
 
 use crate::types::*;
+use roles_model::paths::{self, Id, Kind, Names, Rules, View};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A standing edge value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Edge {
-    pub role: Role,
-    pub invite: Option<Role>,
-    pub until: Option<u64>,
-}
-
-impl Edge {
-    pub fn alive(&self, wall: u64) -> bool {
-        self.until.map_or(true, |u| wall < u)
-    }
-    pub fn of(w: &EdgeWrite) -> Option<Edge> {
-        w.role.map(|role| Edge { role, invite: w.invite, until: w.until })
-    }
-    /// Componentwise maximum, alive (spec/permissions.md §5.1 Edge as restored).
-    fn join(a: Option<Edge>, b: Option<Edge>) -> Option<Edge> {
-        match (a, b) {
-            (None, x) | (x, None) => x.map(|e| Edge { until: None, ..e }),
-            (Some(a), Some(b)) => Some(Edge { role: a.role.max(b.role), invite: a.invite.max(b.invite), until: None }),
-        }
-    }
-}
-
-/// `new` lowers `cur` (spec/permissions.md §2 Self-removal): a removal, or no component above.
-fn lowers(new: Option<Edge>, cur: Option<Edge>) -> bool {
-    let until_le = |a: Option<u64>, b: Option<u64>| match (a, b) {
-        (_, None) => true,
-        (None, Some(_)) => false,
-        (Some(a), Some(b)) => a <= b,
-    };
-    match (new, cur) {
-        (None, _) => true,
-        (Some(_), None) => false,
-        (Some(n), Some(c)) => n.role <= c.role && n.invite <= c.invite && until_le(n.until, c.until),
-    }
-}
-
-pub type Edges = BTreeMap<(ThingId, NodeId), Edge>;
-
-/// Authority class (spec/permissions.md §5.1 step 3), weakest first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Class {
-    Invite(Role),
-    EdgeAdmin,
-}
+/// A hop's edge: (holder, target).
+pub type Hop = (NodeId, ThingId);
 
 /// The creation records known: mint admins.
 #[derive(Clone, Debug, Default)]
@@ -72,6 +30,10 @@ impl World {
             _ => None,
         }
     }
+    /// A key actor: its record holds a key (spec/permissions.md §1).
+    pub fn key_actor(&self, t: ThingId) -> bool {
+        self.links.get(&t) == Some(&RecordLink::Key)
+    }
     /// The record chain above `t`, nearest first (stops at a key actor, an unknown record or a
     /// cycle).
     pub fn chain_above(&self, t: ThingId) -> Vec<NodeId> {
@@ -86,472 +48,48 @@ impl World {
         }
         v
     }
-    /// The walk's initial state: every thing's record edge.
-    pub fn initial(&self) -> Edges {
-        self.links
-            .iter()
-            .filter_map(|(&t, o)| match o {
-                RecordLink::Admin(a) => Some(((t, *a), Edge { role: Role::Admin, invite: None, until: None })),
-                RecordLink::Key => None,
-            })
-            .collect()
+    /// The edges the path `signer` states for a part on `thing` uses (spec/permissions.md §1
+    /// Path, Hops, the key hop left out), and which of them are record edges; `None` where its
+    /// members name a thing twice or its marks are invalid. `holder`: the part's holder, for an
+    /// edge write (a path ending at it is a self-removal's).
+    pub fn hops(&self, signer: NodeId, path: &Path, thing: ThingId, holder: Option<NodeId>) -> Option<Vec<(Hop, bool)>> {
+        let names = Interned::new(self.links.keys().copied().chain(self.links.values().filter_map(|l| l.mint_admin())).chain([signer, thing]).chain(path.things.iter().copied()).chain(holder));
+        let mut w = paths::World::new(&self.record_edges(&names));
+        let things: Vec<paths::Thing> = path.things.iter().map(|&t| names.thing(t)).collect();
+        let kind = holder.map_or(Kind::Content, |h| Kind::set(names.thing(h), roles_model::Role::None));
+        let i = w.push_marked(names.thing(signer), 0, &things, names.thing(thing), kind, &path.direct);
+        w.well(i).then(|| w.hops(i).iter().map(|&e| ((names.id(e.0), names.id(e.1)), w.is_record(e))).collect())
     }
-    /// Effective roles of `x` on everything (widest paths over alive edges).
-    pub fn reach(&self, edges: &Edges, x: NodeId, wall: u64) -> BTreeMap<NodeId, Role> {
-        let mut best = BTreeMap::from([(x, Role::Admin)]);
-        loop {
-            let mut changed = false;
-            let mut raise = |best: &mut BTreeMap<NodeId, Role>, t: NodeId, r: Role| {
-                if best.get(&t).map_or(true, |&b| b < r) {
-                    best.insert(t, r);
-                    changed = true;
-                }
-            };
-            for (&(t, h), e) in edges {
-                if e.alive(wall) {
-                    if let Some(&r) = best.get(&h) {
-                        raise(&mut best, t, r.min(e.role));
-                    }
-                }
-            }
-            if !changed {
-                return best;
-            }
-        }
-    }
-    pub fn role(&self, edges: &Edges, x: NodeId, n: ThingId, wall: u64) -> Option<Role> {
-        self.reach(edges, x, wall).get(&n).copied()
-    }
-    /// X's authority class on N: edge admin, invite.
-    pub fn class(&self, edges: &Edges, x: NodeId, n: ThingId, wall: u64) -> Option<Class> {
-        let r = self.reach(edges, x, wall);
-        let mut best = None;
-        for (&(t, h), e) in edges {
-            if t != n || !e.alive(wall) {
-                continue;
-            }
-            let Some(&rh) = r.get(&h) else { continue };
-            if e.role == Role::Admin && rh == Role::Admin {
-                best = best.max(Some(Class::EdgeAdmin));
-            }
-            if let Some(i) = e.invite {
-                best = best.max(Some(Class::Invite(rh.min(i))));
-            }
-        }
-        best
+    fn record_edges(&self, names: &Interned) -> Vec<paths::Edge> {
+        self.links.iter().filter_map(|(&t, l)| Some((names.thing(l.mint_admin()?), names.thing(t)))).collect()
     }
 }
 
-/// One edge write of an applied role commit.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EdgeEv {
-    pub key: Key,
-    pub commit: CommitId,
-    /// The part index.
-    pub part: usize,
-    pub thing: ThingId,
-    pub author: NodeId,
-    pub holder: NodeId,
-    pub value: Option<Edge>,
-    pub frontier: Option<BTreeSet<CommitId>>,
+/// Things as roles-model numbers them: in id order, so keys order alike.
+struct Interned(Vec<ThingId>);
+
+impl Interned {
+    fn new(ids: impl IntoIterator<Item = ThingId>) -> Interned {
+        let v: Vec<ThingId> = ids.into_iter().collect::<BTreeSet<_>>().into_iter().collect();
+        assert!(v.len() < paths::KEYS as usize, "roles-model `paths` numbers at most {} things", paths::KEYS);
+        Interned(v)
+    }
+    fn thing(&self, t: ThingId) -> paths::Thing {
+        self.0.binary_search(&t).expect("an interned thing") as paths::Thing
+    }
+    fn id(&self, t: paths::Thing) -> ThingId {
+        self.0[t as usize]
+    }
 }
 
-/// Every edge write held in a role commit of `commits`, in walk order.
-pub fn edge_events<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Vec<EdgeEv> {
-    let mut evs = Vec::new();
-    for c in commits {
-        if c.kind != CommitKind::Role {
-            continue;
-        }
-        let frontier: Option<BTreeSet<CommitId>> = c.frontier.as_ref().map(|f| f.iter().copied().collect());
-        for (i, p) in c.parts.iter().enumerate() {
-            if let Body::Held(Delta::Edge(e)) = &p.body {
-                evs.push(EdgeEv {
-                    key: c.key(),
-                    commit: c.id,
-                    part: i,
-                    thing: p.thing,
-                    author: c.signer,
-                    holder: e.holder,
-                    value: Edge::of(e),
-                    frontier: frontier.clone(),
-                });
-            }
-        }
+fn role(r: Option<Role>) -> roles_model::Role {
+    match r {
+        None => roles_model::Role::None,
+        // sync and read judge alike (neither writes)
+        Some(Role::Sync | Role::Read) => roles_model::Role::Read,
+        Some(Role::Write) => roles_model::Role::Write,
+        Some(Role::Admin) => roles_model::Role::Admin,
     }
-    evs.sort_by(|a, b| (a.key, a.holder, a.part).cmp(&(b.key, b.holder, b.part)));
-    evs
-}
-
-/// One applied edge write in the settled walk.
-#[derive(Clone, Debug)]
-pub struct Applied {
-    pub ev: EdgeEv,
-    pub class: Option<Class>,
-    /// Attributed to edge-admin authority (spec/permissions.md §5.1 step 2).
-    pub explicit: bool,
-    /// The thing it counts as a write on (a self-removal through actor M: M).
-    pub on: ThingId,
-    /// The state before it, its edge as restored when explicit.
-    pub before: Edges,
-    pub after: Edges,
-}
-
-pub struct Timeline {
-    /// `world` and `applied` are fixed once walked (`demotions` keeps its answers).
-    world: World,
-    pub initial: Edges,
-    applied: Vec<Applied>,
-    /// `demotions`' answers by (thing, X, need), as indices into `applied`.
-    demoted: std::sync::Mutex<BTreeMap<(ThingId, NodeId, Role), Vec<usize>>>,
-    /// The addenda that count (`vouch`): valid, their author held write on the thing at their key.
-    pub counting: Vec<Addendum>,
-    /// The valid addenda: (commit, thing).
-    pub valid_addenda: BTreeSet<(CommitId, ThingId)>,
-}
-
-/// An `addenda.0` delta of a content commit acting for its author (spec/permissions.md §5.2
-/// Addenda): per entry the removal it names and the commits it lists, none without its body.
-#[derive(Clone, Debug)]
-pub struct Addendum {
-    pub commit: CommitId,
-    pub key: Key,
-    pub author: NodeId,
-    pub thing: ThingId,
-    pub entries: Vec<(CommitId, Vec<CommitId>)>,
-}
-
-/// Every addendum among the applied commits `view`.
-pub fn addenda<'a>(view: impl IntoIterator<Item = &'a Commit>) -> Vec<Addendum> {
-    let mut out = Vec::new();
-    for c in view {
-        if c.kind != CommitKind::Content || c.acting != c.signer {
-            continue;
-        }
-        for p in c.parts.iter().filter(|p| p.aspect == Aspect::ADDENDA) {
-            let entries = match &p.body {
-                Body::Held(Delta::Addenda(es)) => es.clone(),
-                _ => Vec::new(),
-            };
-            out.push(Addendum { commit: c.id, key: c.key(), author: c.signer, thing: p.thing, entries });
-        }
-    }
-    out
-}
-
-const LAST: Key = (u64::MAX, NodeId::MAX, CommitId::MAX);
-
-/// Where layer 2 judges a commit at `key` (spec/permissions.md §5.2, Position): before every edge
-/// write at its `ts`, at or after every one before it. A key at the same `ts` is never below it,
-/// so "after" reads `>=` and "before" `<`.
-fn start(key: Key) -> Key {
-    (key.0, 0, 0)
-}
-
-impl Timeline {
-    /// The edge as restored on (n, h) before the walk's current point.
-    fn restored(initial: &Edges, applied: &[Applied], n: ThingId, h: NodeId) -> Option<Edge> {
-        let on: Vec<&Applied> = applied.iter().filter(|p| p.ev.thing == n && p.ev.holder == h).collect();
-        let from = on.iter().rposition(|p| p.explicit);
-        let mut v = if from.is_none() { initial.get(&(n, h)).copied().map(|e| Edge { until: None, ..e }) } else { None };
-        for p in &on[from.unwrap_or(0)..] {
-            v = Edge::join(v, p.ev.value);
-        }
-        v
-    }
-
-    /// The settled walk over `evs` (in walk order) from the things' record edges
-    /// (spec/permissions.md §5.1 steps 1-5).
-    pub fn walk(world: World, evs: Vec<EdgeEv>) -> Timeline {
-        let actors: BTreeSet<NodeId> = world.links.keys().copied().chain(evs.iter().flat_map(|e| [e.author, e.holder])).collect();
-        let initial = world.initial();
-        let mut dropped: BTreeSet<(CommitId, usize)> = BTreeSet::new();
-        'restart: loop {
-            let mut edges = initial.clone();
-            let mut applied: Vec<Applied> = Vec::new();
-            // one commit's writes are judged against the state before the commit
-            for group in evs.chunk_by(|a, b| a.key == b.key) {
-                let pre = edges.clone();
-                // every applied write of the commit takes effect and audits; then the walk restarts
-                let mut grew = false;
-                let wall_ = wall(group[0].key.0);
-                for ev in group {
-                    if dropped.contains(&(ev.commit, ev.part)) {
-                        continue;
-                    }
-                    let (n, h, a) = (ev.thing, ev.holder, ev.author);
-                    if h == n {
-                        continue;
-                    }
-                    let Some((class, explicit, on)) = decide(&world, &pre, ev, wall_) else { continue };
-                    let mut before = edges.clone();
-                    if explicit {
-                        match Timeline::restored(&initial, &applied, n, h) {
-                            Some(e) => before.insert((n, h), e),
-                            None => before.remove(&(n, h)),
-                        };
-                    }
-                    match ev.value {
-                        Some(v) => edges.insert((n, h), v),
-                        None => edges.remove(&(n, h)),
-                    };
-                    // step 4: audits by an explicit write
-                    if explicit {
-                        // n and every thing it reaches by edges, record edges included
-                        let down: Vec<ThingId> = world.reach(&edges, n, wall_).into_keys().collect();
-                        for &x in actors.iter().filter(|&&x| x != a) {
-                            for &m in &down {
-                                let cb = world.class(&before, x, m, wall_);
-                                let ca = world.class(&edges, x, m, wall_);
-                                if ca >= cb {
-                                    continue;
-                                }
-                                for p in &applied {
-                                    let fell_through = p.class.is_some_and(|c| Some(c) > ca && Some(c) <= cb);
-                                    let listed = ev.frontier.as_ref().is_some_and(|f| f.contains(&p.ev.commit));
-                                    if p.ev.author == x && p.on == m && fell_through && p.ev.key < ev.key && !listed {
-                                        grew |= dropped.insert((p.ev.commit, p.ev.part));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    applied.push(Applied { ev: ev.clone(), class, explicit, on, before, after: edges.clone() });
-                }
-                if grew {
-                    continue 'restart;
-                }
-            }
-            return Timeline { world, initial, applied, demoted: Default::default(), counting: Vec::new(), valid_addenda: BTreeSet::new() };
-        }
-    }
-
-    pub fn applied_part(&self, c: CommitId, part: usize) -> bool {
-        self.applied.iter().any(|e| e.ev.commit == c && e.ev.part == part)
-    }
-
-    /// The edge state just before `key`.
-    pub fn state_at(&self, key: Key) -> &Edges {
-        self.applied.iter().rev().find(|p| p.ev.key < key).map_or(&self.initial, |p| &p.after)
-    }
-
-    /// X's effective role on the thing just before `key` (edges' `until` judged at its ts).
-    pub fn role_at(&self, thing: ThingId, x: NodeId, key: Key) -> Option<Role> {
-        self.world.role(self.state_at(key), x, thing, wall(key.0))
-    }
-
-    /// The final state, every edge with an `until` counted as removed (spec/permissions.md §5.2).
-    fn final_role(&self, thing: ThingId, x: NodeId) -> Option<Role> {
-        let mut s = self.state_at(LAST).clone();
-        s.retain(|_, e| e.until.is_none());
-        self.world.role(&s, x, thing, 0)
-    }
-
-    /// Valid explicit demotions of X below `need` on the thing: explicit writes by another author
-    /// taking X's role there, the edge as restored, from `need` or above to below it.
-    pub fn demotions(&self, thing: ThingId, x: NodeId, need: Role) -> Vec<&Applied> {
-        let mut memo = self.demoted.lock().unwrap();
-        let ix = memo.entry((thing, x, need)).or_insert_with(|| {
-            (0..self.applied.len())
-                .filter(|&i| {
-                    let p = &self.applied[i];
-                    let w = wall(p.ev.key.0);
-                    p.explicit
-                        && p.ev.author != x
-                        && self.world.role(&p.before, x, thing, w).is_some_and(|r| r >= need)
-                        && !self.world.role(&p.after, x, thing, w).is_some_and(|r| r >= need)
-                })
-                .collect()
-        });
-        ix.iter().map(|&i| &self.applied[i]).collect()
-    }
-
-    /// The applied edge writes, in walk order.
-    pub fn applied(&self) -> &[Applied] {
-        &self.applied
-    }
-
-    /// The first point X held `need` or above (spec/permissions.md §5.2 re-grant).
-    fn first_hold(&self, thing: ThingId, x: NodeId, need: Role) -> Option<Key> {
-        if self.world.role(&self.initial, x, thing, 0).is_some_and(|r| r >= need) {
-            return Some((0, 0, 0));
-        }
-        self.applied.iter().find(|p| self.world.role(&p.after, x, thing, wall(p.ev.key.0)).is_some_and(|r| r >= need)).map(|p| p.ev.key)
-    }
-
-    /// spec/permissions.md §5.2: would a delta by X on the thing, needing `need`, in commit `c` at
-    /// `key`, be valid. Judged at the start of its `ts` (`start`).
-    pub fn valid_as(&self, x: NodeId, thing: ThingId, need: Role, key: Key, c: CommitId) -> bool {
-        let key = start(key);
-        let held = self.role_at(thing, x, key).is_some_and(|r| r >= need);
-        let demos = self.demotions(thing, x, need);
-        if held && !demos.iter().any(|d| d.ev.key >= key) {
-            return true;
-        }
-        // a frontier is what its demoter had received: any demotion's, whatever the order
-        if demos.iter().any(|d| d.ev.frontier.as_ref().is_some_and(|f| f.contains(&c))) {
-            return true;
-        }
-        // re-grant: holding the role in the final state revives writes since it first held it
-        if self.final_role(thing, x).is_some_and(|r| r >= need) {
-            if let Some(k) = self.first_hold(thing, x, need) {
-                return k == (0, 0, 0) || k.0 < key.0;
-            }
-        }
-        false
-    }
-
-    /// The least fixpoint of the addenda (spec/permissions.md §5.2 Addenda): an addendum is valid
-    /// as its author's plain delta on its thing, by `valid_as` or vouched for by a counting one;
-    /// it counts while valid and its author held write on the thing just before its key.
-    pub fn vouch(&mut self, addenda: Vec<Addendum>) {
-        let mut valid: BTreeSet<usize> = BTreeSet::new();
-        loop {
-            let counting: Vec<&Addendum> = valid.iter().map(|&i| &addenda[i]).filter(|a| self.writes_at(a)).collect();
-            let next: BTreeSet<usize> = (0..addenda.len())
-                .filter(|&i| {
-                    let a = &addenda[i];
-                    valid.contains(&i) || self.valid_as(a.author, a.thing, Role::Write, a.key, a.commit) || self.vouched_by(&counting, a.thing, a.author, a.key, a.commit)
-                })
-                .collect();
-            if next == valid {
-                break;
-            }
-            valid = next;
-        }
-        self.valid_addenda = valid.iter().map(|&i| (addenda[i].commit, addenda[i].thing)).collect();
-        self.counting = valid.into_iter().map(|i| addenda[i].clone()).filter(|a| self.writes_at(a)).collect();
-    }
-
-    fn writes_at(&self, a: &Addendum) -> bool {
-        self.role_at(a.thing, a.author, start(a.key)).is_some_and(|r| r >= Role::Write)
-    }
-
-    /// A counting addendum of `counting` on the thing names an explicit demotion of X below
-    /// write there ordered after `key` and before the addendum (each at the start of its `ts`,
-    /// `start`), and lists `c`.
-    fn vouched_by(&self, counting: &[&Addendum], thing: ThingId, x: NodeId, key: Key, c: CommitId) -> bool {
-        let demos = self.demotions(thing, x, Role::Write);
-        counting.iter().filter(|a| a.thing == thing).any(|a| {
-            a.entries.iter().any(|(removal, lists)| lists.contains(&c) && demos.iter().any(|d| d.ev.commit == *removal && start(key) <= d.ev.key && d.ev.key < start(a.key)))
-        })
-    }
-
-    fn vouched(&self, thing: ThingId, x: NodeId, key: Key, c: CommitId) -> bool {
-        self.vouched_by(&self.counting.iter().collect::<Vec<_>>(), thing, x, key, c)
-    }
-
-    /// Commit `c`'s delta on `aspect` of the thing (spec/permissions.md §5.2): judged by its
-    /// signer's authority, or for plain content (a content commit carrying no purge request, an
-    /// aspect neither role-class nor admin-only) vouched for by an addendum; an addendum by the
-    /// fixpoint (`vouch`). An acting thing other than the signer (spec/permissions.md §5.2
-    /// Interim) needs the signer's write on it, or an addendum on it vouching for the commit
-    /// (Acting).
-    pub fn valid_delta(&self, c: &Commit, thing: ThingId, aspect: Aspect) -> bool {
-        let (x, key) = (c.signer, c.key());
-        let plain = c.kind == CommitKind::Content && c.purge.is_empty();
-        let acts = c.acting == x || self.valid_as(x, c.acting, Role::Write, key, c.id) || plain && self.vouched(c.acting, x, key, c.id);
-        if aspect == Aspect::ADDENDA {
-            return acts && self.valid_addenda.contains(&(c.id, thing));
-        }
-        let need = need(aspect);
-        let own = c.kind == CommitKind::Snapshot && c.own_cover && self.own_cover(x, thing, need, key, c.id);
-        acts && (self.valid_as(x, thing, need, key, c.id) || own || plain && need == Role::Write && aspect != Aspect::ROLES && self.vouched(thing, x, key, c.id))
-    }
-
-    /// spec/permissions.md §5.2 (Compaction snapshot, Own cover): snapshot `c` (marked an own
-    /// cover) by X at `key`, made while X held `need` on the thing, is named by the frontier of an applied explicit
-    /// write by X ordered at or after it that demotes some node on the thing (below write or
-    /// admin): it stands while that write applies.
-    fn own_cover(&self, x: NodeId, thing: ThingId, need: Role, key: Key, c: CommitId) -> bool {
-        let key = start(key);
-        if !self.role_at(thing, x, key).is_some_and(|r| r >= need) {
-            return false;
-        }
-        let nodes: BTreeSet<NodeId> = self.applied.iter().flat_map(|p| [p.ev.holder, p.ev.author]).collect();
-        self.applied.iter().any(|p| {
-            let w = wall(p.ev.key.0);
-            p.explicit
-                && p.ev.author == x
-                && p.ev.key >= key
-                && p.ev.frontier.as_ref().is_some_and(|f| f.contains(&c))
-                && nodes.iter().any(|&y| y != x && [Role::Write, Role::Admin].into_iter().any(|n| self.world.role(&p.before, y, thing, w).is_some_and(|r| r >= n) && !self.world.role(&p.after, y, thing, w).is_some_and(|r| r >= n)))
-        })
-    }
-
-    /// spec/permissions.md §6: does a request (signer `q`, acting on `qa`, commit `qc` at `qkey`)
-    /// hold the right over a delta purgeable by `by`, of purge author `actor` (its commit's acting
-    /// thing, notes/redesign-plan.md, Interim in code), on the thing.
-    #[allow(clippy::too_many_arguments)]
-    pub fn right(&self, q: NodeId, qa: NodeId, qkey: Key, qc: CommitId, by: PurgeBy, actor: NodeId, thing: ThingId) -> bool {
-        let both = |need: Role| self.valid_as(q, thing, need, qkey, qc) && (qa == q || self.valid_as(qa, thing, need, qkey, qc));
-        let admin = || both(Role::Admin);
-        // the author's part of `author_or_admin`: the delta's purge author while it holds write on the
-        // thing, held by it and by any node with write on it; each signer holds it on its own
-        let on_actor = |x: NodeId| x == actor || self.valid_as(x, actor, Role::Write, qkey, qc);
-        let auth = || on_actor(q) && on_actor(qa) && self.valid_as(actor, thing, Role::Write, qkey, qc);
-        match by {
-            PurgeBy::Admin => admin(),
-            PurgeBy::AuthorOrAdmin => admin() || auth(),
-            PurgeBy::Writer => both(Role::Write),
-        }
-    }
-
-}
-
-/// Step 2: does an edge write apply, with its class, whether it is explicit and the thing it
-/// counts as a write on.
-fn decide(world: &World, pre: &Edges, ev: &EdgeEv, wall_: u64) -> Option<(Option<Class>, bool, ThingId)> {
-    let (n, h, a) = (ev.thing, ev.holder, ev.author);
-    let cur = pre.get(&(n, h)).copied();
-    let ra = world.reach(pre, a, wall_);
-    let on_n = ra.get(&n).copied();
-    let admin_on_h = ra.get(&h) == Some(&Role::Admin);
-    let ca = world.class(pre, a, n, wall_);
-    let removal = ev.value.map_or(true, |v| v.until == Some(0));
-    // self-removal: lowering one's own edge, or an edge of a holder one is admin of when that is
-    // the only authority (no edge-admin authority on the target with the holder's edge there
-    // disregarded: authority through the holder does not count, a record edge's included)
-    let without = || {
-        let mut e = pre.clone();
-        e.remove(&(n, h));
-        world.class(&e, a, n, wall_)
-    };
-    if lowers(ev.value, cur) && (h == a || (admin_on_h && without() < Some(Class::EdgeAdmin))) {
-        return Some(if h == a { (ca, false, n) } else { (world.class(pre, a, h, wall_), false, h) });
-    }
-    // finalize: any other frontier-less removal of another holder's edge
-    if removal && ev.frontier.is_none() && lowers(ev.value, cur) {
-        let ok = cur.is_some_and(|c| !c.alive(wall_) && on_n >= Some(Role::Write) && on_n >= Some(c.role));
-        return ok.then_some((None, false, n));
-    }
-    if ca >= Some(Class::EdgeAdmin) {
-        return Some((ca, true, n));
-    }
-    if let Some(Class::Invite(inv)) = ca {
-        let fresh = cur.map_or(true, |c| !c.alive(wall_));
-        if let Some(v) = ev.value {
-            if fresh && v.alive(wall_) && v.role <= inv && v.invite.map_or(true, |i| i <= inv) {
-                return Some((ca, false, n));
-            }
-        }
-    }
-    None
-}
-
-/// A role naming: (thing, signer, holder, role).
-pub type Naming = (ThingId, NodeId, NodeId, Role);
-
-pub fn namings<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Vec<Naming> {
-    let mut out = Vec::new();
-    for c in commits {
-        for p in &c.parts {
-            if let (CommitKind::Role, Body::Held(Delta::Edge(EdgeWrite { holder, role: Some(r), .. }))) = (c.kind, &p.body) {
-                out.push((p.thing, c.signer, *holder, *r));
-            }
-        }
-    }
-    out
 }
 
 /// The role a delta on `aspect` needs.
@@ -560,5 +98,329 @@ pub fn need(a: Aspect) -> Role {
         Role::Admin
     } else {
         Role::Write
+    }
+}
+
+/// What the builder is given beside the commits.
+pub struct Joined<'a> {
+    /// Every held commit that is not parked.
+    pub live: &'a [&'a Commit],
+    /// The applied ones as joined: their waiting and thrown parts count as not received.
+    pub view: &'a [Commit],
+    /// Commits void for every judgment: their addenda list nothing.
+    pub void: &'a BTreeSet<CommitId>,
+    /// The commits a held snapshot body carries copies of, on its thing and aspect.
+    pub carries: &'a dyn Fn(&Commit, &Part) -> BTreeSet<CommitId>,
+    /// The node: which rights it holds now is read too (`Timeline::my_right`).
+    pub me: NodeId,
+}
+
+/// What one world part stands for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Of {
+    /// A commit's part, by its index.
+    Part(CommitId, usize),
+    /// A commit's purge request on a thing: a destruction (an item on `created.0`) or not.
+    Request(CommitId, ThingId, bool),
+    /// A request the node could write now along one path it could state.
+    Probe(ThingId, usize),
+}
+
+/// The judgment of the joined commits: roles-model `paths` over the world built from them.
+pub struct Timeline {
+    pub world: World,
+    w: paths::World,
+    rd: paths::Reading,
+    rights: BTreeMap<Id, paths::Right>,
+    names: Interned,
+    /// `ts` values in order: a commit's `ts`, an `until` in `ts` units.
+    times: Vec<u64>,
+    ids: BTreeMap<Of, Vec<Id>>,
+    writes: BTreeMap<Id, EdgeWrite>,
+    probes: BTreeMap<ThingId, Vec<(Id, Path)>>,
+}
+
+const RULES: fn() -> Rules = Rules::purging;
+
+impl Timeline {
+    /// The world of `j`'s commits, judged.
+    pub fn judge(world: World, j: &Joined) -> Timeline {
+        let commits = || j.live.iter().copied();
+        let edges = |c: &Commit| c.parts.iter().filter_map(|p| match &p.body {
+            Body::Held(Delta::Edge(e)) => Some(*e),
+            _ => None,
+        }).collect::<Vec<_>>();
+        let names = Interned::new(
+            world.links.keys().copied().chain(world.links.values().filter_map(|l| l.mint_admin())).chain([j.me]).chain(commits().flat_map(|c| {
+                let parts = c.parts.iter().map(|p| p.thing);
+                let paths = c.paths.values().flat_map(|p| p.things.iter().copied());
+                let purge = c.purge.iter().map(|i| match *i {
+                    PurgeItem::Commit { thing, .. } | PurgeItem::Aspect { thing, .. } | PurgeItem::Author { thing, .. } => thing,
+                });
+                [c.signer, c.author].into_iter().chain(parts).chain(paths).chain(purge).chain(edges(c).into_iter().map(|e| e.holder)).collect::<Vec<_>>()
+            })),
+        );
+        let until = |u: u64| u.saturating_mul(MS);
+        let times: Vec<u64> = commits().map(|c| c.ts).chain(commits().flat_map(|c| edges(c)).filter_map(|e| e.until).map(until)).chain([u64::MAX]).collect::<BTreeSet<_>>().into_iter().collect();
+        let time = |t: u64| times.binary_search(&t).expect("a listed time") as u32 + 1;
+        let mut tl = Timeline { w: paths::World::new(&world.record_edges(&names)), world, rd: Default::default(), rights: BTreeMap::new(), names, times: times.clone(), ids: BTreeMap::new(), writes: BTreeMap::new(), probes: BTreeMap::new() };
+
+        // each commit as joined (a waiting or thrown part is not received), else as held, in id
+        // order: world ids are given by the order pushed, and keys tie on `ts` and signer by id
+        let viewed: BTreeMap<CommitId, &Commit> = j.view.iter().map(|c| (c.id, c)).collect();
+        let mut sorted: Vec<&Commit> = commits().map(|c| viewed.get(&c.id).copied().unwrap_or(c)).collect();
+        sorted.sort_by_key(|c| c.id);
+        let by_id: BTreeMap<CommitId, &Commit> = sorted.iter().map(|c| (c.id, *c)).collect();
+        // the edge writes a commit holds, by part
+        let cuts = |c: CommitId| -> Vec<usize> { by_id.get(&c).filter(|x| x.is_role()).into_iter().flat_map(|x| x.parts.iter().enumerate()).filter(|(_, p)| matches!(p.body, Body::Held(Delta::Edge(_)))).map(|x| x.0).collect() };
+        // each commit's world parts, in the walk's order within the commit, and the thing each is on
+        let mut plan: Vec<(&Commit, Vec<Of>)> = Vec::new();
+        let mut on: Vec<paths::Thing> = Vec::new();
+        for c in &sorted {
+            let ofs = tl.plan(c, j.void.contains(&c.id), &|r| cuts(r).len());
+            for (of, thing, n) in &ofs {
+                tl.ids.insert(*of, (on.len()..on.len() + n).collect());
+                on.extend(std::iter::repeat_n(tl.names.thing(*thing), *n));
+            }
+            plan.push((c, ofs.into_iter().map(|x| x.0).collect()));
+        }
+        // every world part of a commit: what a list naming the commit names
+        let all = |tl: &Timeline, c: CommitId| -> Vec<Id> { tl.ids.iter().filter(|(of, _)| matches!(of, Of::Part(x, _) | Of::Request(x, _, _) if *x == c)).flat_map(|(_, v)| v.clone()).collect() };
+        let mut held = paths::Set::new();
+        for (c, ofs) in plan {
+            let joined = viewed.contains_key(&c.id);
+            let (signer, ts) = (tl.names.thing(c.signer), time(c.ts));
+            let mut ids = Vec::new();
+            for of in ofs {
+                let (thing, kinds, part): (ThingId, Vec<Kind>, Option<&Part>) = match of {
+                    Of::Part(_, i) => {
+                        let p = &c.parts[i];
+                        let kinds = match &p.body {
+                            Body::Held(Delta::Edge(e)) if c.is_role() => {
+                                // one leaf per thing: an entry names its commit's parts on that thing
+                                let mut frontier: BTreeMap<paths::Thing, paths::Set> = BTreeMap::new();
+                                for x in c.frontier.iter().flatten().flat_map(|&x| all(&tl, x)) {
+                                    frontier.entry(on[x]).or_default().insert(x);
+                                }
+                                // a removal carrying no frontier is a finalize, where it is no self-removal (the world reads that)
+                                let removal = e.role.is_none() || e.until == Some(0);
+                                vec![Kind::Edge { holder: tl.names.thing(e.holder), role: role(e.role), until: e.until.map(|u| time(until(u))), frontier, may_grant: e.may_grant, finalize: removal && c.frontier.is_none() }]
+                            }
+                            Body::Held(Delta::Addenda(es)) if c.kind == CommitKind::Content && p.aspect == Aspect::ADDENDA && !j.void.contains(&c.id) => {
+                                let mut ks = Vec::new();
+                                for (removal, list) in es {
+                                    let list: paths::Set = list.iter().flat_map(|&x| all(&tl, x)).collect();
+                                    // the entry is keyed by a commit: against each cut that commit makes
+                                    ks.extend(cuts(*removal).into_iter().filter_map(|k| tl.id(Of::Part(*removal, k))).map(|removal| Kind::Addendum { removal, list: list.clone() }));
+                                }
+                                if ks.is_empty() {
+                                    ks.push(Kind::Content);
+                                }
+                                ks
+                            }
+                            _ if c.kind == CommitKind::Snapshot => {
+                                let t = &tl;
+                                let on_aspect = |x: CommitId| by_id.get(&x).into_iter().flat_map(|k| k.parts.iter().enumerate()).filter(|(_, q)| q.thing == p.thing && q.aspect == p.aspect).filter_map(move |(n, _)| t.id(Of::Part(x, n))).collect::<Vec<_>>();
+                                vec![Kind::Cover { carries: (j.carries)(c, p).into_iter().flat_map(on_aspect).collect() }]
+                            }
+                            _ => vec![Kind::Content],
+                        };
+                        (p.thing, kinds, Some(p))
+                    }
+                    Of::Request(_, thing, destroy) => (thing, vec![Kind::Purge { names: if destroy { Names::Destroy } else { Names::Aspect } }], None),
+                    Of::Probe(..) => unreachable!(),
+                };
+                let empty = Path::default();
+                let path = c.paths.get(&thing).unwrap_or(&empty);
+                let things: Vec<paths::Thing> = path.things.iter().map(|&t| tl.names.thing(t)).collect();
+                // the purge author: a member of the part's path (spec/permissions.md §6), by its index
+                let members: Vec<ThingId> = [c.signer].into_iter().chain(path.things.iter().copied()).chain([thing]).collect();
+                let author = members.iter().position(|&m| m == c.author);
+                for kind in kinds {
+                    let edge = matches!(kind, Kind::Edge { .. });
+                    let i = tl.w.push_marked(signer, ts, &things, tl.names.thing(thing), kind, &path.direct);
+                    assert!(tl.ids[&of].contains(&i), "a world part where it was planned");
+                    ids.push(i);
+                    if let Some(p) = part {
+                        if let (true, Body::Held(Delta::Edge(e))) = (edge, &p.body) {
+                            tl.writes.insert(i, *e);
+                        }
+                        let x = &mut tl.w.commits[i];
+                        x.needs = role(Some(need(p.aspect)));
+                        x.vouchable = c.kind == CommitKind::Content && c.purge.is_empty() && p.aspect != Aspect::ROLES;
+                        x.own = c.kind == CommitKind::Snapshot && c.own_cover;
+                        x.purge_by = match p.purge_by {
+                            PurgeBy::Admin => paths::PurgeBy::Admin,
+                            PurgeBy::AuthorOrAdmin => paths::PurgeBy::AuthorOrAdmin,
+                            PurgeBy::Writer => paths::PurgeBy::Writer,
+                        };
+                    }
+                    if let (Some(ix), false) = (author, edge) {
+                        tl.w.authored(i, ix.min(path.things.len() + 1));
+                    }
+                    // held: a part of an applied commit; an edge write on a key actor applies
+                    // nothing (spec/permissions.md §1 Interim), and a delta whose path leaves its
+                    // commit's purge author out holds nothing (§6)
+                    let refused = if edge { tl.world.key_actor(thing) } else { author.is_none() };
+                    if joined && !refused {
+                        held.insert(i);
+                    }
+                }
+            }
+            if ids.len() > 1 {
+                tl.w.group(&ids);
+            }
+        }
+        // what the node could state now: a request along each path giving it write in the end
+        let first = paths::judge(&tl.w, &RULES(), &View { held: held.clone(), leaves: None, trust: paths::Set::new() });
+        let end = time(u64::MAX);
+        let things: BTreeSet<ThingId> = sorted.iter().flat_map(|c| c.parts.iter().map(|p| p.thing)).collect();
+        if tl.world.known(j.me) {
+            for t in things {
+                for (n, path) in tl.my_paths(&first, j.me, t, end).into_iter().enumerate() {
+                    let listed: Vec<paths::Thing> = path.things.iter().map(|&x| tl.names.thing(x)).collect();
+                    let i = tl.w.push_marked(tl.names.thing(j.me), end, &listed, tl.names.thing(t), Kind::Purge { names: Names::Aspect }, &path.direct);
+                    tl.ids.insert(Of::Probe(t, n), vec![i]);
+                    tl.probes.entry(t).or_default().push((i, path));
+                    held.insert(i);
+                }
+            }
+        }
+        (tl.rd, tl.rights) = paths::judge_rights(&tl.w, &RULES(), &View { held, leaves: None, trust: paths::Set::new() });
+        tl
+    }
+
+    /// The world parts of commit `c` (as joined), in the walk's order within the commit
+    /// (spec/permissions.md §5.1 step 1: its edge writes on no hop of a path it states first, then
+    /// those on one; in each group by thing, then holder), then its deltas and its purge requests:
+    /// each with its thing and how many parts it is in the world (an addendum is one per cut its
+    /// entries are against, `cuts` giving a commit's).
+    fn plan(&self, c: &Commit, void: bool, cuts: &dyn Fn(CommitId) -> usize) -> Vec<(Of, ThingId, usize)> {
+        let empty = Path::default();
+        let mut edges: Vec<(bool, ThingId, NodeId, usize)> = Vec::new();
+        let mut rest: Vec<(Of, ThingId, usize)> = Vec::new();
+        // the edges of the path stated for each thing written, that thing its last member
+        let stated: BTreeSet<Hop> = c.parts.iter().map(|p| p.thing).collect::<BTreeSet<_>>().into_iter().flat_map(|t| self.world.hops(c.signer, c.paths.get(&t).unwrap_or(&empty), t, None).unwrap_or_default()).map(|x| x.0).collect();
+        for (i, p) in c.parts.iter().enumerate() {
+            match &p.body {
+                Body::Held(Delta::Edge(e)) if c.is_role() => edges.push((stated.contains(&(e.holder, p.thing)), p.thing, e.holder, i)),
+                // a role commit's part with no body held names no holder: nothing to walk
+                _ if c.is_role() && p.aspect == Aspect::ROLES => {}
+                Body::Held(Delta::Addenda(es)) if c.kind == CommitKind::Content && p.aspect == Aspect::ADDENDA && !void => rest.push((Of::Part(c.id, i), p.thing, es.iter().map(|(r, _)| cuts(*r)).sum::<usize>().max(1))),
+                _ => rest.push((Of::Part(c.id, i), p.thing, 1)),
+            }
+        }
+        edges.sort();
+        let requests: BTreeSet<(ThingId, bool)> = c.purge.iter().map(|it| match *it {
+            PurgeItem::Commit { thing, aspect, .. } | PurgeItem::Aspect { thing, aspect } | PurgeItem::Author { thing, aspect, .. } => (thing, aspect == Aspect::CREATED),
+        }).collect();
+        edges.into_iter().map(|e| (Of::Part(c.id, e.3), e.1, 1)).chain(rest).chain(requests.into_iter().map(|(t, d)| (Of::Request(c.id, t, d), t, 1))).collect()
+    }
+
+    /// Every path `me` could state for `t` whose edges each give write or above in the reading's
+    /// final state at `end`: the simple paths over standing edges, every hop its direct edge (a
+    /// hop the world would read as a descent is marked). A writer's choice, no judging rule: each
+    /// is judged as stated (`judge`'s probes).
+    fn my_paths(&self, rd: &paths::Reading, me: NodeId, t: ThingId, end: u32) -> Vec<Path> {
+        let gives: BTreeSet<Hop> = rd.state.iter().filter(|(e, v)| !paths::is_key(e.0) && paths::alive(**v, end) >= roles_model::Role::Write).map(|(e, _)| (self.names.id(e.0), self.names.id(e.1))).collect();
+        let mut out = Vec::new();
+        let mut stack = vec![vec![me]];
+        while let Some(at) = stack.pop() {
+            let last = *at.last().expect("a path has its signer");
+            for &(_, x) in gives.iter().filter(|e| e.0 == last) {
+                if at.contains(&x) {
+                    continue;
+                }
+                let mut more = at.clone();
+                more.push(x);
+                if x != t {
+                    stack.push(more);
+                    continue;
+                }
+                // a hop from a thing two or more record edges above the next is a descent unless marked
+                let direct = more.windows(2).enumerate().filter(|(_, p)| self.world.chain_above(p[1]).iter().position(|&o| o == p[0]).is_some_and(|d| d >= 1)).map(|(k, _)| k).collect();
+                out.push(Path { things: more[1..more.len() - 1].to_vec(), direct });
+            }
+        }
+        if me == t {
+            out.push(Path::default());
+        }
+        out.sort();
+        out
+    }
+
+    fn id(&self, of: Of) -> Option<Id> {
+        self.ids.get(&of).and_then(|v| v.first()).copied()
+    }
+
+    /// Whether the settled walk applies the edge write that is part `part` of role commit `c`.
+    pub fn applied_part(&self, c: CommitId, part: usize) -> bool {
+        self.id(Of::Part(c, part)).is_some_and(|i| self.rd.applied.contains(&i))
+    }
+
+    /// Whether the delta that is part `part` of commit `c` is valid along its stated path
+    /// (spec/permissions.md §5.2: content, addenda, snapshots, each by the role its aspect needs).
+    pub fn valid_part(&self, c: CommitId, part: usize) -> bool {
+        self.id(Of::Part(c, part)).is_some_and(|i| self.rd.valid.contains(&i))
+    }
+
+    fn over(&self, q: Option<Id>, d: (CommitId, usize)) -> bool {
+        match (q, self.id(Of::Part(d.0, d.1))) {
+            (Some(q), Some(d)) => self.rights.get(&q).is_some_and(|r| r.over(&self.w, &RULES(), q, d)),
+            _ => false,
+        }
+    }
+
+    /// spec/permissions.md §6: whether commit `q`'s purge request on `thing` (a destruction where
+    /// its item names `created.0`) holds a right over the delta that is part `d`.
+    pub fn right(&self, q: CommitId, thing: ThingId, destroy: bool, d: (CommitId, usize)) -> bool {
+        self.over(self.id(Of::Request(q, thing, destroy)), d)
+    }
+
+    /// Whether part `s` (a snapshot's delta), read as a request at its key along its path, holds a
+    /// right over the delta that is part `d` (spec/permissions.md §6: the same right decides
+    /// whether a snapshot may drop a body it covers).
+    pub fn part_right(&self, s: (CommitId, usize), d: (CommitId, usize)) -> bool {
+        self.over(self.id(Of::Part(s.0, s.1)), d)
+    }
+
+    /// A path along which the node, writing now, holds a right over the delta that is part `d`
+    /// of a commit on `thing`; `None` where no path it could state gives one.
+    pub fn my_right(&self, thing: ThingId, d: (CommitId, usize)) -> Option<Path> {
+        self.probes.get(&thing).into_iter().flatten().find(|(q, _)| self.over(Some(*q), d)).map(|(_, p)| p.clone())
+    }
+
+    /// Per thing, the first path the node could state now along which a request of its own holds
+    /// write (admin first).
+    pub fn writes_along(&self) -> BTreeMap<ThingId, Path> {
+        let pick = |v: &Vec<(Id, Path)>| {
+            let holds = |f: fn(&paths::Right) -> bool| v.iter().find(|(q, _)| self.rights.get(q).is_some_and(f)).map(|x| x.1.clone());
+            holds(|r| r.admin).or_else(|| holds(|r| r.write))
+        };
+        self.probes.iter().filter_map(|(&t, v)| Some((t, pick(v)?))).collect()
+    }
+
+    /// The roster of `thing` in the walk's final state: each holder's grant in force (its record
+    /// edge reads as a standing admin grant), whatever its `until`.
+    pub fn roster(&self, thing: ThingId) -> BTreeMap<NodeId, EdgeWrite> {
+        let mut out: BTreeMap<NodeId, EdgeWrite> = self.world.mint_admin(thing).into_iter().map(|a| (a, EdgeWrite::role(a, Some(Role::Admin)))).collect();
+        for (e, h) in self.rd.hist.iter().filter(|(e, _)| !paths::is_key(e.0) && self.names.id(e.1) == thing) {
+            let holder = self.names.id(e.0);
+            match h.last().and_then(|(k, _)| self.writes.get(&k.2)) {
+                Some(w) if w.role.is_some() => out.insert(holder, *w),
+                _ => out.remove(&holder),
+            };
+        }
+        out
+    }
+
+    /// The addenda that vouch: valid, their path giving write at their key.
+    pub fn vouching(&self) -> usize {
+        self.rd.vouching.len()
+    }
+
+    /// The `ts` values the world orders (a commit's `ts`, an `until` in `ts` units).
+    pub fn times(&self) -> &[u64] {
+        &self.times
     }
 }

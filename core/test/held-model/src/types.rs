@@ -5,6 +5,7 @@ pub use crdt_model::stamp::{Dot, Source, Stamp};
 pub use crdt_model::state::Frag;
 pub use crdt_model::value::Value;
 pub use crate::thing_history::{Opt, NEVER};
+use std::collections::BTreeMap;
 
 pub type CommitId = u32;
 /// Things, actors and nodes share one id space (spec/permissions.md §1: an actor is a thing; a
@@ -107,18 +108,19 @@ pub enum Role {
 }
 
 /// One edge write in `roles.0` (spec/permissions.md §2): `role` None is a removal (erase); a
-/// value with `until` 0 is a removal saying retain. `until` is wall ms; `invite` at most `role`.
+/// value with `until` 0 is a removal saying retain. `until` is wall ms; `may_grant` is the
+/// may-grant flag (its holder may add holders up to the grant's role).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EdgeWrite {
     pub holder: NodeId,
     pub role: Option<Role>,
-    pub invite: Option<Role>,
+    pub may_grant: bool,
     pub until: Option<u64>,
 }
 
 impl EdgeWrite {
     pub const fn role(holder: NodeId, role: Option<Role>) -> EdgeWrite {
-        EdgeWrite { holder, role, invite: None, until: None }
+        EdgeWrite { holder, role, may_grant: false, until: None }
     }
 }
 
@@ -263,6 +265,21 @@ pub enum CommitKind {
     Snapshot,
 }
 
+/// The path a commit states for one thing it writes (spec/permissions.md §1 Path): the things
+/// [A1..Ak] it writes it along, and the hops it marks direct (by index: hop 0 joins the thing
+/// signed as to the next member).
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Path {
+    pub things: Vec<ThingId>,
+    pub direct: Vec<usize>,
+}
+
+impl Path {
+    pub fn along(things: &[ThingId]) -> Path {
+        Path { things: things.to_vec(), direct: vec![] }
+    }
+}
+
 /// spec/commits.md §5 Purge: what a request names (deltas of commits with a smaller `ts`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PurgeItem {
@@ -278,9 +295,12 @@ pub struct Commit {
     pub id: CommitId,
     /// The signing node (spec/wire.md §4 field 1).
     pub signer: NodeId,
-    /// The thing its path reads as acting on (notes/redesign-plan.md, Interim in code): the
-    /// signer for the empty path.
-    pub acting: NodeId,
+    /// Its purge author (spec/permissions.md §6): the thing signed as, or a thing its path lists; a
+    /// member of the path of every thing it writes (a part whose path leaves it out holds nothing).
+    pub author: ThingId,
+    /// The path it states for each thing it writes (spec/permissions.md §1 Path); none listed for
+    /// a thing with no entry.
+    pub paths: BTreeMap<ThingId, Path>,
     pub ts: u64,
     /// `expires: T`, wall ms.
     pub expires: Option<u64>,
@@ -323,6 +343,13 @@ impl Commit {
     }
     pub fn is_role(&self) -> bool {
         self.kind == CommitKind::Role
+    }
+    /// Stating `things` as the path of every thing it writes.
+    pub fn along(mut self, things: &[ThingId]) -> Commit {
+        self.paths = self.parts.iter().map(|p| (p.thing, Path::along(things))).chain(self.purge.iter().map(|it| match *it {
+            PurgeItem::Commit { thing, .. } | PurgeItem::Aspect { thing, .. } | PurgeItem::Author { thing, .. } => (thing, Path::along(things)),
+        })).collect();
+        self
     }
 }
 

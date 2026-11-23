@@ -93,7 +93,7 @@ fn alike(u: &[Commit], nows: &[u64]) {
 fn u_forged() -> Vec<Commit> {
     let mut u = u_edits();
     u.push(edit(30, B, 4, 10)); // another actor's claim
-    u.push(Commit { acting: A, ..edit(31, B, 4, 10) }); // acting thing claimed, not verified: invalid
+    u.push(Commit { author: A, ..edit(31, B, 4, 10) }); // a purge author that is no member of its path: invalid
     u.push(edit(32, A, 4, 11)); // names a version (chain)
     u.push(Commit { ts: ts(0) + 1, ..edit(33, A, 0, 10) }); // sorts before it (just after the grants: a write at their `ts` is concurrent with them)
     let mut other = edit(34, A, 4, 10); // on another aspect
