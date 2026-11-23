@@ -196,7 +196,7 @@ mod tests {
         assert!(!m.valid()[si], "the late overreaching part is invalid");
         assert!(lp.peers[3].engine.core.ix.grant_overreach.contains(&(id, si)));
     }
-    // spec/permissions.md §2: an may-grant grant's `secrets.0` delta carries only puts of its
+    // spec/permissions.md §2: a may-grant grant's `secrets.0` delta carries only puts of its
     // grantees' boxes. One that also resets a box entry (here one the receiver has not seen yet)
     // or a history box is un-merged at every node whatever the arrival order: validity depends on
     // the delta alone.
@@ -272,7 +272,7 @@ mod tests {
         assert_eq!(lp.peers[3].engine.get_typed(&t, &ct::SECRETS).unwrap(), lp.peers[4].engine.get_typed(&t, &ct::SECRETS).unwrap());
     }
     // spec/permissions.md §2, §5.1 step 4: a late grant makes an invite holder an admin earlier,
-    // so its write on another's edge turns from an may-grant grant (no audit) into an audited write
+    // so its write on another's edge turns from a may-grant grant (no audit) into an audited write
     // (restores what the holder gave up, demotes): the edge's value is the same, the holder's
     // write falls, as where the grant came first.
     #[test]
@@ -311,7 +311,7 @@ mod tests {
         let to_admin = *lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Admin, ..read.clone() }).unwrap().commits.last().unwrap();
         let to_admin = lp.peers[0].engine.package(&to_admin).unwrap().unwrap();
         lp.advance(1000);
-        // an may-grant grant at its author, which has heard neither the write nor the rise
+        // a may-grant grant at its author, which has heard neither the write nor the rise
         // (by hand: an honest writer waits for the rotation; the walk does not care)
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, h, &read).unwrap();
@@ -333,7 +333,7 @@ mod tests {
             assert_eq!(lp.peers[r].engine.body_valid(&id, &t, &ak), Some(false), "receiver {r}");
         }
     }
-    // spec/permissions.md §2: an may-grant grant's `secrets.0` entries are new, created by its own
+    // spec/permissions.md §2: a may-grant grant's `secrets.0` entries are new, created by its own
     // delta. A record claiming the grantee's key at another holder's entry dot would merge into
     // that entry (the stored key wins), overwriting its box: not a put, no invite exemption.
     #[test]
@@ -881,7 +881,7 @@ mod keys_tests {
         assert!(!super::super::keys::secrets_patch(&mut ct::Secrets::default(), &rm(Some(&read)), &state), "a removal reading as gone is decoded, not patched");
     }
 
-    // spec/permissions.md §2: an may-grant grant carries the grantee's boxes only; a write of the
+    // spec/permissions.md §2: a may-grant grant carries the grantee's boxes only; a write of the
     // whole `secrets.0` value is no grantee's box
     #[test]
     fn invite_grant_cannot_replace_secrets_spec_perm_2() {

@@ -512,13 +512,13 @@ fn purge_on_replace_pays_its_state() {
     assert!(extra(1) >= 5 * extra(0), "purge on replace pays O(state): {gone:?} against {plain:?}");
     assert!(gone[1] <= 600_000 && plain[1] <= 8_000, "at 2000 entries: {} B with purge on replace, {} B with no history", gone[1], plain[1]);
 }
-/// pending commits read again, perm commits walked and entries moved) added as spans.
+/// pending commits read again, perm commits walked) added as spans.
 fn measured_at<T>(lp: &mut LocalPeer, i: usize, f: impl FnOnce(&mut LocalPeer) -> T) -> (T, Work) {
     let b = lp.peers[i].backend.clone();
-    let c = |lp: &LocalPeer| [lp.peers[i].engine.death_walks(), lp.peers[i].engine.replaced_reads(), lp.peers[i].engine.examined(), osis_perm::commits_walked(), 0u64, lp.peers[i].engine.held_writes_copied()];
+    let c = |lp: &LocalPeer| [lp.peers[i].engine.death_walks(), lp.peers[i].engine.replaced_reads(), lp.peers[i].engine.examined(), osis_perm::commits_walked(), lp.peers[i].engine.held_writes_copied()];
     let c0 = c(lp);
     let (r, mut w) = measured(&b, || f(&mut *lp));
-    for (k, (x, y)) in ["death walks", "replaced reads", "examined", "perm commits walked", "perm entries moved", "held writes copied"].into_iter().zip(c0.into_iter().zip(c(lp))) {
+    for (k, (x, y)) in ["death walks", "replaced reads", "examined", "perm commits walked", "held writes copied"].into_iter().zip(c0.into_iter().zip(c(lp))) {
         // a restart counts from 0 again
         w.spans.insert(k, if y >= x { y - x } else { y });
     }

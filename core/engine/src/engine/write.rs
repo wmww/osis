@@ -535,7 +535,7 @@ fn role_way(core: &Core, plan: &CommitPlan, t: &Tid, edges: &[(Tid, Tid, Option<
 /// never states the split form, spec/wire.md §4): for each thing it writes, the path from the
 /// signer giving its role there (`role_with`, so a rotation reaches every role it rotates and an
 /// admin's edge write admin), shortest by edges as for content (`path_with`); a compaction
-/// snapshot's, the role it needs (`snapshot_role`); an may-grant grant's, the path giving the grant's
+/// snapshot's, the role it needs (`snapshot_role`); a may-grant grant's, the path giving the grant's
 /// role as may-grant; a self-removal's, the path ending at the holder (`role_way`). A grant the
 /// signer gives itself on a thing it reaches by descent states a path not ending at the signer
 /// (which would make it a self-removal): the path to the thing's mint admin, then the mint admin

@@ -73,7 +73,7 @@ impl Engine {
     }
 
     /// Redeems a link once K's sync ID was claimed by L's static entry and downloaded (node-sync;
-    /// `hold_key_actor(link.seed)` came first so L's boxes open): signing as L, an may-grant grant
+    /// `hold_key_actor(link.seed)` came first so L's boxes open): signing as L, a may-grant grant
     /// of `grantee` (this node's actor, or this node) to K with the link's role and K's boxes;
     /// `single_use` also removes L's own edge in the same commit. Deposited under K's sync ID
     /// unless the role is write or above. Leaves the seed held as it was: a caller holding it

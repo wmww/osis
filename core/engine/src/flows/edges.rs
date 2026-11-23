@@ -41,7 +41,7 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
 
 /// A grant or a raise of `holder`'s edge on `target` by `who` (this node, or a held key actor
 /// signing), with the grantee's boxes for every granted role at each current epoch
-/// (spec/crypto.md §4). An admin's grant, or an may-grant grant (spec/permissions.md §2) where
+/// (spec/crypto.md §4). An admin's grant, or a may-grant grant (spec/permissions.md §2) where
 /// `who`'s effective invite allows it and the holder has no current edge. `leave`: the signer's
 /// own edge removed in the same commit (a single-use redemption, spec/permissions.md §7).
 /// `frontier`: the one a grant that audits carries (`Engine::grant_signed`).

@@ -130,7 +130,7 @@ impl Node {
                 let has = |slot: usize| hs.iter().all(|h| record(h) || first.get(h).and_then(|f| f[slot]).is_some_and(|k| k < start));
                 let (kind, chained) = match &p.kind {
                     PartKind::Edge(e) => {
-                        assert!(e.value.is_none_or(|v| !v.may_grant), "no invites: the walk does not report an invite grant's chained-ness");
+                        assert!(e.value.is_none_or(|v| !v.may_grant), "no may-grant grants: the walk does not report one's chained-ness");
                         let leave = e.holder == *p.path.last().unwrap_or(&c.signer);
                         let finalize = e.value.is_none() && e.frontier.is_none() && !leave;
                         let role = e.value.map(|v| v.role);
