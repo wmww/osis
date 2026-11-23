@@ -13,7 +13,7 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 
 ## In flight beside it
 - `mizzen-seq-runs` (worker): issues/seq-cold-edits-follow-gaps.md, the multi-op case; sent back once (it stopped charging repeated work instead of removing it): load ahead what every op needs, or keep progress across loads.
-- `mizzen-until-deadline` (worker): issues/held-model-until-no-deadline.md.
+- `mizzen-until-deadline` (worker): held-model until-no-deadline; done on its branch (issue closed there), to land.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
 ## Safe parallel work queue (outside the rewrite)

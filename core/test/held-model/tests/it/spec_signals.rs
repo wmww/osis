@@ -81,6 +81,20 @@ fn signal_kick_rejudges_history_spec_perm_5_2() {
     assert_eq!(read(&kicked, SIG), None);
 }
 
+// spec/commits.md §5 (Signals), spec/permissions.md §6: the node's own fire held invalid stays
+// while in history and may go once out; the moment it leaves is a deadline like a valid fire's
+#[test]
+fn own_invalid_fire_leaves_history_at_a_deadline_spec_commits_5() {
+    let grant = edge(5, MINT_ADMIN, 0, 1, Some(Role::Write), None);
+    let kick = edge(20, MINT_ADMIN, 2, 1, None, Some(vec![]));
+    let h = |now| Held { me: 1, ..held(now, vec![setting(6, 0, SIG, keep_after(3)), grant.clone(), reg(10, 1, 1, SIG, PurgeBy::AuthorOrAdmin, 7), kick.clone()]) };
+    let o = evaluate(&h(3));
+    assert_eq!(o.valid[&(10, 0)], false);
+    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Until));
+    assert!(o.deadlines.contains(&at(4)), "its keep bound: {:?}", o.deadlines);
+    assert_eq!(fate(&h(4), 10), Fate::MayDrop(DropWhy::PastBound));
+}
+
 mod external {
     use crate::util::*;
     use held_model::edits::listed;
