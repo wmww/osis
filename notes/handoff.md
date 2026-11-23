@@ -12,7 +12,7 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 - After it: a removal as evidence, accounts as ordinary things, public things and cards, core without accounts (notes/redesign-plan.md A3 to A6), each one branch, delete first; cut them to what is still needed before starting.
 
 ## In flight beside it
-- `mizzen-wait-order` (worker): issues/stated-path-wait-order.md; held-model's `Pend::Any` to the reworded spec/commits.md §4 Unjudgeable.
+- `mizzen-wait-order` (fresh reviewer gating; built): issues/stated-path-wait-order.md; held-model's `Pend::Any` to the reworded spec/commits.md §4 Unjudgeable.
 - `mizzen-walk-inputs` (worker): issues/walk-inputs-via-stale.md.
 
 ## Safe parallel work queue (outside the rewrite)
