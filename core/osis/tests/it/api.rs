@@ -182,6 +182,23 @@ fn materialization_bound_spec_data_model_6() {
     assert!(matches!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(p![osis::FieldId(2)]).get::<osis::Value>(), Err(Error::TooLarge { .. })));
 }
 
+// notes/api.md Reads, Large values: listing a thing's aspects that would hold an unpaged state
+// above the read limit fails TooLarge, as a read of it does. spec/data-model.md §6
+#[test]
+fn aspects_past_the_bound_are_too_large_spec_data_model_6() {
+    let c = clock();
+    let mut cf = cfg(0, MemStore::new(), &c);
+    cf.app.read_limit = 1000;
+    let db = osis::internals::create(cf).unwrap();
+    let k = osis::DynamicAspectKey::untyped(ak("t:many.0"));
+    let mut w = db.write();
+    let t = w.create_held().unwrap();
+    w.at(t, k.clone()).set(&Value::Map((0..100).map(|i| (s(&format!("someone{i}@example.org")), Value::Int(i))).collect())).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, k).get(), Err(Error::TooLarge { limit: 1000 }));
+    assert_eq!(db.aspects(t), Err(Error::TooLarge { limit: 1000 }));
+}
+
 // notes/decode-bounds.md (a read holds at most its bound), spec/wire.md §12: a whole read of an
 // aspect whose state is far above the read limit is refused having loaded about the limit of the
 // state, at any size of it, and leaves none of it loaded; a path read into it still works.

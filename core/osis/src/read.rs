@@ -211,8 +211,8 @@ impl Reader<'_> {
         Ok((tid, self.bounded(v)?))
     }
 
-    /// An engine read under the bound (`Engine::get_within`): past it `TooLarge`.
-    fn bounded(&self, v: osis_engine::Result<Option<Value>>) -> Result<Option<Value>> {
+    /// An engine read under the bound (`Engine::get_within`, `aspects_within`): past it `TooLarge`.
+    fn bounded<T>(&self, v: osis_engine::Result<T>) -> Result<T> {
         match v {
             Err(osis_engine::Error::Data(osis_blob::Error::TooLarge(_))) => Err(Error::TooLarge { limit: self.limit }),
             v => Ok(v?),
@@ -335,12 +335,13 @@ impl Reader<'_> {
         Ok(value_at(&projected, &Path(vec![Step::Field(*id)])).cloned())
     }
 
-    /// AKs present on the thing.
+    /// AKs present on the thing; `TooLarge` when telling a state's presence would hold past the bound.
     pub fn aspects(&mut self, tid: Tid) -> Result<Vec<Ak>> {
         if self.hidden(tid) {
             return Ok(Vec::new());
         }
-        Ok(self.e.aspects_within(&tid, Some(self.limit))?)
+        let v = self.e.aspects_within(&tid, Some(self.limit));
+        self.bounded(v)
     }
 
     /// What actor `t` is, from its creation record.
