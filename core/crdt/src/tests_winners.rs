@@ -354,6 +354,17 @@ pub(crate) fn held_of<'a>(bodies: impl IntoIterator<Item = &'a Fragment>) -> Hel
     ix
 }
 
+/// The index of bodies `(i, fragment)`, each body `i`, built from nothing at once: every body
+/// placed, then every write dated once (`Held::place`, `Held::date_every`).
+fn held_built<'a>(bodies: impl IntoIterator<Item = (usize, &'a Fragment)>) -> Held<MemRows> {
+    let mut ix = Held::new(MemRows::default());
+    for (i, b) in bodies {
+        ix.place(&body(i), &BodyWrites::of(b, true), &[]).unwrap();
+    }
+    ix.date_every().unwrap();
+    ix
+}
+
 /// The index of sets of writes, no body winning any.
 pub(crate) fn held_of_writes(sets: &[&Winners]) -> Held<MemRows> {
     let mut ix = Held::new(MemRows::default());
@@ -365,10 +376,10 @@ pub(crate) fn held_of_writes(sets: &[&Winners]) -> Held<MemRows> {
 
 /// `Held::dies` against the from-scratch earliest: the least `ts` among the writes of `bodies`
 /// superseding each write; a text element's creation only by deletes after the latest undelete
-/// held (§4.8 When); hiding read in the copies as joined. Then the index kept as bodies come
+/// held (§4.8 When); hiding read in the copies as joined; in the index kept as bodies come
 /// (`incremental_check`).
 fn first_superseding_check(bodies: &[Fragment]) {
-    let mut ix = held_of(bodies);
+    let mut ix = incremental_check(bodies);
     let mut all: Vec<Raw> = bodies.iter().flat_map(own).collect();
     as_joined(&mut all);
     let all = embedded(all);
@@ -378,24 +389,30 @@ fn first_superseding_check(bodies: &[Fragment]) {
         let by_stamp = all.iter().filter(|s| counts(s)).map(|s| s.w.stamp.ts).min();
         assert_eq!(ix.dies(&w.w).unwrap(), by_stamp, "the earliest write superseding {w:?}");
     }
-    incremental_check(bodies);
 }
 
-/// The index kept as bodies join one at a time is, after each, the one joining those held from
-/// nothing gives, row for row, its deaths those its rows date (`Held::check`).
-fn incremental_check(bodies: &[Fragment]) {
+/// The index kept as bodies join one at a time is, after each, the one built from those held at
+/// once (as `held_built`: placed, then each write dated once by the rows), row for row: so its
+/// deaths are those its rows date. Gives it.
+fn incremental_check(bodies: &[Fragment]) -> Held<MemRows> {
     let mut ix = Held::new(MemRows::default());
+    // placing moves no death: the bodies so far placed, dated afresh at each step
+    let mut placed = Held::new(MemRows::default());
     for (i, b) in bodies.iter().enumerate() {
-        ix.join(&body(i), &BodyWrites::of(b, true), &[]).unwrap();
-        assert_eq!(ix.check().unwrap(), Ok(()), "after body {i} joined");
-        assert!(ix.rows == held_of(&bodies[..=i]).rows, "after body {i} joined: the rows of a fresh index");
+        let w = BodyWrites::of(b, true);
+        ix.join(&body(i), &w, &[]).unwrap();
+        placed.place(&body(i), &w, &[]).unwrap();
+        let mut built = placed.clone();
+        built.date_every().unwrap();
+        assert!(ix.rows == built.rows, "after body {i} joined: the rows built from those held at once");
     }
+    ix
 }
 
 /// Bodies leaving and joining: from a random set of the bodies to another, the leaving ones
 /// taken away (`Held::leave`) and the new ones joined, in a random order, the index is the one
-/// joining the second set from nothing gives, row for row (so every death and every body's
-/// date moved with them), and its deaths are those its rows date.
+/// built from the second set at once (`held_built`), row for row (so every death and every
+/// body's date moved with them), and its deaths are those its rows date.
 fn changes_check(bodies: &[Fragment], r: &mut crate::testutil::SeedRng) {
     for _ in 0..4 {
         let from: Vec<bool> = bodies.iter().map(|_| r.chance(1, 2)).collect();
@@ -417,7 +434,8 @@ fn changes_check(bodies: &[Fragment], r: &mut crate::testutil::SeedRng) {
             if to[i] { ix.join(&body(i), &w, &[]).unwrap() } else { ix.leave(&body(i)).unwrap() }
             assert_eq!(ix.check().unwrap(), Ok(()), "after body {i} joined or left");
         }
-        assert!(ix.rows == build(&to).rows, "the index after bodies left and came is the one joining those held");
+        let built = held_built(bodies.iter().enumerate().filter(|(i, _)| to[*i]));
+        assert!(ix.rows == built.rows, "the index after bodies left and came is the one built from those held");
     }
 }
 
@@ -493,7 +511,7 @@ fn a_run_is_held_by_bucket_and_dated_by_element_spec_4_8() {
     assert_eq!(ix.date(&body(0).c).unwrap(), Some(ts(9)), "the rest died at the reset");
     assert_eq!(ix.date(&body(1).c).unwrap(), Some(ts(9)), "the delete's flags died at the reset");
     assert_eq!(ix.check().unwrap(), Ok(()));
-    assert!(ix.rows == held_of(&bodies).rows, "the rows of a fresh index");
+    assert!(ix.rows == held_built(bodies.iter().enumerate()).rows, "the rows built from them at once");
     let c = body(0).c.0;
     let dated = |ix: &mut Held<MemRows>, t: u64| ix.rows.0.get(&[&[1][..], &c[..], b"D", &(!ts(t).to_u64()).to_be_bytes()].concat()).map(|v| u64::from_be_bytes(v.as_slice().try_into().unwrap()));
     assert_eq!((dated(&mut ix, 5), dated(&mut ix, 9)), (Some(10), Some(990)), "the run's deaths by date");
@@ -505,7 +523,7 @@ fn a_run_is_held_by_bucket_and_dated_by_element_spec_4_8() {
         fresh.join(&body(i), &BodyWrites::of(&bodies[i], true), &[]).unwrap();
     }
     assert!(ix.rows == fresh.rows, "the delete gone: the rows of a fresh index");
-    incremental_check(&bodies);
+    let _ = incremental_check(&bodies);
 }
 
 /// §4.1, §4.8: a register beaten by a greater stamp dies, a late older write dies on arrival,

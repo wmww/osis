@@ -21,6 +21,9 @@ pub struct Tx<'a> {
     /// What a bounded read may still hold of the states it loads (`Engine::get_within`,
     /// `pages::charge`); `None` otherwise.
     pub(crate) bound: pages::Bound,
+    /// Per aspect, the held-writes pages this transaction read (`retention::bounds::index`,
+    /// `osis_crdt::PageCache`), with the table they were read from; emptied by a rollback.
+    pub(crate) held_pages: std::collections::BTreeMap<(Tid, Ak), (Option<osis_store::Table>, osis_crdt::PageCache)>,
 }
 
 impl Tx<'_> {
@@ -74,6 +77,7 @@ impl Tx<'_> {
             }
             Err(e) => {
                 self.txn.rollback_to(sp);
+                self.held_pages.clear();
                 self.blobs.rollback_to(held);
                 self.core.forget_reach_since(m.reached);
                 let walked = m.walked;

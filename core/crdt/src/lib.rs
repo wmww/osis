@@ -76,7 +76,7 @@ mod tests_winners;
 pub use changes::Changes;
 pub use winners::{Kind, Place, Winners, Won};
 pub use held::{BUCKET, Body, BodyWrites, Corrupt, Held, HeldWrite, MemRows, Row, Rows};
-pub use row_pages::PagedRows;
+pub use row_pages::{PageCache, PagedRows};
 pub use copies::CopyIndex;
 pub use codec::{LinkTree, PageAt, TreePlace, decoded_bound, decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array, page_items, sources_of};
 pub use error::Error;

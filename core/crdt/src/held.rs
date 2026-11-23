@@ -28,6 +28,7 @@ use crate::stamp::{Dot, DotRange, Session, Source, SourceKind, Stamp};
 use crate::winners::{Kind, Place, Winners, Won, supersedes};
 use osis_base::{CommitId, Ts, Value};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Bound;
 
 /// Sequence elements per bucket row. At 1 a run record costs a row per element; unbounded, an
 /// edit of one element reads and writes every write on its source's elements. A power of two
@@ -84,13 +85,13 @@ impl Rows for MemRows {
         if from >= to {
             return Ok(Vec::new());
         }
-        Ok(self.0.range(from.to_vec()..to.to_vec()).take(limit).map(|(k, v)| (k.clone(), v.clone())).collect())
+        Ok(self.0.range::<[u8], _>((Bound::Included(from), Bound::Excluded(to))).take(limit).map(|(k, v)| (k.clone(), v.clone())).collect())
     }
     fn scan_back(&mut self, from: &[u8], to: &[u8], limit: usize) -> Result<Vec<Row>, Corrupt> {
         if from >= to {
             return Ok(Vec::new());
         }
-        Ok(self.0.range(from.to_vec()..to.to_vec()).rev().take(limit).map(|(k, v)| (k.clone(), v.clone())).collect())
+        Ok(self.0.range::<[u8], _>((Bound::Included(from), Bound::Excluded(to))).rev().take(limit).map(|(k, v)| (k.clone(), v.clone())).collect())
     }
 }
 
@@ -204,7 +205,7 @@ fn put_stamp(out: &mut Vec<u8>, s: &Stamp) {
 }
 
 fn stamp_bytes(s: &Stamp) -> Vec<u8> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(64);
     put_stamp(&mut out, s);
     out
 }
@@ -283,10 +284,45 @@ fn kind_of(b: u8) -> Result<Kind, Corrupt> {
 
 /// A step of a stored position: a `Place`, or the bucket of the sequence element after it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Step {
+enum StepOf {
     At(Place),
     /// The bucket's dot: an element's with its counter divided by `BUCKET`.
     Bucket(Dot),
+}
+
+/// A step with its hash in keys (`pos_key`), hashed once where the step is made.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Step {
+    of: StepOf,
+    h: [u8; 16],
+}
+
+impl Step {
+    fn new(of: StepOf) -> Step {
+        let mut b = Vec::new();
+        put_step(&mut b, &of);
+        let mut h = short(&b);
+        // no step's hash is the zeros ending a position
+        if h == [0; 16] {
+            h = [1; 16];
+        }
+        Step { of, h }
+    }
+    fn at(p: Place) -> Step {
+        Step::new(StepOf::At(p))
+    }
+    fn place(&self) -> Option<&Place> {
+        match &self.of {
+            StepOf::At(p) => Some(p),
+            StepOf::Bucket(_) => None,
+        }
+    }
+    fn bucket(&self) -> Option<&Dot> {
+        match &self.of {
+            StepOf::Bucket(d) => Some(d),
+            StepOf::At(_) => None,
+        }
+    }
 }
 
 type Pos = Vec<Step>;
@@ -300,46 +336,46 @@ fn pos_of(path: &[Place]) -> Pos {
     let mut out = Vec::with_capacity(path.len() + 1);
     for p in path {
         if let Place::Item(d) = p {
-            out.push(Step::Bucket(bucket_of(d)));
+            out.push(Step::new(StepOf::Bucket(bucket_of(d))));
         }
-        out.push(Step::At(p.clone()));
+        out.push(Step::at(p.clone()));
     }
     out
 }
 
 /// The path of a stored position.
 fn path_of(pos: &[Step]) -> Vec<Place> {
-    pos.iter().filter_map(|s| if let Step::At(p) = s { Some(p.clone()) } else { None }).collect()
+    pos.iter().filter_map(|s| s.place().cloned()).collect()
 }
 
-fn put_step(out: &mut Vec<u8>, s: &Step) {
+fn put_step(out: &mut Vec<u8>, s: &StepOf) {
     match s {
-        Step::At(Place::Field(n)) => {
+        StepOf::At(Place::Field(n)) => {
             out.push(1);
             put_u64(out, *n);
         }
-        Step::At(Place::Case(n)) => {
+        StepOf::At(Place::Case(n)) => {
             out.push(2);
             put_u64(out, *n);
         }
-        Step::At(Place::Entry(d)) => {
+        StepOf::At(Place::Entry(d)) => {
             out.push(3);
             put_dot(out, d);
         }
-        Step::At(Place::Elem(d)) => {
+        StepOf::At(Place::Elem(d)) => {
             out.push(4);
             put_dot(out, d);
         }
-        Step::Bucket(d) => {
+        StepOf::Bucket(d) => {
             out.push(5);
             put_dot(out, d);
         }
-        Step::At(Place::Item(d)) => {
+        StepOf::At(Place::Item(d)) => {
             out.push(6);
             put_dot(out, d);
         }
-        Step::At(Place::In) => out.push(7),
-        Step::At(Place::Gone(d)) => {
+        StepOf::At(Place::In) => out.push(7),
+        StepOf::At(Place::Gone(d)) => {
             out.push(8);
             put_dot(out, d);
         }
@@ -347,23 +383,23 @@ fn put_step(out: &mut Vec<u8>, s: &Step) {
 }
 
 fn read_step(r: &mut Rd<'_>) -> Result<Step, Corrupt> {
-    Ok(match r.u8()? {
-        1 => Step::At(Place::Field(r.u64()?)),
-        2 => Step::At(Place::Case(r.u64()?)),
-        3 => Step::At(Place::Entry(r.dot()?)),
-        4 => Step::At(Place::Elem(r.dot()?)),
-        5 => Step::Bucket(r.dot()?),
-        6 => Step::At(Place::Item(r.dot()?)),
-        7 => Step::At(Place::In),
-        8 => Step::At(Place::Gone(r.dot()?)),
+    Ok(Step::new(match r.u8()? {
+        1 => StepOf::At(Place::Field(r.u64()?)),
+        2 => StepOf::At(Place::Case(r.u64()?)),
+        3 => StepOf::At(Place::Entry(r.dot()?)),
+        4 => StepOf::At(Place::Elem(r.dot()?)),
+        5 => StepOf::Bucket(r.dot()?),
+        6 => StepOf::At(Place::Item(r.dot()?)),
+        7 => StepOf::At(Place::In),
+        8 => StepOf::At(Place::Gone(r.dot()?)),
         _ => return Err(Corrupt("held writes row: step")),
-    })
+    }))
 }
 
 /// The position's steps, each self-delimiting, none starting with 0.
 fn pos_bytes(pos: &[Step]) -> Vec<u8> {
     let mut out = Vec::new();
-    pos.iter().for_each(|s| put_step(&mut out, s));
+    pos.iter().for_each(|s| put_step(&mut out, &s.of));
     out
 }
 
@@ -380,16 +416,10 @@ fn short(b: &[u8]) -> [u8; 16] {
 /// right after them, so a write, what it supersedes and the tops above it share pages
 /// (`row_pages`).
 fn pos_key(tag: u8, pos: &[Step]) -> Vec<u8> {
-    let mut out = vec![0];
+    let mut out = Vec::with_capacity(16 * pos.len() + 64);
+    out.push(0);
     for s in pos {
-        let mut b = Vec::new();
-        put_step(&mut b, s);
-        let mut h = short(&b);
-        // no step's hash is the zeros ending a position
-        if h == [0; 16] {
-            h = [1; 16];
-        }
-        out.extend_from_slice(&h);
+        out.extend_from_slice(&s.h);
     }
     out.extend_from_slice(&[0; 16]);
     out.push(tag);
@@ -767,7 +797,7 @@ impl<R: Rows> Held<R> {
     }
 
     fn bucket(&mut self, pos: &[Step]) -> Result<Bucket, R::Err> {
-        let Some(Step::Bucket(d)) = pos.last() else { return Err(Corrupt("held writes: not a bucket").into()) };
+        let Some(d) = pos.last().and_then(Step::bucket) else { return Err(Corrupt("held writes: not a bucket").into()) };
         match self.rows.get(&pos_key(b'B', pos))? {
             Some(b) => Ok(Bucket::decode(&b, &d.src)?),
             None => Ok(Bucket::default()),
@@ -775,7 +805,7 @@ impl<R: Rows> Held<R> {
     }
 
     fn put_bucket(&mut self, pos: &[Step], b: &Bucket) -> Result<(), R::Err> {
-        let Some(Step::Bucket(d)) = pos.last() else { return Err(Corrupt("held writes: not a bucket").into()) };
+        let Some(d) = pos.last().and_then(Step::bucket) else { return Err(Corrupt("held writes: not a bucket").into()) };
         let key = pos_key(b'B', pos);
         if b.0.is_empty() { self.rows.del(&key) } else { self.rows.put(&key, &b.encode(&d.src)) }
     }
@@ -821,10 +851,10 @@ impl<R: Rows> Held<R> {
     /// The `S` key of step `step` below `up` with top `top`, and its row: the step.
     fn step_key(up: &[Step], top: &Stamp, step: &Step) -> (Vec<u8>, Vec<u8>) {
         let mut row = Vec::new();
-        put_step(&mut row, step);
+        put_step(&mut row, &step.of);
         let mut out = under(b'S', up);
         out.extend_from_slice(&inv(&stamp_bytes(top)));
-        out.extend_from_slice(&short(&row));
+        out.extend_from_slice(&step.h);
         (out, row)
     }
 
@@ -862,7 +892,7 @@ impl<R: Rows> Held<R> {
 
     /// The greatest stamp among the writes at `pos` itself.
     fn own_top(&mut self, pos: &[Step]) -> Result<Option<Stamp>, R::Err> {
-        if matches!(pos.last(), Some(Step::Bucket(_))) {
+        if pos.last().and_then(Step::bucket).is_some() {
             return Ok(self.bucket(pos)?.top().cloned());
         }
         let mut out = None;
@@ -937,7 +967,11 @@ impl<R: Rows> Held<R> {
         let mut from = under(b'W', pos);
         from.push(kind_byte(k));
         let to = match before {
-            Some(s) => [&from[..], &stamp_bytes(s)].concat(),
+            Some(s) => {
+                let mut to = from.clone();
+                put_stamp(&mut to, s);
+                to
+            }
             None => end_of(&from),
         };
         match self.rows.scan_back(&from, &to, 1)?.pop() {
@@ -951,7 +985,9 @@ impl<R: Rows> Held<R> {
         let mut from = under(b'W', pos);
         from.push(kind_byte(k));
         let to = end_of(&from);
-        let start = [&from[..], &stamp_bytes(after), &[0]].concat();
+        let mut start = from.clone();
+        put_stamp(&mut start, after);
+        start.push(0);
         match self.rows.scan(&start, &to, 1)?.pop() {
             Some((key, _)) => Ok(Some(Rd(key.get(from.len()..).unwrap_or_default()).stamp()?)),
             None => Ok(None),
@@ -1026,7 +1062,8 @@ impl<R: Rows> Held<R> {
         }
         // a set element's register write: the value removals hiding it (§5.5)
         if kind == Kind::Value
-            && let [set @ .., Step::At(Place::Elem(d)), Step::At(Place::In)] = pos
+            && let [set @ .., e, Step { of: StepOf::At(Place::In), .. }] = pos
+            && let Some(Place::Elem(d)) = e.place()
             && let Some(v) = cell.value()?
         {
             let mut from = under(b'V', set);
@@ -1034,7 +1071,7 @@ impl<R: Rows> Held<R> {
             for (_, row) in self.rows.scan(&from, &end_of(&from), usize::MAX)? {
                 let mut r = Rd(&row);
                 let (rd, rs) = (r.dot()?, r.stamp()?);
-                let gone = [set, &[Step::At(Place::Gone(rd))]].concat();
+                let gone = [set, &[Step::at(Place::Gone(rd))]].concat();
                 if let Some(c) = self.point(&gone, Kind::Reset, &rs)?
                     && c.removal(&rs)?.is_some_and(|g| g.hides(d, st))
                 {
@@ -1105,6 +1142,45 @@ impl<R: Rows> Held<R> {
 
     /// Body `b` joins with writes `w` under the caller's tag `tag`.
     pub fn join(&mut self, b: &Body, w: &BodyWrites, tag: &[u8]) -> Result<(), R::Err> {
+        self.join_as(b, w, tag, true)
+    }
+
+    /// Body `b` joins as `join`, but no death moves: rows built from nothing (`date_every`
+    /// after the last), where each write is dated once, not again at each join.
+    pub fn place(&mut self, b: &Body, w: &BodyWrites, tag: &[u8]) -> Result<(), R::Err> {
+        self.join_as(b, w, tag, false)
+    }
+
+    /// Dates every write by the rows (`point_death`, `bucket_deaths`), and each body's deaths
+    /// with them: after bodies `place`d, the rows joining them gives, in any order.
+    pub fn date_every(&mut self) -> Result<(), R::Err> {
+        for pos in self.below(&[], None)? {
+            if pos.last().and_then(Step::bucket).is_some() {
+                let mut b = self.bucket(&pos)?;
+                let was = b.clone();
+                self.bucket_deaths(&pos, &mut b)?;
+                if b != was {
+                    self.put_bucket(&pos, &b)?;
+                }
+                continue;
+            }
+            let from = under(b'W', &pos);
+            for (k, v) in self.rows.scan(&from, &end_of(&from), usize::MAX)? {
+                let mut r = Rd(k.get(from.len()..).unwrap_or_default());
+                let (kind, st) = (kind_of(r.u8()?)?, r.stamp()?);
+                let c = Cell::decode(&v)?;
+                let death = self.point_death(&pos, kind, &st, &c)?;
+                if death != c.death {
+                    let new = Cell { death, holders: c.holders.clone() };
+                    self.redate(Some(&c), Some(&new));
+                    self.rows.put(&k, &new.encode())?;
+                }
+            }
+        }
+        self.flush()
+    }
+
+    fn join_as(&mut self, b: &Body, w: &BodyWrites, tag: &[u8], date: bool) -> Result<(), R::Err> {
         let mut own = Own::default();
         for won in w.held.iter() {
             let pos = pos_of(&won.path);
@@ -1137,7 +1213,7 @@ impl<R: Rows> Held<R> {
             add(rec);
         }
         for (pos, cells) in &own.buckets {
-            let Some(Step::Bucket(d)) = pos.last() else { continue };
+            let Some(d) = pos.last().and_then(Step::bucket) else { continue };
             let mut b = Bucket::default();
             cells.iter().for_each(|(ctr, kind, st, _)| b.set(*ctr, *kind, st, Some(Cell::default())));
             let mut rec = vec![1];
@@ -1149,7 +1225,7 @@ impl<R: Rows> Held<R> {
         for (i, c) in chunks.iter().enumerate().filter(|(_, c)| !c.is_empty()) {
             self.rows.put(&own_key(&b.c, Some(i as u64)), c)?;
         }
-        self.change(b, own, true)
+        self.change(b, own, true, date)
     }
 
     /// Body `b`, joined before, leaves: its writes are those its join kept.
@@ -1171,7 +1247,7 @@ impl<R: Rows> Held<R> {
                     own.points.push((pos, kind_of(rec.u8()?)?, rec.stamp()?, false, Vec::new()));
                     rec.end()?;
                 } else {
-                    let Some(Step::Bucket(d)) = pos.last() else { return Err(Corrupt("held writes: not a bucket").into()) };
+                    let Some(d) = pos.last().and_then(Step::bucket) else { return Err(Corrupt("held writes: not a bucket").into()) };
                     let cells = Bucket::decode(rec.0, &d.src)?.cells().map(|(ctr, k, _)| (ctr, k.0, k.1.clone(), false)).collect();
                     own.buckets.insert(pos, cells);
                 }
@@ -1179,10 +1255,11 @@ impl<R: Rows> Held<R> {
             self.rows.del(&k)?;
         }
         self.rows.del(&body_key(&b.c))?;
-        self.change(b, own, false)
+        self.change(b, own, false, true)
     }
 
-    fn change(&mut self, body: &Body, own: Own, join: bool) -> Result<(), R::Err> {
+    /// `date`: the deaths it moves are dated (else none is: `place`).
+    fn change(&mut self, body: &Body, own: Own, join: bool, date: bool) -> Result<(), R::Err> {
         self.moved.insert(body.c);
         // the writes whose coming, going or joined copy may move a death, and the positions
         // whose tops they move
@@ -1214,7 +1291,7 @@ impl<R: Rows> Held<R> {
             }
             // a value removal's row under the reference its joined copy names
             let mut copies = old.is_none() || gone;
-            if let [set @ .., Step::At(Place::Gone(d))] = pos.as_slice() {
+            if let [set @ .., Step { of: StepOf::At(Place::Gone(d)), .. }] = pos.as_slice() {
                 let (was, now) = (old.as_ref().map(|c| c.removal(&stamp)).transpose()?.flatten(), new.removal(&stamp)?);
                 if was != now {
                     copies = true;
@@ -1249,7 +1326,7 @@ impl<R: Rows> Held<R> {
                     changed = true;
                     // an element reset supersedes what lies below its element
                     if *kind == Kind::ElemReset
-                        && let Some(Step::Bucket(d)) = pos.last()
+                        && let Some(d) = pos.last().and_then(Step::bucket)
                     {
                         let item = Place::Item(Dot::new(d.src.clone(), *ctr));
                         sources.push(Won { path: [path_of(pos).as_slice(), &[item]].concat(), kind: *kind, stamp: stamp.clone() });
@@ -1276,6 +1353,9 @@ impl<R: Rows> Held<R> {
         }
         for (pos, st) in &lowered {
             self.lower(pos, st)?;
+        }
+        if !date {
+            return self.flush();
         }
         for s in &sources {
             self.moved_by(s, &mut moved)?;
@@ -1320,7 +1400,7 @@ impl<R: Rows> Held<R> {
             out.insert(Moved::Point(pos.clone(), s.kind, s.stamp.clone()));
         }
         for q in self.below(&pos, floor.as_ref())? {
-            if matches!(q.last(), Some(Step::Bucket(_))) {
+            if q.last().and_then(Step::bucket).is_some() {
                 out.insert(Moved::Bucket(q));
                 continue;
             }
@@ -1347,10 +1427,10 @@ impl<R: Rows> Held<R> {
                 }
             }
         }
-        if let [set @ .., Step::At(Place::Gone(_))] = pos.as_slice() {
+        if let [set @ .., Step { of: StepOf::At(Place::Gone(_)), .. }] = pos.as_slice() {
             let floor = self.floor(set, &s.stamp)?;
             for q in self.below(set, floor.as_ref())? {
-                if !matches!(q.get(set.len()..), Some([Step::At(Place::Elem(_)), Step::At(Place::In)])) {
+                if !matches!(q.get(set.len()..), Some([Step { of: StepOf::At(Place::Elem(_)), .. }, Step { of: StepOf::At(Place::In), .. }])) {
                     continue;
                 }
                 let mut from = under(b'W', &q);
@@ -1378,7 +1458,7 @@ impl<R: Rows> Held<R> {
         };
         // every position holding a write is under the root's steps
         for pos in self.below(&[], None)? {
-            if matches!(pos.last(), Some(Step::Bucket(_))) {
+            if pos.last().and_then(Step::bucket).is_some() {
                 let b = self.bucket(&pos)?;
                 let mut again = b.clone();
                 let pending = std::mem::take(&mut self.dated);
@@ -1423,13 +1503,13 @@ impl<R: Rows> Held<R> {
 /// Whether `pos` is a position with writes of its own in `W` rows: not a bucket, nor a sequence
 /// element (its writes are its bucket's).
 fn is_point(pos: &[Step]) -> bool {
-    !matches!(pos.last(), Some(Step::Bucket(_) | Step::At(Place::Item(_))))
+    !matches!(pos.last().map(|s| &s.of), Some(StepOf::Bucket(_) | StepOf::At(Place::Item(_))))
 }
 
 /// The bucket's position and the element's counter, where `pos` is a sequence element's.
 fn item_of(pos: &[Step]) -> Option<(&[Step], u64)> {
     match pos.split_last() {
-        Some((Step::At(Place::Item(d)), bucket)) => Some((bucket, d.ctr)),
+        Some((Step { of: StepOf::At(Place::Item(d)), .. }, bucket)) => Some((bucket, d.ctr)),
         _ => None,
     }
 }

@@ -287,7 +287,7 @@ const HELD_TABLE: u8 = 3;
 
 /// The pages of `(tid, ak)`'s held writes as `osis_crdt::Rows`: the rows of `HELD_TABLE`.
 pub(crate) struct IndexRows<'a, 'b> {
-    tx: &'a mut Tx<'b>,
+    txn: &'a mut osis_store::Transaction<'b>,
     tid: Tid,
     ak: Ak,
     /// The table, once made.
@@ -306,45 +306,52 @@ impl Rows for IndexRows<'_, '_> {
     type Err = Error;
     fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         match self.table {
-            Some(t) => Ok(self.tx.txn.table_get(t, key)?),
+            Some(t) => Ok(self.txn.table_get(t, key)?),
             None => Ok(None),
         }
     }
     fn put(&mut self, key: &[u8], val: &[u8]) -> Result<()> {
         let t = match self.table {
             Some(t) => t,
-            None => self.tx.txn.create_table(&self.tid, &self.ak, HELD_TABLE)?,
+            None => self.txn.create_table(&self.tid, &self.ak, HELD_TABLE)?,
         };
         self.table = Some(t);
         // counted: what a write costs in held-writes pages (scale tests)
         osis_base::costs::count("held writes: pages written", 1);
-        self.tx.txn.table_put(t, key, val.to_vec(), self.shred)?;
+        self.txn.table_put(t, key, val.to_vec(), self.shred)?;
         Ok(())
     }
     fn del(&mut self, key: &[u8]) -> Result<()> {
         if let Some(t) = self.table {
-            self.tx.txn.table_remove(t, key, self.shred)?;
+            self.txn.table_remove(t, key, self.shred)?;
         }
         Ok(())
     }
     fn scan(&mut self, from: &[u8], to: &[u8], limit: usize) -> Result<Vec<osis_store::KeyValue>> {
         match self.table {
-            Some(t) => Ok(self.tx.txn.table_range(t, from, Some(to), limit)?),
+            Some(t) => Ok(self.txn.table_range(t, from, Some(to), limit)?),
             None => Ok(Vec::new()),
         }
     }
     fn scan_back(&mut self, from: &[u8], to: &[u8], limit: usize) -> Result<Vec<osis_store::KeyValue>> {
         match self.table {
-            Some(t) => Ok(self.tx.txn.table_range_rev(t, from, to, limit)?),
+            Some(t) => Ok(self.txn.table_range_rev(t, from, to, limit)?),
             None => Ok(Vec::new()),
         }
     }
 }
 
 /// The held writes of `(tid, ak)` (`osis_crdt::Held`) over the transaction's store.
-fn index<'a, 'b>(tx: &'a mut Tx<'b>, tid: &Tid, ak: &Ak, shred: Shred) -> Result<Held<osis_crdt::PagedRows<IndexRows<'a, 'b>>>> {
+/// Pages read stay for the rest of the transaction (`Tx::held_pages`), forgotten where the
+/// table is not the one they were read from (dropped, or made since).
+fn index<'a, 'b>(tx: &'a mut Tx<'b>, tid: &Tid, ak: &Ak, shred: Shred) -> Result<Held<osis_crdt::PagedRows<IndexRows<'a, 'b>, &'a mut osis_crdt::PageCache>>> {
     let table = tx.txn.table(tid, ak, HELD_TABLE)?;
-    Ok(Held::new(osis_crdt::PagedRows::new(IndexRows { tx, tid: *tid, ak: ak.clone(), table, shred }, PAGE_KEY)))
+    let (of, cache) = tx.held_pages.entry((*tid, ak.clone())).or_default();
+    if *of != table {
+        *of = table;
+        cache.clear();
+    }
+    Ok(Held::new(osis_crdt::PagedRows::with_cache(IndexRows { txn: &mut tx.txn, tid: *tid, ak: ak.clone(), table, shred }, PAGE_KEY, cache)))
 }
 
 /// The most bytes of a row's key in its page's key (`osis_crdt::PagedRows`): a table bounds its
@@ -413,9 +420,10 @@ pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         let mut fresh = Held::new(osis_crdt::MemRows::default());
         for (c, f) in noted {
             if let Some((b, w)) = body_writes(tx, tid, ak, &c, f)? {
-                fresh.join(&b, &w, &tag(f))?;
+                fresh.place(&b, &w, &tag(f))?;
             }
         }
+        fresh.date_every()?;
         // nothing dead: nothing to keep
         if !fresh.any_dead()? {
             return Ok(());
@@ -472,15 +480,16 @@ pub(crate) fn settle_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// its last body left): the table, shredded.
 pub(crate) fn drop_index(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     tx.txn.drop_table(tid, ak, HELD_TABLE)?;
+    tx.held_pages.remove(&(*tid, ak.clone()));
     tx.core.index_settled.remove(&(*tid, ak.clone()));
     Ok(())
 }
 
-/// Debug builds: the kept held writes of `(tid, ak)` are, row for row, those joining its held
-/// valid bodies from nothing gives (so no join or leave was missed and every death and date
-/// moved with them), and their deaths those their rows date (`Held::check`); none kept yet
-/// (no transaction wrote the aspect since it is dated: the next builds them) is no fault.
-/// Gives the held writes built from nothing.
+/// Debug builds: the kept held writes of `(tid, ak)` are, row for row, those built from its
+/// held valid bodies at once, each write dated by the rows (`Held::place`, `Held::date_every`):
+/// so no join or leave was missed, every death and date moved with them, and the deaths kept
+/// are those the rows date. None kept yet (no transaction wrote the aspect since it is dated:
+/// the next builds them) is no fault. Gives the held writes built from nothing.
 #[cfg(debug_assertions)]
 pub(super) fn index_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, when: &str) -> Result<Held<osis_crdt::MemRows>> {
     let mut fresh = Held::new(osis_crdt::MemRows::default());
@@ -489,18 +498,16 @@ pub(super) fn index_exact(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, when: &str) -> Re
         if let Some(f) = form(tx.core, &c, tid, ak)
             && let Some((b, w)) = body_writes(tx, tid, ak, &c, f)?
         {
-            fresh.join(&b, &w, &tag(f))?;
+            fresh.place(&b, &w, &tag(f))?;
         }
     }
+    fresh.date_every()?;
     if tx.txn.table(tid, ak, HELD_TABLE)?.is_none() {
         return Ok(fresh);
     }
-    let mut ix = index(tx, tid, ak, Shred::No)?;
-    let kept: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = ix.rows.scan(&[], &[0xff; 2], usize::MAX)?.into_iter().collect();
+    let kept: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = index(tx, tid, ak, Shred::No)?.rows.scan(&[], &[0xff; 2], usize::MAX)?.into_iter().collect();
     let diff: Vec<String> = kept.keys().chain(fresh.rows.0.keys()).filter(|k| kept.get(*k) != fresh.rows.0.get(*k)).take(4).map(|k| format!("{:?}: kept {:?}, fresh {:?}", osis_base::hex::encode(k), kept.get(k).map(|v| osis_base::hex::encode(v)), fresh.rows.0.get(k).map(|v| osis_base::hex::encode(v)))).collect();
     assert!(diff.is_empty(), "{when}: the held writes of {tid:?} {ak:?} differ from those of its held bodies: {diff:?}");
-    let checked = ix.check()?;
-    assert!(checked.is_ok(), "{when}: the held writes of {tid:?} {ak:?}: {checked:?}");
     Ok(fresh)
 }
 
