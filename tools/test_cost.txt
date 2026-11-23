@@ -1,0 +1,40 @@
+# Each default-test binary's instruction budget (notes/gate.md, The summary: Test cost): one per
+# line, CRATE/NAME G, NAME the binary's file name without cargo's hash, G in 10^9 user-space
+# instructions (tools/icount over the whole binary). The gate fails a binary over its G (NEW-COST)
+# and calls a line stale under G / 2 (STALE-COST); a new or raised line is 1.5x the count, as the
+# summary prints it, with the reason in the commit message.
+crdt-model/props 23
+held-model/it 470
+osis-app/it 270
+osis-base/cbor 25
+osis-base/osis_base 3.9
+osis-bench/it 6.1
+osis-blob/osis_blob 24
+osis-chat/it 17
+osis-chat/osis_chat 0.0013
+osis-cli/it 110
+osis-cli/osis_cli 0.098
+osis-commit/osis_commit 26
+osis-crdt/osis_crdt 48
+osis-crypto/osis_crypto 4.5
+osis-engine/it 2400
+osis-engine/osis_engine 1900
+osis-keys/it 7.8
+osis-keys/osis_keys 2.4
+osis-kit/it 150
+osis-perm/it 49
+osis-proto/it 7.3
+osis-proto/osis_proto 7.9
+osis-schema/it 1.8
+osis-schema/osis_schema 0.0013
+osis-sim/it 25
+osis-sim/osis_sim 0.0013
+osis-store/it 37
+osis-store/osis_store 3.6
+osis-sync/it 1500
+osis-sync/osis_sync 1.5
+osis-transport/it 5.7
+osis-transport/osis_transport 0.035
+osis-vectors/vectors 12
+osis/it 550
+roles-model/roles_model 1.7

@@ -15,7 +15,7 @@ Every timed run has a CPU limit (tight: other work barely moves CPU-s) and a wal
 
 | limit | CPU (u) | wall (u) | share of | what (fastbox-0 unless named: CPU-s / wall at load) |
 |---|---|---|---|---|
-| `test` | 4.5 | 6.5 |  | one default test alone (`tools/limits.py tests`): over 10 s needs a reason; its wall is also the gate's per-test bound on each default test's wall in the stage (notes/gate.md, The summary: Slow tests) |
+| `test` | 4.5 | 6.5 |  | one default test alone (`tools/limits.py tests`): over 10 s needs a reason; in a gate each default-test binary is held to its instruction count instead (notes/gate.md, The summary: Test cost), walls there swinging with load |
 | `rebuild` | 70 | 13 |  | an osis-base edit, `cargo build --all-targets` (`tools/limits.py run rebuild cargo build --all-targets`): one comment line, warm, 330-390 / 41-53 s at load 9-14 |
 | `build` | 55 | 10 |  | the gate's builds, outside `gate`: 8-108 / 4-42 s with nothing below the branch's top crates changed since the target's build; any change below osis-engine 330 / 41 s at best, 500-1350 / 70-370 s in gates; an engine change on ostrich 246-260 / 43 s at best (Patterns, An engine change) |
 | `default-tests` | 1400 | 100 | `gate.hold` | `cargo test --no-fail-fast`, built: 1190 / 123 s at load 16 (per test and binary: notes/test-harnesses.md, Default-test cost) |

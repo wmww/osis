@@ -44,8 +44,8 @@ limited() { local n; n=$1; shift; step "$@"; python3 "$tools/limits.py" check "$
 # it returns 0 whatever CMD did, so no failure ends a later stage. Its stdin is /dev/null: one
 # reading stdin would eat the held runner's later lines. A stage of default tests (held to the
 # `test` limit) runs under tools/test_watch.py, which stops a target where no test finishes for a
-# multiple of that limit and names its running tests "hung" (notes/gate.md, Hung tests), and times
-# each test for the summary's per-test bound (notes/gate.md, The summary).
+# multiple of that limit and names its running tests "hung" (notes/gate.md, Hung tests), and counts
+# each test binary's instructions for the summary's test cost (notes/gate.md, The summary).
 tested() {
   local n log s c; n=$1; log=$2; shift 2
   printf '== %s\n' "$*"; s=$(date +%s); cpu; c=$cpu
@@ -148,9 +148,12 @@ passed() {
       echo "== summary again (this gate's files kept in $tmp; rm -r it when done): python3 $tools/gate_failures.py $sel $results"
       exit "$rc"
     fi
-    # a known line whose test passed: stale unless `rate:`, so the pass line (the one read) says it
+    # a known line whose test passed (stale unless `rate:`) or a stale test-cost line: the pass
+    # line (the one read) says so
     n=$(grep -c '^   KNOWN-BUT-PASSED:' "$tmp/summary" || true)
     [ "$n" = 0 ] || stale="; $n KNOWN-BUT-PASSED to remove (above)"
+    n=$(grep -c '^   STALE-COST:' "$tmp/summary" || true)
+    [ "$n" = 0 ] || stale="$stale; $n STALE-COST to lower (above)"
   fi
   echo "== gate passed$2 ($(( $(date +%s) - t0 ))s)$stale"
 }

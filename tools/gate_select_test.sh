@@ -161,15 +161,14 @@ rm -f hung.pid
 rc=0; out=$(env GATE_HANG_S=1 PATH="$PWD/fakebin:$PATH" python3 "$(dirname "$gate")/test_watch.py" cargo test 2>&1) || rc=$?
 n=$((n + 1)); [ "$rc $(printf '%s\n' "$out" | grep -c -e '^gate: hung test: a::spin$' -e '^gate: hung: stopped [0-9].*, 1 processes$')" = "137 2" ] || { echo "FAIL orphan hang: rc $rc, out '$out'"; fail=1; }
 n=$((n + 1)); ! kill -0 "$(cat hung.pid)" 2>/dev/null || { echo "FAIL orphan hang: $(cat hung.pid) still runs"; fail=1; kill "$(cat hung.pid)"; }
-# the default-test stages run each test binary under tools/test_time.sh: libtest's per-test times,
-# RUSTC_BOOTSTRAP in the binary's environment only
-printf '#!/bin/sh\nenv | sed -n "s/^CARGO_TARGET_.*_RUNNER=//p"\necho "bootstrap=${RUSTC_BOOTSTRAP-unset}"\n' > fakebin/cargo
-printf '#!/bin/sh\necho "bootstrap=$RUSTC_BOOTSTRAP args: $*"\n' > fakebin/bin
-chmod +x fakebin/cargo fakebin/bin
-out=$(env -u RUSTC_BOOTSTRAP PATH="$PWD/fakebin:$PATH" python3 "$(dirname "$gate")/test_watch.py" cargo test 2>&1 | tr '\n' '|')
-n=$((n + 1)); [ "$out" = "$(dirname "$gate")/test_time.sh|bootstrap=unset|" ] || { echo "FAIL timed runner: '$out'"; fail=1; }
-out=$(sh "$(dirname "$gate")/test_time.sh" fakebin/bin --exact a)
-n=$((n + 1)); [ "$out" = "bootstrap=1 args: --exact a -Zunstable-options --report-time" ] || { echo "FAIL test_time.sh: '$out'"; fail=1; }
+# the default-test stages run each test binary under tools/test_count.sh: named, then counted
+printf '#!/bin/sh\nenv | sed -n "s/^CARGO_TARGET_.*_RUNNER=//p"\n' > fakebin/cargo
+printf '#!/bin/sh\necho "args: $*"\n' > fakebin/bin-0123abcd
+chmod +x fakebin/cargo fakebin/bin-0123abcd
+out=$(PATH="$PWD/fakebin:$PATH" python3 "$(dirname "$gate")/test_watch.py" cargo test 2>&1)
+n=$((n + 1)); [ "$out" = "$(dirname "$gate")/test_count.sh" ] || { echo "FAIL counted runner: '$out'"; fail=1; }
+out=$(CARGO_PKG_NAME=c sh "$(dirname "$gate")/test_count.sh" "$PWD/fakebin/bin-0123abcd" --exact a 2>&1 | tr '\n' '|' | sed 's/INSTR [0-9]*|$/INSTR N|/')
+n=$((n + 1)); [ "$out" = "gate: binary c/bin|args: --exact a|INSTR N|" ] || { echo "FAIL test_count.sh: '$out'"; fail=1; }
 rm -rf runs runs.* ran fakebin hung.pid
 echo "gate selection: $n cases, $([ $fail = 0 ] && echo ok || echo FAILED)"
 exit $fail

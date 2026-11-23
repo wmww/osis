@@ -4,8 +4,6 @@
 # random seeds pass it most runs, and its summary says passing is expected); ISSUE: its issues/
 # file; PATTERN: a regex every failing unit of NAME (each seed line of its panic, or its whole
 # panic) must match (tools/gate_failures.py).
-# A default test allowed over the per-test bound: NAME slow:S ISSUE, held to S seconds of wall in a
-# gate instead (notes/gate.md, The summary: Slow tests).
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=647344785567 issues/custody-differential-failures.md FAIL flip: node \w+ at \d+ dropped a taken revocation
 roles-model/custody::tests::random_worlds_hold_large rate:OSIS_ROLES_START=567669682357 issues/custody-differential-failures.md FAIL writes: node \w+ settled without \w+'s write \d+ on \w+
 roles-model/paths::tests::random_worlds_hold_large OSIS_ROLES_START=0,OSIS_ROLES_SEEDS=13000 issues/masked-backdated-lowerings.md counts:dispute=4 OSIS_ROLES_START=\d+: \{
@@ -17,5 +15,4 @@ osis-crdt/tests_seq::slots_join_follows_cache_plain_spec_7 rate:OSIS_CRDT_START=
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
 osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=47 issues/seq-cold-edits-follow-gaps.md same delta as on the whole state
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=512007751,OSIS_ORDER_LEN=60 issues/order-purged-message-shown.md shows other than the node keeping every body: Tid\(\S+\) t:msg\.0
-osis-sync/delete_keys::a_party_without_the_right_signs_no_delete_a_store_or_its_peer_path_takes_spec_sync_ids_6 slow:34 issues/test-time.md
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=134782623960,OSIS_ORDER_LEN=60 issues/order-purged-message-shown.md shows other than the node keeping every body: Tid\(\S+\) t:msg\.0

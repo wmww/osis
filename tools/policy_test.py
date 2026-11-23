@@ -82,6 +82,8 @@ PLANTS = [
     # known_failures
     ("tools/known_failures.txt", None, f"osis-engine/planted::no_such_test_fn - {ISSUE} x\nsim-sweep:no_such_scenario - {ISSUE} x\n"
      f"planted::a - issues/planted-missing.md x\nplanted::b - {ISSUE} (\n"),
+    # test_cost
+    ("tools/test_cost.txt", None, "planted-crate/it 3\nosis-base/planted 0\n"),
     # ended_names, in each kind of file it reads; the last without a final newline
     ("core/base/src/hash.rs", None, "\n// the ended_things here\n"),
     ("schema/app.osis", None, "\n# EndedIn\n"),
@@ -149,6 +151,8 @@ EXPECT = [  # regexes the output must hold
     r"sim-sweep:no_such_scenario: no such sim scenario",
     r"issues/planted-missing\.md: no such issue file",
     r"bad pattern '\('",
+    r"tools/test_cost\.txt: planted-crate/it: want CRATE/NAME, CRATE a workspace package",
+    r"tools/test_cost\.txt:\d+: want `CRATE/NAME G` \(G over 0\), got 'osis-base/planted 0'",
     r"core/base/src/hash\.rs:\d+: `ended_things`",
     r"schema/app\.osis:\d+: `EndedIn`",
     r"tools/gate\.sh:\d+: `Status::Ended`",

@@ -98,3 +98,4 @@ Leaves::Unit  removed: a held-model evidence option its findings name
 Removals::Any  removed: a held-model evidence option its findings name
 Scope::Edge  removed: a held-model evidence option its findings name
 Far  removed: a held-model evidence option its findings name (`Home::Far`)
+RUSTC_BOOTSTRAP  third-party: rustc and cargo read it (unstable flags on stable)

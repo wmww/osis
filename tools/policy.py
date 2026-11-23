@@ -9,7 +9,8 @@ real LAN (`real_lan_tests`), a test peer ticks through its wake (`peer_ticks`), 
 test-only (`test_copies`), only the engine's `apply::checked` vouches for checked delta bytes
 (`checked_bytes`), signature verdicts are read back only where kept (`kept_verdicts`), sync keeps
 no hashed collection (`sync_hashed`), sync's tests pin no harness seed (`pinned_seeds`),
-tools/known_failures.txt names existing issues, tests and valid patterns (`known_failures`), an
+tools/known_failures.txt names existing issues, tests and valid patterns (`known_failures`),
+tools/test_cost.txt's lines are well formed and name workspace packages (`test_cost`), an
 `#[ignore = "..."]` naming an issue names an existing issues/ file (`ignore_issues`),
 union-merged lists have no duplicate and a stale-line check (`union_lists`), a notes section
 marked `<!-- registry -->` numbers its items uniquely and increasingly (`registries`), no destruction named
@@ -361,6 +362,15 @@ def known_failures():
         if path.split("::")[-1] not in fns[crate]:
             yield f"{gate_failures.KNOWN}: {name}: no such test in {crate}"
 
+def test_cost():
+    lines, bad = gate_failures.budgets(ROOT)
+    yield from bad
+    crates = set(workspace_members().values())
+    for name in lines:
+        if name.split("/")[0] not in crates:
+            yield f"{gate_failures.COST}: {name}: want CRATE/NAME, CRATE a workspace package"
+
+
 # Line lists under git's union merge (.gitattributes `merge=union`): a hunk both sides changed keeps
 # both, so a line both sides added comes twice (`union_lists` refuses it) and a line one side removed
 # beside the other's change comes back: each list needs a check that refuses a stale line, named here.
@@ -514,7 +524,7 @@ def spec_anchors():
 
 
 # the slowest first, so the pool balances
-CHECKS = [doc_refs.check, spec_anchors, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, union_lists, registries, test_copies, ignore_issues, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
+CHECKS = [doc_refs.check, spec_anchors, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, test_cost, union_lists, registries, test_copies, ignore_issues, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
 
 
 def run(check):
