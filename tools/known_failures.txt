@@ -17,3 +17,4 @@ osis-crdt/tests_seq::slots_join_follows_cache_plain_spec_7 rate:OSIS_CRDT_START=
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=486492445194,OSIS_ORDER_LEN=60 issues/snapshot-carries-unread.md histories judged differently by what was held
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=300644506442,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
+osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=610442177300,OSIS_ORDER_LEN=60 issues/order-settings-seed.md histories judged differently by what was held
