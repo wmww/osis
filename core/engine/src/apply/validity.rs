@@ -739,7 +739,7 @@ pub(crate) fn reading_of(core: &Core, id: &CommitId, h: &Header, view: &View) ->
             continue;
         };
         let class = if h.kind.is_compaction() {
-            // what it carries is not read here (notes/perm-paths.md, The switch): it is judged as
+            // what it carries is not read here (issues/snapshot-carries-unread.md): it is judged as
             // its signer's write
             DeltaClass::Snapshot { carries: Frontier::default(), stated: BTreeMap::new(), own: h.own_cover }
         } else if ct::is_addenda(ak) && h.kind == Kind::Content {

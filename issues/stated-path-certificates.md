@@ -10,4 +10,4 @@ What stands in, each site marked `Interim (issues/stated-path-certificates.md)`:
 - `sync_ids/chain.rs`: chain certificates close over chained writes along any path, not the stated one; the index is built per call.
 - osis-commit `Header::path_allowed`: a role commit's purge index is held to 0, a bad input spec/wire.md does not list.
 
-The rest the switch read short of the spec (snapshot carries, `addenda.0` entries, by-commit purge items, the list's frontier, epoch addenda, sides): notes/perm-paths.md, The switch, Left 3.
+What else the engine reads short of the spec (snapshot carries, `addenda.0` entries, by-commit purge items, the list's frontier, epoch addenda, sides): notes/perm-paths.md, Read short of the spec.
