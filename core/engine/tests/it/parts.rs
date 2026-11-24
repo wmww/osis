@@ -936,7 +936,8 @@ fn purge_whose_only_part_is_parked_applies_spec_commits_4() {
 }
 
 // spec/versioning.md §2, spec/commits.md §5: a purge request applies to a part this build cannot read.
-// It cannot be stripped, so it goes, whichever came first: no copy of its bytes is left on the device.
+// It cannot be decoded, so it goes, whichever came first: no copy of its bytes is left on the device,
+// and nothing is flagged (its writes have no effect anywhere, spec/crdt.md §4.7).
 #[test]
 fn parked_part_goes_at_its_purge_spec_commits_5() {
     use crate::common::*;
@@ -969,7 +970,7 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
         p.reexamine().unwrap();
         assert!(p.engine.header(&rq.id).is_some(), "the request applied");
         assert_eq!(p.engine.pending(), vec![], "parked first: {parked_first}");
-        assert!(p.engine.suspects().iter().any(|f| f.0 == x), "flagged");
+        assert!(p.engine.suspects().is_empty(), "nothing flagged");
         assert_eq!(p.engine.pending_value_past_end(&b.id(), now).unwrap(), None, "parked first: {parked_first}");
         assert_eq!(found_in(&mut p, PARKED_MARK), vec![], "parked first: {parked_first}");
     }

@@ -887,31 +887,25 @@ fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::Commit
     (t, c, whole)
 }
 
-// spec/commits.md §5: a waiting part a held request names goes at once while a page of it is away (the
-// part's bytes cannot be stripped), the pages it holds readable no more; its commit then applies and the
-// aspect is flagged, its non-value writes missing.
+// spec/commits.md §5, spec/crdt.md §4.7: a waiting part a held request names goes at once while a
+// page of it is away (its bytes cannot be decoded), the pages it holds readable no more; its commit
+// then applies, nothing flagged: the purged writes have no effect, so the node reads as the writer
+// that held and removed them (the older value back), and a snapshot by the writer or a copy
+// arriving again changes nothing and brings back no purged value.
 #[test]
 fn purged_with_a_page_away_goes_at_once_spec_commits_5() {
-    let marker = "PAGE-AWAY-4c8e";
-    let mut lp = net2();
-    let (t, c, _) = purged_page_away(&mut lp, marker);
-    let e = &mut lp.peers[1].engine;
-    assert!(e.pending().is_empty() && e.commit_ids().contains(&c), "{:?}", e.pending());
-    assert_eq!(e.suspects().into_iter().map(|x| (x.0, x.1)).collect::<Vec<_>>(), vec![(t, ak("t:big.0"))]);
-    assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "recovered with a page away");
-}
-
-// spec/commits.md §5: the older value a part gone with a page away leaves showing, flagged, goes with a
-// snapshot by a writer or a copy arriving again, and neither brings back the purged value.
-#[test]
-fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
     for by_snapshot in [true, false] {
-        let marker = "PAGE-REPAIR-5d1a";
+        let marker = "PAGE-AWAY-4c8e";
         let mut lp = net2();
         let a = ak("t:big.0");
-        let (t, _, whole) = purged_page_away(&mut lp, marker);
-        assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))]))), "by snapshot {by_snapshot}");
-        assert_eq!(lp.peers[1].engine.suspects().len(), 1);
+        let (t, c, whole) = purged_page_away(&mut lp, marker);
+        let e = &mut lp.peers[1].engine;
+        assert!(e.pending().is_empty() && e.commit_ids().contains(&c), "{:?}", e.pending());
+        assert!(e.suspects().is_empty(), "nothing flagged");
+        assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "recovered with a page away");
+        let older = Some(Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))])));
+        assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), older, "by snapshot {by_snapshot}");
+        assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), older, "by snapshot {by_snapshot}: the writer");
         if by_snapshot {
             lp.advance(5);
             let sc = lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
@@ -921,7 +915,7 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
             lp.peers[1].receive(&whole.bytes, whole.blobs.clone()).unwrap();
         }
         lp.peers[1].reexamine().unwrap();
-        assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), lp.peers[0].engine.get(&t, &a).unwrap(), "by snapshot {by_snapshot}");
+        assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), older, "by snapshot {by_snapshot}");
         assert!(lp.peers[1].engine.suspects().is_empty(), "by snapshot {by_snapshot}");
         assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "by snapshot {by_snapshot}");
     }
@@ -1661,6 +1655,7 @@ fn a_suspect_flag_is_followed_per_aspect_spec_perm_4() {
         let mut feed = lp.peers[1].engine.suspect_feed();
         let mut fx = SuspectFx::new("test suspects");
         let (t, c, whole) = purged_page_away(&mut lp, "FOLLOW-7e3c");
+        lp.peers[1].engine.flag_suspect(&t, &a, osis_engine::retention::suspect::Why::Uncovered, &[(c, 0)]).unwrap();
         let moved = suspects_moved(&mut lp, 1, &mut feed, &mut fx);
         assert!(matches!(moved.as_slice(), [(k, Some((_, w)))] if *k == (t, a.clone()) && *w != 0), "raised: {moved:?}");
         for i in 0..4 {
