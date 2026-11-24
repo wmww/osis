@@ -1,12 +1,13 @@
 #!/bin/sh
-# tools/bin-at REV OUT (-p CRATE [--test NAME | --bin NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]...:
+# tools/bin-at REV OUT (-p CRATE [--test NAME | --bin NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]... [--take-at REV2 PATH]...:
 # REV's test binary (CRATE's `it`, or `--test NAME`, dev profile; `--lib CRATE`: that crate's lib
 # unit tests, e.g. osis-engine's `rotation::tests`; `--bin NAME`: CRATE's binary NAME, e.g. a model's
 # search driver `-p roles-model --bin roles-model`), built in this worktree and copied to
 # OUT, for old-vs-new runs and `tools/icount` comparisons (notes/build.md). To build a new test
 # against an old REV: `--patch FILE` applies a diff (`git apply --index`) on top of REV, `--take
-# PATH` (a file or directory) copies PATH as the starting commit holds it (`git checkout <start>
-# -- PATH`, root-relative); both undone before returning (`git reset --hard`). Needs a clean tree
+# PATH` (a file or directory, root-relative) replaces PATH with the starting commit's copy (files
+# the start lacks removed), `--take-at REV2 PATH` with REV2's (tools/src-at: a library's sources at
+# another revision); all undone before returning (`git reset --hard`). Needs a clean tree
 # (wip-commit first): checks out REV detached, builds, checks the starting branch or commit out again (also on failure). OUT
 # is the only copy of REV's binary: every executable it compiled at REV is deleted from target/
 # (cargo's path for it is the branch's, so running that path later would run REV's code). The
@@ -19,7 +20,7 @@
 # fail to link with undefined symbols: `cargo clean -p <crate>` for the crate the error names
 # (notes/build.md, Footguns; deleting incremental dirs leaves a fresh-looking rlib unrebuilt).
 set -eu
-usage="usage: tools/bin-at REV OUT (-p CRATE [--test NAME | --bin NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]..."
+usage="usage: tools/bin-at REV OUT (-p CRATE [--test NAME | --bin NAME] | --lib CRATE) [--release] [--patch FILE]... [--take PATH]... [--take-at REV2 PATH]..."
 [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
 rev=$1 out=$2
 shift 2
@@ -35,7 +36,11 @@ while [ $# -gt 0 ]; do
         --bin) bin=$2; shift ;;
         --patch) [ -f "$2" ] || { echo "bin-at: no patch file $2" >&2; exit 2; }
             patches="$patches$(cd "$(dirname "$2")" && pwd)/$(basename "$2")$nl"; shift ;;
-        --take) takes="$takes$2$nl"; shift ;;
+        # each take a line `REV2 PATH` (REV2 empty: the starting commit)
+        --take) takes="$takes $2$nl"; shift ;;
+        --take-at) [ $# -ge 3 ] || { echo "$usage" >&2; exit 2; }
+            r=$(git rev-parse --verify -q "$2^{commit}") || { echo "bin-at: no revision $2" >&2; exit 2; }
+            takes="$takes$r $3$nl"; shift 2 ;;
         *) echo "bin-at: unknown argument $1" >&2; exit 2 ;;
     esac
     shift
@@ -59,7 +64,10 @@ git checkout -q --detach "$sha"
 dirty=1
 IFS=$nl
 for f in $patches; do git apply --index "$f" || { echo "bin-at: $f does not apply to $sha" >&2; exit 1; }; done
-for f in $takes; do git checkout -q "$start" -- "$f" || exit 1; done
+for t in $takes; do
+    r=${t%% *} f=${t#* }
+    git rm -rq --ignore-unmatch -- "$f" > /dev/null && git checkout -q "${r:-$start}" -- "$f" || { echo "bin-at: no $f at ${r:-$start}" >&2; exit 1; }
+done
 unset IFS
 [ -n "$patches$takes" ] || dirty=
 if [ -n "$lib" ]; then

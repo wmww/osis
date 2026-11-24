@@ -1,5 +1,5 @@
 # Tool and harness fixes owed
-> Summary: Fixes to test harnesses and tools that agents asked for and that are too large for a quick fix: failure messages and dumps that name what failed, quiet checks that miss stuck states, a safe library differential against main, per-node cost counts, cpuprof by caller, a generator census. Ordered by how much time each cost.
+> Summary: Fixes to test harnesses and tools that agents asked for and that are too large for a quick fix: failure messages and dumps that name what failed, quiet checks that miss stuck states, per-node cost counts, cpuprof by caller, a generator census. Ordered by how much time each cost.
 > Priority: low
 > Tags: tests, tools
 
@@ -12,9 +12,8 @@
    - the sync trace: an entry that stays NotOpen shows `+entry` without `+commit` and nothing says why;
    - a held-in-part placement reports misses and bail-outs as bare bools.
 2. **Quiet checks that miss stuck states** (a test passed vacuously at half the seeds; a stale-read bug hid behind the second): a quiet end with a commit pending `WaitBlobs` on blobs a source shows; `World::parks` skipping store entries never opened.
-3. **Library differential against main**: comparing a library crate's behaviour with main's (not a binary, so `tools/bin-at` does not help) is done by `git checkout origin/main -- <crate>/src` and back, which has dropped uncommitted edits and pulled in a newer sibling that did not build. A `tools/src-at REV <crate>` (wip-commit, swap the sources in at the merge base, build, swap back) would make it safe; until then wip-commit first and `git reset --hard` back.
-4. **Per-node cost counts**: `osis_base::costs` is thread-local and `World` steps every node on one thread, so counts mix nodes; a `costs::count_by` keyed by the stepping node (set in `World::deliver`) and by caller would answer in one run what took a backtrace probe.
-5. **cpuprof by caller and inlined frame**: `cpuprof_report.py` filters by one frame and symbolizes with `--no-inlines`, so inlined walks fold into their callers; splitting a cost by caller (`--callers FN`, `--under FN`) or by innermost source line (`llvm-symbolizer --inlines`) took private scripts.
-6. **Generator census and a no-room knob**: which of a model's generators write a shape took a temporary panic in `World::put`; the sync harness has no knob holding pushes back, so a test cannot tell an at-once lost-access drop from release's pass wait.
+3. **Per-node cost counts**: `osis_base::costs` is thread-local and `World` steps every node on one thread, so counts mix nodes; a `costs::count_by` keyed by the stepping node (set in `World::deliver`) and by caller would answer in one run what took a backtrace probe.
+4. **cpuprof by caller and inlined frame**: `cpuprof_report.py` filters by one frame and symbolizes with `--no-inlines`, so inlined walks fold into their callers; splitting a cost by caller (`--callers FN`, `--under FN`) or by innermost source line (`llvm-symbolizer --inlines`) took private scripts.
+5. **Generator census and a no-room knob**: which of a model's generators write a shape took a temporary panic in `World::put`; the sync harness has no knob holding pushes back, so a test cannot tell an at-once lost-access drop from release's pass wait.
 
 Seed-dependent fixtures (a fixture seed taken from an env var): issues/fixture-seed-luck.md.

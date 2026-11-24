@@ -1,0 +1,19 @@
+#!/bin/sh
+# tools/src-at REV CRATE OUT (-p C [--test NAME | --bin NAME] | --lib C) [bin-at options]: a binary
+# built from HEAD with library CRATE's src/ as REV holds it, copied to OUT: the branch's tests (of
+# CRATE or of a crate using it) run against the old library, for a differential against main where
+# tools/bin-at alone (the whole tree at REV) would drop the branch's tests. Take REV from the merge
+# base (`git merge-base HEAD origin/main`): a later main's sources may need sibling changes HEAD
+# lacks. It is `tools/bin-at HEAD OUT ... --take-at REV <CRATE dir>/src`, so bin-at's rules hold:
+# a clean tree (wip-commit first), the sources swapped back on success and failure, REV's built
+# executables deleted from target/.
+set -eu
+usage="usage: tools/src-at REV CRATE OUT (-p C [--test NAME | --bin NAME] | --lib C) [bin-at options]"
+[ $# -ge 4 ] || { echo "$usage" >&2; exit 2; }
+rev=$1 crate=$2 out=$3
+shift 3
+root=$(git rev-parse --show-toplevel)
+manifest=$(cd "$root" && cargo metadata --no-deps --format-version 1 --locked | jq -r --arg n "$crate" '.packages[] | select(.name == $n) | .manifest_path')
+[ -n "$manifest" ] || { echo "src-at: no workspace package $crate" >&2; exit 2; }
+src=$(dirname "$manifest")/src
+exec "$(dirname "$0")/bin-at" HEAD "$out" "$@" --take-at "$rev" "${src#"$root"/}"
