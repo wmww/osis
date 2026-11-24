@@ -34,7 +34,7 @@ pub fn open(dir: &Path, dial: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) -
 }
 
 /// The aspects that are the system's, not the user's: no view accounts for them, raw hides them.
-pub const SYSTEM: [&str; 9] = ["created.0", "holds.0", "roles.0", "keys.0", "secrets.0", "label.0", "reach.0", "node.0", "retention^.0"];
+pub const SYSTEM: [&str; 9] = ["created.0", "holds.0", "roles.0", "keys.0", "secrets.0", "sync.0", "reach.0", "node.0", "retention^.0"];
 
 /// The registry of what a Data knows: its facets and view types.
 pub use crate::view::registry::Registry;
@@ -619,7 +619,7 @@ impl Data {
         }
         self.commit(|w| w.at(g, key).set(&v))
     }
-    /// This device's window, made on first use: under home, held by home's `ui:windows.0` (so it
+    /// This device's window, made on first use, minted with home as admin and held by home's `ui:windows.0` (so it
     /// syncs, and is not among the things home holds).
     pub fn window(&self) -> Result<Tid> {
         if let Some(w) = self.window_opt()? {
@@ -658,7 +658,7 @@ impl Data {
         self.set_open(Some(t))?;
         Ok(t)
     }
-    /// A new empty note under home, opened on this node.
+    /// A new empty note (`create_with`), opened on this node.
     pub fn create_note(&self) -> Result<Tid> {
         self.create_with(|_, _, _| Ok(()))
     }
