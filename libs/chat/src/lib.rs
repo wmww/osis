@@ -66,8 +66,7 @@ pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
         PurgeBy::Writer => Some(schema::Deletes::Anyone),
     };
     let msg = RetentionEntry { history: Some(History::FOREVER), expires: o.disappear, refuse_replace: o.edit.is_none() };
-    let mut setting = RetentionSetting { rules: BTreeMap::from([(MSG.name(), msg)]), default: None, retain_copies: o.retain_copies, history_holds_targets: false };
-    setting.enable_inbox_signals();
+    let setting = RetentionSetting { rules: BTreeMap::from([(MSG.name(), msg)]), default: None, retain_copies: o.retain_copies, history_holds_targets: false };
     let mut w = db.write();
     let c = w.create(holder, None)?;
     w.at(c, RETENTION).set(&setting)?;

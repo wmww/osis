@@ -680,13 +680,12 @@ impl Data {
 }
 
 /// In `w`, by the admin creating `t`: the setting a thing kit makes starts with, keeping what any
-/// aspect replaces a day after, so Undo can write it back (without a setting nothing replaced is kept), with its inbox signals
-/// enabled, so it works shared.
+/// aspect replaces a day after, so Undo can write it back (without a setting nothing replaced is kept). It takes no
+/// grant from outside: only an account's inbox does unless a thing's admins enable it.
 pub fn start_setting(w: &mut osis::Write<'_>, t: Tid) -> Result<()> {
     let day = osis::History::Keep { until: osis::Time(0), after_replaced: std::time::Duration::from_secs(86_400) };
     let entry = osis::core::RetentionEntry { history: Some(day), ..Default::default() };
-    let mut setting = osis::core::RetentionSetting { default: Some(entry), ..Default::default() };
-    setting.enable_inbox_signals();
+    let setting = osis::core::RetentionSetting { default: Some(entry), ..Default::default() };
     w.at(t, osis::core::RETENTION).set(&setting)
 }
 

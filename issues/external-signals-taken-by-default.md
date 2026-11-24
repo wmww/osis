@@ -17,3 +17,4 @@
 ## To do
 - Stage A5: externally grantable as what a thing publishes, cards, KEM keys following the switch; spec/requirements.md Permissions brought to the rule once roles-model has checked grants from outside (notes/write-path-design.md §6).
 - Engine against the model: issues/held-set-external-fires.md.
+- **Core has no default (Tess).** A thing takes no grant from outside until its admins enable it, whatever kind of thing it is. Which things enable it is the apps' and libraries' choice: an account's inbox does, nothing else by default (kit and chat enable none on what they make). The engine enabling an account's inbox at its creation is core holding that opinion while accounts are core's: it moves to the library that makes accounts (notes/redesign-plan.md A6), and is not to be rebuilt in core by the accounts work.
