@@ -36,7 +36,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Does their modified client keep what it downloaded? | accepted | yes |
 | A message they sent before the kick that the kicker had not received: does it stay for others? | yes | no! |
 | Re-added later: do posts their modified client made while kicked appear? | no | yes! |
-| Re-added later: can they read what was sent while they were out? | opt | core n |
+| Re-added later: can they read what was sent while they were out? | opt | opt³³ |
 
 ## Leaving
 
@@ -64,14 +64,12 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | case | want | chat |
 |---|---|---|
 | Does a new member see the history? | opt | opt³³ |
-| Segments: can the new member's modified client learn anything about the earlier chat? | no | no³⁴ |
-| Segments: two admins add different people at once; is the outcome deterministic with nothing lost for old members? | yes | yes³⁵ |
-| Adding one member without history to a 1000-member group under 20 MB? | yes | yes³⁶ |
+| Adding one member without history to a 1000-member group under 20 MB? | yes | ? |
 | Can strangers join by link with no admin online? | yes | yes |
 | Does a link joiner keep access when the sharer is kicked? | yes | opt⁷ |
 | Can an admin kick one link joiner without killing the link? | yes | opt⁷ |
-| Does a stranger's invite show a verified sender before accepting? | yes | core e |
-| Does a stranger's invite fetch anything before you accept? | no | no |
+| Does a stranger's offer show a verified sender before you hold the thing? | yes | core e |
+| Does a stranger's offer fetch anything before you hold the thing? | no | no |
 
 ## Devices
 
@@ -124,7 +122,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can you block someone without deleting anything on either side? | yes | opt |
 | Is your evidence kept after blocking? | yes | opt |
 | Can a blocked contact you share a group with add you to a chat? | no | opt¹² |
-| Can a stranger holding your contact card fill your invite inbox? | no | yes¹³! |
+| Can a stranger holding your contact card fill your inbox with offers? | no | yes¹³! |
 | Do message requests show a verified sender? | yes | core e |
 
 ## Admins
@@ -249,11 +247,10 @@ Nothing here is designed: each answer is what today's core would give if servers
 
 ## Core changes
 
-- **e** Sender card in invite requests (Tess: yes).
+- **e** Sender card in offers from strangers (Tess: yes).
 - **h** Wake relay for background notifications (Tess: does not block).
 - **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per node and either a per-sender marker the nodes keeping the chat unread can link or trial decryption.
 - **m** Erasable per-node KEM keys with per-node boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and spec/requirements.md, Cost.
-- **n** History-less grant: a cut (a read rotation at the add carrying no history), a floor per read epoch that history entries and boxes respect, role commits opened by every holder under roles secrets (notes/history-less-grant.md, model-checked); segments (footnote 33) are the fallback without core change.
 - **o** A node that stops fetching short of old messages (issues/partial-history-fetch.md); fetch is newest first (spec/sync-judgement.md §2).
 - **r** Pure readers place nothing under big sync IDs: no certificate copies or node card from a reader unless asked (realms past a few thousand members).
 
@@ -263,7 +260,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 6. An admin gives member grants the may-grant flag; then members may invite.
 7. Only if the sharer's node granted the joiner directly on join (links are admin-only).
 11. Its header, until forgotten; none of its writes stays (spec/crdt.md §4.7).
-12. The grant applies (sender is "connected"); the app leaves automatically.
+12. The grant is the chat's own data and applies whoever wrote it; the app leaves automatically.
 13. Needs your contact card's keys; the remedy is a new card.
 14. Needs two nodes keeping the chat unread listed, or direct member-to-member contact, for the replacement to be learned.
 20. From held headers: an expired delta carries `expires`, a purged one is named by a purge request; after header forgetting both are residue.
@@ -272,10 +269,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 28. the header-only blob of a purged permanent delta is kept forever and reaches new nodes, with its purge commit (spec/commits.md §5).
 30. nothing is compacted; messages keep at least forever.
 31. admins may always purge (spec/commits.md §5 Who and how long): junk is what an admin's purge by author erases.
-33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. No core change; Tess's primary path is core n (notes/chat.md Left out).
-34. The new chat carries no pointer back; a tid is a bare reference and the old chat's sync ID and the peers keeping it live under its own sync ID.
-35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.
-36. About 15 KB per member (grant boxes plus certificate copies under the new sync ID): about 15 MB at 1000, estimated.
+33. The grant's `reads` (`GrantOpts::reads`: `FromNow` or `All`; notes/history-less-grant.md). Segments, a chain of chats, are rejected (notes/chat.md Left out).
 38. admins may always purge (spec/commits.md §5): no setting makes a message undeletable.
 39. the purge author is a member of every thing's stated path, so validity checks it (notes/path-form.md, Whom a write is by): a valid commit's purge author is its sender.
 40. with frontier heads (unbuilt); without them a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.

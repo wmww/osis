@@ -39,9 +39,9 @@ osis-chat holds only what every chat reader or writer must do alike for chat to 
 Not here, on purpose: wrappers over one osis call (grant, `set_role`, `make_link`, `fire`, `on_fire`, `on_diagnostic`, delete, purge by author, `commit(id)`, `versions`, the timer, resend), chat copies of osis types, a list of chats (the query API, issues/api-deferred.md). Ids stay `string` in the schema, parsed as `CommitId` (a schema type for a commit id is a core change for one use); the name stays in `chat:settings^.0`, not `name.0`, as only admins rename.
 
 ## Left out
-- Rejected: segments, adding without history as a chain of chats (the core option does it with no chain); an admin creates C2, grants every current participant and the newcomer, copies the settings, and adds C2 to C1's `chat:next^.0` (admin-only set). Old participants stitch by time; the newcomer holds only C2 and learns nothing of C1. Any admin re-applies roster changes across segments on seeing `next`; links made on C1 die at each segment; a kick is one commit per segment; `next` is a set, so a fork shows both branches to old participants and one to each newcomer. About 15 KB per member per segment.
+- Rejected: segments, adding without history as a chain of chats (C1 pointing at C2 in an admin-only set, every roster change re-applied per segment, links dying at each): the core's `Reads::FromNow` does it with one chat.
 - Unbuilt core: stopping a fetch short of old messages (issues/partial-history-fetch.md; a sync ID fills newest first, so old messages reach a new node late, each past a cursor), kicks past the frontier cap (frontier heads), realms (below).
-- Not done: reactions, read marker, typing, hidden set, segments, attachments, the leave audit.
+- Not done: reactions, read marker, typing, hidden set, attachments, the leave audit.
 - Known and small: an edit not held here when a delete is written still shows, as a new message could. Re-adding a participant revives posts it made while kicked. A kicked account's new node gets nothing, its own messages included.
 
 ## Costs
