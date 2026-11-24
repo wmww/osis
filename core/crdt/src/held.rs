@@ -444,7 +444,7 @@ fn under(tag: u8, pos: &[Step]) -> Vec<u8> {
 }
 
 /// The least key above every key starting with `prefix`.
-fn end_of(prefix: &[u8]) -> Vec<u8> {
+pub(crate) fn end_of(prefix: &[u8]) -> Vec<u8> {
     let mut out = prefix.to_vec();
     while let Some(b) = out.pop() {
         if b < 0xff {

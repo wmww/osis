@@ -354,9 +354,8 @@ fn index<'a, 'b>(tx: &'a mut Tx<'b>, tid: &Tid, ak: &Ak, shred: Shred) -> Result
     Ok(Held::new(osis_crdt::PagedRows::with_cache(IndexRows { txn: &mut tx.txn, tid: *tid, ak: ak.clone(), table, shred }, PAGE_KEY, cache)))
 }
 
-/// The most bytes of a row's key in its page's key (`osis_crdt::PagedRows`): a table bounds its
-/// keys at a quarter of the store's page, 128 B at the smallest (512), less the page tag. Seven
-/// steps of a path: deeper positions under one such path share pages.
+/// The most bytes of a page's key (`osis_crdt::PagedRows`): a table bounds its keys at a quarter
+/// of the store's page, 128 B at the smallest (512), less the page tag.
 const PAGE_KEY: usize = 120;
 
 /// The tag a body joins the held writes with: its `Form`.
