@@ -81,13 +81,16 @@ pub fn set(ts: u64, id: CommitId, v: i64) -> Frag {
     Frag::Register { reset: None, write: Some((stamp(ts, id, 1), Value::Int(v))) }
 }
 
+/// The node things 0 to 3, each minted with its node's key (spec/sync-set.md §1).
 pub const NODES: u64 = 4;
-/// An account actor whose mint admin is node 2, the mint admin of thing 12.
+/// An account (spec/permissions.md §8): minted with node 2's node thing as mint admin, the mint
+/// admin of thing 12; pairing is a grant to a node thing on it, removal the ordinary removal.
 pub const ACCOUNT: ThingId = 20;
-/// A link: K (an actor whose mint admin is node 0, with an edge on thing 10) and L (a key actor).
+/// A link: K (minted with node 0 as mint admin, with an edge on thing 10) and L (its link key,
+/// minted with a key).
 pub const LINK_K: ThingId = 21;
 pub const LINK_L: NodeId = 30;
-/// The records held apart from creations: the nodes and L (key actors), and the account's (thing
+/// The records held apart from creations: the node things and L (minted with a key), and the account's (thing
 /// 12's chain proof).
 pub const RECORDS: [Record; 6] = [
     Record { id: 0, link: RecordLink::Key },
@@ -127,8 +130,9 @@ pub fn creates(c: &Commit) -> bool {
 }
 /// Things content is written on, and the node with authority on each by its record chain.
 pub const CONTENT: [(ThingId, NodeId); 4] = [(10, 0), (11, 1), (12, 2), (13, 3)];
-/// Things roles are written on, with that node.
-pub const TARGETS: [(ThingId, NodeId); 6] = [(10, 0), (11, 1), (12, 2), (13, 3), (ACCOUNT, 2), (LINK_K, 0)];
+/// Things roles are written on, with that node: node 1's node thing among them (written by its
+/// key, as itself).
+pub const TARGETS: [(ThingId, NodeId); 7] = [(10, 0), (11, 1), (12, 2), (13, 3), (ACCOUNT, 2), (LINK_K, 0), (1, 1)];
 pub const HOLDERS: [NodeId; 7] = [0, 1, 2, 3, ACCOUNT, LINK_K, LINK_L];
 pub const START: u64 = 1_000_000_000;
 
@@ -215,7 +219,7 @@ fn plain_part(thing: ThingId, aspect: Aspect, purge_by: PurgeBy, d: Delta) -> Pa
 /// time, stated paths and purge authors (`stated`), edge writes (grants, `until`, may-grant, self-removals, finalizes, link
 /// redemptions); creations kept for good or `admin` with no history, a few expiring, some
 /// purged; every body held but about one in ten missing and a few parked (creations whole);
-/// sometimes a creation or a key actor's record unknown; `now` up to six hours after the last
+/// sometimes a creation or a node thing's record unknown; `now` up to six hours after the last
 /// commit. Snapshots and undos are written from the author's model state.
 pub fn history(seed: u64, n: usize) -> Held {
     let mut r = Rng::new(seed);

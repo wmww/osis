@@ -12,10 +12,11 @@
 //! takes them (Sides, held first). The prover holds every commit and picks any copies V lacks.
 //! A holds write on S.
 //!
-//! Rules (`ProofRules`): `spec` as written; `fixed` with `guard` (a reading in which the copies
+//! Rules (`ProofRules`): `spec`, with `guard` (a reading in which the copies
 //! undo a lowering V's own reading applies proves nothing: `undone`), `receipt` (the copies judged
 //! with the sides taking them in would record) and `j_path` (J reads a proven thing at the role
-//! its claimed path gives: the least of the path's role and the claimed thing's role on S).
+//! its claimed path gives: the least of the path's role and the claimed thing's role on S); the
+//! control `draft`, without the three.
 //! Properties, each a message kind:
 //! - `revive`: a proof never stands on a reading in which its copies undo a lowering the
 //!   verifier's own reading applies (spec/sync-opens.md §2: a removal on the path ends it).
@@ -51,19 +52,19 @@ pub struct ProofRules {
 }
 
 impl ProofRules {
-    /// spec/sync-opens.md §2 and §4 as written.
-    pub fn spec() -> ProofRules {
+    /// The control: spec/sync-opens.md §2 and §4 without the guard, receipt and the path's role.
+    pub fn draft() -> ProofRules {
         ProofRules { guard: false, receipt: false, j_path: false }
     }
-    pub fn fixed() -> ProofRules {
+    pub fn spec() -> ProofRules {
         ProofRules { guard: true, receipt: true, j_path: true }
     }
     pub fn named(mode: &str) -> Option<ProofRules> {
-        let f = ProofRules::fixed();
+        let f = ProofRules::spec();
         let rest = mode.strip_prefix("proofs").unwrap_or(mode);
         Some(match rest.strip_prefix("-exh").unwrap_or(rest) {
             "" => f,
-            "-spec" => ProofRules::spec(),
+            "-draft" => ProofRules::draft(),
             "-no-guard" => ProofRules { guard: false, ..f },
             "-no-receipt" => ProofRules { receipt: false, ..f },
             "-no-j" => ProofRules { j_path: false, ..f },
@@ -410,7 +411,7 @@ mod tests {
         let held: Set = (0..2).collect();
         let rd = own(&w, &held, &Set::new());
         for p in NODES {
-            assert_eq!(proven(&w, &Rules::fixed(), ProofRules::fixed(), &held, &Set::new(), &rd, p, &Set::new()), Admin, "{p}");
+            assert_eq!(proven(&w, &Rules::fixed(), ProofRules::spec(), &held, &Set::new(), &rd, p, &Set::new()), Admin, "{p}");
         }
     }
 
@@ -429,9 +430,9 @@ mod tests {
         let rd = own(&w, &held, &trust);
         assert_eq!(path_role(&rd, N1), Gone);
         let c: Set = [x].into();
-        assert_eq!(proven(&w, &Rules::fixed(), ProofRules::spec(), &held, &trust, &rd, N1, &c), Admin, "as written");
-        assert_eq!(proven(&w, &Rules::fixed(), ProofRules { receipt: true, ..ProofRules::spec() }, &held, &trust, &rd, N1, &c), Gone, "taken in");
-        assert_eq!(proven(&w, &Rules::fixed(), ProofRules::fixed(), &held, &trust, &rd, N1, &c), Gone, "fixed");
+        assert_eq!(proven(&w, &Rules::fixed(), ProofRules::draft(), &held, &trust, &rd, N1, &c), Admin, "as written");
+        assert_eq!(proven(&w, &Rules::fixed(), ProofRules { receipt: true, ..ProofRules::draft() }, &held, &trust, &rd, N1, &c), Gone, "taken in");
+        assert_eq!(proven(&w, &Rules::fixed(), ProofRules::spec(), &held, &trust, &rd, N1, &c), Gone, "fixed");
     }
 
     /// A third party's removal of the remover, cherry-picked: N3 removed N2 at 3, but N1 had
@@ -453,7 +454,7 @@ mod tests {
         let c: Set = [z].into();
         let recv = ProofRules { receipt: true, guard: false, j_path: true };
         assert_eq!(proven(&w, &Rules::fixed(), recv, &held, &trust, &rd, N1, &c), Admin, "taken in");
-        assert_eq!(proven(&w, &Rules::fixed(), ProofRules::fixed(), &held, &trust, &rd, N1, &c), Gone, "fixed");
+        assert_eq!(proven(&w, &Rules::fixed(), ProofRules::spec(), &held, &trust, &rd, N1, &c), Gone, "fixed");
     }
 
     /// Copies judged with the sides taking them in records (control `-no-receipt`): N1's removal of N3
@@ -471,25 +472,25 @@ mod tests {
         let trust = trust_of(&w, &Rules::fixed(), &[[4].into(), [0].into(), [2, 5].into()]);
         let rd = own(&w, &held, &trust);
         let c: Set = [1, rm].into();
-        assert_eq!(proven(&w, &Rules::fixed(), ProofRules::fixed(), &held, &trust, &rd, N3, &c), Role::Read);
-        assert_eq!(proven(&w, &Rules::fixed(), ProofRules { receipt: false, ..ProofRules::fixed() }, &held, &trust, &rd, N3, &c), Gone);
+        assert_eq!(proven(&w, &Rules::fixed(), ProofRules::spec(), &held, &trust, &rd, N3, &c), Role::Read);
+        assert_eq!(proven(&w, &Rules::fixed(), ProofRules { receipt: false, ..ProofRules::spec() }, &held, &trust, &rd, N3, &c), Gone);
     }
 
     /// J reads the proven thing's role on S whatever the path gives: N3 holding read on A is
     /// trusted as a writer of S.
     #[test]
     fn j_reads_the_claimed_path_role() {
-        assert_eq!(j(ProofRules::spec(), Role::Read), Role::Write);
-        assert_eq!(j(ProofRules::fixed(), Role::Read), Role::Read);
+        assert_eq!(j(ProofRules::draft(), Role::Read), Role::Write);
+        assert_eq!(j(ProofRules::spec(), Role::Read), Role::Read);
     }
 
-    /// The searches at small size: the fixed rules hold, each control and the spec fail.
+    /// The searches at small size: the spec's rules hold, each control and the draft fail.
     #[test]
     #[ignore = "property"]
     fn proofs_hold_plain() {
-        let st = proofs_random(0, 2000, ProofRules::fixed());
+        let st = proofs_random(0, 2000, ProofRules::spec());
         assert_eq!(st.failures, 0, "{:?} {:?}", st.kinds, st.fail.iter().map(|f| &f.0).collect::<Vec<_>>());
-        for (mode, kind) in [("proofs-spec", "revive"), ("proofs-no-guard", "revive"), ("proofs-no-j", "j-path")] {
+        for (mode, kind) in [("proofs-draft", "revive"), ("proofs-no-guard", "revive"), ("proofs-no-j", "j-path")] {
             let st = proofs_random(0, 2000, ProofRules::named(mode).unwrap());
             assert!(st.kinds.contains_key(kind), "{mode}: {:?}", st.kinds);
         }
@@ -498,7 +499,7 @@ mod tests {
     #[test]
     #[ignore = "property"]
     fn proofs_hold_large() {
-        let st = proofs_random(0, 20_000, ProofRules::fixed());
+        let st = proofs_random(0, 20_000, ProofRules::spec());
         st.print("proofs");
         assert_eq!(st.failures, 0, "{:?}", st.fail.iter().map(|f| &f.0).collect::<Vec<_>>());
     }

@@ -392,7 +392,7 @@ impl Sync {
 // ---- The node closure ----
 
 /// What a node brings to its closure: its node root's strongs and its own things (its node
-/// thing and the key actors it holds: spec/sync-set.md §2 Own things).
+/// thing and the link keys it redeems by: spec/sync-set.md §2 Own things).
 #[derive(Clone, Debug, Default)]
 pub struct NodeView {
     pub roots: Set,

@@ -1699,7 +1699,7 @@ pub fn random(seed: u64, len: usize) -> World {
     let pick = |rng: &mut roles_model::Rng, mine: &[Thing]| -> Vec<Thing> { things.iter().copied().filter(|t| mine.contains(t) || rng.below(3) == 0).collect() };
     let (x, y, wn, q, z) = (w.node(true, &pick(&mut rng, &[A])), w.node(true, &pick(&mut rng, &[D, R])), w.node(true, &pick(&mut rng, &[O])), w.node(true, &pick(&mut rng, &[])), w.node(true, &pick(&mut rng, &[])));
     let k = w.node(false, &[]);
-    // a thing's admin by its record chain: the key actor at its top, writing by descent
+    // a thing's admin by its record chain: the node thing at its top, writing by descent
     let admin = |t: Thing| -> (Thing, usize) {
         match (t, o_mint, d_mint) {
             (O, A, _) | (D, _, O) => (X, x),
@@ -1810,8 +1810,8 @@ pub struct Wide {
     pub late: bool,
     /// Each of O, H, D, R minted by an earlier one of the five one time in three (record edges:
     /// record edges anywhere on a route, mint chains up to four deep, a minted thing in a unit, a
-    /// record edge changed by churn), its admin the key actor at the top of its record chain,
-    /// writing by descent. False: every thing minted by a key actor, the worlds as without it.
+    /// record edge changed by churn), its admin the node thing at the top of its record chain,
+    /// writing by descent. False: every thing minted by a node thing, the worlds as without it.
     pub mint: bool,
 }
 
@@ -1847,7 +1847,7 @@ pub fn wide(seed: u64, len: usize, opt: Wide) -> World {
     let pick = |rng: &mut roles_model::Rng, mine: &[Thing]| -> Vec<Thing> { things.iter().copied().filter(|t| mine.contains(t) || rng.below(5) == 0).collect() };
     let (x, wn, y, q, z) = (w.node(true, &pick(&mut rng, &[A])), w.node(true, &pick(&mut rng, &[O, H])), w.node(true, &pick(&mut rng, &[D, R])), w.node(true, &pick(&mut rng, &[])), w.node(true, &pick(&mut rng, &[])));
     let k = w.node(false, &[]);
-    // the key actor at the top of t's record chain, and its node
+    // the node thing at the top of t's record chain, and its node
     let admin = |t: Thing| {
         let mut top = t;
         while let Some(&(m, _)) = recs.iter().find(|e| e.1 == top) {

@@ -10,11 +10,11 @@
 //! one). T's current epoch e is boxed to its holders before the leave, so every node holding read
 //! on T then opens it.
 //!
-//! Rules (`LeaveRules`): `spec` as written (J is exempt where its own things administer X,
-//! whichever node made the leave; any peer holding the commit counts for held elsewhere: core
-//! reads no account, so "a node's own other nodes" names nobody); `fixed` (exempt only where J may
-//! not rotate T's read role: one that may rotates first, as for any departure; a peer counts for a
-//! self-removal only where a thing it proved holds a role on T with the leave applied). Properties:
+//! Rules (`LeaveRules`): `spec` (exempt only where J may not rotate T's read role: one that may
+//! rotates first, as for any departure; a peer counts for a self-removal only where a thing it
+//! proved holds a role on T with the leave applied); the control `draft`, without both (J is
+//! exempt where its own things administer X, whichever node made the leave; any peer holding the
+//! commit counts for held elsewhere). Properties:
 //! - `content`: what J writes on T after the leave, under e, opens only for the nodes holding T
 //!   after it, and J (the departure covers every reader it made);
 //! - `log`: J can log the leave under T's sync IDs: exempt, or it may rotate;
@@ -60,18 +60,18 @@ pub struct LeaveRules {
 }
 
 impl LeaveRules {
-    pub fn spec() -> LeaveRules {
+    pub fn draft() -> LeaveRules {
         LeaveRules { may_not_rotate: false, staying_sources: false }
     }
-    pub fn fixed() -> LeaveRules {
+    pub fn spec() -> LeaveRules {
         LeaveRules { may_not_rotate: true, staying_sources: true }
     }
     pub fn named(mode: &str) -> Option<LeaveRules> {
-        let f = LeaveRules::fixed();
+        let f = LeaveRules::spec();
         let rest = mode.strip_prefix("leave").unwrap_or(mode);
         Some(match rest.strip_prefix("-exh").unwrap_or(rest) {
             "" => f,
-            "-spec" => LeaveRules::spec(),
+            "-draft" => LeaveRules::draft(),
             "-rotating" => LeaveRules { may_not_rotate: false, ..f },
             "-any-source" => LeaveRules { staying_sources: false, ..f },
             _ => return None,
@@ -245,20 +245,20 @@ mod tests {
         let g = Grants { n2_a: Admin, a_g: Gone, b_g: Gone, a_t: Write, g_t: Gone, n1_t: Write, b_t: Gone };
         let w = world(g, A, N1, N1, vec![]);
         let mut st = LeaveStats::default();
-        leave_check(&w, LeaveRules::spec(), &mut st);
+        leave_check(&w, LeaveRules::draft(), &mut st);
         assert_eq!(st.kinds.keys().collect::<Vec<_>>(), ["content"]);
         let mut st = LeaveStats::default();
-        leave_check(&w, LeaveRules::fixed(), &mut st);
+        leave_check(&w, LeaveRules::spec(), &mut st);
         assert_eq!(st.failures, 0);
     }
 
-    /// G (administered by A, B its writer) leaves T: as written N1 writing T directly is exempt and
+    /// G (administered by A, B its writer) leaves T: under the draft N1 writing T directly is exempt and
     /// B, who holds T through G alone, opens what it writes.
     #[test]
     fn a_group_leaving_leaks_to_its_other_members_as_written() {
         let g = Grants { n2_a: Write, a_g: Admin, b_g: Write, a_t: Gone, g_t: Read, n1_t: Write, b_t: Gone };
         let mut st = LeaveStats::default();
-        leave_check(&world(g, G, N1, N1, vec![]), LeaveRules::spec(), &mut st);
+        leave_check(&world(g, G, N1, N1, vec![]), LeaveRules::draft(), &mut st);
         assert!(st.fail[0].0.contains("[1, 2]"), "{:?}", st.fail);
     }
 
@@ -269,10 +269,10 @@ mod tests {
         let g = Grants { n2_a: Admin, a_g: Gone, b_g: Gone, a_t: Read, g_t: Gone, n1_t: Gone, b_t: Gone };
         let w = world(g, A, N1, N1, vec![(N1, N2)]);
         let mut st = LeaveStats::default();
-        leave_check(&w, LeaveRules::spec(), &mut st);
+        leave_check(&w, LeaveRules::draft(), &mut st);
         assert_eq!(st.kinds.keys().collect::<Vec<_>>(), ["lost"]);
         let mut st = LeaveStats::default();
-        leave_check(&w, LeaveRules::fixed(), &mut st);
+        leave_check(&w, LeaveRules::spec(), &mut st);
         assert_eq!(st.failures, 0);
     }
 
@@ -285,10 +285,10 @@ mod tests {
             let rnd = crate::each_world(0x1ea7e, 0..20_000, |rng, st: &mut LeaveStats| leave_check(&random_leave_world(rng), r, st));
             (fam, rnd)
         };
-        for st in <[LeaveStats; 2]>::from(run(LeaveRules::fixed())) {
+        for st in <[LeaveStats; 2]>::from(run(LeaveRules::spec())) {
             assert!(st.worlds > 0 && st.failures == 0, "{:?}", st.fail.iter().map(|f| &f.0).collect::<Vec<_>>());
         }
-        for (mode, kind) in [("leave-spec", "content"), ("leave-spec", "lost"), ("leave-rotating", "content"), ("leave-any-source", "lost")] {
+        for (mode, kind) in [("leave-draft", "content"), ("leave-draft", "lost"), ("leave-rotating", "content"), ("leave-any-source", "lost")] {
             let (fam, rnd) = run(LeaveRules::named(mode).unwrap());
             assert!(fam.kinds.contains_key(kind) && rnd.kinds.contains_key(kind), "{mode}: {:?} {:?}", fam.kinds, rnd.kinds);
         }

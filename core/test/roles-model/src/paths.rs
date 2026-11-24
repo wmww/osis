@@ -1,5 +1,5 @@
-//! Stated paths and signers as members (notes/write-path-design.md §1-§2, §5,
-//! notes/account-membership-design.md §2, §4; not built, not in spec): an oracle of those notes,
+//! Stated paths, accounts as ordinary things (notes/write-path-design.md §1-§2, §5,
+//! spec/permissions.md §1, §5, §8): an oracle of those notes,
 //! greenfield, sharing nothing with `joint` (whose authority is a maximum over every path).
 //! Findings: notes/path-model-findings.md. README.md, Paths: what is assumed where the notes are
 //! open, sizes, how to run.

@@ -50,15 +50,16 @@ pub enum Fix {
     Greatest,
 }
 
-/// The rule and its variants. `Rule::SPEC` is the spec as written; `Rule::FIXED` the design with
-/// the fixes the model found.
+/// The rule and its variants. `Rule::SPEC` is the spec (spec/sync-set.md §2 First entry);
+/// `Rule::DRAFT` the control without the three fixes the model found (`record_pieces`,
+/// `stubs_at_sync`, `founded_pieces`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rule {
     pub fix: Fix,
     /// First entry checked (off: the walk enters by role alone, the rule removed).
     pub first_entry: bool,
     /// A key part's edge pieces are indexed by every edge its holder holds, the record edge
-    /// included (off: by edge writes only, spec/permissions.md §4 Key part as written).
+    /// included (off: by edge writes only).
     pub record_pieces: bool,
     /// A read unit carries the stub of an independent thing a strong of it reaches where the unit's
     /// thing holds sync or above on it (off: only where its keys open it, notes/stubs.md rule 2).
@@ -71,8 +72,8 @@ pub struct Rule {
 }
 
 impl Rule {
-    pub const SPEC: Rule = Rule { fix: Fix::Least, first_entry: true, record_pieces: false, stubs_at_sync: false, founded_pieces: false, merged: false };
-    pub const FIXED: Rule = Rule { record_pieces: true, stubs_at_sync: true, founded_pieces: true, ..Rule::SPEC };
+    pub const DRAFT: Rule = Rule { fix: Fix::Least, first_entry: true, record_pieces: false, stubs_at_sync: false, founded_pieces: false, merged: false };
+    pub const SPEC: Rule = Rule { record_pieces: true, stubs_at_sync: true, founded_pieces: true, ..Rule::DRAFT };
 }
 
 /// A node's state: the independent things it reads, keeps unread, and whose key parts it holds.

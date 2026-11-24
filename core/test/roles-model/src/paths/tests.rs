@@ -1203,7 +1203,9 @@ fn small_worlds_hold_plain() {
             // honest writers make few writes that do not apply: their worlds check `honest` alone here
             let ran = |k: &str| st.checked.get(k).is_some_and(|n| *n > 0);
             let keys: &[&str] = if honest == Honesty::Writers { &["honest"] } else { &["void", "honest", "idle N", "unapplied N"] };
-            assert!(st.failures() == 0 && keys.iter().all(|k| ran(k)), "{flags} {detached} {keyed} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
+            // the membership shapes (`tiny_keys`): a node signing by a key granted on its node thing, paths through A
+            let members: &[&str] = if keyed { &["reach: a node signed by a granted key", "reach: through A"] } else { &[] };
+            assert!(st.failures() == 0 && keys.iter().chain(members).all(|k| ran(k)), "{flags} {detached} {keyed} {honest:?} {:?} {:?} {:?}", st.checked, st.fails, st.first);
         }
     }
     let no_void = tiny_run_from(0, 1000, &Rules { self_void: false, ..Rules::fixed() }, TinyMode { flags: false, detached: false, keys: false, honest: Honesty::None });

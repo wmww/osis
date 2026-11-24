@@ -49,13 +49,13 @@ fn held(net: &Net, i: usize, rule: Rule) -> Set {
 #[test]
 fn the_node_things_unit_is_itself() {
     let net = account(Some(Role::Admin), 0);
-    for (n, rule) in [(N1, Rule::FIXED), (N2, Rule::FIXED)] {
+    for (n, rule) in [(N1, Rule::SPEC), (N2, Rule::SPEC)] {
         assert_eq!(unit(&net.w, n, &net.edges(rule)), set(&[n]));
     }
-    let merged = Rule { merged: true, ..Rule::FIXED };
+    let merged = Rule { merged: true, ..Rule::SPEC };
     assert_eq!(unit(&net.w, N1, &net.edges(merged)), set(&[N1, A, D, INBOX, PROFILE]), "control: the merged node thing carries the account");
     // held alike either way: the split changes what N's sync ID carries, not what the node holds
-    let split = held(&net, 0, Rule::FIXED);
+    let split = held(&net, 0, Rule::SPEC);
     assert_eq!(held(&net, 0, merged), &split - &set(&[R1]));
 }
 
@@ -67,9 +67,9 @@ fn the_node_things_unit_is_itself() {
 #[test]
 fn hole_the_making_node_never_enters_its_account() {
     let net = account(None, 0);
-    assert_eq!(held(&net, 0, Rule::SPEC), set(&[N1, R1]), "the spec as written: A is not entered");
-    let fixed = Rule { record_pieces: true, ..Rule::SPEC };
-    let h: Held = net.held(0, fixed);
+    assert_eq!(held(&net, 0, Rule::DRAFT), set(&[N1, R1]), "the draft: A is not entered");
+    let records = Rule { record_pieces: true, ..Rule::DRAFT };
+    let h: Held = net.held(0, records);
     assert_eq!(h.held, set(&[N1, R1, A, D, INBOX, PROFILE]));
     assert_eq!(h.sync_set, set(&[N1, A, INBOX, PROFILE]));
 }
@@ -82,20 +82,20 @@ fn one_and_two_node_accounts_pairing_and_removal() {
     for role in [Role::Admin, Role::Write] {
         let mut net = account(Some(role), 0);
         net.nodes[1].offers = set(&[A]);
-        let with_offer = net.held(1, Rule::FIXED);
+        let with_offer = net.held(1, Rule::SPEC);
         net.nodes[1].offers.clear();
-        let after = net.held(1, Rule::FIXED);
+        let after = net.held(1, Rule::SPEC);
         assert_eq!(with_offer, after);
         assert_eq!(after.held, set(&[N2, R2, A, D, INBOX, PROFILE]));
         assert_eq!(after.sync_set, set(&[N2, A, INBOX, PROFILE]), "N1 is held for nothing at node 2");
-        assert_eq!(net.held(0, Rule::FIXED).sync_set, set(&[N1, A, INBOX, PROFILE]));
-        // the spec as written: the second node is in, the first is out
-        assert_eq!(held(&net, 1, Rule::SPEC), after.held);
-        assert_eq!(held(&net, 0, Rule::SPEC), set(&[N1, R1]));
+        assert_eq!(net.held(0, Rule::SPEC).sync_set, set(&[N1, A, INBOX, PROFILE]));
+        // the draft: the second node is in, the first is out
+        assert_eq!(held(&net, 1, Rule::DRAFT), after.held);
+        assert_eq!(held(&net, 0, Rule::DRAFT), set(&[N1, R1]));
         // removal: the grant goes (its piece stays, with the removal); node 2 holds itself alone
         net.w.grants.remove(&(N2, A));
-        assert_eq!(held(&net, 1, Rule::FIXED), set(&[N2, R2]));
-        assert_eq!(held(&net, 0, Rule::FIXED), set(&[N1, R1, A, D, INBOX, PROFILE]));
+        assert_eq!(held(&net, 1, Rule::SPEC), set(&[N2, R2]));
+        assert_eq!(held(&net, 0, Rule::SPEC), set(&[N1, R1, A, D, INBOX, PROFILE]));
     }
 }
 
@@ -116,7 +116,7 @@ fn far(last: Role) -> Net {
 // holds sync on enters C either way.
 #[test]
 fn hole_a_far_thing_held_sync_through_a_holder_is_never_entered() {
-    let fix_records = Rule { record_pieces: true, ..Rule::SPEC };
+    let fix_records = Rule { record_pieces: true, ..Rule::DRAFT };
     let net = far(Role::Read);
     for i in 0..2 {
         let h = net.held(i, fix_records);
@@ -127,9 +127,9 @@ fn hole_a_far_thing_held_sync_through_a_holder_is_never_entered() {
     direct.w.grants.insert((A, C), Role::Sync);
     direct.strongs.insert((A, C));
     for i in 0..2 {
-        assert!(!held(&net, i, fix_records).contains(&C), "the spec: never entered");
+        assert!(!held(&net, i, fix_records).contains(&C), "the draft: never entered");
         assert!(held(&direct, i, fix_records).contains(&C), "direct: entered by A's piece");
-        let h = net.held(i, Rule::FIXED);
+        let h = net.held(i, Rule::SPEC);
         assert!(h.s.kept.contains(&C) && h.held.contains(&C), "stub at sync: kept unread {h:?}");
     }
 }
@@ -145,11 +145,11 @@ fn a_far_thing_referenced_from_the_root_needs_an_offer() {
     net.w.grants.insert((A, B), Role::Read);
     net.w.grants.insert((B, C), Role::Read);
     net.strongs.insert((R1, C));
-    assert!(!held(&net, 0, Rule::FIXED).contains(&C));
-    assert!(held(&net, 0, Rule { fix: Fix::Greatest, ..Rule::FIXED }).contains(&C), "control: greatest fixpoint walks down");
-    assert!(held(&net, 0, Rule { first_entry: false, ..Rule::FIXED }).contains(&C), "control: no first entry");
+    assert!(!held(&net, 0, Rule::SPEC).contains(&C));
+    assert!(held(&net, 0, Rule { fix: Fix::Greatest, ..Rule::SPEC }).contains(&C), "control: greatest fixpoint walks down");
+    assert!(held(&net, 0, Rule { first_entry: false, ..Rule::SPEC }).contains(&C), "control: no first entry");
     net.nodes[0].offers = set(&[C]);
-    let with = net.held(0, Rule::FIXED);
+    let with = net.held(0, Rule::SPEC);
     assert!(with.held.contains(&C) && with.sync_set.contains(&B), "{with:?}");
 }
 
@@ -166,11 +166,11 @@ fn following_changes_keeps_a_self_supporting_entry() {
     net.w.grants.insert((B, C), Role::Read);
     net.strongs.insert((R1, C));
     net.nodes[0].offers = set(&[C]);
-    let prev: S = net.held(0, Rule::FIXED).s;
+    let prev: S = net.held(0, Rule::SPEC).s;
     net.nodes[0].offers.clear();
-    let followed = net.held_from(0, Rule::FIXED, net.settle(0, Rule::FIXED, prev));
+    let followed = net.held_from(0, Rule::SPEC, net.settle(0, Rule::SPEC, prev));
     assert!(followed.held.contains(&C), "kept by its own support");
-    assert!(!held(&net, 0, Rule::FIXED).contains(&C), "dropped by the rule");
+    assert!(!held(&net, 0, Rule::SPEC).contains(&C), "dropped by the rule");
 }
 
 /// Random worlds over the account: `more` further things (independent, or dependents of an earlier
@@ -289,19 +289,19 @@ fn sweep(rule: Rule, worlds: u64, more: usize) -> std::collections::BTreeMap<&'s
     fails
 }
 
-// The design (`Rule::FIXED`) keeps every property over random worlds but "history", the hazard of
+// The design (`Rule::SPEC`) keeps every property over random worlds but "history", the hazard of
 // following changes (no rule: an engine must recompute founded support); each rule weakened fails
 // its property: record pieces off fails making and symmetry, stubs at sync off fails by role, first
 // entry off or the greatest fixpoint fails first entry (founded pieces off: the hand world below).
 #[test]
 fn entry_rules_over_random_worlds() {
-    let fixed = sweep(Rule::FIXED, 1000, 5);
-    assert_eq!(fixed.keys().copied().collect::<Vec<_>>(), vec!["history"], "{fixed:?}");
+    let spec = sweep(Rule::SPEC, 1000, 5);
+    assert_eq!(spec.keys().copied().collect::<Vec<_>>(), vec!["history"], "{spec:?}");
     for (rule, prop) in [
-        (Rule { record_pieces: false, ..Rule::FIXED }, "making"),
-        (Rule { stubs_at_sync: false, ..Rule::FIXED }, "by role"),
-        (Rule { first_entry: false, ..Rule::FIXED }, "first entry"),
-        (Rule { fix: Fix::Greatest, ..Rule::FIXED }, "first entry"),
+        (Rule { record_pieces: false, ..Rule::SPEC }, "making"),
+        (Rule { stubs_at_sync: false, ..Rule::SPEC }, "by role"),
+        (Rule { first_entry: false, ..Rule::SPEC }, "first entry"),
+        (Rule { fix: Fix::Greatest, ..Rule::SPEC }, "first entry"),
     ] {
         let f = sweep(rule, 1000, 5);
         assert!(f.contains_key(prop), "{rule:?} should fail {prop}: {f:?}");
@@ -323,11 +323,11 @@ fn incidental_entry_through_a_holder_held_for_another_thing() {
     net.w.grants.insert((H, Y), Role::Sync);
     net.w.grants.insert((H, X), Role::Sync);
     net.strongs.insert((R1, X));
-    let spec = Rule { founded_pieces: false, ..Rule::FIXED };
+    let spec = Rule { founded_pieces: false, ..Rule::SPEC };
     assert!(!held(&net, 0, spec).contains(&X));
     net.strongs.insert((A, Y));
     assert!(held(&net, 0, spec).contains(&X), "entered through H, held for Y");
-    assert!(held(&net, 0, Rule::FIXED).contains(&Y) && !held(&net, 0, Rule::FIXED).contains(&X));
+    assert!(held(&net, 0, Rule::SPEC).contains(&Y) && !held(&net, 0, Rule::SPEC).contains(&X));
 }
 
 // By hand: OSIS_ENTRY_WORLDS random worlds (default 20000) of OSIS_ENTRY_MORE further things
@@ -339,12 +339,12 @@ fn entry_explore() {
     let more: usize = std::env::var("OSIS_ENTRY_MORE").ok().and_then(|s| s.parse().ok()).unwrap_or(5);
     for (name, rule) in [
         ("spec", Rule::SPEC),
-        ("fixed", Rule::FIXED),
-        ("no record pieces", Rule { record_pieces: false, ..Rule::FIXED }),
-        ("no stubs at sync", Rule { stubs_at_sync: false, ..Rule::FIXED }),
-        ("pieces of held-for-keys holders", Rule { founded_pieces: false, ..Rule::FIXED }),
-        ("no first entry", Rule { first_entry: false, ..Rule::FIXED }),
-        ("greatest", Rule { fix: Fix::Greatest, ..Rule::FIXED }),
+        ("draft", Rule::DRAFT),
+        ("no record pieces", Rule { record_pieces: false, ..Rule::SPEC }),
+        ("no stubs at sync", Rule { stubs_at_sync: false, ..Rule::SPEC }),
+        ("pieces of held-for-keys holders", Rule { founded_pieces: false, ..Rule::SPEC }),
+        ("no first entry", Rule { first_entry: false, ..Rule::SPEC }),
+        ("greatest", Rule { fix: Fix::Greatest, ..Rule::SPEC }),
     ] {
         println!("{name}: {:?}", sweep(rule, n, more));
     }
@@ -352,7 +352,7 @@ fn entry_explore() {
 
 // By hand, the exhaustive family: A and three further independent things, every grant among them
 // (A on each, each on each other) none, sync or read, and one strong to one of them from A or from
-// both roots; every property under `Rule::FIXED` but "history".
+// both roots; every property under `Rule::SPEC` but "history".
 #[test]
 #[ignore]
 fn entry_family() {
@@ -382,7 +382,7 @@ fn entry_family() {
                     }
                 }
                 worlds += 1;
-                for f in check(&n, Rule::FIXED) {
+                for f in check(&n, Rule::SPEC) {
                     *fails.entry(f).or_insert(0) += 1;
                 }
             }

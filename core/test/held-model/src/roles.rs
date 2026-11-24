@@ -30,12 +30,12 @@ impl World {
             _ => None,
         }
     }
-    /// A key actor: its record holds a key (spec/permissions.md §1).
-    pub fn key_actor(&self, t: ThingId) -> bool {
+    /// Minted with a key: its record holds the key (spec/permissions.md §1).
+    pub fn minted_with_key(&self, t: ThingId) -> bool {
         self.links.get(&t) == Some(&RecordLink::Key)
     }
-    /// The record chain above `t`, nearest first (stops at a key actor, an unknown record or a
-    /// cycle).
+    /// The record chain above `t`, nearest first (stops at a thing minted with a key, an unknown
+    /// record or a cycle).
     pub fn chain_above(&self, t: ThingId) -> Vec<NodeId> {
         let mut v = Vec::new();
         let mut x = t;
@@ -265,11 +265,9 @@ impl Timeline {
                     if let (Some(ix), false) = (author, edge) {
                         tl.w.authored(i, ix.min(path.things.len() + 1));
                     }
-                    // held: a part of an applied commit; an edge write on a key actor applies
-                    // nothing (Interim: issues/held-model-key-actor-edges.md), and a delta whose path leaves its
-                    // commit's purge author out holds nothing (§6)
-                    let refused = if edge { tl.world.key_actor(thing) } else { author.is_none() };
-                    if joined && !refused {
+                    // held: a part of an applied commit; a delta whose path leaves its commit's
+                    // purge author out holds nothing (§6)
+                    if joined && (edge || author.is_some()) {
                         held.insert(i);
                     }
                 }

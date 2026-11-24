@@ -440,7 +440,7 @@ fn unknown(world: &World, exists: &BTreeSet<ThingId>, c: &Commit, p: &Part) -> b
 /// spec/commits.md §4 Unjudgeable: a commit is unjudgeable while the record of the thing it is
 /// signed as is unknown, or its key hop is not that record's key (no key grant is modelled).
 fn judgeable(world: &World, c: &Commit) -> bool {
-    world.key_actor(c.signer)
+    world.minted_with_key(c.signer)
 }
 
 /// An edge write's place in the order a wait reads (spec/permissions.md §5.1 step 1): its key,
@@ -560,13 +560,12 @@ fn forget(h: &Held, things: &BTreeSet<ThingId>) -> Held {
 /// node closure, every thing not in `closure` (spec/commits.md §5 What a held thing needs): its
 /// certificates alone, never content, whether or not it was ever in the node closure. `h` with
 /// every content part on such a thing counting as never received: all but its creation and its
-/// `roles.0` (role-class; `retention^.0` is content), and all of a key actor (its card).
+/// `roles.0` (role-class; `retention^.0` is content).
 pub fn at_quiet(h: &Held, closure: &BTreeSet<ThingId>) -> Held {
-    let keys: BTreeSet<ThingId> = h.records.iter().filter(|r| r.link == RecordLink::Key).map(|r| r.id).chain(h.commits.iter().flat_map(|c| &c.parts).filter(|p| creation(p) == Some(RecordLink::Key)).map(|p| p.thing)).collect();
     let mut n = h.clone();
     for p in n.commits.iter_mut().flat_map(|c| c.parts.iter_mut()) {
         let certificate = [Aspect::CREATED, Aspect::ROLES].contains(&p.aspect);
-        if !closure.contains(&p.thing) && !keys.contains(&p.thing) && !certificate && matches!(p.body, Body::Held(_) | Body::Parked) {
+        if !closure.contains(&p.thing) && !certificate && matches!(p.body, Body::Held(_) | Body::Parked) {
             p.body = Body::Missing;
             p.stripped.clear();
         }

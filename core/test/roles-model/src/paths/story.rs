@@ -2280,15 +2280,20 @@ pub fn tiny_detached(i: u64, n: usize) -> World {
     w
 }
 
-/// A small world of keys on A (H its mint admin, so no key signs as A at the start): `n` commits
-/// at random `ts`, each signed by a random party as itself or (one in two) by RK or TK as A
-/// acting as itself, on A (half the worlds open with H granting RK admin on A at 1): content one
-/// in five, else one part or (one in four) two or three on distinct holders, each a party's edge
-/// (admin, standing or until two ticks on, or none) or, one in three, a key's grant on A for RK
-/// or TK (admin, write or read, standing or timed, with or without the flag, or none; a key
-/// lowering its own among them), listing each earlier write with probability one half (notes/
-/// write-path-design.md, Keys K3 to K5). A key's grant is written, lowered and removed as any
-/// grant; a key acts as A by the role its grant gives; a lowered key's commits fall unless listed.
+/// A small world of accounts as ordinary things (spec/permissions.md §1, §8): node things H, B,
+/// N5, Z, N6, each minted with its own key (so its key holds admin on it), and A minted with
+/// H as mint admin, T1 with A. `n` commits at random `ts`, each signed by a party's own key as
+/// itself, or (one in two) by RK or TK as A or as a party (the key's grant there, `signers.0`);
+/// on A (one in two), T1 or a party's node thing; acting as itself where it writes its own thing,
+/// else by its direct edge or (one in two, past a party) through A: [N, A, T1] and [N, A, N']. Half
+/// the worlds open with H granting RK admin on A at 1, half with B granting RK admin on B (a
+/// node's second key), a quarter with N5 granting TK write on N5; a key signs as A, as the party
+/// the opening grants it on, or as any party, a third each. Content one in five, else one part or (one in four) two or three on
+/// distinct holders: a key's grant (one in three: admin, write or read, standing or timed, with or
+/// without the flag, or none; a key lowering its own among them), A's (one in six off A), else a
+/// party's (admin, standing or until two ticks on, write, read or none), listing each earlier
+/// write with probability one half. Pairing is a grant to a node thing, removal the ordinary
+/// removal, a node's key rotation a key grant on its node thing and the lowering of the old one.
 pub fn tiny_keys(i: u64, n: usize) -> World {
     let mut rng = Rng::thread(0x0e75, i as usize);
     let mut w = account();
@@ -2297,12 +2302,34 @@ pub fn tiny_keys(i: u64, n: usize) -> World {
     if rng.below(2) == 0 {
         w.push(H, 1, &[], A, Kind::set(RK, Role::Admin));
     }
+    if rng.below(2) == 0 {
+        w.push(B, 1, &[], B, Kind::set(RK, Role::Admin));
+    }
+    if rng.below(4) == 0 {
+        w.push(N5, 1, &[], N5, Kind::set(TK, Role::Write));
+    }
     for _ in 0..n {
-        let key = if rng.below(2) == 0 { Some(keys[rng.below(2)]) } else { None };
-        let (k, s) = key.map_or_else(|| { let p = parties[rng.below(5)]; (own_key(p), p) }, |k| (k, A));
+        let (k, s) = if rng.below(2) == 0 {
+            let k = keys[rng.below(2)];
+            // as A, as the party the opening grants it on, or as any party
+            (k, match rng.below(3) {
+                0 => A,
+                1 => if k == RK { B } else { N5 },
+                _ => parties[rng.below(5)],
+            })
+        } else {
+            let p = parties[rng.below(5)];
+            (own_key(p), p)
+        };
+        let on = match rng.below(4) {
+            0 | 1 => A,
+            2 => T1,
+            _ => parties[rng.below(5)],
+        };
+        let path: &[Thing] = if s == on || s == A || on == A || rng.below(2) == 0 { &[] } else { &[A] };
         let ts = 1 + rng.below(n) as u32;
         if rng.below(5) == 0 {
-            w.push_signed(k, s, ts, &[], A, Kind::Content);
+            w.push_signed(k, s, ts, path, on, Kind::Content);
             continue;
         }
         let m = if rng.below(4) == 0 { 2 + rng.below(2) } else { 1 };
@@ -2322,14 +2349,16 @@ pub fn tiny_keys(i: u64, n: usize) -> World {
                     _ => Kind::set(h, Role::Read),
                 })
             } else {
-                let h = parties[rng.below(5)];
-                (h, match rng.below(5) {
+                let h = if on != A && rng.below(6) == 0 { A } else { parties[rng.below(5)] };
+                (h, match rng.below(7) {
                     0 | 1 => Kind::set(h, Role::Admin),
                     2 => Kind::set(h, Role::Admin).until(ts + 2),
+                    3 => Kind::set(h, Role::Write),
+                    4 => Kind::set(h, Role::Read),
                     _ => Kind::set(h, Role::None),
                 })
             };
-            if h != s && !holders.contains(&h) {
+            if h != s && h != on && !holders.contains(&h) {
                 holders.push(h);
                 parts.push(kind.listing(w.cut(&list)));
             }
@@ -2337,10 +2366,10 @@ pub fn tiny_keys(i: u64, n: usize) -> World {
         match parts.len() {
             0 => {}
             1 => {
-                w.push_signed(k, s, ts, &[], A, parts.pop().expect("one part"));
+                w.push_signed(k, s, ts, path, on, parts.pop().expect("one part"));
             }
             _ => {
-                w.commit_signed(k, s, ts, &[], A, parts, &[]);
+                w.commit_signed(k, s, ts, path, on, parts, &[]);
             }
         }
     }
@@ -2741,6 +2770,9 @@ pub fn tiny_check(i: u64, t: &Tiny, rules: &Rules, st: &mut TinyStats) {
     *st.checked.entry("reach: key grant by member").or_default() += n(&|j| w.key_write(j) && !w.hops(j).is_empty());
     *st.checked.entry("reach: key grant by flag").or_default() += n(&|j| w.key_write(j) && rd.by_flag.contains(&j));
     *st.checked.entry("reach: key below admin writes").or_default() += rd.valid.iter().filter(|&&j| is_key(w.key_hop(j).0) && w.key_hop(j).0 != own_key(w.key_hop(j).1) && before_in(w, &rd, w.key_hop(j), j) == Role::Write).count() as u64;
+    let node_key = |j: Id| is_key(w.key_hop(j).0) && w.key_hop(j).0 != own_key(w.key_hop(j).1) && w.commits[j].signer != A;
+    *st.checked.entry("reach: a node signed by a granted key").or_default() += n(&node_key) + rd.valid.iter().filter(|&&j| node_key(j)).count() as u64;
+    *st.checked.entry("reach: through A").or_default() += n(&|j| w.commits[j].path == [A]) + rd.valid.iter().filter(|&&j| w.commits[j].path == [A]).count() as u64;
     *st.checked.entry("reach: key drops").or_default() += rd.dropped.iter().filter(|j| rd.dropper.get(j).is_some_and(|&d| w.sets(d).is_some_and(|e| is_key(e.0)))).count() as u64;
     let keys = unright_key_writes(w, &rd);
     st.hit("key right", true, !keys.is_empty(), i, w, || format!("key grants {keys:?} made with no right"));
@@ -2809,15 +2841,20 @@ pub fn tiny_trace(w: &World) -> String {
         RK => "RK",
         TK => "TK",
         t if is_key(t) => "own key",
+        T1 => "T1",
         t => ["?", "H", "B", "X", "N5", "K", "Z", "N6"].get(t as usize).copied().unwrap_or("?"),
     };
     let mut s = String::new();
     for (i, c) in w.commits.iter().enumerate() {
+        let by = if c.key == own_key(c.signer) { String::new() } else { format!(" by {}", name(&c.key)) };
+        // the thing written and the path, where it is not A by the direct edge
+        let at = if c.on == A && c.path.is_empty() { String::new() } else { format!(" on {} via {:?}", name(&c.on), c.path.iter().map(name).collect::<Vec<_>>()) };
         if let Kind::Edge { holder, role, frontier, until, may_grant, finalize } = &c.kind {
             let what = if *finalize { "finalize".to_string() } else { format!("{role:?}{}{}", if *may_grant { " may grant" } else { "" }, until.map_or(String::new(), |u| format!(" until {u}"))) };
             let part = if w.parts(c.cid) > 1 { format!(" (commit {})", c.cid) } else { String::new() };
-            let by = if c.key == own_key(c.signer) { String::new() } else { format!(" by {}", name(&c.key)) };
-            s += &format!("  {i}: {}{by} ts {}{part}: {} := {what} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
+            s += &format!("  {i}: {}{by} ts {}{part}{at}: {} := {what} listing {:?}\n", name(&c.signer), c.ts, name(holder), frontier.values().flatten().collect::<Vec<_>>());
+        } else if matches!(c.kind, Kind::Content) {
+            s += &format!("  {i}: {}{by} ts {}{at}: content\n", name(&c.signer), c.ts);
         }
     }
     s

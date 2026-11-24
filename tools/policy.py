@@ -491,13 +491,11 @@ def spec_anchors():
 # issues/deprecated-terms.md (Gone): a fully removed concept whose word has no other sense, so no
 # text may use it again. The registry itself and history logs are exempt.
 DEAD_WORDS = {"key actor": re.compile(r"(?i)\bkey[ _-]?actors?\b")}
-# Interim (issues/deprecated-terms.md, key actor row): uses still owed, each with its owner
-DEAD_WORD_OWED = ("core/test/held-model/", "issues/held-model-key-actor-edges.md", "notes/accounts-switch-brief.md")
 
 
 def dead_words():
     tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split("\n")
-    skip = ("docs/", "notes/complaints/", "libs/kit/patches/", "issues/deprecated-terms.md", "tools/policy.py") + DEAD_WORD_OWED
+    skip = ("docs/", "notes/complaints/", "libs/kit/patches/", "issues/deprecated-terms.md", "tools/policy.py")
     for rel in tracked:
         if not rel or rel.startswith(skip):
             continue

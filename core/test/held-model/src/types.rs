@@ -8,8 +8,8 @@ pub use crate::thing_history::{Opt, NEVER};
 use std::collections::BTreeMap;
 
 pub type CommitId = u32;
-/// Things, actors and nodes share one id space (spec/permissions.md §1: an actor is a thing; a
-/// node is a key actor). `NodeId` names a signer, `ThingId` a target.
+/// Things, actors and nodes share one id space (spec/permissions.md §1: a holder is a thing; a
+/// node signs as its node thing, minted with its key). `NodeId` names a signer, `ThingId` a target.
 pub type NodeId = u32;
 pub type ThingId = u32;
 
@@ -356,14 +356,14 @@ impl Commit {
 /// What a creation record puts above its thing (spec/permissions.md §1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RecordLink {
-    /// A key actor (node, link key): admin of itself.
+    /// Minted with a key (a node thing, a link key): the key holds admin on it.
     Key,
-    /// Its mint admin (a key actor or a thing that is an actor): holds its record edge.
+    /// Its mint admin: holds its record edge.
     Admin(NodeId),
 }
 
 impl RecordLink {
-    /// The mint admin the record names; a key actor has none.
+    /// The mint admin the record names; a thing minted with a key has none.
     pub fn mint_admin(self) -> Option<NodeId> {
         match self {
             RecordLink::Key => None,
@@ -424,7 +424,7 @@ pub struct Held {
     pub now: u64,
     /// The node itself (for "may drop" judgments that need the right).
     pub me: NodeId,
-    /// Creation records the node knows without a held creation: key actors' and the raw records
+    /// Creation records the node knows without a held creation: things minted with a key and the raw records
     /// a dependent's record chain carries (spec/permissions.md §1). A held creation's record is
     /// known too (`model::records`); an input may list it here as well. A record is identity: a
     /// thing exists while a creation of it joins, or, no held commit listing a creation of it,

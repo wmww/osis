@@ -92,7 +92,7 @@ fn present(h: &Held) -> BTreeMap<(ThingId, Aspect), Value> {
     evaluate(h).reads.into_iter().filter_map(|(k, v)| Some((k, v?))).collect()
 }
 
-/// A random valid world: things under sync IDs, each created by a key actor, valid grants boxing
+/// A random valid world: things under sync IDs, each created by a node thing, valid grants boxing
 /// real keys (copied under `MINE` or not), forged boxes that open nothing, writes.
 fn world(seed: u64) -> Library {
     let mut r = Rng::new(seed);
@@ -103,7 +103,7 @@ fn world(seed: u64) -> Library {
     for t in 0..n {
         let thing = 10 + t;
         let key = r.below(2) as NodeId;
-        // half the things answer to an account (a thing created by the key actor): its record
+        // half the things answer to an account (minted with the node thing): its record
         // up the chain may be behind another sync ID
         let (admin, link) = if r.chance(50) {
             let account = 40 + t;
