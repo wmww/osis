@@ -260,9 +260,9 @@ fn a_fire_sent_between_a_rotation_and_its_step_is_taken_spec_crypto_7() {
     assert!(matches!(opened, crate::sync::Opened::Commit(..)), "the admin takes the fire: {opened:?}");
 }
 
-// spec/permissions.md §3 (a `keys.0` delta touching a field other than the keysets a writer
-// rotates and box records needs admin), spec/crypto.md §7 Header list: a writer of g writing junk
-// step keys in g's `keys.0` changes nothing: its write is invalid, peer 2 (outside g) still lists
+// spec/permissions.md §3 (Who rotates), spec/crypto.md §7 (Header list): a `keys.0` delta touching
+// a field other than the keysets a writer rotates and box records needs admin, so a writer of g
+// writing junk step keys in g's `keys.0` changes nothing: its write is invalid, peer 2 (outside g) still lists
 // the recorded step's key in its fire, and the admin takes it. Fails if `step` needs only write
 // (every outside fire would then list keys no step places and apply nowhere, silently).
 #[test]
