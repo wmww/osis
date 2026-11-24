@@ -85,7 +85,8 @@ fn pending_until_created_spec_commits_4() {
     m.set(t, &REG, &s("second")).unwrap();
     lp.peers[0].commit(m).unwrap();
     let pks = packages_to(&mut lp, 0, 1);
-    // the last commit first: its author's created.0 is unknown
+    // the last commit first, before the grant's fire: its author's created.0 is unknown
+    lp.hold_fires(true);
     let r = lp.deliver(1, pks.last().unwrap()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_))), "{r:?}");
     let me = lp.peers[0].engine.me();
@@ -345,13 +346,13 @@ impl osis_commit::Secrets for Dedup {
         self.0.iter().find(|r| r.tid() == *tid).map(|r| osis_crypto::dedup_secret(r.nonce()))
     }
     fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
     }
     fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
     }
     fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
     }
 }
 

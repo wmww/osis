@@ -1006,7 +1006,7 @@ fn delete_of_an_entry_not_held_changes_nothing_spec_wire_11_2() {
     assert!(st.tombstone(&s.id, &never).unwrap().is_none(), "no tombstone for a blob never held");
     assert_eq!(st.usage(&s.id).unwrap().0, before);
     assert_eq!(st.take_delete(&s.id, &[del(b), del(b)], true).unwrap(), [Code::OK, Code::OK], "a repeat is idempotent");
-    let d2 = DeleteSecret::derive(&Secret32::from_bytes([21; 32]));
+    let d2 = DeleteSecret::write(&Secret32::from_bytes([21; 32]));
     let by = DeleteItem::sign_by(&s.sync_key(), &[(2, &d2)], &[5; 16], &[1; 16], &s.id, b).unwrap();
     assert_eq!(st.take_delete(&s.id, &[by], true).unwrap(), [Code::REFUSED], "by levels: the prefix is gone");
 }
@@ -1034,8 +1034,8 @@ fn delete_reads_only_the_prefix_spec_sync_ids_6() {
 #[test]
 fn delete_by_levels_spec_sync_ids_6() {
     let (_dev, s, mut st) = one_unread();
-    let d2 = DeleteSecret::derive(&Secret32::from_bytes([21; 32]));
-    let d3 = DeleteSecret::derive(&Secret32::from_bytes([22; 32]));
+    let d2 = DeleteSecret::write(&Secret32::from_bytes([21; 32]));
+    let d3 = DeleteSecret::write(&Secret32::from_bytes([22; 32]));
     let p = Prefix::for_keys([5; 16], &[1; 16], None, &[(2, d2.verifying_key())]).unwrap();
     let mut rng = SeededRng::from_u64(3);
     let (_, bytes) = osis_blob::frame(&p, b"body", &mut rng).unwrap();
@@ -1059,7 +1059,7 @@ fn delete_by_levels_spec_sync_ids_6() {
 #[test]
 fn deletes_by_levels_reach_only_the_signers_right_spec_sync_ids_6() {
     let (_dev, mut s, mut st) = one_unread();
-    let dk = |b: u8| DeleteSecret::derive(&Secret32::from_bytes([b; 32]));
+    let dk = |b: u8| DeleteSecret::write(&Secret32::from_bytes([b; 32]));
     let (admin, x, y, w3) = (dk(31), dk(32), dk(33), dk(34));
     let mut rng = SeededRng::from_u64(3);
     let mut entry = |st: &mut Store, s: &Sid, keys: &[(u8, &DeleteSecret)]| {

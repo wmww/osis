@@ -144,7 +144,6 @@ impl Checker<'_> {
             | (Type::Strong, Type::Strong)
             | (Type::Weak, Type::Weak)
             | (Type::Ref, Type::Ref)
-            | (Type::Ticket, Type::Ticket)
             | (Type::Any, Type::Any)
             | (Type::Text, Type::Text) => {}
             (Type::Param(a), Type::Param(b)) if a == b => {}

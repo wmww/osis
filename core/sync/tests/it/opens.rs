@@ -595,12 +595,12 @@ fn store_dialed_by_adv(head: &StepKeys, ch_adv: [u8; 32]) -> (Side, Adv) {
 /// Adv Hits nothing K shows, so K indexes the Hits its filter makes possible now: what it shows
 /// later must not take an entry of that index for proof.
 fn hit_once(h: &mut Side, adv: &mut Adv) {
-    assert_eq!(adv.offer(h, vec![OfferItem::Hit { hit: [0; 32], sig: None, unread: false }])[0].code, Code::DECLINED);
+    assert_eq!(adv.offer(h, vec![OfferItem::Hit { hit: [0; 32], sig: None, class: osis_proto::SourceClass::Reader }])[0].code, Code::DECLINED);
 }
 
 /// Adv's Hit on a sync key it holds the secret of, with its open signature.
 fn sync_key_hit(adv: &Adv, st: &StepKeys) -> OfferItem {
-    OfferItem::Hit { hit: adv.hit_on(&st.pk(), &S), sig: Some(adv.bind.sign(&st.sync, &S)), unread: false }
+    OfferItem::Hit { hit: adv.hit_on(&st.pk(), &S), sig: Some(adv.bind.sign(&st.sync, &S)), class: osis_proto::SourceClass::Reader }
 }
 
 // ON_old (spec/sync-opens.md §4, shared set): a step older than the newest the judge knows
@@ -628,7 +628,7 @@ fn an_older_steps_proof_proves_nothing_spec_sync_opens_4() {
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     k.table.set(S, Some(store(&s1)));
     k.settle();
-    let a = adv.offer(&mut k, vec![OfferItem::Hit { hit: adv.hit_on(&s0.proof, &S), sig: None, unread: false }]);
+    let a = adv.offer(&mut k, vec![OfferItem::Hit { hit: adv.hit_on(&s0.proof, &S), sig: None, class: osis_proto::SourceClass::Reader }]);
     assert_eq!(a[0].code, Code::DECLINED);
     assert!(!k.open(adv.peer, &S));
 }
@@ -641,7 +641,7 @@ fn a_proof_from_the_public_key_proves_nothing_spec_sync_opens_4() {
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     // The proof's derivation applied to the public key in place of the seed.
     let fake = *osis_crypto::kdf::kdf(osis_crypto::kdf::SYNC_PROOF, &s0.pk(), b"").expose();
-    let a = adv.offer(&mut k, vec![OfferItem::Hit { hit: adv.hit_on(&fake, &S), sig: None, unread: false }]);
+    let a = adv.offer(&mut k, vec![OfferItem::Hit { hit: adv.hit_on(&fake, &S), sig: None, class: osis_proto::SourceClass::Reader }]);
     assert_eq!(a[0].code, Code::DECLINED);
     assert!(!k.open(adv.peer, &S));
 }
@@ -657,7 +657,7 @@ fn an_answer_on_a_public_value_opens_nothing_spec_sync_opens_5() {
     let sent = k.sent();
     let offer = of_kind(&sent, 37).pop().expect("K Hits the sync key Adv shows");
     let tag = adv.tag_on(&s0.pk(), &S);
-    adv.send(&mut k, Msg::Shared { id: offer.id(), items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: None, unread: false }] });
+    adv.send(&mut k, Msg::Shared { id: offer.id(), items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: None, class: osis_proto::SourceClass::Reader }] });
     assert!(!k.open(adv.peer, &S));
     assert_eq!(of_kind(&k.sent(), 38).len(), 1, "Lost for what Adv accepted");
 }
@@ -679,7 +679,7 @@ fn a_reflected_open_signature_opens_nothing_spec_wire_11_2() {
     let Some(Msg::Offer { id, items }) = of_kind(&sent, 37).pop() else { panic!("an Offer") };
     let Some(OfferItem::Hit { sig: Some(reflected), .. }) = items.into_iter().next() else { panic!("a signed Hit") };
     let tag = adv.tag_on(&s0.pk(), &S);
-    adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: Some(reflected), unread: false }] });
+    adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: Some(reflected), class: osis_proto::SourceClass::Reader }] });
     assert!(!k.open(adv.peer, &S));
 }
 
@@ -726,7 +726,7 @@ fn an_ended_member_closes_when_the_stream_passes_until_spec_sync_opens_6() {
 fn a_proof_open_ends_at_a_rotation_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    assert_eq!(adv.offer(&mut k, vec![OfferItem::Hit { hit: adv.hit_on(&s0.proof, &S), sig: None, unread: false }])[0].code, Code::OK);
+    assert_eq!(adv.offer(&mut k, vec![OfferItem::Hit { hit: adv.hit_on(&s0.proof, &S), sig: None, class: osis_proto::SourceClass::Reader }])[0].code, Code::OK);
     k.table.set(S, Some(store(&s1)));
     k.settle();
     assert!(k.opens.members(adv.peer)[&S].until.is_some(), "ended");
@@ -745,7 +745,7 @@ fn reader_with_link(l: &osis_crypto::SigningSecret) -> (Side, Adv) {
 
 fn static_item(adv: &Adv, l: &osis_crypto::SigningSecret) -> OfferItem {
     let e = osis_crypto::static_entry(&S, &l.verifying_key());
-    OfferItem::Static { hit: adv.hit_on(&e, &S), signing_pk: l.verifying_key().to_bytes(), sig: adv.bind.sign(l, &S), unread: false }
+    OfferItem::Static { hit: adv.hit_on(&e, &S), signing_pk: l.verifying_key().to_bytes(), sig: adv.bind.sign(l, &S), class: osis_proto::SourceClass::Reader }
 }
 
 // ON_linkold (spec/sync-opens.md §4): a static entry counts only while the roster held now lists
@@ -789,7 +789,7 @@ fn reader_judging(j: J) -> (Side, Adv) {
 fn j_is_judged_on_the_roster_held_now_spec_sync_opens_4() {
     let (mut r, mut adv) = reader_judging(J::Reader);
     r.table.judge_as(S, tid(9), J::Departed);
-    assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), unread: false }])[0].code, Code::DECLINED);
+    assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), class: osis_proto::SourceClass::Reader }])[0].code, Code::DECLINED);
     assert!(!r.open(adv.peer, &S));
 }
 
@@ -800,7 +800,7 @@ fn j_is_judged_on_the_roster_held_now_spec_sync_opens_4() {
 fn a_j_open_closes_when_its_peer_stops_counting_spec_sync_opens_6() {
     for (j, stays) in [(J::Departed, false), (J::Unknown, false), (J::SyncHolder, true)] {
         let (mut r, mut adv) = reader_judging(J::Reader);
-        assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), unread: false }])[0].code, Code::OK);
+        assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), class: osis_proto::SourceClass::Reader }])[0].code, Code::OK);
         assert!(r.open(adv.peer, &S));
         r.sent();
         r.table.judge_as(S, tid(9), j);
@@ -1018,7 +1018,7 @@ fn nothing_opens_toward_a_departed_peer_spec_sync_opens_4() {
     let rs = read_secret(1, 0);
     let st = StepKeys::new(1, 0);
     let (mut r, mut adv) = reader_judging(J::Departed);
-    let a = adv.offer(&mut r, vec![OfferItem::Hit { hit: adv.hit_on(rs.1.expose(), &S), sig: None, unread: false }, OfferItem::Hit { hit: adv.hit_on(&st.proof, &S), sig: None, unread: false }]);
+    let a = adv.offer(&mut r, vec![OfferItem::Hit { hit: adv.hit_on(rs.1.expose(), &S), sig: None, class: osis_proto::SourceClass::Reader }, OfferItem::Hit { hit: adv.hit_on(&st.proof, &S), sig: None, class: osis_proto::SourceClass::Reader }]);
     assert!(a.iter().all(|x| x.code == Code::DECLINED), "{a:?}");
     adv.filter(&mut r, &[*rs.1.expose(), st.pk()], &S);
     assert_eq!(offered_hits(&r.sent()), 0, "R tests nothing toward Adv");
@@ -1028,7 +1028,7 @@ fn nothing_opens_toward_a_departed_peer_spec_sync_opens_4() {
     r.table.covering.insert((S, rs1.0));
     r.table.set(S, Some(reader(&S, &rs1, &st, &[], &[], &[])));
     r.settle();
-    assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit: adv.hit_on(rs1.1.expose(), &S), sig: None, unread: false }])[0].code, Code::OK);
+    assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit: adv.hit_on(rs1.1.expose(), &S), sig: None, class: osis_proto::SourceClass::Reader }])[0].code, Code::OK);
 }
 
 // ON_dialer (spec/sync-opens.md §4): which side dialed proves nothing. K dials Adv, which holds
@@ -1049,12 +1049,12 @@ fn dialing_proves_nothing_spec_sync_opens_4() {
             adv.send(&mut k, Msg::NoRecord { id });
         }
         k.sent();
-        assert_eq!(adv.offer(&mut k, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), unread: false }])[0].code, Code::DECLINED);
+        assert_eq!(adv.offer(&mut k, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), class: osis_proto::SourceClass::Reader }])[0].code, Code::DECLINED);
         adv.filter(&mut k, &[s0.pk()], &S);
         let sent = k.sent();
         let Some(Msg::Offer { id, .. }) = of_kind(&sent, 37).pop() else { panic!("K Hits the sync key Adv shows") };
         let tag = adv.tag_on(&s0.pk(), &S);
-        adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: None, unread: false }] });
+        adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: None, class: osis_proto::SourceClass::Reader }] });
         assert!(!k.open(adv.peer, &S), "k dials: {k_dials}");
         outcome.push((k.opens.record(adv.peer).is_some(), of_kind(&k.sent(), 38).len()));
     }
@@ -1225,7 +1225,7 @@ fn a_read_secret_hit_opens_whoever_proved_spec_sync_opens_4() {
         r.settle();
         let (mut adv, _) = Adv::dials(&mut r, Proven::default(), [2; 32]);
         let hit = adv.hit_on(rs.1.expose(), &S);
-        let item = if byrole { OfferItem::ByRole { sync_id: S, hits: vec![hit], unread: false } } else { OfferItem::Hit { hit, sig: None, unread: false } };
+        let item = if byrole { OfferItem::ByRole { sync_id: S, hits: vec![hit], class: osis_proto::SourceClass::Reader } } else { OfferItem::Hit { hit, sig: None, class: osis_proto::SourceClass::Reader } };
         assert_eq!(adv.offer(&mut r, vec![item])[0].code, Code::OK, "byrole {byrole}");
         assert!(r.open(adv.peer, &S));
     }
@@ -1244,7 +1244,7 @@ fn no_lost_names_s_without_a_valid_tag_spec_sync_opens_5() {
     adv.filter(&mut r, &[*rs.1.expose()], &S);
     let sent = r.sent();
     let Some(Msg::Offer { id, .. }) = of_kind(&sent, 37).pop() else { panic!("an Offer") };
-    adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some([0; 32]), grant: None, sig: None, unread: false }] });
+    adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some([0; 32]), grant: None, sig: None, class: osis_proto::SourceClass::Reader }] });
     assert!(!r.open(adv.peer, &S));
     assert!(of_kind(&r.sent(), 38).is_empty(), "no Lost");
 }
@@ -1957,7 +1957,7 @@ fn a_walk_stops_past_its_keys_or_refused_spec_sync_ids_6() {
     assert_eq!(r.opens.walk_stop(&S), None, "the stop goes with the connection");
     let (mut r, mut adv, _) = walk_answered(ok.clone(), false);
     let hit = adv.hit_on(read_secret(1, 0).1.expose(), &S);
-    assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit, sig: None, unread: false }])[0].code, Code::OK);
+    assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit, sig: None, class: osis_proto::SourceClass::Reader }])[0].code, Code::OK);
     assert!(r.open(adv.peer, &S));
     assert_eq!(r.opens.walk_stop(&S), None, "S opened there by the peer's test: no stop");
     let (mut r, ..) = walk_answered(osis_proto::SharedItem::code(Code::DECLINED), false);
@@ -1994,7 +1994,7 @@ fn a_behind_refused_for_now_is_asked_again_after_a_back_off_spec_sync_ids_6() {
     assert_eq!(r.opens.next_wake(), Some(Mono(r.mono.0 + backoff_ms(1))), "a second 4: a longer back-off");
     // S opened there meanwhile: its back-off ending asks nothing and leaves no wake past
     let hit = adv.hit_on(read_secret(1, 0).1.expose(), &S);
-    assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit, sig: None, unread: false }])[0].code, Code::OK);
+    assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit, sig: None, class: osis_proto::SourceClass::Reader }])[0].code, Code::OK);
     assert!(r.open(adv.peer, &S));
     r.mono = Mono(r.mono.0 + backoff_ms(1));
     r.settle();
@@ -2259,14 +2259,14 @@ fn an_answer_after_the_testers_class_moved_opens_nothing_at_the_old_class_spec_s
         adv.filter(&mut k, &[s0.pk()], &S);
         let sent = k.sent();
         let Some(Msg::Offer { id, items }) = of_kind(&sent, 37).pop() else { panic!("K Hits the sync key Adv shows") };
-        assert!(matches!(items[..], [OfferItem::Hit { unread: true, .. }]), "{items:?}");
+        assert!(matches!(items[..], [OfferItem::Hit { class: osis_proto::SourceClass::Store, .. }]), "{items:?}");
         if moved {
             k.table.set(S, Some(reader(&S, &read_secret(1, 0), &s0, &[], &[], &[])));
             k.settle();
             k.sent();
         }
         let tag = adv.tag_on(&s0.pk(), &S);
-        adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: Some(adv.bind.sign(&s0.sync, &S)), unread: false }] });
+        adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: Some(adv.bind.sign(&s0.sync, &S)), class: osis_proto::SourceClass::Reader }] });
         let own = k.opens.members(adv.peer).get(&S).map(|m| m.own);
         let want = if moved { None } else { Some(SourceClass::Store) };
         assert_eq!(own, want, "moved {moved}");

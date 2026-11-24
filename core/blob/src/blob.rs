@@ -396,8 +396,8 @@ mod tests {
     #[test]
     fn agreement() {
         let salt = [4u8; 16];
-        let k = osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([1; 32])).verifying_key();
-        let k3 = osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([2; 32])).verifying_key();
+        let k = osis_crypto::DeleteSecret::write(&Secret32::from_bytes([1; 32])).verifying_key();
+        let k3 = osis_crypto::DeleteSecret::write(&Secret32::from_bytes([2; 32])).verifying_key();
         let hb = [6u8; 16];
         let dk = |l, k: &VerifyingKey| osis_commit::DeleteKey::new(l, k);
         let p = Prefix::for_keys(salt, &hb, Some(WallMs(10)), &[(2, k)]).unwrap();
@@ -421,7 +421,7 @@ mod tests {
         assert_ne!(Prefix::for_keys(salt, &[8; 16], None, &[(2, k)]).unwrap().key_at(0, 2), p.key_at(0, 2));
         // a commit's delete keys give the same prefix; a delete signature under that salt and
         // blind verifies under the committed key
-        let d = osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([1; 32]));
+        let d = osis_crypto::DeleteSecret::write(&Secret32::from_bytes([1; 32]));
         assert_eq!(Prefix::for_delete_keys(salt, &hb, Some(WallMs(10)), &g(&[dk(2, &k)])).unwrap(), p);
         assert!(Prefix::for_delete_keys(salt, &hb, None, &g(&[dk(2, &k), dk(2, &k3)])).is_err());
         let key = p.key_at(0, 2).unwrap();
@@ -456,7 +456,7 @@ mod tests {
             }
             Some(Prefix { salt, expiry, class: Class::Durable, groups: out })
         };
-        let pool: Vec<VerifyingKey> = (1..=3u8).map(|i| osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([i; 32])).verifying_key()).collect();
+        let pool: Vec<VerifyingKey> = (1..=3u8).map(|i| osis_crypto::DeleteSecret::write(&Secret32::from_bytes([i; 32])).verifying_key()).collect();
         let off_curve = (0..=255u8).map(|b| [b; 32]).find(|b| VerifyingKey::from_bytes(b).is_err()).unwrap();
         let mut rng = osis_crypto::SeededRng::from_u64(0);
         for _ in 0..2000 {

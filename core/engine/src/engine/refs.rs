@@ -12,7 +12,7 @@ pub(crate) mod kept;
 use super::{Tx, records, scan_table};
 use crate::error::{Error, Result};
 use crate::events::Event;
-use osis_base::{Ak, BlobId, CommitId, Link, RefKind, Ticket, Tid, Value};
+use osis_base::{Ak, BlobId, CommitId, Link, RefKind, Tid, Value};
 use osis_crdt::Fragment;
 use osis_store::Shred;
 use std::collections::BTreeMap;
@@ -22,11 +22,6 @@ use std::collections::BTreeMap;
 pub(crate) const TO: &[u8] = b"node/refs to";
 /// Rows by source: source ‖ AK length (u16) ‖ AK ‖ target ‖ kind, the count (u64).
 pub(crate) const FROM: &[u8] = b"node/refs from";
-/// Ticket rows by target, a signal's per fire: target ‖ source ‖ AK ‖ 0 ‖ the fire's commit ID
-/// (none for a state), the tickets held there with their counts (`TicketCounts`). Finding a
-/// target's tickets reads its rows alone (`tickets_to`), never the source's state, its other
-/// references or a signal's other fires.
-pub(crate) const TICKETS: &[u8] = b"node/refs tickets";
 /// The large values `(source, AK)` reads (spec/data-model.md §6), by content hash: source ‖ AK
 /// length ‖ AK ‖ hash, a `LinkRow`. A large value's references count from its row, read once
 /// when it is first read there (or when the blob it waited for came), never again.
@@ -59,7 +54,7 @@ fn fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<(CommitId, Delta)>> 
 }
 
 /// Sets the rows of signal `(tid, ak)` to what its held valid fires hold (`apply::rebuild`: a
-/// fire dropped, forgotten or judged again): its ticket rows per fire afresh.
+/// fire dropped, forgotten or judged again).
 pub(crate) fn resync_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if !indexed(ak) {
         return Ok(());
@@ -67,7 +62,7 @@ pub(crate) fn resync_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let mut per = fires(tx, tid, ak)?;
     let mut want: BTreeMap<[u8; 32], (Link, i64)> = BTreeMap::new();
     for (_, f) in &per {
-        for (h, (l, n)) in &f.2 {
+        for (h, (l, n)) in &f.1 {
             let e = want.entry(*h).or_insert((*l, 0));
             e.1 += n;
         }
@@ -77,138 +72,14 @@ pub(crate) fn resync_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         f.count_links(&held);
     }
     let old = stored(tx, tid, ak)?;
-    // the ticket rows it had, per fire, go; each fire's are written again
-    for (t, _) in old.keys().filter(|(_, k)| *k == RefKind::Ticket) {
-        for (fire, held) in ticket_rows(tx, t, tid, ak)? {
-            let mut d = Delta::default();
-            d.0.insert((*t, RefKind::Ticket), -(held.count() as i64));
-            d.1 = held.0.into_iter().map(|(k, n)| (k, -(n as i64))).collect();
-            note_tickets(tx, tid, ak, fire.as_ref(), &d)?;
-        }
-    }
     let mut d = Delta::default();
-    for (c, f) in &per {
-        note_tickets(tx, tid, ak, Some(c), f)?;
+    for (_, f) in &per {
         for (k, n) in &f.0 {
             *d.0.entry(*k).or_default() += n;
         }
     }
     d.sub(&old);
     note_rows(tx, tid, ak, d)
-}
-
-/// The ticket rows of `(source, ak)` naming `target`, by fire (none: a state's), with what they
-/// hold.
-fn ticket_rows(tx: &mut Tx<'_>, target: &Tid, source: &Tid, ak: &Ak) -> Result<Vec<(Option<CommitId>, TicketCounts)>> {
-    let tk = tx.txn.index(TICKETS)?;
-    let pre = ticket_key(target, source, ak, None);
-    let end = [pre.as_slice(), &[0xff; 33]].concat();
-    let mut out = Vec::new();
-    scan_table(&mut tx.txn, tk, &pre, Some(&end), |k, v| {
-        let fire = k.get(pre.len()..).filter(|b| !b.is_empty()).map(|b| <[u8; 32]>::try_from(b).map(CommitId)).transpose().map_err(|_| Error::Corrupt("ticket row"))?;
-        out.push((fire, TicketCounts::decode(&v)?));
-        Ok(())
-    })?;
-    Ok(out)
-}
-
-/// A ticket row's value: each ticket for the target its source holds there, with how many times.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct TicketCounts(pub BTreeMap<Ticket, u64>);
-
-impl TicketCounts {
-    /// How many tickets for the target it counts.
-    pub(crate) fn count(&self) -> u64 {
-        self.0.values().sum()
-    }
-    fn encode(&self) -> Vec<u8> {
-        let items = self.0.iter().flat_map(|(k, n)| [Value::Ticket(Box::new(k.clone())), Value::Int(*n as i64)]).collect();
-        osis_base::encode(&Value::List(items))
-    }
-    fn decode(v: &[u8]) -> Result<TicketCounts> {
-        let bad = || Error::Corrupt("ticket row");
-        let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, v.len());
-        let Value::List(items) = osis_base::decode(v, &lim).map_err(|_| bad())? else { return Err(bad()) };
-        let mut out = BTreeMap::new();
-        for pair in items.chunks(2) {
-            let [Value::Ticket(k), Value::Int(n)] = pair else { return Err(bad()) };
-            out.insert((**k).clone(), u64::try_from(*n).map_err(|_| bad())?);
-        }
-        Ok(TicketCounts(out))
-    }
-}
-
-fn ticket_key(target: &Tid, source: &Tid, ak: &Ak, fire: Option<&CommitId>) -> Vec<u8> {
-    [target.as_bytes().as_slice(), source.as_bytes(), ak.as_str().as_bytes(), &[0], fire.map(|c| c.0.as_slice()).unwrap_or_default()].concat()
-}
-
-/// One ticket row (`tickets_to`): `source`'s state on `ak`, or its fire `fire` there, holds
-/// `tickets` for the target.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct TicketRow {
-    pub source: Tid,
-    pub ak: Ak,
-    pub fire: Option<CommitId>,
-    pub tickets: Vec<Ticket>,
-}
-
-/// The ticket rows naming `target`: O(its tickets).
-pub(crate) fn tickets_to(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<TicketRow>> {
-    let tk = tx.txn.index(TICKETS)?;
-    let pre = target.as_bytes().to_vec();
-    let end = [pre.as_slice(), &[0xff; 16]].concat();
-    let mut out = Vec::new();
-    scan_table(&mut tx.txn, tk, &pre, Some(&end), |k, v| {
-        osis_base::costs::count("tickets: rows read", 1);
-        let bad = || Error::Corrupt("ticket row");
-        let rest = k.get(pre.len()..).ok_or_else(bad)?;
-        let (s, a) = rest.split_at_checked(osis_base::format::TID_LEN).ok_or_else(bad)?;
-        let source = Tid::from_bytes(s.try_into().map_err(|_| bad())?);
-        let z = a.iter().position(|b| *b == 0).ok_or_else(bad)?;
-        let (a, fire) = (a.get(..z).ok_or_else(bad)?, a.get(z + 1..).ok_or_else(bad)?);
-        let ak = std::str::from_utf8(a).ok().and_then(|a| Ak::new(a).ok()).ok_or_else(bad)?;
-        let fire = (!fire.is_empty()).then(|| <[u8; 32]>::try_from(fire).map(CommitId)).transpose().map_err(|_| bad())?;
-        let tickets = TicketCounts::decode(&v)?.0.into_keys().collect();
-        out.push(TicketRow { source, ak, fire, tickets });
-        Ok(())
-    })?;
-    Ok(out)
-}
-
-/// Applies the ticket changes of `d` (`Delta`'s tickets) to the ticket rows of `(source, ak)`
-/// (fire `fire` of a signal), telling the node closure of a row appearing or going.
-fn note_tickets(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitId>, d: &Delta) -> Result<()> {
-    let mut by_target: BTreeMap<Tid, Vec<(&Ticket, i64)>> = BTreeMap::new();
-    for (k, n) in d.1.iter().filter(|x| *x.1 != 0) {
-        by_target.entry(k.target).or_default().push((k, *n));
-    }
-    if by_target.is_empty() {
-        return Ok(());
-    }
-    tx.in_class(ak.ephemeral(), |tx| {
-        let tk = tx.txn.index(TICKETS)?;
-        for (target, moved) in by_target {
-            let key = ticket_key(&target, source, ak, fire);
-            let mut row = tx.txn.table_get(tk, &key)?.map(|v| TicketCounts::decode(&v)).transpose()?.unwrap_or_default();
-            let was = row.0.is_empty();
-            for (k, n) in moved {
-                let new = u64::try_from(row.0.get(k).copied().unwrap_or(0) as i64 + n).map_err(|_| Error::Corrupt("ticket count below zero"))?;
-                match new {
-                    0 => drop(row.0.remove(k)),
-                    _ => drop(row.0.insert(k.clone(), new)),
-                }
-            }
-            if row.0.is_empty() {
-                tx.txn.table_remove(tk, &key, Shred::Yes)?;
-            } else {
-                tx.txn.table_put(tk, &key, row.encode(), Shred::No)?;
-            }
-            if was != row.0.is_empty() {
-                tx.core.ix.closure.rejudge(target);
-            }
-        }
-        Ok(())
-    })
 }
 
 /// One row: `source` holds a `kind` reference to `target` `count` times in its values on `ak`.
@@ -221,10 +92,10 @@ pub struct Reference {
     pub count: u64,
 }
 
-/// Count changes by target and kind, of each ticket, and of each large value read (by content
-/// hash, with a link to it), whose references `note` counts from its row (`move_link`).
+/// Count changes by target and kind, and of each large value read (by content hash, with a
+/// link to it), whose references `note` counts from its row (`move_link`).
 #[derive(Default, Debug, PartialEq, Eq)]
-pub(crate) struct Delta(BTreeMap<(Tid, RefKind), i64>, BTreeMap<Ticket, i64>, BTreeMap<[u8; 32], (Link, i64)>);
+pub(crate) struct Delta(BTreeMap<(Tid, RefKind), i64>, BTreeMap<[u8; 32], (Link, i64)>);
 
 impl Delta {
     /// Adds `sign` for every reference and large value in the values `f` reads as
@@ -233,7 +104,7 @@ impl Delta {
         f.each_read_value(&mut |v| {
             drop(osis_base::costs::span("refs: value read"));
             v.each_reference_or_link(&mut |r| match r {
-                Value::Link(l) => self.2.entry(l.hash).or_insert((**l, 0)).1 += sign,
+                Value::Link(l) => self.1.entry(l.hash).or_insert((**l, 0)).1 += sign,
                 r => self.count(r, sign),
             });
         });
@@ -242,9 +113,6 @@ impl Delta {
     fn count(&mut self, r: &Value, n: i64) {
         if let Some((k, t)) = RefKind::of(r) {
             *self.0.entry((t, k)).or_default() += n;
-            if let Value::Ticket(x) = r {
-                *self.1.entry((**x).clone()).or_default() += n;
-            }
         }
     }
     /// Adds `n` for each of `refs`.
@@ -255,7 +123,7 @@ impl Delta {
     }
     /// Counts each large value's references, `held` by content hash, as many times as it is read.
     fn count_links(&mut self, held: &BTreeMap<[u8; 32], Vec<Value>>) {
-        for (h, (_, n)) in std::mem::take(&mut self.2) {
+        for (h, (_, n)) in std::mem::take(&mut self.1) {
             self.count_all(held.get(&h).map(Vec::as_slice).unwrap_or_default(), n);
         }
     }
@@ -329,25 +197,16 @@ fn count_of(v: &[u8]) -> Result<u64> {
     Ok(u64::from_be_bytes(v.try_into().map_err(|_| Error::Corrupt("reference count"))?))
 }
 
-/// Applies the count changes `d` to the rows of `(source, ak)`, `fire` the signal fire they come
-/// from (none: a state's).
-pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitId>, mut d: Delta) -> Result<()> {
+/// Applies the count changes `d` to the rows of `(source, ak)`.
+pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, mut d: Delta) -> Result<()> {
     if !indexed(ak) {
         return Ok(());
     }
-    let mut late = false;
-    for (_, (l, n)) in std::mem::take(&mut d.2).into_iter().filter(|x| x.1.1 != 0) {
+    for (_, (l, n)) in std::mem::take(&mut d.1).into_iter().filter(|x| x.1.1 != 0) {
         let (refs, earlier) = move_link(tx, source, ak, &l.hash, Some(&l), n, false)?;
         d.count_all(&refs, n + earlier as i64);
-        late |= earlier > 0;
     }
-    note_tickets(tx, source, ak, fire, &d)?;
-    note_rows(tx, source, ak, d)?;
-    // a signal's earlier reads were other fires': its ticket rows per fire afresh
-    if late && fire.is_some() {
-        resync_fires(tx, source, ak)?;
-    }
-    Ok(())
+    note_rows(tx, source, ak, d)
 }
 
 /// What a `LINKS` row holds: a link to the large value, how many times `(source, AK)`'s state
@@ -466,13 +325,9 @@ fn count_earlier(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, refs: &[Value], count: 
     if count == 0 {
         return Ok(());
     }
-    // a signal's ticket rows per fire afresh
-    if ak.signal() {
-        return resync_fires(tx, source, ak);
-    }
     let mut d = Delta::default();
     d.count_all(refs, count as i64);
-    note(tx, source, ak, None, d)
+    note(tx, source, ak, d)
 }
 
 /// The `LINKS` rows of `(source, ak)` by content hash.
@@ -607,27 +462,11 @@ pub(crate) fn resync(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, f: Option<&Fragment
         return Ok(());
     }
     let mut d = Delta::of(f);
-    let held = set_links(tx, source, ak, &d.2)?;
+    let held = set_links(tx, source, ak, &d.1)?;
     d.count_links(&held);
     let old = stored(tx, source, ak)?;
-    for (k, n) in stored_tickets(tx, source, ak, &old)? {
-        *d.1.entry(k).or_default() -= n as i64;
-    }
     d.sub(&old);
-    note(tx, source, ak, None, d)
-}
-
-/// The tickets the state rows of `(source, ak)` hold (`old` its stored counts), with counts.
-fn stored_tickets(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, old: &BTreeMap<(Tid, RefKind), u64>) -> Result<BTreeMap<Ticket, u64>> {
-    let mut out = BTreeMap::new();
-    for (t, _) in old.keys().filter(|(_, k)| *k == RefKind::Ticket) {
-        for (fire, held) in ticket_rows(tx, t, source, ak)? {
-            if fire.is_none() {
-                out.extend(held.0);
-            }
-        }
-    }
-    Ok(out)
+    note(tx, source, ak, d)
 }
 
 /// Removes every row of `(source, ak)` (its state is dropped).
@@ -763,8 +602,6 @@ pub(crate) fn check(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, f: Option<&Fragment>
     let want: BTreeMap<(Tid, RefKind), u64> = all.0.into_iter().filter(|x| x.1 != 0).map(|(t, n)| (t, n as u64)).collect();
     let got = stored(tx, source, ak)?;
     debug_assert_eq!(got, want, "reference rows of {source:?} {ak:?} differ from its state");
-    let tickets: BTreeMap<Ticket, u64> = all.1.into_iter().filter(|x| x.1 != 0).map(|(k, n)| (k, n as u64)).collect();
-    debug_assert_eq!(stored_tickets(tx, source, ak, &got)?, tickets, "ticket rows of {source:?} {ak:?} differ from its state");
     Ok(())
 }
 
@@ -779,8 +616,8 @@ pub(crate) fn check_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         for (k, n) in d.0 {
             *all.0.entry(k).or_default() += n;
         }
-        for (h, (l, n)) in d.2 {
-            all.2.entry(h).or_insert((l, 0)).1 += n;
+        for (h, (l, n)) in d.1 {
+            all.1.entry(h).or_insert((l, 0)).1 += n;
         }
     }
     check_links(tx, tid, ak, &mut all)?;
@@ -795,7 +632,7 @@ pub(crate) fn check_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 #[cfg(debug_assertions)]
 fn check_links(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, all: &mut Delta) -> Result<()> {
     let rows: BTreeMap<_, _> = stored_links(tx, source, ak)?.into_iter().filter(|x| x.1.count > 0).collect();
-    let counts: BTreeMap<[u8; 32], u64> = all.2.iter().filter(|x| x.1.1 != 0).map(|(h, (_, n))| (*h, *n as u64)).collect();
+    let counts: BTreeMap<[u8; 32], u64> = all.1.iter().filter(|x| x.1.1 != 0).map(|(h, (_, n))| (*h, *n as u64)).collect();
     debug_assert_eq!(rows.iter().map(|(h, r)| (*h, r.count)).collect::<BTreeMap<_, _>>(), counts, "large-value rows of {source:?} {ak:?} differ from its reads");
     let waits = tx.txn.index(WAITS)?;
     let mut held = BTreeMap::new();

@@ -138,8 +138,7 @@ impl CommitBlob {
         self.parts.binary_search_by_key(&ai, |p| p.ai).ok().and_then(|i| self.parts.get(i))
     }
 
-    /// The path it states for thing `t`, where known here: the header's in the clear (`Path::to`
-    /// reads `t`'s holders off it), else `t`'s entry opened under its held path key.
+    /// The path it states for thing `t`, where known here: the header's in the clear, else `t`'s entry opened under its held path key.
     pub fn path(&self, t: &Tid) -> Option<ThingPath> {
         match &self.header.path {
             Paths::One(p) => self.header.aspects.iter().any(|a| a.tid == *t).then(|| ThingPath::Known(p.clone())),

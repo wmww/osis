@@ -1,7 +1,7 @@
 //! Canonical encoder and strict decoder for the osis CBOR profile (spec/data-model.md §5).
 //! Accepted bytes are canonical, so they are hashed and stored as received, never re-encoded.
 
-use crate::format::{MAX_VALUE_BYTES, MAX_VALUE_DEPTH, TAG_ENUM, TAG_LINK, TAG_RETIRED, TAG_SET, TAG_STRONG, TAG_TICKET, TAG_WEAK, TID_LEN};
+use crate::format::{MAX_VALUE_BYTES, MAX_VALUE_DEPTH, TAG_ENUM, TAG_LINK, TAG_RETIRED, TAG_SET, TAG_STRONG, TAG_WEAK, TID_LEN};
 use crate::ids::{BlobId, Del, Link, Tid};
 use crate::sorted::{ValueMap, ValueSet};
 use crate::value::{Float, Unknown, Value};
@@ -174,7 +174,6 @@ pub fn encoded_len(v: &Value) -> usize {
         Value::Bytes(b) => bytes(b.len()),
         Value::Strong(t) => head_len(TAG_STRONG) + bytes(t.as_bytes().len()),
         Value::Weak(t) => head_len(TAG_WEAK) + bytes(t.as_bytes().len()),
-        Value::Ticket(t) => head_len(TAG_TICKET) + encoded_len(&t.to_value()),
         Value::Enum(case, payload) => head_len(TAG_ENUM) + 1 + head_len(*case) + payload.as_deref().map_or(0, encoded_len),
         Value::Map(m) => head_len(m.len() as u64) + m.iter().map(|(k, v)| encoded_len(k) + encoded_len(v)).sum::<usize>(),
         Value::List(l) => head_len(l.len() as u64) + l.iter().map(encoded_len).sum::<usize>(),
@@ -301,10 +300,6 @@ pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
         Value::Weak(t) => {
             head(out, MAJOR_TAG, TAG_WEAK);
             put_bytes(out, t.as_bytes());
-        }
-        Value::Ticket(t) => {
-            head(out, MAJOR_TAG, TAG_TICKET);
-            encode_into(&t.to_value(), out);
         }
         Value::Enum(case, payload) => {
             head(out, MAJOR_TAG, TAG_ENUM);
@@ -1151,12 +1146,6 @@ impl<'a> Decoder<'a> {
         Ok(Link { hash, blob, suite, key, salt, del })
     }
 
-    /// A ticket's content (Interim (issues/tickets-retired.md)).
-    fn ticket(&mut self, inner: usize) -> Result<crate::refs::Ticket, DecodeError> {
-        let v = self.item::<Value>(inner)?;
-        crate::refs::Ticket::from_value(&v).ok_or(DecodeError::TagContent(TAG_TICKET))
-    }
-
     fn tagged<M: Made>(&mut self, tag: u64, depth: usize) -> Result<M, DecodeError> {
         let inner = depth + 1;
         self.enter(inner)?;
@@ -1183,11 +1172,6 @@ impl<'a> Decoder<'a> {
             TAG_WEAK => {
                 let t = Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?);
                 M::make(|| Ok(Value::Weak(t)))
-            }
-            TAG_TICKET => {
-                self.spend(size_of::<crate::refs::Ticket>())?;
-                let t = self.ticket(inner)?;
-                M::make(|| Ok(Value::Ticket(Box::new(t))))
             }
             TAG_RETIRED => Err(DecodeError::TagContent(tag)),
             TAG_ENUM => {
@@ -1226,7 +1210,7 @@ impl<'a> Decoder<'a> {
 }
 
 /// What `Decoder::item` makes of an item: its `Value` (`decode`), or nothing (`()`: `check`,
-/// which allocates only for a link's delete keys and a ticket, read whole to check them).
+/// which allocates only for a link's delete keys, read whole to check them).
 trait Made: Sized {
     /// Whether anything is built.
     const BUILD: bool;

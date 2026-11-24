@@ -13,7 +13,7 @@ impl osis_commit::Secrets for Dedup {
         self.0.iter().find(|r| r.tid() == *t).map(|r| osis_crypto::dedup_secret(r.nonce()))
     }
     fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([3; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&Secret32::from_bytes([3; 32])).verifying_key())
     }
     fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
         None

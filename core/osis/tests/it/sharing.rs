@@ -7,10 +7,11 @@ use common::*;
 use osis::{SetRoleOpts, Error, Role};
 
 // spec/crypto.md §7 (Header list): a writer lists the thing's delete keys, notes/api.md Rights: a role whose
-// delete keys are not here yet (no inbox hint, the thing's `keys.0` in a later batch: another node
-// of the grantee's account, a holder's grant learned from its certificate copy) reads as `Read`
+// delete keys are not here yet (the thing's `keys.0` in a later batch: a grant to a holder the
+// node acts through, learned from the role commit before the thing's keysets) reads as `Read`
 // and a content write on it is `Permission`, until the keys come; then both say the role. An
-// admin's calls are `Permission { needs: Admin }` meanwhile alike, by the same rule.
+// admin's calls are `Permission { needs: Admin }` meanwhile alike, by the same rule. (A grant to
+// the account itself comes by its fire, which carries the keys.)
 #[test]
 fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
     for role in [Role::Write, Role::Admin] {
@@ -18,6 +19,12 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
         deliver(&bob, &alice);
         deliver(&carol, &alice);
         deliver(&dave, &bob);
+        // bob acts through H, alice's too: she writes H, so her grant to it goes with no fire
+        // (spec/permissions.md §4 Delivering an edge piece)
+        let h = alice.commit_with(|w| w.create_held()).unwrap();
+        alice.grant(h, bob.me(), Role::Admin, Default::default()).unwrap();
+        deliver(&alice, &bob);
+        assert_eq!(bob.role_on(h).unwrap(), Some(Role::Admin));
         let mut w = alice.write();
         let t = w.create_held().unwrap();
         w.at(t, untyped("t:x.0")).set(&s("one")).unwrap();
@@ -25,13 +32,13 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
         // minted with the account as admin, `t` is independent from its creation: its keysets go in
         // that commit
         alice.grant(t, carol.me(), Role::Read, Default::default()).unwrap();
-        alice.grant(t, bob.me(), role, Default::default()).unwrap();
+        alice.grant(t, h, role, Default::default()).unwrap();
         // (a grant's `keys.0` part records its boxes: the keyset is the rotation's)
         let (later, now): (Vec<_>, Vec<_>) = alice.engine(|e| {
             e.commit_ids().into_iter().map(|id| (e.writes_keyset(&t, &id), e.package(&id).unwrap().unwrap())).partition(|(k, _)| *k)
         });
         assert_eq!(later.len(), 1, "one commit carries t's keysets");
-        // bob accepts t first: a grant gives his account a role only at a strong to its thing
+        // bob holds t: a node writes only what it holds (spec/sync-set.md §2 Writing)
         bob.hold(t).unwrap();
         for (_, pk) in &now {
             bob.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
@@ -308,7 +315,7 @@ fn the_owners_rule_one_write_through_different_actors_is_one_commit_spec_wire_4(
     let o = bob.commit_with(|w| w.create_held()).unwrap();
     bob.grant(o, carol.me(), Role::Read, Default::default()).unwrap();
     mesh(&all);
-    // Bob acts through H once he accepts it: a grant gives a role only at a strong to its thing
+    // Bob holds what he writes (spec/sync-set.md §2 Writing): H, which he acts through, and G
     bob.hold(h).unwrap();
     bob.hold(g).unwrap();
     carol.hold(g).unwrap();

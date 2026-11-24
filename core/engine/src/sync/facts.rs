@@ -3,7 +3,7 @@
 //! falls on a body's aspects. Each field is a direct statement of its spec clause over what the
 //! engine holds; every one answers the side that keeps data while it cannot be judged.
 
-use super::{BlobOf, BodyFacts, MustNot, PartSet, ReadFacts};
+use super::{BlobOf, BodyFacts, BodyId, MustNot, PartSet, ReadFacts};
 use crate::engine::{DropFor, Engine};
 use crate::error::Result;
 use osis_base::{BlobId, CommitId, SyncId, Tid};
@@ -54,8 +54,9 @@ impl Engine {
     ///
     /// Its carriers are a call of their own (`carriers`): they move with every snapshot
     /// extending a chain of covers, which no other fact of a covered body does.
-    pub(crate) fn read_facts_now(&mut self, s: &SyncId, c: &CommitId) -> Result<ReadFacts> {
-        let body: BodyFacts = self.body_facts(s, c)?;
+    pub(crate) fn read_facts_now(&mut self, s: &SyncId, id: &BodyId) -> Result<ReadFacts> {
+        let c = &id.commit;
+        let body: BodyFacts = self.body_facts(s, id)?;
         let mut f = ReadFacts { body, must_not: None, own: false, repair_fresh: Arc::default(), role: false, later_unheld: Vec::new(), missing: false };
         // a card is judged by its header alone: it is no closure body of S (spec/permissions.md §4)
         if let Some(h) = self.header(c)
@@ -63,7 +64,7 @@ impl Engine {
         {
             f.must_not = self.card_must_not(c, &h, &node);
         }
-        let (Some(b), Some(h)) = (self.sync_body_now(s, c)?, self.header(c)) else { return Ok(f) };
+        let (Some(b), Some(h)) = (self.sync_body_now(s, id)?, self.header(c)) else { return Ok(f) };
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(f) };
         f.own = m.origin == crate::events::Origin::Local;
         f.repair_fresh = m.repair().cloned().unwrap_or_default();
@@ -111,8 +112,9 @@ impl Engine {
     /// (`BodyFacts::covered`): per part a held valid snapshot under S covers, the snapshots
     /// covering it; per part dropped as covered, the held valid snapshots of its chain of covers
     /// (spec/permissions.md §5.2). One of each must be held where the body leaves.
-    pub(crate) fn carriers_now(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BTreeSet<CommitId>>> {
-        let (Some(b), Some(h)) = (self.sync_body_now(s, c)?, self.header(c)) else { return Ok(Vec::new()) };
+    pub(crate) fn carriers_now(&mut self, s: &SyncId, id: &BodyId) -> Result<Vec<BTreeSet<CommitId>>> {
+        let c = &id.commit;
+        let (Some(b), Some(h)) = (self.sync_body_now(s, id)?, self.header(c)) else { return Ok(Vec::new()) };
         if !self.core.ix.commits.contains_key(c) {
             return Ok(Vec::new());
         }
@@ -206,8 +208,9 @@ impl Engine {
     /// ID, established as for must-hold. `None` while that is not established (a later snapshot
     /// not judged yet) or `s` carries no body of `c`. An entry under S being fetched or pending is
     /// sync's to know; one not counted here only widens this set, toward keeping.
-    pub(crate) fn blob_only(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<PartSet>> {
-        let (Some(b), Some(h)) = (self.sync_body_now(s, c)?, self.header(c)) else { return Ok(None) };
+    pub(crate) fn blob_only(&mut self, s: &SyncId, id: &BodyId) -> Result<Option<PartSet>> {
+        let c = &id.commit;
+        let (Some(b), Some(h)) = (self.sync_body_now(s, id)?, self.header(c)) else { return Ok(None) };
         let keeps = self.part_keeps(c)?;
         let mut out = PartSet::new();
         for ai in &b.parts {
@@ -241,8 +244,8 @@ impl Engine {
     /// strip here (`bodies::strips`: a strip's rewrite holds the body). A blob not
     /// opened or sealed here holds none.
     pub fn holds_body(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
-        let Some(c) = self.core.ix.blob_parts.get(b).map(|row| row.commit) else { return Ok(false) };
-        let Some(meta) = self.sync_body_now(s, &c)? else { return Ok(false) };
+        let Some(id) = self.blob_body(s, b)? else { return Ok(false) };
+        let Some(meta) = self.sync_body_now(s, &id)? else { return Ok(false) };
         Ok(self.body_held_by(&meta, b))
     }
 
@@ -260,15 +263,16 @@ impl Engine {
     /// carries is held there by another blob of the commit that is not must-not-hold (one of
     /// `there`, the blobs of `c` held where the delete was) and no held purge request signed by
     /// ones that could hold the right names a delta of it without dropping it.
-    pub fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
-        let Some(meta) = self.sync_body_now(s, c)? else { return Ok(false) };
+    pub fn neither(&mut self, s: &SyncId, id: &BodyId, there: &BTreeSet<BlobId>) -> Result<bool> {
+        let c = &id.commit;
+        let Some(meta) = self.sync_body_now(s, id)? else { return Ok(false) };
         if meta.certificate {
             return Ok(false);
         }
         let held: PartSet = there.iter().filter_map(|x| self.carried_by(c, meta.copy, x)).flat_map(|x| x.parts.iter().copied().collect::<Vec<_>>()).collect();
         // a blob there holding the whole body carries what only a blob carries of it, whatever that is
         if !meta.parts.is_subset(&held) {
-            let Some(only) = self.blob_only(s, c)? else { return Ok(false) };
+            let Some(only) = self.blob_only(s, id)? else { return Ok(false) };
             if !only.is_subset(&held) {
                 return Ok(false);
             }

@@ -25,7 +25,7 @@
 //! here is durable.
 
 use crate::set::Held;
-use crate::types::{Holding, Result};
+use crate::types::Result;
 use osis_base::memo::{Effects, Feed, Stamped};
 use osis_base::{SyncId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
@@ -184,7 +184,7 @@ impl Leave {
                     }
                 }
                 Wait::Done | Wait::Lost => {
-                    if now == Wait::Done && h == Holding::Read {
+                    if now == Wait::Done && h.opens() {
                         forget.extend(things);
                     }
                     stopped.push(s);

@@ -5,7 +5,7 @@
 //! Usable from `build.rs` (`generate`) or the `osis-schema-gen` binary.
 //!
 //! Mapping: string, text, markdown → `String`; blob → `Vec<u8>`; int, timestamp, duration,
-//! date, localtime → `i64`; float → `Float` (bit pattern, so every generated type is `Ord`); strong, weak, ref, ticket → `Strong`, `Weak`, `Ref`, `Ticket`;
+//! date, localtime → `i64`; float → `Float` (bit pattern, so every generated type is `Ord`); strong, weak, ref → `Strong`, `Weak`, `Ref`;
 //! any → `Value`; option → `Option`; list, set, map → `Vec`, `BTreeSet`, `BTreeMap`; wrappers →
 //! their inner type; a recursive type outside a collection is boxed. Inline structs and enums
 //! are named after their position (`NoteTyping`, `BoxSealed`).
@@ -109,7 +109,6 @@ impl Gen {
             Type::Strong => format!("{P}::osis_base::Strong"),
             Type::Weak => format!("{P}::osis_base::Weak"),
             Type::Ref => format!("{P}::osis_base::Ref"),
-            Type::Ticket => format!("{P}::osis_base::Ticket"),
             Type::Any => format!("{P}::osis_base::Value"),
             Type::Counter(i) | Type::Max(i) | Type::Min(i) => self.rust_type(i, hint, in_collection)?,
             Type::List(e) => format!("Vec<{}>", self.rust_type(e, hint, true)?),

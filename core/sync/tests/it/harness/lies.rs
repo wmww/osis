@@ -27,9 +27,9 @@ pub enum Lie {
     /// Refuses every role entry it is shown (spec/sync-streams.md §4 Refused, code 1), while it
     /// takes them.
     RefuseRoles,
-    /// Declares this class for every sync ID it opens (`unread` in its Offer items and its
+    /// Declares this class for every sync ID it opens (`class` in its Offer items and its
     /// accepting answers, spec/wire.md §11.2), whatever it holds.
-    Declare { unread: bool },
+    Declare(osis_proto::SourceClass),
 }
 
 /// One connection's frames each way.
@@ -122,18 +122,18 @@ impl Liar {
                 r.events = self.log(r.events);
                 vec![Msg::PullReply(r)]
             }
-            (Lie::Declare { unread }, Msg::Offer { id, mut items }) => {
+            (Lie::Declare(class), Msg::Offer { id, mut items }) => {
                 for i in &mut items {
                     match i {
-                        OfferItem::Hit { unread: u, .. } | OfferItem::ByRole { unread: u, .. } | OfferItem::Static { unread: u, .. } => *u = unread,
+                        OfferItem::Hit { class: u, .. } | OfferItem::ByRole { class: u, .. } | OfferItem::Static { class: u, .. } => *u = class,
                         _ => {}
                     }
                 }
                 vec![Msg::Offer { id, items }]
             }
-            (Lie::Declare { unread }, Msg::Shared { id, mut items }) => {
+            (Lie::Declare(class), Msg::Shared { id, mut items }) => {
                 for i in items.iter_mut().filter(|i| i.code == Code::OK) {
-                    i.unread = unread;
+                    i.class = class;
                 }
                 vec![Msg::Shared { id, items }]
             }

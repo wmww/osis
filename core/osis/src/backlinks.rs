@@ -22,7 +22,7 @@ pub struct Backlink {
     pub ak: Ak,
     /// The thing holding the reference.
     pub tid: Tid,
-    /// Whether it is a strong, a weak or a ticket.
+    /// Whether it is a strong or a weak.
     pub kind: RefKind,
 }
 
@@ -84,7 +84,7 @@ fn watch(db: &ReadOnly, tid: Tid, on: Option<&Ak>) -> Filter {
 }
 
 impl ReadOnly {
-    /// The things whose current values reference `tid` (a strong, a weak or a ticket, at any
+    /// The things whose current values reference `tid` (a strong or a weak, at any
     /// depth), each with the aspect and the kind, a page at a time. Only what this node holds and the handle may read counts, never
     /// history. `tid` itself need not be known here.
     pub fn backlinks(&self, tid: Tid, q: &BacklinkQuery) -> Result<BacklinkPage> {

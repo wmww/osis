@@ -134,11 +134,6 @@ fn plain(o: &mut String, v: &Value) {
         Value::Bytes(b) => o.push_str(&format!("h'{}'", hex::encode(b))),
         Value::Strong(t) => o.push_str(&format!("strong({})", t.to_uri())),
         Value::Weak(t) => o.push_str(&format!("weak({})", t.to_uri())),
-        Value::Ticket(t) => {
-            o.push_str("ticket(");
-            plain(o, &t.to_value());
-            o.push(')');
-        }
         Value::Enum(c, p) => {
             o.push('#');
             o.push_str(&c.to_string());
@@ -655,16 +650,11 @@ impl<'a> Parser<'a> {
                     "false" => Ok(Value::Bool(false)),
                     "NaN" => Ok(Value::float(f64::NAN)),
                     "Infinity" => Ok(Value::float(f64::INFINITY)),
-                    "strong" | "weak" | "ticket" if self.peek() == Some('(') => {
+                    "strong" | "weak" if self.peek() == Some('(') => {
                         self.pos += 1;
                         self.ws();
-                        let v = if w == "ticket" {
-                            let c = self.value(None)?;
-                            osis::Ticket::from_value(&c).map(Value::from).ok_or_else(|| self.err("not a ticket's content"))?
-                        } else {
-                            let t = self.target()?;
-                            if w == "strong" { Value::Strong(t) } else { Value::Weak(t) }
-                        };
+                        let t = self.target()?;
+                        let v = if w == "strong" { Value::Strong(t) } else { Value::Weak(t) };
                         self.ws();
                         self.expect(')')?;
                         Ok(v)

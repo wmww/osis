@@ -301,10 +301,16 @@ impl Node {
         &self.opens
     }
 
-    /// Tests only: read's verdict of commit `c`'s body under `s`.
+    /// Tests only: read's verdict of commit `c`'s sync unit body under `s`.
     #[doc(hidden)]
     pub fn verdict(&self, s: &SyncId, c: &osis_base::CommitId) -> Option<crate::read::Verdict> {
         self.read.verdict(s, c)
+    }
+
+    /// Tests only: read's verdict of body `c` under `s`.
+    #[doc(hidden)]
+    pub fn body_verdict(&self, s: &SyncId, c: &osis_engine::sync::BodyId) -> Option<crate::read::Verdict> {
+        self.read.body_verdict(s, c)
     }
 
     /// Tests only: restarts in place after a store failure so far.

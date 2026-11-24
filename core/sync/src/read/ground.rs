@@ -9,9 +9,9 @@ use crate::session::RequestId;
 use crate::types::{ConnId, Entry, Result};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_engine::retention::Minting;
-use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, Loss, PartSet, PieceLink, ReadCredentials, SealedSet, Strip};
+use osis_engine::sync::{BodyFacts, BodyId, BodyMeta, CertKind, Loss, PartSet, PieceLink, ReadCredentials, SealedSet, Strip};
 use osis_blob::StepId;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::Why;
@@ -85,7 +85,7 @@ pub trait Ground {
     /// whether or not S carries a body of it (spec/sync-judgement.md §2: one it carries none of is
     /// outside the required set). An entry of a commit not held (pending, parked) is not judged:
     /// unjudged blobs are kept within the pending bounds (§1 Unjudged blobs).
-    fn entries_added(&mut self) -> Result<Vec<(SyncId, CommitId)>>;
+    fn entries_added(&mut self) -> Result<Vec<(SyncId, BodyId)>>;
     /// The pass place now (`Engine::pass_place`): a complete pass of S counts for what happened
     /// here only when begun after it (spec/sync-status.md §1).
     fn place(&mut self) -> u64;
@@ -95,17 +95,18 @@ pub trait Ground {
     /// Entry `b` of S leaves the own store with no tombstone (judged outside S's required set
     /// here: judged so wrongly, it is logged or pulled again once required).
     fn unlog(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
-    /// Per sync ID of the sync set, `c`'s body there (`Engine::sync_bodies`).
-    fn bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>>;
-    fn facts(&mut self, s: &SyncId, c: &CommitId) -> Result<Facts>;
+    /// Per sync ID of the sync set, `c`'s bodies there (`Engine::sync_bodies`): its sync unit
+    /// body (no thing) and its certificate copy on each thing outside the sync unit.
+    fn bodies(&mut self, c: &CommitId) -> Result<Arc<osis_engine::sync::Bodies>>;
+    fn facts(&mut self, s: &SyncId, c: &BodyId) -> Result<Facts>;
     /// `c`'s body under S taken as covered: per delta needing a carrier (holding a live write,
     /// kept, or dropped as covered and not purged), the commits whose entries under S would
     /// carry it (spec/sync-compaction.md §1 Carriers, `Engine::carriers`): one of each set must
     /// be held where the body leaves. Empty: none needed. Asked only where an entry of the body
     /// would leave: it moves with every snapshot extending the body's chain of covers.
-    fn carriers(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BTreeSet<CommitId>>>;
+    fn carriers(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<BTreeSet<CommitId>>>;
     /// `c`'s judgement under S went idle: what `facts` keeps of it may go (`Engine::unfollow_facts`).
-    fn unfollow_facts(&mut self, s: &SyncId, c: &CommitId) {
+    fn unfollow_facts(&mut self, s: &SyncId, c: &BodyId) {
         let _ = (s, c);
     }
     /// Brings the ground's rows kept per key up to date before judging (a judgement depends on a
@@ -117,7 +118,7 @@ pub trait Ground {
     /// spec/commits.md §5 A thing's mintings travel with its record).
     fn mintings(&mut self, t: &Tid) -> Arc<Vec<Minting>>;
     /// Falls of held parts on `c`'s aspects so far (`Engine::fall_mark`, summed over them).
-    fn fall_mark(&mut self, s: &SyncId, c: &CommitId) -> u64;
+    fn fall_mark(&mut self, s: &SyncId, c: &BodyId) -> u64;
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>>;
     /// This node syncs S read (`Store::holding`: the sync set, or leaving and waiting): read judges
     /// nothing else.
@@ -138,18 +139,18 @@ pub trait Ground {
     fn first_synced(&mut self, s: &SyncId) -> Result<bool>;
     /// This node may log `c`'s body under S now (`Engine::may_log`, spec/sync-judgement.md §2
     /// Loggable): must-hold only while it may.
-    fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool>;
+    fn may_log(&mut self, s: &SyncId, c: &BodyId) -> Result<bool>;
     /// The time (not followed: `Read` follows it through its clock).
     fn now(&self) -> WallMs;
 
     /// The entries of `c` in this node's own store of S.
-    fn own(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<Entry>>;
+    fn own(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<Entry>>;
     /// Whether entry `e` of `c`'s body under S stands as this node's log of it
     /// (spec/sync-judgement.md §3 Own store: stamped where it writes S): where it holds S's head
     /// write key, one stamped under that key (or a role commit a recorded step registers, stamped
     /// under that step's parent, spec/sync-ids.md §6 Steps), own or a peer's alike; anywhere
     /// else, any entry held.
-    fn stands(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
+    fn stands(&mut self, s: &SyncId, c: &BodyId, e: &Entry) -> Result<bool> {
         let _ = (s, c, e);
         Ok(true)
     }
@@ -162,7 +163,7 @@ pub trait Ground {
     }
     /// Whether a peer's deposited entry `b` of `c` under S is promoted (spec/sync-inbox.md §4,
     /// `inbox::promotion`): stamped in place as this node's log of the body.
-    fn promotion(&mut self, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<crate::inbox::Promotion> {
+    fn promotion(&mut self, s: &SyncId, c: &BodyId, b: &BlobId) -> Result<crate::inbox::Promotion> {
         let _ = (s, c, b);
         Ok(crate::inbox::Promotion::Yes)
     }
@@ -170,7 +171,7 @@ pub trait Ground {
     /// stamp, this node's own from then on (off any peer budget).
     fn restamp(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
     /// This node's own tombstones of `c`'s entries under S.
-    fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>>;
+    fn own_tombstones(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<BlobId>>;
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>>;
     /// Held blob `b` carries a part that strips here (purged, past its bounds, destroyed, dropped
     /// as covered by a snapshot reaching it; `Engine::strip_of`): must-not-hold wherever it is logged
@@ -182,7 +183,7 @@ pub trait Ground {
     /// `there`, the blobs of `c` held at a place, carry what only a blob carries of its body and
     /// no purge request reopens it (`Engine::neither`, spec/sync-judgement.md §3 Neither): a delete
     /// of it there stands, and nothing of it is relayed there.
-    fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool>;
+    fn neither(&mut self, s: &SyncId, c: &BodyId, there: &BTreeSet<BlobId>) -> Result<bool>;
 
     /// The sources of S, up or away: a member S of each record in memory (a take or a release
     /// moves none).
@@ -210,19 +211,19 @@ pub trait Ground {
     fn head_at(&mut self, s: &SyncId, at: &Source) -> Option<StepId>;
     /// The sources, up now or away, whose stream shows an entry of `c` under S present (one
     /// showing it deleted only is never idle there, so its verdict moving judges it again).
-    fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>>;
+    fn shown_at(&mut self, s: &SyncId, c: &BodyId) -> Result<BTreeSet<Source>>;
     /// Sources of S whose view was written (joined or changed) since the last call.
     fn sources_added(&mut self) -> Vec<(SyncId, Source)>;
-    fn seen(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Seen>;
+    fn seen(&mut self, at: &Source, s: &SyncId, c: &BodyId) -> Result<Seen>;
     /// `known` rows written since the last call (a source's stream showed an entry of the commit,
     /// or its removal); at the first call (a start) every row, presence and deletes seen alike.
-    fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>>;
+    fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, BodyId)>>;
     /// Some source's stream shows an entry of `c` under S present.
-    fn present_anywhere(&mut self, s: &SyncId, c: &CommitId) -> Result<bool>;
+    fn present_anywhere(&mut self, s: &SyncId, c: &BodyId) -> Result<bool>;
     /// Every source of S heard out (spec/sync-status.md §1), at once with no peer to wait for on S
     /// (`Status::heard_out_or_alone`).
     fn heard_out(&mut self, s: &SyncId) -> Result<bool>;
-    fn stand(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Option<Stand>>;
+    fn stand(&mut self, at: &Source, s: &SyncId, c: &BodyId) -> Result<Option<Stand>>;
 
     /// Logs `c`'s body under S in the own store; its blob, or `None` when it cannot be logged here.
     /// Not `fresh`: a held blob of it not tombstoned under S, verbatim under a wrap for S, else a
@@ -230,9 +231,9 @@ pub trait Ground {
     /// encryption is `Engine::seal_body`'s alone, given every held blob of the commit
     /// (spec/crypto.md §5 Passing on: refused while it may not be made).
     /// `skip`: entries it replaces, never logged verbatim.
-    fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool, skip: &[BlobId]) -> Result<Option<BlobId>>;
+    fn log_own(&mut self, s: &SyncId, c: &BodyId, fresh: bool, skip: &[BlobId]) -> Result<Option<BlobId>>;
     /// The entry leaves the own log, its tombstone noting `c`.
-    fn drop_own(&mut self, s: &SyncId, b: &BlobId, c: &CommitId) -> Result<()>;
+    fn drop_own(&mut self, s: &SyncId, b: &BlobId, c: &BodyId) -> Result<()>;
     fn lift(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
     /// Entry `b` of S fetched on `conn` (streams' Fetch, spec/sync-judgement.md §3 Dropped
     /// bodies): a body counting missing again.
@@ -247,8 +248,8 @@ pub trait Ground {
     /// (spec/sync-judgement.md §3 Reader that is not a writer): own entry `b` relayed under its
     /// stamp when the head's write key verifies it, else a fresh encryption
     /// (`Engine::seal_body`) deposited.
-    fn deposit(&mut self, conn: ConnId, head: Option<StepId>, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()>;
-    fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()>;
+    fn deposit(&mut self, conn: ConnId, head: Option<StepId>, s: &SyncId, c: &BodyId, b: &BlobId) -> Result<()>;
+    fn set_stand(&mut self, at: &Source, s: &SyncId, c: &BodyId, stand: &Stand) -> Result<()>;
 
     /// Of kind `r` (records: `None`; a rotation's thing lists: `Some(r)`), what S carries as
     /// certificates that no certificate blob of that kind in the own store carries, whoever
@@ -376,10 +377,11 @@ pub trait Ground {
     fn unfollow_fate(&mut self, c: &CommitId) {
         let _ = c;
     }
-    /// The sync IDs where an entry or a tombstone of a blob of `c` is held here (`Store::naming`,
-    /// `Store::tombstoned_under`), whatever sync IDs carry a body of it now.
-    fn known_under(&mut self, c: &CommitId) -> Result<BTreeSet<SyncId>> {
-        let _ = c;
+    /// Each blob of `c` as a body (`Engine::blob_body`) under each sync ID where an entry or a
+    /// tombstone of it is held here (`Store::naming`, `Store::tombstoned_under`) and under each
+    /// of `at`, whatever sync IDs carry a body of it now.
+    fn known_under(&mut self, c: &CommitId, at: &BTreeSet<SyncId>) -> Result<BTreeSet<(SyncId, BodyId)>> {
+        let _ = (c, at);
         Ok(BTreeSet::new())
     }
     /// The held parts of `c` that drop as covered now (`Engine::covered_drops`).

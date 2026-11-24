@@ -23,6 +23,44 @@ fn every_node_of_the_role_paths_world_passes_the_evidence_check_spec_permissions
     }
 }
 
+// spec/permissions.md §4 Evidence of a sync ID, notes/principles.md (each change does work in
+// proportion to what changed): a write on one of the things a node reads has the certificate
+// follow derive the same read things' certificates whether the node reads 3 such things or 30,
+// at the writer and at a reader; and what each keeps is what deriving every read thing's gives.
+#[test]
+fn a_write_in_one_of_n_read_things_costs_the_certificate_follow_the_same_at_n_and_10n_spec_permissions_4() {
+    let cost = |n: usize| {
+        let (mut lp, ps) = people(2);
+        let ts: Vec<Tid> = (0..n).map(|_| thing_of(&mut lp, 0, ps[0])).collect();
+        for t in &ts {
+            lp.peers[0].engine.grant(t, &ps[1], &edge_of(Role::Write)).unwrap();
+        }
+        among(&mut lp, 2);
+        for t in &ts {
+            lp.hold_at(1, *t);
+            write(&mut lp, 1, *t, "reader's");
+        }
+        among(&mut lp, 2);
+        let read: Vec<usize> = lp.peers.iter_mut().map(|p| ts.iter().filter(|t| matches!(p.engine.thing_sync(t).unwrap(), osis_engine::sync::ThingSync::Read(_))).count()).collect();
+        assert_eq!(read, [n, n], "both read every thing");
+        let before: Vec<u64> = lp.peers.iter_mut().map(|p| p.engine.certificates_derived().unwrap()).collect();
+        let c = write(&mut lp, 0, ts[0], "one more");
+        among(&mut lp, 2);
+        let mut out = Vec::new();
+        for (p, b) in lp.peers.iter_mut().zip(before) {
+            assert!(!p.engine.sync_bodies(&c).unwrap().is_empty(), "the write is a body under its thing's sync ID");
+            out.push(p.engine.certificates_derived().unwrap() - b);
+        }
+        for (i, p) in lp.peers.iter_mut().enumerate() {
+            assert_eq!(p.engine.check_evidence().unwrap(), None, "node {i} reading {n} things");
+        }
+        out
+    };
+    let (small, large) = (cost(3), cost(30));
+    assert_eq!(small, large, "reading 3 things and reading 30");
+    assert!(small.iter().all(|d| *d <= 2), "a content write moves the certificates of its thing at most: {small:?}");
+}
+
 use crate::common::{REG, s};
 use crate::flows::{edge_of, people, thing_of};
 use osis_base::{Ak, CommitId, Role, Tid};
@@ -150,19 +188,15 @@ fn a_write_listing_an_old_step_after_sync_is_compacted_requires_the_snapshot_spe
     lp.advance(1000);
     let snap = lp.peers[0].engine.snapshot(&g, &sync).unwrap().unwrap();
     let e = &mut lp.peers[0].engine;
-    let mut copies = e.evidence_copies().unwrap();
+    let copies = e.evidence_copies().unwrap();
     let steps = copies[&(snap, g)][0].steps.clone();
     let second = *copies[&(s2, g)][0].steps.first().expect("the second step's write records it");
     assert!(steps.contains(&second) && steps.len() >= 3, "the snapshot records every step: {steps:?}");
-    // w lists keys for its delete base G
-    let dels = &mut copies.get_mut(&(w, d)).unwrap()[0].dels;
-    assert!(!dels.is_empty() && dels.iter().all(|x| x.base == g), "{dels:?}");
-    // Interim (issues/delete-key-levels-unchecked.md): the engine lists its newest epoch's
-    // `kdf("delete key", s)`, borne by no step, until brief 3 lists step keys; w lists the second
-    // step's, as written then
-    for x in dels.iter_mut() {
-        x.key = if x.level == Level::Admin { second.delete } else { second.write };
-    }
+    // w lists the keys of the newest step its delete base G's `sync.0` recorded when it was
+    // written (spec/crypto.md §7 Header list): the second, placed for every thing up D's record
+    // chain, G among them
+    let dels = &copies[&(w, d)][0].dels;
+    assert!(dels.iter().any(|x| x.base == g) && dels.iter().all(|x| x.key == if x.level == Level::Admin { second.delete } else { second.write }), "{dels:?}");
     // the step's entry in the snapshot keeps its recording write's stamp
     let key = |f: &osis_crdt::Fragment| f.at(&[osis_crdt::PathSeg::Key(osis_schema::Codec::to_value(&sid)), osis_crdt::PathSeg::Field(0), osis_crdt::PathSeg::Key(osis_base::Value::Bytes(second.id.to_vec())), osis_crdt::PathSeg::Field(0)]).and_then(|x| x.write_stamp().cloned());
     let at_snap = key(&e.body_fragment(&snap, &g, &sync).unwrap().unwrap()).expect("the snapshot carries the step's entry");
@@ -177,4 +211,43 @@ fn a_write_listing_an_old_step_after_sync_is_compacted_requires_the_snapshot_spe
     assert_eq!(ev.check(), Ok(()));
     let req = ev.required(&d).unwrap();
     assert!(matches!(req.get(&(snap, g)), Some(Reason::Step(b, _)) if *b == g), "{req:?}");
+}
+
+// spec/permissions.md §4 Evidence of a sync ID (a function of the held commits and the unit,
+// computed again at every change of either), notes/principles.md (each change does work in
+// proportion to what changed): one more write on a granted thing costs the derivation the engine
+// keeps the commits it moved, the same after 10 and 100 held writes, at the writer and at a reader
+// it reaches; and what each keeps is the derivation from nothing.
+#[test]
+fn a_write_costs_the_kept_derivation_what_it_moved_at_n_and_10n_spec_permissions_4() {
+    let cost = |n: usize| {
+        let (mut lp, ps) = people(2);
+        let t = thing_of(&mut lp, 0, ps[0]);
+        lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
+        among(&mut lp, 2);
+        lp.hold_at(1, t);
+        for i in 0..n {
+            write(&mut lp, i % 2, t, &format!("{i}"));
+            among(&mut lp, 2);
+        }
+        for p in &mut lp.peers {
+            assert!(matches!(p.engine.thing_sync(&t).unwrap(), osis_engine::sync::ThingSync::Read(_)), "both read the thing");
+        }
+        let before: Vec<_> = lp.peers.iter_mut().map(|p| p.engine.evidence_counts().unwrap()).collect();
+        let c = write(&mut lp, 0, t, "one more");
+        among(&mut lp, 2);
+        let mut out = Vec::new();
+        for (p, b) in lp.peers.iter_mut().zip(before) {
+            assert!(!p.engine.sync_bodies(&c).unwrap().is_empty(), "the write is a body under the thing's sync ID");
+            let (counts, read) = p.engine.evidence_counts().unwrap();
+            out.push((counts - b.0, read - b.1));
+        }
+        for (i, p) in lp.peers.iter_mut().enumerate() {
+            assert_eq!(p.engine.check_evidence().unwrap(), None, "node {i} after {n} writes");
+        }
+        out
+    };
+    let (small, large) = (cost(10), cost(100));
+    assert_eq!(small, large, "after 10 writes and after 100");
+    assert!(small.iter().all(|(c, read)| c.bodies == 1 && c.closes == 0 && (1..=2).contains(read)), "each node read the write, took one body and closed nothing again: {small:?}");
 }

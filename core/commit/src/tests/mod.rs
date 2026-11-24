@@ -22,7 +22,7 @@ pub(crate) fn ts(wall: u64) -> Ts {
 
 /// A valid delete key at `level` from secret `[b; 32]`.
 pub(crate) fn dkey(level: u8, b: u8) -> DeleteKey {
-    DeleteKey::new(level, &osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([b; 32])).verifying_key())
+    DeleteKey::new(level, &osis_crypto::DeleteSecret::write(&Secret32::from_bytes([b; 32])).verifying_key())
 }
 
 /// The test signer's session nonce (spec/crdt.md §2.1).

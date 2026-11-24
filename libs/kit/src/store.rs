@@ -34,7 +34,7 @@ pub fn open(dir: &Path, dial: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) -
 }
 
 /// The aspects that are the system's, not the user's: no view accounts for them, raw hides them.
-pub const SYSTEM: [&str; 10] = ["created.0", "holds.0", "tickets.0", "roles.0", "keys.0", "secrets.0", "label.0", "reach.0", "node.0", "retention^.0"];
+pub const SYSTEM: [&str; 9] = ["created.0", "holds.0", "roles.0", "keys.0", "secrets.0", "label.0", "reach.0", "node.0", "retention^.0"];
 
 /// The registry of what a Data knows: its facets and view types.
 pub use crate::view::registry::Registry;
@@ -726,8 +726,7 @@ impl Data {
         let l: osis::ShareLink = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a link: {e}")))?;
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().map_err(|e| osis::Error::Network(e.to_string()))?;
         let got = rt.block_on(async { tokio::time::timeout(JOIN_WAIT, self.db.redeem(&l)).await }).unwrap_or_else(|_| Err(osis::Error::Network("could not confirm this link yet; trying again is safe".into())))?;
-        // home holds it; the account's ticket for it, which brings it to the account's other
-        // nodes, is core's
+        // home holds it, which brings it to the account's other nodes
         if !self.things()?.contains(&got) {
             let g = self.home()?;
             self.commit(|w| w.hold(g, got))?;

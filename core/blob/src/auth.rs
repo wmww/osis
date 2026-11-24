@@ -270,7 +270,7 @@ mod tests {
         let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
         let l = s0.sync_id;
         let (sync, write) = (role_key(RoleKey::Sync, &g.sync), role_key(RoleKey::Write, &g.write));
-        let dk = |b: u8| DeleteSecret::derive(&Secret32::from_bytes([b; 32]));
+        let dk = |b: u8| DeleteSecret::write(&Secret32::from_bytes([b; 32]));
         let (a1, b1, author, a3, b3) = (dk(1), dk(2), dk(3), dk(4), dk(5));
         let (salt, hb, b) = ([5u8; 16], [7u8; 16], BlobId([9; 32]));
         let vk = |l: u8, d: &DeleteSecret| (l, d.verifying_key());
@@ -328,7 +328,7 @@ mod tests {
         let l = s0.sync_id;
         let (sync, write) = (role_key(RoleKey::Sync, &g.sync), role_key(RoleKey::Write, &g.write));
         let salt = [5u8; 16];
-        let (d2, d3) = (DeleteSecret::derive(&Secret32::from_bytes([1; 32])), DeleteSecret::derive(&Secret32::from_bytes([2; 32])));
+        let (d2, d3) = (DeleteSecret::write(&Secret32::from_bytes([1; 32])), DeleteSecret::write(&Secret32::from_bytes([2; 32])));
         let hb = [7u8; 16];
         let prefix = Prefix::for_keys(salt, &hb, None, &[(2, d2.verifying_key()), (3, d3.verifying_key())]).unwrap();
         let b = BlobId([9; 32]);
@@ -344,7 +344,7 @@ mod tests {
         // a key at another level, a forged key, another salt, no prefix
         assert!(by(&sync, &[(2, &d3)], &salt, &hb).verify(&s0, Some(&prefix)).is_err());
         assert!(by(&sync, &[(1, &d2)], &salt, &hb).verify(&s0, Some(&prefix)).is_err());
-        let forged = DeleteSecret::derive(&Secret32::from_bytes([3; 32]));
+        let forged = DeleteSecret::write(&Secret32::from_bytes([3; 32]));
         assert!(by(&sync, &[(2, &forged)], &salt, &hb).verify(&s0, Some(&prefix)).is_err());
         assert!(by(&sync, &[(2, &d2)], &[6; 16], &hb).verify(&s0, Some(&prefix)).is_err());
         assert!(by(&sync, &[(2, &d2)], &salt, &[9; 16]).verify(&s0, Some(&prefix)).is_err(), "another header's blind");
@@ -361,7 +361,7 @@ mod tests {
         // groups (spec/sync-ids.md §6): a Delete needs a signature under every group; an empty group
         // blocks a Delete by level; no group refuses one; the author key shared by both
         // groups covers both with one signature
-        let d1 = DeleteSecret::derive(&Secret32::from_bytes([4; 32]));
+        let d1 = DeleteSecret::write(&Secret32::from_bytes([4; 32]));
         let two = Prefix::for_groups(salt, &hb, None, &[vec![(2, d2.verifying_key()), (3, d3.verifying_key())], vec![(1, d1.verifying_key()), (2, d2.verifying_key())]]).unwrap();
         assert!(by(&write, &[(3, &d3)], &salt, &hb).verify(&s0, Some(&two)).is_err());
         by(&write, &[(1, &d1), (3, &d3)], &salt, &hb).verify(&s0, Some(&two)).unwrap();

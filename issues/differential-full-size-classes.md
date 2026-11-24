@@ -1,5 +1,5 @@
 # Full-size sync differential: open failure classes
-> Summary: `OSIS_FULL=1 differential::histories_hold_their_closure_plain` over seeds 0..199 failed 5 on main at 8b8fb50e8 (138, 169, 180, 183, 189; 113 passes there). Open: S's required set hanging on other paths (189, fix parked: it exposes three more), stale status sources (113, reached once record-edge removals travel). The unaccepted-grant class (138, 183) is fixed by the taken-up role (notes/node-closure.md Roles taken up); the content-kept-with-no-secret scripts (169, 180) pass.
+> Summary: `OSIS_FULL=1 differential::histories_hold_their_closure_plain` over seeds 0..199 failed 5 on main at 8b8fb50e8 (138, 169, 180, 183, 189; 113 passes there). Open: S's required set hanging on other paths (189, fix parked: it exposes three more), stale status sources (113, reached once record-edge removals travel). The unaccepted-grant class (138, 183) is fixed by the node's role over taken grants (notes/node-closure.md The node's role); the content-kept-with-no-secret scripts (169, 180) pass.
 > Priority: normal
 > Tags: sync, engine, tests
 

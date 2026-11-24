@@ -14,7 +14,8 @@
 //! one in the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a
 //! part the node fetches again), one in the node closure an edge write on it names holder (not by its
 //! record: the holder's sync ID carries the grant with its chain, spec/permissions.md §4 Key
-//! part). A thing is rooted, kept for itself (`Root`): held (in the node closure
+//! part), one on whose inbox a `grant@~0` fire held valid carries a commit on it (what an
+//! offer carries, `flows::inbox::granted_on`). A thing is rooted, kept for itself (`Root`): held (in the node closure
 //! or leaving it), a retained copy, a thing an own self-removal still waits to seal under, or a
 //! thing whose record what waits under Pending storage awaits (nothing on it applies before its
 //! record: what came for it pends, kept while carried, `apply::carriers`).
@@ -37,7 +38,7 @@
 //! lost one (a strong row or an account's `keys.0` row gone, durable or ephemeral, `refs::note`; a signer's commit
 //! leaving pending; the last held commit acting as it gone, `apply::unindex`; a
 //! commit's part no longer missing, `Core::note_on`; a holder unnamed, `Held::take_unnamed`; the
-//! last held vertex with a ticket for it no longer following its strong, `units::set_accepted`) is noted in `Core::lost_due`, judged at a pass's end or, with
+//! last held vertex no longer following its strong) is noted in `Core::lost_due`, judged at a pass's end or, with
 //! none in flight, at once (`Engine::settle_lost`). A release judges what it released, and what
 //! each was named holder on, in its own transaction
 //! (`Engine::released`). Either way at the end of a transaction (`Engine::run`, in turn with
@@ -81,7 +82,8 @@ impl Engine {
     /// judgement and nothing held needs goes, as at a pass end. A lost need waits for nothing;
     /// an arrival waits for the pass that brought it (a parent's record before what needs it),
     /// so one also arrived since (`Core::pass_due`; every held record after an open) waits for
-    /// that pass. O(what lost a need).
+    /// that pass. What a sealed fire brought came whole with it, by no pass, and is judged here
+    /// (`Core::note_pass_due`). O(what lost a need).
     pub fn settle_lost(&mut self) -> Result<()> {
         let Some(arrived) = &self.core.pass_due else { return Ok(()) };
         let due: BTreeSet<Tid> = self.core.lost_due.difference(arrived).copied().collect();
@@ -218,6 +220,8 @@ fn excess(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
 pub(crate) enum Root {
     /// In the node closure, or leaving it and not released yet.
     Held,
+    /// Held for keys (spec/sync-set.md §2): its key part, nothing of its content.
+    Keys,
     /// A retained copy (`rotation::lost`) under this kept actor, itself or the secret actor it is
     /// a copy under (`forget::copy_of`).
     Copy(Tid),
@@ -248,6 +252,9 @@ pub(crate) enum Need {
     Strong(osis_base::Ak),
     /// Account `x`'s `keys.0` names `t` (its inbox).
     Inbox,
+    /// A `grant@~0` fire on `x`'s inbox held valid carries this commit on `t`: what an offer
+    /// carries is held while the offer is (spec/sync-inbox.md §5 Grant from outside).
+    Offered(osis_base::CommitId),
 }
 
 /// Why `t` is kept for itself (the module doc), if it is.
@@ -255,6 +262,9 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
     let cl = &core.ix.closure;
     if cl.holds(t) || cl.left().contains_key(t) {
         return Some(Root::Held);
+    }
+    if cl.for_keys(t) {
+        return Some(Root::Keys);
     }
     if let Some(a) = super::forget::copy_of(core, t) {
         return Some(Root::Copy(a));
@@ -296,7 +306,10 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // things it writes on: its path lists it, so its record judges the commit (spec/commits.md §4
     // Unjudgeable)
     let acting = core.acting_for(t).flat_map(|c| core.ix.commits.get(&c).into_iter().flat_map(move |m| m.view.aspects.iter().map(move |a| (a.tid, Need::Acting(c)))));
-    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(devices).chain(pending).chain(acting).chain(waiting).chain(holding).collect();
+    // a holder a held valid grant fire on whose inbox carries a commit on it: what an offer
+    // carries, held while the offer is
+    let granted = crate::flows::inbox::granted_on(core, t).map(|(h, c)| (h, Need::Offered(c)));
+    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(devices).chain(pending).chain(acting).chain(waiting).chain(holding).chain(granted).collect();
     // a strong from a thing the node closure holds (a weak or ticket only points; one kept only
     // as a certificate needs nothing by what its state names), and an account's reference from
     // its `keys.0` (its inbox, part of its chain)

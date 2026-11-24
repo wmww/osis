@@ -12,7 +12,7 @@ use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_crypto::{RoleKey, Secret32, Signature, SigningSecret, role_key};
 use osis_engine::sync_ids::HeadKeys;
 use osis_engine::retention::{End, Minting, Standing};
-use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, Loss, ReadCredentials, Strip};
+use osis_engine::sync::{BodyFacts, BodyId, BodyMeta, CertKind, Loss, ReadCredentials, Strip};
 use osis_blob::{Class, Step, StepId, StepKeys};
 use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, CertBlobsMissing, Seen, SrcView, StepReady, Verdict, Why};
 use osis_engine::sync::PieceLink;
@@ -257,10 +257,10 @@ impl Ground for Fake {
         self.sent.push(Sent::Take(*b));
         Ok(())
     }
-    fn stands(&mut self, s: &SyncId, _c: &CommitId, e: &Entry) -> Result<bool> {
+    fn stands(&mut self, s: &SyncId, _c: &BodyId, e: &Entry) -> Result<bool> {
         Ok(self.head_stamp(s).is_none_or(|h| e.stamp == Some(h)))
     }
-    fn promotion(&mut self, _s: &SyncId, _c: &CommitId, b: &BlobId) -> Result<Promotion> {
+    fn promotion(&mut self, _s: &SyncId, _c: &BodyId, b: &BlobId) -> Result<Promotion> {
         Ok(self.promotions.get(b).copied().unwrap_or(Promotion::Yes))
     }
     fn restamp(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
@@ -325,8 +325,8 @@ impl Ground for Fake {
     fn forgettable(&mut self, c: &CommitId) -> Result<Option<bool>> {
         Ok(self.bodies.contains_key(c).then(|| self.forgettable.contains_key(c)))
     }
-    fn known_under(&mut self, c: &CommitId) -> Result<BTreeSet<SyncId>> {
-        Ok(self.known.get(c).cloned().unwrap_or_default())
+    fn known_under(&mut self, c: &CommitId, _at: &BTreeSet<SyncId>) -> Result<BTreeSet<(SyncId, BodyId)>> {
+        Ok(self.known.get(c).into_iter().flatten().map(|s| (*s, BodyId::unit(*c))).collect())
     }
     fn forget_commits(&mut self, cs: &[CommitId]) -> Result<()> {
         for c in cs {
@@ -353,20 +353,23 @@ impl Ground for Fake {
         }
         Ok(())
     }
-    fn entries_added(&mut self) -> Result<Vec<(SyncId, CommitId)>> {
-        Ok(std::mem::take(&mut self.entries_feed))
+    fn entries_added(&mut self) -> Result<Vec<(SyncId, BodyId)>> {
+        Ok(std::mem::take(&mut self.entries_feed).into_iter().map(|(s, c)| (s, BodyId::unit(c))).collect())
     }
-    fn bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
+    fn bodies(&mut self, c: &CommitId) -> Result<Arc<osis_engine::sync::Bodies>> {
         let _ = self.bodies_read.get(c);
-        Ok(self.bodies.get(c).cloned().unwrap_or_default())
+        Ok(Arc::new(self.bodies.get(c).into_iter().flat_map(|m| m.iter()).map(|(s, m)| ((*s, None), m.clone())).collect()))
     }
-    fn facts(&mut self, s: &SyncId, c: &CommitId) -> Result<Facts> {
+    fn facts(&mut self, s: &SyncId, c: &BodyId) -> Result<Facts> {
+        let c = &c.commit;
         Ok(self.facts.get(&(*s, *c)).cloned().unwrap_or_else(uncovered).facts)
     }
-    fn carriers(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BTreeSet<CommitId>>> {
+    fn carriers(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<BTreeSet<CommitId>>> {
+        let c = &c.commit;
         Ok(self.facts.get(&(*s, *c)).map(|f| f.carriers.clone()).unwrap_or_default())
     }
-    fn fall_mark(&mut self, s: &SyncId, c: &CommitId) -> u64 {
+    fn fall_mark(&mut self, s: &SyncId, c: &BodyId) -> u64 {
+        let c = &c.commit;
         self.marks.get(&(*s, *c)).copied().unwrap_or(0)
     }
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
@@ -387,7 +390,8 @@ impl Ground for Fake {
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unpullable.contains_key(s))
     }
-    fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+    fn may_log(&mut self, s: &SyncId, c: &BodyId) -> Result<bool> {
+        let c = &c.commit;
         Ok(!self.unloggable.contains_key(&(*s, *c)))
     }
     fn cert_blobs_missing(&mut self, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
@@ -427,13 +431,15 @@ impl Ground for Fake {
     fn loses(&mut self, _s: &SyncId, _b: &BlobId, _o: &BlobId, _stands: (bool, bool)) -> Result<Option<Loss>> {
         Ok(None)
     }
-    fn neither(&mut self, _s: &SyncId, _c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
+    fn neither(&mut self, _s: &SyncId, _c: &BodyId, there: &BTreeSet<BlobId>) -> Result<bool> {
         Ok(!there.is_empty())
     }
-    fn own(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<Entry>> {
+    fn own(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<Entry>> {
+        let c = &c.commit;
         Ok(self.own.get(&(*s, *c)).cloned().unwrap_or_default())
     }
-    fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>> {
+    fn own_tombstones(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<BlobId>> {
+        let c = &c.commit;
         Ok(self.tombs.get(&(*s, *c)).cloned().unwrap_or_default())
     }
     fn sources(&mut self, s: &SyncId) -> Arc<Vec<SrcView>> {
@@ -457,19 +463,22 @@ impl Ground for Fake {
     fn head_at(&mut self, s: &SyncId, at: &Source) -> Option<StepId> {
         self.srcs.get(&(*s, *at)).and_then(|v| v.head)
     }
-    fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>> {
+    fn shown_at(&mut self, s: &SyncId, c: &BodyId) -> Result<BTreeSet<Source>> {
+        let c = &c.commit;
         Ok(self.seen.iter().filter(|((_, x, y), v)| x == s && y == c && !v.present.is_empty()).map(|((at, ..), _)| *at).collect())
     }
     fn sources_added(&mut self) -> Vec<(SyncId, Source)> {
         std::mem::take(&mut self.src_feed)
     }
-    fn seen(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Seen> {
+    fn seen(&mut self, at: &Source, s: &SyncId, c: &BodyId) -> Result<Seen> {
+        let c = &c.commit;
         Ok(self.seen.get(&(*at, *s, *c)).cloned().unwrap_or_default())
     }
-    fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>> {
-        Ok(std::mem::take(&mut self.seen_feed))
+    fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, BodyId)>> {
+        Ok(std::mem::take(&mut self.seen_feed).into_iter().map(|(at, s, c)| (at, s, BodyId::unit(c))).collect())
     }
-    fn present_anywhere(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+    fn present_anywhere(&mut self, s: &SyncId, c: &BodyId) -> Result<bool> {
+        let c = &c.commit;
         Ok(self.anywhere.get(&(*s, *c)).copied().unwrap_or(false))
     }
     fn heard_out(&mut self, s: &SyncId) -> Result<bool> {
@@ -483,27 +492,30 @@ impl Ground for Fake {
         self.step.remove(s);
         Ok(true)
     }
-    fn stand(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Option<Stand>> {
+    fn stand(&mut self, at: &Source, s: &SyncId, c: &BodyId) -> Result<Option<Stand>> {
+        let c = &c.commit;
         Ok(self.stands.get(&(*at, *s, *c)).cloned())
     }
-    fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool, _skip: &[BlobId]) -> Result<Option<BlobId>> {
+    fn log_own(&mut self, s: &SyncId, c: &BodyId, fresh: bool, _skip: &[BlobId]) -> Result<Option<BlobId>> {
+        let c = &c.commit;
         self.fresh.push(fresh);
         self.next += 1;
         let mut b = [0u8; 32];
         b[..4].copy_from_slice(&self.next.to_be_bytes());
         b[4] = c.0[0];
         let blob = BlobId(b);
-        let mut v = self.own(s, c)?;
+        let mut v = self.own(s, &osis_engine::sync::BodyId::unit(*c))?;
         let stamp = self.head_stamp(s);
         v.push(Entry { blob, wrap: [0; osis_crypto::WRAP_LEN], stamp, deposited: stamp.is_none(), own: true, role: false, class: Class::Durable, expires: None });
         self.own.insert((*s, *c), v);
         self.logged.push((*s, *c, blob));
         Ok(Some(blob))
     }
-    fn drop_own(&mut self, s: &SyncId, b: &BlobId, c: &CommitId) -> Result<()> {
-        let v: Vec<Entry> = self.own(s, c)?.into_iter().filter(|e| e.blob != *b).collect();
+    fn drop_own(&mut self, s: &SyncId, b: &BlobId, c: &BodyId) -> Result<()> {
+        let c = &c.commit;
+        let v: Vec<Entry> = self.own(s, &osis_engine::sync::BodyId::unit(*c))?.into_iter().filter(|e| e.blob != *b).collect();
         self.own.insert((*s, *c), v);
-        let mut t = self.own_tombstones(s, c)?;
+        let mut t = self.own_tombstones(s, &osis_engine::sync::BodyId::unit(*c))?;
         t.push(*b);
         self.tombs.insert((*s, *c), t);
         Ok(())
@@ -535,12 +547,14 @@ impl Ground for Fake {
         self.requests += 1;
         Ok(Some(self.requests))
     }
-    fn deposit(&mut self, conn: ConnId, head: Option<StepId>, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()> {
+    fn deposit(&mut self, conn: ConnId, head: Option<StepId>, s: &SyncId, c: &BodyId, b: &BlobId) -> Result<()> {
+        let c = &c.commit;
         let _ = (head, s, c);
         self.sent.push(Sent::Deposit(conn, *b));
         Ok(())
     }
-    fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()> {
+    fn set_stand(&mut self, at: &Source, s: &SyncId, c: &BodyId, stand: &Stand) -> Result<()> {
+        let c = &c.commit;
         self.stands.insert((*at, *s, *c), stand.clone());
         Ok(())
     }
@@ -754,7 +768,7 @@ impl W {
     }
 
     fn own_blobs(&mut self, s: SyncId, c: CommitId) -> Vec<BlobId> {
-        self.g.own(&s, &c).unwrap().into_iter().map(|e| e.blob).collect()
+        self.g.own(&s, &osis_engine::sync::BodyId::unit(c)).unwrap().into_iter().map(|e| e.blob).collect()
     }
 
     /// Deletes sent so far, K's taken included.
@@ -2319,7 +2333,7 @@ fn a_destroyed_things_witness_that_went_is_logged_again_spec_commits_5() {
     assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
     assert_eq!(w.logs(S, cid(1)), 1);
     let b = w.own_blobs(S, cid(1))[0];
-    w.g.drop_own(&S, &b, &cid(1)).unwrap();
+    w.g.drop_own(&S, &b, &osis_engine::sync::BodyId::unit(cid(1))).unwrap();
     w.settle();
     assert_eq!(w.logs(S, cid(1)), 2, "logged again");
 }
@@ -2466,13 +2480,13 @@ fn a_pulled_entry_outside_the_required_set_leaves_after_a_pass_spec_sync_judgeme
     w.pulled(c, &[S2], 40, 5);
     assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Unjudged), "no pass since it came");
     assert_eq!(w.read.passes_wanted().get(&S), Some(&5), "a pass of S begun after place 5 is wanted");
-    assert_eq!(w.g.own(&S, &c).unwrap().len(), 1, "kept while it waits");
+    assert_eq!(w.g.own(&S, &osis_engine::sync::BodyId::unit(c)).unwrap().len(), 1, "kept while it waits");
     w.pass(5);
     assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Unjudged), "a pass begun at its place counts not");
     w.pass(6);
     assert_eq!(w.read.verdict(&S, &c), None, "judged outside, dropped, no longer followed");
     assert_eq!(w.g.unlogged, vec![(S, BlobId([40; 32]))], "dropped with no tombstone");
-    assert!(w.g.own_tombstones(&S, &c).unwrap().is_empty());
+    assert!(w.g.own_tombstones(&S, &osis_engine::sync::BodyId::unit(c)).unwrap().is_empty());
     assert!(w.read.passes_wanted().is_empty(), "no pass wanted any more");
 }
 
@@ -2498,7 +2512,7 @@ fn an_unjudgeable_entry_is_kept_then_judged_spec_sync_judgement_1() {
     w.pass(8);
     assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Must));
     assert!(w.g.unlogged.is_empty(), "never dropped");
-    assert_eq!(w.g.own(&S, &c).unwrap().len(), 1);
+    assert_eq!(w.g.own(&S, &osis_engine::sync::BodyId::unit(c)).unwrap().len(), 1);
 }
 
 // spec/sync-judgement.md §3 (Own store: another's body is logged once a complete pass of S begun
@@ -2538,7 +2552,7 @@ fn an_entry_judged_outside_then_listed_is_held_again_spec_sync_judgement_2() {
     let c = cid(42);
     w.pulled(c, &[S2], 42, 2);
     w.pass(3);
-    assert!(w.g.own(&S, &c).unwrap().is_empty(), "dropped as outside");
+    assert!(w.g.own(&S, &osis_engine::sync::BodyId::unit(c)).unwrap().is_empty(), "dropped as outside");
     w.g.place = 4;
     w.g.bodies.insert(c, Arc::new([(S, meta()), (S2, meta())].into()));
     w.settle();
@@ -2739,48 +2753,4 @@ fn a_deposit_only_step_waits_a_complete_pass_spec_permissions_3() {
     assert_eq!(w.g.issued, vec![S], "a pass begun at its place counts not");
     w.pass(6);
     assert_eq!(w.g.issued, vec![S, S], "issued once the pass ended");
-}
-
-
-/// The judgements (`read: judged`) both nodes make as node 1, reading thing 0 by a grant, comes
-/// to hold a sync ticket for it too, with `n` things minted with thing 0 as admin (each a body under its
-/// sync ID): the ticket moves what thing 0's read things and credentials are derived from (its
-/// ticket sync IDs), not what they are.
-fn judged_per_ticket(n: usize) -> u64 {
-    use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world_of};
-    use osis_base::{Ak, Role, Value};
-    let mut w = world_of(0, 2, 2);
-    let mut steps = vec![New(0), Grant(0, 0, 1, Gives::Reads), Run];
-    steps.extend((0..n).flat_map(|_| [NewIn(0, 0), Run]));
-    for s in &steps {
-        crate::harness::step(&mut w, s);
-    }
-    let (t, a1) = (w.history.things[0].0, w.node(1).account.unwrap());
-    let k = w.engine(0).ticket_of(&t, Role::Sync, &a1).unwrap().expect("a ticket");
-    w.run();
-    osis_base::costs::take();
-    w.write(1, |e| {
-        let d = e.account_root().unwrap();
-        let mut m = osis_engine::Mutation::new();
-        let h = e.new_thing(&mut m, d);
-        m.set(h, &Ak::new("x:k.0").unwrap(), &Value::Ticket(Box::new(k))).unwrap();
-        m.op(d, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(h)) }).unwrap();
-        e.commit(m)
-    })
-    .unwrap();
-    w.run();
-    osis_base::costs::take().iter().filter(|(k, _, _)| *k == "read: judged").map(|(_, _, n)| n).sum()
-}
-
-// spec/sync-judgement.md §3 (driven by events): a ticket for a thing read already moves what its
-// sync ID's read things (`Engine::read_things_of`) and stamp key (`Engine::step_write_key`) are
-// derived from, not their answers, so it judges none of the bodies under that sync ID: the same
-// judgements at n and 10n bodies (the ticket's own commit alone). Either read whole (the sync ID's
-// things, or its credentials) judges every body again.
-#[test]
-fn a_ticket_for_a_thing_read_judges_none_of_its_bodies_at_n_and_10n() {
-    let (a, b) = (judged_per_ticket(2), judged_per_ticket(20));
-    assert_eq!(a, b, "judgements per ticket grow with the bodies held");
-    assert!(a <= 4, "{a}");
 }

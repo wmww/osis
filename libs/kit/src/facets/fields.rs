@@ -196,7 +196,7 @@ fn scalar(t: &ValueType) -> Option<Edit> {
         ValueType::Float => Edit::Float,
         ValueType::Bool => Edit::Bool,
         ValueType::Cases(c) if c.iter().all(|c| c.value.is_none()) => Edit::Case,
-        ValueType::Strong | ValueType::Weak | ValueType::Ref | ValueType::Ticket | ValueType::Bytes => Edit::None,
+        ValueType::Strong | ValueType::Weak | ValueType::Ref | ValueType::Bytes => Edit::None,
         _ => return None,
     })
 }
@@ -210,7 +210,6 @@ pub fn show(v: &Value) -> String {
         Value::Str(s) => s.clone(),
         Value::Bytes(b) => format!("{} bytes", b.len()),
         Value::Strong(t) | Value::Weak(t) => t.to_string(),
-        Value::Ticket(t) => format!("ticket for {}", t.target),
         Value::Enum(c, None) => format!("#{c}"),
         Value::Enum(c, Some(p)) => format!("#{c}({})", show(p)),
         Value::Map(m) => format!("{{{}}}", m.iter().map(|(k, v)| format!("{}: {}", show(k), show(v))).collect::<Vec<_>>().join(", ")),

@@ -35,7 +35,6 @@ mod memory;
 mod destruction;
 mod refs;
 mod role_paths;
-mod tickets;
 mod strangers;
 mod external;
 mod thing_cost;

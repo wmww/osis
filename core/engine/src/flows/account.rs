@@ -884,6 +884,13 @@ impl Core {
     pub(crate) fn account_delete_key(&self, p: &Tid) -> Option<VerifyingKey> {
         Some(self.account_view(p)?.open_epoch()?.1.signing)
     }
+
+    /// The signing keys of the held epochs of account `p`'s chain: what a header may list as
+    /// its delete key (spec/crypto.md §7 Checked keys). Every held epoch, counting or not: a
+    /// commit at an epoch that counts not is refused by the epoch rule itself.
+    pub(crate) fn account_signing_keys(&self, p: &Tid) -> Vec<[u8; 32]> {
+        self.account_view(p).map(|v| v.epochs.values().map(|e| e.signing.to_bytes()).collect()).unwrap_or_default()
+    }
 }
 
 /// The things commit view `v` names words on: those it has a delta on, and the thing it acts on.
@@ -1282,11 +1289,10 @@ impl Engine {
                 Ok(inner)
             })?
         };
-        // D's certificates as this node logs them, and every roster node's card and record
-        // (`own_piece`): the new node reads each rotation's minter by them, the creation device's
+        // D's certificates as this node logs them, every roster node's card and record among
+        // them: the new node reads each rotation's minter by them, the creation device's
         // included; records travel as the commits minting them
-        let mut certs = self.certificates(&d);
-        certs.extend(self.own_piece(&d));
+        let certs = self.certificates(&d)?;
         let mut all: Vec<CommitId> = certs.commits.into_keys().chain(certs.headers).chain(certs.mintings.into_keys()).collect();
         let sync_id = osis_base::Ak::new("sync.0").map_err(|_| Error::Misuse("ak"))?;
         all.extend(self.core.ix.by_aspect.get(&(d, sync_id)).into_iter().flatten().map(|(_, c)| *c));
@@ -1409,12 +1415,6 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     }
     done.add(Engine::commit_tx(tx, m)?);
     super::roots::hold_in(tx, d)?;
-    // the account's tickets for the profile and the inbox, which the walk now enters from D
-    // (Interim (issues/tickets-retired.md))
-    crate::sync::units::settle(tx)?;
-    for t in [profile, inbox] {
-        done.add(super::inbox::write_account_ticket(tx, &t)?);
-    }
     Ok((profile, done))
 }
 

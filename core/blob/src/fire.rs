@@ -1,6 +1,7 @@
-//! Sealed fires (spec/sync-inbox.md §2, spec/wire.md §9): a fire of an external signal, a commit by
-//! the sender's own account sealed to the fired thing's read KEM key, delivered as a deposit.
-//! The commit travels as its `CommitBlobPlaintext` value; osis-commit parses it.
+//! Sealed fires and sealed copies (spec/sync-inbox.md §2, spec/wire.md §9): a fire of an external
+//! signal (a commit by the sender's own account) or a certificate copy, sealed to the receiving
+//! thing's read KEM key, delivered as a deposit. The commit travels as its `CommitBlobPlaintext`
+//! value; osis-commit parses it.
 
 use crate::blob::Prefix;
 use crate::cbor::{records_from, records_value};
@@ -10,29 +11,34 @@ use osis_base::cbor::{decode, encode};
 use osis_base::{CreationRecord, Tid, Value};
 use osis_crypto::{CryptoRngCore, Epoch, KemPublicKey, KemSecret};
 
-/// `SealedFire := [CommitBlobPlaintext, [CommitBlobPlaintext*], [creation*]]` (spec/wire.md §9):
-/// the fire's commit, its author's chain certificates for its actor (each projected to its chain
-/// deltas), and their creation records, ascending by tid, distinct.
+/// `Sealed := [form, CommitBlobPlaintext, [CommitBlobPlaintext*], [creation*], [blob*]]`
+/// (spec/wire.md §9): `form` 0 a sealed fire, 1 a sealed copy (`copy`); the fire's commit or the
+/// certificate copy; its evidence as certificate copies; their creation records, ascending by
+/// tid, distinct; the blobs its commit's deltas link (their pages), whole.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealedFire {
+    pub copy: bool,
     pub commit: Value,
     pub chain: Vec<Value>,
     pub records: Vec<CreationRecord>,
+    pub pages: Vec<Vec<u8>>,
 }
 
 impl SealedFire {
     pub fn to_value(&self) -> Value {
-        Value::List(vec![self.commit.clone(), Value::List(self.chain.clone()), records_value(&self.records)])
+        let pages = Value::List(self.pages.iter().map(|b| Value::Bytes(b.clone())).collect());
+        Value::List(vec![Value::Int(i64::from(self.copy)), self.commit.clone(), Value::List(self.chain.clone()), records_value(&self.records), pages])
     }
 
     pub fn from_value(v: Value) -> Result<SealedFire, Error> {
         let bad = || Error::Malformed("sealed fire");
         let Value::List(items) = v else { return Err(bad()) };
-        let Ok::<[Value; 3], _>([commit @ Value::List(_), Value::List(chain), Value::List(records)]) = items.try_into() else { return Err(bad()) };
+        let Ok::<[Value; 5], _>([Value::Int(form @ (0 | 1)), commit @ Value::List(_), Value::List(chain), Value::List(records), Value::List(pages)]) = items.try_into() else { return Err(bad()) };
         if !chain.iter().all(|c| matches!(c, Value::List(_))) {
             return Err(bad());
         }
-        Ok(SealedFire { commit, chain, records: records_from(&records)? })
+        let pages = pages.into_iter().map(|b| if let Value::Bytes(b) = b { Ok(b) } else { Err(bad()) }).collect::<Result<_, _>>()?;
+        Ok(SealedFire { copy: form == 1, commit, chain, records: records_from(&records)?, pages })
     }
 }
 
@@ -67,7 +73,7 @@ mod tests {
         let kem = KemSecret::derive(&Secret32::from_bytes([1; 32]));
         let (t, e) = (Tid::from_bytes([2; 15]), Epoch::new(3, [4; 32]).unwrap());
         let prefix = Prefix::new(Prefix::random_salt(&mut rng), None, vec![]).unwrap();
-        let fire = SealedFire { commit: Value::List(vec![Value::Int(1)]), chain: vec![], records: vec![] };
+        let fire = SealedFire { copy: false, commit: Value::List(vec![Value::Int(1)]), chain: vec![], records: vec![], pages: vec![] };
         let blob = seal_fire(&prefix, &t, &e, kem.public(), &fire, &mut rng).unwrap();
         assert_eq!(open_fire(&blob, &t, &e, &kem).unwrap(), (prefix, fire));
         assert!(open_fire(&blob, &t, &e, &KemSecret::derive(&Secret32::from_bytes([9; 32]))).is_err(), "another key");

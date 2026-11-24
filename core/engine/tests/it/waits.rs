@@ -1055,6 +1055,9 @@ fn record_and_reach(x_below: bool) -> (Reason, Tid, Option<Value>) {
         }
     };
     let xc = creation_of(&mut lp, 0, 2, x);
+    // 2 takes its grant on y; x's grant fire carries x's record: held back with it
+    lp.pass_fires(2).unwrap();
+    lp.hold_fires(true);
     lp.peers[0].engine.grant(&x, &r, &Edge { role: Role::Read, until: None, may_grant: false, retain: false, floor: None }).unwrap();
     let mut m = Mutation::new();
     m.set(y, &REG, &s("y")).unwrap();
@@ -1079,6 +1082,7 @@ fn record_and_reach(x_below: bool) -> (Reason, Tid, Option<Value>) {
     }
     let cp = pks.iter().find(|p| p.id == c).unwrap();
     let Ingested::Pending(_, r) = lp.deliver(2, cp).unwrap() else { panic!("pends") };
+    lp.hold_fires(false);
     lp.deliver(2, &grant).unwrap();
     (r, x, lp.peers[2].engine.get(&y, &ak("t:reg.0")).unwrap())
 }
@@ -1111,6 +1115,8 @@ fn an_expiry_passed_while_pending_sets_no_timer_spec_commits_4() {
     m.expires(t, &REG, WallMs(at)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let pk = packages_to(&mut lp, 0, 1).into_iter().find(|p| p.id == c).unwrap();
+    // nor has its grant's fire come
+    lp.hold_fires(true);
     assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Pending(..)));
     assert!(lp.peers[1].engine.next_timer().unwrap().is_some_and(|x| x <= at), "a wake at its expiry");
     lp.peers[1].clock.advance(2 * 3_600_000);

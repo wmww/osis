@@ -361,7 +361,7 @@ mod tests {
     }
 
     fn dk(b: u8) -> osis_crypto::VerifyingKey {
-        osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([b; 32])).verifying_key()
+        osis_crypto::DeleteSecret::write(&Secret32::from_bytes([b; 32])).verifying_key()
     }
 
     // spec/wire.md §6, spec/crypto.md §6, §7: chunk and node blobs round trip through framing; the

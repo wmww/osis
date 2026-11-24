@@ -1,7 +1,7 @@
 //! Judgement for kept-unread sync IDs (spec/sync-judgement.md §6, spec/sync-set.md §3).
 //!
-//! Principle: a node keeping S unread holds the sync secrets of S's thing that the tickets it
-//! holds give and those it held when it stopped reading (spec/sync.md §3); it holds no engine
+//! Principle: a node keeping S unread holds the sync secrets of S's thing that its boxes give and
+//! those it held when it stopped reading (spec/sync.md §3); it holds no engine
 //! state of what S carries. Its inputs are the
 //! sync IDs this node syncs kept unread, those secrets and the store's path of S. It keeps S
 //! while its head's sync key is one a held secret derives; at a head whose key none derives it
@@ -144,7 +144,7 @@ impl Unread {
                 // raised to read: no longer this module's (its store stays, a copy it dropped is
                 // fetched anew, also when dropped before a restart); stopped: shredded
                 _ => {
-                    if matches!(now, Some((_, Holding::Read))) {
+                    if now.as_ref().is_some_and(|(_, h)| h.opens()) {
                         cx.store.set_unheld(&s, false)?;
                     }
                     if self.followed.remove(&s) {

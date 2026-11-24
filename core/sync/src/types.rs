@@ -45,25 +45,14 @@ pub type Position = u64;
 /// An opaque node-log cursor (spec/sync-streams.md §3).
 pub type Cursor = Vec<u8>;
 
-/// What a side of a member of the shared set does with S (spec/sync-opens.md §4 Source): the
-/// class it declared opening S.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SourceClass {
-    /// It keeps S unread.
-    Store,
-    /// It reads S.
-    Reader,
-}
+pub use osis_proto::SourceClass;
 
-impl SourceClass {
-    /// The class an `unread` declaration names (spec/wire.md §11.2 Offer).
-    pub fn declared(unread: bool) -> SourceClass {
-        if unread { SourceClass::Store } else { SourceClass::Reader }
-    }
-
-    /// What a side of this class declares: whether it keeps S unread.
-    pub fn unread(self) -> bool {
-        self == SourceClass::Store
+/// The class a node holding S as `h` declares (spec/sync-opens.md §4 Source).
+pub fn class_of(h: Holding) -> SourceClass {
+    match h {
+        Holding::Read => SourceClass::Reader,
+        Holding::Keys => SourceClass::Keys,
+        Holding::Unread => SourceClass::Store,
     }
 }
 

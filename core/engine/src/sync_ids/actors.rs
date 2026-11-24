@@ -228,17 +228,13 @@ impl Engine {
 }
 
 /// The sync IDs this node holds for `g`, its `sync.0` recording `m`: those `m` records that `g`
-/// owns here (`owned_in`), else a followed link's (`followed`) or its held tickets' (`ticket_hints`).
+/// owns here (`owned_in`), else a followed link's (`followed`).
 pub(crate) fn held_sync_ids(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId> {
-    let mut out = owned_in(core, g, m);
+    let out = owned_in(core, g, m);
     match out.is_empty() {
-        true => out = followed(core, g).map(|h| vec![h]).unwrap_or_else(|| ticket_hints(core, g)),
-        // a ticket's sync ID no held `sync.0` records: two admins giving g secrets at once each
-        // made one, and this node may hold only the other's record (a forged one opens nothing,
-        // and goes with its ticket)
-        false => out.extend(ticket_hints(core, g).into_iter().filter(|o| !m.contains_key(&o.id))),
+        true => followed(core, g).map(|h| vec![h]).unwrap_or_default(),
+        false => out,
     }
-    out
 }
 
 /// The links this node redeems (`Engine::follow_link`): link K to its sync ID from the link text
@@ -346,19 +342,6 @@ fn followed(core: &Core, k: &Tid) -> Option<OwnedSyncId> {
     let elsewhere = ix.sync_recorders.get(&s).is_some_and(|x| !x.is_empty())
         || core.followed_links.naming(&s).iter().any(|t| t != k);
     (followable(core, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), endorsed: Arc::default(), hint: true })
-}
-
-/// The sync IDs the held tickets for `g` name (Interim (issues/tickets-retired.md): its
-/// issuer's word until a held `sync.0` records `g`'s), as hints with no recorded path. Each is
-/// untrusted: one another thing owns here (an applied `sync.0` records it, a followed link names
-/// it) is not `g`'s, so a forged one cuts nothing off.
-fn ticket_hints(core: &Core, g: &Tid) -> Vec<OwnedSyncId> {
-    let ix = &core.ix;
-    let theirs = |s: &SyncId| {
-        ix.sync_recorders.get(s).is_some_and(|x| x.iter().any(|t| t != g)) || !core.followed_links.naming(s).is_empty()
-    };
-    let ids: BTreeSet<SyncId> = ix.closure.ticket_ids(g).into_iter().map(|(s, _)| s).filter(|s| !theirs(s)).collect();
-    ids.into_iter().map(|id| OwnedSyncId { id, path: Arc::new(crate::sync::Path::default()), tree: Arc::default(), endorsed: Arc::default(), hint: true }).collect()
 }
 
 /// Whether followed link `k` may be a link's K here: a thing this node holds only as a link's K

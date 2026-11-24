@@ -31,6 +31,8 @@ fn world(keys: bool) -> (LocalPeer, Tid, Vec<osis_engine::local_peer::Package>) 
         let pks = lp.packages_for(0, 1).unwrap();
         let carries = |lp: &LocalPeer, id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
         let (held, rest): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| keys || !carries(&lp, &pk.id));
+        // without the keys, the grant's fire (its copy carries them) has not come either
+        lp.hold_fires(!keys);
         for pk in &held {
             lp.deliver(1, pk).unwrap();
         }
@@ -126,9 +128,11 @@ fn owed_resnapshot_survives_a_stop_spec_commits_5() {
 #[test]
 fn owed_resnapshot_waits_for_delete_keys_spec_commits_5() {
     let (mut lp, t, keys) = world(false);
+    lp.hold_fires(true);
     purged(&mut lp, t, Secret::First);
     lp.peers[1].engine.purge_resnapshots().unwrap();
     assert_eq!(own_snapshots(&lp, t), 0, "the keys are not here");
+    lp.hold_fires(false);
     for pk in &keys {
         lp.deliver(1, pk).unwrap();
     }

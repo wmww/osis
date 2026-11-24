@@ -1,9 +1,9 @@
-# Chained writes and chain certificates still built
-> Summary: spec/permissions.md §4 judges by evidence along stated paths (every edge write on a stated path's edges, E1) and has no chained writes or chain certificates; the engine still builds both, each site marked `Interim (issues/chains-retired.md)`. Stage A2 brief 3 (the switch, notes/a2-spec/README.md) deletes them.
+# The chained pass has no reader
+> Summary: spec/permissions.md §4 judges by evidence along stated paths and has no chained writes; osis-perm still computes chained-ness and the models keep chained sets, each site marked `Interim (issues/chains-retired.md)`, read by nothing in the engine.
 > Priority: normal
-> Tags: engine, sync, permissions
+> Tags: permissions, tests
 
-What stands in:
-- osis-perm `paths`' chained pass (`Paths::is_chained`, `timeline`'s chained set): what chain certificates read; the evidence derivation (E1) reads none of it.
-- `sync/certified.rs` (certificates over chains), `sync_ids/certs.rs`'s any-path search, `author_chain`: what a sync ID carries beside its bodies, built over any path of chained writes.
-- Their tests (osis-perm `paths::chained`, the certified tests citing chains) go with them; the models' chained sets (roles-model `paths`, held-model `evidence`) stay only while the differential compares against the old build.
+What stands in, to delete together:
+- osis-perm `paths`' chained pass (`Paths::is_chained`, `Timeline::is_chained`, walk.rs's chained levels) and its tests (osis-perm `paths::chained`).
+- The models' chained sets (roles-model `paths`, held-model `evidence`, `spec_open10`). After a model change run osis-perm `paths::` and osis-engine `evidence::` differentials.
+- Test comments citing chains (osis-engine `facade`, `validity`).

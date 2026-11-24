@@ -132,7 +132,7 @@ fn since_goes_by_arrival() {
     let c = create(&alice, &Options::default(), alice.account_root()).unwrap();
     alice.grant(c, bob.me(), Role::Write, Default::default()).unwrap();
     deliver(&alice, &bob);
-    // bob accepts the chat: he writes only what he holds (spec/sync-set.md §2 Writing)
+    // bob holds the chat: he writes only what he holds (spec/sync-set.md §2 Writing)
     let mut w = bob.write();
     w.hold(bob.account_root(), c).unwrap();
     w.commit().unwrap();

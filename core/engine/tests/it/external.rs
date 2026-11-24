@@ -1,10 +1,10 @@
 //! External fires (spec/permissions.md §5.2 External fires, spec/commits.md §5 The setting): a fire
 //! of an external signal valid by its author's authority is valid whatever the setting; any other
 //! only while the thing's current setting enables the signal. Each path from a fire to an effect:
-//! a reader's write, the fire's listing and validity, promotion, a sealed fire's ticket and removal
-//! notice taken, each in both orders against the setting.
+//! a reader's write, the fire's listing and validity, promotion, a sealed grant fire taken, each in
+//! both orders against the setting.
 
-use crate::common::{ak, edge, edge_write, new_shared, s, set_edge, set_setting, test_setting};
+use crate::common::{REG, ak, edge, edge_write, new_shared, s, set_edge, set_setting, test_setting};
 use crate::flows::{edge_of, people, send_carried};
 use osis_base::{CommitId, Role, Tid};
 use osis_crdt::{Op, PathOp};
@@ -118,9 +118,10 @@ fn inbox_signal(lp: &mut LocalPeer, i: usize, signal: &str, enabled: bool) {
     let me = lp.peers[i].engine.me();
     let inbox = lp.peers[i].engine.inbox_thing(&me).unwrap();
     let mut x = lp.peers[i].engine.get_typed(&inbox, &ct::RETENTION).unwrap().unwrap();
-    let keep = ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(osis_base::format::INBOX_LIFETIME_MS) }), ..Default::default() };
+    let mut created = ct::RetentionSetting::default();
+    created.take_inbox_signals();
     if enabled {
-        x.rules.insert(ak(signal), keep);
+        x.rules.insert(ak(signal), created.rules[&ak(signal)]);
     } else {
         x.rules.remove(&ak(signal));
     }
@@ -132,76 +133,47 @@ fn open(lp: &mut LocalPeer, to: usize, out: &osis_engine::sync::SealedFireOut) -
     lp.peers[to].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap()
 }
 
-// spec/sync-inbox.md §5 Carried commits; removal notices: Interim (issues/tickets-retired.md); spec/permissions.md §5.2 External fires:
-// Alice removes Bob from X; her removal notice reaches Bob's inbox sealed. With `removal@~0`
-// disabled there it is refused whole and nothing of it is taken (Bob still reads X by his
-// timeline); enabled, the same sealed fire is taken and the removal applies; disabled again,
-// the fire turns invalid but what was taken stands.
+// spec/sync-inbox.md §5 Grant from outside, spec/permissions.md §5.2 External fires: with
+// `grant@~0` disabled on Bob's inbox, Alice's grant fire is refused; enabled, the same fire is
+// taken.
 #[test]
-fn a_removal_notice_is_taken_only_while_enabled_spec_sync_inbox_5() {
-    let (mut lp, ps) = people(2);
-    let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
-    crate::flows::spread(&mut lp);
-    inbox_signal(&mut lp, 1, "removal@~0", false);
-    let owed = lp.peers[0].engine.fires_owed();
-    lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: Some(false) }).unwrap();
-    let id = *lp.peers[0].engine.fires_owed().iter().find(|f| !owed.contains(f)).expect("a removal notice owed");
-    let out = lp.peers[0].engine.sealed_fire(&id).unwrap().expect("sealed");
-    assert!(matches!(open(&mut lp, 1, &out), Opened::Bad), "not enabled: refused");
-    lp.peers[1].engine.take_carried().unwrap();
-    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "nothing taken");
-    inbox_signal(&mut lp, 1, "removal@~0", true);
-    let Opened::Commit(f, _) = open(&mut lp, 1, &out) else { panic!("enabled: taken") };
-    lp.peers[1].engine.take_carried().unwrap();
-    assert_eq!(lp.peers[1].engine.role_on(&x), None, "the removal applied");
-    inbox_signal(&mut lp, 1, "removal@~0", false);
-    let inbox = lp.peers[1].engine.inbox_thing(&ps[1]).unwrap();
-    let e = &lp.peers[1].engine;
-    let ai = e.header(&f).unwrap().aspects.iter().position(|a| a.tid == inbox).unwrap();
-    assert!(!e.judged_valid(&f, &[ai]), "disabled: the notice is invalid");
-    lp.peers[1].engine.take_carried().unwrap();
-    assert_eq!(lp.peers[1].engine.role_on(&x), None, "what was taken stands");
-}
-
-// spec/sync-inbox.md §5; ticket fires: Interim (issues/tickets-retired.md); spec/permissions.md §5.2
-// External fires: with `ticket@~0` disabled on Bob's inbox, Alice's ticket fire is refused and
-// Bob holds no ticket; enabled, the same fire is taken and Bob holds the ticket.
-#[test]
-fn a_ticket_is_taken_only_while_enabled_spec_sync_inbox_5() {
+fn a_grant_fire_is_taken_only_while_enabled_spec_sync_inbox_5() {
     let (mut lp, ps) = people(2);
     let t = crate::flows::thing_of(&mut lp, 0, ps[0]);
     crate::flows::spread(&mut lp);
-    inbox_signal(&mut lp, 1, "ticket@~0", false);
+    inbox_signal(&mut lp, 1, "grant@~0", false);
     let owed = lp.peers[0].engine.fires_owed();
     lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
-    let id = *lp.peers[0].engine.fires_owed().iter().find(|f| !owed.contains(f)).expect("a ticket owed");
+    let id = *lp.peers[0].engine.fires_owed().iter().find(|f| !owed.contains(f)).expect("a grant fire owed");
     let out = lp.peers[0].engine.sealed_fire(&id).unwrap().expect("sealed");
     assert!(matches!(open(&mut lp, 1, &out), Opened::Bad), "not enabled: refused");
-    assert!(lp.peers[1].engine.ticket_for(&t).unwrap().is_none(), "no ticket held");
-    inbox_signal(&mut lp, 1, "ticket@~0", true);
+    inbox_signal(&mut lp, 1, "grant@~0", true);
     assert!(matches!(open(&mut lp, 1, &out), Opened::Commit(..)), "enabled: taken");
-    assert!(lp.peers[1].engine.ticket_for(&t).unwrap().is_some(), "the ticket is held");
 }
 
-// spec/sync-inbox.md §5 Carried commits, spec/permissions.md §5.2 External fires: a removal
-// notice opened while `removal@~0` is enabled on Bob's inbox, disabled before its carried commit
-// is taken: the notice is invalid and out of history, so nothing of it is taken (`take_fire`;
-// passes with every external fire valid too, the dropped body alone stopping it).
+// spec/sync-inbox.md §5 Grant from outside (an offer, held while H's current setting enables and
+// keeps the signal): Bob opens Alice's grant fire and holds what it carries of X, which he
+// references nowhere. Disabling the signal ends the offer, and what it carried goes with it:
+// Bob's node holds nothing of X.
 #[test]
-fn a_removal_notice_disabled_before_taken_is_not_taken_spec_sync_inbox_5() {
+fn disabling_grant_fires_ends_the_offer_and_what_it_carried_spec_sync_inbox_5() {
     let (mut lp, ps) = people(2);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
     crate::flows::spread(&mut lp);
     let owed = lp.peers[0].engine.fires_owed();
-    lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: Some(false) }).unwrap();
-    let id = *lp.peers[0].engine.fires_owed().iter().find(|f| !owed.contains(f)).expect("a removal notice owed");
+    lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
+    let id = *lp.peers[0].engine.fires_owed().iter().find(|f| !owed.contains(f)).expect("a grant fire owed");
     let out = lp.peers[0].engine.sealed_fire(&id).unwrap().expect("sealed");
     assert!(matches!(open(&mut lp, 1, &out), Opened::Commit(..)), "enabled: opened");
-    inbox_signal(&mut lp, 1, "removal@~0", false);
-    lp.peers[1].engine.take_carried().unwrap();
-    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "disabled before taken: nothing taken");
+    lp.peers[1].engine.unhold(osis_base::Strong(x)).unwrap();
+    lp.peers[1].engine.released(&[x].into()).unwrap();
+    lp.peers[1].engine.settle_needs().unwrap();
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "the offer shows the grant");
+    assert_eq!(carried_on(&lp, 1, &x).len(), 1, "one offer of X held");
+    inbox_signal(&mut lp, 1, "grant@~0", false);
+    lp.peers[1].engine.settle_needs().unwrap();
+    assert_eq!(carried_on(&lp, 1, &x), Vec::new(), "disabled: no offer held");
+    assert_eq!(lp.peers[1].engine.role_on(&x), None, "and nothing of X: {}", lp.peers[1].engine.why_kept(&x));
 }
 
 // spec/commits.md §5 In force, spec/permissions.md §5.2 External fires: `g`'s setting purges its
@@ -295,4 +267,225 @@ fn a_readers_fire_its_setting_does_not_take_is_refused_spec_sync_inbox_2() {
     let s2 = set_setting(&mut lp, 0, g, &setting(true));
     send_carried(&mut lp, 0, 1, &[s2]);
     try_fire(&mut lp).expect("enabled and kept: written");
+}
+
+/// The `grant@~0` fire peer `from` owes beside those in `owed`, sealed.
+fn new_fire(lp: &mut LocalPeer, from: usize, owed: &[osis_engine::sync::FireId]) -> osis_engine::sync::SealedFireOut {
+    let id = *lp.peers[from].engine.fires_owed().iter().find(|f| !owed.contains(f)).expect("a grant fire owed");
+    lp.peers[from].engine.sealed_fire(&id).unwrap().expect("sealed")
+}
+
+// spec/permissions.md §4 Delivering an edge piece (stamped where it may write H): Alice makes a
+// group G and a thing X and grants G read on X. She writes G, so no fire goes: Bob, a reader of
+// G, reads X through it by X's grants.
+#[test]
+fn a_grant_by_the_holders_writer_goes_with_no_fire_spec_permissions_4() {
+    let (mut lp, ps) = people(2);
+    let g = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&g, &ps[1], &edge_of(Role::Read)).unwrap();
+    crate::flows::spread(&mut lp);
+    let owed = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.grant(&x, &g, &edge_of(Role::Read)).unwrap();
+    assert_eq!(lp.peers[0].engine.fires_owed(), owed, "G's writer: no fire");
+    crate::flows::spread(&mut lp);
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "Bob reads X through G");
+}
+
+// spec/sync-inbox.md §5 Grant from outside (an offer; the grant is the target's own data), spec/
+// sync-set.md §2 Own actors (the node's role is by the thing's grants as the node holds them):
+// Bob makes a group G; Alice, who holds no role on G, grants G read on her X. G's setting
+// enables no `grant@~0`: her fire is refused and Bob learns nothing of X. Once Bob enables the
+// signal on G the same fire is held, an offer of X, and Bob reads X through G. Disabled again,
+// the offer is held no more and the grant stands: Bob's node syncs X, whose grants name G.
+#[test]
+fn a_grant_from_outside_is_an_offer_and_the_grant_stands_without_it_spec_sync_inbox_5() {
+    let (mut lp, ps) = people(2);
+    let g = crate::flows::thing_of(&mut lp, 1, ps[1]);
+    let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    // G independent: it has an inbox of its own
+    lp.peers[1].engine.grant(&g, &ps[0], &edge_of(Role::Sync)).unwrap();
+    crate::flows::spread(&mut lp);
+    let owed = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.grant(&x, &g, &edge_of(Role::Read)).unwrap();
+    let out = new_fire(&mut lp, 0, &owed);
+    assert!(matches!(open(&mut lp, 1, &out), Opened::Bad), "not enabled: refused");
+    assert_eq!(lp.peers[1].engine.role_on(&x), None, "Bob holds nothing on X");
+    lp.takes_grants(1, g);
+    assert!(matches!(open(&mut lp, 1, &out), Opened::Commit(..)), "enabled: the fire is held");
+    assert_eq!(carried_on(&lp, 1, &x).len(), 1, "an offer of X");
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "Bob reads X through G");
+    lp.hold(x);
+    crate::flows::spread(&mut lp);
+    assert!(lp.peers[1].engine.closure_holds(&x), "Bob's node syncs X");
+    set_setting(&mut lp, 1, g, &ct::RetentionSetting::default());
+    lp.peers[1].engine.settle_needs().unwrap();
+    assert_eq!(carried_on(&lp, 1, &x), Vec::new(), "disabled: no offer held");
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "the grant is X's: Bob reads it still");
+}
+
+/// The role commits the `grant@~0` fires peer `i` holds valid carry on `x`.
+fn carried_on(lp: &LocalPeer, i: usize, x: &Tid) -> Vec<CommitId> {
+    lp.peers[i].engine.grant_fires_held().into_iter().filter(|c| c.target == *x).map(|c| c.commit).collect()
+}
+
+// spec/sync-inbox.md §5 Grant from outside (kept as H's setting keeps the signal; once the
+// target syncs, the offer decides nothing): Alice grants Bob read on her X from outside his
+// account. Bob holds the offer and syncs X. Past the inbox lifetime the offer is gone and Bob
+// reads X as before: his role is by X's grants.
+#[test]
+fn a_grant_outlives_its_offer_spec_sync_inbox_5() {
+    let (mut lp, ps) = people(2);
+    let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    let grant = lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap().commits;
+    crate::flows::spread(&mut lp);
+    let held = carried_on(&lp, 1, &x);
+    assert!(!held.is_empty() && held.iter().all(|c| grant.contains(c)), "Bob holds the grant's offer: {held:?}, grant {grant:?}");
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "and reads X");
+    lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);
+    lp.peers[1].tick().unwrap();
+    lp.peers[1].engine.settle_needs().unwrap();
+    assert_eq!(carried_on(&lp, 1, &x), Vec::new(), "past the inbox lifetime: no offer held");
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "Bob reads X by its grants");
+}
+
+/// Hands peer `to` the role-class parts on `x` of peer `from`'s commits `ids`, as a copy of each
+/// reaches a node that does not sync `x`.
+fn carry_roles(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId], x: Tid) {
+    for id in ids {
+        let h = lp.peers[from].engine.header(id).unwrap();
+        let parts: std::collections::BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.tid == x && ct::ROLE_CLASS.contains(&a.ak.as_str())).map(|(i, _)| i).collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let pk = lp.peers[from].engine.package_of_parts(id, &parts).unwrap().unwrap();
+        lp.deliver(to, &pk).unwrap();
+    }
+}
+
+// spec/sync-set.md §2 Own actors (the node's role is by the thing's grants as the node holds
+// them): Alice makes Carol admin of X and grants Bob read. Alice removes Carol; before Carol
+// hears of it she removes Bob, and her removal reaches Bob first: his edge has ended. Then
+// Alice's removal of Carol reaches him: Carol's removal is judged invalid, Bob's grant stands
+// again and he reads X by it, with no new fire from anyone.
+#[test]
+fn a_grant_standing_again_by_an_invalid_removal_gives_its_role_again_spec_sync_set_2() {
+    let (mut lp, ps) = people(3);
+    let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&x, &ps[2], &edge_of(Role::Admin)).unwrap();
+    crate::flows::spread(&mut lp);
+    lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
+    crate::flows::spread(&mut lp);
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "Bob reads X");
+    let carol_out = lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[2], new: None, retain: Some(false) }).unwrap().commits;
+    lp.advance(1_000);
+    let removal = lp.peers[2].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: Some(false) }).unwrap().commits;
+    lp.sync(2, 1).unwrap();
+    carry_roles(&mut lp, 2, 1, &removal, x);
+    assert_eq!(lp.peers[1].engine.role_on(&x), None, "Carol's removal applies at Bob");
+    carry_roles(&mut lp, 0, 1, &carol_out, x);
+    assert!(lp.peers[1].engine.roster(&x).contains_key(&ps[1]), "Carol's removal is invalid: Bob's grant stands");
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "Bob reads X again");
+}
+
+/// Alice grants Bob read on X and removes him, erasing, and Bob lets X go: the world, Bob's
+/// account, X and the grant's sealed fire.
+fn an_ended_grant() -> (LocalPeer, Tid, osis_engine::sync::SealedFireOut) {
+    let (mut lp, ps) = people(2);
+    let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    crate::flows::spread(&mut lp);
+    let owed = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
+    let grant = new_fire(&mut lp, 0, &owed);
+    crate::flows::spread(&mut lp);
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "Bob reads X");
+    lp.advance(1_000);
+    lp.peers[0].engine.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: Some(false) }).unwrap();
+    crate::flows::spread(&mut lp);
+    assert_eq!(lp.peers[1].engine.role_on(&x), None, "removed");
+    lp.peers[1].engine.unhold(osis_base::Strong(x)).unwrap();
+    lp.peers[1].engine.released(&[x].into()).unwrap();
+    (lp, x, grant)
+}
+
+// spec/sync-inbox.md §5 Grant from outside (a removal from outside goes as a grant does, kept
+// as long): an old offer never reinstates a grant its edge's later write ended. Bob let X go
+// and his node syncs nothing of it, but holds the removal as it holds any offer, and the
+// removal is the later write: the grant's sealed fire offered again within the inbox lifetime (a
+// store's stale copy, or anyone who kept it) is judged against it and gives Bob nothing.
+#[test]
+fn a_replayed_offer_of_an_ended_grant_gives_no_role_spec_sync_inbox_5() {
+    let (mut lp, x, grant) = an_ended_grant();
+    lp.advance(3_600_000);
+    lp.peers[1].tick().unwrap();
+    lp.peers[1].engine.settle_needs().unwrap();
+    let _ = open(&mut lp, 1, &grant);
+    lp.peers[1].engine.settle_needs().unwrap();
+    assert_eq!(lp.peers[1].engine.role_on(&x), None, "the ended grant gives Bob nothing");
+}
+
+// spec/sync-inbox.md §5 Grant from outside (kept as H's setting keeps the signal: a fire past
+// its keep is no offer): past the inbox lifetime Bob's node holds nothing of X, and the grant's
+// sealed fire offered again is past its keep too: never taken.
+#[test]
+fn an_offer_past_its_keep_is_never_taken_spec_sync_inbox_5() {
+    let (mut lp, x, grant) = an_ended_grant();
+    lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);
+    lp.peers[1].tick().unwrap();
+    lp.peers[1].engine.settle_needs().unwrap();
+    assert_eq!(carried_on(&lp, 1, &x), Vec::new(), "no offer of X is held");
+    let _ = open(&mut lp, 1, &grant);
+    assert_eq!(carried_on(&lp, 1, &x), Vec::new(), "the late copy is no offer");
+    assert!(!lp.peers[1].engine.roster(&x).contains_key(&lp.peers[1].engine.me()), "the ended grant is not standing at Bob again");
+    assert_eq!(lp.peers[1].engine.role_on(&x), None, "and gives him nothing");
+}
+
+// spec/sync-set.md §2 Own actors (a grant is its target's own data: a node judges its role on a
+// thing by what it syncs): Alice grants Bob read on X. No offer reaches him and he references X
+// nowhere, so the grant's commits handed to his node are held as another thing's certificate
+// would be: they name him on X's roster and give no role and no secret of X. A strong to X makes
+// X his to sync, and the same commits give him read and X's secrets. Fails with a role read
+// from every held edge write.
+#[test]
+fn a_held_grant_counts_only_where_its_thing_is_synced_spec_sync_set_2() {
+    let (mut lp, ps) = people(2);
+    lp.hold_fires(true);
+    let before: std::collections::BTreeSet<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, ps[0]);
+    m.set(x, &REG, &s("x")).unwrap();
+    e.commit(m).unwrap().unwrap();
+    e.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap();
+    let mut new: Vec<CommitId> = e.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+    new.sort_by_key(|c| e.header(c).unwrap().ts);
+    let hand = |lp: &mut LocalPeer| {
+        for c in &new {
+            let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+            lp.deliver(1, &pk).unwrap();
+        }
+    };
+    hand(&mut lp);
+    let held = |lp: &LocalPeer| lp.peers[1].engine.epochs(&x).is_some_and(|e| e.read.held().next().is_some());
+    assert!(lp.peers[1].engine.roster(&x).contains_key(&ps[1]), "Bob's node holds the grant");
+    assert_eq!(lp.peers[1].engine.role_on(&x), None, "which gives no role on a thing he does not sync");
+    assert!(!held(&lp), "and no secret of it");
+    lp.hold_at(1, x);
+    hand(&mut lp);
+    assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "synced, X's grants count");
+    assert!(held(&lp), "and its boxes open");
+    assert_eq!(lp.peers[1].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")), "Bob reads X");
+}
+
+// spec/sync-inbox.md §1 (key actors have no inbox): Alice grants her node, a key actor, read on
+// X: no fire goes, and the grant is X's as any.
+#[test]
+fn a_grant_to_a_key_actor_fires_nothing_spec_sync_inbox_1() {
+    let (mut lp, ps) = people(1);
+    let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
+    let node = lp.peers[0].engine.tid();
+    let owed = lp.peers[0].engine.fires_owed();
+    lp.peers[0].engine.grant(&x, &node, &edge_of(Role::Read)).unwrap();
+    assert_eq!(lp.peers[0].engine.fires_owed(), owed, "a key actor has no inbox: no fire");
+    assert!(lp.peers[0].engine.roster(&x).contains_key(&node), "granted");
 }

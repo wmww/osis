@@ -255,6 +255,9 @@ fn drop_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<O
     if a.ak.as_str() == osis_commit::retention::RETENTION {
         crate::apply::validity::forget_setting(tx.core, &a.tid, c);
     }
+    if a.ak.as_str() == crate::flows::inbox::GRANT_FIRE {
+        crate::flows::inbox::fire_dropped(tx.core, c);
+    }
     let k = (a.tid, a.ak.clone());
     // a stripped part's body is its leftover: read below as the held body, forgotten after
     let stripped = m.stripped(ai);
@@ -333,7 +336,7 @@ fn drop_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<O
     // An invalid part gave nothing (`apply::rebuilt`): its drop leaves the state as it is
     // unless it uncovered a part.
     if a.ak.signal() {
-        crate::engine::refs::note(tx, &a.tid, &a.ak, Some(c), fire_refs)?;
+        crate::engine::refs::note(tx, &a.tid, &a.ak, fire_refs)?;
         return Ok(None);
     }
     if why == DropFor::Destroyed || (invalid && !uncovered) || in_place {
@@ -886,7 +889,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     }
     put_leftover(tx, c, ai, m, body, gives)?;
     if let Some(d) = fire_refs {
-        crate::engine::refs::note(tx, &a.tid, &a.ak, Some(c), d)?;
+        crate::engine::refs::note(tx, &a.tid, &a.ak, d)?;
     }
     match at {
         Some(at) => gone_in_place(tx, &a.tid, &a.ak, &at, o, revivals)?,
@@ -1914,6 +1917,8 @@ mod tests {
             let carries = |id: &CommitId| lp.peers[0].engine.writes_keyset(&t, id);
             let (key_pks, other): (Vec<_>, Vec<_>) = pks.into_iter().partition(|pk| carries(&pk.id));
             let (put_pks, rest): (Vec<_>, Vec<_>) = other.into_iter().partition(|pk| puts.contains(&pk.id));
+            // the keys reach bob in the commits ordered below, his grant's fire with the last
+            lp.hold_fires(true);
             for pk in &rest {
                 lp.deliver(1, pk).unwrap();
             }
@@ -1927,6 +1932,7 @@ mod tests {
                 assert_eq!(e.get(&t, &x).unwrap(), Some(Value::Int(2)));
                 assert!(super::held_part(&e.core, &puts[0], &t, &x).is_some(), "no cover yet: the replaced body stays");
             }
+            lp.hold_fires(false);
             for pk in last {
                 lp.deliver(1, pk).unwrap();
             }

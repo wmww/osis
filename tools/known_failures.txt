@@ -11,6 +11,5 @@ osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=210455287849 issues/custody-differential-failures.md \w+ acting: certificate engine None, model Some
 osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_plain_spec_permissions_5_4 rate:OSIS_CUSTODY_START=146887569055 issues/custody-differential-failures.md node \w+, account \w+: seeds held: engine
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
-osis-sync/differential::histories_hold_their_closure_plain rate:OSIS_SYNC_START=157455058984 issues/differential-closure-read-lost.md node \d+ reads thing \d+: None, the model reads it
 osis-engine/engine::pages::tests::seq_cold_edits_keep_placement_plain_spec_crdt_6_1 rate:OSIS_SEQ_COLD_START=96284297739,OSIS_SEQ_COLD_SEEDS=1 issues/seq-cold-edit-move-placement.md placement kept
 osis-engine/rotation::tests_property::rotation_holds_large_spec_crypto_4 rate:OSIS_ROTATION_START=96284297771,OSIS_ROTATION_SEEDS=1 issues/rotation-holder-lacks-box.md with key access lacks a box

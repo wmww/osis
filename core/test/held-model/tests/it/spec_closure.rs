@@ -3,7 +3,7 @@
 //! test asserts the minimal counterexample, so the finding stays visible and checked.
 use held_model::closure::*;
 use held_model::gen::Rng;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 const K: Kind = Kind::Independent;
 fn p(k: T) -> Kind {
@@ -31,8 +31,13 @@ fn add(from: T, to: T) -> Commit {
 fn role(on: T, g: T, r: Option<Role>) -> Commit {
     Commit { from: on, op: Op::Role(g, r), ephemeral: false }
 }
-fn tickets(open: &[T], sync_only: &[T]) -> BTreeMap<T, Ticket> {
-    open.iter().map(|&t| (t, Ticket::Open)).chain(sync_only.iter().map(|&t| (t, Ticket::SyncOnly))).collect()
+/// A node whose root holds `roots`, its one own actor (a thing added to `w`) granted read on
+/// each of `read` and sync on each of `sync`: taken grants.
+fn node(w: &mut World, roots: &[T], read: &[T], sync: &[T]) -> NodeView {
+    let a = w.kinds.len();
+    w.kinds.push(K);
+    w.grants.extend(read.iter().map(|&t| ((a, t), Role::Read)).chain(sync.iter().map(|&t| ((a, t), Role::Sync))));
+    NodeView { roots: set(roots), own: set(&[a]) }
 }
 
 /// Every world of independent 0, 1 and dependent 2, 3, 4 (keys from 0 or 1), each of 0 and 1 holding no
@@ -386,14 +391,14 @@ fn p2_sync_settles_random() {
 }
 
 /// P3, the plan's worked case: Alice makes X and Y (both independent), X has a strong to Y; Bob has
-/// tickets for both, Carol for X only. Bob holds Y; Carol does not, and holds what she would
+/// read on both, Carol on X only. Bob holds Y; Carol does not, and holds what she would
 /// without the strong.
 #[test]
 fn p3_worked_case() {
-    let w = world(&[K, K], &[]);
+    let mut w = world(&[K, K], &[]);
     let e = es(&[(0, 1)]);
-    let bob = NodeView { roots: set(&[0]), tickets: tickets(&[0, 1], &[]) };
-    let carol = NodeView { roots: set(&[0]), tickets: tickets(&[0], &[]) };
+    let bob = node(&mut w, &[0], &[0, 1], &[]);
+    let carol = node(&mut w, &[0], &[0], &[]);
     assert!(closure(&w, &e, &bob, Walk::Units).held.contains(&1));
     let c = closure(&w, &e, &carol, Walk::Units);
     assert_eq!(c.held, set(&[0]));
@@ -401,24 +406,25 @@ fn p3_worked_case() {
 }
 
 /// (a) Nested sharing: Y independent, X granted read on Y, X -> Y. Y and its dependent things are
-/// in X's sync unit: every reader of X holds and reads them with no ticket for Y, a node keeping X
+/// in X's sync unit: every reader of X holds and reads them with no grant on Y, a node keeping X
 /// unread holds X alone (it reads none of X's strongs; Y's commits go under X's sync ID), and by sync a node reading X only gets Y's commits under X and syncs Y.
-/// Without the grant only a holder of Y's ticket holds Y.
+/// Without the grant only a node granted Y holds Y.
 #[test]
 fn p3_nested_sharing() {
     // X=0, Y=1 independent; B=2 dependent on Y; X -> Y -> B.
     let e = es(&[(0, 1), (1, 2)]);
-    let reader = NodeView { roots: set(&[0]), tickets: tickets(&[0], &[]) };
-    let store = NodeView { roots: set(&[0]), tickets: tickets(&[], &[0]) };
-    let both = NodeView { roots: set(&[0]), tickets: tickets(&[0, 1], &[]) };
-    let w = world(&[K, K, p(1)], &[(0, 1)]);
+    let mut w = world(&[K, K, p(1)], &[(0, 1)]);
+    let reader = node(&mut w, &[0], &[0], &[]);
+    let store = node(&mut w, &[0], &[], &[0]);
+    let both = node(&mut w, &[0], &[0, 1], &[]);
     assert_eq!(unit(&w, 0, &e), set(&[0, 1, 2]));
     let c = closure(&w, &e, &reader, Walk::Units);
     assert_eq!((c.held, c.read), (set(&[0, 1, 2]), set(&[0, 1])));
     let c = closure(&w, &e, &store, Walk::Units);
     // kept unread, X's strongs go unread: it holds X alone (spec/sync-set.md §2)
     assert_eq!((c.held, c.stored, c.read), (set(&[0]), set(&[0]), set(&[])));
-    let ungranted = world(&[K, K, p(1)], &[]);
+    let mut ungranted = w.clone();
+    ungranted.grants.remove(&(0, 1));
     assert_eq!(unit(&ungranted, 0, &e), set(&[0]));
     assert_eq!(closure(&ungranted, &e, &reader, Walk::Units).held, set(&[0]));
     assert_eq!(closure(&ungranted, &e, &store, Walk::Units).held, set(&[0]));
@@ -472,7 +478,6 @@ fn p3_grant_chains() {
     use Role::*;
     // X=0, W=1, Y=2 independent; X -> Y.
     let e = es(&[(0, 2)]);
-    let reader = NodeView { roots: set(&[0]), tickets: tickets(&[0], &[]) };
     let cases: [(&[(T, T, Role)], bool); 7] = [
         (&[(0, 1, Read), (1, 2, Read)], true),
         (&[(0, 1, Write), (1, 2, Read)], true),
@@ -483,7 +488,8 @@ fn p3_grant_chains() {
         (&[(1, 2, Read)], false),
     ];
     for (g, opens) in cases {
-        let w = worldr(&[K, K, K], g);
+        let mut w = worldr(&[K, K, K], g);
+        let reader = node(&mut w, &[0], &[0], &[]);
         assert_eq!(w.keys_of(0).contains(&2), opens, "{g:?}");
         assert_eq!(unit(&w, 0, &e), if opens { set(&[0, 2]) } else { set(&[0]) }, "{g:?}");
         let c = closure(&w, &e, &reader, Walk::Units);
@@ -495,10 +501,11 @@ fn p3_grant_chains() {
 }
 
 /// Every small node world: independent 0, 1, dependent 2, 3 (keys from 0 or 1), grants of read, strongs
-/// among a candidate set, node root strongs and tickets.
+/// among a candidate set, node root strongs and the node's own grants (none, read or sync on each
+/// of 0 and 1).
 fn p3_worlds() -> Vec<(World, Edges, NodeView)> {
     let cand = [(0, 1), (0, 2), (2, 3), (3, 1), (1, 2)];
-    let tk = [None, Some(Ticket::Open), Some(Ticket::SyncOnly)];
+    let tk = [None, Some(Role::Read), Some(Role::Sync)];
     let mut out = vec![];
     for kf in 0..4u32 {
         let kinds = vec![K, K, p((kf & 1) as T), p((kf >> 1 & 1) as T)];
@@ -508,8 +515,11 @@ fn p3_worlds() -> Vec<(World, Edges, NodeView)> {
                 for roots in subsets(&[0, 1, 2]) {
                     for t0 in tk {
                         for t1 in tk {
-                            let tickets = [(0, t0), (1, t1)].into_iter().filter_map(|(k, t)| t.map(|t| (k, t))).collect();
-                            out.push((w.clone(), es(&e), NodeView { roots: set(&roots), tickets }));
+                            let mut w = w.clone();
+                            let n = node(&mut w, &roots, &[], &[]);
+                            let a = *n.own.first().expect("an own actor");
+                            w.grants.extend([(0, t0), (1, t1)].into_iter().filter_map(|(k, t)| t.map(|t| ((a, k), t))));
+                            out.push((w, es(&e), n));
                         }
                     }
                 }
@@ -519,18 +529,17 @@ fn p3_worlds() -> Vec<(World, Edges, NodeView)> {
     out
 }
 
-/// P3: a node reads an independent thing only by keys it holds and stores one unread only inside a sync unit
-/// it holds a sync-only ticket for; a strong into or out of an independent thing that it has neither a
-/// ticket nor keys for, and that no sync unit it stores unread may hold, never changes what it holds.
+/// P3: a node reads an independent thing only at its role of read or above and stores one unread
+/// only at its role of sync; a strong into or out of an independent thing it holds no role on
+/// never changes what it holds.
 #[test]
-fn p3_strong_never_changes_what_no_ticket_holds_exhaustive() {
+fn p3_strong_never_changes_what_no_role_holds_exhaustive() {
     for (w, e, n) in p3_worlds() {
-        let ring = w.ring(&n.tickets.iter().filter(|t| *t.1 == Ticket::Open).map(|t| *t.0).collect());
+        let roles = keys::roles_of(&w, &n.own);
         let c = closure(&w, &e, &n, Walk::Units);
-        let stores: Set = n.tickets.iter().filter(|t| *t.1 == Ticket::SyncOnly).flat_map(|t| w.keys_of(*t.0)).collect();
-        assert!(c.read.is_subset(&ring), "{w:?} {e:?} {n:?}");
-        assert!(c.stored.is_subset(&stores), "{w:?} {e:?} {n:?}");
-        for k in [0, 1].into_iter().filter(|k| !ring.contains(k) && !n.tickets.contains_key(k) && !stores.contains(k)) {
+        assert!(c.read.iter().all(|k| roles.get(k) >= Some(&Role::Read)), "{w:?} {e:?} {n:?}");
+        assert!(c.stored.iter().all(|k| roles.get(k) == Some(&Role::Sync)), "{w:?} {e:?} {n:?}");
+        for k in [0, 1].into_iter().filter(|k| !roles.contains_key(k)) {
             for y in 0..4 {
                 for edge in [(y, k), (k, y)] {
                     let mut e2 = e.clone();
@@ -547,7 +556,7 @@ fn p3_strong_never_changes_what_no_ticket_holds_exhaustive() {
 /// P3: what a node's closure holds is carried under a sync ID it syncs (or is its local sync unit).
 /// Walked sync unit by sync unit it is; walked by "the closure walks strongs", a dependent thing the sync unit's
 /// keys cannot open but the node can leads to things no sync ID it syncs carries. Minimal: X, U
-/// independent with open tickets, both node roots; X -> L -> M, L and M dependent on U; X holds no role on U.
+/// independent and read by the node, both node roots; X -> L -> M, L and M dependent on U; X holds no role on U.
 #[test]
 fn p3_held_is_carried_exhaustive() {
     let mut literal_fails = 0;
@@ -560,30 +569,31 @@ fn p3_held_is_carried_exhaustive() {
         }
     }
     assert!(literal_fails > 0);
-    let w = world(&[K, K, p(1), p(1)], &[]);
+    let mut w = world(&[K, K, p(1), p(1)], &[]);
     let e = es(&[(0, 2), (2, 3)]);
-    let n = NodeView { roots: set(&[0, 1]), tickets: tickets(&[0, 1], &[]) };
+    let n = node(&mut w, &[0, 1], &[0, 1], &[]);
     let l = closure(&w, &e, &n, Walk::Literal);
     assert!(l.held.contains(&3) && !l.carried.contains(&3));
     assert_eq!(closure(&w, &e, &n, Walk::Units).held, set(&[0, 1]));
 }
 
 /// P3, the making rule: the commit must leave the new thing in the node closure. X and U independent
-/// with open tickets: a dependent thing from X under X is admitted; a dependent thing from U referenced
+/// the maker reads: a dependent thing from X under X is admitted; a dependent thing from U referenced
 /// only by X is refused, though a held thing references it (X's keys do not open it); an independent
 /// thing minted with admin X whose keys the maker holds is admitted, and other readers of X hold it only once
 /// X is granted read on it.
 #[test]
 fn p3_making_rule() {
     // X=0, U=1, Q=4 independent; M=2 dependent on X, N=3 dependent on U.
-    let w = world(&[K, K, p(0), p(1), K], &[]);
-    let maker = NodeView { roots: set(&[0]), tickets: tickets(&[0, 1, 4], &[]) };
-    let other = NodeView { roots: set(&[0]), tickets: tickets(&[0], &[]) };
+    let mut w = world(&[K, K, p(0), p(1), K], &[]);
+    let maker = node(&mut w, &[0], &[0, 1, 4], &[]);
+    let other = node(&mut w, &[0], &[0], &[]);
     assert!(may_make(&w, &es(&[(0, 2)]), &maker, 2));
     assert!(!may_make(&w, &es(&[(0, 3)]), &maker, 3));
     assert!(may_make(&w, &es(&[(0, 4)]), &maker, 4));
     assert!(!may_make(&w, &es(&[(0, 4)]), &other, 4));
-    assert!(may_make(&world(&[K, K, p(0), p(1), K], &[(0, 4)]), &es(&[(0, 4)]), &other, 4));
+    w.grants.insert((0, 4), Role::Read);
+    assert!(may_make(&w, &es(&[(0, 4)]), &other, 4));
 }
 
 // ---- Release ----
@@ -925,17 +935,4 @@ fn p5_subtree_drop_needs_reattaching() {
         assert_eq!(t.held.contains(&2), !naive);
         assert_eq!(t.held == t.reach(), !naive);
     }
-}
-
-
-// spec/sync-set.md §2; taking up: Interim (issues/tickets-retired.md): an account takes a grant
-// naming it only at a strong to its thing, so its role on T1 by a chain through T0 counts only
-// once T0 is reached. Account 0, T0 = 1, T1 = 2 independent: 0 holds sync on T0, T0 sync on T1.
-#[test]
-fn an_accounts_role_through_an_unreached_thing_counts_nothing() {
-    use Role::*;
-    let w = worldr(&[K, K, K], &[(0, 1, Sync), (1, 2, Sync)]);
-    assert!(w.roles_from_reached(0, &set(&[2])).get(&2).is_none(), "T0 unreached: no role on T1");
-    assert_eq!(w.roles_from_reached(0, &set(&[1])).get(&2), Some(&Sync), "T0 reached: sync on T1 through it");
-    assert_eq!(w.roles_from(0).get(&2), Some(&Sync), "a thing's chains are not restricted");
 }

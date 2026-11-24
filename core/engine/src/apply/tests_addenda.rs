@@ -299,6 +299,7 @@ fn build_holder() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     let mut m = Mutation::new();
     let holder = lp.peers[3].engine.new_thing(&mut m, me3);
     lp.peers[3].commit(m).unwrap();
+    lp.takes_grants(3, holder);
     lp.hold(holder);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&n, &holder, &edge(Role::Write)).unwrap();
@@ -1508,7 +1509,7 @@ fn a_cut_of_the_stated_path_owes_an_addendum_whatever_another_path_gives_spec_pe
 }
 
 // spec/permissions.md §5.2 (Addenda; Writing): Yan (1), a reader of `t`, holds write on it through two holders
-// it minted, X and P. Yan writes e, received by Carol (2) alone. Dave removes
+// it minted, X and P, e's path going through P. Yan writes e, received by Carol (2) alone. Dave removes
 // P's grant (R1); then Alice (0) removes X's (R), holding neither e nor R1. Carol receives R
 // first: Yan keeps write through P, so nothing is owed. R1 then reaches her, ordered before R:
 // Yan falls below write at R, and Carol owes an addendum for e, though R1 names neither X nor
@@ -1531,9 +1532,15 @@ fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2
     }
     lp.advance(1000);
     lp.sync_all().unwrap();
-    let (x, p) = (holders[0], holders[1]);
     assert_eq!(lp.peers[2].engine.core.timelines().role(&yan, &t, osis_perm::At::END), Some(Role::Write), "Yan writes through the holders");
     let e = write(&mut lp, 1, t, "x:e.0", 7);
+    // P is the holder e's path goes through (Yan's writer picks one)
+    let through = |q: &Tid| {
+        let core = &lp.peers[1].engine.core;
+        let ai = core.ix.commits[&e].view.aspect(&t, "x:e.0").unwrap() as u32;
+        core.timelines().paths().rests(&osis_perm::WriteId(e, ai)).is_some_and(|(hops, _)| hops.iter().any(|h| h.0 == *q || h.1 == *q))
+    };
+    let (x, p) = if through(&holders[1]) { (holders[0], holders[1]) } else { (holders[1], holders[0]) };
     lp.sync(1, 2).unwrap();
     let r1 = *lp.peers[3].engine.demote(&t, &Demotion { holder: p, new: None, retain: None }).unwrap().commits.last().unwrap();
     lp.advance(1000);

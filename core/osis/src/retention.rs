@@ -105,9 +105,8 @@ pub struct RetentionSetting {
 
 impl RetentionSetting {
     /// Enables the external signals a thing takes as its own inbox, as an account's inbox has them:
-    /// a ticket from a grant to it, the notice of its removal from a thing, and a reader's call
-    /// for the keys it cannot read, each from parties that cannot write it, kept for as long as an
-    /// account's inbox keeps them. An entry already here stays as it is. A thing others will read,
+    /// a grant to it from outside and a reader's call for the keys it cannot read, each from parties that cannot write it, kept for as long as an
+    /// account's inbox keeps them (a grant's for good: the grant holds while its signal is kept). An entry already here stays as it is. A thing others will read,
     /// or that will be granted roles on other things, needs them to learn of these without one of
     /// its writers connected.
     pub fn enable_inbox_signals(&mut self) {

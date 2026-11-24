@@ -122,6 +122,12 @@ pub trait Ground {
         let _ = (s, b);
         false
     }
+    /// Whether held blob `b` under S is a role entry by this node's own judgement
+    /// (`Engine::role_entry`): what a node opening S shows a peer holding S's thing for keys.
+    fn role_entry(&mut self, s: &SyncId, b: &BlobId) -> bool {
+        let _ = (s, b);
+        false
+    }
     /// The write key of the head S's `sync.0` records here (`ReadCredentials::head`), which the
     /// store's served path follows.
     fn head_write(&mut self, s: &SyncId) -> Option<osis_crypto::VerifyingKey> {
@@ -616,6 +622,10 @@ impl Ground for EngineGround<'_> {
 
     fn counted(&mut self, s: &SyncId, b: &BlobId) -> bool {
         self.engine.cert_blob_noted(s, b)
+    }
+
+    fn role_entry(&mut self, s: &SyncId, b: &BlobId) -> bool {
+        self.engine.role_entry(s, b)
     }
 }
 

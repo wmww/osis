@@ -18,12 +18,12 @@ fn core_schema_parses_spec_data_model_9() {
     let aks: Vec<&str> = s.aspects.keys().map(String::as_str).collect();
     for ak in [
         "aspects.0", "created.0", "roles.0", "keys.0", "secrets.0", "sync.0", "node.0", "reach.0", "dial^.0", "caps^.0",
-        "clients^.0", "name.0", "body.0", "tag.0", "holds.0", "tickets.0", "addenda.0", "account.0", "listing.0", "retention^.0",
+        "clients^.0", "name.0", "body.0", "tag.0", "holds.0", "addenda.0", "account.0", "listing.0", "retention^.0",
         "purge.0",
     ] {
         assert!(aks.contains(&ak), "{ak}");
     }
-    assert_eq!(aks.len(), 21);
+    assert_eq!(aks.len(), 20);
     let holders = &s.aspects["roles.0"];
     assert_eq!(holders.purge_by, PurgeBy::Admin);
     assert_eq!(s.aspects["created.0"].purge_by, PurgeBy::Admin);
@@ -70,7 +70,6 @@ fn encoding_per_type_spec_crdt_3_1() {
         ("strong", Some(Encoding::Register)),
         ("weak", Some(Encoding::Register)),
         ("ref", Some(Encoding::Register)),
-        ("ticket", Some(Encoding::Register)),
         ("timestamp", Some(Encoding::Register)),
         ("date", Some(Encoding::Register)),
         ("localtime", Some(Encoding::Register)),

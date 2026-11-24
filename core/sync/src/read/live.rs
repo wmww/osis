@@ -16,7 +16,7 @@ use crate::types::{ConnId, Cx, Entry, Result};
 use osis_base::memo::{Cutoff, Feed};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
-use osis_engine::sync::{BodyMeta, CertKind, HeldBlob, Loss, MustNot, ReadCredentials, Strip};
+use osis_engine::sync::{BodyId, BodyMeta, CertKind, HeldBlob, Loss, MustNot, ReadCredentials, Strip};
 use osis_blob::{Class, DeleteItem};
 use osis_proto::Msg;
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,11 +36,11 @@ pub struct Feeds {
     blobs: BlobsAt,
 }
 
-/// Per judged (S, commit), the blobs of the commit S has an entry, a tombstone or a source's
-/// presence of (`Live::blobs_at`): a row each, so a blob of the commit coming under another sync
-/// ID (a copy sealed or opened there) moves no judgement at S.
+/// Per judged (S, body), the blobs of the body (`Engine::blob_body`) S has an entry, a tombstone
+/// or a source's presence of (`Live::blobs_at`): a row each, so a blob of the commit coming under
+/// another sync ID (a copy sealed or opened there) moves no judgement at S.
 #[derive(Clone)]
-struct BlobsAt(Cutoff<(SyncId, CommitId), Arc<Vec<BlobId>>>);
+struct BlobsAt(Cutoff<(SyncId, BodyId), Arc<Vec<BlobId>>>);
 
 impl Default for BlobsAt {
     fn default() -> Self {
@@ -76,16 +76,18 @@ fn stamp_key(cx: &mut Cx, s: &SyncId) -> Result<Option<SigningSecret>> {
 }
 
 /// The entry this node logs of its own under `s`: stamped where it writes S's served head, else
-/// deposited.
-fn own_entry(cx: &mut Cx, s: &SyncId, blob: BlobId, wrap: crate::types::Wrap, class: Class) -> Result<Entry> {
-    let stamp = stamp_key(cx, s)?.map(|w| osis_blob::sign_stamp(&w, s, &blob, &wrap, false));
-    Ok(Entry { blob, wrap, stamp, deposited: stamp.is_none(), own: true, role: false, class, expires: None })
+/// deposited; `role`: as a role entry (spec/sync-ids.md §6 Role entries; `Engine::role_commit`
+/// of its commit, a record or list blob always).
+fn own_entry(cx: &mut Cx, s: &SyncId, blob: BlobId, wrap: crate::types::Wrap, class: Class, role: bool) -> Result<Entry> {
+    let stamp = stamp_key(cx, s)?.map(|w| osis_blob::sign_stamp(&w, s, &blob, &wrap, role));
+    Ok(Entry { blob, wrap, stamp, deposited: stamp.is_none(), own: true, role, class, expires: None })
 }
 
 impl Live<'_, '_> {
     /// Of `at`, the read sync IDs whose own store holds an entry of blob `b` (all of them when
-    /// `None`), each with `b`'s commit where this node holds it (`entries_added`).
-    fn entries_of(&mut self, b: &BlobId, at: Option<SyncId>, out: &mut Vec<(SyncId, CommitId)>) -> Result<()> {
+    /// `None`), each with the body `b` is of there where this node holds its commit
+    /// (`entries_added`).
+    fn entries_of(&mut self, b: &BlobId, at: Option<SyncId>, out: &mut Vec<(SyncId, BodyId)>) -> Result<()> {
         let Some(c) = self.cx.engine.blob_commit(b) else { return Ok(()) };
         if !self.cx.engine.holds_commit(&c) {
             return Ok(());
@@ -96,8 +98,10 @@ impl Live<'_, '_> {
             None => self.cx.store.naming(b)?,
         };
         for s in ids {
-            if self.cx.store.holding(&s) == Some(osis_engine::sync::Holding::Read) {
-                out.push((s, c));
+            if self.cx.store.holding(&s).is_some_and(osis_engine::sync::Holding::opens)
+                && let Some(id) = self.cx.engine.blob_body(&s, b)?
+            {
+                out.push((s, id));
             }
         }
         Ok(())
@@ -119,8 +123,9 @@ impl Live<'_, '_> {
     /// The parents of the recorded steps of S whose epochs depend on role commit `c`
     /// (`Engine::step_needs`), earliest first: an entry of `c` keeps a stamp under one, so a
     /// source standing there takes it before the step is registered (spec/sync-ids.md §6 Steps).
-    fn step_parents(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<osis_blob::Step>> {
-        if !self.cx.engine.read_facts(s, c)?.role {
+    fn step_parents(&mut self, s: &SyncId, id: &BodyId) -> Result<Vec<osis_blob::Step>> {
+        let c = &id.commit;
+        if !self.cx.engine.read_facts(s, id)?.role {
             return Ok(Vec::new());
         }
         let Some(path) = self.cx.store.path(s)? else { return Ok(Vec::new()) };
@@ -136,7 +141,7 @@ impl Live<'_, '_> {
 
     /// Entry `e` is of role commit `c` that a recorded step of S registers, stamped under that
     /// step's parent (`step_parents`).
-    fn registers_step(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
+    fn registers_step(&mut self, s: &SyncId, c: &BodyId, e: &Entry) -> Result<bool> {
         if e.stamp.is_none() {
             return Ok(false);
         }
@@ -149,37 +154,51 @@ impl Live<'_, '_> {
     /// with an entry's wrap, tombstoned under `s` or not (spec/crypto.md §5 Passing on: what
     /// this node may not encrypt under an epoch of its choosing goes as the section it came in).
     /// The only place read makes a fresh encryption of a body.
-    fn fresh(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<(osis_engine::sync_ids::Sealed, crate::types::Wrap)>> {
+    fn fresh(&mut self, s: &SyncId, c: &BodyId) -> Result<Option<(osis_engine::sync_ids::Sealed, crate::types::Wrap)>> {
         let mut held = Vec::new();
-        for (b, x, e) in self.held_blobs(c)? {
+        for (b, x, e) in self.held_blobs(&c.commit)? {
             let Some(bytes) = self.cx.store.bytes(&b)? else { continue };
             held.push(HeldBlob { sync_id: x, wrap: e.wrap, bytes });
         }
         Ok(self.cx.engine.seal_body(s, c, &held, self.cx.rng)?)
     }
 
-    /// `c`'s blobs that S has an entry or a tombstone of, or a source of S shows (`BlobsAt`), in
-    /// `commit_blobs` order: a read of that row alone.
-    fn blobs_at(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Vec<BlobId>>> {
+    /// Body `c`'s blobs (`body_blobs`) that S has an entry or a tombstone of, or a source of S
+    /// shows (`BlobsAt`), in `commit_blobs` order: a read of that row alone.
+    fn blobs_at(&mut self, s: &SyncId, c: &BodyId) -> Result<Arc<Vec<BlobId>>> {
         Cutoff::get_in(self, |l| &l.feeds.blobs.0, &(*s, *c), |l, (s, c)| l.derive_blobs_at(s, c))
     }
 
-    fn derive_blobs_at(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Vec<BlobId>>> {
+    fn derive_blobs_at(&mut self, s: &SyncId, c: &BodyId) -> Result<Arc<Vec<BlobId>>> {
         let mut out = Vec::new();
-        for b in self.cx.engine.commit_blobs(c)?.iter() {
-            if self.cx.store.entry(s, b)?.is_some() || self.cx.store.tombstone(s, b)?.is_some() || self.streams.known().present(s, b) {
-                out.push(*b);
+        for b in self.body_blobs(s, c)? {
+            if self.cx.store.entry(s, &b)?.is_some() || self.cx.store.tombstone(s, &b)?.is_some() || self.streams.known().present(s, &b) {
+                out.push(b);
             }
         }
         Ok(Arc::new(out))
     }
 
-    /// The sync IDs with an entry of blob `b` that carry a body of `c` (`Engine::sync_body`), in
-    /// order.
-    fn body_ids_naming(&mut self, b: &BlobId, c: &CommitId) -> Result<Vec<SyncId>> {
+    /// The blobs of `c`'s commit opened or sealed here that are of body `c` under S
+    /// (`Engine::blob_body`), in `commit_blobs` order.
+    fn body_blobs(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<BlobId>> {
+        let mut out = Vec::new();
+        for b in self.cx.engine.commit_blobs(&c.commit)?.iter() {
+            if self.cx.engine.blob_body(s, b)? == Some(*c) {
+                out.push(*b);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The sync IDs with an entry of blob `b` that carry the body it is of there
+    /// (`Engine::blob_body`, `Engine::sync_body`), in order.
+    fn body_ids_naming(&mut self, b: &BlobId) -> Result<Vec<SyncId>> {
         let mut out = Vec::new();
         for x in self.cx.store.naming(b)? {
-            if self.cx.engine.sync_body(&x, c)?.is_some() {
+            if let Some(id) = self.cx.engine.blob_body(&x, b)?
+                && self.cx.engine.sync_body(&x, &id)?.is_some()
+            {
                 out.push(x);
             }
         }
@@ -196,7 +215,7 @@ impl Live<'_, '_> {
             // the entry first: its row moves when the bytes arrive, so a reader follows them; a
             // sync ID's body asked per sync ID naming the blob, never every sync ID's
             let mut found = None;
-            for x in self.body_ids_naming(b, c)? {
+            for x in self.body_ids_naming(b)? {
                 if let Some(e) = self.cx.store.entry(&x, b).ok().flatten() {
                     found = Some((x, e));
                     break;
@@ -237,7 +256,7 @@ impl Ground for Live<'_, '_> {
         self.cx.store.unlog_entry(s, b)?;
         Ok(())
     }
-    fn entries_added(&mut self) -> Result<Vec<(SyncId, CommitId)>> {
+    fn entries_added(&mut self) -> Result<Vec<(SyncId, BodyId)>> {
         let mut out = Vec::new();
         let Some((entries, blobs, commits)) = self.feeds.entries.as_mut() else {
             // a start: every entry of every held commit
@@ -263,10 +282,10 @@ impl Ground for Live<'_, '_> {
         }
         Ok(out)
     }
-    fn bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
+    fn bodies(&mut self, c: &CommitId) -> Result<Arc<osis_engine::sync::Bodies>> {
         Ok(self.cx.engine.sync_bodies(c)?)
     }
-    fn facts(&mut self, s: &SyncId, c: &CommitId) -> Result<Facts> {
+    fn facts(&mut self, s: &SyncId, c: &BodyId) -> Result<Facts> {
         let f = self.cx.engine.read_facts(s, c)?;
         let must_not = f.must_not.map(|m| match m {
             MustNot::Purged => Why::Purged,
@@ -275,10 +294,10 @@ impl Ground for Live<'_, '_> {
         });
         Ok(Facts { body: f.body, must_not, own: f.own, repair_fresh: f.repair_fresh, role: f.role, later_unheld: f.later_unheld, missing: f.missing })
     }
-    fn carriers(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BTreeSet<CommitId>>> {
+    fn carriers(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<BTreeSet<CommitId>>> {
         Ok(self.cx.engine.carriers(s, c)?)
     }
-    fn unfollow_facts(&mut self, s: &SyncId, c: &CommitId) {
+    fn unfollow_facts(&mut self, s: &SyncId, c: &BodyId) {
         self.cx.engine.unfollow_facts(s, c);
         self.feeds.blobs.0.unfollow(&(*s, *c));
     }
@@ -291,14 +310,14 @@ impl Ground for Live<'_, '_> {
     fn mintings(&mut self, t: &Tid) -> Arc<Vec<osis_engine::retention::Minting>> {
         Arc::new(self.cx.engine.mintings_of(t))
     }
-    fn fall_mark(&mut self, _s: &SyncId, c: &CommitId) -> u64 {
-        self.cx.engine.body_fall_mark(c)
+    fn fall_mark(&mut self, _s: &SyncId, c: &BodyId) -> u64 {
+        self.cx.engine.body_fall_mark(&c.commit)
     }
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
         Ok(self.cx.engine.read_credentials(s)?)
     }
     fn reads(&mut self, s: &SyncId) -> bool {
-        self.cx.store.holding(s) == Some(osis_engine::sync::Holding::Read)
+        self.cx.store.holding(s).is_some_and(osis_engine::sync::Holding::opens)
     }
     fn holdings_moved(&mut self) -> Vec<SyncId> {
         self.feeds.syncs.as_mut().map(|f| f.added()).unwrap_or_default()
@@ -327,7 +346,7 @@ impl Ground for Live<'_, '_> {
         let things = self.things(s);
         Ok(things.iter().any(|t| self.cx.engine.minted_here(t)))
     }
-    fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+    fn may_log(&mut self, s: &SyncId, c: &BodyId) -> Result<bool> {
         // S's own entries first, read by key: what may be logged only grows with the blobs
         // held, so where they do, no other sync ID's entries are read (a commit logged under
         // many sync IDs judges each without the others)
@@ -340,27 +359,32 @@ impl Ground for Live<'_, '_> {
         if !own.is_empty() && self.cx.engine.may_log(s, c, &own)? {
             return Ok(true);
         }
-        let held: Vec<BlobId> = self.held_blobs(c)?.into_iter().map(|(b, _, _)| b).collect();
+        let held: Vec<BlobId> = self.held_blobs(&c.commit)?.into_iter().map(|(b, _, _)| b).collect();
         Ok(self.cx.engine.may_log(s, c, &held)?)
     }
     fn now(&self) -> WallMs {
         self.cx.now
     }
-    fn own(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<Entry>> {
+    fn own(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<Entry>> {
         let mut out = Vec::new();
         for b in self.blobs_at(s, c)?.iter() {
             out.extend(self.cx.store.entry(s, b)?);
         }
         Ok(out)
     }
-    fn stands(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
+    fn stands(&mut self, s: &SyncId, c: &BodyId, e: &Entry) -> Result<bool> {
         Ok(self.under_head(s, e)? || self.registers_step(s, c, e)?)
     }
     fn holds_body(&mut self, meta: &BodyMeta, b: &BlobId) -> Result<bool> {
         Ok(self.cx.engine.body_held_by(meta, b))
     }
-    fn promotion(&mut self, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<crate::inbox::Promotion> {
-        crate::inbox::promotion(self.cx.engine, self.cx.store, s, c, b)
+    fn promotion(&mut self, s: &SyncId, c: &BodyId, b: &BlobId) -> Result<crate::inbox::Promotion> {
+        // a deposited certificate copy is never stamped in place: a writer holding its parts logs
+        // its own (spec/permissions.md §4 Logging certificates)
+        if c.on.is_some() {
+            return Ok(crate::inbox::Promotion::No);
+        }
+        crate::inbox::promotion(self.cx.engine, self.cx.store, s, &c.commit, b)
     }
     fn restamp(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let Some(e) = self.cx.store.entry(s, b)? else { return Ok(()) };
@@ -370,7 +394,7 @@ impl Ground for Live<'_, '_> {
         // a role commit a recorded step registers under the earliest such step's parent whose
         // write key is held (`registers_step`), anything else under the served head
         let mut w = None;
-        if let Some(c) = self.cx.engine.blob_commit(b) {
+        if let Some(c) = self.cx.engine.blob_body(s, b)? {
             for p in self.step_parents(s, &c)? {
                 if w.is_none() {
                     w = self.cx.engine.step_write_key(s, &p.id())?;
@@ -378,15 +402,17 @@ impl Ground for Live<'_, '_> {
             }
         }
         let Some(w) = w.or(stamp_key(self.cx, s)?) else { return Ok(()) };
-        let stamp = osis_blob::sign_stamp(&w, s, b, &e.wrap, e.role);
+        // judged here, whoever logged it first: a pulled entry's row does not say
+        let role = self.cx.engine.role_entry(s, b);
+        let stamp = osis_blob::sign_stamp(&w, s, b, &e.wrap, role);
         let own = e.own;
-        self.cx.store.log(s, Entry { stamp: Some(stamp), deposited: false, own: true, ..e }, None, None)?;
+        self.cx.store.log(s, Entry { stamp: Some(stamp), deposited: false, own: true, role, ..e }, None, None)?;
         if !own {
             self.cx.store.uncharge(s, b)?;
         }
         Ok(())
     }
-    fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>> {
+    fn own_tombstones(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<BlobId>> {
         let mut out = Vec::new();
         for b in self.blobs_at(s, c)?.iter() {
             if self.cx.store.tombstone(s, b)?.is_some() {
@@ -408,7 +434,7 @@ impl Ground for Live<'_, '_> {
     fn loses(&mut self, s: &SyncId, b: &BlobId, o: &BlobId, stands: (bool, bool)) -> Result<Option<Loss>> {
         Ok(self.cx.engine.blob_loses(s, b, o, stands)?)
     }
-    fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
+    fn neither(&mut self, s: &SyncId, c: &BodyId, there: &BTreeSet<BlobId>) -> Result<bool> {
         Ok(self.cx.engine.neither(s, c, there)?)
     }
     fn sources(&mut self, s: &SyncId) -> Arc<Vec<SrcView>> {
@@ -440,14 +466,14 @@ impl Ground for Live<'_, '_> {
     fn head_at(&mut self, s: &SyncId, at: &Source) -> Option<StepId> {
         self.streams.known().head(*at, s)
     }
-    fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>> {
+    fn shown_at(&mut self, s: &SyncId, c: &BodyId) -> Result<BTreeSet<Source>> {
         let known = self.streams.known();
-        Ok(self.cx.engine.commit_blobs(c)?.iter().flat_map(|b| known.shown_at(s, b)).collect())
+        Ok(self.body_blobs(s, c)?.iter().flat_map(|b| known.shown_at(s, b)).collect())
     }
     fn sources_added(&mut self) -> Vec<(SyncId, Source)> {
         self.feeds.sources.as_mut().map(|f| f.added()).unwrap_or_default()
     }
-    fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>> {
+    fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, BodyId)>> {
         let mut out = Vec::new();
         let rows = match self.feeds.known.as_mut() {
             Some(f) => f.added(),
@@ -462,24 +488,24 @@ impl Ground for Live<'_, '_> {
         // a blob this node never opened or sealed names no commit here: it is pulled, and its
         // commit known, once opened
         for (at, s, b) in rows {
-            if let Some(c) = self.cx.engine.blob_commit(&b) {
+            if let Some(c) = self.cx.engine.blob_body(&s, &b)? {
                 out.push((at, s, c));
             }
         }
         Ok(out)
     }
-    fn present_anywhere(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+    fn present_anywhere(&mut self, s: &SyncId, c: &BodyId) -> Result<bool> {
         let blobs = self.blobs_at(s, c)?;
         let known = self.streams.known();
         Ok(blobs.iter().any(|b| known.present(s, b)))
     }
-    fn seen(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Seen> {
+    fn seen(&mut self, at: &Source, s: &SyncId, c: &BodyId) -> Result<Seen> {
         let mut seen = Seen::default();
-        for b in self.cx.engine.commit_blobs(c)?.iter() {
-            if self.streams.known().knows(*at, s, b) {
-                seen.present.insert(*b);
-            } else if self.cx.store.seen_deleted(*at, s, b)? {
-                seen.deleted.insert(*b);
+        for b in self.body_blobs(s, c)? {
+            if self.streams.known().knows(*at, s, &b) {
+                seen.present.insert(b);
+            } else if self.cx.store.seen_deleted(*at, s, &b)? {
+                seen.deleted.insert(b);
             }
         }
         Ok(seen)
@@ -487,34 +513,36 @@ impl Ground for Live<'_, '_> {
     fn heard_out(&mut self, s: &SyncId) -> Result<bool> {
         self.status.heard_out_or_alone(self.opens, self.cx.engine, self.cx.store, s, &NetView { streams: self.streams, unread: self.unread })
     }
-    fn stand(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Option<Stand>> {
-        self.cx.store.stand(*at, s, &c.0)
+    fn stand(&mut self, at: &Source, s: &SyncId, c: &BodyId) -> Result<Option<Stand>> {
+        self.cx.store.stand(*at, s, &stand_key(c))
     }
-    fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool, skip: &[BlobId]) -> Result<Option<BlobId>> {
+    fn log_own(&mut self, s: &SyncId, c: &BodyId, fresh: bool, skip: &[BlobId]) -> Result<Option<BlobId>> {
         let class = if self.cx.engine.sync_body(s, c)?.is_some() { Class::Durable } else { return Ok(None) };
         if !fresh {
             // a held blob of the commit not tombstoned under S, verbatim under a wrap for S
-            for b in self.cx.engine.commit_blobs(c)?.iter() {
+            for b in self.cx.engine.commit_blobs(&c.commit)?.iter() {
                 if self.cx.store.tombstone(s, b)?.is_some() || self.cx.store.blob_len(b)?.is_none() || self.cx.engine.blob_gone(b) || skip.contains(b) {
                     continue;
                 }
-                for from in &self.body_ids_naming(b, c)? {
+                for from in &self.body_ids_naming(b)? {
                     // a peer's deposit under S is stamped only as promoted (`Ground::promotion`)
                     let Some(e) = self.cx.store.entry(from, b)?.filter(|e| from != s || !e.deposited || e.own) else { continue };
                     let Some(wrap) = self.cx.engine.rewrap(c, b, from, &e.wrap, s)? else { continue };
-                    let e = own_entry(self.cx, s, *b, wrap, e.class)?;
+                    let role = self.cx.engine.role_commit(&c.commit);
+                    let e = own_entry(self.cx, s, *b, wrap, e.class, role)?;
                     let code = self.cx.store.log(s, e, None, None)?;
                     return Ok((code == osis_proto::Code::OK).then_some(*b));
                 }
             }
         }
         let Some((sealed, wrap)) = self.fresh(s, c)? else { return Ok(None) };
-        let e = own_entry(self.cx, s, sealed.id, wrap, class)?;
+        let role = self.cx.engine.role_commit(&c.commit);
+        let e = own_entry(self.cx, s, sealed.id, wrap, class, role)?;
         let code = self.cx.store.log(s, e, Some(sealed.blob), None)?;
         Ok((code == osis_proto::Code::OK).then_some(sealed.id))
     }
-    fn drop_own(&mut self, s: &SyncId, b: &BlobId, c: &CommitId) -> Result<()> {
-        self.cx.store.drop_entry(s, b, c.0.to_vec())?;
+    fn drop_own(&mut self, s: &SyncId, b: &BlobId, c: &BodyId) -> Result<()> {
+        self.cx.store.drop_entry(s, b, c.commit.0.to_vec())?;
         Ok(())
     }
     fn lift(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
@@ -540,7 +568,7 @@ impl Ground for Live<'_, '_> {
         let Some(item) = self.delete_item(s, head, b)? else { return Ok(None) };
         Ok(self.sessions.get_mut(conn).map(|session| session.request(To::Read, Msg::Delete { id: 0, sync_id: *s, items: vec![item] })))
     }
-    fn deposit(&mut self, _conn: ConnId, head: Option<StepId>, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()> {
+    fn deposit(&mut self, _conn: ConnId, head: Option<StepId>, s: &SyncId, c: &BodyId, b: &BlobId) -> Result<()> {
         let Some(e) = self.cx.store.entry(s, b)? else { return Ok(()) };
         // a deposited own entry is offered to every store source of S (inbox's offers)
         if e.deposited {
@@ -556,12 +584,12 @@ impl Ground for Live<'_, '_> {
         }
         // else a fresh encryption, deposited: offered as it is logged
         let Some((sealed, wrap)) = self.fresh(s, c)? else { return Ok(()) };
-        let entry = Entry { blob: sealed.id, wrap, stamp: None, deposited: true, own: true, role: false, class: e.class, expires: None };
+        let entry = Entry { blob: sealed.id, wrap, stamp: None, deposited: true, own: true, role: self.cx.engine.role_commit(&c.commit), class: e.class, expires: None };
         self.cx.store.log(s, entry, Some(sealed.blob), None)?;
         Ok(())
     }
-    fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()> {
-        self.cx.store.set_stand(*at, s, &c.0, Some(stand))
+    fn set_stand(&mut self, at: &Source, s: &SyncId, c: &BodyId, stand: &Stand) -> Result<()> {
+        self.cx.store.set_stand(*at, s, &stand_key(c), Some(stand))
     }
     fn cert_blobs_missing(&mut self, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
         let carried = match r {
@@ -675,7 +703,7 @@ impl Ground for Live<'_, '_> {
             Some(r) => self.cx.engine.seal_lists(s, &r, tids, self.cx.rng)?,
         };
         let Some((blob, bytes, wrap)) = sealed else { return Ok(()) };
-        let e = own_entry(self.cx, s, blob, wrap, Class::Durable)?;
+        let e = own_entry(self.cx, s, blob, wrap, Class::Durable, true)?;
         self.cx.store.log(s, e, Some(bytes), None)?;
         Ok(())
     }
@@ -717,7 +745,8 @@ impl Ground for Live<'_, '_> {
         let Some(bytes) = self.cx.store.bytes(b)? else { return Ok(()) };
         let wrap = osis_crypto::filler_wrap(&mut *self.cx.rng);
         // class and expiry come from the bytes' prefix
-        let e = own_entry(self.cx, s, *b, wrap, Class::Durable)?;
+        let role = self.cx.engine.role_entry(s, b);
+        let e = own_entry(self.cx, s, *b, wrap, Class::Durable, role)?;
         self.cx.store.log(s, e, Some(bytes), None)?;
         Ok(())
     }
@@ -773,11 +802,17 @@ impl Ground for Live<'_, '_> {
     fn forgettable(&mut self, c: &CommitId) -> Result<Option<bool>> {
         Ok(self.cx.engine.held_fate(c)?.map(|f| f.forgettable))
     }
-    fn known_under(&mut self, c: &CommitId) -> Result<BTreeSet<SyncId>> {
+    fn known_under(&mut self, c: &CommitId, at: &BTreeSet<SyncId>) -> Result<BTreeSet<(SyncId, BodyId)>> {
         let mut out = BTreeSet::new();
         for b in self.cx.engine.commit_blobs(c)?.iter() {
-            out.extend(self.cx.store.naming(b)?);
-            out.extend(self.cx.store.tombstoned_under(b)?);
+            let mut ids = at.clone();
+            ids.extend(self.cx.store.naming(b)?);
+            ids.extend(self.cx.store.tombstoned_under(b)?);
+            for s in ids {
+                if let Some(id) = self.cx.engine.blob_body(&s, b)? {
+                    out.insert((s, id));
+                }
+            }
         }
         Ok(out)
     }
@@ -790,6 +825,16 @@ impl Ground for Live<'_, '_> {
     fn forget_commits(&mut self, cs: &[CommitId]) -> Result<()> {
         Ok(self.cx.engine.forget_commits(cs)?)
     }
+}
+
+/// The key of body `c`'s stand rows (`Store::stand`): its commit ID, and a certificate copy's
+/// thing after it.
+fn stand_key(c: &BodyId) -> Vec<u8> {
+    let mut k = c.commit.0.to_vec();
+    if let Some(x) = &c.on {
+        k.extend(x.as_bytes());
+    }
+    k
 }
 
 /// A Delete of blob `b` at a source on head keys `keys` (spec/sync-ids.md §6 Delete): by the

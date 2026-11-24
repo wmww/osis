@@ -80,7 +80,7 @@ fn shape(d: usize) -> Shape {
 }
 
 /// Delivers parts `parts` of commit `c` of peer `from` to peer `to`, and what a verifier needs
-/// beside them as `from` judges it (`Engine::author_chain`: for a `keys.0` part, the demotions
+/// beside them as `from` judges it (`Engine::evidence_of`: for a `keys.0` part, the demotions
 /// its keysets carry), each projected to the parts listed: a certificate, as a node logging
 /// `c`'s keyset under a sync ID of G logs it.
 fn deliver_certified(lp: &mut LocalPeer, from: usize, to: usize, c: CommitId, parts: BTreeSet<usize>) {
@@ -90,7 +90,7 @@ fn deliver_certified(lp: &mut LocalPeer, from: usize, to: usize, c: CommitId, pa
 /// `deliver_certified`, shuffled by `order` when given (any arrival order: a keyset arriving
 /// before what it carries is held once that comes).
 fn deliver_certified_in(lp: &mut LocalPeer, from: usize, to: usize, c: CommitId, parts: BTreeSet<usize>, order: Option<&mut super::tests::Rng>) {
-    let chain = lp.peers[from].engine.author_chain(&c, &parts).unwrap();
+    let chain = lp.peers[from].engine.evidence_of(&c, &parts).unwrap();
     let mut send: Vec<(CommitId, BTreeSet<usize>)> = chain.commits.into_iter().collect();
     send.push((c, parts));
     let pks = lp.packages_for(from, to).unwrap();

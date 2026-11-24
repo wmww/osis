@@ -6,9 +6,9 @@
 //! LA's bytes sort after LB's), so the encoder sorts the encodings of a set or map holding a link.
 
 use crate::cbor::CanonicalBytes;
-use crate::format::{TAG_ENUM, TAG_LINK, TAG_RETIRED, TAG_SET, TAG_STRONG, TAG_TICKET, TAG_WEAK};
+use crate::format::{TAG_ENUM, TAG_LINK, TAG_RETIRED, TAG_SET, TAG_STRONG, TAG_WEAK};
 use crate::ids::{Link, Tid};
-use crate::refs::{Ref, Strong, Ticket, Weak};
+use crate::refs::{Ref, Strong, Weak};
 use crate::sorted::{ValueMap, ValueSet};
 use std::cmp::Ordering;
 
@@ -25,8 +25,6 @@ pub enum Value {
     Strong(Tid),
     /// A weak reference (`Weak`): it only points.
     Weak(Tid),
-    /// A ticket: a weak that also carries what syncing its target needs.
-    Ticket(Box<Ticket>),
     /// Case ID and optional payload.
     Enum(u64, Option<Box<Value>>),
     /// Also the struct representation (int keys).
@@ -68,7 +66,7 @@ impl Float {
 /// Tag numbers with a meaning in this build; never held by `Unknown`. The reserved STRUCT tag
 /// is not one: a later version may define it, so it is preserved like any unknown tag.
 fn is_known_tag(tag: u64) -> bool {
-    matches!(tag, TAG_SET | TAG_RETIRED | TAG_ENUM | TAG_LINK | TAG_STRONG | TAG_WEAK | TAG_TICKET)
+    matches!(tag, TAG_SET | TAG_RETIRED | TAG_ENUM | TAG_LINK | TAG_STRONG | TAG_WEAK)
 }
 
 /// Unknown tag with its canonical content bytes (spec/data-model.md §5): merges as an opaque
@@ -147,7 +145,7 @@ impl Value {
             _ => None,
         }
     }
-    /// A strong or a weak as a `Ref`; `None` for anything else, a ticket included.
+    /// A strong or a weak as a `Ref`; `None` for anything else.
     pub fn as_ref_value(&self) -> Option<Ref> {
         match self {
             Value::Strong(t) => Some(Ref::Strong(Strong(*t))),
@@ -155,17 +153,16 @@ impl Value {
             _ => None,
         }
     }
-    /// Whether this is a reference: a strong, a weak or a ticket (spec/data-model.md §8).
+    /// Whether this is a reference: a strong or a weak (spec/data-model.md §8).
     pub fn is_reference(&self) -> bool {
-        matches!(self, Value::Strong(_) | Value::Weak(_) | Value::Ticket(_))
+        matches!(self, Value::Strong(_) | Value::Weak(_))
     }
     /// Calls `f` on every reference at any depth of this value (spec/data-model.md §8 What
-    /// counts): map keys, set elements, enum payloads, unknown tags' content; not inside a ticket
-    /// (its tids are no references) or a string. A link (a chunked value, §6) is given to `f`
+    /// counts): map keys, set elements, enum payloads, unknown tags' content; not inside a string. A link (a chunked value, §6) is given to `f`
     /// itself: the references inside it are its content's, read by whoever holds its blobs.
     pub fn each_reference_or_link(&self, f: &mut dyn FnMut(&Value)) {
         match self {
-            Value::Strong(_) | Value::Weak(_) | Value::Ticket(_) | Value::Link(_) => f(self),
+            Value::Strong(_) | Value::Weak(_) | Value::Link(_) => f(self),
             Value::Enum(_, Some(p)) => p.each_reference_or_link(f),
             Value::Map(m) => m.iter().for_each(|(k, x)| {
                 k.each_reference_or_link(f);
@@ -213,7 +210,6 @@ impl Value {
         match self {
             Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Bytes(_) => 0,
             Value::Strong(_) | Value::Weak(_) => 1,
-            Value::Ticket(t) => 1 + t.to_value().depth(),
             Value::Enum(_, None) => 2,
             Value::Link(l) => 3 + usize::from(!l.del.is_empty()),
             Value::Enum(_, Some(p)) => 2 + p.depth(),
@@ -234,7 +230,6 @@ impl Value {
         match self {
             Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Bytes(_) | Value::Link(_) => false,
             Value::Strong(_) | Value::Weak(_) => max < 1,
-            Value::Ticket(t) => max < 1 || t.to_value().deeper_than(max - 1),
             Value::Enum(_, None) => max < 2,
             Value::Enum(_, Some(p)) => below(p, 2),
             Value::List(l) => max < 1 || l.iter().any(|v| below(v, 1)),
@@ -258,7 +253,6 @@ fn kind_key(v: &Value) -> (u8, u64) {
         Value::Set(_) => (6, TAG_SET),
         Value::Strong(_) => (6, TAG_STRONG),
         Value::Weak(_) => (6, TAG_WEAK),
-        Value::Ticket(_) => (6, TAG_TICKET),
         Value::Enum(..) => (6, TAG_ENUM),
         Value::Link(_) => (6, TAG_LINK),
         Value::Unknown(u) => (6, u.tag),
@@ -285,7 +279,6 @@ impl Ord for Value {
             (Str(a), Str(b)) => cmp_bytes(a.as_bytes(), b.as_bytes()),
             (Bytes(a), Bytes(b)) => cmp_bytes(a, b),
             (Strong(a), Strong(b)) | (Weak(a), Weak(b)) => a.cmp(b),
-            (Ticket(a), Ticket(b)) => a.to_value().cmp(&b.to_value()),
             (Enum(ca, pa), Enum(cb, pb)) => {
                 // `[case]` (array of 1) sorts before `[case, payload]` (array of 2).
                 pa.is_some().cmp(&pb.is_some()).then(ca.cmp(cb)).then_with(|| pa.cmp(pb))
@@ -319,7 +312,6 @@ impl std::hash::Hash for Value {
             Str(s) => s.hash(h),
             Bytes(b) => b.hash(h),
             Strong(t) | Weak(t) => t.hash(h),
-            Ticket(t) => t.to_value().hash(h),
             Enum(c, p) => (c, p).hash(h),
             Map(m) => m.iter().for_each(|kv| kv.hash(h)),
             List(l) => l.iter().for_each(|v| v.hash(h)),
@@ -362,8 +354,3 @@ impl From<Ref> for Value {
     }
 }
 
-impl From<Ticket> for Value {
-    fn from(t: Ticket) -> Value {
-        Value::Ticket(Box::new(t))
-    }
-}

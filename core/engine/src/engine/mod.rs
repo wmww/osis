@@ -741,6 +741,22 @@ indexes! {
     /// `pend_by`'s keys per pending commit.
     pub pend_needs: JMap<CommitId, Arc<Vec<Tid>>>,
     pub void: JSet<CommitId>,
+    /// Per held commit, the things on which a delta of it lists a level-1 or level-3 delete key
+    /// no step places before it (`sync_ids::steps`, spec/crypto.md §7 Checked keys): its deltas
+    /// on that thing are invalid, its edge writes there read by nothing. Persisted with the
+    /// commit's parts row; judged again as the steps, records or account epochs it reads move
+    /// (`Core::rekey`).
+    pub miskeyed: JSet<(CommitId, Tid)>,
+    /// Role commits whose `miskeyed` things moved: their edge writes are read again
+    /// (`validity::resolve_unresolved`). Empty between transactions.
+    pub rekeyed: JSet<CommitId>,
+    /// Things whose record chain became known: the keys every commit on them lists are judged
+    /// at the next re-judge (`validity::rejudge_once`), with the walk whole.
+    pub keys_due: JSet<Tid>,
+    /// Commits holding a valid `grant@~0` fire or stranded notice (`inbox::carries`), applied or
+    /// turned valid here, whose carried commit or report is not yet taken
+    /// (`Engine::take_carried`). Empty between follows.
+    pub fires_due: JSet<CommitId>,
     /// Freed links judged freed, by (blob, thing) (`retention::freed`): what sync deletes.
     pub freed: JMap<(osis_base::BlobId, Tid), Arc<crate::retention::freed::Freed>>,
     /// The commit, parts and unopened sections each opened or sealed blob holds (`sync::bodies`).
@@ -763,6 +779,10 @@ indexes! {
     pub carriers: JSetMap<CommitId, crate::apply::carriers::Carrier>,
     /// `carriers` by fire and report: what each carries.
     pub carrying: JSetMap<crate::apply::carriers::Carrier, CommitId>,
+    /// Per held `grant@~0` fire, what it carries (`flows::inbox`, rows `gf/`).
+    pub grant_fires: JMap<CommitId, crate::flows::inbox::Carried>,
+    /// `grant_fires` by target: the held grant fires carrying a commit on each thing.
+    pub fires_carrying: JSetMap<Tid, CommitId>,
     /// Per thing, the commits with an opening written under an epoch of it (`sync_ids::opened`,
     /// `records::OPENED_UNDER`): what goes with the thing.
     pub opened_under: JSetMap<Tid, CommitId>,
@@ -809,6 +829,9 @@ indexes! {
     pub sync_recorders: JSetMap<SyncId, Tid>,
     /// Per thing with a `sync.0` state, the sync IDs it records (`sync_recorders` inverted).
     pub sync_recorded_ids: JMap<Tid, BTreeSet<SyncId>>,
+    /// Per thing with a `sync.0` state, the steps it places (`sync_ids::steps`, `Tx::derive`):
+    /// what delete keys are listed from and checked against (spec/crypto.md §7).
+    pub steps: JMap<Tid, Arc<crate::sync_ids::steps::Recorded>>,
     /// Keyed `roles.0` entries seen: (target, entry dot) -> (holder, created value).
     pub holder_keys: JMap<(Tid, Dot), Tid>,
     /// Role commits whose removed keys are not known yet.
@@ -1046,6 +1069,8 @@ pub struct Core {
     /// What each read thing's certificates name, per commit (`sync::certified`): `sync_bodies`
     /// reads one commit's row.
     pub(crate) certified: crate::sync::certified::Certified,
+    /// The evidence derivation over the held set (`evidence::kept`), which `certified` reads.
+    pub(crate) evidence: crate::evidence::kept::Kept,
     /// The thing lists each read thing's sync IDs carry, per rotation (`sync::listed`).
     pub(crate) listed: crate::sync::listed::Listed,
     /// The records each read thing's sync IDs carry as certificates (`sync::certblobs`).
@@ -1083,7 +1108,7 @@ pub struct Core {
     /// `Engine::read_facts` per (sync ID, commit) (`memo::Cutoff`), refreshed by
     /// `Engine::follow`: a body's judgement moves only when its facts do, not with every write on
     /// its aspects.
-    pub(crate) read_facts: memo::Cutoff<(SyncId, CommitId), crate::sync::ReadFacts>,
+    pub(crate) read_facts: memo::Cutoff<(SyncId, crate::sync::BodyId), crate::sync::ReadFacts>,
     /// `Engine::held_fate` per commit (`memo::Cutoff`), refreshed by `Engine::follow`.
     pub(crate) held_fates: memo::Cutoff<CommitId, Option<crate::sync::HeldFate>>,
     /// Page indexes of the cached states kept paged in the store.
@@ -1275,6 +1300,11 @@ pub struct Core {
     pub signing_due: bool,
     /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
+    /// Interim (issues/delete-key-levels-unchecked.md): whether verdicts read the key check
+    /// (`Indexes::miskeyed`). Off until the steps placing a listed key ride with every copy as
+    /// its evidence: a node holding a copy without them cannot tell a wrong key from a base
+    /// whose `sync.0` it lacks (`Engine::check_delete_keys`, tests).
+    pub check_keys: bool,
     /// The list bound, `MAX_LIST_BYTES` (tests: `Engine::list_bound`): what `receipt::fit` fits a
     /// frontier to and each listing is cut to; a thing list, written inline only, fits the smaller
     /// of it and `CHUNK_THRESHOLD`.
@@ -1284,6 +1314,9 @@ pub struct Core {
     /// Things judged at the end of the transaction for whether a held thing still needs them
     /// (`retention::needed`): a release, `pass_due` at a pass end.
     pub needs_due: BTreeSet<Tid>,
+    /// A sealed fire is being opened or taken for what it carries (`Engine::bringing`): what
+    /// arrives is the fire's, brought by no pass (`note_pass_due`).
+    pub fire_brings: bool,
     /// Things judged once the pass in flight ends (`Engine::settle_needs`, `retention::needed`):
     /// one arrived (a record learned or awaited). `None` after an open: every held record and
     /// awaited record is judged then.
@@ -1300,6 +1333,9 @@ pub struct Core {
     /// kept unread read again enters a read context). `None` until the first such end, which
     /// reads every awaited thing.
     pub(crate) entered: Option<memo::Feed<(crate::sync::units::Ctx, Tid)>>,
+    /// The things that came to be held for keys since `apply::wake_entered` last looked
+    /// (`sync::units`): what waits for them is examined again.
+    pub(crate) keys_came: BTreeSet<Tid>,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
@@ -1346,14 +1382,6 @@ pub struct Core {
     /// given them before a content write on them (`write::independent_first`), else at its end
     /// (`rotation::own_secrets_due`).
     pub own_secrets_due: BTreeSet<Tid>,
-    /// Edges (holder, target) a role commit this transaction applied or joined writes: the
-    /// removal notices their applied writes owe are judged at its end
-    /// (`flows::inbox::owe_removal_notices`).
-    pub notices_due: BTreeSet<(Tid, Tid)>,
-    /// Things whose removal notices on this node's inbox are judged at its end
-    /// (`flows::inbox::removals_due`): a notice naming one arrived, or its tickets were taken at a
-    /// strong.
-    pub removals_due: BTreeSet<Tid>,
     /// Freed rows (thing, blob) added this transaction: judged at its end, once their states are
     /// rebuilt (`retention::freed::settle_due`).
     pub freed_due: BTreeSet<(Tid, osis_base::BlobId)>,
@@ -1395,9 +1423,9 @@ pub struct Core {
     /// `retention::snapshot::covered` per (cover, body, aspect) (`memo`).
     pub(crate) covers: memo::Memo<(CommitId, CommitId, Tid, Ak), Option<bool>>,
     /// `Engine::sync_body_now` per (sync ID, commit) (`memo`).
-    pub(crate) sync_body: memo::Memo<(SyncId, CommitId), Option<crate::sync::BodyMeta>>,
+    pub(crate) sync_body: memo::Memo<(SyncId, crate::sync::BodyId), Option<crate::sync::BodyMeta>>,
     /// `Engine::sync_bodies` per commit (`memo`).
-    pub(crate) sync_bodies: memo::Memo<CommitId, Arc<BTreeMap<SyncId, crate::sync::BodyMeta>>>,
+    pub(crate) sync_bodies: memo::Memo<CommitId, Arc<crate::sync::Bodies>>,
     /// `Engine::state_digest` per aspect (`memo`): a suspect list's entries judged by lookup.
     pub(crate) state_digests: memo::Memo<(Tid, Ak), Option<[u8; 16]>>,
     /// `Engine::piece_below` per piece link (`memo`): a node's links, decoded once while held.
@@ -1530,7 +1558,15 @@ impl Core {
         self.stale_commits.extend(commits);
         // the deltas the walk's change reaches (`osis_perm::paths::Changed`)
         self.stale_commits.extend(c.reached.iter().map(|w| w.0));
-        self.stale_things.extend(self.ix.held.below(&c.created));
+        let below = self.ix.held.below(&c.created);
+        // a key on a thing whose record chain was not known is checked once it is
+        // (`Indexes::keys_due`)
+        if !c.created.is_empty() {
+            for t in &below {
+                self.ix.keys_due.insert(*t);
+            }
+        }
+        self.stale_things.extend(below);
         let holders: BTreeSet<Tid> = c.edges().map(|p| p.0).chain(c.created.iter().copied()).collect();
         let targets: BTreeSet<Tid> = c.edges().map(|p| p.1).chain(c.created.iter().copied()).collect();
         let moved = self.ix.held.upstream(&holders);
@@ -1746,7 +1782,7 @@ impl Core {
 
     /// Whether some validity waits for `rejudge_all`.
     pub fn stale(&self) -> bool {
-        self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty() || !self.stale_authors.is_empty() || !self.ix.epochs_due.is_empty()
+        self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty() || !self.stale_authors.is_empty() || !self.ix.epochs_due.is_empty() || !self.ix.keys_due.is_empty()
     }
 
     /// Notes that the running transaction writes the state of `k` (evicted on rollback).
@@ -1999,6 +2035,7 @@ impl Core {
             // followed (`Effects`): what a rollback restores moves its reads, so the next follow
             // indexes again
             certified: _,
+            evidence: _,
             listed: _,
             cert_records: _,
             key_roles: _,
@@ -2047,8 +2084,6 @@ impl Core {
             kept_due: _,
             kept_things_due: _,
             own_secrets_due: _,
-            notices_due: _,
-            removals_due: _,
             freed_due: _,
             carriers_due: _,
             forgotten_names_due: _,
@@ -2061,10 +2096,12 @@ impl Core {
             setting_waits_judging: _,
             gone_dirty: _,
             needs_due: _,
+            fire_brings: _,
             pass_due: _,
             lost_due: _,
             learned: _,
             entered: _,
+            keys_came: _,
             wakes: _,
             resnapshots_due: _,
             openings: _,
@@ -2098,6 +2135,7 @@ impl Core {
             followed_links,
             account,
             keep_bodies,
+            check_keys,
             list_bound,
             sourced_elsewhere,
             // test hooks and debug bookkeeping, set and taken anywhere
@@ -2135,7 +2173,7 @@ impl Core {
             "{:?}",
             (
                 (id.tid(), detect, key_salt, addenda_on, skip_writer_rules, leave_adminless),
-                (commits_watched, refs_watched, commit_listeners.is_some(), forge_bad, keep_bodies, list_bound, sourced_elsewhere),
+                (commits_watched, refs_watched, commit_listeners.is_some(), forge_bad, keep_bodies, check_keys, list_bound, sourced_elsewhere),
                 (actors(&mut key_actors.keys()), actors(&mut held_keys.keys()), followed_links.all(), account.get()),
             )
         )
@@ -2267,6 +2305,7 @@ impl Core {
             paths_wait: None,
             holders_named: memo::Memo::new("holders named: read"),
             certified: Default::default(),
+            evidence: Default::default(),
             listed: Default::default(),
             cert_records: Default::default(),
             departures: memo::Memo::new("departures"),
@@ -2367,14 +2406,17 @@ impl Core {
             signing_due: true,
             accounts: Default::default(),
             keep_bodies: false,
+            check_keys: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
             gone_dirty: BTreeSet::new(),
             needs_due: BTreeSet::new(),
+            fire_brings: false,
             // what arrived before the open but was not judged yet: all judged at the first settle
             pass_due: None,
             lost_due: BTreeSet::new(),
             learned: BTreeSet::new(),
             entered: None,
+            keys_came: BTreeSet::new(),
             batched: None,
             touches: Default::default(),
             waiting_carried: memo::Memo::new("waiting snapshot: bound"),
@@ -2391,8 +2433,6 @@ impl Core {
             kept_due: BTreeSet::new(),
             kept_things_due: BTreeSet::new(),
             own_secrets_due: BTreeSet::new(),
-            notices_due: BTreeSet::new(),
-            removals_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
             carriers_due: BTreeSet::new(),
             forgotten_names_due: BTreeSet::new(),
@@ -2574,8 +2614,15 @@ impl Core {
         self.update_timelines();
     }
 
-    /// `t` arrived: judged at the next `Engine::settle_needs`.
+    /// `t` arrived: judged at the next `Engine::settle_needs`. What a sealed fire brings
+    /// (`fire_brings`) no pass brought: it came whole with the fire, its evidence with it, and
+    /// is judged as a lost need is, at once with no pass in flight (`Engine::settle_lost`); a
+    /// deposit is taken outside any pass, and none is wanted for it.
     pub(crate) fn note_pass_due(&mut self, t: Tid) {
+        if self.fire_brings {
+            self.lost_due.insert(t);
+            return;
+        }
         if let Some(a) = &mut self.pass_due {
             a.insert(t);
         }
@@ -2928,7 +2975,6 @@ fn end_flows<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
         }
         // a commit pends only while carried (spec/commits.md §4 Pending storage)
         r = then(r, || crate::apply::carriers::settle(tx));
-        r = then(r, || crate::flows::inbox::owe_removal_notices(tx));
         r = then(r, || crate::flows::addenda::write_owed(tx));
         r = then(r, || crate::flows::signing::leave_if_removed(tx));
         r = then(r, || crate::flows::signing::answer_rotations(tx));
@@ -2949,8 +2995,6 @@ fn end_flows<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
 /// The transaction's end, steps 3 and 4 (notes/engine.md): invalid bodies, settings, re-judging,
 /// setting waits and covers; then destructions and what nothing held needs any more.
 fn end_drops<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
-    tx.core.notices_due.clear();
-    tx.core.removals_due.clear();
     if r.is_ok() && tx.core.header_fault.load(std::sync::atomic::Ordering::Relaxed) {
         r = Err(Error::Corrupt("commit record header"));
     }
@@ -2971,15 +3015,11 @@ fn end_drops<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
     tx.core.settings_due.clear();
     // a setting that left here moves which external fires are valid
     // (`validity::setting_moved`): judged, and what turned invalid goes, in this
-    // transaction; a removal notice turned valid is taken as one arriving
+    // transaction
     if tx.core.stale() {
         r = then(r, || crate::apply::rejudged(tx, false).and_then(|_| crate::retention::drop_invalid(tx)));
-        if !tx.core.removals_due.is_empty() && !tx.txn.is_memory() {
-            r = then(r, || crate::flows::inbox::owe_removal_notices(tx));
-        }
     }
     tx.core.drop_due.clear();
-    tx.core.removals_due.clear();
     if !tx.core.setting_waits_due.is_empty() {
         r = then(r, || crate::sync::setting::judge_due(tx));
     }
@@ -3683,7 +3723,10 @@ impl Engine {
             // the record's bytes, compared at each hit (`decoded`), so judging is all redone
             fresh.decoded = std::mem::take(&mut self.core.decoded);
             fresh.key_actors = self.core.key_actors.clone();
+            // a link followed is synced, so its grants count (`rotation::role_here`)
+            fresh.followed_links = self.core.followed_links.clone();
             fresh.accounts = self.core.accounts.clone();
+            fresh.check_keys = self.core.check_keys;
             let mut rng = SeededRng::from_u64(0);
             let mut store_rng = SeededRng::from_u64(0);
             let load = || -> Result<Option<u64>> {

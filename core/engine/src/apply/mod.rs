@@ -426,6 +426,13 @@ pub(crate) fn wake_entered(tx: &mut Tx<'_>) -> Result<usize> {
         }
     };
     let mut ids: BTreeSet<CommitId> = BTreeSet::new();
+    // a thing come to be held for keys takes the parts it is judged by, its other content
+    // waiting on (`retention::needed::applies_on`)
+    for t in std::mem::take(&mut tx.core.keys_came) {
+        if tx.core.ix.closure.for_keys(&t) {
+            ids.extend(tx.core.ix.pend_on.get(&Wake::Enters(t)).into_iter().flatten().copied());
+        }
+    }
     for t in came.iter().filter(|t| crate::retention::needed::whole(tx.core, t)) {
         ids.extend(tx.core.ix.pend_on.get(&Wake::Enters(*t)).into_iter().flatten().copied());
         // a held commit missing a part on `t` that a blob of it opened here (taken out as outside
@@ -466,7 +473,7 @@ fn missing_opened(core: &crate::engine::Core, c: &CommitId, t: &Tid) -> bool {
 /// so a write that fails and stays due brings no other round. O(what was logged since).
 pub(crate) fn entering(tx: &Tx<'_>) -> bool {
     let cl = &tx.core.ix.closure;
-    tx.core.entered.as_ref().is_some_and(|f| f.clone().added().iter().any(|(c, t)| cl.members(c).is_some_and(|m| m.contains(t))))
+    tx.core.keys_came.iter().any(|t| cl.for_keys(t)) || tx.core.entered.as_ref().is_some_and(|f| f.clone().added().iter().any(|(c, t)| cl.members(c).is_some_and(|m| m.contains(t))))
 }
 
 /// The parts waiting for `t` to enter the node closure count as never received: no sync ID the
@@ -996,7 +1003,10 @@ pub(crate) fn unjudgeable(core: &crate::engine::Core, id: &CommitId, h: &Header,
     let Some(a) = h.aspects.get(ai) else { return false };
     let held = |t: &Tid| core.created(t).cloned();
     let path = validity::stated(h, view, &a.tid);
-    header_wait(h, &held).is_err() || view.paths.as_deref().is_some_and(|p| !p.contains_key(&a.tid)) || thing_wait(core, h, id, a, path.as_ref().map(|p| (p.0.as_slice(), p.1)), &held, &|t, core| core.created(t).cloned()).is_some()
+    header_wait(h, &held).is_err()
+        || view.paths.as_deref().is_some_and(|p| !p.contains_key(&a.tid))
+        || thing_wait(core, h, id, a, path.as_ref().map(|p| (p.0.as_slice(), p.1)), &held, &|t, core| core.created(t).cloned()).is_some()
+        || core.check_keys && core.awaits_steps(h, &a.tid)
 }
 
 /// Applies or stores one decoded commit blob.
@@ -1642,12 +1652,13 @@ impl Engine {
 
     /// A sealed fire's bundle taken whole or not at all (spec/sync-inbox.md §4 A sealed fire):
     /// `records` and `chain` (its author's chain to its actor) then `fire`, in one transaction
-    /// kept only when the fire applies valid and no chain commit brought is parked or applies
-    /// invalid; else nothing of it is written (`None`), so a stranger's records and chain are
-    /// learned only with a fire that checks out. Decode errors of `fire` are the caller's. Its
+    /// kept only when the fire applies valid, or waits for the clock to reach its stamp
+    /// (`Pending(fire, Reason::Drift)`, as any commit ahead of the clock), and no chain commit
+    /// brought is parked or applies invalid; else nothing of it is written (`None`), so a
+    /// stranger's records and chain are learned only with a fire that checks out or waits. Decode errors of `fire` are the caller's. Its
     /// transaction failing for a fault of this node (`Error::is_fault`) keeps nothing either, and
     /// judges nothing: `Pending(fire, Reason::Fault)`, told to the app.
-    pub(crate) fn ingest_sealed_fire(&mut self, records: Vec<CreationRecord>, chain: &[Vec<u8>], fire: CommitBlob) -> Result<Option<Ingested>> {
+    pub(crate) fn ingest_sealed_fire(&mut self, records: Vec<CreationRecord>, chain: &[Vec<u8>], fire: CommitBlob, pages: Vec<Vec<u8>>) -> Result<Option<Ingested>> {
         let mut blobs = Vec::new();
         for c in chain {
             match CommitBlob::decode(c) {
@@ -1677,12 +1688,28 @@ impl Engine {
                     return Err(Error::Misuse("refused"));
                 }
             }
+            // its pages come with it (spec/wire.md §9): each a blob its deltas link, else refused
+            let pages: Vec<(osis_base::BlobId, Vec<u8>)> = pages.into_iter().map(|b| (osis_blob::blob_id(&b), b)).collect();
+            let given: BTreeSet<osis_base::BlobId> = pages.iter().map(|p| p.0).collect();
+            tx.store_blobs(pages)?;
+            let mut linked = crate::engine::large::Trees::default();
+            for p in &fire.parts {
+                let Some(dedup) = fire.header.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
+                crate::engine::large::tree_blobs(tx, &dedup, &crate::engine::large::delta_roots(&p.delta), &mut linked)?;
+            }
+            if !given.is_subset(&linked.blobs) {
+                refused = true;
+                return Err(Error::Misuse("refused"));
+            }
             let out = match arrive(tx, &id, fire, false) {
                 Ok(o) => o,
                 Err(e) if e.class() == ErrorClass::Local => return Err(e),
                 Err(_) => Ingested::Parked(id),
             };
-            if !matches!(out, Ingested::Applied(_) | Ingested::Duplicate(_)) || !crate::sync_ids::judged_valid(tx.core, &id, &ais) {
+            // one stamped ahead of the clock waits as any commit does (spec/commits.md §4), its
+            // entry carrying it: judged when the clock reaches it
+            let waits = matches!(out, Ingested::Pending(_, Reason::Drift));
+            if !waits && (!matches!(out, Ingested::Applied(_) | Ingested::Duplicate(_)) || !crate::sync_ids::judged_valid(tx.core, &id, &ais)) {
                 refused = true;
                 // rolled back
                 return Err(Error::Misuse("refused"));
@@ -2240,6 +2267,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::sync::falls::load(tx)?;
     crate::sync::bodies::load(tx)?;
     carriers::load(tx)?;
+    crate::flows::inbox::load_carried(tx)?;
     crate::sync::certblobs::load(tx)?;
     crate::sync_ids::opened::load(tx)?;
     crate::flows::lists::load(tx)?;
@@ -2376,6 +2404,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 }
             }
             atomic::index_commit(tx.core, &id, &m.view);
+            tx.core.note_keys_of(&id, &m.header);
             tx.core.put_meta(id, m);
             atomic::note_stands_in(tx.core, &id);
             if blob.header.kind.is_compaction() {
@@ -2452,6 +2481,12 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     // the role commits given to the walk at once (held one by one, each update would judge the
     // grants anew); which of accounts' count (spec/permissions.md §5.5) is judged over it
     tx.core.update_timelines();
+    // which things are independent, before any box opens: what a box gives is judged by the
+    // node's role on its actor (`rotation::role_here`), which reads the actor a thing's secrets
+    // derive from (with every commit's validity; a rebuild's re-judging below re-derives what
+    // flips)
+    let things: BTreeSet<Tid> = tx.core.ix.keyset_parts.keys().copied().collect();
+    keys::refresh_independent(tx, &things, false)?;
     crate::flows::account::refresh_epochs(tx)?;
     // a commit read before the record it needs (a nested edge write `ts`-ordered before its
     // grant: another node's clock) is derived now, as it was when that record arrived
@@ -2472,9 +2507,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     // each examined once by the open's `reexamine`
     tx.core.waits.open_due = true;
     crate::retention::destroy::load(tx, fast)?;
-    // with every commit's validity (a rebuild's re-judging below re-derives what flips)
-    let things: BTreeSet<Tid> = tx.core.ix.keyset_parts.keys().copied().collect();
-    keys::refresh_independent(tx, &things, false)?;
     // derived indexes from states (secrets: persisted, read again on a rebuild)
     let mut aspects = Vec::new();
     tx.scan(crate::engine::records::ASPECTS, |k, _| {
@@ -2502,6 +2534,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                     if !ids.is_empty() {
                         tx.core.ix.sync_recorded_ids.insert(tid, ids);
                     }
+                    tx.core.steps_recorded(&tid, Some(&f));
                 }
             }
             _ => atomic::observe_state(tx, &tid, &ak)?,
@@ -2514,6 +2547,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         tx.core.stale_under.clear();
         tx.core.stale_commits.clear();
         tx.core.stale_all = false;
+        for t in tx.core.ix.keys_due.iter().copied().collect::<Vec<_>>() {
+            tx.core.ix.keys_due.remove(&t);
+        }
     } else {
         tx.core.stale_all = true;
         validity::rejudge_all(tx, false)?;
@@ -2850,6 +2886,9 @@ mod tests {
         }
         lp.peers[0].engine.core.skip_writer_rules = true;
         let id = lp.peers[0].commit(m).unwrap().unwrap();
+        // a grant from outside b's account: fired, as the edge writers do
+        lp.peers[0].engine.run(|tx| crate::flows::inbox::fire_copy(tx, b, id, t)).unwrap();
+        lp.hold_fires(true);
         let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
         for p in lp.packages_for(0, 1).unwrap() {
             if p.id != id {
@@ -2857,6 +2896,8 @@ mod tests {
             }
         }
         assert_eq!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(id));
+        lp.hold_fires(false);
+        lp.pass_fires(1).unwrap();
         assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[0].engine.roster(&t));
         assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
     }

@@ -224,7 +224,7 @@ impl Core {
                 DeleteSource::KeyActor { seed, public } if public.as_bytes() == key => return Some(DeleteSecret::from_seed(seed.clone())),
                 DeleteSource::KeyActor { .. } => {}
                 DeleteSource::Epochs(e) => {
-                    let found = osis_keys::delete_candidates(level, e, Some(e)).into_iter().map(|(_, s)| DeleteSecret::derive(s)).find(|d| d.verifying_key().to_bytes() == *key);
+                    let found = osis_keys::delete_candidates(level, e, Some(e)).into_iter().map(|(_, s)| DeleteSecret::at_level(level, s)).find(|d| d.verifying_key().to_bytes() == *key);
                     if found.is_some() {
                         return found;
                     }
@@ -577,8 +577,8 @@ pub struct CommitSecrets<'c> {
     pub purge_author: Tid,
     /// Creation records of things the commit creates.
     pub created: &'c crate::engine::write::Creates,
-    /// Delete keys published in `keys.0` of delete bases whose secret of that role is not held
-    /// ([`published_keys`]).
+    /// Interim: delete keys published in `keys.0` of delete bases whose secret of that role is
+    /// not held ([`published_keys`]).
     pub published: &'c BTreeMap<(Tid, Role), VerifyingKey>,
     /// The delete keys found for things outside the commit, by the thing and role: the things a
     /// commit writes mostly share a delete base, and the node's state does not move while one
@@ -603,9 +603,9 @@ fn base_of(created: &crate::engine::write::Creates, tid: &Tid) -> Option<std::re
     }
 }
 
-/// The admin and write delete keys published in `keys.0` (spec/crypto.md §3, §7) of the delete
-/// bases of `tids` whose secret of that role this node does not hold: a writer that is no admin
-/// lists the admin one.
+/// Interim (issues/delete-key-levels-unchecked.md; `CommitSecrets::key`): the admin and write
+/// delete keys published in `keys.0` of the delete bases of `tids` whose secret of that role this
+/// node does not hold.
 pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::engine::write::Creates, tids: impl IntoIterator<Item = Tid>) -> Result<BTreeMap<(Tid, Role), VerifyingKey>> {
     // the roles of a delete base whose secret this node does not hold
     let unheld = |base: Option<DeleteBase>| -> Vec<(Tid, Role)> {
@@ -690,7 +690,7 @@ pub(crate) fn usable_role(tx: &mut crate::engine::Tx<'_>, t: &Tid, role: Option<
     })
 }
 
-/// `who`'s role on `t` now as this node can use it ([`usable_role`]).
+/// `who`'s role on `t` now (`Core::role_now`) as this node can use it ([`usable_role`]).
 pub(crate) fn usable_role_now(tx: &mut crate::engine::Tx<'_>, who: &Tid, t: &Tid) -> Result<Option<Role>> {
     let role = tx.core.role_now(who, t);
     usable_role(tx, t, role)
@@ -743,12 +743,23 @@ impl<'c> CommitSecrets<'c> {
         self.core.record_chain(&self.purge_author).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t) || self.core.accounts.contains_key(&t))
     }
 
-    /// The delete key of role `r` of `tid`'s delete base: a key actor's signing key, else from
-    /// the newest held secret of the role, else the published one.
+    /// The delete key of role `r` of `tid`'s delete base (spec/crypto.md §7 Header list): a key
+    /// actor's signing key, else that role's key of the newest step the base's `sync.0` records
+    /// here (`Core::listed_step`).
+    ///
+    /// Interim (issues/delete-key-levels-unchecked.md): a node recording no step of the base
+    /// lists the step key of its newest held secret of the role, else the one the base's
+    /// `keys.0` publishes (a link's redeemer holds K's `keys.0` and boxes and no `sync.0` part
+    /// of K when it writes its join as the link key, a may-grant reader), until every holder
+    /// is handed the base's `sync.0` with its boxes; by the spec a writer recording none cannot
+    /// write.
     fn key(&self, tid: &Tid, r: Role) -> Option<VerifyingKey> {
         let of = |base: DeleteBase| match base {
             DeleteBase::KeyActor(k) => Some(k),
-            DeleteBase::Actor(b, e) => e.and_then(|e| newest_delete_key(&e, r)).or_else(|| self.published.get(&(b, r)).copied()),
+            DeleteBase::Actor(b, e) => match self.core.listed_step(&b) {
+                Some(s) => VerifyingKey::from_slice(if r == Role::Admin { &s.delete } else { &s.write }).ok(),
+                None => e.and_then(|e| newest_delete_key(&e, r)).or_else(|| self.published.get(&(b, r)).copied()),
+            },
         };
         match base_of(self.created, tid)? {
             Ok(base) => of(base),
@@ -757,9 +768,10 @@ impl<'c> CommitSecrets<'c> {
     }
 }
 
-/// The delete key of the newest held secret of role `r` (spec/crypto.md §7).
+/// The delete key of the newest held secret of role `r` (spec/crypto.md §7): its step key, an
+/// admin secret's delete key, a write secret's write key.
 fn newest_delete_key(e: &ActorEpochs, r: Role) -> Option<VerifyingKey> {
-    e.role(r).newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key())
+    e.role(r).newest_held().map(|(_, s)| if r == Role::Admin { DeleteSecret::admin(s) } else { DeleteSecret::write(s) }.verifying_key())
 }
 
 // ---- local encoding of held epochs (local records `k/` + actor)

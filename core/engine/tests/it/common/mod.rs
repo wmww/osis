@@ -327,8 +327,9 @@ pub fn reader(lp: &mut LocalPeer, admin: usize, t: Tid, seed: u64) -> osis_engin
     p.engine.hold(osis_base::Strong(t)).unwrap();
     let me = p.engine.me();
     lp.peers[admin].engine.grant(&t, &me, &edge(Role::Read)).unwrap();
-    // what `admin` sends it: certificates (the grant among them), then what the sync IDs it
-    // then syncs carry
+    // what `admin` sends it: the grant's fire, certificates (the grant among them), then what
+    // the sync IDs it then syncs carry
+    lp.pass_fires_to(admin, &mut p).unwrap();
     for _ in 0..2 {
         let synced = p.engine.sync_set().unwrap().ids.keys().copied().collect();
         for pk in lp.packages_under(admin, &synced).unwrap() {
@@ -514,13 +515,13 @@ impl osis_commit::Secrets for Keys {
         Some(osis_crypto::dedup_secret(self.0.nonce()))
     }
     fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
     }
     fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
     }
     fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
     }
 }
 

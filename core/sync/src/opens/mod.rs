@@ -2107,7 +2107,7 @@ impl Opens {
         };
         let tests = creds.tests.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
         let step = creds.step.as_ref().filter(|(_, e)| ok(e)).map(|(k, _)| k.clone());
-        let own = SourceClass::declared(creds.holding == Some(crate::types::Holding::Unread));
+        let own = crate::types::class_of(creds.holding?);
         Some(Adm { j, own, shows, tests, walk, step })
     }
 
@@ -2157,11 +2157,11 @@ impl Opens {
                     continue;
                 }
                 let h = bind.hit(&m, &s, &b);
-                let unread = adm.own.unread();
+                let class = adm.own;
                 items.push(match t {
-                    Tested::SyncKey { key, .. } | Tested::Claim { key, .. } => OfferItem::Hit { hit: h, sig: Some(bind.sign(key, &s)), unread },
-                    Tested::Static { key, .. } => OfferItem::Static { hit: h, signing_pk: key.verifying_key().to_bytes(), sig: bind.sign(key, &s), unread },
-                    Tested::Read(..) | Tested::Proof(_) => OfferItem::Hit { hit: h, sig: None, unread },
+                    Tested::SyncKey { key, .. } | Tested::Claim { key, .. } => OfferItem::Hit { hit: h, sig: Some(bind.sign(key, &s)), class },
+                    Tested::Static { key, .. } => OfferItem::Static { hit: h, signing_pk: key.verifying_key().to_bytes(), sig: bind.sign(key, &s), class },
+                    Tested::Read(..) | Tested::Proof(_) => OfferItem::Hit { hit: h, sig: None, class },
                 });
                 sent.push(Sent::Hit { s, cred: Box::new(t.clone()), beacon: b, own: adm.own });
                 hit = true;
@@ -2178,7 +2178,7 @@ impl Opens {
                     let m = t.matched(&s);
                     bind.hit(&m, &s, &beacon_of(&m, &s, &rr))
                 });
-                items.push(OfferItem::ByRole { sync_id: s, hits: hits.collect(), unread: adm.own.unread() });
+                items.push(OfferItem::ByRole { sync_id: s, hits: hits.collect(), class: adm.own });
                 sent.push(Sent::ByRole(s, adm.own));
                 self.set_stop(conn, s, None);
             } else if !hit && adm.j == J::SyncHolder {
@@ -2298,13 +2298,13 @@ impl Opens {
                         continue;
                     }
                     let by = cred.credential(&s);
-                    self.open(ctx, conn, s, Member { class: SourceClass::declared(a.unread), own, by, until: None, departed: false }, Some(beacon), moved);
+                    self.open(ctx, conn, s, Member { class: a.class, own, by, until: None, departed: false }, Some(beacon), moved);
                 }
                 Sent::ByRole(s, own) if a.code == Code::OK => {
                     accepted.insert(s);
                     // An accepted ByRole opens S at its sender while J is still reader there.
                     if self.member(conn, &s).is_none() && self.admissible(ctx, conn, &s).is_some_and(|a| a.j == J::Reader && a.own == own) {
-                        self.open(ctx, conn, s, Member { class: SourceClass::declared(a.unread), own, by: Credential::J, until: None, departed: false }, None, moved);
+                        self.open(ctx, conn, s, Member { class: a.class, own, by: Credential::J, until: None, departed: false }, None, moved);
                     }
                 }
                 // refused: tried again once something re-marks S or moves `changed_at(S)` (§5)
@@ -2389,9 +2389,9 @@ impl Opens {
         let mut answers = Vec::with_capacity(items.len());
         for item in items {
             let a = match item {
-                OfferItem::Hit { hit, sig, unread } => self.accept_hit(ctx, conn, &hit, sig.as_ref(), None, SourceClass::declared(unread), moved),
-                OfferItem::Static { hit, signing_pk, sig, unread } => self.accept_hit(ctx, conn, &hit, Some(&sig), Some(signing_pk), SourceClass::declared(unread), moved),
-                OfferItem::ByRole { sync_id, hits, unread } => self.accept_by_role(ctx, conn, sync_id, &hits, SourceClass::declared(unread), moved),
+                OfferItem::Hit { hit, sig, class } => self.accept_hit(ctx, conn, &hit, sig.as_ref(), None, class, moved),
+                OfferItem::Static { hit, signing_pk, sig, class } => self.accept_hit(ctx, conn, &hit, Some(&sig), Some(signing_pk), class, moved),
+                OfferItem::ByRole { sync_id, hits, class } => self.accept_by_role(ctx, conn, sync_id, &hits, class, moved),
                 OfferItem::Deposit(d) => {
                     let src = self.record(conn).map_or(crate::store::Source::Conn(conn), crate::store::Source::Record);
                     SharedItem::code(ctx.holds.deposit(src, &d))
@@ -2460,14 +2460,14 @@ impl Opens {
         if self.open(ctx, conn, s, m, Some(beacon), moved) && walk {
             self.rejudge(ctx, conn, s, moved);
         }
-        SharedItem { code: Code::OK, tag: Some(bind.tag(shown.matched(), &s, &beacon)), grant, sig: answer_sig, unread: adm.own.unread() }
+        SharedItem { code: Code::OK, tag: Some(bind.tag(shown.matched(), &s, &beacon)), grant, sig: answer_sig, class: adm.own }
     }
 
     /// ByRole (spec/sync-opens.md §5): opens S when this side holds S and J judges the peer a
     /// reader, or a listed Hit is its own of a read secret or a static entry, carrying its proof.
     fn accept_by_role(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, hits: &[[u8; 32]], class: SourceClass, moved: &mut Vec<Moved>) -> SharedItem {
         let Some(adm) = self.admissible(ctx, conn, &s) else { return SharedItem::code(Code::DECLINED) };
-        let ok = SharedItem { unread: adm.own.unread(), ..SharedItem::code(Code::OK) };
+        let ok = SharedItem { class: adm.own, ..SharedItem::code(Code::OK) };
         if adm.j == J::Reader {
             self.open(ctx, conn, s, Member { class, own: adm.own, by: Credential::J, until: None, departed: false }, None, moved);
             return ok;

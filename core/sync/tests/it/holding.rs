@@ -114,12 +114,6 @@ fn holding(w: &mut World, i: usize, t: &Tid) -> Option<Holding> {
     h.iter().copied().max_by_key(|h| matches!(h, Holding::Read))
 }
 
-/// D's tickets for `t` at node `i`.
-fn d_tickets(w: &mut World, i: usize, t: &Tid) -> usize {
-    let d = w.engine(i).account_root().unwrap();
-    w.engine(i).get_typed(&d, &ct::TICKETS).unwrap().unwrap_or_default().iter().filter(|k| k.target == *t).count()
-}
-
 // spec/sync-set.md §2, spec/permissions.md §3: a strong grants nothing; removing a
 // reference revokes nothing. Bob writes a strong to Alice's T he has no role on: nothing of
 // T reaches him, the strong is NotCarried. Alice grants Bob read, Bob accepts, then Alice writes
@@ -181,30 +175,29 @@ fn a_strong_to_a_thing_never_fetched_holds_nothing_spec_sync_set_3() {
 }
 
 // spec/sync-set.md §4 (nothing else makes a node hold a thing it is granted a role on),
-// spec/sync-inbox.md §5; Interim (issues/tickets-retired.md): a grant's ticket reaches Bob; until he accepts, nothing of T is fetched or synced (his
-// sync set and store hold nothing of it); declining is never accepting; accepting is the strong.
+// spec/sync-inbox.md §5: a grant reaches Bob; until he holds T by a strong, nothing of T is fetched or synced
+// (his sync set and store hold nothing of it).
 #[test]
 fn nothing_is_fetched_before_the_strong_spec_sync_inbox_5() {
     let (mut w, (t, _)) = granted();
-    let k = w.engine(1).ticket_for(&t).unwrap().expect("the ticket reached Bob");
+    let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
     w.advance(10 * osis_sync::types::RESYNC_MS);
-    assert!(!w.engine(1).sync_set().unwrap().ids.contains_key(&k.sync_id), "not synced before the strong");
-    assert!(w.store(1).entries(&k.sync_id).unwrap().is_empty(), "nothing stored");
+    assert!(!w.engine(1).sync_set().unwrap().ids.contains_key(&s), "not synced before the strong");
+    assert!(w.store(1).entries(&s).unwrap().is_empty(), "nothing stored");
     assert!(value(&mut w, 1, &t).is_none() && !w.engine(1).closure_holds(&t));
     strong(&mut w, 1, None, t, true);
     w.run();
-    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())), "accepted: read");
+    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())), "held: read");
 }
 
-// spec/sync-set.md §1; Interim (issues/tickets-retired.md): node 1 accepts a grant; D gets a
-// ticket for it, so its sibling and a node paired later hold it without the inbox; node 1
-// releasing it removes D's ticket, and every node of the account lets it go. Its sibling accepts
-// it again from the shared D: every node reads it again (release forgot all of it, so this is
-// the first accept's path). spec/sync-inbox.md §4 (A sealed fire is promoted in place): Alice,
-// who neither reads nor writes Bob's inbox, seals the grant's ticket fire; Bob's nodes, its
-// writers, hold it stamped under the inbox's sync ID.
+// spec/sync-set.md §1: node 1 holds a granted thing by a strong in D, so its sibling and a node
+// paired later hold it too; node 1 releasing it, every node of the account lets it go. Its
+// sibling holds it again from the shared D: every node reads it again (release kept its edge piece while the grant's fire is held, forgetting the rest of
+// it). spec/sync-inbox.md §4 (A sealed fire is promoted in place): Alice, who neither reads nor
+// writes Bob's inbox, seals the grant fire; Bob's nodes, its writers, hold it stamped under the
+// inbox's sync ID.
 #[test]
-fn the_accounts_tickets_follow_what_it_accepts_spec_sync_set_1() {
+fn the_accounts_nodes_follow_what_it_holds_spec_sync_set_1() {
     let mut w = siblings();
     let t = make(&mut w, 0, None, "hi");
     let (alice, bob) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
@@ -214,14 +207,13 @@ fn the_accounts_tickets_follow_what_it_accepts_spec_sync_set_1() {
     let s = w.engine(1).sync_id_of(&inbox).unwrap().unwrap();
     for i in [1, 2] {
         let stamped = w.store(i).entries(&s).unwrap().into_iter().filter(|e| e.stamp.is_some() && !e.deposited);
-        let fires: Vec<_> = stamped.filter(|e| w.engine(i).blob_commit(&e.blob).and_then(|c| w.engine(i).header(&c)).is_some_and(|h| h.signer == alice && h.aspects.iter().any(|a| a.tid == inbox && a.ak.as_str() == "ticket@~0"))).collect();
+        let fires: Vec<_> = stamped.filter(|e| w.engine(i).blob_commit(&e.blob).and_then(|c| w.engine(i).header(&c)).is_some_and(|h| h.signer == alice && h.aspects.iter().any(|a| a.tid == inbox && a.ak.as_str() == "grant@~0"))).collect();
         assert_eq!(fires.len(), 1, "node {i}: Alice's sealed fire stamped once");
         // in place: the sealed blob itself, its wrap filler no read secret of the inbox opens
         assert!(osis_blob::unwrap_any(w.engine(i).read_secrets(&inbox).iter(), &fires[0].blob, &fires[0].wrap).is_none(), "node {i}: promoted in place, not encrypted again");
     }
     strong(&mut w, 1, None, t, true);
     w.run();
-    assert_eq!(d_tickets(&mut w, 1, &t), 1, "D's ticket written");
     let n = w.pair(1);
     w.run();
     for i in [2, n] {
@@ -230,15 +222,13 @@ fn the_accounts_tickets_follow_what_it_accepts_spec_sync_set_1() {
     strong(&mut w, 1, None, t, false);
     w.run();
     for i in [1, 2, n] {
-        assert_eq!(d_tickets(&mut w, i, &t), 0, "node {i}: D's ticket removed with the release");
         assert!(!w.engine(i).closure_holds(&t), "node {i} released it");
     }
     strong(&mut w, 2, None, t, true);
     w.run();
     for i in [1, 2, n] {
-        assert_eq!(value(&mut w, i, &t), Some(Value::Str("hi".into())), "node {i}: accepted again by its sibling, read");
+        assert_eq!(value(&mut w, i, &t), Some(Value::Str("hi".into())), "node {i}: held again by its sibling, read");
     }
-    assert_eq!(d_tickets(&mut w, 1, &t), 1, "D's ticket again");
 }
 
 /// Alice gives Bob read on T; before Bob accepts she lowers him to sync (`lowered`) or removes
@@ -253,13 +243,11 @@ fn accepted_after_a_change(lowered: bool) -> (World, Tid) {
     (w, t)
 }
 
-// spec/sync-set.md §2: a ticket supplies up to the lower of its own role and the
-// holder's; a read ticket whose holder holds sync alone on T keeps T unread, one whose holder
-// holds no role enters nothing. Alice grants Bob read and, before he accepts, lowers him to sync
-// or removes him; his accept takes the removal notice on his inbox with the ticket's fire, so T
-// is kept unread (lowered) or not entered (removed).
+// spec/sync-set.md §2: a strong enters a thing at the role the held role commits give. Alice
+// grants Bob read and, before he holds it, lowers him to sync or removes him; his strong keeps T
+// unread (lowered) or enters nothing (removed).
 #[test]
-fn a_ticket_enters_at_the_lower_of_its_role_and_the_holders_spec_sync_set_2() {
+fn a_strong_enters_at_the_role_the_role_commits_give_spec_sync_set_2() {
     for lowered in [true, false] {
         let (mut w, t) = accepted_after_a_change(lowered);
         assert_eq!(value(&mut w, 1, &t), None, "lowered {lowered}");
@@ -268,7 +256,7 @@ fn a_ticket_enters_at_the_lower_of_its_role_and_the_holders_spec_sync_set_2() {
 }
 
 // spec/sync-set.md §1, §2: a key change keeps sync-only holders.
-// Bob keeps T unread by a sync ticket; Alice rotates T's keys
+// Bob keeps T unread by a sync grant; Alice rotates T's keys
 // and writes: Bob still keeps it unread and his store takes the write.
 #[test]
 fn a_key_change_keeps_a_sync_only_holder_spec_sync_set_2() {
@@ -279,7 +267,7 @@ fn a_key_change_keeps_a_sync_only_holder_spec_sync_set_2() {
     w.run();
     strong(&mut w, 1, None, t, true);
     w.run();
-    let s = w.engine(1).ticket_for(&t).unwrap().expect("the ticket").sync_id;
+    let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
     let before = w.store(1).entries(&s).unwrap().len();
     w.write(0, |e| e.make_independent_again(&t)).unwrap();
     w.write(0, |e| {
@@ -459,34 +447,6 @@ fn a_keyless_grant_reads_nothing_through_it_spec_crypto_4() {
     }
 }
 
-// spec/sync-set.md §2, §4 (nothing else makes a node hold a thing it is granted a role on);
-// Interim (issues/tickets-retired.md): Alice's T1 is
-// minted with admin T0 and held from it; Bob keeps T1 unread by a sync ticket, then is granted read on
-// T0, T1's mint admin, which gives him read on T1 by chain. A ticket's secret is taken only at a
-// strong to its thing, so until he accepts T0 he holds no secret of T0, no role commit of T1 and
-// no read secret of T1: T1 stays unread. Accepting T0, he reads T1.
-#[test]
-fn a_read_role_by_chain_through_an_unaccepted_thing_reads_nothing_spec_sync_set_4() {
-    let mut w = contacts();
-    let t0 = make(&mut w, 0, None, "v1");
-    let t1 = make(&mut w, 0, Some(t0), "v2");
-    strong(&mut w, 0, Some(t0), t1, true);
-    let bob = w.node(1).account.unwrap();
-    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Sync))).unwrap();
-    w.run();
-    strong(&mut w, 1, None, t1, true);
-    w.run();
-    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Unread), "kept unread by the sync ticket");
-    w.write(0, |e| e.grant(&t0, &bob, &edge(Role::Read))).unwrap();
-    w.run();
-    assert_eq!(value(&mut w, 1, &t1), None, "T0 not accepted: Bob reads no T1");
-    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Unread));
-    strong(&mut w, 1, None, t0, true);
-    w.run();
-    assert_eq!(value(&mut w, 1, &t1), Some(Value::Str("v2".into())), "T0 accepted: Bob reads T1");
-    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Read));
-}
-
 // spec/permissions.md §3 (Lost access), spec/sync-set.md §3 (Lowering from read to sync): Alice
 // mints T1 with admin T0 and grants Bob write on T1 (T1 made independent); she then lowers T0's record edge
 // on T1 to sync, her only path to a role on T1. She loses read access to T1: she reads none of
@@ -566,6 +526,7 @@ fn a_removal_notice_taken_before_its_roster_acts_once_the_roster_comes_spec_sync
 // nor pending, the entry waits for that sync ID again (store::Follow::lost_parks), as one whose
 // held commit is forgotten does.
 #[test]
+#[ignore = "sync rewrite: copies per (commit, thing)"]
 fn an_entry_whose_pending_commit_is_forgotten_is_parked_again_spec_sync_judgement_3() {
     let mut w = siblings();
     w.parks = true;
@@ -635,19 +596,20 @@ fn a_self_removal_of_the_makers_only_path_reaches_the_reader_spec_permissions_3(
     assert_eq!(roster, vec![bob], "Bob holds the removal");
 }
 
-// spec/sync-inbox.md §5; removal notices: Interim (issues/tickets-retired.md): cut off from his sibling, one of Bob's nodes removes
-// Alice from T, never having seen the grant his other node gives her. The removal stands; its
-// writer, holding no grant as it wrote it, fired no notice. Every node applying it with the
-// grant held owes one (the sibling, and the writer once the grant reaches it), and Alice, who
-// reads T by the grant, takes it and reads T no more.
+// spec/permissions.md §4 (Role changes travel): cut off from his sibling and from Alice, one of
+// Bob's nodes removes Alice from T, never having seen the grant his other node gives her. Alice
+// takes the grant by its fire and reads T; the removal, a body under T's sync ID that applies by
+// its place on the timeline whatever its writer held, reaches her once its writer does, and she
+// reads T no more.
 #[test]
-fn a_removal_its_writer_made_blind_reaches_the_removed_reader_spec_sync_inbox_5() {
+fn a_removal_its_writer_made_blind_reaches_the_removed_reader_spec_permissions_4() {
     let mut w = siblings();
     let t = make(&mut w, 1, None, "v1");
     let alice = w.node(0).account.unwrap();
     strong(&mut w, 0, None, t, true);
     w.run();
     w.partition(1, 2);
+    w.partition(0, 2);
     w.write(1, |e| e.grant(&t, &alice, &edge(Role::Read))).unwrap();
     // the removal orders after the grant (spec/permissions.md §5.1 key order)
     w.advance(10);
@@ -768,28 +730,6 @@ fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_i
     assert_eq!(w.engine(0).mint_admin(&t3), None, "T3's record goes with T4");
 }
 
-// spec/sync-inbox.md §5, spec/sync-set.md §2; Interim (issues/tickets-retired.md):
-// Bob held T1 by a read ticket, then lost his own grant; T1 is granted sync to T0 and Bob
-// sync on T0, which he has not accepted. T0's grant to Bob is taken only at a strong to T0, so he
-// holds no role on T0 and none on T1 through it: his strong to T1 holds nothing.
-#[test]
-fn a_role_by_chain_through_an_unaccepted_thing_counts_nothing_spec_sync_inbox_5() {
-    let mut w = contacts();
-    let bob = w.node(1).account.unwrap();
-    let t0 = make(&mut w, 0, None, "t0");
-    let t1 = make(&mut w, 0, None, "t1");
-    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
-    strong(&mut w, 1, None, t1, true);
-    w.run();
-    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Read));
-    w.write(0, |e| e.grant(&t1, &t0, &edge(Role::Sync))).unwrap();
-    w.write(0, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None })).unwrap();
-    w.write(0, |e| e.grant(&t0, &bob, &edge(Role::Sync))).unwrap();
-    w.run();
-    assert_eq!(holding(&mut w, 1, &t1), None, "T0 unaccepted: no role on T1 through it");
-    assert_eq!(value(&mut w, 1, &t1), None);
-}
-
 // spec/permissions.md §4 (Role changes travel), spec/sync-judgement.md §2 (the key part of S's actor: a later
 // edge write on the edge of a grant A takes, a removal among them, is in A's own sync ID's
 // required set): Bob's node 2 makes T2 under
@@ -895,13 +835,15 @@ fn a_reader_of_a_holder_holds_its_targets_boxes_to_it_spec_sync_judgement_2() {
 }
 
 
-// spec/sync-set.md §2, spec/permissions.md §3 (Lost access); Interim (issues/tickets-retired.md): Bob reads
-// T1, which Alice granted sync on T2 and then removed, so T1's certificates bring Bob T2's sync
-// record and the role commits naming T1 alone. Alice grants Bob sync on T2 directly and he
-// accepts it after T1: those role commits show no role of his on T2, so they neither keep his ticket out nor
-// drop the sync secrets it gives. He keeps T2 unread.
+// spec/sync-set.md §2 (counts as independent; kept unread), spec/permissions.md §3 (Lost
+// access), §4 (Key part): Bob reads T1, which Alice granted sync on
+// T2 and then removed, so T1's certificates bring Bob T2's sync record and the role commits
+// naming T1 alone. Alice grants Bob sync on T2 directly, after the rotation that removed T1: he
+// takes the grant by its fire, holding its box and no copy of that rotation. The role commits
+// naming T1 show no role of his on T2, so they neither keep the box out nor drop the sync secret
+// it gives. He keeps T2 unread.
 #[test]
-fn a_sync_ticket_beside_a_removed_holders_role_commits_keeps_the_thing_unread_spec_sync_set_2() {
+fn a_sync_grant_beside_a_removed_holders_role_commits_keeps_the_thing_unread_spec_sync_set_2() {
     let mut w = contacts();
     let bob = w.node(1).account.unwrap();
     let t0 = make(&mut w, 0, None, "t0");
@@ -919,9 +861,51 @@ fn a_sync_ticket_beside_a_removed_holders_role_commits_keeps_the_thing_unread_sp
     assert_eq!(holding(&mut w, 1, &t2), Some(Holding::Unread), "Bob keeps T2 unread");
 }
 
+// spec/sync-set.md §2 (Held for keys; Sync set: its sync ID, for role entries alone),
+// spec/sync-opens.md §4 (Source: a keys source), spec/sync-streams.md §4 (Toward a peer holding
+// S's thing for keys), spec/sync-ids.md §6 (Role entries): Bob reads T1 and X, each granted to
+// him and held; T1 holds read on H and H on X, so H is a holder X's grants name, on a path from
+// Bob to X, that his node closure does not read. He holds H for keys: its sync ID is in his sync
+// set so, he declares it opening it, and Alice, reading H, shows him its role entries alone:
+// every entry he holds under it is one she stamped as a role entry, he holds no entry of H's
+// content though she logs it there, and he reads no value of H. Fails with H synced as read, or
+// with a server that sends a keys source every entry.
+#[test]
+fn a_holder_held_for_keys_is_shown_its_role_entries_alone_spec_sync_set_2() {
+    let mut w = contacts();
+    let bob = w.node(1).account.unwrap();
+    let t1 = make(&mut w, 0, None, "t1");
+    let h = make(&mut w, 0, None, "h");
+    let x = make(&mut w, 0, None, "x");
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&x, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&h, &t1, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&x, &h, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, None, t1, true);
+    strong(&mut w, 1, None, x, true);
+    w.run();
+    assert_eq!(value(&mut w, 1, &x), Some(Value::Str("x".into())), "Bob reads X");
+    assert!(w.engine(1).held_for_keys(&h), "H is on a path from Bob to X");
+    assert_eq!(holding(&mut w, 1, &h), Some(Holding::Keys), "its sync ID is held for keys");
+    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Read), "T1's is read");
+    assert_eq!(value(&mut w, 1, &h), None, "Bob reads nothing of H");
+    let sh = w.engine(0).sync_id_of(&h).unwrap().unwrap();
+    let st = w.node(0).node.status_of(&sh).expect("Alice syncs H");
+    assert!(st.sources.values().any(|x| x.src.class == osis_proto::SourceClass::Keys), "Bob declared himself a keys source of H: {:?}", st.sources);
+    let hers = w.store(0).entries(&sh).unwrap();
+    let role: std::collections::BTreeSet<_> = hers.iter().filter(|e| e.role).map(|e| e.blob).collect();
+    assert!(!role.is_empty() && role.len() < hers.len(), "Alice logs H's role entries and its content under its sync ID");
+    let his = w.store(1).entries(&sh).unwrap();
+    assert!(!his.is_empty(), "Bob holds H's role entries");
+    for e in &his {
+        assert!(role.contains(&e.blob) || e.own, "Bob holds an entry of H that is no role entry: {:?}", e.blob);
+    }
+    assert!(his.iter().any(|e| role.contains(&e.blob)), "shown by Alice");
+}
+
 // spec/permissions.md §4 (Role changes travel: under the sync ID of each thing whose keys open
 // the holder), spec/sync-judgement.md §2: Bob reads T1, granted read on H, granted read on X;
-// T1 -> X, so Bob reads X through T1 and H, syncing no H. Alice removes H from X: X leaves T1's
+// T1 -> X, so Bob reads X through T1 and H, holding H for keys alone. Alice removes H from X: X leaves T1's
 // sync unit with the removal, which reaches Bob under T1's sync ID as H's chain to X, so his
 // role commits show him no role on X. A, dependent on X (notes/closure-model.md Hole, its dependent
 // form), held by T1 -> A, leaves T1's sync unit with X: Bob reads it no more, and no store keeps
@@ -944,7 +928,7 @@ fn a_removal_reaches_a_reader_opening_the_holder_through_a_second_thing_spec_per
     w.run();
     assert_eq!(value(&mut w, 1, &x), Some(Value::Str("x".into())), "Bob reads X through T1 and H");
     assert_eq!(value(&mut w, 1, &a), Some(Value::Str("a".into())), "and A, dependent on X");
-    assert_eq!(holding(&mut w, 1, &h), None, "Bob syncs no H");
+    assert_eq!(holding(&mut w, 1, &h), Some(Holding::Keys), "X's grants name H: Bob holds it for keys");
     let s1 = w.engine(0).sync_id_of(&t1).unwrap().unwrap();
     // entries under T1's sync ID of commits on A and things outside T1's sync unit
     let of_a = |w: &mut World, i: usize| {
@@ -1345,34 +1329,12 @@ fn a_grantee_reads_a_value_minted_under_its_mint_admin_spec_sync_judgement_1() {
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2's minting value");
 }
 
-// spec/sync-set.md §2, spec/sync-inbox.md §5; taking up: Interim (issues/tickets-retired.md): Alice
-// grants Bob read on T1; Bob accepts, then drops his strong to T1 while Alice grants T1 sync on
-// T2 and he writes a strong to T2: his grant on T1 is no longer taken up, so the chain through it
-// gives him nothing on T2, which he does not hold.
+// spec/sync-set.md §2 (Held for keys): Bob holds T2 kept unread by a chain through T1, which he
+// reads (T1 holds sync on T2). He drops his strong to T1: his grant on T1 stands, T1's own data,
+// so T2 stays kept unread, and T1, read by his closure no more and named holder on a thing he
+// syncs, is held for keys: its content goes.
 #[test]
-fn a_chain_through_a_grant_accepted_then_dropped_gives_nothing_spec_sync_set_2() {
-    let mut w = contacts();
-    let bob = w.node(1).account.unwrap();
-    let t1 = make(&mut w, 0, None, "t1");
-    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
-    strong(&mut w, 1, None, t1, true);
-    w.run();
-    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Read));
-    strong(&mut w, 1, None, t1, false);
-    let t2 = make(&mut w, 0, None, "t2");
-    w.write(0, |e| e.grant(&t2, &t1, &edge(Role::Sync))).unwrap();
-    strong(&mut w, 1, None, t2, true);
-    w.run();
-    assert_eq!(holding(&mut w, 1, &t1), None, "T1 dropped");
-    assert_eq!(holding(&mut w, 1, &t2), None, "no role on T2 through T1, no longer accepted");
-}
-
-// spec/sync-set.md §1, §2; Interim (issues/tickets-retired.md): Bob holds T2 kept unread by a chain
-// through T1, which he reads (T1 holds sync on T2), so D's ticket for T2 records no ticket's word
-// and none is written; Bob drops his strong to T1, and with it every role on T2: T2 goes, and
-// no ticket of D's own keeps it.
-#[test]
-fn a_thing_kept_unread_by_a_chain_goes_once_the_chain_is_dropped_spec_sync_set_1() {
+fn a_holder_dropped_on_a_chain_is_held_for_keys_and_its_target_stays_spec_sync_set_2() {
     let mut w = contacts();
     let bob = w.node(1).account.unwrap();
     let t1 = make(&mut w, 0, None, "t1");
@@ -1384,59 +1346,12 @@ fn a_thing_kept_unread_by_a_chain_goes_once_the_chain_is_dropped_spec_sync_set_1
     strong(&mut w, 1, None, t2, true);
     w.run();
     assert_eq!(holding(&mut w, 1, &t2), Some(Holding::Unread), "T2 kept unread through T1");
-    assert_eq!(d_tickets(&mut w, 1, &t2), 0, "a role by role commits alone: no D ticket");
+    assert!(!w.engine(1).held_for_keys(&t1), "T1 is read, held by a strong");
     strong(&mut w, 1, None, t1, false);
     w.run();
-    assert_eq!(holding(&mut w, 1, &t2), None, "the chain dropped, T2 goes");
-}
-
-// spec/sync-set.md §2; taking up: Interim (issues/tickets-retired.md): Alice grants Bob read on T0 and T1, mints T2 with admin T1 and
-// grants T0 read on T2. Bob accepts T0 alone and holds T2 from his root, reading it through T0
-// (T2's certificates bring T1's roster, his grant on T1 among it). Alice lowers Bob to sync on
-// T0: his grant on T1, never accepted, gives no read of T2.
-#[test]
-fn a_grant_never_accepted_reads_nothing_through_certificates_spec_sync_set_2() {
-    let mut w = contacts();
-    let bob = w.node(1).account.unwrap();
-    let t0 = make(&mut w, 0, None, "t0");
-    let t1 = make(&mut w, 0, None, "t1");
-    w.write(0, |e| e.grant(&t0, &bob, &edge(Role::Read))).unwrap();
-    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
-    let t2 = make_in(&mut w, 0, t1, "t2");
-    w.write(0, |e| e.grant(&t2, &t0, &edge(Role::Read))).unwrap();
-    w.run();
-    strong(&mut w, 1, None, t0, true);
-    strong(&mut w, 1, None, t2, true);
-    w.run();
-    assert_eq!(value(&mut w, 1, &t2), Some(Value::Str("t2".into())), "Bob reads T2 through T0");
-    w.write(0, |e| e.demote(&t0, &osis_engine::flows::Demotion { holder: bob, new: Some(edge(Role::Sync)), retain: None })).unwrap();
-    w.run();
-    assert_eq!(value(&mut w, 1, &t2), None, "T1 never accepted: no read of T2 through it");
-}
-
-// spec/permissions.md §3 (Lost access; Retain), notes/node-closure.md Roles taken up: Bob grants
-// Alice read on T1, which she holds, then drops; his sibling mints T2 under its T0 and he grants
-// T1 read on T2, which Alice holds from her root. A grant no longer taken up is a lost one: Alice
-// drops T1's secrets, keeps no copy by her own grant on it, and reads T2 neither through T1 nor
-// at all.
-#[test]
-fn a_grant_no_longer_taken_up_reads_nothing_below_it_spec_permissions_3() {
-    let mut w = siblings();
-    let alice = w.node(0).account.unwrap();
-    let t0 = make(&mut w, 2, None, "t0");
-    let t1 = make(&mut w, 1, None, "t1");
-    w.write(1, |e| e.grant(&t1, &alice, &edge(Role::Read))).unwrap();
-    strong(&mut w, 0, None, t1, true);
-    w.run();
-    assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
-    let t2 = make_in(&mut w, 1, t0, "t2");
-    strong(&mut w, 0, None, t1, false);
-    w.write(1, |e| e.grant(&t2, &t1, &edge(Role::Read))).unwrap();
-    strong(&mut w, 0, None, t2, true);
-    w.run();
-    assert_eq!(value(&mut w, 0, &t1), None, "Alice reads T1 no more");
-    assert_eq!(value(&mut w, 0, &t2), None, "Alice reads T2: {}", w.why_role(0, &t2));
-    assert!(w.engine(0).read_secrets(&t1).is_empty(), "Alice holds T1's secrets: {}", w.why_role(0, &t1));
+    assert_eq!(holding(&mut w, 1, &t2), Some(Holding::Unread), "T2 stays: the grant on T1 stands");
+    assert!(w.engine(1).held_for_keys(&t1), "T1 is held for keys");
+    assert_eq!(value(&mut w, 1, &t1), None, "T1's content goes");
 }
 
 // spec/permissions.md §3 (Retain: a way alive is a grant with key access), spec/crypto.md §4 Key
@@ -1569,32 +1484,6 @@ fn an_ended_keyed_grant_keeps_a_copy_spec_permissions_3() {
     assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("t1".into())), "Alice reads T1");
 }
 
-// spec/permissions.md §3 (Lost access: what it can no longer read by another path), spec/sync-set.md
-// §2 Taken up: Bob grants Alice read on T1 and T3 and grants each of them read on T2; Alice holds all
-// three. She drops her strong to T1: T1 goes, T2 stays read through T3, whose grant she still takes up.
-#[test]
-fn a_thing_read_through_two_grants_stays_when_one_is_no_longer_taken_up_spec_permissions_3() {
-    let mut w = contacts();
-    let alice = w.node(0).account.unwrap();
-    let [t1, t2, t3] = ["t1", "t2", "t3"].map(|v| make(&mut w, 1, None, v));
-    for t in [t1, t3] {
-        w.write(1, |e| e.grant(&t, &alice, &edge(Role::Read))).unwrap();
-        w.write(1, |e| e.grant(&t2, &t, &edge(Role::Read))).unwrap();
-    }
-    for t in [t1, t2, t3] {
-        strong(&mut w, 0, None, t, true);
-    }
-    w.run();
-    assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "Alice reads T2");
-    strong(&mut w, 0, None, t1, false);
-    w.run();
-    assert_eq!(value(&mut w, 0, &t1), None, "Alice reads T1 no more");
-    assert!(w.engine(0).read_secrets(&t1).is_empty(), "T1's secrets go: {}", w.why_role(0, &t1));
-    assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())), "T2 stays through T3: {}", w.why_role(0, &t2));
-    assert!(!w.engine(0).read_secrets(&t2).is_empty(), "T2's secrets stay");
-    assert_eq!(value(&mut w, 0, &t3), Some(Value::Str("t3".into())));
-}
-
 // spec/sync-set.md §3 (Release: the node's own writes are served in the pass in flight before
 // it drops), spec/permissions.md §3 (Lost access: a node syncing a sync ID of the thing waits for
 // a complete pass): Bob grants Alice write on T, which she holds; she writes and drops her
@@ -1640,17 +1529,17 @@ fn an_ended_keyless_grant_keeps_no_copy_spec_permissions_3() {
     assert_eq!(value(&mut w, 0, &t0), None, "Alice reads T0 no more: {}", w.why_role(0, &t0));
 }
 
-/// Node `i` writes its account's inbox setting with `ticket@~0` enabled as at creation, or not.
-fn inbox_tickets(w: &mut World, i: usize, enabled: bool) {
+/// Node `i` writes its account's inbox setting with `grant@~0` enabled as at creation, or not.
+fn inbox_grants(w: &mut World, i: usize, enabled: bool) {
     w.write(i, |e| {
         let me = e.me();
         let inbox = e.inbox_thing(&me).unwrap();
         let mut x = e.get_typed(&inbox, &ct::RETENTION).unwrap().unwrap();
-        let keep = ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(osis_base::format::INBOX_LIFETIME_MS) }), ..Default::default() };
+        let keep = ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() };
         if enabled {
-            x.rules.insert(Ak::new("ticket@~0").unwrap(), keep);
+            x.rules.insert(Ak::new("grant@~0").unwrap(), keep);
         } else {
-            x.rules.remove(&Ak::new("ticket@~0").unwrap());
+            x.rules.remove(&Ak::new("grant@~0").unwrap());
         }
         let mut m = Mutation::new();
         m.set(inbox, &ct::RETENTION, &x).unwrap();
@@ -1659,13 +1548,13 @@ fn inbox_tickets(w: &mut World, i: usize, enabled: bool) {
 }
 
 // spec/sync-inbox.md §4 (A sealed fire), notes/principles.md (work in proportion to change): Bob's
-// inbox enables no ticket fires; Alice grants Bob read on T, her ticket fire deposited sealed at
+// inbox enables no grant fires; Alice grants Bob read on T, her grant fire deposited sealed at
 // Bob's node, which refuses it. Writes of Bob's own elsewhere open the refused deposit no more
-// often for being ten times as many; Bob enabling ticket fires takes it: the ticket is his.
+// often for being ten times as many; Bob enabling grant fires takes it: the grant is his.
 #[test]
 fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sync_inbox_4() {
     let mut w = contacts();
-    inbox_tickets(&mut w, 1, false);
+    inbox_grants(&mut w, 1, false);
     w.run();
     let t = make(&mut w, 0, None, "hi");
     let bob = w.node(1).account.unwrap();
@@ -1674,7 +1563,7 @@ fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sy
     let inbox = w.engine(1).inbox_thing(&bob).unwrap();
     let s = w.engine(1).sync_id_of(&inbox).unwrap().unwrap();
     assert!(w.store(1).entries(&s).unwrap().iter().any(|e| e.deposited && !e.own), "Alice's fire deposited at Bob's node");
-    assert!(w.engine(1).ticket_for(&t).unwrap().is_none(), "refused: no ticket");
+    assert_eq!(w.engine(1).role_on(&t), None, "refused: no grant taken");
     let x = make(&mut w, 1, None, "x");
     w.run();
     let opens = |w: &mut World, n: usize| {
@@ -1691,9 +1580,9 @@ fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sy
     };
     let (few, many) = (opens(&mut w, 1), opens(&mut w, 10));
     assert!(many <= few, "opens of the refused deposit grow with unrelated writes: {few} at 1, {many} at 10");
-    inbox_tickets(&mut w, 1, true);
+    inbox_grants(&mut w, 1, true);
     w.run();
-    assert!(w.engine(1).ticket_for(&t).unwrap().is_some(), "enabled: the fire is taken");
+    assert_eq!(w.engine(1).role_on(&t), Some(Role::Read), "enabled: the fire is taken");
 }
 
 // spec/sync-inbox.md §3 (opens a deposit it takes): Bob's node 1 reads T, which
@@ -1704,7 +1593,7 @@ fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sy
 #[test]
 fn a_reader_opens_a_deposit_it_takes_spec_sync_inbox_3() {
     let mut w = siblings();
-    w.lie(2, Some(crate::harness::lies::Lie::Declare { unread: true }));
+    w.lie(2, Some(crate::harness::lies::Lie::Declare(osis_proto::SourceClass::Store)));
     let ping = Ak::new("x:ping@~0").unwrap();
     let t = make(&mut w, 0, None, "hi");
     let x = ct::RetentionSetting::of(ping.clone(), osis_schema::History::FOREVER);

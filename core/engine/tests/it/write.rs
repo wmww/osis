@@ -135,6 +135,8 @@ fn authority_checked_before_signing_spec_perm_1() {
         let pk = a.engine.package(&id).unwrap().unwrap();
         b.engine.ingest(&pk.bytes, pk.blobs).unwrap();
     }
+    // and its grant's fire
+    crate::order::take_fires(&mut b, &crate::order::owed_fires(&mut a.engine));
     assert_eq!(b.engine.get(&ta, &ak("app:x.0")).unwrap(), Some(Value::Int(1)));
     let mut m = Mutation::new();
     m.set(ta, &ak("app:x.0"), &Value::Int(2)).unwrap();

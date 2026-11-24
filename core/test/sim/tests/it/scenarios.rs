@@ -63,6 +63,10 @@ fn partial_relay_gets_its_rest_spec_commits_4() {
     carry(&mut sim, 0, 1, &of0);
     carry(&mut sim, 0, 2, &of0);
     carry(&mut sim, 1, 0, &of1);
+    // each grant is taken by its fire but node 2's on B, which it learns of last
+    sim.fires(0, 1).unwrap();
+    sim.fires(0, 2).unwrap();
+    sim.fires(1, 0).unwrap();
 
     let word = Value::Str("both".into());
     let mut m = Mutation::new();

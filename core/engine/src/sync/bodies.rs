@@ -5,7 +5,7 @@
 //! a deposit. The must-hold / may-hold / must-not-hold rule itself is `read`'s; these are its
 //! inputs.
 
-use super::{BlobOf, BodyFacts, BodyMeta, HeldBlob, Loss, Opened, PartSet, Promote, SealedSet, Strip, ThingSync, Wrap};
+use super::{BlobOf, BodyFacts, BodyId, BodyMeta, HeldBlob, Loss, Opened, PartSet, Promote, SealedSet, Strip, ThingSync, Wrap};
 use crate::engine::{DropFor, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{BlobId, CommitId, Role, SyncId, Tid, WallMs};
@@ -129,6 +129,10 @@ pub(crate) fn reachers(core: &crate::engine::Core, c: &CommitId, m: &crate::engi
     core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && carries(&x.1) && crate::retention::snapshot::reaches((&x.2, &x.3), &m.header, c, a.hi)).map(|x| x.1).collect()
 }
 
+/// A commit under one read thing's sync IDs (`Engine::bodies_for`): its closure body, its
+/// certificate copy per thing, and the header-only copy its certificates name.
+type ThingBodies = (Option<BodyMeta>, Vec<(Tid, BodyMeta)>, Option<BodyMeta>);
+
 impl Engine {
     /// The things whose sync IDs may carry a body of commit `c`: those its parts are on and the
     /// sync units holding them (spec/sync-judgement.md §1).
@@ -142,11 +146,12 @@ impl Engine {
         out
     }
 
-    /// Per sync ID this node reads whose required set holds a body of commit `c`: that body
-    /// (spec/sync-judgement.md §1: parts, expiry, fetch order, a per-sync-ID copy or the shared
-    /// blob, a lasting header alone, or a certificate copy, `certificate_bodies`). A memo
+    /// The bodies of commit `c` under the sync IDs this node reads (spec/sync-judgement.md §1,
+    /// spec/permissions.md §4 Copies): per (sync ID, thing), its sync unit body (no thing: parts,
+    /// expiry, fetch order, a per-sync-ID copy or the shared blob, or a header alone) and its
+    /// certificate copy on each thing outside the sync unit (`bodies_at`). A memo
     /// (`Core::sync_bodies`): read's bodies and each judgement's held blobs ask it.
-    pub fn sync_bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
+    pub fn sync_bodies(&mut self, c: &CommitId) -> Result<Arc<super::Bodies>> {
         self.follow_bodies()?;
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_bodies, c, |e| e.sync_bodies_read(c))
     }
@@ -160,75 +165,147 @@ impl Engine {
         Ok(())
     }
 
-    /// `sync_bodies` read anew.
-    fn sync_bodies_read(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
-        let mut out = BTreeMap::new();
-        for g in self.body_things(c) {
-            let ThingSync::Read(ids) = self.thing_sync_now(&g)? else { continue };
-            if let Some(meta) = self.closure_body(&g, c)? {
-                for s in &ids {
-                    let was = out.remove(s);
-                    out.insert(*s, join_body(was, meta.clone()));
-                }
+    /// `sync_bodies` read anew: `bodies_at` each read sync ID of a thing that may carry one.
+    fn sync_bodies_read(&mut self, c: &CommitId) -> Result<Arc<super::Bodies>> {
+        let mut things = self.body_things(c);
+        things.extend(self.certified(c)?.into_iter().map(|x| x.0));
+        let mut ids = BTreeSet::new();
+        for g in things {
+            if let ThingSync::Read(x) = self.thing_sync_now(&g)? {
+                ids.extend(x);
             }
         }
-        self.certificate_bodies(c, &mut out)?;
+        let mut out = BTreeMap::new();
+        for s in ids {
+            for (on, meta) in self.bodies_at(&s, c)? {
+                out.insert((s, on), meta);
+            }
+        }
         Ok(Arc::new(out))
     }
 
-    /// Commit `c`'s body at read sync ID `s` (`sync_bodies`' entry for `s`), a read of that pair
-    /// alone (`sync_body_now`).
-    pub fn sync_body(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<BodyMeta>> {
-        self.sync_body_now(s, c)
+    /// Body `b` at read sync ID `s` (`sync_bodies`' entry for it), a read of that pair alone
+    /// (`sync_body_now`).
+    pub fn sync_body(&mut self, s: &SyncId, b: &BodyId) -> Result<Option<BodyMeta>> {
+        self.sync_body_now(s, b)
     }
 
-    /// Commit `c`'s body at read sync ID `s` (`sync_bodies`' entry for `s`), read from `s`'s
-    /// thing alone: a body coming or going at another sync ID moves nothing here. A memo
-    /// (`Core::sync_body`): each judgement of a body asks it from several facade calls.
-    pub(crate) fn sync_body_now(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<BodyMeta>> {
+    /// Body `b` at read sync ID `s` (`sync_bodies`' entry for it), read from `s`'s things alone:
+    /// a body coming or going at another sync ID moves nothing here. A memo (`Core::sync_body`):
+    /// each judgement of a body asks it from several facade calls.
+    pub(crate) fn sync_body_now(&mut self, s: &SyncId, b: &BodyId) -> Result<Option<BodyMeta>> {
         self.follow_bodies()?;
-        osis_base::memo::Memo::get_in(self, |e| &e.core.sync_body, &(*s, *c), |e| e.sync_body_read(s, c))
+        osis_base::memo::Memo::get_in(self, |e| &e.core.sync_body, &(*s, *b), |e| Ok(e.bodies_at(s, &b.commit)?.remove(&b.on)))
     }
 
-    /// `sync_body_now` read anew.
-    /// `s`'s body of `c` is judged for each thing reading `s` (`read_things`), their bodies
-    /// joined (`join_body`).
-    fn sync_body_read(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<BodyMeta>> {
-        let mut out: Option<BodyMeta> = None;
+    /// Whether `x` is outside `s`'s sync unit as its bodies read it: no thing reading `s` carries
+    /// a part on `x` in its sync unit body (`body_carried`). Only then does `s` carry a
+    /// certificate copy on `x`, and a held copy of parts on `x` alone is that copy's blob.
+    fn outside(&mut self, s: &SyncId, x: &Tid) -> Result<bool> {
         for t in self.read_things_of(s)? {
-            if let Some(meta) = self.body_for(&t, c)? {
-                out = Some(join_body(out, meta));
+            let ctx = self.body_ctx(&t);
+            if ctx.holds(&self.core, x) && self.reads(&ctx, x) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The bodies of commit `c` under read sync ID `s`, judged for each thing reading `s`
+    /// (`read_things_of`) and joined (`join_body`): the sync unit body (key `None`: a closure
+    /// body, else a header the certificates name alone, while no copy carries it), and per thing
+    /// outside the sync unit (`outside`) the certificate copy of the parts on it the certificates
+    /// name (spec/permissions.md §4 Copies).
+    fn bodies_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeMap<Option<Tid>, BodyMeta>> {
+        let mut out: BTreeMap<Option<Tid>, BodyMeta> = BTreeMap::new();
+        let mut put = |on: Option<Tid>, meta: BodyMeta| {
+            let was = out.remove(&on);
+            out.insert(on, join_body(was, meta));
+        };
+        for t in self.read_things_of(s)? {
+            let (closure, copies, header) = self.bodies_for(&t, c)?;
+            let mut copied = false;
+            for (x, meta) in copies {
+                if self.outside(s, &x)? {
+                    copied = true;
+                    put(Some(x), meta);
+                }
+            }
+            if let Some(b) = closure {
+                put(None, b);
+            } else if let Some(h) = header.filter(|_| !copied) {
+                put(None, h);
             }
         }
         Ok(out)
     }
 
-    /// Commit `c`'s body under read thing `t`'s sync IDs: its closure body, else its certificate
-    /// body.
-    fn body_for(&mut self, t: &Tid, c: &CommitId) -> Result<Option<BodyMeta>> {
+    /// Commit `c` under read thing `t`'s sync IDs: its closure body; per thing, the certificate
+    /// copy of the held parts on it `t`'s certificates name that the closure body does not
+    /// carry; and the header-only copy its certificates name (a rotation, a request, a minting),
+    /// which goes where no other body of the commit does. Only a commit with a part certificates
+    /// are made of (an edge write, keys, a card, a record) or a request has copies, so content
+    /// never reads the certificates.
+    fn bodies_for(&mut self, t: &Tid, c: &CommitId) -> Result<ThingBodies> {
         let closure = match self.body_things(c).contains(t) {
             true => self.closure_body(t, c)?,
             false => None,
         };
-        let cert = match self.certified_of(c, t)? {
-            Some(named) => self.certificate_body(c, t, &named)?,
-            None => None,
-        };
-        Ok(match (closure, cert) {
-            (Some(b), Some(x)) => Some(with_certificates(b, x)),
-            (b, x) => b.or(x),
-        })
+        let none = |closure| Ok((closure, Vec::new(), None));
+        let Some(h) = self.header(c) else { return none(closure) };
+        if h.purge.is_empty() && !h.aspects.iter().any(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0" | "node.0" | "reach.0" | "created.0")) {
+            return none(closure);
+        }
+        let Some(named) = self.certified_of(c, t)? else { return none(closure) };
+        let (expires, order) = (osis_commit::blob_expiry(&h).map(WallMs), crate::sync_ids::fetch_order(&h));
+        let mut by: BTreeMap<Tid, PartSet> = BTreeMap::new();
+        if !named.parts.is_empty() {
+            let ctx = self.body_ctx(t);
+            let carried = self.body_carried(&ctx, &h);
+            // each named part's hold read alone: held as its body (what the record carries)
+            let held = |ai: &usize| self.core.ix.commits.get(c).is_some_and(|m| matches!(m.hold(*ai), Some(crate::engine::Hold::Body { .. })));
+            for ai in named.parts.iter().filter(|ai| !carried.contains(ai) && held(ai)) {
+                if let Some(a) = h.aspects.get(*ai) {
+                    by.entry(a.tid).or_default().insert(*ai);
+                }
+            }
+        }
+        let copies = by.into_iter().map(|(x, parts)| (x, BodyMeta { parts, expires, order, copy: true, certificate: true, header_only: false, mints: BTreeSet::new() })).collect();
+        // a header copy that is a request goes as one, whatever it mints
+        let header = (named.header || !named.mints.is_empty()).then(|| BodyMeta { parts: PartSet::new(), expires, order, copy: true, certificate: true, header_only: true, mints: if named.header { BTreeSet::new() } else { named.mints.clone() } });
+        Ok((closure, copies, header))
     }
 
-    /// The thing reading `s` whose body of `c` `s` carries (`body_for`), under whose keys that
+    /// The thing reading `s` whose body `b` `s` carries (`bodies_for`), under whose keys that
     /// body is sealed, logged and promoted.
-    fn body_thing(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<Tid>> {
+    fn body_thing(&mut self, s: &SyncId, b: &BodyId) -> Result<Option<Tid>> {
         for t in self.read_things_of(s)? {
-            if self.body_for(&t, c)?.is_some() {
+            let (closure, copies, header) = self.bodies_for(&t, &b.commit)?;
+            let has = match b.on {
+                None => closure.is_some() || header.is_some(),
+                Some(x) => copies.iter().any(|(y, _)| *y == x),
+            };
+            if has {
                 return Ok(Some(t));
             }
         }
         Ok(None)
+    }
+
+    /// The body held blob `b` is an entry of under `s` (spec/permissions.md §4 Copies): a copy
+    /// holding parts on one thing alone, that thing outside `s`'s sync unit (`outside`), is the
+    /// certificate copy on it; any other blob of the commit is of its sync unit body. `None`
+    /// for a blob not opened or sealed here.
+    pub fn blob_body(&mut self, s: &SyncId, b: &BlobId) -> Result<Option<BodyId>> {
+        let Some(row) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(None) };
+        let mut on = None;
+        if row.copy && !row.parts.is_empty() && let Some(h) = self.header(&row.commit) {
+            let things: BTreeSet<Tid> = row.parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| a.tid).collect();
+            if let (1, Some(x)) = (things.len(), things.first()) && self.outside(s, x)? {
+                on = Some(*x);
+            }
+        }
+        Ok(Some(BodyId { commit: row.commit, on }))
     }
 
     /// Commit `c`'s closure body under read thing `g`'s sync IDs, if any.
@@ -236,57 +313,6 @@ impl Engine {
         let ctx = self.body_ctx(g);
         let last = self.bodies_under(&ctx, c, true)?.pop();
         Ok(last.map(|b| BodyMeta { parts: b.parts.iter().copied().collect(), expires: b.expires.map(WallMs), order: b.order, copy: b.to_sync_id, certificate: false, header_only: b.parts.is_empty(), mints: BTreeSet::new() }))
-    }
-
-    /// Adds to `out` the certificate bodies of commit `c` (spec/sync-judgement.md §1-§2,
-    /// spec/permissions.md §4): per read sync ID, the held parts of it the sync ID's certificates
-    /// name (`sync_certificates`) that its closure's bodies do not carry, as a copy; else, a
-    /// header the certificates name, as a header-only copy. Only a commit with a part
-    /// certificates are made of (an edge write, keys, a card, a record) or a request is asked, so
-    /// content never reads the certificates. Where a sync ID carries a closure body of `c` too,
-    /// the two are its one body there (`with_certificates`).
-    fn certificate_bodies(&mut self, c: &CommitId, out: &mut BTreeMap<SyncId, BodyMeta>) -> Result<()> {
-        let closure: BTreeSet<SyncId> = out.keys().copied().collect();
-        for (t, named, ids) in self.certified(c)? {
-            let Some(meta) = self.certificate_body(c, &t, &named)? else { continue };
-            for s in ids {
-                let was = out.remove(&s);
-                let joined = match was {
-                    Some(b) if closure.contains(&s) && !b.certificate => with_certificates(b, meta.clone()),
-                    was => join_body(was, meta.clone()),
-                };
-                out.insert(s, joined);
-            }
-        }
-        Ok(())
-    }
-
-    /// The certificate body of commit `c` under read thing `t`'s sync IDs, from what `t`'s
-    /// certificates name of it (`certificate_bodies`).
-    fn certificate_body(&mut self, c: &CommitId, t: &Tid, named: &super::certified::Named) -> Result<Option<BodyMeta>> {
-        let Some(h) = self.header(c) else { return Ok(None) };
-        if h.purge.is_empty() && !h.aspects.iter().any(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0" | "node.0" | "reach.0" | "created.0")) {
-            return Ok(None);
-        }
-        let id = *c;
-        let parts: PartSet = match named.parts.is_empty() {
-            false => {
-                let ctx = self.body_ctx(t);
-                let carried = self.body_carried(&ctx, &h);
-                // each named part's hold read alone: held as its body (what the record carries)
-                let held = |ai: &usize| self.core.ix.commits.get(&id).is_some_and(|m| matches!(m.hold(*ai), Some(crate::engine::Hold::Body { .. })));
-                named.parts.iter().copied().filter(|ai| !carried.contains(ai) && held(ai)).collect()
-            }
-            true => PartSet::new(),
-        };
-        if parts.is_empty() && !named.header && named.mints.is_empty() {
-            return Ok(None);
-        }
-        let (expires, order) = (osis_commit::blob_expiry(&h).map(WallMs), crate::sync_ids::fetch_order(&h));
-        let header_only = parts.is_empty();
-        // a header copy that is a request goes as one, whatever it mints
-        let mints = if header_only && !named.header { named.mints.clone() } else { BTreeSet::new() };
-        Ok(Some(BodyMeta { parts, expires, order, copy: true, certificate: true, header_only, mints }))
     }
 
     /// The things reading `s` here: those of `s`'s things (`sync_things_of`) whose
@@ -331,8 +357,9 @@ impl Engine {
     /// store shows (snapshots under `s` this node does not hold, other blobs of the commit, a
     /// certificate's author's other blobs) is the judgement's to add: `sole_certificate` is false
     /// here.
-    pub fn body_facts(&mut self, s: &SyncId, c: &CommitId) -> Result<BodyFacts> {
-        let Some(b) = self.sync_body_now(s, c)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, invalid: false, kept: false, hosts_from: 0, covered: Some(false), sole_certificate: false, lasting_header: false }) };
+    pub fn body_facts(&mut self, s: &SyncId, id: &BodyId) -> Result<BodyFacts> {
+        let c = &id.commit;
+        let Some(b) = self.sync_body_now(s, id)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, invalid: false, kept: false, hosts_from: 0, covered: Some(false), sole_certificate: false, lasting_header: false }) };
         let Some(h) = self.header(c) else { return Err(Error::UnknownCommit(*c)) };
         let keeps = self.part_keeps(c)?;
         let Some(m) = self.core.ix.commits.get(c) else { return Err(Error::UnknownCommit(*c)) };
@@ -429,11 +456,13 @@ impl Engine {
 
     /// No entry names blob `b` any more (the store's `unnamed_feed`): what this node noted of it
     /// goes where its commit is neither held nor pending (forgotten with lost access, its notes
-    /// kept for its entries alone: spec/sync-set.md §3, Nothing of R stays). A held or pending
-    /// commit's blob stays the commit's.
-    pub fn unnamed_blob(&mut self, b: &BlobId) -> Result<()> {
+    /// kept for its entries alone: spec/sync-set.md §3, Nothing of R stays), or it is a copy no
+    /// tombstone names either (`tombstoned`: sealed for the sync IDs whose entries named it, so a
+    /// certificate copy its sync IDs need no more leaves nothing; a tombstone of it is still
+    /// found by its row). A held or pending commit's shared blob stays the commit's.
+    pub fn unnamed_blob(&mut self, b: &BlobId, tombstoned: bool) -> Result<()> {
         let ix = &self.core.ix;
-        if !ix.blob_parts.get(b).is_some_and(|x| !(ix.commits.contains_key(&x.commit) || ix.pending.contains_key(&x.commit))) {
+        if !ix.blob_parts.get(b).is_some_and(|x| (x.copy && !tombstoned) || !(ix.commits.contains_key(&x.commit) || ix.pending.contains_key(&x.commit))) {
             return Ok(());
         }
         let b = *b;
@@ -494,14 +523,19 @@ impl Engine {
             return Ok(None);
         }
         let c = x.commit;
+        // blobs of two bodies of the commit (its sync unit body, a certificate copy) compare as none
+        let Some(id) = self.blob_body(s, b)? else { return Ok(None) };
+        if self.blob_body(s, o)? != Some(id) {
+            return Ok(None);
+        }
         let Some(m) = self.core.ix.commits.get(&c) else { return Ok(None) };
         if x.parts.iter().any(|ai| m.holds(*ai) && !strips(&self.core, &c, m, *ai) && !y.parts.contains(ai)) {
             return Ok(None);
         }
         // a blob of the other kind holds no body here (a certificate copy beside the shared blob
         // carries parts S's readers cannot open there, whatever this node opens of it)
-        let body_kind = self.sync_body_now(s, &c)?.is_some_and(|meta| x.of_kind(meta.copy));
-        if body_kind && x.parts.is_subset(&y.parts) && y.parts.len() > x.parts.len() && x.sealed.is_subset(&y.sealed) && let Some(only) = self.blob_only(s, &c)? && y.parts.difference(&x.parts).any(|ai| only.contains(ai)) {
+        let body_kind = self.sync_body_now(s, &id)?.is_some_and(|meta| x.of_kind(meta.copy));
+        if body_kind && x.parts.is_subset(&y.parts) && y.parts.len() > x.parts.len() && x.sealed.is_subset(&y.sealed) && let Some(only) = self.blob_only(s, &id)? && y.parts.difference(&x.parts).any(|ai| only.contains(ai)) {
             return Ok(Some(Loss::Needed));
         }
         let same = y.parts == x.parts && y.sealed == x.sealed && y.ais == x.ais;
@@ -532,10 +566,11 @@ impl Engine {
     /// `wrap_secret`'s for the parts the blob carries. `None`: nothing may be made now (a part
     /// the body needs, or its header, this node read only under an epoch not established here).
     /// A held blob not tombstoned under `s` is the store's to log verbatim (`rewrap`).
-    pub fn seal_body(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(crate::sync_ids::Sealed, Wrap)>> {
-        let Some(t) = self.body_thing(s, c)? else { return Ok(None) };
+    pub fn seal_body(&mut self, s: &SyncId, id: &BodyId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(crate::sync_ids::Sealed, Wrap)>> {
+        let c = &id.commit;
+        let Some(t) = self.body_thing(s, id)? else { return Ok(None) };
         // what a strip leaves of the body: its parts whose bodies are not gone here
-        let meta = self.sync_body_now(s, c)?.map(|mut m| {
+        let meta = self.sync_body_now(s, id)?.map(|mut m| {
             if let Some(cm) = self.core.ix.commits.get(c) {
                 m.parts.retain(|ai| !strips(&self.core, c, cm, *ai));
             }
@@ -546,10 +581,6 @@ impl Engine {
         }
         let ctx = self.body_ctx(&t);
         let Some(b) = self.commit_bodies_under(&ctx, c)?.into_iter().next() else { return Ok(None) };
-        // certificates joined into the closure body (`with_certificates`): one copy of both
-        if let Some(meta) = meta.as_ref().filter(|m| m.copy && m.parts.iter().any(|p| !b.parts.contains(p))) {
-            return self.seal_certificate(&t, c, meta, rng);
-        }
         let class = match self.core.ix.commits.get(c).is_some_and(|m| m.view.memory) {
             true => osis_blob::Class::Ephemeral,
             false => osis_blob::Class::Durable,
@@ -589,9 +620,10 @@ impl Engine {
     /// part of the body sealed here (`section_secret`) or carried by a held genuine section; in
     /// each case wrapped for `s` as `wrap_secret` says for the parts the blob carries. Only the
     /// blobs of `held` (bytes in the sync store) count as passed on or carried.
-    pub fn may_log(&mut self, s: &SyncId, c: &CommitId, held_blobs: &[BlobId]) -> Result<bool> {
-        let Some(t) = self.body_thing(s, c)? else { return Ok(false) };
-        let Some(meta) = self.sync_body_now(s, c)? else { return Ok(false) };
+    pub fn may_log(&mut self, s: &SyncId, id: &BodyId, held_blobs: &[BlobId]) -> Result<bool> {
+        let c = &id.commit;
+        let Some(t) = self.body_thing(s, id)? else { return Ok(false) };
+        let Some(meta) = self.sync_body_now(s, id)? else { return Ok(false) };
         let Some(h) = self.header(c) else { return Ok(false) };
         if !self.core.ix.commits.contains_key(c) {
             return Ok(false);
@@ -733,17 +765,18 @@ impl Engine {
     /// copy's body (spec/sync-judgement.md §1 Per-sync-ID copies). A certificate copy of exactly
     /// the parts `to`'s certificate body names is the one blob wrapped under each sync ID needing
     /// them, wrapped as `wrap_secret` says for those parts (§1 Certificate blobs).
-    pub fn rewrap(&mut self, c: &CommitId, b: &BlobId, from: &SyncId, from_wrap: &Wrap, to: &SyncId) -> Result<Option<Wrap>> {
+    pub fn rewrap(&mut self, id: &BodyId, b: &BlobId, from: &SyncId, from_wrap: &Wrap, to: &SyncId) -> Result<Option<Wrap>> {
+        let c = &id.commit;
         // a certificate copy of the same parts is one blob wrapped under each sync ID needing
         // them (spec/sync-judgement.md §1 Certificate blobs); a per-sync-ID copy never is shared,
         // even as a certificate of the same parts elsewhere: `from` holds `b` as a certificate too
-        let Some(meta) = self.sync_body_now(to, c)? else { return Ok(None) };
-        let from_certificate = self.sync_body_now(from, c)?.is_some_and(|m| m.certificate && m.parts == meta.parts);
+        let Some(meta) = self.sync_body_now(to, id)? else { return Ok(None) };
+        let from_certificate = self.sync_body_now(from, id)?.is_some_and(|m| m.certificate && m.parts == meta.parts);
         let certificate = meta.certificate && from_certificate && self.blob_copy_now(b) == Some(true) && self.blob_parts(b).as_ref() == Some(&meta.parts);
         if !certificate && (self.blob_copy_now(b) != Some(false) || meta.copy) {
             return Ok(None);
         }
-        let Some(tt) = self.body_thing(to, c)? else { return Ok(None) };
+        let Some(tt) = self.body_thing(to, id)? else { return Ok(None) };
         let from_things = self.read_things_of(from)?;
         let Some((key, order)) = from_things.iter().find_map(|t| self.read_secrets(t).iter().find_map(|x| osis_crypto::unwrap_order(x, b, from_wrap).ok())) else { return Ok(None) };
         let parts: Vec<usize> = self.blob_parts(b).map(|p| p.into_iter().collect()).unwrap_or_default();
@@ -900,7 +933,7 @@ impl Engine {
     /// to log beside it (`NotYet` while that chain is not complete here). `Never` when `s` carries
     /// nothing of `c` or its author lacked write then.
     pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
-        let Some(t) = self.body_thing(s, c)? else { return Ok(Promote::Never) };
+        let Some(t) = self.body_thing(s, &BodyId::unit(*c))? else { return Ok(Promote::Never) };
         if !self.core.ix.commits.contains_key(c) || self.core.ix.pending.contains_key(c) {
             return Ok(Promote::NotYet);
         }
@@ -916,29 +949,14 @@ impl Engine {
             return Ok(Promote::Never);
         }
         let parts: crate::sync_ids::Parts = b.parts.iter().copied().collect();
-        Ok(match self.author_chain(c, &parts) {
-            Some(chain) => Promote::Yes { chain },
-            None => Promote::NotYet,
-        })
+        Ok(Promote::Yes { chain: self.evidence_of(c, &parts)? })
     }
 }
 
-/// Two bodies of one commit under one sync ID, from different things reading it, as one: a
+/// Two readings of one body under one sync ID, from different things reading it, as one: a
 /// closure body over a certificate (where a sync ID carries a closure body of a commit, that is
-/// its one body there), else their parts and minted records together, the later expiry, the
+/// its sync unit body there), else their parts and minted records together, the later expiry, the
 /// earlier fetch order. The same whatever order they come in.
-/// Closure body `b` of a commit with certificate body `x` of it under the same sync ID: one
-/// body (spec/sync-judgement.md §1 One blob per commit). Parts the certificates name beyond the
-/// closure's are of things outside the sync unit (an account's `keys.0` in the commit making its
-/// profile), whose sections its readers cannot open: the body is then a per-sync-ID copy of both
-/// (§1 Per-sync-ID copies), its readers opening every part under the blob key.
-fn with_certificates(b: BodyMeta, x: BodyMeta) -> BodyMeta {
-    if x.parts.is_subset(&b.parts) {
-        return b;
-    }
-    BodyMeta { parts: b.parts.union(&x.parts).copied().collect(), copy: true, header_only: false, ..b }
-}
-
 fn join_body(a: Option<BodyMeta>, b: BodyMeta) -> BodyMeta {
     let Some(a) = a else { return b };
     if a == b {

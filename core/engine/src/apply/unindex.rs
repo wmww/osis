@@ -36,6 +36,8 @@ pub(crate) fn unindex_unreceived(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 /// `marks`: forgotten as covered, purged, spent or invalid, so it leaves its marks and its
 /// blobs' rows go; else as never received.
 fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
+    // the held set changes: what is derived from it (`Core::generation`) is derived again
+    tx.core.touch();
     // its bodies leave with the record
     let held: Vec<usize> = tx.core.ix.commits.get(id).map(|m| (0..m.view.aspects.len()).filter(|ai| m.holds(*ai) && !m.stripped(*ai)).collect()).unwrap_or_default();
     tx.pin_states(id, &held)?;
@@ -52,6 +54,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     tx.core.walks.drop_all(id);
     // a fire carries nothing once forgotten (spec/commits.md §4 Pending storage)
     super::carriers::fire_gone(tx, id)?;
+    crate::flows::inbox::fire_gone(tx, id)?;
     // a memory commit's held parts go with it: what they link joins the freed sets
     // (`retention::freed`), memory rows; node-sync deletes the pieces as durable ones
     let held: Vec<usize> = tx.core.ix.commits.get(id).filter(|m| m.view.memory).map(|m| (0..m.header.aspects.len()).filter(|ai| m.holds(*ai)).collect()).unwrap_or_default();
@@ -138,6 +141,10 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         tx.txn.remove_local(&records::own_secrets_key(t, id), Shred::No)?;
     }
     let void = core.ix.void.remove(id);
+    for a in &v.aspects {
+        core.ix.miskeyed.remove(&(*id, a.tid));
+    }
+    core.ix.rekeyed.remove(id);
     super::set_pending(core, id, None);
     core.ix.unresolved.remove(id);
     // perm reads nothing of a commit not held: its edge writes

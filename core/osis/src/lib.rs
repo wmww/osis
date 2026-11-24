@@ -522,7 +522,7 @@ pub use track::ReadSet;
 pub use watch::{Change, DerivedFrom, Dispatcher, Origin, Subscription};
 pub use write::{AspectWrite, Expiry, PathWrite, Purge, SpliceItems, Write};
 
-pub use osis_base::{Ak, Float, Ref, RefKind, Role, Strong, Ticket, Tid, Value, ValueMap, ValueSet, Weak};
+pub use osis_base::{Ak, Float, Ref, RefKind, Role, Strong, Tid, Value, ValueMap, ValueSet, Weak};
 pub use osis_base::{AkError, Time, TidParseError};
 pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, PathErrorKind, PurgeBy, Signal, SignalKey, Step, ValueKey, p};
 
@@ -534,6 +534,6 @@ pub mod generated {
 
     /// The value types generated code names.
     pub mod osis_base {
-        pub use osis_base::{Float, Ref, Strong, Ticket, Tid, Value, Weak};
+        pub use osis_base::{Float, Ref, Strong, Tid, Value, Weak};
     }
 }

@@ -22,13 +22,13 @@ impl Secrets for TestSecrets {
         Some(sec(0xd0, tid))
     }
     fn admin_key(&self, tid: &Tid) -> Option<VerifyingKey> {
-        self.admin.then(|| DeleteSecret::derive(&sec(0xa1, tid)).verifying_key())
+        self.admin.then(|| DeleteSecret::admin(&sec(0xa1, tid)).verifying_key())
     }
     fn purge_author_key(&self) -> Option<VerifyingKey> {
-        Some(DeleteSecret::derive(&Secret32::from_bytes([0xc2; 32])).verifying_key())
+        Some(DeleteSecret::write(&Secret32::from_bytes([0xc2; 32])).verifying_key())
     }
     fn write_key(&self, tid: &Tid) -> Option<VerifyingKey> {
-        Some(DeleteSecret::derive(&sec(0x33, tid)).verifying_key())
+        Some(DeleteSecret::write(&sec(0x33, tid)).verifying_key())
     }
 }
 

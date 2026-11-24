@@ -202,7 +202,7 @@ pub enum Promotion {
 /// is under S (`chain_under`). The one judgement of it: read stamps by it, held keeps such a
 /// deposit from clearing.
 pub fn promotion(engine: &mut Engine, store: &Store, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<Promotion> {
-    if store.holding(s) != Some(Holding::Read) || engine.signers(s, None)?.stamp.is_none() {
+    if !store.holding(s).is_some_and(Holding::opens) || engine.signers(s, None)?.stamp.is_none() {
         return Ok(Promotion::No);
     }
     let chain = match engine.promotable(s, c)? {
@@ -210,7 +210,7 @@ pub fn promotion(engine: &mut Engine, store: &Store, s: &SyncId, c: &CommitId, b
         Promote::NotYet => return Ok(Promotion::Wait),
         Promote::Yes { chain } => chain,
     };
-    let need = engine.sync_bodies(c)?.get(s).map(|m| m.parts.clone()).unwrap_or_default();
+    let need = engine.sync_bodies(c)?.get(&(*s, None)).map(|m| m.parts.clone()).unwrap_or_default();
     let judged = |o: Arc<osis_engine::sync::BlobOf>| Judged { parts: o.parts.clone(), sealed: o.sealed.clone() };
     let mine = engine.blob_of(b).map(judged).unwrap_or_default();
     let mut others = Vec::new();
@@ -237,7 +237,12 @@ pub fn promotion(engine: &mut Engine, store: &Store, s: &SyncId, c: &CommitId, b
 fn chain_under(engine: &mut Engine, store: &Store, s: &SyncId, chain: &osis_engine::sync_ids::Certs) -> Result<bool> {
     let commits = chain.commits.iter().map(|(c, p)| (*c, Some(p))).chain(chain.headers.iter().map(|c| (*c, None)));
     for (c, parts) in commits {
-        let Some(meta) = engine.sync_bodies(&c)?.get(s).cloned() else { continue };
+        // what S carries of it, over its sync unit body and its certificate copies
+        let bodies = engine.sync_bodies(&c)?;
+        let carried: PartSet = bodies.iter().filter(|((x, _), _)| x == s).flat_map(|(_, m)| m.parts.iter().copied()).collect();
+        if !bodies.keys().any(|(x, _)| x == s) {
+            continue;
+        }
         let mut held = PartSet::new();
         let mut any = false;
         for x in engine.commit_blobs(&c)?.iter() {
@@ -247,7 +252,7 @@ fn chain_under(engine: &mut Engine, store: &Store, s: &SyncId, chain: &osis_engi
             }
         }
         let complete = match parts {
-            Some(p) => p.iter().filter(|ai| meta.parts.contains(*ai)).all(|ai| held.contains(ai)),
+            Some(p) => p.iter().filter(|ai| carried.contains(*ai)).all(|ai| held.contains(ai)),
             None => any,
         };
         if !complete {
@@ -288,7 +293,7 @@ fn judge(engine: &mut Engine, store: &Store, k: &Key) -> Result<Act> {
     // a peer's deposit (an own one here holds no S) under a read S: opened as any entry a reader
     // takes, whether or not this node writes S (spec/sync-inbox.md §3 Who takes it: a stamp
     // arriving later for its bytes fetches nothing); where it writes S, whether read promotes it
-    if holding == Some(Holding::Read)
+    if holding.is_some_and(Holding::opens)
         && let Some(c) = deposit_commit(engine, store, s, &e)?
         && promotion(engine, store, s, &c, b)? == Promotion::Yes
     {

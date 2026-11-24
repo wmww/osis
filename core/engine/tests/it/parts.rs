@@ -47,6 +47,7 @@ fn deliver(played: &Played, order: &[Tok]) -> Peer {
     let grants = |pk: &osis_engine::local_peer::Package| CommitBlob::decode(&pk.bytes).unwrap().header.aspects.iter().any(|a| a.ak.to_string() == "roles.0");
     let mine: Vec<_> = played.access.iter().filter(|(h, pk)| *h == me || !grants(pk)).collect();
     assert_eq!(mine.iter().filter(|(_, pk)| grants(pk)).count(), played.things.len() - 1, "a grant to the node under test per thing outside G");
+    crate::order::take_fires(&mut p, &played.fires);
     for (_, pk) in mine {
         p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
@@ -382,6 +383,8 @@ fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     for pk in &setup {
         receiver.deliver(1, pk).unwrap();
     }
+    // it takes its grant on g by the fire peer 0 owes it
+    lp.pass_fires_to(0, &mut receiver.peers[1]).unwrap();
     let mut read = |deliveries: &[&[u8]]| {
         let mut lp2 = receiver.copy().unwrap();
         let e = &mut lp2.peers[1].engine;

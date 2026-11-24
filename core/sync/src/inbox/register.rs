@@ -185,7 +185,7 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
     osis_base::costs::count("inbox: register judged", 1);
     let (src, s) = k;
     let Some(m) = net.member_at(*src, s).filter(|m| m.class == SourceClass::Store) else { return Ok(Plan::Nothing) };
-    // S's recorded path and tree: a sync ID only tickets name records none
+    // S's recorded path and tree: a sync ID only a hint names records none
     let mut owned = None;
     for t in engine.sync_owners(s)? {
         owned = owned.or_else(|| engine.sync_ids(&t).ok()?.iter().find(|o| o.id == *s && !o.hint).cloned());

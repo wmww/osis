@@ -311,7 +311,6 @@ fn a_delete_naming_another_sync_ids_or_things_blob_is_refused_spec_sync_ids_6() 
 #[test]
 fn nothing_deletes_a_header_lists_chunks_by_level_2_spec_crypto_7() {
     let (mut w, t, s) = world_of_three();
-    let before: std::collections::BTreeSet<BlobId> = w.store(1).entries(&s).unwrap().into_iter().map(|e| e.blob).collect();
     let name = |i: usize| Ak::new(format!("u:{}{i:05}.0", "a".repeat(1000))).unwrap();
     let n = osis_base::format::CHUNK_THRESHOLD / 1000 + 4;
     let c = w.write(2, |e| {
@@ -323,9 +322,10 @@ fn nothing_deletes_a_header_lists_chunks_by_level_2_spec_crypto_7() {
     });
     w.run();
     assert!(w.engine(2).header(&c).unwrap().links.aspects.is_some(), "the aspect list goes by link");
+    assert_eq!(w.engine(0).get(&t, &name(0)).unwrap(), Some(Value::Str("v".into())), "node 0 reads the write, its list resolved");
     let b = entry(&mut w, 2, &s, &c);
-    let chunks: Vec<BlobId> = w.store(1).entries(&s).unwrap().into_iter().map(|e| e.blob).filter(|x| !before.contains(x) && *x != b).collect();
-    assert!(!chunks.is_empty(), "node 1 holds the list's chunks");
+    let chunks: Vec<BlobId> = w.engine(2).header_list_blobs(&c).unwrap().into_iter().collect();
+    assert!(!chunks.is_empty() && chunks.iter().all(|x| held(&w, &s, x)), "node 1 holds the list's chunks");
     for x in &chunks {
         let p = osis_blob::clear_prefix(&w.store(1).bytes(x).unwrap().unwrap()).unwrap().unwrap();
         assert!(p.groups().len() == 1 && p.groups()[0].is_empty(), "a chunk carries one empty group");

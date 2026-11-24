@@ -17,7 +17,6 @@ pub enum Type {
     Strong,
     Weak,
     Ref,
-    Ticket,
     Any,
     Text,
     List(Box<Type>),
@@ -68,7 +67,7 @@ pub struct Case {
 pub(crate) fn is_reserved_name(n: &str) -> bool {
     matches!(
         n,
-        "string" | "blob" | "bool" | "int" | "float" | "strong" | "weak" | "ref" | "ticket" | "any" | "text" | "list" | "set" | "map" | "struct" | "enum"
+        "string" | "blob" | "bool" | "int" | "float" | "strong" | "weak" | "ref" | "any" | "text" | "list" | "set" | "map" | "struct" | "enum"
             | "counter" | "max" | "min" | "option" | "markdown" | "timestamp" | "duration" | "date" | "localtime"
     )
 }
@@ -93,7 +92,7 @@ impl Type {
             Type::Named(_, a) => a.iter().collect(),
             Type::Struct(st) => st.fields.values().map(|f| &f.ty).collect(),
             Type::Enum(en) => en.cases.values().filter_map(|c| c.payload.as_ref()).collect(),
-            Type::String | Type::Blob | Type::Bool | Type::Int | Type::Float | Type::Strong | Type::Weak | Type::Ref | Type::Ticket | Type::Any | Type::Text | Type::Param(_) => {
+            Type::String | Type::Blob | Type::Bool | Type::Int | Type::Float | Type::Strong | Type::Weak | Type::Ref | Type::Any | Type::Text | Type::Param(_) => {
                 Vec::new()
             }
         }
@@ -126,7 +125,7 @@ impl Type {
                     .collect(),
                 reserved: en.reserved.clone(),
             }),
-            Type::String | Type::Blob | Type::Bool | Type::Int | Type::Float | Type::Strong | Type::Weak | Type::Ref | Type::Ticket | Type::Any | Type::Text => {
+            Type::String | Type::Blob | Type::Bool | Type::Int | Type::Float | Type::Strong | Type::Weak | Type::Ref | Type::Any | Type::Text => {
                 self.clone()
             }
         }

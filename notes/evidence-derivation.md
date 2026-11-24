@@ -1,5 +1,5 @@
 # Evidence derivation
-> Summary: Design and build state of `osis_engine::evidence` (A2 brief 2, notes/a2-spec/README.md Order of the code briefs): the copies a sync ID requires, derived from a node's held copies and the sync ID's unit by spec/permissions.md §4 under E1 (every edge write on a stated path's edges and on the edges a member writes) with delete-key steps; built unused beside `sync/certified.rs`; the engine's input and check (`evidence::held`), engine hand tests; inputs, output, what re-derives what and its cost; keys-open travel as an indexed graph; the differential against held-model `Stage::E1` (0 disagreements), hand worlds and counts; carried demotions (A3 design); what the switch (brief 3) must know.
+> Summary: Design and build state of `osis_engine::evidence` (A2 brief 2, notes/a2-spec/README.md Order of the code briefs): the copies a sync ID requires, derived from a node's held copies and the sync ID's unit by spec/permissions.md §4 under E1 (every edge write on a stated path's edges and on the edges a member writes) with delete-key steps; the engine keeps one fed per commit (`evidence::kept`), read by `sync/certified.rs`; the engine's input and check (`evidence::held`), engine hand tests; inputs, output, what re-derives what and its cost; keys-open travel as an indexed graph; the differential against held-model `Stage::E1` (0 disagreements), hand worlds and counts; carried demotions (A3 design).
 
 **Principle: a sync ID's evidence is a function of the copies the node holds and the sync ID's unit: the least set the spec's rules close over them. Nothing is placed once and remembered; a change re-derives exactly what it can move, and the incremental answer is the from-scratch answer by construction (same closure step, same seeds).**
 
@@ -10,7 +10,7 @@ Per held **copy** (commit ID, thing), held whole (a commit's edge writes on a th
 - `dels`: the delete keys it lists at levels 1 and 3 for its thing's delete base (`Del`: base, level, key; spec/crypto.md §7). A key-actor base lists none here.
 - `steps`: the steps a `sync.0` part records on its thing (`Step`: ID, parent, delete and write keys; spec/sync-ids.md §2).
 - Per sync ID: its actor (whose role changes travel under it) and its unit's things (`join`, `leave`).
-- **Record edges** (`add_record`): each (mint admin, thing it minted), standing for good: edges of the keys-open graph.
+- **Record edges** (`add_record`, `remove_record`): each (mint admin, thing it minted), standing while the record is held: edges of the keys-open graph.
 - `Config::keys_open`: Role changes travel's keys-open half on or off (off: writes naming the actor alone).
 
 No validity, no order, no chained-ness: E1 takes every held write "whatever their validity or order", so the derivation needs no walk output at all.
@@ -37,7 +37,7 @@ Reachability over the **read graph**: an edge (holder → target) per held part 
 | a part giving read on a new edge (x, y) | per sync ID whose open set holds x and not y: walk what y opens beyond it, take the writes naming each newly opened holder: O(what it opens + its writes) |
 | record edge added | as a new read edge |
 | a write naming holder h | the sync IDs whose open set holds h take it |
-| a read edge gone (forget) | sync IDs whose open set held both ends recompute open and seeds |
+| a read edge gone (a forget, a record forgotten) | sync IDs whose open set held both ends recompute open and seeds |
 
 ## Steps
 Per (base, step ID) the held step and the copies recording it; per (base, level, key) the step IDs bearing it. A key's placement is walked inside the closure (`Item::Del`), memoized per closure (`dels`). A copy recording a step arriving or leaving closes again every sync ID placing a key of that base (`base_sids`): steps move only with rotations, a rare path paid at closure size. A body listing a key another body lists walks nothing (counted atom).
@@ -54,11 +54,12 @@ Monotone changes extend the closure from what they add (`close`); a change that 
 | path entry opens | its edges' atoms where a body; pushed into each closure holding it as member |
 | body forgotten | its atoms out; S closes again only where it was the last on an edge or key; `forget_all` closes each sync ID once |
 | thing joins or leaves S's unit (b bodies) | b bodies' atoms; S dirty if it held copies on the thing, or on leaving |
+| a sync ID taken back (`remove_sid`) | its unit, open set and closure leave the reverse indexes: O(those) |
 | from scratch for S | linear in bodies·k + closure |
 
 Memory per sync ID: its used edges and keys, members and reasons, atom counts: O(edges and keys its bodies use + copies), not O(bodies).
 
-The module is pure: it takes changes by call and does work in proportion to them. Brief 3 drives it from `memo::Feed`/`Effects` followers over the held set and the units; the derivation keeps no stamps.
+The module takes changes by call and does work in proportion to them. Its lookups are stamped (`Ix::stamps`, one key per `Row`: a copy's parts, the copies on an edge, the steps bearing a key, a held step, a sync ID's closure; any other read is of the whole), so a value derived from it (`osis_base::memo`: a read thing's certificates) is due exactly when a row it read was written. A sync ID's row is written where its closure moved (`extend` adding an edge or member, `reclose` ending on another closure), never by a body that only counts an atom.
 
 ## Carried demotions (design for A3: not built)
 A removal reaches a thing other than its own by the evidence closure (wherever a node holds both it and a write on its edge it judges) and by **carried demotions** (spec/crypto.md §4): a keyset of M lists the explicit demotions below write or admin its rotator holds applied on M or below it, and is held only with those edge writes. At A3 the demotions a required keyset carries become a seed of the required set (notes/a3-spec/crypto.md; Open 8): one copy identity per (removal commit, thing) with the closure's, one blob per sync ID. held-model's `Rule::keysets` has it; the derivation does not (issues/engine-evidence-trails-model.md).
@@ -66,19 +67,21 @@ A removal reaches a thing other than its own by the evidence closure (wherever a
 ## The engine's input (`evidence::held`)
 `held::copies` reads every commit in `ix.commits` (any validity) into copies, from the index and the held `sync.0` bodies, nothing kept:
 - Per aspect on a thing one part; a `roles.0` aspect one part per edge write its commit makes there (`ix.held.edge_commit`: kind, holder, `gives_read` from the edge, no self-removal), hops by `osis_perm::paths::hops` along the role commit's one path; every other aspect and each purge item a content part, hops from `validity::stated` (`None` while a split entry is unopened). An unresolved removal (no ops) is one content part.
-- `dels`: the aspect's header keys at levels 1 and 3 where `Core::delete_base` is an actor.
+- `dels`: the aspect's header keys at levels 1 and 3, each for the thing up the record chain whose steps bear it (a key actor's signing key: none).
 - `steps`: each step entry whose step a held `sync.0` body writes, walked in the fragment (a step joins the sync ID entry its genesis made, so a read of the delta alone shows none); snapshots included, which is how a role compaction keeps steps evidence (Open 4: a carried entry keeps its recording write's stamp).
 - Records: `held::mint`, every held record naming a mint admin.
-- **Header keys are not step keys yet**: the engine lists its newest epoch's `kdf("delete key", s)` (`DeleteSecret::derive`), borne by no step, so step evidence finds nothing on engine data until brief 3 lists step keys (issues/delete-key-levels-unchecked.md). The Open 4 test substitutes the step key, marked Interim.
+- Header keys are step keys (`Core::listed_step`), so step evidence places them on engine data; a key's base is the thing up the record chain whose held steps bear it (`Core::key_base`), else the thing's delete base.
 
 **The check** (`Engine::check_evidence`, tests; run by the order harness's `node_checks` and `evidence::engine`): per thing t with a held part, as a sync ID whose unit is t alone, the derivation built with the copies in reverse order and units last agrees with the one built units first, `check` holds (incremental = from scratch), and a reader holding t's parts plus exactly the required copies judges every part on t (content validity, edge write status) under osis-perm `Paths::evaluate` of the engine's readings (`validity::reading`, empty trust) as the node holding everything. This is the engine side of the joint property; a full engine-to-held-model `Stage::E1` adapter would test the derivation the plain differential already compares, so it is not built. Withholding the copies fails it on the role-paths world.
 
-## What the switch (brief 3) must know
-- Drive the derivation from `held::copies`' rules incrementally (`memo::Feed` over `ix.commits`, path opens, units); the from-scratch reader above is the oracle.
-- Records ride beside evidence: a reader also needs the creation records of the things on the paths (finding 9's engine test hands it A's minting commit).
-- Accounts: Role changes travel's account clauses and the signing chain's rotations (spec/permissions.md §4, Interim) are not in the derivation: an account root's sync ID needs them as inputs, or waits for A4.
-- A forget is the rare path (`retention::forgettable`); forget a compaction's bodies with one `forget_all`.
-- The derivation keeps its own indexes; the engine's (`ix.held`) can feed or replace them.
+## The kept derivation (`evidence::kept`)
+The engine keeps one derivation (`Core::evidence`, `Engine::kept_evidence`): every held commit's copies, every held record's mint admin, each read thing (`SyncRows::read`) as a sync ID with itself as actor and its sync unit. Each input is followed per key by a `memo::Effects` (a held commit's `copy_parts`, a thing's mint admin, whether a thing is read, whether a read thing's unit holds a thing), wanted from the containers' feeds (`ix.commits`, `Held::records_feed`, `SyncRows::read`, `Closure::member_feed`), so an ask settles the keys whose reads were written since the last and gives each difference to the derivation (`add`, `forget_all`, `add_record`, `remove_record`, `add_sid`, `remove_sid`, `join`, `leave`). A rollback moves the stamps it undoes, so the keys it touched settle again.
+- A commit's copies change without the commit: a record up one of its things' chains arriving, its role commit reading resolving, its split entry opening, its `sync.0` body arriving. `copy_parts` reads each through a stamped container, so the commit is due by itself; nothing names these cases.
+- `sync/certified.rs` follows each read thing's certificates by what deriving them read (`Effects<Tid, Certs>`; `sync_certificates`: `required`, `edges`, and `closure_of` for the key part, mintings, frozen history and current keys, each a stamped read of the derivation's rows, beside the engine's indexes), so a follow derives the certificates of the things whose inputs moved and writes their rows' differences (`Certified::put`). The asks outside a follow read the derivation as it stands (`evidence_now`); `Engine::certificates` of a thing not read adds it as a sync ID on a copy.
+- A copy of the engine copies the derivation (`kept::Own`): its stamps are the copy's, as the copy's followers' reads are (`osis_base::copying`). Shared by `Arc` between a world and its copy, the copy's first change cloned it outside the copy and its followers kept reading the stamps of a table nothing wrote.
+- Oracles: `Engine::kept_differs` (the kept copies, records, sync IDs and each sync ID's required copies and edges against `held::derive` over the same inputs, and the derivation's own `check`) and `certified_differs` (each read thing's followed certificates against `sync_certificates` anew, the rows against those written from nothing), run by `check_evidence` and, in debug builds, at the 1st, 2nd, 4th, ... follow of each engine.
+- Counts: one more write on a granted thing reads that commit's copies and takes one body, at the writer and a reader, after 10 and 100 held writes (`evidence::engine::a_write_costs_the_kept_derivation_what_it_moved_at_n_and_10n`); a write on one of 3 or of 30 read things derives the same things' certificates, at most 2 (`a_write_in_one_of_n_read_things_costs_the_certificate_follow_the_same_at_n_and_10n`).
+- Records ride beside evidence (a reader needs the creation records of the things on the paths); accounts' signing chains and carried demotions are added by `sync_ids/certs.rs`, not derived here.
 
 ## Engine hand tests (`evidence/engine.rs`)
 - Finding 9: X removes K and Q from A in one commit; K wrote D through [A] before (listed) and after. D's evidence holds the removal and both creations; a reader engine handed D's bodies, A's record and exactly the required copies judges both writes as X; one handed them less X's grant to Q holds the removal unresolved and takes K's later write as valid.

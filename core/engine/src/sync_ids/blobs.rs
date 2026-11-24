@@ -469,9 +469,9 @@ impl Engine {
     }
 
     /// Whether this node opens thing `t`'s sections whole (`section_opens`): `t` is in its node
-    /// closure (on a ticket's word too: it syncs `t`'s sync IDs) or a key actor.
+    /// closure or a key actor.
     fn holds_sections(&self, t: &Tid) -> bool {
-        self.core.ix.closure.reaches(t) || self.core.is_key_actor(t)
+        self.core.ix.closure.holds(t) || self.core.is_key_actor(t)
     }
 
     /// Whether this node holds thing `t` whole: its content applies here (spec/commits.md §4

@@ -58,7 +58,7 @@ impl Engine {
         }
         match holding {
             // the listed nodes of the accounts holding sync or above on S's things
-            Holding::Read => {
+            Holding::Read | Holding::Keys => {
                 let accounts: BTreeSet<Tid> = things.iter().flat_map(|t| self.holder_accounts(t)).collect();
                 for a in accounts {
                     if own.is_some_and(|(p, _)| p == a) {
@@ -72,19 +72,6 @@ impl Engine {
                 }
             }
             Holding::Unread => {}
-        }
-        // the issuer of each ticket for S's things held here, by its profile's dial list where
-        // the profile is held (spec/sync-opens.md §1: a ticket carries no address)
-        let mut profiles = BTreeSet::new();
-        for t in &things {
-            profiles.extend(self.held_tickets(t)?.into_iter().map(|k| k.profile));
-        }
-        for p in profiles {
-            for (k, urls) in self.get_typed(&p, &ct::DIAL)?.unwrap_or_default() {
-                if let Some(x) = address(&k, &urls) {
-                    out.entry(x.key).or_insert(x);
-                }
-            }
         }
         Ok(Arc::new(out.into_values().collect()))
     }

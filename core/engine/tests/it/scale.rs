@@ -786,8 +786,14 @@ fn first_sync(n: usize) -> (Work, u64) {
         add(&mut lp, 0, t, &TAGS, format!("{i:08}{}", "e".repeat(192)));
     }
     let pks = crate::common::packages_to(&mut lp, 0, 1);
+    // the grant's fire comes with the grant: it carries the thing's record and the grant
+    lp.hold_fires(true);
     let (_, w) = measured_at(&mut lp, 1, |lp| {
-        for p in pks.iter().filter(|p| !base.contains(&p.id)).chain(pks.iter().filter(|p| base.contains(&p.id))) {
+        for p in pks.iter().filter(|p| !base.contains(&p.id)) {
+            lp.deliver(1, p).unwrap();
+        }
+        lp.hold_fires(false);
+        for p in pks.iter().filter(|p| base.contains(&p.id)) {
             lp.deliver(1, p).unwrap();
         }
     });
@@ -1594,12 +1600,15 @@ fn kept_backlog(n: usize) -> Work {
         lp.peers[0].commit(m).unwrap().unwrap();
     }
     let pks = crate::common::packages_to(&mut lp, 0, 1);
+    // the grant's fire comes with the grant: it carries the thing's record and the grant
+    lp.hold_fires(true);
     for p in pks.iter().filter(|p| !base.contains(&p.id)) {
         lp.deliver(1, p).unwrap();
     }
     // a listener reads each woken part's keep bound in the transaction (its listing)
     lp.peers[1].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
     let (_, w) = measured_at(&mut lp, 1, |lp| {
+        lp.hold_fires(false);
         for p in pks.iter().filter(|p| base.contains(&p.id)) {
             lp.deliver(1, p).unwrap();
         }

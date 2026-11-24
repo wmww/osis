@@ -4,7 +4,7 @@
 //!
 //! One structure holds both (`Closure`): a spanning tree over vertices (context, thing) rooted at
 //! (local, node root). A context is the node root's local part, a sync unit read (`Ctx::Read`),
-//! one kept unread (`Ctx::Unread`) or a thing entered on a ticket's word (`Ctx::Ticket`). A
+//! or one kept unread (`Ctx::Unread`). A
 //! vertex's out-list (`given_by`) is what the walk takes from
 //! it: in the local part its strongs to dependent things; in T's read sync unit its strongs to
 //! things T's keys open; from either, a strong to an independent thing the context does not
@@ -34,15 +34,12 @@ use osis_base::{Role, Tid};
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
-/// Where the walk is: the node root's local part, a sync unit entered read or kept unread, or a
-/// thing entered on a ticket's word (`Ticket`: not independent here, synced under its tickets' sync
-/// IDs to fetch its role commits, none of its data held for it).
+/// Where the walk is: the node root's local part, or a sync unit entered read or kept unread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Ctx {
     Local,
     Read(Tid),
     Unread(Tid),
-    Ticket(Tid),
 }
 
 /// A vertex of the walk: a thing reached in a context.
@@ -123,42 +120,15 @@ pub struct Closure {
     /// Strongs that appeared or went since the last settle, per target its sources (`note_row`):
     /// by target, as `targeted` reads one target's.
     rows: JSetMap<Tid, Tid>,
-    /// Things whose edges into them are judged again at the next settle (`rejudge`).
-    rejudge: JSet<Tid>,
-    /// Per thing a held strong reaches whose read secret is not established here, the sync IDs
-    /// and roles of the held tickets for it the node can open, as last judged (`judge`).
-    ticket_ids: JMap<Tid, BTreeSet<(osis_base::SyncId, Role)>>,
-    /// Per thing as `ticket_ids`, each such ticket's holder and word:
-    /// what `tickets::role_on` reads.
-    ticket_words: JMap<Tid, BTreeSet<(Tid, Role)>>,
-    /// Per sync ID, the things whose `ticket_ids` name it.
-    by_ticket_id: JSetMap<osis_base::SyncId, Tid>,
-    /// The ticket step's openers: per thing whose held tickets the walk last took, the holders
-    /// those tickets are boxed to, opened or not (`judge`).
-    openers: JSetMap<Tid, Tid>,
-    /// Per holder, the things whose `openers` name it: the edges into them are judged again when
-    /// the holder can open more (`opener_moved`).
-    by_opener: JSetMap<Tid, Tid>,
-    /// Per thing, the held vertices whose strong reaches it, the thing not followed by their
-    /// keys, while the node holds a ticket for it that opens here, as last judged: the role
-    /// commits that judge those tickets stay while any does (`retention::needed`), whether or not
-    /// they enter it.
-    accepted: JSetMap<Tid, Vx>,
     /// Per thing, the held vertices of a context that reads strongs (the local part, a read sync
-    /// unit) whose strong reaches it, as last judged: the things the account's own edges count
-    /// on (`rotation::role_here`, notes/node-closure.md Roles taken up).
+    /// unit) whose strong reaches it, as last judged: the things the walk reaches at a strong
+    /// (spec/sync-set.md §2 Held for keys).
     targeted: JSetMap<Tid, Vx>,
-    /// A thing became targeted or stopped being since the settle last looked (`settle_with`):
-    /// outside the journal, as a spurious mark costs one `flows::retake`.
-    reached_moved: bool,
     /// Per thing whose record the node does not hold, the held vertices whose strong reaches it,
     /// as last judged: each awaits the record (spec/commits.md §4 Records), which decides whether
     /// the strong brings the thing in, so a record blob's record of it is learned
     /// (`apply::waits::awaits_record`).
     unknown: JSetMap<Tid, Vx>,
-    /// Fires whose carried commit is due for taking, not taken yet (`tickets::take_in`, `flows::inbox`,
-    /// `Engine::take_carried`).
-    pub(crate) fires_due: JSet<osis_base::CommitId>,
     /// Per context, its things: a read context's are its root's sync unit.
     members: JSetMap<Ctx, Tid>,
     /// The things that left the node closure and are not released yet, each with the contexts it
@@ -167,6 +137,8 @@ pub struct Closure {
     /// The things sourced at another node whose paths the sync set's walk takes not
     /// (`Engine::set_sourced`, spec/sync-set.md §5), the account root never among them.
     cut: JSet<Tid>,
+    /// The holders held for keys (`held_for_keys`), as last settled.
+    keys: JSet<Tid>,
 }
 
 impl Default for Closure {
@@ -178,20 +150,12 @@ impl Default for Closure {
             inn: JSetMap::default(),
             moved: JSet::default(),
             rows: JSetMap::default(),
-            rejudge: JSet::default(),
-            ticket_ids: JMap::default(),
-            ticket_words: JMap::default(),
-            by_ticket_id: JSetMap::default(),
-            openers: JSetMap::default(),
-            by_opener: JSetMap::default(),
-            accepted: JSetMap::default(),
             targeted: JSetMap::default(),
-            reached_moved: false,
             unknown: JSetMap::default(),
-            fires_due: JSet::default(),
             members: JSetMap::by_element(),
             left: JMap::default(),
             cut: JSet::default(),
+            keys: JSet::default(),
         }
     }
 }
@@ -214,11 +178,13 @@ pub(crate) struct Follow {
     /// whose edges are all old (a refetch was durable before the transaction adding its strong).
     before: Option<Effects<Edge, BTreeSet<Vx>>>,
     known: bool,
+    /// Per thing the node holds secrets of: whether it is held for keys (`held_for_keys`).
+    keys: Effects<Tid, bool>,
 }
 
 impl Default for Follow {
     fn default() -> Follow {
-        Follow { fx: Effects::new("closure: edges"), reset: true, acted: false, gone: Default::default(), before: None, known: false }
+        Follow { fx: Effects::new("closure: edges"), reset: true, acted: false, gone: Default::default(), before: None, known: false, keys: Effects::new("closure: held for keys") }
     }
 }
 
@@ -239,30 +205,23 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = ([usize; 4], [usize; 4], [usize; 17]);
+    type Mark = ([usize; 4], [usize; 4], [usize; 10]);
     fn commit(&mut self) {
-        self.ticket_ids.commit();
-        self.ticket_words.commit();
-        self.by_ticket_id.commit();
-        self.openers.commit();
-        self.by_opener.commit();
-        self.accepted.commit();
         self.targeted.commit();
         self.unknown.commit();
-        self.fires_due.commit();
         self.tree.commit();
         self.synced.commit();
         self.out.commit();
         self.inn.commit();
         self.moved.commit();
         self.rows.commit();
-        self.rejudge.commit();
         self.members.commit();
         self.left.commit();
         self.cut.commit();
+        self.keys.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.rejudge.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.ticket_ids.mark(), self.by_ticket_id.mark(), self.fires_due.mark(), self.openers.mark(), self.by_opener.mark(), self.accepted.mark(), self.ticket_words.mark(), self.unknown.mark(), self.targeted.mark()])
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.unknown.mark(), self.targeted.mark(), self.keys.mark()])
     }
     fn rollback_to(&mut self, (t, s, m): Self::Mark) {
         self.tree.rollback_to(t);
@@ -271,19 +230,12 @@ impl Journaled for Closure {
         self.inn.rollback_to(m[1]);
         self.moved.rollback_to(m[2]);
         self.rows.rollback_to(m[3]);
-        self.rejudge.rollback_to(m[4]);
-        self.members.rollback_to(m[5]);
-        self.left.rollback_to(m[6]);
-        self.cut.rollback_to(m[7]);
-        self.ticket_ids.rollback_to(m[8]);
-        self.by_ticket_id.rollback_to(m[9]);
-        self.fires_due.rollback_to(m[10]);
-        self.openers.rollback_to(m[11]);
-        self.by_opener.rollback_to(m[12]);
-        self.accepted.rollback_to(m[13]);
-        self.ticket_words.rollback_to(m[14]);
-        self.unknown.rollback_to(m[15]);
-        self.targeted.rollback_to(m[16]);
+        self.members.rollback_to(m[4]);
+        self.left.rollback_to(m[5]);
+        self.cut.rollback_to(m[6]);
+        self.unknown.rollback_to(m[7]);
+        self.targeted.rollback_to(m[8]);
+        self.keys.rollback_to(m[9]);
     }
     fn name(&mut self, _name: &'static str) {
         self.tree.name("index: closure held");
@@ -291,14 +243,9 @@ impl Journaled for Closure {
         self.members.name("index: closure members");
         self.left.name("index: closure left");
         self.cut.name("index: closure cut");
-        self.ticket_ids.name("index: closure ticket ids");
-        self.ticket_words.name("index: closure ticket words");
-        self.by_ticket_id.name("index: closure by ticket id");
-        self.openers.name("index: closure ticket openers");
-        self.by_opener.name("index: closure by ticket opener");
-        self.accepted.name("index: closure accepted");
         self.targeted.name("index: closure targeted");
         self.unknown.name("index: closure unknown");
+        self.keys.name("index: held for keys");
     }
     #[cfg(test)]
     fn contents(&self) -> String {
@@ -476,81 +423,33 @@ impl Grow for GrowSynced<'_> {
 }
 
 impl Closure {
-    /// Whether the node closure holds `t`: in a context other than on a ticket's word alone,
-    /// which holds none of its data (`Ctx::Ticket`).
+    /// Whether the node closure holds `t`, in any context.
     pub(crate) fn holds(&self, t: &Tid) -> bool {
-        self.tree.held.get(t).is_some_and(|cs| cs.iter().any(|c| !matches!(c, Ctx::Ticket(_))))
+        self.tree.held.get(t).is_some_and(|cs| !cs.is_empty())
     }
 
     /// Whether the node closure reads `t`: holds it, or holds it leaving, in the local part or a
     /// read sync unit (spec/sync-set.md §2: a sync unit kept unread is its root alone, the node
-    /// cannot read what it holds; on a ticket's word none of its data is held).
+    /// cannot read what it holds).
     pub(crate) fn reads(&self, t: &Tid) -> bool {
         let reading = |cs: &BTreeSet<Ctx>| cs.iter().any(|c| matches!(c, Ctx::Local | Ctx::Read(_)));
         self.tree.held.get(t).is_some_and(reading) || self.left.get(t).is_some_and(reading)
     }
 
-    /// Whether `t` is in the node closure in any context, on a ticket's word included: the node
-    /// syncs its sync IDs, so it takes its role commits and purge requests.
-    pub(crate) fn reaches(&self, t: &Tid) -> bool {
-        self.tree.held.get(t).is_some_and(|cs| !cs.is_empty())
-    }
-
-    /// Whether `t` is entered on a ticket's word (`Ctx::Ticket`).
-    pub(crate) fn on_ticket(&self, t: &Tid) -> bool {
-        self.tree.held.get(t).is_some_and(|cs| cs.contains(&Ctx::Ticket(*t)))
-    }
-
-    /// The sync IDs and roles of the held tickets for `t` the node can open, as last judged.
-    pub(crate) fn ticket_ids(&self, t: &Tid) -> BTreeSet<(osis_base::SyncId, Role)> {
-        self.ticket_ids.get(t).cloned().unwrap_or_default()
-    }
-
-    /// The holders and words of the held tickets for `t` the node can open, as last judged.
-    pub(crate) fn ticket_words(&self, t: &Tid) -> BTreeSet<(Tid, Role)> {
-        self.ticket_words.get(t).cloned().unwrap_or_default()
-    }
-
-    /// Sets `t`'s ticket words (`ticket_words`) to `words`.
-    pub(crate) fn set_ticket_words(&mut self, t: Tid, words: BTreeSet<(Tid, Role)>) {
-        if self.ticket_words(&t) == words {
-            return;
-        }
-        match words.is_empty() {
-            true => drop(self.ticket_words.remove(&t)),
-            false => drop(self.ticket_words.insert(t, words)),
-        }
-    }
-
-    /// The things whose held tickets name sync ID `s`.
-    pub(crate) fn naming_ticket_id(&self, s: &osis_base::SyncId) -> BTreeSet<Tid> {
-        self.by_ticket_id.get(s).cloned().unwrap_or_default()
-    }
-
-    /// Whether a held vertex's strong reaches `t` with a ticket for it held (`accepted`).
-    pub(crate) fn accepted(&self, t: &Tid) -> bool {
-        self.accepted.get(t).is_some_and(|v| !v.is_empty())
-    }
-
-    /// Whether a held vertex of a context that reads strongs has a strong to `t` (`targeted`):
-    /// the account's own edges on `t` count (notes/node-closure.md Roles taken up).
-    /// A strong noted since the last settle (`rows`) counts from a held reading source until
-    /// the settle judges it: a transaction asks roles before its settle (a thing it makes, held
-    /// by a strong it writes, is made independent by its maker's record edge).
+    /// Whether a held vertex's strong reaches `t`, as last judged.
     pub(crate) fn targeted(&self, t: &Tid) -> bool {
-        let reading = |x: &Tid| self.tree.held.get(x).is_some_and(|cs| cs.iter().any(|c| matches!(c, Ctx::Local | Ctx::Read(_))));
-        self.targeted.get(t).is_some_and(|v| !v.is_empty()) || self.rows.get(t).is_some_and(|xs| xs.iter().any(reading))
+        self.targeted.get(t).is_some_and(|v| !v.is_empty())
     }
 
-    /// Notes whether `v`'s strong to `t` counts for `targeted`.
-    fn set_targeted(&mut self, t: Tid, v: Vx, on: bool) {
+    /// Notes whether `v`'s strong to `t` counts for `targeted`; whether `t` lost its last.
+    fn set_targeted(&mut self, t: Tid, v: Vx, on: bool) -> bool {
         let set = |c: &Closure| c.targeted.get(&t).is_some_and(|v| !v.is_empty());
         let was = set(self);
         match on {
             true => drop(self.targeted.insert(t, v)),
             false => drop(self.targeted.remove(&t, &v)),
         }
-        self.reached_moved |= was != set(self);
+        was && !set(self)
     }
 
     /// Whether a held vertex's strong reaches `t`, whose record was not held when it was judged
@@ -568,63 +467,12 @@ impl Closure {
         }
     }
 
-    /// Sets whether `v`'s strong to `t` is one `accepted` counts; whether `t` lost its last.
-    fn set_accepted(&mut self, t: Tid, v: Vx, on: bool) -> bool {
-        if on {
-            self.accepted.insert(t, v);
-            return false;
-        }
-        let had = self.accepted(&t);
-        self.accepted.remove(&t, &v);
-        had && !self.accepted(&t)
-    }
-
-    /// Sets `t`'s ticket sync IDs (`ticket_ids`) to `ids`.
-    fn set_ticket_ids(&mut self, t: Tid, ids: BTreeSet<(osis_base::SyncId, Role)>) {
-        let old = self.ticket_ids(&t);
-        if old == ids {
-            return;
-        }
-        for (s, _) in &old {
-            self.by_ticket_id.remove(s, &t);
-        }
-        for (s, _) in &ids {
-            self.by_ticket_id.insert(*s, t);
-        }
-        match ids.is_empty() {
-            true => drop(self.ticket_ids.remove(&t)),
-            false => drop(self.ticket_ids.insert(t, ids)),
-        }
-    }
-
-    /// Sets the holders `t`'s held tickets are boxed to (`openers`) to `holders`.
-    fn set_openers(&mut self, t: Tid, holders: BTreeSet<Tid>) {
-        let old = self.openers.get(&t).cloned().unwrap_or_default();
-        for h in old.difference(&holders) {
-            self.openers.remove(&t, h);
-            self.by_opener.remove(h, &t);
-        }
-        for h in holders.difference(&old) {
-            self.openers.insert(t, *h);
-            self.by_opener.insert(*h, t);
-        }
-    }
-
-    /// Holder `h` can open more (taken up, or its secrets grew): the edges into each thing with a
-    /// held ticket boxed to it are judged again at the next settle, O(those things).
-    pub(crate) fn opener_moved(&mut self, h: &Tid) {
-        for t in self.by_opener.get(h).cloned().unwrap_or_default() {
-            osis_base::costs::count("closure: opener rejudged", 1);
-            self.rejudge.insert(t);
-        }
-    }
-
     /// Tests and debugging (`Engine::why_kept`): the node closure's tree path to `t`, from the
-    /// node root, by one context holding it (not on a ticket's word alone, if any).
+    /// node root, by one context holding it.
     #[cfg(debug_assertions)]
     pub(crate) fn path(&self, t: &Tid) -> Option<Vec<Vx>> {
         let cs = self.tree.held.get(t)?;
-        let c = cs.iter().find(|c| !matches!(c, Ctx::Ticket(_))).or_else(|| cs.iter().next())?;
+        let c = cs.iter().next()?;
         let mut path = vec![(*c, *t)];
         while let Some(p) = self.tree.parent.get(path.last()?) {
             if path.contains(p) {
@@ -682,6 +530,21 @@ impl Closure {
         self.synced.held.feed()
     }
 
+    /// Whether `t` is held for keys (`held_for_keys`, as last settled).
+    pub(crate) fn for_keys(&self, t: &Tid) -> bool {
+        self.keys.contains(t)
+    }
+
+    /// The holders held for keys (a read of them whole).
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &Tid> {
+        self.keys.iter()
+    }
+
+    /// A cursor over the things coming to be held for keys from now on.
+    pub(crate) fn keys_feed(&self) -> osis_base::memo::Feed<Tid> {
+        self.keys.feed()
+    }
+
     /// The things the sync set's walk takes no path through.
     pub(crate) fn cut(&self) -> &JSet<Tid> {
         &self.cut
@@ -703,34 +566,6 @@ impl Closure {
         if self.tree.held.contains_key(&source) {
             self.rows.insert(target, source);
         }
-    }
-
-    /// The role `t` is entered at by a strong outside the node root's local part (spec/sync-set.md
-    /// §1 The account's tickets): read where its read sync unit hangs from a vertex of a sync
-    /// unit, else sync where it is kept unread so; `None` where it is entered from the local
-    /// part alone, or not entered.
-    pub(crate) fn entered_outside(&self, t: &Tid) -> Option<Role> {
-        let outside = |c: Ctx| self.inn.get(&(c, *t)).is_some_and(|i| i.iter().any(|w| w.0 != Ctx::Local));
-        if outside(Ctx::Read(*t)) {
-            Some(Role::Read)
-        } else if outside(Ctx::Unread(*t)) {
-            Some(Role::Sync)
-        } else {
-            None
-        }
-    }
-
-    /// Whether a vertex of `g`'s read sync unit has a strong to `t` that enters it, read, kept
-    /// unread or on a ticket's word (spec/permissions.md §4 Role changes travel: an account root
-    /// counts for its account on a thing it reaches by strongs).
-    pub(crate) fn reaches_from(&self, g: &Tid, t: &Tid) -> bool {
-        [Ctx::Read(*t), Ctx::Unread(*t), Ctx::Ticket(*t)].into_iter().any(|c| self.inn.get(&(c, *t)).is_some_and(|i| i.iter().any(|w| w.0 == Ctx::Read(*g))))
-    }
-
-    /// Each held vertex's edge to `target` is judged again at the next settle: a ticket for it
-    /// appeared among the known references (`judge` takes its secret).
-    pub(crate) fn rejudge(&mut self, target: Tid) {
-        self.rejudge.insert(target);
     }
 
     /// The held vertices.
@@ -784,7 +619,7 @@ impl Closure {
     /// The vertices of `v`'s out-list that its edge to `y` gives.
     fn given(&self, v: &Vx, y: &Tid) -> BTreeSet<Vx> {
         let Some(out) = self.out.get(v) else { return BTreeSet::new() };
-        [(v.0, *y), (Ctx::Read(*y), *y), (Ctx::Unread(*y), *y), (Ctx::Ticket(*y), *y)].into_iter().filter(|w| out.contains(w)).collect()
+        [(v.0, *y), (Ctx::Read(*y), *y), (Ctx::Unread(*y), *y)].into_iter().filter(|w| out.contains(w)).collect()
     }
 
     /// Brings the sync set's tree up to the out-lists' edges that moved (`moved`), as the node
@@ -870,31 +705,13 @@ impl Core {
         a == self.id.tid() || Some(a) == self.member() || self.key_actors.contains_key(&a)
     }
 
-    /// Whether context `c` follows a strong to `y` by its own secrets: the local part a dependent
-    /// thing the node opens, a read sync unit what its root's keys open.
-    pub(crate) fn keys_open_from(&self, c: Ctx, y: &Tid) -> bool {
-        match c {
-            Ctx::Local => !self.is_independent(y) && self.opens_dependent(y),
-            Ctx::Read(t) => self.keys_open(&t, y),
-            Ctx::Unread(_) | Ctx::Ticket(_) => false,
-        }
-    }
-
     /// Whether `y` is independent here (spec/sync-set.md §2): by the role commits held of it, or by
-    /// an established secret of its own (not one derived from its mint admin's). A ticket's
-    /// secret establishes nothing (it may be anyone's): a thing that is not independent whose tickets the
-    /// walk took is entered on their word (`given_by`), read fetching under their sync IDs
-    /// (`Ctx::Ticket`) until the role commits arrive, sync kept unread (`Ctx::Unread`).
+    /// a secret of its own a held valid box gave (not one derived from its mint admin's, nor a
+    /// reading-only one): only a thing with role secrets of its own has boxes. Established or not:
+    /// a grantee holds the grant's box before it syncs `y`, where the rotation that made the
+    /// epoch is (spec/permissions.md §4 Key part).
     pub(crate) fn counts_independent(&self, y: &Tid) -> bool {
-        self.is_independent(y) || self.ix.secrets.get(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held_established().next().is_some()))
-    }
-
-    /// Whether the node holds an established read secret of `y`'s own (not one derived from its
-    /// mint admin's, which a thing whose keyset the node lacks reads as): until then a held ticket's
-    /// secret is taken at each strong reaching it, since a secret held but not established may be
-    /// anyone's (a ticket's epoch is its maker's to choose) and must not keep an honest one out.
-    pub(crate) fn reads_established(&self, y: &Tid) -> bool {
-        self.ix.secrets.get(y).is_some_and(|e| e.role(Role::Read).held_established().next().is_some())
+        self.is_independent(y) || self.ix.secrets.get(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held().next().is_some()))
     }
 
     /// How the walk enters independent thing `y` at a strong from a context that does not
@@ -934,34 +751,20 @@ fn given_by(core: &Core, v: Vx, y: Tid) -> BTreeSet<Vx> {
     let (c, x) = v;
     let mut out = BTreeSet::new();
     // the walk does not enter a key actor: it has no sync unit
-    if matches!(c, Ctx::Unread(_) | Ctx::Ticket(_)) || x == y || core.is_key_actor(&y) {
+    if matches!(c, Ctx::Unread(_)) || x == y || core.is_key_actor(&y) {
         return out;
     }
     let independent = core.counts_independent(&y);
     let follows = match c {
         Ctx::Local => !independent && core.opens_dependent(&y),
         Ctx::Read(t) => core.keys_open(&t, &y),
-        Ctx::Unread(_) | Ctx::Ticket(_) => false,
+        Ctx::Unread(_) => false,
     };
     if follows {
         out.insert((c, y));
     }
     if independent && Ctx::Read(y) != c && let Some(e) = core.enter(&y) {
         out.insert((e, y));
-    }
-    // not independent here: entered on a ticket's word, where a ticket was taken, at the node's
-    // role (`tickets::role_on`, read again here so a role change judges the edge again), by a
-    // secret of that role held: read fetches under the tickets' sync IDs (spec/sync-inbox.md §5
-    // Ticket sync IDs), none of its data held for it; sync keeps them unread
-    if !independent {
-        let best = core.ix.closure.ticket_ids(&y).into_iter().map(|(_, r)| r).max();
-        let role = best.and_then(|k| Some(super::tickets::role_on(core, &y)?.min(k)));
-        let holds = |r: Role| core.ix.secrets.get(&y).is_some_and(|e| e.role(r).holds_any());
-        if role >= Some(Role::Read) && holds(Role::Read) {
-            out.insert((Ctx::Ticket(y), y));
-        } else if role.is_some() && holds(Role::Sync) {
-            out.insert((Ctx::Unread(y), y));
-        }
     }
     out
 }
@@ -973,10 +776,18 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
     crate::engine::refs::kept::settle(tx)?;
     let Some(root) = tx.core.node_root else { return Ok(()) };
     let rv = (Ctx::Local, root);
-    let mut f = std::mem::take(&mut tx.core.closure_follow);
-    let r = settle_with(tx, &mut f, rv);
-    tx.core.closure_follow = f;
-    r
+    loop {
+        let mut f = std::mem::take(&mut tx.core.closure_follow);
+        let r = settle_with(tx, &mut f, rv);
+        tx.core.closure_follow = f;
+        r?;
+        // the grants of what the node newly syncs count (`rotation::grants_count`: a thing a
+        // strong reaches, a holder held for keys), so a box its roles had kept out opens, and
+        // the walk enters by the secret it gives: the two settle together
+        if !crate::flows::retake(tx)? {
+            return Ok(());
+        }
+    }
 }
 
 fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
@@ -989,6 +800,10 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
         osis_base::costs::count("closure: refollowed", all.len() as u64);
         for v in all {
             want_edges(tx, f, v)?;
+        }
+        f.keys = Effects::new("closure: held for keys");
+        for t in tx.core.ix.secrets.keys_held() {
+            f.keys.want(*t);
         }
     }
     if !tx.core.ix.closure.is_held(&rv) {
@@ -1008,47 +823,12 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
                 }
             }
         }
-        // a ticket arrived for a thing a held strong reaches: those edges judged again
-        let again: Vec<Tid> = tx.core.ix.closure.rejudge.iter().copied().collect();
-        for y in again {
-            tx.core.ix.closure.rejudge.remove(&y);
-            if tx.core.reads_established(&y) {
-                continue;
-            }
-            let mut from: Vec<Tid> = crate::engine::refs::to(tx, &y)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong).map(|r| r.source).collect();
-            for (x, _) in crate::engine::refs::kept::to(tx, &y)? {
-                if !from.contains(&x) {
-                    from.push(x);
-                }
-            }
-            for x in from {
-                for c in tx.core.ix.closure.contexts(&x) {
-                    let v = (c, x);
-                    if tx.core.ix.closure.is_held(&v) {
-                        let now = judge(tx, f, v, y)?;
-                        apply(tx, f, rv, v, y, now)?;
-                    }
-                }
-            }
-        }
-        // what is reached moved, so the node's roles may have grown (notes/node-closure.md Roles
-        // taken up): boxes kept out for want of them open now, moving what the walk enters
-        if std::mem::take(&mut tx.core.ix.closure.reached_moved) {
-            crate::flows::retake(tx)?;
-        }
         let due = f.fx.due();
-        if due.is_empty() && tx.core.ix.closure.rows.is_empty() && tx.core.ix.closure.rejudge.is_empty() && !tx.core.ix.closure.reached_moved {
+        if due.is_empty() && tx.core.ix.closure.rows.is_empty() {
             // each thing out of the node closure now, noted with every context it was dropped
             // from in this transaction: the sync units that carried it when it left
             let cl = &mut tx.core.ix.closure;
             for (t, cs) in std::mem::take(&mut f.gone) {
-                // its ticket step's inputs go with its last vertex, judged at the settle's end: a
-                // thing moving between contexts is dropped from one before it is held in the next
-                if !cl.tree.held.contains_key(&t) {
-                    cl.set_ticket_ids(t, BTreeSet::new());
-                    cl.set_ticket_words(t, BTreeSet::new());
-                    cl.set_openers(t, BTreeSet::new());
-                }
                 if !cl.holds(&t) {
                     let mut was = cl.left.get(&t).cloned().unwrap_or_default();
                     was.extend(cs);
@@ -1057,7 +837,8 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
             }
             f.before = None;
             f.known = true;
-            return cl.settle_synced(rv);
+            cl.settle_synced(rv)?;
+            return settle_keys(tx, f);
         }
         for (v, y) in due {
             if !tx.core.ix.closure.is_held(&v) {
@@ -1070,9 +851,89 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
     }
 }
 
+/// Whether the node holds `t` for keys (spec/sync-set.md §2 Held for keys): a holder the grants
+/// of a thing the node syncs name, found from that thing up (`named_up`), which the node closure
+/// does not read and the node can open (`opened_holder`).
+fn held_for_keys(core: &Core, t: &Tid) -> bool {
+    opened_holder(core, t) && named_up(core, t)
+}
+
+/// Whether `t` is a holder the node opens without reading it in the node closure: an independent
+/// thing, no key actor, of which the node holds a read secret of its own (a box to an own actor
+/// or to a holder it opens gave it; the lost-access rule keeps it only while the node's role
+/// reads `t`, `rotation::lost`).
+fn opened_holder(core: &Core, t: &Tid) -> bool {
+    !core.is_key_actor(t) && core.enter(t) == Some(Ctx::Read(*t)) && !core.ix.closure.reads(t)
+}
+
+/// Whether the grants of a thing the node closure holds (read, or kept unread: its edge piece is
+/// in `t`'s key part) name `t`, or those of a holder so named
+/// in turn that the node opens (`opened_holder`): each hop an edge write the node holds naming
+/// its holder on its target, the holder holding a role there now with key access, any role on a
+/// read thing and read or above on a holder (a hop that opens that holder's keys). The walk up
+/// from a read thing through the holders its grants name, asked of one holder: O(what `t` is
+/// named on by such hops).
+fn named_up(core: &Core, t: &Tid) -> bool {
+    let mut seen = BTreeSet::from([*t]);
+    let mut todo = vec![*t];
+    while let Some(x) = todo.pop() {
+        for y in core.ix.held.named_on(&x) {
+            if core.ix.closure.holds(y) {
+                if core.keyed_role_now(&x, y).is_some() {
+                    return true;
+                }
+            } else if opened_holder(core, y) && core.keyed_role_now(&x, y) >= Some(Role::Read) && seen.insert(*y) {
+                todo.push(*y);
+            }
+        }
+    }
+    false
+}
+
+/// Brings the holders held for keys up to date (`held_for_keys`): each thing whose secrets moved
+/// in this transaction is followed or let go, and each followed one whose judgement moved is
+/// judged again. One coming to be held for keys wakes what waits for it (`apply::wake_entered`);
+/// one held so no more is judged for what it still needs (`retention::needed`). Work in
+/// proportion to the things whose secrets or holding moved.
+fn settle_keys(tx: &mut Tx<'_>, f: &mut Follow) -> Result<()> {
+    for t in tx.core.ix.secrets.logged() {
+        if tx.core.ix.secrets.contains_key(&t) {
+            f.keys.want(t);
+        } else {
+            f.keys.unwant(&t);
+            if tx.core.ix.closure.keys.remove(&t) {
+                tx.core.note_lost(t);
+            }
+        }
+    }
+    for t in f.keys.due() {
+        if !tx.core.ix.secrets.contains_key(&t) {
+            f.keys.unwant(&t);
+            continue;
+        }
+        let core = &*tx.core;
+        let mut now = false;
+        f.keys.settle(&t, || {
+            now = held_for_keys(core, &t);
+            now
+        });
+        if now == tx.core.ix.closure.keys.contains(&t) {
+            continue;
+        }
+        if now {
+            tx.core.ix.closure.keys.insert(t);
+            tx.core.keys_came.insert(t);
+        } else {
+            tx.core.ix.closure.keys.remove(&t);
+            tx.core.note_lost(t);
+        }
+    }
+    Ok(())
+}
+
 /// Follows every edge of held vertex `v`: O(its thing's strongs).
 fn want_edges(tx: &mut Tx<'_>, f: &mut Follow, v: Vx) -> Result<()> {
-    if matches!(v.0, Ctx::Unread(_) | Ctx::Ticket(_)) {
+    if matches!(v.0, Ctx::Unread(_)) {
         return Ok(());
     }
     for y in strongs_from(tx, &v.1)? {
@@ -1084,14 +945,13 @@ fn want_edges(tx: &mut Tx<'_>, f: &mut Follow, v: Vx) -> Result<()> {
 /// What `v`'s edge to `y` gives: nothing without a strong (the edge followed no more), else what
 /// `given_by` says, recorded as what the edge follows.
 fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>> {
-    if matches!(v.0, Ctx::Unread(_) | Ctx::Ticket(_)) || !strong_to(tx, &v.1, &y)? {
+    if matches!(v.0, Ctx::Unread(_)) || !strong_to(tx, &v.1, &y)? {
         f.fx.unwant(&(v, y));
-        set_accepted(tx, y, v, false);
-        tx.core.ix.closure.set_targeted(y, v, false);
+        set_targeted(tx, y, v, false);
         tx.core.ix.closure.set_unknown(y, v, false);
         return Ok(BTreeSet::new());
     }
-    tx.core.ix.closure.set_targeted(y, v, true);
+    set_targeted(tx, y, v, true);
     // a strong to a thing whose record is not held awaits it: a record blob's copy of it, kept
     // loose, is learned (spec/commits.md §4 Records)
     let unknown = !tx.core.exists(&y) && !tx.core.is_key_actor(&y);
@@ -1101,22 +961,9 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     }
     let new = f.known && !f.before.as_ref().unwrap_or(&f.fx).wants(&(v, y));
     f.fx.want((v, y));
-    // a thing the context does not follow by its keys, whose read secret is not established
-    // here: each held ticket for it the node can open has its secret taken now the strong reaches
-    // it, and its sync ID noted (spec/sync-set.md §2; Interim (issues/tickets-retired.md)):
-    // O(its tickets)
-    let ticketed = !tx.core.is_key_actor(&y) && !tx.core.reads_established(&y) && !tx.core.keys_open_from(v.0, &y);
-    let mut any = false;
-    if ticketed {
-        let taken = super::tickets::take_in(tx, &y, v)?;
-        tx.core.ix.closure.set_ticket_ids(y, taken.ids);
-        tx.core.ix.closure.set_openers(y, taken.openers);
-        any = taken.opened;
-    }
-    set_accepted(tx, y, v, any);
     if new {
         let held = f.gone.contains_key(&y);
-        refetch(tx, v, y, any, held)?;
+        refetch(tx, v, y, held)?;
     }
     let core = &*tx.core;
     let mut got = BTreeSet::new();
@@ -1127,7 +974,7 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     Ok(got)
 }
 
-/// A new edge of read unit `v` to `y`, which no ticket for opened here and the node held as
+/// A new edge of read unit `v` to `y`, which the node held as
 /// certificates alone or not at all when the transaction began (`retention::needed::Holding`:
 /// not in the node closure, nor leaving it, nor dropped from it in this transaction, `was_held`),
 /// unless its record was learned in this transaction: the unit's sync IDs are pulled anew from
@@ -1135,10 +982,10 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
 /// judged outside the required set before the strong arrived) is fetched again
 /// (spec/sync-judgement.md §3 Dropped bodies). Once per new edge, durable before the
 /// transaction adding it commits.
-fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, ticketed: bool, was_held: bool) -> Result<()> {
+fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, was_held: bool) -> Result<()> {
     let Ctx::Read(t) = v.0 else { return Ok(()) };
     let cl = &tx.core.ix.closure;
-    if ticketed || was_held || cl.holds(&y) || cl.left().contains_key(&y) || tx.core.learned.contains(&y) || tx.core.is_key_actor(&y) {
+    if was_held || cl.holds(&y) || cl.left().contains_key(&y) || tx.core.learned.contains(&y) || tx.core.is_key_actor(&y) {
         return Ok(());
     }
     // a held commit minting `y` whose part on it was never taken: nothing keeps its blobs out
@@ -1149,10 +996,11 @@ fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, ticketed: bool, was_held: bool) -> Re
     crate::flows::sync_ids::pull_anew(tx, &t)
 }
 
-/// Notes whether `v`'s strong to `y` counts for `Closure::accepted`; `y` losing its last is
-/// judged for what it still needs (`retention::needed`).
-pub(crate) fn set_accepted(tx: &mut Tx<'_>, y: Tid, v: Vx, on: bool) {
-    if tx.core.ix.closure.set_accepted(y, v, on) {
+/// Notes whether `v`'s strong to `y` counts for `Closure::targeted`; `y` losing its last is
+/// judged for what it still needs (`retention::needed`): what was held for keys on the paths to
+/// it goes with the strong (spec/sync-set.md §2 Held for keys).
+fn set_targeted(tx: &mut Tx<'_>, y: Tid, v: Vx, on: bool) {
+    if tx.core.ix.closure.set_targeted(y, v, on) {
         tx.core.note_lost(y);
     }
 }
@@ -1180,11 +1028,10 @@ fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<V
             for x in tx.core.ix.closure.detach(rv, w) {
                 f.gone.entry(x.1).or_default().insert(x.0);
                 // its edges are followed no more
-                if !matches!(x.0, Ctx::Unread(_) | Ctx::Ticket(_)) {
+                if !matches!(x.0, Ctx::Unread(_)) {
                     for y in strongs_from(tx, &x.1)? {
                         f.fx.unwant(&(x, y));
-                        set_accepted(tx, y, x, false);
-                        tx.core.ix.closure.set_targeted(y, x, false);
+                        set_targeted(tx, y, x, false);
                     }
                 }
             }
@@ -1205,7 +1052,7 @@ impl Grow for GrowClosure<'_, '_> {
     }
     fn out(&mut self, x: Vx) -> Result<Vec<Vx>> {
         let mut out = Vec::new();
-        if matches!(x.0, Ctx::Unread(_) | Ctx::Ticket(_)) {
+        if matches!(x.0, Ctx::Unread(_)) {
             return Ok(out);
         }
         for y in strongs_from(self.0, &x.1)? {
@@ -1240,7 +1087,7 @@ pub(crate) fn check_whole(tx: &mut Tx<'_>) -> Result<()> {
         let mut seen = BTreeSet::from([rv]);
         let mut stack = vec![rv];
         while let Some(v) = stack.pop() {
-            if matches!(v.0, Ctx::Unread(_) | Ctx::Ticket(_)) {
+            if matches!(v.0, Ctx::Unread(_)) {
                 continue;
             }
             for y in strongs_from(tx, &v.1)? {
@@ -1262,6 +1109,9 @@ pub(crate) fn check_whole(tx: &mut Tx<'_>) -> Result<()> {
             }
         }
     }
+    let core = &*tx.core;
+    let keys: BTreeSet<Tid> = core.ix.secrets.keys().filter(|t| held_for_keys(core, t)).copied().collect();
+    assert_eq!(core.ix.closure.keys.iter().copied().collect::<BTreeSet<Tid>>(), keys, "the holders held for keys differ from those judged afresh");
     Ok(())
 }
 
@@ -1358,6 +1208,11 @@ impl Engine {
     /// Whether the node closure holds `t` (spec/sync-set.md §2).
     pub fn closure_holds(&self, t: &Tid) -> bool {
         self.core.ix.closure.holds(t)
+    }
+
+    /// Whether `t` is held for keys (spec/sync-set.md §2), as last settled.
+    pub fn held_for_keys(&self, t: &Tid) -> bool {
+        self.core.ix.closure.keys.contains(t)
     }
 
     /// Whether `t` is kept unread: in the node closure by a sync secret alone (spec/sync-set.md

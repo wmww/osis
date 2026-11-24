@@ -211,6 +211,8 @@ pub(crate) struct Walks {
     kept: BTreeMap<(CommitId, Slot), Walk>,
     /// Each blob a kept walk lacks, and the slots lacking it: the wake index.
     wanted: BTreeMap<BlobId, BTreeSet<(CommitId, Slot)>>,
+    /// Blobs that came to be wanted since `Engine::take_wanted` last took them.
+    newly: BTreeSet<BlobId>,
     /// Slots a blob held since the last round was wanted by, with the blob (`held`).
     arrived: Arrived,
     /// Commits whose walks a failed step or transaction dropped: examined at the next round
@@ -235,6 +237,7 @@ impl Walks {
     fn index(&mut self, c: CommitId, s: Slot, w: &mut Walk) {
         for (b, add) in w.moved.drain(..) {
             if add {
+                self.newly.insert(b);
                 self.wanted.entry(b).or_default().insert((c, s));
             } else if let Some(x) = self.wanted.get_mut(&b) {
                 x.remove(&(c, s));
@@ -683,6 +686,15 @@ impl Engine {
     /// trees (fetched at once: they are held in memory at peers). The whole set: O(its size).
     pub fn blob_wants(&mut self) -> Result<Wants> {
         Ok(Wants { missing: self.core.walks.wanted.keys().copied().collect() })
+    }
+
+    /// The blobs commits here came to wait for since the last call and still do: what a holder
+    /// of blobs outside the engine's store (sync's own store) looks up once, so a blob it took
+    /// before any walk named it (a chunk arriving ahead of the node above it) is handed over when
+    /// the walk reaches it. O(the blobs newly wanted).
+    pub fn take_wanted(&mut self) -> Vec<BlobId> {
+        let w = &mut self.core.walks;
+        std::mem::take(&mut w.newly).into_iter().filter(|b| w.wanted.contains_key(b)).collect()
     }
 
     /// Whether a commit here waits for blob `b` (`blob_wants`, one blob: O(log)).

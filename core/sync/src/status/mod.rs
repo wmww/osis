@@ -560,7 +560,7 @@ impl Status {
         }
         for (s, (_, h)) in &set.ids {
             if self.holding.insert(*s, *h) != Some(*h) {
-                if *h == Holding::Read {
+                if h.opens() {
                     self.own_fx.want(*s);
                     self.wanted_fx.want(*s);
                     self.stranding_fx.want(*s);
@@ -876,7 +876,7 @@ impl Status {
             })
             .collect();
         let unheld = match holding {
-            Some(Holding::Read) => self.unheld.get(s).map(|u| u.len()),
+            Some(Holding::Read | Holding::Keys) => self.unheld.get(s).map(|u| u.len()),
             _ => Some(0),
         };
         let pass_waits = self.passes.get(s).map(|p| p.waits.clone());

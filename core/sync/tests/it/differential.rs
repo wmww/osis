@@ -15,6 +15,11 @@ use osis_base::testenv::Seeds;
 /// scratch test, never a committed test (notes/principles.md, Never pin a seed).
 pub(crate) fn holds(seed: u64, steps: &[Step], replay: String, twice: bool) -> World {
     let (n, accounts, _, _) = size();
+    holds_on(seed, accounts, n, steps, replay, twice)
+}
+
+/// `holds` on a world of `n` nodes of `accounts` accounts.
+fn holds_on(seed: u64, accounts: usize, n: usize, steps: &[Step], replay: String, twice: bool) -> World {
     let played = |replay: String, again: bool| {
         let mut w = world_of(seed, accounts, n);
         if again {
@@ -82,6 +87,19 @@ pub(crate) fn worlds(name: &str, steps_of: impl Fn(u64) -> Vec<Step> + Sync) {
             },
         );
     });
+}
+
+// spec/sync-set.md §3 (Nothing of R stays): a node's own writes on a thing it releases, not yet
+// held elsewhere, go. Node 1 makes a thing and grants node 0's account read; a run connects them
+// while no node of that account holds the thing (the grant is an offer); a paired node of the
+// account then holds it by a strong and node 1 releases it before any run. The making's value is
+// at no node, and the oracle counts it lost: a run gives a node a value write only where its
+// account's node closure held the thing then (`harness::history::ran`).
+#[test]
+fn a_making_released_before_a_grantee_held_it_is_lost_spec_sync_set_3() {
+    use crate::harness::history::{Gives, Holder};
+    let script = [Step::New(1), Step::NewIn(1, 0), Step::Give(1, 1, Holder::Node(0), Gives::Reads), Step::Run, Step::Strong(2, None, 1), Step::Unstrong(1, Some(0), 1)];
+    holds_on(0, 2, 3, &script, String::new(), false);
 }
 
 // spec: none (test harness): a history is a function of its seed, faults included, and draws

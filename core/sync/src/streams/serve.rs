@@ -7,7 +7,7 @@ use super::known::Op;
 use super::{Ctx, Streams};
 use crate::opens::Reported;
 use crate::store::Members;
-use crate::types::{ConnId, Cursor, Position, Result};
+use crate::types::{ConnId, Cursor, Entry, Holding, Position, Result, SourceClass};
 use osis_base::{BlobId, SyncId};
 use osis_proto::limits::REPLY_BUDGET;
 use osis_proto::msg::stream_event_len;
@@ -159,6 +159,19 @@ impl Page {
         self.events.push((s, e));
         true
     }
+}
+
+/// Whether the peer on `conn` holds S's thing for keys, as it declared opening S
+/// (spec/sync-opens.md §4 Source): it is shown S's role entries alone (spec/sync-ids.md §6 Role
+/// entries).
+pub(super) fn for_keys(ctx: &Ctx, conn: ConnId, s: &SyncId) -> bool {
+    ctx.shared.members(conn).get(s).is_some_and(|m| m.class == SourceClass::Keys)
+}
+
+/// Whether entry `e` of S is a role entry: by its stamp or deposit signature where this node
+/// keeps S unread (`Entry::role`), else by its own judgement of what the blob holds.
+fn role_entry(ctx: &mut Ctx, s: &SyncId, e: &Entry) -> bool {
+    e.role || (ctx.store.holding(s).is_some_and(Holding::opens) && ctx.ground.role_entry(s, &e.blob))
 }
 
 /// Where a read of the log stopped.
@@ -368,6 +381,9 @@ impl Streams {
         Ok(match *e {
             NodeEvent::Added(s, b) => {
                 let Some(entry) = ctx.store.entry(&s, &b)? else { return Ok(None) };
+                if for_keys(ctx, conn, &s) && !role_entry(ctx, &s, &entry) {
+                    return Ok(None);
+                }
                 let blob = if inline > 0 && !page.inlined.contains(&b) { ctx.store.bytes(&b)?.filter(|v| v.len() as u64 <= inline) } else { None };
                 let blob = blob.filter(|_| !self.shown_by_peer(ctx, conn, &s, &b));
                 let inlined = blob.is_some();
@@ -418,7 +434,8 @@ impl Streams {
             (Some(x), None) => x.eph.iter().map(|(s, n)| (*s, *n)).collect(),
             (Some(x), Some(m)) => m.iter().filter_map(|s| Some((*s, *x.eph.get(s)?))).collect(),
         };
-        let listing: Vec<(SyncId, u64)> = listing.into_iter().filter(|(s, _)| members.until(s) == Some(None)).collect();
+        // no ephemeral entry is a role entry: a peer holding S's thing for keys is listed none
+        let listing: Vec<(SyncId, u64)> = listing.into_iter().filter(|(s, _)| members.until(s) == Some(None) && !for_keys(ctx, conn, s)).collect();
         self.work.members += listing.len() as u64;
         for (s, mut at) in listing {
             loop {
@@ -656,7 +673,7 @@ impl Streams {
             let until = ctx.shared.members(conn).get(&s).map(|m| m.until);
             let entry = match until {
                 None => None,
-                Some(u) => self.fetchable(ctx, &s, &b, u).ok().flatten(),
+                Some(u) => self.fetchable(ctx, conn, &s, &b, u).ok().flatten(),
             };
             let n = entry.as_ref().map_or(40, |(v, ..)| v.len() + 200);
             if n > left && !items.is_empty() {
@@ -668,8 +685,11 @@ impl Streams {
         ctx.wire.answer(conn, id, Msg::FetchReply { id, items });
     }
 
-    fn fetchable(&self, ctx: &mut Ctx, s: &SyncId, b: &BlobId, until: Option<Position>) -> Result<Option<Body>> {
+    fn fetchable(&self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, b: &BlobId, until: Option<Position>) -> Result<Option<Body>> {
         let Some(e) = ctx.store.entry(s, b)? else { return Ok(None) };
+        if for_keys(ctx, conn, s) && !role_entry(ctx, s, &e) {
+            return Ok(None);
+        }
         if let Some(u) = until
             && ctx.store.first_logged(s, b)?.is_none_or(|f| f > u)
         {

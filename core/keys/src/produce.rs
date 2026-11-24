@@ -298,7 +298,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         // the keyset lists its current epochs but derived ones (held only where the mint admin's
         // secret is: superseded through the history box)
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived)).copied().collect();
-        let mut ks = keyset(&epoch, &secret, &listed, names);
+        let mut ks = keyset(r, &epoch, &secret, &listed, names);
         for (m, out) in left_out.get(&r).into_iter().flatten() {
             ks.left_out.insert((*m).into(), out.iter().map(to_schema).collect());
         }
@@ -451,7 +451,7 @@ pub fn box_holder(
     Ok(out)
 }
 
-/// A box of `role`'s secret `secret` at `epoch` of `actor` to `rcpt` alone (a ticket's).
+/// A box of `role`'s secret `secret` at `epoch` of `actor` to `rcpt` alone.
 /// `Ok(None)` when a needed keyset is unknown.
 pub fn box_epoch(actor: &Tid, rcpt: &Recipient, role: Role, epoch: Epoch, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Option<SecretsWrite>, Error> {
     let mut out = SecretsWrite::default();

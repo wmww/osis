@@ -697,14 +697,15 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     w.take()
 }
 
-/// A commit's `METAS` row: version 1, the part count, a byte per part, the view.
+/// A commit's `METAS` row: version 1, the part count, a byte per part (bit 7: its thing is
+/// `Indexes::miskeyed` for the commit), the view.
 pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     let mut out = Vec::with_capacity(64 + 48 * m.parts());
     out.push(1);
     out.extend_from_slice(&(m.parts() as u32).to_be_bytes());
     for (ai, v) in m.valid().iter().enumerate() {
         let role = core.ix.rotation_role.get(&(*id, ai)).map_or(0, |r| 1 + *r as u8);
-        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 4) | (u8::from(m.missing(ai)) << 5) | (u8::from(m.whole(ai)) << 6));
+        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 4) | (u8::from(m.missing(ai)) << 5) | (u8::from(m.whole(ai)) << 6) | (u8::from(m.view.aspects.get(ai).is_some_and(|a| core.ix.miskeyed.contains(&(*id, a.tid)))) << 7));
     }
     let v = &m.view;
     let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8);
@@ -892,6 +893,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
         let mut s: BTreeSet<CommitId> = c.ix.commits.logged().into_iter().collect();
         s.extend(c.ix.rotation_role.logged().into_iter().map(|k| k.0));
         s.extend(c.ix.grant_overreach.logged().into_iter().map(|k| k.0));
+        s.extend(c.ix.miskeyed.logged().into_iter().map(|k| k.0));
         s.into_iter().collect()
     };
     if !ids.is_empty() {
@@ -970,7 +972,7 @@ pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
     tx.txn.drop_indexes()?;
     // the tables memory rows go to exist whatever they hold: a memory transaction registering
     // one would write it durably (a table's registration is always durable)
-    for name in [METAS, SNAPSHOTS, ADDENDA, super::refs::TO, super::refs::FROM, super::refs::TICKETS, super::refs::LINKS, super::refs::WAITS] {
+    for name in [METAS, SNAPSHOTS, ADDENDA, super::refs::TO, super::refs::FROM, super::refs::LINKS, super::refs::WAITS] {
         tx.txn.index(name)?;
     }
     super::refs::write_all(tx)?;
@@ -1063,6 +1065,11 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             }
             if p & 16 != 0 {
                 tx.core.ix.grant_overreach.insert((id, ai));
+            }
+            if p & 128 != 0
+                && let Some(a) = view.aspects.get(ai)
+            {
+                tx.core.ix.miskeyed.insert((id, a.tid));
             }
         }
         let view = Arc::new(view);

@@ -19,13 +19,13 @@ impl Secrets for VSecrets {
         Some(s32(0x30))
     }
     fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&s32(0x31)).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&s32(0x31)).verifying_key())
     }
     fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&s32(0x32)).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&s32(0x32)).verifying_key())
     }
     fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&s32(0x33)).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&s32(0x33)).verifying_key())
     }
 }
 
@@ -439,12 +439,12 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.frontier = frontier;
     out.push(reject("frontier on a role compaction snapshot", "spec/wire.md §4", &x, "frontier"));
     let mut x = content.clone();
-    x.keys.push(DeleteKey::new(3, &osis_crypto::DeleteSecret::derive(&s32(0x37)).verifying_key()));
+    x.keys.push(DeleteKey::new(3, &osis_crypto::DeleteSecret::write(&s32(0x37)).verifying_key()));
     out.push(reject("delete key no aspect lists", "spec/wire.md §4", &x, "unused-key"));
     // one purge author per commit: a second level-2 key, listed by a second aspect, is bad input
     let mut x = content.clone();
     let (k1, k2) = (x.keys[0], x.keys[1]);
-    let other = DeleteKey::new(2, &osis_crypto::DeleteSecret::derive(&s32(0x38)).verifying_key());
+    let other = DeleteKey::new(2, &osis_crypto::DeleteSecret::write(&s32(0x38)).verifying_key());
     x.keys.push(other);
     x.keys.sort();
     let ix = |k: &DeleteKey| x.keys.iter().position(|y| y == k).unwrap();

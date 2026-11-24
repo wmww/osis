@@ -11,7 +11,7 @@ use osis_base::format::MAX_DRIFT_MS;
 use osis_base::memo::{Clock, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid};
 use osis_engine::retention::Minting;
-use osis_engine::sync::{BodyMeta, Loss, PieceLink, ReadCredentials};
+use osis_engine::sync::{BodyId, BodyMeta, Loss, PieceLink, ReadCredentials};
 use osis_blob::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -132,16 +132,16 @@ pub(crate) struct Toward {
 
 /// What a judgement reads of read's own state.
 pub(crate) struct Mine<'a> {
-    pub verdicts: &'a Stamped<(SyncId, CommitId), Verdict>,
-    pub roles: &'a Stamped<SyncId, BTreeSet<CommitId>>,
+    pub verdicts: &'a Stamped<(SyncId, BodyId), Verdict>,
+    pub roles: &'a Stamped<SyncId, BTreeSet<BodyId>>,
     pub clock: &'a Clock,
-    /// Each (S, commit)'s body at S, as `Read::bodies` last settled it.
-    pub metas: &'a Stamped<(SyncId, CommitId), BodyMeta>,
+    /// Each (S, body)'s meta at S, as `Read::bodies` last settled it.
+    pub metas: &'a Stamped<(SyncId, BodyId), BodyMeta>,
     /// Per (S, minting, thing) the header-only copy's place among the thing's mintings, as
     /// `Read::mintings` last settled them.
     pub mints: &'a Stamped<(SyncId, CommitId, Tid), Mint>,
-    /// Per (S, commit), the pass place an entry of it last came into the own store of S.
-    pub arrived: &'a Stamped<(SyncId, CommitId), u64>,
+    /// Per (S, body), the pass place an entry of it last came into the own store of S.
+    pub arrived: &'a Stamped<(SyncId, BodyId), u64>,
     /// Per commit, the pass place what its bodies read (`Ground::bodies`) last moved.
     pub moved: &'a Stamped<CommitId, u64>,
 }
@@ -175,20 +175,20 @@ pub(crate) fn rank(ms: &[Minting], mut held: impl FnMut(&CommitId) -> Result<boo
 /// Thing `t`'s mintings whose header-only copy is in S's required set as a minting of `t`
 /// (`BodyMeta::mints`), each by `rank` over every held minting of `t` and the own store of S.
 /// Empty: none is (no longer followed).
-pub(crate) fn mintings(g: &mut impl Ground, metas: &Stamped<(SyncId, CommitId), BodyMeta>, s: &SyncId, t: &Tid) -> Result<Arc<BTreeMap<CommitId, Mint>>> {
+pub(crate) fn mintings(g: &mut impl Ground, metas: &Stamped<(SyncId, BodyId), BodyMeta>, s: &SyncId, t: &Tid) -> Result<Arc<BTreeMap<CommitId, Mint>>> {
     osis_base::costs::count("read: mintings", 1);
     let ms = g.mintings(t);
-    let mut ranked = rank(&ms, |c| Ok(!g.own(s, c)?.is_empty()))?;
-    ranked.retain(|c, _| metas.get(&(*s, *c)).is_some_and(|m| m.mints.contains(t)));
+    let mut ranked = rank(&ms, |c| Ok(!g.own(s, &BodyId::unit(*c))?.is_empty()))?;
+    ranked.retain(|c, _| metas.get(&(*s, BodyId::unit(*c))).is_some_and(|m| m.mints.contains(t)));
     Ok(Arc::new(ranked))
 }
 
 /// A header-only minting copy's verdict from its places among its things' mintings (`Mint`): the
 /// most any thing gives it; unjudged while a thing's is not settled.
-fn minted(mine: &Mine, s: &SyncId, c: &CommitId, meta: &BodyMeta) -> Verdict {
+fn minted(mine: &Mine, s: &SyncId, c: &BodyId, meta: &BodyMeta) -> Verdict {
     let mut v = Verdict::May;
     for t in &meta.mints {
-        match mine.mints.get(&(*s, *c, *t)) {
+        match mine.mints.get(&(*s, c.commit, *t)) {
             None => return Verdict::Unjudged,
             Some(Mint::Log) => v = Verdict::Must,
             Some(Mint::Keep) => {}
@@ -200,7 +200,7 @@ fn minted(mine: &Mine, s: &SyncId, c: &CommitId, meta: &BodyMeta) -> Verdict {
 impl Mine<'_> {
     /// Commit `c`'s body at `s` (`Ground::bodies`), a read of that pair alone: a body coming or
     /// going at another sync ID moves no judgement here.
-    fn meta(&self, s: &SyncId, c: &CommitId) -> Option<&BodyMeta> {
+    fn meta(&self, s: &SyncId, c: &BodyId) -> Option<&BodyMeta> {
         self.metas.get(&(*s, *c))
     }
 
@@ -214,8 +214,8 @@ impl Mine<'_> {
 /// past a complete pass of S begun after both an entry of it came and what its bodies read last
 /// moved (§1 Unjudged blobs: what arrives in that pass may still put it inside), else unjudged,
 /// with the place the wait runs from.
-fn outside(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -> (Verdict, Option<u64>) {
-    let since = mine.arrived.get(&(*s, *c)).copied().unwrap_or(0).max(mine.moved.get(c).copied().unwrap_or(0));
+fn outside(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId) -> (Verdict, Option<u64>) {
+    let since = mine.arrived.get(&(*s, *c)).copied().unwrap_or(0).max(mine.moved.get(&c.commit).copied().unwrap_or(0));
     match g.passed(s, since) {
         true => (Verdict::MustNot(Why::OutsideRequired), None),
         false => (Verdict::Unjudged, Some(since)),
@@ -235,7 +235,7 @@ fn unnamed_copy(g: &mut impl Ground, meta: &BodyMeta, b: &BlobId) -> Result<bool
 
 /// Of `blobs` of `c`, the unnamed copies (`unnamed_copy`) and, while any is, whether the
 /// judgement that they are outside is final (`outside`) and the wait otherwise.
-fn unnamed_copies(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId, blobs: &BTreeSet<BlobId>) -> Result<(Vec<BlobId>, bool, Option<u64>)> {
+fn unnamed_copies(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId, blobs: &BTreeSet<BlobId>) -> Result<(Vec<BlobId>, bool, Option<u64>)> {
     let Some(meta) = mine.meta(s, c) else { return Ok((Vec::new(), false, None)) };
     let mut out = Vec::new();
     for b in blobs {
@@ -252,7 +252,7 @@ fn unnamed_copies(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId, bl
 
 /// spec/sync-judgement.md §2: what the body is at S, with the clause that decided it (a debug
 /// trace's reason, `last_why`).
-fn classify(mine: &Mine, f: &Facts, s: &SyncId, c: &CommitId, meta: &BodyMeta, later_held: bool) -> (Verdict, &'static str) {
+fn classify(mine: &Mine, f: &Facts, s: &SyncId, c: &BodyId, meta: &BodyMeta, later_held: bool) -> (Verdict, &'static str) {
     if let Some(w) = f.must_not {
         return (Verdict::MustNot(w), "its facts say must-not");
     }
@@ -307,7 +307,7 @@ pub(crate) fn last_why() -> &'static str {
 /// keep-at-least bound, each delta needing a carrier having one held there. A certificate but a
 /// sole one (a lasting header has no delta to cover) is required whatever snapshot covers it:
 /// never dropped as covered, may-hold only while this node may not log it (§2 Loggable: kept).
-fn covered_dropped<G: Ground>(g: &mut G, s: &SyncId, c: &CommitId, v: &Verdict, f: &Facts, mut held: impl FnMut(&mut G, &CommitId) -> Result<bool>) -> Result<bool> {
+fn covered_dropped<G: Ground>(g: &mut G, s: &SyncId, c: &BodyId, v: &Verdict, f: &Facts, mut held: impl FnMut(&mut G, &CommitId) -> Result<bool>) -> Result<bool> {
     if *v != Verdict::May || f.body.covered != Some(true) || f.body.kept || (!f.body.closure && !f.body.sole_certificate) {
         return Ok(false);
     }
@@ -327,7 +327,7 @@ fn covered_dropped<G: Ground>(g: &mut G, s: &SyncId, c: &CommitId, v: &Verdict, 
 }
 
 /// One body at S: its verdict and what it calls for in the own store.
-pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -> Result<Judged> {
+pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId) -> Result<Judged> {
     osis_base::costs::count("read: judged", 1);
     let mut j = Judged::default();
     if !g.reads(s) {
@@ -392,7 +392,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
             let mut later_held = false;
             // one this node judged invalid does not count (never-quiet)
             for (snap, invalid) in &f.later_unheld {
-                if !*invalid && (!g.own(s, snap)?.is_empty() || g.present_anywhere(s, snap)?) {
+                if !*invalid && (!g.own(s, &BodyId::unit(*snap))?.is_empty() || g.present_anywhere(s, &BodyId::unit(*snap))?) {
                     later_held = true;
                     break;
                 }
@@ -451,7 +451,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     // own store (§3 Own store): it follows this node's judgement alone, no delete key needed;
     // carriers are read only where an entry would leave
     let dropped_here = match &f {
-        Some(f) if !live.is_empty() => covered_dropped(g, s, c, &verdict, f, |g, x| Ok(!g.own(s, x)?.is_empty()))?,
+        Some(f) if !live.is_empty() => covered_dropped(g, s, c, &verdict, f, |g, x| Ok(!g.own(s, &BodyId::unit(*x))?.is_empty()))?,
         _ => false,
     };
     // judged invalid here, the body leaves the own store with no tombstone, so the node is no
@@ -509,7 +509,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         // (spec/sync-judgement.md §3 Own store; spec/sync-streams.md §5), so a new reader logs no
         // copy of what its sources hold
         if log && !f.as_ref().is_some_and(|f| f.own) && !g.first_synced(s)? {
-            let since = mine.arrived.get(&(*s, *c)).copied().unwrap_or(0).max(mine.moved.get(c).copied().unwrap_or(0));
+            let since = mine.arrived.get(&(*s, *c)).copied().unwrap_or(0).max(mine.moved.get(&c.commit).copied().unwrap_or(0));
             if !g.passed(s, since) {
                 #[cfg(debug_assertions)]
                 osis_base::trace::note(|| format!("log held back {s:?} {c:?}: first sync, a pass after {since}"));
@@ -536,7 +536,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         // the body's parts as its meta gives them (read's `bodies` effect), not `sync_bodies`
         // again: that reads every sync ID's body of `c`
         if let Some(meta) = mine.meta(s, c) {
-            j.roots = g.piece_roots(c, &meta.parts)?;
+            j.roots = g.piece_roots(&c.commit, &meta.parts)?;
         }
         j.repairs = f.as_ref().is_some_and(|f| f.own);
         j.fresh = f.as_ref().map(|f| f.repair_fresh.clone()).unwrap_or_default();
@@ -637,7 +637,7 @@ pub(crate) fn freed(g: &mut impl Ground, b: &BlobId, t: &Tid) -> Result<Freed> {
 /// away), whether it is up now or not: a delete owed stays owed until its stream no longer shows
 /// the entry. Only a body owing something reads whether the source is up (to carry it out on
 /// that connection), so a source coming back judges again what is owed there, nothing else.
-pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId, at: &Source) -> Result<Toward> {
+pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId, at: &Source) -> Result<Toward> {
     osis_base::costs::count("read: toward", 1);
     let mut t = Toward::default();
     if !g.kept_at(s, at) {
@@ -699,7 +699,7 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId,
 /// S must hold (not present there and not deleted there; one it refused included), read from the
 /// own store and the source's stream, never from what was sent. `c` itself waits for no other
 /// copy of itself.
-fn role_wait(g: &mut impl Ground, mine: &Mine, src: &SrcView, full: bool, s: &SyncId, c: &CommitId, creds: &ReadCredentials) -> Result<bool> {
+fn role_wait(g: &mut impl Ground, mine: &Mine, src: &SrcView, full: bool, s: &SyncId, c: &BodyId, creds: &ReadCredentials) -> Result<bool> {
     let ours = creds.head.as_ref().map(|h| h.id());
     if full || src.head.is_none() || src.head != ours {
         return Ok(false);
@@ -719,7 +719,7 @@ fn role_wait(g: &mut impl Ground, mine: &Mine, src: &SrcView, full: bool, s: &Sy
 /// Carriers, Duplicates) of the entries this node can sign a Delete of, while no role entry of this node's is lacking there and its stream
 /// shows no role commit this node does not hold.
 #[allow(clippy::too_many_arguments)]
-fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full: bool, seen: &Seen, s: &SyncId, c: &CommitId, f: Option<&Facts>, verdict: &Verdict, head: StepId, creds: &ReadCredentials) -> Result<()> {
+fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full: bool, seen: &Seen, s: &SyncId, c: &BodyId, f: Option<&Facts>, verdict: &Verdict, head: StepId, creds: &ReadCredentials) -> Result<()> {
     let why = match verdict {
         // an expired entry leaves every store by itself
         Verdict::MustNot(Why::Expired) => return Ok(()),
@@ -728,7 +728,7 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full
         // and it waits `MAX_DRIFT` past its keep-at-least bound (spec/commits.md §5 Keep at
         // least: every node's clock agrees it left history)
         _ => match f {
-            Some(f) => covered_dropped(g, s, c, verdict, f, |g, x| Ok(full || !g.seen(&src.at, s, x)?.present.is_empty()))? && mine.reached(f.body.hosts_from),
+            Some(f) => covered_dropped(g, s, c, verdict, f, |g, x| Ok(full || !g.seen(&src.at, s, &BodyId::unit(*x))?.present.is_empty()))? && mine.reached(f.body.hosts_from),
             None => false,
         },
     };
@@ -784,7 +784,7 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full
                     if any {
                         break;
                     }
-                    any = !g.seen(&src.at, s, x)?.present.is_empty();
+                    any = !g.seen(&src.at, s, &BodyId::unit(*x))?.present.is_empty();
                 }
                 carried &= any;
             }
@@ -847,7 +847,7 @@ fn duplicates(g: &mut impl Ground, seen: &Seen, copy_body: bool) -> Result<Vec<B
 
 /// A must-hold body the source lacks (§3 Reader that is not a writer; §4 Logged again once).
 #[allow(clippy::too_many_arguments)]
-fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full: bool, seen: &Seen, s: &SyncId, c: &CommitId, verdict: &Verdict, head: StepId, creds: &ReadCredentials, writer: bool, role: bool) -> Result<()> {
+fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full: bool, seen: &Seen, s: &SyncId, c: &BodyId, verdict: &Verdict, head: StepId, creds: &ReadCredentials, writer: bool, role: bool) -> Result<()> {
     // what the source holds of it carries the body (§3 Neither): nothing to relay
     if *verdict != Verdict::Must || (!seen.present.is_empty() && g.neither(s, c, &seen.present)?) {
         return Ok(());
@@ -904,11 +904,11 @@ pub(crate) enum Local {
 /// What held commit `c` calls for in the engine: its parts covered now drop (spec/commits.md §5
 /// Covered, Own replaces; spec/sync-compaction.md §1), and it is forgotten (§5 Forgetting) once
 /// the engine would forget it (`Ground::forgettable`) and no entry of a blob of it is known here
-/// under `at`, the sync IDs carrying a body of it (dropped parts included: `Ground::bodies`), or
-/// any other holding an entry or tombstone of one (`Ground::known_under`: a body whose sync IDs
-/// moved): none in the own store, no own tombstone (it ends `TOMBSTONE_LIFETIME` after the
+/// under `at`, the bodies of it its sync IDs carry (dropped parts included: `Ground::bodies`), or
+/// any other body an entry or tombstone of one is held as (`Ground::known_under`: a body whose
+/// sync IDs moved): none in the own store, no own tombstone (it ends `TOMBSTONE_LIFETIME` after the
 /// delete), none a source's stream shows.
-pub(crate) fn local(g: &mut impl Ground, c: &CommitId, at: &[SyncId]) -> Result<Local> {
+pub(crate) fn local(g: &mut impl Ground, c: &CommitId, at: &[(SyncId, Option<Tid>)]) -> Result<Local> {
     osis_base::costs::count("read: local judged", 1);
     match g.forgettable(c)? {
         None => return Ok(Local::Gone),
@@ -918,9 +918,10 @@ pub(crate) fn local(g: &mut impl Ground, c: &CommitId, at: &[SyncId]) -> Result<
             return Ok(if drops.is_empty() { Local::Kept } else { Local::Drop(Arc::new(drops)) });
         }
     }
-    let mut under: BTreeSet<SyncId> = at.iter().copied().collect();
-    under.extend(g.known_under(c)?);
-    for s in &under {
+    let mut under: BTreeSet<(SyncId, BodyId)> = at.iter().map(|(s, on)| (*s, BodyId { commit: *c, on: *on })).collect();
+    let ids: BTreeSet<SyncId> = at.iter().map(|x| x.0).collect();
+    under.extend(g.known_under(c, &ids)?);
+    for (s, c) in &under {
         if !g.own(s, c)?.is_empty() || !g.own_tombstones(s, c)?.is_empty() || g.present_anywhere(s, c)? {
             return Ok(Local::Kept);
         }

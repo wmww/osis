@@ -195,12 +195,14 @@ impl Engine {
         self.core.roster_of(thing)
     }
 
-    /// This node's effective role on `tid` now.
+    /// This node's role on `tid` now (spec/sync-set.md §2 Own actors): its own actors' effective
+    /// role by `tid`'s grants where the node syncs it or holds an offer of it, none elsewhere
+    /// (`rotation::role_here`).
     pub fn role_on(&self, tid: &Tid) -> Option<Role> {
         if !self.core.exists(tid) {
             return None;
         }
-        self.core.role_now(&self.core.me()?, tid)
+        crate::rotation::role_here(&self.core, tid)
     }
 
     /// The local state fragment of `(tid, ak)` (tests, simulator invariants).

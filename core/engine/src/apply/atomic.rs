@@ -206,7 +206,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     let st = tx.kept(tid, ak, st)?;
     if ch.is_changed() {
         tx.set_state_touched(tid, ak, st, &touch, Shred::No)?;
-        crate::engine::refs::note(tx, tid, ak, None, refs.unwrap_or_default())?;
+        crate::engine::refs::note(tx, tid, ak, refs.unwrap_or_default())?;
     } else {
         tx.core.states.insert(k, st);
     }
@@ -384,7 +384,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
                 d.add(&f, 1);
                 Ok(())
             })?;
-            crate::engine::refs::note(tx, &tid, &ak, Some(id), d)?;
+            crate::engine::refs::note(tx, &tid, &ak, d)?;
         }
         return Ok(());
     }
@@ -621,10 +621,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let mut held_changed = note_created(tx, &h, &parts.whole, true)?;
     let view = Arc::new(crate::engine::View::of(&h, super::paths::decided(tx.core, &h, &blob.keys)));
     let read = super::PartsRead::of(&h, &parts.whole);
+    tx.core.note_keys_of(&id, &h);
     if h.kind.is_role() {
         validity::note_required(tx.core, &h, &id, &read);
         validity::add_role_commit(tx.core, &view, &h.path, &id, read.perm());
-        validity::note_notices(tx.core, &id);
         held_changed = true;
     }
 
@@ -667,6 +667,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let meta = Meta::of(view.clone(), crate::engine::LazyHeader::ready(h.clone()), received, origin, None, parts.signed, valid.clone(), hold);
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
+    validity::note_grant_fire(tx.core, &id, &h, &valid);
     // held now: what it names is judged (`lists::put_names`)
     crate::flows::lists::note_listing(tx, &h, &id, &parts.whole)?;
     crate::retention::note_requests(tx, &id, &h)?;
@@ -859,7 +860,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     crate::retention::on_late(tx, id, Some(&late), &mut j.changed)?;
     if perm && let Some(all) = perm_parts {
         validity::add_role_commit(tx.core, &meta.view, &meta.header.path, id, all);
-        validity::note_notices(tx.core, id);
         held_changed = true;
     }
     observe_all(tx, &j)?;
@@ -1275,7 +1275,7 @@ pub(crate) fn remove_in_place(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment
     let after = crate::retention::compact::roots(ak, &st, at);
     let st = tx.kept(tid, ak, st)?;
     tx.set_state_touched(tid, ak, st, &touch, Shred::Yes)?;
-    crate::engine::refs::note(tx, tid, ak, None, refs.unwrap_or_default())?;
+    crate::engine::refs::note(tx, tid, ak, refs.unwrap_or_default())?;
     crate::retention::compact::Trigger::unlinked(tx, tid, ak, &roots, &after)?;
     Ok(())
 }

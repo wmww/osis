@@ -5,7 +5,7 @@
 use crate::common::{REG, s};
 use crate::flows::{account_two_nodes, edge_of, people};
 use osis_base::Role;
-use osis_base::{Tid, costs};
+use osis_base::{CommitId, Tid, costs};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
 use std::collections::BTreeMap;
@@ -166,18 +166,35 @@ fn what_a_reader_costs() {
         lp.hold_at(1, t);
         crate::flows::spread(&mut lp);
         let reader_ops = ops();
-        let (mg, rg) = (grown(&c0, &lp.peers[0].engine.census().unwrap()), grown(&r0, &lp.peers[1].engine.census().unwrap()));
+        let (mg, offered) = (grown(&c0, &lp.peers[0].engine.census().unwrap()), grown(&r0, &lp.peers[1].engine.census().unwrap()));
         assert!(lp.peers[1].engine.epochs(&t).is_some_and(|x| x.read.held().next().is_some()), "the reader holds t's secrets");
-        if show && i == 1 {
-            eprintln!("  granter rows: {mg:?}\n  reader rows: {rg:?}");
+        // the grant's offer (its fire, with the copy's evidence and records) is held its keep
+        // only: past the inbox lifetime the reader holds what syncing t costs
+        lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);
+        lp.peers[1].tick().unwrap();
+        // a fire out of history is forgotten, as sync forgets it once no source holds it
+        let e = &mut lp.peers[1].engine;
+        let fires: Vec<CommitId> = e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == "grant@~0"))).collect();
+        for f in fires {
+            assert!(e.forgettable(&f).unwrap(), "the offer is out of history");
+            e.forget_commits(&[f]).unwrap();
         }
-        each.push((done.commits.len(), download, mg.iter().map(|x| x.2).sum::<i64>(), rg.iter().map(|x| x.2).sum::<i64>(), maker_ops, reader_ops));
+        e.settle_needs().unwrap();
+        let rg = grown(&r0, &lp.peers[1].engine.census().unwrap());
+        assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Read), "the reader reads t past its offer");
+        if show && i == 1 {
+            eprintln!("  granter rows: {mg:?}\n  reader rows with the offer: {offered:?}\n  reader rows: {rg:?}");
+        }
+        let sum = |x: &[(String, i64, i64)]| x.iter().map(|x| x.2).sum::<i64>();
+        each.push((done.commits.len(), download, sum(&mg), sum(&rg), sum(&offered), maker_ops, reader_ops));
     }
-    eprintln!("grant read to another account: (commits, grant bytes, granter rows, reader rows, granter ops, reader ops) {:?}", each[1]);
-    let (commits, bytes, _, reader, _, _) = &each[1];
+    eprintln!("grant read to another account: (commits, grant bytes, granter rows, reader rows, reader rows with the offer, granter ops, reader ops) {:?}", each[1]);
+    let (commits, bytes, _, reader, offered, _, _) = &each[1];
     // the grant replaces writes of the thing's `secrets.0`: its first death, so the reader (and
     // the granter) keeps its held writes from here on, 4,460 B for its 50 writes (89 B a write,
     // notes/thing-cost.md): what dating replaced role bodies costs (spec/commits.md §5 Fixed
-    // retention: a replaced one is kept `ROLE_KEEP` after replaced)
-    assert!(*commits == 1 && *bytes < 4_000 && *reader < 36_000, "{:?}", each[1]);
+    // retention: a replaced one is kept `ROLE_KEEP` after replaced). The reader is measured past
+    // the inbox lifetime, the offer's fire forgotten (36,067 B, 40 B of it a history cursor of t
+    // the passing time writes, `hf/`: its last place out), and with the offer held (59,033 B)
+    assert!(*commits == 1 && *bytes < 4_000 && *reader < 36_200 && *offered < 59_200, "{:?}", each[1]);
 }

@@ -43,7 +43,7 @@ A failed read is no wait: `Effects::try_settle` records nothing and leaves the k
 | spec/sync-ids.md (sync IDs, steps, the store, Register, Behind, Walk) | engine `sync_ids`; `store` (entries, paths, caps, Register, Delete, Behind); `opens` (Walk); `inbox/register.rs` |
 | spec/sync-opens.md (dials, proofs, records, the shared set) | `driver/dials.rs`, `session` (proofs), `opens` |
 | spec/sync-judgement.md, spec/sync-compaction.md | `read` (reader), `unread` (kept unread); engine `sync/facts.rs`, `bodies.rs`, retention |
-| spec/sync-inbox.md | `inbox`; engine `sync/tickets.rs`, `flows/inbox.rs` |
+| spec/sync-inbox.md | `inbox`; engine `flows/inbox.rs` |
 | spec/sync-streams.md | `streams`, `session` (window, pushes) |
 | spec/sync-status.md | `status`; engine `sync/held.rs` (passes, held elsewhere) |
 | spec/sync-hostile.md | bounds in each module: `session` (per connection), `store` (caps, peer budget, deposits), `opens` (records, filters) |

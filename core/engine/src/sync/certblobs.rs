@@ -130,7 +130,7 @@ impl Engine {
         for t in self.read_things_of(s)? {
             for src in self.core.delete_chain(&t) {
                 match src {
-                    DeleteSource::Epochs(e) => held.extend(osis_keys::delete_candidates(DELETE_WRITER, &e, Some(&e)).into_iter().map(|(_, x)| (DELETE_WRITER, osis_crypto::DeleteSecret::derive(x)))),
+                    DeleteSource::Epochs(e) => held.extend(osis_keys::delete_candidates(DELETE_WRITER, &e, Some(&e)).into_iter().map(|(_, x)| (DELETE_WRITER, osis_crypto::DeleteSecret::write(x)))),
                     DeleteSource::KeyActor { seed, .. } => held.push((DELETE_WRITER, osis_crypto::DeleteSecret::from_seed(seed))),
                 }
             }
@@ -276,7 +276,7 @@ impl Engine {
         let mut out = BTreeSet::new();
         for t in namers {
             let ctx = self.body_ctx(&t);
-            if !(plain && ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_above_floor(x, &t)) {
+            if !(plain && ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minting_opens(x, &ctx) && self.minted_above_floor(x, &t)) {
                 out.insert(t);
             }
         }
@@ -288,7 +288,7 @@ impl Engine {
     /// moved.
     pub(crate) fn follow_cert_records(&mut self) -> Result<bool> {
         let f = &self.core.cert_records.followers;
-        if f.quiet.holds(f.carriers.idle()) && self.certificates_quiet() {
+        if f.quiet.holds(f.carriers.idle()) && self.certificates_quiet()? {
             return Ok(false);
         }
         let _u = Unrecorded::start();
@@ -327,7 +327,7 @@ impl Engine {
         let ctx = self.body_ctx(t);
         let mut out = BTreeSet::new();
         for x in records.iter() {
-            if self.core.created(x).is_some() && !(ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_dependent(x) && self.minted_above_floor(x, t)) {
+            if self.core.created(x).is_some() && !(ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_dependent(x) && self.minting_opens(x, &ctx) && self.minted_above_floor(x, t)) {
                 out.insert(*x);
             }
         }
@@ -353,6 +353,26 @@ impl Engine {
             Ok(false)
         })
         .unwrap_or(false)
+    }
+
+    /// Whether the readers of `ctx`'s sync unit open the section `x` was minted in: sealed under
+    /// the secret `x` derived when minted, it lists `x`'s record chain up to the actor that
+    /// secret derives from, and opens from a member they hold epochs of (spec/sync-judgement.md
+    /// §1): the unit's actor, or an independent thing of the unit. A thing minted under another
+    /// tree and reached by a strong or a grant (an account's profile under a contact) is minted
+    /// where they open nothing, so its record goes as a certificate.
+    fn minting_opens(&self, x: &Tid, ctx: &crate::sync_ids::BodyCtx) -> bool {
+        let core = &self.core;
+        for step in core.record_chain(x) {
+            let osis_base::ChainStep::Up { admin, .. } = step else { return false };
+            if admin == ctx.actor || (core.is_independent(&admin) && ctx.holds(core, &admin) && !core.destroyed(&admin)) {
+                return true;
+            }
+            if core.is_independent(&admin) || core.is_key_actor(&admin) {
+                return false;
+            }
+        }
+        false
     }
 
     /// Whether no held minting of `x` gives it epochs: its own-secrets rotation carrying its record

@@ -369,8 +369,13 @@ fn sync_units_are_the_models_plain_spec_sync_set_2() {
                 assert_eq!(got, hc::unit(&w, k, &edges), "seed {seed} step {step}: the sync unit of {k}");
             }
             // the node reads every independent thing (it made them): roots D's strongs to them
-            let n = hc::NodeView { roots: [0, 1, 2].into(), tickets: (0..3).map(|k| (k, hc::Ticket::Open)).collect() };
-            let held = hc::closure(&w, &edges, &n, hc::Walk::Units).held;
+            // (the model's last thing is its account, admin of each)
+            let me = kinds.len();
+            let mut mine = w.clone();
+            mine.kinds.push(hc::Kind::Independent);
+            mine.grants.extend((0..3).map(|k| ((me, k), hc::Role::Admin)));
+            let n = hc::NodeView { roots: [0, 1, 2].into(), own: [me].into() };
+            let held = hc::closure(&mine, &edges, &n, hc::Walk::Units).held;
             let want: BTreeSet<(usize, usize)> = edges.iter().copied().filter(|(x, y)| held.contains(x) && !held.contains(y)).collect();
             let got: BTreeSet<(usize, usize)> = e.not_carried().unwrap().iter().filter_map(|(x, y)| Some((ix(x)?, ix(y)?))).collect();
             assert_eq!(got, want, "seed {seed} step {step}: not carried");
@@ -446,7 +451,6 @@ fn nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2() {
     strong(e1, d1, x, true);
     lp.sync_all().unwrap();
     let e1 = &mut lp.peers[1].engine;
-    assert!(e1.held_tickets(&y).unwrap().is_empty(), "no ticket for Y");
     for t in [x, y, b] {
         assert!(e1.closure_holds(&t) && e1.sync_unit(&x).contains(&t), "{t:?}");
     }
@@ -566,8 +570,9 @@ fn knows(lp: &mut LocalPeer, i: usize, a: Tid) -> bool {
 // spec/commits.md §5 What a held thing needs, spec/sync-set.md §3 Release: another account's
 // chain stays while a held thing needs it and goes with the last. Peer 0 makes T (peer 1 a
 // writer who writes there, peer 2 a reader) and U (peer 2 a reader); peer 2 holds both and of
-// peer 1 only what certifies it (its role commits). Released, T goes whole, and peer 1's chain
-// with it; peer 0's stays, U needing it.
+// peer 1 only what certifies it (its role commits). Released, T keeps its edge piece while its
+// grant's fire is held; once peer 0 removed peer 2 and the removal's fire left the inbox, T goes
+// whole, and peer 1's chain with it; peer 0's stays, U needing it.
 #[test]
 fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_5() {
     let mut lp = crate::common::net_bare(3, 0);
@@ -617,10 +622,19 @@ fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_
     assert!(knows(&mut lp, 2, ps[1]), "T, left but not released, still needs peer 1's chain");
     let e2 = &mut lp.peers[2].engine;
     e2.released(&[t].into()).unwrap();
-    // the pass ends: what T's commits needed goes
     e2.settle_needs().unwrap();
     e2.check_index();
-    assert!(e2.core.created(&t).is_none(), "T released whole");
+    assert!(e2.core.created(&t).is_some(), "released, T keeps its edge piece: the grant's fire is held");
+    // peer 0 removes peer 2 from T; the removal's fire leaves the inbox after its lifetime
+    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: ps[2], new: None, retain: Some(false) }).unwrap();
+    pass(&mut lp);
+    lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);
+    lp.peers[2].tick().unwrap();
+    // the pass ends: what T's commits needed goes
+    let e2 = &mut lp.peers[2].engine;
+    e2.settle_needs().unwrap();
+    e2.check_index();
+    assert!(e2.core.created(&t).is_none(), "T goes whole with its grant's last fire");
     assert!(!knows(&mut lp, 2, ps[1]), "nothing held needs peer 1's chain");
     assert!(knows(&mut lp, 2, ps[0]), "U needs peer 0's chain");
     assert!(lp.peers[2].engine.closure_holds(&u));
@@ -656,8 +670,9 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
 // node holds outside its node closure at quiet does not depend on arrival order. Account Q (peer
 // 1, never met by peer 0) makes T and grants peer 0's account read; peer 0 holds T, takes Q's
 // commits, then releases T. Q's write on its own profile arrives before the release, or after
-// it: either way, at the pass's end nothing held needs Q's chain or that write, and peer 0 holds
-// the same.
+// it; Q ends the grant and its last fire leaves peer 0's inbox (a held fire keeps T's edge
+// piece): either way, at the pass's end nothing held needs Q's chain or that write, and peer 0
+// holds the same.
 #[test]
 fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
     let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
@@ -692,6 +707,11 @@ fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
         if late {
             crate::flows::send_carried(&mut lp, 1, 0, &[x]);
         }
+        // the grant ends and its last fire leaves the inbox: T's edge piece is held no more
+        let removal = lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: p0, new: None, retain: Some(false) }).unwrap().commits;
+        crate::flows::send_carried(&mut lp, 1, 0, &removal);
+        lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);
+        lp.peers[0].tick().unwrap();
         let e0 = &mut lp.peers[0].engine;
         e0.settle_needs().unwrap();
         // of Q's commits (peer 0's own hold and unhold differ by their stamps)

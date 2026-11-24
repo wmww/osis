@@ -377,8 +377,7 @@ impl ReadOnly {
     }
 
     /// Holds `t` on this node: a strong in its node root (spec/sync-set.md §1), so this node syncs
-    /// and keeps `t`, accepting a ticket for it that it holds (spec/sync-set.md §4). This node alone
-    /// holds it so, and writes no ticket for its account.
+    /// and keeps `t` (spec/sync-set.md §4). This node alone holds it so.
     /// `Unsupported` on a client with its own actor.
     pub fn hold(&self, t: Tid) -> Result<()> {
         self.local("hold")?;
@@ -426,8 +425,8 @@ impl Osis {
     /// holder of a role on it can read it.
     ///
     /// A grant to a thing as holder reaches that thing's readers through it; from a node that does
-    /// not read the holder it goes as a ticket the holder takes only once its setting enables its
-    /// inbox signals (`core::RetentionSetting::enable_inbox_signals`), waiting until then.
+    /// not read the holder it goes as a grant fire the holder takes only once its setting enables
+    /// its inbox signals (`core::RetentionSetting::enable_inbox_signals`), waiting until then.
     ///
     /// Needs admin on the target (or `may_grant` with a role of at least `role`, for someone with no grant yet;
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,

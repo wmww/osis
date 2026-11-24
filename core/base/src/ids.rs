@@ -213,7 +213,7 @@ pub struct Markers {
 /// An aspect key: name segments `[a-z_][a-z0-9_]*` joined by `:`, after an optional leading
 /// `:<tid>` segment; then the markers `+` (ephemeral) and `^` (admin-only); then `.` (an aspect)
 /// or `~` (a signal), or `@~` alone (an external signal), and the version: `name.0`,
-/// `contact:names.0`, `:<tid>:foo+^.1`, `x+~0`, `ticket@~0`.
+/// `contact:names.0`, `:<tid>:foo+^.1`, `x+~0`, `grant@~0`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Ak(String);
 
@@ -731,9 +731,9 @@ mod tests {
         assert_eq!(Ak::markers_of(":AAAAAAAAAAAAAAAAAAAA:a+^~12"), m(true, true, true));
         // `@` only as `@~`, never beside `+` or `^`
         let external = Markers { signal: true, external: true, ..Markers::default() };
-        let k = Ak::new("ticket@~0").unwrap();
-        assert!(k.external() && k.signal() && !k.ephemeral() && !k.admin_only() && k.segments().eq(["ticket"]));
-        assert_eq!((Ak::markers_of("ticket@~0"), Ak::markers_of("x~0").external), (external, false));
+        let k = Ak::new("grant@~0").unwrap();
+        assert!(k.external() && k.signal() && !k.ephemeral() && !k.admin_only() && k.segments().eq(["grant"]));
+        assert_eq!((Ak::markers_of("grant@~0"), Ak::markers_of("x~0").external), (external, false));
         for bad in ["x@.0", "x+@~0", "x^@~0", "x@+~0", "x@^~0", "x@~", "x@0", "@~0", "x@@~0"] {
             assert_eq!(Ak::new(bad), Err(AkError), "{bad}");
         }

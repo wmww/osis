@@ -167,6 +167,9 @@ fn late_keys_part_establishes_rotation_spec_crypto_4() {
     let mut lp = net(2, 0);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
+    // by the flow: `a` gets secrets of its own with its sync ID (spec/sync-ids.md §2), whose
+    // steps the hand-written rotations list their delete keys from
+    read_by_1(&mut lp, a);
     let (_, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from(Role::ALL), &Names::default());
     let e1 = r1.rotated.iter().find(|x| x.role == Role::Read).unwrap().epoch;
     let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]), &Names::default());

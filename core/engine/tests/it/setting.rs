@@ -77,12 +77,23 @@ fn pack(lp: &mut LocalPeer, i: usize, c: &CommitId) -> Package {
     lp.peers[i].engine.package(c).unwrap().unwrap()
 }
 
-/// What every node holds before the writes under test (the thing, its roles).
-fn base(lp: &mut LocalPeer) -> Vec<Package> {
+/// What every node holds before the writes under test: the thing and its roles, and the fires
+/// peer 0 owes (the fresh account's grant reaches it as its `grant@~0` fire).
+struct Base {
+    packs: Vec<Package>,
+    fires: Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)>,
+}
+
+fn base(lp: &mut LocalPeer) -> Base {
     let ids = lp.peers[0].engine.commit_ids();
     let mut x: Vec<(osis_base::Ts, Package)> = ids.iter().map(|c| (lp.peers[0].engine.header(c).unwrap().ts, pack(lp, 0, c))).collect();
     x.sort_by_key(|x| x.0);
-    x.into_iter().map(|x| x.1).collect()
+    Base { packs: x.into_iter().map(|x| x.1).collect(), fires: fires(lp) }
+}
+
+/// The fires peer 0 owes, sealed.
+fn fires(lp: &mut LocalPeer) -> Vec<(CommitId, WallMs, osis_engine::sync::SealedFireOut)> {
+    crate::order::owed_fires(&mut lp.peers[0].engine)
 }
 
 /// A node apart from `setup`'s (seeds 0 to 2).
@@ -90,11 +101,15 @@ const FRESH: u64 = 3;
 
 /// A node of the account `setup` grants read on `d` (`fresh_account`), holding `d`, at wall
 /// time `at`, holding `base` then `order`.
-fn fresh(d: Tid, base: &[Package], order: &[&Package], at: WallMs) -> Peer {
+fn fresh(d: Tid, base: &Base, order: &[&Package], at: WallMs) -> Peer {
     let mut p = fresh_account();
     p.engine.hold(osis_base::Strong(d)).unwrap();
     p.clock.set(at);
-    for x in base.iter().chain(order.iter().copied()) {
+    for x in &base.packs {
+        p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
+    }
+    crate::order::take_fires(&mut p, &base.fires);
+    for x in order {
         p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
     }
     p
@@ -758,6 +773,7 @@ fn covered_drops_history(seed: u64) -> usize {
     let mut ids: Vec<(osis_base::Ts, CommitId)> = lp.peers[0].engine.commit_ids().into_iter().map(|c| (lp.peers[0].engine.header(&c).unwrap().ts, c)).collect();
     ids.sort();
     let packs: Vec<Package> = ids.iter().filter_map(|(_, c)| lp.peers[0].engine.package(c).unwrap()).collect();
+    let packs = Base { packs, fires: fires(&mut lp) };
     let mut p = fresh(d, &packs, &[], lp.peers[0].engine.now());
     let p = &mut p;
     let on: Vec<(CommitId, &str)> =

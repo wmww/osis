@@ -46,14 +46,11 @@ aspect body.0: markdown;
 
 // ---- References ----
 // What a thing holds (spec/data-model.md §8): a strong says its target belongs with this thing,
-// a weak only points, a ticket also carries what syncing its target needs.
+// a weak only points.
 
 /// Strongs and weaks. A node holds what its node root reaches by strongs; a tag tags what its
 /// `holds.0` references.
 aspect holds.0: set<ref>;
-
-/// Tickets the thing holds: the account root's for the things the account's nodes hold.
-aspect tickets.0: set<ticket>;
 
 // ---- Tags ----
 
@@ -136,7 +133,8 @@ type keyset = struct {
     kem_key 1: kem_key,
     /// Which set of algorithms the secret is used with.
     suite 2: int,
-    /// Lets holders of the secret delete stored data at nodes keeping it unread (spec/crypto.md §7).
+    /// Interim (issues/delete-key-levels-unchecked.md): the step key of the role's secret
+    /// (spec/crypto.md §7), for a writer holding no `sync.0` of the actor.
     delete_key 3: signing_key,
     /// The earlier epochs this one replaces.
     supersedes 4: set<epoch>,

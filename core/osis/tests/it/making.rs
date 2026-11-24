@@ -15,7 +15,7 @@ fn pumped() -> Osis {
 }
 
 /// Makes one thing, held where it lives: dependent, in the account root's sync unit, else minted with the
-/// account as admin (independent, a sync ID of its own, the account's ticket for it in the account root).
+/// account as admin (independent, a sync ID of its own).
 fn make(db: &Osis, dependent: bool) {
     let mut w = db.write();
     match dependent {
@@ -27,7 +27,7 @@ fn make(db: &Osis, dependent: bool) {
 }
 
 /// Per counted kind, the work of making one more thing after `n` held ones: the least of three
-/// such makes, since an aspect the makes write (the account root's `holds.0` and `tickets.0`)
+/// such makes, since an aspect the makes write (the account root's `holds.0`)
 /// compacts once its bodies outweigh a snapshot (spec/sync-compaction.md §1), a cost its trigger
 /// spreads over the writes it covers.
 fn next(n: usize, dependent: bool) -> BTreeMap<&'static str, u64> {
@@ -71,7 +71,7 @@ fn making_a_dependent_thing_costs_what_it_changed_spec_sync_set_2() {
 }
 
 // spec/sync-set.md §2 (Cost; Making a thing), spec/permissions.md §3 (a thing whose mint admin is
-// an account becomes independent): one more independent thing moves no other sync ID's dial peers, tickets, lost access,
+// an account becomes independent): one more independent thing moves no other sync ID's dial peers, lost access,
 // role duty, wrap or judgements: every counted kind flat from 4 to 40 such things.
 #[test]
 fn making_an_independent_thing_costs_what_it_changed_spec_sync_set_2() {

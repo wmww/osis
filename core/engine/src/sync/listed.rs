@@ -139,7 +139,7 @@ impl Engine {
     pub(crate) fn follow_lists(&mut self) -> Result<bool> {
         let f = &self.core.listed.followers;
         // `certified`'s follow runs inside: at its fixed point too
-        if f.quiet.holds(f.carriers.idle()) && self.certificates_quiet() {
+        if f.quiet.holds(f.carriers.idle()) && self.certificates_quiet()? {
             return Ok(false);
         }
         let _u = Unrecorded::start();

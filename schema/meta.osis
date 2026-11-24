@@ -61,7 +61,6 @@ type type_expr = enum {
     weak 19,
     /// A strong or a weak, the writer's choice per value.
     ref 20,
-    ticket 21,
     reserved 5,
 };
 

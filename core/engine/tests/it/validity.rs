@@ -187,6 +187,38 @@ fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_b
     cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
+// spec/crypto.md §7 (Checked keys), spec/commits.md §4 (Delete keys): a delta listing, at level 1
+// or 3, a key no step up its thing's record chain bears is invalid where the check is read, and
+// the writer's writes listing the step's keys stay valid there. Bob, a writer of `d`, signs a
+// write listing made-up keys (keys he could hold, to delete the blob at a store whatever its
+// purge-by). Interim (issues/delete-key-levels-unchecked.md): the check is read only where
+// `Engine::check_delete_keys` turns it on; without it the forged write applies.
+#[test]
+fn a_delta_listing_a_key_no_step_bears_is_invalid_spec_crypto_7() {
+    let (mut lp, d, _, _) = setup();
+    let x = ak("x:other.0");
+    let first = put(&mut lp, 1, d, &x, &s("first"));
+    sync(&mut lp, 1, 0);
+    let h = lp.peers[1].engine.header(&first).unwrap();
+    let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let forged = forge_reg(&mut lp, d, &x, h.aspects[0].hi, ts, "forged");
+    lp.peers[0].receive(&forged, Vec::new()).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&d, &x).unwrap(), Some(s("forged")), "unchecked, the write applies");
+    lp.peers[0].engine.check_delete_keys(true).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&d, &x).unwrap(), Some(s("first")), "its key is on no step: invalid");
+    // arriving under the check it is invalid as well; a write listing the step's keys is valid
+    sync(&mut lp, 1, 2);
+    lp.peers[2].engine.check_delete_keys(true).unwrap();
+    lp.peers[2].receive(&forged, Vec::new()).unwrap();
+    assert_eq!(lp.peers[2].engine.get(&d, &x).unwrap(), Some(s("first")));
+    lp.advance(1000);
+    put(&mut lp, 2, d, &x, &s("third"));
+    sync(&mut lp, 2, 0);
+    for i in [0, 2] {
+        assert_eq!(lp.peers[i].engine.get(&d, &x).unwrap(), Some(s("third")), "peer {i}");
+    }
+}
+
 /// The ID of an applied ingest.
 fn applied(r: Ingested) -> osis_base::CommitId {
     match r {
@@ -1116,7 +1148,7 @@ fn record_then_edge_chain_applies_spec_perm_1() {
         assert_eq!(lp.peers[i].engine.get(&c, &ak("t:reg.0")).unwrap(), Some(s("n0")), "peer {i}");
     }
     // the certificates carry the edges and the records, A's among them, raw
-    let certs = lp.peers[0].engine.certificates(&c);
+    let certs = lp.peers[0].engine.certificates(&c).unwrap();
     assert!(certs.records.contains(&a));
     assert!(certs.commits.contains_key(&ab) && certs.commits.contains_key(&bc));
     let mut fresh = LocalPeer::of(vec![obs], 1).unwrap();
@@ -3317,13 +3349,13 @@ impl osis_commit::Secrets for Dedups {
     }
     fn admin_key(&self, t: &Tid) -> Option<osis_crypto::VerifyingKey> {
         let _ = t;
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
     }
     fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
     }
     fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
     }
 }
 
@@ -4688,6 +4720,8 @@ fn a_path_waiting_opens_when_its_roles_secret_comes_spec_commits_4() {
             let pk = lp.peers[0].engine.package(&g).unwrap().unwrap();
             unless_refused(lp.peers[2].engine.ingest(&pk.bytes, pk.blobs.clone()));
         }
+        // the grant's fire takes it: its box opens then, no part of Bob's commit delivered
+        lp.pass_fires(2).unwrap();
         lp.peers[2].reexamine().unwrap();
         assert!(lp.peers[2].engine.epochs(&d).is_some_and(|e| !e.read.held_roles().is_empty()), "Carol holds D's roles secret");
         assert!(!lp.peers[2].engine.core.ix.paths_unknown.contains(&id), "D's path opened (rolled back: {rolled_back})");

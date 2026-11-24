@@ -27,14 +27,11 @@ pub(crate) mod set;
 pub(crate) mod setting;
 mod signing;
 pub(crate) mod stranded;
-pub(crate) mod tickets;
 pub(crate) mod units;
 pub use stranded::Stranding;
 pub use crate::flows::inbox::{FireId, SealedFireOut};
 #[cfg(test)]
 mod tests_facts;
-#[cfg(test)]
-mod tests_tickets;
 
 pub use osis_blob::DialHint;
 
@@ -137,7 +134,32 @@ pub enum Opened {
     Bad,
 }
 
-/// One sync ID's body of a commit: what S carries of it (spec/sync-judgement.md §1).
+/// One body under a sync ID (spec/permissions.md §4 Copies): a commit's sync unit body (`on`
+/// none: the shared blob, a per-sync-ID copy, or a header alone), or its certificate copy on one
+/// thing outside the sync unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BodyId {
+    pub commit: CommitId,
+    pub on: Option<Tid>,
+}
+
+impl BodyId {
+    /// `c`'s sync unit body.
+    pub fn unit(c: CommitId) -> BodyId {
+        BodyId { commit: c, on: None }
+    }
+
+    /// `c`'s certificate copy on `x`.
+    pub fn copy(c: CommitId, x: Tid) -> BodyId {
+        BodyId { commit: c, on: Some(x) }
+    }
+}
+
+/// A commit's bodies under the read sync IDs (`Engine::sync_bodies`): per (sync ID, thing), its
+/// sync unit body (no thing) or its certificate copy on that thing.
+pub type Bodies = BTreeMap<(SyncId, Option<Tid>), BodyMeta>;
+
+/// One body under a sync ID: what S carries of it (spec/sync-judgement.md §1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BodyMeta {
     pub parts: PartSet,
@@ -279,6 +301,8 @@ impl std::fmt::Debug for ThingsFeed {
 #[derive(Clone)]
 pub(crate) struct Entered {
     held: osis_base::memo::Feed<Tid>,
+    /// The holders coming to be held for keys (`Closure::keys_feed`).
+    keys: osis_base::memo::Feed<Tid>,
     /// The links followed (`FollowedLinks::followed_feed`).
     links: osis_base::memo::Feed<Tid>,
 }
@@ -286,9 +310,10 @@ pub(crate) struct Entered {
 /// How this node syncs one thing of N's closure (spec/sync-set.md §2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThingSync {
-    /// Read: its sync ID.
+    /// Its sync IDs, opened by a read secret held: read, or, where the thing is held for keys,
+    /// for role entries alone (`Engine::thing_holdings` tells which).
     Read(Vec<SyncId>),
-    /// Kept unread: by a ticket for the sync role (spec/sync.md).
+    /// Kept unread: by a sync secret alone (spec/sync.md §3).
     Unread(Vec<SyncId>),
     /// Independent, neither a read nor a sync secret held (`Unsyncable`).
     Unsyncable,
@@ -300,7 +325,18 @@ pub enum ThingSync {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Holding {
     Read,
+    /// Held for keys (spec/sync-set.md §2): its role entries alone, opened and judged as a reader
+    /// does, and none of its thing's content.
+    Keys,
     Unread,
+}
+
+impl Holding {
+    /// Whether a read secret of S's thing is held: S's entries are opened and judged as a reader
+    /// does (all of them read, its role entries alone held for keys).
+    pub fn opens(self) -> bool {
+        self != Holding::Unread
+    }
 }
 
 /// A sync ID a thing owns, with its recorded path and tree.
@@ -488,7 +524,7 @@ impl Engine {
     /// What `read` judges `c`'s body under `s` on beside `BodyFacts` (`ReadFacts`). Kept per
     /// (sync ID, commit) from its first ask (`Core::read_facts`, a `memo::Cutoff`, refreshed by
     /// `follow`): a reader moves only when the facts do; `unfollow_facts` lets a key go.
-    pub fn read_facts(&mut self, s: &SyncId, c: &CommitId) -> Result<ReadFacts> {
+    pub fn read_facts(&mut self, s: &SyncId, c: &BodyId) -> Result<ReadFacts> {
         osis_base::memo::Cutoff::get_in(self, |e| &e.core.read_facts, &(*s, *c), |e, (s, c)| e.read_facts_now(s, c))
     }
 
@@ -496,12 +532,12 @@ impl Engine {
     /// per delta needing one, the commits one of which must be held where the body leaves. Not
     /// kept: a judgement asks only where it would let an entry of the body go, so a body whose
     /// entries went reads nothing of the snapshots extending its chain of covers.
-    pub fn carriers(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BTreeSet<CommitId>>> {
+    pub fn carriers(&mut self, s: &SyncId, c: &BodyId) -> Result<Vec<BTreeSet<CommitId>>> {
         self.carriers_now(s, c)
     }
 
     /// Stops keeping `c`'s facts under `s` (`read_facts`): its judgement went idle.
-    pub fn unfollow_facts(&mut self, s: &SyncId, c: &CommitId) {
+    pub fn unfollow_facts(&mut self, s: &SyncId, c: &BodyId) {
         self.core.read_facts.unfollow(&(*s, *c));
     }
 
@@ -941,6 +977,21 @@ impl Engine {
     pub fn roster_holders(&mut self, s: &SyncId) -> Result<Arc<RosterHolders>> {
         self.follow_read_things()?;
         osis_base::memo::Memo::get_in(self, |e| &e.core.roster_holders, s, |e| e.roster_holders_now(s))
+    }
+
+    /// Whether the entries of held commit `c` are role entries (spec/sync-ids.md §6 Role
+    /// entries): a role commit or a commit carrying a purge request. What a
+    /// writer stamps under the role-entry domain, and what a peer holding the sync ID's thing
+    /// for keys is shown.
+    pub fn role_commit(&mut self, c: &CommitId) -> bool {
+        let Some(h) = self.header(c) else { return false };
+        h.kind.is_role() || self.core.ix.commits.get(c).is_some_and(|m| m.view.purges)
+    }
+
+    /// Whether held blob `b` under `s` is a role entry: a blob of a `role_commit`, or a record
+    /// or list blob noted under `s`.
+    pub fn role_entry(&mut self, s: &SyncId, b: &BlobId) -> bool {
+        self.cert_blob_noted(s, b) || self.blob_commit(b).is_some_and(|c| self.role_commit(&c))
     }
 
     /// The commit a held blob opened or was sealed as (`blob_parts`' row).

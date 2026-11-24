@@ -642,9 +642,9 @@ impl Header {
     }
 
     fn encode_with(&self, out: &mut Vec<u8>, position: &dyn Fn(&Header, &mut Vec<u8>, ListField)) {
-        // the flags are trailing, absent when none is set
+        // the flags are trailing, absent when zero
         let flags = self.flags();
-        put_array(out, if flags != 0 { 18 } else { 17 });
+        put_array(out, 17 + usize::from(flags != 0));
         put_uint(out, FORMAT_VERSION);
         put_tid_bytes(out, &self.signer);
         self.path.put(out);
@@ -931,13 +931,14 @@ impl Header {
             return Err(Error::Malformed("format version"));
         }
         let all: Vec<Item> = items.into_iter().collect();
-        let flags = match all.get(17) {
-            None => 0,
-            Some(m) if all.len() == 18 => match item::uint(*m)? {
+        // trailing: the flags (a uint), only where not zero
+        let flags = match all.get(17..).unwrap_or_default() {
+            [] => 0,
+            [m] => match item::uint(*m)? {
                 f @ 1..=3 => f,
                 _ => return Err(Error::Malformed("header flags")),
             },
-            Some(_) => return Err(Error::Malformed("header arity")),
+            _ => return Err(Error::Malformed("header arity")),
         };
         let Some([_, signer, path, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation, reseal]) = all.get(..17).and_then(|x| <[Item; 17]>::try_from(x).ok()) else {
             return Err(Error::Malformed("header arity"));

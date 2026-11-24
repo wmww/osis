@@ -1,10 +1,10 @@
 //! The evidence a sync ID requires (notes/evidence-derivation.md; spec/permissions.md §4 Evidence
-//! of a commit, Evidence of a sync ID, Role changes travel). Built unused beside `sync/certified.rs`:
-//! nothing reads it yet.
+//! of a commit, Evidence of a sync ID, Role changes travel). The engine keeps one over its held
+//! set (`kept`), which `sync/certified.rs` reads.
 //!
 //! A function of the copies (commit, thing) a node holds and of each sync ID's unit: the least set
 //! the closure rules give over them. Changes come in by call (`add`, `forget`, `open_path`, `join`,
-//! `leave`); each extends the closure from what it adds, or closes again from the sync ID's seeds
+//! `leave`, `add_sid`, `remove_sid`, `add_record`, `remove_record`); each extends the closure from what it adds, or closes again from the sync ID's seeds
 //! where it can shrink it. `from_scratch` is the same closure from nothing. Generic over the thing
 //! (`T`), commit (`C`) and step (`S`: step IDs and their keys) types so it runs over held-model's
 //! worlds as over the engine's.
@@ -13,13 +13,16 @@
 //! edge of its stated paths and on each edge it writes, whatever their validity or order, and the
 //! `sync.0` writes recording the steps that place the delete keys it lists. **Keys-open travel**
 //! (`Config::keys_open`) is a graph over things, kept as an index so a change reaches only the sync
-//! IDs it can move: edges of held writes giving read, and record edges (`add_record`, standing for
-//! good), from a sync ID's actor to the holders whose role changes travel under it.
+//! IDs it can move: edges of held writes giving read, and record edges (`add_record`, standing
+//! while the record is held), from a sync ID's actor to the holders whose role changes travel under it.
 
+use osis_base::memo::Stamps;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
+use std::hash::Hash;
 
 pub mod held;
+pub(crate) mod kept;
 
 /// An edge: (holder, target).
 pub type Edge<T> = (T, T);
@@ -47,7 +50,7 @@ pub enum Kind<T> {
 
 /// The level of a checked delete key (spec/crypto.md §7 Levels): a step's delete key (1) or its
 /// write key (3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
     Admin,
     Writer,
@@ -55,7 +58,7 @@ pub enum Level {
 
 /// A delete key a part lists at level 1 or 3 for its thing's delete base (spec/crypto.md §7 Header
 /// list); a key-actor base lists none here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Del<T, S> {
     pub base: T,
     pub level: Level,
@@ -196,6 +199,14 @@ impl<C: Ord + Copy, T: Ord + Copy> Graph<C, T> {
         }
         new
     }
+    /// A record edge held no more; true when the edge is gone.
+    fn remove_record(&mut self, e: &Edge<T>) -> bool {
+        if !self.records.remove(e) || self.parts.contains_key(e) {
+            return false;
+        }
+        remove_from(&mut self.out, &e.0, &e.1);
+        true
+    }
     /// True when the edge is gone.
     fn remove(&mut self, e: &Edge<T>, p: &PartId<C, T>) -> bool {
         let Some(s) = self.parts.get_mut(e) else { return false };
@@ -238,10 +249,34 @@ struct Ix<C, T, S> {
     steps: BTreeMap<(T, S), HeldStep<C, S>>,
     /// Step IDs per (base, level, key) they bear.
     bearing: BTreeMap<Del<T, S>, BTreeSet<S>>,
+    /// The stamps of what a closure looks up (`Row`), and of each sync ID's closure: a derived
+    /// value that read the derivation moves with the rows it read (`osis_base::memo`).
+    stamps: Stamps,
+}
+
+/// What a reader of the derivation depends on, as its stamps name it: one closure lookup (a
+/// copy's parts, the copies on an edge, the steps bearing a key, a held step) or one sync ID's
+/// closure (`required`, `edges`).
+#[derive(Hash)]
+enum Row<'a, C, T, S> {
+    Copy(&'a CopyId<C, T>),
+    Edge(&'a Edge<T>),
+    Bearing(&'a Del<T, S>),
+    Step(&'a (T, S)),
+    Sid(&'a T),
+}
+
+impl<C: Hash, T: Hash, S: Hash> Ix<C, T, S> {
+    fn read(&self, r: Row<'_, C, T, S>) {
+        self.stamps.read(&r);
+    }
+    fn wrote(&self, r: Row<'_, C, T, S>) {
+        self.stamps.wrote(&r, true);
+    }
 }
 
 /// A sync ID's closure over its seeds.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Closure<C, T, S> {
     members: Required<C, T, S>,
     edges: BTreeSet<Edge<T>>,
@@ -359,9 +394,9 @@ fn own_edge<T: Copy, S>(p: &Part<T, S>, on: T) -> Option<Edge<T>> {
 
 impl<C, T, S> Evidence<C, T, S>
 where
-    C: Ord + Copy + Debug,
-    T: Ord + Copy + Debug,
-    S: Ord + Copy + Debug,
+    C: Ord + Copy + Debug + Hash,
+    T: Ord + Copy + Debug + Hash,
+    S: Ord + Copy + Debug + Hash,
 {
     pub fn new(cfg: Config) -> Self {
         let ix = Ix {
@@ -373,6 +408,7 @@ where
             reads: Graph::new(),
             steps: BTreeMap::new(),
             bearing: BTreeMap::new(),
+            stamps: Stamps::named("evidence"),
         };
         Evidence { cfg, ix, sids: BTreeMap::new(), edge_sids: BTreeMap::new(), member_sids: BTreeMap::new(), thing_sids: BTreeMap::new(), open_sids: BTreeMap::new(), base_sids: BTreeMap::new(), counts: Counts::default() }
     }
@@ -381,22 +417,31 @@ where
         self.counts
     }
 
+    /// The whole derivation is read (a read no row names).
+    fn read_all(&self) {
+        self.ix.stamps.read_all();
+    }
+
     /// The copies S's evidence holds (things outside its unit), each with a reason.
     pub fn required(&self, sid: &T) -> Option<&Required<C, T, S>> {
+        self.ix.read(Row::Sid(sid));
         self.sids.get(sid).map(|s| &s.closure.members)
     }
 
     /// The edges S's evidence uses.
     pub fn edges(&self, sid: &T) -> Option<&BTreeSet<Edge<T>>> {
+        self.ix.read(Row::Sid(sid));
         self.sids.get(sid).map(|s| &s.closure.edges)
     }
 
     /// The edges S's bodies bring and how many bring each.
     pub fn atoms(&self, sid: &T) -> Option<&BTreeMap<Edge<T>, usize>> {
+        self.read_all();
         self.sids.get(sid).map(|s| &s.atoms.edges)
     }
 
     pub fn holds(&self, c: &CopyId<C, T>) -> bool {
+        self.ix.read(Row::Copy(c));
         self.ix.copies.contains_key(c)
     }
 
@@ -407,6 +452,7 @@ where
 
     /// `from_scratch` with the work it did.
     pub fn from_scratch_counted(&self, sid: &T) -> Option<(Required<C, T, S>, Counts)> {
+        self.read_all();
         let s = self.sids.get(sid)?;
         let mut counts = Counts::default();
         let atoms = self.atoms_of(&s.unit, &mut counts);
@@ -417,6 +463,25 @@ where
         let mut cl = Closure::default();
         close(&self.ix, &s.unit, &mut cl, work, &mut counts);
         Some((cl.members, counts))
+    }
+
+    /// The evidence of copies `seeds` alone (spec/permissions.md §4 Evidence of a commit): the
+    /// closure from what each brings (its parts' known path edges, the edges its edge writes set,
+    /// the delete keys it lists), the seeds left out. What a fire, a sealed copy or an edge piece
+    /// carries beside its copy.
+    pub fn closure_of(&self, seeds: &BTreeSet<CopyId<C, T>>) -> Required<C, T, S> {
+        let mut work = Vec::new();
+        for c in seeds {
+            self.ix.read(Row::Copy(c));
+            for p in self.ix.copies.get(c).into_iter().flatten() {
+                work.extend(p.hops.iter().flatten().chain(&own_edge(p, c.1)).map(|e| Item::Edge(*e)));
+                work.extend(p.dels.iter().map(|d| Item::Del(*d)));
+            }
+        }
+        let mut cl = Closure::default();
+        close(&self.ix, &BTreeSet::new(), &mut cl, work, &mut Counts::default());
+        cl.members.retain(|c, _| !seeds.contains(c));
+        cl.members
     }
 
     /// What the bodies on `unit`'s things bring, from nothing.
@@ -442,6 +507,7 @@ where
     /// keys-open graph holds exactly the held parts giving read and the records, and the reverse
     /// indexes (edge, member, thing, open thing, base → sync IDs) hold exactly what the sync IDs do.
     pub fn check(&self) -> Result<(), String> {
+        self.read_all();
         let mut reads = Graph::new();
         for e in &self.ix.records {
             reads.insert_record(*e);
@@ -506,11 +572,53 @@ where
         if self.sids.contains_key(&sid) {
             return;
         }
+        self.ix.stamps.moved();
+        self.ix.wrote(Row::Sid(&sid));
         let travel = Travel { open: BTreeSet::new(), seeds: BTreeMap::new() };
         self.sids.insert(sid, Sid { actor, unit: BTreeSet::new(), atoms: Atoms::default(), travel, closure: Closure::default() });
         let mut todo = Todo::default();
         todo.travel.insert(sid);
         self.settle(todo);
+    }
+
+    /// Sync ID `sid` registered no more: its unit, travel and closure go, in proportion to them.
+    pub fn remove_sid(&mut self, sid: &T) {
+        let Some(s) = self.sids.remove(sid) else { return };
+        self.ix.stamps.moved();
+        self.ix.wrote(Row::Sid(sid));
+        for e in &s.closure.edges {
+            remove_from(&mut self.edge_sids, e, sid);
+        }
+        for m in s.closure.members.keys() {
+            remove_from(&mut self.member_sids, m, sid);
+        }
+        for b in s.closure.dels.iter().map(|d| d.base).collect::<BTreeSet<_>>() {
+            remove_from(&mut self.base_sids, &b, sid);
+        }
+        for t in &s.unit {
+            remove_from(&mut self.thing_sids, t, sid);
+        }
+        for t in &s.travel.open {
+            remove_from(&mut self.open_sids, t, sid);
+        }
+    }
+
+    /// The sync IDs registered.
+    pub fn sids(&self) -> impl Iterator<Item = T> + '_ {
+        self.read_all();
+        self.sids.keys().copied()
+    }
+
+    /// The held copies with their parts.
+    pub fn copies(&self) -> &BTreeMap<CopyId<C, T>, Vec<Part<T, S>>> {
+        self.read_all();
+        &self.ix.copies
+    }
+
+    /// The record edges held.
+    pub fn records(&self) -> &BTreeSet<Edge<T>> {
+        self.read_all();
+        &self.ix.records
     }
 
     /// `t` joins S's unit.
@@ -531,6 +639,7 @@ where
         if !moved {
             return;
         }
+        self.ix.stamps.moved();
         let had = s.closure.members.keys().any(|c| c.1 == t);
         if joins {
             self.thing_sids.entry(t).or_default().insert(*sid);
@@ -547,16 +656,32 @@ where
         self.settle(todo);
     }
 
-    /// Record edge `e` (holder: the mint admin; target: the thing it minted), standing for good: an
-    /// edge of the keys-open graph (an admin edge, giving read). Records are identity: none is
-    /// ever taken back.
+    /// Record edge `e` (holder: the mint admin; target: the thing it minted), standing while the
+    /// record is held: an edge of the keys-open graph (an admin edge, giving read).
     pub fn add_record(&mut self, e: Edge<T>) {
         if !self.ix.records.insert(e) {
             return;
         }
+        self.ix.stamps.moved();
         let mut todo = Todo::default();
         if self.ix.reads.insert_record(e) {
             self.read_edge(e, &mut todo);
+        }
+        self.settle(todo);
+    }
+
+    /// Record edge `e` held no more (its thing's record forgotten): a shrink of the keys-open
+    /// graph, so the sync IDs whose open things held both its ends compute theirs again.
+    pub fn remove_record(&mut self, e: &Edge<T>) {
+        if !self.ix.records.remove(e) {
+            return;
+        }
+        self.ix.stamps.moved();
+        let mut todo = Todo::default();
+        if self.ix.reads.remove_record(e)
+            && let (Some(a), Some(b)) = (self.open_sids.get(&e.0), self.open_sids.get(&e.1))
+        {
+            todo.travel.extend(a.intersection(b).copied());
         }
         self.settle(todo);
     }
@@ -567,19 +692,25 @@ where
             self.forget(&c);
         }
         let mut todo = Todo::default();
+        self.ix.stamps.moved();
+        self.ix.wrote(Row::Copy(&c));
         self.ix.on_thing.entry(c.1).or_default().insert(c.0);
         let mut steps = false;
         for (i, p) in parts.iter().enumerate() {
             for s in &p.steps {
                 steps = true;
+                self.ix.wrote(Row::Step(&(c.1, s.id)));
                 let h = self.ix.steps.entry((c.1, s.id)).or_insert_with(|| HeldStep { step: *s, by: BTreeSet::new() });
                 h.by.insert(c.0);
                 for level in [Level::Admin, Level::Writer] {
-                    self.ix.bearing.entry(Del { base: c.1, level, key: s.key(level) }).or_default().insert(s.id);
+                    let d = Del { base: c.1, level, key: s.key(level) };
+                    self.ix.wrote(Row::Bearing(&d));
+                    self.ix.bearing.entry(d).or_default().insert(s.id);
                 }
             }
             let Kind::Write(w) = p.kind else { continue };
             let e = (w.holder, c.1);
+            self.ix.wrote(Row::Edge(&e));
             self.ix.on_edge.entry(e).or_default().insert(c);
             self.ix.by_holder.entry(w.holder).or_default().insert(c);
             for sid in self.edge_sids.get(&e).cloned().unwrap_or_default() {
@@ -636,15 +767,20 @@ where
             todo.dirty.insert(sid);
         }
         let parts = self.ix.copies.remove(c).unwrap_or_default();
+        self.ix.stamps.moved();
+        self.ix.wrote(Row::Copy(c));
         remove_from(&mut self.ix.on_thing, &c.1, &c.0);
         for (i, p) in parts.iter().enumerate() {
             for s in &p.steps {
+                self.ix.wrote(Row::Step(&(c.1, s.id)));
                 if let Some(h) = self.ix.steps.get_mut(&(c.1, s.id)) {
                     h.by.remove(&c.0);
                     if h.by.is_empty() {
                         self.ix.steps.remove(&(c.1, s.id));
                         for level in [Level::Admin, Level::Writer] {
-                            remove_from(&mut self.ix.bearing, &Del { base: c.1, level, key: s.key(level) }, &s.id);
+                            let d = Del { base: c.1, level, key: s.key(level) };
+                            self.ix.wrote(Row::Bearing(&d));
+                            remove_from(&mut self.ix.bearing, &d, &s.id);
                         }
                     }
                 }
@@ -652,6 +788,7 @@ where
             }
             let Kind::Write(w) = p.kind else { continue };
             let e = (w.holder, c.1);
+            self.ix.wrote(Row::Edge(&e));
             remove_from(&mut self.ix.on_edge, &e, c);
             remove_from(&mut self.ix.by_holder, &w.holder, c);
             // a travel seed it was leaves with it
@@ -677,6 +814,8 @@ where
             return;
         }
         p.hops = Some(hops.clone());
+        self.ix.stamps.moved();
+        self.ix.wrote(Row::Copy(c));
         let mut todo = Todo::default();
         for sid in self.thing_sids.get(&c.1).cloned().unwrap_or_default() {
             self.counts.bodies += 1;
@@ -818,6 +957,9 @@ where
     fn extend(&mut self, sid: &T, work: Vec<Item<C, T, S>>) {
         let Some(s) = self.sids.get_mut(sid) else { return };
         let added = close(&self.ix, &s.unit, &mut s.closure, work, &mut self.counts);
+        if !added.edges.is_empty() || !added.members.is_empty() {
+            self.ix.wrote(Row::Sid(sid));
+        }
         for e in added.edges {
             self.edge_sids.entry(e).or_default().insert(*sid);
         }
@@ -848,6 +990,10 @@ where
         work.extend(s.atoms.dels.keys().map(|d| Item::Del(*d)));
         work.extend(s.travel.seeds.iter().map(|(c, r)| Item::Copy(*c, *r)));
         self.extend(sid, work);
+        // `extend` stamped what it added: a closure that only shrank is stamped here
+        if self.sids.get(sid).is_some_and(|s| s.closure != old) {
+            self.ix.wrote(Row::Sid(sid));
+        }
     }
 }
 
@@ -890,9 +1036,9 @@ struct Added<C, T> {
 /// brings its parts' known path edges, the edges its edge writes set and the delete keys it lists.
 fn close<C, T, S>(ix: &Ix<C, T, S>, unit: &BTreeSet<T>, cl: &mut Closure<C, T, S>, mut work: Vec<Item<C, T, S>>, counts: &mut Counts) -> Added<C, T>
 where
-    C: Ord + Copy,
-    T: Ord + Copy,
-    S: Ord + Copy,
+    C: Ord + Copy + Hash,
+    T: Ord + Copy + Hash,
+    S: Ord + Copy + Hash,
 {
     let mut added = Added { edges: vec![], members: vec![], bases: vec![] };
     while let Some(item) = work.pop() {
@@ -903,6 +1049,7 @@ where
                 }
                 counts.edges += 1;
                 added.edges.push(e);
+                ix.read(Row::Edge(&e));
                 work.extend(ix.on_edge.get(&e).into_iter().flatten().map(|c| Item::Copy(*c, Reason::Edge(e))));
             }
             Item::Del(d) => {
@@ -912,8 +1059,10 @@ where
                 added.bases.push(d.base);
                 // each step bearing the key, up to the genesis (a step's ID commits to its parent)
                 let mut walked = BTreeSet::new();
+                ix.read(Row::Bearing(&d));
                 let mut todo: Vec<S> = ix.bearing.get(&d).into_iter().flatten().copied().collect();
                 while let Some(id) = todo.pop() {
+                    ix.read(Row::Step(&(d.base, id)));
                     let Some(h) = ix.steps.get(&(d.base, id)) else { continue };
                     if !walked.insert(id) {
                         continue;
@@ -928,6 +1077,7 @@ where
                 if unit.contains(&c.1) || cl.members.contains_key(&c) {
                     continue;
                 }
+                ix.read(Row::Copy(&c));
                 let Some(parts) = ix.copies.get(&c) else { continue };
                 cl.members.insert(c, why);
                 added.members.push(c);

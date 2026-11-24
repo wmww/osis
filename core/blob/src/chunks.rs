@@ -105,7 +105,7 @@ mod tests {
     }
 
     fn dk(b: u8) -> osis_crypto::VerifyingKey {
-        osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([b; 32])).verifying_key()
+        osis_crypto::DeleteSecret::write(&Secret32::from_bytes([b; 32])).verifying_key()
     }
 
     fn read_back(store: &mut MemoryBlobs, f: &Framing, root: Link, max_len: usize, room: usize) -> Result<(Value, usize), Error> {

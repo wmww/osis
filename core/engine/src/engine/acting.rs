@@ -19,7 +19,8 @@ impl Engine {
         Ts::make(self.now(), 0).unwrap_or_default()
     }
 
-    /// The effective role of `actor` on `t` now (spec/permissions.md §1).
+    /// The role `actor` holds on `t` now as this node acts by it: its effective role
+    /// (spec/permissions.md §1) over record edges and taken grants alone (§4 Taken grants).
     pub fn actor_role(&self, actor: &Tid, t: &Tid) -> Option<Role> {
         self.core.role_now(actor, t)
     }

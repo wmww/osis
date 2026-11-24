@@ -92,6 +92,10 @@ impl Held {
         self.records_read.read(t);
         self.created.get(t)
     }
+    /// A cursor over the things whose record comes to be held from now on.
+    pub fn records_feed(&self) -> osis_base::memo::Feed<Tid> {
+        self.records_read.feed()
+    }
     /// Every thing whose record is held.
     pub fn things(&self) -> impl Iterator<Item = &Tid> {
         self.records_read.read_all();
@@ -248,7 +252,7 @@ impl Held {
     }
 
     fn set_created(&mut self, t: Tid, r: Option<CreationRecord>) -> Option<CreationRecord> {
-        self.records_read.wrote(&t, r.is_some());
+        self.records_read.wrote_added(&t, r.is_some(), !self.created.contains_key(&t));
         let old = match r {
             Some(r) => {
                 if let Some(up) = r.mint_admin() {
@@ -673,7 +677,8 @@ enum Read {
     /// The history of the edges into a thing (its record edge included): moved by a change of
     /// one (`osis_perm::Changed::edges`) or of its record.
     Into(Tid),
-    /// The edge writes held on a thing, applied or not: moved by any change of its held inputs.
+    /// The edge writes held on a thing and whether each applies: moved by one coming or going
+    /// (`osis_perm::Changed::held`) or changing its standing (`ops`).
     Held(Tid),
     /// The edge writes held on a thing, any validity, and its record: what a chain walk reads of
     /// it, moved by `ever_moved`.
@@ -719,6 +724,10 @@ impl<'a> On<'a> {
     /// Whether one of them applies (`Timeline::is_applied`).
     pub fn is_applied(&self, w: &osis_perm::WriteId) -> bool {
         self.tl.is_applied(w)
+    }
+    /// One of them as applied: what it found on its edge (`Timeline::applied`).
+    pub fn applied_write(&self, w: &osis_perm::WriteId) -> Option<osis_perm::paths::Applied> {
+        self.tl.applied(w)
     }
     /// `holder`'s edge on it just before `point` (`None`: now).
     pub fn edge_at(&self, holder: &Tid, point: Option<osis_perm::Point>) -> Option<osis_perm::Edge> {
@@ -832,16 +841,11 @@ impl Timelines {
     /// Every actor's effective role on `thing` on the current edges at `ts`, and the earliest
     /// `until` before which they hold, read as `roles_on` is.
     pub fn roles_now(&self, thing: &Tid, ts: osis_base::Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<osis_base::WallMs>) {
-        self.roles_now_without(thing, ts, &BTreeSet::new())
-    }
-
-    /// `roles_now` over the edges not in `skip`, each named (target, holder).
-    pub fn roles_now_without(&self, thing: &Tid, ts: osis_base::Ts, skip: &BTreeSet<(Tid, Tid)>) -> (Arc<BTreeMap<Tid, Role>>, Option<osis_base::WallMs>) {
-        let (roles, until) = self.of.roles_on_now_without(thing, ts, skip);
+        let (roles, until) = self.of.roles_on_now(thing, ts);
         for t in roles.keys().chain([thing]) {
             self.stamps.read(&Read::Into(*t));
         }
-        (Arc::new(roles), until)
+        (roles, until)
     }
 
     /// `node`'s effective role on `thing` at `at` (`roles_on`).
@@ -861,8 +865,8 @@ impl Timelines {
         self.of.things()
     }
 
-    /// Stamps what an update over `touched` things changed (`c`).
-    fn moved(&mut self, touched: &BTreeSet<Tid>, c: &osis_perm::Changed) {
+    /// Stamps what an update changed (`c`).
+    fn moved(&mut self, c: &osis_perm::Changed) {
         // the whole of it as role state: a delta coming or going moves no edge write's
         // standing and no edge (what reads a delta's verdict is judged again by `Changed::reached`)
         let w = &c.walk;
@@ -872,7 +876,10 @@ impl Timelines {
         if !c.created.is_empty() || c.edges().next().is_some() {
             self.ways.clear();
         }
-        for t in touched.iter().chain(&c.held) {
+        // the edge writes held on a thing, and which of them apply: a write that came or went
+        // (`held`), one whose standing moved (`ops`). A commit moves nothing of its signer's.
+        let stood: BTreeSet<Tid> = c.ops.iter().filter_map(|w| self.of.edge_op(w)).map(|(_, _, target)| target).collect();
+        for t in c.held.iter().chain(&stood) {
             self.stamps.wrote(&Read::Held(*t), true);
         }
         for t in c.created.iter().chain(c.edges().map(|(_, t)| t)) {
@@ -916,7 +923,7 @@ impl Timelines {
     /// reading may have changed, `touched` things whose held inputs did.
     pub fn update(&mut self, held: &dyn osis_perm::HeldSet, commits: &BTreeSet<osis_base::CommitId>, touched: &BTreeSet<Tid>) -> osis_perm::Changed {
         let c = self.of.update(held, commits, touched);
-        self.moved(touched, &c);
+        self.moved(&c);
         c
     }
 
@@ -1147,10 +1154,9 @@ mod tests {
         h.add_commit(grant(2, at[0], g2.tid(), at[2], Role::Write));
         update(&mut h, &mut tl);
         check(&tl);
-        // g2's holders, roster, standings, roles on it (twice) and writes held,
-        // and the writes held on its author (a held input of every thing the commit names);
-        // nothing of g1 or a1
-        assert_eq!(runs(), 7, "a grant on g2");
+        // g2's holders, roster, standings, roles on it (twice) and writes held; nothing of g1
+        // or a1, nor of its author (no write held on it came, went or changed its standing)
+        assert_eq!(runs(), 6, "a grant on g2");
         // a write by a party without authority applies nothing: held on g1, nothing else moves
         h.add_commit(grant(5, at[3], g1.tid(), at[3], Role::Admin));
         update(&mut h, &mut tl);

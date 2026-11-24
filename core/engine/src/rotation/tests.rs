@@ -153,13 +153,15 @@ fn rotation_missing_again_binds_nothing_spec_crypto_4() {
     assert!(blocked_at(&mut lp, 3, t).is_empty(), "covered by its own rotation");
 }
 
-/// An independent thing of peer `i`'s.
+/// An independent thing of peer `i`'s, taking grants from outside (`LocalPeer::takes_grants`): a
+/// holder other peers grant roles to.
 pub(super) fn independent_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     let me = lp.peers[i].engine.me();
     let mut m = Mutation::new();
     let g = lp.peers[i].engine.new_thing(&mut m, me);
     lp.peers[i].commit(m).unwrap();
     lp.peers[i].engine.make_independent(&g).unwrap();
+    lp.takes_grants(i, g);
     lp.hold(g);
     g
 }
@@ -390,6 +392,8 @@ fn box_applied_before_its_grant_is_taken_after_a_pending_read_spec_permissions_3
                 lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
             }
         }
+        // G is taken as its fire comes
+        lp.pass_fires(1).unwrap();
         assert!(lp.peers[1].engine.epochs(&g).is_some_and(|x| x.read.secret(&e).is_some()), "late {late}: N lacks R's epoch");
     }
 }
@@ -744,6 +748,8 @@ fn rotation_without_its_boxes_orphans_nothing_spec_crypto_4() {
 fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
     let was = [Some(Role::Admin), Some(Role::Admin), Some(Role::Admin), Some(Role::Read), Some(Role::Admin)];
     let (mut lp, g, tids) = granted(5, &(1..5).map(|i| (i, was[i].unwrap())).collect::<Vec<_>>());
+    // the others stay unaware of peer 0's demotion: its fire is kept from them as its commit is
+    lp.hold_fires_of(0, true);
     let others = |lp: &mut LocalPeer| {
         for a in 1..5 {
             for b in 1..5 {
@@ -765,6 +771,7 @@ fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
     let before = lp.peers[2].engine.epochs(&g).unwrap().read.current();
     assert_eq!(before.len(), 2, "G's epoch and 4's fork current at 2: {before:?}");
     lp.peers[2].engine.demote(&g, &Demotion { holder: tids[3], new: None, retain: None }).unwrap();
+    lp.hold_fires_of(0, false);
     departures_settle(&mut lp, g, was);
 }
 
@@ -777,7 +784,7 @@ fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, h
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let ks = osis_keys::keyset(&s, held.read.secret(&s).unwrap(), &Default::default(), &Default::default());
+            let ks = osis_keys::keyset(Role::Read, &s, held.read.secret(&s).unwrap(), &Default::default(), &Default::default());
             let state = crate::flows::secrets_in(tx, &g)?;
             let at = ct::Epoch { n: s.n(), nonce: *s.nonce() };
             let key = ct::HistoryKey { role: Role::Read, epoch: at.clone() };
@@ -923,7 +930,7 @@ fn writer_rotation_skips(list_s: bool) {
             let mut rot = osis_keys::rotate(&g, &[Role::Read].into(), &held, &secrets, &holders.holders, &osis_keys::Names::default(), &mut *tx.rng).unwrap();
             let r = &rot.rotated[0];
             let list: BTreeSet<osis_crypto::Epoch> = if list_s { [s].into() } else { BTreeSet::new() };
-            rot.keys.keysets.insert(Role::Read, osis_keys::keyset(&r.epoch, &r.secret, &list, &rot.names));
+            rot.keys.keysets.insert(Role::Read, osis_keys::keyset(Role::Read, &r.epoch, &r.secret, &list, &rot.names));
             crate::flows::put_secrets(&mut m, g, &rot.secrets, false)?;
             crate::flows::put_keysets(&mut m, g, &rot.keys)?;
             crate::engine::Engine::commit_tx(tx, m)?;
@@ -2079,6 +2086,8 @@ fn withdrawn_epoch_compacts_judged_alike_spec_crypto_4() {
                 let _ = lp.peers[4].receive(&pk.bytes, pk.blobs.clone());
             }
         }
+        // N takes its grant by the fire, after the commits or before them
+        lp.pass_fires(4).unwrap();
         let read = |lp: &LocalPeer, p: usize| lp.peers[p].engine.epochs(&g).unwrap().read.clone();
         assert_eq!(read(&lp, 4).current(), read(&lp, c).current(), "case {case}: N and compactor {c} count different current read epochs");
         assert!(reads_key(&mut lp, 4, g, "after"), "case {case}: N reads nothing of what came after");

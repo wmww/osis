@@ -930,7 +930,9 @@ impl Streams {
                 }
                 class(Rank::Unopened, false)
             }
-            Holding::Read => {
+            // held for keys it takes what it is shown as a reader does: its source shows it role
+            // entries alone (`Streams::event`)
+            Holding::Read | Holding::Keys => {
                 if tomb {
                     return None;
                 }
@@ -961,7 +963,7 @@ impl Streams {
         match ctx.store.holding(&s) {
             Some(Holding::Unread) if tomb => self.tell(conn, s, Event::Refused(b, Code::TOMBSTONED)),
             Some(Holding::Unread) if stamp.is_some() => return self.take_body(ctx, conn, s, b, wrap, stamp, bytes),
-            Some(Holding::Read) if !tomb && ctx.store.entry(&s, &b).ok().flatten().is_none() => return self.take_body(ctx, conn, s, b, wrap, stamp, bytes),
+            Some(Holding::Read | Holding::Keys) if !tomb && ctx.store.entry(&s, &b).ok().flatten().is_none() => return self.take_body(ctx, conn, s, b, wrap, stamp, bytes),
             _ => {}
         }
         if let Some(p) = self.pull.get_mut(&conn) {
@@ -986,7 +988,7 @@ impl Streams {
     /// only while S is a member there and this node lacks the bytes and holds no tombstone of it.
     /// Its wrap comes with the reply; until then it ranks as a body that opens, after the rest.
     pub(super) fn refetch(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, b: BlobId) {
-        if !ctx.shared.members(conn).contains_key(&s) || ctx.store.holding(&s) != Some(Holding::Read) {
+        if !ctx.shared.members(conn).contains_key(&s) || !ctx.store.holding(&s).is_some_and(Holding::opens) {
             return;
         }
         if ctx.store.bytes(&b).ok().flatten().is_some() || ctx.store.tombstone(&s, &b).ok().flatten().is_some() {
@@ -1059,7 +1061,7 @@ impl Streams {
                 Ok(code) => self.refused(ctx, conn, s, b, code),
                 Err(e) => return self.failed(Err(e)),
             },
-            Some(Holding::Read) => match ctx.ground.open(&s, &e, bytes) {
+            Some(Holding::Read | Holding::Keys) => match ctx.ground.open(&s, &e, bytes) {
                 Ok(Opening::Bad) => {
                     if let Some(p) = self.pull.get_mut(&conn) {
                         p.failed.insert((s, b));
@@ -1418,7 +1420,7 @@ impl Streams {
             match e {
                 Event::Added { blob_id: b, blob, wrap, stamp } => {
                     if let Some(st) = stamp
-                        && ctx.store.holding(s) == Some(Holding::Read)
+                        && ctx.store.holding(s).is_some_and(Holding::opens)
                     {
                         self.new_stamp(ctx, src, s, b, wrap, st);
                     }

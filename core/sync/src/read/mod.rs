@@ -40,7 +40,7 @@ use crate::types::{ConnId, Cx, Result};
 use judge::{Act, Judged, Mine, Toward};
 use osis_base::memo::{Clock, Effects, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
-use osis_engine::sync::{BodyMeta, CertKind};
+use osis_engine::sync::{BodyId, BodyMeta, CertKind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -67,19 +67,19 @@ pub enum Why {
 pub struct Read {
     /// The time as judgements read it: an answer valid until `t` moves when the clock reaches it.
     clock: Clock,
-    bodies: Effects<CommitId, Arc<BTreeMap<SyncId, BodyMeta>>>,
-    /// Each commit's bodies as `bodies` last settled them, and the same per (S, commit): what a
+    bodies: Effects<CommitId, Arc<osis_engine::sync::Bodies>>,
+    /// Each commit's bodies as `bodies` last settled them, and the same per (S, body): what a
     /// judgement reads (`Mine::meta`), so a body coming or going at one sync ID moves the
     /// judgements of that pair alone.
-    settled: BTreeMap<CommitId, Arc<BTreeMap<SyncId, BodyMeta>>>,
-    metas: Stamped<(SyncId, CommitId), BodyMeta>,
-    judged: Effects<(SyncId, CommitId), Judged>,
+    settled: BTreeMap<CommitId, Arc<osis_engine::sync::Bodies>>,
+    metas: Stamped<(SyncId, BodyId), BodyMeta>,
+    judged: Effects<(SyncId, BodyId), Judged>,
     /// Per (S, thing) whose minting copies are in S's required set (`BodyMeta::mints`), each
     /// copy's place among the thing's mintings (`judge::mintings`), and the same per (S, minting,
     /// thing) (`Mine::mints`), so one minting moving re-judges the copies whose place moved alone.
     mintings: Effects<(SyncId, Tid), Arc<BTreeMap<CommitId, judge::Mint>>>,
     mints: Stamped<(SyncId, CommitId, Tid), judge::Mint>,
-    toward: Effects<(SyncId, CommitId, Source), Toward>,
+    toward: Effects<(SyncId, BodyId, Source), Toward>,
     /// Per (S, kind), the records (`None`) or one rotation's thing lists (`Some(r)`) S carries
     /// as certificates that no own certificate blob of the kind carries (spec/permissions.md §4,
     /// spec/sync-judgement.md §1): one record blob of them, and one list blob per rotation, is
@@ -101,14 +101,14 @@ pub struct Read {
     /// Per held commit, what it calls for in the engine: covered parts dropped, then forgotten
     /// (spec/commits.md §5 Covered, Forgetting; `judge::local`).
     local: Effects<CommitId, judge::Local>,
-    verdicts: Stamped<(SyncId, CommitId), Verdict>,
+    verdicts: Stamped<(SyncId, BodyId), Verdict>,
     /// Own role commits S must hold (§3 Role entries first).
-    roles: Stamped<SyncId, BTreeSet<CommitId>>,
-    /// Per (S, commit), the pass place an entry of it last came into the own store of S; per
+    roles: Stamped<SyncId, BTreeSet<BodyId>>,
+    /// Per (S, body), the pass place an entry of it last came into the own store of S; per
     /// commit, the pass place what its bodies read last moved; per S, the newest place a
     /// judgement outside S's required set waits a complete pass after (`judge::outside`, status
     /// runs it: `passes_wanted`).
-    arrived: Stamped<(SyncId, CommitId), u64>,
+    arrived: Stamped<(SyncId, BodyId), u64>,
     moved: Stamped<CommitId, u64>,
     waits: Stamped<SyncId, u64>,
     /// Per S whose certificate blobs are followed, the pass place they were first followed at:
@@ -235,20 +235,21 @@ impl Read {
             // again unchanged moves nothing)
             self.moved.insert(c, place);
             let was = self.settled.insert(c, now.clone()).unwrap_or_default();
-            for s in was.keys().filter(|s| !now.contains_key(*s)) {
-                self.metas.remove(&(*s, c));
+            let id = |on: &Option<Tid>| BodyId { commit: c, on: *on };
+            for (s, on) in was.keys().filter(|k| !now.contains_key(*k)) {
+                self.metas.remove(&(*s, id(on)));
             }
-            for (s, m) in now.iter().filter(|(s, m)| was.get(*s) != Some(*m)) {
-                self.metas.insert((*s, c), m.clone());
+            for ((s, on), m) in now.iter().filter(|(k, m)| was.get(*k) != Some(*m)) {
+                self.metas.insert((*s, id(on)), m.clone());
             }
-            for (s, m) in now.iter() {
+            for ((s, _), m) in now.iter() {
                 for t in &m.mints {
                     self.mintings.want((*s, *t));
                 }
             }
             self.local.want(c);
-            for s in now.keys() {
-                self.judged.want((*s, c));
+            for (s, on) in now.keys() {
+                self.judged.want((*s, id(on)));
                 self.follow_cert_blobs(g, s)?;
                 self.steps.want(*s);
             }
@@ -259,10 +260,10 @@ impl Read {
         // and every entry a source's stream shows (spec/sync-judgement.md §3 What a source
         // holds): what it calls for there is that source's (`toward`), and its own judgement
         // keeps it (a start replays every row, so what is owed at a source away is owed again)
-        let seen: Vec<(Source, SyncId, CommitId)> = g.seen_added()?;
+        let seen: Vec<(Source, SyncId, BodyId)> = g.seen_added()?;
         let mut shown = Vec::new();
         for (_, s, c) in &seen {
-            if g.holds(c) {
+            if g.holds(&c.commit) {
                 shown.push((*s, *c));
             }
         }
@@ -279,7 +280,7 @@ impl Read {
             if !g.reads(&s) {
                 continue;
             }
-            for (k, _) in self.metas.range((s, CommitId([0; 32]))..=(s, CommitId([0xff; 32]))) {
+            for (k, _) in self.metas.range((s, BodyId::unit(CommitId([0; 32])))..).take_while(|(k, _)| k.0 == s) {
                 self.judged.want(*k);
             }
             self.follow_cert_blobs(g, &s)?;
@@ -393,7 +394,7 @@ impl Read {
             }
         }
         // the own judgement of each body, to its fixpoint
-        let mut judged: Moved<(SyncId, CommitId), Judged> = BTreeMap::new();
+        let mut judged: Moved<(SyncId, BodyId), Judged> = BTreeMap::new();
         loop {
             g.refresh()?;
             let due = self.judged.due();
@@ -476,13 +477,13 @@ impl Read {
         // wrote, and a source joining or moving (a non-writer there gives every must-hold body)
         for (s, at) in g.sources_added() {
             if self.giving_to(g, &s)?.contains(&at) {
-                let must: Vec<CommitId> = self.verdicts.range((s, CommitId([0; 32]))..=(s, CommitId([0xff; 32]))).filter(|(_, v)| **v == Verdict::Must).map(|((_, c), _)| *c).collect();
+                let must: Vec<BodyId> = self.verdicts.range((s, BodyId::unit(CommitId([0; 32])))..).take_while(|(k, _)| k.0 == s).filter(|(_, v)| **v == Verdict::Must).map(|((_, c), _)| *c).collect();
                 for c in must {
                     self.toward.want((s, c, at));
                 }
             }
         }
-        let mut toward: Moved<(SyncId, CommitId, Source), Toward> = BTreeMap::new();
+        let mut toward: Moved<(SyncId, BodyId, Source), Toward> = BTreeMap::new();
         loop {
             let due = self.toward.due();
             if due.is_empty() {
@@ -526,7 +527,7 @@ impl Read {
         // engine transaction; a commit no longer held leaves read
         let mut forget = Vec::new();
         for c in self.local.due() {
-            let at: Vec<SyncId> = self.settled.get(&c).map(|m| m.keys().copied().collect()).unwrap_or_default();
+            let at: Vec<(SyncId, Option<Tid>)> = self.settled.get(&c).map(|m| m.keys().copied().collect()).unwrap_or_default();
             let Some((_, now)) = self.local.try_settle(&c, || judge::local(g, &c, &at))? else { continue };
             match now {
                 judge::Local::Gone => {
@@ -534,8 +535,8 @@ impl Read {
                     g.unfollow_fate(&c);
                     self.bodies.unwant(&c);
                     self.moved.remove(&c);
-                    for s in self.settled.remove(&c).into_iter().flat_map(|m| m.keys().copied().collect::<Vec<_>>()) {
-                        self.metas.remove(&(s, c));
+                    for (s, on) in self.settled.remove(&c).into_iter().flat_map(|m| m.keys().copied().collect::<Vec<_>>()) {
+                        self.metas.remove(&(s, BodyId { commit: c, on }));
                     }
                 }
                 judge::Local::Drop(parts) => {
@@ -563,9 +564,9 @@ impl Read {
         Ok(acted)
     }
 
-    /// Commit `c`'s acts at S moved from `before` to `now`: those toward a source no longer
+    /// Body `c`'s acts at S moved from `before` to `now`: those toward a source no longer
     /// called for are owed no more, the new ones carried out.
-    fn react(&mut self, g: &mut impl Ground, s: &SyncId, c: CommitId, before: &BTreeSet<Act>, now: &BTreeSet<Act>) -> Result<()> {
+    fn react(&mut self, g: &mut impl Ground, s: &SyncId, c: BodyId, before: &BTreeSet<Act>, now: &BTreeSet<Act>) -> Result<()> {
         for a in before.difference(now).filter(|a| a.toward().is_some()) {
             self.owed.remove(&(*s, Some(c), a.clone()));
         }
@@ -675,8 +676,14 @@ impl Read {
         self.waits.iter().map(|(s, w)| (*s, *w)).collect()
     }
 
-    /// For status and inbox (stamped read).
+    /// The verdict of commit `c`'s sync unit body under `s`: for status and inbox (stamped read).
     pub fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict> {
+        self.body_verdict(s, &BodyId::unit(*c))
+    }
+
+    /// The verdict of body `c` under `s`: a commit's sync unit body or one of its certificate
+    /// copies (stamped read).
+    pub fn body_verdict(&self, s: &SyncId, c: &BodyId) -> Option<Verdict> {
         self.verdicts.get(&(*s, *c)).cloned()
     }
 
@@ -704,7 +711,7 @@ impl Read {
         self.clock.next().map(WallMs)
     }
 
-    fn set_role(&mut self, s: &SyncId, c: &CommitId, on: bool) {
+    fn set_role(&mut self, s: &SyncId, c: &BodyId, on: bool) {
         let has = self.roles.get(s).is_some_and(|r| r.contains(c));
         if has == on {
             return;
@@ -724,7 +731,7 @@ impl Read {
 
     /// Act `a` of a judgement under S: on the own store or the engine at once; toward a source,
     /// owed it (`deliver`).
-    fn act(&mut self, g: &mut impl Ground, s: &SyncId, c: Option<&CommitId>, a: Act) -> Result<()> {
+    fn act(&mut self, g: &mut impl Ground, s: &SyncId, c: Option<&BodyId>, a: Act) -> Result<()> {
         if a.toward().is_some() {
             self.owed.add((*s, c.copied(), a));
             return Ok(());

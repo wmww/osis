@@ -81,14 +81,13 @@ fn a_node_pairs_another_after_removing_its_pairer_spec_sync_inbox_1() {
     holds_as_sibling(&mut w, n, 2);
 }
 
-// spec/sync-judgement.md §2 (the key part of S's actor: on an account's D's and inbox's sync IDs, the account's);
-// Interim (issues/tickets-retired.md): a node paired once the inbox's
-// fires are gone holds every thing its sibling holds with its current secrets. The commits giving
-// the contact's card link K its epochs are wrapped under epochs the account took only by its
-// inbox's ticket fire, and D's ticket gives K's current read secret alone: without K's boxes to
-// the account under D the new node opens neither K's sync secret nor its history.
+// spec/sync-judgement.md §2 (the key part of S's actor: on an account's D's and inbox's sync IDs, the account's),
+// spec/permissions.md §4 Key part: a node paired past the inbox's lifetime, every offer's fire
+// gone, holds every thing its sibling holds with its current secrets, by its account's key part
+// under D's sync ID: the profile and inbox its account minted, and the contact's card link K,
+// which the account was granted from outside.
 #[test]
-fn a_node_paired_after_the_fires_expire_holds_its_siblings_secrets_spec_sync_judgement_2() {
+fn a_node_paired_past_the_inbox_lifetime_holds_its_siblings_secrets_spec_sync_judgement_2() {
     let mut w = crate::harness::contacts();
     w.advance(2 * osis_base::format::INBOX_LIFETIME_MS);
     w.run();

@@ -2008,11 +2008,12 @@ fn a_taken_revocation_is_carried_once_whatever_the_preferred_head_spec_permissio
 // in one millisecond. Of the two merges holding C's removal it follows the one placed first: by
 // ID (a merge by its merge ID) before depth, so A and C's where its ID and A's removal's sort
 // before B's merge's, though deeper. The world is the first of a few start delays whose IDs sort
-// so (placing by depth first would follow B's).
+// so (placing by depth first would follow B's); the delays start at the first that does today,
+// each delay costing a whole run: move the range when the IDs move.
 #[test]
 fn an_outsider_places_one_milliseconds_rotations_by_id_before_depth_spec_permissions_5_4() {
     let cert = |r: &mut Run, made: Vec<u32>| *made.iter().find(|id| matches!(r.w.item(**id).kind, MK::Cert { .. })).expect("a certificate");
-    for delay in 0..16 {
+    for delay in 22..38 {
         let mut r = Run::new(0);
         r.lp.advance(delay);
         let a1 = r.script_rotation(A).unwrap();

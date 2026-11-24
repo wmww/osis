@@ -703,8 +703,7 @@ fn aspects_agrees_with_reads_after_a_purge() {
 fn the_empty_path_is_the_whole_value() {
     let db = db(0);
     let (k, l) = (ak("t:x.0"), ak("t:s.0"));
-    // dependent, in the account root's sync unit: entering an independent thing writes the account's
-    // ticket for it beside the next write
+    // dependent, in the account root's sync unit
     let t = db.commit_with(|w| {
         let t = w.create_held_with_admin(db.account_root())?;
         w.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(p![]).set(&Value::Int(1))?;

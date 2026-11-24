@@ -270,11 +270,11 @@ fn a_sync_id_kept_unread_by_ticket_stays_synced_across_a_restart_spec_sync_set_2
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), unread, "kept unread after the restart");
 }
 
-// spec/sync-set.md §1; Interim (issues/tickets-retired.md): node 1 keeps S unread by the ticket its grant fired
-// on its inbox; past the inbox's lifetime that fire is gone, and D's ticket, written as the walk
-// entered the thing, keeps it kept unread.
+// spec/sync-inbox.md §5 Grant from outside (an offer: once a node syncs the target its role is
+// by the target's grants, whatever becomes of the fire): node 1 keeps S unread by the grant its
+// fire carried; past the inbox's lifetime the fire is gone and it keeps S as before.
 #[test]
-fn a_sync_id_kept_unread_outlives_its_inbox_ticket_spec_sync_set_1() {
+fn a_grant_outlives_its_offer_spec_sync_inbox_5() {
     let (mut w, t, s) = three();
     w.advance(osis_base::format::INBOX_LIFETIME_MS + 86_400_000);
     w.run();
@@ -417,7 +417,7 @@ fn a_new_reader_of_a_cover_stripped_commit_misses_nothing_spec_commits_5() {
     let n = w.pair(0);
     w.run();
     assert!(w.engine(n).holds_commit(&c), "the new device holds the commit");
-    assert!(!w.engine(n).read_facts(&s, &c).unwrap().missing, "no part of it counts missing");
+    assert!(!w.engine(n).read_facts(&s, &osis_engine::sync::BodyId::unit(c)).unwrap().missing, "no part of it counts missing");
     assert_eq!(w.engine(n).get(&t, &value_ak()).unwrap(), Some(Value::Str("final".into())));
     assert_eq!(w.engine(n).get(&t, &Ak::new("u:n.0").unwrap()).unwrap(), Some(Value::Str("kept".into())));
 }
@@ -487,7 +487,7 @@ fn covers_cover(purge_on_replace: bool) {
     w.run();
     let s = w.engine(1).sync_id_of(&t).unwrap().unwrap();
     assert!(w.engine(0).holds_commit(&c), "the reader holds the making commit");
-    assert!(!w.engine(0).read_facts(&s, &c).unwrap().missing, "no part of it counts missing");
+    assert!(!w.engine(0).read_facts(&s, &osis_engine::sync::BodyId::unit(c)).unwrap().missing, "no part of it counts missing");
     assert!(w.engine(0).get(&t, &value_ak()).unwrap().is_some(), "the reader reads the value");
 }
 
@@ -565,7 +565,7 @@ fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_j
         assert!(w.engine(3).blob_of(&id).is_some(), "node 3 opened a rewrite");
     }
     let rng = &mut osis_crypto::SeededRng::from_u64(1);
-    let (sealed, _) = w.engine(3).seal_body(&s, &x, &[first, by_2], rng).unwrap().expect("node 3 encrypts the commit");
+    let (sealed, _) = w.engine(3).seal_body(&s, &osis_engine::sync::BodyId::unit(x), &[first, by_2], rng).unwrap().expect("node 3 encrypts the commit");
     assert!(!sealed.ais.contains(&ai(a)) && !sealed.ais.contains(&ai(b)), "node 3's fresh encryption keeps a purged section: {:?}", sealed.ais);
     assert!(sealed.ais.contains(&ai(c)), "it carries C's part");
 }

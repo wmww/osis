@@ -27,8 +27,6 @@ pub enum ValueType {
     Weak,
     /// A strong or a weak, the writer's choice (`Value::Strong`, `Value::Weak`).
     Ref,
-    /// A ticket (`Value::Ticket`).
-    Ticket,
     /// A moment, in milliseconds (`Value::Int`).
     Time,
     /// A length of time, in milliseconds (`Value::Int`).
@@ -136,7 +134,6 @@ fn type_name(t: &Type) -> String {
         Type::Strong => "strong".into(),
         Type::Weak => "weak".into(),
         Type::Ref => "ref".into(),
-        Type::Ticket => "ticket".into(),
         Type::Any => "any".into(),
         Type::Text => "text".into(),
         Type::List(e) => format!("list<{}>", type_name(e)),
@@ -189,7 +186,6 @@ fn describe(s: &Arc<Schema>, t: &Type) -> ValueType {
         Type::Strong => ValueType::Strong,
         Type::Weak => ValueType::Weak,
         Type::Ref => ValueType::Ref,
-        Type::Ticket => ValueType::Ticket,
         Type::Any | Type::Named(..) | Type::Param(_) => ValueType::Any,
         Type::List(e) => ValueType::List(nested(e)),
         Type::Set(e) => ValueType::Set(nested(e)),

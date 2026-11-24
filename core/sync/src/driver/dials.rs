@@ -3,7 +3,7 @@
 //!
 //! A **candidate** is a dialable key with the reasons it is one (`Why`), each with the address
 //! it is known by: the dial peers of a sync ID it syncs (`Engine::dial_peers`: holders of sync or
-//! above, granters, its own nodes holding S, tickets' issuers), the inbox's hints (sharer nodes of
+//! above, granters, its own nodes holding S), the inbox's hints (sharer nodes of
 //! links being redeemed: `Inbox::dial_hints`), configured addresses,
 //! discovered nodes. Reasons are priorities, never a filter on what opens: they order the dials,
 //! nothing else.

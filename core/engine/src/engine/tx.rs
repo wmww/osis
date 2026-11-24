@@ -447,7 +447,7 @@ impl Tx<'_> {
                 let _s = osis_base::costs::span("reset: by pages");
                 self.txn.put_aspect(tid, ak, &AspectUnit { state: unit }, Shred::No)?;
                 self.core.states.insert(k, Some(skeleton));
-                refs::note(self, tid, ak, None, moved)?;
+                refs::note(self, tid, ak, moved)?;
                 Ok(Some(changes))
             }
             pages::Reset::Laid { state, changes } => {
@@ -578,7 +578,7 @@ impl Tx<'_> {
     }
 
     /// Keeps the index derived from states at the state `f` of `(tid, ak)`, whatever wrote it:
-    /// `Indexes::sync_recorded`.
+    /// `Indexes::sync_recorded`, `Indexes::steps`.
     fn derive(&mut self, tid: &Tid, ak: &Ak, f: Option<&Fragment>) {
         if derives(ak) {
             let before = self.core.ix.sync_recorded_ids.get(tid).cloned().unwrap_or_default();
@@ -597,6 +597,7 @@ impl Tx<'_> {
                 Some(_) => self.core.ix.sync_recorded.insert(*tid),
                 None => self.core.ix.sync_recorded.remove(tid),
             };
+            self.core.steps_recorded(tid, f);
         }
     }
 

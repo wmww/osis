@@ -890,6 +890,8 @@ mod tests {
             let n = u8::try_from(n).unwrap();
             lp.peers[1].engine.core.ix.secrets.insert(Tid::from_bytes([n; 15]), reading_only(n, CommitId([n; 32])));
         }
+        // the grants' commits reach the grantee before their fires
+        lp.hold_fires(true);
         lp.deliver(1, &p1).unwrap();
         lp.deliver(1, &p2).unwrap();
         let held = |lp: &LocalPeer, t: &Tid| lp.peers[1].engine.core.ix.secrets.get(t).is_some_and(|e| e.read.holds_any());
@@ -898,6 +900,11 @@ mod tests {
         // the first grant's thing arrives: it applies, its secret is checked, a place is free
         let created = lp.peers[0].engine.package(&c1).unwrap().unwrap();
         lp.deliver(1, &created).unwrap();
+        // and the first grant's fire alone (the second's went to another node of b's)
+        let f2 = lp.peers[0].engine.core.ix.fires.iter().find(|(_, o)| matches!(o.what, crate::flows::inbox::Fire::Grant { commit, .. } if commit == g2)).map(|(id, _)| *id).unwrap();
+        lp.peers[0].engine.fire_taken(&f2).unwrap();
+        lp.hold_fires(false);
+        lp.pass_fires(1).unwrap();
         lp.peers[1].reexamine().unwrap();
         assert!(!lp.peers[1].engine.pending().iter().any(|(c, _)| *c == g1), "applied");
         assert!(held(&lp, &t2), "read once a place is free");
@@ -930,6 +937,8 @@ mod tests {
         lp.hold(a);
         let g = *lp.peers[0].engine.grant(&a, &b, &edge).unwrap().commits.last().unwrap();
         let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
+        // the grant's commit reaches the grantee before its fire
+        lp.hold_fires(true);
         lp.deliver(1, &p).unwrap();
         assert!(!lp.peers[1].engine.commit_ids().contains(&g), "waits for a's record");
     }
@@ -990,13 +999,13 @@ mod tests {
             }
             // made-up delete keys (peers' business)
             fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-                Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([3; 32])).verifying_key())
+                Some(osis_crypto::DeleteSecret::write(&Secret32::from_bytes([3; 32])).verifying_key())
             }
             fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
-                Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([1; 32])).verifying_key())
+                Some(osis_crypto::DeleteSecret::write(&Secret32::from_bytes([1; 32])).verifying_key())
             }
             fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-                Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([2; 32])).verifying_key())
+                Some(osis_crypto::DeleteSecret::write(&Secret32::from_bytes([2; 32])).verifying_key())
             }
         }
         let ak = osis_base::Ak::new("secrets.0").unwrap();
@@ -1131,7 +1140,7 @@ mod tests {
             let genuine = e0.read.secret(&e).cloned().unwrap();
             lp.sync(0, 1).unwrap();
             // the writer's `keys.0`: E's keyset with another secret's keys
-            let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
+            let junk = osis_keys::keyset(Role::Read, &e, &Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
             let mut mu = Mutation::new();
             mu.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Some(junk.clone()).to_value()) }).unwrap();
             mu.unchecked();
@@ -1286,8 +1295,11 @@ mod tests {
         flood(&mut lp, t, 40);
         let before = candidates(&lp, &t);
         let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
+        // the grant's commit reaches the grantee before its fire
+        lp.hold_fires(true);
         assert!(matches!(lp.deliver(1, &p).unwrap(), crate::Ingested::Pending(_, crate::Reason::MissingChain(_) | crate::Reason::UnknownCreated(_))), "the grant waits for the granter's chain");
         assert_eq!(candidates(&lp, &t), before, "the pool is full: the grant's candidate waits");
+        lp.hold_fires(false);
         lp.sync(0, 1).unwrap();
         assert!(!lp.peers[1].engine.core.ix.pending.contains_key(&g), "the grant applied");
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), Some(Value::Int(1)));

@@ -13,7 +13,7 @@
 //! (`Cause`), not after the newest role arrival: role commits arriving faster than a pass ends
 //! never hold it off. The place is kept while the cause holds and forgotten once it does not.
 
-use super::{Holding, ThingSync};
+use super::ThingSync;
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{CommitId, SyncId, Tid};
@@ -178,9 +178,10 @@ impl Engine {
         })
     }
 
-    /// This node reads `s` (its sync set holds it read).
+    /// This node opens `s` by a read secret (its sync set holds it read or for keys): a complete
+    /// pass of it is noted, of role entries alone where it is held for keys (spec/sync-set.md §2).
     fn reads_now(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.sync_held(s)?.is_some_and(|(_, h)| h == Holding::Read))
+        Ok(self.sync_held(s)?.is_some_and(|(_, h)| h.opens()))
     }
 
     /// `s` is read here no more: its passes go with it, so a sync ID read again wants a pass of
@@ -218,7 +219,7 @@ impl Engine {
     /// for tests and listing; status follows each sync ID it reads.
     pub fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
         self.follow_rows()?;
-        let read: Vec<SyncId> = self.core.sync_rows.held.iter().filter(|(_, (_, h))| *h == Holding::Read).map(|(s, _)| *s).collect();
+        let read: Vec<SyncId> = self.core.sync_rows.held.iter().filter(|(_, (_, h))| h.opens()).map(|(s, _)| *s).collect();
         let mut out = BTreeMap::new();
         for s in read {
             if let Some(since) = self.pass_wanted(&s)? {
@@ -246,7 +247,7 @@ impl Engine {
     }
 
     pub(crate) fn pass_wanted_fresh(&mut self, s: &SyncId) -> Result<Option<u64>> {
-        let Some((things, Holding::Read)) = self.core.sync_rows.held.get(s).cloned() else { return Ok(None) };
+        let Some((things, _)) = self.core.sync_rows.held.get(s).filter(|(_, h)| h.opens()).cloned() else { return Ok(None) };
         // per thing of S: after the newest role commit on its actor from elsewhere: what the
         // re-seal trigger waits on (`complete_pass`); after the loss of its actor was judged:
         // what the lost-access drop waits on (`lost_passed`); a stranded report's re-seal ask

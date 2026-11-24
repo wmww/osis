@@ -1,0 +1,371 @@
+//! The steps a thing's `sync.0` state records, as delete keys are listed from them and checked
+//! against them (spec/crypto.md §7 Header list, Checked keys): per independent thing, each step
+//! on a verified path from the genesis step of a sync ID its `sync.0` records, with the stamp from
+//! which the whole path is recorded. An index derived from the state (`Tx::derive`), so from the
+//! thing's held valid `sync.0` writes alone, and held in no store: a function of what is held.
+//!
+//! Invariant (what the check rests on): a level-1 or level-3 key a header lists is taken as right
+//! only where it is a key this index places: the delete key (level 1) or write key (level 3) of a
+//! step whose every ancestor verifies under its parent's delete key down to a genesis step whose
+//! delete key hashes to its sync ID, each of them recorded by a valid `sync.0` write stamped
+//! before the commit. Only an admin's write is valid on `sync.0`, a step verifies only under a
+//! key an admin secret derives, and no secret this node holds is read: every node holding the
+//! same writes places the same keys. A non-admin signer's own key is on no such path, so a part
+//! listing it is invalid with its whole commit.
+//!
+//! Every sync ID entry counts, owned or not (ownership turns on the secrets a node holds,
+//! spec/sync-ids.md §4, which a verdict must not): an admin recording a sync ID of its own making
+//! places only keys of secrets it holds, as any step of the thing's own path it issued does.
+
+use crate::engine::Core;
+use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER};
+use osis_base::{CommitId, SyncId, Tid, Ts};
+use osis_commit::Header;
+use osis_blob::{Step, StepId};
+use osis_crdt::{Fragment, PathSeg};
+use osis_schema::core_types as ct;
+use osis_schema::{Codec, RawKey};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+/// A step on a verified path from its sync ID's genesis step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placed {
+    pub sync_id: SyncId,
+    pub prev: Option<StepId>,
+    pub sync: [u8; 32],
+    pub write: [u8; 32],
+    pub delete: [u8; 32],
+    /// Steps from the genesis step, itself 0.
+    pub depth: u32,
+    /// The latest stamp among the writes recording it and its ancestors: from then on its path
+    /// is recorded.
+    pub since: Ts,
+}
+
+/// The placed steps of one thing's `sync.0` state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Recorded {
+    pub steps: BTreeMap<StepId, Placed>,
+    /// Per (level, key), the earliest `since` of a step bearing it.
+    keys: BTreeMap<(u8, [u8; 32]), Ts>,
+}
+
+impl Recorded {
+    /// The steps `f`, a `sync.0` state, places. `before`: the thing's placed steps so far, whose
+    /// signatures are not verified again (a step's ID commits to its bytes and its parent's ID).
+    pub(crate) fn of(f: &Fragment, before: Option<&Recorded>) -> Recorded {
+        let ids = f.read().and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
+        let mut out = Recorded::default();
+        for (sync_id, entry) in &ids {
+            // the steps that parse under their own ID, with the stamp of the write recording each
+            let mut steps: BTreeMap<StepId, (Step, Ts)> = BTreeMap::new();
+            for (id, r) in &entry.steps {
+                let Ok(s) = Step::parse(&r.step) else { continue };
+                if s.id().0 != *id || s.sync_id != *sync_id {
+                    continue;
+                }
+                let path = [PathSeg::Key(sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(osis_base::Value::Bytes(id.to_vec())), PathSeg::Field(0)];
+                let Some(ts) = f.at(&path).and_then(|x| x.write_stamp().map(|s| s.ts)) else { continue };
+                steps.insert(StepId(*id), (s, ts));
+            }
+            // from the genesis steps down, each child placed once its parent is
+            let mut children: BTreeMap<StepId, Vec<StepId>> = BTreeMap::new();
+            let mut todo: Vec<StepId> = Vec::new();
+            for (id, (s, _)) in &steps {
+                match s.prev {
+                    Some(p) => children.entry(p).or_default().push(*id),
+                    None => todo.push(*id),
+                }
+            }
+            while let Some(id) = todo.pop() {
+                let Some((s, ts)) = steps.get(&id) else { continue };
+                let parent = s.prev.and_then(|p| Some((steps.get(&p)?, out.steps.get(&p)?)));
+                let known = before.is_some_and(|b| b.steps.get(&id).is_some_and(|x| x.sync_id == *sync_id));
+                let (depth, since) = match (s.prev, parent) {
+                    (None, _) if known || s.verify_genesis().is_ok() => (0, *ts),
+                    (Some(_), Some(((p, _), at))) if known || s.verify_child(p).is_ok() => (at.depth.saturating_add(1), (*ts).max(at.since)),
+                    _ => continue,
+                };
+                let placed = Placed { sync_id: *sync_id, prev: s.prev, sync: s.keys.sync.to_bytes(), write: s.keys.write.to_bytes(), delete: s.keys.delete.to_bytes(), depth, since };
+                for k in [(DELETE_ADMIN, placed.delete), (DELETE_WRITER, placed.write)] {
+                    out.keys.entry(k).and_modify(|t| *t = (*t).min(since)).or_insert(since);
+                }
+                out.steps.insert(id, placed);
+                todo.extend(children.remove(&id).unwrap_or_default());
+            }
+        }
+        out
+    }
+
+    /// Whether a step bears `key` at `level` (1 its delete key, 3 its write key) with its path
+    /// recorded before `ts`.
+    pub(crate) fn places(&self, level: u8, key: &[u8; 32], ts: Ts) -> bool {
+        self.keys.get(&(level, *key)).is_some_and(|since| *since < ts)
+    }
+
+    /// Whether a step bears `key` at `level`, whenever recorded.
+    pub(crate) fn bears(&self, level: u8, key: &[u8; 32]) -> bool {
+        self.keys.contains_key(&(level, *key))
+    }
+
+    /// Whether a genesis step is recorded before `ts`.
+    pub(crate) fn genesis_before(&self, ts: Ts) -> bool {
+        self.steps.values().any(|s| s.prev.is_none() && s.since < ts)
+    }
+
+    /// The newest step of sync ID `id`: the deepest, ties by lowest step ID (spec/sync-ids.md §3
+    /// head, as `sync_ids::actors::head_of` reads a forked tree).
+    fn head(&self, id: &SyncId) -> Option<&Placed> {
+        self.steps.iter().filter(|(_, s)| s.sync_id == *id).min_by_key(|(k, s)| (std::cmp::Reverse(s.depth), **k)).map(|(_, s)| s)
+    }
+}
+
+impl Core {
+    /// Keeps `Indexes::steps` at `t`'s `sync.0` state `f` (`Tx::derive`). Where the placed
+    /// steps moved, every held part on a thing whose record chain holds `t` is judged again:
+    /// the keys it lists are checked against them (`key_right`).
+    pub(crate) fn steps_recorded(&mut self, t: &Tid, f: Option<&Fragment>) {
+        let before = self.ix.steps.get(t).cloned();
+        let after = f.map(|f| Recorded::of(f, before.as_deref())).filter(|r| !r.steps.is_empty());
+        if before.as_deref() == after.as_ref() {
+            return;
+        }
+        // keys only placed, or placed earlier: no key held as right turns wrong
+        let grew = before.as_ref().is_none_or(|b| b.keys.iter().all(|(k, since)| after.as_ref().is_some_and(|a| a.keys.get(k).is_some_and(|s| s <= since))));
+        match after {
+            Some(r) => self.ix.steps.insert(*t, Arc::new(r)),
+            None => self.ix.steps.remove(t),
+        };
+        let again: BTreeSet<CommitId> = match grew {
+            // the usual move (a step issued): only a commit held as wrong may turn, O(those)
+            true => self.ix.miskeyed.iter().filter(|(_, x)| self.record_chain(x).any(|s| s.thing() == Some(*t))).map(|(c, _)| *c).collect(),
+            // a `sync.0` write fell or went: every commit on a thing under `t`, O(those)
+            false => self.ix.held.below(&BTreeSet::from([*t])).iter().flat_map(|x| self.on_thing(x)).collect(),
+        };
+        for c in again {
+            self.rekey(&c);
+        }
+    }
+
+    /// The things for which header `h` lists a wrong key: each with a delta listing a level-1 or
+    /// level-3 key that is not right (`key_right`). Level 2 is not checked (spec/crypto.md §7).
+    /// A thing whose record chain is not known to its key actor here is not judged: nothing
+    /// written on it applies meanwhile (spec/commits.md §4 Unjudgeable), and a commit judged on
+    /// missing evidence is never judged invalid for it.
+    pub(crate) fn wrong_keys(&self, h: &Header) -> BTreeSet<Tid> {
+        // a commit's deltas mostly share a thing and its keys: each (thing, key) checked once
+        let mut seen: BTreeSet<(Tid, usize)> = BTreeSet::new();
+        let mut out = BTreeSet::new();
+        for a in &h.aspects {
+            if out.contains(&a.tid) {
+                continue;
+            }
+            let wrong = a.keys.iter().filter(|k| seen.insert((a.tid, **k))).filter_map(|k| h.keys.get(*k)).any(|k| k.level != DELETE_AUTHOR && !self.key_right(&a.tid, k.level, &k.key, h.ts));
+            if wrong && matches!(self.record_chain(&a.tid).end(), osis_base::ChainStep::Key(_)) {
+                out.insert(a.tid);
+            }
+        }
+        out
+    }
+
+    /// What the key check reads of header `h`, for a failing check's message: per delta listing
+    /// a level-1 or level-3 key, its thing, the level, and the base bearing the key.
+    pub(crate) fn explain_keys(&self, h: &Header) -> String {
+        let per = |a: &osis_commit::AspectEntry| {
+            let keys: Vec<String> = a.keys.iter().filter_map(|k| h.keys.get(*k)).filter(|k| k.level != DELETE_AUTHOR).map(|k| format!("{}:{:?}", k.level, self.key_base(&a.tid, k.level, &k.key, Some(h.ts)))).collect();
+            let chain: Vec<String> = self.record_chain(&a.tid).map(|s| format!("{s:?} steps {:?} independent {}", s.thing().and_then(|t| self.ix.steps.get(&t).map(|r| r.steps.values().map(|p| p.since).collect::<Vec<_>>())), s.thing().is_some_and(|t| self.ix.independent.contains(&t)))).collect();
+            format!("{} {} [{}] chain {chain:?}", a.tid, a.ak.as_str(), keys.join(" "))
+        };
+        h.aspects.iter().map(per).collect::<Vec<_>>().join("; ")
+    }
+
+    /// Whether commit `id` lists a wrong key for `t`, as verdicts read it (`Core::check_keys`).
+    pub(crate) fn miskeyed(&self, id: &CommitId, t: &Tid) -> bool {
+        self.check_keys && self.ix.miskeyed.contains(&(*id, *t))
+    }
+
+    /// Takes the key verdict of commit `id` about to apply, header `h` (`Indexes::miskeyed`).
+    pub(crate) fn note_keys_of(&mut self, id: &CommitId, h: &Header) {
+        let wrong = self.wrong_keys(h);
+        for a in &h.aspects {
+            match wrong.contains(&a.tid) {
+                true => self.ix.miskeyed.insert((*id, a.tid)),
+                false => self.ix.miskeyed.remove(&(*id, a.tid)),
+            };
+        }
+    }
+
+    /// Judges held commit `id`'s listed keys again. Where the verdict moved the commit is judged
+    /// again whole, and a role commit's edge writes are read again (`Indexes::rekeyed`).
+    pub(crate) fn rekey(&mut self, id: &CommitId) {
+        let Some(m) = self.ix.commits.get(id) else { return };
+        let h = m.header.clone();
+        let role = m.view.kind.is_role();
+        let wrong = self.wrong_keys(&h);
+        if h.aspects.iter().all(|a| self.ix.miskeyed.contains(&(*id, a.tid)) == wrong.contains(&a.tid)) {
+            return;
+        }
+        self.note_keys_of(id, &h);
+        // Interim (issues/delete-key-levels-unchecked.md): no verdict reads it while the check
+        // is off, so nothing is judged again
+        if !self.check_keys {
+            return;
+        }
+        self.stale_commits.insert(*id);
+        if role {
+            self.ix.rekeyed.insert(*id);
+        }
+    }
+
+    /// Whether a delta on `t` of a commit with header `h` listing a key that is not right waits
+    /// for a base's `sync.0` rather than being judged invalid for it (spec/commits.md §4
+    /// Unjudgeable): a thing on `t`'s record chain is independent here with no genesis step
+    /// recorded before the commit.
+    pub(crate) fn awaits_steps(&self, h: &Header, t: &Tid) -> bool {
+        self.wrong_keys(h).contains(t) && self.record_chain(t).filter_map(|s| s.thing()).any(|b| self.ix.independent.contains(&b) && !self.ix.steps.get(&b).is_some_and(|r| r.genesis_before(h.ts)))
+    }
+
+    /// The step whose keys a write lists for delete base `b` (spec/crypto.md §7 Header list): the
+    /// newest step of `b`'s sync ID its `sync.0` records here: the greatest sync ID `b` owns
+    /// (spec/sync-ids.md §4 Owner: one a step of which bears a sync key of a sync secret of `b`
+    /// held here; every placed one while this node holds no sync secret of `b`'s own). `None`:
+    /// none recorded, and this node cannot write under `b`.
+    pub(crate) fn listed_step(&self, b: &Tid) -> Option<Placed> {
+        let r = self.ix.steps.get(b)?;
+        let held: Option<Vec<[u8; 32]>> = self
+            .holds_own_sync(b)
+            .then(|| self.epochs(b).map(|e| e.sync.held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_key(osis_crypto::RoleKey::Sync, s).verifying_key().to_bytes()).collect()).unwrap_or_default());
+        let owned = |id: &SyncId| held.as_ref().is_none_or(|h| r.steps.values().any(|s| s.sync_id == *id && h.contains(&s.sync)));
+        let id = r.steps.values().map(|s| s.sync_id).filter(owned).max()?;
+        r.head(&id).cloned()
+    }
+
+    /// Whether `key`, listed at level 1 or 3 by a commit stamped `ts` for a delta on `t`, is
+    /// right (spec/crypto.md §7 Checked keys): a thing on `t`'s record chain, itself first,
+    /// places it before `ts` (`Recorded::places`), or the chain ends at a key actor whose signing
+    /// key it is (an account: the signing key of a held epoch of its chain).
+    ///
+    /// Any base up the chain, not the nearest alone: a write made while `t` derived its secrets
+    /// lists its former base's step, and so does a writer that has not yet received the commit
+    /// giving `t` secrets of its own; no header says which the writer knew. A key so accepted is
+    /// still one only an admin (level 1) or writer (level 3) of a thing `t` was made under held.
+    pub(crate) fn key_right(&self, t: &Tid, level: u8, key: &[u8; 32], ts: Ts) -> bool {
+        self.key_base(t, level, key, Some(ts)).is_some()
+    }
+
+    /// The thing on `t`'s record chain whose steps bear `key` at `level` (recorded before `ts`,
+    /// when given), or the key actor ending the chain whose signing key it is (`Err`).
+    pub(crate) fn key_base(&self, t: &Tid, level: u8, key: &[u8; 32], ts: Option<Ts>) -> Option<std::result::Result<Tid, Tid>> {
+        for step in self.record_chain(t) {
+            let cur = step.thing()?;
+            if let Some(r) = self.ix.steps.get(&cur)
+                && ts.map_or_else(|| r.bears(level, key), |ts| r.places(level, key, ts))
+            {
+                return Some(Ok(cur));
+            }
+            if self.signing_keys_of(&cur).any(|k| k == *key) {
+                return Some(Err(cur));
+            }
+        }
+        None
+    }
+
+    /// The signing keys of key actor `t` that are its delete key (spec/crypto.md §7): its record's
+    /// key; an account's, those of the held epochs of its chain (`account_signing_keys`). None for
+    /// a thing.
+    fn signing_keys_of(&self, t: &Tid) -> impl Iterator<Item = [u8; 32]> {
+        let record = match self.created(t) {
+            Some(osis_base::CreationRecord::KeyActor { public_key, .. }) => <[u8; 32]>::try_from(public_key.as_slice()).ok(),
+            _ => None,
+        };
+        record.into_iter().chain(self.account_signing_keys(t))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::Mutation;
+    use crate::local_peer::LocalPeer;
+    use osis_base::{Role, WallMs};
+
+    /// Alice's thing `g`, given secrets of its own and its sync ID by a grant to bob, and `t`
+    /// minted under it (dependent: `g` is its delete base).
+    fn world() -> (LocalPeer, Tid, Tid) {
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (alice, bob) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let mut m = Mutation::new();
+        let g = lp.peers[0].engine.new_thing(&mut m, alice);
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(g);
+        lp.peers[0].engine.grant(&g, &bob, &ct::Edge { role: Role::Write, until: None, may_grant: false, retain: false, floor: None }).unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, g);
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
+        lp.sync_all().unwrap();
+        (lp, g, t)
+    }
+
+    // spec/crypto.md §7 (Header list; Checked keys), spec/sync-ids.md §2: a write lists the
+    // delete and write keys of the newest step its base's `sync.0` records, which are the step
+    // keys of the base's admin and write secrets; a reader takes a key as right only from the
+    // stamp its step is recorded at, for a thing whose record chain holds the base, at its own
+    // level; a writer holding no admin secret lists the same level-1 key.
+    #[test]
+    fn a_write_lists_its_bases_newest_step_and_a_reader_places_it_spec_crypto_7() {
+        let (lp, g, t) = world();
+        for p in &lp.peers {
+            let core = &p.engine.core;
+            let s = core.listed_step(&g).expect("g's sync.0 records its genesis step");
+            assert_eq!(s.depth, 0);
+            let r = core.ix.steps.get(&g).unwrap();
+            for (level, key) in [(DELETE_ADMIN, s.delete), (DELETE_WRITER, s.write)] {
+                assert!(core.key_right(&t, level, &key, Ts::MAX), "a thing under g lists g's step");
+                assert!(core.key_right(&g, level, &key, Ts::MAX));
+                assert!(!core.key_right(&t, level, &key, s.since), "not before the write recording the step");
+                assert!(r.places(level, &key, Ts::MAX) && !r.places(level, &key, s.since));
+                assert_eq!(core.key_base(&t, level, &key, None), Some(Ok(g)));
+            }
+            // each key at its own level alone, and no other key
+            assert!(!core.key_right(&t, DELETE_ADMIN, &s.write, Ts::MAX) && !core.key_right(&t, DELETE_WRITER, &s.delete, Ts::MAX));
+            assert!(!core.key_right(&t, DELETE_ADMIN, &[7; 32], Ts::MAX));
+            // a thing not under g finds nothing in g's steps
+            let me = core.me().unwrap();
+            assert!(!core.key_right(&me, DELETE_ADMIN, &s.delete, Ts::MAX));
+        }
+        // the step keys are the role keys of g's secrets (alice holds admin; bob, a writer, the
+        // write secret alone)
+        let s = lp.peers[0].engine.core.listed_step(&g).unwrap();
+        let e = lp.peers[0].engine.core.epochs(&g).unwrap();
+        assert_eq!(s.delete, osis_crypto::DeleteSecret::admin(e.admin.newest_held().unwrap().1).verifying_key().to_bytes());
+        assert_eq!(s.write, osis_crypto::DeleteSecret::write(e.write.newest_held().unwrap().1).verifying_key().to_bytes());
+        assert_eq!(lp.peers[1].engine.core.listed_step(&g), Some(s), "bob lists the same step");
+        assert!(lp.peers[1].engine.core.epochs(&g).unwrap().admin.newest_held().is_none());
+    }
+
+    // spec/crypto.md §7 (Checked keys): the commits a node writes by the flow list right keys
+    // wherever they are held (`Indexes::miskeyed` empty), and a header listing another key for
+    // a thing is wrong for that thing alone.
+    #[test]
+    fn written_commits_list_right_keys_and_a_made_up_key_is_wrong_for_its_thing_spec_crypto_7() {
+        let (mut lp, _, t) = world();
+        let x = osis_base::Ak::new("x:v.0").unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &x, &osis_base::Value::Int(1)).unwrap();
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        for p in &lp.peers {
+            assert!(p.engine.core.ix.miskeyed.is_empty(), "{:?}", p.engine.core.ix.miskeyed);
+        }
+        let core = &lp.peers[0].engine.core;
+        let mut h = (*core.ix.commits.get(&c).unwrap().header).clone();
+        assert!(core.wrong_keys(&h).is_empty());
+        let listed = h.keys.iter().position(|k| k.level != DELETE_AUTHOR).unwrap();
+        h.keys[listed].key = [7; 32];
+        assert_eq!(core.wrong_keys(&h), BTreeSet::from([t]));
+    }
+}

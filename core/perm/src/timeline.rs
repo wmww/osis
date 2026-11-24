@@ -693,14 +693,9 @@ impl<S: Store> Timeline<S> {
     /// `roles_on` on the current edges at `ts`, and the earliest `until` the walk followed: the
     /// answer holds at any later ts before it.
     pub fn roles_on_now(&self, thing: &Tid, ts: Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<WallMs>) {
-        let (r, u) = self.roles_on_now_without(thing, ts, &BTreeSet::new());
-        (Arc::new(r), u)
-    }
-
-    /// `roles_on_now` over the edges not in `skip`, each named (target, holder).
-    pub fn roles_on_now_without(&self, thing: &Tid, ts: Ts, skip: &BTreeSet<(Tid, Tid)>) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
         let edges = self.edges_at(None);
-        View::at(&edges, Some(ts)).roles_to_expiring(thing, skip)
+        let (r, u) = View::at(&edges, Some(ts)).roles_to_expiring(thing, &BTreeSet::new());
+        (Arc::new(r), u)
     }
 
     /// `roles_on` over the edges not in `skip`, each named (target, holder).
@@ -709,11 +704,10 @@ impl<S: Store> Timeline<S> {
         View::at(&edges, at.ts).roles_to_expiring(thing, skip).0
     }
 
-    /// `node`'s effective role on `thing` at `ts` over `edges_unfinalized`, the edges in `skip`
-    /// (each named (target, holder)) left out.
-    pub fn role_unfinalized(&self, node: &Tid, thing: &Tid, ts: Ts, skip: &BTreeSet<(Tid, Tid)>) -> Option<Role> {
+    /// `node`'s effective role on `thing` at `ts` over `edges_unfinalized`.
+    pub fn role_unfinalized(&self, node: &Tid, thing: &Tid, ts: Ts) -> Option<Role> {
         let edges = self.edges_unfinalized();
-        View::at(&edges, Some(ts)).roles_to_expiring(thing, skip).0.get(node).copied()
+        View::at(&edges, Some(ts)).roles_to_expiring(thing, &BTreeSet::new()).0.get(node).copied()
     }
 
     /// The path from `node` into `thing` giving `need` on the current edges at `ts`

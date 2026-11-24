@@ -119,7 +119,7 @@ fn a_reused_chunk_a_purger_deleted_is_repaired_spec_sync_ids_1() {
     assert_eq!(read_big(&mut w, 0, &t), Some(Value::Bytes(v)), "node 0 reads the repaired value whole");
     assert!(reused.is_disjoint(&live(&mut w, 2, &t)), "node 2's value links no deleted chunk");
     let own: Vec<CommitId> = w.engine(2).own_commits(&s).unwrap().iter().copied().collect();
-    let repairs: Vec<_> = own.iter().map(|c| w.engine(2).read_facts(&s, c).unwrap().repair_fresh).filter(|f| !f.is_empty()).collect();
+    let repairs: Vec<_> = own.iter().map(|c| w.engine(2).read_facts(&s, &osis_engine::sync::BodyId::unit(*c)).unwrap().repair_fresh).filter(|f| !f.is_empty()).collect();
     assert_eq!(repairs.len(), 1, "one commit, marked a repair");
     // marked with what it encrypted afresh alone: the chunks it reused stay repairable through it
     let now = live(&mut w, 2, &t);
@@ -127,14 +127,16 @@ fn a_reused_chunk_a_purger_deleted_is_repaired_spec_sync_ids_1() {
     assert!(now.iter().any(|b| edited.contains(b) && !repairs[0].contains(b)), "the repair reuses chunks");
 }
 
-/// Pieces judged (`read: piece judged`) and nodes decoded across the three nodes for a 4-byte edit
-/// to a value of `kib` KiB node 0 wrote, and the pieces of the edited value.
-fn edit_costs(kib: usize) -> (u64, u64, usize) {
+/// For a 4-byte edit at the end of a value of `kib` KiB node 0 wrote: pieces judged (`read: piece
+/// judged`) and nodes decoded across the three nodes, the pieces of the edited value, and the
+/// pieces the edit wrote (its last chunk and the nodes from it up to the root).
+fn edit_costs(kib: usize) -> (u64, u64, usize, usize) {
     let (mut w, t, _) = three(Gives::Reads);
     let mut v = vec![0u8; kib << 10];
     osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(5), &mut v);
     write_big(&mut w, 0, t, v.clone());
     w.run();
+    let before = live(&mut w, 0, &t);
     let n = v.len();
     v[n - 4..].copy_from_slice(b"edit");
     osis_base::costs::take();
@@ -143,18 +145,26 @@ fn edit_costs(kib: usize) -> (u64, u64, usize) {
     let taken = osis_base::costs::take();
     let count = |name: &str| taken.iter().filter(|(k, _, _)| *k == name).map(|(_, _, n)| n).sum::<u64>();
     assert_eq!(read_big(&mut w, 2, &t), Some(Value::Bytes(v)), "the edit read whole at node 2");
-    (count("read: piece judged"), count("pieces: nodes decoded"), live(&mut w, 0, &t).len())
+    let after = live(&mut w, 0, &t);
+    (count("read: piece judged"), count("pieces: nodes decoded"), after.len(), after.difference(&before).count())
 }
 
-// spec/sync.md §2 (work in proportion to change): a small edit to a large value judges and
-// decodes the pieces it wrote, not the value's tree: about the same at n and 10n pieces (an
-// absent store row a piece reads shares its stamp with a 64th of the others, so a removal
-// re-judges a few).
+// spec/sync.md §2 (work in proportion to change), spec/wire.md §6 (chunk tree): a small edit to
+// a large value judges and decodes the pieces it wrote, not the value's tree. The edit writes
+// its chunk and the nodes above it; the writer and the reader each decode those nodes once and no
+// other, at n and 10n pieces (how many levels a tree has follows its links' content hashes, so
+// the count is the edit's own, not a constant). Pieces judged stay about the same (an absent
+// store row a piece reads shares its stamp with a 64th of the others, so a removal re-judges a
+// few).
 #[test]
 fn a_small_edit_to_a_large_value_costs_its_new_pieces() {
     let (small, large) = (edit_costs(256), edit_costs(2560));
-    assert!(large.2 >= 8 * small.2, "{small:?} {large:?}");
-    assert_eq!(small.1, large.1, "nodes decoded: {small:?} {large:?}");
+    // the chunker is unkeyed: these bytes are 3 and 33 chunks in every world, under one to three
+    // nodes and at least one
+    assert!(small.2 <= 6 && large.2 >= 34, "{small:?} {large:?}");
+    for x in [small, large] {
+        assert_eq!(x.1 as usize, 2 * (x.3 - 1), "nodes decoded, twice the nodes the edit wrote: {small:?} {large:?}");
+    }
     assert!(large.0 < 2 * small.0, "pieces judged grow with the tree: {small:?} {large:?}");
 }
 
@@ -172,7 +182,7 @@ fn one_write_entries(gives: Gives) -> Vec<[usize; 4]> {
     w.run();
     let mut out = Vec::new();
     for c in w.engine(0).commit_ids() {
-        if before.contains(&c) || w.engine(0).sync_bodies(&c).unwrap().get(&s).is_none() {
+        if before.contains(&c) || w.engine(0).sync_bodies(&c).unwrap().get(&(s, None)).is_none() {
             continue;
         }
         let blobs: BTreeSet<BlobId> = [0, 2].iter().flat_map(|i| w.engine(*i).commit_blobs(&c).unwrap().to_vec()).collect();

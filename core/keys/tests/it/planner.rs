@@ -127,29 +127,35 @@ fn jumped_base_forks_derive_base_newest() {
     }
 }
 
-// spec/crypto.md §7: a level's delete key from its newest held secret; level 2 from the
-// author's actor; holders try every epoch; the published keyset names the same key.
+// spec/crypto.md §7: a level's delete key from its newest held secret (the step key of its role);
+// level 2 from the author's actor; holders try every epoch; the published keyset (Interim)
+// names the same key.
 #[test]
 fn delete_keys() {
-    let dk = |s: &Secret32| osis_crypto::DeleteSecret::derive(s).verifying_key();
+    let dk = |l: u8, s: &Secret32| osis_crypto::DeleteSecret::at_level(l, s).verifying_key();
     fn delete_key(l: u8, t: &ActorEpochs, a: Option<&ActorEpochs>) -> Option<osis_crypto::VerifyingKey> {
-        delete_candidates(l, t, a).first().map(|(_, s)| osis_crypto::DeleteSecret::derive(s).verifying_key())
+        delete_candidates(l, t, a).first().map(|(_, s)| osis_crypto::DeleteSecret::at_level(l, s).verifying_key())
     }
     let (mut thing, author) = (actor_epochs(0x20), actor_epochs(0x30));
-    assert_eq!(delete_key(1, &thing, Some(&author)), Some(dk(thing.admin.secret(&ep(1, 0x20)).unwrap())));
-    assert_eq!(delete_key(2, &thing, Some(&author)), Some(dk(author.write.secret(&ep(1, 0x30)).unwrap())));
-    assert_eq!(delete_key(3, &thing, Some(&author)), Some(dk(thing.write.secret(&ep(1, 0x20)).unwrap())));
+    assert_eq!(delete_key(1, &thing, Some(&author)), Some(dk(1, thing.admin.secret(&ep(1, 0x20)).unwrap())));
+    // a level's key is its role's step key (spec/sync-ids.md §2)
+    assert_eq!(delete_key(1, &thing, None), Some(osis_crypto::role_key(osis_crypto::RoleKey::Delete, thing.admin.secret(&ep(1, 0x20)).unwrap()).verifying_key()));
+    assert_eq!(delete_key(3, &thing, None), Some(osis_crypto::role_key(osis_crypto::RoleKey::Write, thing.write.secret(&ep(1, 0x20)).unwrap()).verifying_key()));
+    assert_eq!(delete_key(2, &thing, Some(&author)), Some(dk(2, author.write.secret(&ep(1, 0x30)).unwrap())));
+    assert_eq!(delete_key(3, &thing, Some(&author)), Some(dk(3, thing.write.secret(&ep(1, 0x20)).unwrap())));
     assert_eq!(delete_key(2, &thing, None), None);
-    let ks = osis_keys::keyset(&ep(1, 0x20), thing.admin.secret(&ep(1, 0x20)).unwrap(), &Default::default(), &Default::default());
+    let ks = osis_keys::keyset(Role::Admin, &ep(1, 0x20), thing.admin.secret(&ep(1, 0x20)).unwrap(), &Default::default(), &Default::default());
     assert_eq!(ks.delete_key, osis_schema::core_types::SigningKey::Ed25519(delete_key(1, &thing, None).unwrap().to_bytes().to_vec()));
+    let ks = osis_keys::keyset(Role::Write, &ep(1, 0x20), thing.write.secret(&ep(1, 0x20)).unwrap(), &Default::default(), &Default::default());
+    assert_eq!(ks.delete_key, osis_schema::core_types::SigningKey::Ed25519(delete_key(3, &thing, None).unwrap().to_bytes().to_vec()));
     thing.write.set_history(ep(2, 0), BTreeSet::new(), [ep(1, 0x20)], None);
     thing.write.set_established(ep(2, 0), osis_keys::Provenance::Fixed);
     thing.write.set_secret(ep(2, 0), Secret32::from_bytes([5; 32]));
-    assert_eq!(delete_key(3, &thing, None), Some(dk(&Secret32::from_bytes([5; 32]))));
+    assert_eq!(delete_key(3, &thing, None), Some(dk(3, &Secret32::from_bytes([5; 32]))));
     let c: Vec<_> = delete_candidates(3, &thing, None).into_iter().map(|x| x.0).collect();
     assert_eq!(c, vec![ep(2, 0), ep(1, 0x20)]);
     assert!(delete_candidates(2, &thing, None).is_empty());
-    // no admin secret held, no level-1 key (a writer takes the published one)
+    // no admin secret held, no level-1 secret (a writer lists the step's public key)
     let mut writer = actor_epochs(0x40);
     writer.admin = Default::default();
     assert_eq!(delete_key(1, &writer, None), None);

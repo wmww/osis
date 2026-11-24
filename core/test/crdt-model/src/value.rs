@@ -5,7 +5,6 @@ use std::cmp::Ordering;
 pub const TAG_SET: u64 = 258;
 pub const TAG_STRONG: u64 = 1620;
 pub const TAG_WEAK: u64 = 1621;
-pub const TAG_TICKET: u64 = 1622;
 pub const TAG_ENUM: u64 = 1617;
 
 #[derive(Clone, Debug)]
@@ -18,8 +17,6 @@ pub enum Value {
     Bytes(Vec<u8>),
     Strong([u8; 15]),
     Weak([u8; 15]),
-    /// A ticket: its tag content, a list of seven (Interim (issues/tickets-retired.md)).
-    Ticket(Box<Value>),
     List(Vec<Value>),
     /// Sorted by canonical key bytes, unique keys. Structs are maps with int keys.
     Map(Vec<(Value, Value)>),
@@ -29,9 +26,9 @@ pub enum Value {
 }
 
 impl Value {
-    /// A strong, a weak or a ticket.
+    /// A strong or a weak.
     pub fn is_reference(&self) -> bool {
-        matches!(self, Value::Strong(_) | Value::Weak(_) | Value::Ticket(_))
+        matches!(self, Value::Strong(_) | Value::Weak(_))
     }
     pub fn float(f: f64) -> Value {
         let f = if f.is_nan() { f64::NAN } else { f };
@@ -58,7 +55,6 @@ impl Value {
         match self {
             Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bytes(_) => 0,
             Value::Strong(_) | Value::Weak(_) => 1,
-            Value::Ticket(c) => 1 + c.depth(),
             Value::List(l) => 1 + max(l.iter()),
             Value::Map(m) => 1 + max(m.iter().flat_map(|(k, v)| [k, v])),
             Value::Set(s) => 2 + max(s.iter()),
@@ -74,7 +70,6 @@ impl Value {
             Value::Bytes(b) => Item::Bytes(b.clone()),
             Value::Strong(t) => Item::Tag(TAG_STRONG, Box::new(Item::Bytes(t.to_vec()))),
             Value::Weak(t) => Item::Tag(TAG_WEAK, Box::new(Item::Bytes(t.to_vec()))),
-            Value::Ticket(c) => Item::Tag(TAG_TICKET, Box::new(c.to_item())),
             Value::List(l) => Item::Array(l.iter().map(|v| v.to_item()).collect()),
             Value::Map(m) => Item::Map(m.iter().map(|(k, v)| (k.to_item(), v.to_item())).collect()),
             Value::Set(s) => Item::Tag(TAG_SET, Box::new(Item::Array(s.iter().map(|v| v.to_item()).collect()))),
@@ -109,10 +104,6 @@ impl Value {
                     if *t == TAG_STRONG { Value::Strong(x) } else { Value::Weak(x) }
                 }
                 _ => return Err(cbor::Error::Bad("reference")),
-            },
-            Item::Tag(TAG_TICKET, b) => match Value::from_item(b)? {
-                c @ Value::List(_) => Value::Ticket(Box::new(c)),
-                _ => return Err(cbor::Error::Bad("ticket")),
             },
             Item::Tag(TAG_SET, b) => match &**b {
                 Item::Array(a) => {

@@ -234,7 +234,6 @@ fn scan(v: &Value, out: &mut BTreeMap<(Tid, RefKind), u64>) {
     match v {
         Value::Strong(t) => one(*t, RefKind::Strong),
         Value::Weak(t) => one(*t, RefKind::Weak),
-        Value::Ticket(k) => one(k.target, RefKind::Ticket),
         Value::Enum(_, Some(p)) => scan(p, out),
         Value::Map(m) => m.iter().for_each(|(k, x)| {
             scan(k, out);

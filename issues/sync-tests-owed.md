@@ -32,14 +32,12 @@ Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry
 - Client port: tracking reads of `role_on`, `holders`, `backlinks`, `profile_of` and `stream` follow a thing at a connected node (tracked-read-port).
 
 ## Built, untested end to end
-- An entry of S whose commit was thrown out as outside the node closure (S's thing on a ticket's word, its keysets not yet arrived) opens again as S's thing comes to be held whole (`store::Follow`, `Awaits::Sync`'s whole flag): only the differential reaches it (a fetch split over two sources bringing T's content before its keysets, on a fork of T's sync ID); no World test forces that order. The held-commit half has the engine's `sync::tests_tickets::a_part_taken_on_a_tickets_word_is_redelivered_once_held_whole_spec_commits_4`. A2 removes fetching on a ticket's word (notes/holder-access-study.md, direction 1): drop this item then, build nothing for it before.
 - A record lacking its creation whose delta is not reflected stays unswept (notes/crdt.md, Hidden writes go by a sweep): no world where a record's creation is invalid at a sweep, then a re-grant makes it valid and the entry reads with the edits made into it (osis-crdt `sweep_takes_what_a_parent_reset_hid` and engine `partial_receipt_survives_compaction` cover the unit and the not-yet-received case).
 - A dead expiring write is covered before its expiry (notes/ephemeral.md, Ephemeral expiry is durable expiry): B's expiring write overwrites A's on an ephemeral register, a writer's snapshot covers A's then, and every holder forgets it while B's live write stays to its expiry; no engine or world test (`expiry_covers` before T).
 - HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does): the engine's `fall_mark`.
 - `Live::fresh` (held blobs handed to `Engine::seal_body`): no World test; a mutation passing none fails no osis-sync test (the engine's `rotation::tests_reseal::facade_*` cover the contract). Cheapest found: a purge of one thing's part of a commit spanning two things, the other thing's section then logged again verbatim.
 
 - The facade's waits (notes/sync-facade.md, Pending): one small world per wait and waking event asserting the order property's `lost_wakes` empty, and a world for a refused box freed by room.
-- The facade's account piece (notes/sync-facade.md, Certificate bodies): a rotation re-derives that one `Piece::Account`, not every piece naming the account; no count test at n and 10n checks it.
 - The differential's "a fresh reader that syncs only through a node keeping S unread reads alike" as an oracle clause (notes/sync-test-harness.md): today only the simulation `sims::a_reader_through_a_node_keeping_it_unread_plain`.
 
 ## API behaviours the rebuild's deletion left untested

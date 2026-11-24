@@ -601,6 +601,8 @@ fn keyset_in_joint_box_reached_alone_blocks_spec_crypto_4() {
     let n = independent_thing(&mut lp, 2);
     lp.peers[2].engine.grant(&n, &a1, &edge(Role::Read)).unwrap();
     send_skipping(&mut lp, 2, 3, &none);
+    // a1 takes m2's grant on N by its fire
+    lp.pass_fires(3).unwrap();
     lp.peers[3].engine.grant(&a, &n, &edge(Role::Read)).unwrap();
     assert!(blocked_at(&mut lp, 3, a).is_empty(), "N's epoch boxes nothing yet");
     lp.peers[2].engine.grant(&n, &m, &edge(Role::Read)).unwrap();
@@ -671,7 +673,7 @@ fn forged_keyset_invalid_where_removal_arrived_spec_crypto_4() {
     send_skipping(&mut lp, 1, 0, &c_m);
     let s_d = osis_crypto::Secret32::from_bytes([79; 32]);
     let x_d = Epoch::derive(&m, Role::Read, kk.n() + 1, &s_d).unwrap();
-    let forged = osis_keys::keyset(&x_d, &s_d, &BTreeSet::from([k0, kk]), &Default::default());
+    let forged = osis_keys::keyset(Role::Read, &x_d, &s_d, &BTreeSet::from([k0, kk]), &Default::default());
     let mut mu = Mutation::new();
     mu.op(m, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Replace(osis_schema::Codec::to_value(&Some(forged))) }).unwrap();
     mu.unchecked();

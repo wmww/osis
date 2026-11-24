@@ -67,15 +67,15 @@ fn a_card_goes_once_a_later_one_is_opened_spec_sync_judgement_2() {
     let old = reach(&mut lp, 1, 1);
     let new = reach(&mut lp, 1, 2);
     opened(&mut lp, 0, 1, &new, &[], true);
-    assert_eq!(lp.peers[0].engine.read_facts(&ds, &old).unwrap().must_not, None, "a header only: kept");
+    assert_eq!(lp.peers[0].engine.read_facts(&ds, &crate::sync::BodyId::unit(old)).unwrap().must_not, None, "a header only: kept");
     opened(&mut lp, 0, 2, &new, &[0], true);
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.read_facts(&ds, &old).unwrap().must_not, Some(MustNot::CardSuperseded));
-    assert_eq!(e.read_facts(&ds, &new).unwrap().must_not, None, "the newest stays");
+    assert_eq!(e.read_facts(&ds, &crate::sync::BodyId::unit(old)).unwrap().must_not, Some(MustNot::CardSuperseded));
+    assert_eq!(e.read_facts(&ds, &crate::sync::BodyId::unit(new)).unwrap().must_not, None, "the newest stays");
     let own = reach(&mut lp, 0, 3);
     let later = reach(&mut lp, 0, 4);
     opened(&mut lp, 0, 3, &later, &[0], true);
-    assert_eq!(lp.peers[0].engine.read_facts(&ds, &own).unwrap().must_not, None, "its own card: never by this rule");
+    assert_eq!(lp.peers[0].engine.read_facts(&ds, &crate::sync::BodyId::unit(own)).unwrap().must_not, None, "its own card: never by this rule");
 }
 
 // spec/sync-ids.md §1 (Prefix of a commit encryption: a node opening a blob refuses one whose
@@ -123,7 +123,7 @@ fn a_header_alone_holds_a_header_only_body_of_either_kind_spec_sync_judgement_1(
     let mut found = None;
     for c in e.commit_ids() {
         for s in &ids {
-            if e.sync_body(s, &c).unwrap().is_some_and(|m| m.header_only && m.copy) {
+            if e.sync_body(s, &crate::sync::BodyId::unit(c)).unwrap().is_some_and(|m| m.header_only && m.copy) {
                 found = found.or(Some((*s, c)));
             }
         }
@@ -221,7 +221,7 @@ fn a_blob_loses_to_another_by_what_each_carries_spec_sync_judgement_2() {
     let (t, c) = wide_commit(&mut lp, d, 2);
     let e = &mut lp.peers[0].engine;
     let s = e.sync_id_of(&d).unwrap().unwrap();
-    let copy = e.sync_body_now(&s, &c).unwrap().expect("a body under S").copy;
+    let copy = e.sync_body_now(&s, &crate::sync::BodyId::unit(c)).unwrap().expect("a body under S").copy;
     let h = e.header(&c).unwrap();
     let on = |k: &str| h.aspects.iter().position(|a| a.tid == t && a.ak.as_str() == k).unwrap();
     let (p0, p1) = (on("x:a0.0"), on("x:a1.0"));

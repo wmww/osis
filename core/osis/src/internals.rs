@@ -21,6 +21,35 @@ pub fn read_counts(set: &crate::ReadSet) -> Vec<(String, u32)> {
     set.counts()
 }
 
+/// Hands `to` each sealed fire `from` owes on a thing `to` holds a read secret of, as sync's fire
+/// step does between connected nodes (spec/sync-inbox.md §3): a harness carrying commits by hand
+/// carries fires so, and a grant from outside reaches its holder as its `grant@~0` fire
+/// (spec/sync-inbox.md §5 Grant from outside). Whether `to` refused any (the thing's setting, as `to`
+/// holds it, keeps no such signal).
+pub fn pass_fires(from: &Osis, to: &Osis) -> bool {
+    let fired = |e: &mut Engine| e.fire_own().map_err(|e| e.to_string());
+    let outs = from.engine(|e| {
+        fired(e)?;
+        let mut outs = Vec::new();
+        for id in e.fires_owed() {
+            outs.extend(e.sealed_fire(&id).map_err(|e| e.to_string())?);
+        }
+        Ok::<_, String>(outs)
+    });
+    let Ok(outs) = outs else { return true };
+    to.engine(|e| {
+        let mut refused = false;
+        for o in outs {
+            if !e.epochs(&o.thing).is_some_and(|k| k.read.holds_any()) {
+                continue;
+            }
+            let opened = e.offer_fire(&o);
+            refused |= !matches!(opened, Ok(o) if !matches!(o, osis_engine::sync::Opened::Bad));
+        }
+        refused | fired(e).is_err()
+    })
+}
+
 /// What a commit's id holds, as a test asks.
 pub trait CommitRaw {
     /// The engine's id of the commit it names.

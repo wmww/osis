@@ -88,8 +88,7 @@ pub const LINK: &str = "link";
 /// A suspect aspect's state digest (spec/permissions.md §4).
 pub const STATE: &str = "state";
 pub const LINK_TREE: &str = "link tree";
-/// Delete keys, their blinding factor and blinded signing nonce (spec/crypto.md §7).
-pub const DELETE_KEY: &str = "delete key";
+/// A delete key's blinding factor and blinded signing nonce (spec/crypto.md §7).
 pub const DELETE_BLIND: &str = "delete blind";
 pub const DELETE_NONCE: &str = "delete nonce";
 /// A linked blob's blind, from its blob key (spec/crypto.md §7).
@@ -118,9 +117,9 @@ pub const PATH: &str = "path";
 pub const PATH_COMMIT: &str = "path commit";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 42] = [
+pub const PURPOSES: [&str; 41] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
-    DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM,
+    DELTA, LINK, LINK_TREE, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM,
     INNER_SECRET, INNER, SEED_BOX, DEVICES, FIRST_DEVICE, MERGE_SEED, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT,
 ];
 

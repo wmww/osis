@@ -22,13 +22,13 @@ impl osis_commit::Secrets for Secrets {
         Some(osis_crypto::Secret32::from_bytes([1; 32]))
     }
     fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
     }
     fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
     }
     fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([4; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([4; 32])).verifying_key())
     }
 }
 

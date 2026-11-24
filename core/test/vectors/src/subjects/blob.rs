@@ -55,7 +55,7 @@ pub fn prefixes() -> VecFile {
     cases.push(prefix_case("ephemeral class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_blob::Class::Ephemeral)));
     cases.push(prefix_case("relay-only class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_blob::Class::Relay)));
     // Commitments derived from (level, delete key) pairs under the prefix salt.
-    let keys: Vec<(u8, osis_crypto::VerifyingKey)> = [(1u8, 0x23u8), (2, 0x24), (3, 0x25)].iter().map(|(l, b)| (*l, DeleteSecret::derive(&s32(*b)).verifying_key())).collect();
+    let keys: Vec<(u8, osis_crypto::VerifyingKey)> = [(1u8, 0x23u8), (2, 0x24), (3, 0x25)].iter().map(|(l, b)| (*l, DeleteSecret::write(&s32(*b)).verifying_key())).collect();
     let hb = [0x26u8; 16];
     let p = Prefix::for_keys(salt, &hb, None, &keys).unwrap();
     let pairs: Vec<String> = keys.iter().map(|(l, k)| format!("{l}:{}", hex(&k.to_bytes()))).collect();
@@ -115,7 +115,7 @@ pub fn blobs() -> VecFile {
     // Chunk: prefix committing to the delete key of an `admin` delta (level 1, secret 0x26).
     let salt = [0x27; 16];
     let secret = s32(0x26);
-    let dk = DeleteSecret::derive(&secret).verifying_key();
+    let dk = DeleteSecret::write(&secret).verifying_key();
     // its commitment is blinded by the link blind of its blob key bound to its thing (spec/crypto.md §7)
     let thing = [0x2b; 15];
     let lb = link_blind(&[0x28; 32]);

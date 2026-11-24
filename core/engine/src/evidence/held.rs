@@ -1,5 +1,5 @@
-//! The derivation's input from the engine's held set (notes/evidence-derivation.md, What the
-//! switch must know): per held copy (commit, thing) its parts on that thing, and the record
+//! The derivation's input from the engine's held set (notes/evidence-derivation.md, The engine's
+//! input): per held copy (commit, thing) its parts on that thing, and the record
 //! edges. Read from the index and the held `sync.0` bodies; nothing is kept.
 //!
 //! `Engine::check_evidence` is the engine side of the joint property (spec/permissions.md §4;
@@ -8,7 +8,6 @@
 //! as the node holding everything does.
 
 use super::{Config, CopyId, Del, Evidence, Kind, Level, Part, Step, Write};
-use crate::engine::secrets::DeleteBase;
 use crate::engine::{Core, Tx};
 use crate::error::Result;
 use osis_base::{CommitId, Role, Tid};
@@ -29,38 +28,66 @@ pub(crate) fn mint(core: &Core) -> BTreeMap<Tid, Tid> {
     held.things().filter_map(|t| Some((*t, held.created(t)?.mint_admin()?))).collect()
 }
 
-/// Every held copy with its parts: per aspect on the thing a part (a `roles.0` aspect: one per
-/// edge write it makes there, else one with no edge write), per purge item on it a content part.
-/// Hops from the path the commit states for the thing (`None` while a split entry has not opened
-/// here); delete keys at levels 1 and 3 where the thing's delete base is an actor; steps from a
-/// held `sync.0` body, snapshots included (a compaction snapshot carrying steps records them).
+/// Every held copy with its parts (`copy_parts` of each held commit).
 pub(crate) fn copies(tx: &mut Tx<'_>) -> Result<Copies> {
-    let mint = mint(tx.core);
     let ids: Vec<CommitId> = tx.core.ix.commits.keys().copied().collect();
     let mut out = Copies::new();
     for id in ids {
-        let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
-        let h = m.header.clone();
+        for (t, ps) in copy_parts(tx, &id)? {
+            out.insert((id, t), ps);
+        }
+    }
+    Ok(out)
+}
+
+/// Held commit `id`'s copies, per thing its parts there: per aspect on the thing a part (a
+/// `roles.0` aspect: one per edge write it makes there, else one with no edge write), per purge
+/// item on it a content part. Hops from the path the commit states for the thing (`None` while a
+/// split entry has not opened here); delete keys at levels 1 and 3 for each thing up the part's
+/// thing's record chain (the one whose steps bear a key places it, spec/crypto.md §7 Checked
+/// keys; the others place nothing); steps from a held `sync.0` body, snapshots included (a
+/// compaction snapshot carrying steps records them). It reads the commit's header and view, its
+/// role commit reading, the records up its things' chains and its held `sync.0` body: what a
+/// derivation fed per commit follows.
+pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTreeMap<Tid, Vec<Part<Tid, Key32>>>> {
+    let id = *id;
+    let Some(m) = tx.core.ix.commits.get(&id).cloned() else { return Ok(BTreeMap::new()) };
+    let h = m.header.clone();
+    let mut parts: BTreeMap<Tid, Vec<Part<Tid, Key32>>> = BTreeMap::new();
+    let mut steps_at: Vec<(Tid, usize, usize)> = Vec::new();
+    {
         let core: &Core = tx.core;
         let rc = core.ix.held.edge_commit(&id).cloned();
+        // the mint admins a path's shape reads: up the chains of the signer, the path's members
+        // and the thing written
+        let minted = |ts: &mut dyn Iterator<Item = Tid>| -> BTreeMap<Tid, Tid> {
+            let mut out = BTreeMap::new();
+            for t in ts {
+                let mut x = t;
+                while let Some(a) = core.ix.held.created(&x).and_then(|r| r.mint_admin()) {
+                    if out.insert(x, a).is_some() {
+                        break;
+                    }
+                    x = a;
+                }
+            }
+            out
+        };
         let hops = |t: &Tid, holder: Option<Tid>, edge_class: bool| -> Option<Vec<(Tid, Tid)>> {
             let (along, direct, _) = crate::apply::validity::stated(&h, &m.view, t)?;
+            let mint = minted(&mut along.iter().copied().chain([h.signer, *t]));
             Some(osis_perm::paths::hops(&mint, h.signer, &along, direct, *t, holder, edge_class))
         };
-        let mut bases: BTreeMap<Tid, Option<Tid>> = BTreeMap::new();
-        let mut parts: BTreeMap<Tid, Vec<Part<Tid, Key32>>> = BTreeMap::new();
-        let mut steps_at: Vec<(Tid, usize, usize)> = Vec::new();
         for (ai, a) in h.aspects.iter().enumerate() {
             let t = a.tid;
-            let base = *bases.entry(t).or_insert_with(|| match core.delete_base(&t) {
-                Some(DeleteBase::Actor(b, _)) => Some(b),
-                _ => None,
-            });
-            let dels: Vec<Del<Tid, Key32>> = base
-                .map(|base| {
-                    a.keys.iter().filter_map(|k| h.keys.get(*k)).filter_map(|k| Some(Del { base, level: level(k.level)?, key: k.key })).collect()
-                })
-                .unwrap_or_default();
+            let bases: Vec<Tid> = core.record_chain(&t).filter_map(|s| s.thing()).collect();
+            let dels: Vec<Del<Tid, Key32>> = a
+                .keys
+                .iter()
+                .filter_map(|k| h.keys.get(*k))
+                .filter_map(|k| Some((level(k.level)?, k.key)))
+                .flat_map(|(level, key)| bases.iter().map(move |base| Del { base: *base, level, key }))
+                .collect();
             let on = parts.entry(t).or_default();
             let writes: Vec<&osis_perm::EdgeOp> = match (&rc, a.ak.as_str()) {
                 (Some(rc), "roles.0") => rc.ops.iter().filter(|o| o.target == t).collect(),
@@ -71,6 +98,7 @@ pub(crate) fn copies(tx: &mut Tx<'_>) -> Result<Copies> {
                     let path = rc.path_to(&t);
                     let leave = o.holder == *path.last().unwrap_or(&rc.signer);
                     let kind = Kind::Write(Write { holder: o.holder, gives_read: o.edge.is_some_and(|e| e.role >= Role::Read) && !leave });
+                    let mint = minted(&mut path.iter().copied().chain([rc.signer, t]));
                     let hops = osis_perm::paths::hops(&mint, rc.signer, path, rc.direct, t, Some(o.holder), true);
                     on.push(Part { kind, hops: Some(hops), dels: dels.clone(), steps: vec![] });
                 }
@@ -85,17 +113,14 @@ pub(crate) fn copies(tx: &mut Tx<'_>) -> Result<Copies> {
             let (t, _, _) = crate::retention::purge::item_names(item);
             parts.entry(*t).or_default().push(Part::new(Kind::Content, hops(t, None, false)));
         }
-        for (t, i, ai) in steps_at {
-            let steps = recorded_steps(tx, &id, ai)?;
-            if let Some(p) = parts.get_mut(&t).and_then(|v| v.get_mut(i)) {
-                p.steps = steps;
-            }
-        }
-        for (t, ps) in parts {
-            out.insert((id, t), ps);
+    }
+    for (t, i, ai) in steps_at {
+        let steps = recorded_steps(tx, &id, ai)?;
+        if let Some(p) = parts.get_mut(&t).and_then(|v| v.get_mut(i)) {
+            p.steps = steps;
         }
     }
-    Ok(out)
+    Ok(parts)
 }
 
 fn level(l: u8) -> Option<Level> {
@@ -182,13 +207,38 @@ impl crate::Engine {
         Ok(derive(&self.evidence_mint(), &copies, sids))
     }
 
+    /// The work the kept derivation (`evidence::kept`) has done, brought up to date, and the
+    /// commits whose copies it has read (tests).
+    #[doc(hidden)]
+    pub fn evidence_counts(&mut self) -> Result<(super::Counts, u64)> {
+        let counts = self.kept_evidence()?.counts();
+        Ok((counts, self.core.evidence.read))
+    }
+
+    /// The read things whose certificates the follow has derived so far (`sync::certified`),
+    /// brought up to date (tests).
+    #[doc(hidden)]
+    pub fn certificates_derived(&mut self) -> Result<u64> {
+        self.follow_certificates()?;
+        Ok(self.core.certified.derived)
+    }
+
     /// The engine side of the joint property (tests): per thing `t` with a held part, as the
     /// sync ID of a unit holding `t` alone, the derivation built with the copies taken in two
     /// orders agrees with itself and from scratch; and a reader holding `t`'s bodies plus exactly
     /// the copies it requires judges each body on `t` (content validity, edge write status) under
-    /// osis-perm `paths` as the node holding everything does. `Some`: the first difference.
+    /// osis-perm `paths` as the node holding everything does; and the derivation the engine keeps
+    /// fed per commit (`evidence::kept`) is the one derived from nothing. `Some`: the first
+    /// difference.
     #[doc(hidden)]
     pub fn check_evidence(&mut self) -> Result<Option<String>> {
+        let kept = self.kept_evidence()?;
+        if let Some(d) = osis_base::costs::paused(|| self.kept_differs(&kept))? {
+            return Ok(Some(format!("kept against from scratch: {d}")));
+        }
+        if let Some(d) = self.check_certified()? {
+            return Ok(Some(format!("followed certificates against derived anew: {d}")));
+        }
         let copies = self.evidence_copies()?;
         let mint = self.evidence_mint();
         let walk: Vec<Commit> = {

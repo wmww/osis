@@ -124,7 +124,7 @@ fn a_flag_naming_a_body_a_source_shows_waits_spec_permissions_4() {
 #[test]
 fn a_false_reader_declaration_gets_no_list_spec_permissions_4() {
     let mut w = world_of(0, 3, 3);
-    w.lie(2, Some(Lie::Declare { unread: false }));
+    w.lie(2, Some(Lie::Declare(osis_proto::SourceClass::Reader)));
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Grant(0, 0, 2, Gives::Syncs), Run, Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();

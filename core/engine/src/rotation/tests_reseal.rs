@@ -462,13 +462,13 @@ fn facade_fresh_encryption_withheld_without_the_removal_spec_crypto_5() {
     assert!(!lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
     let mut rng = osis_crypto::SeededRng::from_u64(21);
     for given in [Vec::new(), vec![held.clone()]] {
-        if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &w, &given, &mut rng).unwrap() {
+        if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &crate::sync::BodyId::unit(w), &given, &mut rng).unwrap() {
             let (header, content) = m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap);
             panic!("V sealed w lacking W (held blobs given: {}): M opens its header {header}, content {content}", given.len());
         }
     }
     w_arrives(&mut lp, g, &w_commits, &e_r);
-    let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &w, &[held], &mut rng).unwrap().expect("V seals w once e_R is established");
+    let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &crate::sync::BodyId::unit(w), &[held], &mut rng).unwrap().expect("V seals w once e_R is established");
     assert_eq!(m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap), (false, false), "M opens V's fresh encryption of w");
 }
 
@@ -481,12 +481,12 @@ fn facade_verbatim_wrap_withheld_without_the_removal_spec_crypto_5() {
     let (s, held) = r_held(&mut lp, g, w, &entry);
     v_takes(&mut lp, &s, w, &held);
     let id = osis_blob::blob_id(&held.bytes);
-    if let Some(wrap) = lp.peers[V].engine.rewrap(&w, &id, &s, &held.wrap, &s).unwrap() {
+    if let Some(wrap) = lp.peers[V].engine.rewrap(&crate::sync::BodyId::unit(w), &id, &s, &held.wrap, &s).unwrap() {
         let (header, content) = m_opens_entry(&mut lp, g, w, &id, &held.bytes, &wrap);
         panic!("V wrapped R's entry lacking W: M opens its header {header}, content {content}");
     }
     w_arrives(&mut lp, g, &w_commits, &e_r);
-    let wrap = lp.peers[V].engine.rewrap(&w, &id, &s, &held.wrap, &s).unwrap().expect("V wraps R's entry once e_R is established");
+    let wrap = lp.peers[V].engine.rewrap(&crate::sync::BodyId::unit(w), &id, &s, &held.wrap, &s).unwrap().expect("V wraps R's entry once e_R is established");
     assert_eq!(m_opens_entry(&mut lp, g, w, &id, &held.bytes, &wrap), (false, false));
 }
 
@@ -508,7 +508,7 @@ fn facade_header_only_wrap_withheld_without_the_removal_spec_crypto_5() {
     v_takes(&mut lp, &s, w, &held);
     assert!(!reads(&mut lp, V, g, "w"), "V holds w's header alone");
     assert!(lp.peers[V].engine.wrap_secret(&g, Some((&w, &[]))).unwrap().is_none(), "V wraps w's header lacking W");
-    if let Some(wrap) = lp.peers[V].engine.rewrap(&w, &hdr.id, &s, &held.wrap, &s).unwrap() {
+    if let Some(wrap) = lp.peers[V].engine.rewrap(&crate::sync::BodyId::unit(w), &hdr.id, &s, &held.wrap, &s).unwrap() {
         let (header, _) = m_opens_entry(&mut lp, g, w, &hdr.id, &hdr.blob, &wrap);
         panic!("V wrapped w's header-only blob lacking W: M opens it {header}");
     }
@@ -516,7 +516,7 @@ fn facade_header_only_wrap_withheld_without_the_removal_spec_crypto_5() {
     lp.peers[V].restart(23).unwrap();
     assert!(lp.peers[V].engine.wrap_secret(&g, Some((&w, &[]))).unwrap().is_none(), "the header opening lasts a restart");
     w_arrives(&mut lp, g, &w_commits, &e_r);
-    let wrap = lp.peers[V].engine.rewrap(&w, &hdr.id, &s, &held.wrap, &s).unwrap().expect("V wraps the header once e_R is established");
+    let wrap = lp.peers[V].engine.rewrap(&crate::sync::BodyId::unit(w), &hdr.id, &s, &held.wrap, &s).unwrap().expect("V wraps the header once e_R is established");
     assert_eq!(m_opens_entry(&mut lp, g, w, &hdr.id, &hdr.blob, &wrap), (false, false));
 }
 
@@ -543,13 +543,13 @@ fn facade_copy_read_content_withheld_without_the_removal_spec_crypto_5() {
     v_takes(&mut lp, &s, w, &held);
     assert!(reads(&mut lp, V, g, "w"), "V reads w from R's copy");
     let mut rng = osis_crypto::SeededRng::from_u64(25);
-    if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &w, std::slice::from_ref(&held), &mut rng).unwrap() {
+    if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &crate::sync::BodyId::unit(w), std::slice::from_ref(&held), &mut rng).unwrap() {
         let (header, content) = m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap);
         panic!("V sealed w read from a copy lacking W: M opens its header {header}, content {content}");
     }
     assert!(lp.peers[V].engine.snapshot(&g, &x()).is_err(), "V snapshots w read from a copy under e_R, not established");
     w_arrives(&mut lp, g, &w_commits, &e_r);
-    let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &w, &[held], &mut rng).unwrap().expect("V seals w once e_R is established");
+    let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &crate::sync::BodyId::unit(w), &[held], &mut rng).unwrap().expect("V seals w once e_R is established");
     assert_eq!(m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap), (false, false));
     let c = lp.peers[V].engine.snapshot(&g, &x()).unwrap().unwrap();
     let pks = lp.sealed(V, &[c]).unwrap();
@@ -572,6 +572,8 @@ fn cross_thing_copy_content_never_resealed_spec_crypto_5() {
     // content its independent may not read is not taken)
     lp.peers[R].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
     send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
+    // V takes R's grant on h by its fire
+    lp.pass_fires(V).unwrap();
     let sh = lp.peers[V].engine.sync_id_of(&h).unwrap().expect("V syncs h");
     let copied = r_copy(&mut lp, h, sh, w, 26);
     v_takes(&mut lp, &sh, w, &copied);
@@ -582,7 +584,7 @@ fn cross_thing_copy_content_never_resealed_spec_crypto_5() {
         if arrived {
             w_arrives(&mut lp, g, &w_commits, &e_r);
         }
-        if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &w, std::slice::from_ref(&copied), &mut rng).unwrap() {
+        if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &crate::sync::BodyId::unit(w), std::slice::from_ref(&copied), &mut rng).unwrap() {
             let (header, content) = m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap);
             panic!("W arrived {arrived}: V sealed w read from h's copy: M opens its header {header}, content {content}");
         }
@@ -590,7 +592,7 @@ fn cross_thing_copy_content_never_resealed_spec_crypto_5() {
     }
     let (_, held) = r_held(&mut lp, g, w, &entry);
     v_takes(&mut lp, &s, w, &held);
-    let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &w, &[copied, held], &mut rng).unwrap().expect("V seals w once it opened R's section under e_R, established");
+    let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &crate::sync::BodyId::unit(w), &[copied, held], &mut rng).unwrap().expect("V seals w once it opened R's section under e_R, established");
     assert_eq!(m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap), (false, false));
     let c = lp.peers[V].engine.snapshot(&g, &x()).unwrap().unwrap();
     let pks = lp.sealed(V, &[c]).unwrap();
@@ -615,7 +617,7 @@ fn old_epoch_section_sealed_while_newest_unestablished_spec_crypto_5() {
     assert_eq!(m_opens_entry(&mut lp, g, w0, &e.id, &e.blob, &held.wrap), (true, true), "M reads A's entry of w0");
     let mut rng = osis_crypto::SeededRng::from_u64(29);
     for given in [vec![held.clone()], Vec::new()] {
-        let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &w0, &given, &mut rng).unwrap().expect("V seals w0, opened under e0, established");
+        let (sealed, wrap) = lp.peers[V].engine.seal_body(&s, &crate::sync::BodyId::unit(w0), &given, &mut rng).unwrap().expect("V seals w0, opened under e0, established");
         assert!(!lp.peers[V].engine.open_commit(&sealed.blob, &sealed.key).unwrap().commit.parts.is_empty(), "V opens its fresh encryption");
         let (_, content) = m_opens_entry(&mut lp, g, w0, &sealed.id, &sealed.blob, &wrap);
         assert!(content, "given {}: M reads V's encryption of w0 as it reads A's", given.len());
@@ -649,7 +651,7 @@ fn planted_copy_unlocks_no_reseal_spec_crypto_5() {
     let (_, held) = r_held(&mut lp, g, w, &entry);
     v_takes(&mut lp, &s, w, &held);
     assert!(reads(&mut lp, V, g, "w"));
-    if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &w, &[planted, held], &mut rng).unwrap() {
+    if let Some((sealed, wrap)) = lp.peers[V].engine.seal_body(&s, &crate::sync::BodyId::unit(w), &[planted, held], &mut rng).unwrap() {
         let (header, content) = m_opens_entry(&mut lp, g, w, &sealed.id, &sealed.blob, &wrap);
         panic!("V sealed w after a planted copy: M opens its header {header}, content {content}");
     }
@@ -675,7 +677,7 @@ fn copy_opening_of_a_pending_write_survives_a_restart_spec_crypto_5() {
     assert!(reads(&mut lp, V, g, "w2"), "w2 applies at V");
     assert!(!lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
     let mut rng = osis_crypto::SeededRng::from_u64(34);
-    assert!(lp.peers[V].engine.seal_body(&s, &w2, std::slice::from_ref(&held), &mut rng).unwrap().is_none(), "V seals w2 read from a copy under e_R");
+    assert!(lp.peers[V].engine.seal_body(&s, &crate::sync::BodyId::unit(w2), std::slice::from_ref(&held), &mut rng).unwrap().is_none(), "V seals w2 read from a copy under e_R");
     assert!(lp.peers[V].engine.snapshot(&g, &x()).is_err(), "V snapshots w2 read from a copy under e_R");
 }
 
@@ -710,7 +712,7 @@ fn copy_read_below_a_cut_keeps_its_floor_spec_crypto_5() {
     let held = HeldBlob { sync_id: s, wrap: e.wraps.iter().find(|(t, _)| *t == g).unwrap().1, bytes: e.blob.clone() };
     let mut rng = osis_crypto::SeededRng::from_u64(36);
     for given in [vec![copied.clone()], vec![copied, held]] {
-        let Some((sealed, wrap)) = lp.peers[p].engine.seal_body(&s, &w0, &given, &mut rng).unwrap() else { continue };
+        let Some((sealed, wrap)) = lp.peers[p].engine.seal_body(&s, &crate::sync::BodyId::unit(w0), &given, &mut rng).unwrap() else { continue };
         let ne = &mut lp.peers[n].engine;
         let Some((_, key)) = osis_blob::unwrap_any(ne.read_secrets(&g).iter(), &sealed.id, &wrap) else { continue };
         let content = ne.open_commit(&sealed.blob, &key).is_ok_and(|o| !o.commit.parts.is_empty());
@@ -828,7 +830,7 @@ fn roles_at_now_move_at_an_until_spec_permissions_2() {
     fx.want(0);
     fx.want(1);
     let (e0, e1) = { let (a, b) = lp.peers.split_at_mut(1); (&mut a[0].engine, &mut b[0].engine) };
-    assert_eq!(fx.settle(&0, || e0.actor_role(&tids[1], &g)), Some((None, Some(Role::Read))));
+    assert_eq!(fx.settle(&0, || e0.core.role_now(&tids[1], &g)), Some((None, Some(Role::Read))));
     assert_eq!(fx.settle(&1, || e1.role_on(&g)), Some((None, Some(Role::Read))));
     assert!(fx.due().is_empty());
     let mut rosters: osis_base::memo::Effects<(), Vec<Tid>> = osis_base::memo::Effects::new("roster at now");
@@ -844,7 +846,7 @@ fn roles_at_now_move_at_an_until_spec_permissions_2() {
     assert_eq!(rosters.due(), vec![()], "the roster too");
     assert!(rosters.settle(&(), || lp.peers[1].engine.roster(&g).into_keys().collect()).is_some_and(|(_, r)| !r.contains(&tids[1])));
     let (e0, e1) = { let (a, b) = lp.peers.split_at_mut(1); (&mut a[0].engine, &mut b[0].engine) };
-    assert_eq!(fx.settle(&0, || e0.actor_role(&tids[1], &g)), Some((Some(Some(Role::Read)), None)));
+    assert_eq!(fx.settle(&0, || e0.core.role_now(&tids[1], &g)), Some((Some(Some(Role::Read)), None)));
     assert_eq!(fx.settle(&1, || e1.role_on(&g)), Some((Some(Some(Role::Read)), None)));
 }
 

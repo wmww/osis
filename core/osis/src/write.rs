@@ -308,7 +308,7 @@ impl<'d> Write<'d> {
     /// `holder` holds `t`: a strong to `t` in `holder`'s `holds.0`, so `t` syncs with `holder`
     /// wherever `holder` is held (spec/sync-set.md §2) and stays while some held thing holds it.
     /// Holding a thing made in this write is what keeps it (`create`); holding one granted here
-    /// accepts it (spec/sync-set.md §4). This node's own hold, held by no other node of the
+    /// syncs it (spec/sync-set.md §4). This node's own hold, held by no other node of the
     /// account, is `Osis::hold`: a commit of the node's, never part of a write.
     pub fn hold(&mut self, holder: Tid, t: Tid) -> Result<()> {
         self.at(holder, crate::core::HOLDS).path(osis_schema::p![]).add(&Ref::Strong(Strong(t)))

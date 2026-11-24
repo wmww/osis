@@ -39,7 +39,7 @@ pub(super) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     let st = tx.kept(tid, ak, st)?;
     if ch.is_changed() {
         tx.set_state_touched(tid, ak, st, &touch, Shred::No)?;
-        crate::engine::refs::note(tx, tid, ak, None, refs.unwrap_or_default())?;
+        crate::engine::refs::note(tx, tid, ak, refs.unwrap_or_default())?;
     } else {
         tx.core.states.insert(k, st);
     }

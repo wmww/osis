@@ -77,7 +77,7 @@ pub fn awaited(engine: &mut Engine, named: &Named) -> Vec<Tid> {
 /// (spec/sync-opens.md §4 Admissible): each with the epoch it is at, for the Departed rule.
 #[derive(Clone, Debug, Default)]
 pub struct Creds {
-    /// How the node holds S: read, or kept unread.
+    /// How the node holds S: read, for keys, or kept unread.
     pub holding: Option<Holding>,
     /// Credentials it shows, each with its epoch (none: at no epoch covering a departure).
     pub shows: Vec<(Shown, Option<Epoch>)>,
@@ -244,7 +244,8 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
     let (_, holding) = cx.store.synced(s)?;
     let mut c = Creds { holding: Some(holding), ..Creds::default() };
     match holding {
-        Holding::Read => {
+        // held for keys it opens as a reader does: by the read secret a box gave it
+        Holding::Read | Holding::Keys => {
             let rc = cx.engine.read_credentials(s).ok()??;
             for (e, k) in &rc.read_secrets {
                 c.shows.push((Shown::Read(*e, *k.expose()), Some(*e)));
@@ -320,7 +321,7 @@ pub(crate) fn member_until(cx: &mut Cx, s: &SyncId, by: &Credential) -> crate::t
     let end = cx.store.log_bounds()?.0;
     match (cx.store.synced(s), by) {
         (Some((_, Holding::Unread)), _) => Ok(cx.store.head_at(s)?.unwrap_or(end)),
-        (Some((_, Holding::Read)), Credential::ReadSecret(e)) => {
+        (Some((_, Holding::Read | Holding::Keys)), Credential::ReadSecret(e)) => {
             let mut at = None;
             for c in cx.engine.rotations_superseding(s, e)? {
                 for b in cx.engine.commit_blobs(&c)?.iter() {
@@ -419,7 +420,7 @@ impl Holds for NodeHolds<'_, '_> {
     fn grant(&mut self, s: &SyncId, entry: &[u8; 32]) -> Option<Grant> {
         // the path this node keeps: a reader's recorded one, else the one registered here
         let steps: Vec<(Step, Option<osis_blob::ClaimSet>)> = match self.cx.store.synced(s)? {
-            (_, Holding::Read) => path_of(self.cx, s)?.steps.clone(),
+            (_, Holding::Read | Holding::Keys) => path_of(self.cx, s)?.steps.clone(),
             (_, Holding::Unread) => self.cx.store.path(s).ok()??.steps.clone(),
         };
         let (_, claims) = steps.last()?;

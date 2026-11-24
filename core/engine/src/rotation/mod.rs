@@ -490,8 +490,8 @@ pub(crate) fn cut_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeS
 /// commit is wrapped under that epoch, so they cannot open it from the sync ID (a grant this node
 /// learned of after an epoch that left it out, the single-use link race's winner); while `a`
 /// owns several sync IDs here (a fork), every holder it boxes. They get it by inbox
-/// (spec/permissions.md §3; key-change tickets: Interim (issues/tickets-retired.md)). Called before the rotation is
-/// committed.
+/// (spec/permissions.md §3; as grant fires: Interim (notes/sync-rewrite-state.md, Delivery)).
+/// Called before the rotation is committed.
 pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<Tid>> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
     let secrets = secrets_in(tx, a)?;
@@ -500,10 +500,10 @@ pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<
     out.sort();
     out.dedup();
     // Invariant: a holder syncs the sync ID the commit is logged under (`a`'s, the greatest it
-    // owns) only once it holds the `sync.0` entry recording it or a ticket naming it. With two
-    // (admins making `a` independent at once), a holder granted on the other side holds neither:
-    // nothing is logged under its sync ID once every writer syncs the greater one, so only a
-    // ticket naming `a`'s sync ID reaches it, and this node cannot tell which side a holder is on
+    // owns) only once it holds the `sync.0` entry recording it. With two (admins making `a`
+    // independent at once), a holder granted on the other side holds none: nothing is logged
+    // under its sync ID once every writer syncs the greater one, so only the inbox reaches it,
+    // and this node cannot tell which side a holder is on
     if flows::sync_ids::owned_in(tx, a)?.len() > 1 {
         return Ok(out);
     }
@@ -515,11 +515,12 @@ pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<
     Ok(out)
 }
 
-/// The tickets rotation commit `c` of `a` fires to `holders` (spec/sync-inbox.md Inbox).
+/// Rotation commit `c` of `a` to `holders` that take it by inbox (spec/sync-inbox.md §5).
+/// Interim (notes/sync-rewrite-state.md, Delivery): as a `grant@~0` fire, not a sealed copy.
 pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, holders: &[Tid]) -> Result<()> {
     if let Some(c) = c {
         for m in holders {
-            flows::inbox::fire_ticket(tx, *m, c, &[a])?;
+            flows::inbox::deliver_copy(tx, *m, c, a)?;
         }
     }
     Ok(())
@@ -1039,8 +1040,9 @@ pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTre
     done.add(c);
     if let Some(c) = c {
         // an account's own nodes read it under the sync ID it is written to
+        // Interim (notes/sync-rewrite-state.md, Delivery): as a `grant@~0` fire, not a sealed copy
         if holder != me {
-            flows::inbox::fire_ticket(tx, holder, c, &[a])?;
+            flows::inbox::deliver_copy(tx, holder, c, a)?;
         }
     }
     Ok(())

@@ -85,20 +85,11 @@ impl World {
     /// transitively: a chain of actors gives the lowest role along it, and the best chain counts.
     /// `g` is admin of itself.
     pub fn roles_from(&self, g: T) -> BTreeMap<T, Role> {
-        self.roles_with(g, None)
-    }
-    /// `roles_from` for a holder that takes a grant naming it only at a strong to its thing
-    /// (an account: taking up at a strong, Interim (issues/tickets-retired.md)): its own grants count on
-    /// the things in `reached` alone, and nothing counts through the others.
-    pub fn roles_from_reached(&self, g: T, reached: &Set) -> BTreeMap<T, Role> {
-        self.roles_with(g, Some(reached))
-    }
-    fn roles_with(&self, g: T, reached: Option<&Set>) -> BTreeMap<T, Role> {
         let mut best = BTreeMap::from([(g, Role::Admin)]);
         loop {
             let mut changed = false;
             for (&(a, b), &r) in &self.grants {
-                if self.keyless.contains(&(a, b)) || (a == g && reached.is_some_and(|x| !x.contains(&b))) {
+                if self.keyless.contains(&(a, b)) {
                     continue;
                 }
                 if let Some(&ra) = best.get(&a) {
@@ -252,7 +243,7 @@ impl Carry {
 pub struct Sync {
     pub world: World,
     pub commits: Vec<Commit>,
-    /// Per node: the independent things it holds tickets or keys for.
+    /// Per node: the independent things it syncs.
     pub subs: Vec<Set>,
     pub has: Vec<BTreeSet<C>>,
     /// Per sync ID: the entries logged there.
@@ -399,78 +390,67 @@ impl Sync {
 
 // ---- The node closure ----
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Ticket {
-    Open,
-    SyncOnly,
-}
-
-/// What a node brings to its closure: its node root's strongs and its tickets.
+/// What a node brings to its closure: its node root's strongs and its own actors (its account,
+/// itself, the key actors it holds: spec/sync-set.md §2 Own actors).
 #[derive(Clone, Debug, Default)]
 pub struct NodeView {
     pub roots: Set,
-    pub tickets: BTreeMap<T, Ticket>,
+    pub own: Set,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Closure {
-    /// Keyed things read: entered by keys or an open ticket, or in a sync unit entered so.
+    /// Independent things read: entered at the node's role of read or above, or in a sync unit
+    /// entered so.
     pub read: Set,
-    /// Keyed things kept unread: entered by a sync secret (a sync-only ticket or the node's keys),
-    /// and not read; each holds its sync unit unread and the walk stops at it.
+    /// Independent things kept unread: entered at the node's role of sync, and not read; each
+    /// holds its sync unit unread and the walk stops at it.
     pub stored: Set,
     /// Every thing the node holds.
     pub held: Set,
     /// What some way of obtaining covers: the sync units entered and the local sync unit (the node
     /// root's strongs walked by the node's keys).
     pub carried: Set,
-    /// The node's keys: those of every independent thing read. An open ticket gives its keys only where
-    /// the walk enters its thing (spec/sync-set.md §4: syncing a thing granted is the account's own
-    /// choice, a strong).
+    /// The node's keys: the things its role is read or above on.
     pub keys: Set,
-    /// The independent things whose sync secret the node's keys give (they hold sync or above there).
+    /// The things the node's role gives a sync secret of (sync or above).
     pub synced: Set,
-    /// Holders held for keys alone (`keys::oracle`: notes/holder-access-study.md): on a path of
-    /// grants from an own actor to a thing synced, and not held whole. Empty from `closure`.
+    /// Holders held for keys alone (`keys::for_keys`: notes/holder-access-study.md). Empty from
+    /// `closure`.
     pub for_keys: Set,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Walk {
     /// Sync unit by sync unit: within a sync unit by its strongs; into an independent thing the sync unit's keys cannot
-    /// open only by keys or a ticket the node holds; a dependent thing the sync unit's keys cannot open
+    /// open only by the node's role on it; a dependent thing the sync unit's keys cannot open
     /// stops the walk.
     Units,
     /// The words "the node closure walks strongs": every thing the node can open is followed.
     Literal,
 }
 
-/// The node closure: the walk below with the node's keys and sync secrets, the least sets that
-/// the independent things it reads yield (a ticket's secret is taken only at a strong to its thing, so
-/// keys grow only as the walk enters things).
+/// The node closure (spec/sync-set.md §2): the walk below by the node's role, its own actors'
+/// effective role over `w`'s grants (spec/sync-set.md §2 Own actors). A function of the world: no
+/// role waits for a strong.
 pub fn closure(w: &World, e: &Edges, n: &NodeView, walk: Walk) -> Closure {
-    let (mut ring, mut sync) = (Set::new(), Set::new());
-    loop {
-        let mut c = walk_with(w, e, n, walk, &ring, &sync);
-        let next = (w.ring(&c.read), w.sync_ring(&c.read));
-        if next == (ring.clone(), sync.clone()) {
-            (c.keys, c.synced) = (ring, sync);
-            return c;
-        }
-        (ring, sync) = next;
-    }
+    let roles = keys::roles_of(w, &n.own);
+    let ring: Set = roles.iter().filter(|&(_, &r)| r >= Role::Read).map(|(&x, _)| x).collect();
+    let sync: Set = roles.keys().copied().collect();
+    let mut c = walk_with(w, e, &n.roots, walk, &ring, &sync);
+    (c.keys, c.synced) = (ring, sync);
+    c
 }
 
-/// The walk with keys `ring` and sync secrets `sync`: an independent thing reached is read where `ring`
-/// holds its keys or an open ticket for it is held, else kept unread where `sync` holds its sync
-/// secret or a sync-only ticket for it is held.
-fn walk_with(w: &World, e: &Edges, n: &NodeView, walk: Walk, ring: &Set, sync: &Set) -> Closure {
-    let opened = |k: &T| ring.contains(k) || n.tickets.get(k) == Some(&Ticket::Open);
-    let synced = |k: &T| sync.contains(k) || n.tickets.get(k) == Some(&Ticket::SyncOnly);
+/// The walk from `roots` with keys `ring` and sync secrets `sync`: an independent thing reached
+/// is read where `ring` holds its keys, else kept unread where `sync` holds its sync secret.
+pub(crate) fn walk_with(w: &World, e: &Edges, roots: &Set, walk: Walk, ring: &Set, sync: &Set) -> Closure {
+    let opened = |k: &T| ring.contains(k);
+    let synced = |k: &T| sync.contains(k);
     let mut c = Closure::default();
     let mut independents = vec![];
     let mut stack = vec![];
-    for &r in &n.roots {
+    for &r in roots {
         if w.independent(r) {
             independents.push(r);
         } else if w.opens(ring, r) && c.held.insert(r) {
@@ -541,7 +521,7 @@ fn walk_with(w: &World, e: &Edges, n: &NodeView, walk: Walk, ring: &Set, sync: &
                     }
                 }
             }
-            c.carried = closure(w, e, n, Walk::Units).carried;
+            c.carried = walk_with(w, e, roots, Walk::Units, ring, sync).carried;
             for &k in c.read.iter().chain(&c.stored) {
                 c.carried.extend(unit(w, k, e));
             }

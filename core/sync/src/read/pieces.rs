@@ -15,6 +15,7 @@
 use super::judge::{Act, PieceJudged};
 use osis_base::memo::Effects;
 use osis_base::{BlobId, CommitId, SyncId};
+use osis_engine::sync::BodyId;
 use osis_engine::sync::PieceLink;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -23,7 +24,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Linker {
     /// A must-hold body, and whether its pieces are repaired (an own body).
-    Body { c: CommitId, repairs: bool },
+    Body { c: BodyId, repairs: bool },
     /// An acting node one step above.
     Node(BlobId),
 }
@@ -65,7 +66,7 @@ pub(crate) struct Pieces {
     relinked: BTreeSet<Key>,
     /// Per own repair body linking pieces, the blobs it encrypted afresh: never repaired by way
     /// of it.
-    fresh: BTreeMap<(SyncId, CommitId), Arc<BTreeSet<BlobId>>>,
+    fresh: BTreeMap<(SyncId, BodyId), Arc<BTreeSet<BlobId>>>,
     /// Acts taken of pieces no longer followed since the last `acts`: called for no more.
     gone: Vec<(Key, Act)>,
 }
@@ -79,7 +80,7 @@ impl Default for Pieces {
 impl Pieces {
     /// Body `c`'s links moved from `was` (roots, repairs) to `now`: what it links under S follows;
     /// `fresh`: what it encrypted afresh as a repair.
-    pub fn body(&mut self, s: &SyncId, c: &CommitId, was: (&[PieceLink], bool), now: (&[PieceLink], bool), fresh: &Arc<BTreeSet<BlobId>>) {
+    pub fn body(&mut self, s: &SyncId, c: &BodyId, was: (&[PieceLink], bool), now: (&[PieceLink], bool), fresh: &Arc<BTreeSet<BlobId>>) {
         if fresh.is_empty() || now.0.is_empty() {
             self.fresh.remove(&(*s, *c));
         } else {
@@ -227,7 +228,7 @@ impl Pieces {
                 }
                 for by in self.linked.get(&at).map(|e| &e.by).into_iter().flatten() {
                     match by {
-                        Linker::Body { c, repairs: true } if !self.fresh.get(&(at.0, *c)).is_some_and(|f| f.contains(&k.1)) => drop(out.entry(*c).or_default().insert(k.1)),
+                        Linker::Body { c, repairs: true } if !self.fresh.get(&(at.0, *c)).is_some_and(|f| f.contains(&k.1)) => drop(out.entry(c.commit).or_default().insert(k.1)),
                         Linker::Body { .. } => {}
                         Linker::Node(b) => todo.push((at.0, *b)),
                     }

@@ -27,9 +27,9 @@ fn main() {
     bench("crypto/ed25519_sign", None, || sk.sign(Domain::Commit, &[9; 32]));
     bench("crypto/ed25519_verify", None, || pk.verify(Domain::Commit, &[9; 32], &sig).unwrap());
 
-    let d = DeleteSecret::derive(&Secret32::from_bytes([4; 32]));
+    let d = DeleteSecret::write(&Secret32::from_bytes([4; 32]));
     let vk = d.verifying_key();
-    bench("crypto/delete_key_derive", None, || DeleteSecret::derive(&Secret32::from_bytes([4; 32])).verifying_key());
+    bench("crypto/delete_key_derive", None, || DeleteSecret::write(&Secret32::from_bytes([4; 32])).verifying_key());
     bench("crypto/delete_commitment", None, || commitment(1, &vk, &[6; 16], &[7; 16]).unwrap());
     let c = commitment(1, &vk, &[6; 16], &[7; 16]).unwrap();
     let key: [u8; 32] = c[1..].try_into().unwrap();

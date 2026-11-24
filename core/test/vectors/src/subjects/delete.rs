@@ -16,8 +16,11 @@ pub fn keys() -> VecFile {
     // per level, two prefix salts: the same key commits differently and each signature verifies
     // only under its own commitment
     for (level, secret) in [(1u8, 0x14u8), (2, 0x15), (3, 0x16)] {
-        let d = DeleteSecret::derive(&s32(secret));
+        let d = DeleteSecret::at_level(level, &s32(secret));
+        // a level's key is the step key of its role secret (spec/sync-ids.md §2)
+        let role = if level == 1 { RoleKey::Delete } else { RoleKey::Write };
         let vk = d.verifying_key();
+        assert_eq!(vk, role_key(role, &s32(secret)).verifying_key());
         let digest = osis_blob::auth::delete_digest(&sync_id, &blob, &[level]);
         let mut seen = Vec::new();
         for salt in [[0x13u8; 16], [0x19; 16]] {
@@ -31,7 +34,7 @@ pub fn keys() -> VecFile {
             cases.push(
                 case(&format!("delete key level {level}, salt {:02x}", salt[0]), SPEC)
                     .with("secret", hex(s32(secret).expose()))
-                    .with("seed", hex(kdf::kdf(kdf::DELETE_KEY, s32(secret).expose(), b"").expose()))
+                    .with("seed", hex(role_key_seed(role, &s32(secret)).expose()))
                     .with("key", hex(&vk.to_bytes()))
                     .with("level", level.to_string())
                     .with("salt", hex(&salt))
@@ -66,11 +69,11 @@ pub fn keys() -> VecFile {
             .with("signature", hex(&sig.0)),
     );
     // the unblinded key's signature is refused under the commitment
-    let d = DeleteSecret::derive(&s32(0x14));
+    let d = DeleteSecret::admin(&s32(0x14));
     let salt = [0x13u8; 16];
     let c = commitment(1, &d.verifying_key(), &salt, &hb).unwrap();
     let digest = osis_blob::auth::delete_digest(&sync_id, &blob, &[1]);
-    let plain = SigningSecret::from_seed(&kdf::kdf(kdf::DELETE_KEY, s32(0x14).expose(), b"")).sign(Domain::Delete, &digest);
+    let plain = role_key(RoleKey::Delete, &s32(0x14)).sign(Domain::Delete, &digest);
     assert!(verify_delete(&c[1..].try_into().unwrap(), &digest, &plain).is_err());
     cases.push(case("unblinded signature", SPEC).with("commitment", hex(&c)).with("digest", hex(&digest)).with("signature", hex(&plain.0)).with("reject", "signature"));
     VecFile { header: generated_header("delete", SPEC), cases }

@@ -280,17 +280,23 @@ impl Split {
         if entries.len() < 2 {
             return Err(Error::Malformed("split path of fewer than two things"));
         }
-        if entries.iter().any(|e| !ENTRY_CLASSES.iter().any(|c| entry_len(*c) == Some(e.len()))) {
-            return Err(Error::Malformed("split path entry of no padded length"));
-        }
-        // one key per entry and one entry per key: two entries under one key would share its zero
-        // nonce
-        let mut seen = BTreeSet::new();
-        if !entries.iter().all(|e| seen.insert(e.get(..COMMITMENT_LEN))) {
-            return Err(Error::Malformed("split path entries committing to one key"));
-        }
+        entries_ok(&entries)?;
         Ok(Split { author, entries })
     }
+}
+
+/// The rules on a `Split`'s sealed entries: each of a padded length, and
+/// one key per entry and one entry per key (two entries under one key would share its zero
+/// nonce).
+pub(crate) fn entries_ok(entries: &[Vec<u8>]) -> Result<(), Error> {
+    if entries.iter().any(|e| !ENTRY_CLASSES.iter().any(|c| entry_len(*c) == Some(e.len()))) {
+        return Err(Error::Malformed("path entry of no padded length"));
+    }
+    let mut seen = BTreeSet::new();
+    if !entries.iter().all(|e| seen.insert(e.get(..COMMITMENT_LEN))) {
+        return Err(Error::Malformed("path entries committing to one key"));
+    }
+    Ok(())
 }
 
 impl Paths {

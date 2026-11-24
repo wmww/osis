@@ -263,6 +263,12 @@ pub fn deliver(from: &Osis, to: &Osis) {
     for pk in pks {
         to.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
     }
+    fires(from, to);
+}
+
+/// `osis::internals::pass_fires`: whether `to` refused any.
+pub fn fires(from: &Osis, to: &Osis) -> bool {
+    osis::internals::pass_fires(from, to)
 }
 
 /// Two nodes of one account on one clock; commits travel by `deliver`.

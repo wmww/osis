@@ -304,3 +304,53 @@ fn a_read_grant_opens_only_what_it_leads_to() {
     assert_eq!(a.opened, b.opened);
     assert_eq!(a.opened, 3);
 }
+
+/// A sync ID taken back leaves nothing of it (the derivation's own check: every reverse index
+/// holds what the remaining sync IDs do), the other sync IDs as they were; registered again, it
+/// is as from nothing.
+#[test]
+fn a_sync_id_taken_back_leaves_nothing_and_comes_again_as_new() {
+    let mut w = World::new(3, 10);
+    let (d, d2) = (w.ev.required(&D).unwrap().clone(), w.ev.required(&D2).unwrap().clone());
+    assert!(!d.is_empty(), "D requires its path's grants");
+    w.ev.remove_sid(&D);
+    w.ev.check().unwrap();
+    assert!(w.ev.required(&D).is_none() && w.ev.required(&D2) == Some(&d2), "D is gone, D2 as it was");
+    w.ev.add_sid(D, D);
+    w.ev.join(&D, D);
+    w.ev.check().unwrap();
+    assert_eq!(w.ev.required(&D), Some(&d), "D again");
+}
+
+/// A record edge taken back (its thing's record forgotten) closes the keys it opened: the
+/// writes naming what only it led to travel under the sync ID no more, and an edge a held grant
+/// also sets stands. Taken back at 10 and 100 other sync IDs it walks the same.
+#[test]
+fn a_record_taken_back_closes_what_only_it_opened() {
+    let at = |n: u16| {
+        let mut w = Travel::new();
+        w.sid(A);
+        for i in 0..n {
+            w.sid(2000 + i);
+            w.grant(2000 + i, 3000 + i);
+        }
+        // A mints H; X grants H on H2: the write naming H travels under A by the record alone
+        w.ev.add_record((A, H));
+        let g = w.grant(H, H2);
+        assert!(w.ev.required(&A).unwrap().contains_key(&g), "the grant to H travels under A");
+        let c = w.work(|w| w.ev.remove_record(&(A, H)));
+        w.ev.check().unwrap();
+        assert!(w.ev.required(&A).unwrap().is_empty(), "nothing travels under A");
+        // beside a grant setting the same edge, the record's going moves nothing
+        w.ev.add_record((A, H));
+        w.grant(A, H);
+        let n = w.ev.required(&A).unwrap().len();
+        w.ev.remove_record(&(A, H));
+        w.ev.check().unwrap();
+        assert_eq!(w.ev.required(&A).unwrap().len(), n, "the grant keeps the edge");
+        c
+    };
+    let (a, b) = (at(10), at(100));
+    assert_eq!((a.opened, a.closes), (b.opened, b.closes));
+    assert_eq!(a.closes, 1);
+}

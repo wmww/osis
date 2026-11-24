@@ -99,7 +99,7 @@ pub(crate) fn account_two_nodes() -> (LocalPeer, Tid) {
 fn account_two_nodes_built() -> (LocalPeer, Tid) {
     let mut lp = net_bare(2, 0);
     let (p, done) = lp.peers[0].engine.create_account().unwrap();
-    assert_eq!(done.commits.len(), 7, "the account's creation, the profile's and the inbox's keys, the inbox's history setting, the account root's strongs, its tickets for the profile and the inbox");
+    assert_eq!(done.commits.len(), 5, "the account's creation, the profile's and the inbox's keys, the inbox's history setting, the account root's strongs");
     // the new node's card over the direct connection
     let n = lp.peers[1].engine.tid();
     let card: Vec<CommitId> = lp.peers[1].engine.commit_ids();
@@ -531,6 +531,8 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     send_carried(&mut lp, 1, 0, &bobs);
     let g = thing_of(&mut lp, 0, pa);
     let done = lp.peers[0].engine.grant(&g, &pb, &edge_of(Role::Read)).unwrap();
+    // the grant's fire never reaches bob: he holds the planted copy alone
+    lp.hold_fires(true);
     let grant = *done.commits.last().unwrap();
     let pk = lp.peers[0].engine.package(&grant).unwrap().unwrap();
     let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
@@ -901,7 +903,8 @@ fn cascade_two_hops_spec_perm_3() {
     let d1 = lp.peers[0].engine.tid();
     let t = thing_of(&mut lp, 2, pa);
     let u = thing_of(&mut lp, 2, pa);
-    lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Write)).unwrap();
+    let account = lp.peers[1].engine.me();
+    lp.peers[2].engine.grant(&t, &account, &edge_of(Role::Write)).unwrap();
     lp.peers[2].engine.grant(&u, &t, &edge_of(Role::Write)).unwrap();
     spread(&mut lp);
     let (t0, u0) = (newest_read(&lp, 1, t).unwrap(), newest_read(&lp, 1, u).unwrap());
@@ -1578,7 +1581,8 @@ fn issue_step_after_inside_removal_spec_sync_5() {
     let (mut lp, p, pa, _) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
     let t = thing_of(&mut lp, 2, pa);
-    lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Admin)).unwrap();
+    let account = lp.peers[1].engine.me();
+    lp.peers[2].engine.grant(&t, &account, &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
     let t0 = newest_read(&lp, 1, t).unwrap();
     let sync_id = lp.peers[1].engine.sync_id_of(&t).unwrap().unwrap();
@@ -2140,6 +2144,7 @@ fn rekey_reseals_holder_actor_spec_perm_3() {
     let (mut lp, ps) = people(4);
     let t = thing_of(&mut lp, 3, ps[3]);
     lp.peers[3].engine.make_independent(&t).unwrap();
+    lp.takes_grants(3, t);
     spread(&mut lp);
     let (d, e0, _) = locked_out(&mut lp, &ps[..3], 0);
     lp.peers[0].engine.grant(&d, &t, &edge_of(Role::Read)).unwrap();

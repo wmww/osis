@@ -7,7 +7,6 @@ What stands in, each site marked `Interim (issues/stated-path-certificates.md)`:
 - `Indexes::by_actor` and `acting_on` (with `chains_on`'s (author, purge author) pairs): the things written as, kept needed (`retention::needed`) and certified (`sync_ids/certs`); filled in `apply::atomic::index_acting`, emptied in `apply::unindex`.
 - `apply::header_wait`: a commit waits for its purge author's record, not for every listed thing's.
 - `write::check_acts`: the writer's check that it holds write on the thing it writes as.
-- `sync_ids/chain.rs`: chain certificates close over chained writes along any path, not the stated one; the index is built per call.
 - osis-commit `Header::path_allowed`: a role commit's purge index is held to 0, a bad input spec/wire.md does not list.
 
 What else the engine reads short of the spec (snapshot carries, `addenda.0` entries, by-commit purge items, the list's frontier, epoch addenda, sides): notes/perm-paths.md, Read short of the spec.

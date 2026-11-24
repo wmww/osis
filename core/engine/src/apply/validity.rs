@@ -382,6 +382,11 @@ pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pa
         if too_deep(core, &a.tid) {
             continue;
         }
+        // nor do the edge writes of a commit listing a wrong delete key for the thing
+        // (spec/crypto.md §7 Checked keys; `Core::rekey` reads them again where that moves)
+        if core.miskeyed(id, &a.tid) {
+            continue;
+        }
         let (v, k) = edge_ops(core, &a.tid, es, Owned::of_view(h, id, *ai).as_ref());
         ops.extend(v);
         known &= k;
@@ -409,13 +414,12 @@ pub(crate) fn hold_role_commit(core: &mut Core, h: &View, path: &osis_commit::Pa
     }
 }
 
-/// Notes the edges role commit `id` writes as held (`Core::notices_due`): a commit applied or
-/// joined here, or a write turning resolved, may make a write on one of them take a holder of
-/// read below read in this node's timeline, a removal notice it owes (spec/sync-inbox.md §5).
-pub(crate) fn note_notices(core: &mut Core, id: &CommitId) {
-    let Some(c) = core.ix.held.edge_commit(id) else { return };
-    let edges: Vec<(Tid, Tid)> = c.ops.iter().map(|o| (o.holder, o.target)).collect();
-    core.notices_due.extend(edges);
+/// Notes commit `id` (header `h`, parts judged `valid`) for taking (`Indexes::fires_due`) when a
+/// valid part of it is a `grant@~0` fire (spec/sync-inbox.md §5 Carried commits).
+pub(crate) fn note_grant_fire(core: &mut Core, id: &CommitId, h: &Header, valid: &[bool]) {
+    if h.aspects.iter().zip(valid).any(|(a, v)| *v && crate::flows::inbox::carries(a.ak.as_str())) {
+        core.ix.fires_due.insert(*id);
+    }
 }
 
 /// Where a part sits in the order its path wait reads (spec/permissions.md §5.1 step 1, §5.2
@@ -794,15 +798,19 @@ pub(crate) fn setting_moved(core: &mut Core, t: &Tid, before: Option<BTreeSet<Ak
     core.stale_commits.extend(fires);
 }
 
-/// Re-derives the edge writes of commits whose removed keys were unknown.
+/// Re-derives the edge writes of commits whose removed keys were unknown, and of those whose
+/// things with a wrong delete key moved (`Indexes::rekeyed`).
 pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<()> {
-    let ids: Vec<CommitId> = tx.core.ix.unresolved.iter().copied().collect();
+    let rekeyed: Vec<CommitId> = tx.core.ix.rekeyed.iter().copied().collect();
+    for id in &rekeyed {
+        tx.core.ix.rekeyed.remove(id);
+    }
+    let ids: BTreeSet<CommitId> = tx.core.ix.unresolved.iter().copied().chain(rekeyed).collect();
     for id in ids {
         let Some(v) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
         let parts = super::perm_parts(tx, &id)?;
         let Some(path) = tx.core.ix.commits.get(&id).map(|m| m.header.path.clone()) else { continue };
         add_role_commit(tx.core, &v, &path, &id, &parts);
-        note_notices(tx.core, &id);
     }
     Ok(())
 }
@@ -1020,6 +1028,12 @@ impl<'a> Judge<'a> {
         if ak == "created.0" {
             return true;
         }
+        // a commit's deltas on a thing for which it lists a level-1 or level-3 delete key no step
+        // places before it are invalid (spec/crypto.md §7 Checked keys, spec/commits.md §4;
+        // `Core::rekey` keeps the set, and names the commit stale wherever it moves)
+        if core.miskeyed(id, &a.tid) {
+            return false;
+        }
         // the epoch rule filters first
         if !self.counts(h, id, a) {
             return false;
@@ -1121,6 +1135,11 @@ fn misjudged_on<'a>(core: &Core, things: impl Iterator<Item = &'a Tid>) -> Optio
 
 fn misjudged_one(core: &Core, id: &CommitId, m: &Meta) -> Option<String> {
     let h = &m.header;
+    // the stored key verdict is what judging the header now gives (`Core::rekey`)
+    let wrong = core.wrong_keys(h);
+    if let Some(a) = h.aspects.iter().find(|a| core.ix.miskeyed.contains(&(*id, a.tid)) != wrong.contains(&a.tid)) {
+        return Some(format!("delete keys of {id:?} ({:?} by {}) on {}: held as {}, {}", h.kind, h.signer, a.tid, if wrong.contains(&a.tid) { "right" } else { "wrong" }, core.explain_keys(h)));
+    }
     let now = parts_valid(core, h, &m.view, id);
     (now != m.valid()).then(|| {
         let parts: Vec<_> = h.aspects.iter().zip(m.valid().iter().zip(&now)).filter(|(_, (a, b))| a != b).map(|(x, (a, _))| (x.tid, x.ak.as_str(), *a)).collect();
@@ -1131,7 +1150,21 @@ fn misjudged_one(core: &Core, id: &CommitId, m: &Meta) -> Option<String> {
 /// One pass of `rejudge_all`.
 fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     // the epoch rule first: it decides which role commits the timelines read
+    // an account whose held epochs may move (`Indexes::epochs_due`)
+    let epochs = !tx.core.ix.epochs_due.is_empty();
     crate::flows::account::refresh_epochs(tx)?;
+    // the keys held as wrong are checked again where what the check reads may have moved besides
+    // the steps (`Core::steps_recorded`): a record on a chain (the things judged again), an
+    // account's held epochs (`Core::account_signing_keys`); every key on a thing whose chain
+    // became known (`Indexes::keys_due`)
+    let due: Vec<Tid> = tx.core.ix.keys_due.iter().copied().collect();
+    for t in &due {
+        tx.core.ix.keys_due.remove(t);
+    }
+    let rekey: BTreeSet<CommitId> = tx.core.ix.miskeyed.iter().filter(|(_, t)| epochs || tx.core.stale_things.contains(t)).map(|(c, _)| *c).chain(due.iter().flat_map(|t| tx.core.on_thing(t))).collect();
+    for c in rekey {
+        tx.core.rekey(&c);
+    }
     resolve_unresolved(tx)?;
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     // aspects where something became valid again: re-merging needs the held bodies
@@ -1232,8 +1265,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let current = tx.core.current_sessions();
     let accounts: BTreeSet<Tid> = tx.core.accounts.keys().copied().collect();
     let mut falls: Vec<(Tid, Ak)> = Vec::new();
-    // removal notices turned valid: taken as arriving ones (`flows::inbox::notice_due`)
-    let mut notices: Vec<CommitId> = Vec::new();
     for (id, now) in news {
         let Some(m) = tx.core.ix.commits.get(&id) else { continue };
         let h = m.header.clone();
@@ -1257,8 +1288,8 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 if *b {
                     rose.insert((x.tid, x.ak.clone()));
-                    if x.ak.as_str() == crate::flows::inbox::REMOVAL_FIRE {
-                        notices.push(id);
+                    if crate::flows::inbox::carries(x.ak.as_str()) {
+                        tx.core.ix.fires_due.insert(id);
                     }
                     if m.dropped_invalid(ai) {
                         back.push((id, ai));
@@ -1285,9 +1316,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     tx.core.drop_due.extend(missing_due);
     for (t, ak) in falls {
         crate::sync::falls::fell(tx, &t, &ak)?;
-    }
-    for c in notices {
-        crate::flows::inbox::notice_due(tx, &c)?;
     }
     // an own write of the current sessions fell: later writes go under fresh ones, past the hole
     // (`Core::fresh_session`)

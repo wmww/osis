@@ -1,7 +1,7 @@
 # Closure model
 > Summary: The held-model model of the reference graph, the readable closure (held_model::closure, `spec_closure`, the sync differential's oracle): what it checks, P1-P6 with each test, the P5 work counts, and the hole it found in the design: a revocation never reaches a node syncing only the grantee when the target is dependent or the grant is a chain, and with a delete key two honest nodes then undo each other for good; carrying role commits under the thing they name fixes it, and the spec states that rule (spec/permissions.md §4 Role changes travel, spec/sync-judgement.md §2).
 
-Holder access (roles over the world's grants, `Closure::for_keys`, key parts, the path search) is `held_model::closure::keys`: notes/holder-access-study.md, The model. `World::roles_from_reached` is the rule it replaces, kept as the sync differential's oracle until the build.
+Holder access (`for_keys`: the holders found from a read thing up) is `held_model::closure::keys`: notes/holder-access-study.md, The model. `closure` walks by the own actors' roles over the world's grants, and is the sync differential's oracle.
 
 ## The readable-closure model (held_model::closure, tests `spec_closure`)
 The model is an oracle written from the design's rules (spec/data-model.md §8, spec/sync-set.md), not from code: plain data, pure functions, 24 tests in about 0.8 s (debug, parallel). Its module doc lists what it leaves out (validity, disputes, key rotation, the wire, sealing, `@` signals, purge, storage rows).
@@ -30,7 +30,7 @@ How it reads the plan:
     - By the plan's words, 2 of 600 runs never settle or keep a revoked thing.
 - **P3 Holding.**
   - `p3_worked_case`: Bob (tickets for X and Y) holds Y. Carol (X only) does not, and holds the same with or without X -> Y. PASS.
-  - `p3_strong_never_changes_what_no_ticket_holds_exhaustive` covers every world of 2 independent and 2 dependent things, grants, 5 candidate strongs, root strongs and every ticket combination. A node reads an independent thing only by keys it holds. It stores one unread only inside a sync unit it has a sync-only ticket for. A strong into or out of an independent thing that it has no ticket or keys for, and that no stored sync unit's keys open, never changes what it holds. PASS.
+  - `p3_strong_never_changes_what_no_role_holds_exhaustive` covers every world of 2 independent and 2 dependent things, grants, 5 candidate strongs, root strongs and every ticket combination. A node reads an independent thing only by keys it holds. It stores one unread only inside a sync unit it has a sync-only ticket for. A strong into or out of an independent thing that it has no ticket or keys for, and that no stored sync unit's keys open, never changes what it holds. PASS.
   - `p3_held_is_carried_exhaustive`: everything held is carried by an entered sync unit or the local part. PASS. The literal walk fails it: with X and U open, X -> L -> M, L and M dependents of U, X holding no role on U, it holds M, which nothing carries. Sync unit by sync unit it holds X alone.
   - `p3_making_rule`: "leave it in the node closure" admits a dependent thing minted with admin X and an independent thing whose keys the maker holds. It refuses one of U's dependents referenced only by X, though a held thing references it. PASS.
   - The new checks (a)-(c) and the reach test for (d) are under New checks.

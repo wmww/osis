@@ -1,13 +1,15 @@
 //! Delete keys and their blinded prefix commitments (spec/crypto.md §7).
 
 use crate::kdf::{self, kdf, kdf16, kdf_xof};
+use crate::sync_id::{RoleKey, role_key_seed};
 use crate::{Domain, Secret32, Signature, VerifyingKey};
 use curve25519_dalek::Scalar;
 use ed25519_dalek::hazmat::{ExpandedSecretKey, raw_sign};
 use ed25519_dalek::Sha512;
 
-/// A delete key: the Ed25519 key seeded by `kdf("delete key", secret)` of a role secret, or a key
-/// actor's signing key. Signs only under a blob's blinded key. Zeroized on drop; `Debug` redacted.
+/// A delete key (spec/crypto.md §7): a role secret's step key (the delete key of an admin secret,
+/// the write key of a write secret, spec/sync-ids.md §2), or a key actor's signing key. Signs
+/// only under a blob's blinded key. Zeroized on drop; `Debug` redacted.
 pub struct DeleteSecret {
     seed: Secret32,
     esk: ExpandedSecretKey,
@@ -15,8 +17,20 @@ pub struct DeleteSecret {
 }
 
 impl DeleteSecret {
-    pub fn derive(secret: &Secret32) -> DeleteSecret {
-        DeleteSecret::from_seed(kdf(kdf::DELETE_KEY, secret.expose(), b""))
+    /// Of an admin secret: its step delete key, seed `kdf("sync delete", secret)` (level 1).
+    pub fn admin(secret: &Secret32) -> DeleteSecret {
+        DeleteSecret::from_seed(role_key_seed(RoleKey::Delete, secret))
+    }
+
+    /// Of a write secret: its step write key, seed `kdf("sync write", secret)` (levels 2 and 3).
+    pub fn write(secret: &Secret32) -> DeleteSecret {
+        DeleteSecret::from_seed(role_key_seed(RoleKey::Write, secret))
+    }
+
+    /// Of the role secret a delete level's key derives from ([`DeleteSecret::admin`] at level 1,
+    /// [`DeleteSecret::write`] at levels 2 and 3).
+    pub fn at_level(level: u8, secret: &Secret32) -> DeleteSecret {
+        if level == 1 { DeleteSecret::admin(secret) } else { DeleteSecret::write(secret) }
     }
 
     /// From an Ed25519 seed (a key actor's signing seed `kdf("sign", seed)`, spec/crypto.md §3).
@@ -26,7 +40,7 @@ impl DeleteSecret {
         DeleteSecret { seed, esk, vk }
     }
 
-    /// The delete verification key, listed in headers and published in `keys.0`.
+    /// The delete verification key, listed in headers.
     pub fn verifying_key(&self) -> VerifyingKey {
         self.vk
     }
@@ -115,7 +129,7 @@ mod tests {
     // keys of one key under two salts or two header blinds differ and differ from the key.
     #[test]
     fn blinded_signatures() {
-        let k = DeleteSecret::derive(&Secret32::from_bytes([1; 32]));
+        let k = DeleteSecret::write(&Secret32::from_bytes([1; 32]));
         let vk = k.verifying_key();
         let (s1, s2, hb, hb2) = ([2u8; 16], [3u8; 16], [5u8; 16], [6u8; 16]);
         let (b1, b2, b3) = (blind(&vk, &s1, &hb), blind(&vk, &s2, &hb), blind(&vk, &s1, &hb2));
@@ -128,7 +142,7 @@ mod tests {
         assert!(verify_delete(&vk.to_bytes(), &d, &sig).is_err());
         assert!(verify_delete(&b1.to_bytes(), &[8; 32], &sig).is_err());
         // another key's signature fails
-        let other = DeleteSecret::derive(&Secret32::from_bytes([4; 32]));
+        let other = DeleteSecret::write(&Secret32::from_bytes([4; 32]));
         assert!(verify_delete(&b1.to_bytes(), &d, &other.sign(&s1, &hb, &d)).is_err());
         // deterministic; another salt or blind gives another nonce
         assert_eq!(k.sign(&s1, &hb, &d), sig);

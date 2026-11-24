@@ -25,15 +25,16 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
     HistoryKey { role, epoch: to_schema(epoch) }
 }
 
-/// The keyset of a role epoch: its KEM public key `kdf("kem", secret)` and delete key
-/// (spec/crypto.md §3, §7), listing `supersedes` and the digest of the rotation's `names` (§4),
+/// The keyset of an epoch of `role`: its KEM public key `kdf("kem", secret)` (spec/crypto.md §3)
+/// and, Interim (issues/delete-key-levels-unchecked.md), the step key of the role's secret
+/// (spec/crypto.md §7: an admin secret's delete key, else its write key), listing `supersedes` and the digest of the rotation's `names` (§4),
 /// with no left-out keysets or carried demotions yet (`produce::rotate` adds them).
-pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, names: &Names) -> Keyset {
+pub fn keyset(role: Role, epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, names: &Names) -> Keyset {
     Keyset {
         epoch: to_schema(epoch),
         kem_key: KemKey::X25519MlKem768(role_kem(secret).public().as_bytes().to_vec()),
         suite: SUITE,
-        delete_key: SigningKey::Ed25519(DeleteSecret::derive(secret).verifying_key().to_bytes().to_vec()),
+        delete_key: SigningKey::Ed25519(if role == Role::Admin { DeleteSecret::admin(secret) } else { DeleteSecret::write(secret) }.verifying_key().to_bytes().to_vec()),
         supersedes: supersedes.iter().map(to_schema).collect(),
         names: names.digest(),
         left_out: BTreeMap::new(),

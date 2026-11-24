@@ -125,30 +125,6 @@ impl Engine {
         }
     }
 
-    /// Tests: a ticket for `target` of `role` boxed to `holder` from the secrets held here, as a
-    /// grant fires one (Interim (issues/tickets-retired.md)), to place by hand.
-    #[doc(hidden)]
-    pub fn ticket_of(&mut self, target: &Tid, role: osis_base::Role, holder: &Tid) -> Result<Option<osis_base::Ticket>> {
-        let (t, h) = (*target, *holder);
-        self.run(|tx| crate::flows::inbox::make_ticket(tx, t, role, h))
-    }
-
-    /// Tests: ticket `k` boxing `secret` at epoch `n` of its role instead, as anyone holding its
-    /// holder's public record can box one (a ticket is unsigned), to place by hand.
-    #[doc(hidden)]
-    pub fn reboxed_ticket(&mut self, k: &osis_base::Ticket, n: u64, secret: &osis_crypto::Secret32) -> Result<osis_base::Ticket> {
-        let k = k.clone();
-        let secret = secret.clone();
-        self.run(|tx| {
-            let e = osis_crypto::Epoch::derive(&k.target, k.role, n, &secret)?;
-            let rcpt = crate::flows::recipient(tx, k.holder, k.role)?;
-            let w = osis_keys::produce::box_epoch(&k.target, &rcpt, k.role, e, &secret, &mut *tx.rng)?.ok_or(crate::error::Error::Misuse("no box for the ticket's holder"))?;
-            let key = osis_schema::core_types::BoxKey { holder: k.holder.into(), role: k.role, epoch: osis_keys::aspects::to_schema(&e) };
-            let b = w.boxes.get(&key).ok_or(crate::error::Error::Misuse("no box for the ticket's holder"))?;
-            Ok(osis_base::Ticket { epoch: (e.n(), *e.nonce()), boxed: osis_schema::Codec::to_value(b), ..k })
-        })
-    }
-
     /// Commits `m` past the writer's rules, as a hostile node would: its role check, commit
     /// shape rules and refusal to emit a delta it judges invalid. A receiver's judgment of what
     /// no writer makes can be tested so.
@@ -310,6 +286,23 @@ impl Engine {
     #[doc(hidden)]
     pub fn keep_bodies(&mut self, on: bool) {
         self.core.keep_bodies = on;
+    }
+
+    /// Interim (issues/delete-key-levels-unchecked.md): verdicts read the key check
+    /// (`Core::check_keys`); what is held is judged again by it.
+    #[doc(hidden)]
+    pub fn check_delete_keys(&mut self, on: bool) -> Result<()> {
+        self.core.check_keys = on;
+        self.run(|tx| {
+            let held: BTreeSet<CommitId> = tx.core.ix.miskeyed.iter().map(|(c, _)| *c).collect();
+            for c in held {
+                tx.core.stale_commits.insert(c);
+                if tx.core.ix.commits.get(&c).is_some_and(|m| m.view.kind.is_role()) {
+                    tx.core.ix.rekeyed.insert(c);
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Whether this node answers removals with addenda (spec/permissions.md §5.2): off for an
@@ -749,6 +742,8 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("suspects", &*ix.suspects),
         ("held_wait", &*ix.held_wait),
         ("opened_under", &*ix.opened_under),
+        ("grant_fires", &*ix.grant_fires),
+        ("fires_carrying", &*ix.fires_carrying),
         ("blob_parts", &*ix.blob_parts),
         ("commit_blobs", &*ix.commit_blobs),
         ("cert_blobs", &*ix.cert_blobs),
@@ -757,6 +752,8 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("sync_recorded", &*ix.sync_recorded),
         ("sync_recorders", &*ix.sync_recorders),
         ("sync_recorded_ids", &*ix.sync_recorded_ids),
+        ("steps", &*ix.steps),
+        ("miskeyed", &*ix.miskeyed),
         ("epochs", &*ix.epochs),
         ("named", &*ix.named),
         ("by_epoch", &*ix.by_epoch),
@@ -1070,14 +1067,14 @@ mod tests {
     fn every_index_is_placed_in_the_check() {
         const OWN: &[&str] = &["held", "commits", "snapshots", "dropped_snapshots", "derived_written"];
         // node-local or re-derived by an open, so they differ from a fresh load by design: a
-        // cache counter (`rotations`); a transaction's work queues (`epochs_due`, `names_due`,
+        // cache counter (`rotations`); a transaction's work queues (`rekeyed`, `epochs_due`, `names_due`,
         // `cover_waits`); what an open parks anew (`pending`, `pend_on`,
         // `pend_keys`, `pend_by`, `pend_needs`: each examined again); rows not persisted for ephemeral aspects
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
         // `cause_at`, `reseal_asks`, `carriers`, `carrying`); the node closure, built again after an open (`closure`);
         // the removals to judge for addenda, all of them again at an open (`addenda_due`,
         // `addenda_gathered`, `addenda_wake`).
-        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "addenda_due", "addenda_gathered", "addenda_wake"];
+        const LEFT_OUT: &[&str] = &["rotations", "rekeyed", "keys_due", "fires_due", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "addenda_due", "addenda_gathered", "addenda_wake"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {

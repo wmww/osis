@@ -440,6 +440,41 @@ impl Sim {
         Ok(out)
     }
 
+    /// Node `from` offers node `to` each sealed fire it owes that account (spec/sync-inbox.md §3
+    /// Sending, as a sync's fire step does, apart from its commits), and owes one no more once
+    /// taken: a grant from outside reaches its holder as its `grant@~0` fire (spec/sync-inbox.md §5
+    /// Grant from outside). A fire refused fails the run: every fire here is on an account's inbox.
+    pub fn fires(&mut self, from: usize, to: usize) -> Res<()> {
+        if !self.node(from)?.up || !self.node(to)?.up {
+            return Ok(());
+        }
+        let account = self.tid(to)?;
+        for id in self.engine(from)?.fires_owed() {
+            let out = match self.engine(from)?.sealed_fire(&id) {
+                Ok(out) => out,
+                // an injected fault or crash: the fire stays owed
+                Err(e) => return self.engine_err(from, "seal a fire", e),
+            };
+            let Some(out) = out.filter(|o| o.to.contains(&account)) else { continue };
+            match self.engine(to)?.offer_fire(&out) {
+                Ok(osis_engine::sync::Opened::Commit(..)) => {
+                    self.note(format!("node {to} takes a fire of node {from}"));
+                    if let Err(e) = self.engine(from)?.fire_taken(&id) {
+                        return self.engine_err(from, "fire taken", e);
+                    }
+                }
+                Ok(osis_engine::sync::Opened::NotOpen) => {}
+                Ok(r) => return Err(self.fail(format!("node {to} refuses a fire of node {from}: {r:?}"))),
+                Err(e) => return self.engine_err(to, "take a fire", e),
+            }
+        }
+        if let Err(e) = self.engine(to)?.take_carried() {
+            return self.engine_err(to, "take what its fires carry", e);
+        }
+        self.drain(from)?;
+        self.drain(to)
+    }
+
     /// Packages of the commits node `from` holds that `to` lacks, wholly or by a part `from`
     /// holds, each holding what the sync IDs `to` syncs carry as `from` sees them and its
     /// certificate parts (`Engine::sent_parts`, as a sync sends: anti-entropy oracle; phase B's
@@ -485,6 +520,7 @@ impl Sim {
                     if a == b || !self.node(a)?.up || !self.node(b)?.up {
                         continue;
                     }
+                    self.fires(a, b)?;
                     for p in self.missing(a, b)? {
                         if let Some(Ingested::Applied(_)) = self.deliver(b, &p)? {
                             moved = true;
@@ -594,6 +630,10 @@ impl Sim {
         let Some(&from) = self.dice.pick(&ups) else { return Ok(()) };
         let others: Vec<usize> = (0..self.nodes.len()).filter(|j| *j != from).collect();
         let Some(&to) = self.dice.pick(&others) else { return Ok(()) };
+        // the fire step of the same sync, lost whole as any message is
+        if !self.dice.pct(self.cfg.net.drop_pct) {
+            self.fires(from, to)?;
+        }
         let pkgs = self.missing(from, to)?;
         self.note(format!("node {from} -> {to}: {} packages", pkgs.len()));
         let net = self.cfg.net;

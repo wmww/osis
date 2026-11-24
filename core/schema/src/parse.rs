@@ -338,7 +338,6 @@ impl<'a> Parser<'a> {
                     "strong" => none(self, &args, Type::Strong)?,
                     "weak" => none(self, &args, Type::Weak)?,
                     "ref" => none(self, &args, Type::Ref)?,
-                    "ticket" => none(self, &args, Type::Ticket)?,
                     "any" => none(self, &args, Type::Any)?,
                     "text" => none(self, &args, Type::Text)?,
                     "list" => Type::List(one(self, args)?),

@@ -763,8 +763,7 @@ impl World {
 
     /// Debug: per node, how it syncs thing `t`, one line each: the sync IDs its sync store syncs
     /// with `t` among their things and how (`Store::syncs`), those `t` owns by its held `sync.0`
-    /// (`Engine::sync_ids`, `hint` marked), those carrying it (`Engine::carrying`), and the held
-    /// ticket it opens for `t` (`Engine::ticket_for`: sync ID, role, epoch, holder). Sync IDs as
+    /// (`Engine::sync_ids`, `hint` marked) and those carrying it (`Engine::carrying`). Sync IDs as
     /// the trace prints them, so a reader syncing another sync ID than its writers shows at once.
     pub fn sync_ids_of(&mut self, t: &Tid) -> String {
         let s = trace::short;
@@ -775,12 +774,7 @@ impl World {
             let line = osis_base::costs::paused(|| {
                 let owned: Vec<String> = e.sync_ids(t).map(|v| v.iter().map(|o| format!("{}{}", s(&o.id), if o.hint { " hint" } else { "" })).collect()).unwrap_or_else(|x| vec![format!("{x:?}")]);
                 let carrying: Vec<String> = e.carrying(t).map(|v| v.iter().map(s).collect()).unwrap_or_else(|x| vec![format!("{x:?}")]);
-                let ticket = match e.ticket_for(t) {
-                    Ok(Some(k)) => format!("{} {:?} e{} to {}", s(&k.sync_id), k.role, k.epoch.0, k.holder),
-                    Ok(None) => "none".into(),
-                    Err(x) => format!("{x:?}"),
-                };
-                format!("n{i}: syncs [{}]; owns [{}]; carrying [{}]; ticket {ticket}", synced.join(", "), owned.join(", "), carrying.join(", "))
+                format!("n{i}: syncs [{}]; owns [{}]; carrying [{}]", synced.join(", "), owned.join(", "), carrying.join(", "))
             });
             out.push(line);
         }
@@ -1096,6 +1090,7 @@ impl World {
             osis_base::costs::paused(|| {
                 self.sources_are_members();
                 self.unlogged_must_holds();
+                self.wanted_blobs_in_reach();
             });
         }
     }
@@ -1131,19 +1126,20 @@ impl World {
             let reach = self.engine(i).publishes_reach().unwrap();
             for c in self.engine(i).commit_ids() {
                 let bodies = self.engine(i).sync_bodies(&c).unwrap();
-                for s in bodies.keys() {
-                    if self.node(i).node.verdict(s, &c) != Some(osis_sync::read::Verdict::Must) {
+                for (s, on) in bodies.keys() {
+                    let id = osis_engine::sync::BodyId { commit: c, on: *on };
+                    if self.node(i).node.body_verdict(s, &id) != Some(osis_sync::read::Verdict::Must) {
                         continue;
                     }
                     if !reach && self.node(i).node.status_of(s).is_none_or(|x| x.sources.is_empty()) {
                         continue;
                     }
-                    if self.engine(i).read_facts(s, &c).unwrap().missing {
+                    if self.engine(i).read_facts(s, &id).unwrap().missing {
                         continue;
                     }
-                    let blobs = self.engine(i).commit_blobs(&c).unwrap();
+                    let blobs = self.body_blobs(i, s, &id);
                     if !blobs.iter().any(|b| self.store(i).entry(s, b).unwrap().is_some()) {
-                        stuck.push((i, *s, c));
+                        stuck.push((i, *s, id));
                     }
                 }
             }
@@ -1151,6 +1147,12 @@ impl World {
         let statuses: BTreeSet<String> = stuck.iter().map(|(i, s, _)| format!("\n  node {i} {s:?}: {:?}", self.node(*i).node.status_of(s))).collect();
         assert!(stuck.is_empty(), "must-hold bodies with no entry at quiet (node, S, commit): {stuck:?}\nS's status there:{}", statuses.into_iter().collect::<String>());
         self.unreached_must_holds();
+    }
+
+    /// The blobs of body `id` under `s` as node `i` opened or sealed them (`Engine::blob_body`).
+    fn body_blobs(&mut self, i: usize, s: &osis_base::SyncId, id: &osis_engine::sync::BodyId) -> Vec<osis_base::BlobId> {
+        let blobs = self.engine(i).commit_blobs(&id.commit).unwrap();
+        blobs.iter().copied().filter(|b| self.engine(i).blob_body(s, b).unwrap() == Some(*id)).collect()
     }
 
     /// At quiet, a body some node judges must-hold under S (so may log, and logs) reaches every
@@ -1173,11 +1175,12 @@ impl World {
                 let holders: Vec<usize> = st.sources.iter().filter(|(_, x)| x.caught_up).filter_map(|(c, _)| peers.get(c).copied()).filter(|i| on.contains(i)).collect();
                 let secrets: Vec<_> = t.iter().flat_map(|t| self.engine(j).read_secrets(t)).flat_map(|x| [x.clone(), osis_crypto::roles_secret(&x)]).collect();
                 for i in holders {
-                    for c in self.engine(i).commit_ids() {
-                        if self.node(i).node.verdict(&s, &c) != Some(osis_sync::read::Verdict::Must) {
+                    let ids: Vec<osis_engine::sync::BodyId> = self.engine(i).commit_ids().into_iter().flat_map(|c| self.engine(i).sync_bodies(&c).unwrap().keys().filter(|k| k.0 == s).map(|k| osis_engine::sync::BodyId { commit: c, on: k.1 }).collect::<Vec<_>>()).collect();
+                    for c in ids {
+                        if self.node(i).node.body_verdict(&s, &c) != Some(osis_sync::read::Verdict::Must) {
                             continue;
                         }
-                        let blobs = self.engine(i).commit_blobs(&c).unwrap();
+                        let blobs = self.body_blobs(i, &s, &c);
                         // needed: j opens the wrap of an entry of it at i (one under an epoch j
                         // never held, say before a cut, is not j's to read)
                         let opens = blobs.iter().any(|b| self.store(i).entry(&s, b).unwrap().is_some_and(|e| osis_blob::unwrap_any(secrets.iter(), b, &e.wrap).is_some()));
@@ -1186,7 +1189,7 @@ impl World {
                         }
                         // held with no part of its body under S missing, or an entry of it
                         // fetched that waits to open (parked)
-                        let reached = if self.engine(j).holds_commit(&c) {
+                        let reached = if self.engine(j).holds_commit(&c.commit) {
                             !self.engine(j).read_facts(&s, &c).unwrap().missing
                         } else {
                             blobs.iter().any(|b| self.store(j).entry(&s, b).unwrap().is_some())
@@ -1202,19 +1205,58 @@ impl World {
         assert!(lost.is_empty(), "must-hold bodies a caught-up reader lacks at quiet (holder, reader, S, commit): {lost:?}\nthe first: {first}");
     }
 
+    /// At quiet, no commit waits at a node for a blob in its reach: one its own sync store holds
+    /// the bytes of, or one a source connected to it holds an entry of under a sync ID the node
+    /// pulls from that source, which waits on neither full nor refusing (spec/sync-streams.md §5: a waiting commit's blobs are
+    /// fetched from the sources showing them). Not while a node lies (it may withhold).
+    fn wanted_blobs_in_reach(&mut self) {
+        if !self.liars.is_empty() {
+            return;
+        }
+        let mut stalled = Vec::new();
+        let on: Vec<usize> = (0..self.nodes.len()).filter(|j| self.online(*j)).collect();
+        for &j in &on {
+            let wants = self.engine(j).blob_wants().unwrap().missing;
+            if wants.is_empty() {
+                continue;
+            }
+            let peers: BTreeMap<ConnId, usize> = self.net.links.iter().filter(|((m, _), _)| *m == j).map(|((_, c), (t, _))| (*c, *t)).collect();
+            let status = self.node(j).node.status();
+            for b in wants {
+                if self.store(j).bytes(&b).unwrap().is_some() {
+                    stalled.push((j, j, None, b));
+                }
+                for (s, st) in &status {
+                    for (c, x) in st.sources.iter().filter(|(_, x)| x.waited()) {
+                        let Some(i) = peers.get(c).copied().filter(|i| on.contains(i)) else { continue };
+                        if self.store(i).entry(s, &b).unwrap().is_some() {
+                            stalled.push((j, i, Some((*s, x.caught_up)), b));
+                        }
+                    }
+                }
+            }
+        }
+        let first = stalled.first().map(|(j, _, _, b)| {
+            let waiting: Vec<String> = self.engine(*j).pending().into_iter().map(|(c, r)| format!("{c:?} {r:?}: {}", self.engine(*j).describe_commit(&c).unwrap_or_default())).collect();
+            format!("{b:?}; pending at node {j}:\n  {}", waiting.join("\n  "))
+        }).unwrap_or_default();
+        assert!(stalled.is_empty(), "commits waiting at quiet for a blob in reach (node, holder, S and whether caught up there, blob): {stalled:?}\nthe first: {first}");
+    }
+
     /// What holder `i` and reader `j` each hold of commit `c` under `s`, for a failing must-hold
     /// check: the reader's verdict and read facts, the commit's missing parts, and per blob each
     /// side's entry and whether the engine holds the body.
-    fn lost_body(&mut self, i: usize, j: usize, s: &osis_base::SyncId, c: &osis_base::CommitId) -> String {
-        let mut out = String::new();
+    fn lost_body(&mut self, i: usize, j: usize, s: &osis_base::SyncId, id: &osis_engine::sync::BodyId) -> String {
+        let c = &id.commit;
+        let mut out = format!("\n  body {id:?}");
         if let Some(h) = self.engine(i).header(c) {
             let parts: Vec<String> = h.aspects.iter().enumerate().map(|(ai, a)| format!("{ai} {:?} {}", a.tid, a.ak.as_str())).collect();
             out += &format!("\n  {:?} by {:?}: {}; S's things at the reader {:?}", h.kind, h.signer, parts.join(", "), self.store(j).syncs().into_iter().find(|(x, _)| x == s).map(|(_, (t, _))| t));
         }
         for (who, n) in [("holder", i), ("reader", j)] {
             let held = self.engine(n).holds_commit(c);
-            let verdict = self.node(n).node.verdict(s, c);
-            let facts = if held { format!("{:?}", self.engine(n).read_facts(s, c)) } else { "-".into() };
+            let verdict = self.node(n).node.body_verdict(s, id);
+            let facts = if held { format!("{:?}", self.engine(n).read_facts(s, id)) } else { "-".into() };
             let missing = self.engine(n).commit_parts_missing().get(c).cloned();
             out += &format!("\n  {who} {n}: holds commit {held}, verdict {verdict:?}, missing parts {missing:?}, facts {facts}");
             for b in self.engine(i).commit_blobs(c).unwrap().iter() {

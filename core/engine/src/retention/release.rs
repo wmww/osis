@@ -13,7 +13,7 @@ impl Engine {
     /// that held it when it left (none: it left the local part): what sync drops once its pass
     /// in flight ends (spec/sync-set.md §3). A stamped read.
     pub fn left_closure(&self) -> BTreeMap<Tid, BTreeSet<Tid>> {
-        let units = |cs: &BTreeSet<crate::sync::units::Ctx>| cs.iter().filter_map(|c| if let crate::sync::units::Ctx::Read(u) | crate::sync::units::Ctx::Unread(u) | crate::sync::units::Ctx::Ticket(u) = c { Some(*u) } else { None }).collect();
+        let units = |cs: &BTreeSet<crate::sync::units::Ctx>| cs.iter().filter_map(|c| if let crate::sync::units::Ctx::Read(u) | crate::sync::units::Ctx::Unread(u) = c { Some(*u) } else { None }).collect();
         self.core.ix.closure.left().iter().map(|(t, cs)| (*t, units(cs))).collect()
     }
 
@@ -31,7 +31,6 @@ impl Engine {
             for t in &out {
                 tx.core.ix.closure.released(t);
             }
-            crate::flows::inbox::drop_account_tickets(tx, &out)?;
             tx.core.needs_due.extend(out.iter().copied());
             // and what each was named holder on: needed by it only while it was in the closure
             let named: Vec<Tid> = out.iter().flat_map(|t| tx.core.ix.held.named_on(t).copied().collect::<Vec<_>>()).collect();

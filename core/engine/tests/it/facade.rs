@@ -298,6 +298,12 @@ fn reach(lp: &mut LocalPeer, i: usize, k: u8) -> osis_base::CommitId {
     lp.peers[i].engine.commit(m).unwrap().unwrap()
 }
 
+/// The body `s` carries of commit `c` at `e` (its sync unit body where it carries none).
+fn body_under(e: &mut osis_engine::Engine, s: &osis_base::SyncId, c: &osis_base::CommitId) -> osis_engine::sync::BodyId {
+    let on = e.sync_bodies(c).unwrap().keys().find(|k| k.0 == *s).and_then(|k| k.1);
+    osis_engine::sync::BodyId { commit: *c, on }
+}
+
 // spec/sync-judgement.md §2 must-not-hold (another node's card commit once a later valid card
 // commit of that node writing the same aspect is under the sync ID, an entry of it this node
 // opened). Hostile: a later card held as a commit with no entry of it opened here (a forged
@@ -312,8 +318,8 @@ fn a_card_known_only_as_a_commit_supersedes_nothing_spec_sync_judgement_2() {
     let (o1, _) = (reach(&mut lp, 0, 3), reach(&mut lp, 0, 4));
     spread(&mut lp);
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.read_facts(&ds, &old).unwrap().must_not, None, "a later card held but never opened here: kept");
-    assert_eq!(e.read_facts(&ds, &o1).unwrap().must_not, None, "its own card: never by this rule");
+    assert_eq!({ let id = body_under(e, &ds, &old); e.read_facts(&ds, &id).unwrap() }.must_not, None, "a later card held but never opened here: kept");
+    assert_eq!({ let id = body_under(e, &ds, &o1); e.read_facts(&ds, &id).unwrap() }.must_not, None, "its own card: never by this rule");
 }
 
 // spec/sync-judgement.md §2 must-not-hold (another node's card commit, for `node.0` and `reach.0`,
@@ -329,12 +335,12 @@ fn a_card_goes_with_its_nodes_grant_spec_sync_judgement_2() {
     spread(&mut lp);
     let keys = *lp.peers[0].engine.core.ix.by_aspect.get(&(n1, Ak::new("keys.0").unwrap())).unwrap().iter().next().unwrap();
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.read_facts(&ds, &r).unwrap().must_not, None, "a node of the account: kept");
+    assert_eq!({ let id = body_under(e, &ds, &r); e.read_facts(&ds, &id).unwrap() }.must_not, None, "a node of the account: kept");
     e.demote(&d, &Demotion { holder: n1, new: None, retain: None }).unwrap();
-    assert_eq!(e.read_facts(&ds, &r).unwrap().must_not, Some(osis_engine::sync::MustNot::CardEnded));
-    assert_eq!(e.read_facts(&ds, &keys.1).unwrap().must_not, None, "its keys.0 card stays");
+    assert_eq!({ let id = body_under(e, &ds, &r); e.read_facts(&ds, &id).unwrap() }.must_not, Some(osis_engine::sync::MustNot::CardEnded));
+    assert_eq!({ let id = body_under(e, &ds, &keys.1); e.read_facts(&ds, &id).unwrap() }.must_not, None, "its keys.0 card stays");
     e.pair(&n1).unwrap();
-    assert_eq!(e.read_facts(&ds, &r).unwrap().must_not, None, "paired again: kept");
+    assert_eq!({ let id = body_under(e, &ds, &r); e.read_facts(&ds, &id).unwrap() }.must_not, None, "paired again: kept");
 }
 
 // spec/sync-judgement.md §2 required set (the certificate blobs of spec/permissions.md §4): the
@@ -348,14 +354,15 @@ fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
     let r = reach(&mut lp, 1, 1);
     spread(&mut lp);
-    let (own, wrap) = lp.peers[1].engine.seal_body(&ds, &r, &[], &mut SeededRng::from_u64(2)).unwrap().expect("its node seals its card");
+    let (own, wrap) = { let id = body_under(&mut lp.peers[1].engine, &ds, &r); lp.peers[1].engine.seal_body(&ds, &id, &[], &mut SeededRng::from_u64(2)).unwrap().expect("its node seals its card") };
     lp.peers[0].engine.open_entry(&ds, &own.id, &wrap, &own.blob, u64::MAX).unwrap();
     let e = &mut lp.peers[0].engine;
     let b = e.sync_bodies(&r).unwrap();
-    assert!(b.get(&ds).is_some_and(|m| m.certificate && m.copy && !m.parts.is_empty()), "the card's certificate body under D's sync ID: {b:?}");
-    let f = e.body_facts(&ds, &r).unwrap();
+    assert!(b.iter().any(|((x, _), m)| *x == ds && m.certificate && m.copy && !m.parts.is_empty()), "the card's certificate body under D's sync ID: {b:?}");
+    let id = body_under(e, &ds, &r);
+    let f = e.body_facts(&ds, &id).unwrap();
     assert!(f.required && !f.closure, "{f:?}");
-    let (sealed, wrap) = e.seal_body(&ds, &r, &[], &mut SeededRng::from_u64(1)).unwrap().expect("sealed as a certificate copy");
+    let (sealed, wrap) = e.seal_body(&ds, &id, &[], &mut SeededRng::from_u64(1)).unwrap().expect("sealed as a certificate copy");
     assert_eq!(e.blob_of(&sealed.id).map(|r| r.copy), Some(true));
     match lp.peers[1].engine.open_entry(&ds, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap() {
         osis_engine::sync::Opened::Commit(c, _) => assert_eq!(c, r),
@@ -463,7 +470,7 @@ fn a_rotation_logs_with_it_the_commits_it_names_spec_crypto_4() {
 /// A record blob of `records` under `t`'s current read epoch at peer `i` (spec/wire.md §3), as
 /// any reader of the sync ID could frame one: its ID, bytes and wrap.
 pub(crate) fn record_blob_by_hand(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_base::CreationRecord]) -> (osis_base::BlobId, Vec<u8>, osis_engine::sync::Wrap) {
-    let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([9; 32])).verifying_key();
+    let dk = osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([9; 32])).verifying_key();
     record_blob_framed(lp, i, t, records, &[vec![(osis_base::format::DELETE_WRITER, dk)]])
 }
 
@@ -489,7 +496,7 @@ fn a_record_blob_of_another_prefix_is_bad_spec_crypto_7() {
     let a = lp.peers[0].engine.account().unwrap().unwrap().0;
     let u = thing_of(&mut lp, 0, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
-    let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([9; 32])).verifying_key();
+    let dk = osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([9; 32])).verifying_key();
     for groups in [vec![], vec![vec![(osis_base::format::DELETE_ADMIN, dk)]], vec![vec![(osis_base::format::DELETE_WRITER, dk)], vec![(osis_base::format::DELETE_WRITER, dk)]]] {
         let (id, blob, wrap) = record_blob_framed(&mut lp, 0, &d, std::slice::from_ref(&real), &groups);
         assert!(matches!(lp.peers[1].engine.open_entry(&ds, &id, &wrap, &blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Bad), "{groups:?}");

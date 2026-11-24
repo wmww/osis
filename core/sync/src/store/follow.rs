@@ -223,7 +223,7 @@ impl Carriers {
                 for b in f.added() {
                     engine.forget_carrier(&b);
                     if !store.named(&b)? {
-                        engine.unnamed_blob(&b)?;
+                        engine.unnamed_blob(&b, !store.tombstoned_under(&b)?.is_empty())?;
                     }
                     if let Some(c) = engine.blob_commit(&b) {
                         release(engine, store, &c)?;
@@ -319,7 +319,7 @@ impl Follow {
                 for b in u.moved(engine)? {
                     let naming = store.naming(&b)?;
                     if naming.is_empty() {
-                        engine.unnamed_blob(&b)?;
+                        engine.unnamed_blob(&b, !store.tombstoned_under(&b)?.is_empty())?;
                     }
                     for s in naming {
                         park_read(engine, store, &self.read, &mut self.parked, &mut self.creds, s, b)?;
@@ -339,11 +339,11 @@ impl Follow {
                 self.parked.forget(&mut self.creds, *s);
                 // read no more: its complete passes and record blobs go with it (a pass of it
                 // again when read again)
-                if !matches!(now, Some((_, Holding::Read))) {
+                if !now.as_ref().is_some_and(|(_, h)| h.opens()) {
                     engine.forget_read(s)?;
                 }
             }
-            if let Some((ts, Holding::Read)) = now {
+            if let Some((ts, _)) = now.as_ref().filter(|(_, h)| h.opens()) {
                 self.read.insert(*s, ts.clone());
                 for t in ts {
                     self.paths.want((*s, *t));
@@ -355,7 +355,7 @@ impl Follow {
         // open are parked once, and its read secrets' first settle opens them (spec/sync-judgement.md
         // §6 Read and unread move: raised to read opens what is held)
         for (s, _, now) in &moved {
-            if matches!(now, Some((_, Holding::Read))) {
+            if now.as_ref().is_some_and(|(_, h)| h.opens()) {
                 for e in store.entries(s)? {
                     park(engine, &mut self.parked, &mut self.creds, *s, e.blob, Some(&e));
                 }
@@ -392,8 +392,8 @@ impl Follow {
         // a parked entry is opened as read secrets arrive (spec/sync-streams.md §4 Fill order;
         // S's first settle tries each once; a thing's, once it names a secret)
         // an entry of S whose commit is neither held nor pending, thrown out while S's things
-        // were not held whole (spec/commits.md §4 Outside the node closure: on a ticket's word,
-        // before their keysets arrive), opens again as one comes to be: no pull brings a blob held
+        // were not held whole (spec/commits.md §4 Outside the node closure: before their
+        // keysets arrive), opens again as one comes to be: no pull brings a blob held
         let read = &self.read;
         for a in self.creds.due() {
             let r = self.creds.try_settle(&a, || match a {
@@ -411,6 +411,20 @@ impl Follow {
                 continue;
             }
             acted |= open_parked(engine, store, &mut self.parked, &mut self.creds, &a)?;
+        }
+        // a blob a waiting commit came to want that the store holds already (taken unopened
+        // before any walk named it: a chunk fetched ahead of the node above it) is handed over,
+        // as one arriving wanted is (`Engine::open_entry`); what the walk wants next comes at
+        // the next settle
+        let mut wanted = Vec::new();
+        for b in engine.take_wanted() {
+            if let Some(bytes) = store.bytes(&b)? {
+                wanted.push((b, bytes));
+            }
+        }
+        if !wanted.is_empty() {
+            engine.put_blobs(wanted)?;
+            acted = true;
         }
         acted |= self.carriers.settle(engine, store)?;
         acted |= store.settle_at(now)?;

@@ -83,7 +83,7 @@ pub fn value_at<'a>(v: &'a Value, path: &Path) -> Option<&'a Value> {
 /// can never exceed `CHUNK_THRESHOLD`.
 fn takes_link(t: &Type, atomic: bool) -> bool {
     let small = match t {
-        Type::Bool | Type::Int | Type::Float | Type::Strong | Type::Weak | Type::Ref | Type::Ticket | Type::Counter(_) | Type::Max(_) | Type::Min(_) => true,
+        Type::Bool | Type::Int | Type::Float | Type::Strong | Type::Weak | Type::Ref | Type::Counter(_) | Type::Max(_) | Type::Min(_) => true,
         Type::Enum(en) => en.cases.values().all(|c| c.payload.is_none()),
         _ => false,
     };
@@ -152,7 +152,6 @@ fn kind_name(t: &Type) -> &'static str {
         Type::Strong => "strong",
         Type::Weak => "weak",
         Type::Ref => "ref",
-        Type::Ticket => "ticket",
         Type::List(_) => "list",
         Type::Set(_) => "set",
         Type::Map(..) => "map",
@@ -197,8 +196,7 @@ impl<'v> Walk<'_, 'v> {
             | (Type::Int, Value::Int(_))
             | (Type::Float, Value::Float(_))
             | (Type::Strong | Type::Ref, Value::Strong(_))
-            | (Type::Weak | Type::Ref, Value::Weak(_))
-            | (Type::Ticket, Value::Ticket(_)) => Ok(v.clone()),
+            | (Type::Weak | Type::Ref, Value::Weak(_)) => Ok(v.clone()),
             (Type::List(e), Value::List(items)) => {
                 let mut out = Vec::with_capacity(items.len());
                 for (i, x) in items.iter().enumerate() {

@@ -87,7 +87,6 @@ pub fn value(v: &crdt_model::value::Value) -> Value {
         V::Bytes(b) => Value::Bytes(b.clone()),
         V::Strong(t) => Value::Strong(Tid::from_bytes(*t)),
         V::Weak(t) => Value::Weak(Tid::from_bytes(*t)),
-        V::Ticket(c) => Value::Ticket(Box::new(osis_base::Ticket::from_value(&value(c)).expect("a ticket's content"))),
         V::List(l) => Value::List(l.iter().map(value).collect()),
         V::Map(kv) => Value::Map(kv.iter().map(|(k, v)| (value(k), value(v))).collect()),
         V::Set(s) => Value::Set(s.iter().map(value).collect()),

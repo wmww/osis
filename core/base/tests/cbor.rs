@@ -1,9 +1,9 @@
 //! Canonical CBOR profile tests (spec/data-model.md §5).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)] // test code
 
-use osis_base::format::{TAG_ENUM, TAG_LINK, TAG_RETIRED, TAG_SET, TAG_STRONG, TAG_STRUCT_RESERVED, TAG_TICKET, TAG_WEAK};
+use osis_base::format::{TAG_ENUM, TAG_LINK, TAG_RETIRED, TAG_SET, TAG_STRONG, TAG_STRUCT_RESERVED, TAG_WEAK};
 use osis_base::cbor::{Item, check};
-use osis_base::{BlobId, CanonicalBytes, DecodeError, Float, Limits, Link, Role, SyncId, Ticket, Tid, Unknown, Value, decode, decode_prefix, encode, item_prefix};
+use osis_base::{BlobId, CanonicalBytes, DecodeError, Float, Limits, Link, Tid, Unknown, Value, decode, decode_prefix, encode, item_prefix};
 use proptest::prelude::*;
 
 /// `decode`, checking that `cbor::check` decides alike, with the same error.
@@ -15,12 +15,6 @@ fn dl(b: &[u8], limits: &Limits) -> Result<Value, DecodeError> {
 
 fn d(b: &[u8]) -> Result<Value, DecodeError> {
     dl(b, &Limits::DEFAULT)
-}
-
-/// A ticket for target `b` with fixed fields but `role` and the epoch's `n`.
-fn ticket(b: [u8; 15], role: Role, n: u64) -> Value {
-    let boxed = Value::Enum(0, Some(Box::new(Value::bytes(&[5]))));
-    Ticket { target: Tid::from_bytes(b), sync_id: SyncId([1; 16]), role, epoch: (n, [2; 32]), boxed, holder: Tid::from_bytes([3; 15]), profile: Tid::from_bytes([4; 15]) }.into()
 }
 
 /// An `Item` reads as the value it encodes, every navigation of it included.
@@ -89,7 +83,6 @@ fn leaf() -> impl Strategy<Value = Value> {
         prop::collection::vec(any::<u8>(), 0..30).prop_map(Value::Bytes),
         any::<[u8; 15]>().prop_map(|b| Value::Strong(Tid::from_bytes(b))),
         any::<[u8; 15]>().prop_map(|b| Value::Weak(Tid::from_bytes(b))),
-        (any::<[u8; 15]>(), any::<bool>(), any::<u64>()).prop_map(|(b, read, n)| ticket(b, if read { Role::Read } else { Role::Sync }, n >> 1)),
         (any::<[u8; 32]>(), any::<[u8; 32]>(), any::<u8>(), any::<[u8; 32]>(), any::<[u8; 16]>(), 0u8..8)
             .prop_map(|(hash, blob, suite, key, salt, levels)| Value::link(Link { hash, blob: BlobId(blob), suite, key, salt, del: del_of(levels, key) })),
         prop_oneof![Just(0u64), Just(23), Just(300), Just(i64::MAX as u64)].prop_map(|c| Value::Enum(c, None)),
@@ -268,12 +261,6 @@ fn known_encodings() {
     assert_eq!(encode(&t), hex(&format!("{} 4f {}", tag_head(TAG_STRONG), "ab".repeat(15))));
     let t = Value::Weak(Tid::from_bytes([0xab; 15]));
     assert_eq!(encode(&t), hex(&format!("{} 4f {}", tag_head(TAG_WEAK), "ab".repeat(15))));
-    // [target, sync_id, role, [n, nonce], box, holder, profile]
-    let t = ticket([0xab; 15], Role::Sync, 2);
-    let th = format!("{} 87 4f{} 50{} 03 82 02 5820{} {} 81 00 4f{} 4f{}", tag_head(TAG_TICKET), "ab".repeat(15), "01".repeat(16), "02".repeat(32), tag_head(TAG_ENUM), "03".repeat(15), "04".repeat(15));
-    let th = th.replacen(&format!("{} 81 00", tag_head(TAG_ENUM)), &format!("{} 82 00 41 05", tag_head(TAG_ENUM)), 1);
-    assert_eq!(encode(&t), hex(&th));
-    assert_eq!(d(&hex(&th)), Ok(t));
     let e = Value::Enum(3, Some(Box::new(Value::Bool(true))));
     assert_eq!(encode(&e), hex(&format!("{} 82 03 f5", tag_head(TAG_ENUM))));
     assert_eq!(encode(&Value::Enum(0, None)), hex(&format!("{} 81 00", tag_head(TAG_ENUM))));
@@ -378,7 +365,6 @@ fn rejections() {
     use DecodeError::*;
     let strong = tag_head(TAG_STRONG);
     let weak = tag_head(TAG_WEAK);
-    let tk = tag_head(TAG_TICKET);
     let en = tag_head(TAG_ENUM);
     let ln = tag_head(TAG_LINK);
     let set = tag_head(TAG_SET);
@@ -431,10 +417,6 @@ fn rejections() {
         (format!("{weak} 6f {}", "61".repeat(15)), TagContent(TAG_WEAK)),
         // the retired tid tag
         (format!("{} 4f {}", tag_head(TAG_RETIRED), "00".repeat(15)), TagContent(TAG_RETIRED)),
-        // a ticket of the write role (1), of six items, and with a box that is no enum
-        (format!("{tk} 87 4f{t} 50{s} 01 82 02 5820{n} {en} 82 00 41 05 4f{t} 4f{t}", t = "00".repeat(15), s = "01".repeat(16), n = "02".repeat(32)), TagContent(TAG_TICKET)),
-        (format!("{tk} 86 4f{t} 50{s} 00 82 02 5820{n} {en} 82 00 41 05 4f{t}", t = "00".repeat(15), s = "01".repeat(16), n = "02".repeat(32)), TagContent(TAG_TICKET)),
-        (format!("{tk} 87 4f{t} 50{s} 00 82 02 5820{n} 41 05 4f{t} 4f{t}", t = "00".repeat(15), s = "01".repeat(16), n = "02".repeat(32)), TagContent(TAG_TICKET)),
         (format!("{en} 80"), TagContent(TAG_ENUM)),
         (format!("{en} 83 00 00 00"), TagContent(TAG_ENUM)),
         (format!("{en} 81 20"), TagContent(TAG_ENUM)),
@@ -502,7 +484,7 @@ fn floats_identity() {
 #[test]
 fn unknown_rejects_known_tags() {
     let c = CanonicalBytes::from_value(&Value::Int(0));
-    for t in [TAG_SET, TAG_RETIRED, TAG_ENUM, TAG_LINK, TAG_STRONG, TAG_WEAK, TAG_TICKET] {
+    for t in [TAG_SET, TAG_RETIRED, TAG_ENUM, TAG_LINK, TAG_STRONG, TAG_WEAK] {
         assert!(Unknown::new(t, c.clone()).is_none());
     }
     assert!(Unknown::new(TAG_STRUCT_RESERVED, c).is_some());
@@ -824,7 +806,6 @@ fn heap(v: &Value) -> usize {
     match v {
         Value::Str(s) => s.capacity(),
         Value::Bytes(b) => b.capacity(),
-        Value::Ticket(t) => size_of::<Ticket>() + heap(&t.boxed),
         Value::Enum(_, Some(p)) => size_of::<Value>() + heap(p),
         Value::Map(m) => m.len() * size_of::<(Value, Value)>() + m.iter().map(|(k, x)| heap(k) + heap(x)).sum::<usize>(),
         Value::List(l) => l.capacity() * size_of::<Value>() + l.iter().map(heap).sum::<usize>(),
@@ -864,7 +845,6 @@ fn decode_allocates_within_its_bound_spec_wire_12() {
         ("enums", array_of(500, &encode(&Value::Enum(0, Some(Box::new(Value::Int(0))))))),
         ("links", array_of(100, &link)),
         ("strings", array_of(100, &encode(&Value::Str("abcdefgh".into())))),
-        ("tickets", array_of(50, &encode(&ticket([9; 15], Role::Read, 1)))),
         ("maps", array_of(50, &map)),
         ("sets", array_of(50, &encode(&Value::Set((0..10).map(Value::Int).collect())))),
         ("blob", encode(&Value::Bytes(vec![7; 5000]))),

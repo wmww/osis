@@ -7,7 +7,7 @@ use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
 use crate::statics::CORE;
-use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, SyncId, Ticket, Ts, Value, WallMs, Weak};
+use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, SyncId, Ts, Value, WallMs, Weak};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
@@ -318,21 +318,24 @@ impl RetentionSetting {
         ak.external() && self.rules.contains_key(ak)
     }
 
-    /// Enables the external signals an inbox takes (`INBOX_SIGNALS`, spec/sync-inbox.md §1), each
-    /// kept `INBOX_LIFETIME` after it is fired, as an account's creation sets its inbox's; an entry
-    /// this setting has already stays as it is.
+    /// Enables the external signals an inbox takes (`INBOX_SIGNALS`, spec/sync-inbox.md §1) as
+    /// an account's creation sets its inbox's: each kept `INBOX_LIFETIME` after it is fired (a
+    /// grant's fire is an offer, spec/sync-inbox.md §5); an entry this setting has already stays
+    /// as it is.
     pub fn take_inbox_signals(&mut self) {
-        let keep = RetentionEntry { history: Some(crate::History::Keep { until: None, after: Some(osis_base::format::INBOX_LIFETIME_MS) }), ..RetentionEntry::default() };
+        let lifetime = crate::History::Keep { until: None, after: Some(osis_base::format::INBOX_LIFETIME_MS) };
         // each a valid AK, checked at build time
-        for k in INBOX_SIGNALS.into_iter().filter_map(|k| Ak::new(k).ok()) {
-            self.rules.entry(k).or_insert(keep);
+        for (k, history) in INBOX_SIGNALS.map(|k| (k, lifetime)) {
+            if let Ok(k) = Ak::new(k) {
+                self.rules.entry(k).or_insert(RetentionEntry { history: Some(history), ..RetentionEntry::default() });
+            }
         }
     }
 }
 
-/// The external signals an inbox takes (spec/sync-inbox.md §1): arriving tickets, removal notices
-/// and stranded notices.
-pub const INBOX_SIGNALS: [&str; 3] = [Ak::check("ticket@~0", true), Ak::check("removal@~0", true), Ak::check("stranded@~0", true)];
+/// The external signals an inbox takes (spec/sync-inbox.md §1): grants from outside and stranded
+/// notices.
+pub const INBOX_SIGNALS: [&str; 2] = [Ak::check("grant@~0", true), Ak::check("stranded@~0", true)];
 
 impl From<BTreeMap<Ak, RetentionEntry>> for RetentionSetting {
     fn from(rules: BTreeMap<Ak, RetentionEntry>) -> RetentionSetting {
@@ -400,5 +403,3 @@ pub const BODY: Aspect<String> = Aspect::new("body.0", &CORE);
 pub const TAG: Aspect<Tag> = Aspect::new("tag.0", &CORE);
 /// `holds.0`: a plain set of strongs and weaks (spec/data-model.md §8).
 pub const HOLDS: Aspect<BTreeSet<Ref>> = Aspect::new("holds.0", &CORE);
-/// `tickets.0`: a plain set of tickets (spec/data-model.md §8).
-pub const TICKETS: Aspect<BTreeSet<Ticket>> = Aspect::new("tickets.0", &CORE);

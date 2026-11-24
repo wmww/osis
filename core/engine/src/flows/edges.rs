@@ -201,7 +201,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     };
     done.add(c);
     if let Some(c) = c {
-        super::inbox::fire_ticket(tx, holder, c, &[target])?;
+        super::inbox::deliver_copy(tx, holder, c, target)?;
     }
     if let Some(s) = setting {
         let mut m = Mutation::new();
@@ -338,6 +338,12 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         m.unchecked();
     }
     let c = rotation::commit_rotating(tx, m, who, target, &roles, &skip, departs, &mut done)?;
+    // a removed holder is opened the target's sync ID no more: its removal reaches it as a grant does
+    if let (Some(c), false) = (c, selfr) {
+        for x in &removing {
+            super::inbox::deliver_copy(tx, *x, c, target)?;
+        }
+    }
     // a node's removal from its account root: the account's epoch rotates next, in
     // this transaction (spec/permissions.md §3)
     if c.is_some()

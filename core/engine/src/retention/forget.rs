@@ -69,8 +69,8 @@ enum Fate {
 }
 
 /// Whether a held path reads `t`: its secrets derive from an own actor's (the node's account,
-/// itself, a held key actor), or the node reads the actor they derive from by the role it takes
-/// up there (`rotation::role_here`, notes/node-closure.md Roles taken up): the one role the
+/// itself, a held key actor), or the node reads the actor they derive from by its role there
+/// (`rotation::role_here`, notes/node-closure.md The node's role): the one role the
 /// lost-access drop judges by, so what it keeps is what that role reads.
 pub(crate) fn read_path(core: &Core, t: &Tid) -> bool {
     let Some(a) = core.secret_actor(t) else { return false };
@@ -84,7 +84,8 @@ pub(crate) fn read_path(core: &Core, t: &Tid) -> bool {
 fn fate(core: &Core, scope: Scope<'_>, t: &Tid) -> Fate {
     let lost = match scope {
         Scope::Lost(l) => l,
-        Scope::Local(ts) => return if ts.contains(t) { Fate::Local } else { Fate::Stays },
+        Scope::Local(ts) if !ts.contains(t) => return Fate::Stays,
+        Scope::Local(_) => return Fate::Local,
         Scope::Whole(ts) => return if ts.contains(t) { Fate::Whole } else { Fate::Stays },
     };
     let Some(a) = lost_reader(core, lost, t) else { return Fate::Stays };

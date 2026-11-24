@@ -179,18 +179,28 @@ impl Engine {
     }
 
     /// A stranded report's holder keys of `holder` (spec/wire.md §11.2 Stranded): its current
-    /// `keys.0` commits each projected to that delta, with their authors' chain certificates for
-    /// it (projected, no `keys.0` but the author's own), and that chain's records.
+    /// `keys.0` commits each projected to that delta, with their evidence (projected, no `keys.0`
+    /// but each commit's signer's own) and its records.
     pub fn holder_keys(&mut self, holder: &Tid) -> Result<HolderKeys> {
-        let mut certs = Certs::default();
+        let ev = self.evidence_now()?;
+        let mut evidence = Certs::default();
+        let mut own = Certs::default();
         for k in self.current_keys(holder) {
             let Some(h) = self.header(&k) else { continue };
             let Some(ai) = h.aspect_index(holder, "keys.0") else { continue };
-            certs.commits.entry(k).or_default().insert(ai);
-            let Some(chain) = self.author_chain_own_keys(&k, &BTreeSet::from([ai])) else { continue };
-            certs.extend(chain);
+            own.commits.entry(k).or_default().insert(ai);
+            evidence.records.insert(h.signer);
+            self.add_closure(&ev, &BTreeSet::from([(k, *holder)]), &mut evidence);
         }
-        certs.records.insert(*holder);
+        evidence.records.insert(*holder);
+        self.close_records(&ev, &mut evidence);
+        for (x, ps) in evidence.commits.iter_mut() {
+            let Some(hx) = self.header(x) else { continue };
+            ps.retain(|i| hx.aspects.get(*i).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == hx.signer));
+        }
+        evidence.commits.retain(|_, p| !p.is_empty());
+        let mut certs = own;
+        certs.extend(evidence);
         let (commits, records) = self.certs_values(&certs)?;
         Ok(HolderKeys { commits, records })
     }
@@ -331,20 +341,28 @@ impl Engine {
         out
     }
 
-    /// `certs` as `CommitBlobPlaintext` values projected to their parts and creation records
+    /// `certs` as `CommitBlobPlaintext` values projected to their parts (its header-only copies
+    /// with none), in the order written, and creation records
     /// (spec/wire.md §11.2 Stranded).
     pub(crate) fn certs_values(&mut self, certs: &Certs) -> Result<(Vec<Value>, Vec<CreationRecord>)> {
         let mut out = Vec::new();
-        for (x, ps) in &certs.commits {
-            let id = *x;
+        let none = BTreeSet::new();
+        let ids: BTreeSet<CommitId> = certs.commits.keys().chain(&certs.headers).copied().collect();
+        for id in ids {
+            let ps = certs.commits.get(&id).unwrap_or(&none);
             let Some(full) = self.read(|tx| tx.get_commit(&id))? else { continue };
             let mut b = Arc::unwrap_or_clone(full);
             b.parts.retain(|p| ps.contains(&p.ai));
-            if b.parts.is_empty() {
+            // a copy with no part is kept only as a header-only copy (an account's rotation)
+            if b.parts.is_empty() && !certs.headers.contains(&id) {
                 continue;
             }
-            out.extend(osis_base::decode(&b.encode(), &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB)).ok());
+            out.push((b.header.ts, id, osis_base::decode(&b.encode(), &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB)).ok()));
         }
+        // in the order written: a receiver takes each as it comes, a rotation before the commits
+        // at the epoch it mints
+        out.sort_by_key(|x| (x.0, x.1));
+        let out = out.into_iter().filter_map(|x| x.2).collect();
         let records = certs.records.iter().filter_map(|t| self.core.created(t).cloned()).collect();
         Ok((out, records))
     }

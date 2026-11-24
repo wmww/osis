@@ -4,7 +4,7 @@
 //! sync ID's holding, or of the read things, moves with what moved and costs that, never the
 //! closure. `Engine::sync_set` folds the whole for listing.
 
-use super::{Holding, ThingSync, ThingsFeed};
+use super::{Holding, ThingsFeed};
 use crate::Engine;
 use crate::error::Result;
 use osis_base::memo::{Effects, Feed, Quiet, Stamped, StampedSet, Unrecorded};
@@ -18,8 +18,9 @@ pub type Held = (BTreeSet<Tid>, Holding);
 #[derive(Clone)]
 pub(crate) struct SyncRows {
     entered: ThingsFeed,
-    /// Per thing that entered, how it is synced (`None`: out of the closure, followed no more).
-    thing: Effects<Tid, Option<ThingSync>>,
+    /// Per thing that entered, the sync IDs it is synced under and how each is held
+    /// (`Engine::thing_holdings`; `None`: out of the closure, followed no more).
+    thing: Effects<Tid, Option<Vec<(SyncId, Holding)>>>,
     /// The sync IDs each thing is synced under, as last settled.
     ids_of: BTreeMap<Tid, Vec<(SyncId, Holding)>>,
     /// Per sync ID, every thing naming it.
@@ -28,8 +29,8 @@ pub(crate) struct SyncRows {
     pub(crate) held: Stamped<SyncId, Held>,
     /// `held`'s keys: a feed gives the sync IDs entering it.
     ids: StampedSet<SyncId>,
-    /// The things reading a sync ID (read per thing; a feed gives those added), and how many
-    /// each reads.
+    /// The things opening a sync ID by a read secret, read or held for keys (read per thing; a
+    /// feed gives those added), and how many each opens.
     pub(crate) read: StampedSet<Tid>,
     read_count: BTreeMap<Tid, usize>,
     /// The follow's fixed point.
@@ -62,13 +63,13 @@ impl Default for SyncRows {
 }
 
 /// The sync set's entry of one sync ID from the things synced under it (`Engine::sync_set`'s
-/// fold): every one of them, whatever their order; read while any reads it, else kept unread
-/// (Interim (issues/tickets-retired.md); spec/sync.md §3).
+/// fold): every one of them, whatever their order; read while any reads it, else for keys
+/// while any is held for keys, else kept unread (spec/sync.md §3).
 pub(crate) fn fold(m: &BTreeMap<Tid, Holding>) -> Option<Held> {
     if m.is_empty() {
         return None;
     }
-    let h = if m.values().any(|h| *h == Holding::Read) { Holding::Read } else { Holding::Unread };
+    let h = [Holding::Read, Holding::Keys].into_iter().find(|h| m.values().any(|x| x == h)).unwrap_or(Holding::Unread);
     Some((m.keys().copied().collect(), h))
 }
 
@@ -84,14 +85,14 @@ impl SyncRows {
                     self.by_sync.remove(&s);
                 }
             }
-            if h == Holding::Read {
+            if h.opens() {
                 self.uncount(t);
             }
             touched.insert(s);
         }
         for (s, h) in &ids {
             self.by_sync.entry(*s).or_default().insert(*t, *h);
-            if *h == Holding::Read {
+            if h.opens() {
                 let n = self.read_count.entry(*t).or_default();
                 *n += 1;
                 if *n == 1 {
@@ -167,23 +168,17 @@ impl Engine {
         let moved = !due.is_empty();
         osis_base::costs::count("sync set: settled", due.len() as u64);
         for t in due {
-            let Some((_, now)) = r.thing.try_settle(&t, || if self.in_sync_things(&t)? { self.thing_sync(&t).map(Some) } else { Ok(None) })? else { continue };
+            let Some((_, now)) = r.thing.try_settle(&t, || if self.in_sync_things(&t)? { self.thing_holdings(&t).map(Some) } else { Ok(None) })? else { continue };
             #[cfg(debug_assertions)]
             if now.is_some() {
                 r.things.insert(t);
             } else {
                 r.things.remove(&t);
             }
-            let ids = match now {
-                None => {
-                    r.thing.unwant(&t);
-                    Vec::new()
-                }
-                Some(ThingSync::Read(ids)) => ids.into_iter().map(|s| (s, Holding::Read)).collect(),
-                Some(ThingSync::Unread(ids)) => ids.into_iter().map(|s| (s, Holding::Unread)).collect(),
-                Some(ThingSync::Unsyncable | ThingSync::Dependent) => Vec::new(),
-            };
-            r.moved(&t, ids);
+            if now.is_none() {
+                r.thing.unwant(&t);
+            }
+            r.moved(&t, now.unwrap_or_default());
         }
         // a thing entering or leaving that no key moved for shows as the closure moving alone
         #[cfg(debug_assertions)]

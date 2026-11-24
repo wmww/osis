@@ -186,6 +186,18 @@ impl Total {
     }
 }
 
+/// Whether S moving from `was` to `now` is raised (spec/sync-judgement.md §6 Read and unread
+/// move): it takes entries its sources showed it before and it did not take, so they are pulled
+/// from the start: from kept unread to opened (read or for keys), or from held for keys (role
+/// entries alone) to read.
+fn raised(was: Option<&Held>, now: Option<&Held>) -> bool {
+    match (was.map(|(_, h)| *h), now.map(|(_, h)| *h)) {
+        (Some(Holding::Unread), Some(h)) => h.opens(),
+        (Some(Holding::Keys), Some(Holding::Read)) => true,
+        _ => false,
+    }
+}
+
 impl Env<'_> {
     pub(crate) fn holding(&self, s: &SyncId) -> Option<Holding> {
         self.holdings.get(s).map(|(_, h)| *h)
@@ -569,18 +581,18 @@ impl Store {
     /// left it while it waits to stop; `leave` writes them): those whose entry moved, each with its
     /// entry now (`None`: no longer synced), of which thing, read or kept unread. A sync ID moving
     /// between read and kept unread is counted again in the unread total (spec/sync-ids.md §5
-    /// Caps); only the sync IDs whose entry moved stamp. One raised from kept unread to read is
+    /// Caps); only the sync IDs whose entry moved stamp. One raised (`raised`) is
     /// fetched anew (spec/sync-judgement.md §6 Read and unread move), marked durably (`N/`) until
     /// streams moved every source's place of S back to the start (`reset_anew`), so a restart
     /// between still fetches it (`anew_feed`).
     pub fn set_holdings(&mut self, moved: &[(SyncId, Option<Held>)]) -> Result<()> {
         let mut g = self.lock();
         let unread = |h: Option<&Held>| h.is_some_and(|(_, h)| *h == Holding::Unread);
-        let raised: Vec<SyncId> = moved.iter().filter(|(s, now)| unread(g.holdings.get(s)) && now.as_ref().is_some_and(|(_, h)| *h == Holding::Read) && !g.unheld.contains(s)).map(|(s, _)| *s).collect();
-        if !raised.is_empty() {
+        let anew: Vec<SyncId> = moved.iter().filter(|(s, now)| raised(g.holdings.get(s), now.as_ref()) && !g.unheld.contains(s)).map(|(s, _)| *s).collect();
+        if !anew.is_empty() {
             // a dropped copy's mark stands as it is: it is fetched anew once judged (`set_unheld`)
             g.write(|t, _| {
-                for s in &raised {
+                for s in &anew {
                     t.put_local(&[rows::ANEW, &s.0].concat(), rows::ANEW_RAISED, Shred::No)?;
                 }
                 Ok(())
@@ -596,9 +608,10 @@ impl Store {
                 recount.push((*s, unread(now.as_ref())));
             }
             g.mem.syncs.wrote_added(s, true, true);
-            // raised to read: what it refused kept unread (a stamp under no key of its head then)
-            // its sources show no more, so S is pulled anew (`anew_feed`)
-            if unread(was.as_ref()) && now.as_ref().is_some_and(|(_, h)| *h == Holding::Read) {
+            // raised: what it refused kept unread (a stamp under no key of its head then), or
+            // was not shown held for keys (all but role entries), its sources show no more, so S
+            // is pulled anew (`anew_feed`)
+            if raised(was.as_ref(), now.as_ref()) {
                 g.mem.anew.wrote_added(s, true, true);
             }
             match now {
@@ -1210,7 +1223,7 @@ impl Store {
         let all = |c: Code| Ok(vec![c; items.len()]);
         match g.holding(s) {
             None => return all(Code::UNKNOWN_SYNC_ID),
-            Some(Holding::Read) => return all(Code::DECLINED),
+            Some(Holding::Read | Holding::Keys) => return all(Code::DECLINED),
             Some(Holding::Unread) => {}
         }
         if !by_store_credential {

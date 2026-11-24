@@ -79,55 +79,62 @@ pub(crate) fn load_kept(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Whether the node holds `min` or above on `a` now (`tickets::role_on`: what its role commits
-/// show, or a held ticket's word where they cannot show its holder's grant).
+/// Whether the node holds `min` or above on `a` now (`role_here`).
 fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
-    crate::sync::tickets::role_on(core, a) >= Some(min)
+    role_here(core, a) >= Some(min)
 }
 
-/// The best role the node's own actors (its account, itself, a held key actor) hold on `a` now
-/// by its role commits (notes/node-closure.md Roles taken up): any path with key access, `until`
-/// honoured (`Core::keyed_role_now`), whose first edge, where it is the account's, is on a thing
-/// reached (`reached`): a grant naming the account gives a role only accepting takes up (a key
-/// actor is taken up by holding it). An edge into a thing that reaches no holder of `a` is no
-/// path's, so only the account's edges on things `roles_now` names are skipped: none in the
-/// usual case, where this is `keyed_role_now`.
+/// The node's role on `a` (spec/sync-set.md §2 Own actors): the best its own actors (its account,
+/// itself, a held key actor) hold on `a` now by `a`'s grants as the node holds them, by paths
+/// with key access, `until` honoured (`Core::keyed_role_now`), where those grants count
+/// (`grants_count`); none where they do not. An account root's roles are its roster's.
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
-    let skip = untaken(core, a, core.roles_now(a).keys().chain([a]));
-    if skip.is_empty() {
-        return role_shown(core, a);
+    if !grants_count(core, a) {
+        return None;
     }
+    own_actors(core).iter().map(|m| core.keyed_role_now(m, a)).max().flatten()
+}
+
+/// Whether the grants the node holds of `a` count for its role (spec/sync-set.md §2 Own actors:
+/// grants belong to the thing granted): the node syncs `a` or holds an offer of it (`syncs`), or
+/// `a` is a holder found from such a thing up: one holding a role now, with key access, on a
+/// thing whose grants count. A grant of any other thing is held as some commit's certificate
+/// and gives the node nothing, whoever it names. The walk down from `a` through what it is
+/// named on, stopping at the first thing synced: O(the things reached, each once).
+pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
+    let mut seen = BTreeSet::from([*a]);
+    let mut todo = vec![*a];
+    while let Some(x) = todo.pop() {
+        if syncs(core, &x) {
+            return true;
+        }
+        for y in core.ix.held.named_on(&x) {
+            if !seen.contains(y) && core.keyed_role_now(&x, y).is_some() {
+                seen.insert(*y);
+                todo.push(*y);
+            }
+        }
+    }
+    false
+}
+
+/// Whether the node syncs `t` or holds an offer of it: an own actor or the own account's root,
+/// a thing the node closure holds (read or kept unread) or a held strong reaches (what the node
+/// asked to sync, before a box lets the walk enter it), a holder held for keys, a link the node
+/// redeems (its sync ID is in the sync set from the link's text, spec/sync-set.md §5), or the
+/// target of a held valid `grant@~0` fire (spec/sync-inbox.md §5 Grant from outside); a
+/// dependent thing where the actor its secrets derive from is one (its grants travel under that
+/// actor's sync IDs).
+fn syncs(core: &Core, t: &Tid) -> bool {
+    let cl = &core.ix.closure;
     let own = own_actors(core);
-    let roles = core.roles_now_without(a, &skip);
-    let keyless = crate::rotation::members::key_access(core);
-    let keyed = (!keyless.is_empty()).then(|| core.timelines().roles_on(a, osis_perm::At::KEYS, &keyless.union(&skip).copied().collect()));
-    own.iter().map(|m| roles.get(m).copied().min(keyed.as_ref().map_or(Some(Role::Admin), |k| k.get(m).copied()))).max().flatten()
+    let one = |t: &Tid| own.contains(t) || core.account_and_root().is_some_and(|(_, d)| d == *t) || cl.holds(t) || cl.targeted(t) || cl.for_keys(t) || core.followed_links.contains(t) || crate::flows::inbox::granted_on(core, t).next().is_some();
+    one(t) || core.secret_actor(t).is_some_and(|a| a != *t && one(&a))
 }
 
 /// The node's own actors: its account, itself, each held key actor.
 fn own_actors(core: &Core) -> Vec<Tid> {
     core.member().into_iter().chain([core.id.tid()]).chain(core.key_actors.keys().copied()).collect()
-}
-
-/// The best role the node's own actors hold on `a` now by its role commits, taken up or not
-/// (`role_here` without `reached`): what the role commits show it was given.
-fn role_shown(core: &Core, a: &Tid) -> Option<Role> {
-    own_actors(core).iter().map(|m| core.keyed_role_now(m, a)).max().flatten()
-}
-
-/// Of the account's edges on `things`, those no role on `a` counts (each named (target, holder)):
-/// on a thing not reached (`reached`). None where `a` is an account root its chain holds.
-fn untaken<'a>(core: &Core, a: &Tid, things: impl Iterator<Item = &'a Tid>) -> BTreeSet<(Tid, Tid)> {
-    match core.member() {
-        Some(p) if core.root_holders(a).is_none() => things.filter(|t| core.ix.held.is_named(&p, t) && !reached(core, t)).map(|t| (*t, p)).collect(),
-        _ => BTreeSet::new(),
-    }
-}
-
-/// Whether the account's edge on `t` counts (notes/node-closure.md Roles taken up): `t` is the
-/// node root, or a strong of a thing the node closure reads targets it (`Closure::targeted`).
-fn reached(core: &Core, t: &Tid) -> bool {
-    core.node_root == Some(*t) || core.ix.closure.targeted(t)
 }
 
 /// Whether the node (`holds_at`) reads `a` now: read or above.
@@ -160,13 +167,13 @@ pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
     may_take(core, a) || r == Role::Sync && holds_at(core, a, Role::Sync)
 }
 
-/// Whether an entry box or a ticket may give this node `a`'s secret of role `r`
+/// Whether an entry box may give this node `a`'s secret of role `r`
 /// (spec/sync-ids.md §3): as a box may (`may_take_role`), or while nothing held says the node lost
 /// `a`: no ended edge on it of the node, a held key actor or an actor it reads (a link's redeemer
 /// opens the sync ID before it holds the grant to its key; the trigger judges `a` once role
 /// commits on it apply).
 pub(crate) fn may_learn(core: &Core, a: &Tid, r: Role) -> bool {
-    may_take_role(core, a, r) || core.timelines().get(a).is_none_or(|tl| !tl.ended(a, now_ts(core)).keys().any(|h| ours(core, h)))
+    may_take_role(core, a, r) || core.timelines().get(a).is_none_or(|tl| !tl.ended(a, now_ts(core)).keys().any(|h| was_ours(core, h)))
 }
 
 /// Whether the node holds secrets of `a` no current role of its there covers (lost access): a
@@ -179,10 +186,8 @@ fn over_held(core: &Core, a: &Tid) -> bool {
 
 /// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:
 /// walked with every edge's time ahead and every finalize undone (it counts as the `until` it
-/// finalizes, spec/permissions.md §2), a role giving what it holds is there, over the edges
-/// `role_here` counts (an account's edge on a thing not reached gives none whatever the time:
-/// a grant no longer taken up is no `until` passing). A removal saying its own retain is
-/// written with `until` 0, gone at every clock, so it never counts.
+/// finalizes, spec/permissions.md §2), a role giving what it holds is there. A removal saying
+/// its own retain is written with `until` 0, gone at every clock, so it never counts.
 pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     let ts = osis_base::Ts::default();
     let Some(tl) = core.timelines().get(a) else { return false };
@@ -190,9 +195,7 @@ pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     // ahead is no loss by time), sync for a sync-only holder
     let reads = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| *r != Role::Sync && e.role(*r).holds_any()));
     let need = if reads { Role::Read } else { Role::Sync };
-    let p = core.member();
-    let skip = untaken(core, a, p.iter().flat_map(|p| core.ix.held.named_on(p)));
-    let role = |x: &Tid| tl.role_unfinalized(x, a, ts, &skip).is_some_and(|r| r >= need);
+    let role = |x: &Tid| tl.role_unfinalized(x, a, ts).is_some_and(|r| r >= need);
     core.member().as_ref().is_some_and(role) || core.key_actors.keys().any(role)
 }
 
@@ -208,6 +211,15 @@ pub const LOST_HEARD_WAIT_MS: u64 = osis_base::format::ROLE_KEEP_MS;
 /// Whether box recipient `m` is this node, a held key actor or an actor it holds and reads now.
 fn ours(core: &Core, m: &Tid) -> bool {
     Some(*m) == core.member() || *m == core.id.tid() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
+}
+
+/// Whether an edge of holder `h` that ended or lowered was one of the node's ways: `h` is an own
+/// actor, or one an own actor reads by the grants held. Read without `grants_count`: a holder is
+/// found from the thing its edge names up, so once that edge ended nothing finds it, its own
+/// secrets go, and the loss it brings would be seen by no rule that asks whether it still counts.
+fn was_ours(core: &Core, h: &Tid) -> bool {
+    let own = own_actors(core);
+    own.contains(h) || own.iter().any(|m| core.keyed_role_now(m, h) >= Some(Role::Read))
 }
 
 /// Whether a role on `x` gives one on `a`: `x` is `a`, on its record chain, or holds a role on it.
@@ -393,8 +405,7 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
 
 /// The copies to keep among `lost` and the held copies `marks` (spec/permissions.md §3, Retain), each
 /// with the holders it hangs on. A copy hangs on holder H while the node still has H (it is H, reads
-/// H, keeps H, or holds H's secrets not dropped in this judging; never the account by its edge on
-/// a thing not reached, a grant not taken up) and the way through H is one that keeps; a holder already recorded goes
+/// H, keeps H, or holds H's secrets not dropped in this judging) and the way through H is one that keeps; a holder already recorded goes
 /// only on the timeline's word: the edge's end now says erase. Least fixpoint, so holders
 /// cannot keep each other.
 fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>) -> BTreeMap<Tid, BTreeSet<Tid>> {
@@ -414,10 +425,7 @@ fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>
         let mut grew = false;
         for a in &all {
             let (w, old) = (ways.get(a), marks.get(a));
-            // the account's edge on a thing not reached is a grant not taken up: no way
-            // (notes/node-closure.md Roles taken up)
-            let untaken = me.filter(|_| !untaken(core, a, std::iter::once(a)).is_empty());
-            let has = |h: &Tid| Some(*h) != untaken && (own(h) || readable(core, h) || kept.contains_key(h) || not_dropped(h));
+            let has = |h: &Tid| own(h) || readable(core, h) || kept.contains_key(h) || not_dropped(h);
             let mut via: BTreeSet<Tid> = w.into_iter().flatten().filter(|(h, x)| x.retain && has(h) && read_then(a, h, x.end)).map(|(h, _)| *h).collect();
             via.extend(old.into_iter().flatten().filter(|h| has(h) && w.and_then(|w| w.get(*h)).is_none_or(|x| x.retain && read_then(a, h, x.end))));
             if !via.is_empty() && kept.get(a) != Some(&via) {
@@ -489,7 +497,6 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
             let copy = kept.get(a).map_or(String::new(), |v| format!(", read-only copy kept via {}", v.iter().map(Tid::to_string).collect::<Vec<_>>().join(",")));
             format!("lost access {a}: secrets dropped {went}{}{copy}", if sync.is_some() { ", sync kept (unread)" } else { "" })
         });
-        let kept_role = sync.is_some().then_some(Role::Sync);
         match sync {
             Some(r) => {
                 let mut kept = ActorEpochs::default();
@@ -500,8 +507,6 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
                 tx.core.ix.secrets.remove(a);
             }
         }
-        // D's tickets for it follow: none above the role kept (spec/sync-set.md §1)
-        crate::flows::inbox::drop_account_tickets_above(tx, &BTreeSet::from([*a]), kept_role)?;
         crate::sync::stranded::drop_asks(tx, a, |_| false)?;
         crate::sync::held::forget_actor(tx, a)?;
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: if kept.contains_key(a) { "lost read access: secrets dropped, a read-only copy kept" } else { "lost read access: secrets and what only they read dropped" }.into() }, tx.core.hlc.mono());
@@ -582,8 +587,7 @@ fn reaching(core: &Core, a: &Tid) -> BTreeSet<Tid> {
 /// Whether what this node holds says it lost `a` (spec/permissions.md §3: a node that learns it
 /// lost read access): an edge of it, a held key actor or an actor it reads ended or lowered on an actor whose
 /// roles reach `a` (`reaching`), or reading-only secrets of it outlived their source commit, or
-/// its role commits show it a role on `a`, taken up or not (`role_shown`: they show what it may
-/// hold; a grant shown but not taken up, its strong dropped, is a loss as an ended edge is).
+/// its role commits show it a role on `a` (`role_here`: they show what it may hold).
 /// Secrets taken with no role yet (an entry box a link's redeemer opens before its grant
 /// applies, `may_learn`) are no loss until such an edge ends or lowers, or a role shows.
 fn loss_seen(core: &Core, a: &Tid) -> bool {
@@ -592,7 +596,7 @@ fn loss_seen(core: &Core, a: &Tid) -> bool {
     // made them readable is gone
     let stale = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| !core.waits.read_any(&u.commit)))));
     // an edge of ours ended, or lowered (to sync: it stays alive) on an actor reaching `a`
-    stale || role_shown(core, a).is_some() || reaching(core, a).iter().any(|x| core.timelines().on(x).is_some_and(|on| on.holders_gone(ts).keys().chain(on.holders_lowered(ts).iter()).any(|h| ours(core, h))))
+    stale || role_here(core, a).is_some() || reaching(core, a).iter().any(|x| core.timelines().on(x).is_some_and(|on| on.holders_gone(ts).keys().chain(on.holders_lowered(ts).iter()).any(|h| was_ours(core, h))))
 }
 
 /// Whether held actor `a` is lost and its drop is this trigger's (spec/permissions.md §3): lost

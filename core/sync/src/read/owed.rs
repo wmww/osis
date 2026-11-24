@@ -19,12 +19,13 @@ use crate::session::RequestId;
 use crate::store::Source;
 use crate::types::ConnId;
 use osis_base::memo::Effects;
-use osis_base::{CommitId, SyncId};
+use osis_base::SyncId;
+use osis_engine::sync::BodyId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// One act owed: under S, for a body (`Some`) or a piece, freed link or certificate blob.
-pub(crate) type Key = (SyncId, Option<CommitId>, Act);
+pub(crate) type Key = (SyncId, Option<BodyId>, Act);
 
 /// Where an owed act stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

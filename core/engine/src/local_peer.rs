@@ -204,6 +204,8 @@ impl Peer {
         let mut guard = osis_base::loop_guard::LoopGuard::new("LocalPeer::wake (redelivering kept carriers and copies)");
         loop {
             self.engine.reexamine()?;
+            // a grant fire that came as a commit: what it carries is taken, as sync's follow does
+            self.engine.take_carried()?;
             let w = self.engine.take_wakes();
             self.pulled_anew.extend(w.pulled_anew.iter().copied());
             let again = self.engine.take_redeliver();
@@ -392,7 +394,7 @@ impl Engine {
     pub fn carried_under(&mut self, id: &CommitId, synced: &BTreeSet<osis_base::SyncId>) -> Result<Option<BTreeSet<usize>>> {
         let bodies = self.sync_bodies(id)?;
         let mut parts: Option<BTreeSet<usize>> = None;
-        for (_, b) in bodies.iter().filter(|(s, _)| synced.contains(*s)) {
+        for (_, b) in bodies.iter().filter(|((s, _), _)| synced.contains(s)) {
             parts.get_or_insert_default().extend(b.parts.iter().copied());
         }
         Ok(parts)
@@ -530,6 +532,14 @@ pub struct LocalPeer {
 /// What `sync_all` need not do again (`Engine::point`: nothing a delivery reads moved).
 #[derive(Clone, Default)]
 struct SyncMemo {
+    /// No fire passes (`LocalPeer::hold_fires`).
+    fires_held: bool,
+    /// The peers whose fires are held back (`LocalPeer::hold_fires_of`).
+    fires_held_of: BTreeSet<usize>,
+    /// The sealed fires passed on (`LocalPeer::pass_fires`): (sender, fire, receiver).
+    fired: BTreeSet<(usize, crate::flows::inbox::FireId, usize)>,
+    /// The sealed fires a peer refused, its setting not enabling their signal (`pass_fires`).
+    refused: BTreeSet<(usize, crate::flows::inbox::FireId, usize)>,
     /// Per sender: every commit it sends whole (`packages`), at a point of its engine; each set
     /// of sync IDs trims these (`sent`), so a sender's packages are built once per state, not
     /// once per receiver.
@@ -649,19 +659,28 @@ impl LocalPeer {
     }
 
     /// Every other peer holding no role on `t` is granted read on it through the flow by peer
-    /// `admin`, an admin of it, and holds it (`hold`): each keeps what it receives of `t`, as only
-    /// content of a thing in the node closure applies (spec/commits.md §4 Outside the node
-    /// closure).
+    /// `admin`, an admin of it, given the grant's commits (as its grant fire carries them), and
+    /// holds it (`hold`): each keeps what it receives of `t`, as only content of a thing in the
+    /// node closure applies (spec/commits.md §4 Outside the node closure).
     #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a grant that fails fails the test (and a peer index past the net)
     pub fn share(&mut self, admin: usize, t: Tid) {
+        let mut given = Vec::new();
         for j in (0..self.peers.len()).filter(|j| *j != admin) {
             let who = self.peers[j].engine.me();
             if self.peers[admin].engine.key_role(&t, &who).is_none() {
                 let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
-                self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
+                let done = self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
+                given.push((j, done.commits));
             }
         }
         self.hold(t);
+        for (j, commits) in given {
+            for c in commits {
+                if let Some(pk) = self.peers[admin].engine.package(&c).unwrap_or_else(|e| panic!("package: {e}")) {
+                    self.deliver(j, &pk).unwrap_or_else(|e| panic!("deliver: {e}"));
+                }
+            }
+        }
     }
 
     /// A fresh node of its own account (`Peer::new` at peer `admin`'s time, seeded `seed`) that
@@ -681,11 +700,13 @@ impl LocalPeer {
         let who = p.engine.me();
         let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, may_grant: false, retain: false, floor: None };
         let done = self.peers[admin].engine.grant(&t, &who, &edge).unwrap_or_else(|e| panic!("grant {t:?}: {e}"));
+        self.pass_fires_to(admin, &mut p).unwrap_or_else(|e| panic!("grant fire to the reader: {e}"));
         for c in &done.commits {
             if let Some(pk) = self.peers[admin].engine.package(c).unwrap_or_else(|e| panic!("package: {e}")) {
                 p.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists).unwrap_or_else(|e| panic!("grant to the reader: {e}"));
             }
         }
+        assert!(p.engine.grant_fires_held().iter().any(|c| c.holder == who && c.target == t && done.commits.contains(&c.commit)), "the reader holds its grant's offer of {t:?}");
         p
     }
 
@@ -766,10 +787,11 @@ impl LocalPeer {
         self.packages_under(from, &synced)
     }
 
-    /// `packages_to` for `to`, a node apart from this net: what `from` sends it once it syncs
-    /// what those packages bring it to sync (found on a copy of it, handed them again while its
+    /// `packages_to` for `to`, a node apart from this net, given the fires `from` owes it first
+    /// (`pass_fires_to`): what `from` sends it once it syncs what those packages bring it to sync (found on a copy of it, handed them again while its
     /// sync set grows).
     pub fn packages_to_peer(&mut self, from: usize, to: &mut Peer) -> Result<Vec<Package>> {
+        self.pass_fires_to(from, to)?;
         let mut c = to.copy()?;
         let mut seen = BTreeSet::new();
         loop {
@@ -817,14 +839,14 @@ impl LocalPeer {
         Ok(holding(pk, &CommitBlob::decode(&pk.bytes)?, &parts))
     }
 
-    /// Delivers to `to`, whole, the commits of `from`'s chain certificates for `t`
+    /// Delivers to `to`, whole, the commits of `from`'s certificates for `t`
     /// (`Engine::certificates`): what `t`'s sync ID carries beside its bodies (its record chain,
     /// spec/permissions.md §4). A test handing `to` a commit on `t` by hand sends this first: a
     /// pass end drops what nothing held needs, another account's root D included, so a thing
     /// under D is judged only with its chain delivered again, as a sync of `t` brings it.
     pub fn send_chain(&mut self, from: usize, to: usize, t: &Tid) -> Result<()> {
         let Some(p) = self.peers.get_mut(from) else { return Ok(()) };
-        let certs = p.engine.certificates(t);
+        let certs = p.engine.certificates(t)?;
         let ids: BTreeSet<CommitId> = certs.commits.keys().chain(&certs.headers).copied().collect();
         let mut pks = Vec::new();
         for id in ids {
@@ -836,8 +858,101 @@ impl LocalPeer {
         Ok(())
     }
 
-    /// Delivers one package to peer `to`.
+    /// Offers peer `to` each sealed fire another peer owes (spec/sync-inbox.md §3 Sending) on a
+    /// thing `to` holds a read secret of, until `to` takes it: a grant from outside reaches its
+    /// holder's readers as its `grant@~0` fire, an offer (spec/sync-inbox.md §5 Grant from
+    /// outside). A fire `to` refuses fails the test unless the thing's setting, as `to` holds it,
+    /// does not enable the signal (the one refusal the rules give); it is
+    /// offered again once that setting enables it.
+    #[allow(clippy::indexing_slicing, clippy::panic)] // test harness: indexes below the peer count; a refused fire fails the test
+    pub fn pass_fires(&mut self, to: usize) -> Result<()> {
+        if self.memo.fires_held {
+            return Ok(());
+        }
+        let n = self.peers.len();
+        for p in &mut self.peers {
+            p.engine.fire_own()?;
+            p.wake()?;
+        }
+        for from in (0..n).filter(|i| *i != to && to < n) {
+            if self.memo.fires_held_of.contains(&from) {
+                continue;
+            }
+            for id in self.peers[from].engine.fires_owed() {
+                if self.memo.fired.contains(&(from, id, to)) {
+                    continue;
+                }
+                let Some(o) = self.peers[from].engine.core.ix.fires.get(&id).cloned() else { continue };
+                if !self.peers[to].engine.epochs(&o.thing).is_some_and(|e| e.read.holds_any()) {
+                    continue;
+                }
+                // one `to` refused is offered again once the thing's setting enables its signal there
+                if self.memo.refused.contains(&(from, id, to)) && !crate::apply::validity::enabled(&self.peers[to].engine.core, &o.thing).contains(&o.ak) {
+                    continue;
+                }
+                let Some(out) = self.peers[from].engine.sealed_fire(&id)? else { continue };
+                match self.peers[to].engine.offer_fire(&out)? {
+                    crate::sync::Opened::Bad => {
+                        assert!(!crate::apply::validity::enabled(&self.peers[to].engine.core, &o.thing).contains(&o.ak), "peer {to} refused peer {from}'s {} fire on {:?}, which its setting enables", o.ak.as_str(), o.thing);
+                        self.memo.refused.insert((from, id, to));
+                    }
+                    // sealed to a keyset `to` does not hold yet: offered again
+                    crate::sync::Opened::NotOpen => {}
+                    _ => drop(self.memo.fired.insert((from, id, to))),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Holds every fire back (`on`) or lets them pass again: a test of what a node does with a
+    /// grant's commit before its fire reaches it holds them, delivers, then lets them pass
+    /// (fires and commits travel apart).
+    pub fn hold_fires(&mut self, on: bool) {
+        self.memo.fires_held = on;
+    }
+
+    /// Holds back the fires peer `from` owes (`on`) or lets them pass again: a test in which some
+    /// peers stay unaware of a write of `from`'s keeps its fire from them as it keeps the commit.
+    pub fn hold_fires_of(&mut self, from: usize, on: bool) {
+        match on {
+            true => drop(self.memo.fires_held_of.insert(from)),
+            false => drop(self.memo.fires_held_of.remove(&from)),
+        }
+    }
+
+    /// Peer `i`, an admin of thing `t`, writes `t`'s setting enabling its inbox signals as an
+    /// account's inbox has them (spec/sync-inbox.md §1): `t`, a holder, is offered grants from outside
+    /// (spec/sync-inbox.md §5 Grant from outside).
+    #[allow(clippy::panic, clippy::indexing_slicing)] // test harness: a setup that fails fails the test
+    pub fn takes_grants(&mut self, i: usize, t: Tid) {
+        let mut setting = osis_schema::core_types::RetentionSetting::default();
+        setting.take_inbox_signals();
+        let mut m = Mutation::new();
+        m.set(t, &osis_schema::core_types::RETENTION, &setting).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));
+        self.peers[i].commit(m).unwrap_or_else(|e| panic!("setting of {t:?}: {e}"));
+    }
+
+    /// `pass_fires` from peer `from` to `p`, a peer outside the net, every fire each call on a
+    /// thing `p` holds a read secret of. A fire `p` refuses
+    /// though the thing's setting, as `p` holds it, enables its signal fails the test.
+    #[allow(clippy::indexing_slicing, clippy::panic)] // test harness: an index below the peer count; a refused fire fails the test
+    pub fn pass_fires_to(&mut self, from: usize, p: &mut Peer) -> Result<()> {
+        for id in self.peers[from].engine.fires_owed() {
+            let Some(o) = self.peers[from].engine.core.ix.fires.get(&id).cloned() else { continue };
+            if !p.engine.epochs(&o.thing).is_some_and(|e| e.read.holds_any()) {
+                continue;
+            }
+            let Some(out) = self.peers[from].engine.sealed_fire(&id)? else { continue };
+            let opened = p.engine.offer_fire(&out)?;
+            assert!(!matches!(opened, crate::sync::Opened::Bad) || !crate::apply::validity::enabled(&p.engine.core, &o.thing).contains(&o.ak), "the peer refused peer {from}'s {} fire on {:?}, which its setting enables", o.ak.as_str(), o.thing);
+        }
+        Ok(())
+    }
+
+    /// Delivers one package to peer `to`, after the fires it is owed (`pass_fires`).
     pub fn deliver(&mut self, to: usize, pk: &Package) -> Result<Ingested> {
+        self.pass_fires(to)?;
         match self.peers.get_mut(to) {
             Some(p) => p.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists),
             None => Ok(Ingested::Duplicate(pk.id)),
@@ -876,6 +991,7 @@ impl LocalPeer {
     /// the sync store opens a parked entry again, spec/sync-judgement.md §1 Sealed sections); the
     /// IDs of those none of whose bodies opened.
     pub fn deliver_sealed(&mut self, to: usize, pks: &[SealedPackage]) -> Result<Vec<CommitId>> {
+        self.pass_fires(to)?;
         let Some(p) = self.peers.get_mut(to) else { return Ok(pks.iter().map(|x| x.id).collect()) };
         loop {
             let mut moved = false;
@@ -933,6 +1049,7 @@ impl LocalPeer {
     /// bringing a thing in: its sync IDs join in the pass). A package `to` dropped at an earlier
     /// pass end goes only once which of its things `to` needs moved since.
     fn sync_changed(&mut self, from: usize, to: usize) -> Result<bool> {
+        self.pass_fires(to)?;
         osis_base::testenv::checkpoint();
         let mut changed = false;
         let mut seen = BTreeSet::new();

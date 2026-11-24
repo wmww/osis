@@ -80,7 +80,7 @@ pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
 /// Makes `account`'s nodes able to relay chat `c` without reading it: sync on `c` and on the K of
 /// each of `c`'s links that works (a joiner redeems a link at a node sharing K, spec/permissions.md
 /// §7), each skipped where `account` holds a role already. `account` keeps them unread once it
-/// holds a strong to each (accepting the grant's ticket); a link made later needs `relay` again.
+/// holds a strong to each; a link made later needs `relay` again.
 /// Returns the things granted.
 pub fn relay(db: &Osis, c: Tid, account: Tid) -> Result<Vec<Tid>> {
     let ks = db.links()?.into_iter().filter(|l| l.target == c).map(|l| l.id.actor());

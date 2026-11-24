@@ -96,6 +96,8 @@ fn fresh(lp: &mut LocalPeer, d: Tid, base: &[Package]) -> Peer {
     for x in base {
         p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
     }
+    // its account takes the grant on D by the fire peer 0 owes it
+    lp.pass_fires_to(0, &mut p).unwrap();
     p
 }
 

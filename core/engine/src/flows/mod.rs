@@ -181,28 +181,6 @@ impl Core {
         })
     }
 
-    /// Every actor's effective role on `tid` now, read on the memo clock as `role_now` is.
-    pub(crate) fn roles_now(&self, tid: &Tid) -> Arc<BTreeMap<Tid, Role>> {
-        if let Some(h) = self.root_holders(tid) {
-            return Arc::new(h);
-        }
-        self.time.at(|now| {
-            let (roles, until) = self.timelines().roles_now(tid, ts_at(now));
-            (roles, until.map(|u| u.0))
-        })
-    }
-
-    /// `roles_now` over the edges not in `skip`, each named (target, holder).
-    pub(crate) fn roles_now_without(&self, tid: &Tid, skip: &BTreeSet<(Tid, Tid)>) -> Arc<BTreeMap<Tid, Role>> {
-        if let Some(h) = self.root_holders(tid) {
-            return Arc::new(h);
-        }
-        self.time.at(|now| {
-            let (roles, until) = self.timelines().roles_now_without(tid, ts_at(now), skip);
-            (roles, until.map(|u| u.0))
-        })
-    }
-
     /// The mint admin of `tid` (spec/permissions.md §1): the next actor up its record chain,
     /// whose secrets a dependent `tid` derives from (spec/crypto.md §3). None for a key actor or an
     /// unknown thing.
@@ -330,15 +308,13 @@ pub(crate) fn secrets_alts(tx: &mut Tx<'_>, actor: &Tid) -> Result<osis_keys::Hi
 
 /// Re-opens the `secrets.0` of every actor that boxes to `learned` after this node learned
 /// secrets of `learned` (an actor's boxes open only once its holder's epochs are held), to a
-/// fixpoint, and has the walk judge again each held ticket boxed to an actor on the way
-/// (`Closure::opener_moved`). Called by node-core's state observation (engine hook) and by a
+/// fixpoint. Called by node-core's state observation (engine hook) and by a
 /// take-up (`take_up_opener`). Terminates without a step cap: an actor is pushed only when its
 /// held epochs grew, and they only grow, bounded by the boxes held (a cap would leave secrets of
 /// deep holder chains unopened).
 pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     let mut work = vec![learned];
     while let Some(m) = work.pop() {
-        tx.core.ix.closure.opener_moved(&m);
         // `m`'s own invalid commits: their history boxes open with what it learned
         if crate::apply::keys::reread_invalid(tx, &m)? {
             work.push(m);
@@ -368,13 +344,15 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
 /// Invariant: nothing opens here that `ingest_view` would not take now (each box is judged by
 /// `may_take_role` again as it opens; the list only says which actors to try), and the work is one
 /// `may_take_role` per listed actor and role kept out, never per held actor (`retake: judged`).
-pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
+/// Whether any was due.
+pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<bool> {
     let core = &*tx.core;
     osis_base::costs::count("retake: calls", 1);
     let due = core.waits.untaken_due(|a, r| {
         osis_base::costs::count("retake: judged", 1);
         crate::rotation::may_take_role(core, a, r)
     });
+    let any = !due.is_empty();
     for a in due {
         tx.core.waits.retaken(&a);
         let s = secrets_in(tx, &a)?;
@@ -384,7 +362,7 @@ pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
             reopen_dependents(tx, a)?;
         }
     }
-    Ok(())
+    Ok(any)
 }
 
 /// Opener `h` taken up (a key actor, or the account): the boxes keyed to it open, and what they
@@ -394,7 +372,7 @@ pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
 /// closure.
 fn take_up_opener(tx: &mut Tx<'_>, h: Tid) -> Result<()> {
     reopen_dependents(tx, h)?;
-    retake(tx)
+    retake(tx).map(drop)
 }
 
 /// The open's sweep (`Engine::take_account`), O(the held actors) as an open is: re-opens every

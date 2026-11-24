@@ -961,13 +961,13 @@ impl osis_commit::Secrets for Forged {
         Some(osis_crypto::dedup_secret(self.0.nonce()))
     }
     fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
     }
     fn purge_author_key(&self) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
     }
     fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
+        Some(osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
     }
 }
 
@@ -2298,6 +2298,7 @@ fn a_fill_goes_on_past_failed_writes_rounds_and_reloads_spec_commits_4() {
         while !e.pending().is_empty() {
             fill(e, &held, Some(1));
             d += 1;
+            assert!(d <= held.len() + 1, "the commit waits for more than its blobs: {:?}", e.pending());
         }
         d
     };

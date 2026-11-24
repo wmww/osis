@@ -201,12 +201,6 @@ fn arb(schema: &Schema, ty: &Type, depth: u32) -> BoxedStrategy<Value> {
             Type::Float => any::<f64>().prop_map(Value::float).boxed(),
             Type::Strong => any::<[u8; 15]>().prop_map(|b| Value::Strong(Tid::from_bytes(b))).boxed(),
             Type::Weak => any::<[u8; 15]>().prop_map(|b| Value::Weak(Tid::from_bytes(b))).boxed(),
-            Type::Ticket => any::<[u8; 15]>()
-                .prop_map(|b| {
-                    let boxed = Value::Enum(0, Some(Box::new(Value::bytes(&[5]))));
-                    osis_base::Ticket { target: Tid::from_bytes(b), sync_id: osis_base::SyncId([1; 16]), role: osis_base::Role::Read, epoch: (1, [2; 32]), boxed, holder: Tid::from_bytes([3; 15]), profile: Tid::from_bytes([4; 15]) }.into()
-                })
-                .boxed(),
             Type::Ref => (any::<bool>(), any::<[u8; 15]>()).prop_map(|(s, b)| if s { Value::Strong(Tid::from_bytes(b)) } else { Value::Weak(Tid::from_bytes(b)) }).boxed(),
             _ => any::<i64>().prop_map(Value::Int).boxed(),
         }
