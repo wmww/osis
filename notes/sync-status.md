@@ -52,7 +52,7 @@ The rule is mod.rs's (the walk stop: `Opens::walk_stop`, notes/sync-opens.md Sto
 - Model check: streams.rs `caught_up_matches_what_each_side_holds_spec_sync_status_1` runs random histories against both sides' holdings.
 
 ## Readings
-The spec's words are spec/sync-status.md §1-§2. Why a sync ID held by no other node holds no wait: a one-node account's home, carrying every thing it files, would hold every wait on a thing for good; read by the engine's `roster_holders` (another account with a role on S's thing, another own node syncing it, S kept unread).
+The spec's words are spec/sync-status.md §1-§2. Why a sync ID held by no other node holds no wait: a one-node account's home, whose sync unit carries everything it holds by strongs, would hold every wait on a thing for good; read by the engine's `roster_holders` (another account with a role on S's thing, another own node syncing it, S kept unread).
 - `wait` does not use `Opens::waited` (what leave and life read): a redeemer's first contact has no record before its dial completes, so the wait would end before the data came. The caller's timeout bounds a wait; a wait on a thing runs to its timeout while one sync ID carrying it some other node may hold is unconnected.
 
 Kept in code only:
