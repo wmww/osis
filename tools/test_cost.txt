@@ -10,9 +10,9 @@ osis-base/cbor 25
 osis-base/osis_base 3.9
 osis-bench/it 6.1
 osis-blob/osis_blob 24
-osis-chat/it 3.8
+osis-chat/it 8
 osis-chat/osis_chat 0.0013
-osis-cli/it 26
+osis-cli/it 110
 osis-cli/osis_cli 0.098
 osis-commit/osis_commit 26
 osis-crdt/osis_crdt 82
@@ -31,10 +31,10 @@ osis-sim/it 3.3
 osis-sim/osis_sim 0.0013
 osis-store/it 37
 osis-store/osis_store 2.6
-osis-sync/it 40
+osis-sync/it 1900
 osis-sync/osis_sync 0.71
 osis-transport/it 5.7
 osis-transport/osis_transport 0.035
 osis-vectors/vectors 12
-osis/it 200
+osis/it 400
 roles-model/roles_model 1.7
