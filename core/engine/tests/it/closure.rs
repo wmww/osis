@@ -282,8 +282,11 @@ fn sync_units_are_the_models_plain_spec_sync_set_2() {
         let (mut lp, _) = people(1);
         let e = &mut lp.peers[0].engine;
         let (d, p) = (e.node_root().unwrap(), e.me());
-        // model things 0..3 independent (minted with the account as admin, held by D), 3..7 dependent, minted with admin independent i % 3
+        // model things 0..3 independent (minted with the node thing as admin and made independent, held by D), 3..7 dependent, minted with admin independent i % 3
         let mut tids: Vec<Tid> = (0..3).map(|_| make(e, p, d)).collect();
+        for t in &tids {
+            e.make_independent(t).unwrap();
+        }
         let mut kinds = vec![hc::Kind::Independent; 3];
         let mut edges = hc::Edges::new();
         for i in 0..4 {
@@ -345,7 +348,7 @@ fn sync_units_are_the_models_plain_spec_sync_set_2() {
                 assert_eq!(got, hc::unit(&w, k, &edges), "seed {seed} step {step}: the sync unit of {k}");
             }
             // the node reads every independent thing (it made them): roots D's strongs to them
-            // (the model's last thing is its account, admin of each)
+            // (the model's last thing is its node thing, admin of each by its record edge)
             let me = kinds.len();
             let mut mine = w.clone();
             mine.kinds.push(hc::Kind::Independent);

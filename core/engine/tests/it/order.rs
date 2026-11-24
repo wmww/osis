@@ -793,8 +793,9 @@ fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
     let mut lp = if addenda { LocalPeer::new(3, seed, T0).unwrap() } else { local_peer_off(3, seed, T0) };
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
+    // G's holding strong on the node root in a commit of its own: the root is local (spec/sync-set.md §1)
     let mut m = Mutation::new();
-    let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+    let g = m.create(lp.peers[0].engine.held_record(ids[0]).unwrap());
     m.set(g, &REG, &s("g")).unwrap();
     m.set(g, &osis_schema::core_types::RETENTION, &base_setting(lp.peers[0].engine.now(), false)).unwrap();
     lp.peers[0].commit(m).unwrap();
@@ -824,9 +825,15 @@ fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
 /// own (spec/sync-set.md §2 Making a thing), so the commit making it is on it alone. That commit
 /// is on the peer's account root, which no other account syncs: marked `seen`, never played.
 fn held_record(lp: &mut LocalPeer, by: usize, seen: &mut BTreeSet<CommitId>) -> osis_base::CreationRecord {
+    let me = lp.peers[by].engine.me();
+    held_record_of(lp, by, me, seen)
+}
+
+/// `held_record` of a thing minted with admin `admin`.
+fn held_record_of(lp: &mut LocalPeer, by: usize, admin: Tid, seen: &mut BTreeSet<CommitId>) -> osis_base::CreationRecord {
     let e = &mut lp.peers[by].engine;
     let before: BTreeSet<CommitId> = e.commit_ids().into_iter().collect();
-    let rec = e.held_record(e.me()).unwrap();
+    let rec = e.held_record(admin).unwrap();
     seen.extend(e.commit_ids().into_iter().filter(|c| !before.contains(c)));
     rec
 }
@@ -897,8 +904,11 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
     let mut own: Vec<Vec<CommitId>> = vec![Vec::new(); 3];
     // collects the commits peer `i` made since the last call
     let collect = |lp: &mut LocalPeer, i: usize, seen: &mut BTreeSet<CommitId>, packs: &mut Vec<Package>, authors: &mut Vec<usize>, own: &mut Vec<Vec<CommitId>>| {
+        let roots: BTreeSet<Tid> = lp.peers.iter().filter_map(|p| p.engine.node_root()).collect();
         for id in lp.peers[i].engine.commit_ids() {
-            if seen.insert(id) {
+            // a commit on a node root alone stays at its node: the root is local (spec/sync-set.md §1)
+            let local = lp.peers[i].engine.header(&id).is_some_and(|h| h.aspects.iter().all(|a| roots.contains(&a.tid)));
+            if seen.insert(id) && !local {
                 let by = lp.peers[i].engine.header(&id).map(|h| h.signer);
                 let author = ids.iter().position(|x| Some(*x) == by);
                 // from its author's node, which holds it whole: another may have dropped its parts
@@ -1047,7 +1057,10 @@ fn play_in(seed: u64, steps: &[Step], addenda: bool, written: bool) -> Played {
             Step::New { by, admin: p, write } => {
                 let admin = th(p);
                 let mut m = Mutation::new();
-                let t = lp.peers[by].engine.new_thing(&mut m, admin);
+                // held from the node root (local: in a commit of its own, never played), else
+                // from its admin beside its creation
+                let e = &lp.peers[by].engine;
+                let t = if admin == e.me() || !e.closure_holds(&admin) { m.create(held_record_of(&mut lp, by, admin, &mut seen)) } else { lp.peers[by].engine.new_thing(&mut m, admin) };
                 if write {
                     m.set(t, &REG, &s("n")).unwrap();
                 }
