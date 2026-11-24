@@ -23,10 +23,10 @@ In-flight lines name issues in words, not paths: a branch that closes its issue 
 - Workflow agent about half the time; one cleanup always.
 
 ## Decided by Tess, for the sync rewrite
+- **Accounts become ordinary things now**, as the sync rewrite's next piece on the same branch (after the delete-key check), delete first: the account root, the interim key-part-under-D rule, signing chain, account epochs and custody flows go (notes/redesign-plan.md A4). Why: the key-part trouble (a new device couldn't open what its account was granted) comes from accounts not being ordinary things; with them ordinary, a thing's sync unit carries what its keys open and its references reach, references stay bare tids, and nothing keeps a grant list. A read-only scoping pass is preparing the builder's brief.
 - **Grants belong to the thing granted** (replaces "paths found by following grants down; roles are the account's data"): a thing's grants sync with it; references find what a node cares about. Flow: outside grant signal → reference → ordinary sync → permissions, the signal carrying only what bootstraps the reference and sync (an offer, kept as the signal's setting keeps it, 90 days default for outside grants). No account grant list, no taken grants, no fire as proof, no kept-fires rules; keys are found from the synced thing up (holders its grants name, their grant data fetched, up to the node's own actors). This dissolves the replay and finding-the-paths questions.
 
 ## Small, waiting on Tess
-- **How a holder's readers get a granted thing's sync ID and first box** (open; Tess thinks every option offered so far is wrong; talk later). Facts: a reference is a bare tid; the target's own sync ID gives no entry box to a reader-holder (only link keys get one); today the holder's key part (copies of the target's grant data logged under the holder's sync ID) is the only path, for things a holder made and things it was granted alike. Don't build changes to it until she has said what she wants.
 - **Convergence clause** (requirements Decentralization): "at the latest once a writer of that data has synced with them" covered the purge divergence; check whether anything else needs it, then drop it?
 - CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
 
