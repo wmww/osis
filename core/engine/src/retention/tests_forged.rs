@@ -49,7 +49,7 @@ fn world() -> (LocalPeer, Tid) {
 fn forge(lp: &mut LocalPeer, t: Tid, st: Fragment) -> Option<CommitId> {
     let r = lp.peers[1].engine.run(|tx| {
         let (ts, node) = (tx.core.hlc.next(), tx.core.me());
-        crate::retention::snapshot::build_snapshot(tx, t, ak(), st, ts, node, Default::default(), Default::default(), None, false)
+        crate::retention::snapshot::build_snapshot(tx, t, ak(), st.into(), ts, node, Default::default(), Default::default(), None, false)
     });
     match r {
         Ok(c) => Some(c),

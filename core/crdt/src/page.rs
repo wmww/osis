@@ -5,6 +5,9 @@ use osis_base::format::{MAX_PAGE_ITEMS, PAGE_TARGET, TREE_FANOUT};
 use osis_base::{BlobId, ChunkParams, Classified, ErrorClass, Link};
 use std::cell::Cell;
 use std::collections::HashMap;
+use crate::error::Error;
+use crate::fragment::Fragment;
+use crate::paging::{Paths, Step};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageError {
@@ -95,6 +98,19 @@ impl PageSink for Unpaged {
     }
 }
 
+/// A state held whole: no collection kept as pages.
+impl PageWalk for Unpaged {
+    fn pages(&mut self, _: &[Step]) -> Result<usize, Error> {
+        Err(Error::Mismatch("a whole state has no pages"))
+    }
+    fn page(&mut self, _: &[Step], _: usize) -> Result<StoredPage, Error> {
+        Err(Error::Mismatch("a whole state has no pages"))
+    }
+    fn keyed(&mut self, _: &[Step]) -> Result<KeyedPath, Error> {
+        Err(Error::Mismatch("a whole state has no pages"))
+    }
+}
+
 impl PageSource for Unpaged {
     fn get(&mut self, _: &Link) -> Result<Vec<u8>, PageError> {
         Err(PageError::Corrupt)
@@ -118,6 +134,42 @@ pub trait PageSource {
     fn params(&self) -> PageParams {
         PageParams::wire()
     }
+}
+
+/// A state kept as a skeleton and pages of its large collections (the node's paged states,
+/// notes/engine-paged.md), as it is stored: what `Paged` reads a page at a time.
+pub trait PageWalk {
+    /// How many pages the collection at `path` (steps from the root) is kept as.
+    fn pages(&mut self, path: &[Step]) -> Result<usize, Error>;
+    /// Its page `i` as stored: a run of its root elements, all above page `i - 1`'s, every
+    /// collection kept as pages below them reduced (`Fragment::reduced`). A record holding only
+    /// such content may be missing from it.
+    fn page(&mut self, path: &[Step], i: usize) -> Result<StoredPage, Error>;
+    /// The path to the collection at `path` with each entry step's key and creation
+    /// (`Fragment::wrap`): what gives a record holding only paged content back.
+    fn keyed(&mut self, path: &[Step]) -> Result<KeyedPath, Error>;
+}
+
+/// A path with the keys and creations of its entry steps (`Fragment::wrap`).
+pub type KeyedPath = Vec<(Step, Option<osis_base::Value>, Option<crate::Stamp>)>;
+
+/// A page of a collection as stored: its elements from dot `lo` (`None`: the first page) to
+/// `hi` (`None`: the last), every record of a dot on one page.
+pub struct StoredPage {
+    pub lo: Option<crate::Dot>,
+    pub hi: Option<crate::Dot>,
+    pub frag: Fragment,
+}
+
+/// A stored state read for its snapshot a page at a time (`encode_paged_snapshot`,
+/// `page_view::View`): `skeleton`, the state with its collections at `paths` reduced
+/// (`Fragment::reduced`), their pages, and the writes `gone` names (by origin dot), which the
+/// snapshot does not carry (spec/crdt.md §4.7, §8).
+pub struct Paged<'a> {
+    pub skeleton: &'a Fragment,
+    pub paths: &'a Paths,
+    pub pages: &'a mut dyn PageWalk,
+    pub gone: &'a dyn Fn(&crate::Dot) -> bool,
 }
 
 /// In-memory pages for tests: the link hash is the unkeyed BLAKE3 of the plaintext, the blob ID

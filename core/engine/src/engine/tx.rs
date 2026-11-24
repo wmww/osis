@@ -295,6 +295,8 @@ impl Tx<'_> {
     pub fn load(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
         self.load_lazy(tid, ak)?;
         if self.held_in_part(tid, ak) {
+            // counted: scale tests read which operations hold a paged state whole
+            drop(osis_base::costs::span("paged state loaded whole"));
             self.with_pages(tid, ak, |txn, idx, f| pages::load_all(txn, tid, ak, idx, f))?;
         }
         Ok(())

@@ -6,11 +6,12 @@
 
 use crate::error::Error;
 use crate::fragment::{Bag, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Slots};
-use crate::page::{PageError, PageParams, PageSink, PageSource};
+use crate::page::{PageError, PageParams, PageSink, PageSource, Paged};
+use crate::page_view::View;
 use crate::paging::Step;
 use crate::seq;
 use crate::stamp::{Dot, DotRange, Interner, Source, SourceKind, Stamp, max_opt};
-use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint};
+use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Facts, Frontiers, NONCE_LEN, Snapshot, Track, Walk, as_array, as_uint};
 use osis_base::cbor::{Item, List, encode_into, head_len, link_len, put_array, put_bytes, put_link, put_map, put_uint};
 use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
 use osis_base::{CanonicalBytes, Limits, Link, PageCutter, Value};
@@ -341,12 +342,40 @@ pub(crate) fn encode_elem(cx: &mut Enc, out: &mut Vec<u8>, d: &Dot, e: &Elem) ->
     Ok(())
 }
 
-fn encode_elems(cx: &mut Enc, out: &mut Vec<u8>, elems: &BTreeMap<Dot, Elem>) -> Result<(), Error> {
-    let mut p = Pager::of(cx, false);
-    for (d, e) in cx.sorted(elems) {
-        encode_elem(cx, p.out(), d, e)?;
-        p.end(cx.sink())?;
+/// The collection `f` being encoded, a page at a time: `f` itself, or where it is kept as pages
+/// (`Paged`) its pages in element order (`f` then gives its head alone).
+fn each_page(cx: &mut Enc, f: &Fragment, each: &mut dyn FnMut(&mut Enc, &Fragment) -> Result<(), Error>) -> Result<(), Error> {
+    let Some(path) = cx.paged_here() else { return each(cx, f) };
+    let n = cx.walk_pages()?.pages(&path)?;
+    for i in 0..n {
+        let page = cx.walk_pages()?.page(&path, i)?;
+        if page.encoding() != f.encoding() {
+            return Err(Error::Mismatch("a page of another encoding"));
+        }
+        let bytes = page.approx_bytes() as u64;
+        cx.walk_pages()?.held += bytes;
+        let r = each(cx, &page);
+        cx.walk_pages()?.held -= bytes;
+        r?;
     }
+    Ok(())
+}
+
+/// A bag's or set's element array.
+fn encode_elems(cx: &mut Enc, out: &mut Vec<u8>, f: &Fragment) -> Result<(), Error> {
+    let mut p = Pager::of(cx, false);
+    each_page(cx, f, &mut |cx, f| {
+        let elems: &BTreeMap<Dot, Elem> = match f {
+            Fragment::Bag(b) => &b.elems,
+            Fragment::Set(s) => &s.elems,
+            _ => return Err(Error::Mismatch("elements of a bag or set")),
+        };
+        for (d, e) in cx.sorted(elems) {
+            encode_elem(cx, p.out(), d, e)?;
+            p.end(cx.sink())?;
+        }
+        Ok(())
+    })?;
     p.done(cx, out)
 }
 
@@ -422,13 +451,13 @@ pub(crate) fn encode_fragment(cx: &mut Enc, out: &mut Vec<u8>, f: &Fragment) -> 
 fn encode_fragment_at(cx: &mut Enc, out: &mut Vec<u8>, f: &Fragment) -> Result<(), Error> {
     match f {
         Fragment::Register(r) => encode_register(cx, out, r),
-        Fragment::Bag(Bag { meta, elems, .. }) => {
+        Fragment::Bag(Bag { meta, .. }) => {
             head(cx, out, f.encoding(), meta, 4);
-            encode_elems(cx, out, elems)?;
+            encode_elems(cx, out, f)?;
         }
         Fragment::Set(s) => {
             head(cx, out, Encoding::Set, &s.meta, 4);
-            encode_elems(cx, out, &s.elems)?;
+            encode_elems(cx, out, f)?;
         }
         Fragment::Struct(s) => {
             head(cx, out, Encoding::Struct, &s.meta, 4);
@@ -447,16 +476,26 @@ fn encode_fragment_at(cx: &mut Enc, out: &mut Vec<u8>, f: &Fragment) -> Result<(
         Fragment::Map(m) => {
             head(cx, out, Encoding::Map, &m.meta, 4);
             let mut p = Pager::of(cx, false);
-            for (id, e) in cx.sorted_by(&m.entries, |id| &id.dot) {
-                encode_entry(cx, p.out(), id, e)?;
-                p.end(cx.sink())?;
-            }
+            each_page(cx, f, &mut |cx, f| {
+                let Fragment::Map(m) = f else { return Err(Error::Mismatch("entries of a map")) };
+                for (id, e) in cx.sorted_by(&m.entries, |id| &id.dot) {
+                    encode_entry(cx, p.out(), id, e)?;
+                    p.end(cx.sink())?;
+                }
+                Ok(())
+            })?;
             p.done(cx, out)?;
         }
         Fragment::Seq(s) => {
             head(cx, out, s.encoding(), &s.meta, 4);
             let mut p = Pager::of(cx, false);
-            seq::encode_elems(s, cx, &mut p)?;
+            let mut runs = seq::Runs::new(s.text);
+            each_page(cx, f, &mut |cx, f| {
+                let Fragment::Seq(s) = f else { return Err(Error::Mismatch("records of a sequence")) };
+                seq::encode_elems(&mut runs, s, cx, &mut p)
+            })?;
+            runs.close(cx)?;
+            runs.flush(cx, &mut p)?;
             p.done(cx, out)?;
         }
         Fragment::Slots(s) => {
@@ -491,6 +530,24 @@ pub fn sources_of(f: &Fragment, cx: &DeltaCtx) -> Result<BTreeSet<Source>, Error
     Ok(enc.sources().cloned().collect())
 }
 
+/// `sources_of` the state a stored paged state's snapshot carries (`Paged`), read a page at a
+/// time.
+pub fn sources_of_paged(st: Paged<'_>, cx: &DeltaCtx) -> Result<BTreeSet<Source>, Error> {
+    let (view, skeleton) = View::new(st)?;
+    let mut enc = Enc::new(cx, None);
+    enc.walk = Some(Walk { view, track: Track::new() });
+    collect(&mut enc, &skeleton)?;
+    Ok(enc.sources().cloned().collect())
+}
+
+/// Calls `each` with every piece of the state a stored paged state's snapshot carries
+/// (`Paged`): its skeleton, then each page, each with what it needs to be read alone (a page's
+/// records holding only paged content are there, as in the skeleton).
+pub fn each_snapshot_piece(st: Paged<'_>, each: &mut dyn FnMut(&Fragment)) -> Result<(), Error> {
+    let (mut view, skeleton) = View::new(st)?;
+    view.each_piece(&skeleton, each)
+}
+
 /// Encodes a delta (§3.2) against its header facts.
 pub fn encode_delta(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
     #[cfg(test)]
@@ -511,27 +568,61 @@ pub(crate) fn write_delta(mut enc: Enc, d: &Delta) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-/// Encodes a snapshot delta (§8). The caller strips values of expiring deltas first (§4.7).
+/// Encodes a snapshot delta (§8). The caller removes the writes a snapshot does not carry
+/// first (§4.7).
 pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
+    let tail = (&s.frontiers, &s.absorbed, &s.facts);
+    let whole = |p: Option<&mut dyn PageSink>| write_snapshot(cx, p, false, &s.nonce, &s.fragment, None, tail);
     #[cfg(test)]
-    return oracle::twin(pages, |p| write_snapshot(Enc::new(cx, p), s), |p| oracle::encode_snapshot(s, cx, p));
+    return oracle::twin(pages, whole, |p| oracle::encode_snapshot(s, cx, p));
     #[cfg(not(test))]
-    write_snapshot(Enc::new(cx, pages), s)
+    whole(pages)
 }
 
-/// `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed, Facts]`, both passes by `enc`.
-fn write_snapshot(mut enc: Enc, s: &Snapshot) -> Result<Vec<u8>, Error> {
-    collect(&mut enc, &s.fragment)?;
-    enc.add_frontier_sessions(&s.frontiers);
+/// `encode_snapshot` of a stored paged state (`Paged`) without the writes it names gone, read a
+/// page at a time (`page_view`): the encoder holds the skeleton and a page per collection it is
+/// inside, never the whole state; it reads every page twice (the collecting pass, then the real
+/// one), and the pages holding each record that holds only paged content up to its first
+/// element left.
+pub fn encode_paged_snapshot(nonce: &[u8; NONCE_LEN], st: Paged<'_>, frontiers: &Frontiers, absorbed: &BTreeMap<osis_base::CommitId, osis_base::Tid>, facts: &Facts, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
+    // the store's pages and the sink, each borrowed for this call alone: one lifetime fits both
+    fn walk<'c>(p: &'c mut (dyn crate::PageWalk + '_)) -> &'c mut (dyn crate::PageWalk + 'c) {
+        p
+    }
+    fn sink<'c>(p: &'c mut (dyn PageSink + '_)) -> &'c mut (dyn PageSink + 'c) {
+        p
+    }
+    let st = Paged { skeleton: st.skeleton, paths: st.paths, pages: walk(st.pages), gone: st.gone };
+    let (view, skeleton) = View::new(st)?;
+    write_snapshot(cx, pages.map(sink), false, nonce, &skeleton, Some(view), (frontiers, absorbed, facts))
+}
+
+/// A snapshot's frontiers, absorbed commits and facts.
+type Tail<'a> = (&'a Frontiers, &'a BTreeMap<osis_base::CommitId, osis_base::Tid>, &'a Facts);
+
+/// `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed, Facts]`, both passes by one `Enc`
+/// over `skeleton` and, for a paged state, `view`'s pages (`oracle`: the test oracle's whole
+/// paging, `codec::oracle`).
+fn write_snapshot<'p>(cx: &DeltaCtx, pages: Option<&'p mut dyn PageSink>, oracle: bool, nonce: &[u8; NONCE_LEN], skeleton: &Fragment, view: Option<View<'p>>, (frontiers, absorbed, facts): Tail<'_>) -> Result<Vec<u8>, Error> {
+    let mut enc = Enc::new(cx, pages);
+    #[cfg(any(test, fuzzing))]
+    {
+        enc.whole = oracle;
+    }
+    #[cfg(not(any(test, fuzzing)))]
+    let _ = oracle;
+    enc.walk = view.map(|view| Walk { view, track: Track::new() });
+    collect(&mut enc, skeleton)?;
+    enc.add_frontier_sessions(frontiers);
     let mut out = Vec::new();
     put_array(&mut out, 7);
-    put_bytes(&mut out, &s.nonce);
+    put_bytes(&mut out, nonce);
     enc.put_sources(&mut out)?;
     enc.put_commits(&mut out)?;
-    encode_fragment(&mut enc, &mut out, &s.fragment)?;
-    enc.put_frontiers(&mut out, &s.frontiers)?;
-    enc.put_absorbed(&mut out, &s.absorbed)?;
-    enc.put_facts(&mut out, &s.facts)?;
+    encode_fragment(&mut enc, &mut out, skeleton)?;
+    enc.put_frontiers(&mut out, frontiers)?;
+    enc.put_absorbed(&mut out, absorbed)?;
+    enc.put_facts(&mut out, facts)?;
     Ok(out)
 }
 
@@ -1429,7 +1520,7 @@ pub mod oracle {
     }
 
     pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
-        write_snapshot(whole(cx, pages), s)
+        write_snapshot(cx, pages, true, &s.nonce, &s.fragment, None, (&s.frontiers, &s.absorbed, &s.facts))
     }
 
     fn replay(dec: &mut Dec) -> crate::wire::Replay {

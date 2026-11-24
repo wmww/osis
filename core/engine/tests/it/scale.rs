@@ -146,6 +146,31 @@ fn map_edit_is_flat() {
     }
 }
 
+/// A snapshot of an n-entry paged map (`big_map`), written in a new session (nothing of the state
+/// loaded): the most of the state its writer holds at once (decoded, `Fragment::approx_bytes`),
+/// the pages it reads, and the times it loads the state whole.
+fn snapshot_peak(n: usize, nested: bool) -> [u64; 3] {
+    let (mut lp, t) = big_map(n, nested);
+    let b = lp.peers[0].backend.clone();
+    lp.peers[0].restart(1).unwrap();
+    let (_, w) = measured(&b, || lp.peers[0].engine.snapshot(&t, &big()).unwrap().unwrap());
+    [w.n("snapshot: state held"), w.n("snapshot page read"), w.n("paged state loaded whole")]
+}
+
+// spec/requirements.md (Scale: memory follows what is touched), spec/crdt.md §8, spec/sync-compaction.md §1:
+// a snapshot's writer sweeps and encodes the state a page at a time: the most of it held at once
+// is flat from n to 10n entries (the encoded snapshot's pages go to the store as they close), at
+// the root and in a map entry; it reads each page a few times and never loads the state whole.
+#[test]
+fn snapshot_writer_memory_is_flat() {
+    for nested in [false, true] {
+        let (small, big) = (snapshot_peak(500, nested), snapshot_peak(5000, nested));
+        flat(&format!("nested {nested}, snapshot: bytes held at once"), small[0], big[0]);
+        linear(&format!("nested {nested}, snapshot: pages read"), small[1], big[1]);
+        assert_eq!([small[2], big[2]], [0, 0], "nested {nested}: the state loaded whole");
+    }
+}
+
 /// Debug builds' undo check (`memo::Undoable`) at n entries of a paged map (`big_map`): the
 /// writes it noted in an edit, and in a transaction writing 10 rows then rolled back.
 fn undo_check(n: usize) -> [u64; 2] {

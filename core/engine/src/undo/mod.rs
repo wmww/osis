@@ -491,7 +491,7 @@ fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], ts: Ts, nonce: [u8; osis_crdt::SE
         };
         if let Some((f, r, e)) = out {
             copies.extend(e);
-            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, purge_by: None, expires: None, replaces: None, original_floor: 0, frontiers: None, chunks: Vec::new() });
+            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, purge_by: None, expires: None, replaces: None, original_floor: 0, snapshot: None, chunks: Vec::new() });
         }
     }
     Ok((deltas, copies))

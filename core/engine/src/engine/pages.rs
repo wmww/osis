@@ -139,6 +139,10 @@ impl StatePages {
             set.whole = false;
         }
     }
+    /// The paths of the paged collections.
+    pub fn paths(&self) -> &Paths {
+        &self.paths
+    }
     /// Whether every page is loaded.
     pub fn whole(&self) -> bool {
         self.sets.values().all(|s| s.whole)
@@ -724,6 +728,78 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut State
         at = next;
     }
     Ok(at)
+}
+
+// ---- a state read for its snapshot (spec/crdt.md §8)
+
+/// A paged state's pages as stored, served a page at a time to the snapshot encoder
+/// (`osis_crdt::PageWalk`, which strips and reads them: `osis_crdt::encode_paged_snapshot`).
+/// Holds the row keys of each collection it read, never a page past the call that read it. A
+/// store error is kept for `take_err` (the encoder sees a page error).
+pub struct SnapshotPages<'t, 's> {
+    txn: &'t mut Transaction<'s>,
+    t: Table,
+    idx: &'t StatePages,
+    rows: BTreeMap<Vec<Step>, Vec<Vec<u8>>>,
+    err: Option<Error>,
+}
+
+impl<'t, 's> SnapshotPages<'t, 's> {
+    pub fn new(txn: &'t mut Transaction<'s>, tid: &Tid, ak: &Ak, idx: &'t StatePages) -> Result<SnapshotPages<'t, 's>> {
+        let t = table(txn, tid, ak)?;
+        Ok(SnapshotPages { txn, t, idx, rows: BTreeMap::new(), err: None })
+    }
+
+    /// The store error a failed call kept.
+    pub fn take_err(&mut self) -> Option<Error> {
+        self.err.take()
+    }
+
+    fn set(&self, p: &[Step]) -> Result<&PageSet> {
+        self.idx.sets.get(p).ok_or(Error::Corrupt("state page set"))
+    }
+
+    fn rows(&mut self, p: &[Step]) -> Result<&Vec<Vec<u8>>> {
+        if !self.rows.contains_key(p) {
+            let idx = self.idx;
+            let set = idx.sets.get(p).ok_or(Error::Corrupt("state page set"))?;
+            let rows = set_rows(self.txn, self.t, set)?;
+            self.rows.insert(p.to_vec(), rows);
+        }
+        self.rows.get(p).ok_or(Error::Corrupt("state page set"))
+    }
+
+    /// Page `i` of the collection at `p` as stored, with its range.
+    fn row(&mut self, p: &[Step], i: usize) -> Result<osis_crdt::StoredPage> {
+        let key = self.rows(p)?.get(i).cloned().ok_or(Error::Corrupt("state page"))?;
+        let row = self.txn.table_get(self.t, &key)?.ok_or(Error::Corrupt("state page"))?;
+        // counted: scale tests read the pages a snapshot's writer reads
+        let _s = osis_base::costs::span("snapshot page read");
+        let ((lo, hi), frag) = parse_page_row(&row)?;
+        Ok(osis_crdt::StoredPage { lo, hi, frag })
+    }
+
+    fn keep<T>(&mut self, r: Result<T>) -> std::result::Result<T, osis_crdt::Error> {
+        r.map_err(|e| {
+            self.err = Some(e);
+            osis_crdt::Error::Page(osis_crdt::PageError::Storage)
+        })
+    }
+}
+
+impl osis_crdt::PageWalk for SnapshotPages<'_, '_> {
+    fn pages(&mut self, path: &[Step]) -> std::result::Result<usize, osis_crdt::Error> {
+        let r = self.rows(path).map(Vec::len);
+        self.keep(r)
+    }
+    fn page(&mut self, path: &[Step], i: usize) -> std::result::Result<osis_crdt::StoredPage, osis_crdt::Error> {
+        let r = self.row(path, i);
+        self.keep(r)
+    }
+    fn keyed(&mut self, path: &[Step]) -> std::result::Result<osis_crdt::KeyedPath, osis_crdt::Error> {
+        let r = self.set(path).map(|s| s.path.clone());
+        self.keep(r)
+    }
 }
 
 // ---- placement of paged sequences (spec/crdt.md §6)

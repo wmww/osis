@@ -3,6 +3,8 @@
 
 use crate::changes::Changes;
 use crate::fragment::{Bag, Eid, Elem, Entry, Enum, Fragment, Map, Meta, Register, Set, Slots, Struct};
+use crate::error::Error;
+use crate::paging::Step;
 use crate::walk::{Next, Rec, Visit, walk};
 use crate::seq::{self, Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Stamp};
@@ -292,30 +294,89 @@ impl Fragment {
 
     /// `sweep` taking at most `left` content-less elements, less what it takes.
     pub(crate) fn sweep_at_most(&self, r: &Stamp, reflected: &dyn Fn(&Dot) -> bool, left: &mut u64) -> Option<Fragment> {
-        match self {
+        let mut cx = SweepCx { r, reflected, left: *left, view: None, path: Vec::new() };
+        let out = self.sweep_in(&mut cx).unwrap_or_default();
+        *left = cx.left;
+        out
+    }
+
+    /// The sweep of this fragment at `cx.path`: where `cx` reads a stored paged state
+    /// (`sweep_paged`), a paged collection there is swept page by page.
+    fn sweep_in(&self, cx: &mut SweepCx) -> Result<Option<Fragment>, Error> {
+        if let Some(v) = cx.view.as_deref_mut()
+            && v.paths.below(&cx.path).is_some_and(|p| p.here)
+        {
+            let path = cx.path.clone();
+            let mut out: Option<Fragment> = None;
+            for i in 0..v.pages(&path)? {
+                let page = cx.view.as_deref_mut().ok_or(Error::Mismatch("a paged sweep"))?.page(&path, i)?;
+                if let Some(x) = page.sweep_here(cx)? {
+                    match out.as_mut() {
+                        Some(o) => {
+                            o.join(x);
+                        }
+                        None => out = Some(x),
+                    }
+                }
+                if cx.left == 0 {
+                    break;
+                }
+            }
+            return Ok(out);
+        }
+        self.sweep_here(cx)
+    }
+
+    /// `sweep_in` of this fragment's own elements and fields.
+    fn sweep_here(&self, cx: &mut SweepCx) -> Result<Option<Fragment>, Error> {
+        let (r, reflected) = (cx.r, cx.reflected);
+        Ok(match self {
             Fragment::Register(_) | Fragment::Bag(_) | Fragment::Set(_) => None,
-            Fragment::Slots(_) => self.chosen().sweep_at_most(r, reflected, left),
+            Fragment::Slots(_) => self.chosen().sweep_in(cx)?,
             Fragment::Struct(s) => {
-                let fields: BTreeMap<u64, Fragment> = s.fields.iter().filter_map(|(k, f)| Some((*k, f.sweep_at_most(r, reflected, left)?))).collect();
+                let mut fields = BTreeMap::new();
+                for (k, f) in &s.fields {
+                    if let Some(x) = cx.below(Step::Field(*k), |cx| f.sweep_in(cx))? {
+                        fields.insert(*k, x);
+                    }
+                }
                 (!fields.is_empty()).then(|| Fragment::Struct(Struct { meta: Meta::default(), fields }))
             }
             Fragment::Enum(e) => {
-                let payloads: BTreeMap<u64, Fragment> = e.payloads.iter().filter_map(|(k, f)| Some((*k, f.sweep_at_most(r, reflected, left)?))).collect();
+                let mut payloads = BTreeMap::new();
+                for (k, f) in &e.payloads {
+                    if let Some(x) = cx.below(Step::Case(*k), |cx| f.sweep_in(cx))? {
+                        payloads.insert(*k, x);
+                    }
+                }
                 (!payloads.is_empty()).then(|| Fragment::Enum(Enum { meta: Meta::default(), case: None, payloads }))
             }
             Fragment::Map(m) => {
                 let mut entries = BTreeMap::new();
                 for id in m.entries.keys() {
-                    if m.is_live(id) {
-                        if let Some(inner) = m.record_frag(id).and_then(|f| f.sweep_at_most(r, reflected, left)) {
+                    // a record whose content is paged reads present while a paged collection
+                    // below it keeps an element (`View` grafts it in empty)
+                    let paged = |cx: &mut SweepCx| cx.kept_below(&Step::Entry(id.clone()));
+                    let live = |cx: &mut SweepCx| -> Result<bool, Error> { Ok(m.is_live(id) || (id.key.is_some() && m.entries.get(id).is_some_and(|e| e.created.is_some()) && paged(cx)?)) };
+                    if live(cx)? {
+                        if let Some(f) = m.record_frag(id)
+                            && let Some(inner) = cx.below(Step::Entry(id.clone()), |cx| f.sweep_in(cx))?
+                        {
                             entries.insert(id.clone(), Entry { frag: Some(Box::new(inner)), ..Entry::default() });
                         }
                     } else if id.key.is_some() {
                         let recs = || m.of_dot(&id.dot);
                         // a key a record repeats goes with any write
-                        let holds = recs().any(|(_, x)| x.frag.as_deref().is_some_and(|f| f.all_max().is_some()));
+                        let mut holds = recs().any(|(_, x)| x.frag.as_deref().is_some_and(|f| f.all_max().is_some()));
+                        for (i, _) in recs() {
+                            holds = holds || cx.kept_below(&Step::Entry(i.clone()))?;
+                        }
                         let dead = || recs().any(|(_, x)| x.reset.is_some()) || (recs().all(|(_, x)| x.created.is_none()) && reflected(&id.dot));
-                        if holds && !recs().any(|(i, _)| m.is_live(i)) && dead() {
+                        let mut any_live = false;
+                        for (i, _) in recs() {
+                            any_live = any_live || m.is_live(i) || (i.key.is_some() && m.entries.get(i).is_some_and(|e| e.created.is_some()) && cx.kept_below(&Step::Entry(i.clone()))?);
+                        }
+                        if holds && !any_live && dead() {
                             entries.insert(Eid::erased(id.dot.clone()), Entry::tomb(r));
                         }
                     }
@@ -334,11 +395,11 @@ impl Fragment {
                     // an undelete's char under a creation a reset pruned: the element never shows
                     // again (§5.7), and a delete beats the undelete
                     if el.created.is_none() && el.undel.is_some() && (0..el.span).all(|i| reflected(&Dot::new(d.src.clone(), d.ctr + i))) {
-                        let span = el.span.min(*left);
+                        let span = el.span.min(cx.left);
                         if span == 0 {
                             break;
                         }
-                        *left -= span;
+                        cx.left -= span;
                         out.elems_mut().insert(d.clone(), SeqElem { deleted: Some((r.clone(), true)), span, ..SeqElem::bare() });
                     }
                 }
@@ -349,17 +410,21 @@ impl Fragment {
                 for (d, el) in s.elems() {
                     let SeqContent::Frag(f) = &el.content else { continue };
                     if seq::is_visible(el, false) {
-                        if let Some(inner) = f.sweep_at_most(r, reflected, left) {
+                        // a list element's content is never paged (notes/engine-paged.md)
+                        let mut inner = SweepCx { r, reflected, left: cx.left, view: None, path: Vec::new() };
+                        let swept = f.sweep_in(&mut inner)?;
+                        cx.left = inner.left;
+                        if let Some(inner) = swept {
                             out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(inner)), ..SeqElem::bare() });
                         }
-                    } else if *left > 0 && f.written().is_some() && (el.reset().is_some() || (el.created.is_none() && reflected(d))) {
-                        *left -= 1;
+                    } else if cx.left > 0 && f.written().is_some() && (el.reset().is_some() || (el.created.is_none() && reflected(d))) {
+                        cx.left -= 1;
                         out.elems_mut().insert(d.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
                     }
                 }
                 (!out.elems().is_empty()).then_some(Fragment::Seq(out))
             }
-        }
+        })
     }
 
     /// Removes exactly the writes whose origin dot (`Derived` dots: the underlying dot) matches
@@ -627,4 +692,42 @@ impl Keep {
             Keep::NotHeld => !held,
         }
     }
+}
+
+/// A sweep under way (`Fragment::sweep_in`): its reset stamp, what the state reflects, the
+/// content-less elements it may still take, and where it reads a stored paged state, that
+/// state's view and the path of the position swept.
+struct SweepCx<'c, 'v> {
+    r: &'c Stamp,
+    reflected: &'c dyn Fn(&Dot) -> bool,
+    left: u64,
+    view: Option<&'c mut crate::page_view::View<'v>>,
+    path: Vec<Step>,
+}
+
+impl SweepCx<'_, '_> {
+    /// `f` one step below the position swept.
+    fn below<T>(&mut self, s: Step, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.path.push(s);
+        let r = f(self);
+        self.path.pop();
+        r
+    }
+
+    /// Whether a collection paged below step `s` keeps an element (the stored state's records
+    /// holding only paged content: `page_view`).
+    fn kept_below(&mut self, s: &Step) -> Result<bool, Error> {
+        let Some(v) = self.view.as_deref_mut() else { return Ok(false) };
+        let mut at = self.path.clone();
+        at.push(s.clone());
+        v.kept_below(&at)
+    }
+}
+
+/// The sweep (`Fragment::sweep`) of a stored paged state (`Paged`; nothing gone), read a page
+/// at a time: the writer holds the skeleton and a page per collection it is inside.
+pub fn sweep_paged(st: crate::Paged<'_>, r: &Stamp, reflected: &dyn Fn(&Dot) -> bool) -> Result<Option<Fragment>, Error> {
+    let (mut view, skeleton) = crate::page_view::View::new(st)?;
+    let mut cx = SweepCx { r, reflected, left: osis_base::format::MAX_DELTA_BARE, view: Some(&mut view), path: Vec::new() };
+    skeleton.sweep_in(&mut cx)
 }

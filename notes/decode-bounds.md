@@ -12,6 +12,7 @@
 | a large value read whole | writer | `osis_blob::read_value` (engine `read_large_max`, osis `read_link`) | the reader's bound: canonical bytes, and as much again decoded (`Limits::max_alloc`) |
 | an aspect's state, read whole or at a path | writers (as stored) | `Tx::load_lazy`, `pages::join_row` under `Tx::reading` | the reader's bound: each piece charged its bytes or decode, whichever is more (`pages::charge`) |
 | an aspect's state, read for itself (presence for `aspects.0` and content, tree roots) | writers (as stored) | `Tx::each_piece`, `pages::each_piece` | a piece at a time: the skeleton, then a page with its keys' records; presence under the reader's bound |
+| a stored state read for its snapshot or sweep | writers (as stored) | `osis_crdt::Paged` (`page_view`), `SnapState::walk` | the skeleton, a page per collection the walk is inside, a path shell per paged collection in that page's range (what the node's page index holds per collection anyway): one dot naming many keys holds no more (crdt `tests_walk::one_dot_many_keys_holds_a_page_at_a_time_spec_8`) |
 | a body judged covered | writer | `retention::snapshot::covered_body` | a group of its pages about the two parts' root bytes, with its skeleton, and per write a dot |
 | a commit's linked header lists | author | `Header::resolve` | the bytes of its own lists: a list's tree is keyed to its header (list key) |
 | a demotion's frontier | signer | `osis_commit::frontier_ids` | its bytes: 32 B an ID held against 34 sent, one copy |
@@ -43,4 +44,4 @@
 
 ## Left
 - Total over connections: per-connection state grows with peers; no node-wide budget yet: issues/resource-limits.md.
-- A snapshot's writer loads, clones and encodes the whole state (a page-walking writer is parked on branch `mizzen-snapshot-stream`); a write replacing a whole position loads the state there whole; `covered` holds a body paged below a map entry whole; tree roots read a nested paged state whole: issues/durable-decode-bound.md.
+- A write replacing a whole position loads the state there whole; `covered` holds a body paged below a map entry whole; tree roots read a nested paged state whole: issues/durable-decode-bound.md.

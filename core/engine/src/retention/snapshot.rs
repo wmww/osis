@@ -148,7 +148,7 @@ pub(crate) fn carried_meets(core: &Core, tid: &Tid, ak: &Ak, own: &[Owned]) -> b
 /// lifetime ends (spec/crdt.md §4.7, §8: an unexpiring snapshot carries no write of a delta with
 /// an expiry, nor one it holds only from an expiring snapshot, so its copy never outlives the
 /// write; so it covers no such delta, nor what only those writes superseded, `covered`).
-pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
+pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<SnapState>> {
     let mut expiring: Vec<Owned> = tx
         .core
         .ix
@@ -167,14 +167,104 @@ pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
     // writes held from an expiring snapshot alone (a holder granted without history holds no
     // delta of them): its copies end at its expiry (spec/crdt.md §4.7)
     expiring.extend(expiring_copies(tx, tid, ak)?.into_values().flatten());
-    let Some(mut st) = tx.state(tid, ak)?.cloned() else { return Ok(None) };
-    if !expiring.is_empty() {
-        // sorted: a lookup per dot (`sorted_owns`), not a scan of every expiring delta
-        expiring.sort();
-        expiring.dedup();
-        st.remove_gone(&|d| super::sorted_owns(&expiring, d));
+    // sorted: a lookup per dot (`sorted_owns`), not a scan of every expiring delta
+    expiring.sort();
+    expiring.dedup();
+    SnapState::stored(tx, tid, ak, Carries::AllBut(expiring))
+}
+
+/// A state as its snapshot carries it (`snapshot_state`, `write_expiring`): its writes as
+/// `carries` says. Unpaged,
+/// the whole state (`skeleton`); paged, its skeleton and its pages as stored, read a page at a
+/// time as the snapshot is encoded, each stripped alone (`osis_crdt::Paged`), so the writer holds
+/// the skeleton and a page per collection it is inside, never the state.
+pub(crate) struct SnapState {
+    pub skeleton: Fragment,
+    pub pages: Option<crate::engine::pages::StatePages>,
+    pub carries: Carries,
+}
+
+/// Which writes of a state a snapshot carries: all but those listed, or only those (an expiring
+/// snapshot's), each list sorted (`sorted_owns`: a lookup per dot).
+pub(crate) enum Carries {
+    AllBut(Vec<Owned>),
+    Only(Vec<Owned>),
+}
+
+impl Carries {
+    /// Whether the write of origin dot `d` is not carried.
+    fn gone(&self, d: &osis_crdt::Dot) -> bool {
+        match self {
+            Carries::AllBut(v) => super::sorted_owns(v, d),
+            Carries::Only(v) => !super::sorted_owns(v, d),
+        }
     }
-    Ok(Some(st))
+}
+
+impl From<Fragment> for SnapState {
+    /// A state held whole, carried whole.
+    fn from(skeleton: Fragment) -> SnapState {
+        SnapState { skeleton, pages: None, carries: Carries::AllBut(Vec::new()) }
+    }
+}
+
+impl SnapState {
+    /// The state of `(tid, ak)` as stored, its writes as `carries` says: its skeleton and pages,
+    /// never loaded whole. `None`: no state.
+    pub fn stored(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, carries: Carries) -> Result<Option<SnapState>> {
+        tx.load_lazy(tid, ak)?;
+        let k = (*tid, ak.clone());
+        let Some(Some(f)) = tx.core.states.get(&k) else { return Ok(None) };
+        let pages = tx.core.pages.get(&k).cloned();
+        let skeleton = match &pages {
+            Some(idx) => f.reduced(idx.paths()),
+            None => f.clone(),
+        };
+        Ok(Some(SnapState { skeleton, pages, carries }))
+    }
+
+    /// `f` of the state as the encoder reads it (`osis_crdt::Paged`): its pages from `txn`.
+    pub fn walk<T>(&self, txn: &mut osis_store::Transaction<'_>, tid: &Tid, ak: &Ak, f: impl FnOnce(osis_crdt::Paged<'_>) -> std::result::Result<T, osis_crdt::Error>) -> Result<T> {
+        let gone = |d: &osis_crdt::Dot| self.carries.gone(d);
+        let Some(idx) = &self.pages else {
+            return Ok(f(osis_crdt::Paged { skeleton: &self.skeleton, paths: &osis_crdt::Paths::default(), pages: &mut osis_crdt::Unpaged, gone: &gone })?);
+        };
+        let mut w = crate::engine::pages::SnapshotPages::new(txn, tid, ak, idx)?;
+        let r = f(osis_crdt::Paged { skeleton: &self.skeleton, paths: idx.paths(), pages: &mut w, gone: &gone });
+        if let Some(e) = w.take_err() {
+            return Err(e);
+        }
+        Ok(r?)
+    }
+
+    /// Debug builds: the snapshot of this state encoded a page at a time is what the whole state,
+    /// loaded and stripped at once, encodes: the same bytes and pages, or both fail (the oracle of
+    /// the page walk, judged before the walk's own result is).
+    #[cfg(debug_assertions)]
+    pub fn check_whole(&self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, s: &crate::engine::write::SnapshotPart, cx: &osis_crdt::DeltaCtx) -> Result<()> {
+        let Some(idx) = &self.pages else { return Ok(()) };
+        let Some(Some(f)) = tx.core.states.get(&(*tid, ak.clone())) else { return Err(Error::Corrupt("a paged state not cached")) };
+        let (mut whole, mut idx) = (f.clone(), idx.clone());
+        crate::engine::pages::load_all(&mut tx.txn, tid, ak, &mut idx, &mut whole)?;
+        whole.remove_gone(&|d| self.carries.gone(d));
+        let nonce = [0; osis_crdt::NONCE_LEN];
+        let mut a = osis_crdt::MemoryPages::new();
+        let w = osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment: whole, frontiers: s.frontiers.clone(), absorbed: s.absorbed.clone(), facts: s.facts.clone() }, cx, Some(&mut a));
+        let mut b = osis_crdt::MemoryPages::new();
+        let p = self.walk(&mut tx.txn, tid, ak, |st| osis_crdt::encode_paged_snapshot(&nonce, st, &s.frontiers, &s.absorbed, &s.facts, cx, Some(&mut b)));
+        let alike = match (&w, &p) {
+            (Ok(w), Ok(p)) => w == p && a.len() == b.len(),
+            (w, p) => w.is_err() && p.is_err(),
+        };
+        assert!(alike, "a snapshot's page walk writes the whole state's bytes: whole {:?}, paged {:?}", w.map(|x| x.len()), p.map(|x| x.len()));
+        Ok(())
+    }
+
+    /// Calls `each` with each piece of the state the snapshot carries: the skeleton, then every
+    /// page (`osis_crdt::each_snapshot_piece`).
+    pub fn each_piece(&self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, each: &mut dyn FnMut(&Fragment)) -> Result<()> {
+        self.walk(&mut tx.txn, tid, ak, |st| osis_crdt::each_snapshot_piece(st, each))
+    }
 }
 
 /// The bodies of `(tid, ak)` held here, valid, whose writes live and end at an expiry still ahead,
@@ -266,16 +356,12 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
     }
     let due: BTreeSet<u64> = owed.iter().filter_map(|c| tx.core.ix.commits.get(c).and_then(|m| m.header.expires)).filter(|t| carriers.contains_key(t)).collect();
     let node = tx.core.me();
-    // every carried write, sorted (`sorted_owns`: a lookup per dot); the state cut to them once,
-    // so each expiry's part is cut from those writes alone, not from the whole state again
+    // each expiry's carried writes, sorted (`sorted_owns`: a lookup per dot)
     let sorted = |mut v: Vec<Owned>| {
         v.sort();
         v.dedup();
         v
     };
-    let all = sorted(due.iter().filter_map(|t| carriers.get(t)).flatten().cloned().collect());
-    let Some(mut rest) = tx.state(tid, ak)?.cloned() else { return Ok(Vec::new()) };
-    rest.remove_writes(&|d| !super::sorted_owns(&all, d));
     let mut out = Vec::new();
     for t in due {
         let Some(own) = carriers.get(&t).cloned().map(sorted) else { continue };
@@ -286,15 +372,13 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
         if t <= ts.wall_ms().0 {
             continue;
         }
-        let mut part = rest.clone();
-        part.remove_writes(&|d| !super::sorted_owns(&own, d));
-        // canonical form (`remove_writes` leaves it to a join)
-        let mut f = Fragment::default();
-        f.join(part);
-        if f.writes().is_empty() {
+        let Some(st) = SnapState::stored(tx, tid, ak, Carries::Only(own))? else { return Ok(out) };
+        let mut any = false;
+        st.each_piece(tx, tid, ak, &mut |f| any = any || !f.writes().is_empty())?;
+        if !any {
             continue;
         }
-        out.push(build_snapshot(tx, *tid, ak.clone(), f, ts, node, Frontiers::default(), Default::default(), Some(t), false)?);
+        out.push(build_snapshot(tx, *tid, ak.clone(), st, ts, node, Frontiers::default(), Default::default(), Some(t), false)?);
     }
     Ok(out)
 }
@@ -446,8 +530,9 @@ pub(crate) fn held_by_stamp(core: &Core, tid: &Tid, ak: &Ak, ts: Ts, src: &osis_
 /// The facts of the commits whose stamps `st` carries (spec/crdt.md §8 `Facts`): a held
 /// commit's from its header, else as the first held valid snapshot of the aspect by `(ts, ID)`
 /// carrying it states them. One neither gives (none should be) is left to `Fact::NARROWEST`.
-pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<osis_crdt::Facts> {
-    let carried = stamps_of(st);
+pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &SnapState) -> Result<osis_crdt::Facts> {
+    let mut carried = BTreeSet::new();
+    st.each_piece(tx, tid, ak, &mut |f| carried.extend(stamps_of(f)))?;
     let mut out = osis_crdt::Facts::new();
     let mut rest = BTreeSet::new();
     for (ts, src) in carried {
@@ -940,11 +1025,16 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
         return Err(Error::Permission { tid, needs: osis_base::Role::Write });
     }
     let node = tx.core.me();
-    if tx.state(&tid, &ak)?.is_none() {
-        return Ok(None);
-    }
     let Some(mut st) = snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
-    let left_out = if ak.as_str() == "secrets.0" { crate::apply::keys::vouched_only(tx.core, &tid, &mut st)? } else { Default::default() };
+    // what a `secrets.0` snapshot leaves out reads its value whole: a roster's keys, not a large state
+    let left_out = if ak.as_str() == "secrets.0" {
+        let mut whole = tx.state(&tid, &ak)?.cloned().ok_or(Error::Corrupt("secrets.0 state"))?;
+        whole.remove_gone(&|d| st.carries.gone(d));
+        st = SnapState::from(whole);
+        crate::apply::keys::vouched_only(tx.core, &tid, &mut st.skeleton)?
+    } else {
+        Default::default()
+    };
     let valid_on = |c: &CommitId| claims(tx.core, c, &tid, &ak);
     // frontiers cover only counters whose writes this state reflects: applied, valid, from the
     // held valid snapshots' frontiers on (`frontiers_now`); `build_snapshot` lists the sessions
@@ -968,9 +1058,10 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
 /// the commits it carries, expiring at `expires` (an expiring snapshot, `write_expiring`), an own
 /// cover when `own_cover` (`write_own_cover`).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts: Ts, node: Tid, mut frontiers: Frontiers, mut absorbed: std::collections::BTreeMap<CommitId, Tid>, expires: Option<u64>, own_cover: bool) -> Result<CommitId> {
+pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: SnapState, ts: Ts, node: Tid, mut frontiers: Frontiers, mut absorbed: std::collections::BTreeMap<CommitId, Tid>, expires: Option<u64>, own_cover: bool) -> Result<CommitId> {
     let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
-    let mut listed = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
+    let cx = osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0);
+    let mut listed = st.walk(&mut tx.txn, &tid, &ak, |p| osis_crdt::sources_of_paged(p, &cx))?;
     let held = held_sources(tx.core, &tid, &ak);
     for src in &held {
         if src.as_session().is_some() && !frontiers.lists(src) {
@@ -983,7 +1074,7 @@ pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts
     let facts = facts_of(tx, &tid, &ak, &st)?;
     let purge_by = osis_commit::retention::snapshot_purge_by(ak.as_str());
     let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, own_cover, adminless: false };
-    let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, purge_by: Some(purge_by), expires, replaces: None, original_floor: 0, frontiers: Some((frontiers, absorbed, facts)), chunks: Vec::new() };
+    let d = Resolved { tid, ak, fragment: Fragment::default(), lo: 0, hi: 0, schema: None, purge_by: Some(purge_by), expires, replaces: None, original_floor: 0, snapshot: Some(crate::engine::write::SnapshotPart { state: st, frontiers, absorbed, facts }), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d])
 }
 

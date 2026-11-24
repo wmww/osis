@@ -1208,7 +1208,7 @@ pub(crate) fn fit_embedding(s: &mut Seq, r: &Register) -> bool {
 
 // ---- wire hooks (§3.2 Run, §3.3)
 
-pub(crate) use crate::seq_wire::{decode_elems, encode_elems};
+pub(crate) use crate::seq_wire::{Runs, decode_elems, encode_elems};
 
 // ---- op hooks (§5.7 Ops, Undo; §9): `seq_ops`, `seq_diff`
 

@@ -708,10 +708,19 @@ pub(crate) struct Resolved {
     pub replaces: Option<CommitId>,
     /// That fire's floor (`osis_commit::AspectEntry::original_floor`).
     pub original_floor: u64,
-    /// A snapshot delta's frontiers, absorbed commits and facts (spec/crdt.md §8).
-    pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_base::CommitId, Tid>, osis_crdt::Facts)>,
+    /// A snapshot delta's state (`fragment` unused), frontiers, absorbed commits and facts
+    /// (spec/crdt.md §8).
+    pub snapshot: Option<SnapshotPart>,
     /// Chunk blobs of large values the delta introduces.
     pub chunks: Vec<osis_blob::Written>,
+}
+
+/// A snapshot delta (spec/crdt.md §8): its state, read a page at a time as it is encoded.
+pub(crate) struct SnapshotPart {
+    pub state: crate::retention::snapshot::SnapState,
+    pub frontiers: osis_crdt::Frontiers,
+    pub absorbed: std::collections::BTreeMap<osis_base::CommitId, Tid>,
+    pub facts: osis_crdt::Facts,
 }
 
 /// Inputs of a commit other than its deltas.
@@ -858,9 +867,22 @@ pub(crate) fn build_one(tx: &mut Tx<'_>, mut plan: CommitPlan, mut deltas: Vec<R
 
 /// The writes of a compacting writer's sweep of `(tid, ak)` at stamp `r` (`Fragment::sweep`).
 pub(crate) fn sweep_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &osis_crdt::Stamp) -> Result<Option<Fragment>> {
-    tx.load(tid, ak)?;
+    let Some(st) = crate::retention::snapshot::SnapState::stored(tx, tid, ak, crate::retention::snapshot::Carries::AllBut(Vec::new()))? else { return Ok(None) };
     let core = &*tx.core;
-    Ok(tx.cached(tid, ak).and_then(|st| st.sweep(r, &|d| crate::apply::copies::reflected(core, tid, ak, d))))
+    let reflected = |d: &osis_crdt::Dot| crate::apply::copies::reflected(core, tid, ak, d);
+    let out = st.walk(&mut tx.txn, tid, ak, |p| osis_crdt::sweep_paged(p, r, &reflected))?;
+    // debug builds: the sweep read a page at a time is the whole state's
+    #[cfg(debug_assertions)]
+    if let Some(idx) = &st.pages {
+        osis_base::costs::paused(|| -> Result<()> {
+            let mut whole = tx.cached(tid, ak).cloned().unwrap_or_default();
+            super::pages::load_all(&mut tx.txn, tid, ak, &mut idx.clone(), &mut whole)?;
+            let core = &*tx.core;
+            assert_eq!(out, whole.sweep(r, &|d| crate::apply::copies::reflected(core, tid, ak, d)), "a sweep read a page at a time is the whole state's");
+            Ok(())
+        })?;
+    }
+    Ok(out)
 }
 
 /// The writer's own source: its session, or for commit form a placeholder commit that sorts
@@ -921,16 +943,18 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         }
         let framing = framing_for(tx.core, tx.txn.is_memory(), &plan, &published, &keys, &d.tid, &purge_by)?;
         let cx = writer_ctx(plan.form, plan.kind, plan.ts, node, d.lo, d.hi);
+        #[cfg(debug_assertions)]
+        if let Some(s) = &d.snapshot {
+            osis_base::costs::paused(|| s.state.check_whole(tx, &d.tid, &d.ak, s, &cx))?;
+        }
         let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
         tx.rng.fill_bytes(&mut nonce);
         let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
-        let fragment = d.fragment;
-        let encoded = match d.frontiers {
-            Some((frontiers, absorbed, facts)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed, facts }, &cx, Some(&mut bw)),
-            None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw)),
+        let bytes = match &d.snapshot {
+            Some(s) => s.state.walk(&mut tx.txn, &d.tid, &d.ak, |st| osis_crdt::encode_paged_snapshot(&nonce, st, &s.frontiers, &s.absorbed, &s.facts, &cx, Some(&mut bw)))?,
+            None => encode_delta(&Delta { nonce, fragment: d.fragment }, &cx, Some(&mut bw))?,
         };
-        let bytes = encoded?;
         drop(bw);
         // trees written for values the resolved delta does not hold (an edit's item paired
         // with one deleted concurrently) are not kept
@@ -1353,7 +1377,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         if let Some(s) = &am.schema {
             keep_schema(tx, s, false)?;
         }
-        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, purge_by: am.purge_by, expires: am.expires, replaces: am.replaces, original_floor: am.original_floor, frontiers: None, chunks };
+        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, purge_by: am.purge_by, expires: am.expires, replaces: am.replaces, original_floor: am.original_floor, snapshot: None, chunks };
         deltas.push(r);
     }
     if deltas.is_empty() && plan.purge.is_empty() {

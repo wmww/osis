@@ -8,6 +8,7 @@
 use crate::error::Error;
 use crate::fragment::Fragment;
 use crate::page::{PageSink, PageSource};
+use crate::paging::Step;
 use crate::stamp::{CounterRange, Dot, Interner, Session, Source, SourceKind, Stamp};
 use osis_base::cbor::{Item, List, put_array, put_bytes, put_tid, put_uint};
 use osis_base::{CommitId, Tid, Ts, WallMs};
@@ -168,9 +169,18 @@ pub struct Enc<'p> {
     deferred: [Vec<Source>; 2],
     /// Check mode (`stream`): re-encoding a decoded delta against its own tables.
     pub(crate) check: Option<Box<Check>>,
+    /// The state's pages, where it is encoded from a skeleton and its pages (`Paged`).
+    pub(crate) walk: Option<Walk<'p>>,
     /// The test oracle's whole paging (`codec::oracle`).
     #[cfg(any(test, fuzzing))]
     pub(crate) whole: bool,
+}
+
+/// An `Enc` reading a state's paged collections from its pages (`Paged`): where the walk of the
+/// root is, and what serves the pages.
+pub(crate) struct Walk<'p> {
+    pub(crate) view: crate::page_view::View<'p>,
+    pub(crate) track: Track,
 }
 
 /// One source appearance or a streamed position, in encoding order (`Check::log`).
@@ -323,14 +333,32 @@ impl<'p> Enc<'p> {
             defer: None,
             deferred: [Vec::new(), Vec::new()],
             check: None,
+            walk: None,
             #[cfg(any(test, fuzzing))]
             whole: false,
         }
     }
 
-    /// The root walk's tracker, while the root is encoded in check mode.
+    /// The root walk's tracker, while the root is encoded in check mode or from pages.
     pub(crate) fn track(&mut self) -> Option<&mut Track> {
+        if let Some(w) = self.walk.as_mut() {
+            return Some(&mut w.track);
+        }
         self.check.as_mut().filter(|c| c.log.is_some()).map(|c| &mut c.track)
+    }
+
+    /// Where the fragment being encoded is a collection kept as pages (`Paged`): its path.
+    pub(crate) fn paged_here(&self) -> Option<Vec<Step>> {
+        let w = self.walk.as_ref().filter(|w| w.track.on)?;
+        w.view.paths.below(&w.track.path).is_some_and(|p| p.here).then(|| w.track.path.clone())
+    }
+
+    /// The state the walk reads.
+    pub(crate) fn walk_pages(&mut self) -> Result<&mut crate::page_view::View<'p>, Error> {
+        match self.walk.as_mut() {
+            Some(w) => Ok(&mut w.view),
+            None => Err(Error::Mismatch("no pages to walk")),
+        }
     }
     /// Announces the step to the fragment encoded next (`Track`).
     pub(crate) fn step(&mut self, s: impl FnOnce() -> crate::paging::Step) {

@@ -919,7 +919,7 @@ fn forged_expiring_snapshot_ends_no_lasting_value_spec_commits_5() {
         .run(|tx| {
             let st = tx.state(&g, &ak)?.cloned().unwrap();
             let (ts, node) = (tx.core.hlc.next(), tx.core.me());
-            crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st, ts, node, Default::default(), Default::default(), Some(t), false)
+            crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st.into(), ts, node, Default::default(), Default::default(), Some(t), false)
         })
         .unwrap();
     let pk = lp.peers[1].engine.package(&forged).unwrap().unwrap();
@@ -1038,7 +1038,7 @@ fn expiring_snapshots_read_alike_whatever_arrives_and_is_covered_plain_spec_crdt
                             let Some(st) = tx.state(&g, ak)?.cloned() else { return Ok(None) };
                             let (ts, node) = (tx.core.hlc.next(), tx.core.me());
                             let ends = ends.filter(|e| *e > ts.wall_ms().0);
-                            crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st, ts, node, Default::default(), Default::default(), ends, false).map(Some)
+                            crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st.into(), ts, node, Default::default(), Default::default(), ends, false).map(Some)
                         })
                         .unwrap();
                 }

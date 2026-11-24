@@ -203,15 +203,14 @@ fn anchor(cx: &mut Enc, out: &mut Vec<u8>, a: &Anchor) {
     }
 }
 
-/// The runs of `s` in wire order, into `p` as they close.
-pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc, p: &mut crate::codec::Pager) -> Result<(), Error> {
-    let mut runs = Runs::new(s.text);
+/// The records of `s` in wire order into `runs` (whose runs go on across the pages of a
+/// sequence kept as pages), into `p` as they close; `runs.close` then `runs.flush` end it.
+pub(crate) fn encode_elems(runs: &mut Runs, s: &Seq, cx: &mut Enc, p: &mut crate::codec::Pager) -> Result<(), Error> {
     for (k, e) in cx.sorted(s.elems()) {
         runs.push(k, e, cx)?;
         runs.flush(cx, p)?;
     }
-    runs.close(cx)?;
-    runs.flush(cx, p)
+    Ok(())
 }
 
 /// One run of `parts`; `content`: its list content as written, and how many fragments.

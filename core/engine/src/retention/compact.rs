@@ -610,9 +610,13 @@ fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
 fn snapshot_cost(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<usize>> {
     let Some(st) = super::snapshot_state(tx, tid, ak)? else { return Ok(None) };
     let cx = osis_commit::writer_ctx(Form::Commit, osis_commit::Kind::ContentSnapshot, osis_base::Ts::default(), me, 0, 0);
-    let s = osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: st, frontiers: osis_crdt::Frontiers::default(), absorbed: BTreeMap::new(), facts: Default::default() };
-    // encoding fails only on a malformed fragment: counted as nothing
-    let bytes = osis_crdt::encode_snapshot(&s, &cx, Some(&mut osis_crdt::Unpaged)).unwrap_or_default();
+    let encoded = st.walk(&mut tx.txn, tid, ak, |p| osis_crdt::encode_paged_snapshot(&[0; osis_crdt::NONCE_LEN], p, &osis_crdt::Frontiers::default(), &BTreeMap::new(), &Default::default(), &cx, Some(&mut osis_crdt::Unpaged)));
+    let bytes = match encoded {
+        Ok(b) => b,
+        // encoding fails only on a malformed fragment: counted as nothing
+        Err(Error::Crdt(_)) => Vec::new(),
+        Err(e) => return Err(e),
+    };
     Ok(Some(part_weight(bytes.len()).saturating_add(ENTRY_CHARGE)))
 }
 
