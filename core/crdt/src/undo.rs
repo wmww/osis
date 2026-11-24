@@ -222,11 +222,11 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                         let (Some(k), Some(f)) = (x.key(), p.record_frag(x)) else { continue };
                         match removed.get_mut(k) {
                             Some((acc, dots)) => {
-                                acc.join_into(f.into_owned(), None, &mut crate::changes::Changes::new());
+                                acc.join_into(f.clone(), None, &mut crate::changes::Changes::new());
                                 dots.push(x.dot.clone());
                             }
                             None => {
-                                removed.insert(k.clone(), (f.into_owned(), vec![x.dot.clone()]));
+                                removed.insert(k.clone(), (f.clone(), vec![x.dot.clone()]));
                             }
                         }
                     }
@@ -315,7 +315,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
 /// What a nested edit into record `id` of key `k` reads in map `m`: the join of the key's live
 /// records (§5.6 path ops), or the record alone if none is live.
 fn entry_frag(m: &Map, id: &Eid, k: &osis_base::Value) -> Option<Fragment> {
-    key_state(m, &m.live_ids(k)).or_else(|| m.record_frag(id).map(|f| f.into_owned()))
+    key_state(m, &m.live_ids(k)).or_else(|| m.record_frag(id).cloned())
 }
 
 /// Whether undoing `u` writes back content the delta replaced (spec/crdt.md §4.6), judged by

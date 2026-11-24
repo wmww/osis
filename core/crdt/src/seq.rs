@@ -1028,11 +1028,6 @@ pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
     matches!(&e.content, SeqContent::Frag(f) if f.present())
 }
 
-/// Whether an element shows (`Fragment::live_value` of a sequence).
-pub(crate) fn shows_any(s: &Seq) -> bool {
-    s.elems.values().any(|e| is_visible(e, s.text)) || (s.part.is_some() && s.lin().p.shown() > 0)
-}
-
 /// The read of a present sequence: string or list (§5.7 Read, §6).
 pub(crate) fn read(s: &Seq) -> Option<Value> {
     let vis = visible(s);

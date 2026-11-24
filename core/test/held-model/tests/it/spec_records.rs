@@ -156,7 +156,7 @@ fn purging_one_creation_leaves_the_others_of_its_commit_spec_commits_5() {
     assert_eq!(o.destroyed, [T].into());
     assert_eq!(o.reads.get(&(T, REG)).cloned().flatten(), None);
     assert_eq!(o.reads.get(&(OTHER, REG)).cloned().flatten(), int(2));
-    assert_eq!(o.fates[&(CREATION_ID + T, 0)], Fate::Leftover(LeftoverWhy::Purged), "the value-less creation stays");
+    assert_eq!(o.fates[&(CREATION_ID + T, 0)], Fate::Leftover(LeftoverWhy::Purged), "the purged creation stays as its leftover");
     assert_ne!(o.fates[&(CREATION_ID + T, 1)], Fate::MustDrop(DropWhy::Destroyed));
 }
 

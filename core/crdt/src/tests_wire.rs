@@ -472,6 +472,30 @@ fn links_compare_by_bytes_spec_3_3() {
     assert_eq!(back, snap);
 }
 
+/// §3.2, §5.6: a map dot's keyless record holds its removal alone (every other write carries
+/// the key): one carrying a creation or a fragment is bad input at both decoders and the model.
+#[test]
+fn a_keyless_record_holds_its_removal_alone_spec_5_6() {
+    use crdt_model::stamp::{Dot as MDot, Stamp as MStamp};
+    use crdt_model::state::{Composite, Entry as MEntry, Frag as MFrag};
+    let d = MDot { source: MSource::session(1, 0), ctr: 1 };
+    let at = |t: u64| MStamp { ts: t << 16, dot: d.clone() };
+    let reg = MFrag::Register { reset: None, write: Some((MStamp { ts: 3 << 16, dot: MDot { source: MSource::session(2, 0), ctr: 1 } }, crdt_model::value::Value::Int(1))) };
+    let map = |e: MEntry| MFrag::Map { c: Composite { reset: None, w: None }, entries: BTreeMap::from([((d.clone(), None), e)]) };
+    let mcx = || Ctx::new(1 << 40, MSource::session(250, 0), 1);
+    let decodes = |bytes: &[u8]| {
+        let checked = decode_snapshot(bytes, &snap_cx(), &mut Interner::new(), None).map(|_| ()).map_err(|e| e.class());
+        let streamed = crate::stream_snapshot(bytes, &snap_cx(), &mut Interner::new(), None, &mut |_| Ok(())).map(|_| ()).map_err(|e| e.class());
+        (checked, streamed, crdt_model::wire::decode_snapshot(bytes, &mut mcx()).is_ok())
+    };
+    let removal = MEntry { reset: Some(at(2)), frag: None, created: None };
+    assert_eq!(decodes(&crdt_model::wire::encode_snapshot(&map(removal), &[], [3; 16], &mut mcx())), (Ok(()), Ok(()), true), "a removal");
+    for bad in [MEntry { reset: Some(at(2)), frag: Some(Box::new(reg.clone())), created: None }, MEntry { reset: None, frag: Some(Box::new(reg)), created: None }, MEntry { reset: None, frag: None, created: Some(at(1)) }] {
+        let bytes = crdt_model::wire::encode_snapshot(&map(bad.clone()), &[], [3; 16], &mut mcx());
+        assert_eq!(decodes(&bytes), (Err(ErrorClass::BadInput), Err(ErrorClass::BadInput), false), "{bad:?}");
+    }
+}
+
 /// §2.4, §8: a snapshot commit carries only foreign writes and consumes no counters: a write of
 /// this commit (`Ci` 0) is bad input there, while the same fragment is a writer's delta.
 #[test]

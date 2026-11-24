@@ -239,12 +239,10 @@ impl Rec for crate::retention::snapshot::Spans {
 }
 impl Rec for crate::retention::snapshot::Carried {
     fn to(&self) -> Value {
-        Value::List(self.spans().iter().map(|s| s.to()).collect())
+        self.spans().to()
     }
     fn from(v: &Value) -> Option<Self> {
-        use crate::retention::snapshot::Spans;
-        let (a, b) = <(Spans, Spans) as Rec>::from(v)?;
-        Some(crate::retention::snapshot::Carried::of([a, b]))
+        Some(crate::retention::snapshot::Carried::of(Rec::from(v)?))
     }
 }
 impl Rec for osis_crdt::Facts {

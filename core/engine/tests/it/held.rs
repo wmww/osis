@@ -3,8 +3,8 @@
 //! harness (`order.rs`, `Cfg::model`) runs it on every node it judges.
 //!
 //! Input: every commit the node holds (applied, and waiting with the parts its stored copy
-//! holds), bodies as the node holds them (missing, dropped, held: a leftover's value-less carriers
-//! as `stripped`), and every creation record it holds of an actor or thing the input names.
+//! holds), bodies as the node holds them (missing, dropped, held: a leftover's carriers of gone
+//! writes as `stripped`), and every creation record it holds of an actor or thing the input names.
 //! Commits and ids are relabelled (commits ordered as their dots order, spec/crdt.md §2.2: source
 //! kind, source bytes, then counter, a session's commits in `ts` order). Bodies and states are
 //! crdt-model fragments decoded from the engine's wire bytes (`frag`), with every header's dot
@@ -40,8 +40,8 @@
 //!
 //! Normalizations: a waiting commit's held parts carry no writes or edges (the model only needs
 //! that they are held); a part an applied commit misses, or holds waiting alone (spec/commits.md
-//! §4), is missing; a leftover's value-less carriers are taken as stripped by the node, also for
-//! a value that arrived value-less; an edge's `floor` is dropped (it gives keys, never
+//! §4), is missing; a leftover's carriers of gone writes are taken as stripped by the node, also
+//! for a copy that arrived without them; an edge's `floor` is dropped (it gives keys, never
 //! a role).
 
 use held_model as hm;
@@ -65,7 +65,7 @@ pub(crate) struct Coverage {
     pub(crate) compared: u64,
     pub(crate) skipped: BTreeMap<&'static str, u64>,
     /// Of the compared aspects: reads present; parts invalid, purged, dropped, held as leftovers;
-    /// value-less deltas. Of nodes with a compared aspect: the commits and edges fed of each
+    /// gone deltas. Of nodes with a compared aspect: the commits and edges fed of each
     /// feature (undo, listed things, addenda, may-grant, `until`, self-removals).
     pub(crate) reached: BTreeMap<&'static str, u64>,
     /// Every difference found, by kind (`compare` reports the first).
@@ -476,7 +476,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
     let mut commits = Vec::new();
     let mut sync_ids = BTreeMap::new();
     let mut inside = BTreeMap::new();
-    // held leftovers: their value-less carriers are taken as stripped once the input is whole
+    // held leftovers: their carriers of gone writes are taken as stripped once the input is whole
     let mut leftovers = Vec::new();
     for (id, h, applied) in &held {
         let sync_id = cv.commit(id);
@@ -784,7 +784,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
     reach("purged", parts().filter(|(k, _)| o.purged.contains_key(k)).count());
     reach("dropped", parts().filter(|(_, p)| matches!(p.body, hm::Body::Dropped(_))).count());
     reach("leftover", parts().filter(|(_, p)| !p.stripped.is_empty()).count());
-    reach("value-less", o.valueless.iter().filter(|d| inside.contains(&(d.1, d.2))).count());
+    reach("gone", o.gone.iter().filter(|d| inside.contains(&(d.1, d.2))).count());
     reach("signal parts", parts().filter(|(_, p)| p.aspect.signal).count());
     // replaced bodies in history, and under purge on replace
     let in_history = |k: &hm::PartRef, r: u64| {

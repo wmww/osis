@@ -176,8 +176,8 @@ pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option
 /// without it (same header), the aspect rebuilt
 /// shredded (node-sync deletes it at peers, judged from
 /// `Meta::body_gone`). A bare leftover stays for un-merge (spec/crdt.md §4.6) but past its
-/// expiry, when a held snapshot covers it (`drops_as_covered`); one holding values
-/// (`Hold::Leftover::valued`) is dropped as a whole body.
+/// expiry, when a held snapshot covers it (`drops_as_covered`); one whose own writes live
+/// (`Hold::Leftover::own_live`) is dropped as a whole body.
 pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     drop_part_for(tx, c, ai, DropFor::Other)
 }
@@ -185,7 +185,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
 /// Whether a cover may drop part `ai` of `m` (spec/commits.md §5): not dropped, and a body, a
 /// leftover whose own writes live (`Hold::Leftover::own_live`) or an own-gone leftover past its expiry (gone for
 /// good, its writes in the coverer). A purge's bare leftover stays: the purge may fall and its
-/// values come back. The one judgment of which parts a cover drops: the drop (`drop_part_for`,
+/// writes come back. The one judgment of which parts a cover drops: the drop (`drop_part_for`,
 /// `Engine::droppable_if_covered`) and the compaction trigger's count (`compact::candidates`)
 /// both ask it, so the trigger never counts a body its own snapshot leaves.
 pub(crate) fn drops_as_covered(m: &crate::engine::Meta, ai: usize, now: u64) -> bool {
@@ -667,7 +667,7 @@ fn drop_as_invalid(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
 /// Whether a late copy of part `ai` of `c`, dropped or stripped, joins (`reopen_late` makes
 /// way for it). A body dropped other than as covered (one missing when purged) counts as never
 /// received (spec/commits.md §5): its copy joins and is judged again (`on_late`: stripped if
-/// expired or purged), so nodes holding the same bodies read alike. A leftover is replaced only by a valued copy: one of a delta no longer held
+/// expired or purged), so nodes holding the same bodies read alike. A leftover is replaced only by a whole copy: one of a delta no longer held
 /// gone here (an expired delta's never comes back; its purge's fall made it missing
 /// already, `rejudge_purges`); else the copy is the leftover and brings nothing. One dropped
 /// as covered joins only once no cover carries it
@@ -925,7 +925,7 @@ fn expire_snapshot(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(T
     Ok(Some((a.tid, a.ak)))
 }
 
-/// Snapshot part `ai` of `c` carries a copy of a value of a write on its aspect's gone list
+/// Snapshot part `ai` of `c` carries a copy of a write on its aspect's gone list
 /// (spec/crdt.md §4.7 Gone writes, spec/commits.md §5): held as its leftover from now on, without
 /// those copies. Store only: the state took the copies stripped (`apply::join_into_state`), or the
 /// caller rebuilds the aspect.
@@ -1005,8 +1005,8 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
 }
 
 /// Part `ai` of `c`, held as its leftover, gives it up: the part is missing (counts as never
-/// received), its writes leave the state (`apply::rebuild`). For the valued copy
-/// arriving (`takes_late`), whose join brings them back valued; or on its purge's fall
+/// received), its writes leave the state (`apply::rebuild`). For the whole copy
+/// arriving (`takes_late`), whose join brings them back; or on its purge's fall
 /// (`rejudge_purges`), a delta's leftover then `kept` aside for a rise before a copy comes (held
 /// gone again, it holds what it left, as at a node that never saw the fall:
 /// `make_leftover` adopts it). A whole replace missing at the fall is no own replace: the
@@ -1040,7 +1040,7 @@ fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
 }
 
 /// Takes delta `ai` of `c`'s writes off its body (`make_leftover`): at expiry, or `purged`. A snapshot has
-/// no values of its own: one a request names stays held, its copies of what the request takes
+/// no writes of its own: one a request names stays held, its copies of what the request takes
 /// stripped by the rebuild that request runs (spec/commits.md §5), so a purge never drops a
 /// cover. A part of
 /// it waiting in the stored pending copy goes at expiry (`strip_pending`); purged, it is held
@@ -1053,9 +1053,8 @@ fn hold_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, changed: &m
         strip_pending(tx, c, ai)?;
     }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
-    // an expiring snapshot has no writes of its own: at its expiry its copies' values go, its
-    // body held as its leftover (spec/crdt.md §4.7); the writes stay, valued wherever another
-    // body holds them so
+    // an expiring snapshot has no writes of its own: at its expiry its body drops whole
+    // (spec/crdt.md §4.7); the writes stay wherever another body holds them
     if !purged
         && m.header.kind.is_compaction()
         && let Some(k) = expire_snapshot(tx, c, ai)?

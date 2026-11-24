@@ -326,8 +326,8 @@ pub(crate) fn key_state(m: &Map, ids: &[&Eid]) -> Option<Fragment> {
     let mut out: Option<Fragment> = None;
     for f in ids.iter().filter_map(|id| m.record_frag(id)) {
         match &mut out {
-            None => out = Some(f.into_owned()),
-            Some(o) => o.join_into(f.into_owned(), None, &mut Changes::new()),
+            None => out = Some(f.clone()),
+            Some(o) => o.join_into(f.clone(), None, &mut Changes::new()),
         }
     }
     out
@@ -343,8 +343,7 @@ pub(crate) fn key_writes(m: &Map, ids: &[&Eid], d: Fragment) -> Vec<(Eid, Entry)
     if let [id] = ids {
         return vec![entry(id, d)];
     }
-    let recs: Vec<Option<std::borrow::Cow<'_, Fragment>>> = ids.iter().map(|id| m.record_frag(id)).collect();
-    let recs: Vec<Option<&Fragment>> = recs.iter().map(|r| r.as_deref()).collect();
+    let recs: Vec<Option<&Fragment>> = ids.iter().map(|id| m.record_frag(id)).collect();
     route(&d, &recs).into_iter().zip(ids).filter_map(|(p, id)| Some(entry(id, p?))).collect()
 }
 

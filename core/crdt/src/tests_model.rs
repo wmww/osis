@@ -624,7 +624,7 @@ fn implied_creation_pos_decodes_back_spec_3_3() {
     let d = Dot::new(s1.clone(), 1);
     let e = Dot::new(s1.clone(), 2);
     let text = |el: SeqElem| Some(Box::new(Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(e.clone(), el)])))));
-    // (d, none): e's creation c (t5) and position write p1 (t12); (d, key 0): e's position
+    // (d, key 0): e's creation c (t5) and position write p1 (t12); (d, key 1): e's position
     // write p2 (t10), so the dot's top two are p1 and p2
     let mut created = SeqElem::bare();
     created.created = Some((st(5, &s1, 2), Anchor::Head));
@@ -633,8 +633,8 @@ fn implied_creation_pos_decodes_back_spec_3_3() {
     let mut moved = SeqElem::bare();
     moved.pos = vec![(st(10, &s2, 2), Anchor::Head, None)];
     let entries = BTreeMap::from([
-        (Eid::new(d.clone(), None), Entry { reset: None, frag: text(created), created: Some(st(5, &s1, 1)) }),
-        (Eid::new(d, Some(osis_base::Value::Int(0))), Entry { reset: None, frag: text(moved), created: None }),
+        (Eid::new(d.clone(), Some(osis_base::Value::Int(0))), Entry { reset: None, frag: text(created), created: Some(st(5, &s1, 1)) }),
+        (Eid::new(d, Some(osis_base::Value::Int(1))), Entry { reset: None, frag: text(moved), created: None }),
     ]);
     let f = Fragment::Map(Map::new(Meta::default(), entries));
     let mut pruned = f.clone();

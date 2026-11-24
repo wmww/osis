@@ -117,7 +117,7 @@ proptest! {
 }
 
 /// Copies of one map entry (§5.6) under several keys, as forged snapshots carry them: random
-/// records of one dot (`a`, `b`, `c` or key-erased), each holding a write of one stamp with
+/// records of one dot (`a`, `b`, `c`, each holding a write of one stamp, or a key-erased removal), with
 /// differing payloads (`leaf`) and maybe a reset, `depth` maps deep (inner records of one dot
 /// under their own keys). One encoding per level unless `slots` (§7: a register beside other
 /// encodings at one position).
@@ -211,7 +211,9 @@ mod entry_copies {
                 let k = if slots { [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10][r.below(12)] } else { kind };
                 leaf(r, k)
             };
-            entries.insert((Dot { source: Source::session(1, 0), ctr }, key), Entry { reset, frag: Some(Box::new(inner)), created });
+            // the key-erased record holds a removal alone (§5.6)
+            let e = if key.is_some() { Entry { reset, frag: Some(Box::new(inner)), created } } else { Entry { reset: Some(st(2, 4)), frag: None, created: None } };
+            entries.insert((Dot { source: Source::session(1, 0), ctr }, key), e);
         }
         let mut x = Frag::empty(7);
         x.join(Frag::Map { c: Default::default(), entries });

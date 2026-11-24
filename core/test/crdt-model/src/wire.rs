@@ -930,6 +930,10 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
                 if reset.is_none() && created.is_none() && frag.as_deref().map_or(true, deep_empty) {
                     return Err(Error::Bad("record without a write"));
                 }
+                // a dot's keyless record holds its removal alone: every other write carries the key (§5.6)
+                if key.is_none() && (created.is_some() || frag.is_some()) {
+                    return Err(Error::Bad("keyless record holding more than a removal"));
+                }
                 entries.insert((d, key), Entry { reset, frag, created });
             }
             Frag::Map { c: composite(a, cx)?, entries }

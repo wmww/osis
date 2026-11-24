@@ -207,7 +207,7 @@ impl std::hash::Hash for Key {
 }
 
 /// A map entry record's identity (§5.6): the entry's dot and key; `None` for the dot's
-/// key-erased record (§4.7). Ordered by dot, the key-erased record first, then by key.
+/// key-erased record, holding its removals alone. Ordered by dot, the key-erased record first, then by key.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Eid {
     pub dot: Dot,
@@ -399,30 +399,15 @@ impl Map {
         let d = dot.clone();
         self.entries.range(Eid::erased(dot.clone())..).take_while(move |(id, _)| id.dot == d)
     }
-    /// Whether keyed record `id` is live (§5.6 Live): its dot's creation is held (in it, or
-    /// in the key-erased record, without its key), and what it reads as (`record_frag`) is present and,
-    /// but under its own valued creation, holds a live value.
+    /// Whether keyed record `id` is live (§5.6 Live): it holds its dot's creation and a
+    /// fragment that is present.
     pub(crate) fn is_live(&self, id: &Eid) -> bool {
         let Some(e) = self.entries.get(id).filter(|_| id.key.is_some()) else { return false };
-        let erased = self.entries.get(&Eid::erased(id.dot.clone()));
-        if e.frag.is_none() || (e.created.is_none() && erased.is_none_or(|x| x.created.is_none())) {
-            return false;
-        }
-        let Some(f) = self.record_frag(id) else { return false };
-        f.present() && (e.created.is_some() || f.live_value())
+        e.created.is_some() && e.frag.as_deref().is_some_and(Fragment::present)
     }
-    /// What record `id` reads as: its fragment, a keyed record's joined with its dot's
-    /// key-erased record's (§5.6).
-    pub(crate) fn record_frag(&self, id: &Eid) -> Option<std::borrow::Cow<'_, Fragment>> {
-        let f = self.entries.get(id)?.frag.as_deref()?;
-        match self.entries.get(&Eid::erased(id.dot.clone())).and_then(|e| e.frag.as_deref()) {
-            Some(x) if id.key.is_some() => {
-                let mut j = f.clone();
-                j.join_into(x.clone(), None, &mut crate::changes::Changes::new());
-                Some(std::borrow::Cow::Owned(j))
-            }
-            _ => Some(std::borrow::Cow::Borrowed(f)),
-        }
+    /// What record `id` reads as: its fragment (a keyless record has none, §5.6).
+    pub(crate) fn record_frag(&self, id: &Eid) -> Option<&Fragment> {
+        self.entries.get(id)?.frag.as_deref()
     }
     /// What each key reads as: the join of its live records (§5.6, same-key entries read as
     /// their join).
@@ -436,10 +421,10 @@ impl Map {
             let Some(f) = self.record_frag(id) else { continue };
             match by_key.get_mut(k) {
                 None => {
-                    by_key.insert(k, f.into_owned());
+                    by_key.insert(k, f.clone());
                 }
                 Some(g) => {
-                    g.join_into(f.into_owned(), None, &mut crate::changes::Changes::new());
+                    g.join_into(f.clone(), None, &mut crate::changes::Changes::new());
                 }
             }
         }

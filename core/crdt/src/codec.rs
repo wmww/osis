@@ -985,6 +985,10 @@ fn decode_entries(cx: &mut Dec, items: List, m: &mut Map) -> Result<(), Error> {
         if reset.is_none() && created.is_none() && !paged && frag.as_deref().is_none_or(Fragment::is_empty) {
             return Err(Error::Malformed("record without a write"));
         }
+        // a dot's keyless record holds its removal alone: every other write carries the key (§5.6)
+        if key.is_none() && (created.is_some() || paged || frag.is_some()) {
+            return Err(Error::Malformed("keyless record holding more than a removal"));
+        }
         m.index_id(&id);
         m.entries.insert(id, Entry { reset, frag, created });
     }

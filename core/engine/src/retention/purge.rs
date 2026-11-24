@@ -65,7 +65,7 @@ fn reaches(item: &PurgeItem, t: &Target) -> bool {
 }
 
 /// Whether a request with header `p` names delta `t`: a delta with writes of its own (a
-/// snapshot has none, so no request names it: it is never purged, its copies of purged values go
+/// snapshot has none, so no request names it: it is never purged, its copies of purged writes go
 /// as any carrying body's), an item on its aspect reaches it, it is stamped before the request,
 /// and a purge request that expires reaches only deltas expiring no later than it
 /// (spec/commits.md §5); a release, which expires, drops every minting (§5 Destruction).
@@ -536,9 +536,9 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     if leaving.is_empty() && back.is_empty() {
         return Ok(());
     }
-    // a body stripped for carrying others' values (a snapshot; a delta carrying a copy) stays held
-    // as its leftover: its copies of the values coming back stay stripped, so the valued copy
-    // wins wherever one joins (spec/crdt.md §4.7 Gone writes), and every other write it carries stays
+    // a body stripped for carrying others' writes (a snapshot; a delta carrying a copy) stays held
+    // as its leftover: its copies of the writes coming back stay removed, so a whole copy brings
+    // them back wherever one joins (spec/crdt.md §4.7 Gone writes), and every other write it carries stays
     off_gone(tx, tid, ak, &leaving);
     // until each comes back, this node may read less than one that kept it
     suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &back)?;
@@ -652,7 +652,7 @@ pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut
     Ok(())
 }
 
-/// Applies request `pc` to held delta `(c, ai)` if it stands: its values go, its body and
+/// Applies request `pc` to held delta `(c, ai)` if it stands: its writes go, its body and
 /// every held body carrying them are held as their leftovers (node-sync re-snapshots where no
 /// covering snapshot is left, spec/commits.md §5, `apply_request`). Whether it stood.
 pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<bool> {

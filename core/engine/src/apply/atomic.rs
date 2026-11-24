@@ -34,15 +34,14 @@ pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::
 /// commits it carries: the walk reads it again (`validity::reading`).
 pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId, c: Carried) {
     let k = (*tid, ak.clone());
-    let Some(was) = core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *id && x.4 != c)).map(|x| x.4.same_writes(&c)) else { return };
-    let v = core.ix.snapshots.entry_or_default(k);
-    if let Some(x) = v.iter_mut().find(|x| x.1 == *id) {
+    if !core.ix.snapshots.get(&k).is_some_and(|v| v.iter().any(|x| x.1 == *id && x.4 != c)) {
+        return;
+    }
+    if let Some(x) = core.ix.snapshots.get_mut(&k).and_then(|v| v.iter_mut().find(|x| x.1 == *id)) {
         x.4 = c;
     }
-    if !was {
-        core.ix.held.touch_commit(*id);
-        core.update_timelines();
-    }
+    core.ix.held.touch_commit(*id);
+    core.update_timelines();
 }
 
 /// Indexes the dropped parts of `id` that still stand in (`Dropped::stands_in`).
@@ -1117,7 +1116,7 @@ pub(crate) fn check_states(tx: &mut Tx<'_>, aspects: BTreeSet<(Tid, Ak)>) -> Res
         // unseen: the cached state as it was, and no cost recorded
         let k = (tid, ak.clone());
         // the gone list is a cache of the parts' statuses: a part held as a bare leftover
-        // has its own writes on it, one held whole or as a leftover holding values none
+        // has its own writes on it, one held whole or as a leftover with its own writes live none
         let list = tx.core.ix.gone.get(&k).cloned().unwrap_or_default();
         for c in tx.core.ix.by_aspect.get(&k).map(|s| s.iter().map(|(_, c)| *c).collect::<Vec<_>>()).unwrap_or_default() {
             let Some(m) = tx.core.ix.commits.get(&c) else { continue };
@@ -1130,9 +1129,8 @@ pub(crate) fn check_states(tx: &mut Tx<'_>, aspects: BTreeSet<(Tid, Ak)>) -> Res
                 debug_assert_eq!(on, 0, "{c:?} on {tid:?} {ak:?}: held with its own writes live, its writes gone");
             }
         }
-        // every held snapshot is indexed with bounds holding each write its body holds, valued
-        // and value-less (`retention::snapshot::Carried`): a valued write missed would expire in
-        // place past its copy, a value-less one would cover a body it gives no value of
+        // every held snapshot is indexed with bounds holding each write its body holds
+        // (`retention::snapshot::Carried`): a write missed would expire in place past its copy
         for c in tx.core.ix.by_aspect.get(&k).map(|s| s.iter().map(|(_, c)| *c).collect::<Vec<_>>()).unwrap_or_default() {
             let Some(ai) = tx.core.ix.commits.get(&c).filter(|m| !m.header.kind.has_own_writes()).and_then(|m| m.aspect(&tid, &ak)) else { continue };
             let mut held = Carried::default();

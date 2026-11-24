@@ -262,7 +262,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 5. Once an admin writes an explicit removal of the absent grant, the leave is audited and the post is unlisted.
 6. An admin gives member grants the may-grant flag; then members may invite.
 7. Only if the sharer's node granted the joiner directly on join (links are admin-only).
-11. About 33 B of value-less residue per message.
+11. Its header, until forgotten; none of its writes stays (spec/crdt.md §4.7).
 12. The grant applies (sender is "connected"); the app leaves automatically.
 13. Needs your contact card's keys; the remedy is a new card.
 14. Needs two nodes keeping the chat unread listed, or direct member-to-member contact, for the replacement to be learned.

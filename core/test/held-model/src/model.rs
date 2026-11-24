@@ -37,7 +37,7 @@ pub enum LeftoverWhy {
     Purged,
     /// A waiting part a purge request names (spec/commits.md §5).
     PendingPurged,
-    /// It carries a copy of a value the node holds value-less (spec/crdt.md §4.7 Gone writes).
+    /// It carries a copy of a gone write (spec/crdt.md §4.7 Gone writes).
     Copy,
 }
 
@@ -67,14 +67,14 @@ pub enum DropWhy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Fate {
     Keep(KeepWhy),
-    /// Hold it with the values of value-less writes stripped.
+    /// Hold it with the gone writes removed (its leftover).
     Leftover(LeftoverWhy),
     /// It may drop it now (out of history and covered, or a signal's out of history).
     MayDrop(DropWhy),
     /// It must have dropped it by now (under purge on replace once a right holder covers it; gone
     /// and invalid parts).
     MustDrop(DropWhy),
-    /// Its own writes are held value-less with no reason left (a purge that fell): it counts as
+    /// Its own writes are removed with no reason left (a purge that fell): it counts as
     /// never received and is fetched again (spec/permissions.md §6).
     NeverReceived,
 }
@@ -87,8 +87,8 @@ pub struct Outcome {
     pub valid: BTreeMap<PartRef, bool>,
     /// Parts a purge request drops, with the request (lowest commit ID among those that do).
     pub purged: BTreeMap<PartRef, CommitId>,
-    /// Deltas whose value-carrying writes the node holds value-less (expired or purged).
-    pub valueless: BTreeSet<DeltaRef>,
+    /// Deltas whose writes are gone (expired or purged): removed from every body (spec/crdt.md §4.7).
+    pub gone: BTreeSet<DeltaRef>,
     /// What each aspect reads (spec/crdt.md §4.4), None absent.
     pub reads: BTreeMap<(ThingId, Aspect), Option<Value>>,
     /// Canonical state per aspect (what a snapshot from this node's whole state carries).
@@ -289,7 +289,7 @@ impl Dots {
         f
     }
     /// The writes of `f` of a commit `drop` names (gone, spec/crdt.md §4.7), by `death::key`, with it.
-    pub fn values_of(&self, t: ThingId, a: Aspect, f: &Frag, drop: &dyn Fn(CommitId) -> bool) -> Vec<(Name, CommitId)> {
+    pub fn writes_of(&self, t: ThingId, a: Aspect, f: &Frag, drop: &dyn Fn(CommitId) -> bool) -> Vec<(Name, CommitId)> {
         writes(f)
             .into_iter()
             .filter_map(|(n, _)| {
@@ -642,8 +642,8 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     }
 
     // Purge (spec/commits.md §5, spec/permissions.md §6): an applied request drops the named
-    // joined or missing deltas of applied commits and marks waiting parts value-less. A snapshot
-    // has no values of its own: a request naming it takes nothing.
+    // joined or missing deltas of applied commits and marks waiting parts gone. A snapshot
+    // has no writes of its own: a request naming it takes nothing.
     let mut pending_purged: BTreeSet<PartRef> = BTreeSet::new();
     for q in live.iter().filter(|q| !q.purge.is_empty() && is_applied(q) && !void.contains(&q.id)) {
         for c in live.iter().filter(|c| c.kind != CommitKind::Snapshot) {
@@ -662,21 +662,21 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
         }
     }
 
-    // Value-less deltas: expired, or purged.
+    // Gone deltas: expired, or purged.
     for c in &live {
         for (i, p) in c.parts.iter().enumerate() {
             let purged = o.purged.contains_key(&(c.id, i)) || pending_purged.contains(&(c.id, i));
             if c.kind != CommitKind::Snapshot && (expired(c, now) || purged) {
-                o.valueless.insert((c.id, p.thing, p.aspect));
+                o.gone.insert((c.id, p.thing, p.aspect));
             }
         }
     }
     // The settings (spec/commits.md §5 The setting): every held valid `retention^.0` body of an
-    // applied commit with its values (not expired, not purged), a snapshot's by the write it carries
+    // applied commit not gone (not expired, not purged), a snapshot's by the write it carries
     for c in view.iter() {
         for (i, p) in c.parts.iter().enumerate() {
             if let Body::Held(Delta::Retention(x)) = &p.body {
-                if p.aspect == Aspect::RETENTION && o.valid.get(&(c.id, i)) == Some(&true) && !o.valueless.contains(&(c.id, p.thing, p.aspect)) {
+                if p.aspect == Aspect::RETENTION && o.valid.get(&(c.id, i)) == Some(&true) && !o.gone.contains(&(c.id, p.thing, p.aspect)) {
                     let key = (x.written.unwrap_or(c.ts), c.signer, c.id);
                     o.settings.entry(p.thing).or_default().push((key, x.clone()));
                 }
@@ -718,23 +718,23 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
         .flat_map(|c| c.parts.iter().enumerate().map(|(i, p)| ((c.id, p.thing, p.aspect), o.valid[&(c.id, i)])))
         .collect();
 
-    // destroyed: every creation joined of the thing is value-less (notes/expiry-creation-design.md §3)
+    // destroyed: every creation joined of the thing is gone (notes/expiry-creation-design.md §3)
     let joined = || view.iter().flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter(|(_, p)| creation(p).is_some());
-    o.destroyed = joined().map(|(_, p)| p.thing).filter(|&t| joined().filter(|(_, p)| p.thing == t).all(|(c, p)| o.valueless.contains(&(c.id, t, p.aspect)))).collect();
-    let vls = o.valueless.clone();
+    o.destroyed = joined().map(|(_, p)| p.thing).filter(|&t| joined().filter(|(_, p)| p.thing == t).all(|(c, p)| o.gone.contains(&(c.id, t, p.aspect)))).collect();
+    let gone_m = o.gone.clone();
     let valid_m = o.valid.clone();
-    let vl = |c: CommitId, t: ThingId, a: Aspect| vls.contains(&(c, t, a));
+    let is_gone = |c: CommitId, t: ThingId, a: Aspect| gone_m.contains(&(c, t, a));
 
     // A content body held without its own writes (`Part::stripped`) with no reason (gone for a
     // purge that fell) counts as never received (spec/permissions.md §6). One this node stripped of
     // another delta's writes stays held.
-    let never_received = |c: &Commit, p: &Part| -> bool { c.kind == CommitKind::Content && !vl(c.id, p.thing, p.aspect) && body(p).is_some() && p.stripped.contains(&c.id) };
+    let never_received = |c: &Commit, p: &Part| -> bool { c.kind == CommitKind::Content && !is_gone(c.id, p.thing, p.aspect) && body(p).is_some() && p.stripped.contains(&c.id) };
 
     // Snapshot validity and contribution.
     let snap_ok = |c: &Commit, i: usize| valid_m.get(&(c.id, i)) == Some(&true);
 
     // Build each aspect's state: the join of the valid held bodies, invalid deltas un-merged
-    // (spec/crdt.md §4.6: only their own writes go; a valid snapshot's copies stay), value-less
+    // (spec/crdt.md §4.6: only their own writes go; a valid snapshot's copies stay), gone
     // deltas stripped (spec/crdt.md §4.7). `bodies`: what each held body contributes.
     let mut aspects: BTreeSet<(ThingId, Aspect)> = BTreeSet::new();
     for c in &live {
@@ -774,7 +774,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
             bodies.push((id, f));
         }
         bodies.extend(snaps);
-        let bodies: Vec<(CommitId, Frag)> = bodies.into_iter().map(|(id, f)| (id, dots.strip(t, a, &f, &|c| vl(c, t, a)))).collect();
+        let bodies: Vec<(CommitId, Frag)> = bodies.into_iter().map(|(id, f)| (id, dots.strip(t, a, &f, &|c| is_gone(c, t, a)))).collect();
         let st = join(bodies.iter().map(|x| x.1.clone()));
         o.reads.insert((t, a), st.read());
         o.states.insert((t, a), st);
@@ -808,8 +808,8 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
             if valid_m.get(&(c.id, i)) != Some(&true) || never_received(c, p) {
                 continue;
             }
-            let own = |x: CommitId| vl(x, t, a) || (x == c.id && c.expires.is_some());
-            let b = dots.strip(t, a, f, &|x| vl(x, t, a));
+            let own = |x: CommitId| is_gone(x, t, a) || (x == c.id && c.expires.is_some());
+            let b = dots.strip(t, a, f, &|x| is_gone(x, t, a));
             let st = if c.expires.is_some() { dots.strip(t, a, st, &own) } else { st.clone() };
             // a write it holds that is dead in the state: not held there, or winning in the body
             // and held there but not winning (spec/crdt.md §4.8: a text element's creation under
@@ -887,7 +887,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     for c in by_id.values() {
         for (i, p) in c.parts.iter().enumerate() {
             if matches!(p.body, Body::Held(_) | Body::Parked) {
-                let (f, owed) = if thrown.contains(&(c.id, i)) { (Fate::MustDrop(DropWhy::Unknown), false) } else { fate(c, i, p, &o, &live, &tl, h.me, &pending_purged, &waiting, now, &never_received, &vl, &dots) };
+                let (f, owed) = if thrown.contains(&(c.id, i)) { (Fate::MustDrop(DropWhy::Unknown), false) } else { fate(c, i, p, &o, &live, &tl, h.me, &pending_purged, &waiting, now, &never_received, &is_gone, &dots) };
                 fates.insert((c.id, i), f);
                 if owed {
                     o.owed.insert((c.id, i));
@@ -947,7 +947,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
     }
     o.deadlines.retain(|&t| t > now && t != NEVER);
 
-    // Forbidden values: any value of a value-less delta still held.
+    // Forbidden writes: any write of a gone delta still held.
     for c in &h.commits {
         for (i, p) in c.parts.iter().enumerate() {
             // a waiting body is stripped of others' values only when its commit applies; one the
@@ -956,7 +956,7 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
                 continue;
             }
             let Some(f) = body(p) else { continue };
-            for (n, own) in dots.values_of(p.thing, p.aspect, f, &|x| o.valueless.contains(&(x, p.thing, p.aspect))) {
+            for (n, own) in dots.writes_of(p.thing, p.aspect, f, &|x| o.gone.contains(&(x, p.thing, p.aspect))) {
                 o.forbidden.insert(((c.id, i), (own, p.thing, p.aspect), n));
             }
         }
@@ -991,7 +991,7 @@ fn fate(
     waiting: &BTreeSet<PartRef>,
     now: u64,
     never_received: &dyn Fn(&Commit, &Part) -> bool,
-    vl: &dyn Fn(CommitId, ThingId, Aspect) -> bool,
+    is_gone: &dyn Fn(CommitId, ThingId, Aspect) -> bool,
     dots: &Dots,
 ) -> (Fate, bool) {
     let pr = (c.id, i);
@@ -1005,7 +1005,7 @@ fn fate(
         return (Fate::MustDrop(DropWhy::Gone), false);
     }
     let (t, a) = (p.thing, p.aspect);
-    let copy = body(p).is_some_and(|f| !dots.values_of(t, a, f, &|x| vl(x, t, a)).is_empty());
+    let copy = body(p).is_some_and(|f| !dots.writes_of(t, a, f, &|x| is_gone(x, t, a)).is_empty());
     if !waits && p.body != Body::Parked && o.valid.get(&pr) == Some(&false) && c.signer != me {
         return (Fate::MustDrop(DropWhy::Invalid), false);
     }
@@ -1013,7 +1013,7 @@ fn fate(
         if pending_purged.contains(&pr) {
             return (Fate::Leftover(LeftoverWhy::PendingPurged), false);
         }
-        // a waiting body keeps its body, copies of value-less values included, until its commit
+        // a waiting body keeps its body, copies of gone writes included, until its commit
         // applies (spec/commits.md §5, spec/crdt.md §4.7 Gone writes)
         return (Fate::Keep(KeepWhy::Pending), false);
     }
@@ -1034,9 +1034,9 @@ fn fate(
     if p.aspect.signal {
         return (Fate::Keep(KeepWhy::Until), false);
     }
-    // A body carrying a copy of a value held value-less is held as its leftover, and is a body
+    // A body carrying a copy of a gone write is held as its leftover, and is a body
     // like a whole one for its mode and covering (spec/commits.md §5 Dropping a body).
-    let ws = body(p).map_or_else(|| Frag::empty(0), |f| dots.strip(t, a, f, &|x| vl(x, t, a)));
+    let ws = body(p).map_or_else(|| Frag::empty(0), |f| dots.strip(t, a, f, &|x| is_gone(x, t, a)));
     let keep = |why| if copy { Fate::Leftover(LeftoverWhy::Copy) } else { Fate::Keep(why) };
     if now < kept_until(c) {
         return (keep(KeepWhy::Until), false);
@@ -1046,7 +1046,7 @@ fn fate(
         return (keep(KeepWhy::Plain), false);
     }
     // Covers: a valid snapshot whose part on the aspect covers the body by the join; an expiring
-    // delta only once no value of it lives (a snapshot carries its values value-less,
+    // delta only once none of its writes lives (a snapshot carries none of them,
     // spec/crdt.md §8); a snapshot body only by one stamped later, or at the same `ts` by one with
     // a lower commit ID (covered-equal, spec/sync-compaction.md §1); another node's own cover
     // never (only its writer drops a held body under it, spec/commits.md §5 Covered). Each with
@@ -1091,7 +1091,7 @@ fn fate(
 
 /// The covering snapshot `me` writes for an aspect from its whole state (spec/commits.md §2), its
 /// purge-by `writer`: what a writer owes for an `owed` body (`Outcome::owed`), or writes to
-/// compact. A snapshot carries writes of expiring deltas value-less (spec/crdt.md §8).
+/// compact. A snapshot carries no write of an expiring delta (spec/crdt.md §8).
 pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId, ts: u64) -> Commit {
     let f = snapshot_state(h, o, thing, aspect);
     let part = Part { thing, aspect, purge_by: PurgeBy::Writer, body: Body::Held(Delta::Writes(f)), stripped: Default::default(), replaces: None };
@@ -1100,7 +1100,7 @@ pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId
     Commit { id, signer: h.me, author: h.me, paths: [(thing, path)].into(), ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
-/// What a snapshot of an aspect carries: the state, writes of expiring deltas value-less
+/// What a snapshot of an aspect carries: the state without the writes of expiring deltas
 /// (spec/crdt.md §8).
 pub fn snapshot_state(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect) -> Frag {
     let st = o.states.get(&(thing, aspect)).cloned().unwrap_or_else(|| Frag::empty(0));
@@ -1133,12 +1133,12 @@ pub fn act(h: &Held, o: &Outcome, may: Option<PartRef>) -> Held {
             let Some(&f) = o.fates.get(&(c.id, i)) else { continue };
             let (t, a) = (p.thing, p.aspect);
             match f {
-                // a body that stays held holds no value of a value-less write (spec/crdt.md §4.7
-                // Copies), whatever else its fate says
+                // a body that stays held holds no gone write (spec/crdt.md §4.7), whatever else
+                // its fate says
                 Fate::Leftover(_) | Fate::Keep(_) | Fate::MayDrop(_) if f != Fate::Keep(KeepWhy::Pending) && may != Some((c.id, i)) => {
                     if let Body::Held(Delta::Writes(f)) = &mut p.body {
-                        let drop = |x: CommitId| o.valueless.contains(&(x, t, a));
-                        p.stripped.extend(dots.values_of(t, a, f, &drop).into_iter().map(|x| x.1));
+                        let drop = |x: CommitId| o.gone.contains(&(x, t, a));
+                        p.stripped.extend(dots.writes_of(t, a, f, &drop).into_iter().map(|x| x.1));
                         *f = dots.strip(t, a, f, &drop);
                     }
                 }

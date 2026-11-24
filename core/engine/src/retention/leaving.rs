@@ -300,7 +300,7 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()
     }
 }
 
-/// The row of value part `(tid, ak)` of `c`: a held valid part with values at its replaced-at
+/// The row of value part `(tid, ak)` of `c`: a held valid part, its own writes live, at its replaced-at
 /// (`bounds::held_date`), a purged one at its own `ts`; `None`: no row (not held, invalid, live).
 fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };

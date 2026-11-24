@@ -305,26 +305,23 @@ impl Fragment {
             }
             Fragment::Map(m) => {
                 let mut entries = BTreeMap::new();
-                for (id, en) in &m.entries {
+                for id in m.entries.keys() {
                     if m.is_live(id) {
-                        // judged on what the record reads as: its fragment joined with its dot's
-                        // key-erased record's (§5.6)
                         if let Some(inner) = m.record_frag(id).and_then(|f| f.sweep_at_most(r, reflected, left)) {
                             entries.insert(id.clone(), Entry { frag: Some(Box::new(inner)), ..Entry::default() });
                         }
-                    } else if id.key.is_some() || en.frag.is_some() {
+                    } else if id.key.is_some() {
                         let recs = || m.of_dot(&id.dot);
-                        // a key a record repeats goes with any write; a key-erased record has
-                        // bytes to lose only in a presence-counting one
-                        let holds = recs().any(|(i, x)| x.frag.as_deref().is_some_and(|f| if i.key.is_some() { f.all_max().is_some() } else { f.written().is_some() }));
+                        // a key a record repeats goes with any write
+                        let holds = recs().any(|(_, x)| x.frag.as_deref().is_some_and(|f| f.all_max().is_some()));
                         let dead = || recs().any(|(_, x)| x.reset.is_some()) || (recs().all(|(_, x)| x.created.is_none()) && reflected(&id.dot));
                         if holds && !recs().any(|(i, _)| m.is_live(i)) && dead() {
                             entries.insert(Eid::erased(id.dot.clone()), Entry::tomb(r));
                         }
                     }
                 }
-                // live records of one dot under several keys share the key-erased record's
-                // content: prune puts each write in one record (§5.6)
+                // live records of one dot under several keys: prune puts each write in one
+                // record (§5.6)
                 (!entries.is_empty()).then(|| {
                     let mut out = Fragment::Map(Map::new(Meta::default(), entries));
                     out.prune(None, &mut Changes::new());

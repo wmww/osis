@@ -792,23 +792,6 @@ impl Fragment {
         }
     }
 
-    /// Whether the fragment holds a live value (§4.3): a valued register or case winner, a
-    /// valued `W`, a live element or record, or a field holding one. Removals and positions
-    /// are none.
-    pub(crate) fn live_value(&self) -> bool {
-        match self {
-            Fragment::Register(r) => reg_written(r).is_some(),
-            Fragment::Slots(_) => self.chosen_slot().by(|r| reg_written(r).is_some(), Fragment::live_value),
-            f if f.meta().is_some_and(|m| m.w_valued().is_some()) => true,
-            Fragment::Bag(Bag { elems, .. }) => elems.values().any(|e| e.frag.as_deref().is_some_and(Fragment::present)),
-            Fragment::Set(s) => crate::fragment::live_elems(&s.elems).next().is_some(),
-            Fragment::Struct(s) => s.fields.values().any(Fragment::live_value),
-            Fragment::Enum(s) => s.case.is_some(),
-            Fragment::Map(m) => m.entries.keys().any(|id| m.is_live(id)),
-            Fragment::Seq(s) => seq::shows_any(s),
-        }
-    }
-
     /// `inner_max(true).is_some()`, stopping at the first write.
     fn inner_any(&self) -> bool {
         let slot = |m: &SlotRef| m.present() || m.reset().is_some();
@@ -820,13 +803,13 @@ impl Fragment {
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems_any(elems),
             Fragment::Struct(s) => s.fields.values().any(child),
             Fragment::Enum(s) => s.case.is_some() || s.payloads.values().any(child),
-            Fragment::Map(m) => m.entries.iter().any(|(id, e)| e.reset.is_some() || (id.key.is_some() && e.created.is_some()) || e.frag.as_deref().is_some_and(child)),
+            Fragment::Map(m) => m.entries.values().any(|e| e.reset.is_some() || e.created.is_some() || e.frag.as_deref().is_some_and(child)),
             Fragment::Seq(s) => seq::has_written(s),
         }
     }
 
     /// Greatest stamp inside (children, elements, case), excluding own reset and `W`. With
-    /// `valued`, only presence-counting writes (a key-erased record's creation is none, §4.3).
+    /// `valued`, only presence-counting writes (§4.3).
     pub(crate) fn inner_max(&self, valued: bool) -> Option<Stamp> {
         let slot = |m: &SlotRef| if valued { max_opt(m.written(), m.reset()) } else { m.all_max() };
         let child = |f: &Fragment| slot(&SlotRef::Frag(f));
@@ -840,10 +823,9 @@ impl Fragment {
                 let k = s.case.as_ref().map(|k| k.stamp.clone());
                 s.payloads.values().fold(k, |m, f| max_opt(m, child(f)))
             }
-            // a keyed record's creation counts (§4.3); a key-erased record's holds no key
-            Fragment::Map(m) => m.entries.iter().fold(None, |x, (id, e)| {
-                let c = e.created.clone().filter(|_| !valued || id.key.is_some());
-                max_opt(max_opt(max_opt(x, c), e.reset.clone()), e.frag.as_deref().and_then(child))
+            // a record's creation counts (§4.3)
+            Fragment::Map(m) => m.entries.values().fold(None, |x, e| {
+                max_opt(max_opt(max_opt(x, e.created.clone()), e.reset.clone()), e.frag.as_deref().and_then(child))
             }),
             Fragment::Seq(s) => seq::inner_max(s, valued),
         }

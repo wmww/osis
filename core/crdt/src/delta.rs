@@ -459,7 +459,7 @@ fn key_lookup<'s>(s: Option<&'s Fragment>, a: Option<&Fragment>, e: Option<&Stam
         && let [id] = m.live_ids(k).as_slice()
         && am.is_none_or(|a| !a.keys.contains_key(k) && a.of_dot(&id.dot).next().is_none())
     {
-        return Some(KeyAt { ids: vec![(*id).clone()], read: m.record_frag(id), map: Cow::Borrowed(m) });
+        return Some(KeyAt { ids: vec![(*id).clone()], read: m.record_frag(id).map(Cow::Borrowed), map: Cow::Borrowed(m) });
     }
     let dots: std::collections::BTreeSet<&Dot> = [sm, am].into_iter().flatten().filter_map(|m| m.keys.get(k)).flatten().map(|id| &id.dot).collect();
     if dots.is_empty() {

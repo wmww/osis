@@ -22,8 +22,8 @@ pub fn undo(h: &Held, target: CommitId, id: CommitId, ts: u64, author: NodeId) -
         return None;
     }
     // what the node holds as if `target` had not been written: its own body gone, and its writes
-    // gone from every snapshot carrying them; values held value-less (expired by the undo's
-    // `wall_ms(ts)`, purged) never written back (spec/crdt.md §4.6)
+    // gone from every snapshot carrying them; gone writes (expired by the undo's `wall_ms(ts)`,
+    // purged) never written back (spec/crdt.md §4.6)
     let mut without = h.clone();
     without.now = h.now.max(wall(ts));
     without.commits.retain(|c| c.id != target);

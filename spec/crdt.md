@@ -114,7 +114,7 @@ Struct   := [4, R, W, {field_id: Fragment}]          ; or paged: [Link+], §8
 Enum     := [5, R, W, Case, {case_id: Fragment}]   Case := Opt([Stamp, case_id])   ; payload map paged: [Link+], §8
 Set      := [6, R, W, [Elem*]]               Elem  := [Dot, R, Opt(Fragment)] | [Dot, R, Opt(Fragment), Stamp, Value, [Seen+]]   ; the second carries a value removal (§5.5), sets only
 Seen     := [Dot, n]                         ; the dots of Dot's source with counters in [ctr, ctr + n), n >= 1
-Map      := [7, R, W, [Entry*]]              Entry := [Dot, Opt(Ci), R, Value, Opt(Fragment)] | [Dot, Opt(Ci), R, Opt(Fragment)]   ; Value is the key; omitted: key not carried. Opt(Ci) here is the bare Ci or nothing: the entry's creation commit (§5.6), carried for a creation of another commit than this one
+Map      := [7, R, W, [Entry*]]              Entry := [Dot, Opt(Ci), R, Value, Opt(Fragment)] | [Dot, R, []]   ; Value is the key; the second is the dot's keyless record: its removal alone (§5.6). Opt(Ci) here is the bare Ci or nothing: the entry's creation commit (§5.6), carried for a creation of another commit than this one
 Seq      := [8|9, R, W, [Run*]]
 Run      := [Dot, n, Creation, Content, [PosW*], [FlagW*]]
 Creation := [] | [Anchor, [[Ci, k]*]]   ; segments: k consecutive elements created by commit Ci; sum k = n
@@ -195,7 +195,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
      - a text `Content` on a run without a `Creation`;
      - a non-empty `Content` whose length differs from the number of content-carrying elements of the run;
      - a `PosW` sibling key whose `ts` is not below its stamp's.
-   - **Records**: a set, bag or map entry record carrying no write (no reset, no creation, and a fragment absent or empty, §4.2 Emptiness), as a run carrying none above.
+   - **Records**: a set, bag or map entry record carrying no write (no reset, no creation, and a fragment absent or empty, §4.2 Emptiness), as a run carrying none above; a map dot's keyless record carrying a creation or a fragment (§5.6).
    - **Value removals**: one in a bag, one whose value is not a reference (§5.5), one whose `Seen` parts are not ascending by first dot (§2.2) and apart (on one source, each starting above the previous one's last counter plus one), and a part whose end (`ctr + n`) overflows.
    - **Registers and set or bag elements**
      - a `Register` with a reset below a nested level (only aspect roots and the slots of a `Slots` carry one);
@@ -261,7 +261,6 @@ Every fragment has an **effective reset** `E = max(E_parent, own R)`, with `E_ro
   - **Excluded**: its own reset.
   - **Sequences**: a creation counts iff it is valued (text: its char is held; list: always) or the element has a flag write (text: a deleted char is never on the wire, an undelete carries its own) or is reset (list).
   - `written` is a function of the surviving writes; only explicit `W` writes are stored, so a write going (§4.6, §4.7) can lower it.
-- A fragment **holds a live value** iff it is a register whose write is valued, an enum whose case write is valued, a composite with a valued `W`, a set with a live element (§5.5), a bag with a present element, a map with a live record (§5.6), a sequence with a live element (§5.7), a struct one of whose fields holds one, or a `Slots` position whose chosen slot (§7) holds one. Resets, flags and positions are none.
 - An aspect is present on a thing iff its root fragment is present. `aspects.0` reads the present ones.
 - A writer emits an explicit `W` (a commit-level write at the delta stamp, §2.3) only when creating or replacing a composite with no content writes in the same delta (an empty set, an empty struct). `W` is a write like any other for frontiers and un-merge, and is always carried on the wire while it survives (§3.3 rule 4).
 
@@ -388,7 +387,7 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
 ### 5.6 Map (7)
 - State: `R`, `written`, entry records `{(dot, key): (R_rec, creation, fragment)}`, plus a local index `key -> live records` (not part of the lattice).
   - A record's key is part of its identity; each write in a record carries the key as its own value (§4.7).
-  - A dot's **keyless** record `(dot, -)` holds its removals outside role-class aspects.
+  - A dot's **keyless** record `(dot, -)` holds its removals outside role-class aspects, and nothing else: every other write carries the key.
   - The records of a dot are one entry (§4.8 Which write).
 - Join: union by `(dot, key)`; per record `R` max, fragment join, creation by stamp; then prune:
   - every record of a dot under `E_rec = max(E_parent, every R_rec of the dot)`: every reset of the dot reaches each of its records;

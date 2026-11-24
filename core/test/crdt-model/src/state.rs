@@ -43,7 +43,7 @@ pub struct Elem {
     pub gone: Option<Removal>,
 }
 
-/// A map entry record's identity (§5.6): the entry's dot and key; no key for the dot's key-erased record (§4.7).
+/// A map entry record's identity (§5.6): the entry's dot and key; no key for the dot's key-erased record, holding its removals alone.
 pub type Eid = (Dot, Option<Value>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,28 +55,16 @@ pub struct Entry {
     pub created: Option<Stamp>,
 }
 
-/// The records of map `entries` that are live, with what each reads as (§5.6): a keyed record whose dot's creation
-/// is held (in it, valued, or value-less in the dot's key-erased record), whose content (its fragment joined with
-/// the key-erased record's) is present and, but under its own valued creation, holds a live value.
+/// The records of map `entries` that are live, with what each reads as (§5.6): a keyed record holding its dot's
+/// creation, whose fragment is present.
 pub fn live_records(entries: &BTreeMap<Eid, Entry>) -> Vec<(Eid, Frag)> {
     let mut out = Vec::new();
     for ((d, k), en) in entries {
-        let (Some(_), Some(f)) = (k, &en.frag) else { continue };
-        let erased = entries.get(&(d.clone(), None));
-        if en.created.is_none() && erased.map_or(true, |e| e.created.is_none()) {
+        let (Some(_), Some(f), Some(_)) = (k, &en.frag, &en.created) else { continue };
+        if !f.present() {
             continue;
         }
-        let f = match erased.and_then(|e| e.frag.as_deref()) {
-            Some(x) => {
-                let mut j = join_any((**f).clone(), x.clone());
-                j.prune(None);
-                j
-            }
-            None => (**f).clone(),
-        };
-        if !f.present() || (en.created.is_none() && !f.live_value()) {
-            continue;
-        }
+        let f = (**f).clone();
         out.push(((d.clone(), k.clone()), f));
     }
     out
@@ -192,10 +180,6 @@ impl SeqElem {
             return true;
         }
         !matches!(&self.content, Content::Frag(f) if f.present())
-    }
-    /// Whether the element reads (§5.7 Live).
-    pub fn shows(&self, text: bool) -> bool {
-        !self.is_deleted(text)
     }
     /// Whether the record holds a write, and so stays in the state (§4.2): one with none goes, and what anchors at its
     /// dot is placed at a virtual anchor (§6.1), as at a node that never held it.
@@ -331,10 +315,9 @@ impl Frag {
                 let k = case.as_ref().map(|k| k.0.clone());
                 payloads.values().fold(k, |m, f| max_opt(m, child(f)))
             }
-            // a keyed record's creation counts (§4.3); a key-erased record's is value-less
-            Frag::Map { entries, .. } => entries.iter().fold(None, |m, ((_, k), e)| {
-                let c = e.created.clone().filter(|_| !valued || k.is_some());
-                max_opt(max_opt(max_opt(m, c), e.reset.clone()), e.frag.as_deref().and_then(child))
+            // a record's creation counts (§4.3)
+            Frag::Map { entries, .. } => entries.values().fold(None, |m, e| {
+                max_opt(max_opt(max_opt(m, e.created.clone()), e.reset.clone()), e.frag.as_deref().and_then(child))
             }),
             Frag::Seq { elems, text, .. } => elems.iter().fold(None, |m, (d, e)| {
                 let creation = !valued || e.creation_counts(*text);
@@ -725,22 +708,6 @@ impl Frag {
 
     pub fn present(&self) -> bool {
         self.written().is_some()
-    }
-
-    /// Whether the fragment holds a live value (§4.3): a valued register or case winner, a `W`, a live element or
-    /// record, or a field holding one. Removals and positions are none.
-    pub fn live_value(&self) -> bool {
-        match self {
-            Frag::Register { write, .. } => write.is_some(),
-            Frag::Slots { .. } => self.chosen().live_value(),
-            f if f.composite().is_some_and(|c| c.w.is_some()) => true,
-            Frag::Bag { elems, .. } => elems.values().any(|e| e.frag.as_ref().is_some_and(|f| f.present())),
-            Frag::Set { elems, .. } => !crate::ops::live_elems(elems).is_empty(),
-            Frag::Struct { fields, .. } => fields.values().any(|f| f.live_value()),
-            Frag::Enum { case, .. } => case.is_some(),
-            Frag::Map { entries, .. } => !live_records(entries).is_empty(),
-            Frag::Seq { text, elems, .. } => elems.values().any(|e| e.shows(*text)),
-        }
     }
 
     /// Read (§4.4, §5). `None` = absent.

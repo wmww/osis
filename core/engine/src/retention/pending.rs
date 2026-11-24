@@ -169,7 +169,7 @@ fn verify_waiting(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &
 /// (this build cannot read it), cannot be decoded: it goes, as a part missing when purged, which
 /// reads as one held and removed (its writes have no effect). One with its thing's record away cannot occur: no right can stand without
 /// it (`holds_right`), spec/commits.md §5 states the limit. A bad one is `examine`'s. A snapshot
-/// has no values of its own: kept whole, dropped once applied (`purge_one`).
+/// has no writes of its own: kept whole, dropped once applied (`purge_one`).
 fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header, ai: usize) -> Result<()> {
     let o = super::writes_of(h, id, ai);
     if o.is_empty() {

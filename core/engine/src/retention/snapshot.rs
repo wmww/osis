@@ -14,22 +14,17 @@ use osis_schema::core_types::{is_content, is_role_class};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What a held snapshot carries (spec/crdt.md §4.7 Gone writes, spec/permissions.md §5.2 Copies): per
-/// source, the counters of the writes its held body holds (`Fragment::write_ranges`), and of
-/// those it holds valued (`Fragment::each_valued`). The commits it carries copies
-/// of are the held ones whose counters on the aspect meet a write (`carried`, `carriers`): what
-/// the body holds, never what its frontiers or `Absorbed` claim (spec/crdt.md §8). An honest
-/// snapshot holds no write of an expiring delta (§8); one holding a write gone here is held as its
-/// leftover (`meets`). The value-less counters say where a cover holds a write value-less
-/// (`covered_join`: such a cover covers no body of it not gone here).
+/// source, the counters of the writes its held body holds (`Fragment::write_ranges`). The commits
+/// it carries copies of are the held ones whose counters on the aspect meet a write (`carried`,
+/// `carriers`): what the body holds, never what its frontiers or `Absorbed` claim (spec/crdt.md
+/// §8). An honest snapshot holds no write of an expiring delta (§8); one holding a write gone here
+/// is held as its leftover, with the gone writes removed (`meets`: expiry in place).
 ///
-/// Memory: one `(lo, hi)` per run of consecutive counters of a source, in each of the three: a
-/// session writing the aspect alone is one run however many writes the body holds of it; one
-/// writing other aspects between is a run per stretch, at most one per commit carried.
+/// Memory: one `(lo, hi)` per run of consecutive counters of a source: a session writing the
+/// aspect alone is one run however many writes the body holds of it; one writing other aspects
+/// between is a run per stretch, at most one per commit carried.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Carried {
-    writes: Spans,
-    valued: Spans,
-}
+pub struct Carried(Spans);
 
 /// Per source, counters as runs `lo..hi`: ascending, disjoint, none adjacent to the next.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -45,9 +40,6 @@ impl Spans {
         let (from, to) = (v.partition_point(|r| r.1 < lo), v.partition_point(|r| r.0 <= hi));
         let run = v.get(from..to).into_iter().flatten().fold((lo, hi), |(a, b), r| (a.min(r.0), b.max(r.1)));
         v.splice(from..to, [run]);
-    }
-    fn add_dot(&mut self, d: &osis_crdt::Dot) {
-        self.add(&d.src, d.ctr, d.ctr.saturating_add(1));
     }
     /// Whether a counter of `src` in `lo..hi` is here.
     fn meets(&self, src: &osis_crdt::Source, lo: u64, hi: u64) -> bool {
@@ -77,34 +69,28 @@ impl Spans {
 }
 
 impl Carried {
-    /// Adds what `f` holds: every write, and those valued.
+    /// Adds every write `f` holds.
     pub(crate) fn add(&mut self, f: &Fragment) {
-        f.write_ranges(&mut |src, lo, hi| self.writes.add(src, lo, hi));
-        f.each_valued(&mut |d| self.valued.add_dot(d));
+        f.write_ranges(&mut |src, lo, hi| self.0.add(src, lo, hi));
     }
     /// Whether it holds a write of `own`.
     pub(crate) fn meets(&self, own: &[Owned]) -> bool {
-        self.writes.meets_owned(own)
+        self.0.meets_owned(own)
     }
-    /// Whether it holds every write `o` does, and every one `o` holds valued.
+    /// Whether it holds every write `o` does.
     #[cfg(debug_assertions)]
     pub(crate) fn holds(&self, o: &Carried) -> bool {
-        self.writes.holds(&o.writes) && self.valued.holds(&o.valued)
+        self.0.holds(&o.0)
     }
-    /// Whether it holds the writes `o` does: the commits carried are the same.
-    pub(crate) fn same_writes(&self, o: &Carried) -> bool {
-        self.writes == o.writes
-    }
-    /// The runs of its writes (its memory: the valued runs lie within them).
+    /// The runs of its writes (its memory).
     pub(crate) fn len(&self) -> usize {
-        self.writes.0.values().map(Vec::len).sum()
+        self.0.0.values().map(Vec::len).sum()
     }
-    /// Its writes, and those valued.
-    pub(crate) fn spans(&self) -> [&Spans; 2] {
-        [&self.writes, &self.valued]
+    pub(crate) fn spans(&self) -> &Spans {
+        &self.0
     }
-    pub(crate) fn of([writes, valued]: [Spans; 2]) -> Carried {
-        Carried { writes, valued }
+    pub(crate) fn of(writes: Spans) -> Carried {
+        Carried(writes)
     }
 }
 
@@ -118,7 +104,7 @@ pub(crate) fn carried(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak) -> Vec<Comm
     let Some(row) = core.ix.snapshots.get(&(*tid, ak.clone())).and_then(|v| v.iter().find(|x| x.1 == *s)) else { return Vec::new() };
     let zero = CommitId([0; 32]);
     let mut out = Vec::new();
-    for (src, runs) in &row.4.writes.0 {
+    for (src, runs) in &row.4.0.0 {
         match src.kind() {
             osis_crdt::SourceKind::Commit(c) => out.extend(core.ix.commits.get(c).filter(|m| by_id(m.view.kind, m.view.form) && m.view.aspect(tid, ak.as_str()).is_some()).map(|_| *c)),
             osis_crdt::SourceKind::Session(_) => {
@@ -146,7 +132,7 @@ pub(crate) fn carriers(core: &Core, c: &CommitId, v: &crate::engine::View) -> Ve
     let mut out = Vec::new();
     for a in &v.aspects {
         let meets = |w: &Spans| if v.form.counted() { a.lo < a.hi && w.meets(&src, a.lo, a.hi) } else { by_id(v.kind, v.form) && w.0.contains_key(&src) };
-        for x in core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && meets(&x.4.writes)) {
+        for x in core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| x.1 != *c && meets(&x.4.0)) {
             out.extend(core.ix.commits.get(&x.1).and_then(|m| m.view.aspect(&a.tid, a.ak.as_str())).map(|sai| osis_perm::WriteId(x.1, sai as u32)));
         }
     }
@@ -178,7 +164,7 @@ pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
             Owned::of(&m.header, c, ai)
         })
         .collect();
-    // values held from an expiring snapshot alone (a holder granted without history holds no
+    // writes held from an expiring snapshot alone (a holder granted without history holds no
     // delta of them): its copies end at its expiry (spec/crdt.md §4.7)
     expiring.extend(expiring_copies(tx, tid, ak)?.into_values().flatten());
     let Some(mut st) = tx.state(tid, ak)?.cloned() else { return Ok(None) };
@@ -191,9 +177,9 @@ pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
     Ok(Some(st))
 }
 
-/// The bodies of `(tid, ak)` held here, valid, whose values live and end at an expiry still ahead,
-/// by that expiry: each as the writes whose values it gives (spec/crdt.md §4.7, §8): a delta's own
-/// writes, and `expiring_copies`.
+/// The bodies of `(tid, ak)` held here, valid, whose writes live and end at an expiry still ahead,
+/// by that expiry: each as the writes it gives (spec/crdt.md §4.7, §8): a delta's own writes, and
+/// `expiring_copies`.
 pub(crate) fn expiring_carriers(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<u64, Vec<Owned>>> {
     let now = tx.now().0;
     let mut out = expiring_copies(tx, tid, ak)?;
@@ -201,28 +187,29 @@ pub(crate) fn expiring_carriers(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<B
         let Some(m) = tx.core.ix.commits.get(c) else { continue };
         let Some(ai) = m.aspect(tid, ak) else { continue };
         let Some(t) = m.header.expires.filter(|t| *t > now && !m.header.kind.is_compaction()) else { continue };
-        if live_valued(tx.core, c, ai) {
+        if live_part(tx.core, c, ai) {
             out.entry(t).or_default().extend(Owned::of(&m.header, c, ai));
         }
     }
     Ok(out)
 }
 
-/// Whether part `ai` of held commit `c` is held with its values, valid.
-fn live_valued(core: &Core, c: &CommitId, ai: usize) -> bool {
+/// Whether part `ai` of held commit `c` is held, valid, its own writes not gone.
+fn live_part(core: &Core, c: &CommitId, ai: usize) -> bool {
     core.ix.commits.get(c).is_some_and(|m| m.holds(ai) && !m.own_gone(ai) && m.valid_at(ai) && !super::is_gone(core, c, ai))
 }
 
-/// The valued copies of the expiring snapshots of `(tid, ak)` held here, valid, by their expiry
+/// The copies the expiring snapshots of `(tid, ak)` held here, valid, carry, by their expiry
 /// still ahead, as exact dots (they have no writes of their own): of the writes this node knows
 /// no other lifetime of. Reads the aspect's snapshots alone. Invariant: an expiring snapshot's
-/// expiry is any writer's claim, so it decides only for a value held from expiring snapshots
+/// expiry is any writer's claim, so it decides only for a write held from expiring snapshots
 /// alone: a write whose own delta's header is held ends as that delta does, and one a lasting
-/// body holds valued lasts (else a forged expiring snapshot ends a lasting value, or extends an
-/// expiring one, in what an honest node writes from it: its snapshots, its undo).
+/// body holds lasts (else a forged expiring snapshot ends a lasting write, or extends an
+/// expiring one, in what an honest node writes from it: its snapshots, its undo). Every write
+/// of a dot, value-carrying or not: a gone write has no effect (spec/crdt.md §4.7).
 pub(crate) fn expiring_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<u64, Vec<Owned>>> {
     let now = tx.now().0;
-    // each held valid snapshot with its values: its expiry, if any
+    // each held valid snapshot with its own writes live: its expiry, if any
     let snaps: Vec<(CommitId, usize, Option<u64>)> = tx
         .core
         .ix
@@ -234,7 +221,7 @@ pub(crate) fn expiring_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTr
             let m = tx.core.ix.commits.get(&x.1)?;
             let ai = m.aspect(tid, ak)?;
             let t = m.header.expires;
-            (t.is_none_or(|t| t > now) && live_valued(tx.core, &x.1, ai)).then_some((x.1, ai, t))
+            (t.is_none_or(|t| t > now) && live_part(tx.core, &x.1, ai)).then_some((x.1, ai, t))
         })
         .collect();
     let mut out: BTreeMap<u64, Vec<Owned>> = BTreeMap::new();
@@ -247,20 +234,18 @@ pub(crate) fn expiring_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTr
         crate::apply::each_held_piece(tx, &s, ai, &mut |_, f| {
             match t {
                 Some(t) => expiring.push((t, f)),
-                None => f.each_valued(&mut |d| {
-                    lasting.insert((d.src.clone(), d.ctr));
-                }),
+                None => lasting.extend(f.writes().into_iter().map(|(d, _)| (d.src, d.ctr))),
             }
             Ok(())
         })?;
     }
     let mut dots: BTreeMap<u64, BTreeMap<osis_crdt::Source, BTreeSet<u64>>> = BTreeMap::new();
     for (t, f) in &expiring {
-        f.each_valued(&mut |d| {
-            if tx.core.write_expiry(tid, ak, d).is_none() && !lasting.contains(&(d.src.clone(), d.ctr)) {
-                dots.entry(*t).or_default().entry(d.src.clone()).or_default().insert(d.ctr);
+        for (d, _) in f.writes() {
+            if tx.core.write_expiry(tid, ak, &d).is_none() && !lasting.contains(&(d.src.clone(), d.ctr)) {
+                dots.entry(*t).or_default().entry(d.src).or_default().insert(d.ctr);
             }
-        });
+        }
     }
     for (t, by) in dots {
         out.insert(t, by.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs: ctrs.into_iter().collect() }).collect());
@@ -269,11 +254,10 @@ pub(crate) fn expiring_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTr
 }
 
 /// State at a cut (spec/crypto.md §4), beside the snapshot from this node's whole state, which
-/// carries every expiring value value-less: for each expiry still ahead of a body of `owed`
-/// holding values, a snapshot expiring then, carrying of this node's state the writes whose values
-/// the bodies ending then give (`expiring_carriers`), valued (spec/crdt.md §8). It ends with them
-/// at every node, read or not, so a holder granted without history reads each value while it
-/// lives and never after. Its tables claim nothing (frontiers 0, nothing absorbed): it carries
+/// carries no expiring write: for each expiry still ahead of a body of `owed` with live writes, a
+/// snapshot expiring then, carrying of this node's state the writes the bodies ending then give
+/// (`expiring_carriers`, spec/crdt.md §8). It ends with them at every node, read or not, so a
+/// holder granted without history reads each write while it lives and never after. Its tables claim nothing (frontiers 0, nothing absorbed): it carries
 /// part of the state. The snapshots written.
 pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSet<CommitId>) -> Result<Vec<CommitId>> {
     let carriers = expiring_carriers(tx, tid, ak)?;
@@ -307,9 +291,7 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
         // canonical form (`remove_writes` leaves it to a join)
         let mut f = Fragment::default();
         f.join(part);
-        let mut any = false;
-        f.each_valued(&mut |_| any = true);
-        if !any {
+        if f.writes().is_empty() {
             continue;
         }
         out.push(build_snapshot(tx, *tid, ak.clone(), f, ts, node, Frontiers::default(), Default::default(), Some(t), false)?);
@@ -334,7 +316,7 @@ pub(super) fn unseen_by(fr: &osis_crdt::Frontiers, h: &Header, c: &CommitId, hi:
 /// aspect was live to its writer (header `h`, part counters below `hi`; spec/crdt.md §8): its
 /// session listed up to them, or the commit absorbed. An unlisted one is not reached: the tables
 /// cannot tell a commit whose writes all died from one the writer never applied. A commit with
-/// an expiry is never reached: a snapshot carries its values value-less.
+/// an expiry is never reached: a snapshot carries none of its writes (§8).
 pub(crate) fn reaches((fr, abs): (&Frontiers, &[(CommitId, Tid)]), h: &Header, c: &CommitId, hi: u64) -> bool {
     if h.expires.is_some() {
         return false;
@@ -521,10 +503,9 @@ pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Re
 /// Whether a snapshot of `(tid, ak)` written now at wall ms `now` claims the writes of `c`'s part
 /// (`frontiers_now`'s walk passes it, `Absorbed` lists it): valid here; held, as a part still
 /// missing gives the state nothing (applied without it, spec/commits.md §4), but an expiring
-/// one, whose writes would go here anyway. A part gone for a purge is
-/// claimed: the snapshot carries its writes value-less, and no node counts a body it lacks
-/// covered by a value-less copy (`covered_join`), so a fall of the purge brings it back. The
-/// writer and the compaction trigger both ask it.
+/// one, whose writes would go here anyway. A part gone for a purge is claimed: its writes have
+/// no effect, and the snapshot carries none of them (spec/crdt.md §4.7). The writer and the
+/// compaction trigger both ask it.
 pub(crate) fn claims(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing(ai) || m.header.expires.is_some())))
 }
@@ -691,9 +672,9 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     let body_facts = body.facts;
     // counted: tests read how much of the snapshot a judgment walks
     osis_base::costs::count("covered: snapshot part bytes", body.part_bytes);
-    // a snapshot never carries an expiring delta's values (spec/crdt.md §8): held with its
-    // values, the join below judges it (covered once no value of it lives); not held and not
-    // value-less, the frontier alone would wrongly say covered
+    // a snapshot never carries an expiring delta's writes (spec/crdt.md §8): held, the join
+    // below judges it (covered once none of its writes lives); not held and not gone, the
+    // frontier alone would wrongly say covered
     if !held && m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) && !super::is_gone(tx.core, c, cai) {
         return Ok(Some(false));
     }
@@ -765,12 +746,12 @@ struct CoveredBody {
     /// Some group was judged.
     judged: bool,
     /// The snapshot's part at the body's positions, its writes under the body's dots taken
-    /// out (but value-less ones) and the body joined back, encodes as before.
+    /// out and the body joined back, encodes as before.
     unchanged: bool,
 }
 
 /// Reads body `c` a piece at a time (`each_held_piece`; `strip`: an invalid snapshot's copies
-/// of what a valid delta supplies taken out): its writes by dot, value-less ones and stamps,
+/// of what a valid delta supplies taken out): its writes by dot and stamps,
 /// then judges it against the snapshot's part at its positions (`held_part_at`) in groups of
 /// its pages, each with its skeleton (where pages meet: their paths' records and resets), so a
 /// judgment holds the skeleton and pages of about the two parts' root bytes, not the body.
@@ -1095,7 +1076,7 @@ fn owed_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Error>>
         return Ok(None);
     }
     // a holder granted without history holds none of the expiring bodies below its floor: their
-    // values go beside the snapshot, in snapshots ending with them (`write_expiring`)
+    // writes go beside the snapshot, in snapshots ending with them (`write_expiring`)
     Ok(tx
         .step(crate::engine::Step::Resnapshot, |tx| {
             tx.in_class(memory, |tx| {
@@ -1112,8 +1093,8 @@ fn owed_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Error>>
 impl Engine {
     /// Writes the re-snapshots owed after purge requests (`Indexes::resnapshots_owed`) that are
     /// due (`Core::resnapshots_due`), each in a transaction of its own (`owed_resnapshot`): it
-    /// carries the purged writes value-less, so a node that never held them reads as this one
-    /// once it holds it; duplicates from several writers are harmless (spec/sync-compaction.md §1). Each
+    /// carries none of the purged writes and what they superseded where this node holds it, so
+    /// a node that dropped that as covered reads as this one once it holds it; duplicates from several writers are harmless (spec/sync-compaction.md §1). Each
     /// aspect whose snapshot failed, with why.
     pub fn purge_resnapshots(&mut self) -> Result<Vec<(Tid, Ak, Error)>> {
         let mut due = std::mem::take(&mut self.core.resnapshots_due);
@@ -1135,8 +1116,7 @@ impl Engine {
 
 impl Engine {
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
-    /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
-    /// value-less; frontiers from what this node applied (`frontiers_now`). On a `+` aspect a memory commit. `None`: no state to snapshot (a signal
+    /// §2, spec/crdt.md §8): no write of a delta with an expiry nor a gone one; frontiers from what this node applied (`frontiers_now`). On a `+` aspect a memory commit. `None`: no state to snapshot (a signal
     /// has none).
     pub fn snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
         let (tid, ak) = (*tid, ak.clone());
@@ -1174,9 +1154,8 @@ impl Engine {
     /// unchanged, whatever its tables say, and the snapshot holds each live write of the body
     /// with the body's payload where the body's write has one. A body not held here: covered, unless the snapshot's
     /// frontier lists its session short of its counters, so a body dropped here as covered past
-    /// a gap reads uncovered from then on (`Dropped::covered_by` keeps what covered it), or the
-    /// snapshot holds a write of it value-less that this node does not hold so for good (past
-    /// its expiry). A snapshot
+    /// a gap reads uncovered from then on (`Dropped::covered_by` keeps what covered it), or it
+    /// has an expiry and is not gone here (the snapshot carries none of its writes). A snapshot
     /// covers none stamped later, nor, purging on replace, a live body that keeps history. `None` when either is not
     /// held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {

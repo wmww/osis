@@ -112,7 +112,7 @@ pub(crate) enum Here {
 /// What is here of part `ai` of commit `c`, listed or not, its body not read.
 fn part_here(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Here> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(Here::Dropped) };
-    // a bare leftover (expired, purged) shows as what took its values, not as its read
+    // a bare leftover (expired, purged) shows as what took its writes, not as its read
     let holds = m.holds(ai) && !m.own_gone(ai);
     let dropped = m.body_gone(ai);
     let header = m.header.clone();

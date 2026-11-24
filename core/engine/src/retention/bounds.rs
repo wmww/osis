@@ -200,8 +200,8 @@ pub(super) fn dated_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: u
     Ok(tx.core.ix.dated.get(&(*c, tid, ak)).copied())
 }
 
-/// Whether part `ai` of `c` on `(tid, ak)` is dated at all: held whole with values (a bare
-/// leftover has none to keep) and valid.
+/// Whether part `ai` of `c` on `(tid, ak)` is dated at all: held whole or with its own writes
+/// live (a bare leftover has none to keep) and valid.
 fn judged(core: &Core, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> bool {
     held_part(core, c, tid, ak) == Some(ai) && core.ix.commits.get(c).is_some_and(|m| !m.own_gone(ai) && m.valid_at(ai))
 }

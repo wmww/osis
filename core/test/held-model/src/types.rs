@@ -250,8 +250,8 @@ pub struct Part {
     pub aspect: Aspect,
     pub purge_by: PurgeBy,
     pub body: Body,
-    /// The commits whose values this node stripped from the held body (it holds its leftover); one
-    /// no longer held value-less makes the body count as never received (spec/permissions.md §6).
+    /// The commits whose writes this node removed from the held body as gone (it holds its
+    /// leftover); one no longer gone makes the body count as never received (spec/permissions.md §6).
     pub stripped: std::collections::BTreeSet<CommitId>,
     /// A signal edit's claim (`edits::listing`, notes/signal-edits-design.md): the fire this part replaces.
     pub replaces: Option<CommitId>,

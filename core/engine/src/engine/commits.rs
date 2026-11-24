@@ -155,7 +155,7 @@ impl Meta {
         matches!(self.hold(ai), Some(Hold::Leftover { own_live: true, .. }))
     }
     /// Whether part `ai` is held as a leftover whose own writes are gone (expired, purged), for
-    /// the copies it carries: no values of its own to keep, so no keep bounds.
+    /// the copies it carries: no writes of its own to keep, so no keep bounds.
     pub fn own_gone(&self, ai: usize) -> bool {
         matches!(self.hold(ai), Some(Hold::Leftover { own_live: false, .. }))
     }

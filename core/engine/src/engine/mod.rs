@@ -989,7 +989,7 @@ pub(crate) struct CoreMark {
 }
 
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, signer),
-/// and the bounds of what its held body carries valued and value-less (`retention::snapshot::Carried`).
+/// and the bounds of what its held body carries (`retention::snapshot::Carried`).
 pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitId, Tid)>, crate::retention::snapshot::Carried);
 
 /// A decoded commit record: its head (received, origin, dropped parts) and blob.
@@ -3887,7 +3887,7 @@ mod tests {
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         let mut meta = lp.peers[0].engine.core.ix.commits[&id].clone();
         meta = super::Meta::of(meta.view.clone(), meta.header.clone(), meta.received, meta.origin, None, meta.signed(), vec![true], vec![Hold::Body { whole: true }]);
-        // (holds, body gone, leftover, valued, bare, whole, dropped, missing)
+        // (holds, body gone, leftover, own live, bare, whole, dropped, missing)
         let answers = |m: &super::Meta| (m.holds(0), m.body_gone(0), m.stripped(0), m.own_live(0), m.own_gone(0), m.whole(0), m.is_dropped(0), m.missing(0));
         let cases = [
             (Hold::Body { whole: true }, (true, false, false, false, false, true, false, false)),

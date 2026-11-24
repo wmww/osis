@@ -48,8 +48,8 @@ fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, right: bool) -> Re
 /// so dots alone miss an overwritten value. A write the state holds as it is (a root reset a later
 /// write implies, kept by canonical form) wins in both, so a snapshot of the state is never
 /// replaced by its own content and writers' covers do not chase each other. A delta with an
-/// expiry held with its values is judged against the state with its writes gone, as a
-/// snapshot carries them (spec/crdt.md §8): replaced only once no value of it lives, when a
+/// expiry is judged against the state without its writes, as no snapshot carries them
+/// (spec/crdt.md §8): replaced only once none of its writes lives, when a
 /// snapshot of the state covers it (spec/commits.md §5).
 pub(super) fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
