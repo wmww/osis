@@ -1,5 +1,5 @@
 # Handoff
-> Summary: For the next coordinator: where main and the unlanded sync rewrite stand, the one ordered route from here (land the rewrite, accounts as ordinary things, then what the rewrite still owes), what not to build on the way, what waits on Tess, and the open small items. Kept current as work moves.
+> Summary: For the next coordinator: where main stands with the sync rewrite in it, the one ordered route from here (accounts as ordinary things, then what the rewrite still owes), what not to build on the way, what waits on Tess, and the open small items. Kept current as work moves.
 
 ## Tess's direction (standing)
 - Stay focused and moving; simple and correct. Modify plans and process freely.
@@ -10,29 +10,28 @@
 ## State
 - **Nothing is running.** No agent, no task in flight; the worktrees under `.worktrees/` hold old finished branches.
 - **Main** builds and passes its default tests. Two seeds fail on it unread, each with its issue and rate line: a cold seq edit-then-move (issues/seq-cold-edit-move-placement.md) and a holder with key access lacking a box after rotations (issues/rotation-holder-lacks-box.md, security). The custody failures go with the account machinery.
-- **The sync rewrite** is branch `mizzen-a2-switch` (pushed, at d0f1f721c: two commits on main's 463925bec; main has moved nine commits since, some in engine files it rewrites: retention, apply, the order and held tests). 278 files, about 2,000 lines fewer.
+- **The sync rewrite is on main**, as it stood on its branch: unreviewed, ungated, no property or sim run on it.
   - Gone: tickets, chain certificates and the search over any path, accepting, removal notices.
   - Built: a grant belongs to the thing granted (a node's role is by the grants of what it syncs or holds an offer of; a grant from outside arrives as an offer; holders are held for keys from the synced thing up, in engine and sync); a sync ID carries a commit's unit body and one certificate copy per thing outside the unit, read off the one evidence derivation; the delete-key check is on.
-  - It builds and its default tests pass, with 22 tests ignored by cause (`rg -n 'sync rewrite: ' core/ libs/`). It was never reviewed or gated, and no property or sim has run on it.
-  - Its own account is the sync-rewrite-state note, on the branch only (`git show` it from `origin/mizzen-a2-switch`, under notes, named sync-rewrite-state): what the tree is, the ignores by cause, and a list of rulings marked "For review".
+  - It builds and its default tests passed before the rebase onto main, with 22 tests ignored by cause (`rg -n 'sync rewrite: ' core/ libs/`); chat's join by a write link is one of them (fails at the redeem, "no holder answered", cause unknown).
+  - Its account is notes/sync-rewrite-state.md: what the tree is, the ignores by cause, what is owed, and a list of rulings marked "For review".
 
 ## The route
-One list, in order. It stands in for every other list of what is next (the state note's Next, the order of code briefs in notes/a2-spec/README.md); notes/redesign-plan.md holds the stages and their reasons.
+One list, in order. It stands in for every other list of what is next (the order of the state note's Next, the order of code briefs in notes/a2-spec/README.md); notes/redesign-plan.md holds the stages and their reasons.
 
-1. **Put the sync rewrite on main as it stands**: rebase, check it builds, push. No review, no gate, no tidying of its ignores or notes first; its state note lands with it and stays the account of what is owed.
-2. **Accounts as ordinary things** (Tess: next, delete first), on main directly, no branch. Builder's brief with the delete list, sizes and order of work: notes/accounts-switch-brief.md; stage A4 of the plan.
+1. **Accounts as ordinary things** (Tess: next, delete first), on main directly, no branch. Builder's brief with the delete list, sizes and order of work: notes/accounts-switch-brief.md; stage A4 of the plan.
    - Before its spec piece: Tess's answer on issues/first-entry-through-holder.md; home as the account itself or a dependent of it (the design note argues the first, the plan says the second: settle in the spec piece).
    - The key hop and the membership cases are modelled already (roles-model's paths; the walk reads the key hop as admin until this lands).
    - One piece a session, each ending pushed. Main may be red: a test broken by the piece is ignored with the piece's label and left.
    - The one review and gate come when accounts are in, over the rewrite and accounts together.
-3. **What the rewrite still owes**, after accounts: sealed copies in place of rotations delivered as grant fires; own boxes only for a holder held for keys; acting only after a complete pass; the offer cut to the bootstrap alone; the delete-key leftovers (issues/delete-key-levels-unchecked.md, Left); the ignores still standing, each probed for its own cause; the chained pass out of osis-perm and the models; the citations of the two retired-machinery issues; the deprecated-terms rename.
-4. **Then** what the plan has left: a removal as evidence (what A2 did not already build), public things and cards, core without accounts, clean-up. Cut each to what is still needed before starting.
+2. **What the rewrite still owes**, after accounts (notes/sync-rewrite-state.md, Next): sealed copies in place of rotations delivered as grant fires; own boxes only for a holder held for keys; acting only after a complete pass; the offer cut to the bootstrap alone; the delete-key leftovers (issues/delete-key-levels-unchecked.md, Left); the ignores still standing, each probed for its own cause; the chained pass out of osis-perm and the models; the citations of the two retired-machinery issues; the deprecated-terms rename.
+3. **Then** what the plan has left: a removal as evidence (what A2 did not already build), public things and cards, core without accounts, clean-up. Cut each to what is still needed before starting.
 
-Beside the route, any time after step 1: deleting suspect repair whole (spec, wire message, sync, engine, notes: purged writes have no effect, so nothing is left for it to repair); the two failing seeds; one cleanup always, a workflow job about half the time (a tool that lists and runs the rewrite's ignores by name: three sessions wrote it in scratch).
+Beside the route: deleting suspect repair whole (spec, wire message, sync, engine, notes: purged writes have no effect, so nothing is left for it to repair); the two failing seeds; one cleanup always, a workflow job about half the time (a tool that lists and runs the rewrite's ignores by name: three sessions wrote it in scratch).
 
 ## Not to build on the way
-- **Nothing that accounts delete.** The account root, its key part, node cards, the signing chain, account epochs, custody and their tests go at step 2: an ignore or failure whose cause sits there is recorded and left (two of the 22 are in a test file on the delete list; the delete-key issue's account-epoch item goes the same way).
-- **No grant list with the holder**, no taken or accepted grant, no fire kept as proof, no path a role commit states for its holders: each was built and removed (the branch's copy of notes/holder-access-study.md says why not down from the account).
+- **Nothing that accounts delete.** The account root, its key part, node cards, the signing chain, account epochs, custody and their tests go at step 1: an ignore or failure whose cause sits there is recorded and left (two of the 22 are in a test file on the delete list; the delete-key issue's account-epoch item goes the same way).
+- **No grant list with the holder**, no taken or accepted grant, no fire kept as proof, no path a role commit states for its holders: each was built and removed (notes/holder-access-study.md; why not down from the account).
 - **No fix sized by its label.** Three times a class of failing tests labelled with one cause had three or more; one probe line per failing test (what it holds, which fire or box was refused) sizes a job in a session's first minutes. A cause written in a note says whether it was probed or guessed.
 
 ## Waiting on Tess
