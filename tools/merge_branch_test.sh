@@ -4,7 +4,8 @@
 # tools/gate.sh (prints a summary, exits $GATE_RC) and cargo (logs its arguments, exits $CARGO_RC).
 # gate: a conflict in notes/handoff.md alone takes main's side, any other stops before the gate as
 # does a policy failure; the gate's exit, log and summary come back. land: lands, deletes the pushed
-# copy, releases the worktree and deletes the branch; refuses after a failed gate unless --fixed; when
+# copy, releases the worktree and deletes the branch; refuses after a failed gate unless --fixed or
+# its kept summary, read again against main's known failures, passes; when
 # main moved, rebases and runs clippy and the tests of the packages both sides changed only, a failure
 # stopping the landing. Exit 1 on a mismatch.
 set -eu
@@ -38,11 +39,19 @@ export CARGO_LOG="$d/cargo.log"
 git init -q --bare -b main "$d/origin.git"
 git clone -q "$d/origin.git" "$d/a" 2> /dev/null
 cd "$d/a"
+# every push below goes to the temp bare remote only: stop if this is any other repo
+[ "$(git remote get-url origin)" = "$d/origin.git" ] && [ "$(git rev-parse --show-toplevel)" = "$d/a" ] || { echo "FAIL: not the temp repo"; exit 1; }
 git config user.email t@t && git config user.name t
 mkdir -p tools notes core/x core/y
-cp "$tools/merge-branch" "$tools/claim" "$tools/land" tools/
+cp "$tools/merge-branch" "$tools/claim" "$tools/land" "$tools/known_failures_merge.py" tools/
 printf 'import os, sys\nsys.exit(int(os.environ.get("POLICY_RC", "0")))\n' > tools/policy.py
-printf 'echo "== test stages: 1 run of 1, 0 failed"\necho "== gate exit ${GATE_RC:-0}"\nexit "${GATE_RC:-0}"\n' > tools/gate.sh
+# GATE_KEEP=DIR: a failed gate keeps its files for the summary's re-read
+printf '%s\n' 'echo "== test stages: 1 run of 1, 0 failed"' 'echo "== gate exit ${GATE_RC:-0}"' \
+    'if [ -n "${GATE_KEEP:-}" ]; then mkdir -p "$GATE_KEEP" && touch "$GATE_KEEP/sel" "$GATE_KEEP/sel.res"' \
+    '  echo "== summary again (kept): python3 tools/gate_failures.py $GATE_KEEP/sel $GATE_KEEP/sel.res"; fi' \
+    'exit "${GATE_RC:-0}"' > tools/gate.sh
+# the summary: KNOWN only (exit 3) when ROOT's known list names probe/x, else NEW (exit 1)
+printf 'import sys\nsys.exit(3 if "probe/x " in open(sys.argv[3] + "/tools/known_failures.txt").read() else 1)\n' > tools/gate_failures.py
 printf '[workspace]\nmembers = ["core/*"]\ndefault-members = ["core/*"]\n' > Cargo.toml
 for p in x y; do printf '[package]\nname = "%s"\n' $p > core/$p/Cargo.toml; printf '1\n2\n3\n4\n5\n' > core/$p/f; done
 echo base > notes/handoff.md
@@ -93,6 +102,21 @@ before=$(tip)
 check "failed gate: land refused" "$rc $(tip)" "1 $before"
 "$mb" land t5 --fixed > /dev/null 2>&1 && rc=0 || rc=$?
 check "failed gate, --fixed: landed" "$rc $(git branch --list t5 | wc -l)" "0 0"
+git fetch -q
+
+# land after a failed gate whose NEW failure main listed since: its summary read again lands it
+branch t7 core/x/f
+GATE_RC=1 GATE_KEEP="$d/keep7" "$mb" gate t7 > /dev/null 2>&1 && rc=0 || rc=$?
+before=$(tip)
+"$mb" land t7 > /dev/null 2>&1 && rc=0 || rc=$?
+check "failed gate, main unlisted: land refused" "$rc $(tip)" "1 $before"
+git checkout -q --detach origin/main && mkdir -p issues && echo i > issues/p.md
+echo "probe/x rate:1 issues/p.md fails" > tools/known_failures.txt
+git add issues/p.md tools/known_failures.txt && git commit -qm listed && git push -q origin HEAD:main && git fetch -q
+"$mb" land t7 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "failed gate, listed on main since: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -1 main)" "0 t7"
+check "failed gate, listed: re-read said" "$(grep -c 'read again against origin/main.s known failures exits 3' "$d/err")" "1"
+rm -f "$CARGO_LOG"
 git fetch -q
 
 # land after main moved: rebased, clippy and the tests of the package both sides changed (x, not y)

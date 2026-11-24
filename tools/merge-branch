@@ -11,7 +11,10 @@ The task loop), every step checked and reported, run from any checkout of the re
       the exit, HEAD and origin/main in LOGS/NAME/record.json. Exit: the gate's, or 2 refused
       before it ran.
   land NAME [--fixed]     in W: refused unless W is clean and its last gate exited 0 or 3 (with
-      --fixed: a NEW failure or failed check was fixed and its tests rerun by name); prints the
+      --fixed: a NEW failure or failed check was fixed and its tests rerun by name), or its summary
+      read again (the files the gate kept) against the known failures the landing carries (HEAD's
+      tools/known_failures.txt merged with origin/main's, as the rebase merges them) exits 0 or 3:
+      its NEW failures shown on main and listed there since; prints the
       commits after the checked HEAD (refused if HEAD is no descendant of it); if origin/main moved
       past the checked base, rebases as gate does, then `cargo clippy --all-targets -- -D warnings`,
       the same with `-p` for each non-default package both sides changed, and `cargo test -p` each
@@ -21,7 +24,7 @@ The task loop), every step checked and reported, run from any checkout of the re
 
 LOGS is gate-logs/ in the repo's common git dir: one place per branch from any worktree, read by
 the next step. A failed check after a land's rebase is recorded like a failed gate."""
-import fnmatch, glob, importlib.machinery, importlib.util, json, os, re, shutil, subprocess, sys, tomllib
+import fnmatch, glob, importlib.machinery, importlib.util, json, os, re, shutil, subprocess, sys, tempfile, tomllib
 
 sys.dont_write_bytecode = True
 TOOLS = os.path.dirname(os.path.abspath(__file__))
@@ -152,7 +155,7 @@ def gate(name, args):
         rc = subprocess.run(["sh", "tools/gate.sh", *args], cwd=w, stdout=f, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL).returncode
         f.write(f"gate={rc}\n")
-    record(d, exit=rc, failed=f"gate exit {rc}", head=head, base=base)
+    record(d, exit=rc, failed=f"gate exit {rc}", head=head, base=base, log=log)
     lines = open(log).read().splitlines()
     starts = [i for i, l in enumerate(lines) if l.startswith("== test stages:")]
     print("\n".join(lines[starts[-1]:] if starts else lines[-20:]))
@@ -207,6 +210,41 @@ def checks(w, base, head):
     return True
 
 
+KNOWN = "tools/known_failures.txt"
+
+
+def reread(w, rec, main):
+    """(exit, summary) of the last gate's summary read again (tools/gate_failures.py on the files the
+    gate kept) against the known list the landing carries: HEAD's merged with MAIN's over the gated
+    base (tools/known_failures_merge.py), an issue kept when MAIN has it or the branch added it.
+    None when there is nothing to read: no kept files, or both sides changed one test's lines."""
+    log = rec.get("log")
+    text = open(log, errors="replace").read() if log and os.path.exists(log) else ""
+    m = re.findall(r"^== summary again .*: python3 \S*gate_failures\.py (\S+) (\S+)$", text, re.M)
+    if not m or not all(os.path.exists(p) for p in m[-1]):
+        return None
+    show = lambda rev, path: run("git", "show", f"{rev}:{path}", cwd=w, check=False)
+    texts = [show(rev, KNOWN).stdout for rev in (rec["base"], rec["head"], main)]
+    kfm = load("known_failures_merge.py")
+    if kfm.both_changed(*texts):
+        return None
+    has = lambda rev, path: show(rev, path).returncode == 0
+    exists = lambda issue: has(main, issue) or (has(rec["head"], issue) and not has(rec["base"], issue))
+    merged, _ = kfm.merge(*texts, exists)
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, "tools"))
+        with open(os.path.join(root, KNOWN), "w") as f:
+            f.write(merged)
+        with open(os.path.join(root, "tools", "test_cost.txt"), "w") as f:
+            f.write(show(rec["head"], "tools/test_cost.txt").stdout)
+        for line in kfm.records(merged)[1]:
+            issue = os.path.join(root, line.split()[2])
+            os.makedirs(os.path.dirname(issue), exist_ok=True)
+            open(issue, "w").close()
+        r = run("python3", os.path.join(TOOLS, "gate_failures.py"), *m[-1], root, cwd=w, check=False)
+    return r.returncode, r.stdout
+
+
 def land(name, fixed):
     w = held(name)
     if not w:
@@ -217,20 +255,24 @@ def land(name, fixed):
     rec = record(d)
     if rec is None:
         stop(f"no gate recorded for {name} ({d}): run `tools/merge-branch gate {name}`", 1)
+    git("fetch", "-q", "--prune", "origin", cwd=w)
+    main = git("rev-parse", "origin/main", cwd=w)
     if rec["exit"] not in (0, 3):
-        if not fixed:
+        again = None if fixed else reread(w, rec, main)
+        if again and again[0] in (0, 3):
+            say(f"the gate's summary read again against origin/main's known failures exits {again[0]}:\n{again[1].rstrip()}")
+        elif not fixed:
             stop(f"the last check failed ({rec['failed']}): fix it, rerun its tests by name, then land with --fixed", 1)
-        say(f"landing with --fixed after: {rec['failed']}")
+        else:
+            say(f"landing with --fixed after: {rec['failed']}")
     head = git("rev-parse", "HEAD", cwd=w)
     if head != rec["head"]:
         if run("git", "merge-base", "--is-ancestor", rec["head"], head, cwd=w, check=False).returncode:
             stop(f"HEAD is no descendant of the checked {rec['head'][:9]}: rewritten since; gate it again", 1)
         say(f"commits after the checked HEAD:\n{git('log', '--oneline', rec['head'] + '..' + head, cwd=w)}")
-    git("fetch", "-q", "--prune", "origin", cwd=w)
     pushed = [r for r in git("for-each-ref", "--format=%(refname:short)", f"refs/remotes/origin/*-{name}", cwd=w).split() if r]
     if len(pushed) > 1:
         stop(f"several pushed copies of {name}: {' '.join(pushed)}: delete the stale one first", 1)
-    main = git("rev-parse", "origin/main", cwd=w)
     if main != rec["base"]:
         say(f"origin/main moved since the last check ({rec['base'][:9]} -> {main[:9]}): rebasing")
         rebase(w, 1)
