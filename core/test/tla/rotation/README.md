@@ -151,6 +151,23 @@ When a joint box to holder actor M is blocked (spec/crypto.md §4, Seal). Static
 | party | **fails**: q in N and P; N removed from M (fork 1 boxes N, fork 2 does not), q removed from P (fork 1 boxes P at its new keyset, fork 2 at its old); fork 1 misses party N, fork 2 party q, and q opens fork 1 through N, fork 2 through P | **fails** | pass |
 | every | pass | pass | pass |
 
+## Left out (`LeftOut.tla`)
+notes/holder-actors.md (Left out); spec/crypto.md §4 Left out. One holder actor M of thing A, read role. One cause c (a departure from M or below, or a keyset below M making a box stale) removes party x, who opens every keyset of M made without knowing c valid; c is void wherever its invalidator i is held (`HasInv`: a concurrent demotion of c's author, a side switch). Sealers of A: w reads M (judges M's keysets by names), c holds none of M's secrets (judges by order). r rotates M, holding none of its secrets unless `RSec`. `Ignorant`: one rotation of M made after c without it (adversary). A rotation of A boxes M at Seal's keyset or leaves it out and records; a re-seal boxes M into a current epoch lacking a box; any delivery order, a rotation of A arriving with the keysets it names and what it carries. `Rule`: `cause` (the rule: a record names its cause, which A's keyset carries; it counts while the cause stands, and its keyset is then blocked; r rotates M while a counting record names a current keyset of M), `old` (a record counts whatever its cause; Seal takes only a keyset past it; r rotates only where no recorded keyset is current and nothing is past it), `nocarry` (cause, not carried), `nofact` (no record, the cause carried), `nodue` (cause, no rotation of M for a record). Invariants: `NoLeak` (with c valid, content w wrote knowing c is opened by x through no keyset of M made before c: the stated limit admits an ignorant keyset made after it), `Live` (once all is held and nothing is due, M is boxed at every current epoch of A at each sealer and none is blocked: invalid data keeps no effect), `NoUndo` (with c valid, no re-seal boxes M at the keyset an epoch's maker left it out at: else its maker rotates A once per re-seal). `MaxA` 2, `MaxM` 1. Module `LeftOut`.
+
+| cfg | setting | result | distinct states | time |
+|---|---|---|---|---|
+| `LO_inv` | cause, c invalidated | pass | 931,184 | 1 min 39 s |
+| `LO_inv_old` | old, c invalidated | **fails** `Live`: w leaves M out on c, i reaches everyone, the record keeps M out (issues/rotation-holder-lacks-box.md) | 3,166 | 3 s |
+| `LO_ign` | cause, ignorant keyset, c valid | pass (by hand) | 1,261,128 | 4 min 12 s |
+| `LO_ign_old` | old, ignorant keyset | **fails** `Live`: r judges the recorded keyset by order and never re-keys | 3,688 | 3 s |
+| `LO_both` | cause, both | pass (by hand) | | |
+| `LO_rsec` | cause, both, r reads M | pass (by hand) | | |
+| `LO_nocarry` | negative control | **fails** `NoLeak`: c, lacking the cause, finds the record void and re-seals M at the keyset made before c | 60 | 1 s |
+| `LO_nofact` | negative control | **fails** `NoUndo`: c re-seals M at the ignorant keyset w left it out at | 1,406 | 3 s |
+| `LO_nodue` | negative control | **fails** `Live`: nobody re-keys M | 531 | 3 s |
+
+Not modelled: an invalidator voided in turn (Tail.tla `T_chain`), joint boxes (Joint.tla), several holder actors or causes, hostile records.
+
 ## Timed grants and finalizes (`Finalize.tla`)
 notes/timed-ends.md. One group, read role, writers A, B, X (admins), readers D1, D2. Edge writes are entries (spec/crdt.md §5.6): A's `until` writes on D1, D2 and its renewal of D2 (before any finalize) each reset the entry their author held live; a finalize resets the live entry of each ended grant (erase, or keep: an `until` 0 entry beside) and carries a rotation naming the departures its author applied, its own by the departs mark. Any delivery order, commits whole; boxes are global and secrets are the closure over boxes and history boxes. `Rule`: `named` (the rule) or `old` (a name met by its commit alone; the negative control). Invariants: `NoLeak` (content written knowing a departure that stands with every commit held is not readable by the departed reader; every honest writer writes whenever it may), `Settles` (once all is delivered and nobody has a key action left, the honest writers agree on the current epochs and may encrypt, and every holder, a renewed one included, holds each of them).
 

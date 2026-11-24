@@ -1,21 +1,20 @@
-# A left-out record outlives the invalidated cause that made it
-> Summary: a writer of G leaves holder actor M out of G on a stale box whose staleness comes from a rotation (of N, below M) that later turns invalid; G's keyset records M's current keyset, nothing is blocked once all is held, so no rotator of M ever re-keys and M stays out of G for good. Design question in Left out (spec/crypto.md §4). Reproducer `rotation::tests_members::repro_left_out_on_an_invalidated_rotation_spec_crypto_4`.
+# Build: left-out records carry their causes
+> Summary: build spec/crypto.md §4 Left out as specified (design: notes/holder-actors.md, Left out; model LeftOut.tla): a record names the commits that blocked its keyset, they travel carried, it counts only while one stands, and a rotator of M rotates for a counting record of a current keyset. Fixes the lockout of an honest holder actor once a record's cause turns invalid (reproducer `rotation::tests_members::repro_left_out_on_an_invalidated_rotation_spec_crypto_4`).
 > Priority: normal
 > Tags: engine, security
 
-Property violated: every holder of G with key access ends boxed at G's current epochs (spec/permissions.md §3; the rotation property's "a holder ... lacks a box"). A permanent lockout of an honest holder actor with no hostile party: invalid data (the invalidated rotation) keeps an effect on G forever.
+Property violated today: every holder of G with key access ends boxed at G's current epochs (spec/permissions.md §3). A record made for a cause that later turns invalid (a rotation of N below M invalidated by a concurrent demotion of its rotator, a departure by a concurrently demoted admin, a side switch) keeps M out of G for good; so does a record of a current keyset whose only rotators judge it by order. LeftOut.tla `LO_inv_old` and `LO_ign_old` fail `Live`; the specified rule passes (`LO_inv`, `LO_ign`).
 
-## Cause (probed on `rotation_holds_large` seed 96284297771, rebuilt by hand)
-G {g0, W admin, M}, M {m0, N}, N {n0, P admin}.
-1. P rotates N (keyset k1' listing k1); n0 demotes P concurrently, so P's rotation is invalid once both are held.
-2. W holds P's rotation, not the demotion. M's epoch boxes N at k1, listed by k1': stale at W (`members::stale_at`, `Block::Box`). W rotates G and Seal leaves M out; G's keyset records M left out at M's current keyset.
-3. Everything syncs: P's rotation is invalid, k1 is N's only keyset, M's epoch is not stale anywhere, no departure from M exists. M's rotators have nothing due, and `left_out_for_good` skips a recorded keyset that is current at the node (it waits for "the knowing re-key"). Every later rotation of G records M again (spec: no rotation of A drops a record). M is never boxed.
-The same holds for any cause that later turns invalid: a departure from M by an admin demoted concurrently, a side switch in an admin dispute.
+## Change
+- Wire and schema: keyset field 6 `left_out` becomes `map<weak, map<epoch, set<blob>>>` (spec/wire.md §7): per M, per recorded keyset, its causes' commit IDs. `schema/core.osis` `left_out 6` and its doc line, `osis_keys::aspects`, `produce::rotate_leaving_out`, `LeftOut` (per keyset: epoch to cause IDs), test vectors (`core/test/vectors` schema subject).
+- Causes: `rotation::blocking` (and the box walk under it, `blocked_epoch`) returns, beside its `Block`, the commits it read per spec/crypto.md §4 Left out: a departure's newest edge write the covering epoch must name (Covers; `Departure::newest_needed`), a stale box's superseding keyset's rotation commit, a keyless grant's edge write. `rotation::members::left_out` records each current keyset of M blocked at the rotator with them, joining causes with A's current records.
+- Carried: `rotation::carry` logs each recorded cause (its parts on its own thing, as a certificate copy with evidence by the ordinary rule); Held keyset for A's keysets: a keyset of A recording causes counts as not arrived until each is held (as for carried demotions).
+- Effect: `left_out_at` returns only records with a cause that stands at the node (held valid; a departure's holder still departed there, not the node's own; a grant still keyless). A keyset M is left out at is blocked by a box (`blocking`), so Seal leaves M out at it; `osis_keys::seal_keyset` / `candidates` lose the left-out argument: delete `Keysets::past` and its order fallback.
+- Re-key: replace `left_out_for_good` (both, in `osis_keys::members` and `rotation::members`) with "M is left out of A at a current keyset of M" at `Due::PassEnd`, keeping its holder-with-key-access condition.
 
-Not account machinery: holder actors, staleness and left-out records only.
-
-## Why no patch
-The spec and notes/holder-actors.md (Left out) deliberately make a record at a current keyset wait for M's knowing re-key: a rotator of M that judges the keyset unblocked cannot tell "the cause is void" from "I have not received the departure yet", and rotating in the second case makes an ignorant keyset past the record that sealers of G seal to (a leak until the knowing re-key). Dropping the record on a node judging it unblocked is already rejected there for the same reason. So the record's effect needs to depend on its cause, which no record carries.
-
-## Candidate fix (design change)
-Carry the cause: a rotation of A carries (spec/crypto.md §4 Carried), beside the recorded keyset's rotation commit, the commits that blocked it at the recorder (the uncovered departures' edge writes; the rotation commit of the keyset that made a box stale; an invalid keyset's body; a taint's grant), at whatever depth the blocking walk found them. A node that may rotate r of M, holding the record, its carried commits, and the recorded keyset current and unblocked, then knows the cause is void and rotates M as Left out for good does. Needs: `blocking` to return its causes, records or carried commits extended (wire), spec Left out / Carried, Depth0.tla checked against it. Alternative to weigh: accept the early (ignorant) rotation's leak window and drop the "none current" clause, which notes/holder-actors.md rejected.
+## Tests
+- Un-ignore `repro_left_out_on_an_invalidated_rotation_spec_crypto_4`; add its departure twin (a removal from M by an admin demoted concurrently) and a regrant of the departed party ending a record.
+- A co-writer holding A's recording keyset holds the cause: a keyset of A whose cause is withheld counts as not arrived (fails with the carry off: the co-writer re-seals M at a keyset made before the departure, as `LO_nocarry`).
+- A record of a current keyset whose rotator reads M only by order makes it rotate (`LO_ign`); a hostile record naming a standing departure and a covering keyset costs one rotation of M per record (rework `hostile_record_forces_one_rotation_per_rotation_of_a_spec_crypto_4`).
+- Delete or rewrite what tests the removed rules: `osis_keys` `seal_keyset_past_left_out`, `left_out_past_by_order_after_its_record`, `left_out_for_good_needs_no_candidate_and_no_current_record`; engine `left_out_for_good_world` and its users.
+- Run `core/test/tla/run.sh leftout` (the model is landed); the rotation property tests (`tests_property::rotation_holds_*`) at their default size.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, planted, netstream, netshared, netopen, nethold, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, leftout, planted, netstream, netshared, netopen, nethold, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker, but depth0: 10-20 min); with cfg names: those instances instead
 #   (the larger ones in the module's README, by hand), judged only if listed
@@ -114,6 +114,12 @@ instances=(
   "withdrawn rotation Withdrawn W_waitall_live.cfg fail" # negative control: waiting for every admin is safe and stalls
   "withdrawn rotation Withdrawn W_regrant_live.cfg fail" # an explicit re-grant of M unlocks it safely but nothing makes one
   "withdrawn rotation Withdrawn W_joiners.cfg pass"     # later holders only, M left out by names: safe and live for them
+  "leftout rotation LeftOut LO_inv.cfg pass"       # a left-out record counts while its cause stands (spec/crypto.md §4 Left out)
+  "leftout rotation LeftOut LO_inv_old.cfg fail"   # negative control: a record counting whatever its cause keeps M out once the cause is void
+  "leftout rotation LeftOut LO_ign_old.cfg fail"   # ... with M rotated only where no recorded keyset is current: a rotator judging by order never re-keys
+  "leftout rotation LeftOut LO_nocarry.cfg fail"   # negative control: causes not carried, a co-writer re-seals a keyset made before the cause
+  "leftout rotation LeftOut LO_nofact.cfg fail"    # negative control: no record, a co-writer undoes the leave-out (churn)
+  "leftout rotation LeftOut LO_nodue.cfg fail"     # negative control: no rotation of M for a counting record
   "planted rotation Planted P_leaveout.cfg pass"    # a secrets.0 snapshot leaves out records at epochs its writer has not verified (spec/crypto.md §4)
   "planted rotation Planted P_wait.cfg fail"        # negative control: waiting for every keyed epoch stops compaction for good
   "planted rotation Planted P_all.cfg fail"         # negative control: carrying everything bases a planted epoch
@@ -240,7 +246,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|planted|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|leftout|planted|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
   exit 2
 fi
 
