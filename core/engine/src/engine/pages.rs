@@ -2172,6 +2172,36 @@ mod tests {
     use osis_crdt::{AnyView, DeltaBuilder, Op, PathOp, PathSeg, Source, Writer, create};
     use osis_store::{MemoryBackend, MemoryRoot, Store, StoreConfig};
 
+    /// A memory store and its rng.
+    fn store() -> (Store, osis_crypto::SeededRng) {
+        let mut rng = osis_crypto::SeededRng::from_u64(0);
+        let store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        (store, rng)
+    }
+
+    /// Joins `delta` into the paged state `f` (`idx`, unit `unit`) as a write does: through the
+    /// pages it touches, else loaded and written whole (still paged). Whether it joined in place.
+    fn join_stored(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, unit: &mut Vec<u8>, delta: Fragment) -> bool {
+        let touch = touch_of(&delta, Some(idx));
+        match &touch {
+            Some(t) => assert!(ensure_touch(txn, tid, ak, idx, f, t).unwrap()),
+            None => load_all(txn, tid, ak, idx, f).unwrap(),
+        }
+        f.join(delta);
+        let done = touch.and_then(|t| write_touched(txn, idx, tid, ak, f, &t, Shred::No).unwrap());
+        match &done {
+            Some(Some(u)) => *unit = u.clone(),
+            Some(None) => {}
+            None => {
+                load_all(txn, tid, ak, idx, f).unwrap();
+                let (u, i) = write_full(txn, tid, ak, Some(f), true, &SALT).unwrap();
+                *unit = u;
+                *idx = i.expect("still paged");
+            }
+        }
+        done.is_some()
+    }
+
     /// A session of the made-up node `n` (tid bytes all `n`).
     fn sess(n: u8) -> Source {
         Source::session(osis_crdt::Session { node: Tid::from_bytes([n; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] })
@@ -2187,8 +2217,7 @@ mod tests {
     // the other keys' rows stay; rows are keyed hashes (another salt finds nothing).
     #[test]
     fn dropped_body_unindexed_spec_commits_5() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (mut store, mut rng) = store();
         let (tid, ak) = (Tid::from_bytes([5; 15]), osis_base::Ak::new("app:keys.0").unwrap());
         let node = sess(1);
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), node.clone(), 1);
@@ -2223,8 +2252,7 @@ mod tests {
     // on an early page: key-erased removals of key 0's first record and of dot (3, 1).
     #[test]
     fn map_join_loads_its_reach_spec_crdt_5_6() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (mut store, mut rng) = store();
         let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:map.0").unwrap());
         let ts = |n: u64| Ts::from_u64(n << 16).unwrap();
         let mut w = Writer::new(ts(1), sess(1), 1);
@@ -2268,8 +2296,7 @@ mod tests {
     // a removed value go with the bodies holding it.
     #[test]
     fn set_value_index_spec_crdt_5_5() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (mut store, mut rng) = store();
         let (tid, ak) = (Tid::from_bytes([6; 15]), osis_base::Ak::new("app:set.0").unwrap());
         let node = sess(1);
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), node.clone(), 1);
@@ -2317,8 +2344,7 @@ mod tests {
     #[test]
     fn set_index_differential_spec_crdt_5_5() {
         use osis_base::Float;
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (mut store, mut rng) = store();
         let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("app:s.0").unwrap());
         let nodes = [sess(1), sess(2)];
         let link = |h: u8, b: u8| Value::link(osis_base::Link { hash: [h; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32], salt: [0; 16], del: osis_base::Del::NONE });
@@ -2364,14 +2390,8 @@ mod tests {
                 let Some((delta, range)) = b.finish() else { continue };
                 ctrs[1] = range.hi;
                 let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-                let touch = touch_of(&delta, Some(&idx));
-                match &touch { Some(t) => { ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, t).unwrap(); } None => load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap() }
-                st.join(delta.clone()); f.join(delta);
-                match touch.as_ref().and_then(|t| write_touched(&mut txn, &mut idx, &tid, &ak, &f, t, Shred::No).unwrap()) {
-                    Some(Some(u)) => unit = u,
-                    Some(None) => {}
-                    None => { load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap(); unit = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap().0; }
-                }
+                st.join(delta.clone());
+                join_stored(&mut txn, &tid, &ak, &mut idx, &mut f, &mut unit, delta);
                 if r(4) == 0 { old = st.clone(); }
                 continue;
             }
@@ -2408,8 +2428,7 @@ mod tests {
     // fresh session load the pages of that key only and read what the whole state reads.
     #[test]
     fn lazy_nested_paging_spec_requirements_scale() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (mut store, mut rng) = store();
         let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("app:nested.0").unwrap());
         let node = sess(1);
         let big_set = Value::Set((0..2000).map(|i| Value::Str(format!("s{i}"))).collect());
@@ -2474,28 +2493,11 @@ mod tests {
             assert_eq!(got.as_ref().map(|x| &x.0), want.as_ref().map(|x| &x.0), "step {step}: {op:?}");
             let Some((delta, range)) = got else { continue };
             ctr = range.hi;
-            let touch = touch_of(&delta, Some(&idx));
-            match &touch {
-                Some(t) => assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, t).unwrap()),
-                None => load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap(),
-            }
             st.join(delta.clone());
-            f.join(delta);
-            let done = match &touch {
-                Some(t) => write_touched(&mut txn, &mut idx, &tid, &ak, &f, t, Shred::No).unwrap(),
-                None => None,
-            };
-            in_place += usize::from(done.is_some());
-            match done {
-                Some(Some(u)) => unit = u,
-                Some(None) => {}
-                None => {
-                    load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-                    assert_eq!(f, st, "step {step}");
-                    let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
-                    unit = u;
-                    assert!(i.is_some(), "still paged");
-                }
+            if join_stored(&mut txn, &tid, &ak, &mut idx, &mut f, &mut unit, delta) {
+                in_place += 1;
+            } else {
+                assert_eq!(f, st, "step {step}");
             }
             assert_eq!(whole(&mut txn, &unit), st, "step {step}: {op:?}");
             // a read by key in a fresh session
@@ -2610,8 +2612,7 @@ mod tests {
     }
 
     fn seq_placement_run_with(text: bool, n: u64, reset: bool) {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (mut store, mut rng) = store();
         let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let nodes = [sess(1), sess(2)];
         let view = SeqView::Root(text);
@@ -2761,29 +2762,9 @@ mod tests {
                 if wi == 1 {
                     received.push((long, range));
                 }
-                let touch = touch_of(&delta, Some(&idx));
-                match &touch {
-                    Some(t) => assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, t).unwrap()),
-                    None => load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap(),
-                }
                 bodies.push(delta.clone());
                 st.join(delta.clone());
-                f.join(delta);
-                let done = match &touch {
-                    Some(t) => write_touched(&mut txn, &mut idx, &tid, &ak, &f, t, Shred::No).unwrap(),
-                    None => None,
-                };
-                in_place += usize::from(done.is_some());
-                match done {
-                    Some(Some(u)) => unit = u,
-                    Some(None) => {}
-                    None => {
-                        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-                        let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
-                        unit = u;
-                        idx = i.unwrap();
-                    }
-                }
+                in_place += usize::from(join_stored(&mut txn, &tid, &ak, &mut idx, &mut f, &mut unit, delta));
                 if wi == 0 && r(3) == 0 {
                     old = st.clone();
                 }
@@ -2958,37 +2939,91 @@ mod tests {
         assert_eq!(relaid, 0, "placements laid out anew");
     }
 
+    /// Where the seq tests' text lives.
+    fn text_at() -> (Tid, Ak) {
+        (Tid::from_bytes([9; 15]), Ak::new("app:seq.0").unwrap())
+    }
+
+    /// The text of `seq_value(true, 4_000)` at field 1, by `sess(1)` from counter 1: the state
+    /// and the writer's next counter.
+    fn text() -> (Fragment, u64) {
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
+        let st = create(&mut w, &SeqView::Root(true), &seq_value(true, 4_000)).unwrap();
+        (st, w.range().hi)
+    }
+
+    /// `st` written whole at `text_at`: its unit.
+    fn write_text(txn: &mut Transaction<'_>, st: &Fragment) -> Vec<u8> {
+        let (tid, ak) = text_at();
+        write_full(txn, &tid, &ak, Some(st), false, &SALT).unwrap().0
+    }
+
+    /// `ops` at field 1.
+    fn at_text(ops: Vec<Op>) -> Vec<PathOp> {
+        ops.into_iter().map(|op| PathOp { path: vec![PathSeg::Field(1)], op }).collect()
+    }
+
+    /// The delta of `ops` on `st` by `sess(node)` from counter `lo` at `ts << 16` (`None`: an op
+    /// failed).
+    fn text_delta(st: &Fragment, ops: &[PathOp], ts: u64, node: u8, lo: u64) -> Option<(Fragment, osis_crdt::CounterRange)> {
+        let mut b = DeltaBuilder::new(st, Writer::new(Ts::from_u64(ts << 16).unwrap(), sess(node), lo));
+        ops.iter().try_for_each(|o| b.apply(o, &SeqView::Root(true)).map(|_| ())).ok()?;
+        b.finish()
+    }
+
+    /// Joins `delta` into the paged text `f` (`idx`) through its pages, and into `st` beside:
+    /// the join keeps the stored placement (not loaded whole), a whole pass's.
+    fn join_kept(txn: &mut Transaction<'_>, idx: &mut StatePages, f: &mut Fragment, st: &mut Fragment, delta: Fragment) {
+        let (tid, ak) = text_at();
+        let t = touch_of(&delta, Some(idx)).unwrap();
+        assert!(ensure_touch(txn, &tid, &ak, idx, f, &t).unwrap());
+        f.join(delta.clone());
+        st.join(delta);
+        assert!(matches!(write_touched(txn, idx, &tid, &ak, f, &t, Shred::No).unwrap(), Some(None)));
+        let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
+        assert!(!set.whole && matches!(set.place, Place::Held(_)), "placement kept");
+        assert!(stored_place(txn, &tid, &ak, set).unwrap().order() == place_whole_pass(st).order());
+    }
+
+    /// `join_kept` of a received `delta` into the text stored as `unit`, in a new session.
+    fn received_kept(txn: &mut Transaction<'_>, unit: &[u8], st: &mut Fragment, delta: Fragment) {
+        let (mut f, mut idx) = open(unit, &SALT).unwrap();
+        join_kept(txn, &mut idx, &mut f, st, delta);
+    }
+
+    /// An own commit of `ops` by `sess(1)` from counter `ctr` at `ts << 16` on the text stored as
+    /// `unit`, in a new session, run on the pages (`attach_ops`, `run_ops`): the delta the whole
+    /// state `st` gives, then joined (`join_kept`). The runs it took.
+    fn own_kept(txn: &mut Transaction<'_>, unit: &[u8], st: &mut Fragment, ops: &[PathOp], ts: u64, ctr: u64) -> usize {
+        let (tid, ak) = text_at();
+        let runs = std::cell::Cell::new(0);
+        let run = |f: &Fragment| {
+            runs.set(runs.get() + 1);
+            text_delta(f, ops, ts, 1, ctr)
+        };
+        let want = run(st).unwrap();
+        runs.set(0);
+        let (mut f, mut idx) = open(unit, &SALT).unwrap();
+        assert!(attach_ops(txn, &tid, &ak, &mut idx, &mut f, ops, &[], &Dot::new(sess(1), ctr)).unwrap());
+        assert!(run_ops(txn, &tid, &ak, &mut idx, &mut f, run).flatten().as_ref() == Some(&want), "same delta as on the whole state");
+        let n = runs.get();
+        join_kept(txn, &mut idx, &mut f, st, want.0);
+        n
+    }
+
     // spec/crdt.md §5.7, §6, §8: a received delta moving a range and inserting far from both
     // ends, in a new session: its follow misses rows, dot-map chunks and records at three places
     // in the text, each dry run stopping at its first miss, so it takes many dry runs of little
     // work each; the join follows the stored placement and keeps it.
     #[test]
     fn seq_received_move_and_insert_keeps_placement_spec_crdt_6_1() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
-        let view = SeqView::Root(true);
-        let field = || vec![PathSeg::Field(1)];
-        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
-        let mut st = create(&mut w, &view, &seq_value(true, 4_000)).unwrap();
+        let (mut store, mut rng) = store();
         let mut txn = store.transaction(&mut rng).unwrap();
-        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
-        let ops = [Op::Move { at: 2_000, len: 4, to: 100 }, Op::Insert { at: 3_500, items: seq_items(true, 0, 3) }];
-        let mut b = DeltaBuilder::new(&st, Writer::new(Ts::from_u64(2 << 16).unwrap(), sess(2), 1));
-        for op in ops {
-            b.apply(&PathOp { path: field(), op }, &view).unwrap();
-        }
-        let (delta, _) = b.finish().unwrap();
-        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-        let t = touch_of(&delta, Some(&idx)).unwrap();
-        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
-        f.join(delta.clone());
-        st.join(delta);
-        assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)));
-        let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
-        assert!(!set.whole && matches!(set.place, Place::Held(_)), "placement kept");
-        let stored = stored_place(&mut txn, &tid, &ak, set).unwrap();
-        assert!(stored.order() == place_whole_pass(&st).order());
+        let (mut st, _) = text();
+        let unit = write_text(&mut txn, &st);
+        let ops = at_text(vec![Op::Move { at: 2_000, len: 4, to: 100 }, Op::Insert { at: 3_500, items: seq_items(true, 0, 3) }]);
+        let (delta, _) = text_delta(&st, &ops, 2, 2, 1).unwrap();
+        received_kept(&mut txn, &unit, &mut st, delta);
     }
 
     // spec/crdt.md §5.7, §6, §8: an own commit of an insert and a move far apart, in a new session:
@@ -2997,41 +3032,12 @@ mod tests {
     // whole state gives, through the stored placement, which the join keeps.
     #[test]
     fn seq_insert_and_move_loaded_ahead_spec_crdt_6_1() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
-        let view = SeqView::Root(true);
-        let field = || vec![PathSeg::Field(1)];
-        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
-        let mut st = create(&mut w, &view, &seq_value(true, 4_000)).unwrap();
-        let ctr = w.range().hi;
+        let (mut store, mut rng) = store();
         let mut txn = store.transaction(&mut rng).unwrap();
-        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
-        let ops: Vec<PathOp> = [Op::Insert { at: 3_114, items: seq_items(true, 0, 3) }, Op::Move { at: 1_167, len: 4, to: 3_603 }]
-            .into_iter()
-            .map(|op| PathOp { path: field(), op })
-            .collect();
-        let wr = || Writer::new(Ts::from_u64(2 << 16).unwrap(), sess(1), ctr);
-        let runs = std::cell::Cell::new(0);
-        let run = |f: &Fragment| {
-            runs.set(runs.get() + 1);
-            let mut b = DeltaBuilder::new(f, wr());
-            ops.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
-        };
-        let want = run(&st).unwrap();
-        runs.set(0);
-        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-        assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[], &Dot::new(sess(1), ctr)).unwrap());
-        assert!(run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).flatten().as_ref() == Some(&want), "same delta as on the whole state");
-        assert_eq!(runs.get(), 1, "loaded before the first run");
-        let t = touch_of(&want.0, Some(&idx)).unwrap();
-        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
-        f.join(want.0.clone());
-        st.join(want.0);
-        assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)));
-        let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
-        assert!(!set.whole && matches!(set.place, Place::Held(_)), "placement kept");
-        assert!(stored_place(&mut txn, &tid, &ak, set).unwrap().order() == place_whole_pass(&st).order());
+        let (mut st, ctr) = text();
+        let unit = write_text(&mut txn, &st);
+        let ops = at_text(vec![Op::Insert { at: 3_114, items: seq_items(true, 0, 3) }, Op::Move { at: 1_167, len: 4, to: 3_603 }]);
+        assert_eq!(own_kept(&mut txn, &unit, &mut st, &ops, 2, ctr), 1, "loaded before the first run");
     }
 
     // spec/crdt.md §5.7, §6, §8: a delta of deletes and moves at far-apart places, received or an
@@ -3042,49 +3048,17 @@ mod tests {
     // placement and the commit writes what it writes on the whole state.
     #[test]
     fn seq_far_apart_misses_found_together_spec_crdt_6_1() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
-        let view = SeqView::Root(true);
-        let field = || vec![PathSeg::Field(1)];
-        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
-        let mut st = create(&mut w, &view, &seq_value(true, 4_000)).unwrap();
-        let ctr = w.range().hi;
+        let (mut store, mut rng) = store();
         let mut txn = store.transaction(&mut rng).unwrap();
-        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
-        let ops = |v: Vec<Op>| v.into_iter().map(|op| PathOp { path: field(), op }).collect::<Vec<_>>();
-        let make = |st: &Fragment, ops: &[PathOp], node: u8, ts: u64, lo: u64| {
-            let mut b = DeltaBuilder::new(st, Writer::new(Ts::from_u64(ts << 16).unwrap(), sess(node), lo));
-            ops.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
-        };
-        let kept = |txn: &mut Transaction<'_>, idx: &StatePages, st: &Fragment| {
-            let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
-            assert!(!set.whole && matches!(set.place, Place::Held(_)), "placement kept");
-            assert!(stored_place(txn, &tid, &ak, set).unwrap().order() == place_whole_pass(st).order());
-        };
+        let (mut st, ctr) = text();
+        let unit = write_text(&mut txn, &st);
         // received from another writer
-        let recv = ops(vec![Op::Delete { at: 359, len: 43 }, Op::Move { at: 2_185, len: 1, to: 3_421 }, Op::Move { at: 1_200, len: 2, to: 2_900 }, Op::Delete { at: 3_700, len: 3 }]);
-        let (delta, _) = make(&st, &recv, 2, 2, 1).unwrap();
-        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-        let t = touch_of(&delta, Some(&idx)).unwrap();
-        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
-        f.join(delta.clone());
-        st.join(delta);
-        assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)));
-        kept(&mut txn, &idx, &st);
+        let recv = at_text(vec![Op::Delete { at: 359, len: 43 }, Op::Move { at: 2_185, len: 1, to: 3_421 }, Op::Move { at: 1_200, len: 2, to: 2_900 }, Op::Delete { at: 3_700, len: 3 }]);
+        let (delta, _) = text_delta(&st, &recv, 2, 2, 1).unwrap();
+        received_kept(&mut txn, &unit, &mut st, delta);
         // an own commit
-        let own = ops(vec![Op::Delete { at: 300, len: 40 }, Op::Move { at: 200, len: 3, to: 3_900 }, Op::Move { at: 1_500, len: 2, to: 2_600 }, Op::Insert { at: 3_300, items: seq_items(true, 0, 2) }]);
-        let run = |f: &Fragment| make(f, &own, 1, 3, ctr);
-        let want = run(&st).unwrap();
-        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-        assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &own, &[], &Dot::new(sess(1), ctr)).unwrap());
-        assert!(run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).flatten().as_ref() == Some(&want), "same delta as on the whole state");
-        let t = touch_of(&want.0, Some(&idx)).unwrap();
-        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
-        f.join(want.0.clone());
-        st.join(want.0);
-        assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)));
-        kept(&mut txn, &idx, &st);
+        let own = at_text(vec![Op::Delete { at: 300, len: 40 }, Op::Move { at: 200, len: 3, to: 3_900 }, Op::Move { at: 1_500, len: 2, to: 2_600 }, Op::Insert { at: 3_300, items: seq_items(true, 0, 2) }]);
+        own_kept(&mut txn, &unit, &mut st, &own, 3, ctr);
     }
 
     // spec/crdt.md §5.7: `back` takes each visible index named after a run of inserts, deletes
@@ -3138,37 +3112,22 @@ mod tests {
     // sequence and loaded before the first run: one run, the delta the whole state gives.
     #[test]
     fn seq_far_apart_ops_of_one_commit_spec_crdt_6_1() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
-        let view = SeqView::Root(true);
-        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
-        let st = create(&mut w, &view, &seq_value(true, 4_000)).unwrap();
-        let ctr = w.range().hi;
+        let (mut store, mut rng) = store();
         let mut txn = store.transaction(&mut rng).unwrap();
-        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
-        let own: Vec<PathOp> = (0..24)
-            .map(|j| {
-                let at = 50 + 140 * j;
-                let op = match j % 2 {
-                    0 => Op::Delete { at, len: 40 },
-                    _ => Op::Insert { at, items: seq_items(true, j as u64, 2) },
-                };
-                PathOp { path: vec![PathSeg::Field(1)], op }
-            })
-            .collect();
-        let runs = std::cell::Cell::new(0);
-        let run = |f: &Fragment| {
-            runs.set(runs.get() + 1);
-            let mut b = DeltaBuilder::new(f, Writer::new(Ts::from_u64(3 << 16).unwrap(), sess(1), ctr));
-            own.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
-        };
-        let want = run(&st).unwrap();
-        runs.set(0);
-        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-        assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &own, &[], &Dot::new(sess(1), ctr)).unwrap());
-        assert!(run_ops(&mut txn, &tid, &ak, &mut idx, &mut f, run).flatten().as_ref() == Some(&want), "same delta as on the whole state");
-        assert_eq!(runs.get(), 1, "loaded before the first run");
+        let (mut st, ctr) = text();
+        let unit = write_text(&mut txn, &st);
+        let own = at_text(
+            (0..24)
+                .map(|j| {
+                    let at = 50 + 140 * j;
+                    match j % 2 {
+                        0 => Op::Delete { at, len: 40 },
+                        _ => Op::Insert { at, items: seq_items(true, j as u64, 2) },
+                    }
+                })
+                .collect(),
+        );
+        assert_eq!(own_kept(&mut txn, &unit, &mut st, &own, 3, ctr), 1, "loaded before the first run");
     }
 
     // spec/crdt.md §5.7, §6, §8: a stretch of a text split into rows of two chars (a char inserted
@@ -3178,40 +3137,20 @@ mod tests {
     // walk of the blocks, so the join follows the stored placement and keeps it.
     #[test]
     fn seq_cuts_where_rows_start_keep_placement_spec_crdt_6_1() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
-        let view = SeqView::Root(true);
-        let field = || vec![PathSeg::Field(1)];
-        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
-        let mut st = create(&mut w, &view, &seq_value(true, 4_000)).unwrap();
-        let commit = |st: &Fragment, ts: u64, node: u8, lo: u64, ops: Vec<Op>| {
-            let mut b = DeltaBuilder::new(st, Writer::new(Ts::from_u64(ts << 16).unwrap(), sess(node), lo));
-            for op in ops {
-                b.apply(&PathOp { path: field(), op }, &view).unwrap();
-            }
-            b.finish().unwrap()
-        };
+        let (mut store, mut rng) = store();
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (mut st, ctr) = text();
         let base = st.clone();
         // a char before each even position 1000..1114 of the text as created
-        let (ins, r) = commit(&st, 2, 1, w.range().hi, (0..58).map(|k| Op::Insert { at: 1_000 + 3 * k, items: seq_items(true, k as u64, 1) }).collect());
+        let (ins, r) = text_delta(&st, &at_text((0..58).map(|k| Op::Insert { at: 1_000 + 3 * k, items: seq_items(true, k as u64, 1) }).collect()), 2, 1, ctr).unwrap();
         st.join(ins);
         // the stretch and those chars deleted at once
-        let (del, _) = commit(&st, 3, 1, r.hi, vec![Op::Delete { at: 1_000, len: 174 }]);
+        let (del, _) = text_delta(&st, &at_text(vec![Op::Delete { at: 1_000, len: 174 }]), 3, 1, r.hi).unwrap();
         st.join(del);
-        let mut txn = store.transaction(&mut rng).unwrap();
-        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
+        let unit = write_text(&mut txn, &st);
         // concurrently, every other pair of the stretch: each record cuts at two row starts
-        let (delta, _) = commit(&base, 4, 2, 1, (0..19).map(|j| Op::Delete { at: 1_000 + 2 * j, len: 2 }).collect());
-        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-        let t = touch_of(&delta, Some(&idx)).unwrap();
-        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
-        f.join(delta.clone());
-        st.join(delta);
-        assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)));
-        let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
-        assert!(!set.whole && matches!(set.place, Place::Held(_)), "placement kept");
-        assert!(stored_place(&mut txn, &tid, &ak, set).unwrap().order() == place_whole_pass(&st).order());
+        let (delta, _) = text_delta(&base, &at_text((0..19).map(|j| Op::Delete { at: 1_000 + 2 * j, len: 2 }).collect()), 4, 2, 1).unwrap();
+        received_kept(&mut txn, &unit, &mut st, delta);
     }
 
     // spec/crdt.md §5.7, §6, §8: as above, the plan's choices random: `OSIS_SEQ_COLD_START`, `OSIS_SEQ_COLD_SEEDS` (2 at small
@@ -3239,7 +3178,7 @@ mod tests {
     fn seq_cold_edits(seed: u64, steps: u64, pick: &mut dyn FnMut(Pick, u64, u64) -> u64) -> (usize, usize, usize, usize) {
         let mut rng = osis_crypto::SeededRng::from_u64(seed);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
+        let (tid, ak) = text_at();
         let nodes = [sess(1), sess(2)];
         let view = SeqView::Root(true);
         let field = || vec![PathSeg::Field(1)];
@@ -3377,9 +3316,8 @@ mod tests {
     // placement is kept.
     #[test]
     fn seq_index_segment_on_pages_spec_crdt_5_7() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
+        let (mut store, mut rng) = store();
+        let (tid, ak) = text_at();
         let node = sess(1);
         let view = SeqView::Root(false);
         let mut ts = 1u64 << 16;
@@ -3446,9 +3384,8 @@ mod tests {
     // read) or followed, and either way is never wrong.
     #[test]
     fn seq_whole_session_and_hostile_delta_spec_crdt_6_2() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
+        let (mut store, mut rng) = store();
+        let (tid, ak) = text_at();
         let me = sess(1);
         let view = SeqView::Root(true);
         let field = || vec![PathSeg::Field(1)];
@@ -3534,8 +3471,7 @@ mod tests {
     // from the whole sequence it reads by index again.
     #[test]
     fn seq_placement_rebuilt_spec_crdt_6() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (mut store, mut rng) = store();
         let (tid, ak) = (Tid::from_bytes([8; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
         let st = create(&mut w, &SeqView::Root(true), &seq_value(true, 6_000)).unwrap();
@@ -3584,8 +3520,7 @@ mod tests {
     // anew if needed).
     #[test]
     fn seq_placement_damaged_rows_spec_crdt_6() {
-        let mut rng = osis_crypto::SeededRng::from_u64(0);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (mut store, mut rng) = store();
         let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:seq.0").unwrap());
         let me = sess(1);
         let view = SeqView::Root(true);
