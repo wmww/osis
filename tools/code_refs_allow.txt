@@ -44,7 +44,6 @@ last_modified  placeholder: an example schema field
 
 app_root  planned: issues/app-home-helper.md
 node_data  planned: issues/settings.md
-materialize_limit  planned: issues/cli-proxy.md
 QUERY_PAGE  planned: issues/cli-proxy.md, notes/client-port.md
 MAX_QUERY_SUBS  planned: issues/cli-proxy.md, notes/client-port.md
 MAX_SCHEMA_BYTES  planned: notes/client-port.md (schemas over the port, not built)
