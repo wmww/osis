@@ -267,7 +267,7 @@ impl Inbox {
         }
     }
 
-    /// Record `id` went (evicted past `RECORD_BUDGET`, or twin-dropped): what is kept of it goes.
+    /// Record `id` went (evicted past `RECORD_BUDGET`, or another of its pair taken): what is kept of it goes.
     pub fn record_gone(&mut self, id: crate::types::RecordId) {
         self.register.gone(Source::Record(id));
     }

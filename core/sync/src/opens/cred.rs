@@ -68,18 +68,6 @@ impl Bind {
         (self.rank, osis_crypto::kdf::connection_order(r, d, l))
     }
 
-    /// A Twin's tag on this connection for the record keyed `r` (spec/sync-opens.md §1 Twin).
-    pub fn twin_tag(&self, r: &[u8; 32]) -> [u8; 32] {
-        let (d, l) = self.challenges();
-        osis_crypto::kdf::twin_tag(r, &self.listener_key, d, l)
-    }
-
-    /// The answer to a Twin matched on this connection for the record keyed `r`.
-    pub fn twinned_tag(&self, r: &[u8; 32]) -> [u8; 32] {
-        let (d, l) = self.challenges();
-        osis_crypto::kdf::twinned_tag(r, &self.listener_key, d, l)
-    }
-
     /// Whether `sig` is the peer's open signature by `key` on this connection.
     pub fn peer_signed(&self, key: &[u8; 32], s: &SyncId, sig: &Signature) -> bool {
         VerifyingKey::from_bytes(key).is_ok_and(|k| verify_open(&k, self.dialer, s, &self.own_challenge, &self.listener_key, sig).is_ok())

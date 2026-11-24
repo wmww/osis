@@ -156,17 +156,6 @@ pub fn resumed_tag(r: &[u8; 32], key: &[u8; 32], dialer: &[u8; 32], listener: &[
     resume_hash(r, b"resumed", key, dialer, listener)
 }
 
-/// A Twin's tag (spec/sync-opens.md §1 Twin): a record with pair key `r`, made on another
-/// connection, named on this one (`key`, `dialer`, `listener` this connection's).
-pub fn twin_tag(r: &[u8; 32], key: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
-    resume_hash(r, b"twin", key, dialer, listener)
-}
-
-/// The answer to a Twin tag matched: shows the receiver holds r too.
-pub fn twinned_tag(r: &[u8; 32], key: &[u8; 32], dialer: &[u8; 32], listener: &[u8; 32]) -> [u8; 32] {
-    resume_hash(r, b"twinned", key, dialer, listener)
-}
-
 /// A beacon: `BLAKE3(key = kdf("beacon", match, L), r)` (spec/sync-opens.md §5): the
 /// value both sides compute for one credential, so a filter entry is its first bits.
 pub fn beacon(match_value: &[u8; 32], sync_id: &[u8; 16], r: &[u8; 32]) -> [u8; 32] {

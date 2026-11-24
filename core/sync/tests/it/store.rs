@@ -822,8 +822,8 @@ fn an_evicted_record_takes_its_charges_at_once_spec_sync_opens_3() {
 }
 
 // spec/sync-ids.md §5 (Peer budget): a source going hands each entry charged to it to a peer's
-// record whose stream showed it present and has room, else the entry goes. Twin's case
-// (spec/sync-opens.md §1): an entry both connections brought during the round trip, charged to
+// record whose stream showed it present and has room, else the entry goes. Crossed dials' case
+// (spec/sync-opens.md §3 One record per pair): an entry both connections brought, charged to
 // the loser's record (a duplicate keeps its first charge), stays charged to the survivor's, whose
 // stream passed it and would not bring it again; likewise an eviction and a recordless
 // connection closing. A record that showed nothing, or one without room, takes nothing.
@@ -842,7 +842,7 @@ fn a_gone_sources_charges_pass_to_a_record_that_showed_them_spec_sync_ids_5() {
         assert_eq!(st.take_deposit(&deposit(&s, &x, false), Some(from)).unwrap(), Code::OK);
         b
     };
-    // Twin: brought on the loser first, then on the survivor
+    // crossed dials: brought on the loser first, then on the survivor
     let b1 = brought(&mut st, 200, Source::Record(loser));
     brought(&mut st, 200, Source::Record(survivor));
     showed(&mut st, survivor, b1);

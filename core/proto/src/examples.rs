@@ -188,9 +188,6 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("applied", Msg::Applied { cursor: cursor(0x30) }),
         ("digest", Msg::Digest { digest: [0x31; 32] }),
         ("members", Msg::Members { sync_ids: vec![l, other], more: false }),
-        ("twin", Msg::Twin { id: 47, tag: [0x47; 32] }),
-        ("twinned", Msg::Twinned { id: 47, tag: Some([0x48; 32]) }),
-        ("twinned with none", Msg::Twinned { id: 47, tag: None }),
     ]
 }
 
@@ -285,7 +282,5 @@ pub fn rejections() -> Vec<(&'static str, &'static str, Vec<u8>)> {
         ("applied with a cursor of 257 bytes", "size", with(&m("applied"), 2, Some(bytes(257, 0)))),
         ("digest of 31 bytes", "size", with(&m("digest"), 2, Some(bytes(31, 0)))),
         ("members with a sync ID of 17 bytes", "size", with(&m("members"), 2, Some(list(vec![bytes(17, 0)])))),
-        ("twin with a tag of 31 bytes", "size", with(&m("twin"), 2, Some(bytes(31, 0)))),
-        ("twinned with two tags", "shape", with(&m("twinned"), 2, Some(list(vec![bytes(32, 0), bytes(32, 0)])))),
     ]
 }

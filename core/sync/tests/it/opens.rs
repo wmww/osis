@@ -126,8 +126,8 @@ fn a_sync_id_just_joined_waits_for_a_peer_the_rosters_name_spec_sync_set_3() {
     p.close();
     p.a.restart();
     assert!(!wait(&p, &may), "nor after a restart");
-    // a second record naming the same actors (both nodes dialed at first contact, §1 Limit) is the
-    // same peer: told by one of its records, it is told; one naming other actors is another peer
+    // a second record naming the same actors (a crash's leftover until the pair's next take, §3 One
+    // record per pair) is the same peer: told by one of its records, it is told; one naming other actors is another peer
     p.a.store.with_tx(|t| t.record_create([9; 32], &named(2)).map(drop)).unwrap();
     p.a.restart();
     assert!(!wait(&p, &may), "the same peer, told by its other record");
@@ -1481,17 +1481,6 @@ fn a_redial_replaces_the_connection_its_dialer_gave_up_spec_sync_opens_1() {
     }
 }
 
-// spec/sync-opens.md §1 (one connection per pair): two connections on which the peer proved the
-// same node of this account are of one pair though each made a record of its own (crossed first
-// dials): one closes, the same one at both ends, and the shared set runs on the other.
-#[test]
-fn crossed_first_dials_between_own_nodes_keep_one_spec_sync_opens_1() {
-    let node = |n: u8, node: u8| Proven { node: Some(tid(node)), ..account(n) };
-    let (mut p, (ca2, cb2)) = crossed(node(1, 11), node(2, 12));
-    route_all(&mut p);
-    one_closed(&p, ca2, cb2);
-}
-
 /// Readers of S proving `pa` and `pb` that dial each other at once: a dials b (connection 1),
 /// b dials a (connection 2), both proved, nothing routed yet. a's and b's ends of connection 2.
 fn crossed(pa: Proven, pb: Proven) -> (Pair, (osis_sync::types::ConnId, osis_sync::types::ConnId)) {
@@ -1504,11 +1493,6 @@ fn crossed(pa: Proven, pb: Proven) -> (Pair, (osis_sync::types::ConnId, osis_syn
     p.a.take(ca2, osis_sync::session::Incoming::Proved);
     p.b.take(cb2, osis_sync::session::Incoming::Proved);
     (p, (ca2, cb2))
-}
-
-/// `crossed` of accounts 1 and 2.
-fn crossed_accounts() -> (Pair, (osis_sync::types::ConnId, osis_sync::types::ConnId)) {
-    crossed(account(1), account(2))
 }
 
 /// Of the two connections (`crossed`, routed), one closed, the same one at both ends, and S is
@@ -1524,95 +1508,99 @@ fn one_closed(p: &Pair, ca2: osis_sync::types::ConnId, cb2: osis_sync::types::Co
     kept
 }
 
-// spec/sync-opens.md §1 (Twin): nodes of two accounts that dial each other at once make a record
-// on each connection; each dialer's Twin names its new record on the other connection, so the two
-// are of one pair: one closes, the same one at both ends, its record goes at both ends, and the
-// shared set runs on the other alone.
+/// The records a side's store holds.
+fn records_held(x: &Side) -> Vec<osis_sync::types::RecordId> {
+    x.store.with_read(|t| t.records_all()).unwrap().into_iter().map(|r| r.id).collect()
+}
+
+// spec/sync-opens.md §1 (one connection per pair), §3 (One record per pair): crossed first dials
+// make a record per connection; the closing one's record goes at both ends, so each side keeps
+// one record of the other, the kept connection's.
 #[test]
-#[ignore = "accounts: keys"]
-fn crossed_first_dials_between_accounts_twin_spec_sync_opens_1() {
-    let (mut p, (ca2, cb2)) = crossed_accounts();
+fn crossed_first_dials_keep_one_record_spec_sync_opens_3() {
+    let (mut p, (ca2, cb2)) = crossed(account(1), account(2));
     route_all(&mut p);
     let kept = one_closed(&p, ca2, cb2);
     for (x, conn) in [(&p.a, kept.0), (&p.b, kept.1)] {
-        let kept_rec = x.opens.record(conn);
-        let all: Vec<_> = x.store.with_read(|t| t.records_all()).unwrap().into_iter().map(|r| r.id).collect();
-        assert_eq!(all.iter().map(|id| Some(*id)).collect::<Vec<_>>(), [kept_rec], "one record of the peer, the kept connection's");
+        assert_eq!(records_held(x).into_iter().map(Some).collect::<Vec<_>>(), [x.opens.record(conn)], "one record of the peer, the kept connection's");
     }
 }
 
-// spec/sync-opens.md §1 (Twin), §5 Testing (re-marking): a twinned connection's record goes with
-// its members re-marked for the one that stays. Each connection in turn has every Hit garbled
-// until the Twins land (S tested there, refused, `acked_pos` past it: a Hit that opened nothing
-// is not tried again until a re-mark), so S is open on the other alone; whichever stays, S opens
-// on it at both ends.
+/// Where a side loses power in the step that settles crossed connections 1 and 2.
+#[derive(Clone, Copy, Debug)]
+enum PairCrash {
+    None,
+    /// `a` (true) or `b` before taking the message that settles the pair: as if it never came.
+    Before(bool),
+    /// `a` or `b` taking it, before the step's end (`crash_taking`): what the step wrote at once
+    /// (a new record) stays, its records' writes and what it sent are lost.
+    Inside(bool),
+}
+
+// spec/sync-opens.md §3 (One record per pair), spec/sync-set.md §3 (To be waited for): crossed
+// dials, connection 2 (of worse route rank) running its shared set first, so S is a member of its
+// record at both ends; connection 1 then settles the pair and connection 2 closes. A side losing
+// power before or inside the step that settles it at its end keeps connection 2's record, and
+// one end may hold a record the other dropped; the pair's next connection leaves one record at
+// each end. Then b stops reading S: once its Lost closes S, a waits on b for S no more, as with
+// one connection all along (a record left holding S would hold that wait until evicted).
 #[test]
-#[ignore = "accounts: keys"]
-fn a_twinned_records_members_are_remarked_on_the_survivor_spec_sync_opens_1() {
-    for garbled in [0, 1] {
-        let (mut p, (ca2, cb2)) = crossed_accounts();
-        let pairs = [(p.ca, p.cb), (ca2, cb2)];
-        let ends = pairs[garbled];
-        let mut held = Vec::new();
-        route_with(&mut p, |from_a, c, m| match m {
-            Msg::Twin { .. } => {
-                held.push((from_a, c, m));
-                None
-            }
-            Msg::Offer { id, mut items } if c == if from_a { ends.0 } else { ends.1 } => {
-                for it in &mut items {
-                    match it {
-                        OfferItem::Hit { hit, .. } | OfferItem::Static { hit, .. } => hit[0] ^= 1,
-                        OfferItem::ByRole { hits, .. } => hits.iter_mut().for_each(|h| h[0] ^= 1),
-                        _ => {}
-                    }
-                }
-                Some(Msg::Offer { id, items })
-            }
-            m => Some(m),
-        });
-        assert!(!held.is_empty(), "a Twin went");
-        let other = pairs[1 - garbled];
-        assert!(!p.a.open(ends.0, &S) && !p.b.open(ends.1, &S) && p.a.open(other.0, &S) && p.b.open(other.1, &S), "S open only where Hits passed");
-        let peer = |c: osis_sync::types::ConnId| osis_sync::types::ConnId(c.0 ^ osis_sync::types::ConnId::ACCEPTED);
-        for (from_a, c, m) in held {
-            if from_a { p.b.take(peer(c), incoming(m)) } else { p.a.take(peer(c), incoming(m)) }
-        }
+fn a_crash_settling_crossed_dials_leaves_one_record_spec_sync_opens_3() {
+    use osis_sync::types::ConnId;
+    for crash in [PairCrash::None, PairCrash::Before(true), PairCrash::Before(false), PairCrash::Inside(true), PairCrash::Inside(false)] {
+        let mut p = reader_pair(account(1), account(2));
+        let (ca1, cb1) = (p.ca, p.cb);
+        let (cb2, ca2) = (ConnId(2), ConnId(ConnId::ACCEPTED | 2));
+        let (bb, ba) = binds_at([0x5c; 32], [0x6d; 32], [0x4a; 32], 2);
+        p.b.pipe.binds.insert(cb2, (bb, account(1)));
+        p.a.pipe.binds.insert(ca2, (ba, account(2)));
+        p.a.take(ca2, osis_sync::session::Incoming::Proved);
+        p.b.take(cb2, osis_sync::session::Incoming::Proved);
+        // connection 2 runs alone (connection 1's Resume held back)
+        let held: Vec<(ConnId, Msg)> = p.a.sent().into_iter().filter(|(c, _)| *c == ca1).collect();
         route_all(&mut p);
-        let lost: Vec<_> = p.a.pipe.closed.iter().map(|(c, _)| *c).collect();
-        assert_eq!(lost.len(), 1, "one closed: {lost:?}");
-        let kept = if lost[0] == pairs[0].0 { pairs[1] } else { pairs[0] };
-        assert!(p.a.open(kept.0, &S) && p.b.open(kept.1, &S), "S open on the survivor at both ends (garbled {garbled})");
+        assert!(p.a.open(ca2, &S) && p.b.open(cb2, &S), "{crash:?}: S open on connection 2");
+        // connection 1's Resume: b settles the pair, answering; then a settles it on the answer
+        let settle = |x: &mut Side, conn: ConnId, m: Msg, at: Option<bool>| match at {
+            Some(true) => x.restart(),
+            Some(false) => x.crash_taking(conn, incoming(m)),
+            None => x.take(conn, incoming(m)),
+        };
+        let at = |side: bool| match crash {
+            PairCrash::Before(s) if s == side => Some(true),
+            PairCrash::Inside(s) if s == side => Some(false),
+            _ => None,
+        };
+        let crashed = |side: bool| at(side).is_some();
+        for (_, m) in held.into_iter().filter(|(_, m)| matches!(m, Msg::Resume { .. })) {
+            settle(&mut p.b, cb1, m, at(false));
+        }
+        if !crashed(false) {
+            let answer: Vec<Msg> = p.b.sent().into_iter().filter(|(c, m)| *c == cb1 && matches!(m, Msg::Resumed { .. })).map(|(_, m)| m).collect();
+            for m in answer {
+                settle(&mut p.a, ca1, m, at(true));
+            }
+        }
+        // every connection ends (a side that lost power has none)
+        for (x, ends) in [(&mut p.a, [ca1, ca2]), (&mut p.b, [cb1, cb2])] {
+            for c in ends {
+                x.closed(c);
+            }
+            x.sent();
+        }
+        p.connect(3, account(1), account(2));
+        p.run();
+        assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "{crash:?}: S open on the next connection");
+        for (x, conn) in [(&p.a, p.ca), (&p.b, p.cb)] {
+            assert_eq!(records_held(x).into_iter().map(Some).collect::<Vec<_>>(), [x.opens.record(conn)], "{crash:?}: one record of the peer, the connection's");
+        }
+        p.b.reported(p.cb, S, 5);
+        p.b.table.set(S, None);
+        p.b.settle();
+        p.run();
+        assert!(!p.a.open(p.ca, &S), "{crash:?}: b's Lost closed S");
+        assert!(!wait_s(&p), "{crash:?}: a waits on b for S no more");
     }
-}
-
-// spec/sync-opens.md §1 (Twin): a Twin's sender takes the two connections as twinned only on the
-// answer proving the peer holds the record: a forged Twinned closes nothing at the sender.
-#[test]
-#[ignore = "accounts: keys"]
-fn a_forged_twinned_twins_nothing_spec_sync_opens_1() {
-    let (mut p, _) = crossed_accounts();
-    // b's Twins never reach a (a learns only from its own Twin's answer), and b's answers lie
-    route_with(&mut p, |from_a, _, m| match m {
-        Msg::Twin { .. } if !from_a => None,
-        Msg::Twinned { id, tag: Some(_) } if !from_a => Some(Msg::Twinned { id, tag: Some([0x55; 32]) }),
-        m => Some(m),
-    });
-    assert!(p.a.pipe.closed.is_empty(), "a closed {:?} on a forged answer", p.a.pipe.closed);
-}
-
-// spec/sync-opens.md §1 (Twin): a Twin whose tag names no record of another connection here (a
-// guess, or another node of the peer's account) twins nothing: answered with none, nothing closes.
-#[test]
-#[ignore = "accounts: keys"]
-fn a_twin_naming_no_record_here_twins_nothing_spec_sync_opens_1() {
-    let (mut p, (ca2, _)) = crossed_accounts();
-    // the Twins lost: two connections of account 2, each on a record of its own
-    route_with(&mut p, |_, _, m| (!matches!(m, Msg::Twin { .. })).then_some(m));
-    p.a.take(ca2, osis_sync::session::Incoming::Request(9, Msg::Twin { id: 9, tag: [0x77; 32] }));
-    assert!(p.a.pipe.sent.iter().any(|(c, m)| *c == ca2 && matches!(m, Msg::Twinned { id: 9, tag: None })), "answered with none");
-    assert!(p.a.pipe.closed.is_empty() && p.b.pipe.closed.is_empty());
-    assert!(p.a.open(p.ca, &S) && p.a.open(ca2, &S));
 }
 
 /// `a` and `b` share `n` sync IDs, close, both restart (opens started from their stores) and

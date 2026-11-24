@@ -12,7 +12,7 @@ The driver owns every `Session` in one `Sessions`. A module that sends takes `&m
 
 ## Routing (`Incoming::to`)
 - **Replies by asker**: only the asker knows what a reply answers (a Shared may answer opens' Hits or inbox's Deposit items), so a reply goes to the `To` that sent the request. A reply of a kind that does not answer its request (`osis_proto::msg::answers`) is dropped.
-- **Requests and pushes by kind**: Resume, Beacons, Offer, Lost, NoRecord, Twin, Digest, Members to opens; Pull, Fetch, Stream, Applied to streams; Register, Delete, Stranded to inbox; Auth, Call, Sub, Unsub and Notify to the client port (`PortEvent`, the owner's). A message no module takes closes the connection.
+- **Requests and pushes by kind**: Resume, Beacons, Offer, Lost, NoRecord, Digest, Members to opens; Pull, Fetch, Stream, Applied to streams; Register, Delete, Stranded to inbox; Auth, Call, Sub, Unsub and Notify to the client port (`PortEvent`, the owner's). A message no module takes closes the connection.
 - **Skipped requests**: Pulls and Fetches are answered in order; one still out when a later one's answer arrives reaches its module as a refusal (`Code::DECLINED`, a Pull) or an empty `FetchReply`, so streams has one path for refusals. Every Fetch takes a top-bit id.
 - `push` waits (returns false) while untaken bytes would pass `REPLY_BUDGET`; the pusher retries at a later settle (`Input::Taken` steps the node). `push_now` (opens' Digest and Members, bounded by a record's shared set) never waits.
 

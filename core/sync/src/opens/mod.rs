@@ -260,8 +260,6 @@ enum Agree {
 #[derive(Clone, Debug)]
 enum Req {
     Resume,
-    /// A Twin naming the new record `rid` of connection `with` (spec/sync-opens.md §1 Twin).
-    Twin { with: ConnId, rid: RecordId },
     NoRecord,
     Beacons { generation: u64 },
     Offer,
@@ -484,8 +482,8 @@ pub struct Opens {
     /// with the sync key of the step it stopped at (none: this node's recorded head). Goes with
     /// the connection, S opening there, and S leaving the sync set (`walk_stop`: status follows it).
     stops: osis_base::memo::Stamped<SyncId, BTreeMap<ConnId, Stop>>,
-    /// Records of twinned connections that closed (spec/sync-opens.md §1 Twin): removed at
-    /// `flush` once no connection holds or lists one.
+    /// Other records of a pair one connection took (spec/sync-opens.md §3 One record per pair):
+    /// removed at `flush` once no connection holds or lists one.
     dropped: BTreeSet<RecordId>,
     /// The connection holding each record: record R is connected on C.
     on: BTreeMap<RecordId, ConnId>,
@@ -593,8 +591,8 @@ impl Opens {
     /// budget go (least recently used first, none a connection holds) with what was charged to
     /// them, in one transaction (`Store::write_records`), memory's with them; a kept record no
     /// connection holds stays in memory while it has a member, without its peer's filter entries
-    /// (read again at its next take). Returns the records that went (evicted, and twin-dropped
-    /// ones removed). A store failure met during the step fails it here.
+    /// (read again at its next take). Returns the records that went (evicted, and others of
+    /// a pair dropped). A store failure met during the step fails it here.
     pub fn flush(&mut self, store: &mut Store) -> Result<Vec<RecordId>> {
         if let Some(e) = self.fault.take() {
             self.dirty.clear();
@@ -1187,10 +1185,10 @@ impl Opens {
 
     /// spec/sync-opens.md §1 (one connection per pair): `conn` comes to take record `id` while
     /// another connection is of the same pair: it holds that record, or on both the peer proved
-    /// the same node. The one of better route rank stays, then the
-    /// smaller order hash (`Bind::pair_order`, each under its own record's pair key: the same at
-    /// both ends whatever order the two arrived in); the other lets its record go and closes.
-    /// Whether `conn` stays.
+    /// the same node. The later stays when one side dialed both, else the one of better route
+    /// rank, then the smaller order hash (`Bind::pair_order`, each under its own record's pair
+    /// key: the same at both ends whatever order the two arrived in); the other lets its record
+    /// go and closes. Whether `conn` stays.
     fn one_per_pair(&mut self, ctx: &mut Ctx, conn: ConnId, id: RecordId, moved: &mut Vec<Moved>) -> bool {
         let Some(r) = self.records.get(&id).map(|r| r.r) else { return true };
         let Some(c) = self.conns.get(&conn) else { return false };
@@ -1198,48 +1196,51 @@ impl Opens {
         let kept = self.records.get(&id).is_some_and(|r| r.kept);
         let same = |k: &Conn| k.rec.is_some_and(|o| (o == id && kept) || (node.is_some() && k.proven.node == node));
         let Some(other) = self.conns.iter().find(|(o, k)| **o != conn && k.lost_to.is_none() && same(k)).map(|(o, _)| *o) else { return true };
-        self.settle_pair(ctx, (conn, r), other, false, moved)
-    }
-
-    /// Two connections of one record's pair: `a` and `b`, each holding its own record, twinned
-    /// (spec/sync-opens.md §1 Twin). Whether `a` stays.
-    fn pair(&mut self, ctx: &mut Ctx, a: ConnId, b: ConnId, twinned: bool, moved: &mut Vec<Moved>) -> bool {
-        let Some(r) = self.conns.get(&a).and_then(|c| self.records.get(&c.rec?)).map(|r| r.r) else { return false };
-        self.settle_pair(ctx, (a, r), b, twinned, moved)
-    }
-
-    /// spec/sync-opens.md §1 (one connection per pair): of `a` (ordered under pair key `ra`) and
-    /// `b`, the later stays when one side dialed both (numbered in order at each end), else the
-    /// one of better route rank, then the smaller order hash; the other lets its record go and
-    /// closes, and a twinned one's record goes (its members re-marked for the one that stays).
-    /// Whether `a` stays.
-    fn settle_pair(&mut self, ctx: &mut Ctx, (a, ra): (ConnId, [u8; 32]), b: ConnId, twinned: bool, moved: &mut Vec<Moved>) -> bool {
-        let Some(ours) = self.conns.get(&a).map(|c| c.bind.pair_order(&ra)) else { return false };
-        let Some(theirs) = self.conns.get(&b).and_then(|k| Some(k.bind.pair_order(&self.records.get(&k.rec?)?.r))) else { return true };
-        // a node dials a peer at most once at a time: of two it dialed, the earlier is one it
-        // gave up (its close not arrived, or an earlier run of the node)
-        let a_stays = if a.accepted() == b.accepted() { a > b } else { ours < theirs };
-        let (loser, winner) = if a_stays { (b, a) } else { (a, b) };
-        let gone = if twinned { self.conns.get(&loser).and_then(|c| c.rec) } else { None };
-        let members: Vec<SyncId> = gone.and_then(|id| self.records.get(&id)).map(|r| r.members.keys().copied().collect()).unwrap_or_default();
+        let Some(ours) = self.conns.get(&conn).map(|c| c.bind.pair_order(&r)) else { return false };
+        let Some(theirs) = self.conns.get(&other).and_then(|k| Some(k.bind.pair_order(&self.records.get(&k.rec?)?.r))) else { return true };
+        // the later stays when one side dialed both (numbered in order at each end), else the one
+        // of better route rank, then the smaller order hash: a node dials a peer at most once at a
+        // time, so of two it dialed, the earlier is one it gave up (its close not arrived, or an
+        // earlier run of the node)
+        let stays = if conn.accepted() == other.accepted() { conn > other } else { ours < theirs };
+        let (loser, winner) = if stays { (other, conn) } else { (conn, other) };
         self.release(loser, moved);
         if let Some(k) = self.conns.get_mut(&loser) {
             k.lost_to = Some(winner);
         }
         ctx.wire.close(loser, "one connection per pair");
-        if let Some(id) = gone {
-            self.forget_record(id, Source::Record(id));
-            self.dirty.remove(&id);
-            if let Some(acks) = &mut self.acks {
-                acks.set(id, None);
-            }
-            self.peers.wrote_all();
-            self.dropped.insert(id);
-            for s in members {
-                self.remark(winner, &s);
-            }
+        stays
+    }
+
+    /// spec/sync-opens.md §3 One record per pair: record `id`, of the pair `conn` holds, goes
+    /// (at `flush`, with its charges, as an eviction), each member it held re-marked on `conn`.
+    fn drop_record(&mut self, ctx: &mut Ctx, id: RecordId, conn: ConnId) {
+        // in memory, with its members, whether or not a start followed it
+        if self.load(ctx, id).is_none() {
+            return;
         }
-        loser != a
+        let members: Vec<SyncId> = self.records.get(&id).map(|r| r.members.keys().copied().collect()).unwrap_or_default();
+        self.forget_record(id, Source::Record(id));
+        self.dirty.remove(&id);
+        if let Some(acks) = &mut self.acks {
+            acks.set(id, None);
+        }
+        self.peers.wrote_all();
+        self.dropped.insert(id);
+        for s in members {
+            self.remark(conn, &s);
+        }
+    }
+
+    /// spec/sync-opens.md §3 One record per pair: `conn` took kept record `id`; every other
+    /// record naming the node its peer proved goes, none a connection holds.
+    fn drop_others(&mut self, ctx: &mut Ctx, conn: ConnId, id: RecordId) {
+        let Some(node) = self.conns.get(&conn).and_then(|c| c.proven.node) else { return };
+        let read = ctx.store.with_read(|t| t.records_of_actors(&[node]));
+        let others: Vec<RecordId> = self.ok(read).unwrap_or_default().into_iter().filter(|r| r.id != id && r.named.node == Some(node) && !self.on.contains_key(&r.id)).map(|r| r.id).collect();
+        for o in others {
+            self.drop_record(ctx, o, conn);
+        }
     }
 
     /// Keep or close (spec/sync-opens.md §1), opens' part: the connection runs its shared set,
@@ -1539,10 +1540,17 @@ impl Opens {
     fn take(&mut self, ctx: &mut Ctx, conn: ConnId, id: RecordId, digest: bool, moved: &mut Vec<Moved>) {
         let Some(read) = self.load(ctx, id) else { return };
         if !self.one_per_pair(ctx, conn, id, moved) {
-            // read from its rows for this take, nothing of it judged or followed: it leaves
-            // memory as it came, so the next take reads and judges it afresh
-            if read {
-                self.forget_record(id, Source::Record(id));
+            let winner = self.conns.get(&conn).and_then(|c| c.lost_to);
+            let theirs = winner.and_then(|w| self.conns.get(&w)).and_then(|k| k.rec);
+            match winner {
+                // another record of the pair the winner took (spec/sync-opens.md §3 One record per pair)
+                Some(w) if theirs != Some(id) && self.records.get(&id).is_some_and(|r| r.kept) => self.drop_record(ctx, id, w),
+                // read from its rows for this take, nothing of it judged or followed: it leaves
+                // memory as it came, so the next take reads and judges it afresh
+                _ if read => {
+                    self.forget_record(id, Source::Record(id));
+                }
+                _ => {}
             }
             return;
         }
@@ -1619,13 +1627,15 @@ impl Opens {
                 self.rejudge(ctx, conn, s, moved);
             }
         }
+        if kept {
+            self.drop_others(ctx, conn, id);
+        }
     }
 
     fn request(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, m: Msg, moved: &mut Vec<Moved>) {
         let running = self.conns.get(&conn).is_some_and(|c| c.phase == Phase::Running);
         match m {
             Msg::Resume { nonce, tags, .. } => self.resume(ctx, conn, id, nonce, &tags, moved),
-            Msg::Twin { tag, .. } => self.twin(ctx, conn, id, &tag, moved),
             Msg::NoRecord { .. } => {
                 if self.conns.get(&conn).is_some_and(|c| c.phase == Phase::Waiting && !c.bind.dialer) {
                     // a Shared holds at least one item (spec/wire.md §11.2): one of code 0
@@ -1679,8 +1689,6 @@ impl Opens {
         match (req, m) {
             (Req::Resume, Msg::Resumed { nonce, tag, .. }) => self.resumed(ctx, conn, nonce, tag, moved),
             (Req::Resume, _) => self.no_record(ctx, conn, moved),
-            (Req::Twin { with, rid }, Msg::Twinned { tag: Some(tag), .. }) => self.twinned(ctx, conn, with, rid, &tag, moved),
-            (Req::Twin { .. }, _) => {}
             // the source's filter shows its new head's credentials when it moves: nothing to do
             (Req::NoRecord | Req::Lost, _) => {}
             (Req::Beacons { generation }, m) => self.beacons_answered(ctx, conn, id, generation, &m),
@@ -1703,61 +1711,7 @@ impl Opens {
                 let named = c.named.clone();
                 let rid = self.new_record(ctx, *pair_key(&nonce, &lnonce).expose(), named, true);
                 self.take(ctx, conn, rid, true, moved);
-                self.send_twins(ctx, conn, rid);
             }
-        }
-    }
-
-    /// spec/sync-opens.md §1 Twin: the dialer made record `rid` on `conn`; a Twin naming it goes on
-    /// each other connection whose record names an actor `rid` names.
-    fn send_twins(&mut self, ctx: &mut Ctx, conn: ConnId, rid: RecordId) {
-        // none when the pair rule closed `conn` as it took the record
-        if self.conns.get(&conn).is_none_or(|c| c.rec != Some(rid)) {
-            return;
-        }
-        let Some(new) = self.records.get(&rid) else { return };
-        let (r, actors) = (new.r, new.named.actors());
-        let others: Vec<ConnId> = self.conns.iter().filter(|(o, k)| **o != conn && self.twin_candidate(k, &actors)).map(|(o, _)| *o).collect();
-        for o in others {
-            let Some(k) = self.conns.get_mut(&o) else { continue };
-            let id = ctx.wire.request(o, Msg::Twin { id: 0, tag: k.bind.twin_tag(&r) });
-            k.reqs.insert(id, Req::Twin { with: conn, rid });
-        }
-    }
-
-    /// A connection that may be twinned with one of a record naming `actors`: running on a kept
-    /// record naming one of them, not closing for the pair rule.
-    fn twin_candidate(&self, k: &Conn, actors: &[osis_base::Tid]) -> bool {
-        k.lost_to.is_none() && k.rec.and_then(|id| self.records.get(&id)).is_some_and(|r| r.kept && r.named.actors().iter().any(|a| actors.contains(a)))
-    }
-
-    /// A Twin (spec/sync-opens.md §1 Twin): answered with the proof when its tag names the record
-    /// of another connection of this pair's actors, and the two are twinned.
-    fn twin(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, tag: &[u8; 32], moved: &mut Vec<Moved>) {
-        let mine = self.conns.get(&conn).and_then(|c| Some((c.bind, self.records.get(&c.rec?).filter(|r| r.kept)?.named.actors())));
-        let found = mine.and_then(|(bind, actors)| {
-            self.conns.iter().filter(|(o, k)| **o != conn && self.twin_candidate(k, &actors)).find_map(|(o, k)| {
-                let r = self.records.get(&k.rec?)?.r;
-                (bind.twin_tag(&r) == *tag).then(|| (*o, bind.twinned_tag(&r)))
-            })
-        });
-        ctx.wire.answer(conn, id, Msg::Twinned { id, tag: found.map(|(_, t)| t) });
-        if let Some((other, _)) = found {
-            self.pair(ctx, conn, other, true, moved);
-        }
-    }
-
-    /// The answer to this side's Twin on `conn` naming `with`'s record `rid`: twinned when it
-    /// proves the peer holds that record (spec/sync-opens.md §1 Twin).
-    fn twinned(&mut self, ctx: &mut Ctx, conn: ConnId, with: ConnId, rid: RecordId, tag: &[u8; 32], moved: &mut Vec<Moved>) {
-        let live = |c: ConnId| self.conns.get(&c).filter(|k| k.lost_to.is_none());
-        let (Some(k), Some(w)) = (live(conn), live(with)) else { return };
-        if w.rec != Some(rid) {
-            return;
-        }
-        let Some(r) = self.records.get(&rid).map(|r| r.r) else { return };
-        if k.bind.twinned_tag(&r) == *tag {
-            self.pair(ctx, conn, with, true, moved);
         }
     }
 

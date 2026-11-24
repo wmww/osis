@@ -1641,8 +1641,8 @@ impl Store {
         Ok(())
     }
 
-    /// Writes `f` (opens' rows of the records in use), then drops the records `dropped` (a
-    /// twinned connection's, spec/sync-opens.md §1 Twin) and those past `budget` that are not
+    /// Writes `f` (opens' rows of the records in use), then drops the records `dropped` (others
+    /// of a pair, spec/sync-opens.md §3 One record per pair) and those past `budget` that are not
     /// `in_use` (`osis_store::Transaction::records_evict`), each passing what was charged to it
     /// on or dropping it (as `gone`), all in one transaction: a record never goes leaving its
     /// peer's entries charged to nobody. The records that went.

@@ -496,7 +496,7 @@ impl Status {
         self.drop_member(s, Source::Record(id));
     }
 
-    /// Record `id` went (evicted past `RECORD_BUDGET`, or twin-dropped): its members go.
+    /// Record `id` went (evicted past `RECORD_BUDGET`, or another of its pair taken): its members go.
     pub fn record_gone(&mut self, id: crate::types::RecordId) {
         let src = Source::Record(id);
         for s in self.of_source.get(&src).cloned().unwrap_or_default() {

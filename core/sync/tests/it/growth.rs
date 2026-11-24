@@ -131,7 +131,7 @@ fn several_writers_grow_nothing_spec_commits_5() {
     grows_nothing(Gives::Writes, &[0, 2]);
 }
 
-// spec/sync-opens.md §1 (One connection per pair; Twin): the differential's nodes dial each other at
+// spec/sync-opens.md §1 (One connection per pair): the differential's nodes dial each other at
 // once at first contact, yet each pair keeps one connection, so each write crosses each pair on one
 // stream: deliveries per write are the same at n and 10n writes, all on one connection per pair.
 #[test]

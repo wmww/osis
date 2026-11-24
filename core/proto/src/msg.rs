@@ -284,9 +284,6 @@ pub enum Msg {
     Applied { cursor: Cursor },
     Digest { digest: [u8; 32] },
     Members { sync_ids: Vec<SyncId>, more: bool },
-    /// A record of another connection, twinned with this one (spec/sync-opens.md §1 Twin).
-    Twin { id: Id, tag: [u8; 32] },
-    Twinned { id: Id, tag: Option<[u8; 32]> },
 }
 
 /// How a kind travels (spec/wire.md §11.1).
@@ -303,8 +300,8 @@ pub enum Flow {
 /// The flow of a kind version 1 knows, `None` for any other.
 pub fn flow(kind: u64) -> Option<Flow> {
     Some(match kind {
-        2 | 7 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 32 | 34 | 36 | 37 | 38 | 40 | 41 | 47 => Flow::Request,
-        0 | 1 | 3 | 11 | 20 | 26 | 33 | 35 | 39 | 42 | 48 => Flow::Reply,
+        2 | 7 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 32 | 34 | 36 | 37 | 38 | 40 | 41 => Flow::Request,
+        0 | 1 | 3 | 11 | 20 | 26 | 33 | 35 | 39 | 42 => Flow::Reply,
         29 | 43 | 44 | 45 | 46 => Flow::Push,
         _ => return None,
     })
@@ -324,7 +321,6 @@ pub fn answers(request: u64, reply: u64) -> bool {
             34 => reply == 35,
             36 | 37 | 38 | 40 => reply == 39,
             41 => reply == 42,
-            47 => reply == 48,
             _ => false,
         }
 }
@@ -425,8 +421,6 @@ impl Msg {
             Applied { .. } => 44,
             Digest { .. } => 45,
             Members { .. } => 46,
-            Twin { .. } => 47,
-            Twinned { .. } => 48,
         }
     }
 
@@ -434,7 +428,7 @@ impl Msg {
     pub fn id(&self) -> Id {
         use Msg::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } | Twin { id, .. } | Twinned { id, .. } => *id,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
             Pull(p) => p.id,
             PullReply(r) => r.id,
             Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => 0,
@@ -449,7 +443,7 @@ impl Msg {
     pub fn set_id(&mut self, new: Id) {
         use Msg::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } | Twin { id, .. } | Twinned { id, .. } => *id = new,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id = new,
             Pull(p) => p.id = new,
             PullReply(r) => r.id = new,
             Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => {}
@@ -499,8 +493,6 @@ impl Msg {
             M::Applied { cursor } => vec![k, id, Value::bytes(cursor.as_bytes())],
             M::Digest { digest } => vec![k, id, Value::bytes(digest)],
             M::Members { sync_ids, more } => vec![k, id, Value::List(sync_ids.iter().map(s).collect()), Value::Bool(*more)],
-            M::Twin { tag, .. } => vec![k, id, Value::bytes(tag)],
-            M::Twinned { tag, .. } => vec![k, id, Value::opt(tag.as_ref().map(|t| Value::bytes(t)))],
         };
         Value::List(items)
     }
@@ -639,8 +631,6 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
         }
         44 => Msg::Applied { cursor: Cursor::new(f.bytes(MAX_CURSOR_BYTES)?)? },
         45 => Msg::Digest { digest: f.fixed()? },
-        47 => Msg::Twin { id, tag: f.fixed()? },
-        48 => Msg::Twinned { id, tag: f.opt()?.map(|v| dec::fixed(v, "tag")).transpose()? },
         46 => Msg::Members { sync_ids: f.list(0, MAX_MEMBERS, "members")?.into_iter().map(|v| dec::fixed(v, "sync id").map(SyncId)).collect::<Result<_, _>>()?, more: f.bool()? },
         _ => return Err(Error::UnknownKind(kind)),
     };
