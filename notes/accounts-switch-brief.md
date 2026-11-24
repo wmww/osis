@@ -47,7 +47,7 @@ The spec is in and the old account machinery is gone from code, models and TLA (
 4. **Removing a node**: the ordinary removal; notes/account-membership-design.md §2's stolen-node steps as tests.
 5. **Connection proofs** with claimed paths; `dial.0` dialing; Prove's new bytes.
 6. `osis` (account calls keep their names), CLI, app.
-7. Models and differentials (properties, sims and differentials are not re-run since the delete): roles-model `paths` membership cases as the perm differential, sync differential and sims with ordinary accounts.
+7. Models and differentials (properties, sims and differentials are not re-run since the delete): roles-model `paths` membership cases as the perm differential, sync differential and sims with ordinary accounts. Those found failing on every seed, with their known_failures lines: issues/accounts-properties-fail.md.
 8. Counting: commit bytes; pairing and removal at n and 10n nodes; evidence per unit at n nodes (node things' records and key hops in every unit they write in).
 
 ## Model first (rules not yet modelled)

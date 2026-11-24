@@ -6,3 +6,16 @@
 # panic) must match (tools/gate_failures.py).
 held-model/spec_gaps::evidence_reach_and_generator_gaps_large rate:OSIS_HELD_START=662818812978 issues/held-model-p4-held-wide.md P4-held
 osis-engine/rotation::tests_property::rotation_holds_large_spec_crypto_4 rate:OSIS_ROTATION_START=96284297771,OSIS_ROTATION_SEEDS=1 issues/rotation-holder-lacks-box.md with key access lacks a box
+osis-engine/parts::forged_parts_beside_a_part_past_expiry_alike_plain_spec_commits_4 OSIS_FORGED_START=0 issues/accounts-properties-fail.md accounts: pairing
+osis-engine/parts::forged_parts_beside_a_part_past_expiry_alike_in_every_order_exhaustive_spec_commits_4 - issues/accounts-properties-fail.md accounts: pairing
+osis-engine/waits::every_part_given_once_joins_in_any_order_plain_spec_commits_4 - issues/accounts-properties-fail.md accounts: pairing
+osis-engine/shred::purged_permanent_alike_plain_spec_commits_5 - issues/accounts-properties-fail.md accounts: pairing
+osis-engine/shred::purged_permanent_alike_in_every_order_exhaustive_spec_commits_5 - issues/accounts-properties-fail.md accounts: pairing
+osis-sync/differential::histories_hold_their_closure_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md accounts: pairing
+osis-engine/apply::tests_addenda::a_removed_writers_writes_read_alike_plain_spec_perm_5_2 OSIS_ADDENDA_START=0 issues/accounts-properties-fail.md the reader holds its grant's offer
+osis-engine/apply::tests_addenda::a_removed_writers_writes_read_alike_large_spec_perm_5_2 OSIS_ADDENDA_START=0 issues/accounts-properties-fail.md the reader holds its grant's offer
+osis-engine/validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/accounts-properties-fail.md the reader holds its grant's offer
+osis-engine/closure::sync_units_are_the_models_plain_spec_sync_set_2 OSIS_UNITS_START=0 issues/accounts-properties-fail.md the sync unit of
+osis-sync/sims::a_reader_through_a_node_keeping_it_unread_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md reads thing 0 unlike the reference
+osis-sync/sims::lost_and_repeated_messages_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md w\.net\.faulted != \(0, 0, 0\)
+osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 - issues/accounts-properties-fail.md purges through a name: \d+ over \d+ seeds, under the floor
