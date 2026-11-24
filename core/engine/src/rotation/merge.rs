@@ -83,7 +83,7 @@ pub(crate) fn due(tx: &mut Tx<'_>, a: &Tid) -> bool {
 /// carries here (established, superseded); its view is kept (that history box keys them). Run
 /// as this node records its own rotation of `a` (`rotation::record`), so one it made needs no
 /// later write. Returns `a`'s view, `None` while `a` is dependent here or nothing is kept.
-pub(crate) fn settle(tx: &mut Tx<'_>, a: &Tid) -> Result<Option<osis_keys::ActorEpochs>> {
+pub(crate) fn settle(tx: &mut Tx<'_>, a: &Tid) -> Result<Option<std::sync::Arc<osis_keys::ActorEpochs>>> {
     let Some(written) = tx.core.ix.derived_written.get(a).cloned() else { return Ok(None) };
     // dependent here: its epochs are still the derived ones
     let Some(view) = tx.core.own_epochs(a) else { return Ok(None) };

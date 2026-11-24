@@ -994,6 +994,12 @@ pub struct Core {
     pub(crate) store_rows: memo::Changes,
     /// `Core::epochs` per thing (`memo`).
     pub(crate) epochs_of: memo::Memo<Tid, Option<Arc<osis_keys::ActorEpochs>>>,
+    /// `Core::held_sync_keys` per thing (`memo`).
+    pub(crate) held_sync_keys: memo::Memo<Tid, Arc<BTreeSet<[u8; 32]>>>,
+    /// `Core::own_epochs` per thing (`memo`).
+    pub(crate) own_epochs_of: memo::Memo<Tid, Option<Arc<osis_keys::ActorEpochs>>>,
+    /// `Core::listed_keys` per base (`memo`).
+    pub(crate) listed_keys: memo::Memo<Tid, Option<[Option<osis_crypto::VerifyingKey>; 2]>>,
     /// The pass place (`sync::held`): one strictly increasing count that both stamps a role
     /// commit's arrival from elsewhere and begins a complete pass, so the two never tie. Never
     /// rolled back; an open takes the highest place stored.
@@ -1854,6 +1860,9 @@ impl Core {
             // memos: each answer holds while what it read does (`memo`); the stamps of what a
             // rollback restores move
             epochs_of: _,
+            held_sync_keys: _,
+            own_epochs_of: _,
+            listed_keys: _,
             live_bodies: _,
             covers: _,
             sync_body: _,
@@ -2207,6 +2216,9 @@ impl Core {
             held_link_keys: Default::default(),
             followed_links: Default::default(),
             epochs_of: memo::Memo::new("epochs"),
+            held_sync_keys: memo::Memo::new("held sync keys"),
+            own_epochs_of: memo::Memo::new("own epochs"),
+            listed_keys: memo::Memo::new("listed keys"),
             store_rows,
             time: Default::default(),
             // judged once after an open: a commit applied before a restart left it owed

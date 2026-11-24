@@ -591,28 +591,31 @@ fn path_listeners_one_write_one_call_n_reads() {
     assert_eq!(*calls.lock().unwrap(), 1, "one call");
     assert_eq!(n(&cs, "watch: value read"), 20, "one read per listener: {cs:?}");
     drop((subs, others));
-    // the pages a read loads, at n and 10n entries: one path listener, one whole-aspect watch
-    let loads = |n_entries: usize, whole: bool| {
+    // the pages a read loads, at n and 10n entries: one path listener, then one whole-aspect
+    // watch, on one map
+    let loads = |n_entries: usize| {
         let t = thing(&db);
         db.commit_set(t, untyped("t:m.0"), &big(n_entries)).unwrap();
         // a second body first: the compaction trigger weighs the aspect then (reading its whole
         // state, spec/sync-compaction.md §1 trigger), not in the measured step
         db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["k2"]).set(&Value::Int(0))).unwrap();
-        let _s = if whole {
-            db.at(t, untyped("t:m.0")).on_change(|_, _| {}).unwrap()
-        } else {
-            db.at(t, untyped("t:m.0")).path(osis::p!["k1"]).on_change::<Value>(|_, _| {}).unwrap()
+        let load = |whole: bool, v: i64| {
+            let _s = if whole {
+                db.at(t, untyped("t:m.0")).on_change(|_, _| {}).unwrap()
+            } else {
+                db.at(t, untyped("t:m.0")).path(osis::p!["k1"]).on_change::<Value>(|_, _| {}).unwrap()
+            };
+            db.settle();
+            db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["k1"]).set(&Value::Int(v))).unwrap();
+            costs::take();
+            db.settle();
+            let cs = costs::take();
+            assert_eq!(n(&cs, "watch: value read"), 1);
+            n(&cs, "state page load")
         };
-        db.settle();
-        db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["k1"]).set(&Value::Int(0))).unwrap();
-        costs::take();
-        db.settle();
-        let cs = costs::take();
-        assert_eq!(n(&cs, "watch: value read"), 1);
-        n(&cs, "state page load")
+        (load(false, 0), load(true, 1))
     };
-    let (small, large) = (loads(500, false), loads(5000, false));
-    let (whole_small, whole_large) = (loads(500, true), loads(5000, true));
+    let ((small, whole_small), (large, whole_large)) = (loads(500), loads(5000));
     // 500 entries fit unpaged; 5000 take about 76 pages
     assert!(whole_large > 10 * whole_small.max(1), "the counter sees a whole read: {whole_small} -> {whole_large}");
     assert!(large <= small + 1, "a path read loads its pages only: {small} -> {large}");

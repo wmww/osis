@@ -258,7 +258,7 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
     let mk = HolderKeys::from_keys(&k)?;
     // a holder whose secrets this node holds (its own things, a held link key) is boxed
     // symmetrically
-    let keys = match tx.core.link_key_epochs(&holder).or_else(|| tx.core.own_epochs(&holder)) {
+    let keys = match tx.core.link_key_epochs(&holder).map(std::sync::Arc::new).or_else(|| tx.core.own_epochs(&holder)) {
         Some(e) => mk.with_own(&e),
         None => mk,
     };

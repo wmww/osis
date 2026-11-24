@@ -8,7 +8,6 @@ use crate::error::Result;
 use osis_base::{ChainStep, SyncId, Role, Tid};
 use crate::sync::{OwnedSyncId, Path};
 use osis_crypto::{RoleKey, role_key};
-use osis_keys::ActorEpochs;
 use osis_blob::{ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
 use crate::identity::Identity;
@@ -26,9 +25,7 @@ use std::sync::Arc;
 /// owns it. An entry failing this is ignored here, never judged invalid: the check turns on the
 /// secrets this node holds. While this node holds no sync secret of g's own (it reads g by derived
 /// secrets, which no step bears) the entries are hints (`OwnedSyncId::hint`).
-pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
-    let Some(e) = epochs else { return false };
-    let held: BTreeSet<[u8; 32]> = e.sync.held_newest_first().into_iter().map(|(_, s)| role_key(RoleKey::Sync, s).verifying_key().to_bytes()).collect();
+pub(crate) fn owns(held: &BTreeSet<[u8; 32]>, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
     // the genesis first (every holder holds the older secrets, so usually it bears one): one
     // step verified, not a path per bearing step
     let mut bearing: Vec<(bool, &StepId)> = steps.iter().filter(|(_, (s, _))| held.contains(&s.keys.sync.to_bytes())).map(|(k, (s, _))| (s.prev.is_some(), k)).collect();
@@ -132,7 +129,16 @@ impl Core {
     /// Whether `g` owns sync ID `id` here (`owns`): judged once this node holds a sync secret of
     /// `g`'s own, else taken as a hint.
     pub(crate) fn owns_sync_id(&self, g: &Tid, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
-        !self.holds_own_sync(g) || owns(self.epochs(g).as_deref(), id, steps)
+        !self.holds_own_sync(g) || owns(&self.held_sync_keys(g), id, steps)
+    }
+
+    /// The sync keys (spec/sync-ids.md §3) of the sync secrets of `g` held here, reading-only
+    /// ones included (`memo`: a key derivation per secret, asked at every write listing a step).
+    pub(crate) fn held_sync_keys(&self, g: &Tid) -> Arc<BTreeSet<[u8; 32]>> {
+        self.held_sync_keys.get(g, || {
+            let e = self.epochs(g);
+            Arc::new(e.iter().flat_map(|e| e.sync.held_newest_first()).map(|(_, s)| role_key(RoleKey::Sync, s).verifying_key().to_bytes()).collect())
+        })
     }
 
     /// The independent of `t`, whose read role reads its deltas: `t` if independent,

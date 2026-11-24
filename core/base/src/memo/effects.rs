@@ -383,8 +383,15 @@ impl<K: Hash + Eq + Clone + std::fmt::Debug, V: Clone + PartialEq + std::fmt::De
             // the same reads again: the index holds `k` under each already
             self.reindex_buckets(&frame.deps);
         } else {
-            self.unindex(k, &old_deps);
-            self.index(k, &frame.deps);
+            // by difference: a run reading most of what the last read (one more thing in a
+            // unit) moves the index by what changed (each list holds a read once, `Frame::note`)
+            let was: HashSet<(usize, Option<u64>), Ids> = old_deps.iter().map(Dep::id).collect();
+            let now: HashSet<(usize, Option<u64>), Ids> = frame.deps.iter().map(Dep::id).collect();
+            let gone: Vec<Dep> = old_deps.iter().filter(|d| !now.contains(&d.id())).cloned().collect();
+            let (kept, came): (Vec<Dep>, Vec<Dep>) = frame.deps.iter().cloned().partition(|d| was.contains(&d.id()));
+            self.unindex(k, &gone);
+            self.reindex_buckets(&kept);
+            self.index(k, &came);
         }
         self.pending.remove(k);
         // a write between a read and its index here is in no log this reader reads

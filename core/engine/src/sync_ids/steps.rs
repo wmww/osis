@@ -242,12 +242,16 @@ impl Core {
     /// none recorded, and this node cannot write under `b`.
     pub(crate) fn listed_step(&self, b: &Tid) -> Option<Placed> {
         let r = self.ix.steps.get(b)?;
-        let held: Option<Vec<[u8; 32]>> = self
-            .holds_own_sync(b)
-            .then(|| self.epochs(b).map(|e| e.sync.held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_key(osis_crypto::RoleKey::Sync, s).verifying_key().to_bytes()).collect()).unwrap_or_default());
+        let held = self.holds_own_sync(b).then(|| self.held_sync_keys(b));
         let owned = |id: &SyncId| held.as_ref().is_none_or(|h| r.steps.values().any(|s| s.sync_id == *id && h.contains(&s.sync)));
         let id = r.steps.values().map(|s| s.sync_id).filter(owned).max()?;
         r.head(&id).cloned()
+    }
+
+    /// The admin and write delete keys of `listed_step(b)`, parsed (`memo`: every write on a
+    /// thing of `b` lists them).
+    pub(crate) fn listed_keys(&self, b: &Tid) -> Option<[Option<osis_crypto::VerifyingKey>; 2]> {
+        self.listed_keys.get(b, || self.listed_step(b).map(|s| [&s.delete, &s.write].map(|k| osis_crypto::VerifyingKey::from_slice(k).ok())))
     }
 
     /// Whether `key`, listed at level 1 or 3 by a commit stamped `ts` for a delta on `t`, is

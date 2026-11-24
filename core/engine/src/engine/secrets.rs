@@ -51,7 +51,8 @@ impl Core {
     }
 
     fn chain_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
-        let (mut e, chain) = self.derivation(tid)?;
+        let (e, chain) = self.derivation(tid)?;
+        let mut e = Arc::unwrap_or_clone(e);
         for t in chain.iter().rev() {
             e = ActorEpochs::derived(&e, t);
         }
@@ -61,11 +62,11 @@ impl Core {
     /// The epochs `tid`'s derive from (spec/crypto.md §3): those of the first actor up its record
     /// chain whose epochs this node holds, itself first, and the dependent things from `tid` up to
     /// below it, nearest first (empty: `tid`'s own).
-    pub(crate) fn derivation(&self, tid: &Tid) -> Option<(ActorEpochs, Vec<Tid>)> {
+    pub(crate) fn derivation(&self, tid: &Tid) -> Option<(Arc<ActorEpochs>, Vec<Tid>)> {
         let mut chain = Vec::new();
         for step in self.record_chain(tid) {
             let cur = step.thing()?;
-            let held = self.link_key_epochs(&cur).or_else(|| self.own_epochs(&cur));
+            let held = self.link_key_epochs(&cur).map(Arc::new).or_else(|| self.own_epochs(&cur));
             if let Some(e) = held {
                 return Some((e, chain));
             }
@@ -102,14 +103,17 @@ impl Core {
 
     /// `own_record` established (spec/crypto.md §4): a function of what this node holds now (its
     /// applied commits, `NamesHeld`, and the mint admin's establishment, `adopt_derived`), so
-    /// nothing about establishment is stored or invalidated.
-    pub(crate) fn own_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
-        let mut e = self.own_record(tid)?.clone();
-        self.adopt_derived(tid, &mut e);
-        e.establish(&self.names_held(tid));
-        crate::rotation::floors::set(self, tid, &mut e);
-        crate::rotation::members::set_foreign(self, tid, &mut e);
-        Some(e)
+    /// nothing about establishment is stored or invalidated (`memo`: every write's delete base
+    /// reads it).
+    pub(crate) fn own_epochs(&self, tid: &Tid) -> Option<Arc<ActorEpochs>> {
+        self.own_epochs_of.get(tid, || {
+            let mut e = self.own_record(tid)?.clone();
+            self.adopt_derived(tid, &mut e);
+            e.establish(&self.names_held(tid));
+            crate::rotation::floors::set(self, tid, &mut e);
+            crate::rotation::members::set_foreign(self, tid, &mut e);
+            Some(Arc::new(e))
+        })
     }
 
     /// What this node holds for judging the names of `actor`'s epochs (spec/crypto.md §4).
@@ -163,7 +167,7 @@ impl Core {
     pub(crate) fn delete_base(&self, tid: &Tid) -> Option<DeleteBase> {
         for step in self.record_chain(tid) {
             let cur = step.thing()?;
-            if let Some(e) = self.link_key_epochs(&cur).or_else(|| self.own_epochs(&cur)) {
+            if let Some(e) = self.link_key_epochs(&cur).map(Arc::new).or_else(|| self.own_epochs(&cur)) {
                 return Some(DeleteBase(cur, Some(e)));
             }
             if self.ix.independent.contains(&cur) || matches!(step, ChainStep::Key(_)) {
@@ -510,7 +514,7 @@ impl osis_keys::Held for NamesHeld<'_> {
 
 /// The delete base of a thing (spec/crypto.md §7): an independent thing, with its epochs when
 /// held.
-pub(crate) struct DeleteBase(pub(crate) Tid, pub(crate) Option<ActorEpochs>);
+pub(crate) struct DeleteBase(pub(crate) Tid, pub(crate) Option<Arc<ActorEpochs>>);
 
 /// What a commit build asks for (osis-commit `Secrets`).
 pub struct CommitSecrets<'c> {
@@ -540,7 +544,7 @@ pub(crate) type KeyCache = std::cell::RefCell<BTreeMap<(Tid, Role), Option<Verif
 /// (`Err`).
 fn base_of(created: &crate::engine::write::Creates, minted: &crate::engine::write::Minted, tid: &Tid) -> Option<std::result::Result<DeleteBase, Tid>> {
     match osis_base::record_chain(*tid, |t| created.get(t).map(CreationRecord::record_link)).end() {
-        ChainStep::Key(k) => Some(Ok(DeleteBase(k, minted.get(&k).cloned()))),
+        ChainStep::Key(k) => Some(Ok(DeleteBase(k, minted.get(&k).cloned().map(Arc::new)))),
         ChainStep::Unknown(t) => Some(Err(t)),
         ChainStep::Up { .. } | ChainStep::TooDeep => None,
     }
@@ -705,7 +709,7 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
         // from a secret this node holds, never a published key (a node cannot write as a purge
         // author it does not hold write on)
         let DeleteBase(_, e) = self.core.delete_base(&self.purge_author)?;
-        newest_delete_key(&e?, Role::Write)
+        newest_delete_key(&*e?, Role::Write)
     }
     fn write_key(&self, tid: &Tid) -> Option<VerifyingKey> {
         self.key(tid, Role::Write)
@@ -730,13 +734,12 @@ impl<'c> CommitSecrets<'c> {
     /// No held secret is read for it: a step key a held secret derives may be one no step bears
     /// yet (a rotation's epoch before its step).
     fn key(&self, tid: &Tid, r: Role) -> Option<VerifyingKey> {
-        let pick = |delete: &[u8; 32], write: &[u8; 32]| VerifyingKey::from_slice(if r == Role::Admin { delete } else { write }).ok();
         match base_of(self.created, self.minted, tid)? {
             Ok(DeleteBase(_, e)) => e.and_then(|e| newest_delete_key(&e, r)),
             Err(t) => *self.keys.borrow_mut().entry((t, r)).or_insert_with(|| {
                 let DeleteBase(b, _) = self.core.delete_base(&t)?;
-                match self.core.listed_step(&b) {
-                    Some(s) => pick(&s.delete, &s.write),
+                match self.core.listed_keys(&b) {
+                    Some([delete, write]) => if r == Role::Admin { delete } else { write },
                     None => self.published.get(&(b, r)).copied(),
                 }
             }),
