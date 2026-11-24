@@ -2,10 +2,8 @@
 //! nests only: sharing a tag grants it a role on each note, notes/tags.md, Sharing a tag), undo across accounts.
 use osis::core::NAME;
 use osis::{GrantOpts, Role, Time};
-use osis::internals::{ManualClock};
 use osis_kit::store::Data;
-use std::sync::Arc;
-use crate::common::{cfg, deliver};
+use crate::common::{clock, deliver, node};
 use osis_kit::view::{Cx, WindowState};
 
 fn reach(d: &Data, t: osis::Tid) -> osis::Result<osis_kit::facets::about::Reach> {
@@ -22,9 +20,9 @@ fn sync(a: &Data, b: &Data) {
 
 /// Alice and Bob, two accounts, each with a home; each holds the other's commits.
 fn two_people() -> (Data, Data) {
-    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = osis_app::store::data(osis::internals::create(cfg(1, &clock)).unwrap());
-    let b = osis_app::store::data(osis::internals::create(cfg(2, &clock)).unwrap());
+    let clock = clock();
+    let a = osis_app::store::data(node(1, &clock));
+    let b = osis_app::store::data(node(2, &clock));
     a.home().unwrap();
     b.home().unwrap();
     sync(&a, &b);

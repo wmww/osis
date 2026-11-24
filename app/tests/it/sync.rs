@@ -2,7 +2,7 @@
 //! path of core's tests) and over malformed synced data.
 use osis::internals::Internals as _;
 use osis::core::{BODY};
-use osis::{Ak, Tid, Value, Time};
+use osis::{Ak, Tid, Value};
 use osis::internals::{ManualClock};
 use osis_kit::store::Data;
 use std::sync::Arc;
@@ -16,8 +16,8 @@ fn two() -> (Data, Data) {
 
 /// `two`, with the clock both read.
 fn two_clocked() -> (Data, Data, Arc<ManualClock>) {
-    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = osis::internals::create(cfg(1, &clock)).unwrap();
+    let clock = crate::common::clock();
+    let a = crate::common::node(1, &clock);
     let j = osis::internals::pair(cfg(2, &clock), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();

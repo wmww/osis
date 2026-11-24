@@ -119,12 +119,7 @@ fn scale_run(d: &Data, v: &ViewType, grow: fn(&Data, Tid, usize), n: usize) -> (
     let w = WindowState::default();
     // for a view of what the search finds: everything grown matches
     w.set_local(QUERY, "grown".to_string());
-    Cx::new(d, &w, false);
-    let mut tree = Tree::default();
-    let mut screen = Screen::default();
-    tree.show(&w, &mut screen, "scale", &ViewSpec::new(v.id, t)).unwrap();
-    Cx::new(d, &w, false);
-    tree.update(&w, &mut screen).unwrap();
+    let (mut tree, mut screen) = shown(d, &w, "scale", &ViewSpec::new(v.id, t)).unwrap();
     let shown = std::mem::take(&mut screen.rows);
     w.graph.take_costs();
     w.graph.record();
@@ -176,24 +171,29 @@ fn tids_in(address: &str) -> Vec<Tid> {
     address.split([' ', '(', ')']).filter_map(|w| w.parse().ok()).collect()
 }
 
+/// `spec` shown at `path` in `w` and brought up to date: what ran in setting it up is not a change.
+fn shown(d: &Data, w: &WindowState, path: &str, spec: &ViewSpec) -> osis::Result<(Tree, Screen)> {
+    let (mut tree, mut screen) = (Tree::default(), Screen::default());
+    Cx::new(d, w, false);
+    tree.show(w, &mut screen, path, spec)?;
+    Cx::new(d, w, false);
+    tree.update(w, &mut screen)?;
+    Ok((tree, screen))
+}
+
 fn check_view(d: &Data, v: &ViewType, t: Tid, (other, spare): (Tid, Tid), query: &str, fails: &mut Vec<String>, reached: &mut Reached) {
     let w = WindowState::default();
-    Cx::new(d, &w, false);
     w.set_local(QUERY, query.to_string());
-    let mut tree = Tree::default();
-    let mut screen = Screen::default();
     let spec = ViewSpec::new(v.id, t);
     let name = format!("{}{}", v.id, if query.is_empty() { "" } else { "?" });
     let update = |tree: &mut Tree, screen: &mut Screen| {
         Cx::new(d, &w, false);
         tree.update(&w, screen)
     };
-    if let Err(e) = tree.show(&w, &mut screen, "sample", &spec) {
-        fails.push(format!("{name}: show: {e}"));
-        return;
-    }
-    // what ran in setting it up is not a change
-    update(&mut tree, &mut screen).unwrap();
+    let (mut tree, mut screen) = match shown(d, &w, "sample", &spec) {
+        Ok(x) => x,
+        Err(e) => return fails.push(format!("{name}: show: {e}")),
+    };
     reached.content |= screen.models.values().any(|m| !m.blocks.is_empty());
     let snap = w.graph.snapshot();
     // no duplicates: within one node, no address read twice
@@ -249,15 +249,10 @@ fn check_view(d: &Data, v: &ViewType, t: Tid, (other, spare): (Tid, Tid), query:
         let w2 = WindowState::default();
         w2.set_local(TICK, w.graph.peek(TICK));
         w2.set_local(QUERY, query.to_string());
-        Cx::new(d, &w2, false);
-        let (mut t2, mut s2) = (Tree::default(), Screen::default());
-        if let Err(e) = t2.show(&w2, &mut s2, "sample", &spec) {
-            return vec![format!("fresh render: {e}")];
-        }
-        Cx::new(d, &w2, false);
-        if let Err(e) = t2.update(&w2, &mut s2) {
-            return vec![format!("fresh render: {e}")];
-        }
+        let s2 = match shown(d, &w2, "sample", &spec) {
+            Ok((_, s2)) => s2,
+            Err(e) => return vec![format!("fresh render: {e}")],
+        };
         let shown = |m: &HashMap<String, Section>| m.iter().map(|(k, v)| format!("{k}: {v:?}")).collect::<BTreeSet<_>>();
         shown(&screen.models).symmetric_difference(&shown(&s2.models)).cloned().collect()
     };

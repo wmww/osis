@@ -17,6 +17,16 @@ pub fn save(d: &osis_kit::store::Data, row: &osis_kit::view::FormRow, text: &str
     row.save.as_ref().expect("an input row").run(&osis_kit::view::Act::new(d, &osis_kit::view::WindowState::default()), &osis_kit::view::Input::Text(text.into()))
 }
 
+/// The clock a test's nodes share, at a fixed start.
+pub fn clock() -> Arc<ManualClock> {
+    Arc::new(ManualClock::new(osis::Time(1_760_000_000_000)))
+}
+
+/// A fresh in-memory node of its own account, seeded `seed`, on `clock`.
+pub fn node(seed: u64, clock: &Arc<ManualClock>) -> Osis {
+    osis::internals::create(cfg(seed, clock)).unwrap()
+}
+
 pub fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     c.app.internals.seed = Some(seed);

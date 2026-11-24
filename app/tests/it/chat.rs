@@ -2,11 +2,11 @@
 //! replies and the sender's name. Redeeming a new chat's link needs a peer: checked by hand; a link
 //! to something already held does not.
 use osis::internals::Internals as _;
-use osis::{GrantOpts, LinkOpts, Osis, Role, Time};
-use osis::internals::{ManualClock};
+use osis::{GrantOpts, LinkOpts, Osis, Role, Tid};
+use osis::internals::ManualClock;
 use osis_app::facets::log as chat;
 use std::sync::Arc;
-use crate::common::{cfg, deliver};
+use crate::common::{clock, deliver, node};
 
 /// Sets the profile's name.
 fn set_name(db: &Osis, name: &str) -> osis::Result<()> {
@@ -30,15 +30,20 @@ fn sync(a: &Osis, b: &Osis) {
     }
 }
 
-#[test]
-fn two_people_chat() {
-    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = osis::internals::create(cfg(1, &clock)).unwrap();
-    let b = osis::internals::create(cfg(2, &clock)).unwrap();
+/// Two accounts and a chat `a` made with `opts` that `b` may write in and holds.
+fn shared(opts: &osis_chat::Options) -> (Arc<ManualClock>, Osis, Osis, Tid) {
+    let clock = clock();
+    let (a, b) = (node(1, &clock), node(2, &clock));
     sync(&a, &b);
-    let c = osis_chat::create(&a, &osis_chat::Options { name: "channel".into(), ..Default::default() }, a.account_root()).unwrap();
+    let c = osis_chat::create(&a, opts, a.account_root()).unwrap();
     a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
     b.hold(c).unwrap();
+    (clock, a, b, c)
+}
+
+#[test]
+fn two_people_chat() {
+    let (clock, a, b, c) = shared(&osis_chat::Options { name: "channel".into(), ..Default::default() });
     set_name(&a, "Alice").unwrap();
     assert_eq!(chat::my_name(&a).unwrap().as_deref(), Some("Alice"));
     let first = chat::send(&a, c, "Hello", "first post", None).unwrap();
@@ -70,13 +75,7 @@ fn two_people_chat() {
 /// replies quoting it), a delete, a sender with no name or a blank one.
 #[test]
 fn edited_deleted_and_nameless() {
-    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = osis::internals::create(cfg(1, &clock)).unwrap();
-    let b = osis::internals::create(cfg(2, &clock)).unwrap();
-    sync(&a, &b);
-    let c = osis_chat::create(&a, &osis_chat::Options::default(), a.account_root()).unwrap();
-    a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
-    b.hold(c).unwrap();
+    let (clock, a, b, c) = shared(&osis_chat::Options::default());
     assert_eq!(chat::name(&a, c).unwrap(), "Chat");
     set_name(&a, "Alice").unwrap();
     let first = chat::send(&a, c, "", "typo", None).unwrap();
@@ -107,8 +106,7 @@ fn edited_deleted_and_nameless() {
 /// profile's name once it has one.
 #[test]
 fn reading_the_name_writes_nothing() {
-    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = osis::internals::create(cfg(0, &clock)).unwrap();
+    let a = node(0, &clock());
     let c = osis_chat::create(&a, &osis_chat::Options::default(), a.account_root()).unwrap();
     let before = a.engine(|e| e.commit_ids().len());
     chat::my_name(&a).unwrap();
@@ -123,13 +121,7 @@ fn reading_the_name_writes_nothing() {
 /// peer; text that is no link still fails.
 #[test]
 fn join_held_chat_opens_it() {
-    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = osis::internals::create(cfg(1, &clock)).unwrap();
-    let b = osis::internals::create(cfg(2, &clock)).unwrap();
-    sync(&a, &b);
-    let c = osis_chat::create(&a, &osis_chat::Options::default(), a.account_root()).unwrap();
-    a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
-    b.hold(c).unwrap();
+    let (clock, a, b, c) = shared(&osis_chat::Options::default());
     let link = a.make_link(c, Role::Write, LinkOpts { until: None, single_use: false }).unwrap().to_string();
     sync(&a, &b);
     for db in [a, b] {
@@ -142,7 +134,7 @@ fn join_held_chat_opens_it() {
         });
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)).expect("redeem returns at once"), Ok(c));
     }
-    let a = osis::internals::create(cfg(3, &clock)).unwrap();
+    let a = node(3, &clock);
     assert!(osis_app::store::data(a).redeem("osis://nonsense").unwrap_err().to_string().contains("not a link"));
 }
 
@@ -154,8 +146,8 @@ fn quotes_read_flat_in_history() {
     use osis::internals::costs;
     const QUOTES: usize = 20;
     let reads = |n: usize| -> (Vec<(&'static str, u64)>, Vec<chat::Line>) {
-        let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-        let a = osis::internals::create(cfg(0, &clock)).unwrap();
+        let clock = clock();
+        let a = node(0, &clock);
         let c = osis_chat::create(&a, &osis_chat::Options::default(), a.account_root()).unwrap();
         let first = chat::send(&a, c, "", "typo", None).unwrap();
         for i in 0..n {
