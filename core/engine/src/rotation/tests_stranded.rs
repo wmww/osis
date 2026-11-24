@@ -281,7 +281,9 @@ fn a_writers_junk_step_keys_change_no_outside_fire_spec_permissions_3() {
     lp.sync_all().unwrap();
     let head = lp.peers[0].engine.core.listed_step(&g).unwrap();
     let mut read = lp.peers[0].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap().step.unwrap().read;
-    read.kem_key = ct::KemKey::X25519MlKem768(vec![0x68; 1216]);
+    if let Some(r) = read.as_mut() {
+        r.kem_key = ct::KemKey::X25519MlKem768(vec![0x68; 1216]);
+    }
     let junk = ct::StepKeys { delete: ct::SigningKey::Ed25519(vec![0x66; 32]), write: ct::SigningKey::Ed25519(vec![0x67; 32]), read };
     let mut m = crate::Mutation::new();
     m.op(g, &ct::KEYS, PathOp { path: vec![PathSeg::Field(10)], op: Op::Set(Some(junk).to_value()) }).unwrap();
@@ -328,43 +330,112 @@ fn opened_by(lp: &mut LocalPeer, i: usize, out: &crate::sync::SealedFireOut) -> 
     lp.peers[i].engine.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap()
 }
 
-// spec/crypto.md §3 (Read key in force), spec/sync-inbox.md §2: peer 1, a writer of g, writes g's
-// read keyset again with a KEM key no secret of its epoch derives (only a holder of the secret
-// could tell). Peer 2, holding g's public key record and no secret of it, fires on g: its fire
-// waits while the writer's keyset is the newest write, and once the admin's step (due: no read key
-// in force) arrives it is sealed to the key the admin derived, which the admin and the writer
-// open. Fails if the sender seals to the writer's keyset (every holder refuses it as unopened,
-// the sender seeing it delivered) or if the step is not due on a read keyset written after it.
-#[test]
-fn a_writers_junk_read_keyset_swallows_no_outside_fire_spec_crypto_3() {
+/// Peer 1 writes `ks` as `g`'s read keyset, bypassing its own writer rules (as a hostile writer
+/// would), and everyone syncs.
+fn write_read_keyset(lp: &mut LocalPeer, g: Tid, ks: &osis_schema::core_types::Keyset) {
     use osis_crdt::{Op, PathOp, PathSeg};
-    use osis_schema::core_types as ct;
     use osis_schema::Codec;
-    let (mut lp, g, _) = granted(3, &[(1, Role::Write)]);
-    let f = fires_kept(&mut lp, g);
-    let e = super::tests::newest_read(&lp, 0, g).unwrap();
-    let junk = osis_keys::keyset(&e, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
     let mut m = crate::Mutation::new();
-    m.op(g, &ct::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Some(junk.clone()).to_value()) }).unwrap();
+    m.op(g, &osis_schema::core_types::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Some(ks.clone()).to_value()) }).unwrap();
     m.unchecked();
     lp.peers[1].engine.core.skip_writer_rules = true;
     lp.advance(1_000);
     lp.peers[1].commit(m).unwrap().unwrap();
     lp.peers[1].engine.core.skip_writer_rules = false;
     lp.sync_all().unwrap();
+}
+
+/// Asserts `out` sealed to epoch `e` (`id` its fire at peer 2) and opened by each of `by`.
+fn sealed_to(lp: &mut LocalPeer, out: &crate::sync::SealedFireOut, e: osis_crypto::Epoch, by: &[usize]) {
+    let id = *lp.peers[2].engine.fires_owed().first().unwrap();
+    assert_eq!(lp.peers[2].engine.fire_epoch(&id).unwrap(), Some(e));
+    for &i in by {
+        let opened = opened_by(lp, i, out);
+        assert!(matches!(opened, crate::sync::Opened::Commit(..)), "peer {i} opens the fire: {opened:?}");
+    }
+}
+
+// spec/crypto.md §3 (Read key in force), spec/sync-inbox.md §2: peer 1, a writer of g, writes g's
+// read keyset with an epoch of its own making whose KEM key no secret boxed to anyone derives
+// (only a holder of a secret could tell it from a rotation). Peer 2, holding g's public key record
+// and no secret of it, fires on g: its fire waits, and no step is due (the admin cannot vouch for
+// an epoch it holds no secret of), until the admin removes the writer, as from a lockout
+// (notes/keys.md Lockouts); the removal's step vouches for its own epoch, which the admin opens
+// and the removed writer does not. Fails if the sender seals to the writer's keyset (every holder
+// refuses it as unopened, the sender seeing it delivered), if a step names an epoch it cannot
+// vouch for, or if the removal's step is not due.
+#[test]
+fn a_writers_junk_read_keyset_swallows_no_outside_fire_spec_crypto_3() {
+    use osis_schema::core_types as ct;
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write)]);
+    let f = fires_kept(&mut lp, g);
+    let e = super::tests::newest_read(&lp, 0, g).unwrap();
+    let mine = osis_crypto::Epoch::new(e.n() + 1, [0x77; 32]).unwrap();
+    let junk = osis_keys::keyset(&mine, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
+    write_read_keyset(&mut lp, g, &junk);
     assert_eq!(lp.peers[2].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap().read, Some(junk), "the writer's keyset applied, valid");
     assert!(outside_fire(&mut lp, 2, g, &f, 5).is_none(), "no read key in force: the fire waits");
     lp.advance(1_000);
     let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
-    lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("a step due: the read keyset was written after the step keys");
+    assert!(lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().is_none(), "no step due: the admin vouches for no epoch it lacks");
+    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.advance(1_000);
+    lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("a step due after the removal's rotation");
     lp.sync_all().unwrap();
     let out = outside_fire(&mut lp, 2, g, &f, 5).expect("sealed to the step's read key");
-    let id = *lp.peers[2].engine.fires_owed().first().unwrap();
-    assert_eq!(lp.peers[2].engine.fire_epoch(&id).unwrap(), Some(e));
-    for i in [0, 1] {
-        let opened = opened_by(&mut lp, i, &out);
-        assert!(matches!(opened, crate::sync::Opened::Commit(..)), "peer {i} opens the fire: {opened:?}");
-    }
+    let removal = super::tests::newest_read(&lp, 0, g).unwrap();
+    assert_ne!(removal, e);
+    sealed_to(&mut lp, &out, removal, &[0]);
+    assert!(matches!(opened_by(&mut lp, 1, &out), crate::sync::Opened::NotOpen), "the removed writer opens nothing");
+}
+
+// spec/crypto.md §3 (Read key in force: the read key is in force over the keyset's epoch, and an
+// epoch names its secret, §4):
+// peer 1, a writer of g, writes g's read keyset again at the epoch the step registers, with a junk
+// KEM key. The read key stays in force: peer 2's fire from outside goes at once, sealed to the key
+// the admin derived, and the admin and the writer open it; no step is due. Fails if the read key
+// is matched to the keyset by its KEM key too (a writer then holds every outside fire back at
+// will) or if the sender seals to the keyset's KEM key.
+#[test]
+fn a_junk_kem_key_at_the_steps_epoch_holds_no_fire_back_spec_crypto_3() {
+    let (mut lp, g, _) = granted(3, &[(1, Role::Write)]);
+    let f = fires_kept(&mut lp, g);
+    let e = super::tests::newest_read(&lp, 0, g).unwrap();
+    let junk = osis_keys::keyset(&e, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
+    write_read_keyset(&mut lp, g, &junk);
+    let out = outside_fire(&mut lp, 2, g, &f, 5).expect("the read key stays in force");
+    sealed_to(&mut lp, &out, e, &[0, 1]);
+    let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
+    assert!(lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().is_none(), "no step due");
+}
+
+// spec/crypto.md §3 (Read key in force), spec/permissions.md §5.2: peer 1, a writer of g, is
+// removed by the admin, who steps after the removal's rotation; peer 1 then writes g's read keyset
+// with an epoch and KEM key of its own. Its write is invalid wherever the removal is held, so it
+// moves no read key: peer 2's fire from outside goes at once, sealed to the removal's epoch, which
+// the admin opens and peer 1 does not. Fails if an invalid keyset write counts (a removed writer
+// holding every outside fire back) or the fire is sealed to an epoch peer 1 holds.
+#[test]
+fn a_removed_writers_keyset_holds_no_fire_back_spec_crypto_3() {
+    use osis_schema::core_types as ct;
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Write)]);
+    let f = fires_kept(&mut lp, g);
+    lp.advance(1_000);
+    lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
+    lp.advance(1_000);
+    lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap().expect("a step due after the removal's rotation");
+    lp.sync_all().unwrap();
+    let e = super::tests::newest_read(&lp, 0, g).unwrap();
+    assert!(lp.peers[1].engine.epochs(&g).is_none_or(|x| x.read.secret(&e).is_none()), "peer 1 left out of the removal's epoch");
+    let held = lp.peers[2].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap().read;
+    let mine = osis_crypto::Epoch::new(e.n() + 1, [0x77; 32]).unwrap();
+    let junk = osis_keys::keyset(&mine, &osis_crypto::Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
+    write_read_keyset(&mut lp, g, &junk);
+    assert_eq!(lp.peers[2].engine.get_typed(&g, &ct::KEYS).unwrap().unwrap().read, held, "the removed writer's keyset applies nothing");
+    let out = outside_fire(&mut lp, 2, g, &f, 5).expect("the read key stays in force");
+    sealed_to(&mut lp, &out, e, &[0]);
+    assert!(matches!(opened_by(&mut lp, 1, &out), crate::sync::Opened::NotOpen), "peer 1 opens nothing");
 }
 
 // spec/crypto.md §3 (Read key in force), spec/requirements.md Permissions (a holder stops reading
@@ -743,4 +814,32 @@ fn an_edge_write_fires_only_where_its_writer_may_not_write_the_holder_spec_permi
     assert!(fired(e0, c), "a grant from outside is fired");
     let c = grant(e0, h);
     assert!(!fired(e0, c), "Alice writes H through A: fired nowhere");
+}
+
+// spec/crypto.md §3 (Read key in force: only over the keyset its issuer had received), §4
+// (Established: a rotation commit held with both its `keys.0` and `secrets.0` deltas): peer 1, a
+// writer of g, rotates read leaving reader peer 3 out. The admin first holds that rotation's
+// `keys.0` delta alone (its boxes still to come) and steps; then it holds the rest. Peer 2, holding
+// everything, seals its fire from outside to no epoch peer 3 holds. Fails if a step's read key
+// may stand over a keyset its issuer does not hold current with its secret (a step registering the
+// older epoch while naming the new keyset stays in force once both are held).
+#[test]
+fn a_step_naming_a_keyset_its_issuer_lacks_puts_no_old_key_in_force_spec_crypto_3() {
+    let (mut lp, g, tids) = granted(4, &[(1, Role::Write), (3, Role::Read)]);
+    let f = fires_kept(&mut lp, g);
+    lp.advance(1_000);
+    lp.peers[1].engine.rotate_leaving_out(&g, &[Role::Read], &[tids[3]]).unwrap().expect("rotated");
+    let new = super::tests::newest_read(&lp, 1, g).unwrap();
+    super::tests::deliver_without_secrets(&mut lp, 1, 0, g);
+    lp.advance(1_000);
+    let sync_id = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
+    let _ = lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let _ = lp.peers[0].engine.issue_step(&g, &sync_id, false).unwrap();
+    lp.sync_all().unwrap();
+    let out = outside_fire(&mut lp, 2, g, &f, 5).expect("sealed once the admin holds the rotation whole");
+    let id = *lp.peers[2].engine.fires_owed().first().unwrap();
+    assert_eq!(lp.peers[2].engine.fire_epoch(&id).unwrap(), Some(new), "sealed to the rotation's epoch");
+    assert!(matches!(opened_by(&mut lp, 3, &out), crate::sync::Opened::NotOpen), "peer 3 opens nothing");
 }

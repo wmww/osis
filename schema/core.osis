@@ -149,22 +149,19 @@ type keyset = struct {
     demotes 7: bool,
 };
 
-/// A read epoch with its read-role KEM key, derived from its secret by whoever wrote it, and the
-/// 32-byte digest of the epoch and KEM key of the read keyset its writer's `keys.0` held then
-/// (none: it held none).
+/// A read epoch with its read-role KEM key, derived from its secret by whoever wrote it.
 type read_key = struct {
     epoch 0: epoch,
     kem_key 1: kem_key,
-    seen 2: option<blob>,
 };
 
 /// The delete and write keys of a step of an actor's sync ID (spec/sync-ids.md §2), and the read
-/// epoch it registers: what a party outside the actor seals to (spec/crypto.md §3, Read key in
-/// force).
+/// key its issuer vouches for (none: it vouches for none): what a party outside the actor seals to
+/// (spec/crypto.md §3, Read key).
 type step_keys = struct {
     delete 0: signing_key,
     write 1: signing_key,
-    read 2: read_key,
+    read 2: option<read_key>,
 };
 
 /// An actor's public keys (spec/crypto.md §3).

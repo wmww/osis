@@ -87,19 +87,19 @@ pub(crate) fn deposit_seed_of(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<Secret3
 pub(crate) struct Issued {
     pub(crate) step: Step,
     pub(crate) set: ClaimSet,
-    pub(crate) read: ct::ReadKey,
+    pub(crate) read: Option<ct::ReadKey>,
 }
 
 /// Issues a step of `t` at the newest established epochs: a genesis step of a new sync ID
 /// when `parent` is none, else a child of the parent step (signed by the parent's delete key,
 /// from the admin secret of the epoch it registers).
 ///
-/// Invariant: the read key is the read epoch the step registers with the KEM key derived here
-/// from that epoch's secret, never copied from a keyset: what a party outside `t` seals to is
-/// an admin's derivation, so no writer's junk keyset can make an outside fire open nowhere
-/// (spec/crypto.md §3, Read key in force). It names the read keyset this node's `keys.0` holds
-/// (`seen`): the key is in force only while that keyset is current, so no rotation the issuer
-/// had not received is passed over.
+/// Invariant: the read key is the epoch of the read keyset `t`'s `keys.0` holds here, written only
+/// where this node vouches for it (`vouched`), with the KEM key derived here from its secret,
+/// never copied from the keyset: what a party outside `t` seals to is an admin's derivation for
+/// an epoch it holds current, so no writer's junk keyset can make an outside fire open nowhere,
+/// and no keyset the issuer holds only part of, or holds superseded, puts an older epoch in force
+/// (spec/crypto.md §3, Read key in force).
 ///
 /// `keyset`: the read keyset `t`'s `keys.0` holds once the step's commit is applied (one the same
 /// commit writes, where it writes one).
@@ -119,8 +119,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: Opti
         None => Parent::Genesis(&del),
         Some((step, _)) => Parent::Child { step, delete: &del },
     };
-    let seen = keyset.map(keyset_digest);
-    let read = ct::ReadKey { epoch: osis_keys::aspects::to_schema(&re), kem_key: KemKey::X25519MlKem768(osis_crypto::role_kem(rs).public().as_bytes().to_vec()), seen };
+    let read = vouched(epochs, keyset).map(|(e, s)| ct::ReadKey { epoch: osis_keys::aspects::to_schema(&e), kem_key: KemKey::X25519MlKem768(osis_crypto::role_kem(s).public().as_bytes().to_vec()) });
     let (step, set) = register_with(p, keys, &rk, (t, re, rs), (se, ss), epochs.read.wrapped_under([&re], |s| epochs.read.secret(s).is_some()).and_then(|s| epochs.read.secret(&s).map(|x| (s, x))), &mut *tx.rng)?;
     Ok(Issued { step, set, read })
 }
@@ -234,26 +233,32 @@ pub(crate) fn due_at(epochs: &ActorEpochs, head: &Step, deposit: &Secret32, read
 }
 
 /// `t`'s read key in force (spec/crypto.md §3): its `keys.0` step keys' read key while the read
-/// keyset there is the one it names (`seen`). `None` while another is (a step is then due,
-/// `step_due`) or no step keys are held.
+/// keyset there is of its epoch. `None` while another is, or no read key is held (a step is then
+/// due wherever an admin vouches for the keyset's epoch, `step_due`).
 ///
 /// Invariant: what a party outside `t` seals to (`Engine::fire_keys`) is admin-written (the step
-/// keys need admin, `validity::rotation_required`) and derived from a read secret its issuer
-/// holds (`issue`); a writer's keyset written since makes the fire wait for the next step and never
-/// chooses the key. A junk KEM key in a writer's keyset would leave every outside fire opened by
-/// nobody while its sender saw it delivered; a step's key from before a writer's rotation (one its
-/// issuer had not received) would be read by the party that rotation left out. Every node reads it
-/// from its own `keys.0` state, a function of the valid writes it holds: no held secret decides it.
+/// keys need admin, `validity::rotation_required`), derived from a read secret its issuer holds
+/// current (`issue`), and the epoch of the keyset every writer's rotation writes: a writer's keyset
+/// written since makes the fire wait and never chooses the key. A junk KEM key in a writer's
+/// keyset would leave every outside fire opened by nobody while its sender saw it delivered; a
+/// step's key for another epoch than the keyset's would be read by a party a rotation since left
+/// out. A writer rewriting the keyset at the read key's epoch changes nothing (an epoch names its
+/// secret, spec/crypto.md §4). Every node reads it from its own `keys.0` state, a function of the
+/// valid writes it holds: no held secret decides it.
 pub(crate) fn read_key_in_force(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<ct::ReadKey>> {
     let Some(k) = Core::keys_in(tx, t)? else { return Ok(None) };
-    let current = k.read.as_ref().map(keyset_digest);
-    Ok(k.step.map(|s| s.read).filter(|r| r.seen == current))
+    let Some(current) = k.read.map(|ks| ks.epoch) else { return Ok(None) };
+    Ok(k.step.and_then(|s| s.read).filter(|r| r.epoch == current))
 }
 
-/// The digest a read key names a read keyset by (`ct::ReadKey::seen`, spec/wire.md §7): BLAKE3
-/// of the canonical bytes of `[epoch, kem_key]`, what a sender would otherwise seal to.
-fn keyset_digest(ks: &ct::Keyset) -> [u8; 32] {
-    osis_base::hash::hash(&osis_base::encode(&Value::List(vec![ks.epoch.to_value(), ks.kem_key.to_value()])))
+/// The epoch of read keyset `keyset` with its secret, where an issuer holding `epochs` vouches for
+/// it (spec/crypto.md §3, Read key): it holds the epoch current (established, not superseded) with
+/// its secret. None for a keyset it holds only part of, holds superseded, or never received the
+/// secret of (junk, a lockout): outside fires then wait for a rotation or a removal.
+fn vouched<'a>(epochs: &'a ActorEpochs, keyset: Option<&ct::Keyset>) -> Option<(Epoch, &'a Secret32)> {
+    let e = osis_keys::aspects::from_schema(&keyset?.epoch).ok()?;
+    let read = epochs.role(Role::Read);
+    read.is_current(&e).then(|| read.secret(&e).map(|s| (e, s))).flatten()
 }
 
 /// `keys.0` field `step` (schema/core.osis).
@@ -286,9 +291,10 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Res
     let Some((head, _)) = crate::sync_ids::actors::head_of(&steps).and_then(|h| steps.get(&h).cloned()) else { return Ok(None) };
     let Some(epochs) = tx.core.epochs(g) else { return Ok(None) };
     let Some(deposit) = deposit_seed_of(tx, g)? else { return Ok(None) };
-    // a read keyset other than the one the step keys name leaves no read key in force: outside
-    // fires wait for this step, so it is due (spec/permissions.md §3), whoever wrote the keyset
-    let read_moved = read_key_in_force(tx, g)?.is_none();
+    // no read key in force for a read keyset this admin vouches for: outside fires wait for this
+    // step, so it is due (spec/permissions.md §3), whoever wrote the keyset
+    let keyset = Core::keys_in(tx, g)?.and_then(|k| k.read);
+    let read_moved = read_key_in_force(tx, g)?.is_none() && vouched(&epochs, keyset.as_ref()).is_some();
     let Some(head_admin) = due_at(&epochs, &head, &deposit, read_moved, fresh) else { return Ok(None) };
     // a deposit-only step waits for a newer seed held but not applied (spec/permissions.md §3):
     // stepping to this one would register a key a departed party may know

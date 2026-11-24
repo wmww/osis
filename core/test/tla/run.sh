@@ -134,12 +134,15 @@ instances=(
   "planted rotation Planted P_all.cfg fail"         # negative control: carrying everything bases a planted epoch
   "planted rotation Planted P_drop.cfg fail"        # negative control: covering what was left out loses a genuine grant's box
   "planted rotation Planted P_keyset.cfg fail"      # negative control: keyset-vouched basis loses older epochs once keys.0 compacts
-  "firekey rotation FireKey FK_safety.cfg pass"        # an outsider seals to the step's read key while keys.0's read keyset is the one it names, else pends (spec/crypto.md §3, spec/sync-inbox.md §2): W2 any keyset and clock
-  "firekey rotation FireKey FK_honest2.cfg pass"       # ... the removal beside an honest rotation not knowing it
-  "firekey rotation FireKey FK_live.cfg pass"          # ... and every fire is taken, sealed to a key an honest node opens
+  "firekey rotation FireKey FK_safety.cfg pass"        # an outsider seals to the step's read key, an admin's vouch for keys.0's read keyset's epoch, while that keyset is of it, else pends (spec/crypto.md §3, spec/sync-inbox.md §2): W2 any keyset, copy and clock
+  "firekey rotation FireKey FK_honest2.cfg pass"       # ... the removal beside an honest rotation not knowing it, keys.0 deltas held before their boxes
+  "firekey rotation FireKey FK_live.cfg pass"          # ... every fire taken, sealed to a key an honest node opens, and none R holds once the knowing rotation is held
+  "firekey rotation FireKey FK_parts.cfg pass"         # ... the same, honest only, two read-only rotations
   "firekey rotation FireKey FK_newest.cfg fail:NoSwallow" # negative control: sealed to the newest read keyset, a writer's lockout swallows it
   "firekey rotation FireKey FK_nopend.cfg fail:NoLeak"    # negative control: sealed to the step's read key whatever the keyset, the removed reader opens it
-  "firekey rotation FireKey FK_stamps.cfg fail:NoLeakStrict" # negative control: in force by stamps, a step concurrent with the knowing rotation keeps an epoch R holds in force (F1)
+  "firekey rotation FireKey FK_stamps.cfg fail:NoLeakStrict" # negative control: in force by stamps (F1)
+  "firekey rotation FireKey FK_seen.cfg fail:NoLeakStrict"   # negative control: the step names the keyset its issuer held, registering its own newest epoch (a copy of the knowing epoch)
+  "firekey rotation FireKey FK_partial.cfg fail:temporal"    # negative control: as FK_seen, honest: a keys.0 delta held before its boxes leaves the old epoch in force for good
   "firekey rotation FireKey FK_fork.cfg fail:NoLeakStrict"   # finding F2: an honest fork not knowing the removal masks the knowing keyset (README)
   "firekey rotation FireKey FK_mask.cfg fail:NoLeakAll"      # stated limit: a W2 keyset masks the knowing keyset (README)
   "netstream net MCStream S_loss.cfg pass"

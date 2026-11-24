@@ -508,8 +508,8 @@ impl Engine {
     /// this node's account, one delta: the fire) with its evidence (its signer's record and, an
     /// account's, its rotations to the epoch it signs at: spec/permissions.md §4), behind the
     /// commit's prefix, sealed to its thing's read key in force held (`fire_keys`). `None`: not
-    /// owed, or no such key is held (the thing's public key record, or a step after its newest
-    /// read keyset).
+    /// owed, or no such key is held (the thing's public key record, or step keys whose read key
+    /// is of its read keyset's epoch).
     pub fn sealed_fire(&mut self, id: &FireId) -> Result<Option<SealedFireOut>> {
         let Some(o) = self.core.ix.fires.get(id).cloned() else { return Ok(None) };
         // a stranded notice past its expiry is owed no more: no receiver would keep it
