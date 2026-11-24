@@ -41,7 +41,6 @@ fn found(d: &Data, q: &str) -> osis_kit::view::search::Found {
 /// Both nodes make a home before they sync: afterwards both write to the same one, the
 /// views and favorites are not doubled, and a favorite made in the other home can be removed.
 #[test]
-#[ignore = "accounts: pairing"]
 fn two_nodes_race_home() {
     let (a, b) = two();
     let ga = a.home().unwrap();
@@ -78,7 +77,6 @@ fn two_nodes_race_home() {
 /// Concurrent reorders and a concurrent delete merge into one list without duplicates or gone
 /// things.
 #[test]
-#[ignore = "accounts: pairing"]
 fn concurrent_reorder_and_delete() {
     let (a, b) = two();
     a.home().unwrap();
@@ -108,7 +106,6 @@ fn concurrent_reorder_and_delete() {
 
 /// This node's open thing stays open when the other node's home (smaller tid) arrives.
 #[test]
-#[ignore = "accounts: pairing"]
 fn open_survives_a_merged_home() {
     let (a, b) = two();
     let ga = a.home().unwrap();
@@ -124,7 +121,6 @@ fn open_survives_a_merged_home() {
 
 /// Demo data once per account: a second node sees it and adds none; existing favorites stay.
 #[test]
-#[ignore = "accounts: pairing"]
 fn demo_once_per_account() {
     let (a, b) = two();
     let n = a.create_note().unwrap();
@@ -139,7 +135,6 @@ fn demo_once_per_account() {
 
 /// A deleted tag leaves no ghost behind (every strong to it goes too).
 #[test]
-#[ignore = "accounts: pairing"]
 fn deleted_tag_is_gone() {
     let (a, _) = two();
     osis_app::demo::add(&a).unwrap();
@@ -154,7 +149,6 @@ fn deleted_tag_is_gone() {
 /// The other node deletes the open thing: this one goes home, and the open editor's sessions,
 /// dropped then, do not bring it back.
 #[test]
-#[ignore = "accounts: pairing"]
 fn remote_delete_of_the_open_thing() {
     let (a, b) = two();
     a.home().unwrap();
@@ -175,7 +169,6 @@ fn remote_delete_of_the_open_thing() {
 /// make treats such an aspect as absent instead of failing the whole screen.
 /// (Not core aspects: a commit whose value does not fit a core type is malformed.)
 #[test]
-#[ignore = "accounts: pairing"]
 fn malformed_aspects_do_not_break_reads() {
     let (a, _) = two();
     osis_app::demo::add(&a).unwrap();
@@ -224,7 +217,6 @@ fn malformed_aspects_do_not_break_reads() {
 /// One node empties the other's home into the main one while that node, not yet knowing
 /// the main home, favorites something in its own: nothing is lost.
 #[test]
-#[ignore = "accounts: pairing"]
 fn emptying_a_home_keeps_a_concurrent_favorite() {
     let (a, b) = two();
     let ga = a.home().unwrap();
@@ -250,7 +242,6 @@ fn emptying_a_home_keeps_a_concurrent_favorite() {
 
 /// Concurrent first writes after the merge: both nodes settle on one list.
 #[test]
-#[ignore = "accounts: pairing"]
 fn concurrent_writes_after_the_merge_converge() {
     let (a, b) = two();
     a.home().unwrap();
@@ -280,7 +271,6 @@ fn concurrent_writes_after_the_merge_converge() {
 /// One node unfavorites a thing still held in the other home while the other node, also
 /// writing for the first time since the merge, favorites something else.
 #[test]
-#[ignore = "accounts: pairing"]
 fn unfavorite_survives_a_concurrent_first_write() {
     let (a, b) = two();
     let ga = a.home().unwrap();
@@ -304,7 +294,6 @@ fn unfavorite_survives_a_concurrent_first_write() {
 /// one choice, a value of another shape or an unknown mode reads as unset, an unknown theme id
 /// is only a string (the UI falls back to the default theme).
 #[test]
-#[ignore = "accounts: pairing"]
 fn look_merges_and_tolerates_odd_values() {
     use osis_kit::schema::Mode;
     let (a, b) = two();
@@ -332,7 +321,6 @@ fn look_merges_and_tolerates_odd_values() {
 /// Reordering is a sequence move: a favorite one node moves while the other removes it stays
 /// removed, and both nodes end with the same order.
 #[test]
-#[ignore = "accounts: pairing"]
 fn reorder_against_concurrent_unfavorite() {
     let (a, b) = two();
     a.home().unwrap();
@@ -363,7 +351,6 @@ fn reorder_against_concurrent_unfavorite() {
 /// fields survive, whichever node writes later (a whole-struct write with defaults would
 /// overwrite the other's field with an empty one).
 #[test]
-#[ignore = "accounts: pairing"]
 fn contact_fields_of_an_absent_struct_race() {
     use osis_app::contact::{NAMES, ORG};
     use crate::common::save;
@@ -397,7 +384,6 @@ fn contact_fields_of_an_absent_struct_race() {
 /// address. (The relabel is a field write into the renamed-away entry, which stays removed:
 /// removal is final, notes/crdt.md Tess's decisions.)
 #[test]
-#[ignore = "accounts: pairing"]
 fn email_rename_against_concurrent_edits() {
     use osis_app::contact::EMAILS;
     use crate::common::save;
@@ -429,7 +415,6 @@ fn email_rename_against_concurrent_edits() {
 /// An "All fields" edit of one field and a nudge of the same aspect on the other node: both
 /// survive (the nudge's whole-value write diffs against what it read).
 #[test]
-#[ignore = "accounts: pairing"]
 fn field_edit_and_nudge_merge() {
     use osis_app::event::{START, Start};
     let (a, b, clock) = two_clocked();
@@ -453,7 +438,6 @@ fn field_edit_and_nudge_merge() {
 /// remove-and-re-add, moves onto entries held in the other home's list. Both nodes end with
 /// one order, without duplicates, and a removal is never undone by a move.
 #[test]
-#[ignore = "accounts: pairing"]
 fn favorites_moves_adversarial() {
     for round in 0..4 {
         let (a, b, clock) = two_clocked();
@@ -530,7 +514,6 @@ fn favorites_moves_adversarial() {
 /// the move is limited to its own list (no copying between homes). The order stays put
 /// rather than jumping somewhere unasked.
 #[test]
-#[ignore = "accounts: pairing"]
 fn favorite_from_the_other_home_moves_within_its_list() {
     let (a, b) = two();
     let ga = a.home().unwrap();
@@ -552,7 +535,6 @@ fn favorite_from_the_other_home_moves_within_its_list() {
 /// A form saved on focus loss after its thing was deleted (here, or concurrently on the other
 /// node) must not bring the thing back into the app.
 #[test]
-#[ignore = "accounts: pairing"]
 fn form_save_after_a_delete() {
     use crate::common::save;
     use osis_app::facets::contact::contact_form;
@@ -580,7 +562,6 @@ fn form_save_after_a_delete() {
 
 /// A window is per node: a state write on one node's window does not touch another's open thing.
 #[test]
-#[ignore = "accounts: pairing"]
 fn windows_do_not_interfere() {
     use osis_kit::schema::WEEK;
     use osis_kit::view::{Act, Cx, WindowState};

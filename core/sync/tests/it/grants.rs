@@ -87,7 +87,6 @@ fn debug_dumps_name_sync_ids_commits_and_rounds() {
 // secrets its account's boxes give read the profile as derived from the account until the
 // profile's keyset arrives: it holds the profile and syncs its sync ID, across a restart.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_paired_node_enters_the_profile_spec_sync_set_1() {
     let mut w = crate::harness::siblings();
     let p = w.node(1).profile.unwrap();
@@ -107,7 +106,6 @@ fn a_paired_node_enters_the_profile_spec_sync_set_1() {
 // its contact card was made is reached all the same: its contact knows its inbox, and a grant to
 // it reaches it: held by a strong, the thing is read.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_card_made_after_pairing_carries_the_inbox_spec_sync_inbox_5() {
     let mut w = World::new(0);
     w.add_node();

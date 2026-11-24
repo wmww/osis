@@ -603,6 +603,61 @@ impl LocalPeer {
         Ok((lp, ps))
     }
 
+    /// `n` nodes of one account (spec/permissions.md §8): peer 0 makes it, each other is paired
+    /// in at admin by peer 0 (`pair_into`), then all sync: the peers and the account.
+    #[allow(clippy::indexing_slicing)] // peer 0 of n ≥ 1
+    pub fn one_account(n: usize, seed: u64, t: WallMs) -> Result<(LocalPeer, crate::flows::Account)> {
+        let mut peers = (0..n).map(|i| Peer::new(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
+        let rest = peers.split_off(1);
+        let mut lp = LocalPeer::apart(peers, seed);
+        let (acc, _) = lp.peers[0].engine.make_account()?;
+        for mut p in rest {
+            lp.pair_into(0, &mut p)?;
+            lp.peers.push(p);
+        }
+        lp.sync_all()?;
+        Ok((lp, acc))
+    }
+
+    /// Adds a fresh node (seeded `seed`) acting for an account of its own, as a contact's node:
+    /// it and every other peer hold each other's accounts' commits and a strong to each account.
+    /// Its index and account.
+    #[allow(clippy::indexing_slicing)] // indices of the net
+    pub fn add_account(&mut self, seed: u64) -> Result<(usize, crate::flows::Account)> {
+        let t = self.peers.first().map_or(WallMs(0), |p| p.engine.now());
+        let mut p = Peer::new(seed, t)?;
+        let (acc, _) = p.engine.make_account()?;
+        self.peers.push(p);
+        let n = self.peers.len() - 1;
+        let accounts: Vec<Option<osis_base::Tid>> = self.peers.iter_mut().map(|p| p.engine.settings_thing()).collect::<Result<_>>()?;
+        let others: Vec<osis_base::Tid> = accounts.iter().take(n).flatten().copied().collect();
+        self.peers[n].know(&others)?;
+        for i in 0..n {
+            self.peers[i].know(&[acc.thing])?;
+            for (from, to) in [(i, n), (n, i)] {
+                for id in self.peers[from].engine.commit_ids() {
+                    if let Some(pk) = self.peers[from].engine.package(&id)? {
+                        self.deliver(to, &pk)?;
+                    }
+                }
+            }
+        }
+        self.sync_all()?;
+        Ok((n, acc))
+    }
+
+    /// Pairs fresh node `p` into peer `by`'s account at admin (spec/permissions.md §8 Pairing):
+    /// `p` shows its node thing's public key record, `by` writes the grant and hands back the
+    /// offer, which `p` takes. The account's things reach `p` by sync after.
+    #[allow(clippy::indexing_slicing)] // test harness: a peer index past the net panics
+    pub fn pair_into(&mut self, by: usize, p: &mut Peer) -> Result<osis_base::Tid> {
+        let a = self.peers[by].engine.settings_thing()?.ok_or(crate::error::Error::Misuse("the pairer acts for no account"))?;
+        let (node, keys) = (p.engine.me(), p.engine.node_keys()?);
+        let (offer, _) = self.peers[by].engine.pair(&a, &node, &keys, osis_base::Role::Admin)?;
+        p.engine.take_offer(&offer)?;
+        Ok(a)
+    }
+
     /// `new` whose accounts have met no other: none keeps another's chain.
     pub fn new_apart(n: usize, seed: u64, t: WallMs) -> Result<LocalPeer> {
         let peers = (0..n).map(|i| Peer::new(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;

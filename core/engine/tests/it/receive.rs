@@ -210,7 +210,6 @@ fn a_part_waits_for_the_edges_of_its_stated_path_spec_commits_4() {
 // it comes; meanwhile commits applied in between judge none of them again
 // (spec/requirements.md, Scale: a first sync is O(commits), not O(commits × awaiting)).
 #[test]
-#[ignore = "accounts: pairing"]
 fn pending_not_reexamined_while_unchanged_spec_commits_4() {
     // 1 a node of 0's account
     let mut lp = net_one(2);
@@ -490,7 +489,6 @@ fn role_commits_before_their_creation_pend_then_apply_spec_commits_4() {
 // to bring again (sync opens every entry naming it again, `store::follow`); the true copy then
 // gives the write.
 #[test]
-#[ignore = "accounts: pairing"]
 fn junk_first_while_a_record_is_away_goes_once_it_comes_spec_commits_4() {
     // 1 a node of 0's account
     let mut lp = net_one(2);

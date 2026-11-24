@@ -94,7 +94,10 @@ pub(crate) fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
 /// Peer 0 creates an account; peer 1 is paired as its second node: brought back by making an
 /// account and pairing (notes/accounts-switch-brief.md).
 pub(crate) fn account_two_nodes() -> (LocalPeer, Tid) {
-    unimplemented!("accounts: pairing")
+    LocalPeer::cached("flows::account_two_nodes", || {
+        let (lp, acc) = LocalPeer::one_account(2, 0, T0).unwrap();
+        (lp, acc.thing)
+    })
 }
 
 /// `n` peers, each with its own account actor (no pairing); everyone holds everyone's commits:
@@ -835,7 +838,14 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
 /// Peers 0 and 1 are nodes of account P (created on 1, 0 paired); peer 2 is Alice (PA): brought
 /// back by making an account and pairing (notes/accounts-switch-brief.md).
 fn nodes_and_alice() -> (LocalPeer, Tid, Tid, SyncId) {
-    unimplemented!("accounts: pairing")
+    let (lp, (p, pa, ps)) = LocalPeer::cached("flows::nodes_and_alice", || {
+        let (mut lp, acc) = LocalPeer::one_account(2, 0, T0).unwrap();
+        lp.peers.swap(0, 1);
+        let (_, alice) = lp.add_account(2).unwrap();
+        let ps = *lp.peers[1].engine.get_typed(&acc.thing, &ct::SYNC).unwrap().unwrap().keys().next().unwrap();
+        (lp, (acc.thing, alice.thing, ps))
+    });
+    (lp, p, pa, ps)
 }
 
 /// The head step of sync ID `s` of actor `a` at peer `k`: the one no other names as its parent.
@@ -850,14 +860,12 @@ fn head_step(lp: &mut LocalPeer, k: usize, a: &Tid, s: &SyncId) -> osis_blob::St
 // P's other node encrypts under U it rotates T (its box to P stale), then U (its box to T
 // stale); d1 holds neither new secret.
 #[test]
-#[ignore = "accounts: pairing"]
 fn cascade_two_hops_spec_perm_3() {
     let (mut lp, p, pa, _) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
     let t = thing_of(&mut lp, 2, pa);
     let u = thing_of(&mut lp, 2, pa);
-    let account = lp.peers[1].engine.me();
-    lp.peers[2].engine.grant(&t, &account, &edge_of(Role::Write)).unwrap();
+    lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Write)).unwrap();
     lp.peers[2].engine.grant(&u, &t, &edge_of(Role::Write)).unwrap();
     spread(&mut lp);
     let (t0, u0) = (newest_read(&lp, 1, t).unwrap(), newest_read(&lp, 1, u).unwrap());
@@ -1102,7 +1110,6 @@ fn link_bearer_and_until_spec_perm_7() {
 // after the removals (until they arrive it stands: the window the removal closes); the joiner
 // that redeemed while the link worked stays.
 #[test]
-#[ignore = "accounts: pairing"]
 fn until_link_backdated_grant_void_spec_perm_7() {
     let (mut lp, p) = account_two_nodes();
     let mut more = net(3, 1);
@@ -1319,7 +1326,6 @@ fn dependent_mint_admin_gets_secrets_before_its_thing_spec_perm_3() {
 // spec/sync-ids.md §2, spec/sync-ids.md §6: after a rotation an admin issues a child of the peer's head at the
 // newest epochs; the removed node has no claim key in it, the remaining one has.
 #[test]
-#[ignore = "accounts: pairing"]
 fn registration_step_after_rotation_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
@@ -1340,7 +1346,6 @@ fn registration_step_after_rotation_spec_sync_5() {
 // deposit seed in its rotation commit, and the step it issues registers the new deposit key, so
 // the removed account can no longer deposit under the thing's sync IDs.
 #[test]
-#[ignore = "accounts: pairing"]
 fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let (mut lp, p, pa, _) = nodes_and_alice();
     let pp = lp.peers[1].engine.me();
@@ -1364,7 +1369,6 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
 // spec/sync-ids.md §6: a refreshed deposit seed alone (no rotation) is registered by the next step
 // an admin issues: a child at the same role keys with the new deposit key; then nothing is due.
 #[test]
-#[ignore = "accounts: pairing"]
 fn refreshed_deposit_seed_issues_step_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
     let parent = head_step(&mut lp, 1, &p, &card);
@@ -1439,7 +1443,6 @@ fn writer_leaves_spec_perm_3() {
 // spec/permissions.md §2, §3: a node removing its account from an organization (its only authority
 // there comes through the account) is a self-removal; the organization's admin rotates later.
 #[test]
-#[ignore = "accounts: pairing"]
 fn node_removes_account_from_an_org_spec_perm_3() {
     let (mut lp, p, pa, _) = nodes_and_alice();
     let t = thing_of(&mut lp, 2, pa);
@@ -1464,7 +1467,6 @@ fn node_removes_account_from_an_org_spec_perm_3() {
 // it (d1's backdated forgery, in effect): every reader drops it and P keeps its role. Had d2
 // received it first, its frontier covers it and the leave stands.
 #[test]
-#[ignore = "accounts: pairing"]
 fn removed_node_backdated_leave_dropped_spec_perm_5_1() {
     for seen in [false, true] {
         let (mut lp, p, pa, _) = nodes_and_alice();
@@ -1536,13 +1538,11 @@ fn write_link_rotates_as_signer_spec_perm_3() {
 // the holder's epochs: after a node left the account that administers the holder, no step is issued
 // until the holder rotates (its roles blocked meanwhile); then its step is, at the new epochs.
 #[test]
-#[ignore = "accounts: pairing"]
 fn issue_step_after_inside_removal_spec_sync_5() {
     let (mut lp, p, pa, _) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
     let t = thing_of(&mut lp, 2, pa);
-    let account = lp.peers[1].engine.me();
-    lp.peers[2].engine.grant(&t, &account, &edge_of(Role::Admin)).unwrap();
+    lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
     let t0 = newest_read(&lp, 1, t).unwrap();
     let sync_id = lp.peers[1].engine.sync_id_of(&t).unwrap().unwrap();
@@ -2608,14 +2608,13 @@ fn a_purge_stamped_before_the_named_commit_names_nothing_spec_commits_5() {
 // epochs; nothing rotates for the fork (they share an author: both rotating for it would fork
 // again on every round, without end), so it ends quiet with both forks current alike.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_fork_by_two_siblings_ends_quiet_spec_crypto_4() {
     let (mut lp, _) = account_two_nodes();
     let mut more = net(2, 1);
     lp.peers.append(&mut more.peers);
     let (x, y) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
     spread(&mut lp);
-    let p = lp.peers[0].engine.me();
+    let p = lp.peers[0].engine.settings_thing().unwrap().unwrap();
     let t = thing_of(&mut lp, 0, p);
     lp.peers[0].engine.grant(&t, &x, &edge_of(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&t, &y, &edge_of(Role::Read)).unwrap();

@@ -636,10 +636,30 @@ impl World {
         i
     }
 
-    /// A new node paired as a second node of node `i`'s account: brought back by pairing
-    /// (notes/accounts-switch-brief.md).
-    pub fn pair(&mut self, _i: usize) -> usize {
-        unimplemented!("accounts: pairing")
+    /// A new node paired at admin as a node of node `i`'s account (spec/permissions.md §8
+    /// Pairing, as the product's `pair_offer`/`pair_accept`): it shows its node thing's public
+    /// key record, node `i` grants it and hands back the offer with where it is dialed, which it
+    /// takes; then it publishes where it is dialed.
+    pub fn pair(&mut self, i: usize) -> usize {
+        let j = self.add_bare_node();
+        let (acc, profile) = (self.node(i).account.expect("an account"), self.node(i).profile);
+        let (node, keys) = self.write(j, |e| (e.me(), e.node_keys().expect("node keys")));
+        let pair = |e: &mut Engine| e.pair(&acc, &node, &keys, osis_base::Role::Admin);
+        let offer = match self.write(i, pair) {
+            Err(osis_engine::Error::Store(_)) => self.write(i, pair).expect("pairing again after a store failure"),
+            r => r.expect("pair"),
+        }
+        .0;
+        self.write(j, |e| e.take_offer(&offer)).expect("take the offer");
+        if let Some(n) = self.nodes.get_mut(j) {
+            n.account = Some(acc);
+            n.profile = profile;
+        }
+        self.publish(j);
+        // the pairing channel also carries where the pairer is dialed, as a link carries its
+        // peers: the new node holds none of A's content (its `dial.0`) before it syncs A
+        self.discover(j, i);
+        j
     }
 
     /// Node `i` publishes its address as it listens (`Engine::publish_reach`: its entry in the

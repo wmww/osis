@@ -183,7 +183,6 @@ fn tracked_path_reads_their_own_position() {
 // `role_on` has no address of its own: it hears every roster and key change, and tells on a
 // changed answer only.
 #[test]
-#[ignore = "accounts: pairing"]
 fn role_on_hears_roles_and_compares() {
     let (a, b, _) = paired();
     let t = a.commit_with(|w| w.create_held()).unwrap();

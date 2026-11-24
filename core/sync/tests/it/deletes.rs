@@ -375,7 +375,6 @@ fn build_replaced() -> (World, (Tid, CommitId, String)) {
 // stores included; the parts beside them still read, and the same attack recovers the kept one
 // (it finds live content). One world for both: an attack per device.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5() {
     let (mut w, t, _, replaced) = replaced_beside_a_kept_part();
     let (gone, stays) = (Ak::new("u:p.0").unwrap(), Ak::new("u:k.0").unwrap());
@@ -442,7 +441,6 @@ fn set_value(w: &mut World, i: usize, t: Tid, v: &str) {
 // body reached at quiet). It passes with that strip too: node 0 counts the part covered either way
 // (the next test), so no test catches it (issues/strip-rule-gaps.md).
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2() {
     covers_cover(false);
 }
@@ -454,7 +452,6 @@ fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2(
 // making commit, held by its writer, so node 0, receiving the commit stripped, counts the part
 // covered, not missing, and reads the value. Fails if a snapshot lists only what occurs in it.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_reader_counts_a_stripped_part_covered_by_its_covers_cover_spec_crdt_8() {
     covers_cover(true);
 }

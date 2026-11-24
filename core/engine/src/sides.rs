@@ -80,6 +80,11 @@ impl Sides {
         self.map.iter().filter(|(_, s)| s.trust).map(|(k, _)| k.0).collect()
     }
 
+    /// The sides that trust R, each with its holder.
+    pub(crate) fn trusted(&self) -> Vec<(WriteId, Holder)> {
+        self.map.iter().filter(|(_, s)| s.trust).map(|(k, _)| *k).collect()
+    }
+
     pub(crate) fn get(&self, op: WriteId, holder: Holder) -> Option<Side> {
         self.map.get(&(op, holder)).copied()
     }
@@ -202,6 +207,18 @@ impl crate::engine::Engine {
             }
         }
         (out.into_values().collect(), left)
+    }
+
+    /// Records `ws` as trusted, as this node's own sides (a pairer's trust records,
+    /// spec/permissions.md §8 Pairing), feeds the walk and judges again.
+    pub(crate) fn adopt_trust(&mut self, ws: &[(WriteId, Holder)]) -> Result<()> {
+        self.run(|tx| {
+            for (w, h) in ws {
+                tx.core.sides.set(*w, *h, Side { trust: true, chosen: true });
+            }
+            feed(tx.core);
+            crate::apply::atomic::rejudged(tx, true).map(drop)
+        })
     }
 
     /// Takes a side in the dispute over edge write `op` of `commit` lowering `holder`: trust

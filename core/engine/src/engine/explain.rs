@@ -92,7 +92,6 @@ fn need(core: &Core, x: &Tid, n: &Need) -> String {
         Need::Missing(c) => format!("held commit c:{} on it has a part missing on {x}", short(c)),
         Need::Strong(ak) => format!("{x}'s {ak} holds a strong to it"),
         Need::Inbox => format!("{x}'s keys.0 names it (its inbox)"),
-        Need::Holding => format!("an edge write on it names {x} holder"),
         Need::Offered(c) => format!("a grant fire held on {x}'s inbox carries {c:?} on it"),
     }
 }

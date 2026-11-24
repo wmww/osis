@@ -99,7 +99,15 @@ fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
 /// grants the first account write on it: brought back by making an account and pairing
 /// (notes/accounts-switch-brief.md).
 fn siblings_granted() -> (LocalPeer, Tid, Tid) {
-    unimplemented!("accounts: pairing")
+    let (lp, (a, t)) = LocalPeer::cached("facade::siblings_granted", || {
+        let (mut lp, acc) = LocalPeer::one_account(2, 0, crate::common::T0).unwrap();
+        let (_, b) = lp.add_account(2).unwrap();
+        let t = crate::flows::thing_of(&mut lp, 2, b.thing);
+        lp.peers[2].engine.grant(&t, &acc.thing, &edge_of(Role::Write)).unwrap();
+        lp.sync_all().unwrap();
+        (lp, (acc.thing, t))
+    });
+    (lp, a, t)
 }
 
 // spec/permissions.md §3 (Lost access: whichever node of the account made it), spec/sync-status.md
@@ -107,7 +115,6 @@ fn siblings_granted() -> (LocalPeer, Tid, Tid) {
 // for sync as the writer does (through a restart and the lost-access trigger), then drops; the
 // other account's node waits on nothing.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_siblings_self_removal_waits_and_drops_alike_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
@@ -188,7 +195,6 @@ fn all_done(lp: &mut LocalPeer, i: usize) {
 // holds): another account's removal of this account is no wait of its; an own removal that
 // leaves a path drops nothing when done; a done told for a commit not waited on drops nothing.
 #[test]
-#[ignore = "accounts: pairing"]
 fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     let b = lp.peers[2].engine.me();
@@ -217,7 +223,6 @@ fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
 // spec/permissions.md §3 (Lost access): both siblings remove their account from a thing while
 // apart; once each holds both removals and sync is done with what it waits on, each drops.
 #[test]
-#[ignore = "accounts: pairing"]
 fn siblings_removing_at_once_both_drop_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     for i in [0, 1] {
@@ -236,7 +241,6 @@ fn siblings_removing_at_once_both_drop_spec_perm_3() {
 // spec/permissions.md §3 (Lost access): a re-grant applied while a sibling's removal waits
 // keeps the secrets when the removal is done.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_regrant_during_the_wait_keeps_the_secrets_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
@@ -255,7 +259,6 @@ fn a_regrant_during_the_wait_keeps_the_secrets_spec_perm_3() {
 // spec/permissions.md §3 (Lost access): a crash after the drop and before the removal leaves
 // the wait (`removal_done`'s order) finds it waiting after a restart; done again clears it.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_crash_between_drop_and_clear_is_done_again_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
@@ -408,7 +411,6 @@ fn record_blob_framed(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_bas
 // spec/wire.md §3 (Record blob), spec/crypto.md §7 (Certificate blobs): a record blob whose prefix
 // is not one group of one level-3 commitment is bad input, whatever it carries.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_record_blob_of_another_prefix_is_bad_spec_crypto_7() {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
@@ -431,12 +433,10 @@ fn a_record_blob_of_another_prefix_is_bad_spec_crypto_7() {
 // receiver learns nothing of the thing; the genuine record, sealed by its holder, is kept loose
 // until a commit here awaits it, then learned as it is.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
-    let a = lp.peers[0].engine.me();
-    let u = unshared_thing(&mut lp, a);
+    let u = unshared_thing(&mut lp, d);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
     assert!(lp.peers[1].engine.core.created(&u).is_none(), "u not spread");
     let forged = osis_base::CreationRecord::with_admin(lp.peers[1].engine.tid(), real.nonce);
@@ -472,12 +472,10 @@ fn unshared_thing(lp: &mut LocalPeer, admin: Tid) -> Tid {
 // a strong to u, whose record reaches it only in a record blob, never in u's minting: it learns
 // the record as the blob opens, and so holds u.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_held_strong_awaits_its_things_record_spec_commits_4() {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
-    let a = lp.peers[0].engine.me();
-    let u = unshared_thing(&mut lp, a);
+    let u = unshared_thing(&mut lp, d);
     lp.peers[1].engine.hold(osis_base::Strong(u)).unwrap();
     assert!(lp.peers[1].engine.core.created(&u).is_none() && !lp.peers[1].engine.closure_holds(&u), "u unknown at peer 1");
     let (id, bytes, wrap) = lp.peers[0].engine.seal_records(&ds, &[u].into(), &mut SeededRng::from_u64(3)).unwrap().expect("sealed");
@@ -502,10 +500,9 @@ fn later_write_on(lp: &mut LocalPeer, u: Tid) {
 fn junk_records(n: usize) -> (usize, usize, usize, bool) {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
-    let a = lp.peers[0].engine.me();
-    let u = unshared_thing(&mut lp, a);
+    let u = unshared_thing(&mut lp, d);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
-    let junk: Vec<osis_base::CreationRecord> = (0..n).map(|i| osis_base::CreationRecord::with_admin(a, { let mut x = [9u8; 32]; x[..8].copy_from_slice(&(i as u64).to_be_bytes()); x })).collect();
+    let junk: Vec<osis_base::CreationRecord> = (0..n).map(|i| osis_base::CreationRecord::with_admin(d, { let mut x = [9u8; 32]; x[..8].copy_from_slice(&(i as u64).to_be_bytes()); x })).collect();
     let known = |lp: &LocalPeer| junk.iter().filter(|r| lp.peers[1].engine.core.created(&r.tid()).is_some()).count();
     let (jb, jbytes, jwrap) = record_blob_by_hand(&mut lp, 0, &d, &junk);
     let (gb, gbytes, gwrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&real));
@@ -526,7 +523,6 @@ fn junk_records(n: usize) -> (usize, usize, usize, bool) {
 // while their carrier is (its entry charged to the peer that brought it): n and 10n junk records
 // are never learned and go with their blob's entry, and they evict nothing another blob carries.
 #[test]
-#[ignore = "accounts: pairing"]
 fn junk_records_go_with_their_carrier_spec_commits_4() {
     for n in [20, 200] {
         let (carried, learned, left, genuine) = junk_records(n);

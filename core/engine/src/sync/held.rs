@@ -140,6 +140,19 @@ impl Engine {
         Arc::new(self.core.ix.held_wait.iter().copied().collect())
     }
 
+    /// Whether a peer that proved node thing `peer` counts toward own commit `c` being held
+    /// elsewhere (spec/sync-status.md §2): where `c` is a self-removal this node waits on, only
+    /// if `peer` holds a role, by this node's reading (the leave applied), on every thing `c`
+    /// removes a holder from; a peer proving nothing never does. Any other commit: every peer.
+    pub fn counts_for_leave(&self, c: &CommitId, peer: Option<&Tid>) -> bool {
+        if !self.core.ix.held_wait.contains(c) {
+            return true;
+        }
+        let Some(peer) = peer else { return false };
+        let Some(rc) = self.core.timelines().role_commit(c) else { return true };
+        rc.ops.iter().all(|op| self.core.role_now(peer, &op.target).is_some())
+    }
+
     /// Sync is done waiting for `c` (held elsewhere, or no peer to wait for where it goes): each
     /// actor lost with no own self-removal behind it still waiting drops (`lost_leaving`, per
     /// actor: one that cannot be placed holds back nothing else; spec/permissions.md §3 Lost

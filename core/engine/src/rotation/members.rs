@@ -352,7 +352,7 @@ fn stands(tx: &mut Tx<'_>, c: &CommitId) -> Result<bool> {
             }
             let deps = super::departures(tx, &op.target)?;
             let wrote = |d: &osis_keys::Departure| d.holder == h && d.edge.as_ref().is_some_and(|e| e.writes.iter().any(|w| w.key.commit == *c));
-            if super::others(tx.core, &op.target, deps).iter().any(wrote) {
+            if super::others(tx.core, &op.target, None, deps).iter().any(wrote) {
                 return Ok(true);
             }
         }

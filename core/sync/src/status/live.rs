@@ -7,7 +7,7 @@ use crate::store::Source;
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Position, RecordId, Result};
 use crate::unread::Unread;
-use osis_base::{BlobId, CommitId, SyncId, WallMs};
+use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_store::Shred;
 use osis_engine::sync::SyncSet;
 use std::collections::{BTreeMap, BTreeSet};
@@ -149,6 +149,9 @@ impl Ground for Live<'_, '_> {
     }
     fn waited(&mut self, s: &SyncId, own: bool) -> Result<bool> {
         self.opens.waited(self.cx.engine, self.cx.store, s, own)
+    }
+    fn counts_for(&mut self, c: &CommitId, node: Option<Tid>) -> bool {
+        self.cx.engine.counts_for_leave(c, node.as_ref())
     }
     fn removal_done(&mut self, c: &CommitId) -> Result<()> {
         Ok(self.cx.engine.removal_done(c)?)

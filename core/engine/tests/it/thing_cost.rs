@@ -110,14 +110,14 @@ fn make(lp: &mut LocalPeer, admin: Tid, label: &str, show: bool) -> (Cost, Tid) 
 // neither pays a first write's rows; the second is measured. Bounds are the measured figures
 // rounded up: a change that grows a thing's cost fails here and says by how much.
 #[test]
-#[ignore = "accounts: pairing"]
+#[ignore = "accounts: counting"]
 fn what_a_thing_costs() {
-    let (mut lp, _) = account_two_nodes();
-    let (p, d) = (lp.peers[0].engine.me(), lp.peers[0].engine.node_root().unwrap());
-    make(&mut lp, d, "dependent warm-up", false);
+    let (mut lp, a) = account_two_nodes();
+    let p = lp.peers[0].engine.me();
+    make(&mut lp, a, "dependent warm-up", false);
     make(&mut lp, p, "independent warm-up", false);
     let show = std::env::var_os("THING_COST").is_some();
-    let (dependent, pt) = make(&mut lp, d, "dependent (minted with the account root)", show);
+    let (dependent, pt) = make(&mut lp, a, "dependent (minted with the account)", show);
     let (independent, kt) = make(&mut lp, p, "independent (minted with the account)", show);
     eprintln!("dependent: {dependent:?}\nindependent: {independent:?}");
     // spec/permissions.md §3: minted with the account root as admin it stays dependent; with the

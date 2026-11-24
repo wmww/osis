@@ -199,7 +199,6 @@ fn a_crash_restarts_the_node_in_place() {
 // makes the new node a node of the account. Every write of the pairing's own transaction:
 // osis-engine `a_failed_pairing_keeps_no_seed_of_its_rotation`.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_pairing_hit_by_a_store_failure_pairs_when_tried_again() {
     for f in [DiskFault::Fail, DiskFault::Unsynced, DiskFault::Crash] {
         let mut w = two_nodes();
@@ -207,7 +206,8 @@ fn a_pairing_hit_by_a_store_failure_pairs_when_tried_again() {
         w.disk_fault(0, 0, f);
         let n = w.pair(0);
         assert!(w.store_faults(0).writes() > 0, "{f:?}: the planned write came");
-        assert_eq!(Some(w.engine(n).me()), account, "{f:?}");
+        assert_eq!(w.engine(n).settings_thing().unwrap(), account, "{f:?}");
+        assert!(w.engine(0).roster(&account.unwrap()).contains_key(&w.engine(n).me()), "{f:?}: granted");
     }
 }
 

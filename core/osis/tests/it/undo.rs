@@ -62,7 +62,7 @@ fn sets(db: &Osis, t: osis::Tid, name: &str, vs: &[i64]) -> osis::CommitId {
 // its body held, by `undo_target`, `undo` and `revert` alike, nothing written; the same from a
 // second node of the account holding the commits, and after a reopen; ephemeral writes alike.
 #[test]
-#[ignore = "accounts: pairing"]
+#[ignore = "accounts: osis/CLI/app"]
 fn no_history_no_undo_spec_commits_7() {
     let c = clock();
     let store = MemStore::new();
@@ -105,7 +105,7 @@ fn no_history_no_undo_spec_commits_7() {
 // keep bound of the value it replaced (the undone set itself kept while live) it is `NotUndoable`
 // by age.
 #[test]
-#[ignore = "accounts: pairing"]
+#[ignore = "accounts: osis/CLI/app"]
 fn register_with_history_undoes_anywhere_spec_crdt_4_6() {
     let c = clock();
     let store = MemStore::new();

@@ -818,17 +818,31 @@ impl Osis {
         self.engine(|e| -> Result<Vec<AccountNode>> { Ok(e.roster(&root).into_iter().filter(|(_, edge)| edge.role >= Role::Read).map(|(node, edge)| AccountNode { node, role: edge.role }).collect()) })
     }
 
-    /// Removes a node from this account. This is `set_role(account_root(), node, None, o)`, here because of
-    /// what it returns, which is easy to forget: this account's links still working. The node keeps
+    /// Removes a node from this account (spec/permissions.md §8 Removing): its role removed with
+    /// the account's rotation, erasing unless `o.retain_copy` says retain, and its entries on the
+    /// account and its profile (dial list, settings) dropped. It returns what is easy to forget:
+    /// this account's links still working. The node keeps
     /// their keys, so whoever holds it can read and join through each until `revoke_link`, and
     /// ending them is the caller's choice. None when `node` was not one of this account's.
     /// `Unsupported` on a client with its own actor.
     pub fn remove_node(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
         self.local("remove_node")?;
-        let root = self.account_root();
+        let (root, profile) = (self.account_root(), self.profile()?);
         let was = self.grants(root)?.contains_key(&node);
-        self.set_role(root, node, None, o)?;
-        if was { self.links() } else { Ok(Vec::new()) }
+        if !was {
+            return Ok(Vec::new());
+        }
+        let retain = o.retain_copy.unwrap_or(false);
+        self.locked(|l| -> Result<()> {
+            let e = l.engine();
+            let r = match o.leave_adminless {
+                true => e.leaving_adminless(|e| e.remove_node(&root, &node, retain, &[profile])),
+                false => e.remove_node(&root, &node, retain, &[profile]),
+            };
+            l.handle(osis_sync::Input::Wrote);
+            r.map(drop).map_err(Into::into)
+        })?;
+        self.links()
     }
 }
 

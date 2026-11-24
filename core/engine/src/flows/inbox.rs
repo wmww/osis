@@ -44,6 +44,17 @@ pub(crate) fn fire_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) 
     save(tx, o)
 }
 
+/// The `grant@~0` fire owed on `holder`'s inbox for role commit `c` on `target` is owed no more:
+/// its offer went another way (a pairing channel, spec/permissions.md §8 Pairing).
+pub(crate) fn unowe_grant(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
+    let Some(inbox) = inbox_in(tx, &holder)? else { return Ok(()) };
+    let ids: Vec<FireId> = tx.core.ix.fires_on.get(&inbox).into_iter().flatten().copied().filter(|id| tx.core.ix.fires.get(id).is_some_and(|o| o.what == Fire::Grant { commit: c, target })).collect();
+    for id in ids {
+        drop_fire(tx, &id)?;
+    }
+    Ok(())
+}
+
 /// Whom a fire on `holder`'s inbox is offered to where proven (spec/sync-inbox.md §3 Sending: a
 /// peer that proved a thing holding a role on it, as this node judges it): the holder and the
 /// things holding a role on it, directly or through the things holding it. Not cut to the things
@@ -270,7 +281,7 @@ pub(crate) fn carries(ak: &str) -> bool {
 
 /// The parts a `grant@~0` fire's copy holds: the role commit's role-class parts on its target
 /// (spec/permissions.md §4 Copies), which give the holder its epochs and the target's `sync.0`.
-const GRANT_PARTS: &[&str] = &["roles.0", "keys.0", "secrets.0", "sync.0"];
+pub(crate) const GRANT_PARTS: &[&str] = &["roles.0", "keys.0", "secrets.0", "sync.0"];
 
 /// A sealed fire's ID: BLAKE3 of `[thing, ak, value]`, so the same fire is owed once.
 pub type FireId = [u8; 32];
@@ -630,7 +641,7 @@ impl Engine {
     /// Role commit `c` as a `grant@~0` fire carries it (spec/sync-inbox.md §5): its certificate
     /// copy on `target` (its header and role-class parts there), the copies of its evidence, and
     /// their creation records. `None` while `c` is not applied here.
-    fn grant_value(&mut self, c: &CommitId, target: &Tid) -> Result<Option<Value>> {
+    pub(crate) fn grant_value(&mut self, c: &CommitId, target: &Tid) -> Result<Option<Value>> {
         let id = *c;
         let Some(full) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
         let parts: BTreeSet<usize> = full.header.aspects.iter().enumerate().filter(|(_, a)| a.tid == *target && GRANT_PARTS.contains(&a.ak.as_str())).map(|(i, _)| i).collect();

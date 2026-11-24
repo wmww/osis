@@ -304,7 +304,6 @@ fn large_value_round_trip_spec_data_model_6() {
 // spec/data-model.md §6 (unreadable link): a node holding a commit but not the blobs of its link
 // reads that position absent, the rest of the value as written, and reports `Unreadable`.
 #[test]
-#[ignore = "accounts: pairing"]
 fn an_unreadable_link_fails_only_its_position_spec_data_model_6() {
     let (a, b, _) = paired();
     let k = untyped("t:doc.0");
@@ -652,7 +651,6 @@ fn values_past_limits_huge_spec_data_model() {
 // notes/api.md Reads (`created`): a later compaction snapshot does not replace the creating
 // commit; a node holding the snapshot without that commit reports none.
 #[test]
-#[ignore = "accounts: pairing"]
 fn created_not_a_snapshot_spec_commits_2() {
     let (a, b, c) = paired();
     let mut w = a.write();

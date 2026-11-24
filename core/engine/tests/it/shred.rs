@@ -55,8 +55,10 @@ const FRESH: u64 = 2;
 
 /// A `FRESH` node of peer `by`'s account: brought back by pairing
 /// (notes/accounts-switch-brief.md).
-fn node_of(_lp: &mut LocalPeer, _by: usize) -> Peer {
-    unimplemented!("accounts: pairing")
+fn node_of(lp: &mut LocalPeer, by: usize) -> Peer {
+    let mut p = peer_bare(FRESH);
+    lp.pair_into(by, &mut p).unwrap();
+    p
 }
 
 /// Node `p` holding `setup`, received in order.
@@ -70,7 +72,16 @@ fn holding(mut p: Peer, setup: &[osis_engine::local_peer::Package]) -> Peer {
 /// `net2` with peer 1 a node of 0's account, so it holds what it is given of 0's things: brought
 /// back by pairing (notes/accounts-switch-brief.md).
 fn net2_one() -> LocalPeer {
-    unimplemented!("accounts: pairing")
+    LocalPeer::cached("shred::net2_one", || {
+        let mut lp = LocalPeer::apart(vec![peer(0)], 0);
+        lp.peers[0].engine.make_account().unwrap();
+        let mut p = peer(1);
+        lp.pair_into(0, &mut p).unwrap();
+        lp.peers.push(p);
+        lp.sync_all().unwrap();
+        (lp, ())
+    })
+    .0
 }
 
 /// Two peers (seeds 0 and 1), each holding the other's account chain (synced once), so either
@@ -303,7 +314,6 @@ fn erasing_edit_drops_replaced_body_unrecoverable_spec_commits_5() {
 // map's key is user content; once its entry is removed and the creation purged, neither the
 // removal's body nor a later snapshot's tombstone keeps it, at the writer or a receiver
 #[test]
-#[ignore = "accounts: pairing"]
 fn removed_map_key_gone_after_purge_spec_crdt_5_6() {
     let mut lp = net2_one();
     let t = new_thing(&mut lp, 0);
@@ -368,7 +378,6 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
 // never received before the commit is judged, so the commit applies as its header at once, and
 // stays so once the record comes.
 #[test]
-#[ignore = "accounts: pairing"]
 fn partless_commit_applies_as_its_header_spec_commits_4() {
     let mut lp = net2_one();
     lp.sync_all().unwrap();
@@ -391,7 +400,6 @@ fn partless_commit_applies_as_its_header_spec_commits_4() {
 // holds each aspect as its author does (the parts gone, what they replaced back), whether the parts
 // waited when the request came or not, and keeps no purged value.
 #[test]
-#[ignore = "accounts: pairing"]
 fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let aspects = [ak("t:reg.0"), ak("t:list.0"), ak("t:big.0")];
@@ -611,20 +619,19 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
 // both ways round) at each place of T among them, ticked or not; a restart in half of those cases,
 // so each rotation and each place of T meets both (every pair of the three choices once).
 #[test]
-#[ignore = "accounts: pairing"]
 fn past_expiry_and_purge_alike_spec_commits_5() {
     past_expiry_and_purge_alike(false);
 }
 
 // As above, all 5040 orders in every shape (50400 cases).
 #[test]
-#[ignore = "accounts: pairing"]
+#[ignore = "by hand: every order"]
 fn past_expiry_and_purge_alike_in_every_order_by_hand_spec_commits_5() {
     past_expiry_and_purge_alike(true);
 }
 
 fn past_expiry_and_purge_alike(every: bool) {
-    let mut lp = net2();
+    let mut lp = net2_one();
     // the nodes judged: nodes of 0's account
     let mut node = node_of(&mut lp, 0);
     let (t2, t3) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
@@ -752,14 +759,14 @@ fn past_expiry_and_purge_alike(every: bool) {
 // applied without its body, the purge named, nothing waiting, nothing of the value recoverable.
 // The `_plain` property runs every third case (orders by restart points); the exhaustive one all.
 #[test]
-#[ignore = "accounts: pairing"]
+#[ignore = "property"]
 fn purged_permanent_alike_plain_spec_commits_5() {
     purged_permanent_alike(3);
 }
 
 // As above, every order and restart point.
 #[test]
-#[ignore = "accounts: pairing"]
+#[ignore = "property"]
 fn purged_permanent_alike_in_every_order_exhaustive_spec_commits_5() {
     purged_permanent_alike(1);
 }
@@ -769,7 +776,7 @@ fn purged_permanent_alike(stride: u64) {
     use osis_commit::CommitBlob;
     let forever = osis_schema::PurgeBy::AuthorOrAdmin;
     let marker = "PURGED-SECRET-8e1a";
-    let mut lp = net2();
+    let mut lp = net2_one();
     // the nodes judged: nodes of 0's account
     let mut node = node_of(&mut lp, 0);
     let setup = lp.packages_to_peer(0, &mut node).unwrap();
@@ -914,7 +921,6 @@ fn purged_with_a_page_away_goes_at_once_spec_commits_5() {
 // request purging one of those replaces the leftover, and the old leftover row's bytes must go with
 // it (was: the row was overwritten unshredded, so the old page kept the value).
 #[test]
-#[ignore = "accounts: pairing"]
 fn snapshot_leftover_stripped_again_unrecoverable_spec_commits_5() {
     let mut lp = net2_one();
     let t = new_thing_keeping(&mut lp, 0, &[("t:text.0", DAY)]);
@@ -1083,7 +1089,6 @@ fn into_entry(lp: &mut LocalPeer, t: Tid, key: &str, n: i64) -> osis_base::Commi
 // the read on both nodes: a later edit into it stays held under its own copy of the key but reads as
 // at a node that never held the creation (no live record); purged too, nothing of the key is left
 #[test]
-#[ignore = "accounts: pairing"]
 fn purge_of_an_entry_hides_later_edits_into_it_spec_crdt_4_7() {
     let mut lp = net2_one();
     let t = new_thing(&mut lp, 0);
@@ -1121,7 +1126,6 @@ fn purge_of_an_entry_hides_later_edits_into_it_spec_crdt_4_7() {
 // entry's T the entry is gone and the edit into it reads as at a node that never held the entry,
 // while another entry and the edit into it stay
 #[test]
-#[ignore = "accounts: pairing"]
 fn edit_into_expiring_entry_keeps_its_expiry_spec_crdt_4_7() {
     let mut lp = net2_one();
     let t = new_thing(&mut lp, 0);
@@ -1154,7 +1158,6 @@ fn edit_into_expiring_entry_keeps_its_expiry_spec_crdt_4_7() {
 // as never inserted (an element without its creation shows no char) though the undelete's chars
 // stay held; a purge of the undo too takes them
 #[test]
-#[ignore = "accounts: pairing"]
 fn undelete_chars_are_their_own_values_spec_crdt_4_7() {
     let mut lp = net2_one();
     let t = new_thing_keeping(&mut lp, 0, &[("t:text.0", DAY)]);
@@ -1345,7 +1348,6 @@ fn undo_copying_two_expiries_waits_spec_crdt_4_6() {
 // receiver keeps no purged value, lists the messages as purged and the snapshots as never purged,
 // alike in every order, and so whether it holds a snapshot whole or dropped it as covered.
 #[test]
-#[ignore = "accounts: pairing"]
 fn purge_strips_carrying_snapshots_alike_in_every_order_spec_commits_5() {
     let k = ak("t:reg.0");
     let marker = "SECRET-SNAP-4e7a";
@@ -1422,7 +1424,6 @@ fn record_of(lp: &mut LocalPeer, t: Tid) -> Vec<osis_engine::local_peer::Package
 // the part waits in the pending copy while the record is away. With the record it is judged:
 // purged, or read as written when no request names it.
 #[test]
-#[ignore = "accounts: pairing"]
 fn pending_part_awaiting_its_record_is_judged_with_it_spec_commits_4() {
     for purge in [false, true] {
         let mut lp = net2_one(); // 1 a node of 0's account
@@ -1503,7 +1504,6 @@ fn copy_of_a_purged_part_beside_an_unjudgeable_one_is_spent_spec_commits_5() {
 // T, so the register reads its older value, as at a node that applied it before T (spec/crdt.md
 // §4.7); nothing waits and the node reads alike either way.
 #[test]
-#[ignore = "accounts: pairing"]
 fn part_pending_for_its_ts_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
     let mut lp = net2_one(); // 1 a node of 0's account
     let t = new_thing(&mut lp, 0);

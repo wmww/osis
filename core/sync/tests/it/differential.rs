@@ -96,7 +96,7 @@ pub(crate) fn worlds(name: &str, steps_of: impl Fn(u64) -> Vec<Step> + Sync) {
 // at no node, and the oracle counts it lost: a run gives a node a value write only where its
 // account's node closure held the thing then (`harness::history::ran`).
 #[test]
-#[ignore = "accounts: pairing"]
+#[ignore = "accounts: models"]
 fn a_making_released_before_a_grantee_held_it_is_lost_spec_sync_set_3() {
     use crate::harness::history::{Gives, Holder};
     let script = [Step::New(1), Step::NewIn(1, 0), Step::Give(1, 1, Holder::Node(0), Gives::Reads), Step::Run, Step::Strong(2, None, 1), Step::Unstrong(1, Some(0), 1)];

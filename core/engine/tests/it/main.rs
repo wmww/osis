@@ -3,6 +3,7 @@
 
 mod common;
 mod accounts;
+mod pairing;
 mod closure;
 mod covered;
 mod setting;

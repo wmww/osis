@@ -6,7 +6,8 @@ use super::Holding;
 use crate::engine::Engine;
 use crate::error::Result;
 use crate::Mutation;
-use osis_base::{Address, SyncId, Tid, peer_url};
+use osis_base::{Address, SyncId, Tid, Value, peer_url};
+use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -60,14 +61,14 @@ impl Engine {
             if t != root && self.role_on(&t) < Some(osis_base::Role::Write) {
                 continue;
             }
-            let mut list = self.get_typed(&t, &ct::DIAL)?.unwrap_or_default();
-            let old = list.clone();
-            for k in &mine {
-                list.remove(k);
+            // its own entries alone, so each entry's writer is the node it is of (a remover drops a
+            // removed node's by who wrote them, spec/permissions.md §8 Removing)
+            let list = self.get_typed(&t, &ct::DIAL)?.unwrap_or_default();
+            for k in mine.iter().filter(|k| list.contains_key(*k)) {
+                m.op(t, &ct::DIAL, PathOp { path: Vec::new(), op: Op::Remove(Value::Bytes(k.clone())) })?;
             }
-            list.insert(dialable.to_vec(), url.clone());
-            if list != old {
-                m.set(t, &ct::DIAL, &list)?;
+            if list.get(dialable.as_slice()) != Some(&url) {
+                m.op(t, &ct::DIAL, PathOp { path: vec![PathSeg::Key(Value::Bytes(dialable.to_vec()))], op: Op::Set(osis_schema::Codec::to_value(&url)) })?;
             }
         }
         if !m.is_empty() {

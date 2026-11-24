@@ -131,6 +131,8 @@ pub(crate) struct Locked {
     pub stepped: bool,
     /// This node's dialable secret (`rotate_peer_address` replaces it).
     pub secret: osis_transport::StaticSecret,
+    /// Pairing offers not yet used: secret, expiry (wall ms).
+    pub offers: Vec<([u8; 32], u64)>,
     /// The client port's sessions (`port`).
     pub port: crate::port::Port,
     /// The nodes this process is a client of (`Osis::connect`, `connect_node`), in the order
@@ -523,8 +525,13 @@ const NODE_KEY: &str = "sync/node-key";
 /// Makes this node's account (spec/permissions.md §8 Making) and records it and its profile.
 fn make_account(e: &mut Engine) -> Result<()> {
     let (a, _) = e.make_account()?;
-    e.set_app_record(ACCOUNT, a.thing.as_bytes())?;
-    e.set_app_record(PROFILE, a.profile.as_bytes())?;
+    record_account(e, a.thing, a.profile)
+}
+
+/// Records the account this node acts for and its profile (made here, or paired into).
+pub(crate) fn record_account(e: &mut Engine, account: Tid, profile: Tid) -> Result<()> {
+    e.set_app_record(ACCOUNT, account.as_bytes())?;
+    e.set_app_record(PROFILE, profile.as_bytes())?;
     Ok(())
 }
 
@@ -602,7 +609,7 @@ impl Osis {
         if let crate::net::Net::Manual { net: m, index } = &mut net {
             *index = m.join();
         }
-        let locked = Locked { node: sync, events, seq: 0, out: Vec::new(), wake: None, stepped: false, secret, port: Default::default(), remotes: Vec::new(), unit_sources: Default::default(), moving_back: Default::default() };
+        let locked = Locked { node: sync, events, seq: 0, offers: Vec::new(), out: Vec::new(), wake: None, stepped: false, secret, port: Default::default(), remotes: Vec::new(), unit_sources: Default::default(), moving_back: Default::default() };
         let store_dir = match &store {
             Store::Dir(p) => Some(p.clone()),
             Store::Memory(_) => None,

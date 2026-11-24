@@ -76,6 +76,9 @@ struct Fake {
     /// Sync IDs only this account's own nodes are to be waited for on.
     own_shared: StampedSet<SyncId>,
     told_held: Vec<CommitId>,
+    /// (self-removal, node): a peer proving the node holds no role on what the leave left
+    /// (`counts_for`).
+    leaving: BTreeSet<(CommitId, Tid)>,
     /// The engine's wants, by pass place; the fake's places are its ms (`begin_pass`).
     wanted: Stamped<(), Arc<BTreeMap<SyncId, u64>>>,
     passes: Vec<(SyncId, u64)>,
@@ -172,6 +175,9 @@ impl Ground for Fake {
     }
     fn waited(&mut self, s: &SyncId, own: bool) -> Result<bool> {
         Ok(self.shared.contains(s) || (own && self.own_shared.contains(s)))
+    }
+    fn counts_for(&mut self, c: &CommitId, node: Option<Tid>) -> bool {
+        node.is_none_or(|n| !self.leaving.contains(&(*c, n)))
     }
     fn removal_done(&mut self, c: &CommitId) -> Result<()> {
         self.told_held.push(*c);
@@ -709,6 +715,26 @@ fn pass_begun_before_the_moment_counts_for_nothing() {
     assert!(t.g.wanted.get(&()).unwrap().is_empty());
 }
 
+// spec/sync-status.md §2 (held elsewhere): a peer counts for a self-removal only where a thing it proved holds a role on
+// the thing left with the leave applied. The account's other node, leaving by the same commit,
+// reports past it and counts nothing; a staying reader's report does. Roles-model leave, control
+// `-any-source`.
+#[test]
+fn a_leave_reported_only_by_a_leaving_peer_is_not_held_elsewhere_spec_sync_status_2() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.g.leaving.insert((cid(1), tid(1)));
+    t.join(S, A, reader(RA, 1));
+    t.join(S, B, reader(RB, 2));
+    t.caught(A, S, 0);
+    t.caught(B, S, 0);
+    t.own(S, cid(1), blob(1), 5);
+    t.g.reported.insert((A, S), 9);
+    t.settle();
+    assert!(!t.st.held(&cid(1)), "the leaving peer's report holds nothing");
+    t.g.reported.insert((B, S), 9);
+    t.settle();
+    assert!(t.st.held(&cid(1)), "a staying peer's does");
+}
 // spec/sync-status.md §3 (wait): `wait` ends when every sync ID in scope is heard out with its own
 // commits held elsewhere, or shared by no peer; never while one a peer shares is unconnected.
 #[test]

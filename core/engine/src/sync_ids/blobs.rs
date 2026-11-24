@@ -707,6 +707,13 @@ impl Engine {
         osis_base::memo::Cutoff::get_in(self, |e| &e.core.wrap_blocks, &(*a, walk), |e, (a, walk)| e.wrap_blocked_read(a, *walk))
     }
 
+    /// Whether content written under `a` now waits for a rotation (`wrap_blocked`'s encrypting
+    /// walk), for tests.
+    #[doc(hidden)]
+    pub fn encrypt_blocked(&mut self, a: &Tid) -> Result<bool> {
+        self.wrap_blocked_read(a, crate::rotation::Walk::Encrypt)
+    }
+
     /// `wrap_blocked` read anew.
     pub(crate) fn wrap_blocked_read(&mut self, a: &Tid, walk: crate::rotation::Walk) -> Result<bool> {
         let a = *a;

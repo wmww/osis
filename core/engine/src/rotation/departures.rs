@@ -281,21 +281,30 @@ fn own_removal_on(core: &Core, tl: &Timeline, a: &Tid, holder: &Tid) -> Option<o
 }
 
 /// Whether applied write `op` of `mc` on `a`, the newest changing the holder's edge there, is this
-/// node's own self-removal (spec/permissions.md §2, §3 Lost access): it lowers the edge, and it
-/// was made here or its author is its node thing or a link key it holds: it waits for it to be held
-/// elsewhere.
+/// node's own self-removal (spec/permissions.md §2, §3 Lost access): it lowers the edge, it is a
+/// self-removal, and it was made here, or by an own thing, or of a holder its own things
+/// administer (the account), whichever node made it: it waits for it to be held elsewhere.
 fn own_leaving_write(core: &Core, tl: &Timeline, a: &Tid, mc: &RoleCommit, op: &EdgeOp) -> bool {
-    let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local) || mc.signer == core.id.tid() || core.link_keys.contains_key(&mc.signer);
-    own && departure_of(tl, a, mc, op).is_some() && op.holder.thing().is_some_and(|h| crate::apply::validity::self_removal(core, &mc.signer, a, &h, mc.ts))
+    let Some(h) = op.holder.thing() else { return false };
+    let own = own_author(core, &mc.id, &mc.signer) || administered(core, &h);
+    own && departure_of(tl, a, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.signer, a, &h, mc.ts)
+}
+
+/// Whether commit `c` signed as `signer` is this node's: made here, or signed as an own thing.
+fn own_author(core: &Core, c: &osis_base::CommitId, signer: &Tid) -> bool {
+    core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local) || core.is_own(signer)
+}
+
+/// Whether this node's own things administer `h` (its account): a self-removal of `h` is the
+/// node's own, whichever of `h`'s nodes made it (spec/crypto.md §4 Exception).
+fn administered(core: &Core, h: &Tid) -> bool {
+    core.is_own(h) || core.role_now(&core.me(), h) == Some(Role::Admin)
 }
 
 /// Whether applied role commit `c` is an own self-removal (`own_removal_on`) on one of
-/// `targets` (`sync::held::wait_if_own`). Reads the targets' writes only for a commit
-/// by an own author.
+/// `targets` (`sync::held::wait_if_own`).
 pub(crate) fn own_self_removal(core: &Core, c: &osis_base::CommitId, targets: &BTreeSet<Tid>) -> bool {
-    let Some(m) = core.ix.commits.get(c) else { return false };
-    let a = m.view.signer;
-    if m.origin != crate::events::Origin::Local && a != core.id.tid() && !core.link_keys.contains_key(&a) {
+    if !core.ix.commits.contains_key(c) {
         return false;
     }
     targets.iter().any(|t| core.timelines().get(t).is_some_and(|tl| edge_writes(tl, t).any(|(mc, op)| mc.id == *c && op.holder.thing().is_some_and(|h| own_removal_on(core, tl, t, &h) == Some(*c)))))

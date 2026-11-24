@@ -70,7 +70,6 @@ fn a_removal_is_logged_before_what_was_written_after_it_spec_permissions_3() {
 // (pairing): the third node is on D's roster and joins (`paired`), reading the rotation that
 // added the second by the creating node's card.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_paired_node_pairs_another_spec_sync_inbox_1() {
     let mut w = crate::harness::siblings();
     let n = w.pair(2);
@@ -94,11 +93,13 @@ fn a_node_paired_past_the_inbox_lifetime_holds_its_siblings_secrets_spec_sync_ju
     holds_as_sibling(&mut w, n, 1);
 }
 
-/// New node `n` holds every thing with a sync ID its sibling `sib` holds, with its current sync
-/// and read secrets.
+/// New node `n` holds every thing with a sync ID its sibling `sib` holds but `sib`'s node thing,
+/// with its current sync and read secrets.
 fn holds_as_sibling(w: &mut World, n: usize, sib: usize) {
     let has = w.engine(n).things_with_sync_ids();
-    for t in w.engine(sib).things_with_sync_ids() {
+    // the sibling's node thing is its own alone (spec/sync-set.md §1)
+    let own = w.engine(sib).me();
+    for t in w.engine(sib).things_with_sync_ids().into_iter().filter(|t| *t != own) {
         assert!(has.contains(&t), "{t:?} lacks a `sync.0` at the new node");
         let (a, b) = (w.engine(sib).epochs(&t).unwrap(), w.engine(n).epochs(&t).unwrap());
         for r in [Role::Sync, Role::Read] {

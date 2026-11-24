@@ -1198,7 +1198,28 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
         set_carry(tx, v, y, &got, k);
     }
     tx.core.ix.closure.set_beyond(y, v, !got.contains(&(v.0, y)));
+    if new && !got.iter().any(|w| w.1 == y) && tx.core.counts_independent(&y) {
+        refetch_holders(tx)?;
+    }
     Ok(got)
+}
+
+/// A new strong to independent `y` that nothing carries (spec/sync-set.md §2 First entry): an
+/// edge piece on `y` in the key part of an own or read thing may have been dropped while the
+/// node synced neither `y` nor an offer of it (spec/permissions.md §4 Key part: a piece is kept
+/// only so far), and nothing local says which holder names `y`; so the sync IDs of every own
+/// and read thing are pulled anew, fetching any such piece again (spec/sync-judgement.md §3
+/// Dropped bodies). Rare-path brute force: one pull of those sync IDs per such strong, also
+/// where nothing names `y`.
+fn refetch_holders(tx: &mut Tx<'_>) -> Result<()> {
+    let core = &*tx.core;
+    let mut hs: BTreeSet<Tid> = core.ix.closure.tree.parent.keys().filter_map(|(c, t)| matches!(c, Ctx::Read(u) if u == t).then_some(*t)).collect();
+    hs.insert(core.me());
+    hs.extend(core.link_keys.keys().copied());
+    for h in hs {
+        crate::flows::sync_ids::pull_anew(tx, &h)?;
+    }
+    Ok(())
 }
 
 /// Records how `v`'s edge to `y` carries its entry (`Closure::pieced`, `loose`), none where it

@@ -11,10 +11,11 @@
 //! (`Indexes::by_actor`), one a pending commit it authored or acted
 //! in, or first awaiting its record, writes on (`Indexes::pend_by`),
 //! one in the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a
-//! part the node fetches again), one in the node closure an edge write on it names holder (not by its
-//! record: the holder's sync ID carries the grant with its chain, spec/permissions.md §4 Key
-//! part), one on whose inbox a `grant@~0` fire held valid carries a commit on it (what an
-//! offer carries, `flows::inbox::granted_on`). A thing is rooted, kept for itself (`Root`): held (in the node closure
+//! part the node fetches again), one on whose inbox a `grant@~0` fire held valid carries a commit on it (what an
+//! offer carries, `flows::inbox::granted_on`). A holder's edge piece on a thing is kept only as
+//! far as the node syncs the thing or holds an offer of it (spec/permissions.md §4 Key part): a
+//! piece dropped so comes again when a strong reaches the thing (`sync::units::refetch_holders`).
+//! A thing is rooted, kept for itself (`Root`): held (in the node closure
 //! or leaving it), a retained copy, a thing an own self-removal still waits to seal under, or a
 //! thing whose record what waits under Pending storage awaits (nothing on it applies before its
 //! record: what came for it pends, kept while carried, `apply::carriers`).
@@ -242,8 +243,6 @@ pub(crate) enum Need {
     Strong(osis_base::Ak),
     /// Account `x`'s `keys.0` names `t` (its inbox).
     Inbox,
-    /// `x` is in the node closure and an edge write on `t` names it holder.
-    Holding,
     /// A `grant@~0` fire on `x`'s inbox held valid carries this commit on `t`: what an offer
     /// carries is held while the offer is (spec/sync-inbox.md §5 Grant from outside).
     Offered(osis_base::CommitId),
@@ -285,13 +284,6 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // closure holds those parts are on (spec/commits.md §5: one the node fetches again): what
     // arrives there may reference it, and the commit stays whole for it
     let waiting = core.on_thing(t).flat_map(|c| core.ix.commits.get(&c).into_iter().flat_map(move |m| m.missing_parts().filter_map(move |ai| m.view.aspects.get(ai).map(|a| (a.tid, Need::Missing(c)))))).filter(|(x, _)| core.ix.closure.holds(x));
-    // a thing an edge write names a holder in the node closure on (not by its record alone,
-    // `Held::is_holder_by_write`; a write removing a record edge names it too): the holder's key
-    // part holds its piece on it (spec/permissions.md §4 Key part), which is how the node starts
-    // syncing it. Interim (notes/accounts-switch-brief.md, Open: Edge pieces kept): kept whether
-    // or not the node syncs it; the spec keeps a piece only as far as the node syncs the thing or
-    // holds an offer of it, which needs the piece fetched again once a strong reaches the thing
-    let holding = core.ix.held.holders_of(t).filter(|h| core.ix.closure.holds(h) && core.ix.held.is_holder_by_write(h, t)).map(|h| (*h, Need::Holding));
     // a held commit naming it as purge author (a member of its path, `apply::header_wait`), on the
     // things it writes on: its path lists it, so its record judges the commit (spec/commits.md §4
     // Unjudgeable)
@@ -299,7 +291,7 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // a holder a held valid grant fire on whose inbox carries a commit on it: what an offer
     // carries, held while the offer is
     let granted = crate::flows::inbox::granted_on(core, t).map(|(h, c)| (h, Need::Offered(c)));
-    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(pending).chain(acting).chain(waiting).chain(holding).chain(granted).collect();
+    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(pending).chain(acting).chain(waiting).chain(granted).collect();
     // a strong from a thing the node closure holds (a weak only points; one kept only
     // as a certificate needs nothing by what its state names), and a thing's reference from its
     // `keys.0` (its inbox, spec/sync-inbox.md §1)

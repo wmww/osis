@@ -2517,7 +2517,6 @@ fn a_peer_departed_after_a_restart_keeps_nothing_it_showed_spec_sync_judgement_3
 // self-removal, and still holds S. Node 2 goes away and back once after the pairing, so the record
 // names its account's new key and the reconnect's take re-judges nothing.
 #[test]
-#[ignore = "accounts: pairing"]
 fn a_self_removal_alone_ends_what_is_served_spec_sync_opens_6() {
     let (mut w, (t, s, n)) = paired_away_and_back();
     w.partition(0, 2);

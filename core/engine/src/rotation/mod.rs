@@ -162,7 +162,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
         osis_base::costs::count("rotation: keysets walked", 1);
         if (full || !missed) && (read || tx.core.me() == x) {
             let known = if x == *a { deps.to_vec() } else { departures(tx, &x)? };
-            let deps = others(tx.core, &x, known);
+            let deps = others(tx.core, &x, Some(r), known);
             let un = uncovered_by(tx, &x, r, &k, &deps)?;
             if !un.is_empty() {
                 missed = true;
@@ -195,7 +195,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
                     let b = match walk != Walk::Log {
                         true => {
                             let known = departures(tx, &p)?;
-                            !others(tx.core, &p, known).is_empty()
+                            !others(tx.core, &p, Some(r), known).is_empty()
                         }
                         false => false,
                     };
@@ -291,8 +291,19 @@ pub(crate) fn uncovered_by<'d>(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypt
 /// actor it administers, a link key) while sync waits on it (`held_wait`, spec/crypto.md §4
 /// Exception): the self-removal carries no rotation, so counted it would keep the node from
 /// logging that very commit, and the wait it is held for would end with no peer told.
-pub(crate) fn others(core: &Core, x: &Tid, deps: Vec<Departure>) -> Vec<Departure> {
-    let own = |d: &Departure| d.holder == core.me() || departures::own_leaving(core, x, d).is_some_and(|c| core.ix.held_wait.contains(&c));
+///
+/// The self-removal exception holds only for a node that may not rotate the role (`r`; `None`:
+/// every role the departure concerns): one that may rotates first, and logs its leave under the
+/// new epoch, so what it writes after the leave is never sealed to the party that left
+/// (spec/crypto.md §4 Exception; roles-model `leave`, control `-rotating`).
+pub(crate) fn others(core: &Core, x: &Tid, r: Option<Role>, deps: Vec<Departure>) -> Vec<Departure> {
+    let me = core.me();
+    let rot = may_rotate(core, &me, x);
+    let may_not = |d: &Departure| match r {
+        Some(r) => !rot.contains(&r),
+        None => osis_keys::ROLES.into_iter().filter(|q| d.concerns(*q)).all(|q| !rot.contains(&q)),
+    };
+    let own = |d: &Departure| d.holder == me || may_not(d) && departures::own_leaving(core, x, d).is_some_and(|c| core.ix.held_wait.contains(&c));
     deps.into_iter().filter(|d| !own(d)).collect()
 }
 

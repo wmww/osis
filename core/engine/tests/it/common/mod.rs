@@ -160,15 +160,20 @@ pub fn net_apart(n: usize, seed: u64) -> LocalPeer {
     LocalPeer::cached(&format!("common::net_apart/{n}/{seed}"), || (LocalPeer::new_apart(n, seed, T0).unwrap(), ())).0
 }
 
-/// `n` peers, the nodes of one account: brought back by making an account and pairing
-/// (notes/accounts-switch-brief.md).
-pub fn net_one(_n: usize) -> LocalPeer {
-    unimplemented!("accounts: pairing")
+/// `n` peers, the nodes of one account (`LocalPeer::one_account`: peer 0 makes it, the others
+/// paired in at admin): built once per `n`.
+pub fn net_one(n: usize) -> LocalPeer {
+    LocalPeer::cached(&format!("common::net_one/{n}"), || (LocalPeer::one_account(n, 0, T0).unwrap().0, ())).0
 }
 
-/// Pairs `p` into peer `by`'s account: brought back by pairing (notes/accounts-switch-brief.md).
-pub fn pair_into(_lp: &mut LocalPeer, _by: usize, _p: &mut osis_engine::local_peer::Peer) {
-    unimplemented!("accounts: pairing")
+/// The account of `net_one`'s peers.
+pub fn account_of(lp: &mut LocalPeer) -> Tid {
+    lp.peers[0].engine.settings_thing().unwrap().unwrap()
+}
+
+/// Pairs `p` into peer `by`'s account (`LocalPeer::pair_into`).
+pub fn pair_into(lp: &mut LocalPeer, by: usize, p: &mut osis_engine::local_peer::Peer) {
+    lp.pair_into(by, p).unwrap();
 }
 
 /// `net` with every peer answering removals with no addenda (`Engine::write_addenda`): for an
@@ -181,8 +186,10 @@ pub fn net_off(n: usize, seed: u64) -> LocalPeer {
     lp
 }
 
-/// A new dependent thing of peer `i`: its mint admin `Engine::me`, held where it lives and
-/// by every other peer (`LocalPeer::hold`), which keeps it once granted a role (`set_edge`).
+/// A new dependent thing of peer `i`: its mint admin the account the peer acts for
+/// (`settings_thing`: made for the account, so its other nodes read it, spec/permissions.md §8),
+/// else `Engine::me`; held where it lives and by every other peer (`LocalPeer::hold`), which
+/// keeps it once granted a role (`set_edge`).
 pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     new_thing_keeping(lp, i, &[])
 }
@@ -190,7 +197,7 @@ pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
 /// `new_thing` whose setting also keeps `extra` (each AK's history beside `test_setting`'s).
 pub fn new_thing_keeping(lp: &mut LocalPeer, i: usize, extra: &[(&str, osis_schema::History)]) -> Tid {
     let p = lp.peer(i).unwrap();
-    let admin = p.engine.me();
+    let admin = p.engine.settings_thing().unwrap().unwrap_or_else(|| p.engine.me());
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, admin);
     m.set(t, &REG, &s("new")).unwrap();

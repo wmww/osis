@@ -210,6 +210,11 @@ pub trait Ground: Net {
     /// Whether a source was recorded holding entry `b` of S, durably.
     fn elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<bool>;
     fn set_elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
+    /// Whether a source that proved node `node` counts toward own commit `c` being held
+    /// elsewhere (`Engine::counts_for_leave`): for a self-removal the engine waits on, only one
+    /// whose proven node still holds a role on each thing left, with the leave applied
+    /// (spec/sync-status.md §2); for any other commit, every source.
+    fn counts_for(&mut self, c: &CommitId, node: Option<Tid>) -> bool;
     /// Some peer is to be waited for on S (`Opens::waited`); `own`: this account's own nodes
     /// count (a self-removal skips them). Stamped.
     fn waited(&mut self, s: &SyncId, own: bool) -> Result<bool>;
@@ -986,6 +991,11 @@ fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl FnOnce()
             srcs = f();
         }
         for &(conn, src, left) in &srcs {
+            // a peer that leaves by the same self-removal (the account's other node, a group's
+            // member) holds nothing for those who stay (roles-model leave, control `-any-source`)
+            if !g.counts_for(c, src.node) {
+                continue;
+            }
             let shown = g.knows(src.at, conn, s, &b);
             let (at, until) = match left {
                 Some(l) => (l.reported, l.until),

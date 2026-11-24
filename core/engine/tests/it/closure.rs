@@ -573,7 +573,6 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
 // piece): either way, at the pass's end nothing held needs Q's chain or that write, and peer 0
 // holds the same.
 #[test]
-#[ignore = "accounts: edge pieces kept"]
 fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
     let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
     let p0 = lp.peers[0].engine.make_account().unwrap().0.thing;
@@ -887,14 +886,13 @@ fn an_ephemeral_strong_going_lets_its_target_go_spec_commits_5() {
 
 // spec/data-model.md §8 What counts (an ephemeral aspect's references while the node holds its
 // value), spec/sync-set.md §3: peers 0 and 1, one account's nodes, hold X by an ephemeral strong
-// on D alone. Peer 0 restarts and loses the value, so X is released there, until peer 1, still
+// on their account D alone. Peer 0 restarts and loses the value, so X is released there, until peer 1, still
 // holding the value, gives it back (as a connected peer's join lists its live ephemeral
 // entries); once both have restarted with nobody holding it, X is released at both.
 #[test]
-#[ignore = "accounts: pairing"]
 fn an_ephemeral_strong_holds_while_a_peer_holds_its_value_spec_data_model_8() {
     let mut lp = crate::common::net_one(2);
-    let d = lp.peers[0].engine.node_root().unwrap();
+    let d = crate::common::account_of(&mut lp);
     let a = osis_base::Ak::new("t:keep+.0").unwrap();
     let x = make(&mut lp.peers[0].engine, d, d);
     let mut m = Mutation::new();

@@ -159,7 +159,6 @@ fn on_blob(b: &CommitBlob, t: Tid) -> Vec<u8> {
 // spec/commits.md §4, spec/crdt.md §8: a paged part whose pages are away waits alone, in either
 // order, and it joins when they come.
 #[test]
-#[ignore = "accounts: pairing"]
 fn part_missing_pages_waits_alone_spec_commits_4() {
     use crate::common::*;
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
@@ -190,7 +189,6 @@ fn part_missing_pages_waits_alone_spec_commits_4() {
 // spec/versioning.md §2, spec/commits.md §4: a parked part waits alone, together or
 // split, either order, and is kept to relay.
 #[test]
-#[ignore = "accounts: pairing"]
 fn parked_part_waits_alone_spec_versioning_2() {
     use crate::common::*;
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
@@ -243,7 +241,6 @@ fn parked_part_waits_alone_spec_versioning_2() {
 // spec/commits.md §4, spec/crypto.md §4: a part waiting alone is pending like a whole commit: its
 // boxes are read, in either order, since they may open what it waits for.
 #[test]
-#[ignore = "accounts: pairing"]
 fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     use crate::common::*;
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
@@ -460,7 +457,6 @@ fn history_plays_past_a_no_op_write_spec_commits_4() {
 // spec/commits.md §4: a commit on two synced things, the H part expired with its pages away. It holds
 // nothing back, in either order.
 #[test]
-#[ignore = "accounts: pairing"]
 fn expired_part_with_pages_away_order_spec_commits_4() {
     use crate::common::*;
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
@@ -574,7 +570,6 @@ fn role_commit_of_junk_holds_nothing_spec_commits_4() {
 // delta on an aspect of the wrong storage class is never applied, by anyone:
 // the rest applies whether the part came or not.
 #[test]
-#[ignore = "accounts: pairing"]
 fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     use crate::common::*;
     let (mut lp, g, _, _) = two_things(|m, g, _| { m.set(g, &REG, &s("first")).unwrap(); });
@@ -665,7 +660,6 @@ fn pending_commit_judged_unjudgeable_awaits_its_record_spec_commits_4() {
 // record is unknown, pends for the record once the pages resolve its header, and applies when
 // the record comes.
 #[test]
-#[ignore = "accounts: pairing"]
 fn pending_for_pages_then_unjudgeable_awaits_its_record_spec_commits_4() {
     use crate::common::*;
     let mut lp = net_one(2);
@@ -743,7 +737,6 @@ fn bad_part_beside_a_waiting_part_alike_spec_commits_4() {
 // spec/commits.md §4 (copies): a true `created.0` proves itself under a header whose aspect list goes by
 // link too: the stored copy's header reads empty until its list is resolved.
 #[test]
-#[ignore = "accounts: pairing"]
 fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
     use crate::common::*;
     let mut lp = net_one(2);
@@ -871,7 +864,6 @@ fn cut(b: &CommitBlob, things: &[Tid]) -> Vec<u8> {
 // other pending part: past T when it came, or parked before T, alone or beside a part that applied, by
 // its timer or at the next look. Its commit's other parts expire with it (one expiry per commit).
 #[test]
-#[ignore = "accounts: pairing"]
 fn parked_part_goes_at_its_expiry_spec_commits_5() {
     let mut f = forge_setup();
     let (x, y, z) = (f.x, f.y, f.z);
@@ -917,7 +909,6 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
 // first (as a node holds it after a destruction dropped the part and fell): the write it names reads
 // alike, and the part waits under the applied commit.
 #[test]
-#[ignore = "accounts: pairing"]
 fn purge_whose_only_part_is_parked_applies_spec_commits_4() {
     use crate::common::*;
     for header_first in [false, true] {
@@ -953,7 +944,6 @@ fn purge_whose_only_part_is_parked_applies_spec_commits_4() {
 // It cannot be decoded, so it goes, whichever came first: no copy of its bytes is left on the device,
 // its writes having no effect anywhere (spec/crdt.md §4.7).
 #[test]
-#[ignore = "accounts: pairing"]
 fn parked_part_goes_at_its_purge_spec_commits_5() {
     use crate::common::*;
     for parked_first in [true, false] {
@@ -994,14 +984,14 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
 // with a relay's junk on two of the slots: in any order, each true copy delivered again at the end, the
 // node reads alike. The `_plain` property takes every seventh of the 120 orders; the exhaustive one all.
 #[test]
-#[ignore = "accounts: pairing"]
+#[ignore = "property"]
 fn forged_parts_beside_a_part_past_expiry_alike_plain_spec_commits_4() {
     forged_parts_beside_a_part_past_expiry(7);
 }
 
 // As above, in every order.
 #[test]
-#[ignore = "accounts: pairing"]
+#[ignore = "property"]
 fn forged_parts_beside_a_part_past_expiry_alike_in_every_order_exhaustive_spec_commits_4() {
     forged_parts_beside_a_part_past_expiry(1);
 }
