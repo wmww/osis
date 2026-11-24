@@ -105,6 +105,8 @@ Helpers are listed in (c). Per-test items:
 | `recv_all(&n, t)`; `arrive(..)`; `assert_eq!(check(..), None)` | 27, ~16 and 23 sites | perm scenarios/queries/content; incremental |
 | crdt `testutil::{via_snapshot, joined, node}`; `Pager::run_until_loaded` | ~13, 4 and ~100 sites; 9 loops | crdt test files |
 | one `samples()` | 2 copies | schema `core_types.rs` vs vectors `subjects/schema.rs` |
+| one forger of a commit "as received" with the thing's real delete keys and a path whose edges are held | made-up delete keys in about six helpers (a key check fails every test using them) and hostile commits along paths nobody granted (a rule change in `apply` reached nine such tests, read one by one) | engine and sync test helpers |
+| one builder of crdt `Commits` tables | nested `l(vec![...])` literals in about a dozen crdt test files: a wire change is a regex sweep | crdt tests |
 
 ## Not covered
 - **Bodies only skimmed** (names and comments only): engine `it` order's scripted bodies, scale, finalize, sessions, crash; osis port, runtime, listing, watch, commits, ephemeral, tracking, undo; engine most rotation files, undo, retention/mod.rs, sync_ids; perm scale and robust bodies; held-model most `spec_*` bodies; keys `established`/`names`, store `nodelog`/`record`, roles-model addenda/epochs/forget/edges/trust bodies.

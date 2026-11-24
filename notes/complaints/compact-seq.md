@@ -1,4 +1,0 @@
-# compact-seq
-- The crdt differential's `_plain` seeds made no range record whose creations differ in `ts` (random inserts rarely land right after the writer's own last element), so a change to ranges passed `_plain` unexercised; only `_large` reached them. Check what a property reaches (a temporary counter) before trusting it for a new state shape.
-- Paged states write back only touched pages, sliced by record start (`pages::page`), so growing a record in place (coalescing) can push it across a page bound; nothing in crdt knows the layout. Engine tests did not catch it (their strips run after a whole load and rewrite).
-- `crdt-model` `gen::history` restarts a writer's counters per call: two calls for one source make duplicate dots, which read as a forged history ("an honest holder's copies are the body's"), not as a bug in the code under test.

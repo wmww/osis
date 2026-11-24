@@ -1,5 +1,0 @@
-# gone-followup
-- The value-less vocabulary outlived the rule in ~40 places across engine comments, held-model names (`Outcome::valueless`, `values_of`) and a dozen notes, and one stale comment contradicted the code (an expiring snapshot "held as its leftover" at expiry; the code drops it whole). A rule rewrite's review should grep its old words (`value-less`, `valued`, `its values`) across core/, notes/ and the models, not only the follow-up issue's list.
-- `Carried`'s valued spans were read only by a debug check; the release path used the write spans alone. A field read only by its own consistency check is worth a grep before re-judging its semantics.
-- `snapshot::expiring_copies` and `write_expiring` still picked value-carrying writes only. Writing a test for the fix showed it unobservable: a history-less holder never holds the write an expiring reset or delete superseded (issues/cut-misses-revived-writes.md). A test that passes before and after a fix needs its setup checked (here the newcomer held the deltas after `sync_all`).
-- An osis-engine test build after a crdt edit took about 5 minutes here.
