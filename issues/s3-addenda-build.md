@@ -1,20 +1,11 @@
-# S3 build: what addenda still owe
-> Summary: What is left of S3's addenda (spec/permissions.md §5.2 Addenda) once osis-perm's addenda gaps and the engine writing addenda by the state rule are built: the remover's leaving out (A1), held-model and the order harness playing addenda, the §5.5 reading of admin-only content, and the questions a builder would otherwise guess.
+# S3: what addenda still owe
+> Summary: Addenda (spec/permissions.md §5.2 Addenda) are built in perm and engine (notes/addenda.md). Left: the remover's leaving out, held-model and the order harness playing addenda, addenda vouching for purge requests, and which node's addendum counts as "of its own" once nodes sign as their node things.
 > Priority: normal
-> Tags: perm, engine
+> Tags: perm, engine, spec, tests
 
-Spec: spec/permissions.md §5.2 Addenda (Writing, admin-only), §5.1 Frontier. Plan: notes/redesign-plan.md S3.
+Plan: notes/redesign-plan.md S3.
 
-## Built
-- **Addenda, the window, the gaps, the triggers**: notes/addenda.md (Rules), notes/engine-roles.md (Write: what makes a removal due again, and why nothing is missed).
-
-## Left, in order
-1. **The remover's leaving out** (notes/account-membership-design.md §4, The list): not in spec/permissions.md §5.1 Frontier; for stage A1 (notes/write-path-design.md §1, The list is its writer's). With today's writer rule it would change nothing reachable: the engine writes R only where its author holds the authority at R's key in its own walk, in which every received write it lists already stands, and a listed write is neither audited by R nor one of R's seeds; trusting R adds only R's seeds, unlisted writes, which leaving out cannot help (one corner: X's writes on a thing T reaches where X's class does not fall are seeds but not listed; if the remover's authority rests on one, R trusted applies with no list at all, and the per-entry rule would leave out everything). Build it in A1 with a test that reaches it.
-2. **held-model and the order harness**: the gaps rule in held-model's role judgment, and an emphasis whose nodes write addenda (`order::under_test`, `local_peer_off`, `setup` turn them off), so `held_set_decides` compares them. Until then `held_set_decides` checks nothing of them.
-
-## Questions a builder would otherwise guess
-- **"Of its own"**: a node acts as its account; read "no addendum of its own vouching" as authored by its account, so sibling nodes do not each write one once one vouches. The node that wrote R is excluded, its siblings are not (the model has one node per account).
-- **The candidate list** per (R, N) (X's content in R's window, not in R's frontier) is fixed once R is held (a delta stated through R's edge applying after makes R due again, `addenda::wake`): receipt times are recorded per commit. Kept while R is held; growth is per removal per witness, as the addenda themselves.
-
-## An addendum vouches for a purge request as for content
-Tess: nothing argues for treating a purge specially (notes/principles.md, Deleting has no safe side). Modelled (notes/purge-model.md, Undoing an honest delete: roles-model `purge_addenda`, no honest loss, the thief's window as for content). Owed: spec/permissions.md §6 ("An addendum vouches for no purge request" goes), `purge_addenda` on in `Rules::fixed`, the walk and the engine's writing rule taking requests, the test citations of the old sentence.
+1. **The remover's leaving out** (notes/account-membership-design.md §4, The list; notes/write-path-design.md §1, The list is its writer's): a list naming X's lowering of the remover voids the removal, so the remover leaves out what its removal would not apply with. Not in spec/permissions.md §5.1 Frontier. With today's writer rule it changes nothing reachable (the engine writes R only where its author holds the authority in its own walk, where every listed write already stands); one corner: X's writes on a thing reached where X's class does not fall are seeds but not listed, and a remover's authority resting on one would apply R with no list. Build it with a test that reaches it.
+2. **held-model and the order harness**: the gaps rule in held-model's role judgment, and an emphasis whose nodes write addenda (`order::under_test`, `local_peer_off` turn them off), so `held_set_decides` compares them; until then it checks nothing of them.
+3. **An addendum vouches for a purge request as for content** (Tess: nothing argues for treating a purge specially, notes/principles.md, Deleting has no safe side; modelled: notes/purge-model.md, roles-model `purge_addenda`). Owed: spec/permissions.md §6 ("An addendum vouches for no purge request" goes), `purge_addenda` on in `Rules::fixed`, the walk and the engine's writing rule taking requests, the tests citing the old sentence.
+4. **"Of its own"** (§5.2 Writing: a node writes an addendum where none of its own vouches): settle whose addendum counts once each node signs as its own node thing (accounts pieces 1 to 3): every node writing one, or one per account.

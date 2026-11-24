@@ -1,10 +1,7 @@
 # Actors, signing and forks as one mechanism
-> Summary: An account is a special kind of thing (members by signing chain, no grants on it, its own fork and merge rules, an account root standing in for it); target: an ordinary independent thing whose members are things holding roles on it, a key that signs being a signing key holding a grant on a thing, with no concept of an account in core (stage A4 of notes/redesign-plan.md). Designed in notes/account-membership-design.md and notes/write-path-design.md; here: Tess's direction, her answers the design notes do not restate, and what is still open.
+> Summary: Tess's direction and answers for accounts as ordinary things (who sees who acted, visible and hidden modes, forks, profiles, identities managed through another) that the design notes (notes/account-membership-design.md, notes/write-path-design.md) do not restate, and what is still open. The build: notes/accounts-switch-brief.md pieces.
 > Priority: normal
 > Tags: perm, crypto, keys, spec
-
-## What is special today
-An account's members were its nodes, kept by its signing chain (the spec before the accounts switch (git history)), not by role grants: no edge write targets it, nothing derives from its epochs (things minted with it as admin are independent at birth), and the account root stands in for it wherever a thing is needed. So an account cannot hold a role on another account's account. It has its own fork rules (sides by first revocation seen; merges of concurrent rotations) beside the admin-dispute rules and the role-key rule (forks stand).
 
 ## Direction (Tess)
 - **One nestable rule for who sees who acted**: those inside a thing (holders of some role on it) see which member acted; those outside see the thing acting. The same for nodes in an account, accounts in an org, and any other nesting.
@@ -38,4 +35,4 @@ Not features to build: a check on the design, each an account thing with some ar
 - The nestable hiding rule (Direction): offered generally and paid for where used, or not at all.
 - Which mode is the default, and whether the other is opt-in, a toggle, or unexposed to end users.
 - A thought, not for building (Tess): a writer minting a dependent of a realm is not its admin, so cannot set its admin-only aspects; perhaps creation carries arbitrary data, admin-only included, which only admins change afterwards; likely the answer is per use (a member makes a sub-realm, grants the main realm a role on it, and mints documents with the sub-realm as admin).
-- **The build**: notes/redesign-plan.md, stages A4 to A6.
+- **The build**: notes/accounts-switch-brief.md (code pieces), notes/redesign-plan.md A5, A6.

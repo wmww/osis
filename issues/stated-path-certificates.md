@@ -1,5 +1,5 @@
 # Purge-author indexes and waits along stated paths
-> Summary: The engine indexes a commit's purge author (where not its signer) as the one extra thing written as, and a commit waits for its signer's and purge author's records alone; spec/permissions.md §4 wants every listed thing of each stated path (its record needed and in the evidence). Stage A1's second branch.
+> Summary: The engine indexes a commit's purge author (where not its signer) as the one extra thing written as, and a commit waits for its signer's and purge author's records alone; spec/permissions.md §4 wants every listed thing of each stated path (its record needed and in the evidence). Left from stage A1.
 > Priority: normal
 > Tags: engine, permissions
 

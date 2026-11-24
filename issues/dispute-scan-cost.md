@@ -1,8 +1,6 @@
 # The dispute listing is capped in point order
-> Summary: `disputes()` walks once per contestable removal (no exact filter exists: notes/disputes.md, Scan bound), so the API examines at most 64 candidates in point order and counts the rest; a flood of early-stamped hostile writes pushes an open dispute with no recorded side past the cap, where it is counted, not listed, and the cap is not a parameter of the API or CLI.
+> Summary: `disputes()` walks once per contestable removal (no exact filter exists: notes/disputes.md, Scan bound), so it examines at most `LIST_MAX` (64) candidates in point order and counts the rest; a flood of early-stamped hostile removals pushes a later open dispute with no recorded side past the cap, counted but not listed. The cap is no parameter of the API or CLI.
 > Priority: low
 > Tags: perm, api
 
-Stage A1 (notes/redesign-plan.md): the walk's rebuild changes how disputes are detected (notes/write-path-design.md §1 W10); check this against it before a fix.
-
-Detection reads every open dispute after each update that changes the timeline (engine `sides::after_update`), and every recorded side is listed whatever the cap. The listing's order (point order, the earliest first) lets a hostile author sign enough early-stamped unapplied removals to keep a later open dispute with no recorded side (one that arrived unapplied, or before the grant its author's authority rests on) among the unexamined. Open: an API and CLI parameter for the bound (`disputes(max)`), or a listing that examines the recently flipped candidates first as detection does; nothing hides silently either way (the count is reported).
+Detection (engine `sides::after_update`) reads every open dispute, and every recorded side is listed whatever the cap; nothing hides silently (the count is reported). Options: a bound parameter (`disputes(max)`), or listing the recently flipped candidates first as detection does.

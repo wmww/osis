@@ -149,7 +149,7 @@ Each a hand world (core/test/roles-model/src/paths/tests.rs), modelled:
 
 **What holds where** (modelled, §6): at nodes that held the honest removals first, made them or chose them (First received), safety (a thief holding a stolen key keeps or regains no role, cannot void its removal, cannot bring back a party removed earlier), liveness, honest history kept, the remover's own path kept; at every node, one reading (a function of the held commits and the trust set, any input order), no gain by a party that never legitimately held the right, and no dispute in an honest history where nobody lowers anybody concurrently.
 
-**What an idle write changes** (modelled, counted: notes/path-model-findings.md 34 to 36): a held commit the reading does not apply mostly changes nothing users observe; it can decide a fight among admins each holding the right at their write, unshown. Decided (Tess, issues/admin-fights-not-always-shown.md): a dispute is reported where a node's trust decides the reading; nothing is built to show the rest.
+**What an idle write changes** (modelled, counted: notes/path-model-findings.md 34 to 36): a held commit the reading does not apply mostly changes nothing users observe; it can decide a fight among admins each holding the right at their write, unshown. Decided (Tess, notes/disputes.md): a dispute is reported where a node's trust decides the reading; nothing is built to show the rest.
 
 **Cost** (modelled: notes/path-model-findings.md 17): a lowering that drops nothing costs its place in the walk; a void one its check (the setters along its own authority: k void lowerings by the last of a chain of k grants cost k² setters read); an applied one that drops costs its drops and one restart from the earliest of them, once.
 
