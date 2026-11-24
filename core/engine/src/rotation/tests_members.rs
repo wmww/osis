@@ -2330,3 +2330,34 @@ fn hostile_record_forces_one_rotation_per_rotation_of_a_spec_crypto_4() {
     }
     assert_eq!(leaked(&mut lp, 0, &[g, m, a], x, start), Vec::<Tid>::new(), "X opens nothing");
 }
+
+// spec/crypto.md §4 (Left out; Stale), spec/permissions.md §3: G {g0, W admin, M}, M {m0, N},
+// N {n0, P admin}. P rotates N while n0 demotes P concurrently, so P's rotation turns invalid once
+// both are held. W holds P's rotation but not the demotion: M's box to N names the keyset P's
+// rotation supersedes, stale at W, so W's rotation of G leaves M out and records M's keyset. Once
+// everything is held nothing is stale and nothing departed, yet every holder of G with key
+// access must end boxed at G's current epochs. Fails: M stays out of G for good.
+#[test]
+#[ignore = "issues/rotation-holder-lacks-box.md"]
+fn repro_left_out_on_an_invalidated_rotation_spec_crypto_4() {
+    let mut lp = synced(5);
+    let [_, p, _, _, w] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let n = independent_thing(&mut lp, 3);
+    lp.peers[3].engine.grant(&n, &p, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let m = independent_thing(&mut lp, 2);
+    lp.peers[2].engine.grant(&m, &n, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let g = independent_thing(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    rotate_skipping(&mut lp, 1, n, &BTreeSet::from([Role::Read]), &[]);
+    lp.peers[3].engine.demote(&n, &Demotion { holder: p, new: Some(edge(Role::Read)), retain: None }).unwrap();
+    lp.sync(1, 4).unwrap();
+    rotate_skipping(&mut lp, 4, g, &BTreeSet::from([Role::Read]), &[]);
+    assert_eq!(sealed_at(&mut lp, 4, g, m), None, "W leaves M out");
+    lp.sync_all().unwrap();
+    settle(&mut lp, &[0, 1, 2, 3, 4], &[n, m, g]);
+    assert!(all_boxed(&mut lp, 0, &[g]), "M ends boxed at G's current epochs");
+}
