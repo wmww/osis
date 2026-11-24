@@ -313,6 +313,8 @@ pub struct Status {
     unheld: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
     /// The read sync IDs each own commit has a body under.
     by_commit: BTreeMap<CommitId, BTreeSet<SyncId>>,
+    /// Per read S, its own commits as `by_commit` holds them (`own_fx`'s value last taken).
+    own: BTreeMap<SyncId, Arc<BTreeSet<CommitId>>>,
     /// Own commits held elsewhere under every sync ID they have a body under.
     held: StampedSet<CommitId>,
     removals_fx: Effects<(), Arc<BTreeSet<CommitId>>>,
@@ -356,6 +358,7 @@ impl Default for Status {
             held_fx: Effects::new("status: held elsewhere"),
             unheld: Stamped::default(),
             by_commit: BTreeMap::new(),
+            own: BTreeMap::new(),
             held: StampedSet::default(),
             removals_fx: Effects::new("status: self-removals"),
             removals: StampedSet::default(),
@@ -625,11 +628,9 @@ impl Status {
     }
 
     fn forget_own(&mut self, s: &SyncId) {
-        if self.unheld.remove(s).is_none() {
-            return;
-        }
-        let commits: Vec<CommitId> = self.by_commit.iter().filter(|(_, ids)| ids.contains(s)).map(|(c, _)| *c).collect();
-        for c in commits {
+        let Some(commits) = self.own.remove(s) else { return };
+        self.unheld.remove(s);
+        for c in commits.iter().copied() {
             self.held_fx.unwant(&(*s, c));
             self.untrack(s, &c);
         }
@@ -669,7 +670,10 @@ impl Status {
         let mut moved = BTreeSet::new();
         for s in self.own_fx.due() {
             let Some((_, now)) = self.own_fx.try_settle(&s, || g.own_commits(&s))? else { continue };
-            let was: Vec<CommitId> = self.by_commit.iter().filter(|(c, ids)| ids.contains(&s) && !now.contains(*c)).map(|(c, _)| *c).collect();
+            // by difference: one more own commit moves one entry
+            let before = self.own.insert(s, now.clone()).unwrap_or_default();
+            let was: Vec<CommitId> = before.difference(&now).copied().collect();
+            let came: Vec<CommitId> = now.difference(&before).copied().collect();
             let mut unheld = self.unheld.get(&s).map(|x| (**x).clone()).unwrap_or_default();
             for c in was {
                 self.held_fx.unwant(&(s, c));
@@ -677,7 +681,7 @@ impl Status {
                 self.untrack(&s, &c);
                 moved.insert(c);
             }
-            for c in now.iter() {
+            for c in came.iter() {
                 if self.by_commit.entry(*c).or_default().insert(s) {
                     self.held_fx.want((s, *c));
                     unheld.insert(*c);
