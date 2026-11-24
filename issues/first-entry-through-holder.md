@@ -4,7 +4,7 @@
 > Tags: sync, engine, spec, tess-call
 
 ## The case
-Alice grants group G write on a document X. Bob is a member of G and holds a strong to X (Alice sent him the reference in a chat). Bob's node knows X's tid and nothing else: not X's sync ID, and no box of X's secrets to G. Holding a holder for keys starts from a thing already synced, so it cannot start here.
+Alice grants G, a shared space, write on a document X. Bob is a member of G and holds a strong to X (Alice sent him the reference in a chat). Bob's node knows X's tid and nothing else: not X's sync ID, and no box of X's secrets to G. Holding a holder for keys starts from a thing already synced, so it cannot start here.
 
 It enters X today where one of these holds:
 - **An offer**: the grant's fire reached G's inbox and Bob's node syncs G within the time G keeps the signal (90 days by default, and only where G's admins enable grants from outside).

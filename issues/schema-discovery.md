@@ -3,7 +3,7 @@
 > Priority: low
 > Tags: schema, api, spec, tess-call
 
-**Tess question:** adopt the proposal below (a public app actor per app carrying `schema.0`: AK name to `.osis` file URL) as the convention for finding an app AK's schema?
+**Tess question:** adopt the proposal below (a public app thing per app carrying `schema.0`: AK name to `.osis` file URL) as the convention for finding an app AK's schema?
 
 The purpose is many apps, generic tools and agents sharing data "like a file format". First-party keys live in the osis repository, so their schemas are found there; an app AK starts with a tid its maker administers (spec/data-model.md §2), and the core distributes no schemas (spec/requirements.md, Versioning).
 
