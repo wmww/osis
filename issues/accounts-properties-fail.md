@@ -9,6 +9,5 @@ Found by a gate on main (every seed fails at the gate's offsets and at seed 0). 
 - Model mismatches, cause not studied (piece 7: sync differential and sims with ordinary accounts): osis-engine `closure::sync_units_are_the_models_plain_spec_sync_set_2` (`the sync unit of`); osis-sync `sims::a_reader_through_a_node_keeping_it_unread_plain` (`reads thing 0 unlike the reference`), `sims::lost_and_repeated_messages_plain` (`w.net.faulted != (0, 0, 0)`: the network faults nothing).
 - `refuses a fire of node N: Bad` (a node refuses another's signal fire): osis-sim's default `scenarios::` tests (seed 0) and the sim-sweep scenarios `crash_restart`, `drift_parks`, `revoke_while_writing`, `three_random`, `two_nodes`.
 - `held-model differs: validity of commit` on some seeds (rate): osis-engine `order::held_set_decides_plain` and `_exhaustive` (OSIS_ORDER_SEED=850771093425).
-- A coverage floor under its count: osis-engine `retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5` (`purges through a name`).
 
 Each piece that lands re-runs the ones it reaches and drops their lines; a test still failing after piece 7 is a bug of its own.
