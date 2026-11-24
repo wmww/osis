@@ -64,9 +64,9 @@ impl Engine {
     /// node thing as mint admin and made independent in its minting; its inbox and profile
     /// minted with admin A, each made independent, held by strongs from A's `holds.0`; A's
     /// `keys.0` naming the inbox, whose setting enables both inbox signals for `INBOX_LIFETIME`
-    /// (spec/sync-inbox.md §1); and a strong to A in the node root's `holds.0`. The node enters A
-    /// by its node thing's edge piece on it (its record edge, spec/permissions.md §4 Key part),
-    /// the inbox and profile in A's sync unit.
+    /// (spec/sync-inbox.md §1); and a strong to A in the node root's `holds.0`, its `settings^.0`
+    /// naming A (spec/sync-set.md §1). The node enters A by its node thing's edge piece on it
+    /// (its record edge, spec/permissions.md §4 Key part), the inbox and profile in A's sync unit.
     pub fn make_account(&mut self) -> Result<(Account, crate::flows::Done)> {
         self.run(|tx| {
             let mut done = crate::flows::Done::default();
@@ -96,6 +96,10 @@ impl Engine {
             let root = tx.core.node_root.ok_or(Error::Misuse("no node root"))?;
             let mut m = Mutation::new();
             m.op(root, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(a)) })?;
+            done.add(crate::engine::write::commit_in(tx, m)?);
+            // A holds this node's settings (its entries there, which A's admins write)
+            let mut m = Mutation::new();
+            m.set(root, &ct::SETTINGS, &osis_base::Weak(a))?;
             done.add(crate::engine::write::commit_in(tx, m)?);
             Ok((Account { thing: a, inbox, profile }, done))
         })

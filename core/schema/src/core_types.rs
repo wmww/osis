@@ -227,8 +227,8 @@ codec_struct! {
     pub struct ThingCaps { 0 entries: u64, 1 bytes: u64 }
 }
 codec_struct! {
-    /// `caps^.0` (spec/data-model.md §9): what peers may make this node store of the sync IDs it
-    /// keeps unread; per-thing limits apply to each sync ID the thing owns.
+    /// A node's entry in `caps^.0` (spec/data-model.md §9): what peers may make the node store of
+    /// the sync IDs it keeps unread; per-thing limits apply to each sync ID the thing owns.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Caps { 0 policy: BTreeMap<String, u64>, 1 things: BTreeMap<Weak, ThingCaps> }
 }
@@ -384,7 +384,10 @@ pub const SYNC: Aspect<SyncIds> = Aspect::new("sync.0", &CORE);
 /// `dial.0` on any thing: each node's 32-byte dialable key to its URLs (spec/sync-set.md §1).
 pub type DialList = BTreeMap<Vec<u8>, Vec<String>>;
 pub const DIAL: Aspect<DialList> = Aspect::new("dial.0", &CORE);
-pub const CAPS: Aspect<Caps> = Aspect::new("caps^.0", &CORE);
+/// `settings^.0` on a node root: the thing holding the node's settings (spec/sync-set.md §1).
+pub const SETTINGS: Aspect<Weak> = Aspect::new("settings^.0", &CORE);
+/// `caps^.0`: each node's caps, by its node thing.
+pub const CAPS: Aspect<BTreeMap<Weak, Caps>> = Aspect::new("caps^.0", &CORE);
 /// `clients^.0`: by client actor, a strong (the node root holds each client's actor).
 pub const CLIENTS: Aspect<BTreeMap<Weak, Client>> = Aspect::new("clients^.0", &CORE);
 /// `retention^.0`: what the thing keeps of replaced content (spec/commits.md §5); fixed retention.

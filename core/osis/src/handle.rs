@@ -160,7 +160,7 @@ pub(crate) struct Inner {
     pub eng: Mutex<Locked>,
     pub dispatch: Dispatch,
     pub node: Tid,
-    /// The node root (spec/sync-set.md §1): where this node's settings live.
+    /// The node root (spec/sync-set.md §1): this node's strongs and whom it acts for.
     pub node_root: Tid,
     pub me: Tid,
     pub account_root: Tid,

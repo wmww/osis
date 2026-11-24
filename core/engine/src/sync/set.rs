@@ -357,11 +357,23 @@ impl Engine {
         Ok(out)
     }
 
-    /// `caps^.0` of this node, on its node root (spec/data-model.md §9, spec/sync-set.md §1;
-    /// absent: the defaults, an empty policy).
+    /// The thing holding this node's settings: its node root's `settings^.0` (spec/sync-set.md
+    /// §1), written only by this node.
+    pub fn settings_thing(&mut self) -> Result<Option<Tid>> {
+        let Some(root) = self.core.node_root else { return Ok(None) };
+        Ok(self.get_typed(&root, &ct::SETTINGS)?.map(|w| w.0))
+    }
+
+    /// This node's caps: its node thing's entry in the `caps^.0` of the thing holding its
+    /// settings (spec/data-model.md §9, spec/sync-set.md §1; absent: the defaults, an empty
+    /// policy). That thing's admins write the entry; what it may set is storage limits alone.
     pub fn caps(&mut self) -> Result<Arc<Caps>> {
-        let Some(root) = self.core.node_root else { return Ok(Arc::default()) };
-        let c = self.get_typed(&root, &ct::CAPS)?.unwrap_or_default();
+        let Some(s) = self.settings_thing()? else { return Ok(Arc::default()) };
+        let me = osis_schema::Codec::to_value(&osis_base::Weak(self.core.me()));
+        let c = match self.get_at(&s, &ct::CAPS.name(), &[osis_crdt::PathSeg::Key(me)])? {
+            Some(v) => <ct::Caps as osis_schema::Codec>::from_value(&v).unwrap_or_default(),
+            None => ct::Caps::default(),
+        };
         Ok(Arc::new(Caps { policy: c.policy, things: c.things.into_iter().map(|(t, x)| (t.0, ThingCaps { entries: x.entries, bytes: x.bytes })).collect() }))
     }
 }

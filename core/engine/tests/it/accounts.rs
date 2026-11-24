@@ -124,3 +124,43 @@ fn a_read_things_piece_carries_nothing_it_is_read_only_through_spec_sync_set_2()
     assert!(!e.closure_holds(&y) && !e.closure_holds(&h), "H's piece carries Y only through Y");
     e.check_closure();
 }
+
+// spec/sync-set.md §1, spec/permissions.md §8 Making: a node's settings are its node thing's
+// entries on the thing its root's `settings^.0` names, A from its making. A sibling holding admin
+// on A writes the node's caps entry there and the node applies it; one holding write on A cannot
+// (`caps^.0` is admin-only: its commit, sent past its own rules, is invalid at the node); and no
+// sibling signs as the node: only a key holding a grant on the node thing does.
+#[test]
+fn a_sibling_writes_a_nodes_settings_and_cannot_sign_as_it_spec_sync_set_1() {
+    use crate::common::edge;
+    use osis_schema::Codec;
+    let mut lp = crate::common::net(3, 0);
+    let (acc, _) = lp.peers[0].engine.make_account().unwrap();
+    let a = acc.thing;
+    let [n0, n1, n2] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
+    lp.peers[0].engine.grant(&a, &n1, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&a, &n2, &edge(Role::Write)).unwrap();
+    lp.hold_at(1, a);
+    lp.hold_at(2, a);
+    lp.sync_all().unwrap();
+    let entry = |n: osis_base::Tid, entries: u64| {
+        let caps = ct::Caps { policy: [("entries".to_string(), entries)].into(), things: Default::default() };
+        let mut m = osis_engine::Mutation::new();
+        let path = vec![osis_crdt::PathSeg::Key(osis_base::Weak(n).to_value())];
+        m.op(a, &ct::CAPS, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(caps.to_value()) }).unwrap();
+        m
+    };
+    let entries = |lp: &mut osis_engine::local_peer::LocalPeer| lp.peers[0].engine.caps().unwrap().policy.get("entries").copied();
+    assert_eq!(entries(&mut lp), None, "no entry: the defaults");
+    lp.peers[1].commit(entry(n0, 7)).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(entries(&mut lp), Some(7), "an admin sibling's entry for node 0 applies there");
+    let c = lp.peers[2].engine.commit_hostile(entry(n0, 1)).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert!(lp.peers[0].engine.header(&c).is_some(), "held at node 0");
+    assert_eq!(entries(&mut lp), Some(7), "a writer of A sets no node's settings");
+    let mut m = entry(n0, 2);
+    m.sign_as(n0);
+    assert!(lp.peers[1].commit(m).is_err(), "no key of node 1's holds a grant on node 0's thing");
+    lp.peers[0].engine.check_closure();
+}

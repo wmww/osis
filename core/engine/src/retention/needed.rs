@@ -288,10 +288,9 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // a thing an edge write names a holder in the node closure on (not by its record alone,
     // `Held::is_holder_by_write`; a write removing a record edge names it too): the holder's key
     // part holds its piece on it (spec/permissions.md §4 Key part), which is how the node starts
-    // syncing it. Interim (notes/accounts-switch-brief.md, piece 2): kept whether or not the node
-    // syncs it; the spec keeps a piece only as far as the node syncs the thing or holds an offer
-    // of it, which needs the piece fetched again from the holder's sync ID once a strong reaches
-    // the thing
+    // syncing it. Interim (notes/accounts-switch-brief.md, Open: Edge pieces kept): kept whether
+    // or not the node syncs it; the spec keeps a piece only as far as the node syncs the thing or
+    // holds an offer of it, which needs the piece fetched again once a strong reaches the thing
     let holding = core.ix.held.holders_of(t).filter(|h| core.ix.closure.holds(h) && core.ix.held.is_holder_by_write(h, t)).map(|h| (*h, Need::Holding));
     // a held commit naming it as purge author (a member of its path, `apply::header_wait`), on the
     // things it writes on: its path lists it, so its record judges the commit (spec/commits.md §4

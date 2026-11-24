@@ -30,7 +30,7 @@ The module notes (notes/sync-*.md) point here. Untested built parts: issues/sync
 ## Status and API
 - Covered by a snapshot at a source (spec/sync-status.md §2): needs the engine's covering snapshots of a commit; a body a source dropped under a snapshot before showing it never counts (an under-claim).
 - Diagnostics: an open refused (sync ID, code) is not reported.
-- Nothing calls `history_complete` (spec/sync-status.md §3) from the API; `caps()`/`set_caps` over `caps^.0` are missing from the osis API (the engine reads `caps^.0`; only a raw write sets it).
+- Nothing calls `history_complete` (spec/sync-status.md §3) from the API; the osis API sets caps by a plain write of `core::CAPS` (the node's entry on its account), with no typed reader beyond it.
 
 ## Own issues
 issues/sync-link-first-contact.md, issues/sync-pending-leftovers.md; missing tests: issues/sync-tests-owed.md.

@@ -95,6 +95,11 @@ pub mod core {
     /// What a thing keeps of replaced content, by aspect, and the expiry its writes get. An admin
     /// sets it, at any time.
     pub const RETENTION: osis_schema::Aspect<RetentionSetting> = osis_schema::Aspect::new("retention^.0", &osis_schema::CORE);
+    /// Each node's limits on what other nodes may make it store of what it keeps for them
+    /// unread, by its node (`node()`), on its account (`me()`): an admin node of the account
+    /// sets any node's, `at(me, CAPS).path(p![Weak(node)])`. Absent: the defaults.
+    pub use osis_schema::core_types::CAPS;
+    pub use osis_schema::core_types::{Caps, ThingCaps};
 }
 
 /// Which calls each key kind takes, checked at compile time: value operations do not compile on

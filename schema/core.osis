@@ -253,7 +253,12 @@ aspect sync.0: map<blob, sync_entry>;
 aspect dial.0: map<blob, list<string>>;
 
 // ---- Nodes ----
-// Each node is itself a thing (its node thing), with these aspects about it.
+// A node's settings (spec/sync-set.md §1): its entries, keyed by its node thing, on the thing its
+// node root's `settings^.0` names (an account), which that thing's admins write; and, on the node
+// root, what only the node decides.
+
+/// On a node root: the thing holding this node's settings, its node thing's entries there.
+admin aspect settings^.0: weak;
 
 /// Limits on what the node stores of one thing it keeps unread.
 type thing_caps = struct {
@@ -261,14 +266,17 @@ type thing_caps = struct {
     bytes 1: int,
 };
 
-/// Limits on what peers may make the node store of the sync IDs it keeps unread
+/// Limits on what peers may make a node store of the sync IDs it keeps unread
 /// (spec/sync-ids.md §5); absent: the defaults.
-admin aspect caps^.0: struct {
+type caps = struct {
     /// Tuning settings by name.
     policy 0: map<string, int>,
     /// Per-thing limits, applied to each sync ID the thing owns.
     things 1: map<weak, thing_caps>,
 };
+
+/// Each node's caps, by its node thing.
+admin aspect caps^.0: map<weak, caps>;
 
 /// A thin client: an app that uses this node's data from elsewhere instead of keeping its own.
 type client = struct {
@@ -278,7 +286,8 @@ type client = struct {
     until 1: option<timestamp>,
 };
 
-/// The thin clients this node serves, by the client's actor (on the node root).
+/// The thin clients this node serves, by the client's actor (on the node root: the node signs
+/// for the actor an entry names, so only the node writes them).
 admin aspect clients^.0: map<weak, client>;
 
 // ---- Retention ----

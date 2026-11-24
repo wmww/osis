@@ -35,16 +35,27 @@ fn read_credentials_and_claim_key_spec_sync_ids_3() {
     assert!(matches!(&ids[0].path.steps[0], (_, Some(_))), "its claim set held");
 }
 
-// spec/data-model.md §9 (`caps^.0`: on the node root), spec/sync-ids.md §5 (caps).
+// spec/data-model.md §9 (`caps^.0`: each node's entry, on the thing its node root's
+// `settings^.0` names), spec/sync-ids.md §5 (caps).
 #[test]
-fn caps_read_from_the_node_spec_sync_ids_5() {
+fn caps_read_from_the_nodes_entry_spec_sync_ids_5() {
+    use osis_schema::Codec;
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    assert!(e.caps().unwrap().things.is_empty(), "absent: the defaults");
-    let me = e.node_root().unwrap();
+    assert!(e.caps().unwrap().things.is_empty(), "no settings thing: the defaults");
+    let (acc, _) = e.make_account().unwrap();
+    assert_eq!(e.settings_thing().unwrap(), Some(acc.thing), "the account, from its making");
+    assert!(e.caps().unwrap().things.is_empty(), "no entry: the defaults");
     let t = Tid::from_bytes([9; 15]);
+    let caps = ct::Caps { policy: [("entries".to_string(), 7)].into(), things: [(t.into(), ct::ThingCaps { entries: 3, bytes: 4 })].into() };
     let mut m = Mutation::new();
-    m.set(me, &ct::CAPS, &ct::Caps { policy: [("entries".to_string(), 7)].into(), things: [(t.into(), ct::ThingCaps { entries: 3, bytes: 4 })].into() }).unwrap();
+    let other = osis_base::Weak(Tid::from_bytes([8; 15])).to_value();
+    m.op(acc.thing, &ct::CAPS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(other)], op: osis_crdt::Op::Set(caps.to_value()) }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    assert!(e.caps().unwrap().things.is_empty(), "another node's entry");
+    let mut m = Mutation::new();
+    let me = osis_base::Weak(e.me()).to_value();
+    m.op(acc.thing, &ct::CAPS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(me)], op: osis_crdt::Op::Set(caps.to_value()) }).unwrap();
     e.commit(m).unwrap().unwrap();
     let c = e.caps().unwrap();
     assert_eq!(c.policy.get("entries"), Some(&7));

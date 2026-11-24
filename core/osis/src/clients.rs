@@ -3,7 +3,10 @@
 //! the hash of its bearer secret
 //! and its end. The node mints the actor (an actor whose mint admin is the account, like a link's K) and
 //! acts as it for the client's session (the client port, spec/wire.md §11.2); what the client may read and write is
-//! that actor's grants, nothing else. Only the node writes its node root.
+//! that actor's grants, nothing else. Only the node writes its node root: an entry makes the node
+//! sign as its node thing for the actor it names, so it is no setting a sibling writes (unlike
+//! `caps^.0`, spec/sync-set.md §1: a sibling naming the node thing, or another account of the
+//! node, would sign as the node).
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
