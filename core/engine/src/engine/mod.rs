@@ -213,6 +213,10 @@ pub struct SealedRec {
     pub epoch: osis_crypto::Epoch,
     pub holder: Tid,
     pub keysets: Vec<osis_crypto::Epoch>,
+    /// Written with the epoch's keyset, by the commit writing it (its rotation commit, or a
+    /// re-write of the keyset): its epoch's own box (spec/crypto.md §4 Holder actors, Foreign),
+    /// not a grant's or re-seal's.
+    pub own: bool,
 }
 
 /// The box records of one epoch of an actor noted from its valid `keys.0` bodies
@@ -222,6 +226,8 @@ pub struct SealedRec {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SealedAt {
     pub keysets: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
+    /// Of `keysets`, those the epoch's own records name (`SealedRec::own`): what makes it foreign.
+    pub own: BTreeMap<Tid, BTreeSet<osis_crypto::Epoch>>,
     pub by: BTreeSet<CommitId>,
 }
 
@@ -820,6 +826,10 @@ indexes! {
     /// keyset a held valid `keys.0` body (a role commit's delta or a compaction snapshot; kept
     /// once dropped, `Dropped::keysets`) writes. `Core::keysets_of` reads one actor's.
     pub keysets: JMap<(Tid, osis_base::Role, osis_crypto::Epoch), HeldKeyset>,
+    /// The keysets invalid `keys.0` bodies write (held, or their records once dropped,
+    /// `Dropped::keysets`), each with those bodies' commits: (actor, role, epoch) -> commits. A
+    /// keyset here and not in `keysets` is held invalid (spec/crypto.md §4, Held keyset).
+    pub keysets_invalid: JMap<(Tid, osis_base::Role, osis_crypto::Epoch), BTreeSet<CommitId>>,
     /// The box records of each epoch (spec/crypto.md §4, Stale): (actor, role, epoch) for each
     /// epoch a held valid `keys.0` body (a role commit's delta or a compaction snapshot) records
     /// a box at.
@@ -1470,6 +1480,18 @@ impl Core {
     /// Every keyset of actor `m` a valid body of which is noted (`Indexes::keysets`), held or not.
     pub(crate) fn keysets_noted(&self, m: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &HeldKeyset)> {
         self.ix.keysets.run(actor_run(m), (*m, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *m).map(|(k, v)| (k.1, k.2, v))
+    }
+
+    /// Every keyset of actor `m` an invalid `keys.0` body writes (`Indexes::keysets_invalid`).
+    pub(crate) fn keysets_invalid_noted(&self, m: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &BTreeSet<CommitId>)> {
+        self.ix.keysets_invalid.run(actor_run(m), (*m, osis_base::Role::Sync, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *m).map(|(k, v)| (k.1, k.2, v))
+    }
+
+    /// Whether keyset `e` of role `r` of `m` is held invalid (spec/crypto.md §4, Held keyset): an
+    /// invalid body writes it and no valid one does.
+    pub(crate) fn keyset_invalid(&self, m: &Tid, r: osis_base::Role, e: &osis_crypto::Epoch) -> bool {
+        let k = (*m, r, *e);
+        !self.ix.keysets.contains_key(&k) && self.ix.keysets_invalid.contains_key(&k)
     }
 
     /// Every epoch of actor `a` a valid `keys.0` body records a box at (`Indexes::sealed`).
@@ -2124,6 +2146,7 @@ impl Core {
             key_salt,
             ix: Indexes {
                 keysets: JMap::by_run(|k| actor_run(&k.0)),
+                keysets_invalid: JMap::by_run(|k| actor_run(&k.0)),
                 sealed: JMap::by_run(|k| actor_run(&k.0)),
                 by_thing: JSetMap::by_run(|k| actor_run(&k.0)),
                 by_actor: JSetMap::by_run(|k| actor_run(&k.0)),

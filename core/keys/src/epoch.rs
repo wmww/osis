@@ -100,6 +100,12 @@ pub struct EpochInfo {
     /// `derived_n`). It orders (`RoleEpochs::is_newer`) by this, so derived epochs order as the
     /// mint admin's (spec/crypto.md §3, §4).
     pub order: Option<u64>,
+    /// Foreign at this node (spec/crypto.md §4 Holder actors, Foreign): its rotation commit boxes
+    /// a holder actor at a keyset held invalid or foreign here. Set on the view
+    /// (`RoleEpochs::set_foreign`), never stored. It supersedes nothing here (`superseding`) and
+    /// is never the newest (nobody here encrypts under it), but stays current where nothing
+    /// else supersedes it.
+    pub foreign: bool,
 }
 
 impl EpochInfo {
@@ -115,9 +121,16 @@ impl EpochInfo {
         self.supersedes.iter().chain(self.rotations.values().flatten())
     }
 
-    /// `superseded_epochs` names `e`.
+    /// What it supersedes at this node (spec/crypto.md §4, Supersedes): `superseded_epochs`,
+    /// nothing where it is foreign. What its commit lists (`superseded_epochs`) is alike at every
+    /// node; whether that supersedes is the node's.
+    fn superseding(&self) -> impl Iterator<Item = &Epoch> {
+        self.superseded_iter().filter(|_| !self.foreign)
+    }
+
+    /// `superseding` names `e`.
     fn supersedes(&self, e: &Epoch) -> bool {
-        self.supersedes.contains(e) || self.rotations.values().any(|r| r.contains(e))
+        !self.foreign && (self.supersedes.contains(e) || self.rotations.values().any(|r| r.contains(e)))
     }
 
     /// Its secret, or its roles secret, is known only from pending commits.
@@ -445,7 +458,7 @@ impl RoleEpochs {
     /// rotation lists it, and its maker withdraws it.
     pub fn unsuperseded(&self) -> Vec<Epoch> {
         let est = self.established_names_aside();
-        let superseded: BTreeSet<&Epoch> = est.keys().filter_map(|e| self.map.get(e)).flat_map(EpochInfo::superseded_iter).collect();
+        let superseded: BTreeSet<&Epoch> = est.keys().filter_map(|e| self.map.get(e)).flat_map(EpochInfo::superseding).collect();
         est.into_keys().filter(|e| !superseded.contains(e)).collect()
     }
 
@@ -497,7 +510,7 @@ impl RoleEpochs {
     /// Current epochs: established, not superseded, and not below this node's own floor
     /// (spec/crypto.md §4, Current), ascending.
     pub fn current(&self) -> Vec<Epoch> {
-        let superseded: BTreeSet<&Epoch> = self.map.values().filter(|i| i.established.is_some()).flat_map(EpochInfo::superseded_iter).collect();
+        let superseded: BTreeSet<&Epoch> = self.map.values().filter(|i| i.established.is_some()).flat_map(EpochInfo::superseding).collect();
         self.map.iter().filter(|(e, i)| i.established.is_some() && !superseded.contains(e) && self.at_own_floor(e)).map(|(e, _)| *e).collect()
     }
 
@@ -617,9 +630,21 @@ impl RoleEpochs {
         self.superseded_by(given)?.into_iter().filter(|s| keep(s)).max_by_key(by_n)
     }
 
-    /// The newest current epoch.
+    /// The newest current epoch that is not foreign (spec/crypto.md §4, Newest).
     pub fn newest(&self) -> Option<Epoch> {
-        self.current().into_iter().max_by_key(|e| self.by_order(e))
+        self.current().into_iter().filter(|e| !self.is_foreign(e)).max_by_key(|e| self.by_order(e))
+    }
+
+    /// Marks `e` foreign at this node (spec/crypto.md §4 Holder actors, Foreign; on the view).
+    pub fn set_foreign(&mut self, e: &Epoch) {
+        if let Some(i) = self.map.get_mut(e) {
+            i.foreign = true;
+        }
+    }
+
+    /// Whether `e` is foreign at this node (`EpochInfo::foreign`).
+    pub fn is_foreign(&self, e: &Epoch) -> bool {
+        self.map.get(e).is_some_and(|i| i.foreign)
     }
 
     /// Whether the secret of every current epoch is held, and there is one (what a holder reaches
@@ -644,10 +669,10 @@ impl RoleEpochs {
         self.newest_with(self.held_established().filter(|(e, _)| keep(e)))
     }
 
-    /// The newest current epoch whose secret is held.
+    /// The newest current epoch whose secret is held, not foreign (spec/crypto.md §4, Newest).
     pub fn newest_held(&self) -> Option<(Epoch, &Secret32)> {
         let current = self.current();
-        self.newest_with(self.held().filter(|(e, _)| current.binary_search(e).is_ok()))
+        self.newest_with(self.held().filter(|(e, _)| current.binary_search(e).is_ok() && !self.is_foreign(e)))
     }
 
     /// The newest established epoch whose secret is held, current or not.
@@ -783,11 +808,12 @@ impl ActorEpochs {
                 let info = EpochInfo {
                     // past the cap two base epochs with one secret derive one epoch: it never
                     // supersedes itself
-                    supersedes: i.superseded_epochs().iter().map(id).filter(|x| x != de).collect(),
+                    supersedes: i.superseding().map(id).filter(|x| x != de).collect(),
                     established: i.established.map(|_| Provenance::Derived),
                     secret: ds.clone(),
                     reading: i.reading.clone(),
                     order: Some(o.order(e)).filter(|&x| x != de.n()),
+                    foreign: i.foreign,
                     ..EpochInfo::default()
                 };
                 a.role_mut(r).map.insert(*de, info);
@@ -819,6 +845,7 @@ impl ActorEpochs {
             self.role_mut(r).floors = None;
             for i in self.role_mut(r).map.values_mut() {
                 i.established = i.established.filter(|p| *p == Provenance::Fixed);
+                i.foreign = false;
             }
         }
         self
@@ -1016,6 +1043,37 @@ mod tests {
         y.set_reading_secret(ep(2, 0), Secret32::from_bytes([2; 32]), Unchecked { author: Tid::from_bytes([1; 15]), commit: cid(1) });
         y.establish(&none);
         assert!(y.is_established(&ep(2, 0)));
+    }
+
+    // spec/crypto.md §4 (Foreign): a foreign epoch supersedes nothing (what it lists stays
+    // current), stays current itself until a rotation that is not foreign lists it, is never the
+    // newest, and a derived epoch of it supersedes nothing either. What its commit lists is
+    // unchanged (`superseded_by`: what a commit giving it wraps under).
+    #[test]
+    fn foreign_supersedes_nothing() {
+        let mut r = RoleEpochs::default();
+        let (e1, e2, e3) = (ep(1, 1), ep(2, 2), ep(3, 3));
+        r.set_rotation(e1, cid(1), BTreeSet::new());
+        r.set_rotation(e2, cid(2), set(&[e1]));
+        for e in [e1, e2] {
+            r.set_secret(e, Secret32::from_bytes([e.n() as u8; 32]));
+            r.set_history(e, [names(&[], None)].into(), [], None);
+        }
+        r.establish(&AllHeld);
+        assert_eq!(r.current(), vec![e2]);
+        r.set_foreign(&e2);
+        assert_eq!(r.current(), vec![e1, e2], "e2 lists e1, superseding nothing");
+        assert!(!r.superseded(&e1) && r.unsuperseded().contains(&e1));
+        assert_eq!((r.newest(), r.newest_held().map(|x| x.0)), (Some(e1), Some(e1)), "never the newest");
+        assert_eq!(r.superseded_by([&e2]), Some(set(&[e1])), "its commit's list stands");
+        r.set_rotation(e3, cid(3), set(&[e1, e2]));
+        r.establish(&AllHeld);
+        assert_eq!(r.current(), vec![e3], "a rotation that is not foreign supersedes it");
+        let mut a = ActorEpochs { read: r, ..Default::default() };
+        a.read.set_foreign(&e3);
+        assert_eq!(a.read.current(), vec![e1, e2, e3]);
+        let d = ActorEpochs::derived(&a, &Tid::from_bytes([9; 15]));
+        assert_eq!(d.read.current().len(), 3, "derived from foreign epochs: they supersede nothing");
     }
 
     // spec/crypto.md §4 (Established): headroom, e's n at most 2^62: an epoch past 2^62 is established only beside an established

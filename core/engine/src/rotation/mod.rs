@@ -48,7 +48,8 @@ pub enum Walk {
 
 /// The roles of `a` that `who` (its node thing, or a link key it signs as) may not encrypt under
 /// (spec/crypto.md §4, encrypting under), or log under (`walk`): those whose newest held
-/// current epoch is blocked (`blocked_epoch`, with every departure from `a` this node knows). A
+/// current epoch is blocked (`blocked_epoch`, with every departure from `a` this node knows), or
+/// whose every held current epoch is foreign (blocked by the box that makes it so). A
 /// memo (`Core::blocked_roles`): a cascade asks it of every actor it passes, each walk the length
 /// of the boxes below it, so asked afresh a chain of n actors costs n² keysets walked per
 /// rotation.
@@ -61,7 +62,13 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, walk: Walk) -> Resu
         let deps = departures(tx, a)?;
         let mut out = BTreeSet::new();
         for r in ROLES {
-            let Some((e, _)) = epochs.role(r).newest_held() else { continue };
+            let re = epochs.role(r);
+            let Some((e, _)) = re.newest_held() else {
+                if re.current().iter().any(|e| re.is_foreign(e) && re.secret(e).is_some()) {
+                    out.insert(r);
+                }
+                continue;
+            };
             if blocked_epoch(tx, who, a, r, &e, &deps, walk)? {
                 out.insert(r);
             }
@@ -344,7 +351,11 @@ fn rotation_due_now(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTree
         // it, and the rotators boxed at it judge it. A rotation due only for current epochs whose
         // secret this node lacks (so judged, or orphaned: no re-sealer) is made where its new
         // epoch reaches a rotator (`boxes_rotator`)
-        let current: Vec<(osis_crypto::Epoch, Option<bool>)> = epochs.role(r).current().into_iter().map(|e| (e, epochs.role(r).secret(&e).map(|_| !osis_keys::uncovered(&epochs, r, &e, &deps, &held).is_empty()))).collect();
+        // a foreign epoch makes none of these due (spec/crypto.md §4 Holder actors, Foreign: it
+        // rests on what this node's side does not apply; blocked by its own box, nobody here
+        // encrypts under it): else each side of a fork on a holder actor rotates for the other's
+        // epoch in turn, for good (ForkRot `FR_m_now`)
+        let current: Vec<(osis_crypto::Epoch, Option<bool>)> = epochs.role(r).current().into_iter().filter(|e| !epochs.role(r).is_foreign(e)).map(|e| (e, epochs.role(r).secret(&e).map(|_| !osis_keys::uncovered(&epochs, r, &e, &deps, &held).is_empty()))).collect();
         let mut unread = false;
         for (e, uncovered_held) in current {
             due = due || members::keyless_at(tx, a, r, &e)?.is_some() || members::box_blocked(tx, a, r, &e)?.is_some();
@@ -1453,3 +1464,5 @@ mod tests_reseal;
 mod tests_planted;
 #[cfg(test)]
 mod tests_stranded;
+#[cfg(test)]
+mod tests_foreign;

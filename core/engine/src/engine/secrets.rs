@@ -108,6 +108,7 @@ impl Core {
         self.adopt_derived(tid, &mut e);
         e.establish(&self.names_held(tid));
         crate::rotation::floors::set(self, tid, &mut e);
+        crate::rotation::members::set_foreign(self, tid, &mut e);
         Some(e)
     }
 

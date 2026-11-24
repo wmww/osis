@@ -143,44 +143,95 @@ pub(crate) fn grant_keyless(core: &mut Core, target: &Tid, holder: &Tid) -> bool
     osis_keys::key_access(gs).contains(&(*target, *holder))
 }
 
-/// The held keysets of role `r` of actor `m` (spec/crypto.md §4): the valid ones from `keysets`,
-/// and `k`, when it is none of those, if held invalid.
+/// The held keysets of role `r` of actor `m` (spec/crypto.md §4): the valid ones from `keysets`
+/// (a foreign one among them: its list keeps what it lists stale, Foreign), and `k`, when it is
+/// none of those, if held invalid.
 pub(super) fn keysets_of(tx: &mut Tx<'_>, m: &Tid, r: Role, k: Option<&Epoch>) -> Result<Keysets> {
     let mut out = Keysets::default();
     for (_, e, x) in tx.core.keysets_of(m).filter(|x| x.0 == r) {
         out.valid.insert(e, x.lists.clone());
     }
     if let Some(k) = k.filter(|k| !out.valid.contains_key(k))
-        && !invalid_writers(tx, m, r, k)?.is_empty()
+        && tx.core.keyset_invalid(m, r, k)
     {
         out.invalid.insert(*k);
     }
     Ok(out)
 }
 
-/// The invalid commits whose `keys.0` body of `m` writes `k` as its keyset of `r`: none valid
-/// (`keysets_of` asks only then), so `k` is held invalid when there is any (spec/crypto.md §4,
-/// Held keyset); they are a stale box's causes (Left out). Only a box naming a keyset not held
-/// valid asks, so this scans `m`'s keyset-writing commits and reads the bodies of the invalid
-/// ones only.
-fn invalid_writers(tx: &mut Tx<'_>, m: &Tid, r: Role, k: &Epoch) -> Result<BTreeSet<CommitId>> {
-    let ids: Vec<osis_base::CommitId> = tx.core.ix.keyset_parts.get(m).into_iter().flatten().copied().collect();
-    let mut out = BTreeSet::new();
-    for id in ids {
-        let Some(meta) = tx.core.ix.commits.get(&id).cloned() else { continue };
-        let Some(ai) = meta.view.aspect(m, "keys.0") else { continue };
-        if meta.valid_at(ai) {
-            continue;
+/// The invalid commits whose `keys.0` body of `m` writes `k` as its keyset of `r`, where `k` is
+/// held invalid (`Core::keyset_invalid`): a stale box's causes (Left out).
+fn invalid_writers(core: &Core, m: &Tid, r: Role, k: &Epoch) -> BTreeSet<CommitId> {
+    match core.keyset_invalid(m, r, k) {
+        true => core.ix.keysets_invalid.get(&(*m, r, *k)).cloned().unwrap_or_default(),
+        false => BTreeSet::new(),
+    }
+}
+
+/// Foreign keysets (spec/crypto.md §4 Holder actors, Foreign): a held valid keyset k of role r of
+/// thing x is foreign when its own box records (`SealedAt::own`: written by a commit writing
+/// k's keyset) name a keyset held invalid or foreign here. So k is foreign when the own records,
+/// followed through held valid keysets, reach one held invalid. One `Foreign` judges any number
+/// of keysets, each (thing, role, keyset) walked once: one found to reach nothing invalid is
+/// remembered so (`clean`).
+///
+/// Invariant: a foreign epoch rests on a write the node's side does not apply (one side per
+/// party, notes/disputes.md Rotations under a fork), so it supersedes nothing here and makes no
+/// rotation due here (`RoleEpochs::set_foreign`, `rotation_due`); it is blocked here by the very
+/// box that makes it foreign (a box naming a keyset held invalid is stale, `box_blocked`; one
+/// naming a foreign keyset is blocked through the box walk at that keyset's own such box,
+/// `blocked_epoch`), so nobody here encrypts under it. To what holds a role on x, a foreign
+/// keyset is any held valid keyset: its list keeps what it lists stale, so a party removed below
+/// a knowing keyset made foreign by an honest race is kept out above it
+/// (`a_box_naming_an_invalid_keyset_is_recorded_with_its_rotation_spec_crypto_4`). Who writes the inputs: a box record
+/// is written by the writer of `x`'s rotation commit (a party on the other side of a fork on a
+/// holder actor among them); a keyset is held invalid by this node's own walk (a removed party's
+/// forgery, the other side's rotations, a keyset planted at some nodes only). None of them can
+/// make an epoch the node itself made, or any epoch boxing only keysets valid here, foreign; a
+/// foreign epoch of another's only stops superseding, so what it listed stays current here and is
+/// judged by the ordinary rules (an uncovered departure there is due as ever).
+#[derive(Default)]
+pub(crate) struct Foreign {
+    clean: BTreeSet<(Tid, Role, Epoch)>,
+}
+
+impl Foreign {
+    /// Whether held valid keyset `k` of role `r` of `x` is foreign here (false where it is not
+    /// held valid).
+    pub(crate) fn is(&mut self, core: &Core, x: &Tid, r: Role, k: &Epoch) -> bool {
+        if self.clean.contains(&(*x, r, *k)) || core.keyset(x, r, k).is_none() {
+            return false;
         }
-        let mut recs = meta.dropped(ai).map(|d| d.keysets.clone()).unwrap_or_default();
-        if let Some(d) = crate::apply::held_part(tx, &id, ai)? {
-            recs.extend(crate::apply::keys::keysets_of(&meta.header, ai, std::slice::from_ref(d.fragment())));
+        let mut seen = BTreeSet::from([(*x, r, *k)]);
+        let mut todo = vec![(*x, *k)];
+        while let Some((y, j)) = todo.pop() {
+            let Some(at) = core.ix.sealed.get(&(y, r, j)) else { continue };
+            for (h, js) in &at.own {
+                for i in js {
+                    if core.keyset_invalid(h, r, i) {
+                        return true;
+                    }
+                    if !self.clean.contains(&(*h, r, *i)) && core.keyset(h, r, i).is_some() && seen.insert((*h, r, *i)) {
+                        todo.push((*h, *i));
+                    }
+                }
+            }
         }
-        if recs.iter().any(|x| x.role == r && x.epoch == *k) {
-            out.insert(id);
+        self.clean.extend(seen);
+        false
+    }
+}
+
+/// Marks the foreign epochs of actor `a` in `view`, its epochs as this node holds them
+/// (`RoleEpochs::set_foreign`): those whose held valid keyset is foreign (`Foreign`).
+pub(crate) fn set_foreign(core: &Core, a: &Tid, view: &mut osis_keys::ActorEpochs) {
+    let mut foreign = Foreign::default();
+    for r in ROLES {
+        let found: Vec<Epoch> = view.role(r).epochs().map(|(e, _)| *e).filter(|e| foreign.is(core, a, r, e)).collect();
+        for e in found {
+            view.role_mut(r).set_foreign(&e);
         }
     }
-    Ok(out)
 }
 
 /// The holders of `a` for keys a box of role `r` to which goes past their key access
@@ -502,7 +553,7 @@ pub(crate) fn box_blocked(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Resul
                 causes.extend(keyset_commit(tx.core, &m, r, j));
             }
             if held.invalid.contains(&k) {
-                causes.extend(invalid_writers(tx, &m, r, &k)?);
+                causes.extend(invalid_writers(tx.core, &m, r, &k));
             }
             if tainted.contains(&k) {
                 causes.extend(keyless_causes(tx.core, &m, r));

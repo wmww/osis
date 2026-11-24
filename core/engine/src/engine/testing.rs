@@ -687,6 +687,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("boxes_to", &*ix.boxes_to),
         ("epoch_intro", &*ix.epoch_intro),
         ("keysets", &*ix.keysets),
+        ("keysets_invalid", &*ix.keysets_invalid),
         ("independent", &*ix.independent),
         ("destroyed", &*ix.destroyed),
         ("keyset_parts", &*ix.keyset_parts),

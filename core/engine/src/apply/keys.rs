@@ -90,22 +90,46 @@ impl KeysBody {
                 Some(KeysetRec { role: *role, epoch, lists, kem, names: ks.names, left_out, demotions })
             })
             .collect();
-        KeysBody { write, recs, sealed: sealed_recs(body) }
+        // per role, the keyset the body writes and the commits that wrote it (a delta's: its own
+        // commit; a snapshot's: by its stamps)
+        let written: std::collections::BTreeMap<Role, (osis_crypto::Epoch, std::collections::BTreeSet<CommitId>)> =
+            write.keysets.iter().filter_map(|(role, ks)| Some((*role, (osis_keys::aspects::from_schema(&ks.epoch).ok()?, commits_of(field(body, osis_keys::aspects::keyset_field(*role))?))))).collect();
+        KeysBody { write, recs, sealed: sealed_recs(body, &written) }
     }
 }
 
+/// The commits whose writes `f` holds live (commit-form sources).
+fn commits_of(f: &Fragment) -> std::collections::BTreeSet<CommitId> {
+    f.live_writes()
+        .into_iter()
+        .filter_map(|(d, _)| match d.src.kind() {
+            osis_crdt::SourceKind::Commit(c) => Some(*c),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The box records a `keys.0` body puts (a delta's puts, a snapshot's live entries;
-/// spec/crypto.md §4, Stale), each naming the keysets its box names.
-fn sealed_recs(body: &Fragment) -> Vec<SealedRec> {
+/// spec/crypto.md §4, Stale), each naming the keysets its box names, and whether it is its
+/// epoch's own (`SealedRec::own`): written by a commit that wrote the keyset of that epoch the body
+/// writes (`written`, per role).
+fn sealed_recs(body: &Fragment, written: &std::collections::BTreeMap<Role, (osis_crypto::Epoch, std::collections::BTreeSet<CommitId>)>) -> Vec<SealedRec> {
     let Some(m) = map(field(body, crate::flows::SEALED)) else { return Vec::new() };
     let set = Type::Set(Box::new(Type::Named("epoch".into(), Vec::new())));
     let mut out: Vec<SealedRec> = m
         .entries()
-        .filter_map(|(_, _, k, f)| {
+        .filter_map(|(dot, _, k, f)| {
             let k = BoxKey::from_value(&typed(k?, "box_key")?).ok()?;
-            let v = typed_read(osis_schema::core_schema(), &f?.read()?, &set).ok()?;
+            let f = f?;
+            let v = typed_read(osis_schema::core_schema(), &f.read()?, &set).ok()?;
             let ks = std::collections::BTreeSet::<ct::Epoch>::from_value(&v).ok()?;
-            Some(SealedRec { role: k.role, epoch: osis_keys::aspects::from_schema(&k.epoch).ok()?, holder: k.holder.0, keysets: ks.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect() })
+            let epoch = osis_keys::aspects::from_schema(&k.epoch).ok()?;
+            let mut by = commits_of(f);
+            if let osis_crdt::SourceKind::Commit(c) = dot.src.kind() {
+                by.insert(*c);
+            }
+            let own = written.get(&k.role).is_some_and(|(e, cs)| *e == epoch && !cs.is_disjoint(&by));
+            Some(SealedRec { role: k.role, epoch, holder: k.holder.0, keysets: ks.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect(), own })
         })
         .collect();
     out.sort();
@@ -209,9 +233,25 @@ pub(crate) fn note_sealed(core: &mut Core, id: &CommitId, actor: &Tid, recs: &[S
         let mut at = core.ix.sealed.get(&key).cloned().unwrap_or_default();
         let before = at.clone();
         at.keysets.entry(x.holder).or_default().extend(x.keysets.iter().copied());
+        if x.own {
+            at.own.entry(x.holder).or_default().extend(x.keysets.iter().copied());
+        }
         at.by.insert(*id);
         if at != before {
             core.ix.sealed.insert(key, at);
+            core.touch();
+        }
+    }
+}
+
+/// Notes the keysets an invalid `keys.0` body of `actor` (commit `id`) writes
+/// (`Indexes::keysets_invalid`).
+fn note_invalid(core: &mut Core, id: &CommitId, actor: &Tid, keysets: &[KeysetRec]) {
+    for k in keysets {
+        let key = (*actor, k.role, k.epoch);
+        let mut at = core.ix.keysets_invalid.get(&key).cloned().unwrap_or_default();
+        if at.insert(*id) {
+            core.ix.keysets_invalid.insert(key, at);
             core.touch();
         }
     }
@@ -235,6 +275,10 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
         for (r, e) in sealed {
             tx.core.ix.sealed.remove(&(*a, r, e));
         }
+        let invalid: Vec<(Role, osis_crypto::Epoch)> = tx.core.keysets_invalid_noted(a).map(|x| (x.0, x.1)).collect();
+        for (r, e) in invalid {
+            tx.core.ix.keysets_invalid.remove(&(*a, r, e));
+        }
     }
     let ak = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
     for a in actors {
@@ -243,6 +287,12 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
             let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
             let Some(ai) = m.aspect(a, &ak) else { continue };
             if !m.valid_at(ai) {
+                if let Some(d) = m.dropped(ai) {
+                    note_invalid(tx.core, &id, a, &d.keysets);
+                }
+                if let Some(d) = super::held_part(tx, &id, ai)? {
+                    note_invalid(tx.core, &id, a, &KeysBody::of(d.fragment()).recs);
+                }
                 continue;
             }
             if let Some(d) = m.dropped(ai) {
@@ -482,12 +532,12 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &su
     note_keyset_parts(tx, h, id, parts)?;
     let mut out = Vec::new();
     for (i, (ai, _)) in parts.all().iter().enumerate() {
-        if let Some(a) = h.aspects.get(*ai)
-            && valid.get(*ai).copied().unwrap_or(false)
-            && let Some(k) = parts.keys(i)
-        {
+        let (Some(a), Some(k)) = (h.aspects.get(*ai), parts.keys(i)) else { continue };
+        if valid.get(*ai).copied().unwrap_or(false) {
             note_keysets(tx.core, h, id, &a.tid, &k.recs);
             note_sealed(tx.core, id, &a.tid, &k.sealed);
+        } else {
+            note_invalid(tx.core, id, &a.tid, &k.recs);
         }
     }
     if h.kind != Kind::Role {

@@ -1,6 +1,6 @@
 ---- MODULE ForkRot ----
-\* Rotations under a permanent fork (issues/rotation-fork-left-out-pingpong.md;
-\* spec/crypto.md \S 4; notes/disputes.md). Thing A, holder actor M of A,
+\* Rotations under a permanent fork (spec/crypto.md \S 4; notes/disputes.md).
+\* Thing A, holder actor M of A,
 \* read role. Two sides p, q: at the start each side's admin removed the
 \* other's, each node trusts its own removal for good (forks are permanent),
 \* and each side rotates A and M by its own rules. ForkM: each side holds the
