@@ -1,115 +1,45 @@
 # Test code that can go: duplicates, vacuous tests, copied helpers
-> Summary: A read of the tests under core/ (not run; osis-sync's came later): medium- and low-confidence candidates for deletion or merging, each with what covers it, and some forty helper families copied between test files. The gain is less code to compile, read and keep, not time (issues/test-time.md has the time). Lists per file below, each with why it is safe and how sure the reader was.
+> Summary: Candidates for deletion or merging from a read of the tests under core/ (osis-sync's not read), each with what covers it, and helper families copied between test files. The gain is less code to compile, read and keep, not time (issues/test-time.md has the time).
 > Priority: low
 > Tags: tests
 
-How to use: every entry left needs both tests read side by side before it goes (line numbers drift: find tests by name). `tools/spec_map.py` counts the `§` citations in the comment above a test or in the file's `//!` header, so a merged test takes the deleted one's citation with it.
+Every entry needs both tests read side by side before it goes. `tools/spec_map.py` counts the `§` citations above a test or in its file's `//!` header, so a merged test takes the deleted one's citation with it. Format: test | action | why safe | confidence.
 
-## Candidates
-Format: `file:line test | action | why safe | confidence`.
+## Vacuous or covered elsewhere
+- engine `apply/tests_paged.rs first_diff_names_the_entry` | delete | tests a test helper's failure message | medium
+- base `hash.rs blake3_known_answer` | delete | only the blake3 crate; vectors pin outputs | medium
+- base `time.rs manual_clock` | delete | `ts_layout` keeps crdt §2.2 cited | medium
+- base `chain.rs record_link_of_each_record` | delete | `each_end` and `depth_limit` walk every link kind | medium
+- base `chunker.rs empty_and_tiny`, `page_closes_at_or_above_max` | delete | covered by `bounds`, `pages_match_rule` | medium
+- base `tests/cbor.rs prefix`, `random_bytes` | delete | covered by `item_prefix_is_decoded_extent`, `mutation`, fuzz `cbor_decode` | medium
+- base `tests/cbor.rs known_encodings` | shrink to cases `cbor/values.vec` lacks | medium
+- crypto `rng.rs deterministic` | delete | only rand_chacha's seeding | medium (keep `unpad_rejections`: the only citer of wire §5 unpad)
+- blob `auth.rs stamp_binds_wrap` | delete or one flip | `entry_signatures` covers the binding | medium
+- keys `epoch.rs ordering_keys_match_folds` | delete or shrink | refactor scaffolding; the rule is in `current_and_newest` | medium
+- osis `api.rs what_public_signatures_show_can_be_named_api_design` | drop its runtime field-read asserts, keep the compile-time guards | medium
+- engine `rotation/tests_departs.rs`: its diagnostic baseline test | delete | low
 
-### Category 1: useless or vacuous
-
-**engine `it`**
-- `parts.rs:554 history_plays_past_a_no_op_write` | delete | tests only the `play` harness of a deleted differential (a seed 9350074 prefix) | medium-high
-
-**engine, perm**
-- `apply/tests_paged.rs first_diff_names_the_entry` | delete | tests a test helper's failure message | medium
-
-**base**
-- `hash.rs blake3_known_answer` | delete | only the blake3 crate; vectors (`kdf_purposes`, `commit_headers`) pin outputs | medium
-- `time.rs manual_clock` | delete | `ts_layout` keeps crdt §2.2 cited | medium
-- `chain.rs record_link_of_each_record` | delete | `each_end` and `depth_limit` walk every link kind | medium
-- `chunker.rs empty_and_tiny`, `page_closes_at_or_above_max` | delete | covered by `bounds`, `pages_match_rule` | medium
-- `tests/cbor.rs prefix` | delete | covered by `item_prefix_is_decoded_extent`, `mutation` | medium
-- `tests/cbor.rs random_bytes` | delete | covered by `mutation` and fuzz `cbor_decode` | medium
-- `tests/cbor.rs known_encodings` | shrink to cases `cbor/values.vec` lacks | medium
-
-**crypto**
-- Keep `unpad_rejections`: it is the only citer of the "wire §5 (unpad)" anchor.
-- `rng.rs deterministic` | delete | only rand_chacha's seeding | medium
-
-**others**
-- blob `auth.rs stamp_binds_wrap` | delete or one flip | Ed25519/BLAKE3 behaviour; `entry_signatures` covers the binding | medium
-- keys `epoch.rs ordering_keys_match_folds` | delete or shrink | refactor scaffolding comparing against replaced folds; the rule is in `current_and_newest` | medium
-- osis `api.rs what_public_signatures_show_can_be_named_api_design` | drop its runtime field-read asserts | keep the compile-time guards | medium
-
-### Category 2: consolidation
-
-**engine `it` `validity.rs`**
-- `:335` | delete | covered by `:3225` | medium
-- `:300` | delete | covered by `:3251`, `:227`, `:269`, `:746` | medium
-- `:1719, :1756, :1934, :1961, :2021` (reader-snapshot `*_changes_nothing` group) | one table | first check that no case targets a pre-validity code path | medium
-
-**engine `it` `flows.rs`**
-- `:439` | merge into `:454` | same `lost_setup` world | medium-high
-- `:2212` + `:2070` | table over `locked_out` 1/2 | medium
-
-**engine `it`, near-duplicates (all confirmed)**
-- `write.rs:591` + `:673` | one paged-text script | medium
-
-**engine `it`, other files**
-- `waits.rs:439` | fold into `:617` | medium
-- `waits.rs:325` | delete | medium-low
-- `waits.rs:293` + `parts::part_missing_pages_waits_alone` | table | medium
-- `edits.rs:109` | delete | `:577` shuffles over 10 seeds | medium-low
-- `edits.rs:494` | delete | low
-- `listing.rs:422 purge_by_author_any_order` (18 s) | keep the by × who table, run named orders only | medium
-
-**osis**
-- `api.rs commit_place_of_any_time_api_design` + `commit_and_place_text_forms_api_design` | merge | medium
-
-**engine**
-- `apply/keys.rs:1196` | merge into `genuine_grant_applies_after_flood` | medium
-- `apply/tests_addenda.rs:99` | merge into `:191` | move the "§5.2 (Addenda, rule 2)" anchor comment with it | medium-high
-- `apply/tests_validity.rs:287` | merge into `:328` | medium-high
-- `rotation/tests.rs:1223` | merge into `:1188` | medium
-- `rotation/tests_departs.rs:164` | delete | a diagnostic baseline | low
-
-**perm**
-
-**held-model**
-- `props.rs:201, :225, :280` | share one reference per seed | medium
-- `spec_fetch.rs:171` | merge into the `settled_reads_like_creation_first` loop | low-medium
-
-**leaf crates and sim**
-- store `pager.rs row_padding_classes` | merge into `row_lengths_show_only_the_class` (bring its independent oracle) | medium
+## Merge
+- osis `api.rs commit_place_of_any_time_api_design` + `commit_and_place_text_forms_api_design` | medium
+- store `pager.rs row_padding_classes` into `row_lengths_show_only_the_class` (bring its independent oracle) | medium
 - transport `p2p.rs peer_*_connects` | one table | medium
-- transport `quic.rs` + `mem.rs`/`manage.rs` | one shared conformance suite, like store's `memory_backend_suite` | medium
-- sim `peers.rs world_*` (4 tests) | one World wiring test | low-medium
+- transport `quic.rs` + `mem.rs`/`manage.rs` | one conformance suite, like store's `memory_backend_suite` | medium
+- sim `peers.rs world_*` | one World wiring test | low-medium
 - blob `step.rs claim_key_per_step` | one seed | low
+- keys `props.rs departures_and_current_holders` | maybe delete: a keys-level copy of engine `rotation::tests_property`, its unique part the `snapshot_keyed` / `unvouched` check | low
 
-### Category 3: cross-crate duplication
-- keys `props.rs departures_and_current_holders` | maybe delete | a keys-level copy of engine `rotation::tests_property`; its unique part is the `snapshot_keyed` / `unvouched` check | low
-
-Kept on purpose: perm scenarios (seed-named minimal reproducers; the properties don't reliably hit them), engine rotation tests (model-case and churn reproducers), `tests_paged` and `engine::pages` (store internals the upper layers cannot see).
-
-### Category 4: code that could shrink
-Helpers are listed in (c). Per-test items:
-- engine `apply/keys.rs:714 spread`: quadratic; replace with `sync_all` or deliver only missing commits | medium
-- engine `tests_addenda.rs:150` inlines `forge_addendum` | high
-
-### Category 5: regressions a property now covers
-- crdt `tests_life.rs:59 expiry_laws`, `:65 unmerge` (+ `seq_` twins) | fold their unique checks into `crdt_equals_model`, then delete | low-medium
-- held-model `spec_thing_history.rs:161`, `:188` plus ~50 lines of test-only src (`Eager`, `Body`, `history`, `replaced_at`) | delete | the `ev_*` twins run the same properties on the real `evaluate` | medium-high
-- osis `text.rs:230` | delete | `text_edit_random_against_reference` checks single-merge cases exactly | medium
-
-
+## Regressions a property now covers
+- crdt `tests_life.rs` `expiry_laws`, `unmerge` (+ `seq_` twins) | fold unique checks into `crdt_equals_model`, delete | low-medium
+- held-model `spec_thing_history.rs` tests on test-only src (`Eager`, `Body`, `history`, `replaced_at` in `thing_history.rs`) | delete | the `ev_*` twins run the same properties on the real `evaluate` | medium-high
+- osis `text.rs`: single-merge cases | delete | `text_edit_random_against_reference` checks them exactly | medium
 
 ## Helpers to add or unify
-
 | helper | replaces | where |
 |---|---|---|
-| `Engine::hand_secrets` (`HandSecrets`, built) for the remaining sites | 2 engine `osis_commit::Secrets` impls of their own (no engine holds their account at the build), and those outside the engine | also bench, commit verify, vectors |
-| `common::forge(...)` commit builder | ~17 hand-built `CommitBuilder` sites | engine `it` validity 9, parts 6, receive 1, flows 1 |
-| `recv_all(&n, t)`; `arrive(..)`; `assert_eq!(check(..), None)` | 27, ~16 and 23 sites | perm scenarios/queries/content; incremental |
-| crdt `testutil::{via_snapshot, joined, node}`; `Pager::run_until_loaded` | ~13, 4 and ~100 sites; 9 loops | crdt test files |
+| `Engine::hand_secrets` (`HandSecrets`, built) | remaining `osis_commit::Secrets` impls of their own | engine, bench, commit verify, vectors |
+| `common::forge(...)` commit builder | ~17 hand-built `CommitBuilder` sites | engine `it` validity, parts, receive, flows |
+| `recv_all(&n, t)`; `arrive(..)`; `assert_eq!(check(..), None)` | dozens of sites | perm scenarios/queries/content |
+| crdt `testutil::{via_snapshot, joined, node}`; `Pager::run_until_loaded` | ~100 sites and loops | crdt test files |
 | one `samples()` | 2 copies | schema `core_types.rs` vs vectors `subjects/schema.rs` |
-| one forger of a commit "as received" with the thing's real delete keys and a path whose edges are held | made-up delete keys in about six helpers (a key check fails every test using them) and hostile commits along paths nobody granted (a rule change in `apply` reached nine such tests, read one by one) | engine and sync test helpers |
-| one builder of crdt `Commits` tables | nested `l(vec![...])` literals in about a dozen crdt test files: a wire change is a regex sweep | crdt tests |
-
-## Not covered
-- **Bodies only skimmed** (names and comments only): engine `it` order's scripted bodies, scale, finalize, sessions, crash; osis port, runtime, listing, watch, commits, ephemeral, tracking, undo; engine most rotation files, undo, retention/mod.rs, sync_ids; perm scale and robust bodies; held-model most `spec_*` bodies; keys `established`/`names`, store `nodelog`/`record`, roles-model addenda/epochs/forget/edges/trust bodies.
-- **Not read**: osis-sync's tests (written after this read).
-- **Not done**: the ephemeral random harnesses; whether the judgment vectors' replay (`judgment::vectors`) repeats `check()`; whether the crdt Slots mode reaches a deleted embedded character.
-- **Doc follow-ups if the removals land**: notes/crdt.md "Beside it" list; notes/engine-validity.md (names `unmerge_rejoin_and_bootstrap_spec_4_6`).
+| one forger of a commit "as received" with the thing's real delete keys and a path whose edges are held | made-up delete keys in about six helpers; hostile commits along paths nobody granted | engine and sync test helpers |
+| one builder of crdt `Commits` tables | nested `l(vec![...])` literals in about a dozen crdt test files | crdt tests |

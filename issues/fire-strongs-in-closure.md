@@ -1,9 +1,7 @@
-# Fire strongs are closure edges in code, not in spec
-> Summary: spec/data-model.md §8 says a reference in a fire adds nothing to a closure, but the engine's closure reads every strong row of the reference index (`units::strongs_from`, `strong_to`), and a durable signal's rows are its held valid fires' references: a strong in a held fire holds its target. Decide which is right and make the other match.
+# A strong in a held fire holds its target whatever the setting
+> Summary: Decided (Tess; notes/stubs.md rule 4): a fire is held history and follows the one rule for references in history, under the thing's setting (`history_holds_targets`). Neither side matches: spec/data-model.md §8 still says a reference in a fire adds nothing to a closure, and the engine's closure holds every held valid fire's strong targets whatever the flag.
 > Priority: low
-> Tags: engine, data-model
+> Tags: engine, data-model, spec
 
-- `refs::note` indexes a held valid fire's references in the same `node/refs from`/`to` rows as a state's; `units::strongs_from` filters by kind only, not by signal. `retention::needed` counts them too (spec/commits.md §5 What a held thing needs does say "held fires included").
-- Either drop signal rows from the closure's edges (a filter in `strongs_from` and `strong_to`, plus a test), or state in the spec that a held fire's strong holds its target while the fire is held (a fire is history from its own `ts`, so this is spec/data-model.md §8 Held history without the flag). The second fits "one mechanism" better but makes every fire's strong pin its target for the fire's keep bound, whatever the setting's flag.
-
-Decided (Tess; notes/stubs.md rule 4): a fire is held history and follows the one rule for references in it, under the thing's setting; the spec's exclusion of signals goes, and the engine's hold whatever the flag is the bug.
+- Spec: drop the signal exclusion from spec/data-model.md §8 (What counts, Held history), so a held fire's strong counts as any held body's under `history_holds_targets`.
+- Engine: `refs::note` indexes a held valid fire's references in the same `node/refs from`/`to` rows as a state's, and `units::strongs_from`/`strong_to` read them whatever the flag; they should count only where the setting has the flag, as `refs::kept` does for other history. A test: a strong in a held fire holds its target with the flag and not without.
