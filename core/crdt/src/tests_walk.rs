@@ -15,12 +15,17 @@ use crdt_model::stamp::Source as MSource;
 use osis_base::{ChunkParams, Value};
 use std::collections::BTreeMap;
 
+/// A stored page: its first dot, the next page's, its content.
+type Row = (Option<Dot>, Option<Dot>, Fragment);
+
 /// A state kept as a node keeps one (notes/engine-paged.md): its collections at `paths` as pages
 /// cut at `cuts` (each page's first dot past the first page), the rest as the skeleton.
 pub(crate) struct Kept {
     pub(crate) whole: Fragment,
     pub(crate) paths: Paths,
     cuts: BTreeMap<Vec<Step>, Vec<Dot>>,
+    /// Each collection's pages, cut once (`rows`).
+    rows: BTreeMap<Vec<Step>, Vec<Row>>,
     /// Pages served.
     pub(crate) served: usize,
 }
@@ -39,7 +44,7 @@ impl Kept {
             cuts.insert(p.clone(), dots.into_iter().skip(1).filter(|_| r.chance(cut, 8)).collect());
             paths.insert(&p);
         }
-        Kept { whole, paths, cuts, served: 0 }
+        Kept { whole, paths, cuts, rows: BTreeMap::new(), served: 0 }
     }
 
     /// Kept at a page every `per` elements.
@@ -50,7 +55,7 @@ impl Kept {
             cuts.insert(p.clone(), c.elem_dots(None, None).into_iter().step_by(per.max(1)).skip(1).collect());
             paths.insert(&p);
         }
-        Kept { whole, paths, cuts, served: 0 }
+        Kept { whole, paths, cuts, rows: BTreeMap::new(), served: 0 }
     }
 
     fn below(&self, p: &[Step]) -> Paths {
@@ -58,7 +63,15 @@ impl Kept {
     }
 
     /// The pages of the collection at `p`, as stored: runs of its elements reduced below.
-    fn rows(&self, p: &[Step]) -> Vec<(Option<Dot>, Option<Dot>, Fragment)> {
+    fn rows(&mut self, p: &[Step]) -> &[Row] {
+        if !self.rows.contains_key(p) {
+            let rows = self.cut(p);
+            self.rows.insert(p.to_vec(), rows);
+        }
+        &self.rows[p]
+    }
+
+    fn cut(&self, p: &[Step]) -> Vec<Row> {
         let Some(c) = self.whole.at_steps(p) else { return Vec::new() };
         let cuts = self.cuts.get(p).cloned().unwrap_or_default();
         let firsts: Vec<Option<Dot>> = std::iter::once(None).chain(cuts.iter().cloned().map(Some)).collect();
@@ -103,7 +116,7 @@ impl PageWalk for Kept {
         Ok(self.rows(path).len())
     }
     fn page(&mut self, path: &[Step], i: usize) -> Result<StoredPage, Error> {
-        let (lo, hi, frag) = self.rows(path).into_iter().nth(i).ok_or(Error::Mismatch("no such page"))?;
+        let (lo, hi, frag) = self.rows(path).get(i).cloned().ok_or(Error::Mismatch("no such page"))?;
         self.served += 1;
         Ok(StoredPage { lo, hi, frag })
     }
@@ -111,7 +124,7 @@ impl PageWalk for Kept {
         Ok(Kept::keyed(self, path))
     }
     fn page_of(&mut self, path: &[Step], d: &Dot) -> Result<StoredPage, Error> {
-        let (lo, hi, frag) = self.rows(path).into_iter().rfind(|(lo, _, _)| lo.as_ref().is_none_or(|lo| lo <= d)).ok_or(Error::Mismatch("no such page"))?;
+        let (lo, hi, frag) = self.rows(path).iter().rfind(|(lo, _, _)| lo.as_ref().is_none_or(|lo| lo <= d)).cloned().ok_or(Error::Mismatch("no such page"))?;
         self.served += 1;
         Ok(StoredPage { lo, hi, frag })
     }
@@ -238,21 +251,22 @@ fn states(seed: u64) -> Vec<Fragment> {
 
 /// §8: a state encoded a page at a time without the writes gone writes the bytes and pages of the
 /// whole state with those writes removed (or both refuse), whatever collections are kept as pages
-/// and where they are cut, nested or not.
+/// and where they are cut, nested or not. A seed runner, so a property.
 #[test]
-fn paged_snapshot_encodes_as_whole_spec_8() {
-    paged_cases(0..24);
+#[ignore = "property"]
+fn paged_snapshot_encodes_as_whole_plain_spec_8() {
+    paged_cases("tests_walk::paged_snapshot_encodes_as_whole_plain_spec_8", 0..24);
 }
 
-/// `paged_snapshot_encodes_as_whole_spec_8` over more seeds.
+/// `paged_snapshot_encodes_as_whole_plain_spec_8` over more seeds.
 #[test]
 #[ignore = "property"]
 fn paged_snapshot_encodes_as_whole_large_spec_8() {
-    paged_cases(0..600);
+    paged_cases("tests_walk::paged_snapshot_encodes_as_whole_large_spec_8", 0..600);
 }
 
-fn paged_cases(seeds: std::ops::Range<u64>) {
-    let out = crate::testutil::crdt_seeds("tests_walk::paged_snapshot_encodes_as_whole_spec_8", seeds, |seed| {
+fn paged_cases(name: &str, seeds: std::ops::Range<u64>) {
+    let out = crate::testutil::crdt_seeds(name, seeds, |seed| {
         let mut r = crate::testutil::fixed(seed ^ 0x5eed);
         let mut n = [0usize; 4];
         for st in states(seed) {
