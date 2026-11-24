@@ -10,7 +10,10 @@
 # TLC_WORKERS (default 1); TLC_KEEP_LOGS=<dir> copies each TLC log there.
 # Downloads tla2tools.jar into ~/.cache/tla/ if missing. Exits non-zero on a
 # TLC error or a result other than the expected one (a listed fail is a
-# negative control or an open finding: it must fail).
+# negative control or an open finding: it must fail). `fail:<Name>` must fail
+# on that invariant or action property (TLC's "Invariant <Name> is violated",
+# "Action property <Name> ... is violated"); `fail:temporal` on a temporal
+# property (TLC names none).
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -115,11 +118,11 @@ instances=(
   "withdrawn rotation Withdrawn W_regrant_live.cfg fail" # an explicit re-grant of M unlocks it safely but nothing makes one
   "withdrawn rotation Withdrawn W_joiners.cfg pass"     # later holders only, M left out by names: safe and live for them
   "leftout rotation LeftOut LO_inv.cfg pass"       # a left-out record counts while its cause stands (spec/crypto.md §4 Left out)
-  "leftout rotation LeftOut LO_inv_old.cfg fail"   # negative control: a record counting whatever its cause keeps M out once the cause is void
-  "leftout rotation LeftOut LO_ign_old.cfg fail"   # ... with M rotated only where no recorded keyset is current: a rotator judging by order never re-keys
-  "leftout rotation LeftOut LO_nocarry.cfg fail"   # negative control: causes not carried, a co-writer re-seals a keyset made before the cause
-  "leftout rotation LeftOut LO_nofact.cfg fail"    # negative control: no record, a co-writer undoes the leave-out (churn)
-  "leftout rotation LeftOut LO_nodue.cfg fail"     # negative control: no rotation of M for a counting record
+  "leftout rotation LeftOut LO_inv_old.cfg fail:Live"   # negative control: a record counting whatever its cause keeps M out once the cause is void
+  "leftout rotation LeftOut LO_ign_old.cfg fail:Live"   # ... with M rotated only where no recorded keyset is current: a rotator judging by order never re-keys
+  "leftout rotation LeftOut LO_nocarry.cfg fail:NoLeak"   # negative control: causes not carried, a co-writer re-seals a keyset made before the cause
+  "leftout rotation LeftOut LO_nofact.cfg fail:NoUndo"    # negative control: no record, a co-writer undoes the leave-out (churn)
+  "leftout rotation LeftOut LO_nodue.cfg fail:Live"     # negative control: no rotation of M for a counting record
   "planted rotation Planted P_leaveout.cfg pass"    # a secrets.0 snapshot leaves out records at epochs its writer has not verified (spec/crypto.md §4)
   "planted rotation Planted P_wait.cfg fail"        # negative control: waiting for every keyed epoch stops compaction for good
   "planted rotation Planted P_all.cfg fail"         # negative control: carrying everything bases a planted epoch
@@ -292,6 +295,13 @@ for r in "${runs[@]}"; do
   if grep -q 'No error has been found' "$log"; then got=pass
   elif grep -qE 'is violated|were violated' "$log"; then got=fail
   else got=error; fi
+  # a named fail: the violation must be that property's
+  if [ "$got" = fail ] && [ "${expect#fail:}" != "$expect" ]; then
+    want=${expect#fail:}
+    if [ "$want" = temporal ]; then pat='Temporal properties were violated'
+    else pat="(Invariant|Action property) $want( of next-state relation)? is violated"; fi
+    grep -qE "$pat" "$log" && got=$expect
+  fi
   if [ "$got" = error ] || { [ "$expect" != any ] && [ "$got" != "$expect" ]; }; then
     verdict=FAILED; failed=1
   else verdict=ok; fi

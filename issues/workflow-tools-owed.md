@@ -20,10 +20,9 @@
 7. **cpuprof by caller and inlined frame**: `cpuprof_report.py` filters by one frame and symbolizes with `--no-inlines`, so inlined walks fold into their callers; splitting a cost by caller (`--callers FN`, `--under FN`) or by innermost source line (`llvm-symbolizer --inlines`) took private scripts.
 8. **Comment-only manifest edits select the whole gate**: gate_paths.py and test_select.py treat any root `Cargo.toml` or `.cargo/` change as build configuration (every crate plus the unification check, about 2000 CPU-s), even for a comment. Ignoring a diff whose changed lines are TOML comments or blank, in both, would fix it.
 9. **A `rate:` line in tools/known_failures.txt is never flagged stale** (KNOWN-BUT-PASSED skips it): replay each `rate:` line's REPRO at the gate.
-10. **run.sh negative controls**: a TLA instance expected to fail passes whatever it violates; a `fail:<Invariant>` expectation checked against TLC's `Invariant <name> is violated` line would pin it.
-11. **code_refs does not check `source:` strings**: engine judgment scenarios cite roles-model test names as strings, so deleting a model test leaves a dangling citation.
-12. **Generator census and a no-room knob**: which of a model's generators write a shape took a temporary panic in `World::put`; the sync harness has no knob holding pushes back, so a test cannot tell an at-once lost-access drop from release's pass wait.
-13. **`osis_blob::verify_stamp` returns `Ok(false)` for a good stamp** (the bool says "role entry"): read once took it as "bad" and re-encrypted every body it should have relayed. An enum (`Stamp::{Role, Entry}`) would make the misreading impossible.
-14. **policy reports a removed test env var as a free-form line** (`core/base/testenv-known.txt`), not by file:line like its other findings: easy to miss in a long run.
+10. **code_refs does not check `source:` strings**: engine judgment scenarios cite roles-model test names as strings, so deleting a model test leaves a dangling citation.
+11. **Generator census and a no-room knob**: which of a model's generators write a shape took a temporary panic in `World::put`; the sync harness has no knob holding pushes back, so a test cannot tell an at-once lost-access drop from release's pass wait.
+12. **`osis_blob::verify_stamp` returns `Ok(false)` for a good stamp** (the bool says "role entry"): read once took it as "bad" and re-encrypted every body it should have relayed. An enum (`Stamp::{Role, Entry}`) would make the misreading impossible.
+13. **policy reports a removed test env var as a free-form line** (`core/base/testenv-known.txt`), not by file:line like its other findings: easy to miss in a long run.
 
 Seed-dependent fixtures (a fixture seed taken from an env var): issues/fixture-seed-luck.md.
