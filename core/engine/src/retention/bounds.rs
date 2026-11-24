@@ -269,7 +269,7 @@ fn dating_deaths(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize, tid: &Tid
 }
 
 /// How a held valid part is held, which decides the writes its body gives: as a leftover
-/// (`Meta::stripped`), and bare (`Meta::bare`).
+/// (`Meta::stripped`), and with its own writes gone (`Meta::own_gone`).
 pub(crate) type Form = (bool, bool);
 
 /// The form of part `(tid, ak)` of `c` when held and valid (a body the held writes note).
