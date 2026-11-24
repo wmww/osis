@@ -381,6 +381,30 @@ fn small_joins_follow_cached_placement_spec_6() {
     assert!(big <= 4 * small, "follow work {small} at 30 runs, {big} at 300");
 }
 
+/// §6.1, `seq_lin`: a commit inserting a char and moving it (alone, or in a range with held
+/// chars; forward or back), as a text session's edit then move writes, joins by following the
+/// cached placement: no whole pass, and the placement is a whole pass's.
+#[test]
+fn new_element_moved_in_its_delta_follows_spec_6_1() {
+    let mut a = Replica::new(1);
+    for k in 0..3u64 {
+        a.commit(k + 1, &[op(Op::Insert { at: 0, items: vec![s("abcdefghij")] })], &text_view());
+    }
+    for (i, mv) in [Op::Move { at: 7, len: 1, to: 20 }, Op::Move { at: 5, len: 4, to: 20 }, Op::Move { at: 7, len: 1, to: 2 }].into_iter().enumerate() {
+        let mut b = a.fork(2 + i as u8);
+        let (d, _, _) = b.commit(10, &[op(Op::Insert { at: 7, items: vec![s("e")] }), op(mv)], &text_view()).unwrap();
+        let mut st = a.state.clone();
+        let _ = read_str(&st);
+        let _ = crate::seq_lin::probe();
+        st.join(d);
+        let Fragment::Seq(q) = &st else { panic!() };
+        let _ = q.lin();
+        assert_eq!(crate::seq_lin::probe().1, 0, "move {i}: a whole pass");
+        crate::testutil::check_lin(&st);
+        assert_eq!(read_str(&st), read_str(&b.state));
+    }
+}
+
 /// §7 Read: a text op at a position holding only a string register writes into the text slot the
 /// register embeds (a slot not held adds nothing to the embedding), indexing what the position
 /// reads.

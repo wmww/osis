@@ -9,7 +9,6 @@
 
 ## Failing on main
 Found by random seeds, each with its issue and a line in tools/known_failures.txt. They run beside the primary work, not before it; each starts with a hand-written minimal reproducer (notes/principles.md, Never pin a seed):
-- A cold seq edit then move loses its placement (issues/seq-cold-edit-move-placement.md).
 - A left-out record outlives an invalidated cause: a holder actor stays out of G for good (issues/rotation-holder-lacks-box.md, security; design question).
 - held-model's P4-held generator gap (issues/held-model-p4-held-wide.md).
 - The custody model and differential (issues/custody-differential-failures.md) go with the account machinery: leave them.

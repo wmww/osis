@@ -13,7 +13,8 @@
 //! past the anchor's children whose sibling keys beat its own, with their subtrees. It closes no
 //! cycle (nothing anchors at it unless a write waits for its dot, which falls back), so no
 //! demotion changes. A single element whose chosen edge changes (a move) has its subtree cut out
-//! and put in the same way at its new anchor, in write-stamp order. A flag or content write
+//! and put in the same way at its new anchor, in write-stamp order; a new element the delta also
+//! moves goes in at its creation, then moves the same way. A flag or content write
 //! moves nothing; only visibility changes. A write over part of a range record, or a new anchor
 //! inside one, cuts the row where a whole pass cuts the node (`cut_row`).
 //!
@@ -28,7 +29,7 @@
 //! Whole-pass fallbacks (the cache is dropped; one held in part is dropped instead):
 //! - a record that is neither new nor over held elements: a reset, a record partly new, a new
 //!   `Derived` record (it splits records of its base source), a new record of more than one
-//!   element or not a plain creation (one anchored at itself included), a new element anchored
+//!   element or without its creation write (one anchored at itself included), a new element anchored
 //!   at a dot that is no element (a virtual anchor on `END`), position writes on a range record
 //!   (`plan`, `plan_one`, `plan_pieces`);
 //! - a new element some write was waiting for, one anchored at a new element other than the end
@@ -1281,7 +1282,7 @@ impl Lin {
                 }
                 let (stamp, anchor) = de.created.clone()?;
                 // anchored at itself: a cycle of one (§6.2), which the whole pass demotes
-                if stamp.dot != *dot || de.pos.len() != 1 || de.pos.first().is_none_or(|p| !is_creation(p, &(stamp.clone(), anchor.clone()))) || anchor == Anchor::Dot(dot.clone()) {
+                if stamp.dot != *dot || !de.pos.iter().any(|p| is_creation(p, &(stamp.clone(), anchor.clone()))) || anchor == Anchor::Dot(dot.clone()) {
                     return None;
                 }
                 let cut = match &anchor {
@@ -1356,8 +1357,18 @@ impl Lin {
                 Plan::New { stamp, anchor, cut } => {
                     // a write waiting for this dot now gets placed: rebuild
                     let c = (stamp.clone(), anchor.clone());
-                    if r.span != 1 || r.created.as_ref() != Some(&c) || r.pos.len() != 1 || r.pos.first().is_none_or(|p| !is_creation(p, &c)) || self.waiting.contains(&dot) {
-                        return false;
+                    let Some(born) = r.pos.iter().find(|p| is_creation(p, &c)).filter(|_| r.span == 1 && r.created.as_ref() == Some(&c) && !self.waiting.contains(&dot)) else { return false };
+                    // also moved in this delta: placed at its creation, then moved as an element
+                    // gaining the other writes
+                    if r.pos.len() > 1 {
+                        match self.moved(elems, &dot, std::slice::from_ref(born), &r.pos, &mut cuts) {
+                            Some(Some(m)) => {
+                                sibs.sits.insert(dot.clone(), sib_key(born).clone());
+                                moves.push(m);
+                            }
+                            Some(None) => {}
+                            None => return false,
+                        }
                     }
                     let key = match anchor {
                         Anchor::Head => None,
