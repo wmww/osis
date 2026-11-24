@@ -2724,7 +2724,7 @@ fn a_maker_departure_alone_is_recorded_with_its_rotation_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, g], p, start), Vec::<Tid>::new(), "P opens nothing new");
 }
 
-// spec/crypto.md §4 (Left out: a rotation cause stands while held; a false record), model
+// spec/crypto.md §4 (Left out: a rotation cause stands while held, a false record costs a re-key), model
 // `LO_hostile` (`HostileEnds`): A {a0, H writer, M}, M {a0}. H records M's current keyset with
 // A's own rotation as its cause, which stands everywhere for good. a0 then removes H: its
 // removal's rotation of A still leaves M out, copying the record, and one re-key of M ends it;
