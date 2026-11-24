@@ -15,15 +15,6 @@ pub struct Point {
     pub commit: CommitId,
 }
 
-impl Point {
-    /// The start of `ts`: the zero tid and commit ID order it before every write at that `ts`.
-    /// An expiry by `until` takes effect there (spec/permissions.md §3, Retain), and layer 2
-    /// judges a commit there (§5.2, Position).
-    pub fn start(ts: Ts) -> Point {
-        Point { ts, node: Tid::from_bytes([0; 15]), commit: CommitId([0; 32]) }
-    }
-}
-
 /// A `roles.0` edge value (spec/data-model.md §9 `edge`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Edge {
@@ -163,15 +154,6 @@ impl RoleCommit {
 /// A part's identity: part `.1` of commit `.0`, in its holder's numbering (`paths::Commit`).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct WriteId(pub CommitId, pub u32);
-
-impl WriteId {
-    pub fn commit(&self) -> CommitId {
-        self.0
-    }
-}
-
-/// The `roles.0` AK.
-pub const ROLES: &str = "roles.0";
 
 /// The earlier of two optional expiries.
 pub(crate) fn earliest(a: Option<WallMs>, b: Option<WallMs>) -> Option<WallMs> {

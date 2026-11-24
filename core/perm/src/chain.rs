@@ -826,11 +826,6 @@ impl<E: Ord + Copy> Chain<E> {
         !self.contested.is_empty()
     }
 
-    /// The user's choice, if held.
-    pub fn chosen(&self) -> Option<E> {
-        self.chosen
-    }
-
     /// Whether a counting rotation rejects held rotation `r`.
     pub fn rejected(&self, r: &E) -> bool {
         self.rejects.iter().any(|(m, x)| x == r && self.counting.contains(m))

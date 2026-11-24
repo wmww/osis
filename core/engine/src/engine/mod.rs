@@ -428,14 +428,6 @@ impl LazyHeader {
         }
     }
 
-    /// Whether the header has been decoded (tests).
-    pub fn is_decoded(&self) -> bool {
-        match &self.0 {
-            Lazy::Ready(_) => true,
-            Lazy::Stored(got, _) => got.get().is_some(),
-        }
-    }
-
     fn get(&self) -> &Arc<Header> {
         match &self.0 {
             Lazy::Ready(h) => h,

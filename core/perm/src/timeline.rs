@@ -7,10 +7,10 @@
 //! The node gives it the held commits as the walk's input (`HeldSet`), naming what moved since
 //! the last update; any order of updates reads as the walk from scratch over what is held.
 
-use crate::graph::{Class, Edges, EdgesAt, Need, Records, Standing, View, RECORD_EDGE};
+use crate::graph::{Edges, EdgesAt, Need, Records, View, RECORD_EDGE};
 use crate::paths::{self, Key, MemStore, Paths, Status, Store, Way};
 use crate::types::{Edge, EdgeOp, Point, RoleCommit, WriteId};
-use osis_base::format::{PathMarks, MAX_CHAIN_DEPTH};
+use osis_base::format::MAX_CHAIN_DEPTH;
 use osis_base::{CommitId, CreationRecord, RecordLink, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -124,9 +124,6 @@ impl Changed {
     /// went aside (`created`).
     pub fn edges(&self) -> impl Iterator<Item = &(Tid, Tid)> {
         self.walk.edges.keys()
-    }
-    pub fn is_empty(&self) -> bool {
-        *self == Changed::default()
     }
 }
 
@@ -353,11 +350,6 @@ impl<S: Store> Timeline<S> {
         self.paths.disputes().iter().filter_map(|w| self.op_of(w)).collect()
     }
 
-    /// The trusted edge writes the walk does not apply.
-    pub fn void_trusted(&self) -> BTreeSet<WriteId> {
-        self.paths.void_trusted().iter().filter_map(|w| self.op_of(w)).collect()
-    }
-
     /// Notes under the first thing with no held record up each member's chain that `c` is to be
     /// given again when it comes.
     fn await_records(&mut self, c: &paths::Commit) {
@@ -496,11 +488,6 @@ impl<S: Store> Timeline<S> {
     /// or not (`Paths::judge`).
     pub fn judge(&self, h: &paths::Commit, ix: u32) -> Option<paths::Content> {
         self.paths.judge(h, ix)
-    }
-
-    /// A held delta's verdict (`Paths::content`), by (commit, part).
-    pub fn content(&self, id: &WriteId) -> Option<paths::Content> {
-        self.paths.content(id)
     }
 
     /// Whether a held edge write names `t` as its holder.
@@ -661,15 +648,6 @@ impl<S: Store> Timeline<S> {
         f(&view, &view.roles_from(node))
     }
 
-    /// Standing (what it may write of grants, and its effective role) of `node` on `thing`.
-    pub fn standing(&self, node: &Tid, thing: &Tid, at: At) -> Standing {
-        self.with_roles(node, at, |view, best| view.standing(best, thing))
-    }
-
-    pub fn class(&self, node: &Tid, thing: &Tid, at: At) -> Class {
-        self.standing(node, thing, at).class
-    }
-
     /// The highest role at which a path from `node` gives may-grant on `thing` (§2).
     pub fn may_grant(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
         self.with_roles(node, at, |view, best| view.may_grant(best, thing))
@@ -705,13 +683,6 @@ impl<S: Store> Timeline<S> {
         View::at(&edges, Some(ts)).roles_to_expiring(thing, &BTreeSet::new()).0.get(node).copied()
     }
 
-    /// The path from `node` into `thing` giving `need` on the current edges at `ts`
-    /// (`graph::Ways::path`): the things listed, the hops marked direct and whether the last hop
-    /// is a record edge.
-    pub fn path_now(&self, node: &Tid, thing: &Tid, need: Need, ts: Ts) -> Option<(Vec<Tid>, PathMarks, bool)> {
-        self.ways_now(thing, need, ts).0.path(&self.records, node)
-    }
-
     /// Every thing's way into `thing` giving `need` on the current edges at `ts`
     /// (`graph::Ways`), and the earliest `until` the search followed: the answer holds at any
     /// later ts before it, while no edge changes.
@@ -735,12 +706,6 @@ impl<S: Store> Timeline<S> {
             }
         }
         View::new(&self.records, &ever, Some(Ts::ZERO)).roles_from(node)
-    }
-
-    /// Effective roles of `node` on every thing it reaches.
-    pub fn roles_of(&self, node: &Tid, at: At) -> BTreeMap<Tid, Role> {
-        let edges = self.edges_at(at.point);
-        View::at(&edges, at.ts).roles_from(node)
     }
 
     /// `roles_of` over the edges not in `skip`, each named (target, holder).

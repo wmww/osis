@@ -800,7 +800,7 @@ impl Timelines {
     }
 
     /// The path from `node` into `thing` giving `need` on the current edges at `ts`
-    /// (`osis_perm::Timeline::path_now`): the things listed, the hops marked direct, and whether
+    /// (`osis_perm::Timeline::ways_now`): the things listed, the hops marked direct, and whether
     /// its last hop is a record edge.
     pub fn path_now(&self, node: &Tid, thing: &Tid, need: osis_perm::Need, ts: osis_base::Ts) -> Option<(Vec<Tid>, osis_base::format::PathMarks, bool)> {
         // the search reads the edges into everything that reaches `thing`

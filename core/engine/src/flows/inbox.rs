@@ -742,13 +742,6 @@ fn notice_of(v: &Value) -> Option<(osis_base::SyncId, Tid, osis_blob::HolderKeys
     Some((osis_base::SyncId(s.as_slice().try_into().ok()?), *holder, keys))
 }
 
-impl Engine {
-    /// A cursor over the things that enter the node closure from now on.
-    pub fn closure_feed(&self) -> osis_base::memo::Feed<Tid> {
-        self.core.ix.closure.feed()
-    }
-}
-
 /// Whether fire `c` holds its part on signal `ak` held and valid here: only such a fire is taken
 /// (its carried commit, `take_fire`), whatever it carries (spec/permissions.md §5.2 External
 /// fires, spec/sync-inbox.md §5). What was taken while it was valid stands.

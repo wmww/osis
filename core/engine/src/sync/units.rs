@@ -509,11 +509,6 @@ impl Closure {
         self.tree.held.keys_held()
     }
 
-    /// A cursor over the things entering the node closure from now on.
-    pub(crate) fn feed(&self) -> osis_base::memo::Feed<Tid> {
-        self.tree.held.feed()
-    }
-
     /// Whether the sync set's walk reaches `t` (spec/sync-set.md §5 Sourced away): the node
     /// closure through no thing sourced at another node.
     pub(crate) fn synced(&self, t: &Tid) -> bool {

@@ -541,12 +541,6 @@ impl Engine {
         self.actor_reads(&ctx.actor, t)
     }
 
-    /// Whether the independent of sync unit `g`'s thing may read `t` (`reads`).
-    pub fn reads_in(&self, g: &Tid, t: &Tid) -> bool {
-        let actor = self.core.reader_of(g);
-        self.actor_reads(&actor, t)
-    }
-
     fn actor_reads(&self, actor: &Tid, t: &Tid) -> bool {
         self.core.may_read(actor, &self.core.reader_of(t))
     }
@@ -555,7 +549,7 @@ impl Engine {
     /// thing lists its sync IDs carry alone (spec/sync-judgement.md §1: an account root reads as
     /// its account, whichever node judges it): any account root reads what its account reads, so
     /// the lists logged under a sync ID are the same at every node. Never an access, sealing,
-    /// boxing or opening decision: there `reads_in`.
+    /// boxing or opening decision: there `reads`.
     pub(crate) fn cert_reads_in(&self, g: &Tid, t: &Tid) -> bool {
         // counted: tests read how many (read thing, thing) pairs a change judges
         osis_base::costs::count("sync: cert reads judged", 1);

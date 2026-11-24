@@ -493,11 +493,6 @@ impl<S: Store> Paths<S> {
         self.timeline.status(id)
     }
 
-    /// The held edge-class parts of `commit`.
-    pub fn parts_of(&self, commit: &CommitId) -> Vec<WriteId> {
-        self.timeline.parts_of(commit)
-    }
-
     /// Applied part `id`: its edge and what it found there.
     pub fn applied(&self, id: &WriteId) -> Option<((Tid, Tid), Applied)> {
         self.timeline.applied_write(id)
@@ -624,12 +619,6 @@ impl<S: Store> Paths<S> {
         self.facts.purged_copies(&self.timeline, &mut Counts::default())
     }
 
-    /// Whether a request holds a right over the copy of `commit`'s write on `on`'s `aspect` (a
-    /// point query; false where no valid held snapshot shows one).
-    pub fn copy_purged(&self, commit: &CommitId, on: &Tid, aspect: &Ak) -> bool {
-        self.facts.copy_purged(&self.timeline, commit, on, aspect, &mut Counts::default())
-    }
-
     /// The right a held purge request holds (draft §6 Holding a role): a point query along its
     /// path, as a delta's validity.
     pub fn right(&self, id: &WriteId) -> Option<Right> {
@@ -694,11 +683,6 @@ impl<S: Store> Paths<S> {
     /// the record edge's admin, else none.
     pub fn value_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Option<Edge> {
         self.timeline.value_before(holder, target, key)
-    }
-
-    /// The role (holder, target) gives just before `key`, its `until` read at `key`'s `ts`.
-    pub fn role_before(&self, holder: &Tid, target: &Tid, key: &Key) -> Option<Role> {
-        self.timeline.role_before(holder, target, key)
     }
 
     /// The final role of each edge the settled walk set (and each record edge), every `until`

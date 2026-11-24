@@ -10,24 +10,6 @@ use osis_base::{CreationRecord, RecordLink, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// What a thing may write of another's grants (spec/permissions.md §2), ordered: admin above
-/// every may-grant role.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum Class {
-    None,
-    /// It may add holders up to this role (§2 Path's may-grant).
-    MayGrant(Role),
-    /// Admin: every edge write.
-    Edge,
-}
-
-/// A node's standing on a thing: its class and effective role.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Standing {
-    pub class: Class,
-    pub role: Option<Role>,
-}
-
 /// The value of a record edge in force (spec/permissions.md §1): admin, no `until`.
 pub const RECORD_EDGE: Edge = Edge { role: Role::Admin, until: None, may_grant: false, retain: false, floor: None };
 
@@ -162,10 +144,6 @@ impl Edges {
     fn targets(&self, holder: &Tid) -> impl Iterator<Item = &Tid> {
         self.by_holder.get(holder).into_iter().flat_map(|s| s.iter())
     }
-    /// Every written edge.
-    pub fn iter(&self) -> impl Iterator<Item = (&Tid, &Tid, &Edge)> {
-        self.by_target.iter().flat_map(|(t, m)| m.iter().map(move |(h, e)| (h, t, e)))
-    }
 }
 
 /// Edges set over a base edge state: an edge here replaces the base's (`None`: removed).
@@ -272,18 +250,6 @@ impl<'a> EdgesAt<'a> {
         let base = self.base.targets(holder).filter(move |t| over.binary_search_by(|x| x.1.cmp(t)).is_err());
         let record = self.records.mint_admin_of(holder).iter().filter(move |t| !self.written(holder, t));
         base.chain(over.iter().filter_map(|x| x.2.as_ref().map(|_| &x.1))).chain(record)
-    }
-    /// Every edge, record edges in force included (O(things)).
-    pub fn iter(&self) -> impl Iterator<Item = (&Tid, &Tid, &Edge)> {
-        let over = &self.over;
-        let base = self.base.iter().filter(move |(m, t, _)| over.get(m, t).is_none());
-        let mut set: Vec<(&Tid, &Tid, &Edge)> = over.set.iter().filter_map(|x| x.2.as_ref().map(|e| (&x.0, &x.1, e))).collect();
-        set.sort_by_key(|x| (*x.1, *x.0));
-        let record = self.records.links().filter_map(move |(t, o)| match o {
-            RecordLink::Admin(a) if !self.written(a, t) => Some((a, t, &RECORD_EDGE)),
-            _ => None,
-        });
-        base.chain(set).chain(record)
     }
 }
 
@@ -562,12 +528,6 @@ impl<'a> View<'a> {
             }
         });
         top
-    }
-
-    /// Standing of `x` on `n` given `x`'s roles.
-    pub fn standing(&self, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
-        let role = best.get(n).copied();
-        Standing { class: if role == Some(Role::Admin) { Class::Edge } else { self.may_grant(best, n).map_or(Class::None, Class::MayGrant) }, role }
     }
 
     /// Things reachable from `start` (included) by edges of any role and `until`.

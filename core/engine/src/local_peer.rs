@@ -840,11 +840,12 @@ impl LocalPeer {
     }
 
     /// Delivers to `to`, whole, the commits of `from`'s certificates for `t`
-    /// (`Engine::certificates`): what `t`'s sync ID carries beside its bodies (its record chain,
+    /// (`Engine::certificates`): what `t`'s sync ID carries beside its bodies (its evidence,
     /// spec/permissions.md §4). A test handing `to` a commit on `t` by hand sends this first: a
     /// pass end drops what nothing held needs, another account's root D included, so a thing
-    /// under D is judged only with its chain delivered again, as a sync of `t` brings it.
-    pub fn send_chain(&mut self, from: usize, to: usize, t: &Tid) -> Result<()> {
+    /// minted with admin D is judged only with its certificates delivered again, as a sync of `t`
+    /// brings it.
+    pub fn send_certificates(&mut self, from: usize, to: usize, t: &Tid) -> Result<()> {
         let Some(p) = self.peers.get_mut(from) else { return Ok(()) };
         let certs = p.engine.certificates(t)?;
         let ids: BTreeSet<CommitId> = certs.commits.keys().chain(&certs.headers).copied().collect();

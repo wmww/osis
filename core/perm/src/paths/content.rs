@@ -883,25 +883,7 @@ impl<S: Store> Facts<S> {
         matches!(d.class, FactClass::Plain) && self.purged_by(d.on, &d.aspect, d.commit(), d.ts, d.purge_author, d.purge_by, counts)
     }
 
-    /// Whether a request holds a right over the copy of commit `c` on `on`'s `aspect`, `c` held
-    /// there by no delta: shown by a valid held snapshot of `on`'s `aspect`, and named and held a
-    /// right over by the facts every such snapshot states of it.
-    pub(super) fn copy_purged(&self, tl: &Walk, c: &CommitId, on: &Tid, aspect: &Ak, counts: &mut Counts) -> bool {
-        let mut shown = false;
-        let mut stated: Vec<Stated> = vec![];
-        for s in self.carriers(c) {
-            counts.content += 1;
-            let Some(sf) = self.store.get(&s) else { continue };
-            let FactClass::Snapshot { stated: st, .. } = &sf.class else { continue };
-            if sf.on == *on && sf.aspect == *aspect && sf.commit() != *c && self.valid(tl, &sf, counts).is_some() {
-                shown = true;
-                stated.extend(st.get(c));
-            }
-        }
-        shown && self.copy_purged_by(c, on, aspect, &stated, counts)
-    }
-
-    /// `copy_purged` once its valid carriers' statements are read: by every fact stated (one
+    /// Whether copy `c` on (`on`, `aspect`) is purged, its valid carriers' statements read: by every fact stated (one
     /// stating none states nothing; with none stated, only a destruction names it), `c` held there
     /// by no delta.
     fn copy_purged_by(&self, c: &CommitId, on: &Tid, aspect: &Ak, stated: &[Stated], counts: &mut Counts) -> bool {

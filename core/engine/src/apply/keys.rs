@@ -877,7 +877,7 @@ mod tests {
             m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
             let c = lp.peers[0].commit(m).unwrap().unwrap();
             lp.hold(t);
-            lp.send_chain(0, 1, &t).unwrap();
+            lp.send_certificates(0, 1, &t).unwrap();
             (t, c)
         };
         let ((t1, c1), (t2, _)) = (thing(&mut lp), thing(&mut lp));
