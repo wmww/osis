@@ -9,10 +9,10 @@
 
 ## State
 - **Nothing is running.** No agent, no task in flight; the worktrees under `.worktrees/` hold old finished branches.
-- **Main** builds and passes its default tests. Two seeds fail on it unread, each with its issue and rate line: a cold seq edit-then-move (issues/seq-cold-edit-move-placement.md) and a holder with key access lacking a box after rotations (issues/rotation-holder-lacks-box.md, security). The custody failures go with the account machinery.
+- **Main** builds, passes its default tests (3,849, none failing) and clippy, with the sync rewrite and the legacy clean-up in it. Two seeds fail on it unread, each with its issue and rate line: a cold seq edit-then-move (issues/seq-cold-edit-move-placement.md) and a holder with key access lacking a box after rotations (issues/rotation-holder-lacks-box.md, security). The custody failures go with the account machinery.
 - **The sync rewrite is on main**, as it stood on its branch: unreviewed, ungated, no property or sim run on it.
   - Built: a grant belongs to the thing granted (a node's role is by the grants of what it syncs or holds an offer of; a grant from outside arrives as an offer; holders are held for keys from the synced thing up, in engine and sync); a sync ID carries a commit's unit body and one certificate copy per thing outside the unit, read off the one evidence derivation; the delete-key check is on.
-  - It builds and its default tests passed before the rebase onto main, with 22 tests ignored by cause (`rg -n 'sync rewrite: ' core/ libs/`); chat's join by a write link is one of them (fails at the redeem, "no holder answered", cause unknown).
+  - 21 of its tests are ignored by cause (`rg -n 'sync rewrite: ' core/ libs/`); chat's join by a write link is one of them (fails at the redeem, "no holder answered", cause unknown).
   - Its account is notes/sync-rewrite-state.md: what the tree is, the ignores by cause, what is owed, and a list of rulings marked "For review".
 
 ## The route
@@ -28,8 +28,14 @@ One list, in order. It stands in for every other list of what is next (the order
 
 Beside the route: the two failing seeds; one cleanup always, a workflow job about half the time (a tool that lists and runs the rewrite's ignores by name: three sessions wrote it in scratch).
 
+## Old words and concepts
+- **A removed concept's word fails policy** wherever it appears: code, models, spec, notes, issues (tools/policy.py, the dead-words table; each failure says what stands in the word's place). Removing a concept adds its words to that table in the same change.
+- issues/deprecated-terms.md lists what is still in the repo though deprecated, each with what removing it takes, and what is gone. Most of what remains goes with accounts.
+- Old designs the test models still carry, each a design step and no clean-up: the chained sets (issues/models-read-chained-sets.md) and per-thing leaves of a removal's list (issues/models-read-list-leaves.md).
+- A word met in git history or in a brief that the tree does not use is dead until the tree says otherwise: read notes/terms.md, never build on it.
+
 ## Not to build on the way
-- **Nothing that accounts delete.** The account root, its key part, node cards, the signing chain, account epochs, custody and their tests go at step 1: an ignore or failure whose cause sits there is recorded and left (two of the 22 are in a test file on the delete list; the delete-key issue's account-epoch item goes the same way).
+- **Nothing that accounts delete.** The account root, its key part, node cards, the signing chain, account epochs, custody and their tests go at step 1: an ignore or failure whose cause sits there is recorded and left (two of the ignored tests are in a test file on the delete list; the delete-key issue's account-epoch item goes the same way).
 - **No grant list with the holder**, no taken or accepted grant, no fire kept as proof, no path a role commit states for its holders: each was built and removed (notes/holder-access-study.md; why not down from the account).
 - **No fix sized by its label.** Three times a class of failing tests labelled with one cause had three or more; one probe line per failing test (what it holds, which fire or box was refused) sizes a job in a session's first minutes. A cause written in a note says whether it was probed or guessed.
 
@@ -37,7 +43,9 @@ Beside the route: the two failing seeds; one cleanup always, a workflow job abou
 1. **First entry through a holder** (issues/first-entry-through-holder.md): needed before the accounts spec.
 2. **To confirm**: a thing kit, the app or chat makes takes grants from outside by default; one made through the bare API takes none until its admin enables them.
 3. **Convergence clause** (requirements Decentralization): "at the latest once a writer of that data has synced with them" covered the purge divergence; check whether anything else needs it, then drop it?
-4. CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
+4. **An addendum and a removed node's honest delete**: notes/purge-model.md records her taking the fix; the spec (permissions §6) and the model still say an addendum vouches for no purge request. Which stands?
+5. **Requirements wording** (hers to edit): "which opaque sync units each item is in" → "each blob is in"; "an item's expiry" → "a blob's expiry"; "(an invitation, a reader leaving)" → "(a grant from outside, a reader leaving)".
+6. CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
 
 ## Parked
 - `mizzen-snapshot-stream`: page-walking snapshot writer, unbounded memory on forged states; resume only with a per-source cursor (issues/durable-decode-bound.md).
