@@ -1,5 +1,5 @@
 # Test code that can go: duplicates, vacuous tests, copied helpers
-> Summary: What is left of a read of the tests under core/ for duplicates and copied helpers: entries in code other jobs are changing (rotation, keys), the greenfield thing-history tests without an `evaluate` twin, helper families to unify, and osis-sync's tests (not read: the sync rewrite is changing them).
+> Summary: What is left of a read of the tests under core/ for duplicates and copied helpers: entries in code other jobs are changing (rotation, keys, accounts), the greenfield thing-history tests without an `evaluate` twin, helper families to unify, and osis-sync's tests (not read: the sync rewrite is changing them).
 > Priority: low
 > Tags: tests
 
@@ -8,6 +8,7 @@ Every entry needs both tests read side by side before it goes. `tools/spec_map.p
 ## Waiting on other work
 - keys `epoch.rs ordering_keys_match_folds` | delete | a differential against the hand-written folds the ordering keys replaced; the rule is in `current_and_newest` | medium
 - keys `props.rs departures_and_current_holders` | maybe delete: a keys-level copy of engine `rotation::tests_property`, its unique part the `snapshot_keyed` / `unvouched` check | low
+- base `chain.rs record_link_of_each_record` | delete | `each_end` and `depth_limit` walk every link kind; the accounts work rewrote it for key minting | medium
 - engine `rotation/tests_departs.rs`: its diagnostic baseline test | delete | low
 - osis-sync's tests: not read; read them once the sync rewrite has landed.
 
