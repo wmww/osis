@@ -686,7 +686,7 @@ impl RoleEpochs {
 /// The n of the epochs derived from a base epoch at `n` (spec/crypto.md §3): the mint admin's, capped
 /// so that a thing's own chain starts at most at `MAX_FREE_N` and a holder holding no secret of
 /// the mint admin establishes it within headroom, whatever n a writer of the mint admin jumped to. Derived
-/// epochs still order as the mint admin's (`EpochInfo::order`): a re-registrar steps a dependent group's
+/// epochs still order as the mint admin's (`EpochInfo::order`): a re-registrar steps a dependent's
 /// sync IDs on each mint admin rotation, a writer picks the mint admin's newest fork.
 fn derived_n(n: u64) -> u64 {
     n.min(MAX_FREE_N - 1)
@@ -1070,7 +1070,7 @@ mod tests {
     }
 
     // spec/crypto.md §3: derived epochs keep the mint admin's n below the cap, so each mint admin rotation
-    // gives a newer derived epoch (a dependent group's sync IDs are stepped on it, spec/sync-ids.md §6);
+    // gives a newer derived epoch (a dependent's sync IDs are stepped on it, spec/sync-ids.md §6);
     // base epochs past the cap (a writer of the mint admin jumped them) all derive at the cap, so a
     // thing's own chain starts at most at `MAX_FREE_N`; placeholders there stay distinct.
     #[test]

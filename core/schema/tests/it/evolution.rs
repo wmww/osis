@@ -160,5 +160,5 @@ fn value_form_and_codegen_bytes_pinned_spec_data_model_10() {
     let src = include_str!("../example.osis");
     let s = parse("example.osis", src).unwrap();
     let code = generate(&s, "example.osis", src).unwrap().code;
-    assert_eq!((hex(&s.canonical_bytes()).as_str(), hex(code.as_bytes()).as_str()), ("47bec1460a779e0e", "46136966f123aad8"));
+    assert_eq!((hex(&s.canonical_bytes()).as_str(), hex(code.as_bytes()).as_str()), ("e2e6fdb3e7ada42a", "58199fa67db5db9a"));
 }

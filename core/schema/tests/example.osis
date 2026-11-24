@@ -52,7 +52,7 @@ purge_by(writer) aspect note:pinned.0: map<strong, tagged<int>>;
 /// Old titles.
 purge_by(author, admin) aspect note:aliases.0: set<string>;
 
-/// Where each device's cursor is; only admins set it.
+/// Where each node's cursor is; only admins set it.
 expires(30s) ephemeral admin aspect note:cursor+^.0: map<weak, int>;
 
 /// Someone is typing in the note.

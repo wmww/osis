@@ -1,6 +1,6 @@
 //! Core schema: the aspects every osis node understands. Apps mostly use the "Content" and
 //! "Tags" sections and the read-only identity aspects; the rest are records osis itself keeps
-//! (who may do what, keys, syncing, devices), whose exact rules are in the spec section named.
+//! (who may do what, keys, syncing, nodes), whose exact rules are in the spec section named.
 revision 1;
 
 // ---- Identity ----
@@ -58,7 +58,7 @@ aspect tag.0: struct {
 };
 
 // ---- Rights ----
-// Who may read, write or administer a thing. Rights are granted to actors (people, devices,
+// Who may read, write or administer a thing. Rights are granted to things (accounts, nodes,
 // organizations) and pass along chains of grants (spec/permissions.md).
 
 /// Each role includes the ones below it: sync < read < write < admin. Sync holds and serves the
@@ -243,16 +243,16 @@ aspect sync.0: map<blob, sync_entry>;
 /// (spec/sync-set.md §1), each node keeping its own entry. Its readers dial them, for dialing only.
 aspect dial.0: map<blob, list<string>>;
 
-// ---- Devices ----
-// Each device running osis (a node) is itself a thing, with these aspects about it.
+// ---- Nodes ----
+// Each node is itself a thing (its node thing), with these aspects about it.
 
-/// Limits on what the device stores of one thing it keeps unread.
+/// Limits on what the node stores of one thing it keeps unread.
 type thing_caps = struct {
     entries 0: int,
     bytes 1: int,
 };
 
-/// Limits on what peers may make the device store of the sync IDs it keeps unread
+/// Limits on what peers may make the node store of the sync IDs it keeps unread
 /// (spec/sync-ids.md §5); absent: the defaults.
 admin aspect caps^.0: struct {
     /// Tuning settings by name.
@@ -261,7 +261,7 @@ admin aspect caps^.0: struct {
     things 1: map<weak, thing_caps>,
 };
 
-/// A thin client: an app that uses this device's data from elsewhere instead of keeping its own.
+/// A thin client: an app that uses this node's data from elsewhere instead of keeping its own.
 type client = struct {
     /// BLAKE3 of the client's 32-byte secret.
     secret_hash 0: blob,

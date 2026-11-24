@@ -325,7 +325,7 @@ fn a_purge_of_one_part_rewrites_the_blob_everywhere_spec_sync_judgement_2() {
 
 /// Node 0 makes thing t with `value` under purge on replace and writes one commit holding a
 /// marked `value` and a note that stays, then replaces `value`: its cover drops the marked part
-/// and strips it from the commit's blobs. Node 1 is a second device of its account. The world,
+/// and strips it from the commit's blobs. Node 1 is a second node of its account. The world,
 /// t, the two-part commit and the marker; built once per process (`fixture_with`).
 fn replaced_beside_a_kept_part() -> (World, Tid, CommitId, String) {
     let (w, (t, c, marker)) = fixture_with("deletes replaced beside a kept part", build_replaced);
@@ -403,7 +403,7 @@ fn a_purged_or_replaced_part_is_unrecoverable_from_the_sync_store_spec_commits_5
 }
 
 // spec/commits.md §5 (Covered: a part not held that a held valid snapshot covers by its tables
-// drops as covered), spec/sync-judgement.md §2 (Per blob): a new device reading the account
+// drops as covered), spec/sync-judgement.md §2 (Per blob): a new node reading the account
 // after the strip receives the commit without its replaced part and the snapshot covering it;
 // it counts that part covered, not missing, so it reaches quiet with nothing to fetch (the
 // harness checks every must-hold body reached at quiet) and reads both values. Fails if a part a
@@ -416,7 +416,7 @@ fn a_new_reader_of_a_cover_stripped_commit_misses_nothing_spec_commits_5() {
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
     let n = w.pair(0);
     w.run();
-    assert!(w.engine(n).holds_commit(&c), "the new device holds the commit");
+    assert!(w.engine(n).holds_commit(&c), "the new node holds the commit");
     assert!(!w.engine(n).read_facts(&s, &osis_engine::sync::BodyId::unit(c)).unwrap().missing, "no part of it counts missing");
     assert_eq!(w.engine(n).get(&t, &value_ak()).unwrap(), Some(Value::Str("final".into())));
     assert_eq!(w.engine(n).get(&t, &Ak::new("u:n.0").unwrap()).unwrap(), Some(Value::Str("kept".into())));

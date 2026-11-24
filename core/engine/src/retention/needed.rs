@@ -7,8 +7,7 @@
 //! only while needed. Its certificates stay while a thing that needs it is kept: one in the node closure whose
 //! current values hold a strong to it (`refs::to`, ephemeral aspects included) or whose held
 //! history does (`refs::kept`, held fires included; a weak only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it mint admin, one
-//! whose held edge write names it holder (`Held::named_on`), an account root whose account's held
-//! chain names it a device (D bears no edge write), one a held commit acting as it writes on
+//! whose held edge write names it holder (`Held::named_on`), one a held commit acting as it writes on
 //! (`Indexes::by_actor`), one a pending commit it authored or acted
 //! in, or first awaiting its record, writes on (`Indexes::pend_by`),
 //! one in the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a
@@ -231,8 +230,7 @@ pub(crate) enum Root {
 /// Why `x` needs `t` held (the module doc, `needs`).
 #[derive(Clone, Debug)]
 pub(crate) enum Need {
-    /// `t` is named holder on `x` by a held edge write (`Held::named_on`), or on account root `x`
-    /// by its account's chain (a device it names).
+    /// `t` is named holder on `x` by a held edge write (`Held::named_on`).
     Holder,
     /// A pending commit `t` signed, or one awaiting `t`'s record first, writes on `x`.
     Pending(osis_base::CommitId),

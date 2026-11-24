@@ -1,6 +1,6 @@
 //! The kit's view system, as data. Everything a window shows is a tree of views computed from
 //! things (notes/app.md Terms); this schema is what that tree needs to remember between
-//! refreshes, restarts and devices. Read top to bottom it is the architecture:
+//! refreshes, restarts and nodes. Read top to bottom it is the architecture:
 //! a **window** holds where you are and what is half-done; a **collection config** says what a
 //! thing shows as a collection; the account's own choices live on its **home**.
 //! Nothing here is specific to the first-party app: a small app built on kit alone uses all of it.
@@ -38,12 +38,12 @@ aspect ui:mode.0: enum {
     dark 2,
 };
 
-// ---- Windows: per device, where you are ----
-// A window is a thing per device. It is an ordinary thing: its raw view works, and another device
+// ---- Windows: per node, where you are ----
+// A window is a thing per node. It is an ordinary thing: its raw view works, and another node
 // can show it given only its tid. Windows are minted with home as admin and held by its `ui:windows.0`, so
 // they sync with the account but are never among what home holds in `holds.0` (the universe).
 
-/// On home: each device's window (node tid to window thing), held by the strong. A device adds its
+/// On home: each node's window (node tid to window thing), held by the strong. A node adds its
 /// entry the first time it writes window state; reading makes nothing.
 aspect ui:windows.0: map<weak, strong>;
 

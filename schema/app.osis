@@ -12,7 +12,7 @@ revision 1;
 /// because a tid depends on who made it first.
 aspect osis_app:app.0: bool;
 
-/// On home: this account already received the demo data (`--demo`), so a second device
+/// On home: this account already received the demo data (`--demo`), so a second node
 /// or run adds none.
 aspect osis_app:demo.0: bool;
 

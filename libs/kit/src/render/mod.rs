@@ -511,9 +511,9 @@ impl Ui {
         })
     }
 
-    /// The device line, and the last diagnostic if any.
+    /// The node line, and the last diagnostic if any.
     fn show_status(&mut self, rr: &mut RenderRoot) {
-        let s = format!("device {}{}", short(self.data.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default());
+        let s = format!("node {}{}", short(self.data.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default());
         self.status(rr, s);
     }
 

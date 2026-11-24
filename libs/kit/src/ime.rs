@@ -43,7 +43,7 @@ pub enum Tell {
 /// The rule: an input method knows the text changes it made itself, and the changes from key
 /// events it sent or a hardware keyboard typed (both reach the text through the platform's input
 /// flow, which input methods follow); it is told every selection and composing change; any other
-/// change to the text (another device's typing merged in, the app clearing a field after Send)
+/// change to the text (another node's typing merged in, the app clearing a field after Send)
 /// restarts it.
 #[derive(Default)]
 pub struct Sync {

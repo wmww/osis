@@ -1,5 +1,5 @@
 //! Signing identities (spec/permissions.md §1, spec/crypto.md §3): a 32-byte seed that never
-//! leaves the device gives a signing key, and the thing minted with that key is what it signs as:
+//! leaves the node gives a signing key, and the thing minted with that key is what it signs as:
 //! the node thing (its nonce random, its secrets random from its minting, kept in the node's own
 //! store like every secret it holds) or a link key (its nonce and secrets from the link's seed).
 //! Creation records of new things (spec/data-model.md §1).

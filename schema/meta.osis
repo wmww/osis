@@ -91,7 +91,7 @@ type purge_by = enum {
 };
 
 type flag = enum {
-    /// Computed by each device, never written.
+    /// Computed by each node, never written.
     synthetic 0,
     /// Present on every thing.
     guaranteed 1,

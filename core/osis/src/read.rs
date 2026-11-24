@@ -38,7 +38,7 @@ pub struct Stamp {
     /// The commit.
     pub id: CommitId,
     /// Whom it is by: the identity it was written as (the writer's account, or what it acted as).
-    /// Checked only where a part of the commit is valid (`Part::valid`): the device that signed
+    /// Checked only where a part of the commit is valid (`Part::valid`): the node that signed
     /// it wrote through that identity. It says who made this commit, not who first wrote a value
     /// the commit carries (a `CommitKind::Snapshot` is by the snapshot's writer).
     pub author: Tid,

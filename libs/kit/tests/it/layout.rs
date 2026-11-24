@@ -485,7 +485,7 @@ fn a_new_things_title_asks_for_the_keyboard_once() {
     assert_ne!(t, first);
     assert_eq!(*keys.borrow(), vec![true]);
     let typing = s.rr.focused_ime_text().map(|(id, _)| id).unwrap();
-    // another device names it: the merge rebuilds what shows the name
+    // another node names it: the merge rebuilds what shows the name
     name(&s.d, t, "named elsewhere");
     s.ui.wake(&mut s.rr);
     // the screen rebuilt: the rail goes

@@ -487,7 +487,7 @@ impl Reader {
 
     // ---- navigation (per-window state, the window held by the main home)
 
-    /// This device's window, if it has one (the main home's first).
+    /// This node's window, if it has one (the main home's first).
     pub fn window_opt(&self) -> Result<Option<Tid>> {
         Ok(*self.memo(("window_opt", ()), |r, _| Ok(r.on_homes(WINDOWS, r.db.node())?.map(|w| w.0)))?)
     }
@@ -619,7 +619,7 @@ impl Data {
         }
         self.commit(|w| w.at(g, key).set(&v))
     }
-    /// This device's window, made on first use, minted with home as admin and held by home's `ui:windows.0` (so it
+    /// This node's window, made on first use, minted with home as admin and held by home's `ui:windows.0` (so it
     /// syncs, and is not among the things home holds).
     pub fn window(&self) -> Result<Tid> {
         if let Some(w) = self.window_opt()? {

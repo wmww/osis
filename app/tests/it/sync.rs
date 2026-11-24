@@ -578,7 +578,7 @@ fn form_save_after_a_delete() {
     assert!(a.opened().unwrap().is_none());
 }
 
-/// A window is per device: a state write on one device's window does not touch another's open thing.
+/// A window is per node: a state write on one node's window does not touch another's open thing.
 #[test]
 #[ignore = "accounts: pairing"]
 fn windows_do_not_interfere() {

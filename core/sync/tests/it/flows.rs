@@ -68,7 +68,7 @@ fn a_removal_is_logged_before_what_was_written_after_it_spec_permissions_3() {
 
 // spec/sync-inbox.md §1, spec/permissions.md §1: a node paired to an account pairs another
 // (pairing): the third node is on D's roster and joins (`paired`), reading the rotation that
-// added the second by the creation device's card.
+// added the second by the creating node's card.
 #[test]
 #[ignore = "accounts: pairing"]
 fn a_paired_node_pairs_another_spec_sync_inbox_1() {
