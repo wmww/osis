@@ -12,10 +12,6 @@ use crdt_model::ops::{Ty, Writer as MWriter};
 use osis_base::{Tid, Value};
 use proptest::prelude::*;
 
-fn read(f: &Fragment) -> Option<Value> {
-    f.read()
-}
-
 proptest! {
     /// §9: the structural diff equals the model's write for write (same dots, same stamps) and
     /// reaches the value; creation likewise.
@@ -42,7 +38,7 @@ proptest! {
             if let Some(d) = d {
                 s.join(d);
             }
-            prop_assert_eq!(read(&s), Some(v.clone()));
+            prop_assert_eq!(s.read(), Some(v.clone()));
             let mut mw = MWriter::new(crdt_model::stamp::Source::session(9, 0), 1 << 16, 1);
             let mut w = writer(&mw);
             prop_assert_eq!(create(&mut w, &TyView(ty.clone()), &v).unwrap(), frag(&crdt_model::ops::create(&mut mw, &ty, &mv)));
@@ -85,7 +81,7 @@ proptest! {
         if let Some((d, _)) = b.finish() {
             batch_state.join(d);
         }
-        prop_assert_eq!(read(&batch_state), read(&seq_state));
+        prop_assert_eq!(batch_state.read(), seq_state.read());
     }
 
     /// §4.6: undoing a single writer's last commit restores the previous read.
@@ -105,7 +101,7 @@ proptest! {
         let s0 = frag(&ms);
         let d = frag(&md);
         // restores the prior read, a spot absent before absent again (§4.6)
-        let cmp = |s: &Fragment| read(s);
+        let cmp = |s: &Fragment| s.read();
         let s1 = joined(&s0, &d);
         let src = source(&mw.source);
         let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() } };
@@ -141,7 +137,7 @@ proptest! {
         if let Some((d, _)) = b.finish() {
             state.join(d);
         }
-        prop_assert_eq!(read(&state), Some(new));
+        prop_assert_eq!(state.read(), Some(new));
     }
 }
 
@@ -234,7 +230,7 @@ fn nested_register_replace_decodes_spec_5_1() {
         let back = decode_delta(&bytes, &cx, &mut crate::stamp::Interner::new(), None).unwrap();
         assert_eq!(back.fragment, d, "{op:?}");
         let s = joined(&state, &back.fragment);
-        assert_eq!(read(&s), Some(want), "{op:?}");
+        assert_eq!(s.read(), Some(want), "{op:?}");
     }
 }
 
@@ -437,13 +433,13 @@ fn diff_rewrites_value_less_field_spec_9() {
     let mut st = st;
     st.remove_gone(&|d: &crate::stamp::Dot| d.src == first);
     st.join(d);
-    assert_eq!(read(&st), Some(v(2, None)));
+    assert_eq!(st.read(), Some(v(2, None)));
     let mut w3 = Writer::new(ts(3 << 16), node(3), 1);
     let d = diff(&mut w3, Some(&st), &view, &v(2, Some(7))).unwrap().unwrap();
     let Fragment::Struct(s) = &d else { panic!("struct delta") };
     assert_eq!(s.fields.keys().copied().collect::<Vec<_>>(), vec![1]);
     st.join(d);
-    assert_eq!(read(&st), Some(v(2, Some(7))));
+    assert_eq!(st.read(), Some(v(2, Some(7))));
 }
 
 proptest! {
@@ -849,7 +845,7 @@ fn whole_collection_diff_is_linear_spec_9() {
             let d = diff(&mut w, Some(&state), &AnyView, &new).unwrap().unwrap();
             out.push(crate::ops::visited_probe() as u64);
             state.join(d);
-            assert_eq!(read(&state).as_ref(), Some(&new));
+            assert_eq!(state.read().as_ref(), Some(&new));
         }
         out
     };
