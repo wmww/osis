@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, leftout, forkrot, planted, firekey, netstream, netshared, netopen, nethold, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, leftout, forkrot, forkdepth, planted, firekey, netstream, netshared, netopen, nethold, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker, but depth0: 10-20 min); with cfg names: those instances instead
 #   (the larger ones in the module's README, by hand), judged only if listed
@@ -138,6 +138,15 @@ instances=(
   "forkrot rotation ForkRot FR_m_supsonly.cfg fail:Quiet" # negative control: a foreign epoch supersedes nothing but makes a rotation due
   "forkrot rotation ForkRot FR_m_dueonly.cfg fail:Quiet"  # negative control: a foreign epoch makes none due but supersedes
   "forkrot rotation ForkRot FR_m_exclude.cfg fail:Kept"   # negative control: such an epoch not established: no later epoch lists it, its content lost to later holders
+  "forkdepth rotation ForkDepth FD_race.cfg pass"         # foreign at depth (spec/crypto.md §4 Foreign): the honest race, a party removed from U reads no T content its knowing keyset reached the writer of
+  "forkdepth rotation ForkDepth FD_race_u.cfg pass"       # ... with unprompted rotations of U and T
+  "forkdepth rotation ForkDepth FD_fork.cfg pass"         # the fork two levels below T: rotations stop, each side seals U at its own keyset
+  "forkdepth rotation ForkDepth FD_fork_u.cfg pass"       # ... with an unprompted rotation of U per side
+  "forkdepth rotation ForkDepth FD_fork_t.cfg pass"       # ... of T per side
+  "forkdepth rotation ForkDepth FD_race_drop.cfg fail:NoLeak"     # negative control: a foreign keyset held invalid above (its list passes nothing on): the writer seals U at the removed party's keyset
+  "forkdepth rotation ForkDepth FD_fork_builder.cfg fail:Live"    # negative control: a foreign keyset any valid keyset above (anchor, candidate): a side leaves U out of T for good (or the sides rotate in turn)
+  "forkdepth rotation ForkDepth FD_fork_builder_nl.cfg fail:Live" # ... though rotations list no foreign epoch
+  "forkdepth rotation ForkDepth FD_fork_list.cfg fail:Live"       # negative control: no anchor or candidate, but rotations list foreign epochs: the other side's list makes a side's own keyset stale above
   "planted rotation Planted P_leaveout.cfg pass"    # a secrets.0 snapshot leaves out records at epochs its writer has not verified (spec/crypto.md §4)
   "planted rotation Planted P_wait.cfg fail"        # negative control: waiting for every keyed epoch stops compaction for good
   "planted rotation Planted P_all.cfg fail"         # negative control: carrying everything bases a planted epoch
@@ -275,7 +284,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|leftout|forkrot|planted|firekey|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|leftout|forkrot|forkdepth|planted|firekey|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
   exit 2
 fi
 

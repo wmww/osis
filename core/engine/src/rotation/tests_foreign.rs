@@ -137,10 +137,10 @@ fn foreign_epoch_makes_nothing_due_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4 (Foreign: supersedes nothing), model `FR_m_dueonly`: P, holding eQ, rotates A
-// again (eP2, listing eQ). At Q, eP2 is foreign and supersedes nothing: eQ stays current there,
-// Q's newest, and nothing is due; superseding, it would leave Q only foreign epochs to write
-// under, a rotation due at once.
+// spec/crypto.md §4 (Foreign: supersedes nothing), model `FR_m_dueonly`: P, holding eQ (foreign
+// at P), rotates A again (eP2): its keyset lists eQ nowhere, its history box carries it. At Q,
+// eP2 is foreign and supersedes nothing: eQ stays current there, Q's newest, and nothing is due;
+// superseding, it would leave Q only foreign epochs to write under, a rotation due at once.
 #[test]
 fn foreign_rotation_supersedes_nothing_spec_crypto_4() {
     let (mut lp, _, a, _, eq) = concurrent_epochs();
@@ -148,7 +148,8 @@ fn foreign_rotation_supersedes_nothing_spec_crypto_4() {
     rotate_leaving_out(&mut lp, P, a, &[Role::Read].into(), &[]);
     let ep2 = newest_read(&lp, P, a).unwrap();
     let lists = |lp: &LocalPeer, i: usize, e: Epoch| lp.peers[i].engine.core.ix.keysets.get(&(a, Role::Read, e)).map(|k| k.lists.clone()).unwrap_or_default();
-    assert!(lists(&lp, P, ep2).contains(&eq), "eP2 lists eQ");
+    assert!(!lists(&lp, P, ep2).contains(&eq), "eP2's keyset lists no foreign epoch");
+    assert!(!lp.peers[P].engine.epochs(&a).unwrap().read.current().contains(&eq), "its history box carries eQ: superseded at P");
     exchange(&mut lp);
     assert!(is_foreign(&lp, Q, a, ep2));
     assert_eq!(newest_read(&lp, Q, a), Some(eq), "eQ stays Q's newest");
@@ -157,7 +158,8 @@ fn foreign_rotation_supersedes_nothing_spec_crypto_4() {
 
 // spec/crypto.md §4 (Foreign: blocked, current), model `FR_m_exclude` (`Kept`): eP at Q is blocked
 // (nobody there encrypts under it) yet current: a grant there boxes the grantee at it, and Q's
-// next rotation lists it, so its content stays readable to Q's later holders.
+// next rotation's history box carries it (its keyset does not list it: ForkDepth `FD_fork_star`),
+// so its content stays readable to Q's later holders.
 #[test]
 fn foreign_epoch_blocks_and_stays_current_spec_crypto_4() {
     let (mut lp, _, a, ep, _) = concurrent_epochs();
@@ -173,7 +175,11 @@ fn foreign_epoch_blocks_and_stays_current_spec_crypto_4() {
     rotate_leaving_out(&mut lp, Q, a, &[Role::Read].into(), &[]);
     let eq2 = newest_read(&lp, Q, a).unwrap();
     let k = lp.peers[Q].engine.core.ix.keysets.get(&(a, Role::Read, eq2)).unwrap().lists.clone();
-    assert!(k.contains(&ep), "Q's next rotation lists eP: {k:?}");
+    assert!(!k.contains(&ep), "Q's next keyset lists no foreign epoch: {k:?}");
+    let ep_q = lp.peers[Q].engine.epochs(&a).unwrap();
+    let read = &ep_q.read;
+    assert!(read.get(&eq2).is_some_and(|i| i.supersedes.contains(&ep)), "its history box carries eP");
+    assert!(!read.current().contains(&ep), "superseded at Q");
 }
 
 // spec/crypto.md §4 (Foreign; Stale), model `FR_m` (`Quiet`: each shared epoch the other side
@@ -258,6 +264,53 @@ fn fork_two_below_stops_rotating_spec_crypto_4() {
     }
     assert_eq!(out.last(), Some(&0), "{out:?}");
     // settled, each side writes G under an epoch of its own boxing A at its own epoch of A
+    for i in [P, Q] {
+        let eg = newest_read(&lp, i, g).unwrap();
+        let ea = newest_read(&lp, i, a).unwrap();
+        assert!(!is_foreign(&lp, i, g, eg), "peer {i}");
+        assert_eq!(boxed_at(&mut lp, i, g, eg, a), Some(ea), "peer {i}: G boxes A at its newest");
+    }
+}
+
+/// Rounds over `things` (in order) as `fork_two_below_stops_rotating_spec_crypto_4`'s: each of P
+/// and Q rotating what is due and re-sealing, then exchanging, until a round makes nothing or
+/// `max` rounds. The commits of each round.
+fn rounds_over(lp: &mut LocalPeer, things: &[Tid], max: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    while out.len() < max {
+        let mut n = 0;
+        for x in things {
+            for i in [P, Q] {
+                n += lp.peers[i].engine.ensure_rotated(x).unwrap().0.commits.len();
+                n += lp.peers[i].engine.pass_end_rotations(x).unwrap().commits.len();
+                n += lp.peers[i].engine.reseal_after_pass(x).unwrap().commits.len();
+            }
+        }
+        exchange(lp);
+        out.push(n);
+        if n == 0 {
+            break;
+        }
+    }
+    out
+}
+
+// spec/crypto.md §4 (Foreign: an epoch boxing a foreign keyset is foreign; above it, how a foreign
+// keyset counts), model `ForkDepth` (`FD_fork_*`): the fork on M two levels below G, but P
+// rotates A and G first and Q only once it holds them. Q's rotation of A lists P's (current at Q,
+// though foreign there); to G at P that list makes P's own keyset of A stale, so P leaves A out of
+// G and re-keys A, whose list makes Q's stale at Q in turn: the sides would rotate G and A in turn
+// for good. Rotations stop, and each side writes G under an epoch of its own boxing A.
+#[test]
+fn fork_two_below_one_side_first_stops_rotating_spec_crypto_4() {
+    let (mut lp, _m, a, g) = fork_below_g();
+    for x in [a, g] {
+        lp.peers[P].engine.ensure_rotated(&x).unwrap();
+    }
+    assert!(newest_read(&lp, P, g) != newest_read(&lp, Q, g), "P rotated G");
+    exchange(&mut lp);
+    let r = rounds_over(&mut lp, &[a, g], 12);
+    assert_eq!(r.last(), Some(&0), "rotations stop: {r:?}");
     for i in [P, Q] {
         let eg = newest_read(&lp, i, g).unwrap();
         let ea = newest_read(&lp, i, a).unwrap();

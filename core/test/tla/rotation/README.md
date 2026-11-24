@@ -1,10 +1,10 @@
 # Rotation, claim steps, re-seal (TLA+)
 > Summary: TLC model of read-role rotation for one actor and its sync ID at one store (spec/crypto.md §3–§5, spec/sync-ids.md §2/§5, spec/permissions.md §3–§4, spec/commits.md §2): epochs established by names (the removals a rotation's rotator held), frozen coverage (an epoch covers exactly the departures it names), a removal withheld forever from one admin, forced and eager rotation, forks, removal carried in its rotation, grants, re-registration after logging the rotation chain, opens by sync key and claims, claim-set drops, stranded stranded notices (also on a refused claim), re-seal after a complete pass (by inbox and under the sync ID), rotation by inbox to holders without a box at the epoch before, per-node box knowledge, co-reader peers, planted boxes (reading-only secrets). Holder actors are Depth0.tla's (depth-0 sealing, rule 4 for cycles); timed edges and finalizes Finalize.tla's. Written from spec/ alone.
 
-Files: `Rotation.tla` (the model; constants come straight from each `.cfg`), `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings). `Depth0.tla`, `Finalize.tla`, `Cover.tla`, `Lockout.tla`, `Cut.tla`, `Withdrawn.tla`, `LeftOut.tla`, `ForkRot.tla`, `Planted.tla` and `FireKey.tla` are separate models (sections below).
+Files: `Rotation.tla` (the model; constants come straight from each `.cfg`), `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings). `Depth0.tla`, `Finalize.tla`, `Cover.tla`, `Lockout.tla`, `Cut.tla`, `Withdrawn.tla`, `LeftOut.tla`, `ForkRot.tla`, `ForkDepth.tla`, `Planted.tla` and `FireKey.tla` are separate models (sections below).
 
 ## Run
-`../run.sh rotation` (and `depth0`, `lockout`, `cut`, `finalize`, `cover`, `withdrawn`, `leftout`, `forkrot`, `planted`, `firekey`) runs a model's listed instances, each model about a minute or less at one worker on a quiet box; `../run.sh <module> <cfg>...` runs others by name. It fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
+`../run.sh rotation` (and `depth0`, `lockout`, `cut`, `finalize`, `cover`, `withdrawn`, `leftout`, `forkrot`, `forkdepth`, `planted`, `firekey`) runs a model's listed instances, each model about a minute or less at one worker on a quiet box; `../run.sh <module> <cfg>...` runs others by name. It fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
 ```
 java -XX:+UseParallelGC -cp ~/.cache/tla/tla2tools.jar tlc2.TLC -workers 1 \
   -metadir ../../../../target/tlc-states -config MC_grant.cfg Rotation
@@ -193,9 +193,28 @@ notes/disputes.md (Rotations under a fork); spec/crypto.md §4 Foreign. Thing A,
 | `FR_m_dueonly` | foreign epochs make nothing due but supersede | **fails** `Quiet`: the other side's epoch supersedes every usable one, so a rotation is due anyway | 22,492 | 16 s |
 | `FR_m_exclude` | not established | **fails** `Kept`: q never lists p's epoch, whose content q's later holders cannot read | 2,934 | 5 s |
 
-Left-out records add nothing here: a record counts at a keyset held valid, and each side records only its own or pre-fork keysets (`FR_m` and `FR_m_norec` have isomorphic state graphs). The case of a record per rotation of the other side is the same mixed case one level down (M unforked, its holder actor forked): an epoch of A boxing a foreign keyset of M is foreign in turn (engine test `fork_two_below_stops_rotating_spec_crypto_4`; to A a foreign keyset of M is otherwise held valid: notes/holder-actors.md, Foreign keysets). Not modelled: several nodes per side, a node holding none of M's secrets, depth past one holder actor, side switches.
+Left-out records add nothing here: a record counts at a keyset held valid, and each side records only its own or pre-fork keysets (`FR_m` and `FR_m_norec` have isomorphic state graphs). The case of a record per rotation of the other side is the same mixed case one level down (M unforked, its holder actor forked): `ForkDepth.tla`. ForkRot's rotations list foreign epochs (`Kept` through lists); the rule lists none and carries them in the history box, which `ForkDepth` checks (`Kept` through history boxes), with the depth. Not modelled: several nodes per side, a node holding none of M's secrets, depth past one holder actor, side switches.
 
-## Timed grants and finalizes (`Finalize.tla`)
+## 
+
+## Foreign keysets at depth (`ForkDepth.tla`)
+notes/holder-actors.md (Foreign keysets); spec/crypto.md §4 Foreign. T above U above B (U holds read on T, B on U); B fixed, U and T rotate. `Scen` `fork`: B forked for good (each side's keyset of B invalid at the other), p and q admins of U and T (ForkRot's mixed case one level down). `race`: party X removed from U, known to m (U's rotator), w (T's writer, not reading U) learning of it only through U's keysets; B's keyset kn invalidated by a concurrent demotion, held invalid where it arrived (U's keysets made knowing it carry it). `Above`: a foreign keyset of U to T: `drop` (held invalid), `builder` (any valid keyset), `star` (the rule: its list keeps what it lists stale; no anchor, no Seal candidate; a stale keyset Seal gives is blocked). `ListForeign`: rotations list foreign epochs (`TRUE`) or carry them in the history box only (`FALSE`, the rule). `MaxU`/`MaxT` unprompted rotations per rotator; causal delivery. Invariants: `NoLeak` (X opens no content of T written by a writer holding a keyset of U made knowing the removal), `Quiet` (rotations per rotator at most `QU`/`QT`), `Live` (settled, each writer of T writes under an epoch boxing U at keysets its side applies; each rotator of U holds an unblocked epoch), `Kept` (settled, every epoch is current or in the history of a current one, through lists and history boxes). Module `ForkDepth`.
+
+| cfg | setting | result | distinct states | time |
+|---|---|---|---|---|
+| `FD_race` | race, the rule | pass | 887 | 5 s |
+| `FD_race_u` | ... `MaxU` 1, `MaxT` 1, `Q` 5 (m: knowing, unprompted, a re-key per leave-out, the demotion's) | pass | 77,109 | 30 s |
+| `FD_fork` | fork, the rule, `Q` 2 | pass | 143 | 4 s |
+| `FD_fork_u` | ... `MaxU` 1, `Q` 3 | pass | 45,215 | 150 s |
+| `FD_fork_t` | ... `MaxT` 1, `Q` 3 | pass | 1,853 | 5 s |
+| `FD_race_drop` | race, `drop` | **fails** `NoLeak`: km foreign at w, its list passes nothing on, w seals U at the keyset km superseded | 59 | 2 s |
+| `FD_fork_builder` | fork, `builder` | **fails** `Live`: p's T anchors at q's keyset of U, Seal gives it, blocked: U left out of T at p, nothing due (with `Quiet` alone, by hand: **fails** `Quiet`, the sides leave U out and re-key it in turn) | 4,885 | 5 s |
+| `FD_fork_builder_nl` | ... rotations list no foreign epoch | **fails** `Live` alike | 6,625 | 4 s |
+| `FD_fork_list` | fork, `star`, rotations list foreign epochs | **fails** `Live`: q's rotation of U lists p's keyset, stale to T at p; p's T leaves U out, nothing due | 1,999 | 3 s |
+| `FD_race_builder` | by hand: race, `builder` | pass (the fork is what fails it) | 887 | 3 s |
+| `FD_fork_drop` | by hand: fork, `drop` | pass (the race is what fails it) | 45,215 | 60 s |
+
+Engine tests: `rotation::tests_foreign` (`fork_two_below_one_side_first_stops_rotating_spec_crypto_4` is `FD_fork_builder`'s ping-pong), `a_box_naming_an_invalid_keyset_is_recorded_with_its_rotation_spec_crypto_4` (`FD_race_drop`). Not modelled: B's own rotations (ForkRot), records' causes voided, joint boxes' departure rule, several nodes per side, a rotator of U lacking U's secrets.Timed grants and finalizes (`Finalize.tla`)
 notes/timed-ends.md. One group, read role, writers A, B, X (admins), readers D1, D2. Edge writes are entries (spec/crdt.md §5.6): A's `until` writes on D1, D2 and its renewal of D2 (before any finalize) each reset the entry their author held live; a finalize resets the live entry of each ended grant (erase, or keep: an `until` 0 entry beside) and carries a rotation naming the departures its author applied, its own by the departs mark. Any delivery order, commits whole; boxes are global and secrets are the closure over boxes and history boxes. `Rule`: `named` (the rule) or `old` (a name met by its commit alone; the negative control). Invariants: `NoLeak` (content written knowing a departure that stands with every commit held is not readable by the departed reader; every honest writer writes whenever it may), `Settles` (once all is delivered and nobody has a key action left, the honest writers agree on the current epochs and may encrypt, and every holder, a renewed one included, holds each of them).
 
 | cfg | rule, instance | result | states | time |

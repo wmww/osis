@@ -180,10 +180,16 @@ fn invalid_writers(core: &Core, m: &Tid, r: Role, k: &Epoch) -> BTreeSet<CommitI
 /// rotation due here (`RoleEpochs::set_foreign`, `rotation_due`); it is blocked here by the very
 /// box that makes it foreign (a box naming a keyset held invalid is stale, `box_blocked`; one
 /// naming a foreign keyset is blocked through the box walk at that keyset's own such box,
-/// `blocked_epoch`), so nobody here encrypts under it. To what holds a role on x, a foreign
-/// keyset is any held valid keyset: its list keeps what it lists stale, so a party removed below
-/// a knowing keyset made foreign by an honest race is kept out above it
-/// (`a_box_naming_an_invalid_keyset_is_recorded_with_its_rotation_spec_crypto_4`). Who writes the inputs: a box record
+/// `blocked_epoch`), so nobody here encrypts under it; a rotation here carries it in its history
+/// box and lists it nowhere (`osis_keys::rotate_leaving_out`). To what holds a role on x, a
+/// foreign keyset's list keeps what it lists stale, so a party removed below a knowing keyset
+/// made foreign by an honest race is kept out above it
+/// (`a_box_naming_an_invalid_keyset_is_recorded_with_its_rotation_spec_crypto_4`), but it anchors
+/// nothing and is sealed to nowhere (`sealing_at`; a stale keyset Seal then gives is blocked,
+/// `seal_blocked`): counted as any keyset there, or listed by rotations, a fork below x makes
+/// each side's keysets of x stale above x at the other, which leaves x out and re-keys it in
+/// turn for good (ForkDepth `FD_fork_builder`, `FD_fork_star`;
+/// `fork_two_below_one_side_first_stops_rotating_spec_crypto_4`). Who writes the inputs: a box record
 /// is written by the writer of `x`'s rotation commit (a party on the other side of a fork on a
 /// holder actor among them); a keyset is held invalid by this node's own walk (a removed party's
 /// forgery, the other side's rotations, a keyset planted at some nodes only). None of them can
@@ -385,7 +391,10 @@ pub(crate) fn rekey_due(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<bo
         return Ok(false);
     }
     let held = keysets_of(tx, m, r, None)?;
-    let current = |q: &Epoch| held.valid.contains_key(q) && !held.valid.values().any(|l| l.contains(q));
+    // a foreign keyset supersedes nothing (spec/crypto.md §4 Holder actors, Foreign)
+    let mut foreign = Foreign::default();
+    let listing: Vec<&BTreeSet<Epoch>> = held.valid.iter().filter(|(k, _)| !foreign.is(tx.core, m, r, k)).map(|(_, l)| l).collect();
+    let current = |q: &Epoch| held.valid.contains_key(q) && !listing.iter().any(|l| l.contains(q));
     if !out.keys().any(current) {
         return Ok(false);
     }
@@ -432,7 +441,13 @@ fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Resul
     let (mut keysets, mut secrets, mut top) = (BTreeMap::new(), BTreeMap::new(), None);
     for r in ROLES.into_iter().filter(|r| *r <= role) {
         let held = keysets_of(tx, m, r, None)?;
-        let Seal::At(ks) = osis_keys::seal_keyset(&held, &anchors(tx, a, m, r)?, &tainted(tx, m, r)?) else { break };
+        // a foreign keyset anchors nothing and is sealed to nowhere (spec/crypto.md §4 Holder
+        // actors, Foreign): its list keeps what it lists stale all the same
+        let mut foreign = Foreign::default();
+        let foreign: BTreeSet<Epoch> = held.valid.keys().filter(|k| foreign.is(tx.core, m, r, k)).copied().collect();
+        let anchors: BTreeSet<Epoch> = anchors(tx, a, m, r)?.difference(&foreign).copied().collect();
+        let skip: BTreeSet<Epoch> = tainted(tx, m, r)?.union(&foreign).copied().collect();
+        let Seal::At(ks) = osis_keys::seal_keyset(&held, &anchors, &skip) else { break };
         if !seal_blocked(tx, who, a, m, r, &ks, &deps)?.is_empty() {
             break;
         }
@@ -462,9 +477,11 @@ fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Resul
 /// keyset `a` leaves `m` out at (`left_out_at`) is blocked by a box.
 fn seal_blocked(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, r: Role, ks: &BTreeSet<Epoch>, deps: &[osis_keys::Departure]) -> Result<BTreeSet<Epoch>> {
     let out = left_out_at(tx, a, m, r)?;
+    let held = keysets_of(tx, m, r, None)?;
     let mut why = BTreeMap::new();
     for k in ks {
-        if out.contains_key(k) {
+        // stale: Seal gives it only where the keyset listing it is foreign (no candidate)
+        if out.contains_key(k) || osis_keys::stale(k, &held, &BTreeSet::new()) {
             why.insert(*k, super::Block::Box);
         } else if let Some((b, _)) = super::blocking(tx, who, m, r, k, deps, super::Walk::Encrypt)? {
             why.insert(*k, b);

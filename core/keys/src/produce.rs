@@ -217,7 +217,7 @@ fn removals(carried: &BTreeMap<Role, BTreeSet<Epoch>>, held_secrets: &Secrets) -
 /// seen, with no valid rotation commit or snapshot, never count), boxes for every holder holding
 /// the role (mint admin included while its record edge stands), the history box of every
 /// distinct earlier established secret held with `names` (spec/crypto.md §4: the departures from
-/// `actor` the rotator holds), the keyset listing every current and unsuperseded epoch, and the removal of the role's boxes at the epochs whose
+/// `actor` the rotator holds), the keyset listing every current and unsuperseded epoch but foreign ones, and the removal of the role's boxes at the epochs whose
 /// secret is held. No current secret is needed: an epoch the rotator cannot open is superseded
 /// unread, and a holder of its secret adds it to the new epoch's history (`history_adds`).
 /// `held` is the rotator's established view of the actor (a dependent thing's derived epochs for its
@@ -288,8 +288,10 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         let entry = HistoryEntry { earlier: earlier.clone(), names: names.to_value(), floor, roles };
         secrets.history.insert(history_key(r, &epoch), seal_history(&secret, actor, r, &epoch, &entry)?);
         // the keyset lists its current epochs but derived ones (held only where the mint admin's
-        // secret is: superseded through the history box)
-        let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived)).copied().collect();
+        // secret is: superseded through the history box) and foreign ones (spec/crypto.md §4
+        // Holder actors, Foreign: its history box carries them; listed, the other side of a fork
+        // below would find its own keysets stale, ForkDepth `FD_fork_star`)
+        let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived) && !re.is_foreign(e)).copied().collect();
         let mut ks = keyset(&epoch, &secret, &listed, names);
         // a keyset with no cause is never recorded (spec/wire.md §7 Left out: nonempty, a reader
         // takes such a body as bad input); it would count for nothing (spec/crypto.md §4 Left
