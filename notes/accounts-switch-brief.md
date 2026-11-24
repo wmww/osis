@@ -1,0 +1,31 @@
+# Accounts as ordinary things: the builder's brief
+> Summary: Scoping for the sync rewrite's next piece (notes/redesign-plan.md A4), read from branch `mizzen-a2-switch`: what an account becomes, the delete list with sizes, whether a new device then needs no per-holder records (one first-entry gap remains, for Tess), the order of work and the risks. Not started.
+
+## What an account becomes
+- An independent thing A (an account only by the schema's mark; core reads none). Each node acts as its node root R, a thing minted with the node's key (its record's key holds admin on R, write-path K1); R holds a grant on A (admin to pair and remove, else write). A node keeping accounts unlinked uses one member thing and key per account.
+- A node signs as R with its key and states the path `[R, A, …]` (16 B a commit). The key hop is an ordinary grant in `signers.0` (K3-K5). Epochs, the inner signature and the account seed go.
+- Pairing is one ordinary grant of R2 on A (boxing A's secrets to R2); over the pairing connection the pairer hands A's tid, A's sync ID, that grant commit with its evidence and its trust entries for A; the library writes R2's strong to A. Removing a device is the ordinary removal plus A's rotation.
+- A is its own inbox (spec/sync-inbox.md §1's rule for non-account things); the library writes A's `retention^.0` enabling `grant@~0` and `stranded@~0`. The profile is an independent thing with admin A, strongly referenced from A. Home and private things are A's dependents.
+- To settle first: notes/write-path-design.md §5 says home is A; notes/redesign-plan.md A4 says home is a dependent of A.
+
+## Delete list
+- Spec (~25 KB): permissions §5.4 Signing chain, §5.5 Account epochs, §1's account/node/account root/profile/inbox bullets and the Interim key-actor line, §4's Interim lines (signing-chain evidence, the account key part under D, node cards under D), §3's "a thing minted with an account is independent at creation"; crypto §9 and §3/§4 account keysets; wire §4 header fields 14-16 (`epoch`, `rotation`, `reseal`), `inner`, merge signatures, the account signature form, `ThingCert`, `Rotation`, `Reseal` (`flags` moves to 14); sync-set §1's account-root half and §2's account clauses; sync-inbox §1's account inbox; sync-ids §2-§3 account cases; sync-opens §1-§2 own-node dialing by `reach.0` under D and account proofs; data-model `account.0`, `listing.0` (`signers.0` gets built).
+- Code (~3.4k lines): engine `flows/account.rs` (1447), `flows/custody.rs` (272), `flows/lists.rs` (231), `flows/signing.rs` (791), `sync/signing.rs` (61), the accounts half of `sides.rs` (its trust store stays: First received and pairing's trust entries need it); perm `chain.rs` (862), `epochs.rs` (257); keys `account.rs`; commit `thing_list.rs` (commit `lists.rs` is header lists, not account code: stays); header fields 14-16 and `inner`; `account.0` in schema/core.osis; `Engine::inbox_thing`, the node cards under D, `current_keys`, D's `reach.0` dialing; perm's Interim "no key grant" in the walk.
+- Tests and models (~9.7k lines): engine `rotation/tests_custody.rs`, `tests_signing.rs`, `tests_account.rs`, `tests/it/account_commits.rs`; perm `tests/it/epochs.rs`; roles-model `custody.rs`, `epochs.rs`; TLA `rotation/Account.tla` and its configs (re-read TLA `sides/` first: it may still model ordinary forks). `account_root` appears 162 times in 43 files (core, CLI, app), `create_account` 62.
+
+## Does a new device then need no per-holder records?
+- Mostly yes. R2's strong to A plus its box lets the walk enter A; A's sync ID carries A's whole unit, including strong-reached things A's keys open through chains with key access; any node of A holding such a thing logs it there. A's key part sits under A's own sync ID by the general rule. Fixes needed: Own actors become "the node root, and things signed as by keys the node holds"; the node root, which must hold grants and keysets, needs a sync ID (today "local, no sync ID"); R's `keys.0` goes under A's sync ID by the grantee-card rule.
+- **First-entry gap (for Tess)**: a reference is a bare tid and a thing's own sync ID gives no first box (its role commits are wrapped under its own secrets). So reaching T through a holder H (you → H → T, T referenced from something you sync) needs T's sync ID and a first box from H's key part, an offer, or a node that already logged T into a unit you read; "held for keys" starts from a thing already synced, which is circular here. notes/holder-access-study.md says it outright: a node reaching X by a strong with no offer and no node of its holder syncing X holds nothing of X. Candidate fixes: references or the holder's unit carry the target's sync ID and an entry box per reader holder (as link keys have), or a bootstrap-only search from the own actors' key parts down to a held strong's tid (judging nothing).
+
+## Order on the branch (after the delete-key check and deleting suspect repair)
+1. Spec rewrite, with the first-entry decision. 2. Delete the list above; mark broken tests `sync rewrite: accounts`. 3. Keys: `signers.0`, the walk reading the key hop, commits signed as R, minting with a key, the node root independent. 4. Making an account. 5. Pairing. 6. Removing a node (account-membership-design §2's stolen-node steps as tests). 7. `osis` (names kept), CLI, app. 8. Models: roles-model `paths` membership cases, the sync differential and sims with ordinary accounts. 9. Counting: commit bytes; pairing and removal at n and 10n nodes; evidence per unit at n nodes.
+
+## Risks
+- Size: the flag day for every account test and sim world; split it.
+- Things minted under A become dependents (today independent at birth): app and chat things sync only inside A's unit until made independent for sharing; broad behaviour change.
+- The first-entry gap above.
+- Node root: needs a sync ID; its record and key-hop grants become evidence in every unit it writes in (count at n nodes).
+- Sibling dialing loses D's node cards: pull A6's dial aspect forward, or a dial list on A (Interim).
+- Link keys stay a key actor with seed-derived secrets and a static entry: name it as the one special case or redesign it.
+- Connection proofs become proofs of a thing's key plus a claimed path (touches the networking check).
+- Accepted costs: node roots show to every reader; the path adds A's tid to every commit.
