@@ -80,14 +80,15 @@ pub enum Hold {
     /// Its body. `whole`: a plain part whose delta replaces the aspect whole
     /// (`retention::snapshot::replaces`), what stands as an own replace (`Indexes::own_replaces`).
     Body { whole: bool },
-    /// Its leftover (expired, purged, a body carrying a copy of such a value:
-    /// `retention::make_leftover`, `retention::strip_carried`): read from `records::LEFTOVER` as
-    /// the body. Held for the engine, no body for node-sync (`Meta::body_gone`). `valued`: held so
-    /// only for the copies it carries, none of its own writes value-less (a snapshot, which has
-    /// none, always); such a leftover is a body like a whole one for keep bounds, covering and a
-    /// purge naming it (`Meta::bare`; spec/commits.md §5 Dropping a body). `whole` as for `Body`,
-    /// judged on the leftover (which keeps every reset).
-    Leftover { whole: bool, valued: bool },
+    /// Its leftover: the body without the writes gone here (expired, purged: its own, or copies
+    /// it carries; `retention::make_leftover`, `retention::strip_carried`), read from
+    /// `records::LEFTOVER` as the body. Held for the engine, no body for node-sync
+    /// (`Meta::body_gone`). `own_live`: none of its own writes gone (a snapshot, which has none,
+    /// always while unexpired), held so only for the copies it lost; such a leftover is a body
+    /// like a whole one for keep bounds, covering and a purge naming it. Else its own writes are
+    /// gone and it is held for the copies it carries (`Meta::own_gone`; spec/commits.md §5
+    /// Dropping a body). `whole` as for `Body`, judged on the leftover (which keeps every reset).
+    Leftover { whole: bool, own_live: bool },
     /// Every delta of it dropped (as covered, expired or purged), with what it keeps.
     Dropped(Dropped),
     /// None of its deltas held here: a part that may still arrive late, or never, or one dropped
@@ -120,7 +121,7 @@ pub enum DropFor {
     /// While invalid, at the end of the transaction that judged it (`retention::drop_invalid`):
     /// it comes back as missing when it turns valid (`retention::valid_again`).
     Invalid,
-    /// Its thing was destroyed (`retention::destroy`): as `Other`, but a value-less leftover goes too.
+    /// Its thing was destroyed (`retention::destroy`): as `Other`, but an own-gone leftover goes too.
     Destroyed,
 }
 
@@ -251,7 +252,7 @@ impl Hold {
         if let Some(d) = head.dropped.remove(&ai) {
             Hold::Dropped(d)
         } else if head.stripped.contains(&ai) {
-            Hold::Leftover { whole, valued: head.valued.contains(&ai) }
+            Hold::Leftover { whole, own_live: head.own_live.contains(&ai) }
         } else if missing {
             Hold::Missing(Missing::Plain)
         } else {
@@ -780,7 +781,7 @@ indexes! {
     /// Per (actor, holder), a re-seal a stranded report asked for (`sync::stranded`, rows `rs/`):
     /// an event, so no rebuild compares it.
     pub reseal_asks: JMap<(Tid, Tid), crate::sync::stranded::Ask>,
-    /// Deltas whose value-carrying writes are held value-less (expired, purged).
+    /// Deltas whose value-carrying writes are gone (expired, purged).
     pub gone: JMap<(Tid, Ak), Vec<Owned>>,
     /// Independent things whose epochs this node holds.
     pub secrets: JMap<Tid, ActorEpochs>,
@@ -1277,7 +1278,7 @@ pub struct Core {
     /// frontier to and each listing is cut to; a thing list, written inline only, fits the smaller
     /// of it and `CHUNK_THRESHOLD`.
     pub list_bound: usize,
-    /// Value-less lists changed in this transaction, written at its end (`retention::persist_gone`).
+    /// Gone lists changed in this transaction, written at its end (`retention::persist_gone`).
     pub gone_dirty: BTreeSet<(Tid, Ak)>,
     /// Things judged at the end of the transaction for whether a held thing still needs them
     /// (`retention::needed`): a release, `pass_due` at a pass end.
@@ -1671,7 +1672,7 @@ impl Core {
         held.into_iter().flatten().filter_map(move |(_, c)| Some((*c, self.ix.commits.get(c)?.aspect(&t, ak.as_ref()?)?)))
     }
 
-    /// Whether `t` is destroyed: a minting of it was held (`mintings`), and each is held value-less
+    /// Whether `t` is destroyed: a minting of it was held (`mintings`), and each is gone
     /// or dropped by a purge or the destruction (`retention::destroy`). One missing may yet come. A thing never held is unknown, not destroyed.
     pub fn destroyed(&self, t: &Tid) -> bool {
         let mut any = false;
@@ -1681,7 +1682,7 @@ impl Core {
         }) && any
     }
 
-    /// Whether minting `ai` of `c` is held value-less or dropped by a purge or the destruction.
+    /// Whether minting `ai` of `c` is gone or dropped by a purge or the destruction.
     pub(crate) fn minting_gone(&self, c: &CommitId, ai: usize) -> bool {
         let Some(m) = self.ix.commits.get(c) else { return false };
         crate::retention::is_gone(self, c, ai) || m.dropped(ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed))
@@ -2543,8 +2544,8 @@ impl Core {
         }
         self.index_missing(&id, &had, &now);
         self.index_own(&id, &m, true);
-        // a setting held value-less (purged) is no setting (`validity::settings`)
-        let bared: Vec<(Tid, BTreeSet<Ak>)> = m.view.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == osis_commit::retention::RETENTION && self.ix.commits.get(&id).is_some_and(|o| o.bare(*ai) != m.bare(*ai))).map(|(_, a)| (a.tid, crate::apply::validity::enabled(self, &a.tid))).collect();
+        // a setting gone (purged) is no setting (`validity::settings`)
+        let gone_settings: Vec<(Tid, BTreeSet<Ak>)> = m.view.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == osis_commit::retention::RETENTION && self.ix.commits.get(&id).is_some_and(|o| o.own_gone(*ai) != m.own_gone(*ai))).map(|(_, a)| (a.tid, crate::apply::validity::enabled(self, &a.tid))).collect();
         let had = self.ix.commits.get(&id).map(covers_of).unwrap_or_default();
         self.index_covers(&id, &had, &covers_of(&m));
         // a part held or missing invalid (a late part joining, a leftover kept, one reopened)
@@ -2563,7 +2564,7 @@ impl Core {
         self.ix.held.touch_commit(id);
         self.ix.commits.insert(id, m);
         self.addenda_moved(&id, &addenda);
-        for (t, before) in bared {
+        for (t, before) in gone_settings {
             crate::apply::validity::setting_moved(self, &t, Some(before));
         }
         self.update_timelines();
@@ -3883,12 +3884,12 @@ mod tests {
         let mut meta = lp.peers[0].engine.core.ix.commits[&id].clone();
         meta = super::Meta::of(meta.view.clone(), meta.header.clone(), meta.received, meta.origin, None, meta.signed(), vec![true], vec![Hold::Body { whole: true }]);
         // (holds, body gone, leftover, valued, bare, whole, dropped, missing)
-        let answers = |m: &super::Meta| (m.holds(0), m.body_gone(0), m.stripped(0), m.valued(0), m.bare(0), m.whole(0), m.is_dropped(0), m.missing(0));
+        let answers = |m: &super::Meta| (m.holds(0), m.body_gone(0), m.stripped(0), m.own_live(0), m.own_gone(0), m.whole(0), m.is_dropped(0), m.missing(0));
         let cases = [
             (Hold::Body { whole: true }, (true, false, false, false, false, true, false, false)),
             (Hold::Body { whole: false }, (true, false, false, false, false, false, false, false)),
-            (Hold::Leftover { whole: true, valued: true }, (true, true, true, true, false, true, false, false)),
-            (Hold::Leftover { whole: false, valued: false }, (true, true, true, false, true, false, false, false)),
+            (Hold::Leftover { whole: true, own_live: true }, (true, true, true, true, false, true, false, false)),
+            (Hold::Leftover { whole: false, own_live: false }, (true, true, true, false, true, false, false, false)),
             (Hold::Dropped(Dropped::default()), (false, true, false, false, false, false, true, false)),
             (Hold::Missing(Missing::ToFetch), (false, false, false, false, false, false, false, true)),
         ];

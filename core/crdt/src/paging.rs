@@ -172,7 +172,7 @@ impl Fragment {
         }
     }
 
-    /// The greatest `ts` of any stamp inside (resets, `W` and value-less writes included).
+    /// The greatest `ts` of any stamp inside (resets and `W` included).
     pub fn max_ts(&self) -> Option<osis_base::Ts> {
         self.all_max().map(|s| s.ts)
     }

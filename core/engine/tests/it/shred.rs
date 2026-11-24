@@ -182,7 +182,7 @@ fn purged_on_replace_paged_unrecoverable_spec_commits_5() {
 }
 
 // spec/commits.md §6, spec/crdt.md §4.7 (expiry), spec/requirements.md (Scale: O(change)): an
-// expiring entry of a paged map goes value-less in its page (rewritten shredded with its key
+// expiring entry of a paged map goes in its page (rewritten shredded with its key
 // index row), not by rewriting the whole state; no copy of its value survives
 #[test]
 fn expired_entry_paged_unrecoverable_spec_commits_6() {
@@ -507,7 +507,7 @@ fn purge_of_a_commit_in_two_copies_reads_alike_spec_commits_5() {
                 _ => drop(lp.peers[1].receive(&rest.encode(), Vec::new()).unwrap()),
             }
             lp.peers[1].reexamine().unwrap();
-            assert!(lp.peers[1].engine.suspects().is_empty(), "order {order:?} after {g}: held value-less, not dropped");
+            assert!(lp.peers[1].engine.suspects().is_empty(), "order {order:?} after {g}: gone, not dropped");
         }
         let e = &mut lp.peers[1].engine;
         assert!(e.pending().is_empty(), "order {order:?}: {:?}", e.pending());

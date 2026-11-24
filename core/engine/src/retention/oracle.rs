@@ -26,7 +26,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     }
     let part = crate::apply::held_part(tx, s, sai)?;
     let held = crate::apply::held_fragment(tx, c, cai)?;
-    // a body with an expiry neither held nor value-less: not covered, whether or not the
+    // a body with an expiry neither held nor gone: not covered, whether or not the
     // snapshot is held (as `covered_join` judges it before reading the snapshot)
     if held.is_none() && tx.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.get(cai).is_some() && m.header.expires.is_some()) && !super::is_gone(tx.core, c, cai) {
         return Ok(Some(false));

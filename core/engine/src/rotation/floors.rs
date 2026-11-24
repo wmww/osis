@@ -180,7 +180,7 @@ fn below(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_base::Ak, f: u64, unknown: bool) 
     let held: Vec<(osis_base::CommitId, usize)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| {
         let m = tx.core.ix.commits.get(c)?;
         let ai = m.aspect(tid, ak)?;
-        matches!(m.hold(ai), Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Leftover { valued: true, .. })).then_some((*c, ai))
+        matches!(m.hold(ai), Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Leftover { own_live: true, .. })).then_some((*c, ai))
     }).collect();
     let mut out = BTreeSet::new();
     for (c, ai) in held {

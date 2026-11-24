@@ -6,7 +6,7 @@
 //! a held snapshot leaving (`atomic::forget_snapshot`) or the commit held again marks the aspect
 //! (`Core::forgotten_names_due`), judged at the transaction's end (`settle_due`). Only a
 //! value-carrying write not past its expiry keeps one: a purge acts on values alone, so a
-//! removal's tombstone keeps none, nor an expired write held value-less. So names are bounded by the live values held snapshots carry; a dead write's goes with
+//! removal's tombstone keeps none, nor an expired write gone. So names are bounded by the live values held snapshots carry; a dead write's goes with
 //! the last snapshot holding it. Durable rows `records::FORGOTTEN_NAMES`; an ephemeral aspect's in memory, as its
 //! data.
 //!

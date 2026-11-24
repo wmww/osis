@@ -74,7 +74,7 @@ impl Write for CaseWrite {
     }
 }
 
-/// Copy order of values (§4.1, §3.3 rule 2): absent (value-less) first, then canonical encodings
+/// Copy order of values (§4.1, §3.3 rule 2): absent first, then canonical encodings
 /// bytewise. `Value`'s order is that unless a link occurs on either side (it compares links by
 /// content hash alone), so then the encodings are compared.
 pub(crate) fn opt_value_cmp(a: Option<&Value>, b: Option<&Value>) -> Ordering {
@@ -87,7 +87,7 @@ pub(crate) fn opt_value_cmp(a: Option<&Value>, b: Option<&Value>) -> Ordering {
 }
 
 /// Last-writer-wins join: greater stamp wins and the loser dies; of two copies of one write the
-/// greater in copy order (§4.1, a valued one over a value-less one, §4.7). Whether `d` took the
+/// greater in copy order (§4.1). Whether `d` took the
 /// place.
 pub(crate) fn join_write<W: Write>(s: &mut Option<W>, d: Option<W>, ch: &mut Changes) -> bool {
     let Some(d) = d else { return false };
@@ -581,8 +581,7 @@ impl Fragment {
 
     /// Calls `f` on every value this fragment holds as written where a read looks: register
     /// values, set elements, list items' content, and the keys of map records holding their
-    /// creation, at a position written in several encodings its chosen slot's alone (§7 Read; a
-    /// value-less write holds none; text chars and bag numbers are not values). What a body holds
+    /// creation, at a position written in several encodings its chosen slot's alone (§7 Read; text chars and bag numbers are not values). What a body holds
     /// as written: its writes into another's entry included.
     pub fn each_value(&self, f: &mut dyn FnMut(&Value)) {
         self.values_with(Values::Written, f);
@@ -794,8 +793,8 @@ impl Fragment {
     }
 
     /// Whether the fragment holds a live value (§4.3): a valued register or case winner, a
-    /// valued `W`, a live element or record, or a field holding one. Removals, positions and
-    /// value-less writes are none.
+    /// valued `W`, a live element or record, or a field holding one. Removals and positions
+    /// are none.
     pub(crate) fn live_value(&self) -> bool {
         match self {
             Fragment::Register(r) => reg_written(r).is_some(),
@@ -827,7 +826,7 @@ impl Fragment {
     }
 
     /// Greatest stamp inside (children, elements, case), excluding own reset and `W`. With
-    /// `valued`, only presence-counting writes (value-less ones are skipped, §4.3, §4.7).
+    /// `valued`, only presence-counting writes (a key-erased record's creation is none, §4.3).
     pub(crate) fn inner_max(&self, valued: bool) -> Option<Stamp> {
         let slot = |m: &SlotRef| if valued { max_opt(m.written(), m.reset()) } else { m.all_max() };
         let child = |f: &Fragment| slot(&SlotRef::Frag(f));
@@ -841,7 +840,7 @@ impl Fragment {
                 let k = s.case.as_ref().map(|k| k.stamp.clone());
                 s.payloads.values().fold(k, |m, f| max_opt(m, child(f)))
             }
-            // a keyed record's creation counts (§4.3); a key-erased record's is value-less
+            // a keyed record's creation counts (§4.3); a key-erased record's holds no key
             Fragment::Map(m) => m.entries.iter().fold(None, |x, (id, e)| {
                 let c = e.created.clone().filter(|_| !valued || id.key.is_some());
                 max_opt(max_opt(max_opt(x, c), e.reset.clone()), e.frag.as_deref().and_then(child))
@@ -850,7 +849,7 @@ impl Fragment {
         }
     }
 
-    /// Greatest stamp of anything inside, own reset, `W` and value-less writes included (§7).
+    /// Greatest stamp of anything inside, own reset and `W` included (§7).
     pub(crate) fn all_max(&self) -> Option<Stamp> {
         let w = self.meta().and_then(|m| m.w.clone());
         max_opt(max_opt(self.inner_max(false), self.reset()), w)

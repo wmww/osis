@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// the body holds, never what its frontiers or `Absorbed` claim (spec/crdt.md §8). An honest
 /// snapshot holds no write of an expiring delta (§8); one holding a write gone here is held as its
 /// leftover (`meets`). The value-less counters say where a cover holds a write value-less
-/// (`covered_join`: such a cover covers no body of it not held value-less here).
+/// (`covered_join`: such a cover covers no body of it not gone here).
 ///
 /// Memory: one `(lo, hi)` per run of consecutive counters of a source, in each of the three: a
 /// session writing the aspect alone is one run however many writes the body holds of it; one
@@ -210,7 +210,7 @@ pub(crate) fn expiring_carriers(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<B
 
 /// Whether part `ai` of held commit `c` is held with its values, valid.
 fn live_valued(core: &Core, c: &CommitId, ai: usize) -> bool {
-    core.ix.commits.get(c).is_some_and(|m| m.holds(ai) && !m.bare(ai) && m.valid_at(ai) && !super::is_gone(core, c, ai))
+    core.ix.commits.get(c).is_some_and(|m| m.holds(ai) && !m.own_gone(ai) && m.valid_at(ai) && !super::is_gone(core, c, ai))
 }
 
 /// The valued copies of the expiring snapshots of `(tid, ak)` held here, valid, by their expiry
@@ -521,7 +521,7 @@ pub(crate) fn facts_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Re
 /// Whether a snapshot of `(tid, ak)` written now at wall ms `now` claims the writes of `c`'s part
 /// (`frontiers_now`'s walk passes it, `Absorbed` lists it): valid here; held, as a part still
 /// missing gives the state nothing (applied without it, spec/commits.md §4), but an expiring
-/// one, whose writes would go value-less here anyway. A part held value-less for a purge is
+/// one, whose writes would go here anyway. A part gone for a purge is
 /// claimed: the snapshot carries its writes value-less, and no node counts a body it lacks
 /// covered by a value-less copy (`covered_join`), so a fall of the purge brings it back. The
 /// writer and the compaction trigger both ask it.

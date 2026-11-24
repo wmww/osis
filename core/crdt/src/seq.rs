@@ -236,8 +236,8 @@ impl SeqElem {
     /// A text element's char as it reads (§5.7 Live): one register over the creation and the
     /// flag writes, by stamp, a flag winning a tie. The creation winning: its char; an undelete:
     /// the undelete's own; a delete: none. None without a creation (content lives and dies with
-    /// it). An undelete whose char is gone (expired, purged, never carried) hides the element as
-    /// a value-less register winner reads absent.
+    /// it). An undelete whose char is gone (expired, purged, never carried) hides the element:
+    /// it has no char to read.
     pub(crate) fn char(&self) -> Option<char> {
         let (c, _) = self.created.as_ref()?;
         match &self.deleted {

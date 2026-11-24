@@ -48,7 +48,7 @@ fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, right: bool) -> Re
 /// so dots alone miss an overwritten value. A write the state holds as it is (a root reset a later
 /// write implies, kept by canonical form) wins in both, so a snapshot of the state is never
 /// replaced by its own content and writers' covers do not chase each other. A delta with an
-/// expiry held with its values is judged against the state with its values value-less, as a
+/// expiry held with its values is judged against the state with its writes gone, as a
 /// snapshot carries them (spec/crdt.md §8): replaced only once no value of it lives, when a
 /// snapshot of the state covers it (spec/commits.md §5).
 pub(super) fn replaced(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<bool> {
@@ -103,7 +103,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
         let bodies: Vec<CommitId> = tx.core.ix.by_aspect.get(&k).into_iter().flatten().map(|x| x.1).collect();
         let mut held = Vec::new();
         for c in bodies {
-            if let Some(ai) = super::held_part(tx.core, &c, &tid, &ak).filter(|ai| tx.core.ix.commits.get(&c).is_some_and(|m| !m.bare(*ai))) {
+            if let Some(ai) = super::held_part(tx.core, &c, &tid, &ak).filter(|ai| tx.core.ix.commits.get(&c).is_some_and(|m| !m.own_gone(*ai))) {
                 held.push((c, ai));
             }
         }

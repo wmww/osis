@@ -400,7 +400,7 @@ impl Map {
         self.entries.range(Eid::erased(dot.clone())..).take_while(move |(id, _)| id.dot == d)
     }
     /// Whether keyed record `id` is live (§5.6 Live): its dot's creation is held (in it, or
-    /// value-less in the key-erased record), and what it reads as (`record_frag`) is present and,
+    /// in the key-erased record, without its key), and what it reads as (`record_frag`) is present and,
     /// but under its own valued creation, holds a live value.
     pub(crate) fn is_live(&self, id: &Eid) -> bool {
         let Some(e) = self.entries.get(id).filter(|_| id.key.is_some()) else { return false };

@@ -134,7 +134,7 @@ fn drop_superseded_of(tx: &mut Tx<'_>, cands: BTreeSet<CommitId>, keep: Option<&
 /// commit being applied, its caller forgets it). Of covered-equal snapshots (equal `ts`) the higher commit ID
 /// goes, as on the durable path. A function of the commits held, so holders of the same ones
 /// keep the same bodies. Run when parts of a memory aspect turn valid, and for `new` alone when it
-/// applies or goes value-less (a body judged against the held snapshots; a snapshot, every held
+/// applies or goes (a body judged against the held snapshots; a snapshot, every held
 /// body against it and it against the others): whether one body is covered by one snapshot
 /// depends on those two alone. The commits dropped from.
 ///
@@ -214,7 +214,7 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
     Ok(dropped)
 }
 
-/// After a part of memory commit `c` went value-less at its expiry: `c` alone is judged again
+/// After a part of memory commit `c` went at its expiry: `c` alone is judged again
 /// (spec/sync-compaction.md §2: its leftover may be superseded now). Not forgotten here: its caller
 /// does.
 pub(crate) fn superseded_rest(tx: &mut Tx<'_>, c: &CommitId) -> Result<BTreeSet<(Tid, Ak)>> {

@@ -290,7 +290,7 @@ impl Engine {
         Ok(osis_store::attack(&ev, Some(&FORENSIC_CIPHERS)))
     }
 
-    /// How many parts of commit `id` are held value-less while they wait (`retention::strip_purged`).
+    /// How many parts of commit `id` are gone while they wait (`retention::strip_purged`).
     #[doc(hidden)]
     pub fn stripped_count(&mut self, id: &osis_base::CommitId) -> Result<usize> {
         let id = *id;
@@ -397,7 +397,7 @@ impl Engine {
     }
 
     /// The held body of `c` on `(tid, ak)`, its pieces joined (diagnosis: what a commit carries,
-    /// value-less writes and copies included, where `body_page` gives only its read).
+    /// gone writes and copies included, where `body_page` gives only its read).
     #[doc(hidden)]
     pub fn body_fragment(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<osis_crdt::Fragment>> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
@@ -440,7 +440,7 @@ impl Engine {
         Ok(None)
     }
 
-    /// The aspect indexes of the parts waiting commit `c`'s stored copy holds, value-less ones
+    /// The aspect indexes of the parts waiting commit `c`'s stored copy holds, gone ones
     /// included (`None`: not waiting). Tests: the held-model adapter (`tests/it/held.rs`).
     #[doc(hidden)]
     pub fn pending_parts(&mut self, c: &CommitId) -> Result<Option<std::collections::BTreeSet<usize>>> {
@@ -792,7 +792,7 @@ fn derived_written(ix: &super::Indexes) -> BTreeMap<Tid, &std::collections::BTre
 fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::WallMs, &crate::events::Origin, &super::View)) {
     let n = m.parts();
     let stands_in = m.dropped_parts().filter(|(_, d)| d.stands_in).map(|(ai, _)| ai).collect();
-    let d = CommitDigest { kind: m.view.kind, valid: m.valid().to_vec(), dropped: m.dropped_parts().map(|x| x.0).collect(), stands_in, stripped: m.stripped_parts().collect(), valued: (0..n).filter(|ai| m.valued(*ai)).collect(), missing: m.missing_parts().collect(), whole: (0..n).filter(|ai| m.whole(*ai)).collect(), rest: String::new() };
+    let d = CommitDigest { kind: m.view.kind, valid: m.valid().to_vec(), dropped: m.dropped_parts().map(|x| x.0).collect(), stands_in, stripped: m.stripped_parts().collect(), own_live: (0..n).filter(|ai| m.own_live(*ai)).collect(), missing: m.missing_parts().collect(), whole: (0..n).filter(|ai| m.whole(*ai)).collect(), rest: String::new() };
     (d, (&m.received, &m.origin, &*m.view))
 }
 
@@ -928,9 +928,9 @@ pub struct CommitDigest {
     /// (`Dropped::stands_in`).
     pub dropped: std::collections::BTreeSet<usize>,
     pub stands_in: std::collections::BTreeSet<usize>,
-    /// Aspects held as their leftover (`Hold::Leftover`), those holding values (`Hold::Leftover::valued`).
+    /// Aspects held as their leftover (`Hold::Leftover`), those none of whose own writes are gone (`Hold::Leftover::own_live`).
     pub stripped: std::collections::BTreeSet<usize>,
-    pub valued: std::collections::BTreeSet<usize>,
+    pub own_live: std::collections::BTreeSet<usize>,
     pub missing: std::collections::BTreeSet<usize>,
     /// Held parts standing as whole replaces (`Hold::Body::whole`).
     pub whole: std::collections::BTreeSet<usize>,

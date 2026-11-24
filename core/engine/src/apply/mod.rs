@@ -207,7 +207,7 @@ pub(crate) struct Parts {
     /// Why the first part judged bad was (`examine`): dropped alone, or for a commit this node
     /// writes a refusal.
     pub bad: Option<Error>,
-    /// Aspects of the parts in `whole` held value-less while they waited
+    /// Aspects of the parts in `whole` gone while they waited
     /// (`retention::strip_purged`): held so once joined (`retention::stripped_joined`).
     pub stripped: Vec<usize>,
 }
@@ -1237,7 +1237,7 @@ fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) 
     let mut rest = applied.clone();
     rest.parts = w.parts;
     rest.keys.extend(w.keys);
-    // a part past its expiry counts as never received, a purged one is held value-less (`retention::pending_drops`)
+    // a part past its expiry counts as never received, a purged one is gone (`retention::pending_drops`)
     let h = rest.header.clone();
     crate::retention::pending_drops(tx, id, &mut rest, &h)?;
     if rest.parts.is_empty() {
@@ -1583,8 +1583,8 @@ impl Engine {
     }
 
     /// Whether copy `copy` of commit `id` holds a part that went from the node (spec/commits.md §5:
-    /// dropped from the applied commit or held as its leftover while value-less, held pending past
-    /// its expiry, or held pending value-less or gone for a request, `retention::strip_purged`)
+    /// dropped from the applied commit or held as its leftover while gone, held pending past
+    /// its expiry, or gone while pending for a request, `retention::strip_purged`)
     /// and nothing a copy may still be needed for:
     /// its every other part went too, is applied, or, where parts of it wait, is in the pending copy
     /// alike, or provably does not hash to its header entry. Node-sync then forgets the copy's blob and key; one holding a true copy the

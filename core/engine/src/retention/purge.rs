@@ -20,7 +20,7 @@ type Request = (CommitId, LazyHeader);
 
 /// Whether a request stamped `at` may name a delta on `ak` stamped `ts`: one stamped before it, or
 /// any minting (`created.0`): a request destroying a thing drops every minting of it, so a later minting
-/// is held value-less as the earlier ones (spec/commits.md §5 Destruction).
+/// is gone as the earlier ones (spec/commits.md §5 Destruction).
 fn stamped_before(at: Ts, ak: &Ak, ts: Ts) -> bool {
     ts < at || ak.as_str() == osis_commit::retention::CREATED
 }
@@ -474,7 +474,7 @@ impl AspectRequests {
 }
 
 /// Judges the held purge requests on `(tid, ak)` again (spec/permissions.md §6): a part one now
-/// drops is purged as on arrival; one held value-less for a purge that none drops any more
+/// drops is purged as on arrival; one gone for a purge that none drops any more
 /// counts as never received from here on: off the gone list, its leftover set aside
 /// (`unstrip`) and its writes gone from the state until a copy comes (sync fetches it; a holder
 /// logs it). A body stripped for carrying others' values stays held
@@ -537,7 +537,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
         return Ok(());
     }
     // a body stripped for carrying others' values (a snapshot; a delta carrying a copy) stays held
-    // as its leftover: its copies of the values coming back stay value-less, so the valued copy
+    // as its leftover: its copies of the values coming back stay stripped, so the valued copy
     // wins wherever one joins (spec/crdt.md §4.7 Gone writes), and every other write it carries stays
     off_gone(tx, tid, ak, &leaving);
     // until each comes back, this node may read less than one that kept it
@@ -572,7 +572,7 @@ struct Carried {
 /// of (forgotten under their author's cover, or never received), judged by those snapshots'
 /// `Facts` and the copies' stamps (spec/commits.md §5 Purge, spec/crdt.md §8): where a held
 /// request names one and holds the right over it by every fact a held snapshot states for it,
-/// its copies' writes are held value-less (`Owned::Dots`, the only such entries on a list: a held
+/// its copies' writes are gone (`Owned::Dots`, the only such entries on a list: a held
 /// delta's writes go on by its own range). Judged whole again on each call, so one no request
 /// takes any more leaves the list, its carriers kept as their leftovers as on any fall
 /// (`rejudge_purges`). Where it lists more, a writer owes a re-snapshot (`owe_resnapshot`). Cost: the
@@ -652,7 +652,7 @@ pub(crate) fn rejudge_carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut
     Ok(())
 }
 
-/// Applies request `pc` to held delta `(c, ai)` if it stands: its values go value-less, its body and
+/// Applies request `pc` to held delta `(c, ai)` if it stands: its values go, its body and
 /// every held body carrying them are held as their leftovers (node-sync re-snapshots where no
 /// covering snapshot is left, spec/commits.md §5, `apply_request`). Whether it stood.
 pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<bool> {
@@ -677,7 +677,7 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
 
 /// Request `id` (header `h`) just applied: against the held deltas it names, then on the lists later
 /// ones find it by. Each named aspect where it dropped something here (it stood on a named delta:
-/// its writes are value-less here from now on) goes to node-sync with the named bodies it dropped
+/// its writes are gone here from now on) goes to node-sync with the named bodies it dropped
 /// that were applied here before (`owe_resnapshot`): a writer re-snapshots unless a snapshot the
 /// purge left whole covers them all (spec/commits.md §5 Purge). A refused or no-op request
 /// changes nothing, so it asks for no snapshot.

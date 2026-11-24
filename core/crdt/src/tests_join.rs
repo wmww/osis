@@ -133,8 +133,7 @@ mod direct {
     }
 
     /// §4.3: an explicit `W` makes an empty set present; a set emptied by a removal stays present
-    /// (the element reset is a write inside it); a reset with nothing after makes it absent; a
-    /// value-less write does not count.
+    /// (the element reset is a write inside it); a reset with nothing after makes it absent.
     #[test]
     fn presence_spec_4_3() {
         let set = |meta: Meta, elems: Vec<(Dot, Elem)>| Fragment::Set(Set::new(meta, elems.into_iter().collect()));

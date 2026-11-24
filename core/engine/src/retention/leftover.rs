@@ -1,6 +1,6 @@
 //! Leftovers (spec/crdt.md §4.7, issues/drop-rejoin-robust.md item 2): a part whose values went
 //! (expired, purged, a snapshot carrying purged values, a waiting part a held request names) is
-//! kept as its body with every value-carrying write value-less, one row per (commit, aspect)
+//! kept as its body without the writes gone here, one row per (commit, aspect)
 //! (`records::LEFTOVER`), and read as the held body (`apply::each_held_piece`). Nothing else of
 //! it is kept: a leftover holds stamps, dots, resets, flags and positions, never a value.
 

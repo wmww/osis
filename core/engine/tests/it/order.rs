@@ -2452,7 +2452,7 @@ fn pool<T: Send>(tasks: Vec<T>, threads: usize, run: impl Fn(T, &dyn Fn(T)) + Sy
 
 /// `OSIS_ORDER_DUMP`: on a failure, each commit whose index entry at node `p` differs from the
 /// keep-everything node's holding `held` at the same clock (validity, dropped and why, stood in,
-/// stripped, valued, missing), and both nodes' pending commits: where a read difference starts.
+/// stripped, own live, missing), and both nodes' pending commits: where a read difference starts.
 fn explain(played: &Played, held: &[usize], p: &mut Peer, what: &str) {
     if std::env::var("OSIS_ORDER_DUMP").is_err() {
         return;
@@ -2496,14 +2496,14 @@ fn explain(played: &Played, held: &[usize], p: &mut Peer, what: &str) {
 
 /// Commit `id`'s index entry at engine `e` (its digest `d`), for the dumps: valid per part, the
 /// parts dropped and why (`DropFor`: covered by which packs, invalid, ...), stood in, stripped,
-/// valued, missing; `absent` when the node holds no entry.
+/// own live, missing; `absent` when the node holds no entry.
 fn commit_state(played: &Played, e: &osis_engine::Engine, d: &osis_engine::engine::IndexDigest, id: &CommitId) -> String {
     let pack = |c: &CommitId| played.packs.iter().position(|q| q.id == *c);
     match d.commits.get(id) {
         None => "absent".to_string(),
         Some(c) => {
             let why: Vec<String> = e.core.ix.commits.get(id).map(|m| m.dropped_parts().map(|(ai, d)| format!("{ai}: {:?} by {:?}", d.why, d.covered_by.iter().map(pack).collect::<Vec<_>>())).collect()).unwrap_or_default();
-            format!("valid {:?} dropped {:?} {why:?} stands in {:?} stripped {:?} valued {:?} missing {:?}", c.valid, c.dropped, c.stands_in, c.stripped, c.valued, c.missing)
+            format!("valid {:?} dropped {:?} {why:?} stands in {:?} stripped {:?} own live {:?} missing {:?}", c.valid, c.dropped, c.stands_in, c.stripped, c.own_live, c.missing)
         }
     }
 }

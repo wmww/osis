@@ -27,13 +27,13 @@ pub enum Wake {
     /// merge's tips and a certificate: `Reason::Epoch`). Holding the rotation alone opens nothing:
     /// its key is known once the chain holds its epoch.
     Epoch(CommitId),
-    /// What is value-less on this thing changing (a purge request, an expiry): what reaches a
+    /// What is gone on this thing changing (a purge request, an expiry): what reaches a
     /// stored copy writing on it (`retention::pending_drops`).
     Thing(Tid),
 }
 
 /// Where pending commit `id` waiting for `r` parks (`h`: its header, where it decoded): what it
-/// awaits, its expiry, and the things it writes on (a purge or expiry changing what is value-less
+/// awaits, its expiry, and the things it writes on (a purge or expiry changing what is gone
 /// there reaches its stored copy, `retention::pending_drops`).
 pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_commit::Header>) -> Vec<Wake> {
     let mut out = match r {

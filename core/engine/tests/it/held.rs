@@ -719,8 +719,8 @@ impl Drops {
             for ai in 0..m.view.aspects.len() {
                 if m.missing(ai) {
                     self.seen.insert((*c, ai), Seen::Not);
-                } else if m.bare(ai) {
-                    self.seen.insert((*c, ai), Seen::Bare);
+                } else if m.own_gone(ai) {
+                    self.seen.insert((*c, ai), Seen::OwnGone);
                 }
             }
         }
@@ -732,7 +732,7 @@ enum Seen {
     /// Held whole by an applied commit, its body as fed (the model dates a body only while held).
     Held(Box<hm::Body>),
     /// Held as a leftover holding no value of its own writes (expired, purged).
-    Bare,
+    OwnGone,
     /// Neither (missing, waiting, dropped).
     Not,
 }
@@ -911,9 +911,9 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
             let expired = hist.headers.get(&id).and_then(|h| h.expires).is_some_and(|x| x <= now);
             for (i, p) in c.parts.iter_mut().enumerate() {
                 if !matches!(p.body, hm::Body::Dropped(_)) {
-                    let bare = e.core.ix.commits.get(&id).is_some_and(|m| m.bare(i));
+                    let own_gone = e.core.ix.commits.get(&id).is_some_and(|m| m.own_gone(i));
                     let seen = match &p.body {
-                        hm::Body::Held(_) if bare => Seen::Bare,
+                        hm::Body::Held(_) if own_gone => Seen::OwnGone,
                         hm::Body::Held(_) if applied && !by_part.contains_key(&(p.thing, p.aspect)) => unread_body(e, hist, &id, i).map_or(Seen::Not, |f| Seen::Held(Box::new(hm::Body::Held(hm::Delta::Writes(f))))),
                         hm::Body::Held(_) if applied => Seen::Held(Box::new(p.body.clone())),
                         _ => Seen::Not,
@@ -929,8 +929,8 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
                     continue;
                 };
                 match d.seen.get(&(id, i)) {
-                    Some(Seen::Held(_)) | Some(Seen::Bare) if expired => reach_n(cov, "leftover drops judged", 1),
-                    Some(Seen::Bare) => {
+                    Some(Seen::Held(_)) | Some(Seen::OwnGone) if expired => reach_n(cov, "leftover drops judged", 1),
+                    Some(Seen::OwnGone) => {
                         reach_n(cov, "leftover drops judged", 1);
                         diffs.push(("dropped a purged leftover as covered".into(), differ(format!("commit {id:?} (#{}) on {t:?} {}: its leftover dropped as covered at {now}, not past its expiry", c.id, a.as_str()), &[p.thing])));
                     }

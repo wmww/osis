@@ -841,7 +841,7 @@ pub(crate) fn retain_default(core: &Core, tid: &Tid) -> bool {
 /// alone: no header is decoded.
 pub(crate) fn settings(core: &Core, tid: &Tid) -> Arc<Settings> {
     let Some(all) = core.ix.retention.get(tid) else { return Arc::default() };
-    let valid = |p: &Point| core.ix.commits.get(&p.commit).is_some_and(|m| m.view.aspect(tid, osis_commit::retention::RETENTION).is_some_and(|ai| m.valid_at(ai) && !m.bare(ai)));
+    let valid = |p: &Point| core.ix.commits.get(&p.commit).is_some_and(|m| m.view.aspect(tid, osis_commit::retention::RETENTION).is_some_and(|ai| m.valid_at(ai) && !m.own_gone(ai)));
     Arc::new(all.iter().filter(|x| valid(&x.0)).cloned().collect())
 }
 

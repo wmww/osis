@@ -321,7 +321,7 @@ fn enter(lp: &mut LocalPeer, w: Tid) {
     pass_end(&mut lp.peers[1].engine);
 }
 
-// spec/commits.md §5 A waiting part under a purge (held value-less from then on, no other local copy
+// spec/commits.md §5 A waiting part under a purge (gone from then on, no other local copy
 // of it), §4 Outside the node closure: commit `c`'s parts on W wait aside (`waiting_on_w`) when
 // peer 0's request purging its `t:reg.0` part comes: once W enters the part joins value-less, as its
 // author holds it, nothing waiting or flagged, the value nowhere.

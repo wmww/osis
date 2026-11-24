@@ -1,8 +1,8 @@
 //! Destroying a thing (spec/commits.md §5 Destruction): purging or expiring its creation. A thing
-//! exists while a creation of it is held live; once every held creation of it is value-less the
+//! exists while a creation of it is held live; once every held creation of it is gone the
 //! thing goes in the transaction that made it so: its parts as bodies dropped (node-sync then
 //! deletes them at peers by the dropped-body path), its states and per-aspect rows, but what
-//! judges its destruction (`judges_destruction`: its record, its value-less mintings, its role-class
+//! judges its destruction (`judges_destruction`: its record, its gone mintings, its role-class
 //! parts, the destroying requests' parts). Records are identity, `created.0` is existence: authority
 //! that passed through it stands as its held edge writes say. What stays is
 //! held by the ordinary rules, never its own: while the thing is in the node closure or a held thing
@@ -66,8 +66,8 @@ impl End {
 }
 
 /// A held minting's standing (spec/commits.md §5, A thing's mintings travel with its record):
-/// valued ones after every value-less one, then by end. A thing is destroyed when its highest
-/// held standing is value-less, and then at that end, so the highest minting is its witness: it
+/// live ones after every gone one, then by end. A thing is destroyed when its highest
+/// held standing is gone, and then at that end, so the highest minting is its witness: it
 /// alone judges the thing as all of them do.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Standing {

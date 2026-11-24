@@ -57,8 +57,8 @@ impl Kind {
     pub const ALL: [Kind; 9] = [Kind::Reset, Kind::W, Kind::Value, Kind::Case, Kind::Created, Kind::Pos, Kind::Delete, Kind::Undelete, Kind::ElemReset];
 }
 
-/// A write by position: path, kind and stamp. Values are not part of it (a value-less copy is
-/// the same write).
+/// A write by position: path, kind and stamp. Values are not part of it (copies of one write
+/// are one write).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Won {
     pub path: Vec<Place>,

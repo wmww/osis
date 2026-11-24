@@ -138,7 +138,7 @@ fn case(k: u64) -> (crate::testutil::SeedRng, Case) {
             let types = pick(&mut r, &[map_of_text(), vec![Ty::List(Box::new(inner()))], vec![Ty::Text, Ty::List(Box::new(Ty::Register))]]);
             let srcs = sources(&mut r, 3);
             // half the time the expiring writer first appends alone, a commit an element:
-            // value-less ranges whose creations differ in `ts` (`seq_span`)
+            // ranges whose creations differ in `ts` (`seq_span`)
             let lead = if r.chance(1, 2) { 6 } else { 0 };
             (from(crate::testutil::history_led(&mut r, &types, srcs, lead, rounds)), true)
         }
@@ -379,7 +379,7 @@ fn snap_mcx() -> Ctx {
 /// decoders, reading as `st` unless `twins` (a forged state may hold one dot under two stamps,
 /// which no snapshot carries: rejected, or decoded with one of them), back to `st` as carried
 /// when `honest`; so does one of `st` stripped of `gone`'s
-/// dots (§4.7: value-less writes, list creations and `W`, map writes key-erased), whose strip
+/// dots (§4.7: their writes removed), whose strip
 /// equals the model's.
 fn snapshots(st: &MFrag, mfr: &[(MSource, u64)], gone: &Gone, honest: bool, twins: bool) {
     let check = |st: &MFrag, mfr: &[(MSource, u64)], what: &str| {
@@ -683,7 +683,7 @@ fn a_write_stamped_with_its_embedded_chars_register_dot_is_bad_input_spec_3_3() 
 /// taking turns with writer 4 (each of its elements anchored at writer 4's); writer 2, holding
 /// the first four, inserts after the second, deletes the third and moves the fourth to the
 /// front; writer 3 replaces the sequence at a `ts` between the third and fourth. Writer 1's dots
-/// up to `upto` expire (a value-less range whose creations differ in `ts` and anchor,
+/// up to `upto` expire (a range whose creations differ in `ts` and anchor,
 /// `seq_span`, split where expiry stops), writer 2's un-merge.
 fn chain_case(ty: &Ty, upto: u64, interleaved: bool) -> Case {
     use crdt_model::ops as mops;
@@ -740,7 +740,7 @@ fn chain_case(ty: &Ty, upto: u64, interleaved: bool) -> Case {
     Case { mode: Mode::Nested, deltas, honest: true, bad: b, gone: Gone { src: a, upto } }
 }
 
-/// §5.7, `seq_span`: value-less elements of one source made by commits of their own, a chain or
+/// §5.7, `seq_span`: elements of one source made by commits of their own, a chain or
 /// anchored at another writer's elements, held as range records (`SeqElem::each`), equal the
 /// model under joins in any order, the wire, expiry and un-merge, with inserts among them, a
 /// delete, a move and a reset between their creations, for a text and lists of registers and

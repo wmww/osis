@@ -21,10 +21,10 @@ pub const COMMIT: &[u8] = b"c/";
 pub const CREATED: &[u8] = b"t/";
 /// Aspects with a state (the `aspects.0` index): `a/` + aspect key, empty value.
 pub const ASPECTS: &[u8] = b"a/";
-/// Value-less deltas per aspect (expired, purged): `v/` + aspect key.
+/// Gone deltas per aspect (expired, purged): `v/` + aspect key.
 pub const GONE: &[u8] = b"v/";
 /// The leftover of a part whose values went (expired, purged; `Hold::Leftover`): its body with
-/// every value-carrying write value-less (spec/crdt.md §4.7), read as the held body
+/// the writes gone here removed (spec/crdt.md §4.7), read as the held body
 /// (`apply::each_held_piece`): `w/` + aspect key + commit ID + aspect index (4 bytes). A waiting
 /// part a held purge request names keeps what was stripped of it here too, its pending copy's
 /// slot holding an empty delta (`retention::emptied`) until it joins (`retention::leftover`).

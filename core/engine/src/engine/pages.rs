@@ -311,7 +311,7 @@ fn parse_page_row(b: &[u8]) -> Result<(Range, Fragment)> {
 
 /// What the index of a paged collection finds element `d` by: the keys of a map's records of
 /// `d` holding content (a tombstone's key finds nothing live), the value of a set element, the
-/// reference of a set's value removal. Empty for a key-erased or value-less element and other
+/// reference of a set's value removal. Empty for a key-erased element and other
 /// encodings.
 fn indexed(c: &Fragment, enc: Encoding, d: &Dot) -> Vec<Value> {
     match enc {
@@ -2523,7 +2523,7 @@ mod tests {
 
     // spec/crdt.md §4.2, §5.7 (`replace`: the old records go), §6, §8: as
     // `seq_placement_differential_text_spec_crdt_6` over a text replaced before the edits, with
-    // long received inserts (strips of them leave value-less runs that span pages).
+    // long received inserts (strips of them leave runs that span pages).
     #[test]
     fn seq_placement_differential_after_reset_spec_crdt_6() {
         seq_placement_run_with(true, 3_000, true);

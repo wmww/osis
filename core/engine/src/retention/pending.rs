@@ -1,5 +1,5 @@
 //! Parts held while their commit waits (spec/commits.md §5): past their expiry they go, named by a
-//! held purge request they are held value-less, what was stripped of them kept as the part's
+//! held purge request they are gone, what was stripped of them kept as the part's
 //! leftover (`leftover`) until it joins.
 
 use super::{T_EXPIRY, known_purged, leftover, make_leftover, suspect, writes_of};
@@ -21,7 +21,7 @@ pub(crate) fn pending_expired(tx: &Tx<'_>, h: &Header, ai: usize) -> bool {
 /// as never received (spec/commits.md §5: no copy past T): they leave the stored copy before it
 /// is kept, and their aspects are flagged suspect (`suspect`: their non-value writes never join
 /// here, where a node that applied them before T keeps them). The others get a timer doing the
-/// same at T (`hold_gone`). One a held purge request names is held value-less instead
+/// same at T (`hold_gone`). One a held purge request names is gone instead
 /// (`strip_purged`), as an applied one is: the request is a held commit, so nodes holding the same
 /// commits read alike; one applied later wakes the commit (`purge_one`). A header whose aspects
 /// are not resolved yet is judged once they are.
@@ -49,7 +49,7 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 
 /// Snapshot part `ai` of pending commit `id` (in `blob`, header `h`) carrying a copy of a value of
 /// a write on its aspect's gone list (purged): held as its leftover from now on, those
-/// copies value-less, as an applied carrier is (spec/crdt.md §4.7 Gone writes, `strip_carried`), its
+/// copies of gone writes stripped, as an applied carrier is (spec/crdt.md §4.7 Gone writes, `strip_carried`), its
 /// slot emptied (`emptied`); it joins as that leftover, frontiers, `Absorbed` and facts kept. One
 /// that cannot be read yet (a page away, parked) is stripped once it can, at the latest when it
 /// joins (`drop_gone`). Called at every look at the stored copy (`reexamine`), so a request
@@ -209,13 +209,13 @@ pub(super) fn purge_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
     strip_purged(tx, c, &mut blob, &h, ai)
 }
 
-/// What the slot of a part held value-less holds in the pending copy (`strip_purged`): an empty
+/// What the slot of a part gone holds in the pending copy (`strip_purged`): an empty
 /// delta, which never hashes to a header entry.
 pub(crate) fn emptied() -> Vec<u8> {
     osis_base::encode(&osis_base::Value::List(Vec::new()))
 }
 
-/// Whether part `ai` of commit `id`, whose stored pending copy is `pending`, is held value-less
+/// Whether part `ai` of commit `id`, whose stored pending copy is `pending`, is gone
 /// while it waits (`strip_purged`): its slot there emptied, its leftover kept, the part not joined
 /// (`Hold::Leftover`). The emptied slot tells it from a leftover set aside at a fall for a missing
 /// part of the applied commit (`unstrip`), which no copy of the part replaces until one joins.
@@ -230,7 +230,7 @@ pub(crate) fn waiting_stripped(tx: &mut Tx<'_>, pending: &osis_commit::CommitBlo
 /// Forgets the leftover kept for waiting part `ai` of commit `id` (header `h`) not yet applied.
 /// An applied commit's goes only when a copy joins whole (`forget_joined_leftovers`): a stripped
 /// part's is its body, and a missing part's (set aside at its purge's fall, or what a waiting part
-/// was stripped to) is adopted when the part is held value-less again (`make_leftover`), at expiry
+/// was stripped to) is adopted when the part is gone again (`make_leftover`), at expiry
 /// as on a rise, as at a node that held the part throughout.
 fn forget_waiting_leftover(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize) -> Result<()> {
     if tx.core.ix.commits.contains_key(id) {
@@ -270,7 +270,7 @@ pub(crate) fn forget_waiting_leftovers(tx: &mut Tx<'_>, id: &CommitId) -> Result
 }
 
 /// The parts of commit `id` just joined from their leftovers (`strip_purged`: aspect, fragment):
-/// held value-less as a purge leaves an applied part, the leftover their body. A purge that fell
+/// gone as a purge leaves an applied part, the leftover their body. A purge that fell
 /// while they waited is judged again next (`rejudge_purges`).
 pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, Decoded)], changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let ais: BTreeSet<usize> = joined.iter().map(|x| x.0).collect();

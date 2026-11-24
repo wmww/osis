@@ -627,7 +627,7 @@ pub(crate) struct RecordHead {
     pub signed: osis_commit::Signed,
     pub dropped: BTreeMap<usize, super::Dropped>,
     pub stripped: BTreeSet<usize>,
-    pub valued: BTreeSet<usize>,
+    pub own_live: BTreeSet<usize>,
     pub lists: Vec<(osis_commit::ListField, Vec<u8>)>,
 }
 
@@ -687,7 +687,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     }
     w = w.u32(m.stripped_parts().count() as u32);
     for a in m.stripped_parts() {
-        w = w.u32(a as u32).u8(u8::from(m.valued(a)));
+        w = w.u32(a as u32).u8(u8::from(m.own_live(a)));
     }
     // a header applies resolved (spec/commits.md §4)
     debug_assert!(m.header.is_resolved(), "record of an unresolved header");
@@ -867,12 +867,12 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         let role = Role::ALL.get(<usize as From<u8>>::from((flags >> 2) & 7).wrapping_sub(1)).copied();
         dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 64 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, hosts_from, stands_in, role, overreach: flags & 32 != 0, keysets, superseded_by: BTreeSet::new() });
     }
-    let (mut stripped, mut valued) = (BTreeSet::new(), BTreeSet::new());
+    let (mut stripped, mut own_live) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..r.u32()? {
         let a = r.u32()? as usize;
         stripped.insert(a);
         if r.u8()? != 0 {
-            valued.insert(a);
+            own_live.insert(a);
         }
     }
     let mut lists = Vec::new();
@@ -880,7 +880,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         let f = *osis_commit::ListField::ALL.get(<usize as From<u8>>::from(r.u8()?)).ok_or(Error::Corrupt("header list field"))?;
         lists.push((f, r.bytes()?.to_vec()));
     }
-    Ok((RecordHead { received, origin, repair, signed, dropped, stripped, valued, lists }, r.rest()))
+    Ok((RecordHead { received, origin, repair, signed, dropped, stripped, own_live, lists }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -1160,8 +1160,8 @@ mod tests {
         let states = [
             Hold::Body { whole: false },
             Hold::Body { whole: true },
-            Hold::Leftover { whole: true, valued: true },
-            Hold::Leftover { whole: false, valued: false },
+            Hold::Leftover { whole: true, own_live: true },
+            Hold::Leftover { whole: false, own_live: false },
             Hold::Dropped(cover),
             Hold::Dropped(invalid),
             Hold::Missing(Missing::Plain),

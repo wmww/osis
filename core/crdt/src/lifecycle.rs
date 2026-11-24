@@ -1,4 +1,4 @@
-//! Expiry (value-less writes, spec/crdt.md §4.7) and un-merge (§4.6): removing writes by origin
+//! Expiry (gone writes, spec/crdt.md §4.7) and un-merge (§4.6): removing writes by origin
 //! dot, and whether that may be done in place.
 
 use crate::changes::Changes;
@@ -21,7 +21,7 @@ impl Fragment {
     }
 
     /// Holds every sequence at any depth as maximal range records (`seq_span::coalesce`): a
-    /// value-less element then costs about what the wire holds, not a record. Changes no read
+    /// deleted element then costs about what the wire holds, not a record. Changes no read
     /// nor equality. For a state held whole: a state laid out in pages keeps its records within
     /// their pages.
     pub fn compact(&mut self) {
@@ -316,8 +316,8 @@ impl Fragment {
                         }
                     } else if id.key.is_some() || en.frag.is_some() {
                         let recs = || m.of_dot(&id.dot);
-                        // a key a record repeats goes with any write, a value-less one too; a
-                        // key-erased record has bytes to lose only in a valued one
+                        // a key a record repeats goes with any write; a key-erased record has
+                        // bytes to lose only in a presence-counting one
                         let holds = recs().any(|(i, x)| x.frag.as_deref().is_some_and(|f| if i.key.is_some() { f.all_max().is_some() } else { f.written().is_some() }));
                         let dead = || recs().any(|(_, x)| x.reset.is_some()) || (recs().all(|(_, x)| x.created.is_none()) && reflected(&id.dot));
                         if holds && !recs().any(|(i, _)| m.is_live(i)) && dead() {

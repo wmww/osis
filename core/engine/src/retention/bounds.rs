@@ -126,7 +126,7 @@ fn part_bounds(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<(
 /// `live_until` is 0 but for fixed retention, whose parts are dated (role) or never out.
 pub(crate) fn live_keep(core: &Core, c: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> u64 {
     let Some(m) = core.ix.commits.get(c) else { return 0 };
-    if m.view.kind.is_compaction() || a.ak.signal() || !m.holds(ai) || m.bare(ai) || !m.valid_at(ai) {
+    if m.view.kind.is_compaction() || a.ak.signal() || !m.holds(ai) || m.own_gone(ai) || !m.valid_at(ai) {
         return 0;
     }
     super::history::of(core, &a.tid, &a.ak).live_until(m.view.ts)
@@ -203,7 +203,7 @@ pub(super) fn dated_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: u
 /// Whether part `ai` of `c` on `(tid, ak)` is dated at all: held whole with values (a bare
 /// leftover has none to keep) and valid.
 fn judged(core: &Core, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> bool {
-    held_part(core, c, tid, ak) == Some(ai) && core.ix.commits.get(c).is_some_and(|m| !m.bare(ai) && m.valid_at(ai))
+    held_part(core, c, tid, ak) == Some(ai) && core.ix.commits.get(c).is_some_and(|m| !m.own_gone(ai) && m.valid_at(ai))
 }
 
 /// When held valid part `(tid, ak)` of `c` was replaced, by the aspect's held writes brought up
@@ -276,7 +276,7 @@ pub(crate) type Form = (bool, bool);
 pub(crate) fn form(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<Form> {
     let ai = held_part(core, c, tid, ak)?;
     let m = core.ix.commits.get(c)?;
-    m.valid_at(ai).then(|| (m.stripped(ai), m.bare(ai)))
+    m.valid_at(ai).then(|| (m.stripped(ai), m.own_gone(ai)))
 }
 
 /// The table of an aspect's unit holding its held writes (`osis_crdt::Held`'s rows in pages,
@@ -731,7 +731,7 @@ impl Engine {
     /// one with one goes only after its carrier (spec/commits.md §5). Writes the state does not
     /// hold count dead: superseded, purged or expired ones, and those of deltas invalid here or
     /// undone (stripped from the state; live again once a validity flip or a redo puts them
-    /// back). Any write counts: resets (a tombstone's, for its remover) and value-less writes
+    /// back). Any write counts: resets (a tombstone's, for its remover) and gone writes
     /// too. A memo (`Core::live_bodies`): a hit runs no transaction.
     pub fn delta_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         let key = (*c, *tid, ak.clone());

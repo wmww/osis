@@ -158,7 +158,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 /// `(tid, ak)`: the ordinary valid join (a valid delta holds no write of an invalid one, and a
 /// valid snapshot's copies all join, spec/permissions.md §5.2), after the
 /// gone list (`remove_gone_writes`): the one join-time predicate, so no value a delta held
-/// value-less here reaches the state from any body (an undelete's copy of a char, a stale
+/// gone here reaches the state from any body (an undelete's copy of a char, a stale
 /// copy, a snapshot's); the same predicate ends every rebuild.
 /// A paged state loads only the pages the join touches, or where it resets or re-encodes a
 /// paged collection joins it a page at a time (`Tx::join_reset`).
@@ -355,7 +355,7 @@ struct Joins {
 /// from the cache before the next, leaves exactly the state,
 /// snapshot records and outcomes that joining it whole does. Pieces split a delta by
 /// element (§8), and what is judged of a whole delta is judged of its pieces: un-merging,
-/// vouching and holding value-less per write, superseded writes per join.
+/// vouching and gone writes per write, superseded writes per join.
 fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &Parts, valid: &[bool]) -> Result<Joins> {
     let mut j = Joins::default();
     for (ai, part) in in_order(parts) {
@@ -519,7 +519,7 @@ pub(crate) fn carries_any(tx: &mut Tx<'_>, c: &CommitId, ai: usize, owned: &[Own
     Ok(carries)
 }
 
-/// Removes from body `f` of `(tid, ak)` the writes gone here (expired, purged: the value-less
+/// Removes from body `f` of `(tid, ak)` the writes gone here (expired, purged: the gone
 /// list, spec/crdt.md §4.7): applied to each body before it joins, never to a state (removal does
 /// not commute with join).
 pub(crate) fn remove_gone_writes(core: &Core, tid: &Tid, ak: &Ak, f: &mut Fragment) {
@@ -1124,10 +1124,10 @@ pub(crate) fn check_states(tx: &mut Tx<'_>, aspects: BTreeSet<(Tid, Ak)>) -> Res
             let Some(ai) = m.aspect(&tid, &ak) else { continue };
             let own = crate::retention::writes_of(&m.header, &c, ai);
             let on = own.iter().filter(|o| list.binary_search(o).is_ok()).count();
-            if m.bare(ai) {
-                debug_assert_eq!(on, own.len(), "{c:?} on {tid:?} {ak:?}: held as a bare leftover, its writes not all value-less");
+            if m.own_gone(ai) {
+                debug_assert_eq!(on, own.len(), "{c:?} on {tid:?} {ak:?}: held as an own-gone leftover, its writes not all gone");
             } else if m.holds(ai) {
-                debug_assert_eq!(on, 0, "{c:?} on {tid:?} {ak:?}: held with values, its writes value-less");
+                debug_assert_eq!(on, 0, "{c:?} on {tid:?} {ak:?}: held with its own writes live, its writes gone");
             }
         }
         // every held snapshot is indexed with bounds holding each write its body holds, valued
@@ -1197,12 +1197,12 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// a re-arrival. The state is `rebuilt` (spec/crdt.md §4.6, spec/permissions.md §5.2): the join
 /// of every held valid body, leftovers included (an invalid delta's body carries only its own
 /// writes, which un-merge takes; an invalid snapshot gives nothing), stripped of the values held
-/// value-less here. Written shredded (spec/commits.md §5: a body went, so every local copy of it
+/// gone here. Written shredded (spec/commits.md §5: a body went, so every local copy of it
 /// goes). What waits on its state, and its bodies with a relative bound, are
 /// judged again.
 ///
 /// Invariant (spec/crdt.md §4.7, spec/commits.md §5; `retention::strip_leftover`): no held body
-/// carries the value of a write this node holds value-less (expired, purged), its own or a copy
+/// carries the value of a write gone at this node (expired, purged), its own or a copy
 /// under the original's dot (a snapshot's), and none loses a value of a write not so held. Kept
 /// where it can break: while the aspect's gone list changed in this transaction, this walk
 /// reads every held body and holds each snapshot carrying a listed value as its leftover

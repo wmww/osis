@@ -291,7 +291,7 @@ pub(crate) type Copies = BTreeSet<Option<u64>>;
 /// of a write still held is known). Invariant (§4.6, §4.7): an undo never extends a value's
 /// lifetime, and never writes back content gone by expiry or purge: what has expired by `wall`
 /// (the undo's `ts`) is stripped from `pre` first, and the caller strips what the node holds
-/// value-less (`remove_gone_writes`).
+/// gone (`remove_gone_writes`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mut pre: Fragment, schema: Option<&osis_schema::Schema>, ak: &Ak, wall: u64, expiry: &dyn Fn(&Dot) -> Option<u64>) -> Result<Option<(Fragment, CounterRange, Copies)>> {
     pre.remove_gone(&|d| expiry(d).is_some_and(|t| t <= wall));
@@ -349,7 +349,7 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, ts: Ts) -> Result<Option<(Vec<
     }
     let memory = m.view.memory;
     // the parts it undoes, each with the state before it as kept history gives it, without what
-    // the node holds value-less or what has expired by the undo's `ts`
+    // the node holds gone or what has expired by the undo's `ts`
     let wall = ts.wall_ms().0;
     let mut parts = Vec::new();
     let undone = undone_parts(tx, &target, ts)?;
@@ -1071,7 +1071,7 @@ mod tests {
     }
 
     // spec/commits.md §7, spec/crdt.md §8: a snapshot holds an expiring delta's writes
-    // value-less, so reaching it excuses nothing. A writes `j`; C puts `k` (expiring or not) and
+    // gone, so reaching it excuses nothing. A writes `j`; C puts `k` (expiring or not) and
     // snapshots the map (kept: `j` lives in it); A removes `k`, and a setting comes after, so
     // C's put is out of history: the undo writes `k` back from the snapshot only where `k` does
     // not expire.

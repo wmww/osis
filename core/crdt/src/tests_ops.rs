@@ -418,7 +418,7 @@ fn remove_then_put_same_key_round_trips_spec_5_6() {
 }
 
 
-/// §9, §4.7: S is the state as read now. A struct field whose only write went value-less reads
+/// §9, §4.7: S is the state as read now. A struct field whose only write is gone reads
 /// as absent, so the diff writes it again; a field whose value is still live is matched and not
 /// rewritten (it keeps its expiry).
 #[test]

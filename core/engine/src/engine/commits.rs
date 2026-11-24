@@ -149,14 +149,15 @@ impl Meta {
     pub fn stripped(&self, ai: usize) -> bool {
         matches!(self.hold(ai), Some(Hold::Leftover { .. }))
     }
-    /// Whether part `ai` is held as a leftover holding values (`Hold::Leftover::valued`).
-    pub fn valued(&self, ai: usize) -> bool {
-        matches!(self.hold(ai), Some(Hold::Leftover { valued: true, .. }))
+    /// Whether part `ai` is held as a leftover none of whose own writes are gone
+    /// (`Hold::Leftover::own_live`).
+    pub fn own_live(&self, ai: usize) -> bool {
+        matches!(self.hold(ai), Some(Hold::Leftover { own_live: true, .. }))
     }
-    /// Whether part `ai` is held as a leftover for its own writes gone value-less (expired,
-    /// purged): no values to keep, so no keep bounds.
-    pub fn bare(&self, ai: usize) -> bool {
-        matches!(self.hold(ai), Some(Hold::Leftover { valued: false, .. }))
+    /// Whether part `ai` is held as a leftover whose own writes are gone (expired, purged), for
+    /// the copies it carries: no values of its own to keep, so no keep bounds.
+    pub fn own_gone(&self, ai: usize) -> bool {
+        matches!(self.hold(ai), Some(Hold::Leftover { own_live: false, .. }))
     }
     /// Whether held part `ai` replaces its aspect whole (`Hold::Body::whole`).
     pub fn whole(&self, ai: usize) -> bool {

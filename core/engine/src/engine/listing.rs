@@ -6,7 +6,7 @@
 //! The listing rule, one at every address: a part is listed while it is in its aspect's read (a
 //! write of its own live, `delta_live`) or kept by its own aspect's history until its keep bound
 //! (`body_history_keep`), a purge tombstone while the part would be listed unpurged (its
-//! value-less writes are judged alike, never past its expiry), or this node's own invalid write. Replaced
+//! gone writes are judged alike, never past its expiry), or this node's own invalid write. Replaced
 //! with no history kept, expired, dropped (compacted), another node's invalid write: not listed,
 //! whatever this node still holds. So every node holding the same commits lists the same ones.
 
@@ -112,7 +112,7 @@ pub(crate) enum Here {
 fn part_here(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Here> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(Here::Dropped) };
     // a bare leftover (expired, purged) shows as what took its values, not as its read
-    let holds = m.holds(ai) && !m.bare(ai);
+    let holds = m.holds(ai) && !m.own_gone(ai);
     let dropped = m.body_gone(ai);
     let header = m.header.clone();
     Ok(if holds {
@@ -138,7 +138,7 @@ fn part_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<
 
 /// Whether part `ai` of `c` on `(tid, ak)` is in kept history at wall ms `now`: a write of it in
 /// the aspect's read (`delta_live`: its own writes, never another part's of its body, which keeps
-/// the bytes, not this part's listing; value-less writes count, so a purge tombstone of a live
+/// the bytes, not this part's listing; gone writes count, so a purge tombstone of a live
 /// write does) or kept by its own aspect's history (`body_history_keep`). By headers and the state alone.
 pub(crate) fn in_kept_history(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, now: u64) -> Result<bool> {
     let Some(written) = tx.core.ix.commits.get(c).filter(|m| m.aspect(tid, ak).is_some()).map(|m| m.view.ts) else { return Ok(false) };
@@ -174,7 +174,7 @@ fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize, itself: 
 
 /// Whether part `ai` of `c` is listed, with its validity and what is here of it; its body not
 /// read. A purged part is listed while it would be unpurged: not past its expiry, and in the read
-/// by its value-less writes or kept by its keep rule counted from its own `ts` (its body is gone,
+/// by its gone writes or kept by its keep rule counted from its own `ts` (its body is gone,
 /// so no death of its writes can be judged from it; its own `ts` is never later than its death, so
 /// a purge never lists a part retention no longer kept).
 pub(crate) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here)>> {

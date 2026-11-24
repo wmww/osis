@@ -284,11 +284,11 @@ pub(crate) fn persist(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     Ok(())
 }
 
-/// Lets go of the rows of commit `c`'s parts held with no content (dropped, or value-less):
+/// Lets go of the rows of commit `c`'s parts held with no content (dropped, or gone):
 /// nothing of them is encrypted again, and kept they would follow the bodies' churn
 /// (`Tx::put_commit`, with its record `m`).
 pub(crate) fn prune(tx: &mut Tx<'_>, c: &CommitId, m: &crate::engine::Meta) -> Result<()> {
-    let empty = |ai: usize| matches!(m.hold(ai), Some(Hold::Leftover { valued: false, .. } | Hold::Dropped(_)));
+    let empty = |ai: usize| matches!(m.hold(ai), Some(Hold::Leftover { own_live: false, .. } | Hold::Dropped(_)));
     if !(0..m.parts()).any(empty) {
         return Ok(());
     }
@@ -390,10 +390,10 @@ pub(crate) fn passes_on(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, ak: &
     Ok(own || established_genuine(tx, c, ai, t, under)?)
 }
 
-/// Whether held commit `c` holds no content of part `ai`: dropped, held value-less, or missing
+/// Whether held commit `c` holds no content of part `ai`: dropped, gone, or missing
 /// (nothing of it to pass on).
 fn holds_no_content(tx: &Tx<'_>, c: &CommitId, ai: usize) -> bool {
-    tx.core.ix.commits.get(c).is_some_and(|m| matches!(m.hold(ai), Some(Hold::Leftover { valued: false, .. } | Hold::Dropped(_) | Hold::Missing(_))))
+    tx.core.ix.commits.get(c).is_some_and(|m| matches!(m.hold(ai), Some(Hold::Leftover { own_live: false, .. } | Hold::Dropped(_) | Hold::Missing(_))))
 }
 
 /// The floor clause: of `under` (a part's openings), those under an epoch of thing `t` whose
@@ -429,7 +429,7 @@ fn opened_under_wrap(tx: &mut Tx<'_>, c: &CommitId, ai: usize, w: &Wrapping) -> 
 /// Whether this node may wrap a blob of commit `c` (its header) under an epoch of its own
 /// choosing (`w`): one with no content part, or one each of whose content parts it holds content
 /// of (its own: any) has a genuine opening under an epoch established here now, of the part's thing or
-/// of the wrap's (`opened_under_wrap`; a part dropped or held value-less keeps none); if an
+/// of the wrap's (`opened_under_wrap`; a part dropped or gone keeps none); if an
 /// entry's wrap of it opened here, one such wrap's epoch is established here now
 /// (`note_unwrapped`: kept whatever is dropped); and every content part on a thing whose secrets
 /// are the wrap actor's has an opening (or own record) under an epoch of floor at least the

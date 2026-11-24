@@ -636,7 +636,7 @@ fn a_value_of_another_shape_leaves_no_references_spec_data_model_8() {
 }
 
 // spec/data-model.md §8 Known references: a fire's references go when it expires (held as its
-// value-less leftover, with no state to strip)
+// own-gone leftover, with no state to strip)
 #[test]
 fn an_expired_fires_references_go_spec_data_model_8() {
     let mut lp = net(1, 0);

@@ -309,7 +309,7 @@ fn row_at(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts
         return Ok(None);
     }
     let h = m.header.clone();
-    if m.holds(ai) && !m.bare(ai) {
+    if m.holds(ai) && !m.own_gone(ai) {
         return super::bounds::held_date(tx, c, tid, ak);
     }
     Ok(super::purged_by(tx, &h, c, ai)?.map(|_| h.ts))
@@ -321,7 +321,7 @@ type Noted = (bool, bool, super::bounds::Form);
 
 /// `Noted` of part `ai` of `m`.
 fn noted(m: &crate::engine::Meta, ai: usize) -> Noted {
-    (m.holds(ai), m.valid_at(ai), (m.stripped(ai), m.bare(ai)))
+    (m.holds(ai), m.valid_at(ai), (m.stripped(ai), m.own_gone(ai)))
 }
 
 /// Whether a dated aspect's rows may lag its held set in the running transaction: a commit with
@@ -499,7 +499,7 @@ pub(crate) fn date_due(tx: &mut Tx<'_>) -> Result<()> {
 fn check_row(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, new: Option<Ts>) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(()) };
     let Some(ai) = m.aspect(tid, ak) else { return Ok(()) };
-    if tx.core.unchecked_tx || !(m.valid_at(ai) && m.holds(ai) && !m.bare(ai)) {
+    if tx.core.unchecked_tx || !(m.valid_at(ai) && m.holds(ai) && !m.own_gone(ai)) {
         return Ok(());
     }
     let h = m.header.clone();
@@ -522,7 +522,7 @@ fn rows_exact_on(tx: &mut Tx<'_>, key: &(Tid, Ak), when: &str) -> Result<()> {
     on.extend(tx.core.ix.leaving.get(key).into_iter().flatten().map(|p| p.1));
     for c in on {
         let want = match (&mut fresh, tx.core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(tid, ak)?)))) {
-            (Some(f), Some((m, ai))) if m.valid_at(ai) && m.holds(ai) && !m.bare(ai) => f.date(&c)?,
+            (Some(f), Some((m, ai))) if m.valid_at(ai) && m.holds(ai) && !m.own_gone(ai) => f.date(&c)?,
             (Some(_), Some((m, ai))) if m.valid_at(ai) => {
                 let h = m.header.clone();
                 super::purged_by(tx, &h, &c, ai)?.map(|_| h.ts)
