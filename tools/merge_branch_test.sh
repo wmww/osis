@@ -5,7 +5,7 @@
 # gate: a conflict in notes/handoff.md alone takes main's side, any other stops before the gate as
 # does a policy failure; the gate's exit, log and summary come back. land: lands, deletes the pushed
 # copy, releases the worktree and deletes the branch; refuses after a failed gate unless --fixed or
-# its kept summary, read again against main's known failures, passes; when
+# its kept summary, read again against main's known failures and cost lines, passes; when
 # main moved, rebases and runs clippy and the tests of the packages both sides changed only, a failure
 # stopping the landing. Exit 1 on a mismatch.
 set -eu
@@ -50,8 +50,10 @@ printf '%s\n' 'echo "== test stages: 1 run of 1, 0 failed"' 'echo "== gate exit 
     'if [ -n "${GATE_KEEP:-}" ]; then mkdir -p "$GATE_KEEP" && touch "$GATE_KEEP/sel" "$GATE_KEEP/sel.res"' \
     '  echo "== summary again (kept): python3 tools/gate_failures.py $GATE_KEEP/sel $GATE_KEEP/sel.res"; fi' \
     'exit "${GATE_RC:-0}"' > tools/gate.sh
-# the summary: KNOWN only (exit 3) when ROOT's known list names probe/x, else NEW (exit 1)
-printf 'import sys\nsys.exit(3 if "probe/x " in open(sys.argv[3] + "/tools/known_failures.txt").read() else 1)\n' > tools/gate_failures.py
+# the summary: KNOWN only (exit 3) when ROOT's known list names probe/x and its cost list holds
+# probe/b at 2 or more (or not at all), else NEW (exit 1)
+printf '%s\n' 'import re, sys' 'r = sys.argv[3] + "/tools/"' 'b = re.findall(r"^probe/b (\S+)$", open(r + "test_cost.txt").read(), re.M)' \
+    'sys.exit(3 if "probe/x " in open(r + "known_failures.txt").read() and all(float(g) >= 2 for g in b) else 1)' > tools/gate_failures.py
 printf '[workspace]\nmembers = ["core/*"]\ndefault-members = ["core/*"]\n' > Cargo.toml
 for p in x y; do printf '[package]\nname = "%s"\n' $p > core/$p/Cargo.toml; printf '1\n2\n3\n4\n5\n' > core/$p/f; done
 echo base > notes/handoff.md
@@ -116,6 +118,21 @@ git add issues/p.md tools/known_failures.txt && git commit -qm listed && git pus
 "$mb" land t7 > /dev/null 2> "$d/err" && rc=0 || rc=$?
 check "failed gate, listed on main since: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -1 main)" "0 t7"
 check "failed gate, listed: re-read said" "$(grep -c 'read again against origin/main.s known failures exits 3' "$d/err")" "1"
+rm -f "$CARGO_LOG"
+git fetch -q
+
+# land after a failed gate whose NEW-COST main raised since: the re-read takes main's cost line
+git checkout -q --detach origin/main && printf 'probe/a 5\nprobe/b 1\n' > tools/test_cost.txt
+git add tools/test_cost.txt && git commit -qm costs && git push -q origin HEAD:main && git fetch -q
+branch t8 core/x/f
+GATE_RC=1 GATE_KEEP="$d/keep8" "$mb" gate t8 > /dev/null 2>&1 && rc=0 || rc=$?
+before=$(tip)
+"$mb" land t8 > /dev/null 2>&1 && rc=0 || rc=$?
+check "failed gate, cost unraised: land refused" "$rc $(tip)" "1 $before"
+git checkout -q --detach origin/main && printf 'probe/a 5\nprobe/b 3\n' > tools/test_cost.txt
+git commit -qam raised && git push -q origin HEAD:main && git fetch -q
+"$mb" land t8 > /dev/null 2> "$d/err" && rc=0 || rc=$?
+check "failed gate, cost raised on main since: landed" "$rc $(git --git-dir="$d/origin.git" log --format=%s -1 main)" "0 t8"
 rm -f "$CARGO_LOG"
 git fetch -q
 

@@ -13,8 +13,9 @@ The task loop), every step checked and reported, run from any checkout of the re
   land NAME [--fixed]     in W: refused unless W is clean and its last gate exited 0 or 3 (with
       --fixed: a NEW failure or failed check was fixed and its tests rerun by name), or its summary
       read again (the files the gate kept) against the known failures the landing carries (HEAD's
-      tools/known_failures.txt merged with origin/main's, as the rebase merges them) exits 0 or 3:
-      its NEW failures shown on main and listed there since; prints the
+      tools/known_failures.txt merged with origin/main's, as the rebase merges them, and their
+      tools/test_cost.txt lines merged per binary) exits 0 or 3: its NEW failures and costs shown
+      on main and listed or raised there since; prints the
       commits after the checked HEAD (refused if HEAD is no descendant of it); if origin/main moved
       past the checked base, rebases as gate does, then `cargo clippy --all-targets -- -D warnings`,
       the same with `-p` for each non-default package both sides changed, and `cargo test -p` each
@@ -212,12 +213,35 @@ def checks(w, base, head):
 
 
 KNOWN = "tools/known_failures.txt"
+COST = "tools/test_cost.txt"
+
+
+def merge_costs(base, head, main):
+    """tools/test_cost.txt's lines merged three ways over the gated base: per binary HEAD's line,
+    or MAIN's where only main changed it, the larger where both did; a line either side removed
+    stays removed."""
+    lines = lambda t: {f[0]: f[1] for l in t.splitlines() if len(f := l.split()) == 2 and not f[0].startswith("#")}
+    b, h, m = lines(base), lines(head), lines(main)
+    out = []
+    for name in dict.fromkeys([*h, *m]):
+        hv, mv, bv = h.get(name), m.get(name), b.get(name)
+        if (hv is None and bv is not None) or (mv is None and bv is not None):
+            continue
+        if hv is None or hv == bv:
+            v = mv
+        elif mv is None or mv == bv:
+            v = hv
+        else:
+            v = max(hv, mv, key=float)
+        out.append(f"{name} {v}\n")
+    return "".join(out)
 
 
 def reread(w, rec, main):
     """(exit, summary) of the last gate's summary read again (tools/gate_failures.py on the files the
     gate kept) against the known list the landing carries: HEAD's merged with MAIN's over the gated
-    base (tools/known_failures_merge.py), an issue kept when MAIN has it or the branch added it.
+    base (tools/known_failures_merge.py), an issue kept when MAIN has it or the branch added it,
+    and the cost lines merged likewise (merge_costs).
     None when there is nothing to read: no kept files, or both sides changed one test's lines."""
     log = rec.get("log")
     text = open(log, errors="replace").read() if log and os.path.exists(log) else ""
@@ -236,8 +260,8 @@ def reread(w, rec, main):
         os.makedirs(os.path.join(root, "tools"))
         with open(os.path.join(root, KNOWN), "w") as f:
             f.write(merged)
-        with open(os.path.join(root, "tools", "test_cost.txt"), "w") as f:
-            f.write(show(rec["head"], "tools/test_cost.txt").stdout)
+        with open(os.path.join(root, COST), "w") as f:
+            f.write(merge_costs(*(show(rev, COST).stdout for rev in (rec["base"], rec["head"], main))))
         for line in kfm.records(merged)[1]:
             issue = os.path.join(root, line.split()[2])
             os.makedirs(os.path.dirname(issue), exist_ok=True)
