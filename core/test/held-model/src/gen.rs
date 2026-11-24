@@ -347,8 +347,8 @@ pub fn history(seed: u64, n: usize) -> Held {
             let aspect = r.pick(&ASPECTS);
             let h = prefix(author);
             let o = evaluate(&h);
-            // a snapshot carries no write of an expiring delta (spec/crdt.md §8)
-            let f = snapshot_state(&h, &o, thing, aspect);
+            // a snapshot carries the state as it reads once every expiring write ends (spec/crdt.md §8)
+            let f = snapshot_state(&o, thing, aspect);
             Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, PurgeBy::Writer, Delta::Writes(f))], ..base(id, author, ts) }
         } else if roll < 31 && !commits.is_empty() {
             // a creation's purge destroys the thing: drawn less often

@@ -144,11 +144,27 @@ pub(crate) fn carried_meets(core: &Core, tid: &Tid, ak: &Ak, own: &[Owned]) -> b
     core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|s| s.4.meets(own))
 }
 
-/// The state of `(tid, ak)` a snapshot of it carries: this node's state without every write whose
-/// lifetime ends (spec/crdt.md §4.7, §8: an unexpiring snapshot carries no write of a delta with
-/// an expiry, nor one it holds only from an expiring snapshot, so its copy never outlives the
-/// write; so it covers no such delta, nor what only those writes superseded, `covered`).
+/// The state of `(tid, ak)` a snapshot of it carries: this node's state as it reads once every
+/// write with an end has ended (spec/crdt.md §4.7, §8 Values): no write of a delta with an
+/// expiry, nor one held only from an expiring snapshot (`expiring_writes`), so its copy never
+/// outlives the write, and every write only those superseded, so a node holding it reads as
+/// without them. No write with an end held: the stored state; else joined from the held bodies
+/// (`apply::joined_by_end`). `None`: no state.
 pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<SnapState>> {
+    let Some(stored) = SnapState::stored(tx, tid, ak, Carries::AllBut(Vec::new()))? else { return Ok(None) };
+    let expiring = expiring_writes(tx, tid, ak)?;
+    if expiring.is_empty() {
+        return Ok(Some(stored));
+    }
+    let (lasting, _) = crate::apply::joined_by_end(tx, tid, ak, &|d| super::sorted_owns(&expiring, d).then_some(0), false)?;
+    Ok(Some(SnapState::from(lasting)))
+}
+
+/// The writes of `(tid, ak)` with an end, sorted (`sorted_owns`: a lookup per dot): every held
+/// delta's with an expiry, and those held from expiring snapshots alone (`expiring_copies`: a
+/// holder granted without history holds no delta of them; their copies end at its expiry,
+/// spec/crdt.md §4.7).
+fn expiring_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>> {
     let mut expiring: Vec<Owned> = tx
         .core
         .ix
@@ -164,13 +180,10 @@ pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Opti
             Owned::of(&m.header, c, ai)
         })
         .collect();
-    // writes held from an expiring snapshot alone (a holder granted without history holds no
-    // delta of them): its copies end at its expiry (spec/crdt.md §4.7)
     expiring.extend(expiring_copies(tx, tid, ak)?.into_values().flatten());
-    // sorted: a lookup per dot (`sorted_owns`), not a scan of every expiring delta
     expiring.sort();
     expiring.dedup();
-    SnapState::stored(tx, tid, ak, Carries::AllBut(expiring))
+    Ok(expiring)
 }
 
 /// A state as its snapshot carries it (`snapshot_state`, `write_expiring`): its writes as
@@ -343,28 +356,50 @@ pub(crate) fn expiring_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTr
     Ok(out)
 }
 
-/// State at a cut (spec/crypto.md §4), beside the snapshot from this node's whole state, which
-/// carries no expiring write: for each expiry still ahead of a body of `owed` with live writes, a
-/// snapshot expiring then, carrying of this node's state the writes the bodies ending then give
-/// (`expiring_carriers`, spec/crdt.md §8). It ends with them at every node, read or not, so a
-/// holder granted without history reads each write while it lives and never after. Its tables claim nothing (frontiers 0, nothing absorbed): it carries
-/// part of the state. The snapshots written.
+/// State at a cut (spec/crypto.md §4), beside the snapshot from this node's whole state
+/// (`snapshot_state`): for each expiry still ahead of a body of `owed` with live writes, a
+/// snapshot expiring then carrying the writes the bodies ending then give (`expiring_carriers`)
+/// as this node's state reads just before then (spec/crdt.md §8 Values): the join of the held
+/// bodies without the writes ending earlier, so what a write ending later superseded is in none.
+/// Joined with the lasting one, the holder granted without history reads at every time what this
+/// state reads then (each write while it lives, what it superseded after), and no copy outlives
+/// its write: each ends with its writes at every node, read or not. Its tables claim nothing
+/// (frontiers 0, nothing absorbed): it carries part of the state. The snapshots written.
 pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSet<CommitId>) -> Result<Vec<CommitId>> {
     let carriers = expiring_carriers(tx, tid, ak)?;
     if carriers.is_empty() {
         return Ok(Vec::new());
     }
     let due: BTreeSet<u64> = owed.iter().filter_map(|c| tx.core.ix.commits.get(c).and_then(|m| m.header.expires)).filter(|t| carriers.contains_key(t)).collect();
-    let node = tx.core.me();
+    if due.is_empty() {
+        return Ok(Vec::new());
+    }
     // each expiry's carried writes, sorted (`sorted_owns`: a lookup per dot)
-    let sorted = |mut v: Vec<Owned>| {
-        v.sort();
-        v.dedup();
-        v
-    };
+    let carriers: BTreeMap<u64, Vec<Owned>> = carriers
+        .into_iter()
+        .map(|(t, mut v)| {
+            v.sort();
+            v.dedup();
+            (t, v)
+        })
+        .collect();
+    // a write with an end none carries (past, or not live) ends before any
+    let expiring = expiring_writes(tx, tid, ak)?;
+    let ends = |d: &osis_crdt::Dot| carriers.iter().find(|(_, v)| super::sorted_owns(v, d)).map(|(t, _)| *t).or_else(|| super::sorted_owns(&expiring, d).then_some(0));
+    let (mut st, mut by_end) = crate::apply::joined_by_end(tx, tid, ak, &ends, true)?;
+    // latest first: the state just before each expiry holds the writes ending then and later
+    let mut snaps = Vec::new();
+    for (t, own) in carriers.iter().rev() {
+        if let Some(f) = by_end.remove(t) {
+            st.join(f);
+        }
+        if due.contains(t) {
+            snaps.push((*t, SnapState { skeleton: st.clone(), pages: None, carries: Carries::Only(own.clone()) }));
+        }
+    }
+    let node = tx.core.me();
     let mut out = Vec::new();
-    for t in due {
-        let Some(own) = carriers.get(&t).cloned().map(sorted) else { continue };
+    for (t, snap) in snaps.into_iter().rev() {
         // stamped at or past its expiry (this node's clock ahead of its wall clock: a peer's
         // fast clock read), a snapshot ending then is invalid (spec/commits.md §6) and its value
         // has ended by the writer's clock: none is written, so its copy never outlives the value
@@ -372,16 +407,15 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
         if t <= ts.wall_ms().0 {
             continue;
         }
-        let Some(st) = SnapState::stored(tx, tid, ak, Carries::Only(own))? else { return Ok(out) };
         let mut any = false;
-        st.each_piece(tx, tid, ak, &mut |f| {
+        snap.each_piece(tx, tid, ak, &mut |f| {
             any = !f.writes().is_empty();
             any
         })?;
         if !any {
             continue;
         }
-        out.push(build_snapshot(tx, *tid, ak.clone(), st, ts, node, Frontiers::default(), Default::default(), Some(t), false)?);
+        out.push(build_snapshot(tx, *tid, ak.clone(), snap, ts, node, Frontiers::default(), Default::default(), Some(t), false)?);
     }
     Ok(out)
 }

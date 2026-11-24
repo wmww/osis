@@ -91,8 +91,11 @@ pub struct Outcome {
     pub gone: BTreeSet<DeltaRef>,
     /// What each aspect reads (spec/crdt.md §4.4), None absent.
     pub reads: BTreeMap<(ThingId, Aspect), Option<Value>>,
-    /// Canonical state per aspect (what a snapshot from this node's whole state carries).
+    /// Canonical state per aspect.
     pub states: BTreeMap<(ThingId, Aspect), Frag>,
+    /// Per aspect, the state as it reads once every expiring write has ended: the join of the
+    /// bodies each without them (spec/crdt.md §8 Values), what a snapshot without an expiry carries.
+    pub lasting: BTreeMap<(ThingId, Aspect), Frag>,
     /// Fate of every held body.
     pub fates: BTreeMap<PartRef, Fate>,
     /// Held valid bodies holding a write the canonical state does not (replaced content).
@@ -776,6 +779,8 @@ fn judge(h: &Held, ov: &Overlap) -> (Outcome, Timeline) {
         bodies.extend(snaps);
         let bodies: Vec<(CommitId, Frag)> = bodies.into_iter().map(|(id, f)| (id, dots.strip(t, a, &f, &|c| is_gone(c, t, a)))).collect();
         let st = join(bodies.iter().map(|x| x.1.clone()));
+        let expiring = |c: CommitId| h.commits.iter().any(|k| k.id == c && k.expires.is_some());
+        o.lasting.insert((t, a), join(bodies.iter().map(|x| dots.strip(t, a, &x.1, &expiring))));
         o.reads.insert((t, a), st.read());
         o.states.insert((t, a), st);
         contrib.insert((t, a), bodies);
@@ -1093,18 +1098,18 @@ fn fate(
 /// purge-by `writer`: what a writer owes for an `owed` body (`Outcome::owed`), or writes to
 /// compact. A snapshot carries no write of an expiring delta (spec/crdt.md §8).
 pub fn cover(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect, id: CommitId, ts: u64) -> Commit {
-    let f = snapshot_state(h, o, thing, aspect);
+    let f = snapshot_state(o, thing, aspect);
     let part = Part { thing, aspect, purge_by: PurgeBy::Writer, body: Body::Held(Delta::Writes(f)), stripped: Default::default(), replaces: None };
     // along a path holding the right over what it owes there, else one giving `me` write
     let path = o.cover_along.get(&(thing, aspect)).or(o.my_paths.get(&thing)).cloned().unwrap_or_default();
     Commit { id, signer: h.me, author: h.me, paths: [(thing, path)].into(), ts, expires: None, kind: CommitKind::Snapshot, parts: vec![part], purge: vec![], frontier: None, undoes: None, own_cover: false, boxes: vec![] }
 }
 
-/// What a snapshot of an aspect carries: the state without the writes of expiring deltas
-/// (spec/crdt.md §8).
-pub fn snapshot_state(h: &Held, o: &Outcome, thing: ThingId, aspect: Aspect) -> Frag {
-    let st = o.states.get(&(thing, aspect)).cloned().unwrap_or_else(|| Frag::empty(0));
-    Dots::new(h).strip(thing, aspect, &st, &|c| h.commits.iter().any(|k| k.id == c && k.expires.is_some()))
+/// What a snapshot of an aspect carries: the state as it reads once every expiring write has
+/// ended (spec/crdt.md §8 Values: no write of an expiring delta, and every write only such writes
+/// superseded).
+pub fn snapshot_state(o: &Outcome, thing: ThingId, aspect: Aspect) -> Frag {
+    o.lasting.get(&(thing, aspect)).cloned().unwrap_or_else(|| Frag::empty(0))
 }
 
 /// The join of fragments, pruned (spec/crdt.md §4.1, §7); nothing is the empty register.

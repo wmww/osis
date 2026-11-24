@@ -967,6 +967,62 @@ fn each_cut_replaces_the_last_cuts_expiring_snapshots_spec_commits_5() {
     }
 }
 
+/// Peer `i` writes `op` at key `k` on `g`'s `x:m.0` (none: the map), expiring at `t` if given.
+fn write_at(lp: &mut LocalPeer, i: usize, g: Tid, k: Option<&str>, op: osis_crdt::Op, t: Option<u64>) {
+    let ak = osis_base::Ak::new("x:m.0").unwrap();
+    let mut m = crate::Mutation::new();
+    m.op(g, &ak, osis_crdt::PathOp { path: k.map(|k| osis_crdt::PathSeg::Key(osis_base::Value::Str(k.into()))).into_iter().collect(), op }).unwrap();
+    if let Some(t) = t {
+        m.expires(g, &ak, osis_base::WallMs(t)).unwrap();
+    }
+    lp.peers[i].commit(m).unwrap();
+}
+
+/// What peer `i` reads on `g`'s `x:m.0` after its due timers ran.
+fn read_now(lp: &mut LocalPeer, i: usize, g: Tid) -> Option<osis_base::Value> {
+    lp.peers[i].tick().unwrap();
+    lp.peers[i].engine.get(&g, &osis_base::Ak::new("x:m.0").unwrap()).unwrap()
+}
+
+// spec/crdt.md §8 Values, spec/crypto.md §4 State at a cut: A puts "k" and sets "v" to 1, both
+// lasting; then removes "k" by a delta expiring at T1, sets "v" to 2 expiring at T2 and to 3
+// expiring at T1 (T1 < T2); then cuts for N, which holds the cut's snapshots alone. At every time
+// N reads what P, holding the history, reads: "v" 3, then 2 past T1 with "k" back, then 1 past
+// T2. Fails with each snapshot cut from the state as it reads now (past T1 N reads neither "k"
+// nor "v").
+#[test]
+fn cut_holder_reads_what_expiring_writes_superseded_once_they_end_spec_crdt_8() {
+    use osis_base::Value as V;
+    use osis_crdt::Op;
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Read)]);
+    let now = lp.peers[0].engine.now().0;
+    let (t1, t2) = (now + 100_000, now + 200_000);
+    write_at(&mut lp, 0, g, Some("k"), Op::Set(V::Int(0)), None);
+    write_at(&mut lp, 0, g, Some("v"), Op::Set(V::Int(1)), None);
+    write_at(&mut lp, 0, g, None, Op::Remove(V::Str("k".into())), Some(t1));
+    write_at(&mut lp, 0, g, Some("v"), Op::Set(V::Int(2)), Some(t2));
+    write_at(&mut lp, 0, g, Some("v"), Op::Set(V::Int(3)), Some(t1));
+    cut_for(&mut lp, 0, g, tids[2], Role::Read);
+    // P syncs with A; N gets A's commits but its deltas on `x:m.0`, which it never opens
+    // (spec/crypto.md §5 Passing on): the cut's snapshots carry that aspect's state to it
+    lp.sync(0, 1).unwrap();
+    let ak = osis_base::Ak::new("x:m.0").unwrap();
+    let delta_on_m = |h: &osis_commit::Header| !h.kind.is_compaction() && h.aspects.iter().any(|a| a.tid == g && a.ak == ak);
+    for c in lp.peers[0].engine.commit_ids() {
+        let h = lp.peers[0].engine.header(&c).unwrap();
+        if !delta_on_m(&h) {
+            let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+            let _ = lp.peers[2].receive(&pk.bytes, pk.blobs.clone());
+        }
+    }
+    let map = |kv: &[(&str, i64)]| Some(V::Map(kv.iter().map(|(k, v)| (V::Str(k.to_string()), V::Int(*v))).collect()));
+    for (at, want) in [(now, map(&[("v", 3)])), (t1, map(&[("k", 0), ("v", 2)])), (t2, map(&[("k", 0), ("v", 1)]))] {
+        lp.advance(at.saturating_sub(lp.peers[0].engine.now().0) + 1_000);
+        assert_eq!(read_now(&mut lp, 1, g), want, "P, holding the history, past {at}");
+        assert_eq!(read_now(&mut lp, 2, g), want, "N, holding the cut, past {at}");
+    }
+}
+
 // spec/crdt.md §4.7, §8, spec/commits.md §5 Covered, §6: randomized differential over expiring
 // snapshots. A writes lasting and expiring map keys and register values, compacts, and writes
 // the expiring snapshots a cut writes (`write_expiring`); H, a writer, forges snapshots of its

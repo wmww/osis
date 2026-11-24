@@ -1373,6 +1373,44 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut carrying: Option<
     Ok((!st.is_empty()).then_some(st))
 }
 
+/// The join of the held valid bodies of `(tid, ak)`, each without the writes gone here, as
+/// `rebuilt` joins them, split by `ends` (spec/crdt.md §8 Values): the writes it gives no end
+/// joined, and with `split`, each end's writes joined apart (each without the others). What a
+/// snapshot carries reads off these: the first is the state once every write `ends` names has
+/// ended. Every body is read, the state loaded whole: a snapshot of an aspect holding writes with
+/// an end (`retention::snapshot_state`) and a cut's expiring snapshots alone ask it.
+pub(crate) fn joined_by_end(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ends: &dyn Fn(&osis_crdt::Dot) -> Option<u64>, split: bool) -> Result<(Fragment, BTreeMap<u64, Fragment>)> {
+    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().map(|x| x.1).collect()).unwrap_or_default();
+    let gone = tx.core.ix.gone.get(&(*tid, ak.clone())).filter(|v| !v.is_empty()).cloned();
+    let (mut lasting, mut by_end) = (Fragment::default(), BTreeMap::<u64, Fragment>::new());
+    for c in &held {
+        let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak)) else { continue };
+        if !super::stores_part(tx, c, ai)? || !tx.core.ix.commits.get(c).is_some_and(|m| m.valid_at(ai)) {
+            continue;
+        }
+        super::each_held_piece(tx, c, ai, &mut |_, mut f| {
+            if let Some(v) = &gone {
+                f.remove_gone(&|d| crate::retention::sorted_owns(v, d));
+            }
+            let at: BTreeSet<u64> = f.writes().iter().filter_map(|(d, _)| ends(d.origin())).collect();
+            if split {
+                for t in &at {
+                    let mut g = f.clone();
+                    g.remove_writes(&|d| ends(d) != Some(*t));
+                    by_end.entry(*t).or_default().join(g);
+                }
+            }
+            if !at.is_empty() {
+                f.remove_writes(&|d| ends(d).is_some());
+            }
+            lasting.join(f);
+            Ok(())
+        })?;
+    }
+    lasting.compact();
+    Ok((lasting, by_end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Owned, OwnedSet};

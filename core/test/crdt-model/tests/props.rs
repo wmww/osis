@@ -1366,3 +1366,159 @@ fn map_dot_records_one_entry_spec_5_6() {
         assert_eq!(j.read(), Some(Value::map(vec![(Value::Int(2), Value::Int(9))])));
     }
 }
+
+/// How a writer cuts its state into snapshots for a holder granted without history (spec/crdt.md §8 Values,
+/// spec/crypto.md §4 State at a cut): one lasting snapshot and one expiring snapshot per expiry T.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Cut {
+    /// Each from the writer's state as it reads now: the lasting one without the expiring writes, each expiring
+    /// one restricted to its expiry's writes. A write only an expiring write superseded is in neither.
+    Now,
+    /// Each as the writer's state reads just before it ends: the lasting one with every expiring write gone,
+    /// each expiring one with the writes ending before it gone, restricted to its expiry's writes.
+    AsItEnds,
+}
+
+/// A commit of a cut history: its delta, range, and expiry (`None`: lasting).
+struct Timed {
+    delta: Frag,
+    range: Range,
+    expires: Option<u64>,
+}
+
+/// The expiry of the commit holding origin dot `d` (`None`: lasting).
+fn expiry_of(h: &[Timed], d: &Dot) -> Option<u64> {
+    h.iter().find(|c| in_ranges(std::slice::from_ref(&c.range))(d)).and_then(|c| c.expires)
+}
+
+/// The writer's state at clock `t` (§4.7): the join of every body, each without the writes ended by `t`.
+fn state_at(h: &[Timed], t: u64) -> Option<Frag> {
+    held(&h.iter().map(|c| c.delta.clone()).collect::<Vec<_>>(), &|d| expiry_of(h, d).is_some_and(|x| x <= t))
+}
+
+/// The snapshots a writer holding `h` writes at clock 0 for a cut, by `rule`: the lasting one, then each
+/// expiring one with its expiry.
+fn cut(h: &[Timed], rule: Cut) -> (Option<Frag>, Vec<(u64, Frag)>) {
+    let bodies: Vec<Frag> = h.iter().map(|c| c.delta.clone()).collect();
+    let ts: std::collections::BTreeSet<u64> = h.iter().filter_map(|c| c.expires).collect();
+    let only = |f: Option<Frag>, t: u64| {
+        f.map(|mut f| {
+            f.keep_writes(&|d| expiry_of(h, d) == Some(t));
+            f.prune(None);
+            f
+        })
+    };
+    let lasting = match rule {
+        Cut::Now => held(&bodies, &|_| false).map(|mut f| {
+            f.remove_gone(&|d| expiry_of(h, d).is_some());
+            f
+        }),
+        Cut::AsItEnds => held(&bodies, &|d| expiry_of(h, d).is_some()),
+    };
+    let expiring = ts
+        .iter()
+        .filter_map(|&t| match rule {
+            Cut::Now => only(held(&bodies, &|_| false), t),
+            Cut::AsItEnds => only(held(&bodies, &|d| expiry_of(h, d).is_some_and(|x| x < t)), t),
+        }
+        .map(|f| (t, f)))
+        .collect();
+    (lasting, expiring)
+}
+
+/// A cut by `rule` against the history it is cut from: at every clock `t`, a holder of the cut's snapshots alone
+/// (each expiring one dropped at its T) reads what the writer holding the history reads (from now: the current
+/// state, and every write that reads again when what superseded it ends); and a node holding the lasting snapshot
+/// and any of the expiring deltas reads as one holding those and the lasting deltas (§4.7 Snapshots: as without the
+/// others). `Err` names the first difference.
+fn cut_reads_as_history(h: &[Timed], rule: Cut, r: &mut Rng) -> Result<(), String> {
+    let (lasting, expiring) = cut(h, rule);
+    let last_t = h.iter().filter_map(|c| c.expires).max().unwrap_or(0);
+    let read = |f: Option<Frag>| f.and_then(|f| f.read());
+    for t in 0..=last_t {
+        let held_cut: Vec<Frag> = lasting.iter().cloned().chain(expiring.iter().filter(|e| e.0 > t).map(|e| e.1.clone())).collect();
+        let (got, want) = (read(held(&held_cut, &|_| false)), read(state_at(h, t)));
+        if got != want {
+            return Err(format!("{rule:?} at t {t}: the cut holder reads {got:?}, the history {want:?}"));
+        }
+    }
+    for _ in 0..4 {
+        let some: Vec<&Timed> = h.iter().filter(|c| c.expires.is_some() && r.chance(1, 2)).collect();
+        let with_lasting: Vec<Frag> = lasting.iter().cloned().chain(some.iter().map(|c| c.delta.clone())).collect();
+        let with_history: Vec<Frag> = h.iter().filter(|c| c.expires.is_none()).chain(some.iter().copied()).map(|c| c.delta.clone()).collect();
+        let (got, want) = (read(held(&with_lasting, &|_| false)), read(held(&with_history, &|_| false)));
+        if got != want {
+            return Err(format!("{rule:?}: the lasting snapshot with {} expiring deltas reads {got:?}, as without the others {want:?}", some.len()));
+        }
+    }
+    Ok(())
+}
+
+/// A random history of `ty` for a cut: three writers, each commit lasting or expiring at 1 to 3.
+fn timed_history(seed: u64, ty: &Ty) -> Vec<Timed> {
+    let mut r = Rng(seed | 1);
+    let sources = (1..=3).map(|i| Source::session(i, 0)).collect();
+    let rounds = 3 + r.below(4);
+    crdt_model::gen::history(&mut r, std::slice::from_ref(ty), sources, rounds, false, true, false)
+        .into_iter()
+        .map(|c| Timed { range: range(&c.w), delta: c.delta, expires: r.chance(1, 2).then(|| 1 + r.below(3) as u64) })
+        .collect()
+}
+
+fn cut_types() -> [Ty; 4] {
+    [
+        kitchen_sink(),
+        Ty::Text,
+        Ty::Map(Box::new(Ty::Register), Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect()))),
+        Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect()))),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(64), .. ProptestConfig::default() })]
+
+    /// spec/crdt.md §8 Values, spec/crypto.md §4 State at a cut (`cut_reads_as_history`): snapshots cut as each
+    /// reads just before it ends give the holder granted without history what the history gives, at every clock.
+    #[test]
+    fn cut_reads_as_history_spec_8(seed in any::<u64>()) {
+        let tys = cut_types();
+        let h = timed_history(seed, &tys[(seed % 4) as usize]);
+        let r = cut_reads_as_history(&h, Cut::AsItEnds, &mut Rng(seed ^ 7));
+        prop_assert!(r.is_ok(), "{}", r.unwrap_err());
+    }
+}
+
+/// Negative control of `cut_reads_as_history_spec_8`: snapshots cut from the state as it reads now lose what an
+/// expiring write superseded, in every type.
+#[test]
+fn cut_from_the_state_now_misses_revived_writes() {
+    let tys = cut_types();
+    for (i, ty) in tys.iter().enumerate() {
+        let failed = (0..200u64).map(|s| s * 4 + i as u64).any(|seed| cut_reads_as_history(&timed_history(seed, ty), Cut::Now, &mut Rng(seed ^ 7)).is_err());
+        assert!(failed, "{ty:?}: the control finds no world");
+    }
+}
+
+/// spec/crdt.md §8 Values (issue's example): "k" put lasting, removed by a delta expiring at 2; a register written
+/// lasting at 1, then at 2 expiring at 3, then at 3 expiring at 1: past each T the cut holder reads what the history
+/// reads, only when each snapshot is cut as it reads just before it ends.
+#[test]
+fn cut_carries_what_expiring_writes_superseded() {
+    let vt = Ty::Struct([(1, Ty::Register)].into_iter().collect());
+    let mut a = Writer::new(Source::session(1, 0), 1 << 16, 1);
+    let put = ops::map_put(&mut a, None, &vt, &Value::Str("k".into()), &Value::fields(vec![(1, Value::Int(1))])).unwrap();
+    let mut b = Writer::new(Source::session(2, 0), 2 << 16, 1);
+    let rm = ops::map_remove(&mut b, Some(&put), &Value::Str("k".into())).unwrap();
+    let map = [Timed { delta: put, range: range(&a), expires: None }, Timed { delta: rm, range: range(&b), expires: Some(2) }];
+
+    let mut w = [1u8, 2, 3].map(|i| Writer::new(Source::session(i, 0), (i as u64) << 16, 1));
+    let reg: Vec<Timed> = [(0, None), (1, Some(3)), (2, Some(1))]
+        .into_iter()
+        .map(|(i, expires)| Timed { delta: ops::create(&mut w[i], &Ty::Register, &Value::Int(i as i64)), range: range(&w[i]), expires })
+        .collect();
+    for h in [&map[..], &reg[..]] {
+        let mut r = Rng(1);
+        assert!(cut_reads_as_history(h, Cut::Now, &mut r).is_err(), "the control misses a revived write");
+        cut_reads_as_history(h, Cut::AsItEnds, &mut r).unwrap();
+    }
+}
