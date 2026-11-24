@@ -36,6 +36,20 @@ impl Certs {
         }
     }
 
+    /// Adds `other`'s commits, headers, mintings and records, by reference.
+    pub fn extend_from(&mut self, other: &Certs) {
+        for (c, p) in &other.commits {
+            if !p.is_empty() {
+                self.commits.entry(*c).or_default().extend(p.iter().copied());
+            }
+        }
+        self.headers.extend(other.headers.iter().copied());
+        for (c, ts) in &other.mintings {
+            self.mintings.entry(*c).or_default().extend(ts.iter().copied());
+        }
+        self.records.extend(other.records.iter().copied());
+    }
+
     /// Adds `other`'s commits, headers, mintings and records.
     pub fn extend(&mut self, other: Certs) {
         for (c, p) in other.commits {
@@ -169,14 +183,8 @@ impl Engine {
     /// unit and not `g` itself; who writes them: the unit's writers write the strongs, `x`'s
     /// admins the role.
     pub(crate) fn stubs_of(&mut self, g: &Tid) -> BTreeSet<Tid> {
-        let unit = self.sync_unit(g);
-        let mut targets = BTreeSet::new();
-        for t in unit.iter() {
-            let refs = self.read(|tx| crate::engine::refs::from(tx, t)).unwrap_or_default();
-            targets.extend(refs.into_iter().filter(|r| crate::engine::refs::holds_target(r.kind, &r.ak)).map(|r| r.target));
-        }
         let core = &self.core;
-        targets.into_iter().filter(|y| y != g && !unit.contains(y) && core.counts_independent(y) && !core.keys_open(g, y) && core.keyed_role_now(g, y) >= Some(osis_base::Role::Sync)).collect()
+        core.ix.closure.beyond(g).into_iter().filter(|y| y != g && !core.ix.closure.unit_holds(g, y) && core.counts_independent(y) && !core.keys_open(g, y) && core.keyed_role_now(g, y) >= Some(osis_base::Role::Sync)).collect()
     }
 
     /// What `g`'s sync IDs carry beside bodies (`sync_certificates`), whether or not this node
@@ -300,8 +308,8 @@ impl Engine {
         }
     }
 
-    /// To a fixed point, every thing whose record `out` carries gets the records up its record
-    /// chain and its mintings (`minting_evidence`); records not held leave.
+    /// To a fixed point, every thing whose record `out` carries brings what its record's going
+    /// brings (`record_certificates`); records not held leave.
     pub(crate) fn close_records(&mut self, ev: &Ev, out: &mut Certs) {
         let mut done = BTreeSet::new();
         loop {
@@ -311,11 +319,32 @@ impl Engine {
             }
             for t in fresh {
                 done.insert(t);
-                out.records.extend(self.core.record_chain(&t).filter_map(|s| s.thing()));
-                self.minting_evidence(ev, &t, out);
+                let c = self.record_certificates(ev, &t);
+                out.extend_from(&c);
             }
         }
         out.records.retain(|t| self.core.created(t).is_some());
+    }
+
+    /// What `t`'s record going brings (`close_records`): the records up its record chain and
+    /// its mintings with their evidence (`minting_evidence`). A function of the held set and
+    /// the derivation's rows alone, kept per record (`Core::record_certs`), so a follow derives
+    /// the records whose inputs moved. An answer read on a copy of the derivation (a thing not
+    /// read, `certificates`) is the kept one's (no closure reads a sync ID), and one derived on
+    /// the copy moves once the copy's stamps go with it.
+    fn record_certificates(&mut self, ev: &Ev, t: &Tid) -> Arc<Certs> {
+        let r: std::result::Result<_, std::convert::Infallible> = Memo::get_in(self, |e| &e.core.record_certs, t, |e| {
+            // counted: a make derives the contributions of the records it changed
+            osis_base::costs::count("certificates: record contributions derived", 1);
+            let mut out = Certs::default();
+            out.records.extend(e.core.record_chain(t).filter_map(|s| s.thing()));
+            e.minting_evidence(ev, t, &mut out);
+            Ok(Arc::new(out))
+        });
+        match r {
+            Ok(c) => c,
+            Err(e) => match e {},
+        }
     }
 
     /// The destroyed actors held here on an authority path into `g`'s sync unit (spec/commits.md

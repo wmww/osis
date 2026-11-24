@@ -973,6 +973,9 @@ pub struct Core {
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
     /// copy, and it decodes role parts.
     pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
+    /// What a record's going brings per record (`Engine::record_certificates`): every
+    /// certificate's records closure merges these, so a change derives the records it moved.
+    pub(crate) record_certs: memo::Memo<Tid, Arc<crate::sync_ids::Certs>>,
     /// What each read thing's certificates name, per commit (`sync::certified`): `sync_bodies`
     /// reads one commit's row.
     pub(crate) certified: crate::sync::certified::Certified,
@@ -1881,6 +1884,7 @@ impl Core {
             // built again from the journaled `ix.paths_unknown` (`apply::paths::Wait`)
             paths_wait: _,
             holders_named: _,
+            record_certs: _,
             // followed (`Effects`): what a rollback restores moves its reads, so the next follow
             // indexes again
             certified: _,
@@ -2128,6 +2132,7 @@ impl Core {
             own_roles: memo::Cutoff::new("own roles"),
             paths_wait: None,
             holders_named: memo::Memo::new("holders named: read"),
+            record_certs: memo::Memo::new("certificates: a record's"),
             certified: Default::default(),
             evidence: Default::default(),
             cert_records: Default::default(),

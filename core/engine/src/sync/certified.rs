@@ -156,7 +156,7 @@ impl Engine {
         osis_base::costs::count("certified: follows", 1);
         let _u = Unrecorded::start();
         let at = self.generations();
-        let r = osis_base::costs::paused(|| osis_perm::uncounted(|| self.follow_due()));
+        let r = self.follow_due();
         self.core.certified.at = r.is_ok().then_some(at);
         r
     }
@@ -211,7 +211,7 @@ impl Engine {
         }
         #[cfg(debug_assertions)]
         if compare {
-            let differs = self.certified_differs(&ev, &f);
+            let differs = osis_base::costs::paused(|| self.certified_differs(&ev, &f));
             debug_assert_eq!(differs, None, "the followed certificates differ from those derived anew");
         }
         self.core.certified.follow = f;

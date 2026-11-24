@@ -124,6 +124,10 @@ pub struct Closure {
     /// unit) whose strong reaches it, as last judged: the things the walk reaches at a strong
     /// (spec/sync-set.md §2 Held for keys).
     targeted: JSetMap<Tid, Vx>,
+    /// Per read context, each (target, source) of a strong of a thing of it whose target the
+    /// context does not follow (its keys do not open it), as last judged: what its stubs are
+    /// found among (`Engine::stubs_of`), never its whole unit.
+    beyond: JSetMap<Ctx, (Tid, Tid)>,
     /// Per thing whose record the node does not hold, the held vertices whose strong reaches it,
     /// as last judged: each awaits the record (spec/commits.md §4 Records), which decides whether
     /// the strong brings the thing in, so a record blob's record of it is learned
@@ -158,6 +162,7 @@ impl Default for Closure {
             moved: JSet::default(),
             rows: JSetMap::default(),
             targeted: JSetMap::default(),
+            beyond: JSetMap::default(),
             unknown: JSetMap::default(),
             members: JSetMap::by_element(),
             left: JMap::default(),
@@ -214,9 +219,10 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = ([usize; 4], [usize; 4], [usize; 12]);
+    type Mark = ([usize; 4], [usize; 4], [usize; 13]);
     fn commit(&mut self) {
         self.targeted.commit();
+        self.beyond.commit();
         self.unknown.commit();
         self.tree.commit();
         self.synced.commit();
@@ -232,7 +238,7 @@ impl Journaled for Closure {
         self.loose.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.unknown.mark(), self.targeted.mark(), self.keys.mark(), self.pieced.mark(), self.loose.mark()])
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.unknown.mark(), self.targeted.mark(), self.keys.mark(), self.pieced.mark(), self.loose.mark(), self.beyond.mark()])
     }
     fn rollback_to(&mut self, (t, s, m): Self::Mark) {
         self.tree.rollback_to(t);
@@ -249,6 +255,7 @@ impl Journaled for Closure {
         self.keys.rollback_to(m[9]);
         self.pieced.rollback_to(m[10]);
         self.loose.rollback_to(m[11]);
+        self.beyond.rollback_to(m[12]);
     }
     fn name(&mut self, _name: &'static str) {
         self.tree.name("index: closure held");
@@ -261,6 +268,7 @@ impl Journaled for Closure {
         self.keys.name("index: held for keys");
         self.pieced.name("index: closure pieced");
         self.loose.name("index: closure loose");
+        self.beyond.name("index: closure beyond");
     }
     #[cfg(test)]
     fn contents(&self) -> String {
@@ -479,7 +487,26 @@ impl Closure {
             true => drop(self.targeted.insert(t, v)),
             false => drop(self.targeted.remove(&t, &v)),
         }
+        if !on {
+            self.set_beyond(t, v, false);
+        }
         was && !set(self)
+    }
+
+    /// Notes whether `v`'s strong to `t` reaches beyond its read context (`beyond`).
+    fn set_beyond(&mut self, t: Tid, v: Vx, on: bool) {
+        if !matches!(v.0, Ctx::Read(_)) || self.beyond.contains(&v.0, &(t, v.1)) == on {
+            return;
+        }
+        match on {
+            true => drop(self.beyond.insert(v.0, (t, v.1))),
+            false => drop(self.beyond.remove(&v.0, &(t, v.1))),
+        }
+    }
+
+    /// The targets of strongs of `g`'s sync unit that its keys do not follow, as last judged.
+    pub(crate) fn beyond(&self, g: &Tid) -> BTreeSet<Tid> {
+        self.beyond.get(&Ctx::Read(*g)).into_iter().flatten().map(|(t, _)| *t).collect()
     }
 
     /// Whether a held vertex's strong reaches `t`, whose record was not held when it was judged
@@ -1170,6 +1197,7 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     if let Some(k) = how {
         set_carry(tx, v, y, &got, k);
     }
+    tx.core.ix.closure.set_beyond(y, v, !got.contains(&(v.0, y)));
     Ok(got)
 }
 
