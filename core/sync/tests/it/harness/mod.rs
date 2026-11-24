@@ -1453,6 +1453,22 @@ pub fn siblings() -> World {
     })
 }
 
+/// Two bare nodes (`World::add_bare_node`), quiet, no connection.
+pub fn bare_pair() -> World {
+    fixture("bare pair", || {
+        let mut w = World::new(0);
+        w.add_bare_node();
+        w.add_bare_node();
+        w.run();
+        w
+    })
+}
+
+/// Store caps of these policy entries, the rest default.
+pub fn caps(policy: &[(&str, u64)]) -> osis_engine::sync::Caps {
+    osis_engine::sync::Caps { policy: policy.iter().map(|(k, v)| (k.to_string(), *v)).collect(), ..Default::default() }
+}
+
 /// One step of a scripted run: what a random layer generates and `play` replays. Printed as
 /// Rust on failure (`osis_base::testenv::Script`; `use crate::harness::script::*` brings every
 /// name a printed step uses).

@@ -1,9 +1,8 @@
 //! Judgement for read sync IDs (spec/sync-judgement.md §1-§5, spec/sync-compaction.md §1) on a
 //! fake ground: the engine's facts and the own store as stamped values, and one source K keeping
 //! S unread that judges nothing (it pulls a writer's store, refuses a tombstoned blob ID, takes
-//! Deletes; a test may delete there as a hostile writer). `Read` runs as in a node while the
-//! engine facade, streams' `known` by commit and the store's entries by commit are not built:
-//! every test here needs the real facade (sync-facade) and streams to run end to end in a world.
+//! Deletes; a test may delete there as a hostile writer). `Read` runs as in a node over this
+//! fake ground (the product's is `read::live`); a few tests run it in a world.
 //! Each negative control of core/test/tla/net/NetHold.tla has a test here that
 //! fails without its rule, and each judgement scenario from the old sync's issues one.
 
@@ -32,6 +31,13 @@ const RC: ConnId = ConnId(2);
 
 fn cid(i: u8) -> CommitId {
     CommitId([i; 32])
+}
+
+/// The `i`th of a run of commits tagged `tag` (more than `cid` names).
+fn cidn(i: u8, tag: u8) -> CommitId {
+    let mut c = [0; 32];
+    (c[0], c[1]) = (i, tag);
+    CommitId(c)
 }
 
 fn key(role: RoleKey, e: u64) -> SigningSecret {
@@ -842,7 +848,7 @@ fn verdicts_follow_the_facts() {
 // entry whose blob holds a part purged here leaves the own store while the body stays
 // must-hold, and the rest of the body is logged again as a fresh encryption without it.
 #[test]
-fn entry_holding_a_purged_part_leaves_spec_sync_judgement_1() {
+fn entry_holding_a_purged_part_leaves_spec_sync_judgement_2() {
     let mut w = W::new();
     w.hold(cid(1), &[S], uncovered());
     w.exchange();
@@ -940,23 +946,6 @@ fn covered_delete_waits_max_drift_spec_commits_5() {
     assert_eq!(w.deletes(), 1, "not deleted once the wait ended");
 }
 
-// spec/sync-judgement.md §3 (deletes): at a source full for S a carrier it lacks counts as held
-// (HN_full).
-#[test]
-fn full_source_counts_a_carrier_it_lacks() {
-    let mut w = W::new();
-    w.pulls = false;
-    w.hold(cid(1), &[S], uncovered());
-    let b = w.own_blobs(S, cid(1))[0];
-    w.g.k.held.insert((S, b), cid(1));
-    w.hold(cid(2), &[S], uncovered());
-    w.judge(S, cid(1), covered(cid(2)));
-    w.g.k.full = true;
-    w.stream();
-    w.settle();
-    assert_eq!(w.deletes(), 1);
-}
-
 // spec/sync-judgement.md §3 (Deletes: what is owed at a source is judged from `known` alone,
 // connected or not, and sent once the source is connected): a Delete owed while K is away goes on
 // K's next connection; one sent and never answered goes again on each later connection, owing
@@ -995,6 +984,12 @@ fn two_shown() -> (W, BlobId) {
     w.g.k.held.insert((S, b2), cid(2));
     w.stream();
     (w, b1)
+}
+
+/// The named `osis_base::costs` counts since the last take (each summed over its spans).
+fn taken<const N: usize>(names: [&str; N]) -> [u64; N] {
+    let t = osis_base::costs::take();
+    names.map(|name| t.iter().filter(|(k, _, _)| *k == name).map(|(_, _, n)| n).sum())
 }
 
 /// K's record taken by connection `c` (its digests agreed): what read sends there.
@@ -1092,7 +1087,7 @@ fn a_missing_body_is_fetched_once_per_connection_spec_sync_judgement_3() {
 
 // spec/sync-judgement.md §3 (Deletes: at a source full for S a carrier it lacks counts as held;
 // Role entries first: a full source is skipped), spec/sync-streams.md §4 (Full: a peer's `full`
-// lasts with the connection it was told on): a Delete owed only because K is full goes only on a
+// lasts with the connection it was told on): a Delete owed only because K is full (HN_full) goes only on a
 // connection K told it is full on, and on K's next connection only once told there too; the
 // judgement reads no connection. Fails with the judgement reading `full` of a connection (it
 // re-judges at each reconnect) or with the act sent whatever K told.
@@ -1115,8 +1110,7 @@ fn a_delete_owed_only_while_full_goes_where_told_full_spec_sync_judgement_3() {
     w.g.conns.insert(K, c2);
     osis_base::costs::take();
     w.settle();
-    let taken = osis_base::costs::take();
-    assert!(!taken.iter().any(|(k, _, n)| *k == "read: toward" && *n > 0), "a reconnect judged K's bodies again");
+    assert_eq!(taken(["read: toward"]), [0], "a reconnect judged K's bodies again");
     assert_eq!(w.deletes(), 1, "sent on a connection K did not tell full on");
     w.g.told_full.insert((c2, S), ());
     w.settle();
@@ -1182,8 +1176,10 @@ fn head_move_allows_one_more() {
     assert_eq!(w.logs(S, cid(1)), 3);
 }
 
-// spec/sync-judgement.md §4 (such a part falls) (again-stand): a held cover or killing write
-// falling here, with no head move, allows one more logging (HN_standfall).
+// spec/sync-judgement.md §4 (such a part falls; judged invalid here counts as a fall) (again-stand):
+// a held cover or killing write falling here, with no head move, allows one more logging
+// (HN_standfall); the stand compares the engine's fall mark alone, which a snapshot arriving
+// invalid moves as one held valid falling does (HN_fallany).
 #[test]
 fn fall_allows_one_more() {
     let mut w = at_k_must_hold();
@@ -1191,6 +1187,7 @@ fn fall_allows_one_more() {
         w.k_delete(cid(1));
         w.exchange();
     }
+    assert_eq!(w.logs(S, cid(1)), 2);
     w.g.marks.insert((S, cid(1)), 1);
     w.settle();
     for _ in 0..2 {
@@ -1200,25 +1197,10 @@ fn fall_allows_one_more() {
     assert_eq!(w.logs(S, cid(1)), 3);
 }
 
-// spec/sync-judgement.md §4 (judged invalid here counts as a fall): the stand compares the engine's
-// fall mark, which a snapshot arriving invalid moves as one held valid falling does; nothing
-// else of the body changes here (HN_fallany).
-#[test]
-fn stand_follows_the_fall_mark_alone() {
-    let mut w = at_k_must_hold();
-    w.k_delete(cid(1));
-    w.exchange();
-    w.k_delete(cid(1));
-    w.exchange();
-    assert_eq!(w.logs(S, cid(1)), 2);
-    w.g.marks.insert((S, cid(1)), 1);
-    w.exchange();
-    assert_eq!(w.logs(S, cid(1)), 3);
-}
-
 // spec/sync-judgement.md §4 (fresh encryption) (deposit-storm): logged again as a fresh blob ID
 // under that sync ID alone, never the deleted one and never one logged under another sync ID
-// (HN_fresh).
+// (HN_fresh). spec/sync-judgement.md §3 (own store): the first logging is of a held blob
+// verbatim where one is (not fresh).
 #[test]
 fn again_is_fresh_per_sync_id() {
     let mut w = W::new();
@@ -1231,6 +1213,7 @@ fn again_is_fresh_per_sync_id() {
     assert_eq!(again.len(), 2, "one logging again per sync ID");
     assert_ne!(again[0].1, again[1].1);
     assert_eq!(w.at_k(S, cid(1)), 2, "K holds a fresh entry under each sync ID");
+    assert_eq!(w.g.fresh, vec![false, false, true, true], "verbatim first, fresh again");
 }
 
 /// An own role commit (cid 7) S must hold, and a must-hold body (cid 1) K holds.
@@ -1410,7 +1393,6 @@ fn a_deposit_is_stamped_only_as_promoted_spec_sync_inbox_4() {
     let standing = Entry { stamp: Some(stamp_at(0)), deposited: false, ..deposit(65) };
     for (promotion, beside, restamps, logs) in [(Promotion::Yes, true, 1, 0), (Promotion::Yes, false, 1, 0), (Promotion::Wait, false, 0, 0), (Promotion::No, false, 0, 1), (Promotion::No, true, 0, 0)] {
         let mut w = W::new();
-        w.g.creds.insert(S, creds(0, true, true));
         let mut held = vec![deposit(66)];
         if beside {
             held.push(standing.clone());
@@ -1426,7 +1408,6 @@ fn a_deposit_is_stamped_only_as_promoted_spec_sync_inbox_4() {
     }
     // one waiting is stamped once promoted (its evidence came under S), never logged meanwhile
     let mut w = W::new();
-    w.g.creds.insert(S, creds(0, true, true));
     w.g.own.insert((S, cid(1)), vec![deposit(66)]);
     w.g.promotions.insert(BlobId([66; 32]), Promotion::Wait);
     let mut f = uncovered();
@@ -1443,7 +1424,7 @@ fn a_deposit_is_stamped_only_as_promoted_spec_sync_inbox_4() {
 fn head_moved(n: u8) -> W {
     let mut w = W::new();
     for i in 0..n {
-        w.hold(CommitId([i, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), &[S], uncovered());
+        w.hold(cidn(i, 2), &[S], uncovered());
     }
     w.exchange();
     assert_eq!(w.g.logged.len(), n as usize);
@@ -1463,8 +1444,7 @@ fn a_head_move_restamps_each_own_entry_once_spec_sync_judgement_3() {
     let mut judged = Vec::new();
     for n in [10u8, 100] {
         let mut w = head_moved(n);
-        let costs = osis_base::costs::take();
-        judged.push(costs.iter().filter(|(k, _, _)| *k == "read: judged").map(|(_, _, x)| x).sum::<u64>());
+        judged.push(taken(["read: judged"])[0]);
         assert_eq!(w.g.restamped.len(), n as usize, "each body's own entry once");
         let blobs: BTreeSet<BlobId> = w.g.restamped.iter().map(|x| x.2).collect();
         assert_eq!(blobs.len(), n as usize);
@@ -1522,21 +1502,6 @@ fn deleted_while_unjudged_is_logged_again_once_must_hold() {
     assert_eq!(w.logs(S, cid(1)), 2, "must-hold: logged again at K");
 }
 
-// spec/sync-judgement.md §3 (reader that is not a writer): a must-hold body K lacks is given as a
-// held entry (relayed or deposited), and K pulls nothing from a non-writer.
-#[test]
-fn non_writer_deposits() {
-    let mut w = W::new();
-    w.pulls = false;
-    w.g.creds.insert(S, creds(0, false, false));
-    w.hold(cid(1), &[S], uncovered());
-    w.settle();
-    let b = w.own_blobs(S, cid(1))[0];
-    assert_eq!(w.g.sent, vec![Sent::Deposit(KC, b)]);
-    w.exchange();
-    assert_eq!(w.at_k(S, cid(1)), 1);
-}
-
 // spec/sync-judgement.md §3 (reader that is not a writer: nothing deposited at a source on an
 // earlier step of its recorded path), spec/sync-ids.md §6 (Steps): a non-writer whose `sync.0`
 // records step 1 gives K, standing at step 0, nothing until K stands at step 1.
@@ -1570,18 +1535,8 @@ fn a_non_writer_deposits_a_role_commit_at_a_source_behind_its_head_spec_sync_ids
     assert!(w.g.sent.contains(&Sent::Deposit(KC, b)), "{:?}", w.g.sent);
 }
 
-// spec/sync-compaction.md §1 (duplicates): of two entries of one body at K the delete-key holder
-// deletes the higher blob ID.
-#[test]
-fn duplicate_higher_goes() {
-    let mut w = at_k_must_hold();
-    w.g.k.held.insert((S, BlobId([0xff; 32])), cid(1));
-    w.stream();
-    w.settle();
-    assert_eq!(w.g.sent, vec![Sent::Delete(KC, BlobId([0xff; 32]))]);
-}
-
-// spec/sync-compaction.md §1 (Only what the node checked): a blob of the
+// spec/sync-compaction.md §1 (duplicates: of two entries of one body at K the delete-key holder
+// deletes the higher blob ID; Only what the node checked): a blob of the
 // same opened parts whose unopened sections differ from the node's by their bytes (a forged
 // section of a thing it does not read, ground to the lowest blob ID and stamped by a writer that
 // copied it as it came) is no duplicate: neither goes. One whose unopened sections are byte for
@@ -1618,19 +1573,19 @@ fn work_follows_change() {
     for n in [20u8, 200] {
         let mut w = W::new();
         for i in 0..n {
-            w.g.facts.insert((S, CommitId([i, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])), uncovered());
+            w.g.facts.insert((S, cidn(i, 1)), uncovered());
         }
         for i in 0..n {
-            let c = CommitId([i, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            let c = cidn(i, 1);
             w.g.bodies.insert(c, Arc::new([(S, meta())].into()));
             w.g.added.push(c);
         }
         w.exchange();
-        let c = CommitId([3, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let c = cidn(3, 1);
         osis_base::costs::take();
         w.judge(S, c, covered(cid(250)));
         w.k_delete(c);
-        let judged: u64 = osis_base::costs::take().iter().filter(|(k, _, _)| *k == "read: judged").map(|(_, _, n)| n).sum();
+        let [judged] = taken(["read: judged"]);
         costs.push(judged);
     }
     assert_eq!(costs[0], costs[1], "judgements per change grow with the bodies held");
@@ -1638,9 +1593,11 @@ fn work_follows_change() {
 }
 
 // spec/sync-judgement.md §2 (header-only blob): a certificate is must-hold whatever snapshot
-// covers it: it neither leaves the own log nor is deleted at K as covered.
+// covers it: it neither leaves the own log nor is deleted at K as covered. §2 (Loggable): one
+// this node may not log now is may-hold, kept as it is (a may-hold body that is not loggable is
+// kept if it arrives), and is must-hold again once it may.
 #[test]
-fn must_hold_certificate_is_never_covered_and_dropped() {
+fn an_unloggable_certificate_is_kept_not_covered_and_dropped_spec_sync_judgement_2() {
     let mut w = W::new();
     w.hold(cid(2), &[S], uncovered());
     let mut f = covered(cid(2));
@@ -1651,21 +1608,6 @@ fn must_hold_certificate_is_never_covered_and_dropped() {
     assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
     assert_eq!(w.own_blobs(S, cid(1)).len(), 1);
     assert_eq!(w.deletes(), 0);
-    assert_eq!(w.logs(S, cid(1)), 1, "logged and dropped in a loop");
-}
-
-// spec/sync-judgement.md §2 (Loggable): a certificate this node may not log now is may-hold, kept
-// as it is: it neither leaves the own log nor is deleted at K as covered (a may-hold body that
-// is not loggable is kept if it arrives), and is must-hold again once it may.
-#[test]
-fn an_unloggable_certificate_is_kept_not_covered_and_dropped_spec_sync_judgement_2() {
-    let mut w = W::new();
-    w.hold(cid(2), &[S], uncovered());
-    let mut f = covered(cid(2));
-    f.body.closure = false;
-    w.hold(cid(1), &[S], f);
-    w.exchange();
-    assert_eq!(w.own_blobs(S, cid(1)).len(), 1);
     w.g.unloggable.insert((S, cid(1)), ());
     w.exchange();
     w.exchange();
@@ -1675,7 +1617,7 @@ fn an_unloggable_certificate_is_kept_not_covered_and_dropped_spec_sync_judgement
     w.g.unloggable.remove(&(S, cid(1)));
     w.exchange();
     assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
-    assert_eq!(w.logs(S, cid(1)), 1);
+    assert_eq!(w.logs(S, cid(1)), 1, "logged and dropped in a loop");
 }
 
 // spec/sync-judgement.md §3 (deletes): a body dropped as invalid is never deleted at a peer,
@@ -1691,16 +1633,6 @@ fn invalid_body_is_never_deleted_at_k() {
     w.exchange();
     assert_eq!(w.deletes(), 0);
     assert_eq!(w.at_k(S, cid(1)), 1);
-}
-
-// spec/sync-judgement.md §3 (own store): a must-hold body with no own entry is logged as a held
-// blob verbatim where one is (not fresh); logging again (§4) is always a fresh encryption.
-#[test]
-fn first_logging_is_verbatim_again_is_fresh() {
-    let mut w = at_k_must_hold();
-    w.k_delete(cid(1));
-    w.exchange();
-    assert_eq!(w.g.fresh, vec![false, true]);
 }
 
 // spec/sync-judgement.md §3 (own store): a node logs what S must hold only while a reader can
@@ -1746,16 +1678,15 @@ fn a_pull_flip_judges_only_what_is_to_log() {
         w.g.unpullable.remove(&S);
         w.settle();
         assert_eq!(w.logs(S, cid(200)), 1, "the body held while no reader could pull is logged once one can");
-        let taken = osis_base::costs::take();
-        let n = |name: &str| taken.iter().filter(|(k, _, _)| *k == name).map(|(_, _, n)| n).sum::<u64>();
-        costs.push((n("read: judged"), n("read: certificate blobs")));
+        costs.push(taken(["read: judged", "read: certificate blobs"]));
     }
     assert_eq!(costs[0], costs[1], "judgements per pull flip grow with the logged bodies");
 }
 
 // spec/sync-judgement.md §2 (Loggable): a body of S's required set this node may not log under S
 // is may-hold, so a non-writer gives it no source and owes it nowhere; once it may (the judgement
-// reads it, so it moves then), it is must-hold, logged once and given.
+// reads it, so it moves then), it is must-hold, logged once and given. spec/sync-judgement.md §3
+// (reader that is not a writer): a must-hold body K lacks is given as a held entry (deposited).
 #[test]
 fn a_body_this_node_may_not_log_is_may_hold_until_it_may_spec_sync_judgement_2() {
     let mut w = W::new();
@@ -1774,6 +1705,8 @@ fn a_body_this_node_may_not_log_is_may_hold_until_it_may_spec_sync_judgement_2()
     assert_eq!(w.logs(S, cid(1)), 1);
     let b = w.own_blobs(S, cid(1))[0];
     assert_eq!(w.g.sent, vec![Sent::Deposit(KC, b)]);
+    w.exchange();
+    assert_eq!(w.at_k(S, cid(1)), 1);
 }
 
 // spec/sync-judgement.md §3 (own store), spec/permissions.md §4 (Logging certificates): a body
@@ -1936,12 +1869,10 @@ fn work_follows_sources() {
         let c = ConnId(98);
         w.source(S, Source::Conn(c), c, true);
         w.settle();
-        let taken = osis_base::costs::take();
-        let n = |name: &str| taken.iter().filter(|(k, _, _)| *k == name).map(|(_, _, n)| n).sum::<u64>();
-        costs.push((n("read: judged"), n("read: toward")));
+        costs.push(taken(["read: judged", "read: toward"]));
     }
     assert_eq!(costs[0], costs[1], "work per source event grows with the sources");
-    assert!(costs[0].1 <= 4, "{costs:?}");
+    assert!(costs[0][1] <= 4, "{costs:?}");
 }
 
 /// The judgements one delivered commit costs (`read: judged`) with `n` other bodies held and
@@ -1966,7 +1897,7 @@ fn judged_per_delivery(n: u16) -> u64 {
     osis_base::costs::take();
     w.g.unloggable.remove(&(S, c0));
     w.hold(id(n + 1), &[S], uncovered());
-    osis_base::costs::take().iter().filter(|(k, _, _)| *k == "read: judged").map(|(_, _, n)| n).sum()
+    taken(["read: judged"])[0]
 }
 
 // spec/sync-judgement.md §3 (driven by events): a delivered commit judges what it moved: a
@@ -1983,7 +1914,7 @@ fn a_delivery_judges_what_it_moved_at_n_and_10n_bodies() {
 /// The judgements (`read: judged`, `read: toward` settles) node 0 and node 1 make for a write and
 /// a grant on thing 0, after `n` writes on each of 3 other things node 0 made (other sync IDs),
 /// each run to quiet: through the product's sync over the real engine.
-fn judged_per_event(n: usize) -> (u64, u64) {
+fn judged_per_event(n: usize) -> [u64; 2] {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, world_of};
     let mut w = world_of(0, 2, 2);
@@ -1996,9 +1927,7 @@ fn judged_per_event(n: usize) -> (u64, u64) {
     for s in [Write(0, 0), Run, Grant(0, 0, 1, Gives::Writes), Run] {
         crate::harness::step(&mut w, &s);
     }
-    let taken = osis_base::costs::take();
-    let n = |name: &str| taken.iter().filter(|(k, _, _)| *k == name).map(|(_, _, n)| n).sum::<u64>();
-    (n("read: judged"), n("read: toward"))
+    taken(["read: judged", "read: toward"])
 }
 
 // spec/sync.md §2 (work in proportion to change): over the real engine, a write and a role
@@ -2013,8 +1942,8 @@ fn an_event_on_one_sync_id_judges_what_it_moved() {
     // the grant commit judged once more at each of its 4 (sync ID, commit) pairs, twice over
     const REJUDGED: u64 = 8;
     let (a, b) = (judged_per_event(2), judged_per_event(20));
-    assert!(b.0 <= a.0 + REJUDGED && a.0 <= b.0 + REJUDGED, "judgements per event grow with the commits under other sync IDs: {a:?} {b:?}");
-    assert_eq!(a.1, b.1, "toward judgements per event grow with the commits under other sync IDs");
+    assert!(b[0] <= a[0] + REJUDGED && a[0] <= b[0] + REJUDGED, "judgements per event grow with the commits under other sync IDs: {a:?} {b:?}");
+    assert_eq!(a[1], b[1], "toward judgements per event grow with the commits under other sync IDs");
 }
 
 fn bid(i: u8) -> BlobId {
@@ -2081,7 +2010,7 @@ fn a_missing_piece_is_taken_or_fetched_spec_sync_judgement_1() {
 
 // spec/sync-ids.md §1 (Repair): a held piece of an own body that every source showing it deleted
 // (none present) is repaired once, judged with S's sources heard out; not while one shows it
-// present, nor for a body not this node's own.
+// present (a body not this node's own: `a_lost_piece_an_own_body_comes_to_link_is_repaired`).
 #[test]
 fn a_piece_every_source_deleted_is_repaired_once_spec_sync_ids_1() {
     let mut w = with_pieces(&[10], &[]);
@@ -2099,14 +2028,6 @@ fn a_piece_every_source_deleted_is_repaired_once_spec_sync_ids_1() {
     w.settle();
     w.exchange();
     assert_eq!(w.g.sent.iter().filter(|m| **m == Sent::Repair(cid(1), bid(10))).count(), 1, "{:?}", w.g.sent);
-    let mut other = with_pieces(&[10], &[]);
-    let mut f = uncovered();
-    f.own = false;
-    other.judge(S, cid(1), f);
-    other.g.heard.insert(S, true);
-    other.g.piece_seen.insert((K, S, bid(10)), (false, true));
-    other.settle();
-    assert_eq!(sent_of(&other, |m| matches!(m, Sent::Repair(..))), 0, "another's body is not repaired here");
 }
 
 // spec/sync-ids.md §1 (Repair): what a repair encrypted afresh is never repaired by way of it: a
@@ -2159,8 +2080,7 @@ fn pieces_judged_for_an_edit(n: u32) -> u64 {
     osis_base::costs::take();
     w.hold(cid(2), &[S], uncovered());
     w.exchange();
-    let taken = osis_base::costs::take();
-    taken.iter().filter(|(k, _, _)| *k == "read: piece judged").map(|(_, _, n)| n).sum()
+    taken(["read: piece judged"])[0]
 }
 
 // spec/sync.md §2 (work in proportion to change): a body sharing most of its tree with one
@@ -2510,8 +2430,7 @@ fn a_body_read_again_unchanged_holds_back_no_log_spec_sync_judgement_3() {
 
 // spec/sync-judgement.md §2, §3 (Own store): judged outside S wrongly (its bodies' inputs had
 // settled and a pass ended, then a later arrival puts it under S), the entry left untombed, so
-// the node logs the body again under S once S carries it (convergence::histories_converge seed 7:
-// ten such pairs before the wait and the untombed drop).
+// the node logs the body again under S once S carries it.
 #[test]
 fn an_entry_judged_outside_then_listed_is_held_again_spec_sync_judgement_2() {
     let mut w = W::new();
@@ -2536,7 +2455,7 @@ fn a_pulled_entry_outside_s_costs_the_same_at_n_and_10n_spec_sync_judgement_2() 
         let mut w = W::new();
         w.g.done.insert(S, 0);
         for i in 0..n {
-            let c = CommitId([i, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            let c = cidn(i, 2);
             w.g.bodies.insert(c, Arc::new([(S, meta())].into()));
             w.g.added.push(c);
         }
@@ -2544,7 +2463,7 @@ fn a_pulled_entry_outside_s_costs_the_same_at_n_and_10n_spec_sync_judgement_2() 
         osis_base::costs::take();
         w.pulled(cid(250), &[S2], 250, 9);
         w.pass(10);
-        let judged: u64 = osis_base::costs::take().iter().filter(|(k, _, _)| *k == "read: judged").map(|(_, _, n)| n).sum();
+        let [judged] = taken(["read: judged"]);
         assert!(w.g.unlogged.iter().any(|(_, b)| *b == BlobId([250; 32])));
         costs.push(judged);
     }

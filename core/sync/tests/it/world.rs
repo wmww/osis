@@ -1,6 +1,6 @@
 //! The harness itself: worlds run to quiet, and every output a node makes reaches the network.
 
-use crate::harness::{Seen, World, two_nodes};
+use crate::harness::{Seen, bare_pair, two_nodes};
 use osis_blob::Address;
 use osis_sync::{ConnId, Links, Out, apply};
 
@@ -21,9 +21,7 @@ fn two_nodes_run_to_quiet() {
 // transport took them, a close reaches the peer, a wake ticks the node at its time.
 #[test]
 fn every_output_reaches_the_network() {
-    let mut w = World::new(0);
-    w.add_bare_node();
-    w.add_bare_node();
+    let mut w = bare_pair();
     w.trace = true;
     let to = w.address(1);
     let nobody = Address { url: to.url.clone(), key: [9; 32] };
@@ -54,10 +52,7 @@ fn every_output_reaches_the_network() {
 // restarted clock ticks the node at that time.
 #[test]
 fn power_loss_starts_the_monotonic_clock_again() {
-    let mut w = World::new(0);
-    w.add_bare_node();
-    w.add_bare_node();
-    w.run();
+    let mut w = bare_pair();
     w.advance(10_000);
     let (wall, other) = (w.node_now(0), w.engine(1).mono());
     assert!(w.engine(0).mono().0 > 10_000);

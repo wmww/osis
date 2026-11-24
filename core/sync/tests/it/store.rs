@@ -13,6 +13,7 @@ use osis_sync::store::{Cred, Source, Stand};
 use osis_sync::types::{ConnId, Entry};
 use osis_sync::Store;
 use std::collections::BTreeMap;
+use crate::harness::caps;
 use crate::harness::sid::{Sid, THING};
 
 /// One simulated device: the store reopens over it after a crash.
@@ -171,39 +172,12 @@ fn register_takes_a_deeper_branch_alone_spec_sync_ids_6() {
     assert_eq!(on_a.path(&s.id).unwrap(), st.path(&s.id).unwrap());
 }
 
-// spec/sync-ids.md §6 (register: a branch only off a step bearing the head's delete key),
-// spec/sync-hostile.md §2: an admin removed at step D (a new admin secret, so a new delete key)
-// holds the delete keys before it. Before D reaches a store it may register its own branch there
-// (it holds the head's delete key, as for a child of the head); once D is the head it cannot
-// branch below it, however deep its branch.
-#[test]
-fn a_removed_admin_cannot_branch_below_the_head_spec_sync_ids_6() {
-    let s = Sid::new(10);
-    // the honest path: D under a new admin secret, signed by the genesis's delete key
-    let mut honest = s.clone();
-    let old = honest.delete();
-    honest.admin = Secret32::from_bytes([0x77; 32]);
-    let d = honest.issue_by(&[], &old);
-    // the removed admin's branch off the genesis, two deep
-    let mut former = s.clone();
-    let (e, ce) = former.rotate(90);
-    let (f, cf) = former.rotate(91);
-    let dev = Dev::new();
-    let mut st = unread(&dev, &s);
-    assert_eq!(st.take_register(&s.id, &[(&d.0, Some(&d.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
-    assert_eq!(st.take_register(&s.id, &[(&e, Some(&ce)), (&f, Some(&cf))], None, osis_base::Mono(0)).unwrap(), Code::NOT_HEAD_KEY, "below a head under another delete key");
-    assert_eq!(st.head(&s.id).unwrap().map(|h| h.id()), Some(d.0.id()));
-    // the control: at the genesis it holds the head's delete key
-    let dev2 = Dev::new();
-    let mut before = unread(&dev2, &s);
-    assert_eq!(before.take_register(&s.id, &[(&e, Some(&ce)), (&f, Some(&cf))], None, osis_base::Mono(0)).unwrap(), Code::OK);
-}
-
 // spec/sync-ids.md §6 (register: a branch off a step bearing the head's delete key, or ending at a
-// step endorsed by it): which sibling rotated the admin secret decides. A store on a sibling
-// keeping the fork's admin secret is moved onto the deeper branch, whether or not that branch
-// rotated it; a store on a sibling that rotated it is moved only by an endorsement of the
-// branch's last step by its head's delete key, whatever the winner did.
+// step endorsed by it), spec/sync-hostile.md §2: which sibling rotated the admin secret decides.
+// A store on a sibling keeping the fork's admin secret is moved onto the deeper branch, whether
+// or not that branch rotated it; a store on a sibling that rotated it (an admin removed there
+// holds only the delete keys before it) is moved only by an endorsement of the branch's last step
+// by its head's delete key, whatever the winner did, however deep the branch.
 #[test]
 fn a_branch_moves_a_store_on_a_rotated_sibling_by_an_endorsement_spec_sync_ids_6() {
     let s = Sid::new(10);
@@ -225,7 +199,8 @@ fn a_branch_moves_a_store_on_a_rotated_sibling_by_an_endorsement_spec_sync_ids_6
         };
         let (_d, mut st) = on_loser();
         let code = st.take_register(&s.id, &[(winner[0], None), (winner[1], None)], None, osis_base::Mono(0)).unwrap();
-        assert_eq!(code == Code::OK, plain, "loser keeps the admin secret: {}", loser.id() == ka.id());
+        assert_eq!(code, if plain { Code::OK } else { Code::NOT_HEAD_KEY }, "loser keeps the admin secret: {}", loser.id() == ka.id());
+        assert_eq!(st.head(&s.id).unwrap().map(|h| h.id()), Some(if plain { winner[1] } else { loser }.id()));
         // endorsed by the loser's delete key: moved either way
         let (_d, mut st) = on_loser();
         let e = winner[1].endorse(&if plain { kept.delete() } else { rotated.delete() });
@@ -324,7 +299,7 @@ fn register_past_the_caps_spec_sync_ids_6() {
     let mut s = Sid::new(10);
     let mut st = dev.open();
     st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
-    let tiny = |bytes: u64| Caps { policy: BTreeMap::from([("bytes".to_string(), bytes), ("register_every_ms".to_string(), 1000)]), ..Caps::default() };
+    let tiny = |bytes: u64| caps(&[("bytes", bytes), ("register_every_ms", 1000)]);
     st.set_caps(&tiny(10));
     assert_eq!(st.take_register(&s.id, &[(&s.steps[0].0, Some(&s.steps[0].1))], None, osis_base::Mono(0)).unwrap(), Code::STORAGE_CAP);
     st.set_caps(&tiny(u64::MAX));
@@ -414,8 +389,8 @@ fn behind_by_a_static_entry_grants_the_path_spec_sync_ids_6() {
 }
 
 // spec/sync-ids.md §6 (stamp refusals): a node keeping S unread refuses a bad stamp (1), a stamp
-// under a superseded write key (9), an expired blob (7), a tombstoned blob ID (6), an oversized
-// blob, and takes a good one with wrap and stamp.
+// under a superseded write key (9), an expired blob (7), an oversized blob, and takes a good one
+// with wrap and stamp (a tombstoned blob ID, 6: `tombstones_end_after_their_lifetime`).
 #[test]
 fn stamped_entries_refused_and_taken_spec_sync_ids_6() {
     let (_dev, mut s, mut st) = one_unread();
@@ -437,10 +412,6 @@ fn stamped_entries_refused_and_taken_spec_sync_ids_6() {
     assert_eq!(st.take_stamped(&s.id, &good, bytes.clone(), &[]).unwrap(), Code::OK);
     assert_eq!(st.entry(&s.id, &b).unwrap().unwrap(), good);
     assert_eq!(st.bytes(&b).unwrap().unwrap(), bytes);
-    // a Delete tombstones it: taking it again is 6
-    let del = DeleteItem::sign(&s.delete(), &s.id, b);
-    assert_eq!(st.take_delete(&s.id, &[del], true).unwrap(), [Code::OK]);
-    assert_eq!(st.take_stamped(&s.id, &good, bytes, &[]).unwrap(), Code::TOMBSTONED);
 }
 
 // spec/sync-judgement.md §6 (stops): at a head whose sync key it holds no box for, a node keeping
@@ -536,7 +507,7 @@ fn a_stamp_replaces_a_deposit_once_spec_sync_ids_6() {
 #[test]
 fn role_entries_pass_the_caps_spec_sync_ids_6() {
     let (_dev, s, mut st) = one_unread();
-    st.set_caps(&Caps { policy: BTreeMap::from([("entries".to_string(), 1)]), ..Caps::default() });
+    st.set_caps(&caps(&[("entries", 1)]));
     let (b1, x1) = blob(100, Class::Durable, None, &[]);
     let (b2, x2) = blob(101, Class::Durable, None, &[]);
     let (b3, x3) = blob(102, Class::Durable, None, &[]);
@@ -563,7 +534,7 @@ fn a_total_refusal_ends_as_room_for_it_frees_spec_sync_streams_4() {
     }
     let (b, x) = blob(300, Class::Durable, None, &[]);
     let used = st.usage(&s.id).unwrap().0.bytes;
-    st.set_caps(&Caps { policy: BTreeMap::from([("total_bytes".to_string(), used + x.len() as u64)]), ..Caps::default() });
+    st.set_caps(&caps(&[("total_bytes", used + x.len() as u64)]));
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone(), &[]).unwrap(), Code::STORAGE_CAP);
     assert!(st.waits_room(&s.id));
     let judged = || osis_base::costs::take().into_iter().filter(|(n, ..)| *n == "store: room judged").map(|(.., c)| c).sum::<u64>();
@@ -601,7 +572,7 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
     }
     let (b, x) = blob(300, Class::Durable, None, &[]);
     let used = st.usage(&s.id).unwrap().0.bytes + st.usage(&o.id).unwrap().0.bytes;
-    let caps = |total: u64, memory: u64| Caps { policy: BTreeMap::from([("total_bytes".to_string(), total), ("memory_total".to_string(), memory)]), ..Caps::default() };
+    let caps = |total: u64, memory: u64| caps(&[("total_bytes", total), ("memory_total", memory)]);
     // an entry in memory counts what it holds there, about 1.5 KB beside its blob
     st.set_caps(&caps(used + x.len() as u64, 2300));
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone(), &[]).unwrap(), Code::STORAGE_CAP);
@@ -651,7 +622,7 @@ fn full_ends_once_what_it_refused_expired_spec_sync_streams_4() {
         let (dev, s, mut st) = one_unread();
         let from = [record(&mut st, 1)];
         let used = st.usage(&s.id).unwrap().0.bytes;
-        let caps = Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() };
+        let caps = caps(&[("bytes", used + 100)]);
         st.set_caps(&caps);
         for (n, exp) in [(300, Some(20_000)), (301, Some(10_000)), (302, if forever { None } else { Some(15_000) })] {
             let (b, x) = blob(n, Class::Durable, exp, &[]);
@@ -684,7 +655,7 @@ fn full_is_marked_per_source_spec_sync_streams_4() {
         let (dev, s, mut st) = one_unread();
         let (r1, r2, r3, c) = (record(&mut st, 1), record(&mut st, 2), record(&mut st, 3), Source::Conn(ConnId(5)));
         let used = st.usage(&s.id).unwrap().0.bytes;
-        let caps = Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() };
+        let caps = caps(&[("bytes", used + 100)]);
         st.set_caps(&caps);
         let (b, x) = blob(300, Class::Durable, None, &[]);
         assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[r1, r2, c]).unwrap(), Code::STORAGE_CAP);
@@ -730,7 +701,7 @@ fn full_is_marked_per_source_spec_sync_streams_4() {
 fn full_by_connections_alone_ends_at_a_restart_spec_sync_streams_4() {
     let (dev, s, mut st) = one_unread();
     let used = st.usage(&s.id).unwrap().0.bytes;
-    st.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() });
+    st.set_caps(&caps(&[("bytes", used + 100)]));
     let (b, x) = blob(300, Class::Durable, None, &[]);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[Source::Conn(ConnId(5))]).unwrap(), Code::STORAGE_CAP);
     assert!(st.waits_room(&s.id));
@@ -764,7 +735,7 @@ fn deposit_answers_spec_sync_inbox_3() {
     st.drop_entry(&s.id, &b, Vec::new()).unwrap();
     assert_eq!(st.take_deposit(&deposit(&s, &bytes, false), None).unwrap(), Code::OK, "dropped");
     assert!(st.entry(&s.id, &b).unwrap().is_none(), "nothing changed");
-    st.set_caps(&Caps { policy: BTreeMap::from([("entries".to_string(), 0)]), ..Caps::default() });
+    st.set_caps(&caps(&[("entries", 0)]));
     let (_, x) = blob(101, Class::Durable, None, &[]);
     assert_eq!(st.take_deposit(&deposit(&s, &x, false), None).unwrap(), Code::STORAGE_CAP);
 }
@@ -832,7 +803,7 @@ fn a_gone_sources_charges_pass_to_a_record_that_showed_them_spec_sync_ids_5() {
     // the record row of what a source's stream showed present (osis-sync's `rows::tag::PRESENT`)
     const PRESENT: u8 = b'k';
     let (_dev, s, mut st) = one_unread();
-    st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 600)]), ..Caps::default() });
+    st.set_caps(&caps(&[("peer_bytes", 600)]));
     let rec = |st: &mut Store, k: u8| st.with_tx(|t| t.record_create([k; 32], &osis_store::Named::default())).unwrap();
     let (loser, survivor, silent) = (rec(&mut st, 1), rec(&mut st, 2), rec(&mut st, 3));
     let none = std::collections::BTreeSet::new();
@@ -877,7 +848,7 @@ fn a_gone_sources_charges_pass_to_a_record_that_showed_them_spec_sync_ids_5() {
 #[test]
 fn peer_budget_spec_sync_ids_5() {
     let (_dev, s, mut st) = one_unread();
-    st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 1500)]), ..Caps::default() });
+    st.set_caps(&caps(&[("peer_bytes", 1500)]));
     let c = Source::Conn(ConnId(1));
     let (b1, x1) = blob(1000, Class::Durable, None, &[]);
     let (_, x2) = blob(1001, Class::Durable, None, &[]);
@@ -903,7 +874,7 @@ fn peer_budget_spec_sync_ids_5() {
     let r = Sid::new(40);
     let mut st = Dev::new().open();
     st.set_sync_set(&holding(&[(&r, Holding::Read)])).unwrap();
-    st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 1500)]), ..Caps::default() });
+    st.set_caps(&caps(&[("peer_bytes", 1500)]));
     let unstamped = |b| Entry { blob: b, wrap: wrap(3), stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: None };
     let c = Source::Conn(ConnId(3));
     assert_eq!(st.log(&r.id, unstamped(b1), Some(x1), Some(c)).unwrap(), Code::OK);
@@ -966,28 +937,9 @@ fn delete_reads_only_the_prefix_spec_sync_ids_6() {
     assert_eq!(a, b, "bytes read: {a} for a blob of n, {b} for 10n");
 }
 
-// spec/sync-ids.md §6 (delete keys): a Delete by levels needs one delete signature per
-// commitment group of the blob's prefix, each under that group's commitment, with the head's
-// write key when any level is 3, else its sync key; anything else is refused.
-#[test]
-fn delete_by_levels_spec_sync_ids_6() {
-    let (_dev, s, mut st) = one_unread();
-    let d2 = DeleteSecret::write(&Secret32::from_bytes([21; 32]));
-    let d3 = DeleteSecret::write(&Secret32::from_bytes([22; 32]));
-    let p = Prefix::for_keys([5; 16], &[1; 16], None, &[(2, d2.verifying_key())]).unwrap();
-    let mut rng = SeededRng::from_u64(3);
-    let (_, bytes) = osis_blob::frame(&p, b"body", &mut rng).unwrap();
-    let b = osis_blob::blob_id(&bytes);
-    st.take_stamped(&s.id, &stamped(&s, b, false), bytes, &[]).unwrap();
-    let by = |key: &SigningSecret, dks: &[(u8, &DeleteSecret)]| DeleteItem::sign_by(key, dks, &[5; 16], &[1; 16], &s.id, b).unwrap();
-    assert_eq!(st.take_delete(&s.id, &[by(&s.sync_key(), &[(2, &d3)])], true).unwrap(), [Code::REFUSED], "a key the prefix does not commit to");
-    assert_eq!(st.take_delete(&s.id, &[by(&s.write_key(), &[(2, &d2)])], true).unwrap(), [Code::REFUSED], "level 2 with the write key");
-    assert!(st.entry(&s.id, &b).unwrap().is_some());
-    assert_eq!(st.take_delete(&s.id, &[by(&s.sync_key(), &[(2, &d2)])], true).unwrap(), [Code::OK]);
-    assert!(st.entry(&s.id, &b).unwrap().is_none());
-}
-
-// spec/sync-ids.md §6 (Delete), spec/crypto.md §7, by who writes each input: a
+// spec/sync-ids.md §6 (delete keys): one delete signature per commitment group of the blob's
+// prefix, each under that group's commitment, with the head's write key when any level is 3, else
+// its sync key. spec/sync-ids.md §6 (Delete), spec/crypto.md §7, by who writes each input: a
 // writer's delete reaches only what the blob's prefix commits to its level keys, under the head's
 // current role keys. Writer X's two entries: one purgeable by its author or an admin (levels 1, 2),
 // one by any writer (1, 2, 3). Hostile writer Y (no admin) holds its own level-2 key and the
@@ -1019,6 +971,7 @@ fn deletes_by_levels_reach_only_the_signers_right_spec_sync_ids_6() {
     };
     refused(&mut st, by(authors, &s.sync_key(), &[(2, &y)]), Code::REFUSED, "Y's own level-2 key on X's entry");
     refused(&mut st, by(authors, &s.write_key(), &[(3, &w3)]), Code::REFUSED, "a level the prefix does not list");
+    refused(&mut st, by(authors, &s.write_key(), &[(2, &x)]), Code::REFUSED, "level 2 with the write key");
     // Y demoted: the head's write key rotates
     let (old_write, old_sync) = (s.write_key(), s.sync_key());
     s.write = Secret32::from_bytes([60; 32]);
@@ -1073,8 +1026,8 @@ fn settling_the_time_reads_only_what_is_due_spec_sync_ids_6() {
     assert_eq!(small, large, "rows read settling the time with 10 and 100 rows not due");
 }
 
-// spec/sync-ids.md §5 (Tombstones): a tombstone is kept `TOMBSTONE_LIFETIME`, then the blob ID may
-// come back.
+// spec/sync-ids.md §5 (Tombstones), spec/sync-ids.md §6 (stamp refusals): a tombstone is kept
+// `TOMBSTONE_LIFETIME` (taking the blob again is refused, 6), then the blob ID may come back.
 #[test]
 fn tombstones_end_after_their_lifetime_spec_sync_ids_5() {
     let (_dev, s, mut st) = one_unread();
@@ -1235,7 +1188,7 @@ fn caps_govern_unread_and_the_largest_gives_way_spec_sync_ids_6() {
     for s in [&s1, &s2] {
         st.take_register(&s.id, &[(&s.steps[0].0, None)], None, osis_base::Mono(0)).unwrap();
     }
-    st.set_caps(&Caps { policy: BTreeMap::from([("total_bytes".to_string(), 12_000), ("memory_bytes".to_string(), 1500)]), ..Caps::default() });
+    st.set_caps(&caps(&[("total_bytes", 12_000), ("memory_bytes", 1500)]));
     let mut first = None;
     for i in 0..4 {
         let (b, x) = blob(2000 + i, Class::Durable, None, &[]);
@@ -1314,7 +1267,7 @@ fn log_reads_by_member_and_until_spec_sync_streams_3() {
     st.take_delete(&s1.id, &[DeleteItem::sign(&s1.delete(), &s1.id, bs[0])], true).unwrap();
     let ended = st.read_log(&BTreeMap::from([(s1.id, Some(until))]), None, 100).unwrap();
     let got: Vec<_> = ended.events.iter().map(|e| e.event).collect();
-    assert!(got.contains(&NodeEvent::Deleted { sync_id: s1.id, blob: bs[0], at: 0 }) || got.iter().any(|e| matches!(e, NodeEvent::Deleted { blob, .. } if *blob == bs[0])));
+    assert!(got.iter().any(|e| matches!(e, NodeEvent::Deleted { blob, .. } if *blob == bs[0])), "{got:?}");
     assert!(!got.contains(&NodeEvent::Added(s1.id, bs[2])));
     let join = st.read_sync(&s2.id, None, None, 100).unwrap();
     assert_eq!(join.events.len(), 4);
@@ -1372,7 +1325,7 @@ fn stands_live_in_the_record_spec_sync_judgement_4() {
 // entries' wraps, tombstones, path, log events) and S from every record, and frees bytes no other
 // sync ID names.
 #[test]
-fn shred_drops_everything_of_s_spec_sync_ids_5() {
+fn shred_drops_everything_of_s_spec_sync_set_3() {
     let (_dev, s, mut st) = one_unread();
     let (b, x) = blob(100, Class::Durable, None, &[]);
     st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
@@ -1431,7 +1384,7 @@ fn ops(st: &mut Store, s: &Sid, rec: RecordId, child: &(Step, ClaimSet), step: u
         9 => st.take_stamped(&s.id, &stamped(s, b(9).0, false), b(9).1, &[]).unwrap(),
         10 => {
             // the total cap gives way: S's oldest entries go
-            st.set_caps(&Caps { policy: BTreeMap::from([("total_bytes".to_string(), 1)]), ..Caps::default() });
+            st.set_caps(&caps(&[("total_bytes", 1)]));
             let acted = st.settle_at(WallMs(1_000)).unwrap();
             st.set_caps(&Caps::default());
             code_of(acted)
@@ -1682,7 +1635,7 @@ fn held_elsewhere_kept_while_the_entry_is() {
 fn reader(s: &Sid, peer_bytes: u64) -> Store {
     let mut st = Dev::new().open();
     st.set_sync_set(&holding(&[(s, Holding::Read)])).unwrap();
-    st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), peer_bytes)]), ..Caps::default() });
+    st.set_caps(&caps(&[("peer_bytes", peer_bytes)]));
     st.serve_path(&s.id, &osis_engine::sync::Path { steps: s.steps.iter().map(|(p, c)| (p.clone(), Some(c.clone()))).collect() }).unwrap();
     st
 }
@@ -1737,7 +1690,7 @@ fn a_start_passes_on_what_connections_brought_spec_sync_ids_5() {
     let dev = Dev::new();
     let start = |st: &mut Store, s: &Sid| {
         st.set_sync_set(&holding(&[(s, Holding::Read)])).unwrap();
-        st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 10_000)]), ..Caps::default() });
+        st.set_caps(&caps(&[("peer_bytes", 10_000)]));
         st.serve_path(&s.id, &osis_engine::sync::Path { steps: s.steps.iter().map(|(p, c)| (p.clone(), Some(c.clone()))).collect() }).unwrap();
     };
     let mut st = dev.open();

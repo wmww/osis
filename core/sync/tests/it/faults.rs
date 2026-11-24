@@ -7,22 +7,11 @@
 
 use crate::harness::history::Gives;
 use crate::harness::lies::Lie;
-use crate::harness::{DiskFault, Loss, Seen, Step, World, fixture, play, two_nodes};
+use crate::harness::{DiskFault, Loss, Seen, Step, World, bare_pair, play, two_nodes};
 use osis_base::{Ak, Value, WallMs};
 use osis_engine::Mutation;
 use osis_sync::session::STALL_TIMEOUT_MS;
 use osis_sync::{ConnId, Out};
-
-/// Two bare nodes, quiet, no connection.
-fn bare_pair() -> World {
-    fixture("faults_bare_pair", || {
-        let mut w = World::new(0);
-        w.add_bare_node();
-        w.add_bare_node();
-        w.run();
-        w
-    })
-}
 
 /// Node 0 dials node 1 on conn 1.
 fn dial(w: &mut World) {

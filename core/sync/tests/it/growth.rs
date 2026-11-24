@@ -859,49 +859,12 @@ fn grants_as_fresh(held: bool, redeem: bool, removals: usize) {
     flat_work(&work, if held { "held" } else { "declined" });
 }
 
-/// The families a grant from outside leaves rows in while its fire is kept or owed: what a held
-/// fire carries (`gf/`) and the sealed fires owed (`node/`).
-const FIRE_ROWS: [&str; 2] = ["gf/", "node/"];
-
-/// `grant_rounds` at 1 and 10 cycles, the grant held (`held`) or left in the inbox: each side
-/// holds at ten cycles what it holds at one (`as_fresh` against the one-cycle world), and of
-/// fires, kept or owed (`FIRE_ROWS`), what a world that never shared holds.
-fn cycles_grow_nothing(held: bool) {
-    let (_, fresh) = fixture_with("growth grants fresh", || {
-        let mut w = grant_world();
-        let held = settled(&mut w);
-        (w, held)
-    });
-    let ([(_, a), (_, b)], _) = grant_rounds(held, false);
-    for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
-        // the nine cycles more leave their set removals' tombstones in D's state (4 a cycle)
-        as_fresh(&b[i], &a[i], 9 * 4, &format!("{who}, 10 cycles against 1"), &mut |_| String::new());
-        for f in FIRE_ROWS {
-            assert_eq!(b[i].0.get(f), fresh[i].0.get(f), "{who}, 10 cycles: {f} rows as a world that never shared");
-        }
-    }
-}
-
-// spec/sync-inbox.md §5 Grant from outside (an offer, held while H's setting keeps the signal),
-// spec/requirements.md Scale (zero growth): a thing shared with another account, held there, and
-// unshared again, each side letting it go, 1 and 10 times over. An inbox keeps a grant's fire and
-// a removal's for the inbox lifetime: once that passed nothing grows with the cycles.
-#[test]
-fn share_and_unshare_cycles_grow_nothing_spec_sync_inbox_5() {
-    cycles_grow_nothing(true);
-}
-
-// Its arm with the grant never held from the grantee's account root: what its fire carried (the
-// thing's edge piece, spec/commits.md §5 What a held thing needs) goes with the fire.
-#[test]
-fn offered_and_withdrawn_grants_grow_nothing_spec_sync_inbox_5() {
-    cycles_grow_nothing(false);
-}
-
 // Releasing everything, its grant, fire, hold and revoke arm (issues/storage-owners.md),
-// spec/sync-set.md §3: a thing granted to another account, held there, written,
-// the grantee removed and both sides letting it go, leaves each node as a fresh world's once the
-// inbox lifetime, the role keep and tombstones have passed, at 1 and 10 rounds. Storage is a fresh
+// spec/sync-set.md §3, spec/sync-inbox.md §5 Grant from outside (an offer, held while H's setting
+// keeps the signal), spec/requirements.md Scale (zero growth): a thing granted to another
+// account, held there, written, the grantee removed and both sides letting it go, leaves each
+// node as a fresh world's once the inbox lifetime (an inbox keeps a grant's fire and a removal's
+// for it), the role keep and tombstones have passed, at 1 and 10 rounds. Storage is a fresh
 // world's, and read's judgements per round do not grow with the rounds played (`flat_work`).
 #[test]
 fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
@@ -918,7 +881,9 @@ fn a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3()
 }
 
 // S1, its decline arm (spec/sync-set.md §4 (nothing else makes a node hold a thing it is granted a
-// role on)): as the grant arm, the grant never held from the grantee's account root.
+// role on), spec/sync-inbox.md §5): as the grant arm, the grant never held from the grantee's
+// account root: what its fire carried (the thing's edge piece, spec/commits.md §5 What a held
+// thing needs) goes with the fire.
 #[test]
 fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(false, false, 4);

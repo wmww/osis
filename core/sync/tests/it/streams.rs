@@ -7,7 +7,7 @@
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_crypto::{RoleKey, Secret32, SeededRng, WRAP_LEN, role_key};
-use osis_engine::sync::{Caps, Holding, SyncSet};
+use osis_engine::sync::{Holding, SyncSet};
 use osis_blob::{Class, Prefix};
 use osis_proto::limits::{REPLY_BUDGET, SMALL_REPLY, TOP_BIT};
 use osis_proto::{Code, Event, Id, Msg, Pull};
@@ -21,6 +21,7 @@ use osis_sync::Store;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
+use crate::harness::caps;
 use crate::harness::sid::{Sid, THING};
 
 /// The one connection, as each side names it.
@@ -495,8 +496,6 @@ fn listed_then_pushed_spec_sync_streams_4() {
     let x: Vec<BlobId> = (0..3).map(|i| p.a.log(s, 100 + i)).collect();
     p.shared_read(s);
     p.run();
-    let src = p.a.src();
-    let _ = src;
     for b in &x {
         assert!(knows(&p.b, p.b.src(), s, *b));
     }
@@ -733,7 +732,6 @@ fn a_join_in_pages_keeps_its_position_spec_sync_streams_4() {
     }
     assert_eq!(seen, 300, "every event of the join, each once");
     assert_eq!(a.reported_at(t), None, "its own position until an Applied covers the merge");
-    let _ = c;
     // merged: the member follows the stream once an Applied covers the merging reply
     a.with(1, |st, cx| st.message(cx, C, Incoming::Push(Msg::Applied { cursor: osis_proto::Cursor::new(stream.clone()).unwrap() })));
     assert!(a.reported.contains(&Reported::Merged(C, t)));
@@ -799,7 +797,7 @@ fn a_refused_join_is_joined_again_later_spec_sync_streams_4() {
 
 // spec/sync-opens.md §3 (Agreement: a member only one side holds closes keeping nothing of where
 // it stopped, so its rejoin is from the start), SN_sreconcile: a rejoin opens says is from the start names no cursor,
-// whatever this side held.
+// whatever this side held (one held rejoins from where it stood: `what_a_source_showed_lasts_with_its_stop`).
 #[test]
 fn a_rejoin_from_the_start_names_no_cursor_spec_sync_opens_3() {
     let mut p = Pair::new();
@@ -812,19 +810,12 @@ fn a_rejoin_from_the_start_names_no_cursor_spec_sync_opens_3() {
     p.run();
     let last = p.sent_by_b(41).into_iter().last().unwrap();
     assert!(matches!(last, Msg::Pull(q) if q.joins == vec![(s, None)]));
-    // held: from where the stream stood
-    p.b.leave(p.now, s);
-    p.b.join(p.now, s);
-    p.run();
-    let last = p.sent_by_b(41).into_iter().last().unwrap();
-    assert!(matches!(last, Msg::Pull(q) if matches!(q.joins.as_slice(), [(x, Some(_))] if *x == s)));
 }
 
 // spec/sync-opens.md §6 (Where it stopped), spec/sync-judgement.md §3 (`known`): what a source
 // showed of S lasts while S is a member there or its stop is kept. Closed keeping its stop, S
 // keeps it and, opened again, rejoins from where it stood (not from the start); closed keeping
-// nothing, it goes; a kept stop goes once its connection ends (at the next tick), and a start
-// forgets one a crash left.
+// nothing, it goes; a kept stop goes once its connection ends (at the next tick).
 #[test]
 fn what_a_source_showed_lasts_with_its_stop_spec_sync_opens_6() {
     let (mut p, s, x) = Pair::read_one();
@@ -858,6 +849,18 @@ fn what_a_source_showed_lasts_with_its_stop_spec_sync_opens_6() {
     assert!(knows(&p.b, src, s, x));
     p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
     assert!(!knows(&p.b, src, s, x), "gone with the connection");
+}
+
+// spec/sync-opens.md §6 (Where it stopped: a restart included): a stop kept when the node went
+// down (no connection end handled) goes at its start, with what the source showed.
+#[test]
+fn a_start_forgets_a_stop_a_crash_left_spec_sync_opens_6() {
+    let (mut p, s, x) = Pair::read_one();
+    let src = p.b.src();
+    p.b.leave_as(p.now, s, Leaving::Kept);
+    assert!(knows(&p.b, src, s, x));
+    p.b.restart_all(7);
+    assert!(!knows(&p.b, src, s, x), "forgotten at the start");
 }
 
 // spec/sync-opens.md §3 (A record keeps),
@@ -912,18 +915,6 @@ fn a_pull_anew_while_closed_stands_over_a_lost_cursor_spec_sync_opens_6() {
     p.run();
     assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])), "rejoined from the start");
     assert!(p.b.store.entry(&k.id, &x).unwrap().is_some(), "what it dropped held again");
-}
-
-// spec/sync-opens.md §6 (Where it stopped: a restart included): a stop kept when the node went
-// down (no connection end handled) goes at its start, with what the source showed.
-#[test]
-fn a_start_forgets_a_stop_a_crash_left_spec_sync_opens_6() {
-    let (mut p, s, x) = Pair::read_one();
-    let src = p.b.src();
-    p.b.leave_as(p.now, s, Leaving::Kept);
-    assert!(knows(&p.b, src, s, x));
-    p.b.restart_all(7);
-    assert!(!knows(&p.b, src, s, x), "forgotten at the start");
 }
 
 // spec/sync-streams.md §4 (Applying: a Deleted says only that the source no longer holds the
@@ -1124,7 +1115,7 @@ fn full_told_then_room_again_spec_sync_streams_4() {
         let (mut p, k) = Pair::kept();
         let x = k.stamped(&mut p.a, 3000, true);
         let y = k.stamped(&mut p.a, 3001, true);
-        p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+        p.b.store.set_caps(&caps(&[("bytes", 4000)]));
         p.join(k.id);
         p.run();
         assert!(p.a.streams.known().full(C, &k.id), "b told it is full");
@@ -1134,7 +1125,7 @@ fn full_told_then_room_again_spec_sync_streams_4() {
         assert_eq!(taken, 1);
         if restart {
             p.b.restart_all(7);
-            p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+            p.b.store.set_caps(&caps(&[("bytes", 4000)]));
             p.a.streams.closed(C);
             assert!(!p.a.streams.known().full(C, &k.id), "full lasts with its connection");
             p.join(k.id);
@@ -1163,12 +1154,12 @@ fn a_shredded_full_s_untells_full_spec_sync_streams_4() {
     let (mut p, k) = Pair::kept();
     k.stamped(&mut p.a, 3000, true);
     k.stamped(&mut p.a, 3001, true);
-    p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+    p.b.store.set_caps(&caps(&[("bytes", 4000)]));
     p.join(k.id);
     p.run();
     assert!(p.a.streams.known().full(C, &k.id));
     p.b.store.shred(&k.id).unwrap();
-    p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 1_000_000)]), ..Caps::default() });
+    p.b.store.set_caps(&caps(&[("bytes", 1_000_000)]));
     assert_eq!(p.b.store.take_register(&k.id, &[(&k.genesis().0, Some(&k.genesis().1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
     p.run();
     assert!(!p.b.store.waits_room(&k.id));
@@ -1183,7 +1174,7 @@ fn full_ends_only_with_room_for_what_it_refused_spec_sync_streams_4() {
     let (mut p, k) = Pair::kept();
     let x = k.stamped(&mut p.a, 3000, true);
     let y = k.stamped(&mut p.a, 3001, true);
-    let caps = |n: u64| Caps { policy: BTreeMap::from([("bytes".to_string(), n)]), ..Caps::default() };
+    let caps = |n: u64| caps(&[("bytes", n)]);
     p.b.store.set_caps(&caps(4000));
     p.join(k.id);
     p.run();
@@ -1219,7 +1210,7 @@ fn full_ends_once_what_it_refused_left_its_source_spec_sync_streams_4() {
         let (mut p, k) = Pair::kept();
         let x = k.stamped(&mut p.a, 3000, true);
         let y = k.stamped(&mut p.a, if oversized { 5000 } else { 3001 }, true);
-        p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4500)]), ..Caps::default() });
+        p.b.store.set_caps(&caps(&[("bytes", 4500)]));
         p.join(k.id);
         p.run();
         assert!(p.a.streams.known().full(C, &k.id) && p.b.store.waits_room(&k.id));
@@ -1261,7 +1252,7 @@ fn a_listing_from_the_start_shows_what_it_refused_left_spec_sync_streams_4() {
         k.keep(&mut p.b);
         let x = k.stamped(&mut p.a, 3000, true);
         let y = k.stamped(&mut p.a, 3001, true);
-        p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+        p.b.store.set_caps(&caps(&[("bytes", 4000)]));
         p.join(k.id);
         p.run();
         assert!(p.b.store.waits_room(&k.id));
@@ -1290,7 +1281,7 @@ fn a_sign_at_one_source_pulls_anew_there_alone_spec_sync_streams_4() {
         let (mut p, k) = Pair::kept();
         k.stamped(&mut p.a, 3000, true);
         k.stamped(&mut p.a, 3001, true);
-        p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+        p.b.store.set_caps(&caps(&[("bytes", 4000)]));
         for (c, r) in [(D, 0xd), (E, 0xe)] {
             let (rb, ra) = (p.b.new_record(r), p.a.new_record(r + 0x10));
             p.b.open.records.insert(c, rb);
@@ -1338,7 +1329,7 @@ fn a_listing_from_the_start_judges_again_what_a_message_in_hand_refused_spec_syn
     let (mut p, k) = Pair::kept();
     let x = k.stamped(&mut p.a, 3000, true);
     let y = k.stamped(&mut p.a, 3001, true);
-    p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+    p.b.store.set_caps(&caps(&[("bytes", 4000)]));
     // two sources: bodies are fetched, not inline
     let (rb, ra) = (p.b.new_record(0xd), p.a.new_record(0x1d));
     p.b.open.records.insert(D, rb);
@@ -1367,7 +1358,7 @@ fn a_listing_from_the_start_judges_again_what_a_message_in_hand_refused_spec_syn
     let st = osis_proto::Stream { events, cursor: cursor.borrow().clone(), report: false, seq: 0 };
     p.b.with(p.now, |t, c| t.message(c, C, Incoming::Push(Msg::Stream(Box::new(st)))));
     // room grows: S is pulled from the start at C (D silent), its listing names the refused entry
-    p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 8000)]), ..Caps::default() });
+    p.b.store.set_caps(&caps(&[("bytes", 8000)]));
     let hold = |ab: bool, conn: ConnId, m: &Msg| conn == D || (ab && matches!(m, Msg::FetchReply { items, .. } if !items.iter().any(|f| f.blob_id == refused && f.entry.is_some())));
     p.run_on(&[C, D], hold);
     assert!(p.b.store.entry(&k.id, &refused).unwrap().is_some(), "fetched by the listing, taken");
@@ -1380,7 +1371,7 @@ fn a_listing_from_the_start_judges_again_what_a_message_in_hand_refused_spec_syn
 #[test]
 fn a_total_cap_refusal_ends_when_the_total_grows_spec_sync_streams_4() {
     let (mut p, k) = Pair::kept();
-    let total = |n: u64| Caps { policy: BTreeMap::from([("total_bytes".to_string(), n)]), ..Caps::default() };
+    let total = |n: u64| caps(&[("total_bytes", n)]);
     p.b.store.set_caps(&total(3000));
     let x = k.stamped(&mut p.a, 3001, true);
     p.join(k.id);
@@ -1695,7 +1686,7 @@ fn a_flood_of_pending_commits_is_bounded_per_peer_spec_commits_4() {
     let mut p = Pair::new();
     let s = sid(1);
     let budget = 5 * 400;
-    p.a.store.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), budget)]), ..Caps::default() });
+    p.a.store.set_caps(&caps(&[("peer_bytes", budget)]));
     // another peer's carrier, charged to it
     let other = Source::Conn(ConnId(9));
     let (theirs, bytes) = blob(299, Class::Durable);
@@ -1722,7 +1713,7 @@ fn duplicates_of_held_commits_are_bounded_per_peer_spec_sync_ids_5() {
     for gave in [true, false] {
         let mut p = Pair::new();
         let s = sid(1);
-        p.a.store.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 5 * 400)]), ..Caps::default() });
+        p.a.store.set_caps(&caps(&[("peer_bytes", 5 * 400)]));
         let flood: Vec<BlobId> = (0..20).map(|i| p.b.log(s, 300 + i)).collect();
         p.a.table.held = Some(gave);
         p.shared_read(s);
@@ -2622,39 +2613,9 @@ fn caught_up_matches_what_each_side_holds_plain_spec_sync_status_1() {
 }
 
 // spec/sync-streams.md §4 (Applying: a listing from the start replaces what the source holds as
-// present, trimmed or not), NetStream S_pres/SN_pres: a source whose store went back to before
-// an entry answers the stored cursor, which names no position of its history, with a whole
-// listing not marked trimmed; the entry it lost with no deletion event is no longer known there.
-#[test]
-fn a_whole_listing_replaces_presence_trimmed_or_not_spec_sync_streams_4() {
-    let mut p = Pair::new();
-    let s = sid(1);
-    let x = p.a.log(s, 100);
-    let y = p.a.log(s, 101);
-    let own = p.b.log(s, 300);
-    p.shared_read(s);
-    p.run();
-    assert!(knows(&p.b, p.b.src(), s, x) && knows(&p.b, p.b.src(), s, y));
-    // a's store is another history now (restored from before y): it holds x alone
-    let mut a = Side::new(5);
-    a.log(s, 100);
-    a.open.record = p.a.open.record;
-    p.a = a;
-    p.b.streams.closed(C);
-    p.shared_read(s);
-    p.seen.clear();
-    p.run();
-    let replies: Vec<_> = p.sent_by_a(42).into_iter().filter_map(|m| if let Msg::PullReply(r) = m { Some(r.clone()) } else { None }).collect();
-    assert!(replies.first().is_some_and(|r| r.whole && !r.trimmed), "{replies:?}");
-    assert!(knows(&p.b, p.b.src(), s, x));
-    assert!(!knows(&p.b, p.b.src(), s, y), "the whole listing is the source's live set");
-    assert!(!p.b.streams.known().present(&s, &y));
-    assert!(p.b.store.entry(&s, &own).unwrap().is_some(), "nothing of b's own store goes");
-}
-
-// spec/sync-streams.md §4 (Applying: a listing from the start replaces presence once read to its
-// end), NetStream S_pres/SN_pres: a source restored from before an entry answers the stored
-// cursor (naming no position of its history) from the start, untrimmed, in pages; a connection
+// present, trimmed or not, once read to its end), NetStream S_pres/SN_pres: a source restored
+// from before an entry answers the stored cursor (naming no position of its history) from the
+// start, a whole listing not marked trimmed, in pages; a connection
 // lost after the first page stores no cursor of the listing, so the next connection lists from
 // the start again, to its end, and the entry the source lost is no longer known there.
 #[test]
@@ -2698,6 +2659,7 @@ fn a_listing_cut_short_is_read_again_from_the_start_spec_sync_streams_4() {
     assert!(again.first().is_some_and(|r| r.whole), "read from the start again: {:?}", again.first().map(|r| (r.whole, r.more)));
     assert!(knows(&p.b, p.b.src(), s, x));
     assert!(!knows(&p.b, p.b.src(), s, y), "the listing read to its end is the source's live set");
+    assert!(!p.b.streams.known().present(&s, &y));
 }
 
 // spec/sync-streams.md §4 (Applying; Joining: a join from the start is S's listing): a join of S

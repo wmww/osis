@@ -412,9 +412,10 @@ fn a_report_counts_when_its_source_leaves_in_the_same_step() {
 
 // spec/sync-status.md §2 (held elsewhere): an own commit is held elsewhere once a source's stream
 // showed its entry or a source reported a position at or past where this node's log first held
-// it; the report is recorded on the entry and outlives the source's connection.
+// it (shown: `store_source_counts_by_its_stream`); the report is recorded on the entry and
+// outlives the source's connection.
 #[test]
-fn own_commit_held_elsewhere_by_report_or_presence() {
+fn own_commit_held_elsewhere_by_report() {
     let mut t = T::new(&[(S, Holding::Read)]);
     t.join(S, A, reader(RA, 1));
     t.caught(A, S, 0);
@@ -432,13 +433,6 @@ fn own_commit_held_elsewhere_by_report_or_presence() {
     t.g.reported.remove(&(A, S));
     t.settle();
     assert!(t.st.held(&cid(1)), "the record outlives the source");
-    // presence by a source's stream counts too
-    t.join(S, B, store(RB));
-    t.own(S, cid(2), blob(2), 9);
-    assert!(!t.st.held(&cid(2)));
-    t.g.knows.insert((Source::Record(RB), S, blob(2)));
-    t.settle();
-    assert!(t.st.held(&cid(2)));
 }
 
 // spec/sync-status.md §2 (never one keeping S unread): a store source: a source keeping S unread holds a writer's entry once
@@ -592,12 +586,14 @@ fn complete_pass_with_no_source_waits_for_a_peer_to_be_waited_for() {
     assert_eq!(t.g.passes, vec![(S, 7), (S, 20), (S, 30)], "PASS_WAIT_MS");
 }
 
-// spec/sync-status.md §1 (PASS_WAIT_MS): a recorded peer away holds a pass no longer than
-// PASS_WAIT_MS; the node wakes for it.
+// spec/sync-status.md §1 (PASS_WAIT_MS; the wait runs on the monotonic clock): a recorded peer
+// away holds a pass no longer than PASS_WAIT_MS, a wall clock frozen while the node runs
+// included; the node wakes for it.
 #[test]
 fn complete_pass_gives_up_on_away_peer() {
     let mut t = T::new(&[(S, Holding::Read)]);
     t.g.records.insert(S, [RB].into());
+    t.g.wall = Some(10);
     t.at(10);
     want(&mut t, S, 10);
     assert!(t.g.passes.is_empty());
@@ -645,19 +641,6 @@ fn a_sync_id_leaving_takes_its_pass_and_row_spec_sync_status_1() {
     assert!(t.g.begun.is_empty(), "no row left");
     t.at(10 + PASS_WAIT_MS);
     assert!(t.g.passes.is_empty() && t.g.begun.is_empty(), "no pass left to end");
-}
-
-// spec/sync-status.md §1 (PASS_WAIT_MS: the wait runs on the monotonic clock): a wall clock frozen
-// while the node runs holds no pass past PASS_WAIT_MS.
-#[test]
-fn a_frozen_wall_clock_holds_no_pass_spec_sync_status_1() {
-    let mut t = T::new(&[(S, Holding::Read)]);
-    t.g.records.insert(S, [RB].into());
-    t.g.wall = Some(10);
-    t.at(10);
-    want(&mut t, S, 10);
-    t.at(10 + PASS_WAIT_MS);
-    assert_eq!(t.g.passes.len(), 1, "ended by the monotonic clock");
 }
 
 // spec/sync-status.md §1 (PASS_WAIT_MS: a pass begun again having waited what the wall clock
@@ -748,19 +731,10 @@ fn wait_all_follows_every_sync_id_spec_sync_status_3() {
     assert_eq!(wait(&t), Waiting::Done);
 }
 
-// spec/sync-status.md §3 (stranded): a node keeping S unread reports S like any sync ID, stranded
-// included.
-#[test]
-fn stranded_reported() {
-    let mut t = T::new(&[(S, Holding::Unread)]);
-    t.g.stranded.insert(S);
-    t.settle();
-    assert!(t.st.of(&S, &t.g).unwrap().stranded);
-}
-
 // spec/sync-status.md §3 (stranded), notes/api-design.md (a wait on Stranded fails, though it is
-// not sure never to finish): a wait whose scope holds a stranded sync ID fails naming it; one on
-// a thing carried elsewhere only does not.
+// not sure never to finish): a node keeping S unread reports S like any sync ID, stranded
+// included; a wait whose scope holds a stranded sync ID fails naming it; one on a thing carried
+// elsewhere only does not.
 #[test]
 fn a_wait_on_a_stranded_sync_id_fails_spec_sync_status_3() {
     let u = sid(2);
@@ -768,6 +742,7 @@ fn a_wait_on_a_stranded_sync_id_fails_spec_sync_status_3() {
     t.g.stranded.insert(S);
     t.g.shared.insert(u);
     t.settle();
+    assert!(t.st.of(&S, &t.g).unwrap().stranded);
     assert_eq!(t.st.wait(&t.g, Scope::All, |_| unreachable!(), |s| t.g.shared.contains(s)), Waiting::Stranded(vec![S]));
     assert_eq!(t.st.wait(&t.g, Scope::Thing(tid(1)), |_| Ok(vec![S]), |s| t.g.shared.contains(s)), Waiting::Stranded(vec![S]));
     assert_eq!(t.st.wait(&t.g, Scope::Thing(tid(1)), |_| Ok(vec![u]), |s| t.g.shared.contains(s)), Waiting::Pending, "not stranded: unconnected");

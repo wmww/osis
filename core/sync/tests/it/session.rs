@@ -2,7 +2,7 @@
 //! the stall clock. Most tests drive one `Session` against a scripted peer (raw frames through the
 //! real encoder) or two `Session`s against each other, over real engines; a few run a world.
 
-use crate::harness::{World, fixture};
+use crate::harness::{Seen, World, bare_pair};
 use osis_base::copying::{cached, copying};
 use osis_base::{Clock, ManualClock, Mono, Tid, WallMs};
 use osis_crypto::{SeededRng, Secret32, SigningSecret};
@@ -460,21 +460,9 @@ fn stall_clock_spec_sync_streams_1() {
     assert_eq!(p.ds.deadline(), None, "answered");
 }
 
-// spec/sync-streams.md §1 (Stall): other bytes received (pushes, the peer's requests) move the
-// stall clock too, within their bound.
-#[test]
-fn other_bytes_move_the_stall_clock_spec_sync_streams_1() {
-    let mut p = quiet_pair();
-    p.ds.request(To::Streams, pull(SMALL_REPLY as u64));
-    p.ds.take_bytes();
-    p.d.now = WallMs(T0.0 + 1000);
-    p.ds.receive(&frame(&Msg::Digest { digest: [0; 32] }), &mut p.d.cx()).expect("kept");
-    assert_eq!(p.ds.deadline(), Some(Mono(T0.0 + 1000 + STALL_TIMEOUT_MS)), "a push moved it");
-}
-
 // spec/sync-transport.md §1, spec/sync-opens.md §1 (Dial timeout): a connection whose peer
 // sends no Hello closes `STALL_TIMEOUT_MS` after it came up; a dial not up `DIAL_TIMEOUT_MS` after
-// it started closes as failed. A world of two connected nodes ends quiet: no deadline left.
+// it started closes as failed.
 #[test]
 fn hello_and_dial_deadlines_spec_sync_opens_1() {
     let mut s = Sessions::default();
@@ -537,17 +525,13 @@ fn frames_after_hello(bytes: &[u8]) -> Vec<Msg> {
 // pings and go quiet: no deadline left, a handful of deliveries.
 #[test]
 fn a_connection_goes_quiet_spec_sync_opens_2() {
-    let mut w = fixture("session_two_bare", || {
-        let mut w = World::new(0);
-        w.add_bare_node();
-        w.add_bare_node();
-        w.run();
-        w
-    });
+    let mut w = bare_pair();
     let to = w.address(1);
     w.apply_as(0, vec![Out::Dial(ConnId(1), to)]);
     let before = w.deliveries;
+    w.trace = true;
     w.run();
+    assert!(!w.seen.iter().any(|s| matches!(s, Seen::Closed { .. })), "a deadline closed it: {:?}", w.seen);
     assert!(w.deliveries - before < 40, "{} deliveries", w.deliveries - before);
 }
 
@@ -581,7 +565,8 @@ fn peer_that_reads_nothing_closes_spec_sync_streams_1() {
     assert!(ls.receive(&ping, &mut l.cx()).is_ok(), "32 MiB unwritten: kept");
 }
 
-// spec/sync-streams.md §1 (Stall): a frame trickled byte by byte moves the stall clock only when it
+// spec/sync-streams.md §1 (Stall): other bytes received (pushes, the peer's requests) move the
+// stall clock too, within their bound. A frame trickled byte by byte moves it only when it
 // is a reply to the oldest request out: the partial bytes of a push, or of a reply to another
 // request, move nothing (a push counts once its frame is whole); and other bytes stop moving it
 // past their bound, until it moves by its own events again.
@@ -630,13 +615,7 @@ fn trickled_and_other_bytes_spec_sync_streams_1() {
 #[test]
 fn silent_peers_close_at_the_tick_spec_sync_streams_1() {
     for deaf in [false, true] {
-        let mut w = fixture("session_two_bare", || {
-            let mut w = World::new(0);
-            w.add_bare_node();
-            w.add_bare_node();
-            w.run();
-            w
-        });
+        let mut w = bare_pair();
         if deaf {
             w.net.deaf.insert(1);
         } else {
@@ -645,7 +624,7 @@ fn silent_peers_close_at_the_tick_spec_sync_streams_1() {
         w.trace = true;
         let to = w.address(1);
         w.apply_as(0, vec![Out::Dial(ConnId(1), to)]);
-        let closed = |w: &World| w.seen.iter().any(|s| matches!(s, crate::harness::Seen::Closed { node: 1, .. }));
+        let closed = |w: &World| w.seen.iter().any(|s| matches!(s, Seen::Closed { node: 1, .. }));
         w.advance(STALL_TIMEOUT_MS - 1);
         assert!(!closed(&w), "deaf {deaf}: kept until the bound");
         w.advance(1);
