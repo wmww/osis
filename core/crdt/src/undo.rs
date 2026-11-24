@@ -85,7 +85,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             }
             // only while the register reads what the undone write wrote (an undo restoring it
             // included, so undo steps back through repeated edits)
-            let Some(ow) = reg.write.as_ref().filter(|x| x.value.is_some()) else { return Ok(None) };
+            let Some(ow) = reg.write.as_ref() else { return Ok(None) };
             let cur = match &slot {
                 Some(Fragment::Register(x)) => x.write.as_ref().map(|x| &x.value),
                 _ => None,
@@ -94,7 +94,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 return Ok(None);
             }
             match before_read(w, b) {
-                Some(v) => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r, value: Some(v) }) }),
+                Some(v) => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r, value: v }) }),
                 // absent before: a root is reset above; a nested register carries no reset
                 None => return Ok(None),
             }
@@ -129,7 +129,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 let d = w.fresh().dot;
                 let f = match &ev {
                     Some(ev) => create(w, ev, &v)?,
-                    None => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r.clone(), value: Some(v) }) }),
+                    None => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r.clone(), value: v }) }),
                 };
                 elems.insert(d, Elem::of_frag(f));
             }

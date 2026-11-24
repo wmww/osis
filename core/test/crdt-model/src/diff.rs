@@ -19,7 +19,7 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
     let Some(st) = st else { return Some(create(w, ty, v)) };
     let cur = st.read();
     let out = match (ty, st, v) {
-        (Ty::Register, _, v) => Frag::Register { reset: None, write: Some((w.delta(), Some(v.clone()))) },
+        (Ty::Register, _, v) => Frag::Register { reset: None, write: Some((w.delta(), v.clone())) },
         (Ty::Counter, _, Value::Int(n)) => {
             let c = match cur {
                 Some(Value::Int(c)) => c,

@@ -22,7 +22,7 @@ pub struct Composite {
 /// its tid, stamped after its write, naming a part `d` lies in. It stays held and reads as
 /// nothing.
 pub fn hidden(d: &Dot, e: &Elem, elems: &BTreeMap<Dot, Elem>) -> bool {
-    let Some(Frag::Register { write: Some((s, Some(v))), .. }) = e.frag.as_deref() else { return false };
+    let Some(Frag::Register { write: Some((s, v)), .. }) = e.frag.as_deref() else { return false };
     elems.values().any(|x| x.gone.as_ref().is_some_and(|g| g.value == *v && g.stamp > *s && g.seen.iter().any(|(f, hi)| f.source == d.source && f.ctr <= d.ctr && d.ctr < *hi)))
 }
 
@@ -150,10 +150,10 @@ impl SeqElem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Frag {
     /// A write without a value is value-less (§4.7).
-    Register { reset: Option<Stamp>, write: Option<(Stamp, Option<Value>)> },
+    Register { reset: Option<Stamp>, write: Option<(Stamp, Value)> },
     Bag { kind: BagKind, c: Composite, elems: BTreeMap<Dot, Elem> },
     Struct { c: Composite, fields: BTreeMap<u64, Frag> },
-    Enum { c: Composite, case: Option<(Stamp, Option<u64>)>, payloads: BTreeMap<u64, Frag> },
+    Enum { c: Composite, case: Option<(Stamp, u64)>, payloads: BTreeMap<u64, Frag> },
     Set { c: Composite, elems: BTreeMap<Dot, Elem> },
     Map { c: Composite, entries: BTreeMap<Eid, Entry> },
     Seq { text: bool, c: Composite, elems: BTreeMap<Dot, SeqElem> },
@@ -163,9 +163,8 @@ pub enum Frag {
     Slots { reg: Option<Box<Frag>>, slots: BTreeMap<u8, Frag> },
 }
 
-/// Register join: greater stamp wins; of copies of one write the valued one (§4.7), then the greater value (canonical
-/// bytes, §4.1 copy order).
-pub fn max_valued<T: Ord>(a: Option<(Stamp, Option<T>)>, b: Option<(Stamp, Option<T>)>) -> Option<(Stamp, Option<T>)> {
+/// Register join: greater stamp wins; of copies of one write the greater value (canonical bytes, §4.1 copy order).
+pub fn max_write<T: Ord>(a: Option<(Stamp, T)>, b: Option<(Stamp, T)>) -> Option<(Stamp, T)> {
     a.max(b)
 }
 
@@ -312,7 +311,7 @@ impl Frag {
     /// presence-counting write inside.
     pub fn written(&self) -> Option<Stamp> {
         match self {
-            Frag::Register { write, .. } => write.as_ref().filter(|w| w.1.is_some()).map(|w| w.0.clone()),
+            Frag::Register { write, .. } => write.as_ref().map(|w| w.0.clone()),
             Frag::Slots { .. } => self.chosen().written(),
             f => max_opt(f.composite().unwrap().w.clone(), f.inner_max(true)),
         }
@@ -325,12 +324,12 @@ impl Frag {
         let child = |f: &Frag| if valued { max_opt(f.written(), f.reset()) } else { f.all_max() };
         let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(max_opt(m, e.reset.clone()), e.gone.as_ref().map(|g| g.stamp.clone())), e.frag.as_deref().and_then(child)));
         match self {
-            Frag::Register { write, .. } => write.as_ref().filter(|w| !valued || w.1.is_some()).map(|w| w.0.clone()),
+            Frag::Register { write, .. } => write.as_ref().map(|w| w.0.clone()),
             Frag::Slots { .. } => self.slots().into_iter().fold(None, |m, f| max_opt(m, child(f))),
             Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems_max(elems),
             Frag::Struct { fields, .. } => fields.values().fold(None, |m, f| max_opt(m, child(f))),
             Frag::Enum { case, payloads, .. } => {
-                let k = case.as_ref().filter(|k| !valued || k.1.is_some()).map(|k| k.0.clone());
+                let k = case.as_ref().map(|k| k.0.clone());
                 payloads.values().fold(k, |m, f| max_opt(m, child(f)))
             }
             // a keyed record's creation counts (§4.3); a key-erased record's is value-less
@@ -420,11 +419,11 @@ impl Frag {
             a
         }
         match (self, o) {
-            (Frag::Register { reset: ra, write: wa }, Frag::Register { reset: rb, write: wb }) => Frag::Register { reset: max_opt(ra, rb), write: max_valued(wa, wb) },
+            (Frag::Register { reset: ra, write: wa }, Frag::Register { reset: rb, write: wb }) => Frag::Register { reset: max_opt(ra, rb), write: max_write(wa, wb) },
             (Frag::Bag { kind, c: ca, elems: ea }, Frag::Bag { c: cb, elems: eb, .. }) => Frag::Bag { kind, c: jc(ca, cb), elems: jelems(ea, eb) },
             (Frag::Set { c: ca, elems: ea }, Frag::Set { c: cb, elems: eb }) => Frag::Set { c: jc(ca, cb), elems: jelems(ea, eb) },
             (Frag::Struct { c: ca, fields: fa }, Frag::Struct { c: cb, fields: fb }) => Frag::Struct { c: jc(ca, cb), fields: jfrags(fa, fb) },
-            (Frag::Enum { c: ca, case: ka, payloads: pa }, Frag::Enum { c: cb, case: kb, payloads: pb }) => Frag::Enum { c: jc(ca, cb), case: max_valued(ka, kb), payloads: jfrags(pa, pb) },
+            (Frag::Enum { c: ca, case: ka, payloads: pa }, Frag::Enum { c: cb, case: kb, payloads: pb }) => Frag::Enum { c: jc(ca, cb), case: max_write(ka, kb), payloads: jfrags(pa, pb) },
             (Frag::Map { c: ca, entries: mut ea }, Frag::Map { c: cb, entries: eb }) => {
                 for (id, nb) in eb {
                     match ea.remove(&id) {
@@ -733,13 +732,13 @@ impl Frag {
     /// record, or a field holding one. Removals, positions and value-less writes are none.
     pub fn live_value(&self) -> bool {
         match self {
-            Frag::Register { write, .. } => write.as_ref().is_some_and(|w| w.1.is_some()),
+            Frag::Register { write, .. } => write.is_some(),
             Frag::Slots { .. } => self.chosen().live_value(),
             f if f.composite().is_some_and(|c| c.w.is_some()) => true,
             Frag::Bag { elems, .. } => elems.values().any(|e| e.frag.as_ref().is_some_and(|f| f.present())),
             Frag::Set { elems, .. } => !crate::ops::live_elems(elems).is_empty(),
             Frag::Struct { fields, .. } => fields.values().any(|f| f.live_value()),
-            Frag::Enum { case, .. } => case.as_ref().is_some_and(|k| k.1.is_some()),
+            Frag::Enum { case, .. } => case.is_some(),
             Frag::Map { entries, .. } => !live_records(entries).is_empty(),
             Frag::Seq { text, elems, .. } => elems.values().any(|e| e.shows(*text)),
         }
@@ -752,7 +751,7 @@ impl Frag {
         }
         Some(match self {
             Frag::Slots { .. } => return self.chosen().read(),
-            Frag::Register { write, .. } => write.as_ref().unwrap().1.clone().unwrap(),
+            Frag::Register { write, .. } => write.as_ref().unwrap().1.clone(),
             Frag::Bag { kind, elems, .. } => {
                 let vals: Vec<Value> = elems.values().filter_map(|e| e.frag.as_ref().and_then(|f| f.read())).collect();
                 match kind {
@@ -792,7 +791,7 @@ impl Frag {
             }
             Frag::Struct { fields, .. } => Value::fields(fields.iter().filter_map(|(k, f)| f.read().map(|v| (*k, v))).collect()),
             Frag::Enum { case, payloads, .. } => {
-                let (_, Some(id)) = case.as_ref()? else { return None };
+                let (_, id) = case.as_ref()?;
                 Value::Enum(*id, payloads.get(id).and_then(|f| f.read()).map(Box::new))
             }
             Frag::Set { elems, .. } => Value::set(crate::ops::live_elems(elems).into_iter().map(|(_, v)| v).collect()),

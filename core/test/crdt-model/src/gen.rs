@@ -211,7 +211,7 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
             Some(f)
         }
         (Ty::Enum(cases), Frag::Enum { case, payloads, .. }) => {
-            if let (Some((_, Some(id))), true) = (case, r.chance(2, 3)) {
+            if let (Some((_, id)), true) = (case, r.chance(2, 3)) {
                 if let Some(Some(pt)) = cases.get(id) {
                     let delta = random_op(r, w, pt, payloads.get(id))?;
                     let f = Frag::Enum { c: Default::default(), case: None, payloads: [(*id, delta)].into_iter().collect() };
@@ -413,7 +413,7 @@ fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
     fn anchor(r: &mut Rng, srcs: &[Source; 3], regs: &[Dot]) -> MAnchor {
         if r.chance(1, 6) { MAnchor::Head } else { MAnchor::Dot(dot(r, srcs, regs)) }
     }
-    let content = |r: &mut Rng, s: &MStamp| Content::Frag(Box::new(Frag::Register { reset: None, write: Some((s.clone(), Some(Value::Int(r.below(3) as i64)))) }));
+    let content = |r: &mut Rng, s: &MStamp| Content::Frag(Box::new(Frag::Register { reset: None, write: Some((s.clone(), Value::Int(r.below(3) as i64))) }));
     // chars at random: creation copies of one dot and undeletes may carry other chars (forged
     // copies, §4.1 copy order, §5.7)
     let any_char = |r: &mut Rng| char::from(b'a' + r.below(4) as u8);
@@ -494,7 +494,7 @@ fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
                 // a forged copy of a register write: its stamp, another string (§4.1 copy order)
                 let rs = reg_stamps[r.below(reg_stamps.len())].clone();
                 let v: String = (0..r.below(4)).map(|_| if r.chance(1, 4) { 'é' } else { any_char(r) }).collect();
-                out.push(Frag::Register { reset: None, write: Some((rs, Some(Value::Str(v)))) });
+                out.push(Frag::Register { reset: None, write: Some((rs, Value::Str(v))) });
                 continue;
             }
             // an old app's save: a register write of a string (a reset of everything older)
@@ -502,7 +502,7 @@ fn hostile_writes(r: &mut Rng, list: bool, slots: bool, n: usize) -> Vec<Frag> {
             let d = Dot { source: srcs[r.below(3)].clone(), ctr: pos_ctr };
             let v: String = (0..r.below(4)).map(|i| char::from(b'a' + ((d.ctr + i as u64 + 1) % 4) as u8)).collect();
             let s = MStamp { ts: t, dot: d.clone() };
-            out.push(Frag::Register { reset: None, write: Some((s.clone(), Some(Value::Str(v)))) });
+            out.push(Frag::Register { reset: None, write: Some((s.clone(), Value::Str(v))) });
             regs.push(d);
             reg_stamps.push(s);
             continue;

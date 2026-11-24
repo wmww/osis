@@ -23,7 +23,7 @@ fn settled(seed: u64, types: &[Ty]) {
     let stamp = Stamp::new(at, node(7), 1);
     let meta = Meta { reset: Some(stamp.clone()), w: None };
     let states = [
-        Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: stamp.clone(), value: Some(osis_base::Value::Int(1)) }) }),
+        Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: stamp.clone(), value: osis_base::Value::Int(1) }) }),
         Fragment::Register(Register { reset: Some(stamp.clone()), write: None }),
         Fragment::Struct(Struct { meta: meta.clone(), fields: Default::default() }),
         Fragment::Set(Set::new(meta.clone(), Default::default())),
@@ -74,7 +74,7 @@ mod direct {
         Stamp::new(ts(t << 16), src(1), c)
     }
     fn reg(s: Stamp, v: Value) -> Fragment {
-        Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(v) }) })
+        Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: v }) })
     }
     /// A bag of `kind` with contributions `vs`, element `i` node 1's dot `i + 1`.
     fn bag(kind: BagKind, vs: &[Value]) -> Fragment {
@@ -145,10 +145,6 @@ mod direct {
         assert_eq!(s.read(), Some(empty));
         s.join(set(Meta { reset: Some(st(3, 1)), w: None }, vec![]));
         assert_eq!(s.read(), None, "remove_aspect: absent");
-        let valueless = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: st(1, 1), value: None }) });
-        assert_eq!(valueless.read(), None);
-        let s = set(Meta::default(), vec![(Dot::new(src(1), 1), Elem { reset: None, frag: Some(Box::new(valueless)), gone: None })]);
-        assert!(!s.present(), "a value-less creation is no presence");
     }
 
     /// §5.3: a struct reads every present field, unknown field IDs included; a replace (reset and
@@ -169,7 +165,7 @@ mod direct {
     /// every older payload write; no case write reads absent whatever payloads exist.
     #[test]
     fn enum_payloads_per_case_spec_5_4() {
-        let en = |m: Meta, case: Option<(Stamp, u64)>, p: Vec<(u64, Fragment)>| Fragment::Enum(Enum { meta: m, case: case.map(|(stamp, c)| CaseWrite { stamp, case: Some(c) }), payloads: p.into_iter().collect() });
+        let en = |m: Meta, case: Option<(Stamp, u64)>, p: Vec<(u64, Fragment)>| Fragment::Enum(Enum { meta: m, case: case.map(|(stamp, c)| CaseWrite { stamp, case: c }), payloads: p.into_iter().collect() });
         let mut e = en(Meta::default(), Some((st(1, 1), 1)), vec![(1, reg(st(1, 1), Value::Int(10)))]);
         assert_eq!(e.read(), Some(Value::Enum(1, Some(Box::new(Value::Int(10))))));
         // case 2 at t3 (reset, case, payload); an edit of case 1's payload at t4

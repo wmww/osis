@@ -1154,7 +1154,7 @@ pub(crate) fn remove_writes(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
 pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
     let mut out = BTreeMap::new();
     let Some(w) = &r.write else { return out };
-    let Some(Value::Str(text)) = &w.value else { return out };
+    let Value::Str(text) = &w.value else { return out };
     let Some(src) = Source::derived(w.stamp.dot.clone()) else { return out };
     let mut prev = Anchor::Head;
     for (i, c) in text.chars().enumerate() {

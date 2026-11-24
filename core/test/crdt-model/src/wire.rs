@@ -491,7 +491,7 @@ impl Frag {
         }
         let reg = |e: &Elem| e.frag.as_ref().map_or(0, |f| f.read_depth());
         match self {
-            Frag::Register { write, .. } => write.as_ref().and_then(|w| w.1.as_ref()).map_or(0, Value::depth),
+            Frag::Register { write, .. } => write.as_ref().map_or(0, |w| w.1.depth()),
             Frag::Bag { elems, .. } => max(elems.values().map(reg)),
             Frag::Set { elems, .. } => 2 + max(elems.values().map(reg)),
             Frag::Struct { fields, .. } => 1 + max(fields.values().map(Frag::read_depth)),
@@ -599,7 +599,7 @@ pub fn encode(f: &Frag, cx: &Ctx) -> Item {
             let mut a = vec![enc, enc_opt_stamp(reset, cx)];
             if let Some((s, v)) = write {
                 a.push(enc_stamp(s, cx));
-                a.extend(v.iter().map(|v| v.to_item()));
+                a.push(v.to_item());
             }
             Item::Array(a)
         }
@@ -609,7 +609,7 @@ pub fn encode(f: &Frag, cx: &Ctx) -> Item {
             Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(c, cx), cbor::sorted_map(m)])
         }
         Frag::Enum { c, case, payloads } => {
-            let case_i = Item::Array(case.iter().map(|(s, id)| Item::Array([enc_stamp(s, cx)].into_iter().chain(id.map(u)).collect())).collect());
+            let case_i = Item::Array(case.iter().map(|(s, id)| Item::Array(vec![enc_stamp(s, cx), u(*id)])).collect());
             let m = payloads.iter().map(|(k, v)| (u(*k), encode(v, cx))).collect();
             Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(c, cx), case_i, cbor::sorted_map(m)])
         }
@@ -876,7 +876,7 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
     let enc = a[0].uint()?;
     let f = match (enc, a.len()) {
         (0, 2) => Frag::Register { reset: dec_opt_stamp(&a[1], cx)?, write: None },
-        (0, 4) => Frag::Register { reset: dec_opt_stamp(&a[1], cx)?, write: Some((dec_stamp(&a[2], cx)?, Some(Value::from_item(&a[3])?))) },
+        (0, 4) => Frag::Register { reset: dec_opt_stamp(&a[1], cx)?, write: Some((dec_stamp(&a[2], cx)?, Value::from_item(&a[3])?)) },
         (1..=3, 4) => {
             let kind = [BagKind::Counter, BagKind::Max, BagKind::Min][enc as usize - 1];
             Frag::Bag { kind, c: composite(a, cx)?, elems: dec_elems(&a[3], cx, false)? }
@@ -886,7 +886,7 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
             let case = match a[3].array()? {
                 [] => None,
                 [c] => match c.array()? {
-                    [s, id] => Some((dec_stamp(s, cx)?, Some(id.uint()?))),
+                    [s, id] => Some((dec_stamp(s, cx)?, id.uint()?)),
                     _ => return Err(Error::Bad("case")),
                 },
                 _ => return Err(Error::Bad("case")),

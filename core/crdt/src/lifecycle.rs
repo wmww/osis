@@ -58,9 +58,7 @@ impl Fragment {
     /// values, a fragment names it no more.
     pub fn each_valued(&self, f: &mut dyn FnMut(&Dot)) {
         let reg = |r: &Register, f: &mut dyn FnMut(&Dot)| {
-            if let Some(w) = &r.write
-                && w.value.is_some()
-            {
+            if let Some(w) = &r.write {
                 f(w.stamp.dot.origin());
             }
         };
@@ -78,9 +76,7 @@ impl Fragment {
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|s| s.each_valued(f)),
             Fragment::Struct(s) => s.fields.values().for_each(|s| s.each_valued(f)),
             Fragment::Enum(e) => {
-                if let Some(c) = &e.case
-                    && c.case.is_some()
-                {
+                if let Some(c) = &e.case {
                     f(c.stamp.dot.origin());
                 }
                 e.payloads.values().for_each(|s| s.each_valued(f));

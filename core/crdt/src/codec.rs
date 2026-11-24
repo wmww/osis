@@ -401,15 +401,12 @@ fn encode_children(cx: &mut Enc, out: &mut Vec<u8>, c: &BTreeMap<u64, Fragment>,
 }
 
 fn encode_register(cx: &mut Enc, out: &mut Vec<u8>, r: &Register) {
-    let value = r.write.as_ref().and_then(|w| w.value.as_ref());
-    put_array(out, 2 + usize::from(r.write.is_some()) + usize::from(value.is_some()));
+    put_array(out, 2 + 2 * usize::from(r.write.is_some()));
     put_uint(out, 0);
     cx.opt_stamp(out, r.reset.as_ref());
     if let Some(w) = &r.write {
         cx.stamp(out, &w.stamp);
-    }
-    if let Some(v) = value {
-        encode_into(v, out);
+        encode_into(&w.value, out);
     }
 }
 
@@ -441,11 +438,9 @@ fn encode_fragment_at(cx: &mut Enc, out: &mut Vec<u8>, f: &Fragment) -> Result<(
             head(cx, out, Encoding::Enum, &s.meta, 5);
             put_array(out, usize::from(s.case.is_some()));
             if let Some(c) = &s.case {
-                put_array(out, 1 + usize::from(c.case.is_some()));
+                put_array(out, 2);
                 cx.stamp(out, &c.stamp);
-                if let Some(k) = c.case {
-                    put_uint(out, k);
-                }
+                put_uint(out, c.case);
             }
             encode_children(cx, out, &s.payloads, Step::Case)?;
         }
@@ -1021,7 +1016,7 @@ fn decode_register(cx: &mut Dec, mut a: List, may_reset: bool) -> Result<Registe
         (_, Some([s, v])) => {
             let v = v.to_value()?;
             check_value(cx, &v)?;
-            Some(RegWrite { stamp: cx.level_stamp(s)?, value: Some(v) })
+            Some(RegWrite { stamp: cx.level_stamp(s)?, value: v })
         }
         _ => return Err(Error::Malformed("register arity")),
     };
@@ -1141,7 +1136,7 @@ fn decode_fragment_at(cx: &mut Dec, v: Item, may_reset: bool) -> Result<Fragment
             let case = opt_stamp_only(k, |c| {
                 let c = as_array(c)?;
                 match c.tuple() {
-                    Some([s, id]) => Ok(CaseWrite { stamp: cx.level_stamp(s)?, case: Some(as_uint(id)?) }),
+                    Some([s, id]) => Ok(CaseWrite { stamp: cx.level_stamp(s)?, case: as_uint(id)? }),
                     _ => Err(Error::Malformed("case")),
                 }
             })?;

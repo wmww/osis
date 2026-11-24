@@ -112,7 +112,7 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
             r.reset.iter().for_each(|s| put(out, path, Kind::Reset, s));
             if let Some(w) = &r.write {
                 put(out, path, Kind::Value, &w.stamp);
-                out.last_mut().unwrap().value = w.value.clone();
+                out.last_mut().unwrap().value = Some(w.value.clone());
             }
         }
         Fragment::Slots(s) => {
@@ -139,7 +139,7 @@ fn walk(f: &Fragment, path: &mut Vec<Place>, out: &mut Vec<Raw>) {
                 if let Some(x) = e.frag.as_deref() {
                     let from = out.len();
                     inside(x, path, out);
-                    let v = e.written().and_then(|w| w.0.cloned());
+                    let v = e.written().map(|w| w.0.clone());
                     out[from..].iter_mut().filter(|r| r.w.kind == Kind::Value).for_each(|r| r.value = v.clone());
                 }
                 path.pop();
@@ -532,7 +532,7 @@ fn a_run_is_held_by_bucket_and_dated_by_element_spec_4_8() {
 fn beaten_and_pruned_die_spec_4_8() {
     use crate::fragment::{RegWrite, Register, Struct};
     let st = |t: u64, c: u64| Stamp::new(ts(t), x(), c);
-    let reg = |s: Stamp, v: i64| Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(v)) }) });
+    let reg = |s: Stamp, v: i64| Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Value::Int(v) }) });
     let field = |s: Stamp, v: i64| Fragment::Struct(Struct { fields: [(1, reg(s, v))].into_iter().collect(), ..Default::default() });
     let (a, b) = (field(st(1, 1), 1), field(st(2, 2), 2));
     assert_eq!(dead(&a, &b), vec![(Kind::Value, st(1, 1))]);
@@ -609,7 +609,7 @@ fn set_of(elems: Vec<(Dot, Elem)>) -> Fragment {
 /// Set element `v` written at `s`.
 fn elem_at(s: &Stamp, v: Value) -> Elem {
     use crate::fragment::{RegWrite, Register};
-    Elem { reset: None, frag: Some(Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: Some(v) }) }))), gone: None }
+    Elem { reset: None, frag: Some(Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: v }) }))), gone: None }
 }
 
 /// A value removal of `v` at `s`, naming the parts of `x()` from counter 1 below `hi`.
@@ -869,7 +869,7 @@ fn a_register_write_stands_for_a_reset_copy_of_its_stamp_spec_5_1() {
     use crate::fragment::{RegWrite, Register};
     let s = Stamp::new(ts(5), x(), 3);
     let reset = Fragment::Seq(Seq::new(true, Meta { reset: Some(s.clone()), ..Meta::default() }, BTreeMap::new()));
-    let write = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(2)) }) });
+    let write = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Value::Int(2) }) });
     assert!(killed(&reset, &write).is_empty());
     assert!(killed(&write, &reset).is_empty());
 }
@@ -989,7 +989,7 @@ fn a_presence_write_reaches_the_whole_slots_position_spec_7() {
 }
 
 fn string_reg(s: &Stamp, v: &str) -> Fragment {
-    Fragment::Register(crate::fragment::Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: Some(Value::Str(v.into())) }) })
+    Fragment::Register(crate::fragment::Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: Value::Str(v.into()) }) })
 }
 
 /// §7 The embedding is the register's, §4.8 Which write: a text's copies of register write `s`'s
@@ -1027,7 +1027,7 @@ fn an_embedding_losing_by_copy_order_is_no_death_spec_4_1() {
     assert!(matches!(slots, Fragment::Slots(_)), "{slots:?}");
     let e = string_reg(&st, "é");
     // a list winning by copy order embeds no char at all
-    let list = Fragment::Register(crate::fragment::Register { reset: None, write: Some(RegWrite { stamp: st.clone(), value: Some(Value::List(vec![])) }) });
+    let list = Fragment::Register(crate::fragment::Register { reset: None, write: Some(RegWrite { stamp: st.clone(), value: Value::List(vec![]) }) });
     for w in [&e, &list] {
         for (a, b) in [(&slots, w), (w, &slots)] {
             assert!(killed(a, b).is_empty(), "{a:?} then {b:?}");

@@ -183,7 +183,7 @@ fn snapshot_frontiers_spec_8() {
     let mut elems = BTreeMap::new();
     for (k, src) in [(1u8, sess(tid(5))), (2, Source::session(session)), (3, Source::commit(osis_base::CommitId([7; 32])))] {
         let dot = Dot::new(src, 4);
-        elems.insert(dot.clone(), Elem { reset: None, frag: Some(Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: Stamp { ts: ts((u64::from(k) + 1) << 16), dot }, value: Some(Value::Int(i64::from(k))) }) }))), gone: None });
+        elems.insert(dot.clone(), Elem { reset: None, frag: Some(Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: Stamp { ts: ts((u64::from(k) + 1) << 16), dot }, value: Value::Int(i64::from(k)) }) }))), gone: None });
     }
     let fragment = Fragment::Set(Set::new(Meta::default(), elems));
     let first = crate::Session { node: tid(5), nonce: [0; crate::SESSION_NONCE_LEN] };
@@ -346,7 +346,7 @@ fn rejects_set_value_of_another_source_spec_5_5() {
     // node 1's element 3 holding a value stamped by node 3 (the encoder writes it canonically)
     use crate::fragment::{Elem, Fragment, Meta, RegWrite, Register, Set};
     use crate::stamp::{Dot, Stamp};
-    let reg = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: Stamp::new(ts(5 << 16), sess(tid(3)), 1), value: Some(i(1)) }) });
+    let reg = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: Stamp::new(ts(5 << 16), sess(tid(3)), 1), value: i(1) }) });
     let f = Fragment::Set(Set::new(Meta::default(), BTreeMap::from([(Dot::new(sess(tid(1)), 3), Elem { reset: None, frag: Some(Box::new(reg)), gone: None })])));
     let b = encode_snapshot(&snapshot(&f), &cx, None).unwrap();
     assert!(!snap_ok(&b, &cx), "node 3 wrote node 1's element value");
@@ -452,7 +452,7 @@ fn links_compare_by_bytes_spec_3_3() {
     assert!(Key(a.clone().into()) < Key(b.clone().into()));
     let src = sess(tid(1));
     let s = Stamp::new(ts(5 << 16), src.clone(), 3);
-    let reg = |v: &Value| Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: Some(v.clone()) }) });
+    let reg = |v: &Value| Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: v.clone() }) });
     for (x, y) in [(&a, &b), (&b, &a)] {
         let mut f = reg(x);
         f.join(reg(y));

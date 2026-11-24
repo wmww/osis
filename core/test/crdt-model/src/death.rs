@@ -131,14 +131,12 @@ pub fn valued(w: &Frag) -> bool {
     }
 }
 
-/// The stamps of the value-carrying writes `f` holds without their value: a register or case without its value,
-/// a creation in a map dot's keyless record, a text undelete without its char,
+/// The stamps of the value-carrying writes `f` holds without their value: a creation in a map dot's keyless record, a text undelete without its char,
 /// and a text creation without its char unless its element is deleted in `f` or something in `f` anchors at it (a
 /// deleted element's char is never on the wire, §3.3 rule 5, §4.5). Embedded chars are their register's.
 pub fn valueless(f: &Frag) -> Vec<Stamp> {
     fn go(f: &Frag, out: &mut Vec<Stamp>) {
         match f {
-            Frag::Register { write: Some((s, None)), .. } => out.push(s.clone()),
             Frag::Register { .. } => {}
             Frag::Slots { reg, slots } => {
                 reg.iter().for_each(|r| go(r, out));
@@ -146,12 +144,7 @@ pub fn valueless(f: &Frag) -> Vec<Stamp> {
             }
             Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values().filter_map(|e| e.frag.as_deref()).for_each(|x| go(x, out)),
             Frag::Struct { fields, .. } => fields.values().for_each(|x| go(x, out)),
-            Frag::Enum { case, payloads, .. } => {
-                if let Some((s, None)) = case {
-                    out.push(s.clone());
-                }
-                payloads.values().for_each(|x| go(x, out));
-            }
+            Frag::Enum { payloads, .. } => payloads.values().for_each(|x| go(x, out)),
             Frag::Map { entries, .. } => {
                 for ((_, k), en) in entries {
                     // a key-erased record's reset is a removal (§5.6), no value-less write

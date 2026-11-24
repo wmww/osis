@@ -58,7 +58,7 @@ impl Fragment {
         let SlotRef::Frag(f) = self.chosen_slot() else { return None };
         match (seg, f) {
             (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.at(rest),
-            (PathSeg::Case(id), Fragment::Enum(e)) if e.case.as_ref().and_then(|c| c.case) == Some(*id) => e.payloads.get(id)?.at(rest),
+            (PathSeg::Case(id), Fragment::Enum(e)) if e.case.as_ref().map(|c| c.case) == Some(*id) => e.payloads.get(id)?.at(rest),
             (PathSeg::Key(k), Fragment::Map(m)) => match m.live_ids(k).as_slice() {
                 // one live record: read in place
                 [id] => m.record_frag(id)?.at(rest),
@@ -75,7 +75,7 @@ impl Fragment {
         use crate::ops::PathSeg;
         let Some((seg, rest)) = path.split_first() else { return self.read() };
         let f = match self.chosen_slot() {
-            SlotRef::Reg(r) => return value_at(r.write.as_ref()?.value.as_ref()?, path).cloned(),
+            SlotRef::Reg(r) => return value_at(&r.write.as_ref()?.value, path).cloned(),
             SlotRef::Frag(f) => f,
         };
         // a struct reads as a map by field id: a field step and an integer key step are one
@@ -84,7 +84,7 @@ impl Fragment {
         match (seg, f) {
             (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.read_at(rest),
             (PathSeg::Key(k), Fragment::Struct(s)) => s.fields.get(&field(k)?)?.read_at(rest),
-            (PathSeg::Case(id), Fragment::Enum(e)) if e.case.as_ref().and_then(|c| c.case) == Some(*id) => e.payloads.get(id)?.read_at(rest),
+            (PathSeg::Case(id), Fragment::Enum(e)) if e.case.as_ref().map(|c| c.case) == Some(*id) => e.payloads.get(id)?.read_at(rest),
             (PathSeg::Field(id), Fragment::Map(_)) => f.read_at(&[&[PathSeg::Key(int(id)?)], rest].concat()),
             (PathSeg::Key(k), Fragment::Map(m)) => match m.live_ids(k).as_slice() {
                 [id] => m.record_frag(id)?.read_at(rest),
@@ -159,7 +159,7 @@ impl Fragment {
     /// than encoding it, and within a small factor of the allocations.
     pub fn approx_bytes(&self) -> usize {
         use crate::fragment::{Bag, Enum, Slots, Struct};
-        let reg = |r: &crate::fragment::Register| opt_stamp(&r.reset) + r.write.as_ref().map_or(0, |w| STAMP + w.value.as_ref().map_or(0, value_bytes));
+        let reg = |r: &crate::fragment::Register| opt_stamp(&r.reset) + r.write.as_ref().map_or(0, |w| STAMP + value_bytes(&w.value));
         match self {
             Fragment::Register(r) => reg(r),
             Fragment::Bag(Bag { meta, elems, .. }) => meta_bytes(meta) + tree(elems) + elems.values().map(|e| opt_stamp(&e.reset) + boxed(&e.frag)).sum::<usize>(),

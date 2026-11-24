@@ -177,7 +177,7 @@ pub(crate) fn encoding_for<V: View>(view: &V, v: &Value) -> Encoding {
 }
 
 fn reg(w: &Writer, v: Value) -> Fragment {
-    Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: w.delta_stamp(), value: Some(v) }) })
+    Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: w.delta_stamp(), value: v }) })
 }
 
 /// A new set element: a fresh dot and its value register, written only by this creation
@@ -237,7 +237,7 @@ pub fn create<V: View>(w: &mut Writer, view: &V, v: &Value) -> Result<Fragment, 
             Fragment::Struct(Struct { meta, fields })
         }
         (Encoding::Enum, Value::Enum(id, p)) => {
-            let case = Some(CaseWrite { stamp: w.delta_stamp(), case: Some(*id) });
+            let case = Some(CaseWrite { stamp: w.delta_stamp(), case: *id });
             let mut payloads = BTreeMap::new();
             if let (Some(pview), Some(pv)) = (view.case(*id), p) {
                 payloads.insert(*id, create(w, &pview, pv)?);
@@ -509,7 +509,7 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
             Fragment::Struct(Struct { meta: Meta::default(), fields: out })
         }
         (Encoding::Enum, Fragment::Enum(e), Value::Enum(id, p)) => {
-            if e.case.as_ref().and_then(|c| c.case) == Some(*id) {
+            if e.case.as_ref().map(|c| c.case) == Some(*id) {
                 let (Some(pview), Some(pv)) = (view.case(*id), p) else { return Ok(None) };
                 let Some(d) = diff(w, e.payloads.get(id), &pview, pv)? else { return Ok(None) };
                 Fragment::Enum(Enum { meta: Meta::default(), case: None, payloads: BTreeMap::from([(*id, d)]) })

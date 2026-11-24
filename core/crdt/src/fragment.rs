@@ -98,11 +98,11 @@ impl Meta {
     }
 }
 
-/// A register write; `value` is `None` for a value-less write (§4.7).
+/// A register write.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegWrite {
     pub(crate) stamp: Stamp,
-    pub(crate) value: Option<Value>,
+    pub(crate) value: Value,
 }
 
 /// §5.1. Only an aspect root or a `Slots` slot carries a reset.
@@ -159,17 +159,17 @@ impl Elem {
     pub(crate) fn of_frag(f: Fragment) -> Elem {
         Elem { reset: None, frag: Some(Box::new(f)), gone: None }
     }
-    /// The value and stamp of the element's register write: `(None, s)` for a value-less one
-    /// (§4.7); `None` for a tombstone or a value removal alone.
-    pub(crate) fn written(&self) -> Option<(Option<&Value>, &Stamp)> {
+    /// The value and stamp of the element's register write; `None` for a tombstone or a value
+    /// removal alone.
+    pub(crate) fn written(&self) -> Option<(&Value, &Stamp)> {
         match self.frag.as_deref() {
-            Some(Fragment::Register(Register { write: Some(w), .. })) => Some((w.value.as_ref(), &w.stamp)),
+            Some(Fragment::Register(Register { write: Some(w), .. })) => Some((&w.value, &w.stamp)),
             _ => None,
         }
     }
     /// The value the record's element holds and the reference its value removal names (§5.5).
     pub(crate) fn values(&self) -> impl Iterator<Item = &Value> {
-        self.removes().into_iter().chain(self.written().and_then(|w| w.0))
+        self.removes().into_iter().chain(self.written().map(|w| w.0))
     }
     /// `values` that may hold a reference: one at any depth, or a link, whose content may
     /// (spec/data-model.md §6, §8).
@@ -278,11 +278,11 @@ pub struct Struct {
     pub(crate) fields: BTreeMap<u64, Fragment>,
 }
 
-/// The case register of an enum; `case` is `None` for a value-less write (§4.7).
+/// The case register of an enum.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CaseWrite {
     pub(crate) stamp: Stamp,
-    pub(crate) case: Option<u64>,
+    pub(crate) case: u64,
 }
 
 /// §5.4. Payload writes are filed under the case they were made for.
@@ -337,7 +337,7 @@ pub(crate) fn removed(elems: &BTreeMap<Dot, Elem>) -> BTreeMap<&Value, Vec<&Remo
 /// Whether element `e` at dot `d` is hidden by a value removal of its tid (`removed`, §5.5): it
 /// stays in the state, as a deleted text element's creation does, and reads as nothing.
 pub(crate) fn hidden(d: &Dot, e: &Elem, removed: &BTreeMap<&Value, Vec<&Removal>>) -> bool {
-    matches!(e.written(), Some((Some(v), s)) if removed.get(v).is_some_and(|rs| rs.iter().any(|r| r.hides(d, s))))
+    matches!(e.written(), Some((v, s)) if removed.get(v).is_some_and(|rs| rs.iter().any(|r| r.hides(d, s))))
 }
 
 /// The live elements of a set or bag's `elems` with their reads: present, and in a set not

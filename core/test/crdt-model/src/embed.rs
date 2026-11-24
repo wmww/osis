@@ -30,7 +30,7 @@ pub fn embed(a: &Frag, target: u8) -> Option<Frag> {
         }
         9 => {
             let mut elems = BTreeMap::new();
-            if let Some((s, Some(Value::Str(text)))) = write {
+            if let Some((s, Value::Str(text))) = write {
                 let src = Source::Derived(Box::new(s.dot.clone()));
                 let mut prev = Anchor::Head;
                 for (i, ch) in text.chars().enumerate() {

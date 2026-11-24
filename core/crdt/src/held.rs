@@ -125,7 +125,7 @@ impl BodyWrites {
     fn elem(&mut self, set: &[Place], d: &Dot, e: &Elem) {
         if let Some((v, s)) = e.written() {
             let path = [set, &[Place::Elem(d.clone()), Place::In]].concat();
-            self.values.insert(Won { path, kind: Kind::Value, stamp: s.clone() }, v.cloned());
+            self.values.insert(Won { path, kind: Kind::Value, stamp: s.clone() }, Some(v.clone()));
         }
         if let Some(g) = &e.gone {
             let path = [set, &[Place::Gone(d.clone())]].concat();

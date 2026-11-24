@@ -150,7 +150,7 @@ fn forged_copies_of_a_value_removal_fail_no_node_spec_crdt_5_5() {
     use crdt_model::state::{Composite, Elem as MElem, Removal};
     use crdt_model::value::Value as MValue;
     let (wa, wb) = (MValue::Weak([1; 15]), MValue::Weak([2; 15]));
-    let elem = |ctr: u64, v: &MValue| (mdot(ctr), MElem { reset: None, frag: Some(Box::new(MFrag::Register { reset: None, write: Some((mstamp(5, ctr), Some(v.clone()))) })), gone: None });
+    let elem = |ctr: u64, v: &MValue| (mdot(ctr), MElem { reset: None, frag: Some(Box::new(MFrag::Register { reset: None, write: Some((mstamp(5, ctr), v.clone())) })), gone: None });
     let removal = |v: &MValue| (mdot(9), MElem { reset: None, frag: None, gone: Some(Removal { stamp: mstamp(8, 9), value: v.clone(), seen: vec![(mdot(1), 3)] }) });
     let set = |elems: Vec<(crdt_model::stamp::Dot, MElem)>| MFrag::Set { c: Composite::default(), elems: elems.into_iter().collect() };
     let a = set(vec![elem(1, &wa), elem(2, &wb), removal(&wa)]);
@@ -165,7 +165,7 @@ fn forged_copies_of_a_value_removal_fail_no_node_spec_crdt_5_5() {
 #[test]
 fn a_forged_reset_copy_of_a_register_write_fails_no_node_spec_crdt_5_1() {
     use crdt_model::state::Composite;
-    let write = MFrag::Register { reset: None, write: Some((mstamp(5, 3), Some(crdt_model::value::Value::Int(2)))) };
+    let write = MFrag::Register { reset: None, write: Some((mstamp(5, 3), crdt_model::value::Value::Int(2))) };
     let reset = MFrag::Seq { text: true, c: Composite { reset: Some(mstamp(5, 3)), w: None }, elems: Default::default() };
     assert_eq!(forged_pair(&write, &reset), Some(Value::Int(2)));
 }
@@ -201,7 +201,7 @@ fn a_write_forged_on_an_embedded_char_at_its_register_dot_has_no_wire_form_spec_
 
 /// Register write `s` = `v` as a model fragment.
 fn mstring(s: &crdt_model::stamp::Stamp, v: &str) -> MFrag {
-    MFrag::Register { reset: None, write: Some((s.clone(), Some(crdt_model::value::Value::Str(v.into())))) }
+    MFrag::Register { reset: None, write: Some((s.clone(), crdt_model::value::Value::Str(v.into()))) }
 }
 
 /// Text elements: register write `s`'s embedded chars `(Derived(s.dot), i)` with chars `cs` from
@@ -348,7 +348,7 @@ fn a_removal_dates_a_write_a_later_reset_prunes_spec_crdt_4_8() {
     use crdt_model::state::{Composite, Elem as MElem, Removal};
     let strong = crdt_model::value::Value::Strong([2; 15]);
     let set = |e: MElem| MFrag::Set { c: Composite::default(), elems: [(if e.gone.is_some() { mdot(7) } else { mdot(1) }, e)].into_iter().collect() };
-    let w = set(MElem { reset: None, frag: Some(Box::new(MFrag::Register { reset: None, write: Some((mstamp(3, 1), Some(strong.clone()))) })), gone: None });
+    let w = set(MElem { reset: None, frag: Some(Box::new(MFrag::Register { reset: None, write: Some((mstamp(3, 1), strong.clone())) })), gone: None });
     let r = set(MElem { reset: None, frag: None, gone: Some(Removal { stamp: mstamp(15, 7), value: strong, seen: vec![(mdot(1), 3)] }) });
     let x = set(MElem { reset: Some(mstamp(29, 9)), frag: None, gone: None });
     let (mut lp, t) = world();
@@ -387,7 +387,7 @@ fn a_kill_by_a_removal_and_a_reset_in_one_body_is_told_at_the_removal_spec_commi
     let (mut lp, t) = world();
     let base = osis_base::Clock::now_wall_ms(&*lp.peers[0].clock).0 - 10 * HOUR;
     let set = |es: Vec<(u64, MElem)>| MFrag::Set { c: Composite::default(), elems: es.into_iter().map(|(c, e)| (mdot(c), e)).collect() };
-    let w = set(vec![(1, MElem { reset: None, frag: Some(Box::new(MFrag::Register { reset: None, write: Some((mstamp(base, 1), Some(strong.clone()))) })), gone: None })]);
+    let w = set(vec![(1, MElem { reset: None, frag: Some(Box::new(MFrag::Register { reset: None, write: Some((mstamp(base, 1), strong.clone())) })), gone: None })]);
     let rx = set(vec![
         (1, MElem { reset: Some(mstamp(base + 3 * HOUR, 9)), frag: None, gone: None }),
         (7, MElem { reset: None, frag: None, gone: Some(Removal { stamp: mstamp(base + HOUR, 7), value: strong, seen: vec![(mdot(1), 3)] }) }),

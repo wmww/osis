@@ -1196,7 +1196,7 @@ fn one_dot_under_two_keys_by_join_spec_5_6() {
     let d = Dot::new(node(1), 1);
     let c = Stamp::new(ts(1 << 16), node(1), 1);
     let w = Stamp::new(ts(2 << 16), node(2), 1);
-    let reg = || Some(Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: w.clone(), value: Some(Value::Int(7)) }) })));
+    let reg = || Some(Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: w.clone(), value: Value::Int(7) }) })));
     let rec = |key: &str, created: Option<Stamp>| {
         let mut m = Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(Eid::new(d.clone(), Some(Value::Str(key.into()))), Entry { reset: None, frag: reg(), created })])));
         m.prune(None, &mut crate::Changes::new());

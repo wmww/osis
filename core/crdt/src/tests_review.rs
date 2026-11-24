@@ -18,7 +18,7 @@ fn st(t: u64, n: u8, c: u64) -> Stamp {
     Stamp { ts: ts(t << 16), dot: Dot::new(node(n), c) }
 }
 fn reg(s: Stamp, v: i64) -> Register {
-    Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(v)) }) }
+    Register { reset: None, write: Some(RegWrite { stamp: s, value: Value::Int(v) }) }
 }
 
 /// §7: a `Slots` that arrives without the register's embedding (a snapshot) is embedded on join,

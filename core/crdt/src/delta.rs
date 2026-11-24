@@ -371,7 +371,7 @@ fn resolve<'s, V: View>(w: &mut Writer, s: Option<&'s Fragment>, a: Option<&Frag
         PathSeg::Case(id) => {
             let cur = current(s, a, e.as_ref());
             let case = match cur.as_deref() {
-                Some(Fragment::Enum(x)) => x.case.as_ref().and_then(|c| c.case),
+                Some(Fragment::Enum(x)) => x.case.as_ref().map(|c| c.case),
                 _ => None,
             };
             if case != Some(*id) {

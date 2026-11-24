@@ -235,8 +235,8 @@ fn anchor(a: &m::Anchor) -> Anchor {
     }
 }
 
-fn register(reset: &Option<crdt_model::stamp::Stamp>, write: &Option<(crdt_model::stamp::Stamp, Option<crdt_model::value::Value>)>) -> Register {
-    Register { reset: ostamp(reset), write: write.as_ref().map(|(s, v)| RegWrite { stamp: stamp(s), value: v.as_ref().map(value) }) }
+fn register(reset: &Option<crdt_model::stamp::Stamp>, write: &Option<(crdt_model::stamp::Stamp, crdt_model::value::Value)>) -> Register {
+    Register { reset: ostamp(reset), write: write.as_ref().map(|(s, v)| RegWrite { stamp: stamp(s), value: value(v) }) }
 }
 
 pub fn frag(f: &m::Frag) -> Fragment {

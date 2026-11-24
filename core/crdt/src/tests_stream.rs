@@ -696,7 +696,7 @@ fn map_dot_prunes_across_pages_spec_3_3() {
     use osis_base::Value;
     let node = node(1);
     let st = |t: u64, c: u64| Stamp::new(crate::testutil::ts(t << 16), node.clone(), c);
-    let reg = |s: Stamp| Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(1)) }) }));
+    let reg = |s: Stamp| Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Value::Int(1) }) }));
     let (mut straddled, mut seen) = ([0, 0], 0);
     for n in 20..32u64 {
         for reset_t in [6, 4] {

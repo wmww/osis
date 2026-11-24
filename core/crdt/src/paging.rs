@@ -57,11 +57,11 @@ impl Fragment {
     }
 
     /// A set's record `d`: the tid its value removal names, or its element's value (hidden or
-    /// not, §5.5); `None` for a tombstone, a value-less element or another encoding.
+    /// not, §5.5); `None` for a tombstone or another encoding.
     pub fn set_record_value(&self, d: &Dot) -> Option<Value> {
         let Fragment::Set(s) = self else { return None };
         let e = s.elems.get(d)?;
-        e.removes().or_else(|| e.written()?.0).cloned()
+        e.removes().or_else(|| e.written().map(|w| w.0)).cloned()
     }
 
     /// The same collection holding only its root elements in `[lo, hi)`, with the own reset and

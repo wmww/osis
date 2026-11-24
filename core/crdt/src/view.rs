@@ -74,13 +74,13 @@ impl crate::fragment::Fragment {
     /// above `CHUNK_THRESHOLD`. Text characters merge as sequences and never chunk.
     pub fn holds_unchunked(&self) -> bool {
         use crate::fragment::{Bag, Fragment, Register, Set, Slots};
-        let reg = |r: &Register| r.write.as_ref().and_then(|w| w.value.as_ref()).is_some_and(holds_large);
+        let reg = |r: &Register| r.write.as_ref().is_some_and(|w| holds_large(&w.value));
         let on = |f: &Fragment| f.holds_unchunked();
         match self {
             Fragment::Register(r) => reg(r),
             Fragment::Slots(Slots { reg: r, slots }) => r.as_ref().is_some_and(reg) || slots.values().any(on),
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().filter_map(|e| e.frag.as_deref()).any(|f| {
-                let whole = |r: &Register| r.write.as_ref().and_then(|w| w.value.as_ref()).is_some_and(Value::above_chunk_threshold);
+                let whole = |r: &Register| r.write.as_ref().is_some_and(|w| w.value.above_chunk_threshold());
                 on(f) || matches!(f, Fragment::Register(r) if whole(r))
             }),
             Fragment::Struct(s) => s.fields.values().any(on),
@@ -98,7 +98,7 @@ impl crate::fragment::Fragment {
     pub fn fits<V: View>(&self, view: &V) -> bool {
         use crate::fragment::{Bag, Fragment, Register, Set, Slots};
         let value = |v: &Value| view.project(v).is_some();
-        let reg = |r: &Register| r.write.as_ref().and_then(|w| w.value.as_ref()).is_none_or(value);
+        let reg = |r: &Register| r.write.as_ref().is_none_or(|w| value(&w.value));
         let elems = |es: &mut dyn Iterator<Item = &Fragment>| match view.element() {
             Some(e) => Iterator::all(&mut &mut *es, |f| f.fits(&e)),
             None => true,
@@ -114,7 +114,7 @@ impl crate::fragment::Fragment {
             Fragment::Enum(e) => {
                 // a payload-less case is declared iff its bare value projects
                 let declared = |c: u64| view.case(c).is_some() || value(&Value::Enum(c, None));
-                e.case.as_ref().and_then(|w| w.case).is_none_or(declared) && e.payloads.iter().all(|(id, f)| view.case(*id).is_none_or(|v| f.fits(&v)))
+                e.case.as_ref().is_none_or(|w| declared(w.case)) && e.payloads.iter().all(|(id, f)| view.case(*id).is_none_or(|v| f.fits(&v)))
             }
             Fragment::Map(m) => {
                 let key = view.key();

@@ -122,7 +122,7 @@ fn entries(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, parts: &[
 
 fn value(p: &Part) -> Value {
     match &p.body {
-        Body::Held(Delta::Writes(Frag::Register { write: Some((_, Some(v))), .. })) => v.clone(),
+        Body::Held(Delta::Writes(Frag::Register { write: Some((_, v)), .. })) => v.clone(),
         b => panic!("a signal part holds one root register write: {b:?}"),
     }
 }

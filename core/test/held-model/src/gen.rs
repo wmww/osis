@@ -78,7 +78,7 @@ pub fn ty(a: Aspect) -> Option<Ty> {
 
 /// A register write of `v` by commit-form commit `id` at `ts`.
 pub fn set(ts: u64, id: CommitId, v: i64) -> Frag {
-    Frag::Register { reset: None, write: Some((stamp(ts, id, 1), Some(Value::Int(v)))) }
+    Frag::Register { reset: None, write: Some((stamp(ts, id, 1), Value::Int(v))) }
 }
 
 pub const NODES: u64 = 4;

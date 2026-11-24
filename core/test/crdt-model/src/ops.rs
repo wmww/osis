@@ -184,7 +184,7 @@ pub fn visible(text: bool, elems: &BTreeMap<Dot, SeqElem>) -> Vec<Dot> {
 
 /// A register write; also a set element's value, whatever the element type (spec §3.2, §5.5).
 pub(crate) fn register(w: &mut Writer, v: Value) -> Frag {
-    Frag::Register { reset: None, write: Some((w.delta(), Some(v))) }
+    Frag::Register { reset: None, write: Some((w.delta(), v)) }
 }
 
 /// Create a value from nothing (every write new). Composites without content get an explicit W.
@@ -225,7 +225,7 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
             Frag::Struct { c, fields }
         }
         (Ty::Enum(cases), Value::Enum(id, p)) => {
-            let case = Some((w.delta(), Some(*id)));
+            let case = Some((w.delta(), *id));
             let mut payloads = BTreeMap::new();
             if let (Some(Some(pt)), Some(pv)) = (cases.get(id), p) {
                 payloads.insert(*id, create(w, pt, pv));
@@ -409,7 +409,7 @@ pub fn map_remove(w: &mut Writer, state: Option<&Frag>, k: &Value) -> Option<Fra
 pub fn enum_set(w: &mut Writer, state: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Frag> {
     let Ty::Enum(cases) = ty else { panic!("enum") };
     let Value::Enum(id, p) = v else { panic!("enum value") };
-    if let Some(Frag::Enum { case: Some((_, Some(cur))), payloads, .. }) = state {
+    if let Some(Frag::Enum { case: Some((_, cur)), payloads, .. }) = state {
         if cur == id {
             let (Some(Some(pt)), Some(pv)) = (cases.get(id), p) else { return None };
             let delta = crate::diff::diff(w, payloads.get(id), pt, pv)?;

@@ -152,11 +152,11 @@ mod entry_copies {
     /// the register write with another char (or under a later stamp).
     fn leaf(r: &mut Rng, kind: usize) -> Frag {
         let src = 1 + r.below(2) as u8;
-        let int = |r: &mut Rng| Some(Value::Int(r.below(2) as i64));
+        let int = |r: &mut Rng| Value::Int(r.below(2) as i64);
         let dot = |src: u8, ctr: u64| Dot { source: Source::session(src, 0), ctr };
-        let bag = |d: Dot, w: (Stamp, Option<Value>)| Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some(w) })), gone: None })]) };
+        let bag = |d: Dot, w: (Stamp, Value)| Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some(w) })), gone: None })]) };
         match kind {
-            0 => Frag::Register { reset: None, write: Some((st(src, 5), [None, Some(str("x")), Some(str("y")), Some(Value::Int(1))][r.below(4)].clone())) },
+            0 => Frag::Register { reset: None, write: Some((st(src, 5), [str("x"), str("y"), Value::Int(1)][r.below(3)].clone())) },
             1 => {
                 let anchor = if r.chance(1, 2) { Anchor::Head } else { Anchor::Dot(dot(2, 9)) };
                 let mut el = SeqElem::new(st(src, 15), anchor, [Content::None, Content::Char('x'), Content::Char('y')][r.below(3)].clone());
@@ -169,7 +169,7 @@ mod entry_copies {
             }
             2 => {
                 let payload = Frag::Register { reset: None, write: Some((st(2, 26), int(r))) };
-                Frag::Enum { c: Default::default(), case: Some((st(src, 25), [None, Some(1), Some(2)][r.below(3)])), payloads: BTreeMap::from([(1, payload)]) }
+                Frag::Enum { c: Default::default(), case: Some((st(src, 25), [1, 2][r.below(2)])), payloads: BTreeMap::from([(1, payload)]) }
             }
             3 => bag(dot(src, 35), (st(src, 35), int(r))),
             4 => {
@@ -185,9 +185,9 @@ mod entry_copies {
                 let el = SeqElem::write(Content::None, vec![], Some((st(2, 17), r.chance(1, 2))));
                 Frag::Seq { text: true, c: Default::default(), elems: BTreeMap::from([(d, el)]) }
             }
-            7 => bag(dot(src, 5), (st_at([0, 0, 4][r.below(3)], src, 5), [None, Some(Value::Int(0)), Some(Value::Int(7))][r.below(3)].clone())),
+            7 => bag(dot(src, 5), (st_at([0, 0, 4][r.below(3)], src, 5), [Value::Int(0), Value::Int(7)][r.below(2)].clone())),
             8 => Frag::Enum { c: crdt_model::state::Composite { reset: Some(st(src, 5)), ..Default::default() }, case: None, payloads: BTreeMap::new() },
-            9 => Frag::Register { reset: Some(st(2, [3, 7][r.below(2)])), write: r.chance(1, 2).then(|| (st(src, 5), Some(str("x")))) },
+            9 => Frag::Register { reset: Some(st(2, [3, 7][r.below(2)])), write: r.chance(1, 2).then(|| (st(src, 5), str("x"))) },
             _ => {
                 let d = Dot { source: Source::Derived(Box::new(dot(src, 5))), ctr: 1 };
                 let el = SeqElem::new(Stamp { ts: (1 << 16) + [0, 0, 4][r.below(3)], dot: d.clone() }, Anchor::Head, [Content::Char('x'), Content::Char('z')][r.below(2)].clone());
@@ -286,7 +286,7 @@ mod entry_copies {
     /// Everything sits under the greatest outer key, as the join of the copies (inner key `z`).
     #[test]
     fn nested_entry_copies_sit_under_the_greatest_key_spec_5_6() {
-        let w = Frag::Register { reset: None, write: Some((st(2, 5), Some(str("x")))) };
+        let w = Frag::Register { reset: None, write: Some((st(2, 5), str("x"))) };
         let one = |k: &str, i: Frag, d: u64| {
             let e = Entry { reset: None, frag: Some(Box::new(i)), created: Some(st(1, d)) };
             Frag::Map { c: Default::default(), entries: BTreeMap::from([((Dot { source: Source::session(1, 0), ctr: d }, Some(str(k))), e)]) }
@@ -391,8 +391,8 @@ mod entry_copies {
     #[test]
     fn slot_copy_of_the_register_write_is_its_embedding_spec_7() {
         let d = Dot { source: Source::session(1, 0), ctr: 1 };
-        let w = Frag::Register { reset: None, write: Some((st(1, 5), Some(Value::Int(1)))) };
-        let reg = Frag::Register { reset: None, write: Some((st(1, 5), Some(Value::Int(7)))) };
+        let w = Frag::Register { reset: None, write: Some((st(1, 5), Value::Int(1))) };
+        let reg = Frag::Register { reset: None, write: Some((st(1, 5), Value::Int(7))) };
         let forged = Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(Dot { source: Source::session(1, 0), ctr: 5 }, Elem { reset: None, frag: Some(Box::new(reg)), gone: None })]) };
         assert_eq!(joined(&frag(&forged), &frag(&w)), frag(&w));
         assert_eq!(joined(&frag(&w), &frag(&forged)), frag(&w));
@@ -406,9 +406,9 @@ mod entry_copies {
     /// to `s` would drop it only where `s` came before `g`).
     #[test]
     fn slot_copies_of_the_register_write_are_told_by_stamp_spec_7() {
-        let s = Frag::Register { reset: None, write: Some((st(1, 5), Some(str("a")))) };
-        let g = Frag::Register { reset: None, write: Some((st_at(2, 2, 6), Some(Value::Int(2)))) };
-        let bag = Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(Dot { source: Source::session(1, 0), ctr: 5 }, Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some((st_at(4, 1, 5), Some(Value::Int(7)))) })), gone: None })]) };
+        let s = Frag::Register { reset: None, write: Some((st(1, 5), str("a"))) };
+        let g = Frag::Register { reset: None, write: Some((st_at(2, 2, 6), Value::Int(2))) };
+        let bag = Frag::Bag { kind: BagKind::Counter, c: Default::default(), elems: BTreeMap::from([(Dot { source: Source::session(1, 0), ctr: 5 }, Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some((st_at(4, 1, 5), Value::Int(7))) })), gone: None })]) };
         let d = Dot { source: Source::Derived(Box::new(Dot { source: Source::session(1, 0), ctr: 5 })), ctr: 1 };
         let el = SeqElem::new(Stamp { ts: (1 << 16) + 4, dot: d.clone() }, Anchor::Head, Content::Char('z'));
         let text = Frag::Seq { text: true, c: Default::default(), elems: BTreeMap::from([(d, el)]) };
@@ -426,8 +426,8 @@ mod entry_copies {
     #[test]
     fn slot_embedding_sits_with_its_register_write_spec_7() {
         let d = Dot { source: Source::session(1, 0), ctr: 1 };
-        let w = Frag::Register { reset: None, write: Some((st(1, 5), Some(str("x")))) };
-        let case = Frag::Enum { c: Default::default(), case: Some((st(2, 25), Some(1))), payloads: BTreeMap::new() };
+        let w = Frag::Register { reset: None, write: Some((st(1, 5), str("x"))) };
+        let case = Frag::Enum { c: Default::default(), case: Some((st(2, 25), 1)), payloads: BTreeMap::new() };
         let rec = |f: Frag, created: bool| Entry { reset: None, frag: Some(Box::new(f)), created: created.then(|| st(1, 1)) };
         let one = Frag::Map { c: Default::default(), entries: BTreeMap::from([((d.clone(), Some(str("a"))), rec(case, true)), ((d.clone(), Some(str("b"))), rec(w.clone(), false))]) };
         let two = Frag::Map { c: Default::default(), entries: BTreeMap::from([((d, Some(str("a"))), rec(w, false))]) };

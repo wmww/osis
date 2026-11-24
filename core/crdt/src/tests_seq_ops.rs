@@ -980,13 +980,9 @@ fn list_delete_vs_concurrent_nested_write_spec_5_7() {
 /// the register write expires, as at a node that never held the register.
 #[test]
 fn derived_anchor_outlives_its_register_spec_7() {
-    let reg_w = |v: Option<Value>| {
+    let reg_w = || {
         let mut w = Writer::new(ts(1 << 16), node(1), 1);
-        let mut f = create(&mut w, &crate::AnyView, &s("ab")).unwrap();
-        if let Fragment::Register(r) = &mut f {
-            r.write.as_mut().unwrap().value = v;
-        }
-        f
+        create(&mut w, &crate::AnyView, &s("ab")).unwrap()
     };
     let embedded = |f: Fragment| match f {
         Fragment::Register(r) => crate::state::embed(&r, crate::Encoding::Text).unwrap(),
@@ -994,7 +990,7 @@ fn derived_anchor_outlives_its_register_spec_7() {
     };
     // a text slot alone: the register's embedding
     let mut p = Fragment::default();
-    p.join(embedded(reg_w(Some(s("ab")))));
+    p.join(embedded(reg_w()));
     assert_eq!(read_str(&p), "ab");
     let mut b = Replica::new(2);
     b.state = p.clone();
@@ -1002,7 +998,7 @@ fn derived_anchor_outlives_its_register_spec_7() {
     p.join(q.clone());
     assert_eq!(read_str(&p), "aqb");
     let expired = |d: &crate::Dot| d.src == node(1) && d.ctr == 1;
-    let mut reg = reg_w(Some(s("ab")));
+    let mut reg = reg_w();
     reg.remove_gone(&expired);
     let gone = joined(&reg, &q);
     assert_eq!(read_str(&gone), "q");

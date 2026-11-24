@@ -458,7 +458,7 @@ proptest! {
         let mk = |r: &mut Rng, i: u8, s: &str| {
             let w = Writer::new(Source::session(i, 0), ((r.below(4) as u64 + 1) << 16) + i as u64, 1);
             let v = if s.is_empty() { Value::Int(r.below(9) as i64 - 4) } else { Value::Str(s.to_string()) };
-            Frag::Register { reset: None, write: Some((w.delta(), Some(v))) }
+            Frag::Register { reset: None, write: Some((w.delta(), v)) }
         };
         for enc in [1u8, 2, 3] {
             let (a, b) = (mk(&mut r, 1, ""), mk(&mut r, 2, ""));
@@ -538,7 +538,7 @@ fn unmerge_keeps_others_nested_writes_spec_4_6() {
     use crdt_model::state::{Composite, Entry};
     let (good, bad) = (Source::session(1, 0), Source::session(2, 0));
     let st = |ts, src: &Source, ctr| Stamp::new(ts, src.clone(), ctr);
-    let reg = |s: Stamp, v: &str| Frag::Register { reset: None, write: Some((s, Some(Value::Str(v.into())))) };
+    let reg = |s: Stamp, v: &str| Frag::Register { reset: None, write: Some((s, Value::Str(v.into()))) };
     let entry = |created: Option<Stamp>, frag: Frag| Entry { reset: None, frag: Some(Box::new(frag)), created };
     let map = |es: Vec<((Dot, &str), Entry)>| Frag::Map { c: Composite::default(), entries: es.into_iter().map(|((d, k), e)| ((d, Some(Value::Str(k.into()))), e)).collect() };
     let dot = |src: &Source, ctr| Dot { source: src.clone(), ctr };
@@ -1040,15 +1040,15 @@ fn decoder_rejects_writer_rule_violations() {
     let ts = 3 << 16;
     let enc = |f: &Frag| encode_delta(f, [1; 16], &mut Ctx::new(ts, own.clone(), 5));
     // own stamp outside [lo, hi)
-    let f = Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 7), Some(Value::Int(1)))) };
+    let f = Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 7), Value::Int(1))) };
     assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 6)).is_err());
     // in range, but a register value is a commit-level write: the delta stamp, counter lo (§2.3)
     assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 8)).is_err());
-    let at_lo = Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 5), Some(Value::Int(1)))) };
+    let at_lo = Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 5), Value::Int(1))) };
     assert!(decode_delta(&enc(&at_lo), &mut Ctx::writer(ts, own.clone(), 5, 8)).is_ok());
     assert!(decode_delta(&enc(&f), &mut Ctx::new(ts, own.clone(), 5)).is_ok(), "a snapshot context checks no range");
     // a foreign stamp in a writer's delta
-    let f = Frag::Register { reset: None, write: Some((Stamp::new(2 << 16, Source::session(2, 0), 1), Some(Value::Int(1)))) };
+    let f = Frag::Register { reset: None, write: Some((Stamp::new(2 << 16, Source::session(2, 0), 1), Value::Int(1))) };
     assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 6)).is_err());
     assert!(decode_delta(&enc(&f), &mut Ctx::new(ts, own.clone(), 5)).is_ok());
     // a run of own elements reaching hi, though its first dot is below lo (§2.3)
@@ -1064,7 +1064,7 @@ fn decoder_rejects_writer_rule_violations() {
     assert!(decode_delta(&enc(&Frag::Seq { text: true, c: Default::default(), elems: empty }), &mut Ctx::new(ts, own.clone(), 5)).is_err());
     // set elements created by one delta
     let mut elems = std::collections::BTreeMap::new();
-    let reg = |v: i64| Some(Box::new(Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 5), Some(Value::Int(v)))) }));
+    let reg = |v: i64| Some(Box::new(Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 5), Value::Int(v))) }));
     elems.insert(Dot { source: own.clone(), ctr: 5 }, crdt_model::state::Elem { reset: None, frag: reg(1), gone: None });
     elems.insert(Dot { source: own.clone(), ctr: 6 }, crdt_model::state::Elem { reset: None, frag: reg(2), gone: None });
     let f = Frag::Set { c: Default::default(), elems };
@@ -1098,7 +1098,7 @@ fn embedded_chars_order_right_after_their_write() {
     let t0 = 1000u64 << 16;
     let st = |n: u8, c: u64| Stamp::new(t0, Source::session(n, 0), c);
     let s = st(1, 5);
-    let reg = Frag::Register { reset: None, write: Some((s.clone(), Some(Value::Str("ab".into())))) };
+    let reg = Frag::Register { reset: None, write: Some((s.clone(), Value::Str("ab".into()))) };
     let reset = Frag::Register { reset: Some(st(9, 1)), write: None };
     let d2 = Dot { source: Source::Derived(Box::new(s.dot.clone())), ctr: 2 };
     let ti = st(4, 1);
@@ -1180,7 +1180,7 @@ fn decoder_rejects_rule_7_strict() {
     assert!(decode_delta(&delta(vec![run(1, 1, 0, "a"), run(2, 1, 0, "b")]), &mut wcx(3)).is_ok());
     // a snapshot's `Slots`: a set slot equal to the register's embedding adds nothing
     let s = Stamp::new(ts, Source::session(2, 0), 1);
-    let r = Frag::Register { reset: None, write: Some((s.clone(), Some(Value::Str("x".into())))) };
+    let r = Frag::Register { reset: None, write: Some((s.clone(), Value::Str("x".into()))) };
     let slots = |set: Frag| Frag::Slots { reg: Some(Box::new(r.clone())), slots: BTreeMap::from([(6u8, set)]) };
     let snap = |f: &Frag| encode_snapshot(f, &[], [0; 16], &mut Ctx::new(1 << 40, Source::session(250, 0), 1));
     let dec = |b: &[u8]| decode_snapshot(b, &mut Ctx::new(1 << 40, Source::session(250, 0), 1));
@@ -1209,7 +1209,7 @@ fn set_element_is_a_register_spec_3_2() {
     let f = ops::create(&mut w, &Ty::Set(Box::new(pair.clone())), &Value::set(vec![v.clone()]));
     let Frag::Set { elems, .. } = &f else { panic!("set") };
     let e = elems.values().next().unwrap();
-    assert!(matches!(e.frag.as_deref(), Some(Frag::Register { reset: None, write: Some((_, Some(x))) }) if *x == v));
+    assert!(matches!(e.frag.as_deref(), Some(Frag::Register { reset: None, write: Some((_, x)) }) if *x == v));
     let enc = |f: &Frag| encode_delta(f, [1; 16], &mut Ctx::new(ts, own.clone(), 1));
     let wcx = || Ctx::writer(ts, own.clone(), 1, 3);
     assert!(decode_delta(&enc(&f), &mut wcx()).is_ok());

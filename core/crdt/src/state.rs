@@ -52,7 +52,7 @@ impl Write for RegWrite {
         &self.stamp
     }
     fn copy_cmp(&self, o: &Self) -> Ordering {
-        opt_value_cmp(self.value.as_ref(), o.value.as_ref())
+        opt_value_cmp(Some(&self.value), Some(&o.value))
     }
 }
 
@@ -605,12 +605,12 @@ impl Fragment {
         let all = mode == Values::All;
         match self {
             Fragment::Register(r) => {
-                if let Some(v) = r.write.as_ref().and_then(|w| w.value.as_ref()) {
-                    f(v);
+                if let Some(w) = &r.write {
+                    f(&w.value);
                 }
             }
             Fragment::Enum(e) if mode.reads() => {
-                if let Some(x) = e.case.as_ref().and_then(|c| c.case).and_then(|id| e.payloads.get(&id)) {
+                if let Some(x) = e.case.as_ref().and_then(|c| e.payloads.get(&c.case)) {
                     x.values_with(mode, f);
                 }
             }
@@ -660,15 +660,15 @@ impl Fragment {
                 }
             }
             Fragment::Slots(s) if all => {
-                if let Some(v) = s.reg.as_ref().and_then(|r| r.write.as_ref()).and_then(|w| w.value.as_ref()) {
-                    f(v);
+                if let Some(w) = s.reg.as_ref().and_then(|r| r.write.as_ref()) {
+                    f(&w.value);
                 }
                 s.slots.values().for_each(|x| x.values_with(mode, f));
             }
             Fragment::Slots(_) => match self.chosen_slot() {
                 SlotRef::Reg(r) => {
-                    if let Some(v) = r.write.as_ref().and_then(|w| w.value.as_ref()) {
-                        f(v);
+                    if let Some(w) = &r.write {
+                        f(&w.value);
                     }
                 }
                 SlotRef::Frag(x) => x.values_with(mode, f),
@@ -804,7 +804,7 @@ impl Fragment {
             Fragment::Bag(Bag { elems, .. }) => elems.values().any(|e| e.frag.as_deref().is_some_and(Fragment::present)),
             Fragment::Set(s) => crate::fragment::live_elems(&s.elems).next().is_some(),
             Fragment::Struct(s) => s.fields.values().any(Fragment::live_value),
-            Fragment::Enum(s) => s.case.as_ref().is_some_and(|k| k.case.is_some()),
+            Fragment::Enum(s) => s.case.is_some(),
             Fragment::Map(m) => m.entries.keys().any(|id| m.is_live(id)),
             Fragment::Seq(s) => seq::shows_any(s),
         }
@@ -816,11 +816,11 @@ impl Fragment {
         let child = |f: &Fragment| slot(&SlotRef::Frag(f));
         let elems_any = |elems: &BTreeMap<Dot, Elem>| elems.values().any(|e| e.reset.is_some() || e.gone.is_some() || e.frag.as_deref().is_some_and(child));
         match self {
-            Fragment::Register(r) => r.write.as_ref().is_some_and(|w| w.value.is_some()),
+            Fragment::Register(r) => r.write.is_some(),
             Fragment::Slots(_) => self.slots().iter().any(slot),
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems_any(elems),
             Fragment::Struct(s) => s.fields.values().any(child),
-            Fragment::Enum(s) => s.case.as_ref().is_some_and(|k| k.case.is_some()) || s.payloads.values().any(child),
+            Fragment::Enum(s) => s.case.is_some() || s.payloads.values().any(child),
             Fragment::Map(m) => m.entries.iter().any(|(id, e)| e.reset.is_some() || (id.key.is_some() && e.created.is_some()) || e.frag.as_deref().is_some_and(child)),
             Fragment::Seq(s) => seq::has_written(s),
         }
@@ -833,12 +833,12 @@ impl Fragment {
         let child = |f: &Fragment| slot(&SlotRef::Frag(f));
         let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(max_opt(m, e.reset.clone()), e.gone.as_ref().map(|g| g.stamp.clone())), e.frag.as_deref().and_then(child)));
         match self {
-            Fragment::Register(r) => r.write.as_ref().filter(|w| !valued || w.value.is_some()).map(|w| w.stamp.clone()),
+            Fragment::Register(r) => r.write.as_ref().map(|w| w.stamp.clone()),
             Fragment::Slots(_) => self.slots().iter().fold(None, |x, m| max_opt(x, slot(m))),
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems_max(elems),
             Fragment::Struct(s) => s.fields.values().fold(None, |m, f| max_opt(m, child(f))),
             Fragment::Enum(s) => {
-                let k = s.case.as_ref().filter(|k| !valued || k.case.is_some()).map(|k| k.stamp.clone());
+                let k = s.case.as_ref().map(|k| k.stamp.clone());
                 s.payloads.values().fold(k, |m, f| max_opt(m, child(f)))
             }
             // a keyed record's creation counts (§4.3); a key-erased record's is value-less
@@ -940,13 +940,13 @@ impl Fragment {
         }
         match self {
             Fragment::Slots(_) => self.chosen_slot().read(),
-            Fragment::Register(r) => r.write.as_ref().and_then(|w| w.value.clone()),
+            Fragment::Register(r) => r.write.as_ref().map(|w| w.value.clone()),
             Fragment::Bag(b) => read_bag(b),
             Fragment::Struct(s) => Some(Value::Map(
                 s.fields.iter().filter_map(|(k, f)| Some((Value::Int(i64::try_from(*k).ok()?), f.read()?))).collect(),
             )),
             Fragment::Enum(s) => {
-                let id = s.case.as_ref()?.case?;
+                let id = s.case.as_ref()?.case;
                 Some(Value::Enum(id, s.payloads.get(&id).and_then(|f| f.read()).map(Box::new)))
             }
             Fragment::Set(s) => {
@@ -1019,7 +1019,7 @@ impl SlotRef<'_> {
         self.by(|r| r.reset.is_none() && r.write.is_none(), Fragment::is_empty)
     }
     fn read(&self) -> Option<Value> {
-        self.by(|r| r.write.as_ref().and_then(|w| w.value.clone()), Fragment::read)
+        self.by(|r| r.write.as_ref().map(|w| w.value.clone()), Fragment::read)
     }
     pub fn to_fragment(self) -> Fragment {
         match self {
@@ -1030,7 +1030,7 @@ impl SlotRef<'_> {
 }
 
 fn reg_written(r: &Register) -> Option<Stamp> {
-    r.write.as_ref().filter(|w| w.value.is_some()).map(|w| w.stamp.clone())
+    r.write.as_ref().map(|w| w.stamp.clone())
 }
 
 /// A register's reset below its own write is implied by the write, which resets everything older
