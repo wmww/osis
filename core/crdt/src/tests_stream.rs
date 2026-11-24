@@ -7,7 +7,7 @@ use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::stamp::Interner;
 use crate::stream::Piece;
 use crate::tests_decoder::{mutate, mutate_tree};
-use crate::testutil::{MCommit, frag, history_bulk, history_with, mapply, node, snapshot};
+use crate::testutil::{MCommit, frag, hex, history_bulk, history_with, mapply, node, snapshot};
 use crate::testutil::{joined, snap_cx, writer_cx};
 use crate::wire::{Delta, DeltaCtx, Frontiers, Snapshot};
 use crate::{Checked, Fragment, decode_checked, decode_delta, decode_snapshot, stream_checked, stream_delta, stream_snapshot};
@@ -56,9 +56,6 @@ const TINY: PageParams = PageParams { target: 600, cut: ChunkParams { min: 48, m
 /// Larger pages: one level, pages of several sequence runs.
 const SMALL: PageParams = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
 
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
 
 /// One input: a delta or snapshot root and its pages.
 struct Input {

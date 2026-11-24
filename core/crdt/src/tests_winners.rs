@@ -6,7 +6,7 @@ use crate::fragment::{Elem, Fragment, Meta, RegWrite};
 use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, Stamp};
-use crate::testutil::{TyView, frag, history, history_honest, joined, node, sink_no_seq, snapshot, ts};
+use crate::testutil::{frag, history, history_honest, joined, node, s, sink_no_seq, snapshot, text_view, ts};
 use crate::held::{Body, BodyWrites, Held, MemRows};
 use crate::winners::{Kind, Place, Winners, Won};
 use crdt_model::ops::Ty;
@@ -467,9 +467,6 @@ fn x() -> Source {
     node(1)
 }
 
-fn text_view() -> TyView {
-    TyView(Ty::Text)
-}
 
 /// The delta of `ops` against `st`, written at `t` from counter `lo`.
 fn edit(st: &Fragment, t: u64, lo: u64, ops: Vec<Op>) -> Fragment {
@@ -477,9 +474,6 @@ fn edit(st: &Fragment, t: u64, lo: u64, ops: Vec<Op>) -> Fragment {
     crate::testutil::build(st, Writer::new(ts(t), x(), lo), &ops, &text_view()).unwrap().0
 }
 
-fn s(v: &str) -> Value {
-    Value::Str(v.into())
-}
 
 /// The writes of `a` dead in `a ⊔ b`, by kind and stamp.
 fn dead(a: &Fragment, b: &Fragment) -> Vec<(Kind, Stamp)> {

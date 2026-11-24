@@ -5,7 +5,7 @@ use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
 use crate::seq::visible;
 use crate::stamp::{CounterRange, Source};
-use crate::testutil::{Pager, TyView, build, frag, joined, mapply, node, ostate, ts, value, via_snapshot, writer};
+use crate::testutil::{Pager, TyView, build, frag, joined, mapply, node, ostate, s, text_view, ts, value, via_snapshot, writer};
 use crate::undo::{Undone, undo};
 use crate::wire::{DeltaCtx, DeltaKind};
 use crdt_model::r#gen::{Rng, random_value};
@@ -14,9 +14,6 @@ use crdt_model::state::Content;
 use osis_base::Value;
 use proptest::prelude::*;
 
-fn s(x: &str) -> Value {
-    Value::Str(x.into())
-}
 fn read_str(f: &Fragment) -> String {
     match f.read() {
         Some(Value::Str(x)) => x,
@@ -29,9 +26,6 @@ fn list_ty() -> Ty {
 /// An element of `list_ty`.
 fn item(a: i64, b: i64) -> Value {
     Value::Map([(Value::Int(1), Value::Int(a)), (Value::Int(2), Value::Int(b))].into_iter().collect())
-}
-fn text_view() -> TyView {
-    TyView(Ty::Text)
 }
 /// Whether `f`'s placement is cached and equals a whole pass.
 fn cached(f: &Fragment) -> bool {

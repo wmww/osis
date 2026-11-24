@@ -4,7 +4,7 @@
 
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::stamp::Interner;
-use crate::testutil::{MCommit, frag, history_with, mapply, snapshot};
+use crate::testutil::{MCommit, frag, hex, history_with, mapply, snapshot};
 use crate::testutil::{joined, snap_cx, writer_cx};
 use crate::wire::{Delta, Snapshot};
 use crdt_model::ops::Ty;
@@ -131,9 +131,6 @@ pub(crate) fn mutate_tree(r: &mut Rng, b: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
 
 /// The model knows the value tags set, tid and enum only: a fragment the implementation accepted
 /// with an unknown tag (kept, spec/data-model.md §5) or a link is beyond it.

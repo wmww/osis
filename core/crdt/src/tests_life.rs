@@ -7,7 +7,7 @@ use crate::ops::{Op, PathOp, Writer, create, diff, replace};
 use crate::page::{MemoryPages, PageParams, PageSink};
 use crate::seq::{Seq, SeqElem};
 use crate::stamp::{Dot, Interner, Source};
-use crate::testutil::{TyView, ctx_of, frag, history, joined, mapply, node, ostate, sink_no_seq, snap_cx, snapshot, source, struct_list, ts, wired, writer_cx};
+use crate::testutil::{TyView, ctx_of, frag, history, joined, mapply, node, ostate, s, sink_no_seq, snap_cx, snapshot, source, struct_list, ts, wired, writer_cx};
 use crate::view::AnyView;
 use crate::wire::{Delta, DeltaCtx, Frontiers, Snapshot};
 use crate::DeltaBuilder;
@@ -840,9 +840,6 @@ fn rejects_list_run_past_chunk_max_spec_3_3() {
     assert!(e.to_string().contains("not canonical"), "{e}");
 }
 
-fn s(v: &str) -> Value {
-    Value::Str(v.into())
-}
 /// The map `{"k": v}`.
 fn kmap(v: Value) -> Value {
     Value::Map([(s("k"), v)].into_iter().collect())

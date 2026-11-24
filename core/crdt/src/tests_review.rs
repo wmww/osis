@@ -586,7 +586,7 @@ fn nested_rec(d: Dot, k: &Value, f: Fragment) -> Fragment {
 /// entry's removal never shows the entry again, in any order; the stale writer reads its edit
 /// until the removal arrives and then converges; a new entry (a fresh dot) shows the key again.
 /// A record whose creation is not held (a write into an entry before its creation arrives, or a
-/// key under a dot nothing created, kept alive by a `W` alone: issue purge-keeps-repeated-key (closed))
+/// key under a dot nothing created, kept alive by a `W` alone)
 /// shows nothing.
 #[test]
 fn removed_entry_hides_newer_write_spec_5_6() {

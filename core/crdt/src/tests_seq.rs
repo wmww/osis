@@ -8,7 +8,7 @@ use crate::linearize::place;
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
 use crate::seq_span::{expand, nth};
 use crate::stamp::{Dot, Interner, Stamp};
-use crate::testutil::{frag, history, history_with, joined, mapply, node, reads, sess_value, snap_cx, snapshot, snapshot_bytes, source, struct_list, ts, via_snapshot, wired, writer_cx};
+use crate::testutil::{frag, history, history_with, joined, mapply, node, reads, s, sess_value, snap_cx, snapshot, snapshot_bytes, source, struct_list, ts, via_snapshot, wired, writer_cx};
 pub(crate) use crate::testutil::{Pager, partial_follow, partial_follow_in};
 use crate::tests_wire::{delta, i, l, rejects, wcx};
 use crate::wire::{Delta, DeltaCtx};
@@ -437,9 +437,6 @@ fn list_with(runs: Vec<Value>) -> Value {
 }
 fn run(dot: Value, n: i64, creation: Value, content: Value, posw: Vec<Value>, flagw: Vec<Value>) -> Value {
     l(vec![dot, i(n), creation, content, l(posw), l(flagw)])
-}
-fn s(x: &str) -> Value {
-    Value::Str(x.into())
 }
 fn reg(v: i64) -> Value {
     l(vec![i(0), l(vec![]), i(0), i(v)])

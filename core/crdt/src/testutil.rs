@@ -179,6 +179,18 @@ pub fn reads(f: &Fragment) -> Option<String> {
 }
 
 /// A snapshot's context: node 250 at ts 2^40.
+pub fn s(x: &str) -> Value {
+    Value::Str(x.into())
+}
+
+pub fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+pub fn text_view() -> TyView {
+    TyView(Ty::Text)
+}
+
 pub fn snap_cx() -> DeltaCtx {
     DeltaCtx { ts: ts(1 << 40), own: source(&crdt_model::stamp::Source::session(250, 0)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
 }
