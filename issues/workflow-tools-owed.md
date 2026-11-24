@@ -22,7 +22,6 @@
 9. **A `rate:` line in tools/known_failures.txt is never flagged stale** (KNOWN-BUT-PASSED skips it): replay each `rate:` line's REPRO at the gate.
 10. **code_refs does not check `source:` strings**: engine judgment scenarios cite roles-model test names as strings, so deleting a model test leaves a dangling citation.
 11. **Generator census and a no-room knob**: which of a model's generators write a shape took a temporary panic in `World::put`; the sync harness has no knob holding pushes back, so a test cannot tell an at-once lost-access drop from release's pass wait.
-12. **`osis_blob::verify_stamp` returns `Ok(false)` for a good stamp** (the bool says "role entry"): read once took it as "bad" and re-encrypted every body it should have relayed. An enum (`Stamp::{Role, Entry}`) would make the misreading impossible.
-13. **policy reports a removed test env var as a free-form line** (`core/base/testenv-known.txt`), not by file:line like its other findings: easy to miss in a long run.
+12. **policy reports a removed test env var as a free-form line** (`core/base/testenv-known.txt`), not by file:line like its other findings: easy to miss in a long run.
 
 Seed-dependent fixtures (a fixture seed taken from an env var): issues/fixture-seed-luck.md.

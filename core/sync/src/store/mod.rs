@@ -1116,7 +1116,7 @@ impl Store {
             let Some(stamp) = e.stamp else { return Ok(Err(Code::REFUSED)) };
             let Some((_, head)) = path::head(t, s)?.filter(|_| !unheld) else { return Ok(Err(Code::REFUSED)) };
             match rows::verify_stamp(&head.keys.write, s, &b, &e.wrap, &stamp) {
-                Some(ok) => Ok(Ok(ok)),
+                Some((signed, vouch)) => Ok(Ok((signed == osis_blob::Signed::RoleEntry, vouch))),
                 None if path::earlier(t, s, |st| osis_blob::verify_stamp(&st.keys.write, s, &b, &e.wrap, &stamp).is_ok())? => Ok(Err(Code::NOT_HEAD_KEY)),
                 None => Ok(Err(Code::REFUSED)),
             }
@@ -1180,7 +1180,8 @@ impl Store {
             if held {
                 return Ok(Err(Code::OK));
             }
-            let Ok(role) = osis_blob::verify_deposit(&head.keys.deposit, &s, &b, &d.wrap, &d.sig) else { return Ok(Err(Code::DECLINED)) };
+            let Ok(signed) = osis_blob::verify_deposit(&head.keys.deposit, &s, &b, &d.wrap, &d.sig) else { return Ok(Err(Code::DECLINED)) };
+            let role = signed == osis_blob::Signed::RoleEntry;
             let claims = path::claims(t, &s, hi)?.map_or(0, |c| c.claims.len());
             let (be, bb) = deposit_budget(&policy, claims);
             let u = entries::usage(t, &s)?;

@@ -23,18 +23,26 @@ pub fn sign_stamp(write: &SigningSecret, sync_id: &SyncId, blob: &BlobId, wrap: 
     write.sign(entry_domain(Domain::Stamp, role), &entry_digest(sync_id, blob, wrap))
 }
 
+/// Which domain a good stamp or deposit signature verified under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signed {
+    /// `"osis v1 stamp"` or `"osis v1 deposit"`.
+    Plain,
+    /// `"osis v1 role entry"`: an entry deletes are judged by.
+    RoleEntry,
+}
+
 /// Checks a stamp against the head's write key, under either domain; an altered wrap fails.
-/// Whether it is a role entry's (`"osis v1 role entry"`).
-pub fn verify_stamp(head_write: &VerifyingKey, sync_id: &SyncId, blob: &BlobId, wrap: &[u8], stamp: &Signature) -> Result<bool, Error> {
+pub fn verify_stamp(head_write: &VerifyingKey, sync_id: &SyncId, blob: &BlobId, wrap: &[u8], stamp: &Signature) -> Result<Signed, Error> {
     verify_entry(head_write, Domain::Stamp, &entry_digest(sync_id, blob, wrap), stamp).ok_or(Error::Verify("stamp"))
 }
 
-/// Which domain of an entry's signature verifies: `Some(true)` a role entry's.
-fn verify_entry(key: &VerifyingKey, plain: Domain, d: &[u8; 32], sig: &Signature) -> Option<bool> {
+/// Which domain of an entry's signature verifies.
+fn verify_entry(key: &VerifyingKey, plain: Domain, d: &[u8; 32], sig: &Signature) -> Option<Signed> {
     if key.verify(plain, d, sig).is_ok() {
-        return Some(false);
+        return Some(Signed::Plain);
     }
-    key.verify(Domain::RoleEntry, d, sig).is_ok().then_some(true)
+    key.verify(Domain::RoleEntry, d, sig).is_ok().then_some(Signed::RoleEntry)
 }
 
 /// A deposit signature by the deposit key under `"osis v1 deposit"`, or `"osis v1 role entry"`
@@ -44,8 +52,8 @@ pub fn sign_deposit(deposit: &SigningSecret, sync_id: &SyncId, blob: &BlobId, wr
 }
 
 /// Checks a deposit's signature against the head's deposit key, under either domain; an
-/// altered wrap fails. Whether it is a role entry's.
-pub fn verify_deposit(head_deposit: &VerifyingKey, sync_id: &SyncId, blob: &BlobId, wrap: &[u8], sig: &Signature) -> Result<bool, Error> {
+/// altered wrap fails.
+pub fn verify_deposit(head_deposit: &VerifyingKey, sync_id: &SyncId, blob: &BlobId, wrap: &[u8], sig: &Signature) -> Result<Signed, Error> {
     verify_entry(head_deposit, Domain::Deposit, &entry_digest(sync_id, blob, wrap), sig).ok_or(Error::Verify("deposit"))
 }
 
@@ -248,8 +256,8 @@ mod tests {
         let (l, b, w) = (s0.sync_id, BlobId([1; 32]), [2u8; 49]);
         let write = role_key(RoleKey::Write, &g.write);
         let stamp = sign_stamp(&write, &l, &b, &w, false);
-        assert!(!verify_stamp(&s0.keys.write, &l, &b, &w, &stamp).unwrap());
-        assert!(verify_stamp(&s0.keys.write, &l, &b, &w, &sign_stamp(&write, &l, &b, &w, true)).unwrap(), "a role entry's stamp says so");
+        assert_eq!(verify_stamp(&s0.keys.write, &l, &b, &w, &stamp).unwrap(), Signed::Plain);
+        assert_eq!(verify_stamp(&s0.keys.write, &l, &b, &w, &sign_stamp(&write, &l, &b, &w, true)).unwrap(), Signed::RoleEntry, "a role entry's stamp says so");
         assert!(verify_stamp(&s0.keys.sync, &l, &b, &w, &stamp).is_err());
         let digest = entry_digest(&l, &b, &w);
         assert!(s0.keys.write.verify(Domain::Deposit, &digest, &stamp).is_err());

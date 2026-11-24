@@ -325,11 +325,11 @@ impl Vouch {
     }
 }
 
-/// Checks `stamp` on entry `b` of S under `wrap` against `key` (either domain): whether it is a
-/// role entry's, and the verdict to keep with the entry, when it verifies.
-pub(crate) fn verify_stamp(key: &osis_crypto::VerifyingKey, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &Signature) -> Option<(bool, Vouch)> {
-    let role = osis_blob::verify_stamp(key, s, b, wrap, stamp).ok()?;
-    Some((role, Vouch::of(key, s, b, wrap, stamp)))
+/// Checks `stamp` on entry `b` of S under `wrap` against `key` (either domain): the domain it
+/// verified under, and the verdict to keep with the entry, when it verifies.
+pub(crate) fn verify_stamp(key: &osis_crypto::VerifyingKey, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &Signature) -> Option<(osis_blob::Signed, Vouch)> {
+    let signed = osis_blob::verify_stamp(key, s, b, wrap, stamp).ok()?;
+    Some((signed, Vouch::of(key, s, b, wrap, stamp)))
 }
 
 /// Whether `stamp` on entry `b` of S under `wrap` verifies under `key`: `kept` answers when it is
