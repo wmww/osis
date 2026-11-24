@@ -16,7 +16,8 @@ matches the name in any module. A variant or tuple-field use counts for its type
 to `pub(crate)` (a free item also leaves every `pub use` in src/ naming it), run
 `cargo clippy -p CRATE --lib --message-format=short` and list rustc's never used / read /
 constructed warnings (dead in the lib build: unused, or used by CRATE's tests alone), less those
-naming only items used outside CRATE by non-test code (a method of a narrowed type). An item a
+naming only items used outside CRATE by non-test code (a method of a narrowed type); a warning
+naming some such items beside dead ones lists them as not dead. An item a
 narrowing breaks the build over (a type named in a still-`pub` signature, a re-export the scan
 missed, a use of the alias a dropped `pub use … as` gave it) is put back `pub` and the run repeated; those are listed as kept. Needs CRATE's src/
 committed (no diff against HEAD); after restoring, `git diff` of it must be empty again.
@@ -197,17 +198,19 @@ def use_sites(output, cwd):
     return sorted({(os.path.relpath(os.path.join(cwd, p), ROOT), int(n), item) for p, n, item in found})
 
 
-def outside_only(warning, items, used):
-    """Whether a dead-code warning names only items used outside the crate by non-test code
-    (`used`): methods or fields of a narrowed type, not dead. The warning's line is its first item's
-    declaration (narrowing keeps line numbers), which gives the owner of every name it lists."""
+def outside(warning, items, used):
+    """(the names a dead-code warning lists, those of them used outside the crate by non-test code
+    (`used`): methods or fields of a narrowed type, not dead). The warning's line is its first
+    item's declaration (narrowing keeps line numbers), which gives the owner of every name it lists."""
     m = DEAD.match(warning)
     if not m:
-        return False
+        return [], []
     at = f"{m.group(1)}:{m.group(2)}"
     owners = {k[0] for k, ds in items.items() if at in ds}
     names = re.findall(r"`(\w+)`", m.group(3))
-    return len(owners) == 1 and bool(names) and all((next(iter(owners)), n) in used for n in names)
+    if len(owners) != 1:
+        return names, []
+    return names, [n for n in names if (next(iter(owners)), n) in used]
 
 
 def resolve(item_path, items, modules):
@@ -381,8 +384,14 @@ def main():
     if a.dead:
         warnings, kept, errors = dead(a.crate, dirs[a.crate], {k: items[k] for k in unused}, {k for k in unused if k[0] in modules})
         used = {k for k in uses if k not in test_only}
-        hidden = [w for w in warnings if outside_only(w, items, used)]
-        warnings = [w for w in warnings if w not in hidden]
+        hidden, shown = [], []
+        for w in warnings:
+            names, out = outside(w, items, used)
+            if names and len(out) == len(names):
+                hidden.append(w)
+            else:
+                shown.append(w + (f"  (used outside, not dead: {', '.join(out)})" if out else ""))
+        warnings = shown
         if not clean(crate_src):
             sys.exit(f"deprecated_probe: {crate_src} differs from HEAD after restoring: check git diff")
         if errors:

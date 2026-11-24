@@ -158,5 +158,14 @@ with tempfile.TemporaryDirectory(prefix="mutate-test-") as d:
     check("does not build in a batch: built alone", (p.returncode, [l for l in out.splitlines() if not l.startswith("   limit ")]),
           (0, ["| `%s`: `a < b` -> `a <= b` | none |" % src, "| `%s`: `BADOLD` -> `BADNEW` | none |" % src]))
     check("built alone: file put back", open(src).read(), "fn f() -> bool { a < b }\nfn g() -> u8 { BADOLD }\n")
+# a second run in one worktree is refused while the first holds the worktree's lock
+with tempfile.TemporaryDirectory(prefix="mutate-test-") as d:
+    subprocess.run(["git", "init", "-q", d], check=True)
+    gd = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], cwd=d, capture_output=True, text=True, check=True).stdout.strip()
+    held = open(os.path.join(gd, "mutate.lock"), "w")
+    fcntl.flock(held, fcntl.LOCK_EX)
+    r = subprocess.run([sys.executable, MUTATE, "x.rs", "a", "b", "--", "-p", "x"], cwd=d, capture_output=True, text=True)
+    check("second run refused", (r.returncode, "another tools/mutate.py runs" in r.stderr), (1, True))
+    held.close()
 print(f"mutate: {'ok' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)

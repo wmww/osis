@@ -26,7 +26,11 @@ NOTE = """# Notes
 - **One call**: one API call.
 ## Handle and lifecycle
 """
-DOCS = {"spec/s.md": SPEC, "notes/n.md": NOTE, "issues/i.md": "# I\n"}
+PLAN = """# Plan
+### A4. Accounts
+### Z. Clean-up
+"""
+DOCS = {"spec/s.md": SPEC, "notes/n.md": NOTE, "notes/p.md": PLAN, "issues/i.md": "# I\n"}
 
 # (text, stale?)
 CASES = [
@@ -62,6 +66,12 @@ CASES = [
     ("notes/n.md `Osis::open`", False),
     ("notes/n.md Osis::open", False),
     ("notes/n.md\nNext line", False),             # a new line is no section name
+    ("notes/p.md A4", False),                     # a lettered heading's label
+    ("notes/p.md, Z; next", False),               # a one-letter label
+    ("notes/p.md, D", True),
+    ("notes/p.md M2 (gone)", True),
+    ("notes/p.md A second thing", True),          # an article: read as a section name
+    ("notes/p.md, Accounts", False),              # the title after the label
     ("issues/i.md Anything", False),              # issues: the file only
     ("issues/gone.md", True),
     ("notes/gone.md", True),

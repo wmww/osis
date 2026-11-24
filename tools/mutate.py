@@ -37,9 +37,9 @@ failure under a plant is read without rebuilding it. After a mutation that does 
 others are built and numbered again (`mutant-<k>.log` is the k-th of those, not of the mutations
 given): read a row's log by the path printed with it, and recheck a "none" by hand. MUTATE_HEAVY=1 runs the tests in holds of tools/heavy,
 MUTATE_PER_HOLD mutations per hold (never run mutate.py itself under it: a batch would hold the
-lock for its whole length).
+lock for its whole length). A second run in one worktree while one runs is refused.
 The variable is read once per site, so a plant in a hot path costs nothing per call."""
-import importlib.machinery, importlib.util, json, os, re, shutil, subprocess, sys, tempfile
+import fcntl, importlib.machinery, importlib.util, json, os, re, shutil, subprocess, sys, tempfile
 
 VAR = "OSIS_MUTANT"
 TOOLS = os.path.dirname(os.path.abspath(__file__))
@@ -93,6 +93,23 @@ def run_bins(bins, mutants):
     return out
 
 
+_LOCK = []
+
+
+def worktree_lock():
+    """One run per worktree: a second one's plants land in the first's tree mid-build (each run
+    then tests the other's plants), so it is refused. The lock is in the worktree's own git dir."""
+    r = subprocess.run(["git", "rev-parse", "--absolute-git-dir"], capture_output=True, text=True)
+    if r.returncode:
+        return
+    f = open(os.path.join(r.stdout.strip(), "mutate.lock"), "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit("mutate: another tools/mutate.py runs in this worktree (two would test each other's plants): wait for it to end")
+    _LOCK.append(f)
+
+
 def main(argv):
     if argv[:1] == ["--run-bins"]:
         with open(os.path.join(argv[1], "in.json")) as f:
@@ -103,6 +120,7 @@ def main(argv):
     if "--" not in argv or not argv.index("--"):
         sys.exit(__doc__)
     k = argv.index("--")
+    worktree_lock()
     # sites (FILE, OLD, NEW), each with its mutation's index: a `+` joins a site to the one before
     muts, lines, group, i = [], [], [], 0
     while i < k:

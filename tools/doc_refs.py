@@ -4,7 +4,9 @@ file that exists, and a pointer into a notes or spec file names a part of it tha
   `<file>, Section` / `<file> (Section)` / `<file> Section`: the words (starting with a capital)
       start with, or are the start of, a heading, bold lead, list item or `Lead:` paragraph of the
       file, or a name its grammar defines (a fenced block line's first word, `Name :=`). A first
-      word with `_` or `::`, or all in capitals, is code or an acronym: not checked.
+      word with `_` or `::`, or all in capitals, is code or an acronym: not checked, except a label
+      (`A4`, `Z`: a capital and digits) in a file with lettered headings (`### A4. Accounts`), which
+      must be one of them.
   `<file> §N[.M]`, also `§N, §M`, `§N and §M`, `§N-§M`: a heading numbered N[.M] exists.
   `<file> §N Section` / `<file> §N (Section)`: as above, within §N (within the file when several
       sections are named).
@@ -26,6 +28,7 @@ SECS = re.compile(rf"[ \t]+§ ?{NUM}(?:(?:\s*[-–]\s*§?|(?:\s*,\s*|\s+(?:and|o
 NAME = re.compile(r"(,\s*|\s+\(|[ \t]+)([A-Z].{0,100})", re.S)
 WRAP = re.compile(r"\s*\n\s*(?://[/!]?|#|\(\*|\*)?\s*")
 HEADING = re.compile(rf"^(#+)\s+({NUM})\.?\s", re.M)
+LABEL = re.compile(r"^#+\s+([A-Z]\d*)\.\s", re.M)
 
 
 SPACES, MARKUP = re.compile(r"\s+"), re.compile(r"[`*_§]")
@@ -56,7 +59,7 @@ def leads(text):
     c += re.findall(r"\b([A-Z]\w*) :=", text)
     c = [norm(re.sub(r"\s*\([^)]*\)\s*$", "", x)) for x in c]
     c = [x for x in c if x]
-    return c + [re.sub(r"^\d+(\.\d+)*\.? ", "", x) for x in c]
+    return c + [re.sub(r"^(\d+(\.\d+)*\.?|[a-z]\d*\.) ", "", x) for x in c]
 
 
 def named(rest, cands):
@@ -111,6 +114,14 @@ def refs(rel, text, read, cache=None):
         if not n:
             continue
         rest = n.group(2)
+        w = re.match(r"([A-Z]\d*)\b(?![-'])", rest)
+        labels = cache.setdefault((p, "labels"), set(LABEL.findall(t)))
+        if w and len(w.group(1)) == 1 and re.match(r". [a-z]", rest):
+            w = None  # an article ("A second"), not a label
+        if w and labels:
+            if w.group(1) not in labels:
+                yield where(), f"{p}, {w.group(1)}: no heading labelled {w.group(1)} there"
+            continue
         if identifier(rest):
             continue
         ok, term = named(rest, cands(p, nums))

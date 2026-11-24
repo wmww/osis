@@ -57,12 +57,12 @@ if got != want:
 # method (or a same-named method of another type) stays
 items = {("T", "a"): ["core/x/src/a.rs:5"], ("T", "b"): ["core/x/src/a.rs:9"], ("U", "a"): ["core/x/src/a.rs:20"]}
 used = {("T", "a"), ("T", "b")}
-cases = [("core/x/src/a.rs:5:12: warning: methods `a` and `b` are never used", True),
-         ("core/x/src/a.rs:20:12: warning: method `a` is never used", False),
-         ("core/x/src/a.rs:5:12: warning: methods `a` and `c` are never used", False)]
+cases = [("core/x/src/a.rs:5:12: warning: methods `a` and `b` are never used", ["a", "b"]),
+         ("core/x/src/a.rs:20:12: warning: method `a` is never used", []),
+         ("core/x/src/a.rs:5:12: warning: methods `a` and `c` are never used", ["a"])]
 for w, want in cases:
-    if deprecated_probe.outside_only(w, items, used) != want:
-        print(f"FAIL outside_only {w!r}: want {want}")
+    if deprecated_probe.outside(w, items, used)[1] != want:
+        print(f"FAIL outside {w!r}: want {want}")
         ok = False
 print(f"deprecated probe: {'ok' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)

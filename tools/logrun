@@ -3,10 +3,38 @@
 # LOG's verdict lines (libtest's `test result`, `FAILED`, `panicked`, `error`, a `policy:` or `gate`
 # line) and `logrun: exit N (LOG)`, exiting with CMD's status. The unpiped way to read a build or
 # test run: a `| grep` or `| tail` reports the pipe's exit and can cut the panic (notes/build.md, Footguns).
+# A `cargo test ... -- FILTER...` that ran no test, or an `--exact` name that ran in no binary (a
+# name missing its `_spec_*` suffix), exits 1 though cargo exits 0: libtest reports neither.
 [ $# -ge 2 ] || { echo "usage: tools/logrun LOG CMD..." >&2; exit 2; }
 log=$1; shift
 mkdir -p "$(dirname "$log")"
 rc=0; "$@" > "$log" 2>&1 < /dev/null || rc=$?
 grep -E '^test result:|^test .* FAILED$|panicked|^error|^policy:|^== gate|^gate=' "$log" | cut -c1-300
+# the filters after `--` of a `cargo test` (option values skipped)
+filters=""; exact=0; cargo_test=0; after=0; skip=0
+for a in "$@"; do
+    if [ $after = 0 ]; then
+        [ "$a" = test ] && cargo_test=1
+        [ "$a" = -- ] && after=1
+        continue
+    fi
+    if [ $skip = 1 ]; then skip=0; continue; fi
+    case $a in
+        --exact) exact=1 ;;
+        --skip|--test-threads|--format|--logfile|--color|-Z|--shuffle-seed) skip=1 ;;
+        -*) ;;
+        *) filters="$filters $a" ;;
+    esac
+done
+if [ $cargo_test = 1 ] && [ -n "$filters" ] && [ $rc = 0 ]; then
+    ran=$(grep -E '^test result:' "$log" | sed -E 's/.* ([0-9]+) passed; ([0-9]+) failed.*/\1 \2/' | awk '{n += $1 + $2} END {print n + 0}')
+    if [ "$ran" = 0 ]; then
+        echo "logrun: the filters ran no test"; rc=1
+    elif [ $exact = 1 ]; then
+        for f in $filters; do
+            grep -qE "^test $f( - should panic)? \.\.\. " "$log" || { echo "logrun: --exact $f ran in no binary"; rc=1; }
+        done
+    fi
+fi
 echo "logrun: exit $rc ($log)"
 exit $rc
