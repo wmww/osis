@@ -118,7 +118,7 @@ Encoding: spec/wire.md §4. Fields:
   - A delta that matches and is bad by itself never applies. Only those bytes can match, so nothing marks it: it is judged again if it comes again. Bad by itself means:
     - it does not decode;
     - a `created.0` delta that is not one minting of its record, or whose commit does not expire at its record's `expires` (§5 Destruction);
-    - a `roles.0` write inside an entry it did not create, or a value that is no well-formed grant (spec/permissions.md §2); a `signers.0` write that is no well-formed key grant (spec/data-model.md §9);
+    - a `roles.0` write inside an entry it did not create, or a value that is no well-formed grant (spec/permissions.md §2); a `signers.0` write that is no well-formed key grant (spec/data-model.md §9); a `keys.0` write of a keyset recording a keyset left out with no cause (spec/wire.md §7 Left out);
     - a value held unchunked that spec/data-model.md §6 chunks;
     - a carried write stamped after its commit.
   - A blob holding only such deltas, none of its parts waiting, is bad input.

@@ -447,6 +447,19 @@ pub(crate) fn keys_write(delta: &Fragment) -> KeysWrite {
     w
 }
 
+/// A `keys.0` delta writing a keyset that records a holder actor left out at a keyset with no
+/// cause is bad input (spec/wire.md §7 Left out: nonempty; spec/commits.md §4): judged from the
+/// delta alone. Such a record would count for nothing (spec/crypto.md §4 Left out).
+pub(crate) fn check_left_out(h: &Header, (ai, d): &(usize, Decoded)) -> Result<()> {
+    if !h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "keys.0") {
+        return Ok(());
+    }
+    if keys_write(d.fragment()).keysets.values().any(|ks| ks.left_out.values().any(|xs| xs.values().any(std::collections::BTreeSet::is_empty))) {
+        return Err(crate::error::Error::BadInput("a keyset recording a keyset left out with no cause"));
+    }
+    Ok(())
+}
+
 fn keyset_of_value(v: &Value) -> Option<ct::Keyset> {
     // an `option<keyset>` field: `some(keyset)`
     let inner = match v {

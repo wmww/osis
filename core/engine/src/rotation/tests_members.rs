@@ -2498,6 +2498,77 @@ fn hostile_record_forces_one_rotation_per_record_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 0, &[m, a], d, start), Vec::<Tid>::new(), "D opens nothing");
 }
 
+// spec/wire.md §7 (Left out: each recorded keyset's causes nonempty): a rotation asked to record
+// holder actor M left out at its current keyset with no cause (none of the rotator's judgement
+// read one) records nothing of M: its keyset of A arrives at a reader, recording no keyset of M,
+// and M is still left out of that rotation.
+#[test]
+fn a_keyset_with_no_cause_is_never_recorded_spec_crypto_4() {
+    let mut lp = synced(2);
+    let h = lp.peers[1].engine.me();
+    let m = independent_thing(&mut lp, 0);
+    let a = independent_thing(&mut lp, 0);
+    lp.peers[0].engine.grant(&a, &h, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let k = newest_read(&lp, 0, m).unwrap();
+    rotate_recording(&mut lp, 1, a, m, k, &[]);
+    let e = newest_read(&lp, 1, a).unwrap();
+    assert!(recorded(&lp, 1, a, m).is_empty(), "the writer records no keyset of M");
+    assert_eq!(sealed_at(&mut lp, 1, a, m), None, "M left out all the same");
+    lp.sync_all().unwrap();
+    assert_eq!(newest_read(&lp, 0, a), Some(e), "A's keyset arrives");
+    assert!(recorded(&lp, 0, a, m).is_empty(), "recording nothing of M");
+    assert!(lp.peers[1].engine.core.ix.keysets.get(&(a, Role::Read, e)).unwrap().left_out.is_empty());
+}
+
+// spec/wire.md §7 (Left out: causes nonempty), spec/commits.md §4 (Judged alone: bad by itself):
+// a hostile writer H of A rotates A recording M's current keyset with an empty cause set, which
+// would count for nothing. Its `keys.0` delta is bad input at a reader, which refuses the commit
+// (its only other delta, `secrets.0`, needs it): the keyset is held nowhere but H. Control: the
+// same rotation recording one cause (a commit nobody holds) arrives.
+#[test]
+fn a_record_with_no_cause_is_bad_input_spec_crypto_4() {
+    let mut lp = synced(2);
+    let h = lp.peers[1].engine.me();
+    let m = independent_thing(&mut lp, 0);
+    let a = independent_thing(&mut lp, 0);
+    lp.peers[0].engine.grant(&a, &h, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let k = newest_read(&lp, 0, m).unwrap();
+    for (causes, held) in [(BTreeSet::from([CommitId([3; 32])]), true), (BTreeSet::new(), false)] {
+        let before = commit_ids(&mut lp, 1);
+        lp.peers[1]
+            .engine
+            .run(|tx| {
+                let held = tx.core.epochs(&a).unwrap();
+                let boxing = super::recipients(tx, &h, &a, &[(m, None)])?;
+                let secrets = crate::flows::secrets_in(tx, &a)?;
+                let names = super::departures::names(tx.core, &a, None);
+                let mut rot = osis_keys::rotate_leaving_out(&a, &BTreeSet::from([Role::Read]), &held, &secrets, &boxing.holders, &boxing.left_out, &osis_keys::Carried::default(), &names, false, None, &mut *tx.rng).unwrap();
+                // written raw, past the writer's rules: the writer records no causeless keyset
+                let ks = rot.keys.keysets.get_mut(&Role::Read).unwrap();
+                ks.left_out.insert(m.into(), [(osis_keys::aspects::to_schema(&k), causes.clone())].into());
+                let mut mu = Mutation::new();
+                crate::flows::put_secrets(&mut mu, a, &rot.secrets, false)?;
+                crate::flows::put_keysets(&mut mu, a, &rot.keys)?;
+                mu.unchecked();
+                tx.core.skip_writer_rules = true;
+                let c = crate::engine::Engine::commit_tx(tx, mu);
+                tx.core.skip_writer_rules = false;
+                c?;
+                super::record(tx, a, &rot)
+            })
+            .unwrap();
+        let e = newest_read(&lp, 1, a).unwrap();
+        let id = *commit_ids(&mut lp, 1).difference(&before).next().unwrap();
+        let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
+        lp.peers[0].receive(&pk.bytes, pk.blobs).unwrap();
+        assert_eq!(lp.peers[0].engine.core.ix.keysets.contains_key(&(a, Role::Read, e)), held, "causes {causes:?}: the keyset held at a reader");
+    }
+}
+
 // spec/crypto.md §4 (Left out: a record with a cause not held counts; Held keyset), hostile
 // writer H of A removed: M {m0}, A {a0, H writer, M reader}, G {g0, A reader}. H rotates A
 // recording M's current keyset with a commit nobody holds, then a0 removes H from A; M's only

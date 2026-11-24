@@ -228,7 +228,8 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
 }
 
 /// `rotate`, each rotated role's keyset recording `left_out` (the holder actors the rotation
-/// leaves out of it, with the keysets of each it was left out at and their causes: `LeftOut`) and carrying
+/// leaves out of it, with the keysets of each it was left out at and their causes: `LeftOut`; a
+/// keyset with no cause left unrecorded) and carrying
 /// `carried` (`Carried`). `cut`: a grant without history (spec/crypto.md §4, Floors): the read
 /// floor is its own n and its history box carries no earlier secret, so it removes no box.
 /// `seed`: a link key's minting, a rotation from none whose secrets are the seed's
@@ -290,8 +291,14 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         // secret is: superseded through the history box)
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived)).copied().collect();
         let mut ks = keyset(r, &epoch, &secret, &listed, names);
+        // a keyset with no cause is never recorded (spec/wire.md §7 Left out: nonempty, a reader
+        // takes such a body as bad input); it would count for nothing (spec/crypto.md §4 Left
+        // out: every block has a cause), and M stays unboxed all the same
         for (m, out) in left_out.get(&r).into_iter().flatten() {
-            ks.left_out.insert((*m).into(), out.iter().map(|(x, causes)| (to_schema(x), causes.clone())).collect());
+            let out: BTreeMap<_, _> = out.iter().filter(|(_, causes)| !causes.is_empty()).map(|(x, causes)| (to_schema(x), causes.clone())).collect();
+            if !out.is_empty() {
+                ks.left_out.insert((*m).into(), out);
+            }
         }
         ks.demotions = carried.demotions.clone();
         ks.demotes = carried.demotes;
