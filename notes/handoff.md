@@ -17,7 +17,7 @@
 One list, in order. It stands in for every other list of what is next (the order of the state note's Next, the order of code briefs in notes/a2-spec/README.md); notes/redesign-plan.md holds the stages and their reasons.
 
 1. **Accounts as ordinary things** (Tess: next, delete first), on main directly, no branch. Builder's brief with the delete list, sizes and order of work: notes/accounts-switch-brief.md; stage A4 of the plan.
-   - It builds on notes/stubs.md: Tess's decisions on grants, stubs, references in history and the inbox, with what the spec piece settles and what to model first. Also for the spec piece: home as the account itself or a dependent of it (the design note argues the first, the plan says the second: settle in the spec piece).
+   - It builds on notes/stubs.md: Tess's decisions on grants, stubs, references in history and the inbox. The spec piece is written on branch spar-accounts-spec and lands together with the delete piece (policy refuses pointers into deleted spec sections otherwise): notes/accounts-switch-brief.md, Landing.
    - The key hop and the membership cases are modelled already (roles-model's paths; the walk reads the key hop as admin until this lands).
    - One piece a session, each ending pushed. The one review and gate come when accounts are in, over the rewrite and accounts together.
 2. **What the rewrite still owes**, after accounts: notes/sync-rewrite-state.md (Next, and the ignored tests by cause), issues/delete-key-levels-unchecked.md (Left), issues/models-read-chained-sets.md.

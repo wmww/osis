@@ -23,7 +23,7 @@ Notation: `{k: v}` maps in this file have int keys, sorted. `A < B` on stamps is
 ### 2.1 Sources and dots
 A **source** is who minted a run of counters:
 - `Commit(id)`: the commit itself (32-byte commit ID). Counters are per commit, contiguous from 1 across all the commit's deltas (aspects get disjoint ranges). The header marks the form once per commit; a commit uses one form for all its writes.
-- `Session(tid, nonce)`: a session of author `tid` (an account): 15-byte tid, then a 16-byte nonce. Every node of an account runs its own sessions under the account's tid; the random nonce keeps them apart.
+- `Session(tid, nonce)`: a session of author `tid` (the thing its commits are signed as, spec/permissions.md §1): 15-byte tid, then a 16-byte nonce. A thing signed as from more than one key store writes in commit form (spec/commits.md §3).
   - **Start.** The node draws the nonce at random at each start. A new start is a new session; two copies of one store running at once, or a copy restored from a backup, are distinct sessions.
   - **Within a run.** A node also begins a new session once one of its session-form writes under the current ones turns invalid (spec/sync-compaction.md §2: a snapshot's frontier stops below it), under a nonce no earlier session of it used.
   - **Use.** Every content write, durable or ephemeral (spec/data-model.md §2), uses the current session. A node also has a second session, begun with each, for its ephemeral writes with an expiry.

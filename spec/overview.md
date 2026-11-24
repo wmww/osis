@@ -13,7 +13,7 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 - spec/permissions.md: actors, role grants, mint admins, rotation, evidence and key parts, the validity rules, purge rights, links.
 - spec/wire.md: byte layouts of everything on the wire, constants, the node-to-node protocol, decoder limits.
 - spec/sync.md: overview of sync: its words, the one kind of node, the two holdings of a sync ID (read, kept unread), each area's principle and the sync file map.
-- spec/sync-set.md: the node root and the account's things, sync units, the node closure, holders held for keys and the sync set, release, redeeming, sources.
+- spec/sync-set.md: the node thing, node root and dial list, first entry, sync units, the node closure, holders held for keys and the sync set, release, redeeming, sources.
 - spec/sync-ids.md: blobs, sync IDs and role keys, steps and claim sets, `sync.0`, the store per sync ID and the operations on it.
 - spec/sync-opens.md: connections, connection proofs, records and agreement, the shared set, filters, Offer, ending opens.
 - spec/sync-judgement.md: what goes under a sync ID, the required set and judgement, acting on it, logged again once, destruction and emptying, kept unread.
