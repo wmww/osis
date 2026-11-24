@@ -15,9 +15,9 @@
 //! - **Bodies.** A commit's body is under every sync ID whose unit holds the thing it writes
 //!   (roles-model commits write one thing: a copy per (commit, thing) is per commit here).
 //! - **The required set** of sync ID S over a held set H (`World::req`): the evidence closure
-//!   (`paths::evidence`: every held edge write on a seed's key hop and on an edge of
-//!   its path or on the remaining admin edge a lowering names, closed under the same for what it
-//!   adds: notes/write-path-design.md §2 E1) of the seeds: the bodies; the grants naming S's thing as holder (a holder's
+//!   (`paths::evidence`: every held edge write on a seed's key hop, on an edge of its path and on
+//!   each edge its commit's edge writes on its thing set, closed under the same for what it adds:
+//!   spec/permissions.md §4 Evidence of a commit) of the seeds: the bodies; the grants naming S's thing as holder (a holder's
 //!   grants travel under its sync ID: every grant counts). What of it
 //!   lies on things outside the unit is a copy, the rest bodies. A removal is in it only as
 //!   evidence of a body (notes/write-path-design.md §2, D1) or as Role changes travel puts it
@@ -125,7 +125,7 @@ pub struct Closure {
 /// `Closure::commit_edges`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommitEdges {
-    /// Nothing (`paths::evidence`: the commit's other parts on its thing alone).
+    /// Nothing: the commit's other parts on its thing alone.
     Off,
     /// The creation (`World::creation`) of each entry the commit's parts on its thing reset.
     Creations,
@@ -135,8 +135,7 @@ pub enum CommitEdges {
 }
 
 impl Closure {
-    /// The spec's (spec/permissions.md §4 Evidence of a commit): `paths::evidence` with
-    /// finding 9's clause in the draft's words.
+    /// The spec's (spec/permissions.md §4 Evidence of a commit): `paths::evidence`.
     pub fn drafted() -> Closure {
         Closure { takes: Takes::All, joined: false, commit_edges: CommitEdges::AllWrites }
     }
@@ -691,11 +690,11 @@ impl World {
     }
     /// The evidence closure of `seeds` over `avail` under `rule.closure`: the seeds, the other
     /// parts of a member's commit on its thing, the edge writes it takes on a member's key hop and
-    /// on an edge of its stated path (where joined, under `joined`).
+    /// on an edge of its stated path (where joined, under `joined`), and what `commit_edges` brings.
     /// The draft is `paths::evidence`.
     pub fn closure(&self, rule: &Rule, seeds: &Set, avail: &Set) -> Set {
         let c = rule.closure;
-        if c == (Closure { commit_edges: CommitEdges::Off, ..Closure::drafted() }) && self.opens.is_empty() {
+        if c == Closure::drafted() && self.opens.is_empty() {
             return paths::evidence(&self.w, seeds, avail);
         }
         let takes = self.takes(rule, avail);
@@ -719,7 +718,7 @@ impl World {
                     match c.commit_edges {
                         CommitEdges::Off => {}
                         CommitEdges::Creations => brought.extend(parts.iter().filter_map(|&p| self.creation(p)).filter(|j| avail.contains(j))),
-                        CommitEdges::AllWrites => edges.extend(parts.iter().filter(|&&p| p != m).filter_map(|&p| self.w.sets(p))),
+                        CommitEdges::AllWrites => edges.extend(parts.iter().filter_map(|&p| self.w.sets(p))),
                     }
                 }
             }

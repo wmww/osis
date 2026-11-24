@@ -854,8 +854,6 @@ fn each_fix_is_needed_plain() {
     }
     // a backdated leave reaches the search through three of the thief's moves: 400 worlds
     assert!(random_from(0, 400, &Rules { leave_in_question: false, ..f }).failures() > 0, "leave");
-    // the variant recording a lowering only where it took its hop down fails rarely (finding 52)
-    assert!(random_from(0, 1000, &Rules { sides: Sides::Lowered, ..f }).failures() > 0, "lowered");
 }
 
 /// Random worlds `OSIS_ROLES_START` (default 0) on, `OSIS_ROLES_SEEDS` many (13,000: about 215
@@ -3187,10 +3185,8 @@ fn a_recorded_side_keeps_the_other_side_of_its_fight_unrecorded() {
 /// B held the second first and records it. The thief then ends X's own admin at 2 (move 33), so
 /// B's walk applies H's removal, and backdates an end of H's admin at 6 (move 44): B has a side
 /// in that fight, records nothing for H's removal and is told of it. Variant `-lowered` (a
-/// lowering recorded only where it took its hop down): B records H's removal here, but the
-/// variant fails the story: a reader holding H's removal before any write of X's (X's grant
-/// arrives as evidence with X's backdated removal of H) applied it taking nothing, records
-/// nothing, and the backdated removal acts (`each_fix_is_needed_plain`).
+/// lowering recorded only where it took its hop down): B records H's removal here; the variant
+/// fails `a_redundant_honest_lowering_is_what_takes_a_backdated_one`.
 #[test]
 fn a_lowering_that_applied_taking_nothing_is_a_side() {
     let s = Setup { x_first: true, ..Setup::default() };
@@ -3864,5 +3860,33 @@ fn a_lowered_keys_grant_standing_where_nothing_is_trusted_is_shown() {
         assert_eq!(disputes(&w, &Rules::fixed(), &v), out, "{keys}");
         let t = fixed(&w, &out);
         assert!(t.dropped.contains(&g) && !t.valid.contains(&c) && t.role(B, A) == Gone, "{keys}: {t:?}");
+    }
+}
+
+/// F2, a lowering that applied taking nothing keeps the node's place against a backdated write.
+/// H paired N5, N5 granted B write on T1 at 2 (`gb5`), X removed N5 at 3 listing that grant
+/// (`out5`); the thief makes X's twin of that removal, ordered first and listing less (move 31),
+/// and backdates N5's demotion of B to 2 (move 48), a seed of both removals that drops B's write
+/// on T1 at 2 (`gs`). At N5 the twin cannot be recorded (its seeds take N5's own grant, a side),
+/// and `out5` applies behind it taking nothing; recording `out5` when the backdated demotion
+/// arrives drops the demotion, as the twin, recorded, does at B. Variant `-lowered` records
+/// nothing at N5: the demotion acts there, so N5 drops B's write that B shows (alike, liveness).
+#[test]
+fn a_redundant_honest_lowering_is_what_takes_a_backdated_one() {
+    let s = Setup { n5: 3, ..Setup::default() };
+    let mv = [Move { kind: 31, ts: 9, made: 5 }, Move { kind: 48, ts: 8, made: 8 }];
+    for (sides, lowered) in [(Sides::Received, false), (Sides::Lowered, true)] {
+        let rules = Rules { sides, ..Rules::fixed() };
+        let m = Sim::build(&s, &rules, &mv, &mut Rng(0));
+        let (out5, gb5) = (m.out5.unwrap(), m.gb5.unwrap());
+        let twin = *m.thief.iter().find(|(_, k)| **k == 31).unwrap().0;
+        let v = m.view(N5, &rules);
+        let rd = judge(&m.w, &rules, &v);
+        assert!(v.trust.contains(&gb5) && !v.trust.contains(&twin) && rd.lowered.contains(&twin) && !rd.lowered.contains(&out5), "{sides:?}: {:?} {rd:?}", v.trust);
+        assert_eq!((v.trust.contains(&out5), rd.applied.contains(&m.gs)), (!lowered, !lowered), "{sides:?}: {:?} {rd:?}", v.trust);
+        assert!(judge(&m.w, &rules, &m.view(B, &rules)).applied.contains(&m.gs), "{sides:?}");
+        let mut st = Stats::default();
+        check(&m, &rules, &mut st);
+        assert_eq!(st.failures() > 0, lowered, "{sides:?}: {:?}", st.fails);
     }
 }

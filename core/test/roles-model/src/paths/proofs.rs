@@ -114,23 +114,9 @@ fn play(r3: Role, moves: &[Move]) -> World {
     w
 }
 
-/// The evidence of `unit` over `avail` (spec/permissions.md §4): every edge write on an edge a held
-/// commit rests on or one of its edge writes sets, closed (`evidence` takes the first alone).
-pub fn closure(w: &World, unit: &Set, avail: &Set) -> Set {
-    let mut s = unit.clone();
-    loop {
-        let edges: BTreeSet<Edge> = s.iter().flat_map(|&i| w.rests(i).iter().copied().chain(w.sets(i))).collect();
-        let more: Vec<Id> = avail.iter().copied().filter(|i| !s.contains(i) && w.sets(*i).is_some_and(|e| edges.contains(&e))).collect();
-        if more.is_empty() {
-            return s;
-        }
-        s.extend(more);
-    }
-}
-
 /// V's batches from `held` (closed by evidence over everything) in `order`, cut where `cuts` says.
 fn batches(w: &World, picked: &Set, logged: &Set, order: &[usize], cut: impl Fn(usize) -> bool) -> Vec<Set> {
-    let held = closure(w, picked, logged);
+    let held = evidence(w, picked, logged);
     let seq: Vec<Id> = order.iter().copied().filter(|i| held.contains(i)).collect();
     let mut out = vec![Set::new()];
     for (k, i) in seq.into_iter().enumerate() {
@@ -341,7 +327,7 @@ pub fn proof_check(m: &ProofWorld, pr: ProofRules, st: &mut ProofStats, rng: &mu
         // applies; then (waits) once V holds what its own evidence brings, they do
         let on_edge: Set = (0..w.commits.len()).filter(|&i| w.sets(i) == Some((p, A))).collect();
         if p != N1 && on_edge.is_disjoint(&held) {
-            let honest: Set = closure(w, &on_edge, &all).difference(&held).copied().collect();
+            let honest: Set = evidence(w, &on_edge, &all).difference(&held).copied().collect();
             let got = proven(w, &rules, pr, &held, &trust, &own, p, &honest);
             let want = path_role(&everything, p);
             let rd = proof_reading(w, &rules, pr, &held, &trust, &honest);
@@ -351,7 +337,7 @@ pub fn proof_check(m: &ProofWorld, pr: ProofRules, st: &mut ProofStats, rng: &mu
             }
             if want > Role::None && got == Role::None && !undone(w, &own, &rd).is_empty() {
                 st.count("waits", 1);
-                let later = closure(w, &held, &all);
+                let later = evidence(w, &held, &all);
                 let t2 = sides_after(w, &rules, &held, &trust, &later.difference(&held).copied().collect());
                 let own2 = judge(w, &rules, &View { held: later.clone(), leaves: None, trust: t2.clone() });
                 let honest2: Set = honest.difference(&later).copied().collect();

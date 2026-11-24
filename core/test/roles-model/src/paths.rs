@@ -250,8 +250,8 @@ pub enum Sides {
     Tie,
     /// Control `-unapplied`: a held lowering is recorded whether or not the walk applied it.
     Unapplied,
-    /// Variant `-lowered` (rejected: it fails the story): a held lowering is recorded only where
-    /// the walk judged it (it took its hop down there), not where it applied taking nothing.
+    /// Variant `-lowered` (rejected: it fails the story, finding 52): a held lowering is recorded
+    /// only where the walk judged it (it took its hop down there), not where it applied taking nothing.
     Lowered,
     /// Control `-both`: a lowering is recorded though one that cannot stand beside it is.
     Both,
@@ -2186,10 +2186,10 @@ pub fn writers_keep(base: Vec<Id>, classed: &[Id], own_end: bool, mut end: impl 
     kept
 }
 
-/// The evidence closure of `unit` over `avail` (notes/write-path-design.md §2): the commits in
-/// `unit`, the other parts of a held commit on the same thing (a part on another thing is that
-/// thing's unit's, with its own path: notes/path-form.md), every available edge write on an edge
-/// of a held part's path.
+/// The evidence closure of `unit` over `avail` (spec/permissions.md §4 Evidence of a commit): the
+/// commits in `unit`, the other parts of a held commit on the same thing (a part on another thing
+/// is that thing's unit's, with its own path: notes/path-form.md), every available edge write on
+/// an edge a held part rests on or one of its edge writes sets.
 pub fn evidence(w: &World, unit: &Set, avail: &Set) -> Set {
     let mut s = unit.clone();
     // the edges and (commit, thing) units of what is in so far, grown by what each round adds
@@ -2197,7 +2197,7 @@ pub fn evidence(w: &World, unit: &Set, avail: &Set) -> Set {
     let mut more: Vec<Id> = s.iter().copied().collect();
     while !more.is_empty() {
         for &i in &more {
-            edges.extend(w.rests(i));
+            edges.extend(w.rests(i).iter().copied().chain(w.sets(i)));
             cids.insert((w.cid(i), w.commits[i].on));
         }
         more = avail
