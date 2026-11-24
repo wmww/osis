@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 pub struct Cipher<'a> {
     src: &'a dyn Ciphertext,
     stamps: &'a Stamps,
-    tx: Option<Box<dyn CipherTx + 'a>>,
+    tx: Option<CipherTx<'a>>,
     /// This transaction's sequence (`Engine::blob_seq`).
     seq: u64,
     /// Blobs this transaction newly held, with whether in memory, in order.
@@ -35,7 +35,7 @@ pub struct Cipher<'a> {
     /// back by a hold (`Some(memory)`).
     journal: Vec<(BlobId, Option<bool>)>,
     /// Blobs of the commits it forgot, with whether in memory: the store's own logs of them go
-    /// with the releases (`CipherTx::forgot`).
+    /// with the releases (`CipherStore::forgot`).
     forgot: Vec<(BlobId, bool)>,
     /// A write to the ciphertext store failed: what it held so far may be gone.
     failed: bool,
@@ -53,9 +53,9 @@ impl<'a> Cipher<'a> {
         Cipher { src, stamps, tx: None, seq, held: Vec::new(), releases: BTreeMap::new(), journal: Vec::new(), forgot: Vec::new(), failed: false, done: false, reads: 0 }
     }
 
-    fn tx(&mut self) -> &mut (dyn CipherTx + 'a) {
+    fn tx(&mut self) -> &mut CipherTx<'a> {
         let src = self.src;
-        &mut **self.tx.get_or_insert_with(|| src.begin())
+        self.tx.get_or_insert_with(|| src.begin())
     }
 
     /// Whether a step of the path the store keeps of sync ID `s` bears sync key `key`
@@ -121,19 +121,19 @@ impl<'a> Cipher<'a> {
     }
 
     /// Blob `id` of a commit forgotten (`memory`: a memory commit's): the store's own logs of
-    /// it go once the engine's store committed (`CipherTx::forgot`).
+    /// it go once the engine's store committed (`CipherStore::forgot`).
     pub fn forgot(&mut self, id: &BlobId, memory: bool) {
         self.forgot.push((*id, memory));
     }
 
-    /// Blob `id`'s commit forgotten as never received (`CipherTx::unreceived`), in the store's
+    /// Blob `id`'s commit forgotten as never received (`CipherStore::unreceived`), in the store's
     /// open transaction.
     pub fn unreceived(&mut self, id: &BlobId) {
         let r = self.tx().unreceived(id);
         self.failed |= r.is_err();
     }
 
-    /// Sync ID `s` is to be pulled anew from every source (`CipherTx::refetch`), written in the
+    /// Sync ID `s` is to be pulled anew from every source (`CipherStore::refetch`), written in the
     /// store's open transaction, so durable before the engine's store commits.
     pub fn refetch(&mut self, s: &osis_base::SyncId) {
         let r = self.tx().refetch(s);

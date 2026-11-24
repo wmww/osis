@@ -18,9 +18,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 /// A store of blob ciphertexts an engine shares (`Engine::open`): a `Mutex` of a `CipherStore`.
 pub trait Ciphertext: Send + Sync + Any {
     /// The store locked for one engine transaction. Dropped uncommitted, it undoes nothing the
-    /// engine journaled itself (`CipherTx::release` of what it held) but aborts its durable
+    /// engine journaled itself (`CipherStore::release` of what it held) but aborts its durable
     /// writes.
-    fn begin(&self) -> Box<dyn CipherTx + '_>;
+    fn begin(&self) -> CipherTx<'_>;
 
     /// Tests only: a copy of this store inside a world copy (`osis_base::copying::remap`: every
     /// holder of this handle gets the same copy), on `clock` where the store keeps time.
@@ -36,14 +36,18 @@ pub struct Note {
     pub holds: Vec<BlobId>,
     /// Durable blobs it released.
     pub releases: Vec<BlobId>,
-    /// Blobs of the commits it forgot (`CipherTx::forgot` applies each): applied after the
+    /// Blobs of the commits it forgot (`CipherStore::forgot` applies each): applied after the
     /// engine's store commits, as releases are.
     pub forgot: Vec<BlobId>,
 }
 
-/// One engine transaction's view of the ciphertext store. Blobs the engine holds stay until it
+/// A store that can be an engine's ciphertext store, behind a `Mutex` (`Ciphertext`), locked
+/// for one engine transaction at a time (`CipherTx`). Blobs the engine holds stay until it
 /// releases them; others (what the store keeps for others) may be read too.
-pub trait CipherTx {
+pub trait CipherStore: Send + Any {
+    /// The store is locked for one engine transaction: its writes until `commit` or `abort` are
+    /// that transaction's.
+    fn begin(&mut self) {}
     /// Whether the engine holds blob `id`.
     fn held(&mut self, id: &BlobId) -> Result<bool, Error>;
     /// Bytes `offset..offset+len` of blob `id`, held by the engine or not.
@@ -57,66 +61,33 @@ pub trait CipherTx {
     /// transaction works on memory data, so a durable blob stays.
     fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error>;
     /// The engine forgot blob `id` with its commit (`Note::forgot`): what the store logged of it
-    /// as the engine's own goes.
-    fn forgot(&mut self, id: &BlobId) -> Result<(), Error>;
-    /// The engine forgot blob `id`'s commit as never received (spec/sync-judgement.md §3 Dropped
-    /// bodies): what the store keeps out of it as the engine's own drop ends, in this transaction.
-    fn unreceived(&mut self, id: &BlobId) -> Result<(), Error>;
-    /// Sync ID `s` is to be pulled anew from every source, durably in this transaction: a strong
-    /// in its sync unit reaches a thing whose record the engine does not hold (spec/sync-judgement.md
-    /// §3 Dropped bodies). A store of blobs only syncs nothing.
-    fn refetch(&mut self, s: &osis_base::SyncId) -> Result<(), Error>;
-    /// Records, in this transaction, an engine transaction's note (`settle` reads it back after
-    /// a crash).
-    fn note(&mut self, note: &Note) -> Result<(), Error>;
-    /// The engine transactions noted and not cleared (`unnote`).
-    fn notes(&mut self) -> Result<Vec<Note>, Error>;
-    /// Clears engine transaction `seq`'s note.
-    fn unnote(&mut self, seq: u64) -> Result<(), Error>;
-    /// Makes this transaction's writes durable.
-    fn commit(&mut self) -> Result<(), Error>;
-    /// Tests only: every key the store's tree yields (`Store::forensic_keys`).
-    #[doc(hidden)]
-    fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error>;
-    /// The store itself, for a holder that knows its type.
-    fn any(&mut self) -> &mut dyn Any;
-    /// Whether a step of the path the store keeps of sync ID `s` bears sync key `key`
-    /// (spec/sync.md §3): none in a store of blobs only.
-    fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> Result<bool, Error>;
-}
-
-/// A store that can be an engine's ciphertext store, behind a `Mutex` (`Ciphertext`): the
-/// `CipherTx` operations on the store locked, `abort` dropping what was written since the last
-/// commit.
-pub trait CipherStore: Send + Any {
-    /// The store is locked for one engine transaction: its writes until `commit` or `abort` are
-    /// that transaction's.
-    fn begin(&mut self) {}
-    fn held(&mut self, id: &BlobId) -> Result<bool, Error>;
-    fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error>;
-    fn len(&mut self, id: &BlobId) -> Result<Option<u64>, Error>;
-    fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Result<bool, Error>;
-    fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error>;
-    /// `CipherTx::forgot`: a store of blobs only logs nothing.
+    /// as the engine's own goes. A store of blobs only logs nothing.
     fn forgot(&mut self, id: &BlobId) -> Result<(), Error> {
         let _ = id;
         Ok(())
     }
-    /// `CipherTx::unreceived`: a store of blobs only keeps nothing out.
+    /// The engine forgot blob `id`'s commit as never received (spec/sync-judgement.md §3 Dropped
+    /// bodies): what the store keeps out of it as the engine's own drop ends, in this transaction.
+    /// A store of blobs only keeps nothing out.
     fn unreceived(&mut self, id: &BlobId) -> Result<(), Error> {
         let _ = id;
         Ok(())
     }
-    /// `CipherTx::refetch`: a store of blobs only syncs nothing.
+    /// Sync ID `s` is to be pulled anew from every source, durably in this transaction: a strong
+    /// in its sync unit reaches a thing whose record the engine does not hold (spec/sync-judgement.md
+    /// §3 Dropped bodies). A store of blobs only syncs nothing.
     fn refetch(&mut self, s: &osis_base::SyncId) -> Result<(), Error> {
         let _ = s;
         Ok(())
     }
     /// Runs `f` in the store's open transaction (the engine's notes live in its local records).
     fn local(&mut self, f: &mut dyn FnMut(&mut crate::Transaction<'_>) -> Result<(), Error>) -> Result<(), Error>;
+    /// Makes this transaction's writes durable.
     fn commit(&mut self) -> Result<(), Error>;
+    /// Drops what was written since the last commit.
     fn abort(&mut self);
-    /// `CipherTx::bears`.
+    /// Whether a step of the path the store keeps of sync ID `s` bears sync key `key`
+    /// (spec/sync.md §3): none in a store of blobs only.
     fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> Result<bool, Error> {
         let _ = (s, key);
         Ok(false)
@@ -169,10 +140,11 @@ pub fn test_copy_shared<T: CipherStore>(store: &Arc<Mutex<T>>, clock: Arc<dyn os
 }
 
 impl<T: CipherStore> Ciphertext for Mutex<T> {
-    fn begin(&self) -> Box<dyn CipherTx + '_> {
-        let mut g = lock(self);
+    fn begin(&self) -> CipherTx<'_> {
+        let m: &Mutex<dyn CipherStore> = self;
+        let mut g = lock(m);
         g.begin();
-        Box::new(StoreTx { g, done: false })
+        CipherTx { g, done: false }
     }
 
     fn test_copy(self: Arc<Self>, clock: Arc<dyn osis_base::Clock>) -> Result<Arc<dyn Ciphertext>, Error> {
@@ -181,41 +153,35 @@ impl<T: CipherStore> Ciphertext for Mutex<T> {
     }
 }
 
-struct StoreTx<'a, T: CipherStore> {
-    g: MutexGuard<'a, T>,
+/// One engine transaction's hold on the ciphertext store (`Ciphertext::begin`): the store's
+/// operations, plus the transaction's notes. Dropped uncommitted, it aborts the store's writes.
+pub struct CipherTx<'a> {
+    g: MutexGuard<'a, dyn CipherStore>,
     done: bool,
 }
 
-impl<T: CipherStore> CipherTx for StoreTx<'_, T> {
-    fn held(&mut self, id: &BlobId) -> Result<bool, Error> {
-        self.g.held(id)
+impl std::ops::Deref for CipherTx<'_> {
+    type Target = dyn CipherStore;
+    fn deref(&self) -> &Self::Target {
+        &*self.g
     }
-    fn read(&mut self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error> {
-        self.g.read(id, offset, len)
+}
+
+impl std::ops::DerefMut for CipherTx<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.g
     }
-    fn len(&mut self, id: &BlobId) -> Result<Option<u64>, Error> {
-        self.g.len(id)
-    }
-    fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Result<bool, Error> {
-        self.g.hold(id, blob, memory)
-    }
-    fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error> {
-        self.g.release(id, memory)
-    }
-    fn forgot(&mut self, id: &BlobId) -> Result<(), Error> {
-        self.g.forgot(id)
-    }
-    fn refetch(&mut self, s: &osis_base::SyncId) -> Result<(), Error> {
-        self.g.refetch(s)
-    }
-    fn unreceived(&mut self, id: &BlobId) -> Result<(), Error> {
-        self.g.unreceived(id)
-    }
-    fn note(&mut self, n: &Note) -> Result<(), Error> {
+}
+
+impl CipherTx<'_> {
+    /// Records, in this transaction, an engine transaction's note (`settle` reads it back after
+    /// a crash).
+    pub fn note(&mut self, n: &Note) -> Result<(), Error> {
         let (k, v) = ([NOTE, &n.seq.to_be_bytes()].concat(), encode_note(n));
         self.g.local(&mut |t| t.put_local(&k, &v, crate::Shred::No))
     }
-    fn notes(&mut self) -> Result<Vec<Note>, Error> {
+    /// The engine transactions noted and not cleared (`unnote`).
+    pub fn notes(&mut self) -> Result<Vec<Note>, Error> {
         let mut rows = Vec::new();
         self.g.local(&mut |t| {
             rows = t.scan_local(NOTE, &[], usize::MAX)?;
@@ -223,26 +189,19 @@ impl<T: CipherStore> CipherTx for StoreTx<'_, T> {
         })?;
         rows.into_iter().map(|(k, v)| decode_note(&k, &v)).collect()
     }
-    fn unnote(&mut self, seq: u64) -> Result<(), Error> {
+    /// Clears engine transaction `seq`'s note.
+    pub fn unnote(&mut self, seq: u64) -> Result<(), Error> {
         let k = [NOTE, &seq.to_be_bytes()].concat();
         self.g.local(&mut |t| t.remove_local(&k, crate::Shred::No).map(drop))
     }
-    fn commit(&mut self) -> Result<(), Error> {
+    /// Makes this transaction's writes durable.
+    pub fn commit(&mut self) -> Result<(), Error> {
         self.done = true;
         self.g.commit()
     }
-    fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error> {
-        self.g.forensic_keys()
-    }
-    fn any(&mut self) -> &mut dyn Any {
-        &mut *self.g
-    }
-    fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> Result<bool, Error> {
-        self.g.bears(s, key)
-    }
 }
 
-impl<T: CipherStore> Drop for StoreTx<'_, T> {
+impl Drop for CipherTx<'_> {
     fn drop(&mut self) {
         if !self.done {
             self.g.abort();

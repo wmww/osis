@@ -466,59 +466,37 @@ fn rebalance(u: &mut dyn Units, es: &mut Vec<InnerE>, l: usize, r: usize, shred:
     Ok(())
 }
 
-/// Up to `limit` entries with `start <= key` and `key < end` (`None`: unbounded), ascending.
-pub(crate) fn range(u: &mut dyn Units, root: u64, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, Error> {
+/// Up to `limit` entries with `start <= key` and `key < end` (`None`: unbounded), ascending or
+/// (`rev`) descending.
+pub(crate) fn range(u: &mut dyn Units, root: u64, start: &[u8], end: Option<&[u8]>, limit: usize, rev: bool) -> Result<Vec<KeyValue>, Error> {
     let mut out = Vec::new();
-    collect(u, root, start, end, limit, &mut out)?;
+    collect(u, root, start, end, limit, rev, &mut out)?;
     Ok(out)
 }
 
-fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit: usize, out: &mut Vec<KeyValue>) -> Result<(), Error> {
-    match &*u.page(slot)? {
-        Page::Leaf(es) => {
-            for e in es.iter().skip(es.partition_point(|e| &e.key[..] < start)) {
-                if out.len() >= limit || end.is_some_and(|end| &e.key[..] >= end) {
-                    break;
-                }
-                out.push((e.key.to_vec(), resolve(u, &e.val)?));
-            }
-        }
-        Page::Inner(es) => {
-            for e in es.iter().skip(child_index(es, start)) {
-                if out.len() >= limit || end.is_some_and(|end| &e.key[..] >= end) {
-                    break;
-                }
-                collect(u, e.child, start, end, limit, out)?;
-            }
-        }
+fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit: usize, rev: bool, out: &mut Vec<KeyValue>) -> Result<(), Error> {
+    // the entries (a leaf's) or children (an inner page's, each holding its first key) in range
+    fn within<'a, T>(es: &'a [T], key: impl Fn(&T) -> &[u8], lo: usize, end: Option<&[u8]>, rev: bool) -> impl Iterator<Item = &'a T> {
+        let hi = end.map_or(es.len(), |end| es.partition_point(|e| key(e) < end)).max(lo);
+        let es = es.get(lo..hi).unwrap_or_default();
+        let n = es.len();
+        (0..n).filter_map(move |i| es.get(if rev { n - 1 - i } else { i }))
     }
-    Ok(())
-}
-
-/// Up to `limit` entries with `start <= key` and `key < end`, descending.
-pub(crate) fn range_rev(u: &mut dyn Units, root: u64, start: &[u8], end: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
-    let mut out = Vec::new();
-    collect_rev(u, root, start, end, limit, &mut out)?;
-    Ok(out)
-}
-
-fn collect_rev(u: &mut dyn Units, slot: u64, start: &[u8], end: &[u8], limit: usize, out: &mut Vec<KeyValue>) -> Result<(), Error> {
     match &*u.page(slot)? {
         Page::Leaf(es) => {
-            for e in es.iter().take(es.partition_point(|e| &e.key[..] < end)).rev() {
-                if out.len() >= limit || &e.key[..] < start {
-                    break;
-                }
-                out.push((e.key.to_vec(), resolve(u, &e.val)?));
-            }
-        }
-        Page::Inner(es) => {
-            let lo = child_index(es, start);
-            for e in es.iter().take(child_index(es, end) + 1).skip(lo).rev() {
+            for e in within(es, |e| &e.key[..], es.partition_point(|e| &e.key[..] < start), end, rev) {
                 if out.len() >= limit {
                     break;
                 }
-                collect_rev(u, e.child, start, end, limit, out)?;
+                out.push((e.key.to_vec(), resolve(u, &e.val)?));
+            }
+        }
+        Page::Inner(es) => {
+            for e in within(es, |e| &e.key[..], child_index(es, start), end, rev) {
+                if out.len() >= limit {
+                    break;
+                }
+                collect(u, e.child, start, end, limit, rev, out)?;
             }
         }
     }
@@ -633,7 +611,7 @@ mod tests {
     }
 
     fn check(u: &mut Mem, root: u64, model: &BTreeMap<Vec<u8>, Vec<u8>>) {
-        let all = range(u, root, b"", None, usize::MAX).unwrap();
+        let all = range(u, root, b"", None, usize::MAX, false).unwrap();
         let want: Vec<_> = model.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         assert_eq!(all, want);
         assert_eq!(len(u, root).unwrap(), model.len() as u64);
@@ -684,7 +662,7 @@ mod tests {
             prop_assert_eq!(nth(&mut u, root, model.len() as u64).unwrap(), None);
             let mid = b"key00150".as_slice();
             let want: Vec<_> = model.range(mid.to_vec()..b"key00200".to_vec()).take(7).map(|(k, v)| (k.clone(), v.clone())).collect();
-            prop_assert_eq!(range(&mut u, root, mid, Some(b"key00200"), 7).unwrap(), want);
+            prop_assert_eq!(range(&mut u, root, mid, Some(b"key00200"), 7, false).unwrap(), want);
             drop_all(&mut u, root, false).unwrap();
             prop_assert!(u.units.is_empty());
         }

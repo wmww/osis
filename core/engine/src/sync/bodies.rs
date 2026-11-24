@@ -91,7 +91,7 @@ fn unnote_blob(tx: &mut Tx<'_>, b: &BlobId) -> Result<()> {
 
 /// Commit `c` is forgotten (`apply::unindex_commit`, a release): its blob parts go with it, in
 /// its transaction, and so do the store's own entries of its blobs under every sync ID once the
-/// engine's store committed (`CipherTx::forgot`): an own entry logs a commit held here. Losing
+/// engine's store committed (`CipherStore::forgot`): an own entry logs a commit held here. Losing
 /// access keeps the rows, so its own entries wait for it to open again.
 pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
     let blobs: Vec<BlobId> = tx.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect();

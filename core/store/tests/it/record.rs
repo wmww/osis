@@ -100,9 +100,7 @@ fn forgetting_a_sync_id_drops_it_from_every_record_in_one_step() {
     t.record_put_row(&b, b'm', &l(2), b"", vec![1]).unwrap();
     t.record_put_wide_row(&b, b'c', b"", vec![1]).unwrap();
     t.commit().unwrap();
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.changed_forget(&l(1)).unwrap();
-    t.commit().unwrap();
+    commit(&mut s, &mut rng, |t| t.changed_forget(&l(1)).unwrap());
     let mut t = s.transaction(&mut rng).unwrap();
     assert!(t.record_tag_rows(&a, b'm').unwrap().is_empty() && t.record_tag_rows(&a, b'k').unwrap().is_empty());
     assert_eq!(t.record_tag_rows(&b, b'm').unwrap().iter().map(|(x, ..)| *x).collect::<Vec<_>>(), [l(2)]);

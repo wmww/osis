@@ -258,9 +258,7 @@ fn crash_during_create() {
             }
             Err(e) => panic!("crash at {n}: {e:?}"),
         };
-        let mut t = s.transaction(&mut rng).unwrap();
-        t.put_local(b"k", b"v", Shred::No).unwrap();
-        t.commit().unwrap();
+        commit(&mut s, &mut rng, |t| t.put_local(b"k", b"v", Shred::No).unwrap());
     }
 }
 
@@ -280,12 +278,7 @@ fn memory_overlay_rows() {
         t.commit().unwrap();
     }
     let writes = dev.faults.writes();
-    let ix;
-    {
-        let mut t = s.transaction(&mut rng).unwrap();
-        ix = t.index(b"ix").unwrap();
-        t.commit().unwrap();
-    }
+    let ix = commit(&mut s, &mut rng, |t| t.index(b"ix").unwrap());
     let writes = writes.max(dev.faults.writes());
     {
         let mut t = s.transaction(&mut rng).unwrap();

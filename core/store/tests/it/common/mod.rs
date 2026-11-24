@@ -293,6 +293,14 @@ pub fn create(dev: &dyn Device, rng: &mut SeededRng) -> Store {
     Store::create(dev.backend(), dev.root(), cfg(), rng).unwrap()
 }
 
+/// Runs `f` in one transaction of `s` and commits it.
+pub fn commit<R>(s: &mut Store, rng: &mut SeededRng, f: impl FnOnce(&mut Transaction<'_>) -> R) -> R {
+    let mut t = s.transaction(rng).unwrap();
+    let r = f(&mut t);
+    t.commit().unwrap();
+    r
+}
+
 pub fn reopen(dev: &dyn Device) -> Store {
     Store::open(dev.backend(), dev.root(), cfg()).unwrap()
 }

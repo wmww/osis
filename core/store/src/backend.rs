@@ -153,7 +153,7 @@ pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Locks `m`, a poisoned lock's data as it stands.
-pub(crate) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(crate) fn lock<T: ?Sized>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 

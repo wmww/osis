@@ -709,7 +709,7 @@ impl Transaction<'_> {
     /// Catalog entries under `prefix`, from `prefix || from` on.
     pub(crate) fn cat_scan(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
         self.st.s.read_prefix(prefix);
-        self.cat_rows(prefix, from, limit)
+        self.cat_range(prefix, from, crate::backend::prefix_end(prefix), limit)
     }
     /// Whether some catalog key under `prefix` passes `exact` (given the key after the prefix).
     /// Read by its witness: the first such key alone, so another coming or going moves nothing
@@ -717,7 +717,7 @@ impl Transaction<'_> {
     pub(crate) fn cat_any(&mut self, prefix: &[u8], exact: impl Fn(&[u8]) -> bool) -> Result<bool, Error> {
         let mut from = Vec::new();
         loop {
-            let rows = self.cat_rows(prefix, &from, PAGE)?;
+            let rows = self.cat_range(prefix, &from, crate::backend::prefix_end(prefix), PAGE)?;
             let n = rows.len();
             for (k, _) in rows {
                 let rest = k.get(prefix.len()..).unwrap_or_default();
@@ -733,23 +733,19 @@ impl Transaction<'_> {
             }
         }
     }
-    /// `cat_scan`'s rows, read by no memo.
-    fn cat_rows(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
-        let end = crate::backend::prefix_end(prefix);
-        self.cat_range(prefix, from, end, limit)
-    }
     /// Catalog entries under `prefix` below `end`, read as a scan of the prefix.
     pub(crate) fn cat_scan_to(&mut self, prefix: &[u8], end: Vec<u8>, limit: usize) -> Result<Vec<KeyValue>, Error> {
         self.st.s.read_prefix(prefix);
         self.cat_range(prefix, b"", Some(end), limit)
     }
-    /// `cat_rows` up to `end` (exclusive; none: the catalog's end), read by no memo.
+    /// Catalog entries under `prefix` from `prefix || from` up to `end` (exclusive; none: the
+    /// catalog's end), read by no memo.
     fn cat_range(&mut self, prefix: &[u8], from: &[u8], end: Option<Vec<u8>>, limit: usize) -> Result<Vec<KeyValue>, Error> {
         let c = self.catalog();
         let start = [prefix, from].concat();
-        let mem = crate::overlay::range(Some(&self.mem.o.cat), &start, end.as_deref(), limit);
-        let durable = btree::range(self, c, &start, end.as_deref(), limit)?;
-        let rows = if mem.is_empty() { durable } else { crate::overlay::merge(mem, durable, limit) };
+        let mem = crate::overlay::range(Some(&self.mem.o.cat), &start, end.as_deref(), limit, false);
+        let durable = btree::range(self, c, &start, end.as_deref(), limit, false)?;
+        let rows = crate::overlay::merge(mem, durable, limit, false);
         // a scan costs a seek and its rows: what scale tests count (`osis_base::costs`)
         osis_base::costs::count_scoped("store rows read", rows.len() as u64 + 1);
         Ok(rows)
@@ -817,14 +813,9 @@ impl Transaction<'_> {
         for (k, _) in self.table_range(t, b"", None, usize::MAX)? {
             self.st.s.table_row(t.1, &k, false);
         }
-        self.drop_root(t.0)
-    }
-
-    /// Drops every row of the table rooted at `root`, in memory and durable.
-    fn drop_root(&mut self, root: u64) -> Result<(), Error> {
-        self.mem.drop_rows(root);
-        if root & MEM_TABLE == 0 {
-            btree::drop_all(self, root, true)?;
+        self.mem.drop_rows(t.0);
+        if t.0 & MEM_TABLE == 0 {
+            btree::drop_all(self, t.0, true)?;
         }
         Ok(())
     }
@@ -905,6 +896,13 @@ impl Transaction<'_> {
     /// Up to `limit` entries with `start <= key < end` in key order: a page of a stream (continue
     /// from the last key with a 0 byte appended).
     pub fn table_range(&mut self, t: Table, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, Error> {
+        self.table_rows(t, start, end, limit, false)
+    }
+    /// Up to `limit` entries with `start <= key < end`, greatest key first.
+    pub fn table_range_rev(&mut self, t: Table, start: &[u8], end: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
+        self.table_rows(t, start, Some(end), limit, true)
+    }
+    fn table_rows(&mut self, t: Table, start: &[u8], end: Option<&[u8]>, limit: usize, rev: bool) -> Result<Vec<KeyValue>, Error> {
         // every key in [start, end) starts with what start and end share
         match end {
             Some(end) => {
@@ -913,26 +911,12 @@ impl Transaction<'_> {
             }
             None => self.st.s.read_owner(t.1),
         }
-        let mem = crate::overlay::range(self.mem.o.tables.get(&t.0), start, end, limit);
-        if t.0 & MEM_TABLE != 0 {
+        let mem = crate::overlay::range(self.mem.o.tables.get(&t.0), start, end, limit, rev);
+        if t.0 & MEM_TABLE != 0 || end.is_some_and(|e| start >= e) {
             return Ok(mem);
         }
-        let durable = btree::range(self, t.0, start, end, limit)?;
-        Ok(if mem.is_empty() { durable } else { crate::overlay::merge(mem, durable, limit) })
-    }
-    /// Up to `limit` entries with `start <= key < end`, greatest key first.
-    pub fn table_range_rev(&mut self, t: Table, start: &[u8], end: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
-        let n = start.iter().zip(end).take_while(|(a, b)| a == b).count();
-        self.st.s.read_table_rows(t.1, start.get(..n).unwrap_or_default(), true);
-        if start >= end {
-            return Ok(Vec::new());
-        }
-        let mem = crate::overlay::range_rev(self.mem.o.tables.get(&t.0), start, end, limit);
-        if t.0 & MEM_TABLE != 0 {
-            return Ok(mem);
-        }
-        let durable = btree::range_rev(self, t.0, start, end, limit)?;
-        Ok(if mem.is_empty() { durable } else { crate::overlay::merge_rev(mem, durable, limit) })
+        let durable = btree::range(self, t.0, start, end, limit, rev)?;
+        Ok(crate::overlay::merge(mem, durable, limit, rev))
     }
     pub fn table_len(&mut self, t: Table) -> Result<u64, Error> {
         self.st.s.read_owner(t.1);

@@ -68,9 +68,7 @@ fn shred_all(s: &mut Store, rng: &mut SeededRng) {
     t.table_put(big, &150u32.to_be_bytes(), b"element 150".to_vec(), Shred::Yes).unwrap();
     assert!(t.remove_pending(&CommitId([3; 32]), Shred::Yes).unwrap());
     t.commit().unwrap();
-    let mut t = s.transaction(rng).unwrap();
-    assert!(t.remove_local(b"local/1", Shred::Yes).unwrap());
-    t.commit().unwrap();
+    commit(s, rng, |t| assert!(t.remove_local(b"local/1", Shred::Yes).unwrap()));
 }
 
 // spec/commits.md §5: dropping a body destroys every local copy so that later compromise recovers nothing; aspect units, catalog records, table pages and pending commits likewise.
@@ -140,9 +138,7 @@ fn shred_after_splits_and_merges() {
         t.put_local(format!("a{i:04}").as_bytes(), &[1; 40], Shred::No).unwrap();
     }
     t.commit().unwrap();
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.put_local(b"m-victim", b"SECRET-MARK", Shred::No).unwrap();
-    t.commit().unwrap();
+    commit(&mut s, &mut rng, |t| t.put_local(b"m-victim", b"SECRET-MARK", Shred::No).unwrap());
     // Inserts around the victim split its page (each transaction commits a page version);
     // removals merge pages.
     for i in 0..12u32 {
@@ -161,9 +157,7 @@ fn shred_after_splits_and_merges() {
         t.commit().unwrap();
     }
     assert!(recoverable(&mut s, &dev, b"SECRET-MARK"));
-    let mut t = s.transaction(&mut rng).unwrap();
-    assert!(t.remove_local(b"m-victim", Shred::Yes).unwrap());
-    t.commit().unwrap();
+    commit(&mut s, &mut rng, |t| assert!(t.remove_local(b"m-victim", Shred::Yes).unwrap()));
     assert!(!recoverable(&mut s, &dev, b"SECRET-MARK"), "recovered from a page version before a split or merge");
 }
 
@@ -172,16 +166,10 @@ fn shred_after_splits_and_merges() {
 #[test]
 fn unshredded_overwrite_is_recoverable_until_a_later_shred() {
     let (dev, mut rng, mut s) = recorded();
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.put_local(b"k", b"old-MARK", Shred::No).unwrap();
-    t.commit().unwrap();
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.put_local(b"k", b"new", Shred::No).unwrap();
-    t.commit().unwrap();
+    commit(&mut s, &mut rng, |t| t.put_local(b"k", b"old-MARK", Shred::No).unwrap());
+    commit(&mut s, &mut rng, |t| t.put_local(b"k", b"new", Shred::No).unwrap());
     assert!(recoverable(&mut s, &dev, b"old-MARK"));
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.put_local(b"k", b"newer", Shred::Yes).unwrap();
-    t.commit().unwrap();
+    commit(&mut s, &mut rng, |t| t.put_local(b"k", b"newer", Shred::Yes).unwrap());
     assert!(!recoverable(&mut s, &dev, b"old-MARK"));
 }
 
@@ -202,17 +190,11 @@ fn unshredded_large_overwrite_is_unrecoverable_after_a_later_shred() {
         t.commit().unwrap();
     };
     fill(&mut s, &mut rng, "a");
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.put_local(b"k", &big(b"old-BIG-MARK"), Shred::No).unwrap();
-    t.commit().unwrap();
+    commit(&mut s, &mut rng, |t| t.put_local(b"k", &big(b"old-BIG-MARK"), Shred::No).unwrap());
     fill(&mut s, &mut rng, "z");
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.put_local(b"k", &big(b"new"), Shred::No).unwrap();
-    t.commit().unwrap();
+    commit(&mut s, &mut rng, |t| t.put_local(b"k", &big(b"new"), Shred::No).unwrap());
     assert!(recoverable(&mut s, &dev, b"old-BIG-MARK"));
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.put_local(b"k", &big(b"newer"), Shred::Yes).unwrap();
-    t.commit().unwrap();
+    commit(&mut s, &mut rng, |t| t.put_local(b"k", &big(b"newer"), Shred::Yes).unwrap());
     assert!(!recoverable(&mut s, &dev, b"old-BIG-MARK"), "an earlier version of a large value survived the shred");
 }
 
@@ -298,9 +280,7 @@ fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
 #[test]
 fn attack_reads_clear_rows_and_raw_blobs() {
     let (dev, mut rng, mut s) = recorded();
-    let mut t = s.transaction(&mut rng).unwrap();
-    t.put_blob(&BlobId([5; 32]), b"CLEAR-BLOB-MARK".to_vec()).unwrap();
-    t.commit().unwrap();
+    commit(&mut s, &mut rng, |t| t.put_blob(&BlobId([5; 32]), b"CLEAR-BLOB-MARK".to_vec()).unwrap());
     let all = osis_store::attack(&Evidence::of(s.forensic_keys().unwrap(), &dev.backend), None);
     assert!(all.iter().any(|r| r.from == osis_store::Source::RawBlob(BlobId([5; 32])) && contains(&r.plain, b"CLEAR-BLOB-MARK")));
     assert!(all.iter().any(|r| r.from == osis_store::Source::Row(b"r".to_vec())), "the clear pointer row");
@@ -319,9 +299,7 @@ fn shredded_small_drop_keeps_unit_lengths_within_a_class_step() {
     t.put_local(b"m-victim", b"SMALL-SECRET", Shred::No).unwrap();
     t.commit().unwrap();
     let before = dev.backend.history().len();
-    let mut t = s.transaction(&mut rng).unwrap();
-    assert!(t.remove_local(b"m-victim", Shred::Yes).unwrap());
-    t.commit().unwrap();
+    commit(&mut s, &mut rng, |t| assert!(t.remove_local(b"m-victim", Shred::Yes).unwrap()));
     // unit rows `u slot ver`: the last version of each slot before the drop and the drop's
     let units = |rows: &[(Vec<u8>, Vec<u8>)]| -> std::collections::BTreeMap<Vec<u8>, usize> {
         let ct = |v: &Vec<u8>| v.len() - 24 - 16;

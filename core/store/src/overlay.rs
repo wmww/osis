@@ -6,6 +6,7 @@
 
 use osis_base::BlobId;
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Bound;
 
 /// Table IDs of tables created in memory (never a durable root slot).
 pub(crate) const MEM_TABLE: u64 = 1 << 63;
@@ -153,8 +154,12 @@ impl MemTxn<'_> {
     }
 }
 
-/// Merges two key-ordered pages (memory wins on equal keys) up to `limit` entries.
-pub(crate) fn merge(mem: Vec<(Vec<u8>, Vec<u8>)>, durable: Vec<(Vec<u8>, Vec<u8>)>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+/// Merges two key-ordered pages, ascending or (`rev`) descending (memory wins on equal keys), up
+/// to `limit` entries.
+pub(crate) fn merge(mem: Vec<(Vec<u8>, Vec<u8>)>, durable: Vec<(Vec<u8>, Vec<u8>)>, limit: usize, rev: bool) -> Vec<(Vec<u8>, Vec<u8>)> {
+    if mem.is_empty() {
+        return durable;
+    }
     let mut out = Vec::with_capacity(limit.min(mem.len() + durable.len()));
     let (mut a, mut b) = (mem.into_iter().peekable(), durable.into_iter().peekable());
     while out.len() < limit {
@@ -163,7 +168,7 @@ pub(crate) fn merge(mem: Vec<(Vec<u8>, Vec<u8>)>, durable: Vec<(Vec<u8>, Vec<u8>
                 b.next();
                 a.next()
             }
-            (Some(x), Some(y)) if x.0 < y.0 => a.next(),
+            (Some(x), Some(y)) if (x.0 < y.0) != rev => a.next(),
             (Some(_), Some(_)) => b.next(),
             (Some(_), None) => a.next(),
             (None, Some(_)) => b.next(),
@@ -175,39 +180,14 @@ pub(crate) fn merge(mem: Vec<(Vec<u8>, Vec<u8>)>, durable: Vec<(Vec<u8>, Vec<u8>
     out
 }
 
-/// `merge` for two descending pages.
-pub(crate) fn merge_rev(mem: Vec<(Vec<u8>, Vec<u8>)>, durable: Vec<(Vec<u8>, Vec<u8>)>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let mut out = Vec::with_capacity(limit.min(mem.len() + durable.len()));
-    let (mut a, mut b) = (mem.into_iter().peekable(), durable.into_iter().peekable());
-    while out.len() < limit {
-        let next = match (a.peek(), b.peek()) {
-            (Some(x), Some(y)) if x.0 == y.0 => {
-                b.next();
-                a.next()
-            }
-            (Some(x), Some(y)) if x.0 > y.0 => a.next(),
-            (Some(_), Some(_)) => b.next(),
-            (Some(_), None) => a.next(),
-            (None, Some(_)) => b.next(),
-            (None, None) => None,
-        };
-        let Some(n) = next else { break };
-        out.push(n);
-    }
-    out
-}
-
-/// The rows of `m` with `start <= key < end`, greatest first, at most `limit`.
-pub(crate) fn range_rev(m: Option<&Rows>, start: &[u8], end: &[u8], limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+/// The rows of `m` with `start <= key < end` (`None`: unbounded), ascending or (`rev`)
+/// descending, at most `limit`.
+pub(crate) fn range(m: Option<&Rows>, start: &[u8], end: Option<&[u8]>, limit: usize, rev: bool) -> Vec<(Vec<u8>, Vec<u8>)> {
     let Some(m) = m else { return Vec::new() };
-    if start >= end {
+    if end.is_some_and(|e| start >= e) {
         return Vec::new();
     }
-    m.range(start.to_vec()..end.to_vec()).rev().take(limit).map(|(k, v)| (k.clone(), v.clone())).collect()
-}
-
-/// The rows of `m` with `start <= key < end`, at most `limit`.
-pub(crate) fn range(m: Option<&Rows>, start: &[u8], end: Option<&[u8]>, limit: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let Some(m) = m else { return Vec::new() };
-    m.range(start.to_vec()..).take_while(|(k, _)| end.is_none_or(|e| k.as_slice() < e)).take(limit).map(|(k, v)| (k.clone(), v.clone())).collect()
+    let rows = m.range::<[u8], _>((Bound::Included(start), end.map_or(Bound::Unbounded, Bound::Excluded)));
+    let pair = |(k, v): (&Vec<u8>, &Vec<u8>)| (k.clone(), v.clone());
+    if rev { rows.rev().take(limit).map(pair).collect() } else { rows.take(limit).map(pair).collect() }
 }

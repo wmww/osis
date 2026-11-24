@@ -17,14 +17,8 @@ fn b(n: u32) -> BlobId {
     BlobId(id)
 }
 
-fn big() -> StoreConfig {
-    StoreConfig::default()
-}
-
 fn add(s: &mut Store, rng: &mut SeededRng, n: u32) {
-    let mut t = s.transaction(rng).unwrap();
-    t.log_added(l(1), b(n)).unwrap();
-    t.commit().unwrap();
+    commit(s, rng, |t| t.log_added(l(1), b(n)).unwrap());
 }
 
 /// A cursor at the log's end.
@@ -380,7 +374,7 @@ fn changed_at_has_its_own_sequence() {
 }
 
 fn filled(n: u32) -> (MemDevice, Vec<u8>) {
-    let (d, mut rng, mut s) = fresh(big());
+    let (d, mut rng, mut s) = fresh(StoreConfig::default());
     let mut t = s.transaction(&mut rng).unwrap();
     for i in 0..n {
         t.log_added(l(1), b(i)).unwrap();
@@ -399,7 +393,7 @@ fn filled(n: u32) -> (MemDevice, Vec<u8>) {
 fn reading_from_a_cursor_costs_what_is_after_it() {
     let read_cost = |n: u32| {
         let (d, c) = filled(n);
-        let mut s = Store::open(Box::new(d.backend.clone()), Box::new(d.root.clone()), big()).unwrap();
+        let mut s = Store::open(Box::new(d.backend.clone()), Box::new(d.root.clone()), StoreConfig::default()).unwrap();
         let before = d.backend.io();
         let mut rng = SeededRng::from_u64(0);
         let r = s.transaction(&mut rng).unwrap().log_read(Some(&c), 100).unwrap();

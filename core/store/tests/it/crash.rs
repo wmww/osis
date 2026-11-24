@@ -117,9 +117,7 @@ fn crash_every_write(dev_name: &str, kind: u8) {
             assert_eq!(state == after, rooted, "kind {kind}: committed exactly when the new root is durable (crash at {n})");
         }
         // The store works on.
-        let mut t = s.transaction(&mut rng).unwrap();
-        t.put_local(b"later", b"x", Shred::Yes).unwrap();
-        t.commit().unwrap();
+        commit(&mut s, &mut rng, |t| t.put_local(b"later", b"x", Shred::Yes).unwrap());
         drop(s);
         let mut s = reopen_cfg(&*dev);
         assert_eq!(snapshot(&mut s).0.iter().find(|(k, _)| k == b"later").map(|(_, v)| v.clone()), Some(b"x".to_vec()));
