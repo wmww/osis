@@ -835,11 +835,11 @@ fn a_reader_of_a_holder_holds_its_targets_boxes_to_it_spec_sync_judgement_2() {
 
 // spec/sync-set.md §2 (counts as independent; kept unread), spec/permissions.md §3 (Lost
 // access), §4 (Key part): Bob reads T1, which Alice granted sync on
-// T2 and then removed, so T1's certificates bring Bob T2's sync record and the role commits
-// naming T1 alone. Alice grants Bob sync on T2 directly, after the rotation that removed T1: he
-// takes the grant by its fire, holding its box and no copy of that rotation. The role commits
-// naming T1 show no role of his on T2, so they neither keep the box out nor drop the sync secret
-// it gives. He keeps T2 unread.
+// T2 and then removed, so T1's certificates bring Bob T2's `sync.0` and the role commits
+// naming T1 alone. Alice grants Bob sync on T2 directly, after the rotation that removed T1: the
+// grant reaches him as an offer (its fire), and he holds its box and no copy of that rotation.
+// The role commits naming T1 show no role of his on T2, so they neither keep the box out nor drop
+// the sync secret it gives. He keeps T2 unread.
 #[test]
 fn a_sync_grant_beside_a_removed_holders_role_commits_keeps_the_thing_unread_spec_sync_set_2() {
     let mut w = contacts();

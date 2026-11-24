@@ -783,7 +783,7 @@ impl Engine {
     /// cover or its author's own whole replaces (spec/commits.md §5 Out of history, spec/sync.md
     /// §7): its keep-at-least bound on this node's clock (`part_keep`; a local drop changes only
     /// this node's reads, which follow its clock; deleting it at peers waits `MAX_DRIFT` more,
-    /// `Dropped::hosts_from`). Out of history nothing promises to keep it, so the cover's writer
+    /// `Dropped::peer_delete_from`). Out of history nothing promises to keep it, so the cover's writer
     /// need not hold the purge right.
     pub fn drop_from(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {
         let (c, tid, ak) = (*c, *tid, ak.clone());

@@ -250,7 +250,7 @@ fn drop_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<O
     }
     // its keep-at-least bound, judged while it is held: peers delete it `MAX_DRIFT` past
     let keep = if why == DropFor::Cover { bounds::part_keep(tx, c, &a.tid, &a.ak)? } else { 0 };
-    let hosts_from = if keep == 0 { 0 } else { keep.saturating_add(osis_base::format::MAX_DRIFT_MS) };
+    let peer_delete_from = if keep == 0 { 0 } else { keep.saturating_add(osis_base::format::MAX_DRIFT_MS) };
     if a.ak.as_str() == osis_commit::retention::RETENTION {
         crate::apply::validity::forget_setting(tx.core, &a.tid, c);
     }
@@ -307,7 +307,7 @@ fn drop_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<O
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received
-    m.set_hold(ai, Hold::Dropped(Dropped { covered_by, why, hosts_from, role, overreach, keysets, superseded_by: BTreeSet::new() }));
+    m.set_hold(ai, Hold::Dropped(Dropped { covered_by, why, peer_delete_from, role, overreach, keysets, superseded_by: BTreeSet::new() }));
     if osis_schema::core_types::is_addenda(a.ak.as_str()) {
         crate::apply::validity::forget_addendum_body(tx.core, c, &a.tid);
     }

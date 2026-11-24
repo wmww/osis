@@ -90,7 +90,7 @@ Decided (Tess, issues/role-vouch-contested.md): a role write of X that R's list 
 - **Addenda reach admin-only content**: an addendum by a witness holding admin at its key vouches for X's deltas on admin-only aspects that are not role-class (built: spec/permissions.md §5.2 Addenda).
 
 ### How a removal reaches other things
-Decided (Tess): no eager delivery. R is evidence wherever a held write's path uses the removed hop, so any node holding R and such a write logs R with it; a thing's next key rotation by a writer holding R carries it; and R travels under A's own sync ID and those whose keys open it (notes/write-path-design.md §2). Nothing is logged for its own sake, nothing is owed per unit, and no node holds a unit for an errand.
+Decided (Tess): no eager delivery. R is evidence wherever a held write's path uses the removed hop, so any node holding R and such a write logs R with it; a thing's next key rotation by a writer holding R carries it; and R travels under A's own sync ID and those whose keys open it (notes/write-path-design.md §2). Nothing is logged for its own sake, nothing is owed per unit, and no node holds a unit to deliver a removal.
 - **What that leaves**: in a thing X could write and no remaining member writes, whose readers are served only by stores, X's later writes show until a node holding R syncs it: an open bug in an issue, not something built around (decided). Wanted if a model shows it simple: a reader holding both depositing R there (notes/write-path-design.md §2, D4).
 - **Cost**: a removal costs nothing under a unit until a write it judges is held there, and leaves with the last of them.
 

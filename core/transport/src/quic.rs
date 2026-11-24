@@ -944,7 +944,7 @@ mod tests {
             let ep = endpoint();
             let c1 = ep.connect_with(cfg.clone(), sa, SNI_NAME).unwrap().await.unwrap();
             let _s = tokio::time::timeout(Duration::from_secs(2), l.accept()).await.unwrap().unwrap();
-            // a round trip, so post-handshake messages (tickets, were any sent) have arrived
+            // a round trip, so post-handshake messages (session tickets, were any sent) have arrived
             let _ = c1.open_bi().await;
             tokio::time::sleep(Duration::from_millis(300)).await;
             c1.close(0u32.into(), b"");

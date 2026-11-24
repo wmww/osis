@@ -198,7 +198,7 @@ pub struct BodyFacts {
     /// Wall ms from which a right holder may delete it at peers keeping S unread once covered
     /// and dropped: `MAX_DRIFT` past the latest keep-at-least bound of its parts (0: at once;
     /// spec/commits.md §5 Keep at least, spec/sync-compaction.md §1).
-    pub hosts_from: u64,
+    pub peer_delete_from: u64,
     /// Covered by a held valid snapshot under S; `None` while that cannot be judged yet. Not
     /// judged where `kept`, which decides first (`Some(false)`).
     pub covered: Option<bool>,
@@ -233,7 +233,7 @@ pub struct Strip {
     /// Per part it strips as covered, the held valid snapshots reaching it (`bodies::reachers`):
     /// one of each shown there, so a reader learning the rest from there counts it covered.
     pub covers: Vec<BTreeSet<CommitId>>,
-    /// The latest `Dropped::hosts_from` of those parts: deleted there no earlier.
+    /// The latest `Dropped::peer_delete_from` of those parts: deleted there no earlier.
     pub from: u64,
 }
 

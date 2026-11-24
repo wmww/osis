@@ -358,7 +358,7 @@ impl Engine {
     /// certificate's author's other blobs) is the judgement's to add.
     pub fn body_facts(&mut self, s: &SyncId, id: &BodyId) -> Result<BodyFacts> {
         let c = &id.commit;
-        let Some(b) = self.sync_body_now(s, id)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, invalid: false, kept: false, hosts_from: 0, covered: Some(false), lasting_header: false }) };
+        let Some(b) = self.sync_body_now(s, id)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, invalid: false, kept: false, peer_delete_from: 0, covered: Some(false), lasting_header: false }) };
         let Some(h) = self.header(c) else { return Err(Error::UnknownCommit(*c)) };
         let keeps = self.part_keeps(c)?;
         let Some(m) = self.core.ix.commits.get(c) else { return Err(Error::UnknownCommit(*c)) };
@@ -371,10 +371,10 @@ impl Engine {
         let invalid = !m.view.kind.is_role() && b.parts.iter().any(|ai| bad(*ai)) && b.parts.iter().all(|ai| bad(*ai) || m.dropped(*ai).is_some_and(|d| d.why == DropFor::Cover)) && (!m.view.purges || crate::retention::purge::drops_nothing(&self.core, c, &h));
         // a bound still ahead wakes the judgement when it passes
         let kept = b.parts.iter().any(|ai| keeps.get(*ai).is_some_and(|k| self.core.time.until(Some(*k)) < *k));
-        // a dropped part's own bound as it dropped (`Dropped::hosts_from`), a held one's keep
+        // a dropped part's own bound as it dropped (`Dropped::peer_delete_from`), a held one's keep
         // bound plus `MAX_DRIFT` (spec/commits.md §5 Keep at least)
-        let hosts_from = b.parts.iter().map(|ai| match m.dropped(*ai) {
-            Some(d) => d.hosts_from,
+        let peer_delete_from = b.parts.iter().map(|ai| match m.dropped(*ai) {
+            Some(d) => d.peer_delete_from,
             None => keeps.get(*ai).filter(|k| **k > 0).map_or(0, |k| k.saturating_add(osis_base::format::MAX_DRIFT_MS)),
         }).max().unwrap_or(0);
         // a kept body is must-hold whatever covers it (spec/sync-judgement.md §2): its coverage,
@@ -391,7 +391,7 @@ impl Engine {
                 _ => None,
             };
         }
-        Ok(BodyFacts { required: true, closure: !b.certificate, dropped, invalid, kept, hosts_from, covered, lasting_header: b.header_only })
+        Ok(BodyFacts { required: true, closure: !b.certificate, dropped, invalid, kept, peer_delete_from, covered, lasting_header: b.header_only })
     }
 
     /// Whether held snapshots of its aspect, or its author's own replaces, cover delta `ai` of `c`
@@ -500,7 +500,7 @@ impl Engine {
             let r = reachers(&self.core, &x.commit, m, ai);
             if !r.is_empty() {
                 covers.push(r);
-                from = from.max(d.hosts_from);
+                from = from.max(d.peer_delete_from);
             }
         }
         Some(Strip { live, covers, from })

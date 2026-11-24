@@ -15,7 +15,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-/// A store of blob ciphertexts an engine shares (`Engine::open`): a `Mutex` of a `CipherHost`.
+/// A store of blob ciphertexts an engine shares (`Engine::open`): a `Mutex` of a `CipherStore`.
 pub trait Ciphertext: Send + Sync + Any {
     /// The store locked for one engine transaction. Dropped uncommitted, it undoes nothing the
     /// engine journaled itself (`CipherTx::release` of what it held) but aborts its durable
@@ -88,7 +88,7 @@ pub trait CipherTx {
 /// A store that can be an engine's ciphertext store, behind a `Mutex` (`Ciphertext`): the
 /// `CipherTx` operations on the store locked, `abort` dropping what was written since the last
 /// commit.
-pub trait CipherHost: Send + Any {
+pub trait CipherStore: Send + Any {
     /// The store is locked for one engine transaction: its writes until `commit` or `abort` are
     /// that transaction's.
     fn begin(&mut self) {}
@@ -160,7 +160,7 @@ fn decode_note(k: &[u8], v: &[u8]) -> Result<Note, Error> {
 /// Tests only: `store`'s copy inside a world copy (`osis_base::copying::remap`), so every holder
 /// of one store (a node's engine and its sync) shares one copy.
 #[doc(hidden)]
-pub fn test_copy_shared<T: CipherHost>(store: &Arc<Mutex<T>>, clock: Arc<dyn osis_base::Clock>) -> Result<Arc<Mutex<T>>, Error> {
+pub fn test_copy_shared<T: CipherStore>(store: &Arc<Mutex<T>>, clock: Arc<dyn osis_base::Clock>) -> Result<Arc<Mutex<T>>, Error> {
     if let Some(c) = osis_base::copying::found(store) {
         return Ok(c);
     }
@@ -168,11 +168,11 @@ pub fn test_copy_shared<T: CipherHost>(store: &Arc<Mutex<T>>, clock: Arc<dyn osi
     Ok(osis_base::copying::remap(store, move |_| Mutex::new(copy)))
 }
 
-impl<T: CipherHost> Ciphertext for Mutex<T> {
+impl<T: CipherStore> Ciphertext for Mutex<T> {
     fn begin(&self) -> Box<dyn CipherTx + '_> {
         let mut g = lock(self);
         g.begin();
-        Box::new(HostTx { g, done: false })
+        Box::new(StoreTx { g, done: false })
     }
 
     fn test_copy(self: Arc<Self>, clock: Arc<dyn osis_base::Clock>) -> Result<Arc<dyn Ciphertext>, Error> {
@@ -181,12 +181,12 @@ impl<T: CipherHost> Ciphertext for Mutex<T> {
     }
 }
 
-struct HostTx<'a, T: CipherHost> {
+struct StoreTx<'a, T: CipherStore> {
     g: MutexGuard<'a, T>,
     done: bool,
 }
 
-impl<T: CipherHost> CipherTx for HostTx<'_, T> {
+impl<T: CipherStore> CipherTx for StoreTx<'_, T> {
     fn held(&mut self, id: &BlobId) -> Result<bool, Error> {
         self.g.held(id)
     }
@@ -242,7 +242,7 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
     }
 }
 
-impl<T: CipherHost> Drop for HostTx<'_, T> {
+impl<T: CipherStore> Drop for StoreTx<'_, T> {
     fn drop(&mut self) {
         if !self.done {
             self.g.abort();
@@ -288,7 +288,7 @@ impl BlobArea {
     }
 }
 
-impl CipherHost for BlobArea {
+impl CipherStore for BlobArea {
     fn local(&mut self, f: &mut dyn FnMut(&mut crate::Transaction<'_>) -> Result<(), Error>) -> Result<(), Error> {
         self.run(|t| f(t))
     }

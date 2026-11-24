@@ -11,7 +11,6 @@
 - **Nothing is running.** No agent, no task in flight; the worktrees under `.worktrees/` hold old finished branches.
 - **Main** builds and passes its default tests. Two seeds fail on it unread, each with its issue and rate line: a cold seq edit-then-move (issues/seq-cold-edit-move-placement.md) and a holder with key access lacking a box after rotations (issues/rotation-holder-lacks-box.md, security). The custody failures go with the account machinery.
 - **The sync rewrite is on main**, as it stood on its branch: unreviewed, ungated, no property or sim run on it.
-  - Gone: tickets, chain certificates and the search over any path, accepting, removal notices.
   - Built: a grant belongs to the thing granted (a node's role is by the grants of what it syncs or holds an offer of; a grant from outside arrives as an offer; holders are held for keys from the synced thing up, in engine and sync); a sync ID carries a commit's unit body and one certificate copy per thing outside the unit, read off the one evidence derivation; the delete-key check is on.
   - It builds and its default tests passed before the rebase onto main, with 22 tests ignored by cause (`rg -n 'sync rewrite: ' core/ libs/`); chat's join by a write link is one of them (fails at the redeem, "no holder answered", cause unknown).
   - Its account is notes/sync-rewrite-state.md: what the tree is, the ignores by cause, what is owed, and a list of rulings marked "For review".

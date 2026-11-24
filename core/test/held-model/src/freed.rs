@@ -117,12 +117,12 @@ impl World {
         if self.nodes[n].blobs.contains(&p) {
             return true;
         }
-        let at_host = self.entries.iter().any(|(g, q)| *q == p && self.nodes[n].sync_ids.contains(g));
+        let at_store = self.entries.iter().any(|(g, q)| *q == p && self.nodes[n].sync_ids.contains(g));
         let at_peer = self.nodes.iter().enumerate().any(|(m, s)| m != n && s.blobs.contains(&p));
-        if at_host || at_peer {
+        if at_store || at_peer {
             self.nodes[n].blobs.insert(p);
         }
-        at_host || at_peer
+        at_store || at_peer
     }
 
     /// Node `n` drops held source `s`: its links join the freed set first (durable), then the

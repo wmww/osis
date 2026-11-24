@@ -168,13 +168,13 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | case | want | chat |
 |---|---|---|
 | Kick in a chat with a million messages under a minute of work on a phone? | yes | ?³² |
-| Kick or lost device in a 1000-member group under 10 MB upload? | yes | yes⁴⁰ |
+| Kick or lost device in a 1000-member group under 10 MB sent? | yes | yes⁴⁰ |
 | Fresh device of a disappearing chat under 50 MB after 10 years at 100 a day? | yes | yes |
 | Long-lived device of a permanent chat holds every message body? | yes | yes |
 | Join under 100 KB? | yes | yes |
 | A message under 3 KB on the wire? | yes | yes |
 | New device of a 1000-member group under 100 MB before any message? | yes | yes |
-| One edit after compaction under 1 MB of upload? | yes | yes |
+| One edit after compaction under 1 MB sent? | yes | yes |
 | Compacting a member's history under 100 MB of memory on a phone? | yes | yes³⁰ |
 | Is a send one commit? | yes | yes |
 
@@ -213,8 +213,8 @@ Nothing here is designed: each answer is what today's core would give if servers
 | Does one commit protect all new content from the removed member (channels re-key on the next sync)? | yes | yes⁴¹ |
 | Does cutting the removed member's write and sync keys need an admin step per channel per node keeping the chat unread? | no | yes⁴¹! |
 | Can the removed member keep writing junk to a channel until an admin steps it there? | no | yes! |
-| Removal under 10 MB upload at 1000 members and 100 channels? | yes | yes⁴² |
-| Removal under 10 MB upload at 100,000 members (nested rosters) and 100 channels? | yes | yes⁴² |
+| Removal under 10 MB sent at 1000 members and 100 channels? | yes | yes⁴² |
+| Removal under 10 MB sent at 100,000 members (nested rosters) and 100 channels? | yes | yes⁴² |
 | Does a member's lost device or leave cost the next poster the top realm's whole rotation? | no | yes! |
 | Is demoting a mod as cheap as a kick? | yes | no!⁴³ |
 | Does each member's device download every other member's chains and cards under the top realm's sync ID? | no | yes⁴⁴! core r |

@@ -728,7 +728,7 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full
         // and it waits `MAX_DRIFT` past its keep-at-least bound (spec/commits.md §5 Keep at
         // least: every node's clock agrees it left history)
         _ => match f {
-            Some(f) => covered_dropped(g, s, c, verdict, f, |g, x| Ok(full || !g.seen(&src.at, s, &BodyId::unit(*x))?.present.is_empty()))? && mine.reached(f.body.hosts_from),
+            Some(f) => covered_dropped(g, s, c, verdict, f, |g, x| Ok(full || !g.seen(&src.at, s, &BodyId::unit(*x))?.present.is_empty()))? && mine.reached(f.body.peer_delete_from),
             None => false,
         },
     };

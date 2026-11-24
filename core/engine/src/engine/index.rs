@@ -681,7 +681,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
                 w = w.raw(&c.0);
             }
         }
-        w = w.u64(d.hosts_from);
+        w = w.u64(d.peer_delete_from);
     }
     w = w.u32(m.stripped_parts().count() as u32);
     for a in m.stripped_parts() {
@@ -861,9 +861,9 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             }
             keysets.push(super::KeysetRec { role, epoch: e, lists, kem, names, left_out, demotions });
         }
-        let hosts_from = r.u64()?;
+        let peer_delete_from = r.u64()?;
         let role = Role::ALL.get(<usize as From<u8>>::from((flags >> 2) & 7).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 64 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, hosts_from, role, overreach: flags & 32 != 0, keysets, superseded_by: BTreeSet::new() });
+        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 64 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, peer_delete_from, role, overreach: flags & 32 != 0, keysets, superseded_by: BTreeSet::new() });
     }
     let (mut stripped, mut own_live) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..r.u32()? {
@@ -1158,7 +1158,7 @@ mod tests {
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         let e = &lp.peers[0].engine;
         let mut meta = e.core.ix.commits[&id].clone();
-        let cover = Dropped { covered_by: [c].into(), why: DropFor::Cover, hosts_from: 7, ..Dropped::default() };
+        let cover = Dropped { covered_by: [c].into(), why: DropFor::Cover, peer_delete_from: 7, ..Dropped::default() };
         let invalid = Dropped { why: DropFor::Invalid, ..Dropped::default() };
         let states = [
             Hold::Body { whole: false },

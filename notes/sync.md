@@ -29,7 +29,7 @@ A holder the engine holds for keys (notes/node-closure.md, The node's role) has 
 - **osis-engine**'s `sync` module (core/engine/src/sync): the facade.
 - **osis-proto** (core/proto): codecs below sync (frames, Hello, proofs, messages and their limits, filters, relay gate, the client port's messages); no session or store (notes/sync-protocol.md).
 - **osis-blob** (core/blob): blob prefix and wraps, steps, claim sets, stamps and deposit signatures, holder keys, sealed fires, links.
-- **osis-store**: the store primitives sync builds on (local rows, per-peer `record` rows under `RECORD_BUDGET`, `nodelog`, `changed`), and `CipherHost`, through which the engine keeps blob bytes in sync's store.
+- **osis-store**: the store primitives sync builds on (local rows, per-peer `record` rows under `RECORD_BUDGET`, `nodelog`, `changed`), and `CipherStore`, through which the engine keeps blob bytes in sync's store.
 - **osis-transport**: connections below sync (notes/networking.md).
 - **osis** holds a `Node` per handle and steps it from its driver task (notes/api-implementation.md).
 

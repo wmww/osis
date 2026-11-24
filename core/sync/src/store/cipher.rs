@@ -1,4 +1,4 @@
-//! The engine's ciphertext door (`osis_store::CipherHost`): the engine holds and releases blobs
+//! The engine's ciphertext door (`osis_store::CipherStore`): the engine holds and releases blobs
 //! in the node's one store, in a transaction of the store's that it commits before its own. A
 //! blob's bytes stay while the engine or any entry of any sync ID holds them; bytes the engine
 //! holds make every entry naming them servable (`entries::bytes_arrived`).
@@ -32,7 +32,7 @@ impl Inner {
     }
 }
 
-impl osis_store::CipherHost for Inner {
+impl osis_store::CipherStore for Inner {
     fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> Res<bool> {
         self.engine_tx(|t, _| super::path::bears(t, s, key))
     }

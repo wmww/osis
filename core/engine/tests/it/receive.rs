@@ -382,11 +382,11 @@ fn parked_spec_versioning_2() {
 }
 
 // spec/commits.md §5 What a held thing needs, §4 Pending storage: a pending commit needs its
-// author's chain as a held one does. b's two writes on t reach reader 2 before b's grant; one of
-// them goes (its carrier left), so b's chain is judged: the other, still pending on t, keeps it, and
-// applies once the grant comes, b's chain not sent again.
+// evidence as a held one does. b's two writes on t reach reader 2 before b's grant; one of them
+// goes (its carrier left), so the evidence of b's path is judged: the other, still pending on t,
+// keeps it, and applies once the grant comes, b's evidence not sent again.
 #[test]
-fn a_pending_commit_keeps_its_authors_chain_spec_commits_5() {
+fn a_pending_commit_keeps_its_evidence_spec_commits_5() {
     let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     let r = lp.peers[2].engine.me();

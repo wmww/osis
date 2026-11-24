@@ -14,7 +14,7 @@ tools/test_cost.txt's lines are well formed and name workspace packages (`test_c
 `#[ignore = "..."]` naming an issue names an existing issues/ file (`ignore_issues`),
 union-merged lists have no duplicate and a stale-line check (`union_lists`), a notes section
 marked `<!-- registry -->` numbers its items uniquely and increasingly (`registries`), no destruction named
-"ended" (`ended_names`) and no deprecated term (`old_words`) in code, store row keys and sync's
+"ended" (`ended_names`) in code, no dead word (`dead_words`) in code, the models, spec, notes or issues, store row keys and sync's
 record tags are distinct and never literals (`row_prefixes`, `record_tags`), every pointer into
 notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and every code name
 notes/ and issues/ cite in backticks exists (tools/code_refs.py), and every test cites the spec and every
@@ -432,22 +432,136 @@ def ended_names():
         for n, m in hinted(read(path), END_HINT, ENDED_NAMES):
             yield f"{rel}:{n}: `{m.group(0)}`: a thing is destroyed, not ended (issues/deprecated-terms.md)"
 
-# issues/deprecated-terms.md: the old words for sync IDs (label), for a node keeping data unread
-# (host), for logging an entry (upload), for the account actor (person) and for a saved peer list
-# may not come back in code or its comments. The TLA models keep their own vocabulary (a TLC rerun
-# renames them), the transport its network hosts; the GUI's labels are another sense.
-OLD_WORDS = re.compile(
-    r"\bosis[-_]label\b|\bLabel(Role|Id)\b|\blabel_role_\w+|\blabeling\b|\bk_label\b|\bto_label\b"
-    r'|"osis v1 label id"|"label (sync|write|delete|deposit|claim)"'
-    r"|\bhost_prefix\b|\bhosts\b|\b[Uu]pload(s|ed|ing|er|ers)?\b|\bpersons?_\w+|\bpersons\b|\bsaved peers?\b")
-OLD_HINT = re.compile(r"abel|host|pload|erson|saved peer")  # in every OLD_WORDS match (`hinted`)
+# Dead words (issues/deprecated-terms.md, Gone): the words of concepts osis no longer has. An agent
+# meeting one takes it for the design and builds on it, so none may appear in code or its comments,
+# the TLA models, spec/, notes/ or issues/. One row per word or family: (hint, pattern, the concept,
+# what stands in its place). The pattern is matched case-insensitively within a line, only on lines
+# holding the hint (a lowercase literal every match holds: the fast scan). A word with a current
+# sense is banned only in its dead phrasings: group, item, host, label, placed, device, box, actor,
+# chained, admit and accept all stay. Words still in the repo are the registry's table, not here.
+DEAD_WORDS = [
+    ("ticket", r"(?<!session )(?<!tls13_)ticket", "tickets",
+     "grants belong to the thing granted and sync with it; a grant from outside reaches its holder as an offer (a `grant@~0` fire)"),
+    ("removal", r"removal[ _]notices?|removal@", "removal notices",
+     "a removal is evidence wherever a held write's path uses the removed hop; nothing delivers it elsewhere"),
+    ("chain", r"chain[ _-]?cert", "chain certificates",
+     "evidence is certificate copies per (commit, thing), read off one derivation (notes/evidence-derivation.md)"),
+    ("author", r"author'?s?[ _]chains?|closed under authors", "the author's chain",
+     "a commit's evidence: the role commits along the path it states (notes/evidence-derivation.md)"),
+    ("taken", r"taken[ _]grants?|taken-?ness", "taken grants",
+     "a node's role is by the grants of what it syncs; a grant is never taken or accepted"),
+    ("grant", r"accept(s|ed|ing)? (a|the|its|their|this) grants?|tak(e|es|ing|en) up (a|the|its|their) grants?",
+     "accepting a grant", "a node's role is by the grants of what it syncs; a grant from outside arrives as an offer that proves nothing"),
+    ("sole", r"sole[ _]certificate", "sole certificates",
+     "a certificate copy is judged as any entry (spec/sync-judgement.md §2)"),
+    ("suspect", r"suspect[ _](flags?|lists?|repair|message)|repair[ _]suspect", "suspect repair",
+     "nothing to repair: a dropped body counts as never received and is fetched from any holder"),
+    ("digest", r"state[ _]digests?|StateDigest", "state digests",
+     "nothing to repair: a dropped body counts as never received and is fetched from any holder"),
+    ("group", r"sub-?groups?|synced[ _]groups?", "groups",
+     "a node holds its node closure; a sync ID carries a sync unit; a tag collects strong references"),
+    ("retainer", r"retainers?", "retainers",
+     "a thing stays while a strong reference reaches it, and is released when the last goes"),
+    ("release", r"release[ _]requests?", "release requests",
+     "a thing is released when the last strong reference to it goes"),
+    ("grant", r"grant[ _]cop(y|ies)|tied[ _]grants?", "grant copies and tied grants",
+     "grants belong to the thing granted and sync with it"),
+    ("record", r"\bsync records?\b", "sync records",
+     "a node holds its node closure; a thing's sync IDs are its `sync.0`"),
+    ("unsync", r"\bunsync(s|ing)?\b", "unsyncing",
+     "a thing is released when the last strong reference to it goes"),
+    ("node", r"(serving|blind|storage|keeper)[ _]nodes?", "kinds of node",
+     "no node is a kind: say \"a node keeping S unread\", \"a peer\", \"a source\""),
+    ("host", r"host_prefix|\bat_?host\b|\bMaxHost\b|host\^\.0|CipherHost|hosts_from", "host nodes",
+     "no node is a kind: say \"a node keeping S unread\", \"a peer\", \"a source\""),
+    ("keep", r"\bkeep lists?\b", "keep lists",
+     "a node keeps exactly the sync IDs of its node closure"),
+    ("admi", r"\badmission\b|--admit\b", "admission",
+     "a node keeps exactly the sync IDs of its node closure"),
+    ("upload", r"upload", "uploading",
+     "an entry is logged (put in a store) and held at a peer"),
+    ("label", r"osis[-_]label\b|\bLabel(Role|Id)\b|label_role_\w+|\blabeling\b|\bk_label\b|\bto_label\b|\blabel\.0"
+     r'|"osis v1 label id"|"label (sync|write|delete|deposit|claim)"', "labels",
+     "a sync ID (a UI label and a run's name are other senses)"),
+    ("person", r"\bperson[ _]actors?\b|\bpersons\b", "the person actor",
+     "an account (the app's Person kind, a contact, is another sense)"),
+    ("saved peer", r"saved peers?", "saved peers",
+     "a node's peers and sources"),
+    ("plain", r"plain[ _]things?|PlainOf|PlainActs|faPlain", "plain things",
+     "a dependent thing (secrets derived from its mint admin's)"),
+    ("keyed", r"keyed[ _]things?", "keyed things",
+     "an independent thing (secrets of its own)"),
+    ("own", r"things? with (its |their )?own keys|own[ _-]keys? things?", "things with own keys",
+     "an independent thing (secrets of its own)"),
+    ("first", r"first[ _]admins?|FirstAdm", "the first admin",
+     "the mint admin (fixed in the tid; an ordinary admin)"),
+    ("actor", r"(base|reader)[ _]actors?", "base and reader actors",
+     "its mint admin; its independent (the nearest independent thing up its chain of mint admins)"),
+    ("under", r"minted under|(made|created) under (its|the|a) (mint )?admin", "a thing made under another",
+     "minted with admin X, one of X's dependents"),
+    ("owner", r"owner[ _]keys?", "owner keys",
+     "a thing's key: a signing key holding a grant on it"),
+    ("standing dut", r"standing dut(y|ies)", "a remover's standing duty",
+     "nothing logs a removal for its own sake"),
+    ("errand", r"errands?", "the remover's errand",
+     "nothing logs a removal for its own sake"),
+    ("retired", r"TAG_RETIRED", "the retired tid tag (1616)",
+     "nothing: a tag is never reused, and no format keeps a retired one (no compatibility before stability)"),
+    ("eager", r"(?<!no )eager[ _]deliver", "eager delivery",
+     "nothing logs a removal for its own sake: a removal reaches a far thing with its next key rotation"),
+]
+DEAD_PAT = [(hint, re.compile(pat, re.I), word, instead) for hint, pat, word, instead in DEAD_WORDS]
 
-def old_words():
-    for path, rel in walk(("core", "cli", "libs/chat", "schema"), (".rs", ".osis", ".sh")):
-        if rel.startswith(("core/test/tla/", "core/transport/")):
+# The few lines that name a dead concept on purpose, as the record of a rejected design a fresh
+# session would otherwise reach for (CLAUDE.md, Notes): (file, the exact phrase holding the word,
+# why). A match inside the phrase passes; an allowance that excuses nothing fails.
+DEAD_ALLOWED = [
+    ("notes/dogfood.md", "`accept` takes up the tickets the grants fired on its inbox",
+     "the running deployment's pinned build, until the next dogfood rebuild"),
+    ("notes/holder-access-study.md", "(takenness: a path stated to the holder",
+     "Why not down from the account: the rejected direction, so it is not tried again"),
+]
+
+# Read, and not the registry of the dead words (issues/deprecated-terms.md), this file and its test;
+# the TLA models of the account (rotation/Account.tla, Acc_*.cfg) go with the accounts work.
+DEAD_TOPS = ("core/", "cli/", "libs/", "app/", "schema/", "tools/", "spec/", "notes/", "issues/")
+DEAD_SKIP = re.compile(r"notes/complaints/|issues/deprecated-terms\.md$|tools/policy(_test)?\.py$"
+                       r"|core/test/tla/rotation/(Account\.tla|Acc_[^/]*\.cfg)$|(^|/)(target|patches|__pycache__)/"
+                       r"|\.(ttf|png|jpg|svg|ico|pyc|vec|snap|lock|diff)$")
+
+def dead_words():
+    files = subprocess.run(["git", "ls-files", "-co", "--exclude-standard", "-z"], cwd=ROOT, check=True,
+                           capture_output=True, text=True).stdout.split("\0")
+    used = set()
+    for rel in files:
+        if not rel.startswith(DEAD_TOPS) or DEAD_SKIP.search(rel) or not os.path.isfile(os.path.join(ROOT, rel)):
             continue
-        for n, m in hinted(read(path), OLD_HINT, OLD_WORDS):
-            yield f"{rel}:{n}: `{m.group(0)}`: a deprecated term (issues/deprecated-terms.md)"
+        text = read(os.path.join(ROOT, rel))
+        low = text.lower()
+        for hint, pat, word, instead in DEAD_PAT:
+            i = low.find(hint)
+            while i >= 0:
+                a, b = low.rfind("\n", 0, i) + 1, low.find("\n", i) % (len(low) + 1)
+                line = text[a:b]
+                for m in pat.finditer(line):
+                    ok = [k for k, (f, phrase, _) in enumerate(DEAD_ALLOWED) if f == rel and any(
+                        s <= m.start() and m.end() <= s + len(phrase) for s in find_all(line, phrase))]
+                    if ok:
+                        used.update(ok)
+                    else:
+                        yield (f"{rel}:{text.count(chr(10), 0, a) + 1}: `{m.group(0)}`: {word}: a concept osis no longer has; "
+                               f"in its place: {instead}. Rewrite the text to what is true today, never a rename "
+                               f"(issues/deprecated-terms.md)")
+                i = low.find(hint, b + 1) if b < len(low) else -1
+    for k, (f, phrase, _) in enumerate(DEAD_ALLOWED):
+        if k not in used:
+            yield f"tools/policy.py: DEAD_ALLOWED {f} {phrase!r} excuses no dead word: remove it"
+
+def find_all(text, sub):
+    i = text.find(sub)
+    while i >= 0:
+        yield i
+        i = text.find(sub, i + 1)
 
 # Local-row keys share one namespace per store (the engine's, sync's): each kind of row is a byte
 # constant, `const NAME: &[u8] = b"...";`, written nowhere else as a literal, and no key constant is
@@ -524,7 +638,7 @@ def spec_anchors():
 
 
 # the slowest first, so the pool balances
-CHECKS = [doc_refs.check, spec_anchors, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, test_cost, union_lists, registries, test_copies, ignore_issues, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
+CHECKS = [doc_refs.check, spec_anchors, code_refs.check, row_prefixes, record_tags, ended_names, dead_words, known_failures, test_cost, union_lists, registries, test_copies, ignore_issues, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
 
 
 def run(check):

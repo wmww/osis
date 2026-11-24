@@ -8,7 +8,7 @@
 //! of what this node logged again there. Ephemeral entries, their tombstones and bytes live in a
 //! second store kept in memory (`Inner::ram`), with the same rows and the same rules
 //! (`entries`), beside the memory part of the log (`memory`). It is the engine's ciphertext door
-//! (`osis_store::CipherHost`, `cipher`): `Store` is a cheap handle over one locked store, held by
+//! (`osis_store::CipherStore`, `cipher`): `Store` is a cheap handle over one locked store, held by
 //! the engine's door and by `Cx`; the engine locks it only inside its own transactions, sync only
 //! between engine calls, so one step never holds both.
 //!

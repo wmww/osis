@@ -14,11 +14,11 @@ Spec: spec/sync-ids.md §5-§6, spec/sync-streams.md §3, spec/sync-inbox.md §3
 `Inner::find` says which part holds an entry, the blob's class which part takes a new one. Beyond entries.rs:
 - An ephemeral entry's charge goes with its source, never to an `heir`; the caps differ (`make_room`: S's entries/bytes and the durable total, kept counted in `Env::total`; S's bytes and the memory total, summed); a durable entry may wait for its bytes, an ephemeral one is taken with them only.
 - Path rows, the node log, records and every other row are the durable store's alone, so a read of the head or a peer's durable charge (`source_charge`) always opens the durable store.
-- Not the durable store's own memory overlay: the engine's suspended transaction (`CipherHost`) may hold no memory rows (`Transaction::suspend` refuses them), and in memory mode that store still writes its node log, records and `changed` rows durably.
+- Not the durable store's own memory overlay: the engine's suspended transaction (`CipherStore`) may hold no memory rows (`Transaction::suspend` refuses them), and in memory mode that store still writes its node log, records and `changed` rows durably.
 - The memory part's writes (log events, feeds, charges in `Memory`) are not undone when its transaction fails: nothing assumes a module's memory survived a store failure, which closes every connection and restarts the modules (notes/sync-driver.md, Failures).
 
 ## Own entries
-A commit the engine forgets other than by lost access (`sync::bodies::forget`) hands each of its blobs to the door (`CipherHost::forgot`) after the engine's store commits, noted with the releases so a crash finishes it at the next open; `forgot` drops the node's own entries of the blob under every sync ID, untombed. Lost access keeps the engine's blob rows, so its own entries stay, parked, and open again when access returns. Peer entries are left to read's judgement.
+A commit the engine forgets other than by lost access (`sync::bodies::forget`) hands each of its blobs to the door (`CipherStore::forgot`) after the engine's store commits, noted with the releases so a crash finishes it at the next open; `forgot` drops the node's own entries of the blob under every sync ID, untombed. Lost access keeps the engine's blob rows, so its own entries stay, parked, and open again when access returns. Peer entries are left to read's judgement.
 
 ## Parked entries (`follow::Parked`, `Awaits`)
 The store's form of the one parking rule (notes/sync.md, Arriving early); what an entry awaits and what opens it: follow.rs's `Awaits` and `Parked` docs. Beyond them:

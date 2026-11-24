@@ -284,7 +284,7 @@ pub(crate) fn keys_write_unapplied(tx: &mut crate::engine::Tx<'_>, g: &Tid) -> R
 }
 
 /// Whether pending `blob` is signed by its author and its `secrets.0` parts on `x` are the ones its
-/// header lists: a commit waiting on its author's chain or a creation record is stored unchecked, so its
+/// header lists: a commit waiting on its evidence or a creation record is stored unchecked, so its
 /// `author` and `ts` could be anyone's. `known`: the verdict its stored copy keeps, if any.
 pub(crate) fn authentic(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId, x: &Tid, known: Option<osis_commit::Signed>) -> bool {
     let h = &blob.header;

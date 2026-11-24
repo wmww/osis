@@ -140,7 +140,7 @@ pub struct Dropped {
     /// peers, `MAX_DRIFT` past its keep-at-least bound when it had one (0: at once). A local drop
     /// follows this node's clock alone; a delete at peers waits for every node's clock to agree
     /// (spec/commits.md §5 Keep bounds).
-    pub hosts_from: u64,
+    pub peer_delete_from: u64,
     /// Its `rotation_role` and `grant_overreach` notes when it dropped: judgments the body made,
     /// kept so re-judging the part (and a rebuild) needs no body.
     pub role: Option<osis_base::Role>,

@@ -10,7 +10,7 @@ Each is built or specified the reversible way; one decision each.
 - **A node keeping S unread shows its filter to every connection** (spec/sync-opens.md §5 Filter; stated limit spec/sync-hostile.md §2): anyone holding S's public values learns it keeps S. A policy limiting whom it syncs with (spec/sync-opens.md §1 Policy) hides it from the rest.
 
 ## Requirements
-The re-upload wording below goes with issues/demoted-writer-deletes-at-stores.md.
+The sending-again wording below goes with issues/demoted-writer-deletes-at-stores.md.
 
 ## Proposed, not applied
-- **Re-upload wording** (Data a node cannot read, Deletion): proposed "Reading never allows deleting data or forcing a writer to log it again." and Deletion's limit "a demoted holder can still delete what its old role allowed, until a writer holding the data logs it again."
+- **Sending-again wording** (Data a node cannot read, Deletion): proposed "Reading never allows deleting data or forcing a writer to log it again." and Deletion's limit "a demoted holder can still delete what its old role allowed, until a writer holding the data logs it again."

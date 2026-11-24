@@ -8,7 +8,7 @@
 //! - `E/ s b` an entry (`EntryRow`).
 //! - `X/ b s` the sync IDs whose entries name blob `b`: its bytes go once none does and the
 //!   engine holds it no more.
-//! - `G/ b` the engine holds blob `b` (`osis_store::CipherHost::hold`; in the memory part, held in
+//! - `G/ b` the engine holds blob `b` (`osis_store::CipherStore::hold`; in the memory part, held in
 //!   memory).
 //! - `W/ src s b` an entry charged to a source (`source_bytes`): a connection's go when it closes
 //!   or at a start, a record's when the record is dropped; `V/ conn` the bytes charged to a
@@ -29,7 +29,7 @@
 //!   back to the start (`Store::reset_anew`): value empty, its copy was dropped kept
 //!   unread (`Store::set_unheld`, written with the drop; it takes nothing until judged again);
 //!   `ANEW_RAISED`, S was raised from kept unread to read (`Store::set_holdings`) or a strong
-//!   in its sync unit reaches a thing whose record the engine lacks (`CipherHost::refetch`); `ANEW_SOME`,
+//!   in its sync unit reaches a thing whose record the engine lacks (`CipherStore::refetch`); `ANEW_SOME`,
 //!   pulled from the start only at the sources whose rows say so: told a refusal of S under
 //!   another head (spec/sync-streams.md §4 Refused; S's head moved kept unread over a refusal
 //!   told to a record's source, `path::register`), or whose room mark is owed (`Store::room_grew`,

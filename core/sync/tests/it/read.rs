@@ -94,7 +94,7 @@ impl std::ops::DerefMut for Fx {
 /// A body of this node's own, established uncovered: must-hold.
 fn uncovered() -> Fx {
     let facts = Facts {
-        body: BodyFacts { required: true, closure: true, dropped: None, invalid: false, kept: false, hosts_from: 0, covered: Some(false), lasting_header: false },
+        body: BodyFacts { required: true, closure: true, dropped: None, invalid: false, kept: false, peer_delete_from: 0, covered: Some(false), lasting_header: false },
         must_not: None,
         own: true,
         repair_fresh: Arc::default(),
@@ -912,7 +912,7 @@ fn delete_waits_for_carrier_in_known() {
 fn covered_delete_waits_max_drift_spec_commits_5() {
     let (mut w, _) = two_shown();
     let mut f = covered(cid(2));
-    f.body.hosts_from = 5_000;
+    f.body.peer_delete_from = 5_000;
     w.judge(S, cid(1), f);
     w.settle();
     assert!(w.own_blobs(S, cid(1)).is_empty(), "the own log waits for no drift");
