@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, leftout, planted, firekey, netstream, netshared, netopen, nethold, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, leftout, forkrot, planted, firekey, netstream, netshared, netopen, nethold, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker, but depth0: 10-20 min); with cfg names: those instances instead
 #   (the larger ones in the module's README, by hand), judged only if listed
@@ -129,6 +129,15 @@ instances=(
   "leftout rotation LeftOut LO_anyrec.cfg fail:HostileEnds" # negative control: M re-keyed for a record whatever keyset it names
   "leftout rotation LeftOut LO_nofact.cfg fail:NoUndo"    # negative control: no record, a co-writer undoes the leave-out (churn)
   "leftout rotation LeftOut LO_nodue.cfg fail:Live"     # negative control: no rotation of M for a counting record
+  "forkrot rotation ForkRot FR_m.cfg pass"          # a permanent fork on holder actor M, A valid on both sides: rotations stop (Quiet) with an epoch resting on a keyset held invalid foreign (spec/crypto.md §4 Foreign)
+  "forkrot rotation ForkRot FR_m_norec.cfg pass"    # ... without left-out records
+  "forkrot rotation ForkRot FR_a.cfg pass"          # the fork on A: the other side's epochs invalid, nothing due by them (so under the rule as written too)
+  "forkrot rotation ForkRot FR_am.cfg pass"         # the fork on A and M alike
+  "forkrot rotation ForkRot FR_m_now.cfg fail:Quiet"      # negative control: every valid rotation supersedes, a box at an invalid keyset makes a rotation due: the sides rotate A in turn forever
+  "forkrot rotation ForkRot FR_m_now_norec.cfg fail:Quiet" # ... without left-out records
+  "forkrot rotation ForkRot FR_m_supsonly.cfg fail:Quiet" # negative control: a foreign epoch supersedes nothing but makes a rotation due
+  "forkrot rotation ForkRot FR_m_dueonly.cfg fail:Quiet"  # negative control: a foreign epoch makes none due but supersedes
+  "forkrot rotation ForkRot FR_m_exclude.cfg fail:Kept"   # negative control: such an epoch not established: no later epoch lists it, its content lost to later holders
   "planted rotation Planted P_leaveout.cfg pass"    # a secrets.0 snapshot leaves out records at epochs its writer has not verified (spec/crypto.md §4)
   "planted rotation Planted P_wait.cfg fail"        # negative control: waiting for every keyed epoch stops compaction for good
   "planted rotation Planted P_all.cfg fail"         # negative control: carrying everything bases a planted epoch
@@ -266,7 +275,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|leftout|planted|firekey|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|leftout|forkrot|planted|firekey|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
   exit 2
 fi
 
