@@ -63,4 +63,4 @@ A worked example covering most of the DSL: the test fixture core/schema/tests/ex
 - `creation` is the one struct the type system cannot express (fields 0 and 1 exclusive): typed keys read `created.0` through `CreationRecord` (`Codec::CHECKS_ITSELF`).
 
 ## Storage
-Multiple backends (in-memory, sqlite, ...). Storage API kept simple; sync, conflict resolution and listeners live above it. Backends hold ciphertext only (notes/local-store.md).
+Backends (memory, redb file) keep a simple storage API and hold ciphertext only; sync, conflict resolution and listeners live above them (notes/local-store.md).
