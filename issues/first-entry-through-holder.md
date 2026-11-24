@@ -19,4 +19,4 @@ Otherwise Bob's node holds nothing of X, though his role would let him read it. 
 3. **A search down, for bootstrap only**: from the own actors' key parts to a held strong's tid, judging nothing. Keeps the edge pieces under holders and reads every holder reached.
 
 ## Lean (the plan-repair session's, not decided)
-Option 1 with the edge piece kept as built: nothing new to build, and options 2 and 3 can be added later without undoing it. The accounts spec needs the answer because a paired node's way into what its account holds roles on rests on the same rule (notes/accounts-switch-brief.md, Does a new device then need no per-holder records).
+Option 1 with the edge piece kept as built: nothing new to build, and options 2 and 3 can be added later without undoing it. The accounts spec needs the answer because a paired node's way into what its account holds roles on rests on the same rule (notes/accounts-switch-brief.md, Does a new node then need no per-holder records).
