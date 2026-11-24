@@ -202,6 +202,35 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     Ok(out)
 }
 
+/// The causes (spec/crypto.md §4, Left out) of departure `d` from `x` that an epoch of role `r`
+/// does not cover, `deps` the departures from `x` known: its newest edge write a covering epoch
+/// must name (`Departure::newest_needed`), or, for a box or maker departure no edge shows (no
+/// epoch covers it), that of its holder's edge departure concerning `r` where there is one, else
+/// the rotation commit of each current epoch of `r` its holder holds a box at or made.
+///
+/// Invariant: every departure has a cause, so every keyset it blocks is recorded. Who writes the
+/// inputs: an edge write, by an admin of `x` (its departure ends with a regrant or its
+/// invalidity, and the record with it); a rotation commit, by a writer of `x` (standing while
+/// held: the box or made epoch shows the departed party holds the secret, which only a rotation
+/// of `x` ends).
+pub(crate) fn departure_causes(tx: &mut Tx<'_>, x: &Tid, r: Role, d: &Departure, deps: &[Departure]) -> Result<BTreeSet<osis_base::CommitId>> {
+    let edge = std::iter::once(d).chain(deps.iter().filter(|e| e.holder == d.holder && e.edge.is_some() && e.concerns(r)));
+    if let Some(k) = edge.filter_map(|e| e.newest_needed(r)).next() {
+        return Ok(BTreeSet::from([k.commit]));
+    }
+    let s = secrets_in(tx, x)?;
+    let Some(current) = tx.core.epochs(x).map(|ep| ep.role(r).current()) else { return Ok(BTreeSet::new()) };
+    let boxed: BTreeSet<osis_crypto::Epoch> = s.boxes.keys().filter(|k| k.holder.0 == d.holder && k.role == r).filter_map(|k| osis_keys::aspects::from_schema(&k.epoch).ok()).collect();
+    let mut out = BTreeSet::new();
+    for e in current {
+        let Some(c) = super::members::keyset_commit(tx.core, x, r, &e) else { continue };
+        if boxed.contains(&e) || tx.core.ix.commits.get(&c).is_some_and(|m| m.view.signer == d.holder) {
+            out.insert(c);
+        }
+    }
+    Ok(out)
+}
+
 /// Every departure `a`'s epochs must cover: its own (`direct_departures`). A memo
 /// (`Core::departures`).
 pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {

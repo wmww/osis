@@ -151,18 +151,21 @@ pub(super) fn keysets_of(tx: &mut Tx<'_>, m: &Tid, r: Role, k: Option<&Epoch>) -
         out.valid.insert(e, x.lists.clone());
     }
     if let Some(k) = k.filter(|k| !out.valid.contains_key(k))
-        && held_invalid(tx, m, r, k)?
+        && !invalid_writers(tx, m, r, k)?.is_empty()
     {
         out.invalid.insert(*k);
     }
     Ok(out)
 }
 
-/// Whether this node holds a `keys.0` body of `m` writing `k` as its keyset of `r` (none valid:
-/// `keysets_of` asks only then). Only a box naming a keyset not held valid asks, so this scans
-/// `m`'s keyset-writing commits and reads the bodies of the invalid ones only.
-fn held_invalid(tx: &mut Tx<'_>, m: &Tid, r: Role, k: &Epoch) -> Result<bool> {
+/// The invalid commits whose `keys.0` body of `m` writes `k` as its keyset of `r`: none valid
+/// (`keysets_of` asks only then), so `k` is held invalid when there is any (spec/crypto.md §4,
+/// Held keyset); they are a stale box's causes (Left out). Only a box naming a keyset not held
+/// valid asks, so this scans `m`'s keyset-writing commits and reads the bodies of the invalid
+/// ones only.
+fn invalid_writers(tx: &mut Tx<'_>, m: &Tid, r: Role, k: &Epoch) -> Result<BTreeSet<CommitId>> {
     let ids: Vec<osis_base::CommitId> = tx.core.ix.keyset_parts.get(m).into_iter().flatten().copied().collect();
+    let mut out = BTreeSet::new();
     for id in ids {
         let Some(meta) = tx.core.ix.commits.get(&id).cloned() else { continue };
         let Some(ai) = meta.view.aspect(m, "keys.0") else { continue };
@@ -174,10 +177,10 @@ fn held_invalid(tx: &mut Tx<'_>, m: &Tid, r: Role, k: &Epoch) -> Result<bool> {
             recs.extend(crate::apply::keys::keysets_of(&meta.header, ai, std::slice::from_ref(d.fragment())));
         }
         if recs.iter().any(|x| x.role == r && x.epoch == *k) {
-            return Ok(true);
+            out.insert(id);
         }
     }
-    Ok(false)
+    Ok(out)
 }
 
 /// The holders of `a` for keys a box of role `r` to which goes past their key access
@@ -227,9 +230,9 @@ fn anchors(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<BTreeSet<Epoch>
 /// box (`box_blocked`, `seal_blocked`), so Seal leaves `m` out at it.
 ///
 /// Invariant: a record is evidence, not a verdict. Its effect is re-derived here from the commits
-/// it names, so a record whose every cause this node holds and judges void (invalid, a departure
-/// ended by a regrant, a grant given key access) counts nothing, and an honest holder actor is
-/// never kept out by a cause that no longer holds. Who writes it: any writer of `a`, naming any
+/// it names, so a record whose every cause this node holds and judges void (a departure ended by
+/// a regrant or its invalidity, a grant given key access) counts nothing; one standing on a
+/// rotation commit keeps `m` out until `m` re-keys (`stands`). Who writes it: any writer of `a`, naming any
 /// keyset and any commits; a false record counts only while a commit it names is a standing cause
 /// here (or is never held), so it can keep `m` out only at that keyset, until `m` rotates
 /// (`rekey_due`) or leaves `a`.
@@ -265,13 +268,22 @@ pub(crate) fn left_out_at(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<
 }
 
 /// Whether left-out cause `c`, held here, stands (spec/crypto.md §4, Left out): a commit writing
-/// edges stands while one of its edge writes is a departure's that its holder still has here,
-/// other than this node's own (`super::others`), or a grant still keyless here; any other while a
-/// `keys.0` part of it is valid (a rotation commit whose keyset makes a box stale). Who writes it:
-/// anyone; each clause is judged by this node's own walk over held commits, as the departure,
-/// keyless grant or stale box it stands for would be, so an invalidated commit, a regrant or a
-/// grant gaining key access ends it as it ends what it stands for.
+/// a keyset (a rotation) while held, valid or not: valid, its keyset supersedes what it lists or
+/// is an epoch a departed party holds; invalid, it is a keyset no box may name; any other while
+/// one of its edge writes is a departure's that its holder still has here, other than this
+/// node's own (`super::others`), or a grant still keyless here.
+///
+/// Invariant: a cause stops standing only where this node can show what it showed is gone. An
+/// edge write's departure ends with a regrant or its invalidity, a keyless grant with key
+/// access, each judged by this node's own walk over held commits. A keyset proves its block by
+/// existing: invalid, a reader lacking what invalidates it would find it valid, so validity
+/// cannot end it either way; the record it keeps ends with `m`'s re-key (`rekey_due`). Who
+/// writes it: anyone; a hostile record naming any held rotation counts as one naming a standing
+/// departure does, one rotation of `m` per record.
 fn stands(tx: &mut Tx<'_>, c: &CommitId) -> Result<bool> {
+    if writes_keyset(tx.core, c) {
+        return Ok(true);
+    }
     if let Some(rc) = tx.core.ix.held.edge_commit(c).cloned() {
         let keyless = key_access(tx.core);
         for op in &rc.ops {
@@ -285,9 +297,20 @@ fn stands(tx: &mut Tx<'_>, c: &CommitId) -> Result<bool> {
                 return Ok(true);
             }
         }
-        return Ok(false);
     }
-    Ok(tx.core.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().enumerate().any(|(ai, a)| a.ak.as_str() == "keys.0" && m.valid_at(ai))))
+    Ok(false)
+}
+
+/// The commit that wrote keyset `e` of role `r` of `x` (a left-out cause, spec/crypto.md §4):
+/// its rotation commit (`Indexes::epoch_intro`), else the earliest held valid body writing it (a
+/// compaction snapshot's, `HeldKeyset::since`).
+pub(crate) fn keyset_commit(core: &Core, x: &Tid, r: Role, e: &Epoch) -> Option<CommitId> {
+    core.ix.epoch_intro.get(&(*x, r, *e)).map(|v| v.1).or_else(|| core.keyset(x, r, e).and_then(|k| k.since).map(|p| p.commit))
+}
+
+/// Whether held commit `c` has a `keys.0` part writing a keyset (`Indexes::keyset_parts`).
+fn writes_keyset(core: &Core, c: &CommitId) -> bool {
+    core.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().any(|a| a.ak.as_str() == "keys.0" && core.ix.keyset_parts.get(&a.tid).is_some_and(|s| s.contains(c))))
 }
 
 /// Re-key (spec/crypto.md §4, Left out): whether `a` leaves its holder actor `m`, holding `r` or
@@ -410,12 +433,11 @@ pub(crate) struct Boxing {
 /// its judgement read (`super::blocking`), and the keysets `a`'s current keysets of that role
 /// record already with theirs, a keyset recorded twice taking the union, less those another of
 /// them descends from (a holder actor left out across rotations records its frontier, not its
-/// history). A keyset blocked by nothing a commit shows (a box or maker departure alone) has no
-/// cause and is not recorded.
+/// history).
 ///
-/// Invariant: every record names only commits the rotator's own judgement read, so at a node
-/// holding them they block exactly what they blocked at the rotator, and stop when they would
-/// stop blocking there.
+/// Invariant: every block has a cause, and every record names only commits the rotator's own
+/// judgement read, so at a node holding them they block what they blocked at the rotator, and
+/// stop where that node can show what they showed is gone (`stands`).
 pub(crate) fn left_out(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role, boxed: Option<Role>, out: &mut osis_keys::LeftOut) -> Result<()> {
     let deps = super::departures(tx, m)?;
     for r in ROLES.into_iter().filter(|r| *r <= role && Some(*r) > boxed) {
@@ -430,9 +452,7 @@ pub(crate) fn left_out(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role,
         let held = keysets_of(tx, m, r, None)?;
         let current: Vec<Epoch> = held.valid.keys().filter(|q| !held.valid.values().any(|l| l.contains(q))).copied().collect();
         for k in current {
-            if let Some((_, causes)) = super::blocking(tx, who, m, r, &k, &deps, super::Walk::Encrypt)?
-                && !causes.is_empty()
-            {
+            if let Some((_, causes)) = super::blocking(tx, who, m, r, &k, &deps, super::Walk::Encrypt)? {
                 ks.entry(k).or_default().extend(causes);
             }
         }
@@ -462,9 +482,8 @@ pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Res
 /// `e` (what a node holding none of `a`'s boxes judges by: every box, whoever wrote it, is
 /// recorded beside it), naming a keyset of it held invalid, tainted, or listed by a held valid
 /// keyset of it; or a box so naming a keyset `a` leaves its holder out at (`left_out_at`). The
-/// causes: each listing keyset's rotation commit, each keyless grant behind a taint, each
-/// counting record's causes; a keyset held invalid names none (what made it invalid is judged
-/// where it is held).
+/// causes: each listing keyset's rotation commit, the invalid rotation commits of a keyset held
+/// invalid, each keyless grant behind a taint, each counting record's causes.
 pub(crate) fn box_blocked(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<Option<BTreeSet<CommitId>>> {
     let mut named: Vec<(Tid, Epoch)> = boxed_keysets(tx, a, r, e)?.into_iter().flat_map(|(m, ks)| ks.into_iter().map(move |k| (m, k))).collect();
     named.extend(tx.core.ix.sealed.get(&(*a, r, *e)).into_iter().flat_map(|x| x.keysets.iter().flat_map(|(m, ks)| ks.iter().map(move |k| (*m, *k)))));
@@ -478,7 +497,10 @@ pub(crate) fn box_blocked(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Resul
         if osis_keys::stale(&k, &held, &tainted) {
             hit = true;
             for (j, _) in held.valid.iter().filter(|(_, l)| l.contains(&k)) {
-                causes.extend(tx.core.ix.epoch_intro.get(&(m, r, *j)).map(|x| x.1));
+                causes.extend(keyset_commit(tx.core, &m, r, j));
+            }
+            if held.invalid.contains(&k) {
+                causes.extend(invalid_writers(tx, &m, r, &k)?);
             }
             if tainted.contains(&k) {
                 causes.extend(keyless_causes(tx.core, &m, r));

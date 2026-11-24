@@ -117,10 +117,16 @@ instances=(
   "withdrawn rotation Withdrawn W_waitall_live.cfg fail" # negative control: waiting for every admin is safe and stalls
   "withdrawn rotation Withdrawn W_regrant_live.cfg fail" # an explicit re-grant of M unlocks it safely but nothing makes one
   "withdrawn rotation Withdrawn W_joiners.cfg pass"     # later holders only, M left out by names: safe and live for them
-  "leftout rotation LeftOut LO_inv.cfg pass"       # a left-out record counts while its cause stands (spec/crypto.md §4 Left out)
+  "leftout rotation LeftOut LO_c.cfg pass"         # a left-out record counts while its cause stands or is not held (spec/crypto.md §4 Left out; LO_inv with c invalidated by hand)
+  "leftout rotation LeftOut LO_rot.cfg pass"       # ... a rotation cause stands while held: an invalidated one costs a re-key
+  "leftout rotation LeftOut LO_hostile.cfg pass"   # a hostile writer's records: one re-key per keyset named, none once removed and re-keyed past
   "leftout rotation LeftOut LO_inv_old.cfg fail:Live"   # negative control: a record counting whatever its cause keeps M out once the cause is void
   "leftout rotation LeftOut LO_ign_old.cfg fail:Live"   # ... with M rotated only where no recorded keyset is current: a rotator judging by order never re-keys
-  "leftout rotation LeftOut LO_nocarry.cfg fail:NoLeak"   # negative control: causes not carried, a co-writer re-seals a keyset made before the cause
+  "leftout rotation LeftOut LO_voidunheld.cfg fail:NoLeak" # negative control: a record whose cause is not held counts nothing, a co-writer re-seals a keyset made before the cause
+  "leftout rotation LeftOut LO_copyheld.cfg fail:NoUndo"   # negative control: a copy keeps only held causes, a co-writer drops the record
+  "leftout rotation LeftOut LO_noadd.cfg fail:NoUndo"      # negative control: a keyset h recorded falsely is copied without the rotator's own cause
+  "leftout rotation LeftOut LO_wait.cfg fail:NoChurn"      # negative control: A's keyset waits for its causes, a copied unheld one makes its maker rotate again
+  "leftout rotation LeftOut LO_anyrec.cfg fail:HostileEnds" # negative control: M re-keyed for a record whatever keyset it names
   "leftout rotation LeftOut LO_nofact.cfg fail:NoUndo"    # negative control: no record, a co-writer undoes the leave-out (churn)
   "leftout rotation LeftOut LO_nodue.cfg fail:Live"     # negative control: no rotation of M for a counting record
   "planted rotation Planted P_leaveout.cfg pass"    # a secrets.0 snapshot leaves out records at epochs its writer has not verified (spec/crypto.md §4)

@@ -116,9 +116,10 @@ pub(crate) enum Block {
 /// `blocked_epoch`, with why (a box reason where any is found, else a missed departure) and the
 /// causes the judgement read (spec/crypto.md §4, Left out): each missed departure's newest edge
 /// write a covering epoch must name (`Departure::newest_needed`), each stale box's superseding
-/// keyset's rotation commit, each keyless grant's edge write, each counting record's causes. The
-/// whole walk is judged, so every cause is found. A departure no edge shows (a box or maker
-/// departure) has none: a keyset blocked by it alone records nothing.
+/// keyset's rotation commit, each keyless grant's edge write, each counting record's causes, and
+/// for a box or maker departure no edge shows, the rotation commit of each epoch its holder holds
+/// (`departures::departure_causes`). The whole walk is judged, so every cause is found: every
+/// block has one.
 pub(crate) fn blocking(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch, deps: &[Departure], walk: Walk) -> Result<Option<(Block, BTreeSet<osis_base::CommitId>)>> {
     let mut own = None;
     let mut causes = BTreeSet::new();
@@ -148,7 +149,9 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
             let un = uncovered_by(tx, &x, r, &k, &deps)?;
             if !un.is_empty() {
                 missed = true;
-                causes.extend(un.iter().filter_map(|d| d.newest_needed(r)).map(|n| n.commit));
+                for d in un.iter().filter(|_| full) {
+                    causes.extend(departures::departure_causes(tx, &x, r, d, &deps)?);
+                }
                 if !full {
                     return Ok(Some(Block::Departure));
                 }
