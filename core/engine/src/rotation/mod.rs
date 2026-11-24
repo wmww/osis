@@ -54,6 +54,9 @@ pub enum Walk {
 /// rotation.
 pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, walk: Walk) -> Result<BTreeSet<Role>> {
     osis_base::memo::Memo::get_in(tx, |tx| &tx.core.blocked_roles, &(*who, *a, walk), |tx| {
+        // a memo's frame is bounded by nothing: the roles at now it reads (`may_rotate`, key
+        // access) hold until the next `until` or role commit on what reaches `a`, not every tick
+        let _horizon = tx.core.bound_to_horizon([*a, *who].into_iter());
         let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
         let deps = departures(tx, a)?;
         let mut out = BTreeSet::new();
@@ -322,6 +325,9 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<
 
 /// `rotation_due`, judged afresh.
 fn rotation_due_now(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
+    // the roles at now it reads (`may_rotate`) hold until the next `until` or role commit on
+    // what reaches `a`: its memo frame is bounded by nothing else
+    let _horizon = tx.core.bound_to_horizon(std::iter::once(*a));
     let may = may_rotate(tx.core, who, a);
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
     let deps = departures(tx, a)?;
