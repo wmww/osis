@@ -300,14 +300,11 @@ fn build_holder() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     let holder = lp.peers[3].engine.new_thing(&mut m, me3);
     lp.peers[3].commit(m).unwrap();
     lp.takes_grants(3, holder);
-    lp.hold(holder);
+    // Alice and Mallory read T: they hold its keys and what is written on it
+    lp.share(3, holder);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&n, &holder, &edge(Role::Write)).unwrap();
-    let mut m = Mutation::new();
-    m.op(holder, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(bob))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
-    lp.peers[3].commit(m).unwrap().unwrap();
-    // Alice and Mallory read T: they hold what is written on it
-    lp.share(3, holder);
+    lp.peers[3].engine.grant(&holder, &bob, &edge(Role::Write)).unwrap();
     lp.sync_all().unwrap();
     lp.advance(1000);
     let e = write_as(&mut lp, 1, holder, n, "x:e.0", 7);
@@ -322,7 +319,6 @@ fn build_holder() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
 // write states: the write counts. A writer can always vouch for the removed side's earlier
 // writes on a thing it writes (stated limit, notes/revocation.md).
 #[test]
-#[ignore = "accounts: keys"]
 fn lying_writer_vouches_for_a_removed_holders_write_spec_perm_5_2() {
     let (mut lp, n, _, r, e) = holder_world();
     lp.sync(1, 2).unwrap();
@@ -1474,7 +1470,6 @@ fn answered_removals_hold_no_role_rows() {
 // judges a part). R1 then reaches her, ordered before R, and she owes nothing more. e stands at
 // every node.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_cut_of_the_stated_path_owes_an_addendum_whatever_another_path_gives_spec_perm_5_2() {
     let (mut lp, t) = world(4, &[Role::Write, Role::Write, Role::Admin]);
     let (bob, dave) = (lp.peers[1].engine.me(), lp.peers[3].engine.me());
@@ -1484,6 +1479,9 @@ fn a_cut_of_the_stated_path_owes_an_addendum_whatever_another_path_gives_spec_pe
     lp.hold(q);
     lp.sync_all().unwrap();
     lp.peers[3].engine.grant(&q, &bob, &edge(Role::Admin)).unwrap();
+    // Alice holds Q's keys by reading it
+    lp.share(3, q);
+    lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&t, &q, &edge(Role::Write)).unwrap();
     lp.advance(1000);
     lp.sync_all().unwrap();
@@ -1519,7 +1517,6 @@ fn a_cut_of_the_stated_path_owes_an_addendum_whatever_another_path_gives_spec_pe
 // Yan falls below write at R, and Carol owes an addendum for e, though R1 names neither X nor
 // Alice and Yan is filed nowhere. e stands at every node.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2() {
     let (mut lp, t) = world(4, &[Role::Read, Role::Write, Role::Admin]);
     let yan = lp.peers[1].engine.me();
@@ -1528,8 +1525,12 @@ fn a_late_removal_of_a_members_other_holder_makes_an_addendum_owed_spec_perm_5_2
         let mut m = Mutation::new();
         let q = lp.peers[1].engine.new_thing(&mut m, yan);
         lp.peers[1].commit(m).unwrap();
-        lp.hold(q);
         holders.push(q);
+    }
+    lp.sync_all().unwrap();
+    // Alice holds the holders' keys by reading them
+    for q in &holders {
+        lp.share(1, *q);
     }
     lp.sync_all().unwrap();
     for q in &holders {

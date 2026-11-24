@@ -9,6 +9,7 @@ use super::blobs::{ListBlobs, TxBlobs};
 use super::secrets::CommitSecrets;
 use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
+use crate::sync::units::Written;
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
 use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Holder, Role, Tid, Ts, Value, WallMs, record_chain};
 use osis_crdt::{AnyView, DeltaBuilder, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
@@ -1141,16 +1142,16 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
         return Err(Error::Misuse(if memory { "a memory commit writes ephemeral aspects only" } else { "a durable commit writes durable aspects only" }));
     }
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
-    // a node writes only what it holds (spec/sync-set.md §2 Writing): every thing the commit
-    // makes, and every thing it writes not held as it writes, must be held at the transaction's
-    // end; a sealed fire is built, never applied.
-    // Interim (notes/accounts-switch-brief.md, Open): a link key is held by no strong, so a
-    // node writes it outside its closure
+    // a node writes only what it holds (spec/sync-set.md §2 Writing, Making a thing): every thing
+    // the commit makes, and every thing it writes not held as it writes, must be held at the
+    // transaction's end; a thing made with its role entries alone may be held as a holder
+    // (`Written::Holder`); a sealed fire is built, never applied.
     if !sealed {
-        let link_key = |t: &Tid| m.creates.get(t).or_else(|| tx.core.created(t)).is_some_and(|r| r.link_key_of().is_some());
-        let made: Vec<Tid> = m.creates.keys().copied().filter(|t| !link_key(t)).collect();
-        let unheld: Vec<Tid> = m.aspects.keys().map(|(t, _)| *t).filter(|t| !m.creates.contains_key(t) && !link_key(t) && !tx.core.ix.closure.holds(t)).collect();
-        tx.core.wrote_on.extend(made.into_iter().chain(unheld));
+        let role_only = |t: &Tid| m.aspects.keys().filter(|(x, _)| x == t).all(|(_, ak)| ak.as_str() == CREATED.ak() || is_role_class(ak.as_str()));
+        let made = m.creates.keys().map(|t| if role_only(t) { Written::Holder(*t) } else { Written::Held(*t) });
+        let unheld = m.aspects.keys().map(|(t, _)| *t).filter(|t| !m.creates.contains_key(t) && !tx.core.ix.closure.holds(t)).map(Written::Held);
+        let written: Vec<Written> = made.chain(unheld).collect();
+        tx.core.wrote_on.extend(written);
     }
     // every minting's commit expires with its record (spec/commits.md §5 Destruction)
     for (&t, rec) in &m.creates {

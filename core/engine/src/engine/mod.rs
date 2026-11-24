@@ -47,6 +47,7 @@ use crate::apply::Reason;
 use crate::error::{Error, Result};
 use crate::events::{Event, Events};
 use crate::identity::Identity;
+use crate::sync::units::Written;
 use clock::Hlc;
 use osis_commit::{CommitBlob, Form, Header};
 use osis_base::{Ak, BlobId, Clock, CommitId, SyncId, Tid, Ts, WallMs};
@@ -1334,9 +1335,9 @@ pub struct Core {
     pub(crate) unit_of: memo::Memo<Tid, Arc<BTreeSet<Tid>>>,
     /// This node's node root (spec/sync-set.md §1), from its first start (`records::NODE_ROOT`).
     pub(crate) node_root: Option<Tid>,
-    /// The things the running transaction's own commits made or wrote: each must be in the node
-    /// closure at its end (spec/sync-set.md §2 Writing).
-    pub(crate) wrote_on: Vec<Tid>,
+    /// The things the running transaction's own commits made or wrote, each held at its end as
+    /// it says (spec/sync-set.md §2 Writing, Making a thing).
+    pub(crate) wrote_on: Vec<Written>,
     /// Sync units the handle reads and writes at another node (`osis` sources): what is here of them
     /// may be behind, syncing or not (`readable_by`). `Engine::set_sourced` sets it.
     pub(crate) sourced_elsewhere: BTreeSet<Tid>,

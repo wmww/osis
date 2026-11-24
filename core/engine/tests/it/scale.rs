@@ -511,12 +511,7 @@ fn roster_removal(n: usize) -> (u64, usize, u64) {
         holders.push(Recipient { holder: Tid::from_bytes(x), role: Role::Write, keys: HolderKeys { keysets, own: BTreeMap::new() }, floor: 0 });
     }
     // an independent thing's secrets are all three roles' (spec/crypto.md §3): the thing gets them first
-    let all = BTreeSet::from(Role::ALL);
-    let view = e.epochs(&a).unwrap();
-    let r0 = rotate(&a, &all, &view, &Default::default(), &holders[..1], &osis_keys::Names::default(), &mut SeededRng::from_u64(2)).unwrap();
-    let mut m = Mutation::new();
-    write_rotation(&mut m, a, &r0);
-    e.commit(m).unwrap().unwrap();
+    e.make_independent(&a).unwrap();
     let view = e.epochs(&a).unwrap();
     let state = e.get_typed(&a, &ct::SECRETS).unwrap().unwrap_or_default();
     let r = rotate(&a, &BTreeSet::from([Role::Read, Role::Write]), &view, &state, &holders, &osis_keys::Names::default(), &mut SeededRng::from_u64(1)).unwrap();
@@ -543,7 +538,6 @@ fn roster_removal(n: usize) -> (u64, usize, u64) {
 // 3000 B per remaining holder past a fixed 4 KiB (notes/chat.md: 2.7 KB); one more `secrets.0` entry afterwards
 // writes about the same bytes at both sizes (the box map is paged).
 #[test]
-#[ignore = "accounts: keys"]
 fn roster_removal_is_linear() {
     let (n, small, big) = (20, roster_removal(20), roster_removal(200));
     for (k, (total, boxes, _)) in [(n, small), (10 * n, big)] {

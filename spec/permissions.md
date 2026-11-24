@@ -336,7 +336,7 @@ The timeline covers the **edge-class parts**: edge writes (writes to `roles.0` a
   - A link carries only those peers.
   - The redeemer dials each with an ephemeral transport key, finds K through its shared set (the link key's static entry, spec/sync-opens.md §4) and opens K's sync ID there as at any peer. Once its join is held it keeps the link's peers, not the seed, as addresses to dial (spec/sync-opens.md §1 Where to dial) while an own thing holds a role on the target.
   - The link's peers are the sharer's explicit choice; a link without them reaches the redeemer only through peers it already shares K with. The sharer's node serves K's sync ID and the target's from its own store (spec/sync-ids.md §5).
-- L is listed in every step of K's sync ID by its static entry with an entry box (spec/sync-ids.md §3), and holds boxes in K's `secrets.0` like any holder.
+- L is listed in every step of K's sync ID by its static entry with an entry box (spec/sync-ids.md §3), and holds boxes in K's `secrets.0` like any holder. The sharer makes L in the transaction granting it on K, and holds it as K's holder, by no strong (spec/sync-set.md §2 Making a thing).
 - **Redeem**:
   1. Derive L's keys from the seed.
   2. Claim K's sync ID by L's static entry, take K's read secrets from the head's entry box (spec/sync-ids.md §3), pull K's sync ID and L's boxes.

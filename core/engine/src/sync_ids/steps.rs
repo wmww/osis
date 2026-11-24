@@ -104,6 +104,11 @@ impl Recorded {
         self.keys.get(&(level, *key)).is_some_and(|since| *since < ts)
     }
 
+    /// Whether a step is recorded before `ts`.
+    fn any_before(&self, ts: Ts) -> bool {
+        self.keys.values().any(|since| *since < ts)
+    }
+
     /// Whether a step bears `key` at `level`, whenever recorded.
     pub(crate) fn bears(&self, level: u8, key: &[u8; 32]) -> bool {
         self.keys.contains_key(&(level, *key))
@@ -126,7 +131,9 @@ impl Core {
         if before.as_deref() == after.as_ref() {
             return;
         }
-        // keys only placed, or placed earlier: no key held as right turns wrong
+        // keys only placed, or placed earlier: no key held as right turns wrong, but on a minting
+        // of `t` read as recording its first steps (`first_steps`: a key-minted thing's chain is
+        // itself alone), which a step placed before it turns to the check
         let grew = before.as_ref().is_none_or(|b| b.keys.iter().all(|(k, since)| after.as_ref().is_some_and(|a| a.keys.get(k).is_some_and(|s| s <= since))));
         match after {
             Some(r) => self.ix.steps.insert(*t, Arc::new(r)),
@@ -134,7 +141,7 @@ impl Core {
         };
         let again: BTreeSet<CommitId> = match grew {
             // the usual move (a step issued): only a commit held as wrong may turn, O(those)
-            true => self.ix.miskeyed.iter().filter(|(_, x)| self.record_chain(x).any(|s| s.thing() == Some(*t))).map(|(c, _)| *c).collect(),
+            true => self.ix.miskeyed.iter().filter(|(_, x)| self.record_chain(x).any(|s| s.thing() == Some(*t))).map(|(c, _)| *c).chain(self.mintings(t).map(|(c, _)| c)).collect(),
             // a `sync.0` write fell or went: every commit on a thing under `t`, O(those)
             false => self.ix.held.below(&BTreeSet::from([*t])).iter().flat_map(|x| self.on_thing(x)).collect(),
         };
@@ -147,14 +154,14 @@ impl Core {
     /// level-3 key that is not right (`key_right`). Level 2 is not checked (spec/crypto.md §7).
     /// A thing whose record chain is not known up to its top here is not judged: nothing
     /// written on it applies meanwhile (spec/commits.md §4 Unjudgeable), and a commit judged on
-    /// missing evidence is never judged invalid for it. Nor is a thing on the commit minting it
-    /// with a key (`mints_with_key`): it lists the keys of the first step it records itself.
+    /// missing evidence is never judged invalid for it. Nor is a thing whose first steps the
+    /// commit records itself (`first_steps`).
     pub(crate) fn wrong_keys(&self, h: &Header) -> BTreeSet<Tid> {
         // a commit's deltas mostly share a thing and its keys: each (thing, key) checked once
         let mut seen: BTreeSet<(Tid, usize)> = BTreeSet::new();
         let mut out = BTreeSet::new();
         for a in &h.aspects {
-            if out.contains(&a.tid) || self.mints_with_key(h, &a.tid) {
+            if out.contains(&a.tid) || self.first_steps(h, &a.tid) {
                 continue;
             }
             let wrong = a.keys.iter().filter(|k| seen.insert((a.tid, **k))).filter_map(|k| h.keys.get(*k)).any(|k| k.level != DELETE_AUTHOR && !self.key_right(&a.tid, k.level, &k.key, h.ts));
@@ -165,16 +172,23 @@ impl Core {
         out
     }
 
-    /// Whether `h` mints `t` with a key (spec/crypto.md §7 Checked keys): it carries `t`'s
-    /// `created.0`, its record holds a key, and it is signed by that key as `t`. Its deltas on `t`
-    /// list the keys of the genesis step its own `sync.0` delta records, which no step recorded
-    /// before it can place. Invariant: only the holder of the record's key, `t`'s admin from the
-    /// start (spec/permissions.md §1), signs it, so a key it lists is its admin's own.
-    fn mints_with_key(&self, h: &Header, t: &Tid) -> bool {
+    /// Whether `h` records `t`'s first steps (spec/crypto.md §7 Checked keys, First steps): no
+    /// step on `t`'s record chain is recorded before it, and it is `t`'s minting by its record's
+    /// key (it carries `t`'s `created.0`, `t`'s record holds a key, and it is signed by that key
+    /// as `t`). It lists the keys of the genesis step its own `sync.0` delta records, which
+    /// nothing before it places.
+    ///
+    /// Invariant: a key so taken is one `t`'s admin from the start listed. Only the record's key
+    /// signs as `t` in the first form, and before any step is recorded nothing ordered before the
+    /// commit can have lowered it (every edge write on `t` is its admin's, after its minting).
+    /// A later commit of that key, once lowered, carrying `created.0` again is checked as any:
+    /// the steps recorded before it place its keys or it is unjudgeable.
+    fn first_steps(&self, h: &Header, t: &Tid) -> bool {
         h.signer == *t
             && h.key.is_none()
             && h.aspects.iter().any(|x| x.tid == *t && x.ak.as_str() == osis_commit::retention::CREATED)
             && self.created(t).is_some_and(|r| r.key().is_some())
+            && !self.record_chain(t).filter_map(|s| s.thing()).any(|x| self.ix.steps.get(&x).is_some_and(|r| r.any_before(h.ts)))
     }
 
     /// What the key check reads of header `h`, for a failing check's message: per delta listing
@@ -347,5 +361,33 @@ mod tests {
         let listed = h.keys.iter().position(|k| k.level != DELETE_AUTHOR).unwrap();
         h.keys[listed].key = [7; 32];
         assert_eq!(core.wrong_keys(&h), BTreeSet::from([t]));
+    }
+
+    // spec/crypto.md §7 (Checked keys; First steps): a thing minted with a key lists, in its
+    // minting, keys no step recorded before places, and they count there alone: the same header
+    // after a step is recorded (a re-minting by its key, which may since be lowered), or signed
+    // by another key, is checked as any, and a key no step places is wrong.
+    #[test]
+    fn only_a_things_first_steps_are_listed_unchecked_spec_crypto_7() {
+        let (lp, _, _) = world();
+        let core = &lp.peers[0].engine.core;
+        let n = core.me();
+        assert!(core.created(&n).is_some_and(|r| r.key().is_some()), "the node thing is minted with a key");
+        let (c, _) = core.mintings(&n).next().unwrap();
+        let minting = (*core.ix.commits.get(&c).unwrap().header).clone();
+        assert!(core.wrong_keys(&minting).is_empty(), "its minting lists its first steps' keys");
+        let listed = minting.keys.iter().position(|k| k.level != DELETE_AUTHOR).unwrap();
+        let since = core.ix.steps.get(&n).unwrap().steps.values().map(|s| s.since).min().unwrap();
+        assert_eq!(since, minting.ts, "its minting records its first step");
+        let mut later = minting.clone();
+        later.ts = Ts::from_u64(minting.ts.to_u64() + 1).unwrap();
+        assert!(core.wrong_keys(&later).is_empty(), "the keys it lists are placed before a later one");
+        later.keys[listed].key = [7; 32];
+        assert_eq!(core.wrong_keys(&later), BTreeSet::from([n]), "a re-minting after a step is checked");
+        let mut other = minting.clone();
+        other.keys[listed].key = [7; 32];
+        assert!(core.wrong_keys(&other).is_empty(), "before any step, the record's key lists unchecked");
+        other.key = Some(osis_base::SignKey([3; 32]));
+        assert_eq!(core.wrong_keys(&other), BTreeSet::from([n]), "another key signing as n is checked");
     }
 }

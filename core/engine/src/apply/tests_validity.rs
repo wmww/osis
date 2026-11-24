@@ -476,7 +476,6 @@ mod tests {
     // deltas: it never reaches perm (else a deep actor's holders would gain its roles on a
     // shallow thing it is a holder of), at the writer and at receivers.
     #[test]
-    #[ignore = "accounts: keys"]
     fn edge_on_deep_thing_not_held_spec_permissions_1() {
         use osis_base::format::MAX_CHAIN_DEPTH;
         use osis_base::Tid;
@@ -487,10 +486,14 @@ mod tests {
         let me = lp.peers[0].engine.me();
         let x = lp.peers[1].engine.me();
         let mut up = me;
-        for _ in 0..MAX_CHAIN_DEPTH {
+        for i in 0..MAX_CHAIN_DEPTH {
             let mut m = Mutation::new();
             up = lp.peers[0].engine.new_thing(&mut m, up);
             lp.peers[0].commit(m).unwrap();
+            // the chain's top keeps delete keys of its own: the things below list them
+            if i == 0 {
+                lp.peers[0].engine.make_independent(&up).unwrap();
+            }
         }
         let mut m = Mutation::new();
         let shallow = lp.peers[0].engine.new_thing(&mut m, me);

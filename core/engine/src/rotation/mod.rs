@@ -820,6 +820,10 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
     // a thing minted with a key: its minting is its rotation from none, signed by the key as it
     // (spec/permissions.md §3); it has no mint admin, nothing it derives from, nothing due
     let key = rec.as_ref().and_then(osis_base::CreationRecord::key).is_some();
+    // a thing whose record is not held: nothing says how it came to exist, nor who may rotate it
+    if rec.is_none() && tx.core.created(&t).is_none() {
+        return Err(Error::UnknownThing(t));
+    }
     if !key && tx.core.created(&t).is_some_and(|r| r.key().is_some()) {
         return Err(Error::Misuse("the keysets of a thing minted with a key are not held here"));
     }

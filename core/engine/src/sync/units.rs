@@ -1105,17 +1105,35 @@ pub(crate) fn check_whole(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The things this transaction's own commits made or wrote, each in the node closure at its end,
-/// or the transaction is refused (spec/sync-set.md §2 Writing: a node writes only what it holds;
-/// it fires at what it does not). A node with no node root yet (its first start) checks nothing,
-/// nor a hostile writer (`skip_writer_rules`): a writer's rule.
+/// A thing a transaction's own commits made or wrote, as it must be held at its end.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Written {
+    /// In the node closure.
+    Held(Tid),
+    /// Made with its role entries alone: in the node closure, or a holder with a role now on a
+    /// thing in it, held as any holder of what the node syncs (its record and public key record
+    /// go under that thing's sync ID, spec/sync-inbox.md §1).
+    Holder(Tid),
+}
+
+/// The things this transaction's own commits made or wrote, each held at its end as `Written`
+/// says, or the transaction is refused (spec/sync-set.md §2 Writing, Making a thing: a node writes
+/// only what it holds; it fires at what it does not). A node with no node root yet (its first
+/// start) checks nothing, nor a hostile writer (`skip_writer_rules`): a writer's rule.
 pub(crate) fn check_written(tx: &mut Tx<'_>) -> Result<()> {
     if tx.core.node_root.is_none() || tx.core.skip_writer_rules {
         tx.core.wrote_on.clear();
         return Ok(());
     }
-    for t in std::mem::take(&mut tx.core.wrote_on) {
-        if tx.core.created(&t).is_some() && !tx.core.ix.closure.holds(&t) {
+    let written = std::mem::take(&mut tx.core.wrote_on);
+    let core = &*tx.core;
+    let holder = |t: &Tid| core.ix.held.named_on(t).any(|y| core.ix.closure.holds(y) && core.keyed_role_now(t, y).is_some());
+    for w in written {
+        let (t, held) = match w {
+            Written::Held(t) => (t, core.ix.closure.holds(&t)),
+            Written::Holder(t) => (t, core.ix.closure.holds(&t) || holder(&t)),
+        };
+        if core.created(&t).is_some() && !held {
             return Err(crate::error::Error::NotHeld(t));
         }
     }

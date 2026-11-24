@@ -38,6 +38,8 @@ fn two_nodes() -> (LocalPeer, Tid) {
         let mut m = Mutation::new();
         let d = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
+        // each node learns the other's node thing by syncing it
+        lp.sync_all().unwrap();
         lp.share(0, d);
         lp.sync_all().unwrap();
         (lp, d)
@@ -82,7 +84,6 @@ fn a_blob_under_another_expiry_is_refused_spec_sync_ids_1() {
 // noted as. Opening it again (a peer relaying it under another sync ID, where nothing in its
 // bytes says copy) leaves it the body, so the node logs no fresh encryption of it each time.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_header_alone_holds_a_header_only_body_of_either_kind_spec_sync_judgement_1() {
     let (mut lp, _) = two_nodes();
     let e = &mut lp.peers[0].engine;
@@ -145,7 +146,6 @@ fn framed_entry(lp: &mut LocalPeer, d: Tid, c: &CommitId, junk: bool) -> (BlobId
 // Fails if the blob is never opened again (it stays the commit's blob, kept and served as its
 // body).
 #[test]
-#[ignore = "accounts: keys"]
 fn a_blob_opened_before_its_lists_resolve_is_checked_once_they_do_spec_commits_4() {
     for junk in [true, false] {
         let (mut lp, d) = two_nodes();
@@ -183,7 +183,6 @@ fn a_blob_opened_before_its_lists_resolve_is_checked_once_they_do_spec_commits_4
 // other lacks: spare, unless the other lacks a part this one holds. A part only a blob carries
 // that the other adds: needed, and not once that part is overwritten.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_blob_loses_to_another_by_what_each_carries_spec_sync_judgement_2() {
     use super::Loss::{Needed, Spare};
     let (mut lp, d) = two_nodes();
@@ -219,7 +218,6 @@ fn a_blob_loses_to_another_by_what_each_carries_spec_sync_judgement_2() {
 // carrier there, and each part it strips as covered has a snapshot reaching it there (`covers`).
 // A purged part strips with no cover; a part replaced under purge on replace strips covered.
 #[test]
-#[ignore = "accounts: keys"]
 fn a_strip_names_its_live_parts_and_covers_spec_sync_judgement_2() {
     let (mut lp, d) = two_nodes();
     let (t, c) = wide_commit(&mut lp, d, 2);
@@ -255,3 +253,4 @@ fn a_strip_names_its_live_parts_and_covers_spec_sync_judgement_2() {
     assert_eq!(st.live, [part(e, &c1, u, "x:w.0")].into(), "replaced: the rest live");
     assert!(st.covers.len() == 1 && !st.covers[0].is_empty(), "replaced: covered by what reaches it: {:?}", st.covers);
 }
+
