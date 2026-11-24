@@ -158,3 +158,32 @@ fn a_key_grant_holding_a_floor_grants_nothing_spec_data_model_9() {
     m.set(t, &REG, &s("by key")).unwrap();
     assert!(lp.peers[1].commit(m).is_err(), "no grant");
 }
+
+// spec/permissions.md §4 Evidence of a commit: a commit signed by a granted key states its key
+// hop first; the edge writes on it (the `signers.0` write granting the key) are evidence of the
+// commit wherever it is held, here a sync ID whose unit is D alone (D minted with T as admin, written
+// as T by the key, so T's grant to the key is outside the unit)
+#[test]
+fn a_key_hops_grant_is_evidence_of_what_the_key_signs_spec_permissions_4() {
+    use osis_engine::evidence::Reason;
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let d = thing_of(&mut lp, 0, t);
+    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    let k = key_of(&lp, 1);
+    let grant = lp.peers[0].engine.grant_key(&t, &k, Some(&edge_of(Role::Write))).unwrap().commits[0];
+    lp.advance(1000);
+    spread(&mut lp);
+    let mut m = Mutation::new();
+    m.sign_as(t);
+    m.set(d, &REG, &s("on D by key")).unwrap();
+    let w = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(1000);
+    spread(&mut lp);
+    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("on D by key")));
+    let e = &mut lp.peers[0].engine;
+    let copies = e.evidence_copies().unwrap();
+    assert_eq!(copies[&(w, d)][0].hops.as_ref().and_then(|h| h.first().copied()), Some((osis_base::Holder::Key(k), t)), "the key hop first");
+    let ev = osis_engine::evidence::held::derive(&e.evidence_mint(), &copies, &[(d, d, vec![d])]);
+    assert_eq!(ev.required(&d).unwrap().get(&(grant, t)), Some(&Reason::Edge((osis_base::Holder::Key(k), t))), "the key's grant");
+}

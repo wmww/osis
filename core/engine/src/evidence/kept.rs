@@ -5,18 +5,16 @@
 //! the same inputs is the oracle (`Engine::check_evidence`; debug builds compare at the 1st, 2nd,
 //! 4th, ... follow).
 
-use super::Part;
-use super::held::{Ev, Key32, copy_parts};
+use super::held::{Ev, copy_parts};
 use crate::Engine;
 use crate::error::Result;
 use crate::sync::units::Ctx;
 use osis_base::memo::{Effects, Feed, Quiet, Unrecorded};
 use osis_base::{CommitId, Tid};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// One commit's copies: per thing its parts there.
-type Parts = Arc<BTreeMap<Tid, Vec<Part<Tid, Key32>>>>;
+type Parts = Arc<super::held::CopyParts>;
 
 /// What gives the keys to follow from the first follow on.
 #[derive(Clone)]

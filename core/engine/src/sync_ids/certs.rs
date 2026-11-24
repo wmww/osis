@@ -127,8 +127,9 @@ impl Engine {
         for (c, x) in &req {
             self.add_copy(c, x, &mut out);
         }
+        // a key has no record: its edge's target's is the one read
         for (a, b) in ev.edges(g).into_iter().flatten() {
-            out.records.insert(*a);
+            out.records.extend(a.thing());
             out.records.insert(*b);
         }
         self.shared_certificates(ev, g, &mut out);

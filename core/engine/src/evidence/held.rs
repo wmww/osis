@@ -17,10 +17,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// A step ID or a delete key: 32 bytes.
 pub type Key32 = [u8; 32];
-/// The derivation over the engine's held set.
-pub type Ev = Evidence<CommitId, Tid, Key32>;
+/// The derivation over the engine's held set: its holders things or keys (a key hop's edge
+/// writes, `signers.0`'s, are evidence as any edge's).
+pub type Ev = Evidence<CommitId, Tid, Key32, Holder>;
 /// The held copies with their parts as the derivation takes them.
-pub type Copies = BTreeMap<CopyId<CommitId, Tid>, Vec<Part<Tid, Key32>>>;
+pub type Copies = super::HeldCopies<CommitId, Tid, Key32, Holder>;
+/// One commit's copies, by thing.
+pub(crate) type CopyParts = BTreeMap<Tid, Vec<Part<Tid, Key32, Holder>>>;
+
+impl super::Holds<Tid> for Holder {
+    fn thing(&self) -> Option<Tid> {
+        Holder::thing(self)
+    }
+}
 
 /// Things to their mint admins, of every held creation record naming one.
 pub(crate) fn mint(core: &Core) -> BTreeMap<Tid, Tid> {
@@ -33,13 +42,6 @@ pub(crate) fn mint(core: &Core) -> BTreeMap<Tid, Tid> {
 fn records(core: &Core) -> BTreeMap<Tid, Holder> {
     let held = &core.ix.held;
     held.things().filter_map(|t| Some((*t, held.created(t)?.holder()?))).collect()
-}
-
-/// The hops of a part as the derivation takes them: grants of things alone. Interim
-/// (notes/accounts-switch-brief.md): the derivation's edges are things' until it takes a holder
-/// type, so a key hop that is no record edge brings none of the `signers.0` writes on it.
-fn thing_hops(hops: Vec<(Holder, Tid)>) -> Vec<(Tid, Tid)> {
-    hops.into_iter().filter_map(|(h, t)| Some((h.thing()?, t))).collect()
 }
 
 /// Every held copy with its parts (`copy_parts` of each held commit).
@@ -63,11 +65,11 @@ pub(crate) fn copies(tx: &mut Tx<'_>) -> Result<Copies> {
 /// compaction snapshot carrying steps records them). It reads the commit's header and view, its
 /// role commit reading, the records up its things' chains and its held `sync.0` body: what a
 /// derivation fed per commit follows.
-pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTreeMap<Tid, Vec<Part<Tid, Key32>>>> {
+pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<CopyParts> {
     let id = *id;
     let Some(m) = tx.core.ix.commits.get(&id).cloned() else { return Ok(BTreeMap::new()) };
     let h = m.header.clone();
-    let mut parts: BTreeMap<Tid, Vec<Part<Tid, Key32>>> = BTreeMap::new();
+    let mut parts: BTreeMap<Tid, Vec<Part<Tid, Key32, Holder>>> = BTreeMap::new();
     let mut steps_at: Vec<(Tid, usize, usize)> = Vec::new();
     {
         let core: &Core = tx.core;
@@ -89,10 +91,10 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTreeMap<Tid,
             out
         };
         let key = crate::apply::validity::signing_key(core, &m.view);
-        let hops = |t: &Tid, holder: Option<Tid>, edge_class: bool| -> Option<Vec<(Tid, Tid)>> {
+        let hops = |t: &Tid, edge_class: bool| -> Option<Vec<(Holder, Tid)>> {
             let (along, direct, _) = crate::apply::validity::stated(&h, &m.view, t)?;
             let mint = minted(&mut along.iter().copied().chain([h.signer, *t]));
-            Some(thing_hops(osis_perm::paths::hops(&mint, key, h.signer, &along, direct, *t, holder.map(Holder::Thing), edge_class)))
+            Some(osis_perm::paths::hops(&mint, key, h.signer, &along, direct, *t, None, edge_class))
         };
         for (ai, a) in h.aspects.iter().enumerate() {
             let t = a.tid;
@@ -105,18 +107,21 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTreeMap<Tid,
                 .flat_map(|(level, key)| bases.iter().map(move |base| Del { base: *base, level, key }))
                 .collect();
             let on = parts.entry(t).or_default();
-            let writes: Vec<&osis_perm::EdgeOp> = match (&rc, a.ak.as_str()) {
-                (Some(rc), "roles.0") => rc.ops.iter().filter(|o| o.target == t && o.holder.thing().is_some()).collect(),
-                (Some(rc), "signers.0") => rc.ops.iter().filter(|o| o.target == t && o.holder.thing().is_none()).collect(),
+            // an edge aspect's parts: one per edge write there, things' on `roles.0`, keys' on
+            // `signers.0`
+            let writes: Vec<&osis_perm::EdgeOp> = match (&rc, crate::apply::validity::Grants::of(a.ak.as_str())) {
+                (Some(rc), Some(g)) => rc.ops.iter().filter(|o| o.target == t && crate::apply::validity::Grants::of_holder(&o.holder) == g).collect(),
                 _ => Vec::new(),
             };
             if let (Some(rc), false) = (&rc, writes.is_empty()) {
-                for (o, holder) in writes.into_iter().filter_map(|o| Some((o, o.holder.thing()?))) {
+                for o in writes {
                     let path = rc.path_to(&t);
-                    let leave = holder == *path.last().unwrap_or(&rc.signer);
-                    let kind = Kind::Write(Write { holder, gives_read: o.edge.is_some_and(|e| e.role >= Role::Read) && !leave });
+                    // a key's grant gives no read (nothing is sealed to a key)
+                    let leave = o.holder == Holder::Thing(*path.last().unwrap_or(&rc.signer));
+                    let gives_read = o.holder.thing().is_some() && o.edge.is_some_and(|e| e.role >= Role::Read) && !leave;
+                    let kind = Kind::Write(Write { holder: o.holder, gives_read });
                     let mint = minted(&mut path.iter().copied().chain([rc.signer, t]));
-                    let hops = thing_hops(osis_perm::paths::hops(&mint, rc.key, rc.signer, path, rc.direct, t, Some(o.holder), true));
+                    let hops = osis_perm::paths::hops(&mint, rc.key, rc.signer, path, rc.direct, t, Some(o.holder), true);
                     on.push(Part { kind, hops: Some(hops), dels: dels.clone(), steps: vec![] });
                 }
                 continue;
@@ -124,11 +129,11 @@ pub(crate) fn copy_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTreeMap<Tid,
             if a.ak.as_str() == "sync.0" {
                 steps_at.push((t, on.len(), ai));
             }
-            on.push(Part { kind: Kind::Content, hops: hops(&t, None, false), dels, steps: vec![] });
+            on.push(Part { kind: Kind::Content, hops: hops(&t, false), dels, steps: vec![] });
         }
         for item in &h.purge {
             let (t, _, _) = crate::retention::purge::item_names(item);
-            parts.entry(*t).or_default().push(Part::new(Kind::Content, hops(t, None, false)));
+            parts.entry(*t).or_default().push(Part::new(Kind::Content, hops(t, false)));
         }
     }
     for (t, i, ai) in steps_at {
