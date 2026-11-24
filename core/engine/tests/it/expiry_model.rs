@@ -247,7 +247,7 @@ fn expiry_takes_its_commits_writes_spec_crdt_4_7() {
 /// Alice's write expiring at an hour, `m0399` of a paged map set to "secret", and writer
 /// Mallory's snapshot carrying valued copies of it under its stamp, `copy`, inside other entries
 /// spread over the pages, on pages the expiring write does not touch (forged: an honest snapshot
-/// carries it value-less). Every peer holds it: Alice 0, Mallory 1, reader 2. The copied keys.
+/// carries none of it). Every peer holds it: Alice 0, Mallory 1, reader 2. The copied keys.
 fn forged_copies(lp: &mut LocalPeer, t: Tid, copy: &Value) -> Vec<Value> {
     let (m_id, r_id) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
     set_edge(&mut lp.peers[0].engine, t, m_id, Some(edge(osis_base::Role::Write)), None);

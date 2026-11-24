@@ -2311,7 +2311,7 @@ fn a_tie_held_keeps_the_witness_unlogged_spec_commits_5() {
 
 // spec/commits.md §5 (A thing's mintings travel with its record: a copy of a destroyed thing's
 // witness a node logged before and that went is logged again while the sync ID needs the thing):
-// T destroyed (its one minting value-less), its witness's own entry gone, is logged again.
+// T destroyed (its one minting gone), its witness's own entry gone, is logged again.
 #[test]
 fn a_destroyed_things_witness_that_went_is_logged_again_spec_commits_5() {
     let mut w = W::new();

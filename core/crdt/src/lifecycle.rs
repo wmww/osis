@@ -53,9 +53,8 @@ impl Fragment {
     }
 
     /// Calls `f` with the origin dot of every value-carrying write held here with its value
-    /// (§4.7): every write `strip` of its dot would change, and every write of a keyed map record
-    /// (each carries the record's key). A dot may come more than once; once stripped of a dot's
-    /// values, a fragment names it no more.
+    /// (§4.7), and every write of a keyed map record (each carries the record's key). A dot may
+    /// come more than once; once `remove_gone` took a dot's writes, a fragment names it no more.
     pub fn each_valued(&self, f: &mut dyn FnMut(&Dot)) {
         let reg = |r: &Register, f: &mut dyn FnMut(&Dot)| {
             if let Some(w) = &r.write {
@@ -281,8 +280,7 @@ impl Fragment {
     /// record has a reset of its own (a removal is written above the creation it removes), or when
     /// no creation of it is held though `reflected` says the state reflects the delta that wrote
     /// it: a reset pruned it. A record lacking its creation otherwise may still show (the creation
-    /// may arrive, or turn valid), and one holding it does not hold it dead (a valued write may
-    /// still arrive under an expired creation). Below a record it resets nothing more (that reset
+    /// may arrive, or turn valid), and one holding it does not hold it dead. Below a record it resets nothing more (that reset
     /// takes it all). An enum's payloads of a case not current are no such thing: any case write
     /// stamped between the enum's reset and theirs shows them. Not for role-class aspects (a
     /// removal there names its key). One commit's worth: at most `MAX_DELTA_BARE` content-less
@@ -310,7 +308,7 @@ impl Fragment {
                 for (id, en) in &m.entries {
                     if m.is_live(id) {
                         // judged on what the record reads as: its fragment joined with its dot's
-                        // key-erased record's (§5.6), where an expired creation sits
+                        // key-erased record's (§5.6)
                         if let Some(inner) = m.record_frag(id).and_then(|f| f.sweep_at_most(r, reflected, left)) {
                             entries.insert(id.clone(), Entry { frag: Some(Box::new(inner)), ..Entry::default() });
                         }

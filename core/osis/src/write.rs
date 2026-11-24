@@ -481,7 +481,7 @@ impl<'d> Write<'d> {
                 WriteOp::Purge { tid, key: k } => {
                     let k = key(k)?;
                     // an ephemeral aspect's removal would be an ephemeral write: the request
-                    // alone holds its writes value-less
+                    // alone makes its writes gone
                     if k.signal() || k.ephemeral() {
                         m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
                     } else {

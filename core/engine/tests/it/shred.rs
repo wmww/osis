@@ -211,7 +211,7 @@ fn expired_entry_paged_unrecoverable_spec_commits_6() {
 }
 
 // spec/commits.md §6, spec/crdt.md §4.7, §5.5: an expiring element of a paged set goes
-// value-less in its page and leaves its value index; no copy of its value survives; adding the
+// from its page and leaves its value index; no copy of its value survives; adding the
 // value again and removing another by value work over the pages
 #[test]
 fn expired_element_paged_set_unrecoverable_spec_commits_6() {
@@ -340,7 +340,7 @@ fn removed_map_key_gone_after_purge_spec_crdt_5_6() {
 }
 
 // spec/crdt.md §4.7: a part of an expired delta arriving after T, later than the rest of its
-// commit, joins value-less and drops again; no local copy of its value survives
+// commit, joins without its writes and drops again; no local copy of its value survives
 #[test]
 fn expired_late_part_unrecoverable_spec_crdt_4_7() {
     let mut lp = net2();

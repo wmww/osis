@@ -13,7 +13,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` store r
 | `c/`+commit | applied commit records: a head (`index::record_head`, version 1: received, origin (a repair's own commit marked, with the blobs it encrypted afresh, `Meta::repair`), dropped parts with what each keeps (`Hold::Dropped`), stripped parts and whether each leftover keeps own values (`Hold::Leftover`), the canonical bytes of the header's linked lists), then the current blob. A held header is whole in its record (its list blobs go at the commit's expiry, spec/wire.md §5), so no open reads them |
 | `t/`+tid | creation records |
 | `a/`+aspect | aspects with a state (`aspects.0`) |
-| `v/`+aspect | value-less deltas (expired, purged): the join-time strip list |
+| `v/`+aspect | gone deltas (expired, purged): the join-time removal list |
 | `w/`+aspect+commit+ai | leftovers (notes/engine-retention-purge.md) |
 | `p/`+aspect, `pn/`+aspect+commit, `z/`+commit+tid | purge requests on a whole aspect or author; requests naming a commit; a request that dropped a permanent delta (`retention::lasting`) |
 | `x/`+T+commit+ai | timers (expiry, keep bounds) |

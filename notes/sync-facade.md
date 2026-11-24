@@ -56,7 +56,7 @@ Each wait's inputs and who moves them (a wake missing here is data that appears 
 - `WaitBlobs`: Blob waits above.
 - `Epoch(e)`: the account chain holding `e` (`account::refresh_epochs`, `epochs_held`), and `Moved`.
 - `Parked`, `Unexamined`: an open (`open_due`).
-- Every stored copy: what is value-less on a thing it writes (`persist_gone`, `purge::apply_request`: `Thing(t)`).
+- Every stored copy: what is gone on a thing it writes (`persist_gone`, `purge::apply_request`: `Thing(t)`).
 - A path waiting (an applied split commit with a thing whose path entry opens nowhere here; its parts invalid until it opens): `apply::paths::Wait`, whose doc says what moves it; `paths::refresh` at each `rejudge_all` pass, before the transaction end's last re-judge (so every write of an opener wakes its waiters by its transaction's end, whichever step made it) and at load settles only the commits whose openers moved. Tests: engine `validity::a_path_waiting_opens_when_its_roles_secret_comes_spec_commits_4`, `a_path_waiting_opens_when_a_pending_commit_gives_its_roles_secret_spec_commits_4`, `split_commits_waiting_on_a_path_cost_an_unrelated_write_nothing_spec_commits_4` (k = 1, 10: none settled), `split_paths_judge_alike_however_parts_come_spec_wire_4`.
 - A box the reading-only budget refused: room in the budget, read at every `wake` (room freed with no arrival or tick waits for the next).
 

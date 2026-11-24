@@ -605,8 +605,8 @@ fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
     out
 }
 
-/// What a snapshot of `(tid, ak)` would cost as a held body: its state (the expiring writes
-/// value-less) encoded, weighed as a part plus `ENTRY_CHARGE`. `None`: no state.
+/// What a snapshot of `(tid, ak)` would cost as a held body: its state (without the expiring
+/// writes) encoded, weighed as a part plus `ENTRY_CHARGE`. `None`: no state.
 fn snapshot_cost(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, me: Tid) -> Result<Option<usize>> {
     let Some(st) = super::snapshot_state(tx, tid, ak)? else { return Ok(None) };
     let cx = osis_commit::writer_ctx(Form::Commit, osis_commit::Kind::ContentSnapshot, osis_base::Ts::default(), me, 0, 0);

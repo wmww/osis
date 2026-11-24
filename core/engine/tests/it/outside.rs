@@ -323,8 +323,8 @@ fn enter(lp: &mut LocalPeer, w: Tid) {
 
 // spec/commits.md §5 A waiting part under a purge (gone from then on, no other local copy
 // of it), §4 Outside the node closure: commit `c`'s parts on W wait aside (`waiting_on_w`) when
-// peer 0's request purging its `t:reg.0` part comes: once W enters the part joins value-less, as its
-// author holds it, nothing waiting or flagged, the value nowhere.
+// peer 0's request purging its `t:reg.0` part comes: once W enters the part is gone, as at its
+// author, nothing waiting or flagged, the value nowhere.
 #[test]
 fn a_part_waiting_aside_is_purged_where_it_waits_spec_commits_5() {
     let reg = crate::common::ak("t:reg.0");
@@ -338,7 +338,7 @@ fn a_part_waiting_aside_is_purged_where_it_waits_spec_commits_5() {
     enter(&mut lp, w);
     let e1 = &mut lp.peers[1].engine;
     assert!(e1.pending().is_empty() && e1.suspects().is_empty(), "{:?} {:?}", e1.pending(), e1.suspects());
-    assert_eq!(e1.get(&w, &reg).unwrap(), None, "value-less");
+    assert_eq!(e1.get(&w, &reg).unwrap(), None, "gone");
     assert_eq!(e1.get(&w, &crate::common::ak("t:list.0")).unwrap(), Some(Value::List(vec![Value::Str("a".into())])));
     let author = lp.peers[0].engine.state_digest(&w, &reg).unwrap();
     assert_eq!(lp.peers[1].engine.state_digest(&w, &reg).unwrap(), author, "as its author holds it");

@@ -282,7 +282,7 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
 
 // spec/commits.md §5 Forgetting (a forgotten commit's name), Purge: a write with no history kept,
 // compacted and its commit forgotten (header and ID gone), is still purged by its ID: the snapshot
-// carrying it holds it value-less.
+// carrying it holds it no more.
 #[test]
 fn purge_commit_reaches_a_forgotten_write_spec_commits_5() {
     let db = db_at(0);

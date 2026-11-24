@@ -628,16 +628,14 @@ fn expiry_round(w: &mut World) {
 // record's; Forgetting: a part not held on a thing whose record is not held, a forgotten name
 // past its expiry), spec/requirements.md (data may carry an expiry at which every node drops it):
 // a thing made to expire with its holding strong, written and expired, leaves its rows and blobs
-// as a fresh node's of the same account, at 1 and 10 rounds: but the expired strongs in D's
-// snapshot, a few bytes each.
+// as a fresh node's of the same account, at 1 and 10 rounds, the expired strongs in D's snapshot
+// included (gone with their adds, spec/crdt.md §4.7).
 #[test]
 fn expired_things_return_storage_to_a_fresh_nodes_spec_commits_5() {
     let (mut wf, fresh) = fresh_node();
     let [(mut wa, a), (mut wb, b)] = one_and_ten(world_of(0, 1, 1), |w, _| expiry_round(w), aged);
-    // each expired strong stays in D's holds.0 snapshot as its value-less record (notes/crdt.md,
-    // An expired set element keeps its record), about two removals' tombstones of bytes
-    as_fresh(&a, &fresh, 2, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
-    as_fresh(&b, &fresh, 2 * 10, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
+    as_fresh(&a, &fresh, 0, "1 round", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
+    as_fresh(&b, &fresh, 0, "10 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
 }
 
 /// A round: node 0 mints A with its account root as admin, keeping 10 minutes of history whose

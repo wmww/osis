@@ -220,7 +220,7 @@ fn late_snapshot_of_purged_value_reads_nothing_spec_crdt_4_7() {
     let purged = lp.peers[0].engine.get(&t, &reg).unwrap();
     assert_ne!(purged, Some(s("secret")));
     lp.deliver(1, &spk).unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &reg).unwrap(), purged, "the snapshot's copy joins value-less");
+    assert_eq!(lp.peers[1].engine.get(&t, &reg).unwrap(), purged, "the snapshot's copy joins without the purged write");
     lp.peers[1].restart(0x5b11).unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &reg).unwrap(), purged, "restarted");
 }

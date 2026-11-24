@@ -773,7 +773,7 @@ fn blobs() -> Vec<Scenario> {
 }
 
 /// Keep bounds and expiry: dead purge-on-replace bodies dropped where they die and held where
-/// they do not, and expired puts' value-less records.
+/// they do not, and expired puts.
 fn bounds() -> Vec<Scenario> {
     use Step::*;
     vec![
@@ -808,7 +808,7 @@ fn bounds() -> Vec<Scenario> {
         Scenario {
             name: "expired map puts",
             spec: "spec/crdt.md §4.7",
-            source: "order harness, shrunk: two expired map puts: their value-less records",
+            source: "order harness, shrunk: two expired map puts",
             steps: vec![Write { by: 1, t: 7, op: 28, k: 1, v: 6 }, Write { by: 1, t: 2, op: 28, k: 1, v: 2 }, Advance { who: None, ms: 4563278 }],
             orders: None,
         },

@@ -63,7 +63,7 @@ fn request(lp: &mut LocalPeer, by: usize, t: Tid, item: PurgeItem) -> CommitId {
 
 // spec/commits.md §5 Purge (Without the header), spec/crdt.md §4.7 Gone writes, §8 Facts: a node that
 // never received the purged commit, holding only a snapshot carrying it and the request, in
-// either order, holds its copy value-less: by stamp or by author, an admin's request or its
+// either order, removes its copy: by stamp or by author, an admin's request or its
 // author's under `author_or_admin`. Its author's under `admin` takes nothing, there as where the
 // header is held: the snapshot states the class.
 #[test]
@@ -144,12 +144,20 @@ fn a_wider_fact_never_covers_spec_commits_5() {
 /// At peer `i`: every body a held valid snapshot of `ak` covers is dropped, then every
 /// forgettable commit forgotten (what node-sync's compaction does).
 fn compact_forget(lp: &mut LocalPeer, i: usize, t: Tid, ak: &Ak) {
+    compact_maybe_forget(lp, i, t, ak, true)
+}
+
+/// `compact_forget`, forgetting only with `forget`.
+fn compact_maybe_forget(lp: &mut LocalPeer, i: usize, t: Tid, ak: &Ak, forget: bool) {
     let e = &mut lp.peers[i].engine;
     for c in e.commit_ids() {
         // refused (nothing changes) unless a held valid snapshot covers it
         if e.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == *ak)) {
             let _ = e.drop_body(&c, &t, ak);
         }
+    }
+    if !forget {
+        return;
     }
     let due: Vec<_> = e.commit_ids().into_iter().filter(|c| e.forgettable(c).unwrap()).collect();
     e.forget_commits(&due).unwrap();
@@ -290,10 +298,8 @@ fn a_dead_write_keeps_no_name_spec_commits_5() {
 // Security invariant (spec/requirements.md Deletion, spec/commits.md §5 Purge): a purge naming a
 // write by ID reaches its value wherever held, and only that write's, whether or not its node
 // forgot the commit. Differential: two runs of the same random writes, compactions and purges by
-// ID, one forgetting every covered commit at once and one forgetting nothing, read alike at every
-// node, and no node reads a purged value; but a purged write that replaced a body brings it back
-// only where a body of it is held (spec/crdt.md §4.7): where the reads differ, the forgetting
-// run holds the write the other reads at no node (a holder would re-snapshot it to the rest).
+// ID, each dropping every covered body, one forgetting every covered commit at once and one
+// forgetting nothing, read alike at every node, and no node reads a purged value.
 #[test]
 #[ignore = "property"]
 fn purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5() {
@@ -356,11 +362,9 @@ fn purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5() {
                 lp.peers[0].engine.purge_resnapshots().unwrap();
                 lp.peers[1].engine.purge_resnapshots().unwrap();
                 lp.sync_all().unwrap();
-                if r == 0 {
-                    for i in 0..3 {
-                        for ak in &aks {
-                            compact_forget(lp, i, t, ak);
-                        }
+                for i in 0..3 {
+                    for ak in &aks {
+                        compact_maybe_forget(lp, i, t, ak, r == 0);
                     }
                 }
             }
@@ -370,10 +374,7 @@ fn purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5() {
             for i in 0..3 {
                 for ak in &aks {
                     let got: Vec<Option<Value>> = runs.iter_mut().map(|lp| lp.peers[i].engine.get(&t, ak).unwrap()).collect();
-                    if got[0] != got[1] {
-                        let gone = written.iter().find(|w| got[1] == Some(Value::Int(w.2))).is_some_and(|w| (0..3).all(|j| super::held_part(&runs[0].peers[j].engine.core, &w.0[0], &t, ak).is_none()));
-                        assert!(gone, "seed {seed} step {step}: node {i} {ak}, forgetting {:?} vs not {:?}, the latter's write held in the forgetting run", got[0], got[1]);
-                    }
+                    assert_eq!(got[0], got[1], "seed {seed} step {step}: node {i} {ak}, forgetting vs not");
                     assert!(!purged.iter().any(|v| got[0] == Some(Value::Int(*v))), "seed {seed} step {step}: node {i} reads a purged value {:?}", got[0]);
                 }
             }

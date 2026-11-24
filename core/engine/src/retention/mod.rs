@@ -473,8 +473,8 @@ pub(crate) fn kept_invalid(m: &crate::engine::Meta) -> bool {
 /// (each gone for a standing request, `held_purged`), no permanent delta (a lasting header stays,
 /// spec/commits.md §5) and no `created.0` delta (a thing's first commit stays): kept only so that
 /// a fall of the request fetches a copy (`purge::rejudge_purges`), as one `kept_invalid` is.
-/// Either class: node-sync forgets it once each part not dropped as covered is covered
-/// (`Engine::forgettable`); a memory one is charged its own bytes until then.
+/// Either class: node-sync forgets it once none of its purged parts is listed
+/// (`Engine::forgettable`, `purged_unlisted`); a memory one is charged its own bytes until then.
 pub(crate) fn kept_purged(core: &Core, c: &CommitId, m: &crate::engine::Meta) -> bool {
     if m.view.purges || m.view.kind != Kind::Content || core.ix.pending.contains_key(c) {
         return false;
@@ -926,8 +926,8 @@ fn expire_snapshot(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(T
 }
 
 /// Snapshot part `ai` of `c` carries a copy of a value of a write on its aspect's gone list
-/// (spec/crdt.md §4.7 Gone writes, spec/commits.md §5): held as its leftover from now on, those copies
-/// value-less. Store only: the state took the copies stripped (`apply::join_into_state`), or the
+/// (spec/crdt.md §4.7 Gone writes, spec/commits.md §5): held as its leftover from now on, without
+/// those copies. Store only: the state took the copies stripped (`apply::join_into_state`), or the
 /// caller rebuilds the aspect.
 pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let (Some(body), gives) = held_body(tx, c, ai)? else { return Ok(()) };

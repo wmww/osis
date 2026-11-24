@@ -149,7 +149,6 @@ impl SeqElem {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Frag {
-    /// A write without a value is value-less (§4.7).
     Register { reset: Option<Stamp>, write: Option<(Stamp, Value)> },
     Bag { kind: BagKind, c: Composite, elems: BTreeMap<Dot, Elem> },
     Struct { c: Composite, fields: BTreeMap<u64, Frag> },
@@ -729,7 +728,7 @@ impl Frag {
     }
 
     /// Whether the fragment holds a live value (§4.3): a valued register or case winner, a `W`, a live element or
-    /// record, or a field holding one. Removals, positions and value-less writes are none.
+    /// record, or a field holding one. Removals and positions are none.
     pub fn live_value(&self) -> bool {
         match self {
             Frag::Register { write, .. } => write.is_some(),

@@ -1027,7 +1027,7 @@ fn a_strong_in_held_history_needs_its_target_spec_commits_5() {
 
 // spec/sync-set.md §3 Release, spec/commits.md §5 (any other commit keeps its header: a held leftover is a part): one
 // commit writes X's register and puts an element on held T's list, expiring; past its expiry
-// both parts are leftovers (T's list keeps the element's record, value-less). X leaves the node
+// both parts are leftovers (T's list without the element). X leaves the node
 // closure and is released: the commit loses X's part only, so T reads as its held bodies give
 // (the debug rebuild check of the release's transaction). Fails when a commit whose blob keeps
 // no part is forgotten whole (a leftover is held outside the blob's parts).
