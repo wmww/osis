@@ -30,5 +30,5 @@
 - Own boxes only (a node following a stub fetches the boxes it opens, not every holder's): not built, and a commit applies only with all its pages.
 - A box is trusted only with the evidence that judges its commit, so a stub in a unit is its boxes plus that evidence.
 - Each stub is one more sync ID a node follows (issues/many-sync-ids-cost.md).
-- spec/requirements.md, for Tess: "the grantee's node syncs it once a strong reference it holds reaches it" holds only where the node has a way to the thing; and the stub as a concept beside the sync unit.
+- spec/requirements.md, for Tess once built: the stub as a concept beside the sync unit.
 - Not modelled: rule 2's cut of the key part, rule 4, a stub from a fire. Model first (notes/principles.md).

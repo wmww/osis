@@ -39,8 +39,7 @@ Beside the route: the two failing seeds; one cleanup always, a workflow job abou
 - **No fix sized by its label.** Three times a class of failing tests labelled with one cause had three or more; one probe line per failing test (what it holds, which fire or box was refused) sizes a job in a session's first minutes. A cause written in a note says whether it was probed or guessed.
 
 ## Waiting on Tess
-1. **Requirements wording** (hers to edit): "which opaque sync units each item is in" → "each blob is in"; "an item's expiry" → "a blob's expiry"; "(an invitation, a reader leaving)" → "(a grant from outside, a reader leaving)".
-2. CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
+1. CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
 
 ## Parked
 - `mizzen-snapshot-stream`: page-walking snapshot writer, unbounded memory on forged states; resume only with a per-source cursor (issues/durable-decode-bound.md).
