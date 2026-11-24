@@ -314,7 +314,9 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         tx.core.gone_dirty.insert(k.clone());
         changed.insert(k);
     }
-    Ok(())
+    // its history cursors and rows (`leaving`), purged parts' included: the parts it dropped may
+    // be none (every one purged), so no part's change dates them out
+    super::leaving::forget_aspects(tx, aspects.into_iter().map(|(ak, _)| (*t, ak)))
 }
 
 /// Every per-aspect row of `(t, ak)` goes, as on a node that never held a part of it.

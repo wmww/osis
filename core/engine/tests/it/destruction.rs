@@ -105,3 +105,31 @@ fn a_thing_relying_on_a_destroyed_thing_keeps_its_record_spec_commits_5() {
     assert!(!keeps(&mut lp, &u), "nothing needs u");
     assert!(!keeps(&mut lp, &t), "u let go of t: t keeps nothing");
 }
+
+// spec/commits.md §5 (Destruction), notes/engine-retention-dating.md Rows: a thing keeping
+// history, its register written twice and every part of it purged by author (each keeps a row at
+// its own `ts`, none held), then destroyed: the destruction drops no part there, yet the aspect
+// is forgotten and no row of it stays (`Engine::check_index`: the rows as the held set dates them).
+#[test]
+fn a_destruction_after_a_purge_by_author_leaves_no_row_spec_commits_5() {
+    let (mut lp, ps) = people(1);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    m.set(t, &ct::RETENTION, &ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() }), ..Default::default() }).unwrap();
+    e.commit(m).unwrap();
+    for v in ["one", "two"] {
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s(v)).unwrap();
+        e.commit(m).unwrap();
+    }
+    let mut m = Mutation::new();
+    let now = e.now();
+    m.set(t, &ct::PURGE, &now).unwrap();
+    m.purge(osis_commit::PurgeItem::Author { tid: t, ak: REG.name(), author: ps[0] });
+    e.commit(m).unwrap();
+    e.check_index();
+    lp.advance(1_000);
+    purge(&mut lp, t);
+    lp.peers[0].engine.check_index();
+}
