@@ -313,7 +313,7 @@ def analyze(path):
     cmds.sort(key=lambda x: -x[0])
     runs = {k: [(e - s).total_seconds() for s, e in v] for k, v in kinds.items()}
     name = meta.get("description") or (first_prompt or os.path.basename(path))[:50].replace("\n", " ")
-    if meta.get("model") and meta["model"] != "opus":
+    if meta.get("model"):
         name += f" [{meta['model']}]"
     return dict(name=name, start=t0, end=t1, total=total, model=model, kinds={k: clip(v, spans) for k, v in kinds.items()},
                 runs=runs, loops=loops, moved=moved, cmds=cmds, bash=bash)
