@@ -101,10 +101,10 @@ osis-engine (`core/engine/src`); each file's doc comment says what it holds. Whe
 | `undo/` | revert from kept history; `held_commits` for the API's stacks |
 | `identity/`, `events/` | node seed, keys, creation records; `Event`, `Diagnostic`, subscribers |
 | `ephemeral/` | the local write path of ephemeral aspects and signals (notes/ephemeral.md) |
-| `sync_ids/` | independents and sync IDs (`actors.rs`); bodies, sealing, wraps, deposits, head and delete keys (`blobs.rs`); certificates (`certs.rs`); re-encrypting another's content (`opened.rs`); judgment J (`judge.rs`), proofs (`proofs.rs`) |
+| `sync_ids/` | independents and sync IDs (`actors.rs`); bodies, sealing, wraps, deposits, head and delete keys (`blobs.rs`); delete-key steps placed and checked (`steps.rs`, notes/delete-keys.md); certificates (`certs.rs`); re-encrypting another's content (`opened.rs`); judgment J (`judge.rs`), proofs (`proofs.rs`) |
 | `sync/` | the facade and the tables kept for sync (notes/sync-facade.md) |
 | `flows/` | `Done`, key actors; accounts and pairing, the signing chain, thing lists, addenda, edge flows, roots, inbox, sync IDs, share links, creation by a record (`create.rs`) |
-| `rotation/` | the cascade, `rotation_due`, re-seals; departures, holder actors, lost access (`lost.rs`) |
+| `rotation/` | the cascade, `rotation_due`, re-seals; departures, holders, lost access (`lost.rs`) |
 | `local_peer.rs` | `LocalPeer`: engines exchanging commits directly (the simulator's seed, notes/test-sim.md) |
 | `sides.rs`, `error.rs` | sides in admin disputes (notes/disputes.md); `Error` with the three classes (notes/architecture.md §3) |
 
