@@ -21,4 +21,4 @@ Options (one line of cost each):
 3. On a lowering, holders re-log the demoted writer's blobs committing to keys it lacks: work in its whole history at every store per lowering, and the new level-2 commitment cannot be its own purge author's key, so level 2 stops meaning the author's right.
 4. Accept: availability, not erasure (notes/purge-model.md For Tess 4); the requirements' "Malicious readers can only waste storage" then needs "or, having written, delete their own earlier writes at stores".
 
-Option 1 does not reach a writer that, while a writer, listed its own key at level 1: a level-1 Delete needs only the sync key, and no node checks which keys a header lists (issues/delete-key-levels-unchecked.md, spec/sync-hostile.md §2).
+A writer that, while a writer, listed its own key at level 1 lists a key no step bears: its part applies at no reader (spec/crypto.md §7 Checked keys; issues/delete-key-levels-unchecked.md), so its level-1 Delete, which needs only the sync key, loses nothing a reader keeps.
