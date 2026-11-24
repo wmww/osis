@@ -13,10 +13,12 @@ Sessions run out of room on it, so each session takes one piece and ends pushed 
 
 ## In flight beside it
 In-flight lines name issues in words, not paths: a branch that closes its issue would fail policy on this note.
-- `mizzen-purge-no-effect` (worker, third session): a purged write has no effect on any read (Tess, decided); rule built and engine green but for expiry cost (waits on the dating redesign's index); osis history listing and some osis-sync tests left.
+- `mizzen-addenda-memo` (worker): removal follow-ups decided by memo; dropping role rows nothing reads, then landing.
+- `mizzen-prop-cost` (worker): the gate's property stage grew ~1.5x; slimming non-coverage work.
 - Gates count instructions per test binary (tools/test_cost.txt): NEW-COST fails, STALE-COST lowers its line in the landing.
 
 ## Safe parallel work queue (outside the rewrite)
+- After the sync rewrite lands: delete suspect repair whole (spec, wire message, sync, engine, notes): no divergence is left for it (purged writes have no effect, landed).
 - After the sync rewrite lands: the deprecated-terms rename pass ("edge" where a role grant is meant → grant, spec and code; issues/deprecated-terms.md).
 - Workflow agent about half the time; one cleanup always.
 
