@@ -2348,3 +2348,28 @@ fn expired_elements_cost_a_ts_and_anchor_each_spec_4_7() {
         }
     }
 }
+
+/// §4.7, `seq_span::coalesce`: a range's creations never fall in `ts`, so value-less elements of
+/// one source created at `ts` 1, 3, 2 do not compact to one range, and a reset at 2.5 keeps the
+/// same elements (the second alone) whether or not the state was compacted first.
+#[test]
+fn compact_never_ranges_falling_creations_spec_4_7() {
+    use crate::fragment::Meta;
+    use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+    use crate::stamp::{Dot, Stamp};
+    let el = |k: u64, t: u64| {
+        let st = Stamp::new(ts(t << 16), node(1), k);
+        let at = if k == 1 { Anchor::Head } else { Anchor::Dot(Dot::new(node(1), k - 1)) };
+        (st.dot.clone(), SeqElem { created: Some((st.clone(), at.clone())), content: SeqContent::None, pos: vec![(st, at, None)], deleted: None, undel: None, valueless: true, span: 1, each: None })
+    };
+    let plain = Fragment::Seq(Seq::new(false, Meta::default(), [el(1, 1), el(2, 3), el(3, 2)].into_iter().collect()));
+    let reset = Fragment::Seq(Seq::new(false, Meta { reset: Some(Stamp::new(ts(5 << 15), node(2), 1)), ..Meta::default() }, Default::default()));
+    let mut compacted = plain.clone();
+    compacted.compact();
+    let (mut a, mut b) = (plain, compacted);
+    a.join(reset.clone());
+    b.join(reset);
+    assert_eq!(b, a, "compacting changes no join");
+    let Fragment::Seq(s) = &a else { unreachable!() };
+    assert_eq!(s.elems().keys().cloned().collect::<Vec<_>>(), vec![Dot::new(node(1), 2)], "the element created above the reset alone stays");
+}

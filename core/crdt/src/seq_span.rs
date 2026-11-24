@@ -280,13 +280,13 @@ pub(crate) fn expand(m: Elems) -> Elems {
 
 /// Whether record `(d, e)` continues range record `(a, ea)`: the next dot, both uniform, the same
 /// deleted write, both without creation or both with (`ts` never falling), one side of the flag
-/// write, and the same content template.
-fn continues(a: &Dot, ea: &SeqElem, d: &Dot, e: &SeqElem) -> bool {
+/// write, and the same content template. `last`: the creation `ts` of the range's last element.
+fn continues(a: &Dot, ea: &SeqElem, last: Option<Ts>, d: &Dot, e: &SeqElem) -> bool {
     let at = |x: &Dot, k: u64| x.src == a.src && Some(x.ctr) == a.ctr.checked_add(k);
     let chain = match (&ea.created, &e.created) {
         (None, None) => true,
         // an embedding is one chain, all at its register write's `ts` (§7)
-        (Some(_), Some((y, ay))) => ea.ts_at(ea.span - 1).is_some_and(|t| y.ts >= t && (!a.src.is_derived() || (y.ts == t && *ay == Anchor::Dot(nth(a, ea.span - 1))))),
+        (Some(_), Some((y, ay))) => last.is_some_and(|t| y.ts >= t && (!a.src.is_derived() || (y.ts == t && *ay == Anchor::Dot(nth(a, ea.span - 1))))),
         _ => false,
     };
     let content = match (&ea.content, &e.content, &ea.created, &e.created) {
@@ -306,8 +306,9 @@ pub(crate) fn coalesce(m: Elems) -> Elems {
     type Creations = Option<(Vec<Ts>, Vec<Option<Anchor>>)>;
     let mut out: Vec<(Dot, SeqElem, Creations)> = Vec::with_capacity(m.len());
     for (d, e) in m {
+        // a range being built holds its elements' `ts` in `each`, not yet in `ea.each`
         if let Some((a, ea, each)) = out.last_mut()
-            && continues(a, ea, &d, &e)
+            && continues(a, ea, each.as_ref().map_or_else(|| ea.ts_at(ea.span - 1), |(ts, _)| ts.last().copied()), &d, &e)
         {
             let chained = |x: &Dot, xe: &SeqElem, i: u64| xe.anchor_at(x, i).filter(|an| i == 0 || *an != Anchor::Dot(nth(x, i - 1)));
             if each.is_none() && (ea.each.is_some() || e.each.is_some() || e.ts_at(0) != ea.ts_at(0) || e.created.as_ref().is_some_and(|c| c.1 != Anchor::Dot(nth(a, ea.span - 1)))) {
