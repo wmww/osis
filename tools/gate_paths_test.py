@@ -122,5 +122,34 @@ check("code change in a file git takes for binary", verdict(write(b'const S: &st
 check("symlink retargeted", verdict(link("//x.rs"), link("//y.rs")), True)
 check("file made a symlink", verdict(write(b"// x\n"), link("//y.rs")), True)
 
+
+
+def quiet(old, new):
+    """Whether a.toml from `old` to `new` is left out (comments or blank lines only), in a scratch repository."""
+    home = os.getcwd()
+    with tempfile.TemporaryDirectory() as d:
+        os.chdir(d)
+        try:
+            git = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True, capture_output=True)
+            git("init", "-q")
+            for i, text in enumerate((old, new)):
+                if text is None:
+                    if os.path.exists("a.toml"):
+                        os.remove("a.toml")
+                else:
+                    write(text.encode())("a.toml")
+                git("add", "-A"); git("commit", "-qm", str(i), "--allow-empty")
+            return g.toml_quiet("HEAD^", "HEAD", ["a.toml"]) == ["a.toml"]
+        finally:
+            os.chdir(home)
+
+
+M = '[package]\nname = "x"\n'
+check("toml comment added", quiet(M, M + "# x\n\n  # y\n"), True)
+check("toml comment changed", quiet(M + "# x\n", M + "#y\n"), True)
+check("toml line changed", quiet(M, M.replace('"x"', '"y"')), False)
+check("toml trailing comment on a key", quiet(M, M.replace('"x"', '"x" # c')), False)
+check("toml comment in a multi-line string", quiet('a = """\nq\n"""\n', 'a = """\n# q\nq\n"""\n'), False)
+check("toml added", quiet(None, "# x\n"), False)
 print(f"gate paths: {n} cases, {'FAILED' if fail else 'ok'}")
 sys.exit(fail)

@@ -190,6 +190,18 @@ git("commit", "-qm", "edit")
 write("core/top/new.rs", "// new\n")
 t = out()
 check("diff from merge-base", t, "paths: 2", "crates touched: osis-leaf, osis-top", "leaf_large", "top_exhaustive")
+# manifests changed in comments and blank lines only select nothing; a real manifest change does
+with open("Cargo.toml", "a") as f:
+    f.write("\n# a comment\n")
+with open("core/mid/Cargo.toml", "a") as f:
+    f.write("  # another\n")
+t = out()
+check("comment-only manifests", t, "selects nothing: Cargo.toml (TOML comments", "selects nothing: core/mid/Cargo.toml (TOML comments",
+      "crates touched: osis-leaf, osis-top", absent=["every crate", "osis-mid"])
+with open("core/mid/Cargo.toml", "a") as f:
+    f.write("[features]\n")
+check("a manifest change", out(), "crates touched: osis-leaf, osis-mid, osis-top")
+git("checkout", "--", "Cargo.toml", "core/mid/Cargo.toml")
 
 # --emit FILE: the gate's `build`, `check` and `run` lines appended to FILE, builds first, with the same
 # packages and offset; the report still printed

@@ -23,7 +23,7 @@ Each prints its wall and CPU-s and checks its time limit. Steps before the tests
 9. The whole gate against `gate` (without its lock wait and build stage), then the summary.
 
 ## Components pay for themselves
-The paths changed since the merge base (committed or not, untracked included) pick the steps; `tools/gate_paths.py BASE` decides (`-v` says why a docs or comments diff took the full gate):
+The paths changed since the merge base (committed or not, untracked included) pick the steps; `tools/gate_paths.py BASE` decides (`-v` says why a docs or comments diff took the full gate). A .toml file whose every changed line is blank or a whole-line `#` comment (no multi-line string in it) is left out first, here and in the selection:
 - Only libs/kit/ or app/: the GUI lint and tests, unification if a manifest changed, deny.
 - Everything else is Markdown under spec/, notes/ or issues/ (`core=docs`): steps 1-2, plus the GUI steps if the GUI changed. A Rust line reading or including a file there sends the full gate.
 - That Markdown plus .rs files whose every changed line is a whole-line `//` comment (`core=comments`): steps 1-2, core clippy, the doctests of each crate with a changed doc comment whose library has doctests (`gate.doctests`), plus the GUI steps if the GUI changed. Anything a comment could change falls through to the full gate (the docstring lists the cases).

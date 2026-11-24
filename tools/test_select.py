@@ -14,7 +14,8 @@ measured by the gate.
 
 The set: every property test, at small size, of the crates the paths touch and their dependents
 (the Cargo graph), and every sim scenario if osis-sim is one of those; `--all` selects every crate.
-A file in PINNED (run-time data whose meaning an instant check fixes) selects nothing.
+A file in PINNED (run-time data whose meaning an instant check fixes) selects nothing, nor in a
+diff does a .toml file whose changed lines are all blank or comments (gate_paths.toml_quiet).
 A dependent is reached through normal and build edges; a dev (or cfg(fuzzing)) edge selects that
 one crate and stops, since a dev dependency is linked only into that crate's own tests, and of a
 crate reached only so, only the properties in files that can call the dependency (`reaching`).
@@ -90,9 +91,12 @@ def metadata():
 
 
 def changed(base):
+    """The paths changed from base (default: the merge base with origin/main) to the working tree,
+    and {path: why it selects nothing} of the .toml ones changed in comments or blank lines only."""
     if base is None:
         base = run("git", "merge-base", "HEAD", "refs/remotes/origin/main").strip()
-    return sorted(gate_paths.changed(base, None))
+    paths = sorted(gate_paths.changed(base, None))
+    return paths, {p: "TOML comments or blank lines only" for p in gate_paths.toml_quiet(base, None, paths)}
 
 
 def owner(path, dirs):
@@ -371,13 +375,15 @@ def main():
             sys.exit(__doc__)
     os.chdir(run("git", "rev-parse", "--show-toplevel").strip())
     given = paths is not None
+    quiet = {}
     if paths is None:
-        paths = [] if every else changed(base)
+        paths, quiet = ([], {}) if every else changed(base)
     if offset is None:
         offset = random.randrange(10**12)
 
     dirs, users = metadata()
-    touched, whole, nothing, local = classify(paths, dirs)
+    touched, whole, nothing, local = classify([p for p in paths if p not in quiet], dirs)
+    nothing.update(quiet)
     whole = whole or every
     selected = dict.fromkeys(dirs) if whole else closure(touched, users)
     local = {} if whole else {c: t for c, t in local.items() if selected.get(c, 0) is not None}

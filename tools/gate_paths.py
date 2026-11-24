@@ -5,6 +5,8 @@
       files included), or to commit REV; prints gate.sh's `core= gui= unify= doc= tooling=` assignments.
       -v: why a diff of docs and Rust is not comments-only (each line that is not)
 
+A .toml file whose every changed line, removed or added, is blank or a whole-line `#` comment is
+left out first (`toml_quiet`); a diff of only such files is `core=docs`.
 gui=1: a path under libs/kit/ or app/. unify=1: a Cargo.toml, Cargo.lock or .cargo/ path.
 tooling=1: a path under tools/, .gitattributes or notes/time-limits.md (the tools' own tests run).
 core: '' when every path is the GUI's; `docs` when the rest is Markdown under spec/, notes/ or
@@ -196,6 +198,29 @@ def rs_verdict(base, rev, paths):
     return bad, docs
 
 
+TOML_QUIET = re.compile(r"[ \t]*(#.*)?\r?")
+
+
+def toml_quiet(base, rev, paths):
+    """The .toml `paths` whose every changed line, removed or added, is blank or a whole-line `#`
+    comment: no reader sees the change. Not one with a multi-line string at either end (a `#` line
+    may be its text), an added or deleted one, or one that is not a regular file."""
+    paths = [p for p in paths if p.endswith(".toml") and "\n" not in p]
+    if not paths:
+        return []
+    old, new = blobs(base, paths), blobs(rev, paths)
+    present = [p for p in paths if old[p] is not None and new[p] is not None
+               and not any(q in t for t in (old[p], new[p]) for q in ('"""', "'''"))]
+    linked = set(links(base, rev, present))
+    present = [p for p in present if p not in linked]
+    out = []
+    for p, (rem, add) in hunks(base, rev, present).items():
+        sides = ((old[p].split("\n"), rem), (new[p].split("\n"), add))
+        if all(TOML_QUIET.fullmatch(lines[n - 1] if n <= len(lines) else "") for lines, nums in sides for n in nums):
+            out.append(p)
+    return out
+
+
 def read(p):
     try:
         with open(p, encoding="utf-8", errors="replace") as f:
@@ -240,6 +265,13 @@ def readers():
 def classify(base, rev=None, verbose=False):
     """{core, gui, unify, doc, tooling} for the paths changed from base to rev (None: the working tree)."""
     paths = changed(base, rev)
+    try:
+        quiet = set(toml_quiet(base, rev, paths))
+    except (OSError, subprocess.CalledProcessError, RuntimeError, ValueError):
+        quiet = set()
+    if quiet and quiet == set(paths):
+        return dict(core="docs", gui="", unify="", doc="", tooling="")
+    paths = [p for p in paths if p not in quiet]
     rest = [p for p in paths if not p.startswith(GUI)]
     res = dict(core="1" if rest else "", gui="1" if len(rest) < len(paths) else "",
                unify="1" if any(UNIFY.fullmatch(p) for p in paths) else "", doc="",
