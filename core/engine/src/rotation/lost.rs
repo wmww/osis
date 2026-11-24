@@ -105,7 +105,7 @@ pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
     let mut seen = BTreeSet::from([*a]);
     let mut todo = vec![*a];
     while let Some(x) = todo.pop() {
-        if syncs(core, &x) {
+        if syncs(core, &x, a) {
             return true;
         }
         for y in core.ix.held.named_on(&x) {
@@ -119,16 +119,19 @@ pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
 }
 
 /// Whether the node syncs `t` or holds an offer of it: an own actor or the own account's root,
-/// a thing the node closure holds (read or kept unread) or a held strong reaches (what the node
-/// asked to sync, before a box lets the walk enter it), a holder held for keys, a link the node
+/// a thing the node closure holds within the local part or another thing's sync unit, or a held
+/// strong reaches where First entry carries it, a loss not carried out aside
+/// (`sync::units::reached_carried`: what the node asked to sync, before a box lets the walk
+/// enter it; a strong alone counts nothing, and an entry kept only while a loss is carried out
+/// gives no role that would keep it, the loss judged on the least state), a holder held for keys, a link the node
 /// redeems (its sync ID is in the sync set from the link's text, spec/sync-set.md §5), or the
 /// target of a held valid `grant@~0` fire (spec/sync-inbox.md §5 Grant from outside); a
 /// dependent thing where the actor its secrets derive from is one (its grants travel under that
 /// actor's sync IDs).
-fn syncs(core: &Core, t: &Tid) -> bool {
+fn syncs(core: &Core, t: &Tid, a: &Tid) -> bool {
     let cl = &core.ix.closure;
     let own = own_actors(core);
-    let one = |t: &Tid| own.contains(t) || cl.holds(t) || cl.targeted(t) || cl.for_keys(t) || core.followed_links.contains(t) || crate::flows::inbox::granted_on(core, t).next().is_some();
+    let one = |t: &Tid| own.contains(t) || crate::sync::units::holds_within_without(core, t, a) || crate::sync::units::reached_carried(core, t, a) || cl.for_keys(t) || core.followed_links.contains(t) || crate::flows::inbox::granted_on(core, t).next().is_some();
     one(t) || core.secret_actor(t).is_some_and(|a| a != *t && one(&a))
 }
 

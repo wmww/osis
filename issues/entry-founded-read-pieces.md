@@ -1,8 +1,0 @@
-# A read thing's edge piece can keep an entry that supports itself
-> Summary: First entry (spec/sync-set.md §2) is founded: nothing self-supporting kept. The engine founds the carriers local to the entering strong (a unit carrying the thing whole or as its stub, `sync::units::edge_carries`) through the closure's spanning tree, and an own thing's piece or an offer needs no founding; a read thing H's piece on Y (`piece_carries`) is taken whenever H is read, though H may be read only through Y's own unit, so Y stays entered once its first carrier goes.
-> Priority: normal
-> Tags: engine, sync
-
-The world: the root strongs Y, Y's unit strongs H (H read by Y's carrying), H holds an edge on Y, and Y was first carried by an offer. Once the offer goes, the least state (held-model `closure::entry`, `Rule::FIXED`) enters neither Y nor H; the engine keeps both, H's piece carrying Y and Y's unit carrying H. The model's "history" property names this (a settle from an earlier state keeps a self-supporting entry).
-
-What a fix needs: the carrier for Y found without Y. The tree founds an edge-local carrier because the entering edge hangs from the carrier's vertex; a read piece is a second condition beside the strong (the strong's source and the piece's holder are two vertices), which a spanning tree does not found. Candidates: the piece as an out-edge of (Read(H), H) into (Read(Y), Y), with the strong as the side condition (still unfounded where the only strong to Y comes from below Y); or a founded recheck from the root avoiding Y, run only where a read piece is Y's sole carrier (a rare path, so brute force is allowed: notes/principles.md). Test owed: the world above, Y and H gone once the offer goes, failing without the fix.

@@ -17,7 +17,9 @@
 //!
 //! Abstracted: every edge piece the spec indexes is logged under its holder's sync ID (ideal
 //! delivery); grants sit on independent things; a box exists for every keyed edge; validity,
-//! rotation, timing and the wire are left out.
+//! rotation, timing and the wire are left out. An edge piece is the current grant's: a removal's
+//! piece carries nothing, since a loss is carried out at once here (the engine's carries until
+//! the node's read secrets go, spec/sync-set.md §2 First entry).
 use super::{targets, unit, Edges, Kind, Role, Set, World, T};
 use std::collections::{BTreeMap, BTreeSet};
 

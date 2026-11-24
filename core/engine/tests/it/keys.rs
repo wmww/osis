@@ -204,6 +204,8 @@ fn link_key_opens_deep_holder_chain_spec_crypto_4() {
     sync(&mut lp, 0, 1);
     let held = |lp: &LocalPeer, t: &Tid| lp.peers[1].engine.epochs(t).is_some_and(|e| e.read.holds_any());
     assert!(chain.iter().all(|t| !held(&lp, t)), "nothing opens before the key");
+    // followed: K's grants count where the node syncs K (spec/sync-set.md §2 Own things)
+    lp.peers[1].engine.follow_link(&link).unwrap();
     lp.peers[1].engine.hold_link_key(link.seed.clone(), link.k).unwrap();
     assert!(held(&lp, &link.k), "K, boxed to L");
     let missing: Vec<usize> = (0..chain.len()).filter(|i| !held(&lp, &chain[*i])).collect();

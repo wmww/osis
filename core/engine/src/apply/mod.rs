@@ -2786,7 +2786,6 @@ mod tests {
         lp.hold_fires(false);
         lp.pass_fires(1).unwrap();
         assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[0].engine.roster(&t));
-        assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
     }
 
     // spec/permissions.md §1 (record edge; record chain; max_chain_depth), §5: a writer mints A with admin X, B with admin A and C with admin B in one
