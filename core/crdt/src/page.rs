@@ -124,7 +124,10 @@ pub trait PageSource {
 /// a counter, the key zero.
 #[derive(Debug)]
 pub struct MemoryPages {
-    pages: HashMap<[u8; 32], Vec<u8>>,
+    /// Plaintexts by hash.
+    pub pages: HashMap<[u8; 32], Vec<u8>>,
+    /// Hashes of the plaintexts in the order they were put.
+    pub written: Vec<[u8; 32]>,
     next: u64,
     params: PageParams,
 }
@@ -141,7 +144,7 @@ impl MemoryPages {
     }
     /// With non-format parameters (tests).
     pub fn with_params(params: PageParams) -> MemoryPages {
-        MemoryPages { pages: HashMap::new(), next: 0, params }
+        MemoryPages { pages: HashMap::new(), written: Vec::new(), next: 0, params }
     }
     pub fn len(&self) -> usize {
         self.pages.len()
@@ -160,6 +163,7 @@ impl PageSink for MemoryPages {
             *b = x;
         }
         self.pages.insert(hash, plaintext.to_vec());
+        self.written.push(hash);
         Ok(Link { hash, blob: BlobId(blob), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
     }
     fn params(&self) -> PageParams {

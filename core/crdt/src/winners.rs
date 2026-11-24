@@ -91,13 +91,6 @@ impl Winners {
         }
         out
     }
-    /// How many writes.
-    pub fn len(&self) -> usize {
-        self.0.values().map(BTreeSet::len).sum()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
     pub fn contains(&self, w: &Won) -> bool {
         self.0.get(&w.path).is_some_and(|s| s.contains(&(w.kind, w.stamp.clone())))
     }

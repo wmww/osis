@@ -220,28 +220,37 @@ pub(crate) fn big_set(n: usize, order_seed: u64) -> Fragment {
     st
 }
 
-/// Plaintexts of every page written.
-struct Recording {
-    inner: MemoryPages,
-    pages: Vec<Vec<u8>>,
+/// A content-addressed page store (equal plaintexts, equal links), counting fetches.
+#[derive(Default)]
+struct Cas {
+    params: Option<PageParams>,
+    pages: std::collections::HashMap<[u8; 32], Vec<u8>>,
+    fetched: usize,
 }
-impl Recording {
-    fn new(params: PageParams) -> Recording {
-        Recording { inner: MemoryPages::with_params(params), pages: Vec::new() }
-    }
-}
-impl PageSink for Recording {
+
+impl PageSink for Cas {
     fn put(&mut self, p: &[u8]) -> Result<osis_base::Link, crate::PageError> {
-        self.pages.push(p.to_vec());
-        self.inner.put(p)
+        let hash = osis_base::hash::hash(p);
+        self.pages.insert(hash, p.to_vec());
+        Ok(osis_base::Link { hash, blob: osis_base::BlobId(hash), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
     }
     fn params(&self) -> PageParams {
-        PageSink::params(&self.inner)
+        self.params.unwrap_or(PageParams::FORMAT)
     }
 }
 
-fn paged(f: &Fragment, params: PageParams) -> (Vec<u8>, Recording) {
-    let mut rec = Recording::new(params);
+impl crate::page::PageSource for Cas {
+    fn get(&mut self, l: &osis_base::Link) -> Result<Vec<u8>, crate::PageError> {
+        self.fetched += 1;
+        self.pages.get(&l.hash).cloned().ok_or(crate::PageError::Missing)
+    }
+    fn params(&self) -> PageParams {
+        self.params.unwrap_or(PageParams::FORMAT)
+    }
+}
+
+fn paged(f: &Fragment, params: PageParams) -> (Vec<u8>, MemoryPages) {
+    let mut rec = MemoryPages::with_params(params);
     let bytes = encode_snapshot(&snapshot(f), &snap_cx(), Some(&mut rec)).unwrap();
     (bytes, rec)
 }
@@ -278,8 +287,8 @@ fn paging_spec_8() {
         let st = big_set(n, 1);
         let (bytes, mut rec) = paged(&st, SMALL);
         assert_eq!(rec.pages.is_empty(), n == 3, "n = {n}");
-        assert_eq!(rec.pages.iter().any(|p| links(p)), n == 600, "link pages above the link target: n = {n}");
-        for p in &rec.pages {
+        assert_eq!(rec.pages.values().any(|p| links(p)), n == 600, "link pages above the link target: n = {n}");
+        for p in rec.pages.values() {
             let Ok(Value::List(items)) = osis_base::decode(p, &osis_base::Limits::DEFAULT) else { panic!("a page") };
             if links(p) {
                 assert!(items.len() <= SMALL.fanout);
@@ -289,55 +298,26 @@ fn paging_spec_8() {
                 assert!(p.len() < SMALL.cut.max + last + 8, "page of {} bytes", p.len());
             }
         }
-        assert_eq!(unpage(&bytes, &mut rec.inner).unwrap(), st);
+        assert_eq!(unpage(&bytes, &mut rec).unwrap(), st);
         if n < 600 {
             continue;
         }
         let other = big_set(n, 2);
         assert_eq!(other, st);
-        assert_eq!(paged(&other, SMALL).1.pages, rec.pages, "equal states, equal pages");
+        assert_eq!(paged(&other, SMALL).1.written, rec.written, "equal states, equal pages");
         let tiny = PageParams { target: 200, cut: ChunkParams { min: 64, max: 256, mask_bits: 4 }, fanout: 2, ..PageParams::FORMAT };
         let (deep, mut deep_rec) = paged(&st, tiny);
-        assert!(depth(&deep, &mut deep_rec.inner) > 3, "levels as needed");
-        assert_eq!(unpage(&deep, &mut deep_rec.inner).unwrap(), st);
+        assert!(depth(&deep, &mut deep_rec) > 3, "levels as needed");
+        assert_eq!(unpage(&deep, &mut deep_rec).unwrap(), st);
         // a source with other parameters would have cut elsewhere: the paging is not canonical
         let mut cut = MemoryPages::with_params(PageParams { cut: ChunkParams { min: 200, max: 1024, mask_bits: 6 }, ..SMALL });
-        for p in &rec.pages {
+        for p in rec.pages.values() {
             cut.put(p).unwrap();
         }
         assert!(unpage(&bytes, &mut cut).is_err());
         assert!(decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).is_err(), "the pages are needed");
         let plain = paged(&st, PageParams { target: usize::MAX, ..SMALL }).0;
-        assert!(unpage(&plain, &mut rec.inner).is_err(), "unpaged where paging is mandatory");
-    }
-}
-
-/// A content-addressed page store (equal plaintexts, equal links), counting fetches.
-#[derive(Default)]
-struct Cas {
-    params: Option<PageParams>,
-    pages: std::collections::HashMap<[u8; 32], Vec<u8>>,
-    fetched: usize,
-}
-
-impl PageSink for Cas {
-    fn put(&mut self, p: &[u8]) -> Result<osis_base::Link, crate::PageError> {
-        let hash = osis_base::hash::hash(p);
-        self.pages.insert(hash, p.to_vec());
-        Ok(osis_base::Link { hash, blob: osis_base::BlobId(hash), suite: 1, key: [0; 32], salt: [0; 16], del: osis_base::Del::NONE })
-    }
-    fn params(&self) -> PageParams {
-        self.params.unwrap_or(PageParams::FORMAT)
-    }
-}
-
-impl crate::page::PageSource for Cas {
-    fn get(&mut self, l: &osis_base::Link) -> Result<Vec<u8>, crate::PageError> {
-        self.fetched += 1;
-        self.pages.get(&l.hash).cloned().ok_or(crate::PageError::Missing)
-    }
-    fn params(&self) -> PageParams {
-        self.params.unwrap_or(PageParams::FORMAT)
+        assert!(unpage(&plain, &mut rec).is_err(), "unpaged where paging is mandatory");
     }
 }
 
@@ -600,11 +580,11 @@ fn first_link(v: &Value) -> Option<osis_base::Link> {
 #[test]
 fn paging_format_size_spec_8() {
     let st = big_set(3000, 6);
-    let mut rec = Recording::new(PageParams::FORMAT);
+    let mut rec = MemoryPages::with_params(PageParams::FORMAT);
     let bytes = encode_snapshot(&snapshot(&st), &snap_cx(), Some(&mut rec)).unwrap();
     assert!(!rec.pages.is_empty());
     assert!(bytes.len() < PageParams::FORMAT.target);
-    assert_eq!(unpage(&bytes, &mut rec.inner).unwrap(), st);
+    assert_eq!(unpage(&bytes, &mut rec).unwrap(), st);
     honest_page_items(&bytes, &rec);
     let e = unpage(&bytes, &mut crate::Unpaged).unwrap_err();
     assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput);
@@ -615,17 +595,17 @@ fn paging_format_size_spec_8() {
     let mut w = Writer::new(ts(1 << 20), node(1), 1);
     let entries = Value::Map((0..3000).map(|i| (Value::Str(format!("bulk import {i}")), Value::Str("v".repeat(10)))).collect());
     let d = create(&mut w, &TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))), &entries).unwrap();
-    let mut rec = Recording::new(PageParams::FORMAT);
+    let mut rec = MemoryPages::with_params(PageParams::FORMAT);
     let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &ctx_of(&w), Some(&mut rec)).unwrap();
     assert!(!rec.pages.is_empty());
     honest_page_items(&bytes, &rec);
-    assert_eq!(decode_delta(&bytes, &ctx_of(&w), &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, d);
+    assert_eq!(decode_delta(&bytes, &ctx_of(&w), &mut Interner::new(), Some(&mut rec)).unwrap().fragment, d);
 }
 
 /// §8 `MAX_PAGE_ITEMS`: an honest writer's root and pages each count at most their bytes, far
 /// below the cap.
-fn honest_page_items(root: &[u8], rec: &Recording) {
-    for b in std::iter::once(root).chain(rec.pages.iter().map(Vec::as_slice)) {
+fn honest_page_items(root: &[u8], rec: &MemoryPages) {
+    for b in std::iter::once(root).chain(rec.pages.values().map(Vec::as_slice)) {
         let n = crate::page_items(b).unwrap();
         assert!(n <= b.len() && n < 3 << 18, "{n} items in {} bytes", b.len());
     }
@@ -695,16 +675,16 @@ fn page_items_honest_spec_8() {
     let mut w = Writer::new(ts(1 << 20), node(1), 1);
     let d = create(&mut w, &TyView(Ty::Text), &text).unwrap();
     let cx = ctx_of(&w);
-    let mut rec = Recording::new(SMALL);
+    let mut rec = MemoryPages::with_params(SMALL);
     let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut rec)).unwrap();
     let (sbytes, mut srec) = paged(&d, SMALL);
     assert!(!rec.pages.is_empty() && !srec.pages.is_empty());
     honest_page_items(&bytes, &rec);
     honest_page_items(&sbytes, &srec);
-    assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, d);
-    assert_eq!(unpage(&sbytes, &mut srec.inner).unwrap(), d);
+    assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut rec)).unwrap().fragment, d);
+    assert_eq!(unpage(&sbytes, &mut srec).unwrap(), d);
     // runs `[Dot, n, ...]` of at most `MAX_RUN` elements
-    let ns: Vec<u64> = rec.pages.iter().flat_map(|p| match osis_base::decode(p, &osis_base::Limits::DEFAULT).unwrap() {
+    let ns: Vec<u64> = rec.pages.values().flat_map(|p| match osis_base::decode(p, &osis_base::Limits::DEFAULT).unwrap() {
         Value::List(runs) => runs.into_iter().filter_map(|r| match r {
             Value::List(r) if r.len() == 6 => r[1].as_uint(),
             _ => None,
@@ -736,12 +716,12 @@ fn wide_struct(n: u64, len: usize) -> (Fragment, DeltaCtx) {
 fn struct_field_paging_spec_8() {
     for (n, paged) in [(3u64, false), (200, true)] {
         let (d, cx) = wide_struct(n, 100);
-        let mut rec = Recording::new(SMALL);
+        let mut rec = MemoryPages::with_params(SMALL);
         let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut rec)).unwrap();
         assert_eq!(!rec.pages.is_empty(), paged, "n = {n}");
         assert!(bytes.len() <= SMALL.target || !paged);
         let mut maps = 0;
-        for p in &rec.pages {
+        for p in rec.pages.values() {
             match osis_base::decode(p, &osis_base::Limits::DEFAULT).unwrap() {
                 Value::Map(m) => {
                     maps += 1;
@@ -753,11 +733,11 @@ fn struct_field_paging_spec_8() {
             }
         }
         assert!(maps > 1 || !paged);
-        assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, d);
+        assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut rec)).unwrap().fragment, d);
         // equal fields give equal pages
-        let mut again = Recording::new(SMALL);
+        let mut again = MemoryPages::with_params(SMALL);
         encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut again)).unwrap();
-        assert_eq!(again.pages, rec.pages);
+        assert_eq!(again.written, rec.written);
     }
 }
 
@@ -766,10 +746,10 @@ fn struct_field_paging_spec_8() {
 #[test]
 fn struct_field_paging_rejections_spec_8() {
     let (d, cx) = wide_struct(200, 100);
-    let mut rec = Recording::new(SMALL);
+    let mut rec = MemoryPages::with_params(SMALL);
     let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut rec)).unwrap();
     let plain = encode_delta(&Delta { nonce: [0; 16], fragment: d }, &cx, Some(&mut MemoryPages::with_params(PageParams { target: usize::MAX, ..SMALL }))).unwrap();
-    assert!(decode_delta(&plain, &cx, &mut Interner::new(), Some(&mut rec.inner)).is_err());
+    assert!(decode_delta(&plain, &cx, &mut Interner::new(), Some(&mut rec)).is_err());
     // swap the struct's top field links for crafted pages
     let top = osis_base::decode(&bytes, &osis_base::Limits::DEFAULT).unwrap();
     let with_children = |c: Value| {
@@ -826,10 +806,10 @@ fn list_run_closes_at_chunk_max_spec_3_3() {
     let Some(Value::List(runs)) = f.get(3) else { panic!() };
     // two elements stay just below 256 KiB, three reach it: 21 runs of 3, one of 2
     assert_eq!(runs.len(), 22);
-    let mut rec = Recording::new(PageParams::FORMAT);
+    let mut rec = MemoryPages::with_params(PageParams::FORMAT);
     let paged = encode_delta(&d, &cx, Some(&mut rec)).unwrap();
-    assert!(rec.pages.iter().all(|p| p.len() < osis_base::format::CHUNK_MAX + 3 * 128 * 1024), "pages {:?}", rec.pages.iter().map(Vec::len).collect::<Vec<_>>());
-    assert_eq!(decode_delta(&paged, &cx, &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, d.fragment);
+    assert!(rec.pages.values().all(|p| p.len() < osis_base::format::CHUNK_MAX + 3 * 128 * 1024), "pages {:?}", rec.pages.values().map(Vec::len).collect::<Vec<_>>());
+    assert_eq!(decode_delta(&paged, &cx, &mut Interner::new(), Some(&mut rec)).unwrap().fragment, d.fragment);
 }
 
 /// §3.3 rule 7: a list run whose content goes on past `CHUNK_MAX` bytes is rejected.

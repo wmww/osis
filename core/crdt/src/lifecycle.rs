@@ -426,11 +426,6 @@ impl Fragment {
         }
     }
 
-    /// Whether the fragment holds a write or record `remove_writes(pred)` would remove or change.
-    pub fn holds_dots(&self, pred: &dyn Fn(&Dot) -> bool) -> bool {
-        walk(&mut DotsIn(pred), self)
-    }
-
     /// Whether a delta of a commit at `ts` or earlier (its stamps all at the commit's `ts`, §2.4)
     /// can no longer change this fragment: its own reset or a register write is past `ts`, which
     /// resets everything older at the position, in any encoding (§4.2, §5.1, §7 One reset per
@@ -446,9 +441,8 @@ impl Fragment {
 
     /// Whether the fragment holds a write stamped exactly `s`: a register, case, reset or `W`
     /// write, a map entry's creation, a sequence element's creation (in a range record too),
-    /// position or flag write. Unlike `holds_dots`, a record keyed by `s`'s dot whose creation
-    /// is gone (a removed entry kept for its reset) does not count, nor another write sharing
-    /// the dot.
+    /// position or flag write. A record keyed by `s`'s dot whose creation is gone (a removed
+    /// entry kept for its reset) does not count, nor another write sharing the dot.
     #[cfg(test)]
     pub fn holds_stamp(&self, s: &Stamp) -> bool {
         walk(&mut HoldsStamp(s), self)
@@ -466,7 +460,7 @@ impl Fragment {
     }
 
     /// Whether a write of the delta carrying dot `d` is here: a write stamped with its dot or a
-    /// record's creation; unlike `holds_dots`, a tombstone keyed by `d` (the remover's) is not.
+    /// record's creation; a tombstone keyed by `d` (the remover's) is not.
     #[cfg(test)]
     pub fn holds_write(&self, d: &Dot) -> bool {
         walk(&mut HoldsWrite(d), self)
@@ -578,25 +572,6 @@ impl Visit for EachWrite<'_> {
             _ => {}
         }
         Next::On
-    }
-}
-
-/// `Fragment::holds_dots`: their writes, and records they created.
-struct DotsIn<'a>(&'a dyn Fn(&Dot) -> bool);
-
-impl Visit for DotsIn<'_> {
-    fn stamp(&mut self, s: &Stamp) -> bool {
-        (self.0)(s.dot.origin())
-    }
-    fn rec(&mut self, r: Rec<'_>) -> Next {
-        let pred = self.0;
-        let held = match r {
-            Rec::Elem(d, _) | Rec::Entry(crate::fragment::Eid { dot: d, .. }, _) => pred(d.origin()),
-            // a sequence record (a range record: any of its elements) loses its creation or goes;
-            // a flag or position write of theirs
-            Rec::Seq(d, el) => (0..el.span).any(|k| pred(crate::seq_span::nth(d, k).origin())) || el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.origin())) || el.pos.iter().any(|p| pred(p.0.dot.origin())),
-        };
-        if held { Next::Stop } else { Next::On }
     }
 }
 

@@ -133,12 +133,9 @@ impl BodyWrites {
         }
     }
     /// Of a set of writes alone: no body winning them, no copies.
+    #[cfg(test)]
     pub fn of_writes(held: Winners) -> BodyWrites {
         BodyWrites { held, ..Default::default() }
-    }
-    /// The writes it holds.
-    pub fn held(&self) -> &Winners {
-        &self.held
     }
     /// A holder's copy payload of write `w`.
     fn payload(&self, w: &Won) -> Vec<u8> {
@@ -1135,6 +1132,7 @@ impl<R: Rows> Held<R> {
     }
 
     /// When write `w` dies by the writes held (§4.8 When), held itself or not.
+    #[cfg(test)]
     pub fn dies(&mut self, w: &Won) -> Result<Option<Ts>, R::Err> {
         let pos = pos_of(&w.path);
         match item_of(&pos) {
@@ -1167,25 +1165,14 @@ impl<R: Rows> Held<R> {
     pub fn date_every(&mut self) -> Result<(), R::Err> {
         for pos in self.below(&[], None)? {
             if pos.last().and_then(Step::bucket).is_some() {
-                let mut b = self.bucket(&pos)?;
-                let was = b.clone();
-                self.bucket_deaths(&pos, &mut b)?;
-                if b != was {
-                    self.put_bucket(&pos, &b)?;
-                }
+                self.redate_bucket(&pos)?;
                 continue;
             }
             let from = under(b'W', &pos);
             for (k, v) in self.rows.scan(&from, &end_of(&from), usize::MAX)? {
                 let mut r = Rd(k.get(from.len()..).unwrap_or_default());
                 let (kind, st) = (kind_of(r.u8()?)?, r.stamp()?);
-                let c = Cell::decode(&v)?;
-                let death = self.point_death(&pos, kind, &st, &c)?;
-                if death != c.death {
-                    let new = Cell { death, holders: c.holders.clone() };
-                    self.redate(Some(&c), Some(&new));
-                    self.rows.put(&k, &new.encode())?;
-                }
+                self.redate_point(&pos, kind, &st, &Cell::decode(&v)?, &k)?;
             }
         }
         self.flush()
@@ -1374,25 +1361,36 @@ impl<R: Rows> Held<R> {
         for m in moved {
             match m {
                 Moved::Point(pos, kind, st) => {
-                    let Some(c) = self.point(&pos, kind, &st)? else { continue };
-                    let death = self.point_death(&pos, kind, &st, &c)?;
-                    if death != c.death {
-                        let new = Cell { death, holders: c.holders.clone() };
-                        self.redate(Some(&c), Some(&new));
-                        self.rows.put(&point_key(&pos, kind, &st), &new.encode())?;
+                    if let Some(c) = self.point(&pos, kind, &st)? {
+                        self.redate_point(&pos, kind, &st, &c, &point_key(&pos, kind, &st))?;
                     }
                 }
-                Moved::Bucket(pos) => {
-                    let mut b = self.bucket(&pos)?;
-                    let was = b.clone();
-                    self.bucket_deaths(&pos, &mut b)?;
-                    if b != was {
-                        self.put_bucket(&pos, &b)?;
-                    }
-                }
+                Moved::Bucket(pos) => self.redate_bucket(&pos)?,
             }
         }
         self.flush()
+    }
+
+    /// Writes the cell `c` of a write at `pos` (row `key`) back when the rows date it otherwise.
+    fn redate_point(&mut self, pos: &[Step], kind: Kind, st: &Stamp, c: &Cell, key: &[u8]) -> Result<(), R::Err> {
+        let death = self.point_death(pos, kind, st, c)?;
+        if death != c.death {
+            let new = Cell { death, holders: c.holders.clone() };
+            self.redate(Some(c), Some(&new));
+            self.rows.put(key, &new.encode())?;
+        }
+        Ok(())
+    }
+
+    /// Writes the bucket at `pos` back when the rows date its writes otherwise.
+    fn redate_bucket(&mut self, pos: &[Step]) -> Result<(), R::Err> {
+        let mut b = self.bucket(pos)?;
+        let was = b.clone();
+        self.bucket_deaths(pos, &mut b)?;
+        if b != was {
+            self.put_bucket(pos, &b)?;
+        }
+        Ok(())
     }
 
     /// The writes whose death may have moved when write `s` came or went, or its joined copy
@@ -1458,8 +1456,9 @@ impl<R: Rows> Held<R> {
         Ok(())
     }
 
-    /// Checks the rows against themselves (tests, debug builds): every write's death as the
+    /// Checks the rows against themselves: every write's death as the
     /// rows date it now, and every body's deaths as its writes give them.
+    #[cfg(test)]
     pub fn check(&mut self) -> Result<Result<(), String>, R::Err> {
         let mut dated: BTreeMap<(CommitId, Ts), u64> = BTreeMap::new();
         let mut count = |c: &Cell| {

@@ -1130,13 +1130,13 @@ fn long_runs_match_model_spec_3_3() {
 }
 
 /// §4.6, §4.7: an undelete's char is its own writer's value: un-merging the element's creator
-/// keeps it with the undelete (`holds_dots` still sees the record).
+/// keeps it with the undelete (`holds_owned` still sees the record).
 #[test]
 fn unmerge_keeps_undelete_char_spec_4_7() {
     let flag = Stamp { ts: ts(9), dot: Dot { src: node(2), ctr: 1 } };
     let el = SeqElem { deleted: Some((flag.clone(), false)), undel: Some('x'), ..SeqElem::bare() };
     let mut f = one(Dot { src: node(1), ctr: 5 }, el);
-    assert!(f.holds_dots(&|d| d.src == node(1)));
+    assert!(f.holds_owned(&|s, _, _| *s == node(1)));
     f.remove_writes(&|d| d.src == node(1));
     let Fragment::Seq(s) = &f else { panic!("a sequence") };
     let left: Vec<_> = s.elems().values().map(|e| (e.deleted.clone(), e.undel)).collect();
@@ -1190,7 +1190,7 @@ mod valid_order {
         let mut valid = Fragment::default();
         for b in bodies {
             let f = frag(b);
-            if !f.holds_dots(&|d| d.src == bad) {
+            if !f.holds_owned(&|s, _, _| *s == bad) {
                 valid.join(f);
             }
         }
