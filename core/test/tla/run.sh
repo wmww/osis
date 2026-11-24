@@ -26,7 +26,7 @@ instances=(
   "sides sides MC kill_touch.cfg pass"           # notes/disputes.md, Storage under a fork
   "sides sides MC purge_touch.cfg pass"
   "sides sides MC place_touch.cfg pass"
-  "sides sides MC branch_kill.cfg pass"          # host branching, rule lifted per branch
+  "sides sides MC branch_kill.cfg pass"          # store branching, rule lifted per branch
   "sides sides MC branch_bridge.cfg pass"        # ... members carry clean bodies across
   "sides sides MC concede.cfg pass"              # a concession ends the fork
   "sides sides MC tidy_need.cfg pass"            # the need rule: one-side superseded writes go
@@ -85,12 +85,12 @@ instances=(
   "cut rotation Cut X_cut_nofloor.cfg fail"      # negative control: boxing rule off
   "cut rotation Cut X_names_noroles.cfg fail"    # negative control: entries carry no roles secrets
   "cut rotation Cut X_race_noroles.cfg fail"     # negative control: a grant beside a cut with no rotation never reaches the newcomer without roles secrets
-  "cut rotation Cut X_host.cfg pass"             # a hostile history-less writer rotating with any floor or listing
+  "cut rotation Cut X_hostile.cfg pass"             # a hostile history-less writer rotating with any floor or listing
   "cut rotation Cut X_gone.cfg pass"
-  "cut rotation Cut X_host_nomaker.cfg fail"     # negative control: the carry rule blind to e's maker
+  "cut rotation Cut X_hostile_nomaker.cfg fail"     # negative control: the carry rule blind to e's maker
   "cut rotation Cut X_acc_nogfloor.cfg fail"     # negative control: a history-less admin grants history
   "cut rotation Cut X_cap_nocap.cfg fail"        # negative control: a floor above n
-  "cut rotation Cut X_host2_all.cfg fail"        # accepted lockout: a hostile writer's low-floor epoch after the cut misses the newcomer
+  "cut rotation Cut X_hostile2_all.cfg fail"        # accepted lockout: a hostile writer's low-floor epoch after the cut misses the newcomer
   "cut rotation Cut X_readd_fresh.cfg pass"      # a re-added member's new node opens what it read before its removal
   "cut rotation Cut X_readd_fresh_noreadd.cfg fail" # negative control: the re-add boxes m only at the cut
   "cut rotation Cut X_two_strict.cfg fail"       # accepted: two history-less adds at once each read content beside the other's
@@ -203,7 +203,7 @@ instances=(
   "nethold net MCHold H_full1.cfg pass"            # a full store: a carrier it lacks counts as held
   "nethold net MCHold H_full2.cfg pass"
   "nethold net MCHold H_expire.cfg pass"           # tombstones expire
-  "nethold net MCHold H_host.cfg pass"             # a hostile writer deleting at K
+  "nethold net MCHold H_hostile.cfg pass"           # a hostile writer deleting at K
   "nethold net MCHold H_live.cfg pass"             # liveness: settles
   "nethold net MCHold HN_stand.cfg fail"           # negative control: no stand, log-liar loop (Bounded)
   "nethold net MCHold HN_standfall.cfg fail"       # negative control: stand blind to a fall, the cover fell and b stays deleted
@@ -244,7 +244,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|account|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|account|withdrawn|planted|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
   exit 2
 fi
 

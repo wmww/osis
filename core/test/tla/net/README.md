@@ -4,7 +4,7 @@
 Files: `NetStream.tla`, `MCStream.tla`, `NetShared.tla`, `MCShared.tla`, `NetOpen.tla`, `MCOpen.tla`, `NetHold.tla`, `MCHold.tla`, `NetKeep.tla`, `MCKeep.tla`; cfgs `S_*` / `SN_*` (stream), `T_*` / `TN_*` (shared), `O_*` / `ON_*` (opens), `H_*` / `HN_*` / `HL_*` (hold), `K_*` / `KN_*` (keep); `*N_*` are rule removals, which must fail; `HL_*` shows a limit the spec states. Each cfg's first line says what it checks and why a failing one fails. `ASSUMPTIONS.md`: what is abstracted.
 
 ## Run
-`tools/heavy env TMPDIR=<dir on disk> TLC_WORKERS=12 ../run.sh netstream`, `netshared`, `netopen` from this directory (`run.sh` puts TLC state in `TMPDIR`: never tmpfs). `netopen` runs in about 5 minutes at one worker (box load 16), no lock needed. `O_rk3.cfg`, `O_kk3.cfg`, `O_rx3.cfg`, `O_pub3.cfg` (three connections, safety only), `S_members.cfg`, `T_rot.cfg`, `T_untildrop.cfg`, `T_rotdrop.cfg`, `T_followremdrop.cfg` by name (under a few minutes each at 12 workers). `nethold` (95 s) and `netkeep` (10 s) at one worker need no lock; `H_host2.cfg` by name (64 s at 12 workers), `S_pres.cfg` by name (89 s at 12 workers).
+`tools/heavy env TMPDIR=<dir on disk> TLC_WORKERS=12 ../run.sh netstream`, `netshared`, `netopen` from this directory (`run.sh` puts TLC state in `TMPDIR`: never tmpfs). `netopen` runs in about 5 minutes at one worker (box load 16), no lock needed. `O_rk3.cfg`, `O_kk3.cfg`, `O_rx3.cfg`, `O_pub3.cfg` (three connections, safety only), `S_members.cfg`, `T_rot.cfg`, `T_untildrop.cfg`, `T_rotdrop.cfg`, `T_followremdrop.cfg` by name (under a few minutes each at 12 workers). `nethold` (95 s) and `netkeep` (10 s) at one worker need no lock; `H_hostile2.cfg` by name (64 s at 12 workers), `S_pres.cfg` by name (89 s at 12 workers).
 
 ## Principle
 A record says only what need not be sent again: a connection first proves the two records agree (a digest of S, first each way), then sends what changed; nothing about data is inferred from absence: an entry leaves a node by a log event or a right holder's delete, a member leaves S by a `Lost` or a digest difference.
@@ -69,8 +69,8 @@ TLC 2.19, 12 workers. Positive cfgs pass; each `*N_*` fails with the listed prop
 | H_full1 | K full with room for one, tombstones expiring | pass | 1,693 |
 | H_full2 | room for two, with x | pass | 1,501 |
 | H_expire | tombstones expire | pass | 44,009 |
-| H_host | H deletes once | pass | 210,327 |
-| H_host2 | H deletes twice (by name, 64 s at 12 workers) | pass | 5,971,488 |
+| H_hostile | H deletes once | pass | 210,327 |
+| H_hostile2 | H deletes twice (by name, 64 s at 12 workers) | pass | 5,971,488 |
 | H_live | settles: head move, room for two, expiry | pass, `Settles` | 69,439 |
 | HN_standhead, HN_snap | stand ground without the head; no unheld-snapshot clause | pass (not needed by any property here) | 7,002, 1,786 |
 | H_keep | b kept (must-hold whatever covers it) | pass | 124 |

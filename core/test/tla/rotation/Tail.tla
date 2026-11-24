@@ -85,9 +85,9 @@ Stands(V, i) == Applied(V, i) \/ Applies(V, EdgeTo(V, 0), i)
 \* how a named applied write (and the mark's) is met: "stands" (the rule), "takes", "commit"
 \* (held, however judged)
 MetOk(V, i) == CASE MetBy = "stands" -> Stands(V, i) [] MetBy = "takes" -> Takes(V, i) [] OTHER -> TRUE
-Plain(X) == {i \in Held(X) : Applied(X, i) /\ ws[i].val < EdgeTo(X, i - 1).val}
+Lowered(X) == {i \in Held(X) : Applied(X, i) /\ ws[i].val < EdgeTo(X, i - 1).val}
 \* a rotation commit cannot name itself
-PlainOf(X, m) == Plain(X) \ {m}
+LoweredOf(X, m) == Lowered(X) \ {m}
 Void(X) == {i \in Held(X) : Counts(X, i) /\ ws[i].val > 0}
 \* the old rule's void names: raises only (above the edge just before)
 OldVoid(X) == {i \in Void(X) : ws[i].val > EdgeTo(X, i - 1).val}
@@ -98,7 +98,7 @@ Marks(X) == {0} \cup {i \in Held(X) : Applied(X, i) /\ ws[i].val < R}
 \* author demoted to write)
 \* each named write judged as X judged it: an applied one (and the mark's) standing at V, a void
 \* one applying nothing there
-Met(V, X, m) == /\ \A i \in PlainOf(X, m) : i \in Held(V) /\ MetOk(V, i)
+Met(V, X, m) == /\ \A i \in LoweredOf(X, m) : i \in Held(V) /\ MetOk(V, i)
                 /\ \A i \in VoidOf(X) : i \in Held(V) /\ (MetHeld \/ ~Applied(V, i))
                 /\ m # 0 => m \in Held(V) /\ MetOk(V, m)
 MarkOk(Zv, m) == m # 0 /\ m \in Held(Zv)
@@ -107,7 +107,7 @@ MarkOk(Zv, m) == m # 0 /\ m \in Held(Zv)
 \* the newest write applying at Z that gives the role or more (0: none)
 G(Zv) == Newest({i \in Held(Zv) : Applied(Zv, i) /\ ws[i].val >= R})
 Anchor(Zv, X, m, i) == ws[i].val < R /\ (AnchorAny \/ Takes(Zv, i) \/ (PinStands /\ Stands(Zv, i)))
-                       /\ (i \in PlainOf(X, m) \/ (~NoMark /\ i = m /\ MarkOk(Zv, m)))
+                       /\ (i \in LoweredOf(X, m) \/ (~NoMark /\ i = m /\ MarkOk(Zv, m)))
 Pins(Zv, X, m) ==
   LET g == G(Zv)
       heldR == g > 0 \/ start.val >= R
@@ -119,13 +119,13 @@ Pins(Zv, X, m) ==
 \* ---- the old rule: a departure attributed to its newest event -----------------
 \* events: applied lowerings; raises applying nothing that count (spec before the pin)
 RaiseEv(Zv) == OldVoid(Zv)
-Events(Zv) == Plain(Zv) \cup RaiseEv(Zv)
+Events(Zv) == Lowered(Zv) \cup RaiseEv(Zv)
 OldNamed(Zv, X, m, i) == IF i \in RaiseEv(Zv) THEN i \in OldVoid(X)
-                         ELSE i \in PlainOf(X, m) \/ (i = m /\ MarkOk(Zv, m))
+                         ELSE i \in LoweredOf(X, m) \/ (i = m /\ MarkOk(Zv, m))
 OldCovers(Zv, X, m) ==
   LET at == Newest(Events(Zv))
       later == {i \in Held(Zv) : i > at /\ ws[i].val < R}
-      since == {i \in RaiseEv(Zv) : i > Newest(Plain(Zv))}
+      since == {i \in RaiseEv(Zv) : i > Newest(Lowered(Zv))}
   IN /\ at # 0
      /\ OldNamed(Zv, X, m, at) \/ \E i \in later : OldNamed(Zv, X, m, i)
      /\ \A i \in since : OldNamed(Zv, X, m, i)

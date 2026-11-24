@@ -1,6 +1,6 @@
 ------------------------------- MODULE Joint -------------------------------
 (* Sealing an actor A to a forked holder actor M (spec/crypto.md §4, Seal). *)
-(* M's admins fork M at once, each removing a device the other keeps; A's   *)
+(* M's admins fork M at once, each removing a node the other keeps; A's   *)
 (* writers (not in M: they judge M by its keysets alone) forked A sealing  *)
 (* M at one fork each, so A's anchors fork. A rotation of A is due. Rule    *)
 (* "joint": with no keyset of M past every anchor, A seals M jointly at the *)
@@ -8,18 +8,18 @@
 (* "wait": A's rotation waits for a keyset of M past every anchor (M's      *)
 (* merge); "newest": M sealed at its newest keyset, anchors ignored. M's    *)
 (* admins may leave for good (Gone); any of them may rotate M (a rotation   *)
-(* lists every current keyset it holds), grant a device, or re-seal a       *)
+(* lists every current keyset it holds), grant a node, or re-seal a       *)
 (* member it knows at a current keyset that lacks it. Crypto as access: a   *)
-(* device opens a keyset boxed to it or listed by one it opens (history);   *)
+(* node opens a keyset boxed to it or listed by one it opens (history);   *)
 (* it reads an epoch of A when it opens every keyset its box to M names,    *)
 (* or reads a later epoch of A listing it.                                  *)
 EXTENDS Naturals, FiniteSets, Sequences
 
-CONSTANTS Dev,      \* M's devices at the start (its admins among them)
+CONSTANTS MemNodes,      \* M's nodes at the start (its admins among them)
           Admins,   \* M's admins: each made one fork of M at the start
           Stays,    \* admins that never leave
           Writers,  \* A's writers, not in M
-          New,      \* a device an admin may grant on M (none: "")
+          New,      \* a node an admin may grant on M (none: "")
           Rule,     \* "joint", "wait" or "newest"
           MaxM,     \* bound on M's keysets
           MaxA      \* bound on A's epochs
@@ -29,7 +29,7 @@ VARIABLES ks,     \* M's keysets: [lists, boxed, removes, grants]
           held,   \* held[n]: M's keysets node n holds (admins, writers)
           heldA,  \* heldA[w]: A's epochs writer w holds
           gone,   \* admins gone for good
-          granted \* the device granted on M, by whom ({} or {<<admin, device>>})
+          granted \* the node granted on M, by whom ({} or {<<admin, node>>})
 
 vars == <<ks, ae, held, heldA, gone, granted>>
 Nodes == Admins \cup Writers
@@ -37,9 +37,9 @@ KIds == 1..Len(ks)
 AIds == 1..Len(ae)
 A1 == CHOOSE a \in Admins : TRUE
 A2 == CHOOSE a \in Admins : a # A1
-\* each fork removes one device the other keeps
-X1 == CHOOSE d \in Dev \ Admins : TRUE
-X2 == CHOOSE d \in Dev \ Admins : d # X1
+\* each fork removes one node the other keeps
+X1 == CHOOSE d \in MemNodes \ Admins : TRUE
+X2 == CHOOSE d \in MemNodes \ Admins : d # X1
 W1 == CHOOSE w \in Writers : TRUE
 W2 == CHOOSE w \in Writers : w # W1
 
@@ -56,7 +56,7 @@ NewestOf(s) == CHOOSE k \in s : \A j \in s : j = k \/ Newer(k, j)
 \* what an admin knows: removals and grants travel with the keysets it holds
 Removed(a) == UNION {ks[k].removes : k \in held[a]}
 Grants(a) == UNION {ks[k].grants : k \in held[a]}
-Members(a) == ((Dev \cup Grants(a)) \ Removed(a))
+Members(a) == ((MemNodes \cup Grants(a)) \ Removed(a))
 
 \* Seal: the keyset set A's box to M names at writer w ({} : wait)
 Anchors(w) == UNION {ae[e].seal : e \in CurA(w)}
@@ -68,9 +68,9 @@ Seal(w) ==
   ELSE {NewestOf({k \in held[w] : Past(k, a)}) : a \in Anchors(w)}
 
 Init ==
-  /\ ks = << [lists |-> {}, boxed |-> Dev, removes |-> {}, grants |-> {}],
-             [lists |-> {1}, boxed |-> Dev \ {X1}, removes |-> {X1}, grants |-> {}],
-             [lists |-> {1}, boxed |-> Dev \ {X2}, removes |-> {X2}, grants |-> {}] >>
+  /\ ks = << [lists |-> {}, boxed |-> MemNodes, removes |-> {}, grants |-> {}],
+             [lists |-> {1}, boxed |-> MemNodes \ {X1}, removes |-> {X1}, grants |-> {}],
+             [lists |-> {1}, boxed |-> MemNodes \ {X2}, removes |-> {X2}, grants |-> {}] >>
   /\ ae = << [lists |-> {}, seal |-> {1}],
              [lists |-> {1}, seal |-> {2}],
              [lists |-> {1}, seal |-> {3}] >>
@@ -106,7 +106,7 @@ RotateM(a) ==
   /\ held' = [held EXCEPT ![a] = @ \cup {Len(ks) + 1}]
   /\ UNCHANGED <<ae, heldA, gone, granted>>
 
-\* a grant boxes the device at the granter's current keysets; it travels with them
+\* a grant boxes the node at the granter's current keysets; it travels with them
 Grant(a) ==
   /\ a \notin gone /\ New # "" /\ granted = {}
   /\ granted' = {<<a, New>>}
@@ -144,12 +144,12 @@ Opens(d, k) == d \in ks[k].boxed \/ \E j \in KIds : k \in Anc(j) /\ d \in ks[j].
 Direct(d, e) == \A k \in ae[e].seal : Opens(d, k)
 Reads(d, e) == Direct(d, e) \/ \E f \in AIds : e \in AncA(f) /\ Direct(d, f)
 
-\* a device a keyset of M removes reads no epoch of A sealed (or made after one sealed) past it
+\* a node a keyset of M removes reads no epoch of A sealed (or made after one sealed) past it
 NoLeak == \A e \in AIds, k \in KIds : \A d \in ks[k].removes :
             (\E f \in AncA(e) \cup {e} : \E j \in ae[f].seal : Past(j, k)) => ~Reads(d, e)
 \* A's due rotation completes with only A's writers online
 Rotates == <>~Due
 \* every member of M no fork removes reads every epoch of A
-Live == {d \in Dev \cup {x[2] : x \in granted} : \A k \in KIds : d \notin ks[k].removes}
+Live == {d \in MemNodes \cup {x[2] : x \in granted} : \A k \in KIds : d \notin ks[k].removes}
 ReadsAll == <>[](\A e \in AIds, d \in Live : Reads(d, e))
 =============================================================================

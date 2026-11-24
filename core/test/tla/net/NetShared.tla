@@ -373,7 +373,7 @@ Remove(n) ==
     /\ cnt' = [cnt EXCEPT !.remove = @ + 1]
     /\ UNCHANGED <<st, epoch, link, q, active, cloned>>
 
-\* A node's view of its peer's actor, learned at any time from group data.
+\* A node's view of its peer's actor, learned at any time from the role commits of the sync ID's thing.
 LearnView(n, p) ==
     LET v == IF removed[p] THEN "departed" ELSE IF role[p] THEN "holder" ELSE "unknown" IN
     /\ n \in active /\ p \in active /\ n # p

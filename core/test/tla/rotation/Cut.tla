@@ -42,7 +42,8 @@
 (* above n counts), "noreadd" (m's re-add boxes only at the cut); Roles    *)
 (* FALSE (entries carry no roles secrets).                                  *)
 (* Commits arrive in any order a node can read them: wrapped under an epoch *)
-(* it holds, boxing it, granting it, or placed again under a cut it holds.   *)
+(* it holds, boxing it, granting it, or under an epoch whose roles secret *)
+(* a cut it holds carries.                                                   *)
 (* Box removal is observed-remove: a rotation removes the boxes it holds at *)
 (* the epochs its history box carries. Know(x): every secret x ever opens  *)
 (* (all boxes and entries ever written); Fresh(x): what a new node of x     *)
@@ -50,7 +51,7 @@
 EXTENDS Naturals, FiniteSets
 
 CONSTANTS Rule, Roles, Admins, Readers, CutTo, HistTo, RemoveM, MaxRot, MaxMerge, MaxDue, MaxC,
-          Hostile, Accomp, MaxHost, MaxHostF, HiF
+          Hostile, Accomp, MaxHostile, MaxHostileF, HiF
 
 M == "m"
 InitH == Admins \cup Readers \cup (IF RemoveM THEN {M} ELSE {})
@@ -67,8 +68,8 @@ E0 == [Base EXCEPT !.ep = TRUE, !.boxes = {<<x, 0>> : x \in InitH}, !.ents = {<<
 
 VARIABLES C,      \* commit id -> commit (a rotation is an epoch, its id the epoch's)
           held,   \* node -> commit ids it holds
-          nrot, nmerge, ndue, nhost, nhostf
-vars == <<C, held, nrot, nmerge, ndue, nhost, nhostf>>
+          nrot, nmerge, ndue, nhostile, nhostilef
+vars == <<C, held, nrot, nmerge, ndue, nhostile, nhostilef>>
 
 Ids == DOMAIN C
 EIds == {i \in Ids : C[i].ep}
@@ -198,22 +199,22 @@ CutGranted(x) == \E i \in Ids : C[i].gr = x /\ C[i].cut
 
 \* ---- actions ----------------------------------------------------------------
 Rotate(v) == /\ MayRotate(v) /\ nrot < MaxRot
-             /\ Add(NewRot(v, FALSE, "", "")) /\ nrot' = nrot + 1 /\ UNCHANGED <<nmerge, ndue, nhost, nhostf>>
+             /\ Add(NewRot(v, FALSE, "", "")) /\ nrot' = nrot + 1 /\ UNCHANGED <<nmerge, ndue, nhostile, nhostilef>>
 \* a rotates while it holds a fork (any rotation lists every current epoch)
 \* a low floor: a current epoch below a holder's floor (the boxing rule bars its re-seal there)
 \* (once v establishes every epoch it holds unsuperseded: else it may be missing a removal one names)
 LowDue(v) == MayRotate(v) /\ Unsup(v) \subseteq Est(v) /\ \E e \in Cur(v), x \in Holders(v) : Fl(v, e) < FloorOf(v, x)
 \* the rotation a low floor makes due (a merge of every current epoch)
 Merge(v) == /\ LowDue(v) /\ nmerge < MaxMerge
-            /\ Add(NewRot(v, FALSE, "", "")) /\ nmerge' = nmerge + 1 /\ UNCHANGED <<nrot, ndue, nhost, nhostf>>
+            /\ Add(NewRot(v, FALSE, "", "")) /\ nmerge' = nmerge + 1 /\ UNCHANGED <<nrot, ndue, nhostile, nhostilef>>
 \* the knowing re-key: a current epoch misses a departure v knows (Due)
 DueRot(v) == /\ MayRotate(v) /\ Due(v) /\ ndue < MaxDue
-             /\ Add(NewRot(v, FALSE, "", "")) /\ ndue' = ndue + 1 /\ UNCHANGED <<nrot, nmerge, nhost, nhostf>>
+             /\ Add(NewRot(v, FALSE, "", "")) /\ ndue' = ndue + 1 /\ UNCHANGED <<nrot, nmerge, nhostile, nhostilef>>
 \* a grant without history (m: its re-add, by a node holding its removal)
 CutGrant(v, x) ==
   /\ MayRotate(v) /\ x \in CutTo /\ ~CutGranted(x)
   /\ IF x = M THEN RmHeld(v, M) /\ M \notin Holders(v) ELSE x \notin Holders(v)
-  /\ Add(NewRot(v, TRUE, x, "")) /\ UNCHANGED <<nrot, nmerge, ndue, nhost, nhostf>>
+  /\ Add(NewRot(v, TRUE, x, "")) /\ UNCHANGED <<nrot, nmerge, ndue, nhostile, nhostilef>>
 \* a grant with history: boxes at the current epochs v holds (with their superset entries) and
 \* at each dropped epoch it holds (showing history later: after its cut); Accomp only by a hostile
 \* party
@@ -225,17 +226,17 @@ HistGrant(v, x) ==
          at == cur \cup (IF RuleOn THEN Dropped(v) ELSE {})
      IN Add([Base EXCEPT !.by = v, !.gr = x, !.hist = TRUE, !.boxes = {<<x, e>> : e \in at},
                !.ents = {<<e, Superset(v, e), Fl(v, e), RolesBelow(v, C[e].n)>> : e \in cur}, !.wraps = cur])
-  /\ UNCHANGED <<nrot, nmerge, ndue, nhost, nhostf>>
+  /\ UNCHANGED <<nrot, nmerge, ndue, nhostile, nhostilef>>
 \* the removal of m, with its rotation
 Remove(v) == /\ RemoveM /\ MayRotate(v) /\ M \in Holders(v) /\ ~\E i \in Ids : C[i].rm = M
-             /\ Add(NewRot(v, FALSE, "", M)) /\ UNCHANGED <<nrot, nmerge, ndue, nhost, nhostf>>
+             /\ Add(NewRot(v, FALSE, "", M)) /\ UNCHANGED <<nrot, nmerge, ndue, nhostile, nhostilef>>
 \* a re-seal of a current holder lacking a box at a current epoch v holds
 Reseal(v, x, e) ==
   /\ MayRotate(v) /\ x \in Holders(v) \ {v} /\ e \in Cur(v) \cap Sec(v)
   /\ ~\E i \in held[v] : <<x, e>> \in C[i].boxes
   /\ Allowed(v, x, Fl(v, e))
   /\ Add([Base EXCEPT !.by = v, !.boxes = {<<x, e>>}, !.ents = {<<e, Superset(v, e), Fl(v, e), RolesBelow(v, C[e].n)>>}, !.wraps = {e}])
-  /\ UNCHANGED <<nrot, nmerge, ndue, nhost, nhostf>>
+  /\ UNCHANGED <<nrot, nmerge, ndue, nhostile, nhostilef>>
 \* History add: a holder holding an established superseded secret that no entry at a current
 \* epoch it holds lists, and that the carry rule lets in
 AddMissing(v, e) == {f \in Mine(v) \ Cur(v) : C[f].n < C[e].n
@@ -246,7 +247,7 @@ AddDue(v, e) == v \in Holders(v) /\ e \in Cur(v) /\ Covers(v, e) /\ (AddMissing(
 HistAdd(v, e) ==
   /\ AddDue(v, e)
   /\ Add([Base EXCEPT !.by = v, !.ents = {<<e, AddMissing(v, e), Fl(v, e), AddRoles(v, e)>>}, !.wraps = {e}])
-  /\ UNCHANGED <<nrot, nmerge, ndue, nhost, nhostf>>
+  /\ UNCHANGED <<nrot, nmerge, ndue, nhostile, nhostilef>>
 \* tip add: a holder of a dropped epoch boxes it to a holder allowed it that, as v sees it,
 \* cannot open it from the live boxes
 TipDue(v, x, t) == /\ RuleOn /\ v \in Holders(v) /\ x \in Holders(v) \ {v}
@@ -254,37 +255,37 @@ TipDue(v, x, t) == /\ RuleOn /\ v \in Holders(v) /\ x \in Holders(v) \ {v}
 TipAdd(v, x, t) ==
   /\ TipDue(v, x, t)
   /\ Add([Base EXCEPT !.by = v, !.boxes = {<<x, t>>}, !.wraps = Cur(v) \cap Sec(v)])
-  /\ UNCHANGED <<nrot, nmerge, ndue, nhost, nhostf>>
+  /\ UNCHANGED <<nrot, nmerge, ndue, nhostile, nhostilef>>
 \* the attacker: a hostile writer rotates listing any epochs it knows of, with any floor (read at
 \* most n; "nocap": up to HiF above, read as written)
 Known(v) == (held[v] \cap EIds) \cup UNION {C[e].lists : e \in held[v] \cap EIds}
-HostRot(h) ==
-  /\ h \in Hostile /\ h \in Holders(h) /\ Sec(h) # {} /\ nhost < MaxHost
+HostileRot(h) ==
+  /\ h \in Hostile /\ h \in Holders(h) /\ Sec(h) # {} /\ nhostile < MaxHostile
   /\ \E ls \in SUBSET Known(h) \ {{}} :
        LET n == Max({C[e].n : e \in ls}) + 1
        IN \E fl \in 0..(n + (IF Rule = "nocap" THEN HiF ELSE 0)) : Add(Rot(h, ls, n, fl, FALSE, "", ""))
-  /\ nhost' = nhost + 1 /\ UNCHANGED <<nrot, nmerge, ndue, nhostf>>
+  /\ nhostile' = nhostile + 1 /\ UNCHANGED <<nrot, nmerge, ndue, nhostilef>>
 
 \* ... and puts an entry with any floor at an epoch whose secret it holds ("anyfloor": any epoch it
 \* knows of, as a floor in a keyset any writer re-writes); it carries nothing (what it would hand is
 \* its own to hand)
-HostFloor(h) ==
-  /\ h \in Hostile /\ h \in Holders(h) /\ nhostf < MaxHostF
+HostileFloor(h) ==
+  /\ h \in Hostile /\ h \in Holders(h) /\ nhostilef < MaxHostileF
   /\ \E e \in (IF Rule = "anyfloor" THEN Known(h) ELSE Sec(h)) : \E fl \in 0..C[e].n :
        Add([Base EXCEPT !.by = h, !.ents = {<<e, {}, fl, {}>>}, !.wraps = {e}])
-  /\ nhostf' = nhostf + 1 /\ UNCHANGED <<nrot, nmerge, ndue, nhost>>
+  /\ nhostilef' = nhostilef + 1 /\ UNCHANGED <<nrot, nmerge, ndue, nhostile>>
 
 Deliver(v) == \E i \in Ids \ held[v] : Readable(v, i) /\ held' = [held EXCEPT ![v] = @ \cup {i}]
-              /\ UNCHANGED <<C, nrot, nmerge, ndue, nhost, nhostf>>
+              /\ UNCHANGED <<C, nrot, nmerge, ndue, nhostile, nhostilef>>
 
 Init == /\ C = [i \in {0} |-> E0]
         /\ held = [v \in Parties |-> IF v \in InitH THEN {0} ELSE {}]
-        /\ nrot = 0 /\ nmerge = 0 /\ ndue = 0 /\ nhost = 0 /\ nhostf = 0
+        /\ nrot = 0 /\ nmerge = 0 /\ ndue = 0 /\ nhostile = 0 /\ nhostilef = 0
 
 Next == \/ \E v \in Admins : Rotate(v) \/ Merge(v) \/ DueRot(v) \/ Remove(v)
                              \/ (\E x \in CutTo : CutGrant(v, x)) \/ (\E x \in HistTo : HistGrant(v, x))
                              \/ (\E x \in Parties, e \in EIds : Reseal(v, x, e))
-        \/ \E h \in Hostile : HostRot(h) \/ HostFloor(h) \/ \E x \in Accomp : HistGrant(h, x)
+        \/ \E h \in Hostile : HostileRot(h) \/ HostileFloor(h) \/ \E x \in Accomp : HistGrant(h, x)
         \/ \E v \in Parties, e \in EIds : HistAdd(v, e)
         \/ \E v \in Parties, x \in Parties, t \in EIds : TipAdd(v, x, t)
         \/ \E v \in Parties : Deliver(v)
@@ -365,6 +366,6 @@ Roster == Settled => \A v \in Final : \A i \in Ids : (C[i].rm # "" \/ C[i].gr # 
 \* settled: a re-added m's new node opens every epoch its removal's rotator held
 ReaddFresh == Settled /\ RemoveM /\ CutGranted(M) => Anc(RmC) \subseteq Fresh(M)
 \* vacuity probe (must fail): no settled state follows every step the bounds allow
-NoFullRun == ~(/\ Settled /\ nrot = MaxRot /\ nmerge = MaxMerge /\ nhost = MaxHost /\ nhostf = MaxHostF
+NoFullRun == ~(/\ Settled /\ nrot = MaxRot /\ nmerge = MaxMerge /\ nhostile = MaxHostile /\ nhostilef = MaxHostileF
                /\ \A x \in CutTo \cup HistTo : Granted(x) /\ (RemoveM => HasRm))
 ===============================================================================

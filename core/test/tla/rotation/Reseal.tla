@@ -3,7 +3,7 @@
 (* (spec/crypto.md §5 Passing on).                                         *)
 (* a2 removes reader M (W). R, holding W, rotates read (Rot: e_R, naming W, *)
 (* boxing V and not M) and writes w under e_R. V holds e_R's secret by its  *)
-(* box; its own current epoch before e_R is e_V, which M holds. A host may  *)
+(* box; its own current epoch before e_R is e_V, which M holds. A store may  *)
 (* withhold W from V for good (no fairness for W to V). Worlds, as in       *)
 (* Withdrawn.tla: "plain" (W applies everywhere); "none" (A demoted a2 (D)  *)
 (* before W, voiding it: M a reader all along); "G" (as none, but a3, maybe *)

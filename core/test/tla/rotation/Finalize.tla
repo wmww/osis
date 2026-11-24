@@ -1,7 +1,7 @@
 ------------------------------- MODULE Finalize -------------------------------
 (* Timed edges ended by a finalize, and the Met rule (spec/permissions.md §2  *)
-(* Finalize, spec/crypto.md §4 Names, Met, Established; issues/finalize-noop- *)
-(* unmet-lockout.md). One group, read role only. Writers (admins) set, renew, *)
+(* Finalize, spec/crypto.md §4 Names, Met, Established; notes/timed-ends.md). *)
+(* One thing, read role only. Writers (admins) set, renew, *)
 (* finalize, rotate, re-seal and write; readers D1, D2 are passive holders.   *)
 (* Edge writes are entries (spec/crdt.md §5.6): a change resets the entry its *)
 (* author held live and puts a new one; a finalize resets the live entry of   *)

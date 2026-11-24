@@ -2,7 +2,7 @@
 (* Instance constants for Depth0.tla (a .cfg cannot write tuples).           *)
 EXTENDS Depth0
 
-\* holder actor M of A; m1 removes device D (an admin of M) from M; m2 may
+\* holder actor M of A; m1 removes node D (an admin of M) from M; m2 may
 \* fork M and a1 (the one admin of A) may rotate A once unprompted
 mActs == <<"A", "M">>
 mMem == {<<"A", "a1">>, <<"A", "M">>, <<"M", "m1">>, <<"M", "m2">>, <<"M", "D">>}
@@ -146,7 +146,7 @@ sG == << <<"G", "b">>, <<"G", "d">> >>
 sHide == {<<"b", <<"G", "d">> >>, <<"d", <<"G", "b">> >>}
 sNoLate == {}
 sNoSync == {<<"a1", "G">>}
-\* above A: A holds G's role; a1 (admin of A and G) removes device E from A,
+\* above A: A holds G's role; a1 (admin of A and G) removes node E from A,
 \* the removal alone; a2 (A's other admin) may fork A once
 \* unprompted, a1 may rotate G once unprompted
 uActs == <<"G", "A">>
@@ -157,7 +157,7 @@ uDeps == {<<"E", "A", "a1">>}
 uEager == {<<"a2", "A">>, <<"a1", "G">>}
 \* ... with a1 the one admin of A (two admins both rotating A for the removal
 \* fork it, and the merge and G's moves after it outrun MaxE 7) and r, a
-\* device reading G only through A
+\* node reading G only through A
 u1Mem == (uMem \ {<<"A", "a2">>}) \cup {<<"A", "r">>}
 u1Adm == uAdm \ {<<"A", "a2">>}
 u1Learners == {"a1", "r"}
@@ -188,8 +188,8 @@ v2Mem == vMem \cup {<<"G", "g2">>}
 v2Adm == vAdm \cup {<<"G", "g2">>}
 v2Learners == vLearners \cup {"g2"}
 v2NoSync == {<<"g2", "A">>, <<"g2", "M">>}
-\* first admin (spec/crypto.md §4 Key access): F (device f1) is
-\* T's first admin, its record edge first in grant order; T is granted on F
+\* mint admin (spec/crypto.md §4 Key access): F (node f1) is
+\* T's mint admin, its record edge first in grant order; T is granted on F
 \* later, closing a cycle, so keyless; t1 (T's other admin) removes F from T,
 \* after which T's grant on F has key access and F's epochs need a re-seal to
 \* T. f1 writes T through F until it knows the removal; f1 may rotate F once
@@ -201,11 +201,11 @@ faLearners == {"f1", "t1"}
 faDeps == {<<"F", "T", "t1">>}
 faEager == {<<"f1", "F">>}
 faVia == {<<"f1", "T">>}
-faFirst == {<<"T", "F">>}
+faMint == {<<"T", "F">>}
 faG == << <<"T", "F">>, <<"F", "T">> >>
-\* ... and T was plain (derived from F) until t1's grant gave it its own
+\* ... and T was dependent (derived from F) until t1's grant gave it its own
 \* secrets (T's initial epoch); f1 lacks that rotation at first
-faPlain == {<<"T", "F">>}
+faDependent == {<<"T", "F">>}
 faUnaware == {<<"f1", "T">>}
 \* derivation alone: no grant of T on F
 fdMem == faMem \ {<<"F", "T">>}
@@ -214,7 +214,7 @@ fdG == << <<"T", "F">> >>
 \* one admin, reads T and is removed from it by a1, T's admin (alone or with
 \* T's rotation); with lDeps2, d too. c may rotate X once unprompted and
 \* writes X. Under Follow c syncs T only while it reads
-\* T, and learns T's later keysets only as T's readers place them under X or
+\* T, and learns T's later keysets only as T's readers log them under X or
 \* report them stranded (Notice)
 lActs == <<"X", "T">>
 lMem == {<<"X", "c">>, <<"X", "T">>, <<"T", "a1">>, <<"T", "c">>, <<"T", "d">>}
@@ -230,7 +230,7 @@ lFollow == TRUE
 \* a departure from a holder actor whose secrets the admin never held
 \* (Order): as lActs, c not in T; a1
 \* removes d (alone or with T's rotation); c learns the removal from T's
-\* placements, T's keysets as T's readers place them under X or report them
+\* logged copies, T's keysets as T's readers log them under X or report them
 \* stranded
 oMem == {<<"X", "c">>, <<"X", "T">>, <<"T", "a1">>, <<"T", "d">>}
 oDeps == {<<"d", "T", "a1">>}

@@ -1,8 +1,8 @@
 ------------------------------ MODULE JointRule ------------------------------
 (* When is a joint box to holder actor M blocked (spec/crypto.md §4, Seal)? *)
 (* Static: every small configuration at once (Init), no steps. M forked    *)
-(* into two keysets; M's direct holders are device x and holder actors N,  *)
-(* P (members among devices x, q). A node knows departures from M (any of  *)
+(* into two keysets; M's direct holders are node x and holder actors N,  *)
+(* P (members among nodes x, q). A node knows departures from M (any of  *)
 (* x, N, P) and from N and P (their members). Each fork of M either covers *)
 (* a removal from M (made knowing it: no box to the removed holder) or     *)
 (* misses it (boxes it), and boxes N, P at their old keyset (every member) *)
@@ -24,7 +24,7 @@ Direct == {"x"} \cup Acts
 Forks == {1, 2}
 
 VARIABLES rmM,    \* direct holders removed from M (known)
-          mem,    \* mem[h]: h's members (devices)
+          mem,    \* mem[h]: h's members (nodes)
           rmA,    \* rmA[h]: members removed from h (known)
           covM,   \* covM[f]: removals from M fork f covers
           atNew   \* atNew[f][h]: fork f boxes h at its keyset covering rmA[h]
@@ -41,7 +41,7 @@ Spec == Init /\ [][UNCHANGED vars]_vars
 Boxes(f) == Direct \ covM[f]
 Members(f, h) == IF atNew[f][h] THEN mem[h] \ rmA[h] ELSE mem[h]
 Opens(d, f) == d \in Boxes(f) \/ \E h \in Acts \cap Boxes(f) : d \in Members(f, h)
-\* a device still reaching M by some standing path
+\* a node still reaching M by some standing path
 Legit == ({"x"} \ rmM) \cup UNION {mem[h] \ rmA[h] : h \in Acts \ rmM}
 Departed == Devs \ Legit
 
@@ -56,9 +56,9 @@ Blocked ==
     [] Rule = "party" -> \E p \in Party(1) : p \in Party(2)
     [] Rule = "every" -> \A f \in Forks : Miss(f) # {}
 
-\* a departed device opens the joint box
+\* a departed node opens the joint box
 NoLeak == ~Blocked => ~\E d \in Departed : \A f \in Forks : Opens(d, f)
-\* departed devices pooling what they hold open it (spec/requirements.md: rights held by
+\* departed nodes pooling what they hold open it (spec/requirements.md: rights held by
 \* different parties never combine into a right neither has alone)
 NoPooledLeak == ~Blocked => ~\A f \in Forks : \E d \in Departed : Opens(d, f)
 \* a fork covering every departure the node knows is enough to seal M (the issue)
