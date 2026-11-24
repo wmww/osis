@@ -182,19 +182,27 @@ def registries():
 
 def env_vars():
     """core/base/testenv-known.txt names every `OSIS_*` variable the repo's sources name, and no other
-    (a set variable it lacks fails the harnesses as a typo)."""
-    known = set(open(os.path.join(ROOT, "core/base/testenv-known.txt")).read().split())
-    used = set()
-    for path, _ in walk(CODE_TOPS + ("tools",), (".rs", ".sh", ".py", ".toml")):
+    (a set variable it lacks fails the harnesses as a typo). Each finding by file:line: a stale name
+    at its line in the list, an unlisted one where it is first named."""
+    listed = "core/base/testenv-known.txt"
+    known = {}
+    for n, line in enumerate(open(os.path.join(ROOT, listed)), 1):
+        for v in line.split():
+            known.setdefault(v, n)
+    used = {}  # each name, where it is first named
+    for path, rel in walk(CODE_TOPS + ("tools",), (".rs", ".sh", ".py", ".toml")):
+        text = read(path)
         # a name ending in `_` is a prefix (a filter over the environment)
         # the `\b` as a lookbehind after the literal, for speed (`has`)
-        used |= {v for v in re.findall(r"OSIS_(?<!\wOSIS_)[A-Z0-9_]+", read(path)) if not v.endswith("_")}
-    for v in sorted(v for v in used - known if v.startswith("OSIS_PROBE_")):
-        yield f"{v} is a throwaway probe (notes/build.md): remove it before committing"
-    for v in sorted(v for v in used - known if not v.startswith("OSIS_PROBE_")):
-        yield f"{v} is read but not in core/base/testenv-known.txt"
-    for v in sorted(known - used):
-        yield f"{v} is in core/base/testenv-known.txt but nothing reads it"
+        for m in re.finditer(r"OSIS_(?<!\wOSIS_)[A-Z0-9_]+", text):
+            if not m[0].endswith("_") and m[0] not in used:
+                used[m[0]] = f"{rel}:{text.count(chr(10), 0, m.start()) + 1}"
+    for v in sorted(v for v in used if v not in known and v.startswith("OSIS_PROBE_")):
+        yield f"{used[v]}: {v} is a throwaway probe (notes/build.md): remove it before committing"
+    for v in sorted(v for v in used if v not in known and not v.startswith("OSIS_PROBE_")):
+        yield f"{used[v]}: {v} is read but not in {listed}"
+    for v in sorted(v for v in known if v not in used):
+        yield f"{listed}:{known[v]}: {v} is listed but nothing reads it"
 
 # notes/disputes.md, the coherence rule: the dispute queries are private to osis-perm and
 # the API layer; nothing else names a side or asks whether a dispute is open.
