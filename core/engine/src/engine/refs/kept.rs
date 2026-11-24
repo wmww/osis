@@ -1,6 +1,6 @@
 //! Strongs in history (spec/data-model.md §8 What counts; notes/engine-refs.md History holds):
 //! on a thing whose newest held valid setting has `history_holds_targets`, each strong in a held
-//! valid body of a counted aspect of it (`counted`) is an edge of the node closure and a need, as
+//! valid body of a counted aspect of it (`counted`), a held fire included, is an edge of the node closure and a need, as
 //! a current value's strong, until the body goes (covered, expired, purged, invalid, forgotten,
 //! released). Local and rebuildable, in three store index tables:
 //! - `PARTS`: source ‖ AK ‖ 0 ‖ commit ‖ part (u32): the strongs that held body holds, by target
@@ -30,10 +30,9 @@ pub(crate) const TO: &[u8] = b"node/refs kept to";
 const TID: usize = osis_base::format::TID_LEN;
 
 /// Whether held bodies of `ak` can hold their strongs' targets: a durable aspect the setting
-/// governs (no fixed retention), not a signal (a held fire's references are the reference
-/// index's, `refs::note`).
+/// governs (no fixed retention), a signal's fires as any other body.
 pub(crate) fn counted(ak: &Ak) -> bool {
-    !ak.ephemeral() && !ak.signal() && osis_commit::retention::fixed_purge_by(ak.as_str()).is_none() && !osis_commit::retention::role_kept(ak.as_str())
+    !ak.ephemeral() && osis_commit::retention::fixed_purge_by(ak.as_str()).is_none()
 }
 
 /// Whether `tid`'s newest held valid setting says its history holds its strongs' targets.

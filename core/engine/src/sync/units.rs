@@ -727,10 +727,10 @@ impl Core {
     }
 }
 
-/// The targets of `x`'s strongs, `x` aside: its current values' and its held history's
-/// (`refs::kept`).
+/// The targets of `x`'s strongs, `x` aside: its current values' and its held history's, held
+/// fires included (`refs::kept`).
 fn strongs_from(tx: &mut Tx<'_>, x: &Tid) -> Result<BTreeSet<Tid>> {
-    let mut out: BTreeSet<Tid> = crate::engine::refs::from(tx, x)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong).map(|r| r.target).collect();
+    let mut out: BTreeSet<Tid> = crate::engine::refs::from(tx, x)?.into_iter().filter(|r| crate::engine::refs::holds_target(r.kind, &r.ak)).map(|r| r.target).collect();
     out.extend(crate::engine::refs::kept::from(tx, x)?.into_iter().map(|r| r.0));
     out.remove(x);
     Ok(out)

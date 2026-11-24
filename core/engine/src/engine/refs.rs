@@ -30,6 +30,13 @@ pub(crate) const LINKS: &[u8] = b"node/refs links";
 /// hash, empty. Read again when the blob is stored (`fetched`).
 pub(crate) const WAITS: &[u8] = b"node/refs waits";
 
+/// Whether a `kind` row on `ak` holds its target as a strong in a current value does
+/// (spec/data-model.md §8 What counts): a signal has no current value, so a held fire's strongs
+/// hold only as held history (`kept`).
+pub(crate) fn holds_target(kind: RefKind, ak: &Ak) -> bool {
+    kind == RefKind::Strong && !ak.signal()
+}
+
 /// Whether `ak` is indexed: every aspect with a state, and every durable signal by its held
 /// valid fires (an ephemeral signal's fires are held by none).
 pub fn indexed(ak: &Ak) -> bool {
@@ -526,8 +533,9 @@ pub(crate) fn has(tx: &mut Tx<'_>, target: &Tid, source: &Tid, ak: &Ak, kind: Re
     Ok(tx.txn.table_get(to, &to_key(target, source, ak, kind))?.is_some())
 }
 
-/// Whether `source` holds a strong to `target`, in any aspect: one probe per aspect holding a
-/// reference to `target` (aspect names are static), never its other referrers.
+/// Whether `source` holds a strong to `target` in a current value (`holds_target`): one probe
+/// per aspect holding a reference to `target` (aspect names are static), never its other
+/// referrers.
 pub(crate) fn strong_from(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result<bool> {
     let to = tx.txn.index(TO)?;
     let pre = target.as_bytes().to_vec();
@@ -537,7 +545,7 @@ pub(crate) fn strong_from(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result
         // the next aspect's first row
         let Some((k, _)) = tx.txn.table_range(to, &start, Some(&end), 1)?.into_iter().next() else { return Ok(false) };
         let (_, ak, _) = parse_to(k.get(pre.len()..).ok_or(Error::Corrupt("reference row"))?)?;
-        if tx.txn.table_get(to, &to_key(target, source, &ak, RefKind::Strong))?.is_some() {
+        if holds_target(RefKind::Strong, &ak) && tx.txn.table_get(to, &to_key(target, source, &ak, RefKind::Strong))?.is_some() {
             return Ok(true);
         }
         start = [pre.as_slice(), ak.as_str().as_bytes(), &[1]].concat();

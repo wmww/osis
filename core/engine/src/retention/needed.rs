@@ -5,8 +5,8 @@
 //! ever in the node closure; nothing once nothing does. So another account's chain (its record,
 //! its `keys.0` commits, its inbox's) and a released thing's record and role-class state stay
 //! only while needed. Its certificates stay while a thing that needs it is kept: one in the node closure whose
-//! known references hold a strong to it (`refs::to`: its state, ephemeral aspects included, and
-//! held fires; a weak only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it mint admin, one
+//! current values hold a strong to it (`refs::to`, ephemeral aspects included) or whose held
+//! history does (`refs::kept`, held fires included; a weak only points and needs nothing), an account by its `keys.0` (its inbox), one whose record names it mint admin, one
 //! whose held edge write names it holder (`Held::named_on`), an account root whose account's held
 //! chain names it a device (D bears no edge write), one a held commit acting as it writes on
 //! (`Indexes::by_actor`), one a pending commit it authored or acted
@@ -309,7 +309,7 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     let core = &*tx.core;
     out.extend(kept.into_iter().filter(|(s, _)| core.ix.closure.holds(s)).map(|(s, ak)| (s, Need::Strong(ak))));
     for r in refs {
-        if r.kind == osis_base::RefKind::Strong && core.ix.closure.holds(&r.source) {
+        if crate::engine::refs::holds_target(r.kind, &r.ak) && core.ix.closure.holds(&r.source) {
             out.push((r.source, Need::Strong(r.ak)));
         } else if r.ak.as_str() == "keys.0" {
             out.push((r.source, Need::Inbox));

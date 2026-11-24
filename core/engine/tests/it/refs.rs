@@ -323,7 +323,8 @@ fn index_and_scan(e: &mut Engine, sources: &[Tid], targets: &[Tid]) -> (Rows, Ro
 type Kept = BTreeSet<(Tid, Tid, String)>;
 
 /// The strongs held history holds (source, target, AK) two ways: the index and a scan of the
-/// held valid bodies of `HELD` on each source whose setting says its history holds them.
+/// held valid bodies of `HELD` and fires of `SIG` on each source whose setting says its history
+/// holds them.
 fn history_two_ways(e: &mut Engine, sources: &[Tid], targets: &[Tid]) -> (Kept, Kept) {
     let (mut index, mut scanned) = (BTreeSet::new(), BTreeSet::new());
     for s in sources {
@@ -331,7 +332,7 @@ fn history_two_ways(e: &mut Engine, sources: &[Tid], targets: &[Tid]) -> (Kept, 
         if !e.get_typed(s, &ct::RETENTION).unwrap().is_some_and(|x| x.history_holds_targets) {
             continue;
         }
-        for a in HELD {
+        for a in HELD.into_iter().chain([SIG]) {
             let mut c = BTreeMap::new();
             scan_bodies(e, s, a, true, &mut c);
             scanned.extend(c.into_keys().filter(|(t, k)| *k == RefKind::Strong && targets.contains(t)).map(|(t, _)| (*s, t, a.to_string())));

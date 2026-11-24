@@ -97,9 +97,9 @@ pub struct RetentionSetting {
     /// A holder removed from the thing retains a read-only copy, unless its remover says otherwise
     /// (`SetRoleOpts::retain_copy`).
     pub retain_copies: bool,
-    /// A strong reference in a version this thing still holds in its history keeps its target
-    /// held, as one in a current value does, so restoring the version finds what it names. Its
-    /// writers can keep a target held for as long as the history keeps the version.
+    /// A strong reference in a version or fire this thing still holds in its history keeps its
+    /// target held, as one in a current value does, so restoring the version finds what it names.
+    /// Its writers can keep a target held for as long as the history keeps the version.
     pub history_holds_targets: bool,
 }
 

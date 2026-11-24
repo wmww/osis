@@ -20,7 +20,7 @@
 ## Against the built tree
 - Held for keys (spec/sync-set.md §2) is the stub of a holder on a chain: the same state, entered there only for holders. A held grant fire keeps what it carried while it is held, as a snapshot nothing corrects.
 - The key part under a holder's sync ID (spec/permissions.md §4 Key part) carries an edge piece for every thing the holder holds a role on that a node syncs: rule 2 keeps only those on chains to things the unit carries.
-- spec/data-model.md §8 says a reference in a fire adds nothing to a closure and that Held history excludes signals and aspects of fixed retention, giving no reason; the engine counts a held fire's strong as a closure edge whatever the flag (issues/fire-strongs-in-closure.md). Rule 4 replaces both.
+- Rule 4 is built for strongs in durable aspects the setting governs, fires included (spec/data-model.md §8 Held history, `refs::kept`). Not built: a weak in held history holding its target's stub (no stubs yet; the spec says weaks in history count for nothing), and held bodies of ephemeral aspects (memory bodies, notes/engine-refs.md History holds).
 - An account's inbox is a thing of its own; any other independent thing is its own inbox (spec/sync-inbox.md §1). Rule 5 makes the first the rule for all.
 
 ## For the spec piece

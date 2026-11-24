@@ -778,54 +778,81 @@ fn own_things_are_released_whole_spec_sync_set_3() {
     }
 }
 
-// spec/data-model.md §8 What counts, spec/commits.md §5 The setting: on a thing whose setting has
-// `history_holds_targets`, a strong in a held body of its history holds its target as a current
-// one does. T keeps 10 minutes of history; its strong to X is removed: X stays held while the
-// adding body is held, and is noted left once a cover past the bound drops that body, or once a
-// setting without the flag follows. Without the flag X leaves at the removal.
+// spec/data-model.md §8 Held history: on a thing whose setting has `history_holds_targets`, a
+// strong in a held body of its history holds its target as a current one does, a fire's as a
+// replaced write's (a fire is history once written); without the flag neither holds. X is held by
+// D's strong; T's body names X (a fire on T's signal, or a write on T's `holds.0` removed again);
+// D's strong removed, X stays iff the flag is set, and goes once the body does (purged; covered
+// past the bound: a fire is never covered) or the flag is turned off.
 #[test]
-#[ignore = "accounts: keys"]
-fn a_strong_in_held_history_holds_its_target_until_the_body_goes_spec_data_model_8() {
-    for (holds, by_cover) in [(false, false), (true, true), (true, false)] {
-        let (mut lp, d) = alone();
-        let e = &mut lp.peers[0].engine;
-        let t = make(e, d, d);
-        let keep = osis_schema::History::Keep { until: None, after: Some(10 * 60_000) };
-        let setting = |holds| ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(keep), ..Default::default() }), history_holds_targets: holds, ..Default::default() };
-        let mut m = Mutation::new();
-        m.set(t, &ct::RETENTION, &setting(holds)).unwrap();
-        e.commit(m).unwrap();
-        let rec = e.thing_record(d, None);
-        let mut m = Mutation::new();
-        let x = m.create(rec);
-        m.op(t, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(x)) }).unwrap();
-        let add = e.commit(m).unwrap().unwrap();
-        lp.advance(1_000);
-        let e = &mut lp.peers[0].engine;
-        strong(e, t, x, false);
-        assert_eq!(e.closure_holds(&x), holds, "held by the replaced body iff the flag is set");
-        if !holds {
-            continue;
-        }
-        if by_cover {
-            lp.advance(11 * 60_000);
-            lp.peers[0].tick().unwrap();
-            let e = &mut lp.peers[0].engine;
-            assert!(e.closure_holds(&x), "past the bound the body is still held: so is X");
-            let holds_ak = osis_base::Ak::new("holds.0").unwrap();
-            e.snapshot(&t, &holds_ak).unwrap().unwrap();
-            if e.body_not_dropped(&add, &t, &holds_ak) {
-                e.drop_body(&add, &t, &holds_ak).unwrap();
+fn a_strong_in_held_history_holds_its_target_while_the_body_is_held_spec_data_model_8() {
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum End {
+        FlagOff,
+        Purged,
+        Covered,
+    }
+    let sig = crate::common::ak("t:f~0");
+    let holds_ak = crate::common::ak("holds.0");
+    let keep = osis_schema::History::Keep { until: None, after: Some(10 * 60_000) };
+    let setting = |holds| ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(keep), ..Default::default() }), history_holds_targets: holds, ..Default::default() };
+    for fire in [false, true] {
+        for (holds, end) in [(false, End::FlagOff), (true, End::FlagOff), (true, End::Purged), (true, End::Covered)] {
+            if fire && end == End::Covered {
+                continue;
             }
-        } else {
+            let at = format!("fire {fire}, flag {holds}, {end:?}");
+            let (mut lp, d) = alone();
+            let e = &mut lp.peers[0].engine;
+            let t = make(e, d, d);
+            let x = make(e, d, d);
             let mut m = Mutation::new();
-            m.set(t, &ct::RETENTION, &setting(false)).unwrap();
-            lp.peers[0].engine.commit(m).unwrap();
+            m.set(t, &ct::RETENTION, &setting(holds)).unwrap();
+            e.commit(m).unwrap();
+            let mut m = Mutation::new();
+            if fire {
+                m.set(t, &sig, &Value::Strong(x)).unwrap();
+            } else {
+                m.op(t, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(x)) }).unwrap();
+            }
+            let body = e.commit(m).unwrap().unwrap();
+            if !fire {
+                strong(e, t, x, false);
+            }
+            strong(e, d, x, false);
+            assert_eq!(e.closure_holds(&x), holds, "{at}: held by T's body iff the flag is set");
+            if !holds {
+                continue;
+            }
+            let on = if fire { sig.clone() } else { holds_ak.clone() };
+            match end {
+                End::FlagOff => {
+                    let mut m = Mutation::new();
+                    m.set(t, &ct::RETENTION, &setting(false)).unwrap();
+                    e.commit(m).unwrap();
+                }
+                End::Purged => {
+                    let mut m = Mutation::new();
+                    m.set(t, &ct::PURGE, &e.now()).unwrap();
+                    m.purge_commit(body, t, on.clone());
+                    e.commit(m).unwrap();
+                    assert!(!e.body_not_dropped(&body, &t, &on), "{at}: the body purged");
+                }
+                End::Covered => {
+                    lp.advance(11 * 60_000);
+                    lp.peers[0].tick().unwrap();
+                    let e = &mut lp.peers[0].engine;
+                    assert!(e.closure_holds(&x), "{at}: past the bound the body is still held: so is X");
+                    e.snapshot(&t, &on).unwrap().unwrap();
+                    if e.body_not_dropped(&body, &t, &on) {
+                        e.drop_body(&body, &t, &on).unwrap();
+                    }
+                }
+            }
+            let e = &mut lp.peers[0].engine;
+            e.check_closure();
+            assert!(!e.closure_holds(&x), "{at}: the body gone or the flag off, X goes");
         }
-        let e = &mut lp.peers[0].engine;
-        e.check_closure();
-        assert!(!e.closure_holds(&x), "its body dropped or the flag off: X goes");
-        assert_eq!(e.left_closure().get(&x), Some(&[d].into()));
     }
 }
 
