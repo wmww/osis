@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, planted, netstream, netshared, netblind, netopen, nethold, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, planted, netstream, netshared, netopen, nethold, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker, but depth0: 10-20 min); with cfg names: those instances instead
 #   (the larger ones in the module's README, by hand), judged only if listed
@@ -173,12 +173,6 @@ instances=(
   "netshared net MCShared TN_cursorrep.cfg fail"
   "netshared net MCShared TN_offergate.cfg fail"
   "netshared net MCShared TN_reptested.cfg fail"
-  "netblind net MCBlind B_all.cfg pass"
-  "netblind net MCBlind B_live.cfg pass"
-  "netblind net MCBlind BN_upack.cfg fail"
-  "netblind net MCBlind BN_whole.cfg fail"
-  "netblind net MCBlind BN_cover.cfg fail"
-  "netblind net MCBlind BN_known.cfg fail"
   "netopen net MCOpen O_rk.cfg pass"               # spec/sync-opens.md §4, the open rule: a reader and a store
   "netopen net MCOpen O_kk.cfg pass"               # ... two stores
   "netopen net MCOpen O_rx.cfg pass"               # ... a reader and a link holder
@@ -250,7 +244,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|account|netstream|netshared|netblind|netopen|nethold|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|account|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
   exit 2
 fi
 

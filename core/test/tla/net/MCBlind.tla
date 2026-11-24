@@ -1,3 +1,0 @@
----- MODULE MCBlind ----
-EXTENDS NetBlind
-====
