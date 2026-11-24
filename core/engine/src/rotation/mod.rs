@@ -149,11 +149,11 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
             let un = uncovered_by(tx, &x, r, &k, &deps)?;
             if !un.is_empty() {
                 missed = true;
-                for d in un.iter().filter(|_| full) {
-                    causes.extend(departures::departure_causes(tx, &x, r, d, &deps)?);
-                }
                 if !full {
                     return Ok(Some(Block::Departure));
+                }
+                for d in un {
+                    causes.extend(departures::departure_causes(tx, &x, r, d, &deps)?);
                 }
             }
         }

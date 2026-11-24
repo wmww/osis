@@ -2672,3 +2672,86 @@ fn a_box_naming_an_invalid_keyset_is_recorded_with_its_rotation_spec_crypto_4() 
     settle(&mut lp, &[0, 2, 3, 4], &[n, m, g]);
     assert!(all_boxed(&mut lp, 0, &[g]));
 }
+
+// spec/crypto.md §4 (Left out: a maker departure's cause is its epoch's rotation; Departure),
+// model `LO_nofact` (no record: churn): M {m0, N write, W reader}, N {n0, P write}, G {g0, W
+// admin, M reader}. P rotates M through N (kP); n0 removes P from N. W, reading M but not N, finds
+// P's departure from M by kP's maker alone (no edge into M shows it), leaves M out of G and
+// records kP with P's rotation among its causes (beside N's rotation, which makes kP's box to N
+// stale). g0, reading no secret of M, seals M at kP nowhere; m0's re-key ends it and P opens
+// nothing written after. (A removal alone, with an empty frontier, would cut P's rotation.)
+#[test]
+fn a_maker_departure_alone_is_recorded_with_its_rotation_spec_crypto_4() {
+    let read = BTreeSet::from([Role::Read]);
+    let mut lp = synced(5);
+    let [_, p, _, w, _] = std::array::from_fn(|i| lp.peers[i].engine.me());
+    let n = independent_thing(&mut lp, 2);
+    lp.peers[2].engine.grant(&n, &p, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    let m = independent_thing(&mut lp, 0);
+    lp.peers[0].engine.grant(&m, &n, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&m, &w, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let g = independent_thing(&mut lp, 4);
+    lp.peers[4].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
+    lp.peers[4].engine.grant(&g, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    assert!(boxes(&mut lp, 0, m, n), "M's grant to N is keyed");
+    lp.peers[1].clock.advance(1_000);
+    let before = commit_ids(&mut lp, 1);
+    rotate_skipping(&mut lp, 1, m, &read, &[]);
+    let p_rot = *commit_ids(&mut lp, 1).difference(&before).next().unwrap();
+    let kp = newest_read(&lp, 1, m).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(newest_read(&lp, 3, m), Some(kp), "W holds P's keyset of M");
+    let start = held_by(&lp, 1, &[m, g]);
+    removal(&mut lp, 2, n, p);
+    lp.sync_all().unwrap();
+    let deps = lp.peers[3].engine.departures(&m).unwrap();
+    assert!(deps.iter().any(|d| d.holder == p && d.edge.is_none()), "W sees P's maker departure: {deps:?}");
+    rotate_skipping(&mut lp, 3, g, &read, &[]);
+    assert_eq!(sealed_at(&mut lp, 3, g, m), None, "W leaves M out");
+    let rec = recorded(&lp, 3, g, m);
+    assert!(rec.get(&kp).is_some_and(|c| c.contains(&p_rot)), "W records kP with P's rotation: {rec:?}");
+    lp.sync_all().unwrap();
+    lp.peers[4].engine.reseal_after_pass(&g).unwrap();
+    assert_eq!(boxing_at(&mut lp, 4, g, m, kp), Vec::<Epoch>::new(), "g0 seals M at kP nowhere");
+    lp.sync_all().unwrap();
+    assert!(lp.peers[3].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "W owes G nothing more");
+    settle(&mut lp, &[0, 2, 3, 4], &[n, m, g]);
+    assert_ne!(newest_read(&lp, 0, m), Some(kp), "M re-keyed off kP");
+    assert!(all_boxed(&mut lp, 0, &[g]));
+    assert_eq!(leaked(&mut lp, 0, &[m, g], p, start), Vec::<Tid>::new(), "P opens nothing new");
+}
+
+// spec/crypto.md §4 (Left out: a rotation cause stands while held; a false record), model
+// `LO_hostile` (`HostileEnds`): A {a0, H writer, M}, M {a0}. H records M's current keyset with
+// A's own rotation as its cause, which stands everywhere for good. a0 then removes H: its
+// removal's rotation of A still leaves M out, copying the record, and one re-key of M ends it;
+// no later pass rotates M again.
+#[test]
+fn a_hostile_record_on_a_rotation_ends_with_its_writers_removal_spec_crypto_4() {
+    let mut lp = synced(2);
+    let h = lp.peers[1].engine.me();
+    let m = independent_thing(&mut lp, 0);
+    let a = independent_thing(&mut lp, 0);
+    lp.peers[0].engine.grant(&a, &h, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let ea = newest_read(&lp, 0, a).unwrap();
+    let cause = lp.peers[0].engine.core.ix.epoch_intro.get(&(a, Role::Read, ea)).unwrap().1;
+    let k = newest_read(&lp, 0, m).unwrap();
+    rotate_recording(&mut lp, 1, a, m, k, &[cause]);
+    lp.sync_all().unwrap();
+    assert_eq!(sealed_at(&mut lp, 0, a, m), None, "M left out");
+    removal(&mut lp, 0, a, h);
+    assert_eq!(sealed_at(&mut lp, 0, a, m), None, "the removal's rotation leaves M out too");
+    assert!(recorded(&lp, 0, a, m).get(&k).is_some_and(|c| c.contains(&cause)), "and copies the record");
+    lp.sync_all().unwrap();
+    settle(&mut lp, &[0], &[m, a]);
+    assert_eq!(newest_read(&lp, 0, m).unwrap().n(), k.n() + 1, "one re-key of M");
+    assert_eq!(sealed_at(&mut lp, 0, a, m), newest_read(&lp, 0, m), "A re-seals M at it");
+    assert_eq!(settle(&mut lp, &[0], &[m, a]), 0, "nothing more");
+    assert_eq!(recorded(&lp, 0, a, m).keys().copied().collect::<Vec<_>>(), vec![k], "until A's next rotation, only the superseded keyset stays recorded");
+    assert!(all_boxed(&mut lp, 0, &[m, a]));
+}

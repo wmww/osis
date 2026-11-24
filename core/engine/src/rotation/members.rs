@@ -275,7 +275,9 @@ pub(crate) fn left_out_at(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<
 ///
 /// Invariant: a cause stops standing only where this node can show what it showed is gone. An
 /// edge write's departure ends with a regrant or its invalidity, a keyless grant with key
-/// access, each judged by this node's own walk over held commits. A keyset proves its block by
+/// access, each judged by this node's own walk over held commits; a commit writing a keyset as
+/// well (a removal's own rotation) stands as a rotation, since a record does not say which of
+/// its writes it was named for. A keyset proves its block by
 /// existing: invalid, a reader lacking what invalidates it would find it valid, so validity
 /// cannot end it either way; the record it keeps ends with `m`'s re-key (`rekey_due`). Who
 /// writes it: anyone; a hostile record naming any held rotation counts as one naming a standing
