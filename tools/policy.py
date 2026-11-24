@@ -17,7 +17,8 @@ marked `<!-- registry -->` numbers its items uniquely and increasingly (`registr
 record tags are distinct and never literals (`row_prefixes`, `record_tags`), every pointer into
 notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and every code name
 notes/ and issues/ cite in backticks exists (tools/code_refs.py), and every test cites the spec and every
-anchor names a rule (`spec_anchors`: tools/spec_map.py --uncited --gaps).
+anchor names a rule (`spec_anchors`: tools/spec_map.py --uncited --gaps), and no text uses a removed
+concept's word (`dead_words`).
 Usage: python3 tools/policy.py [--baseline [REF]]   (every workspace member, the GUI's included;
 vendored crates under libs/kit/patches/ are not ours and are skipped; exit 1 on any violation).
 --baseline prints and fails on only the violations REF (default origin/main) does not have, matched
@@ -487,8 +488,27 @@ def spec_anchors():
     yield from (f"spec_map: {p}" for p in problems)
 
 
+# issues/deprecated-terms.md (Gone): a fully removed concept whose word has no other sense, so no
+# text may use it again. The registry itself and history logs are exempt.
+DEAD_WORDS = {"key actor": re.compile(r"(?i)\bkey[ _-]?actors?\b")}
+# Interim (issues/deprecated-terms.md, key actor row): uses still owed, each with its owner
+DEAD_WORD_OWED = ("core/test/held-model/", "issues/held-model-key-actor-edges.md", "notes/accounts-switch-brief.md")
+
+
+def dead_words():
+    tracked = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split("\n")
+    skip = ("docs/", "notes/complaints/", "libs/kit/patches/", "issues/deprecated-terms.md", "tools/policy.py") + DEAD_WORD_OWED
+    for rel in tracked:
+        if not rel or rel.startswith(skip):
+            continue
+        for n, line in enumerate(read(os.path.join(ROOT, rel)).split("\n"), 1):
+            for word, pat in DEAD_WORDS.items():
+                if pat.search(line):
+                    yield f"{rel}:{n}: uses \"{word}\", a removed concept (issues/deprecated-terms.md, Gone)"
+
+
 # the slowest first, so the pool balances
-CHECKS = [doc_refs.check, spec_anchors, code_refs.check, row_prefixes, record_tags, known_failures, test_cost, union_lists, registries, test_copies, ignore_issues, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
+CHECKS = [doc_refs.check, spec_anchors, code_refs.check, row_prefixes, record_tags, known_failures, test_cost, union_lists, registries, test_copies, ignore_issues, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types, dead_words]
 
 
 def run(check):

@@ -7,7 +7,7 @@
 Per held **copy** (commit ID, thing), held whole (a commit's edge writes on a thing are one `roles.0` delta, spec/crdt.md §2), its parts on that thing (`evidence::Part`), as the derivation's own structs (independent of header types):
 - `kind`: content (anything with no edge write: content, purge requests, snapshots, `sync.0`) or an edge write (`Write`: its holder, and `gives_read`: read or above, any `until`, no self-removal, a step of the keys-open graph).
 - `hops`: the edges of the path its commit states for that thing, key hop first (a hop's holder is a thing or a key: the derivation is generic over its holder type, `evidence::Holds`; keys-open travel and travelling holders are things alone, a key holding no read); `None` while not known here (a split entry waiting to open: notes/path-form.md); `open_path` when it opens. A part with no known path brings no path edges.
-- `dels`: the delete keys it lists at levels 1 and 3 for its thing's delete base (`Del`: base, level, key; spec/crypto.md §7). A key-actor base lists none here.
+- `dels`: the delete keys it lists at levels 1 and 3 for its thing's delete base (`Del`: base, level, key; spec/crypto.md §7).
 - `steps`: the steps a `sync.0` part records on its thing (`Step`: ID, parent, delete and write keys; spec/sync-ids.md §2).
 - Per sync ID: its actor (whose role changes travel under it) and its unit's things (`join`, `leave`).
 - **Record edges** (`add_record`, `remove_record`): each (mint admin, thing it minted), standing while the record is held: edges of the keys-open graph.
@@ -67,7 +67,7 @@ A removal reaches a thing other than its own by the evidence closure (wherever a
 ## The engine's input (`evidence::held`)
 `held::copies` reads every commit in `ix.commits` (any validity) into copies, from the index and the held `sync.0` bodies, nothing kept:
 - Per aspect on a thing one part; a `roles.0` aspect one part per edge write its commit makes there (`ix.held.edge_commit`: kind, holder, `gives_read` from the edge, no self-removal), hops by `osis_perm::paths::hops` along the role commit's one path; every other aspect and each purge item a content part, hops from `validity::stated` (`None` while a split entry is unopened). An unresolved removal (no ops) is one content part.
-- `dels`: the aspect's header keys at levels 1 and 3, each for the thing up the record chain whose steps bear it (a key actor's signing key: none).
+- `dels`: the aspect's header keys at levels 1 and 3, each for the thing up the record chain whose steps bear it.
 - `steps`: each step entry whose step a held `sync.0` body writes, walked in the fragment (a step joins the sync ID entry its genesis made, so a read of the delta alone shows none); snapshots included, which is how a role compaction keeps steps evidence (Open 4: a carried entry keeps its recording write's stamp).
 - Records: `held::mint`, every held record naming a mint admin.
 - Header keys are step keys (`Core::listed_step`), so step evidence places them on engine data; a key's base is the thing up the record chain whose held steps bear it (`Core::key_base`), else the thing's delete base.

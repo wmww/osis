@@ -31,7 +31,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | `MAX_DRIFT_MS` 1 h, `ROLE_KEEP_MS` 90 days, `TOMBSTONE_LIFETIME_MS` 30 days, `MAX_CLAIMS` 65 536 | O | what each trades: issues/magic-number-review.md |
 | `INBOX_LIFETIME` 90 days (spec: the history the account's creation sets for its inbox's signals, spec/sync-inbox.md §1: a stranded notice and a grant's offer) | O | no notice or offer is kept, so a writer that was away as a reader called for keys, or a node away when its account was offered a thing, never hears it / the inbox only grows |
 | `MAX_RETENTION_ENTRIES` 64 | R | no setting can say anything / `MAX_VALUE_BYTES` of AKs in every node's memory per `retention^.0` delta; past it the delta is no setting, a writer refuses it |
-| `MAX_CHAIN_DEPTH` 64 | R | only key actors / unbounded chain walks; deeper is invalid everywhere alike |
+| `MAX_CHAIN_DEPTH` 64 | R | only things minted with a key / unbounded chain walks; deeper is invalid everywhere alike |
 | `MAX_PATH_THINGS` 64 (format) | R (protocol constant: past it a writer refuses the path, a decoder rejects the header) | no write through a holder / a junk path of n made-up things parks a commit on n records and costs every reader a point query per hop, n set by the writer alone; any value well above real nesting (account, organization, a holder within it) serves; 64 matches `MAX_CHAIN_DEPTH` (notes/a1-spec/README.md, Why MAX_PATH_THINGS is 64) |
 | `MAX_VALUE_DEPTH` 64, `MAX_OBJECT_DEPTH` 512, `MAX_AK_BYTES` 1024, `MAX_URL_BYTES` 256, `MAX_RUN` 2^12 (keeps a run, one page element, far below `MAX_PAGE_ITEMS`), `MAX_STEP_BYTES` 323 | R (decoder limits, refuse) | nothing decodes / stack and memory on hostile input |
 | `MAX_MESSAGE` 9 MiB, `REPLY_BUDGET`/`MAX_CLAIM_SET` = it − 64 KiB | R (headroom derived) | no messages / unbounded frame buffers |
@@ -54,7 +54,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 ### Protocol (`proto/relay.rs`, `prove.rs`)
 | value | class | 0 / ∞ |
 |---|---|---|
-| `MAX_PROOFS` 256 (proofs in a Prove or Proved) | R (past it a message is refused whole; a node holding more key actors proves its own key and the first by tid, the rest unproved on that connection) | nothing proved / seconds of event loop per connection (a stranger pays one signature per proof: about 12 ms per connection, once) |
+| `MAX_PROOFS` 256 (proofs in a Prove or Proved) | R (past it a message is refused whole; a node with more own things proves its node thing and the first by tid, the rest unproved on that connection) | nothing proved / seconds of event loop per connection (a stranger pays one signature per proof: about 12 ms per connection, once) |
 | `MAX_RELAY_SEEN` 2^16 | M (commented) | |
 | connection source = IPv6 /64 (`osis_transport::Source`: relay slots shared by source, `evict_for`, the driver's read turns) | M (commented; a holder of a larger prefix counts as many sources) | /0: every client one source / /128: one machine takes every relay slot and turn |
 | `RelayLimits` 6000 / 32 MiB per 60 s | R (rate, code 4) | no relays / relay floods |

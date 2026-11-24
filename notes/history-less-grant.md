@@ -9,7 +9,7 @@
 - **Removed and re-added without history**: keeps what it could read before its removal, and must not get what was written between its removal and its re-add.
 - **Metadata**: a newcomer may be able to tell that earlier entries exist (counts, sizes, times), but osis exposes none of it by default (no API surfaces entries the holder cannot open, nor counts of them).
 - **Decided later** (numbered as the model's README cites them):
-  1. **New devices see what old devices display**: a member's new device may sync anything its account's existing devices display. So a re-add without history boxes the member at the epochs its removal's rotation listed, and rotations take a removed member's boxes only where they carry, as anyone's.
+  1. **New nodes see what old nodes display**: a member's new node may sync anything its account's existing nodes display. So a re-add without history boxes the member at the epochs its removal's rotation listed, and rotations take a removed member's boxes only where they carry, as anyone's.
   2. **Two history-less adds at once**: each newcomer can read what was written around the other's add, never anything from before its own (accepted).
   3. **Sync IDs and steps** (build): spec/sync-ids.md §2 role keys in use assumes every holder holds older secrets by history; a history-less holder opens from its cut's step on, and a walk to an older step must not strand it. Not modelled.
 

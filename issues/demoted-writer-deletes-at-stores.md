@@ -5,7 +5,7 @@
 
 **Decided (Tess):** option 1 if it is easy, with spec/requirements.md Deletion's "anyone who ever held the right" becoming "anyone holding write now" (approved); left as it is if it turns out a mess.
 
-What a user sees: Bob writes messages in a chat, then is made a reader. Bob can still delete his old messages from a server that only stores the chat. People who have them keep them; a new device syncing only through that server never gets them. (Pinned: osis-sync `delete_keys::a_demoted_writers_old_keys_keep_its_writes_out_of_an_unread_store_*`.)
+What a user sees: Bob writes messages in a chat, then is made a reader. Bob can still delete his old messages from a server that only stores the chat. People who have them keep them; a new node syncing only through that server never gets them. (Pinned: osis-sync `delete_keys::a_demoted_writers_old_keys_keep_its_writes_out_of_an_unread_store_*`.)
 
 Why: a lowering below write rotates write, not sync (spec/permissions.md §3 Required rotation); a Delete by levels 1 or 2 is signed with the head's sync key, by level 3 with its write key (spec/sync-ids.md §6 Delete); level 2 is the purge author's own write secret (spec/crypto.md §7), which no lowering revokes. The model gives the author's right only while it holds write (spec/permissions.md §6).
 

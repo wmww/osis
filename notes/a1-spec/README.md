@@ -46,7 +46,7 @@ Every role-class commit the engine writes states one path in the clear (never th
 | role compaction snapshot (`retention::snapshot`) | `snapshot_role` (admin) | none |
 | records alone (a role commit carrying `created.0` only) | the mint admin's path, then its record edge (`path_with`) | `World::push` (descent) |
 | an account's rotation, a seed re-seal | empty, `[0]` (spec/wire.md §4 fields 15, 16) | none |
-| a key actor's own record and keys | empty: the signer is the thing | none |
+| a thing minted with a key: its minting | empty: the signer is the thing | none |
 
 ## Left
 - The purge-author indexes along stated paths, and osis-commit's check that a role commit's index names its signer (`Header::path_allowed`): issues/stated-path-certificates.md.

@@ -40,7 +40,6 @@ The sync unit is the built one: a thing's readable closure, so a thing may be ca
 - **No kind of thing signs.** Nothing is a "key thing": no grant, sync unit or walk treats a signing thing apart from any other. A thing signed as may hold roles, be granted on, have dependents and be a path member of other things' writes.
 - **A stolen key is removed like a stolen member**: by another admin of the thing, with a list. Where the key was the thing's only admin there is no remedy (two parties holding one key cannot be told apart).
 - **Evidence**: the edge writes on (k, S) are evidence wherever a commit signed by k as S is held, by the closure rule that carries every edge write (§2).
-- **Until accounts move** (notes/redesign-plan.md, A4) a built key actor reads as a thing whose record holds its one key: its key hop stands at admin and no write on it exists, so the walk of §1 is built with the key hop from the start and gains writes on it later.
 - **Sessions** are keyed to S; a thing more than one key store signs as writes in commit form, since any holder of one of its keys could overlap another's session dots (notes/account-membership-design.md §6).
 - **Not designed: recovery**, a key that takes a thing back from its admins (issues/recovery-design.md). Under K5 an admin removes any key, so a key written down protects against losing every node, never against another admin.
 

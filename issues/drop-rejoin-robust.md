@@ -5,7 +5,7 @@
 
 Why bugs keep coming (notes/engine-validity.md, Flips against dropped data): peers keeping a body unread may delete it in the same sync; the revoker may not hold it; a node without the revocation deletes a body logged again; drops stack (expiry, covers turning invalid); "nobody has it" looks like "not yet", so repair backstops can loop.
 
-Rejected (Tess): deletions final against later revocation (a removed or stolen device keeps delete power forever); history kept so drops roll back (no prompt permanent deletion); a writer's compaction vouching for a deletion (still diverges when every writer saw the revocation first).
+Rejected (Tess): deletions final against later revocation (a removed or stolen node keeps delete power forever); history kept so drops roll back (no prompt permanent deletion); a writer's compaction vouching for a deletion (still diverges when every writer saw the revocation first).
 
 Built (notes/engine-validity.md, notes/engine-retention-purge.md Leftovers, notes/sync-read.md Fetching again, Role entries first, notes/test-harnesses.md Rebuild check): 1 one path (`apply::rebuild`), 2 leftovers are held bodies, 3 the holder logs it (a snapshot leftover through its purge's fall counts missing while short; a logging again waits for every role commit held, so a node lacking the revocation fetches it before deleting the body logged again), 4 asked by ID (a Want per connection from every reader peer, answered from whatever the peer holds), 5 the rebuild check.
 

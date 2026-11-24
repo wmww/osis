@@ -43,7 +43,7 @@ The vertices, contexts (`Ctx`) and out-lists are units.rs's module doc and `give
 
 ## The node's role
 spec/sync-set.md §2 Own things. Oracle: held-model `closure` (`hc::closure`: the walk by the own actors' roles over the world's grants; `closure::keys::for_keys` adds the holders held for keys), which the sync differential's `Model::closure` runs over its history.
-- `rotation::role_here` (and `Engine::role_on`): the best the own actors (the account, the node, each key actor it holds) hold by the thing's grants as the node holds them, with key access, where those grants count (`rotation::lost::grants_count`: the node syncs the thing or holds an offer of it, or the thing is a holder found from such a thing up). What the node does as one of its actors reads that actor's role (`Core::role_now`), as a judgement of any other party does.
+- `rotation::role_here` (and `Engine::role_on`): the best the node's own things (spec/permissions.md §1: the node thing, a link key it redeems by) hold by the thing's grants as the node holds them, with key access, where those grants count (`rotation::lost::grants_count`: the node syncs the thing or holds an offer of it, or the thing is a holder found from such a thing up). What the node does as one of its actors reads that actor's role (`Core::role_now`), as a judgement of any other party does.
 - A role that grew opens the boxes kept out for want of it (`flows::retake`): after every re-judge, and as an offer is taken. The closure reads the role and the role reads the closure, so `units::settle` loops with `retake` until no box is due.
 - Lost access keeps what that same role reads (`retention::forget::read_path`). An ended edge's holder (`lost::was_ours`, read by `loss_seen` and `may_learn`) is an own actor or one an own actor reads by the held grants, read without `grants_count`: once the edge naming a holder ended nothing finds it from below, its own secrets go, and a rule asking whether it still counts would never see the loss (osis-sync `holding::a_removal_reaches_a_reader_opening_the_holder_through_a_second_thing`).
 - Held for keys (spec/sync-set.md §2; `units::held_for_keys`, `named_up`, `Closure::keys`): each independent thing the closure does not read, of which the node holds a read secret of its own (`opened_holder`), that the grants of a thing the closure holds name, directly or through such holders. The node holds such a holder's certificates, nothing of its content, and its sync ID is in the sync set. A holder named up from no synced thing any more is judged for what it still needs: it goes whole where nothing held needs it. What is not built: notes/sync-rewrite-state.md.
@@ -83,7 +83,7 @@ The invariant, who adds and who removes, and the bound: carriers.rs's module doc
 
 What a node holds of a part on thing T, by what it holds of T (each row the same in every arrival order, `closure::every_order_of_a_commit_its_record_and_its_minting_ends_alike_*`):
 
-| T | certificate part (record, role-class, secrets; key actor's card) | content part | header of a commit missing a part on T |
+| T | certificate part (record, role-class, secrets) | content part | header of a commit missing a part on T |
 | --- | --- | --- | --- |
 | held whole (closure, leaving, retained copy) | applies | applies | kept, part fetched |
 | outside, minting commit held | applies; kept while needed | waits; never received at the pass end (`needed::uncarried`) | kept while a part on a thing in the closure is missing, else goes with T |

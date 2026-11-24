@@ -29,7 +29,7 @@ One lane through the A stages, in the table's order (A4 before A3), with what A2
 ## The order of the account redesign
 - **Nothing waits on the sync unit.** Every stage is stated for the built unit, where a thing may be carried under several sync IDs: evidence goes under each sync ID that carries a commit, a removal with it where it is evidence of a held write. Validity is judged from held commits whatever sync ID brought them.
 - **S1 is independent**: it fixes work per sync ID held, which every closure pays.
-- **Paths (A1) before members (A4).** A node acting as a thing of its own needs a path of at least [A]. With paths first, today's account key actor is simply what a path starts at, so A1 lands with accounts unchanged.
+- **Paths (A1) before members (A4).** A node acting as a thing of its own needs a path of at least [A]. With paths first, the thing a node signs as is simply what a path starts at, so A1 lands with accounts unchanged.
 - **Evidence (A2) before the removal's logging (A3)**: a removal's copy under a unit is carried with the evidence that needs it.
 - **Accounts (A4) straight after A2 (Tess).** A2's Interim placements (an account's key part under its account root's sync ID) exist because accounts are not ordinary things, so they are replaced, not finished. A4 deletes the account's own lists and listings and rests on a removal carried as evidence, whole with its list: that is A2's derivation already. A4's stolen-node tests are its check; one failing for want of A3's required-set rule pulls that rule into A4.
 - **A3 after A4**: what it has left (spec trims, the counts) changes no rule A4 reads.
@@ -120,7 +120,7 @@ The multi-unit carriage (a thing under every enclosing unit's sync ID, retag, de
 By item of notes/priorities.md.
 - **First, main's failing properties**: proceed first (G).
 - **2. Whole commits tail**: invalid bodies kept at stores stays a Tess call and proceeds; "re-grants restoring from stores" matters more after S3, since an addendum arriving late fetches bodies again. Drop-rejoin's holder-logs-again proceeds on the built unit (it logs under every sync ID that carries the thing). Zero-growth: the tombstone design that needs a stable writer waits for A4 (each signer is one); its other rows proceed.
-- **3. Key passing and grants without history**: history-less-grant's next step (records of dependent things under another's sync ID) proceeds. removed-device-reads-later-grants (both leaks) is judged at A5.
+- **3. Key passing and grants without history**: history-less-grant's next step (records of dependent things under another's sync ID) proceeds. removed-node-reads-later-grants (both leaks) is judged at A5.
 - **4. Bounded memory tail**: proceeds; it touches no stage.
 - **5. Account signing tail**: overtaken at A4; account-signing, account-side-shared, rotation-names-grow close there, maker-unknown-from-snapshot is re-read [assumed].
 - **6. Slimmer things** (notes/thing-cost.md, Ranked candidates):
@@ -133,7 +133,7 @@ By item of notes/priorities.md.
 - **7. Sync leftovers**: none closes without its fix; the multi-unit carriage they sit in stays. Need their fix: the retag items of sync-unbuilt and sync-tests-owed, the `rewrap` item of sync-pending-leftovers (its test), attach-cost; sync-parks-check, sync-tests-owed (deposit items), storage-owners and sync-models-lag proceed on their own; differential-full-size-classes needs its classes fixed (a required set hanging on other paths, a grant counting through certificates), each a design step of its own (its first fix is parked: it exposes three more); sync-only-reference is a design step under the built unit. Re-read with what A2 owes: cert-blob-hostile-delete. Wait for A5 and A6: stranger-fire-bounds, dial-candidates, sync-link-first-contact. Proceed: cover-before-commit, opens-hit-index-cost, timed-loss-wait.
 - **8. Long tail**: proceeds beside; an issue in the perm walk (settled-writers-dispute-script, dispute-scan-cost) is checked against the stated-path walk before a fix.
 - **Parked on Tess**: unchanged; recovery is parked (issues/recovery-design.md); settings and client auth do not collide.
-- **Renames owed** (issues/deprecated-terms.md): key actor to signer, device for a node, devices, the account root at A4 (they go with what they name); `actor` in identifiers (`mint_actor`, holder actor, client actor) at A6 and Z, each use read; the TLA vocabulary at Z, with Account.tla's share gone at A4; the spec's rule words (edge, rights, demotion), unscheduled; the reference-graph words stay with their own rebuild.
+- **Renames owed** (issues/deprecated-terms.md): the account root at A4 (it goes with what it names); `actor` in identifiers (`mint_actor`, holder actor, client actor) at A6 and Z, each use read; the TLA vocabulary at Z, with Account.tla's share gone at A4; the spec's rule words (edge, rights, demotion), unscheduled; the reference-graph words stay with their own rebuild.
 - **Later designs that build on this**: readers hidden from each other (issues/readers-see-readers.md); hidden mode stays a design.
 
 ## The stage far larger than the rest

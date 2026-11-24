@@ -6,7 +6,7 @@ Spec: spec/wire.md §11.1-§11.2, spec/sync-streams.md §1-§2, spec/sync-opens.
 **Principle:** pure per-connection state: messages in, frames out, time and what the transport took as inputs; every byte a peer can make it hold is bounded per connection; node-wide only frames received and bytes unwritten (`IN_BOUND`, `OUT_BOUND`). No node-wide memory budget: issues/resource-limits.md.
 
 ## What it owns
-Per connection, in memory only: Hello and both challenges, proofs shown and proven (`Proven`: account, key actors, own node), request ids and their send order, the window, the stall clock, unanswered-in bytes, bytes written and taken, clock samples. Per dial not up yet, its deadline. Time comes in inputs (`Sessions::set_now`), what the transport took as `Input::Taken`.
+Per connection, in memory only: Hello and both challenges, proofs shown and proven (`Proven`: the node thing, link keys), request ids and their send order, the window, the stall clock, unanswered-in bytes, bytes written and taken, clock samples. Per dial not up yet, its deadline. Time comes in inputs (`Sessions::set_now`), what the transport took as `Input::Taken`.
 
 The driver owns every `Session` in one `Sessions`. A module that sends takes `&mut Sessions` in its entry points and `settle`, and sends on the connection it acts on (`request`, `answer`, `push`, `push_now`); what it sent leaves at the end of the step (`take_sends`). Nothing is sent from outside a step.
 
@@ -31,5 +31,5 @@ The driver owns every `Session` in one `Sessions`. A module that sends takes `&m
 
 ## Proving again
 A connection proves once (spec/sync-opens.md §1).
-- The driver (`Node::proving`) closes each connection where this node now acts for a (key actor, key) it did not act for when it proved there (`Session::acted_for`: its provers then, whatever its policy sent, so a connection that proved nothing counts too), and redials at once where it dialed. It reads `Engine::provers` at each owner's write.
+- The driver (`Node::proving`) closes each connection where this node now acts for a (thing, key) it did not act for when it proved there (`Session::acted_for`: its provers then, whatever its policy sent, so a connection that proved nothing counts too), and redials at once where it dialed. It reads `Engine::provers` at each owner's write.
 - Rejected: re-proving on the live connection. The wire's Prove is once per connection, and every module reading a peer's proofs would have to follow them moving mid-connection; one close and redial per connection per rotation is the cost.

@@ -10,8 +10,8 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can a member edit another member's message? | no | no |
 | Can a chat admin edit another member's message? | no | no |
 | Can a chat admin hide a message from honest clients? | yes | opt |
-| Can a chat admin erase one message from nodes keeping the chat unread and honest devices? | yes | opt³⁸ |
-| Can an admin of a member's account (their other device) edit that member's messages? | yes | yes |
+| Can a chat admin erase one message from nodes keeping the chat unread and honest nodes? | yes | opt³⁸ |
+| Can an admin of a member's account (their other node) edit that member's messages? | yes | yes |
 | Can an admin of an organization that is a member edit the messages of the organization's members? | no | no |
 | Can a member make a message appear as written by Bob? | no | no |
 | Can a member make messages appear from a fake account that was never a member? | no | no |
@@ -32,7 +32,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Modified client: can a current member relay their post so it shows as theirs? | no | no |
 | Modified client: can they edit or delete old messages so others see it? | no | no |
 | Do others still see their old messages by default? | yes | opt |
-| Can the kicker wipe their whole history from nodes keeping the chat unread and honest devices? | yes | yes²⁶ |
+| Can the kicker wipe their whole history from nodes keeping the chat unread and honest nodes? | yes | yes²⁶ |
 | Does their modified client keep what it downloaded? | accepted | yes |
 | A message they sent before the kick that the kicker had not received: does it stay for others? | yes | no! |
 | Re-added later: do posts their modified client made while kicked appear? | no | yes! |
@@ -48,7 +48,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can you delete your messages for everyone before leaving? | yes | yes |
 | Can you delete your messages for everyone after leaving? | no | no |
 | Modified client: can a leaver backdate a post before its leave so it stays? | no | opt⁵ |
-| Does leaving wipe the chat from your device? | opt | opt |
+| Does leaving wipe the chat from your node? | opt | opt |
 
 ## The member list
 
@@ -57,7 +57,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Can a non-admin add a member? | opt | opt⁶ |
 | Can a non-admin remove a member? | no | no |
 | Can members see the member list? | yes | yes |
-| Can members see each other's device lists? | accepted | yes |
+| Can members see each other's node lists? | accepted | yes |
 
 ## Adding
 
@@ -71,31 +71,31 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Does a stranger's offer show a verified sender before you hold the thing? | yes | core e |
 | Does a stranger's offer fetch anything before you hold the thing? | no | no |
 
-## Devices
+## Nodes
 
 | case | want | chat |
 |---|---|---|
-| Does a new device get the full history? | yes | yes |
-| Does a kicked member's new device get that member's own messages? | yes | no! |
-| Can a removed (lost) device read new messages? | no | no |
-| Does removing a device wipe the chat from it (honest device)? | yes | yes |
-| Two devices of one member post offline at once: do both messages appear? | yes | yes |
+| Does a new node get the full history? | yes | yes |
+| Does a kicked member's new node get that member's own messages? | yes | no! |
+| Can a removed (lost) node read new messages? | no | no |
+| Does removing a node wipe the chat from it (honest node)? | yes | yes |
+| Two nodes of one member post offline at once: do both messages appear? | yes | yes |
 
 ## Delete and disappear
 
 | case | want | chat |
 |---|---|---|
-| Delete for everyone: erased on honest online devices? | yes | yes |
-| Erased on offline devices when they return? | yes | yes |
+| Delete for everyone: erased on honest online nodes? | yes | yes |
+| Erased on offline nodes when they return? | yes | yes |
 | Erased at nodes keeping the chat unread? | yes | yes |
 | Attachments erased too? | yes | yes |
 | Edit: does the old text leave nodes keeping the chat unread promptly? | yes | yes²⁷ |
 | Disappearing message gone everywhere at its time, with the nodes keeping the chat unread unattended? | yes | yes |
-| Offline device past the time: gone when it wakes? | yes | yes |
-| Does a hostile device keep a deleted message? | accepted | yes |
+| Offline node past the time: gone when it wakes? | yes | yes |
+| Does a hostile node keep a deleted message? | accepted | yes |
 | Can the app make messages undeletable (permanent chat)? | opt | no!³⁸ |
 | Timer changed mid-chat: do old messages keep their old timer? | yes | yes |
-| Does a disappeared message leave a trace on each device? | no | yes¹¹ |
+| Does a disappeared message leave a trace on each node? | no | yes¹¹ |
 | Does a deleted message leave the fact and time visible to members? | accepted | yes |
 
 ## Deletion traces (after a permanent delete)
@@ -116,8 +116,8 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 
 | case | want | chat |
 |---|---|---|
-| Modified member: can it write junk nobody can ever erase from nodes keeping the chat unread and honest devices? | no | no³¹ |
-| Can admins wipe a member's whole history from nodes keeping the chat unread and devices? | yes | yes²⁶ |
+| Modified member: can it write junk nobody can ever erase from nodes keeping the chat unread and honest nodes? | no | no³¹ |
+| Can admins wipe a member's whole history from nodes keeping the chat unread and nodes? | yes | yes²⁶ |
 | Can admins get one illegal message off nodes keeping the chat unread without wiping the member? | yes | opt³⁸ |
 | Can you block someone without deleting anything on either side? | yes | opt |
 | Is your evidence kept after blocking? | yes | opt |
@@ -156,10 +156,10 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Modified client: can a sender backdate a message into history? | no | yes! |
 | Honest sender with a wrong clock: shown at a sane position? | yes | yes |
 | Reply to a deleted message: shown as a placeholder? | yes | opt |
-| Can a new device page recent history without downloading all of it? | yes | core o |
+| Can a new node page recent history without downloading all of it? | yes | core o |
 | Can the app show the latest 50 messages with the osis API alone? | yes | yes |
 | Read receipts: can a member keep their read position private? | yes | opt |
-| Typing: reaches connected devices only, stored nowhere? | yes | yes |
+| Typing: reaches connected nodes only, stored nowhere? | yes | yes |
 | Is a sender woken by its own post? | no | no |
 | Notifications while the app is closed? | yes | core h |
 
@@ -168,12 +168,12 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | case | want | chat |
 |---|---|---|
 | Kick in a chat with a million messages under a minute of work on a phone? | yes | ?³² |
-| Kick or lost device in a 1000-member group under 10 MB sent? | yes | yes⁴⁰ |
-| Fresh device of a disappearing chat under 50 MB after 10 years at 100 a day? | yes | yes |
-| Long-lived device of a permanent chat holds every message body? | yes | yes |
+| Kick or lost node in a 1000-member group under 10 MB sent? | yes | yes⁴⁰ |
+| Fresh node of a disappearing chat under 50 MB after 10 years at 100 a day? | yes | yes |
+| Long-lived node of a permanent chat holds every message body? | yes | yes |
 | Join under 100 KB? | yes | yes |
 | A message under 3 KB on the wire? | yes | yes |
-| New device of a 1000-member group under 100 MB before any message? | yes | yes |
+| New node of a 1000-member group under 100 MB before any message? | yes | yes |
 | One edit after compaction under 1 MB sent? | yes | yes |
 | Compacting a member's history under 100 MB of memory on a phone? | yes | yes³⁰ |
 | Is a send one commit? | yes | yes |
@@ -194,11 +194,11 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 |---|---|---|
 | Can messages deleted or expired more than two hours ago be read? | no | yes! |
 | Can messages deleted in the last two hours be read? | no | yes! |
-| Can old messages the device no longer shows be read? | no | yes! |
+| Can old messages the node no longer shows be read? | no | yes! |
 | Stolen keys only: can messages sent after the theft be read? | no | yes! |
 | Can a removed member read what it already copied? | accepted | yes |
 | Does anyone gain deniability? | accepted | no |
-| A device offline for a year: can it read everything still at the nodes keeping the chat unread on return? | yes | yes |
+| A node offline for a year: can it read everything still at the nodes keeping the chat unread on return? | yes | yes |
 | Can a new member read history without an existing member re-publishing it? | opt | yes |
 | Do nodes keeping the chat unread end up storing content nobody can read? | no | no |
 | Is protection per message, at once, rather than after a window? | yes | no! core j |
@@ -215,9 +215,9 @@ Nothing here is designed: each answer is what today's core would give if servers
 | Can the removed member keep writing junk to a channel until an admin steps it there? | no | yes! |
 | Removal under 10 MB sent at 1000 members and 100 channels? | yes | yes⁴² |
 | Removal under 10 MB sent at 100,000 members (nested rosters) and 100 channels? | yes | yes⁴² |
-| Does a member's lost device or leave cost the next poster the top realm's whole rotation? | no | yes! |
+| Does a member's lost node or leave cost the next poster the top realm's whole rotation? | no | yes! |
 | Is demoting a mod as cheap as a kick? | yes | no!⁴³ |
-| Does each member's device download every other member's chains and cards under the top realm's sync ID? | no | yes⁴⁴! core r |
+| Does each member's node download every other member's chains and cards under the top realm's sync ID? | no | yes⁴⁴! core r |
 | Kick pre-sync across 100 channels under a minute? | yes | ? |
 | Can a mod mute one member in one channel while they hold the top realm? | yes | opt*⁴⁵ |
 | Can a mod ban one member from one channel while they hold the top realm? | yes | no! |
@@ -226,7 +226,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 | Can a mod delete messages without also being able to lock the channel or change its roster? | yes | opt⁴⁶ |
 | Can role holders add and remove others of their role? | opt | yes⁴⁷ |
 | Read-only announcement channel where members can react? | yes | opt⁴⁸ |
-| Does a read-only channel with 20 or more reader devices fill its deposit budget until a mod syncs? | no | yes! |
+| Does a read-only channel with 20 or more reader nodes fill its deposit budget until a mod syncs? | no | yes! |
 | Can any member create a channel that appears in the directory? | opt | opt⁴⁹ |
 | Does the sidebar show channel names without reading each channel? | yes | yes⁵⁰ |
 | Can non-members see that a private channel exists? | no | opt⁵¹ |

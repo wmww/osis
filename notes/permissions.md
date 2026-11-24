@@ -12,7 +12,7 @@ Other permission notes: revocation and frontiers: notes/revocation.md; addenda: 
 - Admins are equals; seniority ranking was rejected (unintuitive, leaks into UX). A hostile admin is out of scope beyond per-node sides in a fight (notes/disputes.md).
 - Not promised, so not in spec/requirements.md: anonymity against network, timing and style analysis; revocation reaching a thing's holders before one of the revoker's nodes next syncs it.
 - What a commit spanning two things reveals to a reader of only one (Tess's wording in spec/requirements.md: no values, only metadata): the exact metadata is spec/wire.md §4's, and may change there without Tess's sign-off.
-- Nodes are key actors that own themselves (spec/sync-set.md §1 Node thing); readers dial them by their entries in `dial.0` lists (spec/sync-set.md §1, notes/networking.md decision 4). Rejected: a thing of nodes readable by contacts (leaks the node roster).
+- A node signs as its node thing, minted with its key (spec/sync-set.md §1 Node thing); readers dial nodes by their entries in `dial.0` lists (spec/sync-set.md §1, notes/networking.md decision 4). Rejected: a thing of nodes readable by contacts (leaks the node roster).
 - **Role `sync`** (below read): a role with its own secret and epochs like the others; the sync ID's sync key derives from it, so a holder of sync alone opens, holds and serves a thing's sync IDs and reads nothing. It takes no carve-out: the roles are a total order, so grants, may-grant (a reader with the flag grants read or sync), departures (a reader's leaves sync too), rotation (a writer rotates sync, read and write) and boxes are the same rules over one more level. Lost access per role: a node left holding sync alone keeps the sync secret and drops the rest (`rotation::lost::over_held`). Cost: every rotation of read also rotates sync, one more box per holder (about 1.2 KB; with only readers the sync boxes are half a reader removal's bytes). Open: readers could derive the sync secret from the read secret's history instead of a box each (cheaper, but removing a sync holder would then need a read rotation).
 
 ## Sharing
@@ -35,7 +35,7 @@ A pattern; needs no core mechanism. A public site off live osis data needs somet
 ## Anonymous writing
 Discussed with Tess, not a priority. Needs no new machinery beyond commit-form dots. Network, timing and style leaks apply to all.
 - Pseudonymous holder: a fresh holder with its own node keys, joined via a link or grant; the granting admin may record pseudonym -> account in admin-only data.
-- Known writers, unlinkable edits: thing X holds the signing key of key actor A, which has write on Y (cleaner: A's key derived from X's role secret). Holders write as A in commit form. Caveats: any holder can purge any A edit; offline A edits the revoker had not received die at A's revoke, so clients re-sign pending ones; undo uses locally remembered own commits.
+- Known writers, unlinkable edits: X's holders share the key of a thing A minted with it, which has write on Y (cleaner: the key derived from X's role secret). Holders write as A in commit form. Caveats: any holder can purge any A edit; offline A edits the revoker had not received die at A's revoke, so clients re-sign pending ones; undo uses locally remembered own commits.
 - Re-publisher: a node the holders trust re-signs their edits under its own identity.
 
 ## The last admin
