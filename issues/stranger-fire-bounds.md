@@ -1,8 +1,6 @@
 # What a stranger's external fires leave behind
-> Summary: External fires let anyone holding a thing's public key record write: the fires stored are bounded only by the sender's rate times the inbox's history setting.
+> Summary: External fires let anyone holding a thing's public key record write; a promoted fire leaves the deposit budget, so fires stored on an inbox are bounded only by the sender's rate times the inbox's history setting (`INBOX_LIFETIME`). State it as a storage bound or bound it.
 > Priority: normal
 > Tags: engine, sync, security
 
-Stage A5 (notes/redesign-plan.md): externally grantable and cards change what a stranger may fire; take it after.
-
-- **Rate × `INBOX_LIFETIME`.** A promoted fire leaves the deposit budget, so fires stored on an inbox are bounded by the sender's rate times its history setting only (notes/sync-inbox.md accepts no rate limit). State it as a storage bound (issues/storage-owners.md, Releasing everything) or bound it.
+notes/sync-inbox.md accepts no rate limit; issues/storage-owners.md (Releasing everything) lists inbox fires as bounded by the history setting alone. Stage A5 (notes/redesign-plan.md: externally grantable things and cards) changes what a stranger may fire; take it after.

@@ -3,8 +3,8 @@
 > Priority: low
 > Tags: engine, sync
 
-A part dropped as covered strips under purge on replace while a held valid snapshot reaches it by its tables (spec/sync-judgement.md §2 Per blob). A snapshot lists every commit its writer holds with a part on the aspect (spec/crdt.md §8), so the snapshot Y covering the reacher X still reaches the part. Not where Y's writer held X but not yet the commit C (C arrives after, its part never received): Y lists nothing of C, its holders drop X, and a reader joining later holds Y and C stripped, counting the part never received with no source. The same order leaves the part unstripped at K where no holder of X writes again (held-model `strip`, 1 of 3000: seed 2006, a cover by a late node holding no blob).
+A part dropped as covered strips under purge on replace while a held valid snapshot reaches it by its tables (spec/sync-judgement.md §2 Per blob). A snapshot lists every commit its writer holds with a part on the aspect (spec/crdt.md §8), so the snapshot Y covering the reacher X normally still reaches the part. Not where Y's writer held X but not yet the commit C: Y lists nothing of C, its holders drop X, and a reader joining later holds Y and C stripped, counting the part never received with no source. The same order leaves the part unstripped where no holder of X writes again (held-model `strip`).
 
-Not seen in the sync differential. Untested at the engine level: needs a snapshot written while its writer holds a reacher and not the commit.
+Untested at the engine level: needs a snapshot written while its writer holds a reacher and not the commit.
 
 Rejected: Y listing every source X lists (grows with history: a source outlives every commit of it); X kept beside Y until Y reaches all X reaches (order-dependent: a reader may drop X before C arrives).

@@ -19,7 +19,6 @@ The module notes (notes/sync-*.md) point here. Untested built parts: issues/sync
 - **Ephemeral refused for the memory cap** (`Ingested::TooLarge`, spec/sync-compaction.md §2 Caps) comes again only with its next listing, not once S's held bytes drop: streams must keep the refusal per S with the usage then, as `room` does.
 - **Fill order again** (spec/sync-streams.md §4 Fill order, 4): a body queued as not opening keeps its place when a read secret of S arrives; it should park under S's read secrets and be ranked again, as the store's parked entries are.
 - **Inbox**: clearing at sources keeping S unread needs streams' `known` to carry each entry's deposited flag and blob size.
-- **The granter's profile** (spec/sync-inbox.md §5 Grant from outside: to an account it may not hold as a contact, the granter first grants that account read on its own account's profile): not built, so a stranger offered a grant cannot dial the granter.
 - **Opens**: static entries claimed in the walk's tests (`Tested::Static` always has no step).
 
 ## Cost

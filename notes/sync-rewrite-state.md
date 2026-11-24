@@ -11,7 +11,7 @@ Spec it rebuilt from: spec/permissions.md §4, spec/sync-set.md §2, spec/sync-i
 - **Acting only after a complete pass.**
 - **The delete-key leftovers** (issues/delete-key-levels-unchecked.md Left 1 to 4): a keyset published before its step (an outside fire in that window is refused for good: decide the rule first); the held-secret fallback of `CommitSecrets::key`; and two ignore causes below.
 - **Each ignore below**, probed for its own cause first (notes/handoff.md, Not to build on the way: no fix sized by its label).
-- **A reproducer of the wanted-blob handover** (issues/wanted-blob-handover-untested.md).
+- **A reproducer of the wanted-blob handover** (issues/fixture-seed-luck.md).
 - **The models' chained sets out** (roles-model `paths::chained`, held-model `World::chained`): `Stage::E1`, the engine differential's oracle, still reads them for a reset's entry; a model change first (issues/models-read-chained-sets.md).
 - **Untested**: a holder of sync alone on a target gets that target's `secrets.0` and `sync.0` parts alone in its key part, no evidence of them; whether a node keeping the target unread needs its own grant's edge write for the lost-access rule; what osis-sync's promotion does with a sealed fire that opens pending for drift (`Opened::Commit(_, Pending(_, Reason::Drift))`: the spec says it waits as any commit; whether it is stamped before it applies is open).
 

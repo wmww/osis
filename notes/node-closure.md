@@ -11,13 +11,22 @@ Spec: spec/sync-set.md, spec/sync-inbox.md §5. Model: notes/closure-model.md (h
 - **Core holds only what cannot be built correctly on top of it.** Home, which offers to act on, contact lists and "what is on my other nodes" are the app's.
 - **Lean on osis for storing data.** Node and account state are ordinary things and aspects. No aspect is exempt from sync; what is local is local by where it sits.
 - **A weak keeps nothing.** What a node keeps outside its closure is only what held things need (spec/commits.md §5 What a held thing needs). A contact is a strong to its profile.
-- **Nothing grows only.** No set of everything ever seen or granted. Storage: issues/storage-owners.md.
+- **Nothing grows only.** No set of everything ever seen or granted. Every stored row has an owner (Storage owners, below).
 
 Why a sync unit stops where its root has no read access: a closure granted read on a large thing carries just what it references of it, so one row of a table syncs without the table and without keys per cell (spec/requirements.md, no unit synced whole). So Alice's A, admin of T, references T; Bob, a reader of A, adds a strong to T from his B; Alice removes hers: B never carried T (Bob reads T, B does not), so T is gone for both, unless Alice shared T with Bob or with B (sync `holding::a_strong_grants_nothing_and_its_removal_revokes_nothing_*`).
 
 An edit of a thing carried under two sync IDs reaches a node syncing only one of them through a node that syncs both (notes/closure-model.md (d)); in an admin dispute the sides differ on what is valid, and so on what belongs.
 
 Kept, each following from a rule above (don't simplify them away): release's one wait (an own self-removal); the retained copy (an option keeping its property); an independent thing as its own inbox; a grant naming a holder in the holder's key part; fetching again at a new strong (rare-path brute force); a stranded notice acted on whatever the history setting.
+
+## Storage owners
+Tess: every stored row is attributable to what the node holds, and releasing everything drops storage to the node's own things. A row lives exactly while its last owner does and goes in the transaction that owner goes; nothing waits for a release's writes to be held elsewhere (spec/sync-set.md §3). Owners:
+- **Whole things**: the node closure. Such a thing keeps all it holds: content, role-class aspects, secrets, derived rows; a thing outside it is kept only while a held thing needs it (`retention/needed.rs`).
+- **Store entries** of each sync ID in the sync set (or leaving it), limited by the required-set judgement (spec/sync-judgement.md §2): unit bodies, lasting headers, certificate copies, deposits. Engine data taken from an entry about no whole thing is owned by the entries carrying it.
+- **Peer records**: what a connection proved, owned by the record, the record by its members (the sync IDs both share), bounded by `RECORD_BUDGET`.
+- **The node's identity rows** (`seed`, `hlc`, `u/`, `d/`), held unconditionally.
+
+Links between owners are counts over acyclic structure (entry → blob `X/`; blob → commit `bp/`, `cb/`; commit → thing; thing or commit → derived rows keyed owner-first), so no walk beyond the closure is needed. Releasing everything also leaves, each bounded: inbox fires for the inbox's history setting, a link's sync ID while redeemed, role changes under a former grantee's sync ID for `ROLE_KEEP`, tombstones for `TOMBSTONE_LIFETIME`. Tests: osis-sync `growth::` own things, expiry, held history, grant and decline, redeem (storage after releasing equals a fresh node's).
 
 ## Roots
 - The node root: `Engine::make_node_root` (local record `records::NODE_ROOT`). The node writes it and its dependents as itself (`Core::nodes_own`, `made_nodes_own` for things a commit makes): no account holds a role there.

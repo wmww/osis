@@ -165,7 +165,7 @@ fn each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1() {
 
 /// Node 0 makes thing 0 and grants node 1's account write and node 2's read (no node keeps it
 /// unread: a store keeps what it holds of an invalid body until its expiry,
-/// issues/invalid-junk-kept.md); node 1 writes `u:n.0`, purgeable by its writer. Cut off from
+/// notes/engine-retention.md); node 1 writes `u:n.0`, purgeable by its writer. Cut off from
 /// node 0, node 1 is lowered to read there. Built once per process (`fixture_with`): the world,
 /// the thing and node 1's write.
 fn lowered() -> (World, (Tid, CommitId)) {
@@ -491,8 +491,8 @@ fn snapshot_roots(w: &mut World, i: usize) {
 }
 
 /// What a set removal's tombstone may add to the roots' snapshots, in their records (`c/`) and
-/// in their blobs: spec/requirements.md Scale, a few bytes per removal (issues/storage-owners.md
-/// 12: no cover can drop one).
+/// in their blobs: spec/requirements.md Scale, a few bytes per removal (issues/zero-growth.md,
+/// Set removals: no cover can drop one).
 const TOMBSTONE_BYTES: usize = 32;
 
 /// `h` holds what a fresh node of the same account holds (`fresh`), after `removals` set

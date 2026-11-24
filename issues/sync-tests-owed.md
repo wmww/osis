@@ -8,8 +8,7 @@ Test conventions: notes/sync-test-harness.md (one harness, one fast test per spe
 ## Reference graph properties with no sync world test
 Each needs a sync world (three nodes, contacts or siblings, inbox delivery) unless it says otherwise.
 - Security on a recording world (`w.record`; the old metadata and shred modules are in git at e499872aa^ core/sync/tests/it): a node keeping S unread holds in clear, live or overwritten, no value, map key, content or core AK, role secret, or writer's node tid or signing key, and every blob it keeps has a Padmé length (by hand: what an attack on its whole device decrypts holds none of them but the core AKs its own things carry); a purge reaching a reader while away, and a dropped blob's wraps and key row (one sync ID or several), leave nothing the forensic attack recovers; a crash at every write of sync's forget (notes/test-security.md).
-- A reader outside an account keeps reading the account's writes across a node removal: the account's rotations reach it with their chains under the sync ID the account writes under.
-- D's deposit seed is fresh after a node removal: the removed node's deposit to the inbox is refused (an account removal from a thing: engine `flows::removal_refreshes_deposit_seed_*`).
+- Across a node removal (accounts piece 4): a reader outside the account keeps reading its writes, and the removed node's deposit to the inbox is refused (the deposit seed is fresh: engine `flows::removal_refreshes_deposit_seed_*`).
 
 ## Scenarios from the old sync's issues
 Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry-holds-label-unsettled` for the one named by sync ID).
@@ -24,7 +23,7 @@ Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry
 - pulled-refusal-lost: a refusal of a pulled entry lost with its connection is learned again on reconnect.
 - doubted-head-exhausted: a doubted open head whose Behind walk finds no earlier credential still learns the peer's later head without a reconnect.
 - stranded-holder-unread: a node holding a thing at sync only sends stranded reports and re-seals with no keyset it does not follow.
-- listing-horizon-tests-isolation: a listing past the deletion horizon is checked with an entry the reader cannot judge (another node's card, a certificate copy) deleted while it is away.
+- listing-horizon-tests-isolation: a listing past the deletion horizon is checked with an entry the reader cannot judge (a certificate copy) deleted while it is away.
 - lan-replaces-relay-flaky: a LAN route replacing a relayed connection comes up at the first announcement, not its 30 s repeat.
 - Counted at n and 10n: dropping F entries past a source's delete rate sends O(F) items in all (delete-resend-past-rate); a write killing one body under purge on replace judges O(1) entries (kill-judges-sync-id-entries); one step flat in things held (sync-step-cost); one connection's flood of inputs delays another source by a few reads (host-hub-stall; sources a transport cannot tell apart are one source to it).
 - forged-section-at-store (unopened-section-forgery): a reader's blob of a genuine commit with junk in a section a delete-key holder cannot open, planted at a store keeping S unread with a lower blob ID: the store keeps the genuine blob, and a reader opening that section syncing only through the store reads the commit (needs a harness hook placing a hostile node's own entry; the rule is tested at the engine rows and the pure judgement).
@@ -47,7 +46,7 @@ Names from `git show 28641727e`; each goes through the facade.
 - Cross-node rules other notes list as awaiting sync tests: retention dating (notes/engine-retention-dating.md), destruction (notes/expiry-creation-design.md), paged scale checks (notes/engine-paged.md).
 
 ## Simulations still missing
-- A granter's account rotation leaves its grant counted at a node keeping S unread (sync-only-chain).
+- A rotation of the granter's account thing leaves its grant counted at a node keeping S unread (sync-only-chain).
 - Connections and shared-set work counted at 10^2 and 10^3 LAN nodes (every LAN announcer is dialed).
 - Both ends of a connection agree on each stream join (a check that would have named refused-join causes at once).
 - A refreshed ephemeral value (a cursor rewritten before its expiry) read through a node whose clock is before the old value's expiry.
