@@ -685,6 +685,27 @@ impl Streams {
         ctx.wire.answer(conn, id, Msg::FetchReply { id, items });
     }
 
+    /// A Want (spec/wire.md §11.2 Want; spec/sync-judgement.md §3 Asked by ID): for each commit, in
+    /// request order, an entry of its body under its sync ID this node holds or makes, a prefix of
+    /// them within `max_reply`; none under a sync ID not shared here, not read here, or open to a
+    /// peer holding it for keys.
+    pub(super) fn on_want(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, max_reply: u64, ids: Vec<(SyncId, Vec<osis_base::CommitId>)>) {
+        let mut left = (max_reply as usize).min(REPLY_BUDGET).saturating_sub(OVERHEAD);
+        let mut items = Vec::new();
+        for (s, c) in ids.into_iter().flat_map(|(s, cs)| cs.into_iter().map(move |c| (s, c))) {
+            let open = ctx.shared.members(conn).contains_key(&s) && ctx.store.holding(&s) == Some(Holding::Read) && !for_keys(ctx, conn, &s);
+            let entry = if open { ctx.ground.want(ctx.store, &s, &c).ok().flatten() } else { None };
+            let n = entry.as_ref().map_or(40, |(v, ..)| v.len() + 200);
+            if n > left && !items.is_empty() {
+                break;
+            }
+            left = left.saturating_sub(n);
+            items.push(osis_proto::WantedItem { commit: c, entry });
+        }
+        osis_base::costs::count("streams: wanted answered", items.iter().filter(|w| w.entry.is_some()).count() as u64);
+        ctx.wire.answer(conn, id, Msg::Wanted { id, items });
+    }
+
     fn fetchable(&self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, b: &BlobId, until: Option<Position>) -> Result<Option<Body>> {
         let Some(e) = ctx.store.entry(s, b)? else { return Ok(None) };
         if for_keys(ctx, conn, s) && !role_entry(ctx, s, &e) {

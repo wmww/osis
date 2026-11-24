@@ -769,9 +769,12 @@ impl Node {
             let sessions = &mut self.driver.sessions;
             let mut fetches = Vec::new();
             acted |= acts.by(Act::Read, self.read.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status, &self.unread, &mut fetches)?);
-            for (conn, s, b) in fetches {
+            for (conn, s, ask) in fetches {
                 let mut cx = cx!(self, out);
-                self.streams.fetch_again(&mut cx, &mut self.driver.sessions, &self.opens, conn, s, b, &mut self.driver.reported);
+                match ask {
+                    crate::read::Ask::Entry(b) => self.streams.fetch_again(&mut cx, &mut self.driver.sessions, &self.opens, conn, s, b, &mut self.driver.reported),
+                    crate::read::Ask::Body(c) => self.streams.want(&mut cx, &mut self.driver.sessions, &self.opens, conn, s, c, &mut self.driver.reported),
+                }
             }
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;

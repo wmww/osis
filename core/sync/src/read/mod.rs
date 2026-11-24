@@ -32,6 +32,14 @@ mod pieces;
 pub use ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView, StepReady};
 pub use live::Live;
 
+/// What read asks a source for on a connection, outside any message (spec/sync-judgement.md §3
+/// Dropped bodies): an entry its stream showed, or a body by its commit ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    Entry(BlobId),
+    Body(CommitId),
+}
+
 use crate::opens::Opens;
 use crate::session::{Incoming, Sessions};
 use crate::store::{Source, Stand};
@@ -97,8 +105,11 @@ pub struct Read {
     /// (spec/commits.md §5 Covered, Forgetting; `judge::local`).
     local: Effects<CommitId, judge::Local>,
     verdicts: Stamped<(SyncId, BodyId), Verdict>,
-    /// Own role commits S must hold (§3 Role entries first).
+    /// Own role commits S must hold (§3 Role entries first: what a delete waits for).
     roles: Stamped<SyncId, BTreeSet<BodyId>>,
+    /// Every role commit or request S must hold here, own or pulled (§3 Role entries first: what
+    /// a logging again waits for); read only where one is due.
+    held_roles: Stamped<SyncId, BTreeSet<BodyId>>,
     /// Per (S, body), the pass place an entry of it last came into the own store of S; per
     /// commit, the pass place what its bodies read last moved; per S, the newest place a
     /// judgement outside S's required set waits a complete pass after (`judge::outside`, status
@@ -137,6 +148,7 @@ impl Default for Read {
             local: Effects::new("read: local"),
             verdicts: Stamped::default(),
             roles: Stamped::default(),
+            held_roles: Stamped::default(),
             arrived: Stamped::default(),
             moved: Stamped::default(),
             waits: Stamped::default(),
@@ -171,7 +183,7 @@ impl Read {
     /// The product's step: over the engine, store, opens' members and streams' `known`. Entries
     /// to fetch again (a body counting missing again) go to `fetches`, for streams.
     #[allow(clippy::too_many_arguments)]
-    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status, unread: &crate::unread::Unread, fetches: &mut Vec<(ConnId, SyncId, osis_base::BlobId)>) -> Result<bool> {
+    pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status, unread: &crate::unread::Unread, fetches: &mut Vec<(ConnId, SyncId, Ask)>) -> Result<bool> {
         let mut commits = self.commits.take();
         let mut feeds = std::mem::take(&mut self.feeds);
         let r = osis_base::costs::scoped("read", || self.settle_on(&mut Live { cx, sessions, opens, streams, status, unread, commits: &mut commits, feeds: &mut feeds, fetches }));
@@ -380,7 +392,7 @@ impl Read {
             }
             for k in due {
                 let (s, c) = k;
-                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, held_roles: &self.held_roles, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
                 let Some((was, now)) = self.judged.try_settle(&k, || judge::body(g, &mine, &s, &c))? else { continue };
                 if self.verdicts.get(&k) != Some(&now.verdict) {
                     #[cfg(debug_assertions)]
@@ -398,7 +410,8 @@ impl Read {
                         }
                     }
                 }
-                self.set_role(&s, &c, now.role && !now.idle);
+                set_in(&mut self.roles, &s, &c, now.role && !now.idle);
+                set_in(&mut self.held_roles, &s, &c, now.held_role && !now.idle);
                 if let Some(w) = now.wait {
                     wait_pass(&mut self.waits, s, w);
                 }
@@ -471,7 +484,7 @@ impl Read {
             }
             for k in due {
                 let (s, c, at) = k;
-                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, held_roles: &self.held_roles, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
                 let Some((was, now)) = self.toward.try_settle(&k, || judge::toward(g, &mine, &s, &c, &at))? else { continue };
                 if now.idle {
                     self.toward.unwant(&k);
@@ -599,6 +612,10 @@ impl Read {
                 g.fetch(conn, s, blob)?;
                 owed::State::Sent(conn)
             }
+            (Act::Want { .. }, Some(c)) => {
+                g.want(conn, s, &c.commit)?;
+                owed::State::Sent(conn)
+            }
             (Act::Delete { head, blob, .. }, _) => {
                 let id = g.delete(conn, s, head, blob)?;
                 sent(id, &mut self.owed)
@@ -690,23 +707,6 @@ impl Read {
         self.clock.next().map(WallMs)
     }
 
-    fn set_role(&mut self, s: &SyncId, c: &BodyId, on: bool) {
-        let has = self.roles.get(s).is_some_and(|r| r.contains(c));
-        if has == on {
-            return;
-        }
-        let mut r = self.roles.get(s).cloned().unwrap_or_default();
-        if on {
-            r.insert(*c);
-        } else {
-            r.remove(c);
-        }
-        if r.is_empty() {
-            self.roles.remove(s);
-        } else {
-            self.roles.insert(*s, r);
-        }
-    }
 
     /// Act `a` of a judgement under S: on the own store or the engine at once; toward a source,
     /// owed it (`deliver`).
@@ -735,9 +735,28 @@ impl Read {
             (Act::TakePiece(b), _) => g.take_piece(s, &b)?,
             (Act::Repair(_), _) => {}
             (Act::DropBlob(b), _) => g.drop_blob(s, &b)?,
-            (Act::Fetch { .. } | Act::Delete { .. } | Act::Deposit { .. } | Act::Again { .. } | Act::DeleteFreed { .. }, _) | (_, None) => {}
+            (Act::Fetch { .. } | Act::Want { .. } | Act::Delete { .. } | Act::Deposit { .. } | Act::Again { .. } | Act::DeleteFreed { .. }, _) | (_, None) => {}
         }
         Ok(())
+    }
+}
+
+/// Body `c` in or out of `set`'s bodies of S.
+fn set_in(set: &mut Stamped<SyncId, BTreeSet<BodyId>>, s: &SyncId, c: &BodyId, on: bool) {
+    let has = set.get(s).is_some_and(|r| r.contains(c));
+    if has == on {
+        return;
+    }
+    let mut r = set.get(s).cloned().unwrap_or_default();
+    if on {
+        r.insert(*c);
+    } else {
+        r.remove(c);
+    }
+    if r.is_empty() {
+        set.remove(s);
+    } else {
+        set.insert(*s, r);
     }
 }
 

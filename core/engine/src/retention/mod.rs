@@ -692,18 +692,23 @@ pub(crate) fn gone_of(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Vec<
 /// length) but for exact-dot entries of `d`'s source. A source's ranges are disjoint (a counter
 /// is one delta's), so the last starting at or below `d`'s counter is the only one that can.
 pub(crate) fn sorted_owns(list: &[Owned], d: &osis_crdt::Dot) -> bool {
+    sorted_owner(list, d).is_some()
+}
+
+/// The entry of `list` owning `d` (`sorted_owns`).
+fn sorted_owner<'a>(list: &'a [Owned], d: &osis_crdt::Dot) -> Option<&'a Owned> {
     if let osis_crdt::SourceKind::Commit(c) = d.src.kind()
-        && list.binary_search(&Owned::Commit(*c)).is_ok()
+        && let Ok(i) = list.binary_search(&Owned::Commit(*c))
     {
-        return true;
+        return list.get(i);
     }
     // `Owned`'s order: ranges by source and start, then commits, then exact dots by source
     let i = list.partition_point(|x| matches!(x, Owned::Range { src, lo, .. } if (src, *lo) <= (&d.src, d.ctr)));
-    if i > 0 && list.get(i - 1).is_some_and(|x| x.owns(d)) {
-        return true;
+    if let Some(x) = i.checked_sub(1).and_then(|i| list.get(i)).filter(|x| x.owns(d)) {
+        return Some(x);
     }
     let j = list.partition_point(|x| !matches!(x, Owned::Dots { src, .. } if *src >= d.src));
-    list.get(j..).unwrap_or_default().iter().take_while(|x| matches!(x, Owned::Dots { src, .. } if *src == d.src)).any(|x| x.owns(d))
+    list.get(j..).unwrap_or_default().iter().take_while(|x| matches!(x, Owned::Dots { src, .. } if *src == d.src)).find(|x| x.owns(d))
 }
 
 /// Takes `gone` off the gone list of `(tid, ak)`.
@@ -837,7 +842,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     if let Some(d) = &mut fire_refs {
         d.add(&body, -1);
     }
-    strip_leftover(tx.core, &m.header, ai, &mut body);
+    let taken = strip_leftover(tx.core, &m.header, ai, &mut body);
     // a delta left with no write (its own all gone, none carried) is nothing: dropped, as gone
     // (a held one, its fire's references with it; one dropped as covered stays so), the aspect
     // without it
@@ -852,7 +857,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     if let Some(d) = &mut fire_refs {
         d.add(&body, 1);
     }
-    put_leftover(tx, c, ai, m, body, gives)?;
+    put_leftover(tx, c, ai, m, body, gives, taken)?;
     if let Some(d) = fire_refs {
         crate::engine::refs::note(tx, &a.tid, &a.ak, d)?;
     }
@@ -917,8 +922,8 @@ fn held_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<(Option<Fragmen
 pub(crate) fn hold_carrier(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut body: Fragment, gives: Option<crate::engine::Gives>) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     tx.core.touch();
-    strip_leftover(tx.core, &m.header, ai, &mut body);
-    put_leftover(tx, c, ai, m, body, gives)
+    let taken = strip_leftover(tx.core, &m.header, ai, &mut body);
+    put_leftover(tx, c, ai, m, body, gives, taken)
 }
 
 /// The leftover of `body`, held part `ai` (spec/crdt.md §4.7), the one strip of purge, expiry
@@ -926,17 +931,39 @@ pub(crate) fn hold_carrier(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut body: F
 /// (purged, expired), its own or a snapshot's copy under its dot; no body loses a value of a write
 /// not gone, but a carrier held through its purge's fall (`purge::rejudge_purges`).
 /// So every listed write goes (`Fragment::remove_gone`), and a rebuild reads the same with it.
-fn strip_leftover(core: &Core, h: &Header, ai: usize, body: &mut Fragment) {
-    let Some(list) = h.aspects.get(ai).and_then(|a| core.ix.gone.get(&(a.tid, a.ak.clone()))) else { return };
-    body.remove_gone(&|d| sorted_owns(list, d));
+/// The list entries it took writes of (`Leftover::taken`).
+fn strip_leftover(core: &Core, h: &Header, ai: usize, body: &mut Fragment) -> Vec<Owned> {
+    let Some(list) = h.aspects.get(ai).and_then(|a| core.ix.gone.get(&(a.tid, a.ak.clone()))) else { return Vec::new() };
+    strip_taking(list, body)
+}
+
+/// `body` without the writes `list` owns, and the entries of `list` that owned one.
+pub(crate) fn strip_taking(list: &[Owned], body: &mut Fragment) -> Vec<Owned> {
+    let taken = std::cell::RefCell::new(BTreeSet::new());
+    body.remove_gone(&|d| {
+        let hit = sorted_owner(list, d);
+        if let Some(o) = hit {
+            taken.borrow_mut().insert(o.clone());
+        }
+        hit.is_some()
+    });
+    taken.into_inner().into_iter().collect()
 }
 
 /// Stores `body` as the leftover of part `ai` of `c` (meta `m`): a part held whole loses its body
 /// (the blob without the slot, shredded); one dropped as covered is held again, as its leftover.
 /// Its own writes live while off the gone list (`Hold::Leftover::own_live`; a snapshot's while
 /// unexpired): a body for keep bounds.
-fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::Meta, body: Fragment, gives: Option<crate::engine::Gives>) -> Result<()> {
+fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::Meta, body: Fragment, gives: Option<crate::engine::Gives>, taken: Vec<Owned>) -> Result<()> {
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
+    // a leftover stripped again lacks what each strip took
+    let mut taken: BTreeSet<Owned> = taken.into_iter().collect();
+    if m.stripped(ai)
+        && let Some(old) = leftover::get(tx, &a.tid, &a.ak, c, ai)?
+    {
+        taken.extend(old.taken);
+    }
+    let taken: Vec<Owned> = taken.into_iter().collect();
     if gives.is_some() {
         let mut carried = snapshot::Carried::default();
         carried.add(&body);
@@ -945,7 +972,7 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
     // a held body keeps what it was judged; one held again (dropped as covered, missing) is a
     // whole replace by its leftover, as a load from the commit records reads it
     let whole_replace = m.whole(ai) || !m.holds(ai) && gives.is_none() && snapshot::whole_replace(&m, &a.ak, &body);
-    leftover::put(tx, &a.tid, &a.ak, c, ai, &leftover::Leftover { fragment: body, gives })?;
+    leftover::put(tx, &a.tid, &a.ak, c, ai, &leftover::Leftover { fragment: body, gives, taken })?;
     // an expiring snapshot past its expiry holds no value (`expire_snapshot`)
     let ended = m.header.kind.is_compaction() && m.header.expires.is_some_and(|t| t <= tx.now().0);
     let own_live = gone_of(tx.core, &m.header, c, ai).is_empty() && !ended;
@@ -1816,7 +1843,7 @@ mod tests {
         // leaked: `Memo::get_in` finds its memo through the transaction's borrow
         let memo: &'static Memo<u8, String> = Box::leak(Box::new(Memo::new("test record")));
         let left = |tx: &mut Tx<'_>| Memo::get_in(tx, |_| memo, &0, |tx| Ok::<_, Error>(format!("{:?}", super::leftover::get(tx, &t, &x, &c, ai)?.map(|l| l.fragment))));
-        let put = |tx: &mut Tx<'_>, f: osis_crdt::Fragment| super::leftover::put(tx, &t, &x, &c, ai, &super::leftover::Leftover { fragment: f, gives: None });
+        let put = |tx: &mut Tx<'_>, f: osis_crdt::Fragment| super::leftover::put(tx, &t, &x, &c, ai, &super::leftover::Leftover { fragment: f, gives: None, taken: Vec::new() });
         e.run(|tx| {
             let f = crate::apply::held_fragment(tx, &c, ai)?.unwrap();
             put(tx, f)

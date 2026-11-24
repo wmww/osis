@@ -866,7 +866,7 @@ impl Session {
 fn allowance(m: &Msg) -> u64 {
     match m {
         Msg::Prove { .. } => MAX_MESSAGE as u64,
-        Msg::Fetch { max_reply, .. } | Msg::Call { max_reply, .. } | Msg::Sub { max_reply, .. } => *max_reply,
+        Msg::Fetch { max_reply, .. } | Msg::Want { max_reply, .. } | Msg::Call { max_reply, .. } | Msg::Sub { max_reply, .. } => *max_reply,
         Msg::Pull(p) => p.max_reply,
         _ => SMALL_REPLY as u64,
     }

@@ -93,7 +93,7 @@ Whenever a cover on the aspect may stop carrying: it turns invalid, arrives agai
 - The chain is sound only because `covered` judges a held body by the join alone, not the frontier: a snapshot can carry writes past its own frontier (its writer held the body behind a session gap). By the frontier, a holder would call uncovered what a node that dropped the body calls covered, and re-place it every pass for the other to delete (`held_memory_body_past_a_snapshot_frontier_judged_by_the_join_*`).
 
 ### Fetching it back
-- The body counts missing again (`facts.missing`), so read fetches it where a source shows it (spec/sync-judgement.md §3 Dropped bodies; `Streams::fetch_again` is not built: issues/sync-unbuilt.md). A holder finds the body uncovered, so must-hold, and logs it again (`coverer_demoted_after_cover_drop_alike_*`, `covered_drop_coverer_and_remover_revoked_alike_*`).
+- The body counts missing again (`facts.missing`), so read fetches it where a source's stream shows it and asks every reader peer for it by ID (spec/sync-judgement.md §3 Dropped bodies, Asked by ID; notes/sync-read.md Fetching again), relying on nobody's must-hold rule. A holder finds the body uncovered, so must-hold, and logs it again (`coverer_demoted_after_cover_drop_alike_*`, `covered_drop_coverer_and_remover_revoked_alike_*`), which reaches nodes meeting only through stores.
 - With no copy anywhere the write is gone at every node alike (spec/permissions.md §5.2). Usually only a reader holds it then.
 - The order harness drops covered bodies at every sync step (`order.rs` `drop_covered`) and checks a reopen reads alike, so open-equals-rebuild covers un-drops.
 

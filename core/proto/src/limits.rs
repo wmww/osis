@@ -37,7 +37,8 @@ pub const NO_RECORD_ID: u32 = TOP_BIT;
 
 /// Items in one Delete, and so codes in its Status (spec/wire.md §11.2, Per-message caps).
 pub const MAX_DELETE_ITEMS: usize = 1024;
-/// Blob IDs in one Fetch, and so items in its FetchReply (spec/wire.md §11.2).
+/// Blob IDs in one Fetch, and so items in its FetchReply; commit IDs in one Want, and so items in
+/// its Wanted (spec/wire.md §11.2).
 pub const MAX_FETCH_IDS: usize = 1024;
 /// Items in one Offer or Lost, and so answers in its Shared (spec/wire.md §11.2).
 pub const MAX_OFFER_ITEMS: usize = 1024;

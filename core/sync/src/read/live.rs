@@ -2,7 +2,7 @@
 //! memory holding it) and streams' `known` (notes/sync-read.md, The ground in a node). A call
 //! failing in the middle of a settle fails the node's step, closing every connection.
 
-use super::Why;
+use super::{Ask, Why};
 use super::ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView, StepReady};
 use osis_engine::sync::PieceLink;
 use osis_blob::StepId;
@@ -60,8 +60,9 @@ pub struct Live<'a, 'b> {
     /// The engine's commits held, followed from read's first settle.
     pub commits: &'a mut Option<Feed<CommitId>>,
     pub feeds: &'a mut Feeds,
-    /// Entries to fetch again, per connection (`Act::Fetch`): the driver hands them to streams.
-    pub fetches: &'a mut Vec<(ConnId, SyncId, BlobId)>,
+    /// Entries to fetch again and bodies to ask for by ID, per connection (`Act::Fetch`,
+    /// `Act::Want`): the driver hands them to streams.
+    pub fetches: &'a mut Vec<(ConnId, SyncId, Ask)>,
 }
 
 
@@ -550,7 +551,11 @@ impl Ground for Live<'_, '_> {
         Ok(())
     }
     fn fetch(&mut self, conn: ConnId, s: &SyncId, b: &BlobId) -> Result<()> {
-        self.fetches.push((conn, *s, *b));
+        self.fetches.push((conn, *s, Ask::Entry(*b)));
+        Ok(())
+    }
+    fn want(&mut self, conn: ConnId, s: &SyncId, c: &CommitId) -> Result<()> {
+        self.fetches.push((conn, *s, Ask::Body(*c)));
         Ok(())
     }
     fn delete_item(&mut self, s: &SyncId, head: &StepId, b: &BlobId) -> Result<Option<DeleteItem>> {

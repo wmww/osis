@@ -970,6 +970,8 @@ struct Fallen {
     t: Tid,
     cy: osis_base::CommitId,
     my: &'static str,
+    snap: osis_base::CommitId,
+    mx: &'static str,
 }
 
 fn fallen_snapshot_rig() -> Fallen {
@@ -997,6 +999,7 @@ fn fallen_snapshot_rig() -> Fallen {
     lp.peers[1].reexamine().unwrap();
     let sai = lp.peers[1].engine.header(&snap).unwrap().aspects.iter().position(|a| a.tid == t && a.ak == k).unwrap();
     assert!(lp.peers[1].engine.core.ix.commits.get(&snap).unwrap().stripped(sai), "the snapshot is held as its leftover");
+    assert!(!lp.peers[1].engine.part_short(&snap, sai), "standing, the purge leaves the leftover wanting nothing");
     lp.advance(5);
     let done = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, retain: None }).unwrap();
     for id in &done.commits {
@@ -1006,7 +1009,7 @@ fn fallen_snapshot_rig() -> Fallen {
     lp.peers[1].reexamine().unwrap();
     let m = lp.peers[1].engine.core.ix.commits.get(&snap).unwrap();
     assert!(m.stripped(sai) && !m.missing(sai), "fallen: the snapshot stays held as its leftover");
-    Fallen { lp, t, cy, my }
+    Fallen { lp, t, cy, my, snap, mx }
 }
 
 /// Node `i` writes `val` at key `key` of `t:big.0`, purging `purge` if given.
@@ -1025,7 +1028,7 @@ fn big_put(lp: &mut LocalPeer, i: usize, t: Tid, key: &str, val: &str, purge: Op
 // spec/commits.md §5: the leftover indexes as an open rebuilding the index reads it.
 #[test]
 fn fallen_snapshot_leftover_gone_for_a_later_purge_spec_commits_5() {
-    let Fallen { mut lp, t, cy, my } = fallen_snapshot_rig();
+    let Fallen { mut lp, t, cy, my, .. } = fallen_snapshot_rig();
     let e = &mut lp.peers[1].engine;
     let opened = e.index_digest().without_held();
     e.rebuild_index().unwrap();
@@ -1039,6 +1042,26 @@ fn fallen_snapshot_leftover_gone_for_a_later_purge_spec_commits_5() {
     filler(&mut lp, 1, 6);
     assert_eq!(lp.peers[1].engine.get_at(&t, &ak("t:big.0"), &[osis_crdt::PathSeg::Key(s("ky"))]).unwrap(), None);
     assert!(!recoverable(&mut lp.peers[1], my.as_bytes()), "the second purged value recovered from the fallen snapshot's leftover");
+}
+
+// spec/permissions.md §6 (A snapshot held as its leftover for carrying a purged write: counted
+// never received while it lacks a write no longer gone), spec/sync-judgement.md §3 (Asked by ID): after the purge's fall node 1 wants the snapshot whole, though it holds the
+// leftover (sync asks for it); the whole copy node 0 holds replaces it, carrying the fallen
+// purge's value again, and then nothing is wanted. Fails with the leftover not counting short
+// (nothing fetched it: node 1 read the value absent while node 0 read it).
+#[test]
+fn a_leftover_through_its_purges_fall_is_wanted_whole_spec_permissions_6() {
+    let Fallen { mut lp, snap, mx, .. } = fallen_snapshot_rig();
+    let k = ak("t:big.0");
+    let sai = lp.peers[1].engine.header(&snap).unwrap().aspects.iter().position(|a| a.ak == k).unwrap();
+    assert!(lp.peers[1].engine.part_short(&snap, sai), "fallen: the leftover lacks a write no longer gone");
+    let pk = lp.peers[0].engine.package(&snap).unwrap().unwrap();
+    lp.deliver(1, &pk).unwrap();
+    lp.peers[1].reexamine().unwrap();
+    let m = lp.peers[1].engine.core.ix.commits.get(&snap).unwrap();
+    assert!(!m.stripped(sai) && !m.missing(sai), "the whole copy replaced the leftover");
+    assert!(!lp.peers[1].engine.part_short(&snap, sai), "nothing wanted once whole");
+    assert!(recoverable(&mut lp.peers[1], mx.as_bytes()), "the fallen purge's value is back from the whole copy");
 }
 
 /// Puts entry `key` of `t`'s `t:map.0` (`map<string, item>`), `expires` at that wall time.

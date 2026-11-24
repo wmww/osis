@@ -124,6 +124,7 @@ enum Sent {
     Delete(ConnId, BlobId),
     Deposit(ConnId, BlobId),
     Fetch(ConnId, BlobId),
+    Want(ConnId, CommitId),
     Take(BlobId),
     LogPiece(BlobId),
     TakePiece(BlobId),
@@ -535,6 +536,11 @@ impl Ground for Fake {
     fn fetch(&mut self, conn: ConnId, s: &SyncId, b: &BlobId) -> Result<()> {
         let _ = s;
         self.sent.push(Sent::Fetch(conn, *b));
+        Ok(())
+    }
+    fn want(&mut self, conn: ConnId, s: &SyncId, c: &CommitId) -> Result<()> {
+        let _ = s;
+        self.sent.push(Sent::Want(conn, *c));
         Ok(())
     }
     /// By the head's delete key alone (levels: the World tests, `deletes::`).
@@ -1085,6 +1091,37 @@ fn a_missing_body_is_fetched_once_per_connection_spec_sync_judgement_3() {
     assert_eq!(fetches(&w), 2);
 }
 
+// spec/sync-judgement.md §3 (Dropped bodies: Asked by ID): a missing body is asked for by commit
+// ID from a source reading S though no stream shows an entry of it, once per connection however
+// often read settles, once more on each new one, never from a source keeping S unread (it cannot
+// answer by ID), and no more once it stops counting missing. Fails without the ask (a holder
+// whose own judgement logged nothing is never reached) or with it sent at each settle (a loop).
+#[test]
+fn a_missing_body_is_asked_for_by_id_once_per_connection_spec_sync_judgement_3() {
+    let (mut w, _) = two_shown();
+    let r = Source::Conn(ConnId(300));
+    w.source(S, r, ConnId(300), false);
+    w.g.own.insert((S, cid(1)), Vec::new());
+    let mut f = uncovered();
+    f.missing = true;
+    w.judge(S, cid(1), f.clone());
+    let wants = |w: &W| w.g.sent.iter().filter(|m| matches!(m, Sent::Want(..))).cloned().collect::<Vec<_>>();
+    assert_eq!(wants(&w), vec![Sent::Want(ConnId(300), cid(1))], "asked of the reader alone");
+    for _ in 0..3 {
+        w.g.added.push(cid(1));
+        w.settle();
+    }
+    assert_eq!(wants(&w).len(), 1, "asked again on one connection");
+    w.g.conns.insert(r, ConnId(301));
+    w.settle();
+    assert_eq!(wants(&w).last(), Some(&Sent::Want(ConnId(301), cid(1))), "asked once more on a new connection");
+    f.missing = false;
+    w.judge(S, cid(1), f);
+    w.g.conns.insert(r, ConnId(302));
+    w.settle();
+    assert_eq!(wants(&w).len(), 2, "no longer missing, no longer asked");
+}
+
 // spec/sync-judgement.md §3 (Deletes: at a source full for S a carrier it lacks counts as held;
 // Role entries first: a full source is skipped), spec/sync-streams.md §4 (Full: a peer's `full`
 // lasts with the connection it was told on): a Delete owed only because K is full (HN_full) goes only on a
@@ -1257,6 +1294,29 @@ fn role_entries_first() {
     w.k_delete(cid(1));
     w.exchange();
     assert_eq!(w.logs(S, cid(1)), 2);
+}
+
+// spec/sync-judgement.md §3 (Role entries first: a logging again waits for any role commit S must
+// hold here, own or pulled): a role commit this node pulled (a removal by another) that K lacks
+// holds back a logging again toward K, so the body goes back there only once what this node's
+// judgement rests on is there too, and a node judging otherwise for want of it fetches it there
+// before it deletes (drop-rejoin: a node without the revocation deletes a body logged again).
+// Fails with own role commits alone waited for.
+#[test]
+fn a_logging_again_waits_for_every_role_commit_held_spec_sync_judgement_3() {
+    let mut w = W::new();
+    let mut f = uncovered();
+    f.role = true;
+    f.own = false;
+    w.hold(cid(7), &[S], f);
+    w.hold(cid(1), &[S], uncovered());
+    w.pulls = false;
+    let b1 = w.own_blobs(S, cid(1))[0];
+    w.g.k.held.insert((S, b1), cid(1));
+    w.stream();
+    w.k_delete(cid(1));
+    w.exchange();
+    assert_eq!(w.logs(S, cid(1)), 1, "logged again before K held the pulled role commit");
 }
 
 // spec/sync-judgement.md §3 (role entries first): a delete toward K waits while K's stream shows

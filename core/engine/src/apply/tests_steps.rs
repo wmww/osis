@@ -252,7 +252,7 @@ fn bad_pending_commit_forgets_its_leftovers() {
     };
     e.run(|tx| {
         for (ai, a) in h.aspects.iter().enumerate() {
-            crate::retention::leftover::put(tx, &a.tid, &a.ak, &c2, ai, &crate::retention::leftover::Leftover { fragment: Default::default(), gives: None })?;
+            crate::retention::leftover::put(tx, &a.tid, &a.ak, &c2, ai, &crate::retention::leftover::Leftover { fragment: Default::default(), gives: None, taken: Vec::new() })?;
         }
         Ok(())
     })

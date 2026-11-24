@@ -103,11 +103,11 @@ fn carried(tx: &mut Tx<'_>, id: &CommitId, part: &osis_commit::Part, h: &Header,
     let Some(dedup) = tx.core.dedup(&a.tid) else { return Err(()) };
     let Some(Decoded::Snapshot(snap)) = verify_waiting(tx, id, part, h, &dedup)? else { return Ok(None) };
     let mut f = snap.fragment.clone();
-    f.remove_gone(&|d| super::sorted_owns(&list, d));
+    let taken = super::strip_taking(&list, &mut f);
     if f == snap.fragment {
         return Ok(None);
     }
-    Ok(Some(leftover::Leftover { fragment: f, gives: Some((snap.frontiers, snap.absorbed.into_iter().collect(), snap.facts)) }))
+    Ok(Some(leftover::Leftover { fragment: f, gives: Some((snap.frontiers, snap.absorbed.into_iter().collect(), snap.facts)), taken }))
 }
 
 /// The stored pending copy of `id`, if any, edited by `edit` and stored again where it says it
@@ -185,7 +185,7 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
             let mut kept = leftover::get(tx, &a.tid, &a.ak, id, ai)?.map(|l| l.fragment).unwrap_or_default();
             kept.join(d.fragment);
             p.delta = emptied();
-            leftover::put(tx, &a.tid, &a.ak, id, ai, &leftover::Leftover { fragment: kept, gives: None })?;
+            leftover::put(tx, &a.tid, &a.ak, id, ai, &leftover::Leftover { fragment: kept, gives: None, taken: Vec::new() })?;
             true
         }
         Err(()) => false,

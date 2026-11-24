@@ -12,18 +12,22 @@ use osis_base::{Ak, CommitId, Tid, Value};
 use osis_crdt::Fragment;
 use osis_store::Shred;
 
-/// A leftover: the stripped fragment and, a snapshot's, its frontiers, `Absorbed` and facts.
+/// A leftover: the stripped fragment and, a snapshot's, its frontiers, `Absorbed` and facts, and
+/// the gone-list entries its strips took writes of (`taken`): a snapshot's leftover lacks a write
+/// no longer gone while one of them is off the list (`short`).
 pub(crate) struct Leftover {
     pub fragment: Fragment,
     pub gives: Option<Gives>,
+    pub taken: Vec<crate::engine::Owned>,
 }
 
 impl Leftover {
     fn encode(&self) -> Result<Vec<u8>> {
         let body = Value::Bytes(crate::engine::state::encode(&self.fragment)?);
+        let taken = Value::Bytes(super::encode_owned(&self.taken));
         let v = match &self.gives {
-            None => Value::List(vec![Value::Int(0), body]),
-            Some((fr, abs, facts)) => Value::List(vec![Value::Int(1), fr.to(), abs.to(), facts.to(), body]),
+            None => Value::List(vec![Value::Int(0), body, taken]),
+            Some((fr, abs, facts)) => Value::List(vec![Value::Int(1), fr.to(), abs.to(), facts.to(), body, taken]),
         };
         Ok(osis_base::encode(&v))
     }
@@ -32,12 +36,19 @@ impl Leftover {
         let bad = || Error::Corrupt("leftover");
         let v = osis_base::decode(b, &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB)).map_err(|_| bad())?;
         let Value::List(items) = &v else { return Err(bad()) };
-        let (gives, body) = match items.as_slice() {
-            [Value::Int(0), Value::Bytes(b)] => (None, b),
-            [Value::Int(1), fr, abs, facts, Value::Bytes(b)] => (Some((Rec::from(fr).ok_or_else(bad)?, Rec::from(abs).ok_or_else(bad)?, Rec::from(facts).ok_or_else(bad)?)), b),
+        let (gives, body, taken) = match items.as_slice() {
+            [Value::Int(0), Value::Bytes(b), Value::Bytes(t)] => (None, b, t),
+            [Value::Int(1), fr, abs, facts, Value::Bytes(b), Value::Bytes(t)] => (Some((Rec::from(fr).ok_or_else(bad)?, Rec::from(abs).ok_or_else(bad)?, Rec::from(facts).ok_or_else(bad)?)), b, t),
             _ => return Err(bad()),
         };
-        Ok(Leftover { fragment: crate::engine::state::decode(body)?, gives })
+        Ok(Leftover { fragment: crate::engine::state::decode(body)?, gives, taken: super::decode_owned(taken)? })
+    }
+
+    /// Whether a snapshot's leftover lacks a write that is no longer gone (an entry it was
+    /// stripped for left the list `list`: its purge fell): it counts as never received whole,
+    /// read meanwhile (spec/permissions.md §6).
+    pub fn short(&self, list: &[crate::engine::Owned]) -> bool {
+        self.gives.is_some() && self.taken.iter().any(|o| list.binary_search(o).is_err())
     }
 }
 

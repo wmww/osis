@@ -154,7 +154,17 @@ pub trait Ground {
         let _ = (store, b);
         Ok(())
     }
+    /// An entry of commit `c`'s body under S this node holds or makes, whatever its own judgement
+    /// of the body (spec/sync-judgement.md §3 Asked by ID): its store's entry holding the body,
+    /// else a fresh encryption of the body under S; none where it holds no whole body.
+    fn want(&mut self, store: &crate::store::Store, s: &SyncId, c: &osis_base::CommitId) -> Result<Option<Given>> {
+        let _ = (store, s, c);
+        Ok(None)
+    }
 }
+
+/// An entry given outside any stream (a Want's answer): the blob, its wrap and stamp.
+pub type Given = (Vec<u8>, Wrap, Option<osis_proto::Stamp>);
 
 /// How streams reaches a connection. The product's is `Sessions`.
 pub trait Wire {
@@ -292,6 +302,18 @@ impl Streams {
         product(cx, sessions, opens, reported, |ctx| self.refetch(ctx, conn, s, b));
     }
 
+    /// Commit `c`'s body under S asked for by ID on `conn` (read's word: a body counting missing,
+    /// spec/sync-judgement.md §3 Asked by ID), whatever the source's stream shows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn want(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, s: SyncId, c: osis_base::CommitId, reported: &mut Vec<Reported>) {
+        product(cx, sessions, opens, reported, |ctx| self.want_in(ctx, conn, s, c));
+    }
+
+    /// `want` over `Ctx`.
+    pub fn want_in(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, c: osis_base::CommitId) {
+        self.want_body(ctx, conn, s, c);
+    }
+
     pub fn next_wake(&self) -> Option<Mono> {
         let asked = self.asked.values().map(|(_, at)| at.after(ASKED_MS)).min();
         self.pull.values().filter_map(pull::Pulling::wake).chain(asked).min()
@@ -361,6 +383,7 @@ impl Streams {
         match m {
             Incoming::Request(id, Msg::Pull(p)) => self.on_pull(ctx, conn, id, *p),
             Incoming::Request(id, Msg::Fetch { max_reply, ids, .. }) => self.on_fetch(ctx, conn, id, max_reply, ids),
+            Incoming::Request(id, Msg::Want { max_reply, ids, .. }) => self.on_want(ctx, conn, id, max_reply, ids),
             Incoming::Push(Msg::Applied { cursor }) => self.on_applied(ctx, conn, cursor.into_bytes()),
             Incoming::Push(Msg::Stream(st)) => self.on_stream(ctx, conn, *st),
             Incoming::Reply(To::Streams, id, m) => self.on_reply(ctx, conn, id, m),
@@ -627,6 +650,30 @@ impl Ground for EngineGround<'_> {
 
     fn role_entry(&mut self, s: &SyncId, b: &BlobId) -> bool {
         self.engine.role_entry(s, b)
+    }
+
+    fn want(&mut self, store: &crate::store::Store, s: &SyncId, c: &osis_base::CommitId) -> Result<Option<Given>> {
+        let id = osis_engine::sync::BodyId::unit(*c);
+        let Some(meta) = self.engine.sync_body(s, &id)? else { return Ok(None) };
+        let blobs = self.engine.commit_blobs(c)?;
+        let mut held = Vec::new();
+        for b in blobs.iter() {
+            let Some(bytes) = store.bytes(b)? else { continue };
+            if let Some(e) = store.entry(s, b)?
+                && self.engine.blob_body(s, b)? == Some(id)
+                && self.engine.body_held_by(&meta, b)
+            {
+                return Ok(Some((bytes, e.wrap, e.stamp)));
+            }
+            // a genuine blob under any sync ID: its sections go into a fresh encryption as they came
+            for x in store.naming(b)? {
+                if self.engine.blob_body(&x, b)?.is_some() && let Some(e) = store.entry(&x, b)? {
+                    held.push(osis_engine::sync::HeldBlob { sync_id: x, wrap: e.wrap, bytes });
+                    break;
+                }
+            }
+        }
+        Ok(self.engine.seal_body(s, &id, &held, &mut *self.rng)?.map(|(sealed, wrap)| (sealed.blob, wrap, None)))
     }
 }
 

@@ -17,9 +17,21 @@ impl Engine {
     /// here, so it is fetched for nothing. Judged by the shared blob's sections also where the
     /// body is a copy: its readers make that copy from what they open, so one sharing this node's
     /// floor never has the part.
-    fn body_missing(&self, c: &CommitId, m: &crate::engine::Meta, parts: impl IntoIterator<Item = usize>) -> bool {
+    /// With it, the parts held as leftovers that may count so too (`part_short`).
+    fn body_missing(&self, c: &CommitId, m: &crate::engine::Meta, parts: impl IntoIterator<Item = usize>) -> (bool, Vec<usize>) {
         let below = |ai: usize| m.view.aspects.get(ai).is_some_and(|a| crate::rotation::floors::sealed_below_floor(&self.core, c, &a.tid, a.ak.as_str()));
-        parts.into_iter().any(|ai| m.missing(ai) && !below(ai))
+        let parts: Vec<usize> = parts.into_iter().filter(|ai| !below(*ai)).collect();
+        (parts.iter().any(|ai| m.missing(*ai)), parts.into_iter().filter(|ai| m.stripped(*ai)).collect())
+    }
+
+    /// Whether part `ai` of `c`, held as a snapshot's leftover, lacks a write no longer gone: an
+    /// entry of the gone list its strips took left the list (its purge fell), so it counts as never
+    /// received whole, its leftover read meanwhile (spec/permissions.md §6), until a copy replaces
+    /// it (`retention::takes_late`).
+    pub fn part_short(&mut self, c: &CommitId, ai: usize) -> bool {
+        let Some(a) = self.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai).cloned()) else { return false };
+        let list = self.core.ix.gone.get(&(a.tid, a.ak.clone())).cloned().unwrap_or_default();
+        self.read(|tx| Ok(crate::retention::leftover::get(tx, &a.tid, &a.ak, c, ai)?.is_some_and(|l| l.short(&list)))).unwrap_or(false)
     }
 
     /// The things whose read secrets may open what opened blob `b` holds sealed here: the thing
@@ -32,7 +44,7 @@ impl Engine {
     pub fn blob_awaits_secrets(&mut self, b: &BlobId) -> BTreeSet<Tid> {
         let Some(o) = self.blob_of(b).filter(|o| !o.sealed.is_empty()) else { return BTreeSet::new() };
         let Some(m) = self.core.ix.commits.get(&o.commit).cloned() else { return BTreeSet::new() };
-        o.ais.iter().filter(|ai| !o.parts.contains(ai) && self.body_missing(&o.commit, &m, [**ai])).filter_map(|ai| m.view.aspects.get(*ai).map(|a| a.tid)).collect()
+        o.ais.iter().filter(|ai| !o.parts.contains(ai) && self.body_missing(&o.commit, &m, [**ai]).0).filter_map(|ai| m.view.aspects.get(*ai).map(|a| a.tid)).collect()
     }
 
     /// spec/sync-judgement.md §2 must-not-hold (the clauses only the engine judges), §3 Role
@@ -58,7 +70,10 @@ impl Engine {
         f.own = m.origin == crate::events::Origin::Local;
         f.repair_fresh = m.repair().cloned().unwrap_or_default();
         f.role = h.kind.is_role() || m.view.purges;
-        f.missing = self.body_missing(c, m, b.parts.iter().copied());
+        let (missing, leftovers) = self.body_missing(c, m, b.parts.iter().copied());
+        // a snapshot held as its leftover lacking a write no longer gone counts so too, its
+        // leftover read meanwhile
+        f.missing = missing || leftovers.into_iter().any(|ai| self.part_short(c, ai));
         let (id, parts) = (*c, b.parts.clone());
         // every part purged: one purged beside a live part strips (`strips`), the rest logged
         // as the rewrite

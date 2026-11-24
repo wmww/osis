@@ -41,6 +41,9 @@ pub(crate) enum Act {
     /// The body counts missing again: an entry of it a source's stream shows present is fetched
     /// there (§3 Dropped bodies), by streams.
     Fetch { at: Source, blob: BlobId },
+    /// The body counts missing: asked for by commit ID from a source reading S, whatever that
+    /// source's stream shows (§3 Asked by ID), by streams.
+    Want { at: Source },
     /// A Delete at a source keeping S unread, by its head's delete key (§3 Deletes); `full`: owed
     /// only while the source is full for S (a carrier it lacks counted as held, no role entry
     /// waited for), so it goes only on a connection the source told so.
@@ -68,7 +71,7 @@ impl Act {
     /// `None`: an act on the own store or the engine, carried out at once.
     pub fn toward(&self) -> Option<Source> {
         match self {
-            Act::Fetch { at, .. } | Act::Delete { at, .. } | Act::Again { at, .. } | Act::Deposit { at, .. } | Act::DeleteFreed { at, .. } => Some(*at),
+            Act::Fetch { at, .. } | Act::Want { at } | Act::Delete { at, .. } | Act::Again { at, .. } | Act::Deposit { at, .. } | Act::DeleteFreed { at, .. } => Some(*at),
             _ => None,
         }
     }
@@ -93,6 +96,8 @@ pub(crate) struct Judged {
     pub verdict: Verdict,
     /// An own role commit S must hold (what Role entries first waits for).
     pub role: bool,
+    /// A role commit or request S must hold, own or pulled (what a logging again waits for).
+    pub held_role: bool,
     pub acts: BTreeSet<Act>,
     /// Nothing of the body is under S here or at a source: no longer followed.
     pub idle: bool,
@@ -109,7 +114,7 @@ pub(crate) struct Judged {
 
 impl Default for Judged {
     fn default() -> Self {
-        Judged { verdict: Verdict::Unjudged, role: false, acts: BTreeSet::new(), idle: false, roots: Arc::default(), repairs: false, fresh: Arc::default(), wait: None }
+        Judged { verdict: Verdict::Unjudged, role: false, held_role: false, acts: BTreeSet::new(), idle: false, roots: Arc::default(), repairs: false, fresh: Arc::default(), wait: None }
     }
 }
 
@@ -134,6 +139,7 @@ pub(crate) struct Toward {
 pub(crate) struct Mine<'a> {
     pub verdicts: &'a Stamped<(SyncId, BodyId), Verdict>,
     pub roles: &'a Stamped<SyncId, BTreeSet<BodyId>>,
+    pub held_roles: &'a Stamped<SyncId, BTreeSet<BodyId>>,
     pub clock: &'a Clock,
     /// Each (S, body)'s meta at S, as `Read::bodies` last settled it.
     pub metas: &'a Stamped<(SyncId, BodyId), BodyMeta>,
@@ -422,17 +428,23 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId) -> 
     let _ = why;
     j.verdict = verdict.clone();
     j.role = verdict == Verdict::Must && f.as_ref().is_some_and(|f| f.own && f.role);
+    j.held_role = verdict == Verdict::Must && f.as_ref().is_some_and(|f| f.role);
     // a body counting missing again: its own tombstones end, an entry of it held here is taken
-    // again, and it is fetched again where a source shows another entry of it present (a source
-    // joining or showing one judges it again)
+    // again, it is fetched again where a source shows another entry of it present, and asked
+    // for by ID from each source reading S (§3 Asked by ID; a source joining or showing one
+    // judges it again)
     if f.as_ref().is_some_and(|f| f.missing) {
         j.acts.extend(g.own_tombstones(s, c)?.into_iter().map(Act::Lift));
         j.acts.extend(own.iter().filter(|e| !stale.contains(&e.blob)).map(|e| Act::Take(e.blob)));
-        for at in g.reached(s) {
+        for src in g.sources(s).iter() {
+            let at = src.at;
             for b in g.seen(&at, s, c)?.present {
                 if !own.iter().any(|e| e.blob == b) {
                     j.acts.insert(Act::Fetch { at, blob: b });
                 }
+            }
+            if !src.store && c.on.is_none() {
+                j.acts.insert(Act::Want { at });
             }
         }
     }
@@ -695,16 +707,20 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &BodyId, a
     Ok(t)
 }
 
-/// §3 Role entries first: the source, on this node's head, not full, lacks an own role commit
-/// S must hold (not present there and not deleted there; one it refused included), read from the
-/// own store and the source's stream, never from what was sent. `c` itself waits for no other
+/// §3 Role entries first: the source, on this node's head, not full, lacks a role commit S must
+/// hold (not present there and not deleted there; one it refused included), read from the own
+/// store and the source's stream, never from what was sent: for a delete an own one, for a
+/// logging again any held here (`held`), so a node logs a body again at a source only once the
+/// role commits its judgement rests on are there, and a node judging otherwise for want of them
+/// fetches them there before it deletes (§3 Role entries first). `c` itself waits for no other
 /// copy of itself.
-fn role_wait(g: &mut impl Ground, mine: &Mine, src: &SrcView, full: bool, s: &SyncId, c: &BodyId, creds: &ReadCredentials) -> Result<bool> {
+#[allow(clippy::too_many_arguments)]
+fn role_wait(g: &mut impl Ground, mine: &Mine, src: &SrcView, full: bool, s: &SyncId, c: &BodyId, creds: &ReadCredentials, held: bool) -> Result<bool> {
     let ours = creds.head.as_ref().map(|h| h.id());
     if full || src.head.is_none() || src.head != ours {
         return Ok(false);
     }
-    let Some(roles) = mine.roles.get(s) else { return Ok(false) };
+    let Some(roles) = (if held { mine.held_roles } else { mine.roles }).get(s) else { return Ok(false) };
     for r in roles.iter().filter(|r| *r != c) {
         let own = g.own(s, r)?;
         let seen = g.seen(&src.at, s, r)?;
@@ -804,7 +820,7 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, full
         }
         out
     };
-    if blobs.is_empty() || src.role_unheld || role_wait(g, mine, src, full, s, c, creds)? {
+    if blobs.is_empty() || src.role_unheld || role_wait(g, mine, src, full, s, c, creds, false)? {
         return Ok(());
     }
     // each by the delete key or the level keys held for it (spec/sync-ids.md §6 Delete); without
@@ -880,7 +896,7 @@ fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, fu
     if g.stand(&src.at, s, c)?.is_some_and(|st: Stand| st.head == head && st.fall == fall) {
         return Ok(());
     }
-    if role_wait(g, mine, src, full, s, c, creds)? {
+    if role_wait(g, mine, src, full, s, c, creds, true)? {
         return Ok(());
     }
     t.acts.insert(Act::Again { at: src.at, head, fall, old: own.iter().map(|e| e.blob).collect(), full: false });

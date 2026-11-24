@@ -6,7 +6,7 @@ use proptest::prelude::*;
 use std::collections::BTreeSet;
 
 /// Every kind version 1 names (spec/wire.md §11.2).
-const KINDS: [u64; 31] = [0, 1, 2, 3, 7, 11, 14, 19, 20, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46];
+const KINDS: [u64; 33] = [0, 1, 2, 3, 7, 11, 14, 19, 20, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48];
 
 fn enc(v: Value) -> Vec<u8> {
     cbor::encode(&v)
@@ -63,7 +63,7 @@ fn exact_arity_spec_wire_11_2() {
 
 // spec/wire.md §11.1: an id is 0 in a push and nonzero in every request and reply, but an Error
 // answering a frame whose id cannot be read; spec/wire.md §11.2: the shared set's and the
-// stream's requests and answers (every Fetch) have the top bit set, NoRecord exactly 2^31
+// stream's requests and answers (every Fetch and Want) have the top bit set, NoRecord exactly 2^31
 #[test]
 fn ids_spec_wire_11_1() {
     for (name, m) in messages() {
@@ -74,7 +74,7 @@ fn ids_spec_wire_11_1() {
             Some(_) => assert_ne!(id, 0, "{name}"),
             None => panic!("{name}"),
         }
-        assert_eq!(top_bit_kind(kind), matches!(kind, 19 | 20 | 36..=42));
+        assert_eq!(top_bit_kind(kind), matches!(kind, 19 | 20 | 36..=42 | 47 | 48));
         if top_bit_kind(kind) {
             assert_ne!(id & crate::limits::TOP_BIT, 0, "{name}");
         }
@@ -133,10 +133,11 @@ fn list_caps_spec_wire_11_2() {
     use crate::limits::*;
     let ms: std::collections::BTreeMap<_, _> = messages().into_iter().collect();
     type Case<'a> = (&'a str, usize, Option<(usize, usize)>, usize);
-    let cases: [Case; 10] = [
+    let cases: [Case; 11] = [
         ("delete", 3, None, MAX_DELETE_ITEMS),
         ("status", 2, None, MAX_DELETE_ITEMS),
         ("fetch reply", 2, None, MAX_FETCH_IDS),
+        ("wanted", 2, None, MAX_FETCH_IDS),
         ("offer", 2, None, MAX_OFFER_ITEMS),
         ("offer", 2, Some((2, 2)), MAX_ITEM_HITS),
         ("lost", 2, None, MAX_OFFER_ITEMS),

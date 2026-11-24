@@ -240,6 +240,9 @@ pub trait Ground {
     /// Entry `b` of S fetched on `conn` (streams' Fetch, spec/sync-judgement.md §3 Dropped
     /// bodies): a body counting missing again.
     fn fetch(&mut self, conn: ConnId, s: &SyncId, b: &BlobId) -> Result<()>;
+    /// Commit `c`'s body under S asked for by ID on `conn` (streams' Want, spec/sync-judgement.md
+    /// §3 Asked by ID): a body counting missing.
+    fn want(&mut self, conn: ConnId, s: &SyncId, c: &osis_base::CommitId) -> Result<()>;
     /// The Delete of commit blob `b` this node can sign for a source on `head` (`Live::delete_item`):
     /// by the head's delete key, else by the delete keys of levels it holds. `None`: it holds
     /// neither, and the entry stays there until a holder connects or it expires.

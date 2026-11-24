@@ -250,6 +250,8 @@ pub(super) struct Pulling {
     pub(super) answered_at: u64,
     /// A Pull is wanted though nothing else is due (a complete pass, `Streams::pull_again`).
     pub(super) again: bool,
+    /// Wants out (spec/sync-judgement.md §3 Asked by ID): what each asked, in order.
+    wants: BTreeMap<Id, Vec<(SyncId, osis_base::CommitId)>>,
 }
 
 impl Pulling {
@@ -287,6 +289,7 @@ impl Pulling {
             out_at: 0,
             answered_at: 0,
             again: false,
+            wants: BTreeMap::new(),
         }
     }
 
@@ -743,6 +746,14 @@ impl Streams {
     /// FetchReply.
     pub(super) fn on_reply(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, m: Msg) {
         let Some(p) = self.pull.get_mut(&conn) else { return };
+        if let Some(asked) = p.wants.remove(&id) {
+            let items = match m {
+                Msg::Wanted { items, .. } => items,
+                _ => Vec::new(),
+            };
+            self.on_wanted(ctx, conn, asked, items);
+            return;
+        }
         if p.fetches.contains_key(&id) {
             let items = match m {
                 Msg::FetchReply { items, .. } => items,
@@ -1008,6 +1019,52 @@ impl Streams {
         p.enqueue((2, u64::MAX), s, b, None);
         self.fetch(ctx, conn);
         self.track(ctx, conn);
+    }
+
+    /// Commit `c`'s body under S asked for by ID on `conn` (`Streams::want`; spec/sync-judgement.md
+    /// §3 Asked by ID): only while S is a member there that this node opens. Read asks once per
+    /// connection while the body counts missing, so nothing here repeats it.
+    pub(super) fn want_body(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, c: osis_base::CommitId) {
+        if !ctx.shared.members(conn).contains_key(&s) || !ctx.store.holding(&s).is_some_and(Holding::opens) || !self.pull.contains_key(&conn) {
+            return;
+        }
+        self.ask_wants(ctx, conn, vec![(s, c)]);
+    }
+
+    fn ask_wants(&mut self, ctx: &mut Ctx, conn: ConnId, asked: Vec<(SyncId, osis_base::CommitId)>) {
+        let mut ids: Vec<(SyncId, Vec<osis_base::CommitId>)> = Vec::new();
+        for (s, c) in &asked {
+            match ids.last_mut() {
+                Some((x, cs)) if x == s => cs.push(*c),
+                _ => ids.push((*s, vec![*c])),
+            }
+        }
+        osis_base::costs::count("streams: bodies wanted", asked.len() as u64);
+        let Some(id) = ctx.wire.request(conn, Msg::Want { id: 0, max_reply: REPLY_BUDGET as u64, ids }) else { return };
+        if let Some(p) = self.pull.get_mut(&conn) {
+            p.wants.insert(id, asked);
+        }
+    }
+
+    /// A Wanted (or a Want refused: nothing): each entry given is taken as a fetched one; the
+    /// rest of a prefix is asked again; one answered none is not asked again here.
+    fn on_wanted(&mut self, ctx: &mut Ctx, conn: ConnId, asked: Vec<(SyncId, osis_base::CommitId)>, items: Vec<osis_proto::WantedItem>) {
+        let n = items.len().min(asked.len());
+        if n > 0 && n < asked.len() {
+            self.ask_wants(ctx, conn, asked.get(n..).unwrap_or_default().to_vec());
+        }
+        for (w, (s, c)) in items.into_iter().zip(asked) {
+            if w.commit != c {
+                continue;
+            }
+            if let Some((bytes, wrap, stamp)) = w.entry {
+                let b = osis_blob::blob_id(&bytes);
+                if ctx.store.bytes(&b).ok().flatten().is_none() {
+                    self.take_body(ctx, conn, s, b, wrap, stamp, &bytes);
+                }
+            }
+        }
+        self.drain(ctx, conn);
     }
 
     /// The sources whose place passes an entry of S once it settles: every connection's holding

@@ -9,7 +9,7 @@ use crate::api::{Outcome, Payload, value};
 use crate::dec::{self, Fields};
 use crate::limits::*;
 use crate::{ActorProof, SyncId};
-use osis_base::{BlobId, Limits, Tid, Value, cbor};
+use osis_base::{BlobId, CommitId, Limits, Tid, Value, cbor};
 pub use osis_crypto::Signature;
 pub use osis_blob::{ClaimSet, DeleteItem, HolderKeys, Step, StepId};
 use osis_schema::Codec;
@@ -96,6 +96,14 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Fetched {
     pub blob_id: BlobId,
+    /// `[blob, wrap, Opt(stamp)]`.
+    pub entry: Option<(Vec<u8>, Wrap, Option<Stamp>)>,
+}
+
+/// A Wanted item: the commit asked and an entry of its body under the item's sync ID, or none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WantedItem {
+    pub commit: CommitId,
     /// `[blob, wrap, Opt(stamp)]`.
     pub entry: Option<(Vec<u8>, Wrap, Option<Stamp>)>,
 }
@@ -257,6 +265,11 @@ pub enum Msg {
     /// Blob IDs to fetch, grouped by sync ID (each blob ID once; at most `MAX_FETCH_IDS` in all).
     Fetch { id: Id, max_reply: u64, ids: Vec<(SyncId, Vec<BlobId>)> },
     FetchReply { id: Id, items: Vec<Fetched> },
+    /// Commit IDs whose bodies are asked for, grouped by sync ID (spec/sync-judgement.md §3 Asked
+    /// by ID; at most `MAX_FETCH_IDS` in all, each once per sync ID).
+    Want { id: Id, max_reply: u64, ids: Vec<(SyncId, Vec<CommitId>)> },
+    /// One item per commit asked, in request order, a prefix of them.
+    Wanted { id: Id, items: Vec<WantedItem> },
     /// A main session sends no secret; a client-actor session its bearer secret.
     Auth { id: Id, secret: Option<osis_crypto::Secret32>, session_id: [u8; SESSION_ID_LEN] },
     Call { id: Id, max_reply: u64, method: u64, args: Vec<Value> },
@@ -300,8 +313,8 @@ pub enum Flow {
 /// The flow of a kind version 1 knows, `None` for any other.
 pub fn flow(kind: u64) -> Option<Flow> {
     Some(match kind {
-        2 | 7 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 32 | 34 | 36 | 37 | 38 | 40 | 41 => Flow::Request,
-        0 | 1 | 3 | 11 | 20 | 26 | 33 | 35 | 39 | 42 => Flow::Reply,
+        2 | 7 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 32 | 34 | 36 | 37 | 38 | 40 | 41 | 47 => Flow::Request,
+        0 | 1 | 3 | 11 | 20 | 26 | 33 | 35 | 39 | 42 | 48 => Flow::Reply,
         29 | 43 | 44 | 45 | 46 => Flow::Push,
         _ => return None,
     })
@@ -321,6 +334,7 @@ pub fn answers(request: u64, reply: u64) -> bool {
             34 => reply == 35,
             36 | 37 | 38 | 40 => reply == 39,
             41 => reply == 42,
+            47 => reply == 48,
             _ => false,
         }
 }
@@ -328,7 +342,7 @@ pub fn answers(request: u64, reply: u64) -> bool {
 /// Kinds whose id has its top bit set: the shared set's and the stream's requests and their
 /// answers, Fetch and FetchReply among them (spec/wire.md §11.2 Shared-set request ids).
 fn top_bit_kind(kind: u64) -> bool {
-    matches!(kind, 19 | 20 | 36..=42)
+    matches!(kind, 19 | 20 | 36..=42 | 47 | 48)
 }
 
 /// A frame body that is not a valid message: its kind and request id when readable (`read`;
@@ -421,6 +435,8 @@ impl Msg {
             Applied { .. } => 44,
             Digest { .. } => 45,
             Members { .. } => 46,
+            Want { .. } => 47,
+            Wanted { .. } => 48,
         }
     }
 
@@ -428,7 +444,7 @@ impl Msg {
     pub fn id(&self) -> Id {
         use Msg::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Want { id, .. } | Wanted { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id,
             Pull(p) => p.id,
             PullReply(r) => r.id,
             Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => 0,
@@ -443,7 +459,7 @@ impl Msg {
     pub fn set_id(&mut self, new: Id) {
         use Msg::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id = new,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Want { id, .. } | Wanted { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } => *id = new,
             Pull(p) => p.id = new,
             PullReply(r) => r.id = new,
             Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => {}
@@ -470,6 +486,8 @@ impl Msg {
             M::Delete { sync_id, items, .. } => vec![k, id, s(sync_id), Value::List(items.iter().map(DeleteItem::to_value).collect())],
             M::Fetch { max_reply, ids, .. } => vec![k, id, Value::uint(*max_reply), Value::List(ids.iter().map(|(x, bs)| Value::List(vec![s(x), Value::List(bs.iter().map(|i| Value::bytes(&i.0)).collect())])).collect())],
             M::FetchReply { items, .. } => vec![k, id, Value::List(items.iter().map(fetched_value).collect())],
+            M::Want { max_reply, ids, .. } => vec![k, id, Value::uint(*max_reply), Value::List(ids.iter().map(|(x, cs)| Value::List(vec![s(x), Value::List(cs.iter().map(|c| Value::bytes(&c.0)).collect())])).collect())],
+            M::Wanted { items, .. } => vec![k, id, Value::List(items.iter().map(|w| entry_item(&w.commit.0, w.entry.as_ref())).collect())],
             M::Auth { secret, session_id, .. } => vec![k, id, Value::opt(secret.as_ref().map(|s| Value::bytes(s.expose()))), Value::bytes(session_id)],
             M::Call { max_reply, method, args, .. } => vec![k, id, Value::uint(*max_reply), Value::uint(*method), Value::List(args.clone())],
             M::Reply { outcome, .. } => vec![k, id, outcome.to_value()],
@@ -581,6 +599,11 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
         }
         19 => Msg::Fetch { id, max_reply: max_reply(&mut f)?, ids: fetch_ids(f.list(1, MAX_FETCH_IDS, "fetch groups")?)? },
         20 => Msg::FetchReply { id, items: f.list(0, MAX_FETCH_IDS, "fetch items")?.into_iter().map(fetched).collect::<Result<_, _>>()? },
+        47 => Msg::Want { id, max_reply: max_reply(&mut f)?, ids: want_ids(f.list(1, MAX_FETCH_IDS, "want groups")?)? },
+        48 => Msg::Wanted {
+            id,
+            items: f.list(0, MAX_FETCH_IDS, "wanted items")?.into_iter().map(|v| item_entry(v, "wanted item").map(|(c, entry)| WantedItem { commit: CommitId(c), entry })).collect::<Result<_, _>>()?,
+        },
         24 => Msg::Auth { id, secret: f.opt()?.map(|v| dec::fixed::<CLIENT_SECRET_LEN>(v, "client secret").map(osis_crypto::Secret32::from_bytes)).transpose()?, session_id: f.fixed()? },
         25 => Msg::Call { id, max_reply: max_reply(&mut f)?, method: f.uint()?, args: f.list(0, usize::MAX, "args")?.into_iter().map(value).collect::<Result<_, _>>()? },
         26 => Msg::Reply { id, outcome: Outcome::from_value(f.next()?)? },
@@ -776,25 +799,38 @@ fn entry_box(v: Value, n: &Items) -> Result<SecretBox, Error> {
     Ok(osis_blob::step::entry_box_from_value(&n.decode(&bytes, MAX_VALUE_DEPTH)?)?)
 }
 
-fn fetched(v: Value) -> Result<Fetched, Error> {
-    let mut f = Fields::exact(v, 2, "fetch item")?;
-    let blob_id = BlobId(f.fixed()?);
+/// An entry of a FetchReply or Wanted: `[blob, wrap, Opt(stamp)]`.
+type ItemEntry = (Vec<u8>, Wrap, Option<Stamp>);
+
+/// A FetchReply or Wanted item: `[id, Opt([blob, wrap, Opt(stamp)])]`.
+fn item_entry(v: Value, what: &'static str) -> Result<([u8; 32], Option<ItemEntry>), Error> {
+    let mut f = Fields::exact(v, 2, what)?;
+    let id = f.fixed()?;
     let entry = match f.opt()? {
         None => None,
         Some(v) => {
-            let mut e = Fields::exact(v, 3, "fetch entry")?;
+            let mut e = Fields::exact(v, 3, "item entry")?;
             let r = (e.bytes(MAX_BLOB)?, e.fixed()?, e.opt()?.map(|v| dec::fixed(v, "stamp").map(Signature)).transpose()?);
             e.end()?;
             Some(r)
         }
     };
     f.end()?;
-    Ok(Fetched { blob_id, entry })
+    Ok((id, entry))
+}
+
+fn entry_item(id: &[u8; 32], entry: Option<&ItemEntry>) -> Value {
+    let e = entry.map(|(blob, wrap, stamp)| Value::List(vec![Value::bytes(blob), Value::bytes(wrap), Value::opt(stamp.as_ref().map(|s| Value::bytes(&s.0)))]));
+    Value::List(vec![Value::bytes(id), Value::opt(e)])
+}
+
+fn fetched(v: Value) -> Result<Fetched, Error> {
+    let (id, entry) = item_entry(v, "fetch item")?;
+    Ok(Fetched { blob_id: BlobId(id), entry })
 }
 
 fn fetched_value(f: &Fetched) -> Value {
-    let e = f.entry.as_ref().map(|(blob, wrap, stamp)| Value::List(vec![Value::bytes(blob), Value::bytes(wrap), Value::opt(stamp.as_ref().map(|s| Value::bytes(&s.0)))]));
-    Value::List(vec![Value::bytes(&f.blob_id.0), Value::opt(e)])
+    entry_item(&f.blob_id.0, f.entry.as_ref())
 }
 
 fn event(v: Value, n: &Items) -> Result<Event, Error> {
@@ -881,6 +917,25 @@ fn fetch_ids(vs: Vec<Value>) -> Result<Vec<(SyncId, Vec<BlobId>)>, Error> {
             left -= ids.len();
             if !ids.iter().all(|b| seen.insert(*b)) {
                 return Err(Error::Malformed("fetch: a blob ID twice"));
+            }
+            Ok((s, ids))
+        })
+        .collect()
+}
+
+/// A Want's groups: a sync ID and its commit IDs, at most `MAX_FETCH_IDS` in all, each commit ID
+/// once per sync ID.
+fn want_ids(vs: Vec<Value>) -> Result<Vec<(SyncId, Vec<CommitId>)>, Error> {
+    let mut left = MAX_FETCH_IDS;
+    vs.into_iter()
+        .map(|v| {
+            let mut g = Fields::exact(v, 2, "want group")?;
+            let s = sync_id(&mut g)?;
+            let ids: Vec<CommitId> = g.list(1, left, "want ids")?.into_iter().map(|v| dec::fixed(v, "commit id").map(CommitId)).collect::<Result<_, _>>()?;
+            left -= ids.len();
+            let mut seen = std::collections::BTreeSet::new();
+            if !ids.iter().all(|c| seen.insert(*c)) {
+                return Err(Error::Malformed("want: a commit ID twice under one sync ID"));
             }
             Ok((s, ids))
         })

@@ -52,6 +52,10 @@ struct Table {
     fail_under: Option<SyncId>,
     /// Record or list blobs counted here (opened before): `Ground::counted`.
     counted: std::collections::BTreeSet<BlobId>,
+    /// Bodies held with no entry under any sync ID, by commit (`Ground::want`), and how many
+    /// times one was asked for.
+    bodies: BTreeMap<osis_base::CommitId, Vec<u8>>,
+    asked: usize,
 }
 
 impl Ground for Table {
@@ -81,6 +85,10 @@ impl Ground for Table {
     }
     fn open_relay(&mut self, _s: &SyncId, _e: &Entry, _bytes: &[u8]) -> Result<osis_engine::sync::RelayOpened> {
         Ok(self.relay.unwrap_or(osis_engine::sync::RelayOpened::NotOpen))
+    }
+    fn want(&mut self, _store: &Store, _s: &SyncId, c: &osis_base::CommitId) -> Result<Option<osis_sync::streams::Given>> {
+        self.asked += 1;
+        Ok(self.bodies.get(c).map(|b| (b.clone(), [7; WRAP_LEN], None)))
     }
 }
 
@@ -1103,6 +1111,50 @@ fn an_owed_body_settles_only_once_taken_under_its_sync_id_spec_sync_streams_4() 
     p.join(other);
     p.run();
     assert!(p.b.store.entry(&s, &x).unwrap().is_some(), "x under S is offered again and taken");
+}
+
+// spec/sync-judgement.md §3 (Asked by ID), spec/sync-streams.md §4 (Want), spec/wire.md §11.2
+// (Want): a body held at a peer whose stream shows no entry of it is asked for by commit
+// ID and taken as a fetched entry, recorded as no showing of the peer's; one the peer lacks is
+// answered none and asked no more. Work is per body asked: one ask and one lookup at the peer per
+// body, flat in the peer's history (h and 10h entries). Fails without the Want (a holder showing
+// nothing is never reached).
+#[test]
+fn a_body_no_stream_shows_comes_when_asked_by_id_spec_sync_judgement_3() {
+    let run = |h: usize, k: usize| {
+        let mut p = Pair::new();
+        let s = sid(1);
+        for i in 0..h {
+            p.a.log(s, 200 + i);
+        }
+        p.shared_read(s);
+        p.run();
+        p.b.table.held = Some(true);
+        let mut asked = Vec::new();
+        for i in 0..k {
+            let (b, bytes) = blob(50 + i, Class::Durable);
+            let c = osis_base::CommitId([i as u8 + 1; 32]);
+            p.a.table.bodies.insert(c, bytes);
+            asked.push((c, b));
+        }
+        let lacking = osis_base::CommitId([0xee; 32]);
+        let now = p.now;
+        for (c, _) in &asked {
+            p.b.with(now, |st, ctx| st.want_in(ctx, C, s, *c));
+        }
+        p.b.with(now, |st, ctx| st.want_in(ctx, C, s, lacking));
+        p.run();
+        for (_, b) in &asked {
+            assert!(p.b.table.opened.contains(b), "a body asked for by ID taken");
+            assert!(p.b.store.entry(&s, b).unwrap().is_some(), "kept as a fetched entry");
+        }
+        let src = p.a.src();
+        assert!(!knows(&p.b, src, s, asked[0].1), "the answer is no showing of the peer's");
+        (p.sent_by_b(47).len(), p.a.table.asked)
+    };
+    assert_eq!(run(10, 1), (2, 2), "one Want per ask, the peer looking up the IDs asked alone");
+    assert_eq!(run(100, 1), (2, 2), "flat in the peer's history");
+    assert_eq!(run(10, 10), (11, 11), "per body asked");
 }
 
 // spec/sync-streams.md §4 (Full): a node keeping S unread refusing a pulled entry for room tells
