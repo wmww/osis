@@ -324,7 +324,7 @@ fn enter(lp: &mut LocalPeer, w: Tid) {
 // spec/commits.md §5 A waiting part under a purge (gone from then on, no other local copy
 // of it), §4 Outside the node closure: commit `c`'s parts on W wait aside (`waiting_on_w`) when
 // peer 0's request purging its `t:reg.0` part comes: once W enters the part is gone, as at its
-// author, nothing waiting or flagged, the value nowhere.
+// author, nothing waiting, the value nowhere.
 #[test]
 fn a_part_waiting_aside_is_purged_where_it_waits_spec_commits_5() {
     let reg = crate::common::ak("t:reg.0");
@@ -337,16 +337,16 @@ fn a_part_waiting_aside_is_purged_where_it_waits_spec_commits_5() {
     assert_eq!(lp.deliver(1, &pk).unwrap(), osis_engine::Ingested::Applied(p));
     enter(&mut lp, w);
     let e1 = &mut lp.peers[1].engine;
-    assert!(e1.pending().is_empty() && e1.suspects().is_empty(), "{:?} {:?}", e1.pending(), e1.suspects());
+    assert!(e1.pending().is_empty(), "{:?}", e1.pending());
     assert_eq!(e1.get(&w, &reg).unwrap(), None, "gone");
     assert_eq!(e1.get(&w, &crate::common::ak("t:list.0")).unwrap(), Some(Value::List(vec![Value::Str("a".into())])));
-    let author = lp.peers[0].engine.state_digest(&w, &reg).unwrap();
-    assert_eq!(lp.peers[1].engine.state_digest(&w, &reg).unwrap(), author, "as its author holds it");
+    let author = lp.peers[0].engine.state_bytes(&w, &reg).unwrap();
+    assert_eq!(lp.peers[1].engine.state_bytes(&w, &reg).unwrap(), author, "as its author holds it");
     assert!(!crate::common::recoverable(&mut lp.peers[1], b"SECRET-W8a3"));
 }
 
 // spec/commits.md §4 (Examined again: the thing a part waits on entering the node closure), §5 (A
-// waiting part past its expiry: goes at T, counts as never received, no flag: its writes have no
+// waiting part past its expiry: goes at T, counts as never received: its writes have no
 // effect anywhere, spec/crdt.md §4.7): commit `c`'s parts on W wait (`waiting_on_w`), aside or with
 // `c` pending whole, every part expiring at T. Ticked past T or not, W then enters: the value is
 // nowhere and the node reads alike either way.
@@ -362,14 +362,12 @@ fn a_waiting_part_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
             lp.peers[1].clock.advance(exp + 5_000 - now);
             if tick {
                 lp.peers[1].tick().unwrap();
-                let e1 = &lp.peers[1].engine;
-                assert!(e1.suspects().is_empty(), "the part that went flags nothing (spec/crdt.md §4.7): {:?}", e1.suspects());
             }
             enter(&mut lp, w);
             let e1 = &mut lp.peers[1].engine;
             assert!(e1.commit_ids().contains(&c) && e1.pending().is_empty(), "aside {aside} tick {tick}: {:?}", e1.pending());
             assert_eq!(e1.get(&w, &reg).unwrap(), None, "aside {aside} tick {tick}");
-            seen.push(format!("flags {:?} reads {:?} digests {:?} {:?}", e1.suspects(), e1.get(&w, &list).unwrap(), e1.state_digest(&w, &reg).unwrap(), e1.state_digest(&w, &list).unwrap()));
+            seen.push(format!("reads {:?} states {:?} {:?}", e1.get(&w, &list).unwrap(), e1.state_bytes(&w, &reg).unwrap(), e1.state_bytes(&w, &list).unwrap()));
             assert!(!crate::common::recoverable(&mut lp.peers[1], b"SECRET-W8a3"), "aside {aside} tick {tick}");
         }
         assert_eq!(seen[0], seen[1], "aside {aside}: ticked at T or not");

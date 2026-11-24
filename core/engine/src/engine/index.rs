@@ -681,7 +681,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
                 w = w.raw(&c.0);
             }
         }
-        w = w.u8(u8::from(d.stands_in)).u64(d.hosts_from);
+        w = w.u64(d.hosts_from);
     }
     w = w.u32(m.stripped_parts().count() as u32);
     for a in m.stripped_parts() {
@@ -861,10 +861,9 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             }
             keysets.push(super::KeysetRec { role, epoch: e, lists, kem, names, left_out, demotions });
         }
-        let stands_in = r.u8()? != 0;
         let hosts_from = r.u64()?;
         let role = Role::ALL.get(<usize as From<u8>>::from((flags >> 2) & 7).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 64 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, hosts_from, stands_in, role, overreach: flags & 32 != 0, keysets, superseded_by: BTreeSet::new() });
+        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 64 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, hosts_from, role, overreach: flags & 32 != 0, keysets, superseded_by: BTreeSet::new() });
     }
     let (mut stripped, mut own_live) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..r.u32()? {
@@ -1091,7 +1090,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             crate::apply::note_role_sigs(tx.core, view.kind, view.epoch.is_some(), &id, s);
         }
         tx.core.put_meta(id, Meta::of(view, header, head.received, head.origin, head.repair.clone(), head.signed, valid, hold));
-        crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }
     drop(_ms);

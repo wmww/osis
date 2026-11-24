@@ -18,7 +18,6 @@ Every value call is a memo or reads stamped rows (`sync/mod.rs`), so a module re
 - **Keys**: `rotations_superseding`, `read_credentials(s)` (a memo per sync ID compared by public halves, as each key is a curve multiplication), `claim_key`, `signers`, `open_grant`/`learn_grant`, `step_needs`, `due_step(s)` and the command `issue_due_step(s)`.
 - **Peers**: `judge_peer(s, proven) -> J`, `covers_departures`, `provers` (proof order: node key, account at its open epoch, key actors by tid), `own_node`, `own_node_key`, `key_open`, `prove_rotations`/`take_rotations` (notes/sync-session.md Proving again).
 - **Stranded** (`sync/stranded.rs`, whose doc holds the rules; notes/sync-inbox.md `stranded`).
-- **Suspect flags** (`retention/suspect.rs`, notes/engine-suspects.md): `suspect`, `suspect_feed`, `state_digest`, `suspect_keys`, `record_known`; repair: `reader_account`, `suspect_under`, `may_repair`, `repair_suspect`.
 - **The inbox**: `kept_sync_secrets(s)`, `inbox_thing(a)`, `logged_with(c)`.
 - **Status**: `carrying(t)`, `waiting_removals`/`removal_done(c)` (notes/engine-lost-access.md Self-removal drops), `passes_wanted`, `begin_pass`/`pass_place`, `note_complete_pass`, `forget_read`, `history_complete`.
 - **Duties** (`osis_sync::life`): `role_things`, `named_a_holder(t)`, `joined_link_ended(k)`/`leave_link(k)`.

@@ -1325,11 +1325,6 @@ impl World {
         self.node(i).disks.faults.at(n, f.store());
     }
 
-    /// Node `i`'s lie and what it heard, while it lies.
-    pub fn liar(&self, i: usize) -> Option<&Liar> {
-        self.liars.get(&i)
-    }
-
     /// Node `i`'s frames pass through `lie` from now on (`None`: it tells the truth again).
     pub fn lie(&mut self, i: usize, lie: Option<Lie>) {
         match lie {

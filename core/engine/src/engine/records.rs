@@ -92,9 +92,6 @@ pub const OPENED_UNDER: &[u8] = b"ou/";
 /// The read floor up to which this node owed the state at a cut of an actor's content
 /// (`rotation::floors::owe_state`): `cs/` + tid, the floor (le64).
 pub const CUT_SETTLED: &[u8] = b"cs/";
-/// Suspect aspects (`retention::suspect`): `q/` + aspect key, le64 wall ms last
-/// raised, then per body its commit ID, aspect index and `Why` bits.
-pub const SUSPECT: &[u8] = b"q/";
 /// The local schema of each app AK (`Core::schemas`): `d/` + AK, the schema's canonical form.
 pub const SCHEMAS: &[u8] = b"d/";
 /// Records the API layer keeps (identity choices, settings): `u/` + name.

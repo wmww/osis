@@ -1,5 +1,5 @@
 # Sync: compaction and ephemeral commits
-> Summary: How nodes compact aspects and drop covered bodies (trigger, own bodies, carriers, freed links, sweep, repair, duplicates), and how ephemeral commits are sent, held in memory, compacted, capped and relayed.
+> Summary: How nodes compact aspects and drop covered bodies (trigger, own bodies, carriers, freed links, sweep, duplicates), and how ephemeral commits are sent, held in memory, compacted, capped and relayed.
 
 **Principle:** area 4's (spec/sync-judgement.md): a body S still needs leaves it only by expiry, purge or a right holder's covering snapshot; this file says how such snapshots are made and what they drop.
 
@@ -27,11 +27,6 @@
   - A live map record holds what it reads as (spec/crdt.md §5.6 Live): its fragment.
   - Any other record lacking its creation is left. A payload of an enum case that is not current is left (spec/crdt.md §5.4).
   - A reset so repeated stays if the first remover turns out invalid.
-- **Repair**: a node that may write an aspect of a thing in a sync ID's sync unit, past its first sync there (spec/sync-streams.md §5), acts on each entry of a suspect list a connected peer sent it for the sync ID (spec/permissions.md §4) whose digest differs from the node's own digest of that aspect, if it holds state of the aspect.
-  - The list's **reporter** is the account the peer proved that holds read or above on the sync ID's thing, as the node judges it; a list from a peer proving none is not acted on.
-  - It writes a snapshot of the aspect from its whole state (spec/commits.md §2) and logs it like any must-hold body, unless it already wrote one from that same state for that reporter, which it remembers durably.
-  - It judges each entry once per suspect list (an aspect named twice is one entry). The last list a peer sent for the sync ID before the node's first sync there ended is judged as that sync ends.
-  - It SHOULD report every entry it judged (a diagnostic), repaired or not.
 - **Duplicates**: of two blobs of one commit with the same delta set under one sync ID (not only the same body, spec/sync-judgement.md §1), both copies or both not (spec/sync-judgement.md §1 Per-sync-ID copies), a delete-key holder deletes the one with the higher blob ID; where the sync ID's body of them is a per-sync-ID copy, a shared blob beside a copy, whatever its ID. Of two at a peer that keeps S unread where one counts as lacking (spec/sync-ids.md §6 Wraps), that one, and it counts as no copy of the other.
   - **Only what the node checked**: duplicates here and losses as needed (spec/sync-judgement.md §2 Per blob) compare the deltas the node opened and checked against the header (each part's hash under its thing's record held) and, by their bytes alone, every other section: two blobs have the same delta set only if their checked deltas are equal and their other sections byte-identical; one loses to another as needed only if its other sections are each byte-identical to one of the other's and the deltas its extra holds that only a blob carries are checked ones. Otherwise neither goes on that ground. A blob holding a part not yet checked for want of its thing's record is judged so until the record is held, then judged again.
 

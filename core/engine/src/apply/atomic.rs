@@ -44,15 +44,6 @@ pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId, c
     core.update_timelines();
 }
 
-/// Indexes the dropped parts of `id` that still stand in (`Dropped::stands_in`).
-pub(crate) fn note_stands_in(core: &mut Core, id: &CommitId) {
-    let Some(m) = core.ix.commits.get(id) else { return };
-    let ks: Vec<(Tid, Ak)> = m.dropped_parts().filter(|x| x.1.stands_in).filter_map(|x| m.view.aspects.get(x.0)).map(|a| (a.tid, a.ak.clone())).collect();
-    for k in ks {
-        core.ix.dropped_snapshots.insert(k, *id);
-    }
-}
-
 /// Forgets snapshot `id` of `(tid, ak)` when its body drops: its index entry is derived from
 /// the body (spec/commits.md §5), which a rebuild cannot read.
 pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId) {

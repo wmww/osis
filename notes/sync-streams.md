@@ -102,7 +102,7 @@ spec/sync-streams.md §4 Refused. Each code 1 refusal this node tells (a stamp u
 ## Presence and listings
 A listing read from the start to its end (a whole reply and its pages: no cursor, one naming no position, or trimmed; a join from the start) replaces what that source is known to hold of each member it covers (spec/sync-streams.md §4 Applying). Until its end it stores no cursor (a join keeps its stored start) and owes no Applied, so one cut short by a lost connection or a restart is listed from the start again.
 
-Its end, applied once every body it owed was settled (`drain`), is S's first sync ending here (spec/sync-streams.md §5): `Store::set_first_synced` (row `F/`, stamped, gone with S's shred), read by inbox's suspect lists. Past the first sync once one ended at any source, until S is left.
+Its end, applied once every body it owed was settled (`drain`), is S's first sync ending here (spec/sync-streams.md §5): `Store::set_first_synced` (row `F/`, stamped, gone with S's shred). Past the first sync once one ended at any source, until S is left.
 
 ## Closed members
 **Presence follows membership**: a source's word on S lasts exactly as long as opens keeps S a member of its record (or a stop on the connection up), so whatever ends a membership (notes/sync-opens.md, Standing: departed, no one, S left) ends the word, and an away member keeps it (offline and forks are normal). What decides is opens' judgement of the peer on what this node holds (rosters, revocations), read alike by every node holding the same. A node keeping S unread judges no departure (it holds no roster of S): a reader's member ended there by a head move keeps what it showed until its next connection closes it, an away member to the store.

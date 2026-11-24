@@ -54,7 +54,7 @@ pub enum Diagnostic {
     Fault { things: Vec<Tid>, commit: Option<CommitId>, detail: String },
     /// A commit from a newer format than this build reads: it waits here, and an update may read it.
     Parked { things: Vec<Tid>, commit: Option<CommitId>, peer: Option<Tid>, detail: String },
-    /// Data from another node was refused, is waiting for what it depends on or was repaired, all
+    /// Data from another node was refused or is waiting for what it depends on, all
     /// without any part for an app: for a log.
     Handled { things: Vec<Tid>, commit: Option<CommitId>, peer: Option<Tid>, detail: String },
 }

@@ -141,11 +141,6 @@ pub struct Dropped {
     /// follows this node's clock alone; a delete at peers waits for every node's clock to agree
     /// (spec/commits.md §5 Keep bounds).
     pub hosts_from: u64,
-    /// A compaction snapshot's part dropped other than as covered, held then or not: it still
-    /// settles suspect flags (`receipt::settled`; indexed by `ix.dropped_snapshots`). One dropped
-    /// as covered does not need to: a coverer is valid and stamped no earlier, so it settles all
-    /// it did.
-    pub stands_in: bool,
     /// Its `rotation_role` and `grant_overreach` notes when it dropped: judgments the body made,
     /// kept so re-judging the part (and a rebuild) needs no body.
     pub role: Option<osis_base::Role>,
@@ -669,15 +664,8 @@ indexes! {
     /// (`ts`, version). Forged claims are other actors' and are never read (`edits`).
     pub versions: JSetMap<(Tid, Ak, CommitId, Tid), (Ts, CommitId)>,
     /// Compaction snapshots held per aspect, with their frontiers and `Absorbed`: the bodies
-    /// carrying a write besides its own (spec/commits.md §5); what settles suspect flags
-    /// (`receipt::settled`).
+    /// carrying a write besides its own (spec/commits.md §5).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
-    /// Snapshots per aspect whose dropped part still stands in (`Dropped::stands_in`; derived at
-    /// open, not persisted).
-    pub dropped_snapshots: JSetMap<(Tid, Ak), CommitId>,
-    /// The suspect flags per aspect (`retention::suspect`, rows `q/`): what sync follows per key,
-    /// new keys by its `Feed`.
-    pub suspects: JMap<(Tid, Ak), Arc<crate::retention::suspect::Flag>>,
     /// Per coverer, the commits with a dropped part naming it (`Dropped::covered_by`;
     /// derived, as `Core::put_meta` keeps it): what a coverer forgotten hands its own covers
     /// down to (`apply::unindex_commit`).
@@ -1423,8 +1411,6 @@ pub struct Core {
     pub(crate) sync_body: memo::Memo<(SyncId, crate::sync::BodyId), Option<crate::sync::BodyMeta>>,
     /// `Engine::sync_bodies` per commit (`memo`).
     pub(crate) sync_bodies: memo::Memo<CommitId, Arc<crate::sync::Bodies>>,
-    /// `Engine::state_digest` per aspect (`memo`): a suspect list's entries judged by lookup.
-    pub(crate) state_digests: memo::Memo<(Tid, Ak), Option<[u8; 16]>>,
     /// `Engine::piece_below` per piece link (`memo`): a node's links, decoded once while held.
     pub(crate) pieces_below: memo::Memo<crate::sync::PieceLink, Option<Arc<Vec<crate::sync::PieceLink>>>>,
     /// Keep-bound judgments (`retention::bounds::part_keep`, `commit_bounds`: a commit's parts at once), for cost
@@ -2011,7 +1997,6 @@ impl Core {
             covers: _,
             sync_body: _,
             sync_bodies: _,
-            state_digests: _,
             pieces_below: _,
             account_views: _,
             account_epochs_of: _,
@@ -2442,7 +2427,6 @@ impl Core {
             covers: memo::Memo::new("covered"),
             sync_body: memo::Memo::new("sync body"),
             sync_bodies: memo::Memo::new("sync bodies"),
-            state_digests: memo::Memo::new("state digest"),
             pieces_below: memo::Memo::new("pieces: below"),
             replaced_reads: 0,
             death_walks: 0,

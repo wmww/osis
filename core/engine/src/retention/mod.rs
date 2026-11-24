@@ -53,7 +53,6 @@ pub(crate) mod handed;
 pub(crate) use snapshot::{reaches, snapshot_state};
 #[cfg(test)]
 pub(crate) use snapshot::write_snapshot;
-pub mod suspect;
 
 pub(crate) use replace::settle_none;
 pub(crate) use pending::{emptied, forget_joined_leftovers, forget_waiting_leftovers, pending_drops, pending_expired, stripped_joined, take_parts, waiting_stripped};
@@ -80,7 +79,7 @@ pub(crate) fn signal_bound(core: &Core, h: &Header, a: &osis_commit::AspectEntry
 
 /// Whether part `ai` of `h` is a signal's past its keep bound at wall ms `now` (spec/commits.md §5
 /// Signals): past every bound, so no read shows it, no copy of it is taken and nothing makes it
-/// missing again (fetched, or a suspect flag for it).
+/// missing again (fetched).
 pub(crate) fn past_signal_bound(core: &Core, h: &Header, ai: usize, now: u64) -> bool {
     h.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| signal_bound(core, h, a)).is_some_and(|t| t <= now)
 }
@@ -279,11 +278,6 @@ fn drop_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<O
     if why == DropFor::Cover && covered_by.is_empty() {
         return Ok(None);
     }
-    // a snapshot dropped other than as covered still settles suspect flags of what it was stamped
-    // after (`receipt::settled`), held when it dropped or not (a part missing, as after a purge
-    // fell, needs no body for that: its header says it all); a coverer, stamped no earlier,
-    // does for a covered one; an invalid one settles nothing
-    let stands_in = snapshot && why == DropFor::Other;
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
     // a role-class body whole: what keys noted from it (`keys::keysets_of`, `forget_dropped`)
     let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragment(tx, c, ai)?.into_iter().collect() } else { Vec::new() };
@@ -313,7 +307,7 @@ fn drop_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<O
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received
-    m.set_hold(ai, Hold::Dropped(Dropped { covered_by, why, hosts_from, stands_in, role, overreach, keysets, superseded_by: BTreeSet::new() }));
+    m.set_hold(ai, Hold::Dropped(Dropped { covered_by, why, hosts_from, role, overreach, keysets, superseded_by: BTreeSet::new() }));
     if osis_schema::core_types::is_addenda(a.ak.as_str()) {
         crate::apply::validity::forget_addendum_body(tx.core, c, &a.tid);
     }
@@ -323,12 +317,11 @@ fn drop_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<O
     }
     let header = m.header.clone();
     tx.core.put_meta(*c, m);
-    crate::apply::note_stands_in(tx.core, c);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     crate::apply::keys::forget_dropped(tx, &header, ai, &role_bodies)?;
     // a snapshot dropped other than as covered carries nothing: the parts dropped under its
     // cover alone are missing again
-    let uncovered = (stands_in || (own_cover && why != DropFor::Cover)) && uncover(tx, &a.tid, &a.ak)?;
+    let uncovered = ((snapshot && why == DropFor::Other) || (own_cover && why != DropFor::Cover)) && uncover(tx, &a.tid, &a.ak)?;
     // the one path (issues/drop-rejoin-robust.md item 1): the aspect is rebuilt from what is
     // held now, shredded (every local copy of the body goes,
     // spec/commits.md §5). A valid snapshot dropped vouches no more for invalid deltas' writes
@@ -423,14 +416,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
         }
     }
     let any = !lost.is_empty();
-    // until each valid one comes back, this node may read less than one that kept it (an invalid
-    // one goes on dropped as invalid, `reopen_to_fetch`)
-    let missing: Vec<(CommitId, usize)> = lost.iter().filter(|(c, ai)| !core.ix.commits.get(c).is_some_and(|m| drops_invalid(core, c, m, *ai))).cloned().collect();
-    if !missing.is_empty() {
-        suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &missing)?;
-    }
     for (c, ai) in lost {
-        // dropped as covered: nothing in `dropped_snapshots` (`Dropped::stands_in`);
         // the epochs it introduced or held go too (`keys::rebuild_keysets` below)
         reopen_to_fetch(tx, &c, ai)?;
     }
@@ -579,21 +565,12 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
 /// The parts `parts` dropped while invalid that are valid now are missing again (spec/permissions.md
 /// §6): they give nothing until the body arrives again, as at a node that never received it
 /// (sync fetches it from any holder; with none it stays gone at every
-/// node alike). Until then this node may read less than one that kept it (its author). A signal's
-/// past its keep bound stays dropped (`past_signal_bound`).
+/// node alike). A signal's past its keep bound stays dropped (`past_signal_bound`).
 pub(crate) fn valid_again(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<()> {
     let now = tx.now().0;
-    let mut by_aspect: std::collections::BTreeMap<(Tid, Ak), Vec<(CommitId, usize)>> = std::collections::BTreeMap::new();
-    for (c, ai) in parts {
-        if let Some(a) = tx.core.ix.commits.get(c).filter(|m| m.dropped_invalid(*ai) && m.valid_at(*ai) && !past_signal_bound(tx.core, &m.header, *ai, now)).and_then(|m| m.view.aspects.get(*ai)) {
-            by_aspect.entry((a.tid, a.ak.clone())).or_default().push((*c, *ai));
-        }
-    }
-    for ((tid, ak), back) in by_aspect {
-        suspect::raise(tx, &tid, &ak, suspect::Why::Uncovered, &back)?;
-        for (c, ai) in back {
-            reopen_to_fetch(tx, &c, ai)?;
-        }
+    let back: Vec<(CommitId, usize)> = parts.iter().filter(|(c, ai)| tx.core.ix.commits.get(c).is_some_and(|m| m.dropped_invalid(*ai) && m.valid_at(*ai) && !past_signal_bound(tx.core, &m.header, *ai, now))).cloned().collect();
+    for (c, ai) in back {
+        reopen_to_fetch(tx, &c, ai)?;
     }
     Ok(())
 }
@@ -611,12 +588,6 @@ fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engi
 /// `reopen` on `m`, the caller writing it.
 pub(super) fn reopen_in(tx: &mut Tx<'_>, c: &CommitId, m: &mut crate::engine::Meta, ai: usize) {
     tx.core.touch();
-    // missing again, a dropped snapshot stands in no more (`Dropped::stands_in`)
-    if m.dropped(ai).is_some_and(|d| d.stands_in)
-        && let Some(a) = m.view.aspects.get(ai)
-    {
-        tx.core.ix.dropped_snapshots.remove(&(a.tid, a.ak.clone()), c);
-    }
     m.set_hold(ai, Hold::Missing(Missing::Plain));
     crate::apply::unjudge_part(tx.core, c, ai);
     // those are inputs of its judgment (`validity::rejudge_all` judges it again)
@@ -656,12 +627,6 @@ fn drop_as_invalid(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let view = m.view.clone();
     let Some(d) = m.dropped_mut(ai).filter(|d| d.why != DropFor::Invalid) else { return Ok(()) };
     tx.core.touch();
-    // an invalid snapshot settles nothing (`drop_part_for`)
-    if d.stands_in
-        && let Some(a) = view.aspects.get(ai)
-    {
-        tx.core.ix.dropped_snapshots.remove(&(a.tid, a.ak.clone()), c);
-    }
     *d = Dropped { why: DropFor::Invalid, role: d.role, overreach: d.overreach, keysets: std::mem::take(&mut d.keysets), ..Dropped::default() };
     tx.core.stale_commits.insert(*c);
     tx.in_class(view.memory, |tx| tx.put_meta_record(c, m))
@@ -2252,7 +2217,7 @@ mod tests {
     // covers it dropped under: a snapshot falling invalid later uncovers nothing a held valid one
     // still carries. Reader R drops W's C under A's S1, S1 under A's S2, forgets S1; W's
     // snapshot falls invalid at R (A removed W not having heard of it): C stays dropped,
-    // nothing is fetched, no flag.
+    // nothing is fetched.
     #[test]
     fn forgotten_coverer_keeps_its_covers_spec_permissions_5_2() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
@@ -2303,7 +2268,6 @@ mod tests {
         let e = &mut lp.peers[2].engine;
         assert!(!e.core.ix.commits[&sw.id].valid_at(0), "W's snapshot fell");
         assert!(matches!(e.core.ix.commits[&c].hold_all()[0], Hold::Dropped(_)), "S2 carries C");
-        assert!(e.suspects().is_empty(), "no flag");
         assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Int(2)));
         e.check_index();
     }
@@ -2506,10 +2470,10 @@ mod tests {
         let c = from_1(&mut lp, m.clone());
         let e = &mut lp.peers[0].engine;
         assert!(e.kept_invalid(&c) && e.forgettable(&c).unwrap(), "dropped as invalid: forgettable");
-        let before = e.state_digest(&t, &x).unwrap();
+        let before = e.state_bytes(&t, &x).unwrap();
         e.forget_commits(&[c]).unwrap();
         assert!(!e.holds_commit(&c));
-        assert_eq!(e.state_digest(&t, &x).unwrap(), before, "no read changed");
+        assert_eq!(e.state_bytes(&t, &x).unwrap(), before, "no read changed");
         e.check_index();
         lp.peers[0].restart(7).unwrap();
         assert!(!lp.peers[0].engine.holds_commit(&c), "forgotten across a restart");
@@ -2632,9 +2596,9 @@ mod tests {
         let e = &mut lp.peers[2].engine;
         assert!(e.kept_invalid(&c1) && e.forgettable(&c1).unwrap(), "the write: dropped as invalid");
         assert!(e.kept_invalid(&p) && e.forgettable(&p).unwrap(), "the purge: dropped as invalid");
-        let before = (e.state_digest(&t, &x).unwrap(), e.state_digest(&t, &z).unwrap());
+        let before = (e.state_bytes(&t, &x).unwrap(), e.state_bytes(&t, &z).unwrap());
         e.forget_commits(&[c1, p]).unwrap();
-        assert_eq!((e.state_digest(&t, &x).unwrap(), e.state_digest(&t, &z).unwrap()), before, "no read changed");
+        assert_eq!((e.state_bytes(&t, &x).unwrap(), e.state_bytes(&t, &z).unwrap()), before, "no read changed");
         e.check_index();
     }
 }

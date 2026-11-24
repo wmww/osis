@@ -4,7 +4,7 @@
 //! `rejudge_purges`), and `signers_could`, by roles of any validity at any time, for what must not
 //! turn on arrival (`could_stand`). A header never names role-class deltas (`Header::validate`).
 
-use super::{gone_of, hold_gone, list_gone, off_gone, purged_changed, reopen_to_fetch, suspect, unstrip, writes_of};
+use super::{gone_of, hold_gone, list_gone, off_gone, purged_changed, reopen_to_fetch, unstrip, writes_of};
 use crate::engine::Owned;
 use crate::engine::records::{self, Rd};
 use crate::engine::{Core, Engine, LazyHeader, Tx};
@@ -540,8 +540,6 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     // as its leftover: its copies of the writes coming back stay removed, so a whole copy brings
     // them back wherever one joins (spec/crdt.md §4.7 Gone writes), and every other write it carries stays
     off_gone(tx, tid, ak, &leaving);
-    // until each comes back, this node may read less than one that kept it
-    suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &back)?;
     for (c, ai) in back {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         if m.stripped(ai) {

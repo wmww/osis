@@ -52,8 +52,6 @@ pub const MAX_CURSOR_BYTES: usize = 256;
 pub const CLIENT_SECRET_LEN: usize = 32;
 /// A client-port session id, exactly (spec/wire.md §11.2 Client port).
 pub const SESSION_ID_LEN: usize = 16;
-/// A suspect entry's digest, exactly (spec/wire.md §11.2 Stranded and Suspect).
-pub const SUSPECT_DIGEST_LEN: usize = 16;
 
 /// A step's greatest canonical encoding: nine fixed-size items, `prev` present (spec/wire.md §8).
 pub const MAX_STEP_BYTES: usize = 323;

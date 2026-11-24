@@ -27,7 +27,7 @@ One list, in order. It stands in for every other list of what is next (the order
 2. **What the rewrite still owes**, after accounts (notes/sync-rewrite-state.md, Next): sealed copies in place of rotations delivered as grant fires; own boxes only for a holder held for keys; acting only after a complete pass; the offer cut to the bootstrap alone; the delete-key leftovers (issues/delete-key-levels-unchecked.md, Left); the ignores still standing, each probed for its own cause; the chained pass out of osis-perm and the models; the citations of the two retired-machinery issues; the deprecated-terms rename.
 3. **Then** what the plan has left: a removal as evidence (what A2 did not already build), public things and cards, core without accounts, clean-up. Cut each to what is still needed before starting.
 
-Beside the route: deleting suspect repair whole (spec, wire message, sync, engine, notes: purged writes have no effect, so nothing is left for it to repair); the two failing seeds; one cleanup always, a workflow job about half the time (a tool that lists and runs the rewrite's ignores by name: three sessions wrote it in scratch).
+Beside the route: the two failing seeds; one cleanup always, a workflow job about half the time (a tool that lists and runs the rewrite's ignores by name: three sessions wrote it in scratch).
 
 ## Not to build on the way
 - **Nothing that accounts delete.** The account root, its key part, node cards, the signing chain, account epochs, custody and their tests go at step 1: an ignore or failure whose cause sits there is recorded and left (two of the 22 are in a test file on the delete list; the delete-key issue's account-epoch item goes the same way).

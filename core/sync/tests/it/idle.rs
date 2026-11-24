@@ -61,8 +61,8 @@ fn sum(costs: &[(&'static str, u64)], named: &[&str]) -> u64 {
 #[test]
 #[ignore = "sync rewrite: copies per (commit, thing)"]
 fn an_idle_reconnect_sends_reads_and_judges_the_same_at_10n_spec_sync_streams_4() {
-    const READER: &[&str] = &["opens: members judged", "status: stranded", "inbox: register judged", "opens standing", "perm: roles walked", "read: certificate blobs", "sync set: entered", "status: members moved", "inbox: members moved", "inbox: offer judged", "inbox: suspect sent"];
-    const STORE: &[&str] = &["opens: members judged", "status: stranded", "opens standing", "perm: roles walked", "read: certificate blobs", "inbox: register judged", "status: lacking", "status: members moved", "inbox: members moved", "inbox: offer judged", "inbox: suspect sent"];
+    const READER: &[&str] = &["opens: members judged", "status: stranded", "inbox: register judged", "opens standing", "perm: roles walked", "read: certificate blobs", "sync set: entered", "status: members moved", "inbox: members moved", "inbox: offer judged"];
+    const STORE: &[&str] = &["opens: members judged", "status: stranded", "opens standing", "perm: roles walked", "read: certificate blobs", "inbox: register judged", "status: lacking", "status: members moved", "inbox: members moved", "inbox: offer judged"];
     const MEMBERS: u64 = (10 * N - N) as u64;
     let at = |n| {
         let mut w = shared(n);

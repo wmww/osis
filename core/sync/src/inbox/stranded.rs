@@ -227,7 +227,55 @@ mod tests {
     use super::*;
     use crate::store::Store;
     use osis_base::WallMs;
+    use crate::store::Source;
+    use crate::types::SourceClass;
     use osis_proto::Code;
+
+    /// A `Net` of no records: nothing connected, nothing sent.
+    struct NoNet;
+
+    impl Net for NoNet {
+        fn named(&self, _: ConnId) -> osis_store::Named {
+            osis_store::Named::default()
+        }
+        fn member(&self, _: ConnId, _: &SyncId) -> Option<crate::opens::Member> {
+            None
+        }
+        fn member_at(&self, _: Source, _: &SyncId) -> Option<crate::opens::Member> {
+            None
+        }
+        fn conn_of(&self, _: Source) -> Option<ConnId> {
+            None
+        }
+        fn agreed_on(&self, _: Source) -> Option<ConnId> {
+            None
+        }
+        fn members(&self, _: ConnId) -> Vec<(SyncId, SourceClass)> {
+            Vec::new()
+        }
+        fn head(&self, _: Source, _: &SyncId) -> Option<osis_blob::StepId> {
+            None
+        }
+        fn present(&self, _: Source, _: &SyncId, _: &osis_base::BlobId) -> bool {
+            false
+        }
+        fn shown(&self, _: &SyncId, _: &osis_base::BlobId) -> bool {
+            false
+        }
+        fn filter_generation(&self, _: ConnId) -> u64 {
+            0
+        }
+        fn shows_deposit_key(&self, _: ConnId, _: &SyncId, _: &[u8; 32]) -> bool {
+            false
+        }
+        fn source(&self, conn: ConnId) -> Source {
+            Source::Conn(conn)
+        }
+        fn request(&mut self, _: ConnId, _: Msg) -> Option<RequestId> {
+            None
+        }
+        fn answer(&mut self, _: ConnId, _: RequestId, _: Msg) {}
+    }
 
     // spec/permissions.md §4 (stranded), spec/wire.md §11.2: a peer counts as told only on its Ok
     // answer; one answering otherwise (a store failure there) or closed first is told again.
@@ -282,7 +330,7 @@ mod tests {
             let mut h = Here { engine: e, status: None, store, now: WallMs(1_000_000), mono: osis_base::Mono(0), policy: &policy };
             r.now = Arc::new(BTreeMap::from([(s, st.clone())]));
             r.dirty = true;
-            r.settle(&mut h, &mut super::super::suspect::tests::Records::default()).unwrap();
+            r.settle(&mut h, &mut NoNet).unwrap();
             h.engine.fires_owed().len() - before
         };
         let mut r = Reports::default();

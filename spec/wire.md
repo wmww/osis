@@ -259,7 +259,6 @@ Sub       [27, id, max_reply, filter]          -> Reply | Error
 Unsub     [28, id, sub_id]                     -> Ok
 Notify    [29, 0, sub_id, payload]
 Stranded  [30, id, sync_id, holder, HolderKeys] -> Ok
-Suspect   [31, id, sync_id, [suspect+]]       -> Ok
 Prove     [32, id, [actor_proof*], Opt([rotation*])]  -> Proved | Error
 Proved    [33, id, [actor_proof*], Opt([rotation*])]
 Resume    [34, id, nonce, [tag*]]             -> Resumed | Error
@@ -286,7 +285,6 @@ join   := [sync_id, Opt(cursor)]
 ditem  := [blob_id, [[level, dsig]*], sig]
 outcome := [0, value] | [1, code, detail*]
 payload := [0, value] | [1] | [2, value]
-suspect := [thing, ak, digest]
 event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, full] | [3, step] | [4, blob_id, code]
 ```
 Kinds 4-6, 8-10, 12, 13, 15-18 and 21-23 and status codes 10 and 15 are retired: never sent, never reused; a retired kind is unknown (answered Error 11).
@@ -320,7 +318,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - Status gives one code per item in order.
 - **Events**: 0 an entry added or a deposited one stamped, its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 the sender is full for the sync ID (`full` a bool: true full, false room again; only in a Stream with no cursor, spec/sync-streams.md §4), 3 a new head (without claim set), 4 the sender refused a pulled entry for anything but room, with the refusal's code (neither 0 nor 12; only in a Stream with no cursor, spec/sync-streams.md §4). Expiry produces no event.
 - **Fetch** (spec/sync-streams.md §4): items in request order, possibly a prefix of the request when the reply would exceed `max_reply` (in `SMALL_REPLY..=REPLY_BUDGET`), possibly none below `REPLY_BUDGET`; the requester asks the rest again under `REPLY_BUDGET`.
-- **Stranded** and **Suspect** (spec/permissions.md §4): node to node only, answered Ok whatever the receiver does with them. Stranded names a sync ID the sender is stranded on and the holder (a tid) it reads the sync ID's thing through, with that holder's holder keys (§9 Holder keys); Suspect carries suspect entries of things in the sync ID's sync unit, `thing` a tid, `ak` an AK, `digest` 16 bytes, as many as fit `MAX_MESSAGE` per message.
+- **Stranded** (spec/permissions.md §4): node to node only, answered Ok whatever the receiver does with it. It names a sync ID the sender is stranded on and the holder (a tid) it reads the sync ID's thing through, with that holder's holder keys (§9 Holder keys).
 - **Client port** (kinds 24-29): served on every connection of a node, at every listener and on those it dialed (spec/sync-transport.md §5, One key). `session_id` is 16 bytes; `secret` is exactly 32 bytes.
   - **Auth**: answered Reply `[0, []]`.
     - A main session (the unix transport, spec/sync-transport.md §6) sends Auth without `secret`.
@@ -384,7 +382,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | `[1, tid]` | `[[ak, read result]*]`, the aspects present | `[ak, read result, origin]`; `[2, [ak, max_reply]]` above it |
     | `[2, tid]` | as row 6 | as row 6 |
     | `[3]` | as row 21 | as row 21 |
-    | `[4]` | `[]` | `[kind, [tid*], Opt(commit id), Opt(peer), detail]`, one per diagnostic of the node, kind 0 bad input, 1 colliding record, 2 parked, 3 pending, 4 overlapping counters, 5 removed, 6 callback, 7 not carried (spec/sync-set.md §2 Not carried), 8 stranded, 9 uncommitted, 10 ephemeral refused, 11 mismatch, 12 storage, 13 repair, 14 own write invalid, 15 unreadable, 16 disputes unexamined, 17 own write failed, 18 sync stopped, 19 clock skew, 20 input capped, 21 connection (an unknown kind reads as 0); main only |
+    | `[4]` | `[]` | `[kind, [tid*], Opt(commit id), Opt(peer), detail]`, one per diagnostic of the node, kind 0 bad input, 1 colliding record, 2 parked, 3 pending, 4 overlapping counters, 5 removed, 6 callback, 7 not carried (spec/sync-set.md §2 Not carried), 8 stranded, 9 uncommitted, 10 ephemeral refused, 11 mismatch, 12 storage, 13 own write invalid, 14 unreadable, 15 own write failed, 16 sync stopped, 17 clock skew, 18 input capped, 19 connection, 20 fault (an unknown kind reads as 0); main only |
     | `[5, method, [arg*]]` | `[]` | `[0, value]` or `[1, code, detail*]`: the row's outcome, once, whatever the room; an Unsub or the connection's end cancels it; main only |
     | `[6, address]` | `[]` | `[0, commit id, Opt(commit)]` a commit reading otherwise at the address (as row 17 reads it then), `[1]` read the address again, `[2, code, detail*]` ended |
 

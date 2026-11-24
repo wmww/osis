@@ -20,7 +20,6 @@ mod read;
 mod reach_cost;
 mod retention;
 mod status;
-mod suspect;
 mod store;
 mod opens;
 mod pieces;

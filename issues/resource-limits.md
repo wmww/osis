@@ -19,7 +19,7 @@ Each is bounded per connection, per input or per thing at most; the total grows 
 - **Peer filters** (osis-sync `opens`): per connection the generation arriving (`peer_gen`) and the held entries of its record, up to 2^22 entries and as many additions (about 10 MB coded, more decoded). Records are bounded by `RECORD_BUDGET`; connections without a record are not. Grows with connections.
 - **Messages held while bodies arrive** (osis-sync `streams::pull`, `Pulling::pending`): up to `PENDING_CAP` messages per connection, each up to `MAX_MESSAGE`. Grows with connections.
 - **Streams' per-source state** (`streams::known::Known`, `Pulling` sets: `queue`, `failed`, `settled`, `join_listing`, `listing`): presence, heads and refusals per (connection source, S), what a listing under way has listed so far. Grows with connections times shared set, and with what a peer lists.
-- **Inbox and opens per-connection maps** (`inbox::suspect` waiting, `inbox::offers` conns and loose, `stranded` out): grow with connections times sync IDs.
+- **Inbox and opens per-connection maps** (`inbox::offers` conns and loose, `stranded` out): grow with connections times sync IDs.
 - **Loose records** (`waits::Loose`): every loose record in RAM, bounded only by the carriers' peer budgets, per connection for record-less peers: issues/sync-pending-leftovers.md.
 - **Peer budget for record-less peers** (spec/sync-ids.md §5 Peer budget): charged per connection, so the total grows with connections.
 - **Blob waits** (osis-engine `apply/reach.rs`): a waiting commit's walk keeps only its frontier (per lacked blob, notes/decode-bounds.md), but waiting commits are not bounded in total.

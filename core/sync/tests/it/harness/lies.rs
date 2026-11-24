@@ -50,8 +50,6 @@ pub struct Liar {
     told: BTreeSet<(ConnId, SyncId)>,
     /// Messages the lie sends next on each connection.
     owed: BTreeMap<ConnId, Vec<Msg>>,
-    /// Suspect entries heard, per sync ID (`Declare`: what a false class gets it).
-    pub suspects: BTreeMap<SyncId, usize>,
 }
 
 /// Each (S, entry added) of a message.
@@ -78,7 +76,7 @@ fn bare_stream(events: Vec<(SyncId, Event)>) -> Msg {
 
 impl Liar {
     pub fn new(lie: Lie) -> Liar {
-        Liar { lie, conns: BTreeMap::new(), told: BTreeSet::new(), owed: BTreeMap::new(), suspects: BTreeMap::new() }
+        Liar { lie, conns: BTreeMap::new(), told: BTreeSet::new(), owed: BTreeMap::new() }
     }
 
     /// The node hears `bytes` on `conn`; `role(S, blob)` says whether an entry is a role entry.
@@ -94,11 +92,6 @@ impl Liar {
                 continue;
             }
             msgs.extend(Msg::decode(&body).ok());
-        }
-        for m in &msgs {
-            if let Msg::Suspect { sync_id, entries, .. } = m {
-                *self.suspects.entry(*sync_id).or_default() += entries.len();
-            }
         }
         for (s, b) in msgs.iter().flat_map(added) {
             let event = match self.lie {

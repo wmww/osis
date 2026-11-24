@@ -303,7 +303,6 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         for p in [records::ASPECTS, records::FORGOTTEN, records::RESNAPSHOTS_OWED] {
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }
-        super::suspect::forget(tx, t, ak, Shred::Yes)?;
         // as a node that never held it (spec/commits.md §5 Forgetting); no write on it is owed
         super::names::forget_aspect(tx, t, ak)?;
         tx.core.ix.forgotten.remove(&k);
@@ -330,7 +329,6 @@ pub(super) fn forget_aspect_rows(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()
     for p in [records::ASPECTS, records::GONE, records::PURGES, records::FORGOTTEN, records::RESNAPSHOTS_OWED] {
         tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
     }
-    super::suspect::forget(tx, t, ak, Shred::Yes)?;
     crate::sync::falls::forget(tx, t, ak)?;
     for p in [records::LEFTOVER, records::PURGES_NAMED] {
         tx.remove_scanned(&records::aspect_key(p, t, ak), |_| Ok(true))?;

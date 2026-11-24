@@ -127,10 +127,6 @@ pub enum DiagnosticKind {
     /// A local storage condition: a store file or directory readable by others whose mode
     /// could not be tightened (the `osis` file store).
     Storage,
-    /// A connected peer's suspect list named an aspect (spec/sync-compaction.md §1 Repair): this
-    /// node re-snapshotted it, holds the same state, or wrote one from this state for that
-    /// reporter already (`tids`: the reporter account, the thing; `commit`: the snapshot written).
-    Repair,
     /// A commit of this node's turned invalid after it was written: a required retention it had
     /// not seen (spec/commits.md §5), a demotion. Its writes no longer read, and nothing re-sends
     /// them (`commit`: it, `tids`: its things).

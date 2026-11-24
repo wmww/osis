@@ -22,7 +22,6 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` store r
 | `g/`+tid+commit | `keys.0` parts whose held body wrote a keyset, any validity (`ix.keyset_parts`, kept while the commit is held); `independent` = things with such a part valid (`apply::keys::refresh_independent`, on noting, flips, load), so an uncover keeps it and an invalid rotation drops it |
 | `k/`+actor | opened epochs of a thing (`established`, `claims`, `snapshot`; never re-inferred; written from the index's journal at each transaction's end, `index::write_secrets`, never by hand). A dependent thing's leftover epochs here are reading-only overlays on its derived ones (`Core::own_epochs`/`epochs`) |
 | `b/`+commit+tid | pending boxes kept sealed by forgetting (`apply/keys.rs` `SEALED`; notes/engine-lost-access.md) |
-| `q/`+aspect | suspect flags: le64 wall ms last raised, then per body its commit, aspect index and `Why` bits (`retention/suspect.rs`) |
 | `T/`, `K/` | timed losses, kept copies (`rotation/lost.rs`) |
 | `d/`+AK | the local schema of each app AK (canonical form) |
 | `u/`+name | API records (profile, contact card, node key, sources) |

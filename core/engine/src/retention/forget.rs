@@ -205,7 +205,6 @@ fn unreceive(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, rest: Option
         tx.put_commit(id, rest, &m, Shred::Yes, None)?;
     }
     tx.core.put_meta(*id, m);
-    crate::apply::note_stands_in(tx.core, id);
     Ok(())
 }
 

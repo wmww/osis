@@ -395,7 +395,7 @@ fn partless_commit_applies_as_its_header_spec_commits_4() {
 // spec/commits.md §5, spec/requirements.md (Deterministic): a commit, its thing's record and a purge
 // request naming its parts on a register, a list and a map (resetting nothing), in every order: the node
 // holds each aspect as its author does (the parts gone, what they replaced back), whether the parts
-// waited when the request came or not, flags nothing and keeps no purged value.
+// waited when the request came or not, and keeps no purged value.
 #[test]
 fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -450,12 +450,11 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
             let e = &mut lp.peers[1].engine;
             assert!(e.pending().is_empty(), "order {order:?}: {:?}", e.pending());
             assert_eq!(e.get(&t2, &ak("t:reg.0")).unwrap(), Some(s("other")), "order {order:?}");
-            assert!(e.suspects().is_empty(), "order {order:?}");
         }
         let mut read = Vec::new();
         for a in &aspects {
-            let author = lp.peers[0].engine.state_digest(&t, a).unwrap();
-            assert_eq!(lp.peers[1].engine.state_digest(&t, a).unwrap(), author, "order {order:?}: {a:?} as its author holds it");
+            let author = lp.peers[0].engine.state_bytes(&t, a).unwrap();
+            assert_eq!(lp.peers[1].engine.state_bytes(&t, a).unwrap(), author, "order {order:?}: {a:?} as its author holds it");
             read.push(lp.peers[1].engine.get(&t, a).unwrap());
         }
         for marker in markers {
@@ -470,7 +469,7 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
 // spec/commits.md §5, spec/requirements.md (Deterministic): commit `c` writes `t` (reg, list) and `t2`;
 // node 1 gets `c` as two copies (one without the list part, one of it alone, as blobs of two purge-by
 // classes would bring it), each applying at once. A purge request naming the reg part, in every
-// order: the node holds `t` as its author does and flags nothing. (A part waiting aside when its purge
+// order: the node holds `t` as its author does. (A part waiting aside when its purge
 // comes: outside::a_part_waiting_aside_is_purged_where_it_waits.)
 #[test]
 fn purge_of_a_commit_in_two_copies_reads_alike_spec_commits_5() {
@@ -507,15 +506,13 @@ fn purge_of_a_commit_in_two_copies_reads_alike_spec_commits_5() {
                 _ => drop(lp.peers[1].receive(&rest.encode(), Vec::new()).unwrap()),
             }
             lp.peers[1].reexamine().unwrap();
-            assert!(lp.peers[1].engine.suspects().is_empty(), "order {order:?} after {g}: gone, not dropped");
         }
         let e = &mut lp.peers[1].engine;
         assert!(e.pending().is_empty(), "order {order:?}: {:?}", e.pending());
         assert_eq!(e.get(&t2, &ak("t:reg.0")).unwrap(), Some(s("other")), "order {order:?}");
-        assert!(e.suspects().is_empty(), "order {order:?}: {:?}", e.suspects());
         for a in [ak("t:reg.0"), ak("t:list.0")] {
-            let author = lp.peers[0].engine.state_digest(&t, &a).unwrap();
-            assert_eq!(lp.peers[1].engine.state_digest(&t, &a).unwrap(), author, "order {order:?}: {a:?} as its author holds it");
+            let author = lp.peers[0].engine.state_bytes(&t, &a).unwrap();
+            assert_eq!(lp.peers[1].engine.state_bytes(&t, &a).unwrap(), author, "order {order:?}: {a:?} as its author holds it");
         }
         assert!(!recoverable(&mut lp.peers[1], b"SECRET-R4e1"), "order {order:?}");
     }
@@ -574,8 +571,7 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
 
 // spec/commits.md §4, §5, §6, spec/crdt.md §4.7: a commit past its expiry, every part of it (one
 // expiry per commit), given with a true part and a relay's junk (a stripped slot) and without its
-// third part: nothing waits for it, so it applies at once, no aspect is
-// flagged (no part went while pending), and the true part is gone: the older value reads, as at a
+// third part: nothing waits for it, so it applies at once, and the true part is gone: the older value reads, as at a
 // node that held the commit before T.
 #[test]
 fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
@@ -603,20 +599,19 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     lp.peers[1].reexamine().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
     assert!(lp.peers[1].engine.commit_ids().contains(&c));
-    assert!(lp.peers[1].engine.suspects().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("old")), "the true part gone: the older value reads");
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:brief.0")).unwrap(), None);
     // the writer past T reads the same
     lp.peers[0].clock.advance(120_000);
     lp.peers[0].tick().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("old")));
-    assert_eq!(lp.peers[0].engine.state_digest(&t, &ak("t:reg.0")).unwrap(), lp.peers[1].engine.state_digest(&t, &ak("t:reg.0")).unwrap());
+    assert_eq!(lp.peers[0].engine.state_bytes(&t, &ak("t:reg.0")).unwrap(), lp.peers[1].engine.state_bytes(&t, &ak("t:reg.0")).unwrap());
 }
 
 // spec/commits.md §4, §5: a purged part, a part past its expiry, an unchecked first copy of a slot and
 // a relay's empty slots (the bytes of a stripped one, no record behind them or one), in any order, T
 // passing and a restart anywhere among them: each true copy delivered again at the end, the node reads
-// alike, its commit applied, no flag left, nothing of either value recoverable.
+// alike, its commit applied, nothing of either value recoverable.
 // The default test runs the 7 rotations of the items' order (each item first and last, each pair
 // both ways round) at each place of T among them, ticked or not; a restart in half of those cases,
 // so each rotation and each place of T meets both (every pair of the three choices once).
@@ -740,7 +735,7 @@ fn past_expiry_and_purge_alike(every: bool) {
                 p.tick().unwrap();
                 p.reexamine().unwrap();
                 let e = &mut p.engine;
-                let got = format!("applied {} pending {:?} stripped {} flags {:?} reads {:?} {:?} {:?} digests {:?} {:?} {:?} {:?}", e.commit_ids().contains(&c), e.pending(), e.stripped_count(&c).unwrap(), e.suspects().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), e.get(&t, &reg).unwrap(), e.get(&t, &list).unwrap(), e.get(&t2, &brief).unwrap(), e.state_digest(&t, &reg).unwrap(), e.state_digest(&t, &list).unwrap(), e.state_digest(&t2, &brief).unwrap(), crate::judgment::observe(e, ids));
+                let got = format!("applied {} pending {:?} stripped {} reads {:?} {:?} {:?} states {:?} {:?} {:?} {:?}", e.commit_ids().contains(&c), e.pending(), e.stripped_count(&c).unwrap(), e.get(&t, &reg).unwrap(), e.get(&t, &list).unwrap(), e.get(&t2, &brief).unwrap(), e.state_bytes(&t, &reg).unwrap(), e.state_bytes(&t, &list).unwrap(), e.state_bytes(&t2, &brief).unwrap(), crate::judgment::observe(e, ids));
                 let [kept_secret, kept_brief] = recovered(&mut p, [b"SECRET-R5c", b"BRIEF-R5c"]);
                 let gone = !kept_secret && !kept_brief;
                 outcomes.lock().unwrap().entry(format!("gone {gone} {got}")).or_insert(format!("restart {restart} k {k} tick {tick} order {order:?}"));
@@ -752,7 +747,7 @@ fn past_expiry_and_purge_alike(every: bool) {
     let (only, _) = out.iter().next().unwrap();
     // every part expires with the commit (spec/commits.md §6) and is gone (spec/crdt.md §4.7): the
     // register reads the record's "new" it replaced, the list and brief nothing, as before `c`
-    assert!(only.starts_with("gone true applied true pending [] stripped 0 flags [] reads Some(Str(\"new\")) None None"), "{only}");
+    assert!(only.starts_with("gone true applied true pending [] stripped 0 reads Some(Str(\"new\")) None None"), "{only}");
 }
 
 // spec/commits.md §4, §5: a purged permanent delta reads alike whatever came first and whatever the
@@ -840,7 +835,6 @@ fn tombstone_alike(stride: u64) {
             assert_eq!(e.purged_on(&t, &ak("t:reg.0")).unwrap().get(&c), Some(&pc), "{at}");
             assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("after")), "{at}");
             assert!(e.pending().is_empty(), "{at}: {:?}", e.pending());
-            assert!(e.suspects().is_empty(), "{at}: flagged");
             // the slow check: a sample
             if *restart == order.len() {
                 assert!(!recoverable(&mut p, marker.as_bytes()), "{at}: recoverable");
@@ -889,7 +883,7 @@ fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::Commit
 
 // spec/commits.md §5, spec/crdt.md §4.7: a waiting part a held request names goes at once while a
 // page of it is away (its bytes cannot be decoded), the pages it holds readable no more; its commit
-// then applies, nothing flagged: the purged writes have no effect, so the node reads as the writer
+// then applies: the purged writes have no effect, so the node reads as the writer
 // that held and removed them (the older value back), and a snapshot by the writer or a copy
 // arriving again changes nothing and brings back no purged value.
 #[test]
@@ -901,7 +895,6 @@ fn purged_with_a_page_away_goes_at_once_spec_commits_5() {
         let (t, c, whole) = purged_page_away(&mut lp, marker);
         let e = &mut lp.peers[1].engine;
         assert!(e.pending().is_empty() && e.commit_ids().contains(&c), "{:?}", e.pending());
-        assert!(e.suspects().is_empty(), "nothing flagged");
         assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "recovered with a page away");
         let older = Some(Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))])));
         assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), older, "by snapshot {by_snapshot}");
@@ -916,7 +909,6 @@ fn purged_with_a_page_away_goes_at_once_spec_commits_5() {
         }
         lp.peers[1].reexamine().unwrap();
         assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), older, "by snapshot {by_snapshot}");
-        assert!(lp.peers[1].engine.suspects().is_empty(), "by snapshot {by_snapshot}");
         assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "by snapshot {by_snapshot}");
     }
 }
@@ -1437,8 +1429,8 @@ fn pending_part_awaiting_its_record_is_judged_with_it_spec_commits_4() {
         let e = &mut lp.peers[1].engine;
         assert!(e.pending().is_empty(), "purge {purge}: {:?}", e.pending());
         assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("ahead")));
-        let want = lp.peers[0].engine.state_digest(&t2, &ak("t:reg.0")).unwrap();
-        assert_eq!(lp.peers[1].engine.state_digest(&t2, &ak("t:reg.0")).unwrap(), want, "purge {purge}: as its author holds it");
+        let want = lp.peers[0].engine.state_bytes(&t2, &ak("t:reg.0")).unwrap();
+        assert_eq!(lp.peers[1].engine.state_bytes(&t2, &ak("t:reg.0")).unwrap(), want, "purge {purge}: as its author holds it");
         if purge {
             assert!(!recoverable(&mut lp.peers[1], b"SECRET-A2f6"));
         } else {
@@ -1484,7 +1476,7 @@ fn copy_of_a_purged_part_beside_an_unjudgeable_one_is_spent_spec_commits_5() {
 // again: the clock reaching its expiry): commit `c` overwrites `t`'s register, pending for its `ts`, its
 // expiry T past that `ts`. Past T, ticked at T or not, the node examines it again: the part went at
 // T, so the register reads its older value, as at a node that applied it before T (spec/crdt.md
-// §4.7), with no suspect flag; nothing waits and the node reads alike either way.
+// §4.7); nothing waits and the node reads alike either way.
 #[test]
 fn part_pending_for_its_ts_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
     let mut lp = net2_one(); // 1 a node of 0's account
@@ -1510,8 +1502,7 @@ fn part_pending_for_its_ts_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
         let e = &mut p.engine;
         assert!(e.commit_ids().contains(&c) && e.pending().is_empty(), "tick {tick}: {:?}", e.pending());
         assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("old")), "tick {tick}: never received");
-        assert!(e.suspects().is_empty(), "tick {tick}: no flag, its writes have no effect anywhere (spec/crdt.md §4.7)");
-        seen.push(format!("applied {} pending {:?} flags {:?} reg {:?} digest {:?}", e.commit_ids().contains(&c), e.pending(), e.suspects(), e.get(&t, &ak("t:reg.0")).unwrap(), e.state_digest(&t, &ak("t:reg.0")).unwrap()));
+        seen.push(format!("applied {} pending {:?} reg {:?} state {:?}", e.commit_ids().contains(&c), e.pending(), e.get(&t, &ak("t:reg.0")).unwrap(), e.state_bytes(&t, &ak("t:reg.0")).unwrap()));
         assert!(!recoverable(&mut p, b"SECRET-D4c7"), "tick {tick}");
     }
     assert_eq!(seen[0], seen[1], "ticked at T or not");
@@ -1551,7 +1542,6 @@ fn waiting_snapshot_drops_a_purged_copy_spec_commits_5() {
         let e = &mut lp.peers[1].engine;
         assert!(e.pending().is_empty() && e.commit_ids().contains(&snap), "{:?}", e.pending());
         assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "purged: the replaced value reads");
-        assert!(e.suspects().is_empty());
         assert!(!recoverable(&mut lp.peers[1], b"SECRET-W9b4"));
     }
 }
@@ -1616,128 +1606,4 @@ fn waiting_snapshots_decoded(n: usize) -> [u64; 4] {
 fn waiting_snapshots_decoded_once_while_they_wait_spec_commits_5() {
     assert_eq!(waiting_snapshots_decoded(3), [0, 0, 0, 0]);
     assert_eq!(waiting_snapshots_decoded(30), [0, 0, 0, 0]);
-}
-
-
-type Flagged = (Tid, osis_base::Ak);
-type SuspectFx = osis_base::memo::Effects<Flagged, Option<(u64, u8)>>;
-
-/// The flags of peer `i` that moved since the follower last looked: keys new from `feed` are
-/// followed, each due one settled; a flag gone is let go.
-fn suspects_moved(lp: &mut LocalPeer, i: usize, feed: &mut osis_base::memo::Feed<Flagged>, fx: &mut SuspectFx) -> Vec<(Flagged, Option<(u64, u8)>)> {
-    let e = &lp.peers[i].engine;
-    for k in feed.added() {
-        fx.want(k);
-    }
-    let mut out = Vec::new();
-    for k in fx.due() {
-        if let Some((_, now)) = fx.settle(&k, || e.suspect(&k.0, &k.1)) {
-            if now.is_none() {
-                fx.unwant(&k);
-            }
-            out.push((k, now));
-        }
-    }
-    out
-}
-
-// spec/permissions.md §4 (Suspect: dormant; Suspect list): a flag is followed per aspect, due when
-// it is raised, when a valid snapshot of its aspect settles it, and when its body back clears it;
-// writes elsewhere move nothing.
-#[test]
-fn a_suspect_flag_is_followed_per_aspect_spec_perm_4() {
-    for by_snapshot in [true, false] {
-        let mut lp = net2();
-        let a = ak("t:big.0");
-        let mine = new_thing(&mut lp, 1);
-        let mut feed = lp.peers[1].engine.suspect_feed();
-        let mut fx = SuspectFx::new("test suspects");
-        let (t, c, whole) = purged_page_away(&mut lp, "FOLLOW-7e3c");
-        lp.peers[1].engine.flag_suspect(&t, &a, osis_engine::retention::suspect::Why::Uncovered, &[(c, 0)]).unwrap();
-        let moved = suspects_moved(&mut lp, 1, &mut feed, &mut fx);
-        assert!(matches!(moved.as_slice(), [(k, Some((_, w)))] if *k == (t, a.clone()) && *w != 0), "raised: {moved:?}");
-        for i in 0..4 {
-            set(&mut lp, 1, mine, &REG, &format!("w{i}"));
-            assert_eq!(suspects_moved(&mut lp, 1, &mut feed, &mut fx), vec![], "a write elsewhere");
-        }
-        // raised again about the same body: only the flag moves
-        lp.advance(5);
-        lp.peers[1].engine.flag_suspect(&t, &a, osis_engine::retention::suspect::Why::Uncovered, &[(c, 0)]).unwrap();
-        let at = lp.peers[1].engine.suspect(&t, &a).unwrap().0;
-        assert_eq!(suspects_moved(&mut lp, 1, &mut feed, &mut fx), vec![((t, a.clone()), Some((at, osis_engine::retention::suspect::Why::Uncovered as u8)))], "raised again");
-        if by_snapshot {
-            lp.advance(5);
-            let sc = lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
-            let pk = lp.peers[0].engine.package(&sc).unwrap().unwrap();
-            lp.deliver(1, &pk).unwrap();
-        } else {
-            lp.peers[1].receive(&whole.bytes, whole.blobs.clone()).unwrap();
-        }
-        lp.peers[1].reexamine().unwrap();
-        let moved = suspects_moved(&mut lp, 1, &mut feed, &mut fx);
-        let want = if by_snapshot { "dormant" } else { "gone" };
-        assert!(matches!(moved.as_slice(), [(k, x)] if *k == (t, a.clone()) && if by_snapshot { matches!(x, Some((_, 0))) } else { x.is_none() }), "{want}: {moved:?}");
-        assert!(lp.peers[1].engine.suspects().is_empty(), "{want}");
-    }
-}
-
-// spec/permissions.md §4: a follower of the flags does work per flag that moved, not per flag held: at n
-// and 10n flagged aspects, raising one again re-judges that one alone.
-#[test]
-fn a_flag_moving_rejudges_that_flag_alone_spec_perm_4() {
-    for n in [8usize, 80] {
-        let mut lp = net2();
-        let t = new_thing(&mut lp, 1);
-        let body = |i: usize| (osis_base::CommitId([u8::try_from(i % 251).unwrap(); 32]), i / 251);
-        let mut feed = lp.peers[1].engine.suspect_feed();
-        let mut fx = SuspectFx::new("test suspects");
-        for i in 0..n {
-            lp.peers[1].engine.flag_suspect(&t, &ak(&format!("t:reg.{i}")), osis_engine::retention::suspect::Why::Uncovered, &[body(i)]).unwrap();
-        }
-        assert_eq!(suspects_moved(&mut lp, 1, &mut feed, &mut fx).len(), n);
-        for i in 0..4 {
-            lp.advance(5);
-            lp.peers[1].engine.flag_suspect(&t, &ak(&format!("t:reg.{i}")), osis_engine::retention::suspect::Why::Uncovered, &[body(i)]).unwrap();
-            let moved = suspects_moved(&mut lp, 1, &mut feed, &mut fx);
-            assert_eq!(moved.iter().map(|m| m.0.1.clone()).collect::<Vec<_>>(), vec![ak(&format!("t:reg.{i}"))], "n {n}");
-        }
-    }
-}
-
-
-// spec/permissions.md §4 (Suspect list): a writer judging a reader's list digests each listed
-// aspect once per state of it: at a 100- and a 1,000-element list, judging three entries again
-// and again computes nothing anew; a write recomputes the aspect it moved alone, to the digest a
-// node holding the same bodies computes, one that asked before the creation record came included.
-#[test]
-fn a_state_digest_is_computed_once_per_state_spec_perm_4() {
-    let computed = || osis_base::costs::take().iter().find(|x| x.0 == "state digest: computed").map_or(0, |x| x.2);
-    for n in [100usize, 1000] {
-        let mut lp = net2_one();
-        let t = new_thing(&mut lp, 0);
-        let mut m = Mutation::new();
-        let items = (0..n).map(|i| s(&format!("e{i}"))).collect();
-        m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items } }).unwrap();
-        m.set(t, &REG, &s("r")).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap();
-        let listed = [ak("t:list.0"), ak("t:reg.0"), ak("t:hi.0")];
-        osis_base::costs::take();
-        let first: Vec<_> = listed.iter().map(|a| lp.peers[0].engine.state_digest(&t, a).unwrap().unwrap()).collect();
-        for _ in 0..50 {
-            for (a, d) in listed.iter().zip(&first) {
-                assert_eq!(lp.peers[0].engine.state_digest(&t, a).unwrap().as_ref(), Some(d), "n {n}");
-            }
-        }
-        assert_eq!(computed(), 3, "n {n}: each listed aspect digested once");
-        put_op(&mut lp, 0, t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("new")] } });
-        osis_base::costs::take();
-        let after: Vec<_> = listed.iter().map(|a| lp.peers[0].engine.state_digest(&t, a).unwrap().unwrap()).collect();
-        assert_eq!(computed(), 1, "n {n}: the written aspect alone digested anew");
-        assert_ne!(after[0], first[0], "n {n}: the list moved");
-        assert_eq!(after[1..], first[1..], "n {n}");
-        assert_eq!(lp.peers[1].engine.state_digest(&t, &listed[0]).unwrap(), None, "n {n}: creation record unknown");
-        lp.sync_all().unwrap();
-        let fresh: Vec<_> = listed.iter().map(|a| lp.peers[1].engine.state_digest(&t, a).unwrap().unwrap()).collect();
-        assert_eq!(after, fresh, "n {n}: as a node holding the same bodies digests it");
-    }
 }

@@ -36,7 +36,7 @@ A credential open toward a peer J judges departed closes at once while S's epoch
 ## Class
 A member's class (spec/sync-opens.md §4 Source) is what the peer declared (`unread` in each Hit, Static and ByRole item and each answer accepting one); the member also keeps the class this side declared (`Member::own`).
 - A tester opens on an answer only while its class is the one its item declared (its holding may move with the Offer out). `rejudge` closes a member that stays, not ended, once this side's class moved (`Close::Class`, kept as at `Until`), so S opens again with both declared anew; a take re-judges alike. Cost: the members of the S whose credentials moved (a holding change moves them).
-- A false declaration steers only duties and counting: deposits, Register and Deletes go to a declared store (nothing a reader cannot read), status counts a declared reader's reports as held (a peer could falsify its reports anyway). Anything disclosed is gated on proof, never on the class: a suspect list goes only to a peer proving an account that may read S (`inbox/suspect.rs`).
+- A false declaration steers only duties and counting: deposits, Register and Deletes go to a declared store (nothing a reader cannot read), status counts a declared reader's reports as held (a peer could falsify its reports anyway). Anything disclosed is gated on proof, never on the class.
 - Rejected: the class from the credential that opened S (a sync proof and a static entry are shown by both kinds, so which side's Hit landed first decided); the class from J (rosters move without moving credentials, so nothing re-judges; a grantee given read keeps S unread until its secrets arrive).
 
 ## Ending

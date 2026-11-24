@@ -382,62 +382,6 @@ fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
     assert_eq!(read[0], read[1], "both hold the same bodies");
 }
 
-// spec/permissions.md §4: a Flip flag about a body whose writes died settles under a later valid
-// snapshot though it lists no session of the body.
-#[test]
-fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
-    let mut lp = net(4, 0);
-    lp.sync_all().unwrap();
-    let t = new_shared(&mut lp, 0);
-    let (w, y) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    let asp = ak("t:gone.0");
-    // a snapshot stamped before the body settles nothing
-    set(&mut lp, 3, t, &GONE, "v0");
-    lp.sync_all().unwrap();
-    lp.advance(1_000);
-    lp.peers[3].engine.snapshot(&t, &asp).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    lp.advance(1_000);
-    let c1 = set(&mut lp, 0, t, &GONE, "v1");
-    lp.sync_all().unwrap();
-    lp.advance(1_000);
-    set(&mut lp, 2, t, &GONE, "v2");
-    // only peer 1 takes W's write and cover: a writer holding the live `v1` it replaces would owe
-    // a cover of its own, which would settle the flag below
-    sync(&mut lp, 2, 1);
-    // peer 1 lets the dead body go (its keep bounds; no snapshot held, so not as covered)
-    lp.peers[1].engine.drop_body(&c1, &t, &asp).unwrap();
-    lp.advance(1_000);
-    let f = osis_schema::core_types::Frontier { commits: Default::default() };
-    let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(f.clone()));
-    // only the demotion: a full sync would give peer 1 the dropped body again
-    let fp = package_for(&mut lp, 0, 1, fall);
-    lp.deliver(1, &fp).unwrap();
-    lp.deliver(3, &fp).unwrap();
-    let flagged = |lp: &mut LocalPeer| lp.peers[1].engine.suspects().iter().any(|x| x.0 == t && x.1 == asp);
-    assert!(flagged(&mut lp), "W's write fell where a body was dropped: flagged");
-    lp.advance(1_000);
-    let v3 = set(&mut lp, 3, t, &GONE, "v3");
-    lp.advance(1_000);
-    let z = lp.peers[3].engine.snapshot(&t, &asp).unwrap().unwrap();
-    for pk in packages_for(&mut lp, 3, 1).into_iter().filter(|p| p.id == v3 || p.id == z) {
-        lp.deliver(1, &pk).unwrap();
-    }
-    let e = &mut lp.peers[1].engine;
-    assert!(e.commit_ids().contains(&z));
-    eprintln!("reads {:?} digest alike {}", e.get(&t, &asp).unwrap(), lp.peers[1].engine.state_digest(&t, &asp).unwrap() == lp.peers[3].engine.state_digest(&t, &asp).unwrap());
-    assert!(!flagged(&mut lp), "a valid later snapshot settles the flag");
-    // its author removed, listing none of its commits: it gives nothing, the flag shows again
-    let f = osis_schema::core_types::Frontier { commits: Default::default() };
-    let gone = set_edge(&mut lp.peers[0].engine, t, y, None, Some(f.clone()));
-    let gp = package_for(&mut lp, 0, 1, gone);
-    lp.deliver(1, &gp).unwrap();
-    assert!(flagged(&mut lp), "the snapshot that settled it turned invalid");
-}
-
 // spec/sync-compaction.md §1, spec/commits.md §5: snapshots of equal `ts` holding the same cover each other;
 // the higher commit ID goes, as covered, and the lower counts for all it did (a commit stamped
 // before both, its missing part held under either).
@@ -476,7 +420,7 @@ fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
     assert_eq!(e.covered(&lo, &hi, &t, &tags).unwrap(), Some(true));
     assert_eq!(e.covered(&hi, &lo, &t, &tags).unwrap(), Some(true));
     e.drop_body(&hi, &t, &tags).unwrap();
-    assert!(e.core.ix.commits.get(&hi).unwrap().dropped_parts().map(|x| x.1).all(|d| d.why == osis_engine::engine::DropFor::Cover && !d.stands_in));
+    assert!(e.core.ix.commits.get(&hi).unwrap().dropped_parts().map(|x| x.1).all(|d| d.why == osis_engine::engine::DropFor::Cover));
     let mut read = Vec::new();
     for p in [1, 4] {
         let e = &mut lp.peers[p].engine;
@@ -540,52 +484,3 @@ fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("a")));
 }
 
-/// A Flip flag about `body` of `(t, asp)` at peer 1, dropped for its bounds: W's write falls.
-fn flip_flag_on(lp: &mut LocalPeer, t: Tid, asp: &Ak, body: &CommitId) {
-    let w = lp.peers[2].engine.me();
-    lp.peers[1].engine.drop_body(body, &t, asp).unwrap();
-    lp.advance(1_000);
-    let f = osis_schema::core_types::Frontier { commits: Default::default() };
-    let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(f.clone()));
-    for p in packages_for(lp, 0, 1).into_iter().filter(|p| p.id == fall) {
-        lp.deliver(1, &p).unwrap();
-    }
-    assert!(lp.peers[1].engine.suspects().iter().any(|x| x.0 == t && x.1 == *asp), "flagged");
-}
-
-/// Y's later write and snapshot of `(t, asp)` reach peer 1.
-fn later_snapshot_settles(lp: &mut LocalPeer, t: Tid, asp: &Ak) {
-    lp.advance(1_000);
-    let v = set(lp, 3, t, &GONE, "later");
-    lp.advance(1_000);
-    let z = lp.peers[3].engine.snapshot(&t, asp).unwrap().unwrap();
-    for p in packages_for(lp, 3, 1).into_iter().filter(|p| p.id == v || p.id == z) {
-        lp.deliver(1, &p).unwrap();
-    }
-    assert!(!lp.peers[1].engine.suspects().iter().any(|x| x.0 == t && x.1 == *asp), "settled");
-}
-
-// spec/permissions.md §4: a flag about a dropped snapshot body settles like any other. Its dormancy
-// read `Absorbed`, which never lists a snapshot, so it never did, and it filled the suspect list.
-#[test]
-fn flip_flag_on_a_snapshot_body_settles_spec_permissions_4() {
-    let mut lp = net(4, 0);
-    lp.sync_all().unwrap();
-    let t = new_shared(&mut lp, 0);
-    for p in [2, 3] {
-        let w = lp.peers[p].engine.me();
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    }
-    lp.sync_all().unwrap();
-    let asp = ak("t:gone.0");
-    set(&mut lp, 0, t, &GONE, "v1");
-    lp.advance(1_000);
-    let z = lp.peers[0].engine.snapshot(&t, &asp).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    lp.advance(1_000);
-    set(&mut lp, 2, t, &GONE, "v2");
-    // only peer 1 takes W's write and cover (as `flip_flag_on_a_pruned_session_settles_*`)
-    sync(&mut lp, 2, 1);
-    flip_flag_on(&mut lp, t, &asp, &z);
-    later_snapshot_settles(&mut lp, t, &asp);
-}

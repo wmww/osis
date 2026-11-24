@@ -462,7 +462,7 @@ fn purged_list_element_takes_edit_in_any_order_spec_crdt_4_7() {
             q.receive(&x.bytes, x.blobs.clone()).unwrap();
         }
         assert_eq!(q.engine.get(&t, &k).unwrap(), Some(Value::List(Vec::new())));
-        digests.push(q.engine.state_digest(&t, &k).unwrap());
+        digests.push(q.engine.state_bytes(&t, &k).unwrap());
     }
     assert!(digests.iter().all(|d| *d == digests[0]), "{digests:?}");
 }
@@ -526,7 +526,7 @@ fn snapshot_past_expiry_beside_body_spec_crdt_4_7() {
     lp.peers[2].clock.advance(2_000);
     lp.peers[2].tick().unwrap();
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("kept")])), "past its own T");
-    assert_eq!(lp.peers[2].engine.state_digest(&t, &k).unwrap(), lp.peers[1].engine.state_digest(&t, &k).unwrap(), "as the snapshot's writer holds it");
+    assert_eq!(lp.peers[2].engine.state_bytes(&t, &k).unwrap(), lp.peers[1].engine.state_bytes(&t, &k).unwrap(), "as the snapshot's writer holds it");
 }
 
 // spec/crdt.md §5.7 Live, §4.7: an expiring list element is a function of the commits held: another
@@ -566,7 +566,7 @@ fn list_element_expiry_in_any_order_spec_crdt_5_7() {
             p.tick().unwrap();
         }
         assert_eq!(p.engine.get(&t, &k).unwrap(), Some(Value::List(Vec::new())), "past {past}");
-        digests.push(p.engine.state_digest(&t, &k).unwrap());
+        digests.push(p.engine.state_bytes(&t, &k).unwrap());
     }
     assert!(digests.iter().all(|d| *d == digests[0]), "{digests:?}");
 }

@@ -878,12 +878,11 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
         }
         p
     };
-    // past T when it came: gone at once, nothing flagged (its writes have no effect anywhere,
+    // past T when it came: gone at once (its writes have no effect anywhere,
     // spec/crdt.md §4.7)
     let mut p = new(late);
     crate::common::unless_refused(p.engine.ingest(&cut(&b, &[x]), Vec::new()));
     assert!(!copy_held(&mut p), "no copy past T");
-    assert!(p.engine.suspects().is_empty(), "no flag: {:?}", p.engine.suspects());
     assert_eq!(p.engine.pending(), vec![]);
     // parked before T, alone or beside a part that applied; its timer takes it
     for things in [&[x][..], &[x, y]] {
@@ -943,7 +942,7 @@ fn purge_whose_only_part_is_parked_applies_spec_commits_4() {
 
 // spec/versioning.md §2, spec/commits.md §5: a purge request applies to a part this build cannot read.
 // It cannot be decoded, so it goes, whichever came first: no copy of its bytes is left on the device,
-// and nothing is flagged (its writes have no effect anywhere, spec/crdt.md §4.7).
+// its writes having no effect anywhere (spec/crdt.md §4.7).
 #[test]
 fn parked_part_goes_at_its_purge_spec_commits_5() {
     use crate::common::*;
@@ -976,7 +975,6 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
         p.reexamine().unwrap();
         assert!(p.engine.header(&rq.id).is_some(), "the request applied");
         assert_eq!(p.engine.pending(), vec![], "parked first: {parked_first}");
-        assert!(p.engine.suspects().is_empty(), "nothing flagged");
         assert_eq!(p.engine.pending_value_past_end(&b.id(), now).unwrap(), None, "parked first: {parked_first}");
         assert_eq!(found_in(&mut p, PARKED_MARK), vec![], "parked first: {parked_first}");
     }
@@ -1039,7 +1037,7 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
                     crate::common::unless_refused(p.engine.ingest(&items[i], Vec::new()));
                     p.reexamine().unwrap();
                 }
-                format!("applied {} pending {:?} flags {:?} reads {:?} {:?} {:?}", p.engine.commit_ids().contains(&b.id()), p.engine.pending(), p.engine.suspects().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), p.engine.get(&x, &ak("t:brief.0")).unwrap(), p.engine.get(&y, &ak("t:reg.0")).unwrap(), p.engine.get(&z, &ak("t:reg.0")).unwrap())
+                format!("applied {} pending {:?} reads {:?} {:?} {:?}", p.engine.commit_ids().contains(&b.id()), p.engine.pending(), p.engine.get(&x, &ak("t:brief.0")).unwrap(), p.engine.get(&y, &ak("t:reg.0")).unwrap(), p.engine.get(&z, &ak("t:reg.0")).unwrap())
             };
             let mut seen = std::collections::BTreeMap::<String, Vec<usize>>::new();
             for (order, got) in picked.iter().zip(osis_base::testenv::par_map(&idx, osis_base::testenv::threads("OSIS_SEED_THREADS"), one)) {

@@ -48,7 +48,7 @@ Every container of mutable facts stamps its changes and reads (`memo::Stamps`), 
 - A hit costs a lock per container the answer read, not a lookup per key (`moves`): else an answer over an aspect's n bodies is O(n) per hit, O(n²) per pass asking each body. Measured at under 1% of instructions in a member-churn sim run and an osis multi-source test.
 - No early cutoff inside `Memo`: a memo reading another copies the inner's reads, so an inner recomputed to an equal value still moves its readers, and every reader of an inner over n inputs holds n reads. A memo keeps no function (a closure given at each `get`, borrowing `Core`, `Tx` or `Engine`), so nothing can recompute an entry when it is checked. Where the copy costs, put a `Cutoff` row at the fan-in (Per-key rows).
 - Patched values: a `Cutoff` row may be amended in place (`Cutoff::refresh_amended_in`, its doc states when an amend is kept: exact, not by hash, `cutoff::tests::an_amend_is_kept_only_over_what_it_accounts_for`). A dated aspect's held writes are no memo: they are store rows followed by each join and leave (notes/engine-retention-dating.md Rows). `flows::secrets_in` is patched by each join (`Memo::held` before the write, `Memo::amend` after), so a write costs its delta, not the roster; the join first loads every page holding an entry of a written key (`apply::keys::secrets_paths`), since concurrent puts sit on pages its own dots do not touch.
-- Other memos are named where declared on `Core`; counted by rotation `tests::epochs_are_derived_once_per_change_of_what_they_read`, `shred::a_state_digest_is_computed_once_per_state_spec_perm_4`, `memo::tests`. `refresh_epochs` re-judges this node's account by `Core::epochs_judged_from`, compared by value without building the chain, so an open decodes no header.
+- Other memos are named where declared on `Core`; counted by rotation `tests::epochs_are_derived_once_per_change_of_what_they_read`, `memo::tests`. `refresh_epochs` re-judges this node's account by `Core::epochs_judged_from`, compared by value without building the chain, so an open decodes no header.
 
 ### `Effects<K, V>`
 - Work in proportion to change, for an owner that acts on values (sync's verdicts, validity per part); its doc and `due`'s state the contract. `due` costs the writes since its last call times their readers, never the keys followed (`due_costs_the_writes_not_the_keys_followed`). The log holds every write since the slowest reader's last `due` or `added`: an owner calls them each pass, and dropping an `Effects` or `Feed` releases its marks. A world copy's tables carry no marks of readers left outside it.
@@ -97,7 +97,7 @@ osis-engine (`core/engine/src`); each file's doc comment says what it holds. Whe
 |---|---|
 | `engine/` | `Engine`, `Core`, `Tx`, `Indexes`, create/open (`mod.rs`); writing (`write.rs`), reads, journal, held set, persisted index, local records, blobs, large values, signal edits, commit listings, acting as an administered thing (`acting.rs`), the reference index (`refs.rs`, notes/engine-refs.md) |
 | `apply/` | `ingest`, `examine`, late parts, `load`; waits, joins and `rebuild` (`atomic.rs`), validity, copies, frontiers, established epochs, the memory class; `tests_*.rs` |
-| `retention/` | bodies dropping and coming back, timers (`tick`); keep bounds (`bounds.rs`), history's one door (`history.rs`), leaving, purge on replace, destroy, release, snapshots, purge, leftovers, suspects, freed links, forgetting lost access |
+| `retention/` | bodies dropping and coming back, timers (`tick`); keep bounds (`bounds.rs`), history's one door (`history.rs`), leaving, purge on replace, destroy, release, snapshots, purge, leftovers, freed links, forgetting lost access |
 | `undo/` | revert from kept history; `held_commits` for the API's stacks |
 | `identity/`, `events/` | node seed, keys, creation records; `Event`, `Diagnostic`, subscribers |
 | `ephemeral/` | the local write path of ephemeral aspects and signals (notes/ephemeral.md) |
@@ -123,7 +123,6 @@ Rustdoc has the list; the rules it rests on:
 - notes/engine-validity.md: re-judging, un-merge by one rebuild, snapshot authority and carried writes, uncovering, flips against dropped data.
 - notes/engine-validity-epochs.md: accounts, the epoch rule, custody and sides (spec/permissions.md §5.4-§5.5).
 - notes/engine-retention.md: index of the retention notes; how bodies drop, invalid bodies, bodies coming back.
-- notes/engine-suspects.md: suspect flags and their repair.
 - notes/engine-roles.md: role commits in the engine (edge writes, addenda, `secrets.0` and `keys.0`, established epochs, role flows, rotation invariants).
 - notes/engine-lost-access.md: the lost-access trigger, forgetting, kept copies, self-removal drops.
 - notes/engine-refs.md: the reference index.

@@ -635,9 +635,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || !expiry_covers(tx.core, s, c) {
         return Ok(Some(false));
     }
-    // a snapshot stamped later settles the suspect flags of more commits than this one
-    // (`receipt::settled`), and dropped as covered it would stop: never covered by one stamped
-    // earlier
+    // a snapshot body is covered only by one stamped no earlier (spec/commits.md §5 Covered)
     if stamped_later(tx.core, c, s) {
         return Ok(Some(false));
     }

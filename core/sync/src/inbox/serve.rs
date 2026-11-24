@@ -1,5 +1,5 @@
 //! Requests from peers this module answers: Register and Delete (spec/sync-ids.md §6, taken by
-//! the store's rules) and Stranded (taken by the engine). Suspect is `suspect`'s.
+//! the store's rules) and Stranded (taken by the engine).
 
 use super::{Here, Net};
 use crate::session::RequestId;

@@ -40,7 +40,7 @@
 - **`changed_at`**: a per-sync-ID position of the node, advanced when S is new to it or a credential of S changes. A node that stops holding S drops S from every record in the step that stops it.
 - **Agreement** (bytes: spec/wire.md §11.2 Digest, Members): on a connection with a record, each side's first message after `Resumed` is `Digest`, the xor over the record's shared set of `BLAKE3(key = r, sync_id)`, computed from the record before anything else on the connection. A side compares the peer's digest with the one it sent, once a connection.
   - On a difference, each side sends its set as `Members` pages on reading the peer's `Digest`, before acting on any later message. On the peer's last page it closes each member only it holds, keeping nothing of where it stopped (§6), and re-marks pending (§5 Testing) every sync ID in exactly one of the two lists.
-  - No Offer is sent before the peer's `Digest` is read, and no Pull, Fetch, Delete, Deposit item or Suspect before the digests matched or the peer's last `Members` page is read.
+  - No Offer is sent before the peer's `Digest` is read, and no Pull, Fetch, Delete or Deposit item before the digests matched or the peer's last `Members` page is read.
 
 ## 4. Shared set
 - The **shared set** of a connection: the sync IDs the two sides share on it, judged by each side on what it holds now. A side keeping no shared set on a connection yet (before a record or NoRecord, §3) answers its shared-set requests Error 14 (spec/wire.md §11.2).

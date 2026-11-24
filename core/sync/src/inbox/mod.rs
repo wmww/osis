@@ -13,7 +13,6 @@
 //!   engine's `take_stranded`).
 //! - `stranded`: this node's own stranded reports (status's `strandings`), by message to a
 //!   connected writer of S's actor.
-//! - `suspect`: suspect lists out (the engine's flags per S) and in (a writer's repair).
 //! - `links`: first contact through a link, durable until the join is held elsewhere.
 //!
 //! Work follows change: the engine's values are read through `Effects` keys, the store's entries
@@ -32,7 +31,6 @@ mod offers;
 mod register;
 mod serve;
 mod stranded;
-mod suspect;
 
 pub use held::{Judged, Promotion, adds_delta, promotion, to_clear};
 pub use offers::{BACKOFF_MAX_MS, BACKOFF_MIN_MS, Judge, Offers, Target, backoff_ms};
@@ -145,7 +143,6 @@ pub struct Inbox {
     register: register::Register,
     links: links::Redemptions,
     reports: stranded::Reports,
-    suspects: suspect::Suspects,
 }
 
 impl std::fmt::Debug for Inbox {
@@ -193,7 +190,6 @@ impl Inbox {
         self.held.start(h, &mut self.offers)?;
         self.fires.start(h);
         self.reports.start(h)?;
-        self.suspects.start(h);
         self.started = true;
         Ok(true)
     }
@@ -205,12 +201,11 @@ impl Inbox {
         acted |= self.links.settle(h)?;
         acted |= self.register.settle(h, net)?;
         acted |= self.reports.settle(h, net)?;
-        acted |= self.suspects.settle(h, net)?;
         acted |= self.offers.settle(h.mono, h.store, net, &mut *h.engine)?;
         Ok(acted)
     }
 
-    /// Register, Delete, Stranded and Suspect requests; Deposit, Stranded and Register answers.
+    /// Register, Delete and Stranded requests; Deposit, Stranded and Register answers.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, conn: ConnId, m: Incoming) {
         let Cx { engine, store, now, mono, policy, .. } = cx;
         let mut here = Here { engine, status: None, store, now: *now, mono: *mono, policy };
@@ -220,12 +215,6 @@ impl Inbox {
 
     fn receive(&mut self, h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, m: Incoming) {
         match m {
-            // judged here (spec/sync-compaction.md §1 Repair), answered Ok whatever it judges
-            // (spec/wire.md §11.2); a failure judges the rest of the list at no later time
-            Incoming::Request(id, Msg::Suspect { sync_id, entries, .. }) => {
-                let _ = self.suspects.received(h, net, conn, sync_id, entries);
-                net.answer(conn, id, Msg::Ok { id });
-            }
             Incoming::Request(id, m) => serve::request(h, net, conn, id, m),
             Incoming::Reply(_, id, m) => {
                 if !self.offers.answered(h.mono, conn, id, &m) && !self.reports.answered(conn, id, &m) {
@@ -254,18 +243,12 @@ impl Inbox {
                 if class == Some(SourceClass::Store) {
                     self.register.joined(src, s);
                 }
-                self.suspects.joined(src, s, class);
             }
-            Moved::Left(conn, s, at) => {
+            Moved::Left(_, s, at) => {
                 osis_base::costs::count("inbox: members moved", 1);
                 self.register.left(at.src, &s);
-                self.suspects.left(at.src, &s);
-                self.suspects.closed_on(conn, &s);
             }
-            Moved::Gone(rid, s) => {
-                self.register.left(Source::Record(rid), &s);
-                self.suspects.left(Source::Record(rid), &s);
-            }
+            Moved::Gone(rid, s) => self.register.left(Source::Record(rid), &s),
             // read from its rows: its members are learned now
             Moved::Taken(conn, rid, true) => {
                 self.offers.record_moved(conn);
@@ -275,7 +258,6 @@ impl Inbox {
                     if class == SourceClass::Store {
                         self.register.joined(src, s);
                     }
-                    self.suspects.joined(src, s, Some(class));
                 }
             }
             Moved::Taken(conn, ..) | Moved::Released(conn, _) => self.offers.record_moved(conn),
@@ -288,7 +270,6 @@ impl Inbox {
     /// Record `id` went (evicted past `RECORD_BUDGET`, or twin-dropped): what is kept of it goes.
     pub fn record_gone(&mut self, id: crate::types::RecordId) {
         self.register.gone(Source::Record(id));
-        self.suspects.record_gone(Source::Record(id));
     }
 
     /// A connection ended.
@@ -296,7 +277,6 @@ impl Inbox {
         self.offers.closed(conn);
         self.register.closed(conn);
         self.reports.closed(conn);
-        self.suspects.closed(conn);
     }
 
     /// First contact through a link (spec/sync-inbox.md §6): durable until the join is held

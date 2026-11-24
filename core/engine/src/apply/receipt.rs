@@ -5,28 +5,9 @@
 
 use crate::engine::{Core, Engine};
 use crate::error::Result;
-use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
-use osis_commit::Header;
+use osis_base::{Ak, CommitId, Tid, WallMs};
 use osis_schema::core_types::{Frontier, is_role_class};
 use std::collections::{BTreeMap, BTreeSet};
-
-/// The held snapshots of `(tid, ak)`, any validity (bodies held, or dropped and still standing in,
-/// `Dropped::stands_in`): ID and `ts`.
-fn held_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -> impl Iterator<Item = (CommitId, Ts)> + 'a {
-    let k = (*tid, ak.clone());
-    let held = core.ix.snapshots.get(&k).into_iter().flatten().map(|x| (x.1, x.0));
-    let kept = core.ix.dropped_snapshots.get(&k).into_iter().flatten().filter_map(move |s| Some((*s, core.ix.commits.get(s)?.view.ts)));
-    held.chain(kept)
-}
-
-/// Whether a held snapshot valid here is stamped after the delta's commit: a suspect flag about the
-/// delta is settled while one is (spec/permissions.md §4; `retention::suspect`). Rule 5's "any
-/// later snapshot": no frontier can say more, since one holding nothing of the delta's session
-/// or commit is all a writer that held the delta may have left.
-pub(crate) fn settled(core: &crate::engine::Core, h: &Header, ai: usize) -> bool {
-    let Some(a) = h.aspects.get(ai) else { return false };
-    held_snapshots(core, &a.tid, &a.ak).any(|(s, ts)| ts > h.ts && crate::apply::copies::snapshot_valid(core, &s, &a.tid, &a.ak))
-}
 
 impl Engine {
     /// The frontier a demotion stamped now must embed (spec/permissions.md §5.1), by commit ID:

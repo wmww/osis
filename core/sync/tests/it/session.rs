@@ -399,7 +399,7 @@ fn routing_by_kind() {
     assert_eq!(req(Msg::Resume { id: 1, nonce: [0; 32], tags: Vec::new() }), Some(To::Opens));
     assert_eq!(req(Msg::NoRecord { id: NO_RECORD_ID }), Some(To::Opens));
     assert_eq!(req(pull(SMALL_REPLY as u64)), Some(To::Streams));
-    assert_eq!(req(Msg::Suspect { id: 1, sync_id: s, entries: Vec::new() }), Some(To::Inbox));
+    assert_eq!(req(Msg::Delete { id: 1, sync_id: s, items: Vec::new() }), Some(To::Inbox));
     assert_eq!(req(Msg::Unsub { id: 1, sub_id: 2 }), Some(To::Port));
     assert_eq!(req(Msg::Auth { id: 1, secret: None, session_id: [0; 16] }), Some(To::Port));
     assert_eq!(Incoming::Push(Msg::Unsub { id: 1, sub_id: 2 }).to(), None);

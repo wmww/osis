@@ -2552,7 +2552,7 @@ fn commit_state(played: &Played, e: &osis_engine::Engine, d: &osis_engine::engin
         None => "absent".to_string(),
         Some(c) => {
             let why: Vec<String> = e.core.ix.commits.get(id).map(|m| m.dropped_parts().map(|(ai, d)| format!("{ai}: {:?} by {:?}", d.why, d.covered_by.iter().map(pack).collect::<Vec<_>>())).collect()).unwrap_or_default();
-            format!("valid {:?} dropped {:?} {why:?} stands in {:?} stripped {:?} own live {:?} missing {:?}", c.valid, c.dropped, c.stands_in, c.stripped, c.own_live, c.missing)
+            format!("valid {:?} dropped {:?} {why:?} stripped {:?} own live {:?} missing {:?}", c.valid, c.dropped, c.stripped, c.own_live, c.missing)
         }
     }
 }
@@ -4139,11 +4139,10 @@ fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
     assert_eq!(p.engine.replaced_at(&ids[2], &t, &a).unwrap(), None, "not replaced");
 }
 
-// spec/commits.md §5 (never received; a compaction snapshot's part dropped other than as covered still counts): a body dropped for its keep bounds counts as never received; a snapshot
-// dropped other than as covered still stands in: B's write kills A's
-// purge-on-replace write (and so A's snapshot of it) where it arrives before B's demotion, which
-// makes it invalid; the snapshot dropped there still stands in (`stands_in`) and leaves the
-// snapshot indexes until a copy arrives again and joins.
+// spec/commits.md §5 (never received): a body dropped for its keep bounds counts as never received:
+// B's write kills A's purge-on-replace write (and so A's snapshot of it) where it arrives before
+// B's demotion, which makes it invalid; the snapshot dropped there leaves the snapshot indexes
+// until a copy arrives again and joins.
 #[test]
 fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
     use Step::*;

@@ -9,7 +9,7 @@ use crate::api::{Outcome, Payload, value};
 use crate::dec::{self, Fields};
 use crate::limits::*;
 use crate::{ActorProof, SyncId};
-use osis_base::{Ak, BlobId, Limits, Tid, Value, cbor};
+use osis_base::{BlobId, Limits, Tid, Value, cbor};
 pub use osis_crypto::Signature;
 pub use osis_blob::{ClaimSet, DeleteItem, HolderKeys, Step, StepId};
 use osis_schema::Codec;
@@ -239,14 +239,6 @@ impl SharedItem {
     }
 }
 
-/// `suspect := [thing, ak, digest]` (spec/wire.md §11.2 Stranded and Suspect).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SuspectEntry {
-    pub thing: Tid,
-    pub ak: Ak,
-    pub digest: [u8; SUSPECT_DIGEST_LEN],
-}
-
 /// `ditem` is osis-blob's `DeleteItem`; `actor_proof` is `ActorProof`.
 /// Every message after Hello (spec/wire.md §11.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -276,7 +268,6 @@ pub enum Msg {
     /// A sync ID the sender is stranded on, the holder it reads the sync ID's actor through and
     /// that holder's holder keys (spec/wire.md §9).
     Stranded { id: Id, sync_id: SyncId, holder: Tid, keys: HolderKeys },
-    Suspect { id: Id, sync_id: SyncId, entries: Vec<SuspectEntry> },
     /// `rotations`: the account's signed rotations the verifier may lack, as header-only copies
     /// (spec/sync-opens.md §2), each a `CommitBlobPlaintext` value the engine judges.
     Prove { id: Id, proofs: Vec<ActorProof>, rotations: Option<Vec<Value>> },
@@ -421,7 +412,6 @@ impl Msg {
             Unsub { .. } => 28,
             Notify { .. } => 29,
             Stranded { .. } => 30,
-            Suspect { .. } => 31,
             Prove { .. } => 32,
             Proved { .. } => 33,
             Resume { .. } => 34,
@@ -446,7 +436,7 @@ impl Msg {
     pub fn id(&self) -> Id {
         use Msg::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Suspect { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } | Twin { id, .. } | Twinned { id, .. } => *id,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } | Twin { id, .. } | Twinned { id, .. } => *id,
             Pull(p) => p.id,
             PullReply(r) => r.id,
             Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => 0,
@@ -461,7 +451,7 @@ impl Msg {
     pub fn set_id(&mut self, new: Id) {
         use Msg::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Suspect { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } | Twin { id, .. } | Twinned { id, .. } => *id = new,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Register { id, .. } | Status { id, .. } | Delete { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } | Stranded { id, .. } | Prove { id, .. } | Proved { id, .. } | Resume { id, .. } | Resumed { id, .. } | Beacons { id, .. } | Offer { id, .. } | Lost { id, .. } | Shared { id, .. } | NoRecord { id } | Twin { id, .. } | Twinned { id, .. } => *id = new,
             Pull(p) => p.id = new,
             PullReply(r) => r.id = new,
             Notify { .. } | Stream(_) | Applied { .. } | Digest { .. } | Members { .. } => {}
@@ -498,7 +488,6 @@ impl Msg {
                 let [commits, records] = keys.to_values();
                 vec![k, id, s(sync_id), Value::bytes(holder.as_bytes()), commits, records]
             }
-            M::Suspect { sync_id, entries, .. } => vec![k, id, s(sync_id), Value::List(entries.iter().map(|e| Value::List(vec![Value::bytes(e.thing.as_bytes()), Value::Str(e.ak.as_str().to_string()), Value::bytes(&e.digest)])).collect())],
             M::Prove { proofs, rotations, .. } | M::Proved { proofs, rotations, .. } => vec![k, id, proofs_value(proofs), Value::opt(rotations.as_ref().map(|r| Value::List(r.clone())))],
             M::Resume { nonce, tags, .. } => vec![k, id, Value::bytes(nonce), Value::List(tags.iter().map(|t| Value::bytes(t)).collect())],
             M::Resumed { nonce, tag, .. } => vec![k, id, Value::bytes(nonce), Value::opt(tag.as_ref().map(|t| Value::bytes(t)))],
@@ -614,7 +603,6 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
             let (commits, records) = (f.next()?, f.next()?);
             Msg::Stranded { id, sync_id, holder, keys: HolderKeys::from_values(&commits, &records)? }
         }
-        31 => Msg::Suspect { id, sync_id: sync_id(&mut f)?, entries: f.list(1, usize::MAX, "suspect entries")?.into_iter().map(suspect_entry).collect::<Result<_, _>>()? },
         32 => Msg::Prove { id, proofs: proofs(&mut f)?, rotations: f.opt()?.map(rotations).transpose()? },
         33 => Msg::Proved { id, proofs: proofs(&mut f)?, rotations: f.opt()?.map(rotations).transpose()? },
         34 => Msg::Resume { id, nonce: f.fixed()?, tags: f.list(0, MAX_RESUME_TAGS, "resume tags")?.into_iter().map(|v| dec::fixed(v, "tag")).collect::<Result<_, _>>()? },
@@ -705,15 +693,6 @@ fn rotations(v: Value) -> Result<Vec<Value>, Error> {
             _ => Err(Error::Malformed("rotation")),
         })
         .collect()
-}
-
-/// `suspect := [thing, ak, digest]`.
-fn suspect_entry(v: Value) -> Result<SuspectEntry, Error> {
-    let mut g = Fields::exact(v, 3, "suspect")?;
-    let thing = Tid::from_bytes(g.fixed()?);
-    let Value::Str(ak) = g.next()? else { return Err(Error::Malformed("suspect ak")) };
-    let ak = Ak::new(ak).map_err(|_| Error::Malformed("suspect ak"))?;
-    Ok(SuspectEntry { thing, ak, digest: g.fixed()? })
 }
 
 /// A reply allowance: `SMALL_REPLY..=REPLY_BUDGET` (spec/wire.md §11.2).

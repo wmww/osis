@@ -204,10 +204,11 @@ impl Engine {
         self.note_opened(&b.header, &under);
     }
 
-    /// Flags an aspect suspect (tests: what a suspect node does, however it became one).
+    /// `(tid, ak)`'s state encoded as a snapshot fragment with its pages (empty: no state):
+    /// nodes holding the same bodies hold the same bytes (tests comparing nodes' states).
     #[doc(hidden)]
-    pub fn flag_suspect(&mut self, t: &Tid, a: &Ak, why: crate::retention::suspect::Why, bodies: &[(CommitId, usize)]) -> Result<()> {
-        self.run(|tx| crate::retention::suspect::raise(tx, t, a, why, bodies))
+    pub fn state_bytes(&mut self, tid: &Tid, ak: &Ak) -> Result<Vec<u8>> {
+        Ok(self.read(|tx| tx.state(tid, ak)?.map(crate::engine::state::encode).transpose())?.unwrap_or_default())
     }
 
     /// The store's local rows and blobs by kind (a row's key up to its first `/`, else 3 bytes;
@@ -722,7 +723,6 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("unresolved", &*ix.unresolved),
         ("secrets", &*ix.secrets),
         ("void", &*ix.void),
-        ("suspects", &*ix.suspects),
         ("held_wait", &*ix.held_wait),
         ("opened_under", &*ix.opened_under),
         ("grant_fires", &*ix.grant_fires),
@@ -770,8 +770,7 @@ fn derived_written(ix: &super::Indexes) -> BTreeMap<Tid, &std::collections::BTre
 /// A commit's `CommitDigest`, its `rest` empty, and what `rest` shows.
 fn commit_digest(m: &super::Meta) -> (CommitDigest, (&osis_base::WallMs, &crate::events::Origin, &super::View)) {
     let n = m.parts();
-    let stands_in = m.dropped_parts().filter(|(_, d)| d.stands_in).map(|(ai, _)| ai).collect();
-    let d = CommitDigest { kind: m.view.kind, valid: m.valid().to_vec(), dropped: m.dropped_parts().map(|x| x.0).collect(), stands_in, stripped: m.stripped_parts().collect(), own_live: (0..n).filter(|ai| m.own_live(*ai)).collect(), missing: m.missing_parts().collect(), whole: (0..n).filter(|ai| m.whole(*ai)).collect(), rest: String::new() };
+    let d = CommitDigest { kind: m.view.kind, valid: m.valid().to_vec(), dropped: m.dropped_parts().map(|x| x.0).collect(), stripped: m.stripped_parts().collect(), own_live: (0..n).filter(|ai| m.own_live(*ai)).collect(), missing: m.missing_parts().collect(), whole: (0..n).filter(|ai| m.whole(*ai)).collect(), rest: String::new() };
     (d, (&m.received, &m.origin, &*m.view))
 }
 
@@ -795,15 +794,9 @@ impl super::Core {
                 snapshots.entry(s.1).or_default().push((*t, a.clone(), format!("{s:?}")));
             }
         }
-        let mut dropped_snapshots: BTreeMap<CommitId, Vec<(Tid, Ak)>> = BTreeMap::new();
-        for ((t, a), v) in ix.dropped_snapshots.iter() {
-            for c in v {
-                dropped_snapshots.entry(*c).or_default().push((*t, a.clone()));
-            }
-        }
         let mut tables: BTreeMap<&'static str, String> = tables(ix).into_iter().map(|(n, t)| (n, format!("{t:?}"))).collect();
         tables.insert("derived_written", format!("{:?}", derived_written(ix)));
-        IndexDigest { commits, held: self.held_digest(), snapshots, dropped_snapshots, tables }
+        IndexDigest { commits, held: self.held_digest(), snapshots, tables }
     }
 
     /// `IndexDigest::held`.
@@ -826,7 +819,6 @@ impl super::Core {
             && a.commits.iter().zip(b.commits.iter()).all(|((x, m), (y, n))| x == y && commit_digest(m) == commit_digest(n))
             && self.held_digest() == o.held_digest()
             && *a.snapshots == *b.snapshots
-            && *a.dropped_snapshots == *b.dropped_snapshots
             && tables(a).iter().zip(tables(b).iter()).all(|((_, x), (_, y))| x.same(*y))
             && derived_written(a) == derived_written(b)
             && self.perm_parts(false) == o.perm_parts(false)
@@ -892,8 +884,6 @@ pub struct IndexDigest {
     pub held: BTreeMap<Tid, (Vec<CommitId>, bool)>,
     /// Per compaction snapshot: its `snapshots` entries, with their aspect.
     pub snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>>,
-    /// Per snapshot: the aspects listing it in `dropped_snapshots`.
-    pub dropped_snapshots: BTreeMap<CommitId, Vec<(Tid, Ak)>>,
     pub tables: BTreeMap<&'static str, String>,
 }
 
@@ -903,10 +893,8 @@ pub struct IndexDigest {
 pub struct CommitDigest {
     pub kind: osis_commit::Kind,
     pub valid: Vec<bool>,
-    /// Aspects whose deltas were all dropped, and those of them standing in
-    /// (`Dropped::stands_in`).
+    /// Aspects whose deltas were all dropped.
     pub dropped: std::collections::BTreeSet<usize>,
-    pub stands_in: std::collections::BTreeSet<usize>,
     /// Aspects held as their leftover (`Hold::Leftover`), those none of whose own writes are gone (`Hold::Leftover::own_live`).
     pub stripped: std::collections::BTreeSet<usize>,
     pub own_live: std::collections::BTreeSet<usize>,
@@ -924,7 +912,6 @@ pub enum IndexField {
     Commit(CommitId),
     Held(Tid),
     Snapshots(CommitId),
-    DroppedSnapshots(CommitId),
     Table(&'static str),
 }
 
@@ -936,12 +923,11 @@ impl IndexDigest {
     /// Every field where `self` and `other` differ, in field order.
     pub fn diff(&self, other: &Self) -> Vec<IndexField> {
         // destructured: a new field fails to compile until it is compared
-        let IndexDigest { commits, held, snapshots, dropped_snapshots, tables } = self;
+        let IndexDigest { commits, held, snapshots, tables } = self;
         let mut out = Vec::new();
         keyed(commits, &other.commits, IndexField::Commit, &mut out);
         keyed(held, &other.held, IndexField::Held, &mut out);
         keyed(snapshots, &other.snapshots, IndexField::Snapshots, &mut out);
-        keyed(dropped_snapshots, &other.dropped_snapshots, IndexField::DroppedSnapshots, &mut out);
         keyed(tables, &other.tables, IndexField::Table, &mut out);
         out
     }
@@ -953,7 +939,6 @@ impl IndexDigest {
             IndexField::Commit(c) => s(self.commits.get(c).map(|x| x as _)),
             IndexField::Held(t) => s(self.held.get(t).map(|x| x as _)),
             IndexField::Snapshots(c) => s(self.snapshots.get(c).map(|x| x as _)),
-            IndexField::DroppedSnapshots(c) => s(self.dropped_snapshots.get(c).map(|x| x as _)),
             IndexField::Table(n) => self.tables.get(n).cloned(),
         }
     }
@@ -1048,7 +1033,7 @@ mod tests {
     // `index_digest`, or listed here as left out of the check, so a new index is placed on purpose.
     #[test]
     fn every_index_is_placed_in_the_check() {
-        const OWN: &[&str] = &["held", "commits", "snapshots", "dropped_snapshots", "derived_written"];
+        const OWN: &[&str] = &["held", "commits", "snapshots", "derived_written"];
         // node-local or re-derived by an open, so they differ from a fresh load by design: a
         // cache counter (`rotations`); a transaction's work queues (`rekeyed`, `epochs_due`, `names_due`,
         // `cover_waits`); what an open parks anew (`pending`, `pend_on`,

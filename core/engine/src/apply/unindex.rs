@@ -99,7 +99,6 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         if a.ak.as_str() == osis_commit::retention::RETENTION {
             super::validity::forget_setting(core, &a.tid, id);
         }
-        core.ix.dropped_snapshots.remove(&k, id);
         if v.form.counted() && v.kind.has_own_writes() && a.lo < a.hi {
             core.ix.ranges.remove(&(a.tid, a.ak.clone(), v.form.own_source(v.signer, *id)), &(a.lo, *id));
         }

@@ -93,7 +93,7 @@ Encoding: spec/wire.md §4. Fields:
   - A copy of a part that hashes to its header entry, under its thing's record held or the record the part itself carries, replaces a stored first copy of that slot that does not.
   - A part of an applied commit that is unjudgeable waits alone (Apply): kept under Pending storage, counted as not received, and examined again when what it awaits arrives.
   - The node reads the `secrets.0` boxes of what it opened (spec/crypto.md Reading-only secrets).
-  - A commit that awaits when its expiry passes: each part of it past its expiry goes as a waiting part past its expiry (§5), counting as never received, and flags its aspect (spec/permissions.md §4 Suspect).
+  - A commit that awaits when its expiry passes: each part of it past its expiry goes as a waiting part past its expiry (§5), counting as never received.
   - A commit that awaits is as if it had not arrived: a deletion decided meanwhile (a covering snapshot's signer dropped by it, a body removed) stands, and the deleted body counts as never received until it is fetched again.
   - **Examined again**: a pending commit is examined only when something it awaits arrives: a record it or a part of it awaits; the thing a part of it waits on entering the node closure; the held role inputs moving (an edge write, a `sync.0` write, a record, a rotation), for one awaiting its evidence or an epoch; the account's chain coming to hold the epoch it names; a blob, for one waiting for pages or header lists; the clock reaching its `ts` less `MAX_DRIFT` or its expiry; a purge request or expiry changing what is gone on a thing it writes; an open (an upgrade may read a parked one or apply one set aside). No arrival examines the others.
   - **Hostile input**: an insider can exhaust the reading-only budget and delay honest grants until its entries leave. A hostile writer with a k-aspect blob can cause k examinations by publishing k records one at a time. A commit awaiting a hop of its path or an epoch is examined again at each change of the held role inputs: k such cost k examinations per role commit applied. What a peer makes pend is bounded by the bounds on unvouched input per source (Pending storage), never by evicting another source's; what a writer stamped is charged to the peer that brought it once its write key is not the head's.
@@ -230,7 +230,6 @@ Every delta carries its **purge-by** on the wire: who may purge it; its commit c
   - If the request no longer drops it when its commit applies, it is fetched again like any missing delta.
   - A snapshot part is never named. A waiting one carrying a copy of a write gone at the node is held as its leftover, without those copies (spec/crdt.md §4.7), and joins as that; one with a page not held, or parked, is stripped once it can be read, at the latest when it joins.
   - A commit whose header lists are not resolved is judged by no request until they are; its parts keep their values until then or until its last carrier leaves (§4 Pending storage).
-- Where such a drop may leave a node reading less than one that kept the data, it reports the aspect suspect (spec/permissions.md §4).
 - **Out of history** every node may drop a covered body past its keep bounds (Covered) (compaction, spec/sync-compaction.md §1) under any held valid writer's snapshot or its signer's own replaces, the purge right or not (The setting). Snapshot bodies follow the same rules. Deleting it at peers that keep it unread stays a right holder's (spec/sync-compaction.md §1).
 
 ### Signals
@@ -267,7 +266,6 @@ Every delta carries its **purge-by** on the wire: who may purge it; its commit c
 - **Dropping a body** means destroying every local copy, its delta nonce and every local index entry derived from it. Holding a snapshot as its **leftover** (the body without the gone writes it carried, spec/crdt.md §4.7) destroys every copy of those writes the same way; the leftover is a local body (never logged, deleted at peers as a dropped one).
   - What the part was judged stays: its validity, the role its writes needed, and for a `secrets.0` or `keys.0` delta the epochs it boxed or keyed, whose introducing commit spec/crypto.md §4 asks for, and the sealed names of its boxes to the holders its edge writes put, a grant's.
   - A delta whose own writes are gone keeps no body. A snapshot held as its leftover is a body like a whole one for keep bounds and covering; it goes also for a copy of its body whose writes are no longer gone (a fallen purge).
-  - Exception: a compaction snapshot's part dropped other than as covered still counts for suspect flags (spec/permissions.md §4) from its header alone; a part dropped as covered need not (its coverer is valid and stamped no earlier). One held as its leftover is held.
 - A dropped body cannot be undone (§7); under purge on replace others' resets beat undo.
 
 ### Fixed retention

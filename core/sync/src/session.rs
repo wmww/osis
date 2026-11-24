@@ -100,7 +100,7 @@ pub enum To {
     Streams,
     /// Answers to read's requests (Delete, deposits, stamps).
     Read,
-    /// Register, Delete, Stranded, Suspect.
+    /// Register, Delete, Stranded.
     Inbox,
     /// The client port (spec/wire.md §11.2 kinds 24-29), the node's owner's (`Node::port`): the
     /// peer's Auth, Call, Sub and Unsub to answer; on a client connection (`Session::client`)
@@ -117,7 +117,7 @@ impl Incoming {
             Incoming::Request(_, m) | Incoming::Push(m) => match m.kind() {
                 34 | 36 | 37 | 38 | 40 | 45 | 46 | 47 => Some(To::Opens),
                 19 | 41 | 43 | 44 => Some(To::Streams),
-                7 | 14 | 30 | 31 => Some(To::Inbox),
+                7 | 14 | 30 => Some(To::Inbox),
                 24 | 25 | 27 | 28 if matches!(self, Incoming::Request(..)) => Some(To::Port),
                 29 if matches!(self, Incoming::Push(..)) => Some(To::Port),
                 _ => None,
