@@ -679,7 +679,7 @@ pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &T
 
 /// Whether `tid`'s record chain, through the records not yet held, reaches a key actor
 /// within `MAX_CHAIN_DEPTH` links (spec/permissions.md §1: a write deeper is invalid).
-fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
+pub(crate) fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
     let end = record_chain(*tid, |t| records(t).or_else(|| core.created(t)).map(CreationRecord::record_link)).end();
     matches!(end, ChainStep::Key(_))
 }

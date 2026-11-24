@@ -1413,6 +1413,54 @@ fn a_role_change_elsewhere_rescans_no_candidates_spec_perm_5_2() {
     assert_eq!((small, big), ((0, 0), (0, 0)));
 }
 
+/// Alice (0) shares `k` things with Bob (1) and Carol (2) as writers; Bob writes on each, Carol
+/// receives the edits, Alice removes Bob from each without them and Carol answers each: (the
+/// own-role rows Carol holds before the removals, after her answers, the addenda she wrote).
+fn rows_after_answers(k: usize) -> (usize, usize, usize) {
+    let mut lp = LocalPeer::fresh(3, T0);
+    lp.sync_all().unwrap();
+    let alice = lp.peers[0].engine.me();
+    let mut ts = Vec::new();
+    for _ in 0..k {
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, alice);
+        m.set(t, &ak("x:a.0"), &Value::Int(0)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
+        for i in 1..3 {
+            let who = lp.peers[i].engine.me();
+            lp.peers[0].engine.grant(&t, &who, &edge(Role::Write)).unwrap();
+        }
+        ts.push(t);
+    }
+    lp.sync_all().unwrap();
+    lp.advance(1000);
+    for t in &ts {
+        write(&mut lp, 1, *t, "x:e.0", 1);
+    }
+    lp.sync(1, 2).unwrap();
+    let before = crate::flows::addenda::rows_held(&lp.peers[2].engine.core);
+    for t in &ts {
+        remove(&mut lp, 0, *t, 1);
+    }
+    lp.sync(0, 2).unwrap();
+    let carol = lp.peers[2].engine.me();
+    let wrote = ts.iter().map(|t| addenda(&lp, 2, *t).iter().filter(|(a, _)| *a == carol).count()).sum();
+    (before, crate::flows::addenda::rows_held(&lp.peers[2].engine.core), wrote)
+}
+
+// notes/principles.md (Close leaks), notes/engine-roles.md (Addenda): a role row is held while
+// a removal's decide reads it; once Carol's own addendum vouches for every candidate the decide
+// reads no role, so the rows held after k answered removals are those held before, at k and 4k.
+#[test]
+fn answered_removals_hold_no_role_rows() {
+    for k in [2, 8] {
+        let (before, after, wrote) = rows_after_answers(k);
+        assert_eq!(wrote, k, "Carol answers each removal");
+        assert_eq!(after, before, "rows held after {k} answered removals");
+    }
+}
+
 // spec/permissions.md §5.2 (Addenda; Writing: whenever its own current view shows a content
 // commit of X ordered before R...): Bob (1) holds write on `t` directly and through holder Q
 // (Dave's thing, Bob its admin). Bob writes e, received by Carol (2) alone. Dave (3), an admin

@@ -5,36 +5,38 @@
 //! window (`window`: received by R's `ts` and before R), not listed by its frontier, on each thing
 //! N it is demoted on, are its candidates (`gather`); while one of them is one an
 //! addendum this node wrote now would vouch for and no counting addendum of its own vouches for
-//! it, it owes one addendum on N keyed by R listing every candidate (`owed`), written once
-//! N is in its node closure (`note_entered`).
+//! it, it owes one addendum on N keyed by R listing every candidate (`unvouched`, `may_vouch`), written once
+//! N is in its node closure and this node may write there (`decide`).
 //!
 //! Invariant: what is owed is a function of the held set, the receipts and the trust set (the
 //! walk, the counting addenda, the clock), never of what this node wrote before, so an open
 //! re-derives it (`all_due`) and nothing about it is durable. A judgement gathers (`gather`:
-//! whether R applies, its candidates) and then decides (`owed`: this node's roles, its own
-//! counting addenda); the gathering is kept (`Gathered`) and a removal is due again only when
-//! something it reads moves: R's own status in the walk (`note_changed`: the only input of one
-//! not applying), the history of an edge R writes changing at or before it, or a delta stated
-//! through such an edge, ordered no later than R and received before it, coming (`wake`, filed
-//! per edge, `Indexes::addenda_wake`), this node's roles moving on a thing it is
-//! filed under (`note_roles_moved`: decided again, the gathering kept), a thing it is filed under
-//! entering the node closure (`note_entered`: likewise). Another edge's change, or a removed
-//! party's commits on edges R does not write, judge nothing, so a commit wakes in proportion to
-//! the edges it names and the removals on them, never to what its author reaches. The window closes at R's own
-//! arrival, so its candidates' receipts are final once R is held. So a removal owing nothing
-//! costs nothing per step, and a node ingesting a history it received after it (a joiner)
-//! judges each removal once.
+//! whether R applies, its candidates) and then decides (`decide`: this node's roles, its own
+//! counting addenda, the node closure, whether it may write there). The gathering is kept
+//! (`Gathered`, `Indexes::addenda_gathered`) and done again only when what it reads may have
+//! moved: R's own status in the walk (`note_changed`: the only input of one not applying), the
+//! history of an edge R writes changing at or before it, or a delta stated through such an edge,
+//! ordered no later than R and received before it, coming (`wake`, filed per edge,
+//! `Indexes::addenda_wake`), R's late parts (`note_due`). Another edge's change, or a removed
+//! party's commits on edges R does not write, gather nothing, so a commit wakes in proportion to
+//! the edges it names and the removals on them, never to what its author reaches. The window
+//! closes at R's own arrival, so its candidates' receipts are final once R is held. The decide is
+//! followed (`Core::addenda_owed`, `memo::Effects` per removal): settled again exactly where
+//! something it read moved, so no input of it has a trigger to forget. It reads this node's role
+//! on each thing with an unvouched candidate as a row (`Core::own_roles`), so a role change there
+//! that leaves this node's role as it was decides nothing. So a removal owing nothing costs nothing per step,
+//! and a node ingesting a history it received after it (a joiner) judges each removal once.
 //!
 //! Who writes each input: R, the candidates and every addendum are their signers' word (a
 //! removed party may sign any number, at any key and `ts`; any writer writes `addenda.0`); the
 //! walk and layer 2 judge them all. An addendum is content: it moves no component, so a flood of
-//! them makes no removal due. This node writes only what it received and could vouch for itself,
-//! so a forged addendum or a flood of a removed party's commits makes it write nothing it would
-//! not write from the honest ones: a removed party's commits after R are not candidates (ordered
-//! after R, or received after its `ts` or after R: a remover's clock running ahead lengthens
-//! nothing).
+//! them gathers nothing; one keyed by R decides R again, once per addendum. This node writes only
+//! what it received and could vouch for itself, so a forged addendum or a flood of a removed
+//! party's commits makes it write nothing it would not write from the honest ones: a removed
+//! party's commits after R are not candidates (ordered after R, or received after its `ts` or
+//! after R: a remover's clock running ahead lengthens nothing).
 
-use crate::engine::write::writable_split;
+use crate::engine::write::{MayWrite, may_write_on, within_depth, writable_split};
 use crate::engine::{Core, Engine, Step, Tx};
 use crate::error::Result;
 use crate::events::{Diagnostic, DiagnosticKind};
@@ -45,17 +47,20 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Notes removal `r` (a role commit with a frontier, applied here) as due, gathered anew (its
+/// What a removal owes at this node and may write now, per thing: the commits its addendum
+/// there lists (`decide`).
+pub(crate) type Owes = Arc<BTreeMap<Tid, BTreeSet<CommitId>>>;
+
+/// Notes removal `r` (a role commit with a frontier, applied here) as due to gather again (its
 /// late parts may change what it names).
 pub(crate) fn note_due(core: &mut Core, r: &CommitId) {
     core.ix.addenda_due.insert(*r);
-    core.ix.addenda_gathered.remove(r);
 }
 
 /// The walk changed (`osis_perm::Changed`): the removals whose gathering may have moved are due
-/// again, gathered anew (`wake`). A removal not applying reads nothing else (`owed`), so its
-/// own edge write's status moving is its only trigger: no write elsewhere judges it, however
-/// many such removals are held.
+/// again (`wake`). A removal not applying reads nothing else (`gather`), so its own edge write's
+/// status moving is its only trigger: no write elsewhere gathers it, however many such removals
+/// are held.
 pub(crate) fn note_changed(core: &mut Core, c: &osis_perm::Changed) {
     for w in &c.ops {
         if core.ix.commits.get(&w.0).is_some_and(|m| m.view.kind.is_role() && m.view.frontier.is_some()) {
@@ -66,43 +71,6 @@ pub(crate) fn note_changed(core: &mut Core, c: &osis_perm::Changed) {
         return;
     }
     wake(core, c);
-}
-
-/// Roles moved for the parties `moved` (`Held::upstream` of a changed edge's holder or a new
-/// record) on the things `under` (`Held::reach` of its target or that record): where this node
-/// is one of them, the removals filed under a thing of `under` are due again, their gathering
-/// kept: what this node may write (the role an addendum needs) and which of its own addenda
-/// count read its roles, and nothing else they read moved. Another party's role moving judges
-/// nothing.
-pub(crate) fn note_roles_moved(core: &mut Core, moved: &BTreeSet<Tid>, under: &BTreeSet<Tid>) {
-    if core.ix.addenda_watch.is_empty() || !(core.member().is_some_and(|m| moved.contains(&m)) || moved.contains(&core.id.tid())) {
-        return;
-    }
-    for t in under {
-        let rs: Vec<CommitId> = core.ix.addenda_watch.get(t).into_iter().flatten().copied().collect();
-        for r in rs {
-            core.ix.addenda_due.insert(r);
-        }
-    }
-}
-
-/// The things `came` may have entered the node closure (`apply::wake_entered`, from the closure's
-/// own log of its members: every entry passes through it): where one now holds it, the removals
-/// filed under it (`Indexes::addenda_watch`: every thing a candidate is on, held or not) are due
-/// again, their gathering kept. An addendum owed on a thing outside the node closure
-/// waits for it (spec/sync-set.md §2 Writing); nothing else it reads moved. Leaving the closure
-/// owes nothing new.
-pub(crate) fn note_entered(core: &mut Core, came: &BTreeSet<Tid>) {
-    if core.ix.addenda_watch.is_empty() {
-        return;
-    }
-    for t in came.iter().filter(|t| core.ix.closure.holds(t)) {
-        let rs: Vec<CommitId> = core.ix.addenda_watch.get(t).into_iter().flatten().copied().collect();
-        osis_base::costs::count("addenda: removals woken on entry", u64::try_from(rs.len()).unwrap_or(u64::MAX));
-        for r in rs {
-            core.ix.addenda_due.insert(r);
-        }
-    }
 }
 
 /// The removals a walk change `c` may have moved the gathering of (`gather`) are due again,
@@ -185,8 +153,8 @@ pub(crate) fn window(got: osis_base::WallMs, r_ts: Ts, r_got: osis_base::WallMs)
 /// (`note_changed`), an edge R writes changing at or before it or a delta stated through one
 /// coming (`wake`), its late parts (`note_due`), an open. Receipts are final
 /// once R is held (its window closes at its arrival), and a commit arriving after R is in no
-/// window, so nothing else adds a candidate. Debug builds check a kept gathering against a fresh
-/// one at each judgement.
+/// window, so nothing else adds a candidate. Debug builds check every kept gathering against a
+/// fresh one after each durable transaction (`missed`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Gathered {
     /// R applies in this node's walk.
@@ -195,113 +163,233 @@ pub struct Gathered {
     addenda: BTreeMap<Tid, BTreeMap<CommitId, BTreeSet<Role>>>,
 }
 
-impl Gathered {
-    /// The things a judgement of it is filed under (`Indexes::addenda_watch`): those of its
-    /// candidates. Nothing for one not applying (only its own change in the walk makes it due,
-    /// `note_changed`) or with nothing to gather (only a delta stated through its edge coming can
-    /// bring one, `wake`).
-    fn watched(&self) -> BTreeSet<Tid> {
-        if !self.applies {
-            return BTreeSet::new();
-        }
-        self.addenda.keys().copied().collect()
+
+/// The decides followed (`Core::addenda_owed`) and the own-role rows each last read
+/// (`Core::own_roles`): a row is held while a followed decide's last settle read it, and goes
+/// with the last such reader (one settled to read it no more, or no longer followed), so the
+/// rows follow the removals that still need a role read, never every thing once read.
+#[derive(Clone)]
+pub(crate) struct Decides {
+    fx: osis_base::memo::Effects<CommitId, Owes>,
+    /// The things each followed removal's last settle read its role on.
+    read: BTreeMap<CommitId, BTreeSet<Tid>>,
+    /// The removals whose last settle read the role on each thing.
+    readers: BTreeMap<Tid, BTreeSet<CommitId>>,
+}
+
+impl Default for Decides {
+    fn default() -> Self {
+        Decides { fx: osis_base::memo::Effects::new("addenda: owed"), read: BTreeMap::new(), readers: BTreeMap::new() }
     }
 }
 
-/// Writes every addendum owed for the due removals (`Indexes::addenda_due`), each removal once per
-/// call, each in a step of its own (`Tx::step`): one that fails leaves nothing, is reported
-/// (`DiagnosticKind::OwnWriteFailed`) and stays due. A removal owing an addendum on a thing this node
-/// may write on only once its minting or keys arrive stays due, judged again at the end of each
-/// transaction until written; one owed on a thing outside the node closure is filed under it and
-/// judged again as it enters (`note_entered`).
+impl Decides {
+    /// `r` read the roles on `things` at its last settle: the rows read by it alone before and
+    /// not now go.
+    fn note_read(&mut self, core: &Core, r: &CommitId, things: BTreeSet<Tid>) {
+        let was = if things.is_empty() { self.read.remove(r) } else { self.read.insert(*r, things.clone()) };
+        for t in was.iter().flatten().filter(|t| !things.contains(t)) {
+            self.unread(core, r, t);
+        }
+        for t in things {
+            self.readers.entry(t).or_default().insert(*r);
+        }
+    }
+
+    fn unread(&mut self, core: &Core, r: &CommitId, t: &Tid) {
+        let Some(rs) = self.readers.get_mut(t) else { return };
+        rs.remove(r);
+        if rs.is_empty() {
+            self.readers.remove(t);
+            core.own_roles.unfollow(t);
+        }
+    }
+
+    /// Follows `r`'s decide no more: the rows it alone read go.
+    fn unwant(&mut self, core: &Core, r: &CommitId) {
+        self.fx.unwant(r);
+        self.note_read(core, r, BTreeSet::new());
+    }
+}
+
+/// Writes every addendum owed: gathers the removals due (`Indexes::addenda_due`), then decides
+/// every followed removal whose reads moved (`Core::addenda_owed`) and writes what one owes, each
+/// removal's addenda in a step of its own (`Tx::step`): one that fails leaves nothing, is
+/// reported (`DiagnosticKind::OwnWriteFailed`) and is decided again at the next call. An addendum
+/// owed on a thing outside the node closure, or one this node may write on only once its minting
+/// or keys arrive, is decided again when that moves, as any other read of the decide.
 pub(crate) fn write_owed(tx: &mut Tx<'_>) -> Result<()> {
-    if !tx.core.addenda_on || tx.core.ix.addenda_due.is_empty() {
+    if !tx.core.addenda_on {
         return Ok(());
     }
     let Some(me) = tx.core.member() else { return Ok(()) };
-    // an addendum is content: writing one moves no component, so makes no removal due here; the
-    // content it makes valid may bring a thing into the node closure, and the transaction's end
-    // runs this again for what that makes due (`note_entered`)
+    let mut ds = std::mem::take(&mut tx.core.addenda_owed);
     let due: Vec<CommitId> = tx.core.ix.addenda_due.iter().copied().collect();
     for r in due {
-        osis_base::costs::count("addenda: removals judged", 1);
-        if let Err(e) = tx.step(Step::Addenda, |tx| write_for(tx, &r, me)) {
-            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: Vec::new(), commit: Some(r), peer: None, detail: e.to_string() }, tx.core.hlc.mono());
-        }
+        gather_due(tx, &mut ds, &r, me);
     }
-    Ok(())
+    // a decide reads its roles as rows: brought up to date before asking what moved
+    refresh_roles(tx.core);
+    let out = decide_due(tx, &mut ds);
+    tx.core.addenda_owed = ds;
+    out
 }
 
-/// Writes the addenda removal `r` owes; takes it off the due set, filed under the
-/// things its judgement reads this node's roles on (`Gathered::watched`), unless one it owes
-/// waits.
-fn write_for(tx: &mut Tx<'_>, r: &CommitId, me: Tid) -> Result<()> {
-    let now = tx.core.hlc.peek();
-    let g = match tx.core.ix.addenda_gathered.get(r) {
-        Some(g) => {
-            #[cfg(debug_assertions)]
-            debug_assert!(gather(tx.core, r, me, false).as_ref() == Some(&**g), "a kept gathering of {r:?} is what a fresh one gathers");
-            g.clone()
-        }
-        None => {
-            let Some(g) = gather(tx.core, r, me, true) else {
-                tx.core.ix.addenda_due.remove(r);
-                return Ok(());
-            };
-            let g = Arc::new(g);
-            tx.core.ix.addenda_gathered.insert(*r, g.clone());
-            g
-        }
-    };
-    let a = writable_split(tx, me, owed(tx.core, r, &g, me, now), ct::ADDENDA_AK, Some(Role::Write))?;
-    for (n, lists) in &a.now {
-        write_entry(tx, *n, r, lists.clone())?;
-    }
-    #[cfg(debug_assertions)]
-    if !a.now.is_empty()
-        && let Some(g) = gather(tx.core, r, me, false)
-    {
-        let again = owed(tx.core, r, &g, me, tx.core.hlc.peek());
-        debug_assert!(a.now.keys().all(|n| !again.contains_key(n)), "an addendum written here does not count here: {r:?} on {:?}", again.keys().collect::<Vec<_>>());
-    }
-    // an addendum on a thing outside the node closure waits for it to enter (`note_entered`: it
-    // is a candidate's thing, so filed under it below)
-    if a.later {
-        return Ok(());
-    }
+/// Gathers removal `r` again (`gather`), keeping the gathering where it changed and following
+/// its decide; one that never owes (not held, no frontier) is followed no more.
+fn gather_due(tx: &mut Tx<'_>, ds: &mut Decides, r: &CommitId, me: Tid) {
     tx.core.ix.addenda_due.remove(r);
-    // filed under the parties that may bring it a candidate later (a commit of one received in
-    // time applying late, a late grant bringing one into question), whatever it owes now
+    let Some(g) = gather(tx.core, r, me, true) else {
+        if tx.core.ix.addenda_gathered.contains_key(r) {
+            tx.core.ix.addenda_gathered.remove(r);
+        }
+        ds.unwant(tx.core, r);
+        return;
+    };
+    if tx.core.ix.addenda_gathered.get(r).is_none_or(|k| **k != g) {
+        tx.core.ix.addenda_gathered.insert(*r, Arc::new(g));
+    }
+    // filed under the edges that may bring it a candidate later (a commit of one received in
+    // time applying late, a late grant bringing one into question)
     file_wake(tx.core, r);
-    // filed under the things whose roles for this node it reads; the gathering kept while filed
-    let old = tx.core.ix.addenda_filed.remove(r);
-    for t in old.iter().flat_map(|s| s.iter()) {
-        tx.core.ix.addenda_watch.remove(t, r);
+    ds.fx.want(*r);
+}
+
+/// Decides every followed removal whose reads moved and writes what it owes, until none moved
+/// but those that failed: an addendum written moves its removal's decide (its own counting
+/// addendum), which then owes nothing there.
+fn decide_due(tx: &mut Tx<'_>, ds: &mut Decides) -> Result<()> {
+    let (mut wrote, mut failed) = (BTreeSet::new(), BTreeSet::new());
+    loop {
+        let due: Vec<CommitId> = ds.fx.due().into_iter().filter(|r| !failed.contains(r)).collect();
+        if due.is_empty() {
+            break;
+        }
+        for r in due {
+            osis_base::costs::count("addenda: removals judged", 1);
+            let mut owes = None;
+            let settled = ds.fx.try_settle(&r, || {
+                let (v, read) = decide(tx, &r)?;
+                owes = Some((v.clone(), read));
+                Ok::<_, crate::Error>(v)
+            });
+            if let Err(e) = settled {
+                report(tx, r, &e);
+                failed.insert(r);
+                continue;
+            }
+            let Some((owes, read)) = owes else { continue };
+            ds.note_read(tx.core, &r, read);
+            if owes.is_empty() {
+                // a removal no longer held owes nothing again
+                if !tx.core.ix.commits.contains_key(&r) {
+                    ds.unwant(tx.core, &r);
+                    if tx.core.ix.addenda_gathered.contains_key(&r) {
+                        tx.core.ix.addenda_gathered.remove(&r);
+                    }
+                }
+                continue;
+            }
+            debug_assert!(!wrote.contains(&r), "an addendum written here does not count here: {r:?} on {:?}", owes.keys().collect::<Vec<_>>());
+            if !wrote.insert(r) {
+                failed.insert(r);
+                continue;
+            }
+            let written = tx.step(Step::Addenda, |tx| {
+                for (n, lists) in owes.iter() {
+                    write_entry(tx, *n, &r, lists.clone())?;
+                }
+                Ok(())
+            });
+            if let Err(e) = written {
+                report(tx, r, &e);
+                failed.insert(r);
+            }
+        }
     }
-    let watched = g.watched();
-    if watched.is_empty() {
-        tx.core.ix.addenda_gathered.remove(r);
-        return Ok(());
+    // decided again at the next call
+    for r in failed {
+        ds.fx.unwant(&r);
+        ds.fx.want(r);
     }
-    for t in &watched {
-        tx.core.ix.addenda_watch.insert(*t, *r);
-    }
-    tx.core.ix.addenda_filed.insert(*r, Arc::new(watched));
     Ok(())
 }
 
-/// Debug builds, after every durable transaction and at an engine's drop: no trigger was
-/// missed. Of every held removal not due, a
-/// kept gathering is what a fresh one gathers, and a fresh judgement owes nothing this node may
-/// write now: a stale gathering or an answer owed with no judgement due is a missed trigger, which
-/// the check at each judgement (`write_for`) cannot see. `Some`: what differs.
+/// Reports a judgement or write of removal `r`'s addenda failing.
+fn report(tx: &mut Tx<'_>, r: CommitId, e: &crate::Error) {
+    tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: Vec::new(), commit: Some(r), peer: None, detail: e.to_string() }, tx.core.hlc.mono());
+}
+
+/// What removal `r` owes at this node and may write now (`Owes`; `Core::addenda_owed` follows
+/// it), with the things whose role row it read: what its kept gathering leaves unvouched (`unvouched`), on the things in
+/// the node closure this node may write `addenda.0` on now (`may_write`'s checks, the role read
+/// as a row only where a candidate is unvouched). Every read is stamped, so it is decided again
+/// exactly where one moves: this node's role on a thing with an unvouched candidate, its own
+/// counting addenda (`Indexes::addenda_keyed` by R, their validity), the candidates still held,
+/// a thing entering the node closure, its minting or keys arriving.
+fn decide(tx: &mut Tx<'_>, r: &CommitId) -> Result<(Owes, BTreeSet<Tid>)> {
+    let (mut out, mut read) = (BTreeMap::new(), BTreeSet::new());
+    let Some(me) = tx.core.member() else { return Ok((Arc::new(out), read)) };
+    if !tx.core.ix.commits.contains_key(r) {
+        return Ok((Arc::new(out), read));
+    }
+    let Some(g) = tx.core.ix.addenda_gathered.get(r).cloned() else { return Ok((Arc::new(out), read)) };
+    for (n, (lists, needs)) in unvouched(tx.core, r, &g, me) {
+        read.insert(n);
+        if !may_vouch(own_role(tx.core, n), &needs) {
+            continue;
+        }
+        let depth = tx.core.skip_writer_rules || within_depth(tx.core, &|_| None, &n);
+        if tx.core.ix.closure.holds(&n) && depth && may_write_on(tx, &n)? == MayWrite::Yes {
+            out.insert(n, lists);
+        }
+    }
+    Ok((Arc::new(out), read))
+}
+
+/// This node's role on `n` now, as its row (`Core::own_roles`).
+fn own_role(core: &mut Core, n: Tid) -> Option<Role> {
+    match osis_base::memo::Cutoff::get_in(core, |c| &c.own_roles, &n, own_role_now) {
+        Ok(r) => r,
+        Err(e) => match e {},
+    }
+}
+
+/// `Core::own_roles`' derivation.
+fn own_role_now(core: &mut Core, n: &Tid) -> std::result::Result<Option<Role>, std::convert::Infallible> {
+    Ok(core.member().and_then(|me| core.role_now(&me, n)))
+}
+
+/// Brings `Core::own_roles` up to date.
+fn refresh_roles(core: &mut Core) {
+    let Ok(_) = osis_base::memo::Cutoff::refresh_in(core, |c| &c.own_roles, own_role_now);
+}
+
+/// Tests: whether removal `r`'s addenda are still to judge (gathered or decided).
+#[cfg(test)]
+pub(crate) fn owing(core: &Core, r: &CommitId) -> bool {
+    core.ix.addenda_due.contains(r) || core.addenda_owed.fx.wants(r) && core.addenda_owed.fx.current(r).is_none()
+}
+
+/// Tests: the own-role rows held (`Core::own_roles`).
+#[cfg(test)]
+pub(crate) fn rows_held(core: &Core) -> usize {
+    core.own_roles.rows_held()
+}
+
+/// Debug builds, after every durable transaction and at an engine's drop: no read of a judgement
+/// went unseen. Of every held removal not due to gather, a kept gathering is what a fresh one
+/// gathers, and a fresh judgement (roles read whole, `may_write` in full) owes nothing this node
+/// may write now unless its decide is due: a stale gathering is a missed wake, an answer owed with
+/// its decide settled a read the decide made unstamped. `Some`: what differs.
 #[cfg(debug_assertions)]
 pub(crate) fn missed(tx: &mut Tx<'_>) -> Result<Option<String>> {
     if !tx.core.addenda_on {
         return Ok(None);
     }
     let Some(me) = tx.core.member() else { return Ok(None) };
-    let now = tx.core.hlc.peek();
+    // the decides read the rows as last refreshed: refreshed as the next judgement does
+    refresh_roles(tx.core);
     let rs: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(id, m)| m.view.kind.is_role() && m.view.frontier.is_some() && !tx.core.ix.addenda_due.contains(id)).map(|(id, _)| *id).collect();
     for r in rs {
         let fresh = gather(tx.core, &r, me, false);
@@ -311,9 +399,11 @@ pub(crate) fn missed(tx: &mut Tx<'_>) -> Result<Option<String>> {
             return Ok(Some(format!("removal {r:?}: kept gathering {kept:?}, fresh {fresh:?}")));
         }
         let Some(g) = fresh else { continue };
-        let a = writable_split(tx, me, owed(tx.core, &r, &g, me, now), ct::ADDENDA_AK, Some(Role::Write))?;
-        if !a.now.is_empty() {
-            return Ok(Some(format!("removal {r:?}, not due, owes addenda on {:?}", a.now.keys().collect::<Vec<_>>())));
+        let owes: BTreeMap<Tid, BTreeSet<CommitId>> = unvouched(tx.core, &r, &g, me).into_iter().filter(|(n, (_, needs))| may_vouch(tx.core.role_now(&me, n), needs)).map(|(n, (lists, _))| (n, lists)).collect();
+        let a = writable_split(tx, me, owes, ct::ADDENDA_AK, Some(Role::Write))?;
+        let due = tx.core.addenda_owed.fx.wants(&r) && tx.core.addenda_owed.fx.current(&r).is_none();
+        if !a.now.is_empty() && !due {
+            return Ok(Some(format!("removal {r:?}, its decide settled, owes addenda on {:?}", a.now.keys().collect::<Vec<_>>())));
         }
     }
     Ok(None)
@@ -390,43 +480,41 @@ fn gather(core: &Core, r: &CommitId, me: Tid, count: bool) -> Option<Gathered> {
     Some(out)
 }
 
-/// What removal `r`, gathered as `g`, owes at this node (account `me`) at `now`, per thing: while
-/// one of its candidates there is one an addendum this node wrote now would vouch for (it holds
-/// the role it needs on N now) and no counting addendum of its own vouches for, one addendum on N
-/// listing every candidate still held. Reads, beside `g`, only what may change while `g` holds:
-/// this node's roles, its own counting addenda, the epoch rule's counting and the commits still
-/// held (the node closure is read where the addenda are written, `writable_split`).
+/// What removal `r`, gathered as `g`, may owe at this node (account `me`), per thing: where one
+/// of its candidates still held is one no counting addendum of this node's vouches for, every
+/// candidate still held (the addendum's list) and the roles those unvouched need. It is owed
+/// where this node holds one of those roles now (`may_vouch`: an addendum written now vouches as
+/// a holder of the role a part needs). Reads, beside `g`, its own addenda keyed by R and their
+/// validity (the epoch rule's counting among it) and the commits still held.
 ///
 /// Who writes each input: R and the candidates are their signers' word, judged by the walk and
 /// layer 2; every addendum on N (any writer's, a removed party's forged ones included) is judged
 /// by the walk's least fixpoint, and only this node's own valid ones stop it owing.
-fn owed(core: &Core, r: &CommitId, g: &Gathered, me: Tid, now: Ts) -> BTreeMap<Tid, BTreeSet<CommitId>> {
+fn unvouched(core: &Core, r: &CommitId, g: &Gathered, me: Tid) -> BTreeMap<Tid, (BTreeSet<CommitId>, BTreeSet<Role>)> {
     let mut out = BTreeMap::new();
     if !g.applies {
         return out;
     }
     // an addendum is positioned after R: applying R moved the clock past its `ts` (`Hlc::observe`)
-    debug_assert!(core.ix.commits.get(r).is_none_or(|m| now > m.view.ts), "the clock is past an applied removal's ts");
+    debug_assert!(core.ix.commits.get(r).is_none_or(|m| core.hlc.peek() > m.view.ts), "the clock is past an applied removal's ts");
     for (n, cs) in &g.addenda {
-        let Some(tn) = core.timelines().get(n) else { continue };
-        // an addendum written now vouches as a holder of the role a part needs
-        let mine = tn.role(&me, n, osis_perm::At::now(now));
-        if mine < Some(Role::Write) {
-            continue;
-        }
         let held: Vec<(&CommitId, &BTreeSet<Role>)> = cs.iter().filter(|(c, _)| core.ix.commits.contains_key(c)).collect();
-        // a valid addendum of this node's on N against R listing the commit
-        let vouched = |c: &CommitId| {
-            core.ix.addenda.range((*n, CommitId([0; 32]))..=(*n, CommitId([0xff; 32]))).any(|((_, ac), x)| {
-                x.entries.iter().any(|(removal, list)| removal == r && list.contains(c))
-                    && core.ix.commits.get(ac).is_some_and(|am| am.view.signer == me && am.view.aspect(n, ct::ADDENDA_AK).is_some_and(|ai| am.valid_at(ai)))
-            })
-        };
-        if held.iter().any(|(c, qs)| qs.iter().any(|q| mine >= Some(*q)) && !vouched(c)) {
-            out.insert(*n, held.into_iter().map(|(c, _)| *c).collect());
+        // a valid addendum of this node's on N against R listing the commit, read by R
+        // (`Indexes::addenda_keyed`), so another removal's addenda move nothing here
+        let mine_on_n: Vec<CommitId> = core.ix.addenda_keyed.get(r).into_iter().flatten().filter(|(t, ac)| t == n && core.ix.commits.get(ac).is_some_and(|am| am.view.signer == me && am.view.aspect(n, ct::ADDENDA_AK).is_some_and(|ai| am.valid_at(ai)))).map(|(_, ac)| *ac).collect();
+        let vouched = |c: &CommitId| mine_on_n.iter().any(|ac| core.ix.addenda.get(&(*n, *ac)).is_some_and(|x| x.entries.iter().any(|(removal, list)| removal == r && list.contains(c))));
+        let needs: BTreeSet<Role> = held.iter().filter(|(c, _)| !vouched(c)).flat_map(|(_, qs)| qs.iter().copied()).collect();
+        if !needs.is_empty() {
+            out.insert(*n, (held.into_iter().map(|(c, _)| *c).collect(), needs));
         }
     }
     out
+}
+
+/// Whether an addendum by a holder of `mine` vouches for a candidate needing one of `needs`
+/// (`unvouched`): it holds write, and one of them.
+fn may_vouch(mine: Option<Role>, needs: &BTreeSet<Role>) -> bool {
+    mine >= Some(Role::Write) && needs.iter().any(|q| mine >= Some(*q))
 }
 
 /// Whether a part on admin-only `ak` is content an addendum by a witness holding admin may list

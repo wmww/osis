@@ -191,11 +191,11 @@ fn addenda_by(lp: &LocalPeer, peer: usize, t: Tid) -> usize {
 fn answer_failing_keeps_nothing() {
     let (lp, t, r) = removal_answered(None);
     assert_eq!(addenda_by(&lp, 2, t), 1, "without a fault it answers");
-    assert!(!lp.peers[2].engine.core.ix.addenda_due.contains(&r));
+    assert!(!crate::flows::addenda::owing(&lp.peers[2].engine.core, &r));
     ran_equals_never_ran(Step::Addenda, 0, |f| {
         let (lp, t, r) = removal_answered(f);
         assert_eq!(addenda_by(&lp, 2, t), 0);
-        assert!(lp.peers[2].engine.core.ix.addenda_due.contains(&r), "still due");
+        assert!(crate::flows::addenda::owing(&lp.peers[2].engine.core, &r), "still due");
         (lp, 2)
     });
 }
@@ -217,13 +217,13 @@ fn failing_answer_never_blocks_ingest() {
     let e = &mut lp.peers[2].engine;
     assert!(e.core.ix.commits.contains_key(&c), "ingest goes on");
     assert_eq!(e.get(&t, &ak("x:a.0")).unwrap(), Some(Value::Int(9)));
-    assert!(e.core.ix.addenda_due.contains(&r), "still due");
+    assert!(crate::flows::addenda::owing(&e.core, &r), "still due");
     let reported: Vec<_> = rx.try_iter().filter_map(|e| if let Event::Diagnostic(d) = e { Some(d) } else { None }).filter(|d| d.kind == DiagnosticKind::OwnWriteFailed).collect();
     assert_eq!(reported.len(), 1, "reported once: {reported:?}");
     assert_eq!(reported[0].commit, Some(r));
     e.core.step_fault = None;
     e.run(|_| Ok(())).unwrap();
-    assert!(!lp.peers[2].engine.core.ix.addenda_due.contains(&r), "answered");
+    assert!(!crate::flows::addenda::owing(&lp.peers[2].engine.core, &r), "answered");
     assert_eq!(addenda_by(&lp, 2, t), 1);
 }
 

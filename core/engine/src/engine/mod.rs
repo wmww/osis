@@ -842,18 +842,12 @@ indexes! {
     /// rotation joining or leaving an epoch's closers moves only the commits these list
     /// (`refresh_epochs`).
     pub addenda_keyed: JSetMap<CommitId, (Tid, CommitId)>,
-    /// Removals whose addenda this node may owe, to judge at the end of the
-    /// transaction (`flows::addenda`): every held one at an open, then those whose component
-    /// changed.
+    /// Removals to gather again at the end of the transaction (`flows::addenda`): every held
+    /// one at an open, then those whose gathering a walk change or late part may have moved.
     pub addenda_due: JSet<CommitId>,
-    /// The removals judged by `flows::addenda`, by each thing whose roles for this node their
-    /// judgement reads (`flows::addenda::Gathered::watched`): this node's roles moving there, or
-    /// the thing's component walked anew, makes them due again.
-    pub addenda_watch: JSetMap<Tid, CommitId>,
-    /// The things each removal is filed under in `addenda_watch`.
-    pub addenda_filed: JMap<CommitId, Arc<BTreeSet<Tid>>>,
-    /// What each removal's judgement gathered (`flows::addenda::Gathered`), kept while it is
-    /// filed or due: gathered anew only when what it reads may have changed. Memory only.
+    /// What each held removal's judgement gathered (`flows::addenda::Gathered`): gathered anew
+    /// only when what it reads may have changed (`addenda_due`), read by its decide
+    /// (`Core::addenda_owed`). Memory only.
     pub addenda_gathered: JMap<CommitId, Arc<crate::flows::addenda::Gathered>>,
     /// The removals judged by `flows::addenda`, by the edges their writes are on: (target,
     /// holder, the removal's `ts`, removal). A walk change naming such an edge at or before the
@@ -1036,6 +1030,13 @@ pub struct Core {
     /// (`sync::dial::drop_departed`), followed: settled at each transaction's end that moved what
     /// it read.
     pub(crate) dial_departed: memo::Effects<(), crate::sync::dial::Departed>,
+    /// What each gathered removal owes at this node and may write now (`flows::addenda::Decides`),
+    /// followed: settled at each transaction's end that moved what it read.
+    pub(crate) addenda_owed: crate::flows::addenda::Decides,
+    /// This node's role on a thing now (`Core::role_now`) per thing (`memo::Cutoff`), a row while
+    /// a removal's decide reads it (`flows::addenda::Decides`): a role change on the thing that
+    /// leaves this node's role as it was moves no reader.
+    pub(crate) own_roles: memo::Cutoff<Tid, Option<osis_base::Role>>,
     /// The held split commits waiting for a path to open (`apply::paths::Wait`): built again
     /// from `Indexes::paths_unknown` where `None` (an open, a rollback).
     pub(crate) paths_wait: Option<crate::apply::paths::Wait>,
@@ -1534,7 +1535,6 @@ impl Core {
         let targets: BTreeSet<Tid> = c.edges().map(|p| p.1).chain(c.created.iter().copied()).collect();
         let moved = self.ix.held.upstream(&holders);
         let under = self.ix.held.reach(&targets);
-        crate::flows::addenda::note_roles_moved(self, &moved, &under);
         // a role moved there, this node's maybe: a held purge-on-replace body may now be owed a
         // cover (`retention::settle_none`), an aspect weighed while this node could not write it
         // a weighing (`compact::Trigger::wake`)
@@ -1992,6 +1992,7 @@ impl Core {
             dial_peers: _,
             roster_holders: _,
             dial_departed: _,
+            addenda_owed: _,
             // built again from the journaled `ix.paths_unknown` (`apply::paths::Wait`)
             paths_wait: _,
             holders_named: _,
@@ -2002,6 +2003,7 @@ impl Core {
             cert_records: _,
             key_roles: _,
             wrap_blocks: _,
+            own_roles: _,
             read_facts: _,
             held_fates: _,
             acting_of: _,
@@ -2260,6 +2262,8 @@ impl Core {
             dial_peers: memo::Memo::new("sync: dial peers"),
             roster_holders: memo::Memo::new("sync: roster holders"),
             dial_departed: memo::Effects::new("sync: dial list departed"),
+            addenda_owed: crate::flows::addenda::Decides::default(),
+            own_roles: memo::Cutoff::new("own roles"),
             paths_wait: None,
             holders_named: memo::Memo::new("holders named: read"),
             certified: Default::default(),

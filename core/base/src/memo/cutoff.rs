@@ -193,6 +193,11 @@ impl<K: Hash + Eq + Ord + Clone + std::fmt::Debug, V: Clone + PartialEq + std::f
         }
     }
 
+    /// How many rows it holds (unstamped: for counts of what it keeps).
+    pub fn rows_held(&self) -> usize {
+        self.rows.borrow().map.len()
+    }
+
     /// Stops following `k`: its row goes (a reader of it moves), and a later `get_in` derives it
     /// anew.
     pub fn unfollow(&self, k: &K) {
