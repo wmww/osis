@@ -42,5 +42,5 @@ Crates and versions: notes/architecture.md §5 (libcrux-ml-kem for deterministic
 ## Rejected
 - Per-epoch `keys.0` history; per-role boxes to nodes as extra objects: needless 1.2 KB objects.
 - Node KEM keys as the only sealing target: a granter would need the grantee's node list; a new node would need re-grants from everyone.
-- A tid committing to the KEM key: 1.2 KB in every chain certificate; rotation would need a new tid.
+- A tid committing to the KEM key: 1.2 KB in every certificate copy of its record; rotation would need a new tid.
 - AES-256-GCM and AEGIS (slow without AES hardware and in WASM, above); HPKE (SHA-256 inside, no hybrid in the RFC); X-Wing (a draft when suite 1 was fixed); ML-KEM-1024 (768 matches TLS and Signal practice); PQ signatures now. One KEM key per independent thing: notes/keys.md.

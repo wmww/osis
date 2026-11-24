@@ -66,4 +66,4 @@ One thing, one key role. Admins a and b rotate, grant, remove, re-seal and make 
 - **Hostile boxes**: extra boxes hand only what their writer opens; missing or removed boxes lock holders out (notes/keys.md, Lockouts).
 - **A history-less re-adder** opens none of the removal's listed epochs, so a holder that opens them boxes them (a tip add, m allowed them by its re-add).
 - **A hostile member re-added without history**: an epoch made knowing the removal is carried only by a node holding the removal, where m's later writes count only with its re-add, which gives m its floor.
-- Chain certificates, withdraw, void names, sync IDs and steps (Decided 3; issues/history-less-grant.md).
+- Certificate copies, withdraw, void names, sync IDs and steps (Decided 3; issues/history-less-grant.md).

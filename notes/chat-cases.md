@@ -255,7 +255,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 - **m** Erasable per-node KEM keys with per-node boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and spec/requirements.md, Cost.
 - **n** History-less grant: a cut (a read rotation at the add carrying no history), a floor per read epoch that history entries and boxes respect, role commits opened by every holder under roles secrets (notes/history-less-grant.md, model-checked); segments (footnote 33) are the fallback without core change.
 - **o** A node that stops fetching short of old messages (issues/partial-history-fetch.md); fetch is newest first (spec/sync-judgement.md §2).
-- **r** Pure readers place nothing under big sync IDs: no chain certificates or node card from a reader unless asked (realms past a few thousand members).
+- **r** Pure readers place nothing under big sync IDs: no certificate copies or node card from a reader unless asked (realms past a few thousand members).
 
 ## Footnotes
 
@@ -275,7 +275,7 @@ Nothing here is designed: each answer is what today's core would give if servers
 33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. No core change; Tess's primary path is core n (notes/chat.md Left out).
 34. The new chat carries no pointer back; a tid is a bare reference and the old chat's sync ID and the peers keeping it live under its own sync ID.
 35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.
-36. About 15 KB per member (grant boxes plus chain certificates under the new sync ID): about 15 MB at 1000, estimated.
+36. About 15 KB per member (grant boxes plus certificate copies under the new sync ID): about 15 MB at 1000, estimated.
 38. admins may always purge (spec/commits.md §5): no setting makes a message undeletable.
 39. the purge author is a member of every thing's stated path, so validity checks it (notes/path-form.md, Whom a write is by): a valid commit's purge author is its sender.
 40. with frontier heads (unbuilt); without them a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
