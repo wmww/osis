@@ -1,7 +1,7 @@
 # Terms
 > Summary: The one set of words for osis's concepts (Tess): each word, what it means and what it is never used for; which concepts are built and which are the design being moved to; how to write about them. Read before writing any spec, note, issue, comment or API doc.
 
-The concepts and their properties are spec/requirements.md (Concepts). This note fixes the words. Old words, those still in the repo with what removing each takes and those gone (kept out by tools/policy.py `dead_words`): issues/deprecated-terms.md.
+The concepts and their properties are spec/requirements.md (Concepts). This note fixes the words. Old words, those still in the repo with what removing each takes and those gone: issues/deprecated-terms.md.
 
 ## Words
 - **Thing**: anything with an identity. A role is **on a thing**; say "thing" wherever any thing will do, never "actor".

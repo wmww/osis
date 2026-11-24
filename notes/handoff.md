@@ -29,7 +29,6 @@ One list, in order. It stands in for every other list of what is next (the order
 Beside the route: the two failing seeds; one cleanup always, a workflow job about half the time (a tool that lists and runs the rewrite's ignores by name: three sessions wrote it in scratch).
 
 ## Old words and concepts
-- **A removed concept's word fails policy** wherever it appears: code, models, spec, notes, issues (tools/policy.py, the dead-words table; each failure says what stands in the word's place). Removing a concept adds its words to that table in the same change.
 - issues/deprecated-terms.md lists what is still in the repo though deprecated, each with what removing it takes, and what is gone. Most of what remains goes with accounts.
 - Old designs the test models still carry, each a design step and no clean-up: the chained sets (issues/models-read-chained-sets.md) and per-thing leaves of a removal's list (issues/models-read-list-leaves.md).
 - A word met in git history or in a brief that the tree does not use is dead until the tree says otherwise: read notes/terms.md, never build on it.
