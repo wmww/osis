@@ -89,7 +89,6 @@ mod tests {
     use crate::tree::{BlobReader, BlobWriter, Framing, HashSink, MemoryBlobs};
     use osis_base::WallMs;
     use osis_crypto::SeededRng;
-    use proptest::prelude::*;
 
     // min above the 64-byte gear window, so cuts are content-defined as with the format.
     const SMALL: LargeParams = LargeParams { chunk: ChunkParams { min: 64, max: 512, mask_bits: 5 }, threshold: 128 };
@@ -135,6 +134,8 @@ mod tests {
                 continue;
             };
             assert_eq!(read_back(&mut store, &f, *l, usize::MAX, MAX_VALUE_DEPTH).unwrap().0, Value::Bytes(d.clone()));
+            let enc = encode(&Value::Bytes(d.clone())).len();
+            assert!(matches!(read_back(&mut store, &f, *l, enc - 1, MAX_VALUE_DEPTH), Err(Error::TooLarge(_))), "{n}: one byte above max_len");
             let mut hs = HashSink::new(f.dedup.clone());
             let Value::Link(h) = chunk_value(&mut hs, SMALL, &Value::Bytes(d.clone())).unwrap() else { panic!() };
             assert_eq!(h.hash, l.hash);
@@ -362,31 +363,6 @@ mod tests {
             let (again, written, reused) = rewrite(&mut store, &f, 3, &d, Some(forged));
             assert_ne!(again.blob, root.blob, "case {i}");
             assert!(written >= 1 && written < n && reused > 0, "case {i}: the root afresh, the honest links below it reused: {written} of {n}");
-        }
-    }
-
-    proptest! {
-        // spec/data-model.md §6: round trip for random sizes around and above the threshold.
-        #[test]
-        fn round_trip(n in 0usize..3000, seed in any::<u8>()) {
-            let f = framing();
-            let d = data(n, seed);
-            let mut store = MemoryBlobs::default();
-            let mut rng = SeededRng::from_u64(u64::from(seed));
-            let v = write_bytes(&mut store, &f, &mut rng, &d);
-            let enc = encode(&Value::Bytes(d.clone()));
-            match v {
-                Value::Link(root) => {
-                    let root = *root;
-                    prop_assert!(enc.len() > SMALL.threshold);
-                    prop_assert_eq!(read_back(&mut store, &f, root, usize::MAX, MAX_VALUE_DEPTH).unwrap().0, Value::Bytes(d));
-                    prop_assert!(matches!(read_back(&mut store, &f, root, enc.len() - 1, MAX_VALUE_DEPTH), Err(Error::TooLarge(_))));
-                }
-                v => {
-                    prop_assert!(enc.len() <= SMALL.threshold);
-                    prop_assert_eq!(v, Value::Bytes(d));
-                }
-            }
         }
     }
 }

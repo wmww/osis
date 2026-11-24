@@ -310,35 +310,16 @@ impl Schema {
                 if let Err(e) = self.instantiate(n, args) {
                     bad(e);
                 }
-                for a in args {
-                    self.check_syntax(a, params, bad);
-                }
             }
-            Type::Param(p) => {
-                if !params.contains(p) {
-                    bad(format!("unbound type parameter {p}"));
-                }
-            }
-            Type::List(t) | Type::Set(t) | Type::Counter(t) | Type::Max(t) | Type::Min(t) => self.check_syntax(t, params, bad),
-            Type::Map(k, v) => {
-                self.check_syntax(k, params, bad);
-                self.check_syntax(v, params, bad);
-            }
+            Type::Param(p) if !params.contains(p) => bad(format!("unbound type parameter {p}")),
             Type::Struct(StructType { fields, reserved }) => {
-                check_ids("field", fields.keys().copied(), reserved, fields.values().map(|f| (&f.name, &f.succeeds)), bad);
-                for f in fields.values() {
-                    self.check_syntax(&f.ty, params, bad);
-                }
+                check_ids("field", fields.keys().copied(), reserved, fields.values().map(|f| (&f.name, &f.succeeds)), bad)
             }
-            Type::Enum(EnumType { cases, reserved }) => {
-                check_ids("case", cases.keys().copied(), reserved, cases.values().map(|c| (&c.name, &c.succeeds)), bad);
-                for c in cases.values() {
-                    if let Some(p) = &c.payload {
-                        self.check_syntax(p, params, bad);
-                    }
-                }
-            }
-            Type::String | Type::Blob | Type::Bool | Type::Int | Type::Float | Type::Strong | Type::Weak | Type::Ref | Type::Any | Type::Text => {}
+            Type::Enum(EnumType { cases, reserved }) => check_ids("case", cases.keys().copied(), reserved, cases.values().map(|c| (&c.name, &c.succeeds)), bad),
+            _ => {}
+        }
+        for c in ty.children() {
+            self.check_syntax(c, params, bad);
         }
     }
 }
