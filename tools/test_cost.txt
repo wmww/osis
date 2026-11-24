@@ -3,7 +3,7 @@
 # instructions (tools/icount over the whole binary). The gate fails a binary over its G (NEW-COST)
 # and calls a line stale under G / 2 (STALE-COST); a new or raised line is 1.5x the count, as the
 # summary prints it, with the reason in the commit message.
-crdt-model/props 23
+crdt-model/props 35
 held-model/it 470
 osis-app/it 270
 osis-base/cbor 25

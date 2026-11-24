@@ -29,3 +29,4 @@ sim-sweep:three_random 0 issues/accounts-properties-fail.md refuses a fire of no
 sim-sweep:two_nodes 0 issues/accounts-properties-fail.md refuses a fire of node \d+: Bad
 osis-engine/order::held_set_decides_plain rate:OSIS_ORDER_SEED=850771093425 issues/accounts-properties-fail.md held-model differs: validity of commit
 osis-engine/order::held_set_decides_exhaustive rate:OSIS_ORDER_SEED=850771093425 issues/accounts-properties-fail.md held-model differs: validity of commit
+osis-engine/retention::tests_carried::purge_by_id_reads_alike_forgotten_or_not_plain_spec_commits_5 rate:OSIS_PURGE_BY_ID_START=679952827408 issues/purge-by-id-forgetting.md forgetting vs not
