@@ -536,24 +536,47 @@ pub struct Timelines {
     /// §4 Key access).
     keyless: Arc<BTreeSet<(Tid, Tid)>>,
     /// The ways into a thing (`osis_perm::Timeline::ways_now`) searched since the edges last
-    /// changed, each with the ts it was searched at and the `until` it holds before.
-    ways: Ways,
+    /// changed.
+    ways: Now<(Tid, osis_perm::Need), Arc<osis_perm::graph::Ways>>,
+    /// Every actor's role on a thing on the current edges (`osis_perm::Timeline::roles_on_now`)
+    /// walked since the edges last changed.
+    roles: Now<Tid, Arc<BTreeMap<Tid, Role>>>,
 }
 
-/// `Timelines::ways`: a cache of the current edges.
-#[derive(Default)]
-struct Ways(std::sync::Mutex<BTreeMap<(Tid, osis_perm::Need), WaysAt>>);
-type WaysAt = (Arc<osis_perm::graph::Ways>, osis_base::Ts, Option<osis_base::WallMs>);
+/// A cache of reads of the current edges, emptied when an edge or record changes: each answer
+/// with the ts it was read at and the `until` it holds before, so it answers any ts between.
+struct Now<K, V>(std::sync::Mutex<BTreeMap<K, ReadAt<V>>>);
+/// An answer, the ts it was read at, and the `until` it holds before.
+type ReadAt<V> = (V, osis_base::Ts, Option<osis_base::WallMs>);
 
-impl Clone for Ways {
-    fn clone(&self) -> Ways {
-        Ways(std::sync::Mutex::new(self.0.lock().map(|m| m.clone()).unwrap_or_default()))
+impl<K, V> Default for Now<K, V> {
+    fn default() -> Self {
+        Now(std::sync::Mutex::new(BTreeMap::new()))
     }
 }
 
-impl Ways {
+impl<K: Clone, V: Clone> Clone for Now<K, V> {
+    fn clone(&self) -> Self {
+        Now(std::sync::Mutex::new(self.0.lock().map(|m| m.clone()).unwrap_or_default()))
+    }
+}
+
+impl<K: Ord, V: Clone> Now<K, V> {
     fn clear(&mut self) {
-        *self = Ways::default();
+        *self = Now::default();
+    }
+    /// The answer for `k` at `ts`, read by `read` (the answer and its `until`) unless one held
+    /// answers it.
+    fn at(&self, k: K, ts: osis_base::Ts, read: impl FnOnce() -> (V, Option<osis_base::WallMs>)) -> (V, Option<osis_base::WallMs>) {
+        let held = |e: &&ReadAt<V>| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
+        if let Some((v, _, until)) = self.0.lock().ok().and_then(|m| m.get(&k).filter(held).cloned()) {
+            return (v, until);
+        }
+        let (v, until) = read();
+        if let Ok(mut m) = self.0.lock() {
+            m.insert(k, (v.clone(), ts, until));
+        }
+        (v, until)
     }
 }
 
@@ -735,7 +758,10 @@ impl Timelines {
     /// (target, holder) (`Timeline::roles_on`): a walk back from it reads the edges into each
     /// node that reaches it and nothing else, so the answer moves with those alone.
     pub fn roles_on(&self, thing: &Tid, at: osis_perm::At, skip: &BTreeSet<(Tid, Tid)>) -> Arc<BTreeMap<Tid, Role>> {
-        let roles = Arc::new(self.of.roles_on_without(thing, at, skip));
+        let roles = match (at.point, at.ts) {
+            (None, Some(ts)) if skip.is_empty() => self.roles.at(*thing, ts, || self.of.roles_on_now(thing, ts)).0,
+            _ => Arc::new(self.of.roles_on_without(thing, at, skip)),
+        };
         for t in roles.keys() {
             self.stamps.read(&Read::Into(*t));
         }
@@ -755,26 +781,17 @@ impl Timelines {
     pub fn path_now(&self, node: &Tid, thing: &Tid, need: osis_perm::Need, ts: osis_base::Ts) -> Option<(Vec<Tid>, osis_base::format::PathMarks, bool)> {
         // the search reads the edges into everything that reaches `thing`
         self.stamps.read(&Read::Whole);
-        let held = |e: &WaysAt| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
-        let cached = self.ways.0.lock().ok().and_then(|m| m.get(&(*thing, need)).filter(|e| held(e)).map(|e| e.0.clone()));
-        let ways = match cached {
-            Some(w) => w,
-            None => {
-                let (w, expires) = self.of.ways_now(thing, need, ts);
-                let w = Arc::new(w);
-                if let Ok(mut m) = self.ways.0.lock() {
-                    m.insert((*thing, need), (w.clone(), ts, expires));
-                }
-                w
-            }
-        };
+        let (ways, _) = self.ways.at((*thing, need), ts, || {
+            let (w, until) = self.of.ways_now(thing, need, ts);
+            (Arc::new(w), until)
+        });
         ways.path(self.of.records(), node)
     }
 
     /// Every actor's effective role on `thing` on the current edges at `ts`, and the earliest
     /// `until` before which they hold, read as `roles_on` is.
     pub fn roles_now(&self, thing: &Tid, ts: osis_base::Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<osis_base::WallMs>) {
-        let (roles, until) = self.of.roles_on_now(thing, ts);
+        let (roles, until) = self.roles.at(*thing, ts, || self.of.roles_on_now(thing, ts));
         for t in roles.keys().chain([thing]) {
             self.stamps.read(&Read::Into(*t));
         }
@@ -808,6 +825,7 @@ impl Timelines {
         }
         if !c.created.is_empty() || c.edges().next().is_some() {
             self.ways.clear();
+            self.roles.clear();
         }
         // the edge writes held on a thing, and which of them apply: a write that came or went
         // (`held`), one whose standing moved (`ops`). A commit moves nothing of its signer's.
@@ -857,6 +875,7 @@ impl Timelines {
     pub fn change<T>(&mut self, f: impl FnOnce(&mut osis_perm::Timeline) -> T) -> T {
         self.stamps.wrote_all();
         self.ways.clear();
+        self.roles.clear();
         let out = f(&mut self.of);
         self.keyless = Arc::new(crate::rotation::members::keyless_in(&self.of));
         out

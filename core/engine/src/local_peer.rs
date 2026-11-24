@@ -433,7 +433,7 @@ impl Engine {
         let Some(s) = self.seal(&b, osis_blob::Class::of_marker(self.header(id).and_then(|h| h.ephemeral)), &[], rng)? else { return Ok(None) };
         let mut wraps = Vec::new();
         for a in self.independents(id) {
-            if self.run(|tx| { let deps = crate::rotation::departures(tx, &a)?; crate::rotation::blocked_roles_of(tx, &tx.core.me(), &a, &deps, crate::rotation::Walk::Log) })?.contains(&osis_base::Role::Read) {
+            if self.run(|tx| crate::rotation::blocked_roles_of(tx, &tx.core.me(), &a, crate::rotation::Walk::Log))?.contains(&osis_base::Role::Read) {
                 continue;
             }
             let Some(secret) = self.wrap_secret(&a, Some((id, &b.parts)))? else { continue };

@@ -972,6 +972,10 @@ pub struct Core {
     pub(crate) cert_records: crate::sync::certblobs::CertRecords,
     /// `rotation::departures` per actor (`memo`).
     pub(crate) departures: memo::Memo<Tid, Vec<osis_keys::Departure>>,
+    /// `rotation::blocked_roles_of` per (who, actor, walk) (`memo`).
+    pub(crate) blocked_roles: memo::Memo<(Tid, Tid, crate::rotation::Walk), BTreeSet<osis_base::Role>>,
+    /// `rotation::rotation_due` per (who, actor, mode, roles kept) (`memo`).
+    pub(crate) rotations_due: memo::Memo<(Tid, Tid, crate::rotation::Due, BTreeSet<osis_base::Role>), BTreeSet<osis_base::Role>>,
     /// The holders lacking a box of each actor (`rotation::reseal_candidates`, `memo`): O(roster)
     /// a pass otherwise.
     pub(crate) reseal_scans: memo::Memo<Tid, Vec<(Tid, BTreeSet<osis_base::Role>)>>,
@@ -1871,6 +1875,8 @@ impl Core {
             part_bounds: _,
             tree_roots: _,
             departures: _,
+            blocked_roles: _,
+            rotations_due: _,
             reseal_scans: _,
             // decodes of commit records kept at each record's stamp (`decoded`): an undo
             // stamps the rows it restores
@@ -2095,6 +2101,8 @@ impl Core {
             evidence: Default::default(),
             cert_records: Default::default(),
             departures: memo::Memo::new("departures"),
+            blocked_roles: memo::Memo::new("blocked roles"),
+            rotations_due: memo::Memo::new("rotation due"),
             reseal_scans: memo::Memo::new("reseal: scan"),
             place: 0,
             key_roles: memo::Memo::new("key roles"),

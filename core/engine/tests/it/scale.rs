@@ -1919,3 +1919,36 @@ fn expired_map_keys_charge_near_nothing() {
     println!("per expired key: charged {} B, state {} B ({small:?} at 10, {big:?} at 100)", per[0], per[1]);
     assert!(per[0] <= 4 && per[1] <= 4, "per expired key: charged {} B, state {} B ({small:?} at 10, {big:?} at 100)", per[0], per[1]);
 }
+
+/// A chain of `d` dependents minted from the node, the bottom one made independent (so each one
+/// above it first, top down): the work of `make_independent`.
+fn deep_independence(d: usize) -> Work {
+    let mut lp = net(1, 0);
+    let mut up = lp.peers[0].engine.me();
+    for _ in 0..d {
+        let mut m = Mutation::new();
+        up = lp.peers[0].engine.new_thing(&mut m, up);
+        lp.peers[0].commit(m).unwrap();
+    }
+    let b = lp.peers[0].backend.clone();
+    let (_, w) = measured(&b, || lp.peers[0].engine.make_independent(&up).unwrap());
+    assert!(lp.peers[0].engine.epochs(&up).is_some_and(|e| e.role(Role::Read).newest_held().is_some()));
+    w
+}
+
+// spec/permissions.md §3 (a dependent holder for keys of a thing becoming independent), spec/requirements.md Scale:
+// making the bottom of a chain of d dependents independent makes the d things above it
+// independent, each rotation boxing the one above and judging the box chain over it once (its
+// keysets walked, the roles read back from it): the work per rotation grows with the depth, so
+// the whole at most with its square, never its cube (8 times the depth: at most 128 times the
+// work, every counted phase).
+#[test]
+fn a_deep_dependent_made_independent_costs_its_depth_per_rotation() {
+    let (small, big) = (deep_independence(4), deep_independence(32));
+    assert!(big.n("rotation: keysets walked") > 0);
+    for k in phases(&small, &big) {
+        let (a, b) = (small.n(k), big.n(k));
+        println!("{k}: {a} at depth 4, {b} at 32");
+        assert!(b <= 128 * a + 128, "{k}: {a} at depth 4, {b} at 32: grows faster than the depth squared");
+    }
+}

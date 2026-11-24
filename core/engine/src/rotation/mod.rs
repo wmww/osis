@@ -48,17 +48,23 @@ pub enum Walk {
 
 /// The roles of `a` that `who` (its node thing, or a link key it signs as) may not encrypt under
 /// (spec/crypto.md §4, encrypting under), or log under (`walk`): those whose newest held
-/// current epoch is blocked (`blocked_epoch`, `deps` the departures from `a` counted).
-pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure], walk: Walk) -> Result<BTreeSet<Role>> {
-    let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
-    let mut out = BTreeSet::new();
-    for r in ROLES {
-        let Some((e, _)) = epochs.role(r).newest_held() else { continue };
-        if blocked_epoch(tx, who, a, r, &e, deps, walk)? {
-            out.insert(r);
+/// current epoch is blocked (`blocked_epoch`, with every departure from `a` this node knows). A
+/// memo (`Core::blocked_roles`): a cascade asks it of every actor it passes, each walk the length
+/// of the boxes below it, so asked afresh a chain of n actors costs n² keysets walked per
+/// rotation.
+pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, walk: Walk) -> Result<BTreeSet<Role>> {
+    osis_base::memo::Memo::get_in(tx, |tx| &tx.core.blocked_roles, &(*who, *a, walk), |tx| {
+        let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
+        let deps = departures(tx, a)?;
+        let mut out = BTreeSet::new();
+        for r in ROLES {
+            let Some((e, _)) = epochs.role(r).newest_held() else { continue };
+            if blocked_epoch(tx, who, a, r, &e, &deps, walk)? {
+                out.insert(r);
+            }
         }
-    }
-    Ok(out)
+        Ok(out)
+    })
 }
 
 /// Whether `who` may not encrypt under epoch `e` of role `r` of `a` (spec/crypto.md §4,
@@ -143,6 +149,7 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
     let mut todo = vec![root];
     let (mut missed, mut boxed) = (false, false);
     while let Some((x, k, read)) = todo.pop() {
+        osis_base::costs::count("rotation: keysets walked", 1);
         if (full || !missed) && (read || tx.core.me() == x) {
             let known = if x == *a { deps.to_vec() } else { departures(tx, &x)? };
             let deps = others(tx.core, &x, known);
@@ -279,15 +286,14 @@ pub(crate) fn others(core: &Core, x: &Tid, deps: Vec<Departure>) -> Vec<Departur
     deps.into_iter().filter(|d| !own(d)).collect()
 }
 
-/// `blocked_roles_of` with every departure of `a` this node knows.
+/// `blocked_roles_of` for encrypting.
 pub(crate) fn blocked_roles(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
-    let deps = departures(tx, a)?;
-    blocked_roles_of(tx, who, a, &deps, Walk::Encrypt)
+    blocked_roles_of(tx, who, a, Walk::Encrypt)
 }
 
 /// What a rotation is due for (`rotation_due`) besides what encrypting waits for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Due {
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum Due {
     /// Only what encrypting under the actor waits for (`ensure_rotated`).
     Encrypt,
     /// Also withdraws and the like, at the end of a complete pass of this actor's sync IDs
@@ -307,12 +313,19 @@ enum Due {
 /// (`floors::low_floor_due`), or when the pass's actor leaves holder actor `a` out at a current
 /// keyset of `a` (`members::rekey_due`). A fork alone is due nothing else: it stands until the role next
 /// rotates (spec/crypto.md §4). No secret of the role is needed; the commit must be
-/// `wrappable`, else the rotation waits for a re-seal.
+/// `wrappable`, else the rotation waits for a re-seal. A memo (`Core::rotations_due`): every
+/// cascade (`rotate_below`) asks it of each actor below the one it enters, so a chain of n
+/// actors made independent one by one would judge n² of them afresh.
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
+    osis_base::memo::Memo::get_in(tx, |tx| &tx.core.rotations_due, &(*who, *a, mode, kept.clone()), |tx| rotation_due_now(tx, who, a, mode, kept))
+}
+
+/// `rotation_due`, judged afresh.
+fn rotation_due_now(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
     let deps = departures(tx, a)?;
-    let blocked = blocked_roles_of(tx, who, a, &deps, Walk::Encrypt)?;
+    let blocked = blocked_roles_of(tx, who, a, Walk::Encrypt)?;
     let mut out = BTreeSet::new();
     let roles: Vec<Role> = ROLES.into_iter().filter(|r| may.contains(r) && !kept.contains(r) && !epochs.role(*r).current().is_empty()).collect();
     for r in roles {

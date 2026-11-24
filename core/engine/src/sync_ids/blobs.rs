@@ -723,8 +723,7 @@ impl Engine {
             if encrypt && !crate::flows::edges::finalizable(tx.core, &who, &a).is_empty() {
                 return Ok(true);
             }
-            let deps = crate::rotation::departures(tx, &a)?;
-            Ok(crate::rotation::blocked_roles_of(tx, &who, &a, &deps, walk)?.contains(&Role::Read))
+            Ok(crate::rotation::blocked_roles_of(tx, &who, &a, walk)?.contains(&Role::Read))
         })
     }
 
