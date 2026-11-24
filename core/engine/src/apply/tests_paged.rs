@@ -186,6 +186,12 @@ fn demote_peer(w: &mut World, who: usize) -> CommitId {
 }
 
 impl World {
+    /// Node `by` commits what `f` writes.
+    fn commit(&mut self, by: usize, f: impl FnOnce(&mut Mutation)) -> CommitId {
+        let mut m = Mutation::new();
+        f(&mut m);
+        self.lp.peers[by].commit(m).unwrap().unwrap()
+    }
     /// Runs one step of the script; every world draws the same numbers.
     fn step(&mut self, r: &mut Rng, g: u64) {
         let aks = aks();
@@ -469,14 +475,10 @@ fn packages(w: &mut World, from: usize, ids: &[CommitId]) -> Vec<Package> {
 fn snapshot_root_reset_prunes_pages_spec_crdt_8() {
     let (c, _) = both(|w| {
         let (t, a) = (w.t, aks()[0].clone());
-        let mut m = Mutation::new();
-        m.set(t, &a, &fat_map(ENTRIES, 0)).unwrap();
-        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let fill = w.commit(0, |m| { m.set(t, &a, &fat_map(ENTRIES, 0)).unwrap(); });
         let pk = packages(w, 0, &[fill]);
         w.lp.deliver(3, &pk[0]).unwrap();
-        let mut m = Mutation::new();
-        m.replace(t, &a, &fat_map(ENTRIES, 1)).unwrap();
-        w.lp.peers[0].commit(m).unwrap().unwrap();
+        w.commit(0, |m| { m.replace(t, &a, &fat_map(ENTRIES, 1)).unwrap(); });
         let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
         packages(w, 0, &[snap])
     });
@@ -527,9 +529,7 @@ fn deep_link_tree_compacts_syncs_and_reads_spec_crdt_8() {
         },
         |w| {
             let t = w.t;
-            let mut m = Mutation::new();
-            m.set(t, &a, &map).unwrap();
-            w.lp.peers[0].commit(m).unwrap().unwrap();
+            w.commit(0, |m| { m.set(t, &a, &map).unwrap(); });
             let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
             let ai = w.lp.peers[0].engine.package_with_record(&snap).unwrap().unwrap().1.parts[0].ai;
             let d = wire_depth(w, 0, &snap, ai);
@@ -559,9 +559,7 @@ fn paged_root_tables_compact_sync_and_read_spec_crdt_8() {
     let mut w = of(lp, t, false);
     let a = aks()[0].clone();
     for k in 0..100u64 {
-        let mut m = Mutation::new();
-        m.op(t, &a, PathOp { path: vec![PathSeg::Key(Value::Int(k as i64))], op: Op::Set(s(k, 0)) }).unwrap();
-        w.lp.peers[0].commit(m).unwrap().unwrap();
+        w.commit(0, |m| { m.op(t, &a, PathOp { path: vec![PathSeg::Key(Value::Int(k as i64))], op: Op::Set(s(k, 0)) }).unwrap(); });
     }
     let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
     let (_, record) = w.lp.peers[0].engine.package_with_record(&snap).unwrap().unwrap();
@@ -582,32 +580,19 @@ fn leaving_told_alike_paged_or_whole_spec_commits_5() {
     let told = |whole: bool| {
         let mut w = world(whole);
         let (t, a) = (w.t, aks()[0].clone());
-        let mut m = Mutation::new();
-        m.set(t, &a, &fat_map(ENTRIES, 0)).unwrap();
-        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let fill = w.commit(0, |m| { m.set(t, &a, &fat_map(ENTRIES, 0)).unwrap(); });
         let pk = packages(&mut w, 0, &[fill]);
         w.lp.deliver(3, &pk[0]).unwrap();
-        let mut m = Mutation::new();
-        m.replace(t, &a, &fat_map(ENTRIES, 1)).unwrap();
-        w.lp.peers[0].commit(m).unwrap().unwrap();
+        w.commit(0, |m| { m.replace(t, &a, &fat_map(ENTRIES, 1)).unwrap(); });
         let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
         let pk = packages(&mut w, 0, &[snap]);
         w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
-        let heard = |w: &mut World| {
-            let mut told = std::collections::BTreeSet::new();
-            for e in w.lp.peers[3].drain_events() {
-                if let crate::Event::Commits(ch) = e {
-                    told.extend(ch.iter().filter(|x| x.tid == t && x.ak == a).map(|x| x.id));
-                }
-            }
-            told
-        };
-        heard(&mut w);
+        heard(&mut w, &a);
         w.lp.deliver(3, &pk[0]).unwrap();
-        let applied = heard(&mut w);
+        let applied = heard(&mut w, &a);
         w.lp.advance(2 * 3_600_000);
         w.lp.peers[3].tick().unwrap();
-        let left = heard(&mut w);
+        let left = heard(&mut w, &a);
         assert!(left.contains(&fill), "{whole}: the replaced fill is told as it leaves: {left:?}");
         (applied, left)
     };
@@ -624,46 +609,31 @@ fn leaving_told_alike_paged_or_whole_later_write_elsewhere_spec_commits_5() {
     let told = |whole: bool| {
         let mut w = world(whole);
         let (t, a) = (w.t, aks()[0].clone());
-        let mut m = Mutation::new();
-        m.set(t, &a, &fat_map(ENTRIES, 0)).unwrap();
-        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let fill = w.commit(0, |m| { m.set(t, &a, &fat_map(ENTRIES, 0)).unwrap(); });
         let pk = packages(&mut w, 0, &[fill]);
         w.lp.deliver(3, &pk[0]).unwrap();
-        let mut m = Mutation::new();
-        m.op(t, &a, entry(0, 1)).unwrap();
-        w.lp.peers[0].commit(m).unwrap().unwrap();
+        w.commit(0, |m| { m.op(t, &a, entry(0, 1)).unwrap(); });
         w.lp.advance(1_800_000);
-        let mut m = Mutation::new();
-        m.op(t, &a, entry(ENTRIES + 10, 1)).unwrap();
-        w.lp.peers[0].commit(m).unwrap().unwrap();
+        w.commit(0, |m| { m.op(t, &a, entry(ENTRIES + 10, 1)).unwrap(); });
         let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
         let pk = packages(&mut w, 0, &[snap]);
         w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
-        let heard = |w: &mut World| {
-            let mut told = std::collections::BTreeSet::new();
-            for e in w.lp.peers[3].drain_events() {
-                if let crate::Event::Commits(ch) = e {
-                    told.extend(ch.iter().filter(|x| x.tid == t && x.ak == a).map(|x| x.id));
-                }
-            }
-            told
-        };
-        heard(&mut w);
+        heard(&mut w, &a);
         osis_base::costs::take();
         w.lp.deliver(3, &pk[0]).unwrap();
         let joins = osis_base::costs::take().iter().find(|x| x.0 == "apply: join").map_or(0, |x| x.2);
         assert!(whole || joins > 1, "the snapshot joins in pieces where not whole: {joins}");
-        let applied = heard(&mut w);
+        let applied = heard(&mut w, &a);
         // an hour after the overwrite, then after the later write
         let mut at = Vec::new();
         for _ in 0..2 {
             w.lp.advance(3_600_000 / 2 + 60_000);
             w.lp.peers[3].tick().unwrap();
-            at.push(heard(&mut w));
+            at.push(heard(&mut w, &a));
         }
         w.lp.advance(3_600_000);
         w.lp.peers[3].tick().unwrap();
-        at.push(heard(&mut w));
+        at.push(heard(&mut w, &a));
         assert!(at.iter().any(|x| x.contains(&fill)), "{whole}: the replaced fill is told as it leaves: {at:?}");
         (applied, at)
     };
@@ -683,37 +653,29 @@ fn rekill_dated_by_its_superseder_paged_or_whole_spec_commits_5() {
     let told = |whole: bool| {
         let mut w = world(whole);
         let (t, a) = (w.t, aks()[1].clone());
-        let commit = |w: &mut World, by: usize, f: &dyn Fn(&mut Mutation)| {
-            let mut m = Mutation::new();
-            f(&mut m);
-            w.lp.peers[by].commit(m).unwrap().unwrap()
-        };
-        let fill = commit(&mut w, 0, &|m| {
+        let fill = w.commit(0, |m| {
             m.set(t, &a, &fixed_fill(1, 0)).unwrap();
         });
         let pk = packages(&mut w, 0, &[fill]);
         for to in [1, 3] {
             w.lp.deliver(to, &pk[0]).unwrap();
         }
-        let refill = commit(&mut w, 1, &|m| {
+        let refill = w.commit(1, |m| {
             m.set(t, &a, &fixed_fill(1, 2)).unwrap();
         });
         w.lp.advance(60_000);
-        let replace = commit(&mut w, 0, &|m| {
+        let replace = w.commit(0, |m| {
             m.replace(t, &a, &fixed_fill(1, 1)).unwrap();
         });
         w.lp.advance(1_800_000);
-        let later = commit(&mut w, 0, &|m| {
+        let later = w.commit(0, |m| {
             let path = vec![PathSeg::Key(Value::Str("big".into())), PathSeg::Key(Value::Int(ENTRIES as i64 + 10))];
             m.op(t, &a, PathOp { path, op: Op::Set(s(0, 3)) }).unwrap();
         });
         let mut pks = packages(&mut w, 0, &[replace, later]);
         pks.extend(packages(&mut w, 1, &[refill]));
         w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
-        let heard = |w: &mut World| {
-            w.lp.peers[3].tick().unwrap();
-            w.lp.peers[3].drain_events().into_iter().any(|e| matches!(e, crate::Event::Commits(ch) if ch.iter().any(|x| x.id == refill && x.ak == a)))
-        };
+        let heard = |w: &mut World| heard_on(w, &a).contains(&refill);
         for pk in &pks {
             w.lp.deliver(3, pk).unwrap();
         }
@@ -730,9 +692,8 @@ fn rekill_dated_by_its_superseder_paged_or_whole_spec_commits_5() {
     assert_eq!(told(true), vec![true, false], "whole: node 1's fill leaves an hour after the replace");
 }
 
-/// What node 3's commit listener hears of `big` on a tick: the commits named.
-fn heard_on(w: &mut World, a: &Ak) -> std::collections::BTreeSet<CommitId> {
-    w.lp.peers[3].tick().unwrap();
+/// What node 3's commit listener heard of `a`: the commits named.
+fn heard(w: &mut World, a: &Ak) -> std::collections::BTreeSet<CommitId> {
     let mut out = std::collections::BTreeSet::new();
     for e in w.lp.peers[3].drain_events() {
         if let crate::Event::Commits(ch) = e {
@@ -740,6 +701,12 @@ fn heard_on(w: &mut World, a: &Ak) -> std::collections::BTreeSet<CommitId> {
         }
     }
     out
+}
+
+/// What node 3's commit listener hears of `a` on a tick (`heard`).
+fn heard_on(w: &mut World, a: &Ak) -> std::collections::BTreeSet<CommitId> {
+    w.lp.peers[3].tick().unwrap();
+    heard(w, a)
 }
 
 /// Node 0 puts key `k` in `big`, then a second entry of `k` beside it (a concurrent put's
@@ -754,18 +721,12 @@ fn removal_of_one_entry_of_a_key_kills_it_alone_spec_commits_5() {
     for whole in [false, true] {
         let mut w = world(whole);
         let (t, a) = (w.t, aks()[0].clone());
-        let mut m = Mutation::new();
-        m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(key(), s(0, 0))]))).unwrap();
-        let first = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let first = w.commit(0, |m| { m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(key(), s(0, 0))]))).unwrap(); });
         let pk = packages(&mut w, 0, &[first]);
         w.lp.deliver(1, &pk[0]).unwrap();
-        let mut m = Mutation::new();
-        m.op(t, &a, PathOp { path: vec![PathSeg::Key(key())], op: Op::Put(s(0, 1)) }).unwrap();
-        let second = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let second = w.commit(0, |m| { m.op(t, &a, PathOp { path: vec![PathSeg::Key(key())], op: Op::Put(s(0, 1)) }).unwrap(); });
         w.lp.advance(60_000);
-        let mut m = Mutation::new();
-        m.op(t, &a, PathOp { path: Vec::new(), op: Op::Remove(key()) }).unwrap();
-        let removal = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let removal = w.commit(1, |m| { m.op(t, &a, PathOp { path: Vec::new(), op: Op::Remove(key()) }).unwrap(); });
         let mut pks = packages(&mut w, 0, &[first, second]);
         pks.extend(packages(&mut w, 1, &[removal]));
         w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
@@ -792,23 +753,17 @@ fn overwrites_in_either_order_never_tell_early_spec_commits_5() {
         let mut w = world(false);
         let (t, a) = (w.t, aks()[0].clone());
         let entry = |g: u64| PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Set(s(0, g)) };
-        let mut m = Mutation::new();
-        m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Int(0), s(0, 0))]))).unwrap();
-        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let fill = w.commit(0, |m| { m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Int(0), s(0, 0))]))).unwrap(); });
         let pk = packages(&mut w, 0, &[fill]);
         for to in [1, 2, 3] {
             w.lp.deliver(to, &pk[0]).unwrap();
         }
         w.lp.advance(60_000);
-        let mut m = Mutation::new();
-        m.op(t, &a, entry(1)).unwrap();
-        let one = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let one = w.commit(1, |m| { m.op(t, &a, entry(1)).unwrap(); });
         let p1 = packages(&mut w, 1, &[one]);
         w.lp.deliver(2, &p1[0]).unwrap();
         w.lp.advance(600_000);
-        let mut m = Mutation::new();
-        m.op(t, &a, entry(2)).unwrap();
-        let two = w.lp.peers[2].commit(m).unwrap().unwrap();
+        let two = w.commit(2, |m| { m.op(t, &a, entry(2)).unwrap(); });
         let p2 = packages(&mut w, 2, &[two]);
         w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
         let order = if first_later { [&p2[0], &p1[0]] } else { [&p1[0], &p2[0]] };
@@ -845,24 +800,17 @@ fn killed_fill_leaves_an_hour_after_its_overwrite_spec_commits_5() {
     for whole in [false, true] {
         let mut w = world(whole);
         let (t, a) = (w.t, aks()[0].clone());
-        let mut m = Mutation::new();
-        m.set(t, &a, &fat_map(ENTRIES, 0)).unwrap();
-        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let fill = w.commit(0, |m| { m.set(t, &a, &fat_map(ENTRIES, 0)).unwrap(); });
         let pk = packages(&mut w, 0, &[fill]);
         w.lp.deliver(3, &pk[0]).unwrap();
         w.lp.advance(3 * 3_600_000);
-        let mut m = Mutation::new();
-        m.op(t, &a, PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Set(fat(0, 1)) }).unwrap();
-        w.lp.peers[0].commit(m).unwrap().unwrap();
+        w.commit(0, |m| { m.op(t, &a, PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Set(fat(0, 1)) }).unwrap(); });
         let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
         let pk = packages(&mut w, 0, &[snap]);
         w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
         w.lp.peers[3].drain_events();
         w.lp.deliver(3, &pk[0]).unwrap();
-        let told = |w: &mut World| {
-            w.lp.peers[3].tick().unwrap();
-            w.lp.peers[3].drain_events().into_iter().any(|e| matches!(e, crate::Event::Commits(ch) if ch.iter().any(|x| x.id == fill && x.ak == a)))
-        };
+        let told = |w: &mut World| heard_on(w, &a).contains(&fill);
         told(&mut w);
         w.lp.advance(3_600_000 - 60_000);
         assert!(!told(&mut w), "{whole}: the fill is in history until an hour after its overwrite");
@@ -878,14 +826,10 @@ fn killed_fill_leaves_an_hour_after_its_overwrite_spec_commits_5() {
 fn paged_and_unpaged_parts_spec_crdt_8() {
     let (c, _) = both(|w| {
         let (t, aks) = (w.t, aks());
-        let mut m = Mutation::new();
-        m.set(t, &aks[1], &fixed_fill(1, 0)).unwrap();
-        let first = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let first = w.commit(1, |m| { m.set(t, &aks[1], &fixed_fill(1, 0)).unwrap(); });
         let pk = packages(w, 1, &[first]);
         w.lp.deliver(3, &pk[0]).unwrap();
-        let mut m = Mutation::new();
-        m.set(t, &aks[1], &fixed_fill(1, 1)).unwrap().set(t, &aks[3], &Value::Int(1)).unwrap();
-        let second = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let second = w.commit(1, |m| { m.set(t, &aks[1], &fixed_fill(1, 1)).unwrap().set(t, &aks[3], &Value::Int(1)).unwrap(); });
         packages(w, 1, &[second])
     });
     let (pieces, loads) = (c.get("apply: piece").copied().unwrap_or(0), c.get("state page load").copied().unwrap_or(0));
@@ -901,9 +845,7 @@ fn paged_and_unpaged_parts_spec_crdt_8() {
 fn own_replace_passes_hole_whole_or_paged_spec_crdt_8() {
     let script = |w: &mut World| {
         let (t, reg) = (w.t, aks()[3].clone());
-        let mut m = Mutation::new();
-        m.set(t, &reg, &Value::Int(0)).unwrap();
-        w.lp.peers[3].commit(m).unwrap().unwrap();
+        w.commit(3, |m| { m.set(t, &reg, &Value::Int(0)).unwrap(); });
         let mut last = None;
         for g in 1..=2 {
             let mut m = Mutation::new();
@@ -943,9 +885,7 @@ fn entry_creation_after_its_paged_content_spec_crdt_5_6() {
             let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
             let pk = packages(w, 0, &[fill]);
             w.lp.deliver(1, &pk[0]).unwrap();
-            let mut m = Mutation::new();
-            m.set(t, &a, &fixed_fill(1, 1)).unwrap();
-            let rewrite = w.lp.peers[1].commit(m).unwrap().unwrap();
+            let rewrite = w.commit(1, |m| { m.set(t, &a, &fixed_fill(1, 1)).unwrap(); });
             let mut pks = packages(w, 1, &[rewrite]);
             pks.push(pk[0].clone());
             pks
@@ -1188,9 +1128,7 @@ fn paged_snapshot_differing_copies_match_whole_spec_perm_5_2() {
             let b = w.lp.peers[1].engine.me();
             let n = ENTRIES;
             let v = |g: u64| fat_map(n, g);
-            let mut m = Mutation::new();
-            m.set(t, &a, &v(0)).unwrap();
-            let fill = w.lp.peers[1].commit(m).unwrap().unwrap();
+            let fill = w.commit(1, |m| { m.set(t, &a, &v(0)).unwrap(); });
             let pk = packages(w, 1, &[fill]);
             w.lp.deliver(3, &pk[0]).unwrap();
             w.lp.deliver(0, &pk[0]).unwrap();
@@ -1230,15 +1168,11 @@ fn invalid_paged_delta_unmerges_per_piece_spec_perm_5_2() {
         let (c, _) = both(|w| {
             let t = w.t;
             let mut r = Rng::new(0);
-            let mut m = Mutation::new();
-            m.set(t, &mix, &fixed_fill(1, 0)).unwrap();
-            let fill = w.lp.peers[ROGUE].commit(m).unwrap().unwrap();
+            let fill = w.commit(ROGUE, |m| { m.set(t, &mix, &fixed_fill(1, 0)).unwrap(); });
             let pk = packages(w, ROGUE, &[fill]);
             w.lp.deliver(1, &pk[0]).unwrap();
             let cur = w.lp.peers[1].engine.get(&t, &mix).unwrap();
-            let mut m = Mutation::new();
-            m.set(t, &mix, &edited(cur, &mut r, 1)).unwrap();
-            let edit = w.lp.peers[1].commit(m).unwrap().unwrap();
+            let edit = w.commit(1, |m| { m.set(t, &mix, &edited(cur, &mut r, 1)).unwrap(); });
             let before: Vec<CommitId> = w.lp.peers[0].engine.commit_ids();
             w.demote();
             let demote = w.lp.peers[0].engine.commit_ids().into_iter().find(|c| !before.contains(c)).unwrap();
@@ -1268,9 +1202,7 @@ fn failed_streamed_apply_leaves_nothing_spec_commits_4() {
     let fill = w.lp.peers[1].commit(m).unwrap().unwrap();
     let pk = packages(&mut w, 1, &[fill]);
     w.lp.deliver(3, &pk[0]).unwrap();
-    let mut m = Mutation::new();
-    m.replace(t, &big, &map_of(1)).unwrap().replace(t, &set, &set_of(1)).unwrap();
-    let next = w.lp.peers[1].commit(m).unwrap().unwrap();
+    let next = w.commit(1, |m| { m.replace(t, &big, &map_of(1)).unwrap().replace(t, &set, &set_of(1)).unwrap(); });
     let pk = packages(&mut w, 1, &[next]).remove(0);
     // node 3 again, spilling every few KiB
     let p = &mut w.lp.peers[3];
@@ -1313,9 +1245,7 @@ fn failed_streamed_apply_leaves_nothing_spec_commits_4() {
 fn elementless_write_keeps_entry_creation_spec_crdt_5_6() {
     both(|w| {
         let (t, a) = (w.t, aks()[1].clone());
-        let mut m = Mutation::new();
-        m.set(t, &a, &fixed_fill(1, 0)).unwrap();
-        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let fill = w.commit(0, |m| { m.set(t, &a, &fixed_fill(1, 0)).unwrap(); });
         let pk = packages(w, 0, &[fill]);
         for to in [1, 3] {
             w.lp.deliver(to, &pk[0]).unwrap();
@@ -1342,19 +1272,17 @@ fn death_on_many_pages_dated_once_spec_commits_5() {
     let mut w = world(false);
     let (t, a) = (w.t, aks()[1].clone());
     let big = fat_map(ENTRIES, 0);
-    let mut m = Mutation::new();
-    m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("big".into()), big), (Value::Str("x".into()), Value::Int(0))]))).unwrap();
-    let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+    let fill = w.commit(0, |m| {
+        m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("big".into()), big), (Value::Str("x".into()), Value::Int(0))]))).unwrap();
+    });
     w.lp.advance(10);
     let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
     w.lp.advance(10);
-    let mut m = Mutation::new();
-    m.replace(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("x".into()), Value::Int(1))]))).unwrap();
-    let reset = w.lp.peers[0].commit(m).unwrap().unwrap();
+    let reset = w.commit(0, |m| {
+        m.replace(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("x".into()), Value::Int(1))]))).unwrap();
+    });
     w.lp.advance(10);
-    let mut m = Mutation::new();
-    m.replace(t, &a, &Value::Int(2)).unwrap();
-    w.lp.peers[0].commit(m).unwrap().unwrap();
+    w.commit(0, |m| { m.replace(t, &a, &Value::Int(2)).unwrap(); });
     let e = &mut w.lp.peers[0].engine;
     let ai = e.header(&snap).unwrap().aspects.iter().position(|x| x.ak == a).unwrap();
     let pieces = e.run(|tx| {
@@ -1380,15 +1308,9 @@ fn death_on_many_pages_dated_once_spec_commits_5() {
 fn reset_drops_dead_paged_collection_spec_crdt_8() {
     let (c, _) = both(|w| {
         let (t, a) = (w.t, aks()[1].clone());
-        let mut m = Mutation::new();
-        m.set(t, &a, &fixed_fill(1, 0)).unwrap();
-        let fill = w.lp.peers[1].commit(m).unwrap().unwrap();
-        let mut m = Mutation::new();
-        m.replace(t, &a, &fixed_fill(1, 1)).unwrap();
-        let replace = w.lp.peers[1].commit(m).unwrap().unwrap();
-        let mut m = Mutation::new();
-        m.set(t, &a, &fixed_fill(1, 2)).unwrap();
-        let rewrite = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let fill = w.commit(1, |m| { m.set(t, &a, &fixed_fill(1, 0)).unwrap(); });
+        let replace = w.commit(1, |m| { m.replace(t, &a, &fixed_fill(1, 1)).unwrap(); });
+        let rewrite = w.commit(1, |m| { m.set(t, &a, &fixed_fill(1, 2)).unwrap(); });
         packages(w, 1, &[fill, rewrite, replace])
     });
     assert!(c.get("reset: laid out").is_some_and(|n| *n > 0), "{c:?}");
@@ -1401,9 +1323,7 @@ fn reset_drops_dead_paged_collection_spec_crdt_8() {
 fn unmerge_emptying_every_page_leaves_none_spec_perm_5_2() {
     let (c, _) = both(|w| {
         let (t, set) = (w.t, aks()[2].clone());
-        let mut m = Mutation::new();
-        m.set(t, &set, &fixed_fill(2, 0)).unwrap();
-        let fill = w.lp.peers[ROGUE].commit(m).unwrap().unwrap();
+        let fill = w.commit(ROGUE, |m| { m.set(t, &set, &fixed_fill(2, 0)).unwrap(); });
         let demote = demote_peer(w, ROGUE);
         let mut pks = packages(w, ROGUE, &[fill]);
         pks.extend(packages(w, 0, &[demote]));
@@ -1420,14 +1340,10 @@ fn unmerge_emptying_every_page_leaves_none_spec_perm_5_2() {
 fn invalid_fill_after_nested_rewrite_spec_perm_5_2() {
     let (c, _) = both(|w| {
         let (t, big) = (w.t, aks()[0].clone());
-        let mut m = Mutation::new();
-        m.set(t, &big, &fixed_fill(0, 0)).unwrap();
-        let fill = w.lp.peers[ROGUE].commit(m).unwrap().unwrap();
+        let fill = w.commit(ROGUE, |m| { m.set(t, &big, &fixed_fill(0, 0)).unwrap(); });
         let pk = packages(w, ROGUE, &[fill]);
         w.lp.deliver(1, &pk[0]).unwrap();
-        let mut m = Mutation::new();
-        m.set(t, &big, &fixed_fill(0, 1)).unwrap();
-        let rewrite = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let rewrite = w.commit(1, |m| { m.set(t, &big, &fixed_fill(0, 1)).unwrap(); });
         let demote = demote_peer(w, ROGUE);
         let mut pks = packages(w, 1, &[rewrite]);
         pks.extend(packages(w, 0, &[demote]));
@@ -1477,9 +1393,7 @@ fn unmerge_leaving_empty_first_page_leaves_none_spec_perm_5_2() {
 fn unmerge_takes_paged_collection_below_invalid_entry_spec_perm_5_2() {
     let (c, _) = both(|w| {
         let (t, mix) = (w.t, aks()[1].clone());
-        let mut m = Mutation::new();
-        m.set(t, &mix, &fixed_fill(1, 0)).unwrap();
-        let fill = w.lp.peers[ROGUE].commit(m).unwrap().unwrap();
+        let fill = w.commit(ROGUE, |m| { m.set(t, &mix, &fixed_fill(1, 0)).unwrap(); });
         let pk = packages(w, ROGUE, &[fill]);
         w.lp.deliver(1, &pk[0]).unwrap();
         // entries of node 1's own, superseding none of the rogue's writes (else a rebuild)
@@ -1489,13 +1403,11 @@ fn unmerge_takes_paged_collection_below_invalid_entry_spec_perm_5_2() {
         {
             big.extend((0..ENTRIES / 2).map(|i| (Value::Int((ENTRIES + i) as i64), fat(i, 1))));
         }
-        let mut m = Mutation::new();
-        m.set(t, &mix, &v).unwrap();
-        let rewrite = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let rewrite = w.commit(1, |m| { m.set(t, &mix, &v).unwrap(); });
         // something else left in the state (else it goes whole)
-        let mut m = Mutation::new();
-        m.op(t, &mix, PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(1)) }).unwrap();
-        let other = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let other = w.commit(0, |m| {
+            m.op(t, &mix, PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(1)) }).unwrap();
+        });
         let demote = demote_peer(w, ROGUE);
         let mut pks = pk;
         pks.extend(packages(w, 1, &[rewrite]));
@@ -1513,12 +1425,12 @@ fn unmerge_takes_paged_collection_below_invalid_entry_spec_perm_5_2() {
 fn unmerge_emptying_skeleton_keeps_paged_entry_spec_perm_5_2() {
     let (c, _) = both(|w| {
         let (t, mix) = (w.t, aks()[1].clone());
-        let mut m = Mutation::new();
-        m.set(t, &mix, &Value::Map(osis_base::ValueMap::from([(Value::Str("big".into()), fat_map(ENTRIES, 0))]))).unwrap();
-        let fill = w.lp.peers[1].commit(m).unwrap().unwrap();
-        let mut m = Mutation::new();
-        m.op(t, &mix, PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(1)) }).unwrap();
-        let put = w.lp.peers[ROGUE].commit(m).unwrap().unwrap();
+        let fill = w.commit(1, |m| {
+            m.set(t, &mix, &Value::Map(osis_base::ValueMap::from([(Value::Str("big".into()), fat_map(ENTRIES, 0))]))).unwrap();
+        });
+        let put = w.commit(ROGUE, |m| {
+            m.op(t, &mix, PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(1)) }).unwrap();
+        });
         let demote = demote_peer(w, ROGUE);
         let mut pks = packages(w, 1, &[fill]);
         pks.extend(packages(w, ROGUE, &[put]));
@@ -1545,9 +1457,7 @@ fn covered_paged_fill_purged_spec_commits_5() {
     for whole in [false, true] {
         let mut w = world(whole);
         let t = w.t;
-        let mut m = Mutation::new();
-        m.set(t, &a, &fixed_fill(1, 0)).unwrap();
-        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let fill = w.commit(0, |m| { m.set(t, &a, &fixed_fill(1, 0)).unwrap(); });
         let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
         let pks = packages(&mut w, 0, &[fill, snap]);
         let mut m = Mutation::new();
@@ -1589,9 +1499,7 @@ fn internal_reads_hold_a_piece_at_a_time_spec_wire_12() {
         for i in 0..2u8 {
             v.insert(Value::Str(format!("large-{i}")), Value::Bytes((0..osis_base::format::CHUNK_THRESHOLD + 100).map(|j| (j * 7 + usize::from(i)) as u8).collect()));
         }
-        let mut m = Mutation::new();
-        m.set(t, &a, &Value::Map(v)).unwrap();
-        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let fill = w.commit(0, |m| { m.set(t, &a, &Value::Map(v)).unwrap(); });
         let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
         let e = &mut w.lp.peers[0].engine;
         let whole = e.state(&t, &a).unwrap().unwrap().approx_bytes() as u64;
@@ -1634,9 +1542,9 @@ fn forged_copies_in_a_paged_nested_set_apply_as_whole_spec_crdt_4_1() {
             b
         }));
         let n = 4000;
-        let mut m = Mutation::new();
-        m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("refs".into()), Value::Set((1..=n).map(weak).collect())), (Value::Str("x".into()), Value::Int(1))]))).unwrap();
-        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let fill = w.commit(0, |m| {
+            m.set(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("refs".into()), Value::Set((1..=n).map(weak).collect())), (Value::Str("x".into()), Value::Int(1))]))).unwrap();
+        });
         let pk = packages(w, 0, &[fill]);
         w.lp.deliver(1, &pk[0]).unwrap();
         w.lp.deliver(3, &pk[0]).unwrap();
@@ -1882,9 +1790,7 @@ fn honest_values_sync_through_the_fetch_walk_plain_spec_wire_6() {
         let v = Value::Map(v.into_iter().collect());
         let mut w = world_under(params);
         let t = w.t;
-        let mut m = Mutation::new();
-        m.set(t, &a, &v).unwrap();
-        let c = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let c = w.commit(0, |m| { m.set(t, &a, &v).unwrap(); });
         let pk = w.lp.peers[0].engine.package(&c).unwrap().unwrap();
         let (rounds, waits) = walk_fill(&mut w, &pk, false);
         assert!(!waits, "seed {seed}: left waiting after {rounds} rounds");
@@ -1948,9 +1854,7 @@ enum Deliver {
 /// A paged map of `n` entries, generation `g`, written by node 0 on aspect `a`, as a package.
 fn paged_package(w: &mut World, a: &Ak, n: u64, g: u64) -> Package {
     let t = w.t;
-    let mut m = Mutation::new();
-    m.set(t, a, &Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, g))).collect())).unwrap();
-    let c = w.lp.peers[0].commit(m).unwrap().unwrap();
+    let c = w.commit(0, |m| { m.set(t, a, &Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, g))).collect())).unwrap(); });
     w.lp.peers[0].engine.package(&c).unwrap().unwrap()
 }
 
@@ -2356,9 +2260,8 @@ fn an_own_write_holding_a_wanted_page_ends_the_wait_spec_commits_4() {
     let a = aks()[1].clone();
     let map = |n: u64| Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, 0))).collect());
     let own = |w: &mut World| {
-        let mut m = Mutation::new();
-        m.set(w.t, &a, &map(60)).unwrap();
-        let c = w.lp.peers[3].commit(m).unwrap().unwrap();
+        let t = w.t;
+        let c = w.commit(3, |m| { m.set(t, &a, &map(60)).unwrap(); });
         w.lp.peers[3].engine.package(&c).unwrap().unwrap()
     };
     // node 3's write, made in a copy: its pages and root list
@@ -2496,9 +2399,8 @@ fn a_paged_part_waits_for_pages_not_value_roots_spec_sync_streams_5() {
     let mix = aks()[1].clone();
     let big = Value::Str("ab".repeat(osis_base::format::CHUNK_THRESHOLD));
     let write = |w: &mut World, v: Value| {
-        let mut m = Mutation::new();
-        m.set(w.t, &mix, &v).unwrap();
-        let c = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let t = w.t;
+        let c = w.commit(0, |m| { m.set(t, &mix, &v).unwrap(); });
         w.lp.peers[0].engine.package(&c).unwrap().unwrap()
     };
     // the value's tree alone (its blobs alike: the same thing, aspect and bytes)
