@@ -488,6 +488,19 @@ pub(crate) fn kept_purged(core: &Core, c: &CommitId, m: &crate::engine::Meta) ->
     (0..n).any(purged) && (0..n).all(|ai| !m.holds(ai) || purged(ai)) && !m.header.aspects.iter().any(kept)
 }
 
+/// Whether no part of `m` dropped for a purge is listed (`listing::purged_keep` passed, spec/commits.md
+/// §7 Listed parts), read on the memo clock: a bound ahead wakes the reader then.
+fn purged_unlisted(core: &Core, c: &CommitId, m: &crate::engine::Meta) -> bool {
+    (0..m.view.aspects.len()).filter(|ai| m.dropped(*ai).is_some_and(|d| d.why == DropFor::Other)).all(|ai| purge_unlisted(core, c, ai))
+}
+
+/// Whether part `ai` of `c`, were it purged, would be listed no more (`listing::purged_keep`
+/// passed), on the memo clock.
+fn purge_unlisted(core: &Core, c: &CommitId, ai: usize) -> bool {
+    let t = crate::engine::listing::purged_keep(core, c, ai);
+    t < osis_commit::FOREVER && core.time.until(Some(t)) >= t
+}
+
 /// Drops every part judged invalid in this transaction (`Core::drop_due`), held or missing, but
 /// those `drops_invalid` keeps: its writes are none of the state's, so no read changes and no
 /// aspect is rebuilt (spec/crdt.md §4.6, spec/permissions.md §5.2). A missing one (never
@@ -1402,7 +1415,8 @@ impl Engine {
     /// removed or not, could pile up invalid headers for good:
     /// `tests_addenda::a_removed_writers_invalid_commits_are_forgotten_spec_commits_5`; a memory
     /// one all covered went at once, `forget_if_spent`); or one kept only for its purged parts
-    /// (`kept_purged`, either class): its gone writes read nothing. One
+    /// (`kept_purged`, either class) once none of its purged parts is listed
+    /// (`purged_unlisted`): its gone writes read nothing. One
     /// carrying a purge request, every part dropped as covered or invalid and one at least as
     /// invalid, goes where its request holds the right over nothing (`purge::drops_nothing`: an
     /// invalid request purges nothing) and it is not lasting. An invalid part that turns valid
@@ -1415,8 +1429,9 @@ impl Engine {
             return Ok(false);
         }
         let covered = |ai: usize| m.dropped(ai).is_some_and(|d| d.why == DropFor::Cover);
-        // a fire out of history (or expired) is past every bound and listed nowhere
-        let spent = |ai: usize| m.header.aspects.get(ai).is_some_and(|a| a.ak.signal()) && m.dropped(ai).is_some_and(|d| d.why == DropFor::Other);
+        // a fire out of history (or expired) is past every bound and listed nowhere; a purged
+        // one once its tombstone is not listed
+        let spent = |ai: usize| m.header.aspects.get(ai).is_some_and(|a| a.ak.signal()) && m.dropped(ai).is_some_and(|d| d.why == DropFor::Other) && purge_unlisted(&self.core, c, ai);
         // a part not held on a thing whose record is not held reads nothing here (one a release
         // forgot, a destroyed thing's, or never received): it arrives again with its commit, as
         // at a fresh node
@@ -1432,8 +1447,9 @@ impl Engine {
                 return self.read(|tx| Ok(purge::drops_nothing(tx.core, &c, &m.header) && !lasting(tx, &c, &|_, _| true)?));
             }
         }
-        // its gone writes read nothing (spec/crdt.md §4.7): forgetting it changes no read
-        Ok(kept_purged(&self.core, c, &m))
+        // its gone writes read nothing (spec/crdt.md §4.7): forgetting it changes no read once
+        // no purged part of it is listed
+        Ok(kept_purged(&self.core, c, &m) && purged_unlisted(&self.core, c, &m))
     }
 
     /// Forgets commits `cs`, IDs included: as if they had never applied (`apply::unindex_commit`).

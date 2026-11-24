@@ -1725,8 +1725,13 @@ fn the_path_wait_reads_each_write_once_spec_commits_4() {
 /// What holder `b` is charged for an ephemeral log on `t` (`Engine::memory_charge` of every
 /// memory commit it holds) once node `x` appended `n` elements, each by a commit of its own
 /// expiring a minute on, all expired and covered by `x`'s snapshot; and the bytes `b`'s state of
-/// the log holds (`Fragment::approx_bytes`).
+/// the log holds (`Fragment::approx_bytes`). With `map`, an ephemeral map instead, each commit
+/// putting a fresh key.
 fn expired_log_charge(n: usize) -> [u64; 2] {
+    expired_charge(n, false)
+}
+
+fn expired_charge(n: usize, map: bool) -> [u64; 2] {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.me();
@@ -1739,13 +1744,14 @@ fn expired_log_charge(n: usize) -> [u64; 2] {
         let ids: Vec<_> = e.memory_commits().into_iter().filter(|h| h.2 && taken.insert(h.0)).map(|h| h.0).collect();
         ids.iter().filter_map(|c| e.memory_blob(c).unwrap()).collect()
     };
-    let log = crate::common::LOG;
+    let log = if map { crate::common::EMAP } else { crate::common::LOG };
     let mut m = Mutation::new();
-    m.set(t, &log, &Value::List(vec![s("start")])).unwrap();
+    m.set(t, &log, &if map { Value::Map(Default::default()) } else { Value::List(vec![s("start")]) }).unwrap();
     lp.peers[0].engine.write(m).unwrap();
     for c in 0..n {
         let mut m = Mutation::new();
-        m.op(t, &log, PathOp { path: vec![], op: Op::Insert { at: c + 1, items: vec![s(&c.to_string())] } }).unwrap();
+        let op = if map { PathOp { path: vec![PathSeg::Key(s(&format!("k{c}")))], op: Op::Put(s(&c.to_string())) } } else { PathOp { path: vec![], op: Op::Insert { at: c + 1, items: vec![s(&c.to_string())] } } };
+        m.op(t, &log, op).unwrap();
         m.expires(t, &log, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
         lp.peers[0].engine.write(m).unwrap();
     }
@@ -1759,7 +1765,7 @@ fn expired_log_charge(n: usize) -> [u64; 2] {
     for bl in fresh(&mut lp) {
         lp.peers[1].engine.ingest_memory(&bl.encode(), u64::MAX).unwrap();
     }
-    let ak = Ak::new("t:log+.0").unwrap();
+    let ak = Ak::new(RawKey::ak(&log)).unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &ak).unwrap(), lp.peers[0].engine.get(&t, &ak).unwrap());
     let e = &mut lp.peers[1].engine;
     let ids: Vec<_> = e.memory_commits().into_iter().filter(|h| h.1 > 0).map(|h| h.0).collect();
@@ -1768,13 +1774,25 @@ fn expired_log_charge(n: usize) -> [u64; 2] {
 }
 
 // spec/crdt.md §4.7, §5.7, spec/sync-compaction.md §2: what a holder is charged per expired
-// element of an ephemeral list once a snapshot covers them (each stays a value-less record, as a
-// late insert may anchor at it), from n to 10n elements: a few bytes each (the snapshot's encoded
-// bytes, in each copy held), never a decoded record each; the holder's state holds as few.
+// element of an ephemeral list once a snapshot covers them (gone with its creation: a late insert
+// anchored at it sits at its virtual anchor), from n to 10n elements: near nothing each,
+// never a decoded record each; the holder's state holds as few.
 #[test]
-fn expired_list_elements_charge_a_few_bytes_each() {
+fn expired_list_elements_charge_near_nothing() {
     let (small, big) = (expired_log_charge(10), expired_log_charge(100));
     let per = [(big[0] - small[0]) / 90, big[1].saturating_sub(small[1]) / 90];
     println!("per expired element: charged {} B, state {} B ({small:?} at 10, {big:?} at 100)", per[0], per[1]);
-    assert!(per[0] <= 48 && per[1] <= 16, "per expired element: charged {} B, state {} B ({small:?} at 10, {big:?} at 100)", per[0], per[1]);
+    assert!(per[0] <= 4 && per[1] <= 4, "per expired element: charged {} B, state {} B ({small:?} at 10, {big:?} at 100)", per[0], per[1]);
+}
+
+// spec/crdt.md §4.7, spec/sync-compaction.md §2, spec/requirements.md Scale: what a holder is
+// charged per expired map entry of an ephemeral map, each put at a fresh key by a commit of its
+// own, once a snapshot covers them, from n to 10n keys: near nothing (the entry goes with its
+// creation, no record of it is kept), in what it is charged and in its state.
+#[test]
+fn expired_map_keys_charge_near_nothing() {
+    let (small, big) = (expired_charge(10, true), expired_charge(100, true));
+    let per = [big[0].saturating_sub(small[0]) / 90, big[1].saturating_sub(small[1]) / 90];
+    println!("per expired key: charged {} B, state {} B ({small:?} at 10, {big:?} at 100)", per[0], per[1]);
+    assert!(per[0] <= 4 && per[1] <= 4, "per expired key: charged {} B, state {} B ({small:?} at 10, {big:?} at 100)", per[0], per[1]);
 }

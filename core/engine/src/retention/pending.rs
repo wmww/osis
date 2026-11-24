@@ -2,7 +2,7 @@
 //! held purge request they are gone, what was stripped of them kept as the part's
 //! leftover (`leftover`) until it joins.
 
-use super::{T_EXPIRY, known_purged, leftover, make_leftover, suspect, writes_of};
+use super::{T_EXPIRY, known_purged, leftover, make_leftover, writes_of};
 use crate::engine::Tx;
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid};
@@ -19,20 +19,20 @@ pub(crate) fn pending_expired(tx: &Tx<'_>, h: &Header, ai: usize) -> bool {
 
 /// Parts of commit `id` held pending (stored as `blob`, header `h`) whose expiry has passed count
 /// as never received (spec/commits.md §5: no copy past T): they leave the stored copy before it
-/// is kept, and their aspects are flagged suspect (`suspect`: their non-value writes never join
-/// here, where a node that applied them before T keeps them). The others get a timer doing the
-/// same at T (`hold_gone`). One a held purge request names is gone instead
+/// is kept: their writes are gone everywhere (spec/crdt.md §4.7), so this node reads as one that
+/// applied them before T. The others get a timer doing the same at T (`hold_gone`). One a held purge request names is gone instead
 /// (`strip_purged`), as an applied one is: the request is a held commit, so nodes holding the same
 /// commits read alike; one applied later wakes the commit (`purge_one`). A header whose aspects
 /// are not resolved yet is judged once they are.
 pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header) -> Result<()> {
     let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
     for ai in ais {
-        let Some(a) = h.aspects.get(ai) else { continue };
+        if h.aspects.get(ai).is_none() {
+            continue;
+        }
         if pending_expired(tx, h, ai) {
             blob.parts.retain(|p| p.ai != ai);
             strip_pending(tx, id, ai)?;
-            suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*id, ai)])?;
             continue;
         }
         if let Some(t) = h.expires {
@@ -317,7 +317,7 @@ pub(crate) fn take_parts(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>) 
 }
 
 /// Part `ai` of the stored pending copy of `c` (waiting or parked), if any, goes (`pending_drops`,
-/// `hold_gone`), flagged suspect; sync then forgets the blobs holding it.
+/// `hold_gone`); sync then forgets the blobs holding it.
 pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some((h, taken)) = rewrite_stored(tx, c, |b| take_slot(b, ai))? else { return Ok(()) };
     forget_waiting_leftover(tx, &h, c, ai)?;
@@ -325,8 +325,5 @@ pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
         return Ok(());
     }
     tx.core.touch();
-    if let Some(a) = h.aspects.get(ai) {
-        suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*c, ai)])?;
-    }
     Ok(())
 }

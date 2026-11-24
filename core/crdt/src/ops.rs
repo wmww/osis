@@ -109,8 +109,8 @@ pub enum PathSeg {
 pub enum Op {
     /// Make the position read `v`: structural diff (§9). A map key that is not live is put (a
     /// path op into it creates the entry unless its path goes on through a field or case,
-    /// §5.6). An entry so created by an expiring delta loses only its own values at T: it
-    /// stays while another write inside it holds a live value (§4.7).
+    /// §5.6). An entry so created by an expiring delta goes with its creation at T (§4.7): others'
+    /// writes inside it stay held and read as at a node that never held it.
     Set(Value),
     /// Reset, then create `v`.
     Replace(Value),

@@ -168,3 +168,43 @@ fn purged_secret_reads_what_it_replaced_whatever_reaches_first_spec_commits_5() 
         }
     }
 }
+
+// spec/commits.md §5 Purge (what the re-snapshot is for), spec/requirements.md Convergence: a
+// node that compacted the value a purged write replaced (no history kept: dropped as covered under
+// a snapshot carrying the purged write) cannot read it again from bodies, which it takes no copy
+// of, even from a writer holding them; it reads it again once that writer re-snapshots
+#[test]
+fn a_compacted_node_reads_what_a_purge_brought_back_once_a_writer_resnapshots_spec_commits_5() {
+    let (mut lp, t, _) = world(true);
+    let mut ids = Vec::new();
+    for v in ["old", "SECRET"] {
+        let mut m = Mutation::new();
+        m.purge_by(t, &reg(), PurgeBy::Writer).unwrap();
+        m.set(t, &reg(), &Value::Str(v.into())).unwrap();
+        let id = lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+        lp.deliver(1, &pk).unwrap();
+        ids.push(id);
+        lp.advance(1_000);
+    }
+    let e = &mut lp.peers[0].engine;
+    e.snapshot(&t, &reg()).unwrap().unwrap();
+    for c in &ids {
+        e.drop_body(c, &t, &reg()).unwrap();
+    }
+    let mut m = Mutation::new();
+    m.set(t, &ct::PURGE, &lp.peers[0].engine.now()).unwrap();
+    m.purge(lp.peers[0].engine.purge_item(&ids[1], t, reg()).unwrap());
+    let p = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&p).unwrap().unwrap();
+    lp.deliver(1, &pk).unwrap();
+    let old = Some(Value::Str("old".into()));
+    assert_eq!(lp.peers[1].engine.get(&t, &reg()).unwrap(), old, "the writer holding the old body reads it");
+    assert_eq!(lp.peers[0].engine.get(&t, &reg()).unwrap(), None, "the compacted node does not");
+    lp.sync(1, 0).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &reg()).unwrap(), None, "nor once it holds what the writer logs, but its re-snapshot");
+    lp.peers[1].engine.purge_resnapshots().unwrap();
+    assert_eq!(own_snapshots(&lp, t), 1);
+    lp.sync(1, 0).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &reg()).unwrap(), old, "the re-snapshot carries it");
+}

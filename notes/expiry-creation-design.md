@@ -64,7 +64,7 @@ Purging or expiring every minting **destroys** the thing.
 **No `delete` call**: undoing a creation reverts its commit (the strong it wrote goes, the creation stays live, a later write recreates). Destruction is `Write::purge` or expiry; a thing no strong reaches is released, not destroyed (spec/sync-set.md §3).
 
 ## 4. Open
-- Dead sequence records others anchor at stay, a few bytes each (issues/seq-dead-records-grow.md); a map entry's records at a fresh key, a whole record each (issues/eph-expired-map-records.md).
+- Dead sequence records others' position or flag writes keep stay, a few bytes each (issues/seq-dead-records-grow.md); an expired element or map entry keeps no record (spec/crdt.md §4.7).
 - What a held snapshot carries is runs of counters per source (`retention::snapshot::Carried`: every write, and those valued), so the carriers of a gone write are found without reading bodies; its runs grow with how often a session alternates between the aspect and others.
 - A destroyed thing strands, silently, what only its strongs held, as an expired one does.
 

@@ -169,9 +169,10 @@ fn kept_part_is_told_leaving_at_its_bound_api_commits() {
     assert_eq!(bodies(&db, u, &k), vec![Body::Held(Some(s("b"))), Body::Held(Some(s("d")))]);
 }
 
-// spec/commits.md §7 (Listed parts: a purged part is listed while it would be listed unpurged):
-// a replaced part past its keep bound has left the listing; a purge naming it then lists nothing
-// again, by commit or by author.
+// spec/commits.md §7 (Listed parts: a purged part is listed while a body of it replaced at its own
+// `ts` would be in history): a replaced part past its keep bound has left the listing; a purge
+// naming it then lists nothing again, by commit or by author; a live part written before the
+// bound is not listed purged either, one written within it is.
 #[test]
 fn a_purge_lists_no_part_that_had_left_the_listing_spec_commits_7() {
     let c = clock();
@@ -186,10 +187,13 @@ fn a_purge_lists_no_part_that_had_left_the_listing_spec_commits_7() {
     assert_eq!(bodies(&db, t, &k), vec![Body::Held(Some(s("b")))], "a left the listing");
     commit_with(&db, |w| w.at(t, key(k.clone())).purge(osis::Purge::Commit(a)));
     assert_eq!(bodies(&db, t, &k), vec![Body::Held(Some(s("b")))], "purged by commit: a stays unlisted");
+    // b is live, but its keep counted from its own `ts` has passed: purged, it lists nowhere;
+    // c, written now, lists as purged
+    commit_with(&db, |w| w.at(t, kept(&db, &k)).set(&s("c")));
     let me = db.me();
     commit_with(&db, |w| w.at(t, key(k.clone())).purge(osis::Purge::Author(me)));
     let got = bodies(&db, t, &k);
-    assert!(got.len() == 1 && matches!(got[0], Body::Purged { .. }), "purged by author: b alone listed, as purged: {got:?}");
+    assert!(got.len() == 1 && matches!(got[0], Body::Purged { .. }), "purged by author: c alone listed, as purged: {got:?}");
 }
 
 // spec: none (API surface); notes/api.md Commits (the commit): a commit writing two things lists at an aspect of one with
@@ -226,8 +230,9 @@ fn a_commit_shows_every_part_api_commits() {
     assert!(rx.try_iter().any(|d| matches!(d, osis::Diagnostic::Mismatch { .. })), "a mismatch told");
 }
 
-// spec/commits.md §5, notes/api.md Commits: delete for everyone: one commit's body goes for good
-// and it stays listed as a tombstone; what the state reads does not change for a dead write; the
+// spec/commits.md §5, §7 Listed parts, notes/api.md Commits: delete for everyone: one commit's body
+// goes for good and, its history kept, it stays listed as a tombstone (with none kept it leaves no
+// trace); what the state reads does not change for a dead write; the
 // request is not listed at the aspect it purges (a writer may add a snapshot there); the listener
 // tells it.
 #[test]
@@ -249,10 +254,13 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     assert_eq!(db.at(t, untyped("t:msg.0")).get().unwrap(), Some(s("next")));
     let evs = heard(&db, &rx);
     assert!(evs.iter().any(|e| matches!(e, CommitEvent::Commit { id, commit: Some(c) } if *id == a && matches!(part(c, t, &msg()).body, Body::Purged { .. }))), "{evs:?}");
-    // a register's live write purged, no history kept: still listed, as purged
+    // a register's live write purged, no history kept: it leaves no trace, listed nowhere
+    // (spec/commits.md §7 Listed parts), and the register reads what it replaced
     let x = commit_with(&db, |w| w.at(t, key(ak("t:reg.0"))).set(&s("x")));
+    assert_eq!(bodies(&db, t, &ak("t:reg.0")), vec![Body::Held(Some(s("x")))]);
     commit_with(&db, |w| w.at(t, key(ak("t:reg.0"))).purge(osis::Purge::Commit(x.stamp.id)));
-    assert!(matches!(bodies(&db, t, &ak("t:reg.0"))[..], [Body::Purged { .. }]));
+    assert_eq!(bodies(&db, t, &ak("t:reg.0")), vec![], "no tombstone");
+    assert_eq!(db.at(t, untyped("t:reg.0")).get().unwrap(), None);
     // an ephemeral write is purged as a durable one, by a durable request of its own
     // (notes/ephemeral.md Principle): beside an ephemeral write it is refused
     let e = commit_with(&db, |w| w.at(t, key(ak("t:x+.0"))).set(&s("eph")));
@@ -328,16 +336,22 @@ fn page_bound_counts_large_values() {
 
 // spec/commits.md §5 (fixed retention; which carries no `expires`): a setting with an
 // expiry on every aspect reaches no `purge.0`, so delete for everyone still works in a
-// disappearing chat; a request beside a write of the thing goes under that write, with its expiry
-// (an edit purging old text).
+// disappearing chat (its messages' history kept, so a purged one lists as purged, §7 Listed
+// parts); a request beside a write of the thing goes under that write, with its expiry (an edit
+// purging old text).
 #[test]
 fn purge_takes_no_setting_expiry_spec_commits_5() {
-    use osis::internals::schema::core_types as ct;
+    use osis::core::{RetentionEntry, RetentionSetting};
     let db = db(0);
     let t = thing(&db);
     let a = say(&db, t, "x");
-    let rules = ct::RetentionSetting { default: Some(ct::RetentionEntry { expires: Some(60_000), ..Default::default() }), ..Default::default() };
-    db.commit_set(t, ct::RETENTION, &rules).unwrap();
+    let minute = Some(Duration::from_secs(60));
+    let rules = RetentionSetting {
+        rules: [(msg(), RetentionEntry { history: Some(osis::History::FOREVER), expires: minute, refuse_replace: false })].into(),
+        default: Some(RetentionEntry { history: None, expires: minute, refuse_replace: false }),
+        ..Default::default()
+    };
+    db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&rules)).unwrap();
     let mut w = db.write();
     w.at(t, untyped("t:msg.0")).purge(osis::Purge::Commit(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().stamp.id;

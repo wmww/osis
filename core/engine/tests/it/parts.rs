@@ -873,11 +873,12 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
         }
         p
     };
-    // past T when it came: gone at once, flagged
+    // past T when it came: gone at once, nothing flagged (its writes have no effect anywhere,
+    // spec/crdt.md §4.7)
     let mut p = new(late);
     crate::common::unless_refused(p.engine.ingest(&cut(&b, &[x]), Vec::new()));
     assert!(!copy_held(&mut p), "no copy past T");
-    assert!(p.engine.suspects().iter().any(|f| f.0 == x), "flagged");
+    assert!(p.engine.suspects().is_empty(), "no flag: {:?}", p.engine.suspects());
     assert_eq!(p.engine.pending(), vec![]);
     // parked before T, alone or beside a part that applied; its timer takes it
     for things in [&[x][..], &[x, y]] {

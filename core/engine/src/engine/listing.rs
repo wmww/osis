@@ -5,10 +5,11 @@
 //!
 //! The listing rule, one at every address: a part is listed while it is in its aspect's read (a
 //! write of its own live, `delta_live`) or kept by its own aspect's history until its keep bound
-//! (`body_history_keep`), a purge tombstone while the part would be listed unpurged (its
-//! gone writes are judged alike, never past its expiry), or this node's own invalid write. Replaced
-//! with no history kept, expired, dropped (compacted), another node's invalid write: not listed,
-//! whatever this node still holds. So every node holding the same commits lists the same ones.
+//! (`body_history_keep`), a purge tombstone while a body of it replaced at its own `ts` would be
+//! in history (by its header and the setting alone, never past its expiry), or this node's own
+//! invalid write. Replaced with no history kept, expired, dropped (compacted), another node's
+//! invalid write: not listed, whatever this node still holds. So every node holding the same
+//! commits lists the same ones.
 
 use super::{Engine, Tx};
 use crate::error::Result;
@@ -138,8 +139,8 @@ fn part_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<
 
 /// Whether part `ai` of `c` on `(tid, ak)` is in kept history at wall ms `now`: a write of it in
 /// the aspect's read (`delta_live`: its own writes, never another part's of its body, which keeps
-/// the bytes, not this part's listing; gone writes count, so a purge tombstone of a live
-/// write does) or kept by its own aspect's history (`body_history_keep`). By headers and the state alone.
+/// the bytes, not this part's listing) or kept by its own aspect's history
+/// (`body_history_keep`). By headers and the state alone.
 pub(crate) fn in_kept_history(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, now: u64) -> Result<bool> {
     let Some(written) = tx.core.ix.commits.get(c).filter(|m| m.aspect(tid, ak).is_some()).map(|m| m.view.ts) else { return Ok(false) };
     if crate::retention::history::of(tx.core, tid, ak).kept_whenever_replaced(written, now) {
@@ -173,9 +174,9 @@ fn listed_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize, itself: 
 }
 
 /// Whether part `ai` of `c` is listed, with its validity and what is here of it; its body not
-/// read. A purged part is listed while it would be unpurged: not past its expiry, and in the read
-/// by its gone writes or kept by its keep rule counted from its own `ts` (its body is gone,
-/// so no death of its writes can be judged from it; its own `ts` is never later than its death, so
+/// read. A purged part is listed while a body of it replaced at its own `ts` would be in history
+/// and it is not past its expiry (`purged_keep`): judged from its header and the setting, as its
+/// body and so the deaths of its writes are gone (its own `ts` is never later than its death, so
 /// a purge never lists a part retention no longer kept).
 pub(crate) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(bool, Here)>> {
     let me = tx.core.me();
@@ -201,10 +202,7 @@ pub(crate) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
     let kept = match &here {
         Here::Dropped => false,
         _ if !valid => true,
-        Here::Purged(_) => {
-            let due = tx.core.ix.commits.get(c).is_some_and(|m| past_due(tx.core, &m.header, ai, now));
-            !due && (now < purged_keep(tx, c, ai) || crate::retention::bounds::delta_live(tx, c, &tid, &ak)?)
-        }
+        Here::Purged(_) => now < purged_keep(tx.core, c, ai),
         _ => in_kept_history(tx, c, &tid, &ak, now)?,
     };
     Ok(kept.then_some((valid, here)))
@@ -223,29 +221,31 @@ fn opened_at(tx: &mut Tx<'_>, o: &CommitId, tid: &Tid, ak: &osis_base::Ak, floor
     Ok(crate::sync_ids::opened::part_floor(tx, o, oai, tid)?.is_some_and(|f| f >= floor))
 }
 
-/// The keep bound of purged part `ai` of `c`: its keep rule counted from its own `ts`, never past
-/// its own expiry or (a signal's) keep bound, where it would leave unpurged.
-pub(super) fn purged_keep(tx: &Tx<'_>, c: &CommitId, ai: usize) -> u64 {
-    let Some(m) = tx.core.ix.commits.get(c) else { return 0 };
+/// The wall ms before which purged part `ai` of `c` is listed: its keep rule counted from its own
+/// `ts`, never past its own expiry or (a signal's) keep bound, where it would leave unpurged.
+pub(crate) fn purged_keep(core: &crate::engine::Core, c: &CommitId, ai: usize) -> u64 {
+    let Some(m) = core.ix.commits.get(c) else { return 0 };
     let Some(a) = m.view.aspects.get(ai) else { return 0 };
-    let keep = crate::retention::history::of(tx.core, &a.tid, &a.ak).leaves_at(Some(m.view.ts.wall_ms().0), m.view.ts);
+    let keep = crate::retention::history::of(core, &a.tid, &a.ak).leaves_at(Some(m.view.ts.wall_ms().0), m.view.ts);
     let h = &m.header;
-    let due = h.expires.into_iter().chain(h.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| crate::retention::signal_bound(tx.core, h, a))).min();
+    let due = h.expires.into_iter().chain(h.aspects.get(ai).filter(|a| a.ak.signal()).and_then(|a| crate::retention::signal_bound(core, h, a))).min();
     due.map_or(keep, |t| keep.min(t))
 }
 
 /// The wall ms before which part `ai` of `c` is listed by its keep bound alone; `None` when no
-/// bound decides it (not held as a valid part, or a live write: its state decides).
+/// bound decides it (not held as a valid part, or a live write: its state decides; a purged
+/// part's bound always does).
 fn keep_bound(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<u64>> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.view.aspects.get(ai) else { return Ok(None) };
     let (tid, ak, valid) = (a.tid, a.ak.clone(), m.valid_at(ai));
-    if !valid || crate::retention::bounds::delta_live(tx, c, &tid, &ak)? {
+    if !valid {
         return Ok(None);
     }
     Ok(match part_here(tx, c, ai)? {
         Here::Dropped => None,
-        Here::Purged(_) => Some(purged_keep(tx, c, ai)),
+        Here::Purged(_) => Some(purged_keep(tx.core, c, ai)),
+        _ if crate::retention::bounds::delta_live(tx, c, &tid, &ak)? => None,
         _ => Some(crate::retention::bounds::body_history_keep(tx, c, &tid, &ak)?),
     })
 }

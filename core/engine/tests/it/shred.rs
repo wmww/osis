@@ -1483,8 +1483,8 @@ fn copy_of_a_purged_part_beside_an_unjudgeable_one_is_spent_spec_commits_5() {
 // spec/commits.md §5 (A waiting part past its expiry: goes at T, counts as never received), §4 (Examined
 // again: the clock reaching its expiry): commit `c` overwrites `t`'s register, pending for its `ts`, its
 // expiry T past that `ts`. Past T, ticked at T or not, the node examines it again: the part went at
-// T, so the register reads its older value and is flagged suspect (spec/permissions.md §4), nothing
-// waits and the node reads alike either way.
+// T, so the register reads its older value, as at a node that applied it before T (spec/crdt.md
+// §4.7), with no suspect flag; nothing waits and the node reads alike either way.
 #[test]
 fn part_pending_for_its_ts_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
     let mut lp = net2_one(); // 1 a node of 0's account
@@ -1510,9 +1510,7 @@ fn part_pending_for_its_ts_goes_at_its_expiry_ticked_or_not_spec_commits_5() {
         let e = &mut p.engine;
         assert!(e.commit_ids().contains(&c) && e.pending().is_empty(), "tick {tick}: {:?}", e.pending());
         assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("old")), "tick {tick}: never received");
-        let pe = osis_engine::retention::suspect::Why::PendingExpiry as u8;
-        let flags: Vec<_> = e.suspects().into_iter().map(|x| (x.0, x.1, x.3)).collect();
-        assert_eq!(flags, vec![(t, ak("t:reg.0"), pe)], "tick {tick}: its aspect flagged suspect");
+        assert!(e.suspects().is_empty(), "tick {tick}: no flag, its writes have no effect anywhere (spec/crdt.md §4.7)");
         seen.push(format!("applied {} pending {:?} flags {:?} reg {:?} digest {:?}", e.commit_ids().contains(&c), e.pending(), e.suspects(), e.get(&t, &ak("t:reg.0")).unwrap(), e.state_digest(&t, &ak("t:reg.0")).unwrap()));
         assert!(!recoverable(&mut p, b"SECRET-D4c7"), "tick {tick}");
     }

@@ -52,7 +52,7 @@ Principle: per (sync ID, commit) a node's own store holds one blob: the parts it
 - Opening again, one mechanism (store `Follow`): an entry with a sealed section on a missing part is parked under `Awaits::Thing(t)`, whose value is `Engine::section_keys` (whole or not, and t's read secrets while it opens t at all), so it opens again as t enters the closure or gains a secret. A pull anew opens every parked entry of S, whatever it awaits: a strong newly reaching a thing whose record went (forgotten at a pass end as not needed) refetches, and the held blob gives the record again (`holding::a_thing_made_beside_its_strong_opens_once_held_spec_sync_judgement_1`, both arrival orders and a strong added after the minting). Cost: every reader opens a minting blob twice (record, then whole once the strong brings the thing in).
 
 ## Left to build
-- The reference model (core/test/held-model) models atomic waits, not a part waiting alone (`retention/pending.rs`, `PendingExpiry`: a part waiting for pages or parking expires and is purged).
+- The reference model (core/test/held-model) models atomic waits, not a part waiting alone (`retention/pending.rs`: a part waiting for pages or parking expires and is purged).
 
 ## Consequences of spec/commits.md §5
 - Purge on replace only under `writer`: whoever replaces a body must be able to cover it.

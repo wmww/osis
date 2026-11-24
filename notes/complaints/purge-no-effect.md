@@ -9,3 +9,5 @@
 - `cargo test -p osis-engine --lib -- --ignored retention:: _plain`: libtest filters OR, so a module filter beside `_plain` also runs that module's `_large` properties. Name each `_plain` with `--exact`.
 - The two-part purge failure showed no cause in `bodies.rs`: only `OSIS_SYNC_TRACE=0` (verdict lines with their reasons) showed `MustNot(Purged)` from `read_facts`. The trace's verdict reasons are the first thing to read for a sync judgement failure; `OSIS_SYNC_TRACE=1` traces node 1 only, so pick the node.
 - `costs::count` records nothing until a `costs::take()` turns it on for the thread: a test counting sends must call it once before the first step it counts.
+- origin/main's tip `84365bf80 "listed"` is a stray tools-test commit (known_failures replaced by `probe/x`, gate_failures.py gutted); rebasing onto it conflicted in known_failures.txt. Worked on its parent instead.
+- A purged fire was forgotten through `forgettable`'s `spent` (a signal part dropped `Other` read as out of history), a second path besides `kept_purged`: two forget rules for one fact.

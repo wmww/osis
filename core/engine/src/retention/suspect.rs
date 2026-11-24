@@ -1,9 +1,9 @@
 //! Suspect aspects (spec/permissions.md §4 Suspect, spec/commits.md §5): an aspect whose
 //! state this node may have computed from less than another holder, because it dropped data a
 //! validity flip or a late creation record would have needed: a dropped body missing again (its
-//! cover turned invalid, spec/permissions.md §5.2, or its purge fell, spec/permissions.md §6), a
-//! part held pending
-//! at its expiry (counts as never received). The node reports them in suspect lists to the
+//! cover turned invalid, spec/permissions.md §5.2, or its purge fell, spec/permissions.md §6).
+//! A part dropped pending at its expiry flags nothing: its writes have no effect anywhere
+//! (spec/crdt.md §4.7). The node reports them in suspect lists to the
 //! peers it shares a sync ID with; a writer
 //! re-snapshots such an aspect (spec/sync-compaction.md §1). A flag names the bodies it is about; an entry
 //! goes as its body comes back (held again: what the aspect lacked for it is in). An
@@ -11,12 +11,7 @@
 //! (`receipt::settled`), judged when the flags are read, from what is held then: a snapshot that
 //! turns invalid gives nothing (spec/permissions.md §5.2), so the flag it had settled shows
 //! again. A snapshot's author that lacked the delta leaves a node that holds it richer until a
-//! writer holding it compacts (notes/engine-suspects.md). A PendingExpiry entry is never
-//! dormant: its part's writes reach this node only as a snapshot's copies, and no test on what a
-//! snapshot holds tells whether they repaired it (a listing snapshot may carry nothing of the part;
-//! a write key-erased at expiry, spec/crdt.md §4.7, lands outside the entry record the part wrote; writes
-//! of one delta share a dot). The lists' digests say whether nodes agree; such an entry goes
-//! only with its thing (`forget`), yields to any flag raised after it (most recent first).
+//! writer holding it compacts (notes/engine-suspects.md).
 //!
 //! The flags are rows `q/` mirrored in `Indexes::suspects`, so a reader of one aspect's flag
 //! (`Engine::suspect`) reads that key and the aspect's held snapshots alone: sync follows each
@@ -35,8 +30,6 @@ use std::sync::Arc;
 pub enum Why {
     /// A dropped body is missing again: its cover turned invalid, or its purge fell.
     Uncovered = 2,
-    /// A part held pending at its expiry was dropped (counts as never received).
-    PendingExpiry = 4,
 }
 
 /// A body a flag is about: its commit, aspect index and `Why` bits.
@@ -136,10 +129,10 @@ pub(crate) fn body_back(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak:
     Ok(())
 }
 
-/// Whether flag entry `e` is dormant: not about a part that went pending at its expiry, and a
-/// held snapshot of its aspect valid here is stamped after its commit.
+/// Whether flag entry `e` is dormant: a held snapshot of its aspect valid here is stamped after
+/// its commit.
 fn dormant(core: &Core, e: &Entry) -> bool {
-    e.2 & Why::PendingExpiry as u8 == 0 && core.ix.commits.get(&e.0).is_some_and(|m| crate::apply::receipt::settled(core, &m.header, usize::from(e.1)))
+    core.ix.commits.get(&e.0).is_some_and(|m| crate::apply::receipt::settled(core, &m.header, usize::from(e.1)))
 }
 
 /// `f` as reported: when last raised and the `Why` bits of its bodies not dormant (0 while
