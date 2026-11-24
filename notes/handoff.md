@@ -19,7 +19,7 @@
 One list, in order. It stands in for every other list of what is next (the order of the state note's Next, the order of code briefs in notes/a2-spec/README.md); notes/redesign-plan.md holds the stages and their reasons.
 
 1. **Accounts as ordinary things** (Tess: next, delete first), on main directly, no branch. Builder's brief with the delete list, sizes and order of work: notes/accounts-switch-brief.md; stage A4 of the plan.
-   - Before its spec piece: Tess's answer on issues/first-entry-through-holder.md; home as the account itself or a dependent of it (the design note argues the first, the plan says the second: settle in the spec piece).
+   - It builds on notes/stubs.md: Tess's decisions on grants, stubs, references in history and the inbox, with what the spec piece settles and what to model first. Also for the spec piece: home as the account itself or a dependent of it (the design note argues the first, the plan says the second: settle in the spec piece).
    - The key hop and the membership cases are modelled already (roles-model's paths; the walk reads the key hop as admin until this lands).
    - One piece a session, each ending pushed. Main may be red: a test broken by the piece is ignored with the piece's label and left.
    - The one review and gate come when accounts are in, over the rewrite and accounts together.
@@ -39,12 +39,11 @@ Beside the route: the two failing seeds; one cleanup always, a workflow job abou
 - **No fix sized by its label.** Three times a class of failing tests labelled with one cause had three or more; one probe line per failing test (what it holds, which fire or box was refused) sizes a job in a session's first minutes. A cause written in a note says whether it was probed or guessed.
 
 ## Waiting on Tess
-1. **First entry through a holder** (issues/first-entry-through-holder.md): needed before the accounts spec.
-2. **To confirm**: a thing kit, the app or chat makes takes grants from outside by default; one made through the bare API takes none until its admin enables them.
-3. **Convergence clause** (requirements Decentralization): "at the latest once a writer of that data has synced with them" covered the purge divergence; check whether anything else needs it, then drop it?
-4. **An addendum and a removed node's honest delete**: notes/purge-model.md records her taking the fix; the spec (permissions §6) and the model still say an addendum vouches for no purge request. Which stands?
-5. **Requirements wording** (hers to edit): "which opaque sync units each item is in" → "each blob is in"; "an item's expiry" → "a blob's expiry"; "(an invitation, a reader leaving)" → "(a grant from outside, a reader leaving)".
-6. CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
+1. **To confirm**: a thing kit, the app or chat makes takes grants from outside by default; one made through the bare API takes none until its admin enables them.
+2. **Convergence clause** (requirements Decentralization): "at the latest once a writer of that data has synced with them" covered the purge divergence; check whether anything else needs it, then drop it?
+3. **An addendum and a removed node's honest delete**: notes/purge-model.md records her taking the fix; the spec (permissions §6) and the model still say an addendum vouches for no purge request. Which stands?
+4. **Requirements wording** (hers to edit): "which opaque sync units each item is in" → "each blob is in"; "an item's expiry" → "a blob's expiry"; "(an invitation, a reader leaving)" → "(a grant from outside, a reader leaving)".
+5. CLAUDE.md's GUI test command lacks `--no-fail-fast`; a smaller fixed setting for the KNOWN story search; the gate.checks CPU share raise (notes/time-limits.md).
 
 ## Parked
 - `mizzen-snapshot-stream`: page-walking snapshot writer, unbounded memory on forged states; resume only with a per-source cursor (issues/durable-decode-bound.md).

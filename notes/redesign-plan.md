@@ -83,7 +83,7 @@ The list stays in the removal, as built (notes/write-path-design.md §2, E4); pe
 - **Depends on**: A4.
 
 ### A4. Accounts as ordinary things
-Next (Tess), on main with no branch. The builder's brief, read from the tree A2 leaves (the delete list with sizes, the order of work, the risks): notes/accounts-switch-brief.md. To decide first: issues/first-entry-through-holder.md.
+Next (Tess), on main with no branch. The builder's brief, read from the tree A2 leaves (the delete list with sizes, the order of work, the risks): notes/accounts-switch-brief.md. It builds on notes/stubs.md.
 
 The flag day of the redesign: an account is an independent thing A, its members things holding roles on it: a node's thing with a key (its node root, or a thing per account where a node wants its accounts unlinked). A's sync unit is its readable closure, as the account root's is today: A, its dependents (home and the account's private things), and what A reads that their strongs reach.
 - **Changes**: spec/permissions.md, spec/crypto.md §3, spec/wire.md §4, spec/sync-set.md §1, spec/sync-inbox.md §1, spec/sync-opens.md §2 (a proof of a signer), spec/sync-ids.md §3 (a signer listed in A's steps by a claim under its own key); engine: making an account mints A with the first signer, pairing is a grant with a step and the pairer's trust entries, removing a node is the ordinary removal, a thing minted with A is its dependent; the `osis` account calls keep their names over the new mechanism (they move at A6); CLI and app follow.
