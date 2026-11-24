@@ -818,6 +818,8 @@ impl World {
 
     /// Steps node `i` with `input` and carries out every output: the one place a node is stepped.
     pub fn deliver(&mut self, i: usize, input: Input) {
+        // a recording thread's phases split by the node stepped (`costs::node`)
+        let _node = osis_base::costs::node(i);
         self.deliveries += 1;
         *self.delivered.entry(i).or_default() += 1;
         MOST.set(MOST.get().max(self.deliveries));

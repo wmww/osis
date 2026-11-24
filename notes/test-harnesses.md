@@ -133,7 +133,8 @@ Each binary's budget is its line in tools/test_cost.txt (notes/gate.md, The summ
 - A count test built on `history::world_of` turns the memo debug comparisons off before counting (`idle::exact`).
 
 **Counting**
-- `costs::take` counts per thread: in a `LocalPeer` test it mixes every peer's work; scope the window to one peer's applies.
+- `costs::take` counts per thread: in a `LocalPeer` test it mixes every peer's work; scope the window to one peer's applies. The sync `World` splits each count by node (`name @node i`: `costs::node`, held in `World::deliver`).
+- Which callers moved a count: `costs::by_caller(name, depth)` before the run records it also as `name <- f <- g` (a backtrace per record: a probe, not a suite; a tail call leaves no frame).
 - `testenv::Cpu` counts only threads `testenv` ran: count other threads' work with `tools/icount`.
 - A count taken inside a `measured` closure (`osis_base::costs::take`) zeroes what the closure is measured by: every n/10n check then passes at 0.
 - A new `osis_base::costs` count shows in every test comparing all spans (osis `making::`, engine `closure::`): a counter one scale test reads goes outside the shared table (as `osis_store::bytes_handed`).
