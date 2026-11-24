@@ -5,7 +5,7 @@
 //!
 //! The listing rule, one at every address: a part is listed while it is in its aspect's read (a
 //! write of its own live, `delta_live`) or kept by its own aspect's history until its keep bound
-//! (`body_history_keep`), a purge tombstone while a body of it replaced at its own `ts` would be
+//! (`body_history_keep`), a purged part while a body of it replaced at its own `ts` would be
 //! in history (by its header and the setting alone, never past its expiry), or this node's own
 //! invalid write. Replaced with no history kept, expired, dropped (compacted), another node's
 //! invalid write: not listed, whatever this node still holds. So every node holding the same

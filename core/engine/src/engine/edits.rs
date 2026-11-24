@@ -7,8 +7,8 @@
 //! depends only on its original and on itself, so `settle` recomputes the claims of each original
 //! that changed and each claim that changed, from the state it finds, at the end of the transaction:
 //! the same function whatever arrived first. The fire reads as its newest listed honored version,
-//! found at read time (`newest_version`). An original leaving the listing by time alone (a purge
-//! tombstone's end) is told by a timer (`time_passed`).
+//! found at read time (`newest_version`). An original leaving the listing by time alone (a purged
+//! part's listing ending) is told by a timer (`time_passed`).
 
 use super::listing::{CommitPos, Here, listed, purged_keep};
 use super::{AspectView, Core, Tx, View};
@@ -158,7 +158,7 @@ fn reclaim(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, o: &CommitId, v: &CommitId, ts: 
 
 /// At the end of a transaction: `originals` from the commits it changed (`Core::commit_changes`'s
 /// journal), each claim's and each named original's fold judged again from what stands now; a
-/// purge tombstone's end armed. O(changed commits), and the claims of the originals among them.
+/// purged part's listing end armed. O(changed commits), and the claims of the originals among them.
 pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
     if tx.txn.is_memory() {
         return Ok(());
@@ -192,7 +192,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
         if let Some(o) = named.filter(|o| tx.core.ix.commits.contains_key(o)) {
             tx.core.commits_named(*tid, ak.clone(), o);
         }
-        // a listed tombstone ends by time alone
+        // a part listed as purged leaves the listing by time alone
         if let Some((_, Here::Purged(_))) = listed(tx, c, ai)? {
             let t = purged_keep(tx.core, c, ai);
             if tx.now().0 < t && t < osis_commit::FOREVER {

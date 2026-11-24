@@ -41,12 +41,12 @@ const NO_KEYS: Config = Config { keys_open: false };
 /// R's mint admin (finding 19's worlds).
 const V: Thing = 7;
 
-/// Finding 19 (`open14_keys_open_travel_carries_a_removal_to_the_things_reading_through_it`): K
+/// Finding 19 (`reach_keys_open_travel_carries_a_removal_to_the_things_reading_through_it`): K
 /// writes R through [A, O, D]; Y removes O from D. A holds write on O, so A's keys open O: the
 /// removal naming O travels under A (Role changes travel), where N takes it to R as evidence of K's
 /// later write (on its path); without keys-open travel A requires nothing of it.
 #[test]
-fn open14_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() {
+fn reach_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() {
     let pw = paths::World::new(&[(X, A), (W, O), (Y, D), (V, R)]);
     let mut w = World::new(pw, &[A, O, D, R]);
     let (x, wn, y, v, k) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[D, A]), w.node(true, &[R]), w.node(false, &[]));
@@ -67,12 +67,12 @@ fn open14_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() 
     assert!(ev.required(&R).unwrap().contains_key(&(r, D)));
 }
 
-/// OPEN 17 (held-model `open17_keys_open_through_a_mint_admins_record_edge`): finding 19's world
+/// Keys open through a record edge (held-model `records_keys_open_through_a_mint_admins_record_edge`): finding 19's world
 /// with O minted by A. A's keys open O through its record edge, so Y's removal of O from D travels
 /// under A (keys-open travel): the derivation takes record edges as standing read edges. Without
 /// them (the control) A's evidence lacks it.
 #[test]
-fn open17_keys_open_through_a_mint_admins_record_edge_spec_permissions_4() {
+fn records_keys_open_through_a_mint_admins_record_edge_spec_permissions_4() {
     let pw = paths::World::new(&[(X, A), (A, O), (Y, D), (V, R)]);
     let mut w = World::new(pw, &[A, O, D, R]);
     let (x, y, v, k) = (w.node(true, &[A]), w.node(true, &[D, A]), w.node(true, &[R]), w.node(false, &[]));

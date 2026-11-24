@@ -1,5 +1,5 @@
 //! Commit listings and their listeners (notes/api.md Commits): which parts a commit shows (in the
-//! read, kept by history until its bound, a purge tombstone, this node's own invalid write), at an
+//! read, kept by history until its bound, purged and still listed by its header, this node's own invalid write), at an
 //! aspect, a thing and the things it holds, typed and untyped; pages, `complete`, memory commits; delete for
 //! everyone and purge by author.
 
@@ -231,7 +231,7 @@ fn a_commit_shows_every_part_api_commits() {
 }
 
 // spec/commits.md §5, §7 Listed parts, notes/api.md Commits: delete for everyone: one commit's body
-// goes for good and, its history kept, it stays listed as a tombstone (with none kept it leaves no
+// goes for good and, its history kept, it stays listed as purged (with none kept it leaves no
 // trace); what the state reads does not change for a dead write; the
 // request is not listed at the aspect it purges (a writer may add a snapshot there); the listener
 // tells it.
@@ -259,7 +259,7 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     let x = commit_with(&db, |w| w.at(t, key(ak("t:reg.0"))).set(&s("x")));
     assert_eq!(bodies(&db, t, &ak("t:reg.0")), vec![Body::Held(Some(s("x")))]);
     commit_with(&db, |w| w.at(t, key(ak("t:reg.0"))).purge(osis::Purge::Commit(x.stamp.id)));
-    assert_eq!(bodies(&db, t, &ak("t:reg.0")), vec![], "no tombstone");
+    assert_eq!(bodies(&db, t, &ak("t:reg.0")), vec![], "not listed");
     assert_eq!(db.at(t, untyped("t:reg.0")).get().unwrap(), None);
     // an ephemeral write is purged as a durable one, by a durable request of its own
     // (notes/ephemeral.md Principle): beside an ephemeral write it is refused

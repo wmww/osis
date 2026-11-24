@@ -1,7 +1,7 @@
 //! Canonical CBOR profile tests (spec/data-model.md §5).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)] // test code
 
-use osis_base::format::{TAG_ENUM, TAG_LINK, TAG_RETIRED, TAG_SET, TAG_STRONG, TAG_STRUCT_RESERVED, TAG_WEAK};
+use osis_base::format::{TAG_ENUM, TAG_LINK, TAG_SET, TAG_STRONG, TAG_STRUCT_RESERVED, TAG_WEAK};
 use osis_base::cbor::{Item, check};
 use osis_base::{BlobId, CanonicalBytes, DecodeError, Float, Limits, Link, Tid, Unknown, Value, decode, decode_prefix, encode, item_prefix};
 use proptest::prelude::*;
@@ -415,8 +415,6 @@ fn rejections() {
         // Known tags with the wrong content.
         (format!("{strong} 4e {}", "00".repeat(14)), TagContent(TAG_STRONG)),
         (format!("{weak} 6f {}", "61".repeat(15)), TagContent(TAG_WEAK)),
-        // the retired tid tag
-        (format!("{} 4f {}", tag_head(TAG_RETIRED), "00".repeat(15)), TagContent(TAG_RETIRED)),
         (format!("{en} 80"), TagContent(TAG_ENUM)),
         (format!("{en} 83 00 00 00"), TagContent(TAG_ENUM)),
         (format!("{en} 81 20"), TagContent(TAG_ENUM)),
@@ -484,7 +482,7 @@ fn floats_identity() {
 #[test]
 fn unknown_rejects_known_tags() {
     let c = CanonicalBytes::from_value(&Value::Int(0));
-    for t in [TAG_SET, TAG_RETIRED, TAG_ENUM, TAG_LINK, TAG_STRONG, TAG_WEAK] {
+    for t in [TAG_SET, TAG_ENUM, TAG_LINK, TAG_STRONG, TAG_WEAK] {
         assert!(Unknown::new(t, c.clone()).is_none());
     }
     assert!(Unknown::new(TAG_STRUCT_RESERVED, c).is_some());

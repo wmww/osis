@@ -6,7 +6,7 @@
 //! LA's bytes sort after LB's), so the encoder sorts the encodings of a set or map holding a link.
 
 use crate::cbor::CanonicalBytes;
-use crate::format::{TAG_ENUM, TAG_LINK, TAG_RETIRED, TAG_SET, TAG_STRONG, TAG_WEAK};
+use crate::format::{TAG_ENUM, TAG_LINK, TAG_SET, TAG_STRONG, TAG_WEAK};
 use crate::ids::{Link, Tid};
 use crate::refs::{Ref, Strong, Weak};
 use crate::sorted::{ValueMap, ValueSet};
@@ -66,7 +66,7 @@ impl Float {
 /// Tag numbers with a meaning in this build; never held by `Unknown`. The reserved STRUCT tag
 /// is not one: a later version may define it, so it is preserved like any unknown tag.
 fn is_known_tag(tag: u64) -> bool {
-    matches!(tag, TAG_SET | TAG_RETIRED | TAG_ENUM | TAG_LINK | TAG_STRONG | TAG_WEAK)
+    matches!(tag, TAG_SET | TAG_ENUM | TAG_LINK | TAG_STRONG | TAG_WEAK)
 }
 
 /// Unknown tag with its canonical content bytes (spec/data-model.md §5): merges as an opaque

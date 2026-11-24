@@ -2818,7 +2818,7 @@ struct Seen {
     /// The reference node's `retention^.0` parts fallen invalid, over the held sets.
     fallen: u64,
     /// Permanent deltas the reference node shows purged, over the held sets.
-    tombstones: u64,
+    purged_permanent: u64,
     /// Deltas the reference node shows purged by a request by author, over the held sets.
     by_author: u64,
     /// Keys (aspects, rosters) a node showed differently after its sync exchange than before:
@@ -2859,7 +2859,7 @@ impl Seen {
         self.steps = (self.steps.0 + o.steps.0, self.steps.1 + o.steps.1);
         self.invalid += o.invalid;
         self.fallen += o.fallen;
-        self.tombstones += o.tombstones;
+        self.purged_permanent += o.purged_permanent;
         self.by_author += o.by_author;
         self.restored += o.restored;
         for (x, y) in self.judged.iter_mut().zip(&o.judged) {
@@ -2906,7 +2906,7 @@ impl Seen {
         // each emphasis's outcome, over its own seeds
         type Reached = fn(&Seen) -> bool;
         let checks: [(Emphasis, &str, Reached); 8] = [
-            (Emphasis::Purges, "a permanent delta purged by name and one by author", |s| s.tombstones > 0 && s.by_author > 0),
+            (Emphasis::Purges, "a permanent delta purged by name and one by author", |s| s.purged_permanent > 0 && s.by_author > 0),
             (Emphasis::Keeps, "kept writes on a register, a set and a map, and held-model judging a covered drop of a replaced body", |s| ["t:kept.0", "t:keptset.0", "t:keptmap.0"].iter().all(|a| s.aspects.contains_key(*a)) && s.model.reached.get("covered drops judged").is_some_and(|n| *n > 0)),
             (Emphasis::Settings, "a setting fell", |s| s.fallen > 0),
             (Emphasis::RecordOnly, "a mint admin's record edge removed", |s| s.tally.kinds.get("RemoveFlow(record)").is_some_and(|x| x.1 > 0)),
@@ -3171,7 +3171,7 @@ fn reference(played: &Played, held: &[usize], whole: bool, p: &mut Peer) -> Seen
     let mut seen = Seen::default();
     for t in &played.things {
         for c in p.engine.purged_on(t, &msg()).unwrap().into_keys() {
-            seen.tombstones += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak == msg() && p.engine.permanent(&h, a))));
+            seen.purged_permanent += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak == msg() && p.engine.permanent(&h, a))));
         }
         let (rows, _) = p.engine.held_parts(t, &msg(), osis_engine::engine::listing::CommitFrom::Oldest, usize::MAX - 1, usize::MAX).unwrap();
         for r in &rows {

@@ -1,11 +1,11 @@
 //! Signal edits (notes/signal-edits-design.md, the design, not the engine). A part with `replaces` is
-//! honored when the named commit is listed on the same (thing, aspect), valid or a purge tombstone,
+//! honored when the named commit is listed on the same (thing, aspect), valid or listed as purged,
 //! has no `replaces` itself, has the same purge author (notes/path-form.md, Whom a write is by: a
 //! member of its stated path, verified) and sorts before it by (ts, ID); else it is a
 //! fire of its own. An original reads as its newest listed honored version (valid versions only);
 //! stamp, place and order stay the original's. A purge takes only the commits it names. Listing
 //! is judged from headers: an original whose body is not here is listed and its versions fold
-//! under it; a version reads only where its body (or tombstone) is here.
+//! under it; a version reads only where its body is here or it is listed as purged.
 use crate::model::{evaluate, expired, kept_until, signal_kept, Outcome};
 use crate::types::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -88,7 +88,7 @@ fn status(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, c: &Commit
 }
 
 /// The commit `v` names, when it is `v`'s original but for being listed: same (thing, aspect), valid
-/// or a purge tombstone's, no `replaces` of its own, of the same purge author, sorting before `v`.
+/// or listed as purged, no `replaces` of its own, of the same purge author, sorting before `v`.
 fn named<'a>(o: &Outcome, by_id: &BTreeMap<CommitId, &'a Commit>, v: &Commit, i: usize) -> Option<(&'a Commit, usize)> {
     let p = &v.parts[i];
     let x = *by_id.get(&p.replaces?)?;
@@ -106,7 +106,7 @@ fn original<'a>(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &'a Commit>, v
 fn entries(h: &Held, o: &Outcome, by_id: &BTreeMap<CommitId, &Commit>, parts: &[(&Commit, usize)]) -> Vec<Entry> {
     let mut out = vec![];
     for &(c, i) in parts.iter().filter(|&&(c, i)| original(h, o, by_id, c, i).is_none()) {
-        // honored versions read only where their body (or tombstone) is here
+        // honored versions read only where their body is here or they are listed as purged
         let honored = parts.iter().filter(|&&(v, j)| original(h, o, by_id, v, j).is_some_and(|x| x.id == c.id) && status(h, o, by_id, v, j) != Some(Here::NotFetched));
         let (nc, ni) = honored.copied().chain([(c, i)]).max_by_key(|&(v, _)| (v.ts, v.id)).unwrap();
         let shows = match status(h, o, by_id, nc, ni) {

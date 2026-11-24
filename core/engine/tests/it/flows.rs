@@ -1932,7 +1932,7 @@ fn writer_rotating_to_itself_recovered_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
 
-// The owner's rule (notes/path-form.md), spec/crypto.md §5 Path entry, §4 Low floor: a writer left
+// A write is never refused or split for its paths (notes/path-form.md), spec/crypto.md §5 Path entry, §4 Low floor: a writer left
 // unboxed at a thing's current epoch writes on, its paths no reason to refuse: account 2 writes D
 // through holder H and its own thing O in one commit while account 1 has rotated D boxing itself
 // alone. The commit states the split form, D's entry under the newest roles secret account 2 holds.

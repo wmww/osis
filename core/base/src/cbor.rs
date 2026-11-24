@@ -1,7 +1,7 @@
 //! Canonical encoder and strict decoder for the osis CBOR profile (spec/data-model.md §5).
 //! Accepted bytes are canonical, so they are hashed and stored as received, never re-encoded.
 
-use crate::format::{MAX_VALUE_BYTES, MAX_VALUE_DEPTH, TAG_ENUM, TAG_LINK, TAG_RETIRED, TAG_SET, TAG_STRONG, TAG_WEAK, TID_LEN};
+use crate::format::{MAX_VALUE_BYTES, MAX_VALUE_DEPTH, TAG_ENUM, TAG_LINK, TAG_SET, TAG_STRONG, TAG_WEAK, TID_LEN};
 use crate::ids::{BlobId, Del, Link, Tid};
 use crate::sorted::{ValueMap, ValueSet};
 use crate::value::{Float, Unknown, Value};
@@ -1173,7 +1173,6 @@ impl<'a> Decoder<'a> {
                 let t = Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?);
                 M::make(|| Ok(Value::Weak(t)))
             }
-            TAG_RETIRED => Err(DecodeError::TagContent(tag)),
             TAG_ENUM => {
                 let (case, payload) = self.enum_head(inner)?;
                 let payload = if payload {

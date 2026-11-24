@@ -300,7 +300,7 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     assert!(holds(&b, b.me()) && !holds(&b, a.me()));
 }
 
-// The owner's rule (notes/path-form.md; spec/wire.md §4 `Split`): one `Write` changing things its
+// A write is never refused or split for its paths (notes/path-form.md; spec/wire.md §4 `Split`): one `Write` changing things its
 // signer reaches through different actors is one commit, never refused or split: Bob writes G,
 // which he reaches through organization H, and his own thing O, and makes a thing under G. Carol, who reads
 // both G and O, and Alice, who reads G alone, each read what that commit wrote on what they read.

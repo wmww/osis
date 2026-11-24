@@ -642,7 +642,7 @@ fn serve_survives_a_bad_socket_dir() {
     let _ = std::fs::remove_dir_all(&xdg);
 }
 
-// CLI `writes`, `fired`, `purge`: pages by place, each part in its line, a tombstone, purge by
+// CLI `writes`, `fired`, `purge`: pages by place, each part in its line, a purged part, purge by
 // commit and by author; a signal's fires; `--follow`; a thing destroyed.
 #[test]
 fn writes_and_purge_commands_plan_cli() {
@@ -667,7 +667,7 @@ fn writes_and_purge_commands_plan_cli() {
     assert!(lines.lines().any(|l| l.contains(one) && l.contains("purged=")), "{lines}");
     let me = rows[0].split(' ').nth(2).unwrap();
     s.ok(&["purge", &t, "note:m.0", "--author", me]);
-    // what was written, every line a tombstone (a writer may add a snapshot of the aspect)
+    // what was written, every line purged (a writer may add a snapshot of the aspect)
     let lines = s.ok(&["writes", &t, "note:m.0", "--kind", "content"]).out;
     assert!(lines.lines().count() == 2 && lines.lines().all(|l| l.contains("purged=")), "{lines}");
     assert_eq!(s.code(&["writes", &t, "note:m.0", "--before", "nonsense"]), 2);

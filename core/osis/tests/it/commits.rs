@@ -282,7 +282,7 @@ fn purged_part_lists_until_its_expiry_spec_commits_7() {
     let before = undo(&db);
     c.advance(61_000);
     db.engine(|e| e.tick().unwrap());
-    assert_eq!(listed(&db), [(lasting, true)], "the expired one's tombstone goes with it");
+    assert_eq!(listed(&db), [(lasting, true)], "the expired one leaves the listing");
     assert_eq!(undo(&db), before, "undo is unaffected");
     c.advance(400 * 86_400_000);
     db.engine(|e| e.tick().unwrap());

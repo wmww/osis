@@ -355,11 +355,10 @@ impl Engine {
     /// before its keep-at-least bound; covered by held valid snapshots of its aspects under `s`
     /// (`None` while one stamped after it cannot be judged); a lasting header alone. What the
     /// store shows (snapshots under `s` this node does not hold, other blobs of the commit, a
-    /// certificate's author's other blobs) is the judgement's to add: `sole_certificate` is false
-    /// here.
+    /// certificate's author's other blobs) is the judgement's to add.
     pub fn body_facts(&mut self, s: &SyncId, id: &BodyId) -> Result<BodyFacts> {
         let c = &id.commit;
-        let Some(b) = self.sync_body_now(s, id)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, invalid: false, kept: false, hosts_from: 0, covered: Some(false), sole_certificate: false, lasting_header: false }) };
+        let Some(b) = self.sync_body_now(s, id)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, invalid: false, kept: false, hosts_from: 0, covered: Some(false), lasting_header: false }) };
         let Some(h) = self.header(c) else { return Err(Error::UnknownCommit(*c)) };
         let keeps = self.part_keeps(c)?;
         let Some(m) = self.core.ix.commits.get(c) else { return Err(Error::UnknownCommit(*c)) };
@@ -392,7 +391,7 @@ impl Engine {
                 _ => None,
             };
         }
-        Ok(BodyFacts { required: true, closure: !b.certificate, dropped, invalid, kept, hosts_from, covered, sole_certificate: false, lasting_header: b.header_only })
+        Ok(BodyFacts { required: true, closure: !b.certificate, dropped, invalid, kept, hosts_from, covered, lasting_header: b.header_only })
     }
 
     /// Whether held snapshots of its aspect, or its author's own replaces, cover delta `ai` of `c`

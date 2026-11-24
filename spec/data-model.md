@@ -70,7 +70,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 | enum | tag 1617 (ENUM) around `[case_id]` or `[case_id, payload]`; `case_id` a major-0 integer at most 2^63 - 1 |
 | link | tag 1618 (LINK) around `[content hash, blob ID, suite byte || key, salt, [[level, pk]*]]` (§6) |
 
-- Tag numbers ENUM = 1617, LINK = 1618, STRONG = 1620, WEAK = 1621 (unassigned in the IANA CBOR tags registry); 1619 (STRUCT) is reserved, unused; 1616 is retired, never reused: a decoder rejects it. Each encodes as `0xd9` plus two big-endian bytes.
+- Tag numbers ENUM = 1617, LINK = 1618, STRONG = 1620, WEAK = 1621 (unassigned in the IANA CBOR tags registry); 1619 (STRUCT) is reserved, unused. Each encodes as `0xd9` plus two big-endian bytes.
 - RFC 8949 §4.2.1 core deterministic rules: shortest integer and length heads, definite lengths only, sorted map keys, no duplicate keys. Deviation: floats are always 8 bytes, so a float's bytes are its bit pattern.
 - A set with two elements, or a map with two keys, that are equal under §4 and §6 (distinct bytes, links of one content hash) is rejected.
 - No `null`, `undefined` or simple values other than true and false.

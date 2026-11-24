@@ -1,8 +1,8 @@
 //! Commits (notes/api.md Commits; spec/commits.md §7, spec/crdt.md §4.6): one `Commit` for every
 //! commit the API shows, listed at an address (a value aspect's or a scope's writes, a signal's
 //! fires) and heard by that address's listener; and undo, redo and revert. A part of a commit is
-//! listed while it is in its aspect's read, kept by history until its keep bound, a purge
-//! tombstone, or this node's own invalid write; a commit is listed at an address while it has a
+//! listed while it is in its aspect's read, kept by history until its keep bound, purged and still
+//! listed by its header, or this node's own invalid write; a commit is listed at an address while it has a
 //! listed part there. Nothing is stored for it: a revert is a commit naming the commit it
 //! reverts; a commit is in effect while no revert in effect names it; undo and redo pick a commit
 //! (`undo_target`, `redo_target`) and revert it. Reverting a thing's creation deletes the thing.

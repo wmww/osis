@@ -64,7 +64,7 @@ pub(crate) use bounds::{Killed, mark_killed, mark_bounded};
 const T_EXPIRY: u8 = 1;
 /// A purge-on-replace body kept to its commit's purge floor: judged again then (`replace`).
 const T_FLOOR: u8 = 2;
-/// A part kept by a purge request's header (its commit's purge floor, a purged fire's tombstone):
+/// A part kept by a purge request's header (its commit's purge floor, the end of a purged fire's listing):
 /// a signal's body goes then (`signal_bound`); a value part is told at its floor, armed when it
 /// arrives (`listing::kept_passed`). Leaving history by the setting alone is `leaving`'s one
 /// timer per aspect.
@@ -772,7 +772,7 @@ pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) 
 /// copies of its writes, each without the gone writes (`Fragment::remove_gone`: nothing of its
 /// own is left); a snapshot's keeps its frontiers and `Absorbed`. A part missing or dropped other
 /// than as covered has none: the list alone holds it gone, and a copy joins without it
-/// (`takes_late`, `drop_gone`); one missing is dropped (a tombstone for a new node).
+/// (`takes_late`, `drop_gone`); one missing is dropped (never fetched).
 /// The aspect, when anything changed.
 fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &[Fragment], in_place: bool) -> Result<Option<(Tid, Ak)>> {
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
@@ -807,7 +807,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     let Some(mut body) = body else {
         // nothing held of it: a leftover set aside at a fall (`unstrip`) is its body again;
         // else the list alone holds it gone, a copy joins stripped. A part missing when
-        // purged counts as received and dropped (a new node's tombstone, spec/commits.md §5:
+        // purged counts as received and dropped, so never fetched (spec/commits.md §5:
         // `purged_on`, `body_gone`); one dropped already stays so.
         if m.missing(ai)
             && let Some(l) = leftover::get(tx, &a.tid, &a.ak, c, ai)?
@@ -1227,8 +1227,8 @@ fn run_timer(tx: &mut Tx<'_>, t: u64, c: &CommitId, ai: usize, kind: u8, changed
     } else {
         hold_gone(tx, c, ai, false, &mut ch)?;
     }
-    // the bound may have ended the part's listing with nothing held changing (a purge
-    // tombstone's): its fold under its original judged again, and told (an event repeating a
+    // the bound may have ended the part's listing with nothing held changing (a purged
+    // part's): its fold under its original judged again, and told (an event repeating a
     // page is harmless)
     if crate::engine::listing::listed(tx, c, ai)?.is_none()
         && let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai))
@@ -1397,7 +1397,7 @@ impl Engine {
         }
         let covered = |ai: usize| m.dropped(ai).is_some_and(|d| d.why == DropFor::Cover);
         // a fire out of history (or expired) is past every bound and listed nowhere; a purged
-        // one once its tombstone is not listed
+        // one once it is not listed
         let spent = |ai: usize| m.header.aspects.get(ai).is_some_and(|a| a.ak.signal()) && m.dropped(ai).is_some_and(|d| d.why == DropFor::Other) && purge_unlisted(&self.core, c, ai);
         // a part not held on a thing whose record is not held reads nothing here (one a release
         // forgot, a destroyed thing's, or never received): it arrives again with its commit, as

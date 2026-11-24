@@ -95,7 +95,7 @@ pub enum Lists {
 }
 
 /// Which edge-class commits the evidence closure takes beyond the bodies (notes/a2-spec/README.md
-/// OPEN 10).
+/// Open 2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Takes {
     /// Every held one on a closure edge, whatever its validity (the draft; `paths::evidence`).
@@ -129,7 +129,7 @@ pub enum CommitEdges {
     Off,
     /// The creation (`World::creation`) of each entry the commit's parts on its thing reset.
     Creations,
-    /// Every taken edge write on each edge the commit's parts on its thing set (spec/permissions.md
+    /// Every edge write the closure takes on each edge the commit's parts on its thing set (spec/permissions.md
     /// §4 Evidence of a commit).
     AllWrites,
 }
@@ -140,7 +140,7 @@ impl Closure {
     pub fn drafted() -> Closure {
         Closure { takes: Takes::All, joined: false, commit_edges: CommitEdges::AllWrites }
     }
-    /// OPEN 10 (b): chained writes, along joined paths.
+    /// Chained writes, along joined paths.
     pub fn joined() -> Closure {
         Closure { takes: Takes::Chained, joined: true, commit_edges: CommitEdges::Creations }
     }
@@ -159,7 +159,7 @@ pub enum Pend {
 }
 
 /// What joins a hop of a stated path under `Pend::Granted`, for joined paths (`World::joined`)
-/// and pending (`World::pend`) alike (notes/a2-spec/README.md OPEN 16, finding 23).
+/// and pending (`World::pend`) alike (finding 23).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Join {
     /// J1: any held chained grant ordered before the part.
@@ -188,9 +188,10 @@ impl Join {
     }
 }
 
-/// The OPEN 10 variants, each a closure with the pending rule judging goes with.
+/// The closure variants compared (notes/a2-spec/README.md Open 2), each a closure with the pending
+/// rule judging goes with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Open10 {
+pub enum Variant {
     /// (i) the draft: every edge write on a stated path, any validity; pending on any write.
     Drafted,
     /// (ii) chained writes only; pending on any write.
@@ -206,33 +207,33 @@ pub enum Open10 {
     Applied,
 }
 
-impl Open10 {
-    pub const ALL: [Open10; 6] = [Open10::Drafted, Open10::Chained, Open10::Joined, Open10::Granted, Open10::ChainedGranted, Open10::Applied];
+impl Variant {
+    pub const ALL: [Variant; 6] = [Variant::Drafted, Variant::Chained, Variant::Joined, Variant::Granted, Variant::ChainedGranted, Variant::Applied];
     pub fn name(self) -> &'static str {
         match self {
-            Open10::Drafted => "i-drafted",
-            Open10::Chained => "ii-chained",
-            Open10::Joined => "iii-joined",
-            Open10::Granted => "iv-granted",
-            Open10::ChainedGranted => "v-chained-granted",
-            Open10::Applied => "vi-applied",
+            Variant::Drafted => "i-drafted",
+            Variant::Chained => "ii-chained",
+            Variant::Joined => "iii-joined",
+            Variant::Granted => "iv-granted",
+            Variant::ChainedGranted => "v-chained-granted",
+            Variant::Applied => "vi-applied",
         }
     }
     pub fn closure(self) -> Closure {
-        if self == Open10::Drafted {
+        if self == Variant::Drafted {
             return Closure::drafted();
         }
         let (takes, joined) = match self {
-            Open10::Drafted => unreachable!(),
-            Open10::Chained | Open10::ChainedGranted => (Takes::Chained, false),
-            Open10::Joined | Open10::Granted => (Takes::Chained, true),
-            Open10::Applied => (Takes::Applied, true),
+            Variant::Drafted => unreachable!(),
+            Variant::Chained | Variant::ChainedGranted => (Takes::Chained, false),
+            Variant::Joined | Variant::Granted => (Takes::Chained, true),
+            Variant::Applied => (Takes::Applied, true),
         };
         Closure { takes, joined, commit_edges: CommitEdges::Creations }
     }
     pub fn pend(self) -> Pend {
         match self {
-            Open10::Drafted | Open10::Chained | Open10::Joined => Pend::Any,
+            Variant::Drafted | Variant::Chained | Variant::Joined => Pend::Any,
             _ => Pend::Granted,
         }
     }
@@ -245,8 +246,8 @@ impl Open10 {
     }
 }
 
-/// The delivery rules OPEN 14 compares (notes/a2-spec/README.md), each over OPEN 10's (iv)
-/// closure and judge.
+/// The delivery rules compared (how a removal reaches a sync ID), each over closure variant (iv)
+/// and its judge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     /// The design (lazy delivery, notes/write-path-design.md §2 D1 to D3): Role changes travel
@@ -273,9 +274,9 @@ impl Stage {
     /// `rule` under (iv) with this stage's delivery, `w` judging as (iv); `E1` under (i).
     pub fn set(self, w: &mut World, rule: Rule) -> Rule {
         if self == Stage::E1 {
-            return Rule { keys_open: true, ..Open10::Drafted.set(w, rule) };
+            return Rule { keys_open: true, ..Variant::Drafted.set(w, rule) };
         }
-        let r = Rule { keys_open: true, ..Open10::Granted.set(w, rule) };
+        let r = Rule { keys_open: true, ..Variant::Granted.set(w, rule) };
         match self {
             Stage::A2 => r,
             Stage::A2Actor => Rule { keys_open: false, ..r },
@@ -288,12 +289,12 @@ impl Stage {
 pub struct Rule {
     pub placement: Placement,
     /// Role changes travel's keys-open half: an edge write naming holder h is a seed also of the
-    /// sync ID of each thing whose keys open h (holding read or above on h through taken grants,
+    /// sync ID of each thing whose keys open h (holding read or above on h through grants the closure takes,
     /// at any time: `ROLE_KEEP` read as for good). The half naming S's own thing is always on.
     pub keys_open: bool,
     /// Record edges are edges of the read graph (each a mint admin's admin edge on the thing it
     /// minted, at any time: `World::opened`): keys open through them (spec/sync-set.md §2).
-    /// False: the control (grants only), which under-reads (README OPEN 17).
+    /// False: the control (grants only), which under-reads (record edges open keys as grants do: spec/sync-set.md §2).
     pub records: bool,
     pub lists: Lists,
     pub closure: Closure,
@@ -307,7 +308,7 @@ pub struct Rule {
 
 impl Rule {
     /// The drafted closure (spec/permissions.md §4) with lazy delivery and lists whole;
-    /// `Stage::A2` puts OPEN 10's (iv) and keys-open travel on it.
+    /// `Stage::A2` puts closure variant (iv) and keys-open travel on it.
     pub fn fixed() -> Rule {
         Rule { placement: Placement::Function, keys_open: false, records: true, lists: Lists::Whole, closure: Closure::drafted(), keysets: true, deposit: false }
     }
@@ -368,7 +369,7 @@ pub struct World {
     /// The node writing each commit.
     pub by: Vec<usize>,
     pub trust: Set,
-    /// The pending rule judging uses (an OPEN 10 variant sets it with its closure).
+    /// The pending rule judging uses (a closure variant sets it with its closure).
     pub pend: Pend,
     /// What joins a hop under `Pend::Granted`, for joined paths and pending alike.
     pub join: Join,
@@ -522,7 +523,7 @@ impl World {
         let ok = |i: &Id| takes.as_ref().is_none_or(|t| t.contains(i));
         let hr: Set = h.iter().copied().filter(ok).collect();
         // the things whose holder roles travel under S: its own, and under Role changes travel
-        // those S's thing holds read or above on, through taken grants at any time
+        // those S's thing holds read or above on, through grants the closure takes, at any time
         let open = self.opened(rule, s, &hr);
         let mut seed: Set = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) || (self.holder(i).is_some_and(|hd| open.contains(&hd)) && ok(&i))).collect();
         if rule.keysets {
@@ -537,7 +538,7 @@ impl World {
     pub fn req(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set) -> Set {
         self.closure(rule, &self.seeds(rule, s, &units[&s], h), h)
     }
-    /// The things whose holder roles travel under S over taken writes `hr`: S's own, and under
+    /// The things whose holder roles travel under S over the writes the closure takes, `hr`: S's own, and under
     /// `keys_open` those S's thing holds read or above on through them and through record edges,
     /// at any time. A record edge opens as a grant of admin from the mint admin to the thing it
     /// minted (spec/sync-set.md §2 T's keys open: effective role over paths that climb record
@@ -576,7 +577,7 @@ impl World {
         self.opens.get(&i).is_some_and(|o| !h.contains(o))
     }
 
-    // ---- The closure (OPEN 10) ----
+    // ---- The closure ----
 
     /// The edge-class commits of `h` the closure may take under `rule` (None: all).
     pub fn takes(&self, rule: &Rule, h: &Set) -> Option<Set> {
@@ -689,7 +690,7 @@ impl World {
         }
     }
     /// The evidence closure of `seeds` over `avail` under `rule.closure`: the seeds, the other
-    /// parts of a member's commit on its thing, the taken edge writes on a member's key hop and
+    /// parts of a member's commit on its thing, the edge writes it takes on a member's key hop and
     /// on an edge of its stated path (where joined, under `joined`).
     /// The draft is `paths::evidence`.
     pub fn closure(&self, rule: &Rule, seeds: &Set, avail: &Set) -> Set {
@@ -1073,7 +1074,8 @@ impl World {
     }
 }
 
-/// The `Join` a new world judges by: `Join::Needed` (README OPEN 16, *proposed*), or by hand
+/// The `Join` a new world judges by: `Join::Needed` (the model's choice under (iv); E1 reads no join), or by
+/// hand
 /// `OSIS_EV_JOIN` naming one (`Join::name`), so every property and search runs under it.
 fn join_default() -> Join {
     match std::env::var("OSIS_EV_JOIN") {
@@ -1535,7 +1537,7 @@ pub struct Shape {
     /// K holds admin on A and grants Z write on A after its first write; Z writes D; the removal
     /// does not list the grant, so it falls with Z's write.
     pub grant: bool,
-    /// Record edges on K's path (README OPEN 17): 0 grants only; 1 the hop after A a record edge
+    /// Record edges on K's path: 0 grants only; 1 the hop after A a record edge
     /// (A mints O, or, with K writing through [A], A mints D); 2 a mint chain two deep (A mints O,
     /// O mints D: K's path [A, O] or [A] (by descent) climbs records past A). Where the last hop
     /// into D is a record edge, `raised` is X (D's admin by descent) lowering it to read before
@@ -1674,7 +1676,7 @@ pub fn family(sh: Shape) -> World {
 /// lowering A's or O's edge, retags among the four things, a member's edge write on A or O to any
 /// holder (junk where it holds no admin), content along [A, R] (A writing R half the time, R
 /// holding nothing on D) or [O, A]; random node sync sets beside each mint admin syncing its
-/// things. A third of the worlds have A mint O, and half of those O mint D (README OPEN 17):
+/// things. A third of the worlds have A mint O, and half of those O mint D (record edges on routes):
 /// records on the members' paths in place of the starting grants, changed later by the moves
 /// that change A's or O's edge (by X, their admin by descent).
 pub fn random(seed: u64, len: usize) -> World {
@@ -1806,7 +1808,7 @@ pub struct Wide {
     /// A content part whose path entry opens late (`World::opens`): its opener (a content commit
     /// on its thing by the thing's mint admin) written some moves later, or never.
     pub late: bool,
-    /// Each of O, H, D, R minted by an earlier one of the five one time in three (README OPEN 17:
+    /// Each of O, H, D, R minted by an earlier one of the five one time in three (record edges:
     /// record edges anywhere on a route, mint chains up to four deep, a minted thing in a unit, a
     /// record edge changed by churn), its admin the key actor at the top of its record chain,
     /// writing by descent. False: every thing minted by a key actor, the worlds as without it.
@@ -2066,7 +2068,7 @@ fn wide_route(w: &World, rng: &mut roles_model::Rng, signer: Thing) -> (Vec<Thin
 /// things, `outside` of which lie outside D's unit (the rest in it): each holder thing H_j granted
 /// write on the next by X, the last on D. Under the draft (`Rule::fixed`).
 pub fn cost(n: usize, k: usize, outside: usize) -> (usize, usize) {
-    let c = cost_with(n, k, outside, 0, 1, Open10::Drafted);
+    let c = cost_with(n, k, outside, 0, 1, Variant::Drafted);
     (c.copies, c.bodies)
 }
 
@@ -2083,7 +2085,7 @@ pub struct Cost {
 /// `cost`, with `churn` more re-grants by X of K's grant on the first holder thing (role churn
 /// on a used edge), D in the units of `carried` sync IDs (its own and `carried - 1` others, R_j
 /// holding nothing else), under variant `v`.
-pub fn cost_with(n: usize, k: usize, outside: usize, churn: usize, carried: usize, v: Open10) -> Cost {
+pub fn cost_with(n: usize, k: usize, outside: usize, churn: usize, carried: usize, v: Variant) -> Cost {
     use names::*;
     assert!(outside <= k && k <= 4 && carried >= 1);
     let hs: Vec<Thing> = (0..k as Thing).map(|j| 20 + j).collect();

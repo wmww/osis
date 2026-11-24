@@ -1,6 +1,5 @@
-//! What a reader of one document fetches in an organisation with members removed: today's
-//! engine against the copies A2's reach would add (notes/a2-spec/README.md OPEN 16; notes/evidence-derivation.md,
-//! Storage every reader pays). Node 0 makes O and D (O holds write on D: an organisation's hub and
+//! What a reader of one document fetches in an organisation with members removed, and the size of
+//! each removal as a certificate copy. Node 0 makes O and D (O holds write on D: an organisation's hub and
 //! one of its documents), writes D, grants `r` member accounts write on O and removes each; node 1
 //! is then granted read on D and syncs it for the first time. Counted at two sizes, never timed.
 
@@ -15,7 +14,7 @@ use std::collections::BTreeSet;
 fn org(r: usize) -> (World, Vec<CommitId>, Vec<CommitId>) {
     let mut grants = vec![];
     let mut removals = vec![];
-    let w = fixture(&format!("reach cost org {r}"), || {
+    let w = fixture(&format!("removal cost org {r}"), || {
         let mut w = world_of(0, 2 + r, 2 + r);
         w.cap = 4_000_000;
         let _ = play(&mut w, &[New(0), New(0), Give(0, 1, Holder::Thing(0), Gives::Writes), Write(0, 1), Write(0, 1), Run], String::new());
@@ -30,7 +29,7 @@ fn org(r: usize) -> (World, Vec<CommitId>, Vec<CommitId>) {
             let o = w.history.things[0].0;
             let d = w.history.things[1].0;
             let e = w.engine(0);
-            if std::env::var_os("REACH_COST").is_some() {
+            if std::env::var_os("REMOVAL_COST").is_some() {
                 for c in e.commit_ids().into_iter().filter(|c| !before.contains(c)) {
                     let h = e.header(&c).unwrap();
                     let asp: Vec<String> = h.aspects.iter().map(|a| format!("{}.{}", if a.tid == o { "O" } else if a.tid == d { "D" } else { "x" }, a.ak.as_str())).collect();
@@ -65,7 +64,7 @@ fn copy_size(w: &mut World, c: &CommitId, on: &osis_base::Tid) -> (usize, usize,
 fn first_read(w: &mut World) -> (u64, u64) {
     let before = w.net.frames.clone();
     let _ = play(w, &[Grant(0, 1, 1, Gives::Reads), Run], String::new());
-    if std::env::var_os("REACH_COST").is_some() {
+    if std::env::var_os("REMOVAL_COST").is_some() {
         for (k, v) in &w.net.frames {
             let b = before.get(k).copied().unwrap_or_default();
             if v.1 != b.1 && (k.0 == 1 || k.1 == 1) {
@@ -81,7 +80,7 @@ fn first_read(w: &mut World) -> (u64, u64) {
 // reaches (spec/crypto.md §4, Carried demotions: the walk records it on everything the lowered
 // edge's target reaches), and a held keyset needs the edge writes of what it carries: a first
 // reader of D holds every removal on O, beside D's own rotation for each (the removed member
-// could read D through O). Where D requires a removal (A2 brief 3: evidence of a write it judges)
+// could read D through O). Where D requires a removal (evidence of a write it judges)
 // it requires it and the grant its reset names as copies, each a role commit's header and its `roles.0` delta on O
 // sealed as a copy, measured here. Printed: the first read's bytes at two sizes, each copy's size.
 #[test]

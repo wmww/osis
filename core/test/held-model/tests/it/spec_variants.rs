@@ -1,5 +1,5 @@
-//! OPEN 10 (notes/a2-spec/README.md; notes/evidence-model-findings.md 11, 13 on): which edge writes
-//! and which stated paths the evidence closure takes. Each variant (`Open10`) on hand worlds, one
+//! The closure variants (notes/a2-spec/README.md Open 2; notes/evidence-model-findings.md 11, 13 on): which edge writes
+//! and which stated paths the evidence closure takes. Each variant (`Variant`) on hand worlds, one
 //! per property it can fail: P1 (a one-sync-ID reader judges as the node holding everything), P9
 //! (no copy of a roster that gives no role on the unit), P10 (no copy of a write no walk applies),
 //! the cost a non-admin and an admin can force.
@@ -8,7 +8,7 @@ use held_model::evidence::*;
 use roles_model::paths::{self, Set, Thing};
 use roles_model::Role;
 
-/// P0 to P10 at every step and at the end, as `spec_evidence::fails` with the OPEN 10 checks.
+/// P0 to P10 at every step and at the end, as `spec_evidence::fails` with the closure variants' checks.
 pub fn fails(w: &World, rule: &Rule) -> Vec<Fail> {
     fails_at(w, rule, &(1..=w.events.len()).collect())
 }
@@ -33,7 +33,7 @@ pub fn fails_at(w: &World, rule: &Rule, at: &std::collections::BTreeSet<usize>) 
 }
 
 /// The properties `w` fails under each of `vs` (of `Rule::fixed`).
-fn by_variant(w: &World, vs: &[Open10]) -> Vec<(&'static str, Vec<&'static str>)> {
+fn by_variant(w: &World, vs: &[Variant]) -> Vec<(&'static str, Vec<&'static str>)> {
     vs.iter()
         .map(|v| {
             let mut w = w.clone();
@@ -59,7 +59,7 @@ fn base() -> (World, [usize; 4]) {
 
 /// D's copies with `n` junk grants by K (a writer of A, no admin) on Q's edge, Q writing D
 /// through [A] after X's grant: finding 11's cost.
-fn junk_copies(v: Open10, n: u32) -> usize {
+fn junk_copies(v: Variant, n: u32) -> usize {
     let (mut w, [x, _, k, q]) = base();
     w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Write, &[]));
     for i in 0..n {
@@ -74,18 +74,18 @@ fn junk_copies(v: Open10, n: u32) -> usize {
 /// Cost: junk grants by a non-admin of a path thing add 27 copies under D for 27 more junk
 /// grants under the draft, none under every chained variant.
 #[test]
-fn open10_junk_by_a_non_admin_adds_no_copy_but_under_the_draft() {
-    for v in Open10::ALL {
+fn variants_junk_by_a_non_admin_adds_no_copy_but_under_the_draft() {
+    for v in Variant::ALL {
         let more = junk_copies(v, 30) - junk_copies(v, 3);
-        assert_eq!(more, if v == Open10::Drafted { 27 } else { 0 }, "{}", v.name());
+        assert_eq!(more, if v == Variant::Drafted { 27 } else { 0 }, "{}", v.name());
     }
 }
 
 /// Cost: an admin's grants on a used edge are real (chained, applied): each is a copy under D
 /// in every variant, so what an admin can force is its own writes on edges D's bodies use.
 #[test]
-fn open10_an_admins_writes_on_a_used_edge_are_copies_in_every_variant() {
-    let copies = |v: Open10, n: u32| {
+fn variants_an_admins_writes_on_a_used_edge_are_copies_in_every_variant() {
+    let copies = |v: Variant, n: u32| {
         let (mut w, [x, _, _, q]) = base();
         for i in 0..n {
             w.write(x, |p| p.edge(X, 1 + i, &[], A, Q, Role::Write, &[]));
@@ -95,7 +95,7 @@ fn open10_an_admins_writes_on_a_used_edge_are_copies_in_every_variant() {
         let st = w.run(&rule, |_| {});
         w.copies(&st, D).len()
     };
-    for v in Open10::ALL {
+    for v in Variant::ALL {
         assert_eq!(copies(v, 30) - copies(v, 3), 27, "{}", v.name());
     }
 }
@@ -111,7 +111,7 @@ fn f13_a_path_set_only_by_junk_waits_at_the_reader_where_the_draft_refuses() {
     let (mut w, [_, _, k, q]) = base();
     let junk = w.write(k, |p| p.edge(K, 2, &[], A, Q, Role::Admin, &[]));
     let c = w.write(q, |p| p.content(Q, 3, &[A], D));
-    let got = by_variant(&w, &Open10::ALL);
+    let got = by_variant(&w, &Variant::ALL);
     for (name, p) in &got {
         let p1 = p.contains(&"P1");
         assert_eq!(p1, matches!(*name, "ii-chained" | "iii-joined"), "{name}: {p:?}");
@@ -121,7 +121,7 @@ fn f13_a_path_set_only_by_junk_waits_at_the_reader_where_the_draft_refuses() {
     assert_eq!(p10, vec!["i-drafted"]);
     // the verdicts at the node holding everything
     let mut wg = w.clone();
-    Open10::Granted.set(&mut wg, Rule::fixed());
+    Variant::Granted.set(&mut wg, Rule::fixed());
     let st = w.run(&Rule::fixed(), |_| {});
     let full = |w: &World| w.verdicts(&w.full(&st, &Set::new()), &Set::from([c, junk]));
     assert_eq!(full(&w)[&c], Verdict::Invalid);
@@ -149,7 +149,7 @@ fn f11_a_stated_path_no_grant_joins_leaks_a_roster_unless_paths_must_be_joined()
     w.write(v, |p| p.edge(V, 1, &[], M1, K, Role::Write, &[]));
     let c = w.write(k, |p| p.content(K, 2, &[M1, M2, A], D));
     let _ = u;
-    let got = by_variant(&w, &Open10::ALL);
+    let got = by_variant(&w, &Variant::ALL);
     for (name, p) in &got {
         assert_eq!(p.contains(&"P9-leak"), matches!(*name, "i-drafted" | "ii-chained" | "v-chained-granted"), "{name}: {p:?}");
         assert!(!p.contains(&"P1"), "{name}: {p:?}");
@@ -179,7 +179,7 @@ fn f14_a_dropped_grant_is_read_by_the_regrant_so_applied_only_strands_a_write() 
     let st = w.run(&Rule::fixed(), |_| {});
     let rd = paths::judge(&w.w, &w.rules, &w.full(&st, &Set::new()).v);
     assert!(rd.dropped.contains(&g1) && rd.valid.contains(&c));
-    for (name, p) in by_variant(&w, &Open10::ALL) {
+    for (name, p) in by_variant(&w, &Variant::ALL) {
         assert_eq!(p.contains(&"P1"), name == "vi-applied", "{name}: {p:?}");
     }
 }
@@ -197,7 +197,7 @@ fn f15_a_writers_finalizes_and_a_may_grant_holders_grants_are_chained_and_copied
             w.write(k, |p| p.push(K, 2 + i, &[], A, paths::Kind::finalize(Q)));
         }
         w.write(q, |p| p.content(Q, 2 + n, &[A], D));
-        let rule = Open10::Granted.set(&mut w, Rule::fixed());
+        let rule = Variant::Granted.set(&mut w, Rule::fixed());
         let st = w.run(&rule, |_| {});
         assert_eq!(fails(&w, &rule), vec![]);
         w.copies(&st, D).len()
@@ -212,7 +212,7 @@ fn f15_a_writers_finalizes_and_a_may_grant_holders_grants_are_chained_and_copied
             w.write(k, |p| p.push(K, 2 + i, &[], A, paths::Kind::set(Q, Role::Read)));
         }
         w.write(q, |p| p.content(Q, 2 + n, &[A], D));
-        let rule = Open10::Granted.set(&mut w, Rule::fixed());
+        let rule = Variant::Granted.set(&mut w, Rule::fixed());
         let st = w.run(&rule, |_| {});
         assert_eq!(fails(&w, &rule), vec![]);
         w.copies(&st, D).len()
@@ -237,13 +237,13 @@ fn f9_a_removal_of_two_holders_waits_for_each_creation() {
     w.write(x, |p| p.edge(X, 1, &[], A, Q, Role::Read, &[]));
     w.write_parts(x, |p| p.commit(X, 5, &[], A, vec![paths::Kind::set(K, Role::None), paths::Kind::set(Q, Role::None)]));
     let c = w.write(kn, |p| p.content(K, 6, &[A], D));
-    for v in [Open10::Drafted, Open10::Granted] {
+    for v in [Variant::Drafted, Variant::Granted] {
         for ce in [CommitEdges::Off, CommitEdges::Creations, CommitEdges::AllWrites] {
             let mut w = w.clone();
             let mut rule = v.set(&mut w, Rule::fixed());
             rule.closure.commit_edges = ce;
             let f = fails(&w, &rule);
-            if ce == CommitEdges::Off && v == Open10::Granted {
+            if ce == CommitEdges::Off && v == Variant::Granted {
                 assert!(f.iter().any(|f| f.prop == "P1" && f.id == c && f.reader == Some(Verdict::Pending) && f.full == Some(Verdict::Invalid)), "{} {ce:?}: {f:?}", v.name());
             } else {
                 assert_eq!(f, vec![], "{} {ce:?}", v.name());
@@ -262,7 +262,7 @@ fn a_creation_is_judged_over_what_its_naming_write_follows() {
     let junk = w.write(k, |p| p.edge(K, 3, &[], A, D, Role::Admin, &[]));
     w.write(x, |p| p.edge(X, 4, &[], A, D, Role::Admin, &[]));
     w.write(x, |p| p.edge(X, 2, &[], A, K, Role::Admin, &[]));
-    let rule = Open10::Granted.set(&mut w, Rule::fixed());
+    let rule = Variant::Granted.set(&mut w, Rule::fixed());
     assert_eq!(fails(&w, &rule), vec![]);
     let st = w.run(&rule, |_| {});
     assert!(w.chained(&w.full(&st, &Set::new()).v.held).contains(&junk));
@@ -275,42 +275,42 @@ fn a_creation_is_judged_over_what_its_naming_write_follows() {
 #[test]
 fn cost_copies_follow_path_edges_and_churn_never_writes() {
     for (k, m) in [(1, 1), (2, 1), (2, 2), (3, 2), (3, 3), (4, 4)] {
-        let a = cost_with(3, k, m, 0, 1, Open10::Granted);
-        let b = cost_with(30, k, m, 0, 1, Open10::Granted);
+        let a = cost_with(3, k, m, 0, 1, Variant::Granted);
+        let b = cost_with(30, k, m, 0, 1, Variant::Granted);
         assert_eq!((a.copies, b.copies), (m, m), "k {k} m {m}");
         assert_eq!(b.bodies - a.bodies, 27);
     }
     for churn in [1, 10] {
-        assert_eq!(cost_with(3, 2, 2, churn, 1, Open10::Granted).copies, 2 + churn);
+        assert_eq!(cost_with(3, 2, 2, churn, 1, Variant::Granted).copies, 2 + churn);
         // churn on an edge inside the unit is bodies, no copy
-        assert_eq!(cost_with(3, 2, 0, churn, 1, Open10::Granted).copies, 0);
+        assert_eq!(cost_with(3, 2, 0, churn, 1, Variant::Granted).copies, 0);
     }
     for carried in [1, 2, 4] {
-        assert_eq!(cost_with(3, 3, 1, 0, carried, Open10::Granted).copies_everywhere, 1 + 3 * (carried - 1));
+        assert_eq!(cost_with(3, 3, 1, 0, carried, Variant::Granted).copies_everywhere, 1 + 3 * (carried - 1));
     }
 }
 
 /// The variants on a slice of the family: with every grant chained and every path joined, (i) to
 /// (v) hold alike (the family has no junk). (vi) fails here too (finding 14): not run.
 #[test]
-fn open10_variants_agree_where_every_write_is_chained() {
+fn variants_agree_where_every_write_is_chained() {
     for i in (0..FAMILY).step_by(1999) {
         let w = family(Shape::nth(i));
-        for (name, p) in by_variant(&w, &Open10::ALL[..5]) {
+        for (name, p) in by_variant(&w, &Variant::ALL[..5]) {
             assert!(p.is_empty(), "{name} {:?}: {p:?}", Shape::nth(i));
         }
     }
 }
 
 /// Per variant, the worlds failing each property over every `step`th family world and `n` random
-/// worlds of 14 moves (by hand: `OSIS_OPEN10_STEP`, `OSIS_OPEN10_RANDOM`).
+/// worlds of 14 moves (by hand: `OSIS_VARIANTS_STEP`, `OSIS_VARIANTS_RANDOM`).
 #[test]
 #[ignore = "by hand"]
-fn open10_explore() {
+fn variants_explore() {
     use crate::util::env;
-    let (step, n) = (env("OSIS_OPEN10_STEP", 97), env("OSIS_OPEN10_RANDOM", 100));
-    let mut jobs: Vec<(Open10, String, World)> = vec![];
-    for v in Open10::ALL {
+    let (step, n) = (env("OSIS_VARIANTS_STEP", 97), env("OSIS_VARIANTS_RANDOM", 100));
+    let mut jobs: Vec<(Variant, String, World)> = vec![];
+    for v in Variant::ALL {
         for i in (0..FAMILY).step_by(step) {
             jobs.push((v, format!("{:?}", Shape::nth(i)), family(Shape::nth(i))));
         }
@@ -340,10 +340,10 @@ fn open10_explore() {
 /// Prints random world `OSIS_HELD_START` under (iv) and its failures (by hand).
 #[test]
 #[ignore = "by hand"]
-fn open10_show_random() {
+fn variants_show_random() {
     let seed = crate::util::env("OSIS_HELD_START", 0u64);
     let mut w = random(seed, 14);
-    let rule = Open10::Granted.set(&mut w, Rule::fixed());
+    let rule = Variant::Granted.set(&mut w, Rule::fixed());
     crate::spec_evidence::show(&w, &rule);
     for f in fails(&w, &rule) {
         eprintln!("{f:?}");
@@ -362,11 +362,11 @@ fn e1_the_edge_writes_on_a_writes_key_hop_are_evidence_in_every_variant() {
     let grant = w.write(x, |p| p.edge(X, 2, &[], A, KEY, Role::Admin, &[]));
     w.write(x, |p| p.push_signed(KEY, A, 3, &[], A, paths::Kind::set(Q, Role::Write)));
     let c = w.write(q, |p| p.content(Q, 4, &[A], D));
-    for (name, p) in by_variant(&w, &Open10::ALL) {
+    for (name, p) in by_variant(&w, &Variant::ALL) {
         assert_eq!(p, Vec::<&str>::new(), "{name}");
     }
     let mut w = w;
-    let rule = Open10::Granted.set(&mut w, Rule::fixed());
+    let rule = Variant::Granted.set(&mut w, Rule::fixed());
     let st = w.run(&rule, |_| {});
     assert!(st.entries[&D].contains(&grant));
     assert_eq!(w.verdicts(&w.reader(&rule, &st, D, &Set::new()), &Set::from([c]))[&c], Verdict::Valid);
@@ -382,7 +382,7 @@ fn e1_the_edge_writes_on_a_writes_key_hop_are_evidence_in_every_variant() {
 fn a_key_hop_no_write_puts_pends_until_one_is_held() {
     use held_model::evidence::Verdict::{Pending, Valid};
     const KEY: Thing = paths::KEYS | 0x40;
-    for v in Open10::ALL {
+    for v in Variant::ALL {
         let (mut w, [x, _, _, q]) = base();
         let grant = w.write(x, |p| p.edge(X, 2, &[], A, KEY, Role::Admin, &[]));
         let g = w.write(x, |p| p.push_signed(KEY, A, 3, &[], A, paths::Kind::set(Q, Role::Write)));
@@ -395,7 +395,7 @@ fn a_key_hop_no_write_puts_pends_until_one_is_held() {
         let all: Vec<Verdict> = w.verdicts(&w.full(&st, &Set::new()), &ids).into_values().collect();
         assert_eq!(all, [Valid, Valid], "{}", v.name());
         // the grant chains, and its stated path is
-        // joined (OPEN 10 (b)), only with the key's grant held
+        // joined, only with the key's grant held
         for (without, yes) in [(Set::from([grant]), false), (Set::new(), true)] {
             let h = w.full(&st, &without).v.held;
             let ch = w.chained(&h);

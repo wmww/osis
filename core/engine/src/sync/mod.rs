@@ -202,8 +202,6 @@ pub struct BodyFacts {
     /// Covered by a held valid snapshot under S; `None` while that cannot be judged yet. Not
     /// judged where `kept`, which decides first (`Some(false)`).
     pub covered: Option<bool>,
-    /// A certificate blob whose author has no other blob under S.
-    pub sole_certificate: bool,
     /// The lasting header of a commit lasting on a thing of the closure.
     pub lasting_header: bool,
 }

@@ -3971,7 +3971,7 @@ fn paths_stated(c: &osis_commit::CommitBlob) -> Vec<(Tid, Vec<Tid>)> {
     }).collect()
 }
 
-// The owner's rule (notes/path-form.md; a1-spec Open 17), spec/wire.md §4 `Split`: a write of things
+// A write is never refused or split for its paths (notes/path-form.md; a1-spec Open 17), spec/wire.md §4 `Split`: a write of things
 // its signer reaches through different actors is one commit, never refused or split: Bob writes D
 // through H and P directly, and the commit states each thing's own path, sealed. Alice reads both;
 // Carol, who opens P's section alone, reads P as Alice does; every node's index is its store's.
@@ -4782,7 +4782,7 @@ fn split_commits_waiting_on_a_path_cost_an_unrelated_write_nothing_spec_commits_
     assert_eq!(work(10), [0, 0, 1]);
 }
 
-// The owner's rule (notes/path-form.md), spec/wire.md §4 `Split`: a write making things beside
+// A write is never refused or split for its paths (notes/path-form.md), spec/wire.md §4 `Split`: a write making things beside
 // writes reached another way is one commit, never refused: Bob makes X with admin D (through H), Y
 // with his own root and Z with P, each beside a write reached another way. Alice (D's and P's
 // admin) reads each new thing from that commit; Carol, a reader of P, reads Z from it; granted D

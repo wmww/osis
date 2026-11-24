@@ -1,9 +1,9 @@
-//! How removals reach a sync ID (notes/write-path-design.md §2, D1 to D3: lazy delivery; OPEN 14
-//! of notes/a2-spec/README.md). Each rule (`Stage`) over OPEN 10's (iv) closure and judge: the
+//! How removals reach a sync ID (notes/write-path-design.md §2, D1 to D3: lazy delivery). Each
+//! rule (`Stage`) over closure variant (iv) and its judge: the
 //! design (`a2`: Role changes travel whole) and the actor seed alone. Each is judged against its
 //! reference (`World::reference`) and its gap counted (`World::gap`). Hand worlds per finding;
 //! `reach_explore` (by hand) tallies every stage over the family, random and story worlds.
-use crate::spec_open10::fails_at;
+use crate::spec_variants::fails_at;
 use held_model::evidence::names::*;
 use held_model::evidence::*;
 use roles_model::paths::{self, Thing};
@@ -64,7 +64,7 @@ fn by_stage(w: &World, f: impl Fn(Rule) -> Rule) -> BTreeMap<&'static str, Vec<&
 /// holds against its reference; every stage has the gap at D (its reader shows
 /// K's writes valid, the node holding everything invalid).
 #[test]
-fn open14_with_no_honest_node_between_the_removal_is_the_gap_at_d() {
+fn reach_with_no_honest_node_between_the_removal_is_the_gap_at_d() {
     let w = family(Shape { via_org: true, units: 0, listed: false, thief: true, regrant: false, addendum: false, raised: false, q_d: false, q_r: false, y_a: false, org_apart: true, grant: false, mint: 0 });
     for (name, p) in by_stage(&w, |r| r) {
         assert_eq!(p, Vec::<&str>::new(), "{name}");
@@ -75,14 +75,14 @@ fn open14_with_no_honest_node_between_the_removal_is_the_gap_at_d() {
     }
 }
 
-/// The removed party's own other route (OPEN 14's finding): Y grants K write on D directly and A
+/// The removed party's own other route (finding 18): Y grants K write on D directly and A
 /// write on D and R; K writes D directly (its stated path [], no hop through A); X removes K from
 /// A; the stolen K writes R through [A]. X syncs A and D, Y syncs D and R; nobody honest syncs A
 /// and R. By stated paths D's evidence holds nothing of (K, A), so no node holding the removal
 /// holds R: every stage has the gap at R (its reader shows the thief's write) and holds against
 /// its reference.
 #[test]
-fn open14_a_removed_writers_other_route_is_the_gap_at_r() {
+fn reach_a_removed_writers_other_route_is_the_gap_at_r() {
     let pw = paths::World::new(&[(X, A), (Y, D), (Y, R)]);
     let mut w = World::new(pw, &[A, D, R]);
     let (x, y, k) = (w.node(true, &[A, D]), w.node(true, &[D, R]), w.node(false, &[]));
@@ -102,7 +102,7 @@ fn open14_a_removed_writers_other_route_is_the_gap_at_r() {
     }
 }
 
-/// R's mint admin (`open14_keys_open_*`).
+/// R's mint admin (`reach_keys_open_*`).
 const V: Thing = 7;
 
 /// Role changes travel's keys-open half carries a removal of a thing's grant to the things that
@@ -113,7 +113,7 @@ const V: Thing = 7;
 /// removal holds R: R's reader shows K's late write, counted as the gap (the reference follows the
 /// rule's own delivery, so a delivery rule is compared by its gap).
 #[test]
-fn open14_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() {
+fn reach_keys_open_travel_carries_a_removal_to_the_things_reading_through_it() {
     let pw = paths::World::new(&[(X, A), (W, O), (Y, D), (V, R)]);
     let mut w = World::new(pw, &[A, O, D, R]);
     let (x, wn, y, v, k) = (w.node(true, &[A]), w.node(true, &[O]), w.node(true, &[D, A]), w.node(true, &[R]), w.node(false, &[]));
@@ -138,14 +138,14 @@ fn grants_only(r: Rule) -> Rule {
     Rule { records: false, ..r }
 }
 
-/// OPEN 17: finding 19's world with O minted by A (record (A, O)) in place of W granting A write
+/// Keys open through a record edge: finding 19's world with O minted by A (record (A, O)) in place of W granting A write
 /// on O. K writes R through [A, O, D]; Y removes O from D; the stolen K writes R again. A's keys
 /// open O through its record edge (spec/sync-set.md §2: effective role climbs record edges), so
 /// Role changes travel puts the removal under A and N carries it to R. Every stage but the actor
 /// seed alone brings it; read through grants only, none does, and R's reader shows K's late
 /// write: the gap.
 #[test]
-fn open17_keys_open_through_a_mint_admins_record_edge() {
+fn records_keys_open_through_a_mint_admins_record_edge() {
     let pw = paths::World::new(&[(X, A), (A, O), (Y, D), (V, R)]);
     let mut w = World::new(pw, &[A, O, D, R]);
     let (x, y, v, k) = (w.node(true, &[A]), w.node(true, &[D, A]), w.node(true, &[R]), w.node(false, &[]));
@@ -168,12 +168,12 @@ fn open17_keys_open_through_a_mint_admins_record_edge() {
     }
 }
 
-/// OPEN 17, finding 18's world with D minted by A in place of Y granting A write on D. X grants K
+/// A record edge on the other route: finding 18's world with D minted by A in place of Y granting A write on D. X grants K
 /// write on D (by descent through A) and Y grants A write on R; K writes D directly; X removes K
 /// from A; the stolen K writes R through [A]. X syncs A and D, Y syncs D and R. No node holding
 /// the removal holds R: every stage has the gap at R.
 #[test]
-fn open17_a_removed_writers_other_route_through_a_record_edge() {
+fn records_a_removed_writers_other_route_through_a_record_edge() {
     let pw = paths::World::new(&[(X, A), (A, D), (Y, R)]);
     let mut w = World::new(pw, &[A, D, R]);
     let (x, y, k) = (w.node(true, &[A, D]), w.node(true, &[D, R]), w.node(false, &[]));

@@ -17,7 +17,7 @@ mod grants;
 mod session;
 mod sims;
 mod read;
-mod reach_cost;
+mod removal_cost;
 mod retention;
 mod status;
 mod store;

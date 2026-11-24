@@ -17,7 +17,7 @@
 //! sync (its keep bound passed); a fire's body drops. A purge
 //! request's header keeps its commit's parts to its purge floor (spec/commits.md §5 Purge), a time
 //! no setting moves, as an expiry: a per-part `T_KEPT` timer, armed at the floor when a value part
-//! arrives (`on_parts`), and for a fire the walk reaches before it (as a purged fire's tombstone,
+//! arrives (`on_parts`), and for a fire the walk reaches before it (as a purged fire's listing end,
 //! `edits::settle`).
 
 use super::{T_KEPT, history};

@@ -246,14 +246,14 @@ fn a_purged_newest_version_keeps_older_ones_gone() {
     }
 }
 
-// One window per aspect: a purged edit's tombstone, listed from its request's `ts`, outlasts the
+// One window per aspect: a purged edit, listed as purged from its request's `ts`, outlasts the
 // versions before it, so none returns when it ends. Purging old text names the earlier versions too.
 #[test]
-fn a_purged_edits_tombstone_outlasts_older_versions() {
+fn a_purged_edits_listing_outlasts_older_versions() {
     let w = setting(5, 0, SIG, keep_after(2));
     let s = [w.clone(), fire(10, A, 1), edit(11, A, 2, 10), purge_of(50, A, 3, 11)];
     assert_eq!(shown(&world(2, &s)), vec![(10, 11, Shows::Purged)]);
-    // the original left at 3: the tombstone stands alone until 5, and 10 never shows again
+    // the original left at 3: the purged edit is listed alone until 5, and 10 never shows again
     assert_eq!(shown(&world(4, &s)), vec![(11, 11, Shows::Purged)]);
     assert_eq!(shown(&world(5, &s)), vec![]);
     let mut v = edit(11, A, 2, 10);
@@ -263,7 +263,7 @@ fn a_purged_edits_tombstone_outlasts_older_versions() {
 }
 
 // A purge takes only what it names: a racing or later version of a purged original still shows, in
-// its place while the tombstone is listed and at its own once it is not; no more than a new message
+// its place while the purged original is listed and at its own once it is not; no more than a new message
 // could do. A deletion meant to hold names the versions too.
 #[test]
 fn a_purge_takes_only_what_it_names() {
@@ -271,7 +271,7 @@ fn a_purge_takes_only_what_it_names() {
     assert_eq!(shown(&world(9, &race)), vec![(10, 11, val(11))]);
     let later = [fire(10, A, 1), purge_of(50, A, 2, 10), edit(11, A, 3, 10), edit(12, A, 4, 10)];
     assert_eq!(shown(&world(9, &later)), vec![(10, 12, val(12))]);
-    // the tombstone (from 2) ends before the version (from 3): it shows at its own place
+    // the purged original's listing (from 2) ends before the version (from 3): it shows at its own place
     let gone = [setting(5, 0, SIG, keep_after(2)), fire(10, A, 1), edit(11, A, 3, 10), purge_of(50, X, 2, 10)];
     assert_eq!(shown(&world(4, &gone)), vec![(11, 11, val(11))]);
     // naming the version too takes it

@@ -302,10 +302,10 @@ pub enum Flow {
     Push,
 }
 
-/// The flow of a kind version 1 knows, `None` for any other (a retired kind included).
+/// The flow of a kind version 1 knows, `None` for any other.
 pub fn flow(kind: u64) -> Option<Flow> {
     Some(match kind {
-        2 | 7 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 31 | 32 | 34 | 36 | 37 | 38 | 40 | 41 | 47 => Flow::Request,
+        2 | 7 | 14 | 19 | 24 | 25 | 27 | 28 | 30 | 32 | 34 | 36 | 37 | 38 | 40 | 41 | 47 => Flow::Request,
         0 | 1 | 3 | 11 | 20 | 26 | 33 | 35 | 39 | 42 | 48 => Flow::Reply,
         29 | 43 | 44 | 45 | 46 => Flow::Push,
         _ => return None,
@@ -318,7 +318,7 @@ pub fn answers(request: u64, reply: u64) -> bool {
     reply == 0
         || match request {
             2 => reply == 3,
-            7 | 28 | 30 | 31 => reply == 1,
+            7 | 28 | 30 => reply == 1,
             14 => reply == 11,
             19 => reply == 20,
             24 | 25 | 27 => reply == 26,

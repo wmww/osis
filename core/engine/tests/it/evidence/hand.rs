@@ -23,7 +23,7 @@ fn reader_of(w: &World, s: Thing) -> BTreeMap<CopyId<Id, Thing>, Reason<Thing, K
     d.ev.required(&s).cloned().unwrap_or_default()
 }
 
-/// spec_open10's base: X mints A (K, Q writers), Y mints D (A writes it); X syncs A, Y syncs D,
+/// spec_variants's base: X mints A (K, Q writers), Y mints D (A writes it); X syncs A, Y syncs D,
 /// Q syncs A, K (no admin) is hostile.
 fn base() -> (World, [usize; 4]) {
     let pw = paths::World::new(&[(X, A), (Y, D)]);
@@ -111,8 +111,8 @@ fn f14_a_dropped_grant_is_evidence_spec_permissions_4() {
 
 /// Finding 15 (`f15_a_writers_finalizes_and_a_may_grant_holders_grants_are_chained_and_copied`): a
 /// writer's finalizes on a used edge are each a copy (27 more for 27 more); a may-grant holder's
-/// grants likewise; under E1 a non-admin's junk too (`open10_junk_by_a_non_admin_adds_no_copy_but_under_the_draft`,
-/// P10, Open 2), and an admin's writes (`open10_an_admins_writes_on_a_used_edge_are_copies_in_every_variant`).
+/// grants likewise; under E1 a non-admin's junk too (`variants_junk_by_a_non_admin_adds_no_copy_but_under_the_draft`,
+/// P10, Open 2), and an admin's writes (`variants_an_admins_writes_on_a_used_edge_are_copies_in_every_variant`).
 #[test]
 fn f15_what_a_non_admin_and_an_admin_force_on_a_used_edge_spec_permissions_4() {
     let copies = |w: &World| reader_of(w, D).len();

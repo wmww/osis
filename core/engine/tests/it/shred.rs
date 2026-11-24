@@ -757,22 +757,22 @@ fn past_expiry_and_purge_alike(every: bool) {
 // The `_plain` property runs every third case (orders by restart points); the exhaustive one all.
 #[test]
 #[ignore = "property"]
-fn tombstone_alike_plain_spec_commits_5() {
-    tombstone_alike(3);
+fn purged_permanent_alike_plain_spec_commits_5() {
+    purged_permanent_alike(3);
 }
 
 // As above, every order and restart point.
 #[test]
 #[ignore = "property"]
-fn tombstone_alike_in_every_order_exhaustive_spec_commits_5() {
-    tombstone_alike(1);
+fn purged_permanent_alike_in_every_order_exhaustive_spec_commits_5() {
+    purged_permanent_alike(1);
 }
 
 /// Every `stride`th case (3 is coprime with the 4 and 5 restart points of an order).
-fn tombstone_alike(stride: u64) {
+fn purged_permanent_alike(stride: u64) {
     use osis_commit::CommitBlob;
     let forever = osis_schema::PurgeBy::AuthorOrAdmin;
-    let marker = "TOMBSTONE-SECRET-8e1a";
+    let marker = "PURGED-SECRET-8e1a";
     let mut lp = net2();
     // the nodes judged: nodes of 0's account
     let mut node = node_of(&mut lp, 0);

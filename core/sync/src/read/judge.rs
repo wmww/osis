@@ -273,9 +273,9 @@ fn classify(mine: &Mine, f: &Facts, s: &SyncId, c: &BodyId, meta: &BodyMeta, lat
     if f.body.dropped.is_some() {
         return (Verdict::May, "dropped here");
     }
-    // a certificate, header-only or not: must-hold but a sole one (its author has no other blob)
+    // a certificate, header-only or not, and a required body outside the node closure: must-hold
     if meta.certificate || !f.body.closure {
-        return if f.body.sole_certificate { (Verdict::May, "a sole certificate") } else { (Verdict::Must, if meta.certificate { "a certificate" } else { "outside the node closure, required" }) };
+        return (Verdict::Must, if meta.certificate { "a certificate" } else { "outside the node closure, required" });
     }
     if meta.header_only {
         return if f.body.lasting_header { (Verdict::Must, "a lasting header") } else { (Verdict::May, "a header-only copy, not lasting") };
@@ -304,11 +304,11 @@ pub(crate) fn last_why() -> &'static str {
 
 /// Covered and dropped where `held` says which commits are held (spec/sync-judgement.md §3,
 /// spec/sync-compaction.md §1 Carriers): a may-hold body a held valid snapshot covers, past its
-/// keep-at-least bound, each delta needing a carrier having one held there. A certificate but a
-/// sole one (a lasting header has no delta to cover) is required whatever snapshot covers it:
-/// never dropped as covered, may-hold only while this node may not log it (§2 Loggable: kept).
+/// keep-at-least bound, each delta needing a carrier having one held there. A certificate (a
+/// lasting header has no delta to cover) is required whatever snapshot covers it: never dropped
+/// as covered.
 fn covered_dropped<G: Ground>(g: &mut G, s: &SyncId, c: &BodyId, v: &Verdict, f: &Facts, mut held: impl FnMut(&mut G, &CommitId) -> Result<bool>) -> Result<bool> {
-    if *v != Verdict::May || f.body.covered != Some(true) || f.body.kept || (!f.body.closure && !f.body.sole_certificate) {
+    if *v != Verdict::May || f.body.covered != Some(true) || f.body.kept || !f.body.closure {
         return Ok(false);
     }
     for alternatives in g.carriers(s, c)? {
