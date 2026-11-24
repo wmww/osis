@@ -1,5 +1,5 @@
 # Test code that can go: duplicates, vacuous tests, copied helpers
-> Summary: What is left of a read of the tests under core/ for duplicates and copied helpers: entries in code other jobs are changing (rotation, keys, accounts), the greenfield thing-history tests without an `evaluate` twin, helper families to unify, and osis-sync's tests (not read: the sync rewrite is changing them).
+> Summary: What is left of a read of the tests under core/ for duplicates and copied helpers: entries in code other jobs are changing (rotation, keys, accounts), the greenfield thing-history tests without an `evaluate` twin, helper families to unify, and osis-sync's tests (not read yet).
 > Priority: low
 > Tags: tests
 
@@ -10,7 +10,7 @@ Every entry needs both tests read side by side before it goes. `tools/spec_map.p
 - keys `props.rs departures_and_current_holders` | maybe delete: a keys-level copy of engine `rotation::tests_property`, its unique part the `snapshot_keyed` / `unvouched` check | low
 - base `chain.rs record_link_of_each_record` | delete | `each_end` and `depth_limit` walk every link kind; the accounts work rewrote it for key minting | medium
 - engine `rotation/tests_departs.rs`: its diagnostic baseline test | delete | low
-- osis-sync's tests: not read; read them once the sync rewrite has landed.
+- osis-sync's tests: not read yet (the sync rewrite is on main; the old branch `mizzen-a2-switch` is a parked copy, not work in flight). Skip tests ignored with an `accounts:` label.
 
 ## Kept, for now
 - held-model `spec_thing_history.rs`: `purged_content_never_shows` (+ `_random`), `a_carried_join_makes_older_settings_add_nothing`, `kept_while_live_while_a_replacement_would_be_kept`, `concurrent_admins_lose_no_floor` run on the greenfield functions with no `ev_` twin: they hold the `Rule` negative controls notes/engine-retention-history.md cites, the carried join, and concurrent admins not holding each other's settings. An `ev_` twin of each would let `Eager`, `history` and `Rule` go from `thing_history.rs`.
