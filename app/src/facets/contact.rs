@@ -4,12 +4,12 @@ use osis_kit::store::Reader;
 use crate::contact::{EMAILS, Labeled, NAMES, NICKNAME, Names, ORG, PHONES, PROFILE, names, org};
 use osis_kit::facets::fields::{Edit, Row};
 use osis_kit::store::Data;
-use osis_kit::view::{Act, Action, Block, Cx, Do, Facet, FormRow as Row2, Icon, Input, Mark, Offer, Section, Summary};
+use osis_kit::view::{Act, Action, Block, Cx, Do, Facet, FormRow, Icon, Input, Mark, Offer, Section, Summary};
 use osis::{Path, Result, Tid};
 
 /// What saving a form row does.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FormAct {
+enum FormAct {
     /// Writes the row's value at its path.
     Field(Row),
     /// Renames a map entry (an email address, a phone number); empty text removes it.
@@ -18,23 +18,14 @@ pub enum FormAct {
     AddKey { ak: &'static str },
 }
 
-/// A row of the contact form.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormRow {
-    pub label: String,
-    pub value: String,
-    pub placeholder: String,
-    pub act: FormAct,
-}
-
 /// A contact's form: names, nickname, title, organisation, emails, phones.
 pub fn contact_form(d: &Reader, t: Tid) -> Result<Vec<FormRow>> {
+    let row = |label: &str, value: String, placeholder: &str, act: FormAct| FormRow { label: label.into(), sub: String::new(), depth: 0, value, placeholder: placeholder.into(), save: Some(Do::new(Save(t, act))) };
     let n = d.db.at(t, NAMES).get()?;
     let o = d.db.at(t, ORG).get()?;
     // a text field of `ak` at `path`
     let field = |label: &str, ak: &str, path: Path, name: &str, value: String, optional: bool| {
-        let row = Row { ak: ak.into(), path, depth: 0, label: name.into(), ty: String::new(), value: value.clone(), edit: Edit::Text, optional };
-        FormRow { label: label.into(), value, placeholder: String::new(), act: FormAct::Field(row) }
+        row(label, value.clone(), "", FormAct::Field(Row { ak: ak.into(), path, depth: 0, label: name.into(), ty: String::new(), value, edit: Edit::Text, optional }))
     };
     let mut out = vec![
         field("Given name", "contact:names.0", Path::root().push(names::GIVEN), "given", n.as_ref().and_then(|n| n.given.clone()).unwrap_or_default(), true),
@@ -45,15 +36,15 @@ pub fn contact_form(d: &Reader, t: Tid) -> Result<Vec<FormRow>> {
     ];
     for (ak, key, label, add) in [("contact:emails.0", EMAILS, "Email", "Add an email"), ("contact:phones.0", PHONES, "Phone", "Add a phone")] {
         for k in d.db.at(t, key).get()?.unwrap_or_default().into_keys() {
-            out.push(FormRow { label: label.into(), value: k.clone(), placeholder: "removed when empty".into(), act: FormAct::RenameKey { ak, old: k } });
+            out.push(row(label, k.clone(), "removed when empty", FormAct::RenameKey { ak, old: k }));
         }
-        out.push(FormRow { label: label.into(), value: String::new(), placeholder: add.into(), act: FormAct::AddKey { ak } });
+        out.push(row(label, String::new(), add, FormAct::AddKey { ak }));
     }
     Ok(out)
 }
 
 /// Saves a form row's text.
-pub fn form_apply(d: &Data, t: Tid, act: &FormAct, text: &str) -> Result<()> {
+fn form_apply(d: &Data, t: Tid, act: &FormAct, text: &str) -> Result<()> {
     let text = text.trim();
     match act {
         // a field of an absent struct is written alone (reads fill the others from defaults):
@@ -121,8 +112,7 @@ impl Facet for ContactFacet {
         Ok(())
     }
     fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
-        let rows = contact_form(cx, t)?.into_iter().map(|r| Row2 { label: r.label, sub: String::new(), depth: 0, value: r.value, placeholder: r.placeholder, save: Some(Do::new(Save(t, r.act))) }).collect();
-        Ok(Section::of(vec![Block::Form { rows, wide: false }]))
+        Ok(Section::of(vec![Block::Form { rows: contact_form(cx, t)?, wide: false }]))
     }
     fn search(&self, cx: &Reader, t: Tid) -> Result<Vec<String>> {
         let mut parts = Vec::new();

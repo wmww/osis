@@ -684,7 +684,7 @@ impl Ui {
             let Some(list) = slot.built.lists.get_mut(&i) else { continue };
             let Some(Block::List(m)) = model.get(i) else { continue };
             views_went |= list.rows.iter().any(|(_, b)| !b.children.is_empty());
-            let mut maker = blocks::Maker { data, window: state, look, acts, current, path: key, style: m.shape.style, rows: &m.rows, children: Vec::new() };
+            let mut maker = blocks::Maker::new(data, state, look, acts, current, key);
             rr.edit_widget(list.widget, |mut w| {
                 let mut w = w.downcast::<VirtualList>();
                 // the row at the top, by key: rows come and go around it
@@ -694,13 +694,13 @@ impl Ui {
                     let mut old = list.keys().skip_while(|o| *o != k);
                     old.find_map(|o| m.rows.iter().position(|r| r.key == *o))
                 });
-                list.apply(&mut w, &ops, &mut maker);
+                list.apply(&mut w, &ops, &mut maker, &m.rows, m.shape.style);
                 let spans = m.rows.iter().map(|r| matches!(r.item, Item::Label(_))).collect();
                 let fixed = usize::from(matches!(m.rows.last(), Some(ListRow { item: Item::New(_), .. })));
                 VirtualList::set_window(&mut w, m.first.unwrap_or(0), m.total, m.more_before, m.more_after, spans, fixed);
                 VirtualList::set_anchor(&mut w, at);
             });
-            made.append(&mut maker.children);
+            made.extend(maker.children());
         }
         let any = !made.is_empty() || views_went;
         for (k, c) in made {

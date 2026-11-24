@@ -153,13 +153,12 @@ impl Widget for Tile {
         };
         let line = f64::from(n.height()) + if self.sub.is_empty() { 0.0 } else { f64::from(s.height()) };
         self.texts = Some((n, s, ini));
-        let (pv, ph) = self.pad();
+        let pv = self.pad().0;
         let ic = self.icon_size();
         let want = match self.style {
             TileStyle::Row => Size::new(bc.max().width.min(400.0), ic.max(line) + 2.0 * pv),
             _ => Size::new(bc.max().width.min(240.0), (ic + self.sp(14.0) + line + 2.0 * pv).max(self.sp(112.0))),
         };
-        let _ = ph;
         let size = bc.constrain(want);
         if self.style != TileStyle::New {
             let b = look.shadow_blur(1.0);

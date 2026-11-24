@@ -353,7 +353,8 @@ fn reorder_against_concurrent_unfavorite() {
 #[test]
 fn contact_fields_of_an_absent_struct_race() {
     use osis_app::contact::{NAMES, ORG};
-    use osis_app::facets::contact::FormRow;
+    use crate::common::save;
+    use osis_app::facets::contact::contact_form;
     for later_is_b in [false, true] {
         let (a, b, clock) = two_clocked();
         a.home().unwrap();
@@ -362,13 +363,13 @@ fn contact_fields_of_an_absent_struct_race() {
         w.at(c, NAMES).remove().unwrap();
         w.commit().unwrap();
         sync(&a, &b);
-        let act = |d: &Data, label: &str| osis_app::facets::contact::contact_form(d, c).unwrap().into_iter().find(|r: &FormRow| r.label == label).unwrap().act;
+        let row = |d: &Data, label: &str| contact_form(d, c).unwrap().into_iter().find(|r| r.label == label).unwrap();
         let (first, second) = if later_is_b { (&a, &b) } else { (&b, &a) };
-        osis_app::facets::contact::form_apply(first, c, &act(first, "Title"), "Gardener").unwrap();
-        osis_app::facets::contact::form_apply(first, c, &act(first, "Given name"), "Theo").unwrap();
+        save(first, &row(first, "Title"), "Gardener").unwrap();
+        save(first, &row(first, "Given name"), "Theo").unwrap();
         clock.advance(1000);
-        osis_app::facets::contact::form_apply(second, c, &act(second, "Organisation"), "Acme").unwrap();
-        osis_app::facets::contact::form_apply(second, c, &act(second, "Family name"), "Lind").unwrap();
+        save(second, &row(second, "Organisation"), "Acme").unwrap();
+        save(second, &row(second, "Family name"), "Lind").unwrap();
         sync(&a, &b);
         for d in [&a, &b] {
             let org = d.db.at(c, ORG).get().unwrap().unwrap();
@@ -385,27 +386,28 @@ fn contact_fields_of_an_absent_struct_race() {
 #[test]
 fn email_rename_against_concurrent_edits() {
     use osis_app::contact::EMAILS;
-    use osis_app::facets::contact::FormAct;
+    use crate::common::save;
+    use osis_app::facets::contact::contact_form;
     let (a, b, clock) = two_clocked();
     a.home().unwrap();
     let c = osis_kit::facets::create(&a, "person").unwrap();
-    let add = |d: &Data| osis_app::facets::contact::contact_form(d, c).unwrap().into_iter().find(|r| matches!(r.act, FormAct::AddKey { ak: "contact:emails.0" })).unwrap().act;
-    let email = |d: &Data, v: &str| osis_app::facets::contact::contact_form(d, c).unwrap().into_iter().find(|r| r.value == v).unwrap().act;
-    osis_app::facets::contact::form_apply(&a, c, &add(&a), "x@a.org").unwrap();
+    let add = |d: &Data| contact_form(d, c).unwrap().into_iter().find(|r| r.placeholder == "Add an email").unwrap();
+    let email = |d: &Data, v: &str| contact_form(d, c).unwrap().into_iter().find(|r| r.value == v).unwrap();
+    save(&a, &add(&a), "x@a.org").unwrap();
     sync(&a, &b);
     // both rename the same address: both new ones stay (no data lost)
-    osis_app::facets::contact::form_apply(&a, c, &email(&a, "x@a.org"), "y@a.org").unwrap();
+    save(&a, &email(&a, "x@a.org"), "y@a.org").unwrap();
     clock.advance(10);
-    osis_app::facets::contact::form_apply(&b, c, &email(&b, "x@a.org"), "z@a.org").unwrap();
+    save(&b, &email(&b, "x@a.org"), "z@a.org").unwrap();
     sync(&a, &b);
     let keys = |d: &Data| d.db.at(c, EMAILS).get().unwrap().unwrap_or_default().into_keys().collect::<Vec<_>>();
     assert_eq!(keys(&a), keys(&b));
     assert_eq!(keys(&a), vec!["y@a.org".to_string(), "z@a.org".to_string()]);
     // a stale row (its address removed elsewhere meanwhile) saved: the new address is added
     let stale = email(&a, "y@a.org");
-    osis_app::facets::contact::form_apply(&b, c, &email(&b, "y@a.org"), "").unwrap();
+    save(&b, &email(&b, "y@a.org"), "").unwrap();
     sync(&a, &b);
-    osis_app::facets::contact::form_apply(&a, c, &stale, "w@a.org").unwrap();
+    save(&a, &stale, "w@a.org").unwrap();
     sync(&a, &b);
     assert_eq!(keys(&b), vec!["w@a.org".to_string(), "z@a.org".to_string()]);
 }
@@ -534,25 +536,26 @@ fn favorite_from_the_other_home_moves_within_its_list() {
 /// node) must not bring the thing back into the app.
 #[test]
 fn form_save_after_a_delete() {
-    use osis_app::facets::contact::FormRow;
+    use crate::common::save;
+    use osis_app::facets::contact::contact_form;
     let (a, b) = two();
     a.home().unwrap();
     let c = osis_kit::facets::create(&a, "person").unwrap();
     sync(&a, &b);
-    let act = |d: &Data| osis_app::facets::contact::contact_form(d, c).unwrap().into_iter().find(|r: &FormRow| r.label == "Title").unwrap().act;
-    let on_a = act(&a);
+    let title = |d: &Data, c| contact_form(d, c).unwrap().into_iter().find(|r| r.label == "Title").unwrap();
+    let on_a = title(&a, c);
     // deleted elsewhere, saved here before hearing of it
     b.delete(c).unwrap();
-    let _ = osis_app::facets::contact::form_apply(&a, c, &on_a, "Gardener");
+    let _ = save(&a, &on_a, "Gardener");
     sync(&a, &b);
     for d in [&a, &b] {
         assert!(!d.things().unwrap().contains(&c), "a concurrent field write does not revive it");
     }
     // deleted here, the stale form saved afterwards
     let c2 = osis_kit::facets::create(&a, "person").unwrap();
-    let on = osis_app::facets::contact::contact_form(&a, c2).unwrap().into_iter().find(|r: &FormRow| r.label == "Title").unwrap().act;
+    let on = title(&a, c2);
     a.delete(c2).unwrap();
-    let _ = osis_app::facets::contact::form_apply(&a, c2, &on, "Gardener");
+    let _ = save(&a, &on, "Gardener");
     assert!(!a.things().unwrap().contains(&c2));
     assert!(a.opened().unwrap().is_none());
 }

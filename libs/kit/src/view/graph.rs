@@ -24,7 +24,6 @@ pub type NodeId = u64;
 
 /// A view on screen (`Graph::view`), with what tells whether it changed.
 pub struct Shown<V> {
-    pub id: NodeId,
     /// Differs from the last `Shown` of this node exactly when the value does.
     pub seq: u64,
     pub value: Rc<V>,
@@ -321,7 +320,7 @@ impl Graph {
         let i = this.inner.borrow();
         let n = i.nodes.get(&id).ok_or_else(gone)?;
         let value = n.value.clone().ok_or_else(gone)?.downcast::<V>().map_err(|_| osis::Error::Invalid("a graph key of two value types".into()))?;
-        Ok(Shown { id, seq: n.seq, value })
+        Ok(Shown { seq: n.seq, value })
     }
 
     /// A view left the screen: it goes unless something still reads it.

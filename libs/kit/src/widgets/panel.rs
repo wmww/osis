@@ -5,7 +5,7 @@
 use super::{lean, shadow};
 use crate::theme::{Look, fade};
 use masonry::accesskit::{Node, Role};
-use masonry::core::{AccessCtx, BoxConstraints, ChildrenIds, LayoutCtx, NewWidget, PaintCtx, PropertiesMut, PropertiesRef, RegisterCtx, Update, UpdateCtx, Widget, WidgetMut, WidgetPod};
+use masonry::core::{AccessCtx, BoxConstraints, ChildrenIds, LayoutCtx, NewWidget, PaintCtx, PropertiesMut, PropertiesRef, RegisterCtx, Update, UpdateCtx, Widget, WidgetPod};
 use masonry::kurbo::{Affine, Insets, Point, RoundedRect, Size, Stroke};
 use masonry::vello::Scene;
 use std::sync::Arc;
@@ -25,8 +25,7 @@ pub struct Panel {
     kind: PanelKind,
     /// Padding before spacing, (vertical, horizontal) px.
     pad: (f64, f64),
-    /// Fill the offered width.
-    fill_width: bool,
+    /// Fill the offered height (the width always is).
     fill_height: bool,
     /// Emit `Blur` when the keyboard focus leaves the child (a form field saving its text).
     report_blur: bool,
@@ -38,7 +37,7 @@ pub struct Blur;
 
 impl Panel {
     pub fn new(child: NewWidget<impl Widget + ?Sized>, look: Arc<Look>, kind: PanelKind, pad: (f64, f64)) -> Panel {
-        Panel { child: child.erased().to_pod(), look, kind, pad, fill_width: true, fill_height: false, report_blur: false }
+        Panel { child: child.erased().to_pod(), look, kind, pad, fill_height: false, report_blur: false }
     }
 
     pub fn fill_height(mut self, on: bool) -> Self {
@@ -49,15 +48,6 @@ impl Panel {
     pub fn report_blur(mut self, on: bool) -> Self {
         self.report_blur = on;
         self
-    }
-
-    pub fn fill_width(mut self, on: bool) -> Self {
-        self.fill_width = on;
-        self
-    }
-
-    pub fn child_mut<'t>(this: &'t mut WidgetMut<'_, Self>) -> WidgetMut<'t, dyn Widget> {
-        this.ctx.get_mut(&mut this.widget.child)
     }
 
     fn radius(&self) -> f64 {
@@ -84,9 +74,8 @@ impl Widget for Panel {
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _props: &mut PropertiesMut<'_>, bc: &BoxConstraints) -> Size {
         let (v, h) = (self.look.sp(self.pad.0), self.look.sp(self.pad.1));
-        let cbc = bc.shrink((2.0 * h, 2.0 * v)).loosen();
-        let mut cbc = cbc;
-        if self.fill_width && bc.is_width_bounded() {
+        let mut cbc = bc.shrink((2.0 * h, 2.0 * v)).loosen();
+        if bc.is_width_bounded() {
             cbc = BoxConstraints::new(Size::new(cbc.max().width, cbc.min().height), cbc.max());
         }
         if self.fill_height && bc.is_height_bounded() {

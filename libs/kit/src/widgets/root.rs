@@ -46,10 +46,6 @@ impl Root {
         this.ctx.request_layout();
     }
 
-    pub fn child_mut<'t>(this: &'t mut WidgetMut<'_, Self>) -> WidgetMut<'t, dyn Widget> {
-        this.ctx.get_mut(&mut this.widget.child)
-    }
-
     /// What covers the window's edges (logical pixels): the screen lays out inside it, the
     /// background still fills the window.
     pub fn set_insets(this: &mut WidgetMut<'_, Self>, insets: Insets) {

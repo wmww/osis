@@ -12,6 +12,11 @@ pub fn data() -> osis_kit::store::Data {
     d
 }
 
+/// Saves `text` in a form row, as Enter or leaving its field does.
+pub fn save(d: &osis_kit::store::Data, row: &osis_kit::view::FormRow, text: &str) -> osis::Result<()> {
+    row.save.as_ref().expect("an input row").run(&osis_kit::view::Act::new(d, &osis_kit::view::WindowState::default()), &osis_kit::view::Input::Text(text.into()))
+}
+
 pub fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     c.app.internals.seed = Some(seed);

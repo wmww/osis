@@ -36,25 +36,23 @@ fn rows_and_edits() {
 #[test]
 fn contact_form() {
     use osis_app::contact::{EMAILS, NAMES, ORG};
-    use osis_app::facets::contact::{FormAct, FormRow, contact_form, form_apply};
+    use crate::common::save;
+    use osis_app::facets::contact::contact_form;
+    use osis_kit::view::FormRow;
     let d = crate::common::data();
     // a contact with no names or org yet: fields still save
     let c = osis_kit::facets::create(&d, "note").unwrap();
-    let form = contact_form(&d, c).unwrap();
-    let row = |form: &[FormRow], label: &str| form.iter().find(|r| r.label == label).unwrap().act.clone();
-    form_apply(&d, c, &row(&form, "Title"), "Gardener").unwrap();
+    let row = |label: &str| contact_form(&d, c).unwrap().into_iter().find(|r: &FormRow| r.label == label).unwrap();
+    let valued = |v: &str| contact_form(&d, c).unwrap().into_iter().find(|r| r.value == v).unwrap();
+    save(&d, &row("Title"), "Gardener").unwrap();
     assert_eq!(d.db.at(c, ORG).get().unwrap().unwrap().title, "Gardener");
-    form_apply(&d, c, &row(&form, "Given name"), "Theo").unwrap();
+    save(&d, &row("Given name"), "Theo").unwrap();
     assert_eq!(d.db.at(c, NAMES).get().unwrap().unwrap().given.as_deref(), Some("Theo"));
-    let add = form.iter().find(|r| matches!(r.act, FormAct::AddKey { ak: "contact:emails.0" })).unwrap().act.clone();
-    form_apply(&d, c, &add, "theo@example.org").unwrap();
-    let form = contact_form(&d, c).unwrap();
-    let email = form.iter().find(|r| r.value == "theo@example.org").unwrap().act.clone();
-    form_apply(&d, c, &email, "theo@posteo.se").unwrap();
+    let add = contact_form(&d, c).unwrap().into_iter().find(|r| r.placeholder == "Add an email").unwrap();
+    save(&d, &add, "theo@example.org").unwrap();
+    save(&d, &valued("theo@example.org"), "theo@posteo.se").unwrap();
     assert_eq!(d.db.at(c, EMAILS).get().unwrap().unwrap().into_keys().collect::<Vec<_>>(), vec!["theo@posteo.se".to_string()]);
-    let form = contact_form(&d, c).unwrap();
-    let email = form.iter().find(|r| r.value == "theo@posteo.se").unwrap().act.clone();
-    form_apply(&d, c, &email, "").unwrap();
+    save(&d, &valued("theo@posteo.se"), "").unwrap();
     assert!(d.db.at(c, EMAILS).get().unwrap().unwrap_or_default().is_empty(), "empty removes");
 }
 
