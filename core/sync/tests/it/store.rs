@@ -3,16 +3,17 @@
 //! durable write of an operation, and its costs counted at n and 10n.
 
 use osis_base::format::{MAX_DRIFT_MS, ROLE_KEEP_MS, TOMBSTONE_LIFETIME_MS};
-use osis_base::{BlobId, SyncId, Tid, WallMs};
-use osis_crypto::{DeleteSecret, Epoch, KemSecret, RoleKey, Secret32, SeededRng, SigningSecret, WRAP_LEN, deposit_key, role_key};
+use osis_base::{BlobId, SyncId, WallMs};
+use osis_crypto::{DeleteSecret, KemSecret, RoleKey, Secret32, SeededRng, SigningSecret, WRAP_LEN, deposit_key, role_key};
 use osis_engine::sync::{Caps, Holding, SyncSet};
-use osis_blob::{ClaimSet, Class, DeleteItem, Parent, Prefix, Reader, Step, StepKeys};
+use osis_blob::{ClaimSet, Class, DeleteItem, Prefix, Reader, Step};
 use osis_proto::{Code, DepositItem};
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot, NodeEvent, RecordId};
 use osis_sync::store::{Cred, Source, Stand};
 use osis_sync::types::{ConnId, Entry};
 use osis_sync::Store;
 use std::collections::BTreeMap;
+use crate::harness::sid::{Sid, THING};
 
 /// One simulated device: the store reopens over it after a crash.
 struct Dev {
@@ -28,69 +29,6 @@ impl Dev {
     }
     fn open(&self) -> Store {
         Store::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), Box::new(SeededRng::from_u64(7))).unwrap()
-    }
-}
-
-/// A sync ID's role secrets and the steps issued so far.
-#[derive(Clone)]
-struct Sid {
-    id: SyncId,
-    sync: Secret32,
-    write: Secret32,
-    admin: Secret32,
-    deposit: Secret32,
-    steps: Vec<(Step, ClaimSet)>,
-}
-
-const THING: Tid = Tid::from_bytes([0x51; 15]);
-
-impl Sid {
-    fn new(b: u8) -> Sid {
-        let (sync, write, admin, deposit) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
-        let id = osis_blob::genesis_sync_id(&admin);
-        let mut s = Sid { id, sync, write, admin, deposit, steps: Vec::new() };
-        let g = s.issue(&[]);
-        s.steps.push(g);
-        s
-    }
-    fn keys(&self) -> StepKeys {
-        StepKeys::derive(&self.sync, &self.write, &self.admin, &self.deposit, &self.id)
-    }
-    fn delete(&self) -> SigningSecret {
-        role_key(RoleKey::Delete, &self.admin)
-    }
-    fn write_key(&self) -> SigningSecret {
-        role_key(RoleKey::Write, &self.write)
-    }
-    fn sync_key(&self) -> SigningSecret {
-        role_key(RoleKey::Sync, &self.sync)
-    }
-    /// The next step (a child of the last), listing `readers`.
-    fn issue(&self, readers: &[Reader]) -> (Step, ClaimSet) {
-        self.issue_by(readers, &self.delete())
-    }
-    /// The next step, signed by `d` (the parent's delete key).
-    fn issue_by(&self, readers: &[Reader], d: &SigningSecret) -> (Step, ClaimSet) {
-        let mut rng = SeededRng::from_u64(self.steps.len() as u64 + 99);
-        let n = self.steps.len() as u64;
-        let read = Epoch::derive(&THING, osis_base::Role::Read, n, &self.write).unwrap();
-        let sync = Epoch::derive(&THING, osis_base::Role::Sync, n, &self.sync).unwrap();
-        let parent = match self.steps.last() {
-            None => Parent::Genesis(d),
-            Some((p, _)) => Parent::Child { step: p, delete: d },
-        };
-        osis_blob::register(parent, self.keys(), readers, (&THING, read, &self.write), (sync, &self.sync), &mut rng).unwrap()
-    }
-    /// Rotates the write and sync secrets and issues the next step.
-    fn rotate(&mut self, b: u8) -> (Step, ClaimSet) {
-        self.write = Secret32::from_bytes([b; 32]);
-        self.sync = Secret32::from_bytes([b + 1; 32]);
-        let st = self.issue(&[]);
-        self.steps.push(st.clone());
-        st
-    }
-    fn head(&self) -> &Step {
-        &self.steps.last().unwrap().0
     }
 }
 

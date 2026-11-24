@@ -16,6 +16,7 @@ pub mod history;
 pub mod lies;
 pub mod reach;
 pub mod scripted;
+pub mod sid;
 pub mod trace;
 
 use lies::{Lie, Liar};

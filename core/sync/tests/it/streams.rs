@@ -5,10 +5,10 @@
 //! 10n.
 
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
-use osis_base::{BlobId, SyncId, Tid, WallMs};
-use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, WRAP_LEN, role_key};
+use osis_base::{BlobId, SyncId, WallMs};
+use osis_crypto::{RoleKey, Secret32, SeededRng, WRAP_LEN, role_key};
 use osis_engine::sync::{Caps, Holding, SyncSet};
-use osis_blob::{ClaimSet, Class, Parent, Prefix, Step, StepKeys};
+use osis_blob::{Class, Prefix};
 use osis_proto::limits::{REPLY_BUDGET, SMALL_REPLY, TOP_BIT};
 use osis_proto::{Code, Event, Id, Msg, Pull};
 use osis_store::{MemoryBackend, MemoryRoot, RecordId};
@@ -21,10 +21,10 @@ use osis_sync::Store;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
+use crate::harness::sid::{Sid, THING};
 
 /// The one connection, as each side names it.
 const C: ConnId = ConnId(1);
-const THING: Tid = Tid::from_bytes([0x51; 15]);
 
 // ---- the scripted parts ----
 
@@ -444,43 +444,18 @@ fn added(r: &[(SyncId, Event)]) -> Vec<BlobId> {
 
 // ---- kept unread: a sync ID's steps and stamps ----
 
-struct Sid {
-    id: SyncId,
-    sync: Secret32,
-    write: Secret32,
-    admin: Secret32,
-    deposit: Secret32,
-    genesis: (Step, ClaimSet),
+/// What a side does with a sync ID kept unread.
+trait OnSide {
+    fn keep(&self, side: &mut Side);
+    fn stamped(&self, side: &mut Side, n: usize, good: bool) -> BlobId;
+    fn stamped_by(&self, side: &mut Side, n: usize, write: Secret32) -> BlobId;
 }
 
-impl Sid {
-    fn new(b: u8) -> Sid {
-        let (sync, write, admin, deposit) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
-        let id = osis_blob::genesis_sync_id(&admin);
-        let keys = StepKeys::derive(&sync, &write, &admin, &deposit, &id);
-        let mut rng = SeededRng::from_u64(99);
-        let read = Epoch::derive(&THING, osis_base::Role::Read, 0, &write).unwrap();
-        let se = Epoch::derive(&THING, osis_base::Role::Sync, 0, &sync).unwrap();
-        let d = role_key(RoleKey::Delete, &admin);
-        let genesis = osis_blob::register(Parent::Genesis(&d), keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap();
-        Sid { id, sync, write, admin, deposit, genesis }
-    }
-
+impl OnSide for Sid {
     /// A side keeping this sync ID unread, its genesis registered.
     fn keep(&self, side: &mut Side) {
-        let _ = (&self.sync, &self.admin, &self.deposit);
-        side.hold(self.id, Holding::Unread);
-        assert_eq!(side.store.take_register(&self.id, &[(&self.genesis.0, Some(&self.genesis.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
-    }
-
-    /// Step `n` (a child of `parent`) whose write secret is `[w; 32]`.
-    fn child(&self, parent: &Step, n: u64, w: u8) -> (Step, ClaimSet) {
-        let write = Secret32::from_bytes([w; 32]);
-        let keys = StepKeys::derive(&self.sync, &write, &self.admin, &self.deposit, &self.id);
-        let read = Epoch::derive(&THING, osis_base::Role::Read, n, &write).unwrap();
-        let se = Epoch::derive(&THING, osis_base::Role::Sync, n, &self.sync).unwrap();
-        let d = role_key(RoleKey::Delete, &self.admin);
-        osis_blob::register(Parent::Child { step: parent, delete: &d }, keys, &[], (&THING, read, &write), (se, &self.sync), &mut SeededRng::from_u64(99 + n)).unwrap()
+                side.hold(self.id, Holding::Unread);
+        assert_eq!(side.store.take_register(&self.id, &[(&self.genesis().0, Some(&self.genesis().1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
     }
 
     /// A stamped entry of a fresh blob taken into `side`'s store.
@@ -1194,7 +1169,7 @@ fn a_shredded_full_s_untells_full_spec_sync_streams_4() {
     assert!(p.a.streams.known().full(C, &k.id));
     p.b.store.shred(&k.id).unwrap();
     p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 1_000_000)]), ..Caps::default() });
-    assert_eq!(p.b.store.take_register(&k.id, &[(&k.genesis.0, Some(&k.genesis.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
+    assert_eq!(p.b.store.take_register(&k.id, &[(&k.genesis().0, Some(&k.genesis().1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
     p.run();
     assert!(!p.b.store.waits_room(&k.id));
     assert!(!p.a.streams.known().full(C, &k.id), "full false told after the shred");
@@ -1435,7 +1410,7 @@ fn a_head_move_while_dropped_keeps_the_fetch_anew_spec_sync_judgement_6() {
     p.run();
     p.b.store.set_unheld(&k.id, true).unwrap();
     // a step under the same write key: x verifies under it
-    let one = k.child(&k.genesis.0, 1, 11);
+    let one = k.child(&k.genesis().0, 1, 11);
     assert_eq!(p.b.store.take_register(&k.id, &[(&one.0, Some(&one.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
     p.run();
     assert!(p.b.store.entry(&k.id, &x).unwrap().is_none(), "dropped");
@@ -1532,7 +1507,7 @@ fn a_refusal_ends_with_its_ground_spec_sync_streams_4() {
     p.join(k.id);
     p.run();
     assert!(refused(&p, &k), "refused under its head");
-    let one = k.child(&k.genesis.0, 1, 0xf0);
+    let one = k.child(&k.genesis().0, 1, 0xf0);
     assert_eq!(p.b.store.take_register(&k.id, &[(&one.0, Some(&one.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
     p.run_with(|ab, m| !ab && m.kind() == 41);
     assert!(!refused(&p, &k), "b's head moved");
@@ -1618,7 +1593,7 @@ fn a_moved_head_shows_a_refused_entry_again_spec_sync_streams_4() {
     assert!(!held(&p, &x), "refused under its head");
     assert_eq!(p.a.streams.known().refusal(p.a.src(), &k.id, &x), Some(Code::REFUSED));
     let pulls = p.sent_by_b(41).len();
-    let one = k.child(&k.genesis.0, 1, 0xee);
+    let one = k.child(&k.genesis().0, 1, 0xee);
     assert_eq!(p.b.store.take_register(&k.id, &[(&one.0, Some(&one.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
     p.run();
     assert!(held(&p, &x), "taken once its head moved");
@@ -1658,7 +1633,7 @@ fn places_after_head_moves(n: u8) -> usize {
         p.b.streams.record_left(rec);
     }
     assert_eq!(p.b.streams.places(), 0);
-    let mut parent = k.genesis.0.clone();
+    let mut parent = k.genesis().0.clone();
     for h in 1..4u64 {
         let next = k.child(&parent, h, 0xe0 + h as u8);
         assert_eq!(p.b.store.take_register(&k.id, &[(&next.0, Some(&next.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
@@ -1685,7 +1660,7 @@ fn a_moved_head_pulls_nothing_anew_over_a_tombstone_refusal_spec_sync_streams_4(
     p.run();
     assert!(p.sent_by_b(43).iter().any(|m| matches!(m, Msg::Stream(st) if st.events.contains(&(k.id, Event::Refused(gone, Code::TOMBSTONED))))));
     let pulls = p.sent_by_b(41).len();
-    let one = k.child(&k.genesis.0, 1, 0xee);
+    let one = k.child(&k.genesis().0, 1, 0xee);
     assert_eq!(p.b.store.take_register(&k.id, &[(&one.0, Some(&one.1))], None, osis_base::Mono(0)).unwrap(), Code::OK);
     p.run();
     let anew = p.sent_by_b(41).iter().skip(pulls).filter(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])).count();
@@ -2634,11 +2609,15 @@ fn deliver(to: &mut Side, now: u64, f: Frame) {
 
 // spec/sync-status.md §1 (caught up: another sync ID's traffic on the connection moves nothing of S's caught up): differential over random histories on two
 // sync IDs: a source said caught up on one holds exactly what this node holds of it (both halves: this side read its stream to the end, it
-// applied every message served to it), whatever order the frames arrive in.
+// applied every message served to it), whatever order the frames arrive in. A seed runner, so a
+// property: `OSIS_CAUGHT_START`/`OSIS_CAUGHT_SEEDS` (100 seeds at small size, 1000 under `OSIS_FULL=1`).
 #[test]
-fn caught_up_matches_what_each_side_holds_spec_sync_status_1() {
-    let said: usize = (1..=100).map(|seed| caught_up_history(seed, 6)).sum();
-    assert!(said > 100 * 100, "caught up is said often enough to test: {said}");
+#[ignore = "property"]
+fn caught_up_matches_what_each_side_holds_plain_spec_sync_status_1() {
+    let name = "caught_up_matches_what_each_side_holds_plain_spec_sync_status_1";
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_CAUGHT_START", "OSIS_CAUGHT_SEEDS", osis_base::testenv::large(0..1000));
+    let said = seeds.run(name, |s| format!("OSIS_CAUGHT_START={s} OSIS_CAUGHT_SEEDS=1"), |seed| caught_up_history(seed, 6));
+    osis_base::testenv::reach_floor("caught up said", said, 100, 1);
 }
 
 // spec/sync-streams.md §4 (Applying: a listing from the start replaces what the source holds as
@@ -3053,20 +3032,7 @@ fn a_pull_anew_while_away_reaches_the_place_held_spec_sync_streams_4() {
 // shown again.
 #[test]
 fn a_reply_after_its_member_left_moves_nothing_of_it_spec_sync_streams_4() {
-    let (mut p, k) = Pair::kept();
-    k.stamped(&mut p.a, 3000, true);
-    p.join(k.id);
-    p.run();
-    p.b.leave(p.now, k.id);
-    p.b.join(p.now, k.id);
-    p.run_with(|ab, m| ab && m.kind() == 42);
-    assert_eq!(p.held.len(), 1, "the join's reply held back");
-    let Some(Msg::Pull(q)) = p.sent_by_b(41).last().copied() else { panic!("b's join") };
-    let [(_, Some(stopped))] = q.joins.as_slice() else { panic!("joined from where it stopped: {q:?}") };
-    let stopped = stopped.clone().into_bytes();
-    p.b.leave(p.now, k.id);
-    p.b.hold(k.id, Holding::Read);
-    p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
+    let (mut p, k, stopped) = reply_held_past_a_leave();
     p.release();
     let pulls = p.sent_by_b(41).len();
     p.b.join_on(p.now, C, k.id, Rejoin::From(Some(stopped)));
@@ -3203,12 +3169,10 @@ fn a_listing_of_made_up_ids_grows_nothing_spec_sync_streams_4() {
     assert_eq!(flood(2), flood(20));
 }
 
-// spec/sync-streams.md §4 (Joining: no reply applied after a member left moves where it stopped,
-// nor a join of it after it opened again): as above, but S opens again (a join from the start)
-// before the old join's reply lands, and leaves again before the new join's reply; S's next join,
-// from where a crossing Lost says it stopped, is from the start.
-#[test]
-fn a_reply_after_its_member_opened_again_moves_nothing_of_it_spec_sync_streams_4() {
+/// b keeps S unread and joins it from where it stopped (a leave and a join), the join's reply
+/// held back; S leaves again and is raised to read (pulled anew there). The pair, S and where the
+/// held-back join said S stopped.
+fn reply_held_past_a_leave() -> (Pair, Sid, Vec<u8>) {
     let (mut p, k) = Pair::kept();
     k.stamped(&mut p.a, 3000, true);
     p.join(k.id);
@@ -3223,6 +3187,16 @@ fn a_reply_after_its_member_opened_again_moves_nothing_of_it_spec_sync_streams_4
     p.b.leave(p.now, k.id);
     p.b.hold(k.id, Holding::Read);
     p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
+    (p, k, stopped)
+}
+
+// spec/sync-streams.md §4 (Joining: no reply applied after a member left moves where it stopped,
+// nor a join of it after it opened again): as above, but S opens again (a join from the start)
+// before the old join's reply lands, and leaves again before the new join's reply; S's next join,
+// from where a crossing Lost says it stopped, is from the start.
+#[test]
+fn a_reply_after_its_member_opened_again_moves_nothing_of_it_spec_sync_streams_4() {
+    let (mut p, k, stopped) = reply_held_past_a_leave();
     p.b.join(p.now, k.id);
     p.release();
     p.run_with(|ab, m| ab && m.kind() == 42);
