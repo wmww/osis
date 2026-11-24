@@ -22,7 +22,7 @@
 
 ## Risks
 - Size: the flag day for every account test and sim world; split it.
-- Things minted under A become dependents (today independent at birth): app and chat things sync only inside A's unit until made independent for sharing; broad behaviour change.
+- Things minted with admin A become dependents (today independent at birth): app and chat things sync only inside A's unit until made independent for sharing; broad behaviour change.
 - The first-entry gap above.
 - Node root: needs a sync ID; its record and key-hop grants become evidence in every unit it writes in (count at n nodes).
 - Sibling dialing loses D's node cards: pull A6's dial aspect forward, or a dial list on A (Interim).

@@ -22,8 +22,8 @@ A thing T's path is read by every node that judges T's parts: T's holders, who h
 - **Marks** (`Path::direct`, spec/wire.md §4 `marks`; a1-spec Open 21): hops marked direct, bit j for hop j; absent where none is marked. In one `Path` the bit at the hop past the end marks every thing past Ak and the end has no such hop, so a write of the end beside a thing past it reached by a marked final hop goes split (`one_of` finds no one path). A split entry carries its thing's marks inside its list.
 - **What it tells other readers** (Decided): every thing's chain up to the end is a prefix of each reader's own path. On the empty path every thing hangs off the signer, which "written by the signer" shows already (a reading of the requirement: strictly, that the signer's role is its own edge and not through a holder is a roster fact; reading it so would split every multi-thing write of own things). On a longer path, a thing T one hop past the end shows its last edge (the end holds a role on T) to the readers of every other thing W written. The clear form is used only where each such W's readers read that edge already:
   - T derives its read secret from W (W on T's record chain up to T's independent): W's readers read T whole, roster and record; or
-  - T's last hop is by record edges (T made under the end) and W's record chain holds T (W made under T): W's readers hold W's record chain, T's record on it.
-  - Otherwise, a grant by the end on T, or T independent of W, the commit goes split though one path would serve. A creation of a dependent thing under a granted parent D (`[D]`) and under the account root (`[0]`) stay clear; a creation of an independent thing under a granted D writing D's `holds.0` goes split (D's readers do not read T's record).
+  - T's last hop is by record edges (T one of the end's dependents) and W's record chain holds T (W one of T's): W's readers hold W's record chain, T's record on it.
+  - Otherwise, a grant by the end on T, or T independent of W, the commit goes split though one path would serve. A creation of a dependent thing minted with admin a granted D (`[D]`) or the account root (`[0]`) stays clear; a creation of an independent thing minted with admin a granted D, writing D's `holds.0`, goes split (D's readers do not read T's record).
   - `engine::write::clear_tells_nothing`. "Independent" there is the node's (`independent_in`: held independent, or a key actor, spec/crypto.md §3): a thing a content commit makes is dependent in it, since only a role commit writing `keys.0` makes a thing independent, and a role commit states no split path.
 
 ## The split form
@@ -53,8 +53,8 @@ Each thing's own path with the fewest edges, then the fewest hops marked direct 
 | commit | path bytes (+ signer: 16) |
 |---|---|
 | own things (`[0]`) | 2 |
-| dependent creation under the account root (`[0]`) | 2 |
-| dependent creation under a granted parent (`[0, D]`) | 18 |
+| dependent creation, minted with admin the account root (`[0]`) | 2 |
+| dependent creation, minted with admin a granted thing (`[0, D]`) | 18 |
 | at or under the last of k holders | 2 + 16k |
 | any of the above with a hop marked direct (a detached thing's owner) | + 2 (hops 0 to 7) |
 | a write of D (by grant from the end) and a thing D holds by grant (clear rule refuses) | split: 3 + 2 · 117 = 237 (author the signer), each section +38 (its key) |
