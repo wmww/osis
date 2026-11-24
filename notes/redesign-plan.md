@@ -21,7 +21,7 @@ Answered and planned on (issues/actors-one-mechanism.md Answers): a removal reac
 | A4 | Accounts as ordinary things, signing keys | A2 |
 | A3 | A removal as evidence: what A2 left | A4 |
 | A5 | Public things, cards, externally grantable | A4 |
-| A6 | Core without accounts: the library | A5 |
+| A6 | Core without accounts: the library (one stage with A5, library first) | A4 |
 | Z | Clean-up | A6 |
 
 One lane through the A stages, in the table's order (A4 before A3), with what A2 owes between A4 and A3: that is notes/handoff.md's route, which says where the lane stands. S1, S3, M1's leftovers and the long tail are not on it: beside work only. Nothing new is built beside old code until the piece before it is switched on (Tess): code built unused on an earlier piece changes under it.
@@ -33,7 +33,7 @@ One lane through the A stages, in the table's order (A4 before A3), with what A2
 - **Evidence (A2) before the removal's logging (A3)**: a removal's copy under a unit is carried with the evidence that needs it.
 - **Accounts (A4) straight after A2 (Tess).** A2's Interim placements (an account's key part under its account root's sync ID) exist because accounts are not ordinary things, so they are replaced, not finished. A4 deletes the account's own lists and listings and rests on a removal carried as evidence, whole with its list: that is A2's derivation already. A4's stolen-node tests are its check; one failing for want of A3's required-set rule pulls that rule into A4.
 - **A3 after A4**: what it has left (spec trims, the counts) changes no rule A4 reads.
-- **Public things and cards (A5) before the library (A6)**, so the account functions leave the `osis` crate once, in their final shape.
+- **Public things and cards (A5) with the library (A6), the library crate first**, so the account functions are written once, in the library, in their final shape.
 - **Earliest deletion**: the signing chain at A4. Nothing old is kept beside its replacement inside a stage: formats change in place.
 
 ## Stages
@@ -93,13 +93,13 @@ The flag day of the redesign: an account is an independent thing A, its members 
 - **Unblocks**: A5, A6; zero-growth's durable counters per signer; a key written down for an account (an admin key like any; a key no admin can remove is parked: issues/recovery-design.md).
 
 ### A5. Public things, cards, externally grantable
-- **Changes**: the public key thing and its five special cases (notes/write-path-design.md §3); every thing's keys count as opening what public reads (spec/sync-set.md §2 T's keys open), so a strong brings a public thing into the referrer's sync unit like any readable thing, its commits carried under the referrer's sync ID and its own; the card aspect and the admin-only aspect naming a thing's inbox and cards, in place of the inbox field of `keys.0`; externally grantable as what a thing publishes (a grant from outside is the `grant@~0` external signal, built: notes/write-path-design.md §4); the granter's refusal; KEM keys published only by a holder or an enabled thing (notes/thing-cost.md, Fewer KEM keys held). spec/crypto.md §3, spec/permissions.md §2 to §4, spec/sync-inbox.md, spec/sync-set.md §2, spec/sync-ids.md §3, spec/data-model.md §9; engine, sync, `osis` (enable, place a card, the public thing's tid), CLI.
-- **Removes**: the inbox field of `keys.0` and `Engine::inbox_thing`'s rule; KEM keys of things nobody seals to; the profile and card travelling as certificates.
-- **Briefs**: (1) spec; (2) the public key thing in perm and keys; (3) public things in sync (the clause in T's keys open, public's static entry); (4) cards and the inbox aspect; (5) the external gate and the refusal; (6) keys following the switch, counted per independent thing.
-- **Checked by**: M1 brief 5 through the perm differential; sims: a profile fetched by a reader served only by a node keeping the referrer unread; a stranger's sealed fire reaching a sync ID kept unread and promoted; bytes per independent thing against notes/thing-cost.md's 14.9 KB; a commit on a profile referenced from n and 10n units (entries per commit grow with the referrers: the stated cost of the built unit).
-- **Depends on**: nothing open. **Unblocks**: A6; the two leaks of priorities item 3 are judged again here.
+Built as one stage with A6, the library crate first (A6's account calls are the ones A5 rewrites). The spec is written; the builder's brief (the design, decisions, delete list, pieces in order, model, costs, risks): notes/public-and-cards-brief.md.
+- **Changes**: the public as a holder that is no thing (zero tid, open boxes, public entry), every thing's keys opening what the public reads with public pieces carried by referring units, cards (`card.0`: a thing's keys and inbox as data), external signals on any thing, KEM keys only where sealed to, the granter's checks, public links.
+- **Checked by**: held-model `closure::public` (built); sims: a profile fetched by a reader served only by a node keeping the referrer unread; a stranger's sealed fire reaching an inbox kept unread and promoted; bytes per independent thing against notes/thing-cost.md; a commit on a profile referenced from n and 10n units.
+- **Unblocks**: the two leaks of priorities item 3 are judged again here.
 
 ### A6. Core without accounts
+With A5 (above): the library crate and the account calls move first, and A4's pairing and node-removal pieces are built there, not in `osis` (notes/public-and-cards-brief.md, A6 folded in).
 - **Changes**: a library crate beside the first-party schema takes `Osis::pair`, `Joining`, `pair_offer`, `pair_accept`, `me`, `account_root`, `nodes`, `remove_node`, `profile`, `profile_of`, `contact_card`, `import_contact` and the account-making half of `Osis::create` [checked: these exist in core/osis/src/account.rs, share.rs, handle.rs]; core keeps signers, a session's default path and purge author, and the dial aspect (notes/write-path-design.md §5 table). The schema describes a realm, a home and an account (notes/realms.md, issues/realms-design.md); profiles are public things, the dial list a contact-only thing. CLI `me`, `pair`, `contact` call the library; app and libs/kit follow (notes/app.md).
 - **Removes**: the account calls from the `osis` crate; the sibling rule of dialing; "the account's inbox" as core's.
 - **Briefs**: (1) the `osis` surface (notes/api-design.md); (2) the library crate; (3) schema: realm, home, account, profile, contacts; (4) dialing by the dial aspect; (5) CLI; (6) kit and app.
@@ -112,7 +112,7 @@ The renames left (below); notes/terms.md, Built and being moved to, reduced to w
 | what | stage | must exist first |
 |---|---|---|
 | The inbox field of `keys.0`, KEM keys nobody seals to | A5 | cards |
-| Account functions in the `osis` crate | A6 | public profiles and cards (A5) |
+| Account functions in the `osis` crate | A5/A6, first | the library crate |
 
 The multi-unit carriage (a thing under every enclosing unit's sync ID, retag, deposits into enclosing units, per-sync-ID copies) stays: it is the built unit. Kept as records (Tess): node anonymity as built, notes/account-membership-design.md §7; the rejected sync unit, notes/sync-unit-scope.md.
 

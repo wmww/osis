@@ -18,7 +18,7 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 - spec/sync-opens.md: connections, connection proofs, records and agreement, the shared set, filters, Offer, ending opens.
 - spec/sync-judgement.md: what goes under a sync ID, the required set and judgement, acting on it, logged again once, destruction and emptying, kept unread.
 - spec/sync-compaction.md: compaction and deletion, ephemeral and relay-only commits.
-- spec/sync-inbox.md: inboxes, external signals and sealed fires, deposits, promotion and clearing, grants from outside, stranded notices, contact cards, links.
+- spec/sync-inbox.md: external signals, cards and sealed fires, deposits, promotion and clearing, grants from outside, stranded notices, contact cards, links.
 - spec/sync-streams.md: framing, clock and flow control, pushes, the node log and cursor, the stream, first sync.
 - spec/sync-status.md: sources and caught up, held elsewhere, status and waits.
 - spec/sync-hostile.md: bounds on hostile peers and the stated limits.

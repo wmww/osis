@@ -62,13 +62,14 @@
   - Every node holding S has one **head** per S: a node reading S the newest step its `sync.0` records (§4); a node keeping S unread the newest step registered with it (§6 Register).
   - An admin issues steps (§6 Steps).
 - **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch (the registrar's newest read epoch at registration): every thing holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the mint admin included while its record edge stands; a holder re-sealed later opens by sync key).
-  - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds. A non-contributory DH result omits M.
+  - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds. A non-contributory DH result, or a read keyset carrying no KEM key (spec/crypto.md §3 Published KEM keys), omits M.
   - A reader that is a link key of S's thing (its creation record names that thing as its K, spec/wire.md §3) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
+  - The public (spec/permissions.md §1), where it holds read, is listed by its **public entry** (spec/wire.md §8), which every node derives.
   - The registrar erases the step private key after signing.
   - M derives its claim key from its own private key and the step key; it tries each keyset epoch it has held.
-- **Entry boxes** of a step: one for each reader listed by its static entry, sealed to its first read keyset's KEM key (spec/crypto.md §4 sealed form; AD = (sync ID, step key)). Layout: spec/wire.md §7.
+- **Entry boxes** of a step: one for each reader listed by its static entry, sealed to its first read keyset's KEM key (spec/crypto.md §4 sealed form; AD = (sync ID, step key)), and one for the public entry, of the open form (spec/crypto.md §4 Boxes). Layout: spec/wire.md §7.
   - It holds the epoch's read secret and, when the epoch supersedes one whose secret the registrar holds, the secret of the one with the greatest n, ties by lowest nonce (what its rotation commit is wrapped under, spec/crypto.md §5), and the sync secret whose sync key the step registers (its holder checks it derives the step's sync key).
-  - A link key holding no secret of the thing reads S from the current step; the rotation commit's history box (spec/crypto.md §4) opens the rest.
+  - A link key, or a party reading as the public, holding no secret of the thing reads S from the current step; the rotation commit's history box (spec/crypto.md §4) opens the rest.
   - Each secret names its epoch of the thing (spec/crypto.md §4); it is held as that epoch's secret, which establishes nothing.
   - Other readers get none: they read the rotations they missed in order (spec/crypto.md §5), or a re-seal (spec/permissions.md §3).
 - **Role keys in use**: a node acts at a peer keeping S unread with the role keys of the epochs that peer's head registers; it derives them from the matching epochs it holds. Every holder of a key in use holds the older secrets through the history boxes, except a holder granted without history, which opens only from its grant's step on: a walk (§6) never strands it for an older step.
