@@ -10,7 +10,7 @@ jobs=${JOBS:-4}
 work=$(mktemp -d -p "${TMPDIR:-/tmp}")
 trap 'rm -rf "$work"' EXIT
 
-# scenario prefix side host aspect rolec
+# scenario prefix side store aspect rolec
 scen=(
   "K K K_SideY {\"b0\"} OneAspect {}"
   "Z Z K_SideX {\"b0\"} OneAspect {}"
@@ -21,7 +21,7 @@ scen=(
   "Q0 Q K_SideY {\"t\"} OneAspect {}"
   "S S K_SideX {\"s1\"} OneAspect {}"
 )
-# mode gate reup fork coverown bridge lift conc cwin
+# mode gate relog fork coverown bridge lift conc cwin
 modes=(
   "none none FALSE FALSE FALSE FALSE FALSE none X"
   "a-direct direct FALSE FALSE FALSE FALSE FALSE none X"
@@ -44,10 +44,10 @@ modes=(
 props=${PROPS:-"NoLoss Quiesce Served Alike PurgePrompt Tidy"}
 
 for s in "${scen[@]}"; do
-  read -r S pre side hostset aspect rolec <<<"$s"
+  read -r S pre side storeset aspect rolec <<<"$s"
   [ -n "${1:-}" ] && [[ "$S" != $1 ]] && continue
   for m in "${modes[@]}"; do
-    read -r M gate reup fork cov bridge lift conc cwin <<<"$m"
+    read -r M gate relog fork cov bridge lift conc cwin <<<"$m"
     [ -n "${2:-}" ] && [[ "$M" != $2 ]] && continue
     for p in $props; do
       if [ "$p" = NoLoss ]; then chk="INVARIANTS TypeOK NoLoss"; else chk="INVARIANT TypeOK
@@ -64,10 +64,10 @@ CONSTANTS
   Aspect <- $aspect
   Reasons <- ${pre}_Reasons
   InitHeld <- ${pre}_Held
-  InitHost = $hostset
+  InitStore = $storeset
   RoleC = $rolec
   Gate = "$gate"
-  ReupOnce = $reup
+  RelogOnce = $relog
   Fork = $fork
   CoverOwn = $cov
   Bridge = $bridge

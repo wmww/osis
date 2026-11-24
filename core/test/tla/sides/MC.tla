@@ -24,7 +24,7 @@ K_Held == XH([n \in {"x", "y", "m"} |-> CASE n = "y" -> {"k"} [] n = "m" -> {"b0
 K_SideY == [n \in {"x", "y", "m"} |-> IF n = "x" THEN "X" ELSE "Y"]
 K_SideX == [n \in {"x", "y", "m"} |-> IF n = "y" THEN "Y" ELSE "X"]
 
-\* Z: z by a device X granted after the dispute (valid on X only, no direct
+\* Z: z by a node granted on side X after the dispute (valid on X only, no direct
 \* seed) supersedes b0. m starts on X.
 Z_Bodies == XB({"b0", "z"})
 Z_Valid == [b \in Z_Bodies |-> IF b = "z" THEN {"X"} ELSE Sides]
@@ -41,7 +41,7 @@ F_Reasons == [b \in F_Bodies |-> IF b = "w" THEN {R("w", "invalid", "not", FALSE
 F_Held == XH([n \in {"x", "y", "m"} |-> CASE n = "x" -> {"w"} [] n = "m" -> {"u"} [] OTHER -> {}])
 
 \* C: X's post-dispute snapshot s covers b0 (one-side cover). m on X holds
-\* b0, which is at the host; y has not fetched it yet.
+\* b0, which is at the store; y has not fetched it yet.
 C_Bodies == XB({"b0", "s"})
 C_Valid == [b \in C_Bodies |-> IF b = "s" THEN {"X"} ELSE Sides]
 C_Seed == [b \in C_Bodies |-> b = "s"]
@@ -57,7 +57,7 @@ P_Reasons == [b \in P_Bodies |-> IF b = "b1" THEN {R("p", "valid", "not", TRUE)}
 P_Held == XH([n \in {"x", "y", "m"} |-> CASE n = "y" -> {"d"} [] n = "m" -> {"b1", "p"} [] OTHER -> {}])
 P_Aspect == [b \in P_Bodies |-> IF b = "p" THEN "pa" ELSE "a"]
 
-\* Q: Y's placement q keeps t in the label's required set; on side X, t is
+\* Q: Y's placement q keeps t in the sync ID's required set; on side X, t is
 \* outside it (must-not-hold while q is invalid or not held). m on Y
 \* holds both.
 Q_Bodies == XB({"t", "q"})
@@ -67,7 +67,7 @@ Q_Reasons == [b \in Q_Bodies |-> IF b = "t" THEN {R("q", "invalid", "not", FALSE
 Q_Held == XH([n \in {"x", "y", "m"} |-> CASE n = "y" -> {"q"} [] n = "m" -> {"t", "q"} [] OTHER -> {}])
 \* S: X's post-dispute write s1 is superseded by X's later s2 (purge on
 \* replace): both valid on side X only. Side X must not hold s1; side Y holds
-\* neither (invalid). m on X holds s2; s1 is at the host.
+\* neither (invalid). m on X holds s2; s1 is at the store.
 S_Bodies == XB({"s1", "s2"})
 S_Valid == [b \in S_Bodies |-> IF b = Conc THEN Sides ELSE {"X"}]
 S_Seed == [b \in S_Bodies |-> b # Conc]
