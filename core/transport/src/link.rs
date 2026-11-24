@@ -4,7 +4,7 @@
 //! every stream the dialer opens as a session (spec/sync-transport.md §2), finishes its side when a session
 //! ends, and closes only once the dialer closed or the connection sat idle without sessions.
 
-use crate::{Address, Connection, Error, Listener, Peer, PublicKey, Rank, RecvStream, SendStream, Source, Transport};
+use crate::{Address, Connection, Error, Listener, Peer, PublicKey, Rank, RecvStream, SendStream, Transport};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -102,8 +102,6 @@ pub struct Link {
     pub peer_key: PublicKey,
     /// The peer as the transport type tells it (`Connection::peer`).
     pub peer: Peer,
-    /// Where the connection carrying it comes from (`Connection::source`).
-    pub source: Option<Source>,
     /// The connection's route rank (`Connection::rank`).
     pub rank: Rank,
     pub tx: LinkTx,
@@ -167,7 +165,7 @@ fn session<C: Connection>(c: &C, mut send: C::Send, mut recv: C::Recv, closer: O
             }
         }
     });
-    Link { peer_key: c.peer_key(), peer: c.peer(), source: c.source(), rank: c.rank(), tx: LinkTx { tx, queued, taken, moved }, rx: LinkRx { rx: rrx, want } }
+    Link { peer_key: c.peer_key(), peer: c.peer(), rank: c.rank(), tx: LinkTx { tx, queued, taken, moved }, rx: LinkRx { rx: rrx, want } }
 }
 
 /// Dials `addr` and opens one session on it. The connection closes when the session ends.

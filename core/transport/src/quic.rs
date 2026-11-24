@@ -36,43 +36,12 @@ pub const STREAM_WINDOW: u32 = 1 << 20;
 pub const CONN_WINDOW: u32 = STREAM_WINDOW;
 /// Concurrent bidirectional streams a peer may open.
 pub const MAX_STREAMS: u32 = 16;
-/// Handshakes in progress per listener: past it the oldest is dropped (`Handshakes`).
+/// Handshakes in progress per listener: past it the oldest is dropped (`util::Bounded`).
 pub(crate) const MAX_INCOMING: usize = 1024;
 
-/// A listener's handshakes in progress, oldest first: each runs in its own task, ends at the QUIC
-/// idle timeout when the peer goes silent, and is aborted when `MAX_INCOMING` newer ones start
-/// (half-open handshakes stay bounded without a deadline that refuses slow links).
-struct Handshakes {
-    cap: usize,
-    q: std::sync::Mutex<std::collections::VecDeque<(u64, tokio::task::AbortHandle)>>,
-    next: std::sync::atomic::AtomicU64,
-}
-
-impl Handshakes {
-    fn new(cap: usize) -> Arc<Handshakes> {
-        Arc::new(Handshakes { cap, q: Default::default(), next: Default::default() })
-    }
-
-    fn spawn(self: &Arc<Self>, f: impl std::future::Future<Output = ()> + Send + 'static) {
-        let id = self.next.fetch_add(1, Ordering::Relaxed);
-        let me = self.clone();
-        // held across the spawn, so the task's removal comes after its insertion
-        let mut q = crate::util::lock(&self.q);
-        let h = tokio::spawn(async move {
-            f.await;
-            crate::util::lock(&me.q).retain(|(x, _)| *x != id);
-        });
-        q.push_back((id, h.abort_handle()));
-        while q.len() > self.cap {
-            if let Some((_, a)) = q.pop_front() {
-                a.abort();
-            }
-        }
-    }
-}
-
 /// An endpoint's accept loop: every incoming connection's `handshake` in its own task
-/// (`Handshakes`, at most `MAX_INCOMING` at once), so a silent or slow client blocks nobody; the
+/// (`util::Bounded`, at most `MAX_INCOMING` at once; each ends at the QUIC idle timeout when the
+/// peer goes silent), so a silent or slow client blocks nobody; the
 /// connections it yields go into the returned channel for `accept`.
 fn accept_loop<C, HF>(ep: quinn::Endpoint, handshake: impl Fn(quinn::Incoming) -> HF + Send + 'static) -> tokio::sync::mpsc::Receiver<C>
 where
@@ -80,14 +49,20 @@ where
     C: Send + 'static,
 {
     let (tx, rx) = tokio::sync::mpsc::channel(64);
-    let hs = Handshakes::new(MAX_INCOMING);
+    let hs = Arc::new(crate::util::Bounded::new(MAX_INCOMING));
     tokio::spawn(async move {
         while let Some(inc) = ep.accept().await {
-            let (tx, hand) = (tx.clone(), handshake(inc));
-            hs.spawn(async move {
-                if let Some(c) = hand.await {
-                    let _ = tx.send(c).await;
-                }
+            let (tx, hand, hs) = (tx.clone(), handshake(inc), hs.clone());
+            let (id, gate) = hs.start();
+            tokio::spawn(async move {
+                let _ = crate::util::race(&gate, async {
+                    if let Some(c) = hand.await {
+                        let _ = tx.send(c).await;
+                    }
+                    Ok(())
+                })
+                .await;
+                hs.end(id);
             });
         }
     });
@@ -829,38 +804,6 @@ mod tests {
     async fn handshake(sa: SocketAddr, me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertVerifier>, alpn: &[u8]) -> Result<quinn::Connection, Error> {
         let cfg = client_config(me, verifier, &[alpn], (MAX_STREAMS, STREAM_WINDOW, u64::from(CONN_WINDOW))).unwrap();
         endpoint().connect_with(cfg, sa, SNI_NAME).unwrap().await.map_err(handshake_err)
-    }
-
-    // spec/sync-transport.md §1: handshakes have no deadline; past the cap the oldest in progress goes
-    #[test]
-    fn handshakes_evict_oldest() {
-        rt().block_on(async {
-            let hs = Handshakes::new(2);
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            let gates: Vec<_> = (0..3)
-                .map(|i| {
-                    let (g, w) = tokio::sync::oneshot::channel::<()>();
-                    let tx = tx.clone();
-                    hs.spawn(async move {
-                        let _ = w.await;
-                        let _ = tx.send(i);
-                    });
-                    g
-                })
-                .collect();
-            drop(tx);
-            assert_eq!(crate::util::lock(&hs.q).len(), 2);
-            for g in gates {
-                let _ = g.send(());
-            }
-            let mut done = Vec::new();
-            while let Some(i) = rx.recv().await {
-                done.push(i);
-            }
-            done.sort();
-            assert_eq!(done, vec![1, 2]);
-            assert!(crate::util::lock(&hs.q).is_empty());
-        });
     }
 
     // spec/sync-transport.md §2 (mutual auth): a client presenting no key is refused: the serving side yields

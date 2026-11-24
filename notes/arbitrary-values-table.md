@@ -11,7 +11,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | rotation `MAX_DEPTH` | `engine/rotation/mod.rs` | departures one per covers class, a polynomial fixpoint over the holder graph, cascade iterative, each thing once: any depth rotates | `rotation::tests::removal_twelve_deep_rotates_every_level_spec_crypto_4` |
 | `MAX_INBOX_TRIES` | `sync/inbox/offers.rs` | a refused deposit backs off between `BACKOFF_MIN_MS` and `BACKOFF_MAX_MS` until taken or moot (stamped, dropped or sealed again) | `inbox::refused_for_now_backs_off_spec_sync_inbox_3` |
 | queue caps and a request timeout as flow control | `sync/src/session.rs` | the request window `WINDOW` (spec/sync-streams.md §1 flow control); `STALL_TIMEOUT_MS` counts from the oldest request's last move; pushes wait while the connection's untaken bytes leave no room for one (`Input::Taken`) | `session::window_spec_sync_streams_1`, `session::pushes_wait_for_room_spec_sync_streams_2` |
-| `HANDSHAKE_TIMEOUT` | `transport/quic.rs`, `p2p.rs` | no deadline; QUIC's idle timeout ends a silent handshake, a listener drops its oldest handshake past `MAX_INCOMING` | `quic::tests::handshakes_evict_oldest` |
+| `HANDSHAKE_TIMEOUT` | `transport/quic.rs`, `p2p.rs` | no deadline; QUIC's idle timeout ends a silent handshake, a listener drops its oldest handshake past `MAX_INCOMING` | `util::tests::bounded_ends_the_oldest` |
 | `CLOSE_WAIT` | `osis/handle.rs` | user handles counted: `close` fails `StillOpen` while others exist, else waits for the callback, engine call or timer to end (and the driver task on the app's multi-thread runtime) | `api::close_waits_or_names_holders_spec_api_handle` |
 
 ## Table

@@ -76,19 +76,8 @@ fn echo(sched: &Sched, mut l: P2pListener<MemUdp>) -> Rc<RefCell<Vec<bool>>> {
             s2.borrow_mut().push(c.rank() == RANK_RELAYED);
             let sp2 = sp.clone();
             sp.spawn(async move {
-                while let Ok((mut tx, mut rx)) = c.accept_stream().await {
-                    sp2.spawn(async move {
-                        let mut b = [0u8; 4096];
-                        while let Ok(n) = rx.read(&mut b).await {
-                            if n == 0 {
-                                let _ = tx.finish().await;
-                                return;
-                            }
-                            if tx.write_all(&b[..n]).await.is_err() {
-                                return;
-                            }
-                        }
-                    });
+                while let Ok((tx, rx)) = c.accept_stream().await {
+                    sp2.spawn(pipe(rx, tx));
                 }
             });
         }
@@ -760,14 +749,8 @@ fn nat_model() {
 
 /// Echoes the first stream of `c` (real QUIC), then waits for the dialer's close.
 async fn quic_echo(c: P2pConn<QuicConn>) {
-    if let Ok((mut tx, mut rx)) = c.accept_stream().await {
-        let mut b = [0u8; 1024];
-        while let Ok(n) = rx.read(&mut b).await {
-            if n == 0 || tx.write_all(&b[..n]).await.is_err() {
-                break;
-            }
-        }
-        let _ = tx.finish().await;
+    if let Ok((tx, rx)) = c.accept_stream().await {
+        pipe(rx, tx).await;
         let _ = c.accept_stream().await;
     }
 }
@@ -1140,39 +1123,17 @@ fn listen_at(w: &mut World, to: P2p<MemUdp>, url: String, s: u8) -> P2pListener<
     l
 }
 
-/// `from` dials `addr`, and the connection carries bytes both ways (the listener's side echoes
-/// one stream); the dial's error if it fails.
-fn dial_route(w: &mut World, from: P2p<MemUdp>, addr: Address, mut l: P2pListener<MemUdp>) -> Result<(), Error> {
-    let sp = w.sched.spawner();
-    let sp2 = sp.clone();
-    sp.spawn(async move {
-        while let Ok(c) = l.accept().await {
-            sp2.spawn(async move {
-                if let Ok((mut tx, mut rx)) = c.accept_stream().await {
-                    let mut b = [0u8; 4];
-                    if let Ok(n) = rx.read(&mut b).await {
-                        let _ = tx.write_all(&b[..n]).await;
-                    }
-                    // the connection outlives the echo: until the dialer is done
-                    let _ = rx.read(&mut b).await;
-                }
-            });
-        }
-    });
-    w.sched.block_on(async move {
-        let c = from.dial(&addr).await?;
-        assert_eq!(c.peer_key(), addr.key);
-        let (mut tx, mut rx) = c.open_stream().await?;
-        tx.write_all(b"ping").await?;
-        let mut got = [0u8; 4];
-        let mut at = 0;
-        while at < got.len() {
-            at += rx.read(&mut got[at..]).await?;
-        }
-        assert_eq!(&got, b"ping");
-        Ok(())
-    })
-    .unwrap()
+/// `from` dials `addr`, and the connection carries bytes both ways (the listener echoes); the
+/// dial's error if it fails.
+fn dial_route(w: &mut World, from: P2p<MemUdp>, addr: Address, l: P2pListener<MemUdp>) -> Result<(), Error> {
+    let _ = echo(&w.sched, l);
+    w.sched
+        .block_on(async move {
+            let c = from.dial(&addr).await?;
+            assert_eq!(c.peer_key(), addr.key);
+            try_round_trip(&c, b"ping").await.map(drop)
+        })
+        .unwrap()
 }
 
 const B_PUBLIC: &str = "203.0.113.2";

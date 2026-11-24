@@ -17,11 +17,11 @@
 //!   observed address; the target punches and the dialer dials direct from the same socket.
 
 use crate::quic::{self, PinnedKey, ALPN, IDLE_TIMEOUT, SNI_NAME};
-use crate::util::{lock, Gate};
+use crate::util::{lock, race, Bounded, Gate};
 use crate::lan::{Discovery, Found, Joined, LanConfig, LanSocket};
 use crate::{evict_for, ip_source, Address, Backoff, Connection, Error, ListenConfig, Listener, PublicKey, Rank, RecvStream, SendStream, Source, StaticSecret, Transport, RANK_DIRECT, RANK_LAN, RANK_RELAYED};
 use std::collections::BTreeMap;
-use std::future::{poll_fn, Future};
+use std::future::Future;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -297,12 +297,6 @@ fn ready_now<F: Future>(f: F) -> Option<F::Output> {
         Poll::Ready(v) => Some(v),
         Poll::Pending => None,
     }
-}
-
-/// `f`, or `Err(Closed)` once `gate` closes.
-async fn race<T>(gate: &Gate, f: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
-    let mut f = std::pin::pin!(f);
-    poll_fn(|cx| if gate.poll_closed(cx).is_ready() { Poll::Ready(Err(Error::Closed)) } else { f.as_mut().poll(cx) }).await
 }
 
 // ---- TLS over a forwarded stream ----
@@ -970,35 +964,7 @@ struct Registration<U: Udp> {
     secret: StaticSecret,
     tx: mpsc::Sender<P2pConn<SConn<U>>>,
     observed: Arc<Mutex<BTreeMap<Relay, SocketAddr>>>,
-    fwd: Arc<Forwarded>,
-}
-
-/// A listener's forwarded streams that `accept` has not handed out, oldest first, each with the
-/// gate that ends it: past `MAX_FORWARDED` the oldest ends.
-#[derive(Default)]
-struct Forwarded(Mutex<(u64, Ends)>);
-
-/// Forwarded streams by id, oldest first, with the gates that end them.
-type Ends = std::collections::VecDeque<(u64, Arc<Gate>)>;
-
-impl Forwarded {
-    fn start(&self) -> (u64, Arc<Gate>) {
-        let gate = Arc::new(Gate::default());
-        let mut g = lock(&self.0);
-        g.0 += 1;
-        let id = g.0;
-        g.1.push_back((id, gate.clone()));
-        while g.1.len() > MAX_FORWARDED {
-            if let Some((_, old)) = g.1.pop_front() {
-                old.close();
-            }
-        }
-        (id, gate)
-    }
-
-    fn end(&self, id: u64) {
-        lock(&self.0).1.retain(|(i, _)| *i != id);
-    }
+    fwd: Arc<Bounded>,
 }
 
 impl<U: Udp> Registration<U> {
@@ -1057,7 +1023,7 @@ impl<U: Udp> Registration<U> {
 /// A stream the relay at `via` forwarded: serve TLS over it, exchange addresses (ours `at`, as
 /// that relay sees it) and punch to the dialer's if `punchable`, then queue the connection for
 /// `accept`. Counted in `fwd` until queued, which may end it first.
-async fn incoming<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, via: SocketAddr, at: SocketAddr, (mut s, mut r): (<SConn<U> as Connection>::Send, <SConn<U> as Connection>::Recv), tx: mpsc::Sender<P2pConn<SConn<U>>>, fwd: Arc<Forwarded>) {
+async fn incoming<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, via: SocketAddr, at: SocketAddr, (mut s, mut r): (<SConn<U> as Connection>::Send, <SConn<U> as Connection>::Recv), tx: mpsc::Sender<P2pConn<SConn<U>>>, fwd: Arc<Bounded>) {
     let (id, gate) = fwd.start();
     let serve = async {
         let mut tag: Source = [0; 16];
@@ -1188,7 +1154,7 @@ impl<U: Udp> P2p<U> {
             }
         });
         let addr = Address { url: String::new(), key: cfg.secret.public_key() };
-        let mut l = P2pListener { rx, addr, stop: Arc::default(), sock, observed: Arc::default(), udp: self.udp.clone(), tx: tx.downgrade(), fwd: Arc::default() };
+        let mut l = P2pListener { rx, addr, stop: Arc::default(), sock, observed: Arc::default(), udp: self.udp.clone(), tx: tx.downgrade(), fwd: Arc::new(Bounded::new(MAX_FORWARDED)) };
         l.register(it.relays, &cfg.secret, &tx);
         Ok(l)
     }
@@ -1321,7 +1287,7 @@ pub struct P2pListener<U: Udp> {
     udp: U,
     /// What its registrations queue to (weak: `accept` ends once the socket and they are gone).
     tx: mpsc::WeakSender<P2pConn<SConn<U>>>,
-    fwd: Arc<Forwarded>,
+    fwd: Arc<Bounded>,
 }
 
 impl<U: Udp> P2pListener<U> {

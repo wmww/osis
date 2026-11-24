@@ -160,21 +160,6 @@ pub trait Transport: Send + Sync + 'static {
     }
 }
 
-/// A shared transport.
-impl<T: Transport> Transport for std::sync::Arc<T> {
-    type Conn = T::Conn;
-    type Listener = T::Listener;
-    fn dial(&self, addr: &Address) -> impl Future<Output = Result<Self::Conn, Error>> + Send {
-        (**self).dial(addr)
-    }
-    fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send {
-        (**self).listen(cfg)
-    }
-    fn discover(&self) -> impl Future<Output = Result<Discovery<Self::Conn>, Error>> + Send {
-        (**self).discover()
-    }
-}
-
 /// Listens at every URL of `urls` under one key (spec/sync-transport.md §5, One key): all or
 /// none. `old` are the listeners a set held (none for a new set): a URL one of them is bound at
 /// keeps it, moved to `secret` (`Listener::relisten`), so a key change never needs a socket

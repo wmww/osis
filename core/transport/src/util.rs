@@ -1,7 +1,11 @@
-//! Small helpers: poison-tolerant locking, a seeded rng, a gate tasks wait on.
+//! Small helpers: poison-tolerant locking, a seeded rng, a gate tasks wait on, a bounded set of
+//! tasks.
 
-use std::future::poll_fn;
-use std::sync::{Mutex, MutexGuard};
+use crate::Error;
+use std::collections::VecDeque;
+use std::future::{Future, poll_fn};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 
 /// Locks, ignoring poisoning (a panicked test thread must not cascade).
@@ -68,5 +72,58 @@ impl Gate {
 
     pub(crate) async fn closed(&self) {
         poll_fn(|cx| self.poll_closed(cx)).await
+    }
+}
+
+/// `f`, or `Err(Closed)` once `gate` closes.
+pub(crate) async fn race<T>(gate: &Gate, f: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
+    let mut f = std::pin::pin!(f);
+    poll_fn(|cx| if gate.poll_closed(cx).is_ready() { Poll::Ready(Err(Error::Closed)) } else { f.as_mut().poll(cx) }).await
+}
+
+/// Tasks in progress, oldest first, each with the gate that ends it (`race`): past `cap` the
+/// oldest ends, so they stay bounded without a deadline that refuses slow peers.
+pub(crate) struct Bounded {
+    cap: usize,
+    next: AtomicU64,
+    q: Mutex<VecDeque<(u64, Arc<Gate>)>>,
+}
+
+impl Bounded {
+    pub(crate) fn new(cap: usize) -> Bounded {
+        Bounded { cap, next: AtomicU64::default(), q: Mutex::default() }
+    }
+
+    /// A task starts: its id and its gate.
+    pub(crate) fn start(&self) -> (u64, Arc<Gate>) {
+        let (id, gate) = (self.next.fetch_add(1, Ordering::Relaxed), Arc::new(Gate::default()));
+        let mut q = lock(&self.q);
+        q.push_back((id, gate.clone()));
+        while q.len() > self.cap {
+            if let Some((_, old)) = q.pop_front() {
+                old.close();
+            }
+        }
+        (id, gate)
+    }
+
+    /// Task `id` ended.
+    pub(crate) fn end(&self, id: u64) {
+        lock(&self.q).retain(|(i, _)| *i != id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec/sync-transport.md §1: handshakes have no deadline; past the cap the oldest in progress goes
+    #[test]
+    fn bounded_ends_the_oldest() {
+        let b = Bounded::new(2);
+        let started: Vec<_> = (0..3).map(|_| b.start()).collect();
+        assert_eq!(started.iter().map(|(_, g)| g.is_closed()).collect::<Vec<_>>(), [true, false, false]);
+        started.iter().for_each(|(id, _)| b.end(*id));
+        assert!(lock(&b.q).is_empty());
     }
 }
