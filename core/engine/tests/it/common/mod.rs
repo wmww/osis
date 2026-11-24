@@ -130,8 +130,8 @@ pub fn item(name: &str, n: i64) -> Value {
     Value::Map([(Value::Int(0), s(name)), (Value::Int(1), Value::Int(n))].into_iter().collect())
 }
 
-/// `n` peers, each its own account (`LocalPeer::new` at `T0`), each holding the others' account
-/// chains (synced once), so any may grant any: built once per `(n, seed)` (`LocalPeer::cached`; a
+/// `n` peers (`LocalPeer::new` at `T0`), each holding the others'
+/// records (synced once), so any may grant any: built once per `(n, seed)` (`LocalPeer::cached`; a
 /// copy costs less than a build).
 pub fn net(n: usize, seed: u64) -> LocalPeer {
     LocalPeer::cached(&format!("common::net/{n}/{seed}"), || {
@@ -155,48 +155,20 @@ pub fn perms(n: usize) -> Vec<Vec<usize>> {
     out
 }
 
-/// `n` peers, each its own account, that have met no other (`LocalPeer::new` at `T0`).
+/// `n` peers that have met no other (`LocalPeer::new` at `T0`).
 pub fn net_apart(n: usize, seed: u64) -> LocalPeer {
     LocalPeer::cached(&format!("common::net_apart/{n}/{seed}"), || (LocalPeer::new_apart(n, seed, T0).unwrap(), ())).0
 }
 
-/// `n` peers, the nodes of one account (peer 0 made it, the others paired, nothing else synced):
-/// each holds what another mints with the account root as admin (`new_thing`) once it holds its record
-/// and the root's strong to it. Built once per `n` (`LocalPeer::cached`).
-pub fn net_one(n: usize) -> LocalPeer {
-    LocalPeer::cached(&format!("common::net_one/{n}"), || {
-        let mut lp = LocalPeer::new_bare(n, 0, T0).unwrap();
-        lp.peers[0].engine.create_account().unwrap();
-        let mut rest = lp.peers.split_off(1);
-        for p in &mut rest {
-            pair_into(&mut lp, 0, p);
-        }
-        lp.peers.extend(rest);
-        (lp, ())
-    })
-    .0
+/// `n` peers, the nodes of one account: brought back by making an account and pairing
+/// (notes/accounts-switch-brief.md).
+pub fn net_one(_n: usize) -> LocalPeer {
+    unimplemented!("accounts: pairing")
 }
 
-/// Pairs `p`, a node that joined no account, into peer `by`'s account (as `Engine::pair` over a
-/// direct connection).
-pub fn pair_into(lp: &mut LocalPeer, by: usize, p: &mut osis_engine::local_peer::Peer) {
-    let account = lp.peers[by].engine.me();
-    for id in p.engine.commit_ids() {
-        let pk = p.engine.package(&id).unwrap().unwrap();
-        lp.deliver(by, &pk).unwrap();
-    }
-    let node = p.engine.tid();
-    let (_, send) = lp.peers[by].engine.pair(&node).unwrap();
-    for id in send {
-        let pk = lp.peers[by].engine.package(&id).unwrap().unwrap();
-        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
-    }
-    p.engine.paired(&account).unwrap();
-}
-
-/// `net` whose peers join no account: the test makes or pairs them.
-pub fn net_bare(n: usize, seed: u64) -> LocalPeer {
-    LocalPeer::cached(&format!("common::net_bare/{n}/{seed}"), || (LocalPeer::new_bare(n, seed, T0).unwrap(), ())).0
+/// Pairs `p` into peer `by`'s account: brought back by pairing (notes/accounts-switch-brief.md).
+pub fn pair_into(_lp: &mut LocalPeer, _by: usize, _p: &mut osis_engine::local_peer::Peer) {
+    unimplemented!("accounts: pairing")
 }
 
 /// `net` with every peer answering removals with no addenda (`Engine::write_addenda`): for an
@@ -209,7 +181,7 @@ pub fn net_off(n: usize, seed: u64) -> LocalPeer {
     lp
 }
 
-/// A new dependent thing of peer `i`: its mint admin `Engine::dependents_admin`, held where it lives and
+/// A new dependent thing of peer `i`: its mint admin `Engine::me`, held where it lives and
 /// by every other peer (`LocalPeer::hold`), which keeps it once granted a role (`set_edge`).
 pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     new_thing_keeping(lp, i, &[])
@@ -218,7 +190,7 @@ pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
 /// `new_thing` whose setting also keeps `extra` (each AK's history beside `test_setting`'s).
 pub fn new_thing_keeping(lp: &mut LocalPeer, i: usize, extra: &[(&str, osis_schema::History)]) -> Tid {
     let p = lp.peer(i).unwrap();
-    let admin = p.engine.dependents_admin();
+    let admin = p.engine.me();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, admin);
     m.set(t, &REG, &s("new")).unwrap();
@@ -503,7 +475,7 @@ pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, osis_commit::Path::default(), Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
+    let forge_key = lp.peers[by].engine.identity().keys().signing.clone();
     cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(&[rec]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
@@ -522,7 +494,7 @@ pub fn session_of(lp: &LocalPeer, i: usize) -> osis_commit::Form {
 /// Node `e` as a reader to box a secret to.
 pub fn read_recipient(e: &mut Engine) -> osis_keys::Recipient {
     let me = e.me();
-    osis_keys::Recipient { holder: me, role: Role::Read, keys: e.account_holder_keys(&me).unwrap(), floor: 0 }
+    osis_keys::Recipient { holder: me, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None }, floor: 0 }
 }
 
 /// The keep-at-least bound of part `(t, a)` of `c` (`Engine::part_keeps`).

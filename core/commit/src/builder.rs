@@ -1,14 +1,14 @@
 //! The commit builder (spec/commits.md §1, spec/wire.md §4).
 
 use crate::blob::{CommitBlob, Part, Sigs};
-use crate::header::{AspectEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, RotationHeader, SeedReseal, aspect_order, purge_bytes};
+use crate::header::{AspectEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, aspect_order, purge_bytes};
 use crate::groups::{COMMIT_PAST_BLOB, blob_bound};
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
 use crate::Error;
 use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB, MAX_LIST_BYTES};
 use osis_base::{Ak, BlobId, CommitId, Tid, Ts};
-use osis_crypto::{CryptoRngCore, Domain, Secret32, SigningSecret, delta_hash, seal_inner};
+use osis_crypto::{CryptoRngCore, Secret32, SigningSecret, delta_hash};
 use osis_schema::PurgeBy;
 use crate::path::{Path, Paths, Split};
 use std::collections::{BTreeMap, BTreeSet};
@@ -64,18 +64,10 @@ pub struct CommitBuilder {
     pub blind: Option<[u8; 16]>,
     /// The ephemeral marker (an ephemeral commit, spec/commits.md §2).
     pub ephemeral: Option<crate::header::EphClass>,
-    /// An account signer's epoch and inner signer (spec/wire.md §4): `build`'s key is then the
-    /// epoch's signing key.
-    pub account: Option<AccountSigner>,
-    /// A rotation of the account's signing chain, with, for a merge certificate, a key per tip
-    /// it names (in that order) signing the merge epoch's ID.
-    pub rotation: Option<(RotationHeader, Vec<SigningSecret>)>,
-    /// The own-cover marker (spec/wire.md §4 field 17).
+    /// The own-cover marker (spec/wire.md §4 field 14).
     pub own_cover: bool,
     /// The adminless mark (`Header::adminless`).
     pub adminless: bool,
-    /// A seed re-seal of an epoch of the signing account's chain (spec/crypto.md §9, Custody).
-    pub reseal: Option<SeedReseal>,
     /// The blob bound the commit is checked against: `MAX_BLOB` (tests shrink it).
     pub(crate) max_blob: usize,
 }
@@ -88,20 +80,6 @@ pub struct CommitBuilder {
 pub struct SplitWrite {
     pub author: Option<Tid>,
     pub things: BTreeMap<Tid, ((Vec<Tid>, crate::Marks), Secret32)>,
-}
-
-/// What an account's commit carries besides its epoch's signature (spec/wire.md §4): the epoch,
-/// and the node signing it with that epoch's inner secret.
-#[derive(Clone, Debug)]
-pub struct AccountSigner {
-    pub epoch: CommitId,
-    pub inner: Secret32,
-    pub node: Tid,
-    pub node_key: SigningSecret,
-    /// A rotation's: the inner secret of each other epoch its inner signature is sealed under
-    /// (`Sigs::more`: a plain rotation's minted epoch; a certificate's named tips, then its
-    /// merge epoch).
-    pub more: Vec<Secret32>,
 }
 
 /// A built commit: the blob holding every delta.
@@ -123,7 +101,7 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, signer: Tid, path: Path, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, signer, path, split: None, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, account: None, rotation: None, reseal: None, own_cover: false, adminless: false, max_blob: MAX_BLOB }
+        CommitBuilder { kind, ts, signer, path, split: None, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, own_cover: false, adminless: false, max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
@@ -210,16 +188,9 @@ impl CommitBuilder {
             frontier: self.frontier,
             links: Links::default(),
             ephemeral: self.ephemeral,
-            epoch: self.account.as_ref().map(|a| a.epoch),
-            rotation: self.rotation.as_ref().map(|r| r.0.clone()),
-            reseal: self.reseal.clone(), own_cover: self.own_cover, adminless: self.adminless,
+            own_cover: self.own_cover,
+            adminless: self.adminless,
         };
-        if self.rotation.as_ref().is_some_and(|(r, keys)| r.names.len() != keys.len()) {
-            return Err(Error::Build("a merge signature per named tip"));
-        }
-        if self.account.as_ref().map_or(0, |a| a.more.len()) != crate::inner_seals(self.rotation.as_ref().map(|r| &r.0)) {
-            return Err(Error::Build("an inner seal per epoch a rotation opens with"));
-        }
         header.validate().map_err(build_err)?;
 
         // lists above the threshold go by link
@@ -257,14 +228,7 @@ impl CommitBuilder {
         }
 
         let id = header.id();
-        let inner = self.account.as_ref().map(|a| seal_inner(&a.inner, &id.0, &a.node, &a.node_key));
-        let more = self.account.as_ref().map(|a| a.more.iter().map(|k| seal_inner(k, &id.0, &a.node, &a.node_key)).collect()).unwrap_or_default();
-        // a merge certificate's tips sign the epoch it mints, alike in every certificate of it
-        let merge = self.rotation.iter().flat_map(|(r, keys)| {
-            let epoch = r.mints(&id);
-            keys.iter().map(move |k| k.sign(Domain::Merge, &epoch.0))
-        }).collect();
-        let sigs = Sigs::signed(&id, key, inner, more, merge);
+        let sigs = Sigs::signed(&id, key);
         let parts = deltas.into_iter().enumerate().map(|(ai, delta)| Part { ai, delta }).collect();
         let commit = CommitBlob { header, sigs, parts, keys: path_keys };
         commit.check_paths().map_err(build_err)?;

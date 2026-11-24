@@ -39,14 +39,12 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let sync_ids: SyncIds = BTreeMap::from([(SyncId([22; 16]), SyncEntry { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None, endorsements: BTreeMap::new() })]) })]);
     vec![
         ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { admin: tid(1), nonce: [2; 32], link: None, expires: None })),
-        ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32], account: false })),
+        ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] })),
         ("holders", "roles.0", ROLES.encode(&holders)),
         ("keys", "keys.0", KEYS.encode(&keys)),
         ("secrets", "secrets.0", SECRETS.encode(&secrets)),
         ("sync", "sync.0", SYNC.encode(&sync_ids)),
-        ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
-        ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], account: None })),
-        ("dial", "dial^.0", DIAL.encode(&BTreeMap::from([(vec![36; 32], vec!["peer://203.0.113.7:4040".to_string()])]))),
+        ("dial", "dial.0", DIAL.encode(&BTreeMap::from([(vec![36; 32], vec!["peer://203.0.113.7:4040".to_string()])]))),
         ("caps", "caps^.0", CAPS.encode(&Caps { policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]), things: BTreeMap::from([(tid(33).into(), ThingCaps { entries: 5, bytes: 6 })]) })),
         ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34).into(), Client { secret_hash: [35; 32], until: Some(WallMs(1_700_000_000_000)) })]))),
     ]
@@ -94,9 +92,7 @@ fn core_aspects_round_trip_spec_data_model_9() {
             "keys.0" => KEYS.encode(&KEYS.decode(v).unwrap()),
             "secrets.0" => SECRETS.encode(&SECRETS.decode(v).unwrap()),
             "sync.0" => SYNC.encode(&SYNC.decode(v).unwrap()),
-            "node.0" => NODE.encode(&NODE.decode(v).unwrap()),
-            "reach.0" => REACH.encode(&REACH.decode(v).unwrap()),
-            "dial^.0" => DIAL.encode(&DIAL.decode(v).unwrap()),
+            "dial.0" => DIAL.encode(&DIAL.decode(v).unwrap()),
             "caps^.0" => CAPS.encode(&CAPS.decode(v).unwrap()),
             "clients^.0" => CLIENTS.encode(&CLIENTS.decode(v).unwrap()),
             _ => panic!("{ak}"),
@@ -128,7 +124,7 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     assert_eq!(e.kind, PathErrorKind::UnknownCase(9));
     assert_eq!(e.path, p![osis_schema::osis_base::Weak(tid(1)), FieldId(0)]);
     // created.0: an unknown signing key case parks; both admin and key is bad input.
-    let rec = CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32], account: false }.to_value();
+    let rec = CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] }.to_value();
     let Value::Map(mut f) = rec else { panic!() };
     f.insert(Value::Int(1), Value::Enum(7, Some(Box::new(Value::Bytes(vec![0; 40])))));
     assert_eq!(CREATED.decode(&Value::Map(f.clone())).unwrap_err().class(), ErrorClass::Parked);
@@ -151,7 +147,7 @@ fn key_defaults_and_identity_spec_commits_5() {
     }
     assert!(!is_role_class("tag.0"));
     assert_eq!(CREATED.defaults().purge_by, PurgeBy::Admin);
-    assert_eq!(NODE.defaults(), AspectDefaults::default());
+    assert_eq!(DIAL.defaults(), AspectDefaults::default());
     assert!(TAG.schema().is_some_and(Schema::declares_core));
     let untyped = Ak::new("x:y.0").unwrap();
     assert!(untyped.schema().is_none());

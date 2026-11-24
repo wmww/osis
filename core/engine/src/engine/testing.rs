@@ -36,7 +36,7 @@ impl Engine {
         let skip: Vec<(Tid, Option<osis_base::Role>)> = skip.iter().map(|t| (*t, None)).collect();
         self.run(|tx| {
             let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-            let me = tx.core.writer()?;
+            let me = tx.core.me();
             let holders = crate::rotation::recipients(tx, &me, &a, &skip)?;
             let mut m = crate::Mutation::new();
             let r = crate::rotation::rotation_into(tx, &mut m, a, &roles, &held, &holders, crate::rotation::Departs::No)?;
@@ -45,20 +45,6 @@ impl Engine {
             crate::rotation::recorded(tx, a, c, &r, &unreached, &mut crate::flows::Done::default())?;
             Ok(c)
         })
-    }
-
-    #[cfg(test)]
-    /// Tests only: the seeds of account `p` in this node's custody.
-    pub(crate) fn held_seeds(&self, p: &Tid) -> Vec<osis_crypto::Secret32> {
-        self.core.accounts.get(p).map(|a| a.keys.values().map(|k| k.seed().clone()).collect()).unwrap_or_default()
-    }
-
-    /// Tests only: rotates account `p`'s signing chain from this node, made for no reason
-    /// (`flows::signing::rotate_in`). The rotation made; `None` as `rotate_in`'s.
-    #[doc(hidden)]
-    pub fn rotate_account(&mut self, p: &Tid) -> Result<Option<CommitId>> {
-        let p = *p;
-        self.run(|tx| crate::flows::signing::rotate_in(tx, p, &[], &mut crate::flows::Done::default()))
     }
 
     /// Tests only: an exact copy of this engine as it stands, on `clock`, sharing no mutable
@@ -113,18 +99,6 @@ impl Engine {
         self.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|s| s.4.len()).collect()
     }
 
-    /// Tests: the mint admin of a dependent thing this node makes: its account root where it acts as
-    /// its account (a thing minted with an account as admin is independent, spec/permissions.md §3), else
-    /// what it acts as.
-    #[doc(hidden)]
-    pub fn dependents_admin(&self) -> Tid {
-        let me = self.me();
-        match self.core.account_and_root() {
-            Some((p, d)) if p == me => d,
-            _ => me,
-        }
-    }
-
     /// Commits `m` past the writer's rules, as a hostile node would: its role check, commit
     /// shape rules and refusal to emit a delta it judges invalid. A receiver's judgment of what
     /// no writer makes can be tested so.
@@ -166,7 +140,7 @@ impl Engine {
             let mut rots = Vec::new();
             for a in actors {
                 let held = tx.core.epochs(a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-                let mut holders = crate::rotation::recipients(tx, &tx.core.writer()?, a, &[])?;
+                let mut holders = crate::rotation::recipients(tx, &tx.core.me(), a, &[])?;
                 holders.holders.retain(|r| boxed.contains(&r.holder));
                 rots.push((*a, crate::rotation::rotation_into(tx, &mut m, *a, &roles, &held, &holders, crate::rotation::Departs::No)?));
             }
@@ -697,7 +671,6 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("by_thing", &*ix.by_thing),
         ("paths_unknown", &*ix.paths_unknown),
         ("by_actor", &*ix.by_actor),
-        ("role_on", &*ix.role_on),
         ("purges_on", &*ix.purges_on),
         ("by_aspect", &*ix.by_aspect),
         ("aspect_things", &*ix.aspect_things),
@@ -728,16 +701,12 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("blob_parts", &*ix.blob_parts),
         ("commit_blobs", &*ix.commit_blobs),
         ("cert_blobs", &*ix.cert_blobs),
-        ("lists_on", &*ix.lists_on),
         ("gone", &*ix.gone),
         ("sync_recorded", &*ix.sync_recorded),
         ("sync_recorders", &*ix.sync_recorders),
         ("sync_recorded_ids", &*ix.sync_recorded_ids),
         ("steps", &*ix.steps),
         ("miskeyed", &*ix.miskeyed),
-        ("epochs", &*ix.epochs),
-        ("named", &*ix.named),
-        ("by_epoch", &*ix.by_epoch),
         ("covered_under", &*ix.covered_under),
         ("handed", &*ix.handed),
         ("handed_under", &*ix.handed_under),
@@ -745,12 +714,10 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("own_held", &*ix.own_held),
         ("own_replaces", &*ix.own_replaces),
         ("sealed", &*ix.sealed),
-        ("role_sigs", &*ix.role_sigs),
         ("leaving", &*ix.leaving),
         ("dated", &*ix.dated),
         ("leave_from", &*ix.leave_from),
         ("leave_due", &*ix.leave_due),
-        ("rotations_due", &*ix.rotations_due),
         ("resnapshots_owed", &*ix.resnapshots_owed),
         ("freed", &*ix.freed),
         ("kept", &*ix.kept),
@@ -1033,14 +1000,13 @@ mod tests {
     fn every_index_is_placed_in_the_check() {
         const OWN: &[&str] = &["held", "commits", "snapshots", "derived_written"];
         // node-local or re-derived by an open, so they differ from a fresh load by design: a
-        // cache counter (`rotations`); a transaction's work queues (`rekeyed`, `epochs_due`, `names_due`,
-        // `cover_waits`); what an open parks anew (`pending`, `pend_on`,
+        // transaction's work queues (`rekeyed`, `cover_waits`); what an open parks anew (`pending`, `pend_on`,
         // `pend_keys`, `pend_by`, `pend_needs`: each examined again); rows not persisted for ephemeral aspects
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
         // `cause_at`, `reseal_asks`, `carriers`, `carrying`); the node closure, built again after an open (`closure`);
         // the removals to judge for addenda, all of them again at an open (`addenda_due`,
         // `addenda_gathered`, `addenda_wake`).
-        const LEFT_OUT: &[&str] = &["rotations", "rekeyed", "keys_due", "fires_due", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "addenda_due", "addenda_gathered", "addenda_wake"];
+        const LEFT_OUT: &[&str] = &["rekeyed", "keys_due", "fires_due", "forgotten", "pending", "pend_on", "pend_keys", "pend_by", "pend_needs", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "carriers", "carrying", "cover_waits", "closure", "addenda_due", "addenda_gathered", "addenda_wake"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {
@@ -1058,7 +1024,7 @@ mod tests {
         use osis_base::{Value, WallMs};
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.dependents_admin();
+        let me = e.me();
         let mut m = crate::Mutation::new();
         let (one, many) = (e.new_thing(&mut m, me), e.new_thing(&mut m, me));
         m.set(one, &Ak::new("x:a.0").unwrap(), &Value::Str("PLANTED-ONE".into())).unwrap();

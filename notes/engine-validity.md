@@ -1,7 +1,7 @@
 # Engine: validity
 > Summary: How the engine keeps every delta's validity, and so every read, a function of the held set (spec/permissions.md §5, spec/crdt.md §4.6): what is re-judged after a held-set change and its cost, un-merge by one rebuild path, snapshot authority and carried writes, covered bodies going missing again, and why validity flips against dropped data converge on delivery (the rule, rejected removal rules, holes left). The spec states the rules; this note keeps reasons, costs and tests.
 
-Elsewhere: the epoch rule (notes/engine-validity-epochs.md), reasons and Tess's decisions (notes/revocation.md Snapshots and history, Revocation, Implementation), invalid bodies dropping (notes/engine-retention.md Invalid bodies).
+Elsewhere: reasons and Tess's decisions (notes/revocation.md Snapshots and history, Revocation, Implementation), invalid bodies dropping (notes/engine-retention.md Invalid bodies).
 
 ## Principle
 Validity is a function of the held set, never of arrival order: an invalid delta changes no value, and a node that held it reads as one that never did. So every judgment input is held or persisted with its commit, re-judging follows what changed, and every change of what counts goes through one rebuild from the held valid bodies.

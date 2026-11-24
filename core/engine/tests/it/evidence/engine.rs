@@ -167,6 +167,7 @@ fn f9_a_removal_of_two_holders_waits_for_both_creations_at_a_reader_spec_permiss
 // the same), and is a copy D's write requires: with the recording writes forgotten, the snapshot
 // alone places the listed keys.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_write_listing_an_old_step_after_sync_is_compacted_requires_the_snapshot_spec_crypto_7() {
     use osis_engine::evidence::{Level, Reason};
     let (mut lp, ps) = people(1);

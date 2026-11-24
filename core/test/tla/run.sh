@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, planted, netstream, netshared, netopen, nethold, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, planted, netstream, netshared, netopen, nethold, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker, but depth0: 10-20 min); with cfg names: those instances instead
 #   (the larger ones in the module's README, by hand), judged only if listed
@@ -119,10 +119,6 @@ instances=(
   "planted rotation Planted P_all.cfg fail"         # negative control: carrying everything bases a planted epoch
   "planted rotation Planted P_drop.cfg fail"        # negative control: covering what was left out loses a genuine grant's box
   "planted rotation Planted P_keyset.cfg fail"      # negative control: keyset-vouched basis loses older epochs once keys.0 compacts
-  "account rotation Account Acc_descent.cfg pass"   # an account epoch covers a removal only descending from the rotation carrying it (spec/crypto.md §4 Encrypting under)
-  "account rotation Account Acc_order.cfg fail"     # negative control: judged by order, an ignorant fork ordered after the removal covers it
-  "account rotation Account Acc_unread.cfg pass"    # a box to the writer's account behind a keyset it cannot open is judged (spec/crypto.md §4 Encrypting under)
-  "account rotation Account Acc_unread_stop.cfg fail" # negative control: the walk stops at that keyset
   "netstream net MCStream S_loss.cfg pass"
   "netstream net MCStream S_restore.cfg pass"
   "netstream net MCStream S_copies.cfg pass"
@@ -244,7 +240,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|account|withdrawn|planted|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|planted|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
   exit 2
 fi
 

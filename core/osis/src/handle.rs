@@ -123,8 +123,6 @@ pub(crate) struct Locked {
     pub node: osis_sync::Node,
     pub events: Receiver<Event>,
     pub seq: u64,
-    /// Pairing offers not yet used: secret, expiry (wall ms).
-    pub offers: Vec<([u8; 32], u64)>,
     /// What sync steps under this hold gave, for `Net::carry`.
     pub out: Vec<osis_sync::Out>,
     /// With no network: the node's wake (its monotonic clock), run at the next call due.
@@ -494,7 +492,7 @@ fn clock(cfg: &Config) -> Arc<dyn Clock> {
 }
 
 fn engine_cfg() -> osis_engine::Config {
-    osis_engine::Config { software: format!("osis {}", env!("CARGO_PKG_VERSION")), ..Default::default() }
+    osis_engine::Config::default()
 }
 
 /// A new store's engine, from the first commit on (it sees every event), and sync's store.
@@ -519,6 +517,12 @@ pub(crate) const PROFILE: &str = "profile";
 /// The app record holding this node's dialable secret.
 const NODE_KEY: &str = "sync/node-key";
 
+/// What a node acts as and its account root. Interim (notes/accounts-switch-brief.md): its node
+/// thing and its node root, until making an account is built.
+fn acting(e: &Engine) -> Result<(Tid, Tid)> {
+    Ok((e.me(), e.node_root().ok_or_else(|| Error::Storage("no node root".into()))?))
+}
+
 /// This node's dialable secret, made on first use.
 fn node_secret(e: &mut Engine, cfg: &Config, salt: u64) -> Result<osis_transport::StaticSecret> {
     if let Some(b) = e.app_record(NODE_KEY)? {
@@ -542,13 +546,13 @@ pub(crate) fn sync_config(cfg: &Config, key: [u8; 32]) -> osis_sync::SyncConfig 
 }
 
 impl Osis {
-    /// Creates a node and a new account with this node its admin.
+    /// Creates a node. Interim (notes/accounts-switch-brief.md): it acts as its node thing, its
+    /// node root the account root, until making an account is built.
     pub fn create(store: Store, cfg: Config) -> Result<Osis> {
         cfg.check()?;
-        let Fresh { mut engine, clock, sync } = fresh_engine(&store, &cfg)?;
-        let (a, _) = engine.create_account()?;
-        engine.set_app_record(PROFILE, a.profile.as_bytes())?;
-        Osis::start(engine, sync, clock, store, &cfg, a.account, a.root, 0)
+        let Fresh { engine, clock, sync } = fresh_engine(&store, &cfg)?;
+        let (me, root) = acting(&engine)?;
+        Osis::start(engine, sync, clock, store, &cfg, me, root, 0)
     }
 
     /// Opens an existing store.
@@ -558,8 +562,8 @@ impl Osis {
         let clock = clock(&cfg);
         let salt = open_salt(&store, &cfg)?;
         let sync = sync_store(&store, &cfg, salt)?;
-        let mut e = Engine::open(b, r, sync.cipher(), engine_cfg(), clock.clone(), rng(&cfg, salt))?;
-        let (me, root) = e.account()?.ok_or_else(|| Error::Storage("no account record".into()))?;
+        let e = Engine::open(b, r, sync.cipher(), engine_cfg(), clock.clone(), rng(&cfg, salt))?;
+        let (me, root) = acting(&e)?;
         Osis::start(e, sync, clock, store, &cfg, me, root, salt)
     }
 
@@ -585,7 +589,7 @@ impl Osis {
         if let crate::net::Net::Manual { net: m, index } = &mut net {
             *index = m.join();
         }
-        let locked = Locked { node: sync, events, seq: 0, offers: Vec::new(), out: Vec::new(), wake: None, stepped: false, secret, port: Default::default(), remotes: Vec::new(), unit_sources: Default::default(), moving_back: Default::default() };
+        let locked = Locked { node: sync, events, seq: 0, out: Vec::new(), wake: None, stepped: false, secret, port: Default::default(), remotes: Vec::new(), unit_sources: Default::default(), moving_back: Default::default() };
         let store_dir = match &store {
             Store::Dir(p) => Some(p.clone()),
             Store::Memory(_) => None,

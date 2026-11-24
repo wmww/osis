@@ -825,32 +825,19 @@ impl Engine {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
             Err(_) => {
-                // a record blob (spec/wire.md §3): its records taken; a list blob (§4): its
-                // thing lists
-                // thing lists, each kept as a certificate blob of the own store under `s`
-                // (`certblobs`): one any node logged counts as this node's own
-                // its prefix a certificate blob's (`CertBlob::of`), else bad input
+                // a record blob (spec/wire.md §3): its records taken, kept as a certificate blob
+                // of the own store under `s` (`certblobs`): one any node logged counts as this
+                // node's own; its prefix a certificate blob's (`CertBlob::of`), else bad input
                 let Ok((_, pt)) = osis_blob::open(bytes, &key) else { return Ok(Opened::Bad) };
                 if super::certblobs::CertBlob::of(bytes, &key, BTreeSet::new()).is_none() {
                     return Ok(Opened::Bad);
                 }
                 if let Some(tids) = self.take_record_blob(blob, &pt)? {
                     let Some(c) = super::certblobs::CertBlob::of(bytes, &key, tids.clone()) else { return Ok(Opened::Bad) };
-                    self.note_cert_blob(s, None, blob, c)?;
+                    self.note_cert_blob(s, blob, c)?;
                     return Ok(Opened::Records(tids));
                 }
-                return Ok(match self.take_list_blob(blob, &pt)? {
-                    Some(r) => {
-                        // lists kept loose count once their rotation holds them (opened again)
-                        if !self.carries_loose(blob) {
-                            let things = osis_commit::thing_list::decode_list_blob(&pt).unwrap_or_default().iter().map(|c| c.list.thing).collect();
-                            let Some(c) = super::certblobs::CertBlob::of(bytes, &key, things) else { return Ok(Opened::Bad) };
-                            self.note_cert_blob(s, Some(r), blob, c)?;
-                        }
-                        Opened::Lists(r)
-                    }
-                    None => Opened::Bad,
-                });
+                return Ok(Opened::Bad);
             }
         };
         let id = opened.commit.id();

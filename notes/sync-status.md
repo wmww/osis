@@ -33,10 +33,10 @@ One rule, as read's (notes/sync-read.md, State): what status follows of a peer i
 - Tests: status.rs `a_reconnect_moves_no_member_spec_sync_status_1` (n and 10n), `a_taken_record_is_caught_up_per_connection_spec_sync_status_1`, `a_release_keeps_no_report_spec_sync_status_2`, `lacking_is_kept_per_record_across_connections_spec_sync_status_1`; idle.rs counts `status: members moved` at an idle reconnect.
 
 ## Self-removals
-The rule is mod.rs's; the waits come from `Engine::waiting_removals` (notes/engine-lost-access.md Self-removal drops), "no peer but own nodes" is `Ground::waited` (`Opens::waited` skipping a peer whose proven key actors include this account or an `own_node`; notes/sync-opens.md Peers to wait for), and `Engine::removal_done` drops each thing lost that no other waiting removal is behind.
+The rule is mod.rs's; the waits come from `Engine::waiting_removals` (notes/engine-lost-access.md Self-removal drops), "no peer but its own node" is `Ground::waited` (`Opens::waited` skipping a peer whose proven key actors include this node's own thing; notes/sync-opens.md Peers to wait for), and `Engine::removal_done` drops each thing lost that no other waiting removal is behind.
 - The same rule as leaving (notes/sync-leave.md): it waits only while a peer could take it. Own nodes leave by the same commit, so counting them would leave two nodes of one account waiting on each other for good. Skipping them is safe because they learn the removal from this account's own sync IDs and inbox (spec/permissions.md §2), never only from S.
 - A peer that applies the removal judges this node departed and closes S: told and not sharing S, it is not waited for, which also ends the wait where the same-step report was lost (a restart between).
-- `by_commit` is a plain map: every change of it writes `unheld` of that S, which the judgement reads. Own-node-ness is read unstamped: it moves only with D's roster, and a node leaving D while skipped needs nothing delivered. A dialer lacking this node's `reach.0` proves only the account. `held_at`'s own-node skip reads `Src::own_node` (node proven), so an own node proven only by its account still counts as holding it there: harmless, that node waits on the same removal itself.
+- `by_commit` is a plain map: every change of it writes `unheld` of that S, which the judgement reads.
 - Tests: status.rs `self_removal_*`, flows.rs `a_self_removal_*`, siblings.rs `a_siblings_self_removal_*`.
 
 ## Stranded

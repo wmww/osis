@@ -64,7 +64,7 @@ fn pending_then_applied(f: Option<StepFault>) -> (LocalPeer, CommitId) {
 fn pending_setup() -> (LocalPeer, (CommitId, CommitId)) {
     let mut lp = LocalPeer::fresh(2, T0);
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.dependents_admin();
+    let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
@@ -107,7 +107,7 @@ fn two_parts(f: Option<StepFault>) -> (LocalPeer, CommitId) {
 fn two_parts_setup() -> (LocalPeer, CommitId) {
     let mut lp = LocalPeer::fresh(2, T0);
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.dependents_admin();
+    let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
@@ -147,7 +147,7 @@ fn removal_to_answer() -> (LocalPeer, Tid, CommitId) {
 fn removal_setup() -> (LocalPeer, Tid, CommitId) {
     let mut lp = LocalPeer::fresh(3, T0);
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.dependents_admin();
+    let me = lp.peers[0].engine.me();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(0)).unwrap();
@@ -180,7 +180,7 @@ fn removal_answered(f: Option<StepFault>) -> (LocalPeer, Tid, CommitId) {
 
 fn addenda_by(lp: &LocalPeer, peer: usize, t: Tid) -> usize {
     let core = &lp.peers[peer].engine.core;
-    let me = core.writer().unwrap();
+    let me = core.me();
     core.ix.addenda.keys().filter(|(th, c)| *th == t && core.ix.commits.get(c).is_some_and(|m| m.view.signer == me)).count()
 }
 

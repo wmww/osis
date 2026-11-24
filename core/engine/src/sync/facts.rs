@@ -7,12 +7,9 @@ use super::{BlobOf, BodyFacts, BodyId, MustNot, PartSet, ReadFacts};
 use crate::engine::{DropFor, Engine};
 use crate::error::Result;
 use osis_base::{BlobId, CommitId, SyncId, Tid};
-use osis_commit::Header;
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
-
-/// The aspects of a node's card (spec/permissions.md §4).
-const CARD: [&str; 3] = ["keys.0", "node.0", "reach.0"];
 
 impl Engine {
     /// Whether a part of `parts` (a body of `c`) counts as never received here, other than one
@@ -28,8 +25,7 @@ impl Engine {
     /// The things whose read secrets may open what opened blob `b` holds sealed here: the thing
     /// of each part it carries in a section not opened (`BlobOf::parts` lacks it) that counts
     /// missing (`body_missing`), whether or not a read secret of it is held yet. Any part, not
-    /// only those of a sync ID's body: an account's rotation goes only under its account root's
-    /// sync IDs, and its part on the account (`keys.0`) opens from there alone; a commit held
+    /// only those of a sync ID's body: a commit held
     /// from a certificate copy has its other parts' sections opened from a blob under another
     /// sync ID, once their thing's secrets arrive. Reads no record: the meta's view and missing
     /// parts.
@@ -41,9 +37,8 @@ impl Engine {
 
     /// spec/sync-judgement.md §2 must-not-hold (the clauses only the engine judges), §3 Role
     /// entries first, Dropped bodies.
-    /// - `must_not`: purged (held requests purge every part of the body, `purged_by`); another
-    ///   node's card commit superseded (`card_superseded`) or ended (`card_ended`). A blob losing
-    ///   to another is per blob (`blob_loses`).
+    /// - `must_not`: purged (held requests purge every part of the body, `purged_by`). A blob
+    ///   losing to another is per blob (`blob_loses`).
     /// - `own`: written here. `role`: a role commit or a purge request.
     /// - `later_unheld`: snapshots stamped later than it whose part is dropped here, each with
     ///   whether it was dropped as invalid, on the aspects of its parts established uncovered.
@@ -58,12 +53,6 @@ impl Engine {
         let c = &id.commit;
         let body: BodyFacts = self.body_facts(s, id)?;
         let mut f = ReadFacts { body, must_not: None, own: false, repair_fresh: Arc::default(), role: false, later_unheld: Vec::new(), missing: false };
-        // a card is judged by its header alone: it is no closure body of S (spec/permissions.md §4)
-        if let Some(h) = self.header(c)
-            && let Some(node) = self.card_node(s, &h)?
-        {
-            f.must_not = self.card_must_not(c, &h, &node);
-        }
         let (Some(b), Some(h)) = (self.sync_body_now(s, id)?, self.header(c)) else { return Ok(f) };
         let Some(m) = self.core.ix.commits.get(c) else { return Ok(f) };
         f.own = m.origin == crate::events::Origin::Local;
@@ -141,66 +130,6 @@ impl Engine {
             }
         }
         Ok(out)
-    }
-
-    /// The node whose card `h` is, when it is another node's card commit under this node's
-    /// account's D's sync ID (spec/permissions.md §4: a node's `keys.0`, `node.0` and
-    /// `reach.0` commits, each touching nothing else, go under D's sync ID only).
-    fn card_node(&mut self, s: &SyncId, h: &Header) -> Result<Option<Tid>> {
-        let Some(node) = h.aspects.first().map(|a| a.tid) else { return Ok(None) };
-        if node == self.core.id.tid() || !h.aspects.iter().all(|a| a.tid == node && CARD.contains(&a.ak.as_str())) {
-            return Ok(None);
-        }
-        let Some((_, d)) = self.core.account_and_root() else { return Ok(None) };
-        if self.sync_id_of(&d)? != Some(*s) || !self.is_node(&node)? {
-            return Ok(None);
-        }
-        Ok(Some(node))
-    }
-
-    /// The must-not-hold condition another node's card commit `c` meets, if any.
-    fn card_must_not(&self, c: &CommitId, h: &Header, node: &Tid) -> Option<MustNot> {
-        if self.card_superseded(c, h, node) {
-            Some(MustNot::CardSuperseded)
-        } else if self.card_ended(h, node) {
-            Some(MustNot::CardEnded)
-        } else {
-            None
-        }
-    }
-
-    /// spec/sync-judgement.md §2 must-not-hold: another node's card commit once a later valid card
-    /// commit of that node writing the same aspect is under the sync ID (an entry of it this node
-    /// opened and checked against its header). Every aspect of `c` must be so written.
-    fn card_superseded(&self, c: &CommitId, h: &Header, node: &Tid) -> bool {
-        h.aspects.iter().all(|a| self.later_card_held(c, h.ts, node, &a.ak))
-    }
-
-    /// A valid card commit of `node` stamped after `ts` writing `ak`, other than `c`, with a blob
-    /// this node opened (or sealed) holding that part: a commit known by its header alone, or
-    /// only claimed by a peer, supersedes nothing.
-    fn later_card_held(&self, c: &CommitId, ts: osis_base::Ts, node: &Tid, ak: &osis_base::Ak) -> bool {
-        let ix = &self.core.ix;
-        ix.by_aspect.get(&(*node, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|x| x != c).any(|x| {
-            let (Some(h), Some(ai)) = (self.header(&x), ix.commits.get(&x).and_then(|m| m.aspect(node, ak))) else { return false };
-            h.ts > ts
-                && h.aspects.iter().all(|a| a.tid == *node && CARD.contains(&a.ak.as_str()))
-                && self.judged_valid(&x, &(0..h.aspects.len()).collect::<Vec<_>>())
-                && ix.commit_blobs.get(&x).into_iter().flatten().any(|b| ix.blob_parts.get(b).is_some_and(|p| p.parts.contains(&ai)))
-        })
-    }
-
-    /// spec/sync-judgement.md §2 must-not-hold: another node's card commit, for `node.0` and
-    /// `reach.0`, once that node is a node of the account no more: the chain held here names it a
-    /// device (creation or a pairing) and D's roster lacks it (spec/permissions.md §5.4, Roster).
-    /// A node whose pairing is not held here has ended nothing.
-    fn card_ended(&self, h: &Header, node: &Tid) -> bool {
-        if !h.aspects.iter().all(|a| matches!(a.ak.as_str(), "node.0" | "reach.0")) {
-            return false;
-        }
-        let Some((p, _)) = self.core.account_and_root() else { return false };
-        let Some(v) = self.core.account_view(&p) else { return false };
-        v.named_device(node) && !v.roster().contains(node)
     }
 
     /// The deltas of `c`'s body under `s` only a blob carries (spec/sync-judgement.md §2 Per

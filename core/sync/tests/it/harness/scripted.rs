@@ -166,7 +166,7 @@ impl Holds for Table {
         self.creds.get(s).cloned()
     }
     fn named(&mut self, proven: &Proven) -> osis_store::Named {
-        osis_store::Named { account: proven.account.as_ref().map(|(r, k)| (r.tid(), *k)), node: proven.node, key_actors: proven.key_actors.keys().copied().collect() }
+        osis_store::Named { node: proven.node, key_actors: proven.key_actors.keys().copied().collect() }
     }
     fn counts(&mut self, named: &osis_store::Named) -> Vec<Tid> {
         named.actors()
@@ -372,22 +372,22 @@ pub fn incoming(m: Msg) -> Incoming {
     }
 }
 
-/// Account `n`'s creation record.
+/// Node `n`'s creation record.
 fn account_record(n: u8) -> osis_base::CreationRecord {
-    osis_base::CreationRecord::KeyActor { alg: osis_base::SIGNING_KEY_ED25519, public_key: vec![n; 32], nonce: [n; 32], account: true }
+    osis_base::CreationRecord::KeyActor { alg: osis_base::SIGNING_KEY_ED25519, public_key: vec![n; 32], nonce: [n; 32] }
 }
 
-/// Account `n`, proved.
+/// Node `n`, proved.
 pub fn account(n: u8) -> Proven {
-    Proven { account: Some((account_record(n), [n; 32])), ..Proven::default() }
+    Proven { node: Some(tid(n)), ..Proven::default() }
 }
 
 /// What a record of a peer proving `account(n)` names.
 pub fn named(n: u8) -> osis_store::Named {
-    osis_store::Named { account: Some((tid(n), [n; 32])), ..osis_store::Named::default() }
+    osis_store::Named { node: Some(tid(n)), ..osis_store::Named::default() }
 }
 
-/// Account `n`'s tid.
+/// Node `n`'s tid.
 pub fn tid(n: u8) -> Tid {
     account_record(n).tid()
 }

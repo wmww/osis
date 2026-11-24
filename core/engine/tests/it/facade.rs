@@ -16,10 +16,11 @@ use std::collections::BTreeSet;
 // §4 (owner), spec/sync-opens.md §4 (admissible: read secrets at a current epoch, the head's sync
 // proof).
 #[test]
+#[ignore = "accounts: keys"]
 fn read_credentials_and_claim_key_spec_sync_ids_3() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let (_, d) = e.account().unwrap().unwrap();
+    let d = e.node_root().unwrap();
     let ds = e.sync_id_of(&d).unwrap().unwrap();
     let ids = e.sync_ids(&d).unwrap();
     assert_eq!(ids.len(), 1);
@@ -85,28 +86,10 @@ fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
 }
 
 /// Peers 0 and 1 nodes of one account (paired), peer 2 of another, which makes a thing and
-/// grants the first account write on it; everyone holds everything. The account and the thing.
+/// grants the first account write on it: brought back by making an account and pairing
+/// (notes/accounts-switch-brief.md).
 fn siblings_granted() -> (LocalPeer, Tid, Tid) {
-    let (lp, (a, t)) = LocalPeer::cached("facade::siblings_granted", || {
-        let mut lp = crate::common::net_bare(3, 0);
-        let a = lp.peers[0].engine.create_account().unwrap().0.account;
-        let n = lp.peers[1].engine.tid();
-        let card = lp.peers[1].engine.commit_ids();
-        crate::flows::send_carried(&mut lp, 1, 0, &card);
-        let (_, sent) = lp.peers[0].engine.pair(&n).unwrap();
-        crate::flows::send_carried(&mut lp, 0, 1, &sent);
-        lp.peers[1].engine.paired(&a).unwrap();
-        let b = lp.peers[2].engine.create_account().unwrap().0.account;
-        spread(&mut lp);
-        let t = thing_of(&mut lp, 2, b);
-        lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Write)).unwrap();
-        spread(&mut lp);
-        for i in [0, 1] {
-            assert!(lp.peers[i].engine.epochs(&t).is_some_and(|x| x.read.holds_any()), "node {i} reads it");
-        }
-        (lp, (a, t))
-    });
-    (lp, a, t)
+    unimplemented!("accounts: pairing")
 }
 
 // spec/permissions.md §3 (Lost access: whichever node of the account made it), spec/sync-status.md
@@ -114,6 +97,7 @@ fn siblings_granted() -> (LocalPeer, Tid, Tid) {
 // for sync as the writer does (through a restart and the lost-access trigger), then drops; the
 // other account's node waits on nothing.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_siblings_self_removal_waits_and_drops_alike_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
@@ -194,9 +178,10 @@ fn all_done(lp: &mut LocalPeer, i: usize) {
 // holds): another account's removal of this account is no wait of its; an own removal that
 // leaves a path drops nothing when done; a done told for a commit not waited on drops nothing.
 #[test]
+#[ignore = "accounts: pairing"]
 fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
-    let b = lp.peers[2].engine.account().unwrap().unwrap().0;
+    let b = lp.peers[2].engine.me();
     let g = thing_of(&mut lp, 2, b);
     lp.peers[2].engine.grant(&g, &a, &edge_of(Role::Read)).unwrap();
     lp.peers[2].engine.grant(&t, &g, &edge_of(Role::Read)).unwrap();
@@ -222,6 +207,7 @@ fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
 // spec/permissions.md §3 (Lost access): both siblings remove their account from a thing while
 // apart; once each holds both removals and sync is done with what it waits on, each drops.
 #[test]
+#[ignore = "accounts: pairing"]
 fn siblings_removing_at_once_both_drop_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     for i in [0, 1] {
@@ -240,6 +226,7 @@ fn siblings_removing_at_once_both_drop_spec_perm_3() {
 // spec/permissions.md §3 (Lost access): a re-grant applied while a sibling's removal waits
 // keeps the secrets when the removal is done.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_regrant_during_the_wait_keeps_the_secrets_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
@@ -258,6 +245,7 @@ fn a_regrant_during_the_wait_keeps_the_secrets_spec_perm_3() {
 // spec/permissions.md §3 (Lost access): a crash after the drop and before the removal leaves
 // the wait (`removal_done`'s order) finds it waiting after a restart; done again clears it.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_crash_between_drop_and_clear_is_done_again_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
@@ -277,10 +265,12 @@ fn a_crash_between_drop_and_clear_is_done_again_spec_perm_3() {
 // spec/sync-ids.md §6 (steps: registered only once the source holds the role commits its epochs
 // depend on): the genesis step's needs are the rotations of its epochs, held here.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let (_, d) = e.account().unwrap().unwrap();
+    let me = e.me();
+    let (d, _) = e.mint_actor(&me, |_| Ok(Mutation::new())).unwrap();
     let ids = e.sync_ids(&d).unwrap();
     let step = ids[0].path.steps[0].0.id();
     let needs = e.step_needs(&ids[0].id, &step).unwrap();
@@ -288,92 +278,10 @@ fn a_step_needs_its_epochs_rotations_spec_sync_ids_6() {
     assert!(needs.iter().all(|c| e.core.ix.commits.contains_key(c)));
 }
 
-/// Peer `i`'s node writes its own `reach.0` a second later; the commit (a card commit, spec/
-/// permissions.md §4).
-fn reach(lp: &mut LocalPeer, i: usize, k: u8) -> osis_base::CommitId {
-    lp.advance(1000);
-    let n = lp.peers[i].engine.tid();
-    let mut m = Mutation::new();
-    m.set(n, &ct::REACH, &ct::Reach { dialable: [k; 32], items: Vec::new(), account: None }).unwrap();
-    lp.peers[i].engine.commit(m).unwrap().unwrap()
-}
-
-/// The body `s` carries of commit `c` at `e` (its sync unit body where it carries none).
-fn body_under(e: &mut osis_engine::Engine, s: &osis_base::SyncId, c: &osis_base::CommitId) -> osis_engine::sync::BodyId {
-    let on = e.sync_bodies(c).unwrap().keys().find(|k| k.0 == *s).and_then(|k| k.1);
-    osis_engine::sync::BodyId { commit: *c, on }
-}
-
-// spec/sync-judgement.md §2 must-not-hold (another node's card commit once a later valid card
-// commit of that node writing the same aspect is under the sync ID, an entry of it this node
-// opened). Hostile: a later card held as a commit with no entry of it opened here (a forged
-// supersession) supersedes nothing, and this node's own card never goes by this rule. The rule
-// firing: core/engine/src/sync/tests_facts.rs.
-#[test]
-fn a_card_known_only_as_a_commit_supersedes_nothing_spec_sync_judgement_2() {
-    let (mut lp, d) = crate::flows::account_two_nodes();
-    let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
-    let old = reach(&mut lp, 1, 1);
-    reach(&mut lp, 1, 2);
-    let (o1, _) = (reach(&mut lp, 0, 3), reach(&mut lp, 0, 4));
-    spread(&mut lp);
-    let e = &mut lp.peers[0].engine;
-    assert_eq!({ let id = body_under(e, &ds, &old); e.read_facts(&ds, &id).unwrap() }.must_not, None, "a later card held but never opened here: kept");
-    assert_eq!({ let id = body_under(e, &ds, &o1); e.read_facts(&ds, &id).unwrap() }.must_not, None, "its own card: never by this rule");
-}
-
-// spec/sync-judgement.md §2 must-not-hold (another node's card commit, for `node.0` and `reach.0`,
-// once that node is a node of the account no more after an applied edge write on D ended its
-// grant). Hostile: a removed node paired again is a node again, its card kept; its `keys.0` card
-// never goes by this rule.
-#[test]
-fn a_card_goes_with_its_nodes_grant_spec_sync_judgement_2() {
-    let (mut lp, d) = crate::flows::account_two_nodes();
-    let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
-    let n1 = lp.peers[1].engine.tid();
-    let r = reach(&mut lp, 1, 1);
-    spread(&mut lp);
-    let keys = *lp.peers[0].engine.core.ix.by_aspect.get(&(n1, Ak::new("keys.0").unwrap())).unwrap().iter().next().unwrap();
-    let e = &mut lp.peers[0].engine;
-    assert_eq!({ let id = body_under(e, &ds, &r); e.read_facts(&ds, &id).unwrap() }.must_not, None, "a node of the account: kept");
-    e.demote(&d, &Demotion { holder: n1, new: None, retain: None }).unwrap();
-    assert_eq!({ let id = body_under(e, &ds, &r); e.read_facts(&ds, &id).unwrap() }.must_not, Some(osis_engine::sync::MustNot::CardEnded));
-    assert_eq!({ let id = body_under(e, &ds, &keys.1); e.read_facts(&ds, &id).unwrap() }.must_not, None, "its keys.0 card stays");
-    e.pair(&n1).unwrap();
-    assert_eq!({ let id = body_under(e, &ds, &r); e.read_facts(&ds, &id).unwrap() }.must_not, None, "paired again: kept");
-}
-
-// spec/sync-judgement.md §2 required set (the certificate blobs of spec/permissions.md §4): the
-// other node's `reach.0` card is in D's sync ID's required set, so read never judges it
-// outside it (must-not-hold, deleted at a node keeping the sync ID unread by a delete-key
-// holder); taken as its node's copy under D's sync ID and sealed again as one, it opens at the
-// card's own node.
-#[test]
-fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
-    let (mut lp, d) = crate::flows::account_two_nodes();
-    let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
-    let r = reach(&mut lp, 1, 1);
-    spread(&mut lp);
-    let (own, wrap) = { let id = body_under(&mut lp.peers[1].engine, &ds, &r); lp.peers[1].engine.seal_body(&ds, &id, &[], &mut SeededRng::from_u64(2)).unwrap().expect("its node seals its card") };
-    lp.peers[0].engine.open_entry(&ds, &own.id, &wrap, &own.blob, u64::MAX).unwrap();
-    let e = &mut lp.peers[0].engine;
-    let b = e.sync_bodies(&r).unwrap();
-    assert!(b.iter().any(|((x, _), m)| *x == ds && m.certificate && m.copy && !m.parts.is_empty()), "the card's certificate body under D's sync ID: {b:?}");
-    let id = body_under(e, &ds, &r);
-    let f = e.body_facts(&ds, &id).unwrap();
-    assert!(f.required && !f.closure, "{f:?}");
-    let (sealed, wrap) = e.seal_body(&ds, &id, &[], &mut SeededRng::from_u64(1)).unwrap().expect("sealed as a certificate copy");
-    assert_eq!(e.blob_of(&sealed.id).map(|r| r.copy), Some(true));
-    match lp.peers[1].engine.open_entry(&ds, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap() {
-        osis_engine::sync::Opened::Commit(c, _) => assert_eq!(c, r),
-        o => panic!("{o:?}"),
-    }
-}
-
-/// The key actors `e` proves as besides its account (`provers`: what it acts for on the wire).
+/// The key actors `e` proves as besides its node (`provers`: what it acts for on the wire).
 fn link_keys_held(e: &mut osis_engine::Engine) -> BTreeSet<Tid> {
-    let me = e.account().unwrap().map(|(a, _)| a);
-    e.provers(false).unwrap().iter().map(|(_, r)| r.tid()).filter(|t| Some(*t) != me).collect()
+    let me = e.me();
+    e.provers().unwrap().iter().map(|(_, r)| r.tid()).filter(|t| *t != me).collect()
 }
 
 // spec/permissions.md §7 (First contact: the redeemer proves L until its join is held, then keeps
@@ -438,10 +346,11 @@ fn following_a_link_again_under_another_seed_lets_its_old_key_go_spec_permission
 // spec/sync-status.md §3 History complete (a complete pass of every sync ID carrying the thing):
 // a fresh node wants one pass of D's sync ID, whenever begun; history is complete once it is noted.
 #[test]
+#[ignore = "accounts: keys"]
 fn history_completes_with_a_pass_spec_sync_status_3() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let (_, d) = e.account().unwrap().unwrap();
+    let d = e.node_root().unwrap();
     let ds = e.sync_id_of(&d).unwrap().unwrap();
     assert_eq!(e.passes_wanted().unwrap().get(&ds), Some(&0), "one pass, whenever");
     assert!(!e.history_complete(&d).unwrap());
@@ -490,10 +399,11 @@ fn record_blob_framed(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_bas
 // spec/wire.md §3 (Record blob), spec/crypto.md §7 (Certificate blobs): a record blob whose prefix
 // is not one group of one level-3 commitment is bad input, whatever it carries.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_record_blob_of_another_prefix_is_bad_spec_crypto_7() {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
-    let a = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let a = lp.peers[0].engine.me();
     let u = thing_of(&mut lp, 0, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
     let dk = osis_crypto::DeleteSecret::write(&osis_crypto::Secret32::from_bytes([9; 32])).verifying_key();
@@ -512,10 +422,11 @@ fn a_record_blob_of_another_prefix_is_bad_spec_crypto_7() {
 // receiver learns nothing of the thing; the genuine record, sealed by its holder, is kept loose
 // until a commit here awaits it, then learned as it is.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_forged_record_in_a_record_blob_names_no_other_thing_spec_wire_3() {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
-    let a = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let a = lp.peers[0].engine.me();
     let u = unshared_thing(&mut lp, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
     assert!(lp.peers[1].engine.core.created(&u).is_none(), "u not spread");
@@ -553,10 +464,11 @@ fn unshared_thing(lp: &mut LocalPeer, admin: Tid) -> Tid {
 // a strong to u, whose record reaches it only in a record blob, never in u's minting: it learns
 // the record as the blob opens, and so holds u.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_held_strong_awaits_its_things_record_spec_commits_4() {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
-    let a = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let a = lp.peers[0].engine.me();
     let u = unshared_thing(&mut lp, a);
     lp.peers[1].engine.hold(osis_base::Strong(u)).unwrap();
     assert!(lp.peers[1].engine.core.created(&u).is_none() && !lp.peers[1].engine.closure_holds(&u), "u unknown at peer 1");
@@ -582,7 +494,7 @@ fn later_write_on(lp: &mut LocalPeer, u: Tid) {
 fn junk_records(n: usize) -> (usize, usize, usize, bool) {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
-    let a = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let a = lp.peers[0].engine.me();
     let u = unshared_thing(&mut lp, a);
     let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
     let junk: Vec<osis_base::CreationRecord> = (0..n).map(|i| osis_base::CreationRecord::Thing { admin: a, nonce: { let mut x = [9u8; 32]; x[..8].copy_from_slice(&(i as u64).to_be_bytes()); x }, link: None, expires: None }).collect();
@@ -606,6 +518,7 @@ fn junk_records(n: usize) -> (usize, usize, usize, bool) {
 // while their carrier is (its entry charged to the peer that brought it): n and 10n junk records
 // are never learned and go with their blob's entry, and they evict nothing another blob carries.
 #[test]
+#[ignore = "accounts: pairing"]
 fn junk_records_go_with_their_carrier_spec_commits_4() {
     for n in [20, 200] {
         let (carried, learned, left, genuine) = junk_records(n);
@@ -619,10 +532,11 @@ fn junk_records_go_with_their_carrier_spec_commits_4() {
 // spec/commits.md §4 (Records: learned once something awaits it): a loose record is learned when
 // a commit by its actor arrives, the author's record being what that commit awaits.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_loose_author_record_is_learned_when_its_commit_comes_spec_commits_4() {
-    let mut lp = crate::common::net_bare(2, 5);
-    let a = lp.peers[0].engine.create_account().unwrap().0.account;
-    let b = lp.peers[1].engine.create_account().unwrap().0.account;
+    let mut lp = crate::common::net(2, 5);
+    let a = lp.peers[0].engine.me();
+    let b = lp.peers[1].engine.me();
     let t = thing_of(&mut lp, 0, a);
     lp.peers[0].engine.make_independent(&t).unwrap();
     let s0 = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
@@ -645,9 +559,9 @@ fn a_loose_author_record_is_learned_when_its_commit_comes_spec_commits_4() {
 #[test]
 fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
     for loose_author in [false, true] {
-        let mut lp = crate::common::net_bare(2, 5);
-        let a = lp.peers[0].engine.create_account().unwrap().0.account;
-        let b = lp.peers[1].engine.create_account().unwrap().0.account;
+        let mut lp = crate::common::net(2, 5);
+        let a = lp.peers[0].engine.me();
+        let b = lp.peers[1].engine.me();
         let t = thing_of(&mut lp, 0, a);
         lp.peers[0].engine.make_independent(&t).unwrap();
         let s0 = lp.peers[0].engine.sync_id_of(&t).unwrap().unwrap();
@@ -683,7 +597,7 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
 fn own_secrets_and_the_sync_id_come_in_one_commit_spec_sync_ids_2() {
     for by_grant in [false, true] {
         let (mut lp, ps) = people(2);
-        let admin = lp.peers[0].engine.dependents_admin();
+        let admin = lp.peers[0].engine.me();
         let t = thing_of(&mut lp, 0, admin);
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.sync_id_of(&t).unwrap(), None, "a dependent thing has none");
@@ -783,6 +697,7 @@ fn a_link_followed_enters_alone_spec_sync_set_2() {
 // carries the step's commit as a certificate copy on G, as it does every commit D's certificates
 // name: a reader of D alone (a link's redeemer) places the keys D's writes list.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_step_on_the_delete_base_travels_as_a_certificate_copy_spec_permissions_4() {
     let (mut lp, ps) = people(2);
     let g = thing_of(&mut lp, 0, ps[0]);

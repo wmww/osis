@@ -743,7 +743,7 @@ impl Engine {
         if !self.run(|tx| owe_unwritable(tx, k))? {
             return Ok(());
         }
-        let Ok(me) = self.core.writer_for(&tid) else { return Ok(()) };
+        let me = self.core.me();
         // counted: tests read how often the trigger weighs and fires per write
         osis_base::costs::count("compact: aspects weighed", 1);
         let Some((l, stops)) = Load::of(self, &tid, &ak, me)? else {
@@ -796,7 +796,7 @@ impl Engine {
             if self.core.created(&tid).is_none() || !compactable(&ak) {
                 continue;
             }
-            let Ok(me) = self.core.writer_for(&tid) else { continue };
+            let me = self.core.me();
             let Some((l, _)) = Load::of(self, &tid, &ak, me)? else { continue };
             if l.bodies == 0 {
                 continue;
@@ -819,7 +819,7 @@ impl Engine {
             if self.core.created(&tid).is_none() {
                 continue;
             }
-            let Ok(me) = self.core.writer_for(&tid) else { continue };
+            let me = self.core.me();
             if let Some((l, _)) = Load::of(self, &tid, &ak, me)? {
                 out.push(l);
             }
@@ -1190,7 +1190,7 @@ mod tests {
     fn cost(lp: &mut LocalPeer, t: Tid, ak: &str) -> usize {
         let ak = Ak::new(ak).unwrap();
         let e = &mut lp.peers[0].engine;
-        let me = e.core.writer_for(&t).unwrap();
+        let me = e.core.me();
         e.run(|tx| {
             if ak.ephemeral() {
                 tx.set_memory();
@@ -1283,7 +1283,7 @@ mod tests {
         let mut lp = LocalPeer::fresh(3, osis_base::WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [b, c] = [1, 2].map(|i| lp.peers[i].engine.me());
-        let a = lp.peers[0].engine.dependents_admin();
+        let a = lp.peers[0].engine.me();
         let edge = |role| ct::Edge { role, until: None, may_grant: false, retain: false, floor: None };
         // bob writes `t` by write on its mint admin `k`, whose secrets `t` keeps, holding both
         let mut m = Mutation::new();

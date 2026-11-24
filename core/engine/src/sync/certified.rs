@@ -72,7 +72,7 @@ pub(crate) struct Certified {
     follow: Follow,
     /// Read things whose certificates were derived so far: what a count test reads.
     pub(crate) derived: u64,
-    /// The read things (what `sync::listed` reads; it follows its feed).
+    /// The read things.
     pub(crate) read: StampedSet<Tid>,
     /// Per (commit, read thing) whose certificates name it, what they name.
     of: Stamped<(CommitId, Tid), Named>,
@@ -80,8 +80,7 @@ pub(crate) struct Certified {
     naming: Stamped<CommitId, Arc<BTreeSet<Tid>>>,
     /// Per read thing, the records its certificates name.
     records: Stamped<Tid, Arc<BTreeSet<Tid>>>,
-    /// Per record, the read things whose certificates name it (`records` the other way; new
-    /// keys by its feed, `sync::listed`).
+    /// Per record, the read things whose certificates name it (`records` the other way).
     pub(crate) namers: Stamped<Tid, Arc<BTreeSet<Tid>>>,
 }
 
@@ -292,12 +291,10 @@ mod tests {
     use osis_base::{Ak, Role, Value, WallMs};
     use osis_schema::core_types as ct;
 
-    /// The rows `follow_lists` and `follow_cert_records` keep equal those derived whole from the
-    /// certificates.
+    /// The rows `follow_cert_records` keeps equal those derived whole from the certificates.
     fn check(e: &mut Engine, step: &str) {
         e.follow_certificates().unwrap();
         let things = e.read_things().unwrap();
-        super::super::listed::tests::check(e, step);
         e.follow_cert_records().unwrap();
         assert!(e.core.cert_records.rows.keys().all(|t| things.contains(t)), "{step}: a certificate record row of a thing not read");
         for t in things.iter() {

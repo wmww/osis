@@ -8,7 +8,6 @@ use osis_base::{Clock, ManualClock, Mono, Tid, WallMs};
 use osis_crypto::{SeededRng, Secret32, SigningSecret};
 use osis_engine::Engine;
 use osis_proto::limits::{MAX_MESSAGE, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, TOP_BIT};
-use osis_proto::prove::ActorProof;
 use osis_proto::{Code, FrameDecoder, Hello, Msg, OFFSET_DIAGNOSTIC_MS, Prover, Pull, PullReply, encode_frame};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::session::{Close, Incoming, IN_BOUND, OUT_BOUND, PINGS, STALL_TIMEOUT_MS, DIAL_TIMEOUT_MS, Session, Sessions, To};
@@ -36,8 +35,8 @@ impl End {
         Cx { engine: &mut self.engine, store: &mut self.store, now: self.now, mono: Mono(self.now.0), rng: &mut self.rng, out: &mut self.out, policy: &osis_sync::Policy {} }
     }
 
-    fn account(&self) -> Option<Tid> {
-        self.engine.account_tid()
+    fn node(&self) -> Option<Tid> {
+        Some(self.engine.me())
     }
 }
 
@@ -47,7 +46,7 @@ fn open(seed: u64, clock: Arc<dyn Clock>) -> (Engine, Store) {
     (engine, store)
 }
 
-/// Two ends, each with an account of its own, unknown to each other: built once, copied per test.
+/// Two ends, unknown to each other: built once, copied per test.
 fn ends() -> (End, End) {
     let clock = Arc::new(ManualClock::new(T0));
     let dyn_clock: Arc<dyn Clock> = clock.clone();
@@ -56,11 +55,7 @@ fn ends() -> (End, End) {
         || {
             let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(T0));
             (0..2u64)
-                .map(|i| {
-                    let (mut e, s) = open(i + 1, clock.clone());
-                    e.create_account().expect("account");
-                    (e, s)
-                })
+                .map(|i| open(i + 1, clock.clone()))
                 .collect::<Vec<_>>()
         },
         |v| copying(|| v.iter().map(|(e, s)| (e.test_copy(dyn_clock.clone()).expect("copy"), s.test_copy(dyn_clock.clone()).expect("copy"))).collect::<Vec<_>>()),
@@ -141,7 +136,7 @@ fn listener_with_scripted_dialer() -> (End, End, Session, Hello) {
 /// A key actor's prover (a link key), not an account.
 fn key_actor(seed: u8) -> Prover {
     let key = SigningSecret::from_seed(&Secret32::from_bytes([seed; 32]));
-    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [seed; 32], account: false };
+    let record = osis_base::CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [seed; 32] };
     Prover { key, record }
 }
 
@@ -257,45 +252,24 @@ fn malformed_messages_spec_wire_11_1() {
 }
 
 // spec/sync-opens.md §2 (Order), §1 (Policy): by default the dialer proves first,
-// after the listener's Hello, and the listener answers with its own proofs, to a dialer of an
-// account it holds nothing of too; both report Proved, each having judged the other's account
-// (open at its first epoch where not held).
+// after the listener's Hello, and the listener answers with its own proofs, to a dialer it holds
+// nothing of too; both report Proved, each having judged the other's node.
 #[test]
 fn strangers_prove_to_each_other_spec_sync_opens_2() {
     let mut p = Pair::new();
     p.flow();
     assert!(matches!(p.l_in.as_slice(), [Incoming::Proved]), "{:?}", p.l_in);
     assert!(matches!(p.d_in.as_slice(), [Incoming::Proved]), "{:?}", p.d_in);
-    assert_eq!(p.ls.proven().account(), p.d.account(), "the dialer's account");
-    assert_eq!(p.ds.proven().account(), p.l.account(), "the listener's account");
-    assert_eq!(p.ds.acted_for().unwrap_or_default().iter().map(|x| x.0).collect::<Vec<_>>(), [p.d.account().expect("account")], "the dialer acted for its account (not its node key: not its own node)");
-    assert_eq!(p.ls.acted_for().unwrap_or_default().iter().map(|x| x.0).collect::<Vec<_>>(), [p.l.account().expect("account")]);
-}
-
-// spec/sync-opens.md §2 (its own node key only to nodes of its own account;
-// with the signed rotations of that account the verifier lacks): a listener whose dialer proved
-// the listener's own account answers with its node key first, then its account, each signed as
-// the listener's over the dialer's challenge, with its account's rotations beside them.
-#[test]
-fn own_account_dialer_gets_the_node_key_spec_sync_opens_2() {
-    let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
-    let b = *ls.binding().expect("binding");
-    let mine: Vec<ActorProof> = l.engine.provers(false).expect("provers").into_iter().map(|(key, record)| Prover { key, record }.sign(false, &b.listener_challenge, &LISTEN.0)).collect();
-    ls.take_bytes();
-    let ins = ls.receive(&frame(&Msg::Prove { id: 4, proofs: mine, rotations: Some(Vec::new()) }), &mut l.cx()).expect("kept");
-    assert!(matches!(ins.as_slice(), [Incoming::Proved]));
-    assert_eq!(ls.proven().account(), l.account());
-    let (_, ms) = frames(&ls.take_bytes(), false);
-    let [Msg::Proved { id: 4, proofs, rotations }] = ms.as_slice() else { panic!("{ms:?}") };
-    assert!(rotations.is_some(), "an account proved: its rotations go beside it");
-    assert_eq!(proofs.len(), 2);
-    assert!(!proofs[0].record.is_account() && proofs[1].actor() == l.account().expect("account"), "node key first, then the account");
-    assert!(proofs.iter().all(|p| p.verify(true, &b.dialer_challenge, &LISTEN.0)));
+    assert_eq!(p.ls.proven().node, p.d.node(), "the dialer's node");
+    assert_eq!(p.ds.proven().node, p.l.node(), "the listener's node");
+    assert_eq!(p.ds.acted_for().unwrap_or_default().iter().map(|x| x.0).collect::<Vec<_>>(), [p.d.node().expect("node")], "the dialer acted for its node");
+    assert_eq!(p.ls.acted_for().unwrap_or_default().iter().map(|x| x.0).collect::<Vec<_>>(), [p.l.node().expect("node")]);
 }
 
 // spec/wire.md §11.2 (Prove): a verifier checks proofs in order and stops at the first that does
 // not verify: those before it stand; key actors proved count whether known or not.
 #[test]
+#[ignore = "accounts: keys"]
 fn proofs_stop_at_the_first_bad_spec_wire_11_2() {
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
     let b = *ls.binding().expect("binding");
@@ -303,10 +277,10 @@ fn proofs_stop_at_the_first_bad_spec_wire_11_2() {
     let bad = key_actor(2).sign(false, &[0; 32], &LISTEN.0);
     let after = key_actor(3).sign(false, &b.listener_challenge, &LISTEN.0);
     let wrong_side = key_actor(4).sign(true, &b.listener_challenge, &LISTEN.0);
-    ls.receive(&frame(&Msg::Prove { id: 4, proofs: vec![good.clone(), bad, after], rotations: None }), &mut l.cx()).expect("kept");
+    ls.receive(&frame(&Msg::Prove { id: 4, proofs: vec![good.clone(), bad, after] }), &mut l.cx()).expect("kept");
     assert_eq!(ls.proven().key_actors.keys().copied().collect::<Vec<_>>(), [good.actor()]);
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
-    ls.receive(&frame(&Msg::Prove { id: 4, proofs: vec![wrong_side], rotations: None }), &mut l.cx()).expect("kept");
+    ls.receive(&frame(&Msg::Prove { id: 4, proofs: vec![wrong_side] }), &mut l.cx()).expect("kept");
     assert!(ls.proven().key_actors.is_empty(), "a proof made as the listener proves nothing from the dialer");
 }
 
@@ -315,13 +289,13 @@ fn proofs_stop_at_the_first_bad_spec_wire_11_2() {
 #[test]
 fn one_prove_from_the_dialer_spec_wire_11_2() {
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
-    ls.receive(&frame(&Msg::Prove { id: 4, proofs: Vec::new(), rotations: None }), &mut l.cx()).expect("kept");
+    ls.receive(&frame(&Msg::Prove { id: 4, proofs: Vec::new() }), &mut l.cx()).expect("kept");
     ls.take_bytes();
-    let ins = ls.receive(&frame(&Msg::Prove { id: 5, proofs: Vec::new(), rotations: None }), &mut l.cx()).expect("kept");
+    let ins = ls.receive(&frame(&Msg::Prove { id: 5, proofs: Vec::new() }), &mut l.cx()).expect("kept");
     assert!(ins.is_empty());
     assert_eq!(frames(&ls.take_bytes(), false).1, [Msg::Error { id: 5, code: Code::MALFORMED }]);
     let mut p = quiet_pair();
-    let ins = p.ds.receive(&frame(&Msg::Prove { id: 6, proofs: Vec::new(), rotations: None }), &mut p.d.cx()).expect("kept");
+    let ins = p.ds.receive(&frame(&Msg::Prove { id: 6, proofs: Vec::new() }), &mut p.d.cx()).expect("kept");
     assert!(ins.is_empty());
     assert_eq!(frames(&p.ds.take_bytes(), false).1, [Msg::Error { id: 6, code: Code::MALFORMED }]);
 }

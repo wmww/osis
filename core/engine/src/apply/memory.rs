@@ -92,11 +92,10 @@ pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId,
     super::reach::take_on(tx, id)?;
     let pending = tx.core.ix.pending.get(id).cloned();
     // only a commit its author signed is kept waiting (as `examine` keeps one): an author not
-    // held makes it unjudgeable there, nothing kept; an epoch not held, pending unverified there
+    // held makes it unjudgeable there, nothing kept
     let Some(author) = tx.core.created(&blob.header.signer).cloned() else { return Ok(None) };
-    if let Some(vk) = super::author_key(tx.core, &blob.header, &blob.sigs, &author)? {
-        *signed = Some(super::check_signature(tx, blob, id, &vk, *signed)?);
-    }
+    let vk = super::author_key(&author)?;
+    *signed = Some(super::check_signature(tx, blob, id, &vk, *signed)?);
     if !blob.header.is_resolved() {
         // no dedup secret: examine finds it unjudgeable before it decodes anything
         let Some(dedup) = tx.core.dedup(&blob.header.signer) else { return Ok(None) };
@@ -180,7 +179,7 @@ impl Engine {
     /// (tests, diagnostics).
     pub fn memory_commits(&self) -> Vec<(CommitId, usize, bool)> {
         let me = self.core.me();
-        self.core.ix.commits.iter().filter(|(_, m)| m.view.memory).map(|(id, m)| (*id, (0..m.view.aspects.len()).filter(|ai| m.holds(*ai)).count(), Some(m.view.signer) == me)).collect()
+        self.core.ix.commits.iter().filter(|(_, m)| m.view.memory).map(|(id, m)| (*id, (0..m.view.aspects.len()).filter(|ai| m.holds(*ai)).count(), m.view.signer == me)).collect()
     }
 
     /// Writes a fresh snapshot of each aspect a held valid memory compaction snapshot turned

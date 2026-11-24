@@ -43,7 +43,7 @@ fn keeps(lp: &mut LocalPeer, t: &Tid) -> bool {
 /// A dependent thing minted with admin D with a value, held by a strong in D's `holds.0`.
 fn dependent_of_d(lp: &mut LocalPeer) -> Tid {
     let e = &mut lp.peers[0].engine;
-    let d = e.account_root().unwrap();
+    let d = e.node_root().unwrap();
     let mut m = Mutation::new();
     let t = m.create(e.thing_record(d, None));
     m.set(t, &REG, &s("new")).unwrap();
@@ -65,7 +65,7 @@ fn a_destroyed_thing_is_held_and_released_as_any_thing_spec_commits_5() {
     assert!(keeps(&mut lp, &t), "held: t keeps its record past the floor");
     assert!(lp.peers[0].engine.commit_ids().contains(&q), "held: the request stays");
     let e = &mut lp.peers[0].engine;
-    let d = e.account_root().unwrap();
+    let d = e.node_root().unwrap();
     let mut m = Mutation::new();
     m.op(d, &ct::HOLDS, holds(t, false)).unwrap();
     m.op(d, &ct::HOLDS, holds(x, false)).unwrap();
@@ -89,7 +89,7 @@ fn a_thing_relying_on_a_destroyed_thing_keeps_its_record_spec_commits_5() {
     lp.peers[0].engine.hold(Strong(u)).unwrap();
     purge(&mut lp, t);
     let e = &mut lp.peers[0].engine;
-    let d = e.account_root().unwrap();
+    let d = e.node_root().unwrap();
     let mut m = Mutation::new();
     m.op(d, &ct::HOLDS, holds(t, false)).unwrap();
     e.commit(m).unwrap();

@@ -97,13 +97,8 @@ fn cursor(b: u8) -> Cursor {
 /// A key actor's connection proof over the examples' challenge and static key.
 pub fn proof(b: u8) -> ActorProof {
     let key = SigningSecret::from_seed(&s32(b));
-    let record = CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [b; 32], account: false };
+    let record = CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [b; 32] };
     Prover { key, record }.sign(false, &CHALLENGE, &STATIC_KEY)
-}
-
-/// A rotation's header-only copy as Prove carries it; its contents are the engine's to judge.
-pub fn rotation() -> Value {
-    Value::List(vec![Value::List(vec![Value::uint(1)]), Value::Enum(1, Some(Box::new(Value::Bytes(vec![0x52; 64])))), Value::List(vec![]), Value::List(vec![]), Value::List(vec![])])
 }
 
 /// `(name, message)` for every kind, in kind order, plus variants of the sum types.
@@ -155,10 +150,8 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
                 keys: osis_blob::HolderKeys { commits: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])], records: vec![CreationRecord::Thing { admin: Tid::from_bytes([0x0e; 15]), nonce: [0x0f; 32], link: None, expires: None }] },
             },
         ),
-        ("prove", Msg::Prove { id: 32, proofs: vec![proof(0x32), proof(0x33)], rotations: None }),
-        ("prove with rotations", Msg::Prove { id: 32, proofs: vec![proof(0x32)], rotations: Some(vec![rotation()]) }),
-        ("proved", Msg::Proved { id: 32, proofs: vec![], rotations: None }),
-        ("proved with rotations", Msg::Proved { id: 32, proofs: vec![proof(0x34)], rotations: Some(vec![rotation()]) }),
+        ("prove", Msg::Prove { id: 32, proofs: vec![proof(0x32), proof(0x33)] }),
+        ("proved", Msg::Proved { id: 32, proofs: vec![] }),
         ("resume", Msg::Resume { id: 34, nonce: [0x34; 32], tags: vec![[0x35; 32], [0x36; 32]] }),
         ("resumed", Msg::Resumed { id: 34, nonce: [0x37; 32], tag: Some([0x35; 32]) }),
         ("beacons", Msg::Beacons { id: top(36), generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs, more: false }),
@@ -270,8 +263,6 @@ pub fn rejections() -> Vec<(&'static str, &'static str, Vec<u8>)> {
         ("notify with an id", "id", with(&m("notify"), 1, Some(int(27)))),
         ("stranded with a holder as a weak", "size", with(&m("stranded"), 3, Some(Value::Weak(Tid::from_bytes([0x0d; 15]))))),
         ("prove with a key of 31 bytes", "size", with(&m("prove"), 2, Some(list(vec![list(vec![proof(1).record.to_value(), bytes(31, 0), bytes(64, 0)])])))),
-        ("prove with a rotation carrying a section", "shape", with(&m("prove with rotations"), 3, Some(list(vec![list(vec![list(vec![]), list(vec![]), list(vec![]), list(vec![]), list(vec![list(vec![])])])])))),
-        ("proved with a rotation carrying a section", "shape", with(&m("proved with rotations"), 3, Some(list(vec![list(vec![list(vec![]), list(vec![]), list(vec![]), list(vec![]), list(vec![list(vec![])])])])))),
         ("proved as a push", "id", with(&m("proved"), 1, Some(int(0)))),
         ("resume with a tag of 31 bytes", "size", with(&m("resume"), 3, Some(list(vec![bytes(31, 0)])))),
         ("resumed with two tags", "shape", with(&m("resumed"), 3, Some(list(vec![bytes(32, 0), bytes(32, 0)])))),

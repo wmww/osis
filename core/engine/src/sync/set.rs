@@ -59,11 +59,10 @@ impl Engine {
 
     /// Sets the sync units the handle reads and writes at another node (spec/sync-set.md §5):
     /// `elsewhere`, of which those also in `moving_back` (moving back, catching up) sync here; the
-    /// others `sync_things` walks no path through, the account root aside: it is never cut. A
+    /// others `sync_things` walks no path through, the node root aside: it is never cut. A
     /// client of this node reads nothing of any of them (`readable_by`). Between transactions.
     pub fn set_sourced(&mut self, elsewhere: BTreeSet<Tid>, moving_back: &BTreeSet<Tid>) -> Result<()> {
-        let root = self.account_root();
-        let cut: BTreeSet<Tid> = elsewhere.difference(moving_back).filter(|g| Some(**g) != root && Some(**g) != self.core.node_root).copied().collect();
+        let cut: BTreeSet<Tid> = elsewhere.difference(moving_back).filter(|g| Some(**g) != self.core.node_root).copied().collect();
         self.core.ix.closure.set_cut(self.core.node_root, cut)?;
         self.core.sourced_elsewhere = elsewhere;
         Ok(())
@@ -289,9 +288,6 @@ impl Engine {
         let Some((st, Some(claims))) = o.path.steps.iter().find(|(x, _)| x.id() == *step) else { return Ok(None) };
         let listed: BTreeSet<[u8; 32]> = claims.claims.iter().copied().collect();
         let mut keys: Vec<X25519Secret> = vec![self.core.id.keys().kem.x25519().clone()];
-        for a in self.core.accounts.keys().copied().collect::<Vec<_>>() {
-            keys.extend(self.account_kems(&a).iter().map(|k| k.x25519().clone()));
-        }
         let reader = self.core.reader_of(&t);
         for (m, _) in self.core.key_holders(&reader) {
             if let Some(e) = self.core.epochs(&m) {

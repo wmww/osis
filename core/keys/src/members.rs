@@ -5,7 +5,6 @@
 //! its boxers only as its new keysets.
 
 use crate::epoch::newest_of;
-use osis_perm::chain::{ancestors, joins};
 use osis_base::Tid;
 use osis_crypto::Epoch;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,17 +16,8 @@ pub struct Keysets {
     pub valid: BTreeMap<Epoch, BTreeSet<Epoch>>,
     /// The held invalid keysets: every body the node holds writing one is invalid.
     pub invalid: BTreeSet<Epoch>,
-    /// The key of each held valid keyset's earliest held valid body, where known (an account's
-    /// chain is whole: none).
+    /// The key of each held valid keyset's earliest held valid body, where known.
     pub since: BTreeMap<Epoch, osis_perm::Point>,
-    /// Every valid keyset is current (an account's: the heads it follows): the seal goes
-    /// jointly at every one that is or descends from each anchor, never at one of them alone, so
-    /// a removed node holding a head beside its removal opens nothing the others do not.
-    pub heads: bool,
-    /// Superseded keysets no departure reaches (an account's closed epochs no revocation closes,
-    /// spec/permissions.md §5.5 Revoked): every holder of one holds the keysets past it, so a
-    /// box naming one is not stale, though nothing is sealed to it.
-    pub lasting: BTreeSet<Epoch>,
 }
 
 impl Keysets {
@@ -58,12 +48,31 @@ impl Keysets {
     }
 }
 
+/// The nodes `k` descends from over `parents`, `k` itself not among them unless on a cycle.
+fn ancestors<N: Ord + Copy, I: IntoIterator<Item = N>>(k: N, parents: impl Fn(N) -> I) -> BTreeSet<N> {
+    let mut seen = BTreeSet::new();
+    let mut work = vec![k];
+    while let Some(x) = work.pop() {
+        for p in parents(x) {
+            if seen.insert(p) {
+                work.push(p);
+            }
+        }
+    }
+    seen
+}
+
+/// Whether `k` is or descends from (over `parents`) each of `anchors`.
+fn joins<'a, N: Ord + Copy + 'a, I: IntoIterator<Item = N>>(k: N, anchors: impl IntoIterator<Item = &'a N>, parents: impl Fn(N) -> I) -> bool {
+    let up = ancestors(k, parents);
+    anchors.into_iter().all(|a| *a == k || up.contains(a))
+}
+
 /// What Seal (rule 1) gives for one role of holder actor M (`seal_keyset`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Seal {
     /// Box M at these keysets: one, or, jointly (a box opening only for a holder of each), one
-    /// per anchor where no keyset is past every anchor (they fork), or an account's every head
-    /// past the anchors (`Keysets::heads`).
+    /// per anchor where no keyset is past every anchor (they fork).
     At(BTreeSet<Epoch>),
     /// M is left out of the role and the roles above, re-sealed once a keyset exists.
     Out,
@@ -74,8 +83,7 @@ pub enum Seal {
 /// `left_out` names (the keysets of M A's current keysets record M was left out at, those held
 /// valid counting, each with the latest earliest-body key of those recording it). The anchors
 /// are the epochs of M the boxes to M at A's current epochs name, those held valid counting. M is
-/// sealed at the newest candidate that is or descends from each anchor (an account's: jointly at
-/// every such candidate, `Keysets::heads`); with none, jointly at, per anchor no
+/// sealed at the newest candidate that is or descends from each anchor; with none, jointly at, per anchor no
 /// other anchor descends from, the newest candidate that is or descends from it, those another
 /// descends from dropped; `Out` when some anchor has none (no anchors: none at all).
 ///
@@ -102,12 +110,7 @@ pub fn seal_keyset(keysets: &Keysets, anchors: &BTreeSet<Epoch>, tainted: &BTree
     let anchors: Vec<&Epoch> = anchors.iter().filter(|q| keysets.valid.contains_key(q)).collect();
     let candidates = candidates(keysets, tainted, left_out);
     let joins_all = |k: &&&Epoch| joins(***k, anchors.iter().copied(), |x| keysets.parents(x));
-    if keysets.heads {
-        let all: BTreeSet<Epoch> = candidates.iter().filter(joins_all).map(|k| **k).collect();
-        if !all.is_empty() {
-            return Seal::At(all);
-        }
-    } else if let Some(k) = newest_of(candidates.iter().filter(joins_all).copied()) {
+    if let Some(k) = newest_of(candidates.iter().filter(joins_all).copied()) {
         return Seal::At(BTreeSet::from([k]));
     }
     let frontier = anchors.iter().filter(|a| !anchors.iter().any(|b| b != *a && keysets.descends(b, a)));
@@ -154,8 +157,7 @@ pub fn left_out_for_good(keysets: &Keysets, tainted: &BTreeSet<Epoch>, left_out:
 }
 
 /// Stale (rule 2): whether a box of A to holder actor M naming M's epoch `k` is stale: `k` is
-/// held invalid, `tainted`, or named by the supersedes list of a held valid keyset of M and not
-/// `lasting`. A node
+/// held invalid, `tainted`, or named by the supersedes list of a held valid keyset of M. A node
 /// that may rotate A does not encrypt under an epoch of A with a stale box; it rotates first.
 ///
 /// Invariant: once M's keyset rotated knowing a removal (it lists the keyset the removed party
@@ -165,7 +167,7 @@ pub fn left_out_for_good(keysets: &Keysets, tainted: &BTreeSet<Epoch>, left_out:
 /// yet, and rotating onto an older one would move A off it (a staleness by "any newer keyset"
 /// would move A onto an ignorant fork).
 pub fn stale(k: &Epoch, keysets: &Keysets, tainted: &BTreeSet<Epoch>) -> bool {
-    keysets.invalid.contains(k) || tainted.contains(k) || !keysets.lasting.contains(k) && keysets.valid.values().any(|l| l.contains(k))
+    keysets.invalid.contains(k) || tainted.contains(k) || keysets.valid.values().any(|l| l.contains(k))
 }
 
 /// The epochs at which `boxes` (an actor's held box keys of one role, as (holder, epoch)) box a

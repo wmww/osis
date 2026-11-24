@@ -823,7 +823,7 @@ fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
 fn held_record(lp: &mut LocalPeer, by: usize, seen: &mut BTreeSet<CommitId>) -> osis_base::CreationRecord {
     let e = &mut lp.peers[by].engine;
     let before: BTreeSet<CommitId> = e.commit_ids().into_iter().collect();
-    let rec = e.held_record(e.dependents_admin()).unwrap();
+    let rec = e.held_record(e.me()).unwrap();
     seen.extend(e.commit_ids().into_iter().filter(|c| !before.contains(c)));
     rec
 }

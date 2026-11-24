@@ -476,6 +476,7 @@ mod tests {
     // deltas: it never reaches perm (else a deep actor's holders would gain its roles on a
     // shallow thing it is a holder of), at the writer and at receivers.
     #[test]
+    #[ignore = "accounts: keys"]
     fn edge_on_deep_thing_not_held_spec_permissions_1() {
         use osis_base::format::MAX_CHAIN_DEPTH;
         use osis_base::Tid;

@@ -41,11 +41,11 @@ fn tid(i: u8) -> Tid {
 }
 
 fn reader(r: RecordId, account: u8) -> Src {
-    Src { class: SourceClass::Reader, at: Source::Record(r), account: Some(tid(account)), own_node: false }
+    Src { class: SourceClass::Reader, at: Source::Record(r), node: Some(tid(account)) }
 }
 
 fn store(r: RecordId) -> Src {
-    Src { class: SourceClass::Store, at: Source::Record(r), account: None, own_node: false }
+    Src { class: SourceClass::Store, at: Source::Record(r), node: None }
 }
 
 #[derive(Default)]
@@ -241,7 +241,7 @@ impl T {
     /// `conn` holds `src`'s record (as `Moved::Taken`) and S is a member of it (as a member
     /// opening).
     fn join(&mut self, s: SyncId, conn: ConnId, src: Src) {
-        self.st.taken(src.at, Up { conn, account: src.account, own_node: src.own_node });
+        self.st.taken(src.at, Up { conn, node: src.node });
         self.on.insert(conn, src.at);
         self.st.opened(s, src.at, src.class);
         self.settle();
@@ -476,29 +476,6 @@ fn ending_member_counts_up_to_its_until() {
     assert!(!t.st.held(&cid(1)), "logged past its until: never served it");
     t.own(S, cid(2), blob(2), 4);
     assert!(t.st.held(&cid(2)), "logged at its until");
-}
-
-// spec/sync-status.md §2 (self-removal): this account's own other nodes never count for its
-// self-removal; once it is held elsewhere the engine is told, once.
-#[test]
-fn self_removal_not_held_at_own_nodes() {
-    let mut t = T::new(&[(S, Holding::Read)]);
-    let own = Src { own_node: true, ..reader(RA, 1) };
-    t.g.shared.insert(S); // another account's record holds S
-    t.join(S, A, own);
-    t.g.removals.insert((), Arc::new([cid(1)].into()));
-    t.own(S, cid(1), blob(1), 1);
-    t.g.knows.insert((Source::Record(RA), S, blob(1)));
-    t.g.reported.insert((A, S), 9);
-    t.settle();
-    assert!(!t.st.held(&cid(1)) && t.g.told_held.is_empty());
-    t.join(S, B, reader(RB, 2));
-    t.g.reported.insert((B, S), 1);
-    t.settle();
-    assert!(t.st.held(&cid(1)));
-    assert_eq!(t.g.told_held, vec![cid(1)]);
-    t.at(10);
-    assert_eq!(t.g.told_held, vec![cid(1)], "told once");
 }
 
 // spec/sync-status.md §2 (must hold): only what S must hold of the commit waits.
@@ -1007,7 +984,7 @@ fn reconnect_of(n: u32) -> (u64, u64) {
     t.settle();
     osis_base::costs::take();
     let lacking = t.st.work().lacking;
-    t.st.taken(Source::Record(RB), Up { conn: ConnId(3), account: None, own_node: false });
+    t.st.taken(Source::Record(RB), Up { conn: ConnId(3), node: None });
     t.on.insert(ConnId(3), Source::Record(RB));
     t.settle();
     let moved = osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "status: members moved").map(|(.., v)| v).sum();
@@ -1039,7 +1016,7 @@ fn a_taken_record_is_caught_up_per_connection_spec_sync_status_1() {
     t.caught(B, S, 0);
     assert!(t.heard_out(S));
     t.release(B);
-    t.st.taken(Source::Record(RB), Up { conn: ConnId(3), account: Some(tid(1)), own_node: false });
+    t.st.taken(Source::Record(RB), Up { conn: ConnId(3), node: Some(tid(1)) });
     t.settle();
     assert!(!t.heard_out(S), "the new connection's stream has said nothing yet");
     t.caught(ConnId(3), S, 0);
@@ -1059,7 +1036,7 @@ fn a_release_keeps_no_report_spec_sync_status_2() {
     t.g.reported.remove(&(A, S));
     t.settle();
     assert!(!t.st.held(&cid(1)), "a release keeps no report");
-    t.st.taken(Source::Record(RA), Up { conn: ConnId(3), account: Some(tid(1)), own_node: false });
+    t.st.taken(Source::Record(RA), Up { conn: ConnId(3), node: Some(tid(1)) });
     t.g.reported.insert((ConnId(3), S), 6);
     t.settle();
     assert!(t.st.held(&cid(1)), "reported again on the next connection");

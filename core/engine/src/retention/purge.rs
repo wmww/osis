@@ -752,8 +752,7 @@ pub(crate) fn owe_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: BTreeSet
 
 /// Whether this node holds write on `tid` now.
 fn writes_on(core: &Core, tid: &Tid) -> bool {
-    let Some(me) = core.me() else { return false };
-    core.role_now(&me, tid) >= Some(osis_base::Role::Write)
+    core.role_now(&core.me(), tid) >= Some(osis_base::Role::Write)
 }
 
 /// The re-snapshots owed at the last stop (`Indexes::resnapshots_owed`), each due again.

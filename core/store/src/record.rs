@@ -47,9 +47,7 @@ pub type RecordRow = (SyncId, Vec<u8>, Vec<u8>);
 /// then (spec/sync-opens.md §2-§3), each kept with what it is judged again by.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Named {
-    /// Its account, with the key it proved with.
-    pub account: Option<(Tid, [u8; 32])>,
-    /// Its node, a node of this node's account then.
+    /// Its node: the thing its first proof proved.
     pub node: Option<Tid>,
     /// The key actors it proved by their own keys, ascending.
     pub key_actors: Vec<Tid>,
@@ -58,7 +56,7 @@ pub struct Named {
 impl Named {
     /// Every actor named, ascending.
     pub fn actors(&self) -> Vec<Tid> {
-        let mut v: Vec<Tid> = self.account.map(|(a, _)| a).into_iter().chain(self.node).chain(self.key_actors.iter().copied()).collect();
+        let mut v: Vec<Tid> = self.node.into_iter().chain(self.key_actors.iter().copied()).collect();
         v.sort();
         v.dedup();
         v
@@ -66,7 +64,7 @@ impl Named {
 
     /// Names no actor: a connection keeping no record.
     pub fn is_empty(&self) -> bool {
-        self.account.is_none() && self.node.is_none() && self.key_actors.is_empty()
+        self.node.is_none() && self.key_actors.is_empty()
     }
 }
 
@@ -115,10 +113,7 @@ impl Record {
         let mut w = W::new();
         w.raw(&self.r);
         let n = &self.named;
-        w.u8(u8::from(n.account.is_some()) | u8::from(n.node.is_some()) << 1);
-        if let Some((a, k)) = &n.account {
-            w.raw(a.as_bytes()).raw(k);
-        }
+        w.u8(u8::from(n.node.is_some()));
         if let Some(x) = &n.node {
             w.raw(x.as_bytes());
         }
@@ -134,11 +129,10 @@ impl Record {
         let mut r = R::new(b);
         let key: [u8; 32] = r.array()?;
         let flags = r.u8()?;
-        if flags > 3 {
+        if flags > 1 {
             return Err(Error::Corrupt("peer record"));
         }
-        let account = if flags & 1 != 0 { Some((Tid::from_bytes(r.array()?), r.array()?)) } else { None };
-        let node = if flags & 2 != 0 { Some(Tid::from_bytes(r.array()?)) } else { None };
+        let node = if flags & 1 != 0 { Some(Tid::from_bytes(r.array()?)) } else { None };
         let n = r.u32()? as usize;
         let mut key_actors = Vec::with_capacity(n.min(b.len() / TID_LEN));
         for _ in 0..n {
@@ -146,7 +140,7 @@ impl Record {
         }
         let (used, row_bytes) = (r.u64()?, r.u64()?);
         r.end()?;
-        Ok(Record { id, r: key, named: Named { account, node, key_actors }, used, row_bytes })
+        Ok(Record { id, r: key, named: Named { node, key_actors }, used, row_bytes })
     }
 
     /// The bytes this record's rows take: what `RECORD_BUDGET` counts.

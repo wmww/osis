@@ -9,7 +9,6 @@ pub(crate) use certs::judged_valid;
 mod judge;
 pub(crate) mod opened;
 pub(crate) mod steps;
-mod proofs;
 
 pub use blobs::{Body, HeadKeys, OpenedBlob, Sealed, fetch_order, frame_envelope};
 pub use blobs::BodyCtx;

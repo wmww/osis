@@ -31,7 +31,7 @@ Crate-wide seeds:
 A setup many tests share is built once per test process and each test gets an exact in-memory copy of the live world: it goes on as the original would (same next commit IDs, rng draws, connections, queues, memo hits). Reopening stores is not a copy (every node restarts and syncs again).
 - **Adding a cached setup**: `LocalPeer::cached(key, || (peer, extra))`, `LocalPeer::cached_world` for a world holding peers beside state that is not `Clone`, or `osis_base::copying::cached` (its module doc) for another world type. Not cached: a setup that closes and reopens a node, real-runtime tests; no osis-level harness shares a setup.
 - **Hooks** (test-only, `#[doc(hidden)]`; policy.py keeps them out of product sources, since two live copies are one node twice and reuse nonces, counters and commit IDs): `Engine::test_copy(clock)`, `Store::test_copy` (memory backends only), `NodeRng::test_copy`; harness copies `Peer::copy`, `LocalPeer::copy`. Types owning identity, rng or a live store copy only through these. Event receivers are subscribed again with the unread events (`Engine::test_subscribe_with`); commit listeners are not copied. Differentials: osis-engine it `copies`.
-- **A test that passes built fresh and fails on a cached setup** has found a copy that is not its original: rerun it fresh with `lp.copy()` before suspecting the edit. Each cached builder has its own key, and a thread-local filled beside the setup is stored with the cache and set again on every copy (`world_then`).
+- **A test that passes built fresh and fails on a cached setup** has found a copy that is not its original: rerun it fresh with `lp.copy()` before suspecting the edit. Each cached builder has its own key, and a thread-local filled beside the setup is stored with the cache and set again on every copy.
 - **A copy's gap** may be a state a production path reaches too (a copy leaving the path wait unset matches what a rollback leaves): ask which product path reaches the same state before fixing only the copy.
 
 ## Debug checks
@@ -108,7 +108,7 @@ Each binary's budget is its line in tools/test_cost.txt (notes/gate.md, The summ
 - `LocalPeer::sync` carries no ephemeral commit: hand one over with `memory_blob` and `ingest_memory`.
 - A role commit past `grant`'s refusal needs `m.unchecked` plus `skip_writer_rules`.
 - A mutation that changes nothing writes no delta, and a commit with no delta is not made (`commit_tx` returns `None`).
-- `Engine::run` rolled back keeps what a trial cached in some `Core` maps (`Core::accounts`): derive secrets from the store record, never from a cache filled inside a trial.
+- `Engine::run` rolled back keeps what a trial cached in some `Core` maps: derive secrets from the store record, never from a cache filled inside a trial.
 - `Meta::missing_parts` counts parts whose body is absent, not parts the node cannot open: test readability by value (`engine.get`).
 - `Engine::seal_package` writes a `dw/` row at the maker: seal after taking a census.
 - A test on what a store holds keeps history on the aspects it probes: a store otherwise compacts by its own judgment.

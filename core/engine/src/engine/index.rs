@@ -41,10 +41,6 @@ const SEALED: &[u8] = b"node/sealed";
 const RETENTION: &[u8] = b"node/retention";
 const ORIGINALS: &[u8] = b"node/originals";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
-/// Per account with a rotation judged, what the epoch rule says of its commits
-/// (`Indexes::epochs`): an open builds no signing chain.
-const EPOCHS: &[u8] = b"node/epochs";
-const NAMED: &[u8] = b"node/named";
 /// What each addendum commit says (`validity::AddendaParts`), by commit ID.
 pub(super) const ADDENDA: &[u8] = b"node/addenda";
 /// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::PermParts`): written with the commit record (`Tx::put_commit`), so an open
@@ -107,35 +103,6 @@ impl Rec for Role {
     }
     fn from(v: &Value) -> Option<Self> {
         Role::from_value(v).ok()
-    }
-}
-impl Rec for Arc<crate::engine::RoleSigs> {
-    fn to(&self) -> Value {
-        let inner = self.inner.as_ref().map_or(Value::bytes(&[]), |i| Value::bytes(i));
-        let more = Value::List(self.more.iter().map(|i| Value::bytes(i)).collect());
-        Value::List(vec![inner, Value::List(self.merge.iter().map(|s| Value::bytes(&s.0)).collect()), more])
-    }
-    fn from(v: &Value) -> Option<Self> {
-        let Value::List(top) = v else { return None };
-        let [Value::Bytes(inner), Value::List(xs), Value::List(ms)] = top.as_slice() else { return None };
-        let inner = if inner.is_empty() { None } else { Some(inner.as_slice().try_into().ok()?) };
-        let more = ms.iter().map(|x| match x {
-            Value::Bytes(b) => b.as_slice().try_into().ok(),
-            _ => None,
-        }).collect::<Option<Vec<_>>>()?;
-        let merge = xs.iter().map(|x| match x {
-            Value::Bytes(b) => Some(osis_crypto::Signature(b.as_slice().try_into().ok()?)),
-            _ => None,
-        }).collect::<Option<Vec<_>>>()?;
-        Some(Arc::new(crate::engine::RoleSigs { inner, more, merge }))
-    }
-}
-impl Rec for Arc<crate::flows::account::JudgedEpochs> {
-    fn to(&self) -> Value {
-        self.to_value()
-    }
-    fn from(v: &Value) -> Option<Self> {
-        crate::flows::account::JudgedEpochs::from_value(v).map(Arc::new)
     }
 }
 impl Rec for super::HeldKeyset {
@@ -713,7 +680,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
         osis_commit::Form::Commit => w.u8(0),
         osis_commit::Form::Session(n) => w.u8(1).raw(&n),
     };
-    w = w.raw(v.signer.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.epoch.is_some()) << 3) | (u8::from(v.own_cover) << 4) | (u8::from(v.paths.is_some()) << 5));
+    w = w.raw(v.signer.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.own_cover) << 3) | (u8::from(v.paths.is_some()) << 4));
     // its purge author; in a split commit, what is decided here of each thing's path
     w = w.raw(v.purge_author.as_bytes());
     if let Some(p) = &v.paths {
@@ -727,9 +694,6 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
                 }
             }
         }
-    }
-    if let Some(e) = &v.epoch {
-        w = w.raw(&e.0);
     }
     for a in &v.aspects {
         let ak = a.ak.as_str().as_bytes();
@@ -770,7 +734,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     let signer = r.tid()?;
     let flags = r.u8()?;
     let purge_author = r.tid()?;
-    let paths = if flags & 32 == 0 {
+    let paths = if flags & 16 == 0 {
         None
     } else {
         let mut m = std::collections::BTreeMap::new();
@@ -788,8 +752,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         Some(Arc::new(m))
     };
     let (linked, memory, purges) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
-    let epoch = if flags & 8 != 0 { Some(CommitId(r.arr()?)) } else { None };
-    let own_cover = flags & 16 != 0;
+    let own_cover = flags & 8 != 0;
     let mut aspects = Vec::with_capacity(n);
     for _ in 0..n {
         let (tid, ak) = (r.tid()?, r.ak()?);
@@ -807,7 +770,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         _ => return Err(Error::Corrupt("meta row frontier")),
     };
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, signer, purge_author, paths, linked, memory, aspects, frontier, purges, epoch, own_cover }))
+    Ok((parts, super::View { ts, kind, form, signer, purge_author, paths, linked, memory, aspects, frontier, purges, own_cover }))
 }
 
 /// A commit record's head and its blob bytes.
@@ -919,8 +882,6 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, RETENTION, &c.ix.retention, all)?;
     put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
-    put_map(txn, EPOCHS, &c.ix.epochs, all)?;
-    put_setmap(txn, NAMED, &c.ix.named, all)?;
     write_secrets(tx, all)?;
     Ok(())
 }
@@ -1035,11 +996,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         // the blob is `[header, signature, parts]`: its first item
         let lim = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, blob.len());
         let hb = osis_base::item_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
-        // the signatures follow the header: an account's role commits' are an index
-        // (`Indexes::role_sigs`), kept where an inner or merge signature is carried
-        let sigs = osis_commit::Sigs::read_stored(blob.get(1 + hb.len()..).unwrap_or_default()).map_err(|_| Error::Corrupt("commit record signatures"))?;
-        let sigs = (sigs.inner.is_some() || !sigs.merge.is_empty()).then_some(sigs);
-        recs.push((id, head, Box::<[u8]>::from(hb), sigs));
+        recs.push((id, head, Box::<[u8]>::from(hb)));
         Ok(())
     })?;
     drop(hs);
@@ -1051,7 +1008,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     let fault = tx.core.header_fault.clone();
-    for (id, mut head, bytes, sigs) in recs {
+    for (id, mut head, bytes) in recs {
         let row = rows.remove(&id).ok_or(Error::Corrupt("meta row missing"))?;
         let (parts, view) = parse_meta_row(&row)?;
         let mut valid = Vec::with_capacity(parts.len());
@@ -1086,9 +1043,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        if let Some(s) = &sigs {
-            crate::apply::note_role_sigs(tx.core, view.kind, view.epoch.is_some(), &id, s);
-        }
         tx.core.put_meta(id, Meta::of(view, header, head.received, head.origin, head.repair.clone(), head.signed, valid, hold));
         tx.core.index_validity(&id);
     }
@@ -1113,21 +1067,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, SNAPSHOTS)? {
         tx.core.ix.snapshots.insert(k, dec(&v)?);
-    }
-    for (k, v) in scan::<Tid>(tx, EPOCHS)? {
-        tx.core.ix.epochs.insert(k, dec(&v)?);
-    }
-    for ((p, c), _) in scan::<(Tid, CommitId)>(tx, NAMED)? {
-        tx.core.ix.named.insert(p, c);
-    }
-    // the epochs as persisted are judged: every change was before the index was written
-    let due: Vec<Tid> = tx.core.ix.epochs_due.iter().copied().collect();
-    for p in due {
-        tx.core.ix.epochs_due.remove(&p);
-    }
-    let due: Vec<CommitId> = tx.core.ix.names_due.iter().copied().collect();
-    for c in due {
-        tx.core.ix.names_due.remove(&c);
     }
     Ok(())
 }

@@ -339,8 +339,9 @@
 //!
 //! # A second node for an account
 //! Pairing needs no connection: your app carries the offer to the new node, its request back, and the
-//! reply to it (a QR code, the clipboard, a local socket).
-//! ```
+//! reply to it (a QR code, the clipboard, a local socket). Not built yet (pairing answers
+//! `Unsupported`).
+//! ```no_run
 //! # use osis::{Config, MemStore, Osis, Store};
 //! let phone = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let offer = phone.pair_offer()?;

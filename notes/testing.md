@@ -49,8 +49,7 @@ A seed runner's sample is a property, never a default test: a test running a har
 - TLA+ when a model or its spec sections change: `core/test/tla/run.sh <module>` (notes/test-properties.md, Models).
 - Networking, for a sync, link or transport change: notes/build.md, Profile and command forms. Real sockets, not seeded: any failure is a bug.
 - osis-crdt's lib test `stream_memory_big_map` (alone, `--exact`).
-- The custody differential, when the custody code changes (engine `flows/custody.rs`, `flows/account.rs`, `sides.rs`, roles-model `custody`): `tools/heavy cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_custody::engine_agrees_with_custody_model_by_hand_spec_permissions_5_4` (200 worlds, about 650 CPU-s); the gate runs its `_plain`. Known failures: issues/custody-differential-failures.md.
-- Fuzz (notes/test-properties.md, Fuzzing); roles-model searches (notes/test-properties.md, Models; `-- 0 custody-exh` when `custody.rs` changes); sim seeds beyond the gate's (notes/test-sim.md); `cargo bench` and memory checks (notes/test-scale.md); coverage with `cargo llvm-cov --lcov --output-path lcov.info` if installed (never gated).
+- Fuzz (notes/test-properties.md, Fuzzing); roles-model searches (notes/test-properties.md, Models); sim seeds beyond the gate's (notes/test-sim.md); `cargo bench` and memory checks (notes/test-scale.md); coverage with `cargo llvm-cov --lcov --output-path lcov.info` if installed (never gated).
 
 ## Conventions
 - **One test binary per crate**: `tests/it/main.rs` with a module per file, so a test's name is `<module>::<fn>`. Single-file crates (osis-base, osis-vectors, crdt-model) keep `tests/<file>.rs` (`--test cbor`, `--test vectors`, `--test props`). Nothing requires nextest, nightly or cargo-fuzz.

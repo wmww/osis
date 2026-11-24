@@ -4,13 +4,13 @@
 > Tags: transport, spec, security
 
 ## Next
-1. **Co-readers as relays** (decided): a node lists the relays it knows in `reach.0`: co-readers that relay (reachable ones, from their direct addresses) and configured ones (`Config::relays`). Needs registrations that follow that set without re-listening (`P2pListener` takes its relays from the URL once).
+1. **Co-readers as relays** (decided): a node lists the relays it knows in its dial entry: co-readers that relay (reachable ones, from their direct addresses) and configured ones (`Config::relays`). Needs registrations that follow that set without re-listening (`P2pListener` takes its relays from the URL once).
 2. **Relaying for strangers** (decided: only when the user turns it on): a `Config` switch making `RelayConfig::allow` answer true (passes notes/api-design.md).
 3. Port mapping (UPnP, NAT-PMP, PCP): optional, later.
 
 ## Decided (Tess)
 - **Who relays**: every reachable node relays for its co-readers by default; for strangers only when the user turns it on. Relaying is a setting of an ordinary node, never a kind of node; no standalone relay program until needed.
-- **Direct addresses**: a reachable node lists them in `reach.0` (built: its global route addresses, notes/networking.md Reach items).
+- **Direct addresses**: a reachable node lists them in its dial entry (built: its global route addresses, notes/networking.md Reach items).
 - **No default relay** in builds for now: a later product decision.
 - **IP consent**: any positive action (sharing a thing, making, sending or following a link, accepting an invite, adding a contact) is consent to share the node's IP (spec/sync-opens.md §4). Built: `reach.0` under every synced sync ID; every dial ephemeral; after the relayed TLS handshake both sides always send their addresses (the relay passes none). Settings: issues/privacy.md, not now.
 
@@ -18,7 +18,7 @@
 - **The target→relay direction of a registration shares one window** (security): relay→target is per stream (`RELAY_STREAM_WINDOW` 64 KiB each, connection window `REG_STREAMS` times it), but at the relay the registration connection has the relay's `quic://` receive windows (1 MiB per stream, 4 MiB per connection), because one server config serves both ALPNs on the relay's socket and quinn fixes it before the ALPN is known. A dialer that stops reading leaves up to 1 MiB of the target's replies unread at the relay; four such sessions stall everything the target sends through that relay until they end (the session's own timeouts, or the dialer closing). Only dialers the target sends a MiB to can do it (co-readers, a link's redeemer being served K's sync ID). Fixes, none plain: the relay raising a registration's connection window after Register (`quinn::Connection::set_receive_window`, a 2 GiB window over 1 MiB streams, and a `Sock` hook), a separate relay socket with small stream windows, or a connection per relayed session.
 - **`Config.relays` cannot name an osis node yet**: the port is fixed (`p2p::PORT` when free), but a relay is named by its dialable key, which `rotate_peer_address` changes, and no API returns a node's `peer://` relay item. A relay named in another node's config needs a key that does not rotate with consent, or the relay set must come from co-readers' `reach.0` (Next 1), which follows rotation.
 - **Reach items are judged once, by address class**: a node lists its global route addresses as of its listener's start, so a node behind 1:1 NAT (cloud VMs) lists nothing, a firewalled one lists an address that fails, and a network change or a rotating IPv6 temporary address leaves a stale one until the next listen. Fixes when needed: observed addresses from relays (`P2pListener::observed`) with the listener's port, re-reading at network changes (`Lan::changed`), port mapping (Next 3).
-- Two nodes that both changed networks and share no live relay cannot find each other until one learns the other's new `reach.0` through a third node. A DHT is a later option.
+- Two nodes that both changed networks and share no live relay cannot find each other until one learns the other's new dial entry through a third node. A DHT is a later option.
 - Switching interrupts the relayed session: every P2P connection that punches through starts relayed (punching waits for the address exchange) and reconnects once (the node redials at once, once per `REDIAL_MS`). Moving the session without a reconnect would need in-connection migration, which the design rules out.
 - Network changes are seen by route polling only (`osis_transport::lan`, `route_networks`); a P2P listener's registrations renew once their relay connections time out (up to the 60 s idle timeout).
 - A LAN listener on `[::]` relies on the OS making it dual-stack (Linux does by default); where it does not, IPv4 LAN dials to it fail.

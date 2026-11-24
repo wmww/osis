@@ -26,8 +26,6 @@ pub const TAG_WEAK: u64 = 1621;
 
 /// Largest blob, prefix and ciphertext (spec/wire.md §2, §5). fixed.
 pub const MAX_BLOB: usize = 8 * MIB;
-/// Account rotations one Prove or one boxes payload carries (spec/wire.md §2, §9, §11.2).
-pub const MAX_ROTATIONS: usize = 256;
 /// Atomic values and header lists whose canonical encoding exceeds this are chunked
 /// (spec/wire.md §2, §4; spec/data-model.md §6). fixed.
 pub const CHUNK_THRESHOLD: usize = 128 * KIB;
@@ -36,11 +34,6 @@ pub const CHUNK_THRESHOLD: usize = 128 * KIB;
 /// commit as bad input; 0 would leave lists inline-only, infinity a hostile header unbounded
 /// memory. Tess's choice; about 140 GB of chunks in one commit, 1.9e6 frontier IDs. fixed.
 pub const MAX_LIST_BYTES: usize = 64 * MIB;
-/// Levels of an account rotation's list tree (spec/wire.md §2, §4 List tree): at most 2^32 thing
-/// lists per rotation. Resource bound: a rotator listing more things refuses the rotation; 0 lets
-/// a rotation list one thing, infinity makes paths unbounded. Fixed at its largest useful size,
-/// so a path (32 hashes) shows nothing of how many things a rotator lists. fixed.
-pub const LIST_TREE_DEPTH: u32 = 32;
 /// A fragment's links are grouped into link pages above this (spec/wire.md §2, §6). fixed.
 pub const PAGE_TARGET: usize = 64 * KIB;
 /// Sequence elements in runs without `Content` per writer's delta, pages included: bounds

@@ -877,11 +877,9 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
         }
     }
     // `roles.0` reads: each known thing's roster (its edges alive now, record edges included) as
-    // the model's walk ends; but this node's account's account root, whose roster is its signing
-    // chain's (spec/permissions.md §5.4, Roster)
+    // the model's walk ends
     if !by_part.is_empty() {
-        let own_d = e.core.account_and_root().map(|x| x.1);
-        for th in input.held.records.iter().map(|t| t.id).filter(|th| Some(input.ids[th]) != own_d) {
+        for th in input.held.records.iter().map(|t| t.id) {
             let alive = |e: &hm::EdgeWrite| e.until.is_none_or(|u| input.held.now < u);
             let model: BTreeMap<hm::NodeId, (hm::Role, Option<hm::Role>, Option<u64>)> = tl.roster(th).into_iter().filter(|(_, e)| alive(e)).filter_map(|(h, e)| Some((h, (e.role?, e.role.filter(|_| e.may_grant), e.until)))).collect();
             let t = input.ids[&th];

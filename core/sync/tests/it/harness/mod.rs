@@ -126,9 +126,10 @@ pub struct WNode {
     pub store: Store,
     clock: Arc<NodeClock>,
     pub key: NodeKey,
-    /// Its account (`Engine::create_account`).
+    /// The thing it acts as: its node thing (`Engine::me`).
     pub account: Option<Tid>,
-    /// Its account's profile thing, made with the account.
+    /// Its account's profile thing: brought back by making an account
+    /// (notes/accounts-switch-brief.md).
     pub profile: Option<Tid>,
 }
 
@@ -618,52 +619,22 @@ impl World {
         self.rng.next_u64()
     }
 
-    /// A new node with an account of its own (`Engine::create_account`), on LAN segment 0 with a
-    /// public address, listening under a fresh key and publishing where (`publish`). Settled once.
+    /// A new node acting as its node thing, on LAN segment 0 with a public address, listening
+    /// under a fresh key and publishing where (`publish`). Settled once.
     pub fn add_node(&mut self) -> usize {
         let i = self.add_bare_node();
-        let made = self.engine(i).create_account().expect("account").0;
+        let me = self.engine(i).me();
         if let Some(n) = self.nodes.get_mut(i) {
-            n.account = Some(made.account);
-            n.profile = Some(made.profile);
+            n.account = Some(me);
         }
         self.publish(i);
         i
     }
 
-    /// A new node paired as a second node of node `i`'s account, as the product's pairing does
-    /// (`Engine::pair`, `Engine::paired`): its card handed to node `i` and what node `i` sends
-    /// handed back, outside sync; then placed, listening and published as `add_node`'s. A store
-    /// failure at node `i` (a planned device fault; a crash restarts it in place, `write`) fails
-    /// its part, and the user pairs again: `Engine::pair` takes the same node twice.
-    pub fn pair(&mut self, i: usize) -> usize {
-        let (account, profile) = (self.node(i).account.expect("an account"), self.node(i).profile);
-        let n = self.add_bare_node();
-        let new = self.engine(n).tid();
-        let card: Vec<osis_engine::local_peer::Package> = { let e = self.engine(n); e.commit_ids().iter().filter_map(|c| e.package(c).ok().flatten()).collect() };
-        let exchange = |e: &mut Engine| -> osis_engine::Result<Vec<osis_engine::local_peer::Package>> {
-            for pk in &card {
-                e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists)?;
-            }
-            let (_, send) = e.pair(&new)?;
-            Ok(send.iter().filter_map(|c| e.package(c).ok().flatten()).collect())
-        };
-        let sent = match self.write(i, exchange) {
-            Err(osis_engine::Error::Store(_)) => self.write(i, exchange).expect("pairing again after a store failure"),
-            r => r.expect("pairing"),
-        };
-        self.write(n, |e| {
-            for pk in &sent {
-                e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists).expect("pairing's commits");
-            }
-            e.paired(&account).expect("paired");
-        });
-        if let Some(x) = self.nodes.get_mut(n) {
-            x.account = Some(account);
-            x.profile = profile;
-        }
-        self.publish(n);
-        n
+    /// A new node paired as a second node of node `i`'s account: brought back by pairing
+    /// (notes/accounts-switch-brief.md).
+    pub fn pair(&mut self, _i: usize) -> usize {
+        unimplemented!("accounts: pairing")
     }
 
     /// Node `i` publishes its address as it listens (`Engine::publish_reach`: its `reach.0` and
@@ -782,16 +753,10 @@ impl World {
     }
 
     /// Debug builds: commit `c` named, for a trace's `C..` (`Engine::describe_commit`, by the
-    /// first node holding its record), each node's own and account tid marked `(n<j>)` and
-    /// `(n<j> account)`.
+    /// first node holding its record), each node's tid marked `(n<j>)`.
     #[cfg(debug_assertions)]
     pub fn describe_commit(&mut self, c: &osis_base::CommitId) -> String {
-        let names: Vec<(String, String)> = (0..self.nodes.len()).flat_map(|j| {
-            let e = self.engine(j);
-            let mut v = vec![(e.tid().to_string(), format!("n{j}"))];
-            v.extend(e.account_tid().map(|a| (a.to_string(), format!("n{j} account"))));
-            v
-        }).collect();
+        let names: Vec<(String, String)> = (0..self.nodes.len()).map(|j| (self.engine(j).tid().to_string(), format!("n{j}"))).collect();
         let Some(mut d) = (0..self.nodes.len()).find_map(|i| self.engine(i).describe_commit(c)) else {
             return format!("{c:?}: held by no node");
         };
@@ -1123,7 +1088,7 @@ impl World {
     fn unlogged_must_holds(&mut self) {
         let mut stuck = Vec::new();
         for i in 0..self.nodes.len() {
-            let reach = self.engine(i).publishes_reach().unwrap();
+            let reach = self.engine(i).publishes_dial().unwrap();
             for c in self.engine(i).commit_ids() {
                 let bodies = self.engine(i).sync_bodies(&c).unwrap();
                 for (s, on) in bodies.keys() {

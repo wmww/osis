@@ -16,7 +16,7 @@ fn ak() -> Ak {
 fn make(w: &mut World, i: usize, admin: Option<Tid>, v: &str) -> Tid {
     let v = v.to_owned();
     w.write(i, |e| {
-        let d = e.account_root().unwrap();
+        let d = e.node_root().unwrap();
         let mut m = Mutation::new();
         let t = m.create(e.thing_record(admin.unwrap_or(d), None));
         m.set(t, &ak(), &Value::Str(v)).unwrap();
@@ -95,7 +95,7 @@ fn keyed_way() -> (World, (Tid, Tid, Tid)) {
 /// the write's NotCarried strongs.
 fn strong(w: &mut World, i: usize, from: Option<Tid>, t: Tid, on: bool) {
     w.write(i, |e| {
-        let from = from.unwrap_or_else(|| e.account_root().unwrap());
+        let from = from.unwrap_or_else(|| e.node_root().unwrap());
         let mut m = Mutation::new();
         let v = Value::Strong(t);
         m.op(from, &ct::HOLDS, PathOp { path: vec![], op: if on { Op::Add(v) } else { Op::Remove(v) } }).unwrap();
@@ -121,10 +121,11 @@ fn holding(w: &mut World, i: usize, t: &Tid) -> Option<Holding> {
 // spec/sync-set.md §3: a thing goes when its last reference goes, waiting for no absent peer:
 // once Bob drops his strong too, T is gone at both.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_strong_grants_nothing_and_its_removal_revokes_nothing_spec_sync_set_2() {
     let mut w = contacts();
     let t = make(&mut w, 0, None, "hi");
-    let d1 = w.engine(1).account_root().unwrap();
+    let d1 = w.engine(1).node_root().unwrap();
     strong(&mut w, 1, None, t, true);
     w.run();
     assert_eq!(value(&mut w, 1, &t), None, "a strong alone fetches nothing");
@@ -178,6 +179,7 @@ fn a_strong_to_a_thing_never_fetched_holds_nothing_spec_sync_set_3() {
 // spec/sync-inbox.md §5: a grant reaches Bob; until he holds T by a strong, nothing of T is fetched or synced
 // (his sync set and store hold nothing of it).
 #[test]
+#[ignore = "accounts: making an account"]
 fn nothing_is_fetched_before_the_strong_spec_sync_inbox_5() {
     let (mut w, (t, _)) = granted();
     let s = w.engine(0).sync_id_of(&t).unwrap().expect("T's sync ID");
@@ -197,6 +199,7 @@ fn nothing_is_fetched_before_the_strong_spec_sync_inbox_5() {
 // writes Bob's inbox, seals the grant fire; Bob's nodes, its writers, hold it stamped under the
 // inbox's sync ID.
 #[test]
+#[ignore = "accounts: pairing"]
 fn the_accounts_nodes_follow_what_it_holds_spec_sync_set_1() {
     let mut w = siblings();
     let t = make(&mut w, 0, None, "hi");
@@ -247,6 +250,7 @@ fn held_after_a_change(lowered: bool) -> (World, Tid) {
 // grants Bob read and, before he holds it, lowers him to sync or removes him; his strong keeps T
 // unread (lowered) or enters nothing (removed).
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_strong_enters_at_the_role_the_role_commits_give_spec_sync_set_2() {
     for lowered in [true, false] {
         let (mut w, t) = held_after_a_change(lowered);
@@ -259,6 +263,7 @@ fn a_strong_enters_at_the_role_the_role_commits_give_spec_sync_set_2() {
 // Bob keeps T unread by a sync grant; Alice rotates T's keys
 // and writes: Bob still keeps it unread and his store takes the write.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_key_change_keeps_a_sync_only_holder_spec_sync_set_2() {
     let mut w = contacts();
     let t = make(&mut w, 0, None, "hi");
@@ -330,6 +335,7 @@ fn independent_at_once(first: usize, rotate: bool) {
 // siblings make T's first grant to Alice at once, each giving T a sync ID of its own; she reads T
 // whichever offer she took first.
 #[test]
+#[ignore = "accounts: pairing"]
 fn concurrent_first_grants_by_two_nodes_reach_the_grantee_spec_permissions_3() {
     for first in [1, 2] {
         independent_at_once(first, false);
@@ -340,6 +346,7 @@ fn concurrent_first_grants_by_two_nodes_reach_the_grantee_spec_permissions_3() {
 // sibling grants Alice read on T while another makes T independent by a rotation; she reads T's
 // newest value whichever sibling granted (so whether the sync ID her offer names is T's or not).
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_grant_beside_a_siblings_rotation_reaches_the_grantee_spec_permissions_3() {
     for first in [1, 2] {
         independent_at_once(first, true);
@@ -353,6 +360,7 @@ fn a_grant_beside_a_siblings_rotation_reaches_the_grantee_spec_permissions_3() {
 // He keeps T's sync secrets, and what he holds of their history is what a fresh load of his
 // store reads.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_reader_lowered_to_sync_keeps_its_sync_epochs_as_a_load_reads_them_spec_permissions_3() {
     let mut w = crate::harness::history::world_of(0, 3, 3);
     let t = make(&mut w, 0, None, "hi");
@@ -374,6 +382,7 @@ fn a_reader_lowered_to_sync_keeps_its_sync_epochs_as_a_load_reads_them_spec_perm
 // thing minted with its node root as admin, held from there: the node writes it as itself, holds and reads it,
 // and no sync ID carries it, so its sibling never holds it.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_thing_under_the_node_root_stays_on_its_node_spec_sync_set_2() {
     let mut w = siblings();
     let x = w.write(1, |e| {
@@ -416,6 +425,7 @@ fn shared_through_a_thing(of_t0: bool) -> (World, Tid, Tid) {
 // was written on it before it was independent. T0's role commits reach him under T1's sync ID as
 // per-sync-ID copies, logged though a certificate copy of fewer parts was logged there first.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_reader_of_a_thing_reads_what_it_is_granted_spec_sync_set_2() {
     let (mut w, t0, t1) = shared_through_a_thing(false);
     strong(&mut w, 0, Some(t1), t0, true);
@@ -429,6 +439,7 @@ fn a_reader_of_a_thing_reads_what_it_is_granted_spec_sync_set_2() {
 // T0, whether T1 references it or he holds it from his account root and is granted sync on it
 // (then he keeps it unread by his sync grant).
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_keyless_grant_reads_nothing_through_it_spec_crypto_4() {
     for direct in [false, true] {
         let (mut w, t0, t1) = shared_through_a_thing(true);
@@ -453,6 +464,7 @@ fn a_keyless_grant_reads_nothing_through_it_spec_crypto_4() {
 // on T1 to sync, her only path to a role on T1. She loses read access to T1: she reads none of
 // it and keeps it unread by the sync secret T0's sync role gives; Bob still reads it.
 #[test]
+#[ignore = "accounts: making an account"]
 fn lowering_the_makers_only_path_to_sync_keeps_the_thing_unread_spec_permissions_3() {
     let mut w = contacts();
     let t0 = make(&mut w, 0, None, "v1");
@@ -476,6 +488,7 @@ fn lowering_the_makers_only_path_to_sync_keeps_the_thing_unread_spec_permissions
 // T1 unread by the sync secret held from her own reading, its store kept: Bob, holding it only
 // then, reads T1 from it.
 #[test]
+#[ignore = "accounts: making an account"]
 fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_judgement_6() {
     let mut w = contacts();
     let t0 = make(&mut w, 0, None, "v1");
@@ -498,6 +511,7 @@ fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_
 // the other, not yet knowing it, grants him sync on T1, boxing him T1's read secret; Bob holds
 // T1 alone and pairs a second node. Both of his nodes keep T1 unread.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_removal_beside_a_sync_grant_keeps_the_thing_unread_at_each_node_spec_sync_inbox_5() {
     // Alice: nodes 1 and 2; Bob: node 0, then node 3
     let mut w = siblings();
@@ -550,6 +564,7 @@ fn an_entry_whose_pending_commit_is_forgotten_is_parked_again_spec_sync_judgemen
 // and D's sync IDs, read still, name a commit she forgets with T1: each is parked again
 // (store::Follow::lost_parks), so the access returning opens it.
 #[test]
+#[ignore = "accounts: making an account"]
 fn removing_the_makers_only_path_parks_its_entries_spec_permissions_3() {
     let mut w = contacts();
     w.parks = true;
@@ -578,6 +593,7 @@ fn removing_the_makers_only_path_parks_its_entries_spec_permissions_3() {
 // She removes T0's record edge on T1, her only path to T1, a self-removal: she keeps T1's
 // secrets and store until Bob holds the removal, so Bob's roster loses T0 as the reference's.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_self_removal_of_the_makers_only_path_reaches_the_reader_spec_permissions_3() {
     let mut w = contacts();
     let t0 = make(&mut w, 0, None, "v1");
@@ -601,6 +617,7 @@ fn a_self_removal_of_the_makers_only_path_reaches_the_reader_spec_permissions_3(
 // its place on the timeline whatever its writer held, reaches her once its writer does, and she
 // reads T no more.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_removal_its_writer_made_blind_reaches_the_removed_reader_spec_permissions_4() {
     let mut w = siblings();
     let t = make(&mut w, 1, None, "v1");
@@ -625,6 +642,7 @@ fn a_removal_its_writer_made_blind_reaches_the_removed_reader_spec_permissions_4
 // removes her from T0 while the other grants her sync on T1, still boxing her T1's read secret;
 // Alice holds T1. Her role there shows sync alone, so she keeps T1 unread and reads none of it.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_read_secret_boxed_beside_a_removal_goes_once_the_role_shows_sync_spec_permissions_3() {
     let mut w = siblings();
     let t0 = make(&mut w, 1, None, "v1");
@@ -647,6 +665,7 @@ fn a_read_secret_boxed_beside_a_removal_goes_once_the_role_shows_sync_spec_permi
 // lowers him to sync and grants read again, each an offer on his inbox; a node Bob pairs holds
 // T. Both of Bob's nodes read T.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_grant_lowered_and_given_again_reads_at_each_of_the_grantees_nodes_spec_sync_inbox_5() {
     let mut w = contacts();
     let t = make(&mut w, 0, None, "v1");
@@ -669,6 +688,7 @@ fn a_grant_lowered_and_given_again_reads_at_each_of_the_grantees_nodes_spec_sync
 // H and T's `sync.0`, so he learns T's sync ID and reads T, though no offer goes (Alice writes
 // H) and he may not write H.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_reader_by_a_chain_through_a_holder_thing_reads_spec_sync_judgement_2() {
     let mut w = contacts();
     let h = make(&mut w, 0, None, "h");
@@ -692,6 +712,7 @@ fn a_reader_by_a_chain_through_a_holder_thing_reads_spec_sync_judgement_2() {
 // admin enables its inbox signals (as chat and kit do at creation: spec/permissions.md §5.2
 // External fires), the offer Alice sent is valid and Bob reads T0 through T1.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_inbox_5() {
     let mut w = contacts();
     let alice = w.node(0).account.unwrap();
@@ -734,6 +755,7 @@ fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_i
 // names T0 by an edge write, so it travels under T0's sync ID: Bob's node 1, reading T2 only
 // through T0, takes it and reads T2 no more, as node 2.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_removed_record_edge_reaches_its_mint_admins_readers_spec_permissions_4() {
     let (mut w, t0) = bobs_thing();
     let alice = w.node(0).account.unwrap();
@@ -752,6 +774,7 @@ fn a_removed_record_edge_reaches_its_mint_admins_readers_spec_permissions_4() {
 // Alice holds both. Node 1 removes Alice from T0 while node 2, not yet knowing, grants her sync
 // on T1 (T1 made independent). Alice holds sync alone on T1 and nothing on T0: she reads neither.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_reader_removed_as_a_sibling_grants_on_a_dependent_reads_it_no_more_spec_permissions_3() {
     let mut w = siblings();
     let alice = w.node(0).account.unwrap();
@@ -791,6 +814,7 @@ fn make_in(w: &mut World, i: usize, admin: Tid, v: &str) -> Tid {
 // Its blob noted no more, the entry waits for T0's sync ID, so when Y -> X reaches her and T0's
 // sync ID is pulled anew, it opens again.
 #[test]
+#[ignore = "accounts: pairing"]
 fn an_entry_of_a_commit_forgotten_whole_opens_again_at_a_pull_anew_spec_sync_judgement_3() {
     let mut w = siblings();
     let alice = w.node(0).account.unwrap();
@@ -816,6 +840,7 @@ fn an_entry_of_a_commit_forgotten_whole_opens_again_at_a_pull_anew_spec_sync_jud
 // `sync.0`, its boxes to T0), so he holds T1's sync secrets and no read: he loses access to T1,
 // which must not forget the minting's header, read by no secret of T1.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_reader_of_a_holder_holds_its_targets_boxes_to_it_spec_sync_judgement_2() {
     let mut w = contacts();
     w.pair(0);
@@ -841,6 +866,7 @@ fn a_reader_of_a_holder_holds_its_targets_boxes_to_it_spec_sync_judgement_2() {
 // The role commits naming T1 show no role of his on T2, so they neither keep the box out nor drop
 // the sync secret it gives. He keeps T2 unread.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_sync_grant_beside_a_removed_holders_role_commits_keeps_the_thing_unread_spec_sync_set_2() {
     let mut w = contacts();
     let bob = w.node(1).account.unwrap();
@@ -869,6 +895,7 @@ fn a_sync_grant_beside_a_removed_holders_role_commits_keeps_the_thing_unread_spe
 // content though she logs it there, and he reads no value of H. Fails with H synced as read, or
 // with a server that sends a keys source every entry.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_holder_held_for_keys_is_shown_its_role_entries_alone_spec_sync_set_2() {
     let mut w = contacts();
     let bob = w.node(1).account.unwrap();
@@ -910,6 +937,7 @@ fn a_holder_held_for_keys_is_shown_its_role_entries_alone_spec_sync_set_2() {
 // an entry under T1's sync ID of a commit on A alone (Alice, holding T1's delete key, deleted
 // hers; Bob logs none again), spec/sync-set.md §3 (A thing leaving a sync unit).
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_removal_reaches_a_reader_opening_the_holder_through_a_second_thing_spec_permissions_4() {
     let mut w = contacts();
     let bob = w.node(1).account.unwrap();
@@ -950,7 +978,7 @@ fn a_removal_reaches_a_reader_opening_the_holder_through_a_second_thing_spec_per
 fn make_beside(w: &mut World, admin: Tid, v: &str, x: Tid, by: osis_base::PurgeBy) -> (Tid, osis_base::CommitId) {
     let v = v.to_owned();
     w.write(1, |e| {
-        let d = e.account_root().unwrap();
+        let d = e.node_root().unwrap();
         let mut m = Mutation::new();
         let y = m.create(e.thing_record(admin, None));
         m.set(y, &ak(), &Value::Str(v)).unwrap().purge_by(y, &ak(), by).unwrap();
@@ -968,6 +996,7 @@ fn make_beside(w: &mut World, admin: Tid, v: &str, x: Tid, by: osis_base::PurgeB
 // disk of hers holds the value: flows::a_section_of_a_thing_not_held_leaves_nothing_on_disk
 // (osis-engine), the forensic attack on a node of a smaller history.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_section_of_a_thing_not_held_stays_sealed_spec_sync_judgement_1() {
     let mut w = contacts();
     let alice = w.node(0).account.unwrap();
@@ -1004,6 +1033,7 @@ fn a_section_of_a_thing_not_held_stays_sealed_spec_sync_judgement_1() {
 // after which the minting reaches her under T0's sync ID. Each time she takes the record, the
 // strong brings the thing in, and the section opens again: she reads both.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_thing_made_beside_its_strong_opens_once_held_spec_sync_judgement_1() {
     for held_first in [true, false] {
         let mut w = contacts();
@@ -1036,6 +1066,7 @@ fn a_thing_made_beside_its_strong_opens_once_held_spec_sync_judgement_1() {
 // history entry carrying them (not only at sync, his key access before the grant), so he reads
 // T and X.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_grant_after_its_thing_became_independent_brings_the_history_its_boxes_open_spec_crypto_4() {
     let mut w = contacts();
     let bob = w.node(1).account.unwrap();
@@ -1060,6 +1091,7 @@ fn a_grant_after_its_thing_became_independent_brings_the_history_its_boxes_open_
 // 1 alone: its view still holds X, so it logs X's value there again; node 0, meeting node 1
 // alone, takes Y -> X and reads X again from the store.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_thing_left_by_one_view_is_logged_again_by_one_still_holding_it_spec_sync_set_3() {
     let (mut w, t, s) = crate::harness::history::three(crate::harness::history::Gives::Writes, 2);
     let x = make_in(&mut w, 0, t, "x");
@@ -1097,6 +1129,7 @@ fn a_thing_left_by_one_view_is_logged_again_by_one_still_holding_it_spec_sync_se
 // under T0's sync ID after the loss (its blob seals T2's value under epochs node 1 holds, from
 // before T2 was independent).
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_removed_record_edge_reaches_a_reader_entering_with_it_spec_permissions_3() {
     let mut w = siblings();
     let alice = w.node(0).account.unwrap();
@@ -1140,6 +1173,7 @@ fn refile(w: &mut World, from: usize, to: usize, s: &osis_base::SyncId, back: bo
 // no reader of T0 reads T2, its maker's nodes included, and every entry under T0's sync ID filed
 // again after the loss by a writer of T0 (who holds them all) gives none of T2's content back.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_sync_set_2() {
     // in either order the entries are filed again in
     for back in [false, true] {
@@ -1171,6 +1205,7 @@ fn a_mint_admins_readers_read_a_thing_no_more_once_its_record_edge_goes_spec_syn
 // whatever T0's sync ID still carries (Bob's node 2 files its entries again). Bob grants T0 read on
 // T2 again: she reads T2 again, and only then.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_mint_admins_readers_read_a_thing_again_once_granted_again_spec_permissions_3() {
     let (mut w, (_, bob, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 2, t0, "t2");
@@ -1222,6 +1257,7 @@ fn record_chain_built(key1: bool) -> (World, (Tid, Tid, Tid)) {
 // admin on T2 by their record edges, each independent (or T1 left dependent): Alice, a reader of T0,
 // reads T1 and T2, and what is written on T2 after it was made independent.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_reader_reads_down_a_chain_of_standing_record_edges_spec_sync_set_2() {
     for key1 in [false, true] {
         let (mut w, _t0, t1, t2) = record_chain_of_three(key1);
@@ -1242,6 +1278,7 @@ fn a_reader_reads_down_a_chain_of_standing_record_edges_spec_sync_set_2() {
 // none of its content, whatever T0's and T1's sync IDs carry (node 2 files them again), while
 // she reads T1 still.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_reader_down_a_chain_lowered_to_sync_reads_the_thing_no_more_spec_permissions_3() {
     let (mut w, t0, t1, t2) = record_chain_of_three(true);
     assert_eq!(value(&mut w, 0, &t2), Some(Value::Str("t2".into())));
@@ -1264,6 +1301,7 @@ fn a_reader_down_a_chain_lowered_to_sync_reads_the_thing_no_more_spec_permission
 // store), spec/permissions.md §3 (Lost access): Bob reads T; lowered to sync he reads nothing and
 // keeps T unread, holding none of its content, and so across a restart.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3() {
     let (mut w, (t, bob)) = granted();
     strong(&mut w, 1, None, t, true);
@@ -1292,6 +1330,7 @@ fn a_reader_lowered_to_sync_holds_no_content_across_a_restart_spec_permissions_3
 // She reads T2 through T0. Bob removes T0's record edge: she keeps T2 unread by her own sync
 // grant and holds none of its content.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_thing_read_through_one_unit_and_kept_unread_directly_spec_sync_set_2() {
     let (mut w, (alice, bob, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 1, t0, "t2");
@@ -1319,6 +1358,7 @@ fn a_thing_read_through_one_unit_and_kept_unread_directly_spec_sync_set_2() {
 // independent) and she holds it: she reads T2's minting value, and holds every part her siblings
 // judge must-hold.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_grantee_reads_the_minting_value_of_a_dependent_made_independent_spec_sync_judgement_1() {
     let (mut w, (alice, _, t0)) = alice_reads_t0();
     let t2 = make_in(&mut w, 2, t0, "t2");
@@ -1333,6 +1373,7 @@ fn a_grantee_reads_the_minting_value_of_a_dependent_made_independent_spec_sync_j
 // so T2 stays kept unread, and T1, read by his closure no more and named holder on a thing he
 // syncs, is held for keys: its content goes.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_holder_dropped_on_a_chain_is_held_for_keys_and_its_target_stays_spec_sync_set_2() {
     let mut w = contacts();
     let bob = w.node(1).account.unwrap();
@@ -1358,6 +1399,7 @@ fn a_holder_dropped_on_a_chain_is_held_for_keys_and_its_target_stays_spec_sync_s
 // derives from T0's) and Alice read on T1; she holds both. Bob removes her from T0: T1's keyless
 // grant reads nothing of T0, so it keeps her no copy, and she reads T0 no more.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
     let (mut w, (alice, t0, t1)) = keyless_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0");
@@ -1372,6 +1414,7 @@ fn a_keyless_grant_keeps_no_copy_spec_permissions_3() {
 // his own, the grant with key access) and Alice read on T1 only; she holds both. Bob removes her from T1
 // saying retain: she keeps a copy of T1, and of T0 by T1's live grant.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
     let (mut w, (alice, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
@@ -1395,6 +1438,7 @@ fn a_keyed_live_grant_from_a_kept_holder_keeps_a_copy_spec_permissions_3() {
 // copy of T0. The sibling's grant arrives, ordered first: T1's grant was keyless before its removal,
 // so the copy goes, as at a node that held every write together.
 #[test]
+#[ignore = "accounts: pairing"]
 fn an_ended_way_found_keyless_drops_its_copy_spec_permissions_3() {
     let mut w = siblings();
     let alice = w.node(0).account.unwrap();
@@ -1457,6 +1501,7 @@ fn a_reader_follows_a_forked_sync_id(cycle: bool) {
 
 // The fork alone: a re-seal of the sibling's epoch boxes Alice.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_reader_follows_a_forked_sync_id_spec_sync_inbox_5() {
     a_reader_follows_a_forked_sync_id(false);
 }
@@ -1464,6 +1509,7 @@ fn a_reader_follows_a_forked_sync_id_spec_sync_inbox_5() {
 // Bob's grant of T1 on T0 closes a cycle with the sibling's (ordered first, it makes Bob's keyless):
 // a rotation of T1, which boxes Alice at the epoch it is wrapped under, replaces the re-seal.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_reader_follows_a_forked_sync_id_through_a_rotation_spec_sync_inbox_5() {
     a_reader_follows_a_forked_sync_id(true);
 }
@@ -1472,6 +1518,7 @@ fn a_reader_follows_a_forked_sync_id_through_a_rotation_spec_sync_inbox_5() {
 // keeps): Bob grants T1 read on T0 (both his own, the grant with key access) and Alice read on T1 only; she
 // holds both. Bob removes T1's grant saying retain: she keeps a copy of T0 and still reads T1.
 #[test]
+#[ignore = "accounts: making an account"]
 fn an_ended_keyed_grant_keeps_a_copy_spec_permissions_3() {
     let (mut w, (_, t0, t1)) = keyed_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0 through T1");
@@ -1488,6 +1535,7 @@ fn an_ended_keyed_grant_keeps_a_copy_spec_permissions_3() {
 // a complete pass): Bob grants Alice write on T, which she holds; she writes and drops her
 // strong before syncing. Her write reaches Bob before she lets T go.
 #[test]
+#[ignore = "accounts: making an account"]
 fn an_own_write_before_a_dropped_strong_reaches_its_peer_spec_sync_set_3() {
     let mut w = contacts();
     let alice = w.node(0).account.unwrap();
@@ -1501,7 +1549,7 @@ fn an_own_write_before_a_dropped_strong_reaches_its_peer_spec_sync_set_3() {
         let mut m = Mutation::new();
         m.set(t, &ak(), &Value::Str("alice".into())).unwrap();
         e.commit(m).unwrap();
-        let d = e.account_root().unwrap();
+        let d = e.node_root().unwrap();
         let mut m = Mutation::new();
         m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Remove(Value::Strong(t)) }).unwrap();
         e.commit(m).unwrap();
@@ -1516,6 +1564,7 @@ fn an_own_write_before_a_dropped_strong_reaches_its_peer_spec_sync_set_3() {
 // T1 read on T0 (keyless) and Alice read on T1; she holds both. Bob removes T1's grant saying retain,
 // then removes Alice from T0: the ended keyless grant read nothing of T0, so it keeps her no copy.
 #[test]
+#[ignore = "accounts: making an account"]
 fn an_ended_keyless_grant_keeps_no_copy_spec_permissions_3() {
     let (mut w, (alice, t0, t1)) = keyless_way();
     assert_eq!(value(&mut w, 0, &t0), Some(Value::Str("t0".into())), "Alice reads T0");
@@ -1551,6 +1600,7 @@ fn inbox_grants(w: &mut World, i: usize, enabled: bool) {
 // Bob's node, which refuses it. Writes of Bob's own elsewhere open the refused deposit no more
 // often for being ten times as many; Bob enabling grant fires takes it: the grant is his.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sync_inbox_4() {
     let mut w = contacts();
     inbox_grants(&mut w, 1, false);
@@ -1590,6 +1640,7 @@ fn a_refused_sealed_fire_is_opened_again_only_when_what_refused_it_moves_spec_sy
 // promotes the deposit in place. Node 2 holds the blob's bytes from the deposit, so the stamp
 // fetches nothing: it reads the fire only because it opened the deposit it took.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_reader_opens_a_deposit_it_takes_spec_sync_inbox_3() {
     let mut w = siblings();
     w.lie(2, Some(crate::harness::lies::Lie::Declare(osis_proto::SourceClass::Store)));

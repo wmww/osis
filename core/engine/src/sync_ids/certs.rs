@@ -13,15 +13,11 @@ use osis_base::{Ak, CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Aspects a node card holds (each its own commit, spec/permissions.md §4).
-const CARD: [&str; 3] = ["keys.0", "node.0", "reach.0"];
-
 /// Parts of a commit, by aspect index.
 pub type Parts = BTreeSet<usize>;
 
 /// Chain material a verifier needs (spec/permissions.md §4): parts of commits to copy, commits
-/// to copy as headers alone (the requests destroying things whose records go, an account's
-/// rotations but its current `keys.0` commits), the held
+/// to copy as headers alone (the requests destroying things whose records go), the held
 /// mintings of things whose records go (each with those things: a header-only copy of each is
 /// judged by its standing, spec/commits.md §5), and raw creation records (a record blob's),
 /// which outlive the commits that minted them.
@@ -139,23 +135,16 @@ impl Engine {
         for h in &holders {
             self.current_keys_into(ev, h, &mut out);
         }
-        // an account root carries its account's key part beside its own (the account's travel)
-        let account = self.core.account_of_root(g);
-        if account.is_some() {
-            self.node_cards(g, &mut out);
-        }
         // a holder of sync alone on a target gets that target's boxes and `sync.0` parts and
         // nothing else of it: no roster, no edge write, no evidence of either (spec/permissions.md
         // §4 Key part)
         let mut key_part = BTreeSet::new();
-        for h in std::iter::once(*g).chain(account) {
-            for (c, x) in self.key_part(&h) {
-                if self.core.roster_of(&x).get(&h).is_some_and(|e| e.role == osis_base::Role::Sync) {
-                    out.add(c, self.parts_of(&c, &BTreeSet::from([x]), &["secrets.0", "sync.0"]));
-                    out.records.insert(x);
-                } else {
-                    key_part.insert((c, x));
-                }
+        for (c, x) in self.key_part(g) {
+            if self.core.roster_of(&x).get(g).is_some_and(|e| e.role == osis_base::Role::Sync) {
+                out.add(c, self.parts_of(&c, &BTreeSet::from([x]), &["secrets.0", "sync.0"]));
+                out.records.insert(x);
+            } else {
+                key_part.insert((c, x));
             }
         }
         for (c, x) in &key_part {
@@ -166,11 +155,9 @@ impl Engine {
         out
     }
 
-    /// What this node hands a node joining its account for `g` (spec/permissions.md §4): what
-    /// `g`'s sync IDs carry beside bodies (`sync_certificates`) with the account's card and
-    /// signing chain and, under the account root D, this node's own card.
+    /// What `g`'s sync IDs carry beside bodies (`sync_certificates`), whether or not this node
+    /// reads `g` as a sync ID.
     pub fn certificates(&mut self, g: &Tid) -> Result<Certs> {
-        let Some(me) = self.core.me() else { return Ok(Certs::default()) };
         let mut ev = self.kept_evidence()?;
         // a thing this node does not read as a sync ID: with its unit, on a copy
         if !ev.sids().any(|s| s == *g) {
@@ -181,43 +168,7 @@ impl Engine {
                 e.join(g, *t);
             }
         }
-        let mut out = self.sync_certificates(&ev, g);
-        let under_d = self.core.account_and_root().is_some_and(|(_, d)| d == *g);
-        for who in std::iter::once(me).chain(under_d.then(|| self.tid())) {
-            let mine = BTreeSet::from([who]);
-            out.records.insert(who);
-            for ak in CARD {
-                if let Some(c) = self.latest_on(&who, ak) {
-                    out.add(c, self.parts_of(&c, &mine, &[ak]));
-                }
-            }
-        }
-        self.close_records(&ev, &mut out);
-        Ok(out)
-    }
-
-    /// Under account root `g`: the cards of its holders and of every node its account's chain
-    /// names (a rotation's minter or certifier, a device added or removed), each rotation read by
-    /// its minter's card; added to `out`.
-    fn node_cards(&mut self, g: &Tid, out: &mut Certs) {
-        let mut nodes: BTreeSet<Tid> = self.core.key_holders(g).into_iter().map(|(n, _)| n).collect();
-        nodes.extend(self.core.account_of_root(g).map(|p| self.core.chain_nodes(&p)).unwrap_or_default());
-        for n in nodes {
-            if !self.is_node(&n).unwrap_or(false) {
-                continue;
-            }
-            out.records.insert(n);
-            for ak in CARD {
-                let Ok(k) = Ak::new(ak) else { continue };
-                let held: Vec<CommitId> = self.core.ix.by_aspect.get(&(n, k)).into_iter().flatten().map(|x| x.1).collect();
-                for c in held {
-                    let Some(h) = self.header(&c) else { continue };
-                    if h.signer == n && h.aspects.iter().all(|a| a.tid == n && CARD.contains(&a.ak.as_str())) {
-                        out.add(c, (0..h.aspects.len()).collect());
-                    }
-                }
-            }
-        }
+        Ok(self.sync_certificates(&ev, g))
     }
 
     /// `g`'s key part (spec/permissions.md §4 Key part), as copies: per thing `x` an edge write
@@ -286,7 +237,7 @@ impl Engine {
 
     /// What any node logs under `g` beside its evidence (spec/permissions.md §4): the records up
     /// `g`'s record chain, the destroyed things its closure needs with their frozen permission
-    /// history, and the cards of the key actors holding `g` that are no node. Nothing here depends
+    /// history, and the public key records of the key actors holding `g`. Nothing here depends
     /// on which node asks. Added to `out`.
     fn shared_certificates(&mut self, ev: &Ev, g: &Tid, out: &mut Certs) {
         out.records.extend(self.core.record_chain(g).filter_map(|s| s.thing()));
@@ -304,11 +255,10 @@ impl Engine {
             }
             self.add_closure(ev, &frozen, out);
         }
-        // the cards of the key actors holding `g` that are neither node nor account (a link key:
-        // its writes under the sync ID verify by its card, which no evidence carries; a node logs
-        // its own under D's sync ID alone; an account's goes with its signing chain)
-        let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_key_actor(k) && !self.core.is_account(k)).collect();
-        for k in keys.into_iter().filter(|k| self.latest_on(k, "node.0").is_none()) {
+        // the public key records of the key actors holding `g` (spec/permissions.md §4: keys, not
+        // evidence)
+        let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_key_actor(k)).collect();
+        for k in keys {
             out.records.insert(k);
             if let Some(c) = self.latest_on(&k, "keys.0") {
                 out.add(c, self.parts_of(&c, &BTreeSet::from([k]), &["keys.0"]));
@@ -317,8 +267,7 @@ impl Engine {
     }
 
     /// To a fixed point, every thing whose record `out` carries gets the records up its record
-    /// chain, an account its signing chain (`account_chain`), and its mintings
-    /// (`minting_evidence`); records not held leave.
+    /// chain and its mintings (`minting_evidence`); records not held leave.
     pub(crate) fn close_records(&mut self, ev: &Ev, out: &mut Certs) {
         let mut done = BTreeSet::new();
         loop {
@@ -329,35 +278,10 @@ impl Engine {
             for t in fresh {
                 done.insert(t);
                 out.records.extend(self.core.record_chain(&t).filter_map(|s| s.thing()));
-                self.account_chain(ev, &t, out);
                 self.minting_evidence(ev, &t, out);
             }
         }
         out.records.retain(|t| self.core.created(t).is_some());
-    }
-
-    /// Account `p`'s record, current `keys.0` commits and signing chain, every line held
-    /// (spec/permissions.md §4, §5.5 Chains travel), added to `out`: the current `keys.0` commits
-    /// projected to `keys.0` (`current_keys`), every other held rotation as a header-only copy
-    /// (`Certs::headers`): a commit at an old epoch verifies by the key its rotation's header
-    /// carries, and the rotation's `keys.0` part is the readers' for nothing; and its inbox's
-    /// record and current `keys.0` commits (its public record, spec/sync-inbox.md §1). Nothing
-    /// for an actor that is no account.
-    pub(crate) fn account_chain(&mut self, ev: &Ev, p: &Tid, out: &mut Certs) {
-        if !self.core.is_account(p) {
-            return;
-        }
-        out.records.insert(*p);
-        let current = self.current_keys(p);
-        self.current_keys_into(ev, p, out);
-        let Ok(keys) = osis_base::Ak::new("keys.0") else { return };
-        let rots: Vec<CommitId> = self.core.ix.by_aspect.get(&(*p, keys)).into_iter().flatten().map(|(_, c)| *c).filter(|c| !current.contains(c) && self.core.ix.commits.get(c).is_some_and(|m| m.view.signer == *p && m.view.epoch.is_some()) && self.header(c).is_some_and(|h| h.rotation.is_some())).collect();
-        out.headers.extend(rots);
-        // and its inbox's public key record (spec/sync-inbox.md §1)
-        if let Some(i) = self.inbox_thing(p).filter(|i| self.core.created(i).is_some()) {
-            out.records.insert(i);
-            self.current_keys_into(ev, &i, out);
-        }
     }
 
     /// The destroyed actors held here on an authority path into `g`'s sync unit (spec/commits.md
@@ -416,7 +340,7 @@ impl Engine {
         crate::retention::destroy::mintings(&self.core, t)
     }
 
-    /// The commits of `t`'s current `keys.0` (spec/permissions.md §4): an account's creation, the newest, the rotation
+    /// The commits of `t`'s current `keys.0` (spec/permissions.md §4): the newest, the rotation
     /// commits of its newest keyset per role, forks included, and the commits recording boxes
     /// at those keysets' epochs (spec/crypto.md §4, Stale: a grant's or re-seal's to a holder
     /// actor). The newest may be an inbox write carrying no keyset, and a rotation of what `t`
@@ -444,13 +368,7 @@ impl Engine {
         // carries the inbox and deposit seed
         let recorders: BTreeSet<CommitId> = self.core.sealed_noted(t).flat_map(|x| x.2.by.iter().copied()).collect();
         let card = self.latest_where(t, "keys.0", |c| intros.contains(c) || !recorders.contains(c));
-        // an account's creation writes its inbox (`flows::account`), which no rotation restates:
-        // its public record holds that write beside the newest keysets
-        let made: Vec<CommitId> = match self.core.is_account(t) {
-            true => self.core.mintings(t).map(|(c, _)| c).filter(|c| self.latest_where(t, "keys.0", |x| x == c).is_some()).collect(),
-            false => Vec::new(),
-        };
-        rotations.iter().chain(&records).copied().chain(card).chain(made).collect()
+        rotations.iter().chain(&records).copied().chain(card).collect()
     }
 
     /// Actor `t`'s current `keys.0` commits projected to `keys.0`, with the demotions its keysets
@@ -540,7 +458,7 @@ mod tests {
     use osis_base::{Ak, Role, Value, WallMs};
     use osis_schema::core_types as ct;
 
-    // spec/permissions.md §4 (current `keys.0` commits; holder card): certificates and cards are the current valid writes, §5.2: a
+    // spec/permissions.md §4 (current `keys.0` commits): certificates and cards are the current valid writes, §5.2: a
     // later write by a node without the role (here a reader; anyone's on another node's card)
     // is invalid and never stands for the newest commit on the aspect: admins would otherwise
     // delete the real one as superseded.

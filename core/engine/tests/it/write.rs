@@ -19,18 +19,17 @@ fn peer(seed: u64) -> Peer {
 }
 
 // spec/data-model.md §1, §9; spec/permissions.md §4: a new node holds its own thing with
-// `created.0`, `node.0` and `keys.0`.
+// `created.0` and `keys.0`.
 #[test]
 fn node_identity_spec_dm_1() {
     let mut p = peer(0);
     let me = p.engine.tid();
     let rec = p.engine.get_typed(&me, &ct::CREATED).unwrap().unwrap();
     assert_eq!(rec.tid(), me);
-    assert!(p.engine.get_typed(&me, &ct::NODE).unwrap().is_some());
     let keys = p.engine.get_typed(&me, &ct::KEYS).unwrap().unwrap();
     assert!(keys.key.is_some());
     let aspects = p.engine.aspects(&me).unwrap();
-    assert!(aspects.contains(&ak("created.0")) && aspects.contains(&ak("node.0")) && aspects.contains(&ak("keys.0")));
+    assert!(aspects.contains(&ak("created.0")) && aspects.contains(&ak("keys.0")));
     assert_eq!(p.engine.core.role_now(&me, &me), Some(osis_base::Role::Admin));
 }
 
@@ -39,7 +38,7 @@ fn node_identity_spec_dm_1() {
 #[test]
 fn write_and_read_spec_crdt_4_5() {
     let mut p = peer(0);
-    let me = p.engine.dependents_admin();
+    let me = p.engine.me();
     p.drain_events();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);

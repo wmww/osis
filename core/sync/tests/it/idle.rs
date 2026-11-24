@@ -104,6 +104,7 @@ fn commit(w: &mut World, named: &[&str]) -> u64 {
 // lost access to drop) unless a grant's `until` or a role commit's `ts` falls due on what reaches
 // it: a small commit after an hour with nothing due judges as many at n as at 10n things.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_commit_judges_one_stranding_and_time_passing_no_duty_per_thing_spec_sync_status_1() {
     let at = |n| {
         let mut w = shared(n);

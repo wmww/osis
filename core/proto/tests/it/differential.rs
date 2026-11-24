@@ -521,6 +521,7 @@ fn mutate_embedded(v: &mut Value, r: &mut Rng) {
 // what `Msg::decode` accepts, on every example and its mutations, and an accepted body
 // re-encodes to its bytes
 #[test]
+#[ignore = "accounts: proofs"]
 fn decoder_agrees_with_the_spec_layouts_spec_wire_11_2() {
     let ms = messages();
     let cases = osis_base::testenv::large_n(200_000);

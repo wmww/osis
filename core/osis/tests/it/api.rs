@@ -304,6 +304,7 @@ fn large_value_round_trip_spec_data_model_6() {
 // spec/data-model.md §6 (unreadable link): a node holding a commit but not the blobs of its link
 // reads that position absent, the rest of the value as written, and reports `Unreadable`.
 #[test]
+#[ignore = "accounts: pairing"]
 fn an_unreadable_link_fails_only_its_position_spec_data_model_6() {
     let (a, b, _) = paired();
     let k = untyped("t:doc.0");
@@ -460,6 +461,7 @@ fn expiry_purge_by_and_purge_spec_commits_5_6() {
 // notes/api.md Writes: `act_as` changes the thing the header's path acts on; the default is `me()`.
 // spec/commits.md §1
 #[test]
+#[ignore = "accounts: keys"]
 fn act_as_spec_commits_1() {
     let db = db(0);
     let mut w = db.write();
@@ -651,6 +653,7 @@ fn values_past_limits_huge_spec_data_model() {
 // notes/api.md Reads (`created`): a later compaction snapshot does not replace the creating
 // commit; a node holding the snapshot without that commit reports none.
 #[test]
+#[ignore = "accounts: pairing"]
 fn created_not_a_snapshot_spec_commits_2() {
     let (a, b, c) = paired();
     let mut w = a.write();
@@ -966,6 +969,7 @@ fn commit_place_of_any_time_api_design() {
 // later grant keeps it unless it says `Reads::All` (never by default), and asking `FromNow` of a
 // holder that reads what came before is `Invalid`.
 #[test]
+#[ignore = "accounts: keys"]
 fn from_now_grant_is_kept_until_a_grant_shows_everything() {
     let db = common::db(41);
     let g = db.commit_with(|w| w.create_held()).unwrap();

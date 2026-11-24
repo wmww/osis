@@ -91,10 +91,8 @@ struct Driver {
     /// Opens' `changed_end` the dials last followed.
     changed: u64,
     /// The actors this node proves for, each with the key it proves with, as of the last
-    /// owner's write or move of its account's open epoch (`Engine::account_open_key`).
+    /// owner's write.
     proving: Vec<(Tid, [u8; 32])>,
-    /// The account's open signing key `proving` was read at.
-    open_key: Option<[u8; 32]>,
     /// A store failure's stretch, while no commit of the store has landed since it began.
     failing: Option<Stretch>,
     /// Restarts in place so far (tests).
@@ -249,12 +247,6 @@ impl Node {
         }
         // a write of this step whose outcome was unknown: the engine reads its store again
         self.engine_reloaded(&mut out);
-        // a rotation of its account taken this step, by another node of it, moves the key it proves with
-        if self.engine.account_open_key() != self.driver.open_key
-            && let Err(e) = self.proving(&mut out)
-        {
-            self.failed(e, &mut out);
-        }
         self.dial(&mut out);
         self.keep_or_close(&mut out);
         for c in self.driver.sessions.closing() {
@@ -519,13 +511,11 @@ impl Node {
 
     /// spec/sync-opens.md §1: a connection proves once, at its start: one where this node now
     /// acts for an actor it did not act for when it proved there (none, a policy proving nothing,
-    /// counts), or for its account at another epoch, closes, and its dialer dials again. The actors it acts for move only by its owner's
-    /// writes (an account taken up, a link key held, a rotation made) and its account's open
-    /// epoch also by a rotation another node of it made, so they are read at `Wrote` and when
-    /// that epoch moves, compared, and the sessions walked only on a move.
+    /// counts) closes, and its dialer dials again. The actors it acts for move only by its owner's
+    /// writes (a link key held), so they are read at `Wrote`, compared, and the sessions walked
+    /// only on a move.
     fn proving(&mut self, out: &mut Vec<Out>) -> Result<()> {
-        self.driver.open_key = self.engine.account_open_key();
-        let mut now: Vec<(Tid, [u8; 32])> = self.engine.provers(false)?.into_iter().map(|(k, r)| (r.tid(), k.verifying_key().to_bytes())).collect();
+        let mut now: Vec<(Tid, [u8; 32])> = self.engine.provers()?.into_iter().map(|(k, r)| (r.tid(), k.verifying_key().to_bytes())).collect();
         now.sort();
         if now == self.driver.proving {
             return Ok(());

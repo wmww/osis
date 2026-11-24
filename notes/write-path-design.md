@@ -287,11 +287,10 @@ Checked in the named files; the right-hand side argued.
 
 | today | without the concept |
 |---|---|
-| `Osis::create` makes a node and an account with its root, profile and inbox (core/osis/src/handle.rs, `Engine::create_account`) | core makes a node: a key store and a node root minted with the node's key. Making an account is the library: mint A, grant the node root a role on it, write the schema's aspects, hold A |
+| `Osis::create` makes a node, `me()` its node thing (core/osis/src/handle.rs; making an account is not built) | core makes a node: a key store and a node root minted with the node's key. Making an account is the library: mint A, grant the node root a role on it, write the schema's aspects, hold A |
 | `Osis::pair`, `Joining`, `pair_offer`, `pair_accept` (core/osis/src/account.rs) | the library, over core's connection: the new node shows its root; a member grants it a role on A (the ordinary grant), hands over a reference to A and its sides for A's disputes; the new node holds A and sets its session defaults |
 | `me()`: the author of writes and the holder of roles; `account_root()` (core/osis/src/handle.rs) | a session's configured default path and purge author; `role_on` and `holders` answer for a stated path |
 | `Write::act_as`: one actor in place of `me()` (core/osis/src/write.rs) | a write states its path and purge author in place of the session's defaults |
-| signing as the account, epochs, custody, lists (engine `flows/signing.rs`, `custody.rs`, `account.rs`, `lists.rs`), account sides (engine `sides.rs`) | gone with the signing chain; a node signs as the thing its path starts at, with a key that thing lists |
 | `nodes`, `remove_node` (core/osis/src/share.rs) | `holders` of A, and the ordinary removal |
 | siblings to sync with (engine `dial_peers`, core/engine/src/sync/dial.rs; spec/sync-set.md §1) | no sibling rule: a node dials what the dial aspect of any thing it holds lists (§3) |
 | inbox delivery by the account's `keys.0` naming its inbox (`Engine::inbox_thing`) | the card (§3): any thing's inbox, named by its admins |

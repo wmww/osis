@@ -57,12 +57,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The connection holding a source now, and who its peer proved there: readers are counted by
-/// identity, and a self-removal skips this account's own nodes.
+/// identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Up {
     pub conn: ConnId,
-    pub account: Option<Tid>,
-    pub own_node: bool,
+    pub node: Option<Tid>,
 }
 
 /// A source of S: a peer with S open on a connection up now (spec/sync-status.md §1).
@@ -71,10 +70,8 @@ pub struct Src {
     pub class: SourceClass,
     /// Its record, else the connection.
     pub at: Source,
-    /// The account it proved: readers are counted by identity.
-    pub account: Option<Tid>,
-    /// Another node of this node's account: never counts for a self-removal (§2).
-    pub own_node: bool,
+    /// The node it proved: readers are counted by identity.
+    pub node: Option<Tid>,
 }
 
 impl Src {
@@ -126,9 +123,9 @@ impl SyncStatus {
         heard_out(self.sources.values().map(|x| (x.waited(), x.caught_up)))
     }
 
-    /// The readers among its sources, counted by the accounts proven (§1).
+    /// The readers among its sources, counted by the nodes proven (§1).
     pub fn readers(&self) -> BTreeSet<Tid> {
-        self.sources.values().filter(|x| x.src.class == SourceClass::Reader).filter_map(|x| x.src.account).collect()
+        self.sources.values().filter(|x| x.src.class == SourceClass::Reader).filter_map(|x| x.src.node).collect()
     }
 
     /// What `wait` waits for: heard out, and every own commit under S held elsewhere (§3).
@@ -383,7 +380,7 @@ impl std::fmt::Debug for Status {
 /// members and of each member's connection, so a take or release moves only what read it.
 fn sources_of(members: &Stamped<SyncId, Arc<BTreeMap<Source, SourceClass>>>, up: &Stamped<Source, Up>, s: &SyncId) -> BTreeMap<ConnId, Src> {
     let Some(m) = members.get(s) else { return BTreeMap::new() };
-    m.iter().filter_map(|(src, class)| up.get(src).map(|u| (u.conn, Src { class: *class, at: *src, account: u.account, own_node: u.own_node }))).collect()
+    m.iter().filter_map(|(src, class)| up.get(src).map(|u| (u.conn, Src { class: *class, at: *src, node: u.node }))).collect()
 }
 
 impl Status {
@@ -394,7 +391,7 @@ impl Status {
     pub fn moved(&mut self, sessions: &Sessions, opens: &Opens, m: &Moved) {
         let up = |conn: ConnId| {
             let proven = sessions.get(conn).map(|x| x.proven());
-            Up { conn, account: proven.and_then(|p| p.account()), own_node: proven.is_some_and(|p| p.node.is_some()) }
+            Up { conn, node: proven.and_then(|p| p.node) }
         };
         match *m {
             Moved::Joined(conn, s, _) => {
@@ -509,7 +506,7 @@ impl Status {
         let up = self.up.get(&at.src).copied().filter(|u| u.conn == conn);
         let Some(class) = self.drop_member(s, at.src) else { return };
         if let Some(u) = up {
-            let src = Src { class, at: at.src, account: u.account, own_node: u.own_node };
+            let src = Src { class, at: at.src, node: u.node };
             self.leaving.entry(s).or_default().insert(conn, (src, at));
         }
     }
@@ -687,13 +684,13 @@ impl Status {
         }
         for (s, c) in self.held_fx.due() {
             self.work.commits += 1;
-            let (members, up, leaving, removals) = (&self.members, &self.up, &self.leaving, &self.removals);
+            let (members, up, leaving) = (&self.members, &self.up, &self.leaving);
             let r = self.held_fx.try_settle(&(s, c), || {
                 let srcs = || {
                     let now = sources_of(members, up, &s);
                     now.into_iter().map(|(k, v)| (k, v, None)).chain(leaving.get(&s).into_iter().flatten().map(|(k, (v, at))| (*k, *v, Some(*at)))).collect()
                 };
-                held_at(g, &s, &c, srcs, removals.contains(&c))
+                held_at(g, &s, &c, srcs)
             });
             let Some((_, now)) = r? else { continue };
             if let Held::Yes(Some(b)) = now {
@@ -955,7 +952,7 @@ impl Status {
 }
 
 /// Whether own commit `c`'s body under S is held at a source (§2): an entry recorded held, or one
-/// a source's stream showed present (a self-removal: not at this account's own nodes), or a reader
+/// a source's stream showed present, or a reader
 /// reported a position at or past where this node's log first held it (for a member being ended,
 /// only an entry first logged at or below its `until`); else nothing S must hold (by read's
 /// verdict). A source holding it is recorded whatever the verdict: one that is may-hold only as
@@ -965,7 +962,7 @@ impl Status {
 /// sources, asked only past the recorded check (a commit held elsewhere moves at no source joining
 /// or leaving), each with where it stood as it left, for one that left since the last settle (its
 /// stream's word still counts: a report and the close that follows it come in one step).
-fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl FnOnce() -> Vec<(ConnId, Src, Option<LeftAt>)>, removal: bool) -> Result<Held> {
+fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl FnOnce() -> Vec<(ConnId, Src, Option<LeftAt>)>) -> Result<Held> {
     let must = match g.verdict(s, c) {
         Some(Verdict::Must) => true,
         Some(Verdict::May | Verdict::MustNot(_)) => false,
@@ -982,9 +979,6 @@ fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl FnOnce()
             srcs = f();
         }
         for &(conn, src, left) in &srcs {
-            if removal && src.own_node {
-                continue;
-            }
             let shown = g.knows(src.at, conn, s, &b);
             let (at, until) = match left {
                 Some(l) => (l.reported, l.until),

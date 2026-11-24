@@ -132,9 +132,8 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             }
             _ => {}
         }
-        if may == MayWrite::Yes
-            && let Ok(me) = tx.core.writer_for(&tid)
-        {
+        if may == MayWrite::Yes {
+            let me = tx.core.me();
             for (c, ai) in &uncovered {
                 if !under_purge(tx, c, *ai, &tid, &ak, &kept)? {
                     continue;
@@ -218,19 +217,6 @@ fn end_wait(core: &mut Core, t: &Tid) {
     let chain: Vec<Tid> = core.record_chain(t).filter_map(|s| s.thing()).collect();
     for a in chain {
         core.ix.cover_waits.remove(&a, t);
-    }
-}
-
-/// The standing of a held commit on `t` moved (`account::refresh_epochs`): a snapshot of `t` that
-/// waited for what it carries to last (`snapshot::may_snapshot`) is judged again, as when `t`
-/// comes to be writable (`wake_covers`).
-pub(crate) fn standing_moved(core: &mut Core, t: &Tid) {
-    core.compaction.wake(t);
-    let on: Vec<Ak> = core.aspects_of(t).map(|((_, a), _)| a.clone()).collect();
-    for ak in on {
-        if super::history::of(core, t, &ak).purges() {
-            core.none_due.insert((*t, ak));
-        }
     }
 }
 

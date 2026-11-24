@@ -253,15 +253,14 @@ impl Core {
         None
     }
 
-    /// The signing keys of key actor `t` that are its delete key (spec/crypto.md §7): its record's
-    /// key; an account's, those of the held epochs of its chain (`account_signing_keys`). None for
-    /// a thing.
+    /// The signing key of key actor `t` that is its delete key (spec/crypto.md §7): its record's
+    /// key. None for a thing.
     fn signing_keys_of(&self, t: &Tid) -> impl Iterator<Item = [u8; 32]> {
-        let record = match self.created(t) {
+        match self.created(t) {
             Some(osis_base::CreationRecord::KeyActor { public_key, .. }) => <[u8; 32]>::try_from(public_key.as_slice()).ok(),
             _ => None,
-        };
-        record.into_iter().chain(self.account_signing_keys(t))
+        }
+        .into_iter()
     }
 }
 
@@ -316,7 +315,7 @@ mod tests {
             assert!(!core.key_right(&t, DELETE_ADMIN, &s.write, Ts::MAX) && !core.key_right(&t, DELETE_WRITER, &s.delete, Ts::MAX));
             assert!(!core.key_right(&t, DELETE_ADMIN, &[7; 32], Ts::MAX));
             // a thing not under g finds nothing in g's steps
-            let me = core.me().unwrap();
+            let me = core.me();
             assert!(!core.key_right(&me, DELETE_ADMIN, &s.delete, Ts::MAX));
         }
         // the step keys are the role keys of g's secrets (alice holds admin; bob, a writer, the

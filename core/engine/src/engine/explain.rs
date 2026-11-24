@@ -34,12 +34,8 @@ pub struct Row {
 fn label(core: &Core, t: &Tid) -> String {
     let what = if core.node_root == Some(*t) {
         " (node root)"
-    } else if core.account_and_root().is_some_and(|(_, d)| d == *t) {
-        " (account root)"
-    } else if core.account.get() == Some(*t) {
-        " (account)"
-    } else if core.is_account(t) {
-        " (an account)"
+    } else if core.me() == *t {
+        " (node)"
     } else if core.is_key_actor(t) {
         " (a key actor)"
     } else {
@@ -96,7 +92,7 @@ fn need(core: &Core, x: &Tid, n: &Need) -> String {
         Need::Missing(c) => format!("held commit c:{} on it has a part missing on {x}", short(c)),
         Need::Holding => format!("an edge write on it names {x} holder"),
         Need::Strong(ak) => format!("{x}'s {ak} holds a strong to it"),
-        Need::Inbox => format!("account {x}'s keys.0 names it (its inbox)"),
+        Need::Inbox => format!("{x}'s keys.0 names it (its inbox)"),
         Need::Offered(c) => format!("a grant fire held on {x}'s inbox carries {c:?} on it"),
     }
 }
@@ -120,11 +116,10 @@ fn held_of(core: &Core, t: &Tid) -> String {
 }
 
 
-/// The identities whose roles are the node's (`rotation::role_here`): its account, itself, its
-/// held key actors, each named.
+/// The identities whose roles are the node's (`rotation::role_here`): itself, its held key
+/// actors, each named.
 fn ours(core: &Core) -> Vec<(Tid, &'static str)> {
-    let mut out: Vec<(Tid, &'static str)> = core.member().map(|m| (m, "account")).into_iter().collect();
-    out.push((core.id.tid(), "node"));
+    let mut out: Vec<(Tid, &'static str)> = vec![(core.me(), "node")];
     out.extend(core.key_actors.keys().map(|k| (*k, "key actor")));
     out
 }
@@ -173,9 +168,6 @@ fn role_lines(tx: &mut crate::engine::Tx<'_>, t: &Tid, out: &mut String) -> Resu
     let core = &*tx.core;
     let role = crate::rotation::role_here(core, t);
     let _ = write!(out, "{}: role {role:?}", label(core, t));
-    if let Some(h) = core.root_holders(t) {
-        let _ = write!(out, "\n  an account root: roster {}", h.iter().map(|(m, r)| format!("{}={r:?}", label(core, m))).collect::<Vec<_>>().join(", "));
-    }
     let paths = widest_to(core, t);
     for (id, what) in ours(core) {
         let (now, keyed) = (core.role_now(&id, t), core.keyed_role_now(&id, t));
@@ -244,12 +236,6 @@ impl Engine {
         }).collect();
         let _ = write!(out, " on [{}]", parts.join(", "));
         if let Some(h) = osis_base::costs::paused(|| m.header.decoded()) {
-            if h.rotation.is_some() {
-                out.push_str(", a rotation");
-            }
-            if h.reseal.is_some() {
-                out.push_str(", a seed re-seal");
-            }
             if let Some(u) = &h.undoes {
                 let _ = write!(out, ", undoes c:{}", short(u));
             }
@@ -353,7 +339,7 @@ impl Engine {
         let ix = &self.core.ix;
         let mut known: BTreeSet<Tid> = ix.commits.values().flat_map(|m| m.view.aspects.iter().map(|a| a.tid)).collect();
         known.extend(ix.closure.things().copied().chain(ix.closure.left().keys().copied()).chain(ix.held.things().copied()).chain(ix.secrets.keys().copied()).chain(ix.kept.keys().copied()));
-        known.extend(self.core.node_root.into_iter().chain(self.core.account_and_root().into_iter().flat_map(|(a, d)| [a, d])));
+        known.extend(self.core.node_root);
         let mut out = Vec::new();
         for (k, v) in rows {
             let fam = family(&k);

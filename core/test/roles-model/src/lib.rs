@@ -5,16 +5,9 @@
 //!   purge worlds (README.md, Paths; findings in notes/path-model-findings.md). osis-perm's
 //!   `paths::` differentials and held-model's judgment read it. Searches `paths`, `paths-exh`,
 //!   `paths-tiny*`, `paths-purge`.
-//! - `custody`: notes/engine-validity-epochs.md: seed custody follows holding, the chain is D's
-//!   roster, a merge is only a join (README.md, results). osis-engine `rotation::tests_custody`.
-//! - `epochs`: layer 2 of the account (§5.5) over `custody`'s chain: P's commits on things in
-//!   sync IDs, thing lists, listings, outside writers' addenda, the cutoff and the bound (README.md,
-//!   results). osis-perm `epochs_model_agrees` (chain and layer 2).
 //! - `shrink`: `without`, a move list less one move.
 //! Binary: `cargo run --bin roles-model -- [samples] [mode]`; `cargo test` runs the hand worlds.
 
-pub mod custody;
-pub mod epochs;
 pub mod paths;
 pub mod shrink;
 

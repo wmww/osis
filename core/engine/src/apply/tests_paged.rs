@@ -1026,9 +1026,9 @@ fn forge_snapshot_in(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: os
     if memory {
         cb.ephemeral = Some(osis_commit::EphClass::Plain);
     }
-    let forge_key = w.lp.peers[by].engine.sign_forged(&mut cb);
+    let forge_key = w.lp.peers[by].engine.identity().keys().signing.clone();
     let c = cb.build(&forge_key, &sec, &mut osis_commit::MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit;
-    Package { id: c.id(), bytes: c.encode(), blobs: blobs.0.into_iter().collect(), lists: Vec::new() }
+    Package { id: c.id(), bytes: c.encode(), blobs: blobs.0.into_iter().collect() }
 }
 
 /// A session of a made-up node `src` (made-up sources sort by their bytes among the peers'
@@ -1116,7 +1116,7 @@ fn memory_commit_waits_only_signed_spec_sync_9() {
     let pk = forge_snapshot_in(&mut w, 1, &ak, now, forged_map(now, ENTRIES, 0x80), &|_, _| {}, true, None);
     assert!(pk.blobs.len() >= 2, "paged");
     let mut forged = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    forged.sigs = osis_commit::Sigs::signed(&pk.id, &osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32])), forged.sigs.inner, Vec::new(), Vec::new());
+    forged.sigs = osis_commit::Sigs::signed(&pk.id, &osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32])));
     let e = &mut w.lp.peers[3].engine;
     let err = e.ingest_memory(&forged.encode(), u64::MAX).unwrap_err();
     assert_eq!(osis_base::Classified::class(&err), osis_base::ErrorClass::BadInput, "{err}");

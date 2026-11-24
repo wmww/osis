@@ -36,7 +36,7 @@ pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 #[cfg(debug_assertions)]
 pub(crate) use atomic::{check_rebuilt, check_states};
-pub(crate) use atomic::{apply_verified, carries_any, forget_snapshot, index_commit, note_carried, note_role_sigs, ingest_secrets_keys, observe_state, rebuild, rejudged, remove_in_place, run_batched, shred_covered, remove_gone_writes};
+pub(crate) use atomic::{apply_verified, carries_any, forget_snapshot, index_commit, note_carried, ingest_secrets_keys, observe_state, rebuild, rejudged, remove_in_place, run_batched, shred_covered, remove_gone_writes};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Step, Tx, decode_commit_record, records};
@@ -77,9 +77,6 @@ pub enum Reason {
     /// invariant of this build), never a judgment of the commit; examined again at the next open
     /// (`set_aside`).
     Fault,
-    /// An account's commit at an epoch whose minting rotation is not held (spec/permissions.md
-    /// §5.5).
-    Epoch(CommitId),
 }
 
 /// What `ingest` did with a commit.
@@ -303,34 +300,11 @@ pub(crate) fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> B
     out
 }
 
-/// The key that signs a commit of `h` by `author` (spec/wire.md §4): a key actor's own; an
-/// account's, the key of the epoch the header names (its first by the creation record, another
-/// by the held rotation minting it). `Ok(None)`: that rotation is not held, so the commit is
-/// pending. Bad input: an author that is no key actor, an epoch or inner signature on a commit
-/// by another than an account or none on one, a rotation by another than an account, a merge
-/// signature count other than the rotation's names.
-pub(crate) fn author_key(core: &crate::engine::Core, h: &osis_commit::Header, sigs: &osis_commit::Sigs, author: &CreationRecord) -> Result<Option<VerifyingKey>> {
-    let CreationRecord::KeyActor { public_key, account, .. } = author else { return Err(Error::BadInput("author is not a key actor")) };
-    if *account != h.epoch.is_some() || *account != sigs.inner.is_some() || (!*account && h.rotation.is_some()) {
-        return Err(Error::BadInput("epoch or inner signature on a commit by another than an account, or none on one"));
-    }
-    if sigs.merge.len() != h.rotation.as_ref().map_or(0, |r| r.names.len()) {
-        return Err(Error::BadInput("a merge signature count other than the rotation's names"));
-    }
-    if sigs.more.len() != osis_commit::inner_seals(h.rotation.as_ref()) {
-        return Err(Error::BadInput("an inner seal count other than the rotation's"));
-    }
-    epoch_key(core, &h.signer, h.epoch, public_key)
-}
-
-/// The key of `author`'s epoch `epoch` (`None`: a plain key actor's key), `public_key` its
-/// creation record's. `Ok(None)`: a rotation not held.
-fn epoch_key(core: &crate::engine::Core, author: &Tid, epoch: Option<CommitId>, public_key: &[u8]) -> Result<Option<VerifyingKey>> {
-    match epoch {
-        None => Ok(Some(VerifyingKey::from_slice(public_key)?)),
-        Some(e) if e == osis_commit::FIRST_EPOCH => Ok(Some(VerifyingKey::from_slice(public_key)?)),
-        Some(e) => Ok(core.rotation(author, &e).map(|r| r.signing_key)),
-    }
+/// The key that signs a commit by `author` (spec/wire.md §4): a key actor's own. Bad input: an
+/// author that is no key actor.
+pub(crate) fn author_key(author: &CreationRecord) -> Result<VerifyingKey> {
+    let CreationRecord::KeyActor { public_key, .. } = author else { return Err(Error::BadInput("author is not a key actor")) };
+    Ok(VerifyingKey::from_slice(public_key)?)
 }
 
 /// Whether `sigs` are commit `id`'s signatures under `key` (spec/crypto.md §2): their verdict, or
@@ -353,23 +327,18 @@ pub(crate) fn signature(core: &crate::engine::Core, id: &CommitId, sigs: &osis_c
     osis_commit::verify_signature(id, sigs, key).ok()
 }
 
-/// Whether `sigs` are `author`'s for commit `id` at epoch `epoch` (`None` for a key actor other
-/// than an account, spec/wire.md §4), from what is held: `false` when that cannot be told.
-pub fn signed_at(core: &crate::engine::Core, id: &CommitId, author: &Tid, epoch: Option<CommitId>, sigs: &osis_commit::Sigs) -> bool {
-    let Some(CreationRecord::KeyActor { public_key, account, .. }) = core.created(author) else { return false };
-    if *account != epoch.is_some() || *account != sigs.inner.is_some() {
-        return false;
-    }
-    epoch_key(core, author, epoch, public_key).ok().flatten().is_some_and(|vk| signature(core, id, sigs, &vk, None).is_some())
+/// Whether `sigs` are `author`'s for commit `id`, from what is held: `false` when that cannot
+/// be told.
+pub fn signed_at(core: &crate::engine::Core, id: &CommitId, author: &Tid, sigs: &osis_commit::Sigs) -> bool {
+    let Some(r) = core.created(author) else { return false };
+    author_key(r).is_ok_and(|vk| signature(core, id, sigs, &vk, None).is_some())
 }
 
 /// Whether `blob`'s signature is its author's (`author_key`), the author's record from `record`,
-/// `known` a verdict kept for it (`signature`): `None` when that cannot be told yet (no record,
-/// an epoch not held).
+/// `known` a verdict kept for it (`signature`): `None` when that cannot be told yet (no record).
 pub(crate) fn signed_by_author(core: &crate::engine::Core, blob: &CommitBlob, id: &CommitId, record: Option<&CreationRecord>, known: Option<osis_commit::Signed>) -> Option<bool> {
-    match author_key(core, &blob.header, &blob.sigs, record?) {
-        Ok(Some(vk)) => Some(signature(core, id, &blob.sigs, &vk, known).is_some()),
-        Ok(None) => None,
+    match author_key(record?) {
+        Ok(vk) => Some(signature(core, id, &blob.sigs, &vk, known).is_some()),
         Err(_) => Some(false),
     }
 }
@@ -549,7 +518,7 @@ fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<
 
 /// Whether pending commit `b` still waits for what can make it wait without anything else
 /// arriving: a blob its kept walks lack (`reach::Walks::lacks`: header lists, pages, value roots), its
-/// `ts`, its author's epoch. `false` when it may apply (or be refused) now.
+/// `ts`. `false` when it may apply (or be refused) now.
 fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> bool {
     let id = b.id();
     if tx.core.walks.lacks(&id) {
@@ -558,11 +527,7 @@ fn still_waits(tx: &mut Tx<'_>, b: &CommitBlob) -> bool {
     if !b.header.is_resolved() {
         return false;
     }
-    if b.header.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
-        return true;
-    }
-    let Some(author) = tx.core.created(&b.header.signer) else { return false };
-    matches!(author_key(tx.core, &b.header, &b.sigs, author), Ok(None))
+    b.header.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS)
 }
 
 /// Resolves the header lists of `blob` from held blobs: `false` when they wait for a blob, their
@@ -625,7 +590,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         // a held author's signature first: a false one costs no list. An author's record carried
         // by this commit waits for the lists: only the aspects say which part holds it
         if let Some(rec) = tx.core.created(&blob.header.signer).cloned()
-            && let Some(vk) = author_key(tx.core, &blob.header, &blob.sigs, &rec)?
+            && let Ok(vk) = author_key(&rec)
         {
             *known = Some(check_signature(tx, blob, id, &vk, *known)?);
         }
@@ -717,13 +682,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // the walks of parts no longer in it (junk, expired, stripped) go
     tx.core.walks.keep_parts(id, &blob.parts.iter().map(|p| p.ai).filter(|ai| !skip.contains(ai)).collect());
     let unjudgeable = unjudged.values().next().cloned().filter(|_| blob.parts.iter().all(|p| skip.contains(&p.ai) || unjudged.contains_key(&p.ai)));
-    let Some(vk) = author_key(tx.core, &h, &blob.sigs, &author)? else {
-        if let Some(r) = unjudgeable {
-            return Ok(pend_unjudgeable(tx, id, &unjudged, r));
-        }
-        note_unjudged(tx, id, &unjudged);
-        return Ok(Exam::Pending(Reason::Epoch(h.epoch.unwrap_or(osis_commit::FIRST_EPOCH))));
-    };
+    let vk = author_key(&author)?;
     let signed = check_signature(tx, blob, id, &vk, *known)?;
     *known = Some(signed);
     h.validate()?;
@@ -747,7 +706,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let mut out = Parts { signed, whole: Vec::new(), streamed: Vec::new(), waiting: None, bad: None, stripped: Vec::new() };
     let mut interner = Interner::new();
     // tests let a local writer break the writer rules, to test receivers
-    let rules = !(tx.core.skip_writer_rules && Some(h.signer) == tx.core.me());
+    let rules = !(tx.core.skip_writer_rules && h.signer == tx.core.me());
     let mut bad: Vec<usize> = Vec::new();
     for p in &blob.parts {
         if skip.contains(&p.ai) || unjudged.contains_key(&p.ai) {
@@ -1144,13 +1103,9 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     let out = match exam {
         Exam::Ready(mut parts) => {
             let w = parts.waiting.take();
-            let waited = tx.core.ix.pending.contains_key(&id);
             tx.core.waits.unawaits(&id);
             unpend(tx, &id)?;
             apply_verified(tx, &blob, parts, origin, received)?;
-            if waited {
-                atomic::applied_late(tx, &blob.header)?;
-            }
             // what a part still waiting read of its boxes may be what opens what it waits for
             match w {
                 Some(w) => pend_aside(tx, &id, &blob, w)?,
@@ -1361,7 +1316,7 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
             let carried = carried_records(&merged.header, &merged, id);
             let author = tx.core.created(&merged.header.signer).cloned().or_else(|| carried.get(&merged.header.signer).cloned());
             if let Some(author) = author
-                && let Ok(Some(vk)) = author_key(tx.core, &merged.header, &sigs, &author)
+                && let Ok(vk) = author_key(&author)
                 && let Some(s) = signature(tx.core, id, &sigs, &vk, None)
             {
                 merged.sigs = sigs;
@@ -1510,7 +1465,6 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, signed: osis_commi
         }
         Exam::Awaits(r) | Exam::Pending(r) => Err(Error::Misuse(match r {
             Reason::MissingChain(_) => "own commit not applicable: a record on its chain is missing",
-            Reason::Epoch(_) => "own commit not applicable: its epoch's rotation is missing",
             Reason::UnknownCreated(_) => "own commit not applicable: a thing's record is unknown",
             Reason::Outside(_) => "own commit not applicable: a thing outside the node closure",
             Reason::Drift => "own commit not applicable: ts drift",
@@ -1632,7 +1586,7 @@ impl Engine {
     /// chunk and header-list blobs it references (ciphertexts by ID). Bad input is reported as
     /// a diagnostic and returned as an error; nothing of it is stored.
     pub fn ingest(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>) -> Result<Ingested> {
-        self.ingest_class(bytes, blobs, None, None, &[])
+        self.ingest_class(bytes, blobs, None, None)
     }
 
     /// `ingest` of a commit taken only for what it proves here (a fire's carried commit, a
@@ -1670,7 +1624,6 @@ impl Engine {
             learn_records_in(tx, records)?;
             for b in blobs {
                 let (c, parts): (CommitId, Vec<usize>) = (b.id(), b.parts.iter().map(|p| p.ai).collect());
-                hold_rotation_lists(tx, &b, &[])?;
                 match arrive(tx, &c, b, false) {
                     Ok(Ingested::Parked(_)) => refused = true,
                     Ok(Ingested::Applied(_)) if !crate::sync_ids::judged_valid(tx.core, &c, &parts) => refused = true,
@@ -1737,45 +1690,6 @@ impl Engine {
         r.map(Some)
     }
 
-    /// `ingest` of a commit nothing carries (a Prove's rotation, spec/sync-opens.md §2): one that
-    /// would pend or park keeps nothing, as if never received (`None`); decided in the one
-    /// transaction, so nothing of it is written.
-    pub(crate) fn ingest_uncarried(&mut self, bytes: &[u8]) -> Result<Option<Ingested>> {
-        self.ingest_kept(bytes, None, |_, _, _, out| matches!(out, Ingested::Parked(_) | Ingested::Pending(..)))
-    }
-
-    /// The commits of `blobs` (each decoding, none held) that `keep` chooses once all of them are
-    /// ingested together, in order, in one transaction that is then rolled back: nothing of it
-    /// is written. `keep` reads the core with them held (those that pend or park are not).
-    pub(crate) fn ingest_trial(&mut self, blobs: &[CommitBlob], keep: impl FnOnce(&crate::engine::Core) -> BTreeSet<CommitId>) -> Result<BTreeSet<CommitId>> {
-        let mut out = None;
-        let r: Result<()> = self.run(|tx| {
-            for b in blobs {
-                hold_rotation_lists(tx, b, &[])?;
-                if let Err(e) = ingest_blob(tx, b.clone(), Origin::Remote)
-                    && e.class() == ErrorClass::Local
-                {
-                    return Err(e);
-                }
-            }
-            out = Some(keep(tx.core));
-            // rolled back
-            Err(Error::Misuse("trial"))
-        });
-        for b in blobs {
-            self.openings_done(&b.id());
-        }
-        match (out, r) {
-            (Some(k), _) => Ok(k),
-            // judged neither way: none kept, the app told (`set_aside`)
-            (None, Err(e)) if e.is_fault() => {
-                tell_fault(&mut self.core, None, Vec::new(), &e);
-                Ok(BTreeSet::new())
-            }
-            (None, r) => r.and(Err(Error::Misuse("trial"))),
-        }
-    }
-
     /// `ingest` keeping nothing of a commit `refuse` objects to (its outcome, judged in the
     /// transaction, which is then rolled back): `None` for those. One kept is carried by `from`.
     fn ingest_kept(&mut self, bytes: &[u8], from: Option<carriers::Carrier>, refuse: impl Fn(&crate::engine::Core, &CommitId, &[usize], &Ingested) -> bool) -> Result<Option<Ingested>> {
@@ -1788,9 +1702,7 @@ impl Engine {
         let id = blob.id();
         let ais: Vec<usize> = blob.parts.iter().map(|p| p.ai).collect();
         let mut refused = false;
-        let mut rotation = None;
         let r = self.run(|tx| {
-            rotation = hold_rotation_lists(tx, &blob, &[])?;
             let out = arrive(tx, &id, blob, false)?;
             refused = refuse(tx.core, &id, &ais, &out);
             if refused {
@@ -1817,9 +1729,6 @@ impl Engine {
         self.openings_done(&id);
         if refused {
             return Ok(None);
-        }
-        if let Some(id) = rotation.filter(|_| r.is_ok()) {
-            self.loose_lists_held(&id);
         }
         if let Ok(Ingested::Applied(_)) = &r {
             self.reexamine()?;
@@ -1880,14 +1789,6 @@ impl Engine {
         })
     }
 
-    /// `ingest` of an account's rotation with list blobs that came with it (under the
-    /// same sync ID, spec/sync-judgement.md §1): the thing lists of this rotation among them that verify are
-    /// held in the same transaction, before it applies, so what they name never reads as
-    /// unlisted here. Others are left (`hold_lists`).
-    pub fn ingest_with_lists(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, lists: &[Vec<u8>]) -> Result<Ingested> {
-        self.ingest_class(bytes, blobs, peer, None, lists)
-    }
-
     /// Receives a memory commit (session form, spec/commits.md §2-§3) through the commit path,
     /// every row it derives in memory. `room`: what holding it may cost, as `memory_charge`
     /// counts it (the node cap, spec/sync-compaction.md §2 caps): it waits undecoded until its header lists,
@@ -1898,16 +1799,15 @@ impl Engine {
     /// only by `apply_waiting_memory`, within the room then. Sync reaches it through
     /// `open_entry`; `ingest` refuses an ephemeral commit.
     pub fn ingest_memory(&mut self, bytes: &[u8], room: u64) -> Result<Ingested> {
-        self.ingest_class(bytes, Vec::new(), None, Some(room), &[])
+        self.ingest_class(bytes, Vec::new(), None, Some(room))
     }
 
     /// `room`: a memory commit's (`ingest_memory`); `None` on the durable path.
-    fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, room: Option<u64>, lists: &[Vec<u8>]) -> Result<Ingested> {
+    fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, room: Option<u64>) -> Result<Ingested> {
         let memory = room.is_some();
         let _s = osis_base::costs::span("ingest");
         let mut fresh = false;
         let mut seen = None;
-        let mut rotation = None;
         self.core.memory_room = room;
         let r = self.run(|tx| {
             let decoded = CommitBlob::decode(bytes);
@@ -1921,9 +1821,6 @@ impl Engine {
                 tx.set_memory();
             } else {
                 fresh = !tx.store_blobs(blobs)?.is_empty();
-            }
-            if let Ok(b) = &decoded {
-                rotation = hold_rotation_lists(tx, b, lists)?;
             }
             match decoded {
                 Ok(blob) => {
@@ -1959,9 +1856,6 @@ impl Engine {
             (Err(e), Some(id)) if e.is_fault() => self.set_aside_arrival(&id, bytes, (!memory).then_some(carriers::Carrier::Entry), &e),
             (r, _) => r,
         };
-        if let Some(id) = rotation.filter(|_| r.is_ok()) {
-            self.loose_lists_held(&id);
-        }
         // written where kept, or nothing of it is kept (`sync_ids::opened`)
         if let Some(id) = seen {
             self.openings_done(&id);
@@ -1977,14 +1871,6 @@ impl Engine {
             _ => {}
         }
         r
-    }
-
-    /// Rotation `id` came and its loose lists were held (`hold_rotation_lists`): their carriers
-    /// give something held now.
-    fn loose_lists_held(&mut self, id: &CommitId) {
-        for b in self.core.waits.loose.lists_held(id) {
-            self.core.waits.carried.wrote_added(&b, true, true);
-        }
     }
 
     /// Forgets reading-only secrets sourced from `id`: it was judged bad or its last entry left.
@@ -2264,9 +2150,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::flows::inbox::load_carried(tx)?;
     crate::sync::certblobs::load(tx)?;
     crate::sync_ids::opened::load(tx)?;
-    crate::flows::lists::load(tx)?;
-    let rotations_due = tx.scan_keys(records::ROTATIONS_DUE, "listings due", CommitId)?;
-    tx.core.ix.rotations_due.extend(rotations_due);
     crate::rotation::merge::load(tx)?;
     crate::retention::load_owed(tx)?;
     let mut vl = Vec::new();
@@ -2451,7 +2334,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 parts.push((p.ai, (*decoded_part(tx, &b.header, &id, at, p)?).clone()));
             }
             let read = PartsRead::of(&b.header, &parts);
-            atomic::note_role_sigs(tx.core, b.header.kind, b.header.epoch.is_some(), &id, &b.sigs);
             validity::note_required(tx.core, &b.header, &id, &read);
             validity::note_settings(tx.core, &b.header, &id, &parts);
             validity::note_addenda(tx.core, &b.header, &id, &parts);
@@ -2472,7 +2354,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         }
     }
     // the role commits given to the walk at once (held one by one, each update would judge the
-    // grants anew); which of accounts' count (spec/permissions.md §5.5) is judged over it
+    // grants anew)
     tx.core.update_timelines();
     // which things are independent, before any box opens: what a box gives is judged by the
     // node's role on its actor (`rotation::role_here`), which reads the actor a thing's secrets
@@ -2480,7 +2362,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     // flips)
     let things: BTreeSet<Tid> = tx.core.ix.keyset_parts.keys().copied().collect();
     keys::refresh_independent(tx, &things, false)?;
-    crate::flows::account::refresh_epochs(tx)?;
     // a commit read before the record it needs (a nested edge write `ts`-ordered before its
     // grant: another node's clock) is derived now, as it was when that record arrived
     validity::resolve_unresolved(tx)?;
@@ -2825,29 +2706,6 @@ pub struct Creation {
     pub received: WallMs,
 }
 
-/// An account rotation not held yet, as it is taken (every durable path: `ingest_class`,
-/// `ingest_valid`): its thing lists among `lists` (list blobs that came beside it) and those kept
-/// loose until it came (`Loose::lists_for`) that verify against its list root are held in the
-/// same transaction, before it applies, so what they name never reads as unlisted here. The
-/// rotation, whose loose lists' carriers `Engine::loose_lists_held` releases once it is kept.
-fn hold_rotation_lists(tx: &mut Tx<'_>, b: &CommitBlob, lists: &[Vec<u8>]) -> Result<Option<CommitId>> {
-    let Some(root) = b.header.rotation.as_ref().map(|r| r.list_root) else { return Ok(None) };
-    let id = b.id();
-    let decoded = lists.iter().filter_map(|l| osis_commit::thing_list::decode_list_blob(l).ok()).flatten();
-    // held already (a Prove's header-only copy, say): its lists are kept as `hold_lists` keeps them
-    if tx.core.ix.commits.contains_key(&id) {
-        let certs: Vec<osis_commit::thing_list::ThingCert> = decoded.filter(|c| c.rotation == id && crate::flows::lists::verifies(c, &root)).collect();
-        if crate::flows::lists::keep_certs(tx, &certs)? {
-            crate::apply::atomic::rejudged(tx, false)?;
-        }
-        return Ok(None);
-    }
-    let loose = tx.core.waits.loose.lists_for(&id);
-    let certs: Vec<osis_commit::thing_list::ThingCert> = decoded.chain(loose).filter(|c| c.rotation == id && crate::flows::lists::verifies(c, &root)).collect();
-    crate::flows::lists::keep_certs(tx, &certs)?;
-    Ok(Some(id))
-}
-
 #[cfg(test)]
 mod tests {
     use crate::local_peer::LocalPeer;
@@ -2902,7 +2760,7 @@ mod tests {
     fn tree_created_in_one_commit_spec_perm_1() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a0, a1) = (lp.peers[0].engine.dependents_admin(), lp.peers[1].engine.me());
+        let (a0, a1) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
         let reg = Ak::new("x:a.0").unwrap();
         let mut things = Vec::new();
         for _ in 0..2 {
@@ -3027,7 +2885,7 @@ mod tests {
                 assert_eq!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(*id));
                 let b = held(&mut lp, id);
                 assert_eq!(lp.peers[1].engine.parts_genuine(&b), Some(true));
-                assert!(super::signed_at(&lp.peers[1].engine.core, id, &b.header.signer, b.header.epoch, &b.sigs));
+                assert!(super::signed_at(&lp.peers[1].engine.core, id, &b.header.signer, &b.sigs));
             }
             assert_eq!(verifies(), n as u64, "round {round}: one per commit at the receiver");
             ids.extend(new);
@@ -3039,16 +2897,16 @@ mod tests {
             assert_eq!(lp.peers[1].engine.parts_genuine(&b), Some(true));
         }
         assert_eq!(verifies(), 0, "kept with the record across a restart");
-        let other = lp.peers[1].engine.core.account.get().unwrap();
+        let other = lp.peers[1].engine.me();
         for id in &ids {
             let genuine = held(&mut lp, id);
             let mut forged = genuine.clone();
             forged.sigs.signature.0[0] ^= 1;
             let e = &mut lp.peers[1].engine;
             assert_eq!(e.parts_genuine(&forged), Some(false), "forged signature bytes");
-            assert!(!super::signed_at(&e.core, id, &genuine.header.signer, genuine.header.epoch, &forged.sigs));
-            assert!(super::signed_at(&e.core, id, &genuine.header.signer, Some(osis_commit::FIRST_EPOCH), &genuine.sigs));
-            assert!(!super::signed_at(&e.core, id, &other, Some(osis_commit::FIRST_EPOCH), &genuine.sigs), "the genuine bytes under another key");
+            assert!(!super::signed_at(&e.core, id, &genuine.header.signer, &forged.sigs));
+            assert!(super::signed_at(&e.core, id, &genuine.header.signer, &genuine.sigs));
+            assert!(!super::signed_at(&e.core, id, &other, &genuine.sigs), "the genuine bytes under another key");
         }
     }
 

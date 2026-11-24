@@ -773,7 +773,8 @@ impl Osis {
         if let Some(at) = self.process_at("profile")? {
             return self.forward(&at, crate::port::method::PROFILE, ());
         }
-        let b = self.engine(|e| e.app_record(crate::handle::PROFILE))?.ok_or_else(|| Error::Storage("no profile record".into()))?;
+        // Interim (notes/accounts-switch-brief.md): no profile until making an account is built
+        let b = self.engine(|e| e.app_record(crate::handle::PROFILE))?.ok_or_else(|| Error::Unsupported("the account's profile: not built yet".into()))?;
         Ok(Tid::from_bytes(b.as_slice().try_into().map_err(|_| Error::Storage("profile record".into()))?))
     }
 
@@ -794,7 +795,7 @@ impl Osis {
         let p = link.target;
         let mut started = false;
         Ok(self.waiting(move |db| {
-            let found = db.engine(|e| e.mint_admin(&p).filter(|a| e.account_holder_keys(a).is_ok()));
+            let found = db.engine(|e| e.mint_admin(&p).filter(|a| e.get_typed(a, &ct::KEYS).ok().flatten().is_some()));
             if let Some(a) = found {
                 return Some(db.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{a}"), p.to_string().as_bytes())).map(|()| a).map_err(Into::into));
             }
@@ -815,11 +816,10 @@ impl Osis {
     pub fn nodes(&self) -> Result<Vec<AccountNode>> {
         self.local("nodes")?;
         let root = self.account_root();
-        let node_ak = ct::NODE.name();
         self.engine(|e| -> Result<Vec<AccountNode>> {
             let mut out = Vec::new();
             for (m, edge) in e.roster(&root) {
-                if edge.role >= Role::Read && (m == e.tid() || e.get(&m, &node_ak)?.is_some()) {
+                if edge.role >= Role::Read && e.is_node(&m)? {
                     out.push(AccountNode { node: m, role: edge.role });
                 }
             }

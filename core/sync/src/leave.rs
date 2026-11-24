@@ -20,9 +20,8 @@
 //! One derived value (`out`): the sync IDs out of the sync set that this node syncs or holds rows
 //! of, one `Effects` key each. The first settle wants every one stored (a start, or a restart of
 //! the modules: the store is the truth), later ones each S the sync set loses. S has left only
-//! with an entry (as synced, else as its keys hold it) and once this node has joined an account
-//! (`Engine::sync_rooted`); rows of another account's inbox it deposits to never leave. Nothing
-//! here is durable.
+//! with an entry (as synced, else as its keys hold it); rows of another thing's inbox it deposits
+//! to never leave. Nothing here is durable.
 
 use crate::set::Held;
 use crate::types::Result;
@@ -53,9 +52,6 @@ pub trait Ground {
     fn pass_seq(&mut self) -> u64;
     /// A complete pass of S begun after pass place `since` ended (status's, spec/sync-status.md §1).
     fn passed(&mut self, s: &SyncId, since: u64) -> bool;
-    /// This node has joined an account (`Engine::sync_rooted`): before, its sync set is empty for
-    /// want of an account root, and nothing it holds counts as left.
-    fn rooted(&mut self) -> bool;
     /// The things that left the node closure and are not released yet, each with the sync units
     /// that held it when it left (`Engine::left_closure`), a stamped read.
     fn left(&mut self) -> Result<BTreeMap<Tid, BTreeSet<Tid>>>;
@@ -269,9 +265,6 @@ fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -
         Some(x) => x.clone(),
         None => {
             let Some(held) = g.synced(s).or_else(|| holder.clone()) else { return Ok(Wait::Not) };
-            if !g.rooted() {
-                return Ok(Wait::Not);
-            }
             let x = Left { held, since: g.pass_seq() };
             leaving.insert(*s, x.clone());
             x
@@ -321,9 +314,6 @@ impl Ground for Live<'_, '_> {
     }
     fn pass_seq(&mut self) -> u64 {
         self.cx.engine.pass_place()
-    }
-    fn rooted(&mut self) -> bool {
-        self.cx.engine.sync_rooted()
     }
     fn passed(&mut self, s: &SyncId, since: u64) -> bool {
         self.status.passed_since(s, since)

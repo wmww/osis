@@ -66,7 +66,7 @@ fn removed_writer(n_first: bool) -> (LocalPeer, Tid, Vec<osis_base::CommitId>) {
 
 /// The roles of `t` peer `i` may not encrypt under now (no rotation first).
 pub(super) fn blocked_at(lp: &mut LocalPeer, i: usize, t: Tid) -> BTreeSet<Role> {
-    lp.peers[i].engine.run(|tx| super::blocked_roles(tx, &tx.core.writer().unwrap(), &t)).unwrap()
+    lp.peers[i].engine.run(|tx| super::blocked_roles(tx, &tx.core.me(), &t)).unwrap()
 }
 
 /// Whether every holder of each of `actors` with key access, at peer `i`, holds a box at each
@@ -325,7 +325,7 @@ pub(super) fn settle(lp: &mut LocalPeer, admins: &[usize], actors: &[Tid]) -> us
 pub(super) fn rotate_as(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>, leave: &[(Tid, Option<Role>)]) -> crate::Result<Vec<osis_crypto::Epoch>> {
     lp.peers[i].engine.run(|tx| {
         let held = tx.core.epochs(&g).unwrap();
-        let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, leave)?;
+        let holders = super::recipients(tx, &tx.core.me(), &g, leave)?;
         let mut m = Mutation::new();
         let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, crate::rotation::Departs::No)?;
         crate::engine::Engine::commit_tx(tx, m)?;
@@ -924,7 +924,7 @@ fn writer_rotation_skips(list_s: bool) {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[])?;
+            let holders = super::recipients(tx, &tx.core.me(), &g, &[])?;
             let mut m = Mutation::new();
             let secrets = crate::flows::secrets_in(tx, &g)?;
             let mut rot = osis_keys::rotate(&g, &[Role::Read].into(), &held, &secrets, &holders.holders, &osis_keys::Names::default(), &mut *tx.rng).unwrap();
@@ -1040,7 +1040,7 @@ pub(super) fn rotate_unchecked(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTree
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &g, &[])?;
+            let holders = super::recipients(tx, &tx.core.me(), &g, &[])?;
             let mut m = Mutation::new();
             let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, crate::rotation::Departs::No)?;
             m.unchecked();

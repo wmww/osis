@@ -7,7 +7,7 @@ Tess's goals: no size cap from lists, small snapshots, one mechanism; a node tha
 A link is the whole authority to read and to delete its blob: whoever holds the link and knows its thing computes the blob's commitments (link blind, thing blind) and, with the delete key of a level, signs its delete. A piece goes once no held body or live state of its thing links it (`Core::tree_reach`). The storing node checks each delete against the prefix.
 
 ## The link
-- `LINK := [content hash, blob ID, suite || key, salt, [DeleteKey*]]` (spec/data-model.md §5, §6) everywhere a LINK stands: value roots, tree-node children, page links, link pages, header lists, a linked frontier, a `ThingList`.
+- `LINK := [content hash, blob ID, suite || key, salt, [DeleteKey*]]` (spec/data-model.md §5, §6) everywhere a LINK stands: value roots, tree-node children, page links, link pages, header lists, a linked frontier.
 - Del is the keys of the blob's one commitment group, by level ascending. It is the writer's claim, never authority: a holder of the blob checks it against the prefix before using it (reuse, deleting by the sync ID's delete key, dropping its copy); a node not holding the blob deletes by level only and the node keeping it unread checks.
 - Derived, not carried: link blind (`kdf("link blind", blob key)`), thing blind (link blind and the tid of the source being walked). Not carried: expiry and class (a deleter needs neither).
 - The salt is carried so a holder of a tree's interior nodes deletes every leaf without fetching any chunk (deleting a dropped 1 GB value needs its node blobs, about 0.3% of its bytes). Deriving it from the key instead: issues/link-salt-from-key.md.

@@ -15,18 +15,12 @@ pub mod edges;
 pub(crate) mod sync_ids;
 pub(crate) mod links;
 mod create;
-pub(crate) mod account;
-pub(crate) mod custody;
 pub(crate) mod inbox;
 pub(crate) mod roots;
-pub mod lists;
-pub(crate) mod signing;
 
 
 pub use edges::{Demotion, Removal};
 pub use links::{HeldLink, LINK_SEED, LinkSpec};
-pub use account::CreatedAccount;
-pub use lists::ListsHeld;
 
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
@@ -143,8 +137,9 @@ pub(crate) fn ts_at(now: u64) -> osis_base::Ts {
 }
 
 impl Core {
-    /// The accounts holding a role on actor `start`, directly or through the actors holding it.
-    pub(crate) fn holder_accounts_of(&self, start: Tid) -> BTreeSet<Tid> {
+    /// The key actors holding a role on actor `start`, directly or through the actors holding
+    /// it: the nodes that may hold it.
+    pub(crate) fn holder_keys_of(&self, start: Tid) -> BTreeSet<Tid> {
         let mut seen = BTreeSet::from([start]);
         let mut todo = vec![start];
         let mut out = BTreeSet::new();
@@ -153,9 +148,9 @@ impl Core {
                 if !seen.insert(m) {
                     continue;
                 }
-                if self.is_account(&m) {
+                if self.is_key_actor(&m) {
                     out.insert(m);
-                } else if !self.is_key_actor(&m) {
+                } else {
                     todo.push(m);
                 }
             }
@@ -172,9 +167,6 @@ impl Core {
     /// answer depends on (`Timeline::roles_on_now`), so a memo reading it (the thing lists a sync
     /// ID carries, access) moves when that passes, with a wake then (`Engine::clock_next`).
     pub fn role_now(&self, node: &Tid, tid: &Tid) -> Option<Role> {
-        if let Some(h) = self.root_holders(tid) {
-            return h.get(node).copied();
-        }
         self.time.at(|now| {
             let (role, until) = self.timelines().role_now(node, tid, ts_at(now));
             (role, until.map(|u| u.0))
@@ -192,12 +184,20 @@ impl Core {
         matches!(self.created(tid), Some(CreationRecord::KeyActor { .. }))
     }
 
+    /// Whether `t` is a link key: a key actor holding a grant on a link's thing K
+    /// (spec/permissions.md §7).
+    pub fn is_link_key(&self, t: &Tid) -> bool {
+        self.is_key_actor(t) && self.ix.held.named_on(t).any(|x| self.created(x).is_some_and(CreationRecord::is_link))
+    }
+
+    /// Whether `t` is a node: a key actor that is no link key (spec/sync-set.md §1).
+    pub fn is_node(&self, t: &Tid) -> bool {
+        *t == self.id.tid() || self.is_key_actor(t) && !self.is_link_key(t)
+    }
+
     /// Current holders of `actor` with their role and `until` (alive edges), its record edge
     /// included while it stands (with no timeline here, nothing wrote it: the mint admin alone).
     pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
-        if let Some(h) = self.root_holders(actor) {
-            return h.into_iter().map(|(m, r)| (m, r, None)).collect();
-        }
         let ts = now_ts(self);
         match self.timelines().on(actor) {
             Some(on) => on.roster(At::now(ts)).into_iter().map(|(m, e)| (m, e.role, e.until)).collect(),
@@ -231,11 +231,6 @@ impl Core {
     /// holders in their place): every edge on it by `rotation::key_role`, its record edge
     /// included while it stands.
     pub(crate) fn edge_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
-        // a held account root D: its holders for keys are D's roster (`root_holders`),
-        // never the account (a box to it on D would open with what D's `account.0` boxes)
-        if let Some(p) = self.held_account_of_root(actor) {
-            return self.devices_roster(&p).into_iter().map(|m| (m, Role::Admin)).collect();
-        }
         match self.timelines().on(actor) {
             Some(on) => on.holders().into_iter().filter_map(|(m, e)| Some((m, crate::rotation::key_role(Some(&e))?))).collect(),
             None => self.mint_admin(actor).map(|a| (a, Role::Admin)).into_iter().collect(),
@@ -257,9 +252,6 @@ impl Core {
 
 /// A recipient for boxes of `actor` to `holder` at `role`, from the holder's held `keys.0`.
 pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Recipient> {
-    if tx.core.is_account(&holder) {
-        return Ok(Recipient { holder, role, keys: account::holder_keys(tx, &holder)?, floor: 0 });
-    }
     let keys = Core::keys_in(tx, &holder)?;
     let keys = match (tx.core.is_key_actor(&holder), keys) {
         (true, Some(k)) => HolderKeys::from_keys(&Keys { read: None, write: None, admin: None, ..k })?,
@@ -287,9 +279,9 @@ pub(crate) fn sync_id_of(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<SyncId>> {
     Ok(sync_ids::owned_in(tx, tid)?.into_keys().next_back())
 }
 
-/// Whether key actor `t` is a node (it has a `node.0` card), not a link key.
+/// Whether `t` is a node (`Core::is_node`).
 pub(crate) fn is_node(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
-    Ok(*t == tx.core.id.tid() || tx.has_state(t, &ak("node.0")?)?)
+    Ok(tx.core.is_node(t))
 }
 
 /// `secrets.0` of `actor`, decoded (`Core::secrets_read`).
@@ -374,12 +366,12 @@ fn take_up_opener(tx: &mut Tx<'_>, h: Tid) -> Result<()> {
     retake(tx).map(drop)
 }
 
-/// The open's sweep (`Engine::take_account`), O(the held actors) as an open is: re-opens every
+/// The open's sweep (`Engine::load`), O(the held actors) as an open is: re-opens every
 /// held `secrets.0` to a fixpoint, listing again the boxes the node's roles keep out
 /// (`Waits::untaken`, in memory). What an actor learns reopens its dependents at once
 /// (`reopen_dependents`, so a holder-actor chain opens in one sweep whatever its tid order);
 /// sweeps repeat until one learns nothing (held epochs only grow, so no round cap is needed).
-fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
+pub(crate) fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
     let secrets_ak = ak("secrets.0")?;
     let actors: BTreeSet<Tid> = tx.core.ix.aspect_things.get(&secrets_ak).cloned().unwrap_or_default();
     loop {
@@ -436,7 +428,7 @@ impl Engine {
         }
     }
 
-    /// Whether key actor `t` is a node (`is_node`): it has a `node.0` card here.
+    /// Whether `t` is a node (`Core::is_node`).
     pub fn is_node(&mut self, t: &Tid) -> Result<bool> {
         let t = *t;
         self.read(|tx| is_node(tx, &t))

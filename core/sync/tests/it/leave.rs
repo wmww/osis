@@ -41,7 +41,6 @@ struct Fake {
     /// Sync IDs whose complete passes are not run here: each passes at once unless listed.
     passing: StampedSet<SyncId>,
     /// This node has joined no account yet (pairing).
-    unrooted: Stamped<(), bool>,
     synced: BTreeMap<SyncId, Held>,
     shredded: Vec<SyncId>,
     forgot: Vec<Tid>,
@@ -104,9 +103,6 @@ impl Ground for Fake {
     }
     fn passed(&mut self, s: &SyncId, since: u64) -> bool {
         !self.passing.contains(s) || self.passes.get(s).is_some_and(|b| *b > since)
-    }
-    fn rooted(&mut self) -> bool {
-        self.unrooted.get(&()) != Some(&true)
     }
 }
 

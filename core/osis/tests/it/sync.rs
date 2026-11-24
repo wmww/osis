@@ -38,10 +38,9 @@ fn listening_needs_a_network_and_a_socket_a_directory_spec_sync_transport_5() {
     assert_ne!(again[0].key(), addrs[0].key());
 }
 
-// spec/sync-transport.md §3 (`reach.0` lists; each time it starts listening),
-// §5 (key change), spec/sync-set.md §1 (dial list: each node keeping its own entry): listening
-// publishes the node's global addresses in `reach.0` and its profile's dial list under its key;
-// a new key replaces its entry.
+// spec/sync-transport.md §3 (each time it starts listening), §5 (key change), spec/sync-set.md §1
+// (dial list: each node keeping its own entry): listening publishes the node's entry under its
+// key, its global addresses only; a new key replaces its entry.
 #[test]
 fn listening_publishes_where_the_node_is_dialed_spec_sync_transport_3() {
     use osis::internals::Internals;
@@ -50,13 +49,11 @@ fn listening_publishes_where_the_node_is_dialed_spec_sync_transport_3() {
     let net = ManualNet::new(c.clone());
     let a = on(&net, 9, &c);
     let key = a.listen(&["peer://203.0.113.5:4040".parse().unwrap(), "peer://127.0.0.1:1".parse().unwrap()]).unwrap()[0].key();
-    let (node, profile) = (a.node(), a.profile().unwrap());
-    let (reach, list) = a.engine(|e| (e.get_typed(&node, &ct::REACH).unwrap(), e.get_typed(&profile, &ct::DIAL).unwrap()));
-    let reach = reach.expect("reach.0 written");
-    assert_eq!((reach.dialable, reach.items.clone(), reach.account), (key, vec!["203.0.113.5:4040".to_string()], Some(a.me().into())), "global addresses only");
-    assert_eq!(list.unwrap(), [(key.to_vec(), vec!["peer://203.0.113.5:4040".to_string()])].into());
+    let node = a.node();
+    let list = a.engine(|e| e.get_typed(&node, &ct::DIAL).unwrap());
+    assert_eq!(list.unwrap(), [(key.to_vec(), vec!["peer://203.0.113.5:4040".to_string()])].into(), "global addresses only");
     a.rotate_peer_address().unwrap();
-    let list = a.engine(|e| e.get_typed(&profile, &ct::DIAL).unwrap()).unwrap();
+    let list = a.engine(|e| e.get_typed(&node, &ct::DIAL).unwrap()).unwrap();
     assert_eq!(list.len(), 1);
     assert!(!list.contains_key(key.as_slice()), "the old key's entry gone");
 }
@@ -310,6 +307,7 @@ fn a_revoked_links_joiner_stays_until_removed_spec_permissions_7() {
 // spec/sync-inbox.md §5 (contact card), spec/sync-set.md §4: importing a card gives the account,
 // whose keys are then here (a grant to it goes through).
 #[test]
+#[ignore = "accounts: making an account"]
 fn importing_a_card_gives_the_account_spec_sync_inbox_5() {
     let c = clock();
     let net = ManualNet::new(c.clone());

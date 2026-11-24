@@ -16,24 +16,24 @@ fn named(actors: &[osis_base::Tid]) -> Named {
     Named { key_actors: actors.to_vec(), ..Named::default() }
 }
 
-// a record keeps what it names as named (spec/sync-opens.md §3: the account with the key it
-// proved with, judged again by it), and is found by each actor it names
+// a record keeps what it names as named (spec/sync-opens.md §3), and is found by each actor it
+// names
 #[test]
 fn a_record_keeps_what_it_names() {
     let (_d, mut rng, mut s) = fresh(cfg());
-    let n = Named { account: Some((tid(1), [9; 32])), node: Some(tid(2)), key_actors: vec![tid(3)] };
+    let n = Named { node: Some(tid(2)), key_actors: vec![tid(3)] };
     let mut t = s.transaction(&mut rng).unwrap();
     let id = t.record_create([1; 32], &n).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(t.record(&id).unwrap().unwrap().named, n);
-    for a in [1, 2, 3] {
+    for a in [2, 3] {
         assert_eq!(t.records_of_actors(&[tid(a)]).unwrap().len(), 1, "found by actor {a}");
     }
-    let m = Named { account: Some((tid(1), [8; 32])), ..Named::default() };
+    let m = Named { node: Some(tid(1)), ..Named::default() };
     t.record_used(&id, &m).unwrap();
-    assert_eq!(t.record(&id).unwrap().unwrap().named, m, "the account's new key");
-    assert!(t.records_of_actors(&[tid(2)]).unwrap().is_empty(), "no longer found by the node");
+    assert_eq!(t.record(&id).unwrap().unwrap().named, m, "named anew");
+    assert!(t.records_of_actors(&[tid(2)]).unwrap().is_empty(), "no longer found by the old node");
 }
 
 fn create(s: &mut Store, rng: &mut SeededRng, r: u8, actor: u8) -> RecordId {

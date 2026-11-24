@@ -74,7 +74,7 @@ pub(super) enum Forge {
 /// held or made (`Rotating`'s and `Backdated`'s are in no record of its own).
 pub(super) fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::Result<BTreeSet<(Role, Epoch)>> {
     lp.peers[i].engine.run(|tx| {
-        let me = tx.core.writer().unwrap();
+        let me = tx.core.me();
         let held = tx.core.epochs(&g).unwrap_or_default();
         let mut out: BTreeSet<(Role, Epoch)> = osis_keys::ROLES.into_iter().flat_map(|r| held.role(r).epochs().filter(|(_, x)| x.secret.is_some()).map(move |(e, _)| (r, *e)).collect::<Vec<_>>()).collect();
         let t1 = tx.core.hlc.next();
@@ -274,7 +274,7 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&a).unwrap();
-            let me = tx.core.writer().unwrap();
+            let me = tx.core.me();
             let mut m_ = Mutation::new();
             m_.ts = Some(tx.core.hlc.next());
             crate::flows::put_edge(&mut m_, a, m, &edge(Role::Write))?;

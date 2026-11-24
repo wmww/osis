@@ -624,7 +624,7 @@ impl Engine {
         if held.is_empty() {
             return Ok(None);
         }
-        let me = self.core.writer()?;
+        let me = self.core.me();
         // reuse links within one position of one aspect: the aspects of the things whose live
         // states link one (the tree memo; a rare path, so every thing of the closure is asked)
         let mut cands: BTreeSet<(Tid, Ak)> = BTreeSet::new();

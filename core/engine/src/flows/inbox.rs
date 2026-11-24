@@ -2,7 +2,6 @@
 //! `stranded@~0`, fired sealed by anyone holding the inbox's public key record,
 //! promoted by a writer.
 
-use super::Done;
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::Mutation;
@@ -11,7 +10,7 @@ use osis_store::Shred;
 use std::sync::Arc;
 use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::{Ak, CommitId, Role, Tid, Value};
-use osis_schema::core_types::{self as ct, RetentionSetting};
+use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
 /// Grants from outside (spec/sync-inbox.md §1, §5).
@@ -19,24 +18,12 @@ pub const GRANT_FIRE: &str = ct::INBOX_SIGNALS[0];
 /// Stranded notices.
 pub const STRANDED_FIRE: &str = ct::INBOX_SIGNALS[1];
 
-/// Makes the account's new inbox `i` independent and gives it its history setting: each of its signals
-/// enabled and kept its lifetime (spec/sync-inbox.md §1), in the account's creation.
-pub(crate) fn make_inbox(tx: &mut Tx<'_>, i: Tid, done: &mut Done) -> Result<()> {
-    crate::rotation::own_secrets(tx, i, done)?;
-    let mut setting = RetentionSetting::default();
-    setting.take_inbox_signals();
-    let mut m = Mutation::new();
-    m.set(i, &ct::RETENTION, &setting)?;
-    done.add(Engine::commit_tx(tx, m)?);
-    Ok(())
-}
-
 /// Role commit `c` of `target` naming or boxing `holder`, as the holder's readers learn of it
 /// (spec/permissions.md §4 Delivering an edge piece): a holder this node may write has it in
 /// its key part, logged under its own sync ID; any other is offered it by a `grant@~0` fire
 /// (`fire_copy`; spec/sync-inbox.md §5 Grant from outside).
 pub(crate) fn deliver_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
-    let me = tx.core.writer()?;
+    let me = tx.core.me();
     if tx.core.role_now(&me, &holder) >= Some(Role::Write) {
         return Ok(());
     }
@@ -58,31 +45,26 @@ pub(crate) fn fire_copy(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) 
 }
 
 /// Whom a fire on `holder`'s inbox is offered to where proven (spec/sync-inbox.md §3 Sending):
-/// the account itself, or, for an actor that is its own inbox, the accounts holding a role on it
-/// as this node judges them.
+/// a key actor itself, else the key actors holding a role on it as this node judges them.
 fn fire_to(tx: &mut Tx<'_>, holder: &Tid) -> BTreeSet<Tid> {
-    match tx.core.is_account(holder) {
+    match tx.core.is_key_actor(holder) {
         true => BTreeSet::from([*holder]),
-        false => tx.core.holder_accounts_of(*holder),
+        false => tx.core.holder_keys_of(*holder),
     }
 }
 
 /// `Engine::inbox_thing` in a transaction.
 pub(crate) fn inbox_in(tx: &mut Tx<'_>, a: &Tid) -> Result<Option<Tid>> {
-    if tx.core.is_account(a) {
-        return Ok(crate::engine::Core::keys_in(tx, a)?.and_then(|k| k.inbox).map(Tid::from));
-    }
-    Ok(tx.core.is_independent(a).then_some(*a))
+    let named = crate::engine::Core::keys_in(tx, a)?.and_then(|k| k.inbox).map(Tid::from);
+    Ok(named.or_else(|| tx.core.is_independent(a).then_some(*a)))
 }
 
 impl Engine {
-    /// Account `a`'s inbox thing, as its `keys.0` names it (spec/sync-inbox.md §1); an independent
-    /// thing that is no account is its own inbox.
+    /// `a`'s inbox thing (spec/sync-inbox.md §1): the thing its `keys.0` names, else `a` itself
+    /// where independent.
     pub fn inbox_thing(&mut self, a: &Tid) -> Option<Tid> {
-        if self.core.is_account(a) {
-            return self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(Tid::from);
-        }
-        self.core.is_independent(a).then_some(*a)
+        let named = self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(Tid::from);
+        named.or_else(|| self.core.is_independent(a).then_some(*a))
     }
 
     /// What each `grant@~0` fire held valid here carries (`Carried`).
@@ -426,7 +408,7 @@ pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: BTre
         return save(tx, OwedFire { thing, ak, what: Fire::Value(value), to, commit: None, pages: Default::default() });
     }
     if !keeps_fire(tx.core, &thing, &ak) {
-        let me = tx.core.writer()?;
+        let me = tx.core.me();
         let writes = tx.core.role_now(&me, &thing) >= Some(Role::Write);
         let enabled = crate::apply::validity::setting_now(tx.core, &thing).is_some_and(|s| s.enables(&ak));
         return Err(match writes || enabled {
@@ -601,13 +583,11 @@ impl Engine {
         self.run(|tx| drop_fire(tx, &id))
     }
 
-    /// A fire's own evidence (spec/sync-inbox.md §4 A sealed fire): its signer's record and, an
-    /// account's, its signing chain (`account_chain`), as commit values and creation records.
+    /// A fire's own evidence (spec/sync-inbox.md §4 A sealed fire): its signer's record, as
+    /// commit values and creation records.
     fn signer_evidence(&mut self, signer: &Tid) -> Result<(Vec<Value>, Vec<osis_base::CreationRecord>)> {
-        let ev = self.evidence_now()?;
         let mut certs = crate::sync_ids::Certs::default();
         certs.records.insert(*signer);
-        self.account_chain(&ev, signer, &mut certs);
         self.certs_values(&certs)
     }
 

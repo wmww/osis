@@ -4,7 +4,7 @@
 > Tags: perm, crypto, keys, spec
 
 ## What is special today
-An account's members are its nodes, kept by its signing chain (spec/permissions.md §5.4-§5.5, spec/crypto.md §9, notes/engine-validity-epochs.md), not by role grants: no edge write targets it, nothing derives from its epochs (things minted with it as admin are independent at birth), and the account root stands in for it wherever a thing is needed. So an account cannot hold a role on another account's account. It has its own fork rules (sides by first revocation seen; merges of concurrent rotations) beside the admin-dispute rules and the role-key rule (forks stand).
+An account's members were its nodes, kept by its signing chain (the spec before the accounts switch (git history)), not by role grants: no edge write targets it, nothing derives from its epochs (things minted with it as admin are independent at birth), and the account root stands in for it wherever a thing is needed. So an account cannot hold a role on another account's account. It has its own fork rules (sides by first revocation seen; merges of concurrent rotations) beside the admin-dispute rules and the role-key rule (forks stand).
 
 ## Direction (Tess)
 - **One nestable rule for who sees who acted**: those inside a thing (holders of some role on it) see which member acted; those outside see the thing acting. The same for nodes in an account, accounts in an org, and any other nesting.

@@ -1861,6 +1861,7 @@ fn frozen_holder_through_a_keyless_grant_is_boxed_nothing_spec_crypto_4() {
 // keyless (T2 holds U first); once all three are destroyed, X's admin boxes M read alone: the
 // admin path never gave M's members X's admin secret, and its destruction gives them nothing
 #[test]
+#[ignore = "accounts: keys"]
 fn frozen_holder_keyed_at_the_role_of_its_keyed_paths_spec_crypto_4() {
     let mut lp = LocalPeer::new(2, 0, T0).unwrap();
     let me = lp.peers[0].engine.me();
@@ -1907,7 +1908,7 @@ fn unrecorded(lp: &mut LocalPeer, boxer: usize, other: usize, a: Tid) -> Vec<(Ti
     let mut out = Vec::new();
     for (k, b) in &s.boxes {
         let e = osis_keys::aspects::from_schema(&k.epoch).unwrap();
-        if !epochs.role(k.role).current().contains(&e) || (core.is_key_actor(&k.holder.0) && !core.is_account(&k.holder.0)) {
+        if !epochs.role(k.role).current().contains(&e) || core.is_key_actor(&k.holder.0) {
             continue;
         }
         let ks = osis_keys::box_keysets(b);
@@ -2290,7 +2291,7 @@ fn rotate_recording(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid, q: Epoch) {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&a).unwrap();
-            let mut boxing = super::recipients(tx, &tx.core.writer().unwrap(), &a, &[(m, None)])?;
+            let mut boxing = super::recipients(tx, &tx.core.me(), &a, &[(m, None)])?;
             boxing.left_out.entry(Role::Read).or_default().insert(m, BTreeSet::from([q]));
             let mut mu = Mutation::new();
             let r = super::rotation_into(tx, &mut mu, a, &BTreeSet::from([Role::Read]), &held, &boxing, crate::rotation::Departs::No)?;

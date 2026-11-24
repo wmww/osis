@@ -70,7 +70,7 @@ impl Engine {
         if synced {
             self.eph.signals.push(c);
         }
-        let (node, received) = (self.core.writer()?, self.now());
+        let (node, received) = (self.core.me(), self.now());
         let fired = fired(signals, id, node, actor, ts, received);
         self.core.commits_fired(fired);
         Ok(Written { id, ts })
@@ -83,7 +83,7 @@ impl Engine {
 
     /// Builds and signs one relay-only commit of `deltas` for `actor` at `ts`.
     pub(crate) fn build_relay(&mut self, actor: Tid, ts: Ts, deltas: Vec<Signal>) -> Result<EphCommit> {
-        let me = self.core.writer()?;
+        let me = self.core.me();
         self.run(|tx| {
             let cx = osis_commit::writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, me, 0, 0);
             let creates = Creates::new();
@@ -102,10 +102,7 @@ impl Engine {
             b.ephemeral = Some(EphClass::Relay);
             let keys = crate::engine::secrets::KeyCache::default();
             let secrets = CommitSecrets { core: tx.core, purge_author: actor, created: &creates, published: &published, keys: &keys };
-            let account = tx.core.account_signing(&me)?;
-            b.account = account.as_ref().map(|(epoch, k)| osis_commit::AccountSigner { epoch: *epoch, inner: k.inner.clone(), node: tx.core.id.tid(), node_key: tx.core.id.keys().signing.clone(), more: Vec::new() });
-            let signing = account.as_ref().map_or(&tx.core.id.keys().signing, |(_, k)| &k.signing);
-            let built = b.build(signing, &secrets, &mut MemoryBlobs::default(), &mut *tx.rng)?;
+            let built = b.build(&tx.core.id.keys().signing, &secrets, &mut MemoryBlobs::default(), &mut *tx.rng)?;
             Ok(EphCommit { id: built.commit.id(), blob: built.commit })
         })
     }
@@ -148,13 +145,11 @@ impl Engine {
             }
         }
         // judged as its author's write at its `ts` (spec/permissions.md §5.2), on an ephemeral signal
-        // key, an account's at an epoch that counts (§5.5: no
-        // addendum lists a commit never held)
-        let counts = core.standing_of(&id, h) == osis_perm::EpochStanding::Counts;
+        // key
         let mut signals = Vec::new();
         for (ai, s) in &decoded {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && counts && check_role(core, h.signer, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
+            let valid = a.ak.signal() && a.ak.ephemeral() && a.replaces.is_none() && check_role(core, h.signer, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
             if valid && let Some(v) = s.fragment.read() {
                 signals.push((a.tid, a.ak.clone(), v));
             }

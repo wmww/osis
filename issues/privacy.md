@@ -4,7 +4,7 @@
 > Tags: transport, security
 
 - **IP settings**: who learns this node's IP, e.g. strangers only through relays, or tunnel everything through one chosen relay.
-- **Open audiences**: with `reach.0` under every synced sync ID, everyone holding a public or bearer-read link learns the node's IP; so do holders of a link, card or profile with dial hints.
+- **Open audiences**: with dial entries readable wherever a node lists one, everyone holding a public or bearer-read link learns the node's IP; so do holders of a link, card or profile with dial hints.
 - **Client actors see the node's connection count**: `status().connected` through the client port counts the connections that are a source of a thing the client may read (notes/client-port.md, Status), roughly how many of its nodes are online; a boolean would tell it enough.
 - LAN discovery announces a transport key fresh per network join, never the dialable key (spec/sync-transport.md §4).
 - **A node serving data it cannot read** shows every connection how many sync IDs it holds (its filter's size, spec/sync-opens.md §5) and "I keep this one" to anyone holding a credential of it. On the one listening key (spec/sync-transport.md §5) this ties what a node keeps unread to the key its contacts know it by.

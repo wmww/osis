@@ -85,10 +85,6 @@ pub enum Event {
     /// An admin dispute was detected and a side taken by default (`crate::sides`): `author`'s
     /// edge write `op` of `commit` lowering `holder` on `target`, `trust`: this node sides with it.
     DisputeDetected { commit: CommitId, op: u32, holder: Tid, target: Tid, author: Tid, trust: bool },
-    /// Account `account`'s signing chain came to be told forked here (`Chain::warning`: a line
-    /// beside the one followed rejects it or is rejected by it): its versions `lines`, of which
-    /// this node follows `side` (spec/permissions.md §5.4, Warning).
-    AccountDisputed { account: Tid, lines: Vec<CommitId>, side: CommitId },
     Diagnostic(Diagnostic),
 }
 
@@ -135,8 +131,8 @@ pub enum DiagnosticKind {
     /// yet, or named by no blob) or failing verification. That position read as absent
     /// (spec/data-model.md §6; `tids`: the thing).
     Unreadable,
-    /// This node could not make a write it makes on its own (its answer to a removal or an
-    /// account's rotation, spec/permissions.md §5.2, §5.5; a purge-on-replace cover, spec/commits.md
+    /// This node could not make a write it makes on its own (its answer to a removal,
+    /// spec/permissions.md §5.2; a purge-on-replace cover, spec/commits.md
     /// §5; a compaction snapshot, spec/sync-compaction.md §1): nothing of the attempt was kept; an
     /// answer stays due, tried again with the next transaction, a cover or compaction snapshot
     /// with the next change to its aspect (`commit`: the removal or rotation answered, `tids`: the

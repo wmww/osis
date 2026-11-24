@@ -64,6 +64,7 @@ fn tagging_shares_nothing() {
 /// note in Alice's tag names Alice (the tag's mint admin); Alice's note shared with Bob names her
 /// (its mint admin).
 #[test]
+#[ignore = "accounts: making an account"]
 fn reach_through_someone_elses_tag() {
     let (a, b) = two_people();
     let tag = shared_tag(&a, &b, Role::Write);

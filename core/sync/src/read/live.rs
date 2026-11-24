@@ -16,7 +16,7 @@ use crate::types::{ConnId, Cx, Entry, Result};
 use osis_base::memo::{Cutoff, Feed};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
-use osis_engine::sync::{BodyId, BodyMeta, CertKind, HeldBlob, Loss, MustNot, ReadCredentials, Strip};
+use osis_engine::sync::{BodyId, BodyMeta, HeldBlob, Loss, MustNot, ReadCredentials, Strip};
 use osis_blob::{Class, DeleteItem};
 use osis_proto::Msg;
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,7 +28,6 @@ pub struct Feeds {
     known: Option<Feed<crate::streams::KnownRow>>,
     sources: Option<Feed<(SyncId, Source)>>,
     freed: Option<Feed<(BlobId, Tid)>>,
-    lists: Option<Feed<(Tid, CommitId)>>,
     /// The own store's entries, the blobs coming to name a commit and the commits coming to be
     /// held (`entries_added`).
     entries: Option<EntryFeeds>,
@@ -289,8 +288,6 @@ impl Ground for Live<'_, '_> {
         let f = self.cx.engine.read_facts(s, c)?;
         let must_not = f.must_not.map(|m| match m {
             MustNot::Purged => Why::Purged,
-            MustNot::CardSuperseded => Why::CardSuperseded,
-            MustNot::CardEnded => Why::CardEnded,
         });
         Ok(Facts { body: f.body, must_not, own: f.own, repair_fresh: f.repair_fresh, role: f.role, later_unheld: f.later_unheld, missing: f.missing })
     }
@@ -336,7 +333,7 @@ impl Ground for Live<'_, '_> {
         if self.opens.has_sources(s) {
             return Ok(true);
         }
-        Ok(self.cx.engine.publishes_reach()?)
+        Ok(self.cx.engine.publishes_dial()?)
     }
     fn first_synced(&mut self, s: &SyncId) -> Result<bool> {
         if self.cx.store.first_synced(s)? {
@@ -591,17 +588,14 @@ impl Ground for Live<'_, '_> {
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &BodyId, stand: &Stand) -> Result<()> {
         self.cx.store.set_stand(*at, s, &stand_key(c), Some(stand))
     }
-    fn cert_blobs_missing(&mut self, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
-        let carried = match r {
-            None => (*self.cx.engine.certificate_records(s)?).clone(),
-            Some(r) => (*self.cx.engine.certificate_lists(s, &r)?).clone(),
-        };
+    fn cert_blobs_missing(&mut self, s: &SyncId) -> Result<CertBlobsMissing> {
+        let carried = (*self.cx.engine.certificate_records(s)?).clone();
         let mut out = CertBlobsMissing::default();
-        // every certificate blob of the kind noted counts, whoever sealed it, by what it carries
+        // every certificate blob noted counts, whoever sealed it, by what it carries
         // of S's; one loses to another carrying all it carries of S's, and more, or the same
         // with fewer others, or the same under a lower ID (spec/permissions.md §4 Logging
         // certificates)
-        let rows = self.cx.engine.cert_blobs(s, r);
+        let rows = self.cx.engine.cert_blobs(s);
         let of: BTreeMap<BlobId, BTreeSet<Tid>> = rows.iter().map(|(b, c)| (*b, c.tids.intersection(&carried).copied().collect())).collect();
         let none = BTreeSet::new();
         let at = |b: &BlobId| of.get(b).unwrap_or(&none);
@@ -630,7 +624,7 @@ impl Ground for Live<'_, '_> {
         }
         // nothing can be sealed under S yet (a rotation owed before encrypting): what is missing
         // is told once it can, so the effect acts then
-        if !whole && self.cx.engine.cert_wrap(s, r.as_ref())? {
+        if !whole && self.cx.engine.cert_wrap(s)? {
             out.missing = carried;
         }
         // at a store, each blob shown there losing to another shown there, once this node's
@@ -653,29 +647,9 @@ impl Ground for Live<'_, '_> {
         }
         Ok(out)
     }
-    fn list_rotations(&mut self, s: &SyncId) -> Result<Vec<CommitId>> {
-        Ok(self.cx.engine.list_rotations(s)?)
-    }
-    fn lists_added(&mut self) -> Result<Vec<(SyncId, CommitId)>> {
-        let added = match self.feeds.lists.as_mut() {
-            Some(f) => f.added(),
-            None => {
-                // from the first call: the rows before are read with each S (`list_rotations`)
-                self.feeds.lists = Some(self.cx.engine.lists_feed());
-                Vec::new()
-            }
-        };
-        let mut out = Vec::new();
-        for (t, r) in added {
-            if let osis_engine::sync::ThingSync::Read(ids) = self.cx.engine.thing_sync(&t)? {
-                out.extend(ids.into_iter().map(|s| (s, r)));
-            }
-        }
-        Ok(out)
-    }
-    fn forget_cert_blobs(&mut self, s: &SyncId, r: CertKind, gone: &BTreeSet<osis_base::BlobId>) -> Result<()> {
+    fn forget_cert_blobs(&mut self, s: &SyncId, gone: &BTreeSet<osis_base::BlobId>) -> Result<()> {
         for b in gone {
-            self.cx.engine.forget_cert_blob(s, r, b)?;
+            self.cx.engine.forget_cert_blob(s, b)?;
         }
         Ok(())
     }
@@ -697,11 +671,8 @@ impl Ground for Live<'_, '_> {
         let stepped = self.cx.engine.issue_due_step(s)?.is_some();
         Ok(self.cx.engine.endorse_due(s)? || stepped)
     }
-    fn log_cert_blob(&mut self, s: &SyncId, r: CertKind, tids: &BTreeSet<osis_base::Tid>) -> Result<()> {
-        let sealed = match r {
-            None => self.cx.engine.seal_records(s, tids, self.cx.rng)?,
-            Some(r) => self.cx.engine.seal_lists(s, &r, tids, self.cx.rng)?,
-        };
+    fn log_cert_blob(&mut self, s: &SyncId, tids: &BTreeSet<osis_base::Tid>) -> Result<()> {
+        let sealed = self.cx.engine.seal_records(s, tids, self.cx.rng)?;
         let Some((blob, bytes, wrap)) = sealed else { return Ok(()) };
         let e = own_entry(self.cx, s, blob, wrap, Class::Durable, true)?;
         self.cx.store.log(s, e, Some(bytes), None)?;

@@ -390,8 +390,8 @@ impl Sync {
 
 // ---- The node closure ----
 
-/// What a node brings to its closure: its node root's strongs and its own actors (its account,
-/// itself, the key actors it holds: spec/sync-set.md §2 Own actors).
+/// What a node brings to its closure: its node root's strongs and its own things (its node
+/// thing and the key actors it holds: spec/sync-set.md §2 Own things).
 #[derive(Clone, Debug, Default)]
 pub struct NodeView {
     pub roots: Set,
@@ -430,8 +430,8 @@ pub enum Walk {
     Literal,
 }
 
-/// The node closure (spec/sync-set.md §2): the walk below by the node's role, its own actors'
-/// effective role over `w`'s grants (spec/sync-set.md §2 Own actors). A function of the world: no
+/// The node closure (spec/sync-set.md §2): the walk below by the node's role, its own things'
+/// effective role over `w`'s grants (spec/sync-set.md §2 Own things). A function of the world: no
 /// role waits for a strong.
 pub fn closure(w: &World, e: &Edges, n: &NodeView, walk: Walk) -> Closure {
     let roles = keys::roles_of(w, &n.own);

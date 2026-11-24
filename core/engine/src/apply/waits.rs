@@ -23,10 +23,6 @@ pub enum Wake {
     Moved,
     /// The wall clock reaching this time (a `ts` ahead, `Reason::Drift`).
     At(u64),
-    /// An epoch an account's chain came to hold (the rotation minting it held with its chain, a
-    /// merge's tips and a certificate: `Reason::Epoch`). Holding the rotation alone opens nothing:
-    /// its key is known once the chain holds its epoch.
-    Epoch(CommitId),
     /// What is gone on this thing changing (a purge request, an expiry): what reaches a
     /// stored copy writing on it (`retention::pending_drops`).
     Thing(Tid),
@@ -46,7 +42,6 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
         },
         // keyed by the blobs its walks lack (`reach::Walks`)
         Reason::WaitBlobs => Vec::new(),
-        Reason::Epoch(e) => vec![Wake::Epoch(*e), Wake::Moved],
     };
     // every record a part of it awaits (`parts_await`), whatever its first reason: any arriving
     // may let a part apply; one held: a reach, which role commits bring (whichever part `t` names)
@@ -202,11 +197,6 @@ pub(crate) struct Loose {
     by_blob: BTreeMap<BlobId, BTreeSet<Tid>>,
     /// Records an awaiting commit or slot named while loose: learned at the next `reexamine`.
     due: BTreeSet<Tid>,
-    /// List blobs whose rotation is not held here (spec/sync-judgement.md §1 List blobs): each
-    /// one's thing lists, unverified, held as the rotation arrives (`lists_for`, verified then
-    /// against its list root), by carrier.
-    lists: BTreeMap<BlobId, (CommitId, Vec<osis_commit::thing_list::ThingCert>)>,
-    lists_by_rotation: BTreeMap<CommitId, BTreeSet<BlobId>>,
 }
 
 impl Loose {
@@ -253,41 +243,13 @@ impl Loose {
         out
     }
 
-    /// Thing lists of rotation `r`, not held here, carried by `b`.
-    pub fn keep_lists(&mut self, b: BlobId, r: CommitId, certs: Vec<osis_commit::thing_list::ThingCert>) {
-        self.lists.insert(b, (r, certs));
-        self.lists_by_rotation.entry(r).or_default().insert(b);
-    }
-
-    /// The loose thing lists of rotation `r` (as its commit arrives).
-    pub fn lists_for(&self, r: &CommitId) -> Vec<osis_commit::thing_list::ThingCert> {
-        self.lists_by_rotation.get(r).into_iter().flatten().filter_map(|b| self.lists.get(b)).flat_map(|x| x.1.iter().cloned()).collect()
-    }
-
-    /// Rotation `r` arrived and its loose lists were held: loose no more. Their carriers.
-    pub fn lists_held(&mut self, r: &CommitId) -> Vec<BlobId> {
-        let out: Vec<BlobId> = self.lists_by_rotation.remove(r).into_iter().flatten().collect();
-        for b in &out {
-            self.lists.remove(b);
-        }
-        out
-    }
-
-    /// Whether `b` carries a loose record or loose thing lists.
+    /// Whether `b` carries a loose record.
     pub fn carries(&self, b: &BlobId) -> bool {
-        self.by_blob.contains_key(b) || self.lists.contains_key(b)
+        self.by_blob.contains_key(b)
     }
 
-    /// No entry carries `b` any more: the records and lists only it carried go.
+    /// No entry carries `b` any more: the records only it carried go.
     pub fn forget(&mut self, b: &BlobId) {
-        if let Some((r, _)) = self.lists.remove(b)
-            && let Some(x) = self.lists_by_rotation.get_mut(&r)
-        {
-            x.remove(b);
-            if x.is_empty() {
-                self.lists_by_rotation.remove(&r);
-            }
-        }
         for t in self.by_blob.remove(b).unwrap_or_default() {
             if let Some(x) = self.recs.get_mut(&t) {
                 x.1.remove(b);
@@ -299,9 +261,9 @@ impl Loose {
         }
     }
 
-    /// Loose records and list blobs held (scale checks).
+    /// Loose records held (scale checks).
     pub fn len(&self) -> usize {
-        self.recs.len() + self.lists.len()
+        self.recs.len()
     }
 }
 
@@ -341,14 +303,11 @@ pub(crate) struct Waits {
     pub open_due: bool,
     /// Things whose gone lists or purge requests moved since the last `wake`: `Wake::Thing`.
     pub lists_moved: BTreeSet<Tid>,
-    /// Epochs an account's chain came to hold since the last `wake` (`account::refresh_epochs`):
-    /// `Wake::Epoch` of each.
-    pub epochs_held: BTreeSet<CommitId>,
     /// Tests: the next `wake` examines every pending commit, as a full scan (`Engine::lost_wakes`).
     pub every_due: bool,
     /// Actors whose applied boxes gave secrets the node's roles did not give then
     /// (`rotation::may_take_role`), with the roles kept out: taken again once they do
-    /// (`flows::retake`). In memory: the open's `reopen_all` (`take_account`) refuses and lists
+    /// (`flows::retake`). In memory: the open's `reopen_all` refuses and lists
     /// them again.
     untaken: BTreeMap<Tid, BTreeSet<Role>>,
     /// Entries `retaken` took off `untaken` in the transaction running: a rollback lists them
@@ -503,7 +462,6 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
         keys.push(Wake::Open);
     }
     keys.extend(std::mem::take(&mut core.waits.lists_moved).into_iter().map(Wake::Thing));
-    keys.extend(std::mem::take(&mut core.waits.epochs_held).into_iter().map(Wake::Epoch));
     let now = core.now().0;
     keys.extend(pend_on.range(Wake::At(0)..=Wake::At(now)).map(|(w, _)| *w));
     if std::mem::take(&mut core.waits.every_due) {

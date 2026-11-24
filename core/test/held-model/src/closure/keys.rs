@@ -4,7 +4,7 @@
 //! a holder name in turn, each one it opens and does not read. Properties in
 //! tests/it/spec_holders.rs.
 //!
-//! Abstracted: a node opens a holder where its own actors' roles read it (`Closure::keys`: in the
+//! Abstracted: a node opens a holder where its own things' roles read it (`Closure::keys`: in the
 //! engine, where it holds a read secret a box gave); grants sit on independent things. Left out:
 //! how a node first learns a thing's sync ID and box (an offer, or a holder's key part).
 use super::{closure, Closure, Edges, NodeView, Role, Set, Walk, World, T};

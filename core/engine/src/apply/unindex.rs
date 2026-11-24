@@ -79,7 +79,6 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         }
         core.ix.invalid.remove(&k, id);
         core.ix.by_thing.remove(&(a.tid, v.signer), id);
-        core.ix.role_on.remove(&(a.tid, v.signer), id);
         core.ix.purges_on.remove(&a.tid, id);
         if a.ak.as_str() == osis_commit::retention::RETENTION {
             super::validity::forget_setting(core, &a.tid, id);
@@ -109,12 +108,6 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         }
     }
     core.ix.paths_unknown.remove(id);
-    if let Some(e) = v.epoch {
-        core.ix.role_sigs.remove(id);
-        core.ix.by_epoch.remove(&(v.signer, e), id);
-        core.ix.named.remove(&v.signer, id);
-        core.ix.names_due.remove(id);
-    }
     super::validity::forget_addenda(core, id, &v.aspects);
     crate::engine::edits::unindex_commit(core, id, v);
     // its keyset parts' rows (`records::OWN_SECRETS`: kept while the commit is held)

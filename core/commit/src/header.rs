@@ -4,13 +4,12 @@
 use crate::Error;
 use crate::cbor::item;
 use crate::path::{Paths, Split, ThingPath};
-use osis_base::cbor::{Item, MAJOR_TAG, encode_into, head, put_array, put_bytes, put_link, put_map, put_text, put_uint};
+use osis_base::cbor::{Item, MAJOR_TAG, head, put_array, put_bytes, put_link, put_map, put_text, put_uint};
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
-use osis_base::{Ak, CommitId, Limits, Link, Reader, Tid, Ts, Value};
+use osis_base::{Ak, CommitId, Limits, Link, Reader, Tid, Ts};
 use std::sync::Arc;
 use osis_crdt::DeltaKind;
-use osis_base::SIGNING_KEY_ED25519;
-use osis_crypto::{Domain, KemPublicKey, Secret32, Signature, VerifyingKey};
+use osis_crypto::{Domain, Secret32, VerifyingKey};
 use osis_schema::{PurgeBy};
 
 /// Decoder limits of commit structures (spec/wire.md §12).
@@ -311,175 +310,12 @@ pub struct Header {
     pub links: Links,
     /// Set on an ephemeral commit (kept in memory by every node, never stored).
     pub ephemeral: Option<EphClass>,
-    /// The epoch an account signer signs at (spec/crypto.md §9): its minting rotation's commit
-    /// ID, `FIRST_EPOCH` for the first. Present iff the signer is an account (judged by the
-    /// signer's creation record).
-    pub epoch: Option<CommitId>,
-    /// A rotation of the account's signing chain (spec/wire.md §4): only on an account's role
-    /// commit. Its commit ID names the epoch it mints.
-    pub rotation: Option<RotationHeader>,
     /// A content snapshot that is its writer's own cover at a removal (spec/permissions.md §5.1,
-    /// Own cover; spec/wire.md §4 field 17): only its writer drops a body under it.
+    /// Own cover; spec/wire.md §4 field 14): only its writer drops a body under it.
     pub own_cover: bool,
     /// A role commit its signer means to leave a thing with no standing admin (spec/wire.md §4
-    /// field 17, bit 1; spec/permissions.md §2 Adminless mark): read only by the writer's check.
+    /// field 14, bit 1; spec/permissions.md §2 Adminless mark): read only by the writer's check.
     pub adminless: bool,
-    /// A seed re-seal (spec/wire.md §4): seed boxes of an existing epoch of the account's chain,
-    /// only on an account's role commit that is no rotation.
-    pub reseal: Option<SeedReseal>,
-}
-
-/// A header's `reseal` (spec/wire.md §4 `Reseal`, spec/crypto.md §9 Custody): the signing key of
-/// the epoch whose seed it boxes and its seed boxes, ascending by tag, distinct, at least one.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SeedReseal {
-    pub signing_key: VerifyingKey,
-    pub seeds: Vec<SeedBox>,
-}
-
-impl SeedReseal {
-    fn put(&self, out: &mut Vec<u8>) {
-        put_array(out, 2);
-        put_signing_key(out, &self.signing_key);
-        put_seed_boxes(out, &self.seeds);
-    }
-
-    fn read(v: Item) -> Result<SeedReseal, Error> {
-        let Some([sk, seeds]) = item::list(v)?.tuple() else { return Err(Error::Malformed("reseal arity")) };
-        let seeds = read_seed_boxes(seeds)?;
-        if seeds.is_empty() {
-            return Err(Error::Malformed("reseal without a seed box"));
-        }
-        Ok(SeedReseal { signing_key: read_signing_key(sk)?, seeds })
-    }
-}
-
-fn put_signing_key(out: &mut Vec<u8>, k: &VerifyingKey) {
-    encode_into(&Value::Enum(SIGNING_KEY_ED25519, Some(Box::new(Value::bytes(&k.to_bytes())))), out);
-}
-
-fn read_signing_key(v: Item) -> Result<VerifyingKey, Error> {
-    match v.to_value()? {
-        Value::Enum(SIGNING_KEY_ED25519, Some(b)) => match b.as_ref() {
-            Value::Bytes(k) => VerifyingKey::from_slice(k).map_err(|_| Error::Malformed("signing key")),
-            _ => Err(Error::Malformed("signing key")),
-        },
-        _ => Err(Error::Malformed("signing key")),
-    }
-}
-
-fn put_seed_boxes(out: &mut Vec<u8>, seeds: &[SeedBox]) {
-    put_array(out, seeds.len());
-    for b in seeds {
-        put_array(out, 2);
-        put_bytes(out, &b.tag);
-        put_bytes(out, &b.sealed);
-    }
-}
-
-/// Seed boxes, ascending by tag and distinct (else malformed).
-fn read_seed_boxes(v: Item) -> Result<Vec<SeedBox>, Error> {
-    let seeds = item::list(v)?.iter().map(|b| {
-        let Some([tag, sealed]) = item::list(b)?.tuple() else { return Err(Error::Malformed("seed box arity")) };
-        let sealed: Vec<u8> = sealed.as_bytes().ok_or(Error::Malformed("seed box"))?.to_vec();
-        if sealed.len() < osis_crypto::SEALED_OVERHEAD + 32 {
-            return Err(Error::Malformed("seed box length"));
-        }
-        Ok(SeedBox { tag: item::bytes(tag)?, sealed })
-    }).collect::<Result<Vec<SeedBox>, Error>>()?;
-    if !crate::cbor::strictly_ascending(&seeds, |b| b.tag) {
-        return Err(Error::Malformed("seed boxes not ascending by tag"));
-    }
-    Ok(seeds)
-}
-
-/// The first epoch of every account's signing chain, named by 32 zero bytes (spec/crypto.md §9).
-pub const FIRST_EPOCH: CommitId = CommitId([0; 32]);
-
-/// A header's `rotation` (spec/wire.md §4 `Rotation`): the new epoch's public keys, the epochs it
-/// supersedes (the header's `epoch` among them), the fork rotations it names (a merge), the
-/// revocations its maker took off its line, and the root of its list tree.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RotationHeader {
-    pub signing_key: VerifyingKey,
-    pub kem_key: KemPublicKey,
-    /// Ascending, distinct.
-    pub supersedes: Vec<CommitId>,
-    /// Ascending, distinct.
-    pub names: Vec<CommitId>,
-    /// The rotations carrying removals from D its maker took that are not on its line
-    /// (spec/permissions.md §5.4): ascending, distinct.
-    pub takes: Vec<CommitId>,
-    /// Whether it removes a device from D (spec/permissions.md §5.5 Revoked): what readers
-    /// outside the account read of its membership changes.
-    pub revokes: bool,
-    /// Its membership changes of D, sealed (`osis_crypto::seal_devices`) under the epoch it is
-    /// signed at; empty when it carries none (spec/crypto.md §9, Roster).
-    pub devices: Vec<u8>,
-    pub list_root: [u8; 32],
-    /// The new epoch's seed boxed to each device on its maker's roster (spec/crypto.md §9,
-    /// Custody): ascending by tag, distinct.
-    pub seeds: Vec<SeedBox>,
-}
-
-/// One seed box of a rotation (spec/wire.md §4): its tag and the sealed box to a device's KEM
-/// key (`osis_crypto::seal_seeds`).
-#[derive(Clone, PartialEq, Eq)]
-pub struct SeedBox {
-    pub tag: [u8; osis_crypto::SEED_TAG_LEN],
-    pub sealed: Vec<u8>,
-}
-
-impl std::fmt::Debug for SeedBox {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SeedBox({:02x?}, {} bytes)", &self.tag[..4], self.sealed.len())
-    }
-}
-
-impl RotationHeader {
-    /// Whether it is a merge certificate: it names the tips it joins besides the one it is
-    /// signed at (spec/crypto.md §9, Merges).
-    pub fn is_merge(&self) -> bool {
-        !self.names.is_empty()
-    }
-
-    /// The ID of the epoch it mints (spec/crypto.md §9): a plain rotation's is its commit ID
-    /// `id`; a merge's `BLAKE3("osis v1 merge epoch" || signing key || its tips ascending)`, alike
-    /// in every certificate of it.
-    pub fn mints(&self, id: &CommitId) -> CommitId {
-        if !self.is_merge() {
-            return *id;
-        }
-        merge_epoch(&self.signing_key, &self.supersedes)
-    }
-
-    fn put(&self, out: &mut Vec<u8>) {
-        let ids = |out: &mut Vec<u8>, v: &[CommitId]| {
-            put_array(out, v.len());
-            v.iter().for_each(|c| put_bytes(out, &c.0));
-        };
-        put_array(out, 9);
-        put_signing_key(out, &self.signing_key);
-        encode_into(&self.kem_key.to_value(), out);
-        ids(out, &self.supersedes);
-        ids(out, &self.names);
-        ids(out, &self.takes);
-        osis_base::cbor::put_bool(out, self.revokes);
-        put_bytes(out, &self.devices);
-        put_bytes(out, &self.list_root);
-        put_seed_boxes(out, &self.seeds);
-    }
-
-    fn read(v: Item) -> Result<RotationHeader, Error> {
-        let Some([sk, kem, sup, names, takes, revokes, devices, root, seeds]) = item::list(v)?.tuple() else { return Err(Error::Malformed("rotation arity")) };
-        let signing_key = read_signing_key(sk)?;
-        let kem_key = KemPublicKey::from_value(&kem.to_value()?).map_err(|_| Error::Malformed("rotation kem key"))?;
-        let ids = |v: Item| -> Result<Vec<CommitId>, Error> { item::list(v)?.iter().map(|c| item::bytes(c).map(CommitId)).collect() };
-        let seeds = read_seed_boxes(seeds)?;
-        let Ok(Value::Bool(revokes)) = revokes.to_value() else { return Err(Error::Malformed("rotation revokes")) };
-        let devices: Vec<u8> = devices.as_bytes().ok_or(Error::Malformed("rotation devices"))?.to_vec();
-        Ok(RotationHeader { signing_key, kem_key, supersedes: ids(sup)?, names: ids(names)?, takes: ids(takes)?, revokes, devices, list_root: item::bytes(root)?, seeds })
-    }
 }
 
 // ---- encode
@@ -644,7 +480,7 @@ impl Header {
     fn encode_with(&self, out: &mut Vec<u8>, position: &dyn Fn(&Header, &mut Vec<u8>, ListField)) {
         // the flags are trailing, absent when zero
         let flags = self.flags();
-        put_array(out, 17 + usize::from(flags != 0));
+        put_array(out, 14 + usize::from(flags != 0));
         put_uint(out, FORMAT_VERSION);
         put_tid_bytes(out, &self.signer);
         self.path.put(out);
@@ -659,15 +495,12 @@ impl Header {
         position(self, out, ListField::Keys);
         position(self, out, ListField::Frontier);
         put_opt(out, self.ephemeral, |out, c| put_uint(out, c as u64));
-        put_opt(out, self.epoch, |out, c| put_bytes(out, &c.0));
-        put_opt(out, self.rotation.as_ref(), |out, r| r.put(out));
-        put_opt(out, self.reseal.as_ref(), |out, r| r.put(out));
         if flags != 0 {
             put_uint(out, flags);
         }
     }
 
-    /// The header's `flags` (spec/wire.md §4 field 17): bit 0 own cover, bit 1 adminless.
+    /// The header's `flags` (spec/wire.md §4 field 14): bit 0 own cover, bit 1 adminless.
     fn flags(&self) -> u64 {
         u64::from(self.own_cover) | u64::from(self.adminless) << 1
     }
@@ -695,12 +528,12 @@ impl Header {
 /// Verifies the signer's signature of `sigs` for commit `id` (spec/crypto.md §2): what it
 /// vouches for, kept with the commit so the same bytes are never checked again.
 pub fn verify_signature(id: &CommitId, sigs: &crate::Sigs, key: &VerifyingKey) -> Result<Signed, Error> {
-    key.verify(Domain::Commit, &sigs.digest(id), &sigs.signature).map_err(|_| Error::BadSignature)?;
+    key.verify(Domain::Commit, &id.0, &sigs.signature).map_err(|_| Error::BadSignature)?;
     Ok(Signed::of(id, sigs, key))
 }
 
-/// A commit signature that verified: the hash of the key, the digest it signs (the commit ID,
-/// with an account's inner and merge signatures) and the signature bytes. It vouches only for
+/// A commit signature that verified: the hash of the key, the commit ID it signs and the
+/// signature bytes. It vouches only for
 /// those exact bytes under that exact key (`vouches`): a copy of the commit with other signature
 /// bytes, or the same bytes judged under another key, is not covered. Made only by
 /// `verify_signature`, by the signer (`Built::signed`), or read back from where one was kept.
@@ -711,7 +544,7 @@ impl Signed {
     pub(crate) fn of(id: &CommitId, sigs: &crate::Sigs, key: &VerifyingKey) -> Signed {
         let mut b = Vec::with_capacity(32 + 32 + 64);
         b.extend_from_slice(key.as_bytes());
-        b.extend_from_slice(&sigs.digest(id));
+        b.extend_from_slice(&id.0);
         b.extend_from_slice(&sigs.signature.0);
         Signed(osis_base::hash::hash(&b))
     }
@@ -729,29 +562,6 @@ impl Signed {
     pub fn from_kept(b: [u8; 32]) -> Signed {
         Signed(b)
     }
-}
-
-/// How many more times an account commit carrying `rotation` seals its inner signature
-/// (`Sigs::more`, spec/wire.md §4): a plain rotation's once more (the epoch it mints), a merge
-/// certificate's once per named tip and once for the merge epoch, any other commit's never.
-pub fn inner_seals(rotation: Option<&RotationHeader>) -> usize {
-    rotation.map_or(0, |r| r.names.len() + 1)
-}
-
-/// A merge epoch's ID from its signing key and its tips, ascending (spec/crypto.md §9).
-pub fn merge_epoch(signing_key: &VerifyingKey, tips: &[CommitId]) -> CommitId {
-    let mut h = osis_base::hash::Hasher::new();
-    h.update(osis_crypto::kdf::MERGE_EPOCH.as_bytes()).update(&signing_key.to_bytes());
-    for t in tips {
-        h.update(&t.0);
-    }
-    CommitId(h.finalize())
-}
-
-/// Verifies a merge certificate's signature by a tip's key over the merge epoch's ID `epoch`
-/// (spec/crypto.md §9).
-pub fn verify_merge(epoch: &CommitId, sig: &Signature, tip_key: &VerifyingKey) -> bool {
-    tip_key.verify(Domain::Merge, &epoch.0, sig).is_ok()
 }
 
 // ---- decode
@@ -932,7 +742,7 @@ impl Header {
         }
         let all: Vec<Item> = items.into_iter().collect();
         // trailing: the flags (a uint), only where not zero
-        let flags = match all.get(17..).unwrap_or_default() {
+        let flags = match all.get(14..).unwrap_or_default() {
             [] => 0,
             [m] => match item::uint(*m)? {
                 f @ 1..=3 => f,
@@ -940,7 +750,7 @@ impl Header {
             },
             _ => return Err(Error::Malformed("header arity")),
         };
-        let Some([_, signer, path, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation, reseal]) = all.get(..17).and_then(|x| <[Item; 17]>::try_from(x).ok()) else {
+        let Some([_, signer, path, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral]) = all.get(..14).and_then(|x| <[Item; 14]>::try_from(x).ok()) else {
             return Err(Error::Malformed("header arity"));
         };
         let signer = item::tid(signer)?;
@@ -959,9 +769,6 @@ impl Header {
             frontier: None,
             links: Links::default(),
             ephemeral: item::opt(ephemeral)?.map(|c| EphClass::from_id(item::uint(c)?).ok_or(Error::Malformed("ephemeral marker"))).transpose()?,
-            epoch: item::opt(epoch)?.map(|c| item::bytes(c).map(CommitId)).transpose()?,
-            rotation: item::opt(rotation)?.map(RotationHeader::read).transpose()?,
-            reseal: item::opt(reseal)?.map(SeedReseal::read).transpose()?,
             own_cover: flags & 1 != 0,
             adminless: flags & 2 != 0,
         };

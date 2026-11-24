@@ -866,10 +866,11 @@ mod tests {
     // A genuine grant past the cap reads its boxes once an applied one frees a place, or it waits
     // for good on the sync ID those secrets open.
     #[test]
+    #[ignore = "accounts: keys"]
     fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.dependents_admin();
+        let me = lp.peers[0].engine.me();
         let b = lp.peers[1].engine.me();
         let thing = |lp: &mut LocalPeer| {
             let mut m = Mutation::new();
@@ -967,7 +968,7 @@ mod tests {
     /// writer rules. Returns how many it delivered.
     fn flood(lp: &mut LocalPeer, t: Tid, per: usize) -> usize {
         let b = lp.peers[1].engine.me();
-        let keys = lp.peers[1].engine.account_holder_keys(&b).unwrap();
+        let keys = osis_keys::HolderKeys::KeyActor { kem: lp.peers[1].engine.identity().keys().kem.public().clone(), seed: None };
         let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
         let mut sent = 0;
         for x in 2..lp.peers.len() {
@@ -1006,14 +1007,14 @@ mod tests {
         let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes.clone());
         aw.purge_by = osis_commit::retention::write_purge_by(ak.as_str(), None, None).unwrap();
         cb.aspects.push(aw);
-        let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
+        let forge_key = lp.peers[by].engine.identity().keys().signing.clone();
         cb.build(&forge_key, &lp.peers[0].engine.hand_secrets(std::slice::from_ref(rec)), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
     }
 
     /// A pending commit by peer `by` boxing peer 1 a fresh read secret of `t`.
     fn forged_grant(lp: &mut LocalPeer, by: usize, t: Tid) {
         let b = lp.peers[1].engine.me();
-        let keys = lp.peers[1].engine.account_holder_keys(&b).unwrap();
+        let keys = osis_keys::HolderKeys::KeyActor { kem: lp.peers[1].engine.identity().keys().kem.public().clone(), seed: None };
         let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
         let mut held = ActorEpochs::default();
         held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);

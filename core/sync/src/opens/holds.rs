@@ -12,66 +12,15 @@ use osis_engine::sync::{J, Path, ReadCredentials};
 use osis_blob::{Step, StepId};
 use osis_proto::{BehindItem, Code, DepositItem, Grant, SharedItem};
 use osis_base::memo::Effects;
-use osis_engine::Engine;
 use osis_store::Named;
 use std::sync::Arc;
 
-/// What `proven` counts for at its proof (spec/sync-opens.md §2): its account while the key it
-/// proved with is at an epoch open here, its node while a node of this node's account, its key
-/// actors.
-pub fn named(engine: &mut Engine, proven: &Proven) -> Named {
-    let account = proven.account.as_ref().filter(|(r, k)| engine.key_open(r, k)).map(|(r, k)| (r.tid(), *k));
-    Named { account, node: proven.node, key_actors: proven.key_actors.keys().copied().collect() }
+/// What `proven` counts for at its proof (spec/sync-opens.md §2): its node and its key actors.
+pub fn named(proven: &Proven) -> Named {
+    Named { node: proven.node, key_actors: proven.key_actors.keys().copied().collect() }
 }
 
-/// The actors `named` is trusted as now, ascending: what a connection up and a record kept are
-/// judged as (J, a report's reader or writer; spec/sync-opens.md §2-§3, judged on what this node
-/// holds now, not on what the proofs once counted for): the account while the key it proved with
-/// is at an epoch open here, the node while it is a node of this node's account, each key actor.
-/// Who is waited for is `awaited`.
-pub fn counted(engine: &mut Engine, named: &Named) -> Vec<Tid> {
-    let account = named.account.filter(|(a, k)| engine.account_key_counts(a, k)).map(|(a, _)| a);
-    let node = named.node.filter(|n| engine.own_node(n));
-    let mut v: Vec<Tid> = account.into_iter().chain(node).chain(named.key_actors.iter().copied()).collect();
-    v.sort();
-    v.dedup();
-    v
-}
 
-/// What a record or connection names, the account's key left out: who a peer is for its
-/// acknowledgements, so a peer's records proved at two epochs of its account are one peer.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Who {
-    pub account: Option<Tid>,
-    pub node: Option<Tid>,
-    pub key_actors: Vec<Tid>,
-}
-
-impl From<&Named> for Who {
-    fn from(n: &Named) -> Who {
-        Who { account: n.account.map(|(a, _)| a), node: n.node, key_actors: n.key_actors.clone() }
-    }
-}
-
-/// Who a peer may be, for what it could still take or tell (spec/sync-set.md §3 to be waited
-/// for, spec/sync-status.md §1), ascending: a node of this account it names while that node is
-/// ours (a removed node takes nothing back), else its account at the key it proved with until
-/// a rotation the chain followed here makes past that key's epoch carries a removal
-/// (`Engine::account_key_revoked`: a node of it away across a plain rotation proves the new key
-/// when back and resumes its record; a removed one is not told from an honest one at rest, so
-/// none proved before such a rotation is waited for until it proves again), and its key actors.
-/// Empty where `named` is not: a removed node of this account, never waited for.
-pub fn awaited(engine: &mut Engine, named: &Named) -> Vec<Tid> {
-    let me = match (named.node, named.account) {
-        (Some(n), _) => engine.own_node(&n).then_some(n),
-        (None, Some((a, k))) => (!engine.account_key_revoked(&a, &k)).then_some(a),
-        (None, None) => None,
-    };
-    let mut v: Vec<Tid> = me.into_iter().chain(named.key_actors.iter().copied()).collect();
-    v.sort();
-    v.dedup();
-    v
-}
 
 /// One sync ID's credentials at this node, before a connection's J filters them
 /// (spec/sync-opens.md §4 Admissible): each with the epoch it is at, for the Departed rule.
@@ -365,11 +314,11 @@ impl Holds for NodeHolds<'_, '_> {
     }
 
     fn named(&mut self, proven: &Proven) -> Named {
-        named(self.cx.engine, proven)
+        named(proven)
     }
 
     fn counts(&mut self, named: &Named) -> Vec<Tid> {
-        counted(self.cx.engine, named)
+        named.actors()
     }
 
     fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J {
@@ -385,12 +334,7 @@ impl Holds for NodeHolds<'_, '_> {
         let engine = &mut *self.cx.engine;
         let mut j = None;
         self.fx.standing.settle(&k, || {
-            j = if *named != Named::default() && awaited(engine, named).is_empty() {
-                None
-            } else {
-                let actors = counted(engine, named);
-                Some(engine.judge_peer(s, &actors).unwrap_or(J::Unknown))
-            };
+            j = Some(engine.judge_peer(s, &named.actors()).unwrap_or(J::Unknown));
             j
         });
         j

@@ -766,7 +766,6 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             let d = crate::Dispute::of(&osis_engine::sides::DisputeInfo { commit: *commit, op: *op, holder: *holder, target: *target, author: *author, side: Some(side) });
             due(&[Slot::Disputes], Delivery::Dispute(d))
         }
-        Msg::Event(Event::AccountDisputed { account, lines, side }) => due(&[Slot::Disputes], Delivery::Dispute(crate::Dispute::of_account(*account, lines, *side, false))),
         _ => Vec::new(),
     }
 }

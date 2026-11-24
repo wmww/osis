@@ -33,5 +33,5 @@ pub use error::{Error, Result};
 pub use ephemeral::Written;
 pub use events::{Cause, Diagnostic, DiagnosticKind, Event, CommitChange, Origin};
 pub use identity::Identity;
-pub use sides::{AccountDisputeInfo, DisputeInfo, Side};
+pub use sides::{DisputeInfo, Side};
 pub use sync::units::strongs_in;

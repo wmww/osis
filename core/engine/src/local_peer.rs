@@ -25,8 +25,6 @@ pub struct Package {
     pub id: CommitId,
     pub bytes: Vec<u8>,
     pub blobs: Vec<(BlobId, Vec<u8>)>,
-    /// A rotation's list blob (its thing lists held here), as sync IDs carry it beside it.
-    pub lists: Vec<Vec<u8>>,
 }
 
 /// A commit as sync IDs carry it (spec/sync-ids.md §1-§3): its one sealed blob with a wrap under
@@ -131,18 +129,13 @@ impl Peer {
     /// `Wakes` names it. The test's `Engine::ingest` is what
     /// node-sync calls; only the fetching is played here.
     pub fn receive(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>) -> Result<Ingested> {
-        self.receive_with(bytes, blobs, &[])
-    }
-
-    /// `receive` with the list blobs that came with it (`Engine::ingest_with_lists`).
-    pub fn receive_with(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, lists: &[Vec<u8>]) -> Result<Ingested> {
         // decoded once for the harness's own bookkeeping (the engine decodes what it ingests)
         let blob = CommitBlob::decode(bytes).ok().map(Arc::new);
         if let Some(b) = &blob {
             self.engine.note_delivered(b);
             self.given.insert(b.id());
         }
-        let r = self.engine.ingest_with_lists(bytes, blobs.clone(), None, lists);
+        let r = self.engine.ingest(bytes, blobs.clone());
         // a broken engine invariant leaves the commit unreceived and fails node-sync's step: in a
         // test it fails at once, not as a read difference far from its cause (a caller dropping
         // the result would never see it)
@@ -250,20 +243,12 @@ impl Peer {
         }
     }
 
-    /// A fresh node at wall time `t`, its own account's only node.
-    pub fn new(seed: u64, t: WallMs) -> Result<Peer> {
-        let mut p = Peer::new_bare(seed, t)?;
-        p.engine.create_account()?;
-        p.engine.take_wakes();
-        Ok(p)
-    }
-
-    /// This node's account keeps the accounts `who` (a contact, a peer it will grant): a strong to
-    /// each in its account root's `holds.0`, so their chains stay once received (spec/commits.md
-    /// §5 What a held thing needs; a strong to a key actor enters nothing). One commit; none when
-    /// it keeps each already.
+    /// This node keeps the nodes `who` (a contact, a peer it will grant): a strong to each in its
+    /// node root's `holds.0`, so their records stay once received (spec/commits.md §5 What a held
+    /// thing needs; a strong to a key actor enters nothing). One commit; none when it keeps each
+    /// already.
     pub fn know(&mut self, who: &[osis_base::Tid]) -> Result<()> {
-        let root = self.engine.account_root().ok_or(crate::error::Error::Misuse("no account root"))?;
+        let root = self.engine.node_root().ok_or(crate::error::Error::Misuse("no node root"))?;
         let kept: BTreeSet<osis_base::Tid> = self.engine.references_from(&root)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong && r.ak.as_str() == "holds.0").map(|r| r.target).collect();
         let mut m = Mutation::new();
         for t in who.iter().filter(|t| **t != self.engine.me() && !kept.contains(*t)) {
@@ -275,8 +260,8 @@ impl Peer {
         Ok(())
     }
 
-    /// A fresh node at wall time `t` that has joined no account yet.
-    pub fn new_bare(seed: u64, t: WallMs) -> Result<Peer> {
+    /// A fresh node at wall time `t`.
+    pub fn new(seed: u64, t: WallMs) -> Result<Peer> {
         let clock = Arc::new(ManualClock::new(t));
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let blob_disk = (MemoryBackend::new(), MemoryRoot::new());
@@ -386,8 +371,7 @@ impl Engine {
                 blobs.push((b, x));
             }
         }
-        let lists = self.list_blob(id, None)?.into_iter().collect();
-        Ok(Some((Package { id: *id, bytes, blobs, lists }, record)))
+        Ok(Some((Package { id: *id, bytes, blobs }, record)))
     }
 
     /// The parts of held commit `id` the bodies under the sync IDs `synced` hold.
@@ -449,7 +433,7 @@ impl Engine {
         let Some(s) = self.seal(&b, osis_blob::Class::of_marker(self.header(id).and_then(|h| h.ephemeral)), &[], rng)? else { return Ok(None) };
         let mut wraps = Vec::new();
         for a in self.independents(id) {
-            if !self.core.is_key_actor(&a) && self.run(|tx| { let deps = crate::rotation::departures(tx, &a)?; crate::rotation::blocked_roles_of(tx, &tx.core.writer()?, &a, &deps, crate::rotation::Walk::Log) })?.contains(&osis_base::Role::Read) {
+            if !self.core.is_key_actor(&a) && self.run(|tx| { let deps = crate::rotation::departures(tx, &a)?; crate::rotation::blocked_roles_of(tx, &tx.core.me(), &a, &deps, crate::rotation::Walk::Log) })?.contains(&osis_base::Role::Read) {
                 continue;
             }
             let Some(secret) = self.wrap_secret(&a, Some((id, &b.parts)))? else { continue };
@@ -600,27 +584,20 @@ impl LocalPeer {
         Ok(LocalPeer::apart(peers, seed))
     }
 
-    /// Every peer that may write as its account keeps every other peer's account (`Peer::know`);
-    /// a node off its account's roster writes nothing as it.
+    /// Every peer keeps every other peer (`Peer::know`).
     pub fn know_all(&mut self) -> Result<()> {
-        let all: Vec<osis_base::Tid> = self.peers.iter().filter(|p| p.engine.account_root().is_some()).map(|p| p.engine.me()).collect();
-        for p in self.peers.iter_mut().filter(|p| p.engine.account_root().is_some() && p.engine.core.writer().is_ok()) {
+        let all: Vec<osis_base::Tid> = self.peers.iter().map(|p| p.engine.me()).collect();
+        for p in self.peers.iter_mut() {
             p.know(&all)?;
         }
         Ok(())
     }
 
     /// `new(n, 0, t)`, a copy of the one built per test process (`cached`): a copy costs about
-    /// a hundredth of building the accounts.
+    /// a hundredth of building the nodes.
     #[allow(clippy::panic)] // test harness: a build that fails fails the test
     pub fn fresh(n: usize, t: WallMs) -> LocalPeer {
         LocalPeer::cached(&format!("LocalPeer::fresh/{n}/{}", t.0), || (LocalPeer::new(n, 0, t).unwrap_or_else(|e| panic!("{e}")), ())).0
-    }
-
-    /// `n` fresh nodes that have joined no account yet (`Peer::new_bare`).
-    pub fn new_bare(n: usize, seed: u64, t: WallMs) -> Result<LocalPeer> {
-        let peers = (0..n).map(|i| Peer::new_bare(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
-        Ok(LocalPeer::apart(peers, seed))
     }
 
     /// Peers made elsewhere, each keeping the others' accounts (`know_all`; `sync` and
@@ -703,7 +680,7 @@ impl LocalPeer {
         self.pass_fires_to(admin, &mut p).unwrap_or_else(|e| panic!("grant fire to the reader: {e}"));
         for c in &done.commits {
             if let Some(pk) = self.peers[admin].engine.package(c).unwrap_or_else(|e| panic!("package: {e}")) {
-                p.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists).unwrap_or_else(|e| panic!("grant to the reader: {e}"));
+                p.receive(&pk.bytes, pk.blobs.clone()).unwrap_or_else(|e| panic!("grant to the reader: {e}"));
             }
         }
         assert!(p.engine.grant_fires_held().iter().any(|c| c.holder == who && c.target == t && done.commits.contains(&c.commit)), "the reader holds its grant's offer of {t:?}");
@@ -801,7 +778,7 @@ impl LocalPeer {
             }
             seen.extend(synced);
             for p in self.packages_under(from, &seen)?.iter() {
-                let _ = c.receive_with(&p.bytes, p.blobs.clone(), &p.lists);
+                let _ = c.receive(&p.bytes, p.blobs.clone());
             }
         }
     }
@@ -842,9 +819,8 @@ impl LocalPeer {
     /// Delivers to `to`, whole, the commits of `from`'s certificates for `t`
     /// (`Engine::certificates`): what `t`'s sync ID carries beside its bodies (its evidence,
     /// spec/permissions.md §4). A test handing `to` a commit on `t` by hand sends this first: a
-    /// pass end drops what nothing held needs, another account's root D included, so a thing
-    /// minted with admin D is judged only with its certificates delivered again, as a sync of `t`
-    /// brings it.
+    /// pass end drops what nothing held needs, so a thing is judged only with its certificates
+    /// delivered again, as a sync of `t` brings it.
     pub fn send_certificates(&mut self, from: usize, to: usize, t: &Tid) -> Result<()> {
         let Some(p) = self.peers.get_mut(from) else { return Ok(()) };
         let certs = p.engine.certificates(t)?;
@@ -955,7 +931,7 @@ impl LocalPeer {
     pub fn deliver(&mut self, to: usize, pk: &Package) -> Result<Ingested> {
         self.pass_fires(to)?;
         match self.peers.get_mut(to) {
-            Some(p) => p.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists),
+            Some(p) => p.receive(&pk.bytes, pk.blobs.clone()),
             None => Ok(Ingested::Duplicate(pk.id)),
         }
     }

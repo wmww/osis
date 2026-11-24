@@ -233,14 +233,14 @@ impl Engine {
     /// thing or a key actor.
     fn section_chain(&self, t: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
-        if self.core.ix.independent.contains(t) || Some(*t) == self.core.me() {
+        if self.core.ix.independent.contains(t) || *t == self.core.me() {
             return out;
         }
         for step in self.core.record_chain(t) {
             match step {
                 osis_base::ChainStep::Up { admin: up, .. } => {
                     out.push(up);
-                    if self.core.ix.independent.contains(&up) || Some(up) == self.core.me() {
+                    if self.core.ix.independent.contains(&up) || up == self.core.me() {
                         return out;
                     }
                 }
@@ -545,19 +545,6 @@ impl Engine {
         self.core.may_read(actor, &self.core.reader_of(t))
     }
 
-    /// Whether the independent of sync unit `g`'s thing reads `t` as every node judges it, for the
-    /// thing lists its sync IDs carry alone (spec/sync-judgement.md §1: an account root reads as
-    /// its account, whichever node judges it): any account root reads what its account reads, so
-    /// the lists logged under a sync ID are the same at every node. Never an access, sealing,
-    /// boxing or opening decision: there `reads`.
-    pub(crate) fn cert_reads_in(&self, g: &Tid, t: &Tid) -> bool {
-        // counted: tests read how many (read thing, thing) pairs a change judges
-        osis_base::costs::count("sync: cert reads judged", 1);
-        let actor = self.core.reader_of(g);
-        let reader = self.core.account_of_root(&actor).unwrap_or(actor);
-        self.core.may_read(&reader, &self.core.reader_of(t))
-    }
-
     /// The parts of `h` a sync ID of `ctx`'s sync unit carries in its bodies (spec/sync-judgement.md
     /// §1): those on things of the sync unit its independent may read. A part on any other thing that
     /// evidence needs goes there as a certificate copy (spec/permissions.md §4).
@@ -732,10 +719,10 @@ impl Engine {
             // the roles at now it reads (`finalizable`, `may_rotate`) hold until the clock
             // reaches the next `until` or role commit in the components of `a` and this
             // node's account
-            let _horizon = tx.core.bound_to_horizon(std::iter::once(a).chain(tx.core.writer().ok()));
+            let _horizon = tx.core.bound_to_horizon(std::iter::once(a).chain(Some(tx.core.me())));
             // a node removed from its account wraps nothing as it (it may still hold the read
             // secrets through the pass its drop waits for)
-            let Ok(who) = tx.core.writer() else { return Ok(true) };
+            let who = tx.core.me();
             if encrypt && !crate::flows::edges::finalizable(tx.core, &who, &a).is_empty() {
                 return Ok(true);
             }
@@ -775,28 +762,6 @@ impl Engine {
         let Some(h) = self.header(c) else { return false };
         parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "secrets.0" | "keys.0"))
     }
-    /// The secret a list blob of rotation `r` is wrapped under at `g` (spec/crypto.md §5 Who
-    /// wraps under what: a rotation's thing lists are parts of it and wrap as it does): the roles
-    /// secret (lists are role-class, spec/crypto.md §4 Roles secrets: a history-less holder holds
-    /// it of every earlier epoch) of the newest established read epoch of `g`'s secret actor whose
-    /// secret is held and that no rotation ordered at or after `r` minted (by (`ts`, author,
-    /// commit ID), spec/permissions.md §5.1; `r`'s own epoch is not current when it is made), so
-    /// a rotation of `g` that `r` caused takes nothing from whoever read `g` before it. Like a
-    /// rotation's own wrap, it is not subject to `wrap_blocked` (an account's rotation re-keys its
-    /// account root in the same commit, so its lists there go as that rotation's do). `None`: `r`
-    /// or no such epoch is held.
-    pub(crate) fn list_wrap_secret(&mut self, g: &Tid, r: &CommitId) -> Option<Secret32> {
-        let a = self.core.secret_actor(g)?;
-        let h = self.header(r)?;
-        let at = (h.ts, h.signer, *r);
-        let e = self.epochs(&a)?;
-        let (intro, commits) = (&self.core.ix.epoch_intro, &self.core.ix.commits);
-        let before = |(ts, c): &(osis_base::Ts, CommitId)| commits.get(c).map_or(*ts < at.0, |m| (*ts, m.view.signer, *c) < at);
-        // role-class metadata: under that epoch's roles secret, which a history-less holder gets
-        // of every earlier epoch (spec/crypto.md §4 Roles secrets)
-        e.read.newest_held_where(|x| intro.get(&(a, Role::Read, *x)).is_none_or(before)).map(|(_, s)| osis_crypto::roles_secret(s))
-    }
-
     /// For a commit giving read epochs of `g`'s secret actor (its `secrets.0` delta boxes them, or
     /// its `keys.0` delta writes a read keyset: a rotation, a grant, a re-seal): the held epoch
     /// with the greatest n that they supersede (spec/crypto.md §5, Who wraps under what), never
@@ -946,7 +911,7 @@ mod tests {
         use crate::Mutation;
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.dependents_admin();
+        let me = e.me();
         let (o, _) = e.create_with_admin(&me).unwrap();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, o);

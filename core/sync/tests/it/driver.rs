@@ -4,7 +4,7 @@
 //! one-wake-last). World tests run the product's node; the dial rules alone
 //! run on `Dials` with a table of dial peers.
 
-use crate::harness::{Seen, World, contacts, siblings, two_nodes};
+use crate::harness::{Seen, World, contacts, two_nodes};
 use osis_base::{BlobId, Mono, SyncId, WallMs};
 use osis_blob::{Address, Class, Prefix};
 use osis_store::Fault;
@@ -101,6 +101,7 @@ fn a_silent_dial_times_out_and_redials_spec_sync_opens_1() {
 // is the node's to keep whatever its wall clock does: with both nodes' clocks gone back an hour
 // while each waits to redial the other, they connect within a pause of the heal, not an hour on.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_clock_gone_back_delays_no_redial_spec_sync_opens_1() {
     let mut w = contacts();
     w.partition(0, 1);
@@ -257,110 +258,6 @@ fn acting_for_a_new_actor_redials_spec_sync_opens_1() {
     assert_eq!(ups_to(&w, 0, 1), 2);
 }
 
-// spec/sync-opens.md §1 (proves once): a connection where this node proved no actor (it acted for
-// none) closes too once it acts for one (an account made), and its dialer dials again; so a node
-// whose account's epoch was closed while it dialed (a sibling's rotation, its seed not yet held)
-// proves the account once the seed comes.
-#[test]
-fn acting_for_a_first_actor_redials_spec_sync_opens_1() {
-    let mut w = World::new(0);
-    w.add_node();
-    let n = w.add_bare_node();
-    let a = w.address(0);
-    w.configure(n, |c| c.dial = vec![a]);
-    let proved = |w: &World| w.links_of(n).iter().any(|(c, _)| w.node(n).node.session(*c).and_then(|s| s.acted_for()).is_some_and(|x| x.is_empty()));
-    while !proved(&w) {
-        assert!(w.step(), "the dial came up and proved nothing");
-    }
-    w.write(n, |e| e.create_account().expect("account"));
-    assert_eq!(dials_to(&w, n, 0), 2, "closed and dialed again at once");
-    w.run();
-    assert_eq!(ups_to(&w, n, 0), 2);
-}
-
-/// Whether node `i` holds a live connection from node `j` on which `j` proved its account with
-/// `key`, the account at an epoch open at `i`.
-fn proven_at(w: &mut World, i: usize, j: usize, key: [u8; 32]) -> bool {
-    let account = w.node(j).account.expect("an account");
-    let proofs: Vec<(osis_base::CreationRecord, [u8; 32])> = w.links_of(i).into_iter().filter(|(_, t)| *t == j).filter_map(|(c, _)| w.node(i).node.session(c)?.proven().account.clone()).collect();
-    proofs.into_iter().any(|(r, k)| r.tid() == account && k == key && w.engine(i).key_open(&r, &k))
-}
-
-// spec/sync-opens.md §1 (proves once), §2 (its account by a signature at an epoch): a node whose
-// account rotates by its own write closes each connection where it proved the account at the
-// closed epoch and dials again; its new Prove carries the rotation, so the peer holds it and
-// counts the account proved at the new epoch.
-#[test]
-fn an_own_rotation_proves_again_spec_sync_opens_1() {
-    let mut w = contacts();
-    let a0 = w.node(0).account.expect("an account");
-    let old = w.engine(0).account_open_key().expect("an open key");
-    assert!(proven_at(&mut w, 1, 0, old), "node 0's account proved to node 1");
-    let dials = dials_to(&w, 0, 1);
-    let r = w.write(0, |e| e.rotate_account(&a0)).unwrap().expect("rotated");
-    assert_eq!(dials_to(&w, 0, 1), dials + 1, "closed and dialed again at once");
-    w.run();
-    let new = w.engine(0).account_open_key().expect("an open key");
-    assert_ne!(new, old);
-    assert!(w.engine(1).account_rotations(&a0).contains(&r), "the Prove carried the rotation");
-    assert!(proven_at(&mut w, 1, 0, new), "proved again at the new epoch");
-    assert!(!proven_at(&mut w, 1, 0, old), "no connection left on the closed epoch");
-}
-
-// spec/sync-opens.md §1 (proves once), §2 (its account by a signature at an epoch),
-// spec/permissions.md §5.4 (Roster): when another node of its account rotates it, a node keeps
-// D's sync ID throughout (D's roster is the chain's, never D's lists), takes the rotation whole and so the new seed, and proves its account again at the
-// new key.
-#[test]
-fn a_sibling_rotation_proves_again_spec_sync_opens_1() {
-    let mut w = siblings();
-    let a1 = w.node(1).account.expect("an account");
-    assert_eq!(w.node(2).account, Some(a1), "node 2 is a node of account 1");
-    let old = w.engine(2).account_open_key().expect("an open key");
-    assert!(proven_at(&mut w, 0, 2, old), "node 2's account proved to node 0");
-    let d = w.engine(2).account().unwrap().expect("an account").1;
-    let ds = w.engine(2).sync_id_of(&d).unwrap().expect("D's sync ID");
-    let held = |w: &World| w.node(2).store.entries(&ds).unwrap().len();
-    let entries = held(&w);
-    assert!(entries > 0, "node 2 holds D's sync ID");
-    let r = w.write(1, |e| e.rotate_account(&a1)).unwrap().expect("rotated");
-    while w.step() {
-        assert!(w.store(2).synced(&ds).is_some(), "node 2 keeps D's sync ID throughout");
-    }
-    w.run();
-    w.advance(REDIAL_MS);
-    w.run();
-    let new = w.engine(1).account_open_key().expect("an open key");
-    assert_ne!(new, old);
-    assert!(w.engine(2).commit_parts_missing()[&r].is_empty(), "node 2 holds the rotation whole");
-    assert!(held(&w) >= entries, "node 2 keeps D's sync ID");
-    assert_eq!(w.engine(2).account_open_key(), Some(new), "node 2 holds the new seed");
-    assert!(proven_at(&mut w, 0, 2, new), "proved again at the new epoch");
-    for j in [0, 1] {
-        assert!(!proven_at(&mut w, j, 2, old), "node {j} counts node 2's account at the closed epoch");
-    }
-}
-
-// spec/sync-ids.md §2 (from the deposit seed of the thing's actor): a node paired after its account
-// rotated holds the account's deposit seed and its D's deposit keys, whatever of the earlier
-// rotations it holds only as certificates.
-#[test]
-fn a_node_paired_after_rotations_holds_the_deposit_seed_spec_sync_ids_2() {
-    let mut w = contacts();
-    let a1 = w.node(1).account.expect("an account");
-    for _ in 0..2 {
-        w.write(1, |e| e.rotate_account(&a1)).unwrap().expect("rotated");
-        w.run();
-    }
-    let n = w.pair(1);
-    w.run();
-    w.advance(REDIAL_MS);
-    w.run();
-    let d = w.engine(n).account().unwrap().expect("an account").1;
-    let missing: Vec<_> = w.engine(n).commit_parts_missing().into_iter().filter(|(_, x)| !x.is_empty()).collect();
-    assert_eq!(w.engine(n).deposit_seed(&d).unwrap().map(|s| *s.expose()), w.engine(1).deposit_seed(&d).unwrap().map(|s| *s.expose()), "the account's deposit seed; parts missing {missing:?}");
-}
-
 /// A blob of `class` expiring at `expiry`.
 fn blob(n: usize, class: Class, expiry: u64) -> (BlobId, Vec<u8>) {
     let mut rng = osis_crypto::SeededRng::from_u64(n as u64);
@@ -420,6 +317,7 @@ fn a_store_failure_restarts_in_place_once_per_stretch() {
 // node's steps go on and it takes what comes after (else each step failed at that commit, and
 // restarted, for good).
 #[test]
+#[ignore = "accounts: keys"]
 fn a_commit_faulting_on_apply_is_set_aside_and_sync_goes_on_spec_commits_4() {
     use crate::harness::history::{Gives, three, value_ak};
     use osis_base::{Ak, Value};
@@ -668,14 +566,13 @@ fn dial_work_follows_change_spec_sync_opens_1() {
 
 // ---- by hand: the product's links over real QUIC ----
 
-/// A node with an account of its own over in-memory disks, on the system clock.
+/// A node over in-memory disks, on the system clock.
 fn real_node(seed: u64, key: [u8; 32]) -> osis_sync::Node {
     use osis_crypto::SeededRng;
     use osis_store::{MemoryBackend, MemoryRoot};
     let clock: Arc<dyn osis_base::Clock> = Arc::new(osis_base::SystemClock);
     let store = osis_sync::Store::open(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), Box::new(SeededRng::from_u64(seed ^ 1))).unwrap();
-    let mut engine = osis_engine::Engine::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(seed))).unwrap();
-    engine.create_account().unwrap();
+    let engine = osis_engine::Engine::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(seed))).unwrap();
     let cfg = osis_sync::SyncConfig { key: Some(osis_sync::NodeKey(key)), ..osis_sync::SyncConfig::default() };
     osis_sync::Node::open(engine, store, cfg, Box::new(SeededRng::from_u64(seed ^ 2)))
 }

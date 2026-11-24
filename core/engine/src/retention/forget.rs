@@ -74,7 +74,7 @@ enum Fate {
 /// lost-access drop judges by, so what it keeps is what that role reads.
 pub(crate) fn read_path(core: &Core, t: &Tid) -> bool {
     let Some(a) = core.secret_actor(t) else { return false };
-    let own = core.member() == Some(a) || a == core.id.tid() || core.key_actors.contains_key(&a);
+    let own = a == core.me() || core.key_actors.contains_key(&a);
     own || crate::rotation::role_here(core, &a) >= Some(osis_base::Role::Read)
 }
 

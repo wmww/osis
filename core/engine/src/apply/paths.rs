@@ -66,10 +66,10 @@ pub(crate) fn undecided(h: &Header, paths: Option<&Decided>) -> bool {
 
 /// What the node holds of the things `open` tries for the things of commit `id` whose paths open
 /// nowhere here: per such thing, per thing up its record chain, the epochs of its own secrets
-/// whose roles secret is held (`Indexes::secrets`) and, for an account, the epochs whose seeds are
-/// held. What may open an entry, read from stamped containers alone (no state, no derivation): a
-/// `memo::Effects` following it is due exactly when one of them moves (a record learned up a
-/// chain, an independent thing's or an account's secrets). A key actor's are fixed.
+/// whose roles secret is held (`Indexes::secrets`). What may open an entry, read from stamped
+/// containers alone (no state, no derivation): a `memo::Effects` following it is due exactly when
+/// one of them moves (a record learned up a chain, an independent thing's secrets). A key actor's
+/// are fixed.
 fn openers(core: &Core, id: &osis_base::CommitId) -> Openers {
     let Some(m) = core.ix.commits.get(id) else { return Vec::new() };
     let Some(paths) = m.view.paths.as_deref() else { return Vec::new() };
@@ -81,15 +81,14 @@ fn openers(core: &Core, id: &osis_base::CommitId) -> Openers {
         for _ in 0..=osis_base::format::MAX_CHAIN_DEPTH + 1 {
             let Some(cur) = x else { break };
             let own = core.ix.secrets.get(&cur).map(|e| e.read.epochs().filter(|(ep, _)| e.read.roles_secret(ep).is_some()).map(|(ep, _)| *ep).collect()).unwrap_or_default();
-            let seeds = core.accounts.get(&cur).map(|a| a.keys.keys().cloned().collect()).unwrap_or_default();
-            out.push((cur, own, seeds));
+            out.push((cur, own));
             x = core.created(&cur).and_then(osis_base::CreationRecord::mint_admin);
         }
     }
     out
 }
 
-type Openers = Vec<(Tid, Vec<osis_crypto::Epoch>, Vec<osis_crypto::VerifyingKey>)>;
+type Openers = Vec<(Tid, Vec<osis_crypto::Epoch>)>;
 
 /// The wait of held split commits with a thing whose path opens nowhere here
 /// (`Indexes::paths_unknown`, journaled): each followed (`memo::Effects`) by what may open it

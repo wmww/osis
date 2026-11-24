@@ -27,9 +27,6 @@ impl Core {
     /// memo or follower reading it moves when the clock alone ends a role there, with a wake then
     /// (`Engine::clock_next`).
     pub(crate) fn roster_of(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
-        if let Some(h) = self.root_holders(thing) {
-            return h.into_iter().map(|(m, role)| (m, Edge::new(role))).collect();
-        }
         self.time.at(|now| {
             let r = self.timelines().on(thing).map(|on| on.roster(At::now(crate::flows::ts_at(now)))).unwrap_or_default();
             let until = r.values().filter_map(|e| e.until).map(|u| u.0).filter(|u| *u > now).min();
@@ -195,7 +192,7 @@ impl Engine {
         self.core.roster_of(thing)
     }
 
-    /// This node's role on `tid` now (spec/sync-set.md §2 Own actors): its own actors' effective
+    /// This node's role on `tid` now (spec/sync-set.md §2 Own things): its own things' effective
     /// role by `tid`'s grants where the node syncs it or holds an offer of it, none elsewhere
     /// (`rotation::role_here`).
     pub fn role_on(&self, tid: &Tid) -> Option<Role> {

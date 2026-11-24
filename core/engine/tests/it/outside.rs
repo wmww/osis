@@ -47,7 +47,7 @@ fn base_n(n: usize) -> ((LocalPeer, Tid), Vec<Tid>) {
     let x = e0.new_thing(&mut m, ps[0]);
     e0.commit(m).unwrap();
     e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-    let d1 = lp.peers[1].engine.account_root().unwrap();
+    let d1 = lp.peers[1].engine.node_root().unwrap();
     let mut m = Mutation::new();
     strong_m(&mut m, d1, x);
     lp.peers[1].engine.commit(m).unwrap();
@@ -166,6 +166,7 @@ fn content_dropped_as_not_carried_comes_back_when_the_minting_strong_does_spec_s
 // writes S, X's strong to W. Peer 1 takes W's commits and S before peer 2's grant (S waits for a
 // reach, W's content for W to enter), then the grant in the same pass.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_grant_making_a_strong_valid_wakes_what_waits_on_its_target_spec_commits_4() {
     let reg = crate::common::ak("t:reg.0");
     let ((mut lp, x), ps) = base_n(3);
@@ -312,7 +313,7 @@ fn waiting_on_w(expiring: bool, aside: bool) -> (LocalPeer, Tid, Tid, CommitId, 
 
 /// Peer 1 holds W from its account root: W enters its node closure, what it pulls anew given.
 fn enter(lp: &mut LocalPeer, w: Tid) {
-    let d1 = lp.peers[1].engine.account_root().unwrap();
+    let d1 = lp.peers[1].engine.node_root().unwrap();
     let mut m = Mutation::new();
     strong_m(&mut m, d1, w);
     lp.peers[1].engine.commit(m).unwrap();

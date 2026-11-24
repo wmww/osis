@@ -17,10 +17,6 @@ pub enum Domain {
     Stamp,
     Deposit,
     Delete,
-    /// A node's inner signature over an account's commit ID (spec/permissions.md §5.5).
-    Inner,
-    /// A merge's signature at a fork's epoch, over the merge's commit ID (spec/crypto.md §9).
-    Merge,
     /// An actor's proof on a connection (spec/sync-opens.md §2, spec/wire.md §11.2).
     ConnectionProof,
     /// A stamp or deposit signature of an entry deletes are judged by: a role commit or a
@@ -31,7 +27,7 @@ pub enum Domain {
 }
 
 impl Domain {
-    pub const ALL: [Domain; 12] = [
+    pub const ALL: [Domain; 10] = [
         Domain::Commit,
         Domain::SyncStep,
         Domain::SyncEndorse,
@@ -39,8 +35,6 @@ impl Domain {
         Domain::Stamp,
         Domain::Deposit,
         Domain::Delete,
-        Domain::Inner,
-        Domain::Merge,
         Domain::ConnectionProof,
         Domain::RoleEntry,
         Domain::InboxBoxes,
@@ -54,8 +48,6 @@ impl Domain {
             Domain::Stamp => "osis v1 stamp",
             Domain::Deposit => "osis v1 deposit",
             Domain::Delete => "osis v1 delete",
-            Domain::Inner => "osis v1 inner",
-            Domain::Merge => "osis v1 merge",
             Domain::ConnectionProof => "osis v1 connection proof",
             Domain::RoleEntry => "osis v1 role entry",
             Domain::InboxBoxes => "osis v1 inbox boxes",
@@ -71,8 +63,6 @@ impl Domain {
             Domain::Stamp => "verify: stamp",
             Domain::Deposit => "verify: deposit",
             Domain::Delete => "verify: delete",
-            Domain::Inner => "verify: inner",
-            Domain::Merge => "verify: merge",
             Domain::ConnectionProof => "verify: connection proof",
             Domain::RoleEntry => "verify: role entry",
             Domain::InboxBoxes => "verify: inbox boxes",

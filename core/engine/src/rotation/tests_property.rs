@@ -388,7 +388,7 @@ impl Run {
         // refused (a rotated role's secret not held, Seal waiting) changes nothing
         self.lp.peers[i].engine.run(|tx| {
             let held = tx.core.epochs(&t).unwrap_or_default();
-            let holders = super::recipients(tx, &tx.core.writer().unwrap(), &t, &skip)?;
+            let holders = super::recipients(tx, &tx.core.me(), &t, &skip)?;
             let mut m = Mutation::new();
             let r = super::rotation_into(tx, &mut m, t, rot, &held, &holders, crate::rotation::Departs::No)?;
             crate::engine::Engine::commit_tx(tx, m)?;

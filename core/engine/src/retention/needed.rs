@@ -22,10 +22,8 @@
 //! Keys held here root nothing: the node itself is needed by its node root (its mint admin), and
 //! a link being redeemed keeps its sync ID in the sync set, so what a pass end drops of K comes
 //! again with the next pass, and the join is written once a pass brought what it needs
-//! (`Engine::redeemable`). Nothing is rooted by whose it is: this node's account is needed by its root
-//! (D's record names it), and a thing minted with the node or the account as admin goes as any once
-//! released. A pairing node takes the account up (`Engine::paired`) in the hold of the engine
-//! that applied what pairing sent, before any pass ends. Everything else goes whole, as never
+//! (`Engine::redeemable`). Nothing is rooted by whose it is: a thing minted with the node as admin
+//! goes as any once released. Everything else goes whole, as never
 //! received, when the pass that brought it ends or its last need went (`settle`).
 //!
 //! An arrival is judged once the pass in flight ends (`Engine::settle_needs`): a thing whose
@@ -294,11 +292,6 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // `Held::is_holder_by_write`; a write removing a record edge names it too): the
     // holder's sync ID carries the grant with its chain (spec/permissions.md §4 Key part), so its readers read it through the holder
     let holding = core.ix.held.holders_of(t).filter(|h| core.ix.closure.holds(h) && core.ix.held.is_holder_by_write(h, t)).map(|h| (*h, Need::Holding));
-    // a device a held account's chain names (its creation device, or one a held rotation adds,
-    // on any line): its account root's holder by the chain (D bears no edge write,
-    // `Core::root_holders`)
-    let device = core.is_key_actor(t) && !core.is_account(t);
-    let devices = core.accounts.iter().filter(|(p, _)| device && core.account_view(p).is_some_and(|v| v.named_device(t))).map(|(_, a)| (a.root, Need::Holder));
     // a held commit naming it as purge author (a member of its path, `apply::header_wait`), on the
     // things it writes on: its path lists it, so its record judges the commit (spec/commits.md §4
     // Unjudgeable)
@@ -306,10 +299,10 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // a holder a held valid grant fire on whose inbox carries a commit on it: what an offer
     // carries, held while the offer is
     let granted = crate::flows::inbox::granted_on(core, t).map(|(h, c)| (h, Need::Offered(c)));
-    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(devices).chain(pending).chain(acting).chain(waiting).chain(holding).chain(granted).collect();
+    let mut out: Vec<(Tid, Need)> = core.ix.held.named_on(t).map(|x| (*x, Need::Holder)).chain(pending).chain(acting).chain(waiting).chain(holding).chain(granted).collect();
     // a strong from a thing the node closure holds (a weak only points; one kept only
-    // as a certificate needs nothing by what its state names), and an account's reference from
-    // its `keys.0` (its inbox, part of its chain)
+    // as a certificate needs nothing by what its state names), and a thing's reference from its
+    // `keys.0` (its inbox, spec/sync-inbox.md §1)
     let refs = crate::engine::refs::to(tx, t)?;
     // a strong in a held body of a thing whose history holds its targets (`refs::kept`)
     let kept = crate::engine::refs::kept::to(tx, t)?;
@@ -318,7 +311,7 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     for r in refs {
         if r.kind == osis_base::RefKind::Strong && core.ix.closure.holds(&r.source) {
             out.push((r.source, Need::Strong(r.ak)));
-        } else if r.ak.as_str() == "keys.0" && core.is_account(&r.source) {
+        } else if r.ak.as_str() == "keys.0" {
             out.push((r.source, Need::Inbox));
         }
     }

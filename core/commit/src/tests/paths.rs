@@ -273,7 +273,7 @@ fn a_forged_entry_harms_only_its_own_thing() {
         if let Paths::Split(s) = &mut f.header.path {
             s.entries[0] = Split::seal(&c.keys[&0], listed, 0).unwrap();
         }
-        f.sigs = Sigs::signed(&f.id(), &key(), None, vec![], vec![]);
+        f.sigs = Sigs::signed(&f.id(), &key());
         f
     };
     let mut b = split(3);
@@ -298,7 +298,7 @@ fn a_forged_entry_harms_only_its_own_thing() {
     if let Paths::Split(s) = &mut swapped.header.path {
         s.entries.swap(0, 1);
     }
-    swapped.sigs = Sigs::signed(&swapped.id(), &key(), None, vec![], vec![]);
+    swapped.sigs = Sigs::signed(&swapped.id(), &key());
     let mut wrong = c.clone();
     wrong.keys.insert(0, [1; 32]);
     for (e, why) in [(seal_commit_unchecked(&swapped, &secret), "entries swapped"), (seal_commit_unchecked(&wrong, &secret), "a key that opens nothing")] {
@@ -357,7 +357,7 @@ fn an_entry_accepts_only_the_key_it_commits_to() {
     if let Paths::Split(s) = &mut f.header.path {
         s.entries[i] = [key_commitment(&k1).to_vec(), Split::seal(&k2, &[t(9), t(2)], 0).unwrap()[COMMITMENT_LEN..].to_vec()].concat();
     }
-    f.sigs = Sigs::signed(&f.id(), &key(), None, vec![], vec![]);
+    f.sigs = Sigs::signed(&f.id(), &key());
     assert_eq!(f.header.open_path(i, &k2), None, "k2 is no key of the entry");
     assert_eq!(f.header.open_path(i, &k1), Some(ThingPath::Bad), "its committed key opens nothing");
     let id = f.id();

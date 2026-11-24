@@ -9,11 +9,10 @@ use crate::open::HistoryAlts;
 use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{
-    AccountEpochKeys, BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, key_actor_role_secret, open_history, seal_box, seal_history, HistoryEntry, seal_joint_box, wrap_symmetric_box,
+    BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, key_actor_role_secret, open_history, seal_box, seal_history, HistoryEntry, seal_joint_box, wrap_symmetric_box,
 };
 use osis_schema::core_types::{BoxKey, JointBox, KemKey, Keys, Sealed, SealedBox, SecretBox, Secrets, SymmetricBox};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 /// What the writer knows of a holder's keys.
 #[derive(Clone, Debug)]
@@ -24,9 +23,6 @@ pub enum HolderKeys {
     /// a joint box, spec/crypto.md §4 Seal), and role secrets of the holder the writer holds
     /// (symmetric boxes, e.g. a thing's mint admin).
     Actor { keysets: BTreeMap<Role, Vec<(Epoch, KemPublicKey)>>, own: BTreeMap<Role, (Epoch, Secret32)> },
-    /// An account at its epoch (spec/crypto.md §3): the epoch's name and KEM key, and its keys
-    /// when the writer holds it (symmetric boxes).
-    Account { epoch: Epoch, kem: KemPublicKey, keys: Option<Arc<AccountEpochKeys>> },
 }
 
 impl HolderKeys {
@@ -87,8 +83,6 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
         let b = match &rcpt.keys {
             HolderKeys::KeyActor { kem, seed: None } => sealed(kem, &slot, None, i, rng)?,
             HolderKeys::KeyActor { seed: Some(seed), .. } => symmetric(&slot, i, &key_actor_role_secret(seed, i.role), Epoch::ZERO)?,
-            HolderKeys::Account { epoch, keys: Some(k), .. } => symmetric(&slot, i, &key_actor_role_secret(k.seed(), i.role), *epoch)?,
-            HolderKeys::Account { epoch, kem, keys: None } => sealed(kem, &slot, Some(*epoch), i, rng)?,
             HolderKeys::Actor { keysets, own } => match keysets.get(&i.role).map(Vec::as_slice) {
                 Some(joint @ [_, _, ..]) => self::joint(joint, &slot, i, rng)?,
                 ks => match own.get(&i.role) {

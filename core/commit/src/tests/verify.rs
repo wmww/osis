@@ -59,7 +59,7 @@ pub(crate) fn one_commit() -> (CommitBlob, SigningSecret) {
     let at = h.ts;
     let delta = register_delta(h.signer, at, 1, "hello");
     h.aspects[0].hash = delta_hash(&sec(0xd0, &h.aspects[0].tid), &delta);
-    let sigs = crate::Sigs::signed(&h.id(), &key, None, Vec::new(), Vec::new());
+    let sigs = crate::Sigs::signed(&h.id(), &key);
     (CommitBlob { header: h, sigs, parts: vec![Part { ai: 0, delta }], keys: Default::default() }, key)
 }
 
@@ -190,7 +190,7 @@ fn verify_refuses_page_items_spec_crdt_8() {
     let frag = Value::List(vec![Value::Int(0), Value::List(vec![]), Value::Int(0), Value::List(vec![Value::Int(0); n])]);
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), frag]));
     b.header.aspects[0].hash = delta_hash(&sec(0xd0, &b.header.aspects[0].tid), &delta);
-    b.sigs = crate::Sigs::signed(&b.header.id(), &key, None, Vec::new(), Vec::new());
+    b.sigs = crate::Sigs::signed(&b.header.id(), &key);
     b.parts[0].delta = delta;
     let s = TestSecrets { admin: true };
     let e = verify_blob(&b, &key.verifying_key(), &|t: &Tid| s.dedup(t), None).unwrap_err();

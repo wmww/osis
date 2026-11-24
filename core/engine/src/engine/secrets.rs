@@ -25,21 +25,6 @@ impl Core {
         self.ix.held.created(tid)
     }
 
-    /// The rotation of `account`'s signing chain minting epoch `e` (spec/crypto.md §9), if this
-    /// node holds that commit (whole or header only): a plain rotation's commit, or a held
-    /// certificate of a merge (one whose every merge signature verifies, so all carry its keys).
-    pub(crate) fn rotation(&self, account: &Tid, e: &CommitId) -> Option<osis_commit::RotationHeader> {
-        let Some(m) = self.ix.commits.get(e) else {
-            let v = self.account_view(account)?;
-            let c = v.minting(e).into_iter().next()?;
-            return self.ix.commits.get(&c)?.header.rotation.clone();
-        };
-        if m.view.signer != *account {
-            return None;
-        }
-        m.header.rotation.clone().filter(|r| !r.is_merge())
-    }
-
     pub(crate) fn dedup(&self, tid: &Tid) -> Option<Secret32> {
         self.created(tid).map(|r| dedup_secret(r.nonce()))
     }
@@ -78,7 +63,7 @@ impl Core {
         let mut chain = Vec::new();
         for step in self.record_chain(tid) {
             let cur = step.thing()?;
-            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.account_epochs(&cur)).or_else(|| self.own_epochs(&cur));
+            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.own_epochs(&cur));
             if let Some(e) = held {
                 return Some((e, chain));
             }
@@ -175,9 +160,6 @@ impl Core {
             if let Some(k) = self.key_actors.get(&cur) {
                 return Some(DeleteBase::KeyActor(k.keys().signing.verifying_key()));
             }
-            if let Some(vk) = self.account_delete_key(&cur) {
-                return Some(DeleteBase::KeyActor(vk));
-            }
             if let Some(e) = self.own_epochs(&cur) {
                 return Some(DeleteBase::Actor(cur, Some(e)));
             }
@@ -198,10 +180,6 @@ impl Core {
         let mut out = Vec::new();
         for step in self.record_chain(tid) {
             let Some(cur) = step.thing() else { break };
-            if let Some(a) = self.accounts.get(&cur) {
-                out.extend(a.keys.values().map(|k| DeleteSource::key_actor(k.seed(), &k.signing)));
-                break;
-            }
             let keys = if cur == self.id.tid() { Some(self.id.keys()) } else { self.key_actors.get(&cur).map(|k| k.keys()) };
             if let Some(k) = keys {
                 out.push(DeleteSource::key_actor(k.seed(), &k.signing));
@@ -301,10 +279,6 @@ impl Core {
         }
         for (m, e) in &openers {
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Actor { holder: *m, epochs: e }, &mut epochs, unchecked);
-        }
-        for t in self.accounts.keys().filter(|t| holders.contains(t)) {
-            let keys = self.account_keys(t);
-            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Account { holder: *t, keys: &keys }, &mut epochs, unchecked);
         }
         // a node holds no secret of an actor it cannot read (spec/permissions.md §3): an applied
         // box gives a role's secrets only where the node's roles give them now
@@ -797,15 +771,14 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
 }
 
 impl<'c> CommitSecrets<'c> {
-    /// A build as this node writes on its own account (a node that joined no account writes
-    /// only its own card, as itself).
+    /// A build as this node writes.
     fn own(core: &'c Core, created: &'c crate::engine::write::Creates, published: &'c BTreeMap<(Tid, Role), VerifyingKey>, keys: &'c KeyCache) -> Self {
-        CommitSecrets { core, purge_author: core.me().unwrap_or(core.id.tid()), created, published, keys }
+        CommitSecrets { core, purge_author: core.me(), created, published, keys }
     }
 
     /// Whether this node holds the key actor at the end of the purge author's record chain.
     fn holds_purge_author_key(&self) -> bool {
-        self.core.record_chain(&self.purge_author).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t) || self.core.accounts.contains_key(&t))
+        self.core.record_chain(&self.purge_author).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t))
     }
 
     /// The delete key of role `r` of `tid`'s delete base (spec/crypto.md §7 Header list): a key

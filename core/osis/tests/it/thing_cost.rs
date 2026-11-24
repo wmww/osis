@@ -76,7 +76,7 @@ fn make(a: &Node, b: &Node, home: Tid, independent: bool, label: &str, show: boo
         eprintln!("== {label}: {} commits", new.len());
     }
     for pk in &pks {
-        let size = pk.bytes.len() + pk.blobs.iter().map(|b| b.1.len()).sum::<usize>() + pk.lists.iter().map(Vec::len).sum::<usize>();
+        let size = pk.bytes.len() + pk.blobs.iter().map(|b| b.1.len()).sum::<usize>();
         cost.download += size;
         if show {
             let h = a.db.engine(|e| e.header(&pk.id).unwrap().clone());

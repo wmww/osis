@@ -1,40 +1,9 @@
-//! Search driver for the roles model: `[samples] [epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|epochs-no-own-cover|epochs-open-carried|epochs-no-reanswer|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries|custody-readd-beside|paths[-exh|-tiny[-flags|-detached][-honest[-writers]]][-control] [--from K | --only K] (paths::mode_rules)|paths-purge[-variant] (paths::purge_rules)]`.
+//! Search driver for the roles model: `[samples] [paths[-exh|-tiny[-flags|-detached][-honest[-writers]]][-control] [--from K | --only K] (paths::mode_rules)|paths-purge[-variant] (paths::purge_rules)]`.
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let samples = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(2_000_000);
     match args.get(2).map(String::as_str) {
-        Some(m) if m.starts_with("epochs") => {
-            use roles_model::epochs::{run, Control};
-            let control = match m {
-                "epochs-no-cutoff" => Control::NoCutoff,
-                "epochs-own-only" => Control::OwnOnly,
-                "epochs-void-uncounted" => Control::VoidUncounted,
-                "epochs-no-own-cover" => Control::NoOwnCover,
-                "epochs-open-carried" => Control::OpenCarried,
-                "epochs-no-reanswer" => Control::NoReanswer,
-                _ => Control::None,
-            };
-            if run(samples, control) > 0 {
-                std::process::exit(1);
-            }
-        }
-        Some(m) if m.starts_with("custody") => {
-            use roles_model::custody::{run, Control};
-            let (mode, control) = match m {
-                "custody-exh" => ("exh", Control::None),
-                "custody-judged" => ("random", Control::CustodyJudged),
-                "custody-roster-bare" => ("random", Control::RosterBare),
-                "custody-merge-random" => ("random", Control::MergeRandom),
-                "custody-stale-shut" => ("random", Control::StaleShut),
-                "custody-merge-carries" => ("random", Control::MergeCarries),
-                "custody-readd-beside" => ("random", Control::ReaddBeside),
-                _ => ("random", Control::None),
-            };
-            if run(samples, mode, control) > 0 {
-                std::process::exit(1);
-            }
-        }
         Some(m) if m.starts_with("paths") => {
             // `-- N paths-exh`: every Nth family world (paths::run)
             if let Some(why) = m.starts_with("paths-exh").then(|| roles_model::stride_refusal(samples.max(1) as usize, roles_model::paths::FAMILY)).flatten() {

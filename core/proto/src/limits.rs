@@ -20,7 +20,6 @@ pub const MAX_SUBS: usize = 4096;
 pub const MAX_CONNS_PER_CLIENT: usize = 8;
 /// Actor proofs in one Prove or Proved (spec/wire.md §2).
 pub const MAX_PROOFS: usize = 256;
-pub use osis_base::format::MAX_ROTATIONS;
 /// Tags in one Resume: ⌊(`MAX_MESSAGE` − 64) / 34⌋, a tag's encoding 34 bytes (spec/wire.md §2).
 pub const MAX_RESUME_TAGS: usize = (MAX_MESSAGE - 64) / 34;
 

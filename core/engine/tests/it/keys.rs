@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 fn rcpt(lp: &mut LocalPeer, i: usize, role: Role) -> Recipient {
     let e = &mut lp.peers[i].engine;
     let holder = e.me();
-    let keys = e.account_holder_keys(&holder).unwrap();
+    let keys = osis_keys::HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None };
     Recipient { holder, role, keys, floor: 0 }
 }
 

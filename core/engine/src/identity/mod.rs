@@ -47,7 +47,7 @@ impl Identity {
 
 /// The creation record of the key actor of `seed`, whose signing key is `signing` (spec/wire.md §3).
 pub fn key_actor_record(signing: &VerifyingKey, seed: &Secret32) -> CreationRecord {
-    CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: signing.to_bytes().to_vec(), nonce: creation_nonce(seed), account: false }
+    CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: signing.to_bytes().to_vec(), nonce: creation_nonce(seed) }
 }
 
 /// The tid of the key actor of `seed`, without deriving its KEM key pair.

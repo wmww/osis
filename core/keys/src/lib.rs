@@ -5,7 +5,6 @@
 //! Layer 3 (notes/architecture.md). Notes: notes/keys-impl.md.
 #![forbid(unsafe_code)]
 
-pub mod account;
 pub mod aspects;
 pub mod covers;
 pub mod delete;
@@ -19,7 +18,6 @@ pub mod wrap;
 
 pub use covers::{Departure, EdgeLog, EdgeWrite, Holder, covers, pins, reseal_missing, reseal_needed, uncovered};
 pub use members::{Grant, Keysets, Seal, boxing_keyless, key_access, left_out_for_good, seal_keyset, stale};
-pub use account::{account_epoch, account_keysets};
 pub use aspects::{KeysWrite, SecretsWrite, keyset, observe_secrets, snapshot_keyed, unvouched, Unvouched};
 pub use epoch::{ActorEpochs, EpochInfo, MAX_FREE_N, MAX_READING, MAX_READING_PER_AUTHOR, Provenance, ROLES, RoleEpochs, SUITE, UNKNOWN_AUTHOR, Unchecked, is_newer, newest_of};
 pub use names::{AllHeld, Held, Key, Name, Names, NamesDigest, Own};

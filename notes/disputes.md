@@ -1,7 +1,7 @@
 # Admin disputes
 > Summary: Admins are equals with no authority above them, so a fight between admins (a backdated removal of the remover) is a fork each node settles for itself by a trust set: Tess's decisions, the coherence rule keeping dispute handling in three places, the walk's rule, detection, default sides and choices (engine `sides.rs`), the scan bound, coming back after erasing (designed), storage under a fork (model-checked, not built), testing oracles, why no top authority, the options weighed and what was measured.
 
-Principle: a side is an ordinary view. A node runs the ordinary rules over held data plus its trust set (its local choices), so state is a function of both; forks are permanent and no rule waits for one to settle. Rules: spec/permissions.md §5.1 Trust set. Account forks (nodes of one account) are not admin disputes: notes/engine-validity-epochs.md.
+Principle: a side is an ordinary view. A node runs the ordinary rules over held data plus its trust set (its local choices), so state is a function of both; forks are permanent and no rule waits for one to settle. Rules: spec/permissions.md §5.1 Trust set.
 
 ## Decided (Tess)
 - No top authority above the admins, nothing hidden, nothing users may want to change baked into a thing. A tid and the mint admin it names stay; the mint admin is history, with no power once removed.

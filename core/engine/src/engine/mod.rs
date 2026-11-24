@@ -61,17 +61,9 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 /// Engine configuration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Config {
-    /// `node.0` software version.
-    pub software: String,
     pub store: StoreConfig,
-}
-
-impl Default for Config {
-    fn default() -> Config {
-        Config { software: format!("osis-engine {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default() }
-    }
 }
 
 
@@ -289,9 +281,6 @@ pub struct View {
     pub frontier: Option<Arc<osis_perm::Frontier>>,
     /// It carries a request, a purge or a release (`Header::purge`; `retention::lasting`).
     pub purges: bool,
-    /// The epoch an account's commit is signed at (spec/wire.md §4): what the epoch rule reads
-    /// (`Core::standing`); `None` for any other author.
-    pub epoch: Option<CommitId>,
     /// The header's own-cover marker (spec/wire.md §4 field 17; `retention::others_own_cover`).
     pub own_cover: bool,
 }
@@ -326,7 +315,6 @@ impl View {
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces, original_floor: a.original_floor }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             purges: !h.purge.is_empty(),
-            epoch: h.epoch,
             own_cover: h.own_cover,
         }
     }
@@ -479,9 +467,7 @@ fn fallback_header(v: &View) -> Header {
         frontier: None,
         links: Default::default(),
         ephemeral: None,
-        epoch: None,
-        rotation: None,
-        reseal: None, own_cover: v.own_cover, adminless: false,
+        own_cover: v.own_cover, adminless: false,
     }
 }
 
@@ -628,27 +614,6 @@ indexes! {
     /// `by_aspect`'s keys, aspect first: the things holding a commit on each aspect, read per
     /// aspect (the actors with a `secrets.0`, the link-seed things).
     pub aspect_things: JSetMap<Ak, Tid>,
-    /// Per account, the sequence number of its last rotation held or dropped
-    /// (`Core::note_rotation`): what `Core::account_view` is cached by.
-    pub rotations: JMap<Tid, u64>,
-    /// Accounts whose rotations held changed since their epochs were last judged
-    /// (`account::refresh_epochs`).
-    pub epochs_due: JSet<Tid>,
-    /// Per account with a rotation judged, what the epoch rule says of its commits
-    /// (`JudgedEpochs`; `account::refresh_epochs` re-judges what moved). Persisted.
-    pub epochs: JMap<Tid, Arc<crate::flows::account::JudgedEpochs>>,
-    /// Per account, its held commits at closed epochs that a counting thing list or listing
-    /// names (`account::refresh_epochs`): a row each, as the history it grows with. Persisted.
-    pub named: JSetMap<Tid, CommitId>,
-    /// Per held role commit at an epoch, its inner and merge signatures (spec/wire.md §4), read
-    /// when the chain is built (`Core::account_view`; `note_role_sigs`). Not persisted: an open
-    /// decodes them from the signature items it reads with each record's header bytes.
-    pub role_sigs: JMap<CommitId, Arc<RoleSigs>>,
-    /// Held commits of accounts per (account, epoch they are signed at).
-    pub by_epoch: JSetMap<(Tid, CommitId), CommitId>,
-    /// Held commits of accounts a thing list or listing may name otherwise since they were last
-    /// judged (`flows::lists::due`; `refresh_epochs`).
-    pub names_due: JSet<CommitId>,
     /// The places listing walks on a durable signal: every fire but the honored versions, valid
     /// or not (`edits`, persisted).
     pub originals: JSetMap<(Tid, Ak), (Ts, CommitId)>,
@@ -673,7 +638,7 @@ indexes! {
     pub forgotten: JMap<(Tid, Ak), Ts>,
     /// Per aspect, the commits forgotten here whose writes a held snapshot of it still carries,
     /// each with its stamp and purge facts from its header (`retention::names`,
-    /// `records::NAMES`): what a purge names it by and judges it by.
+    /// `records::FORGOTTEN_NAMES`): what a purge names it by and judges it by.
     pub forgotten_names: JNested<(Tid, Ak), CommitId, crate::retention::names::Name>,
     /// Per (thing, aspect, author) the held parts of plain commits of a coverable aspect (`retention::snapshot::own_aspect`): what an own replace may cover, without
     /// walking the aspect (derived, as `Core::put_meta` keeps it).
@@ -686,9 +651,6 @@ indexes! {
     /// Held split commits with a thing whose path opens nowhere here yet (`View::paths`), opened
     /// again as role inputs move (`apply::paths::refresh`).
     pub paths_unknown: JSet<CommitId>,
-    /// `by_thing` for role commits alone: what an account's chain reads of its role commits on
-    /// its account root (`Core::devices_read`), so a content write on D (its `holds.0`) moves no account's chain.
-    pub role_on: JSetMap<(Tid, Tid), CommitId>,
     /// Held commits carrying a purge request, per thing they have a delta on (a request has one
     /// on each thing it names, spec/commits.md §5): what finds a thing's requests
     /// (`retention::destroy`) without reading its other commits.
@@ -717,7 +679,7 @@ indexes! {
     /// Per held commit, the things on which a delta of it lists a level-1 or level-3 delete key
     /// no step places before it (`sync_ids::steps`, spec/crypto.md §7 Checked keys): its deltas
     /// on that thing are invalid, its edge writes there read by nothing. Persisted with the
-    /// commit's parts row; judged again as the steps, records or account epochs it reads move
+    /// commit's parts row; judged again as the steps or records it reads move
     /// (`Core::rekey`).
     pub miskeyed: JSet<(CommitId, Tid)>,
     /// Role commits whose `miskeyed` things moved: their edge writes are read again
@@ -736,12 +698,9 @@ indexes! {
     pub blob_parts: JMap<osis_base::BlobId, Arc<crate::sync::BlobOf>>,
     /// `blob_parts`' blobs per commit: they go with it (`sync::bodies::forget`).
     pub commit_blobs: JSetMap<CommitId, osis_base::BlobId>,
-    /// The certificate blobs sealed here per (sync ID, kind: records or a rotation's lists),
-    /// each with what it carries (`sync::certblobs`).
-    pub cert_blobs: JMap<(SyncId, crate::sync::CertKind), Arc<crate::sync::CertBlobs>>,
-    /// (thing, rotation) per thing list held here (`flows::lists`; kept for good, as the lists
-    /// are): `sync::listed` follows its feed.
-    pub lists_on: JSet<(Tid, CommitId)>,
+    /// The certificate blobs sealed here per sync ID, each with what it carries
+    /// (`sync::certblobs`).
+    pub cert_blobs: JMap<SyncId, Arc<crate::sync::CertBlobs>>,
     /// Fall marks per aspect (`sync::falls`, spec/sync-judgement.md §4): a count of events, not
     /// derived from the commits held, so no rebuild compares it.
     pub falls: JMap<(Tid, Ak), u64>,
@@ -834,9 +793,7 @@ indexes! {
     /// its author's write whether its body is held or not, with the entries its body says while
     /// held (`validity::note_addenda`, `validity::forget_addendum_body`).
     pub addenda: JMap<(Tid, CommitId), Arc<crate::apply::validity::Addendum>>,
-    /// `addenda` by the rotation or removal an entry is keyed by: (thing, addendum commit). A
-    /// rotation joining or leaving an epoch's closers moves only the commits these list
-    /// (`refresh_epochs`).
+    /// `addenda` by the removal an entry is keyed by: (thing, addendum commit).
     pub addenda_keyed: JSetMap<CommitId, (Tid, CommitId)>,
     /// Removals to gather again at the end of the transaction (`flows::addenda`): every held
     /// one at an open, then those whose gathering a walk change or late part may have moved.
@@ -849,9 +806,6 @@ indexes! {
     /// holder, the removal's `ts`, removal). A walk change naming such an edge at or before the
     /// removal, or a delta stated through it, makes it due again (`flows::addenda::wake`).
     pub addenda_wake: JSet<(Tid, Tid, osis_base::Ts, CommitId)>,
-    /// Accounts' rotations applied and not yet answered with this node's listing or addenda
-    /// (`flows::signing::answer_rotations`; `records::ROTATIONS_DUE`).
-    pub rotations_due: JSet<CommitId>,
     /// The earliest valid held commit writing an epoch's keyset in `keys.0` (its rotation):
     /// (actor, role, epoch) -> (`ts`, commit). Absent: unknown. What a box naming the keyset
     /// carries (spec/crypto.md §4, Carried) and a certificate of the actor's current keys.
@@ -905,11 +859,6 @@ pub(crate) enum Step {
     Cover,
     /// One re-snapshot owed after a purge written (`Engine::purge_resnapshots`).
     Resnapshot,
-    /// One account rotation answered with this node's listing or addenda
-    /// (`flows::signing::answer_rotations`).
-    Rotation,
-    /// This node's account's dial list rid of removed nodes' entries (`sync::dial::drop_departed`).
-    Dial,
 }
 
 /// Tests: after `skip` more steps of kind `site` run, every later one fails (`BadInput`), before
@@ -925,41 +874,14 @@ pub(crate) struct StepFault {
 /// Whether a commit listener is on a thing (`Engine::listen_commits`).
 pub type CommitListeners = Arc<dyn Fn(&Tid) -> bool + Send + Sync>;
 
-/// Tests: faults the custody differential plants (`Core::faults`).
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct Faults {
-    pub custody_judged: bool,
-    pub roster_bare: bool,
-    pub merge_random: bool,
-    /// Boxes to an account at a stale epoch (revoked, or not counting) stay shut, as if stale
-    /// meant unread (`Core::account_keys`).
-    pub stale_shut: bool,
-}
-
-/// A held role commit's signatures beyond its outer one (`Indexes::role_sigs`): its sealed
-/// inner signature (which node made it, read by the account's nodes) and, a rotation, its merge
-/// signatures.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RoleSigs {
-    pub inner: Option<[u8; osis_crypto::INNER_LEN]>,
-    /// A rotation's inner signature sealed again (`osis_commit::Sigs::more`).
-    pub more: Vec<[u8; osis_crypto::INNER_LEN]>,
-    pub merge: Vec<osis_crypto::Signature>,
-}
-
 /// A point `Core::rollback_to` undoes back to: the journals' points, the lengths of the lists
 /// that only grow within a transaction, and the work lists a step's start holds (a copy: they
 /// are empty or small there).
 pub(crate) struct CoreMark {
     ix: IndexesMark,
-    sides: (usize, usize),
+    sides: usize,
     schemas: usize,
     written: usize,
-    /// `accounts_undo`'s length.
-    accounts: usize,
-    /// `epochs_judged_from`: what the restored judgment of the account's epochs was made from.
-    epochs_judged_from: Option<crate::flows::account::JudgedFrom>,
     events: usize,
     commits_named: usize,
     listed_before: usize,
@@ -1022,10 +944,6 @@ pub struct Core {
     /// `Engine::roster_holders` per sync ID (`memo`): waits and leaving's peers read it per sync
     /// ID at each step.
     pub(crate) roster_holders: memo::Memo<SyncId, Arc<crate::sync::RosterHolders>>,
-    /// This node's account's dial list entries of nodes removed from its account root
-    /// (`sync::dial::drop_departed`), followed: settled at each transaction's end that moved what
-    /// it read.
-    pub(crate) dial_departed: memo::Effects<(), crate::sync::dial::Departed>,
     /// What each gathered removal owes at this node and may write now (`flows::addenda::Decides`),
     /// followed: settled at each transaction's end that moved what it read.
     pub(crate) addenda_owed: crate::flows::addenda::Decides,
@@ -1044,8 +962,6 @@ pub struct Core {
     pub(crate) certified: crate::sync::certified::Certified,
     /// The evidence derivation over the held set (`evidence::kept`), which `certified` reads.
     pub(crate) evidence: crate::evidence::kept::Kept,
-    /// The thing lists each read thing's sync IDs carry, per rotation (`sync::listed`).
-    pub(crate) listed: crate::sync::listed::Listed,
     /// The records each read thing's sync IDs carry as certificates (`sync::certblobs`).
     pub(crate) cert_records: crate::sync::certblobs::CertRecords,
     /// `rotation::departures` per actor (`memo`).
@@ -1058,19 +974,10 @@ pub struct Core {
     pub(crate) store_rows: memo::Changes,
     /// `Core::epochs` per thing (`memo`).
     pub(crate) epochs_of: memo::Memo<Tid, Option<Arc<osis_keys::ActorEpochs>>>,
-    /// Numbers `Indexes::rotations`; never rolled back.
-    pub rotation_seq: u64,
     /// The pass place (`sync::held`): one strictly increasing count that both stamps a role
     /// commit's arrival from elsewhere and begins a complete pass, so the two never tie. Never
     /// rolled back; an open takes the highest place stored.
     pub place: u64,
-    /// `Core::account_view` per account (`memo`).
-    pub(crate) account_views: memo::Memo<Tid, Option<Arc<crate::flows::account::AccountView>>>,
-    /// `Core::account_epochs` per account (`memo`).
-    pub(crate) account_epochs_of: memo::Memo<Tid, Option<osis_keys::ActorEpochs>>,
-    /// What this node's account's epochs were last judged from (`flows::account::refresh_epochs`);
-    /// empty after an open, when the persisted judgment stands.
-    pub(crate) epochs_judged_from: Option<crate::flows::account::JudgedFrom>,
     /// Per actor, each holder for keys at its role and its role with key access
     /// (`rotation::members::key_roles`; `memo`): a walk of its holders through destroyed actors.
     pub(crate) key_roles: memo::Memo<Tid, Arc<crate::rotation::members::KeyRoles>>,
@@ -1232,12 +1139,6 @@ pub struct Core {
     /// Tests: the original's floor this node's edits claim, over the true one (`commit_in`).
     #[cfg(test)]
     pub(crate) lie_floor: Option<u64>,
-    /// Tests, faults the custody differential plants (roles-model `custody` controls): seeds held
-    /// only from counting epochs (`custody_judged`), a held revocation acting on D's roster apart
-    /// from its rotation (`roster_bare`), merges with fresh seeds (`merge_random`), stale boxes shut
-    /// (`stale_shut`).
-    #[cfg(test)]
-    pub(crate) faults: Faults,
     /// Key actors other than the node whose seed this node holds for now: they sign commits
     /// (`Mutation::sign_as`) and open their boxes. Derived: each is held exactly while
     /// `held_keys` or a followed link names it (`Engine::settle_key_actor`). In memory only.
@@ -1249,26 +1150,10 @@ pub struct Core {
     /// (spec/sync-set.md §2). In memory only: sync holds the link durably and follows it again
     /// at a start.
     pub(crate) followed_links: crate::sync_ids::actors::FollowedLinks,
-    /// The account this node belongs to: the author of its commits and
-    /// the holder of its roles. `None` before it joins one.
-    pub account: memo::Tracked<Option<Tid>>,
     /// The wall clock as memos read it (`memo::Clock`, wall ms): set at each transaction and by
     /// node-sync before it asks its memos; a memo reads it whole (`get`) or up to the next time
     /// that moves its answer (`until`).
     pub time: memo::Clock,
-    /// Accounts this node signs as, seeds from each one's account root (`Engine::hold_account`),
-    /// retaken on every open.
-    pub accounts: memo::Stamped<Tid, Arc<crate::flows::account::HeldAccount>>,
-    /// The account this node was removed from and has not dropped what it read as it yet
-    /// (`flows::signing::leave_if_removed`; the lost-access drop takes it).
-    pub left: BTreeSet<Tid>,
-    /// What the running transaction changed of `accounts` and `left` (`account_changing`),
-    /// oldest first: each account as it was, held (`None`: not) and in `left`.
-    accounts_undo: Vec<(Tid, Option<Arc<crate::flows::account::HeldAccount>>, bool)>,
-    /// A commit of this node's account applied from elsewhere, or the engine opened (not
-    /// durable): what it owes its signing chain is looked at at the end of the next complete
-    /// pass of its account root's sync IDs (`Engine::pass_end`, `Engine::signing_due`).
-    pub signing_due: bool,
     /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
     /// The list bound, `MAX_LIST_BYTES` (tests: `Engine::list_bound`): what `receipt::fit` fits a
@@ -1344,10 +1229,6 @@ pub struct Core {
     /// Things whose settings moved: whether their history holds targets is judged at the next
     /// closure settle (`refs::kept::settle`).
     pub kept_things_due: BTreeSet<Tid>,
-    /// Things this transaction's own commits minted with an account as admin and did not make independent yet:
-    /// given them before a content write on them (`write::independent_first`), else at its end
-    /// (`rotation::own_secrets_due`).
-    pub own_secrets_due: BTreeSet<Tid>,
     /// Freed rows (thing, blob) added this transaction: judged at its end, once their states are
     /// rebuilt (`retention::freed::settle_due`).
     pub freed_due: BTreeSet<(Tid, osis_base::BlobId)>,
@@ -1734,7 +1615,7 @@ impl Core {
 
     /// Whether some validity waits for `rejudge_all`.
     pub fn stale(&self) -> bool {
-        self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty() || !self.stale_authors.is_empty() || !self.ix.epochs_due.is_empty() || !self.ix.keys_due.is_empty()
+        self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty() || !self.stale_authors.is_empty() || !self.ix.keys_due.is_empty()
     }
 
     /// Notes that the running transaction writes the state of `k` (evicted on rollback).
@@ -1760,18 +1641,9 @@ impl Core {
         self.sides.commit();
         self.waits.retake_committed();
         self.written.clear();
-        self.accounts_undo.clear();
         self.reach_log.clear();
         self.walks.committed();
         self.dirty = false;
-    }
-
-    /// Account `p` is about to change in `accounts` or `left` inside a transaction: a rollback
-    /// puts it back (a seed a failed transaction kept is not held, a leave undone is not left).
-    pub(crate) fn account_changing(&mut self, p: Tid) {
-        let was = self.accounts.get(&p).cloned();
-        let left = self.left.contains(&p);
-        self.accounts_undo.push((p, was, left));
     }
 
     /// Drops the `tree_reach` of every thing a question took since `n` (`reach_log`): what it
@@ -1794,8 +1666,6 @@ impl Core {
             sides: self.sides.mark(),
             schemas: self.schemas.mark(),
             written: self.written.len(),
-            accounts: self.accounts_undo.len(),
-            epochs_judged_from: self.epochs_judged_from,
             events: self.events.queued(),
             commits_named: self.commits_named.len(),
             listed_before: self.listed_before.len(),
@@ -1829,10 +1699,9 @@ impl Core {
         let stale = (&self.stale_things, &self.stale_authors, &self.stale_under, &self.stale_commits, self.stale_all);
         [
             ("indexes", self.ix.mark() != m.ix),
-            ("sides", self.sides.journaled() > m.sides.0 + m.sides.1),
+            ("sides", self.sides.journaled() > m.sides),
             ("schemas", self.schemas.mark() != m.schemas),
             ("written", self.written.len() != m.written),
-            ("accounts", self.accounts_undo.len() != m.accounts),
             ("events", self.events.queued() != m.events),
             ("commits_named", self.commits_named.len() != m.commits_named),
             ("listed_before", self.listed_before.len() != m.listed_before),
@@ -1858,7 +1727,7 @@ impl Core {
     /// a failed read keeps them). The timelines follow the restored held set. Each field's class
     /// is listed in `rollback_classes`.
     pub(crate) fn rollback_to(&mut self, m: CoreMark) {
-        let sides_back = self.sides.journaled() > m.sides.0 + m.sides.1;
+        let sides_back = self.sides.journaled() > m.sides;
         self.sides.rollback_to(m.sides);
         if self.changed_since(&m) {
             // the node closure's follower, if it acted on what goes back (`sync::units::Follow`)
@@ -1874,16 +1743,6 @@ impl Core {
             }
         }
         self.dirty = m.dirty;
-        for (p, was, left) in self.accounts_undo.split_off(m.accounts.min(self.accounts_undo.len())).into_iter().rev() {
-            match was {
-                Some(a) => drop(self.accounts.replace(p, a)),
-                None => drop(self.accounts.remove(&p)),
-            }
-            match left {
-                true => self.left.insert(p),
-                false => self.left.remove(&p),
-            };
-        }
         self.waits.retake_rolled_back();
         self.ix.rollback_to(m.ix);
         self.schemas.rollback_to(m.schemas);
@@ -1906,7 +1765,6 @@ impl Core {
         self.wrote_on.truncate(m.wrote_on);
         self.batched = m.batched;
         self.fallen = m.fallen;
-        self.epochs_judged_from = m.epochs_judged_from;
         self.memory_tx = m.memory_tx;
     }
 
@@ -1935,10 +1793,6 @@ impl Core {
             revivals: _,
             wrote_on: _,
             written: _,
-            accounts: _,
-            left: _,
-            accounts_undo: _,
-            epochs_judged_from: _,
             stale_things: _,
             stale_authors: _,
             stale_under: _,
@@ -1967,8 +1821,6 @@ impl Core {
             sync_body: _,
             sync_bodies: _,
             pieces_below: _,
-            account_views: _,
-            account_epochs_of: _,
             secrets_read: _,
             own_commits: _,
             head_keys: _,
@@ -1978,7 +1830,6 @@ impl Core {
             sync_set: _,
             dial_peers: _,
             roster_holders: _,
-            dial_departed: _,
             addenda_owed: _,
             // built again from the journaled `ix.paths_unknown` (`apply::paths::Wait`)
             paths_wait: _,
@@ -1987,7 +1838,6 @@ impl Core {
             // indexes again
             certified: _,
             evidence: _,
-            listed: _,
             cert_records: _,
             key_roles: _,
             wrap_blocks: _,
@@ -2024,8 +1874,6 @@ impl Core {
             memory_generation: _,
             // work lists and hints a superset of which is harmless (the consumer re-checks each
             // entry against the restored state), and what a step only moves forward
-            signing_due: _,
-            rotation_seq: _,
             place: _,
             // the trigger's estimates and arms: a failed write counted more than landed, which
             // costs a weighing at most
@@ -2033,7 +1881,6 @@ impl Core {
             drop_due: _,
             kept_due: _,
             kept_things_due: _,
-            own_secrets_due: _,
             freed_due: _,
             carriers_due: _,
             forgotten_names_due: _,
@@ -2083,7 +1930,6 @@ impl Core {
             key_actors,
             held_keys,
             followed_links,
-            account,
             keep_bodies,
             list_bound,
             sourced_elsewhere,
@@ -2114,8 +1960,6 @@ impl Core {
             snapshot_fault: _,
             #[cfg(test)]
             lie_floor: _,
-            #[cfg(test)]
-            faults: _,
         } = c;
         let actors = |m: &mut dyn Iterator<Item = &Tid>| m.copied().collect::<Vec<_>>();
         format!(
@@ -2123,7 +1967,7 @@ impl Core {
             (
                 (id.tid(), detect, key_salt, addenda_on, skip_writer_rules, leave_adminless),
                 (commits_watched, refs_watched, commit_listeners.is_some(), forge_bad, keep_bodies, list_bound, sourced_elsewhere),
-                (actors(&mut key_actors.keys()), actors(&mut held_keys.keys()), followed_links.all(), account.get()),
+                (actors(&mut key_actors.keys()), actors(&mut held_keys.keys()), followed_links.all()),
             )
         )
     }
@@ -2167,10 +2011,10 @@ impl Core {
         n
     }
 
-    /// The nonces this node writes under now: its own sessions and, per account it signs as, that
-    /// account's (what an own write falling starts anew, `fresh_session`).
+    /// The nonces this node writes under now: its own sessions (what an own write falling starts
+    /// anew, `fresh_session`).
     pub(crate) fn current_sessions(&self) -> BTreeSet<Nonce> {
-        std::iter::once(self.id.tid()).chain(self.accounts.keys().copied()).flat_map(|a| [self.nonce_as(&a, self.session.nonce), self.nonce_as(&a, self.expiring.nonce)]).collect()
+        std::iter::once(self.id.tid()).flat_map(|a| [self.nonce_as(&a, self.session.nonce), self.nonce_as(&a, self.expiring.nonce)]).collect()
     }
 
     /// Whether `n` is the nonce of a plain session of `signer` of this open (`fresh_session`).
@@ -2179,21 +2023,10 @@ impl Core {
         n[..8] == now[..8] && nonce_count(&now).wrapping_sub(nonce_count(n)) <= self.later_sessions
     }
 
-    /// The account this node writes as and holds roles as; `None` before it has joined one (it
-    /// then writes only its own card, `commit_in`).
-    pub(crate) fn me(&self) -> Option<Tid> {
-        self.account.get()
-    }
-
-    /// The account this node acts as: its own while it is a node of it (holds its seeds). A
-    /// node removed from its account reads nothing as it (spec/permissions.md §3, Lost access).
-    pub(crate) fn member(&self) -> Option<Tid> {
-        self.account.get().filter(|p| self.accounts.contains_key(p))
-    }
-
-    /// Who writes on `t`: a node writes its own thing as itself, all else as its account.
-    pub(crate) fn writer_for(&self, t: &Tid) -> Result<Tid> {
-        if self.nodes_own(t) { Ok(self.id.tid()) } else { self.writer() }
+    /// The thing this node writes as and holds roles as: its node thing (spec/permissions.md §1,
+    /// own things).
+    pub(crate) fn me(&self) -> Tid {
+        self.id.tid()
     }
 
     /// Whether `t` is the node's own, written by it alone (spec/sync-set.md §1): its node thing,
@@ -2219,21 +2052,6 @@ impl Core {
         false
     }
 
-    /// `me`, for what only an account may do.
-    /// A node removed from its account writes nothing as it (`member`), nor one D's roster does
-    /// not hold (one whose taken revocations remove it: spec/permissions.md §5.5, it signs
-    /// nothing for P while it may still be a node of P), nor one not holding its preferred head's
-    /// seed (it signs only there: spec/crypto.md §9, Custody), until it does.
-    pub(crate) fn writer(&self) -> Result<Tid> {
-        let p = self.account.get().ok_or(Error::Misuse("this node has joined no account"))?;
-        self.member().ok_or(Error::Misuse("this node was removed from its account"))?;
-        if !self.account_view(&p).is_some_and(|v| v.roster().contains(&self.id.tid())) {
-            return Err(Error::Misuse("this node is off its account's roster: it signs nothing as it"));
-        }
-        self.account_signing(&p)?;
-        Ok(p)
-    }
-
     fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session, store_rows: memo::Changes) -> Core {
         let key_salt = osis_base::hash::derive_key("osis node key index", id.seed().expose());
         let mut core = Core {
@@ -2248,22 +2066,16 @@ impl Core {
             sync_set: memo::Memo::new("sync: sync set"),
             dial_peers: memo::Memo::new("sync: dial peers"),
             roster_holders: memo::Memo::new("sync: roster holders"),
-            dial_departed: memo::Effects::new("sync: dial list departed"),
             addenda_owed: crate::flows::addenda::Decides::default(),
             own_roles: memo::Cutoff::new("own roles"),
             paths_wait: None,
             holders_named: memo::Memo::new("holders named: read"),
             certified: Default::default(),
             evidence: Default::default(),
-            listed: Default::default(),
             cert_records: Default::default(),
             departures: memo::Memo::new("departures"),
             reseal_scans: memo::Memo::new("reseal: scan"),
-            rotation_seq: 0,
             place: 0,
-            account_views: memo::Memo::new("account view"),
-            account_epochs_of: memo::Memo::new("account epochs"),
-            epochs_judged_from: None,
             key_roles: memo::Memo::new("key roles"),
             wrap_blocks: memo::Cutoff::new("wrap blocked"),
             read_facts: memo::Cutoff::new("sync: read facts"),
@@ -2339,20 +2151,13 @@ impl Core {
             snapshot_fault: None,
             #[cfg(test)]
             lie_floor: None,
-            #[cfg(test)]
-            faults: Faults::default(),
             key_actors: Default::default(),
             held_keys: Default::default(),
             followed_links: Default::default(),
             epochs_of: memo::Memo::new("epochs"),
             store_rows,
-            account: Default::default(),
             time: Default::default(),
-            left: BTreeSet::new(),
-            accounts_undo: Vec::new(),
             // judged once after an open: a commit applied before a restart left it owed
-            signing_due: true,
-            accounts: Default::default(),
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
             gone_dirty: BTreeSet::new(),
@@ -2379,7 +2184,6 @@ impl Core {
             drop_due: BTreeSet::new(),
             kept_due: BTreeSet::new(),
             kept_things_due: BTreeSet::new(),
-            own_secrets_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
             carriers_due: BTreeSet::new(),
             forgotten_names_due: BTreeSet::new(),
@@ -2507,18 +2311,6 @@ impl Core {
     }
 
 
-    /// A held commit changed: if it is a rotation, its account gets the next rotation number
-    /// (`Indexes::rotations`: what `refresh_epochs` judges the account again by,
-    /// `Core::judged_from`). `rotation_seq` never rolls back, so a number is never given twice.
-    pub(crate) fn note_rotation(&mut self, m: &Meta) {
-        // from the view: an open decodes no header. Every rotation writes its account's `keys.0`.
-        if m.view.kind.is_role() && m.view.aspect(&m.view.signer, "keys.0").is_some() {
-            self.rotation_seq = self.rotation_seq.saturating_add(1);
-            self.ix.rotations.insert(m.view.signer, self.rotation_seq);
-            self.ix.epochs_due.insert(m.view.signer);
-        }
-    }
-
     /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
     /// the indexes derived from it stay exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
@@ -2544,7 +2336,6 @@ impl Core {
             self.drop_due.insert(id);
         }
         self.note_none(&m);
-        self.note_rotation(&m);
         self.touches.note(&id, &m);
         // held again: its meta decides its covers from now on
         if self.ix.handed.contains_key(&id) {
@@ -2607,7 +2398,6 @@ impl Core {
             self.note_on(&m);
         }
         self.index_missing(id, &had, &BTreeSet::new());
-        self.note_rotation(&m);
         self.index_own(id, &m, false);
         self.index_covers(id, &covers_of(&m), &BTreeSet::new());
         self.note_none(&m);
@@ -2691,8 +2481,8 @@ impl Core {
         }
     }
 
-    /// The verdicts of commit `id`'s addenda on `things` moved: what they list against a rotation
-    /// reads them (`validity::Judge::counts`), touched and judged again. Whether any was.
+    /// The verdicts of commit `id`'s addenda on `things` moved: what they list is touched and
+    /// judged again. Whether any was.
     fn addenda_moved(&mut self, id: &CommitId, things: &[Tid]) -> bool {
         let listed: BTreeSet<CommitId> = things.iter().filter_map(|t| self.ix.addenda.get(&(*t, *id))).flat_map(|x| x.entries.iter().flat_map(|(_, l)| l.iter().copied())).filter(|c| self.ix.commits.contains_key(c)).collect();
         for c in &listed {
@@ -2886,15 +2676,9 @@ fn then<T, U>(r: Result<T>, f: impl FnOnce() -> Result<U>) -> Result<T> {
     r.and_then(|v| f().map(|_| v))
 }
 
-/// The transaction's end, steps 1 and 2 (notes/engine.md): own secrets due, then the flows while
-/// their writes bring things into the node closure.
+/// The transaction's end, steps 1 and 2 (notes/engine.md): the flows while their writes bring
+/// things into the node closure.
 fn end_flows<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
-    // a thing minted with an account as admin is independent by its creating transaction's end
-    // (spec/permissions.md §3)
-    if !tx.core.own_secrets_due.is_empty() {
-        r = then(r, || crate::rotation::own_secrets_due(tx));
-    }
-    tx.core.own_secrets_due.clear();
     // explicit demotions applied get this node's addenda (spec/permissions.md §5.2),
     // on what the node closure holds as this transaction leaves it (a node writes only
     // what it holds, spec/sync-set.md §2 Writing). The flows' own writes may bring
@@ -2922,9 +2706,6 @@ fn end_flows<T>(tx: &mut Tx<'_>, mut r: Result<T>) -> Result<T> {
         // a commit pends only while carried (spec/commits.md §4 Pending storage)
         r = then(r, || crate::apply::carriers::settle(tx));
         r = then(r, || crate::flows::addenda::write_owed(tx));
-        r = then(r, || crate::flows::signing::leave_if_removed(tx));
-        r = then(r, || crate::flows::signing::answer_rotations(tx));
-        r = then(r, || crate::sync::dial::drop_departed(tx));
         r = then(r, || crate::sync::units::settle(tx));
         if r.is_err() || !crate::apply::entering(tx) {
             break;
@@ -3153,13 +2934,8 @@ impl Engine {
             self.loading = true;
         }
         self.settle_blobs()?;
-        // the account first: judging what is held reads which commits are this node's own (an own
-        // part judged invalid stays, `retention::goes_invalid`)
-        if let Some((p, _)) = self.account()? {
-            self.core.account.set(Some(p));
-        }
         self.reload()?;
-        self.take_account()?;
+        self.run(crate::flows::reopen_all)?;
         self.reexamine()?;
         self.forget_gone_causes()?;
         self.rejudge_setting_waits()?;
@@ -3207,13 +2983,12 @@ impl Engine {
         Ok(())
     }
 
-    /// The node thing's first commits: `created.0` with `node.0`, then `keys.0` (its KEM key).
+    /// The node thing's first commits: `created.0`, then `keys.0` (its KEM key).
     fn bootstrap(&mut self) -> Result<()> {
         use osis_schema::core_types as ct;
         let node = self.tid();
         let mut m = Mutation::new();
         m.create(self.core.id.record().clone());
-        m.set(node, &ct::NODE, &ct::NodeInfo { software: self.cfg.software.clone() })?;
         self.commit(m)?;
         let kem = self.core.id.keys().kem.public();
         let mut k = Mutation::new();
@@ -3262,17 +3037,9 @@ impl Engine {
         self.core.id.tid()
     }
 
-    /// The account this node writes as. Panics on a node that has joined none: for tests and
-    /// paths past joining; `account_tid` where that can be.
-    #[track_caller]
-    #[allow(clippy::expect_used)]
+    /// The thing this node writes as: its node thing.
     pub fn me(&self) -> Tid {
-        self.core.account.get().expect("this node has joined no account")
-    }
-
-    /// The account this node belongs to, once it has one.
-    pub fn account_tid(&self) -> Option<Tid> {
-        self.core.account.get()
+        self.core.me()
     }
 
     pub fn identity(&self) -> &Identity {
@@ -3431,7 +3198,7 @@ impl Engine {
                 r = end_drops(&mut tx, r);
                 r = end_settle(&mut tx, r);
                 // every validity change was judged before the index is persisted
-                debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty() && tx.core.ix.epochs_due.is_empty()), "stale validity left unjudged: {:?} {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits, *tx.core.ix.epochs_due);
+                debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits);
                 #[cfg(debug_assertions)]
                 if r.is_ok() {
                     match crate::apply::check_rebuilt(&mut tx) {
@@ -3560,7 +3327,6 @@ impl Engine {
         fresh.followed_links = std::mem::take(&mut self.core.followed_links);
         // the pass place never goes back: passes under way began at places below it
         fresh.place = self.core.place;
-        fresh.accounts = std::mem::take(&mut self.core.accounts);
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);
         fresh.waits = std::mem::take(&mut self.core.waits);
         // the trigger's estimates and due aspects (in memory, an open starts them empty): a write
@@ -3602,14 +3368,12 @@ impl Engine {
         fresh.refs_watched = self.core.refs_watched;
         fresh.commit_listeners = self.core.commit_listeners.clone();
         fresh.skip_writer_rules = self.core.skip_writer_rules;
-        fresh.account.set(self.core.account.get());
         // caches keyed on it (the sync engine's sync IDs and co-readers) never see an old value again
         fresh.generation = self.core.generation.wrapping_add(1);
         #[cfg(test)]
         {
             fresh.check_ingest = self.core.check_ingest;
             fresh.whole_apply = self.core.whole_apply;
-            fresh.faults = self.core.faults;
         }
         fresh
     }
@@ -3645,15 +3409,6 @@ impl Engine {
         // key actors are derived: held exactly while `hold_key_actor` or a followed link names them
         let named: BTreeSet<Tid> = self.core.held_keys.keys().chain(self.core.followed_links.all().values().map(|(_, l)| l)).copied().collect();
         assert_eq!(self.core.key_actors.keys().copied().collect::<BTreeSet<_>>(), named, "key actors: held or named by a followed link");
-        // each account taken up holds exactly the seeds in custody (what an open takes up)
-        let held: Vec<(Tid, BTreeSet<osis_crypto::VerifyingKey>)> = self.core.accounts.iter().map(|(p, a)| (*p, a.keys.keys().copied().collect())).collect();
-        for (p, keys) in held {
-            let kept = osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(|tx| crate::flows::custody::seeds(tx, &p)))));
-            match kept {
-                Err(e @ Error::Store(_)) => return Err(e),
-                r => assert_eq!(r.map(|s| s.into_keys().collect::<BTreeSet<_>>()).ok(), Some(keys), "account {p:?}: the seeds taken up, as in custody"),
-            }
-        }
         match self.checked_closure() {
             Err(e @ Error::Store(_)) => return Err(e),
             r => assert!(r.is_ok(), "node closure walked afresh: {:?}", r.err()),
@@ -3671,7 +3426,6 @@ impl Engine {
             fresh.key_actors = self.core.key_actors.clone();
             // a link followed is synced, so its grants count (`rotation::role_here`)
             fresh.followed_links = self.core.followed_links.clone();
-            fresh.accounts = self.core.accounts.clone();
             let mut rng = SeededRng::from_u64(0);
             let mut store_rng = SeededRng::from_u64(0);
             let load = || -> Result<Option<u64>> {

@@ -12,7 +12,7 @@ fn ok(name: &str, seed: u64) -> Report {
 }
 
 // spec/requirements.md (convergence under any delivery order, duplicates, partial receipt);
-// spec/permissions.md §1 (node of p).
+// spec/sync.md §1.
 #[test]
 fn two_nodes_converge() {
     let r = ok("two_nodes", 0);

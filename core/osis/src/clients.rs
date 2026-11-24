@@ -65,7 +65,7 @@ impl Osis {
         // the account root holds the actor by a strong, in the transaction minting it
         // (spec/sync-set.md §2 Making a thing)
         let (actor, _) = self.engine(|e| {
-            let d = e.account_root().ok_or(osis_engine::Error::Misuse("not a node of an account"))?;
+            let d = e.node_root().ok_or(osis_engine::Error::Misuse("no node root"))?;
             e.mint_actor(&me, |actor| {
                 let mut m = osis_engine::Mutation::new();
                 m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(actor)) })?;

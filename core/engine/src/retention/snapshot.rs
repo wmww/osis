@@ -265,7 +265,7 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
         return Ok(Vec::new());
     }
     let due: BTreeSet<u64> = owed.iter().filter_map(|c| tx.core.ix.commits.get(c).and_then(|m| m.header.expires)).filter(|t| carriers.contains_key(t)).collect();
-    let node = tx.core.writer_for(tid)?;
+    let node = tx.core.me();
     // every carried write, sorted (`sorted_owns`: a lookup per dot); the state cut to them once,
     // so each expiry's part is cut from those writes alone, not from the whole state again
     let sorted = |mut v: Vec<Owned>| {
@@ -845,7 +845,7 @@ fn covered_body(tx: &mut Tx<'_>, s: &CommitId, sai: usize, c: &CommitId, cai: us
 /// through a cover: a session write of such a node, or a commit-form write, whose commit is not
 /// held here (forgotten under a cover, or never received: a snapshot carried it here; a
 /// commit-form write's author is unknown without its header, so any such write counts). What a
-/// removal's frontier can no longer name by ID (spec/permissions.md §5.1, §5.5 Own cover). Only
+/// removal's frontier can no longer name by ID (spec/permissions.md §5.1 Own cover). Only
 /// writes stamped from `since` on (or whose stamp the state does not carry). Read only where a
 /// cover can stand for a commit: a forgotten one noted, or a snapshot held.
 pub(crate) fn carried_only(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, of: &dyn Fn(&Tid) -> bool, since: Option<Ts>) -> Result<bool> {
@@ -863,13 +863,13 @@ pub(crate) fn carried_only(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, of: &dyn Fn(&Tid
 }
 
 /// Whether this node may write a snapshot of `(tid, ak)` stamped `ts` (`write::may_write`): as the
-/// node that writes on the thing (`writer_for`: not one removed from its account), holding the
+/// node that writes on the thing (`Core::me`), holding the
 /// strictest role a write the snapshot carries could need (`snapshot_role`; tests may write one a
 /// receiver judges invalid). `write_snapshot`'s check, so what a purge-on-replace cover asks
 /// (`replace::settle_none`).
 pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts: Ts) -> Result<MayWrite> {
-    let Ok(node) = tx.core.writer_for(tid) else { return Ok(MayWrite::No) };
-    if is_content(ak.as_str()) && !carried_passes_on(tx, tid, ak)? || !carried_lasts(tx, tid, ak)? {
+    let node = tx.core.me();
+    if is_content(ak.as_str()) && !carried_passes_on(tx, tid, ak)? {
         return Ok(MayWrite::Later);
     }
     let skip = tx.core.skip_writer_rules;
@@ -898,25 +898,6 @@ pub(crate) fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<b
     }).collect();
     for (c, ai) in held {
         if !crate::sync_ids::opened::passes_on(tx, &c, ai, tid, ak.as_str(), None)? && super::bounds::live(tx, &c, ai)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// Whether every held body of `(tid, ak)` whose writes live in the state stands as it will once
-/// every head of its account closes (`signing::lasts`, spec/permissions.md §5.5 Carrying): a
-/// snapshot carries nothing that counts only at an open head, so it never lends a write a
-/// standing the write lacks. Woken when a standing moves (`replace::standing_moved`).
-pub(crate) fn carried_lasts(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
-    let held: Vec<(CommitId, usize)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| {
-        let m = tx.core.ix.commits.get(c)?;
-        m.view.epoch?;
-        let ai = m.aspect(tid, ak)?;
-        matches!(m.hold(ai), Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Leftover { .. })).then_some((*c, ai))
-    }).collect();
-    for (c, ai) in held {
-        if !crate::flows::signing::lasts(tx, &c)? && super::bounds::live(tx, &c, ai)? {
             return Ok(false);
         }
     }
@@ -958,7 +939,7 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
     if may_snapshot(tx, &tid, &ak, memory, ts)? != MayWrite::Yes {
         return Err(Error::Permission { tid, needs: osis_base::Role::Write });
     }
-    let node = tx.core.writer_for(&tid)?;
+    let node = tx.core.me();
     if tx.state(&tid, &ak)?.is_none() {
         return Ok(None);
     }
@@ -1001,7 +982,7 @@ pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts
     absorbed.retain(|c, _| listed.contains(&osis_crdt::Source::commit(*c)));
     let facts = facts_of(tx, &tid, &ak, &st)?;
     let purge_by = osis_commit::retention::snapshot_purge_by(ak.as_str());
-    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, rotation: None, reseal: None, own_cover, adminless: false };
+    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, own_cover, adminless: false };
     let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, purge_by: Some(purge_by), expires, replaces: None, original_floor: 0, frontiers: Some((frontiers, absorbed, facts)), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d])
 }

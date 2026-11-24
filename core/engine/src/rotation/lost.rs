@@ -84,10 +84,10 @@ fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
     role_here(core, a) >= Some(min)
 }
 
-/// The node's role on `a` (spec/sync-set.md §2 Own actors): the best its own actors (its account,
-/// itself, a held key actor) hold on `a` now by `a`'s grants as the node holds them, by paths
+/// The node's role on `a` (spec/sync-set.md §2 Own things): the best its own things (itself, a
+/// held key actor) hold on `a` now by `a`'s grants as the node holds them, by paths
 /// with key access, `until` honoured (`Core::keyed_role_now`), where those grants count
-/// (`grants_count`); none where they do not. An account root's roles are its roster's.
+/// (`grants_count`); none where they do not.
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
     if !grants_count(core, a) {
         return None;
@@ -95,7 +95,7 @@ pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
     own_actors(core).iter().map(|m| core.keyed_role_now(m, a)).max().flatten()
 }
 
-/// Whether the grants the node holds of `a` count for its role (spec/sync-set.md §2 Own actors:
+/// Whether the grants the node holds of `a` count for its role (spec/sync-set.md §2 Own things:
 /// grants belong to the thing granted): the node syncs `a` or holds an offer of it (`syncs`), or
 /// `a` is a holder found from such a thing up: one holding a role now, with key access, on a
 /// thing whose grants count. A grant of any other thing is held as some commit's certificate
@@ -128,13 +128,13 @@ pub(crate) fn grants_count(core: &Core, a: &Tid) -> bool {
 fn syncs(core: &Core, t: &Tid) -> bool {
     let cl = &core.ix.closure;
     let own = own_actors(core);
-    let one = |t: &Tid| own.contains(t) || core.account_and_root().is_some_and(|(_, d)| d == *t) || cl.holds(t) || cl.targeted(t) || cl.for_keys(t) || core.followed_links.contains(t) || crate::flows::inbox::granted_on(core, t).next().is_some();
+    let one = |t: &Tid| own.contains(t) || cl.holds(t) || cl.targeted(t) || cl.for_keys(t) || core.followed_links.contains(t) || crate::flows::inbox::granted_on(core, t).next().is_some();
     one(t) || core.secret_actor(t).is_some_and(|a| a != *t && one(&a))
 }
 
-/// The node's own actors: its account, itself, each held key actor.
+/// The node's own actors: itself, each held key actor.
 fn own_actors(core: &Core) -> Vec<Tid> {
-    core.member().into_iter().chain([core.id.tid()]).chain(core.key_actors.keys().copied()).collect()
+    std::iter::once(core.me()).chain(core.key_actors.keys().copied()).collect()
 }
 
 /// Whether the node (`holds_at`) reads `a` now: read or above.
@@ -196,7 +196,7 @@ pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     let reads = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| *r != Role::Sync && e.role(*r).holds_any()));
     let need = if reads { Role::Read } else { Role::Sync };
     let role = |x: &Tid| tl.role_unfinalized(x, a, ts).is_some_and(|r| r >= need);
-    core.member().as_ref().is_some_and(role) || core.key_actors.keys().any(role)
+    role(&core.me()) || core.key_actors.keys().any(role)
 }
 
 /// How long an actor lost by the time alone waits for node-sync to hear its sync IDs out before
@@ -210,7 +210,7 @@ pub const LOST_HEARD_WAIT_MS: u64 = osis_base::format::ROLE_KEEP_MS;
 
 /// Whether box recipient `m` is this node, a held key actor or an actor it holds and reads now.
 fn ours(core: &Core, m: &Tid) -> bool {
-    Some(*m) == core.member() || *m == core.id.tid() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
+    *m == core.me() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
 }
 
 /// Whether an edge of holder `h` that ended or lowered was one of the node's ways: `h` is an own
@@ -409,13 +409,13 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
 /// only on the timeline's word: the edge's end now says erase. Least fixpoint, so holders
 /// cannot keep each other.
 fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>) -> BTreeMap<Tid, BTreeSet<Tid>> {
-    let me = core.member();
-    let own = |h: &Tid| Some(*h) == me || core.key_actors.contains_key(h);
+    let me = core.me();
+    let own = |h: &Tid| *h == me || core.key_actors.contains_key(h);
     let all: BTreeSet<Tid> = lost.iter().chain(marks.keys()).copied().collect();
     let ways = ways(core, &all);
     let read_then = |a: &Tid, h: &Tid, end: Option<osis_perm::Point>| {
         let Some(p) = end else { return true };
-        own(h) || core.timelines().get(a).is_some_and(|tl| me.iter().chain(core.key_actors.keys()).any(|x| tl.role(x, h, At::before(p)) >= Some(Role::Read)))
+        own(h) || core.timelines().get(a).is_some_and(|tl| std::iter::once(&me).chain(core.key_actors.keys()).any(|x| tl.role(x, h, At::before(p)) >= Some(Role::Read)))
     };
     // a holder lost but not dropped in this judging (left to node-sync, or held by a pending grant):
     // the node still has it until it is judged, and a copy hanging on it is judged again then
@@ -452,12 +452,7 @@ pub(crate) fn without_frozen(core: &Core, blob: osis_commit::CommitBlob) -> osis
 /// Drops the secrets of `lost` actors (diagnostic each) and forgets what only they read; keeps
 /// what the rules keep, and erases the held copies (minus `dropped`, the user's) nothing keeps
 /// now. `rejudge`: a role commit may have changed what the held copies hang on.
-fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) -> Result<Vec<Tid>> {
-    // an account this node was removed from: what it read as it goes too
-    for p in tx.core.left.clone() {
-        tx.core.account_changing(p);
-    }
-    lost.extend(std::mem::take(&mut tx.core.left));
+fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) -> Result<Vec<Tid>> {
     let lost = with_unread_below(tx.core, lost);
     if lost.is_empty() && dropped.is_empty() && !(rejudge && !tx.core.ix.kept.is_empty()) {
         return Ok(lost);

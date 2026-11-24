@@ -137,38 +137,13 @@ impl Header {
         if self.frontier.is_some() && kind != Kind::Role {
             return Err(Error::Invalid("frontier outside a role commit"));
         }
-        // a rotation of an account's signing chain: on a role commit signed at an epoch it
-        // supersedes, its lists ascending and distinct (spec/wire.md §4 field 15)
-        if let Some(r) = &self.rotation {
-            if kind != Kind::Role {
-                return Err(Error::Invalid("rotation outside a role commit"));
-            }
-            ord(strictly_ascending(&r.supersedes, |c| *c) && strictly_ascending(&r.names, |c| *c) && strictly_ascending(&r.takes, |c| *c), "rotation lists not sorted and distinct")?;
-            if !self.epoch.is_some_and(|e| r.supersedes.contains(&e)) {
-                return Err(Error::Invalid("rotation not superseding the epoch it is signed at"));
-            }
-            if !self.aspects.iter().any(|a| a.tid == self.signer && a.ak.as_str() == "keys.0") {
-                return Err(Error::Invalid("rotation not writing its signer's keys.0"));
-            }
-            // a merge certificate carries only the join: it supersedes exactly its tips (the one
-            // it is signed at and those it names), takes nothing, removes and adds no one
-            let tips = r.names.len() + 1;
-            if r.is_merge() && (r.supersedes.len() != tips || self.epoch.is_some_and(|e| r.names.contains(&e)) || !r.names.iter().all(|n| r.supersedes.contains(n)) || !r.takes.is_empty() || r.revokes || !r.devices.is_empty()) {
-                return Err(Error::Invalid("merge certificate carrying more than its join"));
-            }
-        }
-        // the adminless mark is a role commit's (spec/wire.md §4 field 17)
+        // the adminless mark is a role commit's (spec/wire.md §4 field 14)
         if self.adminless && kind != Kind::Role {
             return Err(Error::Invalid("adminless mark not on a role commit"));
         }
-        // an own cover is a durable content snapshot (spec/wire.md §4 field 17)
+        // an own cover is a durable content snapshot (spec/wire.md §4 field 14)
         if self.own_cover && (kind != Kind::ContentSnapshot || self.ephemeral.is_some()) {
             return Err(Error::Invalid("own cover not a durable content snapshot"));
-        }
-        // a seed re-seal: on an account's role commit that is no rotation (spec/wire.md §4
-        // field 16)
-        if self.reseal.is_some() && (kind != Kind::Role || self.rotation.is_some() || self.epoch.is_none()) {
-            return Err(Error::Invalid("reseal outside an account's role commit, or on a rotation"));
         }
         // an ephemeral commit is a content commit or a content snapshot (each in its form, as a
         // durable one) and carries nothing a stored commit is for (spec/commits.md §2, §3)
@@ -192,12 +167,8 @@ impl Header {
 
     /// Whether it may state `p` for a thing it writes.
     pub fn path_allowed(&self, p: &Path) -> bool {
-        // a rotation and a seed re-seal state the empty path, the signer writing itself
-        // (spec/wire.md §4 fields 15, 16)
-        let own = self.rotation.is_none() && self.reseal.is_none() || p.things.is_empty();
         // Interim (issues/stated-path-certificates.md): a role commit's index names its signer, until its purge
         // author is indexed along stated paths
-        let interim = self.kind != Kind::Role || p.purge == 0;
-        own && interim
+        self.kind != Kind::Role || p.purge == 0
     }
 }

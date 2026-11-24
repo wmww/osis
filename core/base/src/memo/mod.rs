@@ -2,7 +2,7 @@
 //!
 //! Every mutable fact a derivation may read sits in a container that stamps its changes
 //! (`Stamps`: the store's rows (osis-store), the engine's journaled indexes, held set, timelines
-//! and blob holds, `Stamped` maps, `Tracked` values). A read through such a container while a
+//! and blob holds, `Stamped` maps). A read through such a container while a
 //! `Memo` computes records the stamp it saw; the memo's answer holds while every stamp it saw is
 //! the current one. So a memo has no key to pick and no invalidation to call: a write anywhere
 //! reaches exactly the memos that read what it changed. A container's `Deref` counts as a read of
@@ -1284,8 +1284,7 @@ impl<K: Hash + Eq + Clone, V: Clone> Clone for Memo<K, V> {
     }
 }
 
-/// A map outside the journal whose reads and writes are stamped (`Core::key_actors`,
-/// `Core::accounts`).
+/// A map outside the journal whose reads and writes are stamped (`Core::key_actors`).
 #[derive(Debug)]
 pub struct Stamped<K, V> {
     map: BTreeMap<K, V>,
@@ -1524,34 +1523,6 @@ impl Drop for Bound {
                     f.bounded = f.bounded.saturating_sub(1);
                 }
             });
-        }
-    }
-}
-
-/// A value outside the journal whose reads (`get`) and changes (`set`) are stamped
-/// (`Core::account`).
-#[derive(Clone, Debug)]
-pub struct Tracked<T> {
-    value: T,
-    stamps: Stamps,
-}
-
-impl<T: Default> Default for Tracked<T> {
-    fn default() -> Self {
-        Tracked { value: T::default(), stamps: Stamps::of::<Self>() }
-    }
-}
-
-impl<T: Copy + PartialEq> Tracked<T> {
-    pub fn get(&self) -> T {
-        self.stamps.read_all();
-        self.value
-    }
-    /// Sets the value; a change only if it differs.
-    pub fn set(&mut self, value: T) {
-        if self.value != value {
-            self.stamps.wrote_all();
-            self.value = value;
         }
     }
 }

@@ -984,7 +984,7 @@ fn relay_busy_spec_sync_10() {
     assert_eq!(done, Some(true));
 }
 
-// spec/sync-transport.md §3 (`reach.0` lists): a listener is listed at each global address it is bound
+// spec/sync-transport.md §3 (`peer://`): a listener is listed at each global address it is bound
 // to, an unspecified IP standing for the routes' local addresses of the families it serves,
 // then its relays; local, loopback and carrier-NAT addresses are not listed.
 #[test]

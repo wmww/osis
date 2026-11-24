@@ -251,22 +251,20 @@ fn own_removal_on(core: &Core, tl: &Timeline, a: &Tid, holder: &Tid) -> Option<o
 
 /// Whether applied write `op` of `mc` on `a`, the newest changing the holder's edge there, is this
 /// node's own self-removal (spec/permissions.md §2, §3 Lost access): it lowers the edge, and it
-/// was made here or its author is this node, its account or a key actor it holds, whichever node
-/// of the account made it: each waits for it to be held elsewhere, so a sibling that pulled it
-/// from the maker keeps it until a source has it.
+/// was made here or its author is this node or a key actor it holds: it waits for it to be held
+/// elsewhere.
 fn own_leaving_write(core: &Core, tl: &Timeline, a: &Tid, mc: &RoleCommit, op: &EdgeOp) -> bool {
-    let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local) || mc.signer == core.id.tid() || core.account.get() == Some(mc.signer) || core.key_actors.contains_key(&mc.signer);
+    let own = core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local) || mc.signer == core.id.tid() || core.key_actors.contains_key(&mc.signer);
     own && departure_of(tl, a, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.signer, a, &op.holder, mc.ts)
 }
 
 /// Whether applied role commit `c` is an own self-removal (`own_removal_on`) on one of
-/// `targets`: the one rule for every node of the account, the one that made it and its
-/// siblings alike (`sync::held::wait_if_own`). Reads the targets' writes only for a commit
+/// `targets` (`sync::held::wait_if_own`). Reads the targets' writes only for a commit
 /// by an own author.
 pub(crate) fn own_self_removal(core: &Core, c: &osis_base::CommitId, targets: &BTreeSet<Tid>) -> bool {
     let Some(m) = core.ix.commits.get(c) else { return false };
     let a = m.view.signer;
-    if m.origin != crate::events::Origin::Local && a != core.id.tid() && core.account.get() != Some(a) && !core.key_actors.contains_key(&a) {
+    if m.origin != crate::events::Origin::Local && a != core.id.tid() && !core.key_actors.contains_key(&a) {
         return false;
     }
     targets.iter().any(|t| core.timelines().get(t).is_some_and(|tl| edge_writes(tl, t).any(|(mc, op)| mc.id == *c && own_removal_on(core, tl, t, &op.holder) == Some(*c))))

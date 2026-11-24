@@ -73,11 +73,6 @@ pub struct Mutation {
     pub(crate) ts: Option<Ts>,
     /// The header's blind, when taken before the commit (a rotation's departs mark names it).
     pub(crate) blind: Option<[u8; 16]>,
-    /// A rotation of the signing account's chain, with the key of each tip a merge names
-    /// (spec/crypto.md §9; `flows::signing`).
-    pub(crate) rotation: Option<crate::flows::signing::AccountRotation>,
-    /// A seed re-seal of an epoch of the signing account's chain (spec/crypto.md §9, Custody).
-    pub(crate) reseal: Option<osis_commit::SeedReseal>,
     /// A sealed fire's commit (spec/sync-inbox.md §2): built, never applied here.
     pub(crate) sealed: bool,
 }
@@ -94,7 +89,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), ts: None, blind: None, rotation: None, reseal: None, sealed: false }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), ts: None, blind: None, sealed: false }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -112,8 +107,7 @@ impl Mutation {
     }
 
     /// Signs as a key actor whose seed the node holds (`Engine::hold_key_actor`): a
-    /// key or link key (spec/crypto.md §2), in commit form (its holders share no counters), or
-    /// an account held here (`Engine::hold_account`), in a session of its own.
+    /// key or link key (spec/crypto.md §2), in commit form (its holders share no counters).
     pub fn sign_as(&mut self, key_actor: Tid) -> &mut Self {
         self.signer = Some(key_actor);
         self
@@ -239,11 +233,11 @@ impl Mutation {
 }
 
 /// The role a write of `ak` needs (spec/permissions.md §1, §3, §5.2): admin for edges,
-/// `sync.0`, an account's seeds (`account.0`) and admin-only (`^`) aspects; write for rotations
+/// `sync.0` and admin-only (`^`) aspects; write for rotations
 /// (`secrets.0`, `keys.0`) and other content.
 pub(crate) fn required_role(ak: &str) -> Role {
     match ak {
-        "roles.0" | "sync.0" | "account.0" => Role::Admin,
+        "roles.0" | "sync.0" => Role::Admin,
         _ if Ak::markers_of(ak).admin_only => Role::Admin,
         _ => Role::Write,
     }
@@ -330,14 +324,6 @@ pub(crate) fn may_write(tx: &mut Tx<'_>, node: Tid, tid: &Tid, ak: &str, need: O
         return Ok(MayWrite::No);
     }
     may_write_on(tx, tid)
-}
-
-/// `by_thing` with only the things `node` may write `ak` on now, needing `need` (`may_write`, at the
-/// next stamp): `None` while one of them may be written on only later, so a write this node owes
-/// across things (an answer) waits whole.
-pub(crate) fn writable_now<V>(tx: &mut Tx<'_>, node: Tid, by_thing: BTreeMap<Tid, V>, ak: &str, need: Option<Role>) -> Result<Option<BTreeMap<Tid, V>>> {
-    let w = writable_split(tx, node, by_thing, ak, need)?;
-    Ok((!w.later && w.unheld.is_empty()).then_some(w.now))
 }
 
 /// `by_thing` split by when `node` may write `ak` on each (`may_write`, at the next stamp); the
@@ -428,17 +414,12 @@ pub(crate) enum Stated {
 /// thing). One path in the clear where every thing's own path is read off one `Path`
 /// (`Path::one_of`) and that path tells no reader of a thing written a roster fact it could not
 /// read already (`clear_tells_nothing`); else the split form. Never a longer route for one thing
-/// so that one path serves all. A role commit states `role_path`; an account's rotation and seed
-/// re-seal the empty path. A commit where no path gives the role on a thing it writes states
+/// so that one path serves all. A role commit states `role_path`. A commit where no path gives the role on a thing it writes states
 /// `plain_path` (a fire valid by its thing's setting); acting as a thing through which no path
 /// gives the role is refused. A path listing more than `MAX_PATH_THINGS` things is refused.
 pub(crate) fn stated_paths(core: &Core, plan: &CommitPlan, writes: &[AspectWrite], edges: &[(Tid, Tid, Option<osis_perm::Edge>)]) -> Result<Stated> {
     let (node, actor) = (plan.signer, plan.actor);
     let fallback = Stated::One(plain_path(node, actor));
-    // the signer writing itself (spec/wire.md §4 fields 15, 16)
-    if plan.rotation.is_some() || plan.reseal.is_some() {
-        return Ok(Stated::One(osis_commit::Path::default()));
-    }
     if plan.kind.is_role() {
         let real = role_path(core, plan, writes, edges)?;
         return Ok(Stated::One(real.unwrap_or_else(|| plain_path(node, node))));
@@ -753,14 +734,10 @@ pub(crate) struct CommitPlan {
     pub expires: Option<u64>,
     /// An undo's: `expires` stands, whatever its keys' defaults (`build_one`).
     pub restores: bool,
-    /// The header's rotation of the signer's chain and its merge keys (`Mutation::rotation`).
-    pub rotation: Option<crate::flows::signing::AccountRotation>,
     /// The own-cover marker (`retention::snapshot::write_own_cover`).
     pub own_cover: bool,
     /// The adminless mark, where the commit needs it (`Engine::leaving_adminless`).
     pub adminless: bool,
-    /// The header's seed re-seal (`Mutation::reseal`).
-    pub reseal: Option<osis_commit::SeedReseal>,
 }
 
 /// A fresh header blind.
@@ -902,13 +879,8 @@ pub(crate) fn nonce_of(form: Form) -> [u8; osis_crdt::SESSION_NONCE_LEN] {
 
 /// Encodes, pages, reserves counters, builds, signs and applies locally. Returns the ID.
 pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<CommitId> {
-    let rotation = plan.rotation.clone();
     let built = build(tx, plan, deltas)?;
     let id = built.commit.id();
-    // a rotation's thing lists are held before it applies, so what they name never falls here
-    if let Some(r) = &rotation {
-        crate::flows::lists::keep_certs(tx, &r.certs(id))?;
-    }
     // rights are checked before anything leaves the node: a request dropping nothing is refused
     if !tx.core.skip_writer_rules {
         crate::retention::check_request(tx.core, &built.commit.header, &id)?;
@@ -995,19 +967,10 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     b.undoes = plan.undoes;
     b.frontier = plan.frontier.map(|f| f.ids());
     b.blind = Some(plan.blind);
-    b.rotation = plan.rotation.as_ref().map(|r| (r.header.clone(), r.merge_keys.clone()));
     b.own_cover = plan.own_cover;
     b.adminless = adminless;
-    b.reseal = plan.reseal.clone();
     // a commit built in a memory transaction is a memory commit (spec/commits.md §2, §3)
     b.ephemeral = tx.txn.is_memory().then_some(osis_commit::EphClass::Plain);
-    // a merge is signed at the head it names first (`flows::signing::rotate_in`)
-    let account = match plan.rotation.as_ref().and_then(|r| r.at.clone()) {
-        Some(at) => Some(at),
-        None => tx.core.account_signing(&node)?,
-    };
-    let more = plan.rotation.as_ref().map(|r| r.more.clone()).unwrap_or_default();
-    b.account = account.as_ref().map(|(epoch, k)| osis_commit::AccountSigner { epoch: *epoch, inner: k.inner.clone(), node: tx.core.id.tid(), node_key: tx.core.id.keys().signing.clone(), more });
     let built = {
         let core: &Core = tx.core;
         let secrets = CommitSecrets { core, purge_author: plan.actor, created: &plan.creates, published: &published, keys: &keys };
@@ -1015,7 +978,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
         tx.rng.fill_bytes(&mut seed);
         let mut list_rng = osis_crypto::SeededRng::from_seed(seed);
         let mut sink = ListBlobs { blobs: TxBlobs::new(&mut tx.blobs, tx.txn.is_memory()), rng: &mut list_rng };
-        let signing = if let Some((_, k)) = &account { &k.signing } else if node == core.id.tid() { &core.id.keys().signing } else { &core.key_actors.get(&node).ok_or(Error::Misuse("signer not held"))?.keys().signing };
+        let signing = if node == core.id.tid() { &core.id.keys().signing } else { &core.key_actors.get(&node).ok_or(Error::Misuse("signer not held"))?.keys().signing };
         b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };
     let built = match built {
@@ -1059,15 +1022,12 @@ impl Engine {
 
     /// Tests: writes in `m` the strong that holds `t`, minted with admin `admin` (spec/sync-set.md §2
     /// Making a thing): from `admin` where that is a thing `m` makes or the node holds, else from
-    /// the account root (what an account's node writes, it writes as the account), else from the
-    /// node root.
+    /// the node root.
     #[doc(hidden)]
     #[allow(clippy::expect_used)] // tests: an op on a static core aspect
     pub fn hold_where_it_lives(&self, m: &mut Mutation, t: Tid, admin: Tid) {
         let holder = if m.creates.contains_key(&admin) || self.closure_holds(&admin) {
             Some(admin)
-        } else if let Some((_, d)) = self.core.account_and_root() {
-            Some(d)
         } else {
             self.core.node_root
         };
@@ -1089,61 +1049,12 @@ impl Engine {
     }
 }
 
-/// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing. Except: a thing
-/// minted with an account as admin (in no sync unit) is independent before any content is written
-/// on it (spec/permissions.md §3), as `Engine::mint_actor` mints (`independent_first`). Refused when it
-/// would take away a strong the node's roots keep (`roots::kept`), however it is written.
+/// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing.
 pub(crate) fn commit_in(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
     if m.sealed {
         return Err(Error::Misuse("a sealed fire is built by `sealed_commit`"));
     }
-    let kept = crate::flows::roots::kept(tx)?;
-    let r = independent_first(tx, m)?;
-    crate::flows::roots::still_kept(tx, &kept)?;
-    Ok(r)
-}
-
-/// `commit_in`'s commits. A thing `m` mints with an account as admin is due to become
-/// independent (`Core::own_secrets_due`); one due that `m` writes content on gets them first: its record in its
-/// own-secrets rotation where `m` makes it (`rotation::own_secrets_new`), then the rest of `m` under
-/// its own secrets, the last commit returned. Except an expiring thing's: a role commit never
-/// expires, so its record goes alone, in a commit expiring with it. One `m` makes without content goes
-/// with `m` as it is, made independent at the transaction's end or by its maker first (a link's K, its sync
-/// ID listing L).
-fn independent_first(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
-    for (t, r) in &m.creates {
-        if r.mint_admin().is_some_and(|a| tx.core.is_account(&a)) {
-            tx.core.own_secrets_due.insert(*t);
-        }
-    }
-    let content = |t: &Tid| m.aspects.keys().any(|(x, ak)| x == t && ak.as_str() != CREATED.ak() && !is_role_class(ak.as_str()));
-    let now: Vec<Tid> = tx.core.own_secrets_due.iter().filter(|t| content(t)).copied().collect();
-    if now.is_empty() {
-        return Ok(commit_or_build(tx, m)?.map(|(id, _)| id));
-    }
-    let mut done = crate::flows::Done::default();
-    let mut records = Mutation::new();
-    records.signer = m.signer;
-    for t in &now {
-        tx.core.own_secrets_due.remove(t);
-        match m.creates.remove(t) {
-            // a role commit never expires: an expiring record goes alone, in a commit expiring with it
-            Some(r) if r.expires().is_some() => {
-                records.creates.insert(*t, r);
-            }
-            Some(r) => {
-                crate::rotation::own_secrets_new(tx, r, &[], &mut done)?;
-            }
-            None => {}
-        }
-    }
-    if !records.creates.is_empty() {
-        done.add(commit_or_build(tx, records)?.map(|(id, _)| id));
-    }
-    for t in &now {
-        crate::rotation::own_secrets(tx, *t, &mut done)?;
-    }
-    Ok(commit_or_build(tx, m)?.map(|(id, _)| id).or(done.commits.last().copied()))
+    Ok(commit_or_build(tx, m)?.map(|(id, _)| id))
 }
 
 /// The commit of sealed fire mutation `m` (one fire of an external signal on a thing this node need
@@ -1162,14 +1073,14 @@ pub(crate) fn sealed_commit(tx: &mut Tx<'_>, mut m: Mutation) -> Result<osis_com
 pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId, Option<osis_commit::CommitBlob>)>> {
     let sealed = m.sealed;
     let node = match m.signer {
-        Some(k) if tx.core.key_actors.contains_key(&k) || tx.core.accounts.contains_key(&k) => k,
+        Some(k) if tx.core.key_actors.contains_key(&k) => k,
         Some(_) => return Err(Error::Misuse("signer not held")),
         // a node writes its own thing as itself: nobody else has rights on it
         None if !(m.aspects.is_empty() && m.creates.is_empty()) && m.aspects.keys().map(|(t, _)| t).chain(m.creates.keys()).all(|t| tx.core.made_nodes_own(t, &m.creates)) => {
             m.actor = None;
             tx.core.id.tid()
         }
-        None => tx.core.writer()?,
+        None => tx.core.me(),
     };
     if m.undoes.is_some() && !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.purge_named.is_empty() && m.frontier.is_none()) {
         return Err(Error::Misuse("an undo mutation carries no other ops"));
@@ -1245,7 +1156,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
     }
     // under `Engine::leaving_adminless`, an edge write may carry the adminless mark (`build`)
     let adminless = tx.core.leave_adminless && kind == Kind::Role && m.aspects.keys().any(|(_, ak)| ak.as_str() == "roles.0");
-    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, rotation: m.rotation.take(), reseal: m.reseal.take(), own_cover: false, adminless };
+    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, own_cover: false, adminless };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }
@@ -1316,7 +1227,7 @@ pub(crate) fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option
     // (`Core::expiring`)
     let mut plan = base;
     plan.expires = expires;
-    plan.form = if kind != Kind::Content || m.commit_form || (plan.signer != tx.core.id.tid() && !tx.core.is_account(&plan.signer)) { Form::Commit } else { Form::Session(tx.core.nonce_as(&plan.signer, if memory && expires.is_some() { tx.core.expiring.nonce } else { tx.core.session.nonce })) };
+    plan.form = if kind != Kind::Content || m.commit_form || plan.signer != tx.core.id.tid() { Form::Commit } else { Form::Session(tx.core.nonce_as(&plan.signer, if memory && expires.is_some() { tx.core.expiring.nonce } else { tx.core.session.nonce })) };
     let form = plan.form;
     let mut next_ctr = 1u64;
     let mut deltas: Vec<Resolved> = Vec::new();

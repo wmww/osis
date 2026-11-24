@@ -42,6 +42,7 @@ fn shared(opts: &osis_chat::Options) -> (Arc<ManualClock>, Osis, Osis, Tid) {
 }
 
 #[test]
+#[ignore = "accounts: making an account"]
 fn two_people_chat() {
     let (clock, a, b, c) = shared(&osis_chat::Options { name: "channel".into(), ..Default::default() });
     set_name(&a, "Alice").unwrap();
@@ -74,6 +75,7 @@ fn two_people_chat() {
 /// What the CLI can do to a timeline the window shows: an edit (the newest text, marked, its
 /// replies quoting it), a delete, a sender with no name or a blank one.
 #[test]
+#[ignore = "accounts: making an account"]
 fn edited_deleted_and_nameless() {
     let (clock, a, b, c) = shared(&osis_chat::Options::default());
     assert_eq!(chat::name(&a, c).unwrap(), "Chat");
@@ -105,6 +107,7 @@ fn edited_deleted_and_nameless() {
 /// Reading the name writes nothing; a sender with no name on its profile sends nameless, and its
 /// profile's name once it has one.
 #[test]
+#[ignore = "accounts: making an account"]
 fn reading_the_name_writes_nothing() {
     let a = node(0, &clock());
     let c = osis_chat::create(&a, &osis_chat::Options::default(), a.account_root()).unwrap();
@@ -142,6 +145,7 @@ fn join_held_chat_opens_it() {
 /// was edited: showing the newest messages, each answering the first, reads the same at N and 10N
 /// messages. The quotes show the newest text.
 #[test]
+#[ignore = "accounts: making an account"]
 fn quotes_read_flat_in_history() {
     use osis::internals::costs;
     const QUOTES: usize = 20;

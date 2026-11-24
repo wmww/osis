@@ -6,7 +6,7 @@
 Each is built or specified the reversible way; one decision each.
 
 ## Behaviour
-- **Dial hints** (spec/sync-inbox.md §2, spec/wire.md §10): every node publishes `reach.0` and lists itself in its account profile's `dial^.0` (`osis_engine` `dial::lists_on_profile`); links and contact cards carry the sharer node's dial hint by default. Options: which nodes a profile lists; hints off by default (issues/privacy.md).
+- **Dial hints** (spec/sync-inbox.md §2, spec/wire.md §10): every node publishes its own entry in a `dial.0` (spec/sync-set.md §1; `Engine::publish_reach`, on its node thing until accounts are built); links and contact cards carry the sharer node's dial hint by default. Options: which nodes a profile lists; hints off by default (issues/privacy.md).
 - **A node keeping S unread shows its filter to every connection** (spec/sync-opens.md §5 Filter; stated limit spec/sync-hostile.md §2): anyone holding S's public values learns it keeps S. A policy limiting whom it syncs with (spec/sync-opens.md §1 Policy) hides it from the rest.
 
 ## Requirements

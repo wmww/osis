@@ -62,7 +62,7 @@ pub enum History {
 /// `grant_in`, handing `history`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_perm::Frontier>, history: History) -> Result<Done> {
-    let who = signer.unwrap_or(tx.core.writer()?);
+    let who = signer.unwrap_or(tx.core.me());
     if edge.until == Some(osis_base::WallMs(0)) {
         return Err(Error::Misuse("`until` 0 is a removal's saying retain"));
     }
@@ -106,7 +106,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     // is encrypted under its recipient's key, not under that epoch (spec/crypto.md §4,
     // Encrypting under; `rotation::reseal_one` alike)
     if !tx.core.is_key_actor(&holder) {
-        let me = tx.core.writer()?;
+        let me = tx.core.me();
         rotation::ensure_rotated(tx, me, holder, &mut done)?;
     }
     let mut roles = roles_up_to(edge.role);
@@ -255,7 +255,7 @@ pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -
 /// inbox copy to each holder, logged before any other entry under every sync ID the removed
 /// parties could read.
 pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_perm::Frontier>) -> Result<Done> {
-    let who = signer.unwrap_or(tx.core.writer()?);
+    let who = signer.unwrap_or(tx.core.me());
     let holder = d.holder;
     let ts = now_ts(tx.core);
     let tl = tx.core.timelines().get(&target).ok_or(Error::UnknownThing(target))?;
@@ -344,16 +344,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             super::inbox::deliver_copy(tx, *x, c, target)?;
         }
     }
-    // a node's removal from its account root: the account's epoch rotates next, in
-    // this transaction (spec/permissions.md §3)
-    if c.is_some()
-        && !selfr
-        && let Some(p) = tx.core.account_of_root(&target).filter(|p| tx.core.accounts.contains_key(p))
-        && removing.iter().any(|x| tx.core.is_key_actor(x))
-        && let Some(r) = super::signing::rotate_in(tx, p, &[], &mut done)?
-    {
-        done.add(Some(r));
-    }
     Ok(done)
 }
 
@@ -385,7 +375,7 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
 /// `target` is the caller's (`rotation::ensure_rotated`).
 pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], kept: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
     let mut m = Mutation::new();
-    if who != tx.core.writer()? {
+    if who != tx.core.me() {
         m.sign_as(who);
     }
     let mut left: BTreeSet<Role> = BTreeSet::new();
@@ -447,10 +437,7 @@ impl Engine {
     /// `grant_signed`, then `then` in the same transaction.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn grant_signed_then(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, history: History, then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
-        if self.core.account_of_root(&target).is_some() {
-            return Err(Error::Misuse("D's roster changes only by its account's rotations: pair a device"));
-        }
-        let who = signer.unwrap_or(self.core.writer()?);
+        let who = signer.unwrap_or(self.core.me());
         let new = Some(perm_edge(edge));
         let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.needs_frontier(&target, &holder, Some(edge));
         let frontier = match audits {
@@ -556,16 +543,6 @@ impl Engine {
 
     /// `remove_signed`, then `then` in the same transaction.
     pub(crate) fn remove_signed_then(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid], then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
-        // a device leaves its account root only by a rotation removing it
-        if self.core.account_of_root(target).is_some() {
-            return match d.new {
-                None if others.is_empty() => self.remove_device(&d.holder),
-                _ => Err(Error::Misuse("D's roster changes only by its account's rotations")),
-            };
-        }
-        if signer.is_none() {
-            self.core.writer()?;
-        }
         let t = *target;
         let new = match self.core.timelines().get(&t) {
             Some(tl) => written(&self.core, &t, tl.edges_at(None).get(&d.holder, &t), d)?,
@@ -602,7 +579,7 @@ impl Engine {
     /// `until` or role commit of the target's and the holder's components (an authority ending by
     /// time alone moves it).
     pub fn may_remove(&mut self, target: &Tid, holder: &Tid) -> Result<Option<Removal>> {
-        let Some(me) = self.core.me() else { return Ok(None) };
+        let me = self.core.me();
         let _horizon = self.core.bound_to_horizon([*target, *holder].into_iter());
         if crate::apply::validity::self_removal(&self.core, &me, target, holder, now_ts(&self.core)) {
             return Ok(Some(Removal::SelfRemoval));

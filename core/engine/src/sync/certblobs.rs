@@ -1,13 +1,10 @@
 //! Certificate blobs under a sync ID (spec/sync-judgement.md §1): record blobs (spec/wire.md
 //! §3), the raw creation records a sync ID's certificates name that no closure body there
-//! carries, and list blobs (spec/wire.md §4, List tree), the thing lists of one rotation for the
-//! things the sync ID carries lists of (`sync::listed`); each sealed as one blob of all the sync
-//! ID carries of its kind, committing to a writer delete key of the sync ID's thing (spec/crypto.md
-//! §7), and taken when one opens. Each one sealed here or opened from a peer is kept per (sync ID,
-//! kind: records or a rotation's lists) with what it carries and what a Delete of it signs for
+//! carries, each sealed as one blob of all the sync ID carries, committing to a writer delete key
+//! of the sync ID's thing (spec/crypto.md §7), and taken when one opens. Each one sealed here or
+//! opened from a peer is kept per sync ID with what it carries and what a Delete of it signs for
 //! (`CERT_BLOBS` rows: one per blob), so read knows what its own store and its sources carry across
-//! a restart, whoever logged it (spec/permissions.md §4: a record blob logged by any node counts),
-//! and a reader of one rotation's list blobs reads that key alone.
+//! a restart, whoever logged it (spec/permissions.md §4: a record blob logged by any node counts).
 
 use super::Wrap;
 use crate::engine::secrets::DeleteSource;
@@ -15,7 +12,7 @@ use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::memo::{Effects, Feed, Quiet, Stamped, Unrecorded};
 use osis_base::format::DELETE_WRITER;
-use osis_base::{BlobId, CommitId, CreationRecord, SyncId, Tid};
+use osis_base::{BlobId, CreationRecord, SyncId, Tid};
 use osis_crypto::NodeRng;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,10 +20,6 @@ use std::sync::Arc;
 
 /// `cb/` + sync ID + blob ID: what the certificate blob carries (`encode`).
 pub(crate) const CERT_BLOBS: &[u8] = b"cb/";
-
-/// What a certificate blob sealed here carries: a record blob (`None`) these records, a list
-/// blob of rotation `r` (`Some(r)`) the thing lists of these things.
-pub type CertKind = Option<CommitId>;
 
 /// One certificate blob: what it carries, and its prefix and blind (its blob key's link blind,
 /// spec/crypto.md §7), what a Delete of it by levels signs for.
@@ -48,48 +41,35 @@ impl CertBlob {
     }
 }
 
-/// Row bytes: 0, or 1 + rotation; the blind; the prefix's length (a byte) and bytes; tids (15
-/// bytes each).
-fn encode(r: &CertKind, c: &CertBlob) -> Vec<u8> {
-    let head: Vec<u8> = match r {
-        None => vec![0],
-        Some(r) => [&[1u8][..], &r.0[..]].concat(),
-    };
+/// Row bytes: the blind; the prefix's length (a byte) and bytes; tids (15 bytes each).
+fn encode(c: &CertBlob) -> Vec<u8> {
     let prefix = c.prefix.to_bytes();
     // one group of one commitment: far below 256 bytes
     let len = u8::try_from(prefix.len()).unwrap_or(u8::MAX);
-    [head, c.blind.to_vec(), vec![len], prefix, c.tids.iter().flat_map(|t| *t.as_bytes()).collect()].concat()
+    [c.blind.to_vec(), vec![len], prefix, c.tids.iter().flat_map(|t| *t.as_bytes()).collect()].concat()
 }
 
-fn decode(v: &[u8]) -> Option<(CertKind, CertBlob)> {
-    let (r, rest) = match v.split_first()? {
-        (0, rest) => (None, rest),
-        (1, rest) => {
-            let (r, t) = rest.split_at_checked(32)?;
-            (Some(CommitId(r.try_into().ok()?)), t)
-        }
-        _ => return None,
-    };
-    let (blind, rest) = rest.split_at_checked(16)?;
+fn decode(v: &[u8]) -> Option<CertBlob> {
+    let (blind, rest) = v.split_at_checked(16)?;
     let (len, rest) = rest.split_first()?;
     let (prefix, tids) = rest.split_at_checked(usize::from(*len))?;
     let prefix = osis_blob::Prefix::parse(prefix).ok()?;
     let tids = tids.len().is_multiple_of(15).then(|| tids.chunks(15).filter_map(|x| x.try_into().ok().map(Tid::from_bytes)).collect::<BTreeSet<Tid>>())?;
-    Some((r, CertBlob { tids, prefix, blind: blind.try_into().ok()? }))
+    Some(CertBlob { tids, prefix, blind: blind.try_into().ok()? })
 }
 
-/// The certificate blobs noted here under one sync ID of one kind.
+/// The certificate blobs noted here under one sync ID.
 pub type CertBlobs = BTreeMap<BlobId, CertBlob>;
 
 /// Loads the certificate blobs kept (an open or reload).
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let bad = || Error::Corrupt("certificate blob row");
-    let mut rows: BTreeMap<(SyncId, CertKind), CertBlobs> = BTreeMap::new();
+    let mut rows: BTreeMap<SyncId, CertBlobs> = BTreeMap::new();
     tx.scan(CERT_BLOBS, |k, v| {
         let s = SyncId(k.get(..16).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
         let b = BlobId(k.get(16..48).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
-        let (r, c) = decode(&v).ok_or_else(bad)?;
-        rows.entry((s, r)).or_default().insert(b, c);
+        let c = decode(&v).ok_or_else(bad)?;
+        rows.entry(s).or_default().insert(b, c);
         Ok(())
     })?;
     for (k, m) in rows {
@@ -98,26 +78,25 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-fn note(tx: &mut Tx<'_>, s: &SyncId, r: CertKind, b: &BlobId, c: CertBlob) -> Result<()> {
-    let k = (*s, r);
-    let mut m = tx.core.ix.cert_blobs.get(&k).map(|x| (**x).clone()).unwrap_or_default();
+fn note(tx: &mut Tx<'_>, s: &SyncId, b: &BlobId, c: CertBlob) -> Result<()> {
+    let mut m = tx.core.ix.cert_blobs.get(s).map(|x| (**x).clone()).unwrap_or_default();
     if m.get(b) == Some(&c) {
         return Ok(());
     }
-    tx.txn.put_local(&[CERT_BLOBS, &s.0, &b.0].concat(), &encode(&r, &c), Shred::No)?;
+    tx.txn.put_local(&[CERT_BLOBS, &s.0, &b.0].concat(), &encode(&c), Shred::No)?;
     m.insert(*b, c);
-    tx.core.ix.cert_blobs.insert(k, Arc::new(m));
+    tx.core.ix.cert_blobs.insert(*s, Arc::new(m));
     Ok(())
 }
 
 impl Engine {
-    /// Certificate blob `b` of kind `r`, opened under `s`, is `c` (`certblobs`).
-    pub(crate) fn note_cert_blob(&mut self, s: &SyncId, r: CertKind, b: &BlobId, c: CertBlob) -> Result<()> {
-        if self.core.ix.cert_blobs.get(&(*s, r)).is_some_and(|m| m.get(b) == Some(&c)) {
+    /// Certificate blob `b`, opened under `s`, is `c` (`certblobs`).
+    pub(crate) fn note_cert_blob(&mut self, s: &SyncId, b: &BlobId, c: CertBlob) -> Result<()> {
+        if self.core.ix.cert_blobs.get(s).is_some_and(|m| m.get(b) == Some(&c)) {
             return Ok(());
         }
         let (s, b) = (*s, *b);
-        self.run(|tx| note(tx, &s, r, &b, c))
+        self.run(|tx| note(tx, &s, &b, c))
     }
 
     /// What a Delete by levels of certificate blob `b` noted under `s` signs for (`DeleteBasis`):
@@ -125,7 +104,7 @@ impl Engine {
     /// record chains of `s`'s things (spec/crypto.md §7). `None`: `b` is no certificate blob
     /// noted under `s`.
     pub fn cert_delete_basis(&mut self, s: &SyncId, b: &BlobId) -> Result<Option<crate::sync::DeleteBasis>> {
-        let Some(c) = self.core.ix.cert_blobs.range(under(s)).find_map(|(_, m)| m.get(b).cloned()) else { return Ok(None) };
+        let Some(c) = self.core.ix.cert_blobs.get(s).and_then(|m| m.get(b).cloned()) else { return Ok(None) };
         let mut held = Vec::new();
         for t in self.read_things_of(s)? {
             for src in self.core.delete_chain(&t) {
@@ -139,33 +118,25 @@ impl Engine {
     }
 }
 
-/// The keys of `s` in `Indexes::cert_blobs`.
-fn under(s: &SyncId) -> std::ops::RangeInclusive<(SyncId, CertKind)> {
-    (*s, None)..=(*s, Some(CommitId([0xff; 32])))
-}
-
 /// Whether a certificate blob sealed under `s` is kept.
 pub(crate) fn any(core: &crate::engine::Core, s: &SyncId) -> bool {
-    core.ix.cert_blobs.range(under(s)).next().is_some()
+    core.ix.cert_blobs.get(s).is_some()
 }
 
 /// The rows of every certificate blob sealed under `s` go (`s` is read here no more).
 pub(crate) fn forget(tx: &mut Tx<'_>, s: &SyncId) -> Result<()> {
-    let keys: Vec<(SyncId, CertKind)> = tx.core.ix.cert_blobs.range(under(s)).map(|(k, _)| *k).collect();
-    for k in keys {
-        let Some(m) = tx.core.ix.cert_blobs.get(&k).cloned() else { continue };
-        for b in m.keys() {
-            tx.txn.remove_local(&[CERT_BLOBS, &s.0, &b.0].concat(), Shred::No)?;
-        }
-        tx.core.ix.cert_blobs.remove(&k);
+    let Some(m) = tx.core.ix.cert_blobs.get(s).cloned() else { return Ok(()) };
+    for b in m.keys() {
+        tx.txn.remove_local(&[CERT_BLOBS, &s.0, &b.0].concat(), Shred::No)?;
     }
+    tx.core.ix.cert_blobs.remove(s);
     Ok(())
 }
 
-/// The row of certificate blob `b` of kind `r` under `s` goes (neither the own store nor a
-/// source holds it any more).
-pub(crate) fn forget_blob(tx: &mut Tx<'_>, s: &SyncId, r: CertKind, b: &BlobId) -> Result<()> {
-    let k = (*s, r);
+/// The row of certificate blob `b` under `s` goes (neither the own store nor a source holds it
+/// any more).
+pub(crate) fn forget_blob(tx: &mut Tx<'_>, s: &SyncId, b: &BlobId) -> Result<()> {
+    let k = *s;
     let Some(m) = tx.core.ix.cert_blobs.get(&k).cloned() else { return Ok(()) };
     if !m.contains_key(b) {
         return Ok(());
@@ -181,7 +152,7 @@ pub(crate) fn forget_blob(tx: &mut Tx<'_>, s: &SyncId, r: CertKind, b: &BlobId) 
 }
 
 /// A fresh durable blob of `plain` committing to writer delete key `dk`, and its wrap under read
-/// secret `w` (spec/wire.md §3, §4: no expiry, order 0; a fresh encryption per sync ID; its blind
+/// secret `w` (spec/wire.md §3: no expiry, order 0; a fresh encryption per sync ID; its blind
 /// its key's link blind, spec/crypto.md §7).
 fn seal_cert_blob(w: &osis_crypto::Secret32, dk: &osis_crypto::VerifyingKey, plain: &[u8], tids: BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<(BlobId, Vec<u8>, Wrap, CertBlob)> {
     let (salt, key, blind) = osis_blob::linked_prefix_inputs(rng);
@@ -385,31 +356,25 @@ impl Engine {
     }
 
     /// Whether a record blob can be sealed under `s` now (a current read epoch of its thing to
-    /// wrap under; none while, say, a rotation is owed before encrypting), and a list blob of
-    /// rotation `r` (`r`: `list_wrap_secret`).
-    pub fn cert_wrap(&mut self, s: &SyncId, r: Option<&CommitId>) -> Result<bool> {
+    /// wrap under; none while, say, a rotation is owed before encrypting).
+    pub fn cert_wrap(&mut self, s: &SyncId) -> Result<bool> {
         for t in self.read_things_of(s)? {
-            let ok = match r {
-                Some(r) => self.list_wrap_secret(&t, r).is_some(),
-                None => self.wrap_secret(&t, None)?.is_some(),
-            };
-            if ok {
+            if self.wrap_secret(&t, None)?.is_some() {
                 return Ok(true);
             }
         }
         Ok(false)
     }
 
-    /// The certificate blobs of kind `r` noted under `s` (sealed here or opened), each with what
-    /// it carries.
-    pub fn cert_blobs(&self, s: &SyncId, r: CertKind) -> Arc<CertBlobs> {
-        self.core.ix.cert_blobs.get(&(*s, r)).cloned().unwrap_or_default()
+    /// The certificate blobs noted under `s` (sealed here or opened), each with what it carries.
+    pub fn cert_blobs(&self, s: &SyncId) -> Arc<CertBlobs> {
+        self.core.ix.cert_blobs.get(s).cloned().unwrap_or_default()
     }
 
-    /// Whether `b` is a certificate blob noted under `s`, of any kind: what it carries is known
-    /// here, held in the own store or shown at a source (spec/permissions.md §4: it counts).
+    /// Whether `b` is a certificate blob noted under `s`: what it carries is known here, held in
+    /// the own store or shown at a source (spec/permissions.md §4: it counts).
     pub fn cert_blob_noted(&self, s: &SyncId, b: &BlobId) -> bool {
-        self.core.ix.cert_blobs.range(under(s)).any(|(_, m)| m.contains_key(b))
+        self.core.ix.cert_blobs.get(s).is_some_and(|m| m.contains_key(b))
     }
 
     /// One record blob of `records` (those held here) under `s` and its wrap (`seal_cert_blob`).
@@ -432,48 +397,8 @@ impl Engine {
         let tids: BTreeSet<Tid> = recs.iter().map(CreationRecord::tid).collect();
         let (id, blob, wrap, c) = seal_cert_blob(&w, &dk, &plain, tids, rng)?;
         let s = *s;
-        self.run(|tx| note(tx, &s, None, &id, c))?;
+        self.run(|tx| note(tx, &s, &id, c))?;
         Ok(Some((id, blob, wrap)))
-    }
-
-    /// One list blob of rotation `r`'s thing lists held here for `things` under `s` and its wrap
-    /// (`seal_cert_blob`). `None` when none is held or no epoch is.
-    pub fn seal_lists(&mut self, s: &SyncId, r: &CommitId, things: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {
-        // under the thing reading `s` whose rotation `r`'s lists these are, else any reading it
-        let readers = self.read_things_of(s)?;
-        let Some(t) = readers.iter().copied().find(|t| self.thing_lists(t, r).is_superset(things)).or_else(|| readers.first().copied()) else { return Ok(None) };
-        let r = *r;
-        let wanted = things.clone();
-        let certs = self.read(|tx| crate::flows::lists::certs_of(tx, &r, Some(&wanted)))?;
-        if certs.is_empty() {
-            return Ok(None);
-        }
-        let plain = osis_commit::thing_list::encode_list_blob(&certs);
-        // as the rotation wraps (`list_wrap_secret`)
-        let Some(w) = self.list_wrap_secret(&t, &r) else { return Ok(None) };
-        let Some(dk) = self.read(|tx| crate::engine::secrets::writer_delete_key_in(tx, &t))? else { return Ok(None) };
-        let tids: BTreeSet<Tid> = certs.iter().map(|c| c.list.thing).collect();
-        let (id, blob, wrap, c) = seal_cert_blob(&w, &dk, &plain, tids, rng)?;
-        let s = *s;
-        self.run(|tx| note(tx, &s, Some(r), &id, c))?;
-        Ok(Some((id, blob, wrap)))
-    }
-
-    /// Takes a list blob's plaintext `plain`, the plaintext of blob `b`: its thing lists held
-    /// (`hold_lists`), or, while their rotation is not held here, kept loose, carried by `b`, and
-    /// held as the rotation arrives (`Loose::lists_for`). `None` when `plain` is no list blob or
-    /// a list in it does not verify; else its rotation.
-    pub(crate) fn take_list_blob(&mut self, b: &BlobId, plain: &[u8]) -> Result<Option<CommitId>> {
-        use crate::flows::lists::ListsHeld;
-        Ok(match self.hold_lists(plain)? {
-            ListsHeld::Held | ListsHeld::Known => osis_commit::thing_list::decode_list_blob(plain).ok().and_then(|c| c.first().map(|c| c.rotation)),
-            ListsHeld::Awaits(r) => {
-                let certs = osis_commit::thing_list::decode_list_blob(plain).unwrap_or_default();
-                self.core.waits.loose.keep_lists(*b, r, certs);
-                Some(r)
-            }
-            ListsHeld::Bad => None,
-        })
     }
 
     /// Takes a record blob's plaintext `plain`, the plaintext of blob `b` (a record proves itself

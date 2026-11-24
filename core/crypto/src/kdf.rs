@@ -52,20 +52,6 @@ pub const ROLE_WRITE: &str = "role write";
 pub const ROLE_ADMIN: &str = "role admin";
 /// Key actor signing key from its seed.
 pub const SIGN: &str = "sign";
-/// An account epoch's inner secret from its seed, and an inner signature's key from that
-/// (spec/crypto.md §3).
-pub const INNER_SECRET: &str = "inner secret";
-/// (Not "inner": that is the inner signature's domain, spec/crypto.md §2.)
-pub const INNER: &str = "inner key";
-/// A seed box's tag from the epoch's seed (spec/crypto.md §9, Custody).
-pub const SEED_BOX: &str = "seed box";
-/// The key of a rotation's sealed membership changes, from the inner secret of the epoch it is
-/// signed at (spec/crypto.md §9, Roster).
-pub const DEVICES: &str = "devices";
-/// An account's creation nonce from its first seed and its creation device (spec/crypto.md §3).
-pub const FIRST_DEVICE: &str = "first device";
-/// A merge epoch's seed from its tips' seeds (spec/crypto.md §9, Merges).
-pub const MERGE_SEED: &str = "merge seed";
 /// KEM key pair from a seed or role secret.
 pub const KEM: &str = "kem";
 /// Link key creation nonce from the seed (spec/wire.md §3).
@@ -115,10 +101,10 @@ pub const PATH: &str = "path";
 pub const PATH_COMMIT: &str = "path commit";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 41] = [
+pub const PURPOSES: [&str; 35] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM,
-    INNER_SECRET, INNER, SEED_BOX, DEVICES, FIRST_DEVICE, MERGE_SEED, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT,
+    BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF, PATH, PATH_COMMIT,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).
@@ -132,8 +118,6 @@ pub const HYBRID_KEM: &str = "osis v1 hybrid kem";
 pub const SYNC_ID: &str = "osis v1 sync id";
 /// Static entry = BLAKE3(STATIC_CLAIM || sync ID || signing key) (spec/wire.md §8).
 pub const STATIC_CLAIM: &str = "osis v1 static claim";
-/// A merge epoch's ID = BLAKE3(MERGE_EPOCH || signing key || tip IDs ascending) (spec/crypto.md §9).
-pub const MERGE_EPOCH: &str = "osis v1 merge epoch";
 
 pub fn thing_purpose(role: Role) -> &'static str {
     match role {

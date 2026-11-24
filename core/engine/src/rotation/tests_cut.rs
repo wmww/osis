@@ -246,7 +246,7 @@ fn hostile_rotation(lp: &mut LocalPeer, i: usize, g: Tid, lists: &BTreeSet<Epoch
     lp.peers[i]
         .engine
         .run(|tx| {
-            let me = tx.core.writer()?;
+            let me = tx.core.me();
             let mut held = (*tx.core.epochs(&g).unwrap()).clone();
             let secrets = crate::flows::secrets_in(tx, &g)?;
             let mut boxing = super::recipients(tx, &me, &g, &[])?;
@@ -918,7 +918,7 @@ fn forged_expiring_snapshot_ends_no_lasting_value_spec_commits_5() {
         .engine
         .run(|tx| {
             let st = tx.state(&g, &ak)?.cloned().unwrap();
-            let (ts, node) = (tx.core.hlc.next(), tx.core.writer_for(&g)?);
+            let (ts, node) = (tx.core.hlc.next(), tx.core.me());
             crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st, ts, node, Default::default(), Default::default(), Some(t), false)
         })
         .unwrap();
@@ -1036,7 +1036,7 @@ fn expiring_snapshots_read_alike_whatever_arrives_and_is_covered_plain_spec_crdt
                         .engine
                         .run(|tx| {
                             let Some(st) = tx.state(&g, ak)?.cloned() else { return Ok(None) };
-                            let (ts, node) = (tx.core.hlc.next(), tx.core.writer_for(&g)?);
+                            let (ts, node) = (tx.core.hlc.next(), tx.core.me());
                             let ends = ends.filter(|e| *e > ts.wall_ms().0);
                             crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st, ts, node, Default::default(), Default::default(), ends, false).map(Some)
                         })

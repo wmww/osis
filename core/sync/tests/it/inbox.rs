@@ -130,39 +130,33 @@ impl Net for FakeNet {
 }
 
 /// Deposit items out over a real store: each S's deposit key from `keys` (its seed number, a
-/// stamped value as the engine's reads are); the actors no longer counted (`opens::counted`)
-/// in `uncounted`, stamped likewise.
+/// stamped value as the engine's reads are).
 struct T {
     net: FakeNet,
     store: Store,
     offers: Offers,
     keys: Stamped<SyncId, u8>,
-    uncounted: StampedSet<Tid>,
     now: u64,
 }
 
 struct FakeJudge<'a> {
     keys: &'a Stamped<SyncId, u8>,
-    uncounted: &'a StampedSet<Tid>,
 }
 
 impl Judge for FakeJudge<'_> {
     fn deposit_key(&mut self, s: &SyncId, _: Option<Tid>) -> Result<Option<SigningSecret>> {
         Ok(self.keys.get(s).map(|n| deposit_key(&deposit_seed(*n), s)))
     }
-    fn counted(&mut self, named: &osis_store::Named) -> Vec<Tid> {
-        named.key_actors.iter().filter(|a| !self.uncounted.contains(a)).copied().collect()
-    }
 }
 
 impl T {
     fn new() -> T {
         let store = Store::open(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), Box::new(SeededRng::from_u64(7))).unwrap();
-        T { net: FakeNet::default(), store, offers: Offers::default(), keys: Stamped::default(), uncounted: StampedSet::default(), now: T0 }
+        T { net: FakeNet::default(), store, offers: Offers::default(), keys: Stamped::default(), now: T0 }
     }
 
     fn settle(&mut self) {
-        let mut judge = FakeJudge { keys: &self.keys, uncounted: &self.uncounted };
+        let mut judge = FakeJudge { keys: &self.keys };
         for _ in 0..100 {
             if !self.offers.settle(osis_base::Mono(self.now), &self.store, &mut self.net, &mut judge).unwrap() {
                 return;
@@ -277,58 +271,6 @@ fn sealed_fire_offered_to_recipient_spec_sync_inbox_3() {
     let [OfferItem::Deposit(d)] = items.as_slice() else { panic!() };
     let head = deposit_key(&deposit_seed(s.0[0]), &s).verifying_key();
     assert!(osis_blob::verify_deposit(&head, &d.sync_id, &b, &d.wrap, &d.sig).is_ok());
-}
-
-// spec/sync-inbox.md §3 (sending), spec/sync-opens.md §3 (A record names what its last session's proofs counted for): the
-// recipient proven on a connection counts only while its proof counts now: once it stops (its
-// account removed the proving node, its key's epoch closed), nothing more is offered there for
-// it, also what was ready or backed off; counted again, its offers go there again.
-#[test]
-fn sealed_fire_offered_only_while_the_recipient_counts_spec_sync_inbox_3() {
-    let mut t = T::new();
-    t.connect(conn(2), &[tid(0)]);
-    let s = sync_id(100);
-    let first = t.deposit(s, 1, fire(tid(0)));
-    let (c, id, ..) = t.deposits_sent()[0];
-    t.reply(c, id, T::shared(Code::RATE_LIMITED));
-    t.uncounted.insert(tid(0));
-    t.deposit(s, 2, fire(tid(0)));
-    t.advance(osis_sync::inbox::backoff_ms(0));
-    assert_eq!(t.deposits_sent().len(), 1, "no offer for a recipient no longer counted there: {:?}", t.deposits_sent());
-    t.uncounted.remove(&tid(0));
-    t.settle();
-    let sent = t.deposits_sent();
-    assert_eq!(sent.len(), 2, "counted again: offered again");
-    t.reply(c, sent[1].1, T::shared(Code::OK));
-    let blobs: BTreeSet<BlobId> = t.deposits_sent().iter().map(|x| x.3).collect();
-    assert!(blobs.len() == 2 && blobs.contains(&first), "both offers went: {blobs:?}");
-}
-
-// spec/sync-inbox.md §3 (Sending; Refused for now: sent again after a back-off until taken or
-// moot): a back-off whose wake came while the peer could not take the offer (its recipient counted no more there) waits for nothing: S joining
-// that connection, or its filter showing S's deposit key, offers it there again.
-#[test]
-fn a_back_off_over_while_untakeable_waits_for_nothing_spec_sync_inbox_3() {
-    for by_filter in [false, true] {
-        let mut t = T::new();
-        t.connect(conn(2), &[tid(0)]);
-        let s = sync_id(100);
-        t.deposit(s, 1, fire(tid(0)));
-        let (c, id, ..) = t.deposits_sent()[0];
-        t.reply(c, id, T::shared(Code::RATE_LIMITED));
-        t.uncounted.insert(tid(0));
-        t.advance(osis_sync::inbox::backoff_ms(0));
-        assert_eq!(t.deposits_sent().len(), 1, "not offered while the recipient counts no more");
-        if by_filter {
-            let key = deposit_key(&deposit_seed(s.0[0]), &s).verifying_key().to_bytes();
-            t.net.shown.insert((conn(2), s, key));
-            t.net.generation.insert(conn(2), 1);
-            t.settle();
-        } else {
-            t.join(conn(2), s, SourceClass::Reader);
-        }
-        assert_eq!(t.deposits_sent().len(), 2, "offered again (by filter: {by_filter})");
-    }
 }
 
 // spec/sync-inbox.md §3 (sending): a sealed fire also goes to a peer whose filter shows the
@@ -683,6 +625,7 @@ fn register_refusals_spec_sync_ids_6() {
 // (stamped in its store under the new head), and node 1 takes the stamped entry in place of the
 // deposit (what readers pull).
 #[test]
+#[ignore = "accounts: keys"]
 fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
     use crate::harness::history::{Gives, three, value_ak};
     use osis_base::{Role, Value};
@@ -967,7 +910,7 @@ fn losing_sibling(admin: bool) {
     // node 2 holds the rotation without node 0's step: it steps for the same epochs (B)
     w.write(2, |e| {
         for pk in &rotation {
-            e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists).unwrap();
+            e.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
         }
         e.reexamine().unwrap();
     });

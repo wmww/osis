@@ -697,7 +697,7 @@ impl Core {
         if self.is_independent(&a) {
             return self.epochs(&a).is_some_and(|e| e.role(Role::Read).holds_any());
         }
-        a == self.id.tid() || Some(a) == self.member() || self.key_actors.contains_key(&a)
+        a == self.id.tid() || self.key_actors.contains_key(&a)
     }
 
     /// Whether `y` is independent here (spec/sync-set.md §2): by the role commits held of it, or by

@@ -54,9 +54,6 @@ pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderK
 }
 
 pub(crate) fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> {
-    if tx.core.is_account(m) {
-        return super::account::reader_key(tx, m);
-    }
     let keys = Core::keys_in(tx, m)?;
     if tx.core.is_key_actor(m) {
         let kem = match (keys.as_ref().and_then(|k| k.key.as_ref()), tx.core.key_actors.get(m)) {
@@ -229,7 +226,7 @@ pub(crate) struct Due {
 /// head's (or `fresh`). The step is a child of the recorded head, never of a step it has not
 /// recorded.
 pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Result<Option<Due>> {
-    let Ok(me) = tx.core.writer() else { return Ok(None) };
+    let me = tx.core.me();
     if tx.core.role_now(&me, g) != Some(Role::Admin) {
         return Ok(None);
     }
@@ -269,7 +266,7 @@ pub(crate) fn endorsers(tx: &mut Tx<'_>, g: &Tid, o: &crate::sync::OwnedSyncId) 
     if owed.is_empty() {
         return Ok(Vec::new());
     }
-    let Ok(me) = tx.core.writer() else { return Ok(Vec::new()) };
+    let me = tx.core.me();
     if tx.core.role_now(&me, g) != Some(Role::Admin) {
         return Ok(Vec::new());
     }
@@ -309,7 +306,7 @@ impl Engine {
     pub fn issue_step(&mut self, t: &Tid, sync_id: &SyncId, fresh: bool) -> Result<Option<(Step, ClaimSet)>> {
         let (g, l) = (*t, *sync_id);
         self.run(|tx| {
-            let Ok(me) = tx.core.writer() else { return Ok(None) };
+            let me = tx.core.me();
             if !rotation::blocked_roles(tx, &me, &g)?.is_empty() {
                 return Ok(None);
             }

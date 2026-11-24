@@ -1,6 +1,5 @@
 //! Disputes, which every node settles for itself: two admins removed each other without having
-//! seen the other's removal (spec/permissions.md §5.1, Trust set), or an account's history forked
-//! (spec/permissions.md §5.4).
+//! seen the other's removal (spec/permissions.md §5.1, Trust set).
 
 use crate::commit_id::CommitId;
 use crate::error::{Error, Result};
@@ -17,8 +16,6 @@ pub enum Side {
     Author,
     /// Of a removal: the removed holder, so the removal does not count.
     Holder,
-    /// Of an account's history: the version that ends in this change of the account's.
-    Version(CommitId),
 }
 
 /// Names a dispute (`Osis::disputes`). Its text form (`Display`, `FromStr`) keeps it anywhere.
@@ -29,14 +26,12 @@ pub struct DisputeId(Key);
 enum Key {
     /// A removal: the commit, the write in it, whom it removes.
     Removal { commit: osis_base::CommitId, op: u32, holder: Tid },
-    Account(Tid),
 }
 
 impl std::fmt::Display for DisputeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.0 {
             Key::Removal { commit, op, holder } => write!(f, "{}:{}:{}", osis_base::hex::encode(&commit.0), op, holder.to_uri()),
-            Key::Account(a) => write!(f, "{}", a.to_uri()),
         }
     }
 }
@@ -44,9 +39,6 @@ impl std::fmt::Display for DisputeId {
 impl std::str::FromStr for DisputeId {
     type Err = Error;
     fn from_str(s: &str) -> Result<DisputeId> {
-        if let Ok(a) = Tid::parse(s) {
-            return Ok(DisputeId(Key::Account(a)));
-        }
         let bad = || Error::Invalid(format!("not a dispute id: {s}"));
         let mut it = s.splitn(3, ':');
         let (c, op, h) = (it.next().ok_or_else(bad)?, it.next().ok_or_else(bad)?, it.next().ok_or_else(bad)?);
@@ -67,12 +59,6 @@ pub enum Dispute {
     /// unless a node takes `author`'s side. By default a node takes the side its own role
     /// exists on, else whichever write it held first.
     Removal { id: DisputeId, target: Tid, author: Tid, holder: Tid, commit: CommitId, side: Side, chosen: bool },
-    /// Over `account`'s history, which forked into versions ending in `versions` (as when a device
-    /// removed from the account keeps writing as it): the node reads one, by default the one
-    /// whose change it held first, and keeps it until its user chooses another. Told once one
-    /// version rejects another. The account's own devices read who made each change: a removed
-    /// device's version never outweighs its removal there, unless it removed them first.
-    Account { id: DisputeId, account: Tid, versions: Vec<CommitId>, side: Side, chosen: bool },
 }
 
 /// Open removal disputes `disputes` lists at most beside those with a recorded side (a removed
@@ -89,28 +75,24 @@ impl Dispute {
         Dispute::Removal { id: DisputeId(Key::Removal { commit: d.commit, op: d.op, holder: d.holder }), target: d.target, author: d.author, holder: d.holder, commit: CommitId(d.commit), side, chosen }
     }
 
-    pub(crate) fn of_account(account: Tid, versions: &[osis_base::CommitId], side: osis_base::CommitId, chosen: bool) -> Dispute {
-        Dispute::Account { id: DisputeId(Key::Account(account)), account, versions: versions.iter().map(|l| CommitId(*l)).collect(), side: Side::Version(CommitId(side)), chosen }
-    }
-
     /// Its name.
     pub fn id(&self) -> DisputeId {
         match self {
-            Dispute::Removal { id, .. } | Dispute::Account { id, .. } => *id,
+            Dispute::Removal { id, .. } => *id,
         }
     }
 
     /// The side this node follows.
     pub fn side(&self) -> Side {
         match self {
-            Dispute::Removal { side, .. } | Dispute::Account { side, .. } => *side,
+            Dispute::Removal { side, .. } => *side,
         }
     }
 
     /// Whether the side was chosen (`Osis::choose_side`), not taken by default.
     pub fn chosen(&self) -> bool {
         match self {
-            Dispute::Removal { chosen, .. } | Dispute::Account { chosen, .. } => *chosen,
+            Dispute::Removal { chosen, .. } => *chosen,
         }
     }
 }
@@ -125,8 +107,7 @@ impl Osis {
         self.locked(|l| {
             let (ds, left) = l.engine().disputes(LIST_MAX);
             // over a thing this node reads: another's roster is not its to show (`grants`)
-            let mut out: Vec<Dispute> = ds.iter().filter(|d| l.engine().role_on(&d.target) >= Some(osis_base::Role::Read)).map(Dispute::of).collect();
-            out.extend(l.engine().account_disputes().iter().map(|a| Dispute::of_account(a.account, &a.lines, a.side, a.chosen)));
+            let out: Vec<Dispute> = ds.iter().filter(|d| l.engine().role_on(&d.target) >= Some(osis_base::Role::Read)).map(Dispute::of).collect();
             Ok((out, left))
         })
     }
@@ -148,17 +129,11 @@ impl Osis {
     }
 
     /// Takes a side in a dispute, for this node, until chosen again: `Author` or `Holder` of a
-    /// removal, a `Version` of an account's history (one of its `versions`, or any change of the
-    /// account's ending a version). Switching may re-read everything the dispute touches and is
-    /// slow on a long history. `Invalid` when no such removal or change is held, or the side is
-    /// of another kind of dispute; `Unsupported` on a thin client.
+    /// removal. Switching may re-read everything the dispute touches and is slow on a long
+    /// history. `Invalid` when no such removal is held; `Unsupported` on a thin client.
     pub fn choose_side(&self, id: DisputeId, side: Side) -> Result<()> {
         self.local("choose_side")?;
-        let misfit = || Error::Invalid(format!("{side:?} is no side of dispute {id}"));
-        self.locked(|l| match (id.0, side) {
-            (Key::Removal { commit, op, holder }, Side::Author | Side::Holder) => Ok(l.engine().choose(commit, op, holder, side == Side::Author)?),
-            (Key::Account(a), Side::Version(c)) => Ok(l.engine().choose_line(a, c.0)?),
-            _ => Err(misfit()),
-        })
+        let Key::Removal { commit, op, holder } = id.0;
+        self.locked(|l| Ok(l.engine().choose(commit, op, holder, side == Side::Author)?))
     }
 }

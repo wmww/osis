@@ -64,9 +64,7 @@ prop_compose! {
             frontier: frontier.map(|n| (0..n).map(|i| CommitId([i; 32])).collect()),
             links: l,
             ephemeral: None,
-            epoch: None,
-            rotation: None,
-            reseal: None, own_cover: false, adminless: false,
+            own_cover: false, adminless: false,
         };
         // the lists' rule: sorted and distinct
         for a in &mut h.aspects {

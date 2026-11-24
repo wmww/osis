@@ -30,15 +30,8 @@ pub struct Judge<'a> {
 }
 
 impl Core {
-    /// Whether `x` is another node of this node's account: on D's roster as this node reads it
-    /// (spec/permissions.md §1, §5.4 Roster). A node removed is not.
-    pub fn own_node(&self, x: &Tid) -> bool {
-        let Some((p, _)) = self.account_and_root() else { return false };
-        *x != self.id.tid() && self.devices_roster(&p).contains(x)
-    }
-
-    /// J over `actors`: the actors a connection proved by their own key or, for an account, by
-    /// its key at an epoch open here (`Proven`); never one read from a thing's data.
+    /// J over `actors`: the actors a connection proved by their own key (`Proven`); never one
+    /// read from a thing's data.
     pub fn judge(&self, actors: impl IntoIterator<Item = Tid>) -> Judge<'_> {
         Judge { core: self, actors: actors.into_iter().collect(), ever: BTreeMap::new() }
     }
@@ -81,7 +74,7 @@ impl Engine {
             if self.is_node(&m)? {
                 continue;
             }
-            if let Some(CreationRecord::KeyActor { public_key, account: false, .. }) = self.core.created(&m) {
+            if let Some(CreationRecord::KeyActor { public_key, .. }) = self.core.created(&m) {
                 out.extend(VerifyingKey::from_slice(public_key).ok());
             }
         }

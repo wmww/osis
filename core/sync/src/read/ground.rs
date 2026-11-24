@@ -9,7 +9,7 @@ use crate::session::RequestId;
 use crate::types::{ConnId, Entry, Result};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_engine::retention::Minting;
-use osis_engine::sync::{BodyFacts, BodyId, BodyMeta, CertKind, Loss, PartSet, PieceLink, ReadCredentials, SealedSet, Strip};
+use osis_engine::sync::{BodyFacts, BodyId, BodyMeta, Loss, PartSet, PieceLink, ReadCredentials, SealedSet, Strip};
 use osis_blob::StepId;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -131,7 +131,7 @@ pub trait Ground {
     /// (spec/sync-judgement.md §2 outside the required set, §3 Header-only parts): until then
     /// nothing is judged outside it.
     fn unit_settled(&mut self, s: &SyncId) -> Result<bool>;
-    /// A reader can pull S from here: this node publishes `reach.0`, or a connection shares S
+    /// A reader can pull S from here: this node publishes a `dial.0` entry, or a connection shares S
     /// (spec/sync-judgement.md §3 Own store).
     fn pullable(&mut self, s: &SyncId) -> Result<bool>;
     /// S's first sync here ended (`Store::first_synced`, spec/sync-streams.md §5; a stamped read),
@@ -251,36 +251,22 @@ pub trait Ground {
     fn deposit(&mut self, conn: ConnId, head: Option<StepId>, s: &SyncId, c: &BodyId, b: &BlobId) -> Result<()>;
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &BodyId, stand: &Stand) -> Result<()>;
 
-    /// Of kind `r` (records: `None`; a rotation's thing lists: `Some(r)`), what S carries as
-    /// certificates that no certificate blob of that kind in the own store carries, whoever
-    /// logged it (spec/permissions.md §4 Logging certificates: the records missing;
-    /// spec/sync-judgement.md §1 List blobs), and what becomes of each such blob the engine
-    /// noted under S.
-    fn cert_blobs_missing(&mut self, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
-        let _ = (s, r);
+    /// What S carries as certificates that no certificate blob in the own store carries,
+    /// whoever logged it (spec/permissions.md §4 Logging certificates: the records missing), and
+    /// what becomes of each such blob the engine noted under S.
+    fn cert_blobs_missing(&mut self, s: &SyncId) -> Result<CertBlobsMissing> {
+        let _ = s;
         Ok(CertBlobsMissing::default())
     }
-    /// The rotations with a thing list S carries (`Engine::list_rotations`): where read starts
-    /// following S's list blobs.
-    fn list_rotations(&mut self, s: &SyncId) -> Result<Vec<CommitId>> {
-        let _ = s;
-        Ok(Vec::new())
-    }
-    /// The (S, rotation) pairs whose S came to carry a list of the rotation since the last call
-    /// (`Engine::lists_feed`, per read sync ID of the thing).
-    fn lists_added(&mut self) -> Result<Vec<(SyncId, CommitId)>> {
-        Ok(Vec::new())
-    }
-    /// Certificate blobs of kind `r` sealed here under S that the own store holds no more: what
-    /// the engine keeps of them goes.
-    fn forget_cert_blobs(&mut self, s: &SyncId, r: CertKind, gone: &BTreeSet<osis_base::BlobId>) -> Result<()> {
-        let _ = (s, r, gone);
+    /// Certificate blobs sealed here under S that the own store holds no more: what the engine
+    /// keeps of them goes.
+    fn forget_cert_blobs(&mut self, s: &SyncId, gone: &BTreeSet<osis_base::BlobId>) -> Result<()> {
+        let _ = (s, gone);
         Ok(())
     }
-    /// Logs one certificate blob of kind `r` under S in the own store (a fresh encryption): a
-    /// record blob of records `tids`, or a list blob of rotation `r`'s thing lists for `tids`.
-    fn log_cert_blob(&mut self, s: &SyncId, r: CertKind, tids: &BTreeSet<osis_base::Tid>) -> Result<()> {
-        let _ = (s, r, tids);
+    /// Logs one record blob of records `tids` under S in the own store (a fresh encryption).
+    fn log_cert_blob(&mut self, s: &SyncId, tids: &BTreeSet<osis_base::Tid>) -> Result<()> {
+        let _ = (s, tids);
         Ok(())
     }
     /// The links of `c`'s body of `parts`, where its pieces start (`Engine::piece_roots`;

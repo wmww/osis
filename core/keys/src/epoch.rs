@@ -708,9 +708,6 @@ pub struct ActorEpochs {
     pub admin: RoleEpochs,
 }
 
-/// An account's epoch whose seed is held: height, seed, the held (height, seed) it supersedes.
-pub type AccountEpochHeld = (u64, Secret32, Vec<(u64, Secret32)>);
-
 impl ActorEpochs {
     pub fn role(&self, r: Role) -> &RoleEpochs {
         match r {
@@ -744,25 +741,6 @@ impl ActorEpochs {
             a.role_mut(r).set_established(Epoch::ZERO, Provenance::Fixed);
         }
         a
-    }
-
-    /// An account's role secrets `kdf("role <role>", seed)`, one epoch per signing epoch held at
-    /// its height under the nonce rule (spec/crypto.md §3); each entry is (height, seed, the
-    /// held epochs it supersedes). Internal to the account's nodes.
-    pub fn account(tid: &Tid, held: &[AccountEpochHeld]) -> Result<ActorEpochs, crate::Error> {
-        let mut a = ActorEpochs::default();
-        for r in ROLES {
-            let at = |n: u64, seed: &Secret32| Epoch::derive(tid, r, n, &key_actor_role_secret(seed, r));
-            for (n, seed, sup) in held {
-                let e = at(*n, seed)?;
-                let sup = sup.iter().map(|(m, s)| at(*m, s)).collect::<Result<Vec<_>, _>>()?;
-                let re = a.role_mut(r);
-                re.set_secret(e, key_actor_role_secret(seed, r));
-                re.set_established(e, Provenance::Fixed);
-                re.set_history(e, BTreeSet::new(), sup, None);
-            }
-        }
-        Ok(a)
     }
 
     /// The epoch and secret of role `r` of dependent thing `tid` derived from mint admin epoch `e`

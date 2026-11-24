@@ -16,12 +16,9 @@ type signing_key = enum {
 
 /// How a thing was created (spec/wire.md §3). Exactly one of `admin` and `key` is set:
 /// - `admin`: the thing's mint admin;
-/// - `key`: the thing is a key actor, an account, device or share-link key
-///   identified by this public key (an account's: its first). It has no admin; whoever holds
-///   the key's secret acts as it.
+/// - `key`: the thing is minted with this public key (a node thing or a share-link key).
+///   It has no mint admin; whoever holds the key's secret acts as it.
 /// `link`, only beside `admin`: the thing is a share link's actor, made for this target.
-/// `account`, only ever set to true and only beside `key`: the thing is an account, whose keys
-/// change by rotations (spec/crypto.md §9).
 /// `expires`, only beside `admin`: the wall ms the thing ends at, whole, whatever any later
 /// creation of it says.
 type creation = struct {
@@ -29,7 +26,6 @@ type creation = struct {
     key 1: signing_key,
     nonce 2: blob,
     link 3: weak,
-    account 4: bool,
     expires 5: timestamp,
 };
 
@@ -156,15 +152,13 @@ aspect keys.0: struct {
     read 0: option<keyset>,
     write 1: option<keyset>,
     admin 2: option<keyset>,
-    /// A key actor's one encryption key; an account's, its current epoch's.
+    /// A key actor's one encryption key.
     key 3: option<kem_key>,
-    /// An account's inbox thing (spec/sync-inbox.md §1).
+    /// The thing's inbox, where it is another thing (spec/sync-inbox.md §1).
     inbox 4: option<weak>,
     /// 32 bytes. Lets others add data for the actor at nodes keeping it unread without being able to read it
     /// (spec/sync-ids.md §2).
     deposit_seed 5: option<blob>,
-    /// An account's current epoch's signing key (spec/crypto.md §3).
-    signing 6: option<signing_key>,
     sync 7: option<keyset>,
     /// Per box of the actor's secrets to a holder actor, keyed as that box, the keysets of the
     /// holder it names: written with the box, whoever boxes (spec/crypto.md §4, Stale).
@@ -211,15 +205,6 @@ aspect secrets.0: struct {
     history 1: map<history_key, blob>,
 };
 
-/// The account's seed-boxing commits on its devices actor (spec/data-model.md §9): the signing
-/// public key (32 bytes) of the epoch whose seed each boxes, added by the account's creation,
-/// each rotation and each seed re-seal. It marks the devices actor as the account's.
-aspect account.0: set<blob>;
-
-/// An account's listings (spec/permissions.md §5.5): by a rotation's 32-byte commit ID, the
-/// account's own commits at the epochs it closed that this listing names. Entries only put.
-aspect listing.0: map<blob, set<blob>>;
-
 // ---- Syncing ----
 // An independent thing syncs under its home sync ID: nodes keeping it unread hold
 // encrypted data they cannot read, and its steps prove who may fetch and add to it
@@ -243,27 +228,12 @@ type sync_entry = struct {
 /// A thing's sync IDs, by 16-byte sync ID (spec/sync-ids.md §4).
 aspect sync.0: map<blob, sync_entry>;
 
+/// The thing's dial list: each node's 32-byte dialable key to the URLs it is dialed at
+/// (spec/sync-set.md §1), each node keeping its own entry. Its readers dial them, for dialing only.
+aspect dial.0: map<blob, list<string>>;
+
 // ---- Devices ----
 // Each device running osis (a node) is itself a thing, with these aspects about it.
-
-/// The device's software version.
-aspect node.0: struct {
-    software 0: string,
-};
-
-/// How to reach the device directly (spec/sync-transport.md §1, §3): its 32-byte public key, its
-/// `peer://` global addresses and relays, and the account the device says it belongs to (a dial
-/// hint, never proof).
-aspect reach.0: struct {
-    dialable 0: blob,
-    items 1: list<string>,
-    account 2: option<weak>,
-};
-
-/// The account's dial list, on its profile: each of its devices' 32-byte public key to the URLs
-/// it is dialed at (spec/sync-set.md §1), each device keeping its own entry. Its contacts read
-/// it, for dialing only.
-admin aspect dial^.0: map<blob, list<string>>;
 
 /// Limits on what the device stores of one thing it keeps unread.
 type thing_caps = struct {

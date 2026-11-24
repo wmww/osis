@@ -42,7 +42,6 @@ use osis_base::{BlobId, Mono, SyncId, Tid};
 use osis_base::memo::Effects;
 use osis_crypto::{Signature, SigningSecret, VerifyingKey};
 use osis_proto::{Code, DepositItem, Msg, OfferItem};
-use osis_store::Named;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use crate::types::Wrap;
@@ -61,16 +60,11 @@ type Key = (SyncId, BlobId);
 pub trait Judge {
     /// The deposit key S's offers are signed with, for a fired thing from its deposit seed.
     fn deposit_key(&mut self, s: &SyncId, thing: Option<Tid>) -> Result<Option<SigningSecret>>;
-    /// The actors a connection naming `named` counts as now (`opens::counted`).
-    fn counted(&mut self, named: &Named) -> Vec<Tid>;
 }
 
 impl Judge for osis_engine::Engine {
     fn deposit_key(&mut self, s: &SyncId, thing: Option<Tid>) -> Result<Option<SigningSecret>> {
         Ok(self.signers(s, thing.as_ref())?.deposit)
-    }
-    fn counted(&mut self, named: &Named) -> Vec<Tid> {
-        crate::opens::counted(self, named)
     }
 }
 
@@ -110,7 +104,7 @@ pub struct Offers {
     took: Vec<Key>,
     /// The offers to each recipient, for an actor counted anew at a connection.
     to: BTreeMap<Tid, BTreeSet<Key>>,
-    /// Each connection's counted actors (`Judge::counted` of what its proofs named).
+    /// Each connection's counted actors (`Named::actors` of what its proofs named).
     who: Effects<ConnId, Vec<Tid>>,
     /// Each connection's record once its digests agreed there (`Net::agreed_on`).
     agreed: Effects<ConnId, Option<Source>>,
@@ -252,7 +246,7 @@ impl Offers {
                 continue;
             };
             let named = net.named(conn);
-            let Some((_, actors)) = self.who.settle(&conn, || judge.counted(&named)) else { continue };
+            let Some((_, actors)) = self.who.settle(&conn, || named.actors()) else { continue };
             // an actor counted anew: its offers may go there now; one no longer counted is
             // judged out as each of its offers comes up (`may_take`)
             for a in actors.iter().filter(|a| !c.actors.contains(a)) {

@@ -182,7 +182,7 @@ pub(crate) fn listed(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
     let me = tx.core.me();
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(a) = m.view.aspects.get(ai) else { return Ok(None) };
-    let (tid, ak, valid, own) = (a.tid, a.ak.clone(), m.valid_at(ai), Some(m.view.signer) == me);
+    let (tid, ak, valid, own) = (a.tid, a.ak.clone(), m.valid_at(ai), m.view.signer == me);
     let edits = a.replaces.map(|o| (o, a.original_floor));
     if !valid && !own {
         return Ok(None);

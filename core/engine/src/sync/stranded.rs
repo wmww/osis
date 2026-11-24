@@ -161,16 +161,16 @@ impl Engine {
         let actor = self.core.reader_of(&t);
         let holder = self.own_holder(&actor);
         let step = step.unwrap_or_else(|| o.path.steps.last().map_or([0; 32], |(st, _)| st.keys.sync.to_bytes()));
-        let me = self.core.account.get();
-        let admins = self.core.key_holders(&actor).into_iter().filter(|(m, r)| *r == Role::Admin && Some(*m) != me).map(|(m, _)| m).collect();
+        let me = self.core.me();
+        let admins = self.core.key_holders(&actor).into_iter().filter(|(m, r)| *r == Role::Admin && *m != me).map(|(m, _)| m).collect();
         Ok(Some(Stranding { actor, holder, step, keys: self.current_keys(&holder), admins }))
     }
 
     /// The holder of `a` this node reads it through, as it judges it (spec/permissions.md §4):
-    /// its account when that holds `a`, else a holder of `a` that is no key actor and that its
-    /// account holds a role on (an organization); its account when it judges none.
+    /// its node thing when that holds `a`, else a holder of `a` that is no key actor and that its
+    /// node thing holds a role on (an organization); its node thing when it judges none.
     fn own_holder(&self, a: &Tid) -> Tid {
-        let me = self.core.account.get().unwrap_or_else(|| self.core.id.tid());
+        let me = self.core.me();
         let holders: Vec<Tid> = self.core.key_holders(a).into_iter().map(|x| x.0).collect();
         if holders.contains(&me) {
             return me;
@@ -205,12 +205,12 @@ impl Engine {
         Ok(HolderKeys { commits, records })
     }
 
-    /// The account among `proven` holding write or above on read sync ID `s`'s actor, as this
+    /// The thing among `proven` holding write or above on read sync ID `s`'s actor, as this
     /// node judges it (spec/permissions.md §4: who a Stranded message goes to).
     pub fn writer_of(&mut self, s: &SyncId, proven: &[Tid]) -> Result<Option<Tid>> {
         let Some((t, _)) = self.read_sync_id(s)? else { return Ok(None) };
         let a = self.core.reader_of(&t);
-        Ok(proven.iter().find(|x| self.core.is_account(x) && self.core.role_now(x, &a) >= Some(Role::Write)).copied())
+        Ok(proven.iter().find(|x| self.core.role_now(x, &a) >= Some(Role::Write)).copied())
     }
 
     /// A stranded report (a Stranded message, or a stranded notice taken from this node's inbox):
@@ -260,7 +260,7 @@ impl Engine {
     /// `m` is a current holder of `a` and this node may rotate a role of `a` at or below `m`'s.
     fn may_reseal(&self, a: &Tid, m: &Tid) -> bool {
         let Some(role) = self.core.key_holders(a).into_iter().find(|(x, _)| x == m).map(|x| x.1) else { return false };
-        let Ok(me) = self.core.writer() else { return false };
+        let me = self.core.me();
         crate::rotation::may_rotate(&self.core, &me, a).iter().any(|r| *r <= role)
     }
 

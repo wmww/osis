@@ -12,20 +12,19 @@ pub(crate) mod dial;
 pub(crate) mod facts;
 pub(crate) mod falls;
 pub(crate) mod held;
-pub(crate) mod listed;
 pub(crate) mod own;
 pub(crate) mod rows;
 pub use rows::Held;
 pub(crate) mod pieces;
 pub use pieces::PieceLink;
 pub(crate) mod certblobs;
-pub use certblobs::{CertBlob, CertBlobs, CertKind};
+pub use certblobs::{CertBlob, CertBlobs};
 pub(crate) use certblobs::with_chains;
 mod relay;
+mod signing;
 pub use relay::{Relay, RelayOpened};
 pub(crate) mod set;
 pub(crate) mod setting;
-mod signing;
 pub(crate) mod stranded;
 pub(crate) mod units;
 pub use stranded::Stranding;
@@ -36,7 +35,7 @@ mod tests_facts;
 pub use osis_blob::DialHint;
 
 use crate::engine::DropFor;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::sync_ids::{Certs, HeadKeys};
 use crate::{Engine, Ingested};
 use osis_base::{Ak, BlobId, CommitId, CreationRecord, Role, SyncId, Tid, WallMs};
@@ -125,9 +124,6 @@ pub enum Opened {
     Linked,
     /// A record blob (spec/wire.md §3): its records learned.
     Records(BTreeSet<Tid>),
-    /// A list blob (spec/wire.md §4, List tree): the thing lists of this rotation held, or kept
-    /// loose until it is.
-    Lists(CommitId),
     /// No held secret opens it (or nothing held links it).
     NotOpen,
     /// It opened and is bad (its sender is to blame).
@@ -210,8 +206,6 @@ pub struct BodyFacts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MustNot {
     Purged,
-    CardSuperseded,
-    CardEnded,
 }
 
 /// How a held blob of a commit loses to another of it (`Engine::blob_loses`, spec/sync-judgement.md
@@ -433,21 +427,19 @@ pub struct Signers {
 pub struct RosterHolders {
     /// Anyone may: S kept unread (its granters are not named here).
     pub anyone: bool,
-    /// This account's other nodes syncing S's thing.
-    pub nodes: BTreeSet<Tid>,
-    /// The accounts other than this one holding a role on S's thing.
-    pub accounts: BTreeSet<Tid>,
+    /// The key actors other than this node holding a role on S's thing.
+    pub holders: BTreeSet<Tid>,
 }
 
 impl RosterHolders {
     /// Some node other than this one may hold S.
     pub fn any(&self) -> bool {
-        self.anyone || !self.nodes.is_empty() || !self.accounts.is_empty()
+        self.anyone || !self.holders.is_empty()
     }
 
     /// A peer proving `proven` may hold S: one of them is a holder named here.
     pub fn may_hold(&self, proven: &[Tid]) -> bool {
-        self.anyone || proven.iter().any(|x| self.nodes.contains(x) || self.accounts.contains(x))
+        self.anyone || proven.iter().any(|x| self.holders.contains(x))
     }
 }
 
@@ -504,8 +496,6 @@ impl Engine {
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.pass_wanted, |e, s| e.pass_wanted_fresh(s))? | moved;
         self.follow_own()?;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.wrap_blocks, |e, (a, walk)| e.wrap_blocked_read(a, *walk))? | moved;
-        // `listed` follows `certified` first: one follow of each
-        let moved = self.follow_lists()? | moved;
         let moved = self.follow_cert_records()? | moved;
         // a body's facts read every value above
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_facts, |e, (s, c)| e.read_facts_now(s, c))? | moved;
@@ -597,11 +587,10 @@ impl Engine {
         self.core.waits.unpended.feed()
     }
 
-    /// Certificate blob `b` of kind `r` sealed here under `s` is in the own store no more: its
-    /// row goes.
-    pub fn forget_cert_blob(&mut self, s: &SyncId, r: CertKind, b: &BlobId) -> Result<()> {
+    /// Certificate blob `b` sealed here under `s` is in the own store no more: its row goes.
+    pub fn forget_cert_blob(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let (s, b) = (*s, *b);
-        self.run(|tx| certblobs::forget_blob(tx, &s, r, &b))
+        self.run(|tx| certblobs::forget_blob(tx, &s, &b))
     }
 
     /// Takes a piece's bytes (a blob a held body links, `pieces`' missing) from a store entry:
@@ -687,14 +676,6 @@ impl Engine {
     /// what a sync ID carries).
     pub fn carrying(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
         Ok(self.carrying_now(t, false)?.into_iter().collect())
-    }
-
-    /// Whether this node has joined an account (made or paired). Before (a node pairing), its
-    /// node closure reaches no account root, so its sync set is empty for want of one, not
-    /// because anything left it: nothing it holds counts as left. A node removed from its
-    /// account since has no account, and everything it held has left.
-    pub fn sync_rooted(&mut self) -> bool {
-        self.core.account.get().is_some()
     }
 
     /// Sync ID `s`'s things here (`sync_things_of`): its owner by a held `sync.0`, or the
@@ -816,150 +797,25 @@ impl Engine {
     }
 
     /// The keys this node proves with on a connection, in proof order (spec/wire.md §11.2 Prove):
-    /// its own node key first when `own_node` (the peer is a node of its account), then its
-    /// account at its open epoch while it holds that epoch's seed, then the key actors it acts for
-    /// (link keys) by ascending tid. Each with its creation record; signing and checking proofs is
-    /// osis-proto's (`Prover`).
-    pub fn provers(&mut self, own_node: bool) -> Result<Vec<(SigningSecret, CreationRecord)>> {
-        let mut out = Vec::new();
-        if own_node {
-            out.push((self.core.id.keys().signing.clone(), self.core.id.record().clone()));
-        }
-        out.extend(self.account_prover());
+    /// its node key first, then the key actors it acts for (link keys) by ascending tid. Each
+    /// with its creation record; signing and checking proofs is osis-proto's (`Prover`).
+    pub fn provers(&mut self) -> Result<Vec<(SigningSecret, CreationRecord)>> {
+        let mut out = vec![(self.core.id.keys().signing.clone(), self.core.id.record().clone())];
         out.extend(self.core.key_actors.values().map(|k| (k.keys().signing.clone(), k.record().clone())));
         Ok(out)
     }
 
-    /// Whether this node publishes `reach.0` (a reader can pull from it, spec/sync-judgement.md
-    /// §3 Own store).
-    pub fn publishes_reach(&mut self) -> Result<bool> {
-        let me = self.core.id.tid();
-        Ok(self.get_typed(&me, &osis_schema::core_types::REACH)?.is_some())
-    }
-
-    /// Whether `t` is another node of this node's account (spec/sync-opens.md §2: a node proof
-    /// counts as the peer's node only then).
-    pub fn own_node(&mut self, t: &Tid) -> bool {
-        self.core.own_node(t)
-    }
-
-    /// Whether dialable key `key` is, by the `reach.0` held here, another node of this node's
-    /// account (spec/sync-opens.md §2: a dialer proves its node key only to such a key). O(the
-    /// account's nodes): asked once per connection dialed.
-    pub fn own_node_key(&mut self, key: &[u8; 32]) -> Result<bool> {
-        let Some((_, d)) = self.core.account_and_root() else { return Ok(false) };
-        for (n, _) in self.core.key_holders(&d) {
-            if self.core.own_node(&n) && self.get_typed(&n, &osis_schema::core_types::REACH)?.is_some_and(|r| r.dialable == *key) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// The signed rotations of this node's account a verifier may lack, each a header-only copy
-    /// (a `CommitBlobPlaintext` value with no sections), for a Prove or Proved (spec/sync-opens.md §2):
-    /// what holding the epoch it proves at needs (`AccountView::proving_chain`), each after what
-    /// it needs, so a verifier takes them in one pass (`take_rotations`); a session sends the
-    /// newest a message fits. Never a line beside it: a removed node's forks, held here, would
-    /// crowd the message's room.
-    pub fn prove_rotations(&mut self) -> Result<Vec<osis_base::Value>> {
-        let Some(p) = self.core.account.get() else { return Ok(Vec::new()) };
-        let rots = self.core.account_view(&p).map(|v| v.proving_chain()).unwrap_or_default();
-        let mut out = Vec::new();
-        // a merge goes as one of its certificates
-        let v = self.core.account_view(&p);
-        for r in rots.into_iter().filter_map(|e| v.as_ref().and_then(|v| v.minting(&e).first().copied())) {
-            let Some(c) = self.read(|tx| tx.get_commit(&r))? else { continue };
-            let pt = osis_commit::rewrite(&c, |_| true).encode();
-            out.push(osis_base::cbor::decode(&pt, &osis_base::cbor::Limits::DEFAULT).map_err(|_| Error::Corrupt("rotation header"))?);
-        }
-        Ok(out)
-    }
-
-    /// Takes the rotations a peer's Prove or Proved carried (header-only copies of account rotation
-    /// commits), judged by spec/permissions.md §5.4 like any received, in the order given,
-    /// before its proofs are judged. Nothing carries them (spec/commits.md §4 Pending storage),
-    /// so of an account a node keeps only what it holds the account's chain by: the rotations
-    /// that count once all are taken, and, while no rotation held before is in a rejection with
-    /// a counting one, the tips the Warning names (`AccountView::contested`, the versions its
-    /// user may choose); each with what it needs (`AccountView::needed`). Every other one (a
-    /// fork beside the followed line, one that would pend, a second dispute while one is told)
-    /// keeps nothing, as if never received: decided in a trial of all of them together
-    /// (`ingest_trial`) before anything is written. Anything else (not a rotation, a part
-    /// carried, bad input) is skipped.
-    pub fn take_rotations(&mut self, rotations: Vec<osis_base::Value>) -> Result<()> {
-        let mut fresh: Vec<(Vec<u8>, osis_commit::CommitBlob)> = Vec::new();
-        let mut of: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
-        for v in rotations {
-            let b = osis_base::cbor::encode(&v);
-            let Ok(c) = osis_commit::CommitBlob::decode(&b) else { continue };
-            let id = c.id();
-            if c.header.rotation.is_none() || !c.parts.is_empty() || self.core.ix.commits.contains_key(&id) || !of.entry(c.header.signer).or_default().insert(id) {
-                continue;
-            }
-            fresh.push((b, c));
-        }
-        if fresh.is_empty() {
-            return Ok(());
-        }
-        let blobs: Vec<osis_commit::CommitBlob> = fresh.iter().map(|(_, c)| c.clone()).collect();
-        let kept = self.ingest_trial(&blobs, |core| {
-            let mut out = BTreeSet::new();
-            for (p, ids) in &of {
-                let Some(v) = core.account_view(p) else { continue };
-                // by epoch: a merge certificate is its merge's
-                let epochs: BTreeSet<CommitId> = ids.iter().filter_map(|r| v.epoch_of(r)).collect();
-                let mut roots: Vec<CommitId> = epochs.iter().filter(|r| v.rotation_counts(r)).copied().collect();
-                // the Warning's first rise: once it is told by what was held, a Prove adds no line
-                if !v.rotation_ids().iter().any(|r| !epochs.contains(r) && v.contests(r)) {
-                    roots.extend(v.contested().iter().filter(|r| epochs.contains(r)));
-                }
-                out.extend(v.needed(roots).into_iter().flat_map(|e| v.minting(&e)).filter(|r| ids.contains(r)));
-            }
-            out
-        })?;
-        for (b, c) in &fresh {
-            if !kept.contains(&c.id()) {
-                continue;
-            }
-            match self.ingest_uncarried(b) {
-                Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    /// Whether `key` is `record`'s actor's key at an epoch open here (a connection proof's key).
-    pub fn key_open(&mut self, record: &CreationRecord, key: &[u8; 32]) -> bool {
-        self.account_key_open(record, key)
-    }
-
-    /// Whether `key`, with which account `account` proved before, is at an epoch open here now
-    /// (a record's account judged again, spec/sync-opens.md §3): `key_open` by the account's
-    /// creation record; an account this node holds nothing of had no epoch closed here.
-    pub fn account_key_counts(&mut self, account: &Tid, key: &[u8; 32]) -> bool {
-        match self.core.created(account).cloned() {
-            Some(r) => self.account_key_open(&r, key),
-            None => true,
-        }
-    }
-
-    /// [for Fathom's review] Whether `key`, with which account `account` proved before, is the
-    /// signing key of an epoch that a counting rotation of the chain this node follows for the
-    /// account supersedes while carrying a removal (spec/permissions.md §5.5 Revoked: such a
-    /// record is waited for no more). An account this node holds nothing of: not. O(log) on the
-    /// account's chain, a memo.
-    pub fn account_key_revoked(&mut self, account: &Tid, key: &[u8; 32]) -> bool {
-        self.core.account_view(account).is_some_and(|v| v.revoked(key))
+    /// Whether this node publishes a `dial.0` entry (a reader can pull from it,
+    /// spec/sync-judgement.md §3 Own store; `publish_reach`).
+    pub fn publishes_dial(&mut self) -> Result<bool> {
+        let me = self.core.me();
+        Ok(self.get_typed(&me, &osis_schema::core_types::DIAL)?.is_some_and(|d| !d.is_empty()))
     }
 
     /// The nodes this node may dial for S (spec/sync-opens.md §1 Whom to dial), each at the
-    /// address it is known by here: of S read or held for keys, the nodes of each account holding a
-    /// role on S's thing by that account's dial list (`dial^.0` on its profile); and this node's own
-    /// other nodes whose node closure holds S's thing, by their
-    /// `reach.0` (the driver never dials its own key). A memo per sync ID; for dialing only, never
-    /// proof.
+    /// address it is known by here: of S read or held for keys, those the `dial.0` lists of S's
+    /// things name (the driver never dials its own key). A memo per sync ID; for dialing only,
+    /// never proof.
     pub fn dial_peers(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {
         self.follow_read_things()?;
         osis_base::memo::Memo::get_in(self, |e| &e.core.dial_peers, s, |e| e.dial_peers_now(s))
@@ -967,10 +823,8 @@ impl Engine {
 
     /// The nodes other than this one that may hold S, by the rosters and records held here
     /// (spec/sync-status.md §3 held by no other node; spec/sync-set.md §3 the peers a leave waits
-    /// for): of S read, the accounts other than this one holding a role on S's thing and the
-    /// other nodes of this account whose node closure holds it; S kept unread, anyone
-    /// (its granters, whom the rosters do not name). The nodes `dial_peers` lists, by who they
-    /// are, whether or not an address is known. A memo per sync ID.
+    /// for): of S read, the key actors other than this node holding a role on S's thing; S kept
+    /// unread, anyone (its granters, whom the rosters do not name). A memo per sync ID.
     pub fn roster_holders(&mut self, s: &SyncId) -> Result<Arc<RosterHolders>> {
         self.follow_read_things()?;
         osis_base::memo::Memo::get_in(self, |e| &e.core.roster_holders, s, |e| e.roster_holders_now(s))

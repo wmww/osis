@@ -11,7 +11,7 @@ use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, SyncId, Ts, Value, Wall
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
-pub const ROLE_CLASS: [&str; 6] = ["roles.0", "secrets.0", "keys.0", "sync.0", "account.0", "listing.0"];
+pub const ROLE_CLASS: [&str; 4] = ["roles.0", "secrets.0", "keys.0", "sync.0"];
 
 pub fn is_role_class(ak: &str) -> bool {
     ROLE_CLASS.contains(&ak)
@@ -195,30 +195,20 @@ codec_struct! {
     pub struct SyncEntry { 0 steps: BTreeMap<[u8; 32], StepRecord> }
 }
 codec_struct! {
-    /// `keys.0`: keysets per role (actors other than key actors), a key actor's KEM key, an
-    /// account's inbox thing, 32-byte deposit seed, an actor's sync ID, an account's current epoch's signing key (`key` its KEM key), and
+    /// `keys.0`: keysets per role (actors other than key actors), a key actor's KEM key, the
+    /// thing's inbox, 32-byte deposit seed, an actor's sync ID, and
     /// per box to a holder actor, keyed as that box, the holder's keysets it names (spec/crypto.md
     /// §4, Stale).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Keys {
         0 read: Option<Keyset>, 1 write: Option<Keyset>, 2 admin: Option<Keyset>,
-        3 key: Option<KemKey>, 4 inbox: Option<Weak>, 5 deposit_seed: Option<[u8; 32]>, 6 signing: Option<SigningKey>,
+        3 key: Option<KemKey>, 4 inbox: Option<Weak>, 5 deposit_seed: Option<[u8; 32]>,
         7 sync: Option<Keyset>, 8 sealed: BTreeMap<BoxKey, BTreeSet<Epoch>>, 9 sync_id: Option<SyncId>,
     }
 }
 codec_struct! {
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Secrets { 0 boxes: BTreeMap<BoxKey, SecretBox>, 1 history: BTreeMap<HistoryKey, Vec<u8>> }
-}
-codec_struct! {
-    /// `node.0`: software version.
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct NodeInfo { 0 software: String }
-}
-codec_struct! {
-    /// `reach.0` (spec/sync-transport.md §1, §3): 32-byte P2P key, `peer://` items (global addresses, then relays), and the account the node says it belongs to (a dial hint only, never proof).
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Reach { 0 dialable: [u8; 32], 1 items: Vec<String>, 2 account: Option<Weak> }
 }
 codec_struct! {
     /// One thing's limits at a node keeping it unread, in place of the policy's.
@@ -366,13 +356,6 @@ codec_struct! {
     pub struct Tag { 0 color: Option<String> }
 }
 
-/// `account.0` on an account root D (spec/data-model.md §9): the signing keys of the
-/// epochs whose seeds the account's commits on D box. It marks D as the account's.
-pub type Account = BTreeSet<Vec<u8>>;
-
-/// `listing.0`: a rotation's commit ID to the commit IDs a listing names (spec/permissions.md §5.5).
-pub type Listings = BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>;
-
 pub type Holders = BTreeMap<Weak, Edge>;
 pub type SyncIds = BTreeMap<SyncId, SyncEntry>;
 
@@ -384,13 +367,9 @@ pub const ADDENDA: Aspect<Addenda> = Aspect::new(ADDENDA_AK, &CORE);
 pub const KEYS: Aspect<Keys> = Aspect::new("keys.0", &CORE);
 pub const SECRETS: Aspect<Secrets> = Aspect::new("secrets.0", &CORE);
 pub const SYNC: Aspect<SyncIds> = Aspect::new("sync.0", &CORE);
-pub const ACCOUNT: Aspect<Account> = Aspect::new("account.0", &CORE);
-pub const LISTING: Aspect<Listings> = Aspect::new("listing.0", &CORE);
-pub const NODE: Aspect<NodeInfo> = Aspect::new("node.0", &CORE);
-pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
-/// `dial^.0` on an account's profile: each node's 32-byte dialable key to its URLs (spec/sync-set.md §1).
+/// `dial.0` on any thing: each node's 32-byte dialable key to its URLs (spec/sync-set.md §1).
 pub type DialList = BTreeMap<Vec<u8>, Vec<String>>;
-pub const DIAL: Aspect<DialList> = Aspect::new("dial^.0", &CORE);
+pub const DIAL: Aspect<DialList> = Aspect::new("dial.0", &CORE);
 pub const CAPS: Aspect<Caps> = Aspect::new("caps^.0", &CORE);
 /// `clients^.0`: by client actor, a strong (the node root holds each client's actor).
 pub const CLIENTS: Aspect<BTreeMap<Weak, Client>> = Aspect::new("clients^.0", &CORE);

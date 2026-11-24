@@ -239,7 +239,7 @@ impl SharedItem {
     }
 }
 
-/// `ditem` is osis-blob's `DeleteItem`; `actor_proof` is `ActorProof`.
+/// `ditem` is osis-blob's `DeleteItem`; a proof is an `ActorProof`.
 /// Every message after Hello (spec/wire.md §11.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Msg {
@@ -268,10 +268,8 @@ pub enum Msg {
     /// A sync ID the sender is stranded on, the holder it reads the sync ID's actor through and
     /// that holder's holder keys (spec/wire.md §9).
     Stranded { id: Id, sync_id: SyncId, holder: Tid, keys: HolderKeys },
-    /// `rotations`: the account's signed rotations the verifier may lack, as header-only copies
-    /// (spec/sync-opens.md §2), each a `CommitBlobPlaintext` value the engine judges.
-    Prove { id: Id, proofs: Vec<ActorProof>, rotations: Option<Vec<Value>> },
-    Proved { id: Id, proofs: Vec<ActorProof>, rotations: Option<Vec<Value>> },
+    Prove { id: Id, proofs: Vec<ActorProof> },
+    Proved { id: Id, proofs: Vec<ActorProof> },
     Resume { id: Id, nonce: [u8; 32], tags: Vec<[u8; 32]> },
     Resumed { id: Id, nonce: [u8; 32], tag: Option<[u8; 32]> },
     /// One page of generation `generation` of a side's filter; `base` present: additions to it.
@@ -488,7 +486,7 @@ impl Msg {
                 let [commits, records] = keys.to_values();
                 vec![k, id, s(sync_id), Value::bytes(holder.as_bytes()), commits, records]
             }
-            M::Prove { proofs, rotations, .. } | M::Proved { proofs, rotations, .. } => vec![k, id, proofs_value(proofs), Value::opt(rotations.as_ref().map(|r| Value::List(r.clone())))],
+            M::Prove { proofs, .. } | M::Proved { proofs, .. } => vec![k, id, proofs_value(proofs)],
             M::Resume { nonce, tags, .. } => vec![k, id, Value::bytes(nonce), Value::List(tags.iter().map(|t| Value::bytes(t)).collect())],
             M::Resumed { nonce, tag, .. } => vec![k, id, Value::bytes(nonce), Value::opt(tag.as_ref().map(|t| Value::bytes(t)))],
             M::Beacons { generation, base, f, lo, hi, gcs, more, .. } => vec![k, id, Value::uint(*generation), Value::opt(base.map(Value::uint)), Value::uint(u64::from(*f)), Value::uint(*lo), Value::uint(*hi), Value::bytes(gcs), Value::Bool(*more)],
@@ -603,8 +601,8 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
             let (commits, records) = (f.next()?, f.next()?);
             Msg::Stranded { id, sync_id, holder, keys: HolderKeys::from_values(&commits, &records)? }
         }
-        32 => Msg::Prove { id, proofs: proofs(&mut f)?, rotations: f.opt()?.map(rotations).transpose()? },
-        33 => Msg::Proved { id, proofs: proofs(&mut f)?, rotations: f.opt()?.map(rotations).transpose()? },
+        32 => Msg::Prove { id, proofs: proofs(&mut f)? },
+        33 => Msg::Proved { id, proofs: proofs(&mut f)? },
         34 => Msg::Resume { id, nonce: f.fixed()?, tags: f.list(0, MAX_RESUME_TAGS, "resume tags")?.into_iter().map(|v| dec::fixed(v, "tag")).collect::<Result<_, _>>()? },
         35 => Msg::Resumed { id, nonce: f.fixed()?, tag: f.opt()?.map(|v| dec::fixed(v, "tag")).transpose()? },
         36 => beacons(id, &mut f)?,
@@ -674,25 +672,13 @@ fn beacons(id: Id, f: &mut Fields) -> Result<Msg, Error> {
     Ok(Msg::Beacons { id, generation, base, f: width, lo, hi, gcs, more: f.bool()? })
 }
 
-/// `[actor_proof*]`, at most `MAX_PROOFS`: past it the message is refused whole.
+/// `[proof*]`, at most `MAX_PROOFS`: past it the message is refused whole.
 fn proofs(f: &mut Fields) -> Result<Vec<ActorProof>, Error> {
     f.list(0, MAX_PROOFS, "proofs")?.into_iter().map(ActorProof::from_value).collect()
 }
 
 fn proofs_value(proofs: &[ActorProof]) -> Value {
     Value::List(proofs.iter().map(ActorProof::to_value).collect())
-}
-
-/// `[rotation*]`, at most `MAX_ROTATIONS`: each a header-only copy
-/// `[Header, signature, Opt(inner), [signature*], []]` (spec/wire.md §4), judged by the engine.
-fn rotations(v: Value) -> Result<Vec<Value>, Error> {
-    dec::list(v, 0, MAX_ROTATIONS, "rotations")?
-        .into_iter()
-        .map(|r| match &r {
-            Value::List(items) if items.len() == 5 && items.last().is_some_and(|s| matches!(s, Value::List(l) if l.is_empty())) => Ok(r),
-            _ => Err(Error::Malformed("rotation")),
-        })
-        .collect()
 }
 
 /// A reply allowance: `SMALL_REPLY..=REPLY_BUDGET` (spec/wire.md §11.2).

@@ -70,8 +70,7 @@ fn making_a_dependent_thing_costs_what_it_changed_spec_sync_set_2() {
     assert_eq!(grown(&small, &big), [], "work of the next dependent thing grew with the things held");
 }
 
-// spec/sync-set.md §2 (Cost; Making a thing), spec/permissions.md §3 (a thing whose mint admin is
-// an account becomes independent): one more independent thing moves no other sync ID's dial peers, lost access,
+// spec/sync-set.md §2 (Cost; Making a thing): one more independent thing moves no other sync ID's dial peers, lost access,
 // role duty, wrap or judgements: every counted kind flat from 4 to 40 such things.
 #[test]
 fn making_an_independent_thing_costs_what_it_changed_spec_sync_set_2() {

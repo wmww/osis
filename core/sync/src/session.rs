@@ -9,13 +9,12 @@
 //!
 //! State, per connection, in memory: Hello and the challenges, proofs shown and proven, request
 //! ids and their order, the window, the stall clock, unanswered-in bytes, the bytes written and
-//! taken. Depends on osis-proto and the engine's proof calls (`provers`, `own_node_key`,
-//! `own_node`, `key_open`, `account_tid`, `prove_rotations`, `take_rotations`).
+//! taken. Depends on osis-proto and the engine's proof calls (`provers`).
 
 use crate::types::{ConnId, Cx, NodeKey, Out};
-use osis_base::{CreationRecord, Mono, Tid, WallMs};
+use osis_base::{Mono, Tid, WallMs};
 use osis_proto::frame::MAX_HELLO_BODY;
-use osis_proto::limits::{MAX_ID, MAX_MESSAGE, MAX_PROOFS, MAX_ROTATIONS, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, TOP_BIT, WINDOW};
+use osis_proto::limits::{MAX_ID, MAX_MESSAGE, MAX_PROOFS, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, TOP_BIT, WINDOW};
 use osis_proto::msg::{Flow, answers, peek_head};
 use osis_proto::prove::verified;
 use osis_proto::{ActorProof, ClockSamples, Code, FrameDecoder, Hello, Msg, OFFSET_DIAGNOSTIC_MS, OffsetSample, PROTOCOL_VERSION, Prover, encode_frame, negotiate};
@@ -133,24 +132,17 @@ pub struct Close(pub &'static str);
 /// What the peer proved on this connection (spec/sync-opens.md §2).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Proven {
-    /// Its account, proved at an epoch open here then: the account's creation record and the key
-    /// it proved with (`Engine::key_open` judges it again).
-    pub account: Option<(CreationRecord, [u8; 32])>,
-    /// Key actors proved by their own signing keys, with that key (a static entry is checked
-    /// against it), known here or not.
-    pub key_actors: BTreeMap<Tid, [u8; 32]>,
-    /// The peer's node, when it proved its node key and is another node of this node's account.
+    /// The peer's node: the thing its first proof proved.
     pub node: Option<Tid>,
+    /// The other key actors proved by their own signing keys, with that key (a static entry is
+    /// checked against it), known here or not.
+    pub key_actors: BTreeMap<Tid, [u8; 32]>,
 }
 
 impl Proven {
-    pub fn account(&self) -> Option<Tid> {
-        self.account.as_ref().map(|(r, _)| r.tid())
-    }
-
-    /// Every actor proved: the account, the node, the key actors.
+    /// Every actor proved: the node, the key actors.
     pub fn actors(&self) -> Vec<Tid> {
-        self.account().into_iter().chain(self.node).chain(self.key_actors.keys().copied()).collect()
+        self.node.into_iter().chain(self.key_actors.keys().copied()).collect()
     }
 }
 
@@ -661,22 +653,19 @@ impl Session {
         Ok(())
     }
 
-    /// The dialer's Prove (spec/sync-opens.md §2 Order): its node key when the key it dialed is
-    /// a node of its account by `reach.0`, then its account with the account's rotations, then
-    /// its key actors; none where its policy proves nothing to this peer (`Policy::identify`).
+    /// The dialer's Prove (spec/sync-opens.md §2 Order): its node thing, then its key actors;
+    /// none where its policy proves nothing to this peer (`Policy::identify`).
     fn prove(&mut self, cx: &mut Cx) -> Result<(), Close> {
         let Some(b) = self.binding else { return Ok(()) };
-        let own = cx.engine.own_node_key(&self.peer.0).map_err(|_| Close("engine"))?;
-        let proofs = self.signed(cx, own, cx.policy.identify(None), false, &b.listener_challenge)?;
-        let rotations = with_rotations(cx, &proofs, |r| Msg::Prove { id: MAX_ID as RequestId, proofs: proofs.clone(), rotations: r })?;
-        self.send_request(None, Msg::Prove { id: 0, proofs, rotations });
+        let proofs = self.signed(cx, cx.policy.identify(None), false, &b.listener_challenge)?;
+        self.send_request(None, Msg::Prove { id: 0, proofs });
         Ok(())
     }
 
     /// This node's proofs over `challenge`, by `by_listener`, in proof order, at most
     /// `MAX_PROOFS`; none unless `identify` (its policy). What it acts for is noted either way.
-    fn signed(&mut self, cx: &mut Cx, own_node: bool, identify: bool, by_listener: bool, challenge: &[u8; 32]) -> Result<Vec<ActorProof>, Close> {
-        let provers = cx.engine.provers(own_node).map_err(|_| Close("engine"))?;
+    fn signed(&mut self, cx: &mut Cx, identify: bool, by_listener: bool, challenge: &[u8; 32]) -> Result<Vec<ActorProof>, Close> {
+        let provers = cx.engine.provers().map_err(|_| Close("engine"))?;
         self.acted_for = Some(provers.iter().map(|(key, record)| (record.tid(), key.verifying_key().to_bytes())).collect());
         if !identify {
             return Ok(Vec::new());
@@ -685,17 +674,12 @@ impl Session {
         Ok(provers.into_iter().take(MAX_PROOFS).map(|(key, record)| Prover { key, record }.sign(by_listener, challenge, &listener)).collect())
     }
 
-    /// What verified proofs show: an account only at an epoch open here; the first proof as the
-    /// peer's node only when it is another node of this node's account; every other key actor.
-    fn judge(&self, cx: &mut Cx, proofs: Vec<ActorProof>) -> Proven {
+    /// What verified proofs show: the first proof the peer's node, every other a key actor.
+    fn judge(&self, proofs: Vec<ActorProof>) -> Proven {
         let mut p = Proven::default();
         for (i, a) in proofs.into_iter().enumerate() {
             let t = a.actor();
-            if a.record.is_account() {
-                if p.account.is_none() && cx.engine.key_open(&a.record, &a.key) {
-                    p.account = Some((a.record, a.key));
-                }
-            } else if i == 0 && cx.engine.own_node(&t) {
+            if i == 0 {
                 p.node = Some(t);
             } else {
                 p.key_actors.insert(t, a.key);
@@ -756,7 +740,7 @@ impl Session {
         self.reserved += a;
         match m {
             Msg::Ping { .. } => self.answer(id, Msg::Pong { id, wall_ms: self.now.0 }),
-            Msg::Prove { proofs, rotations, .. } => self.proved_to(id, proofs, rotations, cx, ins)?,
+            Msg::Prove { proofs, .. } => self.proved_to(id, proofs, cx, ins)?,
             m => ins.push(Incoming::Request(id, m)),
         }
         Ok(())
@@ -764,25 +748,19 @@ impl Session {
 
     /// The dialer's Prove at the listener: its proofs judged, then the listener's own, by its
     /// policy (spec/sync-opens.md §1 Policy, §2 Order).
-    fn proved_to(&mut self, id: RequestId, proofs: Vec<ActorProof>, rotations: Option<Vec<osis_base::Value>>, cx: &mut Cx, ins: &mut Vec<Incoming>) -> Result<(), Close> {
+    fn proved_to(&mut self, id: RequestId, proofs: Vec<ActorProof>, cx: &mut Cx, ins: &mut Vec<Incoming>) -> Result<(), Close> {
         let Some(b) = self.binding.filter(|_| !self.dialer && self.proofs == Proofs::Proving) else {
             self.answer(id, Msg::Error { id, code: Code::MALFORMED });
             return Ok(());
         };
-        if let Some(r) = rotations {
-            cx.engine.take_rotations(r).map_err(|_| Close("engine"))?;
-        }
-        let proven = self.judge(cx, verified(proofs, false, &b.listener_challenge, &b.listener_key));
+        let proven = self.judge(verified(proofs, false, &b.listener_challenge, &b.listener_key));
         if !cx.policy.sync_with(&proven) {
             return Err(Close("policy"));
         }
-        let mine = cx.engine.account_tid();
-        let own = proven.node.is_some() || (mine.is_some() && proven.account() == mine);
-        let proofs = self.signed(cx, own, cx.policy.identify(Some(&proven)), true, &b.dialer_challenge)?;
-        let rotations = with_rotations(cx, &proofs, |r| Msg::Proved { id: MAX_ID as RequestId, proofs: proofs.clone(), rotations: r })?;
+        let proofs = self.signed(cx, cx.policy.identify(Some(&proven)), true, &b.dialer_challenge)?;
         self.proven = proven;
         self.proofs = Proofs::Done;
-        self.answer(id, Msg::Proved { id, proofs, rotations });
+        self.answer(id, Msg::Proved { id, proofs });
         ins.push(Incoming::Proved);
         Ok(())
     }
@@ -818,12 +796,9 @@ impl Session {
     /// The answer to the session's own Prove or Ping.
     fn own_reply(&mut self, kind: u64, m: Msg, cx: &mut Cx, ins: &mut Vec<Incoming>) -> Result<(), Close> {
         match (kind, m) {
-            (32, Msg::Proved { proofs, rotations, .. }) => {
+            (32, Msg::Proved { proofs, .. }) => {
                 let Some(b) = self.binding else { return Ok(()) };
-                if let Some(r) = rotations {
-                    cx.engine.take_rotations(r).map_err(|_| Close("engine"))?;
-                }
-                self.proven = self.judge(cx, verified(proofs, true, &b.dialer_challenge, &b.listener_key));
+                self.proven = self.judge(verified(proofs, true, &b.dialer_challenge, &b.listener_key));
                 if !cx.policy.sync_with(&self.proven) {
                     return Err(Close("policy"));
                 }
@@ -895,35 +870,6 @@ fn allowance(m: &Msg) -> u64 {
         Msg::Pull(p) => p.max_reply,
         _ => SMALL_REPLY as u64,
     }
-}
-
-/// The account's rotations a Prove or Proved carries beside `proofs` (`msg` with the given
-/// rotations: its size with none): absent unless an account is proved (spec/wire.md §11.2).
-fn with_rotations(cx: &mut Cx, proofs: &[ActorProof], msg: impl Fn(Option<Vec<osis_base::Value>>) -> Msg) -> Result<Option<Vec<osis_base::Value>>, Close> {
-    if !proofs.iter().any(|p| p.record.is_account()) {
-        return Ok(None);
-    }
-    // the room the proofs leave, less the list's head (at most 9 bytes)
-    let bare = msg(Some(Vec::new())).encode().len();
-    Ok(Some(rotations(cx, MAX_MESSAGE.saturating_sub(bare + 9))?))
-}
-
-/// The account's rotations for a Prove or Proved, in the engine's order: the newest that fit
-/// `room` bytes (what the proofs leave of one message), at most `MAX_ROTATIONS`. A verifier
-/// holding the chain up to them takes them all; the oldest it more likely holds already.
-fn rotations(cx: &mut Cx, mut room: usize) -> Result<Vec<osis_base::Value>, Close> {
-    let all = cx.engine.prove_rotations().map_err(|_| Close("engine"))?;
-    let mut out = Vec::new();
-    for r in all.into_iter().rev().take(MAX_ROTATIONS) {
-        let n = osis_base::cbor::encode(&r).len();
-        if n > room {
-            break;
-        }
-        room -= n;
-        out.push(r);
-    }
-    out.reverse();
-    Ok(out)
 }
 
 /// Every connection's session: the driver owns it; a module that sends takes it `&mut` and sends

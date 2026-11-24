@@ -13,6 +13,7 @@ use osis_engine::flows::Demotion;
 // rotation); once healed node 2 has no box at node 1's epoch, and an admin re-seals it at the end
 // of the complete pass a role commit from elsewhere began, so node 2 reads a write under it.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_raced_grant_is_resealed_at_a_complete_passs_end_spec_perm_3() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, check, world_of};
@@ -59,26 +60,12 @@ fn repro_a_removal_is_logged_before_what_was_written_before_it_spec_permissions_
 // (pairing): the third node is on D's roster and joins (`paired`), reading the rotation that
 // added the second by the creation device's card.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_paired_node_pairs_another_spec_sync_inbox_1() {
     let mut w = crate::harness::siblings();
     let n = w.pair(2);
     w.run();
-    assert!(w.engine(n).account_root().is_some());
-}
-
-// spec/sync-inbox.md §1, spec/permissions.md §1: a node pairs another after removing the device
-// that paired it: the chain names the removed device, whose card the new node reads it by.
-#[test]
-fn a_node_pairs_another_after_removing_its_pairer_spec_sync_inbox_1() {
-    let mut w = crate::harness::siblings();
-    let n1 = w.engine(1).tid();
-    w.write(2, |e| e.remove_device(&n1)).unwrap();
-    w.run();
-    let n = w.pair(2);
-    w.run();
-    assert!(w.engine(n).account_root().is_some());
-    // the contact's card link K included, held through D
-    holds_as_sibling(&mut w, n, 2);
+    assert!(w.engine(n).node_root().is_some());
 }
 
 // spec/sync-judgement.md §2 (the key part of S's actor: on an account's D's and inbox's sync IDs, the account's),
@@ -87,6 +74,7 @@ fn a_node_pairs_another_after_removing_its_pairer_spec_sync_inbox_1() {
 // under D's sync ID: the profile and inbox its account minted, and the contact's card link K,
 // which the account was granted from outside.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_node_paired_past_the_inbox_lifetime_holds_its_siblings_secrets_spec_sync_judgement_2() {
     let mut w = crate::harness::contacts();
     w.advance(2 * osis_base::format::INBOX_LIFETIME_MS);
@@ -116,6 +104,7 @@ fn holds_as_sibling(w: &mut World, n: usize, sib: usize) {
 // history; node 1 holds t. Through sync alone it reads t's current value, holds no body carrying
 // an earlier write of it, and reads what node 0 writes next.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{value_ak, world_of};
@@ -154,6 +143,7 @@ fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4
 // record blob, which node 1 learns for t's strong to p. A thing q made after the cut is minted
 // above it: its record goes in its minting alone.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_from_now_grantee_reads_a_dependent_thing_minted_with_it_spec_crypto_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{value_ak, world_of};

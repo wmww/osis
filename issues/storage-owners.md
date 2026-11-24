@@ -6,9 +6,8 @@
 Tess's principle: every stored row is attributable to what the node holds, and releasing everything drops storage to the node root and the account's own things. Nothing may wait for a release's writes to be held elsewhere (spec/sync-set.md §3): a statement here that implies it is wrong.
 
 ## Releasing everything
-A row goes with its last owner (below). Releasing everything leaves the node root, the account root, the profile, the inbox and the node thing, plus only these, each bounded:
+A row goes with its last owner (below). Releasing everything leaves the node root and the node thing, plus only these, each bounded:
 - fires on the inbox, for its history setting (`INBOX_LIFETIME` by default);
-- siblings' node cards under D's sync ID, while they are on D's roster;
 - a link's sync ID while it is redeemed, until the join is held or the redeemer stops (spec/sync-inbox.md §6);
 - role changes carried under a former grantee's sync ID, for `ROLE_KEEP` after replaced (a removal: after its `ts`, spec/sync-judgement.md §2);
 - tombstones for `TOMBSTONE_LIFETIME`, peer records within `RECORD_BUDGET`.
@@ -18,7 +17,7 @@ Every durable row and blob has an owner; a row lives exactly while its owner doe
 - **Whole things**: the node closure (spec/sync-set.md §2: what the node root reaches by strongs). Such a thing keeps all it holds: content, role-class aspects, secrets, derived rows.
 - **Store entries**: the entries of each sync ID in the sync set (or leaving it), which the required-set judgement (spec/sync-judgement.md §2) already limits to what S justifies: sync unit bodies, lasting headers, the certificate copies S's evidence and key part need, deposits. Engine data taken from an entry that is about no whole thing (another account's chain, a destroyed dependency's record and requests) is owned by the entries carrying it.
 - **Peer records**: what a connection proved (a Prove's rotations, presence, charges, filters), owned by the record, and the record by its members (the sync IDs both share) or by being a node of this account.
-- **The node root**: identity rows (`seed`, `hlc`, `account`, `u/`, `d/`) and the account root, held unconditionally.
+- **The node root**: identity rows (`seed`, `hlc`, `u/`, `d/`), held unconditionally.
 
 The links between owners are counts over acyclic structure, so no walk beyond the closure is needed:
 - entry → blob: `X/ b s` (the store keeps a blob while an entry names it);

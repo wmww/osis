@@ -81,6 +81,7 @@ fn equal_set_values_count_once_spec_data_model_8() {
 // the chunked one's reference once they arrive, and then holds X and reads it. Removing the
 // element takes the reference at both.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
     use osis_crdt::{Op, PathOp};
     let a = ak("x:a.0");
@@ -94,7 +95,7 @@ fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
         let e = &mut lp.peers[0].engine;
         let mut m = Mutation::new();
         // minted held by nothing but the element
-        let x = m.create(e.thing_record(e.dependents_admin(), None));
+        let x = m.create(e.thing_record(e.me(), None));
         m.set(x, &REG, &Value::Str("x".into())).unwrap();
         // the element's encoding at the threshold, or a byte past it
         let elem = |n: usize| Value::List(vec![Value::Strong(x), Value::Str("p".repeat(n))]);
@@ -145,6 +146,7 @@ fn a_reference_in_a_chunked_element_counts_as_one_inline_spec_data_model_6() {
 // the writer; a reader given both commits without the element's chunks holds it once they
 // arrive; the flag off lets X go at both.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_strong_in_a_chunked_element_of_held_history_holds_its_target_spec_data_model_8() {
     use osis_crdt::{Op, PathOp};
     let a = ak("x:a.0");
@@ -160,7 +162,7 @@ fn a_strong_in_a_chunked_element_of_held_history_holds_its_target_spec_data_mode
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     // minted held by nothing but the element
-    let x = m.create(e.thing_record(e.dependents_admin(), None));
+    let x = m.create(e.thing_record(e.me(), None));
     m.set(x, &REG, &Value::Str("x".into())).unwrap();
     let elem = Value::List(vec![Value::Strong(x), Value::Str("p".repeat(osis_base::format::CHUNK_THRESHOLD))]);
     m.set(s, &a, &Value::Set([elem.clone()].into_iter().collect())).unwrap();
@@ -398,7 +400,7 @@ fn known_references_are_a_scan_of_held_values_plain_spec_data_model_8() {
         let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
         // targets: the things, an account root, one tid never got
         let mut targets = things.clone();
-        targets.extend([lp.peers[0].engine.account_root().unwrap(), Tid::from_bytes([3; 15])]);
+        targets.extend([lp.peers[0].engine.node_root().unwrap(), Tid::from_bytes([3; 15])]);
         let reference = |rng: &mut crate::order::Rng| {
             let t = targets[rng.below(targets.len() as u64) as usize];
             if rng.below(2) == 0 { Value::Strong(t) } else { Value::Weak(t) }
@@ -589,7 +591,7 @@ fn known_references_are_a_scan_of_held_values_plain_spec_data_model_8() {
 fn core_aspects_hold_nothing_spec_data_model_8() {
     let mut lp = net(1, 0);
     let e = &mut lp.peers[0].engine;
-    let d = e.account_root().unwrap();
+    let d = e.node_root().unwrap();
     let mut m = Mutation::new();
     let x = e.new_thing(&mut m, d);
     let y = e.new_thing(&mut m, x);

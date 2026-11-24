@@ -324,14 +324,14 @@ pub(crate) fn copy_expiry(copies: &Copies) -> Result<Option<u64>> {
 pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, confined: bool) -> Result<CommitId> {
     let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let Some((deltas, nonce)) = undo_writes(tx, target, ts)? else { return Err(Error::Misuse("nothing to undo")) };
-    let node = tx.core.writer()?;
+    let node = tx.core.me();
     // rights: its own commit applies only if valid here, as at every receiver (`apply_local`)
     check_acts(tx.core, node, &|_| None, &actor, ts)?;
     if confined {
         crate::engine::acting::check_undo(tx, actor, &deltas, ts)?;
     }
     // an undo writes under this open's session, like any content commit (spec/commits.md §3)
-    let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None, reseal: None, own_cover: false, adminless: false };
+    let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, own_cover: false, adminless: false };
     build_one(tx, plan, deltas)
 }
 
@@ -447,7 +447,7 @@ struct Undoing {
 /// The undo's deltas of `parts`, stamped under session
 /// `nonce`, with the expiries of what they copy back.
 fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], ts: Ts, nonce: [u8; osis_crdt::SESSION_NONCE_LEN]) -> Result<(Vec<Resolved>, Copies)> {
-    let own = Form::Session(nonce).own_source(tx.core.writer()?, CommitId([0; 32]));
+    let own = Form::Session(nonce).own_source(tx.core.me(), CommitId([0; 32]));
     let mut deltas = Vec::new();
     let mut copies = Copies::new();
     for p in parts {
@@ -521,7 +521,7 @@ impl Engine {
     /// there is nothing to write; `NotKept` (`Error`) when a part is not in kept history or
     /// its inverse needs content no kept history holds; `Clash` if its writes cannot share a commit.
     pub fn revert(&mut self, target: &CommitId) -> Result<Option<CommitId>> {
-        let me = self.core.writer()?;
+        let me = self.core.me();
         match self.revert_commit(*target, me)? {
             Reverted::Written(w) => Ok(Some(w.id)),
             Reverted::Superseded => Ok(None),
@@ -534,7 +534,7 @@ impl Engine {
     /// part is not in kept history or its inverse writes back content no kept history holds). Computes
     /// the revert's writes in a transaction rolled back after.
     pub fn check_revertible(&mut self, c: &CommitId) -> Result<bool> {
-        self.core.writer()?;
+        self.core.me();
         self.check_revert(*c)
     }
 

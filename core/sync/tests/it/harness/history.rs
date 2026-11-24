@@ -243,7 +243,7 @@ fn quiet_model(w: &mut World) -> Option<Model> {
         harvest(w, i);
     }
     let now = w.now();
-    let mut qr = w.history.quiet.take().unwrap_or_else(|| QuietRef(std::sync::Mutex::new(Quiet { peer: Peer::new_bare(0x005e_ed0f_5eed, now).expect("reference"), fed: 0, waiting: Vec::new(), held: BTreeSet::new() })));
+    let mut qr = w.history.quiet.take().unwrap_or_else(|| QuietRef(std::sync::Mutex::new(Quiet { peer: Peer::new(0x005e_ed0f_5eed, now).expect("reference"), fed: 0, waiting: Vec::new(), held: BTreeSet::new() })));
     let q = qr.0.get_mut().unwrap();
     hold_all(w, &mut q.peer, &mut q.held);
     let new: Vec<Package> = w.history.handed[q.fed..].to_vec();
@@ -258,7 +258,7 @@ fn quiet_model(w: &mut World) -> Option<Model> {
     let Quiet { peer, waiting, .. } = q;
     loop {
         let before = waiting.len();
-        waiting.retain(|pk| peer.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists).is_err());
+        waiting.retain(|pk| peer.receive(&pk.bytes, pk.blobs.clone()).is_err());
         if waiting.len() == before || waiting.is_empty() {
             break;
         }
@@ -307,7 +307,7 @@ fn strong_in(m: &mut Mutation, from: Tid, to: Tid, on: bool) -> osis_engine::Res
 }
 
 fn root_of(e: &Engine) -> osis_engine::Result<Tid> {
-    e.account_root().ok_or(osis_engine::Error::Misuse("no account root"))
+    e.node_root().ok_or(osis_engine::Error::Misuse("no node root"))
 }
 
 /// Plays one history write; a note of what came of it.
@@ -661,7 +661,7 @@ pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Peer {
     for i in 0..w.len() {
         harvest(w, i);
     }
-    let mut r = Peer::new_bare(0x005e_ed0f_5eed, w.now()).expect("reference");
+    let mut r = Peer::new(0x005e_ed0f_5eed, w.now()).expect("reference");
     hold_all(w, &mut r, &mut BTreeSet::new());
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
     let mut handed = Vec::new();
@@ -678,7 +678,7 @@ pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Peer {
         let was = r.engine.pending();
         let mut applied = false;
         for pk in &handed {
-            applied |= matches!(r.receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists), Ok(Ingested::Applied(_)));
+            applied |= matches!(r.receive(&pk.bytes, pk.blobs.clone()), Ok(Ingested::Applied(_)));
         }
         if !applied && r.engine.pending() == was {
             break;
@@ -693,7 +693,7 @@ pub fn reference(w: &mut World, lost: &BTreeSet<CommitId>) -> Peer {
 /// (`reference`), and learns every read secret of each that a node holds and it does not.
 fn hold_all(w: &mut World, r: &mut Peer, held: &mut BTreeSet<Tid>) {
     let mut all: Vec<Tid> = w.history.things.iter().map(|x| x.0).collect();
-    all.extend((0..w.len()).filter_map(|i| w.engine(i).account_root()));
+    all.extend((0..w.len()).filter_map(|i| w.engine(i).node_root()));
     for t in &all {
         for i in 0..w.len() {
             let Some(es) = w.engine(i).epochs(t) else { continue };
@@ -745,7 +745,7 @@ impl Model {
                 && !accounts.contains(&a)
             {
                 accounts.push(a);
-                roots.push(w.engine(i).account_root().expect("an account root"));
+                roots.push(w.engine(i).node_root().expect("a node root"));
             }
         }
         let na = accounts.len();

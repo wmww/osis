@@ -6,24 +6,20 @@ use crate::epoch::{ActorEpochs, Unchecked};
 use crate::names::Names;
 use crate::Error;
 use osis_base::{Role, Tid};
-use osis_crypto::{AccountEpochKeys, BoxForm, BoxSlot, Epoch, KeyActorKeys, Secret32, key_actor_role_secret, open_box, open_history, open_joint_box, open_symmetric_box, role_kem};
+use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, Secret32, key_actor_role_secret, open_box, open_history, open_joint_box, open_symmetric_box, role_kem};
 use osis_schema::core_types::{BoxKey, HistoryKey, Sealed, SecretBox, Secrets};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 /// Who opens: a key actor by its keys, or an actor holder by the role secrets it holds.
 pub enum Opener<'a> {
     KeyActor { holder: Tid, keys: &'a KeyActorKeys },
     Actor { holder: Tid, epochs: &'a ActorEpochs },
-    /// An account by the epoch keys it holds, by signing key: an epoch name's key half
-    /// (spec/crypto.md §3), so a box opens with its seed whatever else is held.
-    Account { holder: Tid, keys: &'a BTreeMap<[u8; 32], Arc<AccountEpochKeys>> },
 }
 
 impl Opener<'_> {
     pub fn holder(&self) -> Tid {
         match self {
-            Opener::KeyActor { holder, .. } | Opener::Actor { holder, .. } | Opener::Account { holder, .. } => *holder,
+            Opener::KeyActor { holder, .. } | Opener::Actor { holder, .. } => *holder,
         }
     }
 }
@@ -74,10 +70,6 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
                     }
                     None => return Ok(None),
                 },
-                (Opener::Account { keys, .. }, Some(ks)) => match keys.get(ks.nonce()) {
-                    Some(e) => &e.kem,
-                    None => return Ok(None),
-                },
                 _ => return Err(Error::Mismatch("sealed form does not fit the holder kind")),
             };
             let Sealed::X25519MlKem768(bytes) = &sb.sealed;
@@ -95,10 +87,6 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
                         Some(s) => roles.push(role_kem(s)),
                         None => return Ok(None),
                     },
-                    Opener::Account { keys, .. } => match keys.get(ks.nonce()) {
-                        Some(e) => kems.push(&e.kem),
-                        None => return Ok(None),
-                    },
                     Opener::KeyActor { .. } => return Err(Error::Mismatch("joint form does not fit the holder kind")),
                 }
             }
@@ -114,10 +102,6 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
                 Opener::KeyActor { .. } => return Ok(None),
                 Opener::Actor { epochs, .. } => match epochs.role(k.role).secret(&epoch_s) {
                     Some(s) => s.clone(),
-                    None => return Ok(None),
-                },
-                Opener::Account { keys, .. } => match keys.get(epoch_s.nonce()) {
-                    Some(e) => key_actor_role_secret(e.seed(), k.role),
                     None => return Ok(None),
                 },
             };

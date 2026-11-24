@@ -3,8 +3,6 @@
 //! prover's role, the verifier's Hello challenge and the listener's static key (the one key both
 //! sides authenticated for the connection, whichever of them proves). Invariant: a proof made as
 //! one role cannot be accepted in the other, and is bound to one challenge and one listener.
-//! An account signs with one of its epochs' keys; whether that epoch is open is the node's to
-//! judge.
 
 use crate::Error;
 use crate::dec::Fields;
@@ -14,7 +12,7 @@ use osis_crypto::{Domain, Signature, SigningSecret, VerifyingKey, proof_digest};
 /// A proof as the prover holds it, before the verifier's challenge is known.
 #[derive(Clone)]
 pub struct Prover {
-    /// The actor's signing key: for an account, its signing key at the epoch it proves at.
+    /// The actor's signing key.
     pub key: SigningSecret,
     /// The actor's creation record: its tid commits to the first key.
     pub record: CreationRecord,
@@ -26,11 +24,11 @@ impl Prover {
     }
 }
 
-/// `actor_proof := [record, key, sig]`.
+/// A proof `[record, key, sig]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActorProof {
     pub record: CreationRecord,
-    /// The key that signed: the record's own, or for an account its signing key at some epoch.
+    /// The key that signed: the record's own.
     pub key: [u8; 32],
     pub sig: Signature,
 }
@@ -42,11 +40,10 @@ impl ActorProof {
     }
 
     /// Whether `key` signed this connection's challenge and may stand for the record: a key
-    /// actor's own key, or for an account any key (which epoch it is the node's to judge). Any
-    /// other record (a thing, a key of another algorithm) proves nothing.
+    /// actor's own key. Any other record (a thing, a key of another algorithm) proves nothing.
     pub fn verify(&self, by_listener: bool, challenge: &[u8; 32], listener_key: &[u8; 32]) -> bool {
-        let CreationRecord::KeyActor { public_key, account, .. } = &self.record else { return false };
-        (*account || public_key.as_slice() == self.key.as_slice()) && VerifyingKey::from_slice(&self.key).is_ok_and(|k| k.verify(Domain::ConnectionProof, &proof_digest(by_listener, challenge, listener_key), &self.sig).is_ok())
+        let CreationRecord::KeyActor { public_key, .. } = &self.record else { return false };
+        public_key.as_slice() == self.key.as_slice() && VerifyingKey::from_slice(&self.key).is_ok_and(|k| k.verify(Domain::ConnectionProof, &proof_digest(by_listener, challenge, listener_key), &self.sig).is_ok())
     }
 
     pub fn to_value(&self) -> Value {
@@ -77,7 +74,7 @@ mod tests {
 
     fn prover(seed: u8) -> Prover {
         let key = SigningSecret::from_seed(&Secret32::from_bytes([seed; 32]));
-        let record = CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [seed; 32], account: false };
+        let record = CreationRecord::KeyActor { alg: 1, public_key: key.verifying_key().to_bytes().to_vec(), nonce: [seed; 32] };
         Prover { key, record }
     }
 
@@ -120,7 +117,7 @@ mod tests {
     #[test]
     fn caps_fit_a_frame_spec_wire_11_2() {
         let proofs = vec![prover(8).sign(false, &[1; 32], &[2; 32]); crate::limits::MAX_PROOFS];
-        assert!(crate::encode_frame(&crate::Msg::Prove { id: 1, proofs, rotations: None }.encode()).len() <= osis_base::format::MAX_MESSAGE);
+        assert!(crate::encode_frame(&crate::Msg::Prove { id: 1, proofs }.encode()).len() <= osis_base::format::MAX_MESSAGE);
     }
 
     // spec/wire.md §11.2 Prove: encodes and decodes

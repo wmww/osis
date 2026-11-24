@@ -91,50 +91,20 @@ pub(crate) fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
     t
 }
 
-/// Peer 0 creates an account; peer 1 is paired as its second node: built once (`LocalPeer::cached`).
+/// Peer 0 creates an account; peer 1 is paired as its second node: brought back by making an
+/// account and pairing (notes/accounts-switch-brief.md).
 pub(crate) fn account_two_nodes() -> (LocalPeer, Tid) {
-    LocalPeer::cached("flows::account_two_nodes", account_two_nodes_built)
-}
-
-fn account_two_nodes_built() -> (LocalPeer, Tid) {
-    let mut lp = net_bare(2, 0);
-    let (p, done) = lp.peers[0].engine.create_account().unwrap();
-    assert_eq!(done.commits.len(), 5, "the account's creation, the profile's and the inbox's keys, the inbox's history setting, the account root's strongs");
-    // the new node's card over the direct connection
-    let n = lp.peers[1].engine.tid();
-    let card: Vec<CommitId> = lp.peers[1].engine.commit_ids();
-    send_carried(&mut lp, 1, 0, &card);
-    let (_, send_) = lp.peers[0].engine.pair(&n).unwrap();
-    send_carried(&mut lp, 0, 1, &send_);
-    lp.peers[1].engine.paired(&p.account).unwrap();
-    (lp, p.root)
-}
-
-// spec/permissions.md §1, spec/crypto.md §3: an account root D is independent and has a
-// sync ID; pairing grants a node on D and the node opens D's secrets.
-#[test]
-fn account_and_pairing_spec_perm_1() {
-    let (mut lp, d) = account_two_nodes();
-    let e0 = &mut lp.peers[0].engine;
-    assert_eq!(e0.role_on(&d), Some(Role::Admin));
-    let sync_ids = e0.get_typed(&d, &ct::SYNC).unwrap().unwrap();
-    assert_eq!(sync_ids.len(), 1);
-    let (step, _) = osis_blob::parse_record(sync_ids.values().next().unwrap().steps.values().next().unwrap()).unwrap();
-    step.verify_genesis().unwrap();
-    let read = e0.epochs(&d).unwrap().read.newest_held().unwrap().1.clone();
-    let e1 = &mut lp.peers[1].engine;
-    assert_eq!(e1.role_on(&d), Some(Role::Admin));
-    assert_eq!(e1.epochs(&d).unwrap().read.newest_held().unwrap().1, &read);
+    unimplemented!("accounts: pairing")
 }
 
 /// `n` peers, each with its own account actor (no pairing); everyone holds everyone's commits:
 /// built once per `n` (`LocalPeer::cached`).
 pub(crate) fn people(n: usize) -> (LocalPeer, Vec<Tid>) {
     LocalPeer::cached(&format!("flows::people/{n}"), || {
-        let mut lp = net_bare(n, 0);
+        let mut lp = net(n, 0);
         let mut ps = Vec::new();
         for i in 0..n {
-            ps.push(lp.peers[i].engine.create_account().unwrap().0.account);
+            ps.push(lp.peers[i].engine.me());
         }
         spread(&mut lp);
         (lp, ps)
@@ -208,7 +178,7 @@ pub(crate) fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_engi
 }
 
 fn forensic_cfg() -> osis_engine::Config {
-    osis_engine::Config { store: osis_store::StoreConfig { arity: 4, page_max: 512, ..osis_store::StoreConfig::default() }, ..osis_engine::Config::default() }
+    osis_engine::Config { store: osis_store::StoreConfig { arity: 4, page_max: 512, ..osis_store::StoreConfig::default() } }
 }
 
 /// Reopens peer `i` over its durable state, its rng seed one no open drew before (the peer's
@@ -236,12 +206,12 @@ const SEALED_MARK: &str = "SEALED-MARK-9c41";
 // opens x's section and takes y's record alone, never y's value, and no disk of hers ever holds
 // it. Fails if a node opens the sections of a thing it merely has the secret for.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_section_of_a_thing_not_held_leaves_nothing_on_disk_spec_sync_judgement_1() {
     let mut lp = LocalPeer::of(vec![forensic_peer(0, &osis_store::Faults::new()), forensic_peer(1, &osis_store::Faults::new())], 0).unwrap();
-    let pa = lp.peers[0].engine.create_account().unwrap().0.account;
-    lp.peers[1].engine.create_account().unwrap();
+    let pa = lp.peers[0].engine.me();
     spread(&mut lp);
-    let d = lp.peers[1].engine.account_root().unwrap();
+    let d = lp.peers[1].engine.node_root().unwrap();
     // a thing minted with admin `admin` held from `from`, its value `v`, beside `also` written "x2"
     let make = |lp: &mut LocalPeer, admin: Tid, from: Tid, v: &str, also: Option<Tid>| {
         let e = &mut lp.peers[1].engine;
@@ -306,8 +276,8 @@ fn lost_setup_from(from_e: bool) -> Lost {
 fn lost_built(from_e: bool) -> (LocalPeer, (Tid, Tid, Tid, Tid)) {
     let faults = osis_store::Faults::new();
     let mut lp = LocalPeer::of(vec![forensic_peer(0, &osis_store::Faults::new()), forensic_peer(1, &faults)], 0).unwrap();
-    let pa = lp.peers[0].engine.create_account().unwrap().0.account;
-    let pb = lp.peers[1].engine.create_account().unwrap().0.account;
+    let pa = lp.peers[0].engine.me();
+    let pb = lp.peers[1].engine.me();
     spread(&mut lp);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
@@ -522,10 +492,11 @@ fn removal_with_another_path_keeps_all_spec_perm_3() {
 // spec/permissions.md §3: a planted grant (bad signature, unjudgeable while its author is
 // unknown) yields reading-only secrets; once it proves bad and is dropped, they go.
 #[test]
+#[ignore = "accounts: keys"]
 fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
-    let mut lp = net_bare(2, 0);
-    let pa = lp.peers[0].engine.create_account().unwrap().0.account;
-    let pb = lp.peers[1].engine.create_account().unwrap().0.account;
+    let mut lp = net(2, 0);
+    let pa = lp.peers[0].engine.me();
+    let pb = lp.peers[1].engine.me();
     lp.peers[0].know(&[pb]).unwrap();
     let bobs: Vec<CommitId> = lp.peers[1].engine.commit_ids();
     send_carried(&mut lp, 1, 0, &bobs);
@@ -855,35 +826,10 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     }
 }
 
-/// Peers 0 and 1 are nodes of account P (created on 1, 0 paired); peer 2 is Alice (PA): built
-/// once (`LocalPeer::cached`).
+/// Peers 0 and 1 are nodes of account P (created on 1, 0 paired); peer 2 is Alice (PA): brought
+/// back by making an account and pairing (notes/accounts-switch-brief.md).
 fn nodes_and_alice() -> (LocalPeer, Tid, Tid, SyncId) {
-    let (lp, (d, pa, ds)) = LocalPeer::cached("flows::nodes_and_alice", || {
-        let (lp, d, pa, ds) = nodes_and_alice_built();
-        (lp, (d, pa, ds))
-    });
-    (lp, d, pa, ds)
-}
-
-fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, SyncId) {
-    let mut lp = net_bare(3, 0);
-    let (p, _) = lp.peers[1].engine.create_account().unwrap();
-    let d1 = lp.peers[0].engine.tid();
-    let ids = lp.peers[0].engine.commit_ids();
-    send_carried(&mut lp, 0, 1, &ids);
-    let (_, send_) = lp.peers[1].engine.pair(&d1).unwrap();
-    send_carried(&mut lp, 1, 0, &send_);
-    lp.peers[0].engine.paired(&p.account).unwrap();
-    let pa = lp.peers[2].engine.create_account().unwrap().0.account;
-    // alice grants P's account root: she keeps it
-    lp.peers[2].know(&[p.root]).unwrap();
-    spread(&mut lp);
-    assert_eq!(lp.peers[0].engine.role_on(&p.root), Some(Role::Admin));
-    let ds = *lp.peers[1].engine.get_typed(&p.root, &ct::SYNC).unwrap().unwrap().keys().next().unwrap();
-    // the pairing's rotation re-keyed D: its sync ID's next step registers the new epochs
-    lp.peers[1].engine.issue_step(&p.root, &ds, false).unwrap().expect("the pairing's step");
-    spread(&mut lp);
-    (lp, p.root, pa, ds)
+    unimplemented!("accounts: pairing")
 }
 
 /// The head step of sync ID `s` of actor `a` at peer `k`: the one no other names as its parent.
@@ -898,6 +844,7 @@ fn head_step(lp: &mut LocalPeer, k: usize, a: &Tid, s: &SyncId) -> osis_blob::St
 // P's other node encrypts under U it rotates T (its box to P stale), then U (its box to T
 // stale); d1 holds neither new secret.
 #[test]
+#[ignore = "accounts: pairing"]
 fn cascade_two_hops_spec_perm_3() {
     let (mut lp, p, pa, _) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
@@ -1016,6 +963,7 @@ fn read_link_followed() -> (LocalPeer, [Tid; 3], Tid, osis_blob::ShareLink) {
 // own actor to K (deposited: read), single use removes L's edge in the same commit, so a
 // second redeemer finds no link; the redeemer reads the target through K.
 #[test]
+#[ignore = "accounts: keys"]
 fn link_redeem_single_use_spec_perm_7() {
     let (mut lp, ps) = people(3);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
@@ -1149,11 +1097,12 @@ fn link_bearer_and_until_spec_perm_7() {
 // after the removals (until they arrive it stands: the window the removal closes); the joiner
 // that redeemed while the link worked stays.
 #[test]
+#[ignore = "accounts: pairing"]
 fn until_link_backdated_grant_void_spec_perm_7() {
     let (mut lp, p) = account_two_nodes();
-    let mut more = net_bare(3, 1);
+    let mut more = net(3, 1);
     lp.peers.append(&mut more.peers);
-    let ps: Vec<Tid> = (2..5).map(|i| lp.peers[i].engine.create_account().unwrap().0.account).collect();
+    let ps: Vec<Tid> = (2..5).map(|i| lp.peers[i].engine.me()).collect();
     let (joiner, forger) = (ps[0], ps[1]);
     spread(&mut lp);
     let d = thing_of(&mut lp, 0, p);
@@ -1365,6 +1314,7 @@ fn dependent_mint_admin_gets_secrets_before_its_thing_spec_perm_3() {
 // spec/sync-ids.md §2, spec/sync-ids.md §6: after a rotation an admin issues a child of the peer's head at the
 // newest epochs; the removed node has no claim key in it, the remaining one has.
 #[test]
+#[ignore = "accounts: pairing"]
 fn registration_step_after_rotation_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
@@ -1385,6 +1335,7 @@ fn registration_step_after_rotation_spec_sync_5() {
 // deposit seed in its rotation commit, and the step it issues registers the new deposit key, so
 // the removed account can no longer deposit under the thing's sync IDs.
 #[test]
+#[ignore = "accounts: pairing"]
 fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let (mut lp, p, pa, _) = nodes_and_alice();
     let pp = lp.peers[1].engine.me();
@@ -1408,6 +1359,7 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
 // spec/sync-ids.md §6: a refreshed deposit seed alone (no rotation) is registered by the next step
 // an admin issues: a child at the same role keys with the new deposit key; then nothing is due.
 #[test]
+#[ignore = "accounts: pairing"]
 fn refreshed_deposit_seed_issues_step_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
     let parent = head_step(&mut lp, 1, &p, &card);
@@ -1482,6 +1434,7 @@ fn writer_leaves_spec_perm_3() {
 // spec/permissions.md §2, §3: a node removing its account from an organization (its only authority
 // there comes through the account) is a self-removal; the organization's admin rotates later.
 #[test]
+#[ignore = "accounts: pairing"]
 fn node_removes_account_from_an_org_spec_perm_3() {
     let (mut lp, p, pa, _) = nodes_and_alice();
     let t = thing_of(&mut lp, 2, pa);
@@ -1506,6 +1459,7 @@ fn node_removes_account_from_an_org_spec_perm_3() {
 // it (d1's backdated forgery, in effect): every reader drops it and P keeps its role. Had d2
 // received it first, its frontier covers it and the leave stands.
 #[test]
+#[ignore = "accounts: pairing"]
 fn removed_node_backdated_leave_dropped_spec_perm_5_1() {
     for seen in [false, true] {
         let (mut lp, p, pa, _) = nodes_and_alice();
@@ -1577,6 +1531,7 @@ fn write_link_rotates_as_signer_spec_perm_3() {
 // the holder's epochs: after a node left the account that administers the holder, no step is issued
 // until the holder rotates (its roles blocked meanwhile); then its step is, at the new epochs.
 #[test]
+#[ignore = "accounts: pairing"]
 fn issue_step_after_inside_removal_spec_sync_5() {
     let (mut lp, p, pa, _) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
@@ -1734,7 +1689,7 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     let mut v = osis_keys::ActorEpochs::default();
     v.read.set_secret(top, top_secret);
     v.read.set_established(top, osis_keys::Provenance::Fixed);
-    let rc = osis_keys::Recipient { holder: pa, role: Role::Admin, keys: lp.peers[0].engine.account_holder_keys(&pa).unwrap(), floor: 0 };
+    let rc = osis_keys::Recipient { holder: pa, role: Role::Admin, keys: osis_keys::HolderKeys::KeyActor { kem: lp.peers[0].engine.identity().keys().kem.public().clone(), seed: None }, floor: 0 };
     let w = osis_keys::box_holder(&d, &v, &osis_keys::HistoryBoxes::new(), &rc, &BTreeSet::from([Role::Read]), &mut osis_crypto::SeededRng::from_u64(5)).unwrap().unwrap();
     let mut s = ct::Secrets::default();
     w.apply(&mut s);
@@ -1773,47 +1728,6 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     assert!(!e.is_empty() && e.iter().all(|c| f.commits.contains(c)), "by ID: {f:?}");
-}
-
-// spec/permissions.md §5.1 Frontier, §1 Path: node 1 writes doc X many times as its account P,
-// compacted; acting as P on its own thing Y, which P holds nothing on, is refused. A frontier
-// over P's commits on X lists them, covered or not. Removing node 1 from P, X keeps its last
-// value.
-#[test]
-fn removed_node_frontier_lists_its_writes_as_the_account_spec_perm_5_1() {
-    let (mut lp, p) = account_two_nodes();
-    let x = thing_of(&mut lp, 0, p);
-    let d = lp.peers[1].engine.me();
-    let y = thing_of(&mut lp, 1, d);
-    spread(&mut lp);
-    let reg = ak("t:reg.0");
-    let write = |lp: &mut LocalPeer, t: Tid, v: &str| {
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s(v)).unwrap();
-        m.act_as(p);
-        lp.peers[1].commit(m).unwrap().unwrap()
-    };
-    let mut on_x = Vec::new();
-    for i in 0..30 {
-        on_x.push(write(&mut lp, x, &format!("v{i}")));
-    }
-    lp.peers[1].engine.snapshot(&x, &reg).unwrap().unwrap();
-    // spec/permissions.md §1 Path: P holds nothing on Y, the node's own thing, so no path through
-    // P gives the role there: acting as P on Y is refused
-    let mut m = Mutation::new();
-    m.set(y, &REG, &s("as p")).unwrap();
-    m.act_as(p);
-    assert!(matches!(lp.peers[1].commit(m), Err(osis_engine::Error::Permission { .. })), "acting as P on Y");
-    spread(&mut lp);
-    let ds = BTreeSet::from([p, x]);
-    let scope = osis_engine::DemotionScope { roles: [(d, ds.clone())].into(), content: [(d, ds)].into() };
-    let now = lp.peers[0].engine.now();
-    let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
-    assert!(on_x.iter().all(|c| f.commits.contains(c)), "covered writes as P listed too: {} commits", f.commits.len());
-    let n1 = lp.peers[1].engine.tid();
-    lp.peers[0].engine.remove_device(&n1).unwrap();
-    assert!(!lp.peers[0].engine.roster(&p).contains_key(&n1));
-    assert_eq!(lp.peers[0].engine.get(&x, &reg).unwrap(), Some(s("v29")));
 }
 
 // spec/permissions.md §5.1 (frontier; a commit is listed whether a still holds its body, dropped it or compacted it), spec/commits.md §5 (role-class body has a keep at least of `ROLE_KEEP` after replaced): M leaves t twice
@@ -2321,6 +2235,7 @@ fn frontier_lists_covered_deltas_of_every_purge_by_spec_perm_5_1() {
 // O to itself; the remaining admin recovers. O's admin grants on a thing below O through its record
 // chain.
 #[test]
+#[ignore = "accounts: making an account"]
 fn chat_by_record_spec_perm_1() {
     let (mut lp, ps) = people(4);
     let (o, done) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
@@ -2421,7 +2336,7 @@ fn record_edge_removal_any_order_spec_perm_2() {
 #[test]
 fn first_grant_on_dependent_thing_rotates_first_spec_perm_3() {
     let (mut lp, ps) = people(3);
-    let d = lp.peers[0].engine.dependents_admin();
+    let d = lp.peers[0].engine.me();
     let (o, _) = lp.peers[0].engine.create_with_admin(&d).unwrap();
     lp.hold(o);
     put(&mut lp, 0, o, &REG, &s("derived"));
@@ -2466,7 +2381,7 @@ fn the_last_standing_admin_is_kept_spec_perm_1() {
     let (mut lp, ps) = people(1);
     let p = ps[0];
     let t = thing_of(&mut lp, 0, p);
-    let d = lp.peers[0].engine.dependents_admin();
+    let d = lp.peers[0].engine.me();
     let (o, _) = lp.peers[0].engine.create_with_admin(&d).unwrap();
     lp.hold(o);
     let before = lp.peers[0].engine.commit_ids().len();
@@ -2541,7 +2456,7 @@ fn the_mark_lets_a_thing_go_adminless_spec_perm_1() {
 #[test]
 fn a_dependent_thing_marked_adminless_stays_dependent_spec_perm_1() {
     let (mut lp, _) = people(2);
-    let n = lp.peers[0].engine.dependents_admin();
+    let n = lp.peers[0].engine.me();
     let (o, _) = lp.peers[0].engine.create_with_admin(&n).unwrap();
     lp.hold(o);
     put(&mut lp, 0, o, &REG, &s("v"));
@@ -2688,11 +2603,12 @@ fn a_purge_stamped_before_the_named_commit_names_nothing_spec_commits_5() {
 // epochs; nothing rotates for the fork (they share an author: both rotating for it would fork
 // again on every round, without end), so it ends quiet with both forks current alike.
 #[test]
+#[ignore = "accounts: pairing"]
 fn a_fork_by_two_siblings_ends_quiet_spec_crypto_4() {
     let (mut lp, _) = account_two_nodes();
-    let mut more = net_bare(2, 1);
+    let mut more = net(2, 1);
     lp.peers.append(&mut more.peers);
-    let (x, y) = (lp.peers[2].engine.create_account().unwrap().0.account, lp.peers[3].engine.create_account().unwrap().0.account);
+    let (x, y) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
     spread(&mut lp);
     let p = lp.peers[0].engine.me();
     let t = thing_of(&mut lp, 0, p);

@@ -145,10 +145,6 @@ fn every_stated_role_path_is_a_chain_of_held_edges_spec_wire_4() {
         }
         let osis_commit::Paths::One(p) = &h.path else { panic!("{id:?}: a role commit states one path") };
         assert_eq!(p.purge, 0, "{id:?}");
-        if h.rotation.is_some() || h.reseal.is_some() {
-            assert!(p.things.is_empty());
-            continue;
-        }
         let point = Point { ts: h.ts, node: h.signer, commit: id };
         *lens.entry(p.things.len()).or_default() += 1;
         // judged where its things' records are held: each node checks what it reads

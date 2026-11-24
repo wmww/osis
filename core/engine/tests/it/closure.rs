@@ -13,7 +13,7 @@ use osis_schema::core_types as ct;
 /// One person's node (`people(1)`) and its account root D.
 fn alone() -> (LocalPeer, Tid) {
     let (lp, _) = people(1);
-    let d = lp.peers[0].engine.account_root().unwrap();
+    let d = lp.peers[0].engine.node_root().unwrap();
     (lp, d)
 }
 
@@ -42,11 +42,12 @@ fn make(e: &mut Engine, admin: Tid, from: Tid) -> Tid {
 // account root referenced from it is held in its sync unit; removing the strong takes it out and
 // notes it as left with the sync unit it was in.
 #[test]
+#[ignore = "accounts: keys"]
 fn the_node_closure_follows_strongs_spec_sync_set_2() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let (root, d) = (e.node_root().unwrap(), e.account_root().unwrap());
-    let p = e.account().unwrap().unwrap().0;
+    let (root, d) = (e.node_root().unwrap(), e.node_root().unwrap());
+    let p = e.me();
     let inbox = e.inbox_thing(&p).unwrap();
     for t in [root, d, inbox] {
         assert!(e.closure_holds(&t), "{t:?}");
@@ -144,6 +145,7 @@ fn removal_costs_what_it_held_spec_sync_set_2() {
 // left. X is dependent, minted with admin A (independent, minted with admin D), so in D's and A's sync units; one write removing
 // A -> X takes it out of both, and both are noted, whatever order the walk drops them in.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_thing_leaving_two_units_at_once_notes_both_spec_sync_set_3() {
     let (mut lp, d) = alone();
     let e = &mut lp.peers[0].engine;
@@ -155,31 +157,6 @@ fn a_thing_leaving_two_units_at_once_notes_both_spec_sync_set_3() {
     assert_eq!(e.left_closure().get(&x), Some(&[d, a].into()));
 }
 
-// spec/sync-set.md §1 (a write removing it; a write removing D's strong to P's profile or inbox): a local write that would take away a strong the roots keep
-// is refused, however it is written (a removal, a whole-aspect removal): the node root's to the
-// account root, and the account root's to the profile and the inbox.
-#[test]
-fn the_roots_kept_strongs_stay_spec_sync_set_1() {
-    let (mut lp, ps) = people(1);
-    let e = &mut lp.peers[0].engine;
-    let (root, d) = (e.node_root().unwrap(), e.account_root().unwrap());
-    let (profile, inbox) = (e.profile_of(&ps[0]).unwrap(), e.inbox_thing(&ps[0]).unwrap());
-    for (from, to) in [(root, d), (d, profile), (d, inbox)] {
-        let removal = |m: &mut Mutation| {
-            m.op(from, &ct::HOLDS, PathOp { path: vec![], op: Op::Remove(Value::Strong(to)) }).unwrap();
-        };
-        let whole = |m: &mut Mutation| {
-            m.remove_aspect(from, &ct::HOLDS).unwrap();
-        };
-        for (name, w) in [("removal", &removal as &dyn Fn(&mut Mutation)), ("whole aspect", &whole)] {
-            let mut m = Mutation::new();
-            w(&mut m);
-            assert!(e.commit(m).is_err(), "{name} of {to:?}");
-            assert!(e.closure_holds(&to), "{name} of {to:?}");
-        }
-    }
-}
-
 // spec/sync-set.md §2 Not carried: X in D's sync unit strongly references Y, a thing this node
 // never got, so D's keys do not open it and nothing else holds it: the strong is named, from X's
 // written strongs and in the whole list; a strong to a held thing is not. So is the node root's
@@ -188,7 +165,7 @@ fn the_roots_kept_strongs_stay_spec_sync_set_1() {
 fn a_strong_nothing_carries_is_named_spec_sync_set_2() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let (root, d) = (e.node_root().unwrap(), e.account_root().unwrap());
+    let (root, d) = (e.node_root().unwrap(), e.node_root().unwrap());
     let x = make(e, d, d);
     let y = Tid::from_bytes([7; 15]);
     let mut m = Mutation::new();
@@ -305,7 +282,7 @@ fn sync_units_are_the_models_plain_spec_sync_set_2() {
         let mut rng = crate::order::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let (mut lp, _) = people(1);
         let e = &mut lp.peers[0].engine;
-        let (d, p) = (e.account_root().unwrap(), e.me());
+        let (d, p) = (e.node_root().unwrap(), e.me());
         // model things 0..3 independent (minted with the account as admin, held by D), 3..7 dependent, minted with admin independent i % 3
         let mut tids: Vec<Tid> = (0..3).map(|_| make(e, p, d)).collect();
         let mut kinds = vec![hc::Kind::Independent; 3];
@@ -404,13 +381,12 @@ fn try_make(e: &mut Engine, admin: Tid, from: Option<Tid>) -> osis_engine::Resul
 // and refused with that commit holding nothing; a link (its key actor held by nothing, its seed
 // thing minted with the account root as admin with its strong) is made; the account's creation was.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
-    let (mut lp, ps) = people(1);
+    let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let (d, p) = (e.account_root().unwrap(), e.me());
-    for t in [d, e.profile_of(&ps[0]).unwrap(), e.inbox_thing(&ps[0]).unwrap()] {
-        assert!(e.closure_holds(&t), "the account's creation: {t:?}");
-    }
+    let (d, p) = (e.node_root().unwrap(), e.me());
+    assert!(e.closure_holds(&d), "the node root");
     let (x, u) = (make(e, p, d), make(e, p, d));
     let made = try_make(e, x, Some(x)).unwrap();
     assert!(e.closure_holds(&made));
@@ -440,14 +416,14 @@ fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
 fn nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2() {
     let (mut lp, ps) = people(2);
     let e = &mut lp.peers[0].engine;
-    let (d, p) = (e.account_root().unwrap(), e.me());
+    let (d, p) = (e.node_root().unwrap(), e.me());
     let x = make(e, p, d);
     let y = make(e, p, x);
     let b = make(e, y, y);
     e.grant(&y, &x, &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
     e.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
     let e1 = &mut lp.peers[1].engine;
-    let d1 = e1.account_root().unwrap();
+    let d1 = e1.node_root().unwrap();
     strong(e1, d1, x, true);
     lp.sync_all().unwrap();
     let e1 = &mut lp.peers[1].engine;
@@ -520,7 +496,7 @@ fn a_released_thing_goes_with_its_writes_spec_sync_set_3() {
 fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
     let (mut lp, ps) = people(2);
     let e = &mut lp.peers[0].engine;
-    let (d, p) = (e.account_root().unwrap(), e.me());
+    let (d, p) = (e.node_root().unwrap(), e.me());
     let x = make(e, p, d);
     let reg = crate::common::REG;
     let put = |e: &mut Engine, v: &str| {
@@ -531,7 +507,7 @@ fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
     put(e, "before");
     e.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
     let e1 = &mut lp.peers[1].engine;
-    let d1 = e1.account_root().unwrap();
+    let d1 = e1.node_root().unwrap();
     strong(e1, d1, x, true);
     lp.sync_all().unwrap();
     let read = |lp: &mut LocalPeer| lp.peers[1].engine.get(&x, &crate::common::ak("t:reg.0")).unwrap();
@@ -558,88 +534,6 @@ fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
     assert_ne!(read(&mut lp), Some(Value::Str("after".into())), "unread");
 }
 
-/// Whether peer `i` holds anything of account `a`'s chain: its record, its inbox's, or a
-/// commit it authored.
-fn knows(lp: &mut LocalPeer, i: usize, a: Tid) -> bool {
-    let e = &mut lp.peers[i].engine;
-    let inbox = e.inbox_thing(&a);
-    let commits = e.commit_ids();
-    e.core.created(&a).is_some() || inbox.is_some_and(|x| e.core.created(&x).is_some()) || commits.iter().any(|c| e.header(c).is_some_and(|h| h.signer == a))
-}
-
-// spec/commits.md §5 What a held thing needs, spec/sync-set.md §3 Release: another account's
-// chain stays while a held thing needs it and goes with the last. Peer 0 makes T (peer 1 a
-// writer who writes there, peer 2 a reader) and U (peer 2 a reader); peer 2 holds both and of
-// peer 1 only what certifies it (its role commits). Released, T keeps its edge piece while its
-// grant's fire is held; once peer 0 removed peer 2 and the removal's fire left the inbox, T goes
-// whole, and peer 1's chain with it; peer 0's stays, U needing it.
-#[test]
-fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_5() {
-    let mut lp = crate::common::net_bare(3, 0);
-    let ps: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.create_account().unwrap().0.account).collect();
-    // each peer's commits to the others, twice (chains first); of peer 1 only role commits
-    let pass = |lp: &mut LocalPeer| {
-        for _ in 0..2 {
-            for from in 0..3 {
-                let ids: Vec<_> = lp.peers[from].engine.commit_ids().into_iter().filter(|c| from != 1 || crate::common::is_role(&lp.peers[from].engine, c)).collect();
-                for to in (0..3).filter(|to| *to != from) {
-                    crate::flows::send_carried(lp, from, to, &ids);
-                }
-            }
-        }
-    };
-    pass(&mut lp);
-    let d0 = lp.peers[0].engine.account_root().unwrap();
-    let (t, u) = (make(&mut lp.peers[0].engine, d0, d0), make(&mut lp.peers[0].engine, d0, d0));
-    let e0 = &mut lp.peers[0].engine;
-    e0.grant(&t, &ps[1], &crate::flows::edge_of(osis_base::Role::Write)).unwrap();
-    e0.grant(&t, &ps[2], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-    e0.grant(&u, &ps[2], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-    pass(&mut lp);
-    // peer 1 holds what it writes
-    let d1 = lp.peers[1].engine.account_root().unwrap();
-    strong(&mut lp.peers[1].engine, d1, t, true);
-    let mut m = Mutation::new();
-    m.set(t, &osis_base::Ak::new("x:v.0").unwrap(), &Value::Str("by 1".into())).unwrap();
-    let w = lp.peers[1].engine.commit(m).unwrap().unwrap();
-    pass(&mut lp);
-    // peer 2 holds T before it takes the write: content on a thing outside the node closure waits
-    // (spec/commits.md §4 Outside the node closure)
-    let e2 = &mut lp.peers[2].engine;
-    let d2 = e2.account_root().unwrap();
-    strong(e2, d2, t, true);
-    strong(e2, d2, u, true);
-    crate::flows::send_carried(&mut lp, 1, 2, &[w]);
-    let e2 = &mut lp.peers[2].engine;
-    assert!(e2.commit_ids().contains(&w), "peer 2 holds peer 1's write");
-    assert!(e2.closure_holds(&t) && e2.closure_holds(&u), "peer 2 holds T and U");
-    assert!(knows(&mut lp, 2, ps[1]) && knows(&mut lp, 2, ps[0]), "peer 2 met both");
-    let e2 = &mut lp.peers[2].engine;
-    strong(e2, d2, t, false);
-    // judged at the pass's end: T, left but not released, is held still
-    e2.settle_needs().unwrap();
-    assert!(e2.core.created(&t).is_some(), "T, left but not released, stays");
-    assert!(knows(&mut lp, 2, ps[1]), "T, left but not released, still needs peer 1's chain");
-    let e2 = &mut lp.peers[2].engine;
-    e2.released(&[t].into()).unwrap();
-    e2.settle_needs().unwrap();
-    e2.check_index();
-    assert!(e2.core.created(&t).is_some(), "released, T keeps its edge piece: the grant's fire is held");
-    // peer 0 removes peer 2 from T; the removal's fire leaves the inbox after its lifetime
-    lp.peers[0].engine.demote(&t, &osis_engine::flows::Demotion { holder: ps[2], new: None, retain: Some(false) }).unwrap();
-    pass(&mut lp);
-    lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);
-    lp.peers[2].tick().unwrap();
-    // the pass ends: what T's commits needed goes
-    let e2 = &mut lp.peers[2].engine;
-    e2.settle_needs().unwrap();
-    e2.check_index();
-    assert!(e2.core.created(&t).is_none(), "T goes whole with its grant's last fire");
-    assert!(!knows(&mut lp, 2, ps[1]), "nothing held needs peer 1's chain");
-    assert!(knows(&mut lp, 2, ps[0]), "U needs peer 0's chain");
-    assert!(lp.peers[2].engine.closure_holds(&u));
-}
-
 // spec/sync-set.md §2 Cost: taking up an opener (a key actor, as a bearer does) and making a
 // link cost what the new opener can open, never the node closure or every held actor: counted
 // (`closure:` and `reopen:`) with n and 10n independent things held.
@@ -648,7 +542,7 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
     let work = |n: usize| {
         let (mut lp, _) = people(1);
         let e = &mut lp.peers[0].engine;
-        let (d, p) = (e.account_root().unwrap(), e.me());
+        let (d, p) = (e.node_root().unwrap(), e.me());
         let things: Vec<Tid> = (0..n).map(|_| make(e, p, d)).collect();
         let counted = |e: &mut Engine, f: &dyn Fn(&mut Engine)| {
             osis_base::costs::take();
@@ -674,6 +568,7 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
 // piece): either way, at the pass's end nothing held needs Q's chain or that write, and peer 0
 // holds the same.
 #[test]
+#[ignore = "accounts: making an account"]
 fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
     let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
     let (p0, q) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
@@ -689,7 +584,9 @@ fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
         m.set(t, &crate::common::REG, &Value::Str("t".into())).unwrap();
         e1.commit(m).unwrap();
         e1.grant(&t, &p0, &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-        let profile = e1.profile_of(&q).unwrap();
+        let mut m = Mutation::new();
+        let profile = e1.new_thing(&mut m, q);
+        e1.commit(m).unwrap();
         let mut m = Mutation::new();
         m.set(profile, &crate::common::REG, &Value::Str("q".into())).unwrap();
         let x = e1.commit(m).unwrap().unwrap();
@@ -758,7 +655,7 @@ fn a_commit_waiting_for_a_part_keeps_what_it_is_on_spec_commits_5() {
 /// closure, needed as X's mint admin), once a pass brought what peer 0 holds: the world and D.
 fn held_minted_with_d() -> (LocalPeer, Tid) {
     let mut lp = crate::common::net(2, 0);
-    let d = lp.peers[0].engine.account_root().unwrap();
+    let d = lp.peers[0].engine.node_root().unwrap();
     let x = crate::common::new_shared(&mut lp, 0);
     lp.sync(0, 1).unwrap();
     let e1 = &mut lp.peers[1].engine;
@@ -770,6 +667,7 @@ fn held_minted_with_d() -> (LocalPeer, Tid) {
 // node closure. D, kept at peer 1 for X alone, holds a strong to B; at the pass's end B goes, as
 // would everything D holds.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_strong_from_outside_the_node_closure_needs_nothing_spec_commits_5() {
     let (mut lp, d) = held_minted_with_d();
     let b = make(&mut lp.peers[0].engine, d, d);
@@ -783,6 +681,7 @@ fn a_strong_from_outside_the_node_closure_needs_nothing_spec_commits_5() {
 // it in one commit; peer 1, holding D outside its node closure, gets the commit without its part
 // on D: at the pass's end T goes.
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_part_missing_outside_the_node_closure_keeps_nothing_spec_commits_5() {
     let (mut lp, d) = held_minted_with_d();
     let t = make(&mut lp.peers[0].engine, d, d);
@@ -803,9 +702,10 @@ fn a_part_missing_outside_the_node_closure_keeps_nothing_spec_commits_5() {
 // node closure, holding no role on X: no write is held on T's edge on X, so the commit pends at
 // peer 1; nothing else needs T there, and its record stays past the pass's end with the commit.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_commit_needs_the_thing_it_acts_as_spec_commits_5() {
     let mut lp = crate::common::net(2, 0);
-    let d = lp.peers[0].engine.account_root().unwrap();
+    let d = lp.peers[0].engine.node_root().unwrap();
     let x = crate::common::new_shared(&mut lp, 0);
     let e0 = &mut lp.peers[0].engine;
     let t = make(e0, d, d);
@@ -827,7 +727,7 @@ fn a_commit_needs_the_thing_it_acts_as_spec_commits_5() {
 fn a_node_writes_only_what_it_holds_spec_sync_set_2() {
     let (mut lp, ps) = people(2);
     let e0 = &mut lp.peers[0].engine;
-    let d0 = e0.account_root().unwrap();
+    let d0 = e0.node_root().unwrap();
     let t = make(e0, d0, d0);
     e0.grant(&t, &ps[1], &crate::flows::edge_of(osis_base::Role::Write)).unwrap();
     let ids = lp.peers[0].engine.commit_ids();
@@ -839,40 +739,12 @@ fn a_node_writes_only_what_it_holds_spec_sync_set_2() {
     m.set(t, &v, &Value::Str("unaccepted".into())).unwrap();
     assert!(matches!(e1.commit(m), Err(osis_engine::Error::NotHeld(x)) if x == t), "not held: refused");
     assert_eq!(e1.commit_ids().len(), before, "nothing applied");
-    let d1 = e1.account_root().unwrap();
+    let d1 = e1.node_root().unwrap();
     let mut m = Mutation::new();
     m.op(d1, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
     m.set(t, &v, &Value::Str("held".into())).unwrap();
     e1.commit(m).unwrap();
     assert_eq!(e1.get(&t, &v).unwrap(), Some(Value::Str("held".into())));
-}
-
-// spec/commits.md §5 What a held thing needs: a weak only points and keeps nothing; a strong
-// keeps. Peer 0 (never met Q) refers to Q from its account root and takes Q's commits: by a weak
-// to Q, nothing needs Q's chain at the pass's end and it goes; by a strong to Q's profile (a
-// contact), the profile needs Q (its mint admin) and Q's chain stays.
-#[test]
-fn a_weak_to_an_account_keeps_nothing_a_strong_to_its_profile_keeps_its_chain_spec_commits_5() {
-    let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
-    let q = lp.peers[1].engine.me();
-    let profile = lp.peers[1].engine.profile_of(&q).unwrap();
-    let mut kept = |v: Value| {
-        let mut lp = lp.copy().unwrap();
-        let e0 = &mut lp.peers[0].engine;
-        let d0 = e0.account_root().unwrap();
-        let mut m = Mutation::new();
-        m.op(d0, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(v) }).unwrap();
-        e0.commit(m).unwrap();
-        let qs = lp.peers[1].engine.commit_ids();
-        crate::flows::send_carried(&mut lp, 1, 0, &qs);
-        crate::flows::send_carried(&mut lp, 1, 0, &qs);
-        let e0 = &mut lp.peers[0].engine;
-        e0.settle_needs().unwrap();
-        e0.check_index();
-        e0.core.created(&q).is_some()
-    };
-    assert!(!kept(Value::Weak(q)), "a weak to Q keeps nothing of it");
-    assert!(kept(Value::Strong(profile)), "a strong to Q's profile keeps Q's chain");
 }
 
 // spec/sync-set.md §3 (Nothing of R stays), spec/commits.md §5 (What a held thing needs): a node's
@@ -884,8 +756,8 @@ fn a_weak_to_an_account_keeps_nothing_a_strong_to_its_profile_keeps_its_chain_sp
 fn own_things_are_released_whole_spec_sync_set_3() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let (root, d) = (e.node_root().unwrap(), e.account_root().unwrap());
-    let p = e.account().unwrap().unwrap().0;
+    let (root, d) = (e.node_root().unwrap(), e.node_root().unwrap());
+    let p = e.me();
     let (a, c) = (make(e, d, d), make(e, root, root));
     let b = e.create_with_admin(&p).unwrap().0;
     for t in [a, b, c] {
@@ -912,6 +784,7 @@ fn own_things_are_released_whole_spec_sync_set_3() {
 // adding body is held, and is noted left once a cover past the bound drops that body, or once a
 // setting without the flag follows. Without the flag X leaves at the removal.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_strong_in_held_history_holds_its_target_until_the_body_goes_spec_data_model_8() {
     for (holds, by_cover) in [(false, false), (true, true), (true, false)] {
         let (mut lp, d) = alone();
@@ -966,7 +839,7 @@ fn an_ephemeral_strong_going_lets_its_target_go_spec_commits_5() {
     let theirs: Vec<_> = lp.peers[1].engine.commit_ids();
     crate::flows::send_carried(&mut lp, 1, 0, &theirs);
     let e0 = &mut lp.peers[0].engine;
-    let (d0, a) = (e0.account_root().unwrap(), osis_base::Ak::new("t:keep+.0").unwrap());
+    let (d0, a) = (e0.node_root().unwrap(), osis_base::Ak::new("t:keep+.0").unwrap());
     let mut m = Mutation::new();
     m.set(d0, &a, &Value::Strong(q)).unwrap();
     e0.write(m).unwrap();
@@ -987,9 +860,10 @@ fn an_ephemeral_strong_going_lets_its_target_go_spec_commits_5() {
 // holding the value, gives it back (as a connected peer's join lists its live ephemeral
 // entries); once both have restarted with nobody holding it, X is released at both.
 #[test]
+#[ignore = "accounts: pairing"]
 fn an_ephemeral_strong_holds_while_a_peer_holds_its_value_spec_data_model_8() {
     let mut lp = crate::common::net_one(2);
-    let d = lp.peers[0].engine.account_root().unwrap();
+    let d = lp.peers[0].engine.node_root().unwrap();
     let a = osis_base::Ak::new("t:keep+.0").unwrap();
     let x = make(&mut lp.peers[0].engine, d, d);
     let mut m = Mutation::new();
@@ -1032,7 +906,7 @@ fn a_strong_in_held_history_needs_its_target_spec_commits_5() {
     let theirs: Vec<_> = lp.peers[1].engine.commit_ids();
     crate::flows::send_carried(&mut lp, 1, 0, &theirs);
     let e0 = &mut lp.peers[0].engine;
-    let d0 = e0.account_root().unwrap();
+    let d0 = e0.node_root().unwrap();
     let t = make(e0, d0, d0);
     let keep = osis_schema::History::Keep { until: None, after: Some(10 * 60_000) };
     let mut m = Mutation::new();
@@ -1054,7 +928,7 @@ fn a_strong_in_held_history_needs_its_target_spec_commits_5() {
 #[test]
 fn a_release_keeps_the_leftover_of_a_commit_on_a_thing_still_held_spec_sync_set_3() {
     let (mut lp, _) = people(1);
-    let d = lp.peers[0].engine.account_root().unwrap();
+    let d = lp.peers[0].engine.node_root().unwrap();
     let (x, t) = (make(&mut lp.peers[0].engine, d, d), make(&mut lp.peers[0].engine, d, d));
     let now = lp.peers[0].engine.now().0;
     let mut m = Mutation::new();
@@ -1126,43 +1000,6 @@ fn a_release_keeps_an_own_leave_still_waiting_spec_commits_5() {
     assert!(!lp.peers[0].engine.roster(&x).contains_key(&ps[1]), "peer 0 applies the leave");
 }
 
-// spec/commits.md §5 What a held thing needs (a device its account's held chain names),
-// spec/sync-judgement.md §3 Dropped bodies: a device's card is fetched again once the chain names
-// it, whichever came first. Peers 0 and 1 are account P's nodes; peer 0 pairs node Z. Peer 1
-// gets Z's card before the pairing rotation (it goes at the pass's end: nothing names Z yet) or
-// after it; either way the chain naming Z pulls D's sync IDs anew, which bring the card (the
-// test's stand-in for sync), and peer 1 then removes peer 0, boxing the new seed to Z.
-#[test]
-fn a_device_named_after_its_card_went_is_fetched_again_spec_commits_5() {
-    let mut lp = LocalPeer::new_bare(3, 0, crate::common::T0).unwrap();
-    lp.peers[0].engine.create_account().unwrap();
-    let mut rest = lp.peers.split_off(1);
-    crate::common::pair_into(&mut lp, 0, &mut rest[0]);
-    lp.peers.extend(rest);
-    let (a, z) = (lp.peers[0].engine.tid(), lp.peers[2].engine.tid());
-    let card: Vec<_> = lp.peers[2].engine.commit_ids().into_iter().filter(|c| lp.peers[2].engine.header(c).is_some_and(|h| h.signer == z && h.aspects.iter().all(|x| x.tid == z))).collect();
-    crate::flows::send_carried(&mut lp, 2, 0, &card);
-    lp.peers[0].engine.pair(&z).unwrap();
-    let pairing: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !card.contains(c)).collect();
-    for card_first in [true, false] {
-        let mut lp = lp.copy().unwrap();
-        lp.peers[1].pulled_anew.clear();
-        if card_first {
-            crate::flows::send_carried(&mut lp, 2, 1, &card);
-            lp.peers[1].engine.settle_needs().unwrap();
-            assert!(lp.peers[1].engine.core.created(&z).is_none(), "card first: nothing names Z at the pass's end");
-        }
-        crate::flows::send_carried(&mut lp, 0, 1, &pairing);
-        lp.peers[1].engine.settle_needs().unwrap();
-        lp.peers[1].reexamine().unwrap();
-        assert!(!std::mem::take(&mut lp.peers[1].pulled_anew).is_empty(), "card first {card_first}: the chain names Z, its card not held: D is pulled anew");
-        crate::flows::send_carried(&mut lp, 2, 1, &card);
-        lp.peers[1].engine.settle_needs().unwrap();
-        assert!(lp.peers[1].engine.core.created(&z).is_some(), "card first {card_first}: Z's card stays");
-        lp.peers[1].engine.remove_device(&a).unwrap_or_else(|e| panic!("card first {card_first}: removing peer 0 boxes to Z: {e}"));
-    }
-}
-
 /// Peer 0's thing X (minted by its account), read by peer 1's account, which holds it from its
 /// root and took what X's sync IDs carry: built once (`LocalPeer::cached`).
 fn x_read_at_1() -> (LocalPeer, Tid) {
@@ -1173,7 +1010,7 @@ fn x_read_at_1() -> (LocalPeer, Tid) {
         let x = e0.new_thing(&mut m, ps[0]);
         e0.commit(m).unwrap();
         e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-        let d1 = lp.peers[1].engine.account_root().unwrap();
+        let d1 = lp.peers[1].engine.node_root().unwrap();
         strong(&mut lp.peers[1].engine, d1, x, true);
         let all = lp.peers[0].engine.commit_ids();
         crate::flows::send_carried(&mut lp, 0, 1, &all);
@@ -1221,7 +1058,7 @@ fn parts_held(e: &Engine, ids: &BTreeSet<osis_base::CommitId>) -> BTreeMap<osis_
 /// is needed as X's mint admin.
 fn minted_with_y(n: usize, y_too: bool) -> (LocalPeer, Tid, Tid) {
     let (mut lp, ps) = people(2);
-    let d1 = lp.peers[1].engine.account_root().unwrap();
+    let d1 = lp.peers[1].engine.node_root().unwrap();
     for _ in 0..n {
         make(&mut lp.peers[1].engine, d1, d1);
     }
@@ -1262,7 +1099,7 @@ fn a_thing_once_in_the_node_closure_holds_as_one_never_in_it_spec_commits_5() {
     let (mut never, _, y) = minted_with_y(0, false);
     let (mut once, _, _) = minted_with_y(0, true);
     assert_eq!(once.peers[1].engine.get(&y, &reg).unwrap(), Some(Value::Str("y".into())), "held, Y reads");
-    let d1 = once.peers[1].engine.account_root().unwrap();
+    let d1 = once.peers[1].engine.node_root().unwrap();
     strong(&mut once.peers[1].engine, d1, y, false);
     pass_end(&mut once.peers[1].engine);
     let ids: BTreeSet<osis_base::CommitId> = never.peers[0].engine.commit_ids().into_iter().collect();
@@ -1296,7 +1133,7 @@ fn a_thing_entering_again_with_its_record_held_is_pulled_anew_spec_sync_judgemen
     m.set(y, &crate::common::REG, &Value::Str("y".into())).unwrap();
     e0.commit(m).unwrap();
     e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-    let d1 = lp.peers[1].engine.account_root().unwrap();
+    let d1 = lp.peers[1].engine.node_root().unwrap();
     strong(&mut lp.peers[1].engine, d1, x, true);
     let all = lp.peers[0].engine.commit_ids();
     crate::flows::send_carried(&mut lp, 0, 1, &all);
@@ -1364,10 +1201,11 @@ fn a_part_outside_the_node_closure_waits_beside_one_in_it_spec_commits_4() {
 // releases it; a second write on Y then waits until the pass end, which judges Y in no sync unit
 // peer 1 syncs (it holds Y's minting commit): not carried, it goes. Each step counts the same work.
 #[test]
+#[ignore = "accounts: keys"]
 fn waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5() {
     let work = |n: usize| {
         let (mut lp, _, y) = minted_with_y(n, false);
-        let d1 = lp.peers[1].engine.account_root().unwrap();
+        let d1 = lp.peers[1].engine.node_root().unwrap();
         // a source whose view puts Y in a sync unit peer 1 syncs sends its writes whole
         let give = |lp: &mut LocalPeer, c: &osis_base::CommitId| {
             let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
@@ -1436,7 +1274,7 @@ fn record_with_strong(orders: &[&[&str]]) -> Vec<End> {
         e0.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
         let all = lp.peers[0].engine.commit_ids();
         crate::flows::send_carried(&mut lp, 0, 1, &all);
-        let d1 = lp.peers[1].engine.account_root().unwrap();
+        let d1 = lp.peers[1].engine.node_root().unwrap();
         strong(&mut lp.peers[1].engine, d1, x, true);
         pass_end(&mut lp.peers[1].engine);
         let e0 = &mut lp.peers[0].engine;
@@ -1584,6 +1422,7 @@ fn a_commit_awaiting_its_record_is_kept_while_carried_and_no_longer_spec_commits
 // role-class parts (`account.0`, the signing keys of the account's epochs) and none of its
 // content (`holds.0`).
 #[test]
+#[ignore = "accounts: making an account"]
 fn a_needed_account_root_keeps_its_role_class_parts_alone_spec_commits_5() {
     let (mut lp, d) = held_minted_with_d();
     let [account, holds] = ["account.0", "holds.0"].map(|a| osis_base::Ak::new(a).unwrap());

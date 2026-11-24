@@ -320,7 +320,7 @@ fn attack(s: &mut Shape, how: Attack, rm: &Removal) -> BTreeSet<Key> {
                 .engine
                 .run(|tx| {
                     let held = tx.core.epochs(&g).unwrap();
-                    let hist = super::history_boxes(tx, &tx.core.writer().unwrap(), &g)?;
+                    let hist = super::history_boxes(tx, &tx.core.me(), &g)?;
                     let keys = HolderKeys::Actor { keysets: [Role::Read, Role::Write].into_iter().map(|r| (r, vec![(k, kem.clone())])).collect(), own: Default::default() };
                     let rcpt = Recipient { holder: x1, role: Role::Write, keys, floor: 0 };
                     // (none where W holds no current epoch of G: B's cascade rotated G past it)
@@ -453,7 +453,7 @@ fn route_shape() -> (LocalPeer, Tid, Tid, Tid) {
 }
 
 // spec/requirements.md Permissions (a removal nobody stamps cuts off nothing by itself),
-// spec/permissions.md §5.1, §5.4: f removes its own route S
+// spec/permissions.md §5.1: f removes its own route S
 // from M in a commit that also rotates M leaving S out. The rotation is valid
 // (f held write on M just before it), so f keeps the epoch it made; a1, holding M's keysets as
 // certificates only, seals M at f's keyset. Once m1, who knows S left, rotates M (listing f's
@@ -465,7 +465,7 @@ fn rotation_removing_its_own_route_leaks_nothing_spec_crypto_4() {
     let made = lp.peers[2]
         .engine
         .run(|tx| {
-            let me = tx.core.writer().unwrap();
+            let me = tx.core.me();
             let held = tx.core.epochs(&m).unwrap();
             let holders = super::recipients(tx, &me, &m, &[(s, None)])?;
             let mut mu = Mutation::new();

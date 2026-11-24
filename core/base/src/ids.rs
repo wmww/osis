@@ -73,19 +73,17 @@ pub enum CreationRecord {
     /// made for this target (spec/permissions.md §7); `expires`: the wall ms the thing ends at,
     /// whatever any minting of it says (spec/commits.md §5 Destruction).
     Thing { admin: Tid, nonce: [u8; 32], link: Option<Tid>, expires: Option<u64> },
-    /// Key actor (admin of itself): `signing_key` enum case and key bytes, and a 32-byte nonce;
-    /// `account`: an account, whose key is its first epoch's (spec/permissions.md §1). Only
-    /// `alg` 1 (ed25519, 32 bytes) is readable in this build; other cases can be built (a later
+    /// Key actor (admin of itself): `signing_key` enum case and key bytes, and a 32-byte nonce.
+    /// Only `alg` 1 (ed25519, 32 bytes) is readable in this build; other cases can be built (a later
     /// suite) but `from_value` refuses them.
-    KeyActor { alg: u64, public_key: Vec<u8>, nonce: [u8; 32], account: bool },
+    KeyActor { alg: u64, public_key: Vec<u8>, nonce: [u8; 32] },
 }
 
-// spec/wire.md §3: `creation = struct { admin 0: weak, key 1: signing_key, nonce 2: blob, link 3: weak, account 4: bool, expires 5: timestamp }`.
+// spec/wire.md §3: `creation = struct { admin 0: weak, key 1: signing_key, nonce 2: blob, link 3: weak, expires 5: timestamp }`.
 const REC_ADMIN: i64 = 0;
 const REC_KEY: i64 = 1;
 const REC_NONCE: i64 = 2;
 const REC_LINK: i64 = 3;
-const REC_ACCOUNT: i64 = 4;
 const REC_EXPIRES: i64 = 5;
 /// `signing_key` case ed25519 (spec/wire.md §3).
 pub const SIGNING_KEY_ED25519: u64 = 1;
@@ -105,18 +103,15 @@ impl CreationRecord {
                     m.insert(Value::Int(REC_EXPIRES), Value::Int(i64::try_from(*t).unwrap_or(i64::MAX)));
                 }
             }
-            CreationRecord::KeyActor { alg, public_key, nonce, account } => {
+            CreationRecord::KeyActor { alg, public_key, nonce } => {
                 let key = Value::Enum(*alg, Some(Box::new(Value::Bytes(public_key.clone()))));
                 m.insert(Value::Int(REC_KEY), key);
                 m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
-                if *account {
-                    m.insert(Value::Int(REC_ACCOUNT), Value::Bool(true));
-                }
             }
         }
         Value::Map(m)
     }
-    /// Reads a record: exactly one of admin and key, a 32-byte nonce, `link` and `expires` only beside admin, `account` only `true` beside key, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input (an unknown key case included:
+    /// Reads a record: exactly one of admin and key, a 32-byte nonce, `link` and `expires` only beside admin, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input (an unknown key case included:
     /// callers that must park it check the enum case themselves).
     pub fn from_value(v: &Value) -> Option<CreationRecord> {
         let Value::Map(m) = v else { return None };
@@ -129,21 +124,16 @@ impl CreationRecord {
             Some(Value::Weak(t)) if m.contains_key(&Value::Int(REC_ADMIN)) => Some(*t),
             _ => return None,
         };
-        let account = match m.get(&Value::Int(REC_ACCOUNT)) {
-            None => false,
-            Some(Value::Bool(true)) if m.contains_key(&Value::Int(REC_KEY)) => true,
-            _ => return None,
-        };
         let expires = match m.get(&Value::Int(REC_EXPIRES)) {
             None => None,
             Some(Value::Int(t)) if *t >= 0 && m.contains_key(&Value::Int(REC_ADMIN)) => Some(t.unsigned_abs()),
             _ => return None,
         };
-        match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY)), m.len() - usize::from(link.is_some()) - usize::from(account) - usize::from(expires.is_some())) {
+        match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY)), m.len() - usize::from(link.is_some()) - usize::from(expires.is_some())) {
             (Some(Value::Weak(admin)), None, 2) => Some(CreationRecord::Thing { admin: *admin, nonce, link, expires }),
             (None, Some(Value::Enum(SIGNING_KEY_ED25519, Some(p))), 2) => match p.as_ref() {
                 Value::Bytes(pk) if pk.len() == 32 => {
-                    Some(CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: pk.clone(), nonce, account })
+                    Some(CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: pk.clone(), nonce })
                 }
                 _ => None,
             },
@@ -182,10 +172,6 @@ impl CreationRecord {
             CreationRecord::Thing { link, .. } => *link,
             CreationRecord::KeyActor { .. } => None,
         }
-    }
-    /// Whether this is an account's (spec/permissions.md §1): a key actor with epochs.
-    pub fn is_account(&self) -> bool {
-        matches!(self, CreationRecord::KeyActor { account: true, .. })
     }
     /// The mint admin (spec/permissions.md §1): the next actor up the record chain, whose
     /// secrets a dependent thing derives from (none for a key actor).
@@ -638,21 +624,7 @@ mod tests {
         };
         assert!(with(&|m| { m.insert(Value::Int(REC_LINK), Value::Bool(true)); }).is_none());
         assert!(with(&|m| { m.remove(&Value::Int(REC_ADMIN)); m.insert(Value::Int(REC_KEY), Value::Enum(1, Some(Box::new(Value::Bytes(vec![9; 32]))))); }).is_none());
-        let k = CreationRecord::KeyActor { alg: 1, public_key: vec![9; 32], nonce: [1; 32], account: false };
-        // an account: field 4, only ever true and only beside key, in the tid
-        let a = CreationRecord::KeyActor { alg: 1, public_key: vec![9; 32], nonce: [1; 32], account: true };
-        assert!(a.is_account() && !k.is_account());
-        assert_ne!(a.tid(), k.tid());
-        assert_eq!(CreationRecord::from_value(&a.to_value()), Some(a.clone()));
-        let Value::Map(am) = a.to_value() else { panic!() };
-        let mut f = am.clone();
-        f.insert(Value::Int(REC_ACCOUNT), Value::Bool(false));
-        assert!(CreationRecord::from_value(&Value::Map(f)).is_none());
-        let mut f = l.to_value();
-        if let Value::Map(m) = &mut f {
-            m.insert(Value::Int(REC_ACCOUNT), Value::Bool(true));
-        }
-        assert!(CreationRecord::from_value(&f).is_none(), "account beside admin");
+        let k = CreationRecord::KeyActor { alg: 1, public_key: vec![9; 32], nonce: [1; 32] };
         // `expires`: field 5, a uint beside admin only, in the tid
         let e = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: None, expires: Some(5) };
         assert_ne!(e.tid(), r.tid(), "the expiry is in the tid");

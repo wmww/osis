@@ -118,7 +118,7 @@ impl Ground for Live<'_, '_> {
         self.opens.member(conn, s).and_then(|m| m.until)
     }
     fn records_holding(&mut self, s: &SyncId) -> Result<BTreeSet<RecordId>> {
-        self.opens.records_holding(self.cx.engine, self.cx.store, s)
+        self.opens.records_holding(self.cx.store, s)
     }
     fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
         Ok(self.cx.engine.own_commits(s)?)

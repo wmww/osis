@@ -441,7 +441,7 @@ fn goes_invalid(core: &Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -
 /// Unjudgeable: `apply::unjudgeable`), and neither a role commit's nor this node's own
 /// (`goes_invalid`).
 fn drops_invalid(core: &Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> bool {
-    !m.valid_at(ai) && Some(m.view.signer) != core.me() && !m.view.kind.is_role() && !crate::apply::unjudgeable(core, c, &m.header, &m.view, ai)
+    !m.valid_at(ai) && m.view.signer != core.me() && !m.view.kind.is_role() && !crate::apply::unjudgeable(core, c, &m.header, &m.view, ai)
 }
 
 /// Whether part `ai` of `m` goes once judged invalid, held or missing (`drop_invalid`).
@@ -1922,7 +1922,7 @@ mod tests {
     fn its_independent_up_the_record_chain_spec_sync_3() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b) = (lp.peers[0].engine.dependents_admin(), lp.peers[1].engine.me());
+        let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
         let e = &mut lp.peers[0].engine;
         let p = e.create_with_admin(&a).unwrap().0;
         let r = e.create_with_admin(&p).unwrap().0;

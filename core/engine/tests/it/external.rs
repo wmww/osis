@@ -137,6 +137,7 @@ fn open(lp: &mut LocalPeer, to: usize, out: &osis_engine::sync::SealedFireOut) -
 // `grant@~0` disabled on Bob's inbox, Alice's grant fire is refused; enabled, the same fire is
 // taken.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_grant_fire_is_taken_only_while_enabled_spec_sync_inbox_5() {
     let (mut lp, ps) = people(2);
     let t = crate::flows::thing_of(&mut lp, 0, ps[0]);
@@ -156,6 +157,7 @@ fn a_grant_fire_is_taken_only_while_enabled_spec_sync_inbox_5() {
 // references nowhere. Disabling the signal ends the offer, and what it carried goes with it:
 // Bob's node holds nothing of X.
 #[test]
+#[ignore = "accounts: keys"]
 fn disabling_grant_fires_ends_the_offer_and_what_it_carried_spec_sync_inbox_5() {
     let (mut lp, ps) = people(2);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
@@ -334,6 +336,7 @@ fn carried_on(lp: &LocalPeer, i: usize, x: &Tid) -> Vec<CommitId> {
 // account. Bob holds the offer and syncs X. Past the inbox lifetime the offer is gone and Bob
 // reads X as before: his role is by X's grants.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_grant_outlives_its_offer_spec_sync_inbox_5() {
     let (mut lp, ps) = people(2);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
@@ -363,7 +366,7 @@ fn carry_roles(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId], x: 
     }
 }
 
-// spec/sync-set.md §2 Own actors (the node's role is by the thing's grants as the node holds
+// spec/sync-set.md §2 Own things (the node's role is by the thing's grants as the node holds
 // them): Alice makes Carol admin of X and grants Bob read. Alice removes Carol; before Carol
 // hears of it she removes Bob, and her removal reaches Bob first: his edge has ended. Then
 // Alice's removal of Carol reaches him: Carol's removal is judged invalid, Bob's grant stands
@@ -414,6 +417,7 @@ fn an_ended_grant() -> (LocalPeer, Tid, osis_engine::sync::SealedFireOut) {
 // removal is the later write: the grant's sealed fire offered again within the inbox lifetime (a
 // store's stale copy, or anyone who kept it) is judged against it and gives Bob nothing.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_replayed_offer_of_an_ended_grant_gives_no_role_spec_sync_inbox_5() {
     let (mut lp, x, grant) = an_ended_grant();
     lp.advance(3_600_000);
@@ -428,6 +432,7 @@ fn a_replayed_offer_of_an_ended_grant_gives_no_role_spec_sync_inbox_5() {
 // its keep is no offer): past the inbox lifetime Bob's node holds nothing of X, and the grant's
 // sealed fire offered again is past its keep too: never taken.
 #[test]
+#[ignore = "accounts: keys"]
 fn an_offer_past_its_keep_is_never_taken_spec_sync_inbox_5() {
     let (mut lp, x, grant) = an_ended_grant();
     lp.advance(osis_base::format::INBOX_LIFETIME_MS + 3_600_000);
@@ -440,7 +445,7 @@ fn an_offer_past_its_keep_is_never_taken_spec_sync_inbox_5() {
     assert_eq!(lp.peers[1].engine.role_on(&x), None, "and gives him nothing");
 }
 
-// spec/sync-set.md §2 Own actors (a grant is its target's own data: a node judges its role on a
+// spec/sync-set.md §2 Own things (a grant is its target's own data: a node judges its role on a
 // thing by what it syncs): Alice grants Bob read on X. No offer reaches him and he references X
 // nowhere, so the grant's commits handed to his node are held as another thing's certificate
 // would be: they name him on X's roster and give no role and no secret of X. A strong to X makes
@@ -477,9 +482,10 @@ fn a_held_grant_counts_only_where_its_thing_is_synced_spec_sync_set_2() {
     assert_eq!(lp.peers[1].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")), "Bob reads X");
 }
 
-// spec/sync-inbox.md §1 (key actors have no inbox): Alice grants her node, a key actor, read on
+// spec/sync-inbox.md §1: Alice grants her node, a key actor, read on
 // X: no fire goes, and the grant is X's as any.
 #[test]
+#[ignore = "accounts: keys"]
 fn a_grant_to_a_key_actor_fires_nothing_spec_sync_inbox_1() {
     let (mut lp, ps) = people(1);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);

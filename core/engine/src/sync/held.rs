@@ -206,7 +206,7 @@ impl Engine {
     /// What `forget_read` drops, of each sync ID not read here (one left while the node was
     /// down): `Engine::forget_unread`.
     pub fn forget_unread(&mut self) -> Result<()> {
-        let gone: BTreeSet<SyncId> = self.core.ix.passes.keys().chain(self.core.ix.cert_blobs.keys().map(|k| &k.0)).copied().collect();
+        let gone: BTreeSet<SyncId> = self.core.ix.passes.keys().chain(self.core.ix.cert_blobs.keys()).copied().collect();
         for s in gone {
             if !self.reads_now(&s)? {
                 self.forget_read(&s)?;

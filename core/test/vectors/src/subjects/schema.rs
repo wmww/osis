@@ -43,13 +43,11 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let sync_ids: SyncIds = BTreeMap::from([(SyncId([22; 16]), SyncEntry { steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None, endorsements: BTreeMap::new() })]) })]);
     vec![
         ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { admin: tid(1), nonce: [2; 32], link: None, expires: None })),
-        ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32], account: false })),
+        ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] })),
         ("holders", "roles.0", ROLES.encode(&holders)),
         ("keys", "keys.0", KEYS.encode(&keys)),
         ("secrets", "secrets.0", SECRETS.encode(&secrets)),
         ("sync", "sync.0", SYNC.encode(&sync_ids)),
-        ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
-        ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], account: None })),
         ("name", "name.0", NAME.encode(&"Trip".to_string())),
         ("body", "body.0", BODY.encode(&"# Plan\n".to_string())),
         ("tag", "tag.0", TAG.encode(&Tag { color: Some("#ff8800".into()) })),

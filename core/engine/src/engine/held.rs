@@ -1,9 +1,7 @@
 //! perm's held set (notes/architecture.md §2: the node implements `HeldSet`): applied role
 //! commits by target and `created.0` records, indexed by commit and by holder, journaled for
 //! rollback, and remembering which things' inputs changed since perm last looked
-//! (`take_touched`), so the timelines re-partition only around them. A role commit of an
-//! account that does not count by the epoch rule (spec/permissions.md §5.5) stays held but no
-//! timeline reads it (`set_counted`): the filter runs before the timeline.
+//! (`take_touched`), so the timelines re-partition only around them.
 //!
 //! Reads and changes are stamped for memos (`memo::Stamps`): a record by its thing
 //! (`created`), everything else per key of each map. `Timelines` holds perm's timelines over
@@ -21,7 +19,6 @@ enum Undo {
     Created(Tid, Option<CreationRecord>),
     AddedCommit(Arc<RoleCommit>),
     Removed(Arc<RoleCommit>),
-    Counted(CommitId, bool),
     Touched(CommitId),
 }
 
@@ -53,10 +50,6 @@ pub struct Held {
     /// Holders a thing stopped naming since `take_unnamed` (`retention::destroy`: a destroyed one may
     /// have lost its last dependent).
     unnamed: BTreeSet<Tid>,
-    /// Role commits held that do not count (an account's at a closed epoch no word names):
-    /// left out of what perm reads (`Held::counted`). By ID, whether held or not, so a
-    /// commit re-derived (`add_commit`) keeps its standing.
-    uncounted: BTreeSet<CommitId>,
     /// Stamps `created`, per thing.
     records_read: UndoableStamps,
     /// Stamps everything else, per key of each map (`Row`).
@@ -414,45 +407,16 @@ impl Held {
         self.log.push(Undo::AddedCommit(c));
     }
 
-    /// The edge commit held under this ID where it counts (`set_counted`): what the timeline
-    /// reads.
-    pub fn counted(&self, id: &CommitId) -> Option<Arc<RoleCommit>> {
+    /// The edge commit held under this ID: what the timeline reads.
+    pub fn held_commit(&self, id: &CommitId) -> Option<Arc<RoleCommit>> {
         self.rest.read(&Row::Id(id));
-        self.ids.get(id).filter(|_| !self.uncounted.contains(id)).cloned()
+        self.ids.get(id).cloned()
     }
 
     /// The edge commit held under this ID.
     pub fn edge_commit(&self, id: &CommitId) -> Option<&RoleCommit> {
         self.rest.read(&Row::Id(id));
         self.ids.get(id).map(|c| &**c)
-    }
-
-    /// Whether the role commit `id` counts (spec/permissions.md §5.5): one that does not stays
-    /// held, read by no timeline. A change touches what the commit writes, so perm judges it again.
-    pub fn set_counted(&mut self, id: CommitId, counts: bool) {
-        if self.uncounted.contains(&id) != counts {
-            return;
-        }
-        self.mark_counted(id, counts);
-        self.log.push(Undo::Counted(id, !counts));
-    }
-
-    fn mark_counted(&mut self, id: CommitId, counts: bool) {
-        if counts {
-            self.uncounted.remove(&id);
-        } else {
-            self.uncounted.insert(id);
-        }
-        self.touched_commits.insert(id);
-        if let Some(c) = self.ids.get(&id) {
-            // what perm reads of its targets (`edge_commits`) moved
-            for o in &c.ops {
-                self.rest.wrote(&Row::Commits(&o.target), true);
-            }
-            let targets: Vec<Tid> = c.ops.iter().map(|o| o.target).chain([c.signer]).collect();
-            self.moved.extend(targets.iter().copied());
-                self.touched.extend(targets);
-        }
     }
 
     /// Drops the edge writes of the commit with this ID: a commit applying none
@@ -508,8 +472,8 @@ impl Held {
         !self.touched.is_empty() || !self.touched_commits.is_empty()
     }
 
-    /// The commits touched since the last call (`touch_commit`, an edge commit added, removed or
-    /// counted otherwise).
+    /// The commits touched since the last call (`touch_commit`, an edge commit added or
+    /// removed).
     pub fn take_touched_commits(&mut self) -> BTreeSet<CommitId> {
         std::mem::take(&mut self.touched_commits)
     }
@@ -519,7 +483,7 @@ impl Held {
 impl Journaled for Held {
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.writes, self.mint_admin_of, self.ids, self.uncounted)
+        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.writes, self.mint_admin_of, self.ids)
     }
     type Mark = usize;
     fn commit(&mut self) {
@@ -540,7 +504,6 @@ impl Journaled for Held {
                         self.take(&c.id);
                     }
                     Undo::Removed(c) => self.put_commit(c),
-                    Undo::Counted(id, counts) => self.mark_counted(id, counts),
                     Undo::Touched(id) => {
                         self.touched_commits.insert(id);
                     }
@@ -559,14 +522,10 @@ impl Held {
         s.extend(self.created.keys().copied());
         s.into_iter().collect()
     }
-    /// The edge commits on `thing` that count (`set_counted`).
+    /// The edge commits on `thing`.
     pub fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
         self.rest.read(&Row::Commits(thing));
-        let Some(cs) = self.commits.get(thing) else { return Vec::new() };
-        if self.uncounted.is_empty() {
-            return cs.clone();
-        }
-        cs.iter().filter(|c| !self.uncounted.contains(&c.id)).cloned().collect()
+        self.commits.get(thing).cloned().unwrap_or_default()
     }
 }
 
@@ -940,7 +899,7 @@ mod tests {
         CreationRecord::Thing { admin, nonce: [n; 32], link: None, expires: None }
     }
     fn actor(n: u8) -> CreationRecord {
-        CreationRecord::KeyActor { alg: 1, public_key: vec![n; 32], nonce: [n; 32], account: false }
+        CreationRecord::KeyActor { alg: 1, public_key: vec![n; 32], nonce: [n; 32] }
     }
     fn grant(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RoleCommit {
         let mut c = [0; 32];
@@ -958,7 +917,7 @@ mod tests {
             self.0.ids.values().filter(|c| c.signer == *signer).map(|c| c.id).collect()
         }
         fn commit(&self, id: &CommitId) -> Option<osis_perm::Held> {
-            let c = self.0.counted(id)?;
+            let c = self.0.held_commit(id)?;
             Some(osis_perm::Held { id: *id, ts: c.ts, signer: c.signer, parts: Vec::new(), role: Some(c), carriers: Vec::new() })
         }
     }
@@ -999,7 +958,7 @@ mod tests {
 
     // spec: none (internal: notes/engine.md, Derived values). Each read of the held set is
     // stamped by what it read: a memo of it keeps the answer a fresh read gives through any
-    // change and undo (an edge commit added, removed, counted or not; a record created or
+    // change and undo (an edge commit added or removed; a record created or
     // forgotten), and a change elsewhere reads nothing again.
     #[test]
     fn held_reads_move_with_what_they_read() {
@@ -1052,16 +1011,11 @@ mod tests {
         // what reads g alone (and the mint admins, unnamed on either commit) stays
         assert_eq!(runs(), 5, "of t: its commits (twice), holders and grants; its new holder's things");
         let m = h.mark();
-        h.set_counted(c2.id, false);
-        check(&h);
         h.remove(&c1.id);
         check(&h);
         h.forget_record(&t.tid());
         check(&h);
         h.rollback_to(m);
-        check(&h);
-        h.set_counted(c2.id, false);
-        h.set_counted(c2.id, true);
         check(&h);
     }
 
@@ -1155,7 +1109,7 @@ mod tests {
     // spec: none (internal: notes/engine.md, Derived values). The same, differential: random
     // edge writes (grants, removals, retains, `until`s; authors with and without authority) over
     // key actors and things minted with them or each other as admin, records created and forgotten,
-    // commits removed, counted or not, and undos; after each update a memo of every read through
+    // commits removed, and undos; after each update a memo of every read through
     // the timelines answers as a fresh read, and the keyless grants kept per component are those
     // of one evaluation of everything (`osis_keys::key_access` over all actor grants).
     #[test]
@@ -1227,7 +1181,6 @@ mod tests {
                         let r = &recs[rng(recs.len())];
                         if h.created(&r.tid()).is_some() { h.forget_record(&r.tid()) } else { h.create(r.clone()) }
                     }
-                    7 if !ids.is_empty() => h.set_counted(ids[rng(ids.len())], rng(2) == 0),
                     8 => marks.push(h.mark()),
                     _ => {
                         if let Some(m) = marks.pop() {

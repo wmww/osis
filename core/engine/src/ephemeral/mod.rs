@@ -47,7 +47,7 @@ impl Engine {
     /// signals beside either. When the commit or any op fails, nothing applies. `None` when no
     /// commit is written.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
-        let node = self.core.writer()?;
+        let node = self.core.me();
         let actor = m.actor.unwrap_or(node);
         if m.confined {
             self.check_confined(&m, &actor)?;

@@ -64,18 +64,6 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
     }
 }
 
-/// A role commit's inner and merge signatures (`Indexes::role_sigs`), as held facts: every role
-/// commit at an epoch, whatever is known of its author or the things it is on when it applies.
-/// The signing chain decides which are an account's on its account root when it reads them
-/// (`Core::devices_read`), so the order commits arrive in records nothing differently.
-pub(crate) fn note_role_sigs(core: &mut Core, kind: osis_commit::Kind, at_epoch: bool, id: &CommitId, sigs: &osis_commit::Sigs) {
-    // a rotation is a role commit at an epoch (`osis_commit::validate`): what an open reads back
-    // from the records' signature items (`index::load`)
-    if kind == osis_commit::Kind::Role && at_epoch && (sigs.inner.is_some() || !sigs.merge.is_empty()) {
-        core.ix.role_sigs.insert(*id, Arc::new(crate::engine::RoleSigs { inner: sigs.inner, more: sigs.more.clone(), merge: sigs.merge.clone() }));
-    }
-}
-
 /// Adds a commit whose purge author is not its signer to `Indexes::by_actor` (that thing, a
 /// member of its path, is needed while the commit is held), and a split commit with a path
 /// undecided here to `Indexes::paths_unknown`.
@@ -96,9 +84,6 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
         core.ix.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
         core.ix.aspect_things.insert(a.ak.clone(), a.tid);
         core.ix.by_thing.insert((a.tid, h.signer), *id);
-        if h.kind.is_role() {
-            core.ix.role_on.insert((a.tid, h.signer), *id);
-        }
         if h.purges {
             core.ix.purges_on.insert(a.tid, *id);
         }
@@ -107,14 +92,6 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
         }
     }
     index_acting(core, id, h);
-    if let Some(e) = h.epoch {
-        core.ix.by_epoch.insert((h.signer, e), *id);
-        // at an epoch not open, a held word may name it (`refresh_epochs`)
-        if core.ix.epochs.get(&h.signer).is_some_and(|j| j.unnamed_at(&e) != osis_perm::EpochStanding::Counts) {
-            core.ix.names_due.insert(*id);
-            core.ix.epochs_due.insert(h.signer);
-        }
-    }
     crate::engine::edits::index_commit(core, id, h);
 }
 
@@ -575,20 +552,6 @@ fn hold_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool> {
     Ok(true)
 }
 
-/// Pending commit `h` applied: received before (it waited), the account's rotations closing its
-/// epoch answer again, their listings or addenda naming it by its receipt (spec/permissions.md
-/// §5.1 Received, §5.5 Listings).
-pub(crate) fn applied_late(tx: &mut Tx<'_>, h: &osis_commit::Header) -> Result<()> {
-    if let Some(e) = h.epoch
-        && let Some(v) = tx.core.account_view(&h.signer)
-    {
-        for r in v.closers(&e) {
-            crate::flows::signing::note_rotation_due(tx, &r)?;
-        }
-    }
-    Ok(())
-}
-
 /// Applies a verified commit (`parts` examined) in this transaction.
 pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, origin: Origin, received: WallMs) -> Result<()> {
     let _s = osis_base::costs::span("apply");
@@ -631,17 +594,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         );
     }
     index_commit(tx.core, &id, &view);
-    note_role_sigs(tx.core, blob.header.kind, blob.header.epoch.is_some(), &id, &blob.sigs);
     validity::note_addenda(tx.core, &h, &id, &parts.whole);
-    if tx.core.accounts.contains_key(&h.signer) && origin == Origin::Remote {
-        tx.core.signing_due = true;
-    }
-    // an account's rotation: this node answers it with its listing or addenda
-    crate::flows::custody::take_boxes(tx, &h)?;
-    // (a merge certificate is answered as its epoch: `signing::answer_rotation`)
-    if h.rotation.is_some() {
-        crate::flows::signing::note_rotation_due(tx, &id)?;
-    }
     // an explicit demotion: this node judges what addenda it owes (`flows::addenda`)
     if h.kind.is_role() && view.frontier.is_some() {
         crate::flows::addenda::note_due(tx.core, &id);
@@ -653,8 +606,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
     validity::note_grant_fire(tx.core, &id, &h, &valid);
-    // held now: what it names is judged (`lists::put_names`)
-    crate::flows::lists::note_listing(tx, &h, &id, &parts.whole)?;
     crate::retention::note_requests(tx, &id, &h)?;
 
     let pend = super::keys::before_join(tx, &h, &id, &read, &valid)?;
@@ -813,7 +764,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // role another part needs (`validity::add_role_commit`)
     let perm = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| osis_schema::core_types::is_role_class(a.ak.as_str())));
     validity::note_addenda(tx.core, &h, id, &parts.whole);
-    crate::flows::lists::note_listing(tx, &h, id, &parts.whole)?;
     if edges && meta.view.frontier.is_some() {
         crate::flows::addenda::note_due(tx.core, id);
     }
