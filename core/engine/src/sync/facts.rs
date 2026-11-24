@@ -41,7 +41,7 @@ impl Engine {
 
     /// spec/sync-judgement.md §2 must-not-hold (the clauses only the engine judges), §3 Role
     /// entries first, Dropped bodies.
-    /// - `must_not`: purged (a held request purges a part of the body, `purged_by`); another
+    /// - `must_not`: purged (held requests purge every part of the body, `purged_by`); another
     ///   node's card commit superseded (`card_superseded`) or ended (`card_ended`). A blob losing
     ///   to another is per blob (`blob_loses`).
     /// - `own`: written here. `role`: a role commit or a purge request.
@@ -70,13 +70,15 @@ impl Engine {
         f.role = h.kind.is_role() || m.view.purges;
         f.missing = self.body_missing(c, m, b.parts.iter().copied());
         let (id, parts) = (*c, b.parts.clone());
-        let purged = self.read(|tx| {
+        // every part purged: one purged beside a live part strips (`strips`), the rest logged
+        // as the rewrite
+        let purged = !parts.is_empty() && self.read(|tx| {
             for ai in &parts {
-                if crate::retention::purged_by(tx, &h, &id, *ai)?.is_some() {
-                    return Ok(true);
+                if crate::retention::purged_by(tx, &h, &id, *ai)?.is_none() {
+                    return Ok(false);
                 }
             }
-            Ok(false)
+            Ok(true)
         })?;
         if purged {
             f.must_not = Some(MustNot::Purged);

@@ -296,10 +296,13 @@ fn two_parts(w: &mut World, t: Tid, marker: &str) -> CommitId {
 // spec/sync-judgement.md §2 (per blob), spec/commits.md §5 (Purge: one delta of a commit): a
 // purge of one part of a two-part commit leaves the commit's old blob in no store: every reader
 // logs the rewrite without it (one entry each, the same one), and the writer's delete takes the
-// old blob from the node keeping S unread once the rewrite is there; the other part still reads.
+// old blob from the node keeping S unread once the rewrite is there; the other part still reads,
+// and the purged one reads as if never written.
 #[test]
 fn a_purge_of_one_part_rewrites_the_blob_everywhere_spec_sync_judgement_2() {
     let (mut w, t, s) = three();
+    // what the purged write replaced: the read once it is gone (spec/crdt.md §4.7)
+    let before = w.engine(0).get(&t, &value_ak()).unwrap();
     let c = two_parts(&mut w, t, "a");
     w.run();
     let old = at_unread(&mut w, 2, &s, &c);
@@ -317,7 +320,7 @@ fn a_purge_of_one_part_rewrites_the_blob_everywhere_spec_sync_judgement_2() {
         assert_eq!(w.engine(i).blob_parts(&es[0]).map(|p| p.len()), Some(1), "node {i}: the rewrite holds the other part alone");
         logged.extend(es);
         assert_eq!(w.engine(i).get(&t, &Ak::new("u:n.0").unwrap()).unwrap(), Some(Value::Str("kept".into())), "node {i} reads the other part");
-        assert_eq!(w.engine(i).get(&t, &value_ak()).unwrap(), None, "node {i} reads the purge");
+        assert_eq!(w.engine(i).get(&t, &value_ak()).unwrap(), before, "node {i} reads as if the purged write never was");
     }
     assert_eq!(logged.len(), 1, "the readers settle on one rewrite");
 }
