@@ -171,6 +171,41 @@ fn snapshot_writer_memory_is_flat() {
     }
 }
 
+/// `snapshot_peak` with a few expiring writes on the map first (expiring at the same time, an
+/// hour ahead): one overwriting a lasting entry, one removing one, one adding a new key: the most
+/// of the state held at once, what the expiring writes superseded held beside it, and the times
+/// the state is read whole.
+fn expiring_snapshot_peak(n: usize) -> [u64; 4] {
+    let (mut lp, t) = big_map(n, false);
+    let b = lp.peers[0].backend.clone();
+    let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    for (k, op) in [(n / 2, Op::Set(s("x"))), (n / 3, Op::Remove(s(&format!("k{:06}", n / 3)))), (n + 1, Op::Set(s("y")))] {
+        let mut m = Mutation::new();
+        let path = if matches!(op, Op::Remove(_)) { vec![] } else { entry(k, false) };
+        m.op(t, &big(), PathOp { path, op }).unwrap();
+        m.expires(t, &big(), at).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+    }
+    lp.peers[0].restart(1).unwrap();
+    let (_, w) = measured(&b, || lp.peers[0].engine.snapshot(&t, &big()).unwrap().unwrap());
+    [w.n("snapshot: state held"), w.n("snapshot: overlay held"), w.n("paged state loaded whole"), w.n("snapshot: stored state read whole")]
+}
+
+// spec/requirements.md (Scale: memory follows what is touched), spec/crdt.md §4.7, §8 Values: a
+// snapshot of an aspect holding expiring writes carries the state as it reads once they end
+// (what they superseded back), read a page at a time with what the expiring writes touch joined
+// in: the most held at once is flat from n to 10n entries of a paged map with three expiring
+// writes, and the state is never read whole. Fails with the snapshot joined from every held body
+// whole.
+#[test]
+fn snapshot_with_expiring_writes_holds_a_page_at_a_time() {
+    let (small, big) = (expiring_snapshot_peak(500), expiring_snapshot_peak(5000));
+    flat("snapshot: bytes held at once", small[0], big[0]);
+    flat("snapshot: overlay held", small[1], big[1]);
+    assert!(small[1] > 0, "what the expiring writes superseded joined in");
+    assert_eq!([small[2], big[2], small[3], big[3]], [0; 4], "the state read whole");
+}
+
 /// A whole-position write of the cases below.
 type WholeCase = (&'static str, bool, Vec<PathSeg>, Op, Option<Value>);
 

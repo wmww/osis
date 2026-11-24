@@ -148,16 +148,59 @@ pub(crate) fn carried_meets(core: &Core, tid: &Tid, ak: &Ak, own: &[Owned]) -> b
 /// write with an end has ended (spec/crdt.md §4.7, §8 Values): no write of a delta with an
 /// expiry, nor one held only from an expiring snapshot (`expiring_writes`), so its copy never
 /// outlives the write, and every write only those superseded, so a node holding it reads as
-/// without them. No write with an end held: the stored state; else joined from the held bodies
-/// (`apply::joined_by_end`). `None`: no state.
+/// without them: the stored state without them, joined a page at a time with what only they
+/// superseded (`SnapState::join_in`). `None`: no state.
 pub(crate) fn snapshot_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<SnapState>> {
-    let Some(stored) = SnapState::stored(tx, tid, ak, Carries::AllBut(Vec::new()))? else { return Ok(None) };
+    let Some(mut st) = SnapState::stored(tx, tid, ak, Carries::AllBut(Vec::new()))? else { return Ok(None) };
     let expiring = expiring_writes(tx, tid, ak)?;
     if expiring.is_empty() {
-        return Ok(Some(stored));
+        return Ok(Some(st));
     }
-    let (lasting, _) = crate::apply::joined_by_end(tx, tid, ak, &|d| super::sorted_owns(&expiring, d).then_some(0), false)?;
-    Ok(Some(SnapState::from(lasting)))
+    let ends = Ends { all: expiring.clone(), keep: Vec::new() };
+    let over = superseded(tx, tid, ak, &expiring, std::slice::from_ref(&ends))?.pop().unwrap_or_default();
+    st.carries = Carries::AllBut(expiring);
+    st.join_in(tx, tid, ak, ends, over)?;
+    Ok(Some(st))
+}
+
+/// Writes ending: those `all` names but those `keep` names, each list sorted (`sorted_owns`).
+pub(crate) struct Ends {
+    all: Vec<Owned>,
+    keep: Vec<Owned>,
+}
+
+impl Ends {
+    fn gone(&self, d: &osis_crdt::Dot) -> bool {
+        super::sorted_owns(&self.all, d) && !super::sorted_owns(&self.keep, d)
+    }
+}
+
+/// For each of `ends`, what the writes it names superseded and nothing else does: the join of
+/// every held valid body of `(tid, ak)`, each without the writes gone here and those it names,
+/// at what the writes with an end (`all`) can supersede (`Fragment::reach` of their join, a
+/// superset of each). Joined with the stored state without those writes, it is the join of the
+/// held bodies without them (`osis_crdt::Joined`): a write of that join missing from the stored
+/// state is superseded there by writes `ends` names alone, so lies in their reach. Reads every
+/// held body twice, a piece at a time; holds a piece, the writes with an end, and what they reach.
+fn superseded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, all: &[Owned], ends: &[Ends]) -> Result<Vec<Fragment>> {
+    let mut x = Fragment::default();
+    crate::apply::each_held_valid_piece(tx, tid, ak, &mut |mut f| {
+        f.remove_writes(&|d| !super::sorted_owns(all, d));
+        x.join(f);
+    })?;
+    let mut out = vec![Fragment::default(); ends.len()];
+    crate::apply::each_held_valid_piece(tx, tid, ak, &mut |f| {
+        let r = f.reach(&x);
+        for (o, e) in out.iter_mut().zip(ends) {
+            let mut g = r.clone();
+            g.remove_writes(&|d| e.gone(d));
+            o.join(g);
+        }
+    })?;
+    for o in &mut out {
+        o.compact();
+    }
+    Ok(out)
 }
 
 /// The writes of `(tid, ak)` with an end, sorted (`sorted_owns`: a lookup per dot): every held
@@ -195,6 +238,9 @@ pub(crate) struct SnapState {
     pub skeleton: Fragment,
     pub pages: Option<crate::engine::pages::StatePages>,
     pub carries: Carries,
+    /// Read without the writes `Ends` names, joined with the fragment (`osis_crdt::Joined`): the
+    /// state as it reads once those writes end. `None`: as stored.
+    pub under: Option<(Ends, Fragment)>,
 }
 
 /// Which writes of a state a snapshot carries: all but those listed, or only those (an expiring
@@ -217,7 +263,7 @@ impl Carries {
 impl From<Fragment> for SnapState {
     /// A state held whole, carried whole.
     fn from(skeleton: Fragment) -> SnapState {
-        SnapState { skeleton, pages: None, carries: Carries::AllBut(Vec::new()) }
+        SnapState { skeleton, pages: None, carries: Carries::AllBut(Vec::new()), under: None }
     }
 }
 
@@ -233,32 +279,87 @@ impl SnapState {
             Some(idx) => f.reduced(idx.paths()),
             None => f.clone(),
         };
-        Ok(Some(SnapState { skeleton, pages, carries }))
+        Ok(Some(SnapState { skeleton, pages, carries, under: None }))
+    }
+
+    /// Reads it as stored without the writes `ends` names, joined with `over`, what only they
+    /// superseded (`superseded`), a page at a time (`osis_crdt::Joined`); a state whose layout
+    /// does not join so (`pages::joins_by_page`: a paged sequence, a collection paged inside
+    /// another's elements, `over` changing a paged collection's encoding) is read whole first.
+    fn join_in(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ends: Ends, over: Fragment) -> Result<()> {
+        // counted: tests read what the writes with an end superseded, held beside the walk
+        osis_base::costs::peak("snapshot: overlay held", over.approx_bytes() as u64);
+        if let Some(idx) = &self.pages
+            && !crate::engine::pages::joins_by_page(idx, &self.skeleton, &over, &|d| ends.gone(d))
+        {
+            self.skeleton = self.stored_whole(tx, tid, ak)?;
+            self.pages = None;
+        }
+        self.under = Some((ends, over));
+        Ok(())
+    }
+
+    /// The state as stored, whole.
+    fn stored_whole(&self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Fragment> {
+        let Some(idx) = &self.pages else { return Ok(self.skeleton.clone()) };
+        let _s = osis_base::costs::span("snapshot: stored state read whole");
+        let Some(Some(f)) = tx.core.states.get(&(*tid, ak.clone())) else { return Err(Error::Corrupt("a paged state not cached")) };
+        let (mut whole, mut idx) = (f.clone(), idx.clone());
+        crate::engine::pages::load_all(&mut tx.txn, tid, ak, &mut idx, &mut whole)?;
+        Ok(whole)
+    }
+
+    /// The state as the snapshot carries it, whole.
+    pub fn whole(&self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Fragment> {
+        let mut whole = self.stored_whole(tx, tid, ak)?;
+        if let Some((ends, over)) = &self.under {
+            whole.remove_gone(&|d| ends.gone(d));
+            whole.join(over.clone());
+        }
+        whole.remove_gone(&|d| self.carries.gone(d));
+        Ok(whole)
     }
 
     /// `f` of the state as the encoder reads it (`osis_crdt::Paged`): its pages from `txn`.
     pub fn walk<T>(&self, txn: &mut osis_store::Transaction<'_>, tid: &Tid, ak: &Ak, f: impl FnOnce(osis_crdt::Paged<'_>) -> std::result::Result<T, osis_crdt::Error>) -> Result<T> {
         let gone = |d: &osis_crdt::Dot| self.carries.gone(d);
-        let Some(idx) = &self.pages else {
-            return Ok(f(osis_crdt::Paged { skeleton: &self.skeleton, paths: &osis_crdt::Paths::default(), pages: &mut osis_crdt::Unpaged, gone: &gone })?);
+        let unpaged = osis_crdt::Paths::default();
+        let paths = self.pages.as_ref().map_or(&unpaged, |i| i.paths());
+        let mut stored = match &self.pages {
+            Some(idx) => Some(crate::engine::pages::StoredPages::new(txn, tid, ak, idx, None)?),
+            None => None,
         };
-        let mut w = crate::engine::pages::StoredPages::new(txn, tid, ak, idx, None)?;
-        let r = f(osis_crdt::Paged { skeleton: &self.skeleton, paths: idx.paths(), pages: &mut w, gone: &gone });
-        if let Some(e) = w.take_err() {
+        let mut none = osis_crdt::Unpaged;
+        let inner: &mut dyn osis_crdt::PageWalk = match &mut stored {
+            Some(w) => w,
+            None => &mut none,
+        };
+        let r = match &self.under {
+            None => f(osis_crdt::Paged { skeleton: &self.skeleton, paths, pages: inner, gone: &gone }),
+            Some((ends, over)) => {
+                let pre = |d: &osis_crdt::Dot| ends.gone(d);
+                let (mut j, skeleton) = osis_crdt::Joined::new(inner, &self.skeleton, paths, over, &pre);
+                f(osis_crdt::Paged { skeleton: &skeleton, paths, pages: &mut j, gone: &gone })
+            }
+        };
+        if let Some(e) = stored.as_mut().and_then(|w| w.take_err()) {
             return Err(e);
         }
         Ok(r?)
     }
 
-    /// Debug builds: the snapshot of this state encoded a page at a time is what the whole state,
-    /// loaded and stripped at once, encodes: the same bytes and pages, or both fail (the oracle of
-    /// the page walk, judged before the walk's own result is).
+    /// Debug builds: the snapshot of this state encoded a page at a time is what the whole state
+    /// encodes: the same bytes and pages, or both fail (the oracle of the page walk, judged before
+    /// the walk's own result is). The whole state: as stored, loaded and stripped at once; read
+    /// once some writes end, every held body joined without them (`apply::joined_without`, the
+    /// oracle of `superseded`).
     #[cfg(debug_assertions)]
     pub fn check_whole(&self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, s: &crate::engine::write::SnapshotPart, cx: &osis_crdt::DeltaCtx) -> Result<()> {
-        let Some(idx) = &self.pages else { return Ok(()) };
-        let Some(Some(f)) = tx.core.states.get(&(*tid, ak.clone())) else { return Err(Error::Corrupt("a paged state not cached")) };
-        let (mut whole, mut idx) = (f.clone(), idx.clone());
-        crate::engine::pages::load_all(&mut tx.txn, tid, ak, &mut idx, &mut whole)?;
+        let mut whole = match &self.under {
+            Some((ends, _)) => crate::apply::joined_without(tx, tid, ak, &|d| ends.gone(d))?,
+            None if self.pages.is_some() => self.stored_whole(tx, tid, ak)?,
+            None => return Ok(()),
+        };
         whole.remove_gone(&|d| self.carries.gone(d));
         let nonce = [0; osis_crdt::NONCE_LEN];
         let mut a = osis_crdt::MemoryPages::new();
@@ -383,23 +484,32 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
             (t, v)
         })
         .collect();
-    // a write with an end none carries (past, or not live) ends before any
-    let expiring = expiring_writes(tx, tid, ak)?;
-    let ends = |d: &osis_crdt::Dot| carriers.iter().find(|(_, v)| super::sorted_owns(v, d)).map(|(t, _)| *t).or_else(|| super::sorted_owns(&expiring, d).then_some(0));
-    let (mut st, mut by_end) = crate::apply::joined_by_end(tx, tid, ak, &ends, true)?;
-    // latest first: the state just before each expiry holds the writes ending then and later
+    // the writes with an end; one none carries (past, or not live) ends before any
+    let mut all = expiring_writes(tx, tid, ak)?;
+    all.extend(carriers.values().flatten().cloned());
+    all.sort();
+    all.dedup();
+    // before each due expiry, every write with an end but those ending then and later
+    let ends: Vec<Ends> = due
+        .iter()
+        .map(|t| {
+            let mut keep: Vec<Owned> = carriers.range(t..).flat_map(|(_, v)| v.iter().cloned()).collect();
+            keep.sort();
+            keep.dedup();
+            Ends { all: all.clone(), keep }
+        })
+        .collect();
+    let overs = superseded(tx, tid, ak, &all, &ends)?;
     let mut snaps = Vec::new();
-    for (t, own) in carriers.iter().rev() {
-        if let Some(f) = by_end.remove(t) {
-            st.join(f);
-        }
-        if due.contains(t) {
-            snaps.push((*t, SnapState { skeleton: st.clone(), pages: None, carries: Carries::Only(own.clone()) }));
-        }
+    for ((t, ends), over) in due.iter().zip(ends).zip(overs) {
+        let Some(own) = carriers.get(t) else { continue };
+        let Some(mut st) = SnapState::stored(tx, tid, ak, Carries::Only(own.clone()))? else { return Ok(Vec::new()) };
+        st.join_in(tx, tid, ak, ends, over)?;
+        snaps.push((*t, st));
     }
     let node = tx.core.me();
     let mut out = Vec::new();
-    for (t, snap) in snaps.into_iter().rev() {
+    for (t, snap) in snaps {
         // stamped at or past its expiry (this node's clock ahead of its wall clock: a peer's
         // fast clock read), a snapshot ending then is invalid (spec/commits.md §6) and its value
         // has ended by the writer's clock: none is written, so its copy never outlives the value
@@ -1068,9 +1178,7 @@ fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_co
     let Some(mut st) = snapshot_state(tx, &tid, &ak)? else { return Ok(None) };
     // what a `secrets.0` snapshot leaves out reads its value whole: a roster's keys, not a large state
     let left_out = if ak.as_str() == "secrets.0" {
-        let mut whole = tx.state(&tid, &ak)?.cloned().ok_or(Error::Corrupt("secrets.0 state"))?;
-        whole.remove_gone(&|d| st.carries.gone(d));
-        st = SnapState::from(whole);
+        st = SnapState::from(st.whole(tx, &tid, &ak)?);
         crate::apply::keys::vouched_only(tx.core, &tid, &mut st.skeleton)?
     } else {
         Default::default()

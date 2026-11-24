@@ -389,3 +389,88 @@ fn sweep_reaches_below_an_entry_holding_only_paged_content_spec_sync_7() {
     let mut k = Kept::every(st, 4);
     assert_eq!(sweeps_agree(&mut k), Ok(()));
 }
+
+/// The bytes of `f` encoded whole as a snapshot, at `params`.
+fn whole_bytes(f: &Fragment, params: PageParams) -> Encoded {
+    let s = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() };
+    let mut a = MemoryPages::with_params(params);
+    encode_snapshot(&s, &snap_cx(), Some(&mut a)).map(|b| (b, a))
+}
+
+/// Whether `over` joins `k` a page at a time (`Joined`; osis-engine `pages::joins_by_page`): no
+/// collection paged inside another's elements, no paged sequence, and each paged collection
+/// keeps its encoding.
+fn joins_by_page(k: &Kept, over: &Fragment, pre: &dyn Fn(&Dot) -> bool) -> bool {
+    let paths: Vec<Vec<Step>> = k.whole.collections().into_iter().map(|(p, _)| p).filter(|p| k.paths.below(p).is_some_and(|x| x.here)).collect();
+    let nested = paths.iter().any(|p| paths.iter().any(|q| q.len() < p.len() && p.starts_with(q)));
+    let enc = |p: &[Step]| k.whole.at_steps(p).map(Fragment::encoding);
+    if nested || paths.iter().any(|p| matches!(enc(p), Some(crate::Encoding::List | crate::Encoding::Text))) || !paths.iter().all(|p| over.steps_through(p)) {
+        return false;
+    }
+    let mut j = k.skeleton();
+    j.remove_gone(pre);
+    j.join(over.clone());
+    paths.iter().all(|p| j.at_steps(p).is_none_or(|x| Some(x.encoding()) == enc(p)))
+}
+
+/// §8 Values: a random history's bodies, a random subset of them with an end. The join of the
+/// bodies each without the writes that end (the state as it reads once they end) is the joined
+/// state without those writes joined with what they reach in each body without them (osis-engine
+/// `retention::snapshot::superseded`); and, the joined state kept as pages at random cuts, read a
+/// page at a time with that joined in (`Joined`) it encodes as that state whole.
+#[test]
+fn joined_pages_read_as_the_bodies_without_writes_that_end_spec_8() {
+    let mut paged = 0;
+    for seed in 0..16u64 {
+        let mut r = crate::testutil::fixed(seed ^ 0x101d);
+        let types: Vec<Ty> = match seed % 4 {
+            0 => vec![Ty::Text],
+            1 => vec![Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))],
+            2 => vec![Ty::Map(Box::new(Ty::Register), Box::new(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Set(Box::new(Ty::Register))))))],
+            _ => vec![Ty::Register, kitchen_sink()],
+        };
+        let sources: Vec<MSource> = (1..=3).map(|n| MSource::session(n, 0)).collect();
+        let commits = if seed / 4 % 2 == 0 { history_with(&mut r, &types, sources, 4) } else { history_bulk(&mut r, &types, sources, 6) };
+        let bodies: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
+        let mut st = Fragment::default();
+        for b in &bodies {
+            st.join(b.clone());
+        }
+        let ending: std::collections::BTreeSet<Dot> = bodies.iter().filter(|_| r.chance(1, 3)).flat_map(|b| b.writes().into_iter().map(|(d, _)| d.origin().clone())).collect();
+        let pre = |d: &Dot| ending.contains(d);
+        let (mut want, mut x, mut over) = (Fragment::default(), Fragment::default(), Fragment::default());
+        for b in &bodies {
+            let mut w = b.clone();
+            w.remove_writes(&pre);
+            want.join(w);
+            let mut e = b.clone();
+            e.remove_writes(&|d| !pre(d));
+            x.join(e);
+        }
+        for b in &bodies {
+            let mut g = b.reach(&x);
+            g.remove_writes(&pre);
+            over.join(g);
+        }
+        want.compact();
+        let mut got = st.clone();
+        got.remove_gone(&pre);
+        got.join(over.clone());
+        let expect = whole_bytes(&want, TINY).map(|x| x.0);
+        assert_eq!(whole_bytes(&got, TINY).map(|x| x.0), expect, "seed {seed}: the stored state without the ending writes joined with what they reach");
+        for (chance, cut) in [(4, 4), (2, 2)] {
+            let mut k = Kept::new(&mut r, st.clone(), chance, cut);
+            if !joins_by_page(&k, &over, &pre) {
+                continue;
+            }
+            paged += usize::from(!k.paths.is_empty());
+            let skeleton = k.skeleton();
+            let paths = k.paths.clone();
+            let (mut j, sk) = crate::Joined::new(&mut k, &skeleton, &paths, &over, &pre);
+            let mut b = MemoryPages::with_params(TINY);
+            let p = encode_paged_snapshot(&[3; 16], Paged { skeleton: &sk, paths: &paths, pages: &mut j, gone: &|_| false }, &Frontiers::default(), &Default::default(), &Default::default(), &snap_cx(), Some(&mut b));
+            assert_eq!(p, expect, "seed {seed}, chance {chance}: read a page at a time");
+        }
+    }
+    assert!(paged > 4, "few paged cases: {paged}");
+}

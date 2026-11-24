@@ -2089,6 +2089,19 @@ pub(crate) fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
     Ok(Reset::Paged { skeleton, unit, changes })
 }
 
+/// Whether `over` joins a page at a time (`osis_crdt::Joined`) into the paged state of reduced
+/// skeleton `s` read without the writes `pre` names: as `join_reset`, no paged sequence, no
+/// collection paged inside another's elements, and every paged collection keeps its encoding.
+pub(crate) fn joins_by_page(idx: &StatePages, s: &Fragment, over: &Fragment, pre: &dyn Fn(&Dot) -> bool) -> bool {
+    if nested(idx) || idx.sets.values().any(is_seq) || !idx.sets.keys().all(|p| over.steps_through(p)) {
+        return false;
+    }
+    let mut j = s.clone();
+    j.remove_gone(pre);
+    j.join(over.clone());
+    idx.sets.iter().all(|(p, set)| j.at_steps(p).is_none_or(|x| x.encoding() == set.enc))
+}
+
 /// Tests: the writes the stored pages of the paged state `f` hold that their own skeleton
 /// prunes (a page left unwritten by a join that changed it: the page's winners that do not win
 /// joined under the skeleton's spine along its path). Loading prunes them again, so reads
