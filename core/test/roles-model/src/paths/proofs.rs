@@ -3,7 +3,7 @@
 //! certificate copies of edge writes it picks; a verifier V judges the claim on what it holds
 //! with the copies as received evidence, kept with the connection alone (no side recorded, nothing
 //! stored), and J reads the proven things' roles on S's thing. Findings: notes/accounts-switch-brief.md,
-//! Model first.
+//! Models.
 //!
 //! The world: A minted with N1 (its record edge), N1 granting N2 admin and N3 a role, then a few
 //! edge writes on A by any of the three (removals, demotions, re-grants, self-removals, any `ts`,

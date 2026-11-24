@@ -10,7 +10,7 @@ Tests: the hand worlds are default tests; every sampled search (random worlds, f
 
 | Mode | Size | Checks |
 |---|---|---|
-| `proofs` | 20,000; `proofs-exh` 1 (the whole family, 225,792 worlds, about 370 CPU-s); controls `proofs-spec`, `-no-guard`, `-no-receipt`, `-no-j` | `src/paths/proofs.rs` module doc; findings notes/accounts-switch-brief.md, Model first |
+| `proofs` | 20,000; `proofs-exh` 1 (the whole family, 225,792 worlds, about 370 CPU-s); controls `proofs-spec`, `-no-guard`, `-no-receipt`, `-no-j` | `src/paths/proofs.rs` module doc; findings notes/accounts-switch-brief.md, Models |
 | `leave` | 20,000; `leave-exh` 1 (the whole family, 9,547,776 worlds, 2,088,576 with a valid leave; a few CPU-s); controls `leave-spec`, `-rotating`, `-any-source` | `src/leave.rs` module doc; same findings |
 | `paths-purge` | 100,000 (about 400 CPU-s); variants 8,000 | notes/purge-model.md |
 | `paths` | 13,000 (random worlds, `--from K` to split a larger run); `-- 0 paths --only I` world I alone, traced; `paths-exh` 367 (every 367th family world; the whole family, 8,257,536 worlds, by hand); `paths-tiny[-flags|-detached|-keys][-honest[-writers]]` 1,000,000; controls `paths-*` 3,000 to 8,000 (about 130 CPU-s each) | below, Paths |

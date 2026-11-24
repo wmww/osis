@@ -5,7 +5,7 @@
 
 ## The rules (decided, Tess)
 1. **A stub** of an independent thing is its role part (its roster, the boxes handing its keys to its holders, its sync ID and steps), cut to the boxes the readers of the unit carrying it can open, and none of its content. It is what a node needs to start syncing the thing, and it is kept current: a node holding a stub follows the thing's role entries as they change.
-2. **A sync unit carries each of its things whole or as a stub.** A strong to a thing the unit's keys open brings it in whole. A weak to a thing the unit's keys open brings in its stub, where no strong brings it in whole. A reference to a thing the unit's keys do not open brings in nothing. A holder on the chain by which the unit's keys open a thing it carries is in the unit as a stub: nothing is carried for a holder for having been granted something.
+2. **A sync unit carries each of its things whole or as a stub.** A strong to a thing the unit's keys open brings it in whole. A weak to a thing the unit's keys open brings in its stub, where no strong brings it in whole. A reference to a thing the unit's keys do not open brings in nothing, unless the unit's thing holds sync or above on it: then it brings in its stub (a model finding widening Tess's "keys open", held-model `closure::entry`: else a thing held at sync through a holder is never entered). A holder on the chain by which the unit's keys open a thing it carries is in the unit as a stub: nothing is carried for a holder for having been granted something.
 3. **A node syncs a thing whole** if any unit it syncs carries it whole, else as a stub if any carries its stub.
 4. **References in held history follow one rule, fires included.** Where a thing's setting says its history holds targets, a reference in a held body counts as in a current value: a strong holds its target whole, a weak its stub, while the body is held. A fire is history from the moment it is written, so a signal is no exception.
 5. **An inbox is a thing of its own**, strongly referenced by what takes grants there, so its setting (which signals it takes, how long it keeps them, that its history holds targets) governs nothing else.
@@ -18,6 +18,7 @@
 - **Staying current needs a source of the thing's role entries**: a node reaching none misses its key changes until it does.
 
 ## Against the built tree
+- The spec carries a stub only by rule 2's widening (spec/sync-set.md §2 Stub: a strong to a thing its unit holds sync or above on and does not open); a weak brings in nothing there yet. Not built.
 - Held for keys (spec/sync-set.md §2) is the stub of a holder on a chain: the same state, entered there only for holders. A held grant fire keeps what it carried while it is held, as a snapshot nothing corrects.
 - The key part under a holder's sync ID (spec/permissions.md §4 Key part) carries an edge piece for every thing the holder holds a role on that a node syncs: rule 2 keeps only those on chains to things the unit carries.
 - Rule 4 is built for strongs in durable aspects the setting governs, fires included (spec/data-model.md §8 Held history, `refs::kept`). Not built: a weak in held history holding its target's stub (no stubs yet; the spec says weaks in history count for nothing), and held bodies of ephemeral aspects (memory bodies, notes/engine-refs.md History holds).
@@ -31,4 +32,4 @@
 - A box is trusted only with the evidence that judges its commit, so a stub in a unit is its boxes plus that evidence.
 - Each stub is one more sync ID a node follows (issues/many-sync-ids-cost.md).
 - spec/requirements.md, for Tess once built: the stub as a concept beside the sync unit.
-- Not modelled: rule 2's cut of the key part, rule 4, a stub from a fire. Model first (notes/principles.md).
+- Modelled (held-model `closure::entry`): rule 2 for strongs, and its cut of the key part as first entry reads it (spec/sync-set.md §2). Not modelled: rule 4, a stub from a fire, weaks. Model first (notes/principles.md).

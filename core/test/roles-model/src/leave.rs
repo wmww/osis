@@ -2,7 +2,7 @@
 //! (spec/sync-status.md §2 Held elsewhere; spec/permissions.md §3 Lost access): a holder X of T
 //! leaves T by a self-removal made by a node M through a path to X; a node J holding that commit
 //! is exempt from the departure's block while the commit is not held elsewhere, and drops T once
-//! it is. Findings: notes/accounts-switch-brief.md, Model first.
+//! it is. Findings: notes/accounts-switch-brief.md, Models.
 //!
 //! The world: nodes N1, N2 (A's admins or writer), B (a member of G) and O (T's admin, staying);
 //! things A (the account), G (a group A may administer) and T; grants as `Grants`; X is A or G;

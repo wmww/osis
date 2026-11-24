@@ -1,7 +1,7 @@
 //! First entry and the node thing / node root split (spec/sync-set.md §1, §2; spec/permissions.md
 //! §4 Key part, §8 Accounts), a greenfield model: what a node holds when it enters a thing only by
 //! a unit it syncs carrying it, an edge piece in a key part it holds, or an offer. Properties and
-//! hand worlds in tests/it/spec_entry.rs; findings in notes/accounts-switch-brief.md (Model first).
+//! hand worlds in tests/it/spec_entry.rs; findings in notes/accounts-switch-brief.md (Models).
 //!
 //! A node is its node thing (independent, minted with its key: its unit is itself) and its node
 //! root (a dependent of the node thing, local, holding the node's strongs). The node's role on a

@@ -1,6 +1,6 @@
 //! First entry and the node thing / node root split (held_model::closure::entry; spec/sync-set.md
 //! §1, §2 First entry; spec/permissions.md §4 Key part, §8 Accounts). Findings:
-//! notes/accounts-switch-brief.md, Model first.
+//! notes/accounts-switch-brief.md, Models.
 use held_model::closure::entry::{Fix, Held, Net, Node, Rule, S};
 use held_model::closure::{keyless_of, unit, Kind, Role, Set, World, T};
 
