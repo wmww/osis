@@ -578,7 +578,7 @@ fn p3_held_is_carried_exhaustive() {
 }
 
 /// P3, the making rule: the commit must leave the new thing in the node closure. X and U independent
-/// the maker reads: a dependent thing from X under X is admitted; a dependent thing from U referenced
+/// the maker reads: a dependent thing minted with admin X is admitted; a dependent thing from U referenced
 /// only by X is refused, though a held thing references it (X's keys do not open it); an independent
 /// thing minted with admin X whose keys the maker holds is admitted, and other readers of X hold it only once
 /// X is granted read on it.

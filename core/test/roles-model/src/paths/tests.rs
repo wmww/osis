@@ -177,7 +177,7 @@ fn repro_a_collateral_grantees_writes_count_after_its_re_grant() {
 #[test]
 fn a_collateral_grantees_writes_count_from_its_first_grant_by_right() {
     let (w, week, r, after) = collateral();
-    let rd = with(&w, &[r], |x| x.regrant = Regrant::FirstChained);
+    let rd = with(&w, &[r], |x| x.regrant = Regrant::FirstByRight);
     assert!(rd.valid.contains(&week) && rd.valid.contains(&after));
 }
 
@@ -191,7 +191,7 @@ fn a_backdated_grant_moves_a_current_holders_first_point_back() {
     w.edge(B, 7, &[A], T1, A2, Write, &[]);
     let early = w.content(K, 4, &[A2], T1);
     assert!(!design(&w, &[r]).shows(early));
-    assert!(with(&w, &[r], |x| x.regrant = Regrant::FirstChained).valid.contains(&early));
+    assert!(with(&w, &[r], |x| x.regrant = Regrant::FirstByRight).valid.contains(&early));
 }
 
 /// X's write only N5 received: N5's addendum is valid once N5 is re-granted, but N5 held
@@ -205,7 +205,7 @@ fn repro_a_re_granted_writers_addendum_vouches() {
     let r = w.edge(H, 6, &[], A, X, Gone, &[]);
     let ad = w.addendum(N5, 7, &[A], T1, r, &[xc]);
     w.edge(H, 8, &[], A, N5, Admin, &[]);
-    let rd = with(&w, &[r], |x| x.regrant = Regrant::FirstChained);
+    let rd = with(&w, &[r], |x| x.regrant = Regrant::FirstByRight);
     assert!(rd.valid.contains(&ad));
     assert!(rd.valid.contains(&xc), "N5 received X's write before the removal");
 }
@@ -890,9 +890,7 @@ fn small_family_holds_large() {
 /// removal X grants Z write through [A2] at 7 by may-grant, by right, and Z writes T1 at 7, before its
 /// grant in key order. X's grant of write to Z through [A], stamped at the removal's `ts` and
 /// ordered after it, applies nowhere and is made with no right in this reading, so Z's write
-/// counts from its grant through [A2] with or without the dead grant: it shows in neither. Read
-/// by chained writes (control `-chain-ever`), the dead grant is the edge's first, and Z's write
-/// shows by it alone.
+/// counts from its grant through [A2] with or without the dead grant: it shows in neither.
 #[test]
 fn a_dead_grant_moves_no_may_grant_grantees_first_point_back() {
     let (mut w, ..) = paired();
@@ -909,8 +907,6 @@ fn a_dead_grant_moves_no_may_grant_grantees_first_point_back() {
     assert!(!rd.applied.contains(&dead) && rd.by_flag.contains(&inv) && rd.role(Z, T1) == Write && !rd.valid.contains(&c), "{rd:?}");
     let rd = judge(&w, &x, &v.clone().without(&[dead]));
     assert!(rd.by_flag.contains(&inv) && rd.role(Z, T1) == Write && !rd.valid.contains(&c), "{rd:?}");
-    let ever = Rules { regrant: Regrant::ChainedEver, ..Rules::fixed() };
-    assert!(judge(&w, &ever, &v).valid.contains(&c));
 }
 
 // ---- Each lowering judged once (notes/write-path-design.md §1; findings 16, 17) ----
@@ -1735,12 +1731,12 @@ fn a_may_grant_grant_needs_its_role_on_every_hop() {
     assert_eq!(rd.role(N6, T1), Write);
 }
 
-/// A grant through a hop carrying no flag is not chained (Interim (issues/chains-retired.md),
-/// G1): X grants N5 write through [A2], whose share carries no flag, at 2; N5 writes T1 at 3; H
-/// grants N5 write at 5. N5's path is re-granted from H's grant, its first chained one, so the
-/// write at 3 stays invalid; were X's grant chained it would count from 2.
+/// A grant through a hop carrying no flag is made with no right (G1): X grants N5 write through
+/// [A2], whose share carries no flag, at 2; N5 writes T1 at 3; H grants N5 write at 5. N5's path
+/// is re-granted from H's grant, its first by right, so the write at 3 stays invalid; were X's
+/// grant by right it would count from 2.
 #[test]
-fn a_grant_by_a_flagless_hop_is_not_chained() {
+fn a_grant_by_a_flagless_hop_moves_no_first_point_back() {
     let mut w = guests();
     let x = w.push(X, 2, &[A2], T1, Kind::set(N5, Write));
     let c = w.content(N5, 3, &[], T1);
@@ -2686,7 +2682,7 @@ fn a_removed_far_ancestors_backdated_marked_writes_fall() {
 }
 
 /// The mark meets the other rules (spec/permissions.md §1 Path, Direct mark; §5.1):
-/// T1 under A under H. H grants itself, B and N5 admin on T1 (direct grants through [A]), then
+/// T1 minted with admin A, A with admin H. H grants itself, B and N5 admin on T1 (direct grants through [A]), then
 /// detaches T1 (A's record edge removed, listing those grants). Along its marked direct hop H
 /// grants X write and writes content; X writes. B removes H listing H's content: H's grant of X
 /// rests on the removed edge, so it falls with X's write unless B's list names it too; the listed
@@ -3763,9 +3759,7 @@ fn a_key_removal_dropping_its_own_keys_add_is_void() {
 /// holder's first point back: H gives B admin until 3; B gives N6 admin until 8 at 6 (no right,
 /// applying nowhere); H gives B admin at 7; B gives N6 admin at 10; N6 writes at 9 (also with B's
 /// grant ending at 6, the idle grant's own `ts`). N6's content
-/// shows neither with B's idle grant held nor without it. Chaining by every value, `until`
-/// disregarded (control `-chain-ever`), the idle grant is chained and N6's write shows by re-grant:
-/// an idle write of a party that held its right in no reading changes what users see, unshown.
+/// shows neither with B's idle grant held nor without it.
 #[test]
 fn an_idle_grant_with_no_right_moves_no_first_point_back() {
     // B's grant ending at 3, and ending at 6, the idle grant's own `ts` (ended there, as in the walk)
@@ -3780,15 +3774,14 @@ fn an_idle_grant_with_no_right_moves_no_first_point_back() {
         assert!(!rd.applied.contains(&idle), "{end}");
         let without = judge(&w, &Rules::fixed(), &View::all(&w).without(&[idle]));
         assert!(!rd.valid.contains(&c) && !without.valid.contains(&c), "{end}: {rd:?}");
-        assert!(fixed_but(&w, &[], |r| r.regrant = Regrant::ChainedEver).valid.contains(&c), "{end}");
     }
 }
 
 /// As above where the grantor's right was taken by a lowering applying in the reading (C2 reads the
-/// walk, not the chained writes, which nothing removes): H gives B admin at 1 and removes it at 2;
+/// walk): H gives B admin at 1 and removes it at 2;
 /// B gives N6 admin at 3; H gives N6 admin at 6; N6 writes at 4. And a key that removed itself:
 /// H adds RK to A at 1, RK (as A) removes itself at 1; RK, as A, gives N5 admin at 2; H gives N5
-/// admin at 5; N5 writes at 3. Neither content shows; chaining by every value (`-chain-ever`), both do.
+/// admin at 5; N5 writes at 3. Neither content shows.
 #[test]
 fn an_idle_grant_after_its_grantors_removal_moves_no_first_point_back() {
     let mut w = account();
@@ -3805,7 +3798,6 @@ fn an_idle_grant_after_its_grantors_removal_moves_no_first_point_back() {
     let ck = k.content(N5, 3, &[], A);
     for (w, c) in [(&w, c), (&k, ck)] {
         assert!(!fixed(w, &[]).valid.contains(&c), "{:?}", fixed(w, &[]));
-        assert!(fixed_but(w, &[], |r| r.regrant = Regrant::ChainedEver).valid.contains(&c));
     }
 }
 
@@ -3826,7 +3818,6 @@ fn an_idle_may_grant_grant_with_no_right_moves_no_first_point_back() {
         let c = w.content(N6, 9, &[], on);
         let rd = fixed(&w, &[]);
         assert!(!rd.applied.contains(&idle) && rd.by_flag.contains(&grant) && !rd.valid.contains(&c), "{two}: {rd:?}");
-        assert!(fixed_but(&w, &[], |r| r.regrant = Regrant::ChainedEver).valid.contains(&c), "{two}");
     }
 }
 

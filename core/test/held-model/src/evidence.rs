@@ -22,7 +22,7 @@
 //!   lies on things outside the unit is a copy, the rest bodies. A removal is in it only as
 //!   evidence of a body (notes/write-path-design.md §2, D1) or as Role changes travel puts it
 //!   (D3); nothing logs a removal anywhere for its own sake (lazy delivery).
-//! - **Delivery** (`Placement`): nodes sync sync IDs (`Node::syncs`, closed under the standing duty:
+//! - **Delivery** (`Placement`): nodes sync sync IDs (`Node::syncs`, closed as a node closure is:
 //!   a node syncing S syncs every sync ID of a thing in S's unit) and hold what those carry and what
 //!   they wrote. An honest node logs under each sync ID it syncs what its own view requires there;
 //!   an entry no syncing node requires is deleted (a delete-key holder deletes, a holder whose view
@@ -100,8 +100,8 @@ pub enum Lists {
 pub enum Takes {
     /// Every held one on a closure edge, whatever its validity (the draft; `paths::evidence`).
     All,
-    /// Chained ones only (Interim (issues/chains-retired.md), `World::chained`): what no
-    /// non-admin can make, and a superset of what any walk applies.
+    /// Chained ones only (`World::chained`): what no non-admin can make, and a superset of what
+    /// any walk applies.
     Chained,
     /// Those the logging node's own walk over its holdings applies (non-monotone: a write may
     /// apply over a smaller set and not over a larger, and the reverse).
@@ -112,13 +112,6 @@ pub enum Takes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Closure {
     pub takes: Takes,
-    /// Today's chain certificates (Interim (issues/chains-retired.md): the engine's
-    /// `sync_ids::chain`) in place of stated paths: a member brings every
-    /// taken write on an edge between two things of its signer's **chain** to its thing (the
-    /// signer and the things on any path from it to the thing over record edges and edges chained
-    /// grants set, at any time), and an edge write also its signer's chain to its holder (closed
-    /// under authors). `joined` is read for stated paths only.
-    pub any_path: bool,
     /// A member brings the writes on its stated path's edges only where the path is **joined**:
     /// each edge of it that is no record edge holds a held chained grant (`World::grants`) ordered
     /// before the member.
@@ -145,11 +138,11 @@ impl Closure {
     /// The spec's (spec/permissions.md §4 Evidence of a commit): `paths::evidence` with
     /// finding 9's clause in the draft's words.
     pub fn drafted() -> Closure {
-        Closure { takes: Takes::All, any_path: false, joined: false, commit_edges: CommitEdges::AllWrites }
+        Closure { takes: Takes::All, joined: false, commit_edges: CommitEdges::AllWrites }
     }
     /// OPEN 10 (b): chained writes, along joined paths.
     pub fn joined() -> Closure {
-        Closure { takes: Takes::Chained, any_path: false, joined: true, commit_edges: CommitEdges::Creations }
+        Closure { takes: Takes::Chained, joined: true, commit_edges: CommitEdges::Creations }
     }
 }
 
@@ -235,7 +228,7 @@ impl Open10 {
             Open10::Joined | Open10::Granted => (Takes::Chained, true),
             Open10::Applied => (Takes::Applied, true),
         };
-        Closure { takes, any_path: false, joined, commit_edges: CommitEdges::Creations }
+        Closure { takes, joined, commit_edges: CommitEdges::Creations }
     }
     pub fn pend(self) -> Pend {
         match self {
@@ -261,12 +254,6 @@ pub enum Stage {
     A2,
     /// The actor seed alone (Role changes travel's keys-open half left out).
     A2Actor,
-    /// Main today: chain certificates on any path, closed under authors, the account's chain
-    /// under each sync ID it logs to (spec/permissions.md §4 Logging certificates: read as the
-    /// chain of each signer of a body there), Role changes travel.
-    Today,
-    /// Brief 3 with today's any-path chains kept for removals alone (`Rule::author_reach`).
-    A2AuthorReach,
     /// The spec as written (notes/a2-spec/README.md Open 2: E1): the drafted closure (every edge
     /// write on a stated path's edges and on the edges its commit sets), pending on any write,
     /// Role changes travel whole; the engine's derivation (`osis_engine::evidence`). Not in `ALL`:
@@ -275,13 +262,11 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub const ALL: [Stage; 4] = [Stage::A2, Stage::A2Actor, Stage::Today, Stage::A2AuthorReach];
+    pub const ALL: [Stage; 2] = [Stage::A2, Stage::A2Actor];
     pub fn name(self) -> &'static str {
         match self {
             Stage::A2 => "a2",
             Stage::A2Actor => "a2-actor",
-            Stage::Today => "today",
-            Stage::A2AuthorReach => "a2-author-reach",
             Stage::E1 => "e1",
         }
     }
@@ -294,8 +279,6 @@ impl Stage {
         match self {
             Stage::A2 => r,
             Stage::A2Actor => Rule { keys_open: false, ..r },
-            Stage::Today => Rule { closure: Closure { any_path: true, joined: false, ..r.closure }, ..r },
-            Stage::A2AuthorReach => Rule { author_reach: true, ..r },
             Stage::E1 => unreachable!(),
         }
     }
@@ -308,14 +291,9 @@ pub struct Rule {
     /// sync ID of each thing whose keys open h (holding read or above on h through taken grants,
     /// at any time: `ROLE_KEEP` read as for good). The half naming S's own thing is always on.
     pub keys_open: bool,
-    /// Today's any-path chains kept for removals alone: a held taken removal of (h, t) is a seed
-    /// of S where h signs a held body of S and t lies on h's chain to that body's thing (a path
-    /// from h to it over record edges and chained grants, any time), with the writes of that
-    /// chain's edges.
-    pub author_reach: bool,
     /// Record edges are edges of the read graph (each a mint admin's admin edge on the thing it
-    /// minted, at any time: `World::opened`): today's keys open through them (spec/sync-set.md
-    /// §2). False: the control (grants only), which under-reads today (README OPEN 17).
+    /// minted, at any time: `World::opened`): keys open through them (spec/sync-set.md §2).
+    /// False: the control (grants only), which under-reads (README OPEN 17).
     pub records: bool,
     pub lists: Lists,
     pub closure: Closure,
@@ -331,7 +309,7 @@ impl Rule {
     /// The drafted closure (spec/permissions.md §4) with lazy delivery and lists whole;
     /// `Stage::A2` puts OPEN 10's (iv) and keys-open travel on it.
     pub fn fixed() -> Rule {
-        Rule { placement: Placement::Function, keys_open: false, author_reach: false, records: true, lists: Lists::Whole, closure: Closure::drafted(), keysets: true, deposit: false }
+        Rule { placement: Placement::Function, keys_open: false, records: true, lists: Lists::Whole, closure: Closure::drafted(), keysets: true, deposit: false }
     }
 }
 
@@ -539,8 +517,7 @@ impl World {
     /// The seeds of S's required set over `h`, its unit `unit`: the bodies, and of the edge-class
     /// commits the closure takes (`takes`), the grants naming S's thing (and under `keys_open` a
     /// thing S's keys open).
-    /// And the edges whose taken writes are seeds too (`Stage::Today`'s account chains).
-    fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set) -> (Set, BTreeSet<Edge>) {
+    fn seeds(&self, rule: &Rule, s: Sid, unit: &Things, h: &Set) -> Set {
         let takes = self.takes(rule, h);
         let ok = |i: &Id| takes.as_ref().is_none_or(|t| t.contains(i));
         let hr: Set = h.iter().copied().filter(ok).collect();
@@ -554,31 +531,11 @@ impl World {
             let carried: Vec<Id> = seed.iter().filter_map(|k| self.keysets.get(k)).flatten().copied().filter(|c| h.contains(c) && ok(c)).collect();
             seed.extend(carried);
         }
-        let mut edges = BTreeSet::new();
-        if rule.closure.any_path || rule.author_reach {
-            let ch = self.chained(h);
-            let bodies: Vec<Id> = h.iter().copied().filter(|&i| unit.contains(&self.on(i)) && !self.hidden(h, i)).collect();
-            for &b in &bodies {
-                let a = self.w.commits[b].signer;
-                if rule.closure.any_path {
-                    // the account's chain for S's thing, logged by each node logging there
-                    edges.extend(self.edges_among(h, &self.chain_things(h, &ch, a, s)));
-                }
-                if rule.author_reach {
-                    // with the chain's taken writes, so a reader holding them requires it too
-                    let among = self.edges_among(h, &self.chain_things(h, &ch, a, self.on(b)));
-                    if hr.iter().any(|&l| self.removes(l).is_some_and(|e| among.contains(&e))) {
-                        seed.extend(hr.iter().copied().filter(|&l| self.w.sets(l).is_some_and(|e| among.contains(&e))));
-                    }
-                }
-            }
-        }
-        (seed, edges)
+        seed
     }
     /// S's required set over held set `h` with units `units`: bodies and copies.
     pub fn req(&self, rule: &Rule, s: Sid, units: &BTreeMap<Sid, Things>, h: &Set) -> Set {
-        let (seeds, edges) = self.seeds(rule, s, &units[&s], h);
-        self.closure_with(rule, &seeds, edges, h)
+        self.closure(rule, &self.seeds(rule, s, &units[&s], h), h)
     }
     /// The things whose holder roles travel under S over taken writes `hr`: S's own, and under
     /// `keys_open` those S's thing holds read or above on through them and through record edges,
@@ -612,26 +569,6 @@ impl World {
             Kind::Edge { holder, role, .. } if *role >= Role::Read && !self.w.leave(i) => Some((*holder, self.on(i))),
             _ => None,
         }
-    }
-    /// The things of `a`'s chain to `t` over `h` (Interim (issues/chains-retired.md)): `a` and the things on any path from `a` to `t` over record edges and
-    /// edges chained grants of `ch` set, at any time.
-    pub fn chain_things(&self, h: &Set, ch: &Set, a: Thing, t: Thing) -> Things {
-        let edges: Vec<Edge> = self.w.records.iter().copied().chain(h.iter().filter(|&&i| ch.contains(&i) && self.grant(i)).filter_map(|&i| self.w.sets(i))).collect();
-        let grow = |mut x: Things, fwd: bool| loop {
-            let n = x.len();
-            x.extend(edges.iter().filter(|e| x.contains(if fwd { &e.0 } else { &e.1 })).map(|e| if fwd { e.1 } else { e.0 }).collect::<Vec<_>>());
-            if x.len() == n {
-                return x;
-            }
-        };
-        let (fwd, back) = (grow(Things::from([a]), true), grow(Things::from([t]), false));
-        let mut out: Things = fwd.intersection(&back).copied().collect();
-        out.insert(a);
-        out
-    }
-    /// The edges of `h`'s edge writes joining two of `things`.
-    fn edges_among(&self, h: &Set, things: &Things) -> BTreeSet<Edge> {
-        h.iter().filter_map(|&i| self.w.sets(i)).filter(|e| things.contains(&e.0) && things.contains(&e.1)).collect()
     }
     /// Part `i`'s stated path is not known over `h`: its entry opens late (`World::opens`) and
     /// `h` lacks what opens it.
@@ -756,17 +693,14 @@ impl World {
     /// on an edge of its stated path (where joined, under `joined`).
     /// The draft is `paths::evidence`.
     pub fn closure(&self, rule: &Rule, seeds: &Set, avail: &Set) -> Set {
-        self.closure_with(rule, seeds, BTreeSet::new(), avail)
-    }
-    /// `closure`, with `edges` brought from the start.
-    fn closure_with(&self, rule: &Rule, seeds: &Set, mut edges: BTreeSet<Edge>, avail: &Set) -> Set {
         let c = rule.closure;
-        if c == (Closure { commit_edges: CommitEdges::Off, ..Closure::drafted() }) && edges.is_empty() && self.opens.is_empty() {
+        if c == (Closure { commit_edges: CommitEdges::Off, ..Closure::drafted() }) && self.opens.is_empty() {
             return paths::evidence(&self.w, seeds, avail);
         }
         let takes = self.takes(rule, avail);
         let ok = |i: Id| takes.as_ref().is_none_or(|t| t.contains(&i));
-        let ch = if c.joined || c.any_path { self.chained(avail) } else { Set::new() };
+        let ch = if c.joined { self.chained(avail) } else { Set::new() };
+        let mut edges = BTreeSet::new();
         let mut s = seeds.clone();
         let mut done = Set::new();
         let mut brought = Set::new();
@@ -775,12 +709,6 @@ impl World {
                 done.insert(m);
                 if self.hidden(avail, m) {
                     // a part whose path entry has not opened brings nothing
-                } else if c.any_path {
-                    let a = self.w.commits[m].signer;
-                    edges.extend(self.edges_among(avail, &self.chain_things(avail, &ch, a, self.on(m))));
-                    if let Some(hd) = self.holder(m) {
-                        edges.extend(self.edges_among(avail, &self.chain_things(avail, &ch, a, hd)));
-                    }
                 } else if !c.joined || self.joined(avail, &ch, m) {
                     // the edge writes on its key hop and its path's edges (E1)
                     edges.extend(self.w.rests(m).iter().copied());
@@ -826,7 +754,7 @@ impl World {
 
     // ---- Delivery ----
 
-    /// The sync IDs node `n` syncs: its own, closed under the standing duty.
+    /// The sync IDs node `n` syncs: its own, and the sync ID of every thing in a unit it syncs.
     pub fn syncs(&self, n: usize, units: &BTreeMap<Sid, Things>) -> Things {
         let mut sy: Things = self.nodes[n].syncs.iter().copied().filter(|s| self.sids.contains(s)).collect();
         loop {
@@ -1266,7 +1194,7 @@ impl World {
         out
     }
     /// The model's own check: every edge-class commit the node holding everything applies is
-    /// chained (Interim (issues/chains-retired.md): every write the walk applies is chained).
+    /// chained.
     pub fn p0_applied_chained(&self, st: &State) -> Vec<Fail> {
         let full = self.full(st, &Set::new());
         let ch = self.chained(&full.v.held);

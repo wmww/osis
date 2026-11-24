@@ -99,7 +99,7 @@ pub fn world(seed: u64) -> World {
 }
 
 /// The admins' dispute, toggling forever: each removes the other at hour 5, then they write
-/// settings enabling and disabling `EXT` in turn (the first admin enables at 6 and disables at 8,
+/// settings enabling and disabling `EXT` in turn (the first enables at 6 and disables at 8,
 /// the second disables at 7 and enables at 9); the stranger fires at 3 and at 10. Which admin
 /// stands, and so which setting is current, differs by the held set.
 pub fn dispute() -> World {

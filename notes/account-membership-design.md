@@ -86,7 +86,7 @@ One rule for every removal of every holder and every key: **a write of the remov
 
 ### Role writes: only the list keeps them
 Decided (Tess, issues/role-vouch-contested.md): a role write of X that R's list does not name is dropped, whoever else received it. Two worlds can hold the same commits and need opposite answers, so no rule over the held set can keep it safely. A share, pairing or removal X made shortly before its removal that the remover had not received is undone until someone redoes it as their own write; a node in sync when it removes lists it. Where a node held such a write in R's window, the removal's result says so (the notice; not built).
-- **What follows for the writes made under a fallen grant**: granted again, the grantee holds the role from the new grant; its earlier content is valid by the re-grant rule (modelled: `Regrant::FirstChained`), its earlier role writes stay dropped.
+- **What follows for the writes made under a fallen grant**: granted again, the grantee holds the role from the new grant; its earlier content is valid by the re-grant rule (modelled: `Regrant::FirstByRight`), its earlier role writes stay dropped.
 - **Addenda reach admin-only content**: an addendum by a witness holding admin at its key vouches for X's deltas on admin-only aspects that are not role-class (built: spec/permissions.md §5.2 Addenda).
 
 ### How a removal reaches other things

@@ -184,8 +184,7 @@ fn f14_a_dropped_grant_is_read_by_the_regrant_so_applied_only_strands_a_write() 
     }
 }
 
-/// Finding 15: a writer's finalizes are chained (Interim (issues/chains-retired.md): write on
-/// its target, for a removal), so a writer of A without admin still grows a dependent's copies
+/// Finding 15: a writer's finalizes are chained (write on its target, for a removal), so a writer of A without admin still grows a dependent's copies
 /// under (iv) once A's edge it finalizes is a used one: K finalizes Q's edge `n` times; none ends
 /// anything (Q's grant has no `until`), every one is a copy under D. Likewise a may-grant holder's
 /// grants onto a holder that has a grant (chained by its may-grant, applied nowhere).
@@ -395,7 +394,7 @@ fn a_key_hop_no_write_puts_pends_until_one_is_held() {
         assert_eq!(lacking, [Pending, Pending], "{}", v.name());
         let all: Vec<Verdict> = w.verdicts(&w.full(&st, &Set::new()), &ids).into_values().collect();
         assert_eq!(all, [Valid, Valid], "{}", v.name());
-        // the grant chains (Interim (issues/chains-retired.md)), and its stated path is
+        // the grant chains, and its stated path is
         // joined (OPEN 10 (b)), only with the key's grant held
         for (without, yes) in [(Set::from([grant]), false), (Set::new(), true)] {
             let h = w.full(&st, &without).v.held;

@@ -532,8 +532,7 @@ pub fn show(w: &World, rule: &Rule) {
 
 /// D4's deposits no stamping source of their sync ID logs as well: (step, sync ID, removal) where
 /// only nodes that cannot stamp S keep the copy there, so it is never promoted and would expire
-/// while the body it judges stays (notes/write-path-design.md §2, D4: a standing duty by another
-/// name).
+/// while the body it judges stays (notes/write-path-design.md §2, D4).
 fn unpromoted(w: &World, rule: &Rule, st: &State) -> Vec<(usize, Sid, Id)> {
     let mut out = vec![];
     for &s in &w.sids {

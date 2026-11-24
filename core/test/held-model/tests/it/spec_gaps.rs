@@ -154,8 +154,8 @@ fn wide_jobs(start: u64, n: u64, opt: Wide) -> Vec<Job> {
 }
 
 /// Per stage, the worlds failing each property (P1-trust: two random trust sets) or with the gap
-/// over `OSIS_GAPS_N` (60) wide worlds per option set and the family slice, and the worlds with
-/// the gap where today has none, by hand. `OSIS_EV_RULE` names one stage.
+/// over `OSIS_GAPS_N` (60) wide worlds per option set and the family slice, by hand.
+/// `OSIS_EV_RULE` names one stage.
 #[test]
 #[ignore = "by hand"]
 fn gaps_explore() {
@@ -177,26 +177,20 @@ fn gaps_explore() {
     let runs = crate::util::par_map(&jobs, |(g, j)| {
         let (name, w, _) = j();
         let trusts = trust_sets(&w, name_seed(&name));
-        let today = stages.contains(&Stage::Today) && stage_gaps(&w, Stage::Today).is_empty();
-        let per: Vec<(Stage, Vec<Fail>, bool)> = stages
+        let per: Vec<(Stage, Vec<Fail>)> = stages
             .iter()
             .map(|&s| {
                 let (mut f, gp) = (gap_fails(&w, s, &trusts), stage_gaps(&w, s));
-                let worse = today && !gp.is_empty();
                 f.extend(gp);
-                (s, f, worse)
+                (s, f)
             })
             .collect();
         (g, name, per)
     });
     let mut out = BTreeMap::<(String, &str), BTreeMap<&str, (usize, String)>>::new();
     for (g, name, per) in runs {
-        for (s, f, worse) in per {
-            let e = out.entry((g.clone(), s.name())).or_default();
-            crate::util::count_props(e, &name, &f);
-            if worse {
-                e.entry("GAP-WHERE-TODAY-HAS-NONE").or_insert((0, name.to_string())).0 += 1;
-            }
+        for (s, f) in per {
+            crate::util::count_props(out.entry((g.clone(), s.name())).or_default(), &name, &f);
         }
     }
     for ((g, s), props) in out {
@@ -270,7 +264,7 @@ fn gaps_show() {
 /// nothing delivers to O and which moves no verdict there. Where only a grant giving what the write
 /// needs joins (J2, finding 23) the closure stops at the read hop and the write waits everywhere.
 /// Once W raises A to write on O (backdated, after the removal), the removal decides K's write and
-/// no node holding it holds O: the gap at every stage (finding 17's class, today too).
+/// no node holding it holds O: the gap at every stage (finding 17's class).
 #[test]
 fn gaps_a_removal_on_a_path_through_a_read_hop_is_the_gap_once_it_decides() {
     let base = |raise: bool| {
@@ -316,7 +310,7 @@ fn gaps_a_removal_on_a_path_through_a_read_hop_is_the_gap_once_it_decides() {
 /// thief logs no grant giving below write. The node holding everything judges the write invalid
 /// (no write reaches R through a read hop); R's reader, lacking W's read grant, holds no chained
 /// grant on (A, O). Under J1 (a hop joined by any chained grant) it pends: P1 fails at every
-/// stage, today's included. Under J2 (joined and pending by a grant giving the role the part
+/// stage. Under J2 (joined and pending by a grant giving the role the part
 /// needs) the node holding everything pends too; under J3 (a hop no grant joins judged invalid)
 /// the reader judges it invalid. Either holds P1 at every stage; J3 leaves X's grant to K, which
 /// the thief logs, held under R and required by no reader (P4).
@@ -337,10 +331,9 @@ fn gaps_a_write_through_a_read_hop_pends_at_a_reader_lacking_the_read_grant() {
             assert_eq!(pends, join == Join::Any, "{} {}: {f:?}", join.name(), s.name());
             assert!(f.iter().all(|f| matches!(f.prop, "P1" | "P4-held")), "{} {}: {f:?}", join.name(), s.name());
             // the thief logs X's grant to K under R, which R's reader requires only where it
-            // joins the path: never under J1 or J3 (no grant on (A, O) held), and under J2 the
-            // thief's closure takes it only through today's any-path chains
+            // joins the path: never under J1 or J3 (no grant on (A, O) held)
             let held = f.iter().any(|f| f.prop == "P4-held");
-            assert_eq!(held, join != Join::Needed || s == Stage::Today, "{} {}: {f:?}", join.name(), s.name());
+            assert_eq!(held, join != Join::Needed, "{} {}: {f:?}", join.name(), s.name());
         }
     }
 }
@@ -368,10 +361,10 @@ fn gaps_wide_worlds_reach_the_read_hop() {
 /// Finding 28 (`wide` seed 14204407714, split, shrunk): X removes K and Q from A in one commit; Q
 /// (its node honest, syncing A and D) then writes D through [A], A holding only read on D; the
 /// stolen K writes R through [A]. Y syncs D and R; nobody honest syncs A and R. The removal reaches
-/// R only by riding Q's write: where a read hop joins a path (J1, J4's closure, today's any-path
-/// chains), D's evidence takes the removal's copy (Q's removal is in it), Y holds it and R's reader
-/// requires it; under J2 Q's write through the read hop brings nothing, no node holding the removal
-/// holds R, and R's reader shows K's write valid: the gap (the design's, where today has none).
+/// R only by riding Q's write: where a read hop joins a path (J1, J4's closure), D's evidence
+/// takes the removal's copy (Q's removal is in it), Y holds it and R's reader requires it; under
+/// J2 Q's write through the read hop brings nothing, no node holding the removal holds R, and R's
+/// reader shows K's write valid: the gap.
 #[test]
 fn gaps_a_removal_rides_a_write_through_a_read_hop_only_where_read_joins() {
     let pw = paths::World::new(&[(X, A), (Y, D), (Y, R)]);
@@ -390,7 +383,7 @@ fn gaps_a_removal_rides_a_write_through_a_read_hop_only_where_read_joins() {
             assert_eq!(gap_fails(&w, s, &[]), vec![], "{} {}", join.name(), s.name());
             let g = stage_gaps(&w, s);
             let shows = g.iter().any(|f| f.sid == R && f.id == c && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid));
-            assert_eq!(shows, join == Join::Needed && matches!(s, Stage::A2 | Stage::A2Actor), "{} {}: {g:?}", join.name(), s.name());
+            assert_eq!(shows, join == Join::Needed, "{} {}: {g:?}", join.name(), s.name());
         }
     }
 }

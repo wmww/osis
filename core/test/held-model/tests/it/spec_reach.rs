@@ -1,10 +1,8 @@
 //! How removals reach a sync ID (notes/write-path-design.md §2, D1 to D3: lazy delivery; OPEN 14
 //! of notes/a2-spec/README.md). Each rule (`Stage`) over OPEN 10's (iv) closure and judge: the
-//! design (`a2`: Role changes travel whole), the actor seed alone, main's today (chain
-//! certificates on any path), and the design keeping today's any-path chains for removals alone.
-//! Each is judged against its reference (`World::reference`) and its gap counted (`World::gap`).
-//! Hand worlds per finding; `reach_explore` (by hand) tallies every stage over the family, random
-//! and story worlds, with the worlds where a stage has the gap and today has none.
+//! design (`a2`: Role changes travel whole) and the actor seed alone. Each is judged against its
+//! reference (`World::reference`) and its gap counted (`World::gap`). Hand worlds per finding;
+//! `reach_explore` (by hand) tallies every stage over the family, random and story worlds.
 use crate::spec_open10::fails_at;
 use held_model::evidence::names::*;
 use held_model::evidence::*;
@@ -63,7 +61,7 @@ fn by_stage(w: &World, f: impl Fn(Rule) -> Rule) -> BTreeMap<&'static str, Vec<&
 /// Finding 17's world (finding 1's: K writes D through [A, O]; O's admin W syncs O alone, D's
 /// admin Y syncs D and R; X, syncing A, removes K listing nothing; the stolen K writes D): no
 /// honest node syncs A together with O or D, so no node holding the removal holds D. Every stage
-/// holds against its reference; every stage, today's included, has the gap at D (its reader shows
+/// holds against its reference; every stage has the gap at D (its reader shows
 /// K's writes valid, the node holding everything invalid).
 #[test]
 fn open14_with_no_honest_node_between_the_removal_is_the_gap_at_d() {
@@ -80,13 +78,11 @@ fn open14_with_no_honest_node_between_the_removal_is_the_gap_at_d() {
 /// The removed party's own other route (OPEN 14's finding): Y grants K write on D directly and A
 /// write on D and R; K writes D directly (its stated path [], no hop through A); X removes K from
 /// A; the stolen K writes R through [A]. X syncs A and D, Y syncs D and R; nobody honest syncs A
-/// and R. Today K's write on D carries K's chain to D, which runs through A (any path), so X logs
-/// the removal under D, Y takes it there and logs it under R as evidence of the thief's write.
-/// By stated paths D's evidence holds nothing of (K, A), so no node holding the removal holds R:
-/// the design has the gap at R (its reader shows the thief's write), where today's chains, kept
-/// for removals or not, carry it. Every stage holds against its reference.
+/// and R. By stated paths D's evidence holds nothing of (K, A), so no node holding the removal
+/// holds R: every stage has the gap at R (its reader shows the thief's write) and holds against
+/// its reference.
 #[test]
-fn open14_a_removed_writers_other_route_carried_the_removal_today() {
+fn open14_a_removed_writers_other_route_is_the_gap_at_r() {
     let pw = paths::World::new(&[(X, A), (Y, D), (Y, R)]);
     let mut w = World::new(pw, &[A, D, R]);
     let (x, y, k) = (w.node(true, &[A, D]), w.node(true, &[D, R]), w.node(false, &[]));
@@ -102,7 +98,7 @@ fn open14_a_removed_writers_other_route_carried_the_removal_today() {
     }
     for s in Stage::ALL {
         let g = stage_gaps(&w, s);
-        assert_eq!(g.iter().any(|f| f.sid == R && f.id == late && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), matches!(s, Stage::A2 | Stage::A2Actor), "{}: {g:?}", s.name());
+        assert!(g.iter().any(|f| f.sid == R && f.id == late && f.reader == Some(Verdict::Valid) && f.full == Some(Verdict::Invalid)), "{}: {g:?}", s.name());
     }
 }
 
@@ -146,8 +142,8 @@ fn grants_only(r: Rule) -> Rule {
 /// on O. K writes R through [A, O, D]; Y removes O from D; the stolen K writes R again. A's keys
 /// open O through its record edge (spec/sync-set.md §2: effective role climbs record edges), so
 /// Role changes travel puts the removal under A and N carries it to R. Every stage but the actor
-/// seed alone brings it; read through grants only, none does (today's too: the control under-reads
-/// today), and R's reader shows K's late write: the gap.
+/// seed alone brings it; read through grants only, none does, and R's reader shows K's late
+/// write: the gap.
 #[test]
 fn open17_keys_open_through_a_mint_admins_record_edge() {
     let pw = paths::World::new(&[(X, A), (A, O), (Y, D), (V, R)]);
@@ -174,9 +170,8 @@ fn open17_keys_open_through_a_mint_admins_record_edge() {
 
 /// OPEN 17, finding 18's world with D minted by A in place of Y granting A write on D. X grants K
 /// write on D (by descent through A) and Y grants A write on R; K writes D directly; X removes K
-/// from A; the stolen K writes R through [A]. X syncs A and D, Y syncs D and R. Today K's chain to
-/// D climbs A's record edge, so the removal goes under D and Y takes it to R; the design has the
-/// gap at R.
+/// from A; the stolen K writes R through [A]. X syncs A and D, Y syncs D and R. No node holding
+/// the removal holds R: every stage has the gap at R.
 #[test]
 fn open17_a_removed_writers_other_route_through_a_record_edge() {
     let pw = paths::World::new(&[(X, A), (A, D), (Y, R)]);
@@ -192,40 +187,32 @@ fn open17_a_removed_writers_other_route_through_a_record_edge() {
         assert_eq!(p, Vec::<&str>::new(), "{name}");
     }
     for s in Stage::ALL {
-        assert_eq!(stage_gaps(&w, s).iter().any(|f| f.sid == R), matches!(s, Stage::A2 | Stage::A2Actor), "{}", s.name());
+        assert!(stage_gaps(&w, s).iter().any(|f| f.sid == R), "{}", s.name());
     }
 }
 
 /// The stage failures of every world in a job list, a thread per core: per stage the failing
-/// worlds per property (the gap counted as `gap`), and per stage the worlds with the gap where
-/// today has none.
+/// worlds per property (the gap counted as `gap`).
 pub type Job = Box<dyn Fn() -> (String, World, Option<Steps>) + Sync>;
 
-/// `f` is applied to every stage's rule but today's (a control against today as built).
+/// `f` is applied to every stage's rule (a control).
 pub fn tally(jobs: &[Job], stages: &[Stage], f: impl Fn(Rule) -> Rule + Sync) -> String {
     let runs = crate::util::par_map(jobs, |j| {
         let (name, w, at) = j();
-        let today = stage_gaps(&w, Stage::Today).is_empty();
-        let per: Vec<(Stage, Vec<Fail>, bool)> = stages
+        let per: Vec<(Stage, Vec<Fail>)> = stages
             .iter()
             .map(|&s| {
-                let fs = |r| if s == Stage::Today { r } else { f(r) };
-                let (mut f, g) = (stage_fails_with(&w, s, at.as_ref(), fs), stage_gaps_with(&w, s, fs));
-                let worse_here = today && !g.is_empty();
-                f.extend(g);
-                (s, f, worse_here)
+                let (mut fails, g) = (stage_fails_with(&w, s, at.as_ref(), &f), stage_gaps_with(&w, s, &f));
+                fails.extend(g);
+                (s, fails)
             })
             .collect();
         (name, per)
     });
     let mut out = BTreeMap::<&str, BTreeMap<&str, (usize, String)>>::new();
-    let mut worse = BTreeMap::<&str, (usize, String)>::new();
     for (name, per) in runs {
-        for (s, f, worse_here) in per {
+        for (s, f) in per {
             crate::util::count_props(out.entry(s.name()).or_default(), &name, &f);
-            if let Some(x) = f.iter().find(|x| worse_here && x.prop == "gap") {
-                worse.entry(s.name()).or_insert((0, format!("{name}: {x:?}"))).0 += 1;
-            }
         }
     }
     let mut s = String::new();
@@ -235,16 +222,12 @@ pub fn tally(jobs: &[Job], stages: &[Stage], f: impl Fn(Rule) -> Rule + Sync) ->
             s += &format!("  {p}: {k} worlds, first {first}\n");
         }
     }
-    for (st, (k, first)) in worse {
-        s += &format!("GAP WHERE TODAY HAS NONE {st}: {k}, first {first}\n");
-    }
     s
 }
 
 /// Every stage over every `OSIS_REACH_STEP`th family world (97), `OSIS_REACH_RANDOM` random
 /// worlds (100) and `OSIS_STORY_N` story seeds under every unit crossing (12), by hand.
-/// `OSIS_REACH_CONTROL`: `grants` reads every stage but today's over grants only (`Rule::records`
-/// off).
+/// `OSIS_REACH_CONTROL`: `grants` reads every stage over grants only (`Rule::records` off).
 #[test]
 #[ignore = "by hand"]
 fn reach_explore() {

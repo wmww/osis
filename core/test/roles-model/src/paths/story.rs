@@ -2073,8 +2073,7 @@ pub fn family_run(rules: &Rules, stride: usize) -> Stats {
 /// reading; controls, each the design with one rule undone: `-no-void` (a lowering whose own
 /// drops take its authority applies), `-listed` (the remover names all it received), `-exempt` (the held chain
 /// exempt from a lowering's drops), `-first-applied` (a re-granted path counts from the first point the settled
-/// walk gave it), `-chain-ever` (a write chains whatever its grantor held at its key, `until`
-/// disregarded), `-once` (a node answers a removal only the first time its walk applies it),
+/// walk gave it), `-once` (a node answers a removal only the first time its walk applies it),
 /// `-leave` (a self-removal is never put in question), `-key-order` (the remover keeps
 /// the role writes in key order), `-audit-applied` (the audit puts in question the applied
 /// writes before it, not the held ones), `-no-flag` (a may-grant grant needs only a role on its
@@ -2116,7 +2115,6 @@ pub fn mode_rules(mode: &str) -> Option<Rules> {
         "-both" => Rules { sides: Sides::Both, ..f },
         "-exempt" => Rules { exempt_chain: true, ..f },
         "-first-applied" => Rules { regrant: Regrant::FirstApplied, ..f },
-        "-chain-ever" => Rules { regrant: Regrant::ChainedEver, ..f },
         "-once" => Rules { rewrite: false, ..f },
         "-leave" => Rules { leave_in_question: false, ..f },
         "-audit-applied" => Rules { audit_held: false, ..f },
@@ -2219,7 +2217,7 @@ pub fn tiny_flags(i: u64, n: usize) -> World {
 }
 
 /// A small world of a thing detached from its folder (spec/permissions.md §1 Path,
-/// Direct mark): T1 under A under H, so H is T1's mint ancestor two record edges up. `n` commits by
+/// Direct mark): T1 minted with admin A, A with admin H, so H is T1's mint ancestor two record edges up. `n` commits by
 /// a random party at a random `ts`, one in five on A (granting or removing a party's admin there,
 /// so it reaches T1 through [A]), else on T1: content, or setting a random holder's edge (A's is
 /// T1's record edge, a third of the time: removing it detaches T1) to admin (standing or until two
