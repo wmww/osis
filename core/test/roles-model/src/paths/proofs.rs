@@ -417,7 +417,7 @@ mod tests {
         judge(w, &Rules::fixed(), &View { held: held.clone(), leaves: None, trust: trust.clone() })
     }
 
-    // spec: sync-opens.md §2 (a claimed thing proven while its path gives a role)
+    // spec: sync-opens.md §2 Connection proofs
     #[test]
     fn a_mint_admin_proves_its_account_by_the_record_edge() {
         let w = setup(Admin);
