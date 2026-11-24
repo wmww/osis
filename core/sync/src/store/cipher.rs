@@ -130,7 +130,7 @@ impl osis_store::CipherStore for Inner {
     /// only), so the bodies it lacks are fetched again (spec/sync-judgement.md §3 Dropped bodies).
     fn refetch(&mut self, s: &osis_base::SyncId) -> Res<()> {
         self.engine_tx(|t, env| {
-            let mark = [rows::ANEW, &s.0].concat();
+            let mark = rows::anew_key(s);
             if !super::Store::anew_everywhere(t, s)? {
                 t.put_local(&mark, rows::ANEW_RAISED, Shred::No)?;
             }

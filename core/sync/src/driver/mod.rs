@@ -618,7 +618,7 @@ impl Node {
                     match m.to() {
                         Some(To::Opens) => self.opens.on_message(&mut cx, sessions, &self.unread, conn, m, &mut moved),
                         Some(To::Streams) => self.streams.on_message(&mut cx, sessions, &self.opens, conn, m, &mut self.driver.reported),
-                        Some(To::Read) => self.read.on_message(&mut cx, sessions, conn, m),
+                        Some(To::Read) => self.read.on_message(conn, m),
                         Some(To::Inbox) => self.inbox.on_message(&mut cx, sessions, &self.opens, &self.streams, conn, m),
                         Some(To::Port) => match m {
                             Incoming::Request(id, m) => self.driver.port.push(PortEvent::Request(conn, id, Box::new(m))),

@@ -173,6 +173,12 @@ pub(crate) fn claims_key(s: &SyncId, i: u32) -> Vec<u8> {
 pub(crate) fn claims_due_key(at: WallMs, s: &SyncId, i: u32) -> Vec<u8> {
     [CLAIMS_DUE, &at.0.to_be_bytes(), &s.0, &i.to_be_bytes()].concat()
 }
+pub(crate) fn anew_key(s: &SyncId) -> Vec<u8> {
+    [ANEW, &s.0].concat()
+}
+pub(crate) fn first_key(s: &SyncId) -> Vec<u8> {
+    [FIRST, &s.0].concat()
+}
 pub(crate) fn usage_key(s: &SyncId) -> Vec<u8> {
     [USAGE, &s.0].concat()
 }

@@ -288,10 +288,8 @@ impl Read {
             // pullable read inside: a sync ID a reader cannot pull yet is due again once it can
             let since = self.cert_since.get(&s).copied().unwrap_or(0);
             let Some((was, now)) = self.cert_blobs.try_settle(&s, || cert_blobs_missing(g, &s, since).map(Arc::new))? else { continue };
-            if let Some(w) = now.wait
-                && self.waits.get(&s).is_none_or(|x| *x < w)
-            {
-                self.waits.insert(s, w);
+            if let Some(w) = now.wait {
+                wait_pass(&mut self.waits, s, w);
             }
             // one S needs no more leaves the own store, no tombstone (spec/sync-judgement.md §3
             // Own store); what the engine kept of it goes once no source shows it either
@@ -347,10 +345,8 @@ impl Read {
                 Ok::<bool, crate::types::Error>(ready)
             })?;
             // status runs the pass a deposit-only step waits for (`passes_wanted`)
-            if let Some(w) = since.filter(|_| !ready)
-                && self.waits.get(&s).is_none_or(|x| *x < w)
-            {
-                self.waits.insert(s, w);
+            if let Some(w) = since.filter(|_| !ready) {
+                wait_pass(&mut self.waits, s, w);
             }
             if ready && g.issue_step(&s)? {
                 self.step_since.remove(&s);
@@ -403,10 +399,8 @@ impl Read {
                     }
                 }
                 self.set_role(&s, &c, now.role && !now.idle);
-                if let Some(w) = now.wait
-                    && self.waits.get(&s).is_none_or(|x| *x < w)
-                {
-                    self.waits.insert(s, w);
+                if let Some(w) = now.wait {
+                    wait_pass(&mut self.waits, s, w);
                 }
                 if now.idle {
                     if !g.reads(&s) {
@@ -638,8 +632,7 @@ impl Read {
     /// Answers to its own requests: a Delete taken (its one item answered 0) is done; refused,
     /// whatever the code, it goes again on the source's next connection (the codes reach `known`
     /// through the source's stream, so nothing else is taken from them here).
-    pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, conn: ConnId, m: Incoming) {
-        let _ = (cx, sessions);
+    pub fn on_message(&mut self, conn: ConnId, m: Incoming) {
         if let Incoming::Reply(_, id, reply) = m {
             let taken = matches!(&reply, osis_proto::Msg::Status { codes, .. } if !codes.is_empty() && codes.iter().all(|c| c.0 == 0));
             self.answered(conn, id, taken);
@@ -743,7 +736,14 @@ impl Read {
     }
 }
 
-/// Settles `k` with `f`; a failure leaves `k` due and is returned.
+/// S's judgements outside its required set wait for a complete pass begun after place `w`: the
+/// newest such place is kept (`passes_wanted`).
+fn wait_pass(waits: &mut Stamped<SyncId, u64>, s: SyncId, w: u64) {
+    if waits.get(&s).is_none_or(|x| *x < w) {
+        waits.insert(s, w);
+    }
+}
+
 /// `Ground::cert_blobs_missing` while a reader can pull S, else nothing (`pullable` read inside,
 /// so S is due again once it can; read only where there is something to do, so a source flip
 /// moves no key with nothing to do).

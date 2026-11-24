@@ -287,7 +287,7 @@ pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, s
     for (st, c) in new {
         append(t, env, s, st, if with_claims { *c } else { None })?;
     }
-    let mark = [rows::ANEW, &s.0].concat();
+    let mark = rows::anew_key(s);
     if t.get_local(&mark)?.is_none() && t.records_any_row(s, rows::tag::TOLD, b"")? {
         t.put_local(&mark, rows::ANEW_SOME, Shred::No)?;
     }

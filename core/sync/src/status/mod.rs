@@ -149,6 +149,11 @@ fn heard_out(sources: impl Iterator<Item = (bool, bool)>) -> bool {
     any
 }
 
+/// `heard_out` over S's sources `srcs` as `net` reads them now.
+fn heard_out_at(net: &(impl Net + ?Sized), s: &SyncId, srcs: &BTreeMap<ConnId, Src>) -> bool {
+    heard_out(srcs.iter().map(|(c, src)| (!net.full(*c, s) && !net.refusing(src.at, s), net.caught_since(*c, s).is_some())))
+}
+
 /// What status reads of streams and unread when asked (all stamped reads, memo-safe).
 pub trait Net {
     /// The place of the Pull whose answer S's stream on `conn` is caught up by (none: not caught
@@ -599,8 +604,7 @@ impl Status {
                         None => Ok(None),
                     };
                 }
-                let heard = heard_out(srcs.iter().map(|(c, src)| (!g.full(*c, &s) && !g.refusing(src.at, &s), g.caught_since(*c, &s).is_some())));
-                Ok(if heard { engine } else { None })
+                Ok(if heard_out_at(&*g, &s, &srcs) { engine } else { None })
             })?;
             match r {
                 Some((_, Some(x))) => {
@@ -764,14 +768,7 @@ impl Status {
         // per read S: whether the engine wants a pass, moved only when its want does
         for s in self.wanted_fx.due() {
             let Some((_, Some(since))) = self.wanted_fx.try_settle(&s, || g.pass_wanted(&s))? else { continue };
-            match self.passes.get(&s) {
-                Some(p) if p.noted > since => {}
-                // a Pull sent before the moment ends no pass after it: one more once it ends
-                Some(_) => {
-                    self.again.insert(s);
-                }
-                None => self.begin(g, s, pulls)?,
-            }
+            self.want_pass(g, s, since, pulls)?;
         }
         // a pass of each S leave or read wants, begun after its place (crate::leave, read)
         self.modules_fx.want(());
@@ -779,15 +776,8 @@ impl Status {
             && let Some(wanted) = whole(&mut self.modules_fx, || g.module_passes())
         {
             for (s, since) in wanted.iter() {
-                if self.done.get(s).is_some_and(|d| d > since) {
-                    continue;
-                }
-                match self.passes.get(s) {
-                    Some(p) if p.noted > *since => {}
-                    Some(_) => {
-                        self.again.insert(*s);
-                    }
-                    None => self.begin(g, *s, pulls)?,
+                if !self.done.get(s).is_some_and(|d| d > since) {
+                    self.want_pass(g, *s, *since, pulls)?;
                 }
             }
         }
@@ -824,6 +814,20 @@ impl Status {
             }
         }
         Ok(acted)
+    }
+
+    /// A pass of S begun after place `since` is wanted: one under way begun after it serves; one
+    /// begun before it (a Pull sent before the moment ends no pass after it) is followed by one
+    /// more once it ends; else one begins now.
+    fn want_pass(&mut self, g: &mut impl Ground, s: SyncId, since: u64, pulls: &mut Vec<ConnId>) -> Result<()> {
+        match self.passes.get(&s) {
+            Some(p) if p.noted > since => {}
+            Some(_) => {
+                self.again.insert(s);
+            }
+            None => self.begin(g, s, pulls)?,
+        }
+        Ok(())
     }
 
     /// Begins a pass of S now, its start kept durably while it is under way.
@@ -890,8 +894,7 @@ impl Status {
     /// least.
     /// O(sources of S).
     pub fn heard_out(&self, s: &SyncId, net: &impl Net) -> bool {
-        let srcs = sources_of(&self.members, &self.up, s);
-        heard_out(srcs.iter().map(|(c, src)| (!net.full(*c, s) && !net.refusing(src.at, s), net.caught_since(*c, s).is_some())))
+        heard_out_at(net, s, &sources_of(&self.members, &self.up, s))
     }
 
     /// S heard out for what waits on it (read's repairs and store deletes, spec/sync-ids.md §6):

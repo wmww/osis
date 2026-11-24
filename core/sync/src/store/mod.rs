@@ -459,6 +459,16 @@ fn check_blob(bytes: &[u8], b: &BlobId) -> std::result::Result<(Class, Option<Wa
     }
 }
 
+/// A blob of `class` expiring at `expires` as a store keeps one now, or the code refusing it: a
+/// relay-only blob is never held (14), an expired one never taken (7).
+fn kept((class, expires): (Class, Option<WallMs>), now: WallMs) -> std::result::Result<(Class, Option<WallMs>), Code> {
+    match class {
+        Class::Relay => Err(Code::DECLINED),
+        _ if expired(expires, now) => Err(Code::EXPIRED),
+        _ => Ok((class, expires)),
+    }
+}
+
 /// The clear prefix of held blob `b`, read alone (never the ciphertext): reads twice as much
 /// while the prefix runs past what was read, so at most twice its length. `None`: not held, or
 /// no prefix this build parses (no commitments).
@@ -593,7 +603,7 @@ impl Store {
             // a dropped copy's mark stands as it is: it is fetched anew once judged (`set_unheld`)
             g.write(|t, _| {
                 for s in &anew {
-                    t.put_local(&[rows::ANEW, &s.0].concat(), rows::ANEW_RAISED, Shred::No)?;
+                    t.put_local(&rows::anew_key(s), rows::ANEW_RAISED, Shred::No)?;
                 }
                 Ok(())
             })?;
@@ -932,19 +942,14 @@ impl Store {
     fn log_checked(&mut self, s: &SyncId, e: Entry, bytes: Option<Vec<u8>>, from: Option<Source>, checked: Option<Option<Vouch>>) -> Result<Code> {
         let mut g = self.lock();
         let b = e.blob;
-        let (class, expires) = match &bytes {
-            Some(v) => match check_blob(v, &b) {
-                Ok(x) => x,
-                Err(c) => return Ok(c),
-            },
-            None => (e.class, e.expires),
+        let found = match &bytes {
+            Some(v) => check_blob(v, &b),
+            None => Ok((e.class, e.expires)),
         };
-        if class == Class::Relay {
-            return Ok(Code::DECLINED);
-        }
-        if expired(expires, g.now) {
-            return Ok(Code::EXPIRED);
-        }
+        let (class, expires) = match found.and_then(|x| kept(x, g.now)) {
+            Ok(x) => x,
+            Err(c) => return Ok(c),
+        };
         // a peer's stamp vouches only under S's head write key (spec/sync-ids.md §5 Peer budget):
         // one that does not verify there is charged as unstamped, and replaces no stamp held
         // checked once where it enters, its verdict kept with the entry: one kept with a held copy
@@ -1092,16 +1097,10 @@ impl Store {
             return Ok(Code::DECLINED);
         }
         let b = e.blob;
-        let (class, expires) = match check_blob(&bytes, &b) {
+        let (class, expires) = match check_blob(&bytes, &b).and_then(|x| kept(x, g.now)) {
             Ok(x) => x,
             Err(c) => return Ok(c),
         };
-        if class == Class::Relay {
-            return Ok(Code::DECLINED);
-        }
-        if expired(expires, g.now) {
-            return Ok(Code::EXPIRED);
-        }
         let size = bytes.len() as u64;
         let unheld = g.unheld.contains(s);
         let held = g.find(s, &b)?.map(|(_, r)| (r.wrap, r.stamp));
@@ -1162,13 +1161,7 @@ impl Store {
         let s = d.sync_id;
         let Some(holding) = g.holding(&s) else { return Ok(Code::DECLINED) };
         let b = osis_blob::blob_id(&d.blob);
-        let (class, expires) = match check_blob(&d.blob, &b) {
-            Ok(x) => x,
-            Err(_) => return Ok(Code::DECLINED),
-        };
-        if class == Class::Relay || expired(expires, g.now) {
-            return Ok(Code::DECLINED);
-        }
+        let Ok((class, expires)) = check_blob(&d.blob, &b).and_then(|x| kept(x, g.now)) else { return Ok(Code::DECLINED) };
         let size = d.blob.len() as u64;
         let policy = g.policy.clone();
         let memory = class == Class::Ephemeral;
@@ -1419,8 +1412,7 @@ impl Store {
             let mut out = BTreeSet::new();
             for p in [rows::USAGE, rows::HEAD] {
                 for (k, _) in t.scan_local(p, b"", usize::MAX)? {
-                    let id: [u8; 16] = k.get(p.len()..p.len() + 16).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("sync store held ids")))?;
-                    out.insert(SyncId(id));
+                    out.insert(rows::tail_sync(&k)?);
                 }
             }
             Ok(out)
@@ -1451,8 +1443,8 @@ impl Store {
             t.log_forget(*s)?;
             // S's rows in every record go with its `changed_at` (spec/sync-opens.md §3)
             t.changed_forget(s)?;
-            t.remove_local(&[rows::ANEW, &s.0].concat(), Shred::No)?;
-            t.remove_local(&[rows::FIRST, &s.0].concat(), Shred::No)?;
+            t.remove_local(&rows::anew_key(s), Shred::No)?;
+            t.remove_local(&rows::first_key(s), Shred::No)?;
             remove_room_rows(t, s)
         })?;
         g.forget_room(s);
@@ -1468,12 +1460,12 @@ impl Store {
     /// Whether S's first sync here ended (spec/sync-streams.md §5): a source's stream of S stood
     /// at the end of a listing from the start since S was last shredded here. Stamped (row `F/`).
     pub fn first_synced(&self, s: &SyncId) -> Result<bool> {
-        self.lock().read(|t, _| Ok(t.get_local(&[rows::FIRST, &s.0].concat())?.is_some()))
+        self.lock().read(|t, _| Ok(t.get_local(&rows::first_key(s))?.is_some()))
     }
 
     /// S's first sync here ended: kept until S is shredded (`first_synced`).
     pub fn set_first_synced(&mut self, s: &SyncId) -> Result<()> {
-        let k = [rows::FIRST, &s.0].concat();
+        let k = rows::first_key(s);
         let mut g = self.lock();
         if g.read(|t, _| Ok(t.get_local(&k)?.is_some()))? {
             return Ok(());
@@ -1490,14 +1482,14 @@ impl Store {
     pub(crate) fn reset_anew(&mut self, s: &SyncId, srcs: &[Source], f: impl FnOnce(&mut Transaction<'_>) -> std::result::Result<(), osis_store::Error>) -> Result<()> {
         self.lock().unmark(s, srcs, |t| {
             f(t)?;
-            t.remove_local(&[rows::ANEW, &s.0].concat(), Shred::No).map(drop)
+            t.remove_local(&rows::anew_key(s), Shred::No).map(drop)
         })
     }
 
     /// In `t`: whether S's pull anew is owed at every source (a dropped copy, a raise to read)
     /// rather than only at those whose rows say so (`ANEW_SOME`, or no mark).
     pub(crate) fn anew_everywhere(t: &mut Transaction<'_>, s: &SyncId) -> std::result::Result<bool, osis_store::Error> {
-        Ok(t.get_local(&[rows::ANEW, &s.0].concat())?.is_some_and(|v| v != rows::ANEW_SOME))
+        Ok(t.get_local(&rows::anew_key(s))?.is_some_and(|v| v != rows::ANEW_SOME))
     }
 
     /// The room marks of S (spec/sync-streams.md §4 Full): each source whose place passed an
@@ -1613,7 +1605,7 @@ impl Store {
         }
         g.write(|t, env| {
             drop_entries(t, env, s)?;
-            t.put_local(&[rows::ANEW, &s.0].concat(), &[], Shred::No)?;
+            t.put_local(&rows::anew_key(s), &[], Shred::No)?;
             Ok(())
         })?;
         g.write_in(true, |t, env| drop_entries(t, env, s))
@@ -2165,7 +2157,7 @@ fn mark_some(t: &mut Transaction<'_>, env: &Env<'_>, s: &SyncId) -> Result<bool>
     if env.holding(s) != Some(Holding::Unread) {
         return Ok(false);
     }
-    let mark = [rows::ANEW, &s.0].concat();
+    let mark = rows::anew_key(s);
     if t.get_local(&mark)?.is_none() {
         t.put_local(&mark, rows::ANEW_SOME, Shred::No)?;
     }
@@ -2262,9 +2254,8 @@ fn room_rows(t: &mut Transaction<'_>) -> Result<BTreeMap<(SyncId, Cap), Refused>
 fn anew_marks(t: &mut Transaction<'_>, raised: bool) -> Result<BTreeSet<SyncId>> {
     let mut out = BTreeSet::new();
     for (k, v) in t.scan_local(rows::ANEW, b"", usize::MAX)? {
-        let id: [u8; 16] = k.get(rows::ANEW.len()..).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("sync store anew mark")))?;
         if v.is_empty() != raised {
-            out.insert(SyncId(id));
+            out.insert(rows::tail_sync(&k)?);
         }
     }
     Ok(out)
