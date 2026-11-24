@@ -83,10 +83,27 @@ pub(crate) fn deposit_seed_of(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<Secret3
 }
 
 
+/// A step issued (`issue`): with the read key its issuer publishes beside it (spec/crypto.md §3).
+pub(crate) struct Issued {
+    pub(crate) step: Step,
+    pub(crate) set: ClaimSet,
+    pub(crate) read: ct::ReadKey,
+}
+
 /// Issues a step of `t` at the newest established epochs: a genesis step of a new sync ID
 /// when `parent` is none, else a child of the parent step (signed by the parent's delete key,
 /// from the admin secret of the epoch it registers).
-pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: Option<(&Step, &Secret32)>, readers: &[ReaderKey], deposit: &Secret32) -> Result<(Step, ClaimSet)> {
+///
+/// Invariant: the read key is the read epoch the step registers with the KEM key derived here
+/// from that epoch's secret, never copied from a keyset: what a party outside `t` seals to is
+/// an admin's derivation, so no writer's junk keyset can make an outside fire open nowhere
+/// (spec/crypto.md §3, Read key in force). It names the read keyset this node's `keys.0` holds
+/// (`seen`): the key is in force only while that keyset is current, so no rotation the issuer
+/// had not received is passed over.
+///
+/// `keyset`: the read keyset `t`'s `keys.0` holds once the step's commit is applied (one the same
+/// commit writes, where it writes one).
+pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: Option<(&Step, &Secret32)>, readers: &[ReaderKey], deposit: &Secret32, keyset: Option<&ct::Keyset>) -> Result<Issued> {
     let [(se, ss), (re, rs), (_, ws), (_, adm)] = registration_epochs(epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
     let sync_id = parent.map_or_else(|| genesis_sync_id(adm), |(p, _)| p.sync_id);
     let keys = StepKeys::derive(ss, ws, adm, deposit, &sync_id);
@@ -102,19 +119,24 @@ pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: Opti
         None => Parent::Genesis(&del),
         Some((step, _)) => Parent::Child { step, delete: &del },
     };
-    Ok(register_with(p, keys, &rk, (t, re, rs), (se, ss), epochs.read.wrapped_under([&re], |s| epochs.read.secret(s).is_some()).and_then(|s| epochs.read.secret(&s).map(|x| (s, x))), &mut *tx.rng)?)
+    let seen = keyset.map(keyset_digest);
+    let read = ct::ReadKey { epoch: osis_keys::aspects::to_schema(&re), kem_key: KemKey::X25519MlKem768(osis_crypto::role_kem(rs).public().as_bytes().to_vec()), seen };
+    let (step, set) = register_with(p, keys, &rk, (t, re, rs), (se, ss), epochs.read.wrapped_under([&re], |s| epochs.read.secret(s).is_some()).and_then(|s| epochs.read.secret(&s).map(|x| (s, x))), &mut *tx.rng)?;
+    Ok(Issued { step, set, read })
 }
 
 /// `sync.0` write: a new sync ID of `t` with its genesis step (`genesis`), or a step added; and
-/// the step's keys published in `t`'s `keys.0` in the same commit (spec/crypto.md §7 Header
+/// the step's keys published in `t`'s `keys.0` in the same commit (spec/crypto.md §3, §7 Header
 /// list).
 ///
 /// Invariant: the keys `keys.0` publishes are those of a step recorded by the same commit, so at
 /// the same stamp: a writer listing them (one holding no `sync.0` of `t`, a fire from outside)
-/// lists keys a step recorded before its commit places, never a rotation's before its step.
-pub(crate) fn put_step(m: &mut Mutation, t: Tid, sync_id: SyncId, step: &Step, set: &ClaimSet, genesis: bool) -> Result<()> {
-    let published = ct::StepKeys { delete: ct::SigningKey::Ed25519(step.keys.delete.to_bytes().to_vec()), write: ct::SigningKey::Ed25519(step.keys.write.to_bytes().to_vec()) };
-    m.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(10)], op: Op::Set(Some(published).to_value()) })?;
+/// lists keys a step recorded before its commit places, never a rotation's before its step; and
+/// its read key, naming the read keyset this node holds, is in force again (`read_key_in_force`).
+pub(crate) fn put_step(m: &mut Mutation, t: Tid, sync_id: SyncId, issued: &Issued, genesis: bool) -> Result<()> {
+    let Issued { step, set, read } = issued;
+    let published = ct::StepKeys { delete: ct::SigningKey::Ed25519(step.keys.delete.to_bytes().to_vec()), write: ct::SigningKey::Ed25519(step.keys.write.to_bytes().to_vec()), read: read.clone() };
+    m.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(STEP)], op: Op::Set(Some(published).to_value()) })?;
     match genesis {
         true => {
             let l = ct::SyncEntry { steps: [(step.id().0, step_record(step, Some(set)))].into_iter().collect() };
@@ -159,13 +181,14 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, t: Tid) -> Resu
 
 /// A new sync ID of `t`, an independent thing (spec/sync-ids.md §2): genesis step at its newest epochs,
 /// written to `sync.0` in `m`. Returns the sync ID.
-pub(crate) fn new_sync_id(tx: &mut Tx<'_>, m: &mut Mutation, t: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32) -> Result<SyncId> {
-    let (step, set) = issue(tx, &t, epochs, None, readers, deposit)?;
-    put_step(m, t, step.sync_id, &step, &set, true)?;
+pub(crate) fn new_sync_id(tx: &mut Tx<'_>, m: &mut Mutation, t: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32, keyset: Option<&ct::Keyset>) -> Result<SyncId> {
+    let issued = issue(tx, &t, epochs, None, readers, deposit, keyset)?;
+    let sync_id = issued.step.sync_id;
+    put_step(m, t, sync_id, &issued, true)?;
     // named in its `keys.0` too: the public key record a sender fires by (spec/crypto.md §3)
-    m.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(9)], op: Op::Set(Some(step.sync_id).to_value()) })?;
+    m.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(9)], op: Op::Set(Some(sync_id).to_value()) })?;
     drop_old_claims(tx, m, t)?;
-    Ok(step.sync_id)
+    Ok(sync_id)
 }
 
 /// The sync IDs `t`'s `sync.0` records that it owns (`sync_ids::actors::owns`).
@@ -199,15 +222,42 @@ pub(crate) fn pull_anew(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 /// Whether a child of recorded head `head` is due at an admin holding `epochs`, its actor's
 /// deposit seed `deposit` (spec/sync-ids.md §6 Steps): the head's admin epoch, held and
 /// established here, when it holds a sync, write or admin epoch newer than the head registers,
-/// the seed derives another deposit key than the head's, or `fresh`; never while it lacks the
-/// newest secret of a role (it could not sign the step).
-pub(crate) fn due_at(epochs: &ActorEpochs, head: &Step, deposit: &Secret32, fresh: bool) -> Option<Epoch> {
+/// its `keys.0` has no read key in force (`read_moved`, `read_key_in_force`), the seed derives
+/// another deposit key than the head's, or `fresh`; never while it lacks the newest secret of a
+/// role (it could not sign the step).
+pub(crate) fn due_at(epochs: &ActorEpochs, head: &Step, deposit: &Secret32, read_moved: bool, fresh: bool) -> Option<Epoch> {
     let at = RoleKey::ALL.map(|r| osis_keys::registered_epoch(epochs, r, head.keys.get(r)));
     let head_admin = at[2].filter(|e| epochs.role(Role::Admin).is_established(e))?;
     registration_epochs(epochs)?;
     let deposit_key = osis_crypto::deposit_key(deposit, &head.sync_id).verifying_key();
-    (fresh || osis_keys::newer_than_head(epochs, at) || head.keys.deposit != deposit_key).then_some(head_admin)
+    (fresh || read_moved || osis_keys::newer_than_head(epochs, at) || head.keys.deposit != deposit_key).then_some(head_admin)
 }
+
+/// `t`'s read key in force (spec/crypto.md §3): its `keys.0` step keys' read key while the read
+/// keyset there is the one it names (`seen`). `None` while another is (a step is then due,
+/// `step_due`) or no step keys are held.
+///
+/// Invariant: what a party outside `t` seals to (`Engine::fire_keys`) is admin-written (the step
+/// keys need admin, `validity::rotation_required`) and derived from a read secret its issuer
+/// holds (`issue`); a writer's keyset written since makes the fire wait for the next step and never
+/// chooses the key. A junk KEM key in a writer's keyset would leave every outside fire opened by
+/// nobody while its sender saw it delivered; a step's key from before a writer's rotation (one its
+/// issuer had not received) would be read by the party that rotation left out. Every node reads it
+/// from its own `keys.0` state, a function of the valid writes it holds: no held secret decides it.
+pub(crate) fn read_key_in_force(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<ct::ReadKey>> {
+    let Some(k) = Core::keys_in(tx, t)? else { return Ok(None) };
+    let current = k.read.as_ref().map(keyset_digest);
+    Ok(k.step.map(|s| s.read).filter(|r| r.seen == current))
+}
+
+/// The digest a read key names a read keyset by (`ct::ReadKey::seen`, spec/wire.md §7): BLAKE3
+/// of the canonical bytes of `[epoch, kem_key]`, what a sender would otherwise seal to.
+fn keyset_digest(ks: &ct::Keyset) -> [u8; 32] {
+    osis_base::hash::hash(&osis_base::encode(&Value::List(vec![ks.epoch.to_value(), ks.kem_key.to_value()])))
+}
+
+/// `keys.0` field `step` (schema/core.osis).
+const STEP: u64 = 10;
 
 /// What a due step of `g`'s sync ID `l` is issued from (`step_due`).
 pub(crate) struct Due {
@@ -222,8 +272,8 @@ pub(crate) struct Due {
 /// Whether this node issues a step of `g`'s sync ID `l` now (spec/sync-ids.md §6 Steps,
 /// spec/permissions.md §3 next-step triggers): it is an admin of `g` holding its recorded head's
 /// epochs, the head's admin epoch established, and it holds a sync, write or admin epoch newer
-/// than the head registers, or its actor's deposit seed derives another deposit key than the
-/// head's (or `fresh`). The step is a child of the recorded head, never of a step it has not
+/// than the head registers, `g`'s `keys.0` has no read key in force, or its actor's deposit seed
+/// derives another deposit key than the head's (or `fresh`). The step is a child of the recorded head, never of a step it has not
 /// recorded.
 pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Result<Option<Due>> {
     let me = tx.core.me();
@@ -236,11 +286,14 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Res
     let Some((head, _)) = crate::sync_ids::actors::head_of(&steps).and_then(|h| steps.get(&h).cloned()) else { return Ok(None) };
     let Some(epochs) = tx.core.epochs(g) else { return Ok(None) };
     let Some(deposit) = deposit_seed_of(tx, g)? else { return Ok(None) };
-    let Some(head_admin) = due_at(&epochs, &head, &deposit, fresh) else { return Ok(None) };
+    // a read keyset other than the one the step keys name leaves no read key in force: outside
+    // fires wait for this step, so it is due (spec/permissions.md §3), whoever wrote the keyset
+    let read_moved = read_key_in_force(tx, g)?.is_none();
+    let Some(head_admin) = due_at(&epochs, &head, &deposit, read_moved, fresh) else { return Ok(None) };
     // a deposit-only step waits for a newer seed held but not applied (spec/permissions.md §3):
     // stepping to this one would register a key a departed party may know
     let at = RoleKey::ALL.map(|r| osis_keys::registered_epoch(&epochs, r, head.keys.get(r)));
-    let deposit_only = !fresh && !osis_keys::newer_than_head(&epochs, at);
+    let deposit_only = !fresh && !read_moved && !osis_keys::newer_than_head(&epochs, at);
     if deposit_only && crate::rotation::keys_write_unapplied(tx, g)? {
         return Ok(None);
     }
@@ -254,9 +307,10 @@ fn step_into(tx: &mut Tx<'_>, m: &mut Mutation, g: Tid, l: SyncId, fresh: bool) 
     let Some(due) = step_due(tx, &g, &l, fresh)? else { return Ok(None) };
     let [_, (re, _), _, _] = registration_epochs(&due.epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
     let rs = readers(tx, &g, &re)?;
-    let (step, set) = issue(tx, &g, &due.epochs, Some((&due.head, &due.admin)), &rs, &due.deposit)?;
-    put_step(m, g, l, &step, &set, false)?;
-    Ok(Some((step, set)))
+    let keyset = Core::keys_in(tx, &g)?.and_then(|k| k.read);
+    let issued = issue(tx, &g, &due.epochs, Some((&due.head, &due.admin)), &rs, &due.deposit, keyset.as_ref())?;
+    put_step(m, g, l, &issued, false)?;
+    Ok(Some((issued.step, issued.set)))
 }
 
 /// The endorsements this node owes S's recorded head, as signing keys (spec/sync-ids.md §6

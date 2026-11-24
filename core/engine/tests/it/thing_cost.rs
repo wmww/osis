@@ -198,8 +198,8 @@ fn what_a_reader_costs() {
     // the granter) keeps its held writes from here on, 4,460 B for its 50 writes (89 B a write,
     // notes/thing-cost.md): what dating replaced role bodies costs (spec/commits.md §5 Fixed
     // retention: a replaced one is kept `ROLE_KEEP` after replaced). The reader is measured past
-    // the inbox lifetime, the offer's fire forgotten (35,536 B, a history cursor of t the passing
-    // time writes among it, `hf/`: its last place out), and before (35,496 B: a node thing takes
+    // the inbox lifetime, the offer's fire forgotten (37,900 B, a history cursor of t the passing
+    // time writes among it, `hf/`: its last place out; `keys.0` carries the step's read KEM key), and before (37,860 B: a node thing takes
     // no grant fire, so no offer is held; offers reach a node through its account's inbox)
-    assert!(*commits == 1 && *bytes < 4_000 && *reader < 36_200 && *offered < 59_200, "{:?}, rows by table:\n{rows}", each[1]);
+    assert!(*commits == 1 && *bytes < 4_000 && *reader < 38_400 && *offered < 59_200, "{:?}, rows by table:\n{rows}", each[1]);
 }

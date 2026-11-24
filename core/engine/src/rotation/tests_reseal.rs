@@ -122,8 +122,8 @@ fn reseal_without_the_removal_leaks_nothing_spec_crypto_5() {
 }
 
 // spec/crypto.md §5 (Passing on: a sealed fire's delta came under the keyset it is sealed to),
-// spec/sync-inbox.md §2, §4: S holds g's public key record (R's keyset e_R) and no secret of
-// g, so it fires `x:f@~0` on g sealed to e_R; V, lacking W, opens it under e_R. V encrypts the
+// spec/sync-inbox.md §2, §4: S holds g's public key record (R's keyset e_R, registered by R's
+// step) and no secret of g, so it fires `x:f@~0` on g sealed to e_R; V, lacking W, opens it under e_R. V encrypts the
 // fire under no epoch of its choosing (M's) until W arrives; then it does, and M opens nothing.
 #[test]
 fn sealed_fire_passes_on_only_once_its_keyset_is_established_spec_crypto_5() {
@@ -134,6 +134,8 @@ fn sealed_fire_passes_on_only_once_its_keyset_is_established_spec_crypto_5() {
     let mut m = Mutation::new();
     m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(f.clone(), osis_schema::History::FOREVER)).unwrap();
     lp.peers[A].commit(m).unwrap().unwrap();
+    let sid = lp.peers[R].engine.sync_ids(&g).unwrap()[0].id;
+    lp.peers[R].engine.issue_step(&g, &sid, false).unwrap().expect("R's step registers e_R");
     lp.hold_at(S, g);
     for from in [A, R] {
         send_skipping(&mut lp, from, S, &skip);

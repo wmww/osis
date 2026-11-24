@@ -887,7 +887,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecor
         }
         let after = rot.preview(&held)?;
         let readers: Vec<_> = readers.into_iter().chain(also.iter().cloned()).collect();
-        crate::flows::sync_ids::new_sync_id(tx, &mut m, t, &after, &readers, &deposit)?;
+        crate::flows::sync_ids::new_sync_id(tx, &mut m, t, &after, &readers, &deposit, rot.keys.keysets.get(&Role::Read))?;
     }
     let to = unreached(tx, &t, &rot)?;
     let c = Engine::commit_tx(tx, m)?;

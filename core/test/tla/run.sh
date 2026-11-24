@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, leftout, planted, netstream, netshared, netopen, nethold, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, withdrawn, leftout, planted, firekey, netstream, netshared, netopen, nethold, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker, but depth0: 10-20 min); with cfg names: those instances instead
 #   (the larger ones in the module's README, by hand), judged only if listed
@@ -134,6 +134,14 @@ instances=(
   "planted rotation Planted P_all.cfg fail"         # negative control: carrying everything bases a planted epoch
   "planted rotation Planted P_drop.cfg fail"        # negative control: covering what was left out loses a genuine grant's box
   "planted rotation Planted P_keyset.cfg fail"      # negative control: keyset-vouched basis loses older epochs once keys.0 compacts
+  "firekey rotation FireKey FK_safety.cfg pass"        # an outsider seals to the step's read key while keys.0's read keyset is the one it names, else pends (spec/crypto.md §3, spec/sync-inbox.md §2): W2 any keyset and clock
+  "firekey rotation FireKey FK_honest2.cfg pass"       # ... the removal beside an honest rotation not knowing it
+  "firekey rotation FireKey FK_live.cfg pass"          # ... and every fire is taken, sealed to a key an honest node opens
+  "firekey rotation FireKey FK_newest.cfg fail:NoSwallow" # negative control: sealed to the newest read keyset, a writer's lockout swallows it
+  "firekey rotation FireKey FK_nopend.cfg fail:NoLeak"    # negative control: sealed to the step's read key whatever the keyset, the removed reader opens it
+  "firekey rotation FireKey FK_stamps.cfg fail:NoLeakStrict" # negative control: in force by stamps, a step concurrent with the knowing rotation keeps an epoch R holds in force (F1)
+  "firekey rotation FireKey FK_fork.cfg fail:NoLeakStrict"   # finding F2: an honest fork not knowing the removal masks the knowing keyset (README)
+  "firekey rotation FireKey FK_mask.cfg fail:NoLeakAll"      # stated limit: a W2 keyset masks the knowing keyset (README)
   "netstream net MCStream S_loss.cfg pass"
   "netstream net MCStream S_restore.cfg pass"
   "netstream net MCStream S_copies.cfg pass"
@@ -255,7 +263,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|leftout|planted|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|reseal|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|withdrawn|leftout|planted|firekey|netstream|netshared|netopen|nethold|netkeep [cfg...]" >&2
   exit 2
 fi
 

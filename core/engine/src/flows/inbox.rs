@@ -485,16 +485,20 @@ impl Engine {
         self.core.ix.fires.feed()
     }
 
-    /// The read epoch fire `id` seals to now: the newest read keyset of its thing held here
-    /// (its `keys.0`). Sealed again when this moves.
+    /// The read epoch fire `id` seals to now: its thing's read key in force held here
+    /// (`fire_keys`); `None` while there is none (its delivery waits). Sealed again when this
+    /// moves.
     pub fn fire_epoch(&mut self, id: &FireId) -> Result<Option<osis_crypto::Epoch>> {
         let Some(o) = self.core.ix.fires.get(id).cloned() else { return Ok(None) };
         Ok(self.fire_keys(&o.thing)?.map(|(e, _, _)| e))
     }
 
+    /// What a fire on `t` from outside is sealed to and goes under (spec/sync-inbox.md §2): `t`'s
+    /// read key in force (`sync_ids::read_key_in_force`, never a writer's keyset) and its sync
+    /// ID, from the `keys.0` held here.
     pub(crate) fn fire_keys(&mut self, t: &Tid) -> Result<Option<(osis_crypto::Epoch, osis_crypto::KemPublicKey, osis_base::SyncId)>> {
-        let Some(k) = self.get_typed(t, &ct::KEYS)? else { return Ok(None) };
-        let (Some(rk), Some(s)) = (k.read.as_ref(), k.sync_id) else { return Ok(None) };
+        let t = *t;
+        let Some((rk, s)) = self.read(|tx| Ok(super::sync_ids::read_key_in_force(tx, &t)?.zip(crate::engine::Core::keys_in(tx, &t)?.and_then(|k| k.sync_id))))? else { return Ok(None) };
         let ct::KemKey::X25519MlKem768(b) = &rk.kem_key;
         let (Ok(e), Ok(kem)) = (osis_keys::aspects::from_schema(&rk.epoch), osis_crypto::KemPublicKey::from_slice(b)) else { return Ok(None) };
         Ok(Some((e, kem, s)))
@@ -503,8 +507,9 @@ impl Engine {
     /// Fire `id` sealed now (spec/sync-inbox.md §2, spec/wire.md §9): its commit (built once, by
     /// this node's account, one delta: the fire) with its evidence (its signer's record and, an
     /// account's, its rotations to the epoch it signs at: spec/permissions.md §4), behind the
-    /// commit's prefix, sealed to its thing's newest read keyset held. `None`: not owed, or the
-    /// thing's public key record is not held.
+    /// commit's prefix, sealed to its thing's read key in force held (`fire_keys`). `None`: not
+    /// owed, or no such key is held (the thing's public key record, or a step after its newest
+    /// read keyset).
     pub fn sealed_fire(&mut self, id: &FireId) -> Result<Option<SealedFireOut>> {
         let Some(o) = self.core.ix.fires.get(id).cloned() else { return Ok(None) };
         // a stranded notice past its expiry is owed no more: no receiver would keep it

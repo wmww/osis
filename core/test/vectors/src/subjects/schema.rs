@@ -28,7 +28,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         inbox: Some(osis_base::Weak(tid(10))),
         deposit_seed: Some([12; 32]),
         sealed: BTreeMap::from([(BoxKey { holder: tid(12).into(), role: Role::Read, epoch: epoch(1) }, BTreeSet::from([epoch(3)]))]),
-        step: Some(StepKeys { delete: SigningKey::Ed25519(vec![8; 32]), write: SigningKey::Ed25519(vec![17; 32]) }),
+        step: Some(StepKeys { delete: SigningKey::Ed25519(vec![8; 32]), write: SigningKey::Ed25519(vec![17; 32]), read: ReadKey { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![18; 1216]), seen: Some([19; 32]) } }),
         ..Keys::default()
     };
     let secrets = Secrets {

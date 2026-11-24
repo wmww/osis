@@ -151,9 +151,16 @@ codec_struct! {
     pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 supersedes: BTreeSet<Epoch>, 4 names: [u8; 32], 5 left_out: BTreeMap<Weak, BTreeMap<Epoch, BTreeSet<CommitId>>>, 6 demotions: BTreeSet<CommitId>, 7 demotes: bool }
 }
 codec_struct! {
-    /// The delete and write keys of a step (spec/sync-ids.md §2), as `keys.0` publishes them.
+    /// A read epoch and its read-role KEM key, with the digest of the read keyset its writer
+    /// held (spec/crypto.md §3).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct StepKeys { 0 delete: SigningKey, 1 write: SigningKey }
+    pub struct ReadKey { 0 epoch: Epoch, 1 kem_key: KemKey, 2 seen: Option<[u8; 32]> }
+}
+codec_struct! {
+    /// The delete and write keys of a step (spec/sync-ids.md §2) and the read epoch it registers
+    /// (spec/crypto.md §3), as `keys.0` publishes them.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct StepKeys { 0 delete: SigningKey, 1 write: SigningKey, 2 read: ReadKey }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
