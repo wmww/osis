@@ -52,9 +52,12 @@ struct Replica {
 }
 
 impl Replica {
+    /// `held` of the bodies with `d` added: its join with `d` without the gone writes.
     fn apply(&mut self, d: Frag) {
-        self.bodies.push(d);
-        self.state = held(&self.bodies, &in_ranges(&self.expired));
+        self.bodies.push(d.clone());
+        let mut d = d;
+        d.remove_gone(&in_ranges(&self.expired));
+        apply(&mut self.state, d);
     }
     fn expire(&mut self, r: &Range) {
         if !self.expired.contains(r) {

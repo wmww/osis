@@ -996,7 +996,8 @@ fn expiring_snapshots_read_alike_whatever_arrives_and_is_covered_plain_spec_crdt
         for step in 0..14 {
             lp.advance(1 + rng.next(3_000));
             let now = lp.peers[0].engine.now().0;
-            let t = now + 1_000 * (1 + rng.next(4)) * 5;
+            // on a 10 s grid, so several deltas and snapshots share an expiry
+            let t = (now / 10_000 + 1 + rng.next(4)) * 10_000;
             match rng.next(9) {
                 0 | 1 => put(&mut lp, 0, g, &format!("k{step}")),
                 2 | 3 => {
