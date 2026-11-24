@@ -11,9 +11,6 @@ osis-engine/waits::every_part_given_once_joins_in_any_order_plain_spec_commits_4
 osis-engine/shred::purged_permanent_alike_plain_spec_commits_5 - issues/accounts-properties-fail.md accounts: pairing
 osis-engine/shred::purged_permanent_alike_in_every_order_exhaustive_spec_commits_5 - issues/accounts-properties-fail.md accounts: pairing
 osis-sync/differential::histories_hold_their_closure_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md accounts: pairing
-osis-engine/apply::tests_addenda::a_removed_writers_writes_read_alike_plain_spec_perm_5_2 OSIS_ADDENDA_START=0 issues/accounts-properties-fail.md the reader holds its grant's offer
-osis-engine/apply::tests_addenda::a_removed_writers_writes_read_alike_large_spec_perm_5_2 OSIS_ADDENDA_START=0 issues/accounts-properties-fail.md the reader holds its grant's offer
-osis-engine/validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/accounts-properties-fail.md the reader holds its grant's offer
 osis-engine/closure::sync_units_are_the_models_plain_spec_sync_set_2 OSIS_UNITS_START=0 issues/accounts-properties-fail.md the sync unit of
 osis-sync/sims::a_reader_through_a_node_keeping_it_unread_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md reads thing 0 unlike the reference
 osis-sync/sims::lost_and_repeated_messages_plain OSIS_SYNC_START=0 issues/accounts-properties-fail.md w\.net\.faulted != \(0, 0, 0\)
