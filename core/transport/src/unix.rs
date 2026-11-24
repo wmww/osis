@@ -207,10 +207,6 @@ impl Connection for UnixConn {
         Peer::Unix { uid: self.uid }
     }
 
-    fn source(&self) -> Option<crate::Source> {
-        None
-    }
-
     async fn open_stream(&self) -> Result<(UnixSend, UnixRecv), Error> {
         self.take()
     }

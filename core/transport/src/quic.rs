@@ -511,10 +511,6 @@ impl Connection for QuicConn {
         self.peer
     }
 
-    fn source(&self) -> Option<crate::Source> {
-        Some(crate::ip_source(self.c.remote_address().ip()))
-    }
-
     async fn open_stream(&self) -> Result<(QuicSend, QuicRecv), Error> {
         let (s, r) = self.c.open_bi().await.map_err(conn_err)?;
         Ok((QuicSend(s), QuicRecv(r)))

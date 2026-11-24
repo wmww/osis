@@ -7,7 +7,6 @@ use crate::util::{lock, Rng};
 use crate::{Connection, Error, PublicKey, RecvStream, SendStream};
 use std::collections::{BTreeMap, VecDeque};
 use std::future::{poll_fn, Future};
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 
@@ -95,10 +94,10 @@ impl Conn {
         self.streams.values().filter(|s| s.opener == side && !(s.accepted && s.halves.get(1 - side) == Some(&0))).count()
     }
 
-    /// A handle on side `side` (0 or 1) of this connection `id`, which sees the other end at `remote`.
-    fn handle(&self, net: &Net, id: u64, side: usize, remote: SocketAddr) -> MemConn {
+    /// A handle on side `side` (0 or 1) of this connection `id`.
+    fn handle(&self, net: &Net, id: u64, side: usize) -> MemConn {
         let peer = self.keys.get(1 - side).copied().unwrap_or_default();
-        MemConn(Arc::new(Handle { net: net.clone(), id, side, peer, source: crate::ip_source(remote.ip()) }))
+        MemConn(Arc::new(Handle { net: net.clone(), id, side, peer }))
     }
 }
 
@@ -133,21 +132,21 @@ impl State {
 
     /// A new connection presenting `keys` (side 0 dialed), side 1 not yet accepted
     /// (`accept_conn`), side `i` opening at most `limit[i]` streams at once; the dialer's
-    /// handle, which sees side 1 at `remote`.
-    pub(crate) fn new_conn(&mut self, net: &Net, keys: [PublicKey; 2], limit: [usize; 2], remote: SocketAddr) -> (u64, MemConn) {
+    /// handle.
+    pub(crate) fn new_conn(&mut self, net: &Net, keys: [PublicKey; 2], limit: [usize; 2]) -> (u64, MemConn) {
         let id = self.id();
         let c = Conn { keys, streams: BTreeMap::new(), accept: [VecDeque::new(), VecDeque::new()], accept_waker: [None, None], next_stream: 0, closed: false, dropped: [false, true], limit, open_waker: [None, None] };
-        let h = c.handle(net, id, 0, remote);
+        let h = c.handle(net, id, 0);
         self.conns.insert(id, c);
         (id, h)
     }
 
-    /// Side 1 of connection `id`, which sees side 0 at `remote`; `None` once reset.
-    pub(crate) fn accept_conn(&mut self, net: &Net, id: u64, remote: SocketAddr) -> Option<MemConn> {
+    /// Side 1 of connection `id`; `None` once reset.
+    pub(crate) fn accept_conn(&mut self, net: &Net, id: u64) -> Option<MemConn> {
         let c = self.live(id)?;
         let [_, d1] = &mut c.dropped;
         *d1 = false;
-        Some(c.handle(net, id, 1, remote))
+        Some(c.handle(net, id, 1))
     }
 }
 
@@ -228,8 +227,6 @@ struct Handle {
     id: u64,
     side: usize,
     peer: PublicKey,
-    /// The other end's address's source.
-    source: crate::Source,
 }
 
 impl Drop for Handle {
@@ -257,10 +254,6 @@ impl Connection for MemConn {
 
     fn peer_key(&self) -> PublicKey {
         self.0.peer
-    }
-
-    fn source(&self) -> Option<crate::Source> {
-        Some(self.0.source)
     }
 
     /// Waits while this side has its limit of streams open.

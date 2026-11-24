@@ -160,10 +160,6 @@ impl Connection for MultiConn {
         each!(self, c => c.peer())
     }
 
-    fn source(&self) -> Option<crate::Source> {
-        each!(self, c => c.source())
-    }
-
     fn rank(&self) -> crate::Rank {
         each!(self, c => c.rank())
     }

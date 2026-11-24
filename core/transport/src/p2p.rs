@@ -436,7 +436,6 @@ type Stream<C> = (TlsSend<<C as Connection>::Send>, TlsRecv<<C as Connection>::R
 /// A connection through a relay: one stream.
 pub struct Relayed<C: Connection> {
     peer: PublicKey,
-    source: Source,
     dialer: bool,
     stream: Mutex<Option<Stream<C>>>,
     /// The dialer's connection to the relay, which serves only this one.
@@ -454,8 +453,7 @@ fn tls_stream<S: SendStream, R: RecvStream>(tls: rustls::Connection, s: S, r: R,
 
 /// The address exchange that opens a relayed session (IP consent, spec/sync-transport.md §3): sends
 /// `mine`, reads the peer's. Inside TLS, so the peer's key is proven; the relay never forwards
-/// an address (a Dial answer carries the dialer's own, the target's stream starts with an
-/// opaque tag). Whom a node dials, and who knows its key and relays to dial it, is the caller's
+/// an address (a Dial answer carries the dialer's own). Whom a node dials, and who knows its key and relays to dial it, is the caller's
 /// choice.
 async fn exchange<S: SendStream, R: RecvStream>(s: &mut TlsSend<S>, r: &mut TlsRecv<R>, mine: SocketAddr) -> Result<SocketAddr, Error> {
     let mut out = Vec::new();
@@ -465,9 +463,9 @@ async fn exchange<S: SendStream, R: RecvStream>(s: &mut TlsSend<S>, r: &mut TlsR
 }
 
 impl<C: Connection> Relayed<C> {
-    fn new(peer: PublicKey, source: Source, dialer: bool, stream: Stream<C>, under: Option<C>) -> Relayed<C> {
+    fn new(peer: PublicKey, dialer: bool, stream: Stream<C>, under: Option<C>) -> Relayed<C> {
         let gate = stream.0.gate.clone();
-        Relayed { peer, source, dialer, stream: Mutex::new(Some(stream)), under, gate }
+        Relayed { peer, dialer, stream: Mutex::new(Some(stream)), under, gate }
     }
 
     fn close(&self) {
@@ -512,15 +510,6 @@ impl<C: Connection> Connection for P2pConn<C> {
         match self {
             P2pConn::Direct(c, _) => c.peer_key(),
             P2pConn::Relayed(r) => r.peer,
-        }
-    }
-
-    /// A relayed connection's source: at the target the relay's tag for the dialer's source, at
-    /// the dialer the relay's address.
-    fn source(&self) -> Option<Source> {
-        match self {
-            P2pConn::Direct(c, _) => c.source(),
-            P2pConn::Relayed(r) => Some(r.source),
         }
     }
 
@@ -633,8 +622,6 @@ struct RelayServer<U: Udp> {
     udp: U,
     cfg: RelayConfig,
     st: Mutex<RelayState<SConn<U>>>,
-    /// Keys the tags of dialers' sources (`tag`).
-    tag_key: [u8; 32],
 }
 
 impl<U: Udp> RelayServer<U> {
@@ -741,20 +728,14 @@ impl<U: Udp> RelayServer<U> {
                 // neither side learns the other's address here (the TLS exchange gives it)
                 let mut msg = vec![OK];
                 put_addr(&mut msg, from);
-                if ts.write_all(&self.tag(from)).await.is_err() || s.write_all(&msg).await.is_err() {
+                // the target sees the stream at once (its first byte), so it can end silent ones
+                if ts.write_all(&[DIAL]).await.is_err() || s.write_all(&msg).await.is_err() {
                     return;
                 }
                 tokio::join!(self.copy(r, ts, ip_source(from.ip())), self.copy(tr, s, ip_source(at.ip())));
             }
             _ => {}
         }
-    }
-
-    /// The tag of `from`'s source: the same for every dial from one source, unlinkable to its
-    /// address without `tag_key`, so a target can share its slots by source.
-    fn tag(&self, from: SocketAddr) -> Source {
-        let h = osis_base::hash::keyed_hash(&self.tag_key, &ip_source(from.ip()));
-        h.first_chunk::<16>().copied().unwrap_or_default()
     }
 
     /// Forwards `from` to `to` until it ends, charging `src`.
@@ -843,10 +824,10 @@ impl<U: Udp> P2p<U> {
     }
 
     /// Its listeners also relay, by `cfg`.
-    pub fn relaying(mut self, cfg: RelayConfig) -> Result<P2p<U>, Error> {
+    pub fn relaying(mut self, cfg: RelayConfig) -> P2p<U> {
         let st = RelayState { next: 0, conns: BTreeMap::new(), regs: BTreeMap::new(), buckets: BTreeMap::new() };
-        self.relay = Some(Arc::new(RelayServer { udp: self.udp.clone(), cfg, st: Mutex::new(st), tag_key: self.udp.seed()? }));
-        Ok(self)
+        self.relay = Some(Arc::new(RelayServer { udp: self.udp.clone(), cfg, st: Mutex::new(st) }));
+        self
     }
 
     /// Keys registered here as a relay.
@@ -945,7 +926,7 @@ async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKe
         if punchable(theirs, relay.addr) {
             direct(&udp, &sock, theirs, key, tx.clone());
         }
-        Ok(P2pConn::Relayed(Arc::new(Relayed::new(key, ip_source(relay.addr.ip()), true, (ts, tr), Some(rc)))))
+        Ok(P2pConn::Relayed(Arc::new(Relayed::new(key, true, (ts, tr), Some(rc)))))
     };
     let r = tokio::select! {
         biased;
@@ -1026,8 +1007,9 @@ impl<U: Udp> Registration<U> {
 async fn incoming<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, via: SocketAddr, at: SocketAddr, (mut s, mut r): (<SConn<U> as Connection>::Send, <SConn<U> as Connection>::Recv), tx: mpsc::Sender<P2pConn<SConn<U>>>, fwd: Arc<Bounded>) {
     let (id, gate) = fwd.start();
     let serve = async {
-        let mut tag: Source = [0; 16];
-        read_exact(&mut r, &mut tag).await?;
+        if read_u8(&mut r).await? != DIAL {
+            return Err(Error::Protocol("not a forwarded dial".into()));
+        }
         let cfg = Arc::new(quic::server_tls(quic::keypair(secret.as_bytes())?.1, &[ALPN])?);
         let mut tls = rustls::Connection::Server(rustls::ServerConnection::new(cfg).map_err(|e| Error::Io(e.to_string()))?);
         tls.set_buffer_limit(None);
@@ -1038,7 +1020,7 @@ async fn incoming<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, via: SocketA
         if punchable(theirs, via) {
             sock.punch(theirs);
         }
-        let c = Relayed::<SConn<U>>::new(peer, tag, false, (ts, tr), None);
+        let c = Relayed::<SConn<U>>::new(peer, false, (ts, tr), None);
         tx.send(P2pConn::Relayed(Arc::new(c))).await.map_err(|_| Error::Closed)
     };
     let _ = race(&gate, serve).await;

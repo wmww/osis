@@ -415,7 +415,7 @@ impl MemSock {
             None => st.rng().bytes32(),
         };
         let limit = [crate::quic::MAX_STREAMS as usize, crate::p2p::dialer_limits(alpn, own.is_some()).0 as usize];
-        let (id, c) = st.new_conn(&self.net, [mine, theirs], limit, to);
+        let (id, c) = st.new_conn(&self.net, [mine, theirs], limit);
         if let Some(e) = st.udp.socks.get_mut(&at) {
             e.queue.push_back((id, chosen, src));
             wake(&mut e.waker);
@@ -454,7 +454,7 @@ impl Sock for MemSock {
                     e.waker = Some(cx.waker().clone());
                     return Poll::Pending;
                 };
-                if let Some(conn) = st.accept_conn(&self.net, c, src) {
+                if let Some(conn) = st.accept_conn(&self.net, c) {
                     return Poll::Ready(Ok((conn, alpn, src)));
                 }
             }
