@@ -84,7 +84,6 @@ Each rule above that a model found carries a control: a flag whose removal fails
 
 ## Open
 - notes/stubs.md, For the spec piece: settled here only how a thing names its inbox (`keys.0` `inbox`, until A5's card). Left open: an external signal on a dependent thing, a grant fire cut to the stub's data, own boxes only, a box trusted only with its evidence, the cost of a sync ID per stub, rule 4 (fires holding targets; offers already count by "holds an offer") and rule 5 for every thing (an inbox of its own for all, with A5), the stub in spec/requirements.md.
-- spec/requirements.md wording for Tess: issues/requirements-account-wording.md.
 - Where the node thing's secrets live when its key store is copied or only the key survives (spec says the minting key store holds them; issues/recovery-design.md).
 
 ## Risks

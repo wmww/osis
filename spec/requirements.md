@@ -11,7 +11,7 @@ Each item is a property that must hold, hard unless its section says goal. A pro
 - A thing is **created** by its creation record, which names its mint admin, and **destroyed** when its creation is purged or expires. A node **releases** a thing when nothing it holds references it strongly any more; a released thing is not destroyed.
 - **Role**: sync, read, write or admin, held by one thing on another. A **holder** is a thing with a role on something. Sync stores and serves data without reading it.
 - **Node**: a running osis instance with its own key and store. It reads what it holds keys for and stores and serves the rest encrypted, in any mix; nothing else separates nodes. A node is **untrusted** for data it cannot read.
-- **Account**: the identity a person's (or anything else's) nodes act as, and where others reach it.
+- **Account**: the identity a person's (or anything else's) nodes act as, and where others reach it: an ordinary thing its nodes hold roles on.
 - **Actor**: a thing a write is made through: the thing whose key signs it, then each thing whose role it uses, in order (a node, its account, a thing the account holds a role on). Being an actor is a part played in a write, not a kind of thing.
 - **Peer**: another node a node syncs with directly. **Relay**: forwards a connection's encrypted bytes and stores nothing; not a node. **Client**: anything using the osis client protocol to reach a node out of process, on the same machine or another. Which accounts a client may act as is the node's policy, not a property of where the client runs.
 
@@ -120,7 +120,7 @@ Binds released formats only; until a stable release formats change in place.
 ## Data model
 - One canonical serialization and one hash function: equal values compare equal on every node.
 - Values are typed by the writer's schema. Untyped access always works on any stored data. References may dangle.
-- A thing is kept while something references it strongly and released when nothing does. Release is not prompt and is not erasure: a released thing may still exist on, and come back from, a node that holds it, and changes not yet synced when it is released are lost. A cycle nothing outside it references is released whole. A node that releases everything is left with its own and its account's identity.
+- A thing is kept while something references it strongly and released when nothing does. Release is not prompt and is not erasure: a released thing may still exist on, and come back from, a node that holds it, and changes not yet synced when it is released are lost. A cycle nothing outside it references is released whole. A node that releases everything is left with its own identity; an account is kept by its node's references like any thing.
 - A thing takes with it, to whoever syncs it, its sync unit; a reference from something that cannot read its target does not keep the target. Sharing a thing more narrowly than what holds it, or changing its admins, changes none of that.
 - Per-aspect merge with one conflict rule everywhere: at a position the later write wins, and a removal is final. A write never brings back what was removed, so an edit concurrent with the removal of what it is in is lost; removing from a collection drops only what the remover had seen.
 - Collaborative text and lists.
