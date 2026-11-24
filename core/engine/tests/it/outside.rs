@@ -1,7 +1,6 @@
 //! Content of a thing outside the node closure (spec/commits.md §4 Outside the node closure,
 //! Pending storage): what waits, what is carried, what is fetched again, and what it stores.
 
-use crate::flows::people;
 use osis_base::{CommitId, Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_engine::local_peer::LocalPeer;
@@ -41,7 +40,7 @@ fn base() -> (LocalPeer, Tid) {
 }
 
 fn base_n(n: usize) -> ((LocalPeer, Tid), Vec<Tid>) {
-    let (mut lp, ps) = people(n);
+    let (mut lp, ps) = crate::flows::accounts(n);
     let e0 = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let x = e0.new_thing(&mut m, ps[0]);
@@ -166,7 +165,7 @@ fn content_dropped_as_not_carried_comes_back_when_the_minting_strong_does_spec_s
 // writes S, X's strong to W. Peer 1 takes W's commits and S before peer 2's grant (S waits for a
 // reach, W's content for W to enter), then the grant in the same pass.
 #[test]
-#[ignore = "issues/node-root-independent.md"]
+#[ignore = "accounts: making an account"]
 fn a_grant_making_a_strong_valid_wakes_what_waits_on_its_target_spec_commits_4() {
     let reg = crate::common::ak("t:reg.0");
     let ((mut lp, x), ps) = base_n(3);

@@ -114,8 +114,7 @@ fn a_removed_writers_unlisted_fire_is_judged_as_a_strangers_spec_permissions_5_2
 }
 
 /// Peer `i` writes its account's inbox setting with `signal` enabled as at creation, or not.
-fn inbox_signal(lp: &mut LocalPeer, i: usize, signal: &str, enabled: bool) {
-    let me = lp.peers[i].engine.me();
+fn inbox_signal(lp: &mut LocalPeer, i: usize, me: Tid, signal: &str, enabled: bool) {
     let inbox = lp.peers[i].engine.inbox_thing(&me).unwrap();
     let mut x = lp.peers[i].engine.get_typed(&inbox, &ct::RETENTION).unwrap().unwrap();
     let mut created = ct::RetentionSetting::default();
@@ -137,18 +136,17 @@ fn open(lp: &mut LocalPeer, to: usize, out: &osis_engine::sync::SealedFireOut) -
 // `grant@~0` disabled on Bob's inbox, Alice's grant fire is refused; enabled, the same fire is
 // taken.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_grant_fire_is_taken_only_while_enabled_spec_sync_inbox_5() {
-    let (mut lp, ps) = people(2);
+    let (mut lp, ps) = crate::flows::accounts(2);
     let t = crate::flows::thing_of(&mut lp, 0, ps[0]);
     crate::flows::spread(&mut lp);
-    inbox_signal(&mut lp, 1, "grant@~0", false);
+    inbox_signal(&mut lp, 1, ps[1], "grant@~0", false);
     let owed = lp.peers[0].engine.fires_owed();
     lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
     let id = *lp.peers[0].engine.fires_owed().iter().find(|f| !owed.contains(f)).expect("a grant fire owed");
     let out = lp.peers[0].engine.sealed_fire(&id).unwrap().expect("sealed");
     assert!(matches!(open(&mut lp, 1, &out), Opened::Bad), "not enabled: refused");
-    inbox_signal(&mut lp, 1, "grant@~0", true);
+    inbox_signal(&mut lp, 1, ps[1], "grant@~0", true);
     assert!(matches!(open(&mut lp, 1, &out), Opened::Commit(..)), "enabled: taken");
 }
 
@@ -157,9 +155,8 @@ fn a_grant_fire_is_taken_only_while_enabled_spec_sync_inbox_5() {
 // references nowhere. Disabling the signal ends the offer, and what it carried goes with it:
 // Bob's node holds nothing of X.
 #[test]
-#[ignore = "accounts: making an account"]
 fn disabling_grant_fires_ends_the_offer_and_what_it_carried_spec_sync_inbox_5() {
-    let (mut lp, ps) = people(2);
+    let (mut lp, ps) = crate::flows::accounts(2);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
     crate::flows::spread(&mut lp);
     let owed = lp.peers[0].engine.fires_owed();
@@ -172,7 +169,7 @@ fn disabling_grant_fires_ends_the_offer_and_what_it_carried_spec_sync_inbox_5() 
     lp.peers[1].engine.settle_needs().unwrap();
     assert_eq!(lp.peers[1].engine.role_on(&x), Some(Role::Read), "the offer shows the grant");
     assert_eq!(carried_on(&lp, 1, &x).len(), 1, "one offer of X held");
-    inbox_signal(&mut lp, 1, "grant@~0", false);
+    inbox_signal(&mut lp, 1, ps[1], "grant@~0", false);
     lp.peers[1].engine.settle_needs().unwrap();
     assert_eq!(carried_on(&lp, 1, &x), Vec::new(), "disabled: no offer held");
     assert_eq!(lp.peers[1].engine.role_on(&x), None, "and nothing of X: {}", lp.peers[1].engine.why_kept(&x));
@@ -336,9 +333,8 @@ fn carried_on(lp: &LocalPeer, i: usize, x: &Tid) -> Vec<CommitId> {
 // account. Bob holds the offer and syncs X. Past the inbox lifetime the offer is gone and Bob
 // reads X as before: his role is by X's grants.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_grant_outlives_its_offer_spec_sync_inbox_5() {
-    let (mut lp, ps) = people(2);
+    let (mut lp, ps) = crate::flows::accounts(2);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
     let grant = lp.peers[0].engine.grant(&x, &ps[1], &edge_of(Role::Read)).unwrap().commits;
     crate::flows::spread(&mut lp);
@@ -484,9 +480,8 @@ fn a_held_grant_counts_only_where_its_thing_is_synced_spec_sync_set_2() {
 // node writes its node thing, whose key part carries the grant, so no fire goes, and the grant is
 // X's as any.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_grant_to_the_node_thing_fires_nothing_spec_permissions_4() {
-    let (mut lp, ps) = people(1);
+    let (mut lp, ps) = crate::flows::accounts(1);
     let x = crate::flows::thing_of(&mut lp, 0, ps[0]);
     let node = lp.peers[0].engine.tid();
     let owed = lp.peers[0].engine.fires_owed();

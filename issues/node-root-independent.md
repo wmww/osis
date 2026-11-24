@@ -3,6 +3,6 @@
 > Priority: low
 > Tags: engine, tests
 
-Ignored on this issue (osis-engine `it`): `outside::a_grant_making_a_strong_valid_wakes_what_waits_on_its_target_spec_commits_4` (probed: W's minting pends at the reader as `UnknownCreated` of the maker's root), `closure::waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5` (no pull anew on entry; not probed further), and the lib's `rotation::tests_members::frozen_holder_keyed_at_the_role_of_its_keyed_paths_spec_crypto_4` (peer 1 holds T's record but no minting, so T never reads as destroyed there; not probed further). osis-sync `growth::a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3` (ignored, making an account) showed the `dw/` row.
+Ignored on this issue (osis-engine `it`): `closure::waiting_and_pulling_anew_cost_the_thing_not_the_node_closure_spec_commits_5` (no pull anew on entry; not probed further), and the lib's `rotation::tests_members::frozen_holder_keyed_at_the_role_of_its_keyed_paths_spec_crypto_4` (peer 1 holds T's record but no minting, so T never reads as destroyed there; not probed further). osis-sync `growth::a_redeemed_and_ended_link_returns_storage_to_a_fresh_worlds_spec_sync_set_3` (ignored, making an account) showed the `dw/` row.
 
 A thing minted with admin the node root and made independent is never entered: no own or read thing holds an edge on it, so nothing carries it (spec/sync-set.md §2 First entry). Nothing in the product makes one.

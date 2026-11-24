@@ -5,7 +5,6 @@
 //! (`ingest_valid` from the fire). Reports: rotation::tests_stranded.
 
 use crate::common::{ak, set_setting, REG};
-use crate::flows::people;
 use osis_base::{CommitId, Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_engine::local_peer::LocalPeer;
@@ -26,7 +25,7 @@ fn pass_end(e: &mut Engine) {
 /// Peer 0 makes X and grants peer 1 read; peer 1 holds X and keeps `NOTE` fires on its inbox an
 /// hour. (lp, X, peer 1's inbox)
 fn base() -> (LocalPeer, Tid, Tid) {
-    let (mut lp, ps) = people(2);
+    let (mut lp, ps) = crate::flows::accounts(2);
     let e0 = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let x = e0.new_thing(&mut m, ps[0]);
@@ -103,7 +102,6 @@ fn carrier_rows(lp: &mut LocalPeer) -> usize {
 // transaction), §5 What a held thing needs: D on W, whose record peer 1 lacks, taken with no
 // carrier (`ingest_valid(_, None)`) neither pends nor roots W, across pass ends and a restart.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_commit_taken_from_no_carrier_is_not_kept_spec_commits_4() {
     let (mut lp, x, _) = base();
     let (w, _, d_bytes, d) = minted(&mut lp, x, "d");
@@ -124,7 +122,6 @@ fn a_commit_taken_from_no_carrier_is_not_kept_spec_commits_4() {
 // F; D2 also by an entry. Across a restart both pend and root their things; once F leaves history
 // and is forgotten, D1 goes and its W1 with it, while D2 stays for its entry, until the entry goes.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_fire_letting_go_forgets_what_only_it_carries_spec_commits_4() {
     let (mut lp, x, inbox) = base();
     let f = fire(&mut lp, inbox, "f");
@@ -154,7 +151,6 @@ fn a_fire_letting_go_forgets_what_only_it_carries_spec_commits_4() {
 // W's record and its entry into the node closure; C brings both, and D applies once: W reads D's
 // value, nothing of D pends or keeps a carrier, and the fire leaving changes nothing.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_fire_carried_commit_applies_once_its_ground_comes_spec_commits_4() {
     let (mut lp, x, inbox) = base();
     let f = fire(&mut lp, inbox, "f");
@@ -178,7 +174,6 @@ fn a_fire_carried_commit_applies_once_its_ground_comes_spec_commits_4() {
 // carrier rows are one per fire held (bounded by what bounds the fires), and nothing is left once
 // the fires go.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_flood_of_fires_carries_no_more_than_the_fires_held_spec_commits_4() {
     let k = 6;
     let (mut lp, x, inbox) = base();
@@ -207,7 +202,6 @@ fn a_flood_of_fires_carries_no_more_than_the_fires_held_spec_commits_4() {
 // D1 stays for F, D2 is gone with what it rooted. An entry brings both again: each pends as before,
 // D1 carried by both again; once F goes, both stay for their entries, and go with them.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_commit_let_go_and_brought_again_pends_by_its_carriers_spec_commits_4() {
     let (mut lp, x, inbox) = base();
     let f = fire(&mut lp, inbox, "f");
@@ -243,7 +237,6 @@ fn a_commit_let_go_and_brought_again_pends_by_its_carriers_spec_commits_4() {
 // pends for W's record a while; once C brings it D applies, received when it first came: a
 // frontier as of a time between its arrival and its apply lists it, one before its arrival does not.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_commit_that_waited_for_its_record_was_received_when_it_came_spec_commits_4() {
     let (mut lp, x, _) = base();
     let (w, c, b, d) = minted(&mut lp, x, "d");
@@ -304,7 +297,6 @@ fn work(f: impl FnOnce()) -> [u64; 4] {
 // handed again costs a lookup too. F goes and D stays for its entry; once C comes, D applies with
 // both parts, received when it first came.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_pending_commit_handed_again_costs_a_lookup_unless_it_brings_something_spec_commits_4() {
     let (mut lp, x, inbox) = base();
     let f = fire(&mut lp, inbox, "f");
@@ -378,7 +370,6 @@ fn a_pending_commit_handed_again_costs_a_lookup_unless_it_brings_something_spec_
 // examination would apply it: a copy bringing nothing is a lookup only while nothing of its wait
 // is due.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_pending_commit_handed_again_once_its_drift_passed_applies_spec_commits_4() {
     let (mut lp, x, _) = base();
     let ahead = 3 * osis_base::format::MAX_DRIFT_MS;

@@ -41,13 +41,11 @@ fn make(e: &mut Engine, admin: Tid, from: Tid) -> Tid {
 // account root referenced from it is held in its sync unit; removing the strong takes it out and
 // notes it as left with the sync unit it was in.
 #[test]
-#[ignore = "accounts: making an account"]
 fn the_node_closure_follows_strongs_spec_sync_set_2() {
-    let (mut lp, _) = people(1);
+    let (mut lp, ps) = crate::flows::accounts(1);
     let e = &mut lp.peers[0].engine;
-    let (root, d) = (e.node_root().unwrap(), e.node_root().unwrap());
-    let p = e.me();
-    let inbox = e.inbox_thing(&p).unwrap();
+    let (root, d) = (e.node_root().unwrap(), ps[0]);
+    let inbox = e.inbox_thing(&d).unwrap();
     for t in [root, d, inbox] {
         assert!(e.closure_holds(&t), "{t:?}");
     }
@@ -572,10 +570,12 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
 // piece): either way, at the pass's end nothing held needs Q's chain or that write, and peer 0
 // holds the same.
 #[test]
-#[ignore = "accounts: making an account"]
+#[ignore = "accounts: edge pieces kept"]
 fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
     let mut lp = LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
-    let (p0, q) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+    let p0 = lp.peers[0].engine.make_account().unwrap().0.thing;
+    let (qa, _) = lp.peers[1].engine.make_account().unwrap();
+    let (q, profile) = (qa.thing, qa.profile);
     let mut end = |late: bool| {
         let mut lp = lp.copy().unwrap();
         // Q keeps peer 0's account, which it grants
@@ -588,9 +588,6 @@ fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
         m.set(t, &crate::common::REG, &Value::Str("t".into())).unwrap();
         e1.commit(m).unwrap();
         e1.grant(&t, &p0, &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-        let mut m = Mutation::new();
-        let profile = e1.new_thing(&mut m, q);
-        e1.commit(m).unwrap();
         let mut m = Mutation::new();
         m.set(profile, &crate::common::REG, &Value::Str("q".into())).unwrap();
         let x = e1.commit(m).unwrap().unwrap();
@@ -619,7 +616,7 @@ fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
         let qs: BTreeSet<_> = rest.iter().copied().chain([x]).collect();
         let held: BTreeSet<_> = e0.commit_ids().into_iter().filter(|c| qs.contains(c)).collect();
         let pending: BTreeSet<_> = e0.pending().into_iter().map(|p| p.0).collect();
-        assert!(e0.core.created(&q).is_none(), "late {late}: nothing held needs Q's chain");
+        assert!(e0.core.created(&q).is_none(), "late {late}: nothing held needs Q's chain: {}", e0.why_kept(&q));
         (held, pending)
     };
     let (a, b) = (end(false), end(true));
@@ -658,9 +655,11 @@ fn a_commit_waiting_for_a_part_keeps_what_it_is_on_spec_commits_5() {
 /// Peer 1 reads and holds X, made by peer 0 with mint admin its account root D (outside peer 1's node
 /// closure, needed as X's mint admin), once a pass brought what peer 0 holds: the world and D.
 fn held_minted_with_d() -> (LocalPeer, Tid) {
-    let mut lp = crate::common::net(2, 0);
-    let d = lp.peers[0].engine.node_root().unwrap();
-    let x = crate::common::new_shared(&mut lp, 0);
+    let (mut lp, ps) = crate::flows::accounts(2);
+    let d = ps[0];
+    let x = make(&mut lp.peers[0].engine, d, d);
+    lp.peers[0].engine.grant(&x, &ps[1], &crate::common::edge(osis_base::Role::Read)).unwrap();
+    lp.hold_at(1, x);
     lp.sync(0, 1).unwrap();
     let e1 = &mut lp.peers[1].engine;
     assert!(e1.closure_holds(&x) && !e1.closure_holds(&d) && e1.core.created(&d).is_some(), "D held as X's mint admin, outside the node closure");
@@ -671,7 +670,6 @@ fn held_minted_with_d() -> (LocalPeer, Tid) {
 // node closure. D, kept at peer 1 for X alone, holds a strong to B; at the pass's end B goes, as
 // would everything D holds.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_strong_from_outside_the_node_closure_needs_nothing_spec_commits_5() {
     let (mut lp, d) = held_minted_with_d();
     let b = make(&mut lp.peers[0].engine, d, d);
@@ -685,7 +683,6 @@ fn a_strong_from_outside_the_node_closure_needs_nothing_spec_commits_5() {
 // it in one commit; peer 1, holding D outside its node closure, gets the commit without its part
 // on D: at the pass's end T goes.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_part_missing_outside_the_node_closure_keeps_nothing_spec_commits_5() {
     let (mut lp, d) = held_minted_with_d();
     let t = make(&mut lp.peers[0].engine, d, d);
@@ -1449,18 +1446,16 @@ fn a_commit_awaiting_its_record_is_kept_while_carried_and_no_longer_spec_commits
 }
 
 // spec/commits.md §5 What a held thing needs (certificates: its record, its role-class parts):
-// peer 0's account root D, kept at peer 1 as X's mint admin outside its node closure, keeps its
-// role-class parts (`account.0`, the signing keys of the account's epochs) and none of its
-// content (`holds.0`).
+// peer 0's account D, kept at peer 1 as X's mint admin outside its node closure, keeps its
+// role-class parts (`keys.0`) and none of its content (`holds.0`).
 #[test]
-#[ignore = "accounts: making an account"]
-fn a_needed_account_root_keeps_its_role_class_parts_alone_spec_commits_5() {
+fn a_needed_account_keeps_its_role_class_parts_alone_spec_commits_5() {
     let (mut lp, d) = held_minted_with_d();
-    let [account, holds] = ["account.0", "holds.0"].map(|a| osis_base::Ak::new(a).unwrap());
-    let theirs = lp.peers[0].engine.get(&d, &account).unwrap();
-    assert!(theirs.is_some(), "D carries account.0");
+    let [keys, holds] = ["keys.0", "holds.0"].map(|a| osis_base::Ak::new(a).unwrap());
+    let theirs = lp.peers[0].engine.get(&d, &keys).unwrap();
+    assert!(theirs.is_some(), "D carries keys.0");
     let e1 = &mut lp.peers[1].engine;
-    assert_eq!(e1.get(&d, &account).unwrap(), theirs, "account.0 kept");
+    assert_eq!(e1.get(&d, &keys).unwrap(), theirs, "keys.0 kept");
     assert_eq!(e1.get(&d, &holds).unwrap(), None, "no content of D");
 }
 

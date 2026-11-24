@@ -111,6 +111,11 @@ pub(crate) fn people(n: usize) -> (LocalPeer, Vec<Tid>) {
     })
 }
 
+/// `n` nodes acting for accounts of their own (`LocalPeer::accounts`): built once per `n`.
+pub(crate) fn accounts(n: usize) -> (LocalPeer, Vec<Tid>) {
+    LocalPeer::cached(&format!("flows::accounts/{n}"), || LocalPeer::accounts(n, 0, crate::common::T0).unwrap())
+}
+
 /// `people(n)` with a thing of account 0's granting each `(account, role)` of `grants` in order,
 /// spread: the peers, the accounts and the thing. Built once per parameters (`LocalPeer::cached`).
 fn granted(n: usize, grants: &[(usize, Role)]) -> (LocalPeer, Vec<Tid>, Tid) {
@@ -2230,14 +2235,14 @@ fn frontier_lists_covered_deltas_of_every_purge_by_spec_perm_5_1() {
 
 // spec/permissions.md §1 (mint admin), §3; spec/wire.md §3: account 0
 // creates O (a chat) with itself as mint admin: its creation commit
-// carries `created.0` alone on O, and O, minted with an account as admin, is independent from then. It grants account 1 admin, accounts 2 and 3 write. Its admins are
+// carries `created.0` alone on O, a dependent of account 0 until its first grant makes it
+// independent. It grants account 1 admin, accounts 2 and 3 write. Its admins are
 // equal: account 1 removes account 0's record edge, stored nowhere. Writer 2 rotates
 // O to itself; the remaining admin recovers. O's admin grants on a thing below O through its record
 // chain.
 #[test]
-#[ignore = "accounts: making an account"]
 fn chat_by_record_spec_perm_1() {
-    let (mut lp, ps) = people(4);
+    let (mut lp, ps) = accounts(4);
     let (o, done) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     lp.hold(o);
     assert_eq!(done.commits.len(), 1);
@@ -2246,7 +2251,7 @@ fn chat_by_record_spec_perm_1() {
     assert_eq!(aks, BTreeSet::from(["created.0"]), "on O; beside it the account root's strong holding it");
     assert_eq!(lp.peers[0].engine.mint_admin(&o), Some(ps[0]));
     assert_eq!(lp.peers[0].engine.role_on(&o), Some(Role::Admin));
-    assert!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap().is_some(), "independent at its creation");
+    assert!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap().is_none(), "A's dependent until its first grant");
     for (p, r) in [(ps[1], Role::Admin), (ps[2], Role::Write), (ps[3], Role::Write)] {
         lp.peers[0].engine.grant(&o, &p, &edge_of(r)).unwrap();
     }

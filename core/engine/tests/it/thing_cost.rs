@@ -110,7 +110,7 @@ fn make(lp: &mut LocalPeer, admin: Tid, label: &str, show: bool) -> (Cost, Tid) 
 // neither pays a first write's rows; the second is measured. Bounds are the measured figures
 // rounded up: a change that grows a thing's cost fails here and says by how much.
 #[test]
-#[ignore = "accounts: making an account"]
+#[ignore = "accounts: pairing"]
 fn what_a_thing_costs() {
     let (mut lp, _) = account_two_nodes();
     let (p, d) = (lp.peers[0].engine.me(), lp.peers[0].engine.node_root().unwrap());

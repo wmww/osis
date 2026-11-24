@@ -553,9 +553,13 @@ fn a_sealed_fire_is_one_fire_of_its_thing_spec_sync_inbox_4() {
 // on Bob's inbox. Bob, taking it, checks it against the roster he holds: he still reads g, and holds
 // nothing of the forged commit.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_forged_grant_fire_changes_nothing_spec_sync_inbox_5() {
-    let (mut lp, g, tids) = granted(3, &[(1, Role::Read), (2, Role::Read)]);
+    let (mut lp, tids) = LocalPeer::accounts(3, 0, super::tests::T0).unwrap();
+    let g = super::tests::independent_thing(&mut lp, 0);
+    for i in [1, 2] {
+        lp.peers[0].engine.grant(&g, &tids[i], &super::tests::edge(Role::Read)).unwrap();
+    }
+    lp.sync_all().unwrap();
     let bob = tids[1];
     let reg = osis_base::Ak::new("t:reg.0").unwrap();
     let mut m = crate::Mutation::new();

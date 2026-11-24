@@ -330,13 +330,12 @@ fn crash_every_write_of_a_hold_and_release() {
 // becoming independent then enters Y's sync unit at X's strong: the node closure equals one walked
 // afresh.
 #[test]
-#[ignore = "accounts: making an account"]
 fn a_write_failing_past_the_closures_settle_leaves_it_followed() {
     use osis_crdt::{Op, PathOp};
     use osis_schema::core_types as ct;
     let dev = Dev::new();
     let mut e = dev.create();
-    let d = e.node_root().unwrap();
+    let d = e.make_account().unwrap().0.thing;
     let holds = |from: Tid, to: Tid, on: bool| {
         let mut m = Mutation::new();
         let v = Value::Strong(to);

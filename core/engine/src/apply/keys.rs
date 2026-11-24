@@ -929,12 +929,9 @@ mod tests {
     // A genuine grant past the cap reads its boxes once an applied one frees a place, or it waits
     // for good on the sync ID those secrets open.
     #[test]
-    #[ignore = "accounts: making an account"]
     fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
-        lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
-        let b = lp.peers[1].engine.me();
+        let (mut lp, ps) = LocalPeer::accounts(2, 0, WallMs(1_700_000_000_000)).unwrap();
+        let (me, b) = (ps[0], ps[1]);
         let thing = |lp: &mut LocalPeer| {
             let mut m = Mutation::new();
             let t = lp.peers[0].engine.new_thing(&mut m, me);

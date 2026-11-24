@@ -329,7 +329,6 @@ fn equivocation_under_snapshot_dot_reads_snapshot_copy_spec_perm_5_2() {
 // uncompacted register write: her frontier lists both, compacted or not; both stay, at Alice
 // and at a fresh node that never gets the compacted commit (the snapshot vouches for it).
 #[test]
-#[ignore = "accounts: making an account"]
 fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup();
     let tags_ak = ak("t:tags.0");
@@ -765,7 +764,6 @@ fn admin_only_snapshot_by_writer_invalid_spec_perm_5_2() {
 // the snapshot) keep both, whether the revoke arrives after the snapshot or before it, across a
 // restart and a re-grant.
 #[test]
-#[ignore = "accounts: making an account"]
 fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
     for revoke_first in [false, true] {
         let (mut lp, d, b, _) = setup();
@@ -970,7 +968,6 @@ fn put_at(lp: &mut LocalPeer, i: usize, t: Tid, path: &[&str], v: Value) {
 // (function of the held set), spec/permissions.md §5.1: alike with Dave receiving Carol's write
 // inside "late" before her snapshot (dated after it, as spec/crdt.md §8 requires).
 #[test]
-#[ignore = "accounts: making an account"]
 fn entry_created_after_demotion_spec_perm_5_2() {
     for snapshot_first in [true, false] {
         entry_created_after_demotion(snapshot_first);
@@ -1427,7 +1424,6 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
 // Bob's commit whole before Carol's; a node never getting the rest agrees with itself in either
 // order.
 #[test]
-#[ignore = "accounts: making an account"]
 fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     let (mut lp, d, b, _) = setup();
     // Bob's independent thing (its own secrets: he grants read on it)
@@ -1927,7 +1923,6 @@ fn a_readers_snapshot_changes_nothing_spec_perm_5_2() {
 // snapshot is stripped like Carol's other writes and Bob's tag goes at Dave (Alice, holding Bob's
 // commit, keeps it), whichever of the snapshot and the demotion Dave gets first, across a restart.
 #[test]
-#[ignore = "accounts: making an account"]
 fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
     for (covered, demote_first) in [(true, false), (true, true), (false, false), (false, true)] {
         let (mut lp, d, b, c) = setup();
@@ -2124,7 +2119,6 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
 // and at nodes holding Bob's commits too, in every order of the snapshot, the revoke and "x"
 // and "y" themselves, and after a rebuild of the state and a restart.
 #[test]
-#[ignore = "accounts: making an account"]
 fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup();
     let id_of = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.commit_ids().into_iter().filter(|c| lp.peers[i].engine.header(c).is_some_and(|h| h.signer == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).max_by_key(|c| lp.peers[i].engine.header(c).unwrap().ts).unwrap();
@@ -2645,7 +2639,6 @@ fn missing_snapshot_not_covered_by_older_spec_perm_5_2() {
 // (valid, then invalid) or after the removal, the fresh node's frontier for Bob lists exactly
 // his received commits, also after a restart.
 #[test]
-#[ignore = "accounts: making an account"]
 fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
     let (mut lp, d, b, c) = setup();
     add_tag(&mut lp, 1, d, "bob");
@@ -2755,7 +2748,6 @@ fn listed_part_peer(lp: &mut LocalPeer, d: Tid, held: &BTreeSet<osis_base::Commi
 // does not, also after a restart; at a node that got the removal first, the part joins once it
 // arrives.
 #[test]
-#[ignore = "accounts: making an account"]
 fn part_listed_by_invalid_snapshot_applies_alike_in_any_order_spec_commits_4() {
     for commit_form in [false, true] {
         let (mut lp, d, held, ids) = listed_part_setup(commit_form);
@@ -2789,7 +2781,6 @@ fn part_listed_by_invalid_snapshot_applies_alike_in_any_order_spec_commits_4() {
 // reaching the node only through it, his header held) is not in a frontier backdated to before
 // it came.
 #[test]
-#[ignore = "accounts: making an account"]
 fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup();
     add_tag(&mut lp, 1, d, "bob");
@@ -2839,7 +2830,6 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
 // claims, is invalid at Alice and at fresh nodes getting it before or after the removal, and its
 // header alone shows nothing of it.
 #[test]
-#[ignore = "accounts: making an account"]
 fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
     let tags_ak = ak("t:tags.0");
     for (n, snap_first) in [true, false].into_iter().enumerate() {
@@ -3171,7 +3161,6 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
 // superseded "one" stays valid where held; a new node never given it reads alike. Past the
 // keep-at-least window both are still listed.
 #[test]
-#[ignore = "accounts: making an account"]
 fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup();
     let kept = ak("t:kept.0");
@@ -3553,7 +3542,6 @@ fn kick_reads_bodies_down_to_its_winner() {
 // first y. A node holding Bob's commit reads as a node that never got it (y and z at X's place,
 // at the end; the list absent), whether it arrived invalid or flipped (Carol's node).
 #[test]
-#[ignore = "accounts: making an account"]
 fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let (mut lp, d, b, _) = setup();

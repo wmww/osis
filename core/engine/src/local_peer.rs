@@ -578,6 +578,31 @@ impl LocalPeer {
         LocalPeer::of(peers, seed)
     }
 
+    /// `new` whose nodes each act for an account of their own (`Engine::make_account`), each
+    /// holding the others' accounts' commits and a strong to each account, as a contact's node
+    /// does: the peers and the accounts.
+    #[allow(clippy::indexing_slicing)] // i, j < n
+    pub fn accounts(n: usize, seed: u64, t: WallMs) -> Result<(LocalPeer, Vec<osis_base::Tid>)> {
+        let mut lp = LocalPeer::new(n, seed, t)?;
+        let mut ps = Vec::new();
+        for p in lp.peers.iter_mut() {
+            ps.push(p.engine.make_account()?.0.thing);
+        }
+        for (i, a) in ps.iter().enumerate() {
+            let ids = lp.peers[i].engine.commit_ids();
+            for j in (0..n).filter(|j| *j != i) {
+                lp.peers[j].know(&[*a])?;
+                for id in &ids {
+                    if let Some(pk) = lp.peers[i].engine.package(id)? {
+                        lp.deliver(j, &pk)?;
+                    }
+                }
+            }
+        }
+        lp.sync_all()?;
+        Ok((lp, ps))
+    }
+
     /// `new` whose accounts have met no other: none keeps another's chain.
     pub fn new_apart(n: usize, seed: u64, t: WallMs) -> Result<LocalPeer> {
         let peers = (0..n).map(|i| Peer::new(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
